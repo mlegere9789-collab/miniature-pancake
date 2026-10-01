@@ -3676,6 +3676,157 @@ Brep SplitFaceByCurve(const Brep& target, int face_index, const NurbsCurve& curv
   return result;
 }
 
+// SplitFaceByCurves(): parity-map "Split face by curve / surface (real
+// trim-loop split in place)" - batch sibling of SplitFaceByCurve() above,
+// see boolean_general.h's own doc comment for the full contract. Pulls
+// every curve onto face_index's own surface exactly as SplitFaceByCurve()
+// does for its one curve, builds one Chain per curve, and hands the whole
+// list to FragmentFaces() in a single call so its own open-chain worklist
+// splices every chain in one pass.
+Brep SplitFaceByCurves(const Brep& target, int face_index, const std::vector<NurbsCurve>& curves, double tolerance,
+                       int samples) {
+  const ON_Brep& bt = target.raw();
+  const int nt = bt.m_F.Count();
+  if (nt == 0) {
+    throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: target has no faces");
+  }
+  if (face_index < 0 || face_index >= nt) {
+    throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: face_index out of range");
+  }
+  if (curves.empty()) {
+    throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: curves must not be empty");
+  }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: tolerance must be positive");
+  }
+  if (samples < 2) {
+    throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: samples must be at least 2");
+  }
+
+  const ON_Surface* face_surface = bt.m_F[face_index].SurfaceOf();
+  IntersectOptions opt;
+  opt.tolerance = tolerance;
+  const double stitch_tol = std::max(1e-4, opt.tolerance * 20.0);
+  const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
+
+  std::vector<Chain> chains;
+  chains.reserve(curves.size());
+  for (size_t ci = 0; ci < curves.size(); ++ci) {
+    const NurbsCurve& curve = curves[ci];
+    if (curve.ControlPointCount() < 2) {
+      throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: curves[" + std::to_string(ci) +
+                                   "] has fewer than 2 control points");
+    }
+    const Interval dom = curve.Domain();
+    Chain chain;
+    chain.reserve(static_cast<size_t>(samples) + 1);
+    double u = 0.0, v = 0.0;
+    for (int i = 0; i <= samples; ++i) {
+      const double t = dom.min + (dom.max - dom.min) * (static_cast<double>(i) / samples);
+      const Point3d sample = curve.PointAt(t);
+      if (!SurfaceClosestPointGlobal(*face_surface, sample, u, v)) {
+        throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: curves[" + std::to_string(ci) +
+                                     "] does not converge onto the face's surface");
+      }
+      const Point3d p = face_surface->PointAt(u, v);
+      if (!chain.empty() && chain.back().p.DistanceTo(p) < 1e-9) continue;  // stalled sample, skip
+      chain.push_back({p, Point2d(u, v)});
+    }
+    if (chain.size() < 2) {
+      throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: curves[" + std::to_string(ci) +
+                                   "] collapses to a single point on the surface");
+    }
+    // Same closed-chain rejection SplitFaceByCurve() applies to its one
+    // curve (see that function's own comment) - a curve whose own two
+    // ends coincide is ImprintClosedCurvesOnFace()'s job, not this one's.
+    if (chain.front().p.DistanceTo(chain.back().p) <= stitch_tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::SplitFaceByCurves: curves[" + std::to_string(ci) +
+          "]'s own two ends coincide (within tolerance) once pulled onto the surface - a closed loop only "
+          "ever becomes an interior hole, not an open-chain split; ImprintClosedCurvesOnFace() handles that "
+          "case instead");
+    }
+    chains.push_back(std::move(chain));
+  }
+
+  std::vector<std::vector<Chain>> raw_t(static_cast<size_t>(nt));
+  raw_t[static_cast<size_t>(face_index)] = chains;
+
+  std::vector<FaceFrags> frags_t = FragmentFaces(bt, nt, raw_t, stitch_tol, opt, debug);
+
+  const FaceFrags* split_ff = nullptr;
+  for (const FaceFrags& ff : frags_t) {
+    if (ff.face_index == face_index) {
+      split_ff = &ff;
+      break;
+    }
+  }
+  bool any_holes = false;
+  if (split_ff != nullptr) {
+    for (const Fragment& frag : split_ff->frags) {
+      if (!frag.holes.empty()) any_holes = true;
+    }
+  }
+  const size_t expected = curves.size() + 1;
+  if (split_ff == nullptr || split_ff->frags.size() != expected || any_holes) {
+    const size_t got = split_ff == nullptr ? 0 : split_ff->frags.size();
+    for (FaceFrags& ff : frags_t) delete ff.surface;
+    throw std::invalid_argument(
+        "dino8::kernel::SplitFaceByCurves: " + std::to_string(curves.size()) +
+        " curve(s) must each cross the face's own trim boundary at exactly two points, independently of one "
+        "another, producing exactly " + std::to_string(expected) + " fragment(s) with no interior hole (got " +
+        std::to_string(got) + " fragment(s)" + (any_holes ? ", with a hole" : "") +
+        ") - this function only performs a clean N-way split, with no curve crossing another or touching the "
+        "boundary more than twice");
+  }
+
+  // Same "keep every fragment of every face, unconditionally" reassembly
+  // SplitFaceByCurve()/ImprintFaces() above use.
+  std::vector<KeptFace> kept;
+  for (FaceFrags& ff : frags_t) {
+    for (Fragment& frag : ff.frags) {
+      KeptFace kf;
+      kf.surface = ff.surface->DuplicateSurface();
+      kf.rev = ff.base_rev;
+      kf.outer = frag.outer;
+      kf.holes = frag.holes;
+      if (!kf.holes.empty()) BridgeHolesIntoOuter(kf.outer, kf.holes, ff.surface);
+      kept.push_back(std::move(kf));
+    }
+  }
+  for (FaceFrags& ff : frags_t) delete ff.surface;
+
+  ReconcileFragmentBoundaries(kept);
+
+  Brep result;
+  ON_Brep& brep = result.raw();
+  VertexWelder welder;
+  for (KeptFace& kf : kept) {
+    CollapseDuplicateVids(kf.outer, welder, kf.surface);
+    for (auto& h : kf.holes) CollapseDuplicateVids(h, welder, kf.surface);
+  }
+  for (const Point3d& p : welder.Points()) brep.NewVertex(p);
+
+  std::unordered_map<uint64_t, int> edge_of_pair;
+  for (KeptFace& kf : kept) {
+    if (kf.outer.size() < 3) {
+      delete kf.surface;
+      continue;
+    }
+    const int surface_index = brep.AddSurface(kf.surface);
+    ON_BrepFace& face = brep.NewFace(surface_index);
+    face.m_bRev = kf.rev;
+    BuildLoop(brep, face, ON_BrepLoop::outer, kf.outer, welder, edge_of_pair);
+    for (const std::vector<UVPt>& h : kf.holes) {
+      if (h.size() >= 3) BuildLoop(brep, face, ON_BrepLoop::inner, h, welder, edge_of_pair);
+    }
+  }
+
+  brep.SetTrimIsoFlags();
+  brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+  return result;
+}
+
 // ImprintClosedCurveOnFace(): parity-map "Imprint curve / face onto a body
 // face (add edges without changing geometry)" - the curve-onto-face half,
 // see boolean_general.h's own doc comment for the full contrast with
@@ -3788,6 +3939,164 @@ Brep ImprintClosedCurveOnFace(const Brep& target, int face_index, const NurbsCur
   // ImprintFaces()/SplitFaceByCurve() above use - every other face
   // produces exactly one Fragment (its own original, untouched boundary),
   // same as any face no chain ever reaches.
+  std::vector<KeptFace> kept;
+  for (FaceFrags& ff : frags_t) {
+    for (Fragment& frag : ff.frags) {
+      KeptFace kf;
+      kf.surface = ff.surface->DuplicateSurface();
+      kf.rev = ff.base_rev;
+      kf.outer = frag.outer;
+      kf.holes = frag.holes;
+      if (!kf.holes.empty()) BridgeHolesIntoOuter(kf.outer, kf.holes, ff.surface);
+      kept.push_back(std::move(kf));
+    }
+  }
+  for (FaceFrags& ff : frags_t) delete ff.surface;
+
+  ReconcileFragmentBoundaries(kept);
+
+  Brep result;
+  ON_Brep& brep = result.raw();
+  VertexWelder welder;
+  for (KeptFace& kf : kept) {
+    CollapseDuplicateVids(kf.outer, welder, kf.surface);
+    for (auto& h : kf.holes) CollapseDuplicateVids(h, welder, kf.surface);
+  }
+  for (const Point3d& p : welder.Points()) brep.NewVertex(p);
+
+  std::unordered_map<uint64_t, int> edge_of_pair;
+  for (KeptFace& kf : kept) {
+    if (kf.outer.size() < 3) {
+      delete kf.surface;
+      continue;
+    }
+    const int surface_index = brep.AddSurface(kf.surface);
+    ON_BrepFace& face = brep.NewFace(surface_index);
+    face.m_bRev = kf.rev;
+    BuildLoop(brep, face, ON_BrepLoop::outer, kf.outer, welder, edge_of_pair);
+    for (const std::vector<UVPt>& h : kf.holes) {
+      if (h.size() >= 3) BuildLoop(brep, face, ON_BrepLoop::inner, h, welder, edge_of_pair);
+    }
+  }
+
+  brep.SetTrimIsoFlags();
+  brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+  return result;
+}
+
+// ImprintClosedCurvesOnFace(): parity-map "Imprint curve / face onto a body
+// face (add edges without changing geometry)" - batch sibling of
+// ImprintClosedCurveOnFace() above, see boolean_general.h's own doc
+// comment for the full contract. Pulls every curve onto face_index's own
+// surface exactly as ImprintClosedCurveOnFace() does for its one curve,
+// builds one closed Chain per curve, and hands the whole list to
+// FragmentFaces() in a single call so its own closed-chain pass (the
+// `for (const Chain& c : closed_chains)` loop in SplitFaceLoop()) gives
+// each one its own independently-found owning fragment and its own
+// interior-disk fragment in one pass.
+Brep ImprintClosedCurvesOnFace(const Brep& target, int face_index, const std::vector<NurbsCurve>& curves,
+                                double tolerance, int samples) {
+  const ON_Brep& bt = target.raw();
+  const int nt = bt.m_F.Count();
+  if (nt == 0) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: target has no faces");
+  }
+  if (face_index < 0 || face_index >= nt) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: face_index out of range");
+  }
+  if (curves.empty()) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: curves must not be empty");
+  }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: tolerance must be positive");
+  }
+  if (samples < 2) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: samples must be at least 2");
+  }
+
+  const ON_Surface* face_surface = bt.m_F[face_index].SurfaceOf();
+  IntersectOptions opt;
+  opt.tolerance = tolerance;
+  const double stitch_tol = std::max(1e-4, opt.tolerance * 20.0);
+  const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
+
+  std::vector<Chain> chains;
+  chains.reserve(curves.size());
+  for (size_t ci = 0; ci < curves.size(); ++ci) {
+    const NurbsCurve& curve = curves[ci];
+    if (curve.ControlPointCount() < 2) {
+      throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: curves[" + std::to_string(ci) +
+                                   "] has fewer than 2 control points");
+    }
+    const Interval dom = curve.Domain();
+    Chain chain;
+    chain.reserve(static_cast<size_t>(samples) + 1);
+    double u = 0.0, v = 0.0;
+    for (int i = 0; i <= samples; ++i) {
+      const double t = dom.min + (dom.max - dom.min) * (static_cast<double>(i) / samples);
+      const Point3d sample = curve.PointAt(t);
+      if (!SurfaceClosestPointGlobal(*face_surface, sample, u, v)) {
+        throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: curves[" + std::to_string(ci) +
+                                     "] does not converge onto the face's surface");
+      }
+      const Point3d p = face_surface->PointAt(u, v);
+      if (!chain.empty() && chain.back().p.DistanceTo(p) < 1e-9) continue;  // stalled sample, skip
+      chain.push_back({p, Point2d(u, v)});
+    }
+    if (chain.size() < 2) {
+      throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: curves[" + std::to_string(ci) +
+                                   "] collapses to a single point on the surface");
+    }
+    // The defining requirement this function places on EACH curve that
+    // SplitFaceByCurves() does not - see ImprintClosedCurveOnFace()'s own
+    // comment for the single-curve case.
+    if (chain.front().p.DistanceTo(chain.back().p) > stitch_tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::ImprintClosedCurvesOnFace: curves[" + std::to_string(ci) +
+          "]'s own two ends do not coincide once pulled onto the surface - this function only imprints CLOSED "
+          "loops entirely interior to the face; an open chain reaching the face's own trim boundary is "
+          "SplitFaceByCurves()'s job instead");
+    }
+    chains.push_back(std::move(chain));
+  }
+
+  std::vector<std::vector<Chain>> raw_t(static_cast<size_t>(nt));
+  raw_t[static_cast<size_t>(face_index)] = chains;
+
+  std::vector<FaceFrags> frags_t = FragmentFaces(bt, nt, raw_t, stitch_tol, opt, debug);
+
+  const FaceFrags* split_ff = nullptr;
+  for (const FaceFrags& ff : frags_t) {
+    if (ff.face_index == face_index) {
+      split_ff = &ff;
+      break;
+    }
+  }
+  size_t frags_with_holes = 0;
+  size_t hole_count_on_that_frag = 0;
+  if (split_ff != nullptr) {
+    for (const Fragment& frag : split_ff->frags) {
+      if (!frag.holes.empty()) {
+        ++frags_with_holes;
+        hole_count_on_that_frag = frag.holes.size();
+      }
+    }
+  }
+  const size_t expected = curves.size() + 1;
+  if (split_ff == nullptr || split_ff->frags.size() != expected || frags_with_holes != 1 ||
+      hole_count_on_that_frag != curves.size()) {
+    const size_t got = split_ff == nullptr ? 0 : split_ff->frags.size();
+    for (FaceFrags& ff : frags_t) delete ff.surface;
+    throw std::invalid_argument(
+        "dino8::kernel::ImprintClosedCurvesOnFace: " + std::to_string(curves.size()) +
+        " curve(s) must form independent, non-nested, non-overlapping closed loops entirely interior to the "
+        "face's own trim boundary (got " + std::to_string(got) + " fragment(s), " +
+        std::to_string(frags_with_holes) + " of them holding a hole) - this function only performs a clean "
+        "multi-hole imprint");
+  }
+
+  // Same "keep every fragment of every face, unconditionally" reassembly
+  // ImprintClosedCurveOnFace()/ImprintFaces() above use.
   std::vector<KeptFace> kept;
   for (FaceFrags& ff : frags_t) {
     for (Fragment& frag : ff.frags) {
@@ -4324,6 +4633,30 @@ NurbsCurve HoleToolProfileCurve(Point3d axis_point, Vector3d unit_axis, const st
 
 }  // namespace
 
+namespace {
+
+// The capped cylindrical cutting tool MakeHole() itself builds, factored
+// out so MakeHoles() below can build one per center and fold them into a
+// single compound tool instead of repeating this construction inline.
+// `dir` must already be unit length; `diagonal` is the target's own tight
+// bounding-box diagonal (shared across every tool built for the same
+// solid, so callers computing several of these reuse one GetTightBoundingBox()
+// call rather than repeating it per hole).
+Brep BuildHoleTool(Point3d center, Vector3d dir, double radius, double depth, bool through, double diagonal) {
+  // Backs the tool's own near cap off `center` by `margin` so it pierces
+  // the entry surface cleanly (a transversal wall/face intersection) -
+  // the cap itself then sits in free space, never coincident with the
+  // solid's own surface - rather than starting the cylinder exactly ON
+  // that surface, a numerically degenerate tangent touch.
+  const double margin = std::max(radius, 1e-3 * std::max(diagonal, 1.0));
+  const double length = margin + (through ? 2.0 * diagonal + margin : depth);
+  const Point3d start = center - dir * margin;
+  const NurbsCurve rail = NurbsCurve::FromControlPoints({start, start + dir * length}, 1);
+  return Brep::Pipe(rail, radius, /*cap=*/true, /*stations=*/2);
+}
+
+}  // namespace
+
 Brep MakeHole(const Brep& solid, Point3d center, Vector3d axis, double radius, double depth, bool through) {
   if (solid.raw().m_F.Count() == 0) {
     throw std::invalid_argument("dino8::kernel::MakeHole: solid has no faces");
@@ -4341,46 +4674,61 @@ Brep MakeHole(const Brep& solid, Point3d center, Vector3d axis, double radius, d
 
   const BoundingBox bbox = solid.GetTightBoundingBox();
   const double diagonal = (bbox.max - bbox.min).Length();
-  // Backs the tool's own near cap off `center` by `margin` so it pierces
-  // the entry surface cleanly (a transversal wall/face intersection) -
-  // the cap itself then sits in free space, never coincident with the
-  // solid's own surface - rather than starting the cylinder exactly ON
-  // that surface, a numerically degenerate tangent touch.
-  const double margin = std::max(radius, 1e-3 * std::max(diagonal, 1.0));
-  const double length = margin + (through ? 2.0 * diagonal + margin : depth);
-
-  const Point3d start = center - dir * margin;
-  const NurbsCurve rail = NurbsCurve::FromControlPoints({start, start + dir * length}, 1);
-  const Brep tool = Brep::Pipe(rail, radius, /*cap=*/true, /*stations=*/2);
+  const Brep tool = BuildHoleTool(center, dir, radius, depth, through, diagonal);
   return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
 }
 
-Brep MakeCounterboreHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
-                          bool bore_through, double counterbore_radius, double counterbore_depth) {
+Brep MakeHoles(const Brep& solid, const std::vector<Point3d>& centers, Vector3d axis, double radius, double depth,
+               bool through, double tolerance) {
   if (solid.raw().m_F.Count() == 0) {
-    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: solid has no faces");
+    throw std::invalid_argument("dino8::kernel::MakeHoles: solid has no faces");
   }
-  if (!(bore_radius > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: bore_radius must be positive");
+  if (centers.empty()) {
+    throw std::invalid_argument("dino8::kernel::MakeHoles: centers must not be empty");
   }
-  if (!(counterbore_radius > bore_radius)) {
-    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: counterbore_radius must exceed bore_radius");
+  if (!(radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::MakeHoles: radius must be positive");
   }
-  if (!(counterbore_depth > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: counterbore_depth must be positive");
-  }
-  if (!bore_through && !(bore_depth > counterbore_depth)) {
-    throw std::invalid_argument(
-        "dino8::kernel::MakeCounterboreHole: bore_depth must exceed counterbore_depth for a blind bore (the pilot "
-        "bore must reach past the counterbore recess it sits inside)");
+  if (!through && !(depth > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::MakeHoles: depth must be positive for a blind hole");
   }
   Vector3d dir = axis;
   if (!dir.Unitize()) {
-    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: axis must be non-zero");
+    throw std::invalid_argument("dino8::kernel::MakeHoles: axis must be non-zero");
   }
 
   const BoundingBox bbox = solid.GetTightBoundingBox();
   const double diagonal = (bbox.max - bbox.min).Length();
+  std::vector<Brep> tools;
+  tools.reserve(centers.size());
+  for (const Point3d& center : centers) {
+    tools.push_back(BuildHoleTool(center, dir, radius, depth, through, diagonal));
+  }
+  // Fold every tool into one compound cutter first (BooleanCombineGeneralNAry,
+  // same "build one compound tool, make a single Difference call against the
+  // target" shape MakeCounterboreHole()/MakeCountersinkHole() already use for
+  // their own single-hole compound profile) rather than chaining N separate
+  // Difference calls against `solid` itself - avoiding BooleanCombineGeneral()'s
+  // own disclosed "faces assumed genus-0, no pre-existing holes" scope limit
+  // that drilling into an already-holed target a second time would otherwise
+  // risk. This requires the requested holes not to overlap each other -
+  // exactly the same precondition SplitBrepByManySolids() already carries for
+  // its own cutters, folded via the identical BooleanCombineGeneralNAry() Union
+  // step.
+  const Brep folded_tool = BooleanCombineGeneralNAry(tools, {}, BooleanOp::Union, tolerance);
+  return BooleanCombineGeneral(solid, folded_tool, BooleanOp::Difference, tolerance);
+}
+
+namespace {
+
+// The compound stepped-profile Brep::Revolve() tool MakeCounterboreHole()
+// itself builds, factored out so MakeCounterboreHoles() below can build one
+// per center and fold them into a single compound tool. `dir` must already
+// be unit length; `diagonal` is the target's own tight bounding-box
+// diagonal (see BuildHoleTool()'s own doc comment for why callers share it
+// across several tools rather than recomputing it per hole).
+Brep BuildCounterboreTool(Point3d center, Vector3d dir, double bore_radius, double bore_depth, bool bore_through,
+                           double counterbore_radius, double counterbore_depth, double diagonal) {
   const double margin = std::max(counterbore_radius, 1e-3 * std::max(diagonal, 1.0));
   const double bore_full_depth = bore_through ? (2.0 * diagonal + margin) : bore_depth;
 
@@ -4399,43 +4747,91 @@ Brep MakeCounterboreHole(const Brep& solid, Point3d center, Vector3d axis, doubl
   };
   const Point3d tool_origin = center - dir * margin;
   const NurbsCurve profile_curve = HoleToolProfileCurve(tool_origin, dir, profile);
-  const Brep tool = Brep::Revolve(profile_curve, tool_origin, dir, 2.0 * ON_PI, /*cap=*/true);
+  return Brep::Revolve(profile_curve, tool_origin, dir, 2.0 * ON_PI, /*cap=*/true);
+}
+
+void ValidateCounterboreArgs(const char* fn, const Brep& solid, double bore_radius, double bore_depth,
+                              bool bore_through, double counterbore_radius, double counterbore_depth) {
+  if (solid.raw().m_F.Count() == 0) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn + ": solid has no faces");
+  }
+  if (!(bore_radius > 0.0)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn + ": bore_radius must be positive");
+  }
+  if (!(counterbore_radius > bore_radius)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn + ": counterbore_radius must exceed bore_radius");
+  }
+  if (!(counterbore_depth > 0.0)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn + ": counterbore_depth must be positive");
+  }
+  if (!bore_through && !(bore_depth > counterbore_depth)) {
+    throw std::invalid_argument(
+        std::string("dino8::kernel::") + fn +
+        ": bore_depth must exceed counterbore_depth for a blind bore (the pilot "
+        "bore must reach past the counterbore recess it sits inside)");
+  }
+}
+
+}  // namespace
+
+Brep MakeCounterboreHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
+                          bool bore_through, double counterbore_radius, double counterbore_depth) {
+  ValidateCounterboreArgs("MakeCounterboreHole", solid, bore_radius, bore_depth, bore_through, counterbore_radius,
+                           counterbore_depth);
+  Vector3d dir = axis;
+  if (!dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: axis must be non-zero");
+  }
+
+  const BoundingBox bbox = solid.GetTightBoundingBox();
+  const double diagonal = (bbox.max - bbox.min).Length();
+  const Brep tool = BuildCounterboreTool(center, dir, bore_radius, bore_depth, bore_through, counterbore_radius,
+                                          counterbore_depth, diagonal);
   return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
 }
 
-Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
-                          bool bore_through, double countersink_diameter, double countersink_angle_degrees) {
-  if (solid.raw().m_F.Count() == 0) {
-    throw std::invalid_argument("dino8::kernel::MakeCountersinkHole: solid has no faces");
+Brep MakeCounterboreHoles(const Brep& solid, const std::vector<Point3d>& centers, Vector3d axis, double bore_radius,
+                           double bore_depth, bool bore_through, double counterbore_radius, double counterbore_depth,
+                           double tolerance) {
+  ValidateCounterboreArgs("MakeCounterboreHoles", solid, bore_radius, bore_depth, bore_through, counterbore_radius,
+                           counterbore_depth);
+  if (centers.empty()) {
+    throw std::invalid_argument("dino8::kernel::MakeCounterboreHoles: centers must not be empty");
   }
-  if (!(bore_radius > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::MakeCountersinkHole: bore_radius must be positive");
+  Vector3d dir = axis;
+  if (!dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::MakeCounterboreHoles: axis must be non-zero");
   }
+
+  const BoundingBox bbox = solid.GetTightBoundingBox();
+  const double diagonal = (bbox.max - bbox.min).Length();
+  std::vector<Brep> tools;
+  tools.reserve(centers.size());
+  for (const Point3d& center : centers) {
+    tools.push_back(BuildCounterboreTool(center, dir, bore_radius, bore_depth, bore_through, counterbore_radius,
+                                          counterbore_depth, diagonal));
+  }
+  // Same single-compound-tool, single-Difference-call shape MakeHoles()
+  // above uses, for the identical "avoid drilling into an already-holed
+  // target a second time" reason - see that function's own doc comment.
+  const Brep folded_tool = BooleanCombineGeneralNAry(tools, {}, BooleanOp::Union, tolerance);
+  return BooleanCombineGeneral(solid, folded_tool, BooleanOp::Difference, tolerance);
+}
+
+namespace {
+
+// The compound cone+bore Brep::Revolve() tool MakeCountersinkHole() itself
+// builds, factored out the same way BuildCounterboreTool() above is so
+// MakeCountersinkHoles() below can build one per center and fold them into
+// a single compound tool.
+Brep BuildCountersinkTool(Point3d center, Vector3d dir, double bore_radius, double bore_depth, bool bore_through,
+                           double countersink_diameter, double countersink_angle_degrees, double diagonal) {
   const double countersink_radius = 0.5 * countersink_diameter;
-  if (!(countersink_radius > bore_radius)) {
-    throw std::invalid_argument(
-        "dino8::kernel::MakeCountersinkHole: countersink_diameter must exceed 2*bore_radius");
-  }
-  if (!(countersink_angle_degrees > 0.0) || !(countersink_angle_degrees < 180.0)) {
-    throw std::invalid_argument("dino8::kernel::MakeCountersinkHole: countersink_angle_degrees must be in (0, 180)");
-  }
   // Standard countersink geometry: a cone of full included angle `theta`
   // whose radius shrinks from `countersink_radius` to `bore_radius` over
   // an axial depth of (radius gap) / tan(theta / 2).
   const double half_angle = countersink_angle_degrees * ON_PI / 360.0;
   const double countersink_depth = (countersink_radius - bore_radius) / std::tan(half_angle);
-  if (!bore_through && !(bore_depth > countersink_depth)) {
-    throw std::invalid_argument(
-        "dino8::kernel::MakeCountersinkHole: bore_depth must exceed the countersink's own depth (derived from "
-        "countersink_diameter/countersink_angle_degrees) for a blind bore");
-  }
-  Vector3d dir = axis;
-  if (!dir.Unitize()) {
-    throw std::invalid_argument("dino8::kernel::MakeCountersinkHole: axis must be non-zero");
-  }
-
-  const BoundingBox bbox = solid.GetTightBoundingBox();
-  const double diagonal = (bbox.max - bbox.min).Length();
   const double margin = std::max(countersink_radius, 1e-3 * std::max(diagonal, 1.0));
   const double bore_full_depth = bore_through ? (2.0 * diagonal + margin) : bore_depth;
 
@@ -4454,8 +4850,75 @@ Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, doubl
   };
   const Point3d tool_origin = center - dir * margin;
   const NurbsCurve profile_curve = HoleToolProfileCurve(tool_origin, dir, profile);
-  const Brep tool = Brep::Revolve(profile_curve, tool_origin, dir, 2.0 * ON_PI, /*cap=*/true);
+  return Brep::Revolve(profile_curve, tool_origin, dir, 2.0 * ON_PI, /*cap=*/true);
+}
+
+void ValidateCountersinkArgs(const char* fn, const Brep& solid, double bore_radius, double bore_depth,
+                              bool bore_through, double countersink_diameter, double countersink_angle_degrees) {
+  if (solid.raw().m_F.Count() == 0) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn + ": solid has no faces");
+  }
+  if (!(bore_radius > 0.0)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn + ": bore_radius must be positive");
+  }
+  const double countersink_radius = 0.5 * countersink_diameter;
+  if (!(countersink_radius > bore_radius)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn + ": countersink_diameter must exceed 2*bore_radius");
+  }
+  if (!(countersink_angle_degrees > 0.0) || !(countersink_angle_degrees < 180.0)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn +
+                                 ": countersink_angle_degrees must be in (0, 180)");
+  }
+  const double half_angle = countersink_angle_degrees * ON_PI / 360.0;
+  const double countersink_depth = (countersink_radius - bore_radius) / std::tan(half_angle);
+  if (!bore_through && !(bore_depth > countersink_depth)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn +
+                                 ": bore_depth must exceed the countersink's own depth (derived from "
+                                 "countersink_diameter/countersink_angle_degrees) for a blind bore");
+  }
+}
+
+}  // namespace
+
+Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
+                          bool bore_through, double countersink_diameter, double countersink_angle_degrees) {
+  ValidateCountersinkArgs("MakeCountersinkHole", solid, bore_radius, bore_depth, bore_through, countersink_diameter,
+                           countersink_angle_degrees);
+  Vector3d dir = axis;
+  if (!dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::MakeCountersinkHole: axis must be non-zero");
+  }
+
+  const BoundingBox bbox = solid.GetTightBoundingBox();
+  const double diagonal = (bbox.max - bbox.min).Length();
+  const Brep tool = BuildCountersinkTool(center, dir, bore_radius, bore_depth, bore_through, countersink_diameter,
+                                          countersink_angle_degrees, diagonal);
   return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
+}
+
+Brep MakeCountersinkHoles(const Brep& solid, const std::vector<Point3d>& centers, Vector3d axis, double bore_radius,
+                           double bore_depth, bool bore_through, double countersink_diameter,
+                           double countersink_angle_degrees, double tolerance) {
+  ValidateCountersinkArgs("MakeCountersinkHoles", solid, bore_radius, bore_depth, bore_through, countersink_diameter,
+                           countersink_angle_degrees);
+  if (centers.empty()) {
+    throw std::invalid_argument("dino8::kernel::MakeCountersinkHoles: centers must not be empty");
+  }
+  Vector3d dir = axis;
+  if (!dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::MakeCountersinkHoles: axis must be non-zero");
+  }
+
+  const BoundingBox bbox = solid.GetTightBoundingBox();
+  const double diagonal = (bbox.max - bbox.min).Length();
+  std::vector<Brep> tools;
+  tools.reserve(centers.size());
+  for (const Point3d& center : centers) {
+    tools.push_back(BuildCountersinkTool(center, dir, bore_radius, bore_depth, bore_through, countersink_diameter,
+                                          countersink_angle_degrees, diagonal));
+  }
+  const Brep folded_tool = BooleanCombineGeneralNAry(tools, {}, BooleanOp::Union, tolerance);
+  return BooleanCombineGeneral(solid, folded_tool, BooleanOp::Difference, tolerance);
 }
 
 namespace {

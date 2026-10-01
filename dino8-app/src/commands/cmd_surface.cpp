@@ -405,9 +405,14 @@ class Sweep1Command : public Command {
   void Begin(CommandContext&) override { WantObjects("Select rail"); }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (!rail_) {
-      std::vector<kernel::NurbsCurve> c = CurvesOf(ctx, ids);
-      if (c.empty()) { ctx.Warn("Select a rail curve"); Finish(); return; }
-      rail_ = c.front();
+      // Id kept alongside the curve copy (not just CurvesOf's plain copy)
+      // so a single-profile sweep built while History On is set can
+      // record its rail's id for UpdateHistory - same reason PipeCommand
+      // keeps its rail id (cmd_surface.cpp's PipeCommand::OnObjects).
+      for (ObjectId id : ids) {
+        if (std::optional<kernel::NurbsCurve> c = CurveOf(ctx, id)) { rail_ = c; rail_id_ = id; break; }
+      }
+      if (!rail_) { ctx.Warn("Select a rail curve"); Finish(); return; }
       DeselectAll(ctx, ids);
       closed_ = rail_->IsClosed();
       options = {{"Closed", closed_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
@@ -415,7 +420,11 @@ class Sweep1Command : public Command {
       accept_preselection = false;
       return;
     }
-    std::vector<kernel::NurbsCurve> profiles = CurvesOf(ctx, ids);
+    std::vector<kernel::NurbsCurve> profiles;
+    profile_ids_.clear();
+    for (ObjectId id : ids) {
+      if (std::optional<kernel::NurbsCurve> c = CurveOf(ctx, id)) { profiles.push_back(*c); profile_ids_.push_back(id); }
+    }
     if (profiles.empty()) { ctx.Warn("Select cross section curves"); Finish(); return; }
     Build(ctx, profiles);
     Finish();
@@ -425,6 +434,27 @@ class Sweep1Command : public Command {
   }
   void Build(CommandContext& ctx, std::vector<kernel::NurbsCurve> profiles) {
     const kernel::NurbsCurve& rail = *rail_;
+    ctx.Doc().BeginChange("Sweep1");
+    // A single cross-section is the kernel's own exact Brep::Sweep1 case
+    // (rotation-minimizing-frame transport + skin) - use it rather than
+    // this file's own approximate RMF-loft-and-fit construction below
+    // whenever it applies. Multiple cross-sections (the anchor-blend case
+    // right below) and any case the kernel refuses (a degenerate rail or
+    // section) still fall back to the existing construction unchanged, so
+    // this can only add capability, never remove it. See RebuildSweep1's
+    // own comment (below the anonymous namespace this file closes further
+    // down) for why this stays uncapped/a Surface even for a closed
+    // section, same as before.
+    if (profiles.size() == 1) {
+      HistoryRecord rec;
+      rec.command = "Sweep1";
+      if (std::optional<SceneObject> exact = RebuildSweep1(ctx, profiles.front(), rail, rec)) {
+        const ObjectId new_id = ctx.Doc().Add(std::move(*exact));
+        if (rail_id_ && !profile_ids_.empty()) RecordHistoryIfEnabled(ctx, new_id, "Sweep1", {*rail_id_, profile_ids_.front()}, rec.num);
+        ctx.Print("Sweep1: exact kernel sweep (rotation-minimizing frames)");
+        return;
+      }
+    }
     const bool wrap = closed_ && rail.IsClosed();
     const int nrows = rail.IsLinear() && !wrap ? 2 : kRailSamples;
     const std::vector<double> params = ArcLengthParams(rail, wrap ? nrows + 1 : nrows, false);
@@ -464,11 +494,12 @@ class Sweep1Command : public Command {
       for (const Vector3d& l : local) row.push_back(frames[static_cast<size_t>(j)].Place(l));
       rows.push_back(row);
     }
-    ctx.Doc().BeginChange("Sweep1");
     ctx.Doc().Add(SceneObject::MakeSurface(SurfaceFromRows(rows, closed_profile, wrap)));
     ctx.Print("Sweep1: " + std::to_string(profiles.size()) + " section(s) along " + std::to_string(nrows) + " rail stations" + (wrap ? ", closed" : ""));
   }
   std::optional<kernel::NurbsCurve> rail_;
+  std::optional<ObjectId> rail_id_;
+  std::vector<ObjectId> profile_ids_;
   bool closed_ = false;
 };
 
@@ -1445,8 +1476,50 @@ std::optional<SceneObject> RebuildPipe(CommandContext&, const kernel::NurbsCurve
   return SceneObject::MakeSurface(SurfaceFromRows(rows, true, false));
 }
 
+// Shared by Sweep1Command::Build above and UpdateHistory (cmd_history.cpp) -
+// same "single source of truth" shape as RebuildPipe above. Unlike every
+// other Rebuild* function here, this does not reproduce one of this file's
+// own approximate constructions: it calls the kernel's own exact
+// Brep::Sweep1 directly (rotation-minimizing-frame transport and skin), the
+// real construction this file's own Sweep1Command previously never reached
+// at all. `stations` is fixed at 32 (this command exposes no Style/
+// tolerance option to vary it).
+//
+// Always built uncapped (`cap=false`), even when the section is closed and
+// planar: capping is a real Brep::Sweep1 feature, but this command has no
+// Cap option of its own (unlike Pipe), and this file's existing Sweep1
+// result kind is, and stays, a plain Surface (periodic when the rail is
+// closed) - other scripted tests rely on that (srfedit_script.txt's SrfSeam
+// case sweeps a closed circle down an OPEN rail specifically to get a
+// periodic surface with a seam to move; auto-capping would silently turn it
+// into a solid and break that case's own premise). So the one-face,
+// untrimmed Brep::Sweep1(..., cap=false) returns is unwrapped back down to
+// the bare ON_NurbsSurface its one face already wraps (`ON_NurbsSurface::
+// Cast(m_F[0].SurfaceOf())` - the same idiom used throughout this codebase
+// to read a built Brep's own surface back out, e.g. dino8-kernel/tests/
+// test_basic.cpp) and re-packaged as SceneObject::MakeSurface, matching
+// every call site's existing object-kind expectations exactly. The kernel
+// throws std::invalid_argument for a genuinely degenerate rail/section
+// (zero tangent, invalid NURBS) - caught here and reported as nullopt, the
+// same "degrade gracefully" contract every other Rebuild* function in this
+// file already follows, so neither the live command nor UpdateHistory ever
+// crashes on an input the exact path can't handle.
+std::optional<SceneObject> RebuildSweep1(CommandContext&, const kernel::NurbsCurve& section,
+                                          const kernel::NurbsCurve& rail, const HistoryRecord&) {
+  try {
+    kernel::Brep b = kernel::Brep::Sweep1(section, rail, /*stations=*/32, /*cap=*/false);
+    const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(b.raw().m_F[0].SurfaceOf());
+    if (!ns) return std::nullopt;
+    kernel::NurbsSurface k;
+    k.raw() = *ns;
+    return SceneObject::MakeSurface(k);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 void RegisterSurfaceCommands(CommandEngine& e) {
-  Reg(e, "Sweep1", Make<Sweep1Command>(), CommandStatus::Implemented, "Approximated by a lofted sweep: sections are transported along the rail with rotation-minimizing frames and fitted as a degree-3 surface.");
+  Reg(e, "Sweep1", Make<Sweep1Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep1 (rotation-minimizing-frame transport and skin; still an uncapped surface, periodic when the rail is closed, same as before) and records History (History On) for UpdateHistory to rebuild against the rail/section's current shape; multiple cross sections still blend as an approximated lofted sweep fitted to a degree-3 surface, with no history recorded.");
   Reg(e, "Sweep2", Make<Sweep2Command>(), CommandStatus::Implemented, "Approximate: sections are scaled between the rails (matched by arc length) and fitted as a degree-3 surface.");
   Reg(e, "NetworkSrf", OnSelection("Select curves in network (2, 3 or 4)", NetworkSrf, 2), CommandStatus::Implemented, "Two curves give an exact ruled surface; three or four give a bilinear Coons patch fitted as a degree-3 surface.");
   Reg(e, "Patch", OnSelection("Select curves and points to fit a surface through", Patch), CommandStatus::Implemented, "Planar patch only: a least-squares plane trimmed by the single closed curve, or a fitted rectangle.");

@@ -61,7 +61,10 @@ std::vector<BlockInstance> LoadBlockInstances(const Document& doc) {
     b.insert = kernel::Point3d(v["ix"].number, v["iy"].number, v["iz"].number);
     b.flipped = v["flip"].number != 0;
     const json::Value& arr = v["array"];
-    b.array_count = arr.number > 0 ? static_cast<int>(arr.number) : 1;
+    // Clamp before the cast: a JSON number past INT_MAX is undefined
+    // behavior to static_cast straight to int, and PlaceFiltered's own cap
+    // (kMaxBlockArrayCount) only helps once this is a well-defined int.
+    b.array_count = arr.number > 0 ? static_cast<int>(std::min(arr.number, 1e9)) : 1;
     b.lookup_key = v["lookup"].AsString();
     const json::Value& objs = v["objects"];
     for (size_t j = 0; j < objs.Size(); ++j) b.objects.push_back(static_cast<ObjectId>(objs[j].number));
@@ -114,6 +117,16 @@ namespace {
 // parameter was never configured via BlockSetArraySpacing) always places
 // exactly one copy, regardless of `array_count`, so a plain block or one
 // that only uses states/flip is unaffected.
+// array_count can come straight from a loaded document's embedded JSON
+// (LoadBlockInstances), so it isn't trustworthy: a huge value would make
+// the loop below instantiate and doc.Add() billions of objects just from
+// opening a file. Kept well below Document::Find/Remove's own O(document
+// size) cost (RebuildBlockInstance calls both once per array copy when
+// rebuilding/clearing an instance), so even the capped worst case stays
+// O(count^2) over a small count instead of a huge one - this is still far
+// above any plausible real use (a bolt-pattern/rebar array).
+constexpr int kMaxBlockArrayCount = 2000;
+
 std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, kernel::Point3d at, const std::string& state, bool flipped, int array_count) {
   ON_Xform xf = ON_Xform::TranslationTransformation(at - def.base);
   if (flipped) {
@@ -123,7 +136,7 @@ std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, k
     xf = xf * mirror;
   }
   kernel::Vector3d step(0, 0, 0);
-  const int count = def.array_spacing != 0 ? std::max(1, array_count) : 1;
+  const int count = def.array_spacing != 0 ? std::clamp(array_count, 1, kMaxBlockArrayCount) : 1;
   if (count > 1) {
     step = def.array_axis;
     if (!step.Unitize()) step = kernel::Vector3d(1, 0, 0);

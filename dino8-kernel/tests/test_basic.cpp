@@ -4695,6 +4695,218 @@ void TestImprintClosedCurveOnFaceRejectsInvalidInput() {
   Check(threw_bad_samples, "ImprintClosedCurveOnFace throws std::invalid_argument for samples < 2");
 }
 
+// SplitFaceByCurves(): the batch sibling of SplitFaceByCurve() above - see
+// boolean_general.h's own doc comment for the full contract. Proves the
+// "one call, many independent curves" gain is genuine, not mere loop sugar:
+// two independent, non-crossing straight cuts on the box's own flat top
+// face (z=1, x/y in [-2,2], area 16) at x=-0.5 and x=0.5 (each running the
+// full y in [-2,2] span, so each reaches the face's own y=-2/y=2 boundary
+// edges) split it into exactly 3 strips in ONE call - a 3-way split
+// SplitFaceByCurve() itself can never produce (it only ever returns 2
+// fragments).
+void TestSplitFaceByCurvesBoxTopFaceTwoParallelCutsProduceThreeStrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SplitFaceByCurves;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const NurbsCurve cut_a =
+      NurbsCurve::FromControlPoints({Point3d(-0.5, -2, 1), Point3d(-0.5, 2, 1)}, /*degree=*/1);
+  const NurbsCurve cut_b = NurbsCurve::FromControlPoints({Point3d(0.5, -2, 1), Point3d(0.5, 2, 1)}, /*degree=*/1);
+
+  const Brep split = SplitFaceByCurves(box, /*face_index=*/1, {cut_a, cut_b});
+  Check(split.raw().IsValid(), "SplitFaceByCurves on the box's top face is a valid ON_Brep");
+  Check(split.FaceCount() == box.FaceCount() + 2,
+        "splitting one face with 2 independent curves in one call gains exactly 2 faces (3 fragments "
+        "replacing the original 1)");
+
+  const Mesh closed = split.TessellateToClosedMesh(32, 32);
+  Check(std::abs(closed.Volume() - 32.0) < 0.2,
+        "splitting a face by 2 curves removes no material - the box's own tessellated volume is unchanged "
+        "(32 = 4*4*2)");
+
+  const std::vector<Mesh> per_face = split.Tessellate(32, 32);
+  std::vector<double> top_face_areas;
+  for (const Mesh& m : per_face) {
+    if (m.VertexCount() == 0) continue;
+    const auto bb = m.GetBoundingBox();
+    if (std::abs(bb.min.z - 1.0) < 1e-6 && std::abs(bb.max.z - 1.0) < 1e-6) top_face_areas.push_back(m.Area());
+  }
+  Check(top_face_areas.size() == 3, "the split top face produces exactly 3 flat z=1 fragments");
+  if (top_face_areas.size() == 3) {
+    std::sort(top_face_areas.begin(), top_face_areas.end());
+    Check(std::abs(top_face_areas[0] - 4.0) < 0.2 && std::abs(top_face_areas[1] - 6.0) < 0.2 &&
+              std::abs(top_face_areas[2] - 6.0) < 0.2,
+          "the 3 strips have exactly the areas the two cuts at x=-0.5/x=0.5 imply: widths 1.5/1/1.5 times "
+          "depth 4 -> 6/4/6, not some other split");
+  }
+}
+
+// Two curves that CROSS each other mid-face are out of this function's own
+// documented scope (boolean_general.h's own "chains that cross EACH OTHER
+// on the same face are not [supported]"); rather than silently emitting a
+// wrong split, the actual fragment count no longer matches curves.size()+1
+// and this function refuses.
+void TestSplitFaceByCurvesRejectsCrossingCurves() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SplitFaceByCurves;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const NurbsCurve cut_a = NurbsCurve::FromControlPoints({Point3d(-2, -1, 1), Point3d(2, 1, 1)}, /*degree=*/1);
+  const NurbsCurve cut_b = NurbsCurve::FromControlPoints({Point3d(-2, 1, 1), Point3d(2, -1, 1)}, /*degree=*/1);
+
+  bool threw = false;
+  try {
+    SplitFaceByCurves(box, /*face_index=*/1, {cut_a, cut_b});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitFaceByCurves throws std::invalid_argument for two curves that cross each other mid-face "
+               "rather than silently returning an unexpected split");
+}
+
+void TestSplitFaceByCurvesRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SplitFaceByCurves;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const NurbsCurve cut_a =
+      NurbsCurve::FromControlPoints({Point3d(-0.5, -2, 1), Point3d(-0.5, 2, 1)}, /*degree=*/1);
+
+  bool threw_empty_curves = false;
+  try {
+    SplitFaceByCurves(box, 1, {});
+  } catch (const std::invalid_argument&) {
+    threw_empty_curves = true;
+  }
+  Check(threw_empty_curves, "SplitFaceByCurves throws std::invalid_argument for an empty curves list");
+
+  bool threw_bad_index = false;
+  try {
+    SplitFaceByCurves(box, box.FaceCount(), {cut_a});
+  } catch (const std::invalid_argument&) {
+    threw_bad_index = true;
+  }
+  Check(threw_bad_index, "SplitFaceByCurves throws std::invalid_argument for an out-of-range face_index");
+
+  bool threw_bad_tolerance = false;
+  try {
+    SplitFaceByCurves(box, 1, {cut_a}, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw_bad_tolerance = true;
+  }
+  Check(threw_bad_tolerance, "SplitFaceByCurves throws std::invalid_argument for a non-positive tolerance");
+
+  const std::vector<Point3d> loop_cvs = {Point3d(-0.5, -0.5, 1), Point3d(0.5, -0.5, 1), Point3d(0.5, 0.5, 1),
+                                          Point3d(-0.5, 0.5, 1), Point3d(-0.5, -0.5, 1)};
+  const NurbsCurve closed_loop = NurbsCurve::FromControlPoints(loop_cvs, /*degree=*/1);
+  bool threw_closed_loop = false;
+  try {
+    SplitFaceByCurves(box, 1, {cut_a, closed_loop});
+  } catch (const std::invalid_argument&) {
+    threw_closed_loop = true;
+  }
+  Check(threw_closed_loop,
+        "SplitFaceByCurves throws std::invalid_argument when one of the curves is actually a closed loop "
+        "(ImprintClosedCurvesOnFace()'s job instead)");
+}
+
+// ImprintClosedCurvesOnFace(): the batch sibling of ImprintClosedCurveOnFace()
+// above - see boolean_general.h's own doc comment for the full contract.
+// Proves the "one call, many independent holes" gain is genuine: two
+// disjoint 1x1 square loops, centered at (-1,-1) and (1,1) on the box's own
+// flat top face (z=1, x/y in [-2,2], area 16), are both imprinted as holes
+// in ONE call.
+void TestImprintClosedCurvesOnFaceBoxTopFaceTwoHoles() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintClosedCurvesOnFace;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  auto square_at = [](double cx, double cy) {
+    const std::vector<Point3d> cvs = {Point3d(cx - 0.5, cy - 0.5, 1), Point3d(cx + 0.5, cy - 0.5, 1),
+                                       Point3d(cx + 0.5, cy + 0.5, 1), Point3d(cx - 0.5, cy + 0.5, 1),
+                                       Point3d(cx - 0.5, cy - 0.5, 1)};
+    return NurbsCurve::FromControlPoints(cvs, /*degree=*/1);
+  };
+  const NurbsCurve hole_a = square_at(-1.0, -1.0);
+  const NurbsCurve hole_b = square_at(1.0, 1.0);
+
+  const Brep imprinted = ImprintClosedCurvesOnFace(box, /*face_index=*/1, {hole_a, hole_b});
+  Check(imprinted.raw().IsValid(), "ImprintClosedCurvesOnFace on the box's top face is a valid ON_Brep");
+  Check(imprinted.FaceCount() == box.FaceCount() + 2,
+        "imprinting 2 independent closed loops in one call gains exactly 2 faces (2 interior disks, plus the "
+        "original face now carrying both loops as holes - 3 fragments replacing the original 1)");
+
+  const Mesh closed = imprinted.TessellateToClosedMesh(32, 32);
+  Check(std::abs(closed.Volume() - 32.0) < 0.2,
+        "imprinting 2 closed loops removes no material - the box's own tessellated volume stays 32 (4*4*2)");
+
+  const std::vector<Mesh> per_face = imprinted.Tessellate(32, 32);
+  std::vector<double> top_face_areas;
+  for (const Mesh& m : per_face) {
+    if (m.VertexCount() == 0) continue;
+    const auto bb = m.GetBoundingBox();
+    if (std::abs(bb.min.z - 1.0) < 1e-6 && std::abs(bb.max.z - 1.0) < 1e-6) top_face_areas.push_back(m.Area());
+  }
+  Check(top_face_areas.size() == 3, "the imprinted top face produces exactly 3 flat z=1 fragments");
+  if (top_face_areas.size() == 3) {
+    std::sort(top_face_areas.begin(), top_face_areas.end());
+    Check(std::abs(top_face_areas[0] - 1.0) < 0.05 && std::abs(top_face_areas[1] - 1.0) < 0.05 &&
+              std::abs(top_face_areas[2] - 14.0) < 0.2,
+          "the 3 fragments have exactly the areas the two 1x1 disjoint loops imply: two 1x1 disks and a "
+          "16-1-1=14 remainder - not some other split");
+  }
+}
+
+void TestImprintClosedCurvesOnFaceRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintClosedCurvesOnFace;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const std::vector<Point3d> loop_cvs = {Point3d(-0.5, -0.5, 1), Point3d(0.5, -0.5, 1), Point3d(0.5, 0.5, 1),
+                                          Point3d(-0.5, 0.5, 1), Point3d(-0.5, -0.5, 1)};
+  const NurbsCurve loop = NurbsCurve::FromControlPoints(loop_cvs, /*degree=*/1);
+
+  bool threw_empty_curves = false;
+  try {
+    ImprintClosedCurvesOnFace(box, 1, {});
+  } catch (const std::invalid_argument&) {
+    threw_empty_curves = true;
+  }
+  Check(threw_empty_curves, "ImprintClosedCurvesOnFace throws std::invalid_argument for an empty curves list");
+
+  bool threw_bad_index = false;
+  try {
+    ImprintClosedCurvesOnFace(box, box.FaceCount(), {loop});
+  } catch (const std::invalid_argument&) {
+    threw_bad_index = true;
+  }
+  Check(threw_bad_index, "ImprintClosedCurvesOnFace throws std::invalid_argument for an out-of-range face_index");
+
+  const NurbsCurve open_curve =
+      NurbsCurve::FromControlPoints({Point3d(-2, 0, 1), Point3d(0, 1.5, 1), Point3d(2, 0, 1)}, /*degree=*/1);
+  bool threw_open_chain = false;
+  try {
+    ImprintClosedCurvesOnFace(box, 1, {loop, open_curve});
+  } catch (const std::invalid_argument&) {
+    threw_open_chain = true;
+  }
+  Check(threw_open_chain,
+        "ImprintClosedCurvesOnFace throws std::invalid_argument when one of the curves is actually an open "
+        "chain (SplitFaceByCurves()'s job instead)");
+}
+
 void TestMutualImprintFacesBoxPiercedByCylinder() {
   using dino8::kernel::Brep;
   using dino8::kernel::ImprintFaces;
@@ -8309,6 +8521,67 @@ void TestModelAddNamedViewRoundTrips() {
   std::remove(path.c_str());
 }
 
+void TestModelAddLayoutRoundTrips() {
+  using dino8::kernel::LayoutInfo;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  Model model;
+  Check(model.LayoutCount() == 0, "a fresh Model has no layouts");
+  Check(model.AddLayout("", 297.0, 210.0) == -1,
+        "AddLayout() returns -1 for an empty name, same contract as AddLayer() etc.");
+  Check(model.AddLayout("Bad width", 0.0, 210.0) == -1,
+        "AddLayout() returns -1 for a non-positive page_width_mm");
+  Check(model.AddLayout("Bad height", 297.0, -5.0) == -1,
+        "AddLayout() returns -1 for a non-positive page_height_mm");
+  Check(model.LayoutCount() == 0, "none of the rejected calls above added a layout");
+
+  const int index = model.AddLayout("A4 Landscape", 297.0, 210.0);
+  Check(index == 0, "the first real AddLayout() call returns index 0");
+  Check(model.LayoutCount() == 1, "model has one layout after AddLayout()");
+
+  const LayoutInfo info = model.LayoutAt(0);
+  Check(info.name == "A4 Landscape", "LayoutAt(0) reports the name AddLayout() was given");
+  Check(std::abs(info.page_width_mm - 297.0) < 1e-9,
+        "LayoutAt(0) reports the exact page_width_mm AddLayout() was given");
+  Check(std::abs(info.page_height_mm - 210.0) < 1e-9,
+        "LayoutAt(0) reports the exact page_height_mm AddLayout() was given");
+
+  const LayoutInfo out_of_range = model.LayoutAt(5);
+  Check(out_of_range.name.empty(),
+        "LayoutAt() on an index this model doesn't have returns a default-constructed "
+        "LayoutInfo, same contract as NamedViewAt()/LayerAt() etc.");
+
+  model.AddLayout("A3 Portrait", 297.0, 420.0);
+  Check(model.LayoutCount() == 2, "a second AddLayout() call adds a second layout");
+
+  // Real .3dm round trip: ON_3dmSettings::m_views (distinct from
+  // m_named_views above) is part of the settings chunk ONX_Model::Write/
+  // Read already carries through unmodified, the same situation
+  // AddNamedView() itself found for its own table - so no Save()/Load()
+  // change was needed to make this round-trip either.
+  const std::string path = "dino8_kernel_model_layout_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with layouts succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.LayoutCount() == 2, "both layouts survive the .3dm round trip");
+  const LayoutInfo reloaded0 = loaded.LayoutAt(0);
+  Check(reloaded0.name == "A4 Landscape", "the first reloaded layout's name survives the round trip");
+  Check(std::abs(reloaded0.page_width_mm - 297.0) < 1e-6,
+        "the first reloaded layout's page_width_mm survives the round trip");
+  Check(std::abs(reloaded0.page_height_mm - 210.0) < 1e-6,
+        "the first reloaded layout's page_height_mm survives the round trip");
+  const LayoutInfo reloaded1 = loaded.LayoutAt(1);
+  Check(reloaded1.name == "A3 Portrait", "the second reloaded layout's name survives the round trip");
+  Check(std::abs(reloaded1.page_width_mm - 297.0) < 1e-6,
+        "the second reloaded layout's page_width_mm survives the round trip");
+  Check(std::abs(reloaded1.page_height_mm - 420.0) < 1e-6,
+        "the second reloaded layout's page_height_mm survives the round trip");
+
+  std::remove(path.c_str());
+}
+
 void TestModelMaterialExtendedFieldsRoundTrip() {
   using dino8::kernel::Color;
   using dino8::kernel::Model;
@@ -8856,6 +9129,73 @@ void TestModelAddTextAnnotationRoundTrips() {
         "the reloaded text annotation's plane origin survives the round trip");
 
   std::remove(path.c_str());
+}
+
+void TestModelAddLeaderRoundTrips() {
+  using dino8::kernel::Model;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Narrows PARITY_MAP.md's own "Rhino non-geometry/composite objects in
+  // .3dm" evidence further: "annotations besides plain ON_Text
+  // (dimensions, leaders)" remained open after AddText() closed the plain-
+  // ON_Text half of that gap - before this, nothing in this kernel could
+  // create an ON_Leader.
+  Model model;
+  Check(model.LeaderCount() == 0, "a fresh Model has no leaders");
+  const ON_Plane world_xy(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point3d> path = {Point3d(0, 0, 0), Point3d(2, 1, 0), Point3d(4, 1, 0)};
+  Check(model.AddLeader("hi", path, world_xy, "") == -1,
+        "AddLeader() returns -1 for an empty name, same contract as AddText() etc.");
+  Check(model.AddLeader("", path, world_xy, "Empty Text") == -1,
+        "AddLeader() returns -1 for empty text content");
+  const ON_Plane invalid_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 0));
+  Check(model.AddLeader("hi", path, invalid_plane, "Bad Plane") == -1,
+        "AddLeader() returns -1 for a degenerate (zero-normal) plane");
+  const std::vector<Point3d> one_point = {Point3d(0, 0, 0)};
+  Check(model.AddLeader("hi", one_point, world_xy, "Too Few Points") == -1,
+        "AddLeader() returns -1 for fewer than 2 points");
+  Check(model.LeaderCount() == 0, "none of the refused calls above added anything");
+
+  const int index = model.AddLeader("See detail A", path, world_xy, "Leader A");
+  Check(index == 0, "the first real AddLeader() call returns index 0");
+  Check(model.LeaderCount() == 1, "model has one leader after AddLeader()");
+  Check(model.ObjectCount() == 1,
+        "a leader is a real model geometry object, also counted by ObjectCount()");
+
+  const auto info = model.LeaderAt(0);
+  Check(info.name == "Leader A", "LeaderAt() reports the name AddLeader() was given");
+  Check(info.text == "See detail A", "LeaderAt() reports the exact text content AddLeader() was given");
+  Check(info.points.size() == path.size(),
+        "LeaderAt() reports the same number of path points AddLeader() was given");
+  for (size_t i = 0; i < path.size() && i < info.points.size(); ++i) {
+    Check(info.points[i].DistanceTo(path[i]) < 1e-9,
+          "LeaderAt() reports the exact world-space path point AddLeader() was given, "
+          "converted back out of ON_Leader's own plane-local 2D storage");
+  }
+
+  const auto out_of_range = model.LeaderAt(9999);
+  Check(out_of_range.name.empty(),
+        "LeaderAt() on an index this model doesn't have returns a default-constructed "
+        "LeaderInfo, same contract as TextAt() etc.");
+
+  const std::string path_file = "dino8_kernel_model_leader_roundtrip_test.3dm";
+  Check(model.Save(path_file) == Result::Ok, ".3dm save with a leader succeeded");
+
+  Model loaded;
+  Check(Model::Load(path_file, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.LeaderCount() == 1, "the leader survives the .3dm round trip");
+  const auto reloaded = loaded.LeaderAt(0);
+  Check(reloaded.name == "Leader A", "the reloaded leader's name survives the round trip");
+  Check(reloaded.text == "See detail A", "the reloaded leader's text content survives the round trip");
+  Check(reloaded.points.size() == path.size(),
+        "the reloaded leader's path point count survives the round trip");
+  for (size_t i = 0; i < path.size() && i < reloaded.points.size(); ++i) {
+    Check(reloaded.points[i].DistanceTo(path[i]) < 1e-6,
+          "the reloaded leader's path points survive the round trip");
+  }
+
+  std::remove(path_file.c_str());
 }
 
 void TestModelUnitConversionFactor() {
@@ -24274,18 +24614,11 @@ void TestMeshLoadObjFanTriangulatesNgonFaces() {
         "the pentagon's 5 vertices are all preserved, unduplicated");
   Check(pentagon_mesh.FaceCount() == 3,
         "a pentagon fan-triangulates into exactly 5-2=3 triangles");
-  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
-  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
-  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
-  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
-        "the first fan triangle is corners (0,1,2), stored as a "
-        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
-        "triangle face already is");
-  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
-        "the second fan triangle is corners (0,2,3)");
-  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
-        "the third fan triangle is corners (0,3,4), reaching the "
-        "pentagon's last corner");
+  // Ear-clipping (not a fixed fan from corner 0) picks whichever ear
+  // is valid first, so the exact per-triangle corners aren't pinned
+  // down the way a naive always-from-vertex-0 fan's output would be -
+  // checked below via area instead, against one specific triangulation
+  // among the several equally correct ones.
   Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
         "the 3 fan triangles' combined area exactly reproduces the "
         "convex pentagon's own shoelace area - proof the fan actually "
@@ -24316,6 +24649,37 @@ void TestMeshLoadObjFanTriangulatesNgonFaces() {
         "convex hexagon's own shoelace area");
   std::remove(hexagon_path.c_str());
 
+  // A CONCAVE hexagon (one reflex corner, the "notch" at (2,2)) - the real
+  // point of ear-clipping over a naive fan: fanning from this face's own
+  // first corner, (4,0), would produce a triangle ((4,0),(2,2),(2,4))
+  // whose interior pokes outside the polygon into the notch's own
+  // forbidden region (confirmed directly: that fan's own 4 triangles sum
+  // to 16, not this polygon's actual area of 12 - the notch's own 2x2=4
+  // area, double-counted). Ear-clipping's own interior-point test
+  // (PointInTriangle(), detail/polygon2d.h) never allows that ear.
+  const std::vector<std::pair<double, double>> concave_hexagon = {
+      {4, 0}, {4, 2}, {2, 2}, {2, 4}, {0, 4}, {0, 0}};
+  const std::string concave_path = "dino8_kernel_mesh_obj_test_concave_hexagon.obj";
+  {
+    std::ofstream out(concave_path);
+    for (const auto& [x, y] : concave_hexagon) {
+      out << "v " << x << ' ' << y << " 0\n";
+    }
+    out << "f 1 2 3 4 5 6\n";
+  }
+  Mesh concave_mesh;
+  Check(Mesh::LoadObj(concave_path, concave_mesh) == Result::Ok,
+        "LoadObj succeeds on a concave (reflex-cornered) hexagon face line");
+  Check(concave_mesh.VertexCount() == 6 && concave_mesh.FaceCount() == 4,
+        "the concave hexagon still triangulates into exactly 6-2=4 "
+        "triangles, no vertex duplication");
+  Check(std::abs(triangle_area_sum(concave_mesh) - shoelace_area(concave_hexagon)) < 1e-9,
+        "the 4 triangles' combined area exactly reproduces the concave "
+        "hexagon's own shoelace area (12, not the naive from-vertex-0 "
+        "fan's own 16) - proof ear-clipping keeps every triangle inside "
+        "the polygon even with a reflex corner present");
+  std::remove(concave_path.c_str());
+
   // Fan triangulation must resolve negative (relative) indices before
   // splitting into triangles, not treat them as a separate code path -
   // an all-relative pentagon must fan-triangulate identically to the
@@ -24332,12 +24696,23 @@ void TestMeshLoadObjFanTriangulatesNgonFaces() {
   Check(Mesh::LoadObj(relative_path, relative_mesh) == Result::Ok,
         "LoadObj succeeds on an all-relative-index pentagon face line");
   Check(relative_mesh.FaceCount() == 3,
-        "the all-relative pentagon fan-triangulates into 3 triangles, "
+        "the all-relative pentagon triangulates into 3 triangles, "
         "same as the equivalent all-absolute face");
-  const ON_MeshFace& r0 = relative_mesh.raw().m_F[0];
-  Check(r0.vi[0] == 0 && r0.vi[1] == 1 && r0.vi[2] == 2,
+  // '-5 -4 -3 -2 -1' must resolve to the exact same 0-based corners the
+  // equivalent absolute '1 2 3 4 5' face already resolved to before
+  // triangulating - checked by requiring an identical triangle list
+  // (ear-clipping is a deterministic function of its vertex ring, so two
+  // identical rings always produce the exact same triangles), not just a
+  // separately-matching face count.
+  bool identical_triangles = (relative_mesh.FaceCount() == pentagon_mesh.FaceCount());
+  for (int i = 0; identical_triangles && i < relative_mesh.FaceCount(); ++i) {
+    const ON_MeshFace& a = relative_mesh.raw().m_F[i];
+    const ON_MeshFace& b = pentagon_mesh.raw().m_F[i];
+    identical_triangles = (a.vi[0] == b.vi[0] && a.vi[1] == b.vi[1] && a.vi[2] == b.vi[2]);
+  }
+  Check(identical_triangles,
         "'-5 -4 -3 -2 -1' resolved to the same 0-based corners as the "
-        "equivalent absolute '1 2 3 4 5' would, before fan-triangulating");
+        "equivalent absolute '1 2 3 4 5' would, before triangulating");
   std::remove(relative_path.c_str());
 }
 
@@ -24582,18 +24957,11 @@ void TestMeshLoadOffFanTriangulatesNgonFaces() {
         "the pentagon's 5 vertices are all preserved, unduplicated");
   Check(pentagon_mesh.FaceCount() == 3,
         "a pentagon fan-triangulates into exactly 5-2=3 triangles");
-  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
-  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
-  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
-  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
-        "the first fan triangle is corners (0,1,2), stored as a "
-        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
-        "triangle face already is");
-  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
-        "the second fan triangle is corners (0,2,3)");
-  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
-        "the third fan triangle is corners (0,3,4), reaching the "
-        "pentagon's last corner");
+  // Ear-clipping (not a fixed fan from corner 0) picks whichever ear
+  // is valid first, so the exact per-triangle corners aren't pinned
+  // down the way a naive always-from-vertex-0 fan's output would be -
+  // checked below via area instead, against one specific triangulation
+  // among the several equally correct ones.
   Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
         "the 3 fan triangles' combined area exactly reproduces the "
         "convex pentagon's own shoelace area - proof the fan actually "
@@ -24624,6 +24992,34 @@ void TestMeshLoadOffFanTriangulatesNgonFaces() {
         "the 4 fan triangles' combined area exactly reproduces the "
         "convex hexagon's own shoelace area");
   std::remove(hexagon_path.c_str());
+
+  // A CONCAVE hexagon (one reflex corner, the "notch" at (2,2)) - see
+  // TestMeshLoadObjFanTriangulatesNgonFaces's own identical fixture for
+  // why fanning from this face's own first corner, (4,0), would be wrong
+  // (sums to 16, not this polygon's actual area of 12).
+  const std::vector<std::pair<double, double>> concave_hexagon = {
+      {4, 0}, {4, 2}, {2, 2}, {2, 4}, {0, 4}, {0, 0}};
+  const std::string concave_path = "dino8_kernel_mesh_off_test_concave_hexagon.off";
+  {
+    std::ofstream out(concave_path);
+    out << "OFF\n" << concave_hexagon.size() << " 1 0\n";
+    for (const auto& [x, y] : concave_hexagon) {
+      out << x << ' ' << y << " 0\n";
+    }
+    out << "6 0 1 2 3 4 5\n";
+  }
+  Mesh concave_mesh;
+  Check(Mesh::LoadOff(concave_path, concave_mesh) == Result::Ok,
+        "LoadOff succeeds on a concave (reflex-cornered) hexagon face line");
+  Check(concave_mesh.VertexCount() == 6 && concave_mesh.FaceCount() == 4,
+        "the concave hexagon still triangulates into exactly 6-2=4 "
+        "triangles, no vertex duplication");
+  Check(std::abs(triangle_area_sum(concave_mesh) - shoelace_area(concave_hexagon)) < 1e-9,
+        "the 4 triangles' combined area exactly reproduces the concave "
+        "hexagon's own shoelace area (12, not a naive from-vertex-0 fan's "
+        "own 16) - proof ear-clipping keeps every triangle inside the "
+        "polygon even with a reflex corner present");
+  std::remove(concave_path.c_str());
 }
 
 // SaveOff()/LoadOff() now also handle the COFF (color OFF) variant when the
@@ -25165,18 +25561,11 @@ void TestMeshLoadVrmlFanTriangulatesNgonFaces() {
         "the pentagon's 5 vertices are all preserved, unduplicated");
   Check(pentagon_mesh.FaceCount() == 3,
         "a pentagon fan-triangulates into exactly 5-2=3 triangles");
-  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
-  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
-  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
-  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
-        "the first fan triangle is corners (0,1,2), stored as a "
-        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
-        "triangle face already is");
-  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
-        "the second fan triangle is corners (0,2,3)");
-  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
-        "the third fan triangle is corners (0,3,4), reaching the "
-        "pentagon's last corner");
+  // Ear-clipping (not a fixed fan from corner 0) picks whichever ear
+  // is valid first, so the exact per-triangle corners aren't pinned
+  // down the way a naive always-from-vertex-0 fan's output would be -
+  // checked below via area instead, against one specific triangulation
+  // among the several equally correct ones.
   Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
         "the 3 fan triangles' combined area exactly reproduces the "
         "convex pentagon's own shoelace area");
@@ -25204,6 +25593,34 @@ void TestMeshLoadVrmlFanTriangulatesNgonFaces() {
         "the 4 fan triangles' combined area exactly reproduces the "
         "convex hexagon's own shoelace area");
   std::remove(hexagon_path.c_str());
+
+  // A CONCAVE hexagon (one reflex corner, the "notch" at (2,2)) - see
+  // TestMeshLoadObjFanTriangulatesNgonFaces's own identical fixture for
+  // why fanning from this face's own first corner, (4,0), would be wrong
+  // (sums to 16, not this polygon's actual area of 12).
+  const std::vector<std::pair<double, double>> concave_hexagon = {
+      {4, 0}, {4, 2}, {2, 2}, {2, 4}, {0, 4}, {0, 0}};
+  const std::string concave_path = "dino8_kernel_mesh_vrml_test_concave_hexagon.wrl";
+  {
+    std::ofstream out(concave_path);
+    out << "#VRML V2.0 utf8\nShape { geometry IndexedFaceSet {\n";
+    out << " coord Coordinate { point [\n";
+    for (const auto& [x, y] : concave_hexagon) out << "  " << x << ' ' << y << " 0,\n";
+    out << " ] }\n coordIndex [ 0, 1, 2, 3, 4, 5, -1 ]\n} }\n";
+  }
+  Mesh concave_mesh;
+  Check(Mesh::LoadVrml(concave_path, concave_mesh) == Result::Ok,
+        "LoadVrml succeeds on a concave (reflex-cornered) hexagon "
+        "coordIndex run");
+  Check(concave_mesh.VertexCount() == 6 && concave_mesh.FaceCount() == 4,
+        "the concave hexagon still triangulates into exactly 6-2=4 "
+        "triangles, no vertex duplication");
+  Check(std::abs(triangle_area_sum(concave_mesh) - shoelace_area(concave_hexagon)) < 1e-9,
+        "the 4 triangles' combined area exactly reproduces the concave "
+        "hexagon's own shoelace area (12, not a naive from-vertex-0 fan's "
+        "own 16) - proof ear-clipping keeps every triangle inside the "
+        "polygon even with a reflex corner present");
+  std::remove(concave_path.c_str());
 }
 
 void TestMeshSaveColladaRoundTrips() {
@@ -25441,18 +25858,11 @@ void TestMeshLoadColladaFanTriangulatesNgonFaces() {
         "the pentagon's 5 vertices are all preserved, unduplicated");
   Check(pentagon_mesh.FaceCount() == 3,
         "a pentagon fan-triangulates into exactly 5-2=3 triangles");
-  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
-  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
-  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
-  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
-        "the first fan triangle is corners (0,1,2), stored as a "
-        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
-        "triangle face already is");
-  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
-        "the second fan triangle is corners (0,2,3)");
-  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
-        "the third fan triangle is corners (0,3,4), reaching the "
-        "pentagon's last corner");
+  // Ear-clipping (not a fixed fan from corner 0) picks whichever ear
+  // is valid first, so the exact per-triangle corners aren't pinned
+  // down the way a naive always-from-vertex-0 fan's output would be -
+  // checked below via area instead, against one specific triangulation
+  // among the several equally correct ones.
   Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
         "the 3 fan triangles' combined area exactly reproduces the "
         "convex pentagon's own shoelace area");
@@ -25482,6 +25892,36 @@ void TestMeshLoadColladaFanTriangulatesNgonFaces() {
         "the 4 fan triangles' combined area exactly reproduces the "
         "convex hexagon's own shoelace area");
   std::remove(hexagon_path.c_str());
+
+  // A CONCAVE hexagon (one reflex corner, the "notch" at (2,2)) - see
+  // TestMeshLoadObjFanTriangulatesNgonFaces's own identical fixture for
+  // why fanning from this face's own first corner, (4,0), would be wrong
+  // (sums to 16, not this polygon's actual area of 12).
+  const std::vector<std::pair<double, double>> concave_hexagon = {
+      {4, 0}, {4, 2}, {2, 2}, {2, 4}, {0, 4}, {0, 0}};
+  const std::string concave_path = "dino8_kernel_mesh_collada_test_concave_hexagon.dae";
+  {
+    std::ofstream out(concave_path);
+    out << "<COLLADA><library_geometries><geometry><mesh>\n";
+    out << "<float_array count=\"" << (concave_hexagon.size() * 3) << "\">";
+    for (const auto& [x, y] : concave_hexagon) out << x << ' ' << y << " 0 ";
+    out << "</float_array>\n";
+    out << "<polylist count=\"1\"><vcount>6</vcount><p>0 1 2 3 4 5</p></polylist>\n";
+    out << "</mesh></geometry></library_geometries></COLLADA>\n";
+  }
+  Mesh concave_mesh;
+  Check(Mesh::LoadCollada(concave_path, concave_mesh) == Result::Ok,
+        "LoadCollada succeeds on a concave (reflex-cornered) hexagon "
+        "polylist entry");
+  Check(concave_mesh.VertexCount() == 6 && concave_mesh.FaceCount() == 4,
+        "the concave hexagon still triangulates into exactly 6-2=4 "
+        "triangles, no vertex duplication");
+  Check(std::abs(triangle_area_sum(concave_mesh) - shoelace_area(concave_hexagon)) < 1e-9,
+        "the 4 triangles' combined area exactly reproduces the concave "
+        "hexagon's own shoelace area (12, not a naive from-vertex-0 fan's "
+        "own 16) - proof ear-clipping keeps every triangle inside the "
+        "polygon even with a reflex corner present");
+  std::remove(concave_path.c_str());
 }
 
 void TestMeshSaveX3dRoundTrips() {
@@ -25775,18 +26215,11 @@ void TestMeshLoadX3dFanTriangulatesNgonFaces() {
         "the pentagon's 5 vertices are all preserved, unduplicated");
   Check(pentagon_mesh.FaceCount() == 3,
         "a pentagon fan-triangulates into exactly 5-2=3 triangles");
-  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
-  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
-  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
-  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
-        "the first fan triangle is corners (0,1,2), stored as a "
-        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
-        "triangle face already is");
-  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
-        "the second fan triangle is corners (0,2,3)");
-  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
-        "the third fan triangle is corners (0,3,4), reaching the "
-        "pentagon's last corner");
+  // Ear-clipping (not a fixed fan from corner 0) picks whichever ear
+  // is valid first, so the exact per-triangle corners aren't pinned
+  // down the way a naive always-from-vertex-0 fan's output would be -
+  // checked below via area instead, against one specific triangulation
+  // among the several equally correct ones.
   Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
         "the 3 fan triangles' combined area exactly reproduces the "
         "convex pentagon's own shoelace area");
@@ -25814,6 +26247,34 @@ void TestMeshLoadX3dFanTriangulatesNgonFaces() {
         "the 4 fan triangles' combined area exactly reproduces the "
         "convex hexagon's own shoelace area");
   std::remove(hexagon_path.c_str());
+
+  // A CONCAVE hexagon (one reflex corner, the "notch" at (2,2)) - see
+  // TestMeshLoadObjFanTriangulatesNgonFaces's own identical fixture for
+  // why fanning from this face's own first corner, (4,0), would be wrong
+  // (sums to 16, not this polygon's actual area of 12).
+  const std::vector<std::pair<double, double>> concave_hexagon = {
+      {4, 0}, {4, 2}, {2, 2}, {2, 4}, {0, 4}, {0, 0}};
+  const std::string concave_path = "dino8_kernel_mesh_x3d_test_concave_hexagon.x3d";
+  {
+    std::ofstream out(concave_path);
+    out << "<X3D><Scene><Shape><IndexedFaceSet coordIndex=\"0 1 2 3 4 5 -1\">\n";
+    out << "<Coordinate point=\"";
+    for (const auto& [x, y] : concave_hexagon) out << x << ' ' << y << " 0 ";
+    out << "\"/>\n</IndexedFaceSet></Shape></Scene></X3D>\n";
+  }
+  Mesh concave_mesh;
+  Check(Mesh::LoadX3d(concave_path, concave_mesh) == Result::Ok,
+        "LoadX3d succeeds on a concave (reflex-cornered) hexagon "
+        "coordIndex run");
+  Check(concave_mesh.VertexCount() == 6 && concave_mesh.FaceCount() == 4,
+        "the concave hexagon still triangulates into exactly 6-2=4 "
+        "triangles, no vertex duplication");
+  Check(std::abs(triangle_area_sum(concave_mesh) - shoelace_area(concave_hexagon)) < 1e-9,
+        "the 4 triangles' combined area exactly reproduces the concave "
+        "hexagon's own shoelace area (12, not a naive from-vertex-0 fan's "
+        "own 16) - proof ear-clipping keeps every triangle inside the "
+        "polygon even with a reflex corner present");
+  std::remove(concave_path.c_str());
 }
 
 void TestMeshSaveUsdaRoundTrips() {
@@ -26012,17 +26473,11 @@ void TestMeshLoadUsdaFanTriangulatesNgonFaces() {
         "the pentagon's 5 vertices are all preserved, unduplicated");
   Check(pentagon_mesh.FaceCount() == 3,
         "a pentagon fan-triangulates into exactly 5-2=3 triangles");
-  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
-  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
-  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
-  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
-        "the first fan triangle is corners (0,1,2), stored as a "
-        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
-        "triangle face already is");
-  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
-        "the second fan triangle is corners (0,2,3)");
-  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
-        "the third fan triangle is corners (0,3,4), reaching the pentagon's last corner");
+  // Ear-clipping (not a fixed fan from corner 0) picks whichever ear
+  // is valid first, so the exact per-triangle corners aren't pinned
+  // down the way a naive always-from-vertex-0 fan's output would be -
+  // checked below via area instead, against one specific triangulation
+  // among the several equally correct ones.
   Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
         "the 3 fan triangles' combined area exactly reproduces the "
         "convex pentagon's own shoelace area");
@@ -26050,6 +26505,36 @@ void TestMeshLoadUsdaFanTriangulatesNgonFaces() {
         "the 4 fan triangles' combined area exactly reproduces the "
         "convex hexagon's own shoelace area");
   std::remove(hexagon_path.c_str());
+
+  // A CONCAVE hexagon (one reflex corner, the "notch" at (2,2)) - see
+  // TestMeshLoadObjFanTriangulatesNgonFaces's own identical fixture for
+  // why fanning from this face's own first corner, (4,0), would be wrong
+  // (sums to 16, not this polygon's actual area of 12).
+  const std::vector<std::pair<double, double>> concave_hexagon = {
+      {4, 0}, {4, 2}, {2, 2}, {2, 4}, {0, 4}, {0, 0}};
+  const std::string concave_path = "dino8_kernel_mesh_usda_test_concave_hexagon.usda";
+  {
+    std::ofstream out(concave_path);
+    out << "#usda 1.0\ndef Mesh \"m\" {\n    point3f[] points = [";
+    for (size_t i = 0; i < concave_hexagon.size(); ++i) {
+      if (i > 0) out << ", ";
+      out << "(" << concave_hexagon[i].first << ", " << concave_hexagon[i].second << ", 0)";
+    }
+    out << "]\n    int[] faceVertexCounts = [6]\n";
+    out << "    int[] faceVertexIndices = [0, 1, 2, 3, 4, 5]\n}\n";
+  }
+  Mesh concave_mesh;
+  Check(Mesh::LoadUsda(concave_path, concave_mesh) == Result::Ok,
+        "LoadUsda succeeds on a concave (reflex-cornered) hexagon face");
+  Check(concave_mesh.VertexCount() == 6 && concave_mesh.FaceCount() == 4,
+        "the concave hexagon still triangulates into exactly 6-2=4 "
+        "triangles, no vertex duplication");
+  Check(std::abs(triangle_area_sum(concave_mesh) - shoelace_area(concave_hexagon)) < 1e-9,
+        "the 4 triangles' combined area exactly reproduces the concave "
+        "hexagon's own shoelace area (12, not a naive from-vertex-0 fan's "
+        "own 16) - proof ear-clipping keeps every triangle inside the "
+        "polygon even with a reflex corner present");
+  std::remove(concave_path.c_str());
 }
 
 void TestMeshSaveGltfRoundTrips() {
@@ -46956,6 +47441,64 @@ void TestMergeCoplanarFacesRefusesPairWhoseHoleHasCurvedEdge() {
   Check(b.m_F[fixture.face_a].LoopCount() == 2, "face A still has its own original outer loop plus the untouched hole");
 }
 
+// MergeCoplanarFaces()'s own shared-boundary generalization: two coplanar
+// unit squares whose shared x=1 edge has been pre-split into TWO collinear
+// trims on EACH side (an extra vertex at the midpoint (1, 0.5, 0)) - the
+// exact "a shared boundary later subdivided into several collinear trims"
+// case TryMergeCoplanarPair()'s own build_path() now accepts (see brep.h's
+// own updated doc comment), where this method used to refuse outright the
+// moment a pair shared anything other than EXACTLY one edge. Both pentagons
+// (5 vertices each, the extra one strictly collinear with its two
+// neighbors) still have the SAME 1x1 square shape as
+// TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne()'s own fixture -
+// this test's only difference is the shared boundary's own trim count.
+void TestMergeCoplanarFacesWeldsAdjacentSquaresSharingTwoCollinearTrims() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  Brep::PlanarFace a, b;
+  a.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  a.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 0.5, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  b.plane = ON_Plane(Point3d(1, 0, 0), ON_3dVector(0, 0, 1));
+  b.loop = {Point3d(1, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0), Point3d(1, 1, 0), Point3d(1, 0.5, 0)};
+
+  Brep flat = Brep::FromPlanarFaces({a, b});
+  Check(flat.FaceCount() == 2, "the two-pentagon fixture starts with 2 faces");
+  Check(flat.raw().IsValid(), "the two-pentagon fixture is a valid ON_Brep before merging");
+
+  const int shared_edge_count = [&]() {
+    const ON_Brep& raw = flat.raw();
+    int outer_a = -1;
+    for (int li = 0; li < raw.m_F[0].m_li.Count(); ++li) {
+      if (raw.m_L[raw.m_F[0].m_li[li]].m_type == ON_BrepLoop::outer) outer_a = raw.m_F[0].m_li[li];
+    }
+    int count = 0;
+    for (int k = 0; outer_a >= 0 && k < raw.m_L[outer_a].TrimCount(); ++k) {
+      const ON_BrepTrim* t = raw.m_L[outer_a].Trim(k);
+      const ON_BrepEdge* e = t ? t->Edge() : nullptr;
+      if (e && e->TrimCount() == 2) ++count;
+    }
+    return count;
+  }();
+  Check(shared_edge_count == 2, "setup: the fixture's own shared boundary is genuinely 2 separate (2-trim) "
+                                 "edges, not 1 - exercising the new multi-edge path, not the old single-edge one");
+
+  const int merges = flat.MergeCoplanarFaces();
+  Check(merges == 1, "MergeCoplanarFaces() performed exactly 1 merge across the 2 collinear shared trims");
+  Check(flat.FaceCount() == 1, "the two pentagons merged into a single face");
+  Check(flat.raw().IsValid(), "the merged single face is still a valid ON_Brep");
+
+  const std::vector<Mesh> meshes = flat.Tessellate(16, 16);
+  Check(meshes.size() == 1, "exactly one tessellated mesh for the single merged face");
+  if (!meshes.empty()) {
+    Check(std::abs(meshes[0].Area() - 2.0) < 1e-6,
+          "the merged face's own area is exactly the 2x1 rectangle (1.0 + 1.0) the two source squares bounded "
+          "- the extra midpoint vertex on the shared boundary changed no geometry");
+  }
+  Check(flat.MergeCoplanarFaces() == 0, "a second call finds nothing left to merge");
+}
+
 // Brep::MergeSameSurfaceFaces() - the curved-surface sibling of
 // MergeCoplanarFaces() above (PARITY_MAP's own "Merge faces on the same
 // non-planar surface (cylinder/tangent split faces)" gap). Builds two
@@ -52556,6 +53099,185 @@ void TestMakeCountersinkHoleRejectsInvalidArguments() {
         "MakeCountersinkHole ignores bore_depth entirely when bore_through is true");
   Check(Throws([&] { MakeCountersinkHole(box, center, Vector3d(0, 0, 0), 0.3, 3.0, false, 1.6, 90.0); }),
         "MakeCountersinkHole throws for a zero-length axis");
+}
+
+void TestMakeHolesTwoThroughHolesMatchSumOfIndividualVolumes() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeHole;
+  using dino8::kernel::MakeHoles;
+  using dino8::kernel::Mesh;
+
+  // parity-map "kernel: Feature operations" - "Blind/through hole with
+  // depth/placement": closes MakeHole()'s own disclosed "one hole per
+  // call" gap. Two well-separated through holes on a 4x8x4 slab (volume
+  // 128, the same per-hole box/radius proportions TestMakeHoleBlindAndThrough's
+  // own through case above already confirms gives a reliably closed
+  // tessellation - a wider box at this same resolution was confirmed via
+  // dino8_scratch_test to leave the top/bottom faces' own OUTER silhouette
+  // under-tessellated, a pre-existing TessellateToClosedMesh() resolution
+  // artifact unrelated to either hole), cut via ONE MakeHoles() call,
+  // folded into a single compound cutter (BooleanCombineGeneralNAry) and
+  // subtracted in a single BooleanCombineGeneral() Difference call - not
+  // two chained Difference calls against the slab.
+  const Brep slab = Brep::Box(0, 0, 0, 4, 8, 4);
+  const Point3d c1(2, 2, 4), c2(2, 6, 4);
+  const Vector3d down(0, 0, -1);
+  const double radius = 0.5;
+
+  const Brep drilled = MakeHoles(slab, {c1, c2}, down, radius, /*depth=*/0.0, /*through=*/true);
+  Check(drilled.raw().IsValid(), "MakeHoles produces a valid ON_Brep");
+  Check(drilled.FaceCount() == 8,
+        "MakeHoles (two through holes) adds exactly two new faces to the slab's own 6 - each through hole exits "
+        "both ends through an existing face, same as a single MakeHole() through call");
+  Check(BrepPassesThroughPoint(drilled, c1 + Vector3d(radius, 0, 0)),
+        "MakeHoles leaves a genuine cylindrical wall at the first hole's own center");
+  Check(BrepPassesThroughPoint(drilled, c2 + Vector3d(radius, 0, 0)),
+        "MakeHoles leaves a genuine cylindrical wall at the second hole's own center");
+
+  // Matches the sum of what two independent MakeHole() calls would remove -
+  // not an approximation, the exact same closed-form two-cylinder volume.
+  const Brep sequential = MakeHole(MakeHole(slab, c1, down, radius, 0.0, true), c2, down, radius, 0.0, true);
+  const Mesh m_batch = drilled.TessellateToClosedMesh(32, 128);
+  const Mesh m_sequential = sequential.TessellateToClosedMesh(32, 128);
+  Check(std::abs(m_batch.Volume() - m_sequential.Volume()) < 0.5,
+        "MakeHoles' single-compound-tool construction removes the same volume as two sequential MakeHole() calls "
+        "on well-separated holes");
+  const double expect = 4.0 * 8.0 * 4.0 - 2.0 * ON_PI * radius * radius * 4.0;
+  Check(std::abs(m_batch.Volume() - expect) < 0.5,
+        "MakeHoles (two through holes) matches the closed-form slab_volume - 2*pi*r^2*height");
+}
+
+void TestMakeHolesRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeHoles;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 4);
+  const Brep empty;
+  const std::vector<Point3d> centers = {Point3d(2, 2, 4), Point3d(8, 8, 4)};
+  const Vector3d down(0, 0, -1);
+
+  Check(Throws([&] { MakeHoles(empty, centers, down, 0.5, 1.0, false); }), "MakeHoles throws for a faceless solid");
+  Check(Throws([&] { MakeHoles(box, {}, down, 0.5, 1.0, false); }), "MakeHoles throws for an empty centers list");
+  Check(Throws([&] { MakeHoles(box, centers, down, 0.0, 1.0, false); }), "MakeHoles throws for a non-positive radius");
+  Check(Throws([&] { MakeHoles(box, centers, down, 0.5, 0.0, false); }),
+        "MakeHoles throws for a non-positive depth on a blind hole");
+  Check(Throws([&] { MakeHoles(box, centers, Vector3d(0, 0, 0), 0.5, 1.0, false); }),
+        "MakeHoles throws for a zero-length axis");
+}
+
+void TestMakeCounterboreHolesTwoHolesMatchSumOfIndividualVolumes() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeCounterboreHole;
+  using dino8::kernel::MakeCounterboreHoles;
+  using dino8::kernel::Mesh;
+
+  // parity-map "kernel: Feature operations" - "Counterbore (stepped
+  // coaxial) hole": the same batch closure MakeHoles() above gives
+  // MakeHole(), for a bolt circle of identical counterbore holes.
+  const Brep slab = Brep::Box(0, 0, 0, 10, 10, 4);
+  const Point3d c1(2, 2, 4), c2(8, 8, 4);
+  const Vector3d down(0, 0, -1);
+  const double bore_r = 0.3, bore_depth = 3.0, cb_r = 0.6, cb_depth = 1.0;
+
+  const Brep drilled = MakeCounterboreHoles(slab, {c1, c2}, down, bore_r, bore_depth, /*bore_through=*/false, cb_r, cb_depth);
+  Check(drilled.raw().IsValid(), "MakeCounterboreHoles produces a valid ON_Brep");
+  Check(drilled.FaceCount() == 10,
+        "MakeCounterboreHoles (two holes) adds exactly four new faces to the slab's own 6 - two per hole, same as "
+        "a single MakeCounterboreHole() call");
+  for (const Point3d& c : {c1, c2}) {
+    Check(BrepPassesThroughPoint(drilled, c + Vector3d(cb_r, 0, 0)),
+          "MakeCounterboreHoles' wall passes through the counterbore radius at the entry surface, at both centers");
+    const Point3d bore_probe = c + down * 2.0 + Vector3d(bore_r, 0, 0);
+    Check(BrepPassesThroughPoint(drilled, bore_probe),
+          "MakeCounterboreHoles' SAME wall also passes through the narrower bore radius at both centers");
+    const Point3d expected_bottom = c + down * bore_depth;
+    Check(HasPlanarFaceThroughPoint(drilled, expected_bottom),
+          "MakeCounterboreHoles leaves a genuine flat pilot-bore bottom at both centers");
+  }
+
+  const Brep sequential = MakeCounterboreHole(MakeCounterboreHole(slab, c1, down, bore_r, bore_depth, false, cb_r, cb_depth),
+                                               c2, down, bore_r, bore_depth, false, cb_r, cb_depth);
+  const Mesh m_batch = drilled.TessellateToClosedMesh(32, 128);
+  const Mesh m_sequential = sequential.TessellateToClosedMesh(32, 128);
+  Check(std::abs(m_batch.Volume() - m_sequential.Volume()) < 0.5,
+        "MakeCounterboreHoles' single-compound-tool construction removes the same volume as two sequential "
+        "MakeCounterboreHole() calls on well-separated holes");
+}
+
+void TestMakeCounterboreHolesRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeCounterboreHoles;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 4);
+  const Brep empty;
+  const std::vector<Point3d> centers = {Point3d(2, 2, 4), Point3d(8, 8, 4)};
+  const Vector3d down(0, 0, -1);
+
+  Check(Throws([&] { MakeCounterboreHoles(empty, centers, down, 0.3, 3.0, false, 0.6, 1.0); }),
+        "MakeCounterboreHoles throws for a faceless solid");
+  Check(Throws([&] { MakeCounterboreHoles(box, {}, down, 0.3, 3.0, false, 0.6, 1.0); }),
+        "MakeCounterboreHoles throws for an empty centers list");
+  Check(Throws([&] { MakeCounterboreHoles(box, centers, down, 0.6, 3.0, false, 0.6, 1.0); }),
+        "MakeCounterboreHoles throws when counterbore_radius does not exceed bore_radius");
+  Check(Throws([&] { MakeCounterboreHoles(box, centers, Vector3d(0, 0, 0), 0.3, 3.0, false, 0.6, 1.0); }),
+        "MakeCounterboreHoles throws for a zero-length axis");
+}
+
+void TestMakeCountersinkHolesTwoHolesMatchSumOfIndividualVolumes() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeCountersinkHole;
+  using dino8::kernel::MakeCountersinkHoles;
+  using dino8::kernel::Mesh;
+
+  // parity-map "kernel: Feature operations" - "Countersink (conical) hole":
+  // the countersink-shaped sibling of MakeCounterboreHoles() above.
+  const Brep slab = Brep::Box(0, 0, 0, 10, 10, 4);
+  const Point3d c1(2, 2, 4), c2(8, 8, 4);
+  const Vector3d down(0, 0, -1);
+  const double bore_r = 0.3, bore_depth = 3.0, cs_diameter = 1.6, cs_angle_deg = 90.0;
+  const double cs_radius = 0.5 * cs_diameter;
+
+  const Brep drilled =
+      MakeCountersinkHoles(slab, {c1, c2}, down, bore_r, bore_depth, /*bore_through=*/false, cs_diameter, cs_angle_deg);
+  Check(drilled.raw().IsValid(), "MakeCountersinkHoles produces a valid ON_Brep");
+  Check(drilled.FaceCount() == 10,
+        "MakeCountersinkHoles (two holes) adds exactly four new faces to the slab's own 6 - two per hole, same as "
+        "a single MakeCountersinkHole() call");
+  for (const Point3d& c : {c1, c2}) {
+    Check(BrepPassesThroughPoint(drilled, c + Vector3d(cs_radius, 0, 0)),
+          "MakeCountersinkHoles' wall passes through the countersink radius at the entry surface, at both centers");
+    const Point3d bore_probe = c + down * 2.0 + Vector3d(bore_r, 0, 0);
+    Check(BrepPassesThroughPoint(drilled, bore_probe),
+          "MakeCountersinkHoles' SAME wall also passes through the narrower bore radius at both centers");
+  }
+
+  const Brep sequential =
+      MakeCountersinkHole(MakeCountersinkHole(slab, c1, down, bore_r, bore_depth, false, cs_diameter, cs_angle_deg), c2,
+                           down, bore_r, bore_depth, false, cs_diameter, cs_angle_deg);
+  const Mesh m_batch = drilled.TessellateToClosedMesh(32, 128);
+  const Mesh m_sequential = sequential.TessellateToClosedMesh(32, 128);
+  Check(std::abs(m_batch.Volume() - m_sequential.Volume()) < 0.5,
+        "MakeCountersinkHoles' single-compound-tool construction removes the same volume as two sequential "
+        "MakeCountersinkHole() calls on well-separated holes");
+}
+
+void TestMakeCountersinkHolesRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeCountersinkHoles;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 4);
+  const Brep empty;
+  const std::vector<Point3d> centers = {Point3d(2, 2, 4), Point3d(8, 8, 4)};
+  const Vector3d down(0, 0, -1);
+
+  Check(Throws([&] { MakeCountersinkHoles(empty, centers, down, 0.3, 3.0, false, 1.6, 90.0); }),
+        "MakeCountersinkHoles throws for a faceless solid");
+  Check(Throws([&] { MakeCountersinkHoles(box, {}, down, 0.3, 3.0, false, 1.6, 90.0); }),
+        "MakeCountersinkHoles throws for an empty centers list");
+  Check(Throws([&] { MakeCountersinkHoles(box, centers, down, 0.3, 3.0, false, 0.6, 90.0); }),
+        "MakeCountersinkHoles throws when countersink_diameter does not exceed 2*bore_radius");
+  Check(Throws([&] { MakeCountersinkHoles(box, centers, Vector3d(0, 0, 0), 0.3, 3.0, false, 1.6, 90.0); }),
+        "MakeCountersinkHoles throws for a zero-length axis");
 }
 
 void TestEmbossProfileDebossThroughPocket() {
@@ -63505,6 +64227,11 @@ int main() {
   TestImprintClosedCurveOnFaceBoxTopFaceSquareHole();
   TestImprintClosedCurveOnFaceRejectsOpenChain();
   TestImprintClosedCurveOnFaceRejectsInvalidInput();
+  TestSplitFaceByCurvesBoxTopFaceTwoParallelCutsProduceThreeStrips();
+  TestSplitFaceByCurvesRejectsCrossingCurves();
+  TestSplitFaceByCurvesRejectsInvalidInput();
+  TestImprintClosedCurvesOnFaceBoxTopFaceTwoHoles();
+  TestImprintClosedCurvesOnFaceRejectsInvalidInput();
   TestMutualImprintFacesBoxPiercedByCylinder();
   TestMutualImprintFacesRejectsEmptyOrNonPositiveTolerance();
   TestSplitBySheetBoxCutInHalfByPlane();
@@ -63573,6 +64300,7 @@ int main() {
   TestModelMaterialAccessorsRoundTrip();
   TestModelUnitSystemRoundTrips();
   TestModelAddNamedViewRoundTrips();
+  TestModelAddLayoutRoundTrips();
   TestModelMaterialExtendedFieldsRoundTrip();
   TestModelMaterialTextureRoundTrips();
   TestModelAddLightRoundTrips();
@@ -63582,6 +64310,7 @@ int main() {
   TestModelAddHatchPatternLinesRoundTrips();
   TestModelAddTextDotRoundTrips();
   TestModelAddTextAnnotationRoundTrips();
+  TestModelAddLeaderRoundTrips();
   TestModelUnitConversionFactor();
   TestModelConvertUnitsScalesGeometryAndUpdatesUnitSystem();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
@@ -64133,6 +64862,7 @@ int main() {
   TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane();
   TestMergeCoplanarFacesPreservesExistingHoleOnMergedFace();
   TestMergeCoplanarFacesRefusesPairWhoseHoleHasCurvedEdge();
+  TestMergeCoplanarFacesWeldsAdjacentSquaresSharingTwoCollinearTrims();
   TestMergeSameSurfaceFacesWeldsTwoCylindricalPatchesIntoOne();
   TestMergeSameSurfaceFacesLeavesDistinctCoplanarSurfacesUntouched();
   TestMergeSameSurfaceFacesWeldsCongruentButSeparateCylinderSurfaces();
@@ -64281,6 +65011,12 @@ int main() {
   sweep_tests::TestRecognizeBossesBlindAndFreestandingRoundTrip();
   sweep_tests::TestMakeCountersinkHoleBoxStandardAngle();
   sweep_tests::TestMakeCountersinkHoleRejectsInvalidArguments();
+  sweep_tests::TestMakeHolesTwoThroughHolesMatchSumOfIndividualVolumes();
+  sweep_tests::TestMakeHolesRejectsInvalidArguments();
+  sweep_tests::TestMakeCounterboreHolesTwoHolesMatchSumOfIndividualVolumes();
+  sweep_tests::TestMakeCounterboreHolesRejectsInvalidArguments();
+  sweep_tests::TestMakeCountersinkHolesTwoHolesMatchSumOfIndividualVolumes();
+  sweep_tests::TestMakeCountersinkHolesRejectsInvalidArguments();
   sweep_tests::TestEmbossProfileDebossThroughPocket();
   sweep_tests::TestEmbossProfileDebossBlindPocket();
   sweep_tests::TestEmbossProfileEmbossBoss();

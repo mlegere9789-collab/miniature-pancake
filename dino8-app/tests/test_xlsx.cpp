@@ -139,6 +139,38 @@ std::vector<unsigned char> BuildZipFixture(const std::vector<FixtureEntry>& entr
   return out;
 }
 
+// A minimal, valid package wrapping a hand-written worksheet XML - for
+// fixtures that only care about exercising ParseSheetRows/ParseCellRef on a
+// crafted <sheetData>, not the rels-graph/shared-strings machinery the
+// "real-world-shaped" fixture above already covers.
+std::vector<unsigned char> BuildMinimalXlsx(const std::string& worksheet_xml) {
+  const std::string content_types =
+      "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+      "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+      "<Default Extension=\"xml\" ContentType=\"application/xml\"/></Types>";
+  const std::string root_rels =
+      "<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+      "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>"
+      "</Relationships>";
+  const std::string workbook =
+      "<?xml version=\"1.0\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" "
+      "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+      "<sheets><sheet name=\"Data\" sheetId=\"1\" r:id=\"rIdSheet\"/></sheets></workbook>";
+  const std::string workbook_rels =
+      "<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+      "<Relationship Id=\"rIdSheet\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>"
+      "</Relationships>";
+  std::vector<FixtureEntry> entries = {
+      {"[Content_Types].xml", ToBytes(content_types), 0},
+      {"_rels/.rels", ToBytes(root_rels), 0},
+      {"xl/workbook.xml", ToBytes(workbook), 0},
+      {"xl/_rels/workbook.xml.rels", ToBytes(workbook_rels), 0},
+      {"xl/worksheets/sheet1.xml", ToBytes(worksheet_xml), 0},
+  };
+  std::vector<std::string> orig_texts = {content_types, root_rels, workbook, workbook_rels, worksheet_xml};
+  return BuildZipFixture(entries, orig_texts);
+}
+
 }  // namespace
 
 int main() {
@@ -277,6 +309,48 @@ int main() {
     Check(WriteFile(path, bytes), "wrote the truncated fixture");
     std::vector<std::vector<std::string>> out;
     Check(!ReadXlsxCells(path, out, err), "ReadXlsxCells rejects a truncated zip (no end-of-central-directory record)");
+  }
+
+  // ---- Untrusted-input hardening ------------------------------------------
+
+  // A cell reference with enough column letters overflows `long` in
+  // ParseCellRef's old unbounded version, and the subsequent narrowing to
+  // int could land on a negative col0 that bypassed ParseSheetRows'
+  // `row.size() <= cc` bounds check, corrupting the heap via an
+  // out-of-bounds `row[cc]` write. The malicious cell must simply be
+  // skipped (ParseCellRef now rejects anything past the real XFD16384
+  // worksheet limit), not crash or corrupt the legitimate cell beside it.
+  {
+    const std::string worksheet =
+        "<?xml version=\"1.0\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>"
+        "<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>ok</t></is></c>"
+        "<c r=\"ZZZZZZZ1\" t=\"inlineStr\"><is><t>bad</t></is></c></row>"
+        "</sheetData></worksheet>";
+    const std::string path = (tmp / "overflow_col.xlsx").string();
+    Check(WriteFile(path, BuildMinimalXlsx(worksheet)), "wrote an overflow-column fixture");
+    std::vector<std::vector<std::string>> out;
+    std::string err;
+    Check(ReadXlsxCells(path, out, err), "ReadXlsxCells survives a cell ref with way too many column letters");
+    Check(out.size() == 1 && !out[0].empty() && out[0][0] == "ok", "the legitimate A1 cell is intact");
+    Check(out.size() == 1 && out[0].size() < 1000, "the malicious column ref was rejected, not used as a huge/negative index");
+  }
+
+  // A row index with no sane upper bound (an untrusted .3dm/.xlsx can claim
+  // any 32-bit value) used to be resized straight into `rows`, letting a
+  // few bytes of XML demand a multi-gigabyte allocation. It must be
+  // rejected (skipped) instead, like any other out-of-range row.
+  {
+    const std::string worksheet =
+        "<?xml version=\"1.0\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>"
+        "<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>ok</t></is></c></row>"
+        "<row r=\"2000000000\"><c r=\"A2000000000\" t=\"inlineStr\"><is><t>bad</t></is></c></row>"
+        "</sheetData></worksheet>";
+    const std::string path = (tmp / "overflow_row.xlsx").string();
+    Check(WriteFile(path, BuildMinimalXlsx(worksheet)), "wrote an overflow-row fixture");
+    std::vector<std::vector<std::string>> out;
+    std::string err;
+    Check(ReadXlsxCells(path, out, err), "ReadXlsxCells survives a row index of 2,000,000,000 without a huge allocation");
+    Check(out.size() == 1 && !out[0].empty() && out[0][0] == "ok", "only the legitimate row 1 is present; the absurd row index was rejected");
   }
 
   std::printf("%d failure(s)\n", failures);
