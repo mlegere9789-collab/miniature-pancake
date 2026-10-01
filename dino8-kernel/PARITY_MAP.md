@@ -1,6 +1,33 @@
 # Fossilith / Dino 8 parity map (2026-09-28, updated 2026-10-01)
 
-**Fossilith vs Parasolid/ACIS = 69.4% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 77.3%.**
+**Fossilith vs Parasolid/ACIS = 69.6% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 77.3%.**
+
+**2026-10-01 fleet-merge re-score (doc-only):** re-verified every category's
+Present/Partial/Missing counts against current source (bullet-by-bullet
+count of `- [missing]`/`- [partial]` lines under each of the 17 kernel and
+8 app category sections below, cross-checked against each row of the two
+summary tables). All 8 app rows and 16 of the 17 kernel rows already
+matched their own category's bullet counts exactly. One did not: **kernel:
+Intersections & projections**' table row was still carrying 18/9/2 (77.6%)
+— the value from the 2026-09-30 "Projection... along a direction" close —
+rather than 18/10/1 (79.3%), the value the *later* "2026-10-01 kernel
+rotation" session (`IntersectCurveSurfaceOverlap` flipping `missing`->
+`partial`, see that session's own note a few paragraphs below) already
+established and the category's own bullet list already reflects. Two
+concurrent same-day sessions each computed a kernel headline from their own
+stale snapshot of this row (one from 69.0%/18/9/2, landing at 69.4%; the
+other from 68.8%/18/9/2 before its own change, landing at 68.9%) and
+neither combined with the other's row update, so the table row itself was
+never actually corrected by either. Fixed here: table row below now reads
+18/10/1 (79.3%); this category's own weight/remaining-items count is
+unchanged (11 either way — the item moved from `missing` to `partial`
+within the same remaining total), so the Priority order table needs no
+change. Re-deriving the kernel headline fresh from all 17 rows
+(`sum(weight * (present + 0.5*partial) / items) / 17.75`) gives
+69.6% (69.57%, rounded) — not 69.4%. Re-deriving the app headline fresh
+from all 8 rows the same way confirms the already-tracked 77.3% (77.28%,
+rounded) is correct as-is; no app row changed. `dino8_kernel_tests`/
+`dino8_app_tests` not re-run (docs-only change, no source edited).
 
 **2026-10-01, a further session on "Scripting, automation & visual programming" (app_scripting):** two more real, verified narrowings on two already-`[partial]` items, neither flipping status:
 
@@ -1999,7 +2026,7 @@ it stays last.
 | kernel: Sweeping, lofting, extruding, revolving | 1 | 29 | 6 | 21 | 2 | 56.9% |
 | kernel: Offsetting, shelling, thickening | 1 | 27 | 0 | 27 | 0 | 50.0% |
 | kernel: Local / direct-edit operations | 1 | 28 | 8 | 20 | 0 | 64.3% |
-| kernel: Intersections & projections | 1.5 | 29 | 18 | 9 | 2 | 77.6% |
+| kernel: Intersections & projections | 1.5 | 29 | 18 | 10 | 1 | 79.3% |
 | kernel: Healing, repair, validation, tolerant modeling | 1 | 30 | 19 | 10 | 1 | 80.0% |
 | kernel: Mass properties & spatial queries | 1 | 30 | 16 | 14 | 0 | 76.7% |
 | kernel: Tessellation / faceting | 1 | 25 | 14 | 9 | 2 | 74.0% |
