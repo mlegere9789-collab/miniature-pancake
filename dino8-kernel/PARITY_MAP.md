@@ -1,6 +1,40 @@
 # Fossilith / Dino 8 parity map (2026-09-28, updated 2026-10-01)
 
-**Fossilith vs Parasolid/ACIS = 69.6% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 77.3%.**
+**Fossilith vs Parasolid/ACIS = 69.8% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 77.3%.**
+
+**2026-10-01, a second fleet-merge re-score (doc-only):** re-verified every
+category's Present/Partial/Missing counts against current source again
+(bullet-by-bullet count of `- [missing]`/`- [partial]` lines under each of
+the 17 kernel and 8 app category sections, cross-checked against both
+summary tables), since four more sessions landed on this branch after the
+prior fleet-merge re-score pass below: `0cb6655` (Topology & data
+structure — non-manifold construction, same-surface hole merging),
+`bea5f21` (Boolean operations — wiring `SplitBrepByManySolids`/
+`PolygonBooleanPlanar` into the app), `d15fd60` (Kernel-level data exchange
+— texture refs, DXF, T-junction healing), and `c489ce9` (Offsetting,
+shelling, thickening — `OffsetVariable`/`OffsetOnSurfaceNormal` closing to
+`[present]`). All 25 category rows (17 kernel + 8 app) already match their
+own section's current bullet counts exactly — each of the four sessions
+above had already corrected its own row (and, where it changed, the
+Priority order table) as part of its own commit; `0cb6655`/`bea5f21`
+narrowed evidence text without flipping any bullet's status, so their rows
+were already correct and unchanged. The one thing none of them touched was
+this top-line headline itself: `c489ce9`'s own Offsetting row change
+(50.0% -> 53.7%, see the Priority order table's own 2026-10-01 note) landed
+*after* the prior fleet-merge re-score below had already fixed the headline
+at 69.6% from the row values of that moment, so that row's later
+53.7%-vs-50.0% delta was never folded back in. Re-deriving the kernel
+headline fresh from all 17 current rows
+(`sum(weight * (present + 0.5*partial) / items) / 17.75`) gives **69.8%**
+(69.78%, rounded) — not 69.6%. Re-deriving the app headline fresh from all
+8 rows the same way confirms 77.3% (77.28%, rounded) is still correct
+as-is; no app row changed since the last app-headline derivation. Both
+Priority order tables (kernel and app) were independently re-checked
+row-by-row against the current table's Items/Present/Partial/Missing
+columns and already match exactly — no rank changes needed beyond the one
+`c489ce9` itself already made (Offsetting, shelling, thickening swapping
+past Transformations, patterns, splitting to rank 16). `dino8_kernel_tests`/
+`dino8_app_tests` not re-run (docs-only change, no source edited).
 
 **2026-10-01 fleet-merge re-score (doc-only):** re-verified every category's
 Present/Partial/Missing counts against current source (bullet-by-bullet
