@@ -4490,6 +4490,141 @@ Result Mesh::LoadFbx(const std::string& path, Mesh& out_mesh) {
   return Result::Ok;
 }
 
+namespace {
+
+// DXF's whole file is a flat sequence of (group code, value) line pairs -
+// the group code always a plain integer on its own line, the value on the
+// line right after it. Real-world DXF writers commonly right-align the
+// code in a fixed-width field (e.g. "  0" for a one-digit code), so both
+// lines need trimming, not just the value - reusing TrimAmfWhitespace()
+// above rather than writing a second near-identical trimmer.
+bool ReadDxfPair(std::istream& in, int& code, std::string& value) {
+  std::string code_line;
+  if (!std::getline(in, code_line)) return false;
+  if (!ParseOffInt(TrimAmfWhitespace(code_line), code)) return false;
+  std::string value_line;
+  if (!std::getline(in, value_line)) return false;
+  value = TrimAmfWhitespace(value_line);
+  return true;
+}
+
+}  // namespace
+
+Result Mesh::SaveDxf(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+  out << "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n0\nENDSEC\n";
+  out << "0\nSECTION\n2\nENTITIES\n";
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    const ON_3fPoint& p0 = mesh_.m_V[f.vi[0]];
+    const ON_3fPoint& p1 = mesh_.m_V[f.vi[1]];
+    const ON_3fPoint& p2 = mesh_.m_V[f.vi[2]];
+    // A triangle writes its third corner again as the fourth - DXF's own
+    // documented convention ("If the 3DFACE is a triangle, make the third
+    // and fourth points identical"), not a guess; a genuine quad
+    // (IsQuad()) writes its own real fourth corner instead, since 3DFACE
+    // is natively quad-capable and needs no splitting the way an all-
+    // triangle format (STL, glTF, IFC, ...) would require.
+    const ON_3fPoint& p3 = f.IsQuad() ? mesh_.m_V[f.vi[3]] : p2;
+    out << "0\n3DFACE\n8\n0\n";
+    out << "10\n" << p0.x << '\n' << "20\n" << p0.y << '\n' << "30\n" << p0.z << '\n';
+    out << "11\n" << p1.x << '\n' << "21\n" << p1.y << '\n' << "31\n" << p1.z << '\n';
+    out << "12\n" << p2.x << '\n' << "22\n" << p2.y << '\n' << "32\n" << p2.z << '\n';
+    out << "13\n" << p3.x << '\n' << "23\n" << p3.y << '\n' << "33\n" << p3.z << '\n';
+  }
+  out << "0\nENDSEC\n0\nEOF\n";
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadDxf(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path);
+  if (!in) {
+    return Result::Failed;
+  }
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+
+  bool seen_entities_section = false;
+  bool in_3dface = false;
+  double coord[4][3] = {};
+  bool have_coord[4][3] = {};
+
+  // Finalizes the 3DFACE entity currently being accumulated (if any) into
+  // a real ON_MeshFace, failing if any of its twelve required coordinate
+  // group codes (10/20/30 .. 13/23/33) never showed up.
+  auto FlushFace = [&]() -> bool {
+    if (!in_3dface) return true;
+    for (int c = 0; c < 4; ++c) {
+      for (int a = 0; a < 3; ++a) {
+        if (!have_coord[c][a]) return false;
+      }
+    }
+    const ON_3fPoint p[4] = {
+        ON_3fPoint(coord[0][0], coord[0][1], coord[0][2]),
+        ON_3fPoint(coord[1][0], coord[1][1], coord[1][2]),
+        ON_3fPoint(coord[2][0], coord[2][1], coord[2][2]),
+        ON_3fPoint(coord[3][0], coord[3][1], coord[3][2]),
+    };
+    const int base = raw.m_V.Count();
+    raw.m_V.Append(p[0]);
+    raw.m_V.Append(p[1]);
+    raw.m_V.Append(p[2]);
+    // SaveDxf()'s own triangle convention (third and fourth corners
+    // identical) - matched here with a small fixed tolerance rather than
+    // exact float equality, since a real-world DXF writer's own rounding
+    // may not reproduce the stored value bit-for-bit.
+    const double dx = p[3].x - p[2].x, dy = p[3].y - p[2].y, dz = p[3].z - p[2].z;
+    const bool is_triangle = (dx * dx + dy * dy + dz * dz) < 1e-12;
+    ON_MeshFace face;
+    face.vi[0] = base;
+    face.vi[1] = base + 1;
+    face.vi[2] = base + 2;
+    if (is_triangle) {
+      face.vi[3] = base + 2;
+    } else {
+      raw.m_V.Append(p[3]);
+      face.vi[3] = base + 3;
+    }
+    raw.m_F.Append(face);
+    in_3dface = false;
+    for (auto& row : have_coord) row[0] = row[1] = row[2] = false;
+    return true;
+  };
+
+  int code = 0;
+  std::string value;
+  while (ReadDxfPair(in, code, value)) {
+    if (code == 0) {
+      if (!FlushFace()) return Result::Failed;
+      in_3dface = (value == "3DFACE");
+      continue;
+    }
+    if (code == 2 && value == "ENTITIES") {
+      seen_entities_section = true;
+      continue;
+    }
+    if (!in_3dface) continue;
+    // 1x/2x/3x are this entity's four corners' x/y/z group codes exactly
+    // (10,20,30 = corner 0; 11,21,31 = corner 1; ...; 13,23,33 = corner 3).
+    const int corner = code % 10;
+    const int axis = code / 10 - 1;
+    if (corner < 0 || corner > 3 || axis < 0 || axis > 2) continue;
+    double parsed = 0.0;
+    if (!ParseOffDouble(value, parsed)) return Result::Failed;
+    coord[corner][axis] = parsed;
+    have_coord[corner][axis] = true;
+  }
+  if (!FlushFace()) return Result::Failed;  // a 3DFACE truncated before its own closing 0-code
+  if (!seen_entities_section) return Result::Failed;
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
+
 Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {
   // Distinguishes binary from ASCII the same way most real-world STL
   // readers do: an ASCII file's own text can start with "solid" and

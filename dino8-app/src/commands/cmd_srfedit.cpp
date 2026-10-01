@@ -1563,9 +1563,17 @@ class SetSurfaceTangentCommand : public Command {
 
 // ---------------------------------------------------------------------------
 // VariableOffsetSrf: per-CV offset along each control point's own Greville
-// normal (the same technique OffsetSrf/BuildFillet's OffsetBy use), with the
-// distance interpolated linearly along U between Distance1 and Distance2 -
-// a real, if U-only, spatially-varying offset.
+// normal, distance interpolated linearly along U between Distance1 and
+// Distance2 - now wired to the kernel's own kernel::NurbsSurface::
+// OffsetVariable() (dino8-kernel/include/dino8/kernel/surface.h) rather
+// than reimplementing the same per-CV loop here: the real offset
+// capability lives in the kernel, usable by anything else that needs a
+// spatially-varying surface offset, and this command only handles picking
+// and placing the result. A genuine behavior improvement follows from the
+// switch, not just a relocation: OffsetVariable() refuses (rather than
+// silently producing a folded/self-overlapping result) when either end's
+// own locally-interpolated distance exceeds this surface's local radius
+// of curvature there - a real fold guard the old inline loop never had.
 // ---------------------------------------------------------------------------
 
 class VariableOffsetSrfCommand : public Command {
@@ -1584,24 +1592,17 @@ class VariableOffsetSrfCommand : public Command {
     const SceneObject* o = ctx.Doc().Find(pick->id);
     std::optional<ON_NurbsSurface> s = o ? SurfaceOfObject(*o, pick->face) : std::nullopt;
     if (!s) { ctx.Warn("VariableOffsetSrf: could not read the surface"); Finish(); return; }
-    ON_NurbsSurface out = *s;
-    const ON_Interval du = s->Domain(0);
-    for (int i = 0; i < out.CVCount(0); ++i) {
-      const double u = s->GrevilleAbcissa(0, i);
-      const double frac = du.Length() > 0 ? (u - du.Min()) / du.Length() : 0.0;
-      const double d = d1_ + (d2_ - d1_) * frac;
-      for (int j = 0; j < out.CVCount(1); ++j) {
-        const double v = s->GrevilleAbcissa(1, j);
-        ON_3dVector n = s->NormalAt(u, v);
-        if (!n.Unitize()) continue;
-        ON_3dPoint cv;
-        out.GetCV(i, j, cv);
-        out.SetCV(i, j, cv + n * d);
-      }
+    kernel::NurbsSurface in;
+    in.raw() = *s;
+    kernel::NurbsSurface out;
+    if (in.OffsetVariable(d1_, d2_, out) != kernel::Result::Ok) {
+      ctx.Warn("VariableOffsetSrf: distance " + FormatNumber(d1_) + " to " + FormatNumber(d2_) + " folds the surface through its own local center of curvature somewhere along U; try smaller distances");
+      Finish();
+      return;
     }
     ctx.Doc().BeginChange("VariableOffsetSrf");
     SceneObject like = *o;
-    ObjectId nid = AddSurfaceFrom(ctx, out, like);
+    ObjectId nid = AddSurfaceFrom(ctx, out.raw(), like);
     ctx.Doc().Select(nid, true);
     ctx.Print("VariableOffsetSrf: offset " + FormatNumber(d1_) + " at the U-min edge to " + FormatNumber(d2_) + " at U-max (per-CV normal offset, linearly interpolated along U)");
     Finish();
