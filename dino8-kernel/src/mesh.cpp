@@ -376,6 +376,57 @@ Point3d ClosestPointOnTriangle(const Point3d& p, const Point3d& a, const Point3d
 
 }  // namespace
 
+namespace {
+
+// Forward declaration - defined further below (shared with
+// LoftClosedRings()'s own end-cap triangulation). Declared here so the
+// n-gon face loaders above it in this file (LoadObj/LoadOff/LoadVrml/
+// LoadCollada/LoadX3d/LoadUsda) can call it too.
+std::vector<std::array<int, 3>> TriangulatePlanarRing(const std::vector<Point3d>& ring);
+
+// Appends one polygon face's worth of ON_MeshFace entries to `raw`, given
+// its corner vertex indices (already validated in range against
+// `raw.m_V`) in order around the face. A triangle or quad becomes a
+// single native ON_MeshFace, same as always; a genuine n-gon (5+
+// corners) is real-ear-clip-triangulated on its own best-fit (Newell)
+// plane via TriangulatePlanarRing() - unlike a naive fan from the first
+// corner (what every one of this file's n-gon face loaders used to do
+// independently), ear-clipping stays correct for a CONCAVE n-gon too: a
+// fan can produce a triangle whose interior falls outside the original
+// face, which ear-clipping's own interior-point test (PointInTriangle(),
+// detail/polygon2d.h) never allows - the same guarantee
+// LoftClosedRings()'s own end caps already rely on this exact
+// triangulator for. Shared by every "other mesh/scene exchange format"
+// n-gon loader in this file rather than reimplemented per format, so a
+// future fix to the triangulator benefits all of them at once.
+void AppendPolygonFace(ON_Mesh& raw, const std::vector<int>& face_vertex_indices) {
+  const size_t n = face_vertex_indices.size();
+  if (n <= 4) {
+    ON_MeshFace face;
+    face.vi[0] = face_vertex_indices[0];
+    face.vi[1] = face_vertex_indices[1];
+    face.vi[2] = face_vertex_indices[2];
+    face.vi[3] = (n == 4) ? face_vertex_indices[3] : face_vertex_indices[2];
+    raw.m_F.Append(face);
+    return;
+  }
+  std::vector<Point3d> ring;
+  ring.reserve(n);
+  for (int idx : face_vertex_indices) {
+    ring.push_back(Point3d(raw.m_V[idx]));
+  }
+  for (const std::array<int, 3>& tri : TriangulatePlanarRing(ring)) {
+    ON_MeshFace face;
+    face.vi[0] = face_vertex_indices[static_cast<size_t>(tri[0])];
+    face.vi[1] = face_vertex_indices[static_cast<size_t>(tri[1])];
+    face.vi[2] = face_vertex_indices[static_cast<size_t>(tri[2])];
+    face.vi[3] = face.vi[2];
+    raw.m_F.Append(face);
+  }
+}
+
+}  // namespace
+
 BoundingBox Mesh::GetBoundingBox() const {
   if (mesh_.m_V.Count() == 0) {
     throw std::invalid_argument(
@@ -1161,32 +1212,7 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
   Mesh result;
   ON_Mesh& raw = result.mesh_;
 
-  auto append_face = [&raw](const std::vector<int>& indices) {
-    if (indices.size() <= 4) {
-      ON_MeshFace face;
-      face.vi[0] = indices[0];
-      face.vi[1] = indices[1];
-      face.vi[2] = indices[2];
-      face.vi[3] = (indices.size() == 4) ? indices[3] : indices[2];
-      raw.m_F.Append(face);
-    } else {
-      // An n-gon with n > 4 doesn't fit ON_MeshFace (triangle or quad
-      // only) - fan-triangulate from the face's own first corner instead
-      // of rejecting the line outright, the same accommodation most .obj
-      // consumers make for n-gons. Exact for a convex polygon; a concave
-      // one can produce a triangle whose interior falls outside the
-      // original n-gon - a disclosed limitation of the fan approach, not
-      // something this loader detects or refuses.
-      for (size_t i = 1; i + 1 < indices.size(); ++i) {
-        ON_MeshFace face;
-        face.vi[0] = indices[0];
-        face.vi[1] = indices[i];
-        face.vi[2] = indices[i + 1];
-        face.vi[3] = face.vi[2];
-        raw.m_F.Append(face);
-      }
-    }
-  };
+  auto append_face = [&raw](const std::vector<int>& indices) { AppendPolygonFace(raw, indices); };
 
   if (!coverage_complete) {
     // No usable UV data (or an uncovered vertex breaks it for everyone) -
@@ -2111,30 +2137,7 @@ Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
       }
       indices[static_cast<size_t>(c)] = idx;
     }
-    if (n <= 4) {
-      ON_MeshFace face;
-      face.vi[0] = indices[0];
-      face.vi[1] = indices[1];
-      face.vi[2] = indices[2];
-      face.vi[3] = (n == 4) ? indices[3] : indices[2];
-      raw.m_F.Append(face);
-    } else {
-      // A genuine n-gon (5+ corners) doesn't fit ON_MeshFace (triangle or
-      // quad only) - fan-triangulate from the face's own first corner,
-      // the same accommodation LoadObj() already makes for a `.obj`
-      // n-gon `f` line. Exact for a convex polygon; a concave one can
-      // produce a triangle whose interior falls outside the original
-      // face - a disclosed limitation of the fan approach, not something
-      // this loader detects or refuses.
-      for (int c = 1; c + 1 < n; ++c) {
-        ON_MeshFace face;
-        face.vi[0] = indices[0];
-        face.vi[1] = indices[static_cast<size_t>(c)];
-        face.vi[2] = indices[static_cast<size_t>(c + 1)];
-        face.vi[3] = face.vi[2];
-        raw.m_F.Append(face);
-      }
-    }
+    AppendPolygonFace(raw, indices);
   }
 
   if (is_coff && !colors.empty()) {
@@ -2497,26 +2500,7 @@ Result Mesh::LoadVrml(const std::string& path, Mesh& out_mesh) {
       if (!ParseOffInt(tokens[i], value)) return Result::Failed;
       if (value == -1) {
         if (current_face.size() < 3) return Result::Failed;
-        if (current_face.size() <= 4) {
-          ON_MeshFace face;
-          face.vi[0] = current_face[0];
-          face.vi[1] = current_face[1];
-          face.vi[2] = current_face[2];
-          face.vi[3] = (current_face.size() == 4) ? current_face[3] : current_face[2];
-          raw.m_F.Append(face);
-        } else {
-          // A genuine n-gon (5+ indices) doesn't fit ON_MeshFace -
-          // fan-triangulate from the run's own first index, the same
-          // accommodation LoadObj()/LoadOff() already make.
-          for (size_t c = 1; c + 1 < current_face.size(); ++c) {
-            ON_MeshFace face;
-            face.vi[0] = current_face[0];
-            face.vi[1] = current_face[c];
-            face.vi[2] = current_face[c + 1];
-            face.vi[3] = face.vi[2];
-            raw.m_F.Append(face);
-          }
-        }
+        AppendPolygonFace(raw, current_face);
         current_face.clear();
         continue;
       }
@@ -2728,26 +2712,8 @@ Result Mesh::LoadCollada(const std::string& path, Mesh& out_mesh) {
       const int idx = indices[cursor + c];
       if (idx < 0 || idx >= raw.m_V.Count()) return Result::Failed;
     }
-    if (vcount <= 4) {
-      ON_MeshFace face;
-      face.vi[0] = indices[cursor];
-      face.vi[1] = indices[cursor + 1];
-      face.vi[2] = indices[cursor + 2];
-      face.vi[3] = (vcount == 4) ? indices[cursor + 3] : indices[cursor + 2];
-      raw.m_F.Append(face);
-    } else {
-      // A genuine n-gon (5+ corners) doesn't fit ON_MeshFace -
-      // fan-triangulate from the face's own first corner, the same
-      // accommodation LoadObj()/LoadOff()/LoadVrml() already make.
-      for (int c = 1; c + 1 < vcount; ++c) {
-        ON_MeshFace face;
-        face.vi[0] = indices[cursor];
-        face.vi[1] = indices[cursor + c];
-        face.vi[2] = indices[cursor + c + 1];
-        face.vi[3] = face.vi[2];
-        raw.m_F.Append(face);
-      }
-    }
+    AppendPolygonFace(raw, std::vector<int>(indices.begin() + static_cast<long>(cursor),
+                                             indices.begin() + static_cast<long>(cursor + static_cast<size_t>(vcount))));
     cursor += static_cast<size_t>(vcount);
   }
   if (cursor != indices.size()) return Result::Failed;  // <p> has indices past the last <vcount>
@@ -2904,26 +2870,7 @@ Result Mesh::LoadX3d(const std::string& path, Mesh& out_mesh) {
     for (int value : indices) {
       if (value == -1) {
         if (current_face.size() < 3) return Result::Failed;
-        if (current_face.size() <= 4) {
-          ON_MeshFace face;
-          face.vi[0] = current_face[0];
-          face.vi[1] = current_face[1];
-          face.vi[2] = current_face[2];
-          face.vi[3] = (current_face.size() == 4) ? current_face[3] : current_face[2];
-          raw.m_F.Append(face);
-        } else {
-          // A genuine n-gon (5+ indices) doesn't fit ON_MeshFace -
-          // fan-triangulate from the run's own first index, the same
-          // accommodation LoadVrml()/LoadObj()/LoadOff() already make.
-          for (size_t c = 1; c + 1 < current_face.size(); ++c) {
-            ON_MeshFace face;
-            face.vi[0] = current_face[0];
-            face.vi[1] = current_face[c];
-            face.vi[2] = current_face[c + 1];
-            face.vi[3] = face.vi[2];
-            raw.m_F.Append(face);
-          }
-        }
+        AppendPolygonFace(raw, current_face);
         current_face.clear();
         continue;
       }
@@ -3130,26 +3077,8 @@ Result Mesh::LoadUsda(const std::string& path, Mesh& out_mesh) {
       const int idx = indices[cursor + k];
       if (idx < 0 || idx >= raw.m_V.Count()) return Result::Failed;
     }
-    if (count <= 4) {
-      ON_MeshFace face;
-      face.vi[0] = indices[cursor];
-      face.vi[1] = indices[cursor + 1];
-      face.vi[2] = indices[cursor + 2];
-      face.vi[3] = (count == 4) ? indices[cursor + 3] : indices[cursor + 2];
-      raw.m_F.Append(face);
-    } else {
-      // A genuine n-gon (5+ indices) doesn't fit ON_MeshFace -
-      // fan-triangulate from the face's own first index, the same
-      // accommodation LoadVrml()/LoadX3d() already make.
-      for (int c = 1; c + 1 < count; ++c) {
-        ON_MeshFace face;
-        face.vi[0] = indices[cursor];
-        face.vi[1] = indices[cursor + c];
-        face.vi[2] = indices[cursor + c + 1];
-        face.vi[3] = face.vi[2];
-        raw.m_F.Append(face);
-      }
-    }
+    AppendPolygonFace(raw, std::vector<int>(indices.begin() + static_cast<long>(cursor),
+                                             indices.begin() + static_cast<long>(cursor + static_cast<size_t>(count))));
     cursor += count;
   }
   if (cursor != indices.size()) return Result::Failed;  // trailing indices no count claims
