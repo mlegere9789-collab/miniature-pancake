@@ -2294,6 +2294,32 @@ class Brep {
   // the overwhelmingly common case and needs no CylindricalFace argument.
   static Brep FromPlanarFaces(const std::vector<PlanarFace>& faces);
 
+  // The non-manifold-target sibling of FromMixedFaces(): identical in
+  // every respect (same inputs, same vertex welding, same edge-identity
+  // keys, same per-trim bRev3d logic, same side tables) EXCEPT that a
+  // welded edge reached by a THIRD (or later) face's loop segment is no
+  // longer refused with "an edge is shared by 3 or more faces" - that
+  // segment's trim is attached to the SAME existing ON_BrepEdge instead,
+  // so the result carries one first-class N-trim non-manifold edge (the
+  // exact shape JoinNonManifoldEdge() produces after the fact, and the
+  // one Check() reports as CheckIssue::Kind::NonManifoldEdge and
+  // SplitNonManifoldEdge()/UnjoinEdge() already heal). Each extra trim's
+  // own bRev3d comes from the same "does this face walk the edge in the
+  // edge's own stored direction" vertex comparison FromMixedFaces()
+  // already uses for an ordinary second trim - nothing new is derived.
+  // FromMixedFaces()/FromPlanarFaces() themselves are unchanged and still
+  // refuse such input, so every existing caller (the booleans' own
+  // reassembly chief among them) keeps its current, tested refusal.
+  // Still out of scope: a non-manifold VERTEX without a shared edge (two
+  // faces touching at one point) needs no special handling (the welder
+  // already shares the vertex - Check() reports NonManifoldVertex), and
+  // nothing here decides whether such a target is "sensible" - it is
+  // built as given.
+  static Brep FromMixedFacesNonManifold(const std::vector<PlanarFace>& faces,
+                                        const std::vector<CylindricalFace>& cylindrical_faces = {},
+                                        const std::vector<ConicalFace>& conical_faces = {},
+                                        const std::vector<SphericalFace>& spherical_faces = {});
+
   // One Brep holding several independent closed shells ("lumps"): every
   // lump's ON_Brep is appended (ON_Brep::Append - "appends a copy of brep
   // to this and updates indices ... Duplicates are not removed") and every
@@ -3100,8 +3126,18 @@ class Brep {
   //     (both faces already agree on which side of that shared surface
   //     is outward - required for the reused trims to combine into one
   //     consistently-oriented loop).
-  //   - both have exactly one loop and no holes (same v1 narrowing
-  //     MergeCoplanarFaces() already applies).
+  //   - each has exactly one outer loop (a single-loop face uses its own
+  //     Loop(0) exactly as before), plus zero or more ON_BrepLoop::inner
+  //     holes - a face carrying a slit/curve-on-surface/point-on-surface
+  //     loop (FindOuterLoop()'s own refusal) is skipped. Every existing
+  //     hole of either face is carried onto the merged face VERBATIM:
+  //     same edges (reused, so a curved hole edge stays exact), same
+  //     bRev3d, a duplicate of each 2D trim curve - valid unchanged
+  //     because both faces trim the same parameter space. Unlike
+  //     MergeCoplanarFaces()' AddHoleLoop()-based restoration, no affine
+  //     (u, v) map is involved, so neither planarity nor straight hole
+  //     edges are required. A hole loop holding a singular/edgeless trim
+  //     refuses the pair (left untouched).
   //   - they share EXACTLY ONE edge, with EXACTLY TWO trims on it (the
   //     same non-manifold-safe condition MergeCoplanarFaces() already
   //     applies - an edge a third face also touches is never removed).
@@ -4701,6 +4737,13 @@ class Brep {
   };
 
  private:
+  // Shared body of FromMixedFaces()/FromMixedFacesNonManifold(): the
+  // only difference is whether a third trim on one welded edge throws
+  // (false - FromMixedFaces()'s own long-standing behavior) or is built.
+  static Brep FromMixedFacesImpl(const std::vector<PlanarFace>& faces,
+                                 const std::vector<CylindricalFace>& cylindrical_faces,
+                                 const std::vector<ConicalFace>& conical_faces,
+                                 const std::vector<SphericalFace>& spherical_faces, bool allow_non_manifold_edges);
   // Clears every per-face side table (face_trim_loops_ and its siblings
   // below) - what every topology-surgery method here must do first; see
   // MergeCoplanarFaces' own comment for why.

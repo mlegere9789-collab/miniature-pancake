@@ -1574,12 +1574,97 @@ std::vector<kernel::NurbsCurve> Outlines(const RegionSet& set, const kernel::Mes
 
 enum class RegionOp { Union, Difference, Intersection, Regions };
 
+// This region's own boundary as an exact polygon (no tessellation), when
+// it came from a single already-closed, genuinely piecewise-linear curve
+// - the one lossless case kernel::PolygonBooleanPlanar (boolean.h) can
+// consume directly instead of this file's own mesh-slab pipeline below.
+// `ON_Curve::IsPolyline()` is the same "degree-1 NURBS curve or any other
+// exactly-straight-segment representation" detector
+// TryOffsetPolylineAlongNormal (dino8-kernel/src/curve.cpp) already uses
+// for the identical reason: recognizing a polyline regardless of how it
+// happens to be stored. Returns nullopt for anything else (a curved
+// closed curve - a circle, an arc-and-line fillet outline, a spline - or
+// a loop this file's own ChainOpenCurvesIntoLoops assembled out of
+// several open-curve pieces) - converting either of those to a straight-
+// edge polygon would itself be an approximation, which this function
+// deliberately refuses to do silently; the caller falls back to the
+// existing mesh-slab path in that case, unchanged. The returned polygon
+// has no closing duplicate vertex (PolygonBooleanPlanar's own
+// convention) and is wound counterclockwise as seen from `plane.zaxis`
+// (PolygonBooleanPlanar's own required input orientation) regardless of
+// which way the source curve itself was drawn.
+std::optional<std::vector<Point3d>> ExactPolygonOf(CommandContext& ctx, const Region& r, const ON_Plane& plane) {
+  if (r.source_ids.size() != 1) return std::nullopt;
+  const SceneObject* o = ctx.Doc().Find(r.source_ids[0]);
+  if (!o || o->kind != ObjectKind::Curve || !o->curve) return std::nullopt;
+  ON_SimpleArray<ON_3dPoint> pline;
+  if (!o->curve->raw().IsPolyline(&pline)) return std::nullopt;
+  const bool closed = o->curve->IsClosed();
+  const int total = pline.Count();
+  const int vcount = closed ? total - 1 : total;
+  if (vcount < 3) return std::nullopt;
+  std::vector<Point3d> pts(static_cast<size_t>(vcount));
+  for (int i = 0; i < vcount; ++i) pts[static_cast<size_t>(i)] = pline[i];
+  double area2 = 0.0;
+  for (size_t i = 0; i < pts.size(); ++i) {
+    const Point3d& p = pts[i];
+    const Point3d& q = pts[(i + 1) % pts.size()];
+    const double ux = ON_DotProduct(p - plane.origin, plane.xaxis), uy = ON_DotProduct(p - plane.origin, plane.yaxis);
+    const double vx = ON_DotProduct(q - plane.origin, plane.xaxis), vy = ON_DotProduct(q - plane.origin, plane.yaxis);
+    area2 += ux * vy - vx * uy;
+  }
+  if (area2 < 0.0) std::reverse(pts.begin(), pts.end());
+  return pts;
+}
+
 void RegionBoolean(CommandContext& ctx, const std::vector<ObjectId>& ids, RegionOp op, bool delete_input, const std::string& label) {
   std::optional<RegionSet> set = Regions(ctx, ids, label);
   if (!set) return;
   const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-4);
   std::vector<kernel::Mesh> results;
   std::string what;
+  if (op != RegionOp::Regions && set->regions.size() == 2) {
+    // Exact (non-tessellated) path: both regions are plain polygons, not
+    // a curved closed curve or an assembled open-curve loop - closes a
+    // slice of PARITY_MAP.md's "2D region / planar curve booleans"
+    // bullet, which named this command's own mesh-slab pipeline as the
+    // reason "No exact 2D curve boolean in the kernel" even though
+    // kernel::PolygonBooleanPlanar already existed and was already
+    // tested standalone, with zero callers anywhere in dino8-app. Falls
+    // through silently to the existing mesh pipeline below whenever
+    // either region isn't a plain polygon, or the kernel itself throws
+    // (a self-intersecting polygon, or any of BooleanCombinePlanar's own
+    // disclosed scope limits the prism reduction inherits).
+    std::optional<std::vector<Point3d>> poly_a = ExactPolygonOf(ctx, set->regions[0], set->plane);
+    std::optional<std::vector<Point3d>> poly_b = ExactPolygonOf(ctx, set->regions[1], set->plane);
+    if (poly_a && poly_b) {
+      const kernel::BooleanOp bop = op == RegionOp::Union ? kernel::BooleanOp::Union
+                                     : op == RegionOp::Difference ? kernel::BooleanOp::Difference
+                                                                   : kernel::BooleanOp::Intersection;
+      try {
+        std::vector<std::vector<Point3d>> loops = kernel::PolygonBooleanPlanar(*poly_a, *poly_b, set->plane, bop);
+        ctx.Doc().BeginChange(label);
+        const SceneObject* like = ctx.Doc().Find(set->regions[0].id);
+        const int layer = like ? like->layer_index : -1;
+        int made = 0;
+        for (const std::vector<Point3d>& loop : loops) {
+          std::vector<Point3d> closed_loop = loop;
+          closed_loop.push_back(loop.front());
+          SceneObject n = SceneObject::MakeCurve(PolylineCurve(closed_loop));
+          n.layer_index = layer;
+          ctx.Doc().Add(std::move(n));
+          ++made;
+        }
+        if (delete_input) for (const Region& r : set->regions) for (ObjectId sid : r.source_ids) ctx.Doc().Remove(sid);
+        const std::string what_exact = op == RegionOp::Union ? "Union" : op == RegionOp::Difference ? "Difference" : "Intersection";
+        ctx.Print(label + ": " + what_exact + " of 2 region(s) -> " + std::to_string(made) + " closed curve(s), exact (no tessellation)" +
+                   (delete_input ? ", input deleted" : ""));
+        return;
+      } catch (const std::exception&) {
+        // Fall through to the mesh pipeline below, unchanged.
+      }
+    }
+  }
   if (op == RegionOp::Regions) {
     // Every atomic region: inside the curves of subset S, outside the rest.
     const size_t n = std::min<size_t>(set->regions.size(), 6);

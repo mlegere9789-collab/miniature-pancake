@@ -493,6 +493,48 @@ Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, doubl
 enum class EmbossMode { Emboss, Deboss };
 Brep EmbossProfile(const Brep& solid, const NurbsCurve& profile, Vector3d direction, double depth, EmbossMode mode);
 
+// EmbossProfile() above, extended to a profile with one or more HOLES
+// (parity-map "Emboss/deboss" - closes this item's own disclosed "does not
+// cover ... lettering with disconnected glyph counters (an 'O' or 'A''s
+// own hole)" gap): `outer_profile` is embossed/debossed exactly like a
+// plain EmbossProfile() call, then each curve in `hole_profiles` cuts a
+// COUNTER into that result - the hole in an "O", both counters in a "B",
+// the enclosed triangle in an "A" - so the hole's own area ends up flush
+// with the solid's original surface instead of also raised/recessed by
+// the outer op.
+//
+// Not a second boolean engine or a differently-shaped tool: each hole uses
+// the SAME tool construction `outer_profile` itself used (same `mode`,
+// `direction`, `depth` - see EmbossProfile()'s own doc comment for exactly
+// how that tool is placed), just combined with the OPPOSITE boolean op -
+// Union instead of Deboss's own Difference (refilling the hole's own
+// slice of the just-cut pocket back to the surface), or Difference instead
+// of Emboss's own Union (cutting the hole's own slice back out of the
+// just-raised boss). This is an exact geometric complement, not an
+// approximation: the hole tool occupies precisely the same depth range the
+// outer tool already touched there, just restricted to the hole's own
+// smaller footprint.
+//
+// Each profile (`outer_profile` and every entry of `hole_profiles`)
+// independently inherits EmbossProfile()'s/Brep::Extrude()'s own "closed,
+// planar, star-shaped" capping requirement - a hole with a self-crossing
+// or reflex/non-star outline still isn't supported, same as the outer
+// profile's own disclosed limit. `hole_profiles` is not validated against
+// `outer_profile` itself (e.g. that every hole actually lies inside the
+// outer footprint, or that holes don't overlap each other) - an ill-formed
+// combination surfaces as whatever BooleanCombineGeneral() itself throws
+// for the resulting non-manifold geometry, the same "let the underlying
+// engine's own precondition catch it" posture MakeHole()'s family already
+// has for a similarly out-of-scope combination.
+//
+// Throws std::invalid_argument if `hole_profiles` is empty (call
+// EmbossProfile() directly for a simple profile with no counters) or if
+// any hole profile isn't closed - plus whatever EmbossProfile() itself
+// throws validating `solid`/`outer_profile`/`direction`/`depth`.
+Brep EmbossProfileWithHoles(const Brep& solid, const NurbsCurve& outer_profile,
+                             const std::vector<NurbsCurve>& hole_profiles, Vector3d direction, double depth,
+                             EmbossMode mode);
+
 // A revolved cut (Rhino/SolidWorks "Revolved Cut"/"Revolve Cut" feature,
 // parity-map "Revolved cut (RevolvedHole)"): closes this item's own
 // long-standing gap - `Brep::Revolve()` existed, but no kernel feature op

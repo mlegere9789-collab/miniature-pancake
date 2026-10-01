@@ -129,16 +129,21 @@ Color Mix(Color a, Color b, float t) {
   return Color{a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t};
 }
 
-// SetObjectDisplayMode Ghosted/X-Ray: an object carrying one of these two
-// overrides always fills at that fixed alpha, the same mode-agnostic way
-// force_wireframe/force_shaded already override the viewport's own display
-// mode - so a Ghosted-tagged object stays translucent even viewed in
-// Shaded, Rendered or any other opaque viewport mode, and vice versa for a
-// viewport that is itself already Ghosted/X-Ray (the object's own override
-// still wins, since it names an alpha rather than merely "fill/don't").
+const Color kMonochromeFillColor = Color::FromBytes(200, 200, 205);
+
+// SetObjectDisplayMode Ghosted/X-Ray/Monochrome: an object carrying one of
+// these overrides always fills at that mode's own fixed alpha, the same
+// mode-agnostic way force_wireframe/force_shaded already override the
+// viewport's own display mode - so a Ghosted-tagged object stays
+// translucent even viewed in Shaded, Rendered or any other opaque viewport
+// mode (and a Monochrome-tagged object stays fully opaque even in a
+// translucent Ghosted/X-Ray viewport), and vice versa for a viewport that
+// is itself already one of these modes (the object's own override still
+// wins, since it names an alpha rather than merely "fill/don't").
 float EffectiveFillAlpha(const SceneObject& o, float viewport_alpha) {
   if (o.force_ghosted) return kGhostedFillAlpha;
   if (o.force_xray) return kXRayFillAlpha;
+  if (o.force_monochrome) return kMonochromeFillColor.a;
   return viewport_alpha;
 }
 
@@ -384,11 +389,10 @@ void Viewport::DrawScene(GlRenderer& renderer, const FrameContext& ctx, DisplayM
   if (mode == DisplayMode::Rendered) {
     std::vector<GpuLight> lights;
     SetupLights(renderer, ctx, &lights);
-    // Light index 0 of the same list SetupLights just uploaded is the
-    // shadow-casting light (see GlRenderer::BeginShadowPass) - keeps the
-    // shadow's direction and the shading's strongest light in sync without
-    // re-deriving SetupLights' own sun/point/spot/default priority here.
-    if (!ctx.show_zbuffer && !lights.empty()) DrawShadowPass(renderer, ctx, lights[0].direction);
+    // Every light SetupLights just uploaded gets its own real shadow layer
+    // (see GlRenderer::BeginShadowPass) - a genuine per-light atlas, not
+    // just the strongest one.
+    if (!ctx.show_zbuffer && !lights.empty()) DrawShadowPass(renderer, ctx, lights);
     DrawGroundPlane(renderer, ctx);
   }
   // Clipping planes that clip this viewport cut the model (not the grid).
@@ -477,15 +481,20 @@ void Viewport::SetupLights(GlRenderer& renderer, const FrameContext& ctx, std::v
   if (out_lights) *out_lights = lights;
 }
 
-void Viewport::DrawShadowPass(GlRenderer& renderer, const FrameContext& ctx, kernel::Vector3d light_dir) {
+void Viewport::DrawShadowPass(GlRenderer& renderer, const FrameContext& ctx, const std::vector<GpuLight>& lights) {
   if (!ctx.doc) return;
   kernel::BoundingBox box;
   if (!ctx.doc->VisibleBoundingBox(box)) return;
   const kernel::Point3d center((box.min.x + box.max.x) / 2, (box.min.y + box.max.y) / 2, (box.min.z + box.max.z) / 2);
   const double radius = std::max({box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z, 1.0}) / 2;
-  if (!renderer.BeginShadowPass(light_dir, center, radius)) return;
-  DrawObjects(renderer, ctx, DisplayMode::Rendered);
-  renderer.EndShadowPass();
+  // A fresh mask every frame: a light that existed last frame but not this
+  // one must not keep shading against its old, now-stale, shadow layer.
+  renderer.ClearShadowValidity();
+  for (std::size_t i = 0; i < lights.size(); ++i) {
+    if (!renderer.BeginShadowPass(static_cast<int>(i), lights[i].direction, center, radius)) continue;
+    DrawObjects(renderer, ctx, DisplayMode::Rendered);
+    renderer.EndShadowPass();
+  }
 }
 
 void Viewport::DrawGroundPlane(GlRenderer& renderer, const FrameContext& ctx) {
@@ -1049,8 +1058,12 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       // object/layer colour.
       Color c = Color::FromBytes(205, 207, 212);
       if (rendered || !o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
-      if (style.force_white) c = Color::FromBytes(245, 245, 245);
-      else if (style.monochrome) c = Color::FromBytes(200, 200, 205);
+      // SetObjectDisplayMode Monochrome wins over both the object's own
+      // colour/material and the viewport's own style, the same mode-
+      // agnostic way the Ghosted/X-Ray overrides already win on alpha.
+      if (o.force_monochrome) c = kMonochromeFillColor;
+      else if (style.force_white) c = Color::FromBytes(245, 245, 245);
+      else if (style.monochrome) c = kMonochromeFillColor;
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
       if (o.selected) c = Mix(c, kSelectionColor, 0.55f);
       const float alpha = EffectiveFillAlpha(o, style.fill_alpha);
@@ -1092,7 +1105,11 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
         renderer.DrawTriangles(d.triangles, d.mesh_vertex_colors, alpha);
         continue;
       }
-      if (rendered) {
+      // A Monochrome-tagged object skips Rendered mode's material/texture
+      // shading entirely and falls through to the same flat, lit draw a
+      // non-Rendered viewport uses, just like Ghosted/X-Ray skip it for
+      // their own fixed-alpha fill below (via the transparent-sort branch).
+      if (rendered && !o.force_monochrome) {
         const Material m = doc.MaterialFor(o);
         if ((m.transparency > 0.001f || o.force_ghosted || o.force_xray) && !ctx.arctic) {
           // Sort key: view-space depth of the bounding-box centre.
@@ -1120,14 +1137,15 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     for (std::size_t candidate_index : render_candidates) {
       const SceneObject& o = doc.Objects()[candidate_index];
       // ShadeSelected's force_shaded and SetObjectDisplayMode's
-      // force_ghosted/force_xray all fill here - the only difference
-      // between them is the alpha EffectiveFillAlpha picks.
-      if ((!o.force_shaded && !o.force_ghosted && !o.force_xray) || !shown(o)) continue;
+      // force_ghosted/force_xray/force_monochrome all fill here - the only
+      // difference between them is the colour/alpha picked below.
+      if ((!o.force_shaded && !o.force_ghosted && !o.force_xray && !o.force_monochrome) || !shown(o)) continue;
       o.EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
       Color c = Color::FromBytes(205, 207, 212);
-      if (!o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
+      if (o.force_monochrome) c = kMonochromeFillColor;
+      else if (!o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
       if (o.selected) c = Mix(c, kSelectionColor, 0.55f);
       c.a = EffectiveFillAlpha(o, shaded_style.fill_alpha);

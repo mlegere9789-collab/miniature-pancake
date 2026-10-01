@@ -2857,6 +2857,117 @@ void TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly() {
   Check(all_cross_lumps, "every reported self-intersecting face pair spans the two different (overlapping) lumps, not two faces of the same box");
 }
 
+// PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
+// tangent / grazing contact (surfaces touching along a point or curve)"
+// bullet, named entirely `[missing]`: "There is no SSX tangency capability
+// to give partial credit for." FindSurfaceTangentContacts() closes the
+// isolated-point half of that gap.
+void TestFindSurfaceTangentContactsSphereOnPlane() {
+  using dino8::kernel::FindSurfaceTangentContacts;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::IntersectSurfaces;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SurfaceTangentContact;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-10, 10), true);
+  ground.SetExtents(1, ON_Interval(-10, 10), true);
+
+  // A sphere of radius 2 resting on the ground plane, touching it at
+  // exactly one hand-derivable point: the origin. The two surfaces never
+  // cross - no triangle pair of the ordinary mesh-seeded SSX engine
+  // actually crosses here, so IntersectSurfaces() finds nothing at all,
+  // confirming this is genuinely the gap PARITY_MAP.md names, not a
+  // redundant check.
+  const double radius = 2.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, radius), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds (resting sphere)");
+  Check(IntersectSurfaces(sphere_surface, ground, opt).empty(), "IntersectSurfaces() itself finds no crossing curve for a sphere merely tangent to a plane");
+
+  const std::vector<SurfaceTangentContact> contacts = FindSurfaceTangentContacts(sphere_surface, ground, opt);
+  Check(contacts.size() == 1, "a sphere resting on a plane reports exactly one tangent contact");
+  if (!contacts.empty()) {
+    Check(contacts[0].point.DistanceTo(Point3d(0, 0, 0)) < 1e-3, "the contact point is the hand-derivable origin");
+    Check(contacts[0].gap <= opt.tolerance, "the reported gap is within tolerance (a genuine touch, not a near-miss)");
+  }
+
+  // A sphere held well clear of the plane has no contact at all.
+  const ON_Sphere far_sphere(ON_3dPoint(0, 0, 10 * radius), radius);
+  ON_NurbsSurface far_sphere_surface;
+  Check(far_sphere.GetNurbForm(far_sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds (far sphere)");
+  Check(FindSurfaceTangentContacts(far_sphere_surface, ground, opt).empty(), "a sphere held well clear of the plane reports no tangent contact");
+
+  // A sphere pushed INTO the plane (a genuine crossing, a circle of radius
+  // sqrt(3)) must NOT also be reported as a tangent-only contact -
+  // IntersectSurfaces() already reports that crossing, which is this
+  // function's own stated "not my job" case.
+  const ON_Sphere crossing_sphere(ON_3dPoint(0, 0, radius * 0.5), radius);
+  ON_NurbsSurface crossing_sphere_surface;
+  Check(crossing_sphere.GetNurbForm(crossing_sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds (crossing sphere)");
+  Check(!IntersectSurfaces(crossing_sphere_surface, ground, opt).empty(), "a sphere pushed into the plane produces a real SSX crossing curve");
+  Check(FindSurfaceTangentContacts(crossing_sphere_surface, ground, opt).empty(),
+        "a sphere genuinely crossing the plane is not also reported as a tangent-only contact");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
+// coincident / overlapping surface regions" bullet: "IntersectSurfaces
+// still returns nothing for coincident surfaces. The only coincidence
+// handling is inside planar booleans." IntersectSurfacesOverlap() closes
+// the general-purpose-detection half of that gap.
+void TestIntersectSurfacesOverlapDetectsCoincidentRegion() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::IntersectSurfaces;
+  using dino8::kernel::IntersectSurfacesOverlap;
+  using dino8::kernel::SurfaceOverlapRegion;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.25;
+
+  // Two finite rectangles of the SAME host plane: `a` spans x, y in
+  // [-5, 5]; `b` spans x, y in [0, 10]. They genuinely coincide (lie in the
+  // same plane) over the overlapping quarter [0, 5] x [0, 5] of `a`'s own
+  // domain, and nowhere else. No triangle pair of two coplanar surfaces
+  // ever actually crosses, so IntersectSurfaces() finds nothing here either
+  // - confirming this is genuinely the gap PARITY_MAP.md names.
+  const ON_Plane shared_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  ON_PlaneSurface a(shared_plane);
+  a.SetExtents(0, ON_Interval(-5, 5), true);
+  a.SetExtents(1, ON_Interval(-5, 5), true);
+  ON_PlaneSurface b(shared_plane);
+  b.SetExtents(0, ON_Interval(0, 10), true);
+  b.SetExtents(1, ON_Interval(0, 10), true);
+  Check(IntersectSurfaces(a, b, opt).empty(), "IntersectSurfaces() itself finds no crossing curve for two coincident coplanar surfaces");
+
+  const std::vector<SurfaceOverlapRegion> regions = IntersectSurfacesOverlap(a, b, opt);
+  Check(regions.size() == 1, "two partially-overlapping coplanar surfaces report exactly one overlap region");
+  if (regions.size() == 1) {
+    const SurfaceOverlapRegion& r = regions[0];
+    Check(!r.entire_surface, "the overlap region does not cover all of a's own domain");
+    Check(std::abs(r.u0 - 0.0) < 0.5 && std::abs(r.u1 - 5.0) < 0.5, "the overlap region's own u-range matches the hand-derivable [0, 5] overlap");
+    Check(std::abs(r.v0 - 0.0) < 0.5 && std::abs(r.v1 - 5.0) < 0.5, "the overlap region's own v-range matches the hand-derivable [0, 5] overlap");
+  }
+
+  // Two surfaces with the exact same domain on the same plane coincide
+  // everywhere `a` is defined.
+  ON_PlaneSurface c(shared_plane);
+  c.SetExtents(0, ON_Interval(-5, 5), true);
+  c.SetExtents(1, ON_Interval(-5, 5), true);
+  const std::vector<SurfaceOverlapRegion> whole = IntersectSurfacesOverlap(a, c, opt);
+  Check(whole.size() == 1 && whole[0].entire_surface, "two identical coplanar surfaces report one region flagged entire_surface == true");
+
+  // Two parallel planes offset in z never coincide anywhere.
+  ON_PlaneSurface offset(ON_Plane(ON_3dPoint(0, 0, 5), ON_3dVector(0, 0, 1)));
+  offset.SetExtents(0, ON_Interval(-5, 5), true);
+  offset.SetExtents(1, ON_Interval(-5, 5), true);
+  Check(IntersectSurfacesOverlap(a, offset, opt).empty(), "two parallel, offset planes report no overlap region at all");
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Projection of curves/points onto surfaces along a direction (Project)"
 // bullet: "app ProjectCommand samples the curve and ray-casts along the
@@ -7962,6 +8073,50 @@ void TestModelMaterialExtendedFieldsRoundTrip() {
         "transparency round-trips through an actual .3dm save/load");
   Check(std::abs(full.reflectivity - 0.9) < 1e-9,
         "reflectivity round-trips through an actual .3dm save/load");
+
+  std::remove(path.c_str());
+}
+
+void TestModelMaterialTextureRoundTrips() {
+  using dino8::kernel::Color;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  // A plain relative path, not a Windows-style "C:/..." one: OpenNURBS'
+  // own ON_FileReference::SetFullPath() runs every path through
+  // ON_FileSystemPath::CleanPath(), whose own documented contract is "If
+  // the Platform is not windows, the UNC host names and volume letters
+  // are deleted" - a "C:/..." fixture would silently lose its drive
+  // letter on this (Linux) test run, failing this test over the fixture's
+  // own platform-specific path, not over AddMaterial()/MaterialAt()
+  // themselves. "textures/checker.png" has no drive letter or UNC prefix
+  // to strip, so it round-trips unchanged on every platform this suite runs on.
+  const std::string texture_path = "textures/checker.png";
+
+  Model model;
+  const int untextured_index = model.AddMaterial("PlainRed", Color{200, 20, 20});
+  const int textured_index =
+      model.AddMaterial("Checkerboard", Color{255, 255, 255}, std::nullopt, std::nullopt,
+                         std::nullopt, std::nullopt, std::nullopt, texture_path);
+
+  Check(!model.MaterialAt(untextured_index).texture_filename.has_value(),
+        "a material added with no texture_filename reports std::nullopt, not an empty string "
+        "standing in for 'no texture'");
+  Check(model.MaterialAt(textured_index).texture_filename == texture_path,
+        "a material's texture_filename reads back exactly, in memory before any save");
+
+  const std::string path = "dino8_kernel_model_material_texture_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  Check(!loaded.MaterialAt(untextured_index).texture_filename.has_value(),
+        "the untextured material still reports std::nullopt after a real .3dm save/reload");
+  Check(loaded.MaterialAt(textured_index).texture_filename == texture_path,
+        "the textured material's filename round-trips exactly through a real .3dm save/reload");
+  Check(loaded.MaterialAt(textured_index).diffuse_color.r == 255,
+        "adding a texture_filename doesn't disturb this same call's own diffuse_color");
 
   std::remove(path.c_str());
 }
@@ -20990,6 +21145,156 @@ void TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane() {
   }
 }
 
+// Closes PARITY_MAP.md's own "SubD extraordinary-vertex limit-tangent
+// quality — semi-sharp edge handling" backlog item: before this pass,
+// ExactVertexCorner()'s call to ON_SubDVertex::GetSurfacePoint() silently
+// ignored any semi-sharp (finite, sub-MaximumValue) weight on an incident
+// Smooth-tagged edge, since GetSurfacePoint()'s own sector classification
+// only ever reads edge TAGS, never Sharpness()/EndSharpness() - verified
+// directly against OpenNURBS' own opennurbs_subd_eval.cpp
+// (GetSectorLimitPointHelper -> ON_SubDSectorType::Create), not assumed.
+void TestSubDEvaluateFaceExtraordinaryCornerHandlesSemiSharpEdge() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDSurfacePoint;
+
+  // Same level-1 cube fixture TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane
+  // uses: every original cube corner is a valence-3 extraordinary vertex
+  // after one level of Catmull-Clark refinement, with exactly 3 incident
+  // edges each.
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  SubD subd = SubD::FromControlMesh(cube);
+  subd.Subdivide(1);
+
+  const ON_SubDFace* target = nullptr;
+  int irregular_corner = -1;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr && target == nullptr; f = fit.NextFace()) {
+    if (f->EdgeCount() != 4) continue;
+    int irregular_count = 0, irregular_idx = -1;
+    bool all_smooth = true;
+    for (unsigned int i = 0; i < 4; ++i) {
+      const ON_SubDVertex* v = f->Vertex(i);
+      if (!v || !v->IsSmooth()) all_smooth = false;
+      if (!v || v->EdgeCount() != 4) {
+        ++irregular_count;
+        irregular_idx = static_cast<int>(i);
+      }
+    }
+    if (all_smooth && irregular_count == 1) {
+      target = f;
+      irregular_corner = irregular_idx;
+    }
+  }
+  Check(target != nullptr,
+        "found a level-1 cube face with exactly one still-extraordinary (valence-3) corner");
+
+  const unsigned int face_id = target->FaceId();
+  const double corner_u[4] = {0.0, 1.0, 1.0, 0.0};
+  const double corner_v[4] = {0.0, 0.0, 1.0, 1.0};
+  const int k = irregular_corner;
+
+  const ON_SubDVertex* ev = target->Vertex(static_cast<unsigned int>(k));
+  Check(ev != nullptr && ev->EdgeCount() == 3, "the extraordinary corner vertex has valence 3");
+  const ON_3dPoint original_corner = ev->ControlNetPoint();
+
+  const ON_SubDEdge* sharp_edge = nullptr;
+  for (unsigned int i = 0; i < ev->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = ev->Edge(i);
+    if (e != nullptr && e->IsSmooth()) {
+      sharp_edge = e;
+      break;
+    }
+  }
+  Check(sharp_edge != nullptr, "the extraordinary vertex has a smooth (non-boundary) edge to "
+                               "make semi-sharp");
+  const ON_SubDVertex* other_end = sharp_edge->OtherEndVertex(ev);
+  const Point3d p0 = ev->ControlNetPoint();
+  const Point3d p1 = other_end->ControlNetPoint();
+
+  // Baseline: zero sharpness anywhere, the pre-existing (and, for the
+  // zero-sharpness case, still correct) eigenbasis answer.
+  const SubDSurfacePoint baseline = subd.EvaluateFace(face_id, corner_u[k], corner_v[k]);
+  Check(baseline.exact, "baseline corner evaluation reports exact");
+
+  Check(subd.SetEdgeSharpness(p0, p1, 1.0, 1e-9), "SetEdgeSharpness(1.0) succeeds on this edge");
+  const SubDSurfacePoint sharp_low = subd.EvaluateFace(face_id, corner_u[k], corner_v[k]);
+  Check(sharp_low.exact, "semi-sharp corner evaluation still reports exact");
+
+  const double kMax = ON_SubDEdgeSharpness::MaximumValue;  // 4.0
+  Check(subd.SetEdgeSharpness(p0, p1, kMax, 1e-9), "SetEdgeSharpness(MaximumValue) succeeds");
+  const SubDSurfacePoint sharp_high = subd.EvaluateFace(face_id, corner_u[k], corner_v[k]);
+  Check(sharp_high.exact, "maximally-semi-sharp corner evaluation still reports exact");
+
+  const double d_low = baseline.position.DistanceTo(sharp_low.position);
+  const double d_high = baseline.position.DistanceTo(sharp_high.position);
+  Check(d_low > 1e-6,
+        "a semi-sharp incident edge genuinely moves the corner's own exact limit point away "
+        "from the plain-smooth eigenbasis answer - proving the fix actually reads the "
+        "sharpness, where ON_SubDVertex::GetSurfacePoint()'s own sector-type classification "
+        "alone would silently ignore it");
+  Check(d_high > d_low,
+        "a higher stored sharpness weight pulls the limit point further from the smooth "
+        "baseline than a lower one - the effect scales with the stored weight rather than "
+        "being a fixed on/off perturbation");
+
+  // Independent cross-check using only ALREADY-TESTED public API (not
+  // ExactVertexCorner()'s own internals): a MaximumValue (4.0) semi-sharp
+  // edge takes exactly ceil(4.0) = 4 real SubD::Subdivide() calls to decay
+  // to plain smooth (ON_SubDEdgeSharpness::Subdivided()'s own
+  // decrement-by-1.0-per-level rule - see SetEdgeSharpness()'s own doc
+  // comment). At that point every one of the tracked vertex's own
+  // incident edges is ordinary smooth, so calling
+  // ON_SubDVertex::GetSurfacePoint() directly on it - with no decay logic
+  // of this test's or ExactVertexCorner()'s own involved - is already the
+  // exact closed-form answer, independently of how EvaluateFace() itself
+  // got there. The descendant is tracked by nearest-original-corner
+  // position among same-valence (3) vertices: the cube's 8 corners start
+  // more than 2 apart (edge length 2) while each level's own smoothing
+  // displacement is a small fraction of that (TestSubDFromBoxSubdivides
+  // ToExactCatmullClarkCounts's own measured level-2 volume shrink, 8 ->
+  // 2.80, confirms the displacement is substantial but not enough to
+  // cross half that gap), so nearest-corner identification is unambiguous.
+  SubD decayed = subd;  // already carries the MaximumValue sharpness set above
+  decayed.Subdivide(4);
+
+  const ON_SubDVertex* tracked = nullptr;
+  double best_distance = -1.0;
+  ON_SubDVertexIterator vit = decayed.raw().VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+    if (v->EdgeCount() != 3) continue;  // extraordinary vertices alone keep valence 3 forever
+    const double d = v->ControlNetPoint().DistanceTo(original_corner);
+    if (tracked == nullptr || d < best_distance) {
+      tracked = v;
+      best_distance = d;
+    }
+  }
+  Check(tracked != nullptr, "found the same extraordinary vertex's own descendant 4 levels later");
+
+  double max_residual_sharpness = 0.0;
+  for (unsigned int i = 0; i < tracked->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = tracked->Edge(i);
+    if (e != nullptr && e->IsSmooth()) {
+      max_residual_sharpness = std::max(max_residual_sharpness, e->EndSharpness(tracked));
+    }
+  }
+  Check(max_residual_sharpness == 0.0,
+        "4 levels fully decays a MaximumValue (4.0) semi-sharp edge to plain smooth (0), "
+        "confirmed directly on the tracked descendant rather than assumed");
+
+  ON_SubDSectorSurfacePoint reference_limit;
+  Check(tracked->GetSurfacePoint(tracked->Face(0), true, reference_limit),
+        "GetSurfacePoint succeeds directly on the fully-decayed descendant vertex");
+  const double cross_check_distance = sharp_high.position.DistanceTo(reference_limit.Point());
+  Check(cross_check_distance < 1e-6,
+        "EvaluateFace()'s own corner position for the MaximumValue semi-sharp edge matches, to "
+        "within numerical tolerance, an independent reference obtained by actually running 4 "
+        "real SubD::Subdivide() calls (a separate, already-tested code path) and reading the "
+        "fully-decayed descendant's own closed-form limit point directly - not merely "
+        "self-consistent with ExactVertexCorner()'s own internals");
+}
+
 void TestSubDEvaluateFaceThrowsOnBadInput() {
   using dino8::kernel::Mesh;
   using dino8::kernel::SubD;
@@ -23045,6 +23350,62 @@ void TestSubDBooleanToSubDPropagatesBooleanFailure() {
   Check(threw,
         "SubD::BooleanToSubD throws std::runtime_error when an operand's ToApproximateMesh() is "
         "open, the same precondition Boolean() itself already enforces");
+}
+
+// Closes part of PARITY_MAP.md's own "SubD boolean operations" gap ("every
+// face a raw triangle... no quad-dominant remeshing"): BooleanToSubD() now
+// runs the boolean mesh through the already-existing, already-tested
+// Mesh::TrisToQuads() before FromControlMesh() sees it, so the away-from-
+// the-cut faces of two disjoint box operands - each one a Manifold-
+// triangulated copy of an original quad face - recombine back into actual
+// quads in the returned SubD's own control cage, rather than staying two
+// triangles forever.
+void TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Same disjoint-box fixture as TestSubDBooleanUnionOfDisjointBoxesSumsVolumes:
+  // two box operands with NO shared boundary at all, so every one of
+  // Manifold's own output faces is an untouched copy of an original box
+  // face (split into 2 triangles), never genuinely re-triangulated at a
+  // cut - the case TrisToQuads()'s own doc comment names as where it
+  // actually helps.
+  const SubD a = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+  const SubD b = SubD::FromControlMesh(MakeQuadBoxMesh(5, 0, 0, 7, 2, 2));
+
+  const SubD with_quads = a.BooleanToSubD(b, BooleanOp::Union);
+
+  // Independent reference: the exact same boolean mesh, built into a SubD
+  // the OLD way (no TrisToQuads() step) - proves the comparison below is
+  // against what this method used to return, not a strawman.
+  const Mesh raw_result = a.Boolean(b, BooleanOp::Union);
+  const SubD without_quads = SubD::FromControlMesh(raw_result);
+
+  Check(without_quads.FaceCount() == 24,
+        "sanity: two disjoint boxes' raw triangulated boolean result is 2 boxes x 6 faces x 2 "
+        "triangles = 24 triangles, with no quad recombination at all");
+  Check(with_quads.FaceCount() == 12,
+        "BooleanToSubD()'s own TrisToQuads() pass recombines every one of the 24 raw triangles "
+        "back into the 12 original box faces (2 boxes x 6 faces), since none of them touch a "
+        "cut - the exact 2-to-1 reduction TestMeshTrisToQuadsRecombinesTessellatedBoxFaces "
+        "already proves for a single box");
+  Check(with_quads.FaceCount() < without_quads.FaceCount(),
+        "the quad-recombined control cage has strictly fewer faces than the raw triangulated one");
+
+  Check(std::abs(with_quads.ToApproximateMesh().Volume() - 16.0) < 1e-9,
+        "recombining triangles into quads before FromControlMesh() does not change the boolean "
+        "result's own volume (still the exact disjoint-union sum, 8+8=16)");
+  Check(with_quads.ToApproximateMesh().IsClosedManifold(),
+        "the quad-recombined control cage is still a genuine closed manifold, not just a "
+        "plausible-looking face count");
+
+  SubD further = with_quads;
+  further.Subdivide(1);
+  Check(std::abs(further.ToApproximateMesh().Volume() - 16.0) >
+            1e-9 /* strictly different, not necessarily smaller for a 2-body union */,
+        "the quad-recombined cage is a genuine, further-subdividable SubD control net (a real "
+        "Catmull-Clark refinement actually changes the shape), not a frozen copy");
 }
 
 void TestMeshComputeVertexNormals() {
@@ -26349,6 +26710,117 @@ void TestMeshLoadFbxRejectsMalformedFiles() {
   std::remove(short_run_path.c_str());
   std::remove(oob_index_path.c_str());
   std::remove(unterminated_path.c_str());
+}
+
+void TestMeshSaveDxfRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence
+  // names DXF as app-only ("PLY has a kernel API; STEP/IGES/DXF ... remain
+  // app-only Document entry points").
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_dxf_test.dxf";
+  Check(box.SaveDxf(path) == Result::Ok, "Mesh::SaveDxf succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .dxf file SaveDxf wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_text.find("2\nENTITIES") != std::string::npos, "the file declares a real ENTITIES section");
+  const size_t face_count = [&] {
+    size_t count = 0, pos = 0;
+    while ((pos = file_text.find("0\n3DFACE", pos)) != std::string::npos) { ++count; pos += 1; }
+    return count;
+  }();
+  Check(face_count == 6, "exactly one 3DFACE entity per mesh face (6 for the box), none split");
+
+  Mesh reloaded;
+  Check(Mesh::LoadDxf(path, reloaded) == Result::Ok, "Mesh::LoadDxf succeeds on SaveDxf()'s own output");
+  Check(reloaded.FaceCount() == box.FaceCount(), "the reloaded mesh has the same 6 faces as the original");
+  Check(reloaded.raw().m_F[0].IsQuad(),
+        "the reloaded first face is still a genuine quad - 3DFACE is natively quad-capable, so a quad "
+        "isn't split the way an all-triangle format would require");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-6,
+        "the reloaded mesh's volume exactly matches the original");
+  std::remove(path.c_str());
+
+  // A hand-written file (not SaveDxf()'s own output) exercising a genuine
+  // triangle (third and fourth corners identical, DXF's own documented
+  // convention) and a differently-ordered/padded set of group codes, the
+  // way a real-world DXF writer might lay them out.
+  const std::string hand_written_path = "dino8_kernel_mesh_dxf_test_hand_written.dxf";
+  {
+    std::ofstream out(hand_written_path);
+    out << "  0\nSECTION\n  2\nENTITIES\n";
+    out << "  0\n3DFACE\n  8\n0\n";
+    out << " 10\n0.0\n 20\n0.0\n 30\n0.0\n";
+    out << " 11\n2.0\n 21\n0.0\n 31\n0.0\n";
+    out << " 12\n0.0\n 22\n2.0\n 32\n0.0\n";
+    out << " 13\n0.0\n 23\n2.0\n 33\n0.0\n";  // repeats corner 2 - a triangle
+    out << "  0\nENDSEC\n  0\nEOF\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadDxf(hand_written_path, hand_written) == Result::Ok,
+        "LoadDxf succeeds on a hand-written file with padded group-code fields");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the repeated third/fourth corner collapses to a genuine 3-vertex triangle, not a degenerate quad");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(!tri.IsQuad() && tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "the hand-written triangle's corners read back exactly in order");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadDxfRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_dxf_test_does_not_exist.dxf";
+  Mesh out;
+  Check(Mesh::LoadDxf(missing_path, out) == Result::Failed, "LoadDxf fails on a file that doesn't exist");
+
+  const std::string no_entities_path = "dino8_kernel_mesh_dxf_test_no_entities.dxf";
+  {
+    std::ofstream bad(no_entities_path);
+    // A HEADER section only - no ENTITIES section anywhere.
+    bad << "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n0\nENDSEC\n0\nEOF\n";
+  }
+  Check(Mesh::LoadDxf(no_entities_path, out) == Result::Failed,
+        "LoadDxf fails on a file with no ENTITIES section at all");
+
+  const std::string missing_coord_path = "dino8_kernel_mesh_dxf_test_missing_coord.dxf";
+  {
+    std::ofstream bad(missing_coord_path);
+    // A 3DFACE missing its own 33 (corner 3's z) group code entirely.
+    bad << "0\nSECTION\n2\nENTITIES\n0\n3DFACE\n8\n0\n"
+        << "10\n0\n20\n0\n30\n0\n11\n1\n21\n0\n31\n0\n12\n0\n22\n1\n32\n0\n13\n0\n23\n1\n"
+        << "0\nENDSEC\n0\nEOF\n";
+  }
+  Check(Mesh::LoadDxf(missing_coord_path, out) == Result::Failed,
+        "LoadDxf fails on a 3DFACE missing one of its twelve required coordinate group codes");
+
+  const std::string non_numeric_path = "dino8_kernel_mesh_dxf_test_non_numeric.dxf";
+  {
+    std::ofstream bad(non_numeric_path);
+    bad << "0\nSECTION\n2\nENTITIES\n0\n3DFACE\n8\n0\n"
+        << "10\nnot_a_number\n20\n0\n30\n0\n11\n1\n21\n0\n31\n0\n12\n0\n22\n1\n32\n0\n13\n0\n23\n1\n33\n0\n"
+        << "0\nENDSEC\n0\nEOF\n";
+  }
+  Check(Mesh::LoadDxf(non_numeric_path, out) == Result::Failed,
+        "LoadDxf fails on a coordinate value that doesn't parse as a number");
+
+  const std::string truncated_path = "dino8_kernel_mesh_dxf_test_truncated.dxf";
+  {
+    std::ofstream bad(truncated_path);
+    // The file ends mid-entity, before even reaching corner 1.
+    bad << "0\nSECTION\n2\nENTITIES\n0\n3DFACE\n8\n0\n10\n0\n20\n0\n30\n0\n";
+  }
+  Check(Mesh::LoadDxf(truncated_path, out) == Result::Failed,
+        "LoadDxf fails on a file truncated before its one 3DFACE entity's own closing 0-code");
+
+  std::remove(no_entities_path.c_str());
+  std::remove(missing_coord_path.c_str());
+  std::remove(non_numeric_path.c_str());
+  std::remove(truncated_path.c_str());
 }
 
 void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
@@ -35434,6 +35906,176 @@ void TestFromMixedFacesRejectsNonManifoldEdge() {
   Check(threw,
         "FromMixedFaces rejects a non-manifold edge (3 faces sharing the same boundary "
         "segment) rather than silently misbuilding a third trim onto an already-mated edge");
+}
+
+// `page_count` unit-square planar "pages" hinged on the one common spine
+// (0,0,0)-(0,0,1), page i swung to angle i*2*pi/page_count about the z
+// axis - a genuine non-manifold fan no manifold factory can build. Pages
+// alternate their loop winding (and so their plane normal): an even page
+// walks the spine top->bottom, an odd page bottom->top, so the spine's
+// trims fall into both TrimWalksMaterialLeft() classes - the same mixed
+// false/true/false bRev3d shape BuildNonManifoldEdgeBook() hand-sets, but
+// derived here purely from each face's own winding by
+// FromMixedFacesNonManifold()'s ordinary edge-reuse logic.
+std::vector<dino8::kernel::Brep::PlanarFace> NonManifoldFanPages(int page_count) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  std::vector<Brep::PlanarFace> pages;
+  for (int i = 0; i < page_count; ++i) {
+    const double theta = i * (2.0 * M_PI / page_count);
+    const Point3d d(std::cos(theta), std::sin(theta), 0.0);
+    const Point3d bottom(0, 0, 0), top(0, 0, 1), d_top(d.x, d.y, 1.0);
+    Brep::PlanarFace f;
+    // (bottom -> d -> d_top -> top) is CCW about d x z.
+    const ON_3dVector n = ON_CrossProduct(ON_3dVector(d.x, d.y, 0.0), ON_3dVector(0, 0, 1));
+    if (i % 2 == 0) {
+      f.loop = {bottom, d, d_top, top};
+      f.plane = ON_Plane(bottom, n);
+    } else {
+      f.loop = {top, d_top, d, bottom};
+      f.plane = ON_Plane(bottom, -n);
+    }
+    pages.push_back(f);
+  }
+  return pages;
+}
+
+// Brep::FromMixedFacesNonManifold() - the "hand the kernel a non-manifold
+// TARGET shape and have it build a first-class non-manifold Brep in one
+// call" gap: the same 3-page fan FromMixedFaces() refuses (see
+// TestFromMixedFacesRejectsNonManifoldEdge above) is built with all three
+// trims on ONE spine edge, Check() names exactly that edge with its own
+// trim count and nothing else, and the existing SplitNonManifoldEdge()
+// heal works on it exactly as on the hand-built book fixture.
+void TestFromMixedFacesNonManifoldBuildsThreePageFan() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  const std::vector<Brep::PlanarFace> pages = NonManifoldFanPages(3);
+
+  bool strict_threw = false;
+  try {
+    Brep::FromPlanarFaces(pages);
+  } catch (const std::invalid_argument& e) {
+    strict_threw = std::string(e.what()).find("shared by 3 or more faces") != std::string::npos;
+  }
+  Check(strict_threw, "FromPlanarFaces()/FromMixedFaces() still refuse the 3-page fan - the strict entry points "
+                      "are unchanged");
+
+  Brep fan = Brep::FromMixedFacesNonManifold(pages);
+  const ON_Brep& b = fan.raw();
+  Check(fan.FaceCount() == 3, "FromMixedFacesNonManifold builds all 3 pages");
+  Check(b.m_E.Count() == 10, "10 edges: 1 shared spine + 3 pages * 3 own sides (the spine is NOT duplicated)");
+  Check(b.m_V.Count() == 8, "8 vertices: 2 spine ends welded once + 3 pages * 2 outer corners");
+
+  int spine = -1;
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+    if (b.m_E[ei].TrimCount() == 3) {
+      Check(spine < 0, "only one edge carries 3 trims");
+      spine = ei;
+    } else {
+      Check(b.m_E[ei].TrimCount() == 1, "every other edge is an ordinary single-trim page side");
+    }
+  }
+  Check(spine >= 0, "the spine edge carries all 3 pages' trims");
+  if (spine < 0) return;
+  const ON_3dPoint s0 = b.m_V[b.m_E[spine].m_vi[0]].point, s1 = b.m_V[b.m_E[spine].m_vi[1]].point;
+  Check(std::min(s0.DistanceTo(ON_3dPoint(0, 0, 0)), s0.DistanceTo(ON_3dPoint(0, 0, 1))) < 1e-12 &&
+            std::min(s1.DistanceTo(ON_3dPoint(0, 0, 0)), s1.DistanceTo(ON_3dPoint(0, 0, 1))) < 1e-12 &&
+            s0.DistanceTo(s1) > 0.5,
+        "the 3-trim edge really is the spine (0,0,0)-(0,0,1)");
+
+  // Each trim's own bRev3d matches its own face's winding: the even pages
+  // walk top->bottom, the odd page bottom->top, so exactly the trims of
+  // one walking direction agree with the edge's own stored direction.
+  int forward = 0, reversed = 0;
+  for (int k = 0; k < 3; ++k) {
+    const ON_BrepTrim& t = b.m_T[b.m_E[spine].m_ti[k]];
+    const int walk_start = t.m_bRev3d ? b.m_E[spine].m_vi[1] : b.m_E[spine].m_vi[0];
+    const bool walks_down = b.m_V[walk_start].point.z > 0.5;
+    const bool even_page = (t.FaceIndexOf() % 2) == 0;
+    Check(walks_down == even_page, "each spine trim's bRev3d makes it walk the spine in its own page's loop direction");
+    (t.m_bRev3d ? reversed : forward) += 1;
+  }
+  Check(forward == 2 && reversed == 1, "two pages agree with the spine's stored direction, one opposes it");
+
+  ON_TextLog log;
+  Check(b.IsValid(&log), "the non-manifold fan is otherwise a valid ON_Brep");
+
+  const Brep::CheckReport before = fan.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1, "Check() reports exactly one NonManifoldEdge");
+  for (const Brep::CheckIssue& issue : before.issues) {
+    if (issue.kind == Brep::CheckIssue::Kind::NonManifoldEdge) {
+      Check(issue.index == spine && issue.other_index == 3, "...naming the spine itself and its trim count (3)");
+    }
+  }
+  Check(before.Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0,
+        "no false NonManifoldVertex at the spine ends - the pages are connected through the spine edge");
+  Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 9, "the 9 page sides are naked, nothing else");
+  Check(before.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+        "no InconsistentFaceOrientation false positive on the 3-trim edge");
+
+  // The existing heal on this newly constructible shape.
+  Check(fan.SplitNonManifoldEdge(spine) == Result::Ok, "SplitNonManifoldEdge() heals the constructed spine");
+  Check(fan.raw().m_E.Count() == 11, "one new edge for the odd trim out (10 -> 11)");
+  Check(fan.raw().m_E[spine].TrimCount() == 2, "the spine keeps exactly one opposite-direction manifold pair");
+  const Brep::CheckReport after = fan.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0, "no non-manifold edge remains after the heal");
+  Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 10, "9 page sides + the odd trim's own new naked copy");
+  Check(after.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+        "the surviving pair is well-oriented in Check()'s own sense");
+  Check(fan.raw().IsValid(), "still a valid ON_Brep after the heal");
+}
+
+// N > 3: a 4-page alternating fan puts 4 trims on the one spine, two of
+// each walking direction - SplitNonManifoldEdge() then splits it into two
+// genuine manifold pairs with no naked leftover. Also confirms an ordinary
+// manifold input goes through FromMixedFacesNonManifold() identically to
+// FromPlanarFaces() (it only ever differs where the strict call throws).
+void TestFromMixedFacesNonManifoldBuildsFourPageFanAndMatchesStrictOnManifoldInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  Brep fan = Brep::FromMixedFacesNonManifold(NonManifoldFanPages(4));
+  Check(fan.FaceCount() == 4 && fan.raw().m_E.Count() == 13,
+        "4 pages: 13 edges (1 shared spine + 4 * 3 own sides)");
+  int spine = -1;
+  for (int ei = 0; ei < fan.raw().m_E.Count(); ++ei) {
+    if (fan.raw().m_E[ei].TrimCount() == 4) spine = ei;
+  }
+  Check(spine >= 0, "the spine carries all 4 trims");
+  const Brep::CheckReport before = fan.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1 &&
+            before.Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0,
+        "one NonManifoldEdge, no NonManifoldVertex");
+  if (spine >= 0) {
+    Check(fan.SplitNonManifoldEdge(spine) == Result::Ok, "SplitNonManifoldEdge() heals the 4-trim spine");
+  }
+  const Brep::CheckReport after = fan.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0 &&
+            after.Count(Brep::CheckIssue::Kind::NakedEdge) == 12 &&
+            after.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+        "two well-oriented pairs, no leftover naked copy: only the 12 page sides are naked");
+  Check(fan.raw().m_E.Count() == 14, "exactly one duplicate edge for the second pair (13 -> 14)");
+
+  const std::vector<Brep::PlanarFace> box_faces = CheckHealBoxFaces();
+  Brep strict = Brep::FromPlanarFaces(box_faces);
+  Brep relaxed = Brep::FromMixedFacesNonManifold(box_faces);
+  Check(relaxed.FaceCount() == strict.FaceCount() && relaxed.raw().m_E.Count() == strict.raw().m_E.Count() &&
+            relaxed.raw().m_V.Count() == strict.raw().m_V.Count() && relaxed.raw().m_T.Count() == strict.raw().m_T.Count(),
+        "a manifold box builds with identical face/edge/vertex/trim counts through either entry point");
+  bool same_trims = true;
+  for (int ti = 0; ti < strict.raw().m_T.Count(); ++ti) {
+    if (strict.raw().m_T[ti].m_ei != relaxed.raw().m_T[ti].m_ei ||
+        strict.raw().m_T[ti].m_bRev3d != relaxed.raw().m_T[ti].m_bRev3d) {
+      same_trims = false;
+    }
+  }
+  Check(same_trims, "...trim-for-trim the same edge assignment and bRev3d");
+  const Brep::CheckReport box_report = relaxed.Check();
+  Check(box_report.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0 &&
+            box_report.Count(Brep::CheckIssue::Kind::NakedEdge) == 0,
+        "the manifold box built through the non-manifold entry point is still a closed manifold");
 }
 
 // The strongest check this feature's own spec calls for: build a Brep
@@ -46203,6 +46845,213 @@ void TestMergeSameSurfaceFacesLeavesDistinctCoplanarSurfacesUntouched() {
                                         "confirming the two methods are genuinely complementary, not overlapping");
 }
 
+// Cuts a real ON_BrepLoop::inner hole into face 0 of
+// BuildTwoFaceCylinderFixture(): the (u, v) rectangle spanning angles
+// [ang0, ang1] and heights [h0, h1], whose two constant-height sides are
+// genuine circular arcs (the cylinder's own IsoCurve(0, v)) and whose two
+// constant-angle sides are straight rulings - a CURVED-edged hole on a
+// NON-planar face, both of which MergeCoplanarFaces()' AddHoleLoop()-based
+// hole restoration refuses. The inner loop runs clockwise in (u, v).
+// Returns the 4 new hole edge indices.
+std::vector<int> AddCylinderFaceHole(dino8::kernel::Brep& brep, double radius, double ang0, double ang1, double h0,
+                                     double h1) {
+  ON_Brep& raw = brep.raw();
+  const ON_Surface* surface = raw.m_F[0].SurfaceOf();
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  double ua = 0.0, ub = 0.0;
+  if (!circle.GetNurbFormParameterFromRadian(ang0, &ua) || !circle.GetNurbFormParameterFromRadian(ang1, &ub)) {
+    throw std::runtime_error("AddCylinderFaceHole: GetNurbFormParameterFromRadian failed");
+  }
+  const ON_2dPoint uv[4] = {ON_2dPoint(ua, h0), ON_2dPoint(ua, h1), ON_2dPoint(ub, h1), ON_2dPoint(ub, h0)};  // clockwise in (u, v)
+  int vid[4];
+  for (int k = 0; k < 4; ++k) vid[k] = raw.NewVertex(surface->PointAt(uv[k].x, uv[k].y), 0.0).m_vertex_index;
+  const int loop_index = raw.NewLoop(ON_BrepLoop::inner, raw.m_F[0]).m_loop_index;
+  std::vector<int> edges;
+  for (int k = 0; k < 4; ++k) {
+    const ON_2dPoint a = uv[k], b = uv[(k + 1) % 4];
+    const bool along_u = (a.y == b.y);
+    ON_Curve* iso = along_u ? surface->IsoCurve(0, a.y) : surface->IsoCurve(1, a.x);
+    iso->Trim(along_u ? ON_Interval(std::min(a.x, b.x), std::max(a.x, b.x))
+                      : ON_Interval(std::min(a.y, b.y), std::max(a.y, b.y)));
+    if (along_u ? (a.x > b.x) : (a.y > b.y)) iso->Reverse();
+    const int c3i = raw.AddEdgeCurve(iso);
+    const int ei = raw.NewEdge(raw.m_V[vid[k]], raw.m_V[vid[(k + 1) % 4]], c3i).m_edge_index;
+    raw.m_E[ei].m_tolerance = 0.0;
+    auto* c2 = new ON_LineCurve(a, b);
+    c2->SetDomain(0.0, 1.0);
+    const int c2i = raw.AddTrimCurve(c2);
+    ON_BrepTrim& trim = raw.NewTrim(raw.m_E[ei], false, raw.m_L[loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    edges.push_back(ei);
+  }
+  raw.SetTrimIsoFlags();
+  raw.SetTolerancesBoxesAndFlags();
+  for (int i = 0; i < raw.m_E.Count(); ++i) {
+    ON_BrepEdge& e = raw.m_E[i];
+    if (e.m_edge_index >= 0 && !(e.m_tolerance >= 0.0)) e.m_tolerance = 0.0;
+  }
+  return edges;
+}
+
+// Signed (u, v)-space area enclosed by a face's loops (outer positive,
+// holes negative), from each trim's own 2D start point - exact for the
+// straight-in-(u, v) trims these cylinder fixtures use. The (u, v) region a
+// face covers is what a same-surface merge must preserve exactly.
+double FaceUvSignedArea(const ON_Brep& b, int face_index) {
+  double area = 0.0;
+  const ON_BrepFace& f = b.m_F[face_index];
+  for (int li = 0; li < f.LoopCount(); ++li) {
+    const ON_BrepLoop* l = f.Loop(li);
+    const int n = l->TrimCount();
+    for (int k = 0; k < n; ++k) {
+      const ON_3dPoint p = l->Trim(k)->PointAtStart();
+      const ON_3dPoint q = l->Trim((k + 1) % n)->PointAtStart();
+      area += 0.5 * (p.x * q.y - q.x * p.y);
+    }
+  }
+  return area;
+}
+
+// MergeSameSurfaceFaces() now carries an existing hole across the merge
+// instead of skipping a holed face outright: the hole loop's own edges
+// (two exact arcs, two rulings) are reused verbatim on the merged face,
+// which covers exactly the same (u, v) region the two source faces did.
+// (The region is checked in (u, v) and by 3D hole-corner identity, not by
+// tessellated area: this kernel's tessellators do not trim a hole out of
+// a curved face exactly - TessellateAdaptive() drops a holed cylinder
+// face entirely and Tessellate() falls back to whole-cell clipping, both
+// already true BEFORE the merge, so a mesh area would test the
+// tessellator, not the merge.)
+void TestMergeSameSurfaceFacesCarriesCurvedHoleOnCylinder() {
+  using dino8::kernel::Brep;
+
+  const double radius = 2.0, height = 3.0, total_angle = 2.5, split_angle = 1.0;
+  const double ang0 = 0.3, ang1 = 0.7, h0 = 1.0, h1 = 2.0;
+  Brep tube = BuildTwoFaceCylinderFixture(radius, height, total_angle, split_angle);
+  const std::vector<int> hole_edges = AddCylinderFaceHole(tube, radius, ang0, ang1, h0, h1);
+  ON_TextLog log_before;
+  Check(tube.raw().IsValid(&log_before), "setup: the holed two-patch cylinder is a valid ON_Brep");
+  Check(tube.raw().m_F[0].LoopCount() == 2 && tube.raw().m_F[1].LoopCount() == 1,
+        "setup: face 0 has an outer loop plus one real inner hole loop");
+  int arc_edges = 0;
+  for (const int ei : hole_edges) {
+    if (!tube.raw().m_E[ei].IsLinear(1e-6)) ++arc_edges;
+  }
+  Check(arc_edges == 2, "setup: two of the hole's own edges are genuine circular arcs");
+
+  const double uv_before = FaceUvSignedArea(tube.raw(), 0) + FaceUvSignedArea(tube.raw(), 1);
+  std::vector<ON_3dPoint> hole_corners_before;
+  for (const int ei : hole_edges) hole_corners_before.push_back(tube.raw().m_E[ei].PointAtStart());
+
+  Check(tube.MergeCoplanarFaces() == 0, "MergeCoplanarFaces() refuses the non-planar pair, as before");
+  Check(tube.FaceCount() == 2, "...leaving it untouched");
+
+  const Brep::CheckReport report_before = tube.Check();
+  const int merges = tube.MergeSameSurfaceFaces();
+  Check(merges == 1, "MergeSameSurfaceFaces() merges the pair even though face 0 carries a hole");
+  Check(tube.FaceCount() == 1, "one merged face");
+  const ON_Brep& b = tube.raw();
+  Check(b.m_F[0].LoopCount() == 2, "the merged face carries exactly one outer loop plus the one hole");
+  int inner = 0, inner_trims = 0, inner_arcs = 0;
+  for (int li = 0; li < b.m_F[0].LoopCount(); ++li) {
+    const ON_BrepLoop* l = b.m_F[0].Loop(li);
+    if (l->m_type == ON_BrepLoop::inner) {
+      ++inner;
+      inner_trims = l->TrimCount();
+      for (int k = 0; k < l->TrimCount(); ++k) {
+        if (!l->Trim(k)->Edge()->IsLinear(1e-6)) ++inner_arcs;
+      }
+    } else {
+      Check(l->m_type == ON_BrepLoop::outer && l->TrimCount() == 6, "the outer loop is the 6-sided merged boundary");
+    }
+  }
+  Check(inner == 1 && inner_trims == 4 && inner_arcs == 2,
+        "the hole survives as a 4-trim inner loop whose two arc edges are still exact arcs, not re-fit chords");
+  ON_TextLog log_after;
+  Check(b.IsValid(&log_after), "the merged holed face is a valid ON_Brep");
+
+  Check(uv_before > 0.0 && std::abs(FaceUvSignedArea(b, 0) - uv_before) < 1e-12,
+        "the merged face covers exactly the (u, v) region the two source faces covered (outer minus hole)");
+  int corners_found = 0;
+  for (const ON_3dPoint& c : hole_corners_before) {
+    for (int li = 0; li < b.m_F[0].LoopCount(); ++li) {
+      const ON_BrepLoop* l = b.m_F[0].Loop(li);
+      if (l->m_type != ON_BrepLoop::inner) continue;
+      for (int k = 0; k < l->TrimCount(); ++k) {
+        if (l->Trim(k)->Edge()->PointAtStart().DistanceTo(c) == 0.0) ++corners_found;
+      }
+    }
+  }
+  Check(corners_found == 4, "every hole edge's own 3D start point is bit-identical after the merge (edges reused, "
+                            "not rebuilt)");
+
+  const Brep::CheckReport report_after = tube.Check();
+  Check(report_after.Count(Brep::CheckIssue::Kind::NakedEdge) == report_before.Count(Brep::CheckIssue::Kind::NakedEdge) &&
+            report_after.Count(Brep::CheckIssue::Kind::NakedEdge) == 10,
+        "the same 10 naked edges (6 outer boundary + 4 hole) before and after - only the shared seam was removed");
+  Check(report_after.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0 &&
+            report_after.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+        "no non-manifold or orientation issue introduced");
+  Check(tube.MergeSameSurfaceFaces() == 0, "a second call finds nothing left to merge");
+}
+
+// The hole may sit on EITHER face (here: the second face, fb, rather than
+// the face the scan starts from), and a pair with holes on both faces
+// merges with both holes carried across.
+void TestMergeSameSurfaceFacesCarriesHolesFromBothFaces() {
+  using dino8::kernel::Brep;
+
+  const double radius = 2.0, height = 3.0, total_angle = 2.5, split_angle = 1.0;
+  Brep tube = BuildTwoFaceCylinderFixture(radius, height, total_angle, split_angle);
+  AddCylinderFaceHole(tube, radius, 0.3, 0.7, 1.0, 2.0);
+  // Second hole, on face 1 (angles [1.5, 2.0], heights [0.5, 1.5]) - cut
+  // inline the same way AddCylinderFaceHole() cuts face 0's.
+  {
+    ON_Brep& raw = tube.raw();
+    const ON_Surface* surface = raw.m_F[1].SurfaceOf();
+    const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+    double ua = 0.0, ub = 0.0;
+    circle.GetNurbFormParameterFromRadian(1.5, &ua);
+    circle.GetNurbFormParameterFromRadian(2.0, &ub);
+    const ON_2dPoint uv[4] = {ON_2dPoint(ua, 0.5), ON_2dPoint(ua, 1.5), ON_2dPoint(ub, 1.5), ON_2dPoint(ub, 0.5)};
+    int vid[4];
+    for (int k = 0; k < 4; ++k) vid[k] = raw.NewVertex(surface->PointAt(uv[k].x, uv[k].y), 0.0).m_vertex_index;
+    const int loop_index = raw.NewLoop(ON_BrepLoop::inner, raw.m_F[1]).m_loop_index;
+    for (int k = 0; k < 4; ++k) {
+      const ON_2dPoint a = uv[k], c = uv[(k + 1) % 4];
+      const bool along_u = (a.y == c.y);
+      ON_Curve* iso = along_u ? surface->IsoCurve(0, a.y) : surface->IsoCurve(1, a.x);
+      iso->Trim(along_u ? ON_Interval(std::min(a.x, c.x), std::max(a.x, c.x))
+                        : ON_Interval(std::min(a.y, c.y), std::max(a.y, c.y)));
+      if (along_u ? (a.x > c.x) : (a.y > c.y)) iso->Reverse();
+      const int ei = raw.NewEdge(raw.m_V[vid[k]], raw.m_V[vid[(k + 1) % 4]], raw.AddEdgeCurve(iso)).m_edge_index;
+      auto* c2 = new ON_LineCurve(a, c);
+      c2->SetDomain(0.0, 1.0);
+      ON_BrepTrim& trim = raw.NewTrim(raw.m_E[ei], false, raw.m_L[loop_index], raw.AddTrimCurve(c2));
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    }
+    raw.SetTrimIsoFlags();
+    raw.SetTolerancesBoxesAndFlags();
+    for (int i = 0; i < raw.m_E.Count(); ++i) {
+      if (raw.m_E[i].m_edge_index >= 0 && !(raw.m_E[i].m_tolerance >= 0.0)) raw.m_E[i].m_tolerance = 0.0;
+    }
+  }
+  Check(tube.raw().IsValid() && tube.raw().m_F[0].LoopCount() == 2 && tube.raw().m_F[1].LoopCount() == 2,
+        "setup: both faces carry one real hole each and the Brep is valid");
+
+  const double uv_before = FaceUvSignedArea(tube.raw(), 0) + FaceUvSignedArea(tube.raw(), 1);
+  Check(tube.MergeSameSurfaceFaces() == 1, "the doubly-holed pair merges");
+  Check(tube.FaceCount() == 1 && tube.raw().m_F[0].LoopCount() == 3,
+        "one merged face: one outer loop plus BOTH holes");
+  Check(tube.raw().IsValid(), "the merged face is a valid ON_Brep");
+  Check(std::abs(FaceUvSignedArea(tube.raw(), 0) - uv_before) < 1e-12,
+        "the merged face covers exactly the source faces' (u, v) region minus both holes");
+  const Brep::CheckReport report = tube.Check();
+  Check(report.Count(Brep::CheckIssue::Kind::NakedEdge) == 14 &&
+            report.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0,
+        "14 naked edges (6 outer + 4 + 4 hole), nothing non-manifold");
+}
+
 // Brep::ReplaceEdgeCurve() on a single, naked-boundary flat plate: since
 // the substitute curve only has to fit ONE face's own plane (a naked
 // edge, unlike a shared one, is never constrained to lie on a second
@@ -51399,6 +52248,108 @@ void TestRecognizePocketsBlindPocketRoundTripAndNegativeControls() {
   const Brep through_pocket = EmbossProfile(box, square, down, /*depth=*/4.5, EmbossMode::Deboss);
   Check(RecognizePockets(through_pocket).empty(),
         "RecognizePockets finds nothing on a through-cut (no flat floor face exists to recognize)");
+}
+
+void TestEmbossProfileWithHolesDebossEngravesAnnulusLeavingCounterFlush() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::EmbossMode;
+  using dino8::kernel::EmbossProfile;
+  using dino8::kernel::EmbossProfileWithHoles;
+  using dino8::kernel::Mesh;
+
+  // parity-map "kernel: Feature operations" - "Emboss/deboss": closes this
+  // item's own disclosed "does not cover ... lettering with disconnected
+  // glyph counters (an 'O' or 'A''s own hole)" gap. `EmbossProfileWithHoles`
+  // debosses the OUTER profile exactly like a plain EmbossProfile() call,
+  // then UNIONs each hole's own identically-constructed tool back in,
+  // refilling that hole's own slice of the just-cut pocket flush with the
+  // original surface - a genuine glyph counter, not a second, deeper hole.
+  //
+  // A 10x10x4 box with a concentric "O": an outer radius-1 disk cut `depth`
+  // deep, with a radius-0.5 hole left flush - so only the ANNULUS (outer
+  // disk minus hole disk) is actually removed, not the full outer disk.
+  // Verified directly on the B-rep rather than via an ordinary tessellated
+  // Volume()/IsClosedManifold() - a blind pocket's own tessellated volume
+  // is not reliable here for the same disclosed reason
+  // `TestEmbossProfileDebossBlindPocket` above already established (and,
+  // for this TWO-boolean-op composition specifically with a CURVED profile
+  // at a large outer radius, confirmed directly, dino8_scratch_test, to
+  // also risk a genuinely invalid `ON_Brep` - a real `BooleanCombineGeneral`
+  // SSX-tolerance limitation this function inherits, not fixed here; a
+  // smaller outer radius, as used below, stays within it).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 4);
+  const NurbsCurve outer = Circle(P(5, 5, 4), Vector3d(0, 0, 1), 1.0);
+  const NurbsCurve hole = Circle(P(5, 5, 4), Vector3d(0, 0, 1), 0.5);
+  const Vector3d down(0, 0, -1);
+  const double depth = 1.0;
+
+  const Brep with_hole = EmbossProfileWithHoles(box, outer, {hole}, down, depth, EmbossMode::Deboss);
+  Check(with_hole.raw().IsValid(), "EmbossProfileWithHoles (deboss) produces a valid ON_Brep");
+  Check(HasCylinderFaceWithRadius(with_hole, 1.0),
+        "EmbossProfileWithHoles (deboss) leaves the outer cut's own cylindrical wall at the requested radius (1.0)");
+  Check(HasCylinderFaceWithRadius(with_hole, 0.5),
+        "EmbossProfileWithHoles (deboss) leaves the hole's own cylindrical wall at the requested radius (0.5)");
+  Check(HasPlanarFaceThroughPoint(with_hole, P(5.75, 5, 4.0 - depth)),
+        "EmbossProfileWithHoles (deboss) leaves a genuine pocket floor, `depth` below the entry surface, on the "
+        "ANNULUS (a point between the hole and outer radii)");
+  Check(BrepPassesThroughPoint(with_hole, P(5, 5, 4.0)),
+        "EmbossProfileWithHoles (deboss) leaves the hole's own counter flush at the ORIGINAL entry surface height "
+        "(4.0), refilled rather than also pocketed");
+}
+
+void TestEmbossProfileWithHolesEmbossRaisesRingBossLeavingCounterFlush() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::EmbossMode;
+  using dino8::kernel::EmbossProfile;
+  using dino8::kernel::EmbossProfileWithHoles;
+  using dino8::kernel::Mesh;
+
+  // The additive mirror: a ring-shaped (annular) BOSS raised out of the
+  // surface - the outer disk raises a boss, the hole's own counter is cut
+  // back out of it so that area stays flush with the original surface
+  // instead of also rising. Same radii/depth as the Deboss test above, for
+  // the same B-rep-engine-scale reason given there (verified directly on
+  // the B-rep, not via tessellation, for the same reason).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 4);
+  const NurbsCurve outer = Circle(P(5, 5, 4), Vector3d(0, 0, 1), 1.0);
+  const NurbsCurve hole = Circle(P(5, 5, 4), Vector3d(0, 0, 1), 0.5);
+  const Vector3d down(0, 0, -1);
+  const double depth = 1.0;
+
+  const Brep with_hole = EmbossProfileWithHoles(box, outer, {hole}, down, depth, EmbossMode::Emboss);
+  Check(with_hole.raw().IsValid(), "EmbossProfileWithHoles (emboss) produces a valid ON_Brep");
+  Check(HasCylinderFaceWithRadius(with_hole, 1.0),
+        "EmbossProfileWithHoles (emboss) leaves the boss's own cylindrical wall at the requested radius (1.0)");
+  Check(HasCylinderFaceWithRadius(with_hole, 0.5),
+        "EmbossProfileWithHoles (emboss) leaves the hole's own cylindrical wall at the requested radius (0.5)");
+  Check(HasPlanarFaceThroughPoint(with_hole, P(5.75, 5, 4.0 + depth)),
+        "EmbossProfileWithHoles (emboss) leaves a genuine boss top, `depth` above the entry surface, on the "
+        "ANNULUS (a point between the hole and outer radii)");
+
+  // The hole's own counter sits flush with the original surface (z=4), not
+  // still raised to the boss's own top (z=4+depth) and not cut BELOW the
+  // original surface either.
+  Check(BrepPassesThroughPoint(with_hole, P(5, 5, 4)),
+        "EmbossProfileWithHoles (emboss) leaves the hole's own counter flush at the original surface height");
+}
+
+void TestEmbossProfileWithHolesRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::EmbossMode;
+  using dino8::kernel::EmbossProfileWithHoles;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 4);
+  const NurbsCurve outer = Circle(P(5, 5, 4), Vector3d(0, 0, 1), 3.0);
+  const NurbsCurve hole = Circle(P(5, 5, 4), Vector3d(0, 0, 1), 1.5);
+  const NurbsCurve open_hole = Polyline({P(4, 4, 4), P(6, 4, 4), P(6, 6, 4)});
+  const Vector3d down(0, 0, -1);
+
+  Check(Throws([&] { EmbossProfileWithHoles(box, outer, {}, down, 1.0, EmbossMode::Deboss); }),
+        "EmbossProfileWithHoles throws for an empty hole_profiles list");
+  Check(Throws([&] { EmbossProfileWithHoles(box, outer, {open_hole}, down, 1.0, EmbossMode::Deboss); }),
+        "EmbossProfileWithHoles throws when a hole profile isn't closed");
+  Check(Throws([&] { EmbossProfileWithHoles(box, outer, {hole}, down, 0.0, EmbossMode::Deboss); }),
+        "EmbossProfileWithHoles throws for a non-positive depth (via the outer EmbossProfile() validation)");
 }
 
 void TestThickenFlatSheetProducesExactBoxVolume() {
@@ -57610,6 +58561,132 @@ void TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance() {
   Check(out.PointAt(0.3, 0.2).DistanceTo(s.PointAt(0.3, 0.2)) < 1e-12, "OffsetApproximate(0.0) reproduces the same surface");
 }
 
+void TestSurfaceOffsetVariableIsExactOnAGenuinePlaneAndVariesLinearlyAlongU() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Same consistently-oriented planar fixture
+  // TestSurfaceOffsetApproximateIsExactOnAGenuinePlane uses (see that
+  // test's own comment for why the OffsetAnalytic plane fixture elsewhere
+  // in this file isn't reused here).
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 3; ++j)
+      grid.push_back(Point3d(i, j, 0.0));
+  const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 4, 3, 3, 2);
+
+  NurbsSurface out;
+  Check(s.OffsetVariable(1.0, 3.0, out) == Result::Ok, "OffsetVariable(1.0, 3.0) succeeds on a plane");
+
+  const dino8::kernel::Interval du = s.Domain(0);
+  const dino8::kernel::Interval dv = s.Domain(1);
+  double worst = 0.0;
+  for (double u = du.min + 0.1; u < du.max; u += 0.3) {
+    const double frac = (u - du.min) / (du.max - du.min);
+    const double d = 1.0 + (3.0 - 1.0) * frac;
+    for (double v = dv.min + 0.1; v < dv.max; v += 0.3) {
+      const Point3d expected = s.PointAt(u, v) + d * s.NormalAt(u, v);
+      worst = std::max(worst, expected.DistanceTo(out.PointAt(u, v)));
+    }
+  }
+  Check(worst < 1e-9, "OffsetVariable(1.0, 3.0) on a genuine plane: exact everywhere at each point's own linearly-interpolated distance, not just at one sampled point");
+}
+
+void TestSurfaceOffsetVariableWithEqualEndsMatchesOffsetApproximateExactly() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // The same bulged freeform fixture
+  // TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance
+  // uses - a genuinely curved, non-planar surface, so this is a real
+  // regression guard (degenerate linear interpolation reproducing the
+  // constant-distance method) rather than a plane where every per-CV
+  // distance would trivially agree for an unrelated reason.
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      grid.push_back(Point3d(i, j, (i == 2 && j == 2) ? 3.0 : 0.0));
+  const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+
+  NurbsSurface approx, variable;
+  Check(s.OffsetApproximate(0.2, approx) == Result::Ok, "cross-check setup: OffsetApproximate(+0.2) succeeds on the bulge");
+  Check(s.OffsetVariable(0.2, 0.2, variable) == Result::Ok, "OffsetVariable(0.2, 0.2) succeeds on the bulge");
+
+  const dino8::kernel::Interval du = s.Domain(0);
+  const dino8::kernel::Interval dv = s.Domain(1);
+  double worst = 0.0;
+  for (double u = du.min + 0.1; u < du.max; u += 0.25) {
+    for (double v = dv.min + 0.1; v < dv.max; v += 0.25) {
+      worst = std::max(worst, approx.PointAt(u, v).DistanceTo(variable.PointAt(u, v)));
+    }
+  }
+  Check(worst < 1e-9, "OffsetVariable with equal U-min/U-max distances reproduces OffsetApproximate's own result exactly, not merely approximately");
+}
+
+void TestSurfaceOffsetVariableFoldGuardUsesTheLocallyInterpolatedDistance() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  // Same radius-5 sphere OffsetApproximate's own fold-guard cross-check
+  // test uses, where a uniform distance of -5.0 or beyond folds through
+  // the sphere's own center (`distance * k >= 1.0` with k = -1/radius).
+  const ON_Sphere sphere(ON_3dPoint(1, 2, 3), 5.0);
+  ON_NurbsSurface raw;
+  Check(sphere.GetNurbForm(raw) != 0, "OffsetVariable sphere setup: GetNurbForm succeeds");
+  NurbsSurface s;
+  s.raw() = raw;
+
+  NurbsSurface out;
+  // A safe distance at the U-min end (-2.0, well short of the radius)
+  // paired with an unsafe one at the U-max end (-6.0, past the radius) -
+  // a single-global-distance guard averaging or only checking one end
+  // could miss this; sampling across the whole U domain must catch the
+  // hazard near U-max specifically. A sphere's curvature is the same
+  // (k = -1/radius) at every (u, v), independent of u, so this isolates
+  // the guard's own per-sample distance lookup rather than any curvature
+  // variation across the domain.
+  Check(s.OffsetVariable(-2.0, -6.0, out) == Result::Failed,
+        "OffsetVariable(-2.0, -6.0) on a radius-5 sphere is refused - the U-max end's own locally-interpolated distance folds through the center even though the U-min end alone would not");
+  Check(s.OffsetVariable(-2.0, -2.5, out) == Result::Ok,
+        "OffsetVariable(-2.0, -2.5) on a radius-5 sphere succeeds - both ends stay well short of the fold threshold");
+  // And the symmetric case: unsafe at U-min, safe at U-max.
+  Check(s.OffsetVariable(-6.0, -2.0, out) == Result::Failed,
+        "OffsetVariable(-6.0, -2.0) on a radius-5 sphere is refused - the U-min end folds even though U-max alone would not");
+}
+
+void TestSurfaceOffsetVariableArgumentChecksAndZeroDistance() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 2.0);
+  ON_NurbsSurface raw;
+  sphere.GetNurbForm(raw);
+  NurbsSurface s;
+  s.raw() = raw;
+
+  NurbsSurface out;
+  bool threw = false;
+  try {
+    s.OffsetVariable(std::numeric_limits<double>::quiet_NaN(), 1.0, out);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetVariable(NaN, 1.0) throws std::invalid_argument");
+
+  threw = false;
+  try {
+    s.OffsetVariable(1.0, std::numeric_limits<double>::infinity(), out);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetVariable(1.0, +infinity) throws std::invalid_argument");
+
+  Check(s.OffsetVariable(0.0, 0.0, out) == Result::Ok, "OffsetVariable(0.0, 0.0) succeeds");
+  Check(out.PointAt(0.3, 0.2).DistanceTo(s.PointAt(0.3, 0.2)) < 1e-12, "OffsetVariable(0.0, 0.0) reproduces the same surface");
+}
+
 void TestSurfaceOffsetRefitIsExactOnAGenuinePlane() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -58104,6 +59181,160 @@ void TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy() {
   NurbsCurve out;
   Check(c.OffsetInPlane(0.0, out) == Result::Ok, "OffsetInPlane(0.0) succeeds");
   Check(out.PointAt(0.5).DistanceTo(c.PointAt(0.5)) < 1e-12, "OffsetInPlane(0.0) reproduces the same curve");
+}
+
+// Flat-plane fixture: NormalAt() is the same constant vector everywhere,
+// so OffsetOnSurfaceNormal()'s own sample+closest-point+normal-offset
+// construction is exactly checkable pointwise, not just bounded.
+dino8::kernel::NurbsSurface MakeFlatPlaneSurfaceForOffsetOnSurfaceNormal() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      grid.push_back(Point3d(i * 4.0, j * 4.0, 0.0));
+  return NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+}
+
+// Translates every control point of `c` by the Euclidean vector `v`,
+// exactly (not approximately): a rational curve's basis functions still
+// sum to 1 everywhere, so translating each CV's own homogeneous
+// (w*x, w*y, w*z, w) by (w*v.x, w*v.y, w*v.z) translates every curve
+// point by the same v, for any degree/rationality/closedness.
+dino8::kernel::NurbsCurve TranslateCurveForOffsetOnSurfaceNormalTests(const dino8::kernel::NurbsCurve& c,
+                                                                       const dino8::kernel::Vector3d& v) {
+  dino8::kernel::NurbsCurve out = c;
+  ON_NurbsCurve& raw = out.raw();
+  for (int i = 0; i < raw.CVCount(); ++i) {
+    ON_4dPoint cv;
+    raw.GetCV(i, cv);
+    cv.x += cv.w * v.x;
+    cv.y += cv.w * v.y;
+    cv.z += cv.w * v.z;
+    raw.SetCV(i, cv);
+  }
+  return out;
+}
+
+void TestCurveOffsetOnSurfaceNormalOpenCubicCurveIsExactOnAFlatPlane() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const dino8::kernel::NurbsSurface plane = MakeFlatPlaneSurfaceForOffsetOnSurfaceNormal();
+  Check(plane.IsPlanar(1e-9), "OffsetOnSurfaceNormal flat-plane setup: the constructed grid is genuinely planar");
+
+  // A degree-3 curve lying in the same z=0 plane - not degree 1, so this
+  // exercises the InterpolateCubic() refit branch, not the exact-polyline
+  // one (see the dedicated polyline test below for that branch).
+  const std::vector<Point3d> cps = {Point3d(1, 1, 0), Point3d(4, 8, 0), Point3d(8, 3, 0), Point3d(11, 10, 0)};
+  const NurbsCurve c = NurbsCurve::FromControlPoints(cps, 3);
+
+  NurbsCurve out;
+  Check(c.OffsetOnSurfaceNormal(plane, 2.0, out) == Result::Ok, "OffsetOnSurfaceNormal(+2.0) succeeds on a curve lying in a flat plane");
+
+  // The surface's normal is the same (0,0,+/-1) everywhere on a flat
+  // plane, so translating c by that constant vector gives the EXACT
+  // offset curve - an independent ground truth, not a re-run of this
+  // method's own sample+refit construction. out's own refit uses a
+  // DIFFERENT (chord-length) parameterization than c's, so points are
+  // compared via ClosestPoint() rather than assuming the same parameter
+  // value lands on the same point on both curves.
+  const dino8::kernel::Vector3d n = plane.NormalAt(0.5, 0.5);
+  const NurbsCurve expected = TranslateCurveForOffsetOnSurfaceNormalTests(c, 2.0 * n);
+
+  double worst = 0.0;
+  const dino8::kernel::Interval od = out.Domain();
+  for (double t = od.min; t <= od.max; t += (od.max - od.min) / 20.0) {
+    const Point3d p = out.PointAt(t);
+    worst = std::max(worst, p.DistanceTo(expected.ClosestPoint(p)));
+  }
+  Check(worst < 1e-4, "OffsetOnSurfaceNormal(+2.0) on a flat plane: the refit curve stays close to the exact translated curve everywhere sampled, not just at the fit points");
+}
+
+void TestCurveOffsetOnSurfaceNormalOpenPolylineStaysAnExactPolyline() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const dino8::kernel::NurbsSurface plane = MakeFlatPlaneSurfaceForOffsetOnSurfaceNormal();
+  const std::vector<Point3d> cps = {Point3d(1, 1, 0), Point3d(6, 5, 0), Point3d(10, 2, 0)};
+  const NurbsCurve polyline = NurbsCurve::FromControlPoints(cps, 1);
+  Check(polyline.Degree() == 1, "OffsetOnSurfaceNormal polyline setup: degree 1 as expected");
+
+  NurbsCurve out;
+  Check(polyline.OffsetOnSurfaceNormal(plane, 1.5, out) == Result::Ok, "OffsetOnSurfaceNormal(+1.5) succeeds on an open degree-1 polyline");
+  Check(out.Degree() == 1, "OffsetOnSurfaceNormal on an open degree-1 curve stays an exact polyline (not smoothed into a cubic)");
+
+  const dino8::kernel::Vector3d n = plane.NormalAt(0.5, 0.5);
+  Check(out.PointAt(out.Domain().min).DistanceTo(polyline.PointAt(polyline.Domain().min) + 1.5 * n) < 1e-9,
+        "OffsetOnSurfaceNormal polyline: start point is exactly the original start plus distance*normal");
+  Check(out.PointAt(out.Domain().max).DistanceTo(polyline.PointAt(polyline.Domain().max) + 1.5 * n) < 1e-9,
+        "OffsetOnSurfaceNormal polyline: end point is exactly the original end plus distance*normal");
+}
+
+void TestCurveOffsetOnSurfaceNormalClosedCurveStaysClosed() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const dino8::kernel::NurbsSurface plane = MakeFlatPlaneSurfaceForOffsetOnSurfaceNormal();
+  const ON_Circle circle(ON_3dPoint(6, 6, 0), 2.0);
+  ON_NurbsCurve raw;
+  Check(circle.GetNurbForm(raw) != 0, "OffsetOnSurfaceNormal closed-curve setup: GetNurbForm succeeds");
+  NurbsCurve c;
+  c.raw() = raw;
+  Check(c.IsClosed(), "OffsetOnSurfaceNormal closed-curve setup: the circle is genuinely closed");
+
+  NurbsCurve out;
+  Check(c.OffsetOnSurfaceNormal(plane, 1.0, out) == Result::Ok, "OffsetOnSurfaceNormal(+1.0) succeeds on a closed curve lying in a flat plane");
+  Check(out.IsClosed(), "OffsetOnSurfaceNormal on a closed input curve produces a closed result");
+
+  // Ground truth: translating the circle by the flat plane's own constant
+  // normal is exact (same reasoning as the open-curve test above) - the
+  // circle does NOT grow in radius (that would be an IN-PLANE offset,
+  // PARITY_MAP's separate "Curve offset on surface" item), it moves off
+  // the plane entirely. Compared via ClosestPoint() since out's own
+  // chord-length parameterization around the seam doesn't correspond to
+  // the exact circle's own parameterization.
+  const dino8::kernel::Vector3d n = plane.NormalAt(0.5, 0.5);
+  const NurbsCurve expected = TranslateCurveForOffsetOnSurfaceNormalTests(c, 1.0 * n);
+
+  double worst = 0.0;
+  const dino8::kernel::Interval od = out.Domain();
+  for (double t = 0.0; t < 1.0; t += 0.05) {
+    const Point3d p = out.PointAt(od.min + (od.max - od.min) * t);
+    worst = std::max(worst, p.DistanceTo(expected.ClosestPoint(p)));
+  }
+  Check(worst < 1e-2, "OffsetOnSurfaceNormal on a closed planar circle: the refit stays close to the exact translated circle all the way around, including across the seam");
+}
+
+void TestCurveOffsetOnSurfaceNormalArgumentChecks() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const dino8::kernel::NurbsSurface plane = MakeFlatPlaneSurfaceForOffsetOnSurfaceNormal();
+  const std::vector<Point3d> cps = {Point3d(1, 1, 0), Point3d(4, 8, 0), Point3d(8, 3, 0), Point3d(11, 10, 0)};
+  const NurbsCurve c = NurbsCurve::FromControlPoints(cps, 3);
+
+  NurbsCurve out;
+  bool threw = false;
+  try {
+    c.OffsetOnSurfaceNormal(plane, std::numeric_limits<double>::quiet_NaN(), out);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetOnSurfaceNormal(NaN) throws std::invalid_argument");
+
+  threw = false;
+  try {
+    c.OffsetOnSurfaceNormal(plane, 1.0, out, 1);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetOnSurfaceNormal(sample_count=1) throws std::invalid_argument");
+
+  Check(c.OffsetOnSurfaceNormal(plane, 1.0, out, 5) == dino8::kernel::Result::Ok, "OffsetOnSurfaceNormal(sample_count=5) succeeds");
 }
 
 // An open, axis-aligned "U" bracket: 3 straight segments, 4 vertices,
@@ -61286,6 +62517,194 @@ void TestBendAndBendAllowanceRejectInvalidArguments() {
   Check(!Throws([&] { BendAllowance(0.1, 0.2, 90.0, 1.0); }), "BendAllowance accepts a k_factor of exactly 1");
 }
 
+void TestMultiBendReducesToBendForASingleBend() {
+  using dino8::kernel::Bend;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MultiBend;
+
+  // parity-map "kernel: Feature operations" - "Sheet-metal features":
+  // MultiBend() generalizes Bend() from a single bend to a CHAIN of N -
+  // closing this item's own disclosed "no multi-bend flat pattern" gap.
+  // At N == 1, MultiBend() must build the EXACT SAME profile Bend() itself
+  // does (not just a similar-volume shape), since it's the identical
+  // construction walked once instead of a fixed single call.
+  const double leg1 = 5.0, leg2 = 3.0, width = 2.0, thickness = 0.1, r_in = 0.2, angle_deg = 90.0;
+  const Brep bent = Bend(leg1, leg2, width, thickness, r_in, angle_deg);
+  const Brep multi = MultiBend({leg1, leg2}, {angle_deg}, {r_in}, width, thickness);
+  Check(multi.raw().IsValid(), "MultiBend(N=1) produces a valid ON_Brep");
+  Check(multi.FaceCount() == bent.FaceCount(), "MultiBend(N=1) has exactly as many faces as Bend() itself (3)");
+
+  const Mesh m_bent = bent.TessellateToClosedMesh(64, 128);
+  const Mesh m_multi = multi.TessellateToClosedMesh(64, 128);
+  Check(m_multi.IsClosedManifold(), "MultiBend(N=1) tessellation is a genuine closed manifold");
+  Check(std::abs(m_bent.Volume() - m_multi.Volume()) < 1e-6 * std::max(1.0, m_bent.Volume()),
+        "MultiBend(N=1) matches Bend()'s own tessellated volume almost exactly (the identical construction, not "
+        "just a similar one)");
+}
+
+void TestMultiBendUChannelAndHatChannelMatchPappusClosedForm() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MultiBend;
+
+  // A real 2-bend U-channel: three legs (0.6, 0.8, 0.6), two 10-degree
+  // bends with DIFFERENT radii (0.1, 0.25) - a real multi-radius part, not
+  // just repeated identical bends. Pappus's closed form (the same sum-of-
+  // legs-plus-sum-of-arcs formula
+  // TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency above
+  // already establishes for a single bend, extended to two, each with its
+  // own radius) gives an exact cross-check independent of MultiBend()'s own
+  // construction. Dimensions chosen to stay comfortably inside
+  // `Brep::Extrude()`'s own star-shaped capping requirement (see MultiBend()'s
+  // own doc comment): a two-bend chain's overall profile hits that
+  // requirement's own empty-kernel limit far sooner than a single bend of
+  // similar size does (confirmed directly, dino8_scratch_test, sweeping
+  // angle/leg-length/thickness - the same "stay comfortably inside the
+  // boundary" caveat `Bend()`'s own doc comment already discloses for one
+  // bend, compounding faster across a chain of them).
+  const double width = 1.0, thickness = 0.08;
+  const std::vector<double> legs = {0.6, 0.8, 0.6};
+  const std::vector<double> angles_deg = {10.0, 10.0};
+  const std::vector<double> radii = {0.1, 0.25};
+  const Brep u = MultiBend(legs, angles_deg, radii, width, thickness);
+  Check(u.raw().IsValid(), "MultiBend U-channel (2 bends, independent radii) is a valid ON_Brep");
+  const Mesh m_u = u.TessellateToClosedMesh(64, 128);
+  Check(m_u.IsClosedManifold(), "MultiBend U-channel tessellation is a genuine closed manifold");
+
+  double leg_sum = 0.0;
+  for (double l : legs) leg_sum += l;
+  double arc_sum = 0.0;
+  for (size_t i = 0; i < angles_deg.size(); ++i) {
+    arc_sum += (angles_deg[i] * ON_PI / 180.0) * (radii[i] + thickness / 2.0);
+  }
+  const double expected_u = leg_sum * width * thickness + arc_sum * width * thickness;
+  Check(std::abs(m_u.Volume() - expected_u) < 0.01 * expected_u,
+        "MultiBend U-channel's tessellated volume matches the exact multi-radius Pappus closed form to within 1%");
+
+  // A hat-channel: 4 legs, 3 bends, each with its OWN radius.
+  const std::vector<double> hat_legs = {0.3, 0.5, 0.5, 0.3};
+  const std::vector<double> hat_angles = {8.0, 10.0, 8.0};
+  const std::vector<double> hat_radii = {0.2, 0.15, 0.2};
+  const Brep hat = MultiBend(hat_legs, hat_angles, hat_radii, width, thickness);
+  Check(hat.raw().IsValid(), "MultiBend hat-channel (3 bends, independent radii) is a valid ON_Brep");
+  const Mesh m_hat = hat.TessellateToClosedMesh(64, 128);
+  Check(m_hat.IsClosedManifold(), "MultiBend hat-channel tessellation is a genuine closed manifold");
+
+  double hat_leg_sum = 0.0;
+  for (double l : hat_legs) hat_leg_sum += l;
+  double hat_arc_sum = 0.0;
+  for (size_t i = 0; i < hat_angles.size(); ++i) {
+    hat_arc_sum += (hat_angles[i] * ON_PI / 180.0) * (hat_radii[i] + thickness / 2.0);
+  }
+  const double expected_hat = hat_leg_sum * width * thickness + hat_arc_sum * width * thickness;
+  Check(std::abs(m_hat.Volume() - expected_hat) < 0.01 * expected_hat,
+        "MultiBend hat-channel's tessellated volume matches the exact multi-radius Pappus closed form to within 1%");
+}
+
+void TestMultiBendRejectsInvalidArguments() {
+  using dino8::kernel::MultiBend;
+  using sweep_tests::Throws;
+
+  Check(Throws([&] { MultiBend({1.0}, {}, {}, 1.0, 0.1); }),
+        "MultiBend throws when bend_angles_degrees is empty (at least one bend is required)");
+  Check(Throws([&] { MultiBend({1.0, 2.0}, {90.0}, {0.1, 0.2}, 1.0, 0.1); }),
+        "MultiBend throws when inside_radii's own count doesn't match bend_angles_degrees's");
+  Check(Throws([&] { MultiBend({1.0, 2.0, 3.0}, {90.0}, {0.1}, 1.0, 0.1); }),
+        "MultiBend throws when leg_lengths doesn't have exactly one more entry than bend_angles_degrees");
+  Check(Throws([&] { MultiBend({0.0, 2.0}, {90.0}, {0.1}, 1.0, 0.1); }),
+        "MultiBend throws for a non-positive leg length");
+  Check(Throws([&] { MultiBend({1.0, 2.0}, {90.0}, {0.1}, 0.0, 0.1); }), "MultiBend throws for a non-positive width");
+  Check(Throws([&] { MultiBend({1.0, 2.0}, {90.0}, {0.1}, 1.0, 0.0); }),
+        "MultiBend throws for a non-positive thickness");
+  Check(Throws([&] { MultiBend({1.0, 2.0}, {90.0}, {0.0}, 1.0, 0.1); }),
+        "MultiBend throws for a non-positive inside_radius");
+  Check(Throws([&] { MultiBend({1.0, 2.0}, {0.0}, {0.1}, 1.0, 0.1); }), "MultiBend throws for a zero bend angle");
+  Check(Throws([&] { MultiBend({1.0, 2.0}, {180.0}, {0.1}, 1.0, 0.1); }),
+        "MultiBend throws for a bend angle of exactly 180 degrees");
+  Check(Throws([&] { MultiBend({1.0, 2.0, 3.0}, {90.0, 200.0}, {0.1, 0.1}, 1.0, 0.1); }),
+        "MultiBend throws if ANY bend angle in a multi-bend chain is out of range, not just the first");
+}
+
+void TestLatticeInfillFillsBoxAndConformsToNonBoxSolids() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::LatticeInfill;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // parity-map "kernel: Feature operations" - "Lattice/cellular infill":
+  // previously the only "lattice" hits anywhere in this kernel were the
+  // unrelated Cage FFD deformer - no cellular infill code of any kind.
+  // LatticeInfill() closes this outright (`[missing]` -> at least
+  // `[partial]`, a simple strut-based cubic lattice, not a gyroid/TPMS or
+  // Voronoi infill - both of those remain genuinely unimplemented).
+  const Brep box_brep = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Mesh box = box_brep.TessellateToClosedMesh(8, 8);
+  Check(box.IsClosedManifold(), "sanity: the box fixture itself is a closed manifold");
+
+  const double cell_size = 1.0, strut_radius = 0.05;
+  const Mesh lattice = LatticeInfill(box, cell_size, strut_radius, 12);
+  Check(lattice.IsClosedManifold(), "LatticeInfill(box) is a genuine closed manifold (every strut junction, not "
+                                     "just isolated struts, merges cleanly)");
+  Check(lattice.Volume() > 0.0, "LatticeInfill(box) has positive volume");
+  Check(lattice.Volume() < box.Volume(), "LatticeInfill(box) is a sparse infill, strictly lighter than the solid box");
+
+  // Increasing strut_radius (same grid, same cell_size) must increase the
+  // total lattice volume - a basic monotonicity sanity check independent
+  // of the exact strut-junction overlap math.
+  const Mesh lattice_thicker = LatticeInfill(box, cell_size, 2.0 * strut_radius, 12);
+  Check(lattice_thicker.IsClosedManifold(), "LatticeInfill(box) with a thicker strut radius is still closed manifold");
+  Check(lattice_thicker.Volume() > lattice.Volume(),
+        "doubling strut_radius (same grid) strictly increases the lattice's own total volume");
+
+  // The lattice is genuinely trimmed to `solid`'s own shape, not just to
+  // its bounding box: a cylinder inscribed in the SAME bounding box as the
+  // box above has its own corners cut away, so its own lattice infill must
+  // have LESS material than the box's, despite using an identical grid.
+  const Mesh cylinder = Mesh::Cylinder(Point3d(2, 2, 0), Vector3d(0, 0, 1), 2.0, 4.0, 48);
+  Check(cylinder.IsClosedManifold(), "sanity: the inscribed-cylinder fixture itself is a closed manifold");
+  const Mesh lattice_cyl = LatticeInfill(cylinder, cell_size, strut_radius, 12);
+  Check(lattice_cyl.IsClosedManifold(), "LatticeInfill(inscribed cylinder) is a genuine closed manifold");
+  Check(lattice_cyl.Volume() > 0.0, "LatticeInfill(inscribed cylinder) has positive volume");
+  Check(lattice_cyl.Volume() < lattice.Volume(),
+        "LatticeInfill(inscribed cylinder) has strictly less volume than LatticeInfill(box) over the identical "
+        "bounding box - the cylinder's own corners genuinely trim the lattice, not just its outer box");
+}
+
+void TestLatticeInfillRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::LatticeInfill;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  using sweep_tests::Throws;
+
+  const Brep box_brep = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Mesh box = box_brep.TessellateToClosedMesh(8, 8);
+  const NurbsCurve square = NurbsCurve::FromControlPoints(
+      {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0), Point3d(0, 0, 0)}, 1);
+  const Mesh open_mesh = Brep::Extrude(square, Vector3d(0, 0, 1), /*cap=*/false).TessellateToClosedMesh(4, 4);
+  Check(!open_mesh.IsClosedManifold(), "sanity: the uncapped-tube fixture itself is NOT a closed manifold");
+
+  Check(Throws([&] { LatticeInfill(box, 0.0, 0.05, 12); }), "LatticeInfill throws for a non-positive cell_size");
+  Check(Throws([&] { LatticeInfill(box, 1.0, 0.0, 12); }), "LatticeInfill throws for a non-positive strut_radius");
+  Check(Throws([&] { LatticeInfill(box, 1.0, 0.5, 12); }),
+        "LatticeInfill throws when strut_radius is not strictly less than half cell_size");
+  Check(Throws([&] { LatticeInfill(box, 1.0, 0.05, 2); }), "LatticeInfill throws for circle_segments below 3");
+  // A cell_size exceeding the solid's own bounding box is NOT an error -
+  // ceil() of any positive ratio is always at least 1, so this just builds
+  // one oversized cell, trimmed down to whatever of `solid` it crosses.
+  Check(!Throws([&] { LatticeInfill(box, 10.0, 0.05, 12); }),
+        "LatticeInfill does not throw when cell_size exceeds the solid's own bounding box - it degrades to one "
+        "oversized cell instead");
+  Check(LatticeInfill(box, 10.0, 0.05, 12).Volume() > 0.0,
+        "LatticeInfill with an oversized cell_size still produces a genuine, positive-volume result");
+  Check(Throws([&] { LatticeInfill(open_mesh, 0.2, 0.02, 12); }),
+        "LatticeInfill throws when solid is not a closed manifold");
+}
+
 int main() {
   ON::Begin();
 
@@ -61340,6 +62759,8 @@ int main() {
   TestContourBrepParallelSections();
   TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan();
   TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly();
+  TestFindSurfaceTangentContactsSphereOnPlane();
+  TestIntersectSurfacesOverlapDetectsCoincidentRegion();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
@@ -61426,6 +62847,7 @@ int main() {
   TestModelUnitSystemRoundTrips();
   TestModelAddNamedViewRoundTrips();
   TestModelMaterialExtendedFieldsRoundTrip();
+  TestModelMaterialTextureRoundTrips();
   TestModelAddLightRoundTrips();
   TestModelAddClippingPlaneRoundTrips();
   TestModelAddInstanceReferenceRoundTrips();
@@ -61532,6 +62954,7 @@ int main() {
   TestSubDEvaluateFaceExactOnRegularFlatGrid();
   TestSubDEvaluateFaceAdaptiveOnIrregularFace();
   TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane();
+  TestSubDEvaluateFaceExtraordinaryCornerHandlesSemiSharpEdge();
   TestSubDEvaluateFaceThrowsOnBadInput();
   TestSubDToNurbsPatchesAdaptiveMatchesNonAdaptiveAtZeroLevels();
   TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace();
@@ -61569,6 +62992,7 @@ int main() {
   TestSubDBooleanToSubDReturnsEditableSubDMatchingBooleanVolume();
   TestSubDBooleanToSubDIsGenuinelyFurtherSubdividable();
   TestSubDBooleanToSubDPropagatesBooleanFailure();
+  TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
@@ -61609,6 +63033,8 @@ int main() {
   TestMeshLoad3mfRejectsMalformedFiles();
   TestMeshSaveFbxRoundTrips();
   TestMeshLoadFbxRejectsMalformedFiles();
+  TestMeshSaveDxfRoundTrips();
+  TestMeshLoadDxfRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();
@@ -61784,6 +63210,8 @@ int main() {
   TestShellConvexPlanarResultHasValidTopology();
   TestFilletConvexEdgeFreeBoundaryCapHasValidOpenTopology();
   TestFromMixedFacesRejectsNonManifoldEdge();
+  TestFromMixedFacesNonManifoldBuildsThreePageFan();
+  TestFromMixedFacesNonManifoldBuildsFourPageFanAndMatchesStrictOnManifoldInput();
   TestBrepFromPlanarFacesRoundTripsRealTopologyThroughDotThreeDM();
   TestFilletConvexEdgeRoundTripsCylindricalTopologyThroughDotThreeDM();
   TestMixedFacesRoundTripsCylindricalFace();
@@ -61977,6 +63405,8 @@ int main() {
   TestMergeSameSurfaceFacesLeavesDistinctCoplanarSurfacesUntouched();
   TestMergeSameSurfaceFacesWeldsCongruentButSeparateCylinderSurfaces();
   TestMergeSameSurfaceFacesLeavesGenuinelyDifferentCylindersUntouched();
+  TestMergeSameSurfaceFacesCarriesCurvedHoleOnCylinder();
+  TestMergeSameSurfaceFacesCarriesHolesFromBothFaces();
   TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute();
   TestReplaceEdgeCurveThrowsOnEndpointMismatch();
   TestReplaceEdgeCurveThrowsOnSurfaceMismatch();
@@ -62124,6 +63554,9 @@ int main() {
   sweep_tests::TestEmbossProfileEmbossBoss();
   sweep_tests::TestEmbossProfileRejectsInvalidArguments();
   sweep_tests::TestRecognizePocketsBlindPocketRoundTripAndNegativeControls();
+  sweep_tests::TestEmbossProfileWithHolesDebossEngravesAnnulusLeavingCounterFlush();
+  sweep_tests::TestEmbossProfileWithHolesEmbossRaisesRingBossLeavingCounterFlush();
+  sweep_tests::TestEmbossProfileWithHolesRejectsInvalidArguments();
   sweep_tests::TestThickenFlatSheetProducesExactBoxVolume();
   sweep_tests::TestThickenSymmetricPutsOriginalSurfaceOnMidplane();
   sweep_tests::TestThickenCurvedSheetProducesGenuineClosedSolid();
@@ -62175,6 +63608,11 @@ int main() {
   TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance();
   TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance();
 
+  TestSurfaceOffsetVariableIsExactOnAGenuinePlaneAndVariesLinearlyAlongU();
+  TestSurfaceOffsetVariableWithEqualEndsMatchesOffsetApproximateExactly();
+  TestSurfaceOffsetVariableFoldGuardUsesTheLocallyInterpolatedDistance();
+  TestSurfaceOffsetVariableArgumentChecksAndZeroDistance();
+
   TestSurfaceOffsetRefitIsExactOnAGenuinePlane();
   TestSurfaceOffsetRefitOnSphereBeatsOffsetApproximateAtATighterTolerance();
   TestSurfaceOffsetRefitFoldGuardMatchesOffsetApproximate();
@@ -62193,6 +63631,12 @@ int main() {
   TestCurveOffsetInPlaneWithExplicitPlaneMatchesSinglePlaneOverloadWhenPlanesAgree();
   TestCurveOffsetInPlaneWithExplicitPlaneThrowsOnInvalidArguments();
   TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy();
+
+  TestCurveOffsetOnSurfaceNormalOpenCubicCurveIsExactOnAFlatPlane();
+  TestCurveOffsetOnSurfaceNormalOpenPolylineStaysAnExactPolyline();
+  TestCurveOffsetOnSurfaceNormalClosedCurveStaysClosed();
+  TestCurveOffsetOnSurfaceNormalArgumentChecks();
+
   TestCurveOffsetInPlaneOpenPolylineExactSharpCorners();
   TestCurveOffsetInPlaneClosedPolygonMitersSeamCorner();
   TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter();
@@ -62253,6 +63697,13 @@ int main() {
 
   TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency();
   TestBendAndBendAllowanceRejectInvalidArguments();
+
+  TestMultiBendReducesToBendForASingleBend();
+  TestMultiBendUChannelAndHatChannelMatchPappusClosedForm();
+  TestMultiBendRejectsInvalidArguments();
+
+  TestLatticeInfillFillsBoxAndConformsToNonBoxSolids();
+  TestLatticeInfillRejectsInvalidArguments();
 
   ON::End();
 

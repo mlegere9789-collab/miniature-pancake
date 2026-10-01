@@ -1685,4 +1685,107 @@ std::vector<PocketFeature> RecognizePockets(const Brep& solid) {
   return out;
 }
 
+Mesh LatticeInfill(const Mesh& solid, double cell_size, double strut_radius, int circle_segments) {
+  if (!std::isfinite(cell_size) || !(cell_size > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::LatticeInfill: cell_size must be finite and positive");
+  }
+  if (!std::isfinite(strut_radius) || !(strut_radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::LatticeInfill: strut_radius must be finite and positive");
+  }
+  if (!(strut_radius < cell_size / 2.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::LatticeInfill: strut_radius must be less than half cell_size, or struts running down "
+        "parallel grid lines one cell apart would overlap along their own length instead of only meeting at "
+        "shared nodes");
+  }
+  if (circle_segments < 3) {
+    throw std::invalid_argument("dino8::kernel::LatticeInfill: circle_segments must be at least 3");
+  }
+  if (!solid.IsClosedManifold()) {
+    throw std::invalid_argument(
+        "dino8::kernel::LatticeInfill: solid must be a closed manifold mesh - the trimming step at the end needs "
+        "a genuine solid to intersect the lattice against, the same precondition BooleanCombine() itself has");
+  }
+
+  const BoundingBox box = solid.GetBoundingBox();
+  const Vector3d diag = box.max - box.min;
+  if (!(diag.x > 0.0) || !(diag.y > 0.0) || !(diag.z > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::LatticeInfill: solid's bounding box is degenerate (flat or empty)");
+  }
+
+  // At least 1 regardless of how large cell_size is relative to `diag`
+  // (ceil of any positive ratio is >= 1) - a cell_size exceeding the whole
+  // bounding box simply builds one oversized cell whose own struts extend
+  // well past `solid`, which the final Intersection below trims back down
+  // to whatever of `solid` that single cell's edges actually cross; not an
+  // error case needing its own guard.
+  const int nx = static_cast<int>(std::ceil(diag.x / cell_size));
+  const int ny = static_cast<int>(std::ceil(diag.y / cell_size));
+  const int nz = static_cast<int>(std::ceil(diag.z / cell_size));
+
+  auto node = [&](int i, int j, int k) {
+    return Point3d(box.min.x + i * cell_size, box.min.y + j * cell_size, box.min.z + k * cell_size);
+  };
+  // A low-resolution cap grid: the strut caps are entirely consumed by the
+  // Union fold below wherever two or more struts meet, so their own
+  // tessellation fidelity doesn't matter the way a strut's own cylindrical
+  // wall (circle_segments, the caller-visible parameter) does.
+  constexpr int kCapGridDivisions = 4;
+
+  // Two collinear struts meeting exactly end-to-end at a shared node (e.g.
+  // the x-strut ending at node(i,j,k) and the next one starting there) have
+  // perfectly coincident, flush flat end caps - a degenerate zero-overlap
+  // tangency that is a genuinely hard case for a mesh boolean engine (the
+  // same "grazing tangentially" hazard MakeHole()/EmbossProfile() already
+  // avoid elsewhere in this file by backing their own tool off a small
+  // margin so it crosses the target transversally instead) - confirmed
+  // directly: without this margin, a multi-node lattice's own Union comes
+  // back `IsClosedManifold()` but with a measurably, not just marginally,
+  // wrong (too small) volume, even though every PAIRWISE strut union in
+  // isolation is exact. Extending every strut by `strut_radius` at BOTH
+  // ends (so it genuinely overlaps its neighbors in volume at every node,
+  // not just touches them) fixes this the same way; the extra length
+  // beyond the grid's own outer boundary nodes is harmless - it is cut
+  // away by the final Intersection against `solid` below regardless.
+  const double overlap = strut_radius;
+  const double strut_length = cell_size + 2.0 * overlap;
+  std::vector<Mesh> struts;
+  for (int k = 0; k <= nz; ++k) {
+    for (int j = 0; j <= ny; ++j) {
+      for (int i = 0; i < nx; ++i) {
+        struts.push_back(Mesh::Cylinder(node(i, j, k) - Vector3d(overlap, 0, 0), Vector3d(1, 0, 0), strut_radius,
+                                         strut_length, circle_segments, kCapGridDivisions));
+      }
+    }
+  }
+  for (int k = 0; k <= nz; ++k) {
+    for (int i = 0; i <= nx; ++i) {
+      for (int j = 0; j < ny; ++j) {
+        struts.push_back(Mesh::Cylinder(node(i, j, k) - Vector3d(0, overlap, 0), Vector3d(0, 1, 0), strut_radius,
+                                         strut_length, circle_segments, kCapGridDivisions));
+      }
+    }
+  }
+  for (int j = 0; j <= ny; ++j) {
+    for (int i = 0; i <= nx; ++i) {
+      for (int k = 0; k < nz; ++k) {
+        struts.push_back(Mesh::Cylinder(node(i, j, k) - Vector3d(0, 0, overlap), Vector3d(0, 0, 1), strut_radius,
+                                         strut_length, circle_segments, kCapGridDivisions));
+      }
+    }
+  }
+
+  // Overlapping struts sharing a node are genuinely intersecting volumes,
+  // not just coincident vertices - a real Boolean Union per strut, folded
+  // left-to-right (the same plain fold boolean.h's own Brep-level *NAry
+  // wrappers already use for an analogous N-operand Union), not
+  // Mesh::MergeAndWeld() (which only stitches already-matching boundaries).
+  Mesh lattice = struts.front();
+  for (size_t idx = 1; idx < struts.size(); ++idx) {
+    lattice = BooleanCombine(lattice, struts[idx], BooleanOp::Union);
+  }
+
+  return BooleanCombine(lattice, solid, BooleanOp::Intersection);
+}
+
 }  // namespace dino8::kernel
