@@ -4380,6 +4380,26 @@ Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, doubl
   return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
 }
 
+namespace {
+
+// The tool `EmbossProfile()` below builds from a single profile curve,
+// factored out so `EmbossProfileWithHoles()` can build the geometrically
+// IDENTICAL tool from each of its own hole profiles (same `mode`, same
+// margin placement) and combine it with the OPPOSITE boolean op instead of
+// a second, differently-shaped tool - see that function's own doc comment
+// for why that's what a hole/counter actually needs.
+Brep BuildEmbossTool(const NurbsCurve& profile, Vector3d dir, double depth, EmbossMode mode, double margin) {
+  const bool deboss = (mode == EmbossMode::Deboss);
+  ON_NurbsCurve base_raw = profile.raw();
+  base_raw.Translate(dir * (deboss ? -margin : margin));
+  NurbsCurve base;
+  base.raw() = base_raw;
+  const Vector3d extrude_vector = deboss ? dir * (margin + depth) : -dir * (margin + depth);
+  return Brep::Extrude(base, extrude_vector, /*cap=*/true);
+}
+
+}  // namespace
+
 Brep EmbossProfile(const Brep& solid, const NurbsCurve& profile, Vector3d direction, double depth, EmbossMode mode) {
   if (solid.raw().m_F.Count() == 0) {
     throw std::invalid_argument("dino8::kernel::EmbossProfile: solid has no faces");
@@ -4408,14 +4428,95 @@ Brep EmbossProfile(const Brep& solid, const NurbsCurve& profile, Vector3d direct
   // real overlap to fuse onto) and protrudes `depth` past it the other
   // way, outward.
   const bool deboss = (mode == EmbossMode::Deboss);
-  ON_NurbsCurve base_raw = profile.raw();
-  base_raw.Translate(dir * (deboss ? -margin : margin));
-  NurbsCurve base;
-  base.raw() = base_raw;
-
-  const Vector3d extrude_vector = deboss ? dir * (margin + depth) : -dir * (margin + depth);
-  const Brep tool = Brep::Extrude(base, extrude_vector, /*cap=*/true);
+  const Brep tool = BuildEmbossTool(profile, dir, depth, mode, margin);
   return BooleanCombineGeneral(solid, tool, deboss ? BooleanOp::Difference : BooleanOp::Union);
+}
+
+Brep EmbossProfileWithHoles(const Brep& solid, const NurbsCurve& outer_profile,
+                             const std::vector<NurbsCurve>& hole_profiles, Vector3d direction, double depth,
+                             EmbossMode mode) {
+  if (hole_profiles.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::EmbossProfileWithHoles: hole_profiles must be non-empty - call EmbossProfile() directly "
+        "for a simple profile with no counters");
+  }
+  for (const NurbsCurve& hole : hole_profiles) {
+    if (!hole.raw().IsClosed()) {
+      throw std::invalid_argument("dino8::kernel::EmbossProfileWithHoles: every hole profile must be a closed curve");
+    }
+  }
+
+  // The outer profile is handled exactly like a plain EmbossProfile() call
+  // - same validation, same tool, same op.
+  Brep result = EmbossProfile(solid, outer_profile, direction, depth, mode);
+
+  Vector3d dir = direction;
+  dir.Unitize();  // already validated non-zero by the EmbossProfile() call above
+  const BoundingBox tbb = solid.GetTightBoundingBox();
+  const double diagonal = (tbb.max - tbb.min).Length();
+  const double margin = 1e-3 * std::max(diagonal, 1.0);
+  const bool deboss = (mode == EmbossMode::Deboss);
+
+  // Each hole's own tool is built DIRECTLY from the span it actually needs
+  // to touch - NOT `BuildEmbossTool()`'s own "margin outside the surface,
+  // reach depth past it" convention, which is right for cutting/fusing
+  // against an UNTOUCHED surface (the outer profile's own job) but wrong
+  // here: a first attempt reused that exact convention (same `mode`, same
+  // margin placement as the outer tool) and genuinely DID avoid the
+  // coincident-face throw the naive `depth`-only version hit - but it also
+  // silently built an INVALID result (confirmed directly,
+  // dino8_scratch_test: `IsValid()` false, tessellation not a closed
+  // manifold) with a real, measurable defect: Deboss's own hole tool,
+  // built with its base `margin` OUTSIDE the surface exactly like the outer
+  // tool's own Deboss convention, then got UNIONED there - adding a
+  // genuine `margin`-tall sliver of material ABOVE the original surface
+  // within the hole's own footprint (the model's own tight bounding box
+  // measurably exceeded the original height by exactly `margin`), not
+  // because `margin` was too large, but because the SAME "sit outside the
+  // surface" placement that is harmless for a Difference against solid
+  // material (subtracting empty space subtracts nothing) is NOT harmless
+  // for a Union (adding material where none should be).
+  //
+  // The fix: place each hole tool by which op it will actually combine
+  // with, not by which mode the OUTER tool used:
+  // - Deboss's hole tool (Union): the pocket's own entry is open air within
+  //   the hole's footprint (no existing face there to graze tangentially -
+  //   that hazard is specific to cutting into or fusing onto still-SOLID
+  //   material), so its own top sits flush at `outer_profile`'s own plane
+  //   with no margin needed there at all, and only its FAR end needs the
+  //   "land `margin` PAST an already-existing face, never exactly on it"
+  //   treatment this file already uses elsewhere (here, the pocket floor
+  //   the outer Deboss cut) - reaching `margin` deeper into the untouched,
+  //   already-solid material below it (adding more of the same material
+  //   there is a no-op).
+  // - Emboss's hole tool (Difference): the footprint's own material is now
+  //   CONTINUOUS solid bulk from the original box through the boss (the
+  //   outer Union dissolved any face at the original surface height within
+  //   this footprint), so the hole tool's own BOTTOM end also has no
+  //   existing face to land on within that bulk and needs no margin
+  //   either; only its TOP needs to clear the boss's own top face by
+  //   `margin` so it cuts all the way through rather than landing on it.
+  for (const NurbsCurve& hole : hole_profiles) {
+    ON_NurbsCurve base_raw = hole.raw();
+    Vector3d extrude_vector;
+    if (deboss) {
+      // Base stays exactly at the profile's own plane (flush, open air
+      // there); reach margin past the pocket floor.
+      extrude_vector = dir * (depth + margin);
+    } else {
+      // Base shifted `depth + margin` OUTWARD (past the boss's own top);
+      // reach back down `depth + 2*margin` so the far end lands `margin`
+      // BELOW the original surface - solid bulk either way, no margin
+      // needed on this end specifically, just comfortably past the top.
+      base_raw.Translate(-dir * (depth + margin));
+      extrude_vector = dir * (depth + 2.0 * margin);
+    }
+    NurbsCurve base;
+    base.raw() = base_raw;
+    const Brep hole_tool = Brep::Extrude(base, extrude_vector, /*cap=*/true);
+    result = BooleanCombineGeneral(result, hole_tool, deboss ? BooleanOp::Union : BooleanOp::Difference);
+  }
+  return result;
 }
 
 Brep MakeRevolvedCut(const Brep& solid, const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,

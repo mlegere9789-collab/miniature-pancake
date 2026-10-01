@@ -52461,6 +52461,108 @@ void TestRecognizePocketsBlindPocketRoundTripAndNegativeControls() {
         "RecognizePockets finds nothing on a through-cut (no flat floor face exists to recognize)");
 }
 
+void TestEmbossProfileWithHolesDebossEngravesAnnulusLeavingCounterFlush() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::EmbossMode;
+  using dino8::kernel::EmbossProfile;
+  using dino8::kernel::EmbossProfileWithHoles;
+  using dino8::kernel::Mesh;
+
+  // parity-map "kernel: Feature operations" - "Emboss/deboss": closes this
+  // item's own disclosed "does not cover ... lettering with disconnected
+  // glyph counters (an 'O' or 'A''s own hole)" gap. `EmbossProfileWithHoles`
+  // debosses the OUTER profile exactly like a plain EmbossProfile() call,
+  // then UNIONs each hole's own identically-constructed tool back in,
+  // refilling that hole's own slice of the just-cut pocket flush with the
+  // original surface - a genuine glyph counter, not a second, deeper hole.
+  //
+  // A 10x10x4 box with a concentric "O": an outer radius-1 disk cut `depth`
+  // deep, with a radius-0.5 hole left flush - so only the ANNULUS (outer
+  // disk minus hole disk) is actually removed, not the full outer disk.
+  // Verified directly on the B-rep rather than via an ordinary tessellated
+  // Volume()/IsClosedManifold() - a blind pocket's own tessellated volume
+  // is not reliable here for the same disclosed reason
+  // `TestEmbossProfileDebossBlindPocket` above already established (and,
+  // for this TWO-boolean-op composition specifically with a CURVED profile
+  // at a large outer radius, confirmed directly, dino8_scratch_test, to
+  // also risk a genuinely invalid `ON_Brep` - a real `BooleanCombineGeneral`
+  // SSX-tolerance limitation this function inherits, not fixed here; a
+  // smaller outer radius, as used below, stays within it).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 4);
+  const NurbsCurve outer = Circle(P(5, 5, 4), Vector3d(0, 0, 1), 1.0);
+  const NurbsCurve hole = Circle(P(5, 5, 4), Vector3d(0, 0, 1), 0.5);
+  const Vector3d down(0, 0, -1);
+  const double depth = 1.0;
+
+  const Brep with_hole = EmbossProfileWithHoles(box, outer, {hole}, down, depth, EmbossMode::Deboss);
+  Check(with_hole.raw().IsValid(), "EmbossProfileWithHoles (deboss) produces a valid ON_Brep");
+  Check(HasCylinderFaceWithRadius(with_hole, 1.0),
+        "EmbossProfileWithHoles (deboss) leaves the outer cut's own cylindrical wall at the requested radius (1.0)");
+  Check(HasCylinderFaceWithRadius(with_hole, 0.5),
+        "EmbossProfileWithHoles (deboss) leaves the hole's own cylindrical wall at the requested radius (0.5)");
+  Check(HasPlanarFaceThroughPoint(with_hole, P(5.75, 5, 4.0 - depth)),
+        "EmbossProfileWithHoles (deboss) leaves a genuine pocket floor, `depth` below the entry surface, on the "
+        "ANNULUS (a point between the hole and outer radii)");
+  Check(BrepPassesThroughPoint(with_hole, P(5, 5, 4.0)),
+        "EmbossProfileWithHoles (deboss) leaves the hole's own counter flush at the ORIGINAL entry surface height "
+        "(4.0), refilled rather than also pocketed");
+}
+
+void TestEmbossProfileWithHolesEmbossRaisesRingBossLeavingCounterFlush() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::EmbossMode;
+  using dino8::kernel::EmbossProfile;
+  using dino8::kernel::EmbossProfileWithHoles;
+  using dino8::kernel::Mesh;
+
+  // The additive mirror: a ring-shaped (annular) BOSS raised out of the
+  // surface - the outer disk raises a boss, the hole's own counter is cut
+  // back out of it so that area stays flush with the original surface
+  // instead of also rising. Same radii/depth as the Deboss test above, for
+  // the same B-rep-engine-scale reason given there (verified directly on
+  // the B-rep, not via tessellation, for the same reason).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 4);
+  const NurbsCurve outer = Circle(P(5, 5, 4), Vector3d(0, 0, 1), 1.0);
+  const NurbsCurve hole = Circle(P(5, 5, 4), Vector3d(0, 0, 1), 0.5);
+  const Vector3d down(0, 0, -1);
+  const double depth = 1.0;
+
+  const Brep with_hole = EmbossProfileWithHoles(box, outer, {hole}, down, depth, EmbossMode::Emboss);
+  Check(with_hole.raw().IsValid(), "EmbossProfileWithHoles (emboss) produces a valid ON_Brep");
+  Check(HasCylinderFaceWithRadius(with_hole, 1.0),
+        "EmbossProfileWithHoles (emboss) leaves the boss's own cylindrical wall at the requested radius (1.0)");
+  Check(HasCylinderFaceWithRadius(with_hole, 0.5),
+        "EmbossProfileWithHoles (emboss) leaves the hole's own cylindrical wall at the requested radius (0.5)");
+  Check(HasPlanarFaceThroughPoint(with_hole, P(5.75, 5, 4.0 + depth)),
+        "EmbossProfileWithHoles (emboss) leaves a genuine boss top, `depth` above the entry surface, on the "
+        "ANNULUS (a point between the hole and outer radii)");
+
+  // The hole's own counter sits flush with the original surface (z=4), not
+  // still raised to the boss's own top (z=4+depth) and not cut BELOW the
+  // original surface either.
+  Check(BrepPassesThroughPoint(with_hole, P(5, 5, 4)),
+        "EmbossProfileWithHoles (emboss) leaves the hole's own counter flush at the original surface height");
+}
+
+void TestEmbossProfileWithHolesRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::EmbossMode;
+  using dino8::kernel::EmbossProfileWithHoles;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 4);
+  const NurbsCurve outer = Circle(P(5, 5, 4), Vector3d(0, 0, 1), 3.0);
+  const NurbsCurve hole = Circle(P(5, 5, 4), Vector3d(0, 0, 1), 1.5);
+  const NurbsCurve open_hole = Polyline({P(4, 4, 4), P(6, 4, 4), P(6, 6, 4)});
+  const Vector3d down(0, 0, -1);
+
+  Check(Throws([&] { EmbossProfileWithHoles(box, outer, {}, down, 1.0, EmbossMode::Deboss); }),
+        "EmbossProfileWithHoles throws for an empty hole_profiles list");
+  Check(Throws([&] { EmbossProfileWithHoles(box, outer, {open_hole}, down, 1.0, EmbossMode::Deboss); }),
+        "EmbossProfileWithHoles throws when a hole profile isn't closed");
+  Check(Throws([&] { EmbossProfileWithHoles(box, outer, {hole}, down, 0.0, EmbossMode::Deboss); }),
+        "EmbossProfileWithHoles throws for a non-positive depth (via the outer EmbossProfile() validation)");
+}
+
 void TestThickenFlatSheetProducesExactBoxVolume() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -62626,6 +62728,194 @@ void TestBendAndBendAllowanceRejectInvalidArguments() {
   Check(!Throws([&] { BendAllowance(0.1, 0.2, 90.0, 1.0); }), "BendAllowance accepts a k_factor of exactly 1");
 }
 
+void TestMultiBendReducesToBendForASingleBend() {
+  using dino8::kernel::Bend;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MultiBend;
+
+  // parity-map "kernel: Feature operations" - "Sheet-metal features":
+  // MultiBend() generalizes Bend() from a single bend to a CHAIN of N -
+  // closing this item's own disclosed "no multi-bend flat pattern" gap.
+  // At N == 1, MultiBend() must build the EXACT SAME profile Bend() itself
+  // does (not just a similar-volume shape), since it's the identical
+  // construction walked once instead of a fixed single call.
+  const double leg1 = 5.0, leg2 = 3.0, width = 2.0, thickness = 0.1, r_in = 0.2, angle_deg = 90.0;
+  const Brep bent = Bend(leg1, leg2, width, thickness, r_in, angle_deg);
+  const Brep multi = MultiBend({leg1, leg2}, {angle_deg}, {r_in}, width, thickness);
+  Check(multi.raw().IsValid(), "MultiBend(N=1) produces a valid ON_Brep");
+  Check(multi.FaceCount() == bent.FaceCount(), "MultiBend(N=1) has exactly as many faces as Bend() itself (3)");
+
+  const Mesh m_bent = bent.TessellateToClosedMesh(64, 128);
+  const Mesh m_multi = multi.TessellateToClosedMesh(64, 128);
+  Check(m_multi.IsClosedManifold(), "MultiBend(N=1) tessellation is a genuine closed manifold");
+  Check(std::abs(m_bent.Volume() - m_multi.Volume()) < 1e-6 * std::max(1.0, m_bent.Volume()),
+        "MultiBend(N=1) matches Bend()'s own tessellated volume almost exactly (the identical construction, not "
+        "just a similar one)");
+}
+
+void TestMultiBendUChannelAndHatChannelMatchPappusClosedForm() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MultiBend;
+
+  // A real 2-bend U-channel: three legs (0.6, 0.8, 0.6), two 10-degree
+  // bends with DIFFERENT radii (0.1, 0.25) - a real multi-radius part, not
+  // just repeated identical bends. Pappus's closed form (the same sum-of-
+  // legs-plus-sum-of-arcs formula
+  // TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency above
+  // already establishes for a single bend, extended to two, each with its
+  // own radius) gives an exact cross-check independent of MultiBend()'s own
+  // construction. Dimensions chosen to stay comfortably inside
+  // `Brep::Extrude()`'s own star-shaped capping requirement (see MultiBend()'s
+  // own doc comment): a two-bend chain's overall profile hits that
+  // requirement's own empty-kernel limit far sooner than a single bend of
+  // similar size does (confirmed directly, dino8_scratch_test, sweeping
+  // angle/leg-length/thickness - the same "stay comfortably inside the
+  // boundary" caveat `Bend()`'s own doc comment already discloses for one
+  // bend, compounding faster across a chain of them).
+  const double width = 1.0, thickness = 0.08;
+  const std::vector<double> legs = {0.6, 0.8, 0.6};
+  const std::vector<double> angles_deg = {10.0, 10.0};
+  const std::vector<double> radii = {0.1, 0.25};
+  const Brep u = MultiBend(legs, angles_deg, radii, width, thickness);
+  Check(u.raw().IsValid(), "MultiBend U-channel (2 bends, independent radii) is a valid ON_Brep");
+  const Mesh m_u = u.TessellateToClosedMesh(64, 128);
+  Check(m_u.IsClosedManifold(), "MultiBend U-channel tessellation is a genuine closed manifold");
+
+  double leg_sum = 0.0;
+  for (double l : legs) leg_sum += l;
+  double arc_sum = 0.0;
+  for (size_t i = 0; i < angles_deg.size(); ++i) {
+    arc_sum += (angles_deg[i] * ON_PI / 180.0) * (radii[i] + thickness / 2.0);
+  }
+  const double expected_u = leg_sum * width * thickness + arc_sum * width * thickness;
+  Check(std::abs(m_u.Volume() - expected_u) < 0.01 * expected_u,
+        "MultiBend U-channel's tessellated volume matches the exact multi-radius Pappus closed form to within 1%");
+
+  // A hat-channel: 4 legs, 3 bends, each with its OWN radius.
+  const std::vector<double> hat_legs = {0.3, 0.5, 0.5, 0.3};
+  const std::vector<double> hat_angles = {8.0, 10.0, 8.0};
+  const std::vector<double> hat_radii = {0.2, 0.15, 0.2};
+  const Brep hat = MultiBend(hat_legs, hat_angles, hat_radii, width, thickness);
+  Check(hat.raw().IsValid(), "MultiBend hat-channel (3 bends, independent radii) is a valid ON_Brep");
+  const Mesh m_hat = hat.TessellateToClosedMesh(64, 128);
+  Check(m_hat.IsClosedManifold(), "MultiBend hat-channel tessellation is a genuine closed manifold");
+
+  double hat_leg_sum = 0.0;
+  for (double l : hat_legs) hat_leg_sum += l;
+  double hat_arc_sum = 0.0;
+  for (size_t i = 0; i < hat_angles.size(); ++i) {
+    hat_arc_sum += (hat_angles[i] * ON_PI / 180.0) * (hat_radii[i] + thickness / 2.0);
+  }
+  const double expected_hat = hat_leg_sum * width * thickness + hat_arc_sum * width * thickness;
+  Check(std::abs(m_hat.Volume() - expected_hat) < 0.01 * expected_hat,
+        "MultiBend hat-channel's tessellated volume matches the exact multi-radius Pappus closed form to within 1%");
+}
+
+void TestMultiBendRejectsInvalidArguments() {
+  using dino8::kernel::MultiBend;
+  using sweep_tests::Throws;
+
+  Check(Throws([&] { MultiBend({1.0}, {}, {}, 1.0, 0.1); }),
+        "MultiBend throws when bend_angles_degrees is empty (at least one bend is required)");
+  Check(Throws([&] { MultiBend({1.0, 2.0}, {90.0}, {0.1, 0.2}, 1.0, 0.1); }),
+        "MultiBend throws when inside_radii's own count doesn't match bend_angles_degrees's");
+  Check(Throws([&] { MultiBend({1.0, 2.0, 3.0}, {90.0}, {0.1}, 1.0, 0.1); }),
+        "MultiBend throws when leg_lengths doesn't have exactly one more entry than bend_angles_degrees");
+  Check(Throws([&] { MultiBend({0.0, 2.0}, {90.0}, {0.1}, 1.0, 0.1); }),
+        "MultiBend throws for a non-positive leg length");
+  Check(Throws([&] { MultiBend({1.0, 2.0}, {90.0}, {0.1}, 0.0, 0.1); }), "MultiBend throws for a non-positive width");
+  Check(Throws([&] { MultiBend({1.0, 2.0}, {90.0}, {0.1}, 1.0, 0.0); }),
+        "MultiBend throws for a non-positive thickness");
+  Check(Throws([&] { MultiBend({1.0, 2.0}, {90.0}, {0.0}, 1.0, 0.1); }),
+        "MultiBend throws for a non-positive inside_radius");
+  Check(Throws([&] { MultiBend({1.0, 2.0}, {0.0}, {0.1}, 1.0, 0.1); }), "MultiBend throws for a zero bend angle");
+  Check(Throws([&] { MultiBend({1.0, 2.0}, {180.0}, {0.1}, 1.0, 0.1); }),
+        "MultiBend throws for a bend angle of exactly 180 degrees");
+  Check(Throws([&] { MultiBend({1.0, 2.0, 3.0}, {90.0, 200.0}, {0.1, 0.1}, 1.0, 0.1); }),
+        "MultiBend throws if ANY bend angle in a multi-bend chain is out of range, not just the first");
+}
+
+void TestLatticeInfillFillsBoxAndConformsToNonBoxSolids() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::LatticeInfill;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // parity-map "kernel: Feature operations" - "Lattice/cellular infill":
+  // previously the only "lattice" hits anywhere in this kernel were the
+  // unrelated Cage FFD deformer - no cellular infill code of any kind.
+  // LatticeInfill() closes this outright (`[missing]` -> at least
+  // `[partial]`, a simple strut-based cubic lattice, not a gyroid/TPMS or
+  // Voronoi infill - both of those remain genuinely unimplemented).
+  const Brep box_brep = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Mesh box = box_brep.TessellateToClosedMesh(8, 8);
+  Check(box.IsClosedManifold(), "sanity: the box fixture itself is a closed manifold");
+
+  const double cell_size = 1.0, strut_radius = 0.05;
+  const Mesh lattice = LatticeInfill(box, cell_size, strut_radius, 12);
+  Check(lattice.IsClosedManifold(), "LatticeInfill(box) is a genuine closed manifold (every strut junction, not "
+                                     "just isolated struts, merges cleanly)");
+  Check(lattice.Volume() > 0.0, "LatticeInfill(box) has positive volume");
+  Check(lattice.Volume() < box.Volume(), "LatticeInfill(box) is a sparse infill, strictly lighter than the solid box");
+
+  // Increasing strut_radius (same grid, same cell_size) must increase the
+  // total lattice volume - a basic monotonicity sanity check independent
+  // of the exact strut-junction overlap math.
+  const Mesh lattice_thicker = LatticeInfill(box, cell_size, 2.0 * strut_radius, 12);
+  Check(lattice_thicker.IsClosedManifold(), "LatticeInfill(box) with a thicker strut radius is still closed manifold");
+  Check(lattice_thicker.Volume() > lattice.Volume(),
+        "doubling strut_radius (same grid) strictly increases the lattice's own total volume");
+
+  // The lattice is genuinely trimmed to `solid`'s own shape, not just to
+  // its bounding box: a cylinder inscribed in the SAME bounding box as the
+  // box above has its own corners cut away, so its own lattice infill must
+  // have LESS material than the box's, despite using an identical grid.
+  const Mesh cylinder = Mesh::Cylinder(Point3d(2, 2, 0), Vector3d(0, 0, 1), 2.0, 4.0, 48);
+  Check(cylinder.IsClosedManifold(), "sanity: the inscribed-cylinder fixture itself is a closed manifold");
+  const Mesh lattice_cyl = LatticeInfill(cylinder, cell_size, strut_radius, 12);
+  Check(lattice_cyl.IsClosedManifold(), "LatticeInfill(inscribed cylinder) is a genuine closed manifold");
+  Check(lattice_cyl.Volume() > 0.0, "LatticeInfill(inscribed cylinder) has positive volume");
+  Check(lattice_cyl.Volume() < lattice.Volume(),
+        "LatticeInfill(inscribed cylinder) has strictly less volume than LatticeInfill(box) over the identical "
+        "bounding box - the cylinder's own corners genuinely trim the lattice, not just its outer box");
+}
+
+void TestLatticeInfillRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::LatticeInfill;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  using sweep_tests::Throws;
+
+  const Brep box_brep = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Mesh box = box_brep.TessellateToClosedMesh(8, 8);
+  const NurbsCurve square = NurbsCurve::FromControlPoints(
+      {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0), Point3d(0, 0, 0)}, 1);
+  const Mesh open_mesh = Brep::Extrude(square, Vector3d(0, 0, 1), /*cap=*/false).TessellateToClosedMesh(4, 4);
+  Check(!open_mesh.IsClosedManifold(), "sanity: the uncapped-tube fixture itself is NOT a closed manifold");
+
+  Check(Throws([&] { LatticeInfill(box, 0.0, 0.05, 12); }), "LatticeInfill throws for a non-positive cell_size");
+  Check(Throws([&] { LatticeInfill(box, 1.0, 0.0, 12); }), "LatticeInfill throws for a non-positive strut_radius");
+  Check(Throws([&] { LatticeInfill(box, 1.0, 0.5, 12); }),
+        "LatticeInfill throws when strut_radius is not strictly less than half cell_size");
+  Check(Throws([&] { LatticeInfill(box, 1.0, 0.05, 2); }), "LatticeInfill throws for circle_segments below 3");
+  // A cell_size exceeding the solid's own bounding box is NOT an error -
+  // ceil() of any positive ratio is always at least 1, so this just builds
+  // one oversized cell, trimmed down to whatever of `solid` it crosses.
+  Check(!Throws([&] { LatticeInfill(box, 10.0, 0.05, 12); }),
+        "LatticeInfill does not throw when cell_size exceeds the solid's own bounding box - it degrades to one "
+        "oversized cell instead");
+  Check(LatticeInfill(box, 10.0, 0.05, 12).Volume() > 0.0,
+        "LatticeInfill with an oversized cell_size still produces a genuine, positive-volume result");
+  Check(Throws([&] { LatticeInfill(open_mesh, 0.2, 0.02, 12); }),
+        "LatticeInfill throws when solid is not a closed manifold");
+}
+
 int main() {
   ON::Begin();
 
@@ -63479,6 +63769,9 @@ int main() {
   sweep_tests::TestEmbossProfileEmbossBoss();
   sweep_tests::TestEmbossProfileRejectsInvalidArguments();
   sweep_tests::TestRecognizePocketsBlindPocketRoundTripAndNegativeControls();
+  sweep_tests::TestEmbossProfileWithHolesDebossEngravesAnnulusLeavingCounterFlush();
+  sweep_tests::TestEmbossProfileWithHolesEmbossRaisesRingBossLeavingCounterFlush();
+  sweep_tests::TestEmbossProfileWithHolesRejectsInvalidArguments();
   sweep_tests::TestThickenFlatSheetProducesExactBoxVolume();
   sweep_tests::TestThickenSymmetricPutsOriginalSurfaceOnMidplane();
   sweep_tests::TestThickenCurvedSheetProducesGenuineClosedSolid();
@@ -63619,6 +63912,13 @@ int main() {
 
   TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency();
   TestBendAndBendAllowanceRejectInvalidArguments();
+
+  TestMultiBendReducesToBendForASingleBend();
+  TestMultiBendUChannelAndHatChannelMatchPappusClosedForm();
+  TestMultiBendRejectsInvalidArguments();
+
+  TestLatticeInfillFillsBoxAndConformsToNonBoxSolids();
+  TestLatticeInfillRejectsInvalidArguments();
 
   ON::End();
 
