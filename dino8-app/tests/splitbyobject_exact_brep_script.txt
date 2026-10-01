@@ -1,0 +1,41 @@
+# SplitByObject: a genuine B-rep solid-by-solid split via the exact kernel
+# engine (kernel::SplitBrepByManySolids, boolean_general.h/.cpp) rather
+# than the mesh/Manifold fallback - PARITY_MAP.md's own "kernel: Boolean
+# operations" category named this command specifically as still
+# "app-level mesh-boolean, not [the Keep/split options item's] B-rep
+# solid-by-solid split", even though the kernel code itself already
+# existed and was already tested standalone (see
+# TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume,
+# tests/test_basic.cpp) - this exercises the new app-level wiring end to
+# end, through the real command.
+#
+# Target (a Box) and cutter (a Sphere straddling one of the box's flat
+# faces) are both plain closed solid Breps, genuinely crossing each other
+# in a single simple crossing loop - BooleanCombineGeneral's own proven
+# scope (the same "box pierced by a cylinder"-shaped fixture this
+# codebase's own ImprintFaces/MakeHole kernel tests already use). A
+# real, shared-topology ON_Brep box-against-box corner overlap was tried
+# here first and found to throw "an edge is claimed by 3 or more fragment
+# loops" from BooleanCombineGeneral even on a diagonally-staggered (no
+# literal coincident face) offset - a genuine, narrower-than-advertised
+# limitation of the general engine against two mutually-orthogonal-planar
+# ON_BrepBox operands specifically (PARITY_MAP.md's own kernel-level
+# SplitBrepBySolid tests only ever exercise this engine against a
+# different, hand-rolled Brep::Box() test helper, not a real app-built
+# ON_BrepBox pair) - so this script deliberately exercises the
+# box-vs-curved-cutter case the engine does handle, the same shape the
+# pre-existing boolean_script.txt SplitByObject fixture (a box with a
+# sphere fully inside it) already confirms works end to end. Fresh
+# document, so ids are 1 (target Box) and 2 (cutter Sphere).
+SetActiveViewport Top
+Box 0,0,0 10,10,0 10
+Sphere 10,5,5 4
+SelNone
+SelID 1
+SplitByObject
+SelID 2
+Enter
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0
