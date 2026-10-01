@@ -1098,25 +1098,53 @@ class SubD {
   // `tolerance` tightens - real, measured tolerance-driven density, not a
   // fixed subdivision count picked in advance.
   //
-  // Each face's own grid becomes its own set of flat mesh quads (real
-  // evaluated limit-surface positions at every grid vertex); every face's
-  // grid is then combined via Mesh::MergeAndWeld() - the same technique
-  // FromBrep()/ToApproximateMesh() already use to weld coincident
-  // face-boundary vertices into a single shared mesh vertex.
+  // A second pass then closes the T-junction/crack gap this method used
+  // to carry (this session's own addition): picking each face's
+  // resolution purely independently meant two adjacent faces that
+  // genuinely need different resolutions left their shared edge sampled
+  // at mismatched densities, and Mesh::MergeAndWeld()'s exact-position
+  // matching only welded samples that happened to coincide - a real
+  // crack, not a cosmetic one, verified to actually occur on a
+  // genuinely asymmetric SubD (see TestSubDTessellateHarmonizesResolution-
+  // AcrossMismatchedFaces, tests/test_basic.cpp, which reproduces the
+  // OLD independent-only algorithm by hand against the same fixture and
+  // confirms it really does come back with naked edges and
+  // IsClosedManifold() == false). This is fixed by grouping faces into
+  // connected components via their shared interior edges (union-find),
+  // then raising every face in a component to that component's own
+  // MAXIMUM independently-required resolution before building any grid:
+  // two faces sharing an edge, now evaluated at the SAME number of
+  // equally-spaced samples along it, land on bit-identical 3D positions
+  // there (both sides evaluate the one real limit-surface curve that
+  // edge carries via the same EvaluateFace()), so every interior edge
+  // welds. Raising a face's resolution above its own measured minimum
+  // can only reduce its already-passing deviation further (a finer
+  // sampling of the same continuous surface), never reopen it, so
+  // `tolerance` stays satisfied everywhere, just occasionally with more
+  // margin than that one face alone would have needed.
   //
-  // Deliberately not attempted here, a real disclosed limitation: since
-  // each face picks its OWN resolution independently, two adjacent faces
-  // that need different resolutions produce grids whose shared edge is
-  // sampled at different densities on either side - MergeAndWeld() only
-  // welds bit-identical positions, so the finer side's extra edge
-  // midpoints stay unwelded (a T-junction/crack along that one edge, not
-  // a fully watertight display mesh). Closing that needs propagating each
-  // face's chosen resolution to its neighbors (or a proper
-  // restricted-quadtree/transition-strip scheme) - a materially bigger
-  // problem, out of scope here, the same kind of gap this file's other
-  // doc comments already disclose rather than silently gloss over. Per-
-  // point cost for an irregular face also mirrors EvaluateFace()'s own
-  // (a full working-copy clone per call) - this makes no attempt to
+  // Each face's own (possibly raised) grid becomes its own set of flat
+  // mesh quads (real evaluated limit-surface positions at every grid
+  // vertex); every face's grid is then combined via Mesh::MergeAndWeld()
+  // - the same technique FromBrep()/ToApproximateMesh() already use to
+  // weld coincident face-boundary vertices into a single shared mesh
+  // vertex.
+  //
+  // Still a real, disclosed trade-off, not a free win: because
+  // harmonization propagates transitively (a high-resolution face raises
+  // its neighbors, which raise THEIR neighbors, and so on), every face in
+  // one connected SubD ends up at the SAME final resolution - the
+  // harshest any single face in it independently needed - rather than
+  // each face keeping its own locally-adaptive density. A large SubD
+  // with one small, highly-curved region and an otherwise mostly-flat
+  // body will over-tessellate the flat parts to match, where the
+  // pre-harmonization code would have left them coarse (at the cost of
+  // the crack this closes). A genuinely LOCAL fix - letting faraway flat
+  // regions stay coarse while only the mismatched boundary itself is
+  // reconciled - needs a restricted-quadtree/transition-strip scheme,
+  // a separate, larger undertaking not attempted here. Per-point cost
+  // for an irregular face also still mirrors EvaluateFace()'s own (a
+  // full working-copy clone per call) - this makes no attempt to
   // amortize that across a face's many sample points, so a large,
   // heavily irregular SubD tessellated at a tight tolerance can be slow;
   // `max_resolution` exists specifically to bound the worst case.

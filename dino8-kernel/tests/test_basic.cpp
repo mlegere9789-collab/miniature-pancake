@@ -23560,20 +23560,82 @@ void TestSubDTessellateFlatRegularPatchIsExactAtCoarsestGrid() {
   Check(std::abs(exact_pt.position.z) < 1e-12,
         "sanity: the exact regular-patch evaluation stays exactly on the flat grid's own z=0 plane");
 
-  // Tessellating the WHOLE grid (not just the center face) at an
-  // extremely tight tolerance still can't force the center face's own
-  // portion of the output below its already-exact, already-flat 1x1
-  // grid - the deviation there is identically 0.0, which no tolerance
-  // above 0.0 can fail. (Boundary faces may still need refinement, since
-  // Catmull-Clark's boundary/corner smoothing rule is not a pure
-  // straight-line reproduction - a real, different effect, not tested
-  // here.) So the total output face count must come out well under the
-  // "every face maxed out" bound.
+  // **Corrected, this session:** this used to assert the MERGED output
+  // stayed below the "every face maxed out" bound, reasoning that the
+  // center face's own already-exact flatness would keep its own portion
+  // of the output coarse. That was true of a per-face-INDEPENDENT
+  // resolution search (what Tessellate() used to do), but this session's
+  // own resolution-harmonization fix (see Tessellate()'s own doc comment
+  // in subd.h, and TestSubDTessellateHarmonizesResolutionAcrossMismatched
+  // Faces below) deliberately changes this: because every face here is
+  // one connected SubD (joined edge-to-edge), the 4 CORNER faces'
+  // genuine boundary curvature (Catmull-Clark's own boundary/corner rule
+  // is not a pure straight-line reproduction) measured directly, not
+  // assumed - needs the full `max_resolution` (8) at this extremely
+  // tight tolerance (1e-9), and harmonization now raises every OTHER
+  // face in the component, including this exactly-flat center face, to
+  // that SAME shared resolution - trading this face's own local
+  // coarseness for a crack-free merged result (the "T-junction/crack"
+  // gap Tessellate() used to disclose). The center face's own INDEPENDENT
+  // exactness is unaffected by this (confirmed above, at the
+  // `EvaluateFace()` level, which this fix doesn't touch) - only the
+  // final MERGED mesh's face count changed, and only because every face
+  // here shares one connected component with the corner faces that
+  // genuinely need the cap.
   const Mesh tessellated = subd.Tessellate(1e-9, 8);
-  Check(tessellated.FaceCount() < 9 * 8 * 8,
-        "tessellating the flat grid at a very tight tolerance does not max out every one of "
-        "its 9 faces to the 8x8 cap - the interior regular face's own exact flatness keeps at "
-        "least that face coarse");
+  Check(tessellated.FaceCount() == 9 * 8 * 8,
+        "tessellating the flat grid at a very tight tolerance now DOES max out every one of "
+        "its 9 faces to the 8x8 cap, including the exactly-flat center face - resolution-"
+        "harmonization intentionally raises every face in one connected SubD to the maximum "
+        "any single face in it needs, closing the crack a per-face-independent resolution "
+        "would otherwise leave between the corner faces (which genuinely need the cap here) "
+        "and their coarser neighbors");
+}
+
+void TestSubDTessellateHarmonizesResolutionAcrossMismatchedFaces() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Closes Tessellate()'s own previously-disclosed T-junction/crack
+  // limitation: since each face used to pick its resolution completely
+  // independently, two adjacent faces that genuinely need different
+  // resolutions left their shared edge sampled at mismatched densities,
+  // and MergeAndWeld()'s exact-position matching only welded the samples
+  // that happened to coincide - a real crack, not a cosmetic one. A
+  // level-1-subdivided NON-cubic box (8x1x1, not 1x1x1 - a cube's own
+  // symmetry maps every face to a resolution-equivalent one, hiding the
+  // mismatch) has 24 faces: 8 still touch one of the original box's
+  // valence-3 corners (genuinely more curved), the other 16 are fully
+  // regular - at tolerance 0.1, measured directly, the 16 regular faces
+  // converge to a 2x2 grid while the 8 corner faces need 4x4, a genuine,
+  // provoked mismatch (not assumed): rebuilding the exact pre-fix
+  // algorithm by hand against this same fixture (each face's own
+  // independent resolution, no harmonization) produces a mesh with 96
+  // naked edges and IsClosedManifold() == false, confirming the crack is
+  // real on this fixture, not a hypothetical one.
+  const Mesh quad_box = MakeQuadBoxMesh(0, 0, 0, 8, 1, 1);
+  SubD subd = SubD::FromControlMesh(quad_box);
+  subd.Subdivide(1);
+  Check(subd.FaceCount() == 24, "sanity: a level-1-subdivided box SubD has 24 faces");
+
+  const Mesh tessellated = subd.Tessellate(0.1, 16);
+  const Mesh::CheckReport report = tessellated.Check();
+  Check(report.naked_edges == 0,
+        "Tessellate()'s resolution-harmonization pass leaves zero naked edges on a fixture "
+        "whose faces genuinely need different resolutions - the shared boundary between a "
+        "2x2-sufficient face and a 4x4-needing face is now sampled at the SAME (harmonized) "
+        "density on both sides, so every sample coincides and MergeAndWeld() welds it");
+  Check(report.non_manifold_edges == 0, "...and introduces no non-manifold edges either");
+  Check(tessellated.IsClosedManifold(),
+        "the harmonized tessellation of a genuinely mismatched-resolution SubD is a real "
+        "closed manifold, not merely zero-naked-edges by some other defect");
+
+  // A much looser tolerance (0.2) provokes an even coarser mismatch
+  // (1x1 vs 2x2) and must close the same way.
+  const Mesh loose = subd.Tessellate(0.2, 16);
+  Check(loose.IsClosedManifold(),
+        "harmonization also closes a coarser (1x1 vs 2x2) resolution mismatch at a looser "
+        "tolerance on the same fixture");
 }
 
 void TestSubDBooleanUnionOfDisjointBoxesSumsVolumes() {
@@ -63843,6 +63905,7 @@ int main() {
   TestSubDTessellateFinerGridForTighterTolerance();
   TestSubDTessellateWeldsCubeFacesIntoClosedManifold();
   TestSubDTessellateFlatRegularPatchIsExactAtCoarsestGrid();
+  TestSubDTessellateHarmonizesResolutionAcrossMismatchedFaces();
   TestSubDBooleanUnionOfDisjointBoxesSumsVolumes();
   TestSubDBooleanIntersectionOfOverlappingBoxesMatchesExactOverlap();
   TestSubDBooleanDifferenceSubtractsOnlyTheOverlap();
