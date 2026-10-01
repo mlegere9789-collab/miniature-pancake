@@ -10431,6 +10431,46 @@ void TestBrepBoxIsClosedAndWatertight() {
         "Brep::Box -> Tessellate -> weld volume matches the box's true volume");
 }
 
+// Brep::BoxWelded() closes the "Box() uses the surface-only NewFace(int)"
+// half of the "Genuine topology produced by every constructor/primitive"
+// gap (kernel: Topology & data structure) for the simplest of its five
+// named cases: unlike Box() (checked above/below to have NO real topology
+// at all), this is a genuinely welded solid built through
+// FromPlanarFaces().
+void TestBrepBoxWeldedHasGenuineTopology() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::BoxWelded(0, 0, 0, 2, 3, 4);
+  ON_TextLog discard_log;
+  Check(box.raw().IsValid(&discard_log),
+        "Brep::BoxWelded() is a valid ON_Brep, unlike Brep::Box()");
+  Check(box.raw().IsSolid(), "Brep::BoxWelded() reports IsSolid()");
+  Check(box.FaceCount() == 6 && box.LiveVertexCount() == 8 && box.LiveEdgeCount() == 12,
+        "Brep::BoxWelded() has 6 faces, 8 welded vertices and 12 welded edges");
+  const Brep::CheckReport r = box.Check();
+  Check(r.IsClean(), "Brep::BoxWelded()'s own Check() report is clean");
+  Check(std::abs(box.TessellateToClosedMesh(1, 1).Volume() - 24.0) < 1e-6,
+        "Brep::BoxWelded(0,0,0,2,3,4)'s volume is exactly 2*3*4 = 24");
+
+  // A real adjacency query, which Box()'s own surface-only faces can't
+  // support at all (TestBrepLacksFullOpenNurbsTopologyButStillUsable
+  // below confirms that side): every edge borders exactly 2 faces.
+  for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+    if (box.raw().m_E[ei].m_edge_index < 0) continue;
+    Check(box.FacesOfEdge(ei).size() == 2,
+          "every edge of a welded box borders exactly 2 faces");
+  }
+
+  bool threw = false;
+  try {
+    Brep::BoxWelded(2, 0, 0, 0, 3, 4);  // x1 < x0
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "Brep::BoxWelded() refuses a reversed x0/x1 pair");
+}
+
 void TestBrepLacksFullOpenNurbsTopologyButStillUsable() {
   using dino8::kernel::Brep;
 
@@ -64283,6 +64323,7 @@ int main() {
   TestComputeMultiWayInterference();
   TestComputeAllInterference();
   TestBrepBoxIsClosedAndWatertight();
+  TestBrepBoxWeldedHasGenuineTopology();
   TestBrepLacksFullOpenNurbsTopologyButStillUsable();
   TestBrepGetTightBoundingBox();
   TestBrepGetTightBoundingBoxExactForTrimmedPlanarFaces();
