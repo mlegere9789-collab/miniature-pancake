@@ -517,6 +517,28 @@ std::pair<Brep, Brep> SplitBrepByPlane(const Brep& target, Vector3d plane_normal
 // `solid` with no faces at all.
 Brep MakeHole(const Brep& solid, Point3d center, Vector3d axis, double radius, double depth, bool through = false);
 
+// MakeHole() above, for more than one hole in a single call (parity-map
+// "Blind/through hole with depth/placement" - closes its own disclosed "one
+// hole per call" gap): every entry in `centers` shares the same `axis`,
+// `radius`, `depth` and `through` (a bolt-circle or grid of identical
+// holes, the common case), each cut via the same capped-cylinder tool
+// MakeHole() itself builds. All `centers` tools are folded into ONE
+// compound cutter first (BooleanCombineGeneralNAry's own Union fold), then
+// subtracted from `solid` via a single BooleanCombineGeneral() Difference
+// call - not N chained Difference calls against `solid`, which would risk
+// BooleanCombineGeneral()'s own disclosed "faces assumed genus-0, no
+// pre-existing holes" scope limit on the second and later holes. Verified
+// for well-separated centers only (TestMakeHolesTwoThroughHolesMatchSumOfIndividualVolumes,
+// tests/test_basic.cpp) - overlapping tools are not exercised by this
+// function's own tests and inherit whatever BooleanCombineGeneralNAry()'s
+// own Union fold does for overlapping operands generally, untested here.
+//
+// Throws std::invalid_argument if `centers` is empty, plus whatever
+// MakeHole() itself throws for a non-positive `radius`, a non-positive
+// `depth` on a blind hole, a zero-length `axis`, or a `solid` with no faces.
+Brep MakeHoles(const Brep& solid, const std::vector<Point3d>& centers, Vector3d axis, double radius, double depth,
+               bool through = false, double tolerance = 0.001);
+
 // Counterbore hole (Rhino/SolidWorks "Counterbore Hole" feature,
 // parity-map "Counterbore (stepped coaxial) hole"): MakeHole()'s own
 // straight bore, plus a larger-diameter, shallower coaxial recess at the
@@ -539,6 +561,17 @@ Brep MakeHole(const Brep& solid, Point3d center, Vector3d axis, double radius, d
 Brep MakeCounterboreHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
                           bool bore_through, double counterbore_radius, double counterbore_depth);
 
+// MakeCounterboreHole() above, for more than one counterbore hole (same
+// bore/counterbore sizing) in a single call - the counterbore-shaped
+// sibling of MakeHoles() above, same "one compound tool, one Difference
+// call" NAry-fold construction and the same non-overlap precondition. See
+// MakeHoles()'s own doc comment for the full construction/precondition
+// detail, which applies here unchanged with the per-hole tool replaced by
+// MakeCounterboreHole()'s own stepped-profile revolve.
+Brep MakeCounterboreHoles(const Brep& solid, const std::vector<Point3d>& centers, Vector3d axis, double bore_radius,
+                           double bore_depth, bool bore_through, double counterbore_radius,
+                           double counterbore_depth, double tolerance = 0.001);
+
 // Countersink hole (Rhino/SolidWorks "Countersink Hole" feature,
 // parity-map "Countersink (conical) hole"): MakeHole()'s own straight
 // bore, plus a conical flare at the entry surface for a flat-head screw,
@@ -557,6 +590,14 @@ Brep MakeCounterboreHole(const Brep& solid, Point3d center, Vector3d axis, doubl
 // reason MakeCounterboreHole() above gives.
 Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
                           bool bore_through, double countersink_diameter, double countersink_angle_degrees);
+
+// MakeCountersinkHole() above, for more than one countersink hole (same
+// bore/countersink sizing) in a single call - the countersink-shaped
+// sibling of MakeHoles()/MakeCounterboreHoles() above, identical
+// construction and precondition; see MakeHoles()'s own doc comment.
+Brep MakeCountersinkHoles(const Brep& solid, const std::vector<Point3d>& centers, Vector3d axis, double bore_radius,
+                           double bore_depth, bool bore_through, double countersink_diameter,
+                           double countersink_angle_degrees, double tolerance = 0.001);
 
 // Emboss (raise) or deboss (engrave) a closed planar profile onto `solid`
 // (parity-map "kernel: Feature operations" - "Emboss/deboss", previously

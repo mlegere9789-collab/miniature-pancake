@@ -52459,6 +52459,185 @@ void TestMakeCountersinkHoleRejectsInvalidArguments() {
         "MakeCountersinkHole throws for a zero-length axis");
 }
 
+void TestMakeHolesTwoThroughHolesMatchSumOfIndividualVolumes() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeHole;
+  using dino8::kernel::MakeHoles;
+  using dino8::kernel::Mesh;
+
+  // parity-map "kernel: Feature operations" - "Blind/through hole with
+  // depth/placement": closes MakeHole()'s own disclosed "one hole per
+  // call" gap. Two well-separated through holes on a 4x8x4 slab (volume
+  // 128, the same per-hole box/radius proportions TestMakeHoleBlindAndThrough's
+  // own through case above already confirms gives a reliably closed
+  // tessellation - a wider box at this same resolution was confirmed via
+  // dino8_scratch_test to leave the top/bottom faces' own OUTER silhouette
+  // under-tessellated, a pre-existing TessellateToClosedMesh() resolution
+  // artifact unrelated to either hole), cut via ONE MakeHoles() call,
+  // folded into a single compound cutter (BooleanCombineGeneralNAry) and
+  // subtracted in a single BooleanCombineGeneral() Difference call - not
+  // two chained Difference calls against the slab.
+  const Brep slab = Brep::Box(0, 0, 0, 4, 8, 4);
+  const Point3d c1(2, 2, 4), c2(2, 6, 4);
+  const Vector3d down(0, 0, -1);
+  const double radius = 0.5;
+
+  const Brep drilled = MakeHoles(slab, {c1, c2}, down, radius, /*depth=*/0.0, /*through=*/true);
+  Check(drilled.raw().IsValid(), "MakeHoles produces a valid ON_Brep");
+  Check(drilled.FaceCount() == 8,
+        "MakeHoles (two through holes) adds exactly two new faces to the slab's own 6 - each through hole exits "
+        "both ends through an existing face, same as a single MakeHole() through call");
+  Check(BrepPassesThroughPoint(drilled, c1 + Vector3d(radius, 0, 0)),
+        "MakeHoles leaves a genuine cylindrical wall at the first hole's own center");
+  Check(BrepPassesThroughPoint(drilled, c2 + Vector3d(radius, 0, 0)),
+        "MakeHoles leaves a genuine cylindrical wall at the second hole's own center");
+
+  // Matches the sum of what two independent MakeHole() calls would remove -
+  // not an approximation, the exact same closed-form two-cylinder volume.
+  const Brep sequential = MakeHole(MakeHole(slab, c1, down, radius, 0.0, true), c2, down, radius, 0.0, true);
+  const Mesh m_batch = drilled.TessellateToClosedMesh(32, 128);
+  const Mesh m_sequential = sequential.TessellateToClosedMesh(32, 128);
+  Check(std::abs(m_batch.Volume() - m_sequential.Volume()) < 0.5,
+        "MakeHoles' single-compound-tool construction removes the same volume as two sequential MakeHole() calls "
+        "on well-separated holes");
+  const double expect = 4.0 * 8.0 * 4.0 - 2.0 * ON_PI * radius * radius * 4.0;
+  Check(std::abs(m_batch.Volume() - expect) < 0.5,
+        "MakeHoles (two through holes) matches the closed-form slab_volume - 2*pi*r^2*height");
+}
+
+void TestMakeHolesRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeHoles;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 4);
+  const Brep empty;
+  const std::vector<Point3d> centers = {Point3d(2, 2, 4), Point3d(8, 8, 4)};
+  const Vector3d down(0, 0, -1);
+
+  Check(Throws([&] { MakeHoles(empty, centers, down, 0.5, 1.0, false); }), "MakeHoles throws for a faceless solid");
+  Check(Throws([&] { MakeHoles(box, {}, down, 0.5, 1.0, false); }), "MakeHoles throws for an empty centers list");
+  Check(Throws([&] { MakeHoles(box, centers, down, 0.0, 1.0, false); }), "MakeHoles throws for a non-positive radius");
+  Check(Throws([&] { MakeHoles(box, centers, down, 0.5, 0.0, false); }),
+        "MakeHoles throws for a non-positive depth on a blind hole");
+  Check(Throws([&] { MakeHoles(box, centers, Vector3d(0, 0, 0), 0.5, 1.0, false); }),
+        "MakeHoles throws for a zero-length axis");
+}
+
+void TestMakeCounterboreHolesTwoHolesMatchSumOfIndividualVolumes() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeCounterboreHole;
+  using dino8::kernel::MakeCounterboreHoles;
+  using dino8::kernel::Mesh;
+
+  // parity-map "kernel: Feature operations" - "Counterbore (stepped
+  // coaxial) hole": the same batch closure MakeHoles() above gives
+  // MakeHole(), for a bolt circle of identical counterbore holes.
+  const Brep slab = Brep::Box(0, 0, 0, 10, 10, 4);
+  const Point3d c1(2, 2, 4), c2(8, 8, 4);
+  const Vector3d down(0, 0, -1);
+  const double bore_r = 0.3, bore_depth = 3.0, cb_r = 0.6, cb_depth = 1.0;
+
+  const Brep drilled = MakeCounterboreHoles(slab, {c1, c2}, down, bore_r, bore_depth, /*bore_through=*/false, cb_r, cb_depth);
+  Check(drilled.raw().IsValid(), "MakeCounterboreHoles produces a valid ON_Brep");
+  Check(drilled.FaceCount() == 10,
+        "MakeCounterboreHoles (two holes) adds exactly four new faces to the slab's own 6 - two per hole, same as "
+        "a single MakeCounterboreHole() call");
+  for (const Point3d& c : {c1, c2}) {
+    Check(BrepPassesThroughPoint(drilled, c + Vector3d(cb_r, 0, 0)),
+          "MakeCounterboreHoles' wall passes through the counterbore radius at the entry surface, at both centers");
+    const Point3d bore_probe = c + down * 2.0 + Vector3d(bore_r, 0, 0);
+    Check(BrepPassesThroughPoint(drilled, bore_probe),
+          "MakeCounterboreHoles' SAME wall also passes through the narrower bore radius at both centers");
+    const Point3d expected_bottom = c + down * bore_depth;
+    Check(HasPlanarFaceThroughPoint(drilled, expected_bottom),
+          "MakeCounterboreHoles leaves a genuine flat pilot-bore bottom at both centers");
+  }
+
+  const Brep sequential = MakeCounterboreHole(MakeCounterboreHole(slab, c1, down, bore_r, bore_depth, false, cb_r, cb_depth),
+                                               c2, down, bore_r, bore_depth, false, cb_r, cb_depth);
+  const Mesh m_batch = drilled.TessellateToClosedMesh(32, 128);
+  const Mesh m_sequential = sequential.TessellateToClosedMesh(32, 128);
+  Check(std::abs(m_batch.Volume() - m_sequential.Volume()) < 0.5,
+        "MakeCounterboreHoles' single-compound-tool construction removes the same volume as two sequential "
+        "MakeCounterboreHole() calls on well-separated holes");
+}
+
+void TestMakeCounterboreHolesRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeCounterboreHoles;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 4);
+  const Brep empty;
+  const std::vector<Point3d> centers = {Point3d(2, 2, 4), Point3d(8, 8, 4)};
+  const Vector3d down(0, 0, -1);
+
+  Check(Throws([&] { MakeCounterboreHoles(empty, centers, down, 0.3, 3.0, false, 0.6, 1.0); }),
+        "MakeCounterboreHoles throws for a faceless solid");
+  Check(Throws([&] { MakeCounterboreHoles(box, {}, down, 0.3, 3.0, false, 0.6, 1.0); }),
+        "MakeCounterboreHoles throws for an empty centers list");
+  Check(Throws([&] { MakeCounterboreHoles(box, centers, down, 0.6, 3.0, false, 0.6, 1.0); }),
+        "MakeCounterboreHoles throws when counterbore_radius does not exceed bore_radius");
+  Check(Throws([&] { MakeCounterboreHoles(box, centers, Vector3d(0, 0, 0), 0.3, 3.0, false, 0.6, 1.0); }),
+        "MakeCounterboreHoles throws for a zero-length axis");
+}
+
+void TestMakeCountersinkHolesTwoHolesMatchSumOfIndividualVolumes() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeCountersinkHole;
+  using dino8::kernel::MakeCountersinkHoles;
+  using dino8::kernel::Mesh;
+
+  // parity-map "kernel: Feature operations" - "Countersink (conical) hole":
+  // the countersink-shaped sibling of MakeCounterboreHoles() above.
+  const Brep slab = Brep::Box(0, 0, 0, 10, 10, 4);
+  const Point3d c1(2, 2, 4), c2(8, 8, 4);
+  const Vector3d down(0, 0, -1);
+  const double bore_r = 0.3, bore_depth = 3.0, cs_diameter = 1.6, cs_angle_deg = 90.0;
+  const double cs_radius = 0.5 * cs_diameter;
+
+  const Brep drilled =
+      MakeCountersinkHoles(slab, {c1, c2}, down, bore_r, bore_depth, /*bore_through=*/false, cs_diameter, cs_angle_deg);
+  Check(drilled.raw().IsValid(), "MakeCountersinkHoles produces a valid ON_Brep");
+  Check(drilled.FaceCount() == 10,
+        "MakeCountersinkHoles (two holes) adds exactly four new faces to the slab's own 6 - two per hole, same as "
+        "a single MakeCountersinkHole() call");
+  for (const Point3d& c : {c1, c2}) {
+    Check(BrepPassesThroughPoint(drilled, c + Vector3d(cs_radius, 0, 0)),
+          "MakeCountersinkHoles' wall passes through the countersink radius at the entry surface, at both centers");
+    const Point3d bore_probe = c + down * 2.0 + Vector3d(bore_r, 0, 0);
+    Check(BrepPassesThroughPoint(drilled, bore_probe),
+          "MakeCountersinkHoles' SAME wall also passes through the narrower bore radius at both centers");
+  }
+
+  const Brep sequential =
+      MakeCountersinkHole(MakeCountersinkHole(slab, c1, down, bore_r, bore_depth, false, cs_diameter, cs_angle_deg), c2,
+                           down, bore_r, bore_depth, false, cs_diameter, cs_angle_deg);
+  const Mesh m_batch = drilled.TessellateToClosedMesh(32, 128);
+  const Mesh m_sequential = sequential.TessellateToClosedMesh(32, 128);
+  Check(std::abs(m_batch.Volume() - m_sequential.Volume()) < 0.5,
+        "MakeCountersinkHoles' single-compound-tool construction removes the same volume as two sequential "
+        "MakeCountersinkHole() calls on well-separated holes");
+}
+
+void TestMakeCountersinkHolesRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeCountersinkHoles;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 4);
+  const Brep empty;
+  const std::vector<Point3d> centers = {Point3d(2, 2, 4), Point3d(8, 8, 4)};
+  const Vector3d down(0, 0, -1);
+
+  Check(Throws([&] { MakeCountersinkHoles(empty, centers, down, 0.3, 3.0, false, 1.6, 90.0); }),
+        "MakeCountersinkHoles throws for a faceless solid");
+  Check(Throws([&] { MakeCountersinkHoles(box, {}, down, 0.3, 3.0, false, 1.6, 90.0); }),
+        "MakeCountersinkHoles throws for an empty centers list");
+  Check(Throws([&] { MakeCountersinkHoles(box, centers, down, 0.3, 3.0, false, 0.6, 90.0); }),
+        "MakeCountersinkHoles throws when countersink_diameter does not exceed 2*bore_radius");
+  Check(Throws([&] { MakeCountersinkHoles(box, centers, Vector3d(0, 0, 0), 0.3, 3.0, false, 1.6, 90.0); }),
+        "MakeCountersinkHoles throws for a zero-length axis");
+}
+
 void TestEmbossProfileDebossThroughPocket() {
   using dino8::kernel::Brep;
   using dino8::kernel::EmbossMode;
@@ -63955,6 +64134,12 @@ int main() {
   sweep_tests::TestRecognizeBossesBlindAndFreestandingRoundTrip();
   sweep_tests::TestMakeCountersinkHoleBoxStandardAngle();
   sweep_tests::TestMakeCountersinkHoleRejectsInvalidArguments();
+  sweep_tests::TestMakeHolesTwoThroughHolesMatchSumOfIndividualVolumes();
+  sweep_tests::TestMakeHolesRejectsInvalidArguments();
+  sweep_tests::TestMakeCounterboreHolesTwoHolesMatchSumOfIndividualVolumes();
+  sweep_tests::TestMakeCounterboreHolesRejectsInvalidArguments();
+  sweep_tests::TestMakeCountersinkHolesTwoHolesMatchSumOfIndividualVolumes();
+  sweep_tests::TestMakeCountersinkHolesRejectsInvalidArguments();
   sweep_tests::TestEmbossProfileDebossThroughPocket();
   sweep_tests::TestEmbossProfileDebossBlindPocket();
   sweep_tests::TestEmbossProfileEmbossBoss();
