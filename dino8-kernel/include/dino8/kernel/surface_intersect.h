@@ -455,6 +455,104 @@ std::vector<BrepContourSection> ContourBrep(const ON_Brep& b, const ON_Plane& ba
 // answer.
 std::vector<BrepBrepIntersection> FindBrepSelfIntersections(const ON_Brep& b, const IntersectOptions& opt);
 
+// A single point where two surfaces touch WITHOUT crossing - PARITY_MAP.md's
+// own "SSX tangent / grazing contact (surfaces touching along a point or
+// curve)" bullet, named as entirely `[missing]`: "There is no SSX tangency
+// capability to give partial credit for". IntersectSurfaces() is the wrong
+// tool for this on purpose - its mesh-seeded triangle/triangle crossing
+// search only ever finds a SEGMENT where two triangles actually cross, and a
+// pure tangential touch (a sphere resting on a plane, two cylinders touching
+// along one ruling line) produces no such crossing at all, however fine the
+// seed mesh. This is a dedicated closest-approach search instead: both
+// surfaces are sampled on a coarse grid, every grid point of `a` is paired
+// with its nearest grid point of `b`, and every pair close enough to
+// plausibly be a real touch seeds a Newton solve for a genuine stationary
+// point of the squared gap between the surfaces (RefineClosestApproach,
+// surface_intersect.cpp - the 4-equation "both gradients vanish" system, not
+// RefineSurfaceSurfacePoint()'s 3-equation "coincident point" system that
+// IntersectSurfaces() itself uses, which is deliberately under-determined
+// along a shared crossing curve and would not distinguish a tangent touch
+// from an ordinary point on one). A stationary point with zero gap is not
+// automatically a tangent touch, though - a nonnegative function that
+// reaches zero has a zero gradient there regardless of whether the
+// surfaces merely touch or genuinely cross, so an ordinary transversal
+// crossing point satisfies the same 4-equation system too. What actually
+// distinguishes the two is the surfaces' own tangent planes at that point:
+// coincident (parallel or antiparallel normals) for a tangent touch, at a
+// real angle for a transversal crossing - a purely local, sampling-
+// independent test (checked from each surface's own normal at the converged
+// parameters), deliberately NOT a proximity check against
+// IntersectSurfaces()'s own sampled crossing-curve points (that approach
+// was tried and is unreliable in both directions: a crossing curve's own
+// mesh-driven sample spacing can leave a genuine crossing point farther
+// from its nearest recorded sample than a reasonable match tolerance,
+// wrongly keeping it; and a real tangent touch could coincidentally fall
+// within that same tolerance of an unrelated recorded sample, wrongly
+// dropping it). The normal at each side is taken via a nudge-off-the-exact-
+// point search (RobustSurfaceNormal, surface_intersect.cpp), not a plain
+// cross product of the raw partial derivatives at (ua, va)/(ub, vb) - a
+// contact landing exactly on a surface's own coordinate pole (an entire
+// row/column of control points collapsed to one point, where d/du or d/dv
+// vanishes even though the surface itself has a perfectly well-defined
+// limiting tangent plane there) is still classified correctly, which
+// matters here more than it might elsewhere: the single most natural touch
+// this function exists to find - a sphere resting on a plane directly below
+// its own center - lands exactly on that sphere's own south pole under
+// ON_Sphere's default parametrization (RobustSurfaceNormal's own nudge
+// resolves exactly that case). A contact where even the nudged normal
+// degenerates on either side - a genuinely malformed surface there, not
+// merely a pole - cannot be classified this way and is skipped rather than
+// guessed. Still honestly partial: this finds isolated POINT contacts only -
+// the bullet's own "or curve" half (two surfaces tangent along a whole
+// shared curve, e.g. two cylinders of equal radius touching along one
+// ruling line) is not detected as a curve, only (if at all) as however many
+// isolated points the coarse seed grid happens to converge to along it; a
+// surface pair with more than one genuinely separate point of tangential
+// contact is likewise not guaranteed to find every one of them (only every
+// contact whose coarse grid seed converges to it).
+struct SurfaceTangentContact {
+  ON_2dPoint uv_a;  // parameters on `a` at the contact
+  ON_2dPoint uv_b;  // parameters on `b` at the contact
+  Point3d point;    // the (refined, shared-to-tolerance) contact point
+  double gap = 0;   // |a(uv_a) - b(uv_b)| after refinement
+};
+std::vector<SurfaceTangentContact> FindSurfaceTangentContacts(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt);
+
+// A connected region of `a`'s own (u, v) domain, reported in that domain's
+// own axis-aligned bounding box, whose points all lie ON `b` within
+// tolerance - PARITY_MAP.md's own "SSX coincident / overlapping surface
+// regions" bullet: "IntersectSurfaces still returns nothing for coincident
+// surfaces. The only coincidence handling is inside planar booleans."
+// IntersectSurfaces() is the wrong tool for a coincident region for the same
+// reason IntersectCurveSurfaceOverlap() already exists instead of reusing
+// IntersectCurveSurface(): two surfaces that coincide over a real patch
+// produce no clean triangle-pair CROSSING there at all (the triangles lie
+// in, not athwart, each other), so the mesh-seeded chainer finds nothing to
+// chain. This applies that same sampling-overlap idea one dimension up: `a`
+// is sampled on a grid sized the same way IntersectCurveSurfaceOverlap()
+// sizes its own 1D sampling (opt.mesh_tolerance-driven), each sample is
+// closest-point-projected onto `b` (row-continuity-seeded, globally
+// re-seeded on failure - identical discipline to
+// IntersectCurveSurfaceOverlap()'s own per-sample projection), and every
+// maximal 4-connected run of on-`b` grid cells becomes one region, reported
+// as that run's own axis-aligned (u, v) bounding box in `a`'s domain (NOT an
+// exact boundary polygon - the same "as precise as the sampling resolution"
+// honesty IntersectCurveSurfaceOverlap() already discloses for its own
+// span endpoints, one dimension up). `entire_surface` is true when every
+// sampled grid point across `a`'s WHOLE domain lies on `b` (the two surfaces
+// coincide everywhere `a` is defined, not just within this region's own
+// bounding box). A single isolated on-`b` grid cell with no on-`b` neighbour
+// is dropped as a transient touch - the same "not an overlap" treatment
+// IntersectCurveSurfaceOverlap() already gives an isolated on-surface
+// sample - and is left for FindSurfaceTangentContacts() above to report
+// instead.
+struct SurfaceOverlapRegion {
+  double u0 = 0, u1 = 0;  // bounding sub-interval of a.Domain(0) covered by this region
+  double v0 = 0, v1 = 0;  // bounding sub-interval of a.Domain(1) covered by this region
+  bool entire_surface = false;
+};
+std::vector<SurfaceOverlapRegion> IntersectSurfacesOverlap(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt);
+
 // --- numerical helpers ------------------------------------------------------
 
 // Damped Gauss-Newton on residual(x) (m equations, n unknowns) with box

@@ -257,7 +257,12 @@ Mesh SubD::Boolean(const SubD& other, BooleanOp op) const {
 }
 
 SubD SubD::BooleanToSubD(const SubD& other, BooleanOp op) const {
-  return SubD::FromControlMesh(Boolean(other, op));
+  Mesh result = Boolean(other, op);
+  // See this method's own doc comment (subd.h) for why this is always
+  // safe: a pure face-list rewrite, never touching a vertex, that is a
+  // no-op wherever nothing qualifies.
+  result.TrisToQuads();
+  return SubD::FromControlMesh(result);
 }
 
 SubD SubD::Transform(const ON_Xform& xform) const {
@@ -1831,6 +1836,67 @@ const ON_SubDFace* FindCommonFace(const ON_SubDVertex* vF, const ON_SubDVertex* 
   return nullptr;
 }
 
+// The result of one real ON_SubD::GlobalSubdivide(1) step, tracking which
+// child face/corner-index is the refined position of a specific original
+// face corner. `face == nullptr` means the subdivide-and-relocate step
+// failed (any of the same lookup failures the inline version this
+// factors out of EvaluateFaceAdaptive() already fell back from).
+struct SubdividedCorner {
+  const ON_SubDFace* face = nullptr;
+  int corner_index = -1;
+};
+
+// Globally subdivides `s` once (mutating it in place) and returns
+// whichever of the 4 child faces this produces at face `f`'s own corner
+// `corner_index` shares, plus that child's own corner index for the same
+// vertex - the "which child continues this exact corner" lookup
+// EvaluateFaceAdaptive()'s quadrant recursion already needs every level
+// (predict the face/prev-edge/next-edge subdivision points, locate the
+// 3 matching new vertices, identify the common child face, then find its
+// 4th corner by elimination), factored out here so ExactVertexCorner()'s
+// own semi-sharp decay step below can reuse the identical, already-tested
+// mechanism for a plain "track this one corner through a subdivide" call
+// with no quadrant (u, v) math attached.
+SubdividedCorner SubdivideTrackingCorner(ON_SubD& s, const ON_SubDFace* f, int corner_index) {
+  // Same safety cap EvaluateFaceAdaptive()'s own inline version already
+  // applies - see its own doc comment for why.
+  constexpr unsigned int kMaxWorkingFaceCount = 500000;
+  if (s.FaceCount() > kMaxWorkingFaceCount) return {};
+
+  const int k = corner_index & 3;
+  const ON_SubDEdge* e_prev = f->Edge(static_cast<unsigned int>((k + 3) % 4));
+  const ON_SubDEdge* e_next = f->Edge(static_cast<unsigned int>(k));
+  if (!e_prev || !e_next) return {};
+  const ON_3dPoint face_ref = f->SubdivisionPoint();
+  const ON_3dPoint prev_ref = e_prev->SubdivisionPoint();
+  const ON_3dPoint next_ref = e_next->SubdivisionPoint();
+  if (!face_ref.IsValid() || !prev_ref.IsValid() || !next_ref.IsValid()) return {};
+
+  const double tolerance = FindTolerance(f);
+  if (!s.GlobalSubdivide(1)) return {};
+
+  const ON_SubDVertex* vF = s.FindVertex(&face_ref.x, tolerance);
+  const ON_SubDVertex* vP = s.FindVertex(&prev_ref.x, tolerance);
+  const ON_SubDVertex* vN = s.FindVertex(&next_ref.x, tolerance);
+  const ON_SubDFace* child = FindCommonFace(vF, vP, vN);
+  if (!child) return {};
+
+  // The child's 4th corner - whichever of its vertices is none of the 3
+  // just located - is the refined position of the original Vertex(k);
+  // its own array index there need not match k, so it's found by
+  // elimination rather than assumed.
+  int m = -1;
+  for (int i = 0; i < 4; ++i) {
+    const ON_SubDVertex* cv = child->Vertex(static_cast<unsigned int>(i));
+    if (cv != vF && cv != vP && cv != vN) {
+      m = i;
+      break;
+    }
+  }
+  if (m < 0) return {};
+  return {child, m};
+}
+
 // Recursive core of SubD::EvaluateFace(): `s` is the mutable working
 // copy (SubD::EvaluateFace()'s own `raw()` is never touched), `f` one
 // of its CURRENT faces, (u, v) the parameter within it. See
@@ -1869,11 +1935,67 @@ const ON_SubDFace* FindCommonFace(const ON_SubDVertex* vF, const ON_SubDVertex* 
 // callers for a corner query; the basis' own u/v-axis alignment was
 // already undocumented for this fallback (the zero vector it replaces
 // had none at all).
-SubDSurfacePoint ExactVertexCorner(const ON_SubDFace* f, int corner_index) {
-  const ON_SubDVertex* v = f->Vertex(static_cast<unsigned int>(corner_index));
+//
+// Semi-sharp edge handling (this pass): `ON_SubDVertex::GetSurfacePoint`
+// builds its sector purely from `ON_SubDSectorType::Create`, which only
+// ever looks at edge TAGS (Smooth/Crease) - verified by reading
+// opennurbs_subd_eval.cpp's `GetSectorLimitPointHelper` directly, not
+// assumed: it never once reads `ON_SubDEdge::Sharpness()`/`EndSharpness()`
+// anywhere in its own call chain. A finite, nonzero sharpness weight on a
+// Smooth-tagged edge (`SetEdgeSharpness()`, below) stays tagged Smooth, so
+// a corner vertex touching one was silently evaluated as if that edge
+// carried NO sharpness at all - the fully-rounded smooth eigenbasis
+// answer, not the partially-creased one a real OpenSubdiv/Pixar-style
+// semi-sharp edge is supposed to pull the limit surface toward.
+//
+// The standard technique for this (the same one `ON_SubDEdgeSharpness::
+// Subdivided()` is built for - DeRose/Kass/Truong 1998's semi-sharp
+// creases) is: a semi-sharp edge's own weight decays by exactly 1.0 per
+// `ON_SubD::GlobalSubdivide()` level (confirmed by reading
+// `ON_SubDEdgeSharpness::Subdivided()` directly) until it reaches 0 and
+// becomes an ordinary smooth edge - at which point the closed-form
+// eigenbasis IS exact again, because there is no more residual sharpness
+// left to ignore. So rather than evaluate this vertex's limit point
+// directly, first globally subdivide a working copy exactly
+// ceil(max incident-edge sharpness) times - the same `GlobalSubdivide(1)`
+// + predicted-subdivision-point-match tracking EvaluateFaceAdaptive()'s
+// own quadrant recursion already uses, factored out as
+// SubdivideTrackingCorner() above, just driven by a corner-count loop
+// instead of a (u, v) quadrant - and only then call GetSurfacePoint() on
+// the now-fully-decayed descendant vertex. The limit SURFACE itself is
+// unchanged by subdividing its own control net (that is the entire point
+// of a subdivision surface), so the descendant vertex's exact eigenbasis
+// answer at that point is the same, single true limit value a real
+// semi-sharp evaluator would give - not a tolerance-bounded
+// approximation. A vertex with no semi-sharp edge in its own neighborhood
+// takes zero extra subdivide steps and reduces to exactly the prior
+// behavior.
+SubDSurfacePoint ExactVertexCorner(ON_SubD& s, const ON_SubDFace* f, int corner_index) {
+  const ON_SubDFace* face = f;
+  int idx = corner_index;
+
+  const ON_SubDVertex* v0 = face->Vertex(static_cast<unsigned int>(idx));
+  double max_incident_sharpness = 0.0;
+  for (unsigned int i = 0; i < v0->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = v0->Edge(i);
+    if (e != nullptr && e->IsSmooth()) {
+      max_incident_sharpness = std::max(max_incident_sharpness, e->EndSharpness(v0));
+    }
+  }
+  if (max_incident_sharpness > 0.0) {
+    const int levels = static_cast<int>(std::ceil(max_incident_sharpness));
+    for (int i = 0; i < levels; ++i) {
+      const SubdividedCorner next = SubdivideTrackingCorner(s, face, idx);
+      if (next.face == nullptr) break;  // honest partial decay beats failing outright
+      face = next.face;
+      idx = next.corner_index;
+    }
+  }
+
+  const ON_SubDVertex* v = face->Vertex(static_cast<unsigned int>(idx));
   SubDSurfacePoint pt;
   ON_SubDSectorSurfacePoint limit_point;
-  if (v->GetSurfacePoint(f, /*bUndefinedNormalIsPossible=*/true, limit_point)) {
+  if (v->GetSurfacePoint(face, /*bUndefinedNormalIsPossible=*/true, limit_point)) {
     pt.position = limit_point.Point();
     const ON_3dVector n = limit_point.Normal();
     pt.normal = n.IsValid() ? n : ON_3dVector::ZeroVector;
@@ -1897,10 +2019,10 @@ SubDSurfacePoint EvaluateFaceAdaptive(ON_SubD& s, const ON_SubDFace* f, double u
   if (regular) {
     return EvalPatchPoint(grid, u, v, true);
   }
-  if (u == 0.0 && v == 0.0) return ExactVertexCorner(f, 0);
-  if (u == 1.0 && v == 0.0) return ExactVertexCorner(f, 1);
-  if (u == 1.0 && v == 1.0) return ExactVertexCorner(f, 2);
-  if (u == 0.0 && v == 1.0) return ExactVertexCorner(f, 3);
+  if (u == 0.0 && v == 0.0) return ExactVertexCorner(s, f, 0);
+  if (u == 1.0 && v == 0.0) return ExactVertexCorner(s, f, 1);
+  if (u == 1.0 && v == 1.0) return ExactVertexCorner(s, f, 2);
+  if (u == 0.0 && v == 1.0) return ExactVertexCorner(s, f, 3);
   if (depth_remaining <= 0) {
     return EvalPatchPoint(grid, u, v, false);
   }
@@ -1920,64 +2042,18 @@ SubDSurfacePoint EvaluateFaceAdaptive(ON_SubD& s, const ON_SubDFace* f, double u
   const double uk2 = 2.0 * uk;
   const double vk2 = 2.0 * vk;
 
-  const ON_SubDEdge* e_prev = f->Edge(static_cast<unsigned int>((k + 3) % 4));
-  const ON_SubDEdge* e_next = f->Edge(static_cast<unsigned int>(k));
-  if (!e_prev || !e_next) {
-    return EvalPatchPoint(grid, u, v, false);
-  }
-  const ON_3dPoint face_ref = f->SubdivisionPoint();
-  const ON_3dPoint prev_ref = e_prev->SubdivisionPoint();
-  const ON_3dPoint next_ref = e_next->SubdivisionPoint();
-  if (!face_ref.IsValid() || !prev_ref.IsValid() || !next_ref.IsValid()) {
-    return EvalPatchPoint(grid, u, v, false);
-  }
-
-  // Safety cap: `s.GlobalSubdivide(1)` refines the WHOLE working copy
-  // every call (there's no cheaper "just this face's neighborhood"
-  // primitive used here - see EvaluateFace()'s own doc comment), so
-  // cumulative cost across recursion levels grows with the working
-  // copy's OWN current size, not just with depth - for a large starting
-  // net and a caller-supplied `max_adaptive_levels` deep enough, that
-  // product can reach many millions of faces and exhaust memory. Once
-  // the working copy is already this large, refining it further isn't
-  // worth what it costs - fall back honestly instead of risking that.
-  constexpr unsigned int kMaxWorkingFaceCount = 500000;
-  if (s.FaceCount() > kMaxWorkingFaceCount) {
-    return EvalPatchPoint(grid, u, v, false);
-  }
-
-  const double tolerance = FindTolerance(f);
-  if (!s.GlobalSubdivide(1)) {
-    return EvalPatchPoint(grid, u, v, false);
-  }
-
-  const ON_SubDVertex* vF = s.FindVertex(&face_ref.x, tolerance);
-  const ON_SubDVertex* vP = s.FindVertex(&prev_ref.x, tolerance);
-  const ON_SubDVertex* vN = s.FindVertex(&next_ref.x, tolerance);
-  const ON_SubDFace* child = FindCommonFace(vF, vP, vN);
-  if (!child) {
-    return EvalPatchPoint(grid, u, v, false);
-  }
-
-  // The child's 4th corner - whichever of its vertices is none of the 3
-  // just located - is the refined position of the original Vertex(k);
-  // its own array index there need not match k, so it's found by
-  // elimination rather than assumed.
-  int m = -1;
-  for (int i = 0; i < 4; ++i) {
-    const ON_SubDVertex* cv = child->Vertex(static_cast<unsigned int>(i));
-    if (cv != vF && cv != vP && cv != vN) {
-      m = i;
-      break;
-    }
-  }
-  if (m < 0) {
+  // Subdivide once and track which child face/corner continues quadrant
+  // k - the same SubdivideTrackingCorner() ExactVertexCorner()'s own
+  // semi-sharp decay step above reuses, so the two don't duplicate this
+  // predict-then-relocate logic.
+  const SubdividedCorner next = SubdivideTrackingCorner(s, f, k);
+  if (next.face == nullptr) {
     return EvalPatchPoint(grid, u, v, false);
   }
 
   double u2 = 0.0, v2 = 0.0;
-  FromVertexLocal(m, uk2, vk2, u2, v2);
-  return EvaluateFaceAdaptive(s, child, u2, v2, depth_remaining - 1);
+  FromVertexLocal(next.corner_index, uk2, vk2, u2, v2);
+  return EvaluateFaceAdaptive(s, next.face, u2, v2, depth_remaining - 1);
 }
 
 }  // namespace
