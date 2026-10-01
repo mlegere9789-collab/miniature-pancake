@@ -1719,9 +1719,34 @@ Mesh LatticeInfill(const Mesh& solid, double cell_size, double strut_radius, int
   // well past `solid`, which the final Intersection below trims back down
   // to whatever of `solid` that single cell's edges actually cross; not an
   // error case needing its own guard.
-  const int nx = static_cast<int>(std::ceil(diag.x / cell_size));
-  const int ny = static_cast<int>(std::ceil(diag.y / cell_size));
-  const int nz = static_cast<int>(std::ceil(diag.z / cell_size));
+  //
+  // The other direction - cell_size small relative to `diag` - does need
+  // one: the three loops below build one Mesh::Cylinder() strut per grid
+  // edge, and the fold after them runs a real Boolean Union per strut (not
+  // a cheap vertex-welding merge), so the total strut count below is a
+  // direct, roughly linear bound on how long one LatticeInfill call takes,
+  // not just how much memory the strut meshes themselves use. Checked here
+  // as doubles, before any cast to int: an unreasonably fine cell_size (an
+  // easy mistake - e.g. cell_size given in different units than `solid`'s
+  // own bounding box, not a deliberately adversarial input) would
+  // otherwise overflow int outright in the ceil()-and-cast below (undefined
+  // behavior) long before the strut-building loops ever got a chance to
+  // run out of memory or time on their own. Mirrors the kMaxSections guard
+  // surface_intersect.cpp's BrepContourSections already uses for the
+  // analogous "caller-supplied spacing too fine for the object's own
+  // extent" case.
+  const double rx = diag.x / cell_size, ry = diag.y / cell_size, rz = diag.z / cell_size;
+  constexpr double kMaxLatticeStruts = 20000.0;
+  const double strut_estimate = (ry + 1.0) * (rz + 1.0) * rx + (rx + 1.0) * (rz + 1.0) * ry + (rx + 1.0) * (ry + 1.0) * rz;
+  if (!(strut_estimate <= kMaxLatticeStruts)) {
+    throw std::invalid_argument(
+        "dino8::kernel::LatticeInfill: cell_size is too small relative to the solid's bounding box - the "
+        "resulting grid would need far more struts than is tractable for one Boolean Union per strut");
+  }
+
+  const int nx = static_cast<int>(std::ceil(rx));
+  const int ny = static_cast<int>(std::ceil(ry));
+  const int nz = static_cast<int>(std::ceil(rz));
 
   auto node = [&](int i, int j, int k) {
     return Point3d(box.min.x + i * cell_size, box.min.y + j * cell_size, box.min.z + k * cell_size);

@@ -18,6 +18,14 @@ namespace dino8::util {
 // 0xFFFFFFFF init/final-xor).
 uint32_t Crc32(const unsigned char* data, size_t n);
 
+// The default (and recommended sane ceiling) for `max_output` below. A
+// caller that has its own untrusted "expected decoded size" field (a ZIP
+// entry's declared uncompressed size, say) should clamp it against this
+// constant rather than pass it through unclamped - that field lives in
+// attacker-controlled input right alongside the compressed bytes, so
+// trusting it as-is just moves the attacker-chosen cap from here to there.
+constexpr size_t kDefaultMaxInflateOutput = 256u * 1024 * 1024;
+
 // Raw DEFLATE (RFC 1951) decode - no zlib (RFC 1950) or gzip wrapper, just
 // the deflate bit-stream itself (a sequence of stored/fixed-Huffman/
 // dynamic-Huffman blocks). Appends decoded bytes to `out`. Returns false on
@@ -27,6 +35,9 @@ uint32_t Crc32(const unsigned char* data, size_t n);
 // decoded size (a ZIP entry's declared uncompressed size, a PNG's
 // width*height) should pass it here rather than let a small malicious
 // input decompress to gigabytes before any size check downstream ever runs.
-bool InflateRaw(const unsigned char* data, size_t size, std::vector<unsigned char>& out, size_t max_output = 256u * 1024 * 1024);
+// That expected size should itself be clamped to kDefaultMaxInflateOutput
+// first if it comes from the untrusted input rather than from the caller's
+// own already-validated state.
+bool InflateRaw(const unsigned char* data, size_t size, std::vector<unsigned char>& out, size_t max_output = kDefaultMaxInflateOutput);
 
 }  // namespace dino8::util
