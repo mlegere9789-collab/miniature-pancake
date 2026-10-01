@@ -1247,46 +1247,44 @@ class ExtrudeTaperedCommand : public Command {
     const Vector3d n = ActiveNormal(ctx);
     ctx.Doc().BeginChange("ExtrudeCrvTapered");
     int made = 0;
+    const Vector3d direction = n * d;
+    const double draft_rad = angle_ * ON_PI / 180.0;
     for (const kernel::NurbsCurve& c : profiles_) {
-      const Row pts = SampleCurve(c, 32, c.IsClosed());
-      const Point3d center = Centroid(pts);
-      double radius = 0;
-      for (const Point3d& p : pts) { const Vector3d v = p - center; radius += (v - n * ON_DotProduct(v, n)).Length(); }
-      radius /= static_cast<double>(pts.size());
-      const double inset = std::fabs(d) * std::tan(angle_ * ON_PI / 180.0);
-      double scale = radius > 1e-12 ? (radius - inset) / radius : 1;
-      if (scale < 0.01) { ctx.Warn("Draft angle closes the profile before the full distance; clamped"); scale = 0.01; }
-      ON_Xform xf = ON_Xform::TranslationTransformation(n * d) * ON_Xform::ScaleTransformation(center, scale);
-      ON_NurbsCurve top = c.raw();
-      top.Transform(xf);
-      ON_NurbsSurface rs;
-      if (!rs.CreateRuledSurface(c.raw(), top)) continue;
       ON_Plane plane;
-      if (solid_ && c.IsClosed() && c.raw().IsPlanar(&plane, ctx.Settings().absolute_tolerance)) {
-        ON_Brep* b = ON_Brep::New();
-        ON_NurbsSurface* face_srf = new ON_NurbsSurface(rs);
-        b->Create(face_srf);
-        ON_Plane top_plane = plane;
-        top_plane.SetOrigin(plane.origin + n * d);
-        ON_Brep* cap0 = ON_BrepTrimmedPlane(plane, c.raw());
-        ON_Brep* cap1 = ON_BrepTrimmedPlane(top_plane, top);
-        if (cap0) { b->Append(*cap0); delete cap0; }
-        if (cap1) { b->Append(*cap1); delete cap1; }
-        JoinNakedEdges(*b, ctx.Settings().absolute_tolerance * 10);
-        if (b->IsSolid()) {
-          BrepMeshOptions opt;
-          opt.chord_tolerance = 0.05;
-          if (MeshBrepClosed(*b, opt).Volume() < 0) b->Flip();  // outward normals
+      const bool want_solid = solid_ && c.IsClosed() && c.raw().IsPlanar(&plane, ctx.Settings().absolute_tolerance);
+      try {
+        // dino8::kernel::Brep::ExtrudeTapered (sweep.cpp) is the real
+        // kernel-native draft-extrude primitive: an exact NURBS cone
+        // frustum wall for a circle/line profile, an exact closed-form
+        // miter-join offset for a multi-segment polyline, and
+        // OffsetInPlane()'s own general least-squares offset otherwise -
+        // not this command's own former centroid-scaling approximation
+        // (which treated every profile, circular or not, as a uniform
+        // scale about its centroid - exact only for a circle centered at
+        // its own centroid, approximate for everything else, including a
+        // circle offset from its own curve centroid by a prior edit).
+        // Closes PARITY_MAP.md's "kernel: Feature operations" - "Draft
+        // angle on extrusions" bullet's own last disclosed gap.
+        kernel::Brep b = kernel::Brep::ExtrudeTapered(c, direction, draft_rad, /*cap=*/want_solid);
+        if (want_solid) {
+          if (!b.raw().IsSolid()) {
+            ctx.Warn("ExtrudeCrvTapered: caps could not be joined; result is an open polysurface");
+          } else {
+            BrepMeshOptions opt;
+            opt.chord_tolerance = 0.05;
+            if (MeshBrepClosed(b.raw(), opt).Volume() < 0) b.raw().Flip();  // outward normals
+          }
+          ctx.Doc().Add(SceneObject::MakeBrep(b));
         } else {
-          ctx.Warn("ExtrudeCrvTapered: caps could not be joined; result is an open polysurface");
+          const ON_Surface* s = b.raw().m_F.Count() > 0 ? b.raw().m_F[0].SurfaceOf() : nullptr;
+          kernel::NurbsSurface k;
+          if (!s || !SurfaceFromON(*s, k)) { ctx.Warn("ExtrudeCrvTapered: could not build a surface for this profile"); continue; }
+          ctx.Doc().Add(SceneObject::MakeSurface(k));
         }
-        ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b)));
-      } else {
-        kernel::NurbsSurface k;
-        k.raw() = rs;
-        ctx.Doc().Add(SceneObject::MakeSurface(k));
+        ++made;
+      } catch (const std::exception& ex) {
+        ctx.Warn(std::string("ExtrudeCrvTapered: ") + ex.what());
       }
-      ++made;
     }
     ctx.Print("ExtrudeCrvTapered: distance " + FormatNumber(d) + ", draft " + FormatNumber(angle_) + " deg, " + std::to_string(made) + " object(s)");
     Finish();

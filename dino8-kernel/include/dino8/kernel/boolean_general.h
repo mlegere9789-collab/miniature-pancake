@@ -676,6 +676,36 @@ Brep EmbossProfileWithHoles(const Brep& solid, const NurbsCurve& outer_profile,
                              const std::vector<NurbsCurve>& hole_profiles, Vector3d direction, double depth,
                              EmbossMode mode);
 
+// A genuinely STANDALONE capped solid built from an outer profile with one
+// or more HOLES cut all the way through it (parity-map "kernel: Feature
+// operations" - "Lettering as solid geometry" - the 'O'/'A'/'B' counter
+// problem `EmbossProfileWithHoles()` above already solved for embossing
+// ONTO an existing `solid`, needed again here with no existing solid at
+// all: a free-standing extruded glyph). Not a third boolean engine: the
+// outer tool is exactly `Brep::Extrude(outer_profile, direction, true)` -
+// so `outer_profile` inherits that function's own "closed, planar,
+// star-shaped" capping requirement - and each `hole_profiles` entry is its
+// own `Brep::Extrude()` tool, subtracted via one `BooleanCombineGeneral()`
+// Difference call per hole, left to right.
+//
+// Unlike `EmbossProfileWithHoles()`'s own hole tools (which only need
+// `margin` clearance on ONE end, because the other end lands against
+// still-untouched original material from the outer op), both ends of the
+// outer solid built here are genuine true end caps with nothing beyond
+// them - so each hole tool is extruded `margin` PAST both ends (not just
+// one), the same two-sided clearance `MakeHole()`'s own `through=true`
+// case already uses, to avoid a coincident-cap degeneracy at either end
+// rather than just one.
+//
+// Throws std::invalid_argument if `outer_profile` is not closed, if
+// `hole_profiles` is empty (call `Brep::Extrude()` directly for a simple
+// profile with no holes) or any entry isn't closed, or if `direction` is
+// zero-length - plus whatever `Brep::Extrude()`/`BooleanCombineGeneral()`
+// themselves throw for a profile that isn't planar/star-shaped, or a hole
+// that doesn't actually sit inside the outer footprint.
+Brep ExtrudeProfileWithHoles(const NurbsCurve& outer_profile, const std::vector<NurbsCurve>& hole_profiles,
+                              Vector3d direction);
+
 // A revolved cut (Rhino/SolidWorks "Revolved Cut"/"Revolve Cut" feature,
 // parity-map "Revolved cut (RevolvedHole)"): closes this item's own
 // long-standing gap - `Brep::Revolve()` existed, but no kernel feature op
