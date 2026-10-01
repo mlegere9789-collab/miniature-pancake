@@ -1698,11 +1698,12 @@ sccheck "history: ConstraintSolve: converged" "ConstraintSolve ran cleanly again
 # (see src/script/PythonEngine.cpp), when this build was compiled with a
 # Python 3 development install (DINO8_HAVE_PYTHON - see CMakeLists.txt).
 # Builds a box and a sphere, sets Name/Color on the box (and reads its
-# Layer), selects it, deletes the sphere, and exercises dino8.RunCommand
-# and Point3d/Vector3d arithmetic. Unlike script_script.txt's Lua test
-# there is no trailing script token: PythonEngine runs a script
-# start-to-finish with no GetPoint-style mid-script suspend (see
-# python_script.txt's own header).
+# Layer), selects it, deletes the sphere, and exercises dino8.RunCommand,
+# Point3d/Vector3d arithmetic, and - like script_script.txt's Lua test -
+# dino8.GetPoint() and dino8.GetString(), each fed by its own trailing
+# script token in turn (python_script.txt's own header), now that
+# PythonEngine actually suspends for them (worker thread, not a coroutine -
+# see PythonEngine.h).
 #
 # dino8.RunCommand only *queues* a nested command line while called from
 # inside another command's callback (CommandEngine::RunNested -> Execute,
@@ -2094,6 +2095,23 @@ print("command history has last command: " + str(dino8.LastCommandName() in dino
 dino8.ClearCommandHistory()
 print("command history empty after clear: " + str(dino8.CommandHistory() == ""))
 print("last command survives history clear: " + str(dino8.LastCommandName() == "RunPythonScript"))
+
+# dino8.GetPoint: now a real mid-script suspend (PythonEngine runs the
+# script on a worker thread - see PythonEngine.h), mirroring rs.GetPoint's
+# own trailing-script-token feed (script_script.txt's "RunScript t.lua
+# 20,20,20").
+p = dino8.GetPoint("Pick a marker point")
+print("picked point is None: " + str(p is None))
+if p is not None:
+    dino8.doc.Objects.AddPoint(p)
+    print("picked point %.0f,%.0f,%.0f" % (p.X, p.Y, p.Z))
+print("object count after GetPoint: %d" % len(dino8.doc.Objects.AllObjects()))
+
+# dino8.GetString: mirrors rs.GetString, same worker-thread suspend as
+# GetPoint above (see PythonEngine.h) - fed by the second trailing script
+# token (python_script.txt's "RunPythonScript @TMP@/t.py 20,20,20 Widget2").
+name = dino8.GetString("Name the marker point")
+print("got string: " + str(name))
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
 # Captured with set +e, not "|| { ...; exit 1; }": python_script.txt's own
@@ -2304,7 +2322,11 @@ else
   pscheck "history: command history has last command: True" "dino8.CommandHistory() includes the line-1 \"Command: RunPythonScript ...\" entry LastCommandName just named, matching rs.CommandHistory()"
   pscheck "history: command history empty after clear: True" "dino8.ClearCommandHistory() actually cleared it, matching rs.ClearCommandHistory()"
   pscheck "history: last command survives history clear: True" "clearing the history deque leaves last_command_ itself untouched, matching rs.ClearCommandHistory() only ever clearing rs.CommandHistory()'s own log"
-  pscheck "^ok   expect_objects 36" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, and the two fresh ObjectsByType test points (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script, and the undo/redo group's own point was undone again at the end)"
+  pscheck "picked point is None: False" "dino8.GetPoint() was fed by the trailing script token (python_script.txt's \"RunPythonScript @TMP@/t.py 20,20,20 Widget2\"), returning a real Point3d, not None"
+  pscheck "picked point 20,20,20" "the resumed script read back the exact point the command line fed it"
+  pscheck "history: object count after GetPoint: 37" "AddPoint(p) added the one new object the suspend-and-resume round trip was supposed to produce"
+  pscheck "history: got string: Widget2" "dino8.GetString() suspended a second time (same worker-thread mechanism as GetPoint) and was fed by the second trailing script token, proving the suspend/resume round trip works for a second, different prompt type right after the first, not just once"
+  pscheck "^ok   expect_objects 37" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, the two fresh ObjectsByType test points, and the dino8.GetPoint() marker point (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script, and the undo/redo group's own point was undone again at the end)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
@@ -5432,16 +5454,18 @@ fi
 # item, which had no server/socket/HTTP code anywhere before this. Starts
 # the real app with --serve 0 (an OS-assigned ephemeral port, so this can
 # never collide with another process on a fixed port) and
-# --serve-max-requests 5 so the process is self-terminating like batch
+# --serve-max-requests 6 so the process is self-terminating like batch
 # --script mode above, backgrounds it, waits (bounded, not an unbounded
 # sleep loop) for its own "serve: listening on port N" line, then drives it
 # over a real loopback HTTP connection with curl: a POST that builds
 # geometry and reads back its printed output, a GET that must be rejected
 # with 405, a POST calling an interactive rs.Get* prompt that must be
 # rejected instead of hanging the connection, a POST /run/python that
-# builds and queries geometry through the embedded Python module (or is
-# skipped gracefully on a build with no Python support), and a POST to an
-# unknown path that must come back 404 - see tests/test_compute_server.cpp
+# builds and queries geometry through the embedded Python module, a second
+# POST /run/python calling the now-real dino8.GetPoint() that must likewise
+# be rejected instead of hanging (or both /run/python checks are skipped
+# gracefully on a build with no Python support), and a POST to an unknown
+# path that must come back 404 - see tests/test_compute_server.cpp
 # for the lower-level, no-app unit coverage of the request parsing/response
 # formatting this end-to-end check builds on top of. A second, separate
 # server instance below covers --serve-token bearer-auth.
@@ -5450,9 +5474,9 @@ if ! command -v curl >/dev/null 2>&1; then
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 5 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 6 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 5 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 6 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -5480,15 +5504,18 @@ print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP4="$(curl -s --max-time 10 -X POST --data 'import dino8
 id = dino8.doc.Objects.AddBox(dino8.Point3d(0,0,0), dino8.Vector3d(5,5,5))
 print("volume: %.1f" % dino8.doc.Objects.SurfaceVolume(id))' "http://127.0.0.1:$SERVE_PORT/run/python")"
+    RESP6="$(curl -s --max-time 10 -X POST --data 'import dino8
+dino8.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run/python")"
     CODE5="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'x' "http://127.0.0.1:$SERVE_PORT/run/nosuchroute")"
     set -e
     echo "$RESP1" | grep -q "^objects: 1$" && echo "ok   POST /run built a box over HTTP and read back its printed object count" || { echo "$RESP1"; echo "FAIL --serve POST /run did not report objects: 1"; fail=1; }
     [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
     echo "$RESP3" | grep -q "compute error: script requires interactive input" && echo "ok   a script calling an interactive rs.Get* prompt is rejected instead of hanging the connection" || { echo "$RESP3"; echo "FAIL --serve interactive-prompt script was not rejected as expected"; fail=1; }
     if echo "$RESP4" | grep -q "DINO8_HAVE_PYTHON"; then
-      echo "skip POST /run/python check (this build has no embedded Python - see DINO8_ENABLE_PYTHON in CMakeLists.txt)"
+      echo "skip POST /run/python checks (this build has no embedded Python - see DINO8_ENABLE_PYTHON in CMakeLists.txt)"
     else
       echo "$RESP4" | grep -q "^volume: 125.0$" && echo "ok   POST /run/python built a box through the dino8 module over HTTP and read back its printed volume" || { echo "$RESP4"; echo "FAIL --serve POST /run/python did not report volume: 125.0"; fail=1; }
+      echo "$RESP6" | grep -q "compute error: script requires interactive input" && echo "ok   a POST /run/python script calling the now-real dino8.GetPoint() is rejected instead of hanging the connection (PythonEngine suspends on a worker thread now - see PythonEngine.h - so this is a real regression risk main.cpp's compute_handler guards against)" || { echo "$RESP6"; echo "FAIL --serve POST /run/python dino8.GetPoint() was not rejected as expected"; fail=1; }
     fi
     [ "$CODE5" = "404" ] && echo "ok   a POST to an unrecognized path is rejected with 404 Not Found" || { echo "FAIL --serve POST to an unknown path returned HTTP $CODE5, expected 404"; fail=1; }
 
@@ -5498,7 +5525,7 @@ print("volume: %.1f" % dino8.doc.Objects.SurfaceVolume(id))' "http://127.0.0.1:$
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=5$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 5 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=6$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 6 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
     fi
   fi
 

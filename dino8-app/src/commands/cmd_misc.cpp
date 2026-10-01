@@ -237,16 +237,28 @@ class ScriptCommand : public Command {
     Finish();
   }
 
-  void OnPoint(CommandContext& ctx, Point3d p) override { ctx.App().Lua().ResumePoint(p); Pump(ctx); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (python_active_) ctx.App().Python().ResumePoint(p);
+    else ctx.App().Lua().ResumePoint(p);
+    Pump(ctx);
+  }
   void OnNumber(CommandContext& ctx, double v) override { ctx.App().Lua().ResumeNumber(v); Pump(ctx); }
-  void OnText(CommandContext& ctx, const std::string& t) override { ctx.App().Lua().ResumeText(t); Pump(ctx); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (python_active_) ctx.App().Python().ResumeText(t);
+    else ctx.App().Lua().ResumeText(t);
+    Pump(ctx);
+  }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override { ctx.App().Lua().ResumeObjects(ids); Pump(ctx); }
   void OnEnter(CommandContext& ctx) override {
-    if (want == Want::Objects) ctx.App().Lua().ResumeObjects({});
+    if (python_active_) ctx.App().Python().ResumeNil();
+    else if (want == Want::Objects) ctx.App().Lua().ResumeObjects({});
     else ctx.App().Lua().ResumeNil();
     Pump(ctx);
   }
-  void OnCancel(CommandContext& ctx) override { ctx.App().Lua().Abort(); }
+  void OnCancel(CommandContext& ctx) override {
+    if (python_active_) ctx.App().Python().Abort();
+    else ctx.App().Lua().Abort();
+  }
 
  private:
   void RunPath(CommandContext& ctx, const std::string& raw_path) {
@@ -257,10 +269,12 @@ class ScriptCommand : public Command {
         ctx.Warn(label_ + ": " + raw_path +
                  " is a Python file, but this build has no Python 3 development install (DINO8_HAVE_PYTHON is off); "
                  "rewrite it as Lua (rs.* API) and run that instead, or use RunPythonScript on a build with Python support.");
-      } else {
-        app.Python().StartFile(raw_path);
+        Finish();
+        return;
       }
-      Finish();
+      python_active_ = true;
+      if (app.Python().StartFile(raw_path)) Pump(ctx);
+      else Finish();
       return;
     }
     if (ext == ".txt" || ext == ".dino" || ext == ".cmd") {
@@ -277,9 +291,20 @@ class ScriptCommand : public Command {
     else Finish();
   }
 
-  // Reflects the running script's current rs.Get* prompt (or finishes the
-  // command once the script itself has finished or failed).
+  // Reflects the running script's current rs.Get*/dino8.Get* prompt (or
+  // finishes the command once the script itself has finished or failed).
+  // Python only ever requests Point or Text (see PythonEngine.h) - Objects/
+  // Number/Integer can't come from python_active_.
   void Pump(CommandContext& ctx) {
+    if (python_active_) {
+      PythonEngine& py = ctx.App().Python();
+      if (!py.Running()) { Finish(); return; }
+      const ScriptRequest& r = py.Request();
+      if (py.Suspended() && r.want == ScriptWant::Point) WantPoint(r.prompt);
+      else if (py.Suspended() && r.want == ScriptWant::Text) WantText(r.prompt, r.default_text);
+      else Finish();
+      return;
+    }
     LuaEngine& lua = ctx.App().Lua();
     if (!lua.Running()) { Finish(); return; }
     const ScriptRequest& r = lua.Request();
@@ -295,16 +320,18 @@ class ScriptCommand : public Command {
 
   std::string label_;
   std::string preface_;
+  bool python_active_ = false;  // set once RunPath dispatches a .py file, so OnPoint/OnEnter/OnCancel/Pump know which engine owns this run
 };
 
 // RunPythonScript: runs a .py file through the embedded `dino8` module
 // (PythonEngine) when this build has one (DINO8_HAVE_PYTHON - see
 // CMakeLists.txt), or prints an honest "not available" message otherwise.
 //
-// Unlike ScriptCommand/Lua, this never goes interactive: PythonEngine runs
-// a script start-to-finish in Begin() (see PythonEngine.h for why - no
-// coroutine-style suspend for a dino8.GetPoint()-style prompt exists here),
-// so the command always finishes in the same call that started it.
+// PythonEngine.Start()/StartFile() now run the script on a worker thread and
+// suspend it there when it calls dino8.GetPoint() (see PythonEngine.h) -
+// Pump/OnPoint/OnEnter/OnCancel below mirror ScriptCommand's own Lua pump
+// loop so a RunPythonScript invocation can go interactive too, not just
+// finish in the same call that started it.
 class PythonScriptCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
@@ -316,9 +343,20 @@ class PythonScriptCommand : public Command {
       Finish();
       return;
     }
+    std::string code, chunk;
+    bool expr = false;
+    if (app.TakeQueuedScript(code, chunk, expr)) {
+      // The Script Editor's Run button queues the buffer's text directly
+      // (RunScriptEditor, Panels.cpp) so a non-macro .py tab's chunk name
+      // stays "Script Editor"/its own file name instead of a generic
+      // "_last.py" a round trip through disk would otherwise give it.
+      if (app.Python().Start(code, chunk)) Pump(ctx);
+      else Finish();
+      return;
+    }
     if (std::optional<std::string> path = ctx.Engine().TakePendingInput()) {
-      app.Python().StartFile(*path);
-      Finish();
+      if (app.Python().StartFile(*path)) Pump(ctx);
+      else Finish();
       return;
     }
     if (ctx.ScriptMode() || app.headless) {
@@ -330,6 +368,25 @@ class PythonScriptCommand : public Command {
       app.Engine().Execute("-RunPythonScript \"" + path + "\"");
     });
     Finish();
+  }
+
+  void OnPoint(CommandContext& ctx, Point3d p) override { ctx.App().Python().ResumePoint(p); Pump(ctx); }
+  void OnText(CommandContext& ctx, const std::string& t) override { ctx.App().Python().ResumeText(t); Pump(ctx); }
+  void OnEnter(CommandContext& ctx) override { ctx.App().Python().ResumeNil(); Pump(ctx); }
+  void OnCancel(CommandContext& ctx) override { ctx.App().Python().Abort(); }
+
+ private:
+  // Reflects the running script's current dino8.GetPoint()/dino8.GetString()
+  // prompt (or finishes the command once the script itself has finished or
+  // failed). Only ScriptWant::Point/Text are ever possible here (see
+  // PythonEngine.h) - anything else just finishes, same as ScriptWant::Nothing.
+  void Pump(CommandContext& ctx) {
+    PythonEngine& py = ctx.App().Python();
+    if (!py.Running()) { Finish(); return; }
+    const ScriptRequest& r = py.Request();
+    if (py.Suspended() && r.want == ScriptWant::Point) WantPoint(r.prompt);
+    else if (py.Suspended() && r.want == ScriptWant::Text) WantText(r.prompt, r.default_text);
+    else Finish();
   }
 };
 
@@ -455,8 +512,10 @@ void RegisterMiscCommands(CommandEngine& e) {
       PythonEngine::Available() ? CommandStatus::Implemented : CommandStatus::Partial,
       PythonEngine::Available()
           ? "Runs a .py script through an embedded CPython 3 interpreter (pybind11; see the dino8.* module: "
-            "Point3d/Vector3d, doc.Objects.Add*/Find/Delete, object.Name/Layer/Color, RunCommand). Runs "
-            "start-to-finish (no rs.GetPoint-style mid-script interactive prompts, unlike Lua's RunScript)."
+            "Point3d/Vector3d, doc.Objects.Add*/Find/Delete, object.Name/Layer/Color, RunCommand). A "
+            "dino8.GetPoint() call mid-script suspends it for a viewport pick or typed point, the same way "
+            "Lua's rs.GetPoint does for RunScript (on a worker thread, not a coroutine - see PythonEngine.h); "
+            "other rs.Get*-style prompts (objects/text/number) remain unported."
           : "This build has no Python 3 development install (DINO8_HAVE_PYTHON is off); prints an honest "
             "message instead of running the file - rewrite it as Lua (rs.* API) and use RunScript.");
   Reg(e, "EditPythonScript", Immediate([](CommandContext& ctx) {
