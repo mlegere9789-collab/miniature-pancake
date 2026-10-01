@@ -1024,8 +1024,15 @@ class IgesImporter {
     return idx;
   }
 
-  ON_Xform TransformOf(const IgesRawEntity& e, const std::map<int, IgesRawEntity>& des) {
-    if (e.xform <= 0) return ON_Xform::IdentityTransformation;
+  // `depth` bounds the chain of type-124 transform entities a single
+  // Directory Entry's xform pointer can compose through, the same
+  // untrusted-recursion guard BuildIgesCurve's own `depth` parameter uses
+  // for nested type-102 composite curves: a 124 entity's own xform field
+  // (field 7 of its Directory Entry, like any other entity's) can point at
+  // another 124, including - in a corrupt or crafted file - itself or a
+  // short cycle, which would otherwise recurse forever and stack-overflow.
+  ON_Xform TransformOf(const IgesRawEntity& e, const std::map<int, IgesRawEntity>& des, int depth = 0) {
+    if (e.xform <= 0 || depth > 64) return ON_Xform::IdentityTransformation;
     auto it = des.find(e.xform);
     if (it == des.end() || it->second.type != 124) return ON_Xform::IdentityTransformation;
     const std::vector<std::string>& p = it->second.params;
@@ -1034,7 +1041,7 @@ class IgesImporter {
     for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) x[r][c] = PNum(p, static_cast<size_t>(k++));
     for (int r = 0; r < 3; ++r) x[r][3] = PNum(p, static_cast<size_t>(k++));
     // Compose with the referenced transform's own xform, if any.
-    ON_Xform parent = TransformOf(it->second, des);
+    ON_Xform parent = TransformOf(it->second, des, depth + 1);
     return parent * x;
   }
 
@@ -2306,7 +2313,17 @@ class StepModel {
       const std::vector<int> mult = StepIntList(p->args[6]);
       const std::vector<double> uknots = StepRealList(p->args[7]);
       std::vector<double> full;
-      for (size_t i = 0; i < uknots.size() && i < mult.size(); ++i) for (int k = 0; k < mult[i]; ++k) full.push_back(uknots[i]);
+      for (size_t i = 0; i < uknots.size() && i < mult.size(); ++i) {
+        // Reject a corrupt/hostile file's multiplicity instead of an
+        // unbounded allocation: StepIntList() is a bare atoi() per token
+        // with no range check, so a single "(1,2000000000,1)" multiplicity
+        // list turns a few-hundred-byte STEP file into a multi-gigabyte
+        // push_back loop below - the same untrusted-count class every IGES
+        // entity count field in this file (102/106/112/126/128/...) is
+        // already capped against.
+        if (mult[i] < 0 || mult[i] > 100000) return false;
+        for (int k = 0; k < mult[i]; ++k) full.push_back(uknots[i]);
+      }
       std::vector<ON_3dPoint> cvs;
       for (int r : cv_refs) cvs.push_back(Point(r));
       std::vector<double> weights;
@@ -2459,8 +2476,15 @@ class StepModel {
       const std::vector<double> ku = StepRealList(p->args[10]);
       const std::vector<double> kv = StepRealList(p->args[11]);
       std::vector<double> full_u, full_v;
-      for (size_t i = 0; i < ku.size() && i < mu.size(); ++i) for (int k = 0; k < mu[i]; ++k) full_u.push_back(ku[i]);
-      for (size_t i = 0; i < kv.size() && i < mv.size(); ++i) for (int k = 0; k < mv[i]; ++k) full_v.push_back(kv[i]);
+      // Same untrusted-multiplicity guard as B_SPLINE_CURVE_WITH_KNOTS above.
+      for (size_t i = 0; i < ku.size() && i < mu.size(); ++i) {
+        if (mu[i] < 0 || mu[i] > 100000) return false;
+        for (int k = 0; k < mu[i]; ++k) full_u.push_back(ku[i]);
+      }
+      for (size_t i = 0; i < kv.size() && i < mv.size(); ++i) {
+        if (mv[i] < 0 || mv[i] > 100000) return false;
+        for (int k = 0; k < mv[i]; ++k) full_v.push_back(kv[i]);
+      }
       std::vector<double> weights;
       if (const StepPart* rp = e->Find("RATIONAL_B_SPLINE_SURFACE")) {
         if (!rp->args.empty()) {

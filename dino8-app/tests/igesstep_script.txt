@@ -117,3 +117,39 @@ Open @TMP@/iges_huge_composite_fixture.igs
 @expect_objects 0
 SelAll
 List
+# --- A hand-crafted malformed IGES file: a single type-116 (POINT) entity
+# whose Transformation Matrix pointer (field 7 of its directory entry)
+# points at a type-124 transform entity whose OWN Transformation Matrix
+# pointer points back at itself. Regression for a real crash this session's
+# audit found: IgesImporter::TransformOf composed a referenced transform's
+# own xform with no depth cap and no cycle check (unlike BuildIgesCurve's
+# composite-curve depth<=64 guard above, or the STEP importer's
+# kMaxCurveDepth), so a self-referencing (or longer-cycle) chain of 124
+# entities drove unbounded recursion and a stack overflow on import
+# (confirmed: reverting the depth-guard fix reproduces a real segfault on
+# this exact fixture). Must now be rejected cleanly - the point still
+# imports (with an identity transform once the depth cap trips), not
+# hang or crash.
+cancel
+New
+Open @TMP@/iges_cyclic_xform_fixture.igs
+@expect_objects 1
+SelAll
+List
+# --- A hand-written STEP file: a B_SPLINE_CURVE_WITH_KNOTS whose knot
+# multiplicity list declares one multiplicity of 2000000000 alongside two
+# real multiplicities of 1. Regression for a real crash this session's audit
+# found: StepModel::BuildCurve (and BuildSurface's B_SPLINE_SURFACE_WITH_
+# KNOTS sibling) expanded each knot by its declared multiplicity with no
+# upper bound - unlike every comparable IGES count field in this file
+# (102/106/112/126/128/...), which all reject anything outside
+# [0, 100000] - so a single huge multiplicity turned a few-hundred-byte
+# STEP file into a multi-gigabyte push_back loop (confirmed: reverting the
+# fix reproduces a multi-gigabyte allocation attempt on this exact
+# fixture). Must now be rejected cleanly (0 objects), not hang or crash.
+cancel
+New
+Open @TMP@/step_huge_knot_multiplicity_fixture.stp
+@expect_objects 0
+SelAll
+List
