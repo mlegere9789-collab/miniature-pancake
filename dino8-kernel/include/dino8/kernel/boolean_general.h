@@ -258,6 +258,59 @@ std::pair<Brep, Brep> MutualImprintFaces(const Brep& a, const Brep& b, double to
 Brep SplitFaceByCurve(const Brep& target, int face_index, const NurbsCurve& curve, double tolerance = 0.001,
                       int samples = 200);
 
+// Imprint a CLOSED curve onto a single face, entirely interior to its own
+// trim boundary - the curve-onto-face half of the PARITY_MAP "Imprint curve
+// / face onto a body face (add edges without changing geometry)" gap
+// (localops category): that bullet's own kernel answer, `ImprintFaces()`
+// above, only ever imprints a whole TOOL BODY's faces onto `target`; there
+// was no way to imprint a single caller-supplied curve at all (a grep for
+// "imprint" that isn't `ImprintFaces()`/`MutualImprintFaces()` itself found
+// nothing). `SplitFaceByCurve()` above is the OPEN-curve sibling (crosses
+// the boundary at exactly two points, splitting it into two pieces); this
+// is the CLOSED-curve case that function explicitly refuses and defers to
+// `ImprintFaces()`'s own "keeps every fragment" contract instead (see that
+// function's own doc comment) - so this is the real answer for a closed
+// loop, not a workaround.
+//
+// `curve` is pulled onto `face_index`'s own surface exactly as
+// `SplitFaceByCurve()` already does (point-by-point via
+// `SurfaceClosestPointGlobal()`, into a dense (u, v) polyline chain), then
+// handed to this file's own `FragmentFaces()` - the identical, already-
+// proven per-face SSX-chain-to-Fragment machinery `ImprintFaces()`/
+// `SplitFaceByCurve()` already share. A closed interior chain is the exact
+// case `FragmentFaces()`'s own `SplitFaceLoop()` already turns into a hole
+// PLUS a separate interior disk (see `BridgeHolesIntoOuter()`'s own doc
+// comment - `ImprintFaces()`'s "annulus-with-hole plus interior disk"
+// pattern on a piercing-cylinder tool, reached here through one caller-
+// supplied curve instead of a second operand body) - no new splitting
+// logic of its own, just the already-correct general machinery fed a
+// closed chain instead of an open one and REQUIRED to produce that
+// pattern, where `SplitFaceByCurve()` requires the opposite.
+//
+// No material is ever removed (the same "keep every fragment
+// unconditionally" contract `ImprintFaces()` itself promises): the
+// original face becomes two real, independently-tessellable faces on
+// the SAME underlying surface - the interior disk the curve bounds, and
+// the original face's own outer boundary with the curve now imprinted as
+// a genuine hole loop (bridged into one outer loop by the same
+// `BridgeHolesIntoOuter()` every other hole-producing path in this file
+// already uses, not a true second `ON_BrepLoop::inner`) - rather than a
+// single face with an edge drawn across it and no new topology at all.
+//
+// Throws std::invalid_argument if `face_index` is out of range, `curve`
+// has fewer than 2 control points, `tolerance` isn't positive, `samples`
+// is below 2, `curve` doesn't converge onto the face's own surface, it
+// collapses to a single point there, or - the defining requirement this
+// function places that `SplitFaceByCurve()` does not - its own two ends
+// (once pulled onto the surface) do NOT land within tolerance of each
+// other (not a closed loop at all), or the resulting split is anything
+// other than the exact "2 fragments, exactly one of them holding a hole"
+// pattern a genuine interior loop produces (e.g. the curve actually
+// reaches the face's own boundary, which is `SplitFaceByCurve()`'s own
+// job, not this function's).
+Brep ImprintClosedCurveOnFace(const Brep& target, int face_index, const NurbsCurve& curve, double tolerance = 0.001,
+                               int samples = 200);
+
 // Sheet/solid trim (parity-map "Sheet/solid trim (open surface as cutter
 // through a solid)"): splits `solid` (a closed Brep) into the two pieces
 // on either side of `sheet` (an OPEN Brep - one or more trimmed faces used
@@ -492,6 +545,48 @@ Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, doubl
 // can't be fanned into a flat cap), or whose plane contains `direction`.
 enum class EmbossMode { Emboss, Deboss };
 Brep EmbossProfile(const Brep& solid, const NurbsCurve& profile, Vector3d direction, double depth, EmbossMode mode);
+
+// EmbossProfile() above, extended to a profile with one or more HOLES
+// (parity-map "Emboss/deboss" - closes this item's own disclosed "does not
+// cover ... lettering with disconnected glyph counters (an 'O' or 'A''s
+// own hole)" gap): `outer_profile` is embossed/debossed exactly like a
+// plain EmbossProfile() call, then each curve in `hole_profiles` cuts a
+// COUNTER into that result - the hole in an "O", both counters in a "B",
+// the enclosed triangle in an "A" - so the hole's own area ends up flush
+// with the solid's original surface instead of also raised/recessed by
+// the outer op.
+//
+// Not a second boolean engine or a differently-shaped tool: each hole uses
+// the SAME tool construction `outer_profile` itself used (same `mode`,
+// `direction`, `depth` - see EmbossProfile()'s own doc comment for exactly
+// how that tool is placed), just combined with the OPPOSITE boolean op -
+// Union instead of Deboss's own Difference (refilling the hole's own
+// slice of the just-cut pocket back to the surface), or Difference instead
+// of Emboss's own Union (cutting the hole's own slice back out of the
+// just-raised boss). This is an exact geometric complement, not an
+// approximation: the hole tool occupies precisely the same depth range the
+// outer tool already touched there, just restricted to the hole's own
+// smaller footprint.
+//
+// Each profile (`outer_profile` and every entry of `hole_profiles`)
+// independently inherits EmbossProfile()'s/Brep::Extrude()'s own "closed,
+// planar, star-shaped" capping requirement - a hole with a self-crossing
+// or reflex/non-star outline still isn't supported, same as the outer
+// profile's own disclosed limit. `hole_profiles` is not validated against
+// `outer_profile` itself (e.g. that every hole actually lies inside the
+// outer footprint, or that holes don't overlap each other) - an ill-formed
+// combination surfaces as whatever BooleanCombineGeneral() itself throws
+// for the resulting non-manifold geometry, the same "let the underlying
+// engine's own precondition catch it" posture MakeHole()'s family already
+// has for a similarly out-of-scope combination.
+//
+// Throws std::invalid_argument if `hole_profiles` is empty (call
+// EmbossProfile() directly for a simple profile with no counters) or if
+// any hole profile isn't closed - plus whatever EmbossProfile() itself
+// throws validating `solid`/`outer_profile`/`direction`/`depth`.
+Brep EmbossProfileWithHoles(const Brep& solid, const NurbsCurve& outer_profile,
+                             const std::vector<NurbsCurve>& hole_profiles, Vector3d direction, double depth,
+                             EmbossMode mode);
 
 // A revolved cut (Rhino/SolidWorks "Revolved Cut"/"Revolve Cut" feature,
 // parity-map "Revolved cut (RevolvedHole)"): closes this item's own

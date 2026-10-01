@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <sstream>
 
 #include "doc/BlockInstances.h"
 #include "imgui.h"
@@ -437,6 +438,99 @@ class BlockSetArrayCountCommand : public Command {
   int group_ = -1;
 };
 
+// BlockSetLookupTable: names the Lookup parameter's key->state rows on a
+// block definition - the lookup-parameter analogue of BlockSetArraySpacing
+// naming the Array parameter's axis/spacing: it only configures what a
+// later BlockSetLookup on a placed instance has to work with, it does not
+// itself place or re-state anything. Rows are given as a single comma-
+// separated "key:state" list (e.g. "S:Small,M:Medium,L:Large"); re-running
+// this command replaces the whole table rather than appending to it, so it
+// is always obvious from one command what the current table is. A
+// definition that never calls this keeps lookup_keys empty, so it has no
+// lookup parameter at all, same as array_spacing == 0 having no Array
+// parameter.
+class BlockSetLookupTableCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    if (ctx.Doc().Blocks().empty()) { ctx.Warn("No block definitions. Use Block to create one."); Finish(); return; }
+    std::string names;
+    for (const BlockDefinition& b : ctx.Doc().Blocks()) names += (names.empty() ? "" : ", ") + b.name;
+    ctx.Print("Blocks: " + names);
+    WantText("Block name", ctx.Doc().Blocks().back().name);
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (!def_) {
+      def_ = ctx.Doc().FindBlock(t);
+      if (!def_) { ctx.Warn("No block named '" + t + "'"); Finish(); return; }
+      name_ = t;
+      WantText("Lookup rows, key:state comma-separated (e.g. S:Small,M:Medium,L:Large)");
+      return;
+    }
+    std::vector<std::string> keys, states;
+    std::istringstream in(t);
+    std::string row;
+    while (std::getline(in, row, ',')) {
+      if (row.empty()) continue;
+      const size_t colon = row.find(':');
+      if (colon == std::string::npos) { ctx.Warn("Skipping malformed row '" + row + "' (expected key:state)"); continue; }
+      keys.push_back(row.substr(0, colon));
+      states.push_back(row.substr(colon + 1));
+    }
+    ctx.Doc().BeginChange("BlockSetLookupTable");
+    def_->lookup_keys = keys;
+    def_->lookup_states = states;
+    ctx.Print("Block '" + name_ + "': lookup table set with " + std::to_string(keys.size()) + " row(s)");
+    Finish();
+  }
+  std::string name_;
+  BlockDefinition* def_ = nullptr;
+};
+
+// BlockSetLookup: sets one placed dynamic-block instance's Lookup parameter
+// input key and rebuilds just that instance - the fourth dynamic-block
+// parameter/action type alongside Visibility states, Flip and Array. Only
+// reachable on a placed dynamic-block instance, same scope BlockSetState/
+// BlockToggleFlip/BlockSetArrayCount have; a key with no matching row in
+// its definition's lookup table (BlockSetLookupTable) is accepted but has
+// no visible effect, falling back to the instance's own explicit state,
+// same "stored but inert until it matches/is configured" contract Array's
+// count has on a definition with no spacing.
+class BlockSetLookupCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select an object in the instance to look up", 1); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    group_ = -1;
+    for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->group_id >= 0) { group_ = o->group_id; break; }
+    BlockInstance inst;
+    if (group_ < 0 || !FindBlockInstanceByGroup(ctx.Doc(), group_, inst)) {
+      ctx.Warn("Selection isn't a dynamic-block instance (use BlockAddState first)");
+      Finish();
+      return;
+    }
+    const BlockDefinition* def = ctx.Doc().FindBlock(inst.block);
+    if (!def || def->lookup_keys.empty()) ctx.Warn("Block '" + inst.block + "' has no lookup table yet (use BlockSetLookupTable) - the key will be stored but has no visible effect until it does");
+    else {
+      std::string keys;
+      for (const std::string& k : def->lookup_keys) keys += (keys.empty() ? "" : ", ") + k;
+      ctx.Print("'" + inst.block + "' lookup keys: " + keys);
+    }
+    WantText("Lookup key", inst.lookup_key);
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    ctx.Doc().BeginChange("BlockSetLookup");
+    if (!SetBlockInstanceLookup(ctx.Doc(), group_, t)) ctx.Warn("Could not set lookup key");
+    else {
+      BlockInstance inst;
+      FindBlockInstanceByGroup(ctx.Doc(), group_, inst);
+      const BlockDefinition* def = ctx.Doc().FindBlock(inst.block);
+      const std::string shown = def ? ResolveLookupState(*def, inst.lookup_key, inst.state) : inst.state;
+      ctx.Print("BlockSetLookup: instance now showing '" + shown + "' for key '" + t + "'");
+    }
+    Finish();
+  }
+  int group_ = -1;
+};
+
 }  // namespace
 
 // A block with no named visibility states behaves exactly as before (every
@@ -575,8 +669,17 @@ void RegisterDraftingCommands(CommandEngine& e) {
   Reg(e, "BlockSetArrayCount", Make<BlockSetArrayCountCommand>(), CommandStatus::Implemented,
       "Sets one placed dynamic-block instance's Array repeat count and rebuilds just that instance's objects, laid "
       "out along its definition's array axis/spacing (BlockSetArraySpacing); only reachable on a placed dynamic-block "
-      "instance, same scope BlockSetState/BlockToggleFlip have. Stretch and Lookup parameters/actions remain "
-      "entirely unattempted.");
+      "instance, same scope BlockSetState/BlockToggleFlip have. Stretch parameter/action remains entirely unattempted.");
+  Reg(e, "BlockSetLookupTable", Make<BlockSetLookupTableCommand>(), CommandStatus::Implemented,
+      "Names the Lookup parameter's key->state rows on a block definition (Lookup dynamic blocks - the fourth "
+      "parameter/action type alongside Visibility states, Flip and Array), as a single comma-separated key:state "
+      "list; does not itself place or re-state anything, only configures what a later BlockSetLookup on a placed "
+      "instance has to work with.");
+  Reg(e, "BlockSetLookup", Make<BlockSetLookupCommand>(), CommandStatus::Implemented,
+      "Sets one placed dynamic-block instance's Lookup parameter input key and rebuilds just that instance's "
+      "objects, showing whichever state its definition's lookup table (BlockSetLookupTable) maps the key to, or "
+      "falling back to the instance's own explicit state if the key is empty or matches no row; only reachable on "
+      "a placed dynamic-block instance, same scope BlockSetState/BlockToggleFlip/BlockSetArrayCount have.");
 }
 
 // AT-SPI2-queryable snapshot of Document::Blocks() (see

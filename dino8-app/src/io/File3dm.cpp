@@ -59,7 +59,11 @@ std::string EncodeBlocksMeta(const std::vector<BlockDefinition>& blocks) {
         << ",\"bx\":" << b.base.x << ",\"by\":" << b.base.y << ",\"bz\":" << b.base.z << ",\"states\":[";
     for (size_t j = 0; j < b.states.size(); ++j) out << (j ? "," : "") << "\"" << JsonEscapeBlock(b.states[j]) << "\"";
     out << "],\"aax\":" << b.array_axis.x << ",\"aay\":" << b.array_axis.y << ",\"aaz\":" << b.array_axis.z
-        << ",\"aspc\":" << b.array_spacing << "}";
+        << ",\"aspc\":" << b.array_spacing << ",\"lupk\":[";
+    for (size_t j = 0; j < b.lookup_keys.size(); ++j) out << (j ? "," : "") << "\"" << JsonEscapeBlock(b.lookup_keys[j]) << "\"";
+    out << "],\"lups\":[";
+    for (size_t j = 0; j < b.lookup_states.size(); ++j) out << (j ? "," : "") << "\"" << JsonEscapeBlock(b.lookup_states[j]) << "\"";
+    out << "]}";
   }
   out << "]";
   return out.str();
@@ -84,6 +88,13 @@ std::map<std::string, BlockDefinition> DecodeBlocksMeta(const std::string& text)
     // array_spacing == 0 as "no array parameter defined" regardless of axis.
     b.array_axis = kernel::Vector3d(v["aax"].number, v["aay"].number, v["aaz"].number);
     b.array_spacing = v["aspc"].number;
+    // Missing (a file saved before the Lookup parameter existed) reads back
+    // as empty tables - harmless, since ResolveLookupState treats an empty
+    // lookup_keys as "no lookup parameter defined" regardless of a key.
+    const json::Value& lupk = v["lupk"];
+    for (size_t j = 0; j < lupk.Size(); ++j) b.lookup_keys.push_back(lupk[j].AsString());
+    const json::Value& lups = v["lups"];
+    for (size_t j = 0; j < lups.Size(); ++j) b.lookup_states.push_back(lups[j].AsString());
     out[b.name] = b;
   }
   return out;
@@ -491,7 +502,18 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       auto me = layer_by_id.find(layer->Id());
       auto lt = linetype_by_index.find(layer->LinetypeIndex());
       if (me != layer_by_id.end() && lt != linetype_by_index.end()) doc.Layers()[static_cast<size_t>(me->second)].linetype = lt->second;
-      if (me != layer_by_id.end()) doc.Layers()[static_cast<size_t>(me->second)].print_width_mm = layer->PlotWeight();
+      if (me != layer_by_id.end()) {
+        Layer& L = doc.Layers()[static_cast<size_t>(me->second)];
+        L.print_width_mm = layer->PlotWeight();
+        // m_plot_color (not the PlotColor() getter, which already resolves
+        // ON_UNSET_COLOR back to the layer's display color) is the real
+        // "is there an override at all" signal - see Layer::has_plot_color's
+        // own comment in doc/Document.h.
+        if (layer->m_plot_color != ON_Color::UnsetColor) {
+          L.has_plot_color = true;
+          L.plot_color = FromOnColor(layer->m_plot_color);
+        }
+      }
     }
   }
   // Viewports and layout pages: model views give clipping planes their
@@ -1193,6 +1215,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
       if (!L.material.empty() && material_index.count(L.material)) stored->SetRenderMaterialIndex(material_index[L.material]);
       if (linetype_index(L.linetype) >= 0) stored->SetLinetypeIndex(linetype_index(L.linetype));
       stored->SetPlotWeight(L.print_width_mm);  // real .3dm field, same 0/>0/<0 convention as Layer::print_width_mm
+      if (L.has_plot_color) stored->SetPlotColor(ToOnColor(L.plot_color));  // real .3dm field; unset (ON_UNSET_COLOR) is ON_Layer's own default
       for (size_t li = 0; li < doc.Layouts().size(); ++li) {
         const Layout& lay = doc.Layouts()[li];
         for (size_t di = 0; di < lay.details.size(); ++di) {
