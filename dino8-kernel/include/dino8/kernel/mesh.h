@@ -1390,6 +1390,57 @@ class Mesh {
   // trusted.
   static Result LoadFbx(const std::string& path, Mesh& out_mesh);
 
+  // Writes this mesh as a plain-ASCII DXF (`.dxf`, Autodesk Drawing
+  // Exchange Format) file - the kernel-level counterpart PARITY_MAP.md's
+  // "kernel: Kernel-level data exchange" evidence names as missing ("PLY
+  // has a kernel API; STEP/IGES/DXF... remain app-only Document entry
+  // points"). A minimal `HEADER` section (`$ACADVER` AC1009, the plain
+  // R12 wire format every DXF reader - including Dino 8's own app-level
+  // `ExportDxf`/`ImportDxf`, FileExchange.cpp - already understands) plus
+  // an `ENTITIES` section holding one `3DFACE` entity per mesh face, each
+  // written as four absolute 3D points via DXF's own fixed group-code
+  // convention (10/20/30, 11/21/31, 12/22/32, 13/23/33 for the four
+  // corners) - no shared vertex list, since `3DFACE` itself has none:
+  // every entity carries its own corner coordinates directly, the same
+  // "no index table to populate" shape `SaveStl()` already has for the
+  // identical reason. A quad face (`ON_MeshFace::IsQuad()`) is written as
+  // its own native 4 distinct corners (`3DFACE` is natively quad-capable,
+  // unlike STL's triangle-only facets); a triangle is written with its
+  // third corner repeated as the fourth, exactly DXF's own documented
+  // "if the 3DFACE is a triangle, make the third and fourth points
+  // identical" convention, so a reader expecting a real DXF file's own
+  // triangle encoding sees exactly that, not a guessed-at approximation.
+  // Deliberately narrow, the same scope every other "other file format"
+  // writer in this kernel already discloses: no `BLOCKS`/`TABLES`
+  // sections, no layer/color/linetype properties beyond the fixed layer
+  // "0" every entity is filed under, no `POLYLINE`/`VERTEX`/`MESH`
+  // entity alternative. Returns Result::Failed if the file can't be
+  // opened for writing.
+  Result SaveDxf(const std::string& path) const;
+
+  // Reads a plain-ASCII DXF file written by SaveDxf() (or any other
+  // reasonably well-formed DXF file whose `ENTITIES` section holds
+  // `3DFACE` entities) into `out_mesh`. A deliberately narrow, hand-rolled
+  // scan for exactly this group-code-pair structure - not a general DXF
+  // parser (no `HEADER`/`TABLES`/`BLOCKS` section content is read, no
+  // `POLYLINE`/`VERTEX`/`LWPOLYLINE`/`MESH` entity understood at all,
+  // exactly `SaveDxf()`'s own disclosed scope) - that walks every
+  // (group code, value) line pair looking for `3DFACE` entities (an
+  // `0`-code line whose value is literally `3DFACE`) and reads each one's
+  // four corners from its own 1x/2x/3x group codes. Each `3DFACE`
+  // contributes its own fresh vertices (no cross-entity vertex sharing,
+  // matching `SaveDxf()`'s own unshared convention above, the same
+  // "nothing to deduplicate" shape `LoadStl()` already has); a triangle
+  // (third and fourth corners coincide, within a small fixed tolerance -
+  // `SaveDxf()`'s own documented convention) is read back as a genuine
+  // 3-corner `ON_MeshFace`, not a degenerate quad. Returns
+  // Result::Failed if the file can't be opened, has no `ENTITIES`
+  // section, a `3DFACE` entity is missing one of its twelve required
+  // coordinate group codes, or any coordinate value fails to parse as a
+  // number - `out_mesh` is left unspecified in that case, not partially
+  // filled and silently trusted.
+  static Result LoadDxf(const std::string& path, Mesh& out_mesh);
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 

@@ -1311,6 +1311,23 @@ echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
 stcheck "smoke: frames=[1-4][0-9][0-9] objects=118" "solid-tools script produced the expected object count"
 
+# RegionBoolean exact-polygon path: PlanarUnion/PlanarDifference/
+# CurveBoolean/CreateRegions's own 2-region case must now take
+# kernel::PolygonBooleanPlanar's exact (non-tessellated) path when both
+# input curves are genuine closed polylines, instead of the existing
+# mesh-slab pipeline (see regionboolean_exact_polygon_script.txt) -
+# PARITY_MAP.md's "kernel: Boolean operations" category's "2D region /
+# planar curve booleans" bullet.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RBX="$("$BIN" --smoke 60 --script "$HERE/regionboolean_exact_polygon_script.txt" 2>&1)" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script exited non-zero"; exit 1; }
+else
+  RBX="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/regionboolean_exact_polygon_script.txt" 2>&1)" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script exited non-zero"; exit 1; }
+fi
+echo "$RBX" | grep -E "^(ok|FAIL)"
+if echo "$RBX" | grep -q "^FAIL"; then fail=1; fi
+echo "$RBX" | grep -q "^smoke:" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script produced no smoke line"; fail=1; }
+echo "$RBX" | grep -q "exact (no tessellation)" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script did not take the exact polygon-boolean path"; fail=1; }
+
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,
 # MatchSrf, SplitFace, MergeFaces, ConnectSrf, surface/surface and curve/surface
 # Intersect (see fillet_script.txt).
@@ -2677,6 +2694,22 @@ fi
 echo "$SBO" | grep -E "^(ok|FAIL)"
 if echo "$SBO" | grep -q "^FAIL"; then fail=1; fi
 echo "$SBO" | grep -q "^smoke:" || { echo "$SBO"; echo "FAIL: splitbyobject-regression script produced no smoke line"; fail=1; }
+
+# SplitByObject exact B-rep path: when target and cutter are both plain
+# closed solid Breps that genuinely cross, SplitByObject must now take the
+# new kernel::SplitBrepByManySolids path (real B-rep pieces, no
+# tessellation) rather than silently falling back to the mesh pipeline
+# (see splitbyobject_exact_brep_script.txt) - PARITY_MAP.md's "kernel:
+# Boolean operations" category's "Keep/split options" bullet.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SBX="$("$BIN" --smoke 200 --script "$HERE/splitbyobject_exact_brep_script.txt" 2>&1)" || { echo "$SBX"; echo "FAIL: splitbyobject-exact-brep script exited non-zero"; exit 1; }
+else
+  SBX="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/splitbyobject_exact_brep_script.txt" 2>&1)" || { echo "$SBX"; echo "FAIL: splitbyobject-exact-brep script exited non-zero"; exit 1; }
+fi
+echo "$SBX" | grep -E "^(ok|FAIL)"
+if echo "$SBX" | grep -q "^FAIL"; then fail=1; fi
+echo "$SBX" | grep -q "^smoke:" || { echo "$SBX"; echo "FAIL: splitbyobject-exact-brep script produced no smoke line"; fail=1; }
+echo "$SBX" | grep -q "exact B-rep, no tessellation" || { echo "$SBX"; echo "FAIL: splitbyobject-exact-brep script did not take the exact B-rep path"; fail=1; }
 
 # Adversarial booleans: near-tangent/barely-overlapping/coincident solids,
 # an extreme-aspect-ratio sliver, a huge-coordinate-scale pair, a 10-deep

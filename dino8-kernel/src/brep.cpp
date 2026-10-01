@@ -1543,7 +1543,8 @@ Point3d NotchListMidpoint(const std::vector<Point3d>& pts) {
 void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
                     std::unordered_map<uint64_t, int>& edge_of_vertex_pair,
                     std::unordered_map<int, Point3d>& cap_arc_midpoint_of_edge,
-                    std::unordered_map<uint64_t, std::vector<std::pair<Point3d, uint64_t>>>& notched_edges_of_vertex_pair) {
+                    std::unordered_map<uint64_t, std::vector<std::pair<Point3d, uint64_t>>>& notched_edges_of_vertex_pair,
+                    bool allow_non_manifold_edges) {
   ON_BrepLoop& loop = brep.NewLoop(ON_BrepLoop::outer, face);
   const size_t n = topo.vids.size();
   for (size_t k = 0; k < n; ++k) {
@@ -1835,7 +1836,11 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
       }
     } else {
       edge_index = it->second;
-      if (brep.m_E[edge_index].m_ti.Count() >= 2) {
+      // FromMixedFacesNonManifold() (allow_non_manifold_edges) attaches
+      // this third-or-later trim to the same edge instead - the bRev3d
+      // vertex comparison below is already correct for any number of
+      // trims on a non-closed edge.
+      if (brep.m_E[edge_index].m_ti.Count() >= 2 && !allow_non_manifold_edges) {
         throw std::invalid_argument(
             "dino8::kernel::Brep::FromMixedFaces: an edge is shared by 3 or "
             "more faces (non-manifold) - out of scope here, matching every "
@@ -1902,6 +1907,23 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
                            const std::vector<Brep::CylindricalFace>& cylindrical_faces,
                            const std::vector<Brep::ConicalFace>& conical_faces,
                            const std::vector<Brep::SphericalFace>& spherical_faces) {
+  return FromMixedFacesImpl(faces, cylindrical_faces, conical_faces, spherical_faces,
+                            /*allow_non_manifold_edges=*/false);
+}
+
+Brep Brep::FromMixedFacesNonManifold(const std::vector<Brep::PlanarFace>& faces,
+                                      const std::vector<Brep::CylindricalFace>& cylindrical_faces,
+                                      const std::vector<Brep::ConicalFace>& conical_faces,
+                                      const std::vector<Brep::SphericalFace>& spherical_faces) {
+  return FromMixedFacesImpl(faces, cylindrical_faces, conical_faces, spherical_faces,
+                            /*allow_non_manifold_edges=*/true);
+}
+
+Brep Brep::FromMixedFacesImpl(const std::vector<Brep::PlanarFace>& faces,
+                               const std::vector<Brep::CylindricalFace>& cylindrical_faces,
+                               const std::vector<Brep::ConicalFace>& conical_faces,
+                               const std::vector<Brep::SphericalFace>& spherical_faces,
+                               bool allow_non_manifold_edges) {
   Brep result;
   ON_Brep& brep = result.brep_;
   VertexWelder welder;
@@ -2798,13 +2820,13 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
   for (size_t fi = 0; fi < topo.size(); ++fi) {
     if (topo[fi].curved_surface != nullptr) {
       BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair, cap_arc_midpoint_of_edge,
-                    notched_edges_of_vertex_pair);
+                    notched_edges_of_vertex_pair, allow_non_manifold_edges);
     }
   }
   for (size_t fi = 0; fi < topo.size(); ++fi) {
     if (topo[fi].curved_surface == nullptr) {
       BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair, cap_arc_midpoint_of_edge,
-                    notched_edges_of_vertex_pair);
+                    notched_edges_of_vertex_pair, allow_non_manifold_edges);
     }
   }
 
@@ -5945,11 +5967,25 @@ bool SurfacesHaveIdenticalNurbsForm(const ON_Surface* sa, const ON_Surface* sb, 
   return true;
 }
 
+// The loop a same-surface merge splices across: a single-loop face's own
+// Loop(0) exactly as before holes were accepted (so every hole-free pair
+// keeps its prior path bit-for-bit), otherwise FindOuterLoop()'s own one
+// outer loop, with that face's own inner (hole) loops appended to
+// `*holes` - -1 if the face carries anything FindOuterLoop() refuses.
+int SameSurfaceMergeOuterLoop(const ON_Brep& b, const ON_BrepFace& face, std::vector<int>* holes) {
+  if (face.LoopCount() == 1) return face.m_li[0];
+  return FindOuterLoop(b, face, holes);
+}
+
 bool TryMergeSameSurfacePair(ON_Brep& b, int fa, int fb, int shared_edge_index) {
   ON_BrepFace& face_a = b.m_F[fa];
   ON_BrepFace& face_b = b.m_F[fb];
-  const ON_BrepLoop& loop_a = *face_a.Loop(0);
-  const ON_BrepLoop& loop_b = *face_b.Loop(0);
+  std::vector<int> hole_loops;
+  const int outer_a = SameSurfaceMergeOuterLoop(b, face_a, &hole_loops);
+  const int outer_b = SameSurfaceMergeOuterLoop(b, face_b, &hole_loops);
+  if (outer_a < 0 || outer_b < 0) return false;
+  const ON_BrepLoop& loop_a = b.m_L[outer_a];
+  const ON_BrepLoop& loop_b = b.m_L[outer_b];
 
   // Same splice as TryMergeCoplanarPair()'s own build_path (see its
   // comment above for the full reasoning): walks the loop's own trim
@@ -6020,6 +6056,32 @@ bool TryMergeSameSurfacePair(ON_Brep& b, int fa, int fb, int shared_edge_index) 
     pending.push_back({t->m_ei, t->m_bRev3d, t->m_tolerance[0], t->m_tolerance[1],
                         std::unique_ptr<ON_Curve>(t->TrimCurveOf()->Duplicate())});
   }
+  // Every existing hole of either face (empty for a hole-free pair, the
+  // only kind accepted before): fa and fb trim the same parameter space
+  // (see SurfacesHaveIdenticalNurbsForm()), and a hole sits strictly
+  // inside its own face's material, clear of the dissolved shared edge,
+  // so each hole loop is carried onto the merged face VERBATIM - same
+  // edges (reused, not rebuilt - so a curved hole edge stays exact),
+  // same bRev3d, a plain duplicate of each 2D trim curve - exactly the
+  // way the outer path above reuses its own trims. No affine (u, v) map
+  // is involved, unlike MergeCoplanarFaces()'s own AddHoleLoop()-based
+  // hole restoration, so neither planarity nor straight hole edges are
+  // required. Captured as plain data before any mutation, for the same
+  // pointer-invalidation reason as `pending` above.
+  std::vector<std::vector<PendingTrim>> pending_holes;
+  for (const int li : hole_loops) {
+    const ON_BrepLoop& hl = b.m_L[li];
+    std::vector<PendingTrim> hole;
+    for (int k = 0; k < hl.TrimCount(); ++k) {
+      const ON_BrepTrim* t = hl.Trim(k);
+      if (!t || !t->Edge() || !t->TrimCurveOf()) return false;  // singular/seam trim - out of scope here
+      hole.push_back({t->m_ei, t->m_bRev3d, t->m_tolerance[0], t->m_tolerance[1],
+                      std::unique_ptr<ON_Curve>(t->TrimCurveOf()->Duplicate())});
+    }
+    if (hole.empty()) return false;
+    pending_holes.push_back(std::move(hole));
+  }
+
   const int new_si = face_a.m_si;
   const bool new_rev = face_a.m_bRev;
 
@@ -6032,6 +6094,17 @@ bool TryMergeSameSurfacePair(ON_Brep& b, int fa, int fb, int shared_edge_index) 
     ON_BrepTrim& nt = b.NewTrim(b.m_E[p.edge_index], p.rev3d, new_loop, c2i);
     nt.m_tolerance[0] = p.tol0;
     nt.m_tolerance[1] = p.tol1;
+  }
+  for (std::vector<PendingTrim>& hole : pending_holes) {
+    // NewLoop() may grow m_L, so the face is re-fetched by index rather
+    // than held across the call (NewTrim() below only grows m_T/m_C2).
+    ON_BrepLoop& inner = b.NewLoop(ON_BrepLoop::inner, b.m_F[new_face.m_face_index]);
+    for (PendingTrim& p : hole) {
+      const int c2i = b.AddTrimCurve(p.curve2d.release());
+      ON_BrepTrim& nt = b.NewTrim(b.m_E[p.edge_index], p.rev3d, inner, c2i);
+      nt.m_tolerance[0] = p.tol0;
+      nt.m_tolerance[1] = p.tol1;
+    }
   }
 
   // Both source faces' own reused edges now carry a second trim (the new
@@ -6069,8 +6142,13 @@ int Brep::MergeSameSurfaceFaces() {
     changed = false;
     for (int fa = 0; fa < brep_.m_F.Count() && !changed; ++fa) {
       const ON_BrepFace& face_a = brep_.m_F[fa];
-      if (face_a.m_face_index < 0 || face_a.LoopCount() != 1) continue;
-      const ON_BrepLoop& loop_a = *face_a.Loop(0);
+      if (face_a.m_face_index < 0) continue;
+      // A face with holes is accepted too (see TryMergeSameSurfacePair()'s
+      // own hole carry-over); a single-loop face resolves to Loop(0)
+      // exactly as before.
+      const int outer_a = SameSurfaceMergeOuterLoop(brep_, face_a, nullptr);
+      if (outer_a < 0) continue;
+      const ON_BrepLoop& loop_a = brep_.m_L[outer_a];
 
       for (int k = 0; k < loop_a.TrimCount() && !changed; ++k) {
         const ON_BrepTrim* trim = loop_a.Trim(k);
@@ -6081,7 +6159,7 @@ int Brep::MergeSameSurfaceFaces() {
         const int fb = other_trim.FaceIndexOf();
         if (fb < 0 || fb == fa) continue;
         const ON_BrepFace& face_b = brep_.m_F[fb];
-        if (face_b.LoopCount() != 1) continue;
+        if (SameSurfaceMergeOuterLoop(brep_, face_b, nullptr) < 0) continue;
         // The literal same-surface condition this method is named for -
         // widened to also accept two SEPARATE surface objects whose own
         // NURBS forms are numerically identical (same degree, knots and
@@ -6099,14 +6177,21 @@ int Brep::MergeSameSurfaceFaces() {
         // MergeCoplanarFaces() applies, for the same reason (a pair also
         // touching along a second, separate edge would not splice into
         // one simple polygon below).
+        // Counted over EVERY loop of fa (just loop_a for a hole-free
+        // face, exactly as before), so a pair where fb also touches one
+        // of fa's own holes is never mistaken for a one-edge pair.
         int shared_edges = 0;
-        for (int m = 0; m < loop_a.TrimCount(); ++m) {
-          const ON_BrepTrim* tm = loop_a.Trim(m);
-          const ON_BrepEdge* em = tm ? tm->Edge() : nullptr;
-          if (!em) continue;
-          for (int q = 0; q < em->TrimCount(); ++q) {
-            if (em->m_ti[q] == tm->m_trim_index) continue;
-            if (brep_.m_T[em->m_ti[q]].FaceIndexOf() == fb) { ++shared_edges; break; }
+        for (int li = 0; li < face_a.LoopCount(); ++li) {
+          const ON_BrepLoop* lm = face_a.Loop(li);
+          if (!lm) continue;
+          for (int m = 0; m < lm->TrimCount(); ++m) {
+            const ON_BrepTrim* tm = lm->Trim(m);
+            const ON_BrepEdge* em = tm ? tm->Edge() : nullptr;
+            if (!em) continue;
+            for (int q = 0; q < em->TrimCount(); ++q) {
+              if (em->m_ti[q] == tm->m_trim_index) continue;
+              if (brep_.m_T[em->m_ti[q]].FaceIndexOf() == fb) { ++shared_edges; break; }
+            }
           }
         }
         if (shared_edges != 1) continue;
