@@ -559,6 +559,24 @@ dhecheck "DXF: 0 curves, 0 points, 0 meshes, 1 hatch" "the reopened file's HATCH
 dhecheck "1 object(s) selected" "SelHatch found the round-tripped hatch"
 dhecheck "Area = 100 square" "the round-tripped hatch's area is exactly the 10x10 boundary"
 grep -q "^HATCH$" "$TMPW/dxf_hatch_export.dxf" && echo "ok   dxf_hatch_export.dxf contains a real HATCH entity, not just boundary LINE/POLYLINE entities" || { echo "FAIL dxf_hatch_export.dxf has no HATCH entity"; fail=1; }
+# DXF TEXT export: ExportDxf had no TEXT writer function at all until this
+# change (see WriteDxfTextIfPlanarXY in FileExchange.cpp) - a Dino8 "Text"
+# annotation used to round-trip out as its own baked glyph-outline curves,
+# losing the fact it was ever a single text object. Makes a real Text
+# annotation, exports it, reopens the exported file in a fresh document,
+# and checks SelText/FindText find the same real text object back.
+sed "s|@TMP@|$TMPW|g" "$HERE/dxf_text_export_script.txt" > "$TMPW/dxf_text_export_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DTE="$("$BIN" --smoke 30 --script "$TMPW/dxf_text_export_script.txt" 2>&1)" || { echo "$DTE"; echo "FAIL: DXF TEXT export script exited non-zero"; exit 1; }
+else
+  DTE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_text_export_script.txt" 2>&1)" || { echo "$DTE"; echo "FAIL: DXF TEXT export script exited non-zero"; exit 1; }
+fi
+dtecheck() { if echo "$DTE" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DTE" "$1"; fail=1; fi; }
+dtecheck "Exported $TMPW/dxf_text_export.dxf" "ExportDxf wrote a file"
+dtecheck "DXF: 3 curves, 0 points, 0 meshes" "the reopened file's TEXT entity round-tripped as exactly 3 real glyph curves (H, i-stem, i-dot), the same count a hand-written TEXT fixture already gets"
+dtecheck "Text = Hi" "the round-tripped TEXT entity's string content survived exactly (What dumps each object's user text)"
+dtecheck "Annotation = Text" "the round-tripped curves carry the same Annotation=Text tag DxfImporter::Text() writes for a hand-written fixture"
+grep -q "^TEXT$" "$TMPW/dxf_text_export.dxf" && echo "ok   dxf_text_export.dxf contains a real TEXT entity, not just baked glyph-outline curves" || { echo "FAIL dxf_text_export.dxf has no TEXT entity"; fail=1; }
 # DWG SPLINE: built via LibreDWG's own dwg_add_SPLINE (marked "Experimental.
 # Does not work yet properly" in dwg_api.h - confirmed by hand it only ever
 # populates fit_pts, never real NURBS control points), so this exercises
@@ -3151,6 +3169,32 @@ grep -q "FILE_SCHEMA(('IFC4'))" "$TMPW/ifc/box.ifc" && echo "ok   box.ifc declar
 grep -q "IFCTRIANGULATEDFACESET" "$TMPW/ifc/box.ifc" && echo "ok   box.ifc has a real IFCTRIANGULATEDFACESET" || { echo "FAIL box.ifc has no IFCTRIANGULATEDFACESET"; fail=1; }
 ifccheck "IFC: 1 mesh element (14 vertices, 24 faces)" "Import read the box's tessellated mesh back with the exact vertex/face count Dino 8's own Export wrote"
 ifccheck "Nothing to export: select meshes, surfaces, polysurfaces or SubDs" "Export refuses a selection with nothing IFC-shaped (a bare point) instead of writing an empty file"
+
+# STEP AP242 (tessellated geometry) exchange at the app level
+# (io/FileIgesStep.cpp's ExportStepAp242/ImportStepAp242 - see
+# ap242_script.txt): wires the kernel's own Mesh::SaveStepAp242/
+# LoadStepAp242 into the app, closing the app-level "writer emits AP214
+# only, with no AP242 fixture, test, or PMI/TESSELLATED handler" gap.
+mkdir -p "$TMPW/ap242"
+sed "s|@TMP@|$TMPW/ap242|g" "$HERE/ap242_script.txt" > "$TMPW/ap242_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  AP242OUT="$("$BIN" --smoke 40 --script "$TMPW/ap242_script.txt" 2>&1)" || { echo "$AP242OUT"; echo "FAIL: ap242 script exited non-zero"; exit 1; }
+else
+  AP242OUT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 40 --script "$TMPW/ap242_script.txt" 2>&1)" || { echo "$AP242OUT"; echo "FAIL: ap242 script exited non-zero"; exit 1; }
+fi
+echo "$AP242OUT" | grep -E "^(ok|FAIL)"
+if echo "$AP242OUT" | grep -q "^FAIL"; then fail=1; fi
+ap242check() { if echo "$AP242OUT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$AP242OUT" "$1"; fail=1; fi; }
+ap242check "Exported $TMPW/ap242/box.stp" "ExportStepAp242 wrote box.stp"
+test -s "$TMPW/ap242/box.stp" && echo "ok   box.stp exists" || { echo "FAIL box.stp missing"; fail=1; }
+grep -q "AP242_MANAGED_MODEL_BASED_3D_ENGINEERING" "$TMPW/ap242/box.stp" && echo "ok   box.stp declares the AP242 schema" || { echo "FAIL box.stp is missing the AP242 FILE_SCHEMA"; fail=1; }
+grep -q "TRIANGULATED_FACE" "$TMPW/ap242/box.stp" && echo "ok   box.stp has a real TRIANGULATED_FACE entity" || { echo "FAIL box.stp has no TRIANGULATED_FACE"; fail=1; }
+# Open/Import auto-detects AP242 from the file's own FILE_SCHEMA (no
+# special command needed) and reads the box's tessellated mesh back with
+# the exact same vertex/face count ExportIfc's own box fixture gets -
+# both tessellate the same Box through the same TessellateForIfc helper.
+ap242check "STEP AP242: 14 vertices, 24 faces" "Import auto-detected AP242 (vs. AP214) from FILE_SCHEMA and read the box's tessellated mesh back with the exact vertex/face count Dino 8's own Export wrote"
+ap242check "Nothing to export: select meshes, surfaces, polysurfaces or SubDs" "ExportStepAp242 refuses a selection with nothing tessellatable (a bare point) instead of writing an empty file"
 
 # Creation: Points/Lines/InterpCrv/CurveThroughPt/Sketch/Circle3Pt/CircleD/Arc3Pt/
 # Rectangle3Pt/Polygon/PolygonStar/Ellipse/Helix/Spiral/PointGrid/Divide/ClosestPt/

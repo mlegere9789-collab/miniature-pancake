@@ -212,6 +212,24 @@ void RegisterFileCommands(CommandEngine& e) {
         app.ShowFileDialog("Export selected", kExportExts, true, [&app](const std::string& path) { std::string err; if (!app.ExportSelected(path, err)) app.Notify(err); else app.Notify("Exported " + path); });
       }));
   Reg(e, "ExportWithOrigin", Make<ExportWithOriginCommand>(), CommandStatus::Implemented, "Translates copies of the selection so the picked point lands at 0,0,0 before writing them; SVG/PDF (page-space view drawings, not object-space geometry) export the plain view instead.");
+  // ExportStepAp242: a separate command from Export/SaveAs's own .stp/.step
+  // dispatch (which stays AP214, unchanged, so no existing round trip
+  // breaks) because AP214 and AP242 share the same file extension - this is
+  // the only way to pick AP242's own tessellated-geometry schema on write.
+  // Import/Open need no equivalent command: ImportStep (io/FileIgesStep.cpp)
+  // auto-detects AP242 from the file's own FILE_SCHEMA and reads it back
+  // via ImportStepAp242 either way.
+  Reg(e, "ExportStepAp242", OnSelection("Select objects to export", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        Application& app = ctx.App();
+        Document& doc = ctx.Doc();
+        for (ObjectId id : ids) doc.Select(id, true);
+        auto run = [&doc](const std::string& path) -> std::pair<bool, std::string> { std::string err; bool ok = ExportStepAp242(doc, path, true, err); return {ok, err}; };
+        if (auto p = ctx.Engine().TakePendingInput()) { auto [ok, err] = run(*p); if (!ok) ctx.Warn(err); else ctx.Print("Exported " + *p); return; }
+        app.ShowFileDialog("Export selected (STEP AP242)", {".stp", ".step"}, true, [&app, run](const std::string& path) { auto [ok, err] = run(path); if (ok) app.Notify("Exported " + path); else app.Notify(err); });
+      }), CommandStatus::Implemented,
+      "Writes the selection as a real STEP AP242 (ISO 10303-242) file - COORDINATES_LIST/TRIANGULATED_FACE tessellated "
+      "geometry, not AP214's B-rep entities - tessellating Breps/Surfaces/SubDs exactly like ExportIfc. Plain Export/"
+      "SaveAs to .stp/.step still writes AP214.");
   Reg(e, "Exit", Immediate([](CommandContext& ctx) { ctx.App().RequestQuit(); }));
   Reg(e, "Notes", Immediate([](CommandContext& ctx) { ctx.App().Panels().notes = true; }));
   Reg(e, "ActivityLog", Immediate([](CommandContext& ctx) { ctx.App().Panels().activity_log = true; }));

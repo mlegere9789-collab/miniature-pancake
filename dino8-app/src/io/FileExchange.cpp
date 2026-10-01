@@ -48,6 +48,7 @@
 #include <fstream>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -431,6 +432,63 @@ void WriteDxfHatchSolid(DxfWriter& w, const std::vector<Point3d>& pts, const std
   w.G(98, 0);  // no seed points
 }
 
+// A Dino8-authored "Text" command annotation is a group of glyph-outline
+// curves, every one of them tagged (commands/annotate_common.h's TagGlyph)
+// with the same Text/TextHeight/TextOrigin/TextX/TextY/TextAlign values -
+// re-parsed here directly from those tags (rather than including
+// commands/annotate_common.h itself, which pulls in app/Application.h
+// through commands/cmd_common.h - DimGeometry.h above is this file's own
+// precedent for staying with a plain-data read of the same tag convention
+// instead of that heavier header) so WriteDxfTextIfPlanarXY below can write
+// one real DXF TEXT entity for the whole string instead of N separate
+// glyph-outline curves.
+bool ParsePointTagLocal(const std::string& s, Point3d& out) {
+  double x = 0, y = 0, z = 0;
+  if (std::sscanf(s.c_str(), "%lf,%lf,%lf", &x, &y, &z) != 3) return false;
+  out = Point3d(x, y, z);
+  return true;
+}
+
+struct DxfTextGlyphSpec {
+  std::string text;
+  double height = 0;
+  ON_Plane plane;
+};
+
+bool DxfTextGlyphSpecOf(const SceneObject& o, DxfTextGlyphSpec& g) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *t = get("Text"), *h = get("TextHeight"), *org = get("TextOrigin"), *x = get("TextX"), *y = get("TextY");
+  if (!t || !h || !org || !x || !y) return false;
+  Point3d o3, px, py;
+  if (!ParsePointTagLocal(*org, o3) || !ParsePointTagLocal(*x, px) || !ParsePointTagLocal(*y, py)) return false;
+  g.text = *t;
+  g.height = std::atof(h->c_str());
+  g.plane = ON_Plane(o3, Vector3d(px.x, px.y, px.z), Vector3d(py.x, py.y, py.z));
+  return g.height > 0 && !g.text.empty();
+}
+
+// A TEXT entity for a Dino8 "Text" command's glyph-curve group, instead of
+// writing each glyph outline as its own curve - the same "named primitive
+// instead of its own baked geometry" shortcut WriteDxfHatchSolid above
+// takes for a solid hatch's boundary. World-XY-plane only, with no
+// extrusion/rotation-OCS handling (same simplification WriteDxfHatchSolid/
+// WriteDxfPolyline's LWPOLYLINE branch already make - this writer embeds
+// exact 3D geometry everywhere else instead of using AutoCAD's own OCS
+// convention) - a tilted text plane falls back to the caller's own
+// per-glyph curve export, so nothing is lost either way. Group codes
+// (10/40/1/50) match exactly what this file's own DxfImporter::Text() (see
+// the reader below) reads back, verified end-to-end through the real app.
+bool WriteDxfTextIfPlanarXY(DxfWriter& w, const DxfTextGlyphSpec& g, const std::string& layer, const Color* color) {
+  if (std::fabs(g.plane.zaxis.x) > 1e-6 || std::fabs(g.plane.zaxis.y) > 1e-6 || g.plane.zaxis.z < 1.0 - 1e-6) return false;
+  w.BeginEntity("TEXT", layer, color);
+  w.G(100, "AcDbText");
+  w.Point(10, g.plane.origin);
+  w.G(40, g.height);
+  w.G(1, g.text);
+  w.G(50, std::atan2(g.plane.xaxis.y, g.plane.xaxis.x) * 180.0 / ON_PI);
+  return true;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -539,6 +597,11 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   // ENTITIES
   w.G(0, "SECTION"); w.G(2, "ENTITIES");
   int written = 0;
+  // Groups (SceneObject::group_id) whose Dino8 "Text" annotation already
+  // wrote its one real TEXT entity (WriteDxfTextIfPlanarXY below) - every
+  // other glyph-outline curve belonging to that same group_id is skipped
+  // rather than also written as its own curve.
+  std::set<int> text_groups_written;
   for (const SceneObject* o : objs) {
     const size_t li = static_cast<size_t>(std::clamp(o->layer_index, 0, static_cast<int>(layer_names.size()) - 1));
     const std::string& layer = layer_names[li];
@@ -550,9 +613,32 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
         w.Point(10, o->point);
         ++written;
         break;
-      case ObjectKind::Curve:
-        if (o->curve) { WriteDxfCurve(w, *o->curve, layer, color); ++written; }
+      case ObjectKind::Curve: {
+        if (!o->curve) break;
+        auto glyph = o->user_text.find("Glyph"), ann = o->user_text.find("Annotation"), align = o->user_text.find("TextAlign");
+        // Only the plain Text command's own left-aligned glyph groups (not
+        // Dim*/Leader, whose glyph curves share a group with non-glyph
+        // dimension-line/arrow geometry too) - a centered Text's own
+        // TextOrigin is the pre-shift anchor AddGlyphCurves shifted the
+        // glyph curves away from, not the actual visual-center insertion
+        // point a real DXF TEXT with group 72=1 would need, so that case
+        // still falls through to its own baked curves below rather than
+        // writing a TEXT entity at the wrong point.
+        const bool is_left_text_glyph = glyph != o->user_text.end() && glyph->second == "1" && ann != o->user_text.end() &&
+                                         ann->second == "Text" && (align == o->user_text.end() || align->second == "Left");
+        if (is_left_text_glyph) {
+          if (text_groups_written.count(o->group_id)) break;  // this group's TEXT entity already written
+          DxfTextGlyphSpec g;
+          if (DxfTextGlyphSpecOf(*o, g) && WriteDxfTextIfPlanarXY(w, g, layer, color)) {
+            text_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
+        }
+        WriteDxfCurve(w, *o->curve, layer, color);
+        ++written;
         break;
+      }
       case ObjectKind::Mesh:
         if (o->mesh) { WriteDxfMesh(w, o->mesh->raw(), layer, color); ++written; }
         break;
