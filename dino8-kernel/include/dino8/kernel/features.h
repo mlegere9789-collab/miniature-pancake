@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "dino8/kernel/brep.h"
+#include "dino8/kernel/mesh.h"
 
 namespace dino8::kernel {
 
@@ -894,5 +895,57 @@ struct PocketFeature {
 // stepped or sloped-bottom pocket) are all out of scope and simply not
 // reported, rather than reported inaccurately.
 std::vector<PocketFeature> RecognizePockets(const Brep& solid);
+
+// A cubic-lattice cellular infill (parity-map "Feature operations" -
+// "Lattice/cellular infill": previously the only "lattice" hits anywhere
+// in this kernel were the unrelated Cage FFD deformer, cmd_solidtools.cpp
+// - no gyroid/TPMS/Voronoi infill code, and none of any OTHER kind
+// either): fills `solid`'s own axis-aligned bounding box with a 3D grid of
+// nodes spaced `cell_size` apart, connects every pair of axis-adjacent
+// nodes (the 12 edges of each unit cell, each shared edge built exactly
+// once) with a cylindrical strut of `strut_radius` via `Mesh::Cylinder()`
+// (mesh.h), unions every strut into one solid, then intersects that
+// lattice with `solid` itself so it only survives where `solid`'s own
+// material actually is - the same "build in the bounding box, trim with a
+// real boolean" shape `BooleanCombine()` (boolean.h) is already built to
+// do, not a new engine.
+//
+// This is a simple strut-based CUBIC lattice - the same topology a
+// slicer's plain "grid"/"cubic" infill pattern builds - not a gyroid/other
+// TPMS surface or a Voronoi cell structure, both of which remain
+// unimplemented (no implicit-surface or Voronoi-tessellation machinery
+// exists anywhere in this kernel to build either from); still a genuine,
+// working cellular infill generator, not a placeholder.
+//
+// Two struts sharing a grid node genuinely overlap near it (every strut
+// spans the full `cell_size` from node to node, so several meeting at one
+// node overlap in a small region around it) - NOT merely coincident at a
+// shared vertex the way `Mesh::MergeAndWeld()` (mesh.h) could stitch, so a
+// real `BooleanCombine(..., BooleanOp::Union)` fold is used instead,
+// one strut at a time (the same plain left-to-right fold this kernel's
+// Brep-level `*NAry` wrappers already use for an analogous N-operand
+// Union - see boolean.h's own `BooleanCombineMixedNAry` doc comment) -
+// without which the result would not be `IsClosedManifold()` wherever
+// three or more struts cross through each other's volume at a node.
+//
+// `solid` must be `IsClosedManifold()` (the same precondition
+// `BooleanCombine()` itself has for the trimming step at the end) and have
+// a non-degenerate bounding box. `cell_size`/`strut_radius` must both be
+// finite and positive, `strut_radius` strictly less than half `cell_size`
+// (otherwise struts running down PARALLEL grid lines one cell apart would
+// overlap each other along their own length, not just meet at shared
+// nodes - a different, unintended shape), and `circle_segments` at least
+// 3 (`Mesh::Cylinder()`'s own requirement, surfaced here rather than
+// duplicated).
+//
+// Performance note: this runs one real mesh Boolean Union per strut (none
+// batched into a single N-ary call), so a fine lattice over a large
+// bounding box - many cells in every direction - is slow; no attempt is
+// made here to batch or parallelize it. A `cell_size` larger than `solid`'s
+// own bounding box is not an error: it just builds one oversized cell,
+// trimmed down to whatever of `solid` that cell's own struts actually
+// cross. Throws std::invalid_argument for any other out-of-range parameter
+// above.
+Mesh LatticeInfill(const Mesh& solid, double cell_size, double strut_radius, int circle_segments = 12);
 
 }  // namespace dino8::kernel

@@ -223,6 +223,8 @@ SetObjectDisplayMode Ghosted
 SelAll
 SetObjectDisplayMode X-Ray
 SelAll
+SetObjectDisplayMode Monochrome
+SelAll
 SetObjectDisplayMode UseViewport
 History
 RecordHistory

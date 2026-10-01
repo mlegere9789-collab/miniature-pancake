@@ -292,17 +292,34 @@ class SubD {
   //
   // Still honestly not what that disclosed gap describes, and not a new,
   // separate limitation invented here: the returned SubD's control cage
-  // is whatever Manifold's own triangulated boolean result happens to
-  // be - every face a raw triangle from the mesh-boolean engine, not a
-  // clean quad-dominant cage with creases placed along the cut the way a
-  // hand-modeled SubD would have. Subdivide()ing the result genuinely
-  // smooths the shape (a real Catmull-Clark refinement of a real control
-  // net - verified below, not assumed), but the cage's own topology
-  // carries none of that reconstruction. `FromControlMesh()`'s own
-  // failure mode (an unbuildable topology - shouldn't occur for the
-  // closed, manifold mesh `BooleanCombine()` itself already guarantees,
-  // but not reinterpreted here either way) and `Boolean()`'s own
-  // preconditions both apply unchanged.
+  // carries no creases placed along the cut the way a hand-modeled SubD
+  // would have. Subdivide()ing the result genuinely smooths the shape (a
+  // real Catmull-Clark refinement of a real control net - verified below,
+  // not assumed), but the cage's own topology carries none of that
+  // reconstruction. `FromControlMesh()`'s own failure mode (an unbuildable
+  // topology - shouldn't occur for the closed, manifold mesh
+  // `BooleanCombine()` itself already guarantees, but not reinterpreted
+  // here either way) and `Boolean()`'s own preconditions both apply
+  // unchanged.
+  //
+  // This pass's own addition: the boolean mesh is run through the
+  // already-existing, already-tested `Mesh::TrisToQuads()` (mesh.h) before
+  // `FromControlMesh()` sees it - directly narrowing the "no quad-dominant
+  // remeshing" half of the gap just above (every face used to be a raw
+  // triangle from the mesh-boolean engine unconditionally; now any pair
+  // Manifold happened to split from the SAME original quad - the common
+  // case for the untouched, away-from-the-cut faces of two box-like
+  // operands - recombines back into one quad face of the resulting SubD's
+  // own control cage). `TrisToQuads()` is a pure face-list rewrite that
+  // never moves, adds, or removes a vertex and is a no-op wherever nothing
+  // qualifies (a steep dihedral angle, a non-convex merge, mismatched
+  // winding), so this can only ever reduce triangle count, never change
+  // the boolean result's own geometry, volume, or manifold-ness. Genuinely
+  // triangulated-by-the-cut faces (the new material right at the boolean
+  // seam) are never claimed to become quads by this - `TrisToQuads()`'s
+  // own dihedral/convexity/winding gates simply don't fire there in
+  // general, so this is an honest, bounded narrowing of the disclosed gap,
+  // not a claim that the cut itself is now quad-clean.
   SubD BooleanToSubD(const SubD& other, BooleanOp op) const;
 
   // Applies `xform` to a copy of this SubD's ENTIRE control cage (every
