@@ -14,6 +14,7 @@
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -5625,23 +5626,29 @@ int FindOuterLoop(const ON_Brep& b, const ON_BrepFace& face, std::vector<int>* h
 }
 
 // Attempts to merge faces `fa`/`fb` of `b`, already confirmed coplanar and
-// sharing EXACTLY one edge (`shared_edge_index`, with exactly two trims),
-// into a single face on `plane`. On success, deletes both source faces,
-// appends the merged one, re-welds any naked edges the deletion exposed
-// on their other neighbors, restores every hole either source face already
-// had (see the "trial copy" block near the end of this function), and
-// returns true. Returns false (leaving `b` completely untouched) if the
-// merge boundary can't be spliced into one simple closed loop, either
-// face carries a loop AddHoleLoop() itself would refuse (a slit/curve-on-
+// sharing one or more edges (`shared_edge_indices`, each with exactly two
+// trims), into a single face on `plane`. On success, deletes both source
+// faces, appends the merged one, re-welds any naked edges the deletion
+// exposed on their other neighbors, restores every hole either source face
+// already had (see the "trial copy" block near the end of this function),
+// and returns true. Returns false (leaving `b` completely untouched) if the
+// merge boundary can't be spliced into one simple closed loop - including
+// the case `shared_edge_indices` names more than one edge but they do NOT
+// form a single contiguous run in both loops' own cyclic order (see
+// build_path()'s own comment: a pair touching along two SEPARATE,
+// non-adjacent edges would not merge into one simple polygon by the splice
+// below, so it is left untouched rather than guessed at) - either face
+// carries a loop AddHoleLoop() itself would refuse (a slit/curve-on-
 // surface/point-on-surface loop, or more than one outer loop), a hole has
 // a curved edge (still out of scope - the same straight-edges-only
 // restriction AddHoleLoop() itself already has), or ON_BrepTrimmedPlane
 // refuses the merge - the caller treats that the same as "not eligible",
-// not an error: a face pair that merely LOOKS mergeable (coplanar, one
-// shared 2-trim edge) can still fail here, e.g. if the two loops' own
-// stored trim directions aren't the standard opposite pair a valid
-// 2-manifold edge is expected to have.
-bool TryMergeCoplanarPair(ON_Brep& b, int fa, int fb, int shared_edge_index, const ON_Plane& plane, double tol) {
+// not an error: a face pair that merely LOOKS mergeable (coplanar, a
+// manifold-safe shared boundary) can still fail here, e.g. if the two
+// loops' own stored trim directions aren't the standard opposite pair a
+// valid 2-manifold edge is expected to have.
+bool TryMergeCoplanarPair(ON_Brep& b, int fa, int fb, const std::vector<int>& shared_edge_indices,
+                           const ON_Plane& plane, double tol) {
   const ON_BrepFace& face_a = b.m_F[fa];
   const ON_BrepFace& face_b = b.m_F[fb];
   std::vector<int> holes_a, holes_b;
@@ -5652,29 +5659,52 @@ bool TryMergeCoplanarPair(ON_Brep& b, int fa, int fb, int shared_edge_index, con
   const ON_BrepLoop& loop_b = b.m_L[outer_b];
 
   std::vector<std::unique_ptr<ON_Curve>> owned;
+  const std::unordered_set<int> shared_set(shared_edge_indices.begin(), shared_edge_indices.end());
 
-  // Builds the open boundary path that remains once the trim using
-  // `shared_edge_index` is removed from `loop`, walked in the loop's own
-  // stored order starting right after that trim - i.e. from the shared
-  // edge's own "end" (in this loop's own direction) around to its own
-  // "start". Returns an empty vector if the shared edge isn't found in
-  // `loop` exactly once, the loop has fewer than 2 trims, or any trim
-  // along the way has no edge (a singular/seam trim - out of scope here).
+  // Builds the open boundary path that remains once every trim whose edge
+  // is in `shared_set` is removed from `loop`, walked in the loop's own
+  // stored order starting right after that run - i.e. from the shared
+  // run's own "end" (in this loop's own direction) around to its own
+  // "start". A single shared edge is the `shared_set.size() == 1` case
+  // this already handled before batch siblings became this codebase's own
+  // standard pattern elsewhere (boolean.cpp); more than one is only ever
+  // accepted when every named edge forms ONE maximal contiguous run in
+  // this loop's own cyclic trim order (checked directly below, not
+  // assumed) - a shared boundary later subdivided into several collinear
+  // trims (e.g. by an imprint or a T-junction split) is exactly this case,
+  // while two genuinely separate shared edges elsewhere on the same pair
+  // is not, and returns an empty vector rather than guessing a splice.
+  // Also empty if any named edge is missing from `loop` entirely, any
+  // named edge appears more than once (shouldn't happen in a valid
+  // 2-manifold loop), the loop has too few trims, or any trim outside the
+  // run has no edge (a singular/seam trim - out of scope here).
   auto build_path = [&](const ON_BrepLoop& loop) -> std::vector<ON_Curve*> {
     std::vector<ON_Curve*> path;
     const int n = loop.TrimCount();
-    if (n < 2) return path;
-    int pos = -1;
+    if (n < 2 || shared_set.empty() || static_cast<size_t>(n) <= shared_set.size()) return path;
+    std::vector<bool> is_shared(static_cast<size_t>(n), false);
+    int shared_count = 0;
     for (int k = 0; k < n; ++k) {
       const ON_BrepTrim* t = loop.Trim(k);
-      if (t && t->m_ei == shared_edge_index) {
-        if (pos >= 0) return {};  // shared edge appears twice in this loop
-        pos = k;
+      if (t && shared_set.count(t->m_ei) != 0) {
+        is_shared[static_cast<size_t>(k)] = true;
+        ++shared_count;
       }
     }
-    if (pos < 0) return path;
-    for (int step = 1; step < n; ++step) {
-      const ON_BrepTrim* t = loop.Trim((pos + step) % n);
+    if (shared_count != static_cast<int>(shared_set.size())) return {};  // a named edge missing (or duplicated)
+    int run_start = -1;
+    for (int k = 0; k < n; ++k) {
+      if (is_shared[static_cast<size_t>(k)] && !is_shared[static_cast<size_t>((k - 1 + n) % n)]) {
+        if (run_start >= 0) return {};  // more than one separate run - not contiguous
+        run_start = k;
+      }
+    }
+    if (run_start < 0) return {};  // shouldn't happen given shared_count in (0, n) - defensive only
+    for (int step = 0; step < shared_count; ++step) {
+      if (!is_shared[static_cast<size_t>((run_start + step) % n)]) return {};  // the run wraps but isn't contiguous
+    }
+    for (int step = 0; step < n - shared_count; ++step) {
+      const ON_BrepTrim* t = loop.Trim((run_start + shared_count + step) % n);
       const ON_BrepEdge* e = t ? t->Edge() : nullptr;
       if (!e) return {};
       ON_Curve* c = e->DuplicateCurve();
@@ -5887,20 +5917,34 @@ int Brep::MergeCoplanarFaces(double tolerance) {
         const ON_BrepFace& face_b = brep_.m_F[fb];
         if (FindOuterLoop(brep_, face_b, nullptr) < 0) continue;
 
-        // fa/fb must share EXACTLY this one edge - a pair also touching
-        // along a second, separate edge would not merge into one simple
-        // polygon by the splice below.
-        int shared_edges = 0;
+        // Gather EVERY manifold-safe (exactly 2 trims) edge of loop_a that
+        // borders fb - not merely counting them, the way this used to stop
+        // at "exactly one or refuse": a shared boundary later subdivided
+        // into several collinear trims (e.g. by an imprint, or a
+        // T-junction split on one side only) is a real, mergeable case
+        // TryMergeCoplanarPair()'s own build_path() now accepts, as long
+        // as the whole named set forms one contiguous run in each loop's
+        // own cyclic order - checked there, not here. Any OTHER edge
+        // bordering fb that is itself non-manifold (TrimCount() != 2, a
+        // third face also touching it) still refuses the whole pair
+        // outright, the same conservative stance this method has always
+        // taken toward non-manifold complexity.
+        std::vector<int> shared_edge_indices;
+        bool non_manifold_shared_edge = false;
         for (int m = 0; m < loop_a.TrimCount(); ++m) {
           const ON_BrepTrim* tm = loop_a.Trim(m);
           const ON_BrepEdge* em = tm ? tm->Edge() : nullptr;
           if (!em) continue;
+          bool borders_fb = false;
           for (int q = 0; q < em->TrimCount(); ++q) {
             if (em->m_ti[q] == tm->m_trim_index) continue;
-            if (brep_.m_T[em->m_ti[q]].FaceIndexOf() == fb) { ++shared_edges; break; }
+            if (brep_.m_T[em->m_ti[q]].FaceIndexOf() == fb) { borders_fb = true; break; }
           }
+          if (!borders_fb) continue;
+          if (em->TrimCount() != 2) { non_manifold_shared_edge = true; break; }
+          shared_edge_indices.push_back(em->m_edge_index);
         }
-        if (shared_edges != 1) continue;
+        if (non_manifold_shared_edge || shared_edge_indices.empty()) continue;
 
         FaceGeometry fgb;
         if (!ResolveFace(brep_, fb, face_trim_loops_, face_exact_clip_, face_hole_loops_, fgb)) continue;
@@ -5914,7 +5958,7 @@ int Brep::MergeCoplanarFaces(double tolerance) {
         if (ON_DotProduct(pa.plane.zaxis, pb.plane.zaxis) < 1.0 - tolerance::kAlignment) continue;
         if (std::fabs(ON_DotProduct(pa.plane.zaxis, pb.plane.origin - pa.plane.origin)) > tol) continue;
 
-        if (TryMergeCoplanarPair(brep_, fa, fb, edge->m_edge_index, pa.plane, tol)) {
+        if (TryMergeCoplanarPair(brep_, fa, fb, shared_edge_indices, pa.plane, tol)) {
           ++merges;
           changed = true;
         }

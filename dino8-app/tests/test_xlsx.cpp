@@ -85,6 +85,100 @@ std::vector<unsigned char> StoredDeflateBlock(const std::string& data) {
   return out;
 }
 
+// A hand-built "fixed Huffman" (BFINAL=1, BTYPE=01) block encoding one
+// literal `byte` followed by `repeats` maximal (258-byte, distance-1)
+// back-references - `1 + 258*repeats` bytes of output from a compressed
+// stream of about 13 bits per repeat, same technique tests/test_inflate.cpp
+// uses to exercise InflateRaw's own cap directly. Used here to prove
+// FindZipEntry's cap on a *declared* uncompressed size (an attacker-
+// controlled zip header field, not a verified expectation) actually holds:
+// a real deflate stream that would legitimately decode past a sane
+// ceiling if allowed to run free.
+std::vector<unsigned char> FixedHuffmanRunBlock(unsigned char byte, size_t repeats) {
+  struct BitWriter {
+    std::vector<unsigned char> bytes;
+    unsigned cur = 0;
+    int nbits = 0;
+    void Bit(int b) {
+      cur |= static_cast<unsigned>(b & 1) << nbits;
+      if (++nbits == 8) { bytes.push_back(static_cast<unsigned char>(cur)); cur = 0; nbits = 0; }
+    }
+    void Bits(unsigned v, int len) { for (int i = 0; i < len; ++i) Bit(static_cast<int>((v >> i) & 1)); }
+    void Code(unsigned v, int len) { for (int i = len - 1; i >= 0; --i) Bit(static_cast<int>((v >> i) & 1)); }
+    void Flush() { if (nbits) { bytes.push_back(static_cast<unsigned char>(cur)); cur = 0; nbits = 0; } }
+  };
+  auto CanonicalCodes = [](const std::vector<int>& lengths) {
+    int count[16] = {};
+    for (int len : lengths) if (len) ++count[len];
+    int next_code[16] = {};
+    int code = 0;
+    for (int len = 1; len < 16; ++len) { code = (code + count[len - 1]) << 1; next_code[len] = code; }
+    std::vector<int> codes(lengths.size(), 0);
+    for (size_t sym = 0; sym < lengths.size(); ++sym) if (lengths[sym]) codes[sym] = next_code[lengths[sym]]++;
+    return codes;
+  };
+  std::vector<int> lit_len(288);
+  for (int i = 0; i < 144; ++i) lit_len[static_cast<size_t>(i)] = 8;
+  for (int i = 144; i < 256; ++i) lit_len[static_cast<size_t>(i)] = 9;
+  for (int i = 256; i < 280; ++i) lit_len[static_cast<size_t>(i)] = 7;
+  for (int i = 280; i < 288; ++i) lit_len[static_cast<size_t>(i)] = 8;
+  const std::vector<int> dist_len(30, 5);
+  const std::vector<int> lit_code = CanonicalCodes(lit_len);
+  const std::vector<int> dist_code = CanonicalCodes(dist_len);
+
+  BitWriter bw;
+  bw.Bits(1, 1);
+  bw.Bits(1, 2);
+  bw.Code(static_cast<unsigned>(lit_code[byte]), lit_len[byte]);
+  for (size_t i = 0; i < repeats; ++i) {
+    bw.Code(static_cast<unsigned>(lit_code[285]), lit_len[285]);
+    bw.Code(static_cast<unsigned>(dist_code[0]), dist_len[0]);
+  }
+  bw.Code(static_cast<unsigned>(lit_code[256]), lit_len[256]);
+  bw.Flush();
+  return bw.bytes;
+}
+
+// A single-entry zip whose central/local headers declare `declared_usize`
+// as the entry's uncompressed size, independent of any real decompressed
+// content - lets a fixture claim a multi-hundred-MB size without the test
+// itself having to materialize that many bytes. The CRC field is left at
+// 0: every fixture built with this is expected to be rejected by
+// FindZipEntry's own cap before it ever reaches the CRC comparison.
+std::vector<unsigned char> BuildSingleEntryZipWithDeclaredSize(const std::string& name, const std::vector<unsigned char>& compressed, unsigned method, uint32_t declared_usize) {
+  std::vector<unsigned char> out;
+  PutLE32(out, 0x04034b50);
+  PutLE16(out, 20); PutLE16(out, 0); PutLE16(out, static_cast<unsigned>(method));
+  PutLE16(out, 0); PutLE16(out, 0);
+  PutLE32(out, 0);  // crc - never checked by this fixture
+  PutLE32(out, static_cast<uint32_t>(compressed.size()));
+  PutLE32(out, declared_usize);
+  PutLE16(out, static_cast<unsigned>(name.size()));
+  PutLE16(out, 0);
+  out.insert(out.end(), name.begin(), name.end());
+  out.insert(out.end(), compressed.begin(), compressed.end());
+  const uint32_t cd_start = static_cast<uint32_t>(out.size());
+  PutLE32(out, 0x02014b50);
+  PutLE16(out, 20); PutLE16(out, 20); PutLE16(out, 0); PutLE16(out, static_cast<unsigned>(method));
+  PutLE16(out, 0); PutLE16(out, 0);
+  PutLE32(out, 0);
+  PutLE32(out, static_cast<uint32_t>(compressed.size()));
+  PutLE32(out, declared_usize);
+  PutLE16(out, static_cast<unsigned>(name.size()));
+  PutLE16(out, 0); PutLE16(out, 0); PutLE16(out, 0); PutLE16(out, 0);
+  PutLE32(out, 0);
+  PutLE32(out, 0);  // relative offset of local header
+  out.insert(out.end(), name.begin(), name.end());
+  const uint32_t cd_size = static_cast<uint32_t>(out.size()) - cd_start;
+  PutLE32(out, 0x06054b50);
+  PutLE16(out, 0); PutLE16(out, 0);
+  PutLE16(out, 1); PutLE16(out, 1);
+  PutLE32(out, cd_size);
+  PutLE32(out, cd_start);
+  PutLE16(out, 0);
+  return out;
+}
+
 struct FixtureEntry { std::string name; std::vector<unsigned char> data; unsigned method; };
 
 // method 0 (store) or 8 (deflate - `data` must already be a valid deflate
@@ -351,6 +445,26 @@ int main() {
     std::string err;
     Check(ReadXlsxCells(path, out, err), "ReadXlsxCells survives a row index of 2,000,000,000 without a huge allocation");
     Check(out.size() == 1 && !out[0].empty() && out[0][0] == "ok", "only the legitimate row 1 is present; the absurd row index was rejected");
+  }
+
+  // A zip entry's declared uncompressed size is an attacker-controlled
+  // header field, not a verified expectation - FindZipEntry must clamp it
+  // to a sane ceiling rather than hand it straight to InflateRaw as the
+  // cap. This fixture's "xl/workbook.xml" entry is a genuine, ~1.7 MB
+  // fixed-Huffman deflate stream whose back-references would legitimately
+  // decode to ~270 MiB if allowed to run free, declared as an even larger
+  // 500,000,000-byte entry; it must be rejected well before any such
+  // allocation happens, not accepted or allowed to balloon memory first.
+  {
+    const size_t repeats = 1100000;  // 1 + 258*1,100,000 ~= 270.6 MiB if unbounded
+    const std::vector<unsigned char> bomb = FixedHuffmanRunBlock('A', repeats);
+    const std::vector<unsigned char> zip = BuildSingleEntryZipWithDeclaredSize("xl/workbook.xml", bomb, 8, 500000000u);
+    const std::string path = (tmp / "decompression_bomb.xlsx").string();
+    Check(WriteFile(path, zip), "wrote a decompression-bomb fixture (small compressed, huge declared uncompressed size)");
+    std::vector<std::vector<std::string>> out;
+    std::string err;
+    Check(!ReadXlsxCells(path, out, err), "ReadXlsxCells rejects an entry whose declared uncompressed size is far past the sane ceiling");
+    Check(err.find("corrupt deflate stream") != std::string::npos, "  ...rejected by the decompression cap itself (not a later CRC/size mismatch)");
   }
 
   std::printf("%d failure(s)\n", failures);

@@ -2630,6 +2630,119 @@ void TestPullbackCurveToSurfaceCylinderRulingLine() {
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "Pullback of a 3D curve to surface parameter space" bullet: the fitted
+// `pcurve` used to swing through the middle of a periodic surface
+// direction's domain whenever the input curve crossed that direction's
+// seam (the raw per-sample (u, v) jumps from near one domain edge to near
+// the other, and the un-unwrapped cubic fit took the raw numeric jump at
+// face value). This exercises exactly that case on a cylinder wall - a
+// short arc of the cylinder's own base circle straddling angle 0, which is
+// also the NURBS surface's own u = 0 / u = 2*pi seam.
+void TestPullbackCurveToSurfaceAcrossPeriodicSeam() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PullbackCurveToSurface;
+  using dino8::kernel::PullbackResult;
+
+  const ON_Circle base_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0);
+  const ON_Cylinder on_cylinder(base_circle, 6.0);
+  ON_NurbsSurface cyl_surface;
+  Check(on_cylinder.GetNurbForm(cyl_surface) != 0, "ON_Cylinder::GetNurbForm succeeds (seam test)");
+  NurbsSurface wall;
+  wall.raw() = cyl_surface;
+
+  const dino8::kernel::Interval du = wall.Domain(0);
+  Check(std::abs((du.max - du.min) - 2.0 * ON_PI) < 1e-6, "the cylinder wall's own u domain spans a full turn (it is the seam direction)");
+
+  // A genuine arc of the base circle, straddling angle 0 == the surface's
+  // own u seam (u = du.min == du.max), held at a fixed height - every
+  // sample below is an EXACT point of the cylinder wall (computed directly
+  // from the circle's own trig parametrization, not fit or approximated),
+  // so the only error PullbackCurveToSurface() can introduce is its own
+  // closest-point search, not the input curve's shape.
+  const double theta0 = -0.3, theta1 = 0.3;
+  const double h = 3.0;
+  const int segs = 600;
+  std::vector<Point3d> pts;
+  pts.reserve(segs + 1);
+  for (int i = 0; i <= segs; ++i) {
+    const double theta = theta0 + (theta1 - theta0) * static_cast<double>(i) / segs;
+    ON_3dPoint p = base_circle.PointAt(theta);
+    p.z += h;
+    pts.emplace_back(p.x, p.y, p.z);
+  }
+  const NurbsCurve seam_arc = NurbsCurve::FromControlPoints(pts, /*degree=*/1);
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-4;
+  opt.mesh_tolerance = 0.01;
+  const PullbackResult pb_result = PullbackCurveToSurface(seam_arc.raw(), wall.raw(), opt);
+  Check(pb_result.on_surface, "an arc of the cylinder's own base circle pulls back with on_surface == true");
+  Check(pb_result.uv.size() >= 2, "the seam arc sampled at least its two endpoints");
+
+  // The raw per-sample `uv` field is untouched by the unwrap fix and must
+  // still show the seam jump directly: consecutive wrapped-domain u values
+  // crossing from near du.max down to near du.min.
+  bool raw_seam_jump_seen = false;
+  for (size_t i = 1; i < pb_result.uv.size(); ++i) {
+    if (std::abs(pb_result.uv[i].x - pb_result.uv[i - 1].x) > ON_PI) { raw_seam_jump_seen = true; break; }
+  }
+  Check(raw_seam_jump_seen, "the raw per-sample uv field still shows the wrapped-domain seam jump (sanity check that this test actually exercises the seam)");
+
+  // The fitted pcurve's own control points, by contrast, must NOT swing
+  // back through the middle of the domain: sampled finely along its own
+  // domain, its u coordinate must change monotonically from one end to the
+  // other (allowing a tiny numerical slack), never doubling back by more
+  // than that slack - the concrete, previously-disclosed defect this fix
+  // closes.
+  const ON_Interval pdom = pb_result.pcurve.Domain();
+  const int check_samples = 200;
+  double prev_u = pb_result.pcurve.PointAt(pdom.Min()).x;
+  const double first_u = prev_u;
+  bool monotonic = true;
+  double max_backslide = 0;
+  for (int i = 1; i <= check_samples; ++i) {
+    const double t = pdom.ParameterAt(static_cast<double>(i) / check_samples);
+    const double u = pb_result.pcurve.PointAt(t).x;
+    if (u < prev_u - 1e-6) { monotonic = false; max_backslide = std::max(max_backslide, prev_u - u); }
+    prev_u = u;
+  }
+  const double last_u = prev_u;
+  Check(monotonic, "the fitted pcurve's own u coordinate moves monotonically across the seam crossing (no swing through the domain's middle)");
+  // The arc spans theta1 - theta0 = 0.6 radians total; the unwrapped pcurve
+  // must span close to that, not the ~2*pi - 0.6 "the long way around"
+  // shape the un-fixed swing produced.
+  Check(std::abs(std::abs(last_u - first_u) - (theta1 - theta0)) < 0.05,
+        "the fitted pcurve's own total u excursion matches the arc's actual 0.6 radian span, not a near-full-turn detour");
+
+  // Evaluating pcurve back through the surface must still land on the
+  // original arc's own endpoints, exactly as the non-seam ruling-line test
+  // above already checks for the non-seam case. Per this function's own
+  // documented caller contract (surface_intersect.h), an over-range u on a
+  // merely-closed (not necessarily periodic) direction must be reduced
+  // into the surface's own domain by whole periods before evaluating -
+  // this cylinder's standard NURBS form is closed but not periodic (a
+  // clamped-knot circular arc representation), so this is the one
+  // guaranteed-correct way to map it back, not an optional nicety.
+  const auto wrap_into_domain = [](double x, const dino8::kernel::Interval& d) {
+    const double L = d.max - d.min;
+    while (x < d.min) x += L;
+    while (x > d.max) x -= L;
+    return x;
+  };
+  Check(!wall.IsPeriodic(0), "sanity check: this cylinder's own u direction is closed but NOT periodic, the exact case this wrap contract is for");
+  const ON_3dPoint uv_start = pb_result.pcurve.PointAt(pdom.Min());
+  const ON_3dPoint uv_end = pb_result.pcurve.PointAt(pdom.Max());
+  const dino8::kernel::Interval wall_du = wall.Domain(0);
+  const Point3d back_start = wall.PointAt(wrap_into_domain(uv_start.x, wall_du), uv_start.y);
+  const Point3d back_end = wall.PointAt(wrap_into_domain(uv_end.x, wall_du), uv_end.y);
+  Check(back_start.DistanceTo(pts.front()) < 1e-2 && back_end.DistanceTo(pts.back()) < 1e-2,
+        "the seam-crossing pcurve's own two domain endpoints, wrapped back into the surface's domain, still map through the surface to the arc's own endpoints");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Plane sections / contours of surfaces and B-reps" bullet: "the app
 // still slices render meshes (SliceObjects/SliceMesh). Kernel SplitByPlane
 // is mesh-only; the exact route (IntersectSurfaces per face) is not used
@@ -2855,6 +2968,83 @@ void TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly() {
     if ((h.face_a < 6) == (h.face_b < 6)) { all_cross_lumps = false; break; }
   }
   Check(all_cross_lumps, "every reported self-intersecting face pair spans the two different (overlapping) lumps, not two faces of the same box");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "Surface / B-rep self-intersection detection" bullet's own remaining
+// "no face-interior self-intersection test" half (the face-vs-face half is
+// FindBrepSelfIntersections() above, tested just above this).
+// FindFaceInteriorSelfIntersections() closes this half - see its own doc
+// comment (surface_intersect.h) for why it is a dedicated function rather
+// than reusing IntersectSurfaces(s, s, opt) or FindBrepSelfIntersections().
+void TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FaceInteriorSelfIntersection;
+  using dino8::kernel::FindFaceInteriorSelfIntersections;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-5;
+  opt.mesh_tolerance = 0.1;
+
+  // A single face, EXTRUDED along Y from a degree-1 "bowtie" profile in the
+  // XZ plane - the exact same genuine-crossing shape
+  // TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves()'s
+  // own bowtie fixture above uses (profile corners (0,0)->(10,10)->(10,0)->
+  // (0,10) in (x, z), whose two diagonal segments cross at the
+  // hand-derivable (x=5, z=5)). Both u and v are degree 1, so this NURBS
+  // surface IS its own control net exactly (no approximation): for any
+  // fixed v, S(u, v) traces that same flat profile translated by v along Y,
+  // so the whole surface is literally that self-crossing profile extruded
+  // straight along Y - two topologically distant strips of the SAME face
+  // (the "u in the first diagonal segment" strip and the "u in the second
+  // diagonal segment" strip) cross each other everywhere along a straight
+  // line at (x=5, z=5), for every v.
+  const double L = 4.0;  // extrusion length along Y
+  const std::vector<std::pair<double, double>> profile_xz = {
+      {0, 0}, {10, 10}, {10, 0}, {0, 10}, {0, 0},
+  };
+  std::vector<Point3d> grid;
+  grid.reserve(profile_xz.size() * 2);
+  for (const auto& [x, z] : profile_xz) {
+    grid.emplace_back(x, 0.0, z);
+    grid.emplace_back(x, L, z);
+  }
+  const NurbsSurface folded = NurbsSurface::FromControlGrid(grid, /*u_count=*/static_cast<int>(profile_xz.size()), /*v_count=*/2, /*u_degree=*/1, /*v_degree=*/1);
+  const Brep folded_brep = Brep::FromSurface(folded);
+
+  const std::vector<FaceInteriorSelfIntersection> hits = FindFaceInteriorSelfIntersections(folded_brep.raw(), opt);
+  Check(!hits.empty(), "the folded (self-crossing, extruded bowtie profile) face reports at least one face-interior self-intersection");
+
+  // Every reported hit's own 3D point must sit at the hand-derivable
+  // (x=5, z=5) (any y in [0, L]) - the profile's own diagonals cross
+  // EXACTLY there (the same point TestIntersectCurveSelfIntersections...'s
+  // own bowtie test independently verifies one dimension down), and the
+  // two reported (u, v) preimages must be genuinely distinct (not the
+  // trivial ua==ub/va==vb diagonal this function's own doc comment
+  // discloses it must reject).
+  bool all_at_crossing = true, all_distinct_preimages = true;
+  for (const FaceInteriorSelfIntersection& h : hits) {
+    if (std::abs(h.point.x - 5.0) > 1e-2 || std::abs(h.point.z - 5.0) > 1e-2) all_at_crossing = false;
+    const double du = std::abs(h.uv_a.x - h.uv_b.x), dv = std::abs(h.uv_a.y - h.uv_b.y);
+    if (du < 1e-3 && dv < 1e-3) all_distinct_preimages = false;
+  }
+  Check(all_at_crossing, "every reported face-interior self-intersection sits at the profile's own hand-derivable (x=5, z=5) crossing line");
+  Check(all_distinct_preimages, "every reported hit's two (u, v) preimages are genuinely distinct, not the trivial self-identity diagonal");
+
+  // A plain, non-self-crossing extruded face (just a flat rectangle this
+  // time) must report zero - no false positives on an ordinary face.
+  const std::vector<std::pair<double, double>> flat_xz = {{0, 0}, {10, 0}};
+  std::vector<Point3d> flat_grid;
+  for (const auto& [x, z] : flat_xz) {
+    flat_grid.emplace_back(x, 0.0, z);
+    flat_grid.emplace_back(x, L, z);
+  }
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1);
+  const Brep flat_brep = Brep::FromSurface(flat);
+  Check(FindFaceInteriorSelfIntersections(flat_brep.raw(), opt).empty(), "a plain, non-self-crossing flat face reports zero face-interior self-intersections");
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
@@ -4693,6 +4883,218 @@ void TestImprintClosedCurveOnFaceRejectsInvalidInput() {
     threw_bad_samples = true;
   }
   Check(threw_bad_samples, "ImprintClosedCurveOnFace throws std::invalid_argument for samples < 2");
+}
+
+// SplitFaceByCurves(): the batch sibling of SplitFaceByCurve() above - see
+// boolean_general.h's own doc comment for the full contract. Proves the
+// "one call, many independent curves" gain is genuine, not mere loop sugar:
+// two independent, non-crossing straight cuts on the box's own flat top
+// face (z=1, x/y in [-2,2], area 16) at x=-0.5 and x=0.5 (each running the
+// full y in [-2,2] span, so each reaches the face's own y=-2/y=2 boundary
+// edges) split it into exactly 3 strips in ONE call - a 3-way split
+// SplitFaceByCurve() itself can never produce (it only ever returns 2
+// fragments).
+void TestSplitFaceByCurvesBoxTopFaceTwoParallelCutsProduceThreeStrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SplitFaceByCurves;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const NurbsCurve cut_a =
+      NurbsCurve::FromControlPoints({Point3d(-0.5, -2, 1), Point3d(-0.5, 2, 1)}, /*degree=*/1);
+  const NurbsCurve cut_b = NurbsCurve::FromControlPoints({Point3d(0.5, -2, 1), Point3d(0.5, 2, 1)}, /*degree=*/1);
+
+  const Brep split = SplitFaceByCurves(box, /*face_index=*/1, {cut_a, cut_b});
+  Check(split.raw().IsValid(), "SplitFaceByCurves on the box's top face is a valid ON_Brep");
+  Check(split.FaceCount() == box.FaceCount() + 2,
+        "splitting one face with 2 independent curves in one call gains exactly 2 faces (3 fragments "
+        "replacing the original 1)");
+
+  const Mesh closed = split.TessellateToClosedMesh(32, 32);
+  Check(std::abs(closed.Volume() - 32.0) < 0.2,
+        "splitting a face by 2 curves removes no material - the box's own tessellated volume is unchanged "
+        "(32 = 4*4*2)");
+
+  const std::vector<Mesh> per_face = split.Tessellate(32, 32);
+  std::vector<double> top_face_areas;
+  for (const Mesh& m : per_face) {
+    if (m.VertexCount() == 0) continue;
+    const auto bb = m.GetBoundingBox();
+    if (std::abs(bb.min.z - 1.0) < 1e-6 && std::abs(bb.max.z - 1.0) < 1e-6) top_face_areas.push_back(m.Area());
+  }
+  Check(top_face_areas.size() == 3, "the split top face produces exactly 3 flat z=1 fragments");
+  if (top_face_areas.size() == 3) {
+    std::sort(top_face_areas.begin(), top_face_areas.end());
+    Check(std::abs(top_face_areas[0] - 4.0) < 0.2 && std::abs(top_face_areas[1] - 6.0) < 0.2 &&
+              std::abs(top_face_areas[2] - 6.0) < 0.2,
+          "the 3 strips have exactly the areas the two cuts at x=-0.5/x=0.5 imply: widths 1.5/1/1.5 times "
+          "depth 4 -> 6/4/6, not some other split");
+  }
+}
+
+// Two curves that CROSS each other mid-face are out of this function's own
+// documented scope (boolean_general.h's own "chains that cross EACH OTHER
+// on the same face are not [supported]"); rather than silently emitting a
+// wrong split, the actual fragment count no longer matches curves.size()+1
+// and this function refuses.
+void TestSplitFaceByCurvesRejectsCrossingCurves() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SplitFaceByCurves;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const NurbsCurve cut_a = NurbsCurve::FromControlPoints({Point3d(-2, -1, 1), Point3d(2, 1, 1)}, /*degree=*/1);
+  const NurbsCurve cut_b = NurbsCurve::FromControlPoints({Point3d(-2, 1, 1), Point3d(2, -1, 1)}, /*degree=*/1);
+
+  bool threw = false;
+  try {
+    SplitFaceByCurves(box, /*face_index=*/1, {cut_a, cut_b});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitFaceByCurves throws std::invalid_argument for two curves that cross each other mid-face "
+               "rather than silently returning an unexpected split");
+}
+
+void TestSplitFaceByCurvesRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SplitFaceByCurves;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const NurbsCurve cut_a =
+      NurbsCurve::FromControlPoints({Point3d(-0.5, -2, 1), Point3d(-0.5, 2, 1)}, /*degree=*/1);
+
+  bool threw_empty_curves = false;
+  try {
+    SplitFaceByCurves(box, 1, {});
+  } catch (const std::invalid_argument&) {
+    threw_empty_curves = true;
+  }
+  Check(threw_empty_curves, "SplitFaceByCurves throws std::invalid_argument for an empty curves list");
+
+  bool threw_bad_index = false;
+  try {
+    SplitFaceByCurves(box, box.FaceCount(), {cut_a});
+  } catch (const std::invalid_argument&) {
+    threw_bad_index = true;
+  }
+  Check(threw_bad_index, "SplitFaceByCurves throws std::invalid_argument for an out-of-range face_index");
+
+  bool threw_bad_tolerance = false;
+  try {
+    SplitFaceByCurves(box, 1, {cut_a}, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw_bad_tolerance = true;
+  }
+  Check(threw_bad_tolerance, "SplitFaceByCurves throws std::invalid_argument for a non-positive tolerance");
+
+  const std::vector<Point3d> loop_cvs = {Point3d(-0.5, -0.5, 1), Point3d(0.5, -0.5, 1), Point3d(0.5, 0.5, 1),
+                                          Point3d(-0.5, 0.5, 1), Point3d(-0.5, -0.5, 1)};
+  const NurbsCurve closed_loop = NurbsCurve::FromControlPoints(loop_cvs, /*degree=*/1);
+  bool threw_closed_loop = false;
+  try {
+    SplitFaceByCurves(box, 1, {cut_a, closed_loop});
+  } catch (const std::invalid_argument&) {
+    threw_closed_loop = true;
+  }
+  Check(threw_closed_loop,
+        "SplitFaceByCurves throws std::invalid_argument when one of the curves is actually a closed loop "
+        "(ImprintClosedCurvesOnFace()'s job instead)");
+}
+
+// ImprintClosedCurvesOnFace(): the batch sibling of ImprintClosedCurveOnFace()
+// above - see boolean_general.h's own doc comment for the full contract.
+// Proves the "one call, many independent holes" gain is genuine: two
+// disjoint 1x1 square loops, centered at (-1,-1) and (1,1) on the box's own
+// flat top face (z=1, x/y in [-2,2], area 16), are both imprinted as holes
+// in ONE call.
+void TestImprintClosedCurvesOnFaceBoxTopFaceTwoHoles() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintClosedCurvesOnFace;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  auto square_at = [](double cx, double cy) {
+    const std::vector<Point3d> cvs = {Point3d(cx - 0.5, cy - 0.5, 1), Point3d(cx + 0.5, cy - 0.5, 1),
+                                       Point3d(cx + 0.5, cy + 0.5, 1), Point3d(cx - 0.5, cy + 0.5, 1),
+                                       Point3d(cx - 0.5, cy - 0.5, 1)};
+    return NurbsCurve::FromControlPoints(cvs, /*degree=*/1);
+  };
+  const NurbsCurve hole_a = square_at(-1.0, -1.0);
+  const NurbsCurve hole_b = square_at(1.0, 1.0);
+
+  const Brep imprinted = ImprintClosedCurvesOnFace(box, /*face_index=*/1, {hole_a, hole_b});
+  Check(imprinted.raw().IsValid(), "ImprintClosedCurvesOnFace on the box's top face is a valid ON_Brep");
+  Check(imprinted.FaceCount() == box.FaceCount() + 2,
+        "imprinting 2 independent closed loops in one call gains exactly 2 faces (2 interior disks, plus the "
+        "original face now carrying both loops as holes - 3 fragments replacing the original 1)");
+
+  const Mesh closed = imprinted.TessellateToClosedMesh(32, 32);
+  Check(std::abs(closed.Volume() - 32.0) < 0.2,
+        "imprinting 2 closed loops removes no material - the box's own tessellated volume stays 32 (4*4*2)");
+
+  const std::vector<Mesh> per_face = imprinted.Tessellate(32, 32);
+  std::vector<double> top_face_areas;
+  for (const Mesh& m : per_face) {
+    if (m.VertexCount() == 0) continue;
+    const auto bb = m.GetBoundingBox();
+    if (std::abs(bb.min.z - 1.0) < 1e-6 && std::abs(bb.max.z - 1.0) < 1e-6) top_face_areas.push_back(m.Area());
+  }
+  Check(top_face_areas.size() == 3, "the imprinted top face produces exactly 3 flat z=1 fragments");
+  if (top_face_areas.size() == 3) {
+    std::sort(top_face_areas.begin(), top_face_areas.end());
+    Check(std::abs(top_face_areas[0] - 1.0) < 0.05 && std::abs(top_face_areas[1] - 1.0) < 0.05 &&
+              std::abs(top_face_areas[2] - 14.0) < 0.2,
+          "the 3 fragments have exactly the areas the two 1x1 disjoint loops imply: two 1x1 disks and a "
+          "16-1-1=14 remainder - not some other split");
+  }
+}
+
+void TestImprintClosedCurvesOnFaceRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintClosedCurvesOnFace;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const std::vector<Point3d> loop_cvs = {Point3d(-0.5, -0.5, 1), Point3d(0.5, -0.5, 1), Point3d(0.5, 0.5, 1),
+                                          Point3d(-0.5, 0.5, 1), Point3d(-0.5, -0.5, 1)};
+  const NurbsCurve loop = NurbsCurve::FromControlPoints(loop_cvs, /*degree=*/1);
+
+  bool threw_empty_curves = false;
+  try {
+    ImprintClosedCurvesOnFace(box, 1, {});
+  } catch (const std::invalid_argument&) {
+    threw_empty_curves = true;
+  }
+  Check(threw_empty_curves, "ImprintClosedCurvesOnFace throws std::invalid_argument for an empty curves list");
+
+  bool threw_bad_index = false;
+  try {
+    ImprintClosedCurvesOnFace(box, box.FaceCount(), {loop});
+  } catch (const std::invalid_argument&) {
+    threw_bad_index = true;
+  }
+  Check(threw_bad_index, "ImprintClosedCurvesOnFace throws std::invalid_argument for an out-of-range face_index");
+
+  const NurbsCurve open_curve =
+      NurbsCurve::FromControlPoints({Point3d(-2, 0, 1), Point3d(0, 1.5, 1), Point3d(2, 0, 1)}, /*degree=*/1);
+  bool threw_open_chain = false;
+  try {
+    ImprintClosedCurvesOnFace(box, 1, {loop, open_curve});
+  } catch (const std::invalid_argument&) {
+    threw_open_chain = true;
+  }
+  Check(threw_open_chain,
+        "ImprintClosedCurvesOnFace throws std::invalid_argument when one of the curves is actually an open "
+        "chain (SplitFaceByCurves()'s job instead)");
 }
 
 void TestMutualImprintFacesBoxPiercedByCylinder() {
@@ -47170,6 +47572,64 @@ void TestMergeCoplanarFacesRefusesPairWhoseHoleHasCurvedEdge() {
   Check(b.m_F[fixture.face_a].LoopCount() == 2, "face A still has its own original outer loop plus the untouched hole");
 }
 
+// MergeCoplanarFaces()'s own shared-boundary generalization: two coplanar
+// unit squares whose shared x=1 edge has been pre-split into TWO collinear
+// trims on EACH side (an extra vertex at the midpoint (1, 0.5, 0)) - the
+// exact "a shared boundary later subdivided into several collinear trims"
+// case TryMergeCoplanarPair()'s own build_path() now accepts (see brep.h's
+// own updated doc comment), where this method used to refuse outright the
+// moment a pair shared anything other than EXACTLY one edge. Both pentagons
+// (5 vertices each, the extra one strictly collinear with its two
+// neighbors) still have the SAME 1x1 square shape as
+// TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne()'s own fixture -
+// this test's only difference is the shared boundary's own trim count.
+void TestMergeCoplanarFacesWeldsAdjacentSquaresSharingTwoCollinearTrims() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  Brep::PlanarFace a, b;
+  a.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  a.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 0.5, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  b.plane = ON_Plane(Point3d(1, 0, 0), ON_3dVector(0, 0, 1));
+  b.loop = {Point3d(1, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0), Point3d(1, 1, 0), Point3d(1, 0.5, 0)};
+
+  Brep flat = Brep::FromPlanarFaces({a, b});
+  Check(flat.FaceCount() == 2, "the two-pentagon fixture starts with 2 faces");
+  Check(flat.raw().IsValid(), "the two-pentagon fixture is a valid ON_Brep before merging");
+
+  const int shared_edge_count = [&]() {
+    const ON_Brep& raw = flat.raw();
+    int outer_a = -1;
+    for (int li = 0; li < raw.m_F[0].m_li.Count(); ++li) {
+      if (raw.m_L[raw.m_F[0].m_li[li]].m_type == ON_BrepLoop::outer) outer_a = raw.m_F[0].m_li[li];
+    }
+    int count = 0;
+    for (int k = 0; outer_a >= 0 && k < raw.m_L[outer_a].TrimCount(); ++k) {
+      const ON_BrepTrim* t = raw.m_L[outer_a].Trim(k);
+      const ON_BrepEdge* e = t ? t->Edge() : nullptr;
+      if (e && e->TrimCount() == 2) ++count;
+    }
+    return count;
+  }();
+  Check(shared_edge_count == 2, "setup: the fixture's own shared boundary is genuinely 2 separate (2-trim) "
+                                 "edges, not 1 - exercising the new multi-edge path, not the old single-edge one");
+
+  const int merges = flat.MergeCoplanarFaces();
+  Check(merges == 1, "MergeCoplanarFaces() performed exactly 1 merge across the 2 collinear shared trims");
+  Check(flat.FaceCount() == 1, "the two pentagons merged into a single face");
+  Check(flat.raw().IsValid(), "the merged single face is still a valid ON_Brep");
+
+  const std::vector<Mesh> meshes = flat.Tessellate(16, 16);
+  Check(meshes.size() == 1, "exactly one tessellated mesh for the single merged face");
+  if (!meshes.empty()) {
+    Check(std::abs(meshes[0].Area() - 2.0) < 1e-6,
+          "the merged face's own area is exactly the 2x1 rectangle (1.0 + 1.0) the two source squares bounded "
+          "- the extra midpoint vertex on the shared boundary changed no geometry");
+  }
+  Check(flat.MergeCoplanarFaces() == 0, "a second call finds nothing left to merge");
+}
+
 // Brep::MergeSameSurfaceFaces() - the curved-surface sibling of
 // MergeCoplanarFaces() above (PARITY_MAP's own "Merge faces on the same
 // non-planar surface (cylinder/tangent split faces)" gap). Builds two
@@ -63592,6 +64052,20 @@ void TestLatticeInfillRejectsInvalidArguments() {
         "LatticeInfill with an oversized cell_size still produces a genuine, positive-volume result");
   Check(Throws([&] { LatticeInfill(open_mesh, 0.2, 0.02, 12); }),
         "LatticeInfill throws when solid is not a closed manifold");
+
+  // The opposite of the oversized-cell_size case above: cell_size small
+  // relative to the solid's own bounding box must be rejected, not
+  // silently accepted into a grid with an intractable strut count (the
+  // fold after the strut-building loops is one real Boolean Union per
+  // strut) - or, for a cell_size small enough to overflow int outright in
+  // the ceil()-and-cast this kernel uses internally, undefined behavior
+  // instead of a clean exception.
+  Check(Throws([&] { LatticeInfill(box, 0.001, 0.0001, 12); }),
+        "LatticeInfill throws when cell_size is too small relative to the solid's own bounding box (an "
+        "intractable strut count), not left to build/union millions of struts");
+  Check(Throws([&] { LatticeInfill(box, 1e-12, 1e-13, 12); }),
+        "LatticeInfill throws for a cell_size small enough that the naive ratio would overflow int, instead of "
+        "hitting undefined behavior in the ceil()-and-cast");
 }
 
 int main() {
@@ -63644,10 +64118,12 @@ int main() {
   TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves();
   TestIntersectBrepsAndCurveBrep();
   TestPullbackCurveToSurfaceCylinderRulingLine();
+  TestPullbackCurveToSurfaceAcrossPeriodicSeam();
   TestIntersectBrepByPlaneBoxSideWalls();
   TestContourBrepParallelSections();
   TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan();
   TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly();
+  TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
   TestFindSurfaceTangentContactsSphereOnPlane();
   TestIntersectSurfacesOverlapDetectsCoincidentRegion();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
@@ -63674,6 +64150,11 @@ int main() {
   TestImprintClosedCurveOnFaceBoxTopFaceSquareHole();
   TestImprintClosedCurveOnFaceRejectsOpenChain();
   TestImprintClosedCurveOnFaceRejectsInvalidInput();
+  TestSplitFaceByCurvesBoxTopFaceTwoParallelCutsProduceThreeStrips();
+  TestSplitFaceByCurvesRejectsCrossingCurves();
+  TestSplitFaceByCurvesRejectsInvalidInput();
+  TestImprintClosedCurvesOnFaceBoxTopFaceTwoHoles();
+  TestImprintClosedCurvesOnFaceRejectsInvalidInput();
   TestMutualImprintFacesBoxPiercedByCylinder();
   TestMutualImprintFacesRejectsEmptyOrNonPositiveTolerance();
   TestSplitBySheetBoxCutInHalfByPlane();
@@ -64302,6 +64783,7 @@ int main() {
   TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane();
   TestMergeCoplanarFacesPreservesExistingHoleOnMergedFace();
   TestMergeCoplanarFacesRefusesPairWhoseHoleHasCurvedEdge();
+  TestMergeCoplanarFacesWeldsAdjacentSquaresSharingTwoCollinearTrims();
   TestMergeSameSurfaceFacesWeldsTwoCylindricalPatchesIntoOne();
   TestMergeSameSurfaceFacesLeavesDistinctCoplanarSurfacesUntouched();
   TestMergeSameSurfaceFacesWeldsCongruentButSeparateCylinderSurfaces();

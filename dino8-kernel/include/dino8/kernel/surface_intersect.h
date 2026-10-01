@@ -48,12 +48,19 @@ struct IntersectOptions {
   int min_mesh_divisions = 6;
 };
 
-// A surface tessellation that remembers the (u, v) of every vertex.
+// A surface tessellation that remembers the (u, v) of every vertex. `nu`/`nv`
+// are the regular grid's own cell counts (nu * nv cells, 2 triangles each,
+// in the exact construction order TessellateWithUV() below uses: cell
+// (i, j)'s two triangles are tris[2*(j*nu+i)] and tris[2*(j*nu+i)+1]) -
+// exposed so a caller can recover which grid cell a triangle came from
+// without re-deriving nu/nv from pts.size() (which cannot be done
+// uniquely in general, since (nu+1)*(nv+1) does not factor one way).
 struct SurfaceMesh {
   std::vector<Point3d> pts;
   std::vector<ON_2dPoint> uv;
   std::vector<std::array<int, 3>> tris;
   ON_BoundingBox bbox;
+  int nu = 0, nv = 0;
 };
 SurfaceMesh TessellateWithUV(const ON_Surface& s, const IntersectOptions& opt);
 
@@ -292,12 +299,31 @@ struct PullbackResult {
 //    empty curve for an off-surface input, since "far from the surface"
 //    has no single correct threshold this general-purpose call can assume
 //    for every caller.
-//  - Like IntersectSurfaces()'s own pcurve_a/pcurve_b, a raw (u, v) sample
-//    sequence that crosses a periodic surface direction's seam is not
-//    unwrapped - the cubic fit can swing through the domain's middle
-//    between the two bracketing samples there (a visibly wrong `pcurve`
-//    shape for that specific stretch, even though the individual `uv`
-//    samples, `pulled_curve`, and max_error remain correct).
+//  - Unlike IntersectSurfaces()'s own pcurve_a/pcurve_b, a raw (u, v)
+//    sample sequence that crosses a CLOSED surface direction's seam IS
+//    unwrapped before `pcurve` is fit: whenever two consecutive samples in
+//    a closed direction (IsClosed(dir)) differ by more than half that
+//    direction's domain length, the later one is shifted by a whole period
+//    first, so the fit keeps moving the way it was already moving instead
+//    of swinging through the domain's middle. `pcurve`'s control points
+//    can therefore legitimately fall outside the surface's own nominal
+//    domain for a seam-crossing stretch, exactly like a seam-crossing trim
+//    pcurve elsewhere in OpenNURBS-based kernels - but, unless the
+//    direction is also genuinely IsPeriodic() (a strictly stronger
+//    condition than IsClosed() - see NurbsSurface::IsPeriodic()'s own doc
+//    comment, surface.h), evaluating the surface DIRECTLY at such an
+//    out-of-range parameter is not guaranteed to reproduce the in-domain
+//    point (a merely-closed, clamped-knot surface - e.g. the standard NURBS
+//    form of a plain ON_Cylinder - has matching end curves but no periodic
+//    knot structure past either end). A caller mapping `pcurve` back
+//    through S(u, v) near a seam-crossing stretch MUST first reduce that
+//    coordinate into the surface's own [Domain(dir).Min(),
+//    Domain(dir).Max()] by its domain length (always valid for a closed
+//    direction, periodic or not, since IsClosed() is exactly the guarantee
+//    that both ends already evaluate to the same point) rather than
+//    evaluate the raw out-of-range value directly. `uv` (the raw
+//    per-sample field) is unaffected by any of this - it stays wrapped to
+//    the domain exactly as found, as before.
 PullbackResult PullbackCurveToSurface(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt);
 
 // One directional ray/surface projection result, as returned by
@@ -448,12 +474,78 @@ std::vector<BrepContourSection> ContourBrep(const ON_Brep& b, const ON_Plane& ba
 // leaves at least one face's boundary (running through that face's
 // interior) is a genuine crossing. Returned un-stitched, one entry per
 // crossing face pair, the same shape IntersectBreps() already uses.
-// Still honestly partial: this only catches a crossing where it already
-// reaches another face's own trimmed region - "no face-interior
-// self-intersection test" (a single face folding back onto itself) is a
-// different, still entirely unaddressed question this function does not
-// answer.
+// This only catches a crossing where it already reaches another face's own
+// trimmed region - "no face-interior self-intersection test" (a single face
+// folding back onto itself) is the OTHER half of the same bullet's own
+// prior evidence, closed separately by FindFaceInteriorSelfIntersections()
+// below (point detections rather than curves - see that function's own doc
+// comment for why).
 std::vector<BrepBrepIntersection> FindBrepSelfIntersections(const ON_Brep& b, const IntersectOptions& opt);
+
+// A single point where a face's own interior crosses itself - the "no
+// face-interior self-intersection test" half of PARITY_MAP.md's own
+// "Surface / B-rep self-intersection detection" bullet that
+// FindBrepSelfIntersections() above deliberately leaves unaddressed (that
+// function only catches a crossing that already reaches ANOTHER face's own
+// trimmed region; this is the question of one face folding back onto
+// itself, entirely within its own domain). `Brep::Check()`'s own
+// SelfIntersectingLoop/SelfIntersectingLoop3d (brep.h) only ever examine a
+// face's own BOUNDARY; this examines a face's own INTERIOR.
+//
+// Built on the exact same regular-grid tessellation (TessellateWithUV())
+// and triangle/triangle crossing test (TriTri, surface_intersect.cpp) every
+// other function in this file already uses, applied to ONE surface's own
+// mesh instead of two different surfaces' - but, unlike those, this cannot
+// simply reuse IntersectSurfaces(s, s, opt) directly: every point of a
+// surface trivially coincides with itself under its OWN parametrization
+// (ua == ub, va == vb is always a valid root of the exact same "Sa == Sb"
+// system IntersectSurfaces() solves), the identical "not usable for this"
+// trap PARITY_MAP.md's own "Curve self-intersection" bullet already named
+// for IntersectCurves(c, c) one dimension down - a naive self-SSX would
+// report nearly the entire surface as "self-intersecting" against itself.
+// The fix is this file's own established answer to that exact trap, run
+// one dimension up: IntersectCurveSelfIntersections() seeds ONLY sample
+// INDEX pairs separated by at least 2 segments, skipping a curve's own
+// ordinary local continuity rather than relying on post-hoc dedup to paper
+// over a flood of trivial adjacent-sample hits; this seeds ONLY triangle
+// pairs whose own tessellation GRID CELLS (SurfaceMesh::nu/nv above) are
+// separated by at least 2 cells in Chebyshev distance - the two-dimensional
+// analogue of "at least 2 segments apart" - skipping a smoothly-varying
+// patch's own ordinary local neighbourhood (always close together in 3D
+// too, not a self-crossing) while still finding a genuine fold-back between
+// two topologically distant regions of the domain that happen to cross in
+// space. Each surviving candidate triangle pair's own TriTri crossing
+// segment seeds a Newton refinement of the true "Sa == Sb" system
+// (RefineSurfaceSurfacePoint(), the same one IntersectSurfaces() itself
+// uses, called with the SAME surface passed as both `a` and `b` - purely
+// mechanical, since that function only ever calls .PointAt() on each
+// argument independently) from the seed's own two DISTINCT (u, v)
+// candidates; a converged result that nonetheless lands back within
+// tolerance of the trivial ua==ub/va==vb diagonal (Newton is free to walk
+// away from its own seed, exactly the same caveat
+// IntersectCurveSelfIntersections() discloses) is discarded as that trap,
+// not a real second preimage.
+//
+// Reported as isolated POINTS, not stitched into curves, unlike every
+// other SSX-shaped function in this file: a continuous self-intersection
+// locus (e.g. two parallel strips of the same face folded flat against
+// each other along a whole shared line) would need the same seam/chain
+// machinery IntersectSurfaces() applies to two DIFFERENT surfaces, which a
+// single surface's own trivial-diagonal trap above complicates enough
+// (every chain step risks reseeding back onto the diagonal) that this
+// deliberately stays at the same honestly-scoped POINT level
+// FindSurfaceTangentContacts() above already uses for an analogous reason;
+// a genuinely continuous self-intersection line is reported as however
+// many isolated points its finite grid of triangle pairs happens to
+// converge to along it, not as one connected curve.
+struct FaceInteriorSelfIntersection {
+  int face_index = -1;
+  Point3d point;    // the shared (refined, coincident-to-tolerance) 3D point
+  ON_2dPoint uv_a;  // one (u, v) preimage of `point` on the face's surface
+  ON_2dPoint uv_b;  // the other, DISTINCT (u, v) preimage of the same point
+  double gap = 0;   // |S(uv_a) - S(uv_b)| after refinement
+};
+std::vector<FaceInteriorSelfIntersection> FindFaceInteriorSelfIntersections(const ON_Brep& b, const IntersectOptions& opt);
 
 // A single point where two surfaces touch WITHOUT crossing - PARITY_MAP.md's
 // own "SSX tangent / grazing contact (surfaces touching along a point or

@@ -149,11 +149,16 @@ bool FindZipEntry(const std::vector<unsigned char>& zip, const std::string& name
       data.assign(dptr, dptr + csize);
     } else if (method == 8) {
       // Cap decompression at the entry's own declared uncompressed size
-      // (checked again below) rather than the generic default - a tiny
-      // deflate stream can expand by three orders of magnitude via
-      // back-references, so without this a crafted sheet entry could
-      // exhaust memory before the size/CRC check ever ran.
-      if (!InflateRaw(dptr, csize, data, usize)) { error = "corrupt deflate stream in '" + name + "'"; return false; }
+      // (checked again below), but clamped to a sane ceiling first: `usize`
+      // is itself an attacker-controlled header field, not a verified
+      // expectation, so passing it through unclamped just lets a crafted
+      // local/central-directory pair declare e.g. a 4 GiB uncompressed size
+      // and have a few-hundred-KB back-reference-heavy deflate stream (a
+      // classic zip-bomb ratio, ~1000:1 is easy within a single stream)
+      // actually grow `data` to gigabytes before this function ever gets a
+      // chance to reject it on the size/CRC check below.
+      const size_t cap = std::min<size_t>(usize, dino8::util::kDefaultMaxInflateOutput);
+      if (!InflateRaw(dptr, csize, data, cap)) { error = "corrupt deflate stream in '" + name + "'"; return false; }
     } else {
       error = "unsupported zip compression method (" + std::to_string(method) + ") in '" + name + "'";
       return false;
