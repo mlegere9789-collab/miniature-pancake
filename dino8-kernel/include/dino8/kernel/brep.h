@@ -109,6 +109,32 @@ class Brep {
   static Brep Box(double x0, double y0, double z0, double x1, double y1,
                    double z1);
 
+  // The genuine-topology sibling of Box() above: the same axis-aligned
+  // box, but built through FromPlanarFaces() (below) instead of six
+  // untrimmed NewFace(int) surfaces - closing the "Box()... use the
+  // surface-only NewFace(int)" half of the "Genuine topology produced by
+  // every constructor/primitive" gap for the simplest of its named cases.
+  // Unlike Box(), the result has real shared vertices/edges: raw().
+  // IsValid() and raw().IsSolid() report true, SplitDisjointPieces() and
+  // the adjacency queries (FacesOfEdge/NeighborFaces/EdgesOfVertex/
+  // Check()) all work on it, the same way they already do on a
+  // FromPlanarFaces() box built by hand. Kept as its own entry point
+  // rather than a Box() change: Box()'s own doc comment and every
+  // existing caller already rely on its exact six-separate-surfaces,
+  // no-shared-topology shape, so this is additive.
+  //
+  // Throws std::invalid_argument unless x1 > x0, y1 > y0 and z1 > z0.
+  // Box() itself places no such requirement (an untrimmed surface's own
+  // orientation there is purely a tessellation-winding concern), but each
+  // face built here gets a FIXED axis-direction PlanarFace::plane normal
+  // for the ordinary min-corner/max-corner case, and FromPlanarFaces()
+  // requires that normal to actually agree with the loop's own CCW-from-
+  // outside winding - a reversed pair of corners would build an inside-
+  // out, invalid solid rather than merely an unwelded one, so this is
+  // refused rather than silently building something broken.
+  static Brep BoxWelded(double x0, double y0, double z0, double x1,
+                        double y1, double z1);
+
   // The direct generalization of Box()'s own "six flat untrimmed quad
   // faces, each a bilinear NURBS surface whose own [0,1]x[0,1] domain IS
   // its whole shape" construction from a fixed axis-aligned box to an
