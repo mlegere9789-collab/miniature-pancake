@@ -539,6 +539,26 @@ else
   echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the HATCH fixture check"
   fail=1
 fi
+# DXF HATCH export: the two tests above only ever prove ImportDxf's HATCH
+# reading; ExportDxf itself had no HATCH writer function at all until this
+# change (see WriteDxfHatchSolid in FileExchange.cpp) - a solid hatch made
+# in-app used to round-trip out to bare boundary curves, losing its fill
+# entirely. Makes a real solid hatch (Hatch Pattern=Solid), exports it,
+# reopens the exported file in a fresh document, and checks the same
+# SelHatch/Area facts the fixture-based import tests above already check,
+# proving the new writer and the existing reader agree on the wire format.
+sed "s|@TMP@|$TMPW|g" "$HERE/dxf_hatch_export_script.txt" > "$TMPW/dxf_hatch_export_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DHE="$("$BIN" --smoke 30 --script "$TMPW/dxf_hatch_export_script.txt" 2>&1)" || { echo "$DHE"; echo "FAIL: DXF HATCH export script exited non-zero"; exit 1; }
+else
+  DHE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_hatch_export_script.txt" 2>&1)" || { echo "$DHE"; echo "FAIL: DXF HATCH export script exited non-zero"; exit 1; }
+fi
+dhecheck() { if echo "$DHE" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DHE" "$1"; fail=1; fi; }
+dhecheck "Exported $TMPW/dxf_hatch_export.dxf" "ExportDxf wrote a file"
+dhecheck "DXF: 0 curves, 0 points, 0 meshes, 1 hatch" "the reopened file's HATCH entity round-tripped as a real hatch, not bare boundary curves"
+dhecheck "1 object(s) selected" "SelHatch found the round-tripped hatch"
+dhecheck "Area = 100 square" "the round-tripped hatch's area is exactly the 10x10 boundary"
+grep -q "^HATCH$" "$TMPW/dxf_hatch_export.dxf" && echo "ok   dxf_hatch_export.dxf contains a real HATCH entity, not just boundary LINE/POLYLINE entities" || { echo "FAIL dxf_hatch_export.dxf has no HATCH entity"; fail=1; }
 # DWG SPLINE: built via LibreDWG's own dwg_add_SPLINE (marked "Experimental.
 # Does not work yet properly" in dwg_api.h - confirmed by hand it only ever
 # populates fit_pts, never real NURBS control points), so this exercises
@@ -1205,6 +1225,24 @@ a2check "UpdateMeasureDims:   DimCreaseAngle now 45 deg" "UpdateMeasureDims redr
 a2check "UpdateMeasureDims:   DimOrdinate now X 50" "UpdateMeasureDims redrew the free-floating (unanchored) DimOrdinate from its baked DimP0/DimP1 points, unchanged at 50 since neither point was ever anchored or moved"
 a2check "UpdateMeasureDims:   DimOrdinate now X 120" "UpdateMeasureDims redrew the OrdBase/OrdFeature DimOrdinate from the feature Point object's moved position (x=1220), not the 50 (x=1150) baked at creation time"
 a2check "UpdateMeasureDims: 6 updated, 0 skipped" "UpdateMeasureDims re-derived all 6 associative measured dimensions (DimArea, DimCurveLength, DimVolume, DimCreaseAngle, and both DimOrdinates) with 0 skipped"
+# --- Field text (cmd_annotate2.cpp's FieldCommand/UpdateFields/
+# ResolveFieldValue - see PARITY_MAP.md's "Field text" entry): live text
+# driven by a document/object property, not static baked geometry.
+a2check "Field (Filename): annotate2.3dm" "Field Kind=Filename reads the document's own Save path"
+a2check "Field (CurrentLayer): CreaseAngleTest" "Field Kind=CurrentLayer reads the document's current layer name (CreaseAngleTest, left current by the earlier DimCreaseAngle section's NewLayer)"
+a2check "UpdateFields: 2 field(s) regenerated" "UpdateFields re-evaluated both fields built so far"
+a2check "Field (Length): 100" "Field Kind=Length measures the 100-unit line (MeasureOne, the same math DimCurveLength uses)"
+a2check "UpdateFields:   Length now \"200\"" "UpdateFields redrew Field Kind=Length from the line's doubled length (Scale1D 2000,-30,0 x2: 100 -> 200), not the 100 baked at Field's own creation time - the live-recompute proof, not just a property-sounding name"
+a2check "UpdateFields: 3 field(s) regenerated" "UpdateFields re-evaluated all 3 fields (Filename, CurrentLayer, Length) with 0 skipped"
+# --- Dimension styles (doc/Document.h's AnnotationStyle gaining real
+# precision/unit_suffix/tolerance/extension-line/text-placement fields,
+# wired into DimGeometry.h/annotate_common.h/cmd_annotate.cpp - see
+# PARITY_MAP.md's "Dimension styles" entry): a style's precision/suffix/
+# tolerance are real, wired-in dimension-building inputs, not stored-and-
+# ignored fields, and UpdateDimensions re-reads them live from the
+# dimension's own recorded style by name.
+a2check "Text = 100.00 mm.*0\.05" "DimStyle1 (Precision=2, Suffix=mm, TolMode=symmetric) baked \"100.00 mm\" plus the tolerance suffix for a dimension measuring exactly 100, not the old unstyled \"100\""
+a2check "Text = 100.0000 mm.*0\.05" "UpdateDimensions re-read DimStyle1's CURRENT precision (edited to 4 after the dimension was built) from the dimension's own recorded style by name and reformatted it to 4 decimal places, keeping the tolerance suffix through the rebuild"
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/solidtools_script.txt" > "$TMPW/solidtools_script.txt"
@@ -2998,6 +3036,30 @@ flcheck "Exported $TMPW/file/exportorigin.obj (origin at 5,5,0)" "ExportWithOrig
 test -s "$TMPW/file/exportorigin.obj" && echo "ok   exportorigin.obj exists" || { echo "FAIL exportorigin.obj missing"; fail=1; }
 grep -q "^v -5 -5 0$" "$TMPW/file/exportorigin.obj" && echo "ok   ExportWithOrigin translated the box corner to -5,-5,0" || { echo "FAIL ExportWithOrigin did not re-base the geometry"; fail=1; }
 
+# OBJ per-object/material round trip: ImportMeshFile/ExportMeshFile used to
+# always merge every exported object into one single welded mesh with no
+# "o"/"g" split and no .mtl material file (see ImportObjMulti/ExportObjMulti
+# in File3dm.cpp). Two boxes with distinct colors, exported together, must
+# come back as two separate named objects, not one merged colorless blob,
+# and the sidecar .mtl must actually carry the two colors.
+sed "s|@TMP@|$TMPW|g" "$HERE/obj_multi_script.txt" > "$TMPW/obj_multi_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  OM="$("$BIN" --smoke 30 --script "$TMPW/obj_multi_script.txt" 2>&1)" || { echo "$OM"; echo "FAIL: OBJ multi-object script exited non-zero"; exit 1; }
+else
+  OM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/obj_multi_script.txt" 2>&1)" || { echo "$OM"; echo "FAIL: OBJ multi-object script exited non-zero"; exit 1; }
+fi
+echo "$OM" | grep -E "^(ok|FAIL)"
+if echo "$OM" | grep -q "^FAIL"; then fail=1; fi
+omcheck() { if echo "$OM" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$OM" "$1"; fail=1; fi; }
+omcheck "Exported $TMPW/obj_multi.obj" "Export wrote the multi-object .obj file"
+omcheck "name 'Object'" "the first box round-tripped as its own named object"
+omcheck "name 'Object_2'" "the second box round-tripped as a separate, distinctly-named object (not merged into the first)"
+test -s "$TMPW/obj_multi.mtl" && echo "ok   ExportObjMulti wrote a sidecar .mtl file" || { echo "FAIL obj_multi.mtl missing"; fail=1; }
+grep -q "^mtllib obj_multi.mtl$" "$TMPW/obj_multi.obj" && echo "ok   obj_multi.obj references its sidecar .mtl by name" || { echo "FAIL obj_multi.obj has no mtllib reference"; fail=1; }
+[ "$(grep -c '^o ' "$TMPW/obj_multi.obj")" = "2" ] && echo "ok   obj_multi.obj has two real \"o\" object groups, not one merged mesh" || { echo "FAIL obj_multi.obj did not split into two \"o\" groups"; fail=1; }
+grep -q "^Kd 1 0 0$" "$TMPW/obj_multi.mtl" && echo "ok   obj_multi.mtl carries the first box's red color" || { echo "FAIL obj_multi.mtl is missing the red Kd entry"; fail=1; }
+grep -q "^Kd 0 1 0$" "$TMPW/obj_multi.mtl" && echo "ok   obj_multi.mtl carries the second box's green color" || { echo "FAIL obj_multi.mtl is missing the green Kd entry"; fail=1; }
+
 # Point-cloud exchange at the app level (XYZ/PTS/LAS - see
 # io/FileExchange.cpp's ExportXyz/ImportXyz/ExportPts/ImportPts/ExportLas/
 # ImportLas) and digital signing of an exported file (io/DigitalSignature.h -
@@ -4339,6 +4401,87 @@ dlcheck "DataLinkUpdate: pushed 2x2 table to " "the follow-up DataLinkUpdate Dir
 DL4_CSV="$(cat "$TMPW/datalink.csv" 2>/dev/null || true)"
 if [ "$DL4_CSV" = "$(printf 'Q,R\nS,T\n')" ]; then echo "ok   Direction=Push wrote the table's edit (Q,R / S,T) to the file, discarding the file's own outside edit as the caller explicitly chose"; else echo "FAIL Direction=Push wrote the table's edit to the file (got: $DL4_CSV)"; fail=1; fi
 
+# DataLink / DataLinkUpdate to a native .xlsx file (drafting/Xlsx.cpp - see
+# PARITY_MAP.md's "Live external data linking into tables" entry), not just
+# CSV: the same push/external-edit/pull/push shape as the CSV stages above
+# (datalink_script1..4.txt), but round-tripping through a real .xlsx,
+# independently verified at every stage by Python's own zipfile/xml - never
+# this app's own reader - so both directions are checked against a
+# genuinely external tool, not just a round trip through this app's own
+# writer and reader agreeing with each other.
+XDL1="$(run_dl_stage xlsx_datalink_script1.txt "xlsx 1")"
+xdlcheck() { if echo "$XDL1" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$XDL1" "$1"; fail=1; fi; }
+xdlcheck "DataLink: pushed 2x2 table to " "DataLink pushed the new table to the .xlsx file (it didn't exist yet)"
+[ -f "$TMPW/xlsx_datalink.xlsx" ] || { echo "FAIL DataLink actually wrote $TMPW/xlsx_datalink.xlsx"; fail=1; }
+head -c 2 "$TMPW/xlsx_datalink.xlsx" | grep -q "PK" && echo "ok   xlsx_datalink.xlsx starts with a real zip signature (PK)" || { echo "FAIL xlsx_datalink.xlsx is not a real zip"; fail=1; }
+python3 - "$TMPW/xlsx_datalink.xlsx" <<'PY' && echo "ok   the pushed .xlsx's content matches the table's cells (E,F / G,H), read independently by Python's own zipfile/xml" || { echo "FAIL the pushed .xlsx's content does not match the table's cells"; fail=1; }
+import sys, zipfile, xml.etree.ElementTree as ET
+ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+z = zipfile.ZipFile(sys.argv[1])
+root = ET.fromstring(z.read('xl/worksheets/sheet1.xml'))
+cells = {}
+for c in root.findall('.//m:c', ns):
+    if c.get('t') == 'inlineStr':
+        cells[c.get('r')] = c.find('m:is/m:t', ns).text or ''
+    else:
+        v = c.find('m:v', ns)
+        cells[c.get('r')] = v.text if v is not None else ''
+assert cells.get('A1') == 'E' and cells.get('B1') == 'F', cells
+assert cells.get('A2') == 'G' and cells.get('B2') == 'H', cells
+PY
+
+# Simulate an external spreadsheet edit of the linked .xlsx - written by
+# Python's own zipfile/zlib with real DEFLATE (zip method 8) compression
+# and a proper shared-strings table, the shape an actual Excel/LibreOffice/
+# openpyxl save produces, not just this app's own inlineStr writer - so
+# ReadXlsxCells is proven against a genuinely independent writer, not just
+# a round trip through its own.
+sleep 5
+python3 - "$TMPW/xlsx_datalink.xlsx" <<'PY'
+import sys, zipfile
+path = sys.argv[1]
+content_types = '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/></Types>'
+root_rels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'
+workbook = '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'
+workbook_rels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>'
+shared = '<?xml version="1.0"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="4" uniqueCount="4"><si><t>P</t></si><si><t>Q</t></si><si><t>R</t></si><si><t>S</t></si></sst>'
+sheet = '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2" t="s"><v>3</v></c></row></sheetData></worksheet>'
+z = zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED)
+z.writestr('[Content_Types].xml', content_types)
+z.writestr('_rels/.rels', root_rels)
+z.writestr('xl/workbook.xml', workbook)
+z.writestr('xl/_rels/workbook.xml.rels', workbook_rels)
+z.writestr('xl/sharedStrings.xml', shared)
+z.writestr('xl/worksheets/sheet1.xml', sheet)
+z.close()
+PY
+
+XDL2="$(run_dl_stage xlsx_datalink_script2.txt "xlsx 2")"
+xdlcheck() { if echo "$XDL2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$XDL2" "$1"; fail=1; fi; }
+xdlcheck "DataLinkUpdate: pulled 2x2 table from " "DataLinkUpdate auto-detected the externally-rewritten .xlsx was the only side that changed and pulled it"
+xdlcheck '"cells":\["P","Q","R","S"\]' "the pulled table's own TableData cells (P,Q / R,S) match the real DEFLATE-compressed, shared-string-indexed .xlsx Python wrote - not just this app's own writer's output"
+
+sleep 5
+
+XDL3="$(run_dl_stage xlsx_datalink_script3.txt "xlsx 3")"
+xdlcheck() { if echo "$XDL3" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$XDL3" "$1"; fail=1; fi; }
+xdlcheck "DataLinkUpdate: pushed 2x2 table to " "DataLinkUpdate auto-detected the table (TableEdit) was the only side that changed and pushed it back to the real .xlsx file - the reverse direction from stage 2"
+python3 - "$TMPW/xlsx_datalink.xlsx" <<'PY' && echo "ok   the re-pushed .xlsx's content matches stage 3's TableEdit (U,V / W,X), read independently by Python's own zipfile/xml" || { echo "FAIL the re-pushed .xlsx's content does not match stage 3's TableEdit"; fail=1; }
+import sys, zipfile, xml.etree.ElementTree as ET
+ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+z = zipfile.ZipFile(sys.argv[1])
+root = ET.fromstring(z.read('xl/worksheets/sheet1.xml'))
+cells = {}
+for c in root.findall('.//m:c', ns):
+    if c.get('t') == 'inlineStr':
+        cells[c.get('r')] = c.find('m:is/m:t', ns).text or ''
+    else:
+        v = c.find('m:v', ns)
+        cells[c.get('r')] = v.text if v is not None else ''
+assert cells.get('A1') == 'U' and cells.get('B1') == 'V', cells
+assert cells.get('A2') == 'W' and cells.get('B2') == 'X', cells
+PY
+
 # Real OS-clipboard image write (ViewCaptureToClipboard/ScreenCaptureToClipboard/
 # CopyRenderWindowToClipboard - see src/platform/Clipboard.h). There is no
 # clipboard reader available in this headless harness, so DINO8_CLIPBOARD_DEBUG_FILE
@@ -4434,6 +4577,24 @@ RMAC_LINE50_COUNT="$(echo "$RMAC" | grep -cF "Line 50,0,0 60,0,0" || true)"
 [ "$RMAC_LINE50_COUNT" = "1" ] && echo "ok   the Line command typed AFTER RecordMacro Off was run but NOT appended to the buffer (it appears exactly once, as the typed command line itself, not a second time in the final dump)" || { echo "FAIL a command typed after RecordMacro Off leaked into the buffer (expected 1 occurrence, got $RMAC_LINE50_COUNT)"; fail=1; }
 RMAC_SELF_COUNT="$(echo "$RMAC" | grep -cF "  RecordMacro" || true)"
 [ "$RMAC_SELF_COUNT" = "0" ] && echo "ok   RecordMacro never recorded itself into its own buffer" || { echo "FAIL RecordMacro recorded one of its own toggle lines into the buffer"; fail=1; }
+
+# BlockSetArraySpacing/BlockSetArrayCount command-line wiring: PARITY_MAP.md
+# "Dynamic blocks" Array parameter/action (the Document-level math itself is
+# unit-tested directly in dino8_block_array/test_block_array.cpp) - see
+# block_array_script.txt's own header comment.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  BAR="$("$BIN" --smoke 100 --script "$HERE/block_array_script.txt" 2>&1)" || { echo "$BAR"; echo "FAIL: block-array script exited non-zero"; exit 1; }
+else
+  BAR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/block_array_script.txt" 2>&1)" || { echo "$BAR"; echo "FAIL: block-array script exited non-zero"; exit 1; }
+fi
+echo "$BAR" | grep -E "^(ok|FAIL)" || true
+if echo "$BAR" | grep -q "^FAIL"; then fail=1; fi
+echo "$BAR" | grep -q "^smoke:" || { echo "$BAR"; echo "FAIL: block-array script produced no smoke line"; fail=1; }
+barcheck() { if echo "$BAR" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$BAR" "$1"; fail=1; fi; }
+barcheck "  1,0,0" "the block-defining leftover instance (created before BlockAddState/BlockSetArraySpacing ran) keeps its untouched original point"
+barcheck "  11,0,0" "array copy 0 lands at the plain insert point (local 1,0,0 + insert 10,0,0)"
+barcheck "  16,0,0" "array copy 1 is stepped 5 units along X from copy 0, not stacked on top of it"
+barcheck "  21,0,0" "array copy 2 is stepped 10 units along X from copy 0"
 
 # Undo id-reuse regression (see the last section of history_script.txt):
 # a Box drawn right after undoing a tracked Extrude used to be handed the
@@ -4550,6 +4711,42 @@ EOS
   mcheck "$MG" "Opened $TMPW/mesh_good.3dm (1 objects)" "a mesh with only in-range faces - including a degenerate repeated-index one, which is legitimate - still loads (the check is a range check, not the stricter no-repeated-index rule)"
 else
   echo "FAIL mesh_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the corrupt-mesh fixture check"
+  fail=1
+fi
+
+# Native .3dm ON_Hatch import: previously Load3dm had no ON_Hatch handling
+# at all, so a hatch authored by a real, independent CAD tool (not Dino 8's
+# own baked-geometry export) was silently skipped on open. hatch3dm_fixture_gen
+# builds a real ON_Hatch (solid fill, 10x10 square boundary on the world XY
+# plane, referencing a real "Solid" ON_HatchPattern table entry) directly
+# through OpenNURBS' own API, independent of Dino 8's exporter - the same
+# "real externally-authored file, not a round trip" proof mesh_fixture_gen
+# and dwg_fixture_gen.c already give their own formats. The checks mirror
+# the existing DXF HATCH import test exactly: same SelHatch/List/Area
+# expectations, since Load3dm's new code path is the same BuildSolidHatch
+# helper DxfImporter::Hatch already uses.
+HATCHBIN="$(dirname "$BIN")/hatch3dm_fixture_gen"
+if [ -x "$HATCHBIN" ]; then
+  "$HATCHBIN" "$TMPW/hatch_fixture.3dm" >/dev/null || { echo "FAIL: hatch3dm_fixture_gen failed to write the hatch fixture"; exit 1; }
+  cat > "$TMPW/hatch3dm_script.txt" <<EOS
+Open $TMPW/hatch_fixture.3dm
+SelHatch
+List
+Area
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    H3D="$("$BIN" --smoke 30 --script "$TMPW/hatch3dm_script.txt" 2>&1)" || { echo "$H3D"; echo "FAIL: hatch .3dm script exited non-zero"; exit 1; }
+  else
+    H3D="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/hatch3dm_script.txt" 2>&1)" || { echo "$H3D"; echo "FAIL: hatch .3dm script exited non-zero"; exit 1; }
+  fi
+  h3check() { if echo "$H3D" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$H3D" "$1"; fail=1; fi; }
+  h3check "Opened $TMPW/hatch_fixture.3dm (1 objects)" "Load3dm read the real ON_Hatch as one object, not zero (silently skipped, the old behaviour)"
+  h3check "1 object(s) selected" "SelHatch found the imported hatch (real Hatch=Solid user_text, not just an ordinary object)"
+  h3check "name 'Hatch Solid'" "the imported solid hatch is the same trimmed-planar-brep object BuildSolidHatch builds in-app / from DXF"
+  h3check "1 faces, 1 edges, open" "the imported hatch is a single trimmed planar face"
+  h3check "Area = 100 square" "the imported hatch's area is exactly the 10x10 boundary (not a sampled approximation)"
+else
+  echo "FAIL hatch3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_Hatch fixture check"
   fail=1
 fi
 

@@ -60,6 +60,8 @@ std::vector<BlockInstance> LoadBlockInstances(const Document& doc) {
     b.state = v["state"].AsString();
     b.insert = kernel::Point3d(v["ix"].number, v["iy"].number, v["iz"].number);
     b.flipped = v["flip"].number != 0;
+    const json::Value& arr = v["array"];
+    b.array_count = arr.number > 0 ? static_cast<int>(arr.number) : 1;
     const json::Value& objs = v["objects"];
     for (size_t j = 0; j < objs.Size(); ++j) b.objects.push_back(static_cast<ObjectId>(objs[j].number));
     out.push_back(std::move(b));
@@ -75,7 +77,7 @@ void SaveBlockInstances(Document& doc, const std::vector<BlockInstance>& list) {
     out << (i ? "," : "") << "{\"group\":" << b.group << ",\"block\":\"" << JsonEscape(b.block) << "\""
         << ",\"state\":\"" << JsonEscape(b.state) << "\""
         << ",\"ix\":" << b.insert.x << ",\"iy\":" << b.insert.y << ",\"iz\":" << b.insert.z
-        << ",\"flip\":" << (b.flipped ? 1 : 0) << ",\"objects\":[";
+        << ",\"flip\":" << (b.flipped ? 1 : 0) << ",\"array\":" << b.array_count << ",\"objects\":[";
     for (size_t j = 0; j < b.objects.size(); ++j) out << (j ? "," : "") << b.objects[j];
     out << "]}";
   }
@@ -102,8 +104,15 @@ namespace {
 // (normal +X) through `def.base` before the insert-point translation, so a
 // flipped instance's base point still lands exactly at `at` like an
 // unflipped one - only left/right of the base is mirrored, not the
-// instance's position.
-std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, kernel::Point3d at, const std::string& state, bool flipped) {
+// instance's position. `array_count` (clamped to at least 1) then repeats
+// that placed copy along `def.array_axis`, `def.array_spacing` apart, in
+// world space, after the flip/insert transform - the same order flip
+// already establishes ("mirror in place, then move"), array simply adds
+// "then repeat" after it. A definition with array_spacing == 0 (the array
+// parameter was never configured via BlockSetArraySpacing) always places
+// exactly one copy, regardless of `array_count`, so a plain block or one
+// that only uses states/flip is unaffected.
+std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, kernel::Point3d at, const std::string& state, bool flipped, int array_count) {
   ON_Xform xf = ON_Xform::TranslationTransformation(at - def.base);
   if (flipped) {
     const kernel::Vector3d n(1, 0, 0);
@@ -111,16 +120,27 @@ std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, k
         ON_PlaneEquation(n.x, n.y, n.z, -ON_DotProduct(n, kernel::Vector3d(def.base.x, def.base.y, def.base.z))));
     xf = xf * mirror;
   }
+  kernel::Vector3d step(0, 0, 0);
+  const int count = def.array_spacing != 0 ? std::max(1, array_count) : 1;
+  if (count > 1) {
+    step = def.array_axis;
+    if (!step.Unitize()) step = kernel::Vector3d(1, 0, 0);
+    step *= def.array_spacing;
+  }
   std::vector<ObjectId> ids;
-  for (const SceneObject& o : def.objects) {
-    if (!ObjectVisibleInState(o, state)) continue;
-    SceneObject c = o;
-    c.id = kNoObject;
-    c.selected = false;
-    c.Transform(xf);
-    c.user_text["Block"] = def.name;
-    c.user_text["BlockInsert"] = std::to_string(at.x) + "," + std::to_string(at.y) + "," + std::to_string(at.z);
-    ids.push_back(doc.Add(std::move(c)));
+  for (int k = 0; k < count; ++k) {
+    const ON_Xform step_xf = ON_Xform::TranslationTransformation(step * static_cast<double>(k)) * xf;
+    for (const SceneObject& o : def.objects) {
+      if (!ObjectVisibleInState(o, state)) continue;
+      SceneObject c = o;
+      c.id = kNoObject;
+      c.selected = false;
+      c.Transform(step_xf);
+      c.user_text["Block"] = def.name;
+      c.user_text["BlockInsert"] = std::to_string(at.x) + "," + std::to_string(at.y) + "," + std::to_string(at.z);
+      if (count > 1) c.user_text["BlockArrayIndex"] = std::to_string(k);
+      ids.push_back(doc.Add(std::move(c)));
+    }
   }
   return ids;
 }
@@ -131,7 +151,7 @@ int InstantiateDynamicBlock(Document& doc, const std::string& name, kernel::Poin
   if (!def) return -1;
   std::string active = state;
   if (active.empty() && !def->states.empty()) active = def->states.front();
-  const std::vector<ObjectId> ids = PlaceFiltered(doc, *def, at, active, false);
+  const std::vector<ObjectId> ids = PlaceFiltered(doc, *def, at, active, false, 1);
   // Same anchor-object provenance as the static-block path in
   // InstantiateBlockInDocument (cmd_drafting.cpp) - see ProvenanceInfo's
   // comment in doc/Document.h.
@@ -158,7 +178,7 @@ bool RebuildBlockInstance(Document& doc, int group) {
   BlockDefinition* def = doc.FindBlock(it->block);
   if (!def) return false;
   for (ObjectId id : it->objects) doc.Remove(id);
-  it->objects = PlaceFiltered(doc, *def, it->insert, it->state, it->flipped);
+  it->objects = PlaceFiltered(doc, *def, it->insert, it->state, it->flipped, it->array_count);
   // Re-attach the fresh objects to the same group id so selection/explode
   // (which key off Document::Group membership) still find this instance,
   // and rebuild the anchor-object provenance the same way InstantiateDynamicBlock does.
@@ -182,6 +202,15 @@ bool SetBlockInstanceFlip(Document& doc, int group, bool flipped) {
   auto it = std::find_if(list.begin(), list.end(), [&](const BlockInstance& b) { return b.group == group; });
   if (it == list.end()) return false;
   it->flipped = flipped;
+  SaveBlockInstances(doc, list);
+  return RebuildBlockInstance(doc, group);
+}
+
+bool SetBlockInstanceArrayCount(Document& doc, int group, int count) {
+  std::vector<BlockInstance> list = LoadBlockInstances(doc);
+  auto it = std::find_if(list.begin(), list.end(), [&](const BlockInstance& b) { return b.group == group; });
+  if (it == list.end()) return false;
+  it->array_count = std::max(1, count);
   SaveBlockInstances(doc, list);
   return RebuildBlockInstance(doc, group);
 }

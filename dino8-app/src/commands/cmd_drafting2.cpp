@@ -16,12 +16,14 @@
 #include "drafting/HatchLibrary.h"
 #include "drafting/SectionView.h"
 #include "drafting/Table.h"
+#include "drafting/Xlsx.h"
 #include "elec/ElecComponents.h"
 #include "ui/Panels.h"
 #include "util/json_mini.h"
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
@@ -230,9 +232,12 @@ std::string UniqueHatchMaterialName(const Document& doc, const std::string& base
 }
 
 // ---------------------------------------------------------------------------
-// DataLink: CSV two-way sync for a table's cell data (see RegisterDrafting2Commands
-// for the DataLink/DataLinkUpdate command doc comments - the design rationale,
-// including why this is CSV and not native .xlsx, lives there).
+// DataLink: two-way sync for a table's cell data, to an external CSV or
+// native .xlsx file - dispatched by `path`'s extension (WriteSpecFile/
+// ReadSpecFile below wrap WriteCsvFile/ReadCsvFile and drafting::
+// WriteXlsxCells/ReadXlsxCells, drafting/Xlsx.cpp). See
+// RegisterDrafting2Commands for the DataLink/DataLinkUpdate command doc
+// comments - the design rationale lives there.
 // ---------------------------------------------------------------------------
 
 // Milliseconds since the Unix epoch - not just whole seconds - because a
@@ -424,6 +429,38 @@ void ApplyCsvToSpec(const std::vector<std::vector<std::string>>& rows, TableSpec
       spec.cells[static_cast<size_t>(r) * static_cast<size_t>(spec.cols) + static_cast<size_t>(c)] = rows[static_cast<size_t>(r)][static_cast<size_t>(c)];
 }
 
+// True for a path whose extension is ".xlsx" (case-insensitive) - the only
+// bit of format detection DataLink/DataLinkUpdate need, since File= always
+// names the linked file explicitly (no content-sniffing).
+bool HasXlsxExtension(const std::string& path) {
+  const std::filesystem::path p(path);
+  std::string ext = p.extension().string();
+  for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return ext == ".xlsx";
+}
+
+// Writes `spec` to `path` as .xlsx (drafting::WriteXlsxCells) or CSV
+// (WriteCsvFile above), by extension - the one push path DataLink/
+// DataLinkUpdate both call.
+bool WriteSpecFile(const std::string& path, const TableSpec& spec, std::string* error = nullptr) {
+  if (HasXlsxExtension(path)) {
+    std::string err;
+    const bool ok = drafting::WriteXlsxCells(path, spec.rows, spec.cols, spec.cells, err);
+    if (error) *error = err;
+    return ok;
+  }
+  return WriteCsvFile(path, spec);
+}
+
+// Reads `path` as .xlsx (drafting::ReadXlsxCells) or CSV (ReadCsvFile
+// above), by extension - the one pull path DataLink/DataLinkUpdate both
+// call, feeding straight into ApplyCsvToSpec exactly like a CSV pull
+// already did (both return the same ragged row-major grid shape).
+bool ReadSpecFile(const std::string& path, std::vector<std::vector<std::string>>& rows, std::string& error) {
+  if (HasXlsxExtension(path)) return drafting::ReadXlsxCells(path, rows, error);
+  return ReadCsvFile(path, rows, error);
+}
+
 // ---------------------------------------------------------------------------
 // Tables: shared build / rebuild.
 // ---------------------------------------------------------------------------
@@ -605,15 +642,16 @@ class TableEditCommand : public Command {
 };
 
 // DataLink / DataLinkUpdate: AutoCAD-style two-way sync between a table's
-// cells and an external CSV file. First increment deliberately targets CSV,
-// not native .xlsx: a TableSpec cell is a bare string (Table.h - no formulas,
-// no styles, no merges), so nothing in the current table model can be lost by
-// not using a heavier spreadsheet-container format, and CSV read/write needs
-// no new dependency (BillOfMaterialsCommand above already writes one by hand
-// with std::ofstream). A later increment could add real .xlsx via a vendored
-// MIT library the way LibreDWG was vendored for real .dwg, if a need for
-// preserving a workbook's *other* sheets/styles ever comes up - CSV cannot do
-// that, since writing a CSV always replaces the whole file.
+// cells and an external file - CSV or, as of this window, native .xlsx too
+// (WriteSpecFile/ReadSpecFile above dispatch on the path's extension to
+// drafting::WriteXlsxCells/ReadXlsxCells, drafting/Xlsx.cpp, a real,
+// dependency-free ZIP + minimal OOXML SpreadsheetML codec - see that
+// header's own comment for what it does and doesn't support). A TableSpec
+// cell is still a bare string either way (Table.h - no formulas, no
+// styles, no merges), so every cell is written as a plain .xlsx string
+// cell (t="inlineStr"), the exact same representation choice CsvField
+// already makes for CSV - not a typed number that could silently lose a
+// leading zero or an exact decimal form on round trip.
 //
 // Direction is never guessed silently once a table has synced before: if
 // only the file changed since last_sync_utc, DataLinkUpdate pulls; if only
@@ -623,11 +661,18 @@ class TableEditCommand : public Command {
 // live sync (out of scope here; a poll-on-idle "file changed, run
 // DataLinkUpdate" status hint would be a reasonable later increment).
 //
-// Formula caveat: pulling from a real spreadsheet only ever sees the last
-// value that program itself wrote to the CSV on save. A cell holding
-// "=SUM(A1:A2)" arrives here as whatever number Excel/etc last computed for
-// it, frozen - never the live formula. This is an inherent limit of a
-// plain-text-grid format, disclosed rather than silently papered over.
+// Formula caveat (CSV and .xlsx alike): pulling from a real spreadsheet only
+// ever sees the last value that program itself wrote to the file on save. A
+// cell holding "=SUM(A1:A2)" arrives here as whatever number Excel/LibreOffice/
+// etc last computed for it (a .xlsx formula cell's own cached <v>, same as a
+// CSV export of the same sheet would show), frozen - never the live formula.
+// This is an inherent limit of not having a formula engine of its own, not a
+// shortfall specific to either file format, disclosed rather than silently
+// papered over.
+//
+// Still open: multiple sheets, cell styles/formats, and merged cells - none
+// of which TableSpec itself can represent either, so closing them would mean
+// extending the table model first, not just the file codec.
 bool FindTableGroup(CommandContext& ctx, const std::vector<ObjectId>& ids, int& group_id) {
   for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id); o && o->user_text.count("TableData")) { group_id = o->group_id; return true; }
   return false;
@@ -711,11 +756,12 @@ class DataLinkCommand : public Command {
     }
 
     if (push) {
-      if (!WriteCsvFile(file_, spec)) { ctx.Warn("DataLink: could not write '" + file_ + "'"); return; }
+      std::string werr;
+      if (!WriteSpecFile(file_, spec, &werr)) { ctx.Warn("DataLink: could not write '" + file_ + "'" + (werr.empty() ? "" : " (" + werr + ")")); return; }
     } else {
       std::vector<std::vector<std::string>> rows;
       std::string err;
-      if (!ReadCsvFile(file_, rows, err)) { ctx.Warn("DataLink: " + err); return; }
+      if (!ReadSpecFile(file_, rows, err)) { ctx.Warn("DataLink: " + err); return; }
       ApplyCsvToSpec(rows, spec);
     }
     DataLinkInfo link{file_, mode_, NowMillis()};
@@ -787,11 +833,12 @@ class DataLinkUpdateCommand : public Command {
     }
 
     if (push) {
-      if (!WriteCsvFile(link.path, spec)) { ctx.Warn("DataLinkUpdate: could not write '" + link.path + "'"); return; }
+      std::string werr;
+      if (!WriteSpecFile(link.path, spec, &werr)) { ctx.Warn("DataLinkUpdate: could not write '" + link.path + "'" + (werr.empty() ? "" : " (" + werr + ")")); return; }
     } else {
       std::vector<std::vector<std::string>> rows;
       std::string err;
-      if (!ReadCsvFile(link.path, rows, err)) { ctx.Warn("DataLinkUpdate: " + err); return; }
+      if (!ReadSpecFile(link.path, rows, err)) { ctx.Warn("DataLinkUpdate: " + err); return; }
       ApplyCsvToSpec(rows, spec);
     }
     link.last_sync_utc = NowMillis();
@@ -1832,7 +1879,7 @@ void RegisterDrafting2Commands(CommandEngine& e) {
   Reg(e, "Table", Make<TableCommand>());
   Reg(e, "TableEdit", Make<TableEditCommand>());
   Reg(e, "DataLink", Make<DataLinkCommand>(), CommandStatus::Implemented,
-      "Links a table to an external CSV file and does the initial sync (push if the file doesn't exist yet, otherwise Push/Pull/whichever side's content looks newer for Mode=Ask) - CSV, not native .xlsx, since a TableSpec cell is a bare string with no formulas/styles/merges to lose either way; pulling from a real spreadsheet only ever sees the last value it wrote to the CSV on save, never a live formula.");
+      "Links a table to an external CSV or native .xlsx file (by File='s extension - drafting/Xlsx.cpp, a real ZIP+OOXML codec, not CSV-only) and does the initial sync (push if the file doesn't exist yet, otherwise Push/Pull/whichever side's content looks newer for Mode=Ask). A TableSpec cell is a bare string (no formulas/styles/merges to lose either way), written as a plain .xlsx string cell; pulling from a real spreadsheet only ever sees the last value it wrote to the file on save, never a live formula - true of CSV and .xlsx alike, not a gap specific to either.");
   Reg(e, "DataLinkUpdate", Make<DataLinkUpdateCommand>(), CommandStatus::Implemented,
       "Re-syncs an already-linked table on demand: pulls if only the file changed since the last sync, pushes if only the table did, and refuses to guess (asking for an explicit Direction=Push|Pull) if both changed - manual and on-demand like AutoCAD's own DATALINKUPDATE, not a background file watcher.");
   Reg(e, "RevisionTable", Make<RevisionTableCommand>());

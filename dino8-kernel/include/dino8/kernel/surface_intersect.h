@@ -105,6 +105,33 @@ struct BrepBrepIntersection {
 // specific boolean engine's own topology.
 std::vector<BrepBrepIntersection> IntersectBreps(const ON_Brep& a, const ON_Brep& b, const IntersectOptions& opt);
 
+// One exact section curve between a Brep face and an infinite plane, as
+// returned by IntersectBrepByPlane() below.
+struct BrepPlaneIntersection {
+  int face_index = -1;
+  IntersectionCurve curve;
+};
+
+// Exact plane sections/contours of a whole B-rep - the Brep-level
+// counterpart to IntersectFaces()/IntersectBreps() above, but against a
+// caller-supplied infinite ON_Plane instead of a second B-rep.
+// PARITY_MAP.md's own "Plane sections / contours of surfaces and B-reps"
+// evidence named this gap directly: the app only ever slices its own
+// render MESH (SliceObjects/SliceMesh); "Kernel SplitByPlane is mesh-only;
+// the exact route (IntersectSurfaces per face) is not used for sections."
+// This is that exact route: the plane is modeled as a bounded
+// ON_PlaneSurface sized generously past the Brep's own bounding box (so no
+// genuine crossing is ever missed at the plane's own edge - the same
+// "don't let a caller-guessed rectangle silently clip a real result" issue
+// IntersectCurvePlane()'s own doc comment raises for a curve), and
+// IntersectFaces() is called once per face whose bounding box actually
+// comes within tolerance of the plane, trimming the result to that face's
+// own trim loops exactly as every other IntersectFaces() caller here
+// already does. Returned un-stitched, one entry per face (a caller
+// wanting one merged polyline per physical section contour composes these
+// the same way a caller of IntersectBreps() would).
+std::vector<BrepPlaneIntersection> IntersectBrepByPlane(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& opt);
+
 struct CurveSurfaceHit {
   double t = 0;           // curve parameter
   ON_2dPoint uv;          // surface parameters
@@ -272,6 +299,71 @@ struct PullbackResult {
 //    shape for that specific stretch, even though the individual `uv`
 //    samples, `pulled_curve`, and max_error remain correct).
 PullbackResult PullbackCurveToSurface(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt);
+
+// One directional ray/surface projection result, as returned by
+// ProjectPointToSurface() below - the point-level sibling of
+// ProjectedCurveResult, closing the "points" half of PARITY_MAP.md's own
+// "Projection of curves/points onto surfaces along a direction (Project)"
+// bullet (ProjectCurveToSurface() below closes the "curves" half).
+struct PointProjectionHit {
+  bool hit = false;
+  double t = 0;    // ray parameter: point + t*direction == this->point (meaningful only if hit)
+  ON_2dPoint uv;
+  Point3d point;
+};
+
+// Directional projection of a single point onto a surface along
+// `direction` - Rhino's Project command semantics for a point input. Not a
+// closest-point search (see SurfaceClosestPoint/SurfaceClosestPointGlobal
+// above for that): `point` moves along the fixed `direction` until it
+// meets the surface, the same ray/surface system ProjectCurveToSurface()
+// below solves per curve sample, exposed here as its own public,
+// single-point entry point rather than requiring a caller to wrap one
+// point in a degenerate curve. `direction` of zero length, or a ray that
+// genuinely never meets the surface, both return `hit == false` rather
+// than throwing or fabricating a point - the same honest-miss semantics
+// ProjectCurveToSurface() applies per sample.
+PointProjectionHit ProjectPointToSurface(Point3d point, const Vector3d& direction, const ON_Surface& s, const IntersectOptions& opt);
+
+struct ProjectedCurveResult {
+  std::vector<Point3d> points;  // projected 3D points, one per sample that hit the surface
+  std::vector<ON_2dPoint> uv;   // their (u, v) on the surface, same order as `points`
+  std::vector<double> t;        // the curve parameter each entry in `points` came from
+  std::vector<bool> hit;        // per-SAMPLE success, in uniform sample order (see ProjectCurveToSurface)
+  int sample_count = 0;         // total samples attempted
+  int hit_count = 0;            // points.size() == uv.size() == t.size()
+  ON_NurbsCurve projected_curve;  // degree-3 curve refit through `points` (empty curve if hit_count < 2)
+};
+
+// Directional projection of a curve onto a surface (Rhino's Project
+// command semantics: every point moves along a fixed `direction`, unlike
+// PullbackCurveToSurface()/Pull above, which moves each point to its own
+// nearest point on the surface instead). PARITY_MAP.md's own "Projection
+// of curves/points onto surfaces along a direction" evidence named this
+// gap directly: "app ProjectCommand samples the curve and ray-casts along
+// the CPlane normal onto the render mesh, then refits. No kernel project
+// API." This is that kernel API, against the exact surface rather than a
+// tessellated stand-in: the curve is sampled the same way
+// PullbackCurveToSurface() is (opt.mesh_tolerance-driven, continuity-
+// seeded from the previous sample), each sample solves the 3-unknown
+// system `sample + t*direction == S(u, v)` by Newton iteration (seeded
+// from the previous sample's (u, v) when available, or a global grid scan
+// minimizing perpendicular distance from the ray to the surface
+// otherwise - the same warm/global-reseed discipline
+// PullbackCurveToSurface() applies to its own closest-point search), and
+// the resulting 3D points are refit as `projected_curve` via
+// InterpolateCubic(..., dim=3).
+//
+// A `direction` of zero length returns an empty result outright (there is
+// no ray to cast). Unlike Pull, a ray cast along an arbitrary direction
+// can genuinely miss the surface for some samples (the surface simply
+// isn't there in that direction) - those samples are recorded as
+// `hit[i] == false` and dropped from `points`/`uv`/`t`/the refit curve
+// rather than either aborting the whole call or inventing a point; the
+// common "every sample hits" case is `hit_count == sample_count`.
+// `projected_curve` is left as a default-constructed (empty) ON_NurbsCurve
+// when fewer than 2 samples hit - not enough to fit a curve through.
+ProjectedCurveResult ProjectCurveToSurface(const ON_Curve& c, const ON_Surface& s, const Vector3d& direction, const IntersectOptions& opt);
 
 // --- numerical helpers ------------------------------------------------------
 

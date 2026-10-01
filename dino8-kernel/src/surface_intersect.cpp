@@ -1361,6 +1361,37 @@ std::vector<BrepBrepIntersection> IntersectBreps(const ON_Brep& a, const ON_Brep
   return out;
 }
 
+std::vector<BrepPlaneIntersection> IntersectBrepByPlane(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& opt) {
+  std::vector<BrepPlaneIntersection> out;
+  const ON_BoundingBox bbox = b.BoundingBox();
+  if (!bbox.IsValid() || !plane.IsValid()) return out;
+  // The plane surface must reach past every face that could genuinely meet
+  // it - sized off the WHOLE Brep's own bounding box (doubled) rather than
+  // a caller-guessed rectangle, so a real section point is never silently
+  // clipped at the plane surface's own edge (the same hazard
+  // IntersectCurvePlane()'s own doc comment raises for a bounded
+  // ON_PlaneSurface stand-in).
+  const double half = std::max(bbox.Diagonal().Length(), 1.0) * 2;
+  ON_PlaneSurface plane_surface(plane);
+  plane_surface.SetExtents(0, ON_Interval(-half, half), true);
+  plane_surface.SetExtents(1, ON_Interval(-half, half), true);
+  const double pad = std::max(opt.mesh_tolerance, opt.tolerance * 4);
+  const int nf = b.m_F.Count();
+  for (int i = 0; i < nf; ++i) {
+    const ON_BrepFace& f = b.m_F[i];
+    const ON_Surface* s = f.SurfaceOf();
+    const ON_BoundingBox fb = s->BoundingBox();
+    if (fb.IsValid()) {
+      const double reach = fb.Diagonal().Length() * 0.5 + pad;
+      if (std::fabs(plane.DistanceTo(fb.Center())) > reach) continue;  // face's own box can't reach the plane
+    }
+    for (IntersectionCurve& ic : IntersectFaces(&f, *s, nullptr, plane_surface, opt)) {
+      out.push_back(BrepPlaneIntersection{i, std::move(ic)});
+    }
+  }
+  return out;
+}
+
 namespace {
 
 // Segment / triangle intersection (Moller-Trumbore), returns the segment parameter.
@@ -1737,6 +1768,129 @@ PullbackResult PullbackCurveToSurface(const ON_Curve& c, const ON_Surface& s, co
   out.params = ChordParams(pa, closed);
   out.pcurve = InterpolateCubic(pa, out.params, closed, 2);
   out.pulled_curve = InterpolateCubic(p3, out.params, closed, 3);
+  return out;
+}
+
+namespace {
+
+// Global seed for the ray/surface system below: scans a grid of the
+// surface's own parameter domain (the same grid shape
+// SurfaceClosestPointGlobal() uses) and keeps whichever grid point has the
+// smallest PERPENDICULAR distance to the infinite line through `p` along
+// `dir` - not the smallest distance to `p` itself, since a ray and a
+// closest-point search are genuinely different questions (a point far
+// along the ray from `p` can still be the correct hit).
+bool RaySurfaceGlobalSeed(const ON_Surface& s, Point3d p, const Vector3d& dir, double& u, double& v, int grid = 24) {
+  const double dir_len2 = dir.LengthSquared();
+  if (dir_len2 <= 0) return false;
+  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+  double best = std::numeric_limits<double>::max();
+  bool found = false;
+  for (int i = 0; i <= grid; ++i) {
+    for (int j = 0; j <= grid; ++j) {
+      const double uu = du.ParameterAt(static_cast<double>(i) / grid);
+      const double vv = dv.ParameterAt(static_cast<double>(j) / grid);
+      const Vector3d w = s.PointAt(uu, vv) - p;
+      const double t = ON_DotProduct(w, dir) / dir_len2;
+      const Vector3d perp = w - dir * t;
+      const double d = perp.Length();
+      if (d < best) { best = d; u = uu; v = vv; found = true; }
+    }
+  }
+  return found;
+}
+
+// Newton solve of the 3-unknown ray/surface system `p + t*dir == S(u, v)`
+// from a seed (t, u, v) - the directional-projection counterpart to
+// RefineSurfaceSurfacePoint()/IntersectCurveSurface()'s own 3-unknown
+// (t, u, v) system, but against a fixed ray instead of a second curve.
+bool RaySurfaceNewton(const ON_Surface& s, Point3d p, const Vector3d& dir, double& t, double& u, double& v, double tol, double t_lo, double t_hi) {
+  std::vector<double> x = {t, u, v};
+  const std::vector<double> lo = {t_lo, s.Domain(0).Min(), s.Domain(1).Min()};
+  const std::vector<double> hi = {t_hi, s.Domain(0).Max(), s.Domain(1).Max()};
+  Residual res = [&](const std::vector<double>& q) {
+    const Point3d target = p + dir * q[0];
+    const Point3d sp = s.PointAt(q[1], q[2]);
+    return std::vector<double>{target.x - sp.x, target.y - sp.y, target.z - sp.z};
+  };
+  const bool ok = NewtonSolve(res, x, lo, hi, tol);
+  t = x[0]; u = x[1]; v = x[2];
+  return ok;
+}
+
+}  // namespace
+
+PointProjectionHit ProjectPointToSurface(Point3d point, const Vector3d& direction, const ON_Surface& s, const IntersectOptions& opt) {
+  PointProjectionHit out;
+  if (direction.LengthSquared() <= 0) return out;
+  const ON_BoundingBox sb = s.BoundingBox();
+  double span = 1;
+  if (sb.IsValid()) span = sb.Diagonal().Length() + sb.Center().DistanceTo(point);
+  span = std::max(span, 1.0) * 4;
+
+  double u = 0, v = 0;
+  if (!RaySurfaceGlobalSeed(s, point, direction, u, v)) return out;
+  double t = 0;
+  if (!RaySurfaceNewton(s, point, direction, t, u, v, opt.tolerance, -span, span)) return out;
+  out.hit = true;
+  out.t = t;
+  out.uv = ON_2dPoint(u, v);
+  out.point = point + direction * t;
+  return out;
+}
+
+ProjectedCurveResult ProjectCurveToSurface(const ON_Curve& c, const ON_Surface& s, const Vector3d& direction, const IntersectOptions& opt) {
+  ProjectedCurveResult out;
+  if (direction.LengthSquared() <= 0) return out;
+  const ON_Interval d = c.Domain();
+  if (!d.IsIncreasing()) return out;
+  const ON_BoundingBox cb = c.BoundingBox();
+  const ON_BoundingBox sb = s.BoundingBox();
+  const double clen = cb.IsValid() ? cb.Diagonal().Length() : 1;
+  const int n = static_cast<int>(Clamp(std::ceil(clen / std::max(opt.mesh_tolerance, 1e-6)), 64, 2000));
+  const bool closed = c.IsClosed() != 0;
+  // Generous enough |t| bounds that a genuine hit anywhere between the
+  // curve's own bounding box and the surface's own bounding box - either
+  // side of the sample point - is never clipped by the Newton solve's own
+  // box bounds.
+  double span = clen + 1;
+  if (sb.IsValid()) span += sb.Diagonal().Length() + (cb.IsValid() ? cb.Center().DistanceTo(sb.Center()) : 0);
+  span *= 4;
+
+  double u = 0, v = 0;
+  bool have_seed = false;
+  for (int i = 0; i <= n; ++i) {
+    if (closed && i == n) break;
+    const double tc = d.ParameterAt(static_cast<double>(i) / n);
+    const Point3d p = c.PointAt(tc);
+    ++out.sample_count;
+
+    double tt = 0, uu = u, vv = v;
+    bool ok = have_seed && RaySurfaceNewton(s, p, direction, tt, uu, vv, opt.tolerance, -span, span);
+    if (!ok) {
+      double gu, gv;
+      if (RaySurfaceGlobalSeed(s, p, direction, gu, gv)) {
+        tt = 0; uu = gu; vv = gv;
+        ok = RaySurfaceNewton(s, p, direction, tt, uu, vv, opt.tolerance, -span, span);
+      }
+    }
+    out.hit.push_back(ok);
+    if (ok) {
+      out.points.push_back(p + direction * tt);
+      out.uv.emplace_back(uu, vv);
+      out.t.push_back(tc);
+      u = uu; v = vv; have_seed = true;
+    }
+  }
+  out.hit_count = static_cast<int>(out.points.size());
+  if (out.hit_count < 2) return out;
+
+  std::vector<ON_3dPoint> p3;
+  p3.reserve(out.points.size());
+  for (const Point3d& p : out.points) p3.emplace_back(p.x, p.y, p.z);
+  const bool fit_closed = closed && out.hit_count == out.sample_count;
+  const std::vector<double> params = ChordParams(p3, fit_closed);
+  out.projected_curve = InterpolateCubic(p3, params, fit_closed, 3);
   return out;
 }
 

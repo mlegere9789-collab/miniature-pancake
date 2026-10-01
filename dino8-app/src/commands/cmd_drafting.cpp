@@ -2,6 +2,7 @@
 #include "commands/cmd_common.h"
 
 #include <algorithm>
+#include <cctype>
 
 #include "doc/BlockInstances.h"
 #include "imgui.h"
@@ -363,6 +364,79 @@ class BlockToggleFlipCommand : public Command {
   }
 };
 
+// BlockSetArraySpacing: names the Array parameter's axis and per-copy
+// spacing on a block definition - the array-parameter analogue of
+// BlockAddState naming a new visibility state: it only configures what a
+// placed instance's BlockSetArrayCount later has to work with, it does not
+// itself place anything. A definition that never calls this keeps
+// array_spacing at 0, so it has no array parameter at all, same as a
+// definition with no states having no visibility parameter.
+class BlockSetArraySpacingCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    if (ctx.Doc().Blocks().empty()) { ctx.Warn("No block definitions. Use Block to create one."); Finish(); return; }
+    std::string names;
+    for (const BlockDefinition& b : ctx.Doc().Blocks()) names += (names.empty() ? "" : ", ") + b.name;
+    ctx.Print("Blocks: " + names);
+    WantText("Block name", ctx.Doc().Blocks().back().name);
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    def_ = ctx.Doc().FindBlock(t);
+    if (!def_) { ctx.Warn("No block named '" + t + "'"); Finish(); return; }
+    name_ = t;
+    options = {{"Axis", std::string(1, axis_), {"X", "Y", "Z"}, false, false}};
+    WantNumber("Spacing between array copies (model units)");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Axis" && !v.empty()) { axis_ = static_cast<char>(std::toupper(static_cast<unsigned char>(v[0]))); options[0].value = std::string(1, axis_); }
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    ctx.Doc().BeginChange("BlockSetArraySpacing");
+    def_->array_axis = axis_ == 'Y' ? Vector3d(0, 1, 0) : axis_ == 'Z' ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+    def_->array_spacing = v;
+    ctx.Print("Block '" + name_ + "': array parameter set (" + std::string(1, axis_) + " axis, " + FormatNumber(v) + " apart)");
+    Finish();
+  }
+  std::string name_;
+  BlockDefinition* def_ = nullptr;
+  char axis_ = 'X';
+};
+
+// BlockSetArrayCount: sets one placed dynamic-block instance's Array
+// parameter (repeat count along its definition's array axis/spacing) and
+// rebuilds just that instance - the third dynamic-block parameter/action
+// type alongside Visibility states and Flip. Only reachable on a placed
+// dynamic-block instance, same scope BlockSetState/BlockToggleFlip have;
+// storing a count on a definition with no configured spacing
+// (BlockSetArraySpacing) is accepted but has no visible effect yet, the
+// same "no-op until configured" contract Flip has on a block with no
+// states, so the warning here is informational, not a hard stop.
+class BlockSetArrayCountCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select an object in the instance to array", 1); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    group_ = -1;
+    for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->group_id >= 0) { group_ = o->group_id; break; }
+    BlockInstance inst;
+    if (group_ < 0 || !FindBlockInstanceByGroup(ctx.Doc(), group_, inst)) {
+      ctx.Warn("Selection isn't a dynamic-block instance (use BlockAddState first)");
+      Finish();
+      return;
+    }
+    const BlockDefinition* def = ctx.Doc().FindBlock(inst.block);
+    if (!def || def->array_spacing == 0) ctx.Warn("Block '" + inst.block + "' has no array parameter yet (use BlockSetArraySpacing) - the count will be stored but has no visible effect until it does");
+    WantNumber("Array count", inst.array_count);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    ctx.Doc().BeginChange("BlockSetArrayCount");
+    const int n = std::max(1, static_cast<int>(v));
+    if (!SetBlockInstanceArrayCount(ctx.Doc(), group_, n)) ctx.Warn("Could not set array count");
+    else ctx.Print("BlockSetArrayCount: instance now has " + std::to_string(n) + " copy(ies)");
+    Finish();
+  }
+  int group_ = -1;
+};
+
 }  // namespace
 
 // A block with no named visibility states behaves exactly as before (every
@@ -494,6 +568,15 @@ void RegisterDraftingCommands(CommandEngine& e) {
       "and rebuilds just that instance's objects - a second dynamic-block parameter type (Flip) alongside Visibility "
       "states; only reachable on a block that already has at least one named state (BlockAddState), same scope "
       "BlockSetState has, since that is what makes a placed instance get a per-instance BlockInstance record at all.");
+  Reg(e, "BlockSetArraySpacing", Make<BlockSetArraySpacingCommand>(), CommandStatus::Implemented,
+      "Names the Array parameter's axis and per-copy spacing on a block definition (Array dynamic blocks - the third "
+      "parameter/action type alongside Visibility states and Flip); does not itself place anything, only configures "
+      "what a later BlockSetArrayCount on a placed instance has to work with.");
+  Reg(e, "BlockSetArrayCount", Make<BlockSetArrayCountCommand>(), CommandStatus::Implemented,
+      "Sets one placed dynamic-block instance's Array repeat count and rebuilds just that instance's objects, laid "
+      "out along its definition's array axis/spacing (BlockSetArraySpacing); only reachable on a placed dynamic-block "
+      "instance, same scope BlockSetState/BlockToggleFlip have. Stretch and Lookup parameters/actions remain "
+      "entirely unattempted.");
 }
 
 // AT-SPI2-queryable snapshot of Document::Blocks() (see

@@ -77,6 +77,20 @@ std::vector<PointCloudNeighbor> PointCloud::PointsWithinRadius(Point3d query, do
   return found;
 }
 
+std::vector<PointCloudNeighbor> PointCloud::PointsNearPlane(const ON_Plane& plane, double band) const {
+  if (band < 0.0) throw std::invalid_argument("PointCloud::PointsNearPlane: band must be >= 0");
+  if (!plane.IsValid()) throw std::invalid_argument("PointCloud::PointsNearPlane: plane must be valid");
+  const int n = cloud_.PointCount();
+
+  std::vector<PointCloudNeighbor> found;
+  for (int i = 0; i < n; ++i) {
+    const double d = std::fabs(plane.DistanceTo(Point3d(cloud_.m_P[i])));
+    if (d <= band) found.push_back(PointCloudNeighbor{i, d});
+  }
+  std::sort(found.begin(), found.end(), ByDistanceThenIndex);
+  return found;
+}
+
 Result PointCloud::SaveXyz(const std::string& path) const {
   std::ofstream out(path);
   if (!out) return Result::Failed;

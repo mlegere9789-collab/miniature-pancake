@@ -348,6 +348,8 @@ set(DINO8_SOURCES
   src/commands/cmd_fillet.cpp
   src/util/json_mini.cpp
   src/util/Sha256.cpp
+  src/util/Inflate.cpp
+  src/drafting/Xlsx.cpp
   src/util/BigUint.cpp
   src/io/DigitalSignature.cpp
   src/flow/FlowData.cpp
@@ -658,9 +660,21 @@ if(DINO8_BUILD_TESTS)
   # PNG/BMP/PPM are stuck at, a real-world-shaped new-style-RLE scanline
   # decoded by hand, and the malformed-input error paths. Standalone like
   # dino8_test_aci_palette - ImageIO.cpp has no dino8_kernel dependency.
-  add_executable(dino8_test_image_hdr tests/test_image_hdr.cpp src/render/ImageIO.cpp)
+  add_executable(dino8_test_image_hdr tests/test_image_hdr.cpp src/render/ImageIO.cpp src/util/Inflate.cpp)
   target_include_directories(dino8_test_image_hdr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_image_hdr COMMAND dino8_test_image_hdr)
+
+  # ZIP + minimal OOXML SpreadsheetML reader/writer (src/drafting/Xlsx.cpp):
+  # a real, valid .xlsx round trip (special characters, empty cells, several
+  # rows/cols), a hand-built "real-world-shaped" entry using zip method 8
+  # (deflate) with shared strings - what an actual Excel/LibreOffice/openpyxl
+  # save produces, not just this app's own store-method writer - and the
+  # malformed/truncated/bad-CRC error paths. Standalone like
+  # dino8_test_image_hdr/dino8_test_aci_palette - Xlsx.cpp depends only on
+  # util/Inflate.cpp, no dino8_kernel/opennurbs.
+  add_executable(dino8_test_xlsx tests/test_xlsx.cpp src/drafting/Xlsx.cpp src/util/Inflate.cpp)
+  target_include_directories(dino8_test_xlsx PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_xlsx COMMAND dino8_test_xlsx)
 
   # Numerically verifies VariableBlendSrf's own claim (cmd_fillet.cpp's
   # VariableBlendSrfCommand): that BuildBlendSurfaceG1/G2's new
@@ -689,12 +703,28 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_test_block_flip PRIVATE dino8_kernel)
   add_test(NAME dino8_block_flip COMMAND dino8_test_block_flip)
 
-  # AnnotationStyle::linear_precision / FormatDimensionNumber
-  # (commands/DimGeometry.h) - see tests/test_dim_precision.cpp's own file
-  # comment for why this is header-only against DimGeometry.h (no Document/
-  # CommandContext needed) with a locally-defined FormatNumber stand-in
-  # rather than linking commands/CommandEngine.cpp's real one, which would
-  # drag in app/Application.h and the whole GL/ImGui app.
+  # Dynamic-block Array parameter (src/doc/BlockInstances.cpp's
+  # SetBlockInstanceArrayCount/PlaceFiltered): repeats a placed instance
+  # along its block's array axis/spacing without moving the first copy's
+  # insert point, persists through the same dino8.block_instances JSON
+  # user-text every other BlockInstance field already round-trips through,
+  # is reversible, and is a no-op on a definition with no configured
+  # spacing. See PARITY_MAP.md's "Dynamic blocks" item. Same dependency
+  # shape as dino8_test_block_flip above.
+  add_executable(dino8_test_block_array tests/test_block_array.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                         src/doc/SubObjectEdit.cpp src/doc/BlockInstances.cpp
+                                         src/geom/BrepMesher.cpp src/util/json_mini.cpp)
+  target_include_directories(dino8_test_block_array PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_block_array PRIVATE dino8_kernel)
+  add_test(NAME dino8_block_array COMMAND dino8_test_block_array)
+
+  # AnnotationStyle::precision/unit_suffix/ext_offset/ext_extension/
+  # text_placement / DimStyleParams+FormatMeasurement (commands/DimGeometry.h)
+  # - see tests/test_dim_precision.cpp's own file comment for why this is
+  # header-only against DimGeometry.h (no Document/CommandContext needed)
+  # with locally-defined FormatNumber/DecimalComma stand-ins rather than
+  # linking commands/CommandEngine.cpp's real ones, which would drag in
+  # app/Application.h and the whole GL/ImGui app.
   add_executable(dino8_test_dim_precision tests/test_dim_precision.cpp)
   target_include_directories(dino8_test_dim_precision PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_test_dim_precision PRIVATE dino8_kernel)
@@ -873,6 +903,15 @@ if(DINO8_BUILD_TESTS)
   add_executable(mesh_fixture_gen tests/mesh_fixture_gen.cpp)
   target_include_directories(mesh_fixture_gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(mesh_fixture_gen PRIVATE dino8_kernel)
+
+  # Real-ON_Hatch .3dm fixture generator (see tests/hatch3dm_fixture_gen.cpp
+  # and smoke.sh's Load3dm ON_Hatch-import section): Dino 8 never writes a
+  # native ON_Hatch itself (a hatch is always baked to a Brep/curves plus
+  # user_text - see drafting/HatchBuild.h), so this generator gives Load3dm's
+  # ON_Hatch handling a real externally-authored hatch to read.
+  add_executable(hatch3dm_fixture_gen tests/hatch3dm_fixture_gen.cpp)
+  target_include_directories(hatch3dm_fixture_gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(hatch3dm_fixture_gen PRIVATE dino8_kernel)
 endif()
 
 # ---------------------------------------------------------------------------
