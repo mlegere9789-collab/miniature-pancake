@@ -118,6 +118,47 @@ int main() {
     const std::string wire = BuildHttpResponse(resp);
     Check(wire.rfind("HTTP/1.1 500 Internal Server Error\r\n", 0) == 0, "a 500 response uses the right reason phrase");
   }
+  {
+    HttpResponse resp;
+    resp.status = 401;
+    resp.body = "nope\n";
+    const std::string wire = BuildHttpResponse(resp);
+    Check(wire.rfind("HTTP/1.1 401 Unauthorized\r\n", 0) == 0, "a 401 response uses the right reason phrase");
+  }
+
+  // Header parsing - the --serve-token bearer-auth check (main.cpp) reads
+  // req.headers["authorization"], so TryParseHttpRequest has to surface
+  // every header, not just Content-Length, and has to be case-insensitive
+  // about both the header name (HTTP header names are case-insensitive)
+  // and tolerant of the optional whitespace RFC 7230 allows around the
+  // value - a real client (curl -H) sends "Authorization: Bearer x", but
+  // nothing stops another client from writing "authorization:Bearer x" or
+  // padding the value with trailing spaces.
+  {
+    HttpRequest req;
+    size_t consumed = 0;
+    const std::string buf =
+        "POST /run HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer secret123\r\nContent-Length: 0\r\n\r\n";
+    Check(TryParseHttpRequest(buf, &req, &consumed), "a request with an Authorization header parses");
+    Check(req.headers.count("authorization") == 1, "the Authorization header is captured under its lowercased name");
+    Check(req.headers.at("authorization") == "Bearer secret123", "the Authorization header's value is captured exactly");
+    Check(req.headers.at("host") == "localhost", "every header is captured, not just Authorization/Content-Length");
+  }
+  {
+    HttpRequest req;
+    size_t consumed = 0;
+    const std::string buf = "GET /run HTTP/1.1\r\nAUTHORIZATION:   Bearer  padded  \r\n\r\n";
+    Check(TryParseHttpRequest(buf, &req, &consumed), "a request with an uppercase header name and padded value parses");
+    Check(req.headers.count("authorization") == 1, "an all-caps header name is still matched case-insensitively");
+    Check(req.headers.at("authorization") == "Bearer  padded", "only leading/trailing whitespace is trimmed, not interior spaces");
+  }
+  {
+    HttpRequest req;
+    size_t consumed = 0;
+    const std::string buf = "GET /run HTTP/1.1\r\n\r\n";
+    Check(TryParseHttpRequest(buf, &req, &consumed), "a request with no headers at all still parses");
+    Check(req.headers.empty(), "no Authorization header means an empty headers map, not a spurious entry");
+  }
 
 #ifndef _WIN32
   // Real end-to-end round trip over an actual loopback TCP socket: start

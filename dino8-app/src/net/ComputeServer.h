@@ -3,14 +3,19 @@
 // equivalent)" item, which before this had no server/socket/HTTP code
 // anywhere in the source at all.
 //
-// This is nowhere near Rhino.Compute itself (no auth, no concurrency, no
-// geometry (de)serialization format, no REST resource model) - it is one
-// request at a time, one script per request: POST a Lua script as the
-// request body, get back its captured print() output as the response body.
-// main.cpp's `--serve PORT` wires this to the same LuaEngine every
-// interactive command line and RunScript already use, so a script posted
-// over the network can build/query geometry in the running document exactly
-// like a local script can. See docs/COMPUTE_SERVER.md for the wire format.
+// This is nowhere near Rhino.Compute itself (no concurrency, no geometry
+// (de)serialization format, no REST resource model, no TLS) - it is one
+// request at a time, one script per request: POST a script as the request
+// body, get back its captured print() output as the response body.
+// main.cpp's `--serve PORT` wires this to the same LuaEngine (POST /run) and
+// PythonEngine (POST /run/python) every interactive command line and
+// RunScript/RunPythonScript already use, so a script posted over the network
+// can build/query geometry in the running document exactly like a local
+// script can. An optional `--serve-token TOKEN` requires every request to
+// carry a matching `Authorization: Bearer TOKEN` header - real, if minimal,
+// authentication, not the "no auth at all" this started as; omitting the
+// flag keeps the server open, exactly as before. See docs/COMPUTE_SERVER.md
+// for the wire format.
 //
 // POSIX sockets only, same honestly-scoped-by-platform shape as
 // AccessibilityLinux.cpp's AT-SPI2 bridge: Start() always fails with a
@@ -19,6 +24,7 @@
 #pragma once
 
 #include <functional>
+#include <map>
 #include <string>
 
 namespace dino8::app {
@@ -27,6 +33,12 @@ struct HttpRequest {
   std::string method;
   std::string path;
   std::string body;
+  // Every header, keyed by lowercased name (HTTP header names are
+  // case-insensitive - RFC 7230 3.2) with leading/trailing whitespace
+  // trimmed from the value. A repeated header keeps only its last
+  // occurrence, which is fine for the one header this server itself reads
+  // (Authorization) and matches how most minimal HTTP parsers behave.
+  std::map<std::string, std::string> headers;
 };
 
 struct HttpResponse {

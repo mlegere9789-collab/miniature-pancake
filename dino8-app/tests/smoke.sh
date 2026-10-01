@@ -5426,24 +5426,27 @@ fi
 # item, which had no server/socket/HTTP code anywhere before this. Starts
 # the real app with --serve 0 (an OS-assigned ephemeral port, so this can
 # never collide with another process on a fixed port) and
-# --serve-max-requests 3 so the process is self-terminating like batch
+# --serve-max-requests 5 so the process is self-terminating like batch
 # --script mode above, backgrounds it, waits (bounded, not an unbounded
 # sleep loop) for its own "serve: listening on port N" line, then drives it
 # over a real loopback HTTP connection with curl: a POST that builds
 # geometry and reads back its printed output, a GET that must be rejected
-# with 405, and a POST calling an interactive rs.Get* prompt that must be
-# rejected instead of hanging the connection - see
-# tests/test_compute_server.cpp for the lower-level, no-app unit coverage
-# of the request parsing/response formatting this end-to-end check builds
-# on top of.
+# with 405, a POST calling an interactive rs.Get* prompt that must be
+# rejected instead of hanging the connection, a POST /run/python that
+# builds and queries geometry through the embedded Python module (or is
+# skipped gracefully on a build with no Python support), and a POST to an
+# unknown path that must come back 404 - see tests/test_compute_server.cpp
+# for the lower-level, no-app unit coverage of the request parsing/response
+# formatting this end-to-end check builds on top of. A second, separate
+# server instance below covers --serve-token bearer-auth.
 if ! command -v curl >/dev/null 2>&1; then
   echo "skip --serve compute-server checks (curl not available)"
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 3 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 5 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 3 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 5 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -5468,10 +5471,19 @@ else
 print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
     CODE2="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP3="$(curl -s --max-time 10 -X POST --data 'rs.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run")"
+    RESP4="$(curl -s --max-time 10 -X POST --data 'id = dino8.doc.Objects.AddBox(dino8.Point3d(0,0,0), dino8.Vector3d(5,5,5))
+print("volume:", dino8.doc.Objects.SurfaceVolume(id))' "http://127.0.0.1:$SERVE_PORT/run/python")"
+    CODE5="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'x' "http://127.0.0.1:$SERVE_PORT/run/nosuchroute")"
     set -e
     echo "$RESP1" | grep -q "^objects: 1$" && echo "ok   POST /run built a box over HTTP and read back its printed object count" || { echo "$RESP1"; echo "FAIL --serve POST /run did not report objects: 1"; fail=1; }
     [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
     echo "$RESP3" | grep -q "compute error: script requires interactive input" && echo "ok   a script calling an interactive rs.Get* prompt is rejected instead of hanging the connection" || { echo "$RESP3"; echo "FAIL --serve interactive-prompt script was not rejected as expected"; fail=1; }
+    if echo "$RESP4" | grep -q "DINO8_HAVE_PYTHON"; then
+      echo "skip POST /run/python check (this build has no embedded Python - see DINO8_ENABLE_PYTHON in CMakeLists.txt)"
+    else
+      echo "$RESP4" | grep -q "^volume: 125.0$" && echo "ok   POST /run/python built a box through the dino8 module over HTTP and read back its printed volume" || { echo "$RESP4"; echo "FAIL --serve POST /run/python did not report volume: 125.0"; fail=1; }
+    fi
+    [ "$CODE5" = "404" ] && echo "ok   a POST to an unrecognized path is rejected with 404 Not Found" || { echo "FAIL --serve POST to an unknown path returned HTTP $CODE5, expected 404"; fail=1; }
 
     set +e; wait "$SERVE_PID"; SERVE_EC=$?; set -e
     if [ "$SERVE_EC" -eq 124 ]; then
@@ -5479,7 +5491,57 @@ print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=3$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 3 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=5$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 5 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+    fi
+  fi
+
+  # --serve-token: a second, independent server instance (its own ephemeral
+  # port) started with a bearer token required. Checks both directions: a
+  # request with no/wrong Authorization header is rejected with 401 (its
+  # script body, "should not run", is never passed to Lua.Start at all -
+  # see main.cpp's compute_handler, which checks the token before touching
+  # req.path/req.body), and the same request with the right header succeeds
+  # exactly like the token-less server above.
+  TOKEN_LOG="$TMPW/serve_token.log"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 30 "$BIN" --serve 0 --serve-token hunter2 --serve-max-requests 3 > "$TOKEN_LOG" 2>&1 &
+  else
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token hunter2 --serve-max-requests 3 > "$TOKEN_LOG" 2>&1 &
+  fi
+  TOKEN_PID=$!
+
+  TOKEN_PORT=""
+  for _ in $(seq 1 100); do
+    if grep -q "^serve: listening on port " "$TOKEN_LOG" 2>/dev/null; then
+      TOKEN_PORT="$(grep "^serve: listening on port " "$TOKEN_LOG" | head -1 | awk '{print $NF}')"
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ -z "$TOKEN_PORT" ]; then
+    cat "$TOKEN_LOG"; echo "FAIL: --serve-token server never printed its listening port within 10s"; fail=1
+    kill "$TOKEN_PID" 2>/dev/null || true
+    wait "$TOKEN_PID" 2>/dev/null || true
+  else
+    echo "ok   --serve-token started a second compute server headless on its own bound port ($TOKEN_PORT)"
+
+    set +e
+    CODE_NOAUTH="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'print("should not run")' "http://127.0.0.1:$TOKEN_PORT/run")"
+    CODE_WRONGAUTH="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer wrongtoken' -X POST --data 'print("should not run")' "http://127.0.0.1:$TOKEN_PORT/run")"
+    RESP_OKAUTH="$(curl -s --max-time 10 -H 'Authorization: Bearer hunter2' -X POST --data 'print("authorized ok")' "http://127.0.0.1:$TOKEN_PORT/run")"
+    set -e
+    [ "$CODE_NOAUTH" = "401" ] && echo "ok   --serve-token rejects a request with no Authorization header with 401" || { echo "FAIL --serve-token no-auth request returned HTTP $CODE_NOAUTH, expected 401"; fail=1; }
+    [ "$CODE_WRONGAUTH" = "401" ] && echo "ok   --serve-token rejects a request with the wrong bearer token with 401" || { echo "FAIL --serve-token wrong-token request returned HTTP $CODE_WRONGAUTH, expected 401"; fail=1; }
+    echo "$RESP_OKAUTH" | grep -q "^authorized ok$" && echo "ok   --serve-token accepts a request with the correct Authorization: Bearer header and runs the script" || { echo "$RESP_OKAUTH"; echo "FAIL --serve-token correct-token request did not run the script"; fail=1; }
+
+    set +e; wait "$TOKEN_PID"; TOKEN_EC=$?; set -e
+    if [ "$TOKEN_EC" -eq 124 ]; then
+      cat "$TOKEN_LOG"; echo "FAIL: --serve-token process hung and was killed by the 30s timeout instead of exiting after --serve-max-requests"; fail=1
+    elif [ "$TOKEN_EC" -ne 0 ]; then
+      cat "$TOKEN_LOG"; echo "FAIL: --serve-token process exited $TOKEN_EC, expected 0"; fail=1
+    else
+      grep -q "^serve: done requests=3$" "$TOKEN_LOG" && echo "ok   --serve-token server exited cleanly on its own after 3 real HTTP requests" || { cat "$TOKEN_LOG"; echo "FAIL --serve-token done-summary line missing or wrong"; fail=1; }
     fi
   fi
 fi
