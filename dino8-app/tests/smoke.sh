@@ -2059,6 +2059,22 @@ dino8.doc.Modified = False
 print("doc modified after set: " + str(dino8.doc.Modified))
 dino8.doc.Modified = True
 
+print("object user text before set: " + str(obj.GetUserText()))
+obj.SetUserText("Material", "Steel")
+print("object user text value: " + str(obj.GetUserText("Material")))
+print("object user text keys: " + str(obj.GetUserText()))
+print("object user text missing key: " + str(obj.GetUserText("NoSuchKeyXYZ")))
+obj.SetUserText("Material", None)
+print("object user text after erase: " + str(obj.GetUserText("Material")))
+print("object user text keys after erase: " + str(obj.GetUserText()))
+
+print("document user text before set: " + str(dino8.doc.GetDocumentUserText()))
+dino8.doc.SetDocumentUserText("Project", "Acme")
+print("document user text value: " + str(dino8.doc.GetDocumentUserText("Project")))
+print("document user text keys: " + str(dino8.doc.GetDocumentUserText()))
+dino8.doc.SetDocumentUserText("Project", None)
+print("document user text after erase: " + str(dino8.doc.GetDocumentUserText("Project")))
+
 dino8.doc.BeginUndo("QCPointGroup")
 undo_pt = dino8.doc.Objects.AddPoint(600, 0, 0)
 print("object count before undo: %d" % len(dino8.doc.Objects.AllObjects()))
@@ -2263,6 +2279,16 @@ else
   pscheck "history: doc path: None" "dino8.doc.Path is None for an unsaved document, matching rs.DocumentPath pushing nil instead of an empty string"
   pscheck "history: doc modified before: True" "dino8.doc.Modified reflects the many edits this script already made, matching rs.DocumentModified's getter form"
   pscheck "history: doc modified after set: False" "assigning dino8.doc.Modified = False round-tripped, matching rs.DocumentModified's setter form"
+  pscheck "history: object user text before set: \[\]" "Dino8Object.GetUserText() with no key returns no keys before any are set, matching rs.GetUserText's no-key form"
+  pscheck "history: object user text value: Steel" "Dino8Object.SetUserText/GetUserText round-tripped a per-object attribute value, matching rs.SetUserText/rs.GetUserText - previously entirely unported to Python"
+  pscheck "history: object user text keys: \['Material'\]" "GetUserText() with no key lists the one key just set"
+  pscheck "history: object user text missing key: None" "GetUserText of an unset key returns None, matching rs.GetUserText pushing nil"
+  pscheck "history: object user text after erase: None" "SetUserText(key, None) erased the value, matching rs.SetUserText's \"no value removes\" behavior"
+  pscheck "history: object user text keys after erase: \[\]" "the erased key no longer appears in GetUserText()'s key list"
+  pscheck "history: document user text before set: \[\]" "Dino8Doc.GetDocumentUserText() with no key returns no keys before any are set, matching rs.GetDocumentUserText's no-key form"
+  pscheck "history: document user text value: Acme" "Dino8Doc.SetDocumentUserText/GetDocumentUserText round-tripped a document-level attribute value, matching rs.SetDocumentUserText/rs.GetDocumentUserText - also previously entirely unported to Python"
+  pscheck "history: document user text keys: \['Project'\]" "GetDocumentUserText() with no key lists the one key just set"
+  pscheck "history: document user text after erase: None" "SetDocumentUserText(key, None) erased the value, matching rs.SetDocumentUserText's \"no value removes\" behavior"
   pscheck "history: object count before undo: 37" "dino8.doc.Objects.AddPoint after dino8.doc.BeginUndo(\"QCPointGroup\") added the one new point, matching rs.BeginUndo/rs.AddPoint"
   pscheck "history: undo point present: True" "the freshly added point resolves through Find before any undo"
   pscheck "history: undo returned: True" "dino8.doc.Undo() reported success, matching rs.Undo() - previously entirely unported to Python per the PARITY_MAP note on undo/document-state functions"

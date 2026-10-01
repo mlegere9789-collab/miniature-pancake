@@ -5,6 +5,7 @@
 #include <sstream>
 #include <fstream>
 #include <filesystem>
+#include <map>
 
 #include "app/Application.h"
 #include "commands/cmd_common.h"
@@ -247,6 +248,29 @@ struct PyObjectRef {
 
   std::string GetKind() const { return ObjectKindName(Need("ObjectType").kind); }
   std::string Describe() const { return Need("Describe").Describe(); }
+
+  // Mirrors rs.GetUserText(id [, key])/rs.SetUserText(id, key [, value]) in
+  // LuaEngine.cpp - attribute user text, previously entirely unported to
+  // Python (dino8.doc.GetDocumentUserText/SetDocumentUserText below are
+  // the document-level counterpart, also new this pass). No key: every
+  // key currently set, same as Lua's no-key form. A key with no value
+  // erases it, matching rs.SetUserText's own "no value removes" behavior.
+  py::object GetUserText(py::object key) const {
+    SceneObject& o = Need("GetUserText");
+    if (key.is_none()) {
+      py::list keys;
+      for (const auto& kv : o.user_text) keys.append(kv.first);
+      return keys;
+    }
+    const auto it = o.user_text.find(key.cast<std::string>());
+    if (it == o.user_text.end()) return py::none();
+    return py::cast(it->second);
+  }
+  void SetUserText(const std::string& key, py::object value) {
+    DocOf().BeginChange("SetUserText");
+    SceneObject& o = Need("SetUserText");
+    if (value.is_none()) o.user_text.erase(key); else o.user_text[key] = py::str(value).cast<std::string>();
+  }
 
   void Select() { DocOf().Select(id, true); }
   void Unselect() { DocOf().Select(id, false); }
@@ -931,6 +955,27 @@ struct PyDoc {
 
   bool GetModified() const { return DocOf().Modified(); }
   void SetModified(bool m) { DocOf().SetModified(m); }
+
+  // Mirrors rs.GetDocumentUserText([key])/rs.SetDocumentUserText(key
+  // [, value]) in LuaEngine.cpp - document-level user text, the other half
+  // of the user-text gap PyObjectRef::GetUserText/SetUserText above closes
+  // for the per-object half.
+  py::object GetDocumentUserText(py::object key) const {
+    std::map<std::string, std::string>& ut = DocOf().UserText();
+    if (key.is_none()) {
+      py::list keys;
+      for (const auto& kv : ut) keys.append(kv.first);
+      return keys;
+    }
+    const auto it = ut.find(key.cast<std::string>());
+    if (it == ut.end()) return py::none();
+    return py::cast(it->second);
+  }
+  void SetDocumentUserText(const std::string& key, py::object value) {
+    Document& d = DocOf();
+    if (value.is_none()) d.UserText().erase(key); else d.UserText()[key] = py::str(value).cast<std::string>();
+    d.Touch();
+  }
 };
 
 bool RunCommand(const std::string& name, py::args args) {
@@ -1008,6 +1053,8 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
       .def_property_readonly("Exists", &PyObjectRef::Exists)
       .def("Select", &PyObjectRef::Select)
       .def("Unselect", &PyObjectRef::Unselect)
+      .def("GetUserText", &PyObjectRef::GetUserText, py::arg("key") = py::none())
+      .def("SetUserText", &PyObjectRef::SetUserText, py::arg("key"), py::arg("value") = py::none())
       .def("Describe", &PyObjectRef::Describe)
       .def("__repr__", &PyObjectRef::Repr);
 
@@ -1085,7 +1132,9 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
       .def_property_readonly("UnitSystemName", &PyDoc::UnitSystemName)
       .def_property_readonly("Name", &PyDoc::Name)
       .def_property_readonly("Path", &PyDoc::Path)
-      .def_property("Modified", &PyDoc::GetModified, &PyDoc::SetModified);
+      .def_property("Modified", &PyDoc::GetModified, &PyDoc::SetModified)
+      .def("GetDocumentUserText", &PyDoc::GetDocumentUserText, py::arg("key") = py::none())
+      .def("SetDocumentUserText", &PyDoc::SetDocumentUserText, py::arg("key"), py::arg("value") = py::none());
 
   // A single persistent PyDoc instance, like RhinoCommon's `scriptcontext.doc`.
   m.attr("doc") = PyDoc{};
