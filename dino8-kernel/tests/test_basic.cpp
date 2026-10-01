@@ -4555,6 +4555,146 @@ void TestSplitFaceByCurveRejectsInvalidInput() {
   Check(threw_bad_samples, "SplitFaceByCurve throws std::invalid_argument for samples < 2");
 }
 
+// ImprintClosedCurveOnFace(): the curve-onto-face half of parity-map
+// "Imprint curve / face onto a body face (add edges without changing
+// geometry)" (localops category) - the CLOSED-loop case SplitFaceByCurve()
+// explicitly refuses (see TestSplitFaceByCurveRejectsInteriorOnlyLoop()
+// immediately above, and that function's own doc comment). Uses the
+// IDENTICAL fixture that refusal test does - a 1x1 square loop centered on
+// the box's own flat top face (z=1, x/y in [-2,2], area 16) - so the two
+// tests are a matched positive/negative pair proving the two functions are
+// genuinely complementary: the exact curve SplitFaceByCurve() refuses is
+// precisely the curve this function accepts.
+void TestImprintClosedCurveOnFaceBoxTopFaceSquareHole() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintClosedCurveOnFace;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const std::vector<Point3d> cvs = {Point3d(-0.5, -0.5, 1), Point3d(0.5, -0.5, 1), Point3d(0.5, 0.5, 1),
+                                     Point3d(-0.5, 0.5, 1), Point3d(-0.5, -0.5, 1)};
+  const NurbsCurve loop = NurbsCurve::FromControlPoints(cvs, /*degree=*/1);
+
+  const Brep imprinted = ImprintClosedCurveOnFace(box, /*face_index=*/1, loop);
+  Check(imprinted.raw().IsValid(), "ImprintClosedCurveOnFace on the box's top face is a valid ON_Brep");
+  Check(imprinted.FaceCount() == box.FaceCount() + 1,
+        "imprinting a closed interior loop gains exactly 1 face (the new interior disk, plus the original "
+        "face now carrying the loop as a hole - 2 fragments replacing the original 1)");
+
+  // No material removed: the box's own tessellated volume is unchanged.
+  const Mesh closed = imprinted.TessellateToClosedMesh(32, 32);
+  Check(std::abs(closed.Volume() - 32.0) < 0.2,
+        "imprinting a closed loop removes no material - the box's own tessellated volume stays 32 (4*4*2)");
+
+  // Identify the 2 flat z=1 fragments (the disk and the rest of the top
+  // face) by bounding box, the same robust-to-internal-ordering technique
+  // TestSplitFaceByCurveBoxTopFaceAsymmetricVSplit() already uses.
+  const std::vector<Mesh> per_face = imprinted.Tessellate(32, 32);
+  Check(per_face.size() == static_cast<size_t>(imprinted.FaceCount()), "one tessellated Mesh per face");
+  std::vector<double> top_face_areas;
+  for (const Mesh& m : per_face) {
+    if (m.VertexCount() == 0) continue;
+    const auto bb = m.GetBoundingBox();
+    if (std::abs(bb.min.z - 1.0) < 1e-6 && std::abs(bb.max.z - 1.0) < 1e-6) top_face_areas.push_back(m.Area());
+  }
+  Check(top_face_areas.size() == 2, "the imprinted top face produces exactly 2 flat z=1 fragments");
+  if (top_face_areas.size() == 2) {
+    const double lo = std::min(top_face_areas[0], top_face_areas[1]);
+    const double hi = std::max(top_face_areas[0], top_face_areas[1]);
+    Check(std::abs(lo - 1.0) < 0.05 && std::abs(hi - 15.0) < 0.2,
+          "the 2 fragments have exactly the areas the 1x1 interior loop implies: a 1x1 disk and a 16-1=15 "
+          "remainder - not some other split");
+  }
+
+  bool threw = false;
+  try {
+    dino8::kernel::SplitFaceByCurve(box, /*face_index=*/1, loop);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "...and the identical curve is still refused by SplitFaceByCurve() - the two functions are "
+               "genuinely complementary, not overlapping");
+}
+
+// The negative counterpart: an OPEN chain that reaches the face's own trim
+// boundary (the exact V-shaped curve TestSplitFaceByCurveBoxTopFaceAsymmetricVSplit()
+// above already proves SplitFaceByCurve() accepts) is refused here - this
+// function only ever imprints a closed interior loop.
+void TestImprintClosedCurveOnFaceRejectsOpenChain() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintClosedCurveOnFace;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const std::vector<Point3d> cvs = {Point3d(-2, 0, 1), Point3d(0, 1.5, 1), Point3d(2, 0, 1)};
+  const NurbsCurve curve = NurbsCurve::FromControlPoints(cvs, /*degree=*/1);
+
+  bool threw = false;
+  try {
+    ImprintClosedCurveOnFace(box, /*face_index=*/1, curve);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ImprintClosedCurveOnFace throws std::invalid_argument for an open chain whose two ends "
+               "don't coincide (SplitFaceByCurve()'s own job instead)");
+}
+
+void TestImprintClosedCurveOnFaceRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintClosedCurveOnFace;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const std::vector<Point3d> cvs = {Point3d(-0.5, -0.5, 1), Point3d(0.5, -0.5, 1), Point3d(0.5, 0.5, 1),
+                                     Point3d(-0.5, 0.5, 1), Point3d(-0.5, -0.5, 1)};
+  const NurbsCurve loop = NurbsCurve::FromControlPoints(cvs, /*degree=*/1);
+  const Brep empty;
+
+  bool threw_empty_target = false;
+  try {
+    ImprintClosedCurveOnFace(empty, 0, loop);
+  } catch (const std::invalid_argument&) {
+    threw_empty_target = true;
+  }
+  Check(threw_empty_target, "ImprintClosedCurveOnFace throws std::invalid_argument for a faceless target");
+
+  bool threw_bad_index_low = false;
+  try {
+    ImprintClosedCurveOnFace(box, -1, loop);
+  } catch (const std::invalid_argument&) {
+    threw_bad_index_low = true;
+  }
+  Check(threw_bad_index_low, "ImprintClosedCurveOnFace throws std::invalid_argument for a negative face_index");
+
+  bool threw_bad_index_high = false;
+  try {
+    ImprintClosedCurveOnFace(box, box.FaceCount(), loop);
+  } catch (const std::invalid_argument&) {
+    threw_bad_index_high = true;
+  }
+  Check(threw_bad_index_high, "ImprintClosedCurveOnFace throws std::invalid_argument for an out-of-range face_index");
+
+  bool threw_bad_tolerance = false;
+  try {
+    ImprintClosedCurveOnFace(box, 1, loop, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw_bad_tolerance = true;
+  }
+  Check(threw_bad_tolerance, "ImprintClosedCurveOnFace throws std::invalid_argument for a non-positive tolerance");
+
+  bool threw_bad_samples = false;
+  try {
+    ImprintClosedCurveOnFace(box, 1, loop, 0.001, 1);
+  } catch (const std::invalid_argument&) {
+    threw_bad_samples = true;
+  }
+  Check(threw_bad_samples, "ImprintClosedCurveOnFace throws std::invalid_argument for samples < 2");
+}
+
 void TestMutualImprintFacesBoxPiercedByCylinder() {
   using dino8::kernel::Brep;
   using dino8::kernel::ImprintFaces;
@@ -5134,6 +5274,138 @@ void TestSplitBrepByManySolidsRejectsEmptyCutterGroup() {
     threw = true;
   }
   Check(threw, "SplitBrepByManySolids throws std::invalid_argument for an empty cutters group");
+}
+
+void TestSplitBrepByPlaneMatchesMeshLevelSplitByPlane() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByPlane;
+  using dino8::kernel::SplitByPlane;
+  using dino8::kernel::Vector3d;
+
+  // PARITY_MAP.md's "Keep/split options" bullet names this exact gap:
+  // "BooleanSplit/MeshSplit/MeshBooleanSplit themselves remain plane-only
+  // and mesh-level" - there was no B-rep-preserving plane split, only
+  // boolean.cpp's own mesh-level SplitByPlane(). Splitting the identical
+  // 2x2x2 box down its own midplane through both functions must land on
+  // the same two volumes and the same {side_along_normal, opposite_side}
+  // convention.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const auto [side_along_normal, opposite_side] = SplitBrepByPlane(box, Vector3d(1, 0, 0), 1.0);
+  Check(side_along_normal.raw().IsValid(), "SplitBrepByPlane's side_along_normal piece is a valid ON_Brep");
+  Check(opposite_side.raw().IsValid(), "SplitBrepByPlane's opposite_side piece is a valid ON_Brep");
+
+  const Mesh m_along = side_along_normal.TessellateToClosedMesh(16, 16);
+  const Mesh m_opposite = opposite_side.TessellateToClosedMesh(16, 16);
+  Check(std::abs(m_along.Volume() - 4.0) < 0.5 && std::abs(m_opposite.Volume() - 4.0) < 0.5,
+        "both exact B-rep halves have the same volume (4.0 each) the mesh-level split produces");
+  Check(std::abs((m_along.Volume() + m_opposite.Volume()) - 8.0) < 1e-3,
+        "the two B-rep halves sum back to the original box's own volume (2^3=8) exactly");
+
+  const auto mesh_halves = SplitByPlane(box.TessellateToClosedMesh(16, 16), Vector3d(1, 0, 0), 1.0);
+  Check(std::abs(mesh_halves.first.Volume() - m_along.Volume()) < 0.5 &&
+            std::abs(mesh_halves.second.Volume() - m_opposite.Volume()) < 0.5,
+        "the B-rep split's own {side_along_normal, opposite_side} halves match the mesh-level SplitByPlane's own "
+        "{first, second} convention, not swapped");
+
+  // Brep::GetTightBoundingBox() is not used here: this result comes from
+  // BooleanCombineGeneral()'s own raw-ON_Brep assemble() reassembly (via
+  // SplitBrepBySolid()), the same already-disclosed "gives the underlying
+  // surface's own untrimmed domain box, not the real trim boundary"
+  // limitation this category's own "Sheet/solid trim" bullet names for
+  // SplitBySheet()/TrimSheetBySolid() - so the tessellated MESH's own
+  // bounding box (built from the real trimmed triangles) is the correct
+  // way to check which physical side a piece landed on.
+  const auto along_bounds = m_along.GetBoundingBox();
+  Check(along_bounds.min.x > 1.0 - 1e-6, "side_along_normal is the piece on the +normal side (x >= 1)");
+  const auto opposite_bounds = m_opposite.GetBoundingBox();
+  Check(opposite_bounds.max.x < 1.0 + 1e-6, "opposite_side is the piece on the other side (x <= 1)");
+}
+
+void TestSplitBrepByPlaneTiltedNormalSumsBackToOriginalVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByPlane;
+  using dino8::kernel::Vector3d;
+
+  // A genuinely non-axis-aligned plane_normal - not just a coordinate-axis
+  // special case - through a box NOT centered at the world origin, to
+  // exercise the (u, v, n) frame construction and the p0/half_width/reach
+  // sizing (built off the box's own bounding box, not assumed centered at
+  // the origin) for real.
+  const Brep box = Brep::Box(-3, -3, -3, 3, 3, 3);
+  Vector3d n(1, 1, 1);
+  n.Unitize();
+  const auto [side_along_normal, opposite_side] = SplitBrepByPlane(box, n, 0.0);
+  Check(side_along_normal.raw().IsValid() && opposite_side.raw().IsValid(),
+        "a tilted plane through an off-origin box still produces two valid ON_Brep halves");
+  const Mesh m_along = side_along_normal.TessellateToClosedMesh(24, 24);
+  const Mesh m_opposite = opposite_side.TessellateToClosedMesh(24, 24);
+  Check(std::abs((m_along.Volume() + m_opposite.Volume()) - 216.0) < 1e-2,
+        "the two halves sum back to the original box's own volume (6^3=216) exactly");
+  // A plane through the exact center of a symmetric box splits it exactly
+  // in half, regardless of the normal's own direction.
+  Check(std::abs(m_along.Volume() - 108.0) < 1.0 && std::abs(m_opposite.Volume() - 108.0) < 1.0,
+        "a tilted plane through a symmetric box's own center still splits its volume exactly in half");
+}
+
+void TestSplitBrepByPlaneMissingTargetKeepsWholeTargetOnOneSide() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByPlane;
+  using dino8::kernel::Vector3d;
+
+  // A plane far beyond target's own bounding box never reaches it - the
+  // same "cutter misses entirely" contract SplitBrepBySolid() already
+  // documents, reached here through the plane-to-box construction instead
+  // of a caller-supplied cutter.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const auto [side_along_normal, opposite_side] = SplitBrepByPlane(box, Vector3d(1, 0, 0), 100.0);
+  Check(side_along_normal.FaceCount() == 0,
+        "a plane entirely beyond target leaves the +normal side the empty Brep");
+  Check(opposite_side.raw().IsValid() && opposite_side.FaceCount() == box.FaceCount(),
+        "the whole, untouched target lands on the other side");
+  const Mesh m = opposite_side.TessellateToClosedMesh(8, 8);
+  Check(std::abs(m.Volume() - 8.0) < 1e-3, "the untouched side's volume is target's own, unchanged (2^3=8)");
+
+  const auto [side_along_normal2, opposite_side2] = SplitBrepByPlane(box, Vector3d(1, 0, 0), -100.0);
+  Check(opposite_side2.FaceCount() == 0,
+        "the same plane shifted to the other extreme leaves the opposite side the empty Brep instead");
+  Check(side_along_normal2.raw().IsValid() && side_along_normal2.FaceCount() == box.FaceCount(),
+        "...and the whole, untouched target lands on side_along_normal instead");
+}
+
+void TestSplitBrepByPlaneRejectsEmptyTargetZeroNormalAndNonPositiveTolerance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBrepByPlane;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep empty;
+
+  bool threw = false;
+  try {
+    SplitBrepByPlane(empty, Vector3d(1, 0, 0), 0.5);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByPlane throws std::invalid_argument for an empty target");
+
+  threw = false;
+  try {
+    SplitBrepByPlane(box, Vector3d(0, 0, 0), 0.5);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByPlane throws std::invalid_argument for a zero plane_normal");
+
+  threw = false;
+  try {
+    SplitBrepByPlane(box, Vector3d(1, 0, 0), 0.5, -1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByPlane throws std::invalid_argument for a non-positive tolerance");
 }
 
 void TestSurfaceGetApproximateSize() {
@@ -29569,6 +29841,77 @@ void TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched() {
         "the single-face-drafted box also tessellates to a closed, watertight manifold");
 }
 
+// The per-face angle overload: closes DraftFacesConvexPlanar()'s own "one
+// shared angle across all named faces (no per-face angle vector)" gap.
+// Drafts the box's front (-y) and right (+x) walls - genuinely ADJACENT,
+// sharing the x=10,y=0 vertical edge, so their own re-trims actually
+// interact at that shared corner - by two DIFFERENT angles in one call,
+// and checks the result matches drafting them one at a time via two
+// SEQUENTIAL single-angle `DraftFacesConvexPlanar()` calls, in EITHER
+// order, proving the batch introduces no divergence of its own (the same
+// "one call, many targets" cross-check PushPullFaces()/FoldFacesConvexPlanar()
+// already use for their own batch siblings).
+void TestDraftFacesConvexPlanarPerFaceAnglesMatchesEitherSequentialOrder() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::DraftFacesConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const ON_Plane neutral(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  const double theta_front = std::atan(0.1);
+  const double theta_right = std::atan(0.2);
+
+  const Brep batched = DraftFacesConvexPlanar(box, {2, 5}, neutral, {theta_front, theta_right});
+  Check(batched.FaceCount() == 6, "the per-face-angle batch keeps exactly 6 faces (no topology change)");
+
+  const Brep seq_front_then_right =
+      DraftFacesConvexPlanar(DraftFacesConvexPlanar(box, {2}, neutral, theta_front), {5}, neutral, theta_right);
+  const Brep seq_right_then_front =
+      DraftFacesConvexPlanar(DraftFacesConvexPlanar(box, {5}, neutral, theta_right), {2}, neutral, theta_front);
+
+  auto matches_by_centroid = [](const Brep& a, const Brep& b) {
+    const std::vector<Brep::PlanarFace> fa = a.PlanarFaces();
+    const std::vector<Brep::PlanarFace> fb = b.PlanarFaces();
+    if (fa.size() != fb.size()) return false;
+    for (size_t i = 0; i < fa.size(); ++i) {
+      if (fa[i].loop.size() != fb[i].loop.size()) return false;
+      Point3d ca(0, 0, 0), cb(0, 0, 0);
+      for (const Point3d& p : fa[i].loop) ca = ca + p;
+      for (const Point3d& p : fb[i].loop) cb = cb + p;
+      ca = ca / static_cast<double>(fa[i].loop.size());
+      cb = cb / static_cast<double>(fb[i].loop.size());
+      if (ca.DistanceTo(cb) > 1e-9) return false;
+    }
+    return true;
+  };
+  Check(matches_by_centroid(batched, seq_front_then_right),
+        "the per-face-angle batch matches drafting front then right sequentially, face-for-face by centroid");
+  Check(matches_by_centroid(batched, seq_right_then_front),
+        "the per-face-angle batch matches drafting right then front sequentially too - order-independent");
+  Check(std::fabs(PlanarBrepVolumeExact(batched) - PlanarBrepVolumeExact(seq_front_then_right)) < 1e-9,
+        "the batch's own volume matches the sequential result's exactly, not merely a plausible-looking number");
+
+  bool threw = false;
+  try {
+    DraftFacesConvexPlanar(box, {2, 5}, neutral, std::vector<double>{theta_front});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DraftFacesConvexPlanar refuses angles_radians.size() != face_indices.size()");
+
+  threw = false;
+  try {
+    DraftFacesConvexPlanar(box, {2, 2}, neutral, std::vector<double>{theta_front, theta_right});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DraftFacesConvexPlanar refuses a duplicate face_index in the per-face-angle overload - two "
+               "entries would name two different angles for the same face");
+}
+
 // A pure normal-translate is exactly what OffsetFace() already does, so
 // ReplaceFacePlaneConvexPlanar() fed the SAME translated plane must give
 // bit-for-bit the same result - the cross-check that this is a genuine
@@ -44397,6 +44740,60 @@ void TestBooleanCombineMixedCallerTolerance() {
   Check(!loose_mesh.IsClosedManifold(),
         "same real, disclosed scope limit as BooleanCombinePlanar's own identical fixture: a caller tolerance far "
         "looser than the operands' true separation can degrade a valid closed result into a non-manifold one");
+}
+
+// PARITY_MAP.md's "Boolean failure diagnostics" bullet names BooleanCombinePlanar/
+// BooleanCombineMixed's own precondition checks specifically as not yet
+// covered by the BooleanOperationError/BooleanFailureReason typed-refusal
+// catalogue - this is the first one: an explicit `tolerance` of exactly
+// 0.0 is neither negative (this engine's own "auto-derive" sentinel) nor
+// positive, so without a dedicated guard it would silently be used as-is,
+// demanding exact bit-for-bit coincidence from every distance test inside
+// the engine instead of being refused the way every other caller-tolerance
+// precondition in this kernel already is.
+void TestBooleanCombinePlanarAndMixedRejectExplicitZeroTolerance() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanFailureReason;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::BooleanOperationError;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  bool threw = false;
+  try {
+    BooleanCombinePlanar(a, b, BooleanOp::Union, 0.0);
+  } catch (const BooleanOperationError& ex) {
+    threw = ex.reason() == BooleanFailureReason::InvalidTolerance && ex.function_name() == "BooleanCombinePlanar";
+  }
+  Check(threw, "BooleanCombinePlanar throws a typed InvalidTolerance BooleanOperationError for an explicit 0.0 tolerance");
+
+  threw = false;
+  try {
+    BooleanCombinePlanar(a, b, BooleanOp::Union, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "...and it is still catchable as plain std::invalid_argument, same as every other typed refusal here");
+
+  threw = false;
+  try {
+    BooleanCombineMixed(a, b, BooleanOp::Union, 0.0);
+  } catch (const BooleanOperationError& ex) {
+    threw = ex.reason() == BooleanFailureReason::InvalidTolerance && ex.function_name() == "BooleanCombineMixed";
+  }
+  Check(threw, "BooleanCombineMixed throws a typed InvalidTolerance BooleanOperationError for an explicit 0.0 tolerance");
+
+  // A negative tolerance is untouched by this guard - it still means
+  // "auto-derive", exactly as before this check existed (the same fixture
+  // TestBooleanCombinePlanarCallerTolerance/TestBooleanCombineMixedCallerTolerance
+  // already exercise via the omitted-argument default).
+  const Brep ok1 = BooleanCombinePlanar(a, b, BooleanOp::Union, -1.0);
+  const Brep ok2 = BooleanCombineMixed(a, b, BooleanOp::Union, -1.0);
+  Check(ok1.raw().m_F.Count() > 0 && ok2.raw().m_F.Count() > 0,
+        "a negative tolerance still takes the auto-derived default path for both engines, unaffected by this guard");
 }
 
 // Mirrors TestBooleanCombineGeneralNAryCallerToleranceForwardedToEveryPairwiseCall
@@ -62782,6 +63179,9 @@ int main() {
   TestSplitFaceByCurveBoxTopFaceAsymmetricVSplit();
   TestSplitFaceByCurveRejectsInteriorOnlyLoop();
   TestSplitFaceByCurveRejectsInvalidInput();
+  TestImprintClosedCurveOnFaceBoxTopFaceSquareHole();
+  TestImprintClosedCurveOnFaceRejectsOpenChain();
+  TestImprintClosedCurveOnFaceRejectsInvalidInput();
   TestMutualImprintFacesBoxPiercedByCylinder();
   TestMutualImprintFacesRejectsEmptyOrNonPositiveTolerance();
   TestSplitBySheetBoxCutInHalfByPlane();
@@ -62800,6 +63200,10 @@ int main() {
   TestSplitBrepBySolidRejectsEmptyOperandsAndNonPositiveTolerance();
   TestSplitBrepByManySolidsTwoDisjointCuttersSumBackToOriginalVolume();
   TestSplitBrepByManySolidsRejectsEmptyCutterGroup();
+  TestSplitBrepByPlaneMatchesMeshLevelSplitByPlane();
+  TestSplitBrepByPlaneTiltedNormalSumsBackToOriginalVolume();
+  TestSplitBrepByPlaneMissingTargetKeepsWholeTargetOnOneSide();
+  TestSplitBrepByPlaneRejectsEmptyTargetZeroNormalAndNonPositiveTolerance();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();
@@ -63078,6 +63482,7 @@ int main() {
   TestPushPullFacesRefusesInvalidInput();
   TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume();
   TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched();
+  TestDraftFacesConvexPlanarPerFaceAnglesMatchesEitherSequentialOrder();
   TestReplaceFacePlaneConvexPlanarMatchesOffsetFaceForPureTranslate();
   TestReplaceFacePlaneConvexPlanarTiltedRoofMatchesExactIntegralAndRetrimsWalls();
   TestReplaceFacePlaneConvexPlanarRefusesInvalidInput();
@@ -63377,6 +63782,7 @@ int main() {
   TestBooleanCombineGeneralDifferenceAcceptsRealSymmetricDifferenceCompoundOperand();
   TestBooleanCombinePlanarCallerTolerance();
   TestBooleanCombineMixedCallerTolerance();
+  TestBooleanCombinePlanarAndMixedRejectExplicitZeroTolerance();
   TestBooleanCombinePlanarNAryCallerToleranceForwardedToEveryPairwiseCall();
   TestBooleanCombineMixedNAryCallerToleranceForwardedToEveryPairwiseCall();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleIntersectionAndAllOps();

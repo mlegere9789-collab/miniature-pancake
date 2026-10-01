@@ -2345,7 +2345,12 @@ std::vector<Path2> CollectPaths(const Document& doc, const Projector& proj, bool
     if (o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size() &&
         !LayerPrints(doc.Layers()[static_cast<size_t>(o.layer_index)]))
       continue;  // Layer::print_width_mm < 0: "does not print", still visible on screen
-    const Color color = doc.EffectiveColor(o);
+    // A layer's own plot_color override (LayerPlotColor) takes over from
+    // the object's on-screen display color here - the color half of "plot
+    // styles (CTB/STB)", alongside print_width_mm's lineweight half above.
+    const Color color = o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size()
+                             ? EffectivePlotColor(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.EffectiveColor(o))
+                             : doc.EffectiveColor(o);
     if (o.kind == ObjectKind::Point) {
       Path2 p;
       ON_2dPoint q;
