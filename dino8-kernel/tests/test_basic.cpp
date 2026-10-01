@@ -25599,6 +25599,480 @@ void TestMeshLoadIfcRejectsMalformedFiles() {
   std::remove(oob_index_path.c_str());
 }
 
+void TestMeshSaveStepAp242RoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence names
+  // AP242 as fully missing: "confirmed zero hits for TESSELLATED/
+  // TRIANGULATED_FACE/PMI/AP242 anywhere in dino8-app/src/io/*.cpp; only the
+  // AP214 schema string exists." Same MakeQuadBoxMesh fixture every other
+  // "other file format" round-trip test in this file uses.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_ap242_test.stp";
+  Check(box.SaveStepAp242(path) == Result::Ok, "Mesh::SaveStepAp242 succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the AP242 file SaveStepAp242 wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_text.find("ISO-10303-21;") == 0, "the file starts with the ISO-10303-21 physical-file header");
+  Check(file_text.find("FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF'))") != std::string::npos,
+        "the file declares the AP242 schema in its HEADER section");
+  Check(file_text.find("COORDINATES_LIST") != std::string::npos,
+        "the file has a COORDINATES_LIST entity");
+  Check(file_text.find("TRIANGULATED_FACE") != std::string::npos,
+        "the file has a TRIANGULATED_FACE entity - closing the PARITY_MAP-named gap directly");
+
+  const size_t faceset_pos = file_text.find("TRIANGULATED_FACE(#1,8,$,$,$,(");
+  Check(faceset_pos != std::string::npos,
+        "Triangles follows the documented Coordinates=#1, Pnmax=8, Normals=$, Pnindex=$, "
+        "TriangleStrips=$ argument order");
+
+  Mesh reloaded;
+  Check(Mesh::LoadStepAp242(path, reloaded) == Result::Ok,
+        "Mesh::LoadStepAp242 succeeds on SaveStepAp242()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount(),
+        "the reloaded mesh has the same vertex count as the original - COORDINATES_LIST is a real "
+        "shared vertex list, not duplicated per triangle");
+  Check(reloaded.FaceCount() == box.FaceCount() * 2,
+        "the reloaded mesh has 12 triangles for the original's 6 quads");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-6,
+        "the reloaded mesh's volume exactly matches the original, within the triangle split");
+  std::remove(path.c_str());
+
+  // A hand-written file (not SaveStepAp242()'s own output) exercising a
+  // single triangle whose known corners let LoadStepAp242()'s geometry be
+  // checked exactly - the same independent-fixture discipline
+  // TestMeshSaveIfcRoundTrips() already uses.
+  const std::string hand_written_path = "dino8_kernel_mesh_ap242_test_hand_written.stp";
+  {
+    std::ofstream out(hand_written_path);
+    out << "ISO-10303-21;\n";
+    out << "HEADER;\n";
+    out << "FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF'));\n";
+    out << "ENDSEC;\n";
+    out << "DATA;\n";
+    out << "#1 = COORDINATES_LIST( ( (0., 0., 0.) , (2.,0.,0.), (0., 2., 0.) ) ) ;\n";
+    out << "#2=TRIANGULATED_FACE(#1,3,$,$,$,((1,2,3)));\n";
+    out << "ENDSEC;\n";
+    out << "END-ISO-10303-21;\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadStepAp242(hand_written_path, hand_written) == Result::Ok,
+        "LoadStepAp242 succeeds on a hand-written file with irregular spacing around '='/parens");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the hand-written file's 3 points and 1 triangle are read correctly");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "AP242's 1-based Triangles (1,2,3) resolved to this kernel's own 0-based corners (0,1,2)");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadStepAp242RejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_ap242_test_does_not_exist.stp";
+  Mesh out;
+  Check(Mesh::LoadStepAp242(missing_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a file that doesn't exist");
+
+  const std::string bad_header_path = "dino8_kernel_mesh_ap242_test_bad_header.stp";
+  {
+    std::ofstream bad(bad_header_path);
+    bad << "#1=COORDINATES_LIST(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=TRIANGULATED_FACE(#1,3,$,$,$,((1,2,3)));\n";
+  }
+  Check(Mesh::LoadStepAp242(bad_header_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a file with no ISO-10303-21; header line at all");
+
+  const std::string no_points_path = "dino8_kernel_mesh_ap242_test_no_points.stp";
+  {
+    std::ofstream bad(no_points_path);
+    bad << "ISO-10303-21;\nDATA;\n#2=TRIANGULATED_FACE(#1,3,$,$,$,((1,2,3)));\nENDSEC;\n";
+  }
+  Check(Mesh::LoadStepAp242(no_points_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a file with no COORDINATES_LIST entity at all");
+
+  const std::string no_face_path = "dino8_kernel_mesh_ap242_test_no_face.stp";
+  {
+    std::ofstream bad(no_face_path);
+    bad << "ISO-10303-21;\nDATA;\n#1=COORDINATES_LIST(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\nENDSEC;\n";
+  }
+  Check(Mesh::LoadStepAp242(no_face_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a file with no TRIANGULATED_FACE entity at all");
+
+  const std::string bad_triple_path = "dino8_kernel_mesh_ap242_test_bad_triple.stp";
+  {
+    std::ofstream bad(bad_triple_path);
+    bad << "ISO-10303-21;\nDATA;\n#1=COORDINATES_LIST(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=TRIANGULATED_FACE(#1,3,$,$,$,((1,2)));\nENDSEC;\n";
+  }
+  Check(Mesh::LoadStepAp242(bad_triple_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a Triangles tuple that isn't exactly 3 integers");
+
+  const std::string zero_index_path = "dino8_kernel_mesh_ap242_test_zero_index.stp";
+  {
+    std::ofstream bad(zero_index_path);
+    bad << "ISO-10303-21;\nDATA;\n#1=COORDINATES_LIST(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=TRIANGULATED_FACE(#1,3,$,$,$,((0,1,2)));\nENDSEC;\n";
+  }
+  Check(Mesh::LoadStepAp242(zero_index_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a Triangles entry of 0 - STEP indices are 1-based, never 0");
+
+  const std::string oob_index_path = "dino8_kernel_mesh_ap242_test_oob_index.stp";
+  {
+    std::ofstream bad(oob_index_path);
+    bad << "ISO-10303-21;\nDATA;\n#1=COORDINATES_LIST(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=TRIANGULATED_FACE(#1,3,$,$,$,((1,2,4)));\nENDSEC;\n";
+  }
+  Check(Mesh::LoadStepAp242(oob_index_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a Triangles entry referencing a point index that doesn't exist");
+
+  const std::string few_args_path = "dino8_kernel_mesh_ap242_test_few_args.stp";
+  {
+    std::ofstream bad(few_args_path);
+    bad << "ISO-10303-21;\nDATA;\n#1=COORDINATES_LIST(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=TRIANGULATED_FACE(#1,3,$);\nENDSEC;\n";
+  }
+  Check(Mesh::LoadStepAp242(few_args_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a TRIANGULATED_FACE call with fewer than 6 top-level arguments");
+
+  std::remove(bad_header_path.c_str());
+  std::remove(no_points_path.c_str());
+  std::remove(no_face_path.c_str());
+  std::remove(bad_triple_path.c_str());
+  std::remove(zero_index_path.c_str());
+  std::remove(oob_index_path.c_str());
+  std::remove(few_args_path.c_str());
+}
+
+void TestMeshSave3mfRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "Other mesh/scene exchange formats" evidence names
+  // 3MF as still zero code anywhere in the source, alongside FBX and
+  // SketchUp SKP, after glTF/GLB/OFF/AMF/VRML/X3D/Collada/USD all closed.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_3mf_test.3mf";
+  Check(box.Save3mf(path) == Result::Ok, "Mesh::Save3mf succeeds");
+
+  Mesh reloaded;
+  Check(Mesh::Load3mf(path, reloaded) == Result::Ok, "Mesh::Load3mf succeeds on Save3mf()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount(),
+        "the reloaded mesh has the same vertex count as the original - 3MF's <vertices> is a real "
+        "shared vertex list, not duplicated per triangle");
+  Check(reloaded.FaceCount() == box.FaceCount() * 2,
+        "the reloaded mesh has 12 triangles for the original's 6 quads - 3MF's core mesh is "
+        "triangle-only, so a quad face splits");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-6,
+        "the reloaded mesh's volume exactly matches the original, within the triangle split");
+  std::remove(path.c_str());
+
+  // A hand-assembled 3MF package - not Save3mf()'s own output, and not
+  // built via this kernel's own WriteZipArchive() either: the ZIP bytes
+  // (local file header, raw stored data, central directory, End Of Central
+  // Directory record) are packed by hand right here, independently of
+  // mesh.cpp's own ZIP writer, the same "byte-for-byte per the container
+  // spec, not just a self-round-trip" discipline
+  // TestMeshSaveGlbRoundTrips() already uses for its own hand-assembled
+  // GLB container - ruling out a matched write/read bug that would cancel
+  // itself out in a self-round-trip alone.
+  const std::string hand_written_path = "dino8_kernel_mesh_3mf_test_hand_written.3mf";
+  {
+    const std::string model =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<model unit=\"millimeter\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n"
+        " <resources>\n"
+        "  <object id=\"1\" type=\"model\">\n"
+        "   <mesh>\n"
+        "    <vertices>\n"
+        "     <vertex x=\"0\" y=\"0\" z=\"0\"/>\n"
+        "     <vertex x=\"2\" y=\"0\" z=\"0\"/>\n"
+        "     <vertex x=\"0\" y=\"2\" z=\"0\"/>\n"
+        "    </vertices>\n"
+        "    <triangles>\n"
+        "     <triangle v1=\"0\" v2=\"1\" v3=\"2\"/>\n"
+        "    </triangles>\n"
+        "   </mesh>\n"
+        "  </object>\n"
+        " </resources>\n"
+        " <build>\n"
+        "  <item objectid=\"1\"/>\n"
+        " </build>\n"
+        "</model>\n";
+
+    // A from-scratch CRC-32 (IEEE 802.3), written independently of
+    // mesh.cpp's own Crc32() even though both necessarily implement the
+    // same one standard algorithm.
+    auto crc32_of = [](const std::string& data) {
+      uint32_t crc = 0xFFFFFFFFu;
+      for (unsigned char byte : data) {
+        crc ^= byte;
+        for (int bit = 0; bit < 8; ++bit) {
+          const uint32_t mask = 0u - (crc & 1u);
+          crc = (crc >> 1) ^ (0xEDB88320u & mask);
+        }
+      }
+      return ~crc;
+    };
+
+    std::ofstream out(hand_written_path, std::ios::binary);
+    auto write_u16 = [&](uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
+    auto write_u32 = [&](uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+
+    struct Entry {
+      std::string name;
+      std::string data;
+      uint32_t offset;
+      uint32_t crc;
+    };
+    std::vector<Entry> entries_written;
+    const std::vector<std::pair<std::string, std::string>> parts = {
+        {"[Content_Types].xml",
+         "<?xml version=\"1.0\"?><Types "
+         "xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default "
+         "Extension=\"model\" "
+         "ContentType=\"application/vnd.ms-package.3dmanufacturing-3dmodel+xml\"/></Types>"},
+        {"_rels/.rels",
+         "<?xml version=\"1.0\"?><Relationships "
+         "xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship "
+         "Target=\"/3D/3dmodel.model\" Id=\"rel0\" "
+         "Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\"/></Relationships>"},
+        {"3D/3dmodel.model", model},
+    };
+    for (const auto& [name, data] : parts) {
+      Entry e{name, data, static_cast<uint32_t>(out.tellp()), crc32_of(data)};
+      write_u32(0x04034b50);
+      write_u16(20);
+      write_u16(0);
+      write_u16(0);  // stored, no compression
+      write_u16(0);
+      write_u16(0x21);
+      write_u32(e.crc);
+      write_u32(static_cast<uint32_t>(data.size()));
+      write_u32(static_cast<uint32_t>(data.size()));
+      write_u16(static_cast<uint16_t>(name.size()));
+      write_u16(0);
+      out.write(name.data(), static_cast<std::streamsize>(name.size()));
+      out.write(data.data(), static_cast<std::streamsize>(data.size()));
+      entries_written.push_back(e);
+    }
+    const uint32_t central_offset = static_cast<uint32_t>(out.tellp());
+    for (const Entry& e : entries_written) {
+      write_u32(0x02014b50);
+      write_u16(20);
+      write_u16(20);
+      write_u16(0);
+      write_u16(0);
+      write_u16(0);
+      write_u16(0x21);
+      write_u32(e.crc);
+      write_u32(static_cast<uint32_t>(e.data.size()));
+      write_u32(static_cast<uint32_t>(e.data.size()));
+      write_u16(static_cast<uint16_t>(e.name.size()));
+      write_u16(0);
+      write_u16(0);
+      write_u16(0);
+      write_u16(0);
+      write_u32(0);
+      write_u32(e.offset);
+      out.write(e.name.data(), static_cast<std::streamsize>(e.name.size()));
+    }
+    const uint32_t central_size = static_cast<uint32_t>(out.tellp()) - central_offset;
+    write_u32(0x06054b50);
+    write_u16(0);
+    write_u16(0);
+    write_u16(static_cast<uint16_t>(entries_written.size()));
+    write_u16(static_cast<uint16_t>(entries_written.size()));
+    write_u32(central_size);
+    write_u32(central_offset);
+    write_u16(0);
+  }
+  Mesh hand_written;
+  Check(Mesh::Load3mf(hand_written_path, hand_written) == Result::Ok,
+        "Load3mf succeeds on a hand-assembled ZIP/3MF package built independently of this kernel's "
+        "own WriteZipArchive()/Save3mf()");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the package's 3 points and 1 triangle are read correctly");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "3MF's 0-based triangle indices match this kernel's own 0-based corners directly, no "
+        "off-by-one translation needed (unlike STEP/IFC's 1-based CoordIndex/Triangles)");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoad3mfRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_3mf_test_does_not_exist.3mf";
+  Mesh out;
+  Check(Mesh::Load3mf(missing_path, out) == Result::Failed, "Load3mf fails on a file that doesn't exist");
+
+  const std::string not_a_zip_path = "dino8_kernel_mesh_3mf_test_not_a_zip.3mf";
+  {
+    std::ofstream bad(not_a_zip_path);
+    bad << "this is not a zip file at all";
+  }
+  Check(Mesh::Load3mf(not_a_zip_path, out) == Result::Failed,
+        "Load3mf fails on a file with no End Of Central Directory record");
+  std::remove(not_a_zip_path.c_str());
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string truncated_path = "dino8_kernel_mesh_3mf_test_truncated.3mf";
+  Check(box.Save3mf(truncated_path) == Result::Ok, "Save3mf succeeds (used to build a file to truncate)");
+  {
+    std::ifstream in(truncated_path, std::ios::binary);
+    std::string full_data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    std::ofstream out_trunc(truncated_path, std::ios::binary);
+    out_trunc.write(full_data.data(), static_cast<std::streamsize>(full_data.size() / 2));
+  }
+  Check(Mesh::Load3mf(truncated_path, out) == Result::Failed,
+        "Load3mf fails on a ZIP archive truncated halfway through, well before any genuine EOCD");
+  std::remove(truncated_path.c_str());
+}
+
+void TestMeshSaveFbxRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "Other mesh/scene exchange formats" evidence names
+  // FBX as still zero code anywhere in the source, alongside 3MF and
+  // SketchUp SKP.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_fbx_test.fbx";
+  Check(box.SaveFbx(path) == Result::Ok, "Mesh::SaveFbx succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .fbx file SaveFbx wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_text.find("; FBX 7.3.0 project file") == 0, "the file starts with the real FBX ASCII comment header");
+  Check(file_text.find("Vertices: *24 {") != std::string::npos,
+        "the file declares a Vertices array of 24 reals (8 vertices * 3)");
+  Check(file_text.find("PolygonVertexIndex: *24 {") != std::string::npos,
+        "the file declares a PolygonVertexIndex array of 24 entries (6 quad faces * 4) - a quad is kept "
+        "native, not split, unlike the triangle-only formats above");
+
+  Mesh reloaded;
+  Check(Mesh::LoadFbx(path, reloaded) == Result::Ok, "Mesh::LoadFbx succeeds on SaveFbx()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount(),
+        "the reloaded mesh has the same vertex count as the original");
+  Check(reloaded.FaceCount() == box.FaceCount(),
+        "the reloaded mesh has the same 6 quad faces as the original - FBX's PolygonVertexIndex is a "
+        "genuine variable-length polygon list, so a quad round-trips as a quad, not split into triangles");
+  Check(reloaded.raw().m_F[0].IsQuad(), "the reloaded first face is still a genuine quad");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-6,
+        "the reloaded mesh's volume exactly matches the original - no triangle split to lose precision to");
+  std::remove(path.c_str());
+
+  // A hand-written file (not SaveFbx()'s own output) exercising a single
+  // triangle whose known corners let LoadFbx()'s geometry - and its
+  // one's-complement polygon-terminator decoding - be checked exactly.
+  const std::string hand_written_path = "dino8_kernel_mesh_fbx_test_hand_written.fbx";
+  {
+    std::ofstream out(hand_written_path);
+    out << "; FBX 7.3.0 project file\n";
+    out << "Objects:  {\n";
+    out << "\tGeometry: 1, \"Geometry::\", \"Mesh\" {\n";
+    out << "\t\tVertices: *9 {\n";
+    out << "\t\t\ta: 0,0,0,2,0,0,0,2,0\n";
+    out << "\t\t}\n";
+    out << "\t\tPolygonVertexIndex: *3 {\n";
+    out << "\t\t\ta: 0,1,-3\n";  // -3 is ~2, the one's-complement of real index 2
+    out << "\t\t}\n";
+    out << "\t}\n";
+    out << "}\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadFbx(hand_written_path, hand_written) == Result::Ok,
+        "LoadFbx succeeds on a hand-written file with a minimal Objects/Geometry block");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the hand-written file's 3 points and 1 triangle are read correctly");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "the one's-complement-terminated run (0,1,-3) decodes to real indices (0,1,2)");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadFbxRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_fbx_test_does_not_exist.fbx";
+  Mesh out;
+  Check(Mesh::LoadFbx(missing_path, out) == Result::Failed, "LoadFbx fails on a file that doesn't exist");
+
+  const std::string binary_magic_path = "dino8_kernel_mesh_fbx_test_binary_magic.fbx";
+  {
+    std::ofstream bad(binary_magic_path, std::ios::binary);
+    bad << "Kaydara FBX Binary  \x00\x1a\x00";
+  }
+  Check(Mesh::LoadFbx(binary_magic_path, out) == Result::Failed,
+        "LoadFbx fails outright on a binary-FBX magic header, rather than trying to parse it as ASCII");
+
+  const std::string no_vertices_path = "dino8_kernel_mesh_fbx_test_no_vertices.fbx";
+  {
+    std::ofstream bad(no_vertices_path);
+    bad << "Objects:  {\n\tGeometry: 1, \"Geometry::\", \"Mesh\" {\n\t\tPolygonVertexIndex: *3 {\n"
+        << "\t\t\ta: 0,1,-3\n\t\t}\n\t}\n}\n";
+  }
+  Check(Mesh::LoadFbx(no_vertices_path, out) == Result::Failed,
+        "LoadFbx fails on a file with no Vertices array at all");
+
+  const std::string no_indices_path = "dino8_kernel_mesh_fbx_test_no_indices.fbx";
+  {
+    std::ofstream bad(no_indices_path);
+    bad << "Objects:  {\n\tGeometry: 1, \"Geometry::\", \"Mesh\" {\n\t\tVertices: *9 {\n"
+        << "\t\t\ta: 0,0,0,2,0,0,0,2,0\n\t\t}\n\t}\n}\n";
+  }
+  Check(Mesh::LoadFbx(no_indices_path, out) == Result::Failed,
+        "LoadFbx fails on a file with no PolygonVertexIndex array at all");
+
+  const std::string short_run_path = "dino8_kernel_mesh_fbx_test_short_run.fbx";
+  {
+    std::ofstream bad(short_run_path);
+    // A polygon run of only 2 real indices before its terminator - below
+    // the minimum 3 a polygon needs.
+    bad << "Objects:  {\n\tGeometry: 1, \"Geometry::\", \"Mesh\" {\n\t\tVertices: *9 {\n"
+        << "\t\t\ta: 0,0,0,2,0,0,0,2,0\n\t\t}\n\t\tPolygonVertexIndex: *2 {\n"
+        << "\t\t\ta: 0,-2\n\t\t}\n\t}\n}\n";
+  }
+  Check(Mesh::LoadFbx(short_run_path, out) == Result::Failed,
+        "LoadFbx fails on a polygon run with fewer than 3 real indices before its terminator");
+
+  const std::string oob_index_path = "dino8_kernel_mesh_fbx_test_oob_index.fbx";
+  {
+    std::ofstream bad(oob_index_path);
+    // Only 3 vertices declared (valid indices 0-2); index 5 doesn't exist.
+    bad << "Objects:  {\n\tGeometry: 1, \"Geometry::\", \"Mesh\" {\n\t\tVertices: *9 {\n"
+        << "\t\t\ta: 0,0,0,2,0,0,0,2,0\n\t\t}\n\t\tPolygonVertexIndex: *3 {\n"
+        << "\t\t\ta: 0,1,-6\n\t\t}\n\t}\n}\n";
+  }
+  Check(Mesh::LoadFbx(oob_index_path, out) == Result::Failed,
+        "LoadFbx fails on a PolygonVertexIndex entry referencing a vertex index that doesn't exist");
+
+  const std::string unterminated_path = "dino8_kernel_mesh_fbx_test_unterminated.fbx";
+  {
+    std::ofstream bad(unterminated_path);
+    // No negative (terminator) entry anywhere - the run never ends.
+    bad << "Objects:  {\n\tGeometry: 1, \"Geometry::\", \"Mesh\" {\n\t\tVertices: *9 {\n"
+        << "\t\t\ta: 0,0,0,2,0,0,0,2,0\n\t\t}\n\t\tPolygonVertexIndex: *3 {\n"
+        << "\t\t\ta: 0,1,2\n\t\t}\n\t}\n}\n";
+  }
+  Check(Mesh::LoadFbx(unterminated_path, out) == Result::Failed,
+        "LoadFbx fails on a PolygonVertexIndex run with no one's-complement terminator at all");
+
+  std::remove(binary_magic_path.c_str());
+  std::remove(no_vertices_path.c_str());
+  std::remove(no_indices_path.c_str());
+  std::remove(short_run_path.c_str());
+  std::remove(oob_index_path.c_str());
+  std::remove(unterminated_path.c_str());
+}
+
 void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
   using dino8::kernel::Result;
 
@@ -60495,6 +60969,12 @@ int main() {
   TestMeshLoadGlbRejectsMalformedFiles();
   TestMeshSaveIfcRoundTrips();
   TestMeshLoadIfcRejectsMalformedFiles();
+  TestMeshSaveStepAp242RoundTrips();
+  TestMeshLoadStepAp242RejectsMalformedFiles();
+  TestMeshSave3mfRoundTrips();
+  TestMeshLoad3mfRejectsMalformedFiles();
+  TestMeshSaveFbxRoundTrips();
+  TestMeshLoadFbxRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();
