@@ -216,7 +216,8 @@ int Model::AddGroup(const std::string& name) {
 int Model::AddMaterial(const std::string& name, Color diffuse_color,
                         std::optional<Color> specular_color, std::optional<Color> emission_color,
                         std::optional<double> shine, std::optional<double> transparency,
-                        std::optional<double> reflectivity) {
+                        std::optional<double> reflectivity,
+                        std::optional<std::string> texture_filename) {
   if (name.empty()) {
     return -1;
   }
@@ -237,6 +238,9 @@ int Model::AddMaterial(const std::string& name, Color diffuse_color,
   }
   if (reflectivity.has_value()) {
     material.SetReflectivity(*reflectivity);
+  }
+  if (texture_filename.has_value() && !texture_filename->empty()) {
+    material.AddTexture(ON_wString(texture_filename->c_str()), ON_Texture::TYPE::bitmap_texture);
   }
   const ON_ModelComponentReference material_ref = model_.AddModelComponent(material, true);
   const ON_Material* managed_material = ON_Material::FromModelComponentRef(material_ref, nullptr);
@@ -460,6 +464,10 @@ MaterialInfo Model::MaterialAt(int material_index) const {
   result.shine = material->Shine();
   result.transparency = material->Transparency();
   result.reflectivity = material->Reflectivity();
+  const int texture_index = material->FindTexture(nullptr, ON_Texture::TYPE::bitmap_texture);
+  if (texture_index >= 0) {
+    result.texture_filename = ToStdString(material->m_textures[texture_index].m_image_file_reference.FullPath());
+  }
   return result;
 }
 
