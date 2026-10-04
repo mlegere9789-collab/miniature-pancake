@@ -7326,6 +7326,84 @@ checks passing, 0 failures - including the one pre-existing test this
 session's own fix required correcting (confirmed to fail before that
 correction, not merely assumed).
 
+**2026-10-04 follow-up (round 25 of this category's own rotation):** `git
+log --oneline -5 -- dino8-kernel/src/subd.cpp dino8-kernel/src/mesh.cpp`
+at the start of this session showed `796cc95` (the Tessellate()
+resolution-harmonization crack fix immediately above) as the most recent
+commit touching either file, so this session read this category's own
+current 6 remaining `[partial]` bullets fresh rather than duplicating that
+work, and picked the two most closely related, genuinely narrowable gaps:
+"Quad-remeshing into a clean SubD-ready cage" (still disclosing "not wired
+into any `dino8-app` command or into `SubD::FromControlMesh`") and "SubD
+from NURBS/B-rep conversion" (still disclosing "a curved
+... or genuinely trimmed face is... out of scope entirely").
+
+`SubD::FromMeshQuadRemeshed(mesh, max_dihedral_deg, crease_at_double_edges)`
+(dino8-kernel/include/dino8/kernel/subd.h; src/subd.cpp) closes the first
+bullet's own named gap for the general case: `BooleanToSubD()` was, until
+now, the ONLY caller that ever ran `Mesh::TrisToQuads()` ahead of
+`FromControlMesh()` (see that method's own doc comment) - any other
+triangulated mesh a caller already had (a tessellated Brep, an imported
+OBJ/STL, a `ToApproximateMesh()` snapshot) had no way to reach a
+quad-dominant SubD cage at all, only the Boolean-result path did.
+`BooleanToSubD()` itself is refactored to call this new method (see its
+own updated body) rather than re-implement the same two-line composition
+a second time, so the two can't drift apart - confirmed behavior-identical
+by every one of `BooleanToSubD()`'s own pre-existing tests still passing
+unchanged. `SubD::FromBrepTessellated(brep, u_divisions, v_divisions,
+max_dihedral_deg)` builds directly on it for the second bullet: unlike
+`SubD::FromBrep()`'s exact-but-narrow planar/untrimmed/axis-aligned-quad
+scope, this accepts ANY Brep - curved, trimmed, filleted - by routing
+through `Brep::TessellateToClosedMesh()` (this kernel's own real
+tessellator, already used throughout for boolean/mass-property work, not
+a new or separate code path) and then `FromMeshQuadRemeshed()` above, with
+`crease_at_double_edges=true` matching `FromBrep()`'s own convention (an
+open shell's naked boundary creases, every interior seam stays smooth).
+
+Honestly still not what either disclosed gap fully describes, and no new
+limitation invented here: `FromMeshQuadRemeshed()` is still a LOCAL
+remesher (an already-irregular input mesh comes out with just as many
+irregular faces, `TrisToQuads()`'s own long-standing scope), and
+`FromBrepTessellated()` is a tessellation-resolution-bounded
+APPROXIMATION, not a lossless conversion - a curved face's control cage
+only approaches the real surface as `u_divisions`/`v_divisions` increase,
+and further `Subdivide()`ing the result smooths the TESSELLATION's own
+facets, never converging back onto the exact original Brep surface (the
+same disclosed tradeoff `FromNurbsSurface()`/`Tessellate()` already carry
+for theirs); a genuinely trimmed boundary's own triangulated edge stays
+triangulated, not quad-clean. Neither method is wired into any
+`dino8-app` command. Both items therefore stay honestly `[partial]`, not
+`[present]` - this category's own present/partial/missing counts are
+UNCHANGED at **16/6/0/22 (86.4%)**, so no table or headline arithmetic
+changes (kernel headline stays 70.5%, app headline stays 78.4%).
+
+Verified by 18 new checks across 4 tests (`tests/test_basic.cpp`):
+`TestSubDFromMeshQuadRemeshedRecombinesTessellatedBoxIntoQuads` (a plain
+`Brep::Box().TessellateToClosedMesh(1,1)` 12-triangle fixture recombines
+into exactly the 6 original quad faces, matches the box's own exact
+volume at level 0, genuinely rounds under further `Subdivide()`, and an
+already-all-quad input still builds unaffected);
+`TestSubDFromBrepTessellatedBoxRecombinesIntoSixQuads` (the same 6-quad/
+exact-volume/further-subdividable result reached from a `Brep` directly,
+with zero creases on a fully closed box); 
+`TestSubDFromBrepTessellatedApproximatesSphereFromInside` (a genuinely
+curved `Brep::Sphere()` - zero planar faces, entirely outside
+`SubD::FromBrep()`'s own scope - produces a closed-manifold cage whose
+level-0 volume is provably strictly below the exact `4/3*pi*r^3`, as any
+surface-inscribed polytope's must be, within 10% of it at a 16x16
+tessellation, and strictly closer to it still at 32x32 - confirming the
+approximation genuinely scales with resolution rather than being a fixed
+stand-in); and `TestSubDFromBrepTessellatedRejectsInvalidDivisions`
+(`u_divisions`/`v_divisions` < 1 both throw `std::invalid_argument`,
+matching `SubD::FromBrep()`'s own validation convention). Full
+`dino8_kernel_tests` suite (run directly, not via `ctest`, per this
+round's own fast-verification note elsewhere in this document): 8700/8700
+checks passing, 0 failures, 0 regressions - every pre-existing check,
+`BooleanToSubD()`'s own included, still passes unchanged after its
+refactor onto `FromMeshQuadRemeshed()`. This session's only source edits
+are `dino8-kernel/include/dino8/kernel/subd.h`,
+`dino8-kernel/src/subd.cpp`, and `dino8-kernel/tests/test_basic.cpp`.
+
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027
 
 | Category | Weight | Items | Present | Partial | Missing | Parity % |
