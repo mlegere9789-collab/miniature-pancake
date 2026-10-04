@@ -912,13 +912,31 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_test_sketch_constraints PRIVATE dino8_kernel)
   # Constraints.cpp's AutoResolveFrame() (not exercised by this test) calls
   # real Application/Viewport methods this target never links - dead code
-  # with no live caller here, so per-function sections + a dead-section
-  # sweep at link time drop it (and its otherwise-unresolved references)
-  # before the linker ever needs to resolve them, rather than pulling in
-  # the entire GL/ImGui app just to satisfy a function this binary never
-  # calls.
-  target_compile_options(dino8_test_sketch_constraints PRIVATE -ffunction-sections -fdata-sections)
-  target_link_options(dino8_test_sketch_constraints PRIVATE -Wl,--gc-sections)
+  # with no live caller here, so per-function/data sections plus a
+  # dead-section sweep at link time drop it (and its otherwise-unresolved
+  # references) before the linker ever needs to resolve them, rather than
+  # pulling in the entire GL/ImGui app just to satisfy a function this
+  # binary never calls. Each toolchain needs its own flag pair: GNU ld
+  # takes -ffunction-sections/-fdata-sections plus --gc-sections; Apple's
+  # ld has no GNU-style --gc-sections at all (a hard "unknown options"
+  # link failure, not a warning) and uses -dead_strip instead; MSVC's
+  # link.exe silently warns and ignores an unrecognized -Wl,--gc-sections
+  # (LNK4044) rather than erroring - which looks like success right up
+  # until the now-NOT-dead-stripped AutoResolveFrame's own call to
+  # Application::ActiveViewport() fails to resolve (LNK2019) - MSVC's own
+  # equivalent is /Gy (function-level linking) at compile time plus
+  # /OPT:REF (eliminate unreferenced functions/data) at link time.
+  if(MSVC)
+    target_compile_options(dino8_test_sketch_constraints PRIVATE /Gy)
+    target_link_options(dino8_test_sketch_constraints PRIVATE /OPT:REF)
+  else()
+    target_compile_options(dino8_test_sketch_constraints PRIVATE -ffunction-sections -fdata-sections)
+    if(APPLE)
+      target_link_options(dino8_test_sketch_constraints PRIVATE -Wl,-dead_strip)
+    else()
+      target_link_options(dino8_test_sketch_constraints PRIVATE -Wl,--gc-sections)
+    endif()
+  endif()
   add_test(NAME dino8_sketch_constraints COMMAND dino8_test_sketch_constraints)
 
   # Timing benchmark + regression guard for Array/ArrayLinear/ArrayPolar and

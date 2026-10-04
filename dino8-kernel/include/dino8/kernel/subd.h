@@ -384,7 +384,16 @@ class SubD {
   // own dihedral/convexity/winding gates simply don't fire there in
   // general, so this is an honest, bounded narrowing of the disclosed gap,
   // not a claim that the cut itself is now quad-clean.
-  SubD BooleanToSubD(const SubD& other, BooleanOp op) const;
+  //
+  // `max_dihedral_deg` (same follow-up as FromMeshQuadRemeshed() above):
+  // forwarded straight through to that internal TrisToQuads() call instead
+  // of a hardcoded 20.0 - a caller whose two operands meet at a shallower
+  // or steeper angle than the default threshold along their own untouched
+  // faces can now tune how aggressively the away-from-the-cut faces
+  // recombine, the same knob TrisToQuads() always exposed to every other
+  // caller. Defaults to 20.0, this method's own prior fixed value, so
+  // every existing 2-argument call keeps its exact prior behavior.
+  SubD BooleanToSubD(const SubD& other, BooleanOp op, double max_dihedral_deg = 20.0) const;
 
   // Applies `xform` to a copy of this SubD's ENTIRE control cage (every
   // level it currently holds, not just the active one) and returns it -
