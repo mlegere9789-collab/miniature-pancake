@@ -576,8 +576,8 @@ else
 fi
 dhpcheck() { if echo "$DHP" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DHP" "$1"; fail=1; fi; }
 dhpcheck "Exported $TMPW/dxf_hatch_pattern_export.dxf" "ExportDxf wrote a file"
-BEFORE_SEL="$(echo "$DHP" | grep -o "^[0-9]* object(s) selected" | head -1)"
-AFTER_SEL="$(echo "$DHP" | grep -o "^[0-9]* object(s) selected" | tail -1)"
+BEFORE_SEL="$(echo "$DHP" | grep -o "[0-9]* object(s) selected" | head -1 || true)"
+AFTER_SEL="$(echo "$DHP" | grep -o "[0-9]* object(s) selected" | tail -1 || true)"
 if [ -n "$BEFORE_SEL" ] && [ "$BEFORE_SEL" = "$AFTER_SEL" ]; then
   echo "ok   the round-tripped pattern hatch's line count matches exactly ($BEFORE_SEL)"
 else
