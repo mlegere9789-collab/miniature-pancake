@@ -633,6 +633,52 @@ std::vector<std::vector<Point3d>> PolygonBooleanPlanar(const std::vector<Point3d
                                                          const std::vector<Point3d>& b, const ON_Plane& plane,
                                                          BooleanOp op, double tolerance = -1.0);
 
+// N-ary counterpart of PolygonBooleanPlanar - closes the specific gap its
+// own doc comment above names as untouched ("a/b may each only be a single
+// simple loop") for the common case of several polygons per side, the same
+// "No kernel N-ary API" PARITY_MAP.md's own "Multi-body / multi-tool
+// booleans" bullet already named for the three 3D engines before
+// BooleanCombinePlanarNAry/BooleanCombineMixedNAry/BooleanCombineGeneralNAry
+// closed it there; this is the identical fold shape for the 2D polygon
+// engine. Not a new reduction: every polygon in `first_group`/`second_group`
+// is still extruded into a right prism over the same shared `plane` via
+// PolygonBooleanPlanar's own PrismFromPolygon helper (one common height,
+// the combined bounding-box diagonal of every polygon in BOTH groups, so no
+// prism is a degenerate sliver relative to the full operand set), and the
+// prisms are folded via BooleanCombinePlanarNAry itself - `first_group`
+// left-to-right via Union, `second_group` the same way if non-empty, the
+// two folded solids then combined via one further BooleanCombinePlanar(...,
+// op) call, otherwise the folded `first_group` is returned directly (and
+// `op` must be Union) - the exact same two-stage fold
+// BooleanCombinePlanarNAry's own doc comment describes. The combined
+// solid's own base-plane faces are read back and dissolved into loops via
+// the identical DissolveCoplanarFragments step PolygonBooleanPlanar's own
+// pairwise case already uses - so Prism(2D_NAry_op(group)) ==
+// BooleanCombinePlanarNAry(Prisms(group), ..., op) is the same prism
+// identity PolygonBooleanPlanar's own doc comment already establishes for
+// N=2, simply generalized.
+//
+// Every polygon in either group is individually validated the same way
+// PolygonBooleanPlanar validates `a`/`b` (at least 3 vertices, every vertex
+// in `plane`, a simple non-self-intersecting boundary) via
+// BooleanFailureReason::InvalidPolygon. `first_group` empty throws
+// EmptyOperandGroup; `second_group` empty with `op != Union` throws the
+// same reason BooleanCombinePlanarNAry's own doc comment already
+// describes; SymmetricDifference is refused (UnsupportedOperation) for the
+// identical reason the 3D NAry wrappers already refuse it - its own
+// pairwise result cannot be folded further.
+//
+// Still partial, not present, the same input-side scope limit
+// PolygonBooleanPlanar's own doc comment already discloses: no polygon in
+// either group may itself carry a hole (Brep::PlanarFace has no loop-plus-
+// holes representation to build one from) - this closes the "N operands
+// per side" half of the "2D region / planar curve booleans" bullet's own
+// gap, not that one.
+std::vector<std::vector<Point3d>> PolygonBooleanPlanarNAry(const std::vector<std::vector<Point3d>>& first_group,
+                                                             const std::vector<std::vector<Point3d>>& second_group,
+                                                             const ON_Plane& plane, BooleanOp op,
+                                                             double tolerance = -1.0);
+
 // The Sutherland-Hodgman half-space clipper shared by
 // BooleanIntersectConvexPlanar (above) and ShellConvexPlanar (below) -
 // extracted here, not rewritten, so both operations run the same verified
