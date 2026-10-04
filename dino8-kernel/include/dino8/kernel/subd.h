@@ -132,6 +132,41 @@ class SubD {
   // (`ON_SubDFromMeshParameters::Smooth`, this class's original behavior).
   static SubD FromControlMesh(const Mesh& control_mesh, bool crease_at_double_edges = false);
 
+  // Like FromControlMesh() above, but runs `mesh` through the already-
+  // existing, already-tested `Mesh::TrisToQuads(max_dihedral_deg)` (mesh.h)
+  // first - closing PARITY_MAP.md's subd_mesh "Quad-remeshing into a clean
+  // SubD-ready cage" item's own disclosed "not wired into... SubD::
+  // FromControlMesh" gap for the general case (BooleanToSubD() below
+  // already applies the identical TrisToQuads()-then-FromControlMesh()
+  // composition for its own one specific caller; this is the same pattern
+  // exposed as a general-purpose entry point for any triangulated mesh -
+  // e.g. the output of Brep::Tessellate() or NurbsSurface::TessellateGrid(),
+  // neither of which produces quad faces on its own).
+  //
+  // `max_dihedral_deg` and `crease_at_double_edges` are passed straight
+  // through to TrisToQuads() and FromControlMesh() respectively, with the
+  // exact same meaning and defaults each already has on its own. Since
+  // TrisToQuads() is a pure face-list rewrite that never adds, moves, or
+  // removes a vertex (see its own doc comment), this can only ever reduce
+  // the triangle count `FromControlMesh()` ends up seeing - a mesh with no
+  // mergeable adjacent-triangle pairs (a steep dihedral, a non-convex
+  // merge, mismatched winding, or one that is already quad-only) produces
+  // the exact same SubD FromControlMesh(mesh, crease_at_double_edges) would
+  // have, byte-for-byte.
+  //
+  // Still honestly not a general quad-dominant remesher any more than
+  // TrisToQuads() itself is: an already-irregular triangulation still
+  // yields an irregular quad-dominant cage, since nothing here relocates a
+  // single vertex - the materially bigger "retopology" problem dino8-app's
+  // own SDF/dual-contouring QuadRemesh command solves separately (see
+  // Mesh::TrisToQuads()'s own doc comment), which this neither replaces nor
+  // matches in quality. `mesh`'s own naked-edge boundary and
+  // IsClosedManifold()-relevant topology are unaffected by the remeshing
+  // step, so FromControlMesh()'s own failure mode and preconditions apply
+  // unchanged.
+  static SubD FromMeshQuadRemeshed(const Mesh& mesh, bool crease_at_double_edges = false,
+                                    double max_dihedral_deg = 20.0);
+
   // Builds a SubD control cage from a single UNTRIMMED NURBS surface by
   // evaluating a u_divisions x v_divisions grid of points across its
   // parameter domain and taking each grid cell as one genuine QUAD SubD
@@ -320,7 +355,16 @@ class SubD {
   // own dihedral/convexity/winding gates simply don't fire there in
   // general, so this is an honest, bounded narrowing of the disclosed gap,
   // not a claim that the cut itself is now quad-clean.
-  SubD BooleanToSubD(const SubD& other, BooleanOp op) const;
+  //
+  // `max_dihedral_deg` (same follow-up as FromMeshQuadRemeshed() above):
+  // forwarded straight through to that internal TrisToQuads() call instead
+  // of a hardcoded 20.0 - a caller whose two operands meet at a shallower
+  // or steeper angle than the default threshold along their own untouched
+  // faces can now tune how aggressively the away-from-the-cut faces
+  // recombine, the same knob TrisToQuads() always exposed to every other
+  // caller. Defaults to 20.0, this method's own prior fixed value, so
+  // every existing 2-argument call keeps its exact prior behavior.
+  SubD BooleanToSubD(const SubD& other, BooleanOp op, double max_dihedral_deg = 20.0) const;
 
   // Applies `xform` to a copy of this SubD's ENTIRE control cage (every
   // level it currently holds, not just the active one) and returns it -

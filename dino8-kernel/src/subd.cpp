@@ -54,6 +54,12 @@ SubD SubD::FromControlMesh(const Mesh& control_mesh, bool crease_at_double_edges
   return result;
 }
 
+SubD SubD::FromMeshQuadRemeshed(const Mesh& mesh, bool crease_at_double_edges, double max_dihedral_deg) {
+  Mesh remeshed = mesh;
+  remeshed.TrisToQuads(max_dihedral_deg);
+  return SubD::FromControlMesh(remeshed, crease_at_double_edges);
+}
+
 SubD SubD::FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_divisions) {
   if (u_divisions < 1 || v_divisions < 1) {
     throw std::invalid_argument(
@@ -256,12 +262,12 @@ Mesh SubD::Boolean(const SubD& other, BooleanOp op) const {
   return BooleanCombine(ToApproximateMesh(), other.ToApproximateMesh(), op);
 }
 
-SubD SubD::BooleanToSubD(const SubD& other, BooleanOp op) const {
+SubD SubD::BooleanToSubD(const SubD& other, BooleanOp op, double max_dihedral_deg) const {
   Mesh result = Boolean(other, op);
   // See this method's own doc comment (subd.h) for why this is always
   // safe: a pure face-list rewrite, never touching a vertex, that is a
   // no-op wherever nothing qualifies.
-  result.TrisToQuads();
+  result.TrisToQuads(max_dihedral_deg);
   return SubD::FromControlMesh(result);
 }
 
