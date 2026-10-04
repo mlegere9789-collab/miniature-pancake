@@ -123,6 +123,52 @@ class PointCloud {
   // legitimate answer, and ties are broken by ascending index.
   std::vector<PointCloudNeighbor> PointsNearPlane(const ON_Plane& plane, double band) const;
 
+  // One contour curve fitted through a band of points, as returned by
+  // ContourAtPlane() below. `indices` names the original point(s) each
+  // entry of `points` came from, in the same contour order the curve is
+  // fit through (not PointsNearPlane()'s own ascending-distance order).
+  struct Contour {
+    std::vector<int> indices;
+    std::vector<Point3d> points;  // `indices`' own points, projected onto the cutting plane
+    ON_NurbsCurve curve;          // degree-3 closed curve fit through `points` (empty if points.size() < 3)
+  };
+
+  // A real contour CURVE through the points lying within `band` of an
+  // infinite `plane` - PARITY_MAP.md's own "Point-cloud contour/section as
+  // separate app commands" bullet named this directly as the one thing
+  // PointsNearPlane() above does not give: "this is a membership QUERY
+  // (indices + distances), not PointCloudContour's own contour-CURVE
+  // extraction along a band." PointsNearPlane()'s own ascending-distance
+  // order is meaningless for fitting a curve (two points on opposite sides
+  // of a ring can sit at the same distance from the query plane's origin),
+  // so this re-orders the band by angle around the band's own centroid,
+  // projected into the plane: each point is closest-point-projected onto
+  // `plane` (both as a 3D point, for the fit, and as the plane-local (s, t)
+  // ON_Plane::ClosestPointTo() also returns, for the angle), the centroid
+  // of those (s, t) pairs is taken, and points are ordered by
+  // atan2(t - t0, s - s0) around it - the same "around the centroid" shape
+  // scan-derived cross-section rings are already ordered in the real
+  // LAS/XYZ/.pcd fixtures this class's own loaders round-trip. A closed
+  // cubic is then fit through the ordered, projected points
+  // (InterpolateCubic(..., closed=true, dim=3), surface_intersect.h - the
+  // identical fitter IntersectSurfaces()/PullbackCurveToSurface() already
+  // use elsewhere in this kernel for curves on surfaces, applied here to a
+  // point cloud's own band instead). Honesty note: angular-around-centroid
+  // ordering is only correct for a band that forms a single star-shaped
+  // loop around its own centroid (an ordinary closed scan ring) - a band
+  // with more than one disconnected cluster, or a genuinely concave/
+  // multi-lobe cross-section where a ray from the centroid can cross the
+  // true contour more than once, is NOT guaranteed to order correctly, the
+  // same honestly-scoped limitation IntersectCurveSurfaceOverlap()'s own
+  // sampling-resolution caveat already discloses elsewhere in this
+  // category. Same argument conventions as PointsNearPlane(): a negative
+  // `band` or an invalid `plane` throws std::invalid_argument. Fewer than 3
+  // points in the band is not an error - `indices`/`points` are still
+  // returned (ascending-angle order), but `curve` is left a
+  // default-constructed (empty) ON_NurbsCurve, since fitting a closed cubic
+  // needs at least 3 points.
+  Contour ContourAtPlane(const ON_Plane& plane, double band) const;
+
   // Writes this cloud to a plain-text ASCII XYZ point-cloud file - the
   // de facto point-cloud interchange format (CloudCompare, PCL, MeshLab
   // all read/write it) that this kernel had no path to at all: every

@@ -569,13 +569,12 @@ int main(int argc, char** argv) {
   // LuaEngine, or a POST /run/python request's body as a Python script
   // against PythonEngine - the same two engines the command line and
   // RunScript/RunPythonScript already use - and returns the captured
-  // print() output as the response. A Lua script that suspends on an
-  // rs.Get*-style prompt can't be satisfied over a synchronous HTTP
-  // request, so that case is aborted and reported as an error instead of
-  // hanging the connection; PythonEngine never suspends in the first place
-  // (see script/PythonEngine.h) - a dino8.GetPoint()-style call there is
-  // simply not a function the module defines, so it surfaces as an
-  // ordinary Python error in the response body. --serve-token, when given,
+  // print() output as the response. A script that suspends on an
+  // rs.Get*/dino8.Get*-style prompt (either engine - see script/
+  // PythonEngine.h for how PythonEngine's own worker-thread suspend works)
+  // can't be satisfied over a synchronous HTTP request, so that case is
+  // aborted (Abort()) and reported as a compute error in the response body
+  // instead of hanging the connection. --serve-token, when given,
   // requires a matching "Authorization: Bearer TOKEN" header on every
   // request, checked here before either engine ever sees the body.
   dino8::app::ComputeServer compute_server;

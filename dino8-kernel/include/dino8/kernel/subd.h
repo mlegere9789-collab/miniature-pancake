@@ -132,41 +132,6 @@ class SubD {
   // (`ON_SubDFromMeshParameters::Smooth`, this class's original behavior).
   static SubD FromControlMesh(const Mesh& control_mesh, bool crease_at_double_edges = false);
 
-  // Like FromControlMesh() above, but runs `mesh` through the already-
-  // existing, already-tested `Mesh::TrisToQuads(max_dihedral_deg)` (mesh.h)
-  // first - closing PARITY_MAP.md's subd_mesh "Quad-remeshing into a clean
-  // SubD-ready cage" item's own disclosed "not wired into... SubD::
-  // FromControlMesh" gap for the general case (BooleanToSubD() below
-  // already applies the identical TrisToQuads()-then-FromControlMesh()
-  // composition for its own one specific caller; this is the same pattern
-  // exposed as a general-purpose entry point for any triangulated mesh -
-  // e.g. the output of Brep::Tessellate() or NurbsSurface::TessellateGrid(),
-  // neither of which produces quad faces on its own).
-  //
-  // `max_dihedral_deg` and `crease_at_double_edges` are passed straight
-  // through to TrisToQuads() and FromControlMesh() respectively, with the
-  // exact same meaning and defaults each already has on its own. Since
-  // TrisToQuads() is a pure face-list rewrite that never adds, moves, or
-  // removes a vertex (see its own doc comment), this can only ever reduce
-  // the triangle count `FromControlMesh()` ends up seeing - a mesh with no
-  // mergeable adjacent-triangle pairs (a steep dihedral, a non-convex
-  // merge, mismatched winding, or one that is already quad-only) produces
-  // the exact same SubD FromControlMesh(mesh, crease_at_double_edges) would
-  // have, byte-for-byte.
-  //
-  // Still honestly not a general quad-dominant remesher any more than
-  // TrisToQuads() itself is: an already-irregular triangulation still
-  // yields an irregular quad-dominant cage, since nothing here relocates a
-  // single vertex - the materially bigger "retopology" problem dino8-app's
-  // own SDF/dual-contouring QuadRemesh command solves separately (see
-  // Mesh::TrisToQuads()'s own doc comment), which this neither replaces nor
-  // matches in quality. `mesh`'s own naked-edge boundary and
-  // IsClosedManifold()-relevant topology are unaffected by the remeshing
-  // step, so FromControlMesh()'s own failure mode and preconditions apply
-  // unchanged.
-  static SubD FromMeshQuadRemeshed(const Mesh& mesh, bool crease_at_double_edges = false,
-                                    double max_dihedral_deg = 20.0);
-
   // Builds a SubD control cage from a single UNTRIMMED NURBS surface by
   // evaluating a u_divisions x v_divisions grid of points across its
   // parameter domain and taking each grid cell as one genuine QUAD SubD
@@ -265,6 +230,70 @@ class SubD {
   // real trim boundary or a degenerate corner and returning wrong
   // geometry.
   static SubD FromBrep(const Brep& brep, int divisions, double weld_tolerance = tolerance::kWeld);
+
+  // Narrows PARITY_MAP.md's subd_mesh "Quad-remeshing into a clean
+  // SubD-ready cage" gap for the GENERAL case: until now, the only place
+  // `Mesh::TrisToQuads()` ever fed `FromControlMesh()` was
+  // `BooleanToSubD()`'s own boolean-result path (see its doc comment) -
+  // any other triangulated mesh a caller already had (a tessellated
+  // Brep, an imported OBJ/STL, a `ToApproximateMesh()` snapshot) had no
+  // way to become a quad-dominant SubD cage at all. This exposes that
+  // same, already-tested composition directly: runs `mesh.TrisToQuads(
+  // max_dihedral_deg)` on a copy, then `FromControlMesh()` on the
+  // result. Both steps already carry their own full set of guarantees
+  // (TrisToQuads() never moves/adds/removes a vertex and is a no-op
+  // wherever nothing qualifies; FromControlMesh() accepts the resulting
+  // mix of quads and untouched triangles directly, same as any other
+  // triangle/quad/n-gon mesh) - nothing new is asserted here beyond their
+  // composition. `crease_at_double_edges` forwards unchanged to
+  // `FromControlMesh()` (see its own doc comment); TrisToQuads() never
+  // touches vertex indices, so a caller's double-edge seams survive it
+  // untouched either way.
+  //
+  // Still honestly a LOCAL remesher, not a true retopology: a mesh whose
+  // triangles are already irregular (no coplanar/low-dihedral pair to
+  // merge) comes out with just as many irregular quads/triangles as
+  // before - the same scope limit `TrisToQuads()`'s own doc comment
+  // already discloses, not a new one invented here. Throws
+  // std::runtime_error if `FromControlMesh()` rejects the (post-remesh)
+  // topology.
+  static SubD FromMeshQuadRemeshed(const Mesh& mesh, double max_dihedral_deg = 20.0,
+                                     bool crease_at_double_edges = false);
+
+  // A second, materially different answer to the SAME "SubD from NURBS/
+  // B-rep conversion" gap FromBrep() above only closes for the narrow
+  // planar/untrimmed/axis-aligned-quad case: this one accepts ANY Brep -
+  // curved faces, trimmed faces, fillets, disc caps, the works - by going
+  // through the kernel's own real tessellator instead of per-face exact
+  // bilinear grids. `brep.TessellateToClosedMesh(u_divisions, v_divisions)`
+  // (Tessellate() + Mesh::MergeAndWeld(), already real and already used
+  // throughout this kernel for boolean/mass-property work) produces one
+  // watertight triangle mesh with every shared Brep edge already welded
+  // into one seam; that mesh is then handed to FromMeshQuadRemeshed()
+  // above with `crease_at_double_edges=true` (matching FromBrep()'s own
+  // convention: an open shell's naked boundary comes out a real SubD
+  // crease, every interior two-face seam stays smooth) so the common
+  // case - a box-like region of the tessellation, away from any curved
+  // patch - recombines back into clean quads instead of staying raw
+  // triangles from the tessellator.
+  //
+  // Deliberately NOT what FromBrep() is for the shape it accepts (exact):
+  // this is a tessellation-resolution-bounded APPROXIMATION of the true
+  // Brep, same tradeoff `Tessellate()`/`FromNurbsSurface()` already
+  // disclose for theirs - a curved face's control cage only approaches
+  // the real surface as `u_divisions`/`v_divisions` increase, and further
+  // Subdivide()ing the resulting SubD smooths the TESSELLATION's own
+  // facets, not the original curved surface, so it will not converge back
+  // onto the exact Brep shape no matter how many levels are applied. A
+  // genuinely trimmed boundary's own triangulated edge is irregular by
+  // construction (TrisToQuads() has no coplanar partner to pair it with
+  // there), so it stays triangulated in the resulting cage rather than
+  // becoming a clean quad row. Throws std::invalid_argument if the Brep
+  // has no faces or either division count is less than 1; propagates
+  // FromMeshQuadRemeshed()'s own std::runtime_error for an unbuildable
+  // (post-remesh) topology.
+  static SubD FromBrepTessellated(const Brep& brep, int u_divisions = 8, int v_divisions = 8,
+                                    double max_dihedral_deg = 20.0);
 
   // Applies `levels` rounds of real Catmull-Clark global subdivision in
   // place. Each round refines every face, edge, and vertex of the
