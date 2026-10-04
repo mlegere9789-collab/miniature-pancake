@@ -140,8 +140,108 @@ Result OffsetGeneralAlongNormal(const NurbsCurve& curve, const Vector3d& normal,
 // `result` set to `Result::Ok` (and `out` populated) or `Result::Failed`
 // (a zero-length edge, an edge parallel to `normal`, or a near-180-degree
 // fold) otherwise.
+// A single corner's own contribution to the assembled Round-style offset
+// curve below: `departs` is where the PRECEDING edge's own offset line
+// should end, `arrives` is where the FOLLOWING edge's own offset line
+// should start - equal to each other (the exact miter point) for a
+// `Sharp`-equivalent corner (concave/contracting, or a degenerate near-
+// zero turn), or the two distinct tangent points of a genuine fillet arc
+// (`has_arc`, with `arc` the arc itself, built directly rather than via
+// `FilletCornerArc()` since this corner's own tangent points and radius
+// are already known up front - no tangent-length solve needed, unlike
+// `FilletCornerArc()`'s own two-legs-plus-unknown-corner case).
+struct RoundOffsetCorner {
+  Point3d departs;
+  Point3d arrives;
+  bool has_arc = false;
+  NurbsCurve arc;
+};
+
+// Builds one corner of the Round-style polyline offset at `vertex`, whose
+// incoming/outgoing edges have already-offset unit directions `n0`/`n1`
+// (same convention as the Sharp miter loop below), in the plane with
+// normal `normal`. `turn_n` - `dot(cross(n0, n1), normal)` - is passed in
+// rather than recomputed here since it is also independently useful for a
+// caller-side sanity check; its SIGN, together with `distance`'s own
+// sign, decides whether this corner is the "fill" (convex, gap-opening)
+// side of its own turn or the "cross" (concave, contracting) side - a
+// corner's own fixed geometry (`turn_n`'s sign) means opposite things for
+// an outward vs an inward offset, which is exactly why `distance`'s sign
+// has to enter this test too, not just the turn's own handedness. Only a
+// `Round`-requested FILL corner ever gets an arc; a cross corner is
+// always the exact miter-line intersection, identical to `Sharp`, since
+// there is no gap there to round in the first place (rounding would cut
+// into the shape instead of filling a point sticking out of it).
+//
+// A fill corner's arc is centered on `vertex` itself with radius
+// `|distance|`, running from `vertex + distance * n0` to
+// `vertex + distance * n1` - both already exactly `|distance|` from
+// `vertex` by construction, unlike `FilletCornerArc()`'s own two-legs-
+// plus-unknown-corner case, which has to solve for its tangent points
+// from an independently-chosen radius first. Only the sweep direction
+// needs resolving, via the same "measure the angle, flip if negative"
+// trick `FilletCornerArc()` already uses (curve.cpp, above).
+//
+// Returns `Result::Failed` only for the same genuine degeneracy the
+// `Sharp` loop already refuses on a cross corner (a near-180-degree fold,
+// where the two offset lines have no finite intersection) - a fill
+// corner needs no such check: its arc is built directly from `n0`/`n1`
+// and never requires their lines to actually intersect, so even a turn
+// close to a full 180 degrees (where `Sharp`'s own miter would be
+// refused) still gets a well-defined, near-semicircular arc.
+Result BuildRoundOffsetCorner(const Point3d& vertex, const Vector3d& normal, const Vector3d& n0,
+                               const Vector3d& n1, double turn_n, double distance,
+                               CurveOffsetCornerStyle corner_style, RoundOffsetCorner& corner) {
+  const bool is_fill_corner = corner_style == CurveOffsetCornerStyle::Round &&
+                               ((turn_n > 1e-9 && distance > 0.0) || (turn_n < -1e-9 && distance < 0.0));
+  if (is_fill_corner) {
+    const Point3d T0 = vertex + distance * n0;
+    const Point3d T1 = vertex + distance * n1;
+    Vector3d xaxis = T0 - vertex;
+    Vector3d zaxis = normal;
+    if (xaxis.Unitize()) {
+      Vector3d yaxis = ON_CrossProduct(zaxis, xaxis);
+      if (yaxis.Unitize()) {
+        const Vector3d to_T1 = T1 - vertex;
+        double phi = std::atan2(ON_DotProduct(to_T1, yaxis), ON_DotProduct(to_T1, xaxis));
+        if (phi < 0.0) {
+          zaxis = -zaxis;
+          yaxis = -yaxis;
+          phi = std::atan2(ON_DotProduct(to_T1, yaxis), ON_DotProduct(to_T1, xaxis));
+        }
+        if (phi >= 1e-9) {
+          const ON_Plane arc_plane(vertex, xaxis, yaxis);
+          const ON_Arc arc(arc_plane, std::fabs(distance), phi);
+          ON_NurbsCurve arc_nurbs;
+          if (arc.GetNurbForm(arc_nurbs) != 0) {
+            NurbsCurve arc_curve;
+            arc_curve.raw() = arc_nurbs;
+            corner.departs = T0;
+            corner.arrives = T1;
+            corner.has_arc = true;
+            corner.arc = arc_curve;
+            return Result::Ok;
+          }
+        }
+      }
+    }
+    // Degenerate arc frame (T0 effectively equals vertex, or T1 lands
+    // exactly opposite T0's own xaxis): fall through to the exact miter
+    // point below instead, the same as any non-fill corner.
+  }
+
+  const double denom = 1.0 + ON_DotProduct(n0, n1);
+  if (denom <= 1e-9) return Result::Failed;  // near-180-degree fold: no finite miter point exists
+  const Point3d miter = vertex + (distance / denom) * (n0 + n1);
+  corner.departs = miter;
+  corner.arrives = miter;
+  corner.has_arc = false;
+  return Result::Ok;
+}
+
 bool TryOffsetPolylineAlongNormal(const NurbsCurve& curve, const Vector3d& normal, double distance,
-                                   double tol, NurbsCurve& out, Result& result) {
+                                   double tol, CurveOffsetCornerStyle corner_style, NurbsCurve& out,
+                                   Result& result) {
   ON_SimpleArray<ON_3dPoint> pline;
   if (!curve.raw().IsPolyline(&pline)) return false;
 
@@ -173,29 +273,92 @@ bool TryOffsetPolylineAlongNormal(const NurbsCurve& curve, const Vector3d& norma
     ndir[static_cast<size_t>(i)] = n;
   }
 
-  std::vector<Point3d> offset_v(static_cast<size_t>(vcount));
-  for (int i = 0; i < vcount; ++i) {
-    if (!closed && i == 0) {
-      offset_v[0] = v[0] + distance * ndir[0];
-      continue;
+  if (corner_style == CurveOffsetCornerStyle::Sharp) {
+    std::vector<Point3d> offset_v(static_cast<size_t>(vcount));
+    for (int i = 0; i < vcount; ++i) {
+      if (!closed && i == 0) {
+        offset_v[0] = v[0] + distance * ndir[0];
+        continue;
+      }
+      if (!closed && i == vcount - 1) {
+        offset_v[static_cast<size_t>(i)] =
+            v[static_cast<size_t>(i)] + distance * ndir[static_cast<size_t>(edge_count - 1)];
+        continue;
+      }
+      const Vector3d& n0 = ndir[static_cast<size_t>((i - 1 + edge_count) % edge_count)];
+      const Vector3d& n1 = ndir[static_cast<size_t>(i % edge_count)];
+      const double denom = 1.0 + ON_DotProduct(n0, n1);
+      if (denom <= 1e-9) {
+        result = Result::Failed;  // near-180-degree fold: no finite miter point exists
+        return true;
+      }
+      offset_v[static_cast<size_t>(i)] = v[static_cast<size_t>(i)] + (distance / denom) * (n0 + n1);
     }
-    if (!closed && i == vcount - 1) {
-      offset_v[static_cast<size_t>(i)] =
-          v[static_cast<size_t>(i)] + distance * ndir[static_cast<size_t>(edge_count - 1)];
-      continue;
-    }
-    const Vector3d& n0 = ndir[static_cast<size_t>((i - 1 + edge_count) % edge_count)];
-    const Vector3d& n1 = ndir[static_cast<size_t>(i % edge_count)];
-    const double denom = 1.0 + ON_DotProduct(n0, n1);
-    if (denom <= 1e-9) {
-      result = Result::Failed;  // near-180-degree fold: no finite miter point exists
-      return true;
-    }
-    offset_v[static_cast<size_t>(i)] = v[static_cast<size_t>(i)] + (distance / denom) * (n0 + n1);
+
+    if (closed) offset_v.push_back(offset_v.front());
+    out = NurbsCurve::FromControlPoints(offset_v, 1);
+    result = Result::Ok;
+    return true;
   }
 
-  if (closed) offset_v.push_back(offset_v.front());
-  out = NurbsCurve::FromControlPoints(offset_v, 1);
+  // --- Round: assemble one line per edge, joined through a genuine
+  // fillet arc at every FILL corner (BuildRoundOffsetCorner() above) via
+  // NurbsCurve::Join() - the same position-only C0 line-arc-line splice
+  // FilletCorner() already uses for its own single corner, repeated here
+  // for however many corners this polyline has. A non-fill corner
+  // contributes no separate piece at all: its `departs`/`arrives` are the
+  // same exact miter point, so the two adjacent edge lines already meet
+  // there on their own.
+  std::vector<RoundOffsetCorner> corners(static_cast<size_t>(vcount));
+  std::vector<bool> corner_valid(static_cast<size_t>(vcount), false);
+  for (int i = 0; i < vcount; ++i) {
+    if (!closed && (i == 0 || i == vcount - 1)) continue;
+    const Vector3d& n0 = ndir[static_cast<size_t>((i - 1 + edge_count) % edge_count)];
+    const Vector3d& n1 = ndir[static_cast<size_t>(i % edge_count)];
+    const double turn_n = ON_DotProduct(ON_CrossProduct(n0, n1), normal);
+    if (BuildRoundOffsetCorner(v[static_cast<size_t>(i)], normal, n0, n1, turn_n, distance, corner_style,
+                               corners[static_cast<size_t>(i)]) != Result::Ok) {
+      result = Result::Failed;
+      return true;
+    }
+    corner_valid[static_cast<size_t>(i)] = true;
+  }
+
+  auto EdgeStart = [&](int edge_index) -> Point3d {
+    if (!closed && edge_index == 0) return v[0] + distance * ndir[0];
+    return corners[static_cast<size_t>(edge_index)].arrives;
+  };
+  auto EdgeEnd = [&](int edge_index) -> Point3d {
+    if (!closed && edge_index == edge_count - 1) {
+      return v[static_cast<size_t>(vcount - 1)] + distance * ndir[static_cast<size_t>(edge_count - 1)];
+    }
+    return corners[static_cast<size_t>((edge_index + 1) % vcount)].departs;
+  };
+
+  const double join_tol = std::max(std::fabs(distance), 1.0) * 1e-6;
+  NurbsCurve assembled = NurbsCurve::FromControlPoints({EdgeStart(0), EdgeEnd(0)}, 1);
+  for (int edge_index = 1; edge_index <= edge_count - 1; ++edge_index) {
+    const int vertex_index = edge_index;  // corner shared by edge (edge_index - 1) and edge_index
+    if (corner_valid[static_cast<size_t>(vertex_index)] && corners[static_cast<size_t>(vertex_index)].has_arc) {
+      if (assembled.Join(corners[static_cast<size_t>(vertex_index)].arc, join_tol) != Result::Ok) {
+        result = Result::Failed;
+        return true;
+      }
+    }
+    NurbsCurve edge_piece = NurbsCurve::FromControlPoints({EdgeStart(edge_index), EdgeEnd(edge_index)}, 1);
+    if (assembled.Join(edge_piece, join_tol) != Result::Ok) {
+      result = Result::Failed;
+      return true;
+    }
+  }
+  if (closed && corner_valid[0] && corners[0].has_arc) {
+    if (assembled.Join(corners[0].arc, join_tol) != Result::Ok) {
+      result = Result::Failed;
+      return true;
+    }
+  }
+
+  out = assembled;
   result = Result::Ok;
   return true;
 }
@@ -1193,7 +1356,8 @@ Result NurbsCurve::Split(double t, NurbsCurve& out_left, NurbsCurve& out_right) 
   return Result::Ok;
 }
 
-Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolerance) const {
+Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolerance,
+                                  CurveOffsetCornerStyle corner_style) const {
   if (!ON_IsValid(distance)) {
     throw std::invalid_argument(
         "dino8::kernel::NurbsCurve::OffsetInPlane: distance must be finite");
@@ -1225,7 +1389,8 @@ Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolera
   {
     Result polyline_result;
     NurbsCurve polyline_out;
-    if (TryOffsetPolylineAlongNormal(*this, plane.zaxis, distance, tol, polyline_out, polyline_result)) {
+    if (TryOffsetPolylineAlongNormal(*this, plane.zaxis, distance, tol, corner_style, polyline_out,
+                                      polyline_result)) {
       if (polyline_result == Result::Ok) out = polyline_out;
       return polyline_result;
     }
@@ -1255,8 +1420,8 @@ Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolera
   return OffsetGeneralAlongNormal(*this, plane.zaxis, distance, tol, out);
 }
 
-Result NurbsCurve::OffsetInPlane(const ON_Plane& plane, double distance, NurbsCurve& out,
-                                  double tolerance) const {
+Result NurbsCurve::OffsetInPlane(const ON_Plane& plane, double distance, NurbsCurve& out, double tolerance,
+                                  CurveOffsetCornerStyle corner_style) const {
   if (!ON_IsValid(distance)) {
     throw std::invalid_argument(
         "dino8::kernel::NurbsCurve::OffsetInPlane: distance must be finite");
@@ -1288,7 +1453,8 @@ Result NurbsCurve::OffsetInPlane(const ON_Plane& plane, double distance, NurbsCu
   {
     Result polyline_result;
     NurbsCurve polyline_out;
-    if (TryOffsetPolylineAlongNormal(*this, plane.zaxis, distance, tol, polyline_out, polyline_result)) {
+    if (TryOffsetPolylineAlongNormal(*this, plane.zaxis, distance, tol, corner_style, polyline_out,
+                                      polyline_result)) {
       if (polyline_result == Result::Ok) out = polyline_out;
       return polyline_result;
     }

@@ -62678,6 +62678,156 @@ void TestCurveOffsetInPlaneWithExplicitPlanePolylineMatchesSinglePlaneOverload()
   }
 }
 
+// `CurveOffsetCornerStyle::Round`: on a genuinely convex corner (one
+// where the exact Sharp miter point sticks out PAST the fillet radius -
+// every corner of this already-established open-polyline fixture, per
+// `TestCurveOffsetInPlaneOpenPolylineExactSharpCorners`'s own "same side
+// as the verified endpoint offset" check), Round replaces the sharp spike
+// with a circular arc of radius `distance` centered on the original
+// vertex. Verified independently of the implementation: the arc's own
+// 45-degree bisector point (for this fixture's two 90-degree corners) is
+// computed here from scratch, not reused from `BuildRoundOffsetCorner()`,
+// and must lie ON the result while Sharp's own (farther) corner point
+// does not.
+void TestCurveOffsetInPlaneRoundStyleFilletsConvexCorners() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point3d> cps = {
+      Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  ON_Plane plane;
+  Check(poly.raw().IsPlanar(&plane, 1e-9), "OffsetInPlane Round setup: curve is planar");
+
+  NurbsCurve out_sharp, out_round;
+  Check(poly.OffsetInPlane(1.0, out_sharp) == Result::Ok, "Sharp offset still succeeds on this fixture");
+  Check(poly.OffsetInPlane(1.0, out_round, -1.0, CurveOffsetCornerStyle::Round) == Result::Ok,
+        "Round offset succeeds on the same open polyline");
+
+  // A plain 4-CV degree-1 polyline can no longer represent two genuinely
+  // rounded corners - proof Round did not silently fall back to Sharp's
+  // own construction.
+  Check(!(out_round.Degree() == 1 && out_round.ControlPointCount() == 4),
+        "Round offset is NOT the same plain 4-CV polyline Sharp produces - the corners were genuinely rounded");
+
+  for (int i = 1; i <= 2; ++i) {
+    Vector3d edge_in_dir = cps[static_cast<size_t>(i)] - cps[static_cast<size_t>(i - 1)];
+    Vector3d edge_out_dir = cps[static_cast<size_t>(i + 1)] - cps[static_cast<size_t>(i)];
+    edge_in_dir.Unitize();
+    edge_out_dir.Unitize();
+    Vector3d n0 = ON_CrossProduct(edge_in_dir, plane.zaxis);
+    Vector3d n1 = ON_CrossProduct(edge_out_dir, plane.zaxis);
+    n0.Unitize();
+    n1.Unitize();
+
+    const Point3d vertex = cps[static_cast<size_t>(i)];
+    const Point3d T0 = vertex + 1.0 * n0;
+    const Point3d T1 = vertex + 1.0 * n1;
+    Vector3d bisector = n0 + n1;
+    const double bisector_len = bisector.Length();
+    Check(bisector_len > 1e-9, "Round corner setup: the two offset directions are not opposite");
+    const Point3d bisector_point = vertex + (1.0 / bisector_len) * bisector;
+
+    Check(out_round.ClosestPoint(T0, 2000).DistanceTo(T0) < 1e-6,
+          "Round offset: the result passes through the arc's own start tangent point T0");
+    Check(out_round.ClosestPoint(T1, 2000).DistanceTo(T1) < 1e-6,
+          "Round offset: the result passes through the arc's own end tangent point T1");
+    Check(out_round.ClosestPoint(bisector_point, 2000).DistanceTo(bisector_point) < 1e-6,
+          "Round offset: the result passes through the arc's own independently-computed 45-degree bisector "
+          "point at exactly radius 1.0 from the vertex - proof this corner is a genuine circular arc, not "
+          "just T0/T1 joined by a straight miter");
+
+    // Sharp's own corner for this 90-degree turn sits at distance
+    // sqrt(2) =~ 1.414 from the vertex, well past the fillet radius
+    // Round's own arc is confined to - confirming Round genuinely
+    // shortened this corner rather than coincidentally reproducing it.
+    const Point3d sharp_corner = out_sharp.ControlPointAt(i);
+    Check((sharp_corner - vertex).Length() > 1.3,
+          "Round corner setup: Sharp's own corner for this fixture really is farther than the fillet radius");
+    Check(out_round.ClosestPoint(sharp_corner, 2000).DistanceTo(sharp_corner) > 0.1,
+          "Round offset: the result does NOT pass through Sharp's own (farther) sharp corner point");
+  }
+}
+
+// On a polygon with one reflex (concave) vertex, `Round` must leave that
+// one corner exactly as `Sharp` already does - the same miter-line
+// crossing, since there is no gap there to fill - while still rounding
+// its genuinely convex neighbors. Reuses
+// `TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter`'s
+// own L-tromino fixture (vertex index 3 is its one reflex corner).
+void TestCurveOffsetInPlaneRoundStyleLeavesConcaveCornerAsExactMiter() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0),  Point3d(10, 0, 0), Point3d(10, 4, 0),
+                                       Point3d(4, 4, 0),  Point3d(4, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out_sharp, out_round;
+  Check(poly.OffsetInPlane(1.0, out_sharp) == Result::Ok, "Sharp offset still succeeds on the reflex fixture");
+  Check(poly.OffsetInPlane(1.0, out_round, -1.0, CurveOffsetCornerStyle::Round) == Result::Ok,
+        "Round offset succeeds on the same reflex fixture");
+
+  const Point3d reflex_sharp_corner = out_sharp.ControlPointAt(3);
+  Check(out_round.ClosestPoint(reflex_sharp_corner, 2000).DistanceTo(reflex_sharp_corner) < 1e-6,
+        "Round offset: the reflex (concave) corner is untouched - the result still passes through exactly "
+        "Sharp's own miter point there");
+
+  // The reflex vertex's two immediate neighbors (indices 2 and 4) are
+  // genuinely convex, per the same turn-sign check the concave-polygon
+  // test above already uses to confirm index 3 alone disagrees with the
+  // rest - each one's own Sharp corner point should no longer lie on the
+  // Round result.
+  for (int i : {2, 4}) {
+    const Point3d sharp_corner = out_sharp.ControlPointAt(i);
+    Check(out_round.ClosestPoint(sharp_corner, 2000).DistanceTo(sharp_corner) > 0.01,
+          "Round offset: a genuinely convex neighbor of the reflex vertex is NOT left at Sharp's own corner "
+          "point - it was rounded");
+  }
+}
+
+// A CLOSED polygon exercises the wraparound seam corner Round's own
+// assembly has to splice last (the open-polyline tests above never touch
+// it) - must still close up exactly, and its own total length must match
+// the independent closed-form perimeter of a rounded square: four
+// straight sides at the ORIGINAL edge length (Round's own tangent points
+// sit at the same "edge-fraction" position Sharp's miter extends from,
+// unlike a chamfer, which would shorten them) plus four quarter-circle
+// arcs of radius `distance` - i.e. one full circle of that radius.
+void TestCurveOffsetInPlaneRoundStyleClosedSquareMatchesClosedFormPerimeter() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out;
+  const double distance = 1.0;
+  Check(poly.OffsetInPlane(distance, out, -1.0, CurveOffsetCornerStyle::Round) == Result::Ok,
+        "Round offset succeeds on a closed square");
+  Check(out.IsClosed(), "Round offset on a closed square: the result is itself closed");
+  Check(out.PointAt(out.Domain().min).DistanceTo(out.PointAt(out.Domain().max)) < 1e-6,
+        "Round offset on a closed square: the wraparound seam corner closes the loop exactly");
+
+  const double expected_length = 4.0 * 10.0 + 2.0 * ON_PI * distance;
+  Check(std::abs(out.Length(4000) - expected_length) < 1e-3,
+        "Round offset on a closed square: total length matches 4 full-length sides plus one full circle of "
+        "radius `distance` (four quarter-circle corners) - the independent closed-form perimeter of a "
+        "rounded square, not Sharp's own longer mitered-corner perimeter");
+}
+
 void TestNurbsCurveFilletCornerRightAngle() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -66859,6 +67009,9 @@ int main() {
   TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter();
   TestCurveOffsetInPlanePolylineRefusesNearFullFold();
   TestCurveOffsetInPlaneWithExplicitPlanePolylineMatchesSinglePlaneOverload();
+  TestCurveOffsetInPlaneRoundStyleFilletsConvexCorners();
+  TestCurveOffsetInPlaneRoundStyleLeavesConcaveCornerAsExactMiter();
+  TestCurveOffsetInPlaneRoundStyleClosedSquareMatchesClosedFormPerimeter();
   TestNurbsCurveFilletCornerRightAngle();
   TestNurbsCurveFilletCornerObtuseAngleAndTangency();
   TestNurbsCurveFilletCornerRejectsInvalidInput();

@@ -428,6 +428,26 @@ void BuildResiduals(const std::vector<Constraint>& constraints, VarSet& vars, co
 
 }  // namespace
 
+// Every solver unknown (2 per distinct point reference, 1 per distinct
+// radius object - see VarSet) feeds an n*n normal-equations matrix that
+// this function both allocates and Gaussian-eliminates (O(n^2) and O(n^3)
+// respectively) up to 60 times. dino8.constraints is document user text -
+// a plain string field a crafted/corrupted .3dm can set to anything (see
+// LoadConstraints's own doc comment on that same untrusted-input premise) -
+// so there is nothing stopping it from listing thousands of constraints
+// against thousands of distinct (mostly nonexistent) object/radius
+// references, each one a genuine, LoadConstraints-accepted unknown. Before
+// this check, that alone forced an n in the thousands: multiple n*n double
+// allocations (gigabytes, for n in the tens of thousands) and an O(n^3)
+// elimination repeated up to 60 times, run from AutoResolveFrame on every
+// frame a constrained object's bounding box changes - freezing or OOM-
+// killing the app from nothing but opening the file, the same "untrusted
+// file count reaches unbounded work" hazard already fixed for OFF/LAS/PLY
+// import. Real sketches - even heavily constrained ones - need nowhere
+// near this many unknowns; it's headroom above any legitimate use, just
+// low enough to reject the lie outright instead of acting on it.
+constexpr int kMaxSketchSolveVariables = 256;
+
 bool SolveAll(Document& doc, const dino8::app::ConstructionPlane& cplane, std::vector<std::string>& report) {
   std::vector<Constraint> constraints = LoadConstraints(doc);
   report.clear();
@@ -436,6 +456,12 @@ bool SolveAll(Document& doc, const dino8::app::ConstructionPlane& cplane, std::v
   VarSet vars;
   std::vector<double> x;
   CollectVariables(doc, cplane, constraints, vars, x);
+  if (vars.Size() > kMaxSketchSolveVariables) {
+    report.push_back("Too many constraint unknowns to solve (" + std::to_string(vars.Size()) +
+                      " > " + std::to_string(kMaxSketchSolveVariables) +
+                      ") - the constraint list is likely corrupt.");
+    return false;
+  }
 
   // Fixed constraints pin points[0] at the world position recorded when
   // the constraint was created; project that once into this solve's own

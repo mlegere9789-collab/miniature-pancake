@@ -896,6 +896,31 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_isolate_bench PRIVATE dino8_kernel)
   add_test(NAME dino8_isolate_bench COMMAND dino8_isolate_bench)
 
+  # sketch/Constraints.cpp's SolveAll() unknown-count guard (see
+  # tests/test_sketch_constraints.cpp's own file comment): dino8.constraints
+  # is plain document user text, so a crafted/corrupted .3dm can list far
+  # more distinct constraint unknowns than any real sketch needs, each one
+  # feeding an n*n Levenberg-Marquardt matrix SolveAll both allocates and
+  # Gaussian-eliminates (O(n^2)/O(n^3)) up to 60 times. AutoResolveFrame
+  # itself needs the full Application/Viewport (not used here), but
+  # SolveAll/LoadConstraints only need Document - no GL/ImGui code linked.
+  add_executable(dino8_test_sketch_constraints tests/test_sketch_constraints.cpp src/doc/Document.cpp
+                                                src/doc/SceneObject.cpp src/doc/SubObjectEdit.cpp
+                                                src/geom/BrepMesher.cpp src/sketch/Constraints.cpp
+                                                src/util/json_mini.cpp)
+  target_include_directories(dino8_test_sketch_constraints PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${imgui_SOURCE_DIR})
+  target_link_libraries(dino8_test_sketch_constraints PRIVATE dino8_kernel)
+  # Constraints.cpp's AutoResolveFrame() (not exercised by this test) calls
+  # real Application/Viewport methods this target never links - dead code
+  # with no live caller here, so per-function sections + a dead-section
+  # sweep at link time drop it (and its otherwise-unresolved references)
+  # before the linker ever needs to resolve them, rather than pulling in
+  # the entire GL/ImGui app just to satisfy a function this binary never
+  # calls.
+  target_compile_options(dino8_test_sketch_constraints PRIVATE -ffunction-sections -fdata-sections)
+  target_link_options(dino8_test_sketch_constraints PRIVATE -Wl,--gc-sections)
+  add_test(NAME dino8_sketch_constraints COMMAND dino8_test_sketch_constraints)
+
   # Timing benchmark + regression guard for Array/ArrayLinear/ArrayPolar and
   # ApplyXform's Copy=Yes path (cmd_transform.cpp): Document::Find(id) once
   # per (copy x selected id) pair (see tests/array_bench.cpp) vs resolving
