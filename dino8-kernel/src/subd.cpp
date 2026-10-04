@@ -278,13 +278,14 @@ Mesh SubD::Boolean(const SubD& other, BooleanOp op) const {
   return BooleanCombine(ToApproximateMesh(), other.ToApproximateMesh(), op);
 }
 
-SubD SubD::BooleanToSubD(const SubD& other, BooleanOp op) const {
+SubD SubD::BooleanToSubD(const SubD& other, BooleanOp op, double max_dihedral_deg) const {
   // Delegates to FromMeshQuadRemeshed() (this class's own general
-  // TrisToQuads()+FromControlMesh() composition, added this pass -
-  // BooleanToSubD() was that composition's only caller before now) so
-  // the two methods can't drift apart; behavior is unchanged (default
-  // max_dihedral_deg, no double-edge creasing).
-  return FromMeshQuadRemeshed(Boolean(other, op));
+  // TrisToQuads()+FromControlMesh() composition - BooleanToSubD() was
+  // that composition's only caller before FromMeshQuadRemeshed() existed)
+  // so the two methods can't drift apart; max_dihedral_deg forwards
+  // straight through instead of a hardcoded 20.0 (see this method's own
+  // doc comment, subd.h).
+  return FromMeshQuadRemeshed(Boolean(other, op), max_dihedral_deg);
 }
 
 SubD SubD::Transform(const ON_Xform& xform) const {

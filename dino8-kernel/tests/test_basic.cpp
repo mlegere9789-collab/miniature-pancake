@@ -25079,6 +25079,88 @@ void TestSubDFromBrepTessellatedRejectsInvalidDivisions() {
   Check(threw_negative_v, "SubD::FromBrepTessellated throws std::invalid_argument when v_divisions < 1");
 }
 
+// crease_at_double_edges forwards through FromMeshQuadRemeshed() exactly as
+// it does through FromControlMesh() directly - reusing
+// MakeHingedDoubleEdgeMesh() (both its faces are already quads, so
+// TrisToQuads() is a no-op here and cannot itself be masking the flag's own
+// effect).
+void TestSubDFromMeshQuadRemeshedForwardsCreaseAtDoubleEdges() {
+  using dino8::kernel::SubD;
+
+  const auto hinge = MakeHingedDoubleEdgeMesh();
+  const SubD smooth = SubD::FromMeshQuadRemeshed(hinge, /*max_dihedral_deg=*/20.0,
+                                                  /*crease_at_double_edges=*/false);
+  const SubD creased = SubD::FromMeshQuadRemeshed(hinge, /*max_dihedral_deg=*/20.0,
+                                                   /*crease_at_double_edges=*/true);
+
+  Check(smooth.CreaseEdgeCount() == 6,
+        "without crease_at_double_edges, FromMeshQuadRemeshed() matches "
+        "TestSubDCreaseAtDoubleEdgeKeepsFoldStraight's own smooth case: only the 6 boundary edges "
+        "are creases");
+  Check(creased.CreaseEdgeCount() == 7,
+        "with crease_at_double_edges, the interior fold edge is creased too - all 7 edges");
+}
+
+// Mesh::TrisToQuads()'s own `max_dihedral_deg` gate (already proven at the
+// Mesh level by TestMeshTrisToQuadsGatesOnDihedralAngle) must reach through
+// FromMeshQuadRemeshed() unchanged: the same 5deg tent fold merges into one
+// quad face at the default 20deg threshold but is refused - left as 2
+// triangle faces - once the caller explicitly lowers the threshold below 5.
+void TestSubDFromMeshQuadRemeshedRespectsMaxDihedralDegThreshold() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const double theta = 5.0 * 3.14159265358979323846 / 180.0;
+  Mesh tent;
+  ON_Mesh& raw = tent.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));  // a
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));  // b
+  raw.m_V.Append(ON_3fPoint(0.5f, 1.0f, 0.0f));  // c (triangle i's own apex)
+  raw.m_V.Append(ON_3fPoint(0.5f, static_cast<float>(-std::cos(theta)), static_cast<float>(std::sin(theta))));  // d
+  ON_MeshFace fi;
+  fi.vi[0] = 0; fi.vi[1] = 1; fi.vi[2] = 2; fi.vi[3] = 2;
+  raw.m_F.Append(fi);
+  ON_MeshFace fj;
+  fj.vi[0] = 1; fj.vi[1] = 0; fj.vi[2] = 3; fj.vi[3] = 3;
+  raw.m_F.Append(fj);
+
+  const SubD default_threshold = SubD::FromMeshQuadRemeshed(tent);
+  Check(default_threshold.FaceCount() == 1,
+        "at the default 20deg threshold, the 5deg tent fold merges into one quad face before "
+        "FromControlMesh() sees it");
+
+  const SubD low_threshold = SubD::FromMeshQuadRemeshed(tent, /*max_dihedral_deg=*/1.0,
+                                                          /*crease_at_double_edges=*/false);
+  Check(low_threshold.FaceCount() == 2,
+        "lowering max_dihedral_deg to 1.0 (below the tent's own 5deg fold) reaches all the way "
+        "through to TrisToQuads() and refuses the merge - the cage keeps both original triangle "
+        "faces, proving the parameter is genuinely forwarded, not ignored or hardcoded");
+}
+
+// BooleanToSubD()'s own new `max_dihedral_deg` parameter (same follow-up as
+// FromMeshQuadRemeshed() above) defaults to its prior hardcoded 20.0, so an
+// explicit 20.0 must reproduce TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads'
+// own result exactly - proving the 2-argument call every existing caller
+// already uses still behaves identically now that the parameter exists.
+void TestSubDBooleanToSubDMaxDihedralDegDefaultMatchesExplicitValue() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::SubD;
+
+  const SubD a = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+  const SubD b = SubD::FromControlMesh(MakeQuadBoxMesh(5, 0, 0, 7, 2, 2));
+
+  const SubD default_arg = a.BooleanToSubD(b, BooleanOp::Union);
+  const SubD explicit_arg = a.BooleanToSubD(b, BooleanOp::Union, /*max_dihedral_deg=*/20.0);
+
+  Check(default_arg.FaceCount() == 12 && explicit_arg.FaceCount() == 12,
+        "the 2-argument call (relying on the new parameter's default) and an explicit 20.0 both "
+        "recombine the same 12 original box faces, matching "
+        "TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads' own count");
+  Check(std::abs(default_arg.ToApproximateMesh().Volume() - explicit_arg.ToApproximateMesh().Volume()) < 1e-12,
+        "...with identical volumes, confirming the default argument truly reproduces the prior "
+        "hardcoded-20.0 behavior rather than silently changing it");
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -66245,6 +66327,9 @@ int main() {
   TestSubDFromBrepTessellatedBoxRecombinesIntoSixQuads();
   TestSubDFromBrepTessellatedApproximatesSphereFromInside();
   TestSubDFromBrepTessellatedRejectsInvalidDivisions();
+  TestSubDFromMeshQuadRemeshedForwardsCreaseAtDoubleEdges();
+  TestSubDFromMeshQuadRemeshedRespectsMaxDihedralDegThreshold();
+  TestSubDBooleanToSubDMaxDihedralDegDefaultMatchesExplicitValue();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
