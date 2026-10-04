@@ -242,17 +242,30 @@ class ScriptCommand : public Command {
     else ctx.App().Lua().ResumePoint(p);
     Pump(ctx);
   }
-  void OnNumber(CommandContext& ctx, double v) override { ctx.App().Lua().ResumeNumber(v); Pump(ctx); }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (python_active_) ctx.App().Python().ResumeNumber(v);
+    else ctx.App().Lua().ResumeNumber(v);
+    Pump(ctx);
+  }
   void OnText(CommandContext& ctx, const std::string& t) override {
     if (python_active_) ctx.App().Python().ResumeText(t);
     else ctx.App().Lua().ResumeText(t);
     Pump(ctx);
   }
-  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override { ctx.App().Lua().ResumeObjects(ids); Pump(ctx); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (python_active_) ctx.App().Python().ResumeObjects(ids);
+    else ctx.App().Lua().ResumeObjects(ids);
+    Pump(ctx);
+  }
   void OnEnter(CommandContext& ctx) override {
-    if (python_active_) ctx.App().Python().ResumeNil();
-    else if (want == Want::Objects) ctx.App().Lua().ResumeObjects({});
-    else ctx.App().Lua().ResumeNil();
+    if (python_active_) {
+      if (want == Want::Objects) ctx.App().Python().ResumeObjects({});
+      else ctx.App().Python().ResumeNil();
+    } else if (want == Want::Objects) {
+      ctx.App().Lua().ResumeObjects({});
+    } else {
+      ctx.App().Lua().ResumeNil();
+    }
     Pump(ctx);
   }
   void OnCancel(CommandContext& ctx) override {
@@ -293,16 +306,21 @@ class ScriptCommand : public Command {
 
   // Reflects the running script's current rs.Get*/dino8.Get* prompt (or
   // finishes the command once the script itself has finished or failed).
-  // Python only ever requests Point or Text (see PythonEngine.h) - Objects/
-  // Number/Integer can't come from python_active_.
+  // Python and Lua now both reach every ScriptWant (see PythonEngine.h), so
+  // both branches share the same switch.
   void Pump(CommandContext& ctx) {
     if (python_active_) {
       PythonEngine& py = ctx.App().Python();
-      if (!py.Running()) { Finish(); return; }
+      if (!py.Running() || !py.Suspended()) { Finish(); return; }
       const ScriptRequest& r = py.Request();
-      if (py.Suspended() && r.want == ScriptWant::Point) WantPoint(r.prompt);
-      else if (py.Suspended() && r.want == ScriptWant::Text) WantText(r.prompt, r.default_text);
-      else Finish();
+      switch (r.want) {
+        case ScriptWant::Point: WantPoint(r.prompt); break;
+        case ScriptWant::Objects: WantObjects(r.prompt, std::max(0, r.min_objects)); accept_preselection = true; break;
+        case ScriptWant::Text: WantText(r.prompt, r.default_text); break;
+        case ScriptWant::Number:
+        case ScriptWant::Integer: WantNumber(r.prompt, r.default_number); break;
+        case ScriptWant::Nothing: default: Finish(); break;
+      }
       return;
     }
     LuaEngine& lua = ctx.App().Lua();
@@ -327,11 +345,11 @@ class ScriptCommand : public Command {
 // (PythonEngine) when this build has one (DINO8_HAVE_PYTHON - see
 // CMakeLists.txt), or prints an honest "not available" message otherwise.
 //
-// PythonEngine.Start()/StartFile() now run the script on a worker thread and
-// suspend it there when it calls dino8.GetPoint() (see PythonEngine.h) -
-// Pump/OnPoint/OnEnter/OnCancel below mirror ScriptCommand's own Lua pump
-// loop so a RunPythonScript invocation can go interactive too, not just
-// finish in the same call that started it.
+// PythonEngine.Start()/StartFile() run the script on a worker thread and
+// suspend it there when it calls any dino8.Get*() prompt (see PythonEngine.h)
+// - Pump/OnPoint/OnNumber/OnText/OnObjects/OnEnter/OnCancel below mirror
+// ScriptCommand's own Lua pump loop so a RunPythonScript invocation can go
+// interactive too, not just finish in the same call that started it.
 class PythonScriptCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
@@ -371,22 +389,33 @@ class PythonScriptCommand : public Command {
   }
 
   void OnPoint(CommandContext& ctx, Point3d p) override { ctx.App().Python().ResumePoint(p); Pump(ctx); }
+  void OnNumber(CommandContext& ctx, double v) override { ctx.App().Python().ResumeNumber(v); Pump(ctx); }
   void OnText(CommandContext& ctx, const std::string& t) override { ctx.App().Python().ResumeText(t); Pump(ctx); }
-  void OnEnter(CommandContext& ctx) override { ctx.App().Python().ResumeNil(); Pump(ctx); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override { ctx.App().Python().ResumeObjects(ids); Pump(ctx); }
+  void OnEnter(CommandContext& ctx) override {
+    if (want == Want::Objects) ctx.App().Python().ResumeObjects({});
+    else ctx.App().Python().ResumeNil();
+    Pump(ctx);
+  }
   void OnCancel(CommandContext& ctx) override { ctx.App().Python().Abort(); }
 
  private:
-  // Reflects the running script's current dino8.GetPoint()/dino8.GetString()
-  // prompt (or finishes the command once the script itself has finished or
-  // failed). Only ScriptWant::Point/Text are ever possible here (see
-  // PythonEngine.h) - anything else just finishes, same as ScriptWant::Nothing.
+  // Reflects the running script's current dino8.Get*() prompt (or finishes
+  // the command once the script itself has finished or failed). Every
+  // ScriptWant now reaches here (see PythonEngine.h) - mirrors ScriptCommand's
+  // own Lua/Python Pump switch above.
   void Pump(CommandContext& ctx) {
     PythonEngine& py = ctx.App().Python();
-    if (!py.Running()) { Finish(); return; }
+    if (!py.Running() || !py.Suspended()) { Finish(); return; }
     const ScriptRequest& r = py.Request();
-    if (py.Suspended() && r.want == ScriptWant::Point) WantPoint(r.prompt);
-    else if (py.Suspended() && r.want == ScriptWant::Text) WantText(r.prompt, r.default_text);
-    else Finish();
+    switch (r.want) {
+      case ScriptWant::Point: WantPoint(r.prompt); break;
+      case ScriptWant::Objects: WantObjects(r.prompt, std::max(0, r.min_objects)); accept_preselection = true; break;
+      case ScriptWant::Text: WantText(r.prompt, r.default_text); break;
+      case ScriptWant::Number:
+      case ScriptWant::Integer: WantNumber(r.prompt, r.default_number); break;
+      case ScriptWant::Nothing: default: Finish(); break;
+    }
   }
 };
 
