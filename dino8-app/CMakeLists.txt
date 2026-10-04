@@ -746,6 +746,24 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_test_block_lookup PRIVATE dino8_kernel)
   add_test(NAME dino8_block_lookup COMMAND dino8_test_block_lookup)
 
+  # Dynamic-block Stretch parameter (src/doc/BlockInstances.cpp's
+  # SetBlockInstanceStretch/PlaceFiltered/ObjectMovesWithStretch): moves only
+  # the kBlockStretchKey-tagged objects (BlockSetStretchGroup) along their
+  # block definition's stretch_axis (BlockSetStretchAxis), composes
+  # correctly with an already-flipped instance, persists through the same
+  # dino8.block_instances JSON user-text every other BlockInstance field
+  # already round-trips through, and is a no-op (zero displacement) both at
+  # amount 0 and on a definition with no object ever tagged. See
+  # PARITY_MAP.md's "Dynamic blocks" item - the fifth and last parameter/
+  # action type, after Visibility states, Flip, Array and Lookup. Same
+  # dependency shape as dino8_test_block_array/_lookup above.
+  add_executable(dino8_test_block_stretch tests/test_block_stretch.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                           src/doc/SubObjectEdit.cpp src/doc/BlockInstances.cpp
+                                           src/geom/BrepMesher.cpp src/util/json_mini.cpp)
+  target_include_directories(dino8_test_block_stretch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_block_stretch PRIVATE dino8_kernel)
+  add_test(NAME dino8_block_stretch COMMAND dino8_test_block_stretch)
+
   # AnnotationStyle::precision/unit_suffix/ext_offset/ext_extension/
   # text_placement / DimStyleParams+FormatMeasurement (commands/DimGeometry.h)
   # - see tests/test_dim_precision.cpp's own file comment for why this is
@@ -778,6 +796,20 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_plot_color PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_test_plot_color PRIVATE dino8_kernel)
   add_test(NAME dino8_plot_color COMMAND dino8_test_plot_color)
+
+  # Named, reusable PlotStyle table (doc/Document.h's PlotStyle/
+  # ResolvePlotStyle and the 3-argument LayerPrints/EffectivePrintWidthMm/
+  # EffectivePlotColor overloads) - the CTB/STB-table half of "plot styles",
+  # alongside print_width_mm/plot_color's own flat per-layer-only fields
+  # dino8_test_print_width/dino8_test_plot_color above cover. Needs a real
+  # Document (FindPlotStyle/RemovePlotStyle's "can't delete what's in use"
+  # rule checks every layer), same dependency shape as dino8_find_bench
+  # (no BlockInstances.cpp/json_mini.cpp - this test never touches either).
+  add_executable(dino8_test_plot_style tests/test_plot_style.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                        src/doc/SubObjectEdit.cpp src/geom/BrepMesher.cpp)
+  target_include_directories(dino8_test_plot_style PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_plot_style PRIVATE dino8_kernel)
+  add_test(NAME dino8_plot_style COMMAND dino8_test_plot_style)
 
   # Keyboard-shortcut chord table (src/app/ShortcutRules.cpp's
   # IsReservedShortcut): every chord Application::HandleShortcuts hardcodes

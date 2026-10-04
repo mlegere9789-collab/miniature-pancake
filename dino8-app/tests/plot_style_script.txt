@@ -1,0 +1,36 @@
+# PlotStyleTable/LayerPlotStyle command-line wiring (PARITY_MAP.md "Print
+# and plot output" item - the named, reusable CTB/STB-table half of "plot
+# styles", alongside LayerPrintWidth/LayerPlotColor's own flat
+# per-layer-only fields, which test_print_width.cpp/plot_color_script.txt
+# already cover). The pure ResolvePlotStyle/EffectivePlotColor/
+# EffectivePrintWidthMm overloads themselves are unit-tested directly in
+# dino8_plot_style/test_plot_style.cpp; this instead exercises the real
+# scriptable commands end to end, through a real ExportSvg call, and shows
+# that two different layers sharing one named style change together when
+# the style's own row is edited - the whole point of a *shared, reusable*
+# row versus LayerPlotColor's own flat per-layer-only field.
+#
+# Two lines on two different layers (Default, SecondLayer), neither with
+# its own flat plot color ever set, both pointed instead at the same named
+# style "Mono". Exported to SVG, both must stroke the style's own color
+# (red) - not their shared black display color. Editing the style's own
+# color to blue and re-exporting (no change to either layer) must flip
+# both lines to blue in the new file.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+Line 0,0,0 10,0,0
+SelLast
+NewLayer
+SecondLayer
+Line 0,5,0 10,5,0
+SelLast
+PlotStyleTable Mono 255,0,0 0.5
+LayerPlotStyle Default Mono
+LayerPlotStyle SecondLayer Mono
+SelAll
+Export @TMP@/plot_style_red.svg
+PlotStyleTable Mono 0,0,255 0.5
+SelAll
+Export @TMP@/plot_style_blue.svg
+LayerPlotStyle Default None
+SelAll
+Export @TMP@/plot_style_cleared.svg
