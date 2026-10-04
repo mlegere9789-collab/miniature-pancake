@@ -443,12 +443,46 @@ struct BrepContourSection {
 // picks a base plane and a spacing, not a station count). A section whose
 // plane produces zero hits (e.g. it only grazes the bounding box, not the
 // actual solid) is dropped rather than returned empty. `spacing <= 0` or
-// an invalid `base_plane` returns empty outright. Still honestly partial:
-// this is parallel sections of ONE object along ONE fixed direction
-// (`base_plane`'s own normal) - "ClippingSections" (multiple live, named,
-// arbitrarily-oriented clip planes, typically with hatching) is still
-// entirely unaddressed.
+// an invalid `base_plane` returns empty outright. This is parallel sections
+// of ONE object along ONE fixed direction (`base_plane`'s own normal) -
+// "ClippingSections" (multiple live, named, arbitrarily-oriented clip
+// planes) is the separate SectionBrepByPlanes() below.
 std::vector<BrepContourSection> ContourBrep(const ON_Brep& b, const ON_Plane& base_plane, double spacing, const IntersectOptions& opt);
+
+// One named clip-plane section, as returned by SectionBrepByPlanes() below -
+// `plane_index` is this section's position in the caller-supplied `planes`
+// list (so a caller can tell which of several independent, differently-
+// oriented clip planes produced it, the same way BrepContourSection::offset
+// identifies which parallel station ContourBrep() produced one from).
+struct BrepMultiPlaneSection {
+  int plane_index = -1;
+  std::vector<BrepPlaneIntersection> hits;
+};
+
+// Multiple independent, arbitrarily-oriented clip-plane sections of a whole
+// B-rep in one call - the "ClippingSections" half of PARITY_MAP.md's own
+// "Plane sections / contours of surfaces and B-reps (Section, Contour,
+// ClippingSections)" bullet, the one gap left after IntersectBrepByPlane()
+// closed "Section" (one plane) and ContourBrep() closed "Contour" (a family
+// of PARALLEL planes at even spacing). Rhino's own ClippingPlane objects are
+// not parallel siblings of one base plane - each is independently placed and
+// oriented by the user - so this takes a plain list of planes instead of a
+// base plane + spacing: each entry is run through IntersectBrepByPlane()
+// completely independently (no shared bounding-box precomputation across
+// planes, since two clip planes need not even be close to each other), and a
+// plane producing zero hits is dropped rather than returned empty, the same
+// convention ContourBrep() already uses. `plane_index` records the entry's
+// own position in `planes` (not a compacted output index), so a caller
+// matching sections back to named clip-plane objects does not have to
+// re-derive which input plane produced which output. An empty `planes` list
+// returns empty outright; an individual invalid plane is simply skipped
+// (IntersectBrepByPlane()'s own `!plane.IsValid()` guard already returns no
+// hits for it) rather than failing the whole call. The returned hatching
+// Rhino's own ClippingSections draws is an app-level display concern, not a
+// kernel geometry one, and stays out of scope here - this returns exact
+// section CURVES only, the same honest curves-not-fills scope
+// IntersectBrepByPlane()/ContourBrep() already have.
+std::vector<BrepMultiPlaneSection> SectionBrepByPlanes(const ON_Brep& b, const std::vector<ON_Plane>& planes, const IntersectOptions& opt);
 
 // Face-vs-face crossing test WITHIN a single B-rep - not through shared
 // topology (that is Brep::Check()'s own SelfIntersectingLoop/
