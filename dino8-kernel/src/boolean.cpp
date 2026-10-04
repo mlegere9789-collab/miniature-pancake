@@ -2454,6 +2454,38 @@ Brep FoldFaceConvexPlanar(const Brep& solid, int face_index, int hinge_loop_inde
 
 namespace {
 
+// Newell's method: the same summed-cross-product-over-every-edge formula
+// Brep::PlanarFaces()'s own internal ExtractPlanarFace() helper
+// (brep.cpp's own anonymous-namespace NewellNormal()) and mesh.cpp's own
+// NewellNormal() already use elsewhere in this codebase to find a
+// polygon's own normal directly from its vertices - each translation unit
+// here keeps its own small anonymous-namespace copy of this exact
+// textbook formula rather than sharing one across a header (the same
+// precedent those two already set), so this is not new logic, just this
+// TU's own copy of it. Returns the RAW (not unitized) vector - its length
+// is exactly 2x the polygon's own planar area when the polygon genuinely
+// is planar, the same "near-zero length means near-zero area" signal a
+// plain two-edge cross product already gave MoveConvexPlanarPoints()'s own
+// per-face plane derivation below before this change, now generalized to
+// any vertex count. For a TRIANGLE this is mathematically identical to the
+// plain two-edge cross product (every other edge's own contribution to the
+// sum vanishes identically) - verified directly in
+// TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched,
+// whose own exact-volume check is unchanged by using this formula
+// uniformly instead of only for 4+-sided faces.
+Vector3d PolygonNewellNormalRaw(const std::vector<Point3d>& loop) {
+  Vector3d n(0.0, 0.0, 0.0);
+  const size_t k = loop.size();
+  for (size_t i = 0; i < k; ++i) {
+    const Point3d& p = loop[i];
+    const Point3d& q = loop[(i + 1) % k];
+    n.x += (p.y - q.y) * (p.z + q.z);
+    n.y += (p.z - q.z) * (p.x + q.x);
+    n.z += (p.x - q.x) * (p.y + q.y);
+  }
+  return n;
+}
+
 // Shared core of MoveVertexConvexPlanar()/MoveEdgeConvexPlanar(): moves
 // every (old, new) point in `moves` in place, one caller-named point per
 // entry, matched by position exactly as MoveVertexConvexPlanar()'s own doc
@@ -2521,47 +2553,77 @@ Brep MoveConvexPlanarPoints(const Brep& solid, const std::vector<std::pair<Point
   }
 
   // Every touched face's new plane: its own loop with every matched corner
-  // replaced by that move's own new position, re-derived from the (now
-  // three, since every touched face is required to be a triangle)
-  // corners; every other face's plane unchanged - see
-  // MoveVertexConvexPlanar()'s own doc comment for why only a triangle's
-  // plane is always well-defined with one or more corners free to move
-  // anywhere.
+  // replaced by that move's own new position, with the resulting normal
+  // derived via PolygonNewellNormalRaw() above rather than a plain
+  // two-edge cross product - mathematically identical for a TRIANGLE (see
+  // that function's own doc comment), so this introduces no behavior
+  // change for the triangle-only case every sibling in this family
+  // already had, but ALSO well-defined for a face with 4+ corners, where
+  // a plain two-edge cross product would only ever look at 2 of its
+  // (possibly several) edges. A 4+-sided face is no longer refused
+  // outright: every one of its own UNTOUCHED corners already pins its
+  // plane exactly (3 unmoved, non-collinear corners alone already
+  // determine a plane), so the moved corner(s) are only ever accepted
+  // when they land back in that exact same plane - checked directly
+  // below, not guessed - which is exactly the "a corner slid sideways
+  // WITHIN its own face's existing plane, or an edge's two corners tilted
+  // together to a new but still-common plane through the face's own
+  // other corners" case this category's "Move a single B-rep vertex
+  // directly"/"Move/transform edge" bullets named as their own remaining
+  // gap (a box corner, shared by three mutually perpendicular quads, is
+  // still refused - no single new position other than the old one can
+  // satisfy all three of THOSE planes at once - but a vertex or edge
+  // incident to only one 4+-sided face, e.g. a pyramid's own quad base
+  // corner, now genuinely can move).
   std::vector<ON_Plane> new_planes(static_cast<size_t>(n));
   for (int i = 0; i < n; ++i) new_planes[static_cast<size_t>(i)] = faces[static_cast<size_t>(i)].plane;
 
   for (int face_index = 0; face_index < n; ++face_index) {
     if (per_face[static_cast<size_t>(face_index)].empty()) continue;
     const Brep::PlanarFace& f = faces[static_cast<size_t>(face_index)];
-    if (f.loop.size() != 3) {
-      throw std::invalid_argument(std::string("dino8::kernel::") + caller_name + ": face " +
-                                   std::to_string(face_index) + " is incident to a moved point but has " +
-                                   std::to_string(f.loop.size()) +
-                                   " vertices, not 3 - moving a point shared by a non-triangular "
-                                   "face would need that face to either change topology or become "
-                                   "non-planar, both out of scope here");
-    }
     std::vector<Point3d> new_loop = f.loop;
     for (const auto& [loop_index, move_index] : per_face[static_cast<size_t>(face_index)]) {
       new_loop[static_cast<size_t>(loop_index)] = moves[static_cast<size_t>(move_index)].second;
     }
 
     const Vector3d old_normal = f.plane.zaxis;
-    const Vector3d e1 = new_loop[1] - new_loop[0];
-    const Vector3d e2 = new_loop[2] - new_loop[0];
-    Vector3d new_normal = ON_CrossProduct(e1, e2);
-    const double new_normal_len = new_normal.Length();
-    if (new_normal_len <= tol * tol) {
+    const Vector3d raw_normal = PolygonNewellNormalRaw(new_loop);
+    const double raw_normal_len = raw_normal.Length();
+    if (raw_normal_len <= tol * tol) {
       throw std::invalid_argument(std::string("dino8::kernel::") + caller_name +
                                    ": the given new position(s) collapse face " + std::to_string(face_index) +
-                                   "'s own triangle to ~0 area");
+                                   "'s own boundary to ~0 area");
     }
-    new_normal.Unitize();
+    const Vector3d new_normal = raw_normal / raw_normal_len;
     if (ON_DotProduct(new_normal, old_normal) <= 0.0) {
       throw std::invalid_argument(std::string("dino8::kernel::") + caller_name +
                                    ": the given new position(s) flip face " + std::to_string(face_index) +
                                    "'s own outward orientation (move a point through the plane "
                                    "of its own opposite edge), out of scope here");
+    }
+
+    if (new_loop.size() > 3) {
+      // A triangle's own plane is always well-defined by any 3 points, so
+      // this check is vacuous (and skipped) for n == 3 - exactly the
+      // scope every sibling in this family already had. For 4+ corners,
+      // Newell's method always returns SOME best-fit normal even when the
+      // points genuinely aren't coplanar, so planarity itself must be
+      // checked directly rather than trusted: every corner's own signed
+      // distance from the candidate plane (through new_loop[0], along
+      // new_normal) must land within `tol`, including the corner(s) that
+      // just moved - the ones NOT already pinned by the rest of the loop.
+      for (const Point3d& v : new_loop) {
+        const double deviation = ON_DotProduct(new_normal, v - new_loop[0]);
+        if (std::fabs(deviation) > tol) {
+          throw std::invalid_argument(
+              std::string("dino8::kernel::") + caller_name + ": the given new position(s) leave face " +
+              std::to_string(face_index) + "'s own " + std::to_string(new_loop.size()) +
+              "-sided boundary non-planar (deviation " + std::to_string(std::fabs(deviation)) +
+              " exceeds tolerance " + std::to_string(tol) +
+              ") - a moved corner of a 4+-sided face must stay within tolerance of the plane its own "
+              "other, unmoved corners already pin exactly");
+        }
+      }
     }
 
     ON_Plane new_plane(new_loop[0], new_normal);

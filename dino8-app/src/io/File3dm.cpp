@@ -59,7 +59,9 @@ std::string EncodeBlocksMeta(const std::vector<BlockDefinition>& blocks) {
         << ",\"bx\":" << b.base.x << ",\"by\":" << b.base.y << ",\"bz\":" << b.base.z << ",\"states\":[";
     for (size_t j = 0; j < b.states.size(); ++j) out << (j ? "," : "") << "\"" << JsonEscapeBlock(b.states[j]) << "\"";
     out << "],\"aax\":" << b.array_axis.x << ",\"aay\":" << b.array_axis.y << ",\"aaz\":" << b.array_axis.z
-        << ",\"aspc\":" << b.array_spacing << ",\"lupk\":[";
+        << ",\"aspc\":" << b.array_spacing
+        << ",\"stx\":" << b.stretch_axis.x << ",\"sty\":" << b.stretch_axis.y << ",\"stz\":" << b.stretch_axis.z
+        << ",\"lupk\":[";
     for (size_t j = 0; j < b.lookup_keys.size(); ++j) out << (j ? "," : "") << "\"" << JsonEscapeBlock(b.lookup_keys[j]) << "\"";
     out << "],\"lups\":[";
     for (size_t j = 0; j < b.lookup_states.size(); ++j) out << (j ? "," : "") << "\"" << JsonEscapeBlock(b.lookup_states[j]) << "\"";
@@ -88,6 +90,11 @@ std::map<std::string, BlockDefinition> DecodeBlocksMeta(const std::string& text)
     // array_spacing == 0 as "no array parameter defined" regardless of axis.
     b.array_axis = kernel::Vector3d(v["aax"].number, v["aay"].number, v["aaz"].number);
     b.array_spacing = v["aspc"].number;
+    // Missing (a file saved before the Stretch parameter existed) reads back
+    // as a 0/0/0 axis - harmless, since PlaceFiltered falls back to +X
+    // whenever Unitize() fails on a zero vector, the same fallback the
+    // mirror-flip transform's own normal already uses.
+    b.stretch_axis = kernel::Vector3d(v["stx"].number, v["sty"].number, v["stz"].number);
     // Missing (a file saved before the Lookup parameter existed) reads back
     // as empty tables - harmless, since ResolveLookupState treats an empty
     // lookup_keys as "no lookup parameter defined" regardless of a key.
@@ -513,6 +520,12 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
           L.has_plot_color = true;
           L.plot_color = FromOnColor(layer->m_plot_color);
         }
+        // Named PlotStyle assignment (LayerPlotStyle, PlotStyle below): no
+        // native ON_Layer field for this (unlike PlotWeight/PlotColor above),
+        // so it rides as a plain per-layer user string, the same mechanism
+        // Dino8.DetailLocked/DetailMode use on ON_3dmObjectAttributes above.
+        ON_wString ps;
+        if (layer->GetUserString(L"Dino8.PlotStyle", ps)) L.plot_style = FromWide(ps);
       }
     }
   }
@@ -998,6 +1011,23 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
         if (LayerState* existing = doc.FindLayerState(ls.name)) *existing = ls; else doc.LayerStates().push_back(ls);
         continue;
       }
+      const std::string plot_style_prefix = "Dino8.PlotStyle.";
+      if (key.compare(0, plot_style_prefix.size(), plot_style_prefix) == 0) {
+        // "has_color;r;g;b;width_mm" - the same flat two-column shape
+        // Layer::has_plot_color/plot_color/print_width_mm already have,
+        // just named and stored once per row instead of once per layer.
+        PlotStyle st;
+        st.name = key.substr(plot_style_prefix.size());
+        int has_color = 0, r = 0, g = 0, b = 0;
+        double width = 0;
+        if (std::sscanf(value.c_str(), "%d;%d;%d;%d;%lf", &has_color, &r, &g, &b, &width) == 5) {
+          st.has_color = has_color != 0;
+          st.color = Color::FromBytes(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255));
+          st.width_mm = width;
+        }
+        if (PlotStyle* existing = doc.FindPlotStyle(st.name)) *existing = st; else doc.PlotStyles().push_back(st);
+        continue;
+      }
       if (key.compare(0, 6, "Dino8.") == 0) continue;  // settings, handled above
       doc.UserText()[key] = value;
     }
@@ -1095,6 +1125,13 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
         packed += lname + "," + (vis_lock.first ? "1" : "0") + "," + (vis_lock.second ? "1" : "0");
       }
       model.SetDocumentUserString(ON_wString(("Dino8.LayerState." + ls.name).c_str()), ON_wString(packed.c_str()));
+    }
+    for (const PlotStyle& st : doc.PlotStyles()) {
+      char style_buf[128];
+      std::snprintf(style_buf, sizeof(style_buf), "%d;%d;%d;%d;%g", st.has_color ? 1 : 0,
+                    static_cast<int>(st.color.r * 255 + 0.5f), static_cast<int>(st.color.g * 255 + 0.5f),
+                    static_cast<int>(st.color.b * 255 + 0.5f), st.width_mm);
+      model.SetDocumentUserString(ON_wString(("Dino8.PlotStyle." + st.name).c_str()), ON_wString(style_buf));
     }
   }
 
@@ -1216,6 +1253,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
       if (linetype_index(L.linetype) >= 0) stored->SetLinetypeIndex(linetype_index(L.linetype));
       stored->SetPlotWeight(L.print_width_mm);  // real .3dm field, same 0/>0/<0 convention as Layer::print_width_mm
       if (L.has_plot_color) stored->SetPlotColor(ToOnColor(L.plot_color));  // real .3dm field; unset (ON_UNSET_COLOR) is ON_Layer's own default
+      if (!L.plot_style.empty()) stored->SetUserString(L"Dino8.PlotStyle", ON_wString(L.plot_style.c_str()));  // no native field for this - see the Load3dm read above
       for (size_t li = 0; li < doc.Layouts().size(); ++li) {
         const Layout& lay = doc.Layouts()[li];
         for (size_t di = 0; di < lay.details.size(); ++di) {
