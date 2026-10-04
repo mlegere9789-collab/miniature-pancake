@@ -205,6 +205,28 @@ SubD SubD::FromBrep(const Brep& brep, int divisions, double weld_tolerance) {
   return SubD::FromControlMesh(combined, /*crease_at_double_edges=*/true);
 }
 
+SubD SubD::FromMeshQuadRemeshed(const Mesh& mesh, double max_dihedral_deg, bool crease_at_double_edges) {
+  Mesh result = mesh;
+  // See this method's own doc comment (subd.h) for why this composition
+  // - already proven by BooleanToSubD() - is always safe to expose
+  // directly: TrisToQuads() is a pure face-list rewrite, never touching
+  // a vertex, that is a no-op wherever nothing qualifies.
+  result.TrisToQuads(max_dihedral_deg);
+  return SubD::FromControlMesh(result, crease_at_double_edges);
+}
+
+SubD SubD::FromBrepTessellated(const Brep& brep, int u_divisions, int v_divisions, double max_dihedral_deg) {
+  if (brep.FaceCount() <= 0) {
+    throw std::invalid_argument("dino8::kernel::SubD::FromBrepTessellated: brep has no faces");
+  }
+  if (u_divisions < 1 || v_divisions < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromBrepTessellated: u_divisions and v_divisions must be at least 1");
+  }
+  const Mesh mesh = brep.TessellateToClosedMesh(u_divisions, v_divisions);
+  return FromMeshQuadRemeshed(mesh, max_dihedral_deg, /*crease_at_double_edges=*/true);
+}
+
 void SubD::Subdivide(int levels) {
   if (levels <= 0) {
     return;
@@ -257,12 +279,12 @@ Mesh SubD::Boolean(const SubD& other, BooleanOp op) const {
 }
 
 SubD SubD::BooleanToSubD(const SubD& other, BooleanOp op) const {
-  Mesh result = Boolean(other, op);
-  // See this method's own doc comment (subd.h) for why this is always
-  // safe: a pure face-list rewrite, never touching a vertex, that is a
-  // no-op wherever nothing qualifies.
-  result.TrisToQuads();
-  return SubD::FromControlMesh(result);
+  // Delegates to FromMeshQuadRemeshed() (this class's own general
+  // TrisToQuads()+FromControlMesh() composition, added this pass -
+  // BooleanToSubD() was that composition's only caller before now) so
+  // the two methods can't drift apart; behavior is unchanged (default
+  // max_dihedral_deg, no double-edge creasing).
+  return FromMeshQuadRemeshed(Boolean(other, op));
 }
 
 SubD SubD::Transform(const ON_Xform& xform) const {
