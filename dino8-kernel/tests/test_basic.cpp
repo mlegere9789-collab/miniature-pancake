@@ -31940,6 +31940,177 @@ void TestMoveEdgesConvexPlanarRefusesInvalidInput() {
   Check(threw, "MoveEdgesConvexPlanar refuses an edge whose incident faces are non-triangular (a box's own quads)");
 }
 
+// Exact shoelace area of a planar XY quadrilateral (corners given in
+// order; z is assumed consistent/irrelevant to the area itself) - used by
+// the quad-base MoveVertexConvexPlanar/MoveEdgeConvexPlanar tests below to
+// derive an expected pyramid volume completely independently of anything
+// those functions do internally.
+double QuadAreaShoelaceXY(const dino8::kernel::Point3d& p0, const dino8::kernel::Point3d& p1,
+                           const dino8::kernel::Point3d& p2, const dino8::kernel::Point3d& p3) {
+  const double sum = (p0.x * p1.y - p1.x * p0.y) + (p1.x * p2.y - p2.x * p1.y) + (p2.x * p3.y - p3.x * p2.y) +
+                      (p3.x * p0.y - p0.x * p3.y);
+  return 0.5 * std::fabs(sum);
+}
+
+// PARITY_MAP's kernel: Local / direct-edit operations "Move a single B-rep
+// vertex directly" gap's own remaining "every incident face must be a
+// triangle" limitation. MoveConvexPlanarPoints()'s shared core
+// (boolean.cpp) now derives a touched face's new plane via Newell's method
+// (PolygonNewellNormalRaw()) and, for a 4+-sided face, checks directly that
+// every one of its own corners (including the one(s) that moved) still
+// lands within tolerance of the resulting plane - rather than refusing any
+// 4+-sided incident face outright. A vertex incident to exactly ONE such
+// face (plus any number of triangles) can now move anywhere WITHIN that
+// face's own existing plane, since its own three other, unmoved corners
+// already pin that plane exactly. MakeTestPyramid()'s own quad base
+// (unlike its apex, already exercised by
+// TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched
+// above) is exactly this case: each base corner is incident to the quad
+// base (1 face) plus 2 triangular side faces.
+//
+// Volume is an independent closed-form check: a pyramid's volume is
+// (1/3)*base_area*height for ANY planar polygon base, not just a
+// rectangle - `base_area` is the exact shoelace area of the new (now an
+// irregular quadrilateral, not a square) base, computed directly from the
+// four corner positions via QuadAreaShoelaceXY() above, completely
+// independent of anything MoveVertexConvexPlanar's own half-space-clip
+// arithmetic does internally - and `height` is still exactly the apex's
+// own z (the base stays the z=0 plane, unchanged by sliding one of its own
+// corners sideways within it).
+void TestMoveVertexConvexPlanarQuadBaseCornerWithinPlaneMatchesExactVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveVertexConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Point3d apex(5, 5, 12);
+  const Brep pyramid = MakeTestPyramid(apex);
+
+  const Point3d b1(10, 0, 0), b2(10, 10, 0), b3(0, 10, 0);  // MakeTestPyramid's own other 3 base corners
+  const Point3d old_b0(0, 0, 0);
+  const Point3d new_b0(-5, 0, 0);  // slides within the base's own z=0 plane
+  const Brep moved = MoveVertexConvexPlanar(pyramid, old_b0, new_b0);
+
+  Check(moved.FaceCount() == 5, "MoveVertexConvexPlanar keeps the pyramid's own 5-face topology (no face vanishes)");
+
+  const double base_area = QuadAreaShoelaceXY(new_b0, b1, b2, b3);
+  Check(std::fabs(base_area - 125.0) < 1e-9, "sanity: the new (irregular) base quad's own exact shoelace area is 125");
+  const double expected_volume = (1.0 / 3.0) * base_area * apex.z;
+  Check(std::fabs(expected_volume - 500.0) < 1e-9, "sanity: the hand-derived expected volume is exactly 500");
+  const double measured_volume = PlanarBrepVolumeExact(moved);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "the moved pyramid's volume matches the exact closed-form (1/3)*base_area*height for an irregular "
+        "quadrilateral base, not merely a plausible-looking number - the quad base corner moved within its own "
+        "existing plane, a case MoveVertexConvexPlanar used to refuse outright for any 4+-sided incident face");
+
+  const std::vector<Brep::PlanarFace> result = moved.PlanarFaces();
+  auto loop_contains = [](const std::vector<Point3d>& loop, const Point3d& p) {
+    for (const Point3d& q : loop) {
+      if (q.DistanceTo(p) < 1e-9) return true;
+    }
+    return false;
+  };
+  bool found_base = false;
+  int untouched_triangle_count = 0;
+  int touched_triangle_count = 0;
+  for (const Brep::PlanarFace& f : result) {
+    if (f.loop.size() == 4 && loop_contains(f.loop, new_b0) && loop_contains(f.loop, b1) &&
+        loop_contains(f.loop, b2) && loop_contains(f.loop, b3)) {
+      found_base = true;
+    }
+    if (f.loop.size() == 3) {
+      if (loop_contains(f.loop, new_b0) && loop_contains(f.loop, apex)) ++touched_triangle_count;
+      if (!loop_contains(f.loop, old_b0) && !loop_contains(f.loop, new_b0) && loop_contains(f.loop, apex)) {
+        ++untouched_triangle_count;
+      }
+    }
+  }
+  Check(found_base, "the base face's own 4 corners are exactly new_b0/b1/b2/b3 - a genuinely quadrilateral face, "
+                     "not silently triangulated or otherwise restructured");
+  Check(touched_triangle_count == 2,
+        "exactly 2 of the pyramid's 4 triangular side faces are incident to the moved corner and carry new_b0");
+  Check(untouched_triangle_count == 2,
+        "the other 2 triangular side faces, not incident to the moved corner, are completely untouched");
+}
+
+// The genuinely new refusal case this generalization must still catch,
+// not silently misclassify: moving the SAME base corner OFF the base's
+// own plane (nonzero z) leaves the base's 4 corners genuinely non-planar
+// (3 of them still pin z=0 exactly) - refused via the new direct planarity
+// check rather than the old, now-removed "not a triangle" gate, but still
+// the identical std::invalid_argument failure mode callers already expect.
+void TestMoveVertexConvexPlanarRefusesNonPlanarQuadCornerMove() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveVertexConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Point3d apex(5, 5, 12);
+  const Brep pyramid = MakeTestPyramid(apex);
+
+  bool threw = false;
+  try {
+    MoveVertexConvexPlanar(pyramid, Point3d(0, 0, 0), Point3d(-5, 0, 3));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "MoveVertexConvexPlanar refuses sliding a quad base corner OFF its own existing plane (nonzero z), even "
+        "though the identical move WITHIN the plane (z unchanged) now succeeds");
+}
+
+// PARITY_MAP's kernel: Local / direct-edit operations "Move/transform edge
+// (tweak edge)" gap's own remaining "every incident face must be a
+// triangle" limitation - the identical generalization immediately above,
+// now for an edge whose two endpoints are both corners of the SAME
+// 4+-sided face. MakeTestPyramid()'s own base edge (b0,b1) is incident to
+// the quad base (both endpoints) plus one triangular side face sharing
+// that edge (b0,b1,apex) - unlike a box's own edge, whose two incident
+// faces are BOTH quads and whose corners are each ALSO shared by a THIRD,
+// independent quad (the box's own "a corner can only move to the single
+// point where all 3 of its planes already meet" case
+// TestMoveEdgeConvexPlanarRefusesInvalidInput's own box check still
+// correctly refuses, unchanged by this pass).
+void TestMoveEdgeConvexPlanarQuadBaseEdgeWithinPlaneMatchesExactVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveEdgeConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Point3d apex(5, 5, 12);
+  const Brep pyramid = MakeTestPyramid(apex);
+
+  const Point3d b2(10, 10, 0), b3(0, 10, 0);  // MakeTestPyramid's own other 2 base corners (untouched)
+  const Point3d old_b0(0, 0, 0), old_b1(10, 0, 0);
+  const Point3d new_b0(-5, 0, 0), new_b1(15, 0, 0);  // both endpoints slide within the base's own z=0 plane
+  const Brep moved = MoveEdgeConvexPlanar(pyramid, old_b0, old_b1, new_b0, new_b1);
+
+  Check(moved.FaceCount() == 5, "MoveEdgeConvexPlanar keeps the pyramid's own 5-face topology (no face vanishes)");
+
+  const double base_area = QuadAreaShoelaceXY(new_b0, new_b1, b2, b3);
+  Check(std::fabs(base_area - 150.0) < 1e-9, "sanity: the new (irregular) base quad's own exact shoelace area is 150");
+  const double expected_volume = (1.0 / 3.0) * base_area * apex.z;
+  Check(std::fabs(expected_volume - 600.0) < 1e-9, "sanity: the hand-derived expected volume is exactly 600");
+  const double measured_volume = PlanarBrepVolumeExact(moved);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "the moved pyramid's volume matches the exact closed-form (1/3)*base_area*height for an irregular "
+        "quadrilateral base, with BOTH moved endpoints sliding within the base's own existing plane - a case "
+        "MoveEdgeConvexPlanar used to refuse outright for any edge touching a 4+-sided face");
+
+  const std::vector<Brep::PlanarFace> result = moved.PlanarFaces();
+  auto loop_contains = [](const std::vector<Point3d>& loop, const Point3d& p) {
+    for (const Point3d& q : loop) {
+      if (q.DistanceTo(p) < 1e-9) return true;
+    }
+    return false;
+  };
+  bool found_base = false;
+  for (const Brep::PlanarFace& f : result) {
+    if (f.loop.size() == 4 && loop_contains(f.loop, new_b0) && loop_contains(f.loop, new_b1) &&
+        loop_contains(f.loop, b2) && loop_contains(f.loop, b3)) {
+      found_base = true;
+    }
+  }
+  Check(found_base, "the base face's own 4 corners are exactly new_b0/new_b1/b2/b3 after moving the whole edge");
+}
+
 // The genuinely new capability neither ReplaceFacePlaneConvexPlanar() nor
 // two sequential calls to it can express: two faces whose own new planes
 // are only jointly consistent, each one only valid once the OTHER has also
@@ -64979,6 +65150,9 @@ int main() {
   TestMoveVerticesConvexPlanarRefusesInvalidInput();
   TestMoveEdgesConvexPlanarMovesTwoAdjacentEdgesSharingAVertexMatchesExactVolume();
   TestMoveEdgesConvexPlanarRefusesInvalidInput();
+  TestMoveVertexConvexPlanarQuadBaseCornerWithinPlaneMatchesExactVolume();
+  TestMoveVertexConvexPlanarRefusesNonPlanarQuadCornerMove();
+  TestMoveEdgeConvexPlanarQuadBaseEdgeWithinPlaneMatchesExactVolume();
   TestReplaceFacePlanesConvexPlanarSucceedsWhereSequentialSingleReplaceWouldRefuse();
   TestReplaceFacePlanesConvexPlanarRefusesInvalidInput();
   TestMoveFacesConvexPlanarSucceedsWhereSequentialSingleMoveWouldRefuse();
