@@ -234,11 +234,16 @@ Viewport::FrameContext Application::MakeFrameContext() {
   ctx.show_control_points_for_selected = show_control_points_for_selected;
   ctx.curve_tolerance = curve_display_tolerance;
   ctx.surface_tolerance = surface_display_tolerance;
-  // View-dependent adaptive tessellation: driven by whichever viewport is
-  // active, shared by every viewport's DrawObjects this frame (see
-  // Viewport::FrameContext::lod_scale) so open viewports at different zoom
-  // levels never fight over a shared SceneObject's one display cache.
-  if (Viewport* active = ActiveViewport()) ctx.lod_scale = LodScaleForPixelSize(active->ZoomPixelSize());
+  // View-dependent adaptive tessellation: the FINEST scale any open,
+  // visible modeling viewport's own zoom calls for wins (see
+  // FinestLodScale's own comment in AdaptiveTessellation.h for why - every
+  // SceneObject has one shared display cache, not one per viewport, so a
+  // viewport zoomed in close that isn't the *active* one must still be
+  // able to ask for its own finer resolution rather than being silently
+  // capped at whatever the active viewport happens to want).
+  std::vector<double> viewport_pixel_sizes;
+  for (const auto& vp : viewports_) if (vp->Visible()) viewport_pixel_sizes.push_back(vp->ZoomPixelSize());
+  ctx.lod_scale = FinestLodScale(viewport_pixel_sizes);
   ctx.fallback_analysis = &analysis_fallback;
   ctx.sub_selection = &sub_selection_;
   ctx.overlay_lines = &overlay_lines;

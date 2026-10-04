@@ -10,9 +10,11 @@
 // dependency at all.
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 #include "viewport/AdaptiveTessellation.h"
 
+using dino8::app::FinestLodScale;
 using dino8::app::LodScaleForPixelSize;
 
 namespace {
@@ -21,6 +23,7 @@ void Check(bool ok, const char* what) {
   std::printf("%s %s\n", ok ? "ok  " : "FAIL", what);
   if (!ok) ++failures;
 }
+bool Near(double a, double b) { return std::fabs(a - b) < 1e-9; }
 }  // namespace
 
 int main() {
@@ -62,6 +65,32 @@ int main() {
   // zero or return something nonsensical) falls back to no scaling.
   Check(LodScaleForPixelSize(0.0) == 1.0, "pixel_size == 0.0 falls back to no scaling");
   Check(LodScaleForPixelSize(-1.0) == 1.0, "a negative pixel_size falls back to no scaling");
+
+  // FinestLodScale: Application::MakeFrameContext's own combiner across
+  // every open, visible viewport's pixel size - see its own comment in
+  // AdaptiveTessellation.h for why "finest wins" rather than "the active
+  // viewport's own scale" (the bug this closes: a non-active viewport
+  // zoomed in close on an object used to be silently capped at whatever
+  // the active viewport's own, possibly much coarser, zoom wanted).
+  Check(FinestLodScale({}) == 1.0, "no open viewports falls back to no scaling");
+  Check(Near(FinestLodScale({0.1}), 1.0), "a single viewport at the reference zoom scales by exactly 1.0, same as before this existed");
+  {
+    // Two viewports, one zoomed in (0.01 -> a fine scale), one zoomed out
+    // (1.0 -> a coarse scale): the combined result must be the FINE one -
+    // the zoomed-in viewport's own need, not the zoomed-out one's, and not
+    // some average of the two either.
+    const std::vector<double> two_viewports = {0.01, 1.0};
+    const double combined = FinestLodScale(two_viewports);
+    Check(Near(combined, LodScaleForPixelSize(0.01)), "the finer of two open viewports' own scales wins, not the coarser one");
+    Check(combined < LodScaleForPixelSize(1.0), "the combined scale is strictly finer than the zoomed-out viewport's own scale alone");
+  }
+  {
+    // Order must not matter - this is a plain minimum, not "whichever
+    // viewport happens to be first/active".
+    Check(Near(FinestLodScale({1.0, 0.01, 0.3}), FinestLodScale({0.3, 0.01, 1.0})),
+          "the combined scale does not depend on viewport order");
+  }
+  Check(Near(FinestLodScale({0.1, 0.1, 0.1}), 1.0), "every open viewport at the same zoom still scales by exactly 1.0");
 
   if (failures) std::printf("%d FAILED\n", failures);
   else std::printf("all passed\n");

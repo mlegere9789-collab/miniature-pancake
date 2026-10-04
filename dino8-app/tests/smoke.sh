@@ -4397,6 +4397,81 @@ assert max(bn) - min(bn) <= 8, f'Box B while Monochrome-tagged is not a neutral 
 assert abs(bn[0] - 182) <= 15 and abs(bn[1] - 182) <= 15 and abs(bn[2] - 187) <= 15, f'Box B Monochrome grey is not the expected flat {{200,200,205}}-derived tone: {bn}'
 PY
 
+# SetObjectDisplayMode Pen/Arctic: pixel-level proof (PARITY_MAP.md's
+# "Per-object display mode override" item, narrowed further this pass)
+# that both are real per-object fill-colour overrides, and that Pen's own
+# unlit/flat fill is genuinely distinct from Arctic's own lit fill, not the
+# same code path under two names - three differently-coloured boxes in a
+# Shaded (never Pen/Arctic) Top view; see tests/pen_script.txt for the full
+# scene/capture sequence.
+mkdir -p "$TMPW/pen"
+sed "s|@TMP@|$TMPW/pen|g" "$HERE/pen_script.txt" > "$TMPW/pen_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PEN="$("$BIN" --smoke 30 --script "$TMPW/pen_script.txt" 2>&1)" || { echo "$PEN"; echo "FAIL: pen script exited non-zero"; exit 1; }
+else
+  PEN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/pen_script.txt" 2>&1)" || { echo "$PEN"; echo "FAIL: pen script exited non-zero"; exit 1; }
+fi
+pencheck() { if echo "$PEN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PEN" "$1"; fail=1; fi; }
+pencheck "^ok   expect_objects 3" "pen script left exactly the three boxes"
+pencheck "gl_error=0" "pen script ran without OpenGL errors"
+python3 - "$TMPW/pen/pen_off.bmp" "$TMPW/pen/pen_on.bmp" "$TMPW/pen/pen_off2.bmp" <<'PY' && echo "ok   SetObjectDisplayMode Pen/Arctic genuinely override one object's own fill colour each (Pen flat/unlit, Arctic lit), independent of the viewport's own (never Pen/Arctic) display mode, and UseViewport genuinely restores each object's own colour afterward" || { echo "FAIL SetObjectDisplayMode Pen/Arctic pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+w, h, off = read_bmp(sys.argv[1])
+_, _, on = read_bmp(sys.argv[2])
+_, _, off2 = read_bmp(sys.argv[3])
+
+def find_blob(pred):
+    pts = [(x, y) for y in range(0, h, 2) for x in range(0, w, 2) if pred(off(x, y))]
+    assert pts, 'no matching pixels found in pen_off.bmp'
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    return (min(xs) + max(xs)) // 2, (min(ys) + max(ys)) // 2
+
+# Box A (red, never touched).
+acx, acy = find_blob(lambda c: c[0] > c[1] + 30 and c[0] > c[2] + 30)
+ra, rb, rc = off(acx, acy), on(acx, acy), off2(acx, acy)
+print(f'Box A (untouched) sample: off={ra} on={rb} off2={rc}')
+assert ra == rb == rc, f'Box A changed even though it was never given a SetObjectDisplayMode override: {ra} {rb} {rc}'
+
+# Box B (green, Pen toggled on then off).
+bcx, bcy = find_blob(lambda c: c[1] > c[0] + 30 and c[1] > c[2] + 30)
+bo, bn, bo2 = off(bcx, bcy), on(bcx, bcy), off2(bcx, bcy)
+print(f'Box B (Pen toggled) sample: off={bo} on={bn} off2={bo2}')
+assert bo[1] > bo[0] + 30 and bo[1] > bo[2] + 30, f'Box B does not read as green before the override: {bo}'
+assert bo == bo2, f'Box B does not return to its own colour after UseViewport: off={bo} off2={bo2}'
+assert max(bn) - min(bn) <= 6, f'Box B while Pen-tagged is not a neutral near-white: {bn}'
+assert all(abs(ch - 245) <= 6 for ch in bn), f'Box B Pen fill is not the expected flat, UNLIT {{245,245,245}}: {bn}'
+
+# Box C (blue, Arctic toggled on then off).
+ccx, ccy = find_blob(lambda c: c[2] > c[0] + 30 and c[2] > c[1] + 30)
+co, cn, co2 = off(ccx, ccy), on(ccx, ccy), off2(ccx, ccy)
+print(f'Box C (Arctic toggled) sample: off={co} on={cn} off2={co2}')
+assert co[2] > co[0] + 30 and co[2] > co[1] + 30, f'Box C does not read as blue before the override: {co}'
+assert co == co2, f'Box C does not return to its own colour after UseViewport: off={co} off2={co2}'
+assert max(cn) - min(cn) <= 6, f'Box C while Arctic-tagged is not a neutral near-white: {cn}'
+# Arctic stays LIT (unlike Pen, which forces unlit/flat): it must still read
+# as a light near-white tone, but distinctly darker than Pen's own exact,
+# unlit 245 - proving force_pen and force_arctic are not the same code path
+# wearing two names.
+assert 150 < cn[0] < 240, f'Box C Arctic fill is not a lit near-white tone: {cn}'
+assert bn[0] - cn[0] > 10, f"Pen (unlit, {bn}) is not meaningfully brighter than Arctic (lit, {cn}) - the force_pen vs force_arctic lit-ness distinction had no visible effect"
+PY
+
 # Real-time shadow maps (per-light shadow atlas): pixel-level proof
 # (PARITY_MAP.md's "Real-time shadow maps in the rasterized renderer" item)
 # that two simultaneously-enabled lights now each cast their own real

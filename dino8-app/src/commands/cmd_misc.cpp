@@ -391,24 +391,26 @@ class PythonScriptCommand : public Command {
 };
 
 // A genuine per-object display-mode override (SceneObject::force_wireframe /
-// force_shaded / force_ghosted / force_xray, honoured by
-// Viewport::DrawObjects) for the four modes that map onto a real per-object
-// switch: Wireframe (never filled), Shaded (always filled, same as
-// ShadeSelected), Ghosted/X-Ray (always filled at that mode's own fixed
-// transparency - 0.35/0.18, the same alpha Viewport.cpp's StyleFor uses for
-// the viewport-wide versions of these modes), and now Monochrome (always
-// filled in that mode's own flat grey, fully opaque). The remaining Rhino
-// display modes (Rendered, Technical, Artistic, Pen, Arctic, RayTraced, ...)
-// are still viewport-wide render styles with no per-object equivalent in
-// this renderer, so those fall back to clearing the override (UseViewport)
-// with an explanatory note.
+// force_shaded / force_ghosted / force_xray / force_monochrome / force_pen /
+// force_arctic, honoured by Viewport::DrawObjects) for the modes that map
+// onto a real per-object switch: Wireframe (never filled), Shaded (always
+// filled, same as ShadeSelected), Ghosted/X-Ray (always filled at that
+// mode's own fixed transparency - 0.35/0.18, the same alpha Viewport.cpp's
+// StyleFor uses for the viewport-wide versions of these modes), Monochrome
+// (always filled in that mode's own flat grey, fully opaque), and now
+// Pen/Arctic (always filled in that mode's own near-white, fully opaque -
+// Pen unlit/flat like a line drawing, Arctic still lit). The remaining
+// Rhino display modes (Rendered, Technical, Artistic, RayTraced, ...) are
+// still viewport-wide render styles with no per-object equivalent in this
+// renderer, so those fall back to clearing the override (UseViewport) with
+// an explanatory note.
 class SetObjectDisplayModeCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select objects to set a display mode for", 1); }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (ids.empty()) { Finish(); return; }
     ids_ = ids;
-    WantText("Mode (Wireframe/Shaded/Ghosted/X-Ray/Monochrome/UseViewport)", "Shaded");
+    WantText("Mode (Wireframe/Shaded/Ghosted/X-Ray/Monochrome/Pen/Arctic/UseViewport)", "Shaded");
   }
   void OnText(CommandContext& ctx, const std::string& t) override {
     std::string mode = ToLower(t);
@@ -418,12 +420,15 @@ class SetObjectDisplayModeCommand : public Command {
     for (ObjectId id : ids_) {
       SceneObject* o = doc.Find(id);
       if (!o) continue;
-      o->force_wireframe = o->force_shaded = o->force_ghosted = o->force_xray = o->force_monochrome = false;
+      o->force_wireframe = o->force_shaded = o->force_ghosted = o->force_xray = o->force_monochrome =
+          o->force_pen = o->force_arctic = false;
       if (mode == "wireframe" || mode == "w") o->force_wireframe = true;
       else if (mode == "shaded" || mode == "s") o->force_shaded = true;
       else if (mode == "ghosted" || mode == "g") o->force_ghosted = true;
       else if (mode == "xray" || mode == "x") o->force_xray = true;
       else if (mode == "monochrome" || mode == "m") o->force_monochrome = true;
+      else if (mode == "pen" || mode == "p") o->force_pen = true;
+      else if (mode == "arctic" || mode == "a") o->force_arctic = true;
       o->InvalidateDisplay();
       ++n;
     }
@@ -437,6 +442,10 @@ class SetObjectDisplayModeCommand : public Command {
       ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown X-Ray (18% opaque), even in Wireframe or another viewport display mode.");
     else if (mode == "monochrome" || mode == "m")
       ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown Monochrome (flat grey, fully opaque), even in Wireframe or another viewport display mode.");
+    else if (mode == "pen" || mode == "p")
+      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown Pen (flat white, unlit, fully opaque), even in Wireframe or another viewport display mode.");
+    else if (mode == "arctic" || mode == "a")
+      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown Arctic (lit near-white, fully opaque), even in Wireframe or another viewport display mode.");
     else
       ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) reset to the viewport's own display mode. Other Rhino modes (Rendered/Technical/Artistic/...) are viewport-wide render styles here, with no per-object equivalent - use the Display panel to change the viewport itself.");
     Finish();
