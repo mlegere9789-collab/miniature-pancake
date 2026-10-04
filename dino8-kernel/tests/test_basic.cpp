@@ -2866,6 +2866,81 @@ void TestContourBrepParallelSections() {
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "Plane sections / contours of surfaces and B-reps (Section, Contour,
+// ClippingSections)" bullet's own last remaining half: ContourBrep() (tested
+// just above) closed "Contour" (parallel sections of ONE object along ONE
+// fixed direction), but "ClippingSections" (multiple live, named,
+// arbitrarily-oriented clip planes) was still entirely unaddressed.
+// SectionBrepByPlanes() is that API: a plain list of independently-placed,
+// independently-oriented planes, each run through IntersectBrepByPlane() on
+// its own.
+void TestSectionBrepByPlanesIndependentlyOrientedClipPlanes() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepMultiPlaneSection;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SectionBrepByPlanes;
+
+  const Brep box = Brep::Box(0, 0, 0, 3, 3, 3);
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Three planes, none of them parallel to any other (unlike ContourBrep()'s
+  // own fixture, which is a family of planes that all share one normal):
+  // plane 0 at z=1 (horizontal), plane 1 at x=1.5 (vertical, a different
+  // normal entirely), plane 2 far outside the box's own bounding box (must
+  // be dropped, exactly like ContourBrep()'s/IntersectBrepByPlane()'s own
+  // "far plane" cases).
+  const std::vector<ON_Plane> planes = {
+      ON_Plane(ON_3dPoint(0, 0, 1), ON_3dVector(0, 0, 1)),
+      ON_Plane(ON_3dPoint(1.5, 0, 0), ON_3dVector(1, 0, 0)),
+      ON_Plane(ON_3dPoint(0, 0, 100), ON_3dVector(0, 0, 1)),
+  };
+
+  const std::vector<BrepMultiPlaneSection> sections = SectionBrepByPlanes(box.raw(), planes, opt);
+  Check(sections.size() == 2, "of three clip planes, only the two that actually meet the box produce a section (the far one is dropped)");
+
+  const BrepMultiPlaneSection* at_z1 = nullptr;
+  const BrepMultiPlaneSection* at_x15 = nullptr;
+  for (const BrepMultiPlaneSection& sec : sections) {
+    if (sec.plane_index == 0) at_z1 = &sec;
+    if (sec.plane_index == 1) at_x15 = &sec;
+    Check(sec.plane_index != 2, "the far, non-intersecting plane (index 2) contributes no section entry at all");
+  }
+  Check(at_z1 != nullptr && at_x15 != nullptr,
+        "the two real sections keep their own original plane_index (0 and 1) - not compacted away by the dropped middle one... "
+        "(no middle one here, but index 2 being absent entirely already proves indices are NOT simply 0..n-1 of the output)");
+
+  Check(at_z1 != nullptr && at_z1->hits.size() >= 4, "plane 0 (z=1) crosses at least the box's own four side walls, same as IntersectBrepByPlane() alone");
+  Check(at_x15 != nullptr && at_x15->hits.size() >= 4, "plane 1 (x=1.5), a totally different orientation, independently crosses at least four faces too");
+
+  bool every_z1_point_at_z1 = true;
+  if (at_z1) {
+    for (const auto& hit : at_z1->hits) {
+      for (const Point3d& p : hit.curve.points) {
+        if (std::abs(p.z - 1.0) > 1e-4) every_z1_point_at_z1 = false;
+      }
+    }
+  }
+  Check(every_z1_point_at_z1, "every point of the z=1 clip section genuinely sits at z == 1");
+
+  bool every_x15_point_at_x15 = true;
+  if (at_x15) {
+    for (const auto& hit : at_x15->hits) {
+      for (const Point3d& p : hit.curve.points) {
+        if (std::abs(p.x - 1.5) > 1e-4) every_x15_point_at_x15 = false;
+      }
+    }
+  }
+  Check(every_x15_point_at_x15, "every point of the x=1.5 clip section genuinely sits at x == 1.5 - a real second, independently-oriented plane, not a relabeled copy of the first");
+
+  // An empty plane list returns empty outright, not a crash or a
+  // default-constructed single section.
+  Check(SectionBrepByPlanes(box.raw(), {}, opt).empty(), "an empty clip-plane list returns no sections");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "CSX against trimmed faces and curve-on-surface overlap (coincident)
 // detection" bullet's own second half: "No overlap detection anywhere."
 // IntersectCurveSurfaceOverlap() is that overlap detector - a curve lying
@@ -19680,6 +19755,132 @@ void TestPointCloudPointsNearPlane() {
   const PointCloud empty;
   Check(empty.PointsNearPlane(z0_plane, 1e9).empty(),
         "PointsNearPlane on an empty cloud returns an empty result, not an error");
+}
+
+// PARITY_MAP.md's own "Point-cloud contour/section as separate app commands"
+// bullet's own last remaining half, after PointsNearPlane() above closed "the
+// kernel PointCloud has no section API": "this is a membership QUERY
+// (indices + distances), not PointCloudContour's own contour-CURVE
+// extraction along a band." ContourAtPlane() is that contour-curve
+// extraction - a real fitted curve through the band, ordered by angle around
+// the band's own centroid rather than PointsNearPlane()'s own
+// ascending-distance order (meaningless for fitting a ring).
+void TestPointCloudContourAtPlaneFitsRingThroughBand() {
+  using dino8::kernel::ChordParams;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Point3d;
+
+  // 12 points around a radius-5 circle in the z=0 plane, at exact 30-degree
+  // increments - but APPENDED in a scrambled order (step of 5, coprime to
+  // 12, so every point is visited exactly once in a genuinely shuffled
+  // sequence: 0, 5, 10, 3, 8, 1, 6, 11, 4, 9, 2, 7) so a passing test can't
+  // be an accident of insertion order already being the contour's own
+  // angular order. A 13th point well off the z=0 plane (z=5) is appended
+  // last and must be excluded by the band.
+  PointCloud cloud;
+  std::vector<double> angle_deg(12);
+  for (int k = 0; k < 12; ++k) {
+    const int ring_index = (k * 5) % 12;
+    const double deg = ring_index * 30.0;
+    angle_deg[static_cast<size_t>(ring_index)] = deg;
+    const double rad = deg * 3.14159265358979323846 / 180.0;
+    cloud.AppendPoint(Point3d(5.0 * std::cos(rad), 5.0 * std::sin(rad), 0.0));
+  }
+  cloud.AppendPoint(Point3d(100, 0, 5));  // idx 12: far from the z=0 plane, must be excluded
+
+  const ON_Plane z0_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const PointCloud::Contour contour = cloud.ContourAtPlane(z0_plane, 0.1);
+
+  Check(contour.indices.size() == 12, "ContourAtPlane(band=0.1) finds exactly the 12 on-plane ring points, excluding the far 13th");
+  Check(contour.points.size() == 12, "contour.points has one entry per index, same size");
+  bool has_outlier = false;
+  for (int idx : contour.indices) if (idx == 12) has_outlier = true;
+  Check(!has_outlier, "the far point (idx 12) is genuinely excluded, not merely sorted to one end");
+
+  // Every returned index is one of the 12 ring points (a true permutation of
+  // 0..11, not duplicated or invented), and each returned point matches
+  // PointAt(that index) exactly (the ring already lies exactly in the
+  // cutting plane, so projection changes nothing).
+  std::set<int> seen;
+  bool points_match_indices = true;
+  for (size_t i = 0; i < contour.indices.size(); ++i) {
+    seen.insert(contour.indices[i]);
+    if (contour.points[i].DistanceTo(cloud.PointAt(contour.indices[i])) > 1e-9) points_match_indices = false;
+  }
+  Check(seen.size() == 12, "the 12 returned indices are a genuine permutation of 0..11 (no duplicates)");
+  Check(points_match_indices, "each returned point is exactly PointAt() of its own reported index (on-plane ring, so projection is a no-op)");
+
+  // The real test: the output order is the ring's own angular order around
+  // its centroid, NOT the scrambled append order. Since the 12 points are
+  // exactly evenly spaced by 30 degrees, consecutive entries in the result
+  // (cyclically) must differ by exactly 30 degrees - always in the SAME
+  // rotational direction (the plane's own local axes may be rotated or
+  // mirrored relative to world x/y, but a pure rotation/reflection of an
+  // evenly-spaced ring still visits its neighbors in one consistent
+  // direction).
+  std::vector<double> out_angle(12);
+  for (size_t i = 0; i < 12; ++i) out_angle[i] = std::atan2(contour.points[i].y, contour.points[i].x) * 180.0 / 3.14159265358979323846;
+  bool step_ok = true;
+  int sign = 0;
+  for (size_t i = 0; i < 12; ++i) {
+    double d = out_angle[(i + 1) % 12] - out_angle[i];
+    while (d > 180.0) d -= 360.0;
+    while (d < -180.0) d += 360.0;
+    if (std::abs(std::abs(d) - 30.0) > 1e-6) step_ok = false;
+    const int this_sign = d > 0 ? 1 : -1;
+    if (sign == 0) sign = this_sign;
+    else if (this_sign != sign) step_ok = false;
+  }
+  Check(step_ok, "consecutive contour points are each exactly 30 degrees apart around the ring, in one consistent direction - "
+                 "the real angular-around-centroid order, not the scrambled append order");
+
+  // The fitted curve is a genuine closed interpolation through these exact
+  // points: InterpolateCubic()'s own chord-length parameters, recomputed
+  // here the identical way ContourAtPlane() itself does internally, must
+  // evaluate the curve back to each source point exactly (the defining
+  // property of global cubic INTERPOLATION, as opposed to approximation).
+  Check(contour.curve.IsValid(), "a 12-point band produces a valid fitted closed curve");
+  // ChordParams(..., closed=true) returns ONE MORE entry than there are
+  // points (params[N] is the wrap-around period, mapping back to point 0 -
+  // see ChordParams()'s own doc comment/InterpolateCubic()'s identical
+  // convention elsewhere in this file) - so only params[0..N-1] correspond
+  // 1:1 to contour.points.
+  const std::vector<double> params = ChordParams(contour.points, /*closed=*/true);
+  bool curve_interpolates = params.size() == contour.points.size() + 1;
+  for (size_t i = 0; curve_interpolates && i < contour.points.size(); ++i) {
+    const ON_3dPoint p = contour.curve.PointAt(params[i]);
+    if (Point3d(p).DistanceTo(contour.points[i]) > 1e-6) curve_interpolates = false;
+  }
+  Check(curve_interpolates, "the fitted curve passes exactly through every one of the 12 ordered ring points at their own chord-length parameter");
+
+  // Fewer than 3 points in the band: indices/points are still returned, but
+  // no curve can be fit (an empty, default-constructed ON_NurbsCurve).
+  {
+    PointCloud two;
+    two.AppendPoint(Point3d(1, 0, 0));
+    two.AppendPoint(Point3d(0, 1, 0));
+    const PointCloud::Contour tiny = two.ContourAtPlane(z0_plane, 0.1);
+    Check(tiny.indices.size() == 2, "a 2-point band still returns both points");
+    Check(!tiny.curve.IsValid(), "but fits no curve at all (fewer than 3 points)");
+  }
+
+  // Same argument conventions as PointsNearPlane(): negative band and an
+  // invalid plane both throw; an empty cloud returns an empty (not erroring)
+  // Contour with no curve.
+  {
+    bool threw_band = false;
+    try {
+      cloud.ContourAtPlane(z0_plane, -0.001);
+    } catch (const std::invalid_argument&) {
+      threw_band = true;
+    }
+    Check(threw_band, "ContourAtPlane(negative band) throws");
+
+    const PointCloud empty;
+    const PointCloud::Contour empty_contour = empty.ContourAtPlane(z0_plane, 1e9);
+    Check(empty_contour.indices.empty() && !empty_contour.curve.IsValid(),
+          "ContourAtPlane on an empty cloud returns an empty Contour, not an error");
+  }
 }
 
 // SaveXyz()/LoadXyz() close a real gap: before this, a PointCloud had no
@@ -64617,6 +64818,7 @@ int main() {
   TestPullbackCurveToSurfaceAcrossPeriodicSeam();
   TestIntersectBrepByPlaneBoxSideWalls();
   TestContourBrepParallelSections();
+  TestSectionBrepByPlanesIndependentlyOrientedClipPlanes();
   TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan();
   TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly();
   TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
@@ -64802,6 +65004,7 @@ int main() {
   TestMeshClashWith();
   TestPointCloudSpatialQueries();
   TestPointCloudPointsNearPlane();
+  TestPointCloudContourAtPlaneFitsRingThroughBand();
   TestPointCloudXyzRoundTrips();
   TestPointCloudLoadXyzRejectsMalformedInput();
   TestPointCloudPtsRoundTrips();

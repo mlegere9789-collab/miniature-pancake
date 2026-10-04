@@ -559,6 +559,34 @@ dhecheck "DXF: 0 curves, 0 points, 0 meshes, 1 hatch" "the reopened file's HATCH
 dhecheck "1 object(s) selected" "SelHatch found the round-tripped hatch"
 dhecheck "Area = 100 square" "the round-tripped hatch's area is exactly the 10x10 boundary"
 grep -q "^HATCH$" "$TMPW/dxf_hatch_export.dxf" && echo "ok   dxf_hatch_export.dxf contains a real HATCH entity, not just boundary LINE/POLYLINE entities" || { echo "FAIL dxf_hatch_export.dxf has no HATCH entity"; fail=1; }
+# DXF pattern-fill HATCH export: ExportDxf's HATCH writer above only ever
+# covered the solid-fill case; a pattern-fill hatch (Hatch Pattern=ANSI31)
+# still round-tripped out as its own N already-clipped LINE entities until
+# this change (see WriteDxfHatchPattern/TryWriteDxfHatchPatternGroup in
+# FileExchange.cpp). Makes a real ANSI31 hatch, exports it, reopens the
+# exported file in a fresh document, and checks SelHatch finds the exact
+# same number of real Hatch=ANSI31-tagged line objects the original Hatch
+# command built - proving the new writer and the existing pattern-name-only
+# reader agree on the wire format, not just approximate it.
+sed "s|@TMP@|$TMPW|g" "$HERE/dxf_hatch_pattern_export_script.txt" > "$TMPW/dxf_hatch_pattern_export_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DHP="$("$BIN" --smoke 30 --script "$TMPW/dxf_hatch_pattern_export_script.txt" 2>&1)" || { echo "$DHP"; echo "FAIL: DXF pattern HATCH export script exited non-zero"; exit 1; }
+else
+  DHP="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_hatch_pattern_export_script.txt" 2>&1)" || { echo "$DHP"; echo "FAIL: DXF pattern HATCH export script exited non-zero"; exit 1; }
+fi
+dhpcheck() { if echo "$DHP" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DHP" "$1"; fail=1; fi; }
+dhpcheck "Exported $TMPW/dxf_hatch_pattern_export.dxf" "ExportDxf wrote a file"
+BEFORE_SEL="$(echo "$DHP" | grep -o "^[0-9]* object(s) selected" | head -1)"
+AFTER_SEL="$(echo "$DHP" | grep -o "^[0-9]* object(s) selected" | tail -1)"
+if [ -n "$BEFORE_SEL" ] && [ "$BEFORE_SEL" = "$AFTER_SEL" ]; then
+  echo "ok   the round-tripped pattern hatch's line count matches exactly ($BEFORE_SEL)"
+else
+  echo "FAIL pattern hatch line count did not round-trip (before: '$BEFORE_SEL', after: '$AFTER_SEL')"
+  fail=1
+fi
+grep -q "^HATCH$" "$TMPW/dxf_hatch_pattern_export.dxf" && echo "ok   dxf_hatch_pattern_export.dxf contains a real HATCH entity" || { echo "FAIL dxf_hatch_pattern_export.dxf has no HATCH entity"; fail=1; }
+grep -q "^ANSI31$" "$TMPW/dxf_hatch_pattern_export.dxf" && echo "ok   dxf_hatch_pattern_export.dxf's HATCH entity names the real ANSI31 pattern" || { echo "FAIL dxf_hatch_pattern_export.dxf's HATCH entity does not name ANSI31"; fail=1; }
+[ "$(grep -c "^LINE$" "$TMPW/dxf_hatch_pattern_export.dxf")" = "0" ] && echo "ok   dxf_hatch_pattern_export.dxf has no bare LINE entities - the fill exported as one HATCH, not N clipped lines" || { echo "FAIL dxf_hatch_pattern_export.dxf still has bare LINE entities"; fail=1; }
 # DXF TEXT export: ExportDxf had no TEXT writer function at all until this
 # change (see WriteDxfTextIfPlanarXY in FileExchange.cpp) - a Dino8 "Text"
 # annotation used to round-trip out as its own baked glyph-outline curves,
@@ -4444,6 +4472,84 @@ assert bo[2] > bo[0] + 30 and bo[2] > bo[1] + 30, f'Box B does not read as blue 
 assert bo == bo2, f'Box B does not return to its own colour after UseViewport: off={bo} off2={bo2}'
 assert max(bn) - min(bn) <= 8, f'Box B while Monochrome-tagged is not a neutral grey: {bn}'
 assert abs(bn[0] - 182) <= 15 and abs(bn[1] - 182) <= 15 and abs(bn[2] - 187) <= 15, f'Box B Monochrome grey is not the expected flat {{200,200,205}}-derived tone: {bn}'
+PY
+
+# SetObjectDisplayMode Pen/Arctic: pixel-level proof (PARITY_MAP.md's
+# "Per-object display mode override" item) that Pen and Arctic are two more
+# real per-object overrides - both fill flat white (ModeStyle::force_white's
+# own Color::FromBytes(245,245,245)) like their viewport-wide namesakes, but
+# Pen is unlit (kFlat: the fragment shader returns u_color unchanged, no
+# lighting term at all) while Arctic is lit (kLit, attenuated by the scene's
+# key/fill lights the same way Monochrome already is above) - the one
+# difference between the two viewport-wide modes themselves, preserved
+# per-object; see tests/pen_script.txt for the full scene/capture sequence.
+mkdir -p "$TMPW/pen"
+sed "s|@TMP@|$TMPW/pen|g" "$HERE/pen_script.txt" > "$TMPW/pen_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PEN="$("$BIN" --smoke 30 --script "$TMPW/pen_script.txt" 2>&1)" || { echo "$PEN"; echo "FAIL: pen script exited non-zero"; exit 1; }
+else
+  PEN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/pen_script.txt" 2>&1)" || { echo "$PEN"; echo "FAIL: pen script exited non-zero"; exit 1; }
+fi
+pencheck() { if echo "$PEN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PEN" "$1"; fail=1; fi; }
+pencheck "^ok   expect_objects 2" "pen/arctic script left exactly the two boxes"
+pencheck "gl_error=0" "pen/arctic script ran without OpenGL errors"
+python3 - "$TMPW/pen/pen_off.bmp" "$TMPW/pen/pen_on.bmp" "$TMPW/pen/pen_off2.bmp" "$TMPW/pen/arctic_on.bmp" "$TMPW/pen/arctic_off2.bmp" <<'PY' && echo "ok   SetObjectDisplayMode Pen/Arctic genuinely override one object's own fill colour with each mode's flat white, independent of the viewport's own (never-Pen/Arctic) display mode, Pen stays unlit while Arctic stays lit (the one real difference between the two), and UseViewport genuinely restores the object's own colour after each" || { echo "FAIL SetObjectDisplayMode Pen/Arctic pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+w, h, off = read_bmp(sys.argv[1])
+_, _, pen_on = read_bmp(sys.argv[2])
+_, _, off2 = read_bmp(sys.argv[3])
+_, _, arctic_on = read_bmp(sys.argv[4])
+_, _, arctic_off2 = read_bmp(sys.argv[5])
+
+# Box A (left, never touched): must read identically across every capture.
+reds = [(x, y) for y in range(0, h, 2) for x in range(0, w, 2) if off(x, y)[0] > off(x, y)[1] + 30 and off(x, y)[0] > off(x, y)[2] + 30]
+assert reds, 'no red (Box A) pixels found in pen_off.bmp'
+axs, ays = [p[0] for p in reds], [p[1] for p in reds]
+acx, acy = (min(axs) + max(axs)) // 2, (min(ays) + max(ays)) // 2
+ra = off(acx, acy)
+for name, img in (('pen_on', pen_on), ('off2', off2), ('arctic_on', arctic_on), ('arctic_off2', arctic_off2)):
+    assert img(acx, acy) == ra, f'Box A changed in {name} even though it was never given a SetObjectDisplayMode override: {ra} vs {img(acx, acy)}'
+assert ra[0] > ra[1] + 30 and ra[0] > ra[2] + 30, f'Box A does not read as red: {ra}'
+
+# Box B (right, Pen then Arctic toggled on/off): find the blob where "off"
+# and "pen_on" actually differ, and sample its centre everywhere.
+diffs = [(x, y) for y in range(0, h) for x in range(0, w) if sum(abs(a - b) for a, b in zip(off(x, y), pen_on(x, y))) > 15]
+assert diffs, 'Box B never changed between pen_off.bmp and pen_on.bmp - Pen had no visible effect'
+bxs, bys = [p[0] for p in diffs], [p[1] for p in diffs]
+bcx, bcy = (min(bxs) + max(bxs)) // 2, (min(bys) + max(bys)) // 2
+bo, bpen, bo2, barc, bo3 = off(bcx, bcy), pen_on(bcx, bcy), off2(bcx, bcy), arctic_on(bcx, bcy), arctic_off2(bcx, bcy)
+print(f'Box B sample: off={bo} pen_on={bpen} off2={bo2} arctic_on={barc} arctic_off2={bo3}')
+assert bo[2] > bo[0] + 30 and bo[2] > bo[1] + 30, f'Box B does not read as blue before either override: {bo}'
+assert bo == bo2, f'Box B does not return to its own colour after Pen + UseViewport: off={bo} off2={bo2}'
+assert bo == bo3, f'Box B does not return to its own colour after Arctic + UseViewport: off={bo} off3={bo3}'
+# Pen is unlit (kFlat): the fragment shader returns u_color verbatim, so the
+# sampled pixel must be exactly ModeStyle::force_white's flat (245,245,245),
+# not merely "whiteish" - no lighting attenuation to leave room for.
+assert bpen == (245, 245, 245), f'Box B Pen is not the exact unlit flat white (245,245,245): {bpen}'
+# Arctic is lit (kLit): attenuated by the same key/fill lights as Monochrome
+# above, so it must land noticeably below the flat (245,245,245) Pen value
+# yet stay a neutral white/grey (equal-ish channels, not tinted) - proving
+# Pen and Arctic are genuinely different per-object overrides, not two
+# names for the same effect.
+assert max(barc) - min(barc) <= 8, f'Box B Arctic is not a neutral white/grey: {barc}'
+assert all(barc[i] < bpen[i] - 10 for i in range(3)), f'Box B Arctic ({barc}) is not darker than Box B Pen ({bpen}) - lit vs unlit has no visible effect'
+assert all(barc[i] > 150 for i in range(3)), f'Box B Arctic ({barc}) is too dark to read as the Arctic/Pen family of flat whites'
 PY
 
 # Real-time shadow maps (per-light shadow atlas): pixel-level proof
