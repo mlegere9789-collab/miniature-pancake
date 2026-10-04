@@ -9291,6 +9291,127 @@ void TestModelAddHatchPatternLinesRoundTrips() {
   std::remove(path.c_str());
 }
 
+void TestModelAddHatchHolesRoundTrips() {
+  using dino8::kernel::HatchFillType;
+  using dino8::kernel::Model;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence for
+  // "Rhino non-geometry/composite objects in .3dm" named this directly:
+  // "ON_Hatch (single outer loop, given as plane-relative (u, v) points -
+  // no inner loops/holes)" - before this, AddHatch() had no way to give a
+  // hatch a hole at all, no matter how many loops ON_Hatch::Create()
+  // itself could already accept.
+  Model model;
+  const int pattern_index = model.AddHatchPattern("Solid Fill", HatchFillType::Solid);
+  Check(pattern_index == 0, "the first AddHatchPattern() call returns index 0");
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point2d> outer = {Point2d(0, 0), Point2d(4, 0), Point2d(4, 4), Point2d(0, 4)};
+  const std::vector<Point2d> hole = {Point2d(1, 1), Point2d(2, 1), Point2d(2, 2), Point2d(1, 2)};
+
+  Check(model.AddHatch(plane, outer, pattern_index, 0.0, 1.0, "Bad Hole", -1, std::nullopt,
+                        dino8::kernel::UserStrings(), std::nullopt, std::vector<int>(), std::nullopt,
+                        {{Point2d(0, 0), Point2d(1, 0)}}) == -1,
+        "AddHatch() returns -1 when a hole has fewer than 3 points, same contract the outer "
+        "boundary already has");
+  Check(model.HatchCount() == 0, "the refused call above added nothing - not even a hatch with no holes");
+
+  const int hatch_index =
+      model.AddHatch(plane, outer, pattern_index, 0.0, 1.0, "Annulus", -1, std::nullopt,
+                      dino8::kernel::UserStrings(), std::nullopt, std::vector<int>(), std::nullopt, {hole});
+  Check(hatch_index == 0, "the first real AddHatch() call with a hole returns index 0");
+  Check(model.HatchCount() == 1, "model has one hatch after AddHatch()");
+
+  const auto info = model.HatchAt(0);
+  Check(info.boundary.size() == outer.size(),
+        "HatchAt() still reports the outer boundary with the exact point count AddHatch() was given");
+  Check(info.hole_boundaries.size() == 1, "HatchAt() reports exactly the one hole AddHatch() was given");
+  bool hole_matches = info.hole_boundaries.size() == 1 && info.hole_boundaries[0].size() == hole.size();
+  for (size_t i = 0; hole_matches && i < hole.size(); ++i) {
+    if (info.hole_boundaries[0][i].DistanceTo(hole[i]) > 1e-9) hole_matches = false;
+  }
+  Check(hole_matches, "HatchAt() reports the exact hole boundary points AddHatch() was given, in order");
+
+  // A second, independent hole: confirms holes compose (not just "exactly
+  // one works"), and that hole order survives both construction and the
+  // round trip below.
+  const std::vector<Point2d> hole2 = {Point2d(3, 3), Point2d(3.5, 3), Point2d(3.5, 3.5)};
+  const int two_hole_index =
+      model.AddHatch(plane, outer, pattern_index, 0.0, 1.0, "Two Holes", -1, std::nullopt,
+                      dino8::kernel::UserStrings(), std::nullopt, std::vector<int>(), std::nullopt,
+                      {hole, hole2});
+  Check(two_hole_index == 1, "the second AddHatch() call returns index 1");
+  const auto two_hole_info = model.HatchAt(1);
+  Check(two_hole_info.hole_boundaries.size() == 2,
+        "HatchAt() reports both holes when AddHatch() is given two");
+  Check(two_hole_info.hole_boundaries.size() == 2 && two_hole_info.hole_boundaries[1].size() == hole2.size(),
+        "the second hole's own point count survives, independent of the first hole");
+
+  const std::string path = "dino8_kernel_model_hatch_holes_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a holed hatch succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.HatchCount() == 2, "both hatches survive the .3dm round trip");
+  const auto reloaded = loaded.HatchAt(0);
+  Check(reloaded.hole_boundaries.size() == 1, "the single-hole hatch's hole count survives the round trip");
+  bool reloaded_hole_matches =
+      reloaded.hole_boundaries.size() == 1 && reloaded.hole_boundaries[0].size() == hole.size();
+  for (size_t i = 0; reloaded_hole_matches && i < hole.size(); ++i) {
+    if (reloaded.hole_boundaries[0][i].DistanceTo(hole[i]) > 1e-6) reloaded_hole_matches = false;
+  }
+  Check(reloaded_hole_matches, "the reloaded hole's exact boundary points survive the round trip");
+  const auto reloaded_two_hole = loaded.HatchAt(1);
+  Check(reloaded_two_hole.hole_boundaries.size() == 2,
+        "the two-hole hatch's hole count survives the round trip");
+
+  std::remove(path.c_str());
+}
+
+void TestModelAddHatchPatternDescriptionRoundTrips() {
+  using dino8::kernel::HatchFillType;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence for
+  // "Rhino non-geometry/composite objects in .3dm" named this as one of
+  // this bullet's own last two remaining open items: "ON_HatchPattern's
+  // own other fields" - ON_HatchPattern::SetDescription()/Description()
+  // had no caller-reachable path through this kernel's Model at all.
+  Model model;
+  const int no_description = model.AddHatchPattern("Plain", HatchFillType::Solid);
+  Check(no_description == 0, "the first AddHatchPattern() call returns index 0");
+  Check(model.HatchPatternDescriptionAt(no_description).empty(),
+        "a pattern added with no description argument reports an empty description, the "
+        "pre-existing behavior, unchanged");
+
+  const int described =
+      model.AddHatchPattern("Brick", HatchFillType::Lines, {}, "Standard brick coursing pattern");
+  Check(described == 1, "the second AddHatchPattern() call returns index 1");
+  Check(model.HatchPatternDescriptionAt(described) == "Standard brick coursing pattern",
+        "HatchPatternDescriptionAt() reports the exact description AddHatchPattern() was given");
+  Check(model.HatchPatternDescriptionAt(no_description).empty(),
+        "giving the second pattern a description does not retroactively affect the first");
+
+  Check(model.HatchPatternDescriptionAt(9999).empty(),
+        "HatchPatternDescriptionAt() on a pattern index this model doesn't have returns an "
+        "empty string, same contract as HatchPatternLineCount() etc.");
+
+  const std::string path = "dino8_kernel_model_hatch_pattern_description_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a described hatch pattern succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.HatchPatternDescriptionAt(described) == "Standard brick coursing pattern",
+        "the reloaded pattern's description survives the .3dm round trip");
+  Check(loaded.HatchPatternDescriptionAt(no_description).empty(),
+        "the reloaded undescribed pattern's empty description survives the round trip too");
+
+  std::remove(path.c_str());
+}
+
 void TestModelAddTextDotRoundTrips() {
   using dino8::kernel::Model;
   using dino8::kernel::Point3d;
@@ -9461,6 +9582,76 @@ void TestModelAddLeaderRoundTrips() {
   }
 
   std::remove(path_file.c_str());
+}
+
+void TestModelAddDimensionLinearRoundTrips() {
+  using dino8::kernel::Model;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // Closes the last remaining half of PARITY_MAP.md's own "Rhino non-
+  // geometry/composite objects in .3dm" evidence: "annotations besides
+  // plain ON_Text (dimensions, leaders)" - AddLeader() above closed the
+  // leader half; before this, nothing in this kernel could create an
+  // ON_DimLinear (or any other ON_Dimension subtype) at all.
+  Model model;
+  Check(model.DimensionLinearCount() == 0, "a fresh Model has no linear dimensions");
+
+  const Point3d p0(0, 0, 0);
+  const Point3d p1(4, 0, 0);
+  const Point3d dimline_pt(2, 1, 0);
+  const Vector3d normal(0, 0, 1);
+
+  Check(model.AddDimensionLinear(p0, p1, dimline_pt, normal, "") == -1,
+        "AddDimensionLinear() returns -1 for an empty name, same contract as AddLeader() etc.");
+  Check(model.AddDimensionLinear(p0, p0, dimline_pt, normal, "Coincident") == -1,
+        "AddDimensionLinear() returns -1 when the two extension points coincide - there is no "
+        "direction to build a plane from");
+  Check(model.AddDimensionLinear(p0, p1, dimline_pt, Vector3d(0, 0, 0), "Zero Normal") == -1,
+        "AddDimensionLinear() returns -1 for a zero plane_normal, which fails to unitize");
+  Check(model.DimensionLinearCount() == 0, "none of the refused calls above added anything");
+
+  const int index = model.AddDimensionLinear(p0, p1, dimline_pt, normal, "Dim A");
+  Check(index == 0, "the first real AddDimensionLinear() call returns index 0");
+  Check(model.DimensionLinearCount() == 1, "model has one linear dimension after AddDimensionLinear()");
+  Check(model.ObjectCount() == 1,
+        "a linear dimension is a real model geometry object, also counted by ObjectCount()");
+
+  const auto info = model.DimensionLinearAt(0);
+  Check(info.name == "Dim A", "DimensionLinearAt() reports the name AddDimensionLinear() was given");
+  Check(info.extension_point0.DistanceTo(p0) < 1e-9,
+        "DimensionLinearAt() reports the exact first extension point AddDimensionLinear() was given, "
+        "converted back out of ON_DimLinear's own plane-local 2D storage");
+  Check(info.extension_point1.DistanceTo(p1) < 1e-9,
+        "DimensionLinearAt() reports the exact second extension point AddDimensionLinear() was given");
+  Check(info.dimension_line_point.DistanceTo(dimline_pt) < 1e-9,
+        "DimensionLinearAt() reports the exact dimension line point AddDimensionLinear() was given");
+  Check(std::abs(info.measurement - 4.0) < 1e-9,
+        "the dimension's own Measurement() is the exact distance between the two extension points, "
+        "4.0 for p0=(0,0,0) and p1=(4,0,0)");
+
+  const auto out_of_range = model.DimensionLinearAt(9999);
+  Check(out_of_range.name.empty(),
+        "DimensionLinearAt() on an index this model doesn't have returns a default-constructed "
+        "DimensionLinearInfo, same contract as LeaderAt() etc.");
+
+  const std::string path = "dino8_kernel_model_dimension_linear_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a linear dimension succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.DimensionLinearCount() == 1, "the linear dimension survives the .3dm round trip");
+  const auto reloaded = loaded.DimensionLinearAt(0);
+  Check(reloaded.name == "Dim A", "the reloaded dimension's name survives the round trip");
+  Check(reloaded.extension_point0.DistanceTo(p0) < 1e-6,
+        "the reloaded dimension's first extension point survives the round trip");
+  Check(reloaded.extension_point1.DistanceTo(p1) < 1e-6,
+        "the reloaded dimension's second extension point survives the round trip");
+  Check(std::abs(reloaded.measurement - 4.0) < 1e-6,
+        "the reloaded dimension's measurement survives the round trip");
+
+  std::remove(path.c_str());
 }
 
 void TestModelUnitConversionFactor() {
@@ -65059,9 +65250,12 @@ int main() {
   TestModelAddInstanceReferenceRoundTrips();
   TestModelAddHatchRoundTrips();
   TestModelAddHatchPatternLinesRoundTrips();
+  TestModelAddHatchHolesRoundTrips();
+  TestModelAddHatchPatternDescriptionRoundTrips();
   TestModelAddTextDotRoundTrips();
   TestModelAddTextAnnotationRoundTrips();
   TestModelAddLeaderRoundTrips();
+  TestModelAddDimensionLinearRoundTrips();
   TestModelUnitConversionFactor();
   TestModelConvertUnitsScalesGeometryAndUpdatesUnitSystem();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
