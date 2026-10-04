@@ -2866,6 +2866,81 @@ void TestContourBrepParallelSections() {
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "Plane sections / contours of surfaces and B-reps (Section, Contour,
+// ClippingSections)" bullet's own last remaining half: ContourBrep() (tested
+// just above) closed "Contour" (parallel sections of ONE object along ONE
+// fixed direction), but "ClippingSections" (multiple live, named,
+// arbitrarily-oriented clip planes) was still entirely unaddressed.
+// SectionBrepByPlanes() is that API: a plain list of independently-placed,
+// independently-oriented planes, each run through IntersectBrepByPlane() on
+// its own.
+void TestSectionBrepByPlanesIndependentlyOrientedClipPlanes() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepMultiPlaneSection;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SectionBrepByPlanes;
+
+  const Brep box = Brep::Box(0, 0, 0, 3, 3, 3);
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Three planes, none of them parallel to any other (unlike ContourBrep()'s
+  // own fixture, which is a family of planes that all share one normal):
+  // plane 0 at z=1 (horizontal), plane 1 at x=1.5 (vertical, a different
+  // normal entirely), plane 2 far outside the box's own bounding box (must
+  // be dropped, exactly like ContourBrep()'s/IntersectBrepByPlane()'s own
+  // "far plane" cases).
+  const std::vector<ON_Plane> planes = {
+      ON_Plane(ON_3dPoint(0, 0, 1), ON_3dVector(0, 0, 1)),
+      ON_Plane(ON_3dPoint(1.5, 0, 0), ON_3dVector(1, 0, 0)),
+      ON_Plane(ON_3dPoint(0, 0, 100), ON_3dVector(0, 0, 1)),
+  };
+
+  const std::vector<BrepMultiPlaneSection> sections = SectionBrepByPlanes(box.raw(), planes, opt);
+  Check(sections.size() == 2, "of three clip planes, only the two that actually meet the box produce a section (the far one is dropped)");
+
+  const BrepMultiPlaneSection* at_z1 = nullptr;
+  const BrepMultiPlaneSection* at_x15 = nullptr;
+  for (const BrepMultiPlaneSection& sec : sections) {
+    if (sec.plane_index == 0) at_z1 = &sec;
+    if (sec.plane_index == 1) at_x15 = &sec;
+    Check(sec.plane_index != 2, "the far, non-intersecting plane (index 2) contributes no section entry at all");
+  }
+  Check(at_z1 != nullptr && at_x15 != nullptr,
+        "the two real sections keep their own original plane_index (0 and 1) - not compacted away by the dropped middle one... "
+        "(no middle one here, but index 2 being absent entirely already proves indices are NOT simply 0..n-1 of the output)");
+
+  Check(at_z1 != nullptr && at_z1->hits.size() >= 4, "plane 0 (z=1) crosses at least the box's own four side walls, same as IntersectBrepByPlane() alone");
+  Check(at_x15 != nullptr && at_x15->hits.size() >= 4, "plane 1 (x=1.5), a totally different orientation, independently crosses at least four faces too");
+
+  bool every_z1_point_at_z1 = true;
+  if (at_z1) {
+    for (const auto& hit : at_z1->hits) {
+      for (const Point3d& p : hit.curve.points) {
+        if (std::abs(p.z - 1.0) > 1e-4) every_z1_point_at_z1 = false;
+      }
+    }
+  }
+  Check(every_z1_point_at_z1, "every point of the z=1 clip section genuinely sits at z == 1");
+
+  bool every_x15_point_at_x15 = true;
+  if (at_x15) {
+    for (const auto& hit : at_x15->hits) {
+      for (const Point3d& p : hit.curve.points) {
+        if (std::abs(p.x - 1.5) > 1e-4) every_x15_point_at_x15 = false;
+      }
+    }
+  }
+  Check(every_x15_point_at_x15, "every point of the x=1.5 clip section genuinely sits at x == 1.5 - a real second, independently-oriented plane, not a relabeled copy of the first");
+
+  // An empty plane list returns empty outright, not a crash or a
+  // default-constructed single section.
+  Check(SectionBrepByPlanes(box.raw(), {}, opt).empty(), "an empty clip-plane list returns no sections");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "CSX against trimmed faces and curve-on-surface overlap (coincident)
 // detection" bullet's own second half: "No overlap detection anywhere."
 // IntersectCurveSurfaceOverlap() is that overlap detector - a curve lying
@@ -9216,6 +9291,127 @@ void TestModelAddHatchPatternLinesRoundTrips() {
   std::remove(path.c_str());
 }
 
+void TestModelAddHatchHolesRoundTrips() {
+  using dino8::kernel::HatchFillType;
+  using dino8::kernel::Model;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence for
+  // "Rhino non-geometry/composite objects in .3dm" named this directly:
+  // "ON_Hatch (single outer loop, given as plane-relative (u, v) points -
+  // no inner loops/holes)" - before this, AddHatch() had no way to give a
+  // hatch a hole at all, no matter how many loops ON_Hatch::Create()
+  // itself could already accept.
+  Model model;
+  const int pattern_index = model.AddHatchPattern("Solid Fill", HatchFillType::Solid);
+  Check(pattern_index == 0, "the first AddHatchPattern() call returns index 0");
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point2d> outer = {Point2d(0, 0), Point2d(4, 0), Point2d(4, 4), Point2d(0, 4)};
+  const std::vector<Point2d> hole = {Point2d(1, 1), Point2d(2, 1), Point2d(2, 2), Point2d(1, 2)};
+
+  Check(model.AddHatch(plane, outer, pattern_index, 0.0, 1.0, "Bad Hole", -1, std::nullopt,
+                        dino8::kernel::UserStrings(), std::nullopt, std::vector<int>(), std::nullopt,
+                        {{Point2d(0, 0), Point2d(1, 0)}}) == -1,
+        "AddHatch() returns -1 when a hole has fewer than 3 points, same contract the outer "
+        "boundary already has");
+  Check(model.HatchCount() == 0, "the refused call above added nothing - not even a hatch with no holes");
+
+  const int hatch_index =
+      model.AddHatch(plane, outer, pattern_index, 0.0, 1.0, "Annulus", -1, std::nullopt,
+                      dino8::kernel::UserStrings(), std::nullopt, std::vector<int>(), std::nullopt, {hole});
+  Check(hatch_index == 0, "the first real AddHatch() call with a hole returns index 0");
+  Check(model.HatchCount() == 1, "model has one hatch after AddHatch()");
+
+  const auto info = model.HatchAt(0);
+  Check(info.boundary.size() == outer.size(),
+        "HatchAt() still reports the outer boundary with the exact point count AddHatch() was given");
+  Check(info.hole_boundaries.size() == 1, "HatchAt() reports exactly the one hole AddHatch() was given");
+  bool hole_matches = info.hole_boundaries.size() == 1 && info.hole_boundaries[0].size() == hole.size();
+  for (size_t i = 0; hole_matches && i < hole.size(); ++i) {
+    if (info.hole_boundaries[0][i].DistanceTo(hole[i]) > 1e-9) hole_matches = false;
+  }
+  Check(hole_matches, "HatchAt() reports the exact hole boundary points AddHatch() was given, in order");
+
+  // A second, independent hole: confirms holes compose (not just "exactly
+  // one works"), and that hole order survives both construction and the
+  // round trip below.
+  const std::vector<Point2d> hole2 = {Point2d(3, 3), Point2d(3.5, 3), Point2d(3.5, 3.5)};
+  const int two_hole_index =
+      model.AddHatch(plane, outer, pattern_index, 0.0, 1.0, "Two Holes", -1, std::nullopt,
+                      dino8::kernel::UserStrings(), std::nullopt, std::vector<int>(), std::nullopt,
+                      {hole, hole2});
+  Check(two_hole_index == 1, "the second AddHatch() call returns index 1");
+  const auto two_hole_info = model.HatchAt(1);
+  Check(two_hole_info.hole_boundaries.size() == 2,
+        "HatchAt() reports both holes when AddHatch() is given two");
+  Check(two_hole_info.hole_boundaries.size() == 2 && two_hole_info.hole_boundaries[1].size() == hole2.size(),
+        "the second hole's own point count survives, independent of the first hole");
+
+  const std::string path = "dino8_kernel_model_hatch_holes_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a holed hatch succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.HatchCount() == 2, "both hatches survive the .3dm round trip");
+  const auto reloaded = loaded.HatchAt(0);
+  Check(reloaded.hole_boundaries.size() == 1, "the single-hole hatch's hole count survives the round trip");
+  bool reloaded_hole_matches =
+      reloaded.hole_boundaries.size() == 1 && reloaded.hole_boundaries[0].size() == hole.size();
+  for (size_t i = 0; reloaded_hole_matches && i < hole.size(); ++i) {
+    if (reloaded.hole_boundaries[0][i].DistanceTo(hole[i]) > 1e-6) reloaded_hole_matches = false;
+  }
+  Check(reloaded_hole_matches, "the reloaded hole's exact boundary points survive the round trip");
+  const auto reloaded_two_hole = loaded.HatchAt(1);
+  Check(reloaded_two_hole.hole_boundaries.size() == 2,
+        "the two-hole hatch's hole count survives the round trip");
+
+  std::remove(path.c_str());
+}
+
+void TestModelAddHatchPatternDescriptionRoundTrips() {
+  using dino8::kernel::HatchFillType;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence for
+  // "Rhino non-geometry/composite objects in .3dm" named this as one of
+  // this bullet's own last two remaining open items: "ON_HatchPattern's
+  // own other fields" - ON_HatchPattern::SetDescription()/Description()
+  // had no caller-reachable path through this kernel's Model at all.
+  Model model;
+  const int no_description = model.AddHatchPattern("Plain", HatchFillType::Solid);
+  Check(no_description == 0, "the first AddHatchPattern() call returns index 0");
+  Check(model.HatchPatternDescriptionAt(no_description).empty(),
+        "a pattern added with no description argument reports an empty description, the "
+        "pre-existing behavior, unchanged");
+
+  const int described =
+      model.AddHatchPattern("Brick", HatchFillType::Lines, {}, "Standard brick coursing pattern");
+  Check(described == 1, "the second AddHatchPattern() call returns index 1");
+  Check(model.HatchPatternDescriptionAt(described) == "Standard brick coursing pattern",
+        "HatchPatternDescriptionAt() reports the exact description AddHatchPattern() was given");
+  Check(model.HatchPatternDescriptionAt(no_description).empty(),
+        "giving the second pattern a description does not retroactively affect the first");
+
+  Check(model.HatchPatternDescriptionAt(9999).empty(),
+        "HatchPatternDescriptionAt() on a pattern index this model doesn't have returns an "
+        "empty string, same contract as HatchPatternLineCount() etc.");
+
+  const std::string path = "dino8_kernel_model_hatch_pattern_description_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a described hatch pattern succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.HatchPatternDescriptionAt(described) == "Standard brick coursing pattern",
+        "the reloaded pattern's description survives the .3dm round trip");
+  Check(loaded.HatchPatternDescriptionAt(no_description).empty(),
+        "the reloaded undescribed pattern's empty description survives the round trip too");
+
+  std::remove(path.c_str());
+}
+
 void TestModelAddTextDotRoundTrips() {
   using dino8::kernel::Model;
   using dino8::kernel::Point3d;
@@ -9386,6 +9582,76 @@ void TestModelAddLeaderRoundTrips() {
   }
 
   std::remove(path_file.c_str());
+}
+
+void TestModelAddDimensionLinearRoundTrips() {
+  using dino8::kernel::Model;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // Closes the last remaining half of PARITY_MAP.md's own "Rhino non-
+  // geometry/composite objects in .3dm" evidence: "annotations besides
+  // plain ON_Text (dimensions, leaders)" - AddLeader() above closed the
+  // leader half; before this, nothing in this kernel could create an
+  // ON_DimLinear (or any other ON_Dimension subtype) at all.
+  Model model;
+  Check(model.DimensionLinearCount() == 0, "a fresh Model has no linear dimensions");
+
+  const Point3d p0(0, 0, 0);
+  const Point3d p1(4, 0, 0);
+  const Point3d dimline_pt(2, 1, 0);
+  const Vector3d normal(0, 0, 1);
+
+  Check(model.AddDimensionLinear(p0, p1, dimline_pt, normal, "") == -1,
+        "AddDimensionLinear() returns -1 for an empty name, same contract as AddLeader() etc.");
+  Check(model.AddDimensionLinear(p0, p0, dimline_pt, normal, "Coincident") == -1,
+        "AddDimensionLinear() returns -1 when the two extension points coincide - there is no "
+        "direction to build a plane from");
+  Check(model.AddDimensionLinear(p0, p1, dimline_pt, Vector3d(0, 0, 0), "Zero Normal") == -1,
+        "AddDimensionLinear() returns -1 for a zero plane_normal, which fails to unitize");
+  Check(model.DimensionLinearCount() == 0, "none of the refused calls above added anything");
+
+  const int index = model.AddDimensionLinear(p0, p1, dimline_pt, normal, "Dim A");
+  Check(index == 0, "the first real AddDimensionLinear() call returns index 0");
+  Check(model.DimensionLinearCount() == 1, "model has one linear dimension after AddDimensionLinear()");
+  Check(model.ObjectCount() == 1,
+        "a linear dimension is a real model geometry object, also counted by ObjectCount()");
+
+  const auto info = model.DimensionLinearAt(0);
+  Check(info.name == "Dim A", "DimensionLinearAt() reports the name AddDimensionLinear() was given");
+  Check(info.extension_point0.DistanceTo(p0) < 1e-9,
+        "DimensionLinearAt() reports the exact first extension point AddDimensionLinear() was given, "
+        "converted back out of ON_DimLinear's own plane-local 2D storage");
+  Check(info.extension_point1.DistanceTo(p1) < 1e-9,
+        "DimensionLinearAt() reports the exact second extension point AddDimensionLinear() was given");
+  Check(info.dimension_line_point.DistanceTo(dimline_pt) < 1e-9,
+        "DimensionLinearAt() reports the exact dimension line point AddDimensionLinear() was given");
+  Check(std::abs(info.measurement - 4.0) < 1e-9,
+        "the dimension's own Measurement() is the exact distance between the two extension points, "
+        "4.0 for p0=(0,0,0) and p1=(4,0,0)");
+
+  const auto out_of_range = model.DimensionLinearAt(9999);
+  Check(out_of_range.name.empty(),
+        "DimensionLinearAt() on an index this model doesn't have returns a default-constructed "
+        "DimensionLinearInfo, same contract as LeaderAt() etc.");
+
+  const std::string path = "dino8_kernel_model_dimension_linear_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a linear dimension succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.DimensionLinearCount() == 1, "the linear dimension survives the .3dm round trip");
+  const auto reloaded = loaded.DimensionLinearAt(0);
+  Check(reloaded.name == "Dim A", "the reloaded dimension's name survives the round trip");
+  Check(reloaded.extension_point0.DistanceTo(p0) < 1e-6,
+        "the reloaded dimension's first extension point survives the round trip");
+  Check(reloaded.extension_point1.DistanceTo(p1) < 1e-6,
+        "the reloaded dimension's second extension point survives the round trip");
+  Check(std::abs(reloaded.measurement - 4.0) < 1e-6,
+        "the reloaded dimension's measurement survives the round trip");
+
+  std::remove(path.c_str());
 }
 
 void TestModelUnitConversionFactor() {
@@ -19682,6 +19948,132 @@ void TestPointCloudPointsNearPlane() {
         "PointsNearPlane on an empty cloud returns an empty result, not an error");
 }
 
+// PARITY_MAP.md's own "Point-cloud contour/section as separate app commands"
+// bullet's own last remaining half, after PointsNearPlane() above closed "the
+// kernel PointCloud has no section API": "this is a membership QUERY
+// (indices + distances), not PointCloudContour's own contour-CURVE
+// extraction along a band." ContourAtPlane() is that contour-curve
+// extraction - a real fitted curve through the band, ordered by angle around
+// the band's own centroid rather than PointsNearPlane()'s own
+// ascending-distance order (meaningless for fitting a ring).
+void TestPointCloudContourAtPlaneFitsRingThroughBand() {
+  using dino8::kernel::ChordParams;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Point3d;
+
+  // 12 points around a radius-5 circle in the z=0 plane, at exact 30-degree
+  // increments - but APPENDED in a scrambled order (step of 5, coprime to
+  // 12, so every point is visited exactly once in a genuinely shuffled
+  // sequence: 0, 5, 10, 3, 8, 1, 6, 11, 4, 9, 2, 7) so a passing test can't
+  // be an accident of insertion order already being the contour's own
+  // angular order. A 13th point well off the z=0 plane (z=5) is appended
+  // last and must be excluded by the band.
+  PointCloud cloud;
+  std::vector<double> angle_deg(12);
+  for (int k = 0; k < 12; ++k) {
+    const int ring_index = (k * 5) % 12;
+    const double deg = ring_index * 30.0;
+    angle_deg[static_cast<size_t>(ring_index)] = deg;
+    const double rad = deg * 3.14159265358979323846 / 180.0;
+    cloud.AppendPoint(Point3d(5.0 * std::cos(rad), 5.0 * std::sin(rad), 0.0));
+  }
+  cloud.AppendPoint(Point3d(100, 0, 5));  // idx 12: far from the z=0 plane, must be excluded
+
+  const ON_Plane z0_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const PointCloud::Contour contour = cloud.ContourAtPlane(z0_plane, 0.1);
+
+  Check(contour.indices.size() == 12, "ContourAtPlane(band=0.1) finds exactly the 12 on-plane ring points, excluding the far 13th");
+  Check(contour.points.size() == 12, "contour.points has one entry per index, same size");
+  bool has_outlier = false;
+  for (int idx : contour.indices) if (idx == 12) has_outlier = true;
+  Check(!has_outlier, "the far point (idx 12) is genuinely excluded, not merely sorted to one end");
+
+  // Every returned index is one of the 12 ring points (a true permutation of
+  // 0..11, not duplicated or invented), and each returned point matches
+  // PointAt(that index) exactly (the ring already lies exactly in the
+  // cutting plane, so projection changes nothing).
+  std::set<int> seen;
+  bool points_match_indices = true;
+  for (size_t i = 0; i < contour.indices.size(); ++i) {
+    seen.insert(contour.indices[i]);
+    if (contour.points[i].DistanceTo(cloud.PointAt(contour.indices[i])) > 1e-9) points_match_indices = false;
+  }
+  Check(seen.size() == 12, "the 12 returned indices are a genuine permutation of 0..11 (no duplicates)");
+  Check(points_match_indices, "each returned point is exactly PointAt() of its own reported index (on-plane ring, so projection is a no-op)");
+
+  // The real test: the output order is the ring's own angular order around
+  // its centroid, NOT the scrambled append order. Since the 12 points are
+  // exactly evenly spaced by 30 degrees, consecutive entries in the result
+  // (cyclically) must differ by exactly 30 degrees - always in the SAME
+  // rotational direction (the plane's own local axes may be rotated or
+  // mirrored relative to world x/y, but a pure rotation/reflection of an
+  // evenly-spaced ring still visits its neighbors in one consistent
+  // direction).
+  std::vector<double> out_angle(12);
+  for (size_t i = 0; i < 12; ++i) out_angle[i] = std::atan2(contour.points[i].y, contour.points[i].x) * 180.0 / 3.14159265358979323846;
+  bool step_ok = true;
+  int sign = 0;
+  for (size_t i = 0; i < 12; ++i) {
+    double d = out_angle[(i + 1) % 12] - out_angle[i];
+    while (d > 180.0) d -= 360.0;
+    while (d < -180.0) d += 360.0;
+    if (std::abs(std::abs(d) - 30.0) > 1e-6) step_ok = false;
+    const int this_sign = d > 0 ? 1 : -1;
+    if (sign == 0) sign = this_sign;
+    else if (this_sign != sign) step_ok = false;
+  }
+  Check(step_ok, "consecutive contour points are each exactly 30 degrees apart around the ring, in one consistent direction - "
+                 "the real angular-around-centroid order, not the scrambled append order");
+
+  // The fitted curve is a genuine closed interpolation through these exact
+  // points: InterpolateCubic()'s own chord-length parameters, recomputed
+  // here the identical way ContourAtPlane() itself does internally, must
+  // evaluate the curve back to each source point exactly (the defining
+  // property of global cubic INTERPOLATION, as opposed to approximation).
+  Check(contour.curve.IsValid(), "a 12-point band produces a valid fitted closed curve");
+  // ChordParams(..., closed=true) returns ONE MORE entry than there are
+  // points (params[N] is the wrap-around period, mapping back to point 0 -
+  // see ChordParams()'s own doc comment/InterpolateCubic()'s identical
+  // convention elsewhere in this file) - so only params[0..N-1] correspond
+  // 1:1 to contour.points.
+  const std::vector<double> params = ChordParams(contour.points, /*closed=*/true);
+  bool curve_interpolates = params.size() == contour.points.size() + 1;
+  for (size_t i = 0; curve_interpolates && i < contour.points.size(); ++i) {
+    const ON_3dPoint p = contour.curve.PointAt(params[i]);
+    if (Point3d(p).DistanceTo(contour.points[i]) > 1e-6) curve_interpolates = false;
+  }
+  Check(curve_interpolates, "the fitted curve passes exactly through every one of the 12 ordered ring points at their own chord-length parameter");
+
+  // Fewer than 3 points in the band: indices/points are still returned, but
+  // no curve can be fit (an empty, default-constructed ON_NurbsCurve).
+  {
+    PointCloud two;
+    two.AppendPoint(Point3d(1, 0, 0));
+    two.AppendPoint(Point3d(0, 1, 0));
+    const PointCloud::Contour tiny = two.ContourAtPlane(z0_plane, 0.1);
+    Check(tiny.indices.size() == 2, "a 2-point band still returns both points");
+    Check(!tiny.curve.IsValid(), "but fits no curve at all (fewer than 3 points)");
+  }
+
+  // Same argument conventions as PointsNearPlane(): negative band and an
+  // invalid plane both throw; an empty cloud returns an empty (not erroring)
+  // Contour with no curve.
+  {
+    bool threw_band = false;
+    try {
+      cloud.ContourAtPlane(z0_plane, -0.001);
+    } catch (const std::invalid_argument&) {
+      threw_band = true;
+    }
+    Check(threw_band, "ContourAtPlane(negative band) throws");
+
+    const PointCloud empty;
+    const PointCloud::Contour empty_contour = empty.ContourAtPlane(z0_plane, 1e9);
+    Check(empty_contour.indices.empty() && !empty_contour.curve.IsValid(),
+          "ContourAtPlane on an empty cloud returns an empty Contour, not an error");
+  }
+}
+
 // SaveXyz()/LoadXyz() close a real gap: before this, a PointCloud had no
 // Save/Load path of its own at all (only Model::AddPointCloud()'s .3dm
 // route) - no counterpart to Mesh's SaveObj/SaveStl for the point-cloud
@@ -24409,6 +24801,136 @@ void TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads() {
             1e-9 /* strictly different, not necessarily smaller for a 2-body union */,
         "the quad-recombined cage is a genuine, further-subdividable SubD control net (a real "
         "Catmull-Clark refinement actually changes the shape), not a frozen copy");
+}
+
+// SubD::FromMeshQuadRemeshed() generalizes BooleanToSubD()'s own
+// TrisToQuads()+FromControlMesh() composition to an arbitrary input mesh -
+// this exercises it directly on a plain tessellated box (the same fixture
+// TestMeshTrisToQuadsRecombinesTessellatedBoxFaces uses for TrisToQuads()
+// alone), independent of any boolean operation.
+void TestSubDFromMeshQuadRemeshedRecombinesTessellatedBoxIntoQuads() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const Mesh triangulated = Brep::Box(0, 0, 0, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  Check(triangulated.FaceCount() == 12, "sanity: 1x1 tessellation of a box is 12 triangles");
+
+  const SubD subd = SubD::FromMeshQuadRemeshed(triangulated);
+  Check(subd.FaceCount() == 6,
+        "all 12 triangles recombine into the 6 original box faces before FromControlMesh() "
+        "ever sees them - the same 2-to-1 reduction TrisToQuads() alone already proves");
+
+  const Mesh level0 = subd.ToApproximateMesh();
+  Check(level0.IsClosedManifold(), "the quad-remeshed control net is itself a closed manifold");
+  Check(std::abs(level0.Volume() - 8.0) < 1e-9, "...with the exact original 2x2x2 box volume (8)");
+
+  SubD smoothed = subd;
+  smoothed.Subdivide(2);
+  Check(smoothed.ToApproximateMesh().Volume() < 8.0 - 1e-6,
+        "further Subdivide()ing genuinely rounds the box's corners (real Catmull-Clark "
+        "refinement, not a frozen copy of the input mesh)");
+
+  // An already-quad mesh (nothing for TrisToQuads() to merge) must still
+  // build successfully - FromMeshQuadRemeshed() composes onto whatever
+  // FromControlMesh() already accepts, it doesn't require triangles.
+  const SubD from_quads = SubD::FromMeshQuadRemeshed(MakeQuadBoxMesh(0, 0, 0, 1, 1, 1));
+  Check(from_quads.FaceCount() == 6, "an input with no triangles to merge still builds, unaffected");
+}
+
+// SubD::FromBrepTessellated() closes real ground the exact, bilinear-only
+// SubD::FromBrep() cannot reach at all: a genuinely curved Brep (here,
+// a sphere - every face non-planar). This also exercises the all-planar
+// closed-box case, where its own TrisToQuads() pass should recombine the
+// tessellation back to exactly 6 quads, same as FromMeshQuadRemeshed()
+// above - proving the two methods agree on the shape they both can handle.
+void TestSubDFromBrepTessellatedBoxRecombinesIntoSixQuads() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SubD;
+
+  const Brep box = Brep::Box(1, 1, 1, 3, 3, 3);  // 2x2x2 box, volume 8
+  const SubD subd = SubD::FromBrepTessellated(box, 1, 1);
+
+  Check(subd.FaceCount() == 6, "a closed box's 1x1 tessellation (12 triangles) recombines into "
+                               "exactly its 6 original quad faces, same as FromMeshQuadRemeshed()");
+  Check(subd.CreaseEdgeCount() == 0,
+        "a fully closed Brep has no naked boundary at all, so crease_at_double_edges=true "
+        "creases nothing here");
+
+  const dino8::kernel::Mesh level0 = subd.ToApproximateMesh();
+  Check(level0.IsClosedManifold(), "the resulting control net is a genuine closed manifold");
+  Check(std::abs(level0.Volume() - 8.0) < 1e-9,
+        "the tessellation is exact for a planar box at any division count, so the level-0 "
+        "volume matches the box's own 2x2x2 = 8 exactly");
+
+  SubD smoothed = subd;
+  smoothed.Subdivide(2);
+  Check(smoothed.ToApproximateMesh().Volume() < 8.0 - 1e-6,
+        "genuinely further-subdividable - Catmull-Clark corner rounding shrinks the volume");
+}
+
+// A sphere has no planar, untrimmed, axis-aligned-quad face at all - the
+// exact shape SubD::FromBrep() requires - so this is real, new ground
+// FromBrepTessellated() alone reaches: every face is curved. The result is
+// honestly an APPROXIMATION (see its own doc comment), verified the same
+// way this kernel verifies every other faceted convex approximation: its
+// volume must be strictly less than the exact sphere (every vertex lies
+// exactly ON the sphere, so the inscribed polytope's volume is always
+// strictly smaller), and close to it at a reasonably fine tessellation.
+void TestSubDFromBrepTessellatedApproximatesSphereFromInside() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const double radius = 2.0;
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), radius);
+  const SubD subd = SubD::FromBrepTessellated(sphere, 16, 16);
+
+  Check(subd.FaceCount() > 0, "sanity: the curved sphere Brep produces a non-empty control cage");
+
+  const Mesh level0 = subd.ToApproximateMesh();
+  Check(level0.IsClosedManifold(), "the tessellated-and-quad-remeshed sphere cage is a closed manifold");
+
+  const double exact_volume = (4.0 / 3.0) * ON_PI * radius * radius * radius;
+  const double approx_volume = level0.Volume();
+  Check(approx_volume > 0.0 && approx_volume < exact_volume,
+        "every control-net vertex lies exactly on the sphere, so the inscribed polytope's "
+        "volume is strictly less than the exact sphere's own 4/3*pi*r^3 - this is honestly a "
+        "tessellation approximation, not a lossless conversion, exactly as documented");
+  Check(approx_volume > 0.9 * exact_volume,
+        "...but a reasonably fine 16x16 tessellation should still be within 10% of the exact "
+        "sphere volume, not a wildly coarse stand-in");
+
+  SubD finer = SubD::FromBrepTessellated(sphere, 32, 32);
+  const double finer_volume = finer.ToApproximateMesh().Volume();
+  Check(finer_volume > approx_volume,
+        "doubling the tessellation resolution strictly improves the approximation (closer to "
+        "the exact volume from below) - confirming this genuinely scales with "
+        "u_divisions/v_divisions, not a fixed-quality stand-in");
+}
+
+void TestSubDFromBrepTessellatedRejectsInvalidDivisions() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SubD;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+
+  bool threw_zero_u = false;
+  try {
+    (void)SubD::FromBrepTessellated(box, 0, 4);
+  } catch (const std::invalid_argument&) {
+    threw_zero_u = true;
+  }
+  Check(threw_zero_u, "SubD::FromBrepTessellated throws std::invalid_argument when u_divisions < 1");
+
+  bool threw_negative_v = false;
+  try {
+    (void)SubD::FromBrepTessellated(box, 4, -1);
+  } catch (const std::invalid_argument&) {
+    threw_negative_v = true;
+  }
+  Check(threw_negative_v, "SubD::FromBrepTessellated throws std::invalid_argument when v_divisions < 1");
 }
 
 void TestMeshComputeVertexNormals() {
@@ -64617,6 +65139,7 @@ int main() {
   TestPullbackCurveToSurfaceAcrossPeriodicSeam();
   TestIntersectBrepByPlaneBoxSideWalls();
   TestContourBrepParallelSections();
+  TestSectionBrepByPlanesIndependentlyOrientedClipPlanes();
   TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan();
   TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly();
   TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
@@ -64727,9 +65250,12 @@ int main() {
   TestModelAddInstanceReferenceRoundTrips();
   TestModelAddHatchRoundTrips();
   TestModelAddHatchPatternLinesRoundTrips();
+  TestModelAddHatchHolesRoundTrips();
+  TestModelAddHatchPatternDescriptionRoundTrips();
   TestModelAddTextDotRoundTrips();
   TestModelAddTextAnnotationRoundTrips();
   TestModelAddLeaderRoundTrips();
+  TestModelAddDimensionLinearRoundTrips();
   TestModelUnitConversionFactor();
   TestModelConvertUnitsScalesGeometryAndUpdatesUnitSystem();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
@@ -64802,6 +65328,7 @@ int main() {
   TestMeshClashWith();
   TestPointCloudSpatialQueries();
   TestPointCloudPointsNearPlane();
+  TestPointCloudContourAtPlaneFitsRingThroughBand();
   TestPointCloudXyzRoundTrips();
   TestPointCloudLoadXyzRejectsMalformedInput();
   TestPointCloudPtsRoundTrips();
@@ -64873,6 +65400,10 @@ int main() {
   TestSubDBooleanToSubDIsGenuinelyFurtherSubdividable();
   TestSubDBooleanToSubDPropagatesBooleanFailure();
   TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads();
+  TestSubDFromMeshQuadRemeshedRecombinesTessellatedBoxIntoQuads();
+  TestSubDFromBrepTessellatedBoxRecombinesIntoSixQuads();
+  TestSubDFromBrepTessellatedApproximatesSphereFromInside();
+  TestSubDFromBrepTessellatedRejectsInvalidDivisions();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();

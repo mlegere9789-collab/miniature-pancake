@@ -1,0 +1,22 @@
+# DXF pattern-fill HATCH export QC: ExportDxf had no pattern-fill HATCH
+# writer at all before this change (see WriteDxfHatchPattern /
+# TryWriteDxfHatchPatternGroup in FileExchange.cpp) - a pattern-fill hatch
+# made in-app (Hatch Pattern=ANSI31, drafting::BuildPatternHatch's own
+# already-clipped line-curve group) round-tripped out as N bare LINE
+# entities, losing the fact it was ever one fill. Makes a real ANSI31
+# hatch, exports it, and reopens the exported file in a fresh document:
+# SelHatch must find the exact same number of real, Hatch=ANSI31-tagged
+# line objects the original Hatch command built, proving the new writer
+# and the existing pattern-name-only reader (DxfImporter::Hatch, via
+# drafting::BuildPatternHatch) agree on the wire format, not just
+# approximate it.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+Rectangle 0,0,0 10,10,0
+SelLast
+Hatch Pattern=ANSI31
+SelNone
+SelHatch
+Export @TMP@/dxf_hatch_pattern_export.dxf
+New
+Open @TMP@/dxf_hatch_pattern_export.dxf
+SelHatch
