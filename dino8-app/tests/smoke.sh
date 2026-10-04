@@ -5088,6 +5088,27 @@ blkcheck() { if echo "$BLK" | grep -qF "$1"; then echo "ok   $2"; else echo "FAI
 blkcheck "  12,0,0" "lookup key 'L' switches the instance to state Large: local (2,0,0) + insert (10,0,0) = (12,0,0)"
 blkcheck "  11,0,0" "an unmatched lookup key falls back to the instance's own explicit state (Small): local (1,0,0) + insert (10,0,0) = (11,0,0)"
 
+# BlockSetStretchAxis/BlockSetStretchGroup/BlockSetStretch command-line
+# wiring: PARITY_MAP.md "Dynamic blocks" Stretch parameter/action - the
+# fifth and last of the five named parameter/action types, after
+# Visibility states, Flip, Array and Lookup above (the Document-level math
+# itself is unit-tested directly in dino8_test_block_stretch/
+# test_block_stretch.cpp) - see block_stretch_script.txt's own header
+# comment.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  BST="$("$BIN" --smoke 100 --script "$HERE/block_stretch_script.txt" 2>&1)" || { echo "$BST"; echo "FAIL: block-stretch script exited non-zero"; exit 1; }
+else
+  BST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/block_stretch_script.txt" 2>&1)" || { echo "$BST"; echo "FAIL: block-stretch script exited non-zero"; exit 1; }
+fi
+echo "$BST" | grep -E "^(ok|FAIL)" || true
+if echo "$BST" | grep -q "^FAIL"; then fail=1; fi
+echo "$BST" | grep -q "^smoke:" || { echo "$BST"; echo "FAIL: block-stretch script produced no smoke line"; fail=1; }
+bstcheck() { if echo "$BST" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$BST" "$1"; fail=1; fi; }
+bstcheck "  2,0,0" "the block-defining leftover instance (created before BlockAddState/BlockSetStretchAxis ran) keeps its untouched original tagged point"
+bstcheck "  -3,0,0" "...and its untouched original untagged point"
+bstcheck "  106,0,0" "the placed instance's tagged point moved 4 units along the stretch axis: local (2,0,0) + insert (100,0,0) + stretch 4 = (106,0,0)"
+bstcheck "  97,0,0" "the placed instance's untagged point is unaffected by the same stretch: local (-3,0,0) + insert (100,0,0) = (97,0,0)"
+
 # LayerPlotColor command-line wiring: PARITY_MAP.md "Print and plot output"
 # item - the color half of "plot styles (CTB/STB)", alongside
 # print_width_mm/LayerPrintWidth's lineweight half (the pure
@@ -5106,6 +5127,30 @@ if echo "$PLC" | grep -q "^FAIL"; then fail=1; fi
 grep -q 'stroke="#000000"' "$TMPW/plot_color_off.svg" && echo "ok   with no plot color override, the exported SVG strokes the line in its own display color (black)" || { echo "FAIL plot_color_off.svg does not stroke black"; fail=1; }
 grep -q 'stroke="#ff0000"' "$TMPW/plot_color_on.svg" && echo "ok   LayerPlotColor 255,0,0 makes the exported SVG stroke the line red, not its unchanged on-screen display color" || { echo "FAIL plot_color_on.svg does not stroke red"; fail=1; }
 grep -q 'stroke="#000000"' "$TMPW/plot_color_cleared.svg" && echo "ok   LayerPlotColor ByLayer clears the override back to the display color (black)" || { echo "FAIL plot_color_cleared.svg does not stroke black again after clearing"; fail=1; }
+
+# PlotStyleTable/LayerPlotStyle command-line wiring: PARITY_MAP.md "Print
+# and plot output" item - the named, reusable CTB/STB-table half of "plot
+# styles", alongside LayerPlotColor's own flat per-layer-only field just
+# above (the pure ResolvePlotStyle/EffectivePlotColor overloads themselves
+# are unit-tested directly in dino8_plot_style/test_plot_style.cpp) - see
+# plot_style_script.txt's own header comment. Checked directly against the
+# real exported SVG files' stroke colors, same as the LayerPlotColor check
+# above, specifically proving two layers sharing one named style change
+# together when the style's own row is edited.
+sed "s|@TMP@|$TMPW|g" "$HERE/plot_style_script.txt" > "$TMPW/plot_style_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PST="$("$BIN" --smoke 30 --script "$TMPW/plot_style_script.txt" 2>&1)" || { echo "$PST"; echo "FAIL: plot-style script exited non-zero"; exit 1; }
+else
+  PST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/plot_style_script.txt" 2>&1)" || { echo "$PST"; echo "FAIL: plot-style script exited non-zero"; exit 1; }
+fi
+echo "$PST" | grep -E "^(ok|FAIL)" || true
+if echo "$PST" | grep -q "^FAIL"; then fail=1; fi
+RED_COUNT="$(grep -c 'stroke="#ff0000"' "$TMPW/plot_style_red.svg" || true)"
+[ "$RED_COUNT" = "2" ] && echo "ok   both layers' lines stroke the named style's own red, though neither layer's own flat plot color was ever set" || { echo "FAIL plot_style_red.svg: expected 2 red strokes (one per layer sharing the style), got $RED_COUNT"; fail=1; }
+BLUE_COUNT="$(grep -c 'stroke="#0000ff"' "$TMPW/plot_style_blue.svg" || true)"
+[ "$BLUE_COUNT" = "2" ] && echo "ok   editing the shared style's color to blue changes both layers' lines together, with neither layer touched again" || { echo "FAIL plot_style_blue.svg: expected 2 blue strokes, got $BLUE_COUNT"; fail=1; }
+grep -q 'stroke="#000000"' "$TMPW/plot_style_cleared.svg" && echo "ok   LayerPlotStyle None on the Default layer clears it back to its own display color (black)" || { echo "FAIL plot_style_cleared.svg: Default layer's line is not black after clearing its style"; fail=1; }
+grep -q 'stroke="#0000ff"' "$TMPW/plot_style_cleared.svg" && echo "ok   ...while SecondLayer, never cleared, still strokes the shared style's current color (blue)" || { echo "FAIL plot_style_cleared.svg: SecondLayer's line lost its still-assigned style's color"; fail=1; }
 
 # Undo id-reuse regression (see the last section of history_script.txt):
 # a Box drawn right after undoing a tracked Extrude used to be handed the
