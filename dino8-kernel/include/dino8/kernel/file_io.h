@@ -221,15 +221,20 @@ enum class HatchFillType {
 };
 
 // A hatch read back from Model::HatchAt() below - the read-side counterpart
-// to Model::AddHatch()'s own parameters. `boundary` is always the hatch's
-// OUTER loop only (in the hatch's own `plane`-relative (u, v) coordinates,
-// exactly as AddHatch()'s own `boundary` parameter is given) - AddHatch()
-// itself never creates more than one loop, so there is never an inner loop
-// (a hole) to report back.
+// to Model::AddHatch()'s own parameters. `boundary` is the hatch's OUTER
+// loop (in the hatch's own `plane`-relative (u, v) coordinates, exactly as
+// AddHatch()'s own `boundary` parameter is given). `hole_boundaries` is the
+// read-side counterpart to AddHatch()'s own `hole_boundaries` parameter -
+// closes the "AddHatch() itself never creates more than one loop, so there
+// is never an inner loop (a hole) to report back" gap this struct's own
+// doc comment used to carry: each entry is one inner (hole) loop, in the
+// same plane-relative (u, v) coordinates as `boundary` itself, in the same
+// order AddHatch() was given them.
 struct HatchInfo {
   std::string name;
   ON_Plane plane;
   std::vector<Point2d> boundary;
+  std::vector<std::vector<Point2d>> hole_boundaries;
   int pattern_index = -1;
   double pattern_rotation = 0.0;
   double pattern_scale = 1.0;
@@ -291,6 +296,30 @@ struct LeaderInfo {
   std::string text;
   std::vector<Point3d> points;
   ON_Plane plane;
+};
+
+// A linear dimension (Rhino's own Dimension command, ON_DimLinear
+// underneath) read back from Model::DimensionLinearAt() below - the
+// read-side counterpart to Model::AddDimensionLinear()'s own
+// extension_point0/extension_point1/dimension_line_point parameters.
+// Closes the last remaining half of PARITY_MAP.md's own "Rhino non-
+// geometry/composite objects in .3dm" evidence: "annotations besides
+// plain ON_Text (dimensions, leaders)" - AddLeader() above already closed
+// the leader half, this closes the dimension half. `extension_point0`/
+// `extension_point1`/`dimension_line_point` are reported in WORLD 3D
+// coordinates (converted back out of ON_DimLinear's own plane-local 2D
+// storage via `plane.PointAt()`, the same conversion LeaderInfo's own
+// `points` already uses for ON_Leader), matching the WORLD-space points
+// AddDimensionLinear() itself takes in. `measurement` is the dimension's
+// own computed distance between the two extension points
+// (ON_DimLinear::Measurement()) - reported for convenience, not an
+// independent value a caller sets directly.
+struct DimensionLinearInfo {
+  std::string name;
+  Point3d extension_point0;
+  Point3d extension_point1;
+  Point3d dimension_line_point;
+  double measurement = 0.0;
 };
 
 // Thin wrapper around ONX_Model so .3dm compatibility comes from
@@ -908,11 +937,31 @@ class Model {
   // ignoring a solid hatch's own unused line table), but not rejected for
   // `Solid` - a caller building a pattern it may later want to switch is
   // free to populate lines ahead of that.
+  //
+  // `description` closes the "ON_HatchPattern's own other fields" gap
+  // PARITY_MAP.md's own "Rhino non-geometry/composite objects in .3dm"
+  // evidence names alongside "dimensions" as this bullet's own last two
+  // remaining open items - ON_HatchPattern::SetDescription()/Description()
+  // (opennurbs_hatch.h) is the one settable field besides fill type and
+  // lines this kernel had no way to write at all. Empty by default (the
+  // pre-existing behavior, unchanged for every existing caller - an empty
+  // description is also ON_HatchPattern's own constructor default, so this
+  // is a genuine no-op, not a forced empty-string write).
   int AddHatchPattern(const std::string& name, HatchFillType fill_type = HatchFillType::Solid,
-                       const std::vector<HatchPatternLine>& lines = std::vector<HatchPatternLine>());
+                       const std::vector<HatchPatternLine>& lines = std::vector<HatchPatternLine>(),
+                       const std::string& description = std::string());
 
   // Returns the number of hatch patterns added via AddHatchPattern() above.
   int HatchPatternCount() const;
+
+  // Returns the description AddHatchPattern()'s own `description`
+  // parameter gave the pattern at `pattern_index` - the read-side
+  // counterpart to that parameter, the same read-side gap
+  // HatchPatternLineAt() below already closes for `lines`.
+  // `pattern_index` not naming a hatch pattern this model actually has
+  // returns an empty string, same as a pattern added with no
+  // `description`.
+  std::string HatchPatternDescriptionAt(int pattern_index) const;
 
   // Returns the number of lines AddHatchPattern()'s own `lines` parameter
   // added to the pattern at `pattern_index` (as returned by
@@ -950,8 +999,28 @@ class Model {
   // ObjectAttributesAt() alongside a mesh or brep, exactly like a clipping
   // plane does (see AddClippingPlane() above), so it also shows up in its
   // own HatchCount()/HatchAt() table below for the fields
-  // ObjectAttributesAt() doesn't carry (`plane`/`boundary`/`pattern_index`/
-  // `pattern_rotation`/`pattern_scale`).
+  // ObjectAttributesAt() doesn't carry (`plane`/`boundary`/
+  // `hole_boundaries`/`pattern_index`/`pattern_rotation`/`pattern_scale`).
+  //
+  // `hole_boundaries` (empty by default, the pre-existing "single outer
+  // loop only" behavior, unchanged for every existing caller - appended as
+  // the very last parameter, same "no behavior change for an existing
+  // positional caller" discipline AddMaterial()'s own trailing optional
+  // parameters above already follow) closes the "no inner loops/holes"
+  // gap this method's own doc comment used to disclose - PARITY_MAP.md's
+  // own "Rhino non-geometry/composite objects in .3dm" evidence named this
+  // directly: "ON_Hatch (single outer loop, given as plane-relative (u, v)
+  // points - no inner loops/holes)". Each entry is one more closed loop in
+  // the same plane-relative (u, v) coordinates as `boundary` itself
+  // (closed automatically, same as `boundary`), appended to
+  // `ON_Hatch::Create()`'s own `loops` array right after the outer one -
+  // that call already types every loop after the first as
+  // `ON_HatchLoop::ltInner` on its own (opennurbs_hatch.cpp:
+  // `pLoop->SetType(i ? ltInner : ltOuter)`), so no extra step is needed
+  // here beyond handing it more than one loop. A hole with fewer than 3
+  // points is rejected the same way `boundary` itself already is, leaving
+  // the hatch completely untouched (no partial add of only the valid
+  // holes).
   int AddHatch(const ON_Plane& plane, const std::vector<Point2d>& boundary, int pattern_index,
                double pattern_rotation = 0.0, double pattern_scale = 1.0,
                const std::string& name = std::string(), int layer_index = -1,
@@ -959,7 +1028,8 @@ class Model {
                const UserStrings& user_strings = UserStrings(),
                std::optional<int> linetype_index = std::nullopt,
                const std::vector<int>& group_indices = std::vector<int>(),
-               std::optional<int> material_index = std::nullopt);
+               std::optional<int> material_index = std::nullopt,
+               const std::vector<std::vector<Point2d>>& hole_boundaries = std::vector<std::vector<Point2d>>());
 
   // Returns the number of hatches added via AddHatch() above.
   int HatchCount() const;
@@ -1073,6 +1143,52 @@ class Model {
   // `leader_index` not naming a leader this model actually has returns a
   // default-constructed LeaderInfo.
   LeaderInfo LeaderAt(int leader_index) const;
+
+  // Adds a linear dimension (Rhino's own Dimension command - the aligned
+  // variant, ON_DimLinear underneath) to the model and returns its index
+  // (>= 0) among linear dimensions specifically - closing the last
+  // remaining half of PARITY_MAP.md's own "Rhino non-geometry/composite
+  // objects in .3dm" evidence: "annotations besides plain ON_Text
+  // (dimensions, leaders)" - AddLeader() above closed the leader half,
+  // this closes the dimension half, the one named gap this bullet's own
+  // most recent note still carried. `extension_point0`/`extension_point1`
+  // (in WORLD 3D coordinates) are the two points being measured between -
+  // the dimension's own plane is derived from the line between them
+  // (its x-axis) and `plane_normal` (its z-axis), the same "caller gives
+  // points and a normal, not a full plane" shape AddLeader() uses for its
+  // own `points`/`plane` pair, but one step more implicit here since
+  // ON_DimLinear::CreateAligned() (opennurbs_dimension.h), which this
+  // wraps, derives the plane itself rather than taking one directly.
+  // `dimension_line_point` is any point roughly on the desired dimension
+  // line (how far the dimension line itself sits from the two extension
+  // points) - CreateAligned() projects it onto the derived plane and
+  // clamps it to lie between the two extension points along that line,
+  // the same "nearest reasonable position" contract OpenNURBS itself
+  // documents for this parameter. Returns -1 without adding anything if
+  // `name` is empty, `extension_point0` and `extension_point1` coincide
+  // (or are otherwise too close to define a direction), or `plane_normal`
+  // fails to unitize - the same "degenerate input refused, not silently
+  // built into something meaningless" contract AddLeader()'s own
+  // degenerate-plane refusal already has.
+  int AddDimensionLinear(const Point3d& extension_point0, const Point3d& extension_point1,
+                          const Point3d& dimension_line_point, const Vector3d& plane_normal,
+                          const std::string& name = std::string(), int layer_index = -1,
+                          std::optional<Color> render_color = std::nullopt,
+                          const UserStrings& user_strings = UserStrings(),
+                          std::optional<int> linetype_index = std::nullopt,
+                          const std::vector<int>& group_indices = std::vector<int>(),
+                          std::optional<int> material_index = std::nullopt);
+
+  // Returns the number of linear dimensions added via AddDimensionLinear()
+  // above.
+  int DimensionLinearCount() const;
+
+  // Returns the linear dimension at `dimension_index` (as counted by
+  // DimensionLinearCount() above) - the read-side counterpart to
+  // AddDimensionLinear()'s own parameters. `dimension_index` not naming a
+  // linear dimension this model actually has returns a default-
+  // constructed DimensionLinearInfo.
+  DimensionLinearInfo DimensionLinearAt(int dimension_index) const;
 
   // Sets the model's length unit system - closing PARITY_MAP.md's own
   // "kernel-level data exchange" evidence for "Unit-system conversion":
