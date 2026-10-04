@@ -559,6 +559,34 @@ dhecheck "DXF: 0 curves, 0 points, 0 meshes, 1 hatch" "the reopened file's HATCH
 dhecheck "1 object(s) selected" "SelHatch found the round-tripped hatch"
 dhecheck "Area = 100 square" "the round-tripped hatch's area is exactly the 10x10 boundary"
 grep -q "^HATCH$" "$TMPW/dxf_hatch_export.dxf" && echo "ok   dxf_hatch_export.dxf contains a real HATCH entity, not just boundary LINE/POLYLINE entities" || { echo "FAIL dxf_hatch_export.dxf has no HATCH entity"; fail=1; }
+# DXF pattern-fill HATCH export: ExportDxf's HATCH writer above only ever
+# covered the solid-fill case; a pattern-fill hatch (Hatch Pattern=ANSI31)
+# still round-tripped out as its own N already-clipped LINE entities until
+# this change (see WriteDxfHatchPattern/TryWriteDxfHatchPatternGroup in
+# FileExchange.cpp). Makes a real ANSI31 hatch, exports it, reopens the
+# exported file in a fresh document, and checks SelHatch finds the exact
+# same number of real Hatch=ANSI31-tagged line objects the original Hatch
+# command built - proving the new writer and the existing pattern-name-only
+# reader agree on the wire format, not just approximate it.
+sed "s|@TMP@|$TMPW|g" "$HERE/dxf_hatch_pattern_export_script.txt" > "$TMPW/dxf_hatch_pattern_export_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DHP="$("$BIN" --smoke 30 --script "$TMPW/dxf_hatch_pattern_export_script.txt" 2>&1)" || { echo "$DHP"; echo "FAIL: DXF pattern HATCH export script exited non-zero"; exit 1; }
+else
+  DHP="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_hatch_pattern_export_script.txt" 2>&1)" || { echo "$DHP"; echo "FAIL: DXF pattern HATCH export script exited non-zero"; exit 1; }
+fi
+dhpcheck() { if echo "$DHP" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DHP" "$1"; fail=1; fi; }
+dhpcheck "Exported $TMPW/dxf_hatch_pattern_export.dxf" "ExportDxf wrote a file"
+BEFORE_SEL="$(echo "$DHP" | grep -o "^[0-9]* object(s) selected" | head -1)"
+AFTER_SEL="$(echo "$DHP" | grep -o "^[0-9]* object(s) selected" | tail -1)"
+if [ -n "$BEFORE_SEL" ] && [ "$BEFORE_SEL" = "$AFTER_SEL" ]; then
+  echo "ok   the round-tripped pattern hatch's line count matches exactly ($BEFORE_SEL)"
+else
+  echo "FAIL pattern hatch line count did not round-trip (before: '$BEFORE_SEL', after: '$AFTER_SEL')"
+  fail=1
+fi
+grep -q "^HATCH$" "$TMPW/dxf_hatch_pattern_export.dxf" && echo "ok   dxf_hatch_pattern_export.dxf contains a real HATCH entity" || { echo "FAIL dxf_hatch_pattern_export.dxf has no HATCH entity"; fail=1; }
+grep -q "^ANSI31$" "$TMPW/dxf_hatch_pattern_export.dxf" && echo "ok   dxf_hatch_pattern_export.dxf's HATCH entity names the real ANSI31 pattern" || { echo "FAIL dxf_hatch_pattern_export.dxf's HATCH entity does not name ANSI31"; fail=1; }
+[ "$(grep -c "^LINE$" "$TMPW/dxf_hatch_pattern_export.dxf")" = "0" ] && echo "ok   dxf_hatch_pattern_export.dxf has no bare LINE entities - the fill exported as one HATCH, not N clipped lines" || { echo "FAIL dxf_hatch_pattern_export.dxf still has bare LINE entities"; fail=1; }
 # DXF TEXT export: ExportDxf had no TEXT writer function at all until this
 # change (see WriteDxfTextIfPlanarXY in FileExchange.cpp) - a Dino8 "Text"
 # annotation used to round-trip out as its own baked glyph-outline curves,
