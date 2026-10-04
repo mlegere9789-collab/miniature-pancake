@@ -182,6 +182,18 @@ class SceneObject {
   // mutually exclusive with the four overrides above; Viewport::DrawObjects
   // honours it the same mode-agnostic way.
   bool force_monochrome = false;
+  // SetObjectDisplayMode Pen/Arctic: filled in that mode's own flat white
+  // (the same Color::FromBytes(245,245,245) the viewport-wide Pen/Arctic
+  // modes use via ModeStyle::force_white), fully opaque, regardless of the
+  // viewport's own display mode or this object's own material/colour/
+  // texture - mutually exclusive with the five overrides above and each
+  // other. The one difference between the two mirrors their viewport-wide
+  // counterparts: force_pen is drawn unlit (flat, no per-vertex shading, as
+  // Pen's own ModeStyle::lit = false already draws it viewport-wide) while
+  // force_arctic is drawn lit, same as every other override. Viewport::
+  // DrawObjects honours both the same mode-agnostic way as the rest.
+  bool force_pen = false;
+  bool force_arctic = false;
   bool show_render_mesh_wires = false;  // ToggleRenderMesh/ShowRenderMesh: overlay the tessellation's triangle edges
   // Per-object display tolerance override for surface/brep/SubD tessellation
   // (SetMeshSurfaceParameters); <= 0 means "use the app-wide setting".
