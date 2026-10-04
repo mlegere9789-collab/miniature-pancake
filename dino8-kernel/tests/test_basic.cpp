@@ -24949,6 +24949,136 @@ void TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads() {
         "Catmull-Clark refinement actually changes the shape), not a frozen copy");
 }
 
+// SubD::FromMeshQuadRemeshed() generalizes BooleanToSubD()'s own
+// TrisToQuads()+FromControlMesh() composition to an arbitrary input mesh -
+// this exercises it directly on a plain tessellated box (the same fixture
+// TestMeshTrisToQuadsRecombinesTessellatedBoxFaces uses for TrisToQuads()
+// alone), independent of any boolean operation.
+void TestSubDFromMeshQuadRemeshedRecombinesTessellatedBoxIntoQuads() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const Mesh triangulated = Brep::Box(0, 0, 0, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  Check(triangulated.FaceCount() == 12, "sanity: 1x1 tessellation of a box is 12 triangles");
+
+  const SubD subd = SubD::FromMeshQuadRemeshed(triangulated);
+  Check(subd.FaceCount() == 6,
+        "all 12 triangles recombine into the 6 original box faces before FromControlMesh() "
+        "ever sees them - the same 2-to-1 reduction TrisToQuads() alone already proves");
+
+  const Mesh level0 = subd.ToApproximateMesh();
+  Check(level0.IsClosedManifold(), "the quad-remeshed control net is itself a closed manifold");
+  Check(std::abs(level0.Volume() - 8.0) < 1e-9, "...with the exact original 2x2x2 box volume (8)");
+
+  SubD smoothed = subd;
+  smoothed.Subdivide(2);
+  Check(smoothed.ToApproximateMesh().Volume() < 8.0 - 1e-6,
+        "further Subdivide()ing genuinely rounds the box's corners (real Catmull-Clark "
+        "refinement, not a frozen copy of the input mesh)");
+
+  // An already-quad mesh (nothing for TrisToQuads() to merge) must still
+  // build successfully - FromMeshQuadRemeshed() composes onto whatever
+  // FromControlMesh() already accepts, it doesn't require triangles.
+  const SubD from_quads = SubD::FromMeshQuadRemeshed(MakeQuadBoxMesh(0, 0, 0, 1, 1, 1));
+  Check(from_quads.FaceCount() == 6, "an input with no triangles to merge still builds, unaffected");
+}
+
+// SubD::FromBrepTessellated() closes real ground the exact, bilinear-only
+// SubD::FromBrep() cannot reach at all: a genuinely curved Brep (here,
+// a sphere - every face non-planar). This also exercises the all-planar
+// closed-box case, where its own TrisToQuads() pass should recombine the
+// tessellation back to exactly 6 quads, same as FromMeshQuadRemeshed()
+// above - proving the two methods agree on the shape they both can handle.
+void TestSubDFromBrepTessellatedBoxRecombinesIntoSixQuads() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SubD;
+
+  const Brep box = Brep::Box(1, 1, 1, 3, 3, 3);  // 2x2x2 box, volume 8
+  const SubD subd = SubD::FromBrepTessellated(box, 1, 1);
+
+  Check(subd.FaceCount() == 6, "a closed box's 1x1 tessellation (12 triangles) recombines into "
+                               "exactly its 6 original quad faces, same as FromMeshQuadRemeshed()");
+  Check(subd.CreaseEdgeCount() == 0,
+        "a fully closed Brep has no naked boundary at all, so crease_at_double_edges=true "
+        "creases nothing here");
+
+  const dino8::kernel::Mesh level0 = subd.ToApproximateMesh();
+  Check(level0.IsClosedManifold(), "the resulting control net is a genuine closed manifold");
+  Check(std::abs(level0.Volume() - 8.0) < 1e-9,
+        "the tessellation is exact for a planar box at any division count, so the level-0 "
+        "volume matches the box's own 2x2x2 = 8 exactly");
+
+  SubD smoothed = subd;
+  smoothed.Subdivide(2);
+  Check(smoothed.ToApproximateMesh().Volume() < 8.0 - 1e-6,
+        "genuinely further-subdividable - Catmull-Clark corner rounding shrinks the volume");
+}
+
+// A sphere has no planar, untrimmed, axis-aligned-quad face at all - the
+// exact shape SubD::FromBrep() requires - so this is real, new ground
+// FromBrepTessellated() alone reaches: every face is curved. The result is
+// honestly an APPROXIMATION (see its own doc comment), verified the same
+// way this kernel verifies every other faceted convex approximation: its
+// volume must be strictly less than the exact sphere (every vertex lies
+// exactly ON the sphere, so the inscribed polytope's volume is always
+// strictly smaller), and close to it at a reasonably fine tessellation.
+void TestSubDFromBrepTessellatedApproximatesSphereFromInside() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const double radius = 2.0;
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), radius);
+  const SubD subd = SubD::FromBrepTessellated(sphere, 16, 16);
+
+  Check(subd.FaceCount() > 0, "sanity: the curved sphere Brep produces a non-empty control cage");
+
+  const Mesh level0 = subd.ToApproximateMesh();
+  Check(level0.IsClosedManifold(), "the tessellated-and-quad-remeshed sphere cage is a closed manifold");
+
+  const double exact_volume = (4.0 / 3.0) * ON_PI * radius * radius * radius;
+  const double approx_volume = level0.Volume();
+  Check(approx_volume > 0.0 && approx_volume < exact_volume,
+        "every control-net vertex lies exactly on the sphere, so the inscribed polytope's "
+        "volume is strictly less than the exact sphere's own 4/3*pi*r^3 - this is honestly a "
+        "tessellation approximation, not a lossless conversion, exactly as documented");
+  Check(approx_volume > 0.9 * exact_volume,
+        "...but a reasonably fine 16x16 tessellation should still be within 10% of the exact "
+        "sphere volume, not a wildly coarse stand-in");
+
+  SubD finer = SubD::FromBrepTessellated(sphere, 32, 32);
+  const double finer_volume = finer.ToApproximateMesh().Volume();
+  Check(finer_volume > approx_volume,
+        "doubling the tessellation resolution strictly improves the approximation (closer to "
+        "the exact volume from below) - confirming this genuinely scales with "
+        "u_divisions/v_divisions, not a fixed-quality stand-in");
+}
+
+void TestSubDFromBrepTessellatedRejectsInvalidDivisions() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SubD;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+
+  bool threw_zero_u = false;
+  try {
+    (void)SubD::FromBrepTessellated(box, 0, 4);
+  } catch (const std::invalid_argument&) {
+    threw_zero_u = true;
+  }
+  Check(threw_zero_u, "SubD::FromBrepTessellated throws std::invalid_argument when u_divisions < 1");
+
+  bool threw_negative_v = false;
+  try {
+    (void)SubD::FromBrepTessellated(box, 4, -1);
+  } catch (const std::invalid_argument&) {
+    threw_negative_v = true;
+  }
+  Check(threw_negative_v, "SubD::FromBrepTessellated throws std::invalid_argument when v_divisions < 1");
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -65638,6 +65768,10 @@ int main() {
   TestSubDBooleanToSubDIsGenuinelyFurtherSubdividable();
   TestSubDBooleanToSubDPropagatesBooleanFailure();
   TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads();
+  TestSubDFromMeshQuadRemeshedRecombinesTessellatedBoxIntoQuads();
+  TestSubDFromBrepTessellatedBoxRecombinesIntoSixQuads();
+  TestSubDFromBrepTessellatedApproximatesSphereFromInside();
+  TestSubDFromBrepTessellatedRejectsInvalidDivisions();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
