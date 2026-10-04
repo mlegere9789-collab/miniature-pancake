@@ -2145,6 +2145,16 @@ std::vector<BrepContourSection> ContourBrep(const ON_Brep& b, const ON_Plane& ba
   return out;
 }
 
+std::vector<BrepMultiPlaneSection> SectionBrepByPlanes(const ON_Brep& b, const std::vector<ON_Plane>& planes, const IntersectOptions& opt) {
+  std::vector<BrepMultiPlaneSection> out;
+  for (size_t i = 0; i < planes.size(); ++i) {
+    std::vector<BrepPlaneIntersection> hits = IntersectBrepByPlane(b, planes[i], opt);
+    if (hits.empty()) continue;
+    out.push_back(BrepMultiPlaneSection{static_cast<int>(i), std::move(hits)});
+  }
+  return out;
+}
+
 namespace {
 
 // Every one of a face's own boundary loops, each as a closed 3D polyline
