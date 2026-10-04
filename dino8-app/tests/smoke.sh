@@ -2149,6 +2149,46 @@ print("object count after GetPoint: %d" % len(dino8.doc.Objects.AllObjects()))
 # token (python_script.txt's "RunPythonScript @TMP@/t.py 20,20,20 Widget2").
 name = dino8.GetString("Name the marker point")
 print("got string: " + str(name))
+
+# dino8.GetReal/dino8.GetInteger: mirror rs.GetReal/rs.GetInteger, the same
+# worker-thread suspend as GetPoint/GetString above (see PythonEngine.h) -
+# previously entirely unported (PARITY_MAP.md's app_scripting row named
+# this exact gap). Fed by the third and fourth trailing script tokens.
+radius = dino8.GetReal("Pick a radius")
+print("got real: " + str(radius))
+count = dino8.GetInteger("Pick a count")
+print("got integer: " + str(count))
+print("got integer is int: " + str(isinstance(count, int)))
+
+# dino8.GetObjects/dino8.GetObject: mirror rs.GetObjects/rs.GetObject, the
+# same worker-thread suspend - also previously entirely unported. Unlike
+# Point/String/Real/Integer there is no plain command-line token that means
+# "pick these objects"; CommandEngine's own Want::Objects handling instead
+# accepts a nested Sel* command fed as a token (here, SelAll) followed by
+# Enter to hand the resulting selection to OnObjects (see
+# CommandEngine.cpp's FeedText/FeedEnter Want::Objects branches) - the exact
+# mechanism script_script.txt's Lua test never needed to exercise, so this
+# is new coverage for that path too, not just for Python. Each call
+# deliberately unselects everything right before suspending so the
+# command's own "already-selected objects are accepted immediately"
+# shortcut (CommandEngine::AfterCallback's preselection check) can't
+# short-circuit the very SelAll/Enter tokens below meant for it.
+dino8.doc.Objects.UnselectAllObjects()
+objs = dino8.GetObjects("Select objects")
+print("got objects count: %d" % len(objs))
+print("got objects are ints: " + str(all(isinstance(o, int) for o in objs)))
+
+dino8.doc.Objects.UnselectAllObjects()
+one = dino8.GetObject("Select one object")
+print("got object is int: " + str(isinstance(one, int)))
+print("got object is one of objs: " + str(one in objs))
+
+dino8.doc.Objects.UnselectAllObjects()
+empty_objs = dino8.GetObjects("Select more objects (press Enter for none)")
+print("got empty objects: " + str(empty_objs == []))
+
+none_obj = dino8.GetObject("Select another object (press Enter for none)")
+print("got none object: " + str(none_obj is None))
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
 # Captured with set +e, not "|| { ...; exit 1; }": python_script.txt's own
@@ -2363,6 +2403,15 @@ else
   pscheck "picked point 20,20,20" "the resumed script read back the exact point the command line fed it"
   pscheck "history: object count after GetPoint: 37" "AddPoint(p) added the one new object the suspend-and-resume round trip was supposed to produce"
   pscheck "history: got string: Widget2" "dino8.GetString() suspended a second time (same worker-thread mechanism as GetPoint) and was fed by the second trailing script token, proving the suspend/resume round trip works for a second, different prompt type right after the first, not just once"
+  pscheck "history: got real: 7.5" "dino8.GetReal() suspended a third time and was fed by the third trailing script token, matching rs.GetReal - previously entirely unported to Python per the PARITY_MAP note on Python API breadth"
+  pscheck "history: got integer: 3" "dino8.GetInteger() suspended a fourth time and was fed by the fourth trailing script token, matching rs.GetInteger - previously entirely unported to Python"
+  pscheck "history: got integer is int: True" "GetInteger() returned a real Python int (rounded from the resumed double at the PyGetInteger binding, not left as a float), matching rs.GetInteger pushing a Lua integer"
+  pscheck "history: got objects count: 37" "dino8.GetObjects() suspended a fifth time and was fed by the \"SelAll\"/\"Enter\" trailing script tokens (SelAll via CommandEngine's own nested-Sel-command-as-a-token path for Want::Objects, Enter handing the resulting full selection to OnObjects), returning every one of the 37 objects that existed at that point - matching rs.GetObjects, previously entirely unported to Python"
+  pscheck "history: got objects are ints: True" "GetObjects() returned plain object ids (PyObjId per id), matching every other dino8.doc.Objects.Add-style/rs.GetObjects id-returning call rather than wrapping them as Dino8Object"
+  pscheck "history: got object is int: True" "dino8.GetObject() suspended a sixth time, fed by its own \"SelAll\"/\"Enter\" pair, and returned a single plain id (not a list), matching rs.GetObject - previously entirely unported to Python"
+  pscheck "history: got object is one of objs: True" "GetObject()'s single id is the front of the exact same selection GetObjects() just read, confirming both calls share the identical CommandEngine::OnObjects resume path"
+  pscheck "history: got empty objects: True" "a further dino8.GetObjects() call fed only \"Enter\" with nothing selected resumed with an empty list, not None - matching LuaEngine's rs.GetObjects always pushing a (possibly empty) table rather than nil"
+  pscheck "history: got none object: True" "dino8.GetObject() fed only \"Enter\" with nothing selected resumed with None - matching rs.GetObject pushing nil for the single-object case, the opposite of GetObjects' own empty-list convention just above"
   pscheck "^ok   expect_objects 37" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, the two fresh ObjectsByType test points, and the dino8.GetPoint() marker point (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script, and the undo/redo group's own point was undone again at the end)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
