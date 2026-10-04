@@ -11,9 +11,12 @@
 #include <cmath>
 #include <cstdio>
 
+#include <vector>
+
 #include "viewport/AdaptiveTessellation.h"
 
 using dino8::app::LodScaleForPixelSize;
+using dino8::app::LodScaleForPixelSizes;
 
 namespace {
 int failures = 0;
@@ -62,6 +65,27 @@ int main() {
   // zero or return something nonsensical) falls back to no scaling.
   Check(LodScaleForPixelSize(0.0) == 1.0, "pixel_size == 0.0 falls back to no scaling");
   Check(LodScaleForPixelSize(-1.0) == 1.0, "a negative pixel_size falls back to no scaling");
+
+  // LodScaleForPixelSizes: Application::MakeFrameContext's multi-viewport
+  // form, closing the "two viewports at very different zoom fight over
+  // that one cache's resolution" gap this bullet's own text discloses -
+  // every open viewport shares one SceneObject display cache, so whichever
+  // viewport is zoomed in furthest must win the scale for all of them.
+  Check(std::fabs(LodScaleForPixelSizes({0.1}) - LodScaleForPixelSize(0.1)) < 1e-9,
+        "a single viewport matches the plain single-viewport call exactly");
+  Check(std::fabs(LodScaleForPixelSizes({0.2, 0.05, 1.0}) - LodScaleForPixelSize(0.05)) < 1e-9,
+        "three viewports at different zoom pick the most-zoomed-in (smallest pixel_size) one's own scale");
+  Check(LodScaleForPixelSizes({0.05, 0.2}) == LodScaleForPixelSizes({0.2, 0.05}),
+        "order of the open viewports doesn't change the result");
+  // A viewport reporting a degenerate pixel_size (should never happen, but
+  // must not let one bad entry silently win over a real, valid one from
+  // another open viewport).
+  Check(std::fabs(LodScaleForPixelSizes({0.0, 0.3, -5.0}) - LodScaleForPixelSize(0.3)) < 1e-9,
+        "degenerate entries (<= 0) are ignored, not treated as the most-demanding viewport");
+  // No open viewport at all (should never happen - DrawViewports only runs
+  // with at least one - but must still return the documented fallback).
+  Check(LodScaleForPixelSizes({}) == 1.0, "an empty viewport list falls back to no scaling");
+  Check(LodScaleForPixelSizes({0.0, -1.0}) == 1.0, "every entry degenerate falls back to no scaling, same as one would");
 
   if (failures) std::printf("%d FAILED\n", failures);
   else std::printf("all passed\n");
