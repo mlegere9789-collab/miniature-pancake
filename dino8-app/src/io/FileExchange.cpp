@@ -2343,13 +2343,15 @@ std::vector<Path2> CollectPaths(const Document& doc, const Projector& proj, bool
     if (selected_only && !o.selected) continue;
     if (!doc.IsObjectVisible(o)) continue;
     if (o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size() &&
-        !LayerPrints(doc.Layers()[static_cast<size_t>(o.layer_index)]))
-      continue;  // Layer::print_width_mm < 0: "does not print", still visible on screen
-    // A layer's own plot_color override (LayerPlotColor) takes over from
-    // the object's on-screen display color here - the color half of "plot
-    // styles (CTB/STB)", alongside print_width_mm's lineweight half above.
+        !LayerPrints(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.PlotStyles()))
+      continue;  // Layer::print_width_mm < 0 (or its named PlotStyle's width_mm): "does not print", still visible on screen
+    // A layer's own plot_color override (LayerPlotColor), or its named
+    // PlotStyle's color (LayerPlotStyle/PlotStyleTable) when it has one,
+    // takes over from the object's on-screen display color here - the
+    // color half of "plot styles (CTB/STB)", alongside print_width_mm's
+    // lineweight half above.
     const Color color = o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size()
-                             ? EffectivePlotColor(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.EffectiveColor(o))
+                             ? EffectivePlotColor(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.PlotStyles(), doc.EffectiveColor(o))
                              : doc.EffectiveColor(o);
     if (o.kind == ObjectKind::Point) {
       Path2 p;
@@ -2500,7 +2502,7 @@ bool ExportSvg(const Document& doc, const Viewport* view, const std::string& pat
   for (const auto& [layer, list] : by_layer) {
     const bool valid_layer = layer >= 0 && static_cast<size_t>(layer) < doc.Layers().size();
     std::string name = valid_layer ? doc.LayerFullPath(layer) : "Default";
-    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(layer)], default_width) : default_width;
+    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(layer)], doc.PlotStyles(), default_width) : default_width;
     os << "<g id=\"" << XmlEscape(name) << "\" stroke-width=\"" << Num(width, 3) << "\">\n";
     for (const Path2* p : list) {
       os << "<path stroke=\"" << HexColor(p->color) << "\" d=\"";
@@ -2542,7 +2544,7 @@ bool ExportPdf(const Document& doc, const Viewport* view, const std::string& pat
   double last_width = default_width;
   for (const Path2& p : paths) {
     const bool valid_layer = p.layer >= 0 && static_cast<size_t>(p.layer) < doc.Layers().size();
-    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(p.layer)], default_width) : default_width;
+    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(p.layer)], doc.PlotStyles(), default_width) : default_width;
     if (std::fabs(width - last_width) > 1e-9) { cs << Num(width * pt, 3) << " w\n"; last_width = width; }
     const std::string color = Num(p.color.r, 3) + " " + Num(p.color.g, 3) + " " + Num(p.color.b, 3) + " RG\n";
     if (color != last_color) { cs << color; last_color = color; }
