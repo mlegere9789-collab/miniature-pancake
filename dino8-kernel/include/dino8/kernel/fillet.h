@@ -1641,12 +1641,19 @@ Brep ChamferConcaveVertex(const Brep& solid, Point3d vertex,
 //      already walks that edge.
 //   5. Any THIRD face notched by FilletConvexEdge's own corner-notch
 //      construction (a dense polygonal run between the SAME two rail
-//      corners at one end - see NotchCornerAtVertex's own doc comment)
-//      is found the same way (a run of more than 2 consecutive loop
-//      points between those two corners) and collapsed back to the
-//      single vertex edge_p0 or edge_p1 - the genuine inverse splice.
-//      A face with NO notch there (an untouched sharp corner, or a free
-//      boundary) needs no change and gets none.
+//      corners at one end - see NotchCornerAtVertex's own doc comment,
+//      OR, for an oblique third face, EllipseNotchCornerAtVertexCylindrical's
+//      own dense ellipse sample - CollapseNotchRun's own splice works
+//      purely by matching 3D points, agnostic to which of the two
+//      produced the run, exactly as it already is for the ConicalFace
+//      case below) is found the same way (a run of more than 2
+//      consecutive loop points between those two corners) and collapsed
+//      back to the single vertex edge_p0 or edge_p1 - the genuine inverse
+//      splice. A face with NO notch there (an untouched sharp corner, or a
+//      free boundary) needs no change and gets none; an end whose own
+//      `CylindricalFace::cap0_notch_points`/`cap1_notch_points` says a
+//      notch IS there but no matching run is actually found throws
+//      std::invalid_argument instead of silently restoring a broken shape.
 //   6. The one CylindricalFace is dropped; every other face of `solid`
 //      (including any OTHER fillet's own CylindricalFace/ConicalFace/
 //      SphericalFace, for a solid with several independent fillets) is
@@ -1691,7 +1698,12 @@ Brep ChamferConcaveVertex(const Brep& solid, Point3d vertex,
 // planar face's own supporting plane - and removes the sphere plus all 3
 // cylinders in one call, splicing each cylinder's own FAR (non-sphere) end
 // back onto its own third-face corner notch exactly as the plain
-// single-cylinder case above does. Picking a point on the sphere itself
+// single-cylinder case above does - including an OBLIQUE third-face notch
+// there (the same CollapseNotchRunVerified splice the plain single-
+// cylinder case's own oblique end uses), since the near (sphere-adjacent)
+// end's own cap0/cap1_notch_points is checked empty first and the far
+// end's reconstruction formula itself never depended on that end being
+// perpendicular to begin with. Picking a point on the sphere itself
 // removes the whole corner; picking a point on one of the 3 cylinders' own
 // wall (away from the sphere) still throws (see `end_is_spherical_corner`
 // in fillet.cpp) rather than guessing which whole corner a mid-cylinder
@@ -1702,14 +1714,28 @@ Brep ChamferConcaveVertex(const Brep& solid, Point3d vertex,
 // separate setback, which a second corner's own ball radius does.
 //
 // SCOPE, stated plainly: this reverses exactly what FilletConvexEdge,
-// FilletConvexEdgeTapered and FilletConvexEdges' own m == 3 corner
-// themselves can build - a patch whose two ends are each either a free
-// boundary or a plain corner-notch (NOT an oblique-end CYLINDRICAL
-// fillet's own sloped ellipse notch, which is a genuinely different,
-// not-yet-inverted construction - see FilletConvexEdge's own doc comment
-// for why that case's cylinder is shifted/set back in a way this function
-// does not attempt to undo) - throwing std::invalid_argument for any of
-// those harder cases rather than silently restoring the wrong shape.
+// FilletConcaveEdge, FilletConvexEdgeTapered and FilletConvexEdges' own
+// m == 3 corner themselves can build - a patch whose two ends are each
+// either a free boundary, a plain corner-notch, OR now an oblique-end
+// CYLINDRICAL fillet's own sloped ellipse notch, inverted the same
+// CollapseNotchRun splice the ConicalFace case always used (step 5
+// above) - the cylinder's own `frame`/`radius`/`length` already describe
+// the SAME rolling-ball patch either way, oblique end or not, so no
+// separate reconstruction was needed, only relaxing the blanket rejection
+// that used to sit here; this applies equally to a single
+// FilletConvexEdge/FilletConcaveEdge-built CylindricalFace and to one of
+// the m == 3 spherical-vertex-blend corner's own 3 incident cylinders at
+// its FAR (non-sphere) end (RemoveSphericalVertexBlend) - the NEAR
+// (sphere-adjacent) end of one of those 3 is never notched (it is the
+// sphere itself) and still throws if it somehow were. A
+// zero-or-negative-length cylinder (the unrelated cylinder/cylinder
+// boolean pipeline's own Steinmetz "eye" shape - BooleanCombineMixed,
+// never produced by FilletConvexEdge/FilletConcaveEdge, both of which
+// reject any oblique-end combination leaving a non-positive length) is
+// still rejected outright, and a corner whose own cylinder is ALSO set
+// back by a second spherical vertex-blend corner remains out of scope -
+// throwing std::invalid_argument for either of those harder cases rather
+// than silently restoring the wrong shape.
 // Removing one segment of an N-station tapered profile restores only that
 // segment's own straight span, leaving any adjacent segments' own cones in
 // place with a short straight edge spliced between them - well-defined, if

@@ -32608,6 +32608,177 @@ void TestMoveEdgesConvexPlanarRefusesInvalidInput() {
   Check(threw, "MoveEdgesConvexPlanar refuses an edge whose incident faces are non-triangular (a box's own quads)");
 }
 
+// Exact shoelace area of a planar XY quadrilateral (corners given in
+// order; z is assumed consistent/irrelevant to the area itself) - used by
+// the quad-base MoveVertexConvexPlanar/MoveEdgeConvexPlanar tests below to
+// derive an expected pyramid volume completely independently of anything
+// those functions do internally.
+double QuadAreaShoelaceXY(const dino8::kernel::Point3d& p0, const dino8::kernel::Point3d& p1,
+                           const dino8::kernel::Point3d& p2, const dino8::kernel::Point3d& p3) {
+  const double sum = (p0.x * p1.y - p1.x * p0.y) + (p1.x * p2.y - p2.x * p1.y) + (p2.x * p3.y - p3.x * p2.y) +
+                      (p3.x * p0.y - p0.x * p3.y);
+  return 0.5 * std::fabs(sum);
+}
+
+// PARITY_MAP's kernel: Local / direct-edit operations "Move a single B-rep
+// vertex directly" gap's own remaining "every incident face must be a
+// triangle" limitation. MoveConvexPlanarPoints()'s shared core
+// (boolean.cpp) now derives a touched face's new plane via Newell's method
+// (PolygonNewellNormalRaw()) and, for a 4+-sided face, checks directly that
+// every one of its own corners (including the one(s) that moved) still
+// lands within tolerance of the resulting plane - rather than refusing any
+// 4+-sided incident face outright. A vertex incident to exactly ONE such
+// face (plus any number of triangles) can now move anywhere WITHIN that
+// face's own existing plane, since its own three other, unmoved corners
+// already pin that plane exactly. MakeTestPyramid()'s own quad base
+// (unlike its apex, already exercised by
+// TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched
+// above) is exactly this case: each base corner is incident to the quad
+// base (1 face) plus 2 triangular side faces.
+//
+// Volume is an independent closed-form check: a pyramid's volume is
+// (1/3)*base_area*height for ANY planar polygon base, not just a
+// rectangle - `base_area` is the exact shoelace area of the new (now an
+// irregular quadrilateral, not a square) base, computed directly from the
+// four corner positions via QuadAreaShoelaceXY() above, completely
+// independent of anything MoveVertexConvexPlanar's own half-space-clip
+// arithmetic does internally - and `height` is still exactly the apex's
+// own z (the base stays the z=0 plane, unchanged by sliding one of its own
+// corners sideways within it).
+void TestMoveVertexConvexPlanarQuadBaseCornerWithinPlaneMatchesExactVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveVertexConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Point3d apex(5, 5, 12);
+  const Brep pyramid = MakeTestPyramid(apex);
+
+  const Point3d b1(10, 0, 0), b2(10, 10, 0), b3(0, 10, 0);  // MakeTestPyramid's own other 3 base corners
+  const Point3d old_b0(0, 0, 0);
+  const Point3d new_b0(-5, 0, 0);  // slides within the base's own z=0 plane
+  const Brep moved = MoveVertexConvexPlanar(pyramid, old_b0, new_b0);
+
+  Check(moved.FaceCount() == 5, "MoveVertexConvexPlanar keeps the pyramid's own 5-face topology (no face vanishes)");
+
+  const double base_area = QuadAreaShoelaceXY(new_b0, b1, b2, b3);
+  Check(std::fabs(base_area - 125.0) < 1e-9, "sanity: the new (irregular) base quad's own exact shoelace area is 125");
+  const double expected_volume = (1.0 / 3.0) * base_area * apex.z;
+  Check(std::fabs(expected_volume - 500.0) < 1e-9, "sanity: the hand-derived expected volume is exactly 500");
+  const double measured_volume = PlanarBrepVolumeExact(moved);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "the moved pyramid's volume matches the exact closed-form (1/3)*base_area*height for an irregular "
+        "quadrilateral base, not merely a plausible-looking number - the quad base corner moved within its own "
+        "existing plane, a case MoveVertexConvexPlanar used to refuse outright for any 4+-sided incident face");
+
+  const std::vector<Brep::PlanarFace> result = moved.PlanarFaces();
+  auto loop_contains = [](const std::vector<Point3d>& loop, const Point3d& p) {
+    for (const Point3d& q : loop) {
+      if (q.DistanceTo(p) < 1e-9) return true;
+    }
+    return false;
+  };
+  bool found_base = false;
+  int untouched_triangle_count = 0;
+  int touched_triangle_count = 0;
+  for (const Brep::PlanarFace& f : result) {
+    if (f.loop.size() == 4 && loop_contains(f.loop, new_b0) && loop_contains(f.loop, b1) &&
+        loop_contains(f.loop, b2) && loop_contains(f.loop, b3)) {
+      found_base = true;
+    }
+    if (f.loop.size() == 3) {
+      if (loop_contains(f.loop, new_b0) && loop_contains(f.loop, apex)) ++touched_triangle_count;
+      if (!loop_contains(f.loop, old_b0) && !loop_contains(f.loop, new_b0) && loop_contains(f.loop, apex)) {
+        ++untouched_triangle_count;
+      }
+    }
+  }
+  Check(found_base, "the base face's own 4 corners are exactly new_b0/b1/b2/b3 - a genuinely quadrilateral face, "
+                     "not silently triangulated or otherwise restructured");
+  Check(touched_triangle_count == 2,
+        "exactly 2 of the pyramid's 4 triangular side faces are incident to the moved corner and carry new_b0");
+  Check(untouched_triangle_count == 2,
+        "the other 2 triangular side faces, not incident to the moved corner, are completely untouched");
+}
+
+// The genuinely new refusal case this generalization must still catch,
+// not silently misclassify: moving the SAME base corner OFF the base's
+// own plane (nonzero z) leaves the base's 4 corners genuinely non-planar
+// (3 of them still pin z=0 exactly) - refused via the new direct planarity
+// check rather than the old, now-removed "not a triangle" gate, but still
+// the identical std::invalid_argument failure mode callers already expect.
+void TestMoveVertexConvexPlanarRefusesNonPlanarQuadCornerMove() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveVertexConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Point3d apex(5, 5, 12);
+  const Brep pyramid = MakeTestPyramid(apex);
+
+  bool threw = false;
+  try {
+    MoveVertexConvexPlanar(pyramid, Point3d(0, 0, 0), Point3d(-5, 0, 3));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "MoveVertexConvexPlanar refuses sliding a quad base corner OFF its own existing plane (nonzero z), even "
+        "though the identical move WITHIN the plane (z unchanged) now succeeds");
+}
+
+// PARITY_MAP's kernel: Local / direct-edit operations "Move/transform edge
+// (tweak edge)" gap's own remaining "every incident face must be a
+// triangle" limitation - the identical generalization immediately above,
+// now for an edge whose two endpoints are both corners of the SAME
+// 4+-sided face. MakeTestPyramid()'s own base edge (b0,b1) is incident to
+// the quad base (both endpoints) plus one triangular side face sharing
+// that edge (b0,b1,apex) - unlike a box's own edge, whose two incident
+// faces are BOTH quads and whose corners are each ALSO shared by a THIRD,
+// independent quad (the box's own "a corner can only move to the single
+// point where all 3 of its planes already meet" case
+// TestMoveEdgeConvexPlanarRefusesInvalidInput's own box check still
+// correctly refuses, unchanged by this pass).
+void TestMoveEdgeConvexPlanarQuadBaseEdgeWithinPlaneMatchesExactVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveEdgeConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Point3d apex(5, 5, 12);
+  const Brep pyramid = MakeTestPyramid(apex);
+
+  const Point3d b2(10, 10, 0), b3(0, 10, 0);  // MakeTestPyramid's own other 2 base corners (untouched)
+  const Point3d old_b0(0, 0, 0), old_b1(10, 0, 0);
+  const Point3d new_b0(-5, 0, 0), new_b1(15, 0, 0);  // both endpoints slide within the base's own z=0 plane
+  const Brep moved = MoveEdgeConvexPlanar(pyramid, old_b0, old_b1, new_b0, new_b1);
+
+  Check(moved.FaceCount() == 5, "MoveEdgeConvexPlanar keeps the pyramid's own 5-face topology (no face vanishes)");
+
+  const double base_area = QuadAreaShoelaceXY(new_b0, new_b1, b2, b3);
+  Check(std::fabs(base_area - 150.0) < 1e-9, "sanity: the new (irregular) base quad's own exact shoelace area is 150");
+  const double expected_volume = (1.0 / 3.0) * base_area * apex.z;
+  Check(std::fabs(expected_volume - 600.0) < 1e-9, "sanity: the hand-derived expected volume is exactly 600");
+  const double measured_volume = PlanarBrepVolumeExact(moved);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "the moved pyramid's volume matches the exact closed-form (1/3)*base_area*height for an irregular "
+        "quadrilateral base, with BOTH moved endpoints sliding within the base's own existing plane - a case "
+        "MoveEdgeConvexPlanar used to refuse outright for any edge touching a 4+-sided face");
+
+  const std::vector<Brep::PlanarFace> result = moved.PlanarFaces();
+  auto loop_contains = [](const std::vector<Point3d>& loop, const Point3d& p) {
+    for (const Point3d& q : loop) {
+      if (q.DistanceTo(p) < 1e-9) return true;
+    }
+    return false;
+  };
+  bool found_base = false;
+  for (const Brep::PlanarFace& f : result) {
+    if (f.loop.size() == 4 && loop_contains(f.loop, new_b0) && loop_contains(f.loop, new_b1) &&
+        loop_contains(f.loop, b2) && loop_contains(f.loop, b3)) {
+      found_base = true;
+    }
+  }
+  Check(found_base, "the base face's own 4 corners are exactly new_b0/new_b1/b2/b3 after moving the whole edge");
+}
+
 // The genuinely new capability neither ReplaceFacePlaneConvexPlanar() nor
 // two sequential calls to it can express: two faces whose own new planes
 // are only jointly consistent, each one only valid once the OTHER has also
@@ -56965,16 +57136,54 @@ void TestRemoveBlendRejectsUnsupportedConfigurations() {
   Check(throws([&] { dino8::kernel::RemoveBlend(rounded, mid_r); }),
         "rejects a FilletConvexEdges cylinder with a spherical vertex-blend corner at either end");
 
-  // A FilletConvexEdge oblique end (sloped ellipse cap notch) is out of scope.
-  const Brep hex = FilletObliqueTestHexahedron(0.3);
-  const Brep obl = FilletConvexEdge(hex, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.2);
-  const Brep::MixedFacesResult mf_o = obl.MixedFaces();
-  const Brep::CylindricalFace& cfo = mf_o.cylindrical[0];
-  const Point3d mid_o = cfo.frame.origin + 0.5 * cfo.length * cfo.frame.zaxis +
-                        cfo.radius * std::cos(cfo.angle * 0.5) * cfo.frame.xaxis +
-                        cfo.radius * std::sin(cfo.angle * 0.5) * cfo.frame.yaxis;
-  Check(throws([&] { dino8::kernel::RemoveBlend(obl, mid_o); }),
-        "rejects a FilletConvexEdge oblique-end cylinder (sloped ellipse cap notch)");
+  // A FilletConvexEdge oblique end (sloped ellipse cap notch) is now
+  // supported, not rejected - see TestRemoveBlendRoundTripsAnObliqueEndFillet
+  // below for the full round trip this closes.
+}
+
+void TestRemoveBlendRoundTripsAnObliqueEndFillet() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::Point3d;
+
+  // The same oblique-ended hexahedron fixture
+  // TestFilletConvexEdgeObliqueEndFaceIsExactAndClosed builds and verifies
+  // the FORWARD construction on (slope 0.3, radius 0.2): edge_p0 = (0,0,1)
+  // is a plain perpendicular end (cap0 untouched), edge_p1 = (1,0,1) sits
+  // on the sloped end face (cap1 carries a 201-point dense ellipse notch).
+  // This closes the "oblique-end cylindrical fillets still throw" gap
+  // RemoveBlend's own doc comment used to name: removing this fillet must
+  // now restore the exact pre-fillet hexahedron, notch and all, not throw.
+  const double slope = 0.3, r = 0.2;
+  const Brep hex = FilletObliqueTestHexahedron(slope);
+  const double base_volume = hex.TessellateToClosedMesh(8, 8).Volume();
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const Brep filleted = FilletConvexEdge(hex, edge_p0, edge_p1, r);
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.cylindrical.size() == 1, "sanity: the obliquely-filleted hexahedron has exactly one cylindrical face");
+  const Brep::CylindricalFace& cf = mf.cylindrical[0];
+  Check(cf.cap0_notch_points.empty() && !cf.cap1_notch_points.empty(),
+        "sanity: cap0 is the plain perpendicular end, cap1 carries the oblique ellipse notch");
+  const Point3d mid_on_cyl = cf.frame.origin + 0.5 * cf.length * cf.frame.zaxis +
+                            cf.radius * std::cos(cf.angle * 0.5) * cf.frame.xaxis +
+                            cf.radius * std::sin(cf.angle * 0.5) * cf.frame.yaxis;
+
+  const Brep restored = dino8::kernel::RemoveBlend(filleted, mid_on_cyl);
+
+  Check(restored.FaceCount() == 6, "RemoveBlend restores the exact face count of the pre-fillet hexahedron (6)");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+            !has_boundary && restored.raw().IsSolid(),
+        "the restored solid is itself a valid, closed, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(8, 8).Volume() - base_volume) < 1e-6,
+        "the restored solid's volume matches the original (pre-fillet) oblique-ended hexahedron's exactly");
+  Check(ChamferTestBrepHasVertexNear(restored, edge_p0, 1e-9) && ChamferTestBrepHasVertexNear(restored, edge_p1, 1e-9),
+        "the restored hexahedron has both of the fillet's own original sharp-edge endpoints back, including the "
+        "oblique end's own corner vertex");
+  Check(!ChamferTestBrepHasVertexNear(restored, mid_on_cyl, 1e-9),
+        "the fillet's own cylindrical surface point is gone from the restored solid");
 }
 
 // Evaluates a point on a SphericalFace's own trimmed patch at a given
@@ -57100,6 +57309,73 @@ void TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner() {
   Check(threw,
         "RemoveBlend rejects a spherical vertex-blend corner whose own cylinders are ALSO set back by a second "
         "spherical corner at their far end, rather than silently reconstructing the wrong far vertex");
+}
+
+// Closes the OTHER half of the "oblique-end cylindrical fillets still
+// throw too" gap RemoveBlend's own doc comment used to name: a
+// FilletConvexEdges-built m == 3 spherical vertex-blend corner whose own
+// 3 cylinders are NOT all plain perpendicular far ends (the only case
+// TestRemoveBlendRoundTripsASphericalVertexCorner exercises) - here ONE
+// of them (the edge towards A1) ends obliquely, on the SAME tilted end
+// face FilletObliqueTestHexahedron's own x = X(y) plane already is for
+// the single-edge case above. A, B, D are mutually perpendicular at the
+// origin (the trihedral corner to round); A1's own far end sits on the
+// oblique face, while B and D's own far ends (via the fixture's flat
+// y = 1 / z = 1 caps) stay plain perpendicular corners, exactly like
+// TestFilletConvexEdgesSingleCornerSphereWithNotchedFarEnds' box fixture
+// - so this is that same construction with exactly one of its three far
+// ends swapped from flat to oblique.
+void TestRemoveBlendRoundTripsASphericalVertexCornerWithOneObliqueFarEnd() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  const double slope = 0.3, r = 0.2;
+  const Brep hex = FilletObliqueTestHexahedron(slope);
+  const double base_volume = hex.TessellateToClosedMesh(8, 8).Volume();
+  const Point3d A(0, 0, 0), A1(1, 0, 0), B(0, 1, 0), D(0, 0, 1);
+  const Brep c = FilletConvexEdges(hex, {{A, A1}, {A, B}, {A, D}}, r);
+
+  const Brep::MixedFacesResult mf = c.MixedFaces();
+  Check(mf.spherical.size() == 1 && mf.cylindrical.size() == 3,
+        "sanity: one rounded corner with a third-face notch on one edge still has one sphere and 3 cylinders");
+  int oblique_count = 0, flat_count = 0;
+  for (const Brep::CylindricalFace& cf : mf.cylindrical) {
+    const bool has_notch = !cf.cap0_notch_points.empty() || !cf.cap1_notch_points.empty();
+    // The sphere-adjacent (near) end of every one of these 3 cylinders is
+    // never notched (RemoveSphericalVertexBlend's own doc comment); any
+    // notch here is necessarily at the far end.
+    if (has_notch) {
+      ++oblique_count;
+      const bool oblique_is_cap0 = !cf.cap0_notch_points.empty();
+      const size_t n = oblique_is_cap0 ? cf.cap0_notch_points.size() : cf.cap1_notch_points.size();
+      Check(n > 2, "the oblique far end's own notch is a genuine dense ellipse run, not a plain 2-point corner");
+    } else {
+      ++flat_count;
+    }
+  }
+  Check(oblique_count == 1 && flat_count == 2,
+        "exactly one of the three cylinders (towards A1) has an oblique far-end notch; the other two (towards B "
+        "and D) have plain flat far ends");
+  const Point3d on_sphere = SpherePointAt(mf.spherical[0], 0.5, 0.5);
+
+  const Brep restored = dino8::kernel::RemoveBlend(c, on_sphere);
+
+  Check(restored.FaceCount() == 6, "RemoveBlend restores the exact face count of the pre-fillet hexahedron (6)");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+            !has_boundary && restored.raw().IsSolid(),
+        "the restored solid is itself a valid, closed, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(8, 8).Volume() - base_volume) < 1e-6,
+        "the restored solid's volume matches the original (pre-fillet) oblique-ended hexahedron's exactly");
+  for (const Point3d& v : {A, A1, B, D}) {
+    Check(ChamferTestBrepHasVertexNear(restored, v, 1e-9),
+          "the restored hexahedron has its original sharp corner vertex back, including the trihedral corner "
+          "itself and the obliquely-notched far end");
+  }
+  Check(!ChamferTestBrepHasVertexNear(restored, on_sphere, 1e-9),
+        "the corner sphere's own surface point is gone from the restored solid");
 }
 
 void TestRemoveBlendRoundTripsATaperedFillet() {
@@ -58976,6 +59252,53 @@ void TestRemoveBlendRoundTripsAConcaveFillet() {
     if (restored.raw().m_V[v].point.DistanceTo(edge_p1) < 1e-9) has_p1 = true;
   }
   Check(has_p0 && has_p1, "the restored solid has its original sharp concave corner vertices back");
+  Check(!ChamferTestBrepHasVertexNear(restored, mid_on_cyl, 1e-9),
+        "the fillet's own cylindrical surface point is gone from the restored solid");
+}
+
+// The concave mirror of TestRemoveBlendRoundTripsAnObliqueEndFillet - same
+// "oblique-end cylindrical fillets still throw too" gap RemoveBlend's own
+// doc comment used to name, exercised on FilletConcaveEdge's own
+// outward=false construction instead of FilletConvexEdge's, against the
+// SAME fixture/radius TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed
+// already verifies the forward construction on (slope 0.3, radius 0.15,
+// cap1 the oblique end carrying the dense ellipse notch, cap0 the plain
+// flat bottom).
+void TestRemoveBlendRoundTripsAnObliqueEndConcaveFillet() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdge;
+  using dino8::kernel::Point3d;
+
+  const double slope = 0.3, radius = 0.15;
+  const Brep prism = ConcaveLShapedPrismObliqueTop(slope);
+  const double base_volume = prism.TessellateToClosedMesh(8, 8).Volume();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const Brep filleted = FilletConcaveEdge(prism, edge_p0, edge_p1, radius);
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.cylindrical.size() == 1 && mf.cylindrical[0].outward == false,
+        "sanity: the obliquely-ended concave fillet has exactly one cylindrical face, marked outward=false");
+  const Brep::CylindricalFace& cf = mf.cylindrical[0];
+  Check(cf.cap0_notch_points.empty() && !cf.cap1_notch_points.empty(),
+        "sanity: cap0 (bottom) is the plain flat end, cap1 (the oblique top) carries the ellipse notch");
+  const Point3d mid_on_cyl = cf.frame.origin + 0.5 * cf.length * cf.frame.zaxis +
+                            cf.radius * std::cos(cf.angle * 0.5) * cf.frame.xaxis +
+                            cf.radius * std::sin(cf.angle * 0.5) * cf.frame.yaxis;
+
+  const Brep restored = dino8::kernel::RemoveBlend(filleted, mid_on_cyl);
+
+  Check(restored.FaceCount() == 8, "RemoveBlend restores the exact face count of the pre-fillet oblique-topped "
+                                    "L-shaped prism");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+            !has_boundary && restored.raw().IsSolid(),
+        "the restored solid is itself a valid, closed, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(8, 8).Volume() - base_volume) < 1e-6,
+        "the restored solid's volume matches the original oblique-topped L-shaped prism's exactly");
+  Check(ChamferTestBrepHasVertexNear(restored, edge_p0, 1e-9) && ChamferTestBrepHasVertexNear(restored, edge_p1, 1e-9),
+        "the restored solid has both of the fillet's own original sharp concave-edge endpoints back, including the "
+        "oblique end's own corner vertex");
   Check(!ChamferTestBrepHasVertexNear(restored, mid_on_cyl, 1e-9),
         "the fillet's own cylindrical surface point is gone from the restored solid");
 }
@@ -65878,6 +66201,9 @@ int main() {
   TestMoveVerticesConvexPlanarRefusesInvalidInput();
   TestMoveEdgesConvexPlanarMovesTwoAdjacentEdgesSharingAVertexMatchesExactVolume();
   TestMoveEdgesConvexPlanarRefusesInvalidInput();
+  TestMoveVertexConvexPlanarQuadBaseCornerWithinPlaneMatchesExactVolume();
+  TestMoveVertexConvexPlanarRefusesNonPlanarQuadCornerMove();
+  TestMoveEdgeConvexPlanarQuadBaseEdgeWithinPlaneMatchesExactVolume();
   TestReplaceFacePlanesConvexPlanarSucceedsWhereSequentialSingleReplaceWouldRefuse();
   TestReplaceFacePlanesConvexPlanarRefusesInvalidInput();
   TestMoveFacesConvexPlanarSucceedsWhereSequentialSingleMoveWouldRefuse();
@@ -65929,9 +66255,11 @@ int main() {
   TestRemoveBlendRoundTripsASingleFillet();
   TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo();
   TestRemoveBlendRejectsUnsupportedConfigurations();
+  TestRemoveBlendRoundTripsAnObliqueEndFillet();
   TestRemoveBlendRoundTripsASphericalVertexCorner();
   TestRemoveBlendOnSphericalCornerLeavesAnIndependentCornerIntact();
   TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner();
+  TestRemoveBlendRoundTripsASphericalVertexCornerWithOneObliqueFarEnd();
   TestRemoveBlendRoundTripsATaperedFillet();
   TestRemoveChamferRoundTripsASingleChamfer();
   TestRemoveChamferLeavesTheOtherChamferIntactAmongTwo();
@@ -65967,6 +66295,7 @@ int main() {
   TestRemoveChamferVertexRoundTripsAsymmetricDistancesAndConcaveCorner();
   TestRemoveChamferVertexRejectsNonChamferFacesAndOtherBadInputs();
   TestRemoveBlendRoundTripsAConcaveFillet();
+  TestRemoveBlendRoundTripsAnObliqueEndConcaveFillet();
   TestFilletConvexEdgeByDistanceFromEdgeMatchesEquivalentRadius();
   TestFilletConvexEdgeByDistanceBetweenRailsMatchesEquivalentRadius();
   TestFilletConcaveEdgeByDistanceFromEdgeAndByDistanceBetweenRailsMatchEquivalentRadius();
