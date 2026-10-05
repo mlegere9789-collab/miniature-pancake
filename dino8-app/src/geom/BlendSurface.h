@@ -176,4 +176,31 @@ bool BuildBlendSurfaceG2Adaptive(const ON_Curve& ea, const ON_Surface& sa, const
                                   double* achieved_gap_out = nullptr,
                                   const std::function<double(double)>& width_frac_at = nullptr);
 
+// ADAPTIVE wrapper around kernel::NurbsSurface::BlendSurfaces() - the exact
+// Hermite-skin kernel construction (surface.h), reachable only when both
+// edges are genuinely isoparametric boundaries of their own NurbsSurface
+// (BlendSrfCommand's/VariableBlendSrfCommand's own boundary-iso-curve pick,
+// cmd_fillet.cpp, always is). Unlike BuildBlendSurfaceG1/G2 above, which
+// build from a generic picked edge curve plus a uv_at projection, this one
+// takes the fixed-direction/at-max description BlendSurfaces() itself needs
+// directly (dir0/at_max0 for srf0, dir1/at_max1 for srf1 - see that
+// function's own doc comment for exactly what these mean), and reaches
+// continuity 3 (G3), not just G1/G2.
+//
+// Mirrors BuildBlendSurfaceG1Adaptive's own convergence/budget contract
+// exactly (same shared AdaptiveRefine() driver, BlendSurface.cpp): builds at
+// `min_rows`, then repeatedly doubles the row count and measures
+// MaxSurfaceGap between the last two resolutions until the gap is at most
+// `max_gap` (returns true, `out` holds the finer build) or doubling would
+// exceed `max_rows` (returns false, `out` holds the best attempt,
+// `*achieved_gap_out` the last measured gap). Returns false immediately,
+// `out` untouched, `*achieved_gap_out` left at +infinity, if the very first
+// kernel::NurbsSurface::BlendSurfaces call itself returns Result::Failed
+// (e.g. the two rail points at t=0 coincide, or continuity/dir0/dir1 are
+// invalid - though a caller is expected to have already validated those).
+bool BuildBlendSurfaceKernelAdaptive(int dir0, bool at_max0, const dino8::kernel::NurbsSurface& srf0, int dir1,
+                                      bool at_max1, const dino8::kernel::NurbsSurface& srf1, bool reverse_rail1,
+                                      int continuity, double max_gap, int min_rows, int max_rows,
+                                      ON_NurbsSurface& out, double* achieved_gap_out = nullptr);
+
 }  // namespace dino8::app
