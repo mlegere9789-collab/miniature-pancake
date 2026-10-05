@@ -493,34 +493,43 @@ class Brep {
   // AddWireCurves() actually build (e.g. several open curves chained end
   // to end through shared vertices, not necessarily one single curve).
   //
-  // `wire_body`'s own edge/vertex graph must walk as ONE simple chain:
-  // either a single open path (two degree-1 endpoint vertices, every
-  // other vertex degree exactly 2) or a single closed loop (every vertex
+  // `wire_body`'s own edge/vertex graph must be made up of simple
+  // chains and/or closed loops ONLY: each connected component is either
+  // a single open path (two degree-1 endpoint vertices, every other
+  // vertex degree exactly 2) or a single closed loop (every vertex
   // degree exactly 2, including the one-edge case of a curve closed on
   // itself through a single self-referencing vertex - see WireBody()'s
   // own doc comment). A branch point (any vertex touching 3 or more live
   // edges - a wire body WireBody()/AddWireCurves() can genuinely produce
-  // by welding more than two curve endpoints onto one vertex) or more
-  // than one disjoint wire component (e.g. two separate closed loops in
-  // the same Brep) is refused rather than guessed at: which of several
-  // branches to follow, or which of several disjoint components to
-  // extrude, has no single correct answer. The walked edges' own 3D
-  // curves are then joined, in walk order, into one continuous profile
-  // via NurbsCurve::Join() (curve.h) - exact, not a re-fit, the same
+  // by welding more than two curve endpoints onto one vertex), anywhere
+  // in the body, in any component, is still refused rather than guessed
+  // at: which of several branches to follow has no single correct
+  // answer. Unlike that, more than one disjoint wire component (e.g.
+  // two separate closed loops, or an open chain plus a separate closed
+  // loop, in the same Brep) is NOT refused: each component's own walked
+  // edges are joined, in walk order, into one continuous profile via
+  // NurbsCurve::Join() (curve.h) - exact, not a re-fit, the same
   // machinery a caller would use by hand to turn a multi-edge wire body
-  // back into one curve - and the result is handed straight to Extrude()
-  // above, which itself decides (via the joined profile's own IsClosed())
-  // whether to cap: a closed-loop wire body extrudes into a capped solid
-  // exactly as Extrude() would for an equivalent single closed curve; an
-  // open-chain wire body extrudes into an open, uncapped sheet (`cap` is
-  // irrelevant in that case, the same way it already is for an open
-  // profile passed to Extrude() itself).
+  // back into one curve - and extruded independently via Extrude()
+  // above exactly as a single-component wire body already was, which
+  // itself decides (via each joined profile's own IsClosed()) whether
+  // to cap that component: a closed-loop component extrudes into a
+  // capped solid exactly as Extrude() would for an equivalent single
+  // closed curve; an open-chain component extrudes into an open,
+  // uncapped sheet (`cap` is irrelevant for that component, the same
+  // way it already is for an open profile passed to Extrude() itself).
+  // A single component's result is returned as-is; two or more are
+  // concatenated via Compound() (above) - deliberately unwelded lumps,
+  // the same "Lumps are deliberately NOT welded to each other" contract
+  // Compound() already documents, since disjoint wire components never
+  // shared any geometry with each other to begin with.
   //
   // Throws std::invalid_argument if `direction` is zero, if `wire_body`
-  // does not satisfy IsWireBody(), or if its edge graph is not a single
-  // simple chain as described above; otherwise throws whatever Extrude()
-  // itself throws for the resulting joined profile (e.g. "cap requested
-  // but the closed profile is not planar").
+  // does not satisfy IsWireBody(), or if any component of its edge graph
+  // is not a single simple chain as described above; otherwise throws
+  // whatever Extrude() itself throws for the offending component's own
+  // joined profile (e.g. "cap requested but the closed profile is not
+  // planar").
   static Brep ExtrudeWireBody(const Brep& wire_body, Vector3d direction, bool cap = true);
 
   // Thicken: the direct Brep-level counterpart to Mesh::Thicken() (mesh.h)
@@ -4079,35 +4088,45 @@ class Brep {
   // bodies" item names "wire-body offset" as one of the two still-missing
   // halves of "wire-to-solid/sheet promotion" left once ExtrudeWireBody()
   // (above) closed the extrude half. Like ExtrudeWireBody(), `wire_body`
-  // must satisfy IsWireBody() and its own edge/vertex graph must walk as
-  // ONE simple chain (a single open path or a single closed loop) - the
-  // exact same WalkWireChain() refusal rules (a branch point, or more
-  // than one disjoint wire component) apply here too, for the same reason:
-  // which branch or which component to offset has no single correct
-  // answer. The walked edges' own 3D curves are joined, in walk order,
-  // into one continuous profile exactly as ExtrudeWireBody() does (via
-  // the existing, already-tested NurbsCurve::Join()), then handed straight
-  // to the existing, already-tested NurbsCurve::OffsetInPlane(distance,
-  // out, tolerance) - so this is, like ExtrudeWireBody(), a thin
-  // composition of two already-proven primitives rather than a new
-  // algorithm: the same EXACT/approximate honesty split OffsetInPlane()
-  // itself documents applies unchanged (exact for a line or circular
+  // must satisfy IsWireBody(), and a branch point (a vertex touching 3 or
+  // more live edges) anywhere is out of scope - the same WalkWireChains()
+  // refusal rule ExtrudeWireBody() uses, for the same reason: which
+  // branch to follow has no single correct answer. Unlike that, more
+  // than one disjoint wire component (e.g. two separate closed loops, or
+  // an open chain plus a separate closed loop, in the same Brep) is NOT
+  // refused: each component's own walked edges are joined, in walk
+  // order, into one continuous profile exactly as ExtrudeWireBody() does
+  // (via the existing, already-tested NurbsCurve::Join()), then each
+  // joined profile is independently handed to the existing, already-
+  // tested NurbsCurve::OffsetInPlane(distance, out, tolerance) - so this
+  // is, like ExtrudeWireBody(), a thin composition of already-proven
+  // primitives rather than a new algorithm: the same EXACT/approximate
+  // honesty split OffsetInPlane() itself documents applies unchanged,
+  // independently, to every component (exact for a line or circular
   // arc/circle, an explicitly tolerance-driven least-squares refit for
   // any other planar curve, refused outright for a curve that is not
-  // planar in its own fitted plane). The offset profile is then rebuilt
-  // into a fresh wire body via WireBody() (above) - a genuinely
-  // independent Brep, not a modification of `wire_body` in place.
+  // planar in its own fitted plane - any one component failing refuses
+  // the whole call). Every component's own offset profile is then
+  // rebuilt into ONE fresh wire body via a single WireBody() call (above)
+  // - which already welds curves that happen to share an endpoint and
+  // leaves genuinely disjoint ones apart, so a multi-component input's
+  // own disjointness is preserved for free, with no separate compounding
+  // step (unlike ExtrudeWireBody(), a pure wire body has zero faces, so
+  // Compound() would just discard it - see Compound()'s own "the empty
+  // set: contributes nothing" rule) - a genuinely independent Brep, not a
+  // modification of `wire_body` in place.
   //
   // Throws std::invalid_argument if `wire_body` does not satisfy
-  // IsWireBody(), or if its edge graph is not a single simple chain as
-  // described above; throws std::invalid_argument (Result::Failed from
-  // OffsetInPlane()) if the joined profile is not planar within
-  // `tolerance`, or if `distance` folds it through itself or through its
-  // own center of curvature (an arc/circle offset past its own radius).
-  // `tolerance` defaults (`<= 0`) to OffsetInPlane()'s own default (the
-  // joined profile's `GetTightBoundingBox()` diagonal, via
-  // `tolerance::DistanceForSize()`); the resulting wire body's own vertex
-  // weld tolerance is the unrelated, fixed `tolerance::kDistance` -
+  // IsWireBody(), or if any component of its edge graph is not a single
+  // simple chain as described above; throws std::invalid_argument
+  // (Result::Failed from OffsetInPlane()) if any component's joined
+  // profile is not planar within `tolerance`, or if `distance` folds it
+  // through itself or through its own center of curvature (an arc/circle
+  // offset past its own radius). `tolerance` defaults (`<= 0`) to
+  // OffsetInPlane()'s own default (each joined profile's own
+  // `GetTightBoundingBox()` diagonal, via `tolerance::DistanceForSize()`,
+  // computed independently per component); the resulting wire body's own
+  // vertex weld tolerance is the unrelated, fixed `tolerance::kDistance` -
   // welding is a topological question (are two endpoints the same point)
   // wholly separate from how accurately the offset curve itself was fit.
   static Brep OffsetWireBody(const Brep& wire_body, double distance, double tolerance = -1.0);

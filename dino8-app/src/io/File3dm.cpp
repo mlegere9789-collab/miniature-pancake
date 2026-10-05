@@ -17,6 +17,7 @@
 
 #include "drafting/HatchBuild.h"
 #include "drafting/HatchLibrary.h"
+#include "geom/TextOutline.h"
 #include "util/json_mini.h"
 
 namespace dino8::app {
@@ -59,7 +60,9 @@ std::string EncodeBlocksMeta(const std::vector<BlockDefinition>& blocks) {
         << ",\"bx\":" << b.base.x << ",\"by\":" << b.base.y << ",\"bz\":" << b.base.z << ",\"states\":[";
     for (size_t j = 0; j < b.states.size(); ++j) out << (j ? "," : "") << "\"" << JsonEscapeBlock(b.states[j]) << "\"";
     out << "],\"aax\":" << b.array_axis.x << ",\"aay\":" << b.array_axis.y << ",\"aaz\":" << b.array_axis.z
-        << ",\"aspc\":" << b.array_spacing << ",\"lupk\":[";
+        << ",\"aspc\":" << b.array_spacing
+        << ",\"stx\":" << b.stretch_axis.x << ",\"sty\":" << b.stretch_axis.y << ",\"stz\":" << b.stretch_axis.z
+        << ",\"lupk\":[";
     for (size_t j = 0; j < b.lookup_keys.size(); ++j) out << (j ? "," : "") << "\"" << JsonEscapeBlock(b.lookup_keys[j]) << "\"";
     out << "],\"lups\":[";
     for (size_t j = 0; j < b.lookup_states.size(); ++j) out << (j ? "," : "") << "\"" << JsonEscapeBlock(b.lookup_states[j]) << "\"";
@@ -88,6 +91,11 @@ std::map<std::string, BlockDefinition> DecodeBlocksMeta(const std::string& text)
     // array_spacing == 0 as "no array parameter defined" regardless of axis.
     b.array_axis = kernel::Vector3d(v["aax"].number, v["aay"].number, v["aaz"].number);
     b.array_spacing = v["aspc"].number;
+    // Missing (a file saved before the Stretch parameter existed) reads back
+    // as a 0/0/0 axis - harmless, since PlaceFiltered falls back to +X
+    // whenever Unitize() fails on a zero vector, the same fallback the
+    // mirror-flip transform's own normal already uses.
+    b.stretch_axis = kernel::Vector3d(v["stx"].number, v["sty"].number, v["stz"].number);
     // Missing (a file saved before the Lookup parameter existed) reads back
     // as empty tables - harmless, since ResolveLookupState treats an empty
     // lookup_keys as "no lookup parameter defined" regardless of a key.
@@ -282,6 +290,29 @@ void AddLightFromOn(Document& doc, const ON_Light& light_ref, const ON_3dmObject
 bool UuidLess(const ON_UUID& a, const ON_UUID& b) { return ON_UuidCompare(a, b) < 0; }
 using UuidMap = std::map<ON_UUID, int, bool (*)(const ON_UUID&, const ON_UUID&)>;
 
+// "x,y,z" tag format a real Text command's own glyph curves carry (see
+// annotate_common.h's PointTag/TagGlyph) - reimplemented locally, not via
+// that header, since it pulls in commands/cmd_common.h and from there
+// app/Application.h, the same heavier chain this file's DXF-writer sibling
+// (FileExchange.cpp's DxfTextGlyphSpecOf) already keeps the I/O layer away
+// from. Read back by the exact same annotate_common.h::ParsePointTag
+// (plain sscanf("%lf,%lf,%lf", ...)), so the format only has to match, not
+// come from the same function.
+std::string PointTagLocal(double x, double y, double z) {
+  char buf[96];
+  std::snprintf(buf, sizeof(buf), "%.10g,%.10g,%.10g", x, y, z);
+  return buf;
+}
+
+// Matching plain-number counterpart for a single-value tag ("TextHeight") -
+// annotate_common.h's GlyphSpecOf reads it back with plain std::atof, so
+// (unlike the comma-joined PointTag format above) any %g-style text works.
+std::string NumberTagLocal(double v) {
+  char buf[48];
+  std::snprintf(buf, sizeof(buf), "%.10g", v);
+  return buf;
+}
+
 void CameraToViewport(const CameraState& c, ON_Viewport& vp) {
   vp.SetProjection(c.perspective ? ON::perspective_view : ON::parallel_view);
   vp.SetCameraLocation(c.eye);
@@ -374,6 +405,93 @@ std::string HatchPatternNameFor(const ONX_Model& model, int pattern_index) {
     if (p && p->Index() == pattern_index) return FromWide(p->Name());
   }
   return std::string();
+}
+
+// Resolves a real ON_InstanceDefinition's member geometry (its
+// InstanceGeometryIdList(), each looked up directly off the model by
+// ONX_Model::ModelGeometryComponentFromId - no prepass needed, since the
+// main Load3dm loop below skips idef-member objects by ON::idef_object
+// mode rather than collecting them itself) into Dino8's own BlockDefinition
+// shape - the same conversions (Point/Curve/Brep/Surface/Mesh/SubD/
+// Extrusion) the main loop already applies to ordinary document objects,
+// factored out so this function and that loop share one copy. A member
+// object whose geometry kind has no Dino8 scene-object equivalent (nested
+// instance refs, annotations, hatches, point clouds inside a block - none
+// of which Rhino itself actually allows inside a block definition anyway
+// except nested instance refs) is silently dropped from the definition,
+// the same per-object "no made flag" convention the main loop already
+// uses for a whole-object skip.
+BlockDefinition BuildBlockDefinitionFromIdef(const ONX_Model& model, const ON_InstanceDefinition& idef,
+                                              const std::map<int, int>& layer_map) {
+  BlockDefinition def;
+  def.name = FromWide(idef.Name());
+  if (def.name.empty()) def.name = "Block";
+  def.description = FromWide(idef.Description());
+  const ON_SimpleArray<ON_UUID>& member_ids = idef.InstanceGeometryIdList();
+  for (int i = 0; i < member_ids.Count(); ++i) {
+    const ON_ModelGeometryComponent& mg = model.ModelGeometryComponentFromId(member_ids[i]);
+    const ON_Geometry* g = mg.Geometry(nullptr);
+    if (!g) continue;
+    SceneObject obj;
+    bool made = false;
+    if (const ON_Point* p = ON_Point::Cast(g)) {
+      obj = SceneObject::MakePoint(p->point);
+      made = true;
+    } else if (const ON_Curve* cv = ON_Curve::Cast(g)) {
+      ON_NurbsCurve nc;
+      if (cv->GetNurbForm(nc) > 0) {
+        kernel::NurbsCurve k;
+        k.raw() = nc;
+        obj = SceneObject::MakeCurve(k);
+        made = true;
+      }
+    } else if (const ON_Brep* b = ON_Brep::Cast(g)) {
+      kernel::Brep k;
+      k.raw() = *b;
+      obj = SceneObject::MakeBrep(k);
+      made = true;
+    } else if (const ON_Surface* s = ON_Surface::Cast(g)) {
+      ON_NurbsSurface ns;
+      if (s->GetNurbForm(ns) > 0) {
+        kernel::NurbsSurface k;
+        k.raw() = ns;
+        obj = SceneObject::MakeSurface(k);
+        made = true;
+      }
+    } else if (const ON_Mesh* m = ON_Mesh::Cast(g)) {
+      if (MeshFaceIndicesInRange(*m)) {
+        kernel::Mesh k;
+        k.raw() = *m;
+        obj = SceneObject::MakeMesh(k);
+        made = true;
+      }
+    } else if (const ON_SubD* sd = ON_SubD::Cast(g)) {
+      kernel::SubD k;
+      k.raw() = *sd;
+      obj = SceneObject::MakeSubD(k);
+      made = true;
+    } else if (const ON_Extrusion* ex = ON_Extrusion::Cast(g)) {
+      ON_Brep* b = ex->BrepForm(nullptr);
+      if (b) {
+        kernel::Brep k;
+        k.raw() = *b;
+        delete b;
+        obj = SceneObject::MakeBrep(k);
+        made = true;
+      }
+    }
+    if (!made) continue;
+    if (const ON_3dmObjectAttributes* attr = mg.Attributes(nullptr)) {
+      auto lm = layer_map.find(attr->m_layer_index);
+      if (lm != layer_map.end()) obj.layer_index = lm->second;
+      if (attr->ColorSource() == ON::color_from_object) {
+        obj.color_by_layer = false;
+        obj.color = FromOnColor(attr->m_color);
+      }
+    }
+    def.objects.push_back(std::move(obj));
+  }
+  return def;
 }
 
 }  // namespace
@@ -513,6 +631,12 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
           L.has_plot_color = true;
           L.plot_color = FromOnColor(layer->m_plot_color);
         }
+        // Named PlotStyle assignment (LayerPlotStyle, PlotStyle below): no
+        // native ON_Layer field for this (unlike PlotWeight/PlotColor above),
+        // so it rides as a plain per-layer user string, the same mechanism
+        // Dino8.DetailLocked/DetailMode use on ON_3dmObjectAttributes above.
+        ON_wString ps;
+        if (layer->GetUserString(L"Dino8.PlotStyle", ps)) L.plot_style = FromWide(ps);
       }
     }
   }
@@ -538,6 +662,11 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
   std::vector<PendingDetail> pending_details;
   UuidMap object_ids(UuidLess);  // object uuid -> document id (as int)
   std::map<int, std::vector<ObjectId>> restore_groups;  // file group_id -> new object ids (see Document::CreateGroup below)
+  // Instance-definition uuid -> the Dino8 block name already built for it
+  // this load (see the ON_InstanceRef branch below) - an idef referenced by
+  // several ON_InstanceRef placements is converted to a BlockDefinition
+  // only once.
+  std::map<ON_UUID, std::string, bool (*)(const ON_UUID&, const ON_UUID&)> idef_block_name(UuidLess);
 
   int skipped = 0;
   int corrupt_meshes = 0;  // see the ON_Mesh branch below
@@ -548,6 +677,18 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     const ON_Geometry* g = mg->Geometry(nullptr);
     const ON_3dmObjectAttributes* attr = mg->Attributes(nullptr);
     if (!g) continue;
+    // Instance-definition member geometry (ON::idef_object mode) exists
+    // only to be read back out through ON_InstanceDefinition's own
+    // InstanceGeometryIdList(), via BuildBlockDefinitionFromIdef above when
+    // an ON_InstanceRef below first names it - it is never itself a
+    // document-visible object (a real Rhino file's own reader treats it
+    // the same way). Previously unhandled: with no idef_object check at
+    // all, this file's loop added every idef member as an ordinary visible
+    // scene object too, so opening a real Rhino file with even one block
+    // defined duplicated that block's geometry into plain, ungrouped
+    // objects on top of the (also previously unhandled - see the
+    // ON_InstanceRef branch below) instance placements themselves.
+    if (attr && attr->Mode() == ON::idef_object) continue;
     SceneObject obj;
     bool made = false;
     int file_group_id = -1;
@@ -611,6 +752,123 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
         }
       }
       if (!built) ++skipped;
+      continue;
+    }
+    if (const ON_Annotation* ann = ON_Annotation::Cast(g)) {
+      // Previously entirely unhandled, like ON_Hatch/ON_InstanceRef above:
+      // a real ON_Annotation (Rhino's Text/Dim*/Leader object kind) fell
+      // through to "no made flag" below and counted as a skipped object no
+      // matter its type, the one case this bullet's own top-level note
+      // ("real ON_Annotation text/dimension objects are still silently
+      // skipped on open") still named after the ON_Hatch pass above closed
+      // every other remaining externally-authored-object gap in this
+      // function. Scoped to plain ON::AnnotationType::Text only - the
+      // same single case DXF's own TEXT writer/reader pair already covers
+      // (see FileExchange.cpp's WriteDxfTextIfPlanarXY) - converted into
+      // the identical baked glyph-curve group a live Text command itself
+      // produces (TagGlyph's tags, reimplemented locally above as
+      // PointTagLocal rather than via annotate_common.h - see its own
+      // comment) so it round-trips, is selectable (FindText) and editable
+      // (TextProperties) exactly like one made in-app. Dim*/Leader/other
+      // annotation types still have no reader at all (no Dino8 command
+      // produces a real ON_DimStyle-driven dimension/leader to rebuild
+      // one against), so they still count as skipped, same as before.
+      if (ann->Type() != ON::AnnotationType::Text) { ++skipped; continue; }
+      const std::string text = FromWide(ann->PlainText());
+      const ON_Plane& plane = ann->Plane();
+      const ON_ModelComponentReference dimstyle_ref =
+          model.ComponentFromId(ON_ModelComponent::Type::DimStyle, ann->DimensionStyleId());
+      const ON_DimStyle* dimstyle = ON_DimStyle::Cast(dimstyle_ref.ModelComponent());
+      const double height = (dimstyle ? *dimstyle : ON_DimStyle::Default).TextHeight();
+      std::vector<kernel::NurbsCurve> glyphs;
+      std::string font_used;
+      if (text.empty() || height <= 0 || !TextToCurves(text, height, plane, glyphs, font_used) || glyphs.empty()) {
+        ++skipped;
+        continue;
+      }
+      int layer_idx = 0;
+      if (attr) {
+        auto lm = layer_map.find(attr->m_layer_index);
+        if (lm != layer_map.end()) layer_idx = lm->second;
+      }
+      std::vector<ObjectId> ids;
+      for (kernel::NurbsCurve& glyph : glyphs) {
+        SceneObject s = SceneObject::MakeCurve(glyph);
+        s.layer_index = layer_idx;
+        s.user_text["Annotation"] = "Text";
+        s.user_text["Glyph"] = "1";
+        s.user_text["Text"] = text;
+        s.user_text["TextHeight"] = NumberTagLocal(height);
+        s.user_text["TextOrigin"] = PointTagLocal(plane.origin.x, plane.origin.y, plane.origin.z);
+        s.user_text["TextX"] = PointTagLocal(plane.xaxis.x, plane.xaxis.y, plane.xaxis.z);
+        s.user_text["TextY"] = PointTagLocal(plane.yaxis.x, plane.yaxis.y, plane.yaxis.z);
+        s.user_text["TextAlign"] = "Left";
+        ids.push_back(doc.Add(std::move(s)));
+      }
+      doc.CreateGroup(ids, "Text");
+      continue;
+    }
+    if (const ON_InstanceRef* iref = ON_InstanceRef::Cast(g)) {
+      // Previously entirely unhandled, like ON_Hatch before its own pass
+      // above: with no ON_InstanceRef case at all, a real Rhino block
+      // instance just fell through to "no made flag" below and counted as
+      // a skipped object, while its member geometry (see the
+      // ON::idef_object skip above) was silently added as ordinary loose
+      // objects instead - so a file with blocks lost the placements
+      // entirely and kept only one un-transformed, ungrouped copy of each
+      // block's geometry at the origin. Reconstructed via
+      // BuildBlockDefinitionFromIdef (above), which converts the
+      // referenced ON_InstanceDefinition's member geometry into a real
+      // Dino8 BlockDefinition the first time any ON_InstanceRef names it -
+      // every further reference to the same idef in this file reuses it,
+      // same "build once, place many" relationship InstantiateBlockInDocument
+      // already has for a Dino8-authored block. Each placement then becomes
+      // a tagged Block/BlockInsert group exactly like one made with the
+      // live Block/Insert commands, so it is just as selectable
+      // (SelBlockInstance), explodable (ExplodeBlock) and re-insertable.
+      std::string name;
+      auto cached = idef_block_name.find(iref->m_instance_definition_uuid);
+      if (cached != idef_block_name.end()) {
+        name = cached->second;
+      } else {
+        const ON_ModelComponentReference idef_ref =
+            model.ComponentFromId(ON_ModelComponent::Type::InstanceDefinition, iref->m_instance_definition_uuid);
+        const ON_InstanceDefinition* idef = ON_InstanceDefinition::Cast(idef_ref.ModelComponent());
+        if (!idef) { ++skipped; continue; }
+        BlockDefinition def = BuildBlockDefinitionFromIdef(model, *idef, layer_map);
+        // Name collision with a block already in the document (e.g. a
+        // Dino8-authored block of the same name): keep the first, give
+        // this one a suffix - same convention AddMaterial's own caller
+        // uses above for a material-name collision.
+        std::string base = def.name;
+        for (int k = 2; doc.FindBlock(def.name); ++k) def.name = base + " " + std::to_string(k);
+        name = def.name;
+        idef_block_name[iref->m_instance_definition_uuid] = name;
+        doc.Blocks().push_back(std::move(def));
+      }
+      const BlockDefinition* def = doc.FindBlock(name);
+      if (!def || def->objects.empty()) { ++skipped; continue; }
+      int layer_idx = -1;
+      if (attr) {
+        auto lm = layer_map.find(attr->m_layer_index);
+        if (lm != layer_map.end()) layer_idx = lm->second;
+      }
+      std::vector<ObjectId> ids;
+      for (const SceneObject& member : def->objects) {
+        SceneObject copy = member;
+        copy.id = kNoObject;
+        copy.selected = false;
+        copy.group_id = -1;
+        copy.Transform(iref->m_xform);
+        if (layer_idx >= 0) copy.layer_index = layer_idx;
+        copy.user_text["Block"] = name;
+        const kernel::Point3d insert = iref->m_xform * kernel::Point3d(0, 0, 0);
+        copy.user_text["BlockInsert"] =
+            std::to_string(insert.x) + "," + std::to_string(insert.y) + "," + std::to_string(insert.z);
+        ids.push_back(doc.Add(std::move(copy)));
+      }
+      for (size_t i = 1; i < ids.size(); ++i) doc.SetProvenance(ids[i], ids[0], ProvenanceKind::BlockInstanceMember);
+      doc.CreateGroup(ids, name);
       continue;
     }
     if (const ON_DetailView* dv = ON_DetailView::Cast(g)) {
@@ -998,6 +1256,23 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
         if (LayerState* existing = doc.FindLayerState(ls.name)) *existing = ls; else doc.LayerStates().push_back(ls);
         continue;
       }
+      const std::string plot_style_prefix = "Dino8.PlotStyle.";
+      if (key.compare(0, plot_style_prefix.size(), plot_style_prefix) == 0) {
+        // "has_color;r;g;b;width_mm" - the same flat two-column shape
+        // Layer::has_plot_color/plot_color/print_width_mm already have,
+        // just named and stored once per row instead of once per layer.
+        PlotStyle st;
+        st.name = key.substr(plot_style_prefix.size());
+        int has_color = 0, r = 0, g = 0, b = 0;
+        double width = 0;
+        if (std::sscanf(value.c_str(), "%d;%d;%d;%d;%lf", &has_color, &r, &g, &b, &width) == 5) {
+          st.has_color = has_color != 0;
+          st.color = Color::FromBytes(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255));
+          st.width_mm = width;
+        }
+        if (PlotStyle* existing = doc.FindPlotStyle(st.name)) *existing = st; else doc.PlotStyles().push_back(st);
+        continue;
+      }
       if (key.compare(0, 6, "Dino8.") == 0) continue;  // settings, handled above
       doc.UserText()[key] = value;
     }
@@ -1095,6 +1370,13 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
         packed += lname + "," + (vis_lock.first ? "1" : "0") + "," + (vis_lock.second ? "1" : "0");
       }
       model.SetDocumentUserString(ON_wString(("Dino8.LayerState." + ls.name).c_str()), ON_wString(packed.c_str()));
+    }
+    for (const PlotStyle& st : doc.PlotStyles()) {
+      char style_buf[128];
+      std::snprintf(style_buf, sizeof(style_buf), "%d;%d;%d;%d;%g", st.has_color ? 1 : 0,
+                    static_cast<int>(st.color.r * 255 + 0.5f), static_cast<int>(st.color.g * 255 + 0.5f),
+                    static_cast<int>(st.color.b * 255 + 0.5f), st.width_mm);
+      model.SetDocumentUserString(ON_wString(("Dino8.PlotStyle." + st.name).c_str()), ON_wString(style_buf));
     }
   }
 
@@ -1216,6 +1498,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
       if (linetype_index(L.linetype) >= 0) stored->SetLinetypeIndex(linetype_index(L.linetype));
       stored->SetPlotWeight(L.print_width_mm);  // real .3dm field, same 0/>0/<0 convention as Layer::print_width_mm
       if (L.has_plot_color) stored->SetPlotColor(ToOnColor(L.plot_color));  // real .3dm field; unset (ON_UNSET_COLOR) is ON_Layer's own default
+      if (!L.plot_style.empty()) stored->SetUserString(L"Dino8.PlotStyle", ON_wString(L.plot_style.c_str()));  // no native field for this - see the Load3dm read above
       for (size_t li = 0; li < doc.Layouts().size(); ++li) {
         const Layout& lay = doc.Layouts()[li];
         for (size_t di = 0; di < lay.details.size(); ++di) {
