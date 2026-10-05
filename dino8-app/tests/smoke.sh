@@ -333,8 +333,17 @@ c2check "0,5,0" "MarkFoci found the parabola focus (0,5,0) from curve geometry a
 c2check "MarkFoci: 2 point(s) added" "MarkFoci added both hyperbola foci"
 c2check "6.807" "MarkFoci found the analytic hyperbola focus distance (c=6.807 for a=5, b^2=64/3)"
 c2check "MergeCrv: joined 2 curve(s) into one, merged 1 tangent junction(s) into a single span" "MergeCrv collapsed a tangent joint into one span"
-c2check "Blend: curvature-continuous (G2) blend curve created" "Blend built a real G2 quintic blend"
+# Blend now calls the kernel's own exact NurbsCurve::BlendCurves() (curve.h)
+# instead of duplicating inline Hermite math - PARITY_MAP.md's own disclosed
+# "BlendCrvCommand/BlendCommand... app wiring... a separate increment" gap
+# for curve-to-curve blending. The printed message changed accordingly
+# (Continuity name + "(G<n>)"), and reaches a genuine degree-7 G3 septic
+# blend neither app command could build at all before this wiring.
+c2check "Blend: Curvature (G2) blend curve created" "Blend built a real G2 quintic blend, now through kernel::NurbsCurve::BlendCurves()"
+c2check "degree 5, 6 control points, non-rational, open" "Blend's G2 output is the expected degree-5 (2*continuity+1), 6-control-point Bezier-basis curve BlendCurves() builds"
 c2check "ArcBlend: two-arc tangent blend created (joint tangent match 1)" "ArcBlend found a genuine two-arc biarc, tangent-verified"
+c2check "Blend: G3 (G3) blend curve created" "Blend Continuity=G3 reaches kernel::NurbsCurve::BlendCurves()'s own continuity=3 path - the genuine new capability neither BlendCrv nor Blend could build at all before this wiring (both used to cap out at G2)"
+c2check "degree 7, 8 control points, non-rational, open" "Blend's G3 output is the expected degree-7 (2*3+1), 8-control-point septic Bezier-basis curve - one degree past the G2 quintic case just above, matching position/tangent/curvature AND third derivative at both ends"
 c2check "Domain: 1 curve(s) now have domain 0 to 5" "Domain actually set a new domain, not just reported it"
 c2check "ModifyRadius: 1 curve(s) now have radius 12" "ModifyRadius rebuilt the circle in place"
 c2check "Match: reshaped curve .* to meet curve .* tangentially" "Match reshaped one curve's end to meet another"
@@ -357,7 +366,7 @@ if echo "$C2" | grep -q "Bounding box: (30, 0, 9) to (40, 0, 9)"; then
 else
   echo "ok   RemoveSymmetry genuinely broke the live link (copy did NOT follow the source's post-removal move)"
 fi
-c2check "^ok   expect_objects 194" "curve-tools script produced the expected object count"
+c2check "^ok   expect_objects 197" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/exchange_script.txt" > "$TMPW/exchange_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -1410,6 +1419,26 @@ flcheck "FilletSrf: built between object .* and .*, radius 1 to 2; one surface t
 flcheck "degree 2 x 3, CVs 3 x 33" "the plane+cylinder variable fillet lofted all 33 (samples+1) exact rows into its NURBS surface"
 flcheck "VariableBlendSrf: blend surface added between object .* and .*, width 0.2 to 0.8 .Continuity=Curvature: quintic blend, cross-boundary curvature matched exactly to both surfaces." "VariableBlendSrf built a real independent blend (BuildBlendSurfaceG2, same construction as BlendSrf/BlendEdge) with a width that genuinely ramps from 0.2 to 0.8 along the rail, not the rolling-ball fillet VariableFilletSrf uses"
 flcheck "degree 5 x 3, CVs 6 x 49" "VariableBlendSrf's Continuity=Curvature output is the degree-5x3 quintic-Hermite blend, the same construction BuildBlendSurfaceG2 gives BlendSrf/BlendEdge - not a rolling-ball fillet arc, and see tests/test_variable_blend.cpp for the numeric proof the width itself (measured on the constructed surface's own control points) actually varies along the rail while the G2 curvature match still holds at both ends. 49 (not the old fixed-sample 24+1=25) rows: VariableBlendSrfCommand now builds through BuildBlendSurfaceG2Adaptive (geom/BlendSurface.h) instead of a bare fixed-sample call - PARITY_MAP.md's own disclosed 'tolerance enforcement exists in the geometry library but is not yet reachable from any app command' gap for Surface-to-surface continuity blend - so this box-face-to-extracted-face pair's own real measured gap at 24 samples exceeded the scale-aware max_gap floor and the adaptive wrapper genuinely doubled to 48 (49 rows) to certify it, rather than silently accepting the coarser build's own unmeasured error the way the fixed-sample call used to"
+# BlendSrf (plain, not Variable): now tries the exact kernel::NurbsSurface::
+# BlendSurfaces() Hermite-skin construction FIRST, reachable because this
+# fixture's two picks (the TOP edge of two separate boxes' facing
+# extracted faces, 10 units apart with a real gap between them - unlike
+# VariableBlendSrf's own shared-corner-edge fixture just above, where both
+# rails are actually the SAME physical box edge and the exact construction
+# correctly rejects it as degenerate) are both genuine isoparametric
+# boundaries. One run per Continuity value on the identical two-box gap,
+# so the three are directly comparable: Tangency (G1) is the degree-3
+# cubic BlendCurves() itself builds per row, Curvature (G2) the degree-5
+# quintic, and G3 the degree-7 septic - the genuine new capability neither
+# BlendSrf nor VariableBlendSrf could reach at all before this wiring
+# (BuildBlendSurfaceG1/G2 cap out at G2). All three converge at 16 rows
+# (doubled once from the 8-row floor) since this is flat, simple geometry.
+flcheck "BlendSrf: blend surface added between object .* and .* .Continuity=Tangency, exact kernel blend." "BlendSrf's default Continuity=Tangency now reaches the exact kernel::NurbsSurface::BlendSurfaces() construction, not the approximate BuildBlendSurfaceG1Adaptive fallback"
+flcheck "degree 3 x 3, CVs 4 x 16" "BlendSrf's Continuity=Tangency (G1) output is the expected degree-3 (2*1+1) row curve, skinned over 16 rows"
+flcheck "BlendSrf: blend surface added between object .* and .* .Continuity=Curvature, exact kernel blend." "BlendSrf's Continuity=Curvature now reaches the exact kernel construction too"
+flcheck "degree 5 x 3, CVs 6 x 16" "BlendSrf's Continuity=Curvature (G2) output is the expected degree-5 (2*2+1) row curve - one degree past the G1 case just above, same 16-row convergence on the identical fixture"
+flcheck "BlendSrf: blend surface added between object .* and .* .Continuity=G3, exact kernel blend." "BlendSrf's new Continuity=G3 option reaches kernel::NurbsSurface::BlendSurfaces()'s own continuity=3 path - unreachable from any app command before this wiring, since BuildBlendSurfaceG1/G2 cap out at G2"
+flcheck "degree 7 x 3, CVs 8 x 16" "BlendSrf's Continuity=G3 output is the expected degree-7 (2*3+1) row curve - one degree past the G2 case just above, same 16-row convergence on the identical fixture"
 flcheck "FilletEdge: edge .* -- mesh fallback (exact B-rep trim unavailable here; result is an approximate mesh, not a clean B-rep)" "FilletEdge succeeded on a solid cylinder's own closed (periodic) rim edge via the mesh fallback - this used to fail unconditionally with a watertight-gap error regardless of radius (see adversarial_corpus_notes.md SS3)"
 flcheck "FilletEdge: edge 10 of object .* replaced with an exact conic fillet (rho 0.5, distance 2)" "FilletEdge's Rho option wires straight to kernel::FilletConvexEdgeConic, a genuine ellipse/parabola/hyperbola cross-section blend distinct from the default rolling-ball circular arc"
 flcheck "Volume = 993.3 cubic" "a 10x10x10 box minus a rho=0.5 (exact parabola) conic edge fillet at distance 2 has volume 1000 - 2*2*sin(90deg)*10/6 = 993.3, the closed form FilletConvexEdgeConic's own doc comment derives for rho=0.5"
@@ -1442,7 +1471,7 @@ flcheck "FilletSrf: built between object .* and .*, radius 0.3; both surfaces tr
 flcheck "Area = 169.1 square" "the trimmed quarter-cylinder panel's real, reproducible combined area (stable across repeated runs; not a hand-derived closed form, the same 'no closed form, check the real number' convention the ConnectSrf case above uses)"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
-flcheck "^ok   expect_objects 41" "fillet script produced the expected object count"
+flcheck "^ok   expect_objects 56" "fillet script produced the expected object count"
 
 # Adversarial fillets: tiny/at-the-limit/too-large radii relative to the
 # shortest adjacent edge, a huge-coordinate-scale box (now fixed for the
@@ -1481,6 +1510,7 @@ facheck "FilletSrf: built between object .* and .*, radius 1 to 2; neither surfa
 facheck "FilletSrf: built between object .* and .*, radius 1 to 2$" "VariableFilletSrf Trim=No on an otherwise-exact planar box corner also falls through to the approximate cascade - the exact kernel path always replaces the whole solid, not the untrimmed separate surface Trim=No asks for"
 facheck "! FilletSrf: an exact conic (Rho) fillet needs the two faces to share an edge on one planar-faced solid with Trim=Yes (convex attempt:.*not planar" "FilletSrf Rho on a cylinder's own flat-top cap and curved side wall refuses with a clear diagnostic instead of silently building a plain round fillet that quietly ignores Rho - unlike Chamfer/VariableFillet just above, there is no approximate fallback a non-circular conic could ever be represented by"
 facheck "! FilletSrf: an exact conic (Rho) fillet needs the two faces to share an edge on one planar-faced solid with Trim=Yes (the two picks are independent surfaces with no shared edge)" "FilletSrf Rho on two genuinely independent (no shared edge) extracted surfaces refuses the same way - fa.id != fb.id means kernel::FilletConvexEdgeConic/FilletConcaveEdgeConic have no shared ON_BrepEdge to identify at all, not merely a curved-face rejection"
+facheck "! BlendSrf: could not build the blend" "BlendSrf Continuity=G3, picking the same face/edge twice (a genuinely degenerate, zero-length rail pairing), fails closed with a clear diagnostic instead of silently building a degenerate patch - G3 has no approximate fallback to drop to the way Continuity=Tangency/Curvature would"
 echo "$FA" | grep -E "^(ok|FAIL)"
 if echo "$FA" | grep -q "^FAIL"; then fail=1; fi
 facheck "^ok   expect_objects 0" "fillet-adversarial script cleaned up to zero objects at the end"
@@ -2653,6 +2683,13 @@ edcheck "Surface [0-9]+: centre 5,5,0 normal -?0,0,1" "a plain Flip inverted tha
 # "(2), (3), ..."). List must show the first named object bare.
 edcheck "name 'MyName'$" "SetObjectName kept the first object's name bare, not suffixed '(1)'"
 edcheck "name 'MyName \\(2\\)'" "SetObjectName numbered the second object '(2)', not '(1)'"
+# Rebuild point-count clamp regression: "Point count" used to flow straight
+# from the typed number into an n x n control-point grid with no upper
+# bound (the Surface branch is O(n^2) points, then an O(n^2)-CV
+# NurbsSurface::FromControlGrid), so 5000000 would have demanded a
+# 25-trillion-point grid instead of baking instantly. After the fix the
+# count is clamped to 200 before it drives any allocation.
+edcheck "degree 3 x 3, CVs 200 x 200" "Rebuild clamped an absurd 5000000 point count down to a sane 200 x 200 control-point grid instead of hanging/OOMing on the n x n allocation"
 if echo "$ED" | grep -q "name 'MyName (1)'"; then echo "FAIL SetObjectName still off-by-one: an object was suffixed '(1)'"; fail=1; else echo "ok   no object was suffixed 'MyName (1)'"; fi
 
 # Real NURBS algorithm QC: ExtractPipedCurve/MakePeriodic Smooth=No/RefitTrim

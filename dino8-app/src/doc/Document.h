@@ -1114,6 +1114,20 @@ class Document {
     ObjectId next_id = 1;
     int next_group_id = 1;
     int next_light_id = 1;
+    // Document-level user text (UserText(), e.g. "dino8.block_instances",
+    // "dino8.plot_style_tables") - added alongside the fields above rather
+    // than assumed to already be covered: BlockInstances.h's own comment
+    // claims a dynamic block's instance record "survives Undo/Redo for
+    // free (document user text is part of the snapshot Document::
+    // BeginChange captures)", but before this field existed that was not
+    // actually true of either Capture()/Restore() or the diff-based
+    // StateDelta path below - neither one ever read or wrote user_text_,
+    // so BlockToggleFlip/SetBlockInstanceArrayCount/SetBlockInstanceLookup
+    // (and every other BeginChange-wrapped command that only edits
+    // UserText()) silently left it unreverted by Undo. Fixed here rather
+    // than left as a stale comment matching aspirational, not actual,
+    // behavior.
+    std::map<std::string, std::string> user_text;
   };
   Snapshot Capture(const std::string& label) const;
   void Restore(const Snapshot& snapshot);
@@ -1187,6 +1201,11 @@ class Document {
     ObjectId next_id_before = 1, next_id_after = 1;
     int next_group_id_before = 1, next_group_id_after = 1;
     int next_light_id_before = 1, next_light_id_after = 1;
+    // See Snapshot::user_text above for why this exists: without it, Undo/
+    // Redo silently left UserText() (dino8.block_instances, dino8.
+    // plot_style_tables, ...) at whatever it was when the entry was popped,
+    // regardless of which side of the delta was being applied.
+    std::map<std::string, std::string> user_text_before, user_text_after;
 
     std::vector<SceneObject> modified_before;
     std::vector<SceneObject> modified_after;  // lazily populated - see Document::Undo
@@ -1246,6 +1265,7 @@ class Document {
     int next_light_id = 1;
     std::vector<SceneObject> objects;            // general path: full pre-edit copy
     std::vector<SceneObject> fast_path_before;    // fast path: just the declared ids
+    std::map<std::string, std::string> user_text;  // see Snapshot::user_text above
   };
   void FinalizePending();
   void ApplyDelta(const StateDelta& delta, bool undo);

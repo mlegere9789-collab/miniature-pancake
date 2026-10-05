@@ -392,3 +392,6 @@ Continuity=G3
 SelAll
 List
 @expect_objects 2
+SelAll
+Delete
+@expect_objects 0

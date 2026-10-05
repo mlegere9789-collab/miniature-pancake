@@ -372,4 +372,4 @@ SelNone
 # CurveThroughSrfControlPt/ExtractPt dangling-pointer regression above,
 # which are hidden rather than deleted so List's layer output stays
 # checkable from the saved smoke-test log if this ever needs re-diagnosing.
-@expect_objects 194
+@expect_objects 197
