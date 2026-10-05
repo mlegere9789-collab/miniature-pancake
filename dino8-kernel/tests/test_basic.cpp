@@ -626,6 +626,39 @@ void TestCurveRemoveKnotAt() {
         "strictly interior)");
 }
 
+void TestCurveSetDomainReparameterizes() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 3, 0), Point3d(2, -3, 0),
+                                     Point3d(3, 0, 0)};
+  NurbsCurve curve = NurbsCurve::FromControlPoints(pts, /*degree=*/3);
+  const auto original_domain = curve.Domain();
+  Check(original_domain.min == 0.0 && original_domain.max == 1.0,
+        "SetDomain setup: FromControlPoints' own clamped domain is [0, 1]");
+
+  Check(curve.SetDomain(5.0, 15.0) == Result::Ok, "SetDomain returns Ok for a valid, different domain");
+  const auto new_domain = curve.Domain();
+  Check(new_domain.min == 5.0 && new_domain.max == 15.0, "SetDomain actually moved Domain() to [5, 15]");
+  Check(curve.ControlPointCount() == 4 && curve.KnotCount() == 6,
+        "SetDomain changes no control points or knot count, only knot values");
+
+  // Shape is untouched: the point 40% of the way along the new domain
+  // must be the same point that used to be 40% of the way along the old
+  // one - an affine reparameterization moves no geometry at all.
+  const double old_t = original_domain.min + 0.4 * (original_domain.max - original_domain.min);
+  const double new_t = new_domain.min + 0.4 * (new_domain.max - new_domain.min);
+  NurbsCurve reference = NurbsCurve::FromControlPoints(pts, /*degree=*/3);
+  Check((curve.PointAt(new_t) - reference.PointAt(old_t)).Length() < 1e-12,
+        "SetDomain: PointAt() at the corresponding new parameter matches the pre-reparam shape exactly");
+
+  Check(curve.SetDomain(5.0, 15.0) == Result::NoOpAlreadySatisfied,
+        "SetDomain returns NoOpAlreadySatisfied when the domain already matches");
+  Check(curve.SetDomain(3.0, 3.0) == Result::Failed, "SetDomain returns Failed when t0 == t1");
+  Check(curve.SetDomain(9.0, 2.0) == Result::Failed, "SetDomain returns Failed when t0 > t1");
+}
+
 void TestCurveKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -67877,6 +67910,7 @@ int main() {
   TestCurveMakeRationalAndNonRational();
   TestCurveInsertKnotAt();
   TestCurveRemoveKnotAt();
+  TestCurveSetDomainReparameterizes();
   TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();

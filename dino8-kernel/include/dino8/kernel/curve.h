@@ -735,6 +735,19 @@ class NurbsCurve {
   // `.min`/`.max`, not a method on the return value.
   Interval Domain() const;
 
+  // Reparameterizes the curve so `Domain()` becomes `[t0, t1]`, with every
+  // existing knot and evaluated point mapped by the same affine stretch
+  // (shape, control points and weights are untouched - only the parameter
+  // values change). The surface-level counterpart to `NurbsSurface::
+  // SetDomain(direction, t0, t1)`, minus the direction argument a curve
+  // doesn't have. Delegates to `ON_NurbsCurve::SetDomain`, the same real
+  // (non-stub) implementation `MakeCompatible()` (sweep.cpp) already
+  // relies on internally to normalize loft/sweep sections to `[0, 1]`
+  // before comparing their knot vectors. Returns Result::Failed if `t0 <
+  // t1` doesn't hold or OpenNURBS' own call fails, or
+  // Result::NoOpAlreadySatisfied if `[t0, t1]` already equals `Domain()`.
+  Result SetDomain(double t0, double t1);
+
   Point3d PointAt(double t) const;
 
   // Finds the parameter along the curve's own domain whose PointAt() is
