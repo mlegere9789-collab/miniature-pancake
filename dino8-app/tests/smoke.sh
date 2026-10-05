@@ -933,6 +933,12 @@ secheck "Volume = 1063 cubic" "Boss's union really added the r=2 h=5 cylinder's 
 secheck "Rib: tapered wall of height 2 built following the base's local surface normal at 64 points along the curve; unioned with the base solid" "Rib built a real tapered wall and unioned it with the box"
 secheck "Volume = 1006 cubic" "Rib's union really added the tapered wall's volume"
 secheck "FilletSrfToRail: fillet surface built along the rail's own points" "FilletSrfToRail built real rolling-ball arcs along a picked rail"
+secheck "FilletSrfToRail:.*; both surfaces trimmed" "FilletSrfToRail now real-trims both picked surfaces along their own contact curves by default (TrimRailWholeLoop/TrimRailBySplit), PARITY_MAP.md's own 'no trimming' gap for this command"
+FSR_TRIM="$(echo "$SE" | grep -c "FilletSrfToRail:.*; both surfaces trimmed")"
+[ "$FSR_TRIM" = "1" ] \
+  && echo "ok   exactly one FilletSrfToRail call trimmed both surfaces (the Trim=No call below must not)" \
+  || { echo "FAIL expected exactly 1 'both surfaces trimmed' FilletSrfToRail line, got $FSR_TRIM"; fail=1; }
+secheck "FilletSrfToRail: fillet surface built along the rail's own points (radius 1; contact points off the exact radius by up to 1 - the rail is used directly as the spine, rather than the SSX-offset spine FilletSrf computes)$" "FilletSrfToRail's own Trim=No negative control prints no trim suffix at all (neither trimmed nor a fallback message) - the two picked surfaces are left genuinely untouched"
 secheck "FilletSrfCrv: fillet surface built tangent to the surface and osculating-tangent to the curve" "FilletSrfCrv built a real surface/curve rolling-ball fillet"
 FSC_GAP="$(echo "$SE" | sed -n 's/.*FilletSrfCrv:.*contact points off the exact radius by up to \([0-9.eE+-]*\);.*/\1/p' | head -1)"
 python3 -c "import sys; v=float('$FSC_GAP'); sys.exit(0 if v < 1e-4 else 1)" \
@@ -943,20 +949,20 @@ python3 -c "import sys; v=float('$FSC_TANG'); sys.exit(0 if v < 0.01 else 1)" \
   && echo "ok   FilletSrfCrv tangent-direction error ($FSC_TANG degrees) is essentially zero - the arc is genuinely tangent to the curve, not merely touching it (the exact gap the old Partial note described)" \
   || { echo "FAIL FilletSrfCrv tangent-direction error ($FSC_TANG degrees) is not near zero - arc is not genuinely tangent to the curve"; fail=1; }
 secheck "SoftEditSrf: 4 control point(s) moved with a cosine falloff within radius 8 (max displacement 3)" "SoftEditSrf moved control points with a real falloff"
-secheck "^ok   expect_objects 100" "surface-edit script produced the expected object count halfway through (before UnjoinEdge/ReplaceEdge)"
+secheck "^ok   expect_objects 104" "surface-edit script produced the expected object count halfway through (before UnjoinEdge/ReplaceEdge)"
 secheck "ShowEdges: 1 object(s), 7 edge(s), 6 naked edge(s)" "ShowEdges found the joined planes' 1 shared and 6 naked edges before unjoining"
 secheck "UnjoinEdge: edge [0-9]* split into two naked, coincident edges - both faces remain in the same polysurface" "UnjoinEdge split the shared edge in place via real Brep::UnjoinEdge()"
 secheck "ShowEdges: 1 object(s), 8 edge(s), 8 naked edge(s)" "ShowEdges confirms exactly 2 more naked edges after unjoining - the old shared edge, now two coincident naked ones"
 secheck "ReplaceEdge: edge [0-9]* re-trimmed against the picked curve's own shape, every affected face re-projected onto it" "ReplaceEdge re-trimmed a naked edge against a bowed substitute curve via real Brep::ReplaceEdgeCurve()"
 secheck "2 faces, 9 edges, open" "the re-trimmed polysurface keeps its same topology (2 faces) after ReplaceEdge - only the one edge's own shape changed"
-secheck "^ok   expect_objects 102" "surface-edit script produced the expected final object count"
+secheck "^ok   expect_objects 106" "surface-edit script produced the expected final object count"
 secheck "Squish: face 0 flattened, area 100 (whole object 3D area 100), distortion max 0% avg 0%" "Squish flattened an already-flat plane with exactly zero distortion either way"
 secheck "SquishInfo: object [0-9]* - flat area 100 (3D area 100), distortion max 0% avg 0%" "SquishInfo reprinted Squish's own stored report (area + distortion) instead of recomputing it"
 secheck "SquishBack: 1 curve(s) projected back onto the source surface via the flat pattern's own per-vertex (u,v) map" "SquishBack projected a curve on the flat pattern back onto the source surface via the stored (u,v) map"
 secheck "Bounding box min 3702,2,0 max 3708,8,0" "SquishBack's round trip landed the projected curve exactly back on the source plane's own diagonal"
 secheck "DeleteFaces: face [0-9]* deleted, 5 face(s) left" "DeleteFaces opened the fresh box for the naked-micro-edge fixture"
 secheck "RemoveAllNakedMicroEdges: 1 naked micro edge(s) removed; 1 left in place" "RemoveAllNakedMicroEdges actually CLOSED the isolated sliver (real Brep::RemoveNakedMicroEdge) while correctly leaving the corner-adjacent one it can't safely close"
-secheck "^ok   expect_objects 112" "surface-edit script produced the expected object count after the Squish/SquishBack/RemoveAllNakedMicroEdges additions"
+secheck "^ok   expect_objects 116" "surface-edit script produced the expected object count after the Squish/SquishBack/RemoveAllNakedMicroEdges additions"
 secheck "SplitRefitSurface: 1 surface(s) split into 2 piece(s), each refit to a clean untrimmed NURBS surface" "SplitRefitSurface split the plane at the curve's crossing and refit both pieces"
 secheck "degree 3 x 3, CVs 4 x 4" "SplitRefitSurface's refit pieces are genuinely rebuilt to a fresh 4x4-CV surface, not left at Split()'s own original 2x2 CVs"
 secheck "Bounding box min 4400,0,0 max 4410,10,0" "SplitRefitSurface's two refit pieces still exactly cover the original plane end to end (west [4400,4405] + east [4405,4410])"
@@ -969,7 +975,7 @@ secheck "Area = 331.8" "ExtendSrf Type=Linear produced a genuinely different are
 secheck "MergeSrf: merged 2 surfaces into one" "MergeSrf ran on two adjacent planar rectangles"
 secheck "Area = 200 square" "MergeSrf's refit surface has the exact union area (10x20), not an approximation artifact - a flat plane is exactly representable at any degree"
 secheck "Bounding box min 4600,0,0 max 4620,10,0" "MergeSrf's refit surface exactly spans both source rectangles, corner to corner"
-secheck "smoke: frames=[0-9]* objects=123" "surface-edit script's final object count includes the MergeSrf fixture (2 rectangles + 2 planar surfaces, merged down to 1)"
+secheck "smoke: frames=[0-9]* objects=127" "surface-edit script's final object count includes the MergeSrf fixture (2 rectangles + 2 planar surfaces, merged down to 1)"
 
 # Mesh tools: deformations, mesh editing and mesh primitives (see meshtools_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -1370,9 +1376,12 @@ stcheck "smoke: frames=[1-4][0-9][0-9] objects=118" "solid-tools script produced
 # CurveBoolean/CreateRegions's own 2-region case must now take
 # kernel::PolygonBooleanPlanar's exact (non-tessellated) path when both
 # input curves are genuine closed polylines, instead of the existing
-# mesh-slab pipeline (see regionboolean_exact_polygon_script.txt) -
-# PARITY_MAP.md's "kernel: Boolean operations" category's "2D region /
-# planar curve booleans" bullet.
+# mesh-slab pipeline - and, as of round 40, PlanarUnion/PlanarDifference/
+# CurveBoolean's Union/Difference/Intersection cases must take the same
+# exact path for 3+ regions too, via kernel::PolygonBooleanPlanarNAry (see
+# regionboolean_exact_polygon_script.txt) - PARITY_MAP.md's "kernel:
+# Boolean operations" category's "2D region / planar curve booleans"
+# bullet.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   RBX="$("$BIN" --smoke 60 --script "$HERE/regionboolean_exact_polygon_script.txt" 2>&1)" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script exited non-zero"; exit 1; }
 else
@@ -1381,7 +1390,8 @@ fi
 echo "$RBX" | grep -E "^(ok|FAIL)"
 if echo "$RBX" | grep -q "^FAIL"; then fail=1; fi
 echo "$RBX" | grep -q "^smoke:" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script produced no smoke line"; fail=1; }
-echo "$RBX" | grep -q "exact (no tessellation)" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script did not take the exact polygon-boolean path"; fail=1; }
+RBX_EXACT_COUNT=$(echo "$RBX" | grep -c "exact (no tessellation)")
+[ "$RBX_EXACT_COUNT" -ge 4 ] || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script took the exact polygon-boolean path $RBX_EXACT_COUNT time(s), expected at least 4 (the original 2-region case plus the N=3 Union/Difference/Intersection cases)"; fail=1; }
 
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,
 # MatchSrf, SplitFace, MergeFaces, ConnectSrf, surface/surface and curve/surface
