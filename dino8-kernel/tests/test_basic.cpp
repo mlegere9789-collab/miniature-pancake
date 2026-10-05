@@ -9666,6 +9666,146 @@ void TestModelAddDetailViewRoundTrips() {
   std::remove(path.c_str());
 }
 
+void TestModelAddDetailViewCameraRoundTrips() {
+  using dino8::kernel::Color;
+  using dino8::kernel::DetailViewInfo;
+  using dino8::kernel::Model;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::UserStrings;
+
+  // Closes the disclosed narrowing TestModelAddDetailViewRoundTrips's own
+  // AddDetailView() call above left open: "this call does not attempt
+  // the detail's own nested model-space camera (ON_DetailView::m_view)."
+  Model model;
+  const int layout = model.AddLayout("A4 Landscape", 297.0, 210.0);
+
+  const int no_camera_index =
+      model.AddDetailView(layout, 10.0, 20.0, 150.0, 100.0, 0.02083, "No Camera");
+  Check(no_camera_index == 0, "the first AddDetailView() call (no camera) returns index 0");
+  const DetailViewInfo no_camera_info = model.DetailViewAt(0);
+  Check(!no_camera_info.camera_location.has_value() && !no_camera_info.target_point.has_value(),
+        "DetailViewAt() reports no camera for a detail added with neither camera_location nor "
+        "target_point - the pre-existing behavior, unchanged by this pass");
+
+  const Point3d camera_location(0, -20, 15);
+  const Point3d target_point(0, 0, 0);
+  const int index = model.AddDetailView(
+      layout, 10.0, 20.0, 150.0, 100.0, 0.02083, "Front Elevation",
+      /*layer_index=*/-1, /*render_color=*/std::optional<Color>(std::nullopt),
+      /*user_strings=*/UserStrings(), /*linetype_index=*/std::optional<int>(std::nullopt),
+      /*group_indices=*/std::vector<int>(), /*material_index=*/std::optional<int>(std::nullopt),
+      camera_location, target_point);
+  Check(index == 1, "the second real AddDetailView() call (with a camera) returns index 1");
+
+  const DetailViewInfo info = model.DetailViewAt(1);
+  Check(info.camera_location.has_value() && info.camera_location->DistanceTo(camera_location) < 1e-9,
+        "DetailViewAt() reports the exact camera_location AddDetailView() was given");
+  Check(info.target_point.has_value() && info.target_point->DistanceTo(target_point) < 1e-9,
+        "DetailViewAt() reports the exact target_point AddDetailView() was given");
+
+  const std::string path = "dino8_kernel_model_detail_view_camera_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a detail view camera succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  const DetailViewInfo reloaded_no_camera = loaded.DetailViewAt(0);
+  Check(!reloaded_no_camera.camera_location.has_value(),
+        "the reloaded no-camera detail view still reports no camera after the round trip");
+  const DetailViewInfo reloaded = loaded.DetailViewAt(1);
+  Check(reloaded.camera_location.has_value() &&
+            reloaded.camera_location->DistanceTo(camera_location) < 1e-6,
+        "the reloaded detail view's camera_location survives the round trip");
+  Check(reloaded.target_point.has_value() && reloaded.target_point->DistanceTo(target_point) < 1e-6,
+        "the reloaded detail view's target_point survives the round trip");
+
+  std::remove(path.c_str());
+}
+
+void TestModelAddExtrusionRoundTrips() {
+  using dino8::kernel::ExtrusionInfo;
+  using dino8::kernel::Model;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Result;
+
+  // Closes the "extrusions" item PARITY_MAP.md's own ".3dm attribute/
+  // metadata fidelity" bullet's own opening enumeration names - before
+  // this, nothing in this kernel's Model wrapper could create an
+  // ON_Extrusion at all.
+  Model model;
+  Check(model.ExtrusionCount() == 0, "a fresh Model has no extrusions");
+
+  // A counter-clockwise rectangle (standard x-right/y-up orientation),
+  // chosen so ON_Extrusion::SetOuterProfile()'s own automatic winding
+  // correction is a no-op - the reloaded profile should come back in the
+  // exact same order it was given, not reversed.
+  const std::vector<Point2d> rectangle = {Point2d(0, 0), Point2d(10, 0), Point2d(10, 5),
+                                           Point2d(0, 5)};
+
+  Check(model.AddExtrusion(rectangle, 20.0, true, "") == -1,
+        "AddExtrusion() returns -1 for an empty name, same contract as AddLight() etc.");
+  const std::vector<Point2d> too_few = {Point2d(0, 0), Point2d(1, 0)};
+  Check(model.AddExtrusion(too_few, 20.0, true, "Too Few Points") == -1,
+        "AddExtrusion() returns -1 for a profile with fewer than 3 points");
+  Check(model.AddExtrusion(rectangle, 0.0, true, "Bad Path Length") == -1,
+        "AddExtrusion() returns -1 for a non-positive path_length");
+  Check(model.AddExtrusion(rectangle, -5.0, true, "Negative Path Length") == -1,
+        "AddExtrusion() returns -1 for a negative path_length");
+  Check(model.ExtrusionCount() == 0, "none of the rejected calls above added an extrusion");
+
+  const int index = model.AddExtrusion(rectangle, 20.0, true, "Rect Tube");
+  Check(index == 0, "the first real AddExtrusion() call returns index 0");
+  Check(model.ExtrusionCount() == 1, "model has one extrusion after AddExtrusion()");
+  Check(model.ObjectCount() == 1,
+        "an extrusion is a real model geometry object, also counted by ObjectCount()");
+
+  const ExtrusionInfo info = model.ExtrusionAt(0);
+  Check(info.name == "Rect Tube", "ExtrusionAt(0) reports the name AddExtrusion() was given");
+  Check(std::abs(info.path_length - 20.0) < 1e-9,
+        "ExtrusionAt(0) reports the exact path_length AddExtrusion() was given");
+  Check(info.capped, "ExtrusionAt(0) reports capped == true, matching the capped argument given");
+  Check(info.profile.size() == rectangle.size(),
+        "ExtrusionAt(0) reports the same number of profile points AddExtrusion() was given");
+  for (size_t i = 0; i < rectangle.size() && i < info.profile.size(); ++i) {
+    Check(info.profile[i].DistanceTo(rectangle[i]) < 1e-9,
+          "ExtrusionAt(0) reports the exact profile point AddExtrusion() was given, in the same "
+          "order - the rectangle's own counter-clockwise winding needed no correction");
+  }
+
+  const int uncapped_index = model.AddExtrusion(rectangle, 8.0, false, "Open Sheet");
+  Check(uncapped_index == 1, "a second AddExtrusion() call (uncapped) returns index 1");
+  const ExtrusionInfo uncapped_info = model.ExtrusionAt(1);
+  Check(!uncapped_info.capped, "an extrusion added with capped=false reports capped == false");
+
+  const ExtrusionInfo out_of_range = model.ExtrusionAt(9999);
+  Check(out_of_range.name.empty() && out_of_range.profile.empty(),
+        "ExtrusionAt() on an index this model doesn't have returns a default-constructed "
+        "ExtrusionInfo, same contract as DetailViewAt()/HatchAt() etc.");
+
+  const std::string path = "dino8_kernel_model_extrusion_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with two extrusions succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.ExtrusionCount() == 2, "both extrusions survive the .3dm round trip");
+  const ExtrusionInfo reloaded = loaded.ExtrusionAt(0);
+  Check(reloaded.name == "Rect Tube", "the reloaded extrusion's name survives the round trip");
+  Check(std::abs(reloaded.path_length - 20.0) < 1e-6,
+        "the reloaded extrusion's path_length survives the round trip");
+  Check(reloaded.capped, "the reloaded extrusion's capped flag survives the round trip");
+  Check(reloaded.profile.size() == rectangle.size(),
+        "the reloaded extrusion's profile point count survives the round trip");
+  for (size_t i = 0; i < rectangle.size() && i < reloaded.profile.size(); ++i) {
+    Check(reloaded.profile[i].DistanceTo(rectangle[i]) < 1e-6,
+          "the reloaded extrusion's profile points survive the round trip, in order");
+  }
+  const ExtrusionInfo reloaded_uncapped = loaded.ExtrusionAt(1);
+  Check(!reloaded_uncapped.capped,
+        "the reloaded second extrusion's capped == false survives the round trip");
+
+  std::remove(path.c_str());
+}
+
 void TestModelMaterialExtendedFieldsRoundTrip() {
   using dino8::kernel::Color;
   using dino8::kernel::Model;
@@ -68046,6 +68186,8 @@ int main() {
   TestModelAddNamedViewRoundTrips();
   TestModelAddLayoutRoundTrips();
   TestModelAddDetailViewRoundTrips();
+  TestModelAddDetailViewCameraRoundTrips();
+  TestModelAddExtrusionRoundTrips();
   TestModelMaterialExtendedFieldsRoundTrip();
   TestModelMaterialTextureRoundTrips();
   TestModelAddLightRoundTrips();

@@ -556,7 +556,8 @@ int Model::AddDetailView(int layout_index, double x_mm, double y_mm, double widt
                           double page_per_model_ratio, const std::string& name, int layer_index,
                           std::optional<Color> render_color, const UserStrings& user_strings,
                           std::optional<int> linetype_index, const std::vector<int>& group_indices,
-                          std::optional<int> material_index) {
+                          std::optional<int> material_index, std::optional<Point3d> camera_location,
+                          std::optional<Point3d> target_point, Vector3d camera_up) {
   if (name.empty() || layout_index < 0 || layout_index >= model_.m_settings.m_views.Count() ||
       !(width_mm > 0.0) || !(height_mm > 0.0)) {
     return -1;
@@ -577,6 +578,20 @@ int Model::AddDetailView(int layout_index, double x_mm, double y_mm, double widt
     return -1;
   }
   detail->m_page_per_model_ratio = page_per_model_ratio;
+
+  if (camera_location.has_value() && target_point.has_value()) {
+    detail->m_view.m_vp.SetCameraLocation(*camera_location);
+    Vector3d direction = *target_point - *camera_location;
+    if (!direction.IsValid() || direction.IsZero()) {
+      direction = Vector3d(0, 0, -1);
+    } else {
+      direction.Unitize();
+    }
+    detail->m_view.m_vp.SetCameraDirection(direction);
+    detail->m_view.m_vp.SetCameraUp(camera_up);
+    detail->m_view.SetTargetPoint(*target_point);
+    detail->m_view.m_view_type = ON::view_type::nested_view_type;
+  }
 
   const int index = DetailViewCount();
   ON_3dmObjectAttributes attributes = MakeAttributes(
@@ -632,6 +647,102 @@ DetailViewInfo Model::DetailViewAt(int detail_view_index) const {
       result.width_mm = bbox.m_max.x - bbox.m_min.x;
       result.height_mm = bbox.m_max.y - bbox.m_min.y;
       result.page_per_model_ratio = detail->m_page_per_model_ratio;
+      if (detail->m_view.m_view_type == ON::view_type::nested_view_type) {
+        result.camera_location = detail->m_view.m_vp.CameraLocation();
+        result.target_point = detail->m_view.TargetPoint();
+        result.camera_up = detail->m_view.m_vp.CameraUp();
+      }
+      return result;
+    }
+    ++position;
+  }
+  return result;
+}
+
+int Model::AddExtrusion(const std::vector<Point2d>& profile, double path_length, bool capped,
+                         const std::string& name, int layer_index, std::optional<Color> render_color,
+                         const UserStrings& user_strings, std::optional<int> linetype_index,
+                         const std::vector<int>& group_indices, std::optional<int> material_index) {
+  if (name.empty() || profile.size() < 3 || !(path_length > 0.0)) {
+    return -1;
+  }
+  ON_3dPointArray profile_points;
+  for (const Point2d& p : profile) {
+    profile_points.Append(ON_3dPoint(p.x, p.y, 0.0));
+  }
+  profile_points.Append(profile_points[0]);  // ON_PolylineCurve requires an explicitly closed point list
+  auto* outer_profile = new ON_PolylineCurve(profile_points);
+
+  auto* extrusion = new ON_Extrusion();
+  if (!extrusion->SetPathAndUp(ON_3dPoint(0.0, 0.0, 0.0), ON_3dPoint(0.0, 0.0, path_length),
+                                ON_3dVector(0.0, 1.0, 0.0))) {
+    delete outer_profile;
+    delete extrusion;
+    return -1;
+  }
+  if (!extrusion->SetOuterProfile(outer_profile, capped)) {
+    // SetOuterProfile() only takes ownership of outer_profile on success
+    // (ON_Extrusion's own documented contract) - still ours to delete here.
+    delete outer_profile;
+    delete extrusion;
+    return -1;
+  }
+
+  const int index = ExtrusionCount();
+  ON_3dmObjectAttributes attributes = MakeAttributes(
+      name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
+  model_.AddModelGeometryComponent(extrusion, &attributes);
+  return index;
+}
+
+int Model::ExtrusionCount() const {
+  int count = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    if (ON_Extrusion::Cast(geometry_component->Geometry(nullptr)) != nullptr) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+ExtrusionInfo Model::ExtrusionAt(int extrusion_index) const {
+  ExtrusionInfo result;
+  if (extrusion_index < 0) {
+    return result;
+  }
+  int position = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_Extrusion* extrusion = ON_Extrusion::Cast(geometry_component->Geometry(nullptr));
+    if (extrusion == nullptr) {
+      continue;
+    }
+    if (position == extrusion_index) {
+      const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+      if (attributes != nullptr) {
+        result.name = ToStdString(attributes->Name());
+      }
+      result.path_length = extrusion->PathStart().DistanceTo(extrusion->PathEnd());
+      result.capped = (extrusion->IsCapped() == 3);
+      const ON_Curve* profile_curve = extrusion->Profile(0);
+      if (profile_curve != nullptr) {
+        ON_3dPointArray points;
+        if (profile_curve->IsPolyline(&points) >= 2) {
+          // The curve this kernel built for SetOuterProfile() always has
+          // an explicitly duplicated closing point (same convention
+          // AddHatch()'s own boundary loop uses) - dropped here so
+          // `profile` round-trips exactly what AddExtrusion() was given.
+          const int usable = points.Count() - 1;
+          for (int i = 0; i < usable; ++i) {
+            result.profile.push_back(Point2d(points[i].x, points[i].y));
+          }
+        }
+      }
       return result;
     }
     ++position;
