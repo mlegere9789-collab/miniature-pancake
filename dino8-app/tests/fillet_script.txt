@@ -262,6 +262,60 @@ Continuity=Curvature
 SelLast
 List
 SelNone
+# --- BlendSrf: the SAME extracted-top-face/box-side-face pair as
+# VariableBlendSrf just above, but through plain BlendSrfCommand, which now
+# tries the exact kernel::NurbsSurface::BlendSurfaces() Hermite-skin
+# construction FIRST (both picks land on a genuine isoparametric boundary of
+# their own NurbsSurface - surface.h's own documented scope) ahead of the
+# approximate BuildBlendSurfaceG1/G2Adaptive fallback VariableBlendSrf still
+# uses - PARITY_MAP.md's own disclosed "kernel-only pass, no dino8-app
+# command calls this yet" gap for Surface-to-surface continuity blend. Three
+# runs, one per Continuity value, each on a fresh copy of the same box so
+# the three are independently comparable: Tangency (G1, the default),
+# Curvature (G2), and G3 - the genuine new capability neither BlendSrf nor
+# VariableBlendSrf could reach at all before this wiring, since the app's
+# own BuildBlendSurfaceG1/G2 cap out at G2.
+SelAll
+Hide
+Box 700,0,0 710,10,0 10
+ExtractSrf
+705,5,10
+Enter
+SelNone
+BlendSrf
+709,5,10
+710,5,9
+SelLast
+List
+SelNone
+SelAll
+Hide
+Box 700,0,0 710,10,0 10
+ExtractSrf
+705,5,10
+Enter
+SelNone
+BlendSrf
+Continuity=Curvature
+709,5,10
+710,5,9
+SelLast
+List
+SelNone
+SelAll
+Hide
+Box 700,0,0 710,10,0 10
+ExtractSrf
+705,5,10
+Enter
+SelNone
+BlendSrf
+Continuity=G3
+709,5,10
+710,5,9
+SelLast
+List
+SelNone
 # --- FilletEdge on a solid cylinder's own flat-top rim (a full 360-degree
 # closed edge, one planar face + one cylindrical face) via the mesh
 # fallback: the exact B-rep trim only handles planar-planar adjacent

@@ -2204,6 +2204,16 @@ std::vector<BrepContourSection> ContourBrep(const ON_Brep& b, const ON_Plane& ba
   return out;
 }
 
+std::vector<BrepMultiPlaneSection> SectionBrepByPlanes(const ON_Brep& b, const std::vector<ON_Plane>& planes, const IntersectOptions& opt) {
+  std::vector<BrepMultiPlaneSection> out;
+  for (size_t i = 0; i < planes.size(); ++i) {
+    std::vector<BrepPlaneIntersection> hits = IntersectBrepByPlane(b, planes[i], opt);
+    if (hits.empty()) continue;
+    out.push_back(BrepMultiPlaneSection{static_cast<int>(i), std::move(hits)});
+  }
+  return out;
+}
+
 namespace {
 
 // Every one of a face's own boundary loops, each as a closed 3D polyline
@@ -2604,6 +2614,43 @@ std::vector<SurfaceOverlapRegion> IntersectSurfacesOverlap(const ON_Surface& a, 
   if (on_count == 0) return out;
   const bool whole_surface_coincides = (on_count == static_cast<int>(on.size()));
 
+  // Closest-point error of a's own (u, v) sample against b, used below to
+  // bisection-tighten each extent's representative transect - the same
+  // global-closest-point test the main grid pass above uses, not seeded
+  // from a neighbour, since a bisection midpoint is not guaranteed close to
+  // any one grid sample's own warm seed.
+  auto ErrOnB = [&](double uu, double vv) {
+    double bu = 0, bv = 0;
+    const bool ok = SurfaceClosestPointGlobal(b, a.PointAt(uu, vv), bu, bv);
+    return ok ? b.PointAt(bu, bv).DistanceTo(a.PointAt(uu, vv)) : std::numeric_limits<double>::max();
+  };
+  // Bisects `a`'s own u (resp. v) between a known on-`b` grid index (i_on)
+  // and a known off-`b` neighbour (i_off), holding the other coordinate
+  // fixed at a representative grid line - 40 halvings of the already
+  // grid-spacing-wide bracket, the same discipline
+  // IntersectCurveSurfaceOverlap()'s own RefineBoundary() uses one
+  // dimension down.
+  auto BisectU = [&](int i_on, int i_off, int j_fixed) {
+    double u_on = dua.ParameterAt(static_cast<double>(i_on) / n);
+    double u_off = dua.ParameterAt(static_cast<double>(i_off) / n);
+    const double vv = dva.ParameterAt(static_cast<double>(j_fixed) / n);
+    for (int it = 0; it < 40; ++it) {
+      const double um = 0.5 * (u_on + u_off);
+      if (ErrOnB(um, vv) <= opt.tolerance) u_on = um; else u_off = um;
+    }
+    return u_on;
+  };
+  auto BisectV = [&](int j_on, int j_off, int i_fixed) {
+    double v_on = dva.ParameterAt(static_cast<double>(j_on) / n);
+    double v_off = dva.ParameterAt(static_cast<double>(j_off) / n);
+    const double uu = dua.ParameterAt(static_cast<double>(i_fixed) / n);
+    for (int it = 0; it < 40; ++it) {
+      const double vm = 0.5 * (v_on + v_off);
+      if (ErrOnB(uu, vm) <= opt.tolerance) v_on = vm; else v_off = vm;
+    }
+    return v_on;
+  };
+
   // Maximal 4-connected runs of on-`b` grid cells, each reported as its own
   // axis-aligned (u, v) bounding box - not an exact boundary polygon (see
   // this function's own doc comment).
@@ -2617,13 +2664,21 @@ std::vector<SurfaceOverlapRegion> IntersectSurfacesOverlap(const ON_Surface& a, 
       stack.push_back({i0, j0});
       visited[idx0] = 1;
       int imin = i0, imax = i0, jmin = j0, jmax = j0;
+      // The grid column/row at which each extent was (most recently) seen -
+      // a 4-connected run guarantees the cell just past imin/imax/jmin/jmax
+      // along that one axis, AT this same representative coordinate, is
+      // genuinely off-`b` (see BisectU/BisectV's own call sites below for
+      // why), which is exactly what a bisection bracket needs.
+      int j_at_imin = j0, j_at_imax = j0, i_at_jmin = i0, i_at_jmax = i0;
       int cell_count = 0;
       while (!stack.empty()) {
         const auto [ci, cj] = stack.back();
         stack.pop_back();
         ++cell_count;
-        imin = std::min(imin, ci); imax = std::max(imax, ci);
-        jmin = std::min(jmin, cj); jmax = std::max(jmax, cj);
+        if (ci < imin) { imin = ci; j_at_imin = cj; }
+        if (ci > imax) { imax = ci; j_at_imax = cj; }
+        if (cj < jmin) { jmin = cj; i_at_jmin = ci; }
+        if (cj > jmax) { jmax = cj; i_at_jmax = ci; }
         static const int kDI[4] = {1, -1, 0, 0}, kDJ[4] = {0, 0, 1, -1};
         for (int k = 0; k < 4; ++k) {
           const int ni = ci + kDI[k], nj = cj + kDJ[k];
@@ -2636,13 +2691,50 @@ std::vector<SurfaceOverlapRegion> IntersectSurfacesOverlap(const ON_Surface& a, 
       }
       if (cell_count < 2) continue;  // a single isolated on-surface cell is a transient touch, not an overlap (FindSurfaceTangentContacts()'s job instead)
       SurfaceOverlapRegion region;
-      region.u0 = dua.ParameterAt(static_cast<double>(imin) / n);
-      region.u1 = dua.ParameterAt(static_cast<double>(imax) / n);
-      region.v0 = dva.ParameterAt(static_cast<double>(jmin) / n);
-      region.v1 = dva.ParameterAt(static_cast<double>(jmax) / n);
+      // Each extent is bisection-tightened along its own representative
+      // transect when a genuine off-`b` neighbour exists to bisect toward
+      // (4-connectivity guarantees that neighbour, at this same
+      // representative coordinate, is off - if it were on, it would be
+      // 4-connected to this very cell and imin/imax/jmin/jmax would already
+      // have moved past it). An extent sitting at `a`'s own domain edge has
+      // no such neighbour and stays exactly as the grid already has it (the
+      // domain edge itself, not an approximation).
+      region.u0 = imin > 0 ? BisectU(imin, imin - 1, j_at_imin) : dua.ParameterAt(0.0);
+      region.u1 = imax < n ? BisectU(imax, imax + 1, j_at_imax) : dua.ParameterAt(1.0);
+      region.v0 = jmin > 0 ? BisectV(jmin, jmin - 1, i_at_jmin) : dva.ParameterAt(0.0);
+      region.v1 = jmax < n ? BisectV(jmax, jmax + 1, i_at_jmax) : dva.ParameterAt(1.0);
       region.entire_surface = whole_surface_coincides;
       out.push_back(region);
     }
+  }
+  return out;
+}
+
+PlaneSphereIntersection IntersectPlaneSphere(const ON_Plane& plane, const ON_Sphere& sphere, double tolerance) {
+  PlaneSphereIntersection out;
+  if (!plane.IsValid() || !sphere.IsValid() || !(sphere.Radius() > 0) || !(tolerance >= 0)) return out;  // stays empty
+  const double r = sphere.Radius();
+  const double d = plane.DistanceTo(sphere.Center());
+  const double ad = std::fabs(d);
+  if (ad > r + tolerance) return out;  // genuinely do not meet: stays empty
+
+  const Point3d center_proj = sphere.Center() - Vector3d(plane.zaxis) * d;
+  out.empty = false;
+  if (ad >= r - tolerance) {
+    // |d| within tolerance of r: a genuine positive radius would round to
+    // ~0 here, so this is the tangent-point degeneracy, not a sliver circle.
+    out.tangent = true;
+    out.point = center_proj;
+    return out;
+  }
+  const double circle_radius = std::sqrt(std::max(r * r - d * d, 0.0));
+  out.circle = ON_Circle(ON_Plane(center_proj, plane.xaxis, plane.yaxis), circle_radius);
+  if (out.circle.GetNurbForm(out.curve) == 0) {
+    // ON_Circle::GetNurbForm only fails for a degenerate (non-positive-
+    // radius) circle - already ruled out by the tangent branch above - or an
+    // invalid input plane, already ruled out by the IsValid() guard. Treated
+    // as a genuine miss rather than returning a circle with no usable curve.
+    out = PlaneSphereIntersection{};
   }
   return out;
 }

@@ -371,3 +371,24 @@ List
 SelAll
 Delete
 @expect_objects 0
+# --- BlendSrf Continuity=G3 picking the SAME face/edge twice: a genuinely
+# degenerate, zero-length rail pairing (P0 == P1 at every t), the one real
+# way kernel::NurbsSurface::BlendSurfaces() itself returns Result::Failed
+# (surface.h's own documented scope) for an otherwise perfectly ordinary
+# isoparametric-boundary pick. G3 has no approximate fallback to drop to
+# (BuildBlendSurfaceG1/G2 cap out at G2, so there is nothing honest for a
+# caller-requested G3 to fall back to) - confirms this fails closed with a
+# clear diagnostic, leaving the object untouched, rather than silently
+# building a degenerate/self-intersecting patch.
+Box 1300380,0,0 1300390,10,0 10
+ExtractSrf
+1300385,5,10
+Enter
+SelNone
+BlendSrf
+Continuity=G3
+1300389,5,10
+1300389,5,10
+SelAll
+List
+@expect_objects 2
