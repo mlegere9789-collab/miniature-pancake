@@ -23886,6 +23886,43 @@ void TestSubDEvaluateFaceThrowsOnBadInput() {
     threw_bad_id = true;
   }
   Check(threw_bad_id, "EvaluateFace throws on a face_id that doesn't exist");
+
+  // u/v out of [0, 1] previously extrapolated the quadrant-local Bezier
+  // math silently instead of being refused - now std::invalid_argument,
+  // same convention ToNurbsPatchesAdaptive() already uses for its own
+  // out-of-range argument.
+  const unsigned int any_face = subd.raw().FaceIterator().FirstFace()->FaceId();
+  const std::pair<double, double> bad_uv[] = {{-0.1, 0.5}, {1.1, 0.5}, {0.5, -0.1}, {0.5, 1.1},
+                                               {std::numeric_limits<double>::quiet_NaN(), 0.5}};
+  for (const auto& uv : bad_uv) {
+    bool threw = false;
+    try {
+      subd.EvaluateFace(any_face, uv.first, uv.second);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "EvaluateFace throws std::invalid_argument on an out-of-[0,1] (or NaN) u/v");
+  }
+
+  // Every boundary and interior value in [0, 1] must still work - the
+  // new gate must not be off-by-one at either endpoint.
+  bool boundary_ok = true;
+  try {
+    (void)subd.EvaluateFace(any_face, 0.0, 0.0);
+    (void)subd.EvaluateFace(any_face, 1.0, 1.0);
+    (void)subd.EvaluateFace(any_face, 0.5, 0.5);
+  } catch (const std::exception&) {
+    boundary_ok = false;
+  }
+  Check(boundary_ok, "EvaluateFace still accepts every u/v value actually inside [0, 1], including both endpoints");
+
+  bool threw_negative_levels = false;
+  try {
+    subd.EvaluateFace(any_face, 0.5, 0.5, -1);
+  } catch (const std::invalid_argument&) {
+    threw_negative_levels = true;
+  }
+  Check(threw_negative_levels, "EvaluateFace throws std::invalid_argument when max_adaptive_levels is negative");
 }
 
 void TestSubDToNurbsPatchesAdaptiveMatchesNonAdaptiveAtZeroLevels() {

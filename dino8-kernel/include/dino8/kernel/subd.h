@@ -1231,6 +1231,16 @@ class SubD {
   // `tangent_v` from that fallback are the flat interpolant's own (still
   // well-defined, just not limit-accurate) partial derivatives.
   //
+  // Throws std::invalid_argument if `u` or `v` is outside [0, 1] (or
+  // NaN) or if `max_adaptive_levels` is negative - previously ungated,
+  // unlike `ToNurbsPatchesAdaptive()`'s own matching
+  // `max_adaptive_levels` check: an out-of-domain (u, v) silently
+  // extrapolated the quadrant-local Bezier math below into meaningless
+  // geometry instead of being refused, and a negative level count
+  // happened to be harmless (the recursion's own `depth_remaining <= 0`
+  // base case already catches it) but was never actually validated as
+  // such.
+  //
   // Throws std::runtime_error if `face_id` doesn't identify a face of
   // the current subdivision level, or that face isn't a quad (same
   // "Subdivide(1) first" limitation ToNurbsPatches() already documents
