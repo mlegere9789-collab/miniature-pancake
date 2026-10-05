@@ -432,6 +432,94 @@ void WriteDxfHatchSolid(DxfWriter& w, const std::vector<Point3d>& pts, const std
   w.G(98, 0);  // no seed points
 }
 
+// A pattern-fill HATCH, world-XY-plane only (same restriction
+// WriteDxfHatchSolid above already has): one polyline boundary path exactly
+// like the solid case, plus the named pattern's own real definition lines
+// (group 78 count, then 53/43/44/45/46/79/49 per line) instead of just a
+// name a reader may or may not recognize. `pattern`'s own HatchFamily list
+// (drafting/HatchLibrary.h) is parsed straight out of an AutoCAD .pat file,
+// so its angle/x0/y0/dx/dy/dashes fields are already in exactly the field
+// order and convention a DXF pattern definition line uses - this writes
+// them unscaled/unrotated (53=fam.angle, 43/44=fam.x0/y0, 45/46=fam.dx/dy,
+// 49=each dash length, positive=dash/negative=gap/0=dot, the same
+// convention HatchFamily::dashes already documents) and carries the
+// document's own applied scale/rotation separately as 41/52 - the exact
+// composition this file's own drafting::HatchPatternCurves/ClipFamily
+// (HatchLibrary.cpp) already performs (angle+rotation, x0/y0/dx/dy*scale),
+// so a real AutoCAD/Rhino reader renders the identical fill this app's own
+// viewport does, not an approximation. Was entirely missing before this
+// change: a pattern-fill hatch round-tripped out as its own N already-
+// clipped line segments (one LINE per clipped run) with no HATCH entity and
+// no record it was ever one fill.
+void WriteDxfHatchPattern(DxfWriter& w, const drafting::HatchPattern& pattern, const std::vector<Point3d>& pts,
+                           double scale, double rotation, const std::string& layer, const Color* color) {
+  if (pts.size() < 3) return;
+  if (scale <= 0) scale = 1;  // drafting::HatchPatternCurves' own fallback, mirrored here
+  w.BeginEntity("HATCH", layer, color);
+  w.G(100, "AcDbHatch");
+  w.G(10, 0.0); w.G(20, 0.0); w.G(30, pts.front().z);  // elevation point
+  w.G(210, 0.0); w.G(220, 0.0); w.G(230, 1.0);         // extrusion normal: +Z
+  w.G(2, pattern.name);
+  w.G(70, 0);  // pattern fill (not solid)
+  w.G(71, 0);  // not associative
+  w.G(91, 1);  // one boundary path
+  w.G(92, 2);  // boundary path type: polyline
+  w.G(72, 0);  // no bulges
+  w.G(73, 1);  // closed
+  w.G(93, static_cast<int>(pts.size()));
+  for (const Point3d& p : pts) { w.G(10, p.x); w.G(20, p.y); }
+  w.G(97, 0);  // no source boundary objects
+  w.G(75, 0);  // hatch style: normal
+  w.G(76, 1);  // pattern type: predefined
+  w.G(52, rotation);
+  w.G(41, scale);
+  w.G(77, 0);  // pattern not double
+  w.G(78, static_cast<int>(pattern.families.size()));
+  for (const drafting::HatchFamily& fam : pattern.families) {
+    w.G(53, fam.angle);
+    w.G(43, fam.x0);
+    w.G(44, fam.y0);
+    w.G(45, fam.dx);
+    w.G(46, fam.dy);
+    w.G(79, static_cast<int>(fam.dashes.size()));
+    for (double d : fam.dashes) w.G(49, d);
+  }
+  w.G(98, 0);  // no seed points
+}
+
+// Resolves a pattern-fill hatch line object (SceneObject::user_text's
+// "Hatch" tag set to a library pattern name by drafting::BuildPatternHatch,
+// not "Solid"/"Bitmap" - see HatchBuild.h) back into its real pattern,
+// scale, rotation and - the one piece BuildPatternHatch itself never stores
+// as geometry, only as a "HatchBoundary" object-id reference - its original
+// boundary loop, still live in the document, so WriteDxfHatchPattern above
+// can write one real HATCH entity for the whole group instead of each
+// already-clipped line writing its own LINE entity. Returns false (nothing
+// written) if the pattern name isn't in the library, the boundary object no
+// longer exists, isn't a closed curve, or isn't planar in world-XY - the
+// same "falls through to the caller's own per-line export" contract
+// WriteDxfHatchSolid/WriteDxfTextIfPlanarXY's own callers already follow.
+bool TryWriteDxfHatchPatternGroup(const Document& doc, const SceneObject& o, const std::string& pattern_name,
+                                   DxfWriter& w, const std::string& layer, const Color* color) {
+  const drafting::HatchPattern* pat = drafting::HatchLibrary::Instance().Find(pattern_name);
+  if (!pat) return false;
+  auto bid_it = o.user_text.find("HatchBoundary");
+  if (bid_it == o.user_text.end()) return false;
+  const ObjectId bid = static_cast<ObjectId>(std::strtoull(bid_it->second.c_str(), nullptr, 10));
+  const SceneObject* bnd = bid == kNoObject ? nullptr : doc.Find(bid);
+  if (!bnd || bnd->kind != ObjectKind::Curve || !bnd->curve || !bnd->curve->IsClosed()) return false;
+  const std::vector<Polyline3> loops = ObjectPolylines(*bnd);
+  if (loops.empty() || !loops.front().closed || loops.front().pts.size() < 3) return false;
+  const std::vector<Point3d>& pts = loops.front().pts;
+  for (const Point3d& p : pts) if (std::fabs(p.z - pts.front().z) > 1e-9) return false;  // world-XY only
+  auto num = [&](const char* key, double fallback) {
+    auto it = o.user_text.find(key);
+    return it == o.user_text.end() ? fallback : std::atof(it->second.c_str());
+  };
+  WriteDxfHatchPattern(w, *pat, pts, num("HatchSpacing", 1.0), num("HatchRotation", 0.0), layer, color);
+  return true;
+}
+
 // A Dino8-authored "Text" command annotation is a group of glyph-outline
 // curves, every one of them tagged (commands/annotate_common.h's TagGlyph)
 // with the same Text/TextHeight/TextOrigin/TextX/TextY/TextAlign values -
@@ -602,6 +690,14 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   // other glyph-outline curve belonging to that same group_id is skipped
   // rather than also written as its own curve.
   std::set<int> text_groups_written;
+  // Groups whose pattern-fill hatch already wrote its one real HATCH entity
+  // (TryWriteDxfHatchPatternGroup below) - every other already-clipped line
+  // belonging to that same group_id is skipped rather than also written as
+  // its own curve. Only populated on success - a group whose boundary
+  // couldn't be resolved is never added here, so every one of its lines
+  // independently (and harmlessly) retries the same lookup and falls
+  // through to its own curve export, same as before this set existed.
+  std::set<int> pattern_hatch_groups_written;
   for (const SceneObject* o : objs) {
     const size_t li = static_cast<size_t>(std::clamp(o->layer_index, 0, static_cast<int>(layer_names.size()) - 1));
     const std::string& layer = layer_names[li];
@@ -615,6 +711,19 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
         break;
       case ObjectKind::Curve: {
         if (!o->curve) break;
+        auto hatch_tag = o->user_text.find("Hatch");
+        if (hatch_tag != o->user_text.end() && hatch_tag->second != "Solid" && hatch_tag->second != "Bitmap") {
+          if (pattern_hatch_groups_written.count(o->group_id)) break;  // this group's HATCH entity already written
+          if (TryWriteDxfHatchPatternGroup(doc, *o, hatch_tag->second, w, layer, color)) {
+            pattern_hatch_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
+          // No live, planar-XY boundary to recover - falls through to this
+          // line's own curve export below, same as before this branch
+          // existed (every other line in the group independently makes,
+          // and loses, the same attempt).
+        }
         auto glyph = o->user_text.find("Glyph"), ann = o->user_text.find("Annotation"), align = o->user_text.find("TextAlign");
         // Only the plain Text command's own left-aligned glyph groups (not
         // Dim*/Leader, whose glyph curves share a group with non-glyph
@@ -1379,12 +1488,17 @@ class DxfImporter {
   // HATCH: real import for the common, tractable case only - one boundary
   // path of type "polyline" (a closed sequence of straight/bulge-arc
   // vertices, group code 92 bit 0x2), which is what the overwhelming
-  // majority of real-world HATCH entities use (matching what Dino 8's own
-  // Hatch command would export if ExportDxf ever wrote native HATCH -
-  // it currently doesn't). Group codes 10/20/42/72/73/92/93 repeat per
-  // vertex/path, so unlike every other entity here this can't be read with
-  // DxfEntity::S()/D()/I() (first-occurrence lookups) - it walks e.groups
-  // in file order like a small state machine instead.
+  // majority of real-world HATCH entities use (matching what ExportDxf's
+  // own WriteDxfHatchSolid/WriteDxfHatchPattern now write - both solid and
+  // pattern fills - for exactly this single-polyline-loop case). Group
+  // codes 10/20/42/72/73/92/93 repeat per vertex/path, so unlike every
+  // other entity here this can't be read with DxfEntity::S()/D()/I()
+  // (first-occurrence lookups) - it walks e.groups in file order like a
+  // small state machine instead. Pattern-fill definition-line data
+  // (78/53/43/44/45/46/79/49, written by WriteDxfHatchPattern for a real
+  // third-party reader's benefit) is deliberately not read back here: the
+  // pattern NAME (group 2) is enough to re-resolve the exact same
+  // HatchLibrary entry this app itself wrote the lines from.
   //
   // Explicitly NOT handled, detected and skipped rather than guessed at:
   //   - more than one boundary path (islands/holes: group code 91 != 1)
@@ -2343,13 +2457,15 @@ std::vector<Path2> CollectPaths(const Document& doc, const Projector& proj, bool
     if (selected_only && !o.selected) continue;
     if (!doc.IsObjectVisible(o)) continue;
     if (o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size() &&
-        !LayerPrints(doc.Layers()[static_cast<size_t>(o.layer_index)]))
-      continue;  // Layer::print_width_mm < 0: "does not print", still visible on screen
-    // A layer's own plot_color override (LayerPlotColor) takes over from
-    // the object's on-screen display color here - the color half of "plot
-    // styles (CTB/STB)", alongside print_width_mm's lineweight half above.
+        !LayerPrints(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.PlotStyles()))
+      continue;  // Layer::print_width_mm < 0 (or its named PlotStyle's width_mm): "does not print", still visible on screen
+    // A layer's own plot_color override (LayerPlotColor), or its named
+    // PlotStyle's color (LayerPlotStyle/PlotStyleTable) when it has one,
+    // takes over from the object's on-screen display color here - the
+    // color half of "plot styles (CTB/STB)", alongside print_width_mm's
+    // lineweight half above.
     const Color color = o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size()
-                             ? EffectivePlotColor(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.EffectiveColor(o))
+                             ? EffectivePlotColor(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.PlotStyles(), doc.EffectiveColor(o))
                              : doc.EffectiveColor(o);
     if (o.kind == ObjectKind::Point) {
       Path2 p;
@@ -2500,7 +2616,7 @@ bool ExportSvg(const Document& doc, const Viewport* view, const std::string& pat
   for (const auto& [layer, list] : by_layer) {
     const bool valid_layer = layer >= 0 && static_cast<size_t>(layer) < doc.Layers().size();
     std::string name = valid_layer ? doc.LayerFullPath(layer) : "Default";
-    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(layer)], default_width) : default_width;
+    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(layer)], doc.PlotStyles(), default_width) : default_width;
     os << "<g id=\"" << XmlEscape(name) << "\" stroke-width=\"" << Num(width, 3) << "\">\n";
     for (const Path2* p : list) {
       os << "<path stroke=\"" << HexColor(p->color) << "\" d=\"";
@@ -2542,7 +2658,7 @@ bool ExportPdf(const Document& doc, const Viewport* view, const std::string& pat
   double last_width = default_width;
   for (const Path2& p : paths) {
     const bool valid_layer = p.layer >= 0 && static_cast<size_t>(p.layer) < doc.Layers().size();
-    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(p.layer)], default_width) : default_width;
+    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(p.layer)], doc.PlotStyles(), default_width) : default_width;
     if (std::fabs(width - last_width) > 1e-9) { cs << Num(width * pt, 3) << " w\n"; last_width = width; }
     const std::string color = Num(p.color.r, 3) + " " + Num(p.color.g, 3) + " " + Num(p.color.b, 3) + " RG\n";
     if (color != last_color) { cs << color; last_color = color; }
