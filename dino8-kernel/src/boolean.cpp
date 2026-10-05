@@ -2521,42 +2521,84 @@ Brep MoveConvexPlanarPoints(const Brep& solid, const std::vector<std::pair<Point
   }
 
   // Every touched face's new plane: its own loop with every matched corner
-  // replaced by that move's own new position, re-derived from the (now
-  // three, since every touched face is required to be a triangle)
-  // corners; every other face's plane unchanged - see
-  // MoveVertexConvexPlanar()'s own doc comment for why only a triangle's
-  // plane is always well-defined with one or more corners free to move
-  // anywhere.
+  // replaced by that move's own new position, re-derived from the resulting
+  // corners; every other face's plane unchanged. A TRIANGLE's plane is
+  // always well-defined this way no matter where its one free corner
+  // lands. A face with 4+ vertices is NOT guaranteed to stay planar when
+  // only some of its corners move - rather than refusing every such face
+  // outright (the old, strictly narrower rule), the actual resulting point
+  // set is measured against a Newell-fit plane below and refused only if
+  // it is genuinely non-planar, so a quad (or larger) face whose moved
+  // corner(s) happen to leave every corner still exactly coplanar - e.g. a
+  // vertex sliding within a quad face's own already-pinned plane while
+  // that face's OTHER incident faces are triangles (boolean.h's own doc
+  // comment on MoveVertexConvexPlanar() has the full example) - is no
+  // longer refused just for being a quad.
   std::vector<ON_Plane> new_planes(static_cast<size_t>(n));
   for (int i = 0; i < n; ++i) new_planes[static_cast<size_t>(i)] = faces[static_cast<size_t>(i)].plane;
 
   for (int face_index = 0; face_index < n; ++face_index) {
     if (per_face[static_cast<size_t>(face_index)].empty()) continue;
     const Brep::PlanarFace& f = faces[static_cast<size_t>(face_index)];
-    if (f.loop.size() != 3) {
-      throw std::invalid_argument(std::string("dino8::kernel::") + caller_name + ": face " +
-                                   std::to_string(face_index) + " is incident to a moved point but has " +
-                                   std::to_string(f.loop.size()) +
-                                   " vertices, not 3 - moving a point shared by a non-triangular "
-                                   "face would need that face to either change topology or become "
-                                   "non-planar, both out of scope here");
-    }
     std::vector<Point3d> new_loop = f.loop;
     for (const auto& [loop_index, move_index] : per_face[static_cast<size_t>(face_index)]) {
       new_loop[static_cast<size_t>(loop_index)] = moves[static_cast<size_t>(move_index)].second;
     }
+    const int loop_n = static_cast<int>(new_loop.size());
 
     const Vector3d old_normal = f.plane.zaxis;
-    const Vector3d e1 = new_loop[1] - new_loop[0];
-    const Vector3d e2 = new_loop[2] - new_loop[0];
-    Vector3d new_normal = ON_CrossProduct(e1, e2);
+
+    // Newell's method: the standard arbitrary-polygon normal formula. For
+    // a triangle (loop_n == 3) this is algebraically identical to
+    // cross(e1, e2) from vertex 0 (the expression this function used
+    // before this pass) - not a behavior change for the already-supported
+    // triangle case, confirmed by every pre-existing triangle-only test in
+    // this family (e.g. TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched)
+    // still matching its own exact closed-form check bit-for-bit. For a
+    // genuinely planar polygon of any vertex count it gives the exact
+    // normal (direction and magnitude 2*area); for a non-planar point set
+    // it gives some best-fit average normal that the explicit per-vertex
+    // plane-distance check immediately below then measures and refuses
+    // on, rather than silently accepting.
+    Vector3d new_normal(0.0, 0.0, 0.0);
+    for (int k = 0; k < loop_n; ++k) {
+      const Point3d& cur = new_loop[static_cast<size_t>(k)];
+      const Point3d& nxt = new_loop[static_cast<size_t>((k + 1) % loop_n)];
+      new_normal.x += (cur.y - nxt.y) * (cur.z + nxt.z);
+      new_normal.y += (cur.z - nxt.z) * (cur.x + nxt.x);
+      new_normal.z += (cur.x - nxt.x) * (cur.y + nxt.y);
+    }
     const double new_normal_len = new_normal.Length();
     if (new_normal_len <= tol * tol) {
       throw std::invalid_argument(std::string("dino8::kernel::") + caller_name +
                                    ": the given new position(s) collapse face " + std::to_string(face_index) +
-                                   "'s own triangle to ~0 area");
+                                   "'s own boundary to ~0 area");
     }
     new_normal.Unitize();
+
+    if (loop_n > 3) {
+      // Measured, not assumed: every corner of the new loop (moved ones
+      // and untouched ones alike) must land within tolerance of the
+      // Newell-fit plane above, or this face's own new boundary genuinely
+      // isn't planar and this function - which never re-triangulates or
+      // otherwise changes a face's own topology - cannot represent it.
+      const Point3d& origin = new_loop[0];
+      for (const Point3d& p : new_loop) {
+        const double dist = std::fabs(ON_DotProduct(p - origin, new_normal));
+        if (dist > tol) {
+          throw std::invalid_argument(
+              std::string("dino8::kernel::") + caller_name + ": face " + std::to_string(face_index) +
+              " is incident to a moved point and has " + std::to_string(loop_n) +
+              " vertices; the given new position(s) leave it non-planar (a corner lands " +
+              std::to_string(dist) +
+              " off its own best-fit plane, outside tolerance " + std::to_string(tol) +
+              ") - moving a point shared by a non-triangular face only stays in scope when every "
+              "one of its other corners happens to remain exactly coplanar, since this function "
+              "never changes a face's own topology to compensate");
+        }
+      }
+    }
+
     if (ON_DotProduct(new_normal, old_normal) <= 0.0) {
       throw std::invalid_argument(std::string("dino8::kernel::") + caller_name +
                                    ": the given new position(s) flip face " + std::to_string(face_index) +

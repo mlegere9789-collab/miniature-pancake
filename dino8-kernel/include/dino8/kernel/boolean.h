@@ -1202,29 +1202,41 @@ Brep FoldFaceConvexPlanar(const Brep& solid, int face_index, int hinge_loop_inde
 // against a single swapped plane, which is how "adjacent edges reshape
 // around it" falls out for free rather than needing separate bookkeeping.
 //
-// Deliberately narrow, honest scope, not a general vertex-move: every face
-// incident to the moved vertex must be a TRIANGLE (exactly 3 vertices).
-// With only one vertex moving, a triangle's other two corners already fix
-// a plane no matter where the third moves - always well-defined - but a
-// face with 4+ vertices would need to stay planar with only 3 (or fewer)
-// of its corners fixed, which isn't guaranteed for an arbitrary
-// `new_position` and would otherwise silently produce a non-planar face
-// this class cannot represent; this throws instead of guessing. This
-// covers the common tetrahedron/pyramid-apex/triangulated-corner case (a
-// vertex where the incident faces already happen to be triangles) without
-// overclaiming a box corner (four vertices per face) move, which stays
-// unsupported here.
+// Deliberately narrow, honest scope, not a general vertex-move: a face
+// incident to the moved vertex keeps its own well-defined plane only when
+// the result is still genuinely planar. For a TRIANGLE this is always
+// true (any one corner is free to move anywhere - the other two already
+// fix a plane). For a face with 4+ vertices this is NOT guaranteed with
+// only one corner moving in general, but it IS checked directly rather
+// than refused outright: the moved corner's own new position is measured
+// against a Newell-fit plane through the whole new corner set, and this
+// throws only when some corner (moved or not) genuinely lands off that
+// plane, not merely because the face has more than 3 vertices. This still
+// covers the common tetrahedron/pyramid-apex/triangulated-corner case, and
+// now additionally covers a vertex touching ONE quad (or larger) face
+// whenever the new position still lands on the plane that face's own
+// OTHER (unmoved) corners already pin down - e.g. sliding a pyramid's own
+// base corner within the base's existing plane while its other two
+// incident faces (triangles) reshape freely - without ever
+// re-triangulating or otherwise changing a face's own topology to force
+// planarity that isn't really there. A vertex touching SEVERAL quads at
+// once whose other corners pin down DIFFERENT planes (e.g. a plain box
+// corner, where the three incident quads are mutually perpendicular) only
+// has the identity move left, since no other point satisfies every
+// incident quad's own plane simultaneously - this is a real, honestly
+// narrow case, not the general "move any solid's corner anywhere" op.
 //
 // Same convex-solid precondition and failure mode as
 // `OffsetFace()`/`DraftFacesConvexPlanar()`/`ReplaceFacePlaneConvexPlanar()`
 // above, plus: throws std::invalid_argument if `old_position` doesn't land
 // within tolerance of any vertex of `solid.PlanarFaces()`; if any incident
-// face isn't a triangle; if `new_position` would flip an incident
-// triangle's own outward orientation (its own newly-computed normal
-// disagreeing in sign with its original one - moving the vertex through
-// the plane of its own opposite edge); or if `new_position` collapses any
-// face's own new boundary (including an incident one) to fewer than 3
-// vertices or ~0 area, out of scope here exactly as in the siblings above.
+// face with 4+ vertices is left genuinely non-planar by `new_position`; if
+// `new_position` would flip an incident face's own outward orientation (its
+// own newly-computed normal disagreeing in sign with its original one -
+// moving the vertex through the plane of its own opposite edge); or if
+// `new_position` collapses any face's own new boundary (including an
+// incident one) to fewer than 3 vertices or ~0 area, out of scope here
+// exactly as in the siblings above.
 Brep MoveVertexConvexPlanar(const Brep& solid, const Point3d& old_position, const Point3d& new_position);
 
 // PARITY_MAP's kernel: Local / direct-edit operations "Move/transform edge
@@ -1245,16 +1257,18 @@ Brep MoveVertexConvexPlanar(const Brep& solid, const Point3d& old_position, cons
 // neither keeps its own original plane and is re-clipped against the
 // updated planes the same way.
 //
-// Same triangle-only scope as `MoveVertexConvexPlanar()`, for the same
-// reason: every face incident to either endpoint must be a triangle,
-// since only a triangle's plane is always well-defined regardless of
-// where its corners sit. Throws std::invalid_argument if `old_p0` and
-// `old_p1` coincide (a degenerate, zero-length edge - not a valid edge to
-// name), for the same per-endpoint failure modes
-// `MoveVertexConvexPlanar()` already documents (an endpoint not landing on
-// any vertex, a non-triangular incident face, an orientation flip, or a
-// collapsed face), and propagates the same convex-solid precondition
-// failure `MoveVertexConvexPlanar()` shares with the rest of this family.
+// Same measured-rather-than-assumed planarity scope as
+// `MoveVertexConvexPlanar()`: a face incident to either endpoint with 4+
+// vertices is accepted whenever its own new corner set (both endpoints
+// replaced at once, so a face containing BOTH stays genuinely testable in
+// one shot) is still coplanar within tolerance, and refused only when it
+// measurably isn't. Throws std::invalid_argument if `old_p0` and `old_p1`
+// coincide (a degenerate, zero-length edge - not a valid edge to name),
+// for the same per-endpoint failure modes `MoveVertexConvexPlanar()`
+// already documents (an endpoint not landing on any vertex, a
+// non-planar incident face, an orientation flip, or a collapsed face), and
+// propagates the same convex-solid precondition failure
+// `MoveVertexConvexPlanar()` shares with the rest of this family.
 Brep MoveEdgeConvexPlanar(const Brep& solid, const Point3d& old_p0, const Point3d& old_p1, const Point3d& new_p0,
                            const Point3d& new_p1);
 
@@ -1293,11 +1307,13 @@ Brep MoveEdgeConvexPlanar(const Brep& solid, const Point3d& old_p0, const Point3
 // tolerance) are refused outright as ambiguous - which of their two
 // `new_position`s should apply is undefined - rather than silently keeping
 // only the one that happens to be matched first internally. Every face
-// incident to any named vertex must still be a triangle, for the identical
-// reason `MoveVertexConvexPlanar()` documents. Same convex-solid
-// precondition and every other per-vertex failure mode (unmatched
-// `old_position`, non-triangular incident face, orientation flip, collapsed
-// face) as `MoveVertexConvexPlanar()` above.
+// incident to any named vertex is checked against the same measured
+// (not assumed) planarity test `MoveVertexConvexPlanar()` applies, now
+// against the WHOLE batch's own final corner set when a face is touched
+// by more than one named vertex at once. Same convex-solid precondition
+// and every other per-vertex failure mode (unmatched `old_position`,
+// a genuinely non-planar incident face, orientation flip, collapsed face)
+// as `MoveVertexConvexPlanar()` above.
 Brep MoveVerticesConvexPlanar(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& moves);
 
 // One entry of a `MoveEdgesConvexPlanar()` batch below: the same four
@@ -1329,7 +1345,7 @@ struct EdgeMove {
 //
 // `edge_moves` must be non-empty - throws std::invalid_argument otherwise.
 // Same per-edge degenerate-edge check (`old_p0`/`old_p1` coincide) as
-// `MoveEdgeConvexPlanar()`, and the same triangle-only scope and every
+// `MoveEdgeConvexPlanar()`, and the same measured-planarity scope and every
 // other failure mode shared by the rest of this family.
 Brep MoveEdgesConvexPlanar(const Brep& solid, const std::vector<EdgeMove>& edge_moves);
 
