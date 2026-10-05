@@ -1623,26 +1623,60 @@ void RegionBoolean(CommandContext& ctx, const std::vector<ObjectId>& ids, Region
   const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-4);
   std::vector<kernel::Mesh> results;
   std::string what;
-  if (op != RegionOp::Regions && set->regions.size() == 2) {
-    // Exact (non-tessellated) path: both regions are plain polygons, not
-    // a curved closed curve or an assembled open-curve loop - closes a
-    // slice of PARITY_MAP.md's "2D region / planar curve booleans"
-    // bullet, which named this command's own mesh-slab pipeline as the
-    // reason "No exact 2D curve boolean in the kernel" even though
-    // kernel::PolygonBooleanPlanar already existed and was already
-    // tested standalone, with zero callers anywhere in dino8-app. Falls
-    // through silently to the existing mesh pipeline below whenever
-    // either region isn't a plain polygon, or the kernel itself throws
-    // (a self-intersecting polygon, or any of BooleanCombinePlanar's own
-    // disclosed scope limits the prism reduction inherits).
-    std::optional<std::vector<Point3d>> poly_a = ExactPolygonOf(ctx, set->regions[0], set->plane);
-    std::optional<std::vector<Point3d>> poly_b = ExactPolygonOf(ctx, set->regions[1], set->plane);
-    if (poly_a && poly_b) {
-      const kernel::BooleanOp bop = op == RegionOp::Union ? kernel::BooleanOp::Union
-                                     : op == RegionOp::Difference ? kernel::BooleanOp::Difference
-                                                                   : kernel::BooleanOp::Intersection;
+  if (op != RegionOp::Regions && set->regions.size() >= 2) {
+    // Exact (non-tessellated) path, now for N>=2 regions (used to be
+    // locked to exactly 2) - every region must still be a plain polygon,
+    // not a curved closed curve or an assembled open-curve loop. Falls
+    // through silently to the existing mesh pipeline below whenever any
+    // region isn't a plain polygon, or the kernel itself throws (a self-
+    // intersecting polygon, or any of BooleanCombinePlanar's own disclosed
+    // scope limits the prism reduction inherits).
+    //
+    // Union and Difference route through kernel::PolygonBooleanPlanarNAry
+    // (this category's own "2D region / planar curve booleans" bullet -
+    // the kernel primitive existed with zero dino8-app callers until this
+    // pass): Union puts every polygon in one first_group with an empty
+    // second_group (PolygonBooleanPlanarNAry's own "just fold first_group"
+    // case for an empty second_group); Difference puts regions[0] alone in
+    // first_group and every other region in second_group, matching this
+    // function's own pre-existing sequential "subtract each additional
+    // region in turn" semantics exactly (A - B - C == A - (B union C)).
+    // Intersection has no single-call NAry shape for this - NAry's own
+    // Intersection unions each GROUP first, then intersects the two unions,
+    // which is not "intersect every region" - so it instead chains pairwise
+    // PolygonBooleanPlanar() calls region-by-region, same as the pre-
+    // existing N==2 case already did, falling back to the mesh pipeline if
+    // any step throws OR a partial intersection ever comes back as more
+    // than one loop (a hole at that point can't be fed back in as the next
+    // step's own single-polygon operand - the same "no polygon in either
+    // group may carry a hole" scope limit PolygonBooleanPlanarNAry's own
+    // doc comment already discloses).
+    std::vector<std::vector<Point3d>> polys;
+    polys.reserve(set->regions.size());
+    bool all_exact = true;
+    for (const Region& r : set->regions) {
+      std::optional<std::vector<Point3d>> p = ExactPolygonOf(ctx, r, set->plane);
+      if (!p) { all_exact = false; break; }
+      polys.push_back(std::move(*p));
+    }
+    if (all_exact) {
       try {
-        std::vector<std::vector<Point3d>> loops = kernel::PolygonBooleanPlanar(*poly_a, *poly_b, set->plane, bop);
+        std::vector<std::vector<Point3d>> loops;
+        if (op == RegionOp::Union) {
+          loops = kernel::PolygonBooleanPlanarNAry(polys, {}, set->plane, kernel::BooleanOp::Union);
+        } else if (op == RegionOp::Difference) {
+          std::vector<std::vector<Point3d>> first{polys.front()};
+          std::vector<std::vector<Point3d>> rest(polys.begin() + 1, polys.end());
+          loops = kernel::PolygonBooleanPlanarNAry(first, rest, set->plane, kernel::BooleanOp::Difference);
+        } else {
+          std::vector<Point3d> acc = polys.front();
+          for (size_t i = 1; i < polys.size(); ++i) {
+            std::vector<std::vector<Point3d>> step = kernel::PolygonBooleanPlanar(acc, polys[i], set->plane, kernel::BooleanOp::Intersection);
+            if (step.size() != 1) throw std::runtime_error("RegionBoolean: N-ary intersection step produced a non-simple (holed/empty) result");
+            acc = step[0];
+          }
+          loops = {acc};
+        }
         ctx.Doc().BeginChange(label);
         const SceneObject* like = ctx.Doc().Find(set->regions[0].id);
         const int layer = like ? like->layer_index : -1;
@@ -1657,7 +1691,7 @@ void RegionBoolean(CommandContext& ctx, const std::vector<ObjectId>& ids, Region
         }
         if (delete_input) for (const Region& r : set->regions) for (ObjectId sid : r.source_ids) ctx.Doc().Remove(sid);
         const std::string what_exact = op == RegionOp::Union ? "Union" : op == RegionOp::Difference ? "Difference" : "Intersection";
-        ctx.Print(label + ": " + what_exact + " of 2 region(s) -> " + std::to_string(made) + " closed curve(s), exact (no tessellation)" +
+        ctx.Print(label + ": " + what_exact + " of " + std::to_string(set->regions.size()) + " region(s) -> " + std::to_string(made) + " closed curve(s), exact (no tessellation)" +
                    (delete_input ? ", input deleted" : ""));
         return;
       } catch (const std::exception&) {
