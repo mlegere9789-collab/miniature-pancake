@@ -4397,6 +4397,137 @@ assert max(bn) - min(bn) <= 8, f'Box B while Monochrome-tagged is not a neutral 
 assert abs(bn[0] - 182) <= 15 and abs(bn[1] - 182) <= 15 and abs(bn[2] - 187) <= 15, f'Box B Monochrome grey is not the expected flat {{200,200,205}}-derived tone: {bn}'
 PY
 
+# SetObjectDisplayMode Arctic: pixel-level proof (PARITY_MAP.md's
+# "Per-object display mode override" item) that Arctic is now also a real
+# per-object fill-colour override (a sixth real per-object mode, not just
+# Wireframe/Shaded/Ghosted/X-Ray/Monochrome), not just a printed status
+# line - two differently-coloured boxes in a Shaded (never-Arctic) Top
+# view; see tests/arctic_script.txt for the full scene/capture sequence.
+mkdir -p "$TMPW/arctic"
+sed "s|@TMP@|$TMPW/arctic|g" "$HERE/arctic_script.txt" > "$TMPW/arctic_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  ARCT="$("$BIN" --smoke 30 --script "$TMPW/arctic_script.txt" 2>&1)" || { echo "$ARCT"; echo "FAIL: arctic script exited non-zero"; exit 1; }
+else
+  ARCT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/arctic_script.txt" 2>&1)" || { echo "$ARCT"; echo "FAIL: arctic script exited non-zero"; exit 1; }
+fi
+arctcheck() { if echo "$ARCT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ARCT" "$1"; fail=1; fi; }
+arctcheck "^ok   expect_objects 2" "arctic script left exactly the two boxes"
+arctcheck "gl_error=0" "arctic script ran without OpenGL errors"
+python3 - "$TMPW/arctic/arctic_off.bmp" "$TMPW/arctic/arctic_on.bmp" "$TMPW/arctic/arctic_off2.bmp" <<'PY' && echo "ok   SetObjectDisplayMode Arctic genuinely overrides one object's own fill colour with the mode's flat near-white tone, independent of the viewport's own (never-Arctic) display mode, and UseViewport genuinely restores the object's own colour afterward" || { echo "FAIL SetObjectDisplayMode Arctic pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+w, h, off = read_bmp(sys.argv[1])
+_, _, on = read_bmp(sys.argv[2])
+_, _, off2 = read_bmp(sys.argv[3])
+
+# Box A (left, never touched): find its red-dominant blob in the untouched
+# capture and sample its centre in all three captures.
+reds = [(x, y) for y in range(0, h, 2) for x in range(0, w, 2) if off(x, y)[0] > off(x, y)[1] + 30 and off(x, y)[0] > off(x, y)[2] + 30]
+assert reds, 'no red (Box A) pixels found in arctic_off.bmp'
+axs, ays = [p[0] for p in reds], [p[1] for p in reds]
+acx, acy = (min(axs) + max(axs)) // 2, (min(ays) + max(ays)) // 2
+ra, rb, rc = off(acx, acy), on(acx, acy), off2(acx, acy)
+print(f'Box A (untouched) sample: off={ra} on={rb} off2={rc}')
+assert ra == rb == rc, f'Box A changed even though it was never given a SetObjectDisplayMode override: {ra} {rb} {rc}'
+assert ra[0] > ra[1] + 30 and ra[0] > ra[2] + 30, f'Box A does not read as red: {ra}'
+
+# Box B (right, Arctic toggled on then off): find the blob where "off" and
+# "on" actually differ, and sample its centre in all three captures.
+diffs = [(x, y) for y in range(0, h) for x in range(0, w) if sum(abs(a - b) for a, b in zip(off(x, y), on(x, y))) > 15]
+assert diffs, 'Box B never changed between arctic_off.bmp and arctic_on.bmp - Arctic had no visible effect'
+bxs, bys = [p[0] for p in diffs], [p[1] for p in diffs]
+bcx, bcy = (min(bxs) + max(bxs)) // 2, (min(bys) + max(bys)) // 2
+bo, bn, bo2 = off(bcx, bcy), on(bcx, bcy), off2(bcx, bcy)
+print(f'Box B (Arctic toggled) sample: off={bo} on={bn} off2={bo2}')
+assert bo[2] > bo[0] + 30 and bo[2] > bo[1] + 30, f'Box B does not read as blue before the override: {bo}'
+assert bo == bo2, f'Box B does not return to its own colour after UseViewport: off={bo} off2={bo2}'
+assert max(bn) - min(bn) <= 8, f'Box B while Arctic-tagged is not a neutral near-white tone: {bn}'
+assert abs(bn[0] - 223) <= 15 and abs(bn[1] - 223) <= 15 and abs(bn[2] - 223) <= 15, f'Box B Arctic tone is not the expected flat {{245,245,245}}-derived tone: {bn}'
+PY
+
+# SSAO: pixel-level proof (PARITY_MAP.md's "SSAO in the rasterized
+# renderer" item) that AmbientOcclusion is a real, localized darkening
+# effect, not just a printed status line or a flat global dimming - a flat
+# floor meeting a wall at a real inside corner, lit only by a dim light
+# plus Skylight's ambient term (the only thing GlRenderer::EndSsaoPass's AO
+# buffer darkens), captured with AmbientOcclusion on, then off, then back
+# on; see tests/ssao_script.txt for the full scene.
+mkdir -p "$TMPW/ssao"
+sed "s|@TMP@|$TMPW/ssao|g" "$HERE/ssao_script.txt" > "$TMPW/ssao_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SSAO="$("$BIN" --smoke 30 --script "$TMPW/ssao_script.txt" 2>&1)" || { echo "$SSAO"; echo "FAIL: ssao script exited non-zero"; exit 1; }
+else
+  SSAO="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/ssao_script.txt" 2>&1)" || { echo "$SSAO"; echo "FAIL: ssao script exited non-zero"; exit 1; }
+fi
+ssaocheck() { if echo "$SSAO" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SSAO" "$1"; fail=1; fi; }
+ssaocheck "^ok   expect_objects 2" "ssao script left exactly the floor and the wall"
+ssaocheck "gl_error=0" "ssao script ran without OpenGL errors"
+python3 - "$TMPW/ssao/ssao_on.bmp" "$TMPW/ssao/ssao_off.bmp" "$TMPW/ssao/ssao_on2.bmp" <<'PY' && echo "ok   AmbientOcclusion genuinely darkens the ambient term near a real inside corner (never brighter, never the whole frame), and toggling it back on reproduces the exact same frame" || { echo "FAIL SSAO pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+w, h, on = read_bmp(sys.argv[1])
+_, _, off = read_bmp(sys.argv[2])
+_, _, on2 = read_bmp(sys.argv[3])
+
+def luma(c):
+    r, g, b = c
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+total = w * h
+diff_count = 0
+darker = 0
+brighter = 0
+for y in range(h):
+    for x in range(w):
+        a, b = on(x, y), off(x, y)
+        if sum(abs(p - q) for p, q in zip(a, b)) <= 6:
+            continue
+        diff_count += 1
+        if luma(a) < luma(b):
+            darker += 1
+        else:
+            brighter += 1
+print(f'total pixels: {total}, differing (on vs off): {diff_count} ({100.0 * diff_count / total:.1f}%), darker: {darker}, brighter: {brighter}')
+
+assert diff_count > total * 0.01, f'AmbientOcclusion on vs off barely differ ({diff_count}/{total} px) - no visible effect'
+assert diff_count < total * 0.5, f'AmbientOcclusion changes too much of the frame ({diff_count}/{total} px) - looks like a flat global dimming, not localized occlusion'
+assert brighter <= darker * 0.02, f'AmbientOcclusion made more than a rounding sliver of pixels brighter, not darker ({brighter} brighter vs {darker} darker) - not a real occlusion effect'
+
+on_px = [on(x, y) for y in range(0, h, 3) for x in range(0, w, 3)]
+on2_px = [on2(x, y) for y in range(0, h, 3) for x in range(0, w, 3)]
+assert on_px == on2_px, 'toggling AmbientOcclusion off then back on does not reproduce the exact same frame'
+PY
+
 # Real-time shadow maps (per-light shadow atlas): pixel-level proof
 # (PARITY_MAP.md's "Real-time shadow maps in the rasterized renderer" item)
 # that two simultaneously-enabled lights now each cast their own real

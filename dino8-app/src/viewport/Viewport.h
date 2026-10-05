@@ -337,6 +337,10 @@ class Viewport {
   // skipped (renderer keeps no shadow for it this frame) if there is
   // nothing visible or that light has no usable direction.
   void DrawShadowPass(GlRenderer& renderer, const FrameContext& ctx, const std::vector<GpuLight>& lights);
+  // Real screen-space ambient occlusion (GlRenderer::BeginSsaoPass/
+  // EndSsaoPass): a depth-only prepass of the opaque scene, exactly like
+  // DrawShadowPass's own recursive DrawObjects call below.
+  void DrawSsaoPass(GlRenderer& renderer, const FrameContext& ctx);
   void DrawGroundPlane(GlRenderer& renderer, const FrameContext& ctx);
   void DrawLightWidgets(GlRenderer& renderer, const Document& doc);
   void DrawAxesGizmo(GlRenderer& renderer);

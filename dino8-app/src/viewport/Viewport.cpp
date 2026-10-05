@@ -130,13 +130,16 @@ Color Mix(Color a, Color b, float t) {
 }
 
 const Color kMonochromeFillColor = Color::FromBytes(200, 200, 205);
+// Same near-white tone the viewport-wide Arctic mode's StyleFor force_white
+// fill already uses (see below) - a per-object mirror of it.
+const Color kArcticFillColor = Color::FromBytes(245, 245, 245);
 
-// SetObjectDisplayMode Ghosted/X-Ray/Monochrome: an object carrying one of
-// these overrides always fills at that mode's own fixed alpha, the same
-// mode-agnostic way force_wireframe/force_shaded already override the
+// SetObjectDisplayMode Ghosted/X-Ray/Monochrome/Arctic: an object carrying
+// one of these overrides always fills at that mode's own fixed alpha, the
+// same mode-agnostic way force_wireframe/force_shaded already override the
 // viewport's own display mode - so a Ghosted-tagged object stays
 // translucent even viewed in Shaded, Rendered or any other opaque viewport
-// mode (and a Monochrome-tagged object stays fully opaque even in a
+// mode (and a Monochrome/Arctic-tagged object stays fully opaque even in a
 // translucent Ghosted/X-Ray viewport), and vice versa for a viewport that
 // is itself already one of these modes (the object's own override still
 // wins, since it names an alpha rather than merely "fill/don't").
@@ -144,6 +147,7 @@ float EffectiveFillAlpha(const SceneObject& o, float viewport_alpha) {
   if (o.force_ghosted) return kGhostedFillAlpha;
   if (o.force_xray) return kXRayFillAlpha;
   if (o.force_monochrome) return kMonochromeFillColor.a;
+  if (o.force_arctic) return kArcticFillColor.a;
   return viewport_alpha;
 }
 
@@ -393,7 +397,19 @@ void Viewport::DrawScene(GlRenderer& renderer, const FrameContext& ctx, DisplayM
     // (see GlRenderer::BeginShadowPass) - a genuine per-light atlas, not
     // just the strongest one.
     if (!ctx.show_zbuffer && !lights.empty()) DrawShadowPass(renderer, ctx, lights);
+    // Real screen-space ambient occlusion (GlRenderer::BeginSsaoPass/
+    // EndSsaoPass) - recomputed fresh for every Rendered-mode DrawScene
+    // call, the same no-cross-frame-caching choice the shadow pass above
+    // already makes, so a later viewport/frame that disables it, or is
+    // not in Rendered mode at all, never samples a stale buffer from an
+    // earlier one (DrawObjects' own kRendered/kGround draws are the only
+    // callers that ever read it, so clearing it for every other mode
+    // below is otherwise unreachable, not merely redundant).
+    if (!ctx.show_zbuffer && ctx.doc->Render().ssao) DrawSsaoPass(renderer, ctx);
+    else renderer.ClearSSAO();
     DrawGroundPlane(renderer, ctx);
+  } else {
+    renderer.ClearSSAO();
   }
   // Clipping planes that clip this viewport cut the model (not the grid).
   std::vector<std::array<float, 4>> clip;
@@ -495,6 +511,18 @@ void Viewport::DrawShadowPass(GlRenderer& renderer, const FrameContext& ctx, con
     DrawObjects(renderer, ctx, DisplayMode::Rendered);
     renderer.EndShadowPass();
   }
+}
+
+void Viewport::DrawSsaoPass(GlRenderer& renderer, const FrameContext& ctx) {
+  if (!ctx.doc) return;
+  renderer.BeginSsaoPass();
+  DrawObjects(renderer, ctx, DisplayMode::Rendered);
+  renderer.EndSsaoPass();
+  // The ground plane quad itself is drawn separately (DrawGroundPlane,
+  // below) rather than through DrawObjects, so it never lands in this
+  // prepass's depth buffer - the same pre-existing scope DrawShadowPass's
+  // own recursive DrawObjects call already has (an object never casts a
+  // shadow onto, or here gets AO from, the ground plane itself).
 }
 
 void Viewport::DrawGroundPlane(GlRenderer& renderer, const FrameContext& ctx) {
@@ -1062,6 +1090,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       // colour/material and the viewport's own style, the same mode-
       // agnostic way the Ghosted/X-Ray overrides already win on alpha.
       if (o.force_monochrome) c = kMonochromeFillColor;
+      else if (o.force_arctic) c = kArcticFillColor;
       else if (style.force_white) c = Color::FromBytes(245, 245, 245);
       else if (style.monochrome) c = kMonochromeFillColor;
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
@@ -1105,11 +1134,12 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
         renderer.DrawTriangles(d.triangles, d.mesh_vertex_colors, alpha);
         continue;
       }
-      // A Monochrome-tagged object skips Rendered mode's material/texture
-      // shading entirely and falls through to the same flat, lit draw a
-      // non-Rendered viewport uses, just like Ghosted/X-Ray skip it for
-      // their own fixed-alpha fill below (via the transparent-sort branch).
-      if (rendered && !o.force_monochrome) {
+      // A Monochrome/Arctic-tagged object skips Rendered mode's material/
+      // texture shading entirely and falls through to the same flat, lit
+      // draw a non-Rendered viewport uses, just like Ghosted/X-Ray skip it
+      // for their own fixed-alpha fill below (via the transparent-sort
+      // branch).
+      if (rendered && !o.force_monochrome && !o.force_arctic) {
         const Material m = doc.MaterialFor(o);
         if ((m.transparency > 0.001f || o.force_ghosted || o.force_xray) && !ctx.arctic) {
           // Sort key: view-space depth of the bounding-box centre.
@@ -1137,14 +1167,16 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     for (std::size_t candidate_index : render_candidates) {
       const SceneObject& o = doc.Objects()[candidate_index];
       // ShadeSelected's force_shaded and SetObjectDisplayMode's
-      // force_ghosted/force_xray/force_monochrome all fill here - the only
-      // difference between them is the colour/alpha picked below.
-      if ((!o.force_shaded && !o.force_ghosted && !o.force_xray && !o.force_monochrome) || !shown(o)) continue;
+      // force_ghosted/force_xray/force_monochrome/force_arctic all fill
+      // here - the only difference between them is the colour/alpha picked
+      // below.
+      if ((!o.force_shaded && !o.force_ghosted && !o.force_xray && !o.force_monochrome && !o.force_arctic) || !shown(o)) continue;
       o.EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
       Color c = Color::FromBytes(205, 207, 212);
       if (o.force_monochrome) c = kMonochromeFillColor;
+      else if (o.force_arctic) c = kArcticFillColor;
       else if (!o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
       if (o.selected) c = Mix(c, kSelectionColor, 0.55f);
