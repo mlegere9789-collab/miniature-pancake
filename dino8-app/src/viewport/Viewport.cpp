@@ -871,10 +871,11 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
   const Document& doc = *ctx.doc;
   const ModeStyle style = StyleFor(mode);
   const bool rendered = mode == DisplayMode::Rendered;
-  // View-dependent adaptive tessellation: ctx.lod_scale (the *active*
-  // viewport's zoom, shared by every viewport this frame - see
-  // FrameContext::lod_scale) scales the app-wide curve/surface tolerance
-  // Options up or down. Passed to every EnsureAdaptiveDisplay call below,
+  // View-dependent adaptive tessellation: ctx.lod_scale (the finest scale
+  // any open, visible viewport's own zoom calls for, shared by every
+  // viewport this frame - see FrameContext::lod_scale) scales the app-wide
+  // curve/surface tolerance Options up or down. Passed to every
+  // EnsureAdaptiveDisplay call below,
   // so every pass in this one frame (fills, edges, the Z-buffer
   // visualization, sub-object highlighting) tessellates each object at the
   // same resolution. Skipped for ctx.for_render (Render/RenderView image
@@ -1064,9 +1065,10 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       // object/layer colour.
       Color c = Color::FromBytes(205, 207, 212);
       if (rendered || !o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
-      // SetObjectDisplayMode Monochrome wins over both the object's own
-      // colour/material and the viewport's own style, the same mode-
-      // agnostic way the Ghosted/X-Ray overrides already win on alpha.
+      // SetObjectDisplayMode Monochrome/Pen/Arctic win over both the
+      // object's own colour/material and the viewport's own style, the
+      // same mode-agnostic way the Ghosted/X-Ray overrides already win on
+      // alpha.
       if (o.force_monochrome) c = kMonochromeFillColor;
       else if (o.force_pen || o.force_arctic) c = kForceWhiteFillColor;
       else if (style.force_white) c = kForceWhiteFillColor;
@@ -1129,11 +1131,14 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
         draw_rendered(o, m);
         continue;
       }
-      // Pen is always unlit (flat colour, no per-vertex shading) and Arctic
-      // always lit, the same way their viewport-wide ModeStyle::lit values
-      // already differ - mode-agnostic, like every override above.
-      const bool fill_lit = o.force_pen ? false : (o.force_arctic ? true : style.lit);
-      renderer.DrawTriangles(d.triangles, c, fill_lit);
+      // SetObjectDisplayMode Pen/Arctic also override the viewport's own
+      // lit-ness: Pen is always unlit/flat (matching the viewport-wide Pen
+      // mode's own `s.lit = false`), Arctic is always lit (matching the
+      // viewport-wide Arctic mode, which leaves `lit` at its true default)
+      // - so an Arctic-tagged object still shades even in a Pen viewport,
+      // and a Pen-tagged object stays flat even in a lit Shaded viewport.
+      const bool lit = o.force_pen ? false : (o.force_arctic ? true : style.lit);
+      renderer.DrawTriangles(d.triangles, c, lit);
     }
     if (!transparent.empty()) {
       std::sort(transparent.begin(), transparent.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
@@ -1151,12 +1156,10 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       const SceneObject& o = doc.Objects()[candidate_index];
       // ShadeSelected's force_shaded and SetObjectDisplayMode's
       // force_ghosted/force_xray/force_monochrome/force_pen/force_arctic
-      // all fill here - the only difference between them is the colour/
-      // alpha/lit-ness picked below.
-      if ((!o.force_shaded && !o.force_ghosted && !o.force_xray && !o.force_monochrome && !o.force_pen &&
-           !o.force_arctic) ||
-          !shown(o))
-        continue;
+      // all fill here - the only difference between them is the
+      // colour/alpha/lit-ness picked below.
+      if ((!o.force_shaded && !o.force_ghosted && !o.force_xray && !o.force_monochrome && !o.force_pen && !o.force_arctic) ||
+          !shown(o)) continue;
       o.EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
@@ -1167,8 +1170,8 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
       if (o.selected) c = Mix(c, kSelectionColor, 0.55f);
       c.a = EffectiveFillAlpha(o, shaded_style.fill_alpha);
-      const bool fill_lit = o.force_pen ? false : (o.force_arctic ? true : shaded_style.lit);
-      renderer.DrawTriangles(d.triangles, c, fill_lit);
+      const bool lit = o.force_pen ? false : (o.force_arctic ? true : shaded_style.lit);
+      renderer.DrawTriangles(d.triangles, c, lit);
     }
     renderer.EnablePolygonOffset(false);
   }

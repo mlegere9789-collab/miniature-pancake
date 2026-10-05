@@ -13,22 +13,26 @@ class NurbsSurface;
 // Corner treatment for the exact per-vertex polyline case of
 // `NurbsCurve::OffsetInPlane()` (PARITY_MAP.md's offsetshell category,
 // "Curve offset corner handling at kinks": "sharp (miter) only ... No
-// Round/Chamfer/Smooth corner modes" - this closes the Round half of that
-// gap). `Sharp` (the default, and the only behavior before this enum
-// existed) is the exact angle-bisector miter point every corner already
-// used. `Round` only changes a corner where that miter point would
-// otherwise stick out PAST the simple per-edge offset distance on the
-// expanding side of the turn - the "convex, fill-needed" case where a
-// genuine gap opens between the two offset edges - replacing the sharp
-// spike there with a circular arc of radius `|distance|` centered on the
-// ORIGINAL vertex, tangent to both offset edges. A corner on the
-// contracting side of the turn (offsetting there pulls the two edges
+// Round/Chamfer/Smooth corner modes" - this closes the Round and Chamfer
+// halves of that gap). `Sharp` (the default, and the only behavior before
+// this enum existed) is the exact angle-bisector miter point every corner
+// already used. `Round` and `Chamfer` only change a corner where that
+// miter point would otherwise stick out PAST the simple per-edge offset
+// distance on the expanding side of the turn - the "convex, fill-needed"
+// case where a genuine gap opens between the two offset edges - `Round`
+// replacing the sharp spike there with a circular arc of radius
+// `|distance|` centered on the ORIGINAL vertex, tangent to both offset
+// edges, and `Chamfer` replacing it with the single straight segment
+// connecting those same two tangent points directly (the arc's own chord,
+// never computing or returning to the original vertex at all). A corner on
+// the contracting side of the turn (offsetting there pulls the two edges
 // together rather than apart - e.g. a reflex vertex under an otherwise-
 // outward offset) is NOT a "fill" at all - the two offset lines simply
-// cross there, and `Round` leaves that exact crossing point alone, same
-// as `Sharp`: rounding a corner that never had a gap to begin with is not
-// standard behavior in any offset tool and isn't invented here either.
-enum class CurveOffsetCornerStyle { Sharp, Round };
+// cross there, and both `Round` and `Chamfer` leave that exact crossing
+// point alone, same as `Sharp`: cutting a corner that never had a gap to
+// begin with is not standard behavior in any offset tool and isn't
+// invented here either.
+enum class CurveOffsetCornerStyle { Sharp, Round, Chamfer };
 
 // Wraps ON_NurbsCurve. Deliberately exposes the underlying ON_NurbsCurve
 // (via raw()) rather than re-declaring every accessor OpenNURBS already
@@ -976,15 +980,21 @@ class NurbsCurve {
   // `corner_style` (default `Sharp`, every prior caller's unchanged
   // behavior) only affects the POLYLINE case above: see
   // `CurveOffsetCornerStyle`'s own doc comment for exactly which corners
-  // `Round` changes and why a reflex-under-outward-offset corner is left
-  // alone either way. A genuine bonus of `Round` beyond cosmetics: a
-  // convex corner whose turn is close enough to a full 180 degrees that
-  // `Sharp`'s own finite-miter check (`denom <= 1e-9` below) would refuse
-  // it outright now succeeds instead, landing a correspondingly
-  // near-semicircular arc - `Round` never NEEDS the miter point at a
-  // fill corner at all, only the two tangent directions, so the same
-  // near-flat turn that has no finite sharp corner still has a perfectly
-  // well-defined round one.
+  // `Round`/`Chamfer` change and why a reflex-under-outward-offset corner
+  // is left alone either way. A genuine bonus of `Round`/`Chamfer` beyond
+  // cosmetics: a convex corner whose turn is close enough to a full 180
+  // degrees that `Sharp`'s own finite-miter check (`denom <= 1e-9` below)
+  // would refuse it outright now succeeds instead, landing a
+  // correspondingly near-semicircular arc or long chamfer chord - neither
+  // style ever NEEDS the miter point at a fill corner at all, only the
+  // two tangent directions, so the same near-flat turn that has no finite
+  // sharp corner still has a perfectly well-defined round or chamfered
+  // one. For a CLOSED polyline, every style also refuses
+  // (`Result::Failed`) rather than silently returning a self-crossing
+  // loop when the exact `Sharp` miter polygon itself is not simple
+  // (`detail::IsSimplePolygon()`) - a detection-only guard for the
+  // long-disclosed "inward offset of a concave curve can self-intersect"
+  // gap, not a repair: a distance that is genuinely safe still succeeds.
   Result OffsetInPlane(double distance, NurbsCurve& out, double tolerance = -1.0,
                        CurveOffsetCornerStyle corner_style = CurveOffsetCornerStyle::Sharp) const;
 

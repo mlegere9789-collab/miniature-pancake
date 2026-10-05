@@ -842,6 +842,24 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_test_adaptive_display PRIVATE dino8_kernel)
   add_test(NAME dino8_adaptive_display COMMAND dino8_test_adaptive_display)
 
+  # ObjectGrid::EnsureFresh's non-finite-bounding-box guard (src/spatial/
+  # ObjectGrid.cpp) - a NaN/Infinity object box (reachable with no
+  # validation at all via rs.AddPoint()/dino8.AddPoint() in LuaEngine.cpp/
+  # PythonEngine.cpp) used to flow straight into the scene-wide extent via
+  # std::min/std::max, contaminating it with NaN, and from there into every
+  # object's CellOf() call - not just the degenerate object's own -
+  # converting that NaN to int, which is undefined behaviour in C++. Same
+  # dependency shape as dino8_test_block_flip/dino8_find_bench above: a real
+  # Document (SceneObject/BrepMesher), plus src/spatial/ObjectGrid.cpp
+  # itself (Document.cpp never calls into it - PickGrid() just returns the
+  # member reference - so none of those existing Document-based tests
+  # needed it linked in).
+  add_executable(dino8_test_object_grid tests/test_object_grid.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                         src/doc/SubObjectEdit.cpp src/geom/BrepMesher.cpp src/spatial/ObjectGrid.cpp)
+  target_include_directories(dino8_test_object_grid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_object_grid PRIVATE dino8_kernel)
+  add_test(NAME dino8_object_grid COMMAND dino8_test_object_grid)
+
   # Minimal HTTP request server (src/net/ComputeServer.h/.cpp) - see
   # PARITY_MAP.md's "Cloud/network compute service (Rhino.Compute
   # equivalent)" item, which had no server/socket/HTTP code anywhere before
@@ -904,39 +922,25 @@ if(DINO8_BUILD_TESTS)
   # Gaussian-eliminates (O(n^2)/O(n^3)) up to 60 times. AutoResolveFrame
   # itself needs the full Application/Viewport (not used here), but
   # SolveAll/LoadConstraints only need Document - no GL/ImGui code linked.
-  add_executable(dino8_test_sketch_constraints tests/test_sketch_constraints.cpp src/doc/Document.cpp
+  # AutoResolveFrame's own only unresolved reference this target never
+  # links, Application::ActiveViewport() (Doc()/Viewport::CPlane() are
+  # both trivial header-inline accessors, already resolved), is satisfied
+  # by tests/sketch_constraints_link_stub.cpp instead of trying to
+  # dead-strip the whole function at link time - a dead-code-elimination
+  # flag pair (-ffunction-sections/-fdata-sections + --gc-sections) that
+  # turned out to need a different, platform-specific equivalent on every
+  # toolchain and still didn't actually work on MSVC/ARM64 (confirmed from
+  # a real CI run: /Gy + /OPT:REF still left the exact same LNK2019 this
+  # stub now avoids needing to diagnose further). See that stub file's own
+  # comment for why a one-line always-null definition is safe here.
+  add_executable(dino8_test_sketch_constraints tests/test_sketch_constraints.cpp
+                                                tests/sketch_constraints_link_stub.cpp
+                                                src/doc/Document.cpp
                                                 src/doc/SceneObject.cpp src/doc/SubObjectEdit.cpp
                                                 src/geom/BrepMesher.cpp src/sketch/Constraints.cpp
                                                 src/util/json_mini.cpp)
   target_include_directories(dino8_test_sketch_constraints PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${imgui_SOURCE_DIR})
   target_link_libraries(dino8_test_sketch_constraints PRIVATE dino8_kernel)
-  # Constraints.cpp's AutoResolveFrame() (not exercised by this test) calls
-  # real Application/Viewport methods this target never links - dead code
-  # with no live caller here, so per-function/data sections plus a
-  # dead-section sweep at link time drop it (and its otherwise-unresolved
-  # references) before the linker ever needs to resolve them, rather than
-  # pulling in the entire GL/ImGui app just to satisfy a function this
-  # binary never calls. Each toolchain needs its own flag pair: GNU ld
-  # takes -ffunction-sections/-fdata-sections plus --gc-sections; Apple's
-  # ld has no GNU-style --gc-sections at all (a hard "unknown options"
-  # link failure, not a warning) and uses -dead_strip instead; MSVC's
-  # link.exe silently warns and ignores an unrecognized -Wl,--gc-sections
-  # (LNK4044) rather than erroring - which looks like success right up
-  # until the now-NOT-dead-stripped AutoResolveFrame's own call to
-  # Application::ActiveViewport() fails to resolve (LNK2019) - MSVC's own
-  # equivalent is /Gy (function-level linking) at compile time plus
-  # /OPT:REF (eliminate unreferenced functions/data) at link time.
-  if(MSVC)
-    target_compile_options(dino8_test_sketch_constraints PRIVATE /Gy)
-    target_link_options(dino8_test_sketch_constraints PRIVATE /OPT:REF)
-  else()
-    target_compile_options(dino8_test_sketch_constraints PRIVATE -ffunction-sections -fdata-sections)
-    if(APPLE)
-      target_link_options(dino8_test_sketch_constraints PRIVATE -Wl,-dead_strip)
-    else()
-      target_link_options(dino8_test_sketch_constraints PRIVATE -Wl,--gc-sections)
-    endif()
-  endif()
   add_test(NAME dino8_sketch_constraints COMMAND dino8_test_sketch_constraints)
 
   # Timing benchmark + regression guard for Array/ArrayLinear/ArrayPolar and

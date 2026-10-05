@@ -2989,7 +2989,61 @@ void TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan() {
     const ON_Interval d = bent.raw().Domain();
     const double corner_t = d.ParameterAt(0.5);  // FromControlPoints' clamped-uniform knots put the shared vertex at the curve's own domain midpoint
     Check(std::abs(bent_spans[0].t0 - d.Min()) < 1e-6, "the overlap span starts at the curve's own domain start");
-    Check(std::abs(bent_spans[0].t1 - corner_t) < 0.05, "the overlap span ends at (approximately) the polyline's own corner parameter, where the curve leaves the plane");
+    // Bisection-tightened to well past the ~0.0125-wide (opt.mesh_tolerance
+    // = 0.05-driven) sampling pitch this span's own boundary used to be
+    // limited to (the old, honestly-disclosed "only as precise as the
+    // sampling resolution" gap this function's own doc comment used to
+    // name) - this bound would fail against the un-bisected sample-grid
+    // boundary alone (off by up to ~0.0125), and only passes now that
+    // RefineBoundary() bisects the last on/off sample pair down to near
+    // machine precision. 1e-5, not opt.tolerance (1e-6) itself: the second
+    // leg's own dz/dt is 5 (3D length 5 over a unit parameter span), so the
+    // bisection's own stopping point - the parameter where distance-to-plane
+    // first reaches opt.tolerance, not the exact zero-distance corner -
+    // is itself offset from the true corner by ~opt.tolerance / 5, a real,
+    // geometry-dependent floor well under 1e-5 but not under 1e-7.
+    Check(std::abs(bent_spans[0].t1 - corner_t) < 1e-5, "the overlap span ends at the polyline's own exact corner parameter, bisection-tightened well past the sampling pitch");
+  }
+}
+
+// Same-pass follow-up: closes this function's own previously-disclosed "span
+// endpoints are only as precise as the sampling resolution" honesty gap -
+// see RefineBoundary() (surface_intersect.cpp). Deliberately uses a coarse
+// opt.mesh_tolerance so the un-bisected sampling pitch would be wide enough
+// (fractions of the curve's own total length) that a tight boundary check
+// could only pass after bisection, not by accident of a fine-enough grid.
+void TestIntersectCurveSurfaceOverlapBisectionTightensSpanBoundary() {
+  using dino8::kernel::CurveSurfaceOverlap;
+  using dino8::kernel::IntersectCurveSurfaceOverlap;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 5.0;  // deliberately coarse: forces the minimum-divisions (64-sample) floor, a wide pitch relative to this curve's own length
+
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-50, 50), true);
+  ground.SetExtents(1, ON_Interval(-50, 50), true);
+
+  // A leg in the plane from x=0 to x=37 (an awkward, non-grid-aligned
+  // length), then straight up - the exact same shape as the bent-polyline
+  // fixture above, at a scale where the forced-coarse sampling pitch
+  // (curve length / 64 =~ 1.16 in 3D, well over a percent of the leg) would
+  // leave the un-bisected boundary off by a visible fraction of the leg,
+  // not a negligible rounding error.
+  const NurbsCurve bent = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(37, 0, 0), Point3d(37, 0, 20)}, 1);
+  const ON_Interval d = bent.raw().Domain();
+  const double corner_t = d.ParameterAt(0.5);
+
+  const std::vector<CurveSurfaceOverlap> spans = IntersectCurveSurfaceOverlap(bent.raw(), ground, opt);
+  Check(spans.size() == 1, "the coarsely-sampled bent polyline still reports exactly one overlap span");
+  if (spans.size() == 1) {
+    // The un-bisected sample grid alone could not have landed this close -
+    // its own pitch here is on the order of the curve's total length / 64,
+    // many orders of magnitude looser than 1e-7.
+    Check(std::abs(spans[0].t1 - corner_t) < 1e-7, "the span's own boundary is bisection-tightened to near machine precision even under a deliberately coarse sampling pitch");
   }
 }
 
@@ -3214,8 +3268,18 @@ void TestIntersectSurfacesOverlapDetectsCoincidentRegion() {
   if (regions.size() == 1) {
     const SurfaceOverlapRegion& r = regions[0];
     Check(!r.entire_surface, "the overlap region does not cover all of a's own domain");
-    Check(std::abs(r.u0 - 0.0) < 0.5 && std::abs(r.u1 - 5.0) < 0.5, "the overlap region's own u-range matches the hand-derivable [0, 5] overlap");
-    Check(std::abs(r.v0 - 0.0) < 0.5 && std::abs(r.v1 - 5.0) < 0.5, "the overlap region's own v-range matches the hand-derivable [0, 5] overlap");
+    // u1/v1 sit at a's OWN domain edge (b's own far edge at x=y=10 is well
+    // past a's domain of [-5, 5], so a's own edge - not a genuine crossing -
+    // is what actually limits this side) and are exact already; u0/v0 are
+    // the genuine crossing boundaries (at b's near edge, x=y=0) and are now
+    // bisection-tightened well past the old grid-cell-sized (~0.175, at this
+    // opt.mesh_tolerance) honesty gap this function's own doc comment used
+    // to disclose for every extent. Not tighter than opt.tolerance (1e-6)
+    // itself: ErrOnB's own admission test is "within opt.tolerance", so the
+    // bisected crossing genuinely sits up to opt.tolerance past the exact
+    // geometric edge (slope 1 here - a flat in-plane distance), not AT it.
+    Check(std::abs(r.u0 - 0.0) < 1e-5 && std::abs(r.u1 - 5.0) < 1e-9, "the overlap region's own u-range matches the hand-derivable [0, 5] overlap to bisection precision");
+    Check(std::abs(r.v0 - 0.0) < 1e-5 && std::abs(r.v1 - 5.0) < 1e-9, "the overlap region's own v-range matches the hand-derivable [0, 5] overlap to bisection precision");
   }
 
   // Two surfaces with the exact same domain on the same plane coincide
@@ -3231,6 +3295,113 @@ void TestIntersectSurfacesOverlapDetectsCoincidentRegion() {
   offset.SetExtents(0, ON_Interval(-5, 5), true);
   offset.SetExtents(1, ON_Interval(-5, 5), true);
   Check(IntersectSurfacesOverlap(a, offset, opt).empty(), "two parallel, offset planes report no overlap region at all");
+}
+
+// Same-pass follow-up: closes this function's own previously-disclosed "as
+// precise as the sampling resolution" honesty gap for EVERY extent, not
+// just the one side the test above happens to exercise (its own u1/v1 sit
+// at a's own domain edge, already exact with or without bisection). This
+// fixture keeps `b` strictly INSIDE `a`'s domain on every side, so all four
+// of u0/u1/v0/v1 are genuine crossing boundaries that only bisection can
+// tighten - and deliberately uses a coarse opt.mesh_tolerance (forcing the
+// minimum 12x12 grid) so the un-bisected grid pitch here (~8.3 units) is
+// far too coarse to pass a tight check by accident.
+void TestIntersectSurfacesOverlapBisectionTightensRegionBoundary() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::IntersectSurfacesOverlap;
+  using dino8::kernel::SurfaceOverlapRegion;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 20.0;  // deliberately coarse: forces the minimum-divisions (12x12) grid floor
+
+  const ON_Plane shared_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  ON_PlaneSurface a(shared_plane);
+  a.SetExtents(0, ON_Interval(-50, 50), true);
+  a.SetExtents(1, ON_Interval(-50, 50), true);
+  ON_PlaneSurface b(shared_plane);
+  b.SetExtents(0, ON_Interval(10, 40), true);
+  b.SetExtents(1, ON_Interval(10, 40), true);
+
+  const std::vector<SurfaceOverlapRegion> regions = IntersectSurfacesOverlap(a, b, opt);
+  Check(regions.size() == 1, "a strictly-interior coincident rectangle reports exactly one overlap region, even under a coarse grid");
+  if (regions.size() == 1) {
+    const SurfaceOverlapRegion& r = regions[0];
+    // The un-bisected grid alone (cell size ~8.3 at this opt.mesh_tolerance)
+    // could not land within 1e-4 of any of these four hand-derivable
+    // boundaries by chance - only RefineBoundary()'s own bisection does.
+    Check(std::abs(r.u0 - 10.0) < 1e-4, "u0 bisection-tightens to b's own hand-derivable near edge (x=10), not the coarse grid line nearest it");
+    Check(std::abs(r.u1 - 40.0) < 1e-4, "u1 bisection-tightens to b's own hand-derivable far edge (x=40), not the coarse grid line nearest it");
+    Check(std::abs(r.v0 - 10.0) < 1e-4, "v0 bisection-tightens to b's own hand-derivable near edge (y=10), not the coarse grid line nearest it");
+    Check(std::abs(r.v1 - 40.0) < 1e-4, "v1 bisection-tightens to b's own hand-derivable far edge (y=40), not the coarse grid line nearest it");
+  }
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category, "Analytic/
+// analytic SSX closed forms (plane/plane, plane/cylinder, cylinder/cylinder,
+// plane/sphere, cone, torus)" bullet named plane/sphere directly as one of the
+// still-missing analytic pairs: "No public analytic-SSX API, and no
+// plane/sphere, cone or torus closed form." IntersectPlaneSphere() closes that
+// one named pair with a true closed form (no mesh seeding at all).
+void TestIntersectPlaneSphereClosedForm() {
+  using dino8::kernel::IntersectPlaneSphere;
+  using dino8::kernel::Point3d;
+
+  const ON_Plane ground(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const double tol = 1e-6;
+
+  // A sphere straddling the plane (center ON the plane) meets it in the
+  // hand-derivable great circle of the sphere's own radius, centered at the
+  // plane origin.
+  const ON_Sphere straddling(ON_3dPoint(0, 0, 0), 2.0);
+  const auto mid = IntersectPlaneSphere(ground, straddling, tol);
+  Check(!mid.empty && !mid.tangent, "a sphere centered exactly on the plane produces a genuine circle, not a miss or a tangent point");
+  if (!mid.empty && !mid.tangent) {
+    Check(mid.circle.Center().DistanceTo(Point3d(0, 0, 0)) < 1e-6, "the circle's own center is the hand-derivable plane origin");
+    Check(std::abs(mid.circle.Radius() - 2.0) < 1e-6, "the circle's own radius equals the sphere's full radius when the plane passes through its center");
+    Check(mid.curve.IsValid(), "the circle's own NURBS form (GetNurbForm) is a valid curve");
+    // Every sample of the fitted curve must stay exactly on the plane (z == 0)
+    // and at exactly the sphere's own radius from the origin - the defining
+    // property of this analytic circle, not merely "close to right".
+    bool all_on_plane_and_radius = true;
+    const ON_Interval cd = mid.curve.Domain();
+    for (int k = 0; k <= 16; ++k) {
+      const Point3d p = mid.curve.PointAt(cd.ParameterAt(static_cast<double>(k) / 16));
+      if (std::abs(p.z) > 1e-5 || std::abs(p.DistanceTo(Point3d(0, 0, 0)) - 2.0) > 1e-5) { all_on_plane_and_radius = false; break; }
+    }
+    Check(all_on_plane_and_radius, "every sampled point of the fitted circle curve lies exactly on the plane at exactly the sphere's own radius");
+  }
+
+  // A sphere resting ABOVE the plane, tangent to it from above at exactly
+  // one hand-derivable point (the origin) - the same degenerate case
+  // FindSurfaceTangentContacts()'s own sphere-on-plane test uses one
+  // function over.
+  const double radius = 2.0;
+  const ON_Sphere resting(ON_3dPoint(0, 0, radius), radius);
+  const auto touch = IntersectPlaneSphere(ground, resting, tol);
+  Check(!touch.empty && touch.tangent, "a sphere exactly tangent to the plane reports a tangent point, not a circle or a miss");
+  if (touch.tangent) Check(touch.point.DistanceTo(Point3d(0, 0, 0)) < 1e-6, "the tangent point is the hand-derivable origin");
+
+  // A sphere held well clear of the plane (center at z = 50, radius 2) does
+  // not meet it at all.
+  const ON_Sphere far(ON_3dPoint(0, 0, 50), radius);
+  Check(IntersectPlaneSphere(ground, far, tol).empty, "a sphere held well clear of the plane reports a genuine miss");
+
+  // A sphere genuinely crossing the plane (center at z = 1, radius 2: the
+  // plane cuts it at the hand-derivable height z = 0, radius sqrt(3)) must
+  // produce a real circle of that exact hand-derived radius.
+  const ON_Sphere crossing(ON_3dPoint(0, 0, 1.0), radius);
+  const auto cross = IntersectPlaneSphere(ground, crossing, tol);
+  Check(!cross.empty && !cross.tangent, "a sphere genuinely crossing the plane off-center produces a real circle");
+  if (!cross.empty && !cross.tangent) {
+    Check(std::abs(cross.circle.Radius() - std::sqrt(3.0)) < 1e-6, "the crossing circle's own radius matches the hand-derivable sqrt(r^2 - d^2)");
+    Check(cross.circle.Center().DistanceTo(Point3d(0, 0, 0)) < 1e-6, "the crossing circle's own center is the sphere center's projection onto the plane");
+  }
+
+  // Invalid input (zero-radius sphere) is refused outright, not treated as
+  // a degenerate circle.
+  const ON_Sphere degenerate(ON_3dPoint(0, 0, 0), 0.0);
+  Check(IntersectPlaneSphere(ground, degenerate, tol).empty, "a zero-radius sphere is refused as a genuine miss, not a degenerate circle");
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
@@ -5605,6 +5776,107 @@ void TestTrimSheetBySolidCurvedSolidCylinder() {
   Check(std::abs((inside_area + outside_area) - sheet.Area()) < 0.05,
         "the inside and outside portions' areas still sum back to the original untrimmed sheet's own area "
         "exactly, with a genuinely curved classification solid");
+}
+
+// A genuinely curved SHEET (as distinct from the genuinely curved SOLID the
+// two tests above exercise) - PARITY_MAP.md's "Sheet/solid trim" bullet's
+// own last disclosed gap for this half: "only a flat cutting plane is
+// tested" for the sheet operand specifically. The same bulged-bicubic-
+// Bezier-patch construction TestThickenOnGenuinelyCurvedBulgedFreeformSheet
+// (this file, above) already uses for Thicken(), re-centered at z=2 and
+// widened to the same -1..5 footprint margin SplitBySheet's own flat-sheet
+// tests use, so every existing closed-form expectation (box volume 64,
+// margin past the box's own [0,4] footprint on every side) still applies -
+// only the sheet's own flatness changes. Every interior z value is a convex
+// combination of the control net's own z values (2.0 at every corner but
+// one, 2.6 at the raised one) - B-spline/Bezier blending functions are a
+// partition of unity, so the true surface never leaves [2.0, 2.6], a full
+// 2 units of margin from either of the box's own z=0/z=4 faces - this
+// guarantees the sheet still fully severs the box everywhere inside its
+// footprint, exactly as the flat sheet does, without needing to measure the
+// true (sub-control-point) peak height directly.
+dino8::kernel::Brep MakeBulgedSheetZ(double x0, double y0, double x1, double y1, double base_z, double bulge) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      const double x = x0 + (x1 - x0) * i / 3.0;
+      const double y = y0 + (y1 - y0) * j / 3.0;
+      const double z = base_z + ((i == 2 && j == 2) ? bulge : 0.0);
+      grid.push_back(Point3d(x, y, z));
+    }
+  }
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 4, 4, /*u_degree=*/3, /*v_degree=*/3);
+  return Brep::FromSurface(surface);
+}
+
+void TestSplitBySheetGenuinelyCurvedSheetThroughBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBySheet;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep sheet = MakeBulgedSheetZ(-1, -1, 5, 5, 2.0, 0.6);
+
+  const auto [positive_side, negative_side] = SplitBySheet(box, sheet);
+  Check(positive_side.raw().IsValid(), "SplitBySheet's positive_side (against a genuinely curved sheet) is a valid ON_Brep");
+  Check(negative_side.raw().IsValid(), "SplitBySheet's negative_side (against a genuinely curved sheet) is a valid ON_Brep");
+
+  // A real, previously-undocumented limitation found while building this
+  // test, not assumed: the generic per-face `Brep::TessellateToClosedMesh`
+  // (used successfully by this category's own FLAT-sheet SplitBySheet
+  // tests above) does NOT reliably close this result - confirmed directly
+  // (tests/scratch_test.cpp), it leaves ~200-450 residual boundary edges at
+  // every resolution tried (16/32/64), all along the seam between the new
+  // CURVED sheet-cap face and the box's adjoining PLANAR side-wall faces -
+  // the same already-disclosed "the app's own generic closed-mesh pipeline
+  // cannot yet measure a general-engine-family Brep whose faces were never
+  // meant for independent per-face tessellation" gap this category's
+  // "Face-face imprint" bullet already names for `ImprintFaces`, now
+  // confirmed to affect a curved-capped `SplitBySheet` result too. The
+  // SPECIALIZED `TessellateGeneralBooleanClosedMesh` (boolean_general.h,
+  // already proven elsewhere in this file for any Brep from this shared
+  // SSX-fragmentation family) closes it exactly at every resolution tried -
+  // used here instead, the same substitution this file's own freeform
+  // BooleanCombineGeneral tests already make for the identical reason.
+  const Mesh mp = TessellateGeneralBooleanClosedMesh(positive_side, 32, 32);
+  const Mesh mn = TessellateGeneralBooleanClosedMesh(negative_side, 32, 32);
+  Check(mp.IsClosedManifold() && mn.IsClosedManifold(),
+        "both sides of a curved-sheet split are genuine closed manifolds via TessellateGeneralBooleanClosedMesh, "
+        "not just IsValid() B-reps");
+  Check(std::abs((mp.Volume() + mn.Volume()) - 64.0) < 0.1,
+        "the two halves' volumes sum back to the original box's own exact volume (4^3 = 64), with a genuinely "
+        "curved (not flat) cutting sheet - no material gained or lost");
+  Check(mp.Volume() > 20.0 && mp.Volume() < 44.0 && mn.Volume() > 20.0 && mn.Volume() < 44.0,
+        "neither side is degenerate (near-0 or near-64) - the curved sheet genuinely splits the box into two "
+        "substantial pieces, roughly half each, not an all-or-nothing miss");
+}
+
+void TestTrimSheetBySolidGenuinelyCurvedSheetAgainstBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TrimSheetBySolid;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep sheet = MakeBulgedSheetZ(-1, -1, 5, 5, 2.0, 0.6);
+  const double sheet_area = sheet.Area();
+
+  const Brep inside = TrimSheetBySolid(sheet, box, /*keep_inside=*/true);
+  Check(inside.raw().IsValid(), "TrimSheetBySolid's inside portion (against a genuinely curved sheet) is a valid ON_Brep");
+  const double inside_area = inside.TessellateToClosedMesh(32, 32).Area();
+  Check(inside_area > 14.0 && inside_area < 18.0,
+        "the kept portion's area is close to the box's own 4x4 footprint (16) - the curved sheet's own gentle "
+        "bulge changes true surface area only slightly from the flat-sheet case");
+
+  const Brep outside = TrimSheetBySolid(sheet, box, /*keep_inside=*/false);
+  Check(outside.raw().IsValid(), "TrimSheetBySolid's outside portion (against a genuinely curved sheet) is a valid ON_Brep");
+  const double outside_area = outside.TessellateToClosedMesh(32, 32).Area();
+  Check(std::abs((inside_area + outside_area) - sheet_area) < 0.1,
+        "the inside and outside portions' areas sum back to the original untrimmed curved sheet's own area "
+        "exactly, with a genuinely curved (not flat) sheet");
 }
 
 void TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume() {
@@ -54335,6 +54607,126 @@ void TestRecognizeHolesBlindAndThroughRoundTrip() {
   }
 }
 
+void TestCopyHoleFeatureCopyMirrorAndRotatePlacements() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::CopyHoleFeature;
+  using dino8::kernel::HoleFeature;
+  using dino8::kernel::MakeHole;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::RecognizeHoles;
+
+  // parity-map "kernel: Local / direct-edit operations" - "Move / copy /
+  // rotate / mirror a hole feature": the app's own ApplyHoleXform
+  // (cmd_solidtools.cpp:1027) only ever re-subtracts a stored cutter MESH
+  // from a stored pre-cut mesh, producing a mesh with no B-rep feature at
+  // all. CopyHoleFeature() (features.h) is this kernel's first genuine
+  // B-rep feature-level hole placement: recognize an existing hole via
+  // RecognizeHoles(), transform its own axis frame, and drill an
+  // ADDITIONAL hole with MakeHole() at the transformed location - closing
+  // the "copy"/"rotate"/"mirror" two-thirds of this item (still no
+  // in-place "move": see that function's own doc comment for why).
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  // Off the box's own x==2/y==2 symmetry planes, so a mirror or rotation
+  // below genuinely relocates it rather than mapping it onto itself.
+  const Point3d center(1, 1, 4);
+  const Vector3d down(0, 0, -1);
+  const double radius = 0.5;
+
+  const Brep drilled = MakeHole(box, center, down, radius, /*depth=*/0.0, /*through=*/true);
+  const std::vector<HoleFeature> found = RecognizeHoles(drilled);
+  Check(found.size() == 1, "fixture has exactly one recognized hole before any copy");
+  const HoleFeature hf = found[0];
+
+  {
+    // Copy: a plain translation to (3, 3, 4) - still within the box and
+    // well-separated from the original (center distance sqrt(8) ~= 2.83,
+    // comfortably more than 2*radius - the same "well-separated centers
+    // only" margin MakeHoles()'s own doc comment already requires for a
+    // reliably closed tessellation).
+    const ON_Xform move = ON_Xform::TranslationTransformation(Vector3d(2, 2, 0));
+    const Brep copied = CopyHoleFeature(drilled, hf, move);
+    const std::vector<HoleFeature> after = RecognizeHoles(copied);
+    Check(after.size() == 2, "CopyHoleFeature adds a second hole, keeping the first");
+
+    const Point3d expected_origin = move * hf.origin;
+    const Vector3d expected_axis = move * hf.axis;
+    bool found_original = false, found_copy = false;
+    for (const HoleFeature& f : after) {
+      if (f.origin.DistanceTo(hf.origin) < 1e-6) found_original = true;
+      if (f.origin.DistanceTo(expected_origin) < 1e-6 && (f.axis - expected_axis).Length() < 1e-6) found_copy = true;
+    }
+    Check(found_original, "CopyHoleFeature leaves the original hole's own location untouched");
+    Check(found_copy, "CopyHoleFeature's new hole lands exactly at the translated location with the translated axis");
+
+    // Matches the exact volume of an independent MakeHole() call at that
+    // same translated location - proof this is a genuine second cut, not
+    // a mislabeled no-op or a duplicate of the first.
+    const Brep sequential = MakeHole(drilled, Point3d(3, 3, 4), down, radius, 0.0, true);
+    const Mesh m_copy = copied.TessellateToClosedMesh(32, 128);
+    const Mesh m_sequential = sequential.TessellateToClosedMesh(32, 128);
+    Check(std::abs(m_copy.Volume() - m_sequential.Volume()) < 0.5,
+          "CopyHoleFeature's translated copy removes the exact same volume as an independent MakeHole() call at "
+          "that same location");
+  }
+  {
+    // Mirror: reflect across the box's own x==2 plane. The original
+    // center (x==1) is off that plane, so the mirrored copy genuinely
+    // lands elsewhere (x==3); the drilling axis (0,0,-1), having no
+    // x-component, is unchanged by this particular mirror.
+    ON_Xform mirror;
+    mirror.Mirror(Point3d(2, 2, 4), Vector3d(1, 0, 0));
+    const Brep mirrored = CopyHoleFeature(drilled, hf, mirror);
+    const std::vector<HoleFeature> after = RecognizeHoles(mirrored);
+    Check(after.size() == 2, "CopyHoleFeature's mirror adds a second hole, keeping the first");
+
+    const Point3d expected_origin = mirror * hf.origin;
+    Check(expected_origin.DistanceTo(Point3d(3, 1, 4)) < 1e-9,
+          "sanity: the mirror plane through (2,2,4) with normal (1,0,0) reflects (1,1,4) to (3,1,4)");
+    bool found_mirror = false;
+    for (const HoleFeature& f : after) {
+      if (f.origin.DistanceTo(expected_origin) < 1e-6 && (f.axis - down).Length() < 1e-6) found_mirror = true;
+    }
+    Check(found_mirror, "CopyHoleFeature's mirrored copy lands exactly at the reflected location with the "
+                        "(unchanged, since it has no x-component) drilling axis");
+  }
+  {
+    // Rotate: 90 degrees about the vertical line through (2, 2, 0) - a
+    // bolt-circle-style placement. The original axis (0,0,-1) is parallel
+    // to the rotation axis, so it's unchanged; the origin's own (x,y)
+    // offset from the rotation center, (-1,-1), rotates to (1,-1).
+    ON_Xform rotate;
+    rotate.Rotation(ON_PI / 2.0, Vector3d(0, 0, 1), Point3d(2, 2, 0));
+    const Brep rotated = CopyHoleFeature(drilled, hf, rotate);
+    const std::vector<HoleFeature> after = RecognizeHoles(rotated);
+    Check(after.size() == 2, "CopyHoleFeature's rotation adds a second hole, keeping the first");
+
+    const Point3d expected_origin = rotate * hf.origin;
+    Check(expected_origin.DistanceTo(Point3d(3, 1, 4)) < 1e-6,
+          "sanity: rotating (1,1,4) by 90 degrees about the vertical line through (2,2,*) lands at (3,1,4)");
+    bool found_rotated = false;
+    for (const HoleFeature& f : after) {
+      if (f.origin.DistanceTo(expected_origin) < 1e-6 && (f.axis - down).Length() < 1e-6) found_rotated = true;
+    }
+    Check(found_rotated, "CopyHoleFeature's rotated copy lands exactly at the rotated location with its "
+                        "(axis-parallel-to-rotation-axis, so unchanged) drilling direction");
+  }
+}
+
+void TestCopyHoleFeatureRefusesDegenerateXform() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::CopyHoleFeature;
+  using dino8::kernel::HoleFeature;
+  using dino8::kernel::MakeHole;
+  using dino8::kernel::RecognizeHoles;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep drilled = MakeHole(box, Point3d(2, 2, 4), Vector3d(0, 0, -1), 0.5, 0.0, true);
+  const HoleFeature hf = RecognizeHoles(drilled)[0];
+
+  Check(Throws([&] { CopyHoleFeature(drilled, hf, ON_Xform::ZeroTransformation); }),
+        "CopyHoleFeature throws when xform collapses the hole's own axis frame to a degenerate plane");
+}
+
 // Builds a SINGLE uniform-radius capped cylinder, standing on `base` and
 // growing along `axis`, but assembled as TWO adjacent Brep::CylindricalFace
 // segments (`[0, base_length]` then `[base_length, base_length +
@@ -62877,6 +63269,194 @@ void TestCurveOffsetInPlaneRoundStyleClosedSquareMatchesClosedFormPerimeter() {
         "rounded square, not Sharp's own longer mitered-corner perimeter");
 }
 
+// `CurveOffsetCornerStyle::Chamfer`: on the same genuinely convex corners
+// `TestCurveOffsetInPlaneRoundStyleFilletsConvexCorners()` already
+// exercises, Chamfer must cut the sharp spike with the single STRAIGHT
+// segment directly between the two tangent points T0/T1 - the arc's own
+// chord, not the arc itself. Verified independently of the
+// implementation: the chord's own midpoint (computed here from scratch)
+// must lie ON the result, while neither Sharp's own (farther) corner
+// point nor Round's own (farther-still, since it bulges OUT to the full
+// fillet radius) bisector point do.
+void TestCurveOffsetInPlaneChamferStyleCutsConvexCorners() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point3d> cps = {
+      Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  ON_Plane plane;
+  Check(poly.raw().IsPlanar(&plane, 1e-9), "OffsetInPlane Chamfer setup: curve is planar");
+
+  NurbsCurve out_sharp, out_round, out_chamfer;
+  Check(poly.OffsetInPlane(1.0, out_sharp) == Result::Ok, "Sharp offset still succeeds on this fixture");
+  Check(poly.OffsetInPlane(1.0, out_round, -1.0, CurveOffsetCornerStyle::Round) == Result::Ok,
+        "Round offset still succeeds on this fixture");
+  Check(poly.OffsetInPlane(1.0, out_chamfer, -1.0, CurveOffsetCornerStyle::Chamfer) == Result::Ok,
+        "Chamfer offset succeeds on the same open polyline");
+
+  Check(!(out_chamfer.Degree() == 1 && out_chamfer.ControlPointCount() == 4),
+        "Chamfer offset is NOT the same plain 4-CV polyline Sharp produces - the corners were genuinely cut");
+
+  for (int i = 1; i <= 2; ++i) {
+    Vector3d edge_in_dir = cps[static_cast<size_t>(i)] - cps[static_cast<size_t>(i - 1)];
+    Vector3d edge_out_dir = cps[static_cast<size_t>(i + 1)] - cps[static_cast<size_t>(i)];
+    edge_in_dir.Unitize();
+    edge_out_dir.Unitize();
+    Vector3d n0 = ON_CrossProduct(edge_in_dir, plane.zaxis);
+    Vector3d n1 = ON_CrossProduct(edge_out_dir, plane.zaxis);
+    n0.Unitize();
+    n1.Unitize();
+
+    const Point3d vertex = cps[static_cast<size_t>(i)];
+    const Point3d T0 = vertex + 1.0 * n0;
+    const Point3d T1 = vertex + 1.0 * n1;
+    const Point3d chord_mid((T0.x + T1.x) * 0.5, (T0.y + T1.y) * 0.5, (T0.z + T1.z) * 0.5);
+
+    Check(out_chamfer.ClosestPoint(T0, 2000).DistanceTo(T0) < 1e-6,
+          "Chamfer offset: the result passes through the chord's own start tangent point T0");
+    Check(out_chamfer.ClosestPoint(T1, 2000).DistanceTo(T1) < 1e-6,
+          "Chamfer offset: the result passes through the chord's own end tangent point T1");
+    Check(out_chamfer.ClosestPoint(chord_mid, 2000).DistanceTo(chord_mid) < 1e-6,
+          "Chamfer offset: the result passes through the chord's own independently-computed midpoint - proof "
+          "this corner is a genuine straight cut, not an arc or a miter");
+
+    // The chord's own midpoint sits at distance 1/sqrt(2) =~ 0.707 from
+    // the vertex for this fixture's 90-degree corners - strictly inside
+    // Round's own full fillet radius (1.0) - so Round's independently-
+    // computed bisector point must NOT lie on the Chamfer result.
+    Vector3d bisector = n0 + n1;
+    const double bisector_len = bisector.Length();
+    Check(bisector_len > 1e-9, "Chamfer corner setup: the two offset directions are not opposite");
+    const Point3d round_bisector_point = vertex + (1.0 / bisector_len) * bisector;
+    Check((round_bisector_point - vertex).Length() > (chord_mid - vertex).Length() + 1e-6,
+          "Chamfer corner setup: Round's own bisector point really is farther from the vertex than Chamfer's "
+          "own chord midpoint");
+    Check(out_chamfer.ClosestPoint(round_bisector_point, 2000).DistanceTo(round_bisector_point) > 0.01,
+          "Chamfer offset: the result does NOT pass through Round's own (farther) bisector point");
+
+    const Point3d sharp_corner = out_sharp.ControlPointAt(i);
+    Check(out_chamfer.ClosestPoint(sharp_corner, 2000).DistanceTo(sharp_corner) > 0.1,
+          "Chamfer offset: the result does NOT pass through Sharp's own (farther) sharp corner point");
+  }
+}
+
+// On a polygon with one reflex (concave) vertex, `Chamfer` must leave that
+// one corner exactly as `Sharp`/`Round` already do - the same miter-line
+// crossing, since there is no gap there to cut - while still cutting its
+// genuinely convex neighbors. Reuses
+// `TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter`'s
+// own L-tromino fixture (vertex index 3 is its one reflex corner).
+void TestCurveOffsetInPlaneChamferStyleLeavesConcaveCornerAsExactMiter() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0),  Point3d(10, 0, 0), Point3d(10, 4, 0),
+                                       Point3d(4, 4, 0),  Point3d(4, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out_sharp, out_chamfer;
+  Check(poly.OffsetInPlane(1.0, out_sharp) == Result::Ok, "Sharp offset still succeeds on the reflex fixture");
+  Check(poly.OffsetInPlane(1.0, out_chamfer, -1.0, CurveOffsetCornerStyle::Chamfer) == Result::Ok,
+        "Chamfer offset succeeds on the same reflex fixture");
+
+  const Point3d reflex_sharp_corner = out_sharp.ControlPointAt(3);
+  Check(out_chamfer.ClosestPoint(reflex_sharp_corner, 2000).DistanceTo(reflex_sharp_corner) < 1e-6,
+        "Chamfer offset: the reflex (concave) corner is untouched - the result still passes through exactly "
+        "Sharp's own miter point there");
+
+  for (int i : {2, 4}) {
+    const Point3d sharp_corner = out_sharp.ControlPointAt(i);
+    Check(out_chamfer.ClosestPoint(sharp_corner, 2000).DistanceTo(sharp_corner) > 0.01,
+          "Chamfer offset: a genuinely convex neighbor of the reflex vertex is NOT left at Sharp's own corner "
+          "point - it was cut");
+  }
+}
+
+// A CLOSED polygon exercises the wraparound seam corner Chamfer's own
+// assembly has to splice last - must still close up exactly, and its own
+// total length must match the independent closed-form perimeter of a
+// chamfered square: four straight sides at the ORIGINAL edge length (same
+// "edge-fraction" position Sharp's own miter extends from, unlike a
+// shortened chamfered side - see below) minus nothing (the chamfer cut
+// replaces the corner's own extension, it does not shorten the straight
+// edge pieces themselves, exactly the same convention
+// `TestCurveOffsetInPlaneRoundStyleClosedSquareMatchesClosedFormPerimeter()`
+// already establishes for Round) plus four straight chords, each of
+// length `2 * distance * sin(turn_angle / 2)` - for this fixture's four
+// 90-degree turns, `2 * distance * sin(45deg) = distance * sqrt(2)`.
+void TestCurveOffsetInPlaneChamferStyleClosedSquareMatchesClosedFormPerimeter() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out;
+  const double distance = 1.0;
+  Check(poly.OffsetInPlane(distance, out, -1.0, CurveOffsetCornerStyle::Chamfer) == Result::Ok,
+        "Chamfer offset succeeds on a closed square");
+  Check(out.IsClosed(), "Chamfer offset on a closed square: the result is itself closed");
+  Check(out.PointAt(out.Domain().min).DistanceTo(out.PointAt(out.Domain().max)) < 1e-6,
+        "Chamfer offset on a closed square: the wraparound seam corner closes the loop exactly");
+
+  const double expected_length = 4.0 * 10.0 + 4.0 * distance * std::sqrt(2.0);
+  Check(std::abs(out.Length(4000) - expected_length) < 1e-3,
+        "Chamfer offset on a closed square: total length matches 4 full-length sides plus four straight "
+        "45-degree chamfer chords - the independent closed-form perimeter of a chamfered square, shorter "
+        "than both Sharp's own mitered-corner perimeter and Round's own arc-cornered one");
+  Check(out.Length(4000) < 4.0 * 10.0 + 2.0 * ON_PI * distance - 1e-3,
+        "Chamfer offset on a closed square: strictly shorter than the Round-style perimeter at the same "
+        "distance - a straight chord is always shorter than its own arc");
+}
+
+// Reuses `TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter()`'s
+// own L-tromino fixture, but shrinking it INWARD (a negative distance,
+// confirmed by direct probe - not assumed - to genuinely cross two
+// non-adjacent edges of the exact miter polygon well past the point where
+// the two arms' own offset lines invert past each other, rather than
+// merely touch) - a real, not hypothetical, self-intersecting loop.
+// PARITY_MAP.md's own "Offset self-intersection / invalid-loop removal"
+// item discloses this is honestly unrepaired for curves - this test locks
+// in that the exact polyline path at least DETECTS it now
+// (`Result::Failed`) instead of silently returning the bowtied loop as
+// `Result::Ok`, while a distance that stays safely within both arms'
+// own thickness still succeeds cleanly.
+void TestCurveOffsetInPlaneClosedPolygonRefusesSelfIntersectingLoop() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0),  Point3d(10, 0, 0), Point3d(10, 4, 0),
+                                       Point3d(4, 4, 0),  Point3d(4, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out_safe;
+  Check(poly.OffsetInPlane(-1.0, out_safe) == Result::Ok,
+        "Offset self-intersection setup: an inward distance (-1.0), well within both arms' own 4-unit "
+        "thickness, still succeeds cleanly");
+  Check(out_safe.IsClosed(), "Offset self-intersection setup: the safe-distance result is itself closed");
+
+  NurbsCurve out_crossed;
+  Check(poly.OffsetInPlane(-6.0, out_crossed) == Result::Failed,
+        "OffsetInPlane refuses a closed-polygon inward offset distance (-6.0) that collapses this L-shape "
+        "past itself - detected as a genuinely self-intersecting loop instead of silently returned");
+}
+
 void TestNurbsCurveFilletCornerRightAngle() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -66321,10 +66901,13 @@ int main() {
   TestContourBrepParallelSections();
   TestSectionBrepByPlanesIndependentlyOrientedClipPlanes();
   TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan();
+  TestIntersectCurveSurfaceOverlapBisectionTightensSpanBoundary();
   TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly();
   TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
   TestFindSurfaceTangentContactsSphereOnPlane();
   TestIntersectSurfacesOverlapDetectsCoincidentRegion();
+  TestIntersectSurfacesOverlapBisectionTightensRegionBoundary();
+  TestIntersectPlaneSphereClosedForm();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
@@ -66366,6 +66949,8 @@ int main() {
   TestTrimSheetBySolidCallerTolerance();
   TestSplitBySheetCurvedSolidCylinderCutByFlatSheet();
   TestTrimSheetBySolidCurvedSolidCylinder();
+  TestSplitBySheetGenuinelyCurvedSheetThroughBox();
+  TestTrimSheetBySolidGenuinelyCurvedSheetAgainstBox();
   TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume();
   TestSplitBrepBySolidDisjointCutterKeepsWholeTargetOutside();
   TestSplitBrepBySolidCutterFullyContainsTarget();
@@ -67159,6 +67744,8 @@ int main() {
   sweep_tests::TestMakeCounterboreHoleBoxStepped();
   sweep_tests::TestMakeCounterboreHoleRejectsInvalidArguments();
   sweep_tests::TestRecognizeHolesBlindAndThroughRoundTrip();
+  sweep_tests::TestCopyHoleFeatureCopyMirrorAndRotatePlacements();
+  sweep_tests::TestCopyHoleFeatureRefusesDegenerateXform();
   sweep_tests::TestRecognizeBossesBlindAndFreestandingRoundTrip();
   sweep_tests::TestMakeCountersinkHoleBoxStandardAngle();
   sweep_tests::TestMakeCountersinkHoleRejectsInvalidArguments();
@@ -67273,6 +67860,10 @@ int main() {
   TestCurveOffsetInPlaneRoundStyleFilletsConvexCorners();
   TestCurveOffsetInPlaneRoundStyleLeavesConcaveCornerAsExactMiter();
   TestCurveOffsetInPlaneRoundStyleClosedSquareMatchesClosedFormPerimeter();
+  TestCurveOffsetInPlaneChamferStyleCutsConvexCorners();
+  TestCurveOffsetInPlaneChamferStyleLeavesConcaveCornerAsExactMiter();
+  TestCurveOffsetInPlaneChamferStyleClosedSquareMatchesClosedFormPerimeter();
+  TestCurveOffsetInPlaneClosedPolygonRefusesSelfIntersectingLoop();
   TestNurbsCurveFilletCornerRightAngle();
   TestNurbsCurveFilletCornerObtuseAngleAndTangency();
   TestNurbsCurveFilletCornerRejectsInvalidInput();

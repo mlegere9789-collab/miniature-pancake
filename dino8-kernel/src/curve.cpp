@@ -9,6 +9,7 @@
 #include "dino8/kernel/tolerance.h"
 
 #include "dino8/kernel/detail/degree_elevate.h"
+#include "dino8/kernel/detail/polygon2d.h"
 
 namespace dino8::kernel {
 
@@ -140,63 +141,78 @@ Result OffsetGeneralAlongNormal(const NurbsCurve& curve, const Vector3d& normal,
 // `result` set to `Result::Ok` (and `out` populated) or `Result::Failed`
 // (a zero-length edge, an edge parallel to `normal`, or a near-180-degree
 // fold) otherwise.
-// A single corner's own contribution to the assembled Round-style offset
-// curve below: `departs` is where the PRECEDING edge's own offset line
-// should end, `arrives` is where the FOLLOWING edge's own offset line
+// A single corner's own contribution to the assembled Round/Chamfer-style
+// offset curve below: `departs` is where the PRECEDING edge's own offset
+// line should end, `arrives` is where the FOLLOWING edge's own offset line
 // should start - equal to each other (the exact miter point) for a
 // `Sharp`-equivalent corner (concave/contracting, or a degenerate near-
 // zero turn), or the two distinct tangent points of a genuine fillet arc
-// (`has_arc`, with `arc` the arc itself, built directly rather than via
-// `FilletCornerArc()` since this corner's own tangent points and radius
-// are already known up front - no tangent-length solve needed, unlike
-// `FilletCornerArc()`'s own two-legs-plus-unknown-corner case).
+// or straight chamfer segment (`has_piece`, with `piece` the arc or
+// segment itself, built directly rather than via `FilletCornerArc()` since
+// this corner's own tangent points and radius are already known up front -
+// no tangent-length solve needed, unlike `FilletCornerArc()`'s own
+// two-legs-plus-unknown-corner case).
 struct RoundOffsetCorner {
   Point3d departs;
   Point3d arrives;
-  bool has_arc = false;
-  NurbsCurve arc;
+  bool has_piece = false;
+  NurbsCurve piece;
 };
 
-// Builds one corner of the Round-style polyline offset at `vertex`, whose
-// incoming/outgoing edges have already-offset unit directions `n0`/`n1`
-// (same convention as the Sharp miter loop below), in the plane with
-// normal `normal`. `turn_n` - `dot(cross(n0, n1), normal)` - is passed in
-// rather than recomputed here since it is also independently useful for a
-// caller-side sanity check; its SIGN, together with `distance`'s own
-// sign, decides whether this corner is the "fill" (convex, gap-opening)
-// side of its own turn or the "cross" (concave, contracting) side - a
-// corner's own fixed geometry (`turn_n`'s sign) means opposite things for
-// an outward vs an inward offset, which is exactly why `distance`'s sign
-// has to enter this test too, not just the turn's own handedness. Only a
-// `Round`-requested FILL corner ever gets an arc; a cross corner is
-// always the exact miter-line intersection, identical to `Sharp`, since
-// there is no gap there to round in the first place (rounding would cut
-// into the shape instead of filling a point sticking out of it).
+// Builds one corner of the Round/Chamfer-style polyline offset at
+// `vertex`, whose incoming/outgoing edges have already-offset unit
+// directions `n0`/`n1` (same convention as the Sharp miter loop below), in
+// the plane with normal `normal`. `turn_n` - `dot(cross(n0, n1), normal)` -
+// is passed in rather than recomputed here since it is also independently
+// useful for a caller-side sanity check; its SIGN, together with
+// `distance`'s own sign, decides whether this corner is the "fill"
+// (convex, gap-opening) side of its own turn or the "cross" (concave,
+// contracting) side - a corner's own fixed geometry (`turn_n`'s sign)
+// means opposite things for an outward vs an inward offset, which is
+// exactly why `distance`'s sign has to enter this test too, not just the
+// turn's own handedness. Only a `Round`- or `Chamfer`-requested FILL
+// corner ever gets a piece; a cross corner is always the exact miter-line
+// intersection, identical to `Sharp`, since there is no gap there to cut
+// in the first place (cutting it would carve into the shape instead of
+// filling a point sticking out of it).
 //
-// A fill corner's arc is centered on `vertex` itself with radius
-// `|distance|`, running from `vertex + distance * n0` to
-// `vertex + distance * n1` - both already exactly `|distance|` from
-// `vertex` by construction, unlike `FilletCornerArc()`'s own two-legs-
-// plus-unknown-corner case, which has to solve for its tangent points
-// from an independently-chosen radius first. Only the sweep direction
-// needs resolving, via the same "measure the angle, flip if negative"
-// trick `FilletCornerArc()` already uses (curve.cpp, above).
+// A fill corner's own two tangent points, `T0 = vertex + distance * n0`
+// and `T1 = vertex + distance * n1`, are shared by both styles - both
+// already exactly `|distance|` from `vertex` by construction, unlike
+// `FilletCornerArc()`'s own two-legs-plus-unknown-corner case, which has
+// to solve for its tangent points from an independently-chosen radius
+// first. `Round` joins them with a circular arc centered on `vertex`
+// itself (only the sweep direction needs resolving, via the same "measure
+// the angle, flip if negative" trick `FilletCornerArc()` already uses,
+// curve.cpp above); `Chamfer` joins them with the single straight segment
+// between them directly - literally the arc's own chord, needing no angle
+// or sweep-direction computation at all, since a 2-point line is already
+// fully determined by its endpoints.
 //
 // Returns `Result::Failed` only for the same genuine degeneracy the
 // `Sharp` loop already refuses on a cross corner (a near-180-degree fold,
-// where the two offset lines have no finite intersection) - a fill
-// corner needs no such check: its arc is built directly from `n0`/`n1`
-// and never requires their lines to actually intersect, so even a turn
-// close to a full 180 degrees (where `Sharp`'s own miter would be
-// refused) still gets a well-defined, near-semicircular arc.
+// where the two offset lines have no finite intersection) - a fill corner
+// needs no such check: both `Round`'s arc and `Chamfer`'s segment are
+// built directly from `n0`/`n1` and never require their lines to actually
+// intersect, so even a turn close to a full 180 degrees (where `Sharp`'s
+// own miter would be refused) still gets a well-defined piece.
 Result BuildRoundOffsetCorner(const Point3d& vertex, const Vector3d& normal, const Vector3d& n0,
                                const Vector3d& n1, double turn_n, double distance,
                                CurveOffsetCornerStyle corner_style, RoundOffsetCorner& corner) {
-  const bool is_fill_corner = corner_style == CurveOffsetCornerStyle::Round &&
+  const bool is_fill_corner = (corner_style == CurveOffsetCornerStyle::Round ||
+                                corner_style == CurveOffsetCornerStyle::Chamfer) &&
                                ((turn_n > 1e-9 && distance > 0.0) || (turn_n < -1e-9 && distance < 0.0));
   if (is_fill_corner) {
     const Point3d T0 = vertex + distance * n0;
     const Point3d T1 = vertex + distance * n1;
+    if (corner_style == CurveOffsetCornerStyle::Chamfer) {
+      NurbsCurve chamfer_segment = NurbsCurve::FromControlPoints({T0, T1}, 1);
+      corner.departs = T0;
+      corner.arrives = T1;
+      corner.has_piece = true;
+      corner.piece = chamfer_segment;
+      return Result::Ok;
+    }
     Vector3d xaxis = T0 - vertex;
     Vector3d zaxis = normal;
     if (xaxis.Unitize()) {
@@ -218,8 +234,8 @@ Result BuildRoundOffsetCorner(const Point3d& vertex, const Vector3d& normal, con
             arc_curve.raw() = arc_nurbs;
             corner.departs = T0;
             corner.arrives = T1;
-            corner.has_arc = true;
-            corner.arc = arc_curve;
+            corner.has_piece = true;
+            corner.piece = arc_curve;
             return Result::Ok;
           }
         }
@@ -235,8 +251,31 @@ Result BuildRoundOffsetCorner(const Point3d& vertex, const Vector3d& normal, con
   const Point3d miter = vertex + (distance / denom) * (n0 + n1);
   corner.departs = miter;
   corner.arrives = miter;
-  corner.has_arc = false;
+  corner.has_piece = false;
   return Result::Ok;
+}
+
+// True if the closed polygon `poly` - every vertex coplanar in a plane
+// normal to `normal`, the same guarantee TryOffsetPolylineAlongNormal()
+// below already establishes before calling this - has no two non-adjacent
+// edges properly crossing. Projects into an arbitrary orthonormal basis of
+// that plane (any one works: this tests topology only, not a metric
+// quantity that could depend on which basis was picked) and delegates to
+// detail::IsSimplePolygon(), the same proper-crossing test
+// boolean.cpp/surface.cpp's own concave-polygon code already relies on.
+bool IsOffsetPolygonSimple(const std::vector<Point3d>& poly, const Vector3d& normal) {
+  Vector3d basis_hint(0.0, 0.0, 1.0);
+  if (std::fabs(ON_DotProduct(normal, basis_hint)) > 0.9) basis_hint = Vector3d(1.0, 0.0, 0.0);
+  Vector3d xaxis = ON_CrossProduct(normal, basis_hint);
+  xaxis.Unitize();
+  const Vector3d yaxis = ON_CrossProduct(normal, xaxis);
+
+  std::vector<Point2d> poly2d(poly.size());
+  for (size_t i = 0; i < poly.size(); ++i) {
+    const Vector3d rel = poly[i] - poly[0];
+    poly2d[i] = Point2d(ON_DotProduct(rel, xaxis), ON_DotProduct(rel, yaxis));
+  }
+  return detail::IsSimplePolygon(poly2d);
 }
 
 bool TryOffsetPolylineAlongNormal(const NurbsCurve& curve, const Vector3d& normal, double distance,
@@ -295,20 +334,34 @@ bool TryOffsetPolylineAlongNormal(const NurbsCurve& curve, const Vector3d& norma
       offset_v[static_cast<size_t>(i)] = v[static_cast<size_t>(i)] + (distance / denom) * (n0 + n1);
     }
 
+    if (closed && !IsOffsetPolygonSimple(offset_v, normal)) {
+      // Detection-only invalid-loop guard: PARITY_MAP.md's own "Offset
+      // self-intersection / invalid-loop removal" item discloses that an
+      // inward offset of a concave polygon past its own local feature size
+      // can self-intersect with no repair - and, until now, no detection
+      // either for this exact (non-refit) polyline path, which silently
+      // returned the bowtied loop as Result::Ok. Refuse instead, the same
+      // honest "detect, don't repair" convention this file's other
+      // feasibility guards (the near-180-degree fold check just above,
+      // OffsetAnalytic's spindle guard, etc.) already follow.
+      result = Result::Failed;
+      return true;
+    }
+
     if (closed) offset_v.push_back(offset_v.front());
     out = NurbsCurve::FromControlPoints(offset_v, 1);
     result = Result::Ok;
     return true;
   }
 
-  // --- Round: assemble one line per edge, joined through a genuine
-  // fillet arc at every FILL corner (BuildRoundOffsetCorner() above) via
-  // NurbsCurve::Join() - the same position-only C0 line-arc-line splice
-  // FilletCorner() already uses for its own single corner, repeated here
-  // for however many corners this polyline has. A non-fill corner
-  // contributes no separate piece at all: its `departs`/`arrives` are the
-  // same exact miter point, so the two adjacent edge lines already meet
-  // there on their own.
+  // --- Round/Chamfer: assemble one line per edge, joined through a
+  // genuine fillet arc or straight chamfer segment at every FILL corner
+  // (BuildRoundOffsetCorner() above) via NurbsCurve::Join() - the same
+  // position-only C0 line-piece-line splice FilletCorner() already uses
+  // for its own single corner, repeated here for however many corners this
+  // polyline has. A non-fill corner contributes no separate piece at all:
+  // its `departs`/`arrives` are the same exact miter point, so the two
+  // adjacent edge lines already meet there on their own.
   std::vector<RoundOffsetCorner> corners(static_cast<size_t>(vcount));
   std::vector<bool> corner_valid(static_cast<size_t>(vcount), false);
   for (int i = 0; i < vcount; ++i) {
@@ -339,8 +392,8 @@ bool TryOffsetPolylineAlongNormal(const NurbsCurve& curve, const Vector3d& norma
   NurbsCurve assembled = NurbsCurve::FromControlPoints({EdgeStart(0), EdgeEnd(0)}, 1);
   for (int edge_index = 1; edge_index <= edge_count - 1; ++edge_index) {
     const int vertex_index = edge_index;  // corner shared by edge (edge_index - 1) and edge_index
-    if (corner_valid[static_cast<size_t>(vertex_index)] && corners[static_cast<size_t>(vertex_index)].has_arc) {
-      if (assembled.Join(corners[static_cast<size_t>(vertex_index)].arc, join_tol) != Result::Ok) {
+    if (corner_valid[static_cast<size_t>(vertex_index)] && corners[static_cast<size_t>(vertex_index)].has_piece) {
+      if (assembled.Join(corners[static_cast<size_t>(vertex_index)].piece, join_tol) != Result::Ok) {
         result = Result::Failed;
         return true;
       }
@@ -351,8 +404,8 @@ bool TryOffsetPolylineAlongNormal(const NurbsCurve& curve, const Vector3d& norma
       return true;
     }
   }
-  if (closed && corner_valid[0] && corners[0].has_arc) {
-    if (assembled.Join(corners[0].arc, join_tol) != Result::Ok) {
+  if (closed && corner_valid[0] && corners[0].has_piece) {
+    if (assembled.Join(corners[0].piece, join_tol) != Result::Ok) {
       result = Result::Failed;
       return true;
     }
