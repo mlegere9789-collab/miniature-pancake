@@ -513,15 +513,47 @@ class SubD {
   // symmetric editing (a later edit to one half automatically
   // re-mirroring into the other) is a distinct, materially larger
   // feature - this produces one static symmetrized snapshot, with no
-  // ongoing relationship between the two halves afterward. A vertex
-  // that starts strictly off-plane is always duplicated (never welded
-  // to a same-side neighbor), so this only closes gaps that coincide
-  // with the mirror plane itself, not general internal seams.
+  // ongoing relationship between the two halves afterward.
+  //
+  // `weld_tolerance` narrows the other disclosed gap - a vertex that
+  // starts strictly off-plane used to be ALWAYS duplicated, never welded
+  // to a same-side neighbor, because the single `point_tolerance` value
+  // did double duty: it both decided whether a vertex counts as "on the
+  // mirror plane" (correctness-sensitive - loosening it can silently
+  // change which boundary loop gets welded-as-a-seam vs. mirrored as an
+  // ordinary vertex) AND was the only tolerance `ON_SubD::FindOrAddVertex`
+  // used to decide whether a newly mirrored vertex reuses an existing one
+  // or adds a new one. Two genuinely independent vertices representing
+  // the "same" point - e.g. two features modeled separately that were
+  // meant to share an off-plane seam but drifted apart at single-float
+  // (`ON_3fPoint`) precision - are often many orders of magnitude farther
+  // apart than `point_tolerance`'s tight default (1e-9) but still close
+  // enough that a caller wants them welded, not left open; there was no
+  // way to ask for that without ALSO loosening on-plane classification.
+  // `weld_tolerance`, when positive, is used instead of `point_tolerance`
+  // for every `FindOrAddVertex` lookup (on-plane and off-plane alike -
+  // harmless for the on-plane case, since its own target position is
+  // already exactly the original vertex's own point, so a looser search
+  // still only ever finds that same vertex); when zero or negative (the
+  // default), behavior is byte-identical to before this parameter
+  // existed - `point_tolerance` is reused for both roles, exactly as it
+  // always was.
+  //
+  // Still not a general "weld any two nearby vertices" tool: this only
+  // ever affects vertices this call itself is actively mirroring (an
+  // off-plane vertex already duplicated in the ORIGINAL, pre-Symmetrize
+  // half is untouched - the same scope limit `SubD::Check()`'s own
+  // duplicate-vertex disclosure already names, since SubD has no
+  // `Mesh::MergeDuplicateVertices()` counterpart), and it welds by
+  // position only, same as the on-plane case always did - no averaging,
+  // no "closest neighbor" search beyond `ON_SubD::FindOrAddVertex`'s own
+  // first-match-within-tolerance rule.
   //
   // Throws std::invalid_argument if `plane_normal` is zero (or too
   // close to it to unitize), the same failure convention `Transform()`
   // above uses for a degenerate input.
-  SubD Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance = 1e-9) const;
+  SubD Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance = 1e-9,
+                   double weld_tolerance = 0.0) const;
 
   // Converts the *current* subdivision level's control net to real NURBS
   // patches, one per face - a genuine Catmull-Clark limit-surface

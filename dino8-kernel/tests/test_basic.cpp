@@ -21876,6 +21876,72 @@ void TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces() {
   Check(threw, "Symmetrize() throws std::invalid_argument for a zero plane_normal");
 }
 
+// PARITY_MAP.md's subd_mesh "SubD symmetry/mirror-in-place" item's own
+// disclosed remaining gap: "a vertex that starts strictly off-plane is
+// always duplicated, not welded to a same-side neighbor, so this only
+// closes gaps that coincide with the mirror plane itself, not general
+// internal seams." Symmetrize()'s own new weld_tolerance parameter
+// narrows that: two off-plane quads built as entirely separate vertex
+// records (same "wing" technique TestMeshMergeDuplicateVerticesWelds
+// CoincidentPairs above uses for Mesh) whose footprints are identical
+// except for a tiny (eps = 1e-4) x-shift - modeling two independently-
+// built features meant to be the same, drifted apart at single-float
+// (ON_3fPoint) precision - mirror into two STILL-separate near-duplicate
+// vertex pairs at the default (tight, 1e-9) tolerance, exactly the
+// disclosed gap, but weld into one pair once weld_tolerance is widened
+// past eps, with point_tolerance (on-plane classification) left
+// completely untouched.
+void TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+  using dino8::kernel::Vector3d;
+
+  const double eps = 1e-4;
+  Mesh half;
+  ON_Mesh& raw = half.raw();
+  const auto add_quad = [&raw](double x0, double z0) {
+    const int base = raw.m_V.Count();
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0), 0.0f, static_cast<float>(z0)));
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0 + 1.0), 0.0f, static_cast<float>(z0)));
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0 + 1.0), 0.0f, static_cast<float>(z0 + 0.5)));
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0), 0.0f, static_cast<float>(z0 + 0.5)));
+    ON_MeshFace f;
+    f.vi[0] = base;
+    f.vi[1] = base + 1;
+    f.vi[2] = base + 2;
+    f.vi[3] = base + 3;
+    raw.m_F.Append(f);
+  };
+  add_quad(0.0, 0.0);  // quad A: x in [0,1], z in [0,0.5] - entirely off the z=1 mirror plane
+  add_quad(eps, 0.0);  // quad B: the same footprint, shifted by eps in x only - a near-duplicate of A
+
+  const SubD subd = SubD::FromControlMesh(half);
+  Check(subd.VertexCount() == 8,
+        "sanity: quad A and quad B stay 8 DISTINCT vertices - eps is far bigger than FromControlMesh()'s "
+        "own exact-position weld, so the two near-duplicate quads are not silently merged by construction");
+  Check(subd.FaceCount() == 2, "sanity: 2 separate quad faces, neither touching the z=1 mirror plane");
+
+  // Default behavior (weld_tolerance omitted) is byte-identical to
+  // before this parameter existed: every off-plane vertex, including
+  // this near-duplicate pair, is mirrored as its own new, separate
+  // vertex.
+  const SubD default_doubled = subd.Symmetrize(Vector3d(0, 0, 1), 1.0, 1e-9);
+  Check(default_doubled.VertexCount() == 16,
+        "at the default (tight) tolerance, the mirrored near-duplicate pair (eps apart) stays just as "
+        "unwelded as the original pair - 8 original + 8 mirrored, exactly the disclosed 'always "
+        "duplicated, not welded to a same-side neighbor' gap");
+
+  // Widening weld_tolerance past eps - while leaving point_tolerance,
+  // the on-plane classification threshold, untouched at its original
+  // tight value - welds the mirrored near-duplicates to each other.
+  const SubD widened_doubled = subd.Symmetrize(Vector3d(0, 0, 1), 1.0, 1e-9, /*weld_tolerance=*/1e-3);
+  Check(widened_doubled.VertexCount() == 12,
+        "widening weld_tolerance past eps welds the mirrored near-duplicate pair into one vertex: 8 "
+        "original (still untouched - Symmetrize() never retroactively fixes the ORIGINAL half) + 4 "
+        "newly-welded mirrored vertices, instead of 8");
+  Check(widened_doubled.FaceCount() == 4, "4 faces total either way: the original 2 plus their 2 mirrored copies");
+}
+
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -67116,6 +67182,7 @@ int main() {
   TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth();
   TestSubDTransformMovesScalesAndStaysValidUnderMirror();
   TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces();
+  TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetEdgeSharpnessSupportsPerEndVariableWeight();
   TestSubDEdgeSharpnessAtReadsBackWhatWasWritten();

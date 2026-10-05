@@ -329,11 +329,21 @@ SubD SubD::Offset(double distance) const {
   return result;
 }
 
-SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance) const {
+SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance,
+                       double weld_tolerance) const {
   if (!plane_normal.Unitize()) {
     throw std::invalid_argument(
         "dino8::kernel::SubD::Symmetrize: plane_normal must be nonzero");
   }
+
+  // See this method's own doc comment (subd.h) for why these are two
+  // separate roles: `point_tolerance` alone still decides on-plane
+  // classification below; `effective_weld_tolerance` is only ever used
+  // for the FindOrAddVertex position lookup, so a caller can widen it
+  // (to weld genuinely-distinct-but-nearly-coincident off-plane vertices
+  // together) without also changing which vertices get treated as lying
+  // on the mirror plane itself.
+  const double effective_weld_tolerance = weld_tolerance > 0.0 ? weld_tolerance : point_tolerance;
 
   const auto signed_distance = [&](const Point3d& p) {
     return plane_normal.x * p.x + plane_normal.y * p.y + plane_normal.z * p.z - plane_offset;
@@ -401,7 +411,7 @@ SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_t
       // which already holds it from the initial copy) instead of adding
       // a duplicate at its own unchanged position - this is the "weld".
       const Point3d target = std::abs(s) <= point_tolerance ? original_point : reflect(original_point, s);
-      const ON_SubDVertex* v = result.subd_.FindOrAddVertex(&target.x, point_tolerance);
+      const ON_SubDVertex* v = result.subd_.FindOrAddVertex(&target.x, effective_weld_tolerance);
       if (v == nullptr) {
         throw std::runtime_error(
             "dino8::kernel::SubD::Symmetrize: ON_SubD::FindOrAddVertex failed");

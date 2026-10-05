@@ -7636,6 +7636,74 @@ failures, 0 regressions. Round 26's own source edits are
 `dino8-kernel/src/subd.cpp`, `dino8-kernel/tests/test_basic.cpp`, and this
 file.
 
+**2026-10-05 follow-up, narrows this category's own still-`[partial]`
+"SubD symmetry/mirror-in-place" item, without flipping it (the remaining
+gap stays real and disclosed):** this session independently started on
+the same "Quad-remeshing into a clean SubD-ready cage" item rounds 25/26
+above had just closed concurrently (their commits were not yet fetched
+locally when this session picked its own two items), so that half of this
+session's own original work is superseded by - and functionally
+duplicates - `SubD::FromMeshQuadRemeshed()`/`FromBrepTessellated()` above;
+it is dropped at merge time rather than kept as a second, parallel way to
+reach the same result (same resolution convention this document's own
+round-26 note just used one paragraph up). What survives, genuinely
+non-overlapping with either concurrent session's own work:
+
+**SubD symmetry/mirror-in-place** — `Symmetrize()`'s own disclosed
+   remaining gap: "a vertex that starts strictly off-plane is always
+   duplicated (never welded to a same-side neighbor)." The single
+   `point_tolerance` argument did double duty - both classifying which
+   vertices sit ON the mirror plane (correctness-sensitive: loosening it
+   can silently change which boundary loop gets welded as a seam) AND
+   bounding `ON_SubD::FindOrAddVertex`'s own position-match weld for
+   every mirrored vertex - so there was no way to weld two genuinely-
+   distinct-but-nearly-coincident off-plane vertices (e.g. two
+   independently-modeled features meant to share a seam that drifted
+   apart at single-float `ON_3fPoint` precision) without also loosening
+   on-plane classification. `SubD::Symmetrize()` (subd.cpp:321,
+   subd.h:507) now takes an optional `weld_tolerance` parameter (default
+   `0.0`, meaning "reuse `point_tolerance`," exactly as before this
+   parameter existed): when positive, it is used instead of
+   `point_tolerance` for every `FindOrAddVertex` lookup, on-plane and
+   off-plane alike (harmless for the on-plane case, whose target position
+   is already exactly the original vertex's own point, so a looser search
+   there still only ever finds that same vertex). Verified by
+   `TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance`
+   (tests/test_basic.cpp): two off-plane quads built as entirely separate
+   vertex records, identical except for a 1e-4 x-shift (far bigger than
+   the tight 1e-9 default, modeling realistic float drift between two
+   "same" features), stay 8 distinct vertices after `FromControlMesh()`
+   (sanity: not silently merged by construction); mirroring at the
+   default tolerance produces 16 vertices total - the mirrored
+   near-duplicate pair stays just as unwelded as the original pair,
+   reproducing the disclosed gap exactly, byte-identical to this
+   method's behavior before `weld_tolerance` existed; mirroring with
+   `weld_tolerance = 1e-3` instead produces 12 - the mirrored pair welds
+   into one vertex, while the ORIGINAL pair (never touched by
+   `Symmetrize()`, which only ever processes vertices it is itself
+   mirroring) stays unwelded, confirming the fix is scoped to exactly the
+   vertices it claims to affect. Still honestly `[partial]`: this is not
+   a general "weld any two nearby vertices" tool - a duplicate already
+   present in the ORIGINAL half before `Symmetrize()` runs is untouched,
+   the same scope limit `SubD::Check()`'s own duplicate-vertex disclosure
+   already names (SubD has no `Mesh::MergeDuplicateVertices()`
+   counterpart) - and live constrained symmetric editing remains
+   out of scope, unchanged.
+
+This fix does not flip the item's status, so this category's own
+present/partial/missing counts stay unchanged at 16/6/0/22 (86.4%), the
+kernel headline stays unchanged, and neither priority table above (nor
+the one near the top of this document) is touched - stated explicitly,
+per this document's own convention, rather than left ambiguous. This
+session's only source edits are `dino8-kernel/include/dino8/kernel/
+subd.h`, `dino8-kernel/src/subd.cpp`, and
+`dino8-kernel/tests/test_basic.cpp`. After merging with rounds 25/26's
+own concurrent `FromMeshQuadRemeshed()`/`FromBrepTessellated()` work
+above, full `dino8_kernel_tests` suite (via the test binary directly):
+8943/8943 checks passing (8938 from the merged branch plus 5 new in
+`TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance`),
+0 regressions.
+
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027
 
 | Category | Weight | Items | Present | Partial | Missing | Parity % |
