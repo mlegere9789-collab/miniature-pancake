@@ -2799,6 +2799,18 @@ echo "$IM" | grep -E "^(ok|FAIL)"
 if echo "$IM" | grep -q "^FAIL"; then fail=1; fi
 echo "$IM" | grep -q "^smoke:" || { echo "$IM"; echo "FAIL: imprint script produced no smoke line"; fail=1; }
 
+# SplitBySheet/TrimSheetBySolid: kernel::SplitBySheet()/TrimSheetBySolid()'s
+# first app commands (see splitbysheet_trimsheet_script.txt) - PARITY_MAP.md's
+# "kernel: Boolean operations" category's "Sheet/solid trim" bullet.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SH="$("$BIN" --smoke 60 --script "$HERE/splitbysheet_trimsheet_script.txt" 2>&1)" || { echo "$SH"; echo "FAIL: splitbysheet/trimsheet script exited non-zero"; exit 1; }
+else
+  SH="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/splitbysheet_trimsheet_script.txt" 2>&1)" || { echo "$SH"; echo "FAIL: splitbysheet/trimsheet script exited non-zero"; exit 1; }
+fi
+echo "$SH" | grep -E "^(ok|FAIL)"
+if echo "$SH" | grep -q "^FAIL"; then fail=1; fi
+echo "$SH" | grep -q "^smoke:" || { echo "$SH"; echo "FAIL: splitbysheet/trimsheet script produced no smoke line"; fail=1; }
+
 # SplitByObject regression: a non-intersecting cutter must not be consumed
 # (see splitbyobject_regression.txt) - SplitByObject used to delete every
 # selected cutting object unconditionally, even when nothing was actually

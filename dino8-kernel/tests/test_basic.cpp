@@ -5778,6 +5778,107 @@ void TestTrimSheetBySolidCurvedSolidCylinder() {
         "exactly, with a genuinely curved classification solid");
 }
 
+// A genuinely curved SHEET (as distinct from the genuinely curved SOLID the
+// two tests above exercise) - PARITY_MAP.md's "Sheet/solid trim" bullet's
+// own last disclosed gap for this half: "only a flat cutting plane is
+// tested" for the sheet operand specifically. The same bulged-bicubic-
+// Bezier-patch construction TestThickenOnGenuinelyCurvedBulgedFreeformSheet
+// (this file, above) already uses for Thicken(), re-centered at z=2 and
+// widened to the same -1..5 footprint margin SplitBySheet's own flat-sheet
+// tests use, so every existing closed-form expectation (box volume 64,
+// margin past the box's own [0,4] footprint on every side) still applies -
+// only the sheet's own flatness changes. Every interior z value is a convex
+// combination of the control net's own z values (2.0 at every corner but
+// one, 2.6 at the raised one) - B-spline/Bezier blending functions are a
+// partition of unity, so the true surface never leaves [2.0, 2.6], a full
+// 2 units of margin from either of the box's own z=0/z=4 faces - this
+// guarantees the sheet still fully severs the box everywhere inside its
+// footprint, exactly as the flat sheet does, without needing to measure the
+// true (sub-control-point) peak height directly.
+dino8::kernel::Brep MakeBulgedSheetZ(double x0, double y0, double x1, double y1, double base_z, double bulge) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      const double x = x0 + (x1 - x0) * i / 3.0;
+      const double y = y0 + (y1 - y0) * j / 3.0;
+      const double z = base_z + ((i == 2 && j == 2) ? bulge : 0.0);
+      grid.push_back(Point3d(x, y, z));
+    }
+  }
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 4, 4, /*u_degree=*/3, /*v_degree=*/3);
+  return Brep::FromSurface(surface);
+}
+
+void TestSplitBySheetGenuinelyCurvedSheetThroughBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBySheet;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep sheet = MakeBulgedSheetZ(-1, -1, 5, 5, 2.0, 0.6);
+
+  const auto [positive_side, negative_side] = SplitBySheet(box, sheet);
+  Check(positive_side.raw().IsValid(), "SplitBySheet's positive_side (against a genuinely curved sheet) is a valid ON_Brep");
+  Check(negative_side.raw().IsValid(), "SplitBySheet's negative_side (against a genuinely curved sheet) is a valid ON_Brep");
+
+  // A real, previously-undocumented limitation found while building this
+  // test, not assumed: the generic per-face `Brep::TessellateToClosedMesh`
+  // (used successfully by this category's own FLAT-sheet SplitBySheet
+  // tests above) does NOT reliably close this result - confirmed directly
+  // (tests/scratch_test.cpp), it leaves ~200-450 residual boundary edges at
+  // every resolution tried (16/32/64), all along the seam between the new
+  // CURVED sheet-cap face and the box's adjoining PLANAR side-wall faces -
+  // the same already-disclosed "the app's own generic closed-mesh pipeline
+  // cannot yet measure a general-engine-family Brep whose faces were never
+  // meant for independent per-face tessellation" gap this category's
+  // "Face-face imprint" bullet already names for `ImprintFaces`, now
+  // confirmed to affect a curved-capped `SplitBySheet` result too. The
+  // SPECIALIZED `TessellateGeneralBooleanClosedMesh` (boolean_general.h,
+  // already proven elsewhere in this file for any Brep from this shared
+  // SSX-fragmentation family) closes it exactly at every resolution tried -
+  // used here instead, the same substitution this file's own freeform
+  // BooleanCombineGeneral tests already make for the identical reason.
+  const Mesh mp = TessellateGeneralBooleanClosedMesh(positive_side, 32, 32);
+  const Mesh mn = TessellateGeneralBooleanClosedMesh(negative_side, 32, 32);
+  Check(mp.IsClosedManifold() && mn.IsClosedManifold(),
+        "both sides of a curved-sheet split are genuine closed manifolds via TessellateGeneralBooleanClosedMesh, "
+        "not just IsValid() B-reps");
+  Check(std::abs((mp.Volume() + mn.Volume()) - 64.0) < 0.1,
+        "the two halves' volumes sum back to the original box's own exact volume (4^3 = 64), with a genuinely "
+        "curved (not flat) cutting sheet - no material gained or lost");
+  Check(mp.Volume() > 20.0 && mp.Volume() < 44.0 && mn.Volume() > 20.0 && mn.Volume() < 44.0,
+        "neither side is degenerate (near-0 or near-64) - the curved sheet genuinely splits the box into two "
+        "substantial pieces, roughly half each, not an all-or-nothing miss");
+}
+
+void TestTrimSheetBySolidGenuinelyCurvedSheetAgainstBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TrimSheetBySolid;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep sheet = MakeBulgedSheetZ(-1, -1, 5, 5, 2.0, 0.6);
+  const double sheet_area = sheet.Area();
+
+  const Brep inside = TrimSheetBySolid(sheet, box, /*keep_inside=*/true);
+  Check(inside.raw().IsValid(), "TrimSheetBySolid's inside portion (against a genuinely curved sheet) is a valid ON_Brep");
+  const double inside_area = inside.TessellateToClosedMesh(32, 32).Area();
+  Check(inside_area > 14.0 && inside_area < 18.0,
+        "the kept portion's area is close to the box's own 4x4 footprint (16) - the curved sheet's own gentle "
+        "bulge changes true surface area only slightly from the flat-sheet case");
+
+  const Brep outside = TrimSheetBySolid(sheet, box, /*keep_inside=*/false);
+  Check(outside.raw().IsValid(), "TrimSheetBySolid's outside portion (against a genuinely curved sheet) is a valid ON_Brep");
+  const double outside_area = outside.TessellateToClosedMesh(32, 32).Area();
+  Check(std::abs((inside_area + outside_area) - sheet_area) < 0.1,
+        "the inside and outside portions' areas sum back to the original untrimmed curved sheet's own area "
+        "exactly, with a genuinely curved (not flat) sheet");
+}
+
 void TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -66328,6 +66429,8 @@ int main() {
   TestTrimSheetBySolidCallerTolerance();
   TestSplitBySheetCurvedSolidCylinderCutByFlatSheet();
   TestTrimSheetBySolidCurvedSolidCylinder();
+  TestSplitBySheetGenuinelyCurvedSheetThroughBox();
+  TestTrimSheetBySolidGenuinelyCurvedSheetAgainstBox();
   TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume();
   TestSplitBrepBySolidDisjointCutterKeepsWholeTargetOutside();
   TestSplitBrepBySolidCutterFullyContainsTarget();

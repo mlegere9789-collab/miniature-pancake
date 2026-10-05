@@ -234,17 +234,19 @@ Viewport::FrameContext Application::MakeFrameContext() {
   ctx.show_control_points_for_selected = show_control_points_for_selected;
   ctx.curve_tolerance = curve_display_tolerance;
   ctx.surface_tolerance = surface_display_tolerance;
-  // View-dependent adaptive tessellation: every open modelling viewport's
-  // own zoom feeds LodScaleForPixelSizes (not just the active viewport's -
-  // see that function's own comment for why), so the one scale shared by
-  // every viewport's DrawObjects this frame is always at least as fine as
-  // every open viewport's own need - a viewport sitting zoomed in behind
-  // the active one never renders coarser than its own zoom calls for just
-  // because some other, more-zoomed-out viewport happens to be active.
-  std::vector<double> pixel_sizes;
-  pixel_sizes.reserve(viewports_.size());
-  for (const auto& vp : viewports_) pixel_sizes.push_back(vp->ZoomPixelSize());
-  ctx.lod_scale = LodScaleForPixelSizes(pixel_sizes);
+  // View-dependent adaptive tessellation: the FINEST scale any open,
+  // visible modeling viewport's own zoom calls for wins (see
+  // FinestLodScale's own comment in AdaptiveTessellation.h for why - every
+  // SceneObject has one shared display cache, not one per viewport, so a
+  // viewport zoomed in close that isn't the *active* one must still be
+  // able to ask for its own finer resolution rather than being silently
+  // capped at whatever the active viewport happens to want). Limited to
+  // *visible* viewports only (a maximized layout's hidden ones don't need
+  // their own resolution honoured until they are shown again, at which
+  // point EnsureAdaptiveDisplay rebuilds on demand anyway).
+  std::vector<double> viewport_pixel_sizes;
+  for (const auto& vp : viewports_) if (vp->Visible()) viewport_pixel_sizes.push_back(vp->ZoomPixelSize());
+  ctx.lod_scale = FinestLodScale(viewport_pixel_sizes);
   ctx.fallback_analysis = &analysis_fallback;
   ctx.sub_selection = &sub_selection_;
   ctx.overlay_lines = &overlay_lines;

@@ -24,18 +24,14 @@ double LodScaleForPixelSize(double pixel_size) {
   return std::clamp(pixel_size / kLodReferencePixelSize, kLodMinScale, kLodMaxScale);
 }
 
-double LodScaleForPixelSizes(const std::vector<double>& pixel_sizes) {
-  // The smallest valid pixel_size is the most-zoomed-in viewport - the one
-  // whose own LodScaleForPixelSize is smallest (finest). Picking its scale
-  // for every viewport is exactly the fix: nobody ever lands on a coarser
-  // mesh than their own zoom alone would have picked. -1.0 (no valid entry
-  // found) hits LodScaleForPixelSize's own `pixel_size <= 0` fallback to
-  // 1.0, so an empty/all-degenerate input needs no separate case here.
-  double finest = -1.0;
-  for (double p : pixel_sizes) {
-    if (p > 0.0 && (finest < 0.0 || p < finest)) finest = p;
+double FinestLodScale(const std::vector<double>& viewport_pixel_sizes) {
+  double finest = 1.0;
+  bool any = false;
+  for (double pixel_size : viewport_pixel_sizes) {
+    const double scale = LodScaleForPixelSize(pixel_size);
+    if (!any || scale < finest) { finest = scale; any = true; }
   }
-  return LodScaleForPixelSize(finest);
+  return any ? finest : 1.0;
 }
 
 }  // namespace dino8::app
