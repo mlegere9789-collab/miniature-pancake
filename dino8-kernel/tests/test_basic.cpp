@@ -3047,6 +3047,115 @@ void TestIntersectCurveSurfaceOverlapBisectionTightensSpanBoundary() {
   }
 }
 
+// PARITY_MAP.md's own "CSX against trimmed faces and curve-on-surface
+// overlap (coincident) detection" bullet, after IntersectCurveBrep()
+// already closed the trimmed-face CSX half and IntersectCurveSurfaceOverlap()
+// closed the plain curve/surface overlap half, still disclosed two
+// remaining gaps verbatim: "the span's own t0/t1 are only as precise as
+// the sampling resolution (no bisection tightens the exact boundary where
+// the curve leaves the surface)" and "no curve/B-rep ... counterpart".
+// This test proves the first is now closed: a curve crossing a plane at
+// an x value that does NOT land on the sampling grid (so the grid-only
+// boundary this function used to report would be off by up to one whole
+// sampling step, ~1/104 of the curve's domain here - far looser than the
+// 1e-6 bound checked below) is now bisection-refined to the true,
+// analytically-known crossing parameter.
+void TestIntersectCurveSurfaceOverlapRefinesBoundaryPastSamplingResolution() {
+  using dino8::kernel::CurveSurfaceOverlap;
+  using dino8::kernel::IntersectCurveSurfaceOverlap;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-9;
+  opt.mesh_tolerance = 0.05;
+
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-20, 20), true);
+  ground.SetExtents(1, ON_Interval(-20, 20), true);
+
+  // A line that lies in the plane then climbs straight away from it, with
+  // its bounding-box diagonal (the sampling loop's own resolution driver)
+  // deliberately chosen so the sampling step count n = ceil(diagonal /
+  // opt.mesh_tolerance) comes out ODD (105 here: diagonal == 5.2345, so
+  // diagonal / 0.05 == 104.69, ceil == 105) - the shared-vertex corner,
+  // always at exactly the curve's own domain midpoint for a 3-point
+  // degree-1 curve's clamped-uniform knots, can only land exactly on a
+  // sample grid point when n is EVEN (grid point i == n/2). With n odd,
+  // the un-refined, grid-only boundary this function used to report is
+  // guaranteed off by a fraction of one whole sampling step (domain_len /
+  // n == 2/105 ~= 0.019) - two orders of magnitude looser than the 1e-9
+  // bound checked below, which only real bisection refinement can meet.
+  const double x_start = -1.5492, z_top = 5.0;
+  const NurbsCurve climbing = NurbsCurve::FromControlPoints(
+      {Point3d(x_start, 1, 0), Point3d(0, 1, 0), Point3d(0, 1, z_top)}, 1);
+  const std::vector<CurveSurfaceOverlap> spans = IntersectCurveSurfaceOverlap(climbing.raw(), ground, opt);
+  Check(spans.size() == 1, "a line that lies in the plane then climbs away reports exactly one overlap span");
+  if (spans.size() == 1) {
+    const ON_Interval d = climbing.raw().Domain();
+    const double exact_t1 = d.ParameterAt(0.5);  // the shared vertex, same clamped-uniform-knot convention as the bent-polyline test above
+    Check(std::abs(spans[0].t1 - exact_t1) < 1e-9, "the refined boundary lands within double-precision bisection width of the exact corner parameter, not merely within one sampling step");
+  }
+}
+
+// Same category's second remaining gap named directly above: "this is
+// curve/surface only (no curve/B-rep ... counterpart)". IntersectCurveBrepOverlap()
+// closes it - the curve/B-rep coincident-region counterpart to
+// IntersectCurveBrep(), trimmed to each face's own trim/domain boundary
+// via FaceContainsUV() exactly as IntersectCurveBrep() already is.
+void TestIntersectCurveBrepOverlapScopesSpanToFaceTrim() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::CurveBrepOverlap;
+  using dino8::kernel::IntersectCurveBrepOverlap;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Brep::Box()'s own face_grids order (brep.cpp) puts the bottom (-z)
+  // face first (index 0), a flat rectangle spanning x in [0, 2], y in
+  // [0, 2] at z == 0.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+
+  // A line lying entirely in z == 0 and entirely within the bottom face's
+  // own [0, 2]x[0, 2] extent must report one span covering the line's
+  // WHOLE domain, scoped to face 0.
+  const NurbsCurve inside = NurbsCurve::FromControlPoints({Point3d(0.2, 1, 0), Point3d(1.8, 1, 0)}, 1);
+  const std::vector<CurveBrepOverlap> inside_spans = IntersectCurveBrepOverlap(inside.raw(), box.raw(), opt);
+  Check(inside_spans.size() == 1, "a line entirely within the bottom face's own extent reports exactly one overlap entry");
+  if (inside_spans.size() == 1) {
+    Check(inside_spans[0].face_index == 0, "the overlap is scoped to the bottom face (index 0 in Brep::Box()'s own face order)");
+    Check(inside_spans[0].overlap.entire_curve, "a line entirely within the face's own extent covers the overlap's whole domain");
+  }
+
+  // A line lying in z == 0 but extending well past the bottom face's own
+  // x in [0, 2] extent on both ends must report a span trimmed down to
+  // (approximately) just the portion actually inside that extent - NOT
+  // the line's whole domain - at off-grid parameters whose exact value is
+  // known analytically from the line's own linear parametrization.
+  const double x_start = -1.3307, x_end = 3.8693;
+  const NurbsCurve crossing = NurbsCurve::FromControlPoints({Point3d(x_start, 1, 0), Point3d(x_end, 1, 0)}, 1);
+  const std::vector<CurveBrepOverlap> crossing_spans = IntersectCurveBrepOverlap(crossing.raw(), box.raw(), opt);
+  Check(crossing_spans.size() == 1, "a line crossing the bottom face's own x extent on both ends still reports exactly one overlap entry for that face");
+  if (crossing_spans.size() == 1) {
+    Check(crossing_spans[0].face_index == 0, "the crossing line's overlap is scoped to the bottom face");
+    Check(!crossing_spans[0].overlap.entire_curve, "the crossing line's overlap does not cover its whole domain, since it runs past the face's own trim on both ends");
+    const double expected_t0 = (0.0 - x_start) / (x_end - x_start);   // where the line enters the face's own x in [0, 2] extent
+    const double expected_t1 = (2.0 - x_start) / (x_end - x_start);   // where it leaves it
+    Check(std::abs(crossing_spans[0].overlap.t0 - expected_t0) < 1e-6, "the overlap's own start is bisection-refined to (approximately) the face's own x == 0 trim edge");
+    Check(std::abs(crossing_spans[0].overlap.t1 - expected_t1) < 1e-6, "the overlap's own end is bisection-refined to (approximately) the face's own x == 2 trim edge");
+  }
+
+  // A line held well clear of every face (y == 10 throughout) reports no
+  // overlap on any face at all.
+  const NurbsCurve clear = NurbsCurve::FromControlPoints({Point3d(0.2, 10, 0), Point3d(1.8, 10, 0)}, 1);
+  Check(IntersectCurveBrepOverlap(clear.raw(), box.raw(), opt).empty(), "a line held clear of every face reports no overlap entries");
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Surface / B-rep self-intersection detection" bullet: `Brep::Check()`'s
 // own SelfIntersectingLoop/SelfIntersectingLoop3d only check face
@@ -67194,6 +67303,8 @@ int main() {
   TestSectionBrepByPlanesIndependentlyOrientedClipPlanes();
   TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan();
   TestIntersectCurveSurfaceOverlapBisectionTightensSpanBoundary();
+  TestIntersectCurveSurfaceOverlapRefinesBoundaryPastSamplingResolution();
+  TestIntersectCurveBrepOverlapScopesSpanToFaceTrim();
   TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly();
   TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
   TestFindSurfaceTangentContactsSphereOnPlane();

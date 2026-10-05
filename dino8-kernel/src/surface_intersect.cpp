@@ -2038,7 +2038,15 @@ ProjectedCurveResult ProjectCurveToSurface(const ON_Curve& c, const ON_Surface& 
   return out;
 }
 
-std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlap(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt) {
+namespace {
+
+// Shared core of IntersectCurveSurfaceOverlap()/IntersectCurveBrepOverlap():
+// `trim_ok(u, v)` additionally gates whether a given (u, v) counts as
+// "on" - the plain curve/surface entry point below passes a trivial
+// always-true gate, IntersectCurveBrepOverlap() passes FaceContainsUV() so
+// a span never silently crosses a face's own trim boundary.
+template <typename TrimOk>
+std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlapImpl(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt, TrimOk trim_ok) {
   std::vector<CurveSurfaceOverlap> out;
   const ON_Interval d = c.Domain();
   if (!d.IsIncreasing()) return out;
@@ -2046,61 +2054,61 @@ std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlap(const ON_Curve& c,
   const double clen = cb.IsValid() ? cb.Diagonal().Length() : 1;
   const int n = static_cast<int>(Clamp(std::ceil(clen / std::max(opt.mesh_tolerance, 1e-6)), 64, 2000));
 
+  // Projects `t` onto `s`, seeded from (seed_u, seed_v), re-seeding
+  // globally on failure or a poor fit - the identical discipline the main
+  // sampling loop below uses for every sample after the first. Returns
+  // whether the projection is both within opt.tolerance AND trim_ok().
+  auto on_surface = [&](double t, double seed_u, double seed_v, double& out_u, double& out_v) -> bool {
+    const Point3d p = c.PointAt(t);
+    double u = seed_u, v = seed_v;
+    bool ok = SurfaceClosestPoint(s, p, u, v);
+    double err = ok ? s.PointAt(u, v).DistanceTo(p) : std::numeric_limits<double>::max();
+    if (!ok || err > std::max(opt.mesh_tolerance * 4, 1e-9)) {
+      double gu = u, gv = v;
+      const bool gok = SurfaceClosestPointGlobal(s, p, gu, gv);
+      const double gerr = gok ? s.PointAt(gu, gv).DistanceTo(p) : std::numeric_limits<double>::max();
+      if (gok && gerr < err) { u = gu; v = gv; err = gerr; ok = gok; }
+    }
+    out_u = u; out_v = v;
+    return ok && err <= opt.tolerance && trim_ok(u, v);
+  };
+
   std::vector<double> ts(static_cast<size_t>(n) + 1);
-  std::vector<bool> on(static_cast<size_t>(n) + 1, false);
   std::vector<ON_2dPoint> uvs(static_cast<size_t>(n) + 1);
+  std::vector<bool> on(static_cast<size_t>(n) + 1, false);
   double u = 0, v = 0;
-  double prev_err = 0;
   for (int i = 0; i <= n; ++i) {
     const double t = d.ParameterAt(static_cast<double>(i) / n);
     ts[static_cast<size_t>(i)] = t;
-    const Point3d p = c.PointAt(t);
-    bool ok;
-    if (i == 0) {
-      ok = SurfaceClosestPointGlobal(s, p, u, v);
-    } else {
-      ok = SurfaceClosestPoint(s, p, u, v);  // seeded from the PREVIOUS sample's (u, v), same discipline as PullbackCurveToSurface()
-      const double try_err = ok ? s.PointAt(u, v).DistanceTo(p) : std::numeric_limits<double>::max();
-      if (!ok || try_err > std::max(opt.mesh_tolerance * 4, prev_err * 8 + 1e-9)) {
-        double gu = u, gv = v;
-        const bool gok = SurfaceClosestPointGlobal(s, p, gu, gv);
-        const double gerr = s.PointAt(gu, gv).DistanceTo(p);
-        if (gok && gerr < try_err) { u = gu; v = gv; }
-      }
-    }
-    const double err = s.PointAt(u, v).DistanceTo(p);
-    prev_err = err;
-    on[static_cast<size_t>(i)] = err <= opt.tolerance;
+    if (i == 0) SurfaceClosestPointGlobal(s, c.PointAt(t), u, v);
+    on[static_cast<size_t>(i)] = on_surface(t, u, v, u, v);  // seeded from the PREVIOUS sample's (u, v), same discipline as PullbackCurveToSurface()
     uvs[static_cast<size_t>(i)] = ON_2dPoint(u, v);
   }
 
-  // Bisects the curve parameter between a known on-surface sample (t_in,
-  // seeded from its own closest-point (u, v)) and a known off-surface
-  // neighbour (t_out) down to the exact transition, closing this function's
-  // own previously-disclosed "span endpoints are only as precise as the
-  // sampling resolution" honesty gap. 40 bisection halvings shrink the
-  // already-localized [t_in, t_out] sampling-resolution-wide bracket by a
-  // factor of 2^40 - machine precision, not a second sampling pass - and
-  // the known on-surface side (`t_in`) is what gets returned, so the
-  // reported boundary always stays a genuinely on-surface point, never one
-  // just past it.
-  auto RefineBoundary = [&](double t_in, double t_out, ON_2dPoint seed) {
-    double uu = seed.x, vv = seed.y;
-    for (int it = 0; it < 40; ++it) {
-      const double tm = 0.5 * (t_in + t_out);
-      double um = uu, vm = vv;
-      const bool ok = SurfaceClosestPoint(s, c.PointAt(tm), um, vm);
-      const double e = ok ? s.PointAt(um, vm).DistanceTo(c.PointAt(tm)) : std::numeric_limits<double>::max();
-      if (ok && e <= opt.tolerance) { t_in = tm; uu = um; vv = vm; }
-      else { t_out = tm; }
+  // Bisection-refines the boundary between a known off-surface sample at
+  // `t_off` and a known on-surface sample at `t_on` (seeded (u, v)
+  // `uv_on`) against the identical on_surface() predicate the sampling
+  // loop above uses, narrowing the result (biased toward the on-surface
+  // side, i.e. the tightest still-on-surface parameter found) to
+  // double-precision bisection width - the exact crossing
+  // IntersectCurveSurface() would find near this same seed.
+  auto refine_boundary = [&](double t_off, double t_on, ON_2dPoint uv_on) -> double {
+    double lo = t_off, hi = t_on;
+    double seed_u = uv_on.x, seed_v = uv_on.y;
+    for (int iter = 0; iter < 60 && lo != hi; ++iter) {
+      const double mid = lo + (hi - lo) * 0.5;
+      if (mid == lo || mid == hi) break;  // hit double precision - no narrower midpoint exists
+      double mu, mv;
+      if (on_surface(mid, seed_u, seed_v, mu, mv)) { hi = mid; seed_u = mu; seed_v = mv; } else { lo = mid; }
     }
-    return t_in;
+    return hi;
   };
 
   // Merge every maximal run of consecutive on-surface samples into one
   // span; a single isolated on-surface sample (both neighbours off) is a
   // transient touch, not an overlap, and is left for IntersectCurveSurface()
-  // to report as a discrete crossing instead.
+  // to report as a discrete crossing instead. Each non-domain-endpoint
+  // boundary of the resulting span is then bisection-refined above.
   int i = 0;
   while (i <= n) {
     if (!on[static_cast<size_t>(i)]) { ++i; continue; }
@@ -2108,18 +2116,38 @@ std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlap(const ON_Curve& c,
     while (j <= n && on[static_cast<size_t>(j)]) ++j;
     if (j - 1 > i) {
       CurveSurfaceOverlap ov;
-      ov.t0 = ts[static_cast<size_t>(i)];
-      ov.t1 = ts[static_cast<size_t>(j - 1)];
-      // Tighten each boundary that has a genuine off-surface neighbour to
-      // bisect against (a boundary at the curve's own domain end, with no
-      // such neighbour, is already exact - there is nothing past it to
-      // bisect toward).
-      if (i > 0) ov.t0 = RefineBoundary(ts[static_cast<size_t>(i)], ts[static_cast<size_t>(i - 1)], uvs[static_cast<size_t>(i)]);
-      if (j <= n) ov.t1 = RefineBoundary(ts[static_cast<size_t>(j - 1)], ts[static_cast<size_t>(j)], uvs[static_cast<size_t>(j - 1)]);
+      ov.t0 = (i > 0) ? refine_boundary(ts[static_cast<size_t>(i - 1)], ts[static_cast<size_t>(i)], uvs[static_cast<size_t>(i)]) : ts[static_cast<size_t>(i)];
+      ov.t1 = (j <= n) ? refine_boundary(ts[static_cast<size_t>(j)], ts[static_cast<size_t>(j - 1)], uvs[static_cast<size_t>(j - 1)]) : ts[static_cast<size_t>(j - 1)];
       ov.entire_curve = (i == 0 && j - 1 == n);
       out.push_back(ov);
     }
     i = j;
+  }
+  return out;
+}
+
+}  // namespace
+
+std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlap(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt) {
+  return IntersectCurveSurfaceOverlapImpl(c, s, opt, [](double, double) { return true; });
+}
+
+std::vector<CurveBrepOverlap> IntersectCurveBrepOverlap(const ON_Curve& c, const ON_Brep& b, const IntersectOptions& opt) {
+  std::vector<CurveBrepOverlap> out;
+  const ON_BoundingBox cb = c.BoundingBox();
+  const double pad = std::max(opt.mesh_tolerance, opt.tolerance * 4);
+  const int nf = b.m_F.Count();
+  for (int j = 0; j < nf; ++j) {
+    const ON_BrepFace& f = b.m_F[j];
+    const ON_Surface* s = f.SurfaceOf();
+    if (!s) continue;
+    ON_BoundingBox fb = s->BoundingBox();
+    fb.m_min -= ON_3dVector(pad, pad, pad);
+    fb.m_max += ON_3dVector(pad, pad, pad);
+    if (cb.IsValid() && fb.IsValid() && cb.IsDisjoint(fb)) continue;
+    for (const CurveSurfaceOverlap& ov : IntersectCurveSurfaceOverlapImpl(c, *s, opt, [&f](double u, double v) { return FaceContainsUV(f, u, v); })) {
+      out.push_back(CurveBrepOverlap{j, ov});
+    }
   }
   return out;
 }

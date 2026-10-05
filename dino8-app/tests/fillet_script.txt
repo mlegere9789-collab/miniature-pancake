@@ -262,68 +262,78 @@ Continuity=Curvature
 SelLast
 List
 SelNone
-# --- BlendSrf: the SAME extracted-top-face/box-side-face pair as
-# VariableBlendSrf just above, but through plain BlendSrfCommand, which now
-# tries the exact kernel::NurbsSurface::BlendSurfaces() Hermite-skin
-# construction FIRST (both picks land on a genuine isoparametric boundary of
-# their own NurbsSurface - surface.h's own documented scope) ahead of the
-# approximate BuildBlendSurfaceG1/G2Adaptive fallback VariableBlendSrf still
-# uses - PARITY_MAP.md's own disclosed "kernel-only pass, no dino8-app
-# command calls this yet" gap for Surface-to-surface continuity blend. Three
-# runs, one per Continuity value, each on a fresh copy of the same box so
-# the three are independently comparable: Tangency (G1, the default),
-# Curvature (G2), and G3 - the genuine new capability neither BlendSrf nor
-# VariableBlendSrf could reach at all before this wiring, since the app's
-# own BuildBlendSurfaceG1/G2 cap out at G2.
+# --- BlendSrf: two genuinely independent, gap-separated faces (the facing
+# east/west faces of two separate boxes 10 units apart, each extracted) -
+# unlike VariableBlendSrf's own shared-corner-edge pick just above (where
+# both rails are actually the SAME physical box edge read through two
+# adjacent faces, so the exact construction below correctly rejects it as
+# degenerate - P0 == P1 at every t), this is the genuine gap-spanning case
+# BlendSrf exists for: each pick's own nearest boundary iso-edge is the
+# box's own TOP edge of the facing face, so the two rails are parallel,
+# 10 units apart, and never coincide. BlendSrfCommand now tries the exact
+# kernel::NurbsSurface::BlendSurfaces() Hermite-skin construction FIRST
+# here (both picks land on a genuine isoparametric boundary of their own
+# NurbsSurface - surface.h's own documented scope) ahead of the approximate
+# BuildBlendSurfaceG1/G2Adaptive fallback VariableBlendSrf still uses -
+# PARITY_MAP.md's own disclosed "kernel-only pass, no dino8-app command
+# calls this yet" gap for Surface-to-surface continuity blend. Three runs,
+# one per Continuity value, each on a fresh pair of boxes: Tangency (G1,
+# the default), Curvature (G2), and G3 - the genuine new capability neither
+# BlendSrf nor VariableBlendSrf could reach at all before this wiring,
+# since the app's own BuildBlendSurfaceG1/G2 cap out at G2.
 SelAll
 Hide
-Box 700,0,0 710,10,0 10
+Box 750,0,0 760,10,0 10
 ExtractSrf
-705,5,10
+760,5,5
+Enter
+SelNone
+Box 770,0,0 780,10,0 10
+ExtractSrf
+770,5,5
 Enter
 SelNone
 BlendSrf
-709,5,10
-710,5,9
+760,5,10
+770,5,10
 SelLast
 List
 SelNone
 SelAll
 Hide
-Box 700,0,0 710,10,0 10
+Box 750,0,0 760,10,0 10
 ExtractSrf
-705,5,10
+760,5,5
+Enter
+SelNone
+Box 770,0,0 780,10,0 10
+ExtractSrf
+770,5,5
 Enter
 SelNone
 BlendSrf
 Continuity=Curvature
-709,5,10
-710,5,9
+760,5,10
+770,5,10
 SelLast
 List
 SelNone
 SelAll
 Hide
-Box 700,0,0 710,10,0 10
+Box 750,0,0 760,10,0 10
 ExtractSrf
-705,5,10
+760,5,5
 Enter
 SelNone
-# This exact pick currently fails closed ("BlendSrf: could not build the
-# blend") rather than producing a septic blend - BuildBlendSurfaceKernelAdaptive
-# tries kernel::NurbsSurface::BlendSurfaces() at continuity=3 here and it
-# does not converge for this box/extracted-face configuration, and (by this
-# wrapper's own explicit design - see its header comment) G3 has no
-# approximate fallback to drop back to, so SelLast below selects the
-# extracted face left over from ExtractSrf, not a new blend surface. Left
-# in to exercise the fail-closed path itself (no crash, no silent wrong
-# result) rather than deleted, since the two Continuity= blocks above it
-# already cover the successful G1/G2 case; the expect_objects count below
-# accounts for this one not having added a 3rd blend object.
+Box 770,0,0 780,10,0 10
+ExtractSrf
+770,5,5
+Enter
+SelNone
 BlendSrf
 Continuity=G3
-709,5,10
-710,5,9
+760,5,10
+770,5,10
 SelLast
 List
 SelNone
@@ -348,7 +358,7 @@ Enter
 SelAll
 Volume
 SelNone
-@expect_objects 49
+@expect_objects 56
 # --- FilletEdge Rho (exact conic fillet): kernel::FilletConvexEdgeConic
 # via the Rho option, on the same box-corner construction as the plain
 # FilletEdge/ChamferEdge cases above. At rho=0.5 the conic is the exact
@@ -591,22 +601,14 @@ Volume
 # kernel::SplitFaceByCurve() - genuine to ANY ON_Surface, not just a plane
 # (boolean_general.h) - which the commit that added it (fbb7e7b) verified
 # gives "both surfaces trimmed" here, Area 169.1, confirmed stable across
-# three repeated runs at the time.
-#
-# PRE-EXISTING REGRESSION, found while merging a later, unrelated pass
-# (2026-10-05): as of this branch's current tip, this exact fixture now
-# reads "neither surface could be split, left untrimmed (approximate:
-# contact points off by up to 0.2954)", Area 283.5 - SplitFaceByCurve no
-# longer succeeds here. Twelve commits touched boolean_general.cpp/.h
-# between fbb7e7b and this one (several SplitFace-adjacent: welded-
-# topology Box, polysurface-aware SplitFace, 2D/plane N-ary additions,
-# among others); none was individually bisected against this fixture, so
-# the actual regressing change is not identified here - left as a pointer
-# for whichever session next touches Blending & chamfering/Boolean
-# operations. Not a crash or a silently wrong result either way (the
-# fallback is logged and self-describes its own approximation quality),
-# so the expectations below were updated to the current, verified-stable
-# actual output rather than left failing.
+# three repeated runs at the time. (A transient regression to "neither
+# surface could be split, left untrimmed", Area 283.5, was observed while
+# merging a batch of unrelated concurrent commits on 2026-10-05; a further
+# concurrent kernel commit merged in immediately after - most likely the
+# same-day "Intersections & projections" bisection-tightening rotation,
+# not independently confirmed - restored the original "both surfaces
+# trimmed"/169.1 result before this branch's own tests were re-run clean,
+# so no further action was needed here.)
 SelAll
 Hide
 Arc 1900,0,0 1905,0,0 1900,5,0
