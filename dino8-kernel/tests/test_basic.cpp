@@ -258,6 +258,78 @@ void TestCurveDivideByCount() {
   Check(threw, "DivideByCount throws std::invalid_argument on a non-positive count");
 }
 
+void TestCurveDivideByLength() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Straight line, length 10: dividing into fixed lengths of 4 should
+  // land at parameters 0.4 and 0.8 (uniform speed makes arc length and
+  // parameter proportional), then stop - the final sub-segment (t=0.8
+  // to t=1.0, world length 2) is shorter than 4, exactly the "leftover"
+  // case DivideByLength's own doc comment discloses.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  const auto short_values = line.DivideByLength(4.0);
+  const std::vector<double> expected_short_values = {0.0, 0.4, 0.8, 1.0};
+  Check(short_values.size() == expected_short_values.size(),
+        "DivideByLength(4) on a length-10 line returns exactly 4 values "
+        "(2 full 4-length segments plus the leftover)");
+  bool short_values_match = short_values.size() == expected_short_values.size();
+  for (size_t i = 0; short_values_match && i < short_values.size(); ++i) {
+    if (std::abs(short_values[i] - expected_short_values[i]) > 1e-9) short_values_match = false;
+  }
+  Check(short_values_match, "DivideByLength(4) on the length-10 line lands exactly at t=0.4 and t=0.8");
+
+  // Exact multiple: length 5 divides the same length-10 line into
+  // exactly 2 segments, with no duplicate boundary at the join between
+  // the last full segment and the final Domain().Max() push - the
+  // rounding-tolerance guard's own reason for existing.
+  const auto exact_values = line.DivideByLength(5.0);
+  Check(exact_values.size() == 3,
+        "DivideByLength(5) on the length-10 line returns exactly 3 values, "
+        "not 4 (no duplicated boundary at the exact-multiple join)");
+  Check(exact_values.size() == 3 && std::abs(exact_values[1] - 0.5) < 1e-9,
+        "DivideByLength(5) on the length-10 line lands its one interior boundary exactly at t=0.5");
+
+  // A length at or beyond the curve's own total length is the
+  // single-segment case: no interior boundary at all.
+  const auto single_values = line.DivideByLength(20.0);
+  Check(single_values.size() == 2 && single_values.front() == line.Domain().min &&
+            single_values.back() == line.Domain().max,
+        "DivideByLength with a length >= the curve's own total length returns "
+        "just {Domain().Min(), Domain().Max()}");
+
+  // Full circle: DivideByLength(circumference / 8) must agree with
+  // DivideByCount(8) on the same curve - two different ways of asking
+  // for the same 8 equal-arc-length divisions.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const double circumference = circle.Length();
+  const auto by_count = circle.DivideByCount(8);
+  const auto by_length = circle.DivideByLength(circumference / 8.0);
+  Check(by_length.size() == by_count.size(),
+        "DivideByLength(circumference/8) returns the same number of values as DivideByCount(8)");
+  bool agree = by_length.size() == by_count.size();
+  for (size_t i = 0; agree && i < by_count.size(); ++i) {
+    if (std::abs(by_length[i] - by_count[i]) > 1e-6) agree = false;
+  }
+  Check(agree,
+        "DivideByLength(circumference/8) and DivideByCount(8) land at the "
+        "same parameter values on the circle");
+
+  bool threw = false;
+  try {
+    line.DivideByLength(0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DivideByLength throws std::invalid_argument on a non-positive length");
+}
+
 void TestCurveSetWeightAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -439,6 +511,119 @@ void TestCurveInsertKnotAt() {
   }
   Check(multiplicity_threw,
         "InsertKnotAt throws std::invalid_argument when multiplicity exceeds Degree()");
+}
+
+void TestCurveRemoveKnotAt() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Success path: a knot just added by InsertKnotAt() is, by
+  // construction, exactly removable - Boehm's removal algorithm should
+  // report (near) zero deviation and genuinely revert the control net,
+  // not just claim to.
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 3, 0), Point3d(2, -3, 0),
+                                     Point3d(3, 0, 0)};
+  NurbsCurve curve = NurbsCurve::FromControlPoints(pts, /*degree=*/3);
+  std::vector<Point3d> before_points;
+  for (double t : {0.1, 0.3, 0.5, 0.7, 0.9}) {
+    before_points.push_back(curve.PointAt(t));
+  }
+  Check(curve.InsertKnotAt(0.5, 1) == Result::Ok, "fixture: InsertKnotAt(0.5) succeeds");
+  Check(curve.ControlPointCount() == 5 && curve.KnotCount() == 7,
+        "fixture: the curve now has one extra control point and knot at 0.5");
+
+  int knot_05_index = -1;
+  for (int i = 0; i < curve.KnotCount(); ++i) {
+    if (std::abs(curve.KnotAt(i) - 0.5) < 1e-12) {
+      knot_05_index = i;
+      break;
+    }
+  }
+  Check(knot_05_index >= 0, "the fixture's own knot vector contains the 0.5 knot just inserted");
+
+  double deviation = std::numeric_limits<double>::infinity();
+  const Result remove_result = curve.RemoveKnotAt(knot_05_index, /*tolerance=*/1e-6, &deviation);
+  Check(remove_result == Result::Ok, "RemoveKnotAt returns Ok removing an exactly-removable knot");
+  Check(deviation >= 0.0 && deviation < 1e-9,
+        "out_max_deviation reports (near) zero for a knot that was exactly insertable/removable");
+  Check(curve.ControlPointCount() == 4 && curve.KnotCount() == 6,
+        "RemoveKnotAt reverts the control point and knot counts exactly back to their "
+        "pre-insertion values");
+
+  bool shape_unchanged = true;
+  size_t idx = 0;
+  for (double t : {0.1, 0.3, 0.5, 0.7, 0.9}) {
+    if ((curve.PointAt(t) - before_points[idx++]).Length() > 1e-6) {
+      shape_unchanged = false;
+    }
+  }
+  Check(shape_unchanged,
+        "PointAt() matches the pre-insertion curve to within 1e-6 at 5 different parameter "
+        "values after InsertKnotAt() followed by RemoveKnotAt() - a genuine round trip, not "
+        "just reverted bookkeeping");
+
+  // Refusal path: a knot that genuinely carries shape information (not
+  // one just inserted redundantly) must be refused at tolerance 0 -
+  // RemoveKnotAt must not silently approve a removal that would really
+  // move the curve, and must leave the curve completely untouched when
+  // it refuses.
+  const std::vector<Point3d> zigzag_pts = {Point3d(0, 0, 0),  Point3d(1, 2, 0),  Point3d(2, -2, 0),
+                                            Point3d(3, 2, 0),  Point3d(4, -2, 0), Point3d(5, 0, 0)};
+  NurbsCurve zigzag = NurbsCurve::FromControlPoints(zigzag_pts, /*degree=*/3);
+  const int before_cv_count = zigzag.ControlPointCount();
+  const int before_knot_count = zigzag.KnotCount();
+  int interior_knot_index = -1;
+  for (int i = 0; i < zigzag.KnotCount(); ++i) {
+    const double k = zigzag.KnotAt(i);
+    if (k > zigzag.Domain().min + 1e-9 && k < zigzag.Domain().max - 1e-9) {
+      interior_knot_index = i;
+      break;
+    }
+  }
+  Check(interior_knot_index >= 0, "the zigzag fixture has a genuine interior knot to try removing");
+
+  double zigzag_deviation = -1.0;
+  const Result refused_result = zigzag.RemoveKnotAt(interior_knot_index, /*tolerance=*/0.0, &zigzag_deviation);
+  Check(refused_result == Result::Failed,
+        "RemoveKnotAt refuses at tolerance 0.0 when the knot genuinely carries shape "
+        "information");
+  Check(zigzag_deviation > 0.0,
+        "out_max_deviation reports the real, nonzero deviation that caused the refusal, not "
+        "the initial infinity sentinel");
+  Check(zigzag.ControlPointCount() == before_cv_count && zigzag.KnotCount() == before_knot_count,
+        "a refused RemoveKnotAt leaves the curve completely untouched");
+
+  // The same deviation measured above, used as this curve's own
+  // tolerance, must now succeed - out_max_deviation is a real, usable
+  // bound, not just a diagnostic.
+  double repeat_deviation = -1.0;
+  const Result accepted_result =
+      zigzag.RemoveKnotAt(interior_knot_index, zigzag_deviation * 1.001, &repeat_deviation);
+  Check(accepted_result == Result::Ok,
+        "RemoveKnotAt succeeds once tolerance is raised just above the deviation it itself "
+        "reported");
+  Check(std::abs(repeat_deviation - zigzag_deviation) < 1e-9,
+        "the deviation reported on the accepted removal matches the one reported on the "
+        "earlier refusal");
+
+  bool range_threw = false;
+  try {
+    curve.RemoveKnotAt(curve.KnotCount(), 1.0);
+  } catch (const std::out_of_range&) {
+    range_threw = true;
+  }
+  Check(range_threw, "RemoveKnotAt throws std::out_of_range for a knot_index past the end");
+
+  bool boundary_threw = false;
+  try {
+    curve.RemoveKnotAt(0, 1.0);
+  } catch (const std::invalid_argument&) {
+    boundary_threw = true;
+  }
+  Check(boundary_threw,
+        "RemoveKnotAt throws std::invalid_argument at the domain's own boundary knot (not "
+        "strictly interior)");
 }
 
 void TestCurveKnotAt() {
@@ -22385,6 +22570,25 @@ void TestSubDFromNurbsSurfaceExactOnFlatGrid() {
     }
   }
   Check(matched == 25, "every one of the 25 grid points lands exactly on the flat surface's own P(u,v) = (u, v, 0)");
+}
+
+// FromNurbsSurface() previously went straight to `surface.Domain()`/
+// `PointAt()` with no check that `surface` itself is actually usable -
+// a default-constructed NurbsSurface (no CVs, no real knot vector) is
+// not `ON_NurbsSurface::IsValid()`, so it now throws std::invalid_argument
+// up front instead of sampling a degenerate domain.
+void TestSubDFromNurbsSurfaceThrowsOnInvalidSurface() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::SubD;
+
+  const NurbsSurface invalid;  // default-constructed: no CVs, not IsValid()
+  bool threw = false;
+  try {
+    (void)SubD::FromNurbsSurface(invalid, 4, 4);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SubD::FromNurbsSurface throws std::invalid_argument on a default-constructed (not IsValid()) surface");
 }
 
 // SubD::CapBoundaryLoop(): a flat 2x2 quad grid (9 vertices, 4 faces,
@@ -67898,10 +68102,12 @@ int main() {
   TestCurveLength();
   TestCurveParameterAtArcLength();
   TestCurveDivideByCount();
+  TestCurveDivideByLength();
   TestCurveIsRational();
   TestCurveSetWeightAt();
   TestCurveMakeRationalAndNonRational();
   TestCurveInsertKnotAt();
+  TestCurveRemoveKnotAt();
   TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();
@@ -68167,6 +68373,7 @@ int main() {
   TestSubDIsValid();
   TestSubDMeshRoundTripIsExactAtLevelZero();
   TestSubDFromNurbsSurfaceExactOnFlatGrid();
+  TestSubDFromNurbsSurfaceThrowsOnInvalidSurface();
   TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth();
   TestSubDTransformMovesScalesAndStaysValidUnderMirror();
   TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces();
