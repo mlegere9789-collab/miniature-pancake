@@ -612,6 +612,14 @@ class SubD {
   // neighbors' (it's a different, approximate construction), so those
   // stay as naked, unjoined edges - deliberately: no silently making
   // that approximation look exact.
+  //
+  // Throws std::runtime_error if no quad face exists to convert (an empty
+  // SubD, or one built entirely from a non-quad n-gon/triangle mesh at
+  // level 0 - see the per-face skip above) - matching Subdivide()'s own
+  // convention of a named exception over a silently empty result, since a
+  // caller iterating the returned vector would otherwise have no way to
+  // tell "nothing to convert" apart from "converted to zero patches" after
+  // the fact.
   std::vector<SubDNurbsPatch> ToNurbsPatches() const;
 
   // Like ToNurbsPatches(), but replaces each IRREGULAR face's single
@@ -635,6 +643,8 @@ class SubD {
   // EvaluateFace() takes: 0 makes this identical to ToNurbsPatches()
   // (every irregular face returned as one flat patch, no splitting).
   // Throws std::invalid_argument if `max_adaptive_levels` is negative.
+  // Throws std::runtime_error if no quad face exists to convert - same
+  // empty-result convention and reasoning as ToNurbsPatches() above.
   //
   // Cost and the large-mesh fallback are the same as EvaluateFace()'s:
   // each split clones the current subdivision level's WHOLE control net
