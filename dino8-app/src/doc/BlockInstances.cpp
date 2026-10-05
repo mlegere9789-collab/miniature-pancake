@@ -66,6 +66,7 @@ std::vector<BlockInstance> LoadBlockInstances(const Document& doc) {
     // (kMaxBlockArrayCount) only helps once this is a well-defined int.
     b.array_count = arr.number > 0 ? static_cast<int>(std::min(arr.number, 1e9)) : 1;
     b.lookup_key = v["lookup"].AsString();
+    b.stretch_offset = v["stretch"].number;
     const json::Value& objs = v["objects"];
     for (size_t j = 0; j < objs.Size(); ++j) b.objects.push_back(static_cast<ObjectId>(objs[j].number));
     out.push_back(std::move(b));
@@ -82,7 +83,7 @@ void SaveBlockInstances(Document& doc, const std::vector<BlockInstance>& list) {
         << ",\"state\":\"" << JsonEscape(b.state) << "\""
         << ",\"ix\":" << b.insert.x << ",\"iy\":" << b.insert.y << ",\"iz\":" << b.insert.z
         << ",\"flip\":" << (b.flipped ? 1 : 0) << ",\"array\":" << b.array_count
-        << ",\"lookup\":\"" << JsonEscape(b.lookup_key) << "\",\"objects\":[";
+        << ",\"lookup\":\"" << JsonEscape(b.lookup_key) << "\",\"stretch\":" << b.stretch_offset << ",\"objects\":[";
     for (size_t j = 0; j < b.objects.size(); ++j) out << (j ? "," : "") << b.objects[j];
     out << "]}";
   }
@@ -127,7 +128,73 @@ namespace {
 // above any plausible real use (a bolt-pattern/rebar array).
 constexpr int kMaxBlockArrayCount = 2000;
 
-std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, kernel::Point3d at, const std::string& state, bool flipped, int array_count) {
+// Stretch parameter: moves only the part of `c`'s geometry on the far side
+// of the definition's stretch-frame anchor plane (through `def.base`,
+// normal `def.stretch_axis`, `def.stretch_anchor` model units along that
+// axis from `def.base`) by `offset` model units along the same axis,
+// leaving the near side untouched - a genuine per-point deformation, not
+// a single rigid transform applied to the whole object the way Flip's
+// mirror or Array's translation are. Applied in `c`'s own local
+// (definition) space, before PlaceFiltered's mirror/insert/array
+// transform, since the anchor plane is defined relative to `def.base`.
+//
+// Point/Curve/Mesh (the geometry kinds a 2D drafting dynamic block
+// actually places - lines, polylines, curves, points) get a real
+// per-control-point/per-vertex split: each control point or vertex moves
+// independently depending on which side of the plane it is on, so a
+// single line or curve straddling the plane genuinely stretches (one end
+// anchored, the other sliding away) instead of translating as a whole.
+// Surface/Brep/SubD/PointCloud have no addressable per-point API reachable
+// here without converting the object to a different kind (which would
+// change what kind of object a stretched instance displays as, even at
+// offset 0 once a frame is configured) - honestly scoped down for those
+// four kinds to treating the whole object as a single point at its own
+// bounding-box center: moved rigidly if that center is beyond the anchor
+// plane, left untouched otherwise. See PARITY_MAP.md's "Dynamic blocks"
+// item for this disclosed simplification.
+void ApplyStretch(SceneObject& c, const BlockDefinition& def, double offset) {
+  if (!def.has_stretch_frame || offset == 0) return;
+  kernel::Vector3d axis = def.stretch_axis;
+  if (!axis.Unitize()) return;
+  const kernel::Vector3d delta = axis * offset;
+  auto beyond = [&](const kernel::Point3d& p) {
+    return ON_DotProduct(p - def.base, axis) >= def.stretch_anchor;
+  };
+  switch (c.kind) {
+    case ObjectKind::Point:
+      if (beyond(c.point)) c.point = c.point + delta;
+      break;
+    case ObjectKind::Curve:
+      if (c.curve) {
+        const int n = c.curve->ControlPointCount();
+        for (int i = 0; i < n; ++i) {
+          const kernel::Point3d p = c.curve->ControlPointAt(i);
+          if (beyond(p)) c.curve->SetControlPointAt(i, p + delta);
+        }
+      }
+      break;
+    case ObjectKind::Mesh:
+      if (c.mesh) {
+        ON_Mesh& m = c.mesh->raw();
+        for (int i = 0; i < m.VertexCount(); ++i) {
+          const kernel::Point3d p = m.Vertex(i);
+          if (beyond(p)) m.SetVertex(i, p + delta);
+        }
+        m.DestroyRuntimeCache(true);
+        m.ComputeFaceNormals();
+        m.ComputeVertexNormals();
+      }
+      break;
+    default: {
+      const kernel::BoundingBox bb = c.BoundingBox();
+      const kernel::Point3d center = bb.min + (bb.max - bb.min) * 0.5;
+      if (beyond(center)) c.Transform(ON_Xform::TranslationTransformation(delta));
+      break;
+    }
+  }
+}
+
+std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, kernel::Point3d at, const std::string& state, bool flipped, int array_count, double stretch_offset) {
   ON_Xform xf = ON_Xform::TranslationTransformation(at - def.base);
   if (flipped) {
     const kernel::Vector3d n(1, 0, 0);
@@ -150,6 +217,7 @@ std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, k
       SceneObject c = o;
       c.id = kNoObject;
       c.selected = false;
+      ApplyStretch(c, def, stretch_offset);  // local space, before mirror/insert/array
       c.Transform(step_xf);
       c.user_text["Block"] = def.name;
       c.user_text["BlockInsert"] = std::to_string(at.x) + "," + std::to_string(at.y) + "," + std::to_string(at.z);
@@ -174,7 +242,7 @@ int InstantiateDynamicBlock(Document& doc, const std::string& name, kernel::Poin
   if (!def) return -1;
   std::string active = state;
   if (active.empty() && !def->states.empty()) active = def->states.front();
-  const std::vector<ObjectId> ids = PlaceFiltered(doc, *def, at, active, false, 1);
+  const std::vector<ObjectId> ids = PlaceFiltered(doc, *def, at, active, false, 1, 0);
   // Same anchor-object provenance as the static-block path in
   // InstantiateBlockInDocument (cmd_drafting.cpp) - see ProvenanceInfo's
   // comment in doc/Document.h.
@@ -202,7 +270,7 @@ bool RebuildBlockInstance(Document& doc, int group) {
   if (!def) return false;
   for (ObjectId id : it->objects) doc.Remove(id);
   const std::string place_state = ResolveLookupState(*def, it->lookup_key, it->state);
-  it->objects = PlaceFiltered(doc, *def, it->insert, place_state, it->flipped, it->array_count);
+  it->objects = PlaceFiltered(doc, *def, it->insert, place_state, it->flipped, it->array_count, it->stretch_offset);
   // Re-attach the fresh objects to the same group id so selection/explode
   // (which key off Document::Group membership) still find this instance,
   // and rebuild the anchor-object provenance the same way InstantiateDynamicBlock does.
@@ -244,6 +312,15 @@ bool SetBlockInstanceLookup(Document& doc, int group, const std::string& key) {
   auto it = std::find_if(list.begin(), list.end(), [&](const BlockInstance& b) { return b.group == group; });
   if (it == list.end()) return false;
   it->lookup_key = key;
+  SaveBlockInstances(doc, list);
+  return RebuildBlockInstance(doc, group);
+}
+
+bool SetBlockInstanceStretch(Document& doc, int group, double offset) {
+  std::vector<BlockInstance> list = LoadBlockInstances(doc);
+  auto it = std::find_if(list.begin(), list.end(), [&](const BlockInstance& b) { return b.group == group; });
+  if (it == list.end()) return false;
+  it->stretch_offset = offset;
   SaveBlockInstances(doc, list);
   return RebuildBlockInstance(doc, group);
 }

@@ -78,31 +78,84 @@ struct Layer {
   Color plot_color = Color::FromBytes(0, 0, 0);
 };
 
+// A named, reusable plot style table entry - one layer's row in a real
+// CTB/STB-style plot style table (PlotStyleTable below): the color/
+// lineweight pair a layer named `layer` should print with whenever that
+// table is the document's active one, the same two columns a real plot
+// style table assigns per layer. Mirrors Layer::has_plot_color/plot_color
+// and print_width_mm's own three-way convention (width_mm: 0 = document
+// default, > 0 = explicit mm, < 0 = does not print) exactly, so a table's
+// entry and a layer's own direct fields behave identically once either one
+// takes effect - the only difference is a table's entries can be swapped
+// out as a whole and reused across layers/documents, closing the half of
+// PARITY_MAP.md's "Print and plot output" named "plot styles (CTB/STB)"
+// that print_width_mm/plot_color alone - real but only ever one flat pair
+// of fields per layer - never did: defining "Monochrome" once and
+// assigning it to several layers (or swapping a document between tables).
+struct PlotStyleEntry {
+  std::string layer;
+  bool has_color = false;
+  Color color = Color::FromBytes(0, 0, 0);
+  double width_mm = 0;
+};
+
+// A named table of PlotStyleEntry rows - doc/PlotStyleTables.h/.cpp
+// persists a document's whole set of these (plus which one is active) as
+// JSON in UserText(), the same "small side table round-tripped through
+// document user text" shape BlockInstances.h already established for
+// dynamic-block instance records, rather than a new binary .3dm field.
+struct PlotStyleTable {
+  std::string name;
+  std::vector<PlotStyleEntry> entries;
+};
+
+// The entry in `table` naming `layer_name`, or null if `table` is null or
+// has no row for that layer - first match wins, same "parallel list, first
+// match" convention BlockDefinition::lookup_keys/lookup_states already
+// uses. Pure and header-only like the three functions below, which all
+// take the resolved entry (not a whole table + document) so they can stay
+// free of doc/PlotStyleTables.h's JSON-loading dependency.
+inline const PlotStyleEntry* FindPlotStyleEntry(const PlotStyleTable* table, const std::string& layer_name) {
+  if (!table) return nullptr;
+  for (const PlotStyleEntry& e : table->entries) if (e.layer == layer_name) return &e;
+  return nullptr;
+}
+
 // Whether a layer's objects should appear in a vector Print/Export at all -
 // io/FileExchange.cpp's CollectPaths skips every object on a layer this
-// returns false for (Layer::print_width_mm's negative case). Unrelated to
+// returns false for (Layer::print_width_mm's negative case, or `style`'s
+// when a plot style table entry overrides it). Unrelated to
 // Layer::visible/locked (on-screen display), same as real Rhino's own
 // PlotWeight < 0 convention this mirrors.
-inline bool LayerPrints(const Layer& layer) { return layer.print_width_mm >= 0; }
+inline bool LayerPrints(const Layer& layer, const PlotStyleEntry* style = nullptr) {
+  if (style && style->width_mm < 0) return false;
+  return layer.print_width_mm >= 0;
+}
 
 // The print width a layer's paths should actually be stroked at
 // (io/FileExchange.cpp's ExportSvg/ExportPdf), once LayerPrints() has
-// already ruled out the non-printing case: an explicit positive
-// print_width_mm, else `doc_default` (DrawingOptions::line_width_mm) for
-// the default (0) case. Pure and header-only so it is unit-testable
-// (tests/test_print_width.cpp) without pulling in FileExchange.cpp's much
-// heavier Viewport/GL dependencies.
-inline double EffectivePrintWidthMm(const Layer& layer, double doc_default) {
+// already ruled out the non-printing case: the active plot style table's
+// own entry for this layer when one is set and gives an explicit positive
+// width (the table is the authority once a layer is assigned to one, same
+// as real CTB/STB), else an explicit positive print_width_mm, else
+// `doc_default` (DrawingOptions::line_width_mm) for the default (0) case.
+// Pure and header-only so it is unit-testable (tests/test_print_width.cpp,
+// tests/test_plot_style_table.cpp) without pulling in FileExchange.cpp's
+// much heavier Viewport/GL dependencies.
+inline double EffectivePrintWidthMm(const Layer& layer, double doc_default, const PlotStyleEntry* style = nullptr) {
+  if (style && style->width_mm > 0) return style->width_mm;
   return layer.print_width_mm > 0 ? layer.print_width_mm : doc_default;
 }
 
 // The pen color a layer's paths should actually be stroked at (io/
-// FileExchange.cpp's ExportSvg/ExportPdf): the layer's own plot_color
-// override when set (LayerPlotColor, cmd_layer.cpp), else `display_color`
-// (the object's own on-screen EffectiveColor) unchanged. Pure and
-// header-only for the same unit-testability reason EffectivePrintWidthMm
-// above is.
-inline Color EffectivePlotColor(const Layer& layer, const Color& display_color) {
+// FileExchange.cpp's ExportSvg/ExportPdf): the active plot style table's
+// own color for this layer when one is set (style->has_color), else the
+// layer's own plot_color override when set (LayerPlotColor, cmd_layer.cpp),
+// else `display_color` (the object's own on-screen EffectiveColor)
+// unchanged. Pure and header-only for the same unit-testability reason
+// EffectivePrintWidthMm above is.
+inline Color EffectivePlotColor(const Layer& layer, const Color& display_color, const PlotStyleEntry* style = nullptr) {
+  if (style && style->has_color) return style->color;
   return layer.has_plot_color ? layer.plot_color : display_color;
 }
 
@@ -145,6 +198,28 @@ struct BlockDefinition {
   // "no-op until configured" contract array_spacing == 0 gives Array.
   std::vector<std::string> lookup_keys;
   std::vector<std::string> lookup_states;
+  // Stretch parameter (BlockSetStretchFrame, doc/BlockInstances.h): the
+  // fifth and last dynamic-block parameter/action type, after Visibility
+  // states, Flip, Array and Lookup. Defines a boundary plane through `base`
+  // (normal `stretch_axis`, `stretch_anchor` model units along that axis
+  // from `base`) - a placed instance's own `stretch_offset`
+  // (BlockInstance::stretch_offset) then moves only the part of its
+  // geometry on the far side of that plane by `stretch_offset` model units
+  // along the same axis, leaving the near side exactly where it was. This
+  // is the real, defining behavior a Stretch grip has that Flip/Array/
+  // Lookup don't: those three apply one rigid transform to an instance's
+  // whole geometry, while Stretch is a genuine per-point deformation that
+  // only moves part of it (e.g. a parametric door's far jamb sliding away
+  // from the near one to widen the opening, the near jamb never moving) -
+  // see PlaceFiltered's own comment (BlockInstances.cpp) for exactly how
+  // each supported SceneObject kind is split. A definition that never
+  // calls BlockSetStretchFrame keeps has_stretch_frame false, which
+  // PlaceFiltered treats as "no stretch parameter defined" and leaves
+  // every instance's geometry untouched regardless of stretch_offset, the
+  // same "no-op until configured" contract array_spacing == 0 gives Array.
+  bool has_stretch_frame = false;
+  kernel::Vector3d stretch_axis{1, 0, 0};
+  double stretch_anchor = 0;
 };
 
 struct Group {
@@ -1029,6 +1104,20 @@ class Document {
     ObjectId next_id = 1;
     int next_group_id = 1;
     int next_light_id = 1;
+    // Document-level user text (UserText(), e.g. "dino8.block_instances",
+    // "dino8.plot_style_tables") - added alongside the fields above rather
+    // than assumed to already be covered: BlockInstances.h's own comment
+    // claims a dynamic block's instance record "survives Undo/Redo for
+    // free (document user text is part of the snapshot Document::
+    // BeginChange captures)", but before this field existed that was not
+    // actually true of either Capture()/Restore() or the diff-based
+    // StateDelta path below - neither one ever read or wrote user_text_,
+    // so BlockToggleFlip/SetBlockInstanceArrayCount/SetBlockInstanceLookup
+    // (and every other BeginChange-wrapped command that only edits
+    // UserText()) silently left it unreverted by Undo. Fixed here rather
+    // than left as a stale comment matching aspirational, not actual,
+    // behavior.
+    std::map<std::string, std::string> user_text;
   };
   Snapshot Capture(const std::string& label) const;
   void Restore(const Snapshot& snapshot);
@@ -1102,6 +1191,11 @@ class Document {
     ObjectId next_id_before = 1, next_id_after = 1;
     int next_group_id_before = 1, next_group_id_after = 1;
     int next_light_id_before = 1, next_light_id_after = 1;
+    // See Snapshot::user_text above for why this exists: without it, Undo/
+    // Redo silently left UserText() (dino8.block_instances, dino8.
+    // plot_style_tables, ...) at whatever it was when the entry was popped,
+    // regardless of which side of the delta was being applied.
+    std::map<std::string, std::string> user_text_before, user_text_after;
 
     std::vector<SceneObject> modified_before;
     std::vector<SceneObject> modified_after;  // lazily populated - see Document::Undo
@@ -1161,6 +1255,7 @@ class Document {
     int next_light_id = 1;
     std::vector<SceneObject> objects;            // general path: full pre-edit copy
     std::vector<SceneObject> fast_path_before;    // fast path: just the declared ids
+    std::map<std::string, std::string> user_text;  // see Snapshot::user_text above
   };
   void FinalizePending();
   void ApplyDelta(const StateDelta& delta, bool undo);

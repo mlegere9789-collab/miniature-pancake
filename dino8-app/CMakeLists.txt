@@ -294,6 +294,7 @@ set(DINO8_SOURCES
   src/doc/SceneObject.cpp
   src/doc/SubObjectEdit.cpp
   src/doc/BlockInstances.cpp
+  src/doc/PlotStyleTables.cpp
   src/spatial/ObjectGrid.cpp
   src/viewport/Camera.cpp
   src/viewport/Viewport.cpp
@@ -746,6 +747,23 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_test_block_lookup PRIVATE dino8_kernel)
   add_test(NAME dino8_block_lookup COMMAND dino8_test_block_lookup)
 
+  # Dynamic-block Stretch parameter (src/doc/BlockInstances.cpp's
+  # SetBlockInstanceStretch/PlaceFiltered's ApplyStretch): moves only the
+  # part of a placed instance's geometry beyond its block's stretch-frame
+  # anchor plane, leaving the rest exactly where it was - the fifth and
+  # last dynamic-block parameter/action type, after Visibility states,
+  # Flip, Array and Lookup (which this closes the final gap of). Also
+  # exercises the real Document::UserText() Undo/Redo capture fix this
+  # same session made (Document.h/.cpp's Snapshot/StateDelta/PendingChange
+  # user_text fields) end to end - see the test file's own comment. Same
+  # dependency shape as dino8_test_block_lookup above.
+  add_executable(dino8_test_block_stretch tests/test_block_stretch.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                           src/doc/SubObjectEdit.cpp src/doc/BlockInstances.cpp
+                                           src/geom/BrepMesher.cpp src/util/json_mini.cpp)
+  target_include_directories(dino8_test_block_stretch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_block_stretch PRIVATE dino8_kernel)
+  add_test(NAME dino8_block_stretch COMMAND dino8_test_block_stretch)
+
   # AnnotationStyle::precision/unit_suffix/ext_offset/ext_extension/
   # text_placement / DimStyleParams+FormatMeasurement (commands/DimGeometry.h)
   # - see tests/test_dim_precision.cpp's own file comment for why this is
@@ -778,6 +796,21 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_plot_color PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_test_plot_color PRIVATE dino8_kernel)
   add_test(NAME dino8_plot_color COMMAND dino8_test_plot_color)
+
+  # Named, reusable plot style tables (doc/Document.h's PlotStyleEntry/
+  # PlotStyleTable/FindPlotStyleEntry and doc/PlotStyleTables.h's Load/
+  # Save/Active-name persistence) - the real CTB/STB-style table
+  # PARITY_MAP.md's "Print and plot output" item still named missing even
+  # after print_width_mm/plot_color (dino8_print_width/dino8_plot_color
+  # above) closed the per-layer lineweight/color halves. Needs a real
+  # Document (UserText() persistence), same dependency shape as
+  # dino8_test_block_lookup, plus PlotStyleTables.cpp itself.
+  add_executable(dino8_test_plot_style_table tests/test_plot_style_table.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                             src/doc/SubObjectEdit.cpp src/doc/PlotStyleTables.cpp
+                                             src/geom/BrepMesher.cpp src/util/json_mini.cpp)
+  target_include_directories(dino8_test_plot_style_table PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_plot_style_table PRIVATE dino8_kernel)
+  add_test(NAME dino8_plot_style_table COMMAND dino8_test_plot_style_table)
 
   # Keyboard-shortcut chord table (src/app/ShortcutRules.cpp's
   # IsReservedShortcut): every chord Application::HandleShortcuts hardcodes

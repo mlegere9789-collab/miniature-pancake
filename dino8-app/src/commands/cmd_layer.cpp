@@ -1,5 +1,6 @@
 // Layer commands.
 #include "commands/cmd_common.h"
+#include "doc/PlotStyleTables.h"
 
 #include <cstdio>
 
@@ -134,6 +135,103 @@ class LayerStateCommand : public Command {
     for (auto& s : l) ctx.Print("  " + s.name + ": " + std::to_string(s.layers.size()) + " layer(s)");
   }
   std::string action_;
+};
+
+// PlotStyleTableSet: creates (if needed) a named, reusable plot style
+// table and sets/replaces one layer's row in it - the real CTB/STB-style
+// table PARITY_MAP.md's "Print and plot output" item names as still
+// missing even after LayerPrintWidth/LayerPlotColor closed the per-layer
+// lineweight/color halves: those two commands can only ever set one flat
+// pair of fields per layer, with no way to define a reusable named style
+// (e.g. "Monochrome") once and assign it to several layers, or swap a
+// document between tables. Four chained text prompts (table name, layer
+// name, color, width), each checking the script-input queue first
+// (ctx.Engine().TakePendingInput()) the same way LayerStateCommand above
+// does, so a script can supply all four tokens up front. Re-running this
+// for the same table+layer replaces that row rather than appending a
+// duplicate, matching BlockSetLookupTable's own "replaces, not appends"
+// row semantics for the same `std::find_if`-by-key reason.
+class PlotStyleTableSetCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    if (auto t = ctx.Engine().TakePendingInput()) { OnText(ctx, *t); return; }
+    WantText("Plot style table name");
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (step_ == 0) {
+      table_ = t;
+      step_ = 1;
+      if (auto n = ctx.Engine().TakePendingInput()) { OnText(ctx, *n); return; }
+      WantText("Layer name");
+      return;
+    }
+    if (step_ == 1) {
+      layer_ = t;
+      step_ = 2;
+      if (auto n = ctx.Engine().TakePendingInput()) { OnText(ctx, *n); return; }
+      WantText("Plot color r,g,b (or ByLayer/Default/None to leave unset)");
+      return;
+    }
+    if (step_ == 2) {
+      if (!ParsePlotColorArg(t, clear_, color_)) { ctx.Warn("'" + t + "' is not r,g,b or ByLayer/Default/None"); Finish(); return; }
+      step_ = 3;
+      if (auto n = ctx.Engine().TakePendingInput()) { OnText(ctx, *n); return; }
+      WantText("Print width mm (0 = document default, negative = does not print)");
+      return;
+    }
+    char* end = nullptr;
+    const double width = std::strtod(t.c_str(), &end);
+    if (end == t.c_str()) { ctx.Warn("'" + t + "' is not a number"); Finish(); return; }
+    ctx.Doc().BeginChange("PlotStyleTableSet");
+    std::vector<PlotStyleTable> tables = LoadPlotStyleTables(ctx.Doc());
+    auto tit = std::find_if(tables.begin(), tables.end(), [&](const PlotStyleTable& x) { return x.name == table_; });
+    if (tit == tables.end()) { tables.push_back({table_, {}}); tit = tables.end() - 1; }
+    PlotStyleEntry entry;
+    entry.layer = layer_;
+    entry.has_color = !clear_;
+    if (!clear_) entry.color = color_;
+    entry.width_mm = width;
+    auto eit = std::find_if(tit->entries.begin(), tit->entries.end(), [&](const PlotStyleEntry& x) { return x.layer == layer_; });
+    if (eit != tit->entries.end()) *eit = entry; else tit->entries.push_back(entry);
+    SavePlotStyleTables(ctx.Doc(), tables);
+    ctx.Print("PlotStyleTableSet: table '" + table_ + "', layer '" + layer_ + "' row set");
+    Finish();
+  }
+  int step_ = 0;
+  std::string table_, layer_;
+  bool clear_ = true;
+  Color color_;
+};
+
+// PlotStyleTableActivate: makes a named plot style table the document's
+// active one for Print/Export, or clears it back to "none" so each
+// layer's own print_width_mm/plot_color apply directly again. A real,
+// stateful Command (not Immediate) for the same reason
+// PlotStyleTableSetCommand above is one rather than a single-shot lambda:
+// a script supplies the table name on its own separate line (same
+// one-token-per-line convention block_array_script.txt/block_lookup_
+// script.txt already use for their own multi-step commands), and only a
+// command actively waiting via WantText - not an Immediate handler, which
+// returns before the engine would ever feed it a later line - is fed that
+// next line by the engine's own dispatch loop.
+class PlotStyleTableActivateCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    if (auto t = ctx.Engine().TakePendingInput()) { OnText(ctx, *t); return; }
+    WantText("Plot style table to activate (or None to deactivate)", ActivePlotStyleTableName(ctx.Doc()));
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    const bool none = t.empty() || ToLower(t) == "none";
+    if (!none) {
+      const std::vector<PlotStyleTable> tables = LoadPlotStyleTables(ctx.Doc());
+      if (!FindPlotStyleTable(tables, t)) { ctx.Warn("No plot style table named '" + t + "' (use PlotStyleTableSet first)"); Finish(); return; }
+    }
+    ctx.Doc().BeginChange("PlotStyleTableActivate");
+    SetActivePlotStyleTableName(ctx.Doc(), none ? "" : t);
+    ctx.Print(none ? "PlotStyleTableActivate: no active plot style table (per-layer print width/plot color apply directly)"
+                   : "PlotStyleTableActivate: '" + t + "' is now the active plot style table");
+    Finish();
+  }
 };
 
 }  // namespace
@@ -274,6 +372,25 @@ void RegisterLayerCommands(CommandEngine& e) {
                                              std::to_string(static_cast<int>(c.g * 255 + 0.5f)) + "," + std::to_string(static_cast<int>(c.b * 255 + 0.5f));
         ctx.Print("Layer '" + ctx.Doc().LayerFullPath(idx) + "' plot color: " + desc);
       }));
+  // PlotStyleTableSet/PlotStyleTableActivate: the real, named/reusable
+  // plot style table (doc/PlotStyleTables.h) PARITY_MAP.md's "Print and
+  // plot output" item still named missing even after LayerPrintWidth/
+  // LayerPlotColor closed the per-layer lineweight/color halves above -
+  // "Monochrome" can now be defined once and assigned to several layers,
+  // or a document swapped between tables, rather than only ever one flat
+  // color/width pair per layer. io/FileExchange.cpp's CollectPaths/
+  // ExportSvg/ExportPdf consult whichever table PlotStyleTableActivate
+  // last named (if any) before falling back to each layer's own
+  // print_width_mm/plot_color, exactly as before this pair of commands
+  // existed.
+  Reg(e, "PlotStyleTableSet", Make<PlotStyleTableSetCommand>(), CommandStatus::Implemented,
+      "Creates (if needed) a named plot style table and sets/replaces one layer's color+lineweight row in it, the "
+      "same two columns a real CTB/STB table assigns per layer - does not itself change what prints until "
+      "PlotStyleTableActivate makes this table the document's active one.");
+  Reg(e, "PlotStyleTableActivate", Make<PlotStyleTableActivateCommand>(), CommandStatus::Implemented,
+      "Makes a named plot style table (PlotStyleTableSet) the document's active one for Print/Export, or clears "
+      "the active table back to 'none' (None/empty) so each layer's own print_width_mm/plot_color apply directly - "
+      "the active table's own entries, when it has one for a layer, take over from that layer's direct fields.");
   Reg(e, "LayerStateManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().layer_state_manager = true; }));
   Reg(e, "LayerState", Make<LayerStateCommand>());
   Reg(e, "Purge", Immediate([](CommandContext& ctx) {

@@ -2,6 +2,7 @@
 
 #include "commands/DimGeometry.h"
 #include "io/AciPalette.h"
+#include "doc/PlotStyleTables.h"
 #include "drafting/HatchBuild.h"
 #include "drafting/HatchLibrary.h"
 #include "geom/TextOutline.h"
@@ -2339,17 +2340,29 @@ struct Projector {
 
 std::vector<Path2> CollectPaths(const Document& doc, const Projector& proj, bool selected_only) {
   std::vector<Path2> paths;
+  // The document's active plot style table (PlotStyleTableActivate,
+  // cmd_layer.cpp), if any - its entries take over from each layer's own
+  // print_width_mm/plot_color below (EffectivePrintWidthMm/EffectivePlot
+  // Color/LayerPrints' new `style` parameter), the real named/reusable
+  // CTB/STB-style table PARITY_MAP.md's "Print and plot output" item still
+  // named missing. `table_storage` just keeps the loaded tables alive for
+  // `table`'s lifetime (see ActivePlotStyleTable's own comment).
+  std::vector<PlotStyleTable> table_storage;
+  const PlotStyleTable* table = ActivePlotStyleTable(doc, table_storage);
   for (const SceneObject& o : doc.Objects()) {
     if (selected_only && !o.selected) continue;
     if (!doc.IsObjectVisible(o)) continue;
-    if (o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size() &&
-        !LayerPrints(doc.Layers()[static_cast<size_t>(o.layer_index)]))
-      continue;  // Layer::print_width_mm < 0: "does not print", still visible on screen
+    const bool valid_layer = o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size();
+    const PlotStyleEntry* style = valid_layer ? FindPlotStyleEntry(table, doc.Layers()[static_cast<size_t>(o.layer_index)].name) : nullptr;
+    if (valid_layer && !LayerPrints(doc.Layers()[static_cast<size_t>(o.layer_index)], style))
+      continue;  // Layer::print_width_mm < 0 (or the active table's own entry): "does not print", still visible on screen
     // A layer's own plot_color override (LayerPlotColor) takes over from
     // the object's on-screen display color here - the color half of "plot
-    // styles (CTB/STB)", alongside print_width_mm's lineweight half above.
-    const Color color = o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size()
-                             ? EffectivePlotColor(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.EffectiveColor(o))
+    // styles (CTB/STB)", alongside print_width_mm's lineweight half above;
+    // the active plot style table's own entry, when it has one for this
+    // layer, takes over from both.
+    const Color color = valid_layer
+                             ? EffectivePlotColor(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.EffectiveColor(o), style)
                              : doc.EffectiveColor(o);
     if (o.kind == ObjectKind::Point) {
       Path2 p;
@@ -2494,13 +2507,16 @@ bool ExportSvg(const Document& doc, const Viewport* view, const std::string& pat
   // EffectivePrintWidthMm, doc/Document.h), since every path in one <g>
   // shares a layer already.
   const double default_width = opts.line_width_mm > 0 ? opts.line_width_mm : 0.25;
+  std::vector<PlotStyleTable> table_storage;
+  const PlotStyleTable* table = ActivePlotStyleTable(doc, table_storage);
   std::map<int, std::vector<const Path2*>> by_layer;
   for (const Path2& p : paths) by_layer[p.layer].push_back(&p);
   int written = 0;
   for (const auto& [layer, list] : by_layer) {
     const bool valid_layer = layer >= 0 && static_cast<size_t>(layer) < doc.Layers().size();
     std::string name = valid_layer ? doc.LayerFullPath(layer) : "Default";
-    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(layer)], default_width) : default_width;
+    const PlotStyleEntry* style = valid_layer ? FindPlotStyleEntry(table, doc.Layers()[static_cast<size_t>(layer)].name) : nullptr;
+    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(layer)], default_width, style) : default_width;
     os << "<g id=\"" << XmlEscape(name) << "\" stroke-width=\"" << Num(width, 3) << "\">\n";
     for (const Path2* p : list) {
       os << "<path stroke=\"" << HexColor(p->color) << "\" d=\"";
@@ -2536,13 +2552,16 @@ bool ExportPdf(const Document& doc, const Viewport* view, const std::string& pat
 
   // Content stream.
   const double default_width = opts.line_width_mm > 0 ? opts.line_width_mm : 0.25;
+  std::vector<PlotStyleTable> table_storage;
+  const PlotStyleTable* table = ActivePlotStyleTable(doc, table_storage);
   std::ostringstream cs;
   cs << "q\n" << Num(default_width * pt, 3) << " w 1 J 1 j\n";
   std::string last_color;
   double last_width = default_width;
   for (const Path2& p : paths) {
     const bool valid_layer = p.layer >= 0 && static_cast<size_t>(p.layer) < doc.Layers().size();
-    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(p.layer)], default_width) : default_width;
+    const PlotStyleEntry* style = valid_layer ? FindPlotStyleEntry(table, doc.Layers()[static_cast<size_t>(p.layer)].name) : nullptr;
+    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(p.layer)], default_width, style) : default_width;
     if (std::fabs(width - last_width) > 1e-9) { cs << Num(width * pt, 3) << " w\n"; last_width = width; }
     const std::string color = Num(p.color.r, 3) + " " + Num(p.color.g, 3) + " " + Num(p.color.b, 3) + " RG\n";
     if (color != last_color) { cs << color; last_color = color; }

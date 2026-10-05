@@ -4952,6 +4952,51 @@ grep -q 'stroke="#000000"' "$TMPW/plot_color_off.svg" && echo "ok   with no plot
 grep -q 'stroke="#ff0000"' "$TMPW/plot_color_on.svg" && echo "ok   LayerPlotColor 255,0,0 makes the exported SVG stroke the line red, not its unchanged on-screen display color" || { echo "FAIL plot_color_on.svg does not stroke red"; fail=1; }
 grep -q 'stroke="#000000"' "$TMPW/plot_color_cleared.svg" && echo "ok   LayerPlotColor ByLayer clears the override back to the display color (black)" || { echo "FAIL plot_color_cleared.svg does not stroke black again after clearing"; fail=1; }
 
+# BlockSetStretchFrame/BlockSetStretch command-line wiring: PARITY_MAP.md
+# "Dynamic blocks" Stretch parameter/action - the fifth and last of the
+# five named parameter/action types, after Visibility states, Flip, Array
+# and Lookup above (the Document-level math itself is unit-tested directly
+# in dino8_block_stretch/test_block_stretch.cpp) - see
+# block_stretch_script.txt's own header comment.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  BST="$("$BIN" --smoke 100 --script "$HERE/block_stretch_script.txt" 2>&1)" || { echo "$BST"; echo "FAIL: block-stretch script exited non-zero"; exit 1; }
+else
+  BST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/block_stretch_script.txt" 2>&1)" || { echo "$BST"; echo "FAIL: block-stretch script exited non-zero"; exit 1; }
+fi
+echo "$BST" | grep -E "^(ok|FAIL)" || true
+if echo "$BST" | grep -q "^FAIL"; then fail=1; fi
+echo "$BST" | grep -q "^smoke:" || { echo "$BST"; echo "FAIL: block-stretch script produced no smoke line"; fail=1; }
+bstcheck() { if echo "$BST" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$BST" "$1"; fail=1; fi; }
+bstcheck "CV[0] 100,0,0" "before stretching: near control point (local x=0, before the anchor) at insert + local = 100,0,0"
+bstcheck "CV[1] 110,0,0" "before stretching: far control point (local x=10, beyond the anchor) at insert + local = 110,0,0"
+bstcheck "CV[0] 100,0,0" "BlockSetStretch 3 (anchor at local x=5): the near control point did NOT move - still 100,0,0"
+bstcheck "CV[1] 113,0,0" "BlockSetStretch 3: the far control point moved by the full offset - 110,0,0 -> 113,0,0, not just translating the whole line (which would leave both CVs 3 units further along X)"
+
+# PlotStyleTableSet/PlotStyleTableActivate command-line wiring:
+# PARITY_MAP.md "Print and plot output" item - the real named/reusable
+# plot style table (CTB/STB) half, alongside LayerPrintWidth/
+# LayerPlotColor's per-layer halves above (the pure style-aware
+# EffectivePlotColor/EffectivePrintWidthMm/LayerPrints overloads and the
+# JSON persistence are unit-tested directly in
+# dino8_plot_style_table/test_plot_style_table.cpp) - see
+# plot_style_table_script.txt's own header comment. Checked directly
+# against the real exported SVG files' stroke color AND stroke-width, not
+# just a printed command confirmation.
+sed "s|@TMP@|$TMPW|g" "$HERE/plot_style_table_script.txt" > "$TMPW/plot_style_table_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PST="$("$BIN" --smoke 30 --script "$TMPW/plot_style_table_script.txt" 2>&1)" || { echo "$PST"; echo "FAIL: plot-style-table script exited non-zero"; exit 1; }
+else
+  PST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/plot_style_table_script.txt" 2>&1)" || { echo "$PST"; echo "FAIL: plot-style-table script exited non-zero"; exit 1; }
+fi
+echo "$PST" | grep -E "^(ok|FAIL)" || true
+if echo "$PST" | grep -q "^FAIL"; then fail=1; fi
+grep -q 'stroke="#000000"' "$TMPW/plot_style_off.svg" && echo "ok   with no active plot style table, the exported SVG strokes the line in its own display color (black)" || { echo "FAIL plot_style_off.svg does not stroke black"; fail=1; }
+grep -q 'stroke-width="0.25"' "$TMPW/plot_style_off.svg" && echo "ok   ...at the document default width (0.25mm)" || { echo "FAIL plot_style_off.svg is not stroked at the 0.25mm document default"; fail=1; }
+grep -q 'stroke="#ff0000"' "$TMPW/plot_style_on.svg" && echo "ok   activating the 'Monochrome' plot style table makes the exported SVG stroke the line red, from the table's own row" || { echo "FAIL plot_style_on.svg does not stroke red"; fail=1; }
+grep -q 'stroke-width="0.5"' "$TMPW/plot_style_on.svg" && echo "ok   ...at the table's own 0.5mm width, not the document default or the layer's own print_width_mm" || { echo "FAIL plot_style_on.svg is not stroked at the table's 0.5mm width"; fail=1; }
+grep -q 'stroke="#000000"' "$TMPW/plot_style_cleared.svg" && echo "ok   PlotStyleTableActivate None deactivates the table: back to the display color (black)" || { echo "FAIL plot_style_cleared.svg does not stroke black again after deactivating"; fail=1; }
+grep -q 'stroke-width="0.25"' "$TMPW/plot_style_cleared.svg" && echo "ok   ...and back to the 0.25mm document default width" || { echo "FAIL plot_style_cleared.svg is not back at the 0.25mm document default"; fail=1; }
+
 # Undo id-reuse regression (see the last section of history_script.txt):
 # a Box drawn right after undoing a tracked Extrude used to be handed the
 # undone extrusion's own id (6), so its HistoryRecord/Provenance entries -
