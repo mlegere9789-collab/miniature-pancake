@@ -799,11 +799,11 @@ sfcheck "Area = 62.79 square" "uncapped Pipe surface area ~ 2*pi*10"
 sfcheck "degree 3 x 1, CVs 27 x 2" "uncapped Pipe is a periodic NURBS tube"
 sfcheck "Bounding box min 20,0,-2 max 30,10,-2" "OffsetSrf moved the plane by 2 along its normal"
 sfcheck "Volume = 200 cubic" "OffsetSrf Solid=Yes closed a 10x10x2 slab"
-sfcheck "Shell: thickness 1, closed, volume 1408" "Shell hollowed the box (4000 - 18*18*8)"
+sfcheck "Shell: thickness 1, closed, exact B-rep, volume 1408" "Shell hollowed the box (4000 - 18*18*8) via the kernel's exact ShellConvexPlanar, not the mesh path"
 sfcheck "ExtrudeCrvAlongCrv: 1 surface(s)" "ExtrudeCrvAlongCrv built a sum surface"
 sfcheck "Sweep1: exact kernel sweep (rotation-minimizing frames)" "Sweep1's single-section case now calls the kernel's exact Brep::Sweep1"
 sfcheck "Area = 125.6 square" "Sweep1 area ~ 2*pi*2*10 (kernel's exact NURBS circle reused directly, not a resampled fit)"
-sfcheck "Sweep2: 1 section(s) along 2 rail stations" "Sweep2 spanned the two rails"
+sfcheck "Sweep2: exact kernel sweep (two-rail frame transport)" "Sweep2's single-section case now calls the kernel's exact Brep::Sweep2"
 sfcheck "NetworkSrf: exact Coons patch through 4 curves (all 4 boundaries reproduced exactly)" "NetworkSrf sorted 4 curves into a loop and built the kernel's exact Coons patch (real NURBS algebra, not the sample-and-refit approximation)"
 sfcheck "NetworkSrf: ruled surface between 2 curves" "NetworkSrf ruled two curves"
 sfcheck "Patch: planar face bounded by the closed curve" "Patch trimmed a plane with the circle"
@@ -2798,6 +2798,18 @@ fi
 echo "$IM" | grep -E "^(ok|FAIL)"
 if echo "$IM" | grep -q "^FAIL"; then fail=1; fi
 echo "$IM" | grep -q "^smoke:" || { echo "$IM"; echo "FAIL: imprint script produced no smoke line"; fail=1; }
+
+# SplitBySheet/TrimSheetBySolid: kernel::SplitBySheet()/TrimSheetBySolid()'s
+# first app commands (see splitbysheet_trimsheet_script.txt) - PARITY_MAP.md's
+# "kernel: Boolean operations" category's "Sheet/solid trim" bullet.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SH="$("$BIN" --smoke 60 --script "$HERE/splitbysheet_trimsheet_script.txt" 2>&1)" || { echo "$SH"; echo "FAIL: splitbysheet/trimsheet script exited non-zero"; exit 1; }
+else
+  SH="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/splitbysheet_trimsheet_script.txt" 2>&1)" || { echo "$SH"; echo "FAIL: splitbysheet/trimsheet script exited non-zero"; exit 1; }
+fi
+echo "$SH" | grep -E "^(ok|FAIL)"
+if echo "$SH" | grep -q "^FAIL"; then fail=1; fi
+echo "$SH" | grep -q "^smoke:" || { echo "$SH"; echo "FAIL: splitbysheet/trimsheet script produced no smoke line"; fail=1; }
 
 # SplitByObject regression: a non-intersecting cutter must not be consumed
 # (see splitbyobject_regression.txt) - SplitByObject used to delete every
@@ -4988,7 +5000,7 @@ echo "$HS" | grep -q "^smoke:" || { echo "$HS"; echo "FAIL: history script produ
 hcheck() { if echo "$HS" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HS" "$1"; fail=1; fi; }
 hcheck "History recording: off. 0 object(s) with live construction history" "History defaults Off and reports it"
 hcheck "UpdateHistory: 0 object(s) re-evaluated from their source curve(s)' current geometry" "an Extrude made while History was Off recorded nothing for UpdateHistory to redo"
-hcheck "History recording: on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe/Sweep1 (single section) results will remember their source curve(s) for UpdateHistory" "History On toggled recording on"
+hcheck "History recording: on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe/Sweep1/Sweep2 (single section) results will remember their source curve(s) for UpdateHistory" "History On toggled recording on"
 hcheck "Bounding box min 20,0,0 max 30,0,5" "the freshly-extruded surface's bounding box, before the source curve moves"
 hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one object History was tracking"
 hcheck "Bounding box min 20,0,20 max 30,0,25" "UpdateHistory genuinely re-derived the extruded surface's geometry from the source curve's new z=20 position - not the z=0..5 box baked at creation time"
@@ -5030,6 +5042,24 @@ hsscheck "object 3: Sweep1 <- 1,2" "History tracks a Sweep1 result (object 3) bu
 hsscheck "Bounding box min -0.9073,-0.978,0 max 1,0.978,10" "the freshly-built sweep's bounding box, before the section curve moves"
 hsscheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one Sweep1 History was tracking"
 hsscheck "Bounding box min -0.9073,-0.978,5 max 1,0.978,15" "UpdateHistory genuinely re-derived the swept surface's geometry from the section curve's new +5 z offset - not the z=0..10 surface baked at creation time"
+
+# History extended to an eighth command, Sweep2's single-cross-section case
+# (Sweep2Command, cmd_surface.cpp; RebuildSweep2, history_rebuild.h) - see
+# history_sweep2_script.txt's own header comment for exactly what this
+# checks. Same real-bounding-box-move money check as Sweep1 above.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  HS2="$("$BIN" --smoke 100 --script "$HERE/history_sweep2_script.txt" 2>&1)" || { echo "$HS2"; echo "FAIL: history-sweep2 script exited non-zero"; exit 1; }
+else
+  HS2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/history_sweep2_script.txt" 2>&1)" || { echo "$HS2"; echo "FAIL: history-sweep2 script exited non-zero"; exit 1; }
+fi
+echo "$HS2" | grep -E "^(ok|FAIL)"
+if echo "$HS2" | grep -q "^FAIL"; then fail=1; fi
+echo "$HS2" | grep -q "^smoke:" || { echo "$HS2"; echo "FAIL: history-sweep2 script produced no smoke line"; fail=1; }
+hs2check() { if echo "$HS2" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HS2" "$1"; fail=1; fi; }
+hs2check "object 4: Sweep2 <- 1,2,3" "History tracks a Sweep2 result (object 4) built from its two rails (objects 1,2) and section (object 3)"
+hs2check "Bounding box min -0.9073,-0.978,0 max 1,0.978,10" "the freshly-built sweep's bounding box, before the section curve moves"
+hs2check "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one Sweep2 History was tracking"
+hs2check "Bounding box min -0.9073,-0.978,5 max 1,0.978,15" "UpdateHistory genuinely re-derived the swept surface's geometry from the section curve's new +5 z offset - not the z=0..10 surface baked at creation time"
 
 # RecordMacro: a real action recorder for the Macro Editor's buffer (see
 # record_macro_script.txt's own header comment for exactly what this
@@ -5303,6 +5333,89 @@ EOS
   h3check "Area = 100 square" "the imported hatch's area is exactly the 10x10 boundary (not a sampled approximation)"
 else
   echo "FAIL hatch3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_Hatch fixture check"
+  fail=1
+fi
+
+# Native .3dm ON_InstanceRef import: previously Load3dm had no
+# ON_InstanceRef/ON_InstanceDefinition handling at all, and no
+# ON::idef_object check either, so a block instance authored by a real,
+# independent CAD tool (Dino 8's own blocks persist through .3dm as tagged
+# ordinary geometry plus a private "Dino8.BlocksMeta" document user string,
+# never a real instance definition/reference pair - see File3dm.cpp's
+# EncodeBlocksMeta/DecodeBlocksMeta) lost its placements entirely and kept
+# only one un-transformed, ungrouped copy of the definition's own member
+# geometry instead. instanceref3dm_fixture_gen builds a real
+# ON_InstanceDefinition (one member: a unit-length line on the X axis) and
+# two ON_InstanceRef placements of it - one plain translation, one a
+# translation combined with a uniform 3x scale - directly through
+# OpenNURBS' own API, independent of Dino 8's own exporter (which never
+# writes this pair at all), the same "real externally-authored file, not a
+# round trip" proof hatch3dm_fixture_gen already gives ON_Hatch. The scale
+# placement's imported line must come back 3 units long (not 1), proving
+# Load3dm applied the ref's full ON_Xform, not just an insertion-point
+# translation.
+IREFBIN="$(dirname "$BIN")/instanceref3dm_fixture_gen"
+if [ -x "$IREFBIN" ]; then
+  "$IREFBIN" "$TMPW/instanceref_fixture.3dm" >/dev/null || { echo "FAIL: instanceref3dm_fixture_gen failed to write the instance-ref fixture"; exit 1; }
+  cat > "$TMPW/instanceref3dm_script.txt" <<EOS
+Open $TMPW/instanceref_fixture.3dm
+SelBlockInstanceOf TestBlock
+What
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    IRF="$("$BIN" --smoke 30 --script "$TMPW/instanceref3dm_script.txt" 2>&1)" || { echo "$IRF"; echo "FAIL: instance-ref .3dm script exited non-zero"; exit 1; }
+  else
+    IRF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/instanceref3dm_script.txt" 2>&1)" || { echo "$IRF"; echo "FAIL: instance-ref .3dm script exited non-zero"; exit 1; }
+  fi
+  irfcheck() { if echo "$IRF" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$IRF" "$1"; fail=1; fi; }
+  irfcheck "Opened $TMPW/instanceref_fixture.3dm (2 objects)" "Load3dm placed both ON_InstanceRef instances as 2 real objects (0 before the fix: both silently skipped), and did not also add the idef's own member line as a 3rd, un-transformed object (ON::idef_object skip)"
+  irfcheck "SelBlockInstanceOf: selected 2 object(s) in instances of 'TestBlock'" "both placements landed as real Dino8 block instances, tagged and grouped under the idef's own name, not ordinary untagged objects"
+  irfcheck "Length: 1" "the plain-translation placement's line kept its original unit length"
+  irfcheck "Length: 3" "the scale+translate placement's line came back 3 units long - proof Load3dm applied the ref's full ON_Xform (scale included), not just a translation to the insertion point"
+  irfcheck "BlockInsert = 2.000000,3.000000,0.000000" "the plain-translation placement's insertion point is exactly where it was placed"
+  irfcheck "BlockInsert = 10.000000,0.000000,0.000000" "the scale+translate placement's insertion point is the translation component alone, not shifted by the scale (both ops shared a single ON_Xform, origin-fixed scale then translate)"
+else
+  echo "FAIL instanceref3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_InstanceRef fixture check"
+  fail=1
+fi
+
+# Native .3dm ON_Annotation (Text) import: previously Load3dm had no
+# ON_Annotation handling at all, so a Text object authored by a real,
+# independent CAD tool (Dino 8's own Text command bakes a group of
+# glyph-outline curves plus Annotation/Text/... user_text instead - see
+# commands/annotate_common.h) was silently skipped on open, same as
+# ON_Hatch/ON_InstanceRef before their own passes above. text3dm_fixture_gen
+# builds a real ON_Text ("Hi" at (3,4,0), referencing a real custom
+# ON_DimStyle table entry with text height 2) directly through OpenNURBS'
+# own API, independent of Dino 8's own exporter (which never writes a real
+# ON_Annotation at all). The checks mirror the existing DXF TEXT import
+# test's own "Hi" fixture exactly (same H/i-stem/i-dot = 3 glyph-curve
+# count), except SelText/FindText DO apply here (unlike that DXF-reader
+# gap) since this reader groups the glyph curves into a real
+# Document::Group, so FindText's own group-membership lookup finds it.
+TXTBIN="$(dirname "$BIN")/text3dm_fixture_gen"
+if [ -x "$TXTBIN" ]; then
+  "$TXTBIN" "$TMPW/text_fixture.3dm" >/dev/null || { echo "FAIL: text3dm_fixture_gen failed to write the text fixture"; exit 1; }
+  cat > "$TMPW/text3dm_script.txt" <<EOS
+Open $TMPW/text_fixture.3dm
+SelText
+FindText Hi
+What
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    TXF="$("$BIN" --smoke 30 --script "$TMPW/text3dm_script.txt" 2>&1)" || { echo "$TXF"; echo "FAIL: text .3dm script exited non-zero"; exit 1; }
+  else
+    TXF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/text3dm_script.txt" 2>&1)" || { echo "$TXF"; echo "FAIL: text .3dm script exited non-zero"; exit 1; }
+  fi
+  txfcheck() { if echo "$TXF" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$TXF" "$1"; fail=1; fi; }
+  txfcheck "Opened $TMPW/text_fixture.3dm (3 objects)" "Load3dm read the real ON_Text as 3 real glyph curves (H, i-stem, i-dot - the same count a hand-written TEXT fixture already gets from the DXF reader), not 0 (silently skipped, the old behaviour)"
+  txfcheck "3 object(s) selected" "SelText found all 3 imported glyph curves (real Annotation=Text user_text, not just ordinary curves)"
+  txfcheck "FindText: 1 annotation(s) containing \"Hi\" selected" "FindText found exactly one annotation (its 3 glyph curves share one real Document::Group, unlike the pre-existing DXF/DWG MTEXT-reader gap of the same shape)"
+  txfcheck "Text = Hi" "the imported glyph curves carry the exact source string"
+  txfcheck "TextHeight = 2" "the text height came from the file's own referenced ON_DimStyle table entry (2), not a hardcoded default"
+  txfcheck "TextOrigin = 3,4,0" "the text anchor is the real ON_Text's own plane origin"
+else
+  echo "FAIL text3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_Annotation fixture check"
   fail=1
 fi
 

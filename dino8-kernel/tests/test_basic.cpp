@@ -5607,6 +5607,107 @@ void TestTrimSheetBySolidCurvedSolidCylinder() {
         "exactly, with a genuinely curved classification solid");
 }
 
+// A genuinely curved SHEET (as distinct from the genuinely curved SOLID the
+// two tests above exercise) - PARITY_MAP.md's "Sheet/solid trim" bullet's
+// own last disclosed gap for this half: "only a flat cutting plane is
+// tested" for the sheet operand specifically. The same bulged-bicubic-
+// Bezier-patch construction TestThickenOnGenuinelyCurvedBulgedFreeformSheet
+// (this file, above) already uses for Thicken(), re-centered at z=2 and
+// widened to the same -1..5 footprint margin SplitBySheet's own flat-sheet
+// tests use, so every existing closed-form expectation (box volume 64,
+// margin past the box's own [0,4] footprint on every side) still applies -
+// only the sheet's own flatness changes. Every interior z value is a convex
+// combination of the control net's own z values (2.0 at every corner but
+// one, 2.6 at the raised one) - B-spline/Bezier blending functions are a
+// partition of unity, so the true surface never leaves [2.0, 2.6], a full
+// 2 units of margin from either of the box's own z=0/z=4 faces - this
+// guarantees the sheet still fully severs the box everywhere inside its
+// footprint, exactly as the flat sheet does, without needing to measure the
+// true (sub-control-point) peak height directly.
+dino8::kernel::Brep MakeBulgedSheetZ(double x0, double y0, double x1, double y1, double base_z, double bulge) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      const double x = x0 + (x1 - x0) * i / 3.0;
+      const double y = y0 + (y1 - y0) * j / 3.0;
+      const double z = base_z + ((i == 2 && j == 2) ? bulge : 0.0);
+      grid.push_back(Point3d(x, y, z));
+    }
+  }
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 4, 4, /*u_degree=*/3, /*v_degree=*/3);
+  return Brep::FromSurface(surface);
+}
+
+void TestSplitBySheetGenuinelyCurvedSheetThroughBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBySheet;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep sheet = MakeBulgedSheetZ(-1, -1, 5, 5, 2.0, 0.6);
+
+  const auto [positive_side, negative_side] = SplitBySheet(box, sheet);
+  Check(positive_side.raw().IsValid(), "SplitBySheet's positive_side (against a genuinely curved sheet) is a valid ON_Brep");
+  Check(negative_side.raw().IsValid(), "SplitBySheet's negative_side (against a genuinely curved sheet) is a valid ON_Brep");
+
+  // A real, previously-undocumented limitation found while building this
+  // test, not assumed: the generic per-face `Brep::TessellateToClosedMesh`
+  // (used successfully by this category's own FLAT-sheet SplitBySheet
+  // tests above) does NOT reliably close this result - confirmed directly
+  // (tests/scratch_test.cpp), it leaves ~200-450 residual boundary edges at
+  // every resolution tried (16/32/64), all along the seam between the new
+  // CURVED sheet-cap face and the box's adjoining PLANAR side-wall faces -
+  // the same already-disclosed "the app's own generic closed-mesh pipeline
+  // cannot yet measure a general-engine-family Brep whose faces were never
+  // meant for independent per-face tessellation" gap this category's
+  // "Face-face imprint" bullet already names for `ImprintFaces`, now
+  // confirmed to affect a curved-capped `SplitBySheet` result too. The
+  // SPECIALIZED `TessellateGeneralBooleanClosedMesh` (boolean_general.h,
+  // already proven elsewhere in this file for any Brep from this shared
+  // SSX-fragmentation family) closes it exactly at every resolution tried -
+  // used here instead, the same substitution this file's own freeform
+  // BooleanCombineGeneral tests already make for the identical reason.
+  const Mesh mp = TessellateGeneralBooleanClosedMesh(positive_side, 32, 32);
+  const Mesh mn = TessellateGeneralBooleanClosedMesh(negative_side, 32, 32);
+  Check(mp.IsClosedManifold() && mn.IsClosedManifold(),
+        "both sides of a curved-sheet split are genuine closed manifolds via TessellateGeneralBooleanClosedMesh, "
+        "not just IsValid() B-reps");
+  Check(std::abs((mp.Volume() + mn.Volume()) - 64.0) < 0.1,
+        "the two halves' volumes sum back to the original box's own exact volume (4^3 = 64), with a genuinely "
+        "curved (not flat) cutting sheet - no material gained or lost");
+  Check(mp.Volume() > 20.0 && mp.Volume() < 44.0 && mn.Volume() > 20.0 && mn.Volume() < 44.0,
+        "neither side is degenerate (near-0 or near-64) - the curved sheet genuinely splits the box into two "
+        "substantial pieces, roughly half each, not an all-or-nothing miss");
+}
+
+void TestTrimSheetBySolidGenuinelyCurvedSheetAgainstBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TrimSheetBySolid;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep sheet = MakeBulgedSheetZ(-1, -1, 5, 5, 2.0, 0.6);
+  const double sheet_area = sheet.Area();
+
+  const Brep inside = TrimSheetBySolid(sheet, box, /*keep_inside=*/true);
+  Check(inside.raw().IsValid(), "TrimSheetBySolid's inside portion (against a genuinely curved sheet) is a valid ON_Brep");
+  const double inside_area = inside.TessellateToClosedMesh(32, 32).Area();
+  Check(inside_area > 14.0 && inside_area < 18.0,
+        "the kept portion's area is close to the box's own 4x4 footprint (16) - the curved sheet's own gentle "
+        "bulge changes true surface area only slightly from the flat-sheet case");
+
+  const Brep outside = TrimSheetBySolid(sheet, box, /*keep_inside=*/false);
+  Check(outside.raw().IsValid(), "TrimSheetBySolid's outside portion (against a genuinely curved sheet) is a valid ON_Brep");
+  const double outside_area = outside.TessellateToClosedMesh(32, 32).Area();
+  Check(std::abs((inside_area + outside_area) - sheet_area) < 0.1,
+        "the inside and outside portions' areas sum back to the original untrimmed curved sheet's own area "
+        "exactly, with a genuinely curved (not flat) sheet");
+}
+
 void TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -15119,35 +15220,64 @@ void TestBrepExtrudeWireBody() {
   }
   Check(threw_branch, "ExtrudeWireBody() on a wire body with a branch point throws std::invalid_argument");
 
-  // Refusal: more than one disjoint wire component - two unrelated
-  // straight legs with no shared vertex at all (4 leaves, not 0 or 2).
+  // Narrowed this pass, not refused: more than one disjoint wire
+  // component - two unrelated straight legs with no shared vertex at all
+  // (4 leaves, not 0 or 2) - now extrudes each leg independently (the
+  // same single-chain construction above, applied per component) and
+  // concatenates the two resulting open sheets via the existing multi-
+  // lump Compound(), rather than refusing the whole call the way this
+  // exact fixture used to.
   const NurbsCurve far_leg = NurbsCurve::FromControlPoints({Point3d(100, 0, 0), Point3d(101, 0, 0)}, /*degree=*/1);
   const Brep disjoint_wire = Brep::WireBody({leg_ab, far_leg});
-  bool threw_disjoint = false;
-  try {
-    (void)Brep::ExtrudeWireBody(disjoint_wire, up);
-  } catch (const std::invalid_argument&) {
-    threw_disjoint = true;
-  }
-  Check(threw_disjoint, "ExtrudeWireBody() on two fully disjoint open wires throws std::invalid_argument");
+  const Brep disjoint_sheets = Brep::ExtrudeWireBody(disjoint_wire, up);
+  const Brep leg_ab_sheet_direct = Brep::Extrude(leg_ab, up, /*cap=*/true);
+  const Brep far_leg_sheet_direct = Brep::Extrude(far_leg, up, /*cap=*/true);
+  Check(disjoint_sheets.FaceCount() == leg_ab_sheet_direct.FaceCount() + far_leg_sheet_direct.FaceCount() &&
+            disjoint_sheets.FaceCount() == 2,
+        "two fully disjoint open wires each extrude independently into their own 1-face open sheet, concatenated "
+        "into one 2-face Compound() (previously refused outright)");
+  Check(std::fabs(disjoint_sheets.Area() - (leg_ab_sheet_direct.Area() + far_leg_sheet_direct.Area())) < 1e-9,
+        "...with the combined area exactly matching the sum of the two sheets built directly");
+  const std::vector<std::pair<int, int>> disjoint_ranges = disjoint_sheets.LumpFaceRanges();
+  Check(disjoint_ranges.size() == 2 && disjoint_ranges[0] == std::make_pair(0, 1) &&
+            disjoint_ranges[1] == std::make_pair(1, 2),
+        "...landing as two separate, unwelded one-face lumps, exactly like any other Compound() result");
 
-  // Refusal: a subtler disjoint case that a naive leaf-count check alone
-  // would miss - one open chain (2 leaves) PLUS one entirely separate
-  // closed loop (0 leaves) in the SAME wire body still totals exactly 2
-  // leaves, the same count a single genuine open chain has, but the walk
-  // from the open chain's own leaf never reaches the disjoint loop's edge.
-  const Brep mixed_wire = Brep::WireBody({line, circle});
+  // Narrowed this pass too: a subtler disjoint case that a naive leaf-
+  // count check alone would miss - one open chain (2 leaves) PLUS one
+  // entirely separate closed loop (0 leaves) in the SAME wire body still
+  // totals exactly 2 leaves, the same count a single genuine open chain
+  // has, but the walk from the open chain's own leaf never reaches the
+  // disjoint loop's edge. WalkWireChains() now finds BOTH components
+  // (rather than WalkWireChain()'s own refusal when the walk falls short
+  // of every live edge) and extrudes each one independently: the open
+  // chain into an open sheet, the closed loop into a capped solid. A
+  // circle genuinely centered far from `line` (not the earlier `circle`
+  // above, which is centered at the origin with radius 1.0 and so
+  // passes through (1, 0, 0) - exactly `line`'s own far endpoint,
+  // welding the two into a real degree-3 branch point rather than
+  // leaving them disjoint) keeps this fixture honestly two separate
+  // components, not an accidental third shape.
+  const ON_Circle raw_far_circle(ON_Plane(ON_3dPoint(50, 50, 0), ON_3dVector(0, 0, 1)), 1.0);
+  ON_NurbsCurve raw_far_circle_nurbs;
+  raw_far_circle.GetNurbForm(raw_far_circle_nurbs);
+  NurbsCurve far_circle;
+  far_circle.raw() = raw_far_circle_nurbs;
+  const Brep mixed_wire = Brep::WireBody({line, far_circle});
   Check(mixed_wire.EdgeCount() == 2 && mixed_wire.IsWireBody(),
         "setup: one open edge plus one disjoint closed loop, 2 edges total, exactly 2 leaves overall");
-  bool threw_mixed = false;
-  try {
-    (void)Brep::ExtrudeWireBody(mixed_wire, up);
-  } catch (const std::invalid_argument&) {
-    threw_mixed = true;
-  }
-  Check(threw_mixed,
-        "ExtrudeWireBody() on an open chain plus a disjoint closed loop (2 leaves total, but 2 components) "
-        "still throws std::invalid_argument - the walk-coverage check catches what leaf-counting alone would miss");
+  Check(static_cast<int>(mixed_wire.EdgesOfVertex(mixed_wire.raw().m_E[1].m_vi[0]).size()) == 2,
+        "setup: the far circle's own vertex is NOT also welded onto the line's endpoint - genuinely 2 components");
+  const Brep mixed_result = Brep::ExtrudeWireBody(mixed_wire, up);
+  const Brep line_sheet_direct = Brep::Extrude(line, up, /*cap=*/true);
+  const Brep circle_solid_direct = Brep::Extrude(far_circle, up, /*cap=*/true);
+  Check(mixed_result.FaceCount() == line_sheet_direct.FaceCount() + circle_solid_direct.FaceCount() &&
+            mixed_result.FaceCount() == 4,
+        "the open chain extrudes into its own 1-face open sheet, the disjoint closed loop into its own 3-face "
+        "capped solid, concatenated into one 4-face Compound() (previously refused outright - the exact case the "
+        "walk-coverage check alone catches, that leaf-counting alone would miss)");
+  Check(std::fabs(mixed_result.Area() - (line_sheet_direct.Area() + circle_solid_direct.Area())) < 1e-9,
+        "...with the combined surface area exactly matching the sum of the two pieces built directly");
 }
 
 // OffsetWireBody() closes the "wire-body offset" half of PARITY_MAP.md's
@@ -15315,17 +15445,37 @@ void TestBrepOffsetWireBody() {
   }
   Check(threw_branch, "OffsetWireBody() on a wire body with a branch point throws std::invalid_argument");
 
-  // Refusal: more than one disjoint wire component - two unrelated
-  // straight legs with no shared vertex at all.
+  // Narrowed this pass, not refused: more than one disjoint wire
+  // component - two unrelated, collinear straight legs with no shared
+  // vertex at all - now offsets each leg independently (the same
+  // single-chain construction above, applied per component) and rebuilds
+  // ONE fresh wire body holding both results via a single WireBody()
+  // call, rather than refusing the whole call the way this exact fixture
+  // used to.
   const NurbsCurve far_leg = NurbsCurve::FromControlPoints({Point3d(100, 0, 0), Point3d(101, 0, 0)}, /*degree=*/1);
   const Brep disjoint_wire = Brep::WireBody({leg_ab, far_leg});
-  bool threw_disjoint = false;
-  try {
-    (void)Brep::OffsetWireBody(disjoint_wire, 1.0);
-  } catch (const std::invalid_argument&) {
-    threw_disjoint = true;
-  }
-  Check(threw_disjoint, "OffsetWireBody() on two fully disjoint open wires throws std::invalid_argument");
+  const Brep offset_disjoint = Brep::OffsetWireBody(disjoint_wire, 1.0);
+  NurbsCurve expected_leg_ab_offset;
+  Check(leg_ab.OffsetInPlane(1.0, expected_leg_ab_offset) == Result::Ok, "setup: leg_ab offsets directly");
+  NurbsCurve expected_far_leg_offset;
+  Check(far_leg.OffsetInPlane(1.0, expected_far_leg_offset) == Result::Ok, "setup: far_leg offsets directly");
+  const Brep expected_disjoint = Brep::WireBody({expected_leg_ab_offset, expected_far_leg_offset});
+  Check(offset_disjoint.VertexCount() == expected_disjoint.VertexCount() &&
+            offset_disjoint.EdgeCount() == expected_disjoint.EdgeCount() && offset_disjoint.EdgeCount() == 2,
+        "two fully disjoint open wires each offset independently, then rebuild into ONE wire body holding both "
+        "results (previously refused outright), matching the same two curves offset and rebuilt by hand");
+  const Point3d got_ab_p0 = offset_disjoint.raw().m_V[offset_disjoint.raw().m_E[0].m_vi[0]].point;
+  const Point3d got_ab_p1 = offset_disjoint.raw().m_V[offset_disjoint.raw().m_E[0].m_vi[1]].point;
+  const Point3d want_ab_p0 = expected_disjoint.raw().m_V[expected_disjoint.raw().m_E[0].m_vi[0]].point;
+  const Point3d want_ab_p1 = expected_disjoint.raw().m_V[expected_disjoint.raw().m_E[0].m_vi[1]].point;
+  Check(got_ab_p0.DistanceTo(want_ab_p0) < 1e-9 && got_ab_p1.DistanceTo(want_ab_p1) < 1e-9,
+        "...the first edge sitting exactly where offsetting leg_ab by hand would place it");
+  const Point3d got_far_p0 = offset_disjoint.raw().m_V[offset_disjoint.raw().m_E[1].m_vi[0]].point;
+  const Point3d got_far_p1 = offset_disjoint.raw().m_V[offset_disjoint.raw().m_E[1].m_vi[1]].point;
+  const Point3d want_far_p0 = expected_disjoint.raw().m_V[expected_disjoint.raw().m_E[1].m_vi[0]].point;
+  const Point3d want_far_p1 = expected_disjoint.raw().m_V[expected_disjoint.raw().m_E[1].m_vi[1]].point;
+  Check(got_far_p0.DistanceTo(want_far_p0) < 1e-9 && got_far_p1.DistanceTo(want_far_p1) < 1e-9,
+        "...and the second edge sitting exactly where offsetting far_leg by hand would place it");
 
   // Refusal: OffsetInPlane() itself failing propagates as
   // std::invalid_argument, not a silent bad result - here, an offset
@@ -66105,6 +66255,8 @@ int main() {
   TestTrimSheetBySolidCallerTolerance();
   TestSplitBySheetCurvedSolidCylinderCutByFlatSheet();
   TestTrimSheetBySolidCurvedSolidCylinder();
+  TestSplitBySheetGenuinelyCurvedSheetThroughBox();
+  TestTrimSheetBySolidGenuinelyCurvedSheetAgainstBox();
   TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume();
   TestSplitBrepBySolidDisjointCutterKeepsWholeTargetOutside();
   TestSplitBrepBySolidCutterFullyContainsTarget();

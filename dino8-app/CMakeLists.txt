@@ -904,39 +904,25 @@ if(DINO8_BUILD_TESTS)
   # Gaussian-eliminates (O(n^2)/O(n^3)) up to 60 times. AutoResolveFrame
   # itself needs the full Application/Viewport (not used here), but
   # SolveAll/LoadConstraints only need Document - no GL/ImGui code linked.
-  add_executable(dino8_test_sketch_constraints tests/test_sketch_constraints.cpp src/doc/Document.cpp
+  # AutoResolveFrame's own only unresolved reference this target never
+  # links, Application::ActiveViewport() (Doc()/Viewport::CPlane() are
+  # both trivial header-inline accessors, already resolved), is satisfied
+  # by tests/sketch_constraints_link_stub.cpp instead of trying to
+  # dead-strip the whole function at link time - a dead-code-elimination
+  # flag pair (-ffunction-sections/-fdata-sections + --gc-sections) that
+  # turned out to need a different, platform-specific equivalent on every
+  # toolchain and still didn't actually work on MSVC/ARM64 (confirmed from
+  # a real CI run: /Gy + /OPT:REF still left the exact same LNK2019 this
+  # stub now avoids needing to diagnose further). See that stub file's own
+  # comment for why a one-line always-null definition is safe here.
+  add_executable(dino8_test_sketch_constraints tests/test_sketch_constraints.cpp
+                                                tests/sketch_constraints_link_stub.cpp
+                                                src/doc/Document.cpp
                                                 src/doc/SceneObject.cpp src/doc/SubObjectEdit.cpp
                                                 src/geom/BrepMesher.cpp src/sketch/Constraints.cpp
                                                 src/util/json_mini.cpp)
   target_include_directories(dino8_test_sketch_constraints PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${imgui_SOURCE_DIR})
   target_link_libraries(dino8_test_sketch_constraints PRIVATE dino8_kernel)
-  # Constraints.cpp's AutoResolveFrame() (not exercised by this test) calls
-  # real Application/Viewport methods this target never links - dead code
-  # with no live caller here, so per-function/data sections plus a
-  # dead-section sweep at link time drop it (and its otherwise-unresolved
-  # references) before the linker ever needs to resolve them, rather than
-  # pulling in the entire GL/ImGui app just to satisfy a function this
-  # binary never calls. Each toolchain needs its own flag pair: GNU ld
-  # takes -ffunction-sections/-fdata-sections plus --gc-sections; Apple's
-  # ld has no GNU-style --gc-sections at all (a hard "unknown options"
-  # link failure, not a warning) and uses -dead_strip instead; MSVC's
-  # link.exe silently warns and ignores an unrecognized -Wl,--gc-sections
-  # (LNK4044) rather than erroring - which looks like success right up
-  # until the now-NOT-dead-stripped AutoResolveFrame's own call to
-  # Application::ActiveViewport() fails to resolve (LNK2019) - MSVC's own
-  # equivalent is /Gy (function-level linking) at compile time plus
-  # /OPT:REF (eliminate unreferenced functions/data) at link time.
-  if(MSVC)
-    target_compile_options(dino8_test_sketch_constraints PRIVATE /Gy)
-    target_link_options(dino8_test_sketch_constraints PRIVATE /OPT:REF)
-  else()
-    target_compile_options(dino8_test_sketch_constraints PRIVATE -ffunction-sections -fdata-sections)
-    if(APPLE)
-      target_link_options(dino8_test_sketch_constraints PRIVATE -Wl,-dead_strip)
-    else()
-      target_link_options(dino8_test_sketch_constraints PRIVATE -Wl,--gc-sections)
-    endif()
-  endif()
   add_test(NAME dino8_sketch_constraints COMMAND dino8_test_sketch_constraints)
 
   # Timing benchmark + regression guard for Array/ArrayLinear/ArrayPolar and
@@ -1044,6 +1030,27 @@ if(DINO8_BUILD_TESTS)
   add_executable(hatch3dm_fixture_gen tests/hatch3dm_fixture_gen.cpp)
   target_include_directories(hatch3dm_fixture_gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(hatch3dm_fixture_gen PRIVATE dino8_kernel)
+
+  # Real-ON_InstanceRef .3dm fixture generator (see
+  # tests/instanceref3dm_fixture_gen.cpp and smoke.sh's Load3dm
+  # ON_InstanceRef-import section): Dino 8's own blocks never round-trip
+  # through a real ON_InstanceDefinition/ON_InstanceRef pair (see
+  # File3dm.cpp's EncodeBlocksMeta/DecodeBlocksMeta), so this generator
+  # gives Load3dm's new ON_InstanceRef handling a real externally-authored
+  # block instance to read.
+  add_executable(instanceref3dm_fixture_gen tests/instanceref3dm_fixture_gen.cpp)
+  target_include_directories(instanceref3dm_fixture_gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(instanceref3dm_fixture_gen PRIVATE dino8_kernel)
+
+  # Real-ON_Text .3dm fixture generator (see tests/text3dm_fixture_gen.cpp
+  # and smoke.sh's Load3dm ON_Annotation-import section): Dino 8 never
+  # writes a native ON_Annotation itself (its own Text command bakes glyph
+  # curves plus user_text instead - see commands/annotate_common.h), so
+  # this generator gives Load3dm's new ON_Annotation handling a real
+  # externally-authored Text object to read.
+  add_executable(text3dm_fixture_gen tests/text3dm_fixture_gen.cpp)
+  target_include_directories(text3dm_fixture_gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(text3dm_fixture_gen PRIVATE dino8_kernel)
 endif()
 
 # ---------------------------------------------------------------------------
