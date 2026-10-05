@@ -290,6 +290,7 @@ struct RenderSettings {
   float sun_intensity = 1.0f;
   Color sun_color = Color::FromBytes(255, 248, 232);
   bool skylight = true;           // ambient sky term in Rendered mode
+  bool ssao = true;               // screen-space ambient occlusion in Rendered mode (GlRenderer's SSAO pass)
   int render_width = 1280;
   int render_height = 720;
   int render_quality = 2;         // supersampling factor 1..4
