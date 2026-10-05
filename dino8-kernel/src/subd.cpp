@@ -335,6 +335,11 @@ SubD SubD::Offset(double distance) const {
   return result;
 }
 
+Mesh SubD::Thicken(double distance, double tessellation_tolerance, int max_resolution) const {
+  const Mesh tessellated = Tessellate(tessellation_tolerance, max_resolution);
+  return tessellated.Thicken(distance);
+}
+
 SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance,
                        double weld_tolerance) const {
   if (!plane_normal.Unitize()) {
