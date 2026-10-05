@@ -413,6 +413,36 @@ class NurbsCurve {
   // would require duplicating OpenNURBS' own knot-multiplicity search.
   Result InsertKnotAt(double knot_value, int multiplicity = 1);
 
+  // Removes one multiplicity of the interior knot at ON-convention index
+  // `knot_index` (0 <= knot_index < KnotCount(); any index in a multiple
+  // knot's run selects that whole knot value) - the exact inverse of
+  // `InsertKnotAt()`, i.e. Tiller's knot-removal algorithm (Piegl &
+  // Tiller, "The NURBS Book", A5.8), the same algorithm and the same
+  // rigorous-deviation-bound discipline `NurbsSurface::RemoveKnotAt()`
+  // applies to every row/column of a surface's control net, here applied
+  // to this curve's single control polygon. Knot removal is only shape-
+  // preserving when the curve genuinely has the extra continuity at that
+  // knot (e.g. a knot `InsertKnotAt()` itself added); otherwise the best-
+  // fitting reduced control polygon is an approximation. This method
+  // never silently ships that approximation: it computes a rigorous
+  // upper bound on the resulting max 3D deviation from the original
+  // curve over the whole domain (the algorithm's own control-point
+  // discrepancy, which bounds the curve error because B-spline basis
+  // functions are non-negative and sum to 1; on a rational curve the
+  // discrepancy is measured on the homogeneous control points and
+  // converted to a Euclidean bound via Piegl & Tiller eq. 5.30, a looser
+  // but still rigorous bound) and only commits the removal if that bound
+  // is <= `tolerance`. Otherwise returns Result::Failed and leaves the
+  // curve untouched. `out_max_deviation`, if non-null, always receives
+  // the bound (also on failure, so a caller can report how far off the
+  // removal would have been). Requires the knot vector to be clamped (an
+  // unclamped/periodic knot vector's wrapped control points would need
+  // matching edits this doesn't do) - returns Result::Failed otherwise.
+  // Throws std::invalid_argument if `knot_index` is out of range, or the
+  // knot isn't strictly inside the domain (the domain's own end knots
+  // can't be removed).
+  Result RemoveKnotAt(int knot_index, double tolerance, double* out_max_deviation = nullptr);
+
   // Promotes the curve to rational (every control point gets an
   // explicit weight of 1.0) if it isn't already - delegates to
   // `ON_NurbsCurve::MakeRational()`. Genuinely shape-preserving: giving
@@ -779,6 +809,19 @@ class NurbsCurve {
   // via equal consecutive-point chord lengths, not assumed from the
   // formula). Throws std::invalid_argument if `count <= 0`.
   std::vector<double> DivideByCount(int count, int samples = 1000) const;
+
+  // Divides the curve into sub-segments of (at most) `length` arc length
+  // each, returning the parameter values at `Domain().Min()` and at every
+  // whole multiple of `length` reached along the curve's arc length -
+  // i.e. `floor(Length(samples) / length) + 1` values. Unlike
+  // `DivideByCount()`, the final value is NOT pinned to `Domain().Max()`:
+  // a curve whose length isn't an exact multiple of `length` is left with
+  // a shorter remainder at the end, uncovered by any returned parameter -
+  // the same convention a fixed-length divide needs (there is no way to
+  // both keep every segment exactly `length` long AND land exactly on the
+  // end). Built directly on `ParameterAtArcLength()`, the same way
+  // `DivideByCount()` is. Throws std::invalid_argument if `length <= 0`.
+  std::vector<double> DivideByLength(double length, int samples = 1000) const;
 
   // Unit tangent direction at parameter `t` - the direction of travel
   // along the curve, not a raw (unnormalized) derivative. Delegates to

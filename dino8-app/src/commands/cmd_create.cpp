@@ -228,23 +228,53 @@ class PolygonCommand : public Command {
   std::optional<Point3d> center_;
 };
 
-// Select curves, then a count: Divide / Rebuild.
-class CurveCountCommand : public Command {
+// Divide: places point objects along each selected curve, either by a
+// fixed number of segments (NurbsCurve::DivideByCount) or by a fixed
+// segment length (NurbsCurve::DivideByLength) - the Mode option (same
+// list-choice convention ShellCommand's own Mode option above uses)
+// switches both which kernel call runs and what the number prompt means,
+// re-issuing WantNumber with the new prompt/default each time Mode
+// changes so the command line always asks for the thing Mode currently
+// selects.
+class DivideCommand : public Command {
  public:
-  CurveCountCommand(std::string prompt, std::string count_prompt, int def, std::function<void(CommandContext&, ObjectId, int)> apply, std::string label)
-      : prompt_(std::move(prompt)), count_prompt_(std::move(count_prompt)), def_(def), apply_(std::move(apply)), label_(std::move(label)) {}
-  void Begin(CommandContext&) override { WantObjects(prompt_); }
-  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantNumber(count_prompt_, def_); }
+  void Begin(CommandContext&) override { WantObjects("Select curves to divide"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    options = {{"Mode", "NumberOfSegments", {"NumberOfSegments", "SegmentLength"}, false, false}};
+    WantNumber("Number of segments", count_);
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "Mode") return;
+    by_length_ = (v == "SegmentLength");
+    options[0].value = v;
+    WantNumber(by_length_ ? "Segment length" : "Number of segments", by_length_ ? length_ : count_);
+  }
   void OnNumber(CommandContext& ctx, double v) override {
-    ctx.Doc().BeginChange(label_);
-    for (ObjectId id : ids_) apply_(ctx, id, static_cast<int>(v));
+    if (by_length_) {
+      if (!(v > 0)) { ctx.Warn("Divide: segment length must be positive"); return; }
+      length_ = v;
+    } else {
+      if (v < 1) { ctx.Warn("Divide: number of segments must be at least 1"); return; }
+      count_ = static_cast<int>(v);
+    }
+    ctx.Doc().BeginChange("Divide");
+    int n = 0;
+    for (ObjectId id : ids_) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->kind != ObjectKind::Curve) continue;
+      const kernel::NurbsCurve curve = *o->curve;  // Add() may reallocate objects
+      const std::vector<double> params = by_length_ ? curve.DivideByLength(length_) : curve.DivideByCount(count_);
+      for (double t : params) ctx.Doc().Add(SceneObject::MakePoint(curve.PointAt(t)));
+      ++n;
+    }
+    ctx.Print("Divide: " + std::to_string(n) + " curve(s) divided");
     Finish();
   }
-  std::string prompt_, count_prompt_;
-  int def_;
-  std::function<void(CommandContext&, ObjectId, int)> apply_;
-  std::string label_;
   std::vector<ObjectId> ids_;
+  bool by_length_ = false;
+  int count_ = 10;
+  double length_ = 1.0;
 };
 
 // PointGrid: two corner picks define a rectangular grid of point objects,
@@ -585,13 +615,9 @@ void RegisterCreateCommands(CommandEngine& e) {
   Reg(e, "Spiral", Make<HelixCommand>(true));
   Reg(e, "PointGrid", Make<PointGridCommand>(),
       CommandStatus::Implemented, "Rectangular grid of point objects between two picked corners; CountX/CountY options set the grid size (default 5 x 5).");
-  Reg(e, "Divide", Make<CurveCountCommand>("Select curves to divide", "Number of segments", 10,
-                                           [](CommandContext& ctx, ObjectId id, int n) {
-                                             const SceneObject* o = ctx.Doc().Find(id);
-                                             if (!o || o->kind != ObjectKind::Curve || n < 1) return;
-                                             const kernel::NurbsCurve curve = *o->curve;  // Add() may reallocate objects
-                                             for (double t : curve.DivideByCount(n)) ctx.Doc().Add(SceneObject::MakePoint(curve.PointAt(t)));
-                                           }, "Divide"));
+  Reg(e, "Divide", Make<DivideCommand>(), CommandStatus::Implemented,
+      "Places point objects along each selected curve; Mode=NumberOfSegments (default) divides by a fixed "
+      "segment count, Mode=SegmentLength by a fixed segment length.");
   Reg(e, "ClosestPt", Make<PointsCommand>(std::vector<std::string>{"Point to test"},
                                           [](CommandContext& ctx, const std::vector<Point3d>& p) {
                                             double best = 1e300; Point3d bp = p[0];

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -13,6 +14,77 @@
 namespace dino8::kernel {
 
 namespace {
+
+// Homogeneous 4D point arithmetic for `RemoveKnotOnceRow()` below -
+// duplicated from the identically-named helpers in surface_edit.cpp
+// rather than shared, since the two files have no common detail header
+// for it (same reasoning `OffsetSignAlong()` below already states for
+// its own duplication).
+ON_4dPoint Scale4(const ON_4dPoint& a, double s) { return ON_4dPoint(a.x * s, a.y * s, a.z * s, a.w * s); }
+ON_4dPoint Add4(const ON_4dPoint& a, const ON_4dPoint& b) {
+  return ON_4dPoint(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w);
+}
+ON_4dPoint Sub4(const ON_4dPoint& a, const ON_4dPoint& b) {
+  return ON_4dPoint(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w);
+}
+double Norm4(const ON_4dPoint& a) { return std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z + a.w * a.w); }
+
+// Tiller's single knot removal (Piegl & Tiller, "The NURBS Book",
+// Algorithm A5.8 with num = 1), applied to one curve's own control
+// polygon - the same algorithm `NurbsSurface::RemoveKnotAt()`
+// (surface_edit.cpp) runs independently on every row/column of a
+// surface's control net, duplicated here (not shared - see `Scale4()`'s
+// own comment above) for the single control polygon a curve has. `pw`
+// is the curve's full set of homogeneous control points, `u_full` the
+// full textbook-form knot vector U[0..m] (ON's compressed Knot(k) is
+// U[k + 1], with the two clamped-end copies filled in), `r` the textbook
+// index of the *last* occurrence of the knot value u = U[r], and `s` its
+// multiplicity. Always produces the reduced control polygon (n control
+// points instead of n + 1, `pw` shrunk in place) and the algorithm's own
+// control-point discrepancy `distance`: zero (up to rounding) iff the
+// knot is exactly removable, and otherwise a bound on the resulting
+// curve error because the discrepancy is the coefficient of a single
+// basis function with 0 <= N <= 1 (P&T's own reasoning in section 5.4).
+// The knot vector shrink is the caller's job.
+double RemoveKnotOnceRow(int p, const std::vector<double>& u_full, std::vector<ON_4dPoint>& pw, int r, int s) {
+  const int n = static_cast<int>(pw.size()) - 1;
+  const double u = u_full[static_cast<size_t>(r)];
+  const int ord = p + 1;
+  const int first = r - p;
+  const int last = r - s;
+  const int off = first - 1;
+  std::vector<ON_4dPoint> temp(static_cast<size_t>(2 * p + 2));
+  temp[0] = pw[static_cast<size_t>(off)];
+  temp[static_cast<size_t>(last + 1 - off)] = pw[static_cast<size_t>(last + 1)];
+  int i = first, j = last, ii = 1, jj = last - off;
+  while (j - i > 0) {
+    const double alfi = (u - u_full[static_cast<size_t>(i)]) / (u_full[static_cast<size_t>(i + ord)] - u_full[static_cast<size_t>(i)]);
+    const double alfj = (u - u_full[static_cast<size_t>(j)]) / (u_full[static_cast<size_t>(j + ord)] - u_full[static_cast<size_t>(j)]);
+    temp[static_cast<size_t>(ii)] = Scale4(Sub4(pw[static_cast<size_t>(i)], Scale4(temp[static_cast<size_t>(ii - 1)], 1.0 - alfi)), 1.0 / alfi);
+    temp[static_cast<size_t>(jj)] = Scale4(Sub4(pw[static_cast<size_t>(j)], Scale4(temp[static_cast<size_t>(jj + 1)], alfj)), 1.0 / (1.0 - alfj));
+    ++i; ++ii; --j; --jj;
+  }
+  double distance = 0.0;
+  if (j - i < 0) {
+    distance = Norm4(Sub4(temp[static_cast<size_t>(ii - 1)], temp[static_cast<size_t>(jj + 1)]));
+  } else {
+    const double alfi = (u - u_full[static_cast<size_t>(i)]) / (u_full[static_cast<size_t>(i + ord)] - u_full[static_cast<size_t>(i)]);
+    const ON_4dPoint interp = Add4(Scale4(temp[static_cast<size_t>(ii + 1)], alfi), Scale4(temp[static_cast<size_t>(ii - 1)], 1.0 - alfi));
+    distance = Norm4(Sub4(pw[static_cast<size_t>(i)], interp));
+  }
+  // Commit the recomputed points (P&T's "remflag" branch), then drop the
+  // now-redundant control point at fout.
+  i = first; j = last;
+  while (j - i > 0) {
+    pw[static_cast<size_t>(i)] = temp[static_cast<size_t>(i - off)];
+    pw[static_cast<size_t>(j)] = temp[static_cast<size_t>(j - off)];
+    ++i; --j;
+  }
+  const int fout = (2 * r - s - p) / 2;
+  for (int k = fout + 1; k <= n; ++k) pw[static_cast<size_t>(k - 1)] = pw[static_cast<size_t>(k)];
+  pw.pop_back();
+  return distance;
+}
 
 // Which of the two possible in-plane perpendicular directions `dir`
 // belongs to, relative to a geometrically-known "true outward" direction
@@ -723,6 +795,86 @@ Result NurbsCurve::InsertKnotAt(double knot_value, int multiplicity) {
   return curve_.InsertKnot(knot_value, multiplicity) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsCurve::RemoveKnotAt(int knot_index, double tolerance, double* out_max_deviation) {
+  const int knot_count = curve_.KnotCount();
+  if (knot_index < 0 || knot_index >= knot_count) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::RemoveKnotAt: knot_index out of range");
+  }
+  const double u = curve_.Knot(knot_index);
+  const Interval domain = Domain();
+  if (!(u > domain.min && u < domain.max)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::RemoveKnotAt: the knot must be strictly inside the curve's own domain");
+  }
+  if (out_max_deviation) *out_max_deviation = std::numeric_limits<double>::infinity();
+  if (!curve_.IsClamped(2)) return Result::Failed;
+
+  const int p = curve_.Degree();
+  const int cv_count = curve_.CVCount();
+  const bool rational = curve_.IsRational();
+
+  // Textbook knot vector U[0..m]: ON's compressed Knot(k) is U[k + 1];
+  // the clamped ends supply the two dropped copies.
+  std::vector<double> u_full(static_cast<size_t>(knot_count + 2));
+  for (int k = 0; k < knot_count; ++k) u_full[static_cast<size_t>(k + 1)] = curve_.Knot(k);
+  u_full[0] = u_full[1];
+  u_full[static_cast<size_t>(knot_count + 1)] = u_full[static_cast<size_t>(knot_count)];
+  // Last textbook index of this knot value, and its multiplicity.
+  int r = knot_index + 1;
+  while (r + 1 <= knot_count && u_full[static_cast<size_t>(r + 1)] == u) ++r;
+  int s = 0;
+  for (int k = r; k >= 0 && u_full[static_cast<size_t>(k)] == u; --k) ++s;
+  if (s > p) return Result::Failed;  // a knot of multiplicity > degree is a C^-1 break, not a B-spline knot removal case
+
+  std::vector<ON_4dPoint> pw(static_cast<size_t>(cv_count));
+  for (int i = 0; i < cv_count; ++i) {
+    ON_4dPoint cv;
+    curve_.GetCV(i, cv);
+    if (!rational) cv.w = 1.0;
+    pw[static_cast<size_t>(i)] = cv;
+  }
+  const double max_distance = RemoveKnotOnceRow(p, u_full, pw, r, s);
+
+  // Euclidean deviation bound. Non-rational: the discrepancy itself.
+  // Rational: Piegl & Tiller eq. 5.30 relates a homogeneous-space
+  // tolerance TOL to a Euclidean one d via TOL = d * w_min / (1 +
+  // |P|_max), so d = distance * (1 + |P|_max) / w_min.
+  double bound = max_distance;
+  if (rational) {
+    double w_min = std::numeric_limits<double>::infinity();
+    double p_max = 0.0;
+    for (int i = 0; i < cv_count; ++i) {
+      const double w = curve_.Weight(i);
+      ON_3dPoint e;
+      curve_.GetCV(i, e);
+      w_min = std::min(w_min, w);
+      p_max = std::max(p_max, e.DistanceTo(ON_3dPoint::Origin));
+    }
+    if (!(w_min > 0.0)) return Result::Failed;
+    bound = max_distance * (1.0 + p_max) / w_min;
+  }
+  if (out_max_deviation) *out_max_deviation = bound;
+  if (!(bound <= tolerance)) return Result::Failed;
+
+  // Commit: rebuild the curve with one fewer control point and knot.
+  // Textbook knots U[r + 1..m] shift down by one; ON's compressed form
+  // drops U'[0] and U'[m - 1].
+  std::vector<double> new_full(u_full);
+  new_full.erase(new_full.begin() + r);
+  ON_NurbsCurve out;
+  const int new_count = cv_count - 1;
+  if (!out.Create(3, rational, p + 1, new_count)) return Result::Failed;
+  for (int k = 0; k < out.KnotCount(); ++k) out.SetKnot(k, new_full[static_cast<size_t>(k + 1)]);
+  for (int i = 0; i < new_count; ++i) {
+    const ON_4dPoint& cv = pw[static_cast<size_t>(i)];
+    if (rational) out.SetCV(i, cv);
+    else out.SetCV(i, ON_3dPoint(cv.x, cv.y, cv.z));
+  }
+  if (!out.IsValid()) return Result::Failed;
+  curve_ = out;
+  return Result::Ok;
+}
+
 Result NurbsCurve::MakeRational() {
   if (curve_.IsRational()) {
     return Result::NoOpAlreadySatisfied;
@@ -995,6 +1147,31 @@ std::vector<double> NurbsCurve::DivideByCount(int count, int samples) const {
     values.push_back(ParameterAtArcLength(total_length * static_cast<double>(i) / count, samples));
   }
   values.push_back(domain.Max());
+  return values;
+}
+
+std::vector<double> NurbsCurve::DivideByLength(double length, int samples) const {
+  if (!(length > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::DivideByLength: length must be positive");
+  }
+
+  const ON_Interval domain = curve_.Domain();
+  const double total_length = Length(samples);
+  // `total_length` is itself a sampled-polyline sum (see Length()'s own
+  // doc comment), so a ratio that is mathematically exactly N can land a
+  // few ULPs under N (e.g. 3.999999999999997) purely from summation
+  // rounding - a bare floor() would then silently drop the Nth step. A
+  // tiny absolute epsilon nudges that case back up without affecting any
+  // ratio with a genuine fractional part (the same class of rounding
+  // issue `ParameterAtArcLength()`'s own doc comment above discloses and
+  // clamps for, applied here to the count instead of the parameter).
+  const int count = static_cast<int>(std::floor(total_length / length + 1e-9));
+  std::vector<double> values;
+  values.reserve(static_cast<size_t>(count) + 1);
+  values.push_back(domain.Min());
+  for (int i = 1; i <= count; ++i) {
+    values.push_back(ParameterAtArcLength(length * static_cast<double>(i), samples));
+  }
   return values;
 }
 

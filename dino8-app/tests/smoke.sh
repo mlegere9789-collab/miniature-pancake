@@ -328,6 +328,7 @@ c2check "TweenCurves: 3 curve(s) created" "TweenCurves interpolated between the 
 c2check "ArrayCrv: 6 object(s) placed" "ArrayCrv placed copies along the circle"
 c2check "best-fit line through 4 points" "LineThroughPt fitted a line"
 c2check "best-fit plane through 4 points" "PlaneThroughPt fitted a plane"
+c2check "knot removed (deviation 0) (2 control points)" "RemoveKnot now calls the kernel's real RemoveKnotAt() (exact round-trip, reported deviation), not RemoveKnotApprox's blind resample"
 c2check "MarkFoci: 1 point(s) added" "MarkFoci added the parabola's focus"
 c2check "0,5,0" "MarkFoci found the parabola focus (0,5,0) from curve geometry alone"
 c2check "MarkFoci: 2 point(s) added" "MarkFoci added both hyperbola foci"
@@ -3282,6 +3283,7 @@ crcheck "degree 1, 13 control points, non-rational, closed" "PolygonStar NumSide
 crcheck "Closest point 5,0,0 distance 5" "ClosestPt found the nearest point on the line"
 crcheck "degree 1 x 1, CVs 2 x 2" "Plane3Pt/SrfPt built flat 4-CV surfaces"
 crcheck "PointGrid: 3 x 4 grid of points" "PointGrid CountX=3 CountY=4 built a real, non-square grid, not the old hardcoded 5 x 5"
+crcheck "Divide: 1 curve(s) divided" "Divide (both NumberOfSegments and SegmentLength modes) printed a summary line"
 # Sketch: real continuous mouse-drag capture (Want::Drag), driven here via
 # create_script.txt's scripted drag-sample sequences (see CommandEngine's
 # FeedText Want::Drag case / FeedDragPolyline - the real mouse path lives in
