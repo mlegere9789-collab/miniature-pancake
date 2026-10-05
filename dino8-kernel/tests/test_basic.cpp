@@ -15119,35 +15119,64 @@ void TestBrepExtrudeWireBody() {
   }
   Check(threw_branch, "ExtrudeWireBody() on a wire body with a branch point throws std::invalid_argument");
 
-  // Refusal: more than one disjoint wire component - two unrelated
-  // straight legs with no shared vertex at all (4 leaves, not 0 or 2).
+  // Narrowed this pass, not refused: more than one disjoint wire
+  // component - two unrelated straight legs with no shared vertex at all
+  // (4 leaves, not 0 or 2) - now extrudes each leg independently (the
+  // same single-chain construction above, applied per component) and
+  // concatenates the two resulting open sheets via the existing multi-
+  // lump Compound(), rather than refusing the whole call the way this
+  // exact fixture used to.
   const NurbsCurve far_leg = NurbsCurve::FromControlPoints({Point3d(100, 0, 0), Point3d(101, 0, 0)}, /*degree=*/1);
   const Brep disjoint_wire = Brep::WireBody({leg_ab, far_leg});
-  bool threw_disjoint = false;
-  try {
-    (void)Brep::ExtrudeWireBody(disjoint_wire, up);
-  } catch (const std::invalid_argument&) {
-    threw_disjoint = true;
-  }
-  Check(threw_disjoint, "ExtrudeWireBody() on two fully disjoint open wires throws std::invalid_argument");
+  const Brep disjoint_sheets = Brep::ExtrudeWireBody(disjoint_wire, up);
+  const Brep leg_ab_sheet_direct = Brep::Extrude(leg_ab, up, /*cap=*/true);
+  const Brep far_leg_sheet_direct = Brep::Extrude(far_leg, up, /*cap=*/true);
+  Check(disjoint_sheets.FaceCount() == leg_ab_sheet_direct.FaceCount() + far_leg_sheet_direct.FaceCount() &&
+            disjoint_sheets.FaceCount() == 2,
+        "two fully disjoint open wires each extrude independently into their own 1-face open sheet, concatenated "
+        "into one 2-face Compound() (previously refused outright)");
+  Check(std::fabs(disjoint_sheets.Area() - (leg_ab_sheet_direct.Area() + far_leg_sheet_direct.Area())) < 1e-9,
+        "...with the combined area exactly matching the sum of the two sheets built directly");
+  const std::vector<std::pair<int, int>> disjoint_ranges = disjoint_sheets.LumpFaceRanges();
+  Check(disjoint_ranges.size() == 2 && disjoint_ranges[0] == std::make_pair(0, 1) &&
+            disjoint_ranges[1] == std::make_pair(1, 2),
+        "...landing as two separate, unwelded one-face lumps, exactly like any other Compound() result");
 
-  // Refusal: a subtler disjoint case that a naive leaf-count check alone
-  // would miss - one open chain (2 leaves) PLUS one entirely separate
-  // closed loop (0 leaves) in the SAME wire body still totals exactly 2
-  // leaves, the same count a single genuine open chain has, but the walk
-  // from the open chain's own leaf never reaches the disjoint loop's edge.
-  const Brep mixed_wire = Brep::WireBody({line, circle});
+  // Narrowed this pass too: a subtler disjoint case that a naive leaf-
+  // count check alone would miss - one open chain (2 leaves) PLUS one
+  // entirely separate closed loop (0 leaves) in the SAME wire body still
+  // totals exactly 2 leaves, the same count a single genuine open chain
+  // has, but the walk from the open chain's own leaf never reaches the
+  // disjoint loop's edge. WalkWireChains() now finds BOTH components
+  // (rather than WalkWireChain()'s own refusal when the walk falls short
+  // of every live edge) and extrudes each one independently: the open
+  // chain into an open sheet, the closed loop into a capped solid. A
+  // circle genuinely centered far from `line` (not the earlier `circle`
+  // above, which is centered at the origin with radius 1.0 and so
+  // passes through (1, 0, 0) - exactly `line`'s own far endpoint,
+  // welding the two into a real degree-3 branch point rather than
+  // leaving them disjoint) keeps this fixture honestly two separate
+  // components, not an accidental third shape.
+  const ON_Circle raw_far_circle(ON_Plane(ON_3dPoint(50, 50, 0), ON_3dVector(0, 0, 1)), 1.0);
+  ON_NurbsCurve raw_far_circle_nurbs;
+  raw_far_circle.GetNurbForm(raw_far_circle_nurbs);
+  NurbsCurve far_circle;
+  far_circle.raw() = raw_far_circle_nurbs;
+  const Brep mixed_wire = Brep::WireBody({line, far_circle});
   Check(mixed_wire.EdgeCount() == 2 && mixed_wire.IsWireBody(),
         "setup: one open edge plus one disjoint closed loop, 2 edges total, exactly 2 leaves overall");
-  bool threw_mixed = false;
-  try {
-    (void)Brep::ExtrudeWireBody(mixed_wire, up);
-  } catch (const std::invalid_argument&) {
-    threw_mixed = true;
-  }
-  Check(threw_mixed,
-        "ExtrudeWireBody() on an open chain plus a disjoint closed loop (2 leaves total, but 2 components) "
-        "still throws std::invalid_argument - the walk-coverage check catches what leaf-counting alone would miss");
+  Check(static_cast<int>(mixed_wire.EdgesOfVertex(mixed_wire.raw().m_E[1].m_vi[0]).size()) == 2,
+        "setup: the far circle's own vertex is NOT also welded onto the line's endpoint - genuinely 2 components");
+  const Brep mixed_result = Brep::ExtrudeWireBody(mixed_wire, up);
+  const Brep line_sheet_direct = Brep::Extrude(line, up, /*cap=*/true);
+  const Brep circle_solid_direct = Brep::Extrude(far_circle, up, /*cap=*/true);
+  Check(mixed_result.FaceCount() == line_sheet_direct.FaceCount() + circle_solid_direct.FaceCount() &&
+            mixed_result.FaceCount() == 4,
+        "the open chain extrudes into its own 1-face open sheet, the disjoint closed loop into its own 3-face "
+        "capped solid, concatenated into one 4-face Compound() (previously refused outright - the exact case the "
+        "walk-coverage check alone catches, that leaf-counting alone would miss)");
+  Check(std::fabs(mixed_result.Area() - (line_sheet_direct.Area() + circle_solid_direct.Area())) < 1e-9,
+        "...with the combined surface area exactly matching the sum of the two pieces built directly");
 }
 
 // OffsetWireBody() closes the "wire-body offset" half of PARITY_MAP.md's
@@ -15315,17 +15344,37 @@ void TestBrepOffsetWireBody() {
   }
   Check(threw_branch, "OffsetWireBody() on a wire body with a branch point throws std::invalid_argument");
 
-  // Refusal: more than one disjoint wire component - two unrelated
-  // straight legs with no shared vertex at all.
+  // Narrowed this pass, not refused: more than one disjoint wire
+  // component - two unrelated, collinear straight legs with no shared
+  // vertex at all - now offsets each leg independently (the same
+  // single-chain construction above, applied per component) and rebuilds
+  // ONE fresh wire body holding both results via a single WireBody()
+  // call, rather than refusing the whole call the way this exact fixture
+  // used to.
   const NurbsCurve far_leg = NurbsCurve::FromControlPoints({Point3d(100, 0, 0), Point3d(101, 0, 0)}, /*degree=*/1);
   const Brep disjoint_wire = Brep::WireBody({leg_ab, far_leg});
-  bool threw_disjoint = false;
-  try {
-    (void)Brep::OffsetWireBody(disjoint_wire, 1.0);
-  } catch (const std::invalid_argument&) {
-    threw_disjoint = true;
-  }
-  Check(threw_disjoint, "OffsetWireBody() on two fully disjoint open wires throws std::invalid_argument");
+  const Brep offset_disjoint = Brep::OffsetWireBody(disjoint_wire, 1.0);
+  NurbsCurve expected_leg_ab_offset;
+  Check(leg_ab.OffsetInPlane(1.0, expected_leg_ab_offset) == Result::Ok, "setup: leg_ab offsets directly");
+  NurbsCurve expected_far_leg_offset;
+  Check(far_leg.OffsetInPlane(1.0, expected_far_leg_offset) == Result::Ok, "setup: far_leg offsets directly");
+  const Brep expected_disjoint = Brep::WireBody({expected_leg_ab_offset, expected_far_leg_offset});
+  Check(offset_disjoint.VertexCount() == expected_disjoint.VertexCount() &&
+            offset_disjoint.EdgeCount() == expected_disjoint.EdgeCount() && offset_disjoint.EdgeCount() == 2,
+        "two fully disjoint open wires each offset independently, then rebuild into ONE wire body holding both "
+        "results (previously refused outright), matching the same two curves offset and rebuilt by hand");
+  const Point3d got_ab_p0 = offset_disjoint.raw().m_V[offset_disjoint.raw().m_E[0].m_vi[0]].point;
+  const Point3d got_ab_p1 = offset_disjoint.raw().m_V[offset_disjoint.raw().m_E[0].m_vi[1]].point;
+  const Point3d want_ab_p0 = expected_disjoint.raw().m_V[expected_disjoint.raw().m_E[0].m_vi[0]].point;
+  const Point3d want_ab_p1 = expected_disjoint.raw().m_V[expected_disjoint.raw().m_E[0].m_vi[1]].point;
+  Check(got_ab_p0.DistanceTo(want_ab_p0) < 1e-9 && got_ab_p1.DistanceTo(want_ab_p1) < 1e-9,
+        "...the first edge sitting exactly where offsetting leg_ab by hand would place it");
+  const Point3d got_far_p0 = offset_disjoint.raw().m_V[offset_disjoint.raw().m_E[1].m_vi[0]].point;
+  const Point3d got_far_p1 = offset_disjoint.raw().m_V[offset_disjoint.raw().m_E[1].m_vi[1]].point;
+  const Point3d want_far_p0 = expected_disjoint.raw().m_V[expected_disjoint.raw().m_E[1].m_vi[0]].point;
+  const Point3d want_far_p1 = expected_disjoint.raw().m_V[expected_disjoint.raw().m_E[1].m_vi[1]].point;
+  Check(got_far_p0.DistanceTo(want_far_p0) < 1e-9 && got_far_p1.DistanceTo(want_far_p1) < 1e-9,
+        "...and the second edge sitting exactly where offsetting far_leg by hand would place it");
 
   // Refusal: OffsetInPlane() itself failing propagates as
   // std::invalid_argument, not a silent bad result - here, an offset
@@ -25077,6 +25126,88 @@ void TestSubDFromBrepTessellatedRejectsInvalidDivisions() {
     threw_negative_v = true;
   }
   Check(threw_negative_v, "SubD::FromBrepTessellated throws std::invalid_argument when v_divisions < 1");
+}
+
+// crease_at_double_edges forwards through FromMeshQuadRemeshed() exactly as
+// it does through FromControlMesh() directly - reusing
+// MakeHingedDoubleEdgeMesh() (both its faces are already quads, so
+// TrisToQuads() is a no-op here and cannot itself be masking the flag's own
+// effect).
+void TestSubDFromMeshQuadRemeshedForwardsCreaseAtDoubleEdges() {
+  using dino8::kernel::SubD;
+
+  const auto hinge = MakeHingedDoubleEdgeMesh();
+  const SubD smooth = SubD::FromMeshQuadRemeshed(hinge, /*max_dihedral_deg=*/20.0,
+                                                  /*crease_at_double_edges=*/false);
+  const SubD creased = SubD::FromMeshQuadRemeshed(hinge, /*max_dihedral_deg=*/20.0,
+                                                   /*crease_at_double_edges=*/true);
+
+  Check(smooth.CreaseEdgeCount() == 6,
+        "without crease_at_double_edges, FromMeshQuadRemeshed() matches "
+        "TestSubDCreaseAtDoubleEdgeKeepsFoldStraight's own smooth case: only the 6 boundary edges "
+        "are creases");
+  Check(creased.CreaseEdgeCount() == 7,
+        "with crease_at_double_edges, the interior fold edge is creased too - all 7 edges");
+}
+
+// Mesh::TrisToQuads()'s own `max_dihedral_deg` gate (already proven at the
+// Mesh level by TestMeshTrisToQuadsGatesOnDihedralAngle) must reach through
+// FromMeshQuadRemeshed() unchanged: the same 5deg tent fold merges into one
+// quad face at the default 20deg threshold but is refused - left as 2
+// triangle faces - once the caller explicitly lowers the threshold below 5.
+void TestSubDFromMeshQuadRemeshedRespectsMaxDihedralDegThreshold() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const double theta = 5.0 * 3.14159265358979323846 / 180.0;
+  Mesh tent;
+  ON_Mesh& raw = tent.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));  // a
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));  // b
+  raw.m_V.Append(ON_3fPoint(0.5f, 1.0f, 0.0f));  // c (triangle i's own apex)
+  raw.m_V.Append(ON_3fPoint(0.5f, static_cast<float>(-std::cos(theta)), static_cast<float>(std::sin(theta))));  // d
+  ON_MeshFace fi;
+  fi.vi[0] = 0; fi.vi[1] = 1; fi.vi[2] = 2; fi.vi[3] = 2;
+  raw.m_F.Append(fi);
+  ON_MeshFace fj;
+  fj.vi[0] = 1; fj.vi[1] = 0; fj.vi[2] = 3; fj.vi[3] = 3;
+  raw.m_F.Append(fj);
+
+  const SubD default_threshold = SubD::FromMeshQuadRemeshed(tent);
+  Check(default_threshold.FaceCount() == 1,
+        "at the default 20deg threshold, the 5deg tent fold merges into one quad face before "
+        "FromControlMesh() sees it");
+
+  const SubD low_threshold = SubD::FromMeshQuadRemeshed(tent, /*max_dihedral_deg=*/1.0,
+                                                          /*crease_at_double_edges=*/false);
+  Check(low_threshold.FaceCount() == 2,
+        "lowering max_dihedral_deg to 1.0 (below the tent's own 5deg fold) reaches all the way "
+        "through to TrisToQuads() and refuses the merge - the cage keeps both original triangle "
+        "faces, proving the parameter is genuinely forwarded, not ignored or hardcoded");
+}
+
+// BooleanToSubD()'s own new `max_dihedral_deg` parameter (same follow-up as
+// FromMeshQuadRemeshed() above) defaults to its prior hardcoded 20.0, so an
+// explicit 20.0 must reproduce TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads'
+// own result exactly - proving the 2-argument call every existing caller
+// already uses still behaves identically now that the parameter exists.
+void TestSubDBooleanToSubDMaxDihedralDegDefaultMatchesExplicitValue() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::SubD;
+
+  const SubD a = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+  const SubD b = SubD::FromControlMesh(MakeQuadBoxMesh(5, 0, 0, 7, 2, 2));
+
+  const SubD default_arg = a.BooleanToSubD(b, BooleanOp::Union);
+  const SubD explicit_arg = a.BooleanToSubD(b, BooleanOp::Union, /*max_dihedral_deg=*/20.0);
+
+  Check(default_arg.FaceCount() == 12 && explicit_arg.FaceCount() == 12,
+        "the 2-argument call (relying on the new parameter's default) and an explicit 20.0 both "
+        "recombine the same 12 original box faces, matching "
+        "TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads' own count");
+  Check(std::abs(default_arg.ToApproximateMesh().Volume() - explicit_arg.ToApproximateMesh().Volume()) < 1e-12,
+        "...with identical volumes, confirming the default argument truly reproduces the prior "
+        "hardcoded-20.0 behavior rather than silently changing it");
 }
 
 void TestMeshComputeVertexNormals() {
@@ -66245,6 +66376,9 @@ int main() {
   TestSubDFromBrepTessellatedBoxRecombinesIntoSixQuads();
   TestSubDFromBrepTessellatedApproximatesSphereFromInside();
   TestSubDFromBrepTessellatedRejectsInvalidDivisions();
+  TestSubDFromMeshQuadRemeshedForwardsCreaseAtDoubleEdges();
+  TestSubDFromMeshQuadRemeshedRespectsMaxDihedralDegThreshold();
+  TestSubDBooleanToSubDMaxDihedralDegDefaultMatchesExplicitValue();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();

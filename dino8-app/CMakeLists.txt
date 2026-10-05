@@ -1030,6 +1030,27 @@ if(DINO8_BUILD_TESTS)
   add_executable(hatch3dm_fixture_gen tests/hatch3dm_fixture_gen.cpp)
   target_include_directories(hatch3dm_fixture_gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(hatch3dm_fixture_gen PRIVATE dino8_kernel)
+
+  # Real-ON_InstanceRef .3dm fixture generator (see
+  # tests/instanceref3dm_fixture_gen.cpp and smoke.sh's Load3dm
+  # ON_InstanceRef-import section): Dino 8's own blocks never round-trip
+  # through a real ON_InstanceDefinition/ON_InstanceRef pair (see
+  # File3dm.cpp's EncodeBlocksMeta/DecodeBlocksMeta), so this generator
+  # gives Load3dm's new ON_InstanceRef handling a real externally-authored
+  # block instance to read.
+  add_executable(instanceref3dm_fixture_gen tests/instanceref3dm_fixture_gen.cpp)
+  target_include_directories(instanceref3dm_fixture_gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(instanceref3dm_fixture_gen PRIVATE dino8_kernel)
+
+  # Real-ON_Text .3dm fixture generator (see tests/text3dm_fixture_gen.cpp
+  # and smoke.sh's Load3dm ON_Annotation-import section): Dino 8 never
+  # writes a native ON_Annotation itself (its own Text command bakes glyph
+  # curves plus user_text instead - see commands/annotate_common.h), so
+  # this generator gives Load3dm's new ON_Annotation handling a real
+  # externally-authored Text object to read.
+  add_executable(text3dm_fixture_gen tests/text3dm_fixture_gen.cpp)
+  target_include_directories(text3dm_fixture_gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(text3dm_fixture_gen PRIVATE dino8_kernel)
 endif()
 
 # ---------------------------------------------------------------------------
