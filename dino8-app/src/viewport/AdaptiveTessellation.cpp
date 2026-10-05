@@ -24,4 +24,14 @@ double LodScaleForPixelSize(double pixel_size) {
   return std::clamp(pixel_size / kLodReferencePixelSize, kLodMinScale, kLodMaxScale);
 }
 
+double FinestLodScale(const std::vector<double>& viewport_pixel_sizes) {
+  double finest = 1.0;
+  bool any = false;
+  for (double pixel_size : viewport_pixel_sizes) {
+    const double scale = LodScaleForPixelSize(pixel_size);
+    if (!any || scale < finest) { finest = scale; any = true; }
+  }
+  return any ? finest : 1.0;
+}
+
 }  // namespace dino8::app

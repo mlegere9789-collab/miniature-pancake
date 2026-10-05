@@ -393,6 +393,34 @@ SelLast
 FilletSrfToRail Radius=1
 3405,0,5
 3400,5,5
+# FilletSrfToRail now real-trims both picked surfaces along their own
+# contact curves (TrimRailWholeLoop/TrimRailBySplit, mirroring
+# FilletTwoSurfacesCommand's own TrimWholeLoop/TrimBySplit) - closes this
+# command's own "no trimming" gap (PARITY_MAP.md, Blending & chamfering,
+# "Fillet surface along a user-supplied rail curve"). Both picked panels
+# here are planar, so both go through TrimRailWholeLoop; List confirms
+# each is now a genuine trimmed polysurface (Brep kind), not still a bare
+# untrimmed Surface.
+SelAll
+List
+SelNone
+# Trim=No negative control, same corner geometry shifted clear of the case
+# above: confirms the two picked surfaces are left completely untouched
+# (still bare Surface objects, not converted to a trimmed polysurface)
+# when trimming is explicitly declined, rather than trimming regardless of
+# the option.
+SelAll
+Hide
+SrfPt 3450,0,0 3460,0,0 3460,0,10 3450,0,10
+SrfPt 3450,0,0 3450,10,0 3450,10,10 3450,0,10
+Line 3450,0,2 3450,0,8
+SelLast
+FilletSrfToRail Radius=1 Trim=No
+3455,0,5
+3450,5,5
+SelAll
+List
+SelNone
 # --- FilletSrfCrv: rolling-ball fillet between a surface and an
 # INDEPENDENT curve, the curve itself surviving as one exact edge of the
 # result - not merely touched, genuinely osculating-tangent (the actual gap
@@ -420,7 +448,7 @@ SoftEditSrf Radius=8
 3505,5,0
 3505,5,3
 SelNone
-@expect_objects 100
+@expect_objects 104
 # --- UnjoinEdge: splits a shared edge into two naked copies while keeping
 # both faces in the same polysurface (real Brep::UnjoinEdge(), not the
 # ExtractSrf-into-a-separate-object workaround)
@@ -455,7 +483,7 @@ ReplaceEdge
 SelPolysrf
 List
 SelNone
-@expect_objects 102
+@expect_objects 106
 # --- Squish / SquishInfo: Squish now stores its own flattening report
 # (area, distortion) plus each flattened vertex's own source-surface
 # (u,v) in a real Document-level side table keyed by the flattened
@@ -511,7 +539,7 @@ SplitEdge
 3800.02,0,10
 SelPolysrf
 RemoveAllNakedMicroEdges
-@expect_objects 112
+@expect_objects 116
 # --- SplitRefitSurface: split a plane by a curve crossing it twice (same
 # V-shaped-polyline-through-z=0 cutter SplitFace's own test uses), then
 # confirm both resulting pieces are genuinely refit - a fresh 4x4-CV

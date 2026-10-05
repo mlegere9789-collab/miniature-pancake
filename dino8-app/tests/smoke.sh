@@ -334,8 +334,17 @@ c2check "0,5,0" "MarkFoci found the parabola focus (0,5,0) from curve geometry a
 c2check "MarkFoci: 2 point(s) added" "MarkFoci added both hyperbola foci"
 c2check "6.807" "MarkFoci found the analytic hyperbola focus distance (c=6.807 for a=5, b^2=64/3)"
 c2check "MergeCrv: joined 2 curve(s) into one, merged 1 tangent junction(s) into a single span" "MergeCrv collapsed a tangent joint into one span"
-c2check "Blend: curvature-continuous (G2) blend curve created" "Blend built a real G2 quintic blend"
+# Blend now calls the kernel's own exact NurbsCurve::BlendCurves() (curve.h)
+# instead of duplicating inline Hermite math - PARITY_MAP.md's own disclosed
+# "BlendCrvCommand/BlendCommand... app wiring... a separate increment" gap
+# for curve-to-curve blending. The printed message changed accordingly
+# (Continuity name + "(G<n>)"), and reaches a genuine degree-7 G3 septic
+# blend neither app command could build at all before this wiring.
+c2check "Blend: Curvature (G2) blend curve created" "Blend built a real G2 quintic blend, now through kernel::NurbsCurve::BlendCurves()"
+c2check "degree 5, 6 control points, non-rational, open" "Blend's G2 output is the expected degree-5 (2*continuity+1), 6-control-point Bezier-basis curve BlendCurves() builds"
 c2check "ArcBlend: two-arc tangent blend created (joint tangent match 1)" "ArcBlend found a genuine two-arc biarc, tangent-verified"
+c2check "Blend: G3 (G3) blend curve created" "Blend Continuity=G3 reaches kernel::NurbsCurve::BlendCurves()'s own continuity=3 path - the genuine new capability neither BlendCrv nor Blend could build at all before this wiring (both used to cap out at G2)"
+c2check "degree 7, 8 control points, non-rational, open" "Blend's G3 output is the expected degree-7 (2*3+1), 8-control-point septic Bezier-basis curve - one degree past the G2 quintic case just above, matching position/tangent/curvature AND third derivative at both ends"
 c2check "Domain: 1 curve(s) now have domain 0 to 5" "Domain actually set a new domain, not just reported it"
 c2check "ModifyRadius: 1 curve(s) now have radius 12" "ModifyRadius rebuilt the circle in place"
 c2check "Match: reshaped curve .* to meet curve .* tangentially" "Match reshaped one curve's end to meet another"
@@ -358,7 +367,7 @@ if echo "$C2" | grep -q "Bounding box: (30, 0, 9) to (40, 0, 9)"; then
 else
   echo "ok   RemoveSymmetry genuinely broke the live link (copy did NOT follow the source's post-removal move)"
 fi
-c2check "^ok   expect_objects 194" "curve-tools script produced the expected object count"
+c2check "^ok   expect_objects 197" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/exchange_script.txt" > "$TMPW/exchange_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -560,6 +569,34 @@ dhecheck "DXF: 0 curves, 0 points, 0 meshes, 1 hatch" "the reopened file's HATCH
 dhecheck "1 object(s) selected" "SelHatch found the round-tripped hatch"
 dhecheck "Area = 100 square" "the round-tripped hatch's area is exactly the 10x10 boundary"
 grep -q "^HATCH$" "$TMPW/dxf_hatch_export.dxf" && echo "ok   dxf_hatch_export.dxf contains a real HATCH entity, not just boundary LINE/POLYLINE entities" || { echo "FAIL dxf_hatch_export.dxf has no HATCH entity"; fail=1; }
+# DXF pattern-fill HATCH export: ExportDxf's HATCH writer above only ever
+# covered the solid-fill case; a pattern-fill hatch (Hatch Pattern=ANSI31)
+# still round-tripped out as its own N already-clipped LINE entities until
+# this change (see WriteDxfHatchPattern/TryWriteDxfHatchPatternGroup in
+# FileExchange.cpp). Makes a real ANSI31 hatch, exports it, reopens the
+# exported file in a fresh document, and checks SelHatch finds the exact
+# same number of real Hatch=ANSI31-tagged line objects the original Hatch
+# command built - proving the new writer and the existing pattern-name-only
+# reader agree on the wire format, not just approximate it.
+sed "s|@TMP@|$TMPW|g" "$HERE/dxf_hatch_pattern_export_script.txt" > "$TMPW/dxf_hatch_pattern_export_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DHP="$("$BIN" --smoke 30 --script "$TMPW/dxf_hatch_pattern_export_script.txt" 2>&1)" || { echo "$DHP"; echo "FAIL: DXF pattern HATCH export script exited non-zero"; exit 1; }
+else
+  DHP="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_hatch_pattern_export_script.txt" 2>&1)" || { echo "$DHP"; echo "FAIL: DXF pattern HATCH export script exited non-zero"; exit 1; }
+fi
+dhpcheck() { if echo "$DHP" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DHP" "$1"; fail=1; fi; }
+dhpcheck "Exported $TMPW/dxf_hatch_pattern_export.dxf" "ExportDxf wrote a file"
+BEFORE_SEL="$(echo "$DHP" | grep -o "[0-9]* object(s) selected" | head -1 || true)"
+AFTER_SEL="$(echo "$DHP" | grep -o "[0-9]* object(s) selected" | tail -1 || true)"
+if [ -n "$BEFORE_SEL" ] && [ "$BEFORE_SEL" = "$AFTER_SEL" ]; then
+  echo "ok   the round-tripped pattern hatch's line count matches exactly ($BEFORE_SEL)"
+else
+  echo "FAIL pattern hatch line count did not round-trip (before: '$BEFORE_SEL', after: '$AFTER_SEL')"
+  fail=1
+fi
+grep -q "^HATCH$" "$TMPW/dxf_hatch_pattern_export.dxf" && echo "ok   dxf_hatch_pattern_export.dxf contains a real HATCH entity" || { echo "FAIL dxf_hatch_pattern_export.dxf has no HATCH entity"; fail=1; }
+grep -q "^ANSI31$" "$TMPW/dxf_hatch_pattern_export.dxf" && echo "ok   dxf_hatch_pattern_export.dxf's HATCH entity names the real ANSI31 pattern" || { echo "FAIL dxf_hatch_pattern_export.dxf's HATCH entity does not name ANSI31"; fail=1; }
+[ "$(grep -c "^LINE$" "$TMPW/dxf_hatch_pattern_export.dxf")" = "0" ] && echo "ok   dxf_hatch_pattern_export.dxf has no bare LINE entities - the fill exported as one HATCH, not N clipped lines" || { echo "FAIL dxf_hatch_pattern_export.dxf still has bare LINE entities"; fail=1; }
 # DXF TEXT export: ExportDxf had no TEXT writer function at all until this
 # change (see WriteDxfTextIfPlanarXY in FileExchange.cpp) - a Dino8 "Text"
 # annotation used to round-trip out as its own baked glyph-outline curves,
@@ -772,11 +809,11 @@ sfcheck "Area = 62.79 square" "uncapped Pipe surface area ~ 2*pi*10"
 sfcheck "degree 3 x 1, CVs 27 x 2" "uncapped Pipe is a periodic NURBS tube"
 sfcheck "Bounding box min 20,0,-2 max 30,10,-2" "OffsetSrf moved the plane by 2 along its normal"
 sfcheck "Volume = 200 cubic" "OffsetSrf Solid=Yes closed a 10x10x2 slab"
-sfcheck "Shell: thickness 1, closed, volume 1408" "Shell hollowed the box (4000 - 18*18*8)"
+sfcheck "Shell: thickness 1, closed, exact B-rep, volume 1408" "Shell hollowed the box (4000 - 18*18*8) via the kernel's exact ShellConvexPlanar, not the mesh path"
 sfcheck "ExtrudeCrvAlongCrv: 1 surface(s)" "ExtrudeCrvAlongCrv built a sum surface"
 sfcheck "Sweep1: exact kernel sweep (rotation-minimizing frames)" "Sweep1's single-section case now calls the kernel's exact Brep::Sweep1"
 sfcheck "Area = 125.6 square" "Sweep1 area ~ 2*pi*2*10 (kernel's exact NURBS circle reused directly, not a resampled fit)"
-sfcheck "Sweep2: 1 section(s) along 2 rail stations" "Sweep2 spanned the two rails"
+sfcheck "Sweep2: exact kernel sweep (two-rail frame transport)" "Sweep2's single-section case now calls the kernel's exact Brep::Sweep2"
 sfcheck "NetworkSrf: exact Coons patch through 4 curves (all 4 boundaries reproduced exactly)" "NetworkSrf sorted 4 curves into a loop and built the kernel's exact Coons patch (real NURBS algebra, not the sample-and-refit approximation)"
 sfcheck "NetworkSrf: ruled surface between 2 curves" "NetworkSrf ruled two curves"
 sfcheck "Patch: planar face bounded by the closed curve" "Patch trimmed a plane with the circle"
@@ -897,6 +934,12 @@ secheck "Volume = 1063 cubic" "Boss's union really added the r=2 h=5 cylinder's 
 secheck "Rib: tapered wall of height 2 built following the base's local surface normal at 64 points along the curve; unioned with the base solid" "Rib built a real tapered wall and unioned it with the box"
 secheck "Volume = 1006 cubic" "Rib's union really added the tapered wall's volume"
 secheck "FilletSrfToRail: fillet surface built along the rail's own points" "FilletSrfToRail built real rolling-ball arcs along a picked rail"
+secheck "FilletSrfToRail:.*; both surfaces trimmed" "FilletSrfToRail now real-trims both picked surfaces along their own contact curves by default (TrimRailWholeLoop/TrimRailBySplit), PARITY_MAP.md's own 'no trimming' gap for this command"
+FSR_TRIM="$(echo "$SE" | grep -c "FilletSrfToRail:.*; both surfaces trimmed")"
+[ "$FSR_TRIM" = "1" ] \
+  && echo "ok   exactly one FilletSrfToRail call trimmed both surfaces (the Trim=No call below must not)" \
+  || { echo "FAIL expected exactly 1 'both surfaces trimmed' FilletSrfToRail line, got $FSR_TRIM"; fail=1; }
+secheck "FilletSrfToRail: fillet surface built along the rail's own points (radius 1; contact points off the exact radius by up to 1 - the rail is used directly as the spine, rather than the SSX-offset spine FilletSrf computes)$" "FilletSrfToRail's own Trim=No negative control prints no trim suffix at all (neither trimmed nor a fallback message) - the two picked surfaces are left genuinely untouched"
 secheck "FilletSrfCrv: fillet surface built tangent to the surface and osculating-tangent to the curve" "FilletSrfCrv built a real surface/curve rolling-ball fillet"
 FSC_GAP="$(echo "$SE" | sed -n 's/.*FilletSrfCrv:.*contact points off the exact radius by up to \([0-9.eE+-]*\);.*/\1/p' | head -1)"
 python3 -c "import sys; v=float('$FSC_GAP'); sys.exit(0 if v < 1e-4 else 1)" \
@@ -907,20 +950,20 @@ python3 -c "import sys; v=float('$FSC_TANG'); sys.exit(0 if v < 0.01 else 1)" \
   && echo "ok   FilletSrfCrv tangent-direction error ($FSC_TANG degrees) is essentially zero - the arc is genuinely tangent to the curve, not merely touching it (the exact gap the old Partial note described)" \
   || { echo "FAIL FilletSrfCrv tangent-direction error ($FSC_TANG degrees) is not near zero - arc is not genuinely tangent to the curve"; fail=1; }
 secheck "SoftEditSrf: 4 control point(s) moved with a cosine falloff within radius 8 (max displacement 3)" "SoftEditSrf moved control points with a real falloff"
-secheck "^ok   expect_objects 100" "surface-edit script produced the expected object count halfway through (before UnjoinEdge/ReplaceEdge)"
+secheck "^ok   expect_objects 104" "surface-edit script produced the expected object count halfway through (before UnjoinEdge/ReplaceEdge)"
 secheck "ShowEdges: 1 object(s), 7 edge(s), 6 naked edge(s)" "ShowEdges found the joined planes' 1 shared and 6 naked edges before unjoining"
 secheck "UnjoinEdge: edge [0-9]* split into two naked, coincident edges - both faces remain in the same polysurface" "UnjoinEdge split the shared edge in place via real Brep::UnjoinEdge()"
 secheck "ShowEdges: 1 object(s), 8 edge(s), 8 naked edge(s)" "ShowEdges confirms exactly 2 more naked edges after unjoining - the old shared edge, now two coincident naked ones"
 secheck "ReplaceEdge: edge [0-9]* re-trimmed against the picked curve's own shape, every affected face re-projected onto it" "ReplaceEdge re-trimmed a naked edge against a bowed substitute curve via real Brep::ReplaceEdgeCurve()"
 secheck "2 faces, 9 edges, open" "the re-trimmed polysurface keeps its same topology (2 faces) after ReplaceEdge - only the one edge's own shape changed"
-secheck "^ok   expect_objects 102" "surface-edit script produced the expected final object count"
+secheck "^ok   expect_objects 106" "surface-edit script produced the expected final object count"
 secheck "Squish: face 0 flattened, area 100 (whole object 3D area 100), distortion max 0% avg 0%" "Squish flattened an already-flat plane with exactly zero distortion either way"
 secheck "SquishInfo: object [0-9]* - flat area 100 (3D area 100), distortion max 0% avg 0%" "SquishInfo reprinted Squish's own stored report (area + distortion) instead of recomputing it"
 secheck "SquishBack: 1 curve(s) projected back onto the source surface via the flat pattern's own per-vertex (u,v) map" "SquishBack projected a curve on the flat pattern back onto the source surface via the stored (u,v) map"
 secheck "Bounding box min 3702,2,0 max 3708,8,0" "SquishBack's round trip landed the projected curve exactly back on the source plane's own diagonal"
 secheck "DeleteFaces: face [0-9]* deleted, 5 face(s) left" "DeleteFaces opened the fresh box for the naked-micro-edge fixture"
 secheck "RemoveAllNakedMicroEdges: 1 naked micro edge(s) removed; 1 left in place" "RemoveAllNakedMicroEdges actually CLOSED the isolated sliver (real Brep::RemoveNakedMicroEdge) while correctly leaving the corner-adjacent one it can't safely close"
-secheck "^ok   expect_objects 112" "surface-edit script produced the expected object count after the Squish/SquishBack/RemoveAllNakedMicroEdges additions"
+secheck "^ok   expect_objects 116" "surface-edit script produced the expected object count after the Squish/SquishBack/RemoveAllNakedMicroEdges additions"
 secheck "SplitRefitSurface: 1 surface(s) split into 2 piece(s), each refit to a clean untrimmed NURBS surface" "SplitRefitSurface split the plane at the curve's crossing and refit both pieces"
 secheck "degree 3 x 3, CVs 4 x 4" "SplitRefitSurface's refit pieces are genuinely rebuilt to a fresh 4x4-CV surface, not left at Split()'s own original 2x2 CVs"
 secheck "Bounding box min 4400,0,0 max 4410,10,0" "SplitRefitSurface's two refit pieces still exactly cover the original plane end to end (west [4400,4405] + east [4405,4410])"
@@ -933,7 +976,7 @@ secheck "Area = 331.8" "ExtendSrf Type=Linear produced a genuinely different are
 secheck "MergeSrf: merged 2 surfaces into one" "MergeSrf ran on two adjacent planar rectangles"
 secheck "Area = 200 square" "MergeSrf's refit surface has the exact union area (10x20), not an approximation artifact - a flat plane is exactly representable at any degree"
 secheck "Bounding box min 4600,0,0 max 4620,10,0" "MergeSrf's refit surface exactly spans both source rectangles, corner to corner"
-secheck "smoke: frames=[0-9]* objects=123" "surface-edit script's final object count includes the MergeSrf fixture (2 rectangles + 2 planar surfaces, merged down to 1)"
+secheck "smoke: frames=[0-9]* objects=127" "surface-edit script's final object count includes the MergeSrf fixture (2 rectangles + 2 planar surfaces, merged down to 1)"
 
 # Mesh tools: deformations, mesh editing and mesh primitives (see meshtools_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -1334,9 +1377,12 @@ stcheck "smoke: frames=[1-4][0-9][0-9] objects=118" "solid-tools script produced
 # CurveBoolean/CreateRegions's own 2-region case must now take
 # kernel::PolygonBooleanPlanar's exact (non-tessellated) path when both
 # input curves are genuine closed polylines, instead of the existing
-# mesh-slab pipeline (see regionboolean_exact_polygon_script.txt) -
-# PARITY_MAP.md's "kernel: Boolean operations" category's "2D region /
-# planar curve booleans" bullet.
+# mesh-slab pipeline - and, as of round 40, PlanarUnion/PlanarDifference/
+# CurveBoolean's Union/Difference/Intersection cases must take the same
+# exact path for 3+ regions too, via kernel::PolygonBooleanPlanarNAry (see
+# regionboolean_exact_polygon_script.txt) - PARITY_MAP.md's "kernel:
+# Boolean operations" category's "2D region / planar curve booleans"
+# bullet.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   RBX="$("$BIN" --smoke 60 --script "$HERE/regionboolean_exact_polygon_script.txt" 2>&1)" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script exited non-zero"; exit 1; }
 else
@@ -1345,7 +1391,8 @@ fi
 echo "$RBX" | grep -E "^(ok|FAIL)"
 if echo "$RBX" | grep -q "^FAIL"; then fail=1; fi
 echo "$RBX" | grep -q "^smoke:" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script produced no smoke line"; fail=1; }
-echo "$RBX" | grep -q "exact (no tessellation)" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script did not take the exact polygon-boolean path"; fail=1; }
+RBX_EXACT_COUNT=$(echo "$RBX" | grep -c "exact (no tessellation)")
+[ "$RBX_EXACT_COUNT" -ge 4 ] || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script took the exact polygon-boolean path $RBX_EXACT_COUNT time(s), expected at least 4 (the original 2-region case plus the N=3 Union/Difference/Intersection cases)"; fail=1; }
 
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,
 # MatchSrf, SplitFace, MergeFaces, ConnectSrf, surface/surface and curve/surface
@@ -1383,6 +1430,26 @@ flcheck "FilletSrf: built between object .* and .*, radius 1 to 2; one surface t
 flcheck "degree 2 x 3, CVs 3 x 33" "the plane+cylinder variable fillet lofted all 33 (samples+1) exact rows into its NURBS surface"
 flcheck "VariableBlendSrf: blend surface added between object .* and .*, width 0.2 to 0.8 .Continuity=Curvature: quintic blend, cross-boundary curvature matched exactly to both surfaces." "VariableBlendSrf built a real independent blend (BuildBlendSurfaceG2, same construction as BlendSrf/BlendEdge) with a width that genuinely ramps from 0.2 to 0.8 along the rail, not the rolling-ball fillet VariableFilletSrf uses"
 flcheck "degree 5 x 3, CVs 6 x 49" "VariableBlendSrf's Continuity=Curvature output is the degree-5x3 quintic-Hermite blend, the same construction BuildBlendSurfaceG2 gives BlendSrf/BlendEdge - not a rolling-ball fillet arc, and see tests/test_variable_blend.cpp for the numeric proof the width itself (measured on the constructed surface's own control points) actually varies along the rail while the G2 curvature match still holds at both ends. 49 (not the old fixed-sample 24+1=25) rows: VariableBlendSrfCommand now builds through BuildBlendSurfaceG2Adaptive (geom/BlendSurface.h) instead of a bare fixed-sample call - PARITY_MAP.md's own disclosed 'tolerance enforcement exists in the geometry library but is not yet reachable from any app command' gap for Surface-to-surface continuity blend - so this box-face-to-extracted-face pair's own real measured gap at 24 samples exceeded the scale-aware max_gap floor and the adaptive wrapper genuinely doubled to 48 (49 rows) to certify it, rather than silently accepting the coarser build's own unmeasured error the way the fixed-sample call used to"
+# BlendSrf (plain, not Variable): now tries the exact kernel::NurbsSurface::
+# BlendSurfaces() Hermite-skin construction FIRST, reachable because this
+# fixture's two picks (the TOP edge of two separate boxes' facing
+# extracted faces, 10 units apart with a real gap between them - unlike
+# VariableBlendSrf's own shared-corner-edge fixture just above, where both
+# rails are actually the SAME physical box edge and the exact construction
+# correctly rejects it as degenerate) are both genuine isoparametric
+# boundaries. One run per Continuity value on the identical two-box gap,
+# so the three are directly comparable: Tangency (G1) is the degree-3
+# cubic BlendCurves() itself builds per row, Curvature (G2) the degree-5
+# quintic, and G3 the degree-7 septic - the genuine new capability neither
+# BlendSrf nor VariableBlendSrf could reach at all before this wiring
+# (BuildBlendSurfaceG1/G2 cap out at G2). All three converge at 16 rows
+# (doubled once from the 8-row floor) since this is flat, simple geometry.
+flcheck "BlendSrf: blend surface added between object .* and .* .Continuity=Tangency, exact kernel blend." "BlendSrf's default Continuity=Tangency now reaches the exact kernel::NurbsSurface::BlendSurfaces() construction, not the approximate BuildBlendSurfaceG1Adaptive fallback"
+flcheck "degree 3 x 3, CVs 4 x 16" "BlendSrf's Continuity=Tangency (G1) output is the expected degree-3 (2*1+1) row curve, skinned over 16 rows"
+flcheck "BlendSrf: blend surface added between object .* and .* .Continuity=Curvature, exact kernel blend." "BlendSrf's Continuity=Curvature now reaches the exact kernel construction too"
+flcheck "degree 5 x 3, CVs 6 x 16" "BlendSrf's Continuity=Curvature (G2) output is the expected degree-5 (2*2+1) row curve - one degree past the G1 case just above, same 16-row convergence on the identical fixture"
+flcheck "BlendSrf: blend surface added between object .* and .* .Continuity=G3, exact kernel blend." "BlendSrf's new Continuity=G3 option reaches kernel::NurbsSurface::BlendSurfaces()'s own continuity=3 path - unreachable from any app command before this wiring, since BuildBlendSurfaceG1/G2 cap out at G2"
+flcheck "degree 7 x 3, CVs 8 x 16" "BlendSrf's Continuity=G3 output is the expected degree-7 (2*3+1) row curve - one degree past the G2 case just above, same 16-row convergence on the identical fixture"
 flcheck "FilletEdge: edge .* -- mesh fallback (exact B-rep trim unavailable here; result is an approximate mesh, not a clean B-rep)" "FilletEdge succeeded on a solid cylinder's own closed (periodic) rim edge via the mesh fallback - this used to fail unconditionally with a watertight-gap error regardless of radius (see adversarial_corpus_notes.md SS3)"
 flcheck "FilletEdge: edge 10 of object .* replaced with an exact conic fillet (rho 0.5, distance 2)" "FilletEdge's Rho option wires straight to kernel::FilletConvexEdgeConic, a genuine ellipse/parabola/hyperbola cross-section blend distinct from the default rolling-ball circular arc"
 flcheck "Volume = 993.3 cubic" "a 10x10x10 box minus a rho=0.5 (exact parabola) conic edge fillet at distance 2 has volume 1000 - 2*2*sin(90deg)*10/6 = 993.3, the closed form FilletConvexEdgeConic's own doc comment derives for rho=0.5"
@@ -1413,9 +1480,15 @@ flcheck "FilletEdge: an exact conic (Rho) fillet of the 2 staged edge(s) on obje
 flcheck "Volume = 1000 cubic" "neither staged edge touched the box - a clean atomic failure, not a partially-filleted object"
 flcheck "FilletSrf: built between object .* and .*, radius 0.3; both surfaces trimmed" "FilletSrf's TrimBySplit (cmd_fillet.cpp) genuinely trims a NON-planar pick too now, not just a planar one: a bounded quarter-cylinder panel (open, non-periodic - its contact curve crosses the trim boundary at exactly two points) built from the same Arc+ExtrudeCrv fixture ConnectSrf's own general-trim case uses, paired with an oversized tilted plane - kernel::SplitFaceByCurve (boolean_general.h) is general to ANY ON_Surface, unlike TrimWholeLoop's ON_BrepTrimmedPlane"
 flcheck "Area = 169.1 square" "the trimmed quarter-cylinder panel's real, reproducible combined area (stable across repeated runs; not a hand-derived closed form, the same 'no closed form, check the real number' convention the ConnectSrf case above uses)"
+flcheck "FilletEdge: edge .* of object .* staged for an exact fillet (radius 2) - 1 staged, Enter to apply" "the first of 3 box-corner edges is staged, not applied immediately, for the plain (non-Rho) radius case too now"
+flcheck "FilletEdge: edge .* of object .* staged for an exact fillet (radius 2) - 2 staged, Enter to apply" "the second box-corner edge is staged alongside the first rather than applied against the (still untouched) object"
+flcheck "FilletEdge: edge .* of object .* staged for an exact fillet (radius 2) - 3 staged, Enter to apply" "the third box-corner edge completes the staged batch"
+flcheck "FilletEdge: 3 staged edges of object .* replaced with an exact multi-edge fillet (radius 2)" "all 3 staged edges were built as ONE kernel::FilletConvexEdges call, reaching its own m == 3 trihedral spherical-corner blend - PARITY_MAP.md's own 'no app command surfaces either function's own chain-pick at all' gap for the plain circular case"
+flcheck "10 faces, 21 edges, closed solid" "one spherical corner blend: 6 planar + 3 cylindrical + 1 spherical = 10 faces, a genuine closed solid - not three independent disconnected pieces the old per-edge-immediate behavior would have left (the second and third picks would have hit a non-planar PlanarFaces() rejection and fallen back to the approximate BuildFillet path instead)"
+flcheck "Volume = 975.4 cubic" "matches the app's own tessellated reading of the exact closed form 1000 - 3*8*4*(1-pi/4) - 8*(1-pi/6) = 975.587 (see this section's own comment in fillet_script.txt for why the app's coarser spherical-patch tessellation reads 975.4, not 975.587, and why that gap is pre-existing and unrelated to this fix)"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
-flcheck "^ok   expect_objects 41" "fillet script produced the expected object count"
+flcheck "^ok   expect_objects 56" "fillet script produced the expected object count"
 
 # Adversarial fillets: tiny/at-the-limit/too-large radii relative to the
 # shortest adjacent edge, a huge-coordinate-scale box (now fixed for the
@@ -1454,6 +1527,7 @@ facheck "FilletSrf: built between object .* and .*, radius 1 to 2; neither surfa
 facheck "FilletSrf: built between object .* and .*, radius 1 to 2$" "VariableFilletSrf Trim=No on an otherwise-exact planar box corner also falls through to the approximate cascade - the exact kernel path always replaces the whole solid, not the untrimmed separate surface Trim=No asks for"
 facheck "! FilletSrf: an exact conic (Rho) fillet needs the two faces to share an edge on one planar-faced solid with Trim=Yes (convex attempt:.*not planar" "FilletSrf Rho on a cylinder's own flat-top cap and curved side wall refuses with a clear diagnostic instead of silently building a plain round fillet that quietly ignores Rho - unlike Chamfer/VariableFillet just above, there is no approximate fallback a non-circular conic could ever be represented by"
 facheck "! FilletSrf: an exact conic (Rho) fillet needs the two faces to share an edge on one planar-faced solid with Trim=Yes (the two picks are independent surfaces with no shared edge)" "FilletSrf Rho on two genuinely independent (no shared edge) extracted surfaces refuses the same way - fa.id != fb.id means kernel::FilletConvexEdgeConic/FilletConcaveEdgeConic have no shared ON_BrepEdge to identify at all, not merely a curved-face rejection"
+facheck "! BlendSrf: could not build the blend" "BlendSrf Continuity=G3, picking the same face/edge twice (a genuinely degenerate, zero-length rail pairing), fails closed with a clear diagnostic instead of silently building a degenerate patch - G3 has no approximate fallback to drop to the way Continuity=Tangency/Curvature would"
 echo "$FA" | grep -E "^(ok|FAIL)"
 if echo "$FA" | grep -q "^FAIL"; then fail=1; fi
 facheck "^ok   expect_objects 0" "fillet-adversarial script cleaned up to zero objects at the end"
@@ -2150,6 +2224,46 @@ print("object count after GetPoint: %d" % len(dino8.doc.Objects.AllObjects()))
 # token (python_script.txt's "RunPythonScript @TMP@/t.py 20,20,20 Widget2").
 name = dino8.GetString("Name the marker point")
 print("got string: " + str(name))
+
+# dino8.GetReal/dino8.GetInteger: mirror rs.GetReal/rs.GetInteger, the same
+# worker-thread suspend as GetPoint/GetString above (see PythonEngine.h) -
+# previously entirely unported (PARITY_MAP.md's app_scripting row named
+# this exact gap). Fed by the third and fourth trailing script tokens.
+radius = dino8.GetReal("Pick a radius")
+print("got real: " + str(radius))
+count = dino8.GetInteger("Pick a count")
+print("got integer: " + str(count))
+print("got integer is int: " + str(isinstance(count, int)))
+
+# dino8.GetObjects/dino8.GetObject: mirror rs.GetObjects/rs.GetObject, the
+# same worker-thread suspend - also previously entirely unported. Unlike
+# Point/String/Real/Integer there is no plain command-line token that means
+# "pick these objects"; CommandEngine's own Want::Objects handling instead
+# accepts a nested Sel* command fed as a token (here, SelAll) followed by
+# Enter to hand the resulting selection to OnObjects (see
+# CommandEngine.cpp's FeedText/FeedEnter Want::Objects branches) - the exact
+# mechanism script_script.txt's Lua test never needed to exercise, so this
+# is new coverage for that path too, not just for Python. Each call
+# deliberately unselects everything right before suspending so the
+# command's own "already-selected objects are accepted immediately"
+# shortcut (CommandEngine::AfterCallback's preselection check) can't
+# short-circuit the very SelAll/Enter tokens below meant for it.
+dino8.doc.Objects.UnselectAllObjects()
+objs = dino8.GetObjects("Select objects")
+print("got objects count: %d" % len(objs))
+print("got objects are ints: " + str(all(isinstance(o, int) for o in objs)))
+
+dino8.doc.Objects.UnselectAllObjects()
+one = dino8.GetObject("Select one object")
+print("got object is int: " + str(isinstance(one, int)))
+print("got object is one of objs: " + str(one in objs))
+
+dino8.doc.Objects.UnselectAllObjects()
+empty_objs = dino8.GetObjects("Select more objects (press Enter for none)")
+print("got empty objects: " + str(empty_objs == []))
+
+none_obj = dino8.GetObject("Select another object (press Enter for none)")
+print("got none object: " + str(none_obj is None))
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
 # Captured with set +e, not "|| { ...; exit 1; }": python_script.txt's own
@@ -2364,6 +2478,15 @@ else
   pscheck "picked point 20,20,20" "the resumed script read back the exact point the command line fed it"
   pscheck "history: object count after GetPoint: 37" "AddPoint(p) added the one new object the suspend-and-resume round trip was supposed to produce"
   pscheck "history: got string: Widget2" "dino8.GetString() suspended a second time (same worker-thread mechanism as GetPoint) and was fed by the second trailing script token, proving the suspend/resume round trip works for a second, different prompt type right after the first, not just once"
+  pscheck "history: got real: 7.5" "dino8.GetReal() suspended a third time and was fed by the third trailing script token, matching rs.GetReal - previously entirely unported to Python per the PARITY_MAP note on Python API breadth"
+  pscheck "history: got integer: 3" "dino8.GetInteger() suspended a fourth time and was fed by the fourth trailing script token, matching rs.GetInteger - previously entirely unported to Python"
+  pscheck "history: got integer is int: True" "GetInteger() returned a real Python int (rounded from the resumed double at the PyGetInteger binding, not left as a float), matching rs.GetInteger pushing a Lua integer"
+  pscheck "history: got objects count: 37" "dino8.GetObjects() suspended a fifth time and was fed by the \"SelAll\"/\"Enter\" trailing script tokens (SelAll via CommandEngine's own nested-Sel-command-as-a-token path for Want::Objects, Enter handing the resulting full selection to OnObjects), returning every one of the 37 objects that existed at that point - matching rs.GetObjects, previously entirely unported to Python"
+  pscheck "history: got objects are ints: True" "GetObjects() returned plain object ids (PyObjId per id), matching every other dino8.doc.Objects.Add-style/rs.GetObjects id-returning call rather than wrapping them as Dino8Object"
+  pscheck "history: got object is int: True" "dino8.GetObject() suspended a sixth time, fed by its own \"SelAll\"/\"Enter\" pair, and returned a single plain id (not a list), matching rs.GetObject - previously entirely unported to Python"
+  pscheck "history: got object is one of objs: True" "GetObject()'s single id is the front of the exact same selection GetObjects() just read, confirming both calls share the identical CommandEngine::OnObjects resume path"
+  pscheck "history: got empty objects: True" "a further dino8.GetObjects() call fed only \"Enter\" with nothing selected resumed with an empty list, not None - matching LuaEngine's rs.GetObjects always pushing a (possibly empty) table rather than nil"
+  pscheck "history: got none object: True" "dino8.GetObject() fed only \"Enter\" with nothing selected resumed with None - matching rs.GetObject pushing nil for the single-object case, the opposite of GetObjects' own empty-list convention just above"
   pscheck "^ok   expect_objects 37" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, the two fresh ObjectsByType test points, and the dino8.GetPoint() marker point (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script, and the undo/redo group's own point was undone again at the end)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
@@ -2577,6 +2700,13 @@ edcheck "Surface [0-9]+: centre 5,5,0 normal -?0,0,1" "a plain Flip inverted tha
 # "(2), (3), ..."). List must show the first named object bare.
 edcheck "name 'MyName'$" "SetObjectName kept the first object's name bare, not suffixed '(1)'"
 edcheck "name 'MyName \\(2\\)'" "SetObjectName numbered the second object '(2)', not '(1)'"
+# Rebuild point-count clamp regression: "Point count" used to flow straight
+# from the typed number into an n x n control-point grid with no upper
+# bound (the Surface branch is O(n^2) points, then an O(n^2)-CV
+# NurbsSurface::FromControlGrid), so 5000000 would have demanded a
+# 25-trillion-point grid instead of baking instantly. After the fix the
+# count is clamped to 200 before it drives any allocation.
+edcheck "degree 3 x 3, CVs 200 x 200" "Rebuild clamped an absurd 5000000 point count down to a sane 200 x 200 control-point grid instead of hanging/OOMing on the n x n allocation"
 if echo "$ED" | grep -q "name 'MyName (1)'"; then echo "FAIL SetObjectName still off-by-one: an object was suffixed '(1)'"; fail=1; else echo "ok   no object was suffixed 'MyName (1)'"; fi
 
 # Real NURBS algorithm QC: ExtractPipedCurve/MakePeriodic Smooth=No/RefitTrim
@@ -2722,6 +2852,18 @@ fi
 echo "$IM" | grep -E "^(ok|FAIL)"
 if echo "$IM" | grep -q "^FAIL"; then fail=1; fi
 echo "$IM" | grep -q "^smoke:" || { echo "$IM"; echo "FAIL: imprint script produced no smoke line"; fail=1; }
+
+# SplitBySheet/TrimSheetBySolid: kernel::SplitBySheet()/TrimSheetBySolid()'s
+# first app commands (see splitbysheet_trimsheet_script.txt) - PARITY_MAP.md's
+# "kernel: Boolean operations" category's "Sheet/solid trim" bullet.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SH="$("$BIN" --smoke 60 --script "$HERE/splitbysheet_trimsheet_script.txt" 2>&1)" || { echo "$SH"; echo "FAIL: splitbysheet/trimsheet script exited non-zero"; exit 1; }
+else
+  SH="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/splitbysheet_trimsheet_script.txt" 2>&1)" || { echo "$SH"; echo "FAIL: splitbysheet/trimsheet script exited non-zero"; exit 1; }
+fi
+echo "$SH" | grep -E "^(ok|FAIL)"
+if echo "$SH" | grep -q "^FAIL"; then fail=1; fi
+echo "$SH" | grep -q "^smoke:" || { echo "$SH"; echo "FAIL: splitbysheet/trimsheet script produced no smoke line"; fail=1; }
 
 # SplitByObject regression: a non-intersecting cutter must not be consumed
 # (see splitbyobject_regression.txt) - SplitByObject used to delete every
@@ -4399,6 +4541,152 @@ assert max(bn) - min(bn) <= 8, f'Box B while Monochrome-tagged is not a neutral 
 assert abs(bn[0] - 182) <= 15 and abs(bn[1] - 182) <= 15 and abs(bn[2] - 187) <= 15, f'Box B Monochrome grey is not the expected flat {{200,200,205}}-derived tone: {bn}'
 PY
 
+# SetObjectDisplayMode Pen/Arctic: pixel-level proof (PARITY_MAP.md's
+# "Per-object display mode override" item) that Pen and Arctic are two more
+# real per-object overrides - both fill flat white (ModeStyle::force_white's
+# own Color::FromBytes(245,245,245)) like their viewport-wide namesakes, but
+# Pen is unlit (kFlat: the fragment shader returns u_color unchanged, no
+# lighting term at all) while Arctic is lit (kLit, attenuated by the scene's
+# key/fill lights the same way Monochrome already is above) - the one
+# difference between the two viewport-wide modes themselves, preserved
+# per-object; see tests/pen_script.txt for the full scene/capture sequence.
+mkdir -p "$TMPW/pen"
+sed "s|@TMP@|$TMPW/pen|g" "$HERE/pen_script.txt" > "$TMPW/pen_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PEN="$("$BIN" --smoke 30 --script "$TMPW/pen_script.txt" 2>&1)" || { echo "$PEN"; echo "FAIL: pen script exited non-zero"; exit 1; }
+else
+  PEN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/pen_script.txt" 2>&1)" || { echo "$PEN"; echo "FAIL: pen script exited non-zero"; exit 1; }
+fi
+pencheck() { if echo "$PEN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PEN" "$1"; fail=1; fi; }
+pencheck "^ok   expect_objects 2" "pen/arctic script left exactly the two boxes"
+pencheck "gl_error=0" "pen/arctic script ran without OpenGL errors"
+python3 - "$TMPW/pen/pen_off.bmp" "$TMPW/pen/pen_on.bmp" "$TMPW/pen/pen_off2.bmp" "$TMPW/pen/arctic_on.bmp" "$TMPW/pen/arctic_off2.bmp" <<'PY' && echo "ok   SetObjectDisplayMode Pen/Arctic genuinely override one object's own fill colour with each mode's flat white, independent of the viewport's own (never-Pen/Arctic) display mode, Pen stays unlit while Arctic stays lit (the one real difference between the two), and UseViewport genuinely restores the object's own colour after each" || { echo "FAIL SetObjectDisplayMode Pen/Arctic pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+w, h, off = read_bmp(sys.argv[1])
+_, _, pen_on = read_bmp(sys.argv[2])
+_, _, off2 = read_bmp(sys.argv[3])
+_, _, arctic_on = read_bmp(sys.argv[4])
+_, _, arctic_off2 = read_bmp(sys.argv[5])
+
+# Box A (left, never touched): must read identically across every capture.
+reds = [(x, y) for y in range(0, h, 2) for x in range(0, w, 2) if off(x, y)[0] > off(x, y)[1] + 30 and off(x, y)[0] > off(x, y)[2] + 30]
+assert reds, 'no red (Box A) pixels found in pen_off.bmp'
+axs, ays = [p[0] for p in reds], [p[1] for p in reds]
+acx, acy = (min(axs) + max(axs)) // 2, (min(ays) + max(ays)) // 2
+ra = off(acx, acy)
+for name, img in (('pen_on', pen_on), ('off2', off2), ('arctic_on', arctic_on), ('arctic_off2', arctic_off2)):
+    assert img(acx, acy) == ra, f'Box A changed in {name} even though it was never given a SetObjectDisplayMode override: {ra} vs {img(acx, acy)}'
+assert ra[0] > ra[1] + 30 and ra[0] > ra[2] + 30, f'Box A does not read as red: {ra}'
+
+# Box B (right, Pen then Arctic toggled on/off): find the blob where "off"
+# and "pen_on" actually differ, and sample its centre everywhere.
+diffs = [(x, y) for y in range(0, h) for x in range(0, w) if sum(abs(a - b) for a, b in zip(off(x, y), pen_on(x, y))) > 15]
+assert diffs, 'Box B never changed between pen_off.bmp and pen_on.bmp - Pen had no visible effect'
+bxs, bys = [p[0] for p in diffs], [p[1] for p in diffs]
+bcx, bcy = (min(bxs) + max(bxs)) // 2, (min(bys) + max(bys)) // 2
+bo, bpen, bo2, barc, bo3 = off(bcx, bcy), pen_on(bcx, bcy), off2(bcx, bcy), arctic_on(bcx, bcy), arctic_off2(bcx, bcy)
+print(f'Box B sample: off={bo} pen_on={bpen} off2={bo2} arctic_on={barc} arctic_off2={bo3}')
+assert bo[2] > bo[0] + 30 and bo[2] > bo[1] + 30, f'Box B does not read as blue before either override: {bo}'
+assert bo == bo2, f'Box B does not return to its own colour after Pen + UseViewport: off={bo} off2={bo2}'
+assert bo == bo3, f'Box B does not return to its own colour after Arctic + UseViewport: off={bo} off3={bo3}'
+# Pen is unlit (kFlat): the fragment shader returns u_color verbatim, so the
+# sampled pixel must be exactly ModeStyle::force_white's flat (245,245,245),
+# not merely "whiteish" - no lighting attenuation to leave room for.
+assert bpen == (245, 245, 245), f'Box B Pen is not the exact unlit flat white (245,245,245): {bpen}'
+# Arctic is lit (kLit): attenuated by the same key/fill lights as Monochrome
+# above, so it must land noticeably below the flat (245,245,245) Pen value
+# yet stay a neutral white/grey (equal-ish channels, not tinted) - proving
+# Pen and Arctic are genuinely different per-object overrides, not two
+# names for the same effect.
+assert max(barc) - min(barc) <= 8, f'Box B Arctic is not a neutral white/grey: {barc}'
+assert all(barc[i] < bpen[i] - 10 for i in range(3)), f'Box B Arctic ({barc}) is not darker than Box B Pen ({bpen}) - lit vs unlit has no visible effect'
+assert all(barc[i] > 150 for i in range(3)), f'Box B Arctic ({barc}) is too dark to read as the Arctic/Pen family of flat whites'
+PY
+
+# SSAO: pixel-level proof (PARITY_MAP.md's "SSAO in the rasterized
+# renderer" item) that AmbientOcclusion is a real, localized darkening
+# effect, not just a printed status line or a flat global dimming - a flat
+# floor meeting a wall at a real inside corner, lit only by a dim light
+# plus Skylight's ambient term (the only thing GlRenderer::EndSsaoPass's AO
+# buffer darkens), captured with AmbientOcclusion on, then off, then back
+# on; see tests/ssao_script.txt for the full scene.
+mkdir -p "$TMPW/ssao"
+sed "s|@TMP@|$TMPW/ssao|g" "$HERE/ssao_script.txt" > "$TMPW/ssao_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SSAO="$("$BIN" --smoke 30 --script "$TMPW/ssao_script.txt" 2>&1)" || { echo "$SSAO"; echo "FAIL: ssao script exited non-zero"; exit 1; }
+else
+  SSAO="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/ssao_script.txt" 2>&1)" || { echo "$SSAO"; echo "FAIL: ssao script exited non-zero"; exit 1; }
+fi
+ssaocheck() { if echo "$SSAO" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SSAO" "$1"; fail=1; fi; }
+ssaocheck "^ok   expect_objects 2" "ssao script left exactly the floor and the wall"
+ssaocheck "gl_error=0" "ssao script ran without OpenGL errors"
+python3 - "$TMPW/ssao/ssao_on.bmp" "$TMPW/ssao/ssao_off.bmp" "$TMPW/ssao/ssao_on2.bmp" <<'PY' && echo "ok   AmbientOcclusion genuinely darkens the ambient term near a real inside corner (never brighter, never the whole frame), and toggling it back on reproduces the exact same frame" || { echo "FAIL SSAO pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+w, h, on = read_bmp(sys.argv[1])
+_, _, off = read_bmp(sys.argv[2])
+_, _, on2 = read_bmp(sys.argv[3])
+
+def luma(c):
+    r, g, b = c
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+total = w * h
+diff_count = 0
+darker = 0
+brighter = 0
+for y in range(h):
+    for x in range(w):
+        a, b = on(x, y), off(x, y)
+        if sum(abs(p - q) for p, q in zip(a, b)) <= 6:
+            continue
+        diff_count += 1
+        if luma(a) < luma(b):
+            darker += 1
+        else:
+            brighter += 1
+print(f'total pixels: {total}, differing (on vs off): {diff_count} ({100.0 * diff_count / total:.1f}%), darker: {darker}, brighter: {brighter}')
+
+assert diff_count > total * 0.01, f'AmbientOcclusion on vs off barely differ ({diff_count}/{total} px) - no visible effect'
+assert diff_count < total * 0.5, f'AmbientOcclusion changes too much of the frame ({diff_count}/{total} px) - looks like a flat global dimming, not localized occlusion'
+assert brighter <= darker * 0.02, f'AmbientOcclusion made more than a rounding sliver of pixels brighter, not darker ({brighter} brighter vs {darker} darker) - not a real occlusion effect'
+
+on_px = [on(x, y) for y in range(0, h, 3) for x in range(0, w, 3)]
+on2_px = [on2(x, y) for y in range(0, h, 3) for x in range(0, w, 3)]
+assert on_px == on2_px, 'toggling AmbientOcclusion off then back on does not reproduce the exact same frame'
+PY
+
 # Real-time shadow maps (per-light shadow atlas): pixel-level proof
 # (PARITY_MAP.md's "Real-time shadow maps in the rasterized renderer" item)
 # that two simultaneously-enabled lights now each cast their own real
@@ -4835,7 +5123,7 @@ echo "$HS" | grep -q "^smoke:" || { echo "$HS"; echo "FAIL: history script produ
 hcheck() { if echo "$HS" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HS" "$1"; fail=1; fi; }
 hcheck "History recording: off. 0 object(s) with live construction history" "History defaults Off and reports it"
 hcheck "UpdateHistory: 0 object(s) re-evaluated from their source curve(s)' current geometry" "an Extrude made while History was Off recorded nothing for UpdateHistory to redo"
-hcheck "History recording: on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe/Sweep1 (single section) results will remember their source curve(s) for UpdateHistory" "History On toggled recording on"
+hcheck "History recording: on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe/Sweep1/Sweep2 (single section) results will remember their source curve(s) for UpdateHistory" "History On toggled recording on"
 hcheck "Bounding box min 20,0,0 max 30,0,5" "the freshly-extruded surface's bounding box, before the source curve moves"
 hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one object History was tracking"
 hcheck "Bounding box min 20,0,20 max 30,0,25" "UpdateHistory genuinely re-derived the extruded surface's geometry from the source curve's new z=20 position - not the z=0..5 box baked at creation time"
@@ -4877,6 +5165,24 @@ hsscheck "object 3: Sweep1 <- 1,2" "History tracks a Sweep1 result (object 3) bu
 hsscheck "Bounding box min -0.9073,-0.978,0 max 1,0.978,10" "the freshly-built sweep's bounding box, before the section curve moves"
 hsscheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one Sweep1 History was tracking"
 hsscheck "Bounding box min -0.9073,-0.978,5 max 1,0.978,15" "UpdateHistory genuinely re-derived the swept surface's geometry from the section curve's new +5 z offset - not the z=0..10 surface baked at creation time"
+
+# History extended to an eighth command, Sweep2's single-cross-section case
+# (Sweep2Command, cmd_surface.cpp; RebuildSweep2, history_rebuild.h) - see
+# history_sweep2_script.txt's own header comment for exactly what this
+# checks. Same real-bounding-box-move money check as Sweep1 above.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  HS2="$("$BIN" --smoke 100 --script "$HERE/history_sweep2_script.txt" 2>&1)" || { echo "$HS2"; echo "FAIL: history-sweep2 script exited non-zero"; exit 1; }
+else
+  HS2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/history_sweep2_script.txt" 2>&1)" || { echo "$HS2"; echo "FAIL: history-sweep2 script exited non-zero"; exit 1; }
+fi
+echo "$HS2" | grep -E "^(ok|FAIL)"
+if echo "$HS2" | grep -q "^FAIL"; then fail=1; fi
+echo "$HS2" | grep -q "^smoke:" || { echo "$HS2"; echo "FAIL: history-sweep2 script produced no smoke line"; fail=1; }
+hs2check() { if echo "$HS2" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HS2" "$1"; fail=1; fi; }
+hs2check "object 4: Sweep2 <- 1,2,3" "History tracks a Sweep2 result (object 4) built from its two rails (objects 1,2) and section (object 3)"
+hs2check "Bounding box min -0.9073,-0.978,0 max 1,0.978,10" "the freshly-built sweep's bounding box, before the section curve moves"
+hs2check "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one Sweep2 History was tracking"
+hs2check "Bounding box min -0.9073,-0.978,5 max 1,0.978,15" "UpdateHistory genuinely re-derived the swept surface's geometry from the section curve's new +5 z offset - not the z=0..10 surface baked at creation time"
 
 # RecordMacro: a real action recorder for the Macro Editor's buffer (see
 # record_macro_script.txt's own header comment for exactly what this
@@ -4935,6 +5241,27 @@ blkcheck() { if echo "$BLK" | grep -qF "$1"; then echo "ok   $2"; else echo "FAI
 blkcheck "  12,0,0" "lookup key 'L' switches the instance to state Large: local (2,0,0) + insert (10,0,0) = (12,0,0)"
 blkcheck "  11,0,0" "an unmatched lookup key falls back to the instance's own explicit state (Small): local (1,0,0) + insert (10,0,0) = (11,0,0)"
 
+# BlockSetStretchAxis/BlockSetStretchGroup/BlockSetStretch command-line
+# wiring: PARITY_MAP.md "Dynamic blocks" Stretch parameter/action - the
+# fifth and last of the five named parameter/action types, after
+# Visibility states, Flip, Array and Lookup above (the Document-level math
+# itself is unit-tested directly in dino8_test_block_stretch/
+# test_block_stretch.cpp) - see block_stretch_script.txt's own header
+# comment.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  BST="$("$BIN" --smoke 100 --script "$HERE/block_stretch_script.txt" 2>&1)" || { echo "$BST"; echo "FAIL: block-stretch script exited non-zero"; exit 1; }
+else
+  BST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/block_stretch_script.txt" 2>&1)" || { echo "$BST"; echo "FAIL: block-stretch script exited non-zero"; exit 1; }
+fi
+echo "$BST" | grep -E "^(ok|FAIL)" || true
+if echo "$BST" | grep -q "^FAIL"; then fail=1; fi
+echo "$BST" | grep -q "^smoke:" || { echo "$BST"; echo "FAIL: block-stretch script produced no smoke line"; fail=1; }
+bstcheck() { if echo "$BST" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$BST" "$1"; fail=1; fi; }
+bstcheck "  2,0,0" "the block-defining leftover instance (created before BlockAddState/BlockSetStretchAxis ran) keeps its untouched original tagged point"
+bstcheck "  -3,0,0" "...and its untouched original untagged point"
+bstcheck "  106,0,0" "the placed instance's tagged point moved 4 units along the stretch axis: local (2,0,0) + insert (100,0,0) + stretch 4 = (106,0,0)"
+bstcheck "  97,0,0" "the placed instance's untagged point is unaffected by the same stretch: local (-3,0,0) + insert (100,0,0) = (97,0,0)"
+
 # LayerPlotColor command-line wiring: PARITY_MAP.md "Print and plot output"
 # item - the color half of "plot styles (CTB/STB)", alongside
 # print_width_mm/LayerPrintWidth's lineweight half (the pure
@@ -4953,6 +5280,30 @@ if echo "$PLC" | grep -q "^FAIL"; then fail=1; fi
 grep -q 'stroke="#000000"' "$TMPW/plot_color_off.svg" && echo "ok   with no plot color override, the exported SVG strokes the line in its own display color (black)" || { echo "FAIL plot_color_off.svg does not stroke black"; fail=1; }
 grep -q 'stroke="#ff0000"' "$TMPW/plot_color_on.svg" && echo "ok   LayerPlotColor 255,0,0 makes the exported SVG stroke the line red, not its unchanged on-screen display color" || { echo "FAIL plot_color_on.svg does not stroke red"; fail=1; }
 grep -q 'stroke="#000000"' "$TMPW/plot_color_cleared.svg" && echo "ok   LayerPlotColor ByLayer clears the override back to the display color (black)" || { echo "FAIL plot_color_cleared.svg does not stroke black again after clearing"; fail=1; }
+
+# PlotStyleTable/LayerPlotStyle command-line wiring: PARITY_MAP.md "Print
+# and plot output" item - the named, reusable CTB/STB-table half of "plot
+# styles", alongside LayerPlotColor's own flat per-layer-only field just
+# above (the pure ResolvePlotStyle/EffectivePlotColor overloads themselves
+# are unit-tested directly in dino8_plot_style/test_plot_style.cpp) - see
+# plot_style_script.txt's own header comment. Checked directly against the
+# real exported SVG files' stroke colors, same as the LayerPlotColor check
+# above, specifically proving two layers sharing one named style change
+# together when the style's own row is edited.
+sed "s|@TMP@|$TMPW|g" "$HERE/plot_style_script.txt" > "$TMPW/plot_style_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PST="$("$BIN" --smoke 30 --script "$TMPW/plot_style_script.txt" 2>&1)" || { echo "$PST"; echo "FAIL: plot-style script exited non-zero"; exit 1; }
+else
+  PST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/plot_style_script.txt" 2>&1)" || { echo "$PST"; echo "FAIL: plot-style script exited non-zero"; exit 1; }
+fi
+echo "$PST" | grep -E "^(ok|FAIL)" || true
+if echo "$PST" | grep -q "^FAIL"; then fail=1; fi
+RED_COUNT="$(grep -c 'stroke="#ff0000"' "$TMPW/plot_style_red.svg" || true)"
+[ "$RED_COUNT" = "2" ] && echo "ok   both layers' lines stroke the named style's own red, though neither layer's own flat plot color was ever set" || { echo "FAIL plot_style_red.svg: expected 2 red strokes (one per layer sharing the style), got $RED_COUNT"; fail=1; }
+BLUE_COUNT="$(grep -c 'stroke="#0000ff"' "$TMPW/plot_style_blue.svg" || true)"
+[ "$BLUE_COUNT" = "2" ] && echo "ok   editing the shared style's color to blue changes both layers' lines together, with neither layer touched again" || { echo "FAIL plot_style_blue.svg: expected 2 blue strokes, got $BLUE_COUNT"; fail=1; }
+grep -q 'stroke="#000000"' "$TMPW/plot_style_cleared.svg" && echo "ok   LayerPlotStyle None on the Default layer clears it back to its own display color (black)" || { echo "FAIL plot_style_cleared.svg: Default layer's line is not black after clearing its style"; fail=1; }
+grep -q 'stroke="#0000ff"' "$TMPW/plot_style_cleared.svg" && echo "ok   ...while SecondLayer, never cleared, still strokes the shared style's current color (blue)" || { echo "FAIL plot_style_cleared.svg: SecondLayer's line lost its still-assigned style's color"; fail=1; }
 
 # Undo id-reuse regression (see the last section of history_script.txt):
 # a Box drawn right after undoing a tracked Extrude used to be handed the
@@ -5105,6 +5456,89 @@ EOS
   h3check "Area = 100 square" "the imported hatch's area is exactly the 10x10 boundary (not a sampled approximation)"
 else
   echo "FAIL hatch3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_Hatch fixture check"
+  fail=1
+fi
+
+# Native .3dm ON_InstanceRef import: previously Load3dm had no
+# ON_InstanceRef/ON_InstanceDefinition handling at all, and no
+# ON::idef_object check either, so a block instance authored by a real,
+# independent CAD tool (Dino 8's own blocks persist through .3dm as tagged
+# ordinary geometry plus a private "Dino8.BlocksMeta" document user string,
+# never a real instance definition/reference pair - see File3dm.cpp's
+# EncodeBlocksMeta/DecodeBlocksMeta) lost its placements entirely and kept
+# only one un-transformed, ungrouped copy of the definition's own member
+# geometry instead. instanceref3dm_fixture_gen builds a real
+# ON_InstanceDefinition (one member: a unit-length line on the X axis) and
+# two ON_InstanceRef placements of it - one plain translation, one a
+# translation combined with a uniform 3x scale - directly through
+# OpenNURBS' own API, independent of Dino 8's own exporter (which never
+# writes this pair at all), the same "real externally-authored file, not a
+# round trip" proof hatch3dm_fixture_gen already gives ON_Hatch. The scale
+# placement's imported line must come back 3 units long (not 1), proving
+# Load3dm applied the ref's full ON_Xform, not just an insertion-point
+# translation.
+IREFBIN="$(dirname "$BIN")/instanceref3dm_fixture_gen"
+if [ -x "$IREFBIN" ]; then
+  "$IREFBIN" "$TMPW/instanceref_fixture.3dm" >/dev/null || { echo "FAIL: instanceref3dm_fixture_gen failed to write the instance-ref fixture"; exit 1; }
+  cat > "$TMPW/instanceref3dm_script.txt" <<EOS
+Open $TMPW/instanceref_fixture.3dm
+SelBlockInstanceOf TestBlock
+What
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    IRF="$("$BIN" --smoke 30 --script "$TMPW/instanceref3dm_script.txt" 2>&1)" || { echo "$IRF"; echo "FAIL: instance-ref .3dm script exited non-zero"; exit 1; }
+  else
+    IRF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/instanceref3dm_script.txt" 2>&1)" || { echo "$IRF"; echo "FAIL: instance-ref .3dm script exited non-zero"; exit 1; }
+  fi
+  irfcheck() { if echo "$IRF" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$IRF" "$1"; fail=1; fi; }
+  irfcheck "Opened $TMPW/instanceref_fixture.3dm (2 objects)" "Load3dm placed both ON_InstanceRef instances as 2 real objects (0 before the fix: both silently skipped), and did not also add the idef's own member line as a 3rd, un-transformed object (ON::idef_object skip)"
+  irfcheck "SelBlockInstanceOf: selected 2 object(s) in instances of 'TestBlock'" "both placements landed as real Dino8 block instances, tagged and grouped under the idef's own name, not ordinary untagged objects"
+  irfcheck "Length: 1" "the plain-translation placement's line kept its original unit length"
+  irfcheck "Length: 3" "the scale+translate placement's line came back 3 units long - proof Load3dm applied the ref's full ON_Xform (scale included), not just a translation to the insertion point"
+  irfcheck "BlockInsert = 2.000000,3.000000,0.000000" "the plain-translation placement's insertion point is exactly where it was placed"
+  irfcheck "BlockInsert = 10.000000,0.000000,0.000000" "the scale+translate placement's insertion point is the translation component alone, not shifted by the scale (both ops shared a single ON_Xform, origin-fixed scale then translate)"
+else
+  echo "FAIL instanceref3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_InstanceRef fixture check"
+  fail=1
+fi
+
+# Native .3dm ON_Annotation (Text) import: previously Load3dm had no
+# ON_Annotation handling at all, so a Text object authored by a real,
+# independent CAD tool (Dino 8's own Text command bakes a group of
+# glyph-outline curves plus Annotation/Text/... user_text instead - see
+# commands/annotate_common.h) was silently skipped on open, same as
+# ON_Hatch/ON_InstanceRef before their own passes above. text3dm_fixture_gen
+# builds a real ON_Text ("Hi" at (3,4,0), referencing a real custom
+# ON_DimStyle table entry with text height 2) directly through OpenNURBS'
+# own API, independent of Dino 8's own exporter (which never writes a real
+# ON_Annotation at all). The checks mirror the existing DXF TEXT import
+# test's own "Hi" fixture exactly (same H/i-stem/i-dot = 3 glyph-curve
+# count), except SelText/FindText DO apply here (unlike that DXF-reader
+# gap) since this reader groups the glyph curves into a real
+# Document::Group, so FindText's own group-membership lookup finds it.
+TXTBIN="$(dirname "$BIN")/text3dm_fixture_gen"
+if [ -x "$TXTBIN" ]; then
+  "$TXTBIN" "$TMPW/text_fixture.3dm" >/dev/null || { echo "FAIL: text3dm_fixture_gen failed to write the text fixture"; exit 1; }
+  cat > "$TMPW/text3dm_script.txt" <<EOS
+Open $TMPW/text_fixture.3dm
+SelText
+FindText Hi
+What
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    TXF="$("$BIN" --smoke 30 --script "$TMPW/text3dm_script.txt" 2>&1)" || { echo "$TXF"; echo "FAIL: text .3dm script exited non-zero"; exit 1; }
+  else
+    TXF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/text3dm_script.txt" 2>&1)" || { echo "$TXF"; echo "FAIL: text .3dm script exited non-zero"; exit 1; }
+  fi
+  txfcheck() { if echo "$TXF" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$TXF" "$1"; fail=1; fi; }
+  txfcheck "Opened $TMPW/text_fixture.3dm (3 objects)" "Load3dm read the real ON_Text as 3 real glyph curves (H, i-stem, i-dot - the same count a hand-written TEXT fixture already gets from the DXF reader), not 0 (silently skipped, the old behaviour)"
+  txfcheck "3 object(s) selected" "SelText found all 3 imported glyph curves (real Annotation=Text user_text, not just ordinary curves)"
+  txfcheck "FindText: 1 annotation(s) containing \"Hi\" selected" "FindText found exactly one annotation (its 3 glyph curves share one real Document::Group, unlike the pre-existing DXF/DWG MTEXT-reader gap of the same shape)"
+  txfcheck "Text = Hi" "the imported glyph curves carry the exact source string"
+  txfcheck "TextHeight = 2" "the text height came from the file's own referenced ON_DimStyle table entry (2), not a hardcoded default"
+  txfcheck "TextOrigin = 3,4,0" "the text anchor is the real ON_Text's own plane origin"
+else
+  echo "FAIL text3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_Annotation fixture check"
   fail=1
 fi
 
@@ -5761,20 +6195,22 @@ fi
 # rejected instead of hanging the connection, a POST /run/python that
 # builds and queries geometry through the embedded Python module, a second
 # POST /run/python calling the now-real dino8.GetPoint() that must likewise
-# be rejected instead of hanging (or both /run/python checks are skipped
-# gracefully on a build with no Python support), and a POST to an unknown
-# path that must come back 404 - see tests/test_compute_server.cpp
-# for the lower-level, no-app unit coverage of the request parsing/response
-# formatting this end-to-end check builds on top of. A second, separate
+# be rejected instead of hanging, a third POST /run/python calling the new
+# dino8.GetInteger() that must be rejected the same way (or all three
+# /run/python checks are skipped gracefully on a build with no Python
+# support), and a POST to an unknown path that must come back 404 - see
+# tests/test_compute_server.cpp for the lower-level, no-app unit coverage
+# of the request parsing/response formatting this end-to-end check builds
+# on top of. A second, separate
 # server instance below covers --serve-token bearer-auth.
 if ! command -v curl >/dev/null 2>&1; then
   echo "skip --serve compute-server checks (curl not available)"
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 7 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 8 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 7 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 8 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -5820,6 +6256,11 @@ try:
 except Exception:
     pass
 dino8.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run/python")"
+    # dino8.GetInteger()/GetReal() (new this pass - PythonEngine.h/.cpp)
+    # share WaitForPoint/WaitForText's own suspend-and-abort machinery, so
+    # this must be rejected the same way RESP6's GetPoint() is, not hang.
+    RESP8="$(curl -s --max-time 10 -X POST --data 'import dino8
+dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     CODE5="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'x' "http://127.0.0.1:$SERVE_PORT/run/nosuchroute")"
     set -e
     echo "$RESP1" | grep -q "^objects: 1$" && echo "ok   POST /run built a box over HTTP and read back its printed object count" || { echo "$RESP1"; echo "FAIL --serve POST /run did not report objects: 1"; fail=1; }
@@ -5831,6 +6272,7 @@ dino8.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run/python")"
       echo "$RESP4" | grep -q "^volume: 125.0$" && echo "ok   POST /run/python built a box through the dino8 module over HTTP and read back its printed volume" || { echo "$RESP4"; echo "FAIL --serve POST /run/python did not report volume: 125.0"; fail=1; }
       echo "$RESP6" | grep -q "compute error: script requires interactive input" && echo "ok   a POST /run/python script calling the now-real dino8.GetPoint() is rejected instead of hanging the connection (PythonEngine suspends on a worker thread now - see PythonEngine.h - so this is a real regression risk main.cpp's compute_handler guards against)" || { echo "$RESP6"; echo "FAIL --serve POST /run/python dino8.GetPoint() was not rejected as expected"; fail=1; }
       echo "$RESP7" | grep -q "compute error: script requires interactive input" && echo "ok   a POST /run/python script that catches the cancelled GetPoint() and calls it again still gets an ordinary rejection, not a frozen connection/server" || { echo "$RESP7"; echo "FAIL --serve POST /run/python catch-and-retry GetPoint() hung or returned something unexpected"; fail=1; }
+      echo "$RESP8" | grep -q "compute error: script requires interactive input" && echo "ok   a POST /run/python script calling the new dino8.GetInteger() is rejected instead of hanging the connection, same as GetPoint/GetString" || { echo "$RESP8"; echo "FAIL --serve POST /run/python dino8.GetInteger() was not rejected as expected"; fail=1; }
     fi
     [ "$CODE5" = "404" ] && echo "ok   a POST to an unrecognized path is rejected with 404 Not Found" || { echo "FAIL --serve POST to an unknown path returned HTTP $CODE5, expected 404"; fail=1; }
 
@@ -5840,7 +6282,7 @@ dino8.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run/python")"
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=7$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 7 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=8$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 8 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
     fi
   fi
 
