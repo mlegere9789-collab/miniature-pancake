@@ -35,7 +35,10 @@ Solid=Yes
 2
 SelLast
 Volume
-# --- Shell a 20x20x10 box by 1: 4000 - 18*18*8 = 1408
+# --- Shell a 20x20x10 box by 1: 4000 - 18*18*8 = 1408. The box's faces are
+# all planar and convex, so this now takes the kernel's exact
+# ShellConvexPlanar path (a real Brep, not a tessellated mesh) - SelPolysrf,
+# not the old SelClosedMesh, proves the result's actual object kind.
 SelAll
 Hide
 Box 40,0,0 60,20,0 10
@@ -45,7 +48,7 @@ Enter
 1
 SelLast
 List
-SelClosedMesh
+SelPolysrf
 @expect_selected 1
 # --- ExtrudeCrvAlongCrv: exact sum surface, 10 x 5 rectangle
 SelAll

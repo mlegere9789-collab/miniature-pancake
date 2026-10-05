@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "dino8/kernel/boolean.h"
+#include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/tolerance.h"
 
@@ -565,6 +566,15 @@ std::vector<HoleFeature> RecognizeHoles(const Brep& solid) {
   }
 
   return out;
+}
+
+Brep CopyHoleFeature(const Brep& solid, const HoleFeature& hole, const ON_Xform& xform) {
+  ON_Plane frame = MakeAxisFrame(hole.origin, hole.axis);
+  if (!frame.Transform(xform) || !frame.IsValid()) {
+    throw std::invalid_argument(
+        "dino8::kernel::CopyHoleFeature: xform collapses the hole's own axis frame to an invalid plane");
+  }
+  return MakeHole(solid, frame.origin, frame.zaxis, hole.radius, hole.depth, hole.through);
 }
 
 std::vector<BossFeature> RecognizeBosses(const Brep& solid) {

@@ -797,8 +797,7 @@ InstanceReferenceInfo Model::InstanceReferenceAt(int index) const {
 }
 
 int Model::AddHatchPattern(const std::string& name, HatchFillType fill_type,
-                            const std::vector<HatchPatternLine>& lines,
-                            const std::string& description) {
+                            const std::vector<HatchPatternLine>& lines, const std::string& description) {
   if (name.empty()) {
     return -1;
   }
@@ -825,6 +824,16 @@ int Model::AddHatchPattern(const std::string& name, HatchFillType fill_type,
 
 int Model::HatchPatternCount() const {
   return static_cast<int>(model_.ActiveComponentCount(ON_ModelComponent::Type::HatchPattern));
+}
+
+std::string Model::HatchPatternDescriptionAt(int pattern_index) const {
+  if (pattern_index < 0) {
+    return std::string();
+  }
+  const ON_ModelComponentReference pattern_ref =
+      model_.ComponentFromIndex(ON_ModelComponent::Type::HatchPattern, pattern_index);
+  const ON_HatchPattern* pattern = ON_HatchPattern::Cast(pattern_ref.ModelComponent());
+  return pattern != nullptr ? ToStdString(pattern->Description()) : std::string();
 }
 
 int Model::HatchPatternLineCount(int pattern_index) const {
@@ -863,32 +872,23 @@ HatchPatternLine Model::HatchPatternLineAt(int pattern_index, int line_index) co
   return result;
 }
 
-HatchPatternInfo Model::HatchPatternAt(int pattern_index) const {
-  HatchPatternInfo result;
-  if (pattern_index < 0) {
-    return result;
-  }
-  const ON_ModelComponentReference pattern_ref =
-      model_.ComponentFromIndex(ON_ModelComponent::Type::HatchPattern, pattern_index);
-  const ON_HatchPattern* pattern = ON_HatchPattern::Cast(pattern_ref.ModelComponent());
-  if (pattern == nullptr) {
-    return result;
-  }
-  result.name = ToStdString(pattern->Name());
-  result.fill_type = pattern->FillType() == ON_HatchPattern::HatchFillType::Lines
-                          ? HatchFillType::Lines
-                          : HatchFillType::Solid;
-  result.description = ToStdString(pattern->Description());
-  return result;
-}
-
 int Model::AddHatch(const ON_Plane& plane, const std::vector<Point2d>& boundary, int pattern_index,
                      double pattern_rotation, double pattern_scale, const std::string& name,
                      int layer_index, std::optional<Color> render_color, const UserStrings& user_strings,
                      std::optional<int> linetype_index, const std::vector<int>& group_indices,
-                     std::optional<int> material_index) {
+                     std::optional<int> material_index,
+                     const std::vector<std::vector<Point2d>>& hole_boundaries) {
   if (name.empty() || boundary.size() < 3 || pattern_index < 0) {
     return -1;
+  }
+  // Every hole is validated up front, before any ON_Curve (let alone the
+  // ON_Hatch itself) is built, so a bad hole leaves this call a no-op
+  // exactly like a bad `boundary` already does - never a hatch with only
+  // some of its requested holes.
+  for (const std::vector<Point2d>& hole : hole_boundaries) {
+    if (hole.size() < 3) {
+      return -1;
+    }
   }
   const ON_ModelComponentReference pattern_ref =
       model_.ComponentFromIndex(ON_ModelComponent::Type::HatchPattern, pattern_index);
@@ -896,18 +896,35 @@ int Model::AddHatch(const ON_Plane& plane, const std::vector<Point2d>& boundary,
     return -1;
   }
   // ON_HatchLoop's own doc comment: "the 2d loop curve in the hatch's plane
-  // coordinates ... really a 3d curve with z coordinates = 0" - so `boundary`
+  // coordinates ... really a 3d curve with z coordinates = 0" - so each
+  // loop (the outer `boundary`, then every entry of `hole_boundaries`)
   // becomes a closed 3D polyline with each (u, v) point's z forced to 0,
-  // not a curve in world coordinates.
-  ON_3dPointArray loop_points;
-  for (const Point2d& uv : boundary) {
-    loop_points.Append(ON_3dPoint(uv.x, uv.y, 0.0));
-  }
-  loop_points.Append(loop_points[0]);  // ON_PolylineCurve requires an explicitly closed point list
-  ON_PolylineCurve loop_curve(loop_points);
+  // not a curve in world coordinates. Every loop curve is built into one
+  // `loop_curves` array up front (reserved to its final size so no
+  // reallocation ever invalidates a pointer already appended to `loops`
+  // below) and kept alive until `hatch->Create()` returns, since that call
+  // only reads from the `ON_Curve*` pointers it's given - it doesn't take
+  // ownership of them.
+  std::vector<ON_PolylineCurve> loop_curves;
+  loop_curves.reserve(1 + hole_boundaries.size());
   ON_SimpleArray<const ON_Curve*> loops;
-  loops.Append(static_cast<const ON_Curve*>(&loop_curve));
+  auto append_loop = [&loop_curves, &loops](const std::vector<Point2d>& uv_points) {
+    ON_3dPointArray loop_points;
+    for (const Point2d& uv : uv_points) {
+      loop_points.Append(ON_3dPoint(uv.x, uv.y, 0.0));
+    }
+    loop_points.Append(loop_points[0]);  // ON_PolylineCurve requires an explicitly closed point list
+    loop_curves.emplace_back(loop_points);
+    loops.Append(static_cast<const ON_Curve*>(&loop_curves.back()));
+  };
+  append_loop(boundary);
+  for (const std::vector<Point2d>& hole : hole_boundaries) {
+    append_loop(hole);
+  }
   auto* hatch = new ON_Hatch();
+  // ON_Hatch::Create() types loops.Append()'s own first entry
+  // ON_HatchLoop::ltOuter and every one after it ltInner automatically
+  // (opennurbs_hatch.cpp) - `hole_boundaries` needs no explicit type here.
   if (!hatch->Create(plane, loops, pattern_index, pattern_rotation, pattern_scale)) {
     delete hatch;
     return -1;
@@ -952,21 +969,35 @@ HatchInfo Model::HatchAt(int hatch_index) const {
         result.name = ToStdString(attributes->Name());
       }
       result.plane = hatch->Plane();
-      if (hatch->LoopCount() > 0) {
-        const ON_HatchLoop* loop = hatch->Loop(0);
+      // Loop 0 is always the outer boundary (AddHatch() appends it first,
+      // and ON_Hatch::Create() types loops.Append()'s own first entry
+      // ltOuter); every loop after it is one hole, in the same order
+      // AddHatch()'s own `hole_boundaries` was given - the read-side
+      // counterpart to that parameter.
+      for (int loop_index = 0; loop_index < hatch->LoopCount(); ++loop_index) {
+        const ON_HatchLoop* loop = hatch->Loop(loop_index);
         const ON_Curve* loop_curve = loop != nullptr ? loop->Curve() : nullptr;
-        if (loop_curve != nullptr) {
-          // The loop curve is a closed polyline whose last point duplicates
-          // its first (see AddHatch() above, which appends that duplicate
-          // to close ON_PolylineCurve's own point list) - dropped here so
-          // `boundary` round-trips exactly what AddHatch() was given.
-          ON_3dPointArray points;
-          if (loop_curve->IsPolyline(&points) >= 2) {
-            const int usable = points.Count() - 1;
-            for (int i = 0; i < usable; ++i) {
-              result.boundary.push_back(Point2d(points[i].x, points[i].y));
-            }
-          }
+        if (loop_curve == nullptr) {
+          continue;
+        }
+        // The loop curve is a closed polyline whose last point duplicates
+        // its first (see AddHatch() above, which appends that duplicate to
+        // close ON_PolylineCurve's own point list) - dropped here so
+        // `boundary`/each `hole_boundaries` entry round-trips exactly what
+        // AddHatch() was given.
+        ON_3dPointArray points;
+        if (loop_curve->IsPolyline(&points) < 2) {
+          continue;
+        }
+        std::vector<Point2d> loop_uv;
+        const int usable = points.Count() - 1;
+        for (int i = 0; i < usable; ++i) {
+          loop_uv.emplace_back(points[i].x, points[i].y);
+        }
+        if (loop_index == 0) {
+          result.boundary = std::move(loop_uv);
+        } else {
+          result.hole_boundaries.push_back(std::move(loop_uv));
         }
       }
       result.pattern_index = hatch->PatternIndex();
@@ -1163,28 +1194,28 @@ LeaderInfo Model::LeaderAt(int leader_index) const {
   return result;
 }
 
-int Model::AddDimension(Point3d extension_point0, Point3d extension_point1,
-                         Point3d dimension_line_point, Vector3d plane_normal,
-                         const std::string& name, int layer_index, std::optional<Color> render_color,
-                         const UserStrings& user_strings, std::optional<int> linetype_index,
-                         const std::vector<int>& group_indices, std::optional<int> material_index) {
+int Model::AddDimensionLinear(const Point3d& extension_point0, const Point3d& extension_point1,
+                               const Point3d& dimension_line_point, const Vector3d& plane_normal,
+                               const std::string& name, int layer_index, std::optional<Color> render_color,
+                               const UserStrings& user_strings, std::optional<int> linetype_index,
+                               const std::vector<int>& group_indices, std::optional<int> material_index) {
   if (name.empty()) {
     return -1;
   }
-  ON_DimLinear* dimension = ON_DimLinear::CreateAligned(
-      extension_point0, extension_point1, dimension_line_point, plane_normal,
-      ON_DimStyle::Default.Id(), nullptr);
-  if (dimension == nullptr) {
+  auto* annotation = new ON_DimLinear();
+  if (ON_DimLinear::CreateAligned(extension_point0, extension_point1, dimension_line_point, plane_normal,
+                                   ON_DimStyle::Default.Id(), annotation) == nullptr) {
+    delete annotation;
     return -1;
   }
-  const int index = DimensionCount();
+  const int index = DimensionLinearCount();
   ON_3dmObjectAttributes attributes = MakeAttributes(
       name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
-  model_.AddModelGeometryComponent(dimension, &attributes);
+  model_.AddModelGeometryComponent(annotation, &attributes);
   return index;
 }
 
-int Model::DimensionCount() const {
+int Model::DimensionLinearCount() const {
   int count = 0;
   ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
   for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
@@ -1197,8 +1228,8 @@ int Model::DimensionCount() const {
   return count;
 }
 
-DimensionInfo Model::DimensionAt(int dimension_index) const {
-  DimensionInfo result;
+DimensionLinearInfo Model::DimensionLinearAt(int dimension_index) const {
+  DimensionLinearInfo result;
   if (dimension_index < 0) {
     return result;
   }
@@ -1207,8 +1238,8 @@ DimensionInfo Model::DimensionAt(int dimension_index) const {
   for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
        component = iterator.NextComponent()) {
     const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
-    const ON_DimLinear* dimension = ON_DimLinear::Cast(geometry_component->Geometry(nullptr));
-    if (dimension == nullptr) {
+    const ON_DimLinear* annotation = ON_DimLinear::Cast(geometry_component->Geometry(nullptr));
+    if (annotation == nullptr) {
       continue;
     }
     if (position == dimension_index) {
@@ -1216,14 +1247,14 @@ DimensionInfo Model::DimensionAt(int dimension_index) const {
       if (attributes != nullptr) {
         result.name = ToStdString(attributes->Name());
       }
-      ON_3dPoint defpt1 = ON_3dPoint::UnsetPoint;
-      ON_3dPoint defpt2 = ON_3dPoint::UnsetPoint;
-      ON_3dPoint dimline_pt = ON_3dPoint::UnsetPoint;
-      dimension->Get3dPoints(&defpt1, &defpt2, nullptr, nullptr, &dimline_pt, nullptr);
-      result.extension_point0 = defpt1;
-      result.extension_point1 = defpt2;
-      result.dimension_line_point = dimline_pt;
-      result.measurement = dimension->Measurement();
+      const ON_Plane& plane = annotation->Plane();
+      const ON_2dPoint p1 = annotation->DefPoint1();
+      const ON_2dPoint p2 = annotation->DefPoint2();
+      const ON_2dPoint dl = annotation->DimlinePoint();
+      result.extension_point0 = plane.PointAt(p1.x, p1.y);
+      result.extension_point1 = plane.PointAt(p2.x, p2.y);
+      result.dimension_line_point = plane.PointAt(dl.x, dl.y);
+      result.measurement = annotation->Measurement();
       return result;
     }
     ++position;

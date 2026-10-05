@@ -10,6 +10,34 @@
 
 namespace dino8::app {
 
+namespace {
+// EnsureFresh() below folds every object's own BoundingBox() into the
+// scene-wide extent (via std::min/std::max) and then, independently, into
+// this object's own cell range (via CellOf(), which casts a floor()'d
+// double straight to int). A bounding box isn't guaranteed finite - a
+// script can call rs.AddPoint()/dino8.AddPoint() with a NaN or Infinity
+// coordinate with no validation in between (PyObjectTable::AddPoint/
+// rs_AddPoint take the three doubles straight through to
+// SceneObject::MakePoint(), and SceneObject::BoundingBox() then hands that
+// point straight back out as both the min and max corner) - and once any
+// one object's box is NaN, std::min(NaN, x) / std::max(NaN, x) propagate
+// that NaN into the scene bbox from then on (NaN compares false against
+// everything, so the implementation keeps returning its NaN first
+// argument), which becomes `origin_` below. CellOf() then computes
+// (finite - NaN) = NaN for every object's cell key, not just the NaN
+// object's own - and converting a non-finite double to int has undefined
+// behaviour in C++, unlike the already-guarded cell_size_ a few lines
+// below. Filtering out a non-finite box here, before it ever reaches
+// std::min/std::max or CellOf(), keeps the grid - and every other object
+// sharing it - sane; the degenerate object itself just isn't spatially
+// indexed (it was never going to be meaningfully pickable by location
+// anyway).
+bool IsFiniteBox(const kernel::BoundingBox& box) {
+  return std::isfinite(box.min.x) && std::isfinite(box.min.y) && std::isfinite(box.min.z) &&
+         std::isfinite(box.max.x) && std::isfinite(box.max.y) && std::isfinite(box.max.z);
+}
+}  // namespace
+
 ObjectGrid::CellKey ObjectGrid::CellOf(kernel::Point3d p) const {
   const double inv = 1.0 / cell_size_;
   return CellKey{static_cast<int>(std::floor((p.x - origin_.x) * inv)),
@@ -44,9 +72,16 @@ void ObjectGrid::EnsureFresh(const Document& doc) {
   const std::vector<SceneObject>& objects = doc.Objects();
   if (objects.empty()) return;
 
-  kernel::BoundingBox scene{objects.front().BoundingBox()};
+  kernel::BoundingBox scene{};
+  bool have_scene = false;
   for (const SceneObject& o : objects) {
     const kernel::BoundingBox b = o.BoundingBox();
+    if (!IsFiniteBox(b)) continue;  // see IsFiniteBox()'s own comment above
+    if (!have_scene) {
+      scene = b;
+      have_scene = true;
+      continue;
+    }
     scene.min.x = std::min(scene.min.x, b.min.x);
     scene.min.y = std::min(scene.min.y, b.min.y);
     scene.min.z = std::min(scene.min.z, b.min.z);
@@ -54,6 +89,7 @@ void ObjectGrid::EnsureFresh(const Document& doc) {
     scene.max.y = std::max(scene.max.y, b.max.y);
     scene.max.z = std::max(scene.max.z, b.max.z);
   }
+  if (!have_scene) return;  // every object's own box was non-finite: nothing to index
   origin_ = scene.min;
   extent_ = scene;
   const double dx = std::max(0.0, scene.max.x - scene.min.x);
@@ -71,6 +107,7 @@ void ObjectGrid::EnsureFresh(const Document& doc) {
 
   for (std::size_t index = 0; index < objects.size(); ++index) {
     const kernel::BoundingBox b = objects[index].BoundingBox();
+    if (!IsFiniteBox(b)) continue;  // see IsFiniteBox()'s own comment above
     const CellKey lo = CellOf(b.min);
     const CellKey hi = CellOf(b.max);
     for (int x = lo.x; x <= hi.x; ++x)

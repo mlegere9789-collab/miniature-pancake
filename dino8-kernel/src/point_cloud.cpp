@@ -10,6 +10,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include "dino8/kernel/surface_intersect.h"
+
 namespace dino8::kernel {
 
 void PointCloud::SetColors(const std::vector<ON_Color>& colors) {
@@ -89,6 +91,46 @@ std::vector<PointCloudNeighbor> PointCloud::PointsNearPlane(const ON_Plane& plan
   }
   std::sort(found.begin(), found.end(), ByDistanceThenIndex);
   return found;
+}
+
+PointCloud::Contour PointCloud::ContourAtPlane(const ON_Plane& plane, double band) const {
+  if (band < 0.0) throw std::invalid_argument("PointCloud::ContourAtPlane: band must be >= 0");
+  if (!plane.IsValid()) throw std::invalid_argument("PointCloud::ContourAtPlane: plane must be valid");
+  const int n = cloud_.PointCount();
+
+  struct Entry { int index; Point3d point3d; double s, t; };
+  std::vector<Entry> found;
+  for (int i = 0; i < n; ++i) {
+    const ON_3dPoint p = cloud_.m_P[i];
+    double s = 0, t = 0;
+    if (std::fabs(plane.DistanceTo(p)) > band) continue;
+    plane.ClosestPointTo(p, &s, &t);
+    found.push_back(Entry{i, Point3d(plane.PointAt(s, t)), s, t});
+  }
+
+  PointCloud::Contour out;
+  if (found.empty()) return out;
+
+  double s0 = 0, t0 = 0;
+  for (const Entry& e : found) { s0 += e.s; t0 += e.t; }
+  s0 /= static_cast<double>(found.size());
+  t0 /= static_cast<double>(found.size());
+
+  std::sort(found.begin(), found.end(), [s0, t0](const Entry& a, const Entry& b) {
+    return std::atan2(a.t - t0, a.s - s0) < std::atan2(b.t - t0, b.s - s0);
+  });
+
+  out.indices.reserve(found.size());
+  out.points.reserve(found.size());
+  for (const Entry& e : found) {
+    out.indices.push_back(e.index);
+    out.points.push_back(e.point3d);
+  }
+
+  if (out.points.size() >= 3) {
+    out.curve = InterpolateCubic(out.points, ChordParams(out.points, /*closed=*/true), /*closed=*/true, /*dim=*/3);
+  }
+  return out;
 }
 
 Result PointCloud::SaveXyz(const std::string& path) const {
