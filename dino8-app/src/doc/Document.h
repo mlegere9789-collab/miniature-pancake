@@ -76,87 +76,96 @@ struct Layer {
   // no spare channel to encode "unset" in in the first place.
   bool has_plot_color = false;
   Color plot_color = Color::FromBytes(0, 0, 0);
+  // Named PlotStyle row (see PlotStyle below) this layer prints with, or
+  // empty to use print_width_mm/has_plot_color/plot_color directly above
+  // unchanged - set via LayerPlotStyle (cmd_layer.cpp). A name that no
+  // longer exists in Document::PlotStyles() (the style was deleted, or this
+  // is a file from before the table existed) is treated exactly like an
+  // empty one: ResolvePlotStyle finds nothing, so the flat fields apply.
+  std::string plot_style;
 };
 
-// A named, reusable plot style table entry - one layer's row in a real
-// CTB/STB-style plot style table (PlotStyleTable below): the color/
-// lineweight pair a layer named `layer` should print with whenever that
-// table is the document's active one, the same two columns a real plot
-// style table assigns per layer. Mirrors Layer::has_plot_color/plot_color
-// and print_width_mm's own three-way convention (width_mm: 0 = document
-// default, > 0 = explicit mm, < 0 = does not print) exactly, so a table's
-// entry and a layer's own direct fields behave identically once either one
-// takes effect - the only difference is a table's entries can be swapped
-// out as a whole and reused across layers/documents, closing the half of
-// PARITY_MAP.md's "Print and plot output" named "plot styles (CTB/STB)"
-// that print_width_mm/plot_color alone - real but only ever one flat pair
-// of fields per layer - never did: defining "Monochrome" once and
-// assigning it to several layers (or swapping a document between tables).
-struct PlotStyleEntry {
-  std::string layer;
+// Whether a layer's objects should appear in a vector Print/Export at all -
+// io/FileExchange.cpp's CollectPaths skips every object on a layer this
+// returns false for (Layer::print_width_mm's negative case). Unrelated to
+// Layer::visible/locked (on-screen display), same as real Rhino's own
+// PlotWeight < 0 convention this mirrors.
+inline bool LayerPrints(const Layer& layer) { return layer.print_width_mm >= 0; }
+
+// The print width a layer's paths should actually be stroked at
+// (io/FileExchange.cpp's ExportSvg/ExportPdf), once LayerPrints() has
+// already ruled out the non-printing case: an explicit positive
+// print_width_mm, else `doc_default` (DrawingOptions::line_width_mm) for
+// the default (0) case. Pure and header-only so it is unit-testable
+// (tests/test_print_width.cpp) without pulling in FileExchange.cpp's much
+// heavier Viewport/GL dependencies.
+inline double EffectivePrintWidthMm(const Layer& layer, double doc_default) {
+  return layer.print_width_mm > 0 ? layer.print_width_mm : doc_default;
+}
+
+// The pen color a layer's paths should actually be stroked at (io/
+// FileExchange.cpp's ExportSvg/ExportPdf): the layer's own plot_color
+// override when set (LayerPlotColor, cmd_layer.cpp), else `display_color`
+// (the object's own on-screen EffectiveColor) unchanged. Pure and
+// header-only for the same unit-testability reason EffectivePrintWidthMm
+// above is.
+inline Color EffectivePlotColor(const Layer& layer, const Color& display_color) {
+  return layer.has_plot_color ? layer.plot_color : display_color;
+}
+
+// A named, reusable plot style (PARITY_MAP.md's "Print and plot output" item:
+// the CTB/STB-table half of "plot styles" - a color + lineweight pair
+// defined once and assigned to several layers/documents by name, rather than
+// Layer::print_width_mm/has_plot_color/plot_color's flat per-layer-only
+// fields above). width_mm uses the exact same three-way convention those
+// flat fields do (0 = document default, >0 = an explicit mm width, <0 = does
+// not print), and has_color/color mirror has_plot_color/plot_color exactly -
+// a PlotStyle row is simply those same two columns, factored out into a
+// table a layer can point at by name (Layer::plot_style) instead of storing
+// its own copy. Still honestly narrow, same as the flat fields it factors
+// out: two columns only (no line-type/transparency/screening a real CTB/STB
+// table has), and real printer-device/spooler output remains entirely
+// unattempted - this stays a vector page property, assignable by name.
+struct PlotStyle {
+  std::string name = "Default";
   bool has_color = false;
   Color color = Color::FromBytes(0, 0, 0);
   double width_mm = 0;
 };
 
-// A named table of PlotStyleEntry rows - doc/PlotStyleTables.h/.cpp
-// persists a document's whole set of these (plus which one is active) as
-// JSON in UserText(), the same "small side table round-tripped through
-// document user text" shape BlockInstances.h already established for
-// dynamic-block instance records, rather than a new binary .3dm field.
-struct PlotStyleTable {
-  std::string name;
-  std::vector<PlotStyleEntry> entries;
-};
-
-// The entry in `table` naming `layer_name`, or null if `table` is null or
-// has no row for that layer - first match wins, same "parallel list, first
-// match" convention BlockDefinition::lookup_keys/lookup_states already
-// uses. Pure and header-only like the three functions below, which all
-// take the resolved entry (not a whole table + document) so they can stay
-// free of doc/PlotStyleTables.h's JSON-loading dependency.
-inline const PlotStyleEntry* FindPlotStyleEntry(const PlotStyleTable* table, const std::string& layer_name) {
-  if (!table) return nullptr;
-  for (const PlotStyleEntry& e : table->entries) if (e.layer == layer_name) return &e;
+// Resolves `layer`'s own named PlotStyle row in `styles` (Layer::plot_style),
+// or nullptr when it names none or an unknown one - so a caller falls back
+// to the layer's own flat print_width_mm/has_plot_color/plot_color fields
+// unchanged, the same "not configured" shape every other per-layer plot
+// field already has. Header-only and pure, same reason EffectivePrintWidthMm/
+// EffectivePlotColor above are (tests/test_plot_style.cpp).
+inline const PlotStyle* ResolvePlotStyle(const Layer& layer, const std::vector<PlotStyle>& styles) {
+  if (layer.plot_style.empty()) return nullptr;
+  for (const PlotStyle& s : styles) if (s.name == layer.plot_style) return &s;
   return nullptr;
 }
 
-// Whether a layer's objects should appear in a vector Print/Export at all -
-// io/FileExchange.cpp's CollectPaths skips every object on a layer this
-// returns false for (Layer::print_width_mm's negative case, or `style`'s
-// when a plot style table entry overrides it). Unrelated to
-// Layer::visible/locked (on-screen display), same as real Rhino's own
-// PlotWeight < 0 convention this mirrors.
-inline bool LayerPrints(const Layer& layer, const PlotStyleEntry* style = nullptr) {
-  if (style && style->width_mm < 0) return false;
-  return layer.print_width_mm >= 0;
+// LayerPrints/EffectivePrintWidthMm/EffectivePlotColor overloads that check
+// a layer's named PlotStyle row first (when it has one) before falling back
+// to the same flat-field behavior the two-argument overloads above already
+// have - io/FileExchange.cpp's ExportSvg/ExportPdf/CollectPaths call these,
+// not the flat-only ones, so a layer pointed at a named style prints with
+// that style's own width/color instead of its own flat fields, and several
+// layers sharing one style name all change together when the style's row is
+// edited (LayerPlotStyle/PlotStyleTable, cmd_layer.cpp).
+inline bool LayerPrints(const Layer& layer, const std::vector<PlotStyle>& styles) {
+  if (const PlotStyle* s = ResolvePlotStyle(layer, styles)) return s->width_mm >= 0;
+  return LayerPrints(layer);
 }
 
-// The print width a layer's paths should actually be stroked at
-// (io/FileExchange.cpp's ExportSvg/ExportPdf), once LayerPrints() has
-// already ruled out the non-printing case: the active plot style table's
-// own entry for this layer when one is set and gives an explicit positive
-// width (the table is the authority once a layer is assigned to one, same
-// as real CTB/STB), else an explicit positive print_width_mm, else
-// `doc_default` (DrawingOptions::line_width_mm) for the default (0) case.
-// Pure and header-only so it is unit-testable (tests/test_print_width.cpp,
-// tests/test_plot_style_table.cpp) without pulling in FileExchange.cpp's
-// much heavier Viewport/GL dependencies.
-inline double EffectivePrintWidthMm(const Layer& layer, double doc_default, const PlotStyleEntry* style = nullptr) {
-  if (style && style->width_mm > 0) return style->width_mm;
-  return layer.print_width_mm > 0 ? layer.print_width_mm : doc_default;
+inline double EffectivePrintWidthMm(const Layer& layer, const std::vector<PlotStyle>& styles, double doc_default) {
+  if (const PlotStyle* s = ResolvePlotStyle(layer, styles)) return s->width_mm > 0 ? s->width_mm : doc_default;
+  return EffectivePrintWidthMm(layer, doc_default);
 }
 
-// The pen color a layer's paths should actually be stroked at (io/
-// FileExchange.cpp's ExportSvg/ExportPdf): the active plot style table's
-// own color for this layer when one is set (style->has_color), else the
-// layer's own plot_color override when set (LayerPlotColor, cmd_layer.cpp),
-// else `display_color` (the object's own on-screen EffectiveColor)
-// unchanged. Pure and header-only for the same unit-testability reason
-// EffectivePrintWidthMm above is.
-inline Color EffectivePlotColor(const Layer& layer, const Color& display_color, const PlotStyleEntry* style = nullptr) {
-  if (style && style->has_color) return style->color;
-  return layer.has_plot_color ? layer.plot_color : display_color;
+inline Color EffectivePlotColor(const Layer& layer, const std::vector<PlotStyle>& styles, const Color& display_color) {
+  if (const PlotStyle* s = ResolvePlotStyle(layer, styles)) return s->has_color ? s->color : display_color;
+  return EffectivePlotColor(layer, display_color);
 }
 
 // A block definition: a named set of objects with a base point. Instances
@@ -198,28 +207,17 @@ struct BlockDefinition {
   // "no-op until configured" contract array_spacing == 0 gives Array.
   std::vector<std::string> lookup_keys;
   std::vector<std::string> lookup_states;
-  // Stretch parameter (BlockSetStretchFrame, doc/BlockInstances.h): the
-  // fifth and last dynamic-block parameter/action type, after Visibility
-  // states, Flip, Array and Lookup. Defines a boundary plane through `base`
-  // (normal `stretch_axis`, `stretch_anchor` model units along that axis
-  // from `base`) - a placed instance's own `stretch_offset`
-  // (BlockInstance::stretch_offset) then moves only the part of its
-  // geometry on the far side of that plane by `stretch_offset` model units
-  // along the same axis, leaving the near side exactly where it was. This
-  // is the real, defining behavior a Stretch grip has that Flip/Array/
-  // Lookup don't: those three apply one rigid transform to an instance's
-  // whole geometry, while Stretch is a genuine per-point deformation that
-  // only moves part of it (e.g. a parametric door's far jamb sliding away
-  // from the near one to widen the opening, the near jamb never moving) -
-  // see PlaceFiltered's own comment (BlockInstances.cpp) for exactly how
-  // each supported SceneObject kind is split. A definition that never
-  // calls BlockSetStretchFrame keeps has_stretch_frame false, which
-  // PlaceFiltered treats as "no stretch parameter defined" and leaves
-  // every instance's geometry untouched regardless of stretch_offset, the
-  // same "no-op until configured" contract array_spacing == 0 gives Array.
-  bool has_stretch_frame = false;
+  // Stretch parameter (BlockSetStretchAxis, doc/BlockInstances.h): the axis
+  // along which a placed instance's BlockSetStretchGroup-tagged objects move
+  // when BlockSetStretch sets a nonzero amount - the fifth and last
+  // dynamic-block parameter/action type alongside Visibility states, Flip,
+  // Array and Lookup. Which objects actually move is configured per-object
+  // (kBlockStretchKey, set via BlockSetStretchGroup while the block is open
+  // for editing, not here) - a definition with no object ever tagged has no
+  // Stretch parameter at all regardless of this axis or any instance's
+  // amount, the same "no-op until configured" contract array_spacing == 0
+  // gives Array.
   kernel::Vector3d stretch_axis{1, 0, 0};
-  double stretch_anchor = 0;
 };
 
 struct Group {
@@ -847,6 +845,17 @@ class Document {
   const std::vector<AnnotationStyle>& AnnotationStyles() const { return annotation_styles_; }
   AnnotationStyle* FindAnnotationStyle(const std::string& name);
   const AnnotationStyle& CurrentAnnotationStyle() const;
+  // ---- Plot styles (named, reusable CTB/STB-style color+lineweight rows,
+  // PlotStyle above) ------------------------------------------------------
+  std::vector<PlotStyle>& PlotStyles() { return plot_styles_; }
+  const std::vector<PlotStyle>& PlotStyles() const { return plot_styles_; }
+  PlotStyle* FindPlotStyle(const std::string& name);
+  // Removes a plot style by name. Refuses (returns false) one still named
+  // by any layer's own Layer::plot_style, the same "can't delete what's in
+  // use" rule RemoveAnnotationStyle has for the document's current
+  // annotation style - a layer's own plot_style field is a plain name with
+  // no separate "in use" bookkeeping, so every layer must be checked.
+  bool RemovePlotStyle(const std::string& name);
   // ---- Layer States (Layer State Manager panel) -------------------------
   std::vector<LayerState>& LayerStates() { return layer_states_; }
   const std::vector<LayerState>& LayerStates() const { return layer_states_; }
@@ -1298,6 +1307,7 @@ class Document {
   std::vector<BlockDefinition> blocks_;
   std::vector<Linetype> linetypes_;
   std::vector<AnnotationStyle> annotation_styles_;
+  std::vector<PlotStyle> plot_styles_;
   std::vector<LayerState> layer_states_;
   std::vector<ReferenceModel> reference_models_;
   std::map<ObjectId, HoleFeature> hole_features_;

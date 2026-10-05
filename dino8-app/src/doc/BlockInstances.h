@@ -38,6 +38,17 @@ constexpr const char* kBlockVisStatesKey = "Dino8.VisStates";
 
 bool ObjectVisibleInState(const SceneObject& def_object, const std::string& state);
 
+// User-text key (on a BlockDefinition's own SceneObject copies) marking an
+// object as moving with the Stretch parameter; presence (any value) means
+// "moves", absence means "fixed" - the same boolean-tag shape
+// kBlockVisStatesKey uses for Visibility, but with no state name to match
+// since Stretch has only one axis/amount per instance, not a named list.
+constexpr const char* kBlockStretchKey = "Dino8.Stretch";
+
+// Whether `def_object` moves with the Stretch parameter (kBlockStretchKey
+// tagged, via BlockSetStretchGroup while the block is open for editing).
+bool ObjectMovesWithStretch(const SceneObject& def_object);
+
 struct BlockInstance {
   int group = -1;             // Document::Group id of this instance's objects
   std::string block;          // BlockDefinition::name
@@ -74,16 +85,13 @@ struct BlockInstance {
   // type. Empty, or no matching row, falls back to `state` unchanged, same
   // "no-op until configured/matched" contract Flip/Array already have.
   std::string lookup_key;
-  // Stretch parameter: this instance's own input value for its block
-  // definition's stretch frame (BlockDefinition::has_stretch_frame/
-  // stretch_axis/stretch_anchor, set on the definition via
-  // BlockSetStretchFrame). PlaceFiltered moves only the part of the
-  // definition's geometry beyond the frame's anchor plane by this many
-  // model units along the frame's axis - the fifth and last dynamic-block
-  // parameter type. Zero (or a definition with no stretch frame
-  // configured) is a no-op, same "no-op until configured" contract
-  // Array's count has on a definition with no spacing.
-  double stretch_offset = 0;
+  // Stretch parameter: a signed distance this instance's BlockSetStretchGroup
+  // -tagged objects move along their block definition's stretch_axis
+  // (doc/Document.h), the fifth and last dynamic-block parameter/action type
+  // alongside Visibility states, Flip, Array and Lookup. Zero (the default)
+  // moves nothing regardless of which objects are tagged, the same
+  // "no-op until configured/nonzero" contract Array's count has at 1 copy.
+  double stretch_amount = 0;
 };
 
 std::vector<BlockInstance> LoadBlockInstances(const Document& doc);
@@ -143,15 +151,10 @@ bool SetBlockInstanceArrayCount(Document& doc, int group, int count);
 // dynamic-block instance.
 bool SetBlockInstanceLookup(Document& doc, int group, const std::string& key);
 
-// Looks up the stored record for `group`, sets its Stretch parameter's
-// offset and rebuilds - moving only the part of its geometry beyond its
-// block definition's stretch frame (BlockSetStretchFrame) by `offset`
-// model units along the frame's axis, while the rest stays exactly where
-// it was. A no-op (geometry unchanged) if the definition has no stretch
-// frame configured yet, same "stored but has no visible effect" contract
-// Array/Lookup already have before their own parameter is configured.
+// Looks up the stored record for `group`, sets its Stretch parameter
+// (signed distance along its block definition's stretch_axis) and rebuilds.
 // Returns false if `group` isn't a known dynamic-block instance.
-bool SetBlockInstanceStretch(Document& doc, int group, double offset);
+bool SetBlockInstanceStretch(Document& doc, int group, double amount);
 
 // Resolves which visibility state `def`'s lookup table says `key` should
 // show, or `fallback` (typically the instance's own explicit `state`) if

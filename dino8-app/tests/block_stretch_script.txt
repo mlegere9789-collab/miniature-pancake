@@ -1,39 +1,43 @@
-# BlockSetStretchFrame/BlockSetStretch command-line wiring (PARITY_MAP.md
-# "Dynamic blocks" Stretch parameter - the fifth and last of the five named
-# parameter/action types, after Visibility states, Flip, Array and Lookup,
-# which BlockToggleFlip/BlockSetArrayCount/BlockSetLookup already closed).
-# The Document-level SetBlockInstanceStretch/PlaceFiltered's ApplyStretch
+# BlockSetStretchAxis/BlockSetStretchGroup/BlockSetStretch command-line
+# wiring (PARITY_MAP.md "Dynamic blocks" Stretch parameter - the fifth and
+# last of the five named parameter/action types, after Visibility states,
+# Flip, Array and Lookup, which all four already closed). The
+# Document-level SetBlockInstanceStretch/PlaceFiltered/ObjectMovesWithStretch
 # math itself is unit-tested directly in test_block_stretch.cpp; this
 # instead exercises the real scriptable commands end to end.
 #
-# A one-Line block "StretchBlk" (local straight line from 0,0,0 to 10,0,0)
-# placed at insert point 100,0,0, then configured with a stretch frame (X
-# axis, anchor at local x=5 - between the line's two endpoints) and
-# stretched by 3: List reports each control point's own position
-# (CV[0]/CV[1]), so the near endpoint (local x=0, before the anchor) must
-# stay at CV[0] 100,0,0 while the far endpoint (local x=10, beyond the
-# anchor) moves the full 3 units, CV[1] 110,0,0 -> 113,0,0 - not both CVs
-# shifting together (which a plain translation would produce instead).
-Line 0,0,0 10,0,0
+# A 2-object block "StrBlk": a Point at local 2,0,0 tagged via
+# BlockSetStretchGroup to move with Stretch, and a Point at local -3,0,0
+# left untagged (stays fixed) - same per-object tagging shape
+# block_lookup_script.txt's VisStates tags already establish, just applied
+# through the real command instead of a raw SetUserText.
+Point 2,0,0
 SelLast
+BlockSetStretchGroup
+Yes
+Point -3,0,0
+SelAll
 Block
 0,0,0
-StretchBlk
+StrBlk
 BlockAddState
-StretchBlk
+StrBlk
 Default
-BlockSetStretchFrame
-StretchBlk
-Axis=X
-5
+BlockSetStretchAxis
+StrBlk
+X
+
+# Place one instance at 100,0,0 (local 2,0,0 lands at 102,0,0; local
+# -3,0,0 lands at 97,0,0 - both unmoved, the instance defaults to zero
+# stretch), then stretch it 4 units along X: only the tagged point moves,
+# landing at 106,0,0, while the untagged point stays at 97,0,0.
 Insert
-StretchBlk
+StrBlk
 100,0,0
 Enter
 SelLast
-List
 BlockSetStretch
-3
+4
 SelBlockInstanceOf
-StretchBlk
+StrBlk
 List
