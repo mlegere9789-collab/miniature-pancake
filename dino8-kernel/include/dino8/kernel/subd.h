@@ -491,6 +491,37 @@ class SubD {
   // `distance` is 0 or if this SubD has no vertices.
   SubD Offset(double distance) const;
 
+  // The "Solid" half of PARITY_MAP.md's offsetshell "SubD offset /
+  // thicken" gap `Offset()`'s own doc comment above names as still
+  // missing: `dino8-app`'s own `OffsetNet` Solid option thickens the raw
+  // CONTROL NET by hand (a flipped copy plus side quads); this gives the
+  // same "thicken a sheet into a closed solid" result but starting from
+  // the actual LIMIT SURFACE, tessellated via `Tessellate()` - a real,
+  // not cosmetic, improvement in accuracy for anything but a very fine
+  // cage, the same "limit surface, not the polygonal cage" upgrade
+  // `Offset()` itself already makes over the app's technique. The
+  // tessellated mesh is then handed directly to `Mesh::Thicken()` - the
+  // existing, already-tested "open mesh -> closed solid via a stitched
+  // naked-edge side wall" construction - rather than inventing a second
+  // one; this method is a thin composition of two independent, already-
+  // verified pieces, not a new offset algorithm. The resulting mesh's own
+  // vertex normals (used internally by `Mesh::Thicken()`'s own
+  // `Offset()` call to build the outer wall) come from the tessellated
+  // mesh's geometry, not from `SubD::Offset()`'s own exact Catmull-Clark
+  // limit normal - a materially different, simpler offset than this
+  // class's own `Offset()` method, disclosed here rather than implied.
+  //
+  // `tessellation_tolerance`/`max_resolution` are passed straight through
+  // to `Tessellate()` (see that method's own doc comment for their
+  // meaning). Throws whatever `Tessellate()` itself throws for this
+  // SubD's own shape, and whatever `Mesh::Thicken()` throws for the
+  // tessellated result - in particular, `std::invalid_argument` if
+  // `distance` is zero or non-finite, and if this SubD has no boundary
+  // at all (already a closed cage - Thicken() only handles the open-
+  // sheet case, the same scope restriction its mesh-level counterpart
+  // already has).
+  Mesh Thicken(double distance, double tessellation_tolerance, int max_resolution = 16) const;
+
   // Mirrors this SubD's entire control cage across the plane
   // `{p : p . plane_normal == plane_offset}` (same convention as
   // `SplitByPlane()` in boolean.h) and combines the original half with
@@ -1230,6 +1261,16 @@ class SubD {
   // is never a worse bound - and reports `exact = false`. `tangent_u`/
   // `tangent_v` from that fallback are the flat interpolant's own (still
   // well-defined, just not limit-accurate) partial derivatives.
+  //
+  // Throws std::invalid_argument if `u` or `v` is outside [0, 1] (or
+  // NaN) or if `max_adaptive_levels` is negative - previously ungated,
+  // unlike `ToNurbsPatchesAdaptive()`'s own matching
+  // `max_adaptive_levels` check: an out-of-domain (u, v) silently
+  // extrapolated the quadrant-local Bezier math below into meaningless
+  // geometry instead of being refused, and a negative level count
+  // happened to be harmless (the recursion's own `depth_remaining <= 0`
+  // base case already catches it) but was never actually validated as
+  // such.
   //
   // Throws std::runtime_error if `face_id` doesn't identify a face of
   // the current subdivision level, or that face isn't a quad (same

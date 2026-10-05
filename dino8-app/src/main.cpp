@@ -325,6 +325,30 @@ bool ConstantTimeEquals(const std::string& a, const std::string& b) {
   return diff == 0;
 }
 
+// Minimal string escaping for the compute server's JSON responses (GET
+// /objects, and /run[/python]'s Accept: application/json form) - the same
+// local, dependency-free convention every other JSON writer in this
+// codebase already uses (see doc/BlockInstances.cpp, drafting/Table.cpp,
+// io/DigitalSignature.cpp), rather than a single shared writer none of
+// them centralize either.
+std::string ComputeJsonEscape(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 2);
+  for (unsigned char c : s) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (c < 0x20) { char buf[8]; std::snprintf(buf, sizeof(buf), "\\u%04x", c); out += buf; }
+        else out += static_cast<char>(c);
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
 #if defined(_MSC_VER)
@@ -588,11 +612,35 @@ int main(int argc, char** argv) {
     std::printf("serve: listening on port %d\n", compute_server.Port());
     std::fflush(stdout);
   }
-  const dino8::app::ComputeHandler compute_handler = [&app, &serve_token](const dino8::app::HttpRequest& req) {
+  // JSON-wraps a script run's result when the request asked for it (an
+  // `Accept: application/json` header, checked by the caller below) instead
+  // of the plain `print()`-output-as-body every caller got before this -
+  // PARITY_MAP.md's own disclosed "no geometry (de)serialization format at
+  // all - a script gets and returns plain text" gap, narrowed for the
+  // response side here and for GET /objects (below) on the request side.
+  // Still plain text by default: a caller that never asks for JSON sees no
+  // behavior change at all.
+  auto json_wrap_output = [](bool ok, const std::vector<std::string>& output, const std::string& error_line) {
+    std::string body = "{\"ok\":";
+    body += ok ? "true" : "false";
+    body += ",\"output\":[";
+    for (size_t i = 0; i < output.size(); ++i) {
+      if (i) body += ',';
+      body += '"';
+      body += ComputeJsonEscape(output[i]);
+      body += '"';
+    }
+    body += ']';
+    if (!error_line.empty()) { body += ",\"error\":\""; body += ComputeJsonEscape(error_line); body += '"'; }
+    body += "}\n";
+    return body;
+  };
+  const dino8::app::ComputeHandler compute_handler = [&app, &serve_token, json_wrap_output](const dino8::app::HttpRequest& req) {
     dino8::app::HttpResponse resp;
-    if (req.method != "POST") {
+    const bool is_run = req.path == "/run" || req.path == "/run/python";
+    if ((is_run && req.method != "POST") || (req.path == "/objects" && req.method != "GET")) {
       resp.status = 405;
-      resp.body = "Dino 8 compute service: only POST /run and POST /run/python are supported\n";
+      resp.body = "Dino 8 compute service: /run and /run/python take POST, /objects takes GET\n";
       return resp;
     }
     if (!serve_token.empty()) {
@@ -603,18 +651,55 @@ int main(int argc, char** argv) {
         return resp;
       }
     }
+    // GET /objects: a real, if minimal, structured geometry wire format -
+    // the id/type/name/layer/bounding-box of every object currently in the
+    // running document, as JSON - rather than only the plain print() text
+    // /run[/python] return. Not a geometry (de)serialization format for the
+    // curve/surface data itself (still none of that here, honestly) - this
+    // is metadata a client can act on (which ids exist, roughly where they
+    // are) without parsing a script's own printed text.
+    if (req.path == "/objects") {
+      const dino8::app::Document& doc = app.Doc();
+      std::string body = "[";
+      bool first = true;
+      for (const dino8::app::SceneObject& o : doc.Objects()) {
+        if (!first) body += ',';
+        first = false;
+        const std::string layer = (o.layer_index >= 0 && o.layer_index < static_cast<int>(doc.Layers().size()))
+                                       ? doc.LayerFullPath(o.layer_index)
+                                       : "";
+        body += "{\"id\":" + std::to_string(o.id) + ",\"type\":\"" + ComputeJsonEscape(dino8::app::ObjectKindName(o.kind)) +
+                "\",\"name\":\"" + ComputeJsonEscape(o.name) + "\",\"layer\":\"" + ComputeJsonEscape(layer) + "\",\"bbox\":";
+        dino8::kernel::BoundingBox bb;
+        if (doc.BoundingBoxOf({o.id}, bb)) {
+          body += "{\"min\":[" + std::to_string(bb.min.x) + "," + std::to_string(bb.min.y) + "," + std::to_string(bb.min.z) +
+                  "],\"max\":[" + std::to_string(bb.max.x) + "," + std::to_string(bb.max.y) + "," + std::to_string(bb.max.z) + "]}";
+        } else {
+          body += "null";
+        }
+        body += '}';
+      }
+      body += "]\n";
+      resp.content_type = "application/json";
+      resp.body = body;
+      return resp;
+    }
     if (req.path == "/run") {
       const bool ok = app.Lua().Start(req.body, "compute-request");
       const bool suspended = app.Lua().Suspended();
       if (suspended) app.Lua().Abort();
-      std::string out;
-      for (const std::string& line : app.Lua().LastOutput()) {
-        out += line;
-        out += '\n';
+      const std::string error_line = suspended ? "script requires interactive input (rs.Get*), which the compute server cannot satisfy" : "";
+      const auto accept = req.headers.find("accept");
+      if (accept != req.headers.end() && accept->second.find("application/json") != std::string::npos) {
+        resp.content_type = "application/json";
+        resp.body = json_wrap_output(ok && !suspended, app.Lua().LastOutput(), error_line);
+      } else {
+        std::string out;
+        for (const std::string& line : app.Lua().LastOutput()) { out += line; out += '\n'; }
+        if (suspended) out += "! compute error: " + error_line + "\n";
+        resp.body = out;
       }
-      if (suspended) out += "! compute error: script requires interactive input (rs.Get*), which the compute server cannot satisfy\n";
       resp.status = (ok && !suspended) ? 200 : 500;
-      resp.body = out;
       return resp;
     }
     if (req.path == "/run/python") {
@@ -626,18 +711,22 @@ int main(int argc, char** argv) {
       const bool ok = app.Python().Start(req.body, "compute-request");
       const bool suspended = app.Python().Suspended();
       if (suspended) app.Python().Abort();
-      std::string out;
-      for (const std::string& line : app.Python().LastOutput()) {
-        out += line;
-        out += '\n';
+      const std::string error_line = suspended ? "script requires interactive input (dino8.GetPoint/GetString/GetReal/GetInteger/GetObject/GetObjects), which the compute server cannot satisfy" : "";
+      const auto accept = req.headers.find("accept");
+      if (accept != req.headers.end() && accept->second.find("application/json") != std::string::npos) {
+        resp.content_type = "application/json";
+        resp.body = json_wrap_output(ok && !suspended, app.Python().LastOutput(), error_line);
+      } else {
+        std::string out;
+        for (const std::string& line : app.Python().LastOutput()) { out += line; out += '\n'; }
+        if (suspended) out += "! compute error: " + error_line + "\n";
+        resp.body = out;
       }
-      if (suspended) out += "! compute error: script requires interactive input (dino8.GetPoint/GetString/GetReal/GetInteger/GetObject/GetObjects), which the compute server cannot satisfy\n";
       resp.status = (ok && !suspended) ? 200 : 500;
-      resp.body = out;
       return resp;
     }
     resp.status = 404;
-    resp.body = "Dino 8 compute service: unknown path (supported: POST /run, POST /run/python)\n";
+    resp.body = "Dino 8 compute service: unknown path (supported: POST /run, POST /run/python, GET /objects)\n";
     return resp;
   };
 

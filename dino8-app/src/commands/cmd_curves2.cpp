@@ -668,10 +668,26 @@ class KnotEditCommand : public Command {
       case Op::InsertCP: ok = nc.InsertKnot(t, 1); what = "control point inserted"; break;
       case Op::InsertEditPoint: ok = nc.InsertKnot(t, 1); what = "edit point inserted"; break;
       case Op::RemoveKnot: {
-        // Remove the interior knot nearest to t.
+        // Remove the interior knot nearest to t, via the kernel's own
+        // Tiller's-algorithm RemoveKnotAt() (real Boehm-style removal
+        // with a rigorous deviation bound) rather than RemoveKnotApprox's
+        // blind Greville-abscissa resample. A permissive (infinite)
+        // tolerance keeps this command's own long-standing behavior of
+        // always committing the best-fit removal when a knot is found,
+        // same as RemoveKnotApprox always did - the kernel call still
+        // reports the real deviation this op now has but never did
+        // before.
         int best = -1; double bd = std::numeric_limits<double>::max();
         for (int i = nc.Degree(); i < nc.KnotCount() - nc.Degree(); ++i) { double d = std::fabs(nc.Knot(i) - t); if (d < bd) { bd = d; best = i; } }
-        if (best >= 0) ok = RemoveKnotApprox(nc, best); what = "knot removed";
+        if (best >= 0) {
+          kernel::NurbsCurve k = c->curve;
+          double deviation = 0.0;
+          if (k.RemoveKnotAt(best, std::numeric_limits<double>::infinity(), &deviation) == kernel::Result::Ok) {
+            nc = k.raw();
+            ok = true;
+            what = "knot removed (deviation " + FormatNumber(deviation) + ")";
+          }
+        }
         break;
       }
       case Op::RemoveCP: {

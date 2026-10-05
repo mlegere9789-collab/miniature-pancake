@@ -437,6 +437,35 @@ class NurbsCurve {
   // would require duplicating OpenNURBS' own knot-multiplicity search.
   Result InsertKnotAt(double knot_value, int multiplicity = 1);
 
+  // Rigorous, deviation-bounded knot removal - the curve-level
+  // counterpart to `NurbsSurface::RemoveKnotAt` (surface_edit.cpp),
+  // closing this kernel's own disclosed gap that curve knot removal
+  // only ever had an app-level *approximate* heuristic
+  // (`RemoveKnotApprox`, cmd_curves2.cpp), nothing in the kernel itself
+  // with a real, checked error bound. Removes one occurrence of the
+  // knot at `knot_index` (if its multiplicity is more than one, one
+  // copy of it, same as `InsertKnotAt()`'s own per-call granularity) via
+  // Piegl & Tiller's standard knot-removal construction (their
+  // Algorithm A5.8, the same one `NurbsSurface::RemoveKnotAt` already
+  // applies row-by-row to a surface - duplicated here, not shared
+  // across translation units, to keep this file self-contained the same
+  // way every other curve-editing routine in it already is): computes
+  // the new control polygon in homogeneous coordinates, measures the
+  // worst-case Euclidean deviation the removal would introduce (via the
+  // same rational/non-rational distance bound the surface version
+  // uses), and only commits the removal if that deviation is within
+  // `tolerance` - otherwise leaves the curve completely untouched and
+  // returns Result::Failed. `knot_index` must name a knot strictly
+  // inside the curve's own domain (throws std::out_of_range if out of
+  // `[0, KnotCount())`, std::invalid_argument if not strictly interior),
+  // and the curve must be clamped (an unclamped/periodic curve's ends
+  // have no single well-defined knot-removal case this handles).
+  // `out_max_deviation`, if non-null, always receives the measured
+  // deviation bound - even on a refused removal (as positive infinity
+  // before any measurement is possible, e.g. an unclamped curve), so a
+  // caller can see exactly how close a refused removal came.
+  Result RemoveKnotAt(int knot_index, double tolerance, double* out_max_deviation = nullptr);
+
   // Promotes the curve to rational (every control point gets an
   // explicit weight of 1.0) if it isn't already - delegates to
   // `ON_NurbsCurve::MakeRational()`. Genuinely shape-preserving: giving
@@ -706,6 +735,19 @@ class NurbsCurve {
   // `.min`/`.max`, not a method on the return value.
   Interval Domain() const;
 
+  // Reparameterizes the curve so `Domain()` becomes `[t0, t1]`, with every
+  // existing knot and evaluated point mapped by the same affine stretch
+  // (shape, control points and weights are untouched - only the parameter
+  // values change). The surface-level counterpart to `NurbsSurface::
+  // SetDomain(direction, t0, t1)`, minus the direction argument a curve
+  // doesn't have. Delegates to `ON_NurbsCurve::SetDomain`, the same real
+  // (non-stub) implementation `MakeCompatible()` (sweep.cpp) already
+  // relies on internally to normalize loft/sweep sections to `[0, 1]`
+  // before comparing their knot vectors. Returns Result::Failed if `t0 <
+  // t1` doesn't hold or OpenNURBS' own call fails, or
+  // Result::NoOpAlreadySatisfied if `[t0, t1]` already equals `Domain()`.
+  Result SetDomain(double t0, double t1);
+
   Point3d PointAt(double t) const;
 
   // Finds the parameter along the curve's own domain whose PointAt() is
@@ -803,6 +845,31 @@ class NurbsCurve {
   // via equal consecutive-point chord lengths, not assumed from the
   // formula). Throws std::invalid_argument if `count <= 0`.
   std::vector<double> DivideByCount(int count, int samples = 1000) const;
+
+  // The "by fixed length" half of this kernel's "Divide curve by N/fixed
+  // length" gap - `DivideByCount()` above only ever covers "by N" (a
+  // caller-chosen segment count, whatever length each segment happens to
+  // come out to); this divides into sub-segments of a caller-chosen
+  // `length` instead, whatever count that happens to produce. Returns
+  // the parameter values at each full-`length` boundary, always starting
+  // at `Domain().Min()` and always ending at `Domain().Max()` - built the
+  // same way `DivideByCount()` is, directly on `ParameterAtArcLength()`:
+  // for a curve of `Length(samples) == L`, walks `length`, `2 * length`,
+  // `3 * length`, ... and calls `ParameterAtArcLength()` at each value
+  // that still leaves a non-negligible remainder before `L`, stopping
+  // one boundary short of the end so the final `Domain().Max()` pushed
+  // below is never duplicated by a last boundary landing within a
+  // rounding-scale sliver of `L` (the same "ulp past the end" hazard
+  // `ParameterAtArcLength()`'s own doc comment already discloses, here
+  // guarded with a relative tolerance instead of relying on that
+  // method's own clamp). The curve's own total length need not be an
+  // exact multiple of `length` - the final sub-segment is simply
+  // whatever is left over, which may be shorter than `length` (or, for
+  // a `length` greater than or equal to the whole curve, there is no
+  // interior boundary at all and this returns exactly `{Domain().Min(),
+  // Domain().Max()}`, the single-segment case). Throws
+  // std::invalid_argument if `length` isn't positive.
+  std::vector<double> DivideByLength(double length, int samples = 1000) const;
 
   // Unit tangent direction at parameter `t` - the direction of travel
   // along the curve, not a raw (unnormalized) derivative. Delegates to
