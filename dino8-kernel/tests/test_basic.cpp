@@ -63269,6 +63269,194 @@ void TestCurveOffsetInPlaneRoundStyleClosedSquareMatchesClosedFormPerimeter() {
         "rounded square, not Sharp's own longer mitered-corner perimeter");
 }
 
+// `CurveOffsetCornerStyle::Chamfer`: on the same genuinely convex corners
+// `TestCurveOffsetInPlaneRoundStyleFilletsConvexCorners()` already
+// exercises, Chamfer must cut the sharp spike with the single STRAIGHT
+// segment directly between the two tangent points T0/T1 - the arc's own
+// chord, not the arc itself. Verified independently of the
+// implementation: the chord's own midpoint (computed here from scratch)
+// must lie ON the result, while neither Sharp's own (farther) corner
+// point nor Round's own (farther-still, since it bulges OUT to the full
+// fillet radius) bisector point do.
+void TestCurveOffsetInPlaneChamferStyleCutsConvexCorners() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point3d> cps = {
+      Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  ON_Plane plane;
+  Check(poly.raw().IsPlanar(&plane, 1e-9), "OffsetInPlane Chamfer setup: curve is planar");
+
+  NurbsCurve out_sharp, out_round, out_chamfer;
+  Check(poly.OffsetInPlane(1.0, out_sharp) == Result::Ok, "Sharp offset still succeeds on this fixture");
+  Check(poly.OffsetInPlane(1.0, out_round, -1.0, CurveOffsetCornerStyle::Round) == Result::Ok,
+        "Round offset still succeeds on this fixture");
+  Check(poly.OffsetInPlane(1.0, out_chamfer, -1.0, CurveOffsetCornerStyle::Chamfer) == Result::Ok,
+        "Chamfer offset succeeds on the same open polyline");
+
+  Check(!(out_chamfer.Degree() == 1 && out_chamfer.ControlPointCount() == 4),
+        "Chamfer offset is NOT the same plain 4-CV polyline Sharp produces - the corners were genuinely cut");
+
+  for (int i = 1; i <= 2; ++i) {
+    Vector3d edge_in_dir = cps[static_cast<size_t>(i)] - cps[static_cast<size_t>(i - 1)];
+    Vector3d edge_out_dir = cps[static_cast<size_t>(i + 1)] - cps[static_cast<size_t>(i)];
+    edge_in_dir.Unitize();
+    edge_out_dir.Unitize();
+    Vector3d n0 = ON_CrossProduct(edge_in_dir, plane.zaxis);
+    Vector3d n1 = ON_CrossProduct(edge_out_dir, plane.zaxis);
+    n0.Unitize();
+    n1.Unitize();
+
+    const Point3d vertex = cps[static_cast<size_t>(i)];
+    const Point3d T0 = vertex + 1.0 * n0;
+    const Point3d T1 = vertex + 1.0 * n1;
+    const Point3d chord_mid((T0.x + T1.x) * 0.5, (T0.y + T1.y) * 0.5, (T0.z + T1.z) * 0.5);
+
+    Check(out_chamfer.ClosestPoint(T0, 2000).DistanceTo(T0) < 1e-6,
+          "Chamfer offset: the result passes through the chord's own start tangent point T0");
+    Check(out_chamfer.ClosestPoint(T1, 2000).DistanceTo(T1) < 1e-6,
+          "Chamfer offset: the result passes through the chord's own end tangent point T1");
+    Check(out_chamfer.ClosestPoint(chord_mid, 2000).DistanceTo(chord_mid) < 1e-6,
+          "Chamfer offset: the result passes through the chord's own independently-computed midpoint - proof "
+          "this corner is a genuine straight cut, not an arc or a miter");
+
+    // The chord's own midpoint sits at distance 1/sqrt(2) =~ 0.707 from
+    // the vertex for this fixture's 90-degree corners - strictly inside
+    // Round's own full fillet radius (1.0) - so Round's independently-
+    // computed bisector point must NOT lie on the Chamfer result.
+    Vector3d bisector = n0 + n1;
+    const double bisector_len = bisector.Length();
+    Check(bisector_len > 1e-9, "Chamfer corner setup: the two offset directions are not opposite");
+    const Point3d round_bisector_point = vertex + (1.0 / bisector_len) * bisector;
+    Check((round_bisector_point - vertex).Length() > (chord_mid - vertex).Length() + 1e-6,
+          "Chamfer corner setup: Round's own bisector point really is farther from the vertex than Chamfer's "
+          "own chord midpoint");
+    Check(out_chamfer.ClosestPoint(round_bisector_point, 2000).DistanceTo(round_bisector_point) > 0.01,
+          "Chamfer offset: the result does NOT pass through Round's own (farther) bisector point");
+
+    const Point3d sharp_corner = out_sharp.ControlPointAt(i);
+    Check(out_chamfer.ClosestPoint(sharp_corner, 2000).DistanceTo(sharp_corner) > 0.1,
+          "Chamfer offset: the result does NOT pass through Sharp's own (farther) sharp corner point");
+  }
+}
+
+// On a polygon with one reflex (concave) vertex, `Chamfer` must leave that
+// one corner exactly as `Sharp`/`Round` already do - the same miter-line
+// crossing, since there is no gap there to cut - while still cutting its
+// genuinely convex neighbors. Reuses
+// `TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter`'s
+// own L-tromino fixture (vertex index 3 is its one reflex corner).
+void TestCurveOffsetInPlaneChamferStyleLeavesConcaveCornerAsExactMiter() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0),  Point3d(10, 0, 0), Point3d(10, 4, 0),
+                                       Point3d(4, 4, 0),  Point3d(4, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out_sharp, out_chamfer;
+  Check(poly.OffsetInPlane(1.0, out_sharp) == Result::Ok, "Sharp offset still succeeds on the reflex fixture");
+  Check(poly.OffsetInPlane(1.0, out_chamfer, -1.0, CurveOffsetCornerStyle::Chamfer) == Result::Ok,
+        "Chamfer offset succeeds on the same reflex fixture");
+
+  const Point3d reflex_sharp_corner = out_sharp.ControlPointAt(3);
+  Check(out_chamfer.ClosestPoint(reflex_sharp_corner, 2000).DistanceTo(reflex_sharp_corner) < 1e-6,
+        "Chamfer offset: the reflex (concave) corner is untouched - the result still passes through exactly "
+        "Sharp's own miter point there");
+
+  for (int i : {2, 4}) {
+    const Point3d sharp_corner = out_sharp.ControlPointAt(i);
+    Check(out_chamfer.ClosestPoint(sharp_corner, 2000).DistanceTo(sharp_corner) > 0.01,
+          "Chamfer offset: a genuinely convex neighbor of the reflex vertex is NOT left at Sharp's own corner "
+          "point - it was cut");
+  }
+}
+
+// A CLOSED polygon exercises the wraparound seam corner Chamfer's own
+// assembly has to splice last - must still close up exactly, and its own
+// total length must match the independent closed-form perimeter of a
+// chamfered square: four straight sides at the ORIGINAL edge length (same
+// "edge-fraction" position Sharp's own miter extends from, unlike a
+// shortened chamfered side - see below) minus nothing (the chamfer cut
+// replaces the corner's own extension, it does not shorten the straight
+// edge pieces themselves, exactly the same convention
+// `TestCurveOffsetInPlaneRoundStyleClosedSquareMatchesClosedFormPerimeter()`
+// already establishes for Round) plus four straight chords, each of
+// length `2 * distance * sin(turn_angle / 2)` - for this fixture's four
+// 90-degree turns, `2 * distance * sin(45deg) = distance * sqrt(2)`.
+void TestCurveOffsetInPlaneChamferStyleClosedSquareMatchesClosedFormPerimeter() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out;
+  const double distance = 1.0;
+  Check(poly.OffsetInPlane(distance, out, -1.0, CurveOffsetCornerStyle::Chamfer) == Result::Ok,
+        "Chamfer offset succeeds on a closed square");
+  Check(out.IsClosed(), "Chamfer offset on a closed square: the result is itself closed");
+  Check(out.PointAt(out.Domain().min).DistanceTo(out.PointAt(out.Domain().max)) < 1e-6,
+        "Chamfer offset on a closed square: the wraparound seam corner closes the loop exactly");
+
+  const double expected_length = 4.0 * 10.0 + 4.0 * distance * std::sqrt(2.0);
+  Check(std::abs(out.Length(4000) - expected_length) < 1e-3,
+        "Chamfer offset on a closed square: total length matches 4 full-length sides plus four straight "
+        "45-degree chamfer chords - the independent closed-form perimeter of a chamfered square, shorter "
+        "than both Sharp's own mitered-corner perimeter and Round's own arc-cornered one");
+  Check(out.Length(4000) < 4.0 * 10.0 + 2.0 * ON_PI * distance - 1e-3,
+        "Chamfer offset on a closed square: strictly shorter than the Round-style perimeter at the same "
+        "distance - a straight chord is always shorter than its own arc");
+}
+
+// Reuses `TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter()`'s
+// own L-tromino fixture, but shrinking it INWARD (a negative distance,
+// confirmed by direct probe - not assumed - to genuinely cross two
+// non-adjacent edges of the exact miter polygon well past the point where
+// the two arms' own offset lines invert past each other, rather than
+// merely touch) - a real, not hypothetical, self-intersecting loop.
+// PARITY_MAP.md's own "Offset self-intersection / invalid-loop removal"
+// item discloses this is honestly unrepaired for curves - this test locks
+// in that the exact polyline path at least DETECTS it now
+// (`Result::Failed`) instead of silently returning the bowtied loop as
+// `Result::Ok`, while a distance that stays safely within both arms'
+// own thickness still succeeds cleanly.
+void TestCurveOffsetInPlaneClosedPolygonRefusesSelfIntersectingLoop() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0),  Point3d(10, 0, 0), Point3d(10, 4, 0),
+                                       Point3d(4, 4, 0),  Point3d(4, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out_safe;
+  Check(poly.OffsetInPlane(-1.0, out_safe) == Result::Ok,
+        "Offset self-intersection setup: an inward distance (-1.0), well within both arms' own 4-unit "
+        "thickness, still succeeds cleanly");
+  Check(out_safe.IsClosed(), "Offset self-intersection setup: the safe-distance result is itself closed");
+
+  NurbsCurve out_crossed;
+  Check(poly.OffsetInPlane(-6.0, out_crossed) == Result::Failed,
+        "OffsetInPlane refuses a closed-polygon inward offset distance (-6.0) that collapses this L-shape "
+        "past itself - detected as a genuinely self-intersecting loop instead of silently returned");
+}
+
 void TestNurbsCurveFilletCornerRightAngle() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -67460,6 +67648,10 @@ int main() {
   TestCurveOffsetInPlaneRoundStyleFilletsConvexCorners();
   TestCurveOffsetInPlaneRoundStyleLeavesConcaveCornerAsExactMiter();
   TestCurveOffsetInPlaneRoundStyleClosedSquareMatchesClosedFormPerimeter();
+  TestCurveOffsetInPlaneChamferStyleCutsConvexCorners();
+  TestCurveOffsetInPlaneChamferStyleLeavesConcaveCornerAsExactMiter();
+  TestCurveOffsetInPlaneChamferStyleClosedSquareMatchesClosedFormPerimeter();
+  TestCurveOffsetInPlaneClosedPolygonRefusesSelfIntersectingLoop();
   TestNurbsCurveFilletCornerRightAngle();
   TestNurbsCurveFilletCornerObtuseAngleAndTangency();
   TestNurbsCurveFilletCornerRejectsInvalidInput();
