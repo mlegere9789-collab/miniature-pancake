@@ -2671,6 +2671,7 @@ Brep MoveConvexPlanarPoints(const Brep& solid, const std::vector<std::pair<Point
     for (const auto& [loop_index, move_index] : per_face[static_cast<size_t>(face_index)]) {
       new_loop[static_cast<size_t>(loop_index)] = moves[static_cast<size_t>(move_index)].second;
     }
+    const int loop_n = static_cast<int>(new_loop.size());
 
     const Vector3d old_normal = f.plane.zaxis;
     const Vector3d raw_normal = PolygonNewellNormalRaw(new_loop);

@@ -333,8 +333,17 @@ c2check "0,5,0" "MarkFoci found the parabola focus (0,5,0) from curve geometry a
 c2check "MarkFoci: 2 point(s) added" "MarkFoci added both hyperbola foci"
 c2check "6.807" "MarkFoci found the analytic hyperbola focus distance (c=6.807 for a=5, b^2=64/3)"
 c2check "MergeCrv: joined 2 curve(s) into one, merged 1 tangent junction(s) into a single span" "MergeCrv collapsed a tangent joint into one span"
-c2check "Blend: curvature-continuous (G2) blend curve created" "Blend built a real G2 quintic blend"
+# Blend now calls the kernel's own exact NurbsCurve::BlendCurves() (curve.h)
+# instead of duplicating inline Hermite math - PARITY_MAP.md's own disclosed
+# "BlendCrvCommand/BlendCommand... app wiring... a separate increment" gap
+# for curve-to-curve blending. The printed message changed accordingly
+# (Continuity name + "(G<n>)"), and reaches a genuine degree-7 G3 septic
+# blend neither app command could build at all before this wiring.
+c2check "Blend: Curvature (G2) blend curve created" "Blend built a real G2 quintic blend, now through kernel::NurbsCurve::BlendCurves()"
+c2check "degree 5, 6 control points, non-rational, open" "Blend's G2 output is the expected degree-5 (2*continuity+1), 6-control-point Bezier-basis curve BlendCurves() builds"
 c2check "ArcBlend: two-arc tangent blend created (joint tangent match 1)" "ArcBlend found a genuine two-arc biarc, tangent-verified"
+c2check "Blend: G3 (G3) blend curve created" "Blend Continuity=G3 reaches kernel::NurbsCurve::BlendCurves()'s own continuity=3 path - the genuine new capability neither BlendCrv nor Blend could build at all before this wiring (both used to cap out at G2)"
+c2check "degree 7, 8 control points, non-rational, open" "Blend's G3 output is the expected degree-7 (2*3+1), 8-control-point septic Bezier-basis curve - one degree past the G2 quintic case just above, matching position/tangent/curvature AND third derivative at both ends"
 c2check "Domain: 1 curve(s) now have domain 0 to 5" "Domain actually set a new domain, not just reported it"
 c2check "ModifyRadius: 1 curve(s) now have radius 12" "ModifyRadius rebuilt the circle in place"
 c2check "Match: reshaped curve .* to meet curve .* tangentially" "Match reshaped one curve's end to meet another"
@@ -357,7 +366,7 @@ if echo "$C2" | grep -q "Bounding box: (30, 0, 9) to (40, 0, 9)"; then
 else
   echo "ok   RemoveSymmetry genuinely broke the live link (copy did NOT follow the source's post-removal move)"
 fi
-c2check "^ok   expect_objects 194" "curve-tools script produced the expected object count"
+c2check "^ok   expect_objects 197" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/exchange_script.txt" > "$TMPW/exchange_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -924,6 +933,12 @@ secheck "Volume = 1063 cubic" "Boss's union really added the r=2 h=5 cylinder's 
 secheck "Rib: tapered wall of height 2 built following the base's local surface normal at 64 points along the curve; unioned with the base solid" "Rib built a real tapered wall and unioned it with the box"
 secheck "Volume = 1006 cubic" "Rib's union really added the tapered wall's volume"
 secheck "FilletSrfToRail: fillet surface built along the rail's own points" "FilletSrfToRail built real rolling-ball arcs along a picked rail"
+secheck "FilletSrfToRail:.*; both surfaces trimmed" "FilletSrfToRail now real-trims both picked surfaces along their own contact curves by default (TrimRailWholeLoop/TrimRailBySplit), PARITY_MAP.md's own 'no trimming' gap for this command"
+FSR_TRIM="$(echo "$SE" | grep -c "FilletSrfToRail:.*; both surfaces trimmed")"
+[ "$FSR_TRIM" = "1" ] \
+  && echo "ok   exactly one FilletSrfToRail call trimmed both surfaces (the Trim=No call below must not)" \
+  || { echo "FAIL expected exactly 1 'both surfaces trimmed' FilletSrfToRail line, got $FSR_TRIM"; fail=1; }
+secheck "FilletSrfToRail: fillet surface built along the rail's own points (radius 1; contact points off the exact radius by up to 1 - the rail is used directly as the spine, rather than the SSX-offset spine FilletSrf computes)$" "FilletSrfToRail's own Trim=No negative control prints no trim suffix at all (neither trimmed nor a fallback message) - the two picked surfaces are left genuinely untouched"
 secheck "FilletSrfCrv: fillet surface built tangent to the surface and osculating-tangent to the curve" "FilletSrfCrv built a real surface/curve rolling-ball fillet"
 FSC_GAP="$(echo "$SE" | sed -n 's/.*FilletSrfCrv:.*contact points off the exact radius by up to \([0-9.eE+-]*\);.*/\1/p' | head -1)"
 python3 -c "import sys; v=float('$FSC_GAP'); sys.exit(0 if v < 1e-4 else 1)" \
@@ -934,20 +949,20 @@ python3 -c "import sys; v=float('$FSC_TANG'); sys.exit(0 if v < 0.01 else 1)" \
   && echo "ok   FilletSrfCrv tangent-direction error ($FSC_TANG degrees) is essentially zero - the arc is genuinely tangent to the curve, not merely touching it (the exact gap the old Partial note described)" \
   || { echo "FAIL FilletSrfCrv tangent-direction error ($FSC_TANG degrees) is not near zero - arc is not genuinely tangent to the curve"; fail=1; }
 secheck "SoftEditSrf: 4 control point(s) moved with a cosine falloff within radius 8 (max displacement 3)" "SoftEditSrf moved control points with a real falloff"
-secheck "^ok   expect_objects 100" "surface-edit script produced the expected object count halfway through (before UnjoinEdge/ReplaceEdge)"
+secheck "^ok   expect_objects 104" "surface-edit script produced the expected object count halfway through (before UnjoinEdge/ReplaceEdge)"
 secheck "ShowEdges: 1 object(s), 7 edge(s), 6 naked edge(s)" "ShowEdges found the joined planes' 1 shared and 6 naked edges before unjoining"
 secheck "UnjoinEdge: edge [0-9]* split into two naked, coincident edges - both faces remain in the same polysurface" "UnjoinEdge split the shared edge in place via real Brep::UnjoinEdge()"
 secheck "ShowEdges: 1 object(s), 8 edge(s), 8 naked edge(s)" "ShowEdges confirms exactly 2 more naked edges after unjoining - the old shared edge, now two coincident naked ones"
 secheck "ReplaceEdge: edge [0-9]* re-trimmed against the picked curve's own shape, every affected face re-projected onto it" "ReplaceEdge re-trimmed a naked edge against a bowed substitute curve via real Brep::ReplaceEdgeCurve()"
 secheck "2 faces, 9 edges, open" "the re-trimmed polysurface keeps its same topology (2 faces) after ReplaceEdge - only the one edge's own shape changed"
-secheck "^ok   expect_objects 102" "surface-edit script produced the expected final object count"
+secheck "^ok   expect_objects 106" "surface-edit script produced the expected final object count"
 secheck "Squish: face 0 flattened, area 100 (whole object 3D area 100), distortion max 0% avg 0%" "Squish flattened an already-flat plane with exactly zero distortion either way"
 secheck "SquishInfo: object [0-9]* - flat area 100 (3D area 100), distortion max 0% avg 0%" "SquishInfo reprinted Squish's own stored report (area + distortion) instead of recomputing it"
 secheck "SquishBack: 1 curve(s) projected back onto the source surface via the flat pattern's own per-vertex (u,v) map" "SquishBack projected a curve on the flat pattern back onto the source surface via the stored (u,v) map"
 secheck "Bounding box min 3702,2,0 max 3708,8,0" "SquishBack's round trip landed the projected curve exactly back on the source plane's own diagonal"
 secheck "DeleteFaces: face [0-9]* deleted, 5 face(s) left" "DeleteFaces opened the fresh box for the naked-micro-edge fixture"
 secheck "RemoveAllNakedMicroEdges: 1 naked micro edge(s) removed; 1 left in place" "RemoveAllNakedMicroEdges actually CLOSED the isolated sliver (real Brep::RemoveNakedMicroEdge) while correctly leaving the corner-adjacent one it can't safely close"
-secheck "^ok   expect_objects 112" "surface-edit script produced the expected object count after the Squish/SquishBack/RemoveAllNakedMicroEdges additions"
+secheck "^ok   expect_objects 116" "surface-edit script produced the expected object count after the Squish/SquishBack/RemoveAllNakedMicroEdges additions"
 secheck "SplitRefitSurface: 1 surface(s) split into 2 piece(s), each refit to a clean untrimmed NURBS surface" "SplitRefitSurface split the plane at the curve's crossing and refit both pieces"
 secheck "degree 3 x 3, CVs 4 x 4" "SplitRefitSurface's refit pieces are genuinely rebuilt to a fresh 4x4-CV surface, not left at Split()'s own original 2x2 CVs"
 secheck "Bounding box min 4400,0,0 max 4410,10,0" "SplitRefitSurface's two refit pieces still exactly cover the original plane end to end (west [4400,4405] + east [4405,4410])"
@@ -960,7 +975,7 @@ secheck "Area = 331.8" "ExtendSrf Type=Linear produced a genuinely different are
 secheck "MergeSrf: merged 2 surfaces into one" "MergeSrf ran on two adjacent planar rectangles"
 secheck "Area = 200 square" "MergeSrf's refit surface has the exact union area (10x20), not an approximation artifact - a flat plane is exactly representable at any degree"
 secheck "Bounding box min 4600,0,0 max 4620,10,0" "MergeSrf's refit surface exactly spans both source rectangles, corner to corner"
-secheck "smoke: frames=[0-9]* objects=123" "surface-edit script's final object count includes the MergeSrf fixture (2 rectangles + 2 planar surfaces, merged down to 1)"
+secheck "smoke: frames=[0-9]* objects=127" "surface-edit script's final object count includes the MergeSrf fixture (2 rectangles + 2 planar surfaces, merged down to 1)"
 
 # Mesh tools: deformations, mesh editing and mesh primitives (see meshtools_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -1361,9 +1376,12 @@ stcheck "smoke: frames=[1-4][0-9][0-9] objects=118" "solid-tools script produced
 # CurveBoolean/CreateRegions's own 2-region case must now take
 # kernel::PolygonBooleanPlanar's exact (non-tessellated) path when both
 # input curves are genuine closed polylines, instead of the existing
-# mesh-slab pipeline (see regionboolean_exact_polygon_script.txt) -
-# PARITY_MAP.md's "kernel: Boolean operations" category's "2D region /
-# planar curve booleans" bullet.
+# mesh-slab pipeline - and, as of round 40, PlanarUnion/PlanarDifference/
+# CurveBoolean's Union/Difference/Intersection cases must take the same
+# exact path for 3+ regions too, via kernel::PolygonBooleanPlanarNAry (see
+# regionboolean_exact_polygon_script.txt) - PARITY_MAP.md's "kernel:
+# Boolean operations" category's "2D region / planar curve booleans"
+# bullet.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   RBX="$("$BIN" --smoke 60 --script "$HERE/regionboolean_exact_polygon_script.txt" 2>&1)" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script exited non-zero"; exit 1; }
 else
@@ -1372,7 +1390,8 @@ fi
 echo "$RBX" | grep -E "^(ok|FAIL)"
 if echo "$RBX" | grep -q "^FAIL"; then fail=1; fi
 echo "$RBX" | grep -q "^smoke:" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script produced no smoke line"; fail=1; }
-echo "$RBX" | grep -q "exact (no tessellation)" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script did not take the exact polygon-boolean path"; fail=1; }
+RBX_EXACT_COUNT=$(echo "$RBX" | grep -c "exact (no tessellation)")
+[ "$RBX_EXACT_COUNT" -ge 4 ] || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script took the exact polygon-boolean path $RBX_EXACT_COUNT time(s), expected at least 4 (the original 2-region case plus the N=3 Union/Difference/Intersection cases)"; fail=1; }
 
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,
 # MatchSrf, SplitFace, MergeFaces, ConnectSrf, surface/surface and curve/surface
@@ -1410,6 +1429,26 @@ flcheck "FilletSrf: built between object .* and .*, radius 1 to 2; one surface t
 flcheck "degree 2 x 3, CVs 3 x 33" "the plane+cylinder variable fillet lofted all 33 (samples+1) exact rows into its NURBS surface"
 flcheck "VariableBlendSrf: blend surface added between object .* and .*, width 0.2 to 0.8 .Continuity=Curvature: quintic blend, cross-boundary curvature matched exactly to both surfaces." "VariableBlendSrf built a real independent blend (BuildBlendSurfaceG2, same construction as BlendSrf/BlendEdge) with a width that genuinely ramps from 0.2 to 0.8 along the rail, not the rolling-ball fillet VariableFilletSrf uses"
 flcheck "degree 5 x 3, CVs 6 x 49" "VariableBlendSrf's Continuity=Curvature output is the degree-5x3 quintic-Hermite blend, the same construction BuildBlendSurfaceG2 gives BlendSrf/BlendEdge - not a rolling-ball fillet arc, and see tests/test_variable_blend.cpp for the numeric proof the width itself (measured on the constructed surface's own control points) actually varies along the rail while the G2 curvature match still holds at both ends. 49 (not the old fixed-sample 24+1=25) rows: VariableBlendSrfCommand now builds through BuildBlendSurfaceG2Adaptive (geom/BlendSurface.h) instead of a bare fixed-sample call - PARITY_MAP.md's own disclosed 'tolerance enforcement exists in the geometry library but is not yet reachable from any app command' gap for Surface-to-surface continuity blend - so this box-face-to-extracted-face pair's own real measured gap at 24 samples exceeded the scale-aware max_gap floor and the adaptive wrapper genuinely doubled to 48 (49 rows) to certify it, rather than silently accepting the coarser build's own unmeasured error the way the fixed-sample call used to"
+# BlendSrf (plain, not Variable): now tries the exact kernel::NurbsSurface::
+# BlendSurfaces() Hermite-skin construction FIRST, reachable because this
+# fixture's two picks (the TOP edge of two separate boxes' facing
+# extracted faces, 10 units apart with a real gap between them - unlike
+# VariableBlendSrf's own shared-corner-edge fixture just above, where both
+# rails are actually the SAME physical box edge and the exact construction
+# correctly rejects it as degenerate) are both genuine isoparametric
+# boundaries. One run per Continuity value on the identical two-box gap,
+# so the three are directly comparable: Tangency (G1) is the degree-3
+# cubic BlendCurves() itself builds per row, Curvature (G2) the degree-5
+# quintic, and G3 the degree-7 septic - the genuine new capability neither
+# BlendSrf nor VariableBlendSrf could reach at all before this wiring
+# (BuildBlendSurfaceG1/G2 cap out at G2). All three converge at 16 rows
+# (doubled once from the 8-row floor) since this is flat, simple geometry.
+flcheck "BlendSrf: blend surface added between object .* and .* .Continuity=Tangency, exact kernel blend." "BlendSrf's default Continuity=Tangency now reaches the exact kernel::NurbsSurface::BlendSurfaces() construction, not the approximate BuildBlendSurfaceG1Adaptive fallback"
+flcheck "degree 3 x 3, CVs 4 x 16" "BlendSrf's Continuity=Tangency (G1) output is the expected degree-3 (2*1+1) row curve, skinned over 16 rows"
+flcheck "BlendSrf: blend surface added between object .* and .* .Continuity=Curvature, exact kernel blend." "BlendSrf's Continuity=Curvature now reaches the exact kernel construction too"
+flcheck "degree 5 x 3, CVs 6 x 16" "BlendSrf's Continuity=Curvature (G2) output is the expected degree-5 (2*2+1) row curve - one degree past the G1 case just above, same 16-row convergence on the identical fixture"
+flcheck "BlendSrf: blend surface added between object .* and .* .Continuity=G3, exact kernel blend." "BlendSrf's new Continuity=G3 option reaches kernel::NurbsSurface::BlendSurfaces()'s own continuity=3 path - unreachable from any app command before this wiring, since BuildBlendSurfaceG1/G2 cap out at G2"
+flcheck "degree 7 x 3, CVs 8 x 16" "BlendSrf's Continuity=G3 output is the expected degree-7 (2*3+1) row curve - one degree past the G2 case just above, same 16-row convergence on the identical fixture"
 flcheck "FilletEdge: edge .* -- mesh fallback (exact B-rep trim unavailable here; result is an approximate mesh, not a clean B-rep)" "FilletEdge succeeded on a solid cylinder's own closed (periodic) rim edge via the mesh fallback - this used to fail unconditionally with a watertight-gap error regardless of radius (see adversarial_corpus_notes.md SS3)"
 flcheck "FilletEdge: edge 10 of object .* replaced with an exact conic fillet (rho 0.5, distance 2)" "FilletEdge's Rho option wires straight to kernel::FilletConvexEdgeConic, a genuine ellipse/parabola/hyperbola cross-section blend distinct from the default rolling-ball circular arc"
 flcheck "Volume = 993.3 cubic" "a 10x10x10 box minus a rho=0.5 (exact parabola) conic edge fillet at distance 2 has volume 1000 - 2*2*sin(90deg)*10/6 = 993.3, the closed form FilletConvexEdgeConic's own doc comment derives for rho=0.5"
@@ -1442,7 +1481,7 @@ flcheck "FilletSrf: built between object .* and .*, radius 0.3; both surfaces tr
 flcheck "Area = 169.1 square" "the trimmed quarter-cylinder panel's real, reproducible combined area (stable across repeated runs; not a hand-derived closed form, the same 'no closed form, check the real number' convention the ConnectSrf case above uses)"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
-flcheck "^ok   expect_objects 41" "fillet script produced the expected object count"
+flcheck "^ok   expect_objects 56" "fillet script produced the expected object count"
 
 # Adversarial fillets: tiny/at-the-limit/too-large radii relative to the
 # shortest adjacent edge, a huge-coordinate-scale box (now fixed for the
@@ -1481,6 +1520,7 @@ facheck "FilletSrf: built between object .* and .*, radius 1 to 2; neither surfa
 facheck "FilletSrf: built between object .* and .*, radius 1 to 2$" "VariableFilletSrf Trim=No on an otherwise-exact planar box corner also falls through to the approximate cascade - the exact kernel path always replaces the whole solid, not the untrimmed separate surface Trim=No asks for"
 facheck "! FilletSrf: an exact conic (Rho) fillet needs the two faces to share an edge on one planar-faced solid with Trim=Yes (convex attempt:.*not planar" "FilletSrf Rho on a cylinder's own flat-top cap and curved side wall refuses with a clear diagnostic instead of silently building a plain round fillet that quietly ignores Rho - unlike Chamfer/VariableFillet just above, there is no approximate fallback a non-circular conic could ever be represented by"
 facheck "! FilletSrf: an exact conic (Rho) fillet needs the two faces to share an edge on one planar-faced solid with Trim=Yes (the two picks are independent surfaces with no shared edge)" "FilletSrf Rho on two genuinely independent (no shared edge) extracted surfaces refuses the same way - fa.id != fb.id means kernel::FilletConvexEdgeConic/FilletConcaveEdgeConic have no shared ON_BrepEdge to identify at all, not merely a curved-face rejection"
+facheck "! BlendSrf: could not build the blend" "BlendSrf Continuity=G3, picking the same face/edge twice (a genuinely degenerate, zero-length rail pairing), fails closed with a clear diagnostic instead of silently building a degenerate patch - G3 has no approximate fallback to drop to the way Continuity=Tangency/Curvature would"
 echo "$FA" | grep -E "^(ok|FAIL)"
 if echo "$FA" | grep -q "^FAIL"; then fail=1; fi
 facheck "^ok   expect_objects 0" "fillet-adversarial script cleaned up to zero objects at the end"
@@ -2653,6 +2693,13 @@ edcheck "Surface [0-9]+: centre 5,5,0 normal -?0,0,1" "a plain Flip inverted tha
 # "(2), (3), ..."). List must show the first named object bare.
 edcheck "name 'MyName'$" "SetObjectName kept the first object's name bare, not suffixed '(1)'"
 edcheck "name 'MyName \\(2\\)'" "SetObjectName numbered the second object '(2)', not '(1)'"
+# Rebuild point-count clamp regression: "Point count" used to flow straight
+# from the typed number into an n x n control-point grid with no upper
+# bound (the Surface branch is O(n^2) points, then an O(n^2)-CV
+# NurbsSurface::FromControlGrid), so 5000000 would have demanded a
+# 25-trillion-point grid instead of baking instantly. After the fix the
+# count is clamped to 200 before it drives any allocation.
+edcheck "degree 3 x 3, CVs 200 x 200" "Rebuild clamped an absurd 5000000 point count down to a sane 200 x 200 control-point grid instead of hanging/OOMing on the n x n allocation"
 if echo "$ED" | grep -q "name 'MyName (1)'"; then echo "FAIL SetObjectName still off-by-one: an object was suffixed '(1)'"; fail=1; else echo "ok   no object was suffixed 'MyName (1)'"; fi
 
 # Real NURBS algorithm QC: ExtractPipedCurve/MakePeriodic Smooth=No/RefitTrim
@@ -4562,6 +4609,74 @@ assert bpen == (245, 245, 245), f'Box B Pen is not the exact unlit flat white (2
 assert max(barc) - min(barc) <= 8, f'Box B Arctic is not a neutral white/grey: {barc}'
 assert all(barc[i] < bpen[i] - 10 for i in range(3)), f'Box B Arctic ({barc}) is not darker than Box B Pen ({bpen}) - lit vs unlit has no visible effect'
 assert all(barc[i] > 150 for i in range(3)), f'Box B Arctic ({barc}) is too dark to read as the Arctic/Pen family of flat whites'
+PY
+
+# SSAO: pixel-level proof (PARITY_MAP.md's "SSAO in the rasterized
+# renderer" item) that AmbientOcclusion is a real, localized darkening
+# effect, not just a printed status line or a flat global dimming - a flat
+# floor meeting a wall at a real inside corner, lit only by a dim light
+# plus Skylight's ambient term (the only thing GlRenderer::EndSsaoPass's AO
+# buffer darkens), captured with AmbientOcclusion on, then off, then back
+# on; see tests/ssao_script.txt for the full scene.
+mkdir -p "$TMPW/ssao"
+sed "s|@TMP@|$TMPW/ssao|g" "$HERE/ssao_script.txt" > "$TMPW/ssao_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SSAO="$("$BIN" --smoke 30 --script "$TMPW/ssao_script.txt" 2>&1)" || { echo "$SSAO"; echo "FAIL: ssao script exited non-zero"; exit 1; }
+else
+  SSAO="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/ssao_script.txt" 2>&1)" || { echo "$SSAO"; echo "FAIL: ssao script exited non-zero"; exit 1; }
+fi
+ssaocheck() { if echo "$SSAO" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SSAO" "$1"; fail=1; fi; }
+ssaocheck "^ok   expect_objects 2" "ssao script left exactly the floor and the wall"
+ssaocheck "gl_error=0" "ssao script ran without OpenGL errors"
+python3 - "$TMPW/ssao/ssao_on.bmp" "$TMPW/ssao/ssao_off.bmp" "$TMPW/ssao/ssao_on2.bmp" <<'PY' && echo "ok   AmbientOcclusion genuinely darkens the ambient term near a real inside corner (never brighter, never the whole frame), and toggling it back on reproduces the exact same frame" || { echo "FAIL SSAO pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+w, h, on = read_bmp(sys.argv[1])
+_, _, off = read_bmp(sys.argv[2])
+_, _, on2 = read_bmp(sys.argv[3])
+
+def luma(c):
+    r, g, b = c
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+total = w * h
+diff_count = 0
+darker = 0
+brighter = 0
+for y in range(h):
+    for x in range(w):
+        a, b = on(x, y), off(x, y)
+        if sum(abs(p - q) for p, q in zip(a, b)) <= 6:
+            continue
+        diff_count += 1
+        if luma(a) < luma(b):
+            darker += 1
+        else:
+            brighter += 1
+print(f'total pixels: {total}, differing (on vs off): {diff_count} ({100.0 * diff_count / total:.1f}%), darker: {darker}, brighter: {brighter}')
+
+assert diff_count > total * 0.01, f'AmbientOcclusion on vs off barely differ ({diff_count}/{total} px) - no visible effect'
+assert diff_count < total * 0.5, f'AmbientOcclusion changes too much of the frame ({diff_count}/{total} px) - looks like a flat global dimming, not localized occlusion'
+assert brighter <= darker * 0.02, f'AmbientOcclusion made more than a rounding sliver of pixels brighter, not darker ({brighter} brighter vs {darker} darker) - not a real occlusion effect'
+
+on_px = [on(x, y) for y in range(0, h, 3) for x in range(0, w, 3)]
+on2_px = [on2(x, y) for y in range(0, h, 3) for x in range(0, w, 3)]
+assert on_px == on2_px, 'toggling AmbientOcclusion off then back on does not reproduce the exact same frame'
 PY
 
 # Real-time shadow maps (per-light shadow atlas): pixel-level proof

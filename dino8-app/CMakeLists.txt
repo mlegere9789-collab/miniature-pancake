@@ -299,6 +299,7 @@ set(DINO8_SOURCES
   src/viewport/Viewport.cpp
   src/viewport/AdaptiveTessellation.cpp
   src/render/GlRenderer.cpp
+  src/render/SsaoKernel.cpp
   src/render/ImageIO.cpp
   src/platform/Clipboard.cpp
   src/platform/AccessibilityTree.cpp
@@ -811,6 +812,24 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_test_plot_style PRIVATE dino8_kernel)
   add_test(NAME dino8_plot_style COMMAND dino8_test_plot_style)
 
+  # Document::UserText() Undo/Redo/named-snapshot capture (doc/Document.h/
+  # .cpp's Snapshot::user_text/StateDelta::user_text_before/user_text_after/
+  # PendingChange::user_text) - a real, independently-confirmed pre-existing
+  # bug found while testing the dynamic-block Stretch parameter's own Undo
+  # path (see PARITY_MAP.md's "Dynamic blocks" item): BlockInstances.h's own
+  # comment claims UserText() "survives Undo/Redo for free", but neither
+  # Capture()/Restore() nor the diff-based StateDelta path ever actually
+  # touched it before this fix. Deliberately independent of BlockInstances
+  # or any other UserText() consumer - see the test file's own comment.
+  # Same minimal Document-only dependency shape as dino8_test_plot_style
+  # above (no BlockInstances.cpp/json_mini.cpp needed).
+  add_executable(dino8_test_document_undo_usertext tests/test_document_undo_usertext.cpp src/doc/Document.cpp
+                                                    src/doc/SceneObject.cpp src/doc/SubObjectEdit.cpp
+                                                    src/geom/BrepMesher.cpp)
+  target_include_directories(dino8_test_document_undo_usertext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_document_undo_usertext PRIVATE dino8_kernel)
+  add_test(NAME dino8_document_undo_usertext COMMAND dino8_test_document_undo_usertext)
+
   # Keyboard-shortcut chord table (src/app/ShortcutRules.cpp's
   # IsReservedShortcut): every chord Application::HandleShortcuts hardcodes
   # a built-in default for, and that a user shortcut (Options > Shortcuts)
@@ -868,6 +887,17 @@ if(DINO8_BUILD_TESTS)
   # imgui/GLFW/GL code. Covers request parsing (including a request split
   # across two partial reads) purely in memory, plus a genuine end-to-end
   # round trip over a real loopback TCP socket.
+  # SSAO's pure parts (src/render/SsaoKernel.h/.cpp's BuildSsaoKernel and
+  # viewport/Camera.h's Mat4::Inverse) - see PARITY_MAP.md's "SSAO in the
+  # rasterized renderer" item: no "ssao"/"ambient occlusion" code existed
+  # anywhere in dino8-app/src/render/ before this. Like
+  # dino8_test_adaptive_display, needs the real Camera.cpp (CameraState
+  # lives in doc/Document.h) so it links dino8_kernel, but no GL/ImGui.
+  add_executable(dino8_test_ssao tests/test_ssao.cpp src/viewport/Camera.cpp src/render/SsaoKernel.cpp)
+  target_include_directories(dino8_test_ssao PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_ssao PRIVATE dino8_kernel)
+  add_test(NAME dino8_ssao COMMAND dino8_test_ssao)
+
   add_executable(dino8_test_compute_server tests/test_compute_server.cpp src/net/ComputeServer.cpp)
   target_include_directories(dino8_test_compute_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_compute_server COMMAND dino8_test_compute_server)

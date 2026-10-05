@@ -258,6 +258,78 @@ void TestCurveDivideByCount() {
   Check(threw, "DivideByCount throws std::invalid_argument on a non-positive count");
 }
 
+void TestCurveDivideByLength() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Straight line, length 10: dividing into fixed lengths of 4 should
+  // land at parameters 0.4 and 0.8 (uniform speed makes arc length and
+  // parameter proportional), then stop - the final sub-segment (t=0.8
+  // to t=1.0, world length 2) is shorter than 4, exactly the "leftover"
+  // case DivideByLength's own doc comment discloses.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  const auto short_values = line.DivideByLength(4.0);
+  const std::vector<double> expected_short_values = {0.0, 0.4, 0.8, 1.0};
+  Check(short_values.size() == expected_short_values.size(),
+        "DivideByLength(4) on a length-10 line returns exactly 4 values "
+        "(2 full 4-length segments plus the leftover)");
+  bool short_values_match = short_values.size() == expected_short_values.size();
+  for (size_t i = 0; short_values_match && i < short_values.size(); ++i) {
+    if (std::abs(short_values[i] - expected_short_values[i]) > 1e-9) short_values_match = false;
+  }
+  Check(short_values_match, "DivideByLength(4) on the length-10 line lands exactly at t=0.4 and t=0.8");
+
+  // Exact multiple: length 5 divides the same length-10 line into
+  // exactly 2 segments, with no duplicate boundary at the join between
+  // the last full segment and the final Domain().Max() push - the
+  // rounding-tolerance guard's own reason for existing.
+  const auto exact_values = line.DivideByLength(5.0);
+  Check(exact_values.size() == 3,
+        "DivideByLength(5) on the length-10 line returns exactly 3 values, "
+        "not 4 (no duplicated boundary at the exact-multiple join)");
+  Check(exact_values.size() == 3 && std::abs(exact_values[1] - 0.5) < 1e-9,
+        "DivideByLength(5) on the length-10 line lands its one interior boundary exactly at t=0.5");
+
+  // A length at or beyond the curve's own total length is the
+  // single-segment case: no interior boundary at all.
+  const auto single_values = line.DivideByLength(20.0);
+  Check(single_values.size() == 2 && single_values.front() == line.Domain().min &&
+            single_values.back() == line.Domain().max,
+        "DivideByLength with a length >= the curve's own total length returns "
+        "just {Domain().Min(), Domain().Max()}");
+
+  // Full circle: DivideByLength(circumference / 8) must agree with
+  // DivideByCount(8) on the same curve - two different ways of asking
+  // for the same 8 equal-arc-length divisions.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const double circumference = circle.Length();
+  const auto by_count = circle.DivideByCount(8);
+  const auto by_length = circle.DivideByLength(circumference / 8.0);
+  Check(by_length.size() == by_count.size(),
+        "DivideByLength(circumference/8) returns the same number of values as DivideByCount(8)");
+  bool agree = by_length.size() == by_count.size();
+  for (size_t i = 0; agree && i < by_count.size(); ++i) {
+    if (std::abs(by_length[i] - by_count[i]) > 1e-6) agree = false;
+  }
+  Check(agree,
+        "DivideByLength(circumference/8) and DivideByCount(8) land at the "
+        "same parameter values on the circle");
+
+  bool threw = false;
+  try {
+    line.DivideByLength(0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DivideByLength throws std::invalid_argument on a non-positive length");
+}
+
 void TestCurveSetWeightAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -439,6 +511,119 @@ void TestCurveInsertKnotAt() {
   }
   Check(multiplicity_threw,
         "InsertKnotAt throws std::invalid_argument when multiplicity exceeds Degree()");
+}
+
+void TestCurveRemoveKnotAt() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Success path: a knot just added by InsertKnotAt() is, by
+  // construction, exactly removable - Boehm's removal algorithm should
+  // report (near) zero deviation and genuinely revert the control net,
+  // not just claim to.
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 3, 0), Point3d(2, -3, 0),
+                                     Point3d(3, 0, 0)};
+  NurbsCurve curve = NurbsCurve::FromControlPoints(pts, /*degree=*/3);
+  std::vector<Point3d> before_points;
+  for (double t : {0.1, 0.3, 0.5, 0.7, 0.9}) {
+    before_points.push_back(curve.PointAt(t));
+  }
+  Check(curve.InsertKnotAt(0.5, 1) == Result::Ok, "fixture: InsertKnotAt(0.5) succeeds");
+  Check(curve.ControlPointCount() == 5 && curve.KnotCount() == 7,
+        "fixture: the curve now has one extra control point and knot at 0.5");
+
+  int knot_05_index = -1;
+  for (int i = 0; i < curve.KnotCount(); ++i) {
+    if (std::abs(curve.KnotAt(i) - 0.5) < 1e-12) {
+      knot_05_index = i;
+      break;
+    }
+  }
+  Check(knot_05_index >= 0, "the fixture's own knot vector contains the 0.5 knot just inserted");
+
+  double deviation = std::numeric_limits<double>::infinity();
+  const Result remove_result = curve.RemoveKnotAt(knot_05_index, /*tolerance=*/1e-6, &deviation);
+  Check(remove_result == Result::Ok, "RemoveKnotAt returns Ok removing an exactly-removable knot");
+  Check(deviation >= 0.0 && deviation < 1e-9,
+        "out_max_deviation reports (near) zero for a knot that was exactly insertable/removable");
+  Check(curve.ControlPointCount() == 4 && curve.KnotCount() == 6,
+        "RemoveKnotAt reverts the control point and knot counts exactly back to their "
+        "pre-insertion values");
+
+  bool shape_unchanged = true;
+  size_t idx = 0;
+  for (double t : {0.1, 0.3, 0.5, 0.7, 0.9}) {
+    if ((curve.PointAt(t) - before_points[idx++]).Length() > 1e-6) {
+      shape_unchanged = false;
+    }
+  }
+  Check(shape_unchanged,
+        "PointAt() matches the pre-insertion curve to within 1e-6 at 5 different parameter "
+        "values after InsertKnotAt() followed by RemoveKnotAt() - a genuine round trip, not "
+        "just reverted bookkeeping");
+
+  // Refusal path: a knot that genuinely carries shape information (not
+  // one just inserted redundantly) must be refused at tolerance 0 -
+  // RemoveKnotAt must not silently approve a removal that would really
+  // move the curve, and must leave the curve completely untouched when
+  // it refuses.
+  const std::vector<Point3d> zigzag_pts = {Point3d(0, 0, 0),  Point3d(1, 2, 0),  Point3d(2, -2, 0),
+                                            Point3d(3, 2, 0),  Point3d(4, -2, 0), Point3d(5, 0, 0)};
+  NurbsCurve zigzag = NurbsCurve::FromControlPoints(zigzag_pts, /*degree=*/3);
+  const int before_cv_count = zigzag.ControlPointCount();
+  const int before_knot_count = zigzag.KnotCount();
+  int interior_knot_index = -1;
+  for (int i = 0; i < zigzag.KnotCount(); ++i) {
+    const double k = zigzag.KnotAt(i);
+    if (k > zigzag.Domain().min + 1e-9 && k < zigzag.Domain().max - 1e-9) {
+      interior_knot_index = i;
+      break;
+    }
+  }
+  Check(interior_knot_index >= 0, "the zigzag fixture has a genuine interior knot to try removing");
+
+  double zigzag_deviation = -1.0;
+  const Result refused_result = zigzag.RemoveKnotAt(interior_knot_index, /*tolerance=*/0.0, &zigzag_deviation);
+  Check(refused_result == Result::Failed,
+        "RemoveKnotAt refuses at tolerance 0.0 when the knot genuinely carries shape "
+        "information");
+  Check(zigzag_deviation > 0.0,
+        "out_max_deviation reports the real, nonzero deviation that caused the refusal, not "
+        "the initial infinity sentinel");
+  Check(zigzag.ControlPointCount() == before_cv_count && zigzag.KnotCount() == before_knot_count,
+        "a refused RemoveKnotAt leaves the curve completely untouched");
+
+  // The same deviation measured above, used as this curve's own
+  // tolerance, must now succeed - out_max_deviation is a real, usable
+  // bound, not just a diagnostic.
+  double repeat_deviation = -1.0;
+  const Result accepted_result =
+      zigzag.RemoveKnotAt(interior_knot_index, zigzag_deviation * 1.001, &repeat_deviation);
+  Check(accepted_result == Result::Ok,
+        "RemoveKnotAt succeeds once tolerance is raised just above the deviation it itself "
+        "reported");
+  Check(std::abs(repeat_deviation - zigzag_deviation) < 1e-9,
+        "the deviation reported on the accepted removal matches the one reported on the "
+        "earlier refusal");
+
+  bool range_threw = false;
+  try {
+    curve.RemoveKnotAt(curve.KnotCount(), 1.0);
+  } catch (const std::out_of_range&) {
+    range_threw = true;
+  }
+  Check(range_threw, "RemoveKnotAt throws std::out_of_range for a knot_index past the end");
+
+  bool boundary_threw = false;
+  try {
+    curve.RemoveKnotAt(0, 1.0);
+  } catch (const std::invalid_argument&) {
+    boundary_threw = true;
+  }
+  Check(boundary_threw,
+        "RemoveKnotAt throws std::invalid_argument at the domain's own boundary knot (not "
+        "strictly interior)");
 }
 
 void TestCurveKnotAt() {
@@ -3045,6 +3230,115 @@ void TestIntersectCurveSurfaceOverlapBisectionTightensSpanBoundary() {
     // many orders of magnitude looser than 1e-7.
     Check(std::abs(spans[0].t1 - corner_t) < 1e-7, "the span's own boundary is bisection-tightened to near machine precision even under a deliberately coarse sampling pitch");
   }
+}
+
+// PARITY_MAP.md's own "CSX against trimmed faces and curve-on-surface
+// overlap (coincident) detection" bullet, after IntersectCurveBrep()
+// already closed the trimmed-face CSX half and IntersectCurveSurfaceOverlap()
+// closed the plain curve/surface overlap half, still disclosed two
+// remaining gaps verbatim: "the span's own t0/t1 are only as precise as
+// the sampling resolution (no bisection tightens the exact boundary where
+// the curve leaves the surface)" and "no curve/B-rep ... counterpart".
+// This test proves the first is now closed: a curve crossing a plane at
+// an x value that does NOT land on the sampling grid (so the grid-only
+// boundary this function used to report would be off by up to one whole
+// sampling step, ~1/104 of the curve's domain here - far looser than the
+// 1e-6 bound checked below) is now bisection-refined to the true,
+// analytically-known crossing parameter.
+void TestIntersectCurveSurfaceOverlapRefinesBoundaryPastSamplingResolution() {
+  using dino8::kernel::CurveSurfaceOverlap;
+  using dino8::kernel::IntersectCurveSurfaceOverlap;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-9;
+  opt.mesh_tolerance = 0.05;
+
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-20, 20), true);
+  ground.SetExtents(1, ON_Interval(-20, 20), true);
+
+  // A line that lies in the plane then climbs straight away from it, with
+  // its bounding-box diagonal (the sampling loop's own resolution driver)
+  // deliberately chosen so the sampling step count n = ceil(diagonal /
+  // opt.mesh_tolerance) comes out ODD (105 here: diagonal == 5.2345, so
+  // diagonal / 0.05 == 104.69, ceil == 105) - the shared-vertex corner,
+  // always at exactly the curve's own domain midpoint for a 3-point
+  // degree-1 curve's clamped-uniform knots, can only land exactly on a
+  // sample grid point when n is EVEN (grid point i == n/2). With n odd,
+  // the un-refined, grid-only boundary this function used to report is
+  // guaranteed off by a fraction of one whole sampling step (domain_len /
+  // n == 2/105 ~= 0.019) - two orders of magnitude looser than the 1e-9
+  // bound checked below, which only real bisection refinement can meet.
+  const double x_start = -1.5492, z_top = 5.0;
+  const NurbsCurve climbing = NurbsCurve::FromControlPoints(
+      {Point3d(x_start, 1, 0), Point3d(0, 1, 0), Point3d(0, 1, z_top)}, 1);
+  const std::vector<CurveSurfaceOverlap> spans = IntersectCurveSurfaceOverlap(climbing.raw(), ground, opt);
+  Check(spans.size() == 1, "a line that lies in the plane then climbs away reports exactly one overlap span");
+  if (spans.size() == 1) {
+    const ON_Interval d = climbing.raw().Domain();
+    const double exact_t1 = d.ParameterAt(0.5);  // the shared vertex, same clamped-uniform-knot convention as the bent-polyline test above
+    Check(std::abs(spans[0].t1 - exact_t1) < 1e-9, "the refined boundary lands within double-precision bisection width of the exact corner parameter, not merely within one sampling step");
+  }
+}
+
+// Same category's second remaining gap named directly above: "this is
+// curve/surface only (no curve/B-rep ... counterpart)". IntersectCurveBrepOverlap()
+// closes it - the curve/B-rep coincident-region counterpart to
+// IntersectCurveBrep(), trimmed to each face's own trim/domain boundary
+// via FaceContainsUV() exactly as IntersectCurveBrep() already is.
+void TestIntersectCurveBrepOverlapScopesSpanToFaceTrim() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::CurveBrepOverlap;
+  using dino8::kernel::IntersectCurveBrepOverlap;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Brep::Box()'s own face_grids order (brep.cpp) puts the bottom (-z)
+  // face first (index 0), a flat rectangle spanning x in [0, 2], y in
+  // [0, 2] at z == 0.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+
+  // A line lying entirely in z == 0 and entirely within the bottom face's
+  // own [0, 2]x[0, 2] extent must report one span covering the line's
+  // WHOLE domain, scoped to face 0.
+  const NurbsCurve inside = NurbsCurve::FromControlPoints({Point3d(0.2, 1, 0), Point3d(1.8, 1, 0)}, 1);
+  const std::vector<CurveBrepOverlap> inside_spans = IntersectCurveBrepOverlap(inside.raw(), box.raw(), opt);
+  Check(inside_spans.size() == 1, "a line entirely within the bottom face's own extent reports exactly one overlap entry");
+  if (inside_spans.size() == 1) {
+    Check(inside_spans[0].face_index == 0, "the overlap is scoped to the bottom face (index 0 in Brep::Box()'s own face order)");
+    Check(inside_spans[0].overlap.entire_curve, "a line entirely within the face's own extent covers the overlap's whole domain");
+  }
+
+  // A line lying in z == 0 but extending well past the bottom face's own
+  // x in [0, 2] extent on both ends must report a span trimmed down to
+  // (approximately) just the portion actually inside that extent - NOT
+  // the line's whole domain - at off-grid parameters whose exact value is
+  // known analytically from the line's own linear parametrization.
+  const double x_start = -1.3307, x_end = 3.8693;
+  const NurbsCurve crossing = NurbsCurve::FromControlPoints({Point3d(x_start, 1, 0), Point3d(x_end, 1, 0)}, 1);
+  const std::vector<CurveBrepOverlap> crossing_spans = IntersectCurveBrepOverlap(crossing.raw(), box.raw(), opt);
+  Check(crossing_spans.size() == 1, "a line crossing the bottom face's own x extent on both ends still reports exactly one overlap entry for that face");
+  if (crossing_spans.size() == 1) {
+    Check(crossing_spans[0].face_index == 0, "the crossing line's overlap is scoped to the bottom face");
+    Check(!crossing_spans[0].overlap.entire_curve, "the crossing line's overlap does not cover its whole domain, since it runs past the face's own trim on both ends");
+    const double expected_t0 = (0.0 - x_start) / (x_end - x_start);   // where the line enters the face's own x in [0, 2] extent
+    const double expected_t1 = (2.0 - x_start) / (x_end - x_start);   // where it leaves it
+    Check(std::abs(crossing_spans[0].overlap.t0 - expected_t0) < 1e-6, "the overlap's own start is bisection-refined to (approximately) the face's own x == 0 trim edge");
+    Check(std::abs(crossing_spans[0].overlap.t1 - expected_t1) < 1e-6, "the overlap's own end is bisection-refined to (approximately) the face's own x == 2 trim edge");
+  }
+
+  // A line held well clear of every face (y == 10 throughout) reports no
+  // overlap on any face at all.
+  const NurbsCurve clear = NurbsCurve::FromControlPoints({Point3d(0.2, 10, 0), Point3d(1.8, 10, 0)}, 1);
+  Check(IntersectCurveBrepOverlap(clear.raw(), box.raw(), opt).empty(), "a line held clear of every face reports no overlap entries");
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
@@ -11742,6 +12036,157 @@ void TestBrepTrimmedPlanarFace() {
   // maps to physical area 0.36*100=36 exactly.
   Check(std::abs(meshes.front().Area() - 36.0) < 1e-9,
         "trimmed face's physical area matches the exact scaled trim-loop area");
+}
+
+// TrimmedPlanarFaceWelded() is the genuine-topology sibling of
+// TrimmedPlanarFace() just above, the same "Welded" convention
+// BoxWelded() already established for Box() - PARITY_MAP.md's own
+// "Genuine topology produced by every constructor" bullet names
+// TrimmedPlanarFace() as one of the surface-only factories still left
+// unaddressed there.
+void TestBrepTrimmedPlanarFaceWelded() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Same physical 10x10 flat square and trim loop
+  // TestBrepTrimmedPlanarFace() above already uses, so the resulting
+  // shape's own physical area (36.0) is already proven correct there -
+  // this test is about the TOPOLOGY difference, not a new shape.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0), Point3d(0, 10, 0), Point3d(10, 0, 0), Point3d(10, 10, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const std::vector<Point2d> trim_loop = {
+      Point2d(0.15, 0.15), Point2d(0.85, 0.15), Point2d(0.85, 0.85), Point2d(0.15, 0.85),
+  };
+
+  const Brep face = Brep::TrimmedPlanarFaceWelded(surface, trim_loop);
+  Check(face.FaceCount() == 1, "TrimmedPlanarFaceWelded is a single face");
+  ON_TextLog discard_log;
+  Check(face.raw().IsValid(&discard_log),
+        "TrimmedPlanarFaceWelded() is a valid ON_Brep, unlike TrimmedPlanarFace()");
+  Check(face.LiveVertexCount() == 4 && face.LiveEdgeCount() == 4,
+        "the outer trim loop's own 4 corners/edges become real welded vertices/edges, not a side-table polygon");
+  // A standalone single face's own outer boundary is naked by
+  // construction (nothing else to share it with) - the exact same
+  // "Check() reports exactly...NakedEdge, and nothing else" expectation
+  // TestBrepWireBody's own single-open-edge case already establishes for
+  // the identical reason - so Check() reports 4 NakedEdge issues (one
+  // per outer edge, other_index == 1), never IsClean(), and that is the
+  // CORRECT state, not a defect: what matters is that there is nothing
+  // ELSE wrong (no NonManifoldEdge, no InconsistentFaceOrientation).
+  const Brep::CheckReport report = face.Check();
+  Check(report.issues.size() == 4 && report.Count(Brep::CheckIssue::Kind::NakedEdge) == 4,
+        "TrimmedPlanarFaceWelded()'s own Check() report has exactly the 4 expected NakedEdge issues (the "
+        "standalone outer boundary), and nothing else");
+  Check(report.is_oriented, "...and the one face's own trim is still consistently oriented");
+
+  // TrimmedPlanarFace()'s own default exact_clip=false uses WHOLE-CELL
+  // approximate tessellation (see TestBrepTrimmedPlanarFace() above's
+  // own "fully-inside grid cells" comment) - its 36.0 is a quantized
+  // UNDER-estimate of the true analytic area, not the exact trim area.
+  // TrimmedPlanarFaceWelded() instead builds a REAL trim loop, so an
+  // ordinary trimmed-face tessellation (no whole-cell quantization) gets
+  // the exact analytic area: physical span (0.85-0.15)*10 = 7.0 per
+  // axis, so 7.0 x 7.0 = 49.0 exactly - confirmed directly against this
+  // test's own fixture via a `dino8_scratch_test` probe before writing
+  // this expectation, not assumed from the non-welded sibling's value.
+  const auto meshes = face.Tessellate(10, 10);
+  Check(meshes.size() == 1 && std::abs(meshes.front().Area() - 49.0) < 1e-6,
+        "TrimmedPlanarFaceWelded()'s own EXACT physical area (49.0) is the true trim area, not "
+        "TrimmedPlanarFace()'s own whole-cell-quantized approximation (36.0)");
+
+  // A real hole: a small 2x2-param-unit square centered in the trim
+  // loop's own interior, becoming a genuine ON_BrepLoop::inner loop
+  // (via the existing, already-tested AddHoleLoop()), not another
+  // side-table polygon.
+  const std::vector<Point2d> hole_loop = {
+      Point2d(0.4, 0.4), Point2d(0.6, 0.4), Point2d(0.6, 0.6), Point2d(0.4, 0.6),
+  };
+  const Brep holed = Brep::TrimmedPlanarFaceWelded(surface, trim_loop, {hole_loop});
+  Check(holed.FaceCount() == 1, "a face with one hole is still exactly one face");
+  Check(holed.LiveVertexCount() == 8 && holed.LiveEdgeCount() == 8,
+        "the hole's own 4 corners/edges add 4 more real vertices/edges on top of the outer loop's own 4");
+  // Both the outer loop's 4 edges AND the hole's own 4 edges are naked
+  // (neither borders a second face), so 8 NakedEdge issues total is the
+  // correct clean state here too - same reasoning as the un-holed case
+  // above, just with the hole's own boundary added.
+  const Brep::CheckReport holed_report = holed.Check();
+  Check(holed_report.issues.size() == 8 && holed_report.Count(Brep::CheckIssue::Kind::NakedEdge) == 8,
+        "the holed face's own Check() report has exactly the 8 expected NakedEdge issues (outer + hole "
+        "boundaries), and nothing else - no crossing, no bad orientation");
+  Check(holed_report.is_oriented, "...and the face (with its hole) is still consistently oriented");
+  // Real loop structure: a genuine ON_BrepLoop::outer plus an
+  // ON_BrepLoop::inner, not a side-table polygon - verified via
+  // TypeOfLoop() rather than by mesh area, since Tessellate() on a
+  // multi-loop face (confirmed directly via `dino8_scratch_test`, not
+  // assumed) does not reproduce the exact analytic area even on a flat
+  // face - the same "verify the region, not mesh area" honesty this
+  // kernel's own MergeSameSurfaceFaces tests already adopt for a holed
+  // curved face, found here to apply to this Tessellate() path too.
+  Check(holed.LoopCount(0) == 2, "the holed face has exactly 2 loops: the outer boundary plus the one hole");
+  const std::vector<int> holed_loops = holed.LoopsOfFace(0);
+  int outer_loops = 0, inner_loops = 0;
+  for (const int li : holed_loops) {
+    if (holed.TypeOfLoop(li) == Brep::LoopKind::Outer) ++outer_loops;
+    if (holed.TypeOfLoop(li) == Brep::LoopKind::Inner) ++inner_loops;
+  }
+  Check(outer_loops == 1 && inner_loops == 1,
+        "...classified as exactly one real Outer loop and one real Inner (hole) loop");
+  const auto holed_meshes = holed.Tessellate(10, 10);
+  Check(holed_meshes.size() == 1 && holed_meshes.front().Area() > 0.0 && holed_meshes.front().Area() < 49.0,
+        "the holed face's own tessellated area is strictly positive and strictly less than the un-holed "
+        "face's own 49.0 - the hole genuinely removes material");
+
+  // Refusal: fewer than 3 points in trim_loop_uv.
+  bool threw_too_few = false;
+  try {
+    (void)Brep::TrimmedPlanarFaceWelded(surface, {Point2d(0.1, 0.1), Point2d(0.9, 0.9)});
+  } catch (const std::invalid_argument&) {
+    threw_too_few = true;
+  }
+  Check(threw_too_few, "TrimmedPlanarFaceWelded() with fewer than 3 trim_loop_uv points throws std::invalid_argument");
+
+  // Refusal: the mapped 3D outer loop is not planar - one corner of the
+  // underlying surface raised out of the other three's own z=0 plane, so
+  // a full-domain trim loop's own 4 mapped corners are genuinely
+  // non-coplanar (a bilinear patch's own corners are always exactly its
+  // 4 control points, so this hits the raised corner exactly, not an
+  // interpolated point that might accidentally land back on the plane).
+  const std::vector<Point3d> warped_grid = {
+      Point3d(0, 0, 0), Point3d(0, 10, 0), Point3d(10, 0, 0), Point3d(10, 10, 5),
+  };
+  const NurbsSurface warped_surface = NurbsSurface::FromControlGrid(warped_grid, 2, 2, 1, 1);
+  const std::vector<Point2d> full_domain_loop = {
+      Point2d(0, 0), Point2d(1, 0), Point2d(1, 1), Point2d(0, 1),
+  };
+  bool threw_nonplanar = false;
+  try {
+    (void)Brep::TrimmedPlanarFaceWelded(warped_surface, full_domain_loop);
+  } catch (const std::invalid_argument&) {
+    threw_nonplanar = true;
+  }
+  Check(threw_nonplanar,
+        "TrimmedPlanarFaceWelded() on a surface whose mapped trim loop is not genuinely planar throws "
+        "std::invalid_argument, rather than silently flattening it the way FromPlanarFaces() alone would");
+
+  // Refusal: a hole that lands outside the outer boundary entirely -
+  // propagated from AddHoleLoop()'s own Result::Failed.
+  const std::vector<Point2d> outside_hole = {
+      Point2d(5.0, 5.0), Point2d(5.2, 5.0), Point2d(5.2, 5.2), Point2d(5.0, 5.2),
+  };
+  bool threw_outside_hole = false;
+  try {
+    (void)Brep::TrimmedPlanarFaceWelded(surface, trim_loop, {outside_hole});
+  } catch (const std::invalid_argument&) {
+    threw_outside_hole = true;
+  }
+  Check(threw_outside_hole,
+        "TrimmedPlanarFaceWelded() with a hole entirely outside the outer boundary throws std::invalid_argument, "
+        "propagating AddHoleLoop()'s own refusal rather than silently building an invalid face");
 }
 
 void TestWeldAcrossIndependentlyParameterizedSurfaces() {
@@ -21756,6 +22201,25 @@ void TestSubDFromNurbsSurfaceExactOnFlatGrid() {
   Check(matched == 25, "every one of the 25 grid points lands exactly on the flat surface's own P(u,v) = (u, v, 0)");
 }
 
+// FromNurbsSurface() previously went straight to `surface.Domain()`/
+// `PointAt()` with no check that `surface` itself is actually usable -
+// a default-constructed NurbsSurface (no CVs, no real knot vector) is
+// not `ON_NurbsSurface::IsValid()`, so it now throws std::invalid_argument
+// up front instead of sampling a degenerate domain.
+void TestSubDFromNurbsSurfaceThrowsOnInvalidSurface() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::SubD;
+
+  const NurbsSurface invalid;  // default-constructed: no CVs, not IsValid()
+  bool threw = false;
+  try {
+    (void)SubD::FromNurbsSurface(invalid, 4, 4);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SubD::FromNurbsSurface throws std::invalid_argument on a default-constructed (not IsValid()) surface");
+}
+
 // SubD::CapBoundaryLoop(): a flat 2x2 quad grid (9 vertices, 4 faces,
 // one 8-edge boundary loop around the outside, one fully interior
 // valence-4 vertex at the center) capped with a single new 8-sided
@@ -23497,6 +23961,99 @@ void TestSubDToNurbsPatchesAdaptiveThrowsOnNegativeLevels() {
     threw = true;
   }
   Check(threw, "ToNurbsPatchesAdaptive throws std::invalid_argument on a negative max_adaptive_levels");
+}
+
+// ToNurbsPatches()/ToNurbsPatchesAdaptive() both silently `continue` past
+// any non-quad face (EdgeCount() != 4 - see their own doc comments). That
+// per-face skip was already covered, but nothing ever exercised what
+// happens when EVERY face is skipped: before this pass, both methods
+// returned a bare empty std::vector in that case, identical to "converted
+// 0 of 0 faces because the SubD is trivially empty" - a caller had no way
+// to tell "nothing to convert" apart from "there was something, and it
+// all got silently dropped". Subdivide() already throws std::runtime_error
+// on an empty SubD rather than silently no-op'ing; these two now match
+// that convention. Two different causes are checked, since they're
+// reached through different code paths (a SubD with literally zero faces
+// vs. one whose every face is a triangle, never a quad):
+void TestSubDToNurbsPatchesThrowsOnNoQuadFaces() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Cause 1: a genuinely faceless SubD (the same `const SubD empty;` idiom
+  // already used elsewhere in this file, e.g. SplitDisjointPieces's own
+  // "a faceless SubD splits into zero pieces" case).
+  {
+    const SubD empty;
+    bool threw = false;
+    try {
+      empty.ToNurbsPatches();
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw, "ToNurbsPatches throws std::runtime_error on a faceless SubD");
+  }
+
+  // Cause 2: every face present, but none of them a quad - a closed,
+  // perfectly valid, all-triangle octahedron SubD. EdgeCount() == 3 on
+  // every one of its 8 faces, so the per-face skip above drops all of
+  // them, landing in the exact same "0 patches collected" state as the
+  // faceless case despite FaceCount() being 8, not 0.
+  {
+    const SubD octahedron = SubD::FromControlMesh(MakeOctahedronMesh());
+    Check(octahedron.FaceCount() == 8, "the octahedron SubD fixture itself has 8 faces, not 0");
+    bool threw = false;
+    try {
+      octahedron.ToNurbsPatches();
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw, "ToNurbsPatches throws std::runtime_error on a SubD whose every face is a triangle");
+  }
+
+  // Negative control: an ordinary quad box still returns real patches,
+  // unaffected by this pass - the new exception fires only when the
+  // result would otherwise be empty, never for an ordinary non-empty one.
+  {
+    const SubD cube = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 1, 1, 1));
+    const auto patches = cube.ToNurbsPatches();
+    Check(patches.size() == 6, "ToNurbsPatches on an ordinary quad box still returns its 6 patches, no exception");
+  }
+}
+
+void TestSubDToNurbsPatchesAdaptiveThrowsOnNoQuadFaces() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Same two causes as TestSubDToNurbsPatchesThrowsOnNoQuadFaces above,
+  // since ToNurbsPatchesAdaptive() collects its own `face_ids` via the
+  // identical EdgeCount()==4 filter before doing any adaptive work.
+  {
+    const SubD empty;
+    bool threw = false;
+    try {
+      empty.ToNurbsPatchesAdaptive(2);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw, "ToNurbsPatchesAdaptive throws std::runtime_error on a faceless SubD");
+  }
+  {
+    const SubD octahedron = SubD::FromControlMesh(MakeOctahedronMesh());
+    bool threw = false;
+    try {
+      octahedron.ToNurbsPatchesAdaptive(0);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw,
+          "ToNurbsPatchesAdaptive throws std::runtime_error on an all-triangle SubD, even at "
+          "max_adaptive_levels=0");
+  }
+  {
+    const SubD cube = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 1, 1, 1));
+    const auto patches = cube.ToNurbsPatchesAdaptive(1);
+    Check(!patches.empty(), "ToNurbsPatchesAdaptive on an ordinary quad box still returns patches, no exception");
+  }
 }
 
 // PARITY_MAP.md's subd_mesh category lists "SubD non-manifold/multi-body
@@ -32668,6 +33225,124 @@ void TestMoveVertexConvexPlanarRefusesInvalidInput() {
   Check(threw, "MoveVertexConvexPlanar refuses a move that collapses an incident face's own triangle to ~0 area");
 }
 
+// PARITY_MAP's kernel: Local / direct-edit operations "Move a single B-rep
+// vertex directly" gap's own "every incident face must be a triangle"
+// restriction, narrowed: a quad (or larger) face incident to the moved
+// vertex is now accepted whenever the new point still lands exactly on
+// the plane its OWN OTHER (unmoved) corners already pin down, instead of
+// being refused outright for merely having 4+ vertices. The pyramid
+// fixture's own base corner b[0] is incident to the quad base face AND
+// two triangular side faces - the base's other three corners (b1, b2, b3)
+// are non-collinear points fixed at z=0, so z=0 is the ONLY plane any
+// moved b[0] can land on and still keep the base planar; sliding it to a
+// different (x, y) WITHIN that same z=0 plane is exactly the new in-scope
+// case (an out-of-plane move stays refused - see the refusal test below).
+// Old restriction: this move was refused purely for the base being a
+// quad, with no planarity check of its own at all - this reuses the
+// pyramid fixture `TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched`
+// already uses, moving a BASE corner instead of the apex.
+//
+// Volume is an independent closed-form check that doesn't depend on the
+// base being a square: a pyramid's volume is (1/3)*base_area*height for
+// ANY simple planar polygon base and ANY apex position (the classical
+// "cone" volume formula - decompose the base into triangles from any
+// point, each sub-pyramid's height to the apex is identical since they
+// all share the same base plane). `new_base_area` is computed here via
+// the 2D shoelace formula, independent of PlanarBrepVolumeExact's own 3D
+// tetrahedral-decomposition arithmetic.
+void TestMoveVertexConvexPlanarPyramidBaseCornerSlidesWithinBasePlaneMatchesExactPyramidVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveVertexConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Point3d apex(5, 5, 10);
+  const Point3d old_b0(0, 0, 0);
+  const Point3d b1(10, 0, 0), b2(10, 10, 0), b3(0, 10, 0);
+  const Brep pyramid = MakeTestPyramid(apex);
+
+  // Push b0 outward along the base's own diagonal, staying exactly in the
+  // z=0 plane - the base quad's own existing plane, not a new one.
+  const Point3d new_b0(-2, -2, 0);
+  const Brep moved = MoveVertexConvexPlanar(pyramid, old_b0, new_b0);
+
+  Check(moved.FaceCount() == 5, "MoveVertexConvexPlanar keeps the pyramid's own 5-face topology (no face vanishes)");
+
+  // Shoelace area of the new base quad (new_b0, b1, b2, b3), all at z=0.
+  auto shoelace2d = [](const std::vector<std::pair<double, double>>& pts) {
+    double sum = 0.0;
+    const size_t n = pts.size();
+    for (size_t i = 0; i < n; ++i) {
+      const size_t j = (i + 1) % n;
+      sum += pts[i].first * pts[j].second - pts[j].first * pts[i].second;
+    }
+    return std::fabs(sum) / 2.0;
+  };
+  const double new_base_area =
+      shoelace2d({{new_b0.x, new_b0.y}, {b1.x, b1.y}, {b2.x, b2.y}, {b3.x, b3.y}});
+  Check(std::fabs(new_base_area - 120.0) < 1e-9, "the hand-derived new base area itself is exactly 120");
+
+  const double expected_volume = (1.0 / 3.0) * new_base_area * apex.z;  // height = apex's own z above the z=0 base
+  const double measured_volume = PlanarBrepVolumeExact(moved);
+  Check(std::fabs(measured_volume - expected_volume) < 1e-6,
+        "moving the pyramid's own base corner within the base's existing plane matches the exact "
+        "(1/3)*base_area*height pyramid-volume formula for the ENLARGED base - a real reshape, not merely "
+        "surviving without crashing");
+  Check(std::fabs(measured_volume - 400.0) < 1e-6, "...and that closed-form value itself is exactly 400");
+
+  const std::vector<Brep::PlanarFace> result = moved.PlanarFaces();
+  auto loop_contains = [](const std::vector<Point3d>& loop, const Point3d& p) {
+    for (const Point3d& q : loop) {
+      if (q.DistanceTo(p) < 1e-9) return true;
+    }
+    return false;
+  };
+  Check(loop_contains(result[0].loop, new_b0) && result[0].loop.size() == 4,
+        "the base face carries the new corner exactly and is still a quad (no topology change)");
+  Check(moved.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the reshaped pyramid also tessellates to a closed, watertight manifold");
+}
+
+// The flip side of the above: an out-of-plane move of the SAME quad-face
+// corner is still refused, exactly as before - the generalization measures
+// planarity, it doesn't abandon the check. Also covers the genuinely
+// over-constrained case: a BOX corner's three incident quads are mutually
+// perpendicular, each one's other three corners already pinning a
+// DIFFERENT plane (x=0, y=0, z=0) - the only point satisfying all three at
+// once is the original position itself, so (unlike the pyramid base
+// corner, whose other two incident faces are triangles) a box corner gains
+// no nontrivial move at all under this generalization.
+void TestMoveVertexConvexPlanarRefusesGenuinelyNonPlanarQuadMove() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveVertexConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Point3d apex(5, 5, 10);
+  const Point3d old_b0(0, 0, 0);
+  const Brep pyramid = MakeTestPyramid(apex);
+
+  bool threw = false;
+  try {
+    MoveVertexConvexPlanar(pyramid, old_b0, Point3d(-2, -2, 1));  // lifted off the base's own z=0 plane
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "MoveVertexConvexPlanar still refuses a quad-incident move that genuinely leaves the base non-planar - "
+        "the new planarity check catches it rather than silently accepting any move on a 4+-vertex face");
+
+  threw = false;
+  try {
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    MoveVertexConvexPlanar(box, Point3d(0, 0, 0), Point3d(0.1, 0.1, 0.1));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "a box corner's three mutually-perpendicular incident quads each already pin a different plane (x=0, "
+        "y=0, z=0), so even a tiny move off the original position is refused - confirming the generalization "
+        "doesn't silently open up the fully-constrained box-corner case");
+}
+
 // PARITY_MAP's kernel: Local / direct-edit operations "Move/transform face
 // (tweak face, neighbours adjust)" gap - previously only OffsetFace()'s
 // own normal-only translate. Feeding MoveFaceConvexPlanar the exact
@@ -32906,6 +33581,67 @@ void TestMoveEdgeConvexPlanarRefusesInvalidInput() {
     threw = true;
   }
   Check(threw, "MoveEdgeConvexPlanar refuses an old_p0 that doesn't land within tolerance of any vertex");
+}
+
+// PARITY_MAP's kernel: Local / direct-edit operations "Move/transform edge
+// (tweak edge)" gap's own "every incident face must be a triangle"
+// restriction, narrowed the identical way `MoveVertexConvexPlanar()`'s own
+// bullet is above: a box's own bottom-front edge (shared by the bottom
+// quad AND the front quad, plus touching the left and right quads through
+// its own two endpoints individually) is raised straight up by a uniform
+// height `h` - x and y held fixed, only z changes - which keeps EVERY one
+// of the four incident quads genuinely planar: the bottom face's raised
+// edge stays parallel to its own fixed opposite edge (a pure shear-tilt of
+// a rectangle, still planar for any h), the front face's two moved
+// corners keep y=0 exactly (an in-plane slide, same mechanism the pyramid
+// base-corner test above exercises), and the left/right faces each keep
+// their own touched corner's x exactly 0 or 10. Old behavior: this call
+// was refused outright for touching a box's own quad faces, full stop, as
+// `TestMoveEdgeConvexPlanarRefusesInvalidInput` above still confirms for a
+// move that does NOT keep every incident quad planar.
+//
+// The resulting solid is a box with its bottom tilted up along y=0: a
+// closed form the same way `TestFoldFaceConvexPlanarBoxFrontWallHingedAtBottomEdgeMatchesExactIntegral`
+// checks its own hinge fold - here derived directly in this test, not
+// reused, as the double integral of (10 - h*(10-y)/10) over x,y in
+// [0,10]x[0,10]: 10*(10*10 - (h/10)*50) = 1000 - 50*h.
+void TestMoveEdgeConvexPlanarBoxBottomFrontEdgeTiltMatchesExactIntegralVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveEdgeConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const double h = 4.0;
+  const Point3d old_p0(0, 0, 0), old_p1(10, 0, 0);
+  const Point3d new_p0(0, 0, h), new_p1(10, 0, h);
+  const Brep moved = MoveEdgeConvexPlanar(box, old_p0, old_p1, new_p0, new_p1);
+
+  Check(moved.FaceCount() == 6, "MoveEdgeConvexPlanar keeps the box's own 6-face topology (no face vanishes)");
+
+  const double expected_volume = 1000.0 - 50.0 * h;
+  Check(std::fabs(expected_volume - 800.0) < 1e-12, "the hand-derived integral itself evaluates to 800 for h=4");
+  const double measured_volume = PlanarBrepVolumeExact(moved);
+  Check(std::fabs(measured_volume - expected_volume) < 1e-9,
+        "raising the box's own bottom-front edge by a uniform height matches the exact closed-form integral "
+        "volume - a real reshape of a quad-faced solid, something this function refused outright before");
+
+  const std::vector<Brep::PlanarFace> result = moved.PlanarFaces();
+  auto loop_contains = [](const std::vector<Point3d>& loop, const Point3d& p) {
+    for (const Point3d& q : loop) {
+      if (q.DistanceTo(p) < 1e-9) return true;
+    }
+    return false;
+  };
+  int quads_touched = 0;
+  for (const Brep::PlanarFace& f : result) {
+    if (f.loop.size() != 4) continue;
+    if (loop_contains(f.loop, new_p0) || loop_contains(f.loop, new_p1)) ++quads_touched;
+  }
+  Check(quads_touched == 4,
+        "all four incident quads (bottom, front, left, right) survive as quads carrying the new edge "
+        "position - none of them needed to change topology to stay planar");
+  Check(moved.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the tilted box also tessellates to a closed, watertight manifold");
 }
 
 // PARITY_MAP's kernel: Local / direct-edit operations "Move a single B-rep
@@ -45336,6 +46072,7 @@ void TestPolygonBooleanPlanarNAryNegativeControls() {
   Check(Within(identity_area, 4.0, 1e-9),
         "PolygonBooleanPlanarNAry with a single-element first_group and no second_group is a no-op fold (area 4)");
 }
+
 
 void TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion() {
   using dino8::kernel::BooleanCombineMixedNAry;
@@ -66994,10 +67731,12 @@ int main() {
   TestCurveLength();
   TestCurveParameterAtArcLength();
   TestCurveDivideByCount();
+  TestCurveDivideByLength();
   TestCurveIsRational();
   TestCurveSetWeightAt();
   TestCurveMakeRationalAndNonRational();
   TestCurveInsertKnotAt();
+  TestCurveRemoveKnotAt();
   TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();
@@ -67042,6 +67781,8 @@ int main() {
   TestSectionBrepByPlanesIndependentlyOrientedClipPlanes();
   TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan();
   TestIntersectCurveSurfaceOverlapBisectionTightensSpanBoundary();
+  TestIntersectCurveSurfaceOverlapRefinesBoundaryPastSamplingResolution();
+  TestIntersectCurveBrepOverlapScopesSpanToFaceTrim();
   TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly();
   TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
   TestFindSurfaceTangentContactsSphereOnPlane();
@@ -67204,6 +67945,7 @@ int main() {
   TestBrepVolumeAndAreaMatchClosedForms();
   TestBrepTrimmedPlanarFaceRejectsTooFewPoints();
   TestBrepTrimmedPlanarFace();
+  TestBrepTrimmedPlanarFaceWelded();
   TestWeldAcrossIndependentlyParameterizedSurfaces();
   TestExtrudeUntrimmedFaceIntoSolid();
   TestExtrudeTrimmedFaceFeedsBoolean();
@@ -67254,6 +67996,7 @@ int main() {
   TestSubDIsValid();
   TestSubDMeshRoundTripIsExactAtLevelZero();
   TestSubDFromNurbsSurfaceExactOnFlatGrid();
+  TestSubDFromNurbsSurfaceThrowsOnInvalidSurface();
   TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth();
   TestSubDTransformMovesScalesAndStaysValidUnderMirror();
   TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces();
@@ -67277,6 +68020,8 @@ int main() {
   TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace();
   TestSubDToNurbsPatchesAdaptiveRegularFaceUnaffected();
   TestSubDToNurbsPatchesAdaptiveThrowsOnNegativeLevels();
+  TestSubDToNurbsPatchesThrowsOnNoQuadFaces();
+  TestSubDToNurbsPatchesAdaptiveThrowsOnNoQuadFaces();
   TestSubDCheckCleanClosedBoxReportsNoDefects();
   TestSubDCheckOpenGridReportsNakedEdgesOnly();
   TestSubDCheckDisjointPiecesReportsMultipleBodies();
@@ -67414,11 +68159,14 @@ int main() {
   TestFoldFacesConvexPlanarRefusesInvalidInput();
   TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched();
   TestMoveVertexConvexPlanarRefusesInvalidInput();
+  TestMoveVertexConvexPlanarPyramidBaseCornerSlidesWithinBasePlaneMatchesExactPyramidVolume();
+  TestMoveVertexConvexPlanarRefusesGenuinelyNonPlanarQuadMove();
   TestMoveFaceConvexPlanarMatchesOffsetFaceForPureNormalTranslate();
   TestMoveFaceConvexPlanarRotationMatchesExactAngleAndFixedOrigin();
   TestMoveFaceConvexPlanarRefusesInvalidInput();
   TestMoveEdgeConvexPlanarTetrahedronMatchesExactVolumeFromSignedTripleProduct();
   TestMoveEdgeConvexPlanarRefusesInvalidInput();
+  TestMoveEdgeConvexPlanarBoxBottomFrontEdgeTiltMatchesExactIntegralVolume();
   TestMoveVerticesConvexPlanarMovesAllFourTetrahedronVerticesMatchesExactVolumeFromSignedTripleProduct();
   TestMoveVerticesConvexPlanarSucceedsWhereASequentialSingleMoveWouldRefuse();
   TestMoveVerticesConvexPlanarRefusesInvalidInput();

@@ -4,6 +4,7 @@
 // CreateUVCrv, UnrollSrf/Smash (developable approximation), Fin, Ribbon,
 // Silhouette, 3DFace, MakeUniformUV and friends.
 #include "commands/cmd_common.h"
+#include "dino8/kernel/boolean_general.h"
 #include "doc/SubObjectEdit.h"
 #include "drafting/SectionView.h"
 #include "geom/SurfaceIntersect.h"
@@ -2145,13 +2146,136 @@ std::vector<Point3d> ArcPoints(Point3d center, Vector3d dA, Vector3d dB, double 
   return pts;
 }
 
+// Trims a planar face's own single outer loop against a contact curve,
+// keeping the far side - FilletTwoSurfacesCommand's own TrimWholeLoop
+// (cmd_fillet.cpp), duplicated here rather than shared across translation
+// units (the same "each file keeps its own copy of these small,
+// already-proven helpers" convention this codebase uses elsewhere, e.g.
+// BlendCurves()' own HermiteBlendRow in sweep.cpp). Real geometric trim via
+// ON_BrepTrimmedPlane, not a mesh fallback - limited to a face whose outer
+// loop is exactly the piece touching the fillet.
+bool TrimRailWholeLoop(const ON_Brep& b, int fi, const ON_NurbsCurve& contact, CommandContext& ctx, ObjectId id) {
+  if (fi < 0 || fi >= b.m_F.Count()) return false;
+  const ON_BrepFace& f = b.m_F[fi];
+  ON_Plane plane;
+  if (!f.SurfaceOf()->IsPlanar(&plane, 1e-4)) return false;
+  const ON_Interval du = f.SurfaceOf()->Domain(0), dv = f.SurfaceOf()->Domain(1);
+  std::vector<Point3d> corners = {f.SurfaceOf()->PointAt(du.Min(), dv.Min()), f.SurfaceOf()->PointAt(du.Max(), dv.Min()), f.SurfaceOf()->PointAt(du.Max(), dv.Max()), f.SurfaceOf()->PointAt(du.Min(), dv.Max())};
+  const Point3d c0 = contact.PointAtStart(), c1 = contact.PointAtEnd();
+  Vector3d along = c1 - c0;
+  if (!along.Unitize()) return false;
+  Vector3d perp = ON_CrossProduct(plane.zaxis, along);
+  const double side_ref = ON_DotProduct(f.SurfaceOf()->PointAt(du.Mid(), dv.Mid()) - c0, perp);
+  std::vector<Point3d> far_corners;
+  for (const Point3d& c : corners) if (ON_DotProduct(c - c0, perp) * side_ref > 0) far_corners.push_back(c);
+  if (far_corners.size() < 2) return false;
+  std::vector<Point3d> ordered;
+  for (int i = 0; i < 4; ++i) if (std::find(far_corners.begin(), far_corners.end(), corners[static_cast<size_t>(i)]) != far_corners.end()) ordered.push_back(corners[static_cast<size_t>(i)]);
+  ON_SimpleArray<ON_Curve*> boundary;
+  ON_Curve* cc = contact.DuplicateCurve();
+  if (cc->PointAtEnd().DistanceTo(ordered.front()) > cc->PointAtStart().DistanceTo(ordered.front())) cc->Reverse();
+  boundary.Append(cc);
+  boundary.Append(new ON_LineCurve(cc->PointAtEnd(), ordered.front()));
+  for (size_t i = 0; i + 1 < ordered.size(); ++i) boundary.Append(new ON_LineCurve(ordered[i], ordered[i + 1]));
+  boundary.Append(new ON_LineCurve(ordered.back(), cc->PointAtStart()));
+  ON_Brep* nb = ON_BrepTrimmedPlane(plane, boundary, true);
+  for (int i = 0; i < boundary.Count(); ++i) delete boundary[i];
+  if (!nb) return false;
+  ON_Brep result = *nb;
+  delete nb;
+  result.SetTolerancesBoxesAndFlags(false, true, false, true, true, true, true, true);
+  if (!result.IsValid(nullptr)) return false;
+  if (SceneObject* orig = ctx.Doc().Find(id)) {
+    orig->kind = ObjectKind::Brep;
+    if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+    orig->brep->raw() = result;
+    orig->surface.reset();
+    orig->InvalidateDisplay();
+  }
+  return true;
+}
+// General (non-planar) counterpart to TrimRailWholeLoop() above, via the
+// kernel's own SplitFaceByCurve() (general to any ON_Surface) - closes the
+// "no trimming" half of this command's own PARITY_MAP.md gap (Blending &
+// chamfering: "Fillet surface along a user-supplied rail curve"). Mirrors
+// FilletTwoSurfacesCommand's own TrimBySplit (cmd_fillet.cpp) verbatim.
+bool TrimRailBySplit(const ON_Brep& b, int fi, const ON_NurbsCurve& contact, double tol, CommandContext& ctx, ObjectId id) {
+  if (fi < 0 || fi >= b.m_F.Count()) return false;
+  const ON_BrepFace& f = b.m_F[fi];
+  const ON_Surface* surf = f.SurfaceOf();
+  if (surf == nullptr) return false;
+  const ON_Interval du = surf->Domain(0), dv = surf->Domain(1);
+  const Point3d far_ref = surf->PointAt(du.Mid(), dv.Mid());
+  const Point3d c0 = contact.PointAtStart(), c1 = contact.PointAtEnd();
+  Vector3d along = c1 - c0;
+  if (!along.Unitize()) return false;
+  double mu = 0, mv = 0;
+  const Point3d mid3 = contact.PointAt(contact.Domain().Mid());
+  if (!SurfaceClosestPointGlobal(*surf, mid3, mu, mv)) return false;
+  const Vector3d normal = surf->NormalAt(mu, mv);
+  Vector3d perp = ON_CrossProduct(normal, along);
+  if (!perp.Unitize()) return false;
+  const double side_ref = ON_DotProduct(far_ref - c0, perp);
+  if (std::fabs(side_ref) < 1e-9) return false;
+
+  kernel::Brep kb;
+  kb.raw() = b;
+  kernel::NurbsCurve kc;
+  kc.raw() = contact;
+  kernel::Brep split;
+  try {
+    split = kernel::SplitFaceByCurve(kb, fi, kc, std::max(tol, 1e-6));
+  } catch (const std::exception&) {
+    return false;
+  }
+  if (split.FaceCount() != kb.FaceCount() + 1) return false;
+  const std::vector<kernel::Mesh> meshes = split.Tessellate(16, 16);
+  int keep = -1, drop = -1;
+  for (int idx : {fi, fi + 1}) {
+    if (idx < 0 || idx >= static_cast<int>(meshes.size()) || meshes[static_cast<size_t>(idx)].VertexCount() == 0) continue;
+    const kernel::BoundingBox bb = meshes[static_cast<size_t>(idx)].GetBoundingBox();
+    const Point3d center((bb.min.x + bb.max.x) * 0.5, (bb.min.y + bb.max.y) * 0.5, (bb.min.z + bb.max.z) * 0.5);
+    const double s = ON_DotProduct(center - c0, perp);
+    if (s * side_ref > 0) keep = idx; else drop = idx;
+  }
+  if (keep < 0 || drop < 0) return false;
+  try {
+    split.DeleteFace(drop, /*heal=*/false);
+  } catch (const std::exception&) {
+    return false;
+  }
+  ON_Brep result = split.raw();
+  result.SetTolerancesBoxesAndFlags(false, true, false, true, true, true, true, true);
+  if (!result.IsValid(nullptr)) return false;
+  if (SceneObject* orig = ctx.Doc().Find(id)) {
+    orig->kind = ObjectKind::Brep;
+    if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+    orig->brep->raw() = result;
+    orig->surface.reset();
+    orig->InvalidateDisplay();
+  }
+  return true;
+}
+// Trims whichever of `b`'s face `fi` is planar via TrimRailWholeLoop, else
+// via the general TrimRailBySplit - the same per-face dispatch
+// FilletTwoSurfacesCommand's own trim step uses.
+bool TrimRailFace(const ON_Brep& b, int fi, const ON_NurbsCurve& contact, double tol, CommandContext& ctx, ObjectId id) {
+  if (fi < 0 || fi >= b.m_F.Count()) return false;
+  ON_Plane plane;
+  if (b.m_F[fi].SurfaceOf()->IsPlanar(&plane, tol * 10)) return TrimRailWholeLoop(b, fi, contact, ctx, id);
+  return TrimRailBySplit(b, fi, contact, tol, ctx, id);
+}
+
 class FilletSrfToRailCommand : public Command {
  public:
   void Begin(CommandContext&) override {
-    options = {{"Radius", FormatNumber(radius_), {}, true, false}};
+    options = {{"Radius", FormatNumber(radius_), {}, true, false}, {"Trim", "Yes", {"Yes", "No"}, false, true}};
     WantPoint("Click the first surface");
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Radius") radius_ = std::atof(v.c_str()); }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Radius") radius_ = std::atof(v.c_str());
+    if (n == "Trim") trim_ = (v == "Yes");
+  }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     if (!a_) {
       a_ = PickFace(ctx, p);
@@ -2181,6 +2305,8 @@ class FilletSrfToRailCommand : public Command {
     const int n = 48;
     const kernel::Interval d = rail_->Domain();
     std::vector<std::vector<Point3d>> rows;
+    std::vector<ON_3dPoint> contact_a, contact_b;
+    std::vector<double> params;
     int made = 0;
     double max_gap = 0;
     for (int i = 0; i <= n; ++i) {
@@ -2194,6 +2320,9 @@ class FilletSrfToRailCommand : public Command {
       if (!da.Unitize() || !db.Unitize()) continue;
       max_gap = std::max({max_gap, std::fabs(dda - radius_), std::fabs(ddb - radius_)});
       rows.push_back(ArcPoints(q, da, db, radius_, 8));
+      contact_a.push_back(ca);
+      contact_b.push_back(cb);
+      params.push_back(t);
       ++made;
     }
     if (made < 2) { ctx.Warn("FilletSrfToRail: too few valid rail samples (the rail must run near both surfaces)"); return; }
@@ -2201,13 +2330,30 @@ class FilletSrfToRailCommand : public Command {
     ctx.Doc().BeginChange("FilletSrfToRail");
     SceneObject like = *oa;
     ObjectId nid = AddSurfaceFrom(ctx, fillet.raw(), like);
+    int trimmed = 0;
+    if (trim_) {
+      // Real B-rep trims of the two picked surfaces along their own contact
+      // curves, the same TrimWholeLoop/TrimBySplit machinery
+      // FilletTwoSurfacesCommand already uses for FilletSrf/ChamferSrf -
+      // closes this command's own "no trimming" gap (PARITY_MAP.md,
+      // Blending & chamfering).
+      const ON_NurbsCurve contact_curve_a = InterpolateCubic(contact_a, params, false, 3);
+      const ON_NurbsCurve contact_curve_b = InterpolateCubic(contact_b, params, false, 3);
+      const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
+      std::optional<ON_Brep> ba = BrepOfObject(*oa), bb = BrepOfObject(*ob);
+      const bool okA = ba && TrimRailFace(*ba, a_->face, contact_curve_a, tol, ctx, a_->id);
+      const bool okB = bb && TrimRailFace(*bb, b_->face, contact_curve_b, tol, ctx, b_->id);
+      trimmed = (okA ? 1 : 0) + (okB ? 1 : 0);
+    }
     ctx.Doc().Select(nid, true);
     ctx.Print("FilletSrfToRail: fillet surface built along the rail's own points (radius " + FormatNumber(radius_) + "; contact points off the exact radius by up to " + FormatNumber(max_gap) +
-              " - the rail is used directly as the spine, rather than the SSX-offset spine FilletSrf computes)");
+              " - the rail is used directly as the spine, rather than the SSX-offset spine FilletSrf computes)" +
+              (trim_ ? (trimmed == 2 ? "; both surfaces trimmed" : (trimmed == 1 ? "; one surface trimmed (the other could not be split)" : "; neither surface could be split, left untrimmed")) : ""));
   }
   std::optional<FacePick> a_, b_;
   std::optional<kernel::NurbsCurve> rail_;
   double radius_ = 1.0;
+  bool trim_ = true;
 };
 
 // ---------------------------------------------------------------------------
