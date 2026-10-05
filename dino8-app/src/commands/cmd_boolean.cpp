@@ -346,6 +346,168 @@ class MutualImprintCommand : public Command {
   bool have_first_ = false;
 };
 
+// Shared by SplitBySheetCommand/TrimSheetBySolidCommand below: the first
+// object in `ids` that is a plain, closed (ON_Brep::IsSolid()) Brep - the
+// precondition kernel::SplitBySheet()/TrimSheetBySolid() themselves expect
+// of their own `solid` operand (both classify by ray-casting in/out of it,
+// which has no well-defined meaning for an open shell).
+const SceneObject* FirstSolidBrep(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (o && o->kind == ObjectKind::Brep && o->brep && o->brep->raw().IsSolid()) return o;
+  }
+  return nullptr;
+}
+
+// Shared by SplitBySheetCommand/TrimSheetBySolidCommand below: the first
+// object in `ids` usable as an open cutting/trimming "sheet" - either a
+// Brep with at least one face (the same precondition FirstImprintableBrep
+// above already checks, since kernel::SplitBySheet()/TrimSheetBySolid()
+// impose no IsSolid() requirement on `sheet` either) or a bare Surface
+// object, wrapped into a one-face Brep via Brep::FromSurface() the same way
+// this kernel's own test fixtures (MakePlanarSheetZ, dino8-kernel/tests/
+// test_basic.cpp) build a sheet from a NurbsSurface - a plain "Plane"/
+// "Plane3Pt"/"SrfPt" result has never gone through PlanarSrf's own
+// curve-to-Brep step, so without this a user would have to build a closed
+// planar curve and run PlanarSrf first just to get a sheet either command
+// could accept at all. Returns the Brep by value (not a document reference)
+// since a Surface-kind pick has no Brep object of its own to point to; the
+// picked object itself (whichever kind) is always left untouched in the
+// document, exactly like FirstImprintableBrep's own `tool` contract.
+struct SheetPick {
+  ObjectId id;
+  kernel::Brep brep;
+};
+std::optional<SheetPick> FirstSheetBrep(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o) continue;
+    if (o->kind == ObjectKind::Brep && o->brep && o->brep->raw().m_F.Count() > 0) return SheetPick{id, *o->brep};
+    if (o->kind == ObjectKind::Surface && o->surface) return SheetPick{id, kernel::Brep::FromSurface(*o->surface)};
+  }
+  return std::nullopt;
+}
+
+// SplitBySheet: splits a closed solid into the two real B-rep pieces on
+// either side of an open cutting sheet, each capped with the portion of the
+// sheet inside the solid - PARITY_MAP.md's "kernel: Boolean operations"
+// "Sheet/solid trim" bullet's first half ("open surface as cutter through a
+// solid"). kernel::SplitBySheet() (boolean_general.h/.cpp) already existed,
+// fully tested at the kernel layer (including a genuinely curved solid and,
+// as of this pass, a genuinely curved sheet too - see this category's own
+// trailing note in PARITY_MAP.md); this is its first app command, closing
+// that bullet's own previously-named "wiring either into an app command"
+// gap for this half. The sheet is read-only and stays in the document
+// untouched, exactly like Imprint's own `tool` contract above; the solid is
+// replaced by its own two pieces (0, 1, or 2 new objects - a cutter that
+// misses the solid entirely leaves one empty, dropped silently, matching
+// kernel::SplitBySheet's own "kept.empty()" convention for a disjoint
+// sheet), never tessellated.
+class SplitBySheetCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select the closed solid to split (kept as two pieces)"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (!have_solid_) {
+      const SceneObject* o = FirstSolidBrep(ctx, ids);
+      if (!o) { ctx.Warn("SplitBySheet: select a closed solid Brep"); Finish(); return; }
+      solid_id_ = o->id;
+      have_solid_ = true;
+      ctx.Doc().Select(solid_id_, false);
+      WantObjects("Select the cutting sheet (an open surface or Brep; kept unchanged)");
+      accept_preselection = false;
+      return;
+    }
+    Run(ctx, ids);
+    Finish();
+  }
+  void Run(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+    std::optional<SheetPick> sheet = FirstSheetBrep(ctx, ids);
+    const SceneObject* solid = ctx.Doc().Find(solid_id_);
+    if (!sheet || sheet->id == solid_id_ || !solid || !solid->brep) {
+      ctx.Warn("SplitBySheet: select a different object as the cutting sheet");
+      return;
+    }
+    const int layer = solid->layer_index;
+    try {
+      auto [positive_side, negative_side] = kernel::SplitBySheet(*solid->brep, sheet->brep);
+      ctx.Doc().BeginChange("SplitBySheet");
+      ctx.Doc().Remove(solid_id_);
+      int made = 0;
+      for (kernel::Brep* piece : {&positive_side, &negative_side}) {
+        if (piece->raw().m_F.Count() == 0) continue;
+        SceneObject n = SceneObject::MakeBrep(*piece);
+        n.layer_index = layer;
+        ctx.Doc().Add(std::move(n));
+        ++made;
+      }
+      ctx.Print("SplitBySheet: " + std::to_string(made) + " piece(s), exact B-rep (no tessellation)");
+    } catch (const std::exception& ex) {
+      ctx.Warn(std::string("SplitBySheet failed: ") + ex.what());
+    }
+  }
+  ObjectId solid_id_ = kNoObject;
+  bool have_solid_ = false;
+};
+
+// TrimSheetBySolid: trims an open sheet's own surface down to the portion
+// inside (or, with KeepInside=No, outside) a solid - PARITY_MAP.md's "Sheet/
+// solid trim" bullet's OTHER half, distinct from SplitBySheetCommand above
+// (which splits a solid BY a sheet; this trims a sheet BY a solid, never
+// splitting, capping or returning the solid itself). kernel::
+// TrimSheetBySolid() already existed, fully tested at the kernel layer; this
+// is its first app command. The solid is read-only and stays in the
+// document untouched (used purely as the ray-cast classification target,
+// exactly like ImprintCommand's own `tool`); the sheet is replaced by its
+// own trimmed result.
+class TrimSheetBySolidCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select the sheet to trim"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (!have_sheet_) {
+      std::optional<SheetPick> sheet = FirstSheetBrep(ctx, ids);
+      if (!sheet) { ctx.Warn("TrimSheetBySolid: select a Brep or Surface with at least one face"); Finish(); return; }
+      sheet_id_ = sheet->id;
+      have_sheet_ = true;
+      ctx.Doc().Select(sheet_id_, false);
+      options = {{"KeepInside", keep_inside_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
+      WantObjects("Select the trimming solid (kept unchanged)");
+      accept_preselection = false;
+      return;
+    }
+    Run(ctx, ids);
+    Finish();
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string&) override {
+    if (n == "KeepInside") { keep_inside_ = !keep_inside_; options[0].value = keep_inside_ ? "Yes" : "No"; }
+  }
+  void Run(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+    const SceneObject* solid = FirstSolidBrep(ctx, ids);
+    const SceneObject* sheet_obj = ctx.Doc().Find(sheet_id_);
+    if (!solid || solid->id == sheet_id_ || !sheet_obj) {
+      ctx.Warn("TrimSheetBySolid: select a different, closed solid Brep");
+      return;
+    }
+    std::optional<SheetPick> sheet = FirstSheetBrep(ctx, {sheet_id_});
+    if (!sheet) { ctx.Warn("TrimSheetBySolid: the originally-selected sheet is no longer valid"); return; }
+    const int layer = sheet_obj->layer_index;
+    try {
+      kernel::Brep result = kernel::TrimSheetBySolid(sheet->brep, *solid->brep, keep_inside_);
+      ctx.Doc().BeginChange("TrimSheetBySolid");
+      ctx.Doc().Remove(sheet_id_);
+      SceneObject n = SceneObject::MakeBrep(result);
+      n.layer_index = layer;
+      ctx.Doc().Add(std::move(n));
+      ctx.Print("TrimSheetBySolid: " + std::to_string(result.raw().m_F.Count()) + " face(s), KeepInside=" +
+                std::string(keep_inside_ ? "Yes" : "No"));
+    } catch (const std::exception& ex) {
+      ctx.Warn(std::string("TrimSheetBySolid failed: ") + ex.what());
+    }
+  }
+  ObjectId sheet_id_ = kNoObject;
+  bool have_sheet_ = false;
+  bool keep_inside_ = true;
+};
+
 // Split solids by a plane through two picked points (normal to the CPlane).
 class SplitPlaneCommand : public Command {
  public:
@@ -722,6 +884,10 @@ void RegisterBooleanCommands(CommandEngine& e) {
       "Splits the target object's faces wherever they cross the tool object, removing no material from either (Parasolid/ACIS IMPRINT) - the tool is left unchanged.");
   Reg(e, "MutualImprint", Make<MutualImprintCommand>(), CommandStatus::Implemented,
       "Like Imprint, but both objects imprint each other and both are replaced by their own split result.");
+  Reg(e, "SplitBySheet", Make<SplitBySheetCommand>(), CommandStatus::Implemented,
+      "Splits a closed solid into the two real B-rep pieces on either side of an open cutting sheet (Brep or Surface) - the sheet is left unchanged.");
+  Reg(e, "TrimSheetBySolid", Make<TrimSheetBySolidCommand>(), CommandStatus::Implemented,
+      "Trims an open sheet (Brep or Surface) down to the portion inside, or with KeepInside=No outside, a closed solid - the solid is left unchanged.");
   Reg(e, "MeshBooleanUnion", Make<BooleanCommand>(kernel::BooleanOp::Union, "MeshBooleanUnion", false));
   Reg(e, "MeshBooleanDifference", Make<BooleanCommand>(kernel::BooleanOp::Difference, "MeshBooleanDifference", true));
   Reg(e, "MeshBooleanIntersection", Make<BooleanCommand>(kernel::BooleanOp::Intersection, "MeshBooleanIntersection", true));
