@@ -577,6 +577,29 @@ dtecheck "DXF: 3 curves, 0 points, 0 meshes" "the reopened file's TEXT entity ro
 dtecheck "Text = Hi" "the round-tripped TEXT entity's string content survived exactly (What dumps each object's user text)"
 dtecheck "Annotation = Text" "the round-tripped curves carry the same Annotation=Text tag DxfImporter::Text() writes for a hand-written fixture"
 grep -q "^TEXT$" "$TMPW/dxf_text_export.dxf" && echo "ok   dxf_text_export.dxf contains a real TEXT entity, not just baked glyph-outline curves" || { echo "FAIL dxf_text_export.dxf has no TEXT entity"; fail=1; }
+# DXF INSERT export/import: ExportDxf had no BLOCKS/INSERT writer at all
+# before this change, and ImportDxf had no INSERT reader at all either (see
+# dxf_block_export_script.txt's own header comment) - a Dino8 block
+# instance used to round-trip out as bare flattened curves per instance,
+# losing the fact either copy was ever a block, and a real third-party
+# DXF's own BLOCK/INSERT entities were silently skipped on import. Checks
+# both sides at once: the reopened file's objects carry the same Block/
+# BlockInsert tags the original instances had, and BlockManager reports
+# the same definition back (2 objects in the definition, 4 across both
+# instances), round-tripping through Dino8's own writer and its new
+# DxfImporter::Insert() reader together.
+sed "s|@TMP@|$TMPW|g" "$HERE/dxf_block_export_script.txt" > "$TMPW/dxf_block_export_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DBE="$("$BIN" --smoke 30 --script "$TMPW/dxf_block_export_script.txt" 2>&1)" || { echo "$DBE"; echo "FAIL: DXF INSERT export script exited non-zero"; exit 1; }
+else
+  DBE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_block_export_script.txt" 2>&1)" || { echo "$DBE"; echo "FAIL: DXF INSERT export script exited non-zero"; exit 1; }
+fi
+dbecheck() { if echo "$DBE" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DBE" "$1"; fail=1; fi; }
+dbecheck "Exported $TMPW/dxf_block_export.dxf" "ExportDxf wrote a file"
+dbecheck "DXF: 4 curves, 0 points, 0 meshes, 2 block instances flattened" "the reopened file's two INSERT entities round-tripped as two flattened block instances, not four unrelated curves"
+dbecheck "Block = FixtureBlock" "the round-tripped curves carry the same Block user-text tag InstantiateBlockInDocument already writes"
+dbecheck "Block 'FixtureBlock': 2 object(s), base 0,0,0, 4 object(s) in instances" "BlockManager reports the same definition/instance counts after the round trip as before export"
+grep -q "^BLOCK$" "$TMPW/dxf_block_export.dxf" && grep -q "^INSERT$" "$TMPW/dxf_block_export.dxf" && echo "ok   dxf_block_export.dxf contains real BLOCK/INSERT entities, not just flattened LINE entities" || { echo "FAIL dxf_block_export.dxf has no BLOCK/INSERT entity"; fail=1; }
 # DWG SPLINE: built via LibreDWG's own dwg_add_SPLINE (marked "Experimental.
 # Does not work yet properly" in dwg_api.h - confirmed by hand it only ever
 # populates fit_pts, never real NURBS control points), so this exercises

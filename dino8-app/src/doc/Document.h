@@ -800,6 +800,7 @@ class Document {
   std::vector<BlockDefinition>& Blocks() { return blocks_; }
   const std::vector<BlockDefinition>& Blocks() const { return blocks_; }
   BlockDefinition* FindBlock(const std::string& name) { for (BlockDefinition& b : blocks_) if (b.name == name) return &b; return nullptr; }
+  const BlockDefinition* FindBlock(const std::string& name) const { for (const BlockDefinition& b : blocks_) if (b.name == name) return &b; return nullptr; }
   // Removes a block definition by name. Returns false if not found.
   bool RemoveBlock(const std::string& name);
   std::vector<ReferenceModel>& ReferenceModels() { return reference_models_; }
