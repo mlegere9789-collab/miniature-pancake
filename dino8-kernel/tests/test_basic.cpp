@@ -23616,6 +23616,87 @@ void TestSubDOffsetArgumentChecksRejectNonFiniteDistance() {
   Check(threw, "Offset(-infinity) throws std::invalid_argument");
 }
 
+// PARITY_MAP.md's offsetshell "SubD offset / thicken" gap's own disclosed
+// remainder: "no Solid (thicken-into-a-closed-shell) variant". A lone quad's
+// control net is planar, and every Catmull-Clark limit-point formula is an
+// affine combination of its inputs, so the limit surface of a planar cage
+// stays EXACTLY in that same plane too (an affine combination of coplanar
+// points can't leave the plane) - whatever its boundary curve does inward
+// from the original corners, the tessellated sheet is still an exactly
+// flat polygon. A flat sheet thickened into a prism has an exact, two-
+// independently-computed-quantities closed form regardless of that
+// boundary's own exact shape: Volume() (an integral over the closed
+// result's own triangles) must equal Area() (the flat sheet's own 2D area,
+// computed before thickening) times the offset distance.
+void TestSubDThickenFlatSheetMatchesExactPrismVolumeAndIsClosedManifold() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const SubD subd = SubD::FromControlMesh(MakeFlatUnitSquareMesh());
+  const Mesh tessellated_before_thickening = subd.Tessellate(0.01, 4);
+  const double base_area = tessellated_before_thickening.Area();
+  Check(base_area > 0.0 && base_area <= 1.0 + 1e-9,
+        "the tessellated flat sheet's own area is positive and no larger than the original unit-square cage "
+        "(an uncreased boundary can only pull the limit surface inward, never past its own control net)");
+
+  const Mesh solid = subd.Thicken(0.4, 0.01, 4);
+
+  Check(solid.IsClosedManifold(), "SubD::Thicken on an open flat sheet produces a genuine closed 2-manifold");
+  Check(std::fabs(solid.Volume() - base_area * 0.4) < 1e-6,
+        "SubD::Thicken(0.4)'s own volume matches the flat sheet's own independently-measured area times the "
+        "offset distance exactly - the universal flat-prism identity, cross-checking Volume() against Area() "
+        "on the SAME tessellated geometry via two unrelated code paths");
+
+  // Independent cross-check, not just a volume coincidence: thickening the
+  // SAME tessellated mesh directly via Mesh::Thicken() must give the
+  // identical result, since SubD::Thicken() is documented to be exactly
+  // that composition and nothing more.
+  const Mesh tessellated = subd.Tessellate(0.01, 4);
+  const Mesh direct = tessellated.Thicken(0.4);
+  Check(solid.VertexCount() == direct.VertexCount() && solid.FaceCount() == direct.FaceCount() &&
+            std::fabs(solid.Volume() - direct.Volume()) < 1e-9,
+        "SubD::Thicken() matches Tessellate() followed by a direct Mesh::Thicken() call exactly - it is a thin "
+        "composition of those two existing, independently-tested methods, not a separate construction");
+}
+
+// Both of Mesh::Thicken()'s own refusal cases (zero/non-finite distance,
+// an already-closed input) must still fire when reached through
+// SubD::Thicken() - inherited, not re-implemented, so there is only one
+// place either guard could ever drift.
+void TestSubDThickenInheritsMeshThickenArgumentChecks() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const SubD open_subd = SubD::FromControlMesh(MakeFlatUnitSquareMesh());
+
+  bool threw_zero = false;
+  try {
+    (void)open_subd.Thicken(0.0, 0.01, 4);
+  } catch (const std::invalid_argument&) {
+    threw_zero = true;
+  }
+  Check(threw_zero, "SubD::Thicken(0.0, ...) throws - inherited from Mesh::Thicken()'s own zero-distance refusal");
+
+  bool threw_nan = false;
+  try {
+    (void)open_subd.Thicken(std::numeric_limits<double>::quiet_NaN(), 0.01, 4);
+  } catch (const std::invalid_argument&) {
+    threw_nan = true;
+  }
+  Check(threw_nan, "SubD::Thicken(NaN, ...) throws - inherited from Mesh::Thicken()'s own non-finite guard");
+
+  const SubD closed_subd = SubD::FromControlMesh(MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1));
+  bool threw_closed = false;
+  try {
+    (void)closed_subd.Thicken(0.1, 0.1, 4);
+  } catch (const std::invalid_argument&) {
+    threw_closed = true;
+  }
+  Check(threw_closed,
+        "SubD::Thicken() on an already-closed cage (a cube) throws - its tessellation has no naked edges, so "
+        "Mesh::Thicken()'s own \"already closed\" refusal fires exactly as it would on any other closed mesh");
+}
+
 void TestSubDEvaluateFaceExactOnRegularFlatGrid() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -68459,6 +68540,8 @@ int main() {
   TestSubDOffsetCubeMovesEachCornerAlongItsOwnExactBodyDiagonalLimitNormal();
   TestSubDOffsetZeroDistanceLeavesEveryPositionUnchanged();
   TestSubDOffsetArgumentChecksRejectNonFiniteDistance();
+  TestSubDThickenFlatSheetMatchesExactPrismVolumeAndIsClosedManifold();
+  TestSubDThickenInheritsMeshThickenArgumentChecks();
   TestSubDEvaluateFaceExactOnRegularFlatGrid();
   TestSubDEvaluateFaceAdaptiveOnIrregularFace();
   TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane();
