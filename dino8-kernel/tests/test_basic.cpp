@@ -61358,6 +61358,157 @@ void TestCurveOffsetInPlanePolylineRefusesNearFullFold() {
         "OffsetInPlane refuses a polyline with a near-180-degree fold - no finite miter point exists there");
 }
 
+// PARITY_MAP.md's offsetshell category, "Curve offset corner handling at
+// kinks": Sharp (miter) was the only mode; this exercises the new Round
+// mode on the same open U-bracket `TestCurveOffsetInPlaneOpenPolylineExactSharpCorners`
+// already uses, verified two independent ways: (1) a closed-form total
+// length (each straight edge keeps its own ORIGINAL length exactly - the
+// offset edges are translated, never trimmed or extended, unlike Sharp's
+// miter - plus one quarter-circle arc of radius 1 per 90-degree corner), and
+// (2) every sampled point near each corner sits at exactly radius 1.0 from
+// that corner's own ORIGINAL vertex - the direct geometric definition of
+// "tangent arc", not a re-run of this method's own construction.
+void TestCurveOffsetInPlanePolylineRoundCornerMatchesExactArcAndLength() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::OffsetCornerMode;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> cps = {
+      Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out;
+  Check(poly.OffsetInPlane(1.0, out, -1.0, OffsetCornerMode::Round) == Result::Ok,
+        "OffsetInPlane(Round) succeeds on an open polyline with two 90-degree corners");
+
+  const double expected_length = 30.0 + ON_PI / 2.0 + ON_PI / 2.0;  // 3 untrimmed edges + 2 quarter-circle arcs
+  Check(std::fabs(out.Length(4000) - expected_length) < 1e-4,
+        "OffsetInPlane(Round): total length matches 3 untrimmed original-length edges plus two quarter-circle "
+        "radius-1 arcs exactly - proof the edges are translated, not mitered or trimmed");
+
+  const Point3d corners[2] = {cps[1], cps[2]};
+  for (const Point3d& vertex : corners) {
+    bool saw_point_on_circle = false;
+    const int n = 4000;
+    for (int i = 0; i <= n; ++i) {
+      const double t = out.Domain().min + (out.Domain().max - out.Domain().min) * i / n;
+      const Point3d p = out.PointAt(t);
+      const double d = p.DistanceTo(vertex);
+      if (d < 1.4) {  // only points near this corner are relevant
+        Check(d < 1.0 + 1e-6, "OffsetInPlane(Round): no point near a corner bulges past the radius-1 arc");
+        if (std::fabs(d - 1.0) < 1e-6) saw_point_on_circle = true;
+      }
+    }
+    Check(saw_point_on_circle,
+          "OffsetInPlane(Round): some sampled point near each corner sits exactly on the radius-1 circle "
+          "centered at that corner's own original vertex");
+  }
+}
+
+// Same bracket and corners as the Round test above, Chamfer mode: each
+// corner is a single straight cut between the two tangent points a Round
+// corner would use, so its exact chord length (2*radius*sin(half the
+// 90-degree turn) = sqrt(2) for radius 1) is an independent closed-form
+// check distinct from the arc-length one Round uses.
+void TestCurveOffsetInPlanePolylineChamferCornerMatchesExactLength() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::OffsetCornerMode;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> cps = {
+      Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out;
+  Check(poly.OffsetInPlane(1.0, out, -1.0, OffsetCornerMode::Chamfer) == Result::Ok,
+        "OffsetInPlane(Chamfer) succeeds on an open polyline with two 90-degree corners");
+
+  const double expected_length = 30.0 + 2.0 * std::sqrt(2.0);  // 3 untrimmed edges + 2 chamfer chords
+  Check(std::fabs(out.Length(4000) - expected_length) < 1e-6,
+        "OffsetInPlane(Chamfer): total length matches 3 untrimmed original-length edges plus two exact-chord "
+        "chamfer cuts");
+}
+
+// A closed square with Round corners: the result must still close exactly
+// (PointAtStart == PointAtEnd), and its total length is the clean closed
+// form 4 untrimmed edges + a FULL circle (4 quarter-circle arcs of the
+// same radius sum to one full turn) - 4*10 + 2*pi.
+void TestCurveOffsetInPlaneClosedPolygonRoundCornerStaysClosed() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::OffsetCornerMode;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  cps.push_back(cps[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+  Check(poly.IsClosed(), "OffsetInPlane(Round) closed-square setup: this polygon is closed");
+
+  NurbsCurve out;
+  Check(poly.OffsetInPlane(1.0, out, -1.0, OffsetCornerMode::Round) == Result::Ok,
+        "OffsetInPlane(Round) succeeds on a closed square");
+  Check(out.IsClosed(), "OffsetInPlane(Round) on a closed square: the result is itself closed");
+
+  const double expected_length = 40.0 + 2.0 * ON_PI;
+  Check(std::fabs(out.Length(4000) - expected_length) < 1e-4,
+        "OffsetInPlane(Round) on a closed square: total length matches 4 untrimmed edges plus one full circle's "
+        "worth of corner arcs (4 quarter-circles)");
+}
+
+// The whole point of Round/Chamfer not needing a miter point: both succeed
+// on the exact fixture `TestCurveOffsetInPlanePolylineRefusesNearFullFold`
+// shows Sharp must refuse.
+void TestCurveOffsetInPlaneRoundAndChamferSucceedOnNearFullFoldWhereSharpFails() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::OffsetCornerMode;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(0.001, 0, 0), Point3d(0.001, 10, 0)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out_sharp;
+  Check(poly.OffsetInPlane(1.0, out_sharp) == Result::Failed,
+        "OffsetInPlane(Sharp) setup: still refuses this near-180-degree fold, as already proven above");
+
+  NurbsCurve out_round;
+  Check(poly.OffsetInPlane(1.0, out_round, -1.0, OffsetCornerMode::Round) == Result::Ok,
+        "OffsetInPlane(Round) succeeds on the identical near-180-degree fold where Sharp must refuse - no miter "
+        "point is needed");
+
+  NurbsCurve out_chamfer;
+  Check(poly.OffsetInPlane(1.0, out_chamfer, -1.0, OffsetCornerMode::Chamfer) == Result::Ok,
+        "OffsetInPlane(Chamfer) succeeds on the identical near-180-degree fold where Sharp must refuse");
+}
+
+// The explicit-plane overload's own `corner_mode` parameter must reach the
+// same polyline fast path, not get silently dropped to Sharp.
+void TestCurveOffsetInPlaneWithExplicitPlaneRoundCornerMode() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::OffsetCornerMode;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> cps = {
+      Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+  ON_Plane plane;
+  Check(poly.raw().IsPlanar(&plane, 1e-9), "OffsetInPlane(plane, Round) setup: curve is planar");
+
+  NurbsCurve out_single, out_explicit;
+  Check(poly.OffsetInPlane(1.0, out_single, -1.0, OffsetCornerMode::Round) == Result::Ok,
+        "OffsetInPlane(distance, Round) succeeds");
+  Check(poly.OffsetInPlane(plane, 1.0, out_explicit, -1.0, OffsetCornerMode::Round) == Result::Ok,
+        "OffsetInPlane(plane, distance, Round) succeeds");
+  const double expected_length = 30.0 + ON_PI / 2.0 + ON_PI / 2.0;
+  Check(std::fabs(out_single.Length(2000) - expected_length) < 1e-4 &&
+            std::fabs(out_explicit.Length(2000) - expected_length) < 1e-4,
+        "OffsetInPlane(plane, ..., Round) matches the single-plane overload's own Round length exactly - the "
+        "explicit-plane overload's corner_mode reaches the same polyline construction");
+}
+
 // The explicit-plane overload, handed a plane that agrees with this
 // polyline's own fitted plane, must take the SAME exact miter path (not
 // silently fall back to the approximate general path just because a
@@ -65540,6 +65691,11 @@ int main() {
   TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter();
   TestCurveOffsetInPlanePolylineRefusesNearFullFold();
   TestCurveOffsetInPlaneWithExplicitPlanePolylineMatchesSinglePlaneOverload();
+  TestCurveOffsetInPlanePolylineRoundCornerMatchesExactArcAndLength();
+  TestCurveOffsetInPlanePolylineChamferCornerMatchesExactLength();
+  TestCurveOffsetInPlaneClosedPolygonRoundCornerStaysClosed();
+  TestCurveOffsetInPlaneRoundAndChamferSucceedOnNearFullFoldWhereSharpFails();
+  TestCurveOffsetInPlaneWithExplicitPlaneRoundCornerMode();
   TestNurbsCurveFilletCornerRightAngle();
   TestNurbsCurveFilletCornerObtuseAngleAndTangency();
   TestNurbsCurveFilletCornerRejectsInvalidInput();

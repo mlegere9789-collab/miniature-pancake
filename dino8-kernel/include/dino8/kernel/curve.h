@@ -10,6 +10,25 @@ namespace dino8::kernel {
 
 class NurbsSurface;
 
+// Corner handling at a polyline kink for `OffsetInPlane()` - PARITY_MAP.md's
+// offsetshell category, "Curve offset corner handling at kinks": Rhino's
+// Offset command exposes Sharp/Round/Chamfer/Smooth/None, and until now this
+// kernel only ever produced Sharp (miter). Only the polyline fast path in
+// `OffsetInPlane()` has discrete corners at all - a Line, Arc/Circle or
+// general sampled-refit offset ignores this parameter entirely, since there
+// is no kink to replace there.
+//   - Sharp: the existing exact miter-point corner (unchanged default).
+//   - Round: an exact arc of radius |distance|, centered at the ORIGINAL
+//     (un-offset) vertex, tangent to both adjacent offset edges.
+//   - Chamfer: a straight segment connecting the same two tangent points a
+//     Round corner would use, instead of an arc.
+// Round and Chamfer both need only the two offset edges' own endpoints at
+// the corner, never a miter intersection, so - unlike Sharp - neither one
+// has a near-180-degree-fold singularity: a corner so sharp it folds back on
+// itself still gets a well-defined (if extreme) arc or chamfer, where Sharp
+// must refuse (`Result::Failed`, no finite miter point exists).
+enum class OffsetCornerMode { Sharp, Round, Chamfer };
+
 // Wraps ON_NurbsCurve. Deliberately exposes the underlying ON_NurbsCurve
 // (via raw()) rather than re-declaring every accessor OpenNURBS already
 // has — later chunks (booleans, display) need the real object, not a
@@ -952,7 +971,12 @@ class NurbsCurve {
   // `NurbsSurface::OffsetAnalytic()`'s own doc comment already found for
   // the surface case, far tighter than anything but a hand-built exact
   // primitive tolerates.
-  Result OffsetInPlane(double distance, NurbsCurve& out, double tolerance = -1.0) const;
+  // `corner_mode` (default Sharp, unchanged prior behavior) selects how a
+  // polyline's own kinks are replaced - see `OffsetCornerMode`'s own doc
+  // comment above. Every other case (Line, Arc/Circle, general sampled
+  // refit) ignores it.
+  Result OffsetInPlane(double distance, NurbsCurve& out, double tolerance = -1.0,
+                       OffsetCornerMode corner_mode = OffsetCornerMode::Sharp) const;
 
   // Same construction as `OffsetInPlane(double, ...)` above, but the
   // sweep direction at every parameter is `TangentAt(t) x plane.zaxis`
@@ -1008,8 +1032,10 @@ class NurbsCurve {
   // tolerance-driven refit can't reach `tolerance` even at its own
   // maximum feasible control-point count. Throws `std::invalid_argument`
   // if `distance` isn't finite or `plane` isn't `ON_Plane::IsValid()`.
+  // `corner_mode`: see the single-plane overload above - identical meaning,
+  // applied to this overload's own coplanar-polyline fast path.
   Result OffsetInPlane(const ON_Plane& plane, double distance, NurbsCurve& out,
-                       double tolerance = -1.0) const;
+                       double tolerance = -1.0, OffsetCornerMode corner_mode = OffsetCornerMode::Sharp) const;
 
   // Offsets this curve - assumed to (approximately) lie on `surface` -
   // along `surface`'s own normal, sampled and refit: the kernel
