@@ -73,4 +73,15 @@ std::optional<SceneObject> RebuildPipe(CommandContext& ctx, const kernel::NurbsC
 std::optional<SceneObject> RebuildSweep1(CommandContext& ctx, const kernel::NurbsCurve& section,
                                           const kernel::NurbsCurve& rail, const HistoryRecord& rec);
 
+// Sweep2 (Sweep2Command, cmd_surface.cpp), single-cross-section case only -
+// the kernel's own exact Brep::Sweep2 (two-rail frame transport + skin).
+// Reads no num parameters: stations and cap are fixed the same way the
+// live command's single-section call is. Returns nullopt (no history
+// recorded, live command falls back to its own approximate scaled-frame
+// construction) when the kernel itself refuses the inputs (e.g. a
+// degenerate rail/section, or the rails touching) - never throws.
+std::optional<SceneObject> RebuildSweep2(CommandContext& ctx, const kernel::NurbsCurve& section,
+                                          const kernel::NurbsCurve& rail1, const kernel::NurbsCurve& rail2,
+                                          const HistoryRecord& rec);
+
 }  // namespace dino8::app

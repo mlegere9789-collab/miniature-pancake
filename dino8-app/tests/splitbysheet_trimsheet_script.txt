@@ -1,0 +1,61 @@
+# SplitBySheet/TrimSheetBySolid QC (see smoke.sh): PARITY_MAP.md's "kernel:
+# Boolean operations" category names "Sheet/solid trim" as partial
+# specifically because kernel::SplitBySheet()/kernel::TrimSheetBySolid() -
+# real, tested kernel code - had zero references anywhere in dino8-app/src.
+# This exercises the new SplitBySheet/TrimSheetBySolid commands
+# (cmd_boolean.cpp) end to end through the real app, not just the kernel's
+# own unit tests - including a plain Surface-kind sheet (via "Plane", which
+# produces ObjectKind::Surface, not Brep), proving FirstSheetBrep's
+# Brep::FromSurface() wrapping path actually works through the real
+# command, not just in isolation.
+#
+# Both fixtures build the sheet while the CPlane sits at world z=0 (the
+# Top viewport's own default), then "Move" the sheet up to z=2 - a flat
+# "Plane"/box footprint typed with a nonzero z coordinate is silently
+# projected onto the CPlane by ActivePlane()'s own ClosestPointTo (the
+# same projection PreviewBase/Build already use for Box/Plane's own point
+# input), so typing z=2 directly on the Plane/Box corners would NOT put
+# the sheet or box there - it would land back at z=0, coincident with the
+# box's own bottom face instead of genuinely crossing its middle.
+SetActiveViewport Top
+# --- SplitBySheet: a 4x4x4 box (z in [0,4], id 1) split by an open flat
+# Surface sheet (id 2, moved up to z=2 - the box's own genuine middle)
+# extending a full unit past the box's own footprint on every side. The
+# sheet stays in the document untouched; the box is replaced by its own
+# two real B-rep pieces (3 objects remain: 2 new pieces + the untouched
+# sheet).
+Box 0,0,0 4,4,0 4
+Plane -1,-1,0 5,5,0
+SelNone
+SelID 2
+Move 0,0,0 0,0,2
+SelNone
+SelID 1
+SplitBySheet
+SelID 2
+Enter
+@expect_objects 3
+SelAll
+Delete
+@expect_objects 0
+# --- TrimSheetBySolid: an oversized flat Surface sheet (id 5 - object ids
+# keep incrementing past the first block's own 4, never reused, even
+# though every one of its own objects was deleted - moved up to z=2)
+# trimmed by a 4x4x4 box (z in [0,4], id 6) running straight through the
+# box's own genuine middle - KeepInside defaults to Yes, so the sheet
+# (id 5) is replaced by just its own kept-inside portion; the box (id 6)
+# stays in the document untouched (2 objects remain).
+Plane -1,-1,0 5,5,0
+Box 0,0,0 4,4,0 4
+SelNone
+SelID 5
+Move 0,0,0 0,0,2
+SelNone
+SelID 5
+TrimSheetBySolid
+SelID 6
+Enter
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0

@@ -138,6 +138,40 @@ class GlRenderer {
   void EndShadowPass();
   void ClearShadowValidity() { shadow_valid_mask_ = 0; }
   static constexpr int kShadowMapSize = 1024;
+
+  // Real screen-space ambient occlusion for Rendered mode, closing "SSAO in
+  // the rasterized renderer" (no "ssao"/"ambient occlusion" code existed
+  // anywhere in this renderer before - see PARITY_MAP.md, app_display).
+  // BeginSsaoPass() starts a depth-only prepass of the main camera's own
+  // view, sized to whatever FBO/viewport is currently bound (queried with
+  // GL_VIEWPORT, the same idiom DrawLines' own thick-line branch already
+  // uses - so this works unchanged whether the caller is a docked
+  // viewport's own RenderTarget or RenderToImage's supersampled one) and
+  // reusing the shadow pass's existing depth-only program/vao - every
+  // DrawMesh/DrawTriangles* call made before the matching EndSsaoPass
+  // writes only into this pass's own depth texture (DrawLines/DrawPoints
+  // are no-ops during it, the same reason they are during
+  // BeginShadowPass/EndShadowPass). EndSsaoPass() closes the prepass and
+  // immediately computes a real AO buffer from it - view-space position
+  // reconstructed per fragment from the depth texture via the projection
+  // matrix's own CPU-side inverse, a per-fragment normal taken from that
+  // position's own screen-space derivatives (no separate G-buffer normal
+  // attachment, the same "Alchemy AO" shortcut several shipped engines
+  // use), a 16-sample hemisphere kernel (SsaoKernel.h) rotated by a
+  // per-pixel procedural hash, then box-blurred - leaving the result bound
+  // for every following kRendered/kGround DrawMesh call this frame to
+  // sample inside Shade() (no separate "use it" call needed). ClearSSAO()
+  // disables it for the rest of this frame (the default state before the
+  // first BeginSsaoPass/EndSsaoPass of a frame): Shade() then samples no
+  // AO term at all, exactly as before this feature existed.
+  void BeginSsaoPass();
+  void EndSsaoPass();
+  void ClearSSAO() { ssao_tex_ = 0; }
+  // View-space sample radius (world units) and self-occlusion depth bias
+  // the next EndSsaoPass computes with; defaults cover a typical few-
+  // metre-scale scene reasonably, same as the shadow pass's own fixed
+  // kShadowMapSize rather than exposing every knob to a document setting.
+  void SetSsaoParams(float radius, float bias) { ssao_radius_ = radius; ssao_bias_ = bias; }
   // Ground plane quad at world height z, centred on (cx, cy) with the
   // given half-size, fading out beyond `fade_radius`, with contact shadows.
   void DrawGroundPlane(double cx, double cy, double z, double half_size, double fade_radius, Color color,
@@ -193,6 +227,7 @@ class GlRenderer {
         mesh_u_reflectivity_ = -1, mesh_u_use_texture_ = -1, mesh_u_texture_ = -1, mesh_u_blob_count_ = -1,
         mesh_u_blobs_ = -1, mesh_u_blob_strength_ = -1, mesh_u_ground_ = -1, mesh_u_env_map_ = -1,
         mesh_u_env_map_valid_ = -1, mesh_u_light_vp_ = -1, mesh_u_shadow_map_ = -1, mesh_u_shadow_valid_mask_ = -1;
+  GLint mesh_u_ssao_map_ = -1, mesh_u_ssao_valid_ = -1, mesh_u_viewport_size_ = -1;
   GLuint env_map_tex_ = 0;
 
   // Shadow-pass state (see BeginShadowPass/EndShadowPass above). One
@@ -206,6 +241,38 @@ class GlRenderer {
   Mat4 current_shadow_vp_ = Mat4::Identity();  // the light_vp_ entry the in-progress shadow pass is writing
   GLuint shadow_prev_fbo_ = 0;
   GLint shadow_prev_viewport_[4] = {0, 0, 0, 0};
+
+  // SSAO state (see BeginSsaoPass/EndSsaoPass above).
+  // Depth-only prepass of the main camera's own view (reuses
+  // shadow_program_/vao_ - any plain mat4-to-clip-space transform works
+  // for a depth-only draw, so no separate shader is needed) into its own
+  // 2D depth texture, resized on demand like RenderTarget::Resize.
+  GLuint ssao_depth_fbo_ = 0, ssao_depth_tex_ = 0;
+  int ssao_depth_w_ = 0, ssao_depth_h_ = 0;
+  bool ssao_prepass_ = false;  // true only between BeginSsaoPass/EndSsaoPass
+  Mat4 ssao_prepass_mvp_ = Mat4::Identity();
+  GLuint ssao_prepass_prev_fbo_ = 0;
+  GLint ssao_prepass_prev_viewport_[4] = {0, 0, 0, 0};
+  // AO compute (reconstructs view-space position from ssao_depth_tex_ via
+  // u_inv_proj, derives a per-fragment normal from that position's own
+  // screen-space derivatives, and samples SsaoKernel.h's hemisphere kernel
+  // around it) into a single-channel raw buffer, then a 4x4 box blur of it
+  // into ssao_tex_ - the one DrawMesh's kRendered/kGround branch binds.
+  GLuint ssao_program_ = 0, ssao_fbo_ = 0, ssao_raw_tex_ = 0;
+  GLint ssao_u_depth_ = -1, ssao_u_inv_proj_ = -1, ssao_u_proj_ = -1, ssao_u_texel_ = -1, ssao_u_radius_ = -1,
+        ssao_u_bias_ = -1, ssao_u_kernel_ = -1;
+  GLuint ssao_blur_program_ = 0, ssao_blur_fbo_ = 0, ssao_blur_tex_ = 0;
+  GLint ssao_blur_u_tex_ = -1, ssao_blur_u_texel_ = -1;
+  // 0 = disabled (ClearSSAO, or before this frame's first EndSsaoPass);
+  // otherwise always equal to ssao_blur_tex_ - a separate member (rather
+  // than reusing ssao_blur_tex_ itself as the enabled flag) so ClearSSAO
+  // can disable sampling for the rest of a frame without losing track of,
+  // and leaking, the persistent GL texture object across frames.
+  GLuint ssao_tex_ = 0;
+  float ssao_radius_ = 1.0f, ssao_bias_ = 0.015f;
+  static constexpr int kSsaoKernelSize = 16;
+  std::array<float, kSsaoKernelSize * 3> ssao_kernel_{};
+
   GLint line_u_mvp_ = -1, line_u_color_ = -1, line_u_size_ = -1, line_u_offset_ = -1;
   GLint mesh_u_clip_[kMaxClipPlanes] = {-1, -1, -1, -1, -1, -1}, mesh_u_clip_count_ = -1;
   GLint line_u_clip_[kMaxClipPlanes] = {-1, -1, -1, -1, -1, -1}, line_u_clip_count_ = -1;

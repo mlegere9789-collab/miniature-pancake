@@ -923,6 +923,8 @@ void RegisterRenderCommands(CommandEngine& e) {
         ctx.Print(std::string("Sun ") + (r.sun ? "on" : "off") + ": Azimuth=" + FormatNumber(r.sun_azimuth) + " Altitude=" + FormatNumber(r.sun_altitude) + " Intensity=" + FormatNumber(r.sun_intensity) + " Skylight=" + (r.skylight ? "Yes" : "No"));
       }));
   Reg(e, "Skylight", Immediate([](CommandContext& ctx) { RenderSettings& r = ctx.Doc().Render(); r.skylight = !r.skylight; ctx.Doc().Touch(); ctx.Print(std::string("Skylight ") + (r.skylight ? "on" : "off")); }));
+  Reg(e, "AmbientOcclusion", Immediate([](CommandContext& ctx) { RenderSettings& r = ctx.Doc().Render(); r.ssao = !r.ssao; ctx.Doc().Touch(); ctx.Print(std::string("AmbientOcclusion ") + (r.ssao ? "on" : "off")); }), CommandStatus::Implemented,
+      "Toggles real screen-space ambient occlusion (GlRenderer's depth-reconstructed SSAO pass) in Rendered mode's viewport and in Render/RenderView image export.");
   Reg(e, "GroundPlane", Immediate([](CommandContext& ctx) {
         RenderSettings& r = ctx.Doc().Render();
         Args a = TakeArgs(ctx);
