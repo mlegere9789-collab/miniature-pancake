@@ -399,7 +399,19 @@ void Viewport::DrawScene(GlRenderer& renderer, const FrameContext& ctx, DisplayM
     // (see GlRenderer::BeginShadowPass) - a genuine per-light atlas, not
     // just the strongest one.
     if (!ctx.show_zbuffer && !lights.empty()) DrawShadowPass(renderer, ctx, lights);
+    // Real screen-space ambient occlusion (GlRenderer::BeginSsaoPass/
+    // EndSsaoPass) - recomputed fresh for every Rendered-mode DrawScene
+    // call, the same no-cross-frame-caching choice the shadow pass above
+    // already makes, so a later viewport/frame that disables it, or is
+    // not in Rendered mode at all, never samples a stale buffer from an
+    // earlier one (DrawObjects' own kRendered/kGround draws are the only
+    // callers that ever read it, so clearing it for every other mode
+    // below is otherwise unreachable, not merely redundant).
+    if (!ctx.show_zbuffer && ctx.doc->Render().ssao) DrawSsaoPass(renderer, ctx);
+    else renderer.ClearSSAO();
     DrawGroundPlane(renderer, ctx);
+  } else {
+    renderer.ClearSSAO();
   }
   // Clipping planes that clip this viewport cut the model (not the grid).
   std::vector<std::array<float, 4>> clip;
@@ -501,6 +513,18 @@ void Viewport::DrawShadowPass(GlRenderer& renderer, const FrameContext& ctx, con
     DrawObjects(renderer, ctx, DisplayMode::Rendered);
     renderer.EndShadowPass();
   }
+}
+
+void Viewport::DrawSsaoPass(GlRenderer& renderer, const FrameContext& ctx) {
+  if (!ctx.doc) return;
+  renderer.BeginSsaoPass();
+  DrawObjects(renderer, ctx, DisplayMode::Rendered);
+  renderer.EndSsaoPass();
+  // The ground plane quad itself is drawn separately (DrawGroundPlane,
+  // below) rather than through DrawObjects, so it never lands in this
+  // prepass's depth buffer - the same pre-existing scope DrawShadowPass's
+  // own recursive DrawObjects call already has (an object never casts a
+  // shadow onto, or here gets AO from, the ground plane itself).
 }
 
 void Viewport::DrawGroundPlane(GlRenderer& renderer, const FrameContext& ctx) {
