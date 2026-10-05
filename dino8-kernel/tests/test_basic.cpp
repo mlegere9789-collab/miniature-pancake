@@ -22500,6 +22500,99 @@ void TestSubDToNurbsPatchesAdaptiveThrowsOnNegativeLevels() {
   Check(threw, "ToNurbsPatchesAdaptive throws std::invalid_argument on a negative max_adaptive_levels");
 }
 
+// ToNurbsPatches()/ToNurbsPatchesAdaptive() both silently `continue` past
+// any non-quad face (EdgeCount() != 4 - see their own doc comments). That
+// per-face skip was already covered, but nothing ever exercised what
+// happens when EVERY face is skipped: before this pass, both methods
+// returned a bare empty std::vector in that case, identical to "converted
+// 0 of 0 faces because the SubD is trivially empty" - a caller had no way
+// to tell "nothing to convert" apart from "there was something, and it
+// all got silently dropped". Subdivide() already throws std::runtime_error
+// on an empty SubD rather than silently no-op'ing; these two now match
+// that convention. Two different causes are checked, since they're
+// reached through different code paths (a SubD with literally zero faces
+// vs. one whose every face is a triangle, never a quad):
+void TestSubDToNurbsPatchesThrowsOnNoQuadFaces() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Cause 1: a genuinely faceless SubD (the same `const SubD empty;` idiom
+  // already used elsewhere in this file, e.g. SplitDisjointPieces's own
+  // "a faceless SubD splits into zero pieces" case).
+  {
+    const SubD empty;
+    bool threw = false;
+    try {
+      empty.ToNurbsPatches();
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw, "ToNurbsPatches throws std::runtime_error on a faceless SubD");
+  }
+
+  // Cause 2: every face present, but none of them a quad - a closed,
+  // perfectly valid, all-triangle octahedron SubD. EdgeCount() == 3 on
+  // every one of its 8 faces, so the per-face skip above drops all of
+  // them, landing in the exact same "0 patches collected" state as the
+  // faceless case despite FaceCount() being 8, not 0.
+  {
+    const SubD octahedron = SubD::FromControlMesh(MakeOctahedronMesh());
+    Check(octahedron.FaceCount() == 8, "the octahedron SubD fixture itself has 8 faces, not 0");
+    bool threw = false;
+    try {
+      octahedron.ToNurbsPatches();
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw, "ToNurbsPatches throws std::runtime_error on a SubD whose every face is a triangle");
+  }
+
+  // Negative control: an ordinary quad box still returns real patches,
+  // unaffected by this pass - the new exception fires only when the
+  // result would otherwise be empty, never for an ordinary non-empty one.
+  {
+    const SubD cube = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 1, 1, 1));
+    const auto patches = cube.ToNurbsPatches();
+    Check(patches.size() == 6, "ToNurbsPatches on an ordinary quad box still returns its 6 patches, no exception");
+  }
+}
+
+void TestSubDToNurbsPatchesAdaptiveThrowsOnNoQuadFaces() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Same two causes as TestSubDToNurbsPatchesThrowsOnNoQuadFaces above,
+  // since ToNurbsPatchesAdaptive() collects its own `face_ids` via the
+  // identical EdgeCount()==4 filter before doing any adaptive work.
+  {
+    const SubD empty;
+    bool threw = false;
+    try {
+      empty.ToNurbsPatchesAdaptive(2);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw, "ToNurbsPatchesAdaptive throws std::runtime_error on a faceless SubD");
+  }
+  {
+    const SubD octahedron = SubD::FromControlMesh(MakeOctahedronMesh());
+    bool threw = false;
+    try {
+      octahedron.ToNurbsPatchesAdaptive(0);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw,
+          "ToNurbsPatchesAdaptive throws std::runtime_error on an all-triangle SubD, even at "
+          "max_adaptive_levels=0");
+  }
+  {
+    const SubD cube = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 1, 1, 1));
+    const auto patches = cube.ToNurbsPatchesAdaptive(1);
+    Check(!patches.empty(), "ToNurbsPatchesAdaptive on an ordinary quad box still returns patches, no exception");
+  }
+}
+
 // PARITY_MAP.md's subd_mesh category lists "SubD non-manifold/multi-body
 // validity checks" as only [partial], calling out that SubD::IsValid()
 // was "a thin bool wrapper over ON_SubD::IsValid" with no counts or
@@ -64839,6 +64932,8 @@ int main() {
   TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace();
   TestSubDToNurbsPatchesAdaptiveRegularFaceUnaffected();
   TestSubDToNurbsPatchesAdaptiveThrowsOnNegativeLevels();
+  TestSubDToNurbsPatchesThrowsOnNoQuadFaces();
+  TestSubDToNurbsPatchesAdaptiveThrowsOnNoQuadFaces();
   TestSubDCheckCleanClosedBoxReportsNoDefects();
   TestSubDCheckOpenGridReportsNakedEdgesOnly();
   TestSubDCheckDisjointPiecesReportsMultipleBodies();

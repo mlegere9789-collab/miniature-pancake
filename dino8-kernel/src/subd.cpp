@@ -1736,6 +1736,12 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatches() const {
     patch.exact = regular;
     patches.push_back(std::move(patch));
   }
+  if (patches.empty()) {
+    throw std::runtime_error(
+        "dino8::kernel::SubD::ToNurbsPatches: no quad faces found (the SubD is "
+        "empty, or every face is a non-quad n-gon/triangle - call Subdivide(1) "
+        "first to convert those into quads)");
+  }
   return patches;
 }
 
@@ -2405,6 +2411,12 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesAdaptive(int max_adaptive_levels
     if (f->EdgeCount() != 4) continue;
     if (!f->Vertex(0) || !f->Vertex(1) || !f->Vertex(2) || !f->Vertex(3)) continue;
     face_ids.push_back(f->FaceId());
+  }
+  if (face_ids.empty()) {
+    throw std::runtime_error(
+        "dino8::kernel::SubD::ToNurbsPatchesAdaptive: no quad faces found (the "
+        "SubD is empty, or every face is a non-quad n-gon/triangle - call "
+        "Subdivide(1) first to convert those into quads)");
   }
 
   std::vector<SubDNurbsPatch> patches;
