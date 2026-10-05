@@ -565,6 +565,53 @@ std::pair<Brep, Brep> SplitBrepByManySolids(const Brep& target, const std::vecto
 std::pair<Brep, Brep> SplitBrepByPlane(const Brep& target, Vector3d plane_normal, double plane_offset,
                                         double tolerance = 0.001);
 
+// Plural sibling of SplitBrepByPlane() above - closes PARITY_MAP.md's own
+// "Keep/split options" bullet's "KeepAll semantics" gap for SEVERAL
+// parallel cutting planes at once (slicing a block into N+1 ordered slabs,
+// the same "batch of several identical/related cutters" generalization
+// MakeHoles()/MakeCounterboreHoles()/MakeCountersinkHoles() already made
+// for a single hole tool and SplitBrepByManySolids() already made for a
+// single solid cutter). Not a new algorithm: `plane_offsets` (every plane
+// sharing the one `plane_normal`) is sorted ascending, then
+// SplitBrepByPlane() is called once per offset against whichever remainder
+// is still left to cut - the lowest piece at each step (strictly below that
+// step's own offset, nothing remaining can ever cut it further) is peeled
+// off as one finished slab and the rest carries on to the next, higher
+// offset - so this inherits SplitBrepByPlane()'s own proven correctness and
+// scope limits wholesale, N times over, rather than re-deriving them.
+//
+// Returns the N+1 slabs between consecutive sorted offsets, ordered from
+// the lowest (most negative along plane_normal) to the highest, omitting
+// any slab that comes back with zero faces (an offset at or beyond
+// target's own extent on either end, the same "cutter misses entirely"
+// contract SplitBrepByPlane()/SplitBrepBySolid() already document) - so the
+// returned count can be fewer than plane_offsets.size() + 1, never more.
+// Two offsets within `tolerance` of each other are silently deduplicated
+// before cutting, not merely refused outright: cutting `remainder` a
+// second time at (near-)its own existing flat boundary face is a
+// genuinely degenerate coincident-plane cut that SplitBrepByPlane() itself
+// cannot resolve (an "edge is claimed by 3 or more fragment loops" refusal
+// - confirmed directly, not assumed, by testing an un-deduplicated repeat
+// offset before this guard existed), and deduplicating up front is also
+// the semantically correct answer regardless: a slice boundary at the same
+// location twice can never produce a second real slab.
+//
+// Throws std::invalid_argument if `target` has no faces (as a typed
+// BooleanOperationError, BooleanFailureReason::EmptyOperand), if
+// `plane_offsets` is empty (BooleanFailureReason::EmptyOperandGroup -
+// mirroring SplitBrepByManySolids()'s own empty-`cutters` refusal), if
+// `plane_normal` is zero (a plain std::invalid_argument, the same choice
+// SplitBrepByPlane() itself already makes for the identical precondition),
+// or if `tolerance` is not positive (BooleanFailureReason::InvalidTolerance).
+// If any individual cut along the way hits SplitBrepByPlane()'s own
+// inherited scope limits (genus-0 faces, one crossing component per face
+// pair), the exception propagates from that call and no slabs are
+// returned - this function's own precondition checks above cover `target`/
+// `plane_offsets`/`tolerance` up front, not that every intermediate slice
+// will itself succeed.
+std::vector<Brep> SplitBrepByManyPlanes(const Brep& target, Vector3d plane_normal,
+                                         const std::vector<double>& plane_offsets, double tolerance = 0.001);
+
 // A blind or through round hole (Rhino/SolidWorks "Hole" feature), cut
 // straight into `solid` via BooleanCombineGeneral() above - so, unlike the
 // app's `RoundHole`/`MakeHole`/`PlaceHole` (dino8-app/src/commands/
