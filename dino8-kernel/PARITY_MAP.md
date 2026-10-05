@@ -2127,7 +2127,7 @@ Screen-reader support and Plugin marketplace both moving `missing`->
 |---|---|---|---|---|
 | 1 | 2D drafting, annotation & documentation | 1.0 | 2 | 0.500 |
 | 2 | Viewport display, rendering & visualization | 1.0 | 3 | 0.333 |
-| 3 | Scripting, automation & visual programming | 1.0 | 4 | 0.250 |
+| 2 | Scripting, automation & visual programming | 1.0 | 3 | 0.333 |
 | 4 | Command system & core commands | 1.5 | 8 | 0.188 |
 | 5 | UI/UX, accessibility & localization | 1.0 | 6 | 0.167 |
 | 6 | SubD & mesh modeling toolset (app level) | 0.75 | 5 | 0.150 |
@@ -2149,6 +2149,8 @@ Screen-reader support and Plugin marketplace both moving `missing`->
 *2026-10-04 rotation (concurrent session): 2D drafting's own remaining count dropped 3 -> 2 (Dynamic blocks closed `partial`->`present`, Block Stretch - see that category's own bullet and the dated rotation note below), moving its weight/remaining ratio 0.333 -> 0.500 - still rank 1, now by a wider margin over Scripting/Viewport display's own 0.250. A second, narrower fix the same pass (Print and plot output's own named/reusable PlotStyle table) doesn't change this row's own present/partial/missing counts (the bullet stays `[partial]` - see its own note). Every other row is unchanged.*
 
 *2026-10-05, a further update: Viewport display, rendering & visualization's own remaining count dropped 4 -> 3 (SSAO in the rasterized renderer closed `missing`->`present` - see the category's own bullet above and its dated rotation note below), moving its weight/remaining ratio 0.250 -> 0.333 - now ranked 2 alone (2D drafting's own 0.500 is unaffected and stays rank 1), ahead of Scripting (untouched this pass, stays at 0.250, now rank 3 alone rather than tied at 2). Every other row is unchanged.*
+
+*2026-10-05, reconciliation correction (doc-only bullet-count audit): the "untouched this pass, stays at 0.250" clause just above was itself stale by the time it was written - Scripting's own `Python API breadth` bullet had already closed `[partial]`->`[present]` the day before (2026-10-04, `GetObjects`/`GetReal`/`GetInteger` - see that category's own 2026-10-04 and 2026-10-05-merge notes below), dropping its row to 12/2/1 of 15 (86.7%) and its own remaining count 4 -> 3 well before the Viewport-display rotation above was written against it; that session's table edit above simply never saw it. Table row corrected here (Scripting: remaining 4 -> 3, ratio 0.250 -> 0.333) - it now ties Viewport display at rank 2 (both 0.333) rather than sitting alone at rank 3, and Command system & core commands correctly keeps rank 4 either way (already skipping the now-two-wide rank 2 tie, the same competition-ranking convention this table uses throughout). No other row in either Priority order table needed correction this pass: every kernel row and every other app row was re-verified against the current summary tables above and already matched exactly.*
 
 The app table's top four categories (Scripting, Viewport display, Command
 system, 2D drafting/UI-UX) each earn 1.5-4.5x the headline points per
