@@ -415,12 +415,38 @@ struct CurveSurfaceOverlap {
 // samples whose closest-point distance is within opt.tolerance as one
 // overlap span. A curve nowhere near the surface returns empty; a curve
 // lying entirely on the surface returns one span with `entire_curve ==
-// true`. Honesty note: the span's own t0/t1 are only as precise as the
-// sampling resolution (no bisection refines the exact boundary where the
-// curve leaves the surface) - a caller needing the exact crossing
-// parameter there should follow up with IntersectCurveSurface() near that
-// boundary, the same way this function's own samples were seeded.
+// true`. Each span's own t0/t1 boundary (where one exists inside the
+// curve's own domain, i.e. not already a domain endpoint) is then
+// bisection-refined against the identical on/off-surface predicate the
+// sampling loop uses, the same way IntersectCurveSurface() Newton-refines
+// a seed - narrowing the previously sampling-resolution-only boundary down
+// to within double-precision of the true crossing.
 std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlap(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt);
+
+// One overlap span between a curve and a specific (trimmed) face of a
+// B-rep, as returned by IntersectCurveBrepOverlap() below - the
+// coincident-region counterpart to CurveBrepHit above, the same way
+// CurveSurfaceOverlap is the coincident-region counterpart to
+// CurveSurfaceHit.
+struct CurveBrepOverlap {
+  int face_index = -1;
+  CurveSurfaceOverlap overlap;
+};
+
+// Curve/B-rep coincident-region detection - the curve/B-rep counterpart to
+// IntersectCurveBrep() above, but for a curve lying ON a face over a real
+// span rather than crossing through it. PARITY_MAP.md's own "CSX against
+// trimmed faces and curve-on-surface overlap (coincident) detection"
+// bullet named this directly as still missing even after
+// IntersectCurveSurfaceOverlap() closed the plain curve/surface case:
+// "this is curve/surface only (no curve/B-rep ... counterpart)". Runs the
+// same per-face bounding-box-pruned loop IntersectCurveBrep() already
+// uses, but calls IntersectCurveSurfaceOverlap() against each face's own
+// (untrimmed) surface with every on-surface sample ALSO required to pass
+// FaceContainsUV() - so a span that runs off one face's trim boundary and
+// onto a neighbour's is correctly reported as two separate (face_index,
+// overlap) entries, not one that silently ignores the trim.
+std::vector<CurveBrepOverlap> IntersectCurveBrepOverlap(const ON_Curve& c, const ON_Brep& b, const IntersectOptions& opt);
 
 // One parallel plane section of a whole B-rep, as returned by
 // ContourBrep() below - `offset` is the signed distance from
