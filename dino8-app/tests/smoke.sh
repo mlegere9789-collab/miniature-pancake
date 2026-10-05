@@ -1370,9 +1370,12 @@ stcheck "smoke: frames=[1-4][0-9][0-9] objects=118" "solid-tools script produced
 # CurveBoolean/CreateRegions's own 2-region case must now take
 # kernel::PolygonBooleanPlanar's exact (non-tessellated) path when both
 # input curves are genuine closed polylines, instead of the existing
-# mesh-slab pipeline (see regionboolean_exact_polygon_script.txt) -
-# PARITY_MAP.md's "kernel: Boolean operations" category's "2D region /
-# planar curve booleans" bullet.
+# mesh-slab pipeline - and, as of round 40, PlanarUnion/PlanarDifference/
+# CurveBoolean's Union/Difference/Intersection cases must take the same
+# exact path for 3+ regions too, via kernel::PolygonBooleanPlanarNAry (see
+# regionboolean_exact_polygon_script.txt) - PARITY_MAP.md's "kernel:
+# Boolean operations" category's "2D region / planar curve booleans"
+# bullet.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   RBX="$("$BIN" --smoke 60 --script "$HERE/regionboolean_exact_polygon_script.txt" 2>&1)" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script exited non-zero"; exit 1; }
 else
@@ -1381,7 +1384,8 @@ fi
 echo "$RBX" | grep -E "^(ok|FAIL)"
 if echo "$RBX" | grep -q "^FAIL"; then fail=1; fi
 echo "$RBX" | grep -q "^smoke:" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script produced no smoke line"; fail=1; }
-echo "$RBX" | grep -q "exact (no tessellation)" || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script did not take the exact polygon-boolean path"; fail=1; }
+RBX_EXACT_COUNT=$(echo "$RBX" | grep -c "exact (no tessellation)")
+[ "$RBX_EXACT_COUNT" -ge 4 ] || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script took the exact polygon-boolean path $RBX_EXACT_COUNT time(s), expected at least 4 (the original 2-region case plus the N=3 Union/Difference/Intersection cases)"; fail=1; }
 
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,
 # MatchSrf, SplitFace, MergeFaces, ConnectSrf, surface/surface and curve/surface

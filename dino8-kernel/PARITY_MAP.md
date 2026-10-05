@@ -5288,6 +5288,61 @@ Full `dino8_kernel_tests` suite rebuilt and run clean: 8715 checks, 100%
 passing, 0 regressions (up from 8385 before this pass's own four edits).
 The kernel-only headline is unaffected (no bucket moved).*
 
+**Twenty-fifth note on this category's score (this pass): one app-wiring
+closure, directly continuing the Twenty-fourth note's own new
+`PolygonBooleanPlanarNAry` kernel primitive above - no bucket moves, same
+"narrowing, not a flip" pattern as every note above.**
+
+**"2D region / planar curve booleans":** `RegionBoolean`'s own exact
+(non-tessellated) polygon path was hardcoded to exactly 2 regions
+(`cmd_solidtools.cpp`, `set->regions.size() == 2`) even after
+`PolygonBooleanPlanarNAry` shipped last pass with zero callers anywhere in
+`dino8-app` - this bullet's own prior wording named that gap by name ("no
+`dino8-app` command calls this function... for more than two operands
+yet"). Now `PlanarUnion`/`PlanarDifference`/`CurveBoolean`'s
+Union/Difference/Intersection cases (not the separate `Regions` N-way
+`CreateRegions` mode, still untouched and mesh-slab-only as before) take
+the exact path for ANY number of plain-polygon regions, not just two.
+Union and Difference route through one `PolygonBooleanPlanarNAry` call
+each: Union puts every region's polygon in one `first_group` with an
+empty `second_group` (that function's own documented "just fold
+`first_group`" case for an empty `second_group`); Difference puts
+`regions[0]` alone in `first_group` and every other region in
+`second_group`, matching `RegionBoolean`'s own pre-existing sequential
+"subtract each additional region in turn" semantics exactly (A - B - C ==
+A - (B union C), the same identity this bullet's own prior `PlanarDifference`
+UI label - "first minus the rest" - already promised). Intersection has no
+single-call `PolygonBooleanPlanarNAry` shape for "intersect every region"
+(its own Intersection op unions each GROUP first, then intersects the two
+unions - not the same operation), so it instead chains pairwise
+`PolygonBooleanPlanar()` calls region-by-region, the same construction the
+pre-existing N==2 case already used; a partial result that ever comes back
+as more than one loop (a hole, which cannot be fed back in as the next
+step's own single-polygon operand - the same "no polygon in either group
+may carry a hole" scope limit `PolygonBooleanPlanarNAry`'s own doc comment
+already discloses) falls through to the existing mesh pipeline, same as
+any other exact-path failure. Verified end-to-end through the real
+commands, not just at the kernel layer (`dino8-app/tests/
+regionboolean_exact_polygon_script.txt`, wired into `smoke.sh`): three
+right-nested rectangles (`a` = [0,4]x[0,4], `b` = [1,4]x[0,4] subset of `a`,
+`c` = [2,4]x[0,4] subset of `b` - every pair genuinely overlaps, so the
+left-to-right fold order can't hit the degenerate touching-only case the
+Twenty-fourth note's own fold-order finding disclosed) print "exact (no
+tessellation)" for `PlanarUnion` (result == `a` alone), `PlanarDifference`
+(result == `a` minus `b`, since `c` is already a subset of `b`), and
+`CurveBoolean Operation=Intersection` (result == `c`, the innermost
+rectangle) alike, each landing on the expected object count; the
+pre-existing 2-region fixture in the same script is unaffected. Still
+partial: no polygon in either group may itself carry a hole, unchanged;
+the N-way `CreateRegions`/`RegionOp::Regions` mode remains entirely
+untouched and mesh-slab-only; and Intersection's own pairwise chaining
+means an N>2 intersection that genuinely produces a hole at any
+intermediate step still falls back to the mesh pipeline, a real (if
+narrow) gap Union/Difference don't share. `dino8_kernel_tests` suite
+re-run clean (no kernel source touched this pass); `dino8-app`'s own
+`tests/smoke.sh` re-run clean through the `regionboolean-exact-polygon`
+section, including the new N=3 Union/Difference/Intersection checks.
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
