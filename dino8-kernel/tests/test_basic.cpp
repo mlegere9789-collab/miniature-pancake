@@ -63199,6 +63199,54 @@ void BlendTestEvaluate(const dino8::kernel::NurbsCurve& curve, double t, dino8::
   d3 = dino8::kernel::Vector3d(v[9], v[10], v[11]);
 }
 
+// Central finite-difference derivatives of `s` up to order 3, purely in
+// direction `dir` (0 = u, 1 = v) at a point held fixed in the other
+// direction - a ground truth for NurbsSurface::BlendSurfaces()'s own
+// cross-boundary derivative extraction (sweep.cpp's anonymous-namespace-
+// private `EvaluateSurfaceBlendEnd`, untestable directly from this file)
+// that depends on NEITHER that function's own ON_Surface::Evaluate
+// triangular-layout indexing NOR any assumption about how `s` happens to
+// be parameterized - only on `ON_Surface::PointAt`, already exercised
+// elsewhere in this file. Standard 5-point central-difference stencils
+// (4th-order accurate for d1/d2, verified here by direct Taylor-series
+// substitution, not merely cited): d1 = (D - 8B + 8A - C)/(12h),
+// d2 = (-D + 16B + 16A - C)/(12h^2), d3 = (-D + 2B - 2A + C)/(2h^3),
+// where A/B/C/D are f(+-h)/f(+-2h) each taken RELATIVE to f(0) (safe
+// since every one of these three combinations has coefficients summing
+// to exactly 0, so the f(0) terms cancel whether or not it is subtracted
+// first).
+void FiniteDiffPureSurfaceDerivs(const ON_Surface& s, int dir, double fixed_u, double fixed_v, double h,
+                                  dino8::kernel::Vector3d& d1, dino8::kernel::Vector3d& d2,
+                                  dino8::kernel::Vector3d& d3) {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  auto at = [&](double delta) {
+    const ON_3dPoint p = dir == 0 ? s.PointAt(fixed_u + delta, fixed_v) : s.PointAt(fixed_u, fixed_v + delta);
+    return Point3d(p.x, p.y, p.z);
+  };
+  const Point3d p0 = at(0.0);
+  const Vector3d A = at(h) - p0, B = at(-h) - p0, C = at(2 * h) - p0, D = at(-2 * h) - p0;
+  d1 = (D - B * 8.0 + A * 8.0 - C) * (1.0 / (12.0 * h));
+  d2 = (D * -1.0 + B * 16.0 + A * 16.0 - C) * (1.0 / (12.0 * h * h));
+  d3 = (D * -1.0 + B * 2.0 - A * 2.0 + C) * (1.0 / (2.0 * h * h * h));
+}
+
+// A real cylinder wall (ON_Cylinder::GetNurbForm, the same proven
+// technique this file already uses elsewhere) - genuinely curved in the
+// circular (U) direction, so its cross-boundary derivatives are honestly
+// nonzero up to 3rd order when that direction is held fixed, unlike a
+// flat/ruled fixture where a higher-order check would pass vacuously
+// (both sides zero).
+dino8::kernel::NurbsSurface BlendTestCylinder(dino8::kernel::Point3d center, double radius, double height) {
+  const ON_Circle circle(ON_Plane(center, ON_3dVector(0, 0, 1)), radius);
+  const ON_Cylinder cylinder(circle, height);
+  ON_NurbsSurface ns;
+  Check(cylinder.GetNurbForm(ns) != 0, "BlendTestCylinder: ON_Cylinder::GetNurbForm succeeds");
+  dino8::kernel::NurbsSurface out;
+  out.raw() = ns;
+  return out;
+}
+
 }  // namespace
 
 void TestNurbsCurveBlendCurvesG1MatchesEndpointPositionsAndTangents() {
@@ -63379,6 +63427,170 @@ void TestNurbsCurveBlendCurvesRejectsInvalidInput() {
   // direction to solve for.
   Check(NurbsCurve::BlendCurves(c0, t0, false, c0, t0, false, 1, out) == Result::Failed,
         "BlendCurves reports Result::Failed when both ends coincide");
+}
+
+// The genuine new capability PARITY_MAP.md's own "Surface-to-surface
+// continuity blend (BlendSrf / VariableBlendSrf)" bullet names as missing
+// entirely ("No G3/G4... no kernel API" - the app's own BuildBlendSurfaceG1/
+// G2, dino8-app/src/geom/BlendSurface.h, cap out at G2 and live outside the
+// kernel): NurbsSurface::BlendSurfaces() at continuity 1/2/3, between two
+// independent cylinder walls, each one honestly curved (nonzero up to 3rd
+// derivative) in the direction held fixed across the blend - so a 3rd-
+// derivative match here is a real check, not a 0-matches-0 vacuous one.
+// The rail runs along each cylinder's HEIGHT (dir 1): a straight line in
+// 3D, so position/derivative ground truth along the rail itself needs no
+// independent check, leaving the cross-boundary (circular, dir 0)
+// derivatives the whole point of this test. Verified against
+// FiniteDiffPureSurfaceDerivs() - independent of BlendSurfaces()'s own
+// ON_Surface::Evaluate-based extraction, and independent of any assumption
+// about how ON_Cylinder::GetNurbForm parameterizes the circular direction.
+void TestNurbsSurfaceBlendSurfacesMatchesPositionAndCrossBoundaryDerivatives() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const NurbsSurface cyl0 = BlendTestCylinder(Point3d(0, 0, 0), 2.0, 4.0);
+  const NurbsSurface cyl1 = BlendTestCylinder(Point3d(0, 0, 10), 3.0, 4.0);
+  const ON_Interval u_dom0 = cyl0.raw().Domain(0), u_dom1 = cyl1.raw().Domain(0);
+  const double u0 = u_dom0.Min();  // at_max0 = false below -> fixed at Domain(0).Min()
+  const double u1 = u_dom1.Min();  // at_max1 = false below -> fixed at Domain(0).Min()
+  const double h0 = u_dom0.Length() * 1e-3, h1 = u_dom1.Length() * 1e-3;
+
+  for (int continuity = 1; continuity <= 3; ++continuity) {
+    const int rows = 6;
+    NurbsSurface out;
+    const std::string succeeds_msg =
+        "BlendSurfaces succeeds between two independent cylinder walls (continuity=" + std::to_string(continuity) + ")";
+    Check(NurbsSurface::BlendSurfaces(cyl0, /*dir0=*/1, /*at_max0=*/false, cyl1, /*dir1=*/1, /*at_max1=*/false,
+                                       /*reverse_rail1=*/false, continuity, rows, out) == Result::Ok,
+          succeeds_msg.c_str());
+    Check(out.DegreeU() == 2 * continuity + 1,
+          "the cross-section (U) direction has the expected Hermite degree 2*continuity+1");
+
+    // Only rows 0 and rows-1 (the first/last stations) are checked below:
+    // SkinSections() reparameterizes intermediate stations by chord length
+    // (SkinParameters(), sweep.cpp), not by uniform fraction, so only the
+    // two ENDS are guaranteed - independent of that internal, private
+    // reparameterization - to sit exactly at the output surface's own
+    // Domain(1).Min()/.Max(). That still exercises the cross-boundary
+    // derivative extraction this test cares about at both ends of both
+    // rails, for every continuity level.
+    const ON_Interval out_u = out.raw().Domain(0), out_v = out.raw().Domain(1);
+    for (int k : {0, rows - 1}) {
+      const std::string row = "row " + std::to_string(k) + " (continuity=" + std::to_string(continuity) + "): ";
+      const double t = static_cast<double>(k) / static_cast<double>(rows - 1);
+      const double v0 = cyl0.raw().Domain(1).ParameterAt(t);
+      const double v1 = cyl1.raw().Domain(1).ParameterAt(t);  // reverse_rail1 = false
+      const double out_v_k = t < 0.5 ? out_v.Min() : out_v.Max();
+
+      const ON_3dPoint raw_p0 = cyl0.raw().PointAt(u0, v0), raw_p1 = cyl1.raw().PointAt(u1, v1);
+      const Point3d p0(raw_p0.x, raw_p0.y, raw_p0.z), p1(raw_p1.x, raw_p1.y, raw_p1.z);
+      const ON_3dPoint raw_out_p0 = out.raw().PointAt(out_u.Min(), out_v_k);
+      const ON_3dPoint raw_out_p1 = out.raw().PointAt(out_u.Max(), out_v_k);
+      const Point3d out_p0(raw_out_p0.x, raw_out_p0.y, raw_out_p0.z), out_p1(raw_out_p1.x, raw_out_p1.y, raw_out_p1.z);
+      const std::string p0_msg = row + "the blend's own U=min boundary position matches cylinder 0's rail exactly";
+      const std::string p1_msg = row + "the blend's own U=max boundary position matches cylinder 1's rail exactly";
+      Check(out_p0.DistanceTo(p0) < 1e-9, p0_msg.c_str());
+      Check(out_p1.DistanceTo(p1) < 1e-9, p1_msg.c_str());
+
+      double der_out0[30] = {0}, der_out1[30] = {0};
+      Check(out.raw().Evaluate(out_u.Min(), out_v_k, continuity, 3, der_out0), "out.Evaluate at U=min succeeds");
+      Check(out.raw().Evaluate(out_u.Max(), out_v_k, continuity, 3, der_out1), "out.Evaluate at U=max succeeds");
+
+      // FiniteDiffPureSurfaceDerivs() returns the RAW (unflipped) partials.
+      // BlendSurfaces() itself negates ODD orders when the fixed parameter
+      // sits at Domain.Min() (at_max0/at_max1 = false here, for both
+      // surfaces - see its own doc comment for why: increasing from Min
+      // moves INTO the surface, the opposite of "outward"), so the ground
+      // truth below must apply that SAME flip before comparing - this is
+      // re-stating BlendSurfaces()'s own documented sign convention, not
+      // re-deriving it.
+      Vector3d fd_d1_0, fd_d2_0, fd_d3_0, fd_d1_1, fd_d2_1, fd_d3_1;
+      FiniteDiffPureSurfaceDerivs(cyl0.raw(), /*dir=*/0, u0, v0, h0, fd_d1_0, fd_d2_0, fd_d3_0);
+      FiniteDiffPureSurfaceDerivs(cyl1.raw(), /*dir=*/0, u1, v1, h1, fd_d1_1, fd_d2_1, fd_d3_1);
+      fd_d1_0 = -fd_d1_0;
+      fd_d3_0 = -fd_d3_0;
+      fd_d1_1 = -fd_d1_1;
+      fd_d3_1 = -fd_d3_1;
+
+      Check(fd_d1_0.Length() > 1e-6 && fd_d1_1.Length() > 1e-6,
+            "sanity: both cylinders' own circular-direction 1st derivative is genuinely nonzero");
+      const Vector3d out_d1_0(der_out0[3], der_out0[4], der_out0[5]);
+      const Vector3d out_d1_1(der_out1[3], der_out1[4], der_out1[5]);
+      const std::string d1_0_msg = row + "the blend's own U=min cross-boundary 1st derivative matches cylinder 0's "
+                                          "own finite-difference ground truth (G1)";
+      const std::string d1_1_msg = row + "the blend's own U=max cross-boundary 1st derivative matches cylinder 1's "
+                                          "own finite-difference ground truth (G1)";
+      Check((out_d1_0 - fd_d1_0).Length() < 1e-3 * std::max(1.0, fd_d1_0.Length()), d1_0_msg.c_str());
+      Check((out_d1_1 - fd_d1_1).Length() < 1e-3 * std::max(1.0, fd_d1_1.Length()), d1_1_msg.c_str());
+
+      if (continuity >= 2) {
+        const Vector3d out_d2_0(der_out0[9], der_out0[10], der_out0[11]);
+        const Vector3d out_d2_1(der_out1[9], der_out1[10], der_out1[11]);
+        Check(fd_d2_0.Length() > 1e-6 && fd_d2_1.Length() > 1e-6,
+              "sanity: both cylinders' own circular-direction 2nd derivative is genuinely nonzero");
+        const std::string d2_0_msg = row + "the blend's own U=min cross-boundary 2nd derivative matches cylinder "
+                                            "0's own finite-difference ground truth (G2)";
+        const std::string d2_1_msg = row + "the blend's own U=max cross-boundary 2nd derivative matches cylinder "
+                                            "1's own finite-difference ground truth (G2)";
+        Check((out_d2_0 - fd_d2_0).Length() < 1e-2 * std::max(1.0, fd_d2_0.Length()), d2_0_msg.c_str());
+        Check((out_d2_1 - fd_d2_1).Length() < 1e-2 * std::max(1.0, fd_d2_1.Length()), d2_1_msg.c_str());
+      }
+      if (continuity >= 3) {
+        const Vector3d out_d3_0(der_out0[18], der_out0[19], der_out0[20]);
+        const Vector3d out_d3_1(der_out1[18], der_out1[19], der_out1[20]);
+        Check(fd_d3_0.Length() > 1e-6 && fd_d3_1.Length() > 1e-6,
+              "sanity: both cylinders' own circular-direction 3rd derivative is genuinely nonzero");
+        const std::string d3_0_msg = row + "the blend's own U=min cross-boundary 3rd derivative matches cylinder "
+                                            "0's own finite-difference ground truth (G3, the new capability this "
+                                            "closes)";
+        const std::string d3_1_msg = row + "the blend's own U=max cross-boundary 3rd derivative matches cylinder "
+                                            "1's own finite-difference ground truth (G3)";
+        Check((out_d3_0 - fd_d3_0).Length() < 5e-2 * std::max(1.0, fd_d3_0.Length()), d3_0_msg.c_str());
+        Check((out_d3_1 - fd_d3_1).Length() < 5e-2 * std::max(1.0, fd_d3_1.Length()), d3_1_msg.c_str());
+      }
+    }
+  }
+}
+
+void TestNurbsSurfaceBlendSurfacesRejectsInvalidInput() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const NurbsSurface cyl0 = BlendTestCylinder(Point3d(0, 0, 0), 2.0, 4.0);
+  const NurbsSurface cyl1 = BlendTestCylinder(Point3d(0, 0, 10), 3.0, 4.0);
+  NurbsSurface out;
+
+  Check(throws([&] { NurbsSurface::BlendSurfaces(cyl0, 1, false, cyl1, 1, false, false, 0, 6, out); }),
+        "BlendSurfaces rejects continuity == 0");
+  Check(throws([&] { NurbsSurface::BlendSurfaces(cyl0, 1, false, cyl1, 1, false, false, 4, 6, out); }),
+        "BlendSurfaces rejects continuity == 4 (only 1/2/3 are implemented)");
+  Check(throws([&] { NurbsSurface::BlendSurfaces(cyl0, 2, false, cyl1, 1, false, false, 1, 6, out); }),
+        "BlendSurfaces rejects dir0 outside {0, 1}");
+  Check(throws([&] { NurbsSurface::BlendSurfaces(cyl0, 1, false, cyl1, -1, false, false, 1, 6, out); }),
+        "BlendSurfaces rejects dir1 outside {0, 1}");
+  Check(throws([&] { NurbsSurface::BlendSurfaces(cyl0, 1, false, cyl1, 1, false, false, 1, 1, out); }),
+        "BlendSurfaces rejects rows < 2");
+
+  // Coincident rails: blending a cylinder wall to ITSELF with the SAME
+  // fixed boundary has zero position gap at every row - no well-defined
+  // Hermite direction to solve for, the same degenerate case
+  // NurbsCurve::BlendCurves() reports as Result::Failed rather than
+  // throwing (an input-shape problem discovered only once the two ends
+  // are actually evaluated, not a malformed-argument problem).
+  Check(NurbsSurface::BlendSurfaces(cyl0, 1, false, cyl0, 1, false, false, 1, 6, out) == Result::Failed,
+        "BlendSurfaces reports Result::Failed when both rails coincide");
 }
 
 // A genuinely 3D (non-coplanar-in-the-given-plane) polyline handed to the
@@ -67074,6 +67286,8 @@ int main() {
   TestNurbsCurveBlendCurvesG3MatchesThirdDerivativeAtBothEnds();
   TestNurbsCurveBlendCurvesReverseFlagNegatesOddDerivatives();
   TestNurbsCurveBlendCurvesRejectsInvalidInput();
+  TestNurbsSurfaceBlendSurfacesMatchesPositionAndCrossBoundaryDerivatives();
+  TestNurbsSurfaceBlendSurfacesRejectsInvalidInput();
   TestCurveOffsetInPlaneWithExplicitPlaneNonCoplanarPolylineFallsBackToGeneralPath();
 
 
