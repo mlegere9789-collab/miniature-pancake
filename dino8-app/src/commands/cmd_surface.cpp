@@ -512,21 +512,59 @@ class Sweep2Command : public Command {
   void Begin(CommandContext&) override { WantObjects("Select first rail"); }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (rails_.size() < 2) {
-      std::vector<kernel::NurbsCurve> c = CurvesOf(ctx, ids);
+      // Ids kept alongside each rail curve copy (not just CurvesOf's plain
+      // copy) so a single-cross-section sweep built while History On is
+      // set can record both rails' ids for UpdateHistory - same reason
+      // Sweep1Command keeps its rail id.
+      std::vector<kernel::NurbsCurve> c;
+      std::vector<ObjectId> found_ids;
+      for (ObjectId id : ids) {
+        if (std::optional<kernel::NurbsCurve> cc = CurveOf(ctx, id)) { c.push_back(*cc); found_ids.push_back(id); }
+      }
       if (c.empty()) { ctx.Warn("Select a rail curve"); Finish(); return; }
       rails_.push_back(c.front());
-      if (rails_.size() == 1 && c.size() >= 2) rails_.push_back(c[1]);
+      rail_ids_.push_back(found_ids.front());
+      if (rails_.size() == 1 && c.size() >= 2) { rails_.push_back(c[1]); rail_ids_.push_back(found_ids[1]); }
       DeselectAll(ctx, ids);
       accept_preselection = false;
       WantObjects(rails_.size() < 2 ? "Select second rail" : "Select cross section curves");
       return;
     }
-    std::vector<kernel::NurbsCurve> profiles = CurvesOf(ctx, ids);
+    std::vector<kernel::NurbsCurve> profiles;
+    profile_ids_.clear();
+    for (ObjectId id : ids) {
+      if (std::optional<kernel::NurbsCurve> c = CurveOf(ctx, id)) { profiles.push_back(*c); profile_ids_.push_back(id); }
+    }
     if (profiles.empty()) { ctx.Warn("Select cross section curves"); Finish(); return; }
     Build(ctx, profiles);
     Finish();
   }
   void Build(CommandContext& ctx, std::vector<kernel::NurbsCurve> profiles) {
+    // A single cross-section is the kernel's own exact Brep::Sweep2 case
+    // (two-rail frame transport + skin, with rail2's direction matched to
+    // rail1's the exact same way this file's own approximate construction
+    // below already does, replicated inside Brep::Sweep2 itself) - use it
+    // rather than this file's own scaled-frame-and-fit construction
+    // whenever it applies. Multiple cross-sections (the anchor-blend case
+    // below) and any case the kernel refuses (e.g. a degenerate rail/
+    // section, or the rails touching) still fall back to the existing
+    // construction unchanged, so this can only add capability, never
+    // remove it - same shape as Sweep1Command::Build's own fast path
+    // above. Built uncapped for the same reason RebuildSweep1 is: this
+    // command has no Cap option of its own.
+    if (profiles.size() == 1) {
+      HistoryRecord rec;
+      rec.command = "Sweep2";
+      if (std::optional<SceneObject> exact = RebuildSweep2(ctx, profiles.front(), rails_[0], rails_[1], rec)) {
+        ctx.Doc().BeginChange("Sweep2");
+        const ObjectId new_id = ctx.Doc().Add(std::move(*exact));
+        if (rail_ids_.size() == 2 && !profile_ids_.empty()) {
+          RecordHistoryIfEnabled(ctx, new_id, "Sweep2", {rail_ids_[0], rail_ids_[1], profile_ids_.front()}, rec.num);
+        }
+        ctx.Print("Sweep2: exact kernel sweep (two-rail frame transport)");
+        return;
+      }
+    }
     kernel::NurbsCurve a = rails_[0], b = rails_[1];
     const Point3d a0 = a.PointAt(a.Domain().min), b0 = b.PointAt(b.Domain().min), b1 = b.PointAt(b.Domain().max);
     if (a0.DistanceTo(b1) < a0.DistanceTo(b0)) b.Reverse();
@@ -578,6 +616,8 @@ class Sweep2Command : public Command {
     ctx.Print("Sweep2: " + std::to_string(profiles.size()) + " section(s) along " + std::to_string(nrows) + " rail stations");
   }
   std::vector<kernel::NurbsCurve> rails_;
+  std::vector<ObjectId> rail_ids_;
+  std::vector<ObjectId> profile_ids_;
 };
 
 // ---------------------------------------------------------------------------
@@ -1113,6 +1153,7 @@ class ShellCommand : public Command {
     if (phase_ != Phase::Thickness) return;
     if (t <= 0) { ctx.Warn("Thickness must be positive"); return; }
     std::vector<std::pair<ObjectId, kernel::Mesh>> results;
+    std::vector<std::pair<ObjectId, kernel::Brep>> exact_results;
     std::vector<ObjectId> opened;
     std::vector<ObjectId> per_face;
     for (ObjectId id : ids_) {
@@ -1144,6 +1185,26 @@ class ShellCommand : public Command {
         if (has_overrides && overrides_applied) per_face.push_back(id);
         continue;
       }
+      // Plain, fully-closed shell (no face removed/opened, no per-face
+      // override): try the kernel's own exact ShellConvexPlanar first - a
+      // real, untessellated Brep result for any solid whose PlanarFaces()
+      // are all planar and whose shape is convex, the one case
+      // ShellConvexPlanar covers and (per PARITY_MAP.md's own account)
+      // had zero callers anywhere in this app before this. Fails open
+      // (std::invalid_argument - any curved face, a non-convex shape, or
+      // `t` too large for some face's own offset feasibility) straight
+      // through to the existing mesh path below, the same "exact first,
+      // fail open to the approximate path" shape TryExactBrepBoolean
+      // (cmd_boolean.cpp) already uses for the booleans.
+      if (o->kind == ObjectKind::Brep && o->brep && o->brep->raw().IsSolid()) {
+        try {
+          exact_results.push_back({id, kernel::ShellConvexPlanar(*o->brep, {}, t)});
+          continue;
+        } catch (const std::exception&) {
+          // Not eligible (curved face, non-convex, or t too large) - fall
+          // through to the mesh path below unchanged.
+        }
+      }
       std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
       if (!m || !m->IsClosedManifold()) { ctx.Warn("Object " + std::to_string(id) + " is not a closed solid; skipped"); continue; }
       kernel::Mesh outer = Outward(*m);
@@ -1156,8 +1217,33 @@ class ShellCommand : public Command {
         ctx.Warn("Shell: object " + std::to_string(id) + " rejected by the mesh kernel (" + ex.what() + "); skipped");
       }
     }
-    if (results.empty()) { Finish(); return; }
+    if (results.empty() && exact_results.empty()) { Finish(); return; }
     ctx.Doc().BeginChange("Shell");
+    for (auto& [id, r] : exact_results) {
+      int layer = 0;
+      if (const SceneObject* o = ctx.Doc().Find(id)) layer = o->layer_index;
+      ctx.Doc().Remove(id);
+      SceneObject n = SceneObject::MakeBrep(r);
+      n.layer_index = layer;
+      const ObjectId new_id = ctx.Doc().Add(std::move(n));
+      // Brep::Volume() refuses a FromPlanarFaces()-built face as "trimmed"
+      // (it only integrates over a face's full surface parameter domain,
+      // which a general polygon loop isn't considered to be, even a plain
+      // convex rectangle like every face ShellConvexPlanar builds here) -
+      // confirmed by running this exact path end-to-end, not assumed; the
+      // same reason cmd_boolean.cpp's own exact-brep boolean result prints
+      // a face count rather than a volume. Report volume via the same
+      // display-mesh tessellation MeshOf already uses for every other
+      // object in this app (including this command's own mesh-fallback
+      // path below) - approximate only in the sense any displayed mesh
+      // is, not a sign the geometry just added (the exact Brep) is
+      // anything but exact.
+      double vol = 0;
+      if (const SceneObject* added = ctx.Doc().Find(new_id)) {
+        if (std::optional<kernel::Mesh> disp = MeshOf(*added, 0.005)) vol = std::fabs(disp->Volume());
+      }
+      ctx.Print("Shell: thickness " + FormatNumber(t) + ", closed, exact B-rep, volume " + FormatNumber(vol));
+    }
     for (auto& [id, r] : results) {
       int layer = 0;
       if (const SceneObject* o = ctx.Doc().Find(id)) layer = o->layer_index;
@@ -1516,14 +1602,41 @@ std::optional<SceneObject> RebuildSweep1(CommandContext&, const kernel::NurbsCur
   }
 }
 
+// Shared by Sweep2Command::Build above and UpdateHistory (cmd_history.cpp) -
+// the exact same "single source of truth" shape RebuildSweep1 above already
+// has, mirrored for Sweep2's own kernel::Brep::Sweep2 (two-rail frame
+// transport and skin; rail2's direction is matched to rail1's INSIDE
+// Brep::Sweep2 itself, so no reversal is needed here - see brep.h's own
+// doc comment). Always built uncapped (`cap=false`) for the same reason
+// RebuildSweep1 is: this command has no Cap option of its own, and its
+// existing result kind is, and stays, a plain Surface. `stations` is fixed
+// at 32 (this command exposes no Style/tolerance option to vary it). The
+// kernel throws std::invalid_argument for a genuinely degenerate rail/
+// section or touching rails - caught here and reported as nullopt, same
+// "degrade gracefully" contract every other Rebuild* function follows.
+std::optional<SceneObject> RebuildSweep2(CommandContext&, const kernel::NurbsCurve& section,
+                                          const kernel::NurbsCurve& rail1, const kernel::NurbsCurve& rail2,
+                                          const HistoryRecord&) {
+  try {
+    kernel::Brep b = kernel::Brep::Sweep2(section, rail1, rail2, /*stations=*/32, /*cap=*/false);
+    const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(b.raw().m_F[0].SurfaceOf());
+    if (!ns) return std::nullopt;
+    kernel::NurbsSurface k;
+    k.raw() = *ns;
+    return SceneObject::MakeSurface(k);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 void RegisterSurfaceCommands(CommandEngine& e) {
   Reg(e, "Sweep1", Make<Sweep1Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep1 (rotation-minimizing-frame transport and skin; still an uncapped surface, periodic when the rail is closed, same as before) and records History (History On) for UpdateHistory to rebuild against the rail/section's current shape; multiple cross sections still blend as an approximated lofted sweep fitted to a degree-3 surface, with no history recorded.");
-  Reg(e, "Sweep2", Make<Sweep2Command>(), CommandStatus::Implemented, "Approximate: sections are scaled between the rails (matched by arc length) and fitted as a degree-3 surface.");
+  Reg(e, "Sweep2", Make<Sweep2Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep2 (two-rail frame transport and skin; still an uncapped surface, same as before) and records History (History On) for UpdateHistory to rebuild against the rails/section's current shape; multiple cross sections still blend as an approximated two-rail-scaled sweep fitted to a degree-3 surface, with no history recorded.");
   Reg(e, "NetworkSrf", OnSelection("Select curves in network (2, 3 or 4)", NetworkSrf, 2), CommandStatus::Implemented, "Two curves give an exact ruled surface; three or four give a bilinear Coons patch fitted as a degree-3 surface.");
   Reg(e, "Patch", OnSelection("Select curves and points to fit a surface through", Patch), CommandStatus::Implemented, "Planar patch only: a least-squares plane trimmed by the single closed curve, or a fitted rectangle.");
   Reg(e, "Pipe", Make<PipeCommand>(), CommandStatus::Implemented, "Single radius. Cap=Yes gives a closed mesh solid; Cap=No a periodic NURBS surface (circle approximated by a cubic). Records History (History On, see cmd_history.cpp) for UpdateHistory to rebuild against the rail curve's current shape.");
   Reg(e, "OffsetSrf", Make<OffsetSrfCommand>(), CommandStatus::Implemented, "Surfaces: control points offset along Greville normals (exact for planes). Polysurfaces and meshes are offset as meshes along vertex normals; Solid=Yes closes the shell as a mesh.");
-  Reg(e, "Shell", Make<ShellCommand>(), CommandStatus::Implemented, "Hollows a closed solid as a mesh (outer minus inward vertex-normal offset). Optionally click face(s) of a polysurface solid to remove/open before entering thickness (Enter with none picked keeps the old fully-closed behavior): the picked face(s) are dropped from the outer surface, the remainder gets the inward offset, and a rim mesh connects the two boundary loops - a real open shell (cup/case) for a single face, or a group of mutually-adjacent faces, on a simple box-like solid; a selection that would leave a non-manifold or multi-piece remainder is rejected with a warning rather than producing bad geometry, and mesh-only solids (no polysurface to pick faces on) still only support the fully-closed form. After face removal you can also click additional face(s) and type a thickness for each (repeat, then Enter for the default Thickness on the rest): every kept face's vertices then solve to the exact intersection of its own neighbours' offset planes, so two faces with different thickness meet in a real mitered corner rather than an average - numerically verified for a box (see tests/surface_script.txt) and, by the same plane-intersection algebra, correct for any solid whose kept faces are all planar (prisms and other polyhedra). If any kept face is curved, per-face overrides are detected and dropped for that solid (warned), falling back to the single default Thickness everywhere on it rather than applying an unverified per-triangle offset to a curved surface.");
+  Reg(e, "Shell", Make<ShellCommand>(), CommandStatus::Implemented, "Hollows a closed solid. With no face clicked to remove/open and no per-face thickness override, a polysurface whose faces are all planar and convex (a box or other simple polyhedron) now calls the kernel's exact ShellConvexPlanar first, giving a real B-rep result (exact volume, no tessellation) instead of a mesh; it fails open to the existing mesh construction (outer minus inward vertex-normal offset) for a curved or non-convex solid, or a thickness beyond that shape's own offset feasibility. Optionally click face(s) of a polysurface solid to remove/open before entering thickness (Enter with none picked keeps the old fully-closed behavior): the picked face(s) are dropped from the outer surface, the remainder gets the inward offset, and a rim mesh connects the two boundary loops - a real open shell (cup/case) for a single face, or a group of mutually-adjacent faces, on a simple box-like solid; a selection that would leave a non-manifold or multi-piece remainder is rejected with a warning rather than producing bad geometry, and mesh-only solids (no polysurface to pick faces on) still only support the fully-closed form. After face removal you can also click additional face(s) and type a thickness for each (repeat, then Enter for the default Thickness on the rest): every kept face's vertices then solve to the exact intersection of its own neighbours' offset planes, so two faces with different thickness meet in a real mitered corner rather than an average - numerically verified for a box (see tests/surface_script.txt) and, by the same plane-intersection algebra, correct for any solid whose kept faces are all planar (prisms and other polyhedra). If any kept face is curved, per-face overrides are detected and dropped for that solid (warned), falling back to the single default Thickness everywhere on it rather than applying an unverified per-triangle offset to a curved surface.");
   Reg(e, "ExtrudeCrvAlongCrv", Make<ExtrudeAlongCommand>(), CommandStatus::Implemented, "Exact translational sweep (sum surface); the profile is not rotated along the path.");
   Reg(e, "ExtrudeCrvTapered", Make<ExtrudeTaperedCommand>(), CommandStatus::Implemented, "Ruled surface to a copy of the profile scaled about its centroid by the draft angle (exact for circles, approximate corners).");
   Reg(e, "Project", Make<ProjectCommand>(false), CommandStatus::Implemented, "Projects along the CPlane normal onto the target's render mesh; result curves are refit through the projected samples.");

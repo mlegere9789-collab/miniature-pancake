@@ -96,6 +96,7 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   force_ghosted = other.force_ghosted;
   force_xray = other.force_xray;
   force_monochrome = other.force_monochrome;
+  force_pen = other.force_pen;
   force_arctic = other.force_arctic;
   show_render_mesh_wires = other.show_render_mesh_wires;
   custom_mesh_tolerance = other.custom_mesh_tolerance;
