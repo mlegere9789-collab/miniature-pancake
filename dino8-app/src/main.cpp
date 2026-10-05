@@ -631,7 +631,7 @@ int main(int argc, char** argv) {
         out += line;
         out += '\n';
       }
-      if (suspended) out += "! compute error: script requires interactive input (dino8.GetPoint), which the compute server cannot satisfy\n";
+      if (suspended) out += "! compute error: script requires interactive input (dino8.GetPoint/GetString/GetReal/GetInteger/GetObject/GetObjects), which the compute server cannot satisfy\n";
       resp.status = (ok && !suspended) ? 200 : 500;
       resp.body = out;
       return resp;

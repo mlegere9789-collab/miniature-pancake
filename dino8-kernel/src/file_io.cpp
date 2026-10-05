@@ -518,6 +518,20 @@ int Model::AddLayout(const std::string& name, double page_width_mm, double page_
   view.m_view_type = ON::view_type::page_view_type;
   view.m_page_settings.m_width_mm = page_width_mm;
   view.m_page_settings.m_height_mm = page_height_mm;
+  // A real pre-existing bug, found while building AddDetailView() below,
+  // not merely disclosed after the fact: a freshly-constructed
+  // ON_Viewport's own m_viewport_id defaults to ON_nil_uuid, and nothing
+  // here ever gave it a real one - every layout this method ever added
+  // was therefore indistinguishable from every other by viewport id.
+  // Harmless while nothing used that id, but AddDetailView() needs a
+  // genuinely distinct id per layout to know which page a detail belongs
+  // on, so every new layout now gets one via SetViewportId() (which only
+  // ever succeeds on a still-nil id - OpenNURBS' own "never change the
+  // viewport id once set" contract - so this is a pure addition, not a
+  // behavior change, for a view that was never given one before).
+  ON_UUID viewport_id;
+  ON_CreateUuid(viewport_id);
+  view.m_vp.SetViewportId(viewport_id);
   model_.m_settings.m_views.Append(view);
   return model_.m_settings.m_views.Count() - 1;
 }
@@ -535,6 +549,93 @@ LayoutInfo Model::LayoutAt(int layout_index) const {
   result.name = ToStdString(view.m_name);
   result.page_width_mm = view.m_page_settings.m_width_mm;
   result.page_height_mm = view.m_page_settings.m_height_mm;
+  return result;
+}
+
+int Model::AddDetailView(int layout_index, double x_mm, double y_mm, double width_mm, double height_mm,
+                          double page_per_model_ratio, const std::string& name, int layer_index,
+                          std::optional<Color> render_color, const UserStrings& user_strings,
+                          std::optional<int> linetype_index, const std::vector<int>& group_indices,
+                          std::optional<int> material_index) {
+  if (name.empty() || layout_index < 0 || layout_index >= model_.m_settings.m_views.Count() ||
+      !(width_mm > 0.0) || !(height_mm > 0.0)) {
+    return -1;
+  }
+  const ON_UUID layout_viewport_id = model_.m_settings.m_views[layout_index].m_vp.ViewportId();
+
+  ON_3dPointArray corners;
+  corners.Append(ON_3dPoint(x_mm, y_mm, 0.0));
+  corners.Append(ON_3dPoint(x_mm + width_mm, y_mm, 0.0));
+  corners.Append(ON_3dPoint(x_mm + width_mm, y_mm + height_mm, 0.0));
+  corners.Append(ON_3dPoint(x_mm, y_mm + height_mm, 0.0));
+  corners.Append(corners[0]);  // ON_PolylineCurve requires an explicitly closed point list
+  const ON_PolylineCurve boundary_polyline(corners);
+
+  auto* detail = new ON_DetailView();
+  if (boundary_polyline.NurbsCurve(&detail->m_boundary) == nullptr) {
+    delete detail;
+    return -1;
+  }
+  detail->m_page_per_model_ratio = page_per_model_ratio;
+
+  const int index = DetailViewCount();
+  ON_3dmObjectAttributes attributes = MakeAttributes(
+      name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
+  attributes.m_space = ON::active_space::page_space;
+  attributes.m_viewport_id = layout_viewport_id;
+  model_.AddModelGeometryComponent(detail, &attributes);
+  return index;
+}
+
+int Model::DetailViewCount() const {
+  int count = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    if (ON_DetailView::Cast(geometry_component->Geometry(nullptr)) != nullptr) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+DetailViewInfo Model::DetailViewAt(int detail_view_index) const {
+  DetailViewInfo result;
+  if (detail_view_index < 0) {
+    return result;
+  }
+  int position = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_DetailView* detail = ON_DetailView::Cast(geometry_component->Geometry(nullptr));
+    if (detail == nullptr) {
+      continue;
+    }
+    if (position == detail_view_index) {
+      const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+      if (attributes != nullptr) {
+        result.name = ToStdString(attributes->Name());
+        for (int i = 0; i < model_.m_settings.m_views.Count(); ++i) {
+          if (ON_UuidCompare(model_.m_settings.m_views[i].m_vp.ViewportId(), attributes->m_viewport_id) ==
+              0) {
+            result.layout_index = i;
+            break;
+          }
+        }
+      }
+      const ON_BoundingBox bbox = detail->m_boundary.BoundingBox();
+      result.x_mm = bbox.m_min.x;
+      result.y_mm = bbox.m_min.y;
+      result.width_mm = bbox.m_max.x - bbox.m_min.x;
+      result.height_mm = bbox.m_max.y - bbox.m_min.y;
+      result.page_per_model_ratio = detail->m_page_per_model_ratio;
+      return result;
+    }
+    ++position;
+  }
   return result;
 }
 

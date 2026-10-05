@@ -9265,6 +9265,80 @@ void TestModelAddLayoutRoundTrips() {
   std::remove(path.c_str());
 }
 
+void TestModelAddDetailViewRoundTrips() {
+  using dino8::kernel::DetailViewInfo;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  // Closes the one item AddLayout() above explicitly disclosed as not
+  // attempted: "Detail views (the viewport windows placed ON a layout,
+  // each framing part of model space at its own scale) are a separate,
+  // larger ON_Viewport-per-detail feature this call does not attempt - a
+  // layout added here has a page size but no details on it yet." Before
+  // this, nothing in this kernel could create an ON_DetailView at all.
+  Model model;
+  Check(model.DetailViewCount() == 0, "a fresh Model has no detail views");
+
+  const int layout0 = model.AddLayout("A4 Landscape", 297.0, 210.0);
+  const int layout1 = model.AddLayout("A3 Portrait", 297.0, 420.0);
+  Check(layout0 == 0 && layout1 == 1, "both layouts were added at the expected indices");
+
+  Check(model.AddDetailView(layout1, 10.0, 20.0, 150.0, 100.0, 0.02083, "") == -1,
+        "AddDetailView() returns -1 for an empty name, same contract as AddLight() etc.");
+  Check(model.AddDetailView(9999, 10.0, 20.0, 150.0, 100.0, 0.02083, "No Such Layout") == -1,
+        "AddDetailView() returns -1 for a layout_index this model doesn't have");
+  Check(model.AddDetailView(layout1, 10.0, 20.0, 0.0, 100.0, 0.02083, "Bad Width") == -1,
+        "AddDetailView() returns -1 for a non-positive width_mm");
+  Check(model.AddDetailView(layout1, 10.0, 20.0, 150.0, -5.0, 0.02083, "Bad Height") == -1,
+        "AddDetailView() returns -1 for a non-positive height_mm");
+  Check(model.DetailViewCount() == 0, "none of the rejected calls above added a detail view");
+
+  const int index =
+      model.AddDetailView(layout1, 10.0, 20.0, 150.0, 100.0, 0.02083, "Front View Detail");
+  Check(index == 0, "the first real AddDetailView() call returns index 0");
+  Check(model.DetailViewCount() == 1, "model has one detail view after AddDetailView()");
+  Check(model.ObjectCount() == 1,
+        "a detail view is a real model geometry object, also counted by ObjectCount()");
+
+  const DetailViewInfo info = model.DetailViewAt(0);
+  Check(info.name == "Front View Detail", "DetailViewAt(0) reports the name AddDetailView() was given");
+  Check(info.layout_index == layout1,
+        "DetailViewAt(0) resolves layout_index back to the exact layout AddDetailView() was given, "
+        "not the other one");
+  Check(std::abs(info.x_mm - 10.0) < 1e-9 && std::abs(info.y_mm - 20.0) < 1e-9,
+        "DetailViewAt(0) reports the exact x_mm/y_mm AddDetailView() was given");
+  Check(std::abs(info.width_mm - 150.0) < 1e-9 && std::abs(info.height_mm - 100.0) < 1e-9,
+        "DetailViewAt(0) reports the exact width_mm/height_mm AddDetailView() was given");
+  Check(std::abs(info.page_per_model_ratio - 0.02083) < 1e-9,
+        "DetailViewAt(0) reports the exact page_per_model_ratio AddDetailView() was given");
+
+  const DetailViewInfo out_of_range = model.DetailViewAt(9999);
+  Check(out_of_range.name.empty() && out_of_range.layout_index == -1,
+        "DetailViewAt() on an index this model doesn't have returns a default-constructed "
+        "DetailViewInfo, same contract as LayoutAt()/HatchAt() etc.");
+
+  const std::string path = "dino8_kernel_model_detail_view_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a detail view succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.DetailViewCount() == 1, "the detail view survives the .3dm round trip");
+  Check(loaded.LayoutCount() == 2, "both layouts survive the .3dm round trip too");
+  const DetailViewInfo reloaded = loaded.DetailViewAt(0);
+  Check(reloaded.name == "Front View Detail", "the reloaded detail view's name survives the round trip");
+  Check(reloaded.layout_index == layout1,
+        "the reloaded detail view still resolves to the exact layout it was placed on, "
+        "matched by that layout's own ON_Viewport::ViewportId() surviving the round trip");
+  Check(std::abs(reloaded.x_mm - 10.0) < 1e-6 && std::abs(reloaded.y_mm - 20.0) < 1e-6,
+        "the reloaded detail view's x_mm/y_mm survive the round trip");
+  Check(std::abs(reloaded.width_mm - 150.0) < 1e-6 && std::abs(reloaded.height_mm - 100.0) < 1e-6,
+        "the reloaded detail view's width_mm/height_mm survive the round trip");
+  Check(std::abs(reloaded.page_per_model_ratio - 0.02083) < 1e-6,
+        "the reloaded detail view's page_per_model_ratio survives the round trip");
+
+  std::remove(path.c_str());
+}
+
 void TestModelMaterialExtendedFieldsRoundTrip() {
   using dino8::kernel::Color;
   using dino8::kernel::Model;
@@ -67229,6 +67303,7 @@ int main() {
   TestModelUnitSystemRoundTrips();
   TestModelAddNamedViewRoundTrips();
   TestModelAddLayoutRoundTrips();
+  TestModelAddDetailViewRoundTrips();
   TestModelMaterialExtendedFieldsRoundTrip();
   TestModelMaterialTextureRoundTrips();
   TestModelAddLightRoundTrips();

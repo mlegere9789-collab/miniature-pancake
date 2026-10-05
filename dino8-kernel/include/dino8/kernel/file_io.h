@@ -168,6 +168,27 @@ struct LayoutInfo {
   double page_height_mm = 0.0;
 };
 
+// A detail view (the viewport window placed ON a layout page, framing
+// part of model space at its own scale) read back from
+// Model::DetailViewAt() below - the read-side counterpart to
+// Model::AddDetailView()'s own parameters. `layout_index` is the layout
+// (as returned by AddLayout() above) this detail is placed on, recovered
+// by matching the detail's own page-association attribute back against
+// each layout's own viewport id - -1 if no current layout matches (e.g.
+// the owning layout was somehow removed since). `x_mm`/`y_mm`/
+// `width_mm`/`height_mm` are the detail's own rectangular boundary, in
+// the same page-space millimeter coordinates AddLayout()'s own
+// page_width_mm/page_height_mm are measured in.
+struct DetailViewInfo {
+  std::string name;
+  int layout_index = -1;
+  double x_mm = 0.0;
+  double y_mm = 0.0;
+  double width_mm = 0.0;
+  double height_mm = 0.0;
+  double page_per_model_ratio = 0.0;
+};
+
 // One object's attributes, read back from Model::ObjectAttributesAt()
 // below - the read-side counterpart to every Add*() method's own name/
 // layer_index/render_color/user_strings/linetype_index/group_indices/
@@ -748,6 +769,63 @@ class Model {
   // layout this model actually has returns a default-constructed
   // LayoutInfo.
   LayoutInfo LayoutAt(int layout_index) const;
+
+  // Adds a detail view (Rhino's own Detail command - a rectangular window
+  // placed on a layout page that frames part of model space at its own
+  // scale, ON_DetailView underneath) to the model and returns its index
+  // (>= 0) among detail views specifically - closing the one item
+  // AddLayout() above explicitly disclosed as not attempted ("Detail
+  // views ... are a separate, larger ON_Viewport-per-detail feature this
+  // call does not attempt"), the last field left open on PARITY_MAP.md's
+  // own ".3dm attribute/metadata fidelity" evidence after every other
+  // named item (textures/named-views/lights/clipping-planes/layouts/
+  // units) closed in earlier sessions. `layout_index` (as returned by
+  // AddLayout() above) names the page this detail is placed ON;
+  // `x_mm`/`y_mm`/`width_mm`/`height_mm` are the detail's own rectangular
+  // boundary in that SAME page-space millimeter coordinate system
+  // AddLayout()'s own page_width_mm/page_height_mm are measured in -
+  // written into `ON_DetailView::m_boundary` (a closed `ON_NurbsCurve`
+  // rectangle, built by converting a 4-corner `ON_PolylineCurve` via its
+  // own `NurbsCurve()` call - the same "build a simple shape, then
+  // convert it to the real NURBS form a field demands" approach
+  // `AddHatch()` above takes for its own polyline boundary).
+  // `page_per_model_ratio` is written straight to
+  // `ON_DetailView::m_page_per_model_ratio` (page length / model length
+  // in one shared unit system - e.g. 0.02083 for "1/4 inch on the page =
+  // 1 foot in the model", that field's own documented example); this call
+  // does not attempt the detail's own nested model-space camera
+  // (`ON_DetailView::m_view`), left at its default, unpopulated state - a
+  // caller gets a real page-space rectangle and scale but not yet a
+  // specific view into model space, a disclosed narrowing rather than
+  // the "separate, larger feature" AddLayout() deferred entirely. A
+  // detail IS an ordinary ModelGeometry object (`ON::detail_object`), but
+  // unlike a mesh or brep it is tied to one specific page via
+  // `ON_3dmObjectAttributes::m_viewport_id` (set to that layout's own
+  // `ON_Viewport::ViewportId()`) and `m_space` switched to
+  // `ON::active_space::page_space` - the same "an object restricted to
+  // one specific page" mechanism `m_viewport_id`'s own doc comment
+  // describes, not otherwise used anywhere else in this file. Returns -1
+  // without adding anything if `name` is empty, `layout_index` does not
+  // name a layout this model actually has, `width_mm`/`height_mm` is not
+  // positive, or the polyline-to-NURBS conversion itself fails.
+  int AddDetailView(int layout_index, double x_mm, double y_mm, double width_mm, double height_mm,
+                     double page_per_model_ratio = 1.0, const std::string& name = std::string(),
+                     int layer_index = -1, std::optional<Color> render_color = std::nullopt,
+                     const UserStrings& user_strings = UserStrings(),
+                     std::optional<int> linetype_index = std::nullopt,
+                     const std::vector<int>& group_indices = std::vector<int>(),
+                     std::optional<int> material_index = std::nullopt);
+
+  // Returns the number of detail views added via AddDetailView() above.
+  int DetailViewCount() const;
+
+  // Returns the detail view at `detail_view_index` (as counted by
+  // DetailViewCount() above) - the read-side counterpart to
+  // AddDetailView()'s own parameters, the same read-side gap every other
+  // `*At()` accessor above closes for its own table. `detail_view_index`
+  // not naming a detail view this model actually has returns a
+  // default-constructed DetailViewInfo.
+  DetailViewInfo DetailViewAt(int detail_view_index) const;
 
   // Adds a light (Rhino's own Point/Directional light object) to the model
   // and returns its index (>= 0) among lights specifically - "lights" is
