@@ -599,16 +599,6 @@ LayerState* Document::FindLayerState(const std::string& name) {
   return nullptr;
 }
 
-PlotStyle* Document::FindPlotStyle(const std::string& name) {
-  for (PlotStyle& p : plot_styles_) if (p.name == name) return &p;
-  return nullptr;
-}
-
-const PlotStyle* Document::FindPlotStyle(const std::string& name) const {
-  for (const PlotStyle& p : plot_styles_) if (p.name == name) return &p;
-  return nullptr;
-}
-
 bool Document::RemoveAnnotationStyle(const std::string& name) {
   if (name == settings_.annotation_style) return false;
   const auto it = std::find_if(annotation_styles_.begin(), annotation_styles_.end(), [&](const AnnotationStyle& a) { return a.name == name; });

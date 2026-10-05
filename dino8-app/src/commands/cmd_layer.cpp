@@ -136,67 +136,6 @@ class LayerStateCommand : public Command {
   std::string action_;
 };
 
-// PlotStyleTable: defines or edits one named, reusable plot style
-// (PlotStyle, doc/Document.h) - the actual remaining "no named, reusable
-// plot style table" gap PARITY_MAP.md's "Print and plot output" item still
-// names after LayerPrintWidth/LayerPlotColor closed the per-layer
-// lineweight/color overrides. Does not itself touch any layer - only
-// LayerPlotStyle below assigns a defined style to one. Three-token
-// scriptable form "PlotStyleTable <name> <color> <width>" (same
-// TakePendingInput chaining LayerPrintWidth/LayerPlotColor already use);
-// re-running it on an existing name edits that style in place rather than
-// making a second one, the same "find or create" shape BlockSetLookupTable
-// has for a block's lookup table. With no name queued, lists every style.
-class PlotStyleTableCommand : public Command {
- public:
-  // Every argument, including the first, goes through Want*/On* (not a
-  // direct TakePendingInput() in Begin, the shape Immediate commands like
-  // LayerPrintWidth/LayerPlotColor use for their own same-line arguments):
-  // this is a multi-step Command, so each argument is answered by its own
-  // separate queued script line, the same "command name alone, then one
-  // line per prompt" shape BlockSetArraySpacing/BlockSetLookupTable already
-  // have. An empty name (Enter with nothing typed) lists every style
-  // instead of defining one.
-  void Begin(CommandContext&) override { WantText("Style name (Enter to list)", std::string("")); }
-  void OnText(CommandContext& ctx, const std::string& t) override {
-    if (stage_ == 0) {
-      if (t.empty()) {
-        auto& styles = ctx.Doc().PlotStyles();
-        if (styles.empty()) ctx.Print("No plot styles defined.");
-        for (const PlotStyle& p : styles) {
-          const std::string color = p.has_color ? std::to_string(static_cast<int>(p.color.r * 255 + 0.5f)) + "," +
-                                                        std::to_string(static_cast<int>(p.color.g * 255 + 0.5f)) + "," +
-                                                        std::to_string(static_cast<int>(p.color.b * 255 + 0.5f))
-                                                  : "ByLayer";
-          ctx.Print("  " + p.name + ": color " + color + ", width " + FormatNumber(p.width_mm));
-        }
-        Finish();
-        return;
-      }
-      name_ = t;
-      stage_ = 1;
-      WantText("Color (r,g,b, or ByLayer/None for no color override)");
-      return;
-    }
-    if (!ParsePlotColorArg(t, clear_color_, color_)) { ctx.Warn("'" + t + "' is not r,g,b or ByLayer/Default/None"); Finish(); return; }
-    WantNumber("Width (mm; 0 = no override, negative = does not print)", 0);
-  }
-  void OnNumber(CommandContext& ctx, double v) override {
-    ctx.Doc().BeginChange("PlotStyleTable");
-    PlotStyle* st = ctx.Doc().FindPlotStyle(name_);
-    if (!st) { PlotStyle fresh; fresh.name = name_; ctx.Doc().PlotStyles().push_back(fresh); st = &ctx.Doc().PlotStyles().back(); }
-    st->has_color = !clear_color_;
-    if (!clear_color_) st->color = color_;
-    st->width_mm = v;
-    ctx.Print("PlotStyleTable: '" + name_ + "' set (color " + (clear_color_ ? "ByLayer" : "set") + ", width " + FormatNumber(v) + ")");
-    Finish();
-  }
-  std::string name_;
-  int stage_ = 0;
-  bool clear_color_ = true;
-  Color color_ = Color::FromBytes(0, 0, 0);
-};
-
 }  // namespace
 
 void RegisterLayerCommands(CommandEngine& e) {
@@ -334,43 +273,6 @@ void RegisterLayerCommands(CommandEngine& e) {
         const std::string desc = clear ? "ByLayer (display color)" : std::to_string(static_cast<int>(c.r * 255 + 0.5f)) + "," +
                                              std::to_string(static_cast<int>(c.g * 255 + 0.5f)) + "," + std::to_string(static_cast<int>(c.b * 255 + 0.5f));
         ctx.Print("Layer '" + ctx.Doc().LayerFullPath(idx) + "' plot color: " + desc);
-      }));
-  // PlotStyleTable: defines or edits a named, reusable plot style (color +
-  // lineweight pair) that any number of layers can be assigned to by name
-  // (LayerPlotStyle below) - the actual "no named, reusable plot style
-  // table" gap left open after LayerPrintWidth/LayerPlotColor closed the
-  // per-layer lineweight/color overrides (PARITY_MAP.md's "Print and plot
-  // output" item).
-  Reg(e, "PlotStyleTable", Make<PlotStyleTableCommand>(), CommandStatus::Implemented,
-      "Defines or edits one named plot style (a color + lineweight pair, PlotStyle in doc/Document.h) that any "
-      "number of layers can reference by name via LayerPlotStyle - changing the one style changes every layer "
-      "that uses it, unlike LayerPrintWidth/LayerPlotColor's own independent per-layer fields.");
-  // LayerPlotStyle: assigns (or clears) one layer's named plot style
-  // (Layer::plot_style_name); io/FileExchange.cpp's ExportSvg/ExportPdf
-  // resolve it (CollectPaths) and let it take over from the layer's own
-  // print_width_mm/plot_color one channel at a time (EffectivePrintWidthMm/
-  // EffectivePlotColor/LayerPrints' new `style` parameter, doc/Document.h).
-  // Same scriptable "LayerPlotStyle [layer name] style name" two-token form
-  // as LayerPrintWidth/LayerPlotColor; "None"/"ByLayer" (or no name at all)
-  // clears the assignment, falling back to the layer's own fields.
-  Reg(e, "LayerPlotStyle", Immediate([](CommandContext& ctx) {
-        int idx = ctx.Doc().CurrentLayer();
-        auto first = ctx.Engine().TakePendingInput();
-        std::optional<std::string> style_text = ctx.Engine().TakePendingInput();
-        if (first && style_text) {
-          idx = ctx.Doc().FindLayer(*first);
-          if (idx < 0) { ctx.Warn("No layer named '" + *first + "'"); return; }
-        } else if (first) {
-          style_text = first;  // one token: style name for the current layer
-        }
-        if (!style_text) { ctx.Warn("Usage: LayerPlotStyle [layer name] style name (or ByLayer/None to clear)"); return; }
-        const std::string lower = ToLower(*style_text);
-        const bool clear = lower.empty() || lower == "bylayer" || lower == "default" || lower == "none";
-        if (!clear && !ctx.Doc().FindPlotStyle(*style_text)) ctx.Warn("No plot style named '" + *style_text + "' (use PlotStyleTable) - the assignment will be stored but has no visible effect until one exists");
-        ctx.Doc().BeginChange("LayerPlotStyle");
-        Layer& L = ctx.Doc().Layers()[static_cast<size_t>(idx)];
-        L.plot_style_name = clear ? "" : *style_text;
-        ctx.Print("Layer '" + ctx.Doc().LayerFullPath(idx) + "' plot style: " + (clear ? "ByLayer (no style)" : L.plot_style_name));
       }));
   Reg(e, "LayerStateManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().layer_state_manager = true; }));
   Reg(e, "LayerState", Make<LayerStateCommand>());

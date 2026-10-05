@@ -74,14 +74,6 @@ struct BlockInstance {
   // type. Empty, or no matching row, falls back to `state` unchanged, same
   // "no-op until configured/matched" contract Flip/Array already have.
   std::string lookup_key;
-  // Stretch parameter: this instance's own target length along its block
-  // definition's stretch_axis (BlockDefinition::stretch_length/axis, set on
-  // the definition via BlockSetStretchFrame). 0 means "no override" and
-  // falls back to the definition's own stretch_length unchanged (so the
-  // instance renders exactly as built) - the fifth and last dynamic-block
-  // parameter type, same "no-op until configured/set" contract Array's
-  // count and Lookup's key already have.
-  double stretch_length = 0;
 };
 
 std::vector<BlockInstance> LoadBlockInstances(const Document& doc);
@@ -140,13 +132,6 @@ bool SetBlockInstanceArrayCount(Document& doc, int group, int count);
 // empty or matches no row. Returns false if `group` isn't a known
 // dynamic-block instance.
 bool SetBlockInstanceLookup(Document& doc, int group, const std::string& key);
-
-// Looks up the stored record for `group`, sets its Stretch parameter's
-// target length and rebuilds - the fifth and last dynamic-block
-// parameter/action type. `length` <= 0 clears the override (falls back to
-// the definition's own stretch_length, unstretched). Returns false if
-// `group` isn't a known dynamic-block instance.
-bool SetBlockInstanceStretch(Document& doc, int group, double length);
 
 // Resolves which visibility state `def`'s lookup table says `key` should
 // show, or `fallback` (typically the instance's own explicit `state`) if
