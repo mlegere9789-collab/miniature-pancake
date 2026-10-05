@@ -626,6 +626,39 @@ void TestCurveRemoveKnotAt() {
         "strictly interior)");
 }
 
+void TestCurveSetDomainReparameterizes() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 3, 0), Point3d(2, -3, 0),
+                                     Point3d(3, 0, 0)};
+  NurbsCurve curve = NurbsCurve::FromControlPoints(pts, /*degree=*/3);
+  const auto original_domain = curve.Domain();
+  Check(original_domain.min == 0.0 && original_domain.max == 1.0,
+        "SetDomain setup: FromControlPoints' own clamped domain is [0, 1]");
+
+  Check(curve.SetDomain(5.0, 15.0) == Result::Ok, "SetDomain returns Ok for a valid, different domain");
+  const auto new_domain = curve.Domain();
+  Check(new_domain.min == 5.0 && new_domain.max == 15.0, "SetDomain actually moved Domain() to [5, 15]");
+  Check(curve.ControlPointCount() == 4 && curve.KnotCount() == 6,
+        "SetDomain changes no control points or knot count, only knot values");
+
+  // Shape is untouched: the point 40% of the way along the new domain
+  // must be the same point that used to be 40% of the way along the old
+  // one - an affine reparameterization moves no geometry at all.
+  const double old_t = original_domain.min + 0.4 * (original_domain.max - original_domain.min);
+  const double new_t = new_domain.min + 0.4 * (new_domain.max - new_domain.min);
+  NurbsCurve reference = NurbsCurve::FromControlPoints(pts, /*degree=*/3);
+  Check((curve.PointAt(new_t) - reference.PointAt(old_t)).Length() < 1e-12,
+        "SetDomain: PointAt() at the corresponding new parameter matches the pre-reparam shape exactly");
+
+  Check(curve.SetDomain(5.0, 15.0) == Result::NoOpAlreadySatisfied,
+        "SetDomain returns NoOpAlreadySatisfied when the domain already matches");
+  Check(curve.SetDomain(3.0, 3.0) == Result::Failed, "SetDomain returns Failed when t0 == t1");
+  Check(curve.SetDomain(9.0, 2.0) == Result::Failed, "SetDomain returns Failed when t0 > t1");
+}
+
 void TestCurveKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -23212,6 +23245,87 @@ void TestSubDOffsetArgumentChecksRejectNonFiniteDistance() {
   Check(threw, "Offset(-infinity) throws std::invalid_argument");
 }
 
+// PARITY_MAP.md's offsetshell "SubD offset / thicken" gap's own disclosed
+// remainder: "no Solid (thicken-into-a-closed-shell) variant". A lone quad's
+// control net is planar, and every Catmull-Clark limit-point formula is an
+// affine combination of its inputs, so the limit surface of a planar cage
+// stays EXACTLY in that same plane too (an affine combination of coplanar
+// points can't leave the plane) - whatever its boundary curve does inward
+// from the original corners, the tessellated sheet is still an exactly
+// flat polygon. A flat sheet thickened into a prism has an exact, two-
+// independently-computed-quantities closed form regardless of that
+// boundary's own exact shape: Volume() (an integral over the closed
+// result's own triangles) must equal Area() (the flat sheet's own 2D area,
+// computed before thickening) times the offset distance.
+void TestSubDThickenFlatSheetMatchesExactPrismVolumeAndIsClosedManifold() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const SubD subd = SubD::FromControlMesh(MakeFlatUnitSquareMesh());
+  const Mesh tessellated_before_thickening = subd.Tessellate(0.01, 4);
+  const double base_area = tessellated_before_thickening.Area();
+  Check(base_area > 0.0 && base_area <= 1.0 + 1e-9,
+        "the tessellated flat sheet's own area is positive and no larger than the original unit-square cage "
+        "(an uncreased boundary can only pull the limit surface inward, never past its own control net)");
+
+  const Mesh solid = subd.Thicken(0.4, 0.01, 4);
+
+  Check(solid.IsClosedManifold(), "SubD::Thicken on an open flat sheet produces a genuine closed 2-manifold");
+  Check(std::fabs(solid.Volume() - base_area * 0.4) < 1e-6,
+        "SubD::Thicken(0.4)'s own volume matches the flat sheet's own independently-measured area times the "
+        "offset distance exactly - the universal flat-prism identity, cross-checking Volume() against Area() "
+        "on the SAME tessellated geometry via two unrelated code paths");
+
+  // Independent cross-check, not just a volume coincidence: thickening the
+  // SAME tessellated mesh directly via Mesh::Thicken() must give the
+  // identical result, since SubD::Thicken() is documented to be exactly
+  // that composition and nothing more.
+  const Mesh tessellated = subd.Tessellate(0.01, 4);
+  const Mesh direct = tessellated.Thicken(0.4);
+  Check(solid.VertexCount() == direct.VertexCount() && solid.FaceCount() == direct.FaceCount() &&
+            std::fabs(solid.Volume() - direct.Volume()) < 1e-9,
+        "SubD::Thicken() matches Tessellate() followed by a direct Mesh::Thicken() call exactly - it is a thin "
+        "composition of those two existing, independently-tested methods, not a separate construction");
+}
+
+// Both of Mesh::Thicken()'s own refusal cases (zero/non-finite distance,
+// an already-closed input) must still fire when reached through
+// SubD::Thicken() - inherited, not re-implemented, so there is only one
+// place either guard could ever drift.
+void TestSubDThickenInheritsMeshThickenArgumentChecks() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const SubD open_subd = SubD::FromControlMesh(MakeFlatUnitSquareMesh());
+
+  bool threw_zero = false;
+  try {
+    (void)open_subd.Thicken(0.0, 0.01, 4);
+  } catch (const std::invalid_argument&) {
+    threw_zero = true;
+  }
+  Check(threw_zero, "SubD::Thicken(0.0, ...) throws - inherited from Mesh::Thicken()'s own zero-distance refusal");
+
+  bool threw_nan = false;
+  try {
+    (void)open_subd.Thicken(std::numeric_limits<double>::quiet_NaN(), 0.01, 4);
+  } catch (const std::invalid_argument&) {
+    threw_nan = true;
+  }
+  Check(threw_nan, "SubD::Thicken(NaN, ...) throws - inherited from Mesh::Thicken()'s own non-finite guard");
+
+  const SubD closed_subd = SubD::FromControlMesh(MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1));
+  bool threw_closed = false;
+  try {
+    (void)closed_subd.Thicken(0.1, 0.1, 4);
+  } catch (const std::invalid_argument&) {
+    threw_closed = true;
+  }
+  Check(threw_closed,
+        "SubD::Thicken() on an already-closed cage (a cube) throws - its tessellation has no naked edges, so "
+        "Mesh::Thicken()'s own \"already closed\" refusal fires exactly as it would on any other closed mesh");
+}
+
 void TestSubDEvaluateFaceExactOnRegularFlatGrid() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -23713,6 +23827,43 @@ void TestSubDEvaluateFaceThrowsOnBadInput() {
     threw_bad_id = true;
   }
   Check(threw_bad_id, "EvaluateFace throws on a face_id that doesn't exist");
+
+  // u/v out of [0, 1] previously extrapolated the quadrant-local Bezier
+  // math silently instead of being refused - now std::invalid_argument,
+  // same convention ToNurbsPatchesAdaptive() already uses for its own
+  // out-of-range argument.
+  const unsigned int any_face = subd.raw().FaceIterator().FirstFace()->FaceId();
+  const std::pair<double, double> bad_uv[] = {{-0.1, 0.5}, {1.1, 0.5}, {0.5, -0.1}, {0.5, 1.1},
+                                               {std::numeric_limits<double>::quiet_NaN(), 0.5}};
+  for (const auto& uv : bad_uv) {
+    bool threw = false;
+    try {
+      subd.EvaluateFace(any_face, uv.first, uv.second);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "EvaluateFace throws std::invalid_argument on an out-of-[0,1] (or NaN) u/v");
+  }
+
+  // Every boundary and interior value in [0, 1] must still work - the
+  // new gate must not be off-by-one at either endpoint.
+  bool boundary_ok = true;
+  try {
+    (void)subd.EvaluateFace(any_face, 0.0, 0.0);
+    (void)subd.EvaluateFace(any_face, 1.0, 1.0);
+    (void)subd.EvaluateFace(any_face, 0.5, 0.5);
+  } catch (const std::exception&) {
+    boundary_ok = false;
+  }
+  Check(boundary_ok, "EvaluateFace still accepts every u/v value actually inside [0, 1], including both endpoints");
+
+  bool threw_negative_levels = false;
+  try {
+    subd.EvaluateFace(any_face, 0.5, 0.5, -1);
+  } catch (const std::invalid_argument&) {
+    threw_negative_levels = true;
+  }
+  Check(threw_negative_levels, "EvaluateFace throws std::invalid_argument when max_adaptive_levels is negative");
 }
 
 void TestSubDToNurbsPatchesAdaptiveMatchesNonAdaptiveAtZeroLevels() {
@@ -67737,6 +67888,7 @@ int main() {
   TestCurveMakeRationalAndNonRational();
   TestCurveInsertKnotAt();
   TestCurveRemoveKnotAt();
+  TestCurveSetDomainReparameterizes();
   TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();
@@ -68011,6 +68163,8 @@ int main() {
   TestSubDOffsetCubeMovesEachCornerAlongItsOwnExactBodyDiagonalLimitNormal();
   TestSubDOffsetZeroDistanceLeavesEveryPositionUnchanged();
   TestSubDOffsetArgumentChecksRejectNonFiniteDistance();
+  TestSubDThickenFlatSheetMatchesExactPrismVolumeAndIsClosedManifold();
+  TestSubDThickenInheritsMeshThickenArgumentChecks();
   TestSubDEvaluateFaceExactOnRegularFlatGrid();
   TestSubDEvaluateFaceAdaptiveOnIrregularFace();
   TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane();
