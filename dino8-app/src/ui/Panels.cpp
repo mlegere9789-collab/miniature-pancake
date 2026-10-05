@@ -2070,10 +2070,10 @@ void DrawScriptEditor(Application& app) {
   }
 
   // Lua scripts can suspend mid-run (rs.GetPoint et al. yield the
-  // coroutine - see LuaEngine). Python scripts can now suspend too, but only
-  // on dino8.GetPoint() (PythonEngine runs the script on a worker thread and
-  // blocks it there - see PythonEngine.h); rs.GetObjects/GetString-style
-  // prompts remain Lua-only.
+  // coroutine - see LuaEngine). Python scripts can now suspend on any of
+  // dino8.GetPoint/GetString/GetReal/GetInteger/GetObject/GetObjects too
+  // (PythonEngine runs the script on a worker thread and blocks it there -
+  // see PythonEngine.h), the same set LuaEngine's rs.Get* already covers.
   const bool running = is_python ? app.Python().Running() : app.Lua().Running();
   const bool suspended = is_python ? app.Python().Suspended() : app.Lua().Suspended();
   ImGui::BeginDisabled(running && !suspended);

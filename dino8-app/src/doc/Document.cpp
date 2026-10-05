@@ -28,6 +28,7 @@ void Document::Clear() {
   named_views_.clear();
   linetypes_ = DefaultLinetypes();
   annotation_styles_ = {AnnotationStyle{}};
+  plot_styles_.clear();
   layer_states_.clear();
   named_cplanes_.clear();
   guides_.clear();
@@ -608,6 +609,20 @@ bool Document::RemoveAnnotationStyle(const std::string& name) {
   return true;
 }
 
+PlotStyle* Document::FindPlotStyle(const std::string& name) {
+  for (PlotStyle& s : plot_styles_) if (s.name == name) return &s;
+  return nullptr;
+}
+
+bool Document::RemovePlotStyle(const std::string& name) {
+  for (const Layer& l : layers_) if (l.plot_style == name) return false;
+  const auto it = std::find_if(plot_styles_.begin(), plot_styles_.end(), [&](const PlotStyle& s) { return s.name == name; });
+  if (it == plot_styles_.end()) return false;
+  plot_styles_.erase(it);
+  Touch();
+  return true;
+}
+
 NamedCPlane* Document::FindNamedCPlane(const std::string& name) {
   for (NamedCPlane& c : named_cplanes_) if (c.name == name) return &c;
   return nullptr;
@@ -645,6 +660,7 @@ Document::Snapshot Document::Capture(const std::string& label) const {
   s.next_id = next_id_;
   s.next_group_id = next_group_id_;
   s.next_light_id = next_light_id_;
+  s.user_text = user_text_;
   return s;
 }
 
@@ -657,6 +673,7 @@ void Document::Restore(const Snapshot& s) {
   lights_ = s.lights;
   clipping_planes_ = s.clipping_planes;
   layouts_ = s.layouts;
+  user_text_ = s.user_text;
   // Monotonic for the same reason as ApplyDelta(): a named-snapshot restore
   // must never let a later Add() reuse an id that a side-table record made
   // since the snapshot still refers to.
@@ -717,6 +734,7 @@ bool Document::CaptureSnapshotAsDocument(const std::string& name, Document& out)
   out.next_id_ = s.next_id;
   out.next_group_id_ = s.next_group_id;
   out.next_light_id_ = s.next_light_id;
+  out.user_text_ = s.user_text;
   return true;
 }
 
@@ -734,6 +752,7 @@ void Document::AdoptNamedSnapshotFromDocument(const std::string& name, const Doc
   s.next_id = src.next_id_;
   s.next_group_id = src.next_group_id_;
   s.next_light_id = src.next_light_id_;
+  s.user_text = src.user_text_;
   for (auto& [n, snap] : named_snapshots_) {
     if (n == name) { snap = std::move(s); return; }
   }
@@ -775,6 +794,7 @@ void Document::BeginChange(const std::string& label) {
   pending_.next_light_id = next_light_id_;
   pending_.objects = objects_;  // O(document) - same cost the old Capture() paid at BeginChange time
   pending_.fast_path_before.clear();
+  pending_.user_text = user_text_;
   redo_.clear();
 }
 
@@ -799,6 +819,7 @@ void Document::BeginChangeForObjects(const std::string& label, const std::vector
   for (ObjectId id : ids) {
     if (const SceneObject* o = Find(id)) pending_.fast_path_before.push_back(*o);
   }
+  pending_.user_text = user_text_;
   redo_.clear();
 }
 
@@ -827,6 +848,8 @@ void Document::FinalizePending() {
   d.next_group_id_after = next_group_id_;
   d.next_light_id_before = pending_.next_light_id;
   d.next_light_id_after = next_light_id_;
+  d.user_text_before = std::move(pending_.user_text);
+  d.user_text_after = user_text_;
 
   if (pending_.fast_path) {
     std::unordered_set<ObjectId> live_ids;
@@ -1073,6 +1096,7 @@ void Document::ApplyDelta(const StateDelta& d, bool undo) {
   next_id_ = std::max(next_id_, undo ? d.next_id_before : d.next_id_after);
   next_group_id_ = undo ? d.next_group_id_before : d.next_group_id_after;
   next_light_id_ = undo ? d.next_light_id_before : d.next_light_id_after;
+  user_text_ = undo ? d.user_text_before : d.user_text_after;
   Touch();
 }
 
@@ -1205,8 +1229,8 @@ bool Document::UndoSelected(const std::vector<ObjectId>& selected_ids, std::stri
   // StateDelta comment in Document.h) when BOTH:
   //  (a) the candidate entry itself is object_only (BeginChangeForObjects'
   //      contract guarantees it touched no document-level state - layers/
-  //      groups/materials/lights/clipping planes/layouts/id counters -
-  //      besides the declared objects), so splicing it out can't strand a
+  //      groups/materials/lights/clipping planes/layouts/id counters/
+  //      user text - besides the declared objects), so splicing it out can't strand a
   //      later entry's own before/after copy of any of those lists; and
   //  (b) no later (more recent) entry also touches one of the SAME object
   //      ids - if one did, that later entry's own before/after image of

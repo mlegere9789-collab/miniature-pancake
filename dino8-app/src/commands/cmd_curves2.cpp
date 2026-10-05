@@ -668,10 +668,26 @@ class KnotEditCommand : public Command {
       case Op::InsertCP: ok = nc.InsertKnot(t, 1); what = "control point inserted"; break;
       case Op::InsertEditPoint: ok = nc.InsertKnot(t, 1); what = "edit point inserted"; break;
       case Op::RemoveKnot: {
-        // Remove the interior knot nearest to t.
+        // Remove the interior knot nearest to t, via the kernel's own
+        // Tiller's-algorithm RemoveKnotAt() (real Boehm-style removal
+        // with a rigorous deviation bound) rather than RemoveKnotApprox's
+        // blind Greville-abscissa resample. A permissive (infinite)
+        // tolerance keeps this command's own long-standing behavior of
+        // always committing the best-fit removal when a knot is found,
+        // same as RemoveKnotApprox always did - the kernel call still
+        // reports the real deviation this op now has but never did
+        // before.
         int best = -1; double bd = std::numeric_limits<double>::max();
         for (int i = nc.Degree(); i < nc.KnotCount() - nc.Degree(); ++i) { double d = std::fabs(nc.Knot(i) - t); if (d < bd) { bd = d; best = i; } }
-        if (best >= 0) ok = RemoveKnotApprox(nc, best); what = "knot removed";
+        if (best >= 0) {
+          kernel::NurbsCurve k = c->curve;
+          double deviation = 0.0;
+          if (k.RemoveKnotAt(best, std::numeric_limits<double>::infinity(), &deviation) == kernel::Result::Ok) {
+            nc = k.raw();
+            ok = true;
+            what = "knot removed (deviation " + FormatNumber(deviation) + ")";
+          }
+        }
         break;
       }
       case Op::RemoveCP: {
@@ -1128,15 +1144,34 @@ class TweenCurvesCommand : public Command {
   std::vector<CurveCopy> curves_;
 };
 
-// Blend: pick near the ends of two curves; builds a G1 cubic blend.
+// Continuity=Tangency/Curvature/G3 <-> kernel::NurbsCurve::BlendCurves()'s own
+// continuity argument (1/2/3) - the curve-side counterpart of cmd_fillet.cpp's
+// identical BlendSrfCommand helpers of the same name; duplicated here rather
+// than shared across translation units, the same "each file keeps its own
+// copy of these small, already-proven helpers" convention this codebase uses
+// elsewhere (e.g. BlendCurves()'s own HermiteBlendRow, duplicated verbatim in
+// sweep.cpp because curve.cpp's copy is anonymous-namespace-private).
+std::string ContinuityOptionName(int continuity) { return continuity == 3 ? "G3" : (continuity == 2 ? "Curvature" : "Tangency"); }
+int ContinuityOptionToInt(const std::string& v) { return v == "G3" ? 3 : (v == "Curvature" ? 2 : 1); }
+
+// Blend: pick near the ends of two curves; builds a Hermite blend between
+// them via the kernel's own exact NurbsCurve::BlendCurves() (curve.h) -
+// closing PARITY_MAP.md's own "no app command calls BlendCurves()" gap for
+// curve-to-curve blending (the sibling gap for surface-to-surface blending
+// is closed the same way by BlendSrfCommand, cmd_fillet.cpp).
 class BlendCrvCommand : public Command {
  public:
-  // `curvature`: false builds BlendCrv's own plain tangent (G1) cubic;
-  // true (used by the "Blend" alias) builds a curvature-continuous (G2)
-  // quintic Hermite blend instead - matching not just the end tangents but
-  // the actual curvature vector of each source curve at the blend point.
-  explicit BlendCrvCommand(bool curvature = false) : curvature_(curvature) {}
-  void Begin(CommandContext&) override { WantPoint("Select first curve near the end to blend from"); }
+  // `continuity`: 1 (BlendCrv's own plain tangent G1 cubic), 2 (the "Blend"
+  // alias's curvature-continuous G2 quintic), or 3 (G3 septic, the genuine
+  // new capability BlendCurves() has that neither app command built before
+  // this wiring - exposed here via the new Continuity option, default per
+  // which registration/alias picked this command).
+  explicit BlendCrvCommand(int continuity = 1) : continuity_(continuity) {}
+  void Begin(CommandContext&) override {
+    options = {{"Continuity", ContinuityOptionName(continuity_), {"Tangency", "Curvature", "G3"}, false, false}};
+    WantPoint("Select first curve near the end to blend from");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Continuity") continuity_ = ContinuityOptionToInt(v); }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     double t = 0;
     std::optional<CurveCopy> c = NearestCurveTo(ctx, p, &t);
@@ -1144,44 +1179,30 @@ class BlendCrvCommand : public Command {
     kernel::Interval d = c->curve.Domain();
     bool at_end = std::fabs(t - d.max) < std::fabs(t - d.min);
     double te = at_end ? d.max : d.min;
-    Point3d e = c->curve.PointAt(te);
-    Vector3d tan = c->curve.TangentAt(te);
-    if (!at_end) tan = -tan;  // pointing away from the curve
-    ends_.push_back(e); tans_.push_back(tan); kappas_.push_back(c->curve.CurvatureAt(te)); attrs_ = c->attrs;
-    if (ends_.size() == 1) { WantPoint("Select second curve near the end to blend to"); return; }
-    double len = ends_[0].DistanceTo(ends_[1]) / 3;
+    curves_.push_back(c->curve); params_.push_back(te); reverses_.push_back(!at_end); attrs_ = c->attrs;
+    if (curves_.size() == 1) { WantPoint("Select second curve near the end to blend to"); return; }
     ctx.Doc().BeginChange("BlendCrv");
-    if (!curvature_) {
-      std::vector<Point3d> cvs = {ends_[0], ends_[0] + tans_[0] * len, ends_[1] + tans_[1] * len, ends_[1]};
-      AddCurveLike(ctx, kernel::NurbsCurve::FromControlPoints(cvs, 3), attrs_);
-      ctx.Print("BlendCrv: tangent blend curve created");
+    kernel::NurbsCurve out;
+    // reverse0/reverse1 = !at_end: BlendCurves()'s own "false means the
+    // blend's derivative at that end equals the curve's own +t derivative
+    // unchanged" convention (curve.h) already points AWAY from the curve
+    // at a domain-Max pick (at_end=true) and needs the odd-derivative sign
+    // flip (reverse=true) at a domain-Min pick - the identical direction
+    // this command's own prior inline `if (!at_end) tan = -tan;` encoded.
+    if (kernel::NurbsCurve::BlendCurves(curves_[0], params_[0], reverses_[0], curves_[1], params_[1], reverses_[1],
+                                         continuity_, out) == kernel::Result::Ok) {
+      AddCurveLike(ctx, out, attrs_);
+      ctx.Print("Blend: " + ContinuityOptionName(continuity_) + " (G" + std::to_string(continuity_) + ") blend curve created");
     } else {
-      // Quintic Hermite matching position, tangent, and curvature at both
-      // ends. Choosing a "speed" s = len for each end's velocity vector,
-      // and zero tangential acceleration (a locally constant-speed
-      // parametrization there), the required 2nd derivative is exactly
-      // the source curve's own curvature vector scaled by s^2 - the
-      // geometric relation DD_perp = s^2 * kappa_vec for any parametrization
-      // whose speed isn't itself accelerating at that instant.
-      Vector3d d0 = tans_[0] * len, d1 = tans_[1] * len;
-      Vector3d dd0 = kappas_[0] * (len * len), dd1 = kappas_[1] * (len * len);
-      Point3d b0 = ends_[0];
-      Point3d b1 = b0 + d0 * 0.2;
-      Point3d b2 = b0 + d0 * 0.4 + dd0 * 0.05;
-      Point3d b5 = ends_[1];
-      Point3d b4 = b5 - d1 * 0.2;
-      Point3d b3 = b5 - d1 * 0.4 + dd1 * 0.05;
-      std::vector<Point3d> cvs = {b0, b1, b2, b3, b4, b5};
-      AddCurveLike(ctx, kernel::NurbsCurve::FromControlPoints(cvs, 5), attrs_);
-      ctx.Print("Blend: curvature-continuous (G2) blend curve created");
+      ctx.Warn("Blend: could not build a blend curve between these two ends (coincident points?)");
     }
     Finish();
   }
-  std::vector<Point3d> ends_;
-  std::vector<Vector3d> tans_;
-  std::vector<Vector3d> kappas_;
+  std::vector<kernel::NurbsCurve> curves_;
+  std::vector<double> params_;
+  std::vector<bool> reverses_;
   SceneObject attrs_;
-  bool curvature_;
+  int continuity_;
 };
 
 // ArcBlend: a genuine two-arc tangent blend (a "biarc"), unlike BlendCrv's
@@ -2558,8 +2579,8 @@ void RegisterCurves2Commands(CommandEngine& e) {
   Reg(e, "CutPlane", Make<CutPlaneCommand>());
   Reg(e, "PlanarIntersection", Make<SectionCommand>(), CommandStatus::Implemented, "Same as Section: intersects objects with a plane through two points.");
   Reg(e, "TweenCurves", Make<TweenCurvesCommand>());
-  Reg(e, "BlendCrv", Make<BlendCrvCommand>());
-  Reg(e, "Blend", Make<BlendCrvCommand>(true));
+  Reg(e, "BlendCrv", Make<BlendCrvCommand>(1));
+  Reg(e, "Blend", Make<BlendCrvCommand>(2));
   Reg(e, "ArcBlend", Make<ArcBlendCommand>());
   Reg(e, "Connect", Make<ConnectCommand>());
   Reg(e, "ExtendDynamic", Make<ExtendByLengthCommand>());

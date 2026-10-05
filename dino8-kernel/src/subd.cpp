@@ -60,6 +60,12 @@ SubD SubD::FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_
         "dino8::kernel::SubD::FromNurbsSurface: u_divisions and v_divisions "
         "must be at least 1");
   }
+  if (!surface.raw().IsValid()) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromNurbsSurface: surface is not IsValid() (e.g. "
+        "default-constructed or otherwise degenerate - has no usable domain or "
+        "control points to sample)");
+  }
   const Interval u_domain = surface.Domain(0);
   const Interval v_domain = surface.Domain(1);
 
@@ -205,6 +211,28 @@ SubD SubD::FromBrep(const Brep& brep, int divisions, double weld_tolerance) {
   return SubD::FromControlMesh(combined, /*crease_at_double_edges=*/true);
 }
 
+SubD SubD::FromMeshQuadRemeshed(const Mesh& mesh, double max_dihedral_deg, bool crease_at_double_edges) {
+  Mesh result = mesh;
+  // See this method's own doc comment (subd.h) for why this composition
+  // - already proven by BooleanToSubD() - is always safe to expose
+  // directly: TrisToQuads() is a pure face-list rewrite, never touching
+  // a vertex, that is a no-op wherever nothing qualifies.
+  result.TrisToQuads(max_dihedral_deg);
+  return SubD::FromControlMesh(result, crease_at_double_edges);
+}
+
+SubD SubD::FromBrepTessellated(const Brep& brep, int u_divisions, int v_divisions, double max_dihedral_deg) {
+  if (brep.FaceCount() <= 0) {
+    throw std::invalid_argument("dino8::kernel::SubD::FromBrepTessellated: brep has no faces");
+  }
+  if (u_divisions < 1 || v_divisions < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromBrepTessellated: u_divisions and v_divisions must be at least 1");
+  }
+  const Mesh mesh = brep.TessellateToClosedMesh(u_divisions, v_divisions);
+  return FromMeshQuadRemeshed(mesh, max_dihedral_deg, /*crease_at_double_edges=*/true);
+}
+
 void SubD::Subdivide(int levels) {
   if (levels <= 0) {
     return;
@@ -256,13 +284,14 @@ Mesh SubD::Boolean(const SubD& other, BooleanOp op) const {
   return BooleanCombine(ToApproximateMesh(), other.ToApproximateMesh(), op);
 }
 
-SubD SubD::BooleanToSubD(const SubD& other, BooleanOp op) const {
-  Mesh result = Boolean(other, op);
-  // See this method's own doc comment (subd.h) for why this is always
-  // safe: a pure face-list rewrite, never touching a vertex, that is a
-  // no-op wherever nothing qualifies.
-  result.TrisToQuads();
-  return SubD::FromControlMesh(result);
+SubD SubD::BooleanToSubD(const SubD& other, BooleanOp op, double max_dihedral_deg) const {
+  // Delegates to FromMeshQuadRemeshed() (this class's own general
+  // TrisToQuads()+FromControlMesh() composition - BooleanToSubD() was
+  // that composition's only caller before FromMeshQuadRemeshed() existed)
+  // so the two methods can't drift apart; max_dihedral_deg forwards
+  // straight through instead of a hardcoded 20.0 (see this method's own
+  // doc comment, subd.h).
+  return FromMeshQuadRemeshed(Boolean(other, op), max_dihedral_deg);
 }
 
 SubD SubD::Transform(const ON_Xform& xform) const {
@@ -306,11 +335,26 @@ SubD SubD::Offset(double distance) const {
   return result;
 }
 
-SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance) const {
+Mesh SubD::Thicken(double distance, double tessellation_tolerance, int max_resolution) const {
+  const Mesh tessellated = Tessellate(tessellation_tolerance, max_resolution);
+  return tessellated.Thicken(distance);
+}
+
+SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance,
+                       double weld_tolerance) const {
   if (!plane_normal.Unitize()) {
     throw std::invalid_argument(
         "dino8::kernel::SubD::Symmetrize: plane_normal must be nonzero");
   }
+
+  // See this method's own doc comment (subd.h) for why these are two
+  // separate roles: `point_tolerance` alone still decides on-plane
+  // classification below; `effective_weld_tolerance` is only ever used
+  // for the FindOrAddVertex position lookup, so a caller can widen it
+  // (to weld genuinely-distinct-but-nearly-coincident off-plane vertices
+  // together) without also changing which vertices get treated as lying
+  // on the mirror plane itself.
+  const double effective_weld_tolerance = weld_tolerance > 0.0 ? weld_tolerance : point_tolerance;
 
   const auto signed_distance = [&](const Point3d& p) {
     return plane_normal.x * p.x + plane_normal.y * p.y + plane_normal.z * p.z - plane_offset;
@@ -378,7 +422,7 @@ SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_t
       // which already holds it from the initial copy) instead of adding
       // a duplicate at its own unchanged position - this is the "weld".
       const Point3d target = std::abs(s) <= point_tolerance ? original_point : reflect(original_point, s);
-      const ON_SubDVertex* v = result.subd_.FindOrAddVertex(&target.x, point_tolerance);
+      const ON_SubDVertex* v = result.subd_.FindOrAddVertex(&target.x, effective_weld_tolerance);
       if (v == nullptr) {
         throw std::runtime_error(
             "dino8::kernel::SubD::Symmetrize: ON_SubD::FindOrAddVertex failed");
@@ -1736,6 +1780,12 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatches() const {
     patch.exact = regular;
     patches.push_back(std::move(patch));
   }
+  if (patches.empty()) {
+    throw std::runtime_error(
+        "dino8::kernel::SubD::ToNurbsPatches: no quad faces found (the SubD is "
+        "empty, or every face is a non-quad n-gon/triangle - call Subdivide(1) "
+        "first to convert those into quads)");
+  }
   return patches;
 }
 
@@ -2093,6 +2143,12 @@ SubDSurfacePoint EvaluateFaceAdaptive(ON_SubD& s, const ON_SubDFace* f, double u
 
 SubDSurfacePoint SubD::EvaluateFace(unsigned int face_id, double u, double v,
                                     int max_adaptive_levels) const {
+  if (!(u >= 0.0 && u <= 1.0) || !(v >= 0.0 && v <= 1.0)) {
+    throw std::invalid_argument("dino8::kernel::SubD::EvaluateFace: u and v must both be in [0, 1]");
+  }
+  if (max_adaptive_levels < 0) {
+    throw std::invalid_argument("dino8::kernel::SubD::EvaluateFace: max_adaptive_levels must be >= 0");
+  }
   const ON_SubDFace* f0 = subd_.FaceFromId(face_id);
   if (f0 == nullptr) {
     throw std::runtime_error(
@@ -2405,6 +2461,12 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesAdaptive(int max_adaptive_levels
     if (f->EdgeCount() != 4) continue;
     if (!f->Vertex(0) || !f->Vertex(1) || !f->Vertex(2) || !f->Vertex(3)) continue;
     face_ids.push_back(f->FaceId());
+  }
+  if (face_ids.empty()) {
+    throw std::runtime_error(
+        "dino8::kernel::SubD::ToNurbsPatchesAdaptive: no quad faces found (the "
+        "SubD is empty, or every face is a non-quad n-gon/triangle - call "
+        "Subdivide(1) first to convert those into quads)");
   }
 
   std::vector<SubDNurbsPatch> patches;

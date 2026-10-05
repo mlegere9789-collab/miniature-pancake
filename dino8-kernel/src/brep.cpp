@@ -2878,6 +2878,66 @@ Brep Brep::FromPlanarFaces(const std::vector<Brep::PlanarFace>& faces) {
   return FromMixedFaces(faces, {});
 }
 
+Brep Brep::TrimmedPlanarFaceWelded(const NurbsSurface& surface, const std::vector<Point2d>& trim_loop_uv,
+                                    std::vector<std::vector<Point2d>> hole_loops_uv) {
+  const char* caller = "TrimmedPlanarFaceWelded";
+  if (trim_loop_uv.size() < 3) {
+    throw std::invalid_argument(std::string("dino8::kernel::Brep::") + caller +
+                                 ": trim_loop_uv must have at least 3 points");
+  }
+
+  auto to_3d = [&](const std::vector<Point2d>& uv_loop) {
+    std::vector<Point3d> loop3d;
+    loop3d.reserve(uv_loop.size());
+    for (const Point2d& p : uv_loop) loop3d.push_back(surface.PointAt(p.x, p.y));
+    return loop3d;
+  };
+  auto require_planar = [&](const std::vector<Point3d>& loop3d, const ON_Plane& pl, const std::string& which) {
+    for (const Point3d& p : loop3d) {
+      if (std::fabs(pl.DistanceTo(ON_3dPoint(p.x, p.y, p.z))) > tolerance::kDistance) {
+        throw std::invalid_argument(std::string("dino8::kernel::Brep::") + caller + ": " + which +
+                                     "'s own points, mapped through surface's own PointAt(u, v), are not "
+                                     "planar within tolerance - TrimmedPlanarFaceWelded requires a genuinely "
+                                     "planar loop (TrimmedPlanarFace()'s own bare side-table polygons have no "
+                                     "such restriction, since they carry no real topology to begin with)");
+      }
+    }
+  };
+
+  const std::vector<Point3d> outer3d = to_3d(trim_loop_uv);
+  PlanarFace outer_face;
+  outer_face.loop = outer3d;
+  outer_face.plane = ON_Plane(outer3d[0], NewellNormal(outer3d));
+  require_planar(outer3d, outer_face.plane, "trim_loop_uv");
+
+  Brep result = FromPlanarFaces({outer_face});
+
+  for (size_t h = 0; h < hole_loops_uv.size(); ++h) {
+    const std::vector<Point2d>& hole_uv = hole_loops_uv[h];
+    if (hole_uv.size() < 3) {
+      throw std::invalid_argument(std::string("dino8::kernel::Brep::") + caller + ": hole_loops_uv[" +
+                                   std::to_string(h) + "] must have at least 3 points");
+    }
+    const std::vector<Point3d> hole3d = to_3d(hole_uv);
+    require_planar(hole3d, outer_face.plane, "hole_loops_uv[" + std::to_string(h) + "]");
+
+    std::vector<NurbsCurve> hole_edges;
+    hole_edges.reserve(hole3d.size());
+    for (size_t k = 0; k < hole3d.size(); ++k) {
+      hole_edges.push_back(NurbsCurve::FromControlPoints({hole3d[k], hole3d[(k + 1) % hole3d.size()]}, /*degree=*/1));
+    }
+    const Brep hole_wire = WireBody(hole_edges, tolerance::kDistance);
+    if (result.AddHoleLoop(0, hole_wire, tolerance::kDistance).result != Result::Ok) {
+      throw std::invalid_argument(std::string("dino8::kernel::Brep::") + caller + ": hole_loops_uv[" +
+                                   std::to_string(h) +
+                                   "] could not be punched (it may cross the outer boundary or an "
+                                   "already-punched hole, or land outside the outer boundary)");
+    }
+  }
+
+  return result;
+}
+
 Brep Brep::Compound(const std::vector<Brep>& lumps) {
   Brep result;
   for (const Brep& lump : lumps) {
@@ -3239,6 +3299,31 @@ std::vector<Mesh> Brep::TessellateNonUniformAdaptive(double chord_tolerance) con
 
 Mesh Brep::TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) const {
   return Mesh::MergeAndWeld(TessellateNonUniformAdaptive(chord_tolerance));
+}
+
+std::vector<Mesh> Brep::TessellateAdaptiveByAngle(double angle_tolerance) const {
+  std::vector<Mesh> result;
+  result.reserve(static_cast<size_t>(brep_.m_F.Count()));
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    FaceGeometry fg;
+    if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
+    NurbsSurface wrapper;
+    wrapper.raw() = fg.surface;
+    if (fg.outer.empty()) {
+      result.push_back(wrapper.TessellateGridAdaptiveByAngle(angle_tolerance));
+    } else if (fg.exact_clip) {
+      result.push_back(wrapper.TessellateGridClippedExactAdaptiveByAngle(angle_tolerance, fg.outer));
+    } else {
+      const std::vector<std::vector<Point2d>>* holes = fg.holes.empty() ? nullptr : &fg.holes;
+      result.push_back(wrapper.TessellateGridAdaptiveByAngle(angle_tolerance, &fg.outer, holes));
+    }
+    if (brep_.m_F[i].m_bRev) result.back() = result.back().FlipNormals();
+  }
+  return result;
+}
+
+Mesh Brep::TessellateToClosedMeshAdaptiveByAngle(double angle_tolerance) const {
+  return Mesh::MergeAndWeld(TessellateAdaptiveByAngle(angle_tolerance));
 }
 
 namespace {
