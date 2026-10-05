@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -723,6 +724,150 @@ Result NurbsCurve::InsertKnotAt(double knot_value, int multiplicity) {
   return curve_.InsertKnot(knot_value, multiplicity) ? Result::Ok : Result::Failed;
 }
 
+namespace {
+
+// Minimal homogeneous-point arithmetic for the knot-removal algorithm
+// below - duplicated from `NurbsSurface::RemoveKnotAt`'s own identically-
+// named helpers (surface_edit.cpp) rather than shared, since the two
+// files have no common detail header for it (same convention this file
+// already follows for `OffsetSignAlong` above).
+ON_4dPoint Scale4(const ON_4dPoint& a, double s) { return ON_4dPoint(a.x * s, a.y * s, a.z * s, a.w * s); }
+ON_4dPoint Add4(const ON_4dPoint& a, const ON_4dPoint& b) {
+  return ON_4dPoint(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w);
+}
+ON_4dPoint Sub4(const ON_4dPoint& a, const ON_4dPoint& b) {
+  return ON_4dPoint(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w);
+}
+double Norm4(const ON_4dPoint& a) { return std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z + a.w * a.w); }
+
+// Piegl & Tiller A5.8 ("Removing a Knot"), one control polygon's worth -
+// the exact same step `NurbsSurface::RemoveKnotAt`'s own `RemoveKnotOnceRow`
+// (surface_edit.cpp) runs per row/column, applied here directly to a
+// curve's single control polygon. `u_full` is the textbook (uncompressed,
+// clamped-end-padded) knot vector; `pw` is overwritten in place with one
+// fewer control point; returns the worst homogeneous-space discrepancy
+// (the removal's own control-net error, zero for an exactly-removable
+// knot). Mutates `pw` unconditionally - the caller decides whether to
+// keep the result based on the returned distance.
+double RemoveKnotOnce(int p, const std::vector<double>& u_full, std::vector<ON_4dPoint>& pw, int r, int s) {
+  const int n = static_cast<int>(pw.size()) - 1;
+  const double u = u_full[static_cast<size_t>(r)];
+  const int ord = p + 1;
+  const int first = r - p;
+  const int last = r - s;
+  const int off = first - 1;
+  std::vector<ON_4dPoint> temp(static_cast<size_t>(2 * p + 2));
+  temp[0] = pw[static_cast<size_t>(off)];
+  temp[static_cast<size_t>(last + 1 - off)] = pw[static_cast<size_t>(last + 1)];
+  int i = first, j = last, ii = 1, jj = last - off;
+  while (j - i > 0) {
+    const double alfi = (u - u_full[static_cast<size_t>(i)]) / (u_full[static_cast<size_t>(i + ord)] - u_full[static_cast<size_t>(i)]);
+    const double alfj = (u - u_full[static_cast<size_t>(j)]) / (u_full[static_cast<size_t>(j + ord)] - u_full[static_cast<size_t>(j)]);
+    temp[static_cast<size_t>(ii)] = Scale4(Sub4(pw[static_cast<size_t>(i)], Scale4(temp[static_cast<size_t>(ii - 1)], 1.0 - alfi)), 1.0 / alfi);
+    temp[static_cast<size_t>(jj)] = Scale4(Sub4(pw[static_cast<size_t>(j)], Scale4(temp[static_cast<size_t>(jj + 1)], alfj)), 1.0 / (1.0 - alfj));
+    ++i; ++ii; --j; --jj;
+  }
+  double distance = 0.0;
+  if (j - i < 0) {
+    distance = Norm4(Sub4(temp[static_cast<size_t>(ii - 1)], temp[static_cast<size_t>(jj + 1)]));
+  } else {
+    const double alfi = (u - u_full[static_cast<size_t>(i)]) / (u_full[static_cast<size_t>(i + ord)] - u_full[static_cast<size_t>(i)]);
+    const ON_4dPoint interp = Add4(Scale4(temp[static_cast<size_t>(ii + 1)], alfi), Scale4(temp[static_cast<size_t>(ii - 1)], 1.0 - alfi));
+    distance = Norm4(Sub4(pw[static_cast<size_t>(i)], interp));
+  }
+  i = first; j = last;
+  while (j - i > 0) {
+    pw[static_cast<size_t>(i)] = temp[static_cast<size_t>(i - off)];
+    pw[static_cast<size_t>(j)] = temp[static_cast<size_t>(j - off)];
+    ++i; --j;
+  }
+  const int fout = (2 * r - s - p) / 2;
+  for (int k = fout + 1; k <= n; ++k) pw[static_cast<size_t>(k - 1)] = pw[static_cast<size_t>(k)];
+  pw.pop_back();
+  return distance;
+}
+
+}  // namespace
+
+Result NurbsCurve::RemoveKnot(int knot_index, double tolerance, double* out_max_deviation) {
+  const int knot_count = curve_.KnotCount();
+  if (knot_index < 0 || knot_index >= knot_count) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::RemoveKnot: knot_index out of range");
+  }
+  const double u = curve_.Knot(knot_index);
+  const Interval domain = Domain();
+  if (!(u > domain.min && u < domain.max)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::RemoveKnot: the knot must be strictly inside the domain");
+  }
+  if (out_max_deviation) *out_max_deviation = std::numeric_limits<double>::infinity();
+  if (!curve_.IsClamped(2)) return Result::Failed;
+
+  const int p = curve_.Degree();
+  const int cv_count = curve_.CVCount();
+  const bool rational = curve_.IsRational();
+
+  // Textbook knot vector U[0..m]: ON's compressed Knot(k) is U[k + 1];
+  // the clamped ends supply the two dropped copies (same convention
+  // `NurbsSurface::RemoveKnotAt` uses per direction).
+  std::vector<double> u_full(static_cast<size_t>(knot_count + 2));
+  for (int k = 0; k < knot_count; ++k) u_full[static_cast<size_t>(k + 1)] = curve_.Knot(k);
+  u_full[0] = u_full[1];
+  u_full[static_cast<size_t>(knot_count + 1)] = u_full[static_cast<size_t>(knot_count)];
+  int r = knot_index + 1;
+  while (r + 1 <= knot_count && u_full[static_cast<size_t>(r + 1)] == u) ++r;
+  int s = 0;
+  for (int k = r; k >= 0 && u_full[static_cast<size_t>(k)] == u; --k) ++s;
+  if (s > p) return Result::Failed;  // multiplicity > degree is a C^-1 break, not a B-spline knot removal case
+
+  std::vector<ON_4dPoint> pw(static_cast<size_t>(cv_count));
+  for (int i = 0; i < cv_count; ++i) {
+    ON_4dPoint cv;
+    curve_.GetCV(i, cv);
+    if (!rational) cv.w = 1.0;
+    pw[static_cast<size_t>(i)] = cv;
+  }
+  const double max_distance = RemoveKnotOnce(p, u_full, pw, r, s);
+
+  // Euclidean deviation bound - identical reasoning to
+  // `NurbsSurface::RemoveKnotAt`'s own (Piegl & Tiller eq. 5.30 for the
+  // rational case).
+  double bound = max_distance;
+  if (rational) {
+    double w_min = std::numeric_limits<double>::infinity();
+    double p_max = 0.0;
+    for (int i = 0; i < cv_count; ++i) {
+      const double w = curve_.Weight(i);
+      ON_3dPoint e;
+      curve_.GetCV(i, e);
+      w_min = std::min(w_min, w);
+      p_max = std::max(p_max, e.DistanceTo(ON_3dPoint::Origin));
+    }
+    if (!(w_min > 0.0)) return Result::Failed;
+    bound = max_distance * (1.0 + p_max) / w_min;
+  }
+  if (out_max_deviation) *out_max_deviation = bound;
+  if (!(bound <= tolerance)) return Result::Failed;
+
+  // Commit: rebuild the curve with one fewer control point and knot.
+  // Textbook knots U[r + 1..m] shift down by one; ON's compressed form
+  // drops U'[0] and U'[m - 1].
+  std::vector<double> new_full(u_full);
+  new_full.erase(new_full.begin() + r);
+  ON_NurbsCurve out;
+  const int new_count = cv_count - 1;
+  if (!out.Create(3, rational, p + 1, new_count)) return Result::Failed;
+  for (int k = 0; k < out.KnotCount(); ++k) out.SetKnot(k, new_full[static_cast<size_t>(k + 1)]);
+  for (int i = 0; i < new_count; ++i) {
+    const ON_4dPoint& cv = pw[static_cast<size_t>(i)];
+    if (rational) out.SetCV(i, cv);
+    else out.SetCV(i, ON_3dPoint(cv.x, cv.y, cv.z));
+  }
+  if (!out.IsValid()) return Result::Failed;
+  curve_ = out;
+  return Result::Ok;
+}
+
 Result NurbsCurve::MakeRational() {
   if (curve_.IsRational()) {
     return Result::NoOpAlreadySatisfied;
@@ -755,6 +900,13 @@ Result NurbsCurve::ElevateDegree(int new_degree) {
 Interval NurbsCurve::Domain() const {
   const ON_Interval domain = curve_.Domain();
   return Interval{domain.Min(), domain.Max()};
+}
+
+Result NurbsCurve::SetDomain(double t0, double t1) {
+  if (!(t0 < t1)) return Result::Failed;
+  const Interval current = Domain();
+  if (current.min == t0 && current.max == t1) return Result::NoOpAlreadySatisfied;
+  return curve_.SetDomain(t0, t1) ? Result::Ok : Result::Failed;
 }
 
 Point3d NurbsCurve::PointAt(double t) const {

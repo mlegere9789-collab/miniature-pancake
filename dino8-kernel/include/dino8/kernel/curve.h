@@ -413,6 +413,35 @@ class NurbsCurve {
   // would require duplicating OpenNURBS' own knot-multiplicity search.
   Result InsertKnotAt(double knot_value, int multiplicity = 1);
 
+  // Removes one multiplicity of the interior knot at ON-convention index
+  // `knot_index` (0 <= knot_index < KnotCount(); any index in a multiple
+  // knot's run selects that whole knot value) - the exact inverse of
+  // `InsertKnotAt()`, i.e. Tiller's knot-removal algorithm (Piegl &
+  // Tiller, "The NURBS Book", A5.8), the curve-level counterpart to
+  // `NurbsSurface::RemoveKnotAt()` (same algorithm, applied to this
+  // curve's single control polygon instead of every row/column of a
+  // control net). Knot removal is only shape-preserving when the curve
+  // genuinely has the extra continuity at that knot; otherwise the best-
+  // fitting reduced polygon is an approximation. This method never
+  // silently ships that approximation: it computes a rigorous upper
+  // bound on the resulting max 3D deviation from the original curve over
+  // the whole domain (the algorithm's own control-point discrepancy,
+  // which bounds the curve error because B-spline basis functions are
+  // non-negative and sum to 1; on a rational curve the discrepancy is
+  // measured on the homogeneous control points and converted to a
+  // Euclidean bound via Piegl & Tiller eq. 5.30, a looser but still
+  // rigorous bound) and only commits the removal if that bound is <=
+  // `tolerance`. Otherwise returns Result::Failed and leaves the curve
+  // untouched. `out_max_deviation`, if non-null, always receives the
+  // bound (also on failure, so a caller can report how far off the
+  // removal would have been). Requires the knot vector to be clamped (an
+  // unclamped/periodic knot vector's wrapped control points would need
+  // matching edits this doesn't do) - returns Result::Failed otherwise.
+  // Throws std::invalid_argument if `knot_index` is out of range or the
+  // knot isn't strictly inside the domain (the domain's own end knots
+  // can't be removed).
+  Result RemoveKnot(int knot_index, double tolerance, double* out_max_deviation = nullptr);
+
   // Promotes the curve to rational (every control point gets an
   // explicit weight of 1.0) if it isn't already - delegates to
   // `ON_NurbsCurve::MakeRational()`. Genuinely shape-preserving: giving
@@ -681,6 +710,19 @@ class NurbsCurve {
   // `Domain().Min()`/`Domain().Max()` means this method's own
   // `.min`/`.max`, not a method on the return value.
   Interval Domain() const;
+
+  // Reparameterizes the curve so `Domain()` becomes `[t0, t1]`, with every
+  // existing knot and evaluated point mapped by the same affine stretch
+  // (shape, control points and weights are untouched - only the parameter
+  // values change). The surface-level counterpart to `NurbsSurface::
+  // SetDomain(direction, t0, t1)`, minus the direction argument a curve
+  // doesn't have. Delegates to `ON_NurbsCurve::SetDomain`, the same real
+  // (non-stub) implementation `MakeCompatible()` (sweep.cpp) already
+  // relies on internally to normalize loft/sweep sections to `[0, 1]`
+  // before comparing their knot vectors. Returns Result::Failed if `t0 <
+  // t1` doesn't hold or OpenNURBS' own call fails, or
+  // Result::NoOpAlreadySatisfied if `[t0, t1]` already equals `Domain()`.
+  Result SetDomain(double t0, double t1);
 
   Point3d PointAt(double t) const;
 

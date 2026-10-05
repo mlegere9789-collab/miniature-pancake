@@ -441,6 +441,166 @@ void TestCurveInsertKnotAt() {
         "InsertKnotAt throws std::invalid_argument when multiplicity exceeds Degree()");
 }
 
+void TestCurveRemoveKnotIsExactInverseOfInsertKnotAt() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Cubic curve, 4 control points - same fixture TestCurveInsertKnotAt
+  // already uses, so inserting then removing the same knot is a direct
+  // round-trip check against a curve this suite already trusts.
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 3, 0), Point3d(2, -3, 0),
+                                     Point3d(3, 0, 0)};
+  NurbsCurve curve = NurbsCurve::FromControlPoints(pts, /*degree=*/3);
+  const NurbsCurve original = curve;
+  Check(curve.InsertKnotAt(0.5, /*multiplicity=*/1) == Result::Ok,
+        "RemoveKnot setup: InsertKnotAt(0.5) succeeds");
+  Check(curve.ControlPointCount() == 5, "RemoveKnot setup: insertion added one control point");
+  int idx = -1;
+  for (int k = 0; k < curve.KnotCount(); ++k) {
+    if (std::abs(curve.KnotAt(k) - 0.5) < 1e-12) idx = k;
+  }
+  Check(idx >= 0, "RemoveKnot setup: the inserted knot is present in the knot vector");
+
+  double deviation = -1.0;
+  Check(curve.RemoveKnot(idx, 1e-9, &deviation) == Result::Ok,
+        "RemoveKnot removes a knot that InsertKnotAt just added");
+  Check(deviation >= 0.0 && deviation < 1e-9,
+        "RemoveKnot reports a ~0 deviation bound for an exactly removable knot");
+  Check(curve.ControlPointCount() == 4, "RemoveKnot restores the original control point count");
+  Check(curve.KnotCount() == original.KnotCount(), "RemoveKnot restores the original knot count");
+
+  double cv_err = 0.0;
+  for (int i = 0; i < 4; ++i) cv_err = std::max(cv_err, curve.ControlPointAt(i).DistanceTo(original.ControlPointAt(i)));
+  Check(cv_err < 1e-9, "RemoveKnot recovers the original control points (max |dP| < 1e-9)");
+
+  double shape_err = 0.0;
+  for (double t : {0.1, 0.3, 0.5, 0.7, 0.9}) {
+    shape_err = std::max(shape_err, (curve.PointAt(t) - original.PointAt(t)).Length());
+  }
+  Check(shape_err < 1e-9, "RemoveKnot: PointAt() matches the original curve to within 1e-9");
+
+  // Rational case: a genuine radius-4 circle, same round-trip.
+  ON_NurbsCurve circle_raw;
+  ON_Circle(ON_3dPoint(1, -2, 0.5), 4.0).GetNurbForm(circle_raw);
+  NurbsCurve circle;
+  circle.raw() = circle_raw;
+  Check(circle.IsRational(), "RemoveKnot rational setup: the circle NURBS form is rational");
+  const NurbsCurve circle_original = circle;
+  const double mid = circle.Domain().min + 0.4 * (circle.Domain().max - circle.Domain().min);
+  const int cv_before = circle.ControlPointCount();
+  Check(circle.InsertKnotAt(mid, 1) == Result::Ok, "RemoveKnot rational setup: InsertKnotAt succeeds");
+  Check(circle.ControlPointCount() == cv_before + 1, "RemoveKnot rational setup: insertion added one control point");
+  int circle_idx = -1;
+  for (int k = 0; k < circle.KnotCount(); ++k) {
+    if (std::abs(circle.KnotAt(k) - mid) < 1e-9) circle_idx = k;
+  }
+  Check(circle_idx >= 0, "RemoveKnot rational setup: the inserted knot is present");
+  deviation = -1.0;
+  Check(circle.RemoveKnot(circle_idx, 1e-8, &deviation) == Result::Ok,
+        "RemoveKnot removes an inserted knot from a rational circle");
+  Check(deviation >= 0.0 && deviation < 1e-8, "RemoveKnot: rational deviation bound is ~0 for an exact removal");
+  Check(circle.ControlPointCount() == cv_before, "RemoveKnot restores the circle's control point count");
+  double radius_err = 0.0;
+  for (int i = 0; i <= 40; ++i) {
+    const double t = circle.Domain().min + (circle.Domain().max - circle.Domain().min) * i / 40.0;
+    radius_err = std::max(radius_err, std::abs(circle.PointAt(t).DistanceTo(Point3d(1, -2, 0.5)) - 4.0));
+  }
+  Check(radius_err < 1e-9, "RemoveKnot: every sampled point is still exactly radius 4 from the circle's center");
+}
+
+void TestCurveRemoveKnotRefusesNonRemovableKnotWithinTolerance() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // 6 control points, degree 3: clamped uniform knots give genuine
+  // interior knots the wiggly control polygon does NOT have C^3
+  // continuity across, so removing one at a tight tolerance must fail -
+  // the curve-level mirror of
+  // TestSurfaceRemoveKnotAtRefusesNonRemovableKnotWithinTolerance.
+  std::vector<Point3d> pts;
+  for (int i = 0; i < 6; ++i) pts.push_back(Point3d(i, std::sin(1.7 * i), 0));
+  NurbsCurve curve = NurbsCurve::FromControlPoints(pts, /*degree=*/3);
+  const NurbsCurve original = curve;
+  const double interior = curve.Domain().min + (curve.Domain().max - curve.Domain().min) / 3.0;
+  int idx = -1;
+  for (int k = 0; k < curve.KnotCount(); ++k) {
+    if (std::abs(curve.KnotAt(k) - interior) < 1e-9) idx = k;
+  }
+  Check(idx >= 0, "RemoveKnot refusal setup: a genuine interior knot exists at the expected value");
+
+  double deviation = -1.0;
+  const Result r = curve.RemoveKnot(idx, 1e-9, &deviation);
+  Check(r == Result::Failed, "RemoveKnot refuses a knot the control polygon has no extra continuity at");
+  Check(deviation > 1e-9, "RemoveKnot: the reported deviation bound genuinely exceeds the refused tolerance");
+  Check(curve.ControlPointCount() == original.ControlPointCount(),
+        "RemoveKnot leaves the curve's control point count unchanged on refusal");
+  double cv_err = 0.0;
+  for (int i = 0; i < curve.ControlPointCount(); ++i) {
+    cv_err = std::max(cv_err, curve.ControlPointAt(i).DistanceTo(original.ControlPointAt(i)));
+  }
+  Check(cv_err == 0.0, "RemoveKnot leaves the curve's control points byte-for-byte unchanged on refusal");
+
+  // A large enough tolerance must still succeed, proving the refusal
+  // above was genuinely tolerance-driven, not a hardcoded failure.
+  double loose_deviation = -1.0;
+  Check(curve.RemoveKnot(idx, 1e6, &loose_deviation) == Result::Ok,
+        "RemoveKnot succeeds at a tolerance loose enough to accept the same removal");
+  Check(curve.ControlPointCount() == original.ControlPointCount() - 1,
+        "RemoveKnot genuinely removed a control point once the tolerance allowed it");
+
+  NurbsCurve mutable_original = original;
+  bool out_of_range_threw = false;
+  try {
+    mutable_original.RemoveKnot(-1, 1.0);
+  } catch (const std::invalid_argument&) {
+    out_of_range_threw = true;
+  }
+  Check(out_of_range_threw, "RemoveKnot throws std::invalid_argument for a negative knot_index");
+
+  bool boundary_threw = false;
+  try {
+    mutable_original.RemoveKnot(0, 1.0);
+  } catch (const std::invalid_argument&) {
+    boundary_threw = true;
+  }
+  Check(boundary_threw, "RemoveKnot throws std::invalid_argument on a domain-boundary knot (index 0)");
+}
+
+void TestCurveSetDomainReparameterizes() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 3, 0), Point3d(2, -3, 0),
+                                     Point3d(3, 0, 0)};
+  NurbsCurve curve = NurbsCurve::FromControlPoints(pts, /*degree=*/3);
+  const auto original_domain = curve.Domain();
+  Check(original_domain.min == 0.0 && original_domain.max == 1.0,
+        "SetDomain setup: FromControlPoints' own clamped domain is [0, 1]");
+
+  Check(curve.SetDomain(5.0, 15.0) == Result::Ok, "SetDomain returns Ok for a valid, different domain");
+  const auto new_domain = curve.Domain();
+  Check(new_domain.min == 5.0 && new_domain.max == 15.0, "SetDomain actually moved Domain() to [5, 15]");
+  Check(curve.ControlPointCount() == 4 && curve.KnotCount() == 6,
+        "SetDomain changes no control points or knot count, only knot values");
+
+  // Shape is untouched: the point 40% of the way along the new domain
+  // must be the same point that used to be 40% of the way along the old
+  // one - an affine reparameterization moves no geometry at all.
+  const double old_t = original_domain.min + 0.4 * (original_domain.max - original_domain.min);
+  const double new_t = new_domain.min + 0.4 * (new_domain.max - new_domain.min);
+  NurbsCurve reference = NurbsCurve::FromControlPoints(pts, /*degree=*/3);
+  Check((curve.PointAt(new_t) - reference.PointAt(old_t)).Length() < 1e-12,
+        "SetDomain: PointAt() at the corresponding new parameter matches the pre-reparam shape exactly");
+
+  Check(curve.SetDomain(5.0, 15.0) == Result::NoOpAlreadySatisfied,
+        "SetDomain returns NoOpAlreadySatisfied when the domain already matches");
+  Check(curve.SetDomain(3.0, 3.0) == Result::Failed, "SetDomain returns Failed when t0 == t1");
+  Check(curve.SetDomain(9.0, 2.0) == Result::Failed, "SetDomain returns Failed when t0 > t1");
+}
+
 void TestCurveKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -64576,6 +64736,9 @@ int main() {
   TestCurveSetWeightAt();
   TestCurveMakeRationalAndNonRational();
   TestCurveInsertKnotAt();
+  TestCurveRemoveKnotIsExactInverseOfInsertKnotAt();
+  TestCurveRemoveKnotRefusesNonRemovableKnotWithinTolerance();
+  TestCurveSetDomainReparameterizes();
   TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();
