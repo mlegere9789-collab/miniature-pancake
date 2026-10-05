@@ -1,0 +1,69 @@
+# History / UpdateHistory extended to Sweep2 (Sweep2Command, cmd_surface.cpp;
+# RebuildSweep2, history_rebuild.h), single-cross-section case only: the same
+# source-curve-moves -> UpdateHistory-rederives loop history_script.txt,
+# history_pipe_script.txt and history_sweep1_script.txt already prove for
+# Extrude/Revolve/Loft/SubDLoft/Pipe/Sweep1, now for Sweep2 as an eighth
+# tracked command - see cmd_history.cpp's own header comment for the full
+# scope list. The money check is a real bounding-box move, not just an
+# object count, so a fake/no-op rebuild would fail this the same way it
+# would in the other history_*_script.txt files.
+#
+# Two parallel vertical rails (5 units apart in X) and a single circular
+# cross section at rail1's own start point. Both rails are straight and the
+# same length, so the rail-to-rail width is constant along the whole sweep -
+# the same "no net scaling" case history_sweep1_script.txt's own single
+# straight rail is, which is why the swept tube's bounding box below comes
+# out identical to that file's own. As with Sweep1, the kernel's own exact
+# Brep::Sweep2 carries the section RIGIDLY in its station-0 frame, so moving
+# the SECTION (not a rail) is the one edit guaranteed not to cancel out in
+# the rebuilt result - see history_sweep1_script.txt's own header comment
+# for the full cancellation argument, which applies identically here.
+#
+# Object ids below are the deterministic 1-based counter Document::Add
+# assigns, in creation order.
+
+History On
+Line 0,0,0 0,0,10
+Line 5,0,0 5,0,10
+Circle 0,0,0 1
+SelNone
+SelID 1
+Sweep2
+SelID 2
+Enter
+SelID 3
+Enter
+@expect_objects 4
+
+# Radius-1 circle (centered on rail1's own start point) swept between the
+# two parallel vertical rails: an uncapped tube, identical in shape to
+# history_sweep1_script.txt's own single-straight-rail case (the constant
+# 5-unit rail-to-rail width cancels out, leaving no net scaling). The
+# bounding box's x/y mins fall a little short of the circle's true -1 for
+# the same display-tessellation reason history_sweep1_script.txt's own
+# comment explains (the BoundingBox command's own meshing, not the
+# underlying exact geometry).
+SelNone
+SelID 4
+BoundingBox
+@expect_objects 5
+History
+
+# Move the section curve (id 3) 5 units in +Z, off rail1's start point - the
+# swept tube (id 4) is NOT touched by Move itself, so UpdateHistory is the
+# only thing that can change what it reports next.
+SelNone
+SelID 3
+Move
+0,0,0
+0,0,5
+
+# UpdateHistory re-derives object 4 from the section's new offset - the
+# money check: the whole tube shifts by the same +5 in Z (min/max z move
+# from 0..10 to 5..15), not stay put.
+UpdateHistory
+SelNone
+SelID 4
+BoundingBox
+@expect_objects 6
+History
