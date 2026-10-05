@@ -7995,8 +7995,11 @@ the fix matters for every `UserText()`-backed feature on this branch, this
 category's dynamic-block parameters included. New source: none (fix only,
 no new files). Changed: `dino8-app/src/doc/Document.h`/`.cpp`. New test:
 `tests/test_document_undo_usertext.cpp` (`dino8_document_undo_usertext`
-ctest target). Full `ctest` suite re-run clean (35/35 targets, including
-this one new target) after rebasing onto the rotation above's own work.
+ctest target). Full `ctest` suite re-run clean (37/37 targets, including
+this one new target) after merging onto the rotation above's own work,
+which landed concurrently and independently reached the identical
+`[present]`/16-2-0-18/94.4%/78.8% result this note's own earlier draft had
+also computed before the merge revealed the duplication.
 
 **2026-09-30 rotation on "Viewport display, rendering & visualization"**
 (app_display, a separate session on this same branch): two real, tested,

@@ -68,8 +68,11 @@ int main() {
   Document doc2;
   doc2.BeginChange("add-key");
   doc2.UserText()["new_key"] = "present";
-  doc2.BeginChange("flush");  // finalize the above
   Check(doc2.UserText().count("new_key") == 1, "a key added during a tracked edit is live immediately after it");
+  // Undo() itself calls FinalizePending() first, which is what turns this
+  // still-open "add-key" edit into a real StateDelta - no separate flush
+  // needed (and a redundant BeginChange here would instead push its own
+  // no-op entry on top, so the next Undo() would revert THAT one first).
   Check(doc2.Undo(), "Undo() of the key-adding edit succeeds");
   Check(doc2.UserText().count("new_key") == 0, "Undo removes a key that didn't exist before the edit that added it, not just leaving a stale value");
   Check(doc2.Redo(), "Redo() re-adds the key");
