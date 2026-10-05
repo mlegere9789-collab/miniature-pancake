@@ -2138,6 +2138,12 @@ SubDSurfacePoint EvaluateFaceAdaptive(ON_SubD& s, const ON_SubDFace* f, double u
 
 SubDSurfacePoint SubD::EvaluateFace(unsigned int face_id, double u, double v,
                                     int max_adaptive_levels) const {
+  if (!(u >= 0.0 && u <= 1.0) || !(v >= 0.0 && v <= 1.0)) {
+    throw std::invalid_argument("dino8::kernel::SubD::EvaluateFace: u and v must both be in [0, 1]");
+  }
+  if (max_adaptive_levels < 0) {
+    throw std::invalid_argument("dino8::kernel::SubD::EvaluateFace: max_adaptive_levels must be >= 0");
+  }
   const ON_SubDFace* f0 = subd_.FaceFromId(face_id);
   if (f0 == nullptr) {
     throw std::runtime_error(
