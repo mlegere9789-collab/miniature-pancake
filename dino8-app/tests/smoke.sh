@@ -2576,6 +2576,13 @@ edcheck "Surface [0-9]+: centre 5,5,0 normal -?0,0,1" "a plain Flip inverted tha
 # "(2), (3), ..."). List must show the first named object bare.
 edcheck "name 'MyName'$" "SetObjectName kept the first object's name bare, not suffixed '(1)'"
 edcheck "name 'MyName \\(2\\)'" "SetObjectName numbered the second object '(2)', not '(1)'"
+# Rebuild point-count clamp regression: "Point count" used to flow straight
+# from the typed number into an n x n control-point grid with no upper
+# bound (the Surface branch is O(n^2) points, then an O(n^2)-CV
+# NurbsSurface::FromControlGrid), so 5000000 would have demanded a
+# 25-trillion-point grid instead of baking instantly. After the fix the
+# count is clamped to 200 before it drives any allocation.
+edcheck "degree 3 x 3, CVs 200 x 200" "Rebuild clamped an absurd 5000000 point count down to a sane 200 x 200 control-point grid instead of hanging/OOMing on the n x n allocation"
 if echo "$ED" | grep -q "name 'MyName (1)'"; then echo "FAIL SetObjectName still off-by-one: an object was suffixed '(1)'"; fail=1; else echo "ok   no object was suffixed 'MyName (1)'"; fi
 
 # Real NURBS algorithm QC: ExtractPipedCurve/MakePeriodic Smooth=No/RefitTrim
