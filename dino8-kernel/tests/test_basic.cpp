@@ -54673,6 +54673,126 @@ void TestRecognizeHolesBlindAndThroughRoundTrip() {
   }
 }
 
+void TestCopyHoleFeatureCopyMirrorAndRotatePlacements() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::CopyHoleFeature;
+  using dino8::kernel::HoleFeature;
+  using dino8::kernel::MakeHole;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::RecognizeHoles;
+
+  // parity-map "kernel: Local / direct-edit operations" - "Move / copy /
+  // rotate / mirror a hole feature": the app's own ApplyHoleXform
+  // (cmd_solidtools.cpp:1027) only ever re-subtracts a stored cutter MESH
+  // from a stored pre-cut mesh, producing a mesh with no B-rep feature at
+  // all. CopyHoleFeature() (features.h) is this kernel's first genuine
+  // B-rep feature-level hole placement: recognize an existing hole via
+  // RecognizeHoles(), transform its own axis frame, and drill an
+  // ADDITIONAL hole with MakeHole() at the transformed location - closing
+  // the "copy"/"rotate"/"mirror" two-thirds of this item (still no
+  // in-place "move": see that function's own doc comment for why).
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  // Off the box's own x==2/y==2 symmetry planes, so a mirror or rotation
+  // below genuinely relocates it rather than mapping it onto itself.
+  const Point3d center(1, 1, 4);
+  const Vector3d down(0, 0, -1);
+  const double radius = 0.5;
+
+  const Brep drilled = MakeHole(box, center, down, radius, /*depth=*/0.0, /*through=*/true);
+  const std::vector<HoleFeature> found = RecognizeHoles(drilled);
+  Check(found.size() == 1, "fixture has exactly one recognized hole before any copy");
+  const HoleFeature hf = found[0];
+
+  {
+    // Copy: a plain translation to (3, 3, 4) - still within the box and
+    // well-separated from the original (center distance sqrt(8) ~= 2.83,
+    // comfortably more than 2*radius - the same "well-separated centers
+    // only" margin MakeHoles()'s own doc comment already requires for a
+    // reliably closed tessellation).
+    const ON_Xform move = ON_Xform::TranslationTransformation(Vector3d(2, 2, 0));
+    const Brep copied = CopyHoleFeature(drilled, hf, move);
+    const std::vector<HoleFeature> after = RecognizeHoles(copied);
+    Check(after.size() == 2, "CopyHoleFeature adds a second hole, keeping the first");
+
+    const Point3d expected_origin = move * hf.origin;
+    const Vector3d expected_axis = move * hf.axis;
+    bool found_original = false, found_copy = false;
+    for (const HoleFeature& f : after) {
+      if (f.origin.DistanceTo(hf.origin) < 1e-6) found_original = true;
+      if (f.origin.DistanceTo(expected_origin) < 1e-6 && (f.axis - expected_axis).Length() < 1e-6) found_copy = true;
+    }
+    Check(found_original, "CopyHoleFeature leaves the original hole's own location untouched");
+    Check(found_copy, "CopyHoleFeature's new hole lands exactly at the translated location with the translated axis");
+
+    // Matches the exact volume of an independent MakeHole() call at that
+    // same translated location - proof this is a genuine second cut, not
+    // a mislabeled no-op or a duplicate of the first.
+    const Brep sequential = MakeHole(drilled, Point3d(3, 3, 4), down, radius, 0.0, true);
+    const Mesh m_copy = copied.TessellateToClosedMesh(32, 128);
+    const Mesh m_sequential = sequential.TessellateToClosedMesh(32, 128);
+    Check(std::abs(m_copy.Volume() - m_sequential.Volume()) < 0.5,
+          "CopyHoleFeature's translated copy removes the exact same volume as an independent MakeHole() call at "
+          "that same location");
+  }
+  {
+    // Mirror: reflect across the box's own x==2 plane. The original
+    // center (x==1) is off that plane, so the mirrored copy genuinely
+    // lands elsewhere (x==3); the drilling axis (0,0,-1), having no
+    // x-component, is unchanged by this particular mirror.
+    ON_Xform mirror;
+    mirror.Mirror(Point3d(2, 2, 4), Vector3d(1, 0, 0));
+    const Brep mirrored = CopyHoleFeature(drilled, hf, mirror);
+    const std::vector<HoleFeature> after = RecognizeHoles(mirrored);
+    Check(after.size() == 2, "CopyHoleFeature's mirror adds a second hole, keeping the first");
+
+    const Point3d expected_origin = mirror * hf.origin;
+    Check(expected_origin.DistanceTo(Point3d(3, 1, 4)) < 1e-9,
+          "sanity: the mirror plane through (2,2,4) with normal (1,0,0) reflects (1,1,4) to (3,1,4)");
+    bool found_mirror = false;
+    for (const HoleFeature& f : after) {
+      if (f.origin.DistanceTo(expected_origin) < 1e-6 && (f.axis - down).Length() < 1e-6) found_mirror = true;
+    }
+    Check(found_mirror, "CopyHoleFeature's mirrored copy lands exactly at the reflected location with the "
+                        "(unchanged, since it has no x-component) drilling axis");
+  }
+  {
+    // Rotate: 90 degrees about the vertical line through (2, 2, 0) - a
+    // bolt-circle-style placement. The original axis (0,0,-1) is parallel
+    // to the rotation axis, so it's unchanged; the origin's own (x,y)
+    // offset from the rotation center, (-1,-1), rotates to (1,-1).
+    ON_Xform rotate;
+    rotate.Rotation(ON_PI / 2.0, Vector3d(0, 0, 1), Point3d(2, 2, 0));
+    const Brep rotated = CopyHoleFeature(drilled, hf, rotate);
+    const std::vector<HoleFeature> after = RecognizeHoles(rotated);
+    Check(after.size() == 2, "CopyHoleFeature's rotation adds a second hole, keeping the first");
+
+    const Point3d expected_origin = rotate * hf.origin;
+    Check(expected_origin.DistanceTo(Point3d(3, 1, 4)) < 1e-6,
+          "sanity: rotating (1,1,4) by 90 degrees about the vertical line through (2,2,*) lands at (3,1,4)");
+    bool found_rotated = false;
+    for (const HoleFeature& f : after) {
+      if (f.origin.DistanceTo(expected_origin) < 1e-6 && (f.axis - down).Length() < 1e-6) found_rotated = true;
+    }
+    Check(found_rotated, "CopyHoleFeature's rotated copy lands exactly at the rotated location with its "
+                        "(axis-parallel-to-rotation-axis, so unchanged) drilling direction");
+  }
+}
+
+void TestCopyHoleFeatureRefusesDegenerateXform() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::CopyHoleFeature;
+  using dino8::kernel::HoleFeature;
+  using dino8::kernel::MakeHole;
+  using dino8::kernel::RecognizeHoles;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep drilled = MakeHole(box, Point3d(2, 2, 4), Vector3d(0, 0, -1), 0.5, 0.0, true);
+  const HoleFeature hf = RecognizeHoles(drilled)[0];
+
+  Check(Throws([&] { CopyHoleFeature(drilled, hf, ON_Xform::ZeroTransformation); }),
+        "CopyHoleFeature throws when xform collapses the hole's own axis frame to a degenerate plane");
+}
+
 // Builds a SINGLE uniform-radius capped cylinder, standing on `base` and
 // growing along `axis`, but assembled as TWO adjacent Brep::CylindricalFace
 // segments (`[0, base_length]` then `[base_length, base_length +
@@ -67479,6 +67599,8 @@ int main() {
   sweep_tests::TestMakeCounterboreHoleBoxStepped();
   sweep_tests::TestMakeCounterboreHoleRejectsInvalidArguments();
   sweep_tests::TestRecognizeHolesBlindAndThroughRoundTrip();
+  sweep_tests::TestCopyHoleFeatureCopyMirrorAndRotatePlacements();
+  sweep_tests::TestCopyHoleFeatureRefusesDegenerateXform();
   sweep_tests::TestRecognizeBossesBlindAndFreestandingRoundTrip();
   sweep_tests::TestMakeCountersinkHoleBoxStandardAngle();
   sweep_tests::TestMakeCountersinkHoleRejectsInvalidArguments();

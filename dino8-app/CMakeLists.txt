@@ -842,6 +842,24 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_test_adaptive_display PRIVATE dino8_kernel)
   add_test(NAME dino8_adaptive_display COMMAND dino8_test_adaptive_display)
 
+  # ObjectGrid::EnsureFresh's non-finite-bounding-box guard (src/spatial/
+  # ObjectGrid.cpp) - a NaN/Infinity object box (reachable with no
+  # validation at all via rs.AddPoint()/dino8.AddPoint() in LuaEngine.cpp/
+  # PythonEngine.cpp) used to flow straight into the scene-wide extent via
+  # std::min/std::max, contaminating it with NaN, and from there into every
+  # object's CellOf() call - not just the degenerate object's own -
+  # converting that NaN to int, which is undefined behaviour in C++. Same
+  # dependency shape as dino8_test_block_flip/dino8_find_bench above: a real
+  # Document (SceneObject/BrepMesher), plus src/spatial/ObjectGrid.cpp
+  # itself (Document.cpp never calls into it - PickGrid() just returns the
+  # member reference - so none of those existing Document-based tests
+  # needed it linked in).
+  add_executable(dino8_test_object_grid tests/test_object_grid.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                         src/doc/SubObjectEdit.cpp src/geom/BrepMesher.cpp src/spatial/ObjectGrid.cpp)
+  target_include_directories(dino8_test_object_grid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_object_grid PRIVATE dino8_kernel)
+  add_test(NAME dino8_object_grid COMMAND dino8_test_object_grid)
+
   # Minimal HTTP request server (src/net/ComputeServer.h/.cpp) - see
   # PARITY_MAP.md's "Cloud/network compute service (Rhino.Compute
   # equivalent)" item, which had no server/socket/HTTP code anywhere before
