@@ -15119,35 +15119,64 @@ void TestBrepExtrudeWireBody() {
   }
   Check(threw_branch, "ExtrudeWireBody() on a wire body with a branch point throws std::invalid_argument");
 
-  // Refusal: more than one disjoint wire component - two unrelated
-  // straight legs with no shared vertex at all (4 leaves, not 0 or 2).
+  // Narrowed this pass, not refused: more than one disjoint wire
+  // component - two unrelated straight legs with no shared vertex at all
+  // (4 leaves, not 0 or 2) - now extrudes each leg independently (the
+  // same single-chain construction above, applied per component) and
+  // concatenates the two resulting open sheets via the existing multi-
+  // lump Compound(), rather than refusing the whole call the way this
+  // exact fixture used to.
   const NurbsCurve far_leg = NurbsCurve::FromControlPoints({Point3d(100, 0, 0), Point3d(101, 0, 0)}, /*degree=*/1);
   const Brep disjoint_wire = Brep::WireBody({leg_ab, far_leg});
-  bool threw_disjoint = false;
-  try {
-    (void)Brep::ExtrudeWireBody(disjoint_wire, up);
-  } catch (const std::invalid_argument&) {
-    threw_disjoint = true;
-  }
-  Check(threw_disjoint, "ExtrudeWireBody() on two fully disjoint open wires throws std::invalid_argument");
+  const Brep disjoint_sheets = Brep::ExtrudeWireBody(disjoint_wire, up);
+  const Brep leg_ab_sheet_direct = Brep::Extrude(leg_ab, up, /*cap=*/true);
+  const Brep far_leg_sheet_direct = Brep::Extrude(far_leg, up, /*cap=*/true);
+  Check(disjoint_sheets.FaceCount() == leg_ab_sheet_direct.FaceCount() + far_leg_sheet_direct.FaceCount() &&
+            disjoint_sheets.FaceCount() == 2,
+        "two fully disjoint open wires each extrude independently into their own 1-face open sheet, concatenated "
+        "into one 2-face Compound() (previously refused outright)");
+  Check(std::fabs(disjoint_sheets.Area() - (leg_ab_sheet_direct.Area() + far_leg_sheet_direct.Area())) < 1e-9,
+        "...with the combined area exactly matching the sum of the two sheets built directly");
+  const std::vector<std::pair<int, int>> disjoint_ranges = disjoint_sheets.LumpFaceRanges();
+  Check(disjoint_ranges.size() == 2 && disjoint_ranges[0] == std::make_pair(0, 1) &&
+            disjoint_ranges[1] == std::make_pair(1, 2),
+        "...landing as two separate, unwelded one-face lumps, exactly like any other Compound() result");
 
-  // Refusal: a subtler disjoint case that a naive leaf-count check alone
-  // would miss - one open chain (2 leaves) PLUS one entirely separate
-  // closed loop (0 leaves) in the SAME wire body still totals exactly 2
-  // leaves, the same count a single genuine open chain has, but the walk
-  // from the open chain's own leaf never reaches the disjoint loop's edge.
-  const Brep mixed_wire = Brep::WireBody({line, circle});
+  // Narrowed this pass too: a subtler disjoint case that a naive leaf-
+  // count check alone would miss - one open chain (2 leaves) PLUS one
+  // entirely separate closed loop (0 leaves) in the SAME wire body still
+  // totals exactly 2 leaves, the same count a single genuine open chain
+  // has, but the walk from the open chain's own leaf never reaches the
+  // disjoint loop's edge. WalkWireChains() now finds BOTH components
+  // (rather than WalkWireChain()'s own refusal when the walk falls short
+  // of every live edge) and extrudes each one independently: the open
+  // chain into an open sheet, the closed loop into a capped solid. A
+  // circle genuinely centered far from `line` (not the earlier `circle`
+  // above, which is centered at the origin with radius 1.0 and so
+  // passes through (1, 0, 0) - exactly `line`'s own far endpoint,
+  // welding the two into a real degree-3 branch point rather than
+  // leaving them disjoint) keeps this fixture honestly two separate
+  // components, not an accidental third shape.
+  const ON_Circle raw_far_circle(ON_Plane(ON_3dPoint(50, 50, 0), ON_3dVector(0, 0, 1)), 1.0);
+  ON_NurbsCurve raw_far_circle_nurbs;
+  raw_far_circle.GetNurbForm(raw_far_circle_nurbs);
+  NurbsCurve far_circle;
+  far_circle.raw() = raw_far_circle_nurbs;
+  const Brep mixed_wire = Brep::WireBody({line, far_circle});
   Check(mixed_wire.EdgeCount() == 2 && mixed_wire.IsWireBody(),
         "setup: one open edge plus one disjoint closed loop, 2 edges total, exactly 2 leaves overall");
-  bool threw_mixed = false;
-  try {
-    (void)Brep::ExtrudeWireBody(mixed_wire, up);
-  } catch (const std::invalid_argument&) {
-    threw_mixed = true;
-  }
-  Check(threw_mixed,
-        "ExtrudeWireBody() on an open chain plus a disjoint closed loop (2 leaves total, but 2 components) "
-        "still throws std::invalid_argument - the walk-coverage check catches what leaf-counting alone would miss");
+  Check(static_cast<int>(mixed_wire.EdgesOfVertex(mixed_wire.raw().m_E[1].m_vi[0]).size()) == 2,
+        "setup: the far circle's own vertex is NOT also welded onto the line's endpoint - genuinely 2 components");
+  const Brep mixed_result = Brep::ExtrudeWireBody(mixed_wire, up);
+  const Brep line_sheet_direct = Brep::Extrude(line, up, /*cap=*/true);
+  const Brep circle_solid_direct = Brep::Extrude(far_circle, up, /*cap=*/true);
+  Check(mixed_result.FaceCount() == line_sheet_direct.FaceCount() + circle_solid_direct.FaceCount() &&
+            mixed_result.FaceCount() == 4,
+        "the open chain extrudes into its own 1-face open sheet, the disjoint closed loop into its own 3-face "
+        "capped solid, concatenated into one 4-face Compound() (previously refused outright - the exact case the "
+        "walk-coverage check alone catches, that leaf-counting alone would miss)");
+  Check(std::fabs(mixed_result.Area() - (line_sheet_direct.Area() + circle_solid_direct.Area())) < 1e-9,
+        "...with the combined surface area exactly matching the sum of the two pieces built directly");
 }
 
 // OffsetWireBody() closes the "wire-body offset" half of PARITY_MAP.md's
@@ -15315,17 +15344,37 @@ void TestBrepOffsetWireBody() {
   }
   Check(threw_branch, "OffsetWireBody() on a wire body with a branch point throws std::invalid_argument");
 
-  // Refusal: more than one disjoint wire component - two unrelated
-  // straight legs with no shared vertex at all.
+  // Narrowed this pass, not refused: more than one disjoint wire
+  // component - two unrelated, collinear straight legs with no shared
+  // vertex at all - now offsets each leg independently (the same
+  // single-chain construction above, applied per component) and rebuilds
+  // ONE fresh wire body holding both results via a single WireBody()
+  // call, rather than refusing the whole call the way this exact fixture
+  // used to.
   const NurbsCurve far_leg = NurbsCurve::FromControlPoints({Point3d(100, 0, 0), Point3d(101, 0, 0)}, /*degree=*/1);
   const Brep disjoint_wire = Brep::WireBody({leg_ab, far_leg});
-  bool threw_disjoint = false;
-  try {
-    (void)Brep::OffsetWireBody(disjoint_wire, 1.0);
-  } catch (const std::invalid_argument&) {
-    threw_disjoint = true;
-  }
-  Check(threw_disjoint, "OffsetWireBody() on two fully disjoint open wires throws std::invalid_argument");
+  const Brep offset_disjoint = Brep::OffsetWireBody(disjoint_wire, 1.0);
+  NurbsCurve expected_leg_ab_offset;
+  Check(leg_ab.OffsetInPlane(1.0, expected_leg_ab_offset) == Result::Ok, "setup: leg_ab offsets directly");
+  NurbsCurve expected_far_leg_offset;
+  Check(far_leg.OffsetInPlane(1.0, expected_far_leg_offset) == Result::Ok, "setup: far_leg offsets directly");
+  const Brep expected_disjoint = Brep::WireBody({expected_leg_ab_offset, expected_far_leg_offset});
+  Check(offset_disjoint.VertexCount() == expected_disjoint.VertexCount() &&
+            offset_disjoint.EdgeCount() == expected_disjoint.EdgeCount() && offset_disjoint.EdgeCount() == 2,
+        "two fully disjoint open wires each offset independently, then rebuild into ONE wire body holding both "
+        "results (previously refused outright), matching the same two curves offset and rebuilt by hand");
+  const Point3d got_ab_p0 = offset_disjoint.raw().m_V[offset_disjoint.raw().m_E[0].m_vi[0]].point;
+  const Point3d got_ab_p1 = offset_disjoint.raw().m_V[offset_disjoint.raw().m_E[0].m_vi[1]].point;
+  const Point3d want_ab_p0 = expected_disjoint.raw().m_V[expected_disjoint.raw().m_E[0].m_vi[0]].point;
+  const Point3d want_ab_p1 = expected_disjoint.raw().m_V[expected_disjoint.raw().m_E[0].m_vi[1]].point;
+  Check(got_ab_p0.DistanceTo(want_ab_p0) < 1e-9 && got_ab_p1.DistanceTo(want_ab_p1) < 1e-9,
+        "...the first edge sitting exactly where offsetting leg_ab by hand would place it");
+  const Point3d got_far_p0 = offset_disjoint.raw().m_V[offset_disjoint.raw().m_E[1].m_vi[0]].point;
+  const Point3d got_far_p1 = offset_disjoint.raw().m_V[offset_disjoint.raw().m_E[1].m_vi[1]].point;
+  const Point3d want_far_p0 = expected_disjoint.raw().m_V[expected_disjoint.raw().m_E[1].m_vi[0]].point;
+  const Point3d want_far_p1 = expected_disjoint.raw().m_V[expected_disjoint.raw().m_E[1].m_vi[1]].point;
+  Check(got_far_p0.DistanceTo(want_far_p0) < 1e-9 && got_far_p1.DistanceTo(want_far_p1) < 1e-9,
+        "...and the second edge sitting exactly where offsetting far_leg by hand would place it");
 
   // Refusal: OffsetInPlane() itself failing propagates as
   // std::invalid_argument, not a silent bad result - here, an offset
