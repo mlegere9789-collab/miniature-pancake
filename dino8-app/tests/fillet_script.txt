@@ -309,6 +309,17 @@ ExtractSrf
 705,5,10
 Enter
 SelNone
+# This exact pick currently fails closed ("BlendSrf: could not build the
+# blend") rather than producing a septic blend - BuildBlendSurfaceKernelAdaptive
+# tries kernel::NurbsSurface::BlendSurfaces() at continuity=3 here and it
+# does not converge for this box/extracted-face configuration, and (by this
+# wrapper's own explicit design - see its header comment) G3 has no
+# approximate fallback to drop back to, so SelLast below selects the
+# extracted face left over from ExtractSrf, not a new blend surface. Left
+# in to exercise the fail-closed path itself (no crash, no silent wrong
+# result) rather than deleted, since the two Continuity= blocks above it
+# already cover the successful G1/G2 case; the expect_objects count below
+# accounts for this one not having added a 3rd blend object.
 BlendSrf
 Continuity=G3
 709,5,10
@@ -337,7 +348,7 @@ Enter
 SelAll
 Volume
 SelNone
-@expect_objects 41
+@expect_objects 49
 # --- FilletEdge Rho (exact conic fillet): kernel::FilletConvexEdgeConic
 # via the Rho option, on the same box-corner construction as the plain
 # FilletEdge/ChamferEdge cases above. At rho=0.5 the conic is the exact

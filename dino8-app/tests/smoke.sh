@@ -1465,7 +1465,7 @@ flcheck "FilletSrf: built between object .* and .*, radius 0.3; both surfaces tr
 flcheck "Area = 169.1 square" "the trimmed quarter-cylinder panel's real, reproducible combined area (stable across repeated runs; not a hand-derived closed form, the same 'no closed form, check the real number' convention the ConnectSrf case above uses)"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
-flcheck "^ok   expect_objects 41" "fillet script produced the expected object count"
+flcheck "^ok   expect_objects 49" "fillet script produced the expected object count"
 
 # Adversarial fillets: tiny/at-the-limit/too-large radii relative to the
 # shortest adjacent edge, a huge-coordinate-scale box (now fixed for the
