@@ -60,6 +60,12 @@ SubD SubD::FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_
         "dino8::kernel::SubD::FromNurbsSurface: u_divisions and v_divisions "
         "must be at least 1");
   }
+  if (!surface.raw().IsValid()) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromNurbsSurface: surface is not IsValid() (e.g. "
+        "default-constructed or otherwise degenerate - has no usable domain or "
+        "control points to sample)");
+  }
   const Interval u_domain = surface.Domain(0);
   const Interval v_domain = surface.Domain(1);
 
@@ -1769,6 +1775,12 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatches() const {
     patch.exact = regular;
     patches.push_back(std::move(patch));
   }
+  if (patches.empty()) {
+    throw std::runtime_error(
+        "dino8::kernel::SubD::ToNurbsPatches: no quad faces found (the SubD is "
+        "empty, or every face is a non-quad n-gon/triangle - call Subdivide(1) "
+        "first to convert those into quads)");
+  }
   return patches;
 }
 
@@ -2438,6 +2450,12 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesAdaptive(int max_adaptive_levels
     if (f->EdgeCount() != 4) continue;
     if (!f->Vertex(0) || !f->Vertex(1) || !f->Vertex(2) || !f->Vertex(3)) continue;
     face_ids.push_back(f->FaceId());
+  }
+  if (face_ids.empty()) {
+    throw std::runtime_error(
+        "dino8::kernel::SubD::ToNurbsPatchesAdaptive: no quad faces found (the "
+        "SubD is empty, or every face is a non-quad n-gon/triangle - call "
+        "Subdivide(1) first to convert those into quads)");
   }
 
   std::vector<SubDNurbsPatch> patches;
