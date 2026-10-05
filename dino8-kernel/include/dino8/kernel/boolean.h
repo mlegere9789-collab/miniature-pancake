@@ -100,6 +100,19 @@ enum class BooleanFailureReason {
   // Refused outright instead, the same "fail loud, not quietly wrong"
   // principle every other named scope limit in this file already follows.
   InvalidPolygon,
+  // PolygonBooleanPlanarNAry()'s own fold step (below): an intermediate
+  // Union of two single-loop polygon operands came back with zero loops
+  // (the two footprints share no area at this fold step - Union is
+  // additive, so this should be geometrically impossible for two
+  // non-degenerate simple polygons, but is still refused rather than
+  // trusted blindly) or 2+ loops (a hole, e.g. an annulus-shaped union
+  // footprint, or two disjoint pieces) - either way there is no single
+  // `std::vector<Point3d>` to carry forward into the NEXT pairwise
+  // PolygonBooleanPlanar() call, the same "no hole in this input shape"
+  // limit PolygonBooleanPlanar()'s own doc comment already discloses for
+  // its two operands individually. `other_index` is the number of loops
+  // actually returned (0 or 2+).
+  MultiLoopFoldResult,
 };
 
 // Thrown by RefuseCompoundOperand (boolean.cpp, boolean_general.cpp) in
@@ -632,6 +645,46 @@ Brep BooleanCombinePlanarNAry(const std::vector<Brep>& first_group, const std::v
 std::vector<std::vector<Point3d>> PolygonBooleanPlanar(const std::vector<Point3d>& a,
                                                          const std::vector<Point3d>& b, const ON_Plane& plane,
                                                          BooleanOp op, double tolerance = -1.0);
+
+// N-ary counterpart of PolygonBooleanPlanar, the same fold shape
+// BooleanCombinePlanarNAry/BooleanCombineMixedNAry/BooleanCombineGeneralNAry
+// above already establish for whole-Brep booleans - closes the kernel-level
+// half of PARITY_MAP.md's "2D region / planar curve booleans" bullet's own
+// disclosed "N-way CreateRegions... entirely untouched" gap for the common
+// case where every intermediate fold step stays a single simple polygon.
+//
+// `first_group` is folded left-to-right into one polygon via repeated
+// PolygonBooleanPlanar(..., Union) calls; if `second_group` is non-empty it
+// is folded the same way and the two folded polygons are combined via one
+// further PolygonBooleanPlanar(..., op) call (returned as-is, so the FINAL
+// result may legitimately come back with 2+ loops - a hole, e.g. a
+// Difference that leaves a ring - exactly like a plain pairwise
+// PolygonBooleanPlanar() call already can); otherwise the folded
+// `first_group` is returned directly as a single-entry vector (and `op`
+// must be Union). SymmetricDifference is refused (BooleanFailureReason::
+// UnsupportedOperation) for the identical reason the Brep N-ary wrappers
+// refuse it: there is no well-defined further Union fold of an XOR result.
+//
+// Every INTERMEDIATE fold step (every pairwise Union inside either group's
+// own fold, though never the final combine) must itself come back as
+// exactly one simple loop - PolygonBooleanPlanar()'s own "neither operand
+// may already have a hole" input-side limit applies to the next fold step's
+// own operand just as much as to a caller-supplied one. A fold step whose
+// Union comes back with zero or 2+ loops (the two footprints are disjoint,
+// or their union has a hole) is refused outright (BooleanFailureReason::
+// MultiLoopFoldResult) rather than silently taking the first loop and
+// discarding the rest - the same "fail loud, not quietly wrong" principle
+// BooleanFailureReason::InvalidPolygon's own doc comment already states.
+// This is a real, narrower scope than the whole-Brep N-ary wrappers above
+// (which never hit an analogous mid-fold representation limit), disclosed
+// rather than worked around.
+//
+// `tolerance` is forwarded as-is to every pairwise PolygonBooleanPlanar()
+// call this makes (each fold step and the final combine alike).
+std::vector<std::vector<Point3d>> PolygonBooleanPlanarNAry(const std::vector<std::vector<Point3d>>& first_group,
+                                                             const std::vector<std::vector<Point3d>>& second_group,
+                                                             const ON_Plane& plane, BooleanOp op,
+                                                             double tolerance = -1.0);
 
 // The Sutherland-Hodgman half-space clipper shared by
 // BooleanIntersectConvexPlanar (above) and ShellConvexPlanar (below) -

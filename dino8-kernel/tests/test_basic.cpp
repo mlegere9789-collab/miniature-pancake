@@ -43737,6 +43737,210 @@ void TestPolygonBooleanPlanarRefusesSelfIntersectingOperand() {
   Check(!threw_simple, "PolygonBooleanPlanar's new self-intersection check does not reject an ordinary simple L-shape");
 }
 
+// PolygonBooleanPlanarNAry closes the kernel-level half of PARITY_MAP.md's
+// "2D region / planar curve booleans" bullet's own disclosed "N-way
+// CreateRegions... entirely untouched" gap, for the common case where every
+// intermediate fold step stays a single simple polygon - the same shape
+// BooleanCombinePlanarNAry/BooleanCombineMixedNAry/BooleanCombineGeneralNAry
+// already established for whole-Brep booleans.
+void TestPolygonBooleanPlanarNAryUnionOfThreeOverlappingSquaresMatchesInclusionExclusion() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanarNAry;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  // Three unit-height squares that all pairwise OVERLAP by positive area,
+  // not merely the adjacent pairs of a linear chain: a=[0,2]x[0,2],
+  // b=[1,3]x[0,2], c=[0.5,2.5]x[0,2] - every one of the three possible
+  // PAIRS (a,b)/(a,c)/(b,c) overlaps by at least half a unit. This matters
+  // for the fold-order check just below: a plain END-TO-END chain
+  // (a=[0,2], c=[2,4], touching only at x=2 with ZERO overlap) is fine for
+  // the FORWARD fold order (a then b then c, c only ever meeting the
+  // ALREADY-MERGED [0,3] footprint, never touching 'a' directly) but a
+  // REORDERED fold starting c-then-a would union two squares that only
+  // TOUCH, not overlap - a real, separately-disclosed
+  // BooleanCombinePlanar scope limit (this category's own "Coplanar /
+  // coincident face handling" bullet) that a merely-touching chain hits
+  // and a genuinely-overlapping triple does not; confirmed directly (not
+  // assumed) that swapping in a touching-only chain here makes the
+  // reordered fold throw. |A|+|B|+|C| - |A^B| - |A^C| - |B^C| + |A^B^C| =
+  // 4+4+4 - 2 - 3 - 3 + 2 = 6 (A^B=[1,2] width 1, A^C=[0.5,2] width 1.5,
+  // B^C=[1,2.5] width 1.5, A^B^C=[1,2] width 1, each times height 2).
+  const std::vector<Point3d> a = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0)};
+  const std::vector<Point3d> b = {Point3d(1, 0, 0), Point3d(3, 0, 0), Point3d(3, 2, 0), Point3d(1, 2, 0)};
+  const std::vector<Point3d> c = {Point3d(0.5, 0, 0), Point3d(2.5, 0, 0), Point3d(2.5, 2, 0), Point3d(0.5, 2, 0)};
+
+  const auto result = PolygonBooleanPlanarNAry({a, b, c}, {}, plane, BooleanOp::Union);
+  Check(result.size() == 1, "PolygonBooleanPlanarNAry Union of three pairwise-overlapping squares: one connected "
+                             "result polygon");
+  double total = 0.0;
+  for (const auto& loop : result) total += PolygonLoopArea(loop);
+  Check(Within(total, 6.0, 1e-9), "PolygonBooleanPlanarNAry Union of the three pairwise-overlapping squares has the "
+                                   "inclusion-exclusion area 4+4+4-2-3-3+2 = 6");
+
+  // Fold-order independence, mirroring TestBooleanCombinePlanarNAry's own
+  // such check for whole-Brep operands: a different left-to-right order of
+  // the same three squares must agree exactly - safe here specifically
+  // because every pair genuinely overlaps (see above), so every one of
+  // the 6 possible fold orders unions two positive-area-overlapping
+  // polygons at each step.
+  const auto reordered = PolygonBooleanPlanarNAry({c, a, b}, {}, plane, BooleanOp::Union);
+  double reordered_total = 0.0;
+  for (const auto& loop : reordered) reordered_total += PolygonLoopArea(loop);
+  Check(Within(reordered_total, 6.0, 1e-9),
+        "PolygonBooleanPlanarNAry Union area is not caller-visibly affected by first_group's own fold order");
+}
+
+void TestPolygonBooleanPlanarNAryIntersectionUnionsFirstGroupBeforeCombining() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanarNAry;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  // first_group folds to [0,3]x[0,2] (area 6); second_group is the single
+  // tool [2,5]x[0,2] - their intersection is exactly [2,3]x[0,2], area 1.
+  const std::vector<Point3d> a = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0)};
+  const std::vector<Point3d> b = {Point3d(1, 0, 0), Point3d(3, 0, 0), Point3d(3, 2, 0), Point3d(1, 2, 0)};
+  const std::vector<Point3d> tool = {Point3d(2, 0, 0), Point3d(5, 0, 0), Point3d(5, 2, 0), Point3d(2, 2, 0)};
+
+  const auto result = PolygonBooleanPlanarNAry({a, b}, {tool}, plane, BooleanOp::Intersection);
+  Check(result.size() == 1, "PolygonBooleanPlanarNAry Intersection of a 2-square first_group fold against a single "
+                             "second_group tool: one result polygon");
+  double total = 0.0;
+  for (const auto& loop : result) total += PolygonLoopArea(loop);
+  Check(Within(total, 2.0, 1e-9),
+        "PolygonBooleanPlanarNAry Intersection(Union(A,B)=[0,3]x[0,2], tool=[2,5]x[0,2]) is exactly [2,3]x[0,2], "
+        "area 2");
+}
+
+void TestPolygonBooleanPlanarNAryDifferenceAgainstTwoOverlappingToolsLeavesExpectedRing() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanarNAry;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  // D = [0,5]x[0,5] (area 25); the two tools T1=[1,3]x[1,3] and
+  // T2=[2,4]x[1,3] overlap each other (fold stays a single [1,4]x[1,3]
+  // rectangle, area 6) and both sit strictly inside D, away from its own
+  // boundary - D minus that fold is a genuine ring (outer boundary + one
+  // hole), the same two-loop shape
+  // TestPolygonBooleanPlanarDifferenceLeavesARingWithHoleLoop above already
+  // proves a plain pairwise PolygonBooleanPlanar Difference can return;
+  // D \ (T1 u T2) = D \ T1 \ T2 by ordinary set algebra, so the expected
+  // area is the closed form 25 - 6 = 19 regardless of T1/T2's own overlap.
+  const std::vector<Point3d> d = {Point3d(0, 0, 0), Point3d(5, 0, 0), Point3d(5, 5, 0), Point3d(0, 5, 0)};
+  const std::vector<Point3d> t1 = {Point3d(1, 1, 0), Point3d(3, 1, 0), Point3d(3, 3, 0), Point3d(1, 3, 0)};
+  const std::vector<Point3d> t2 = {Point3d(2, 1, 0), Point3d(4, 1, 0), Point3d(4, 3, 0), Point3d(2, 3, 0)};
+
+  const auto result = PolygonBooleanPlanarNAry({d}, {t1, t2}, plane, BooleanOp::Difference);
+  Check(result.size() == 2, "PolygonBooleanPlanarNAry Difference against a 2-tool second_group: the FINAL combine "
+                             "may still legitimately return 2 loops (a ring), unlike an intermediate fold step");
+  if (result.size() == 2) {
+    // PolygonLoopArea (above) returns each loop's own unsigned magnitude,
+    // the same convention TestPolygonBooleanPlanarDifferenceLeavesARingWithHoleLoop
+    // already uses for a plain pairwise ring - so the outer boundary and
+    // the hole are checked separately (25 and 6), not summed: a naive sum
+    // of two unsigned magnitudes (31) is not the ring's own net area
+    // (25 - 6 = 19), since the hole loop's opposite (CW) winding is what
+    // actually subtracts it, not its magnitude's sign.
+    const double area0 = PolygonLoopArea(result[0]);
+    const double area1 = PolygonLoopArea(result[1]);
+    const double outer = std::max(area0, area1);
+    const double inner = std::min(area0, area1);
+    Check(Within(outer, 25.0, 1e-9), "the ring's outer loop has D's own full 5x5 area (25)");
+    Check(Within(inner, 6.0, 1e-9), "the ring's hole loop has Union(T1,T2)'s own area (6)");
+  }
+}
+
+void TestPolygonBooleanPlanarNAryNegativeControls() {
+  using dino8::kernel::BooleanFailureReason;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::BooleanOperationError;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanarNAry;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point3d> square = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0)};
+
+  bool threw = false;
+  BooleanFailureReason reason = BooleanFailureReason::CompoundOperand;
+  try {
+    PolygonBooleanPlanarNAry({}, {}, plane, BooleanOp::Union);
+  } catch (const BooleanOperationError& e) {
+    threw = true;
+    reason = e.reason();
+  }
+  Check(threw && reason == BooleanFailureReason::EmptyOperandGroup,
+        "PolygonBooleanPlanarNAry refuses an empty first_group with BooleanFailureReason::EmptyOperandGroup");
+
+  threw = false;
+  reason = BooleanFailureReason::CompoundOperand;
+  try {
+    PolygonBooleanPlanarNAry({square}, {}, plane, BooleanOp::Difference);
+  } catch (const BooleanOperationError& e) {
+    threw = true;
+    reason = e.reason();
+  }
+  Check(threw && reason == BooleanFailureReason::EmptyOperandGroup,
+        "PolygonBooleanPlanarNAry refuses an empty second_group with a non-Union op "
+        "(BooleanFailureReason::EmptyOperandGroup)");
+
+  threw = false;
+  reason = BooleanFailureReason::CompoundOperand;
+  try {
+    PolygonBooleanPlanarNAry({square}, {square}, plane, BooleanOp::SymmetricDifference);
+  } catch (const BooleanOperationError& e) {
+    threw = true;
+    reason = e.reason();
+  }
+  Check(threw && reason == BooleanFailureReason::UnsupportedOperation,
+        "PolygonBooleanPlanarNAry refuses SymmetricDifference with BooleanFailureReason::UnsupportedOperation");
+
+  // Negative control: a single-element first_group with an empty
+  // second_group and op=Union is the well-defined trivial fold (no actual
+  // folding needed) and must NOT throw.
+  threw = false;
+  try {
+    const auto result = PolygonBooleanPlanarNAry({square}, {}, plane, BooleanOp::Union);
+    Check(result.size() == 1 && Within(PolygonLoopArea(result.front()), 4.0, 1e-9),
+          "PolygonBooleanPlanarNAry with a single-element first_group and an empty second_group returns that "
+          "polygon unchanged (area 4)");
+  } catch (const BooleanOperationError&) {
+    threw = true;
+  }
+  Check(!threw, "PolygonBooleanPlanarNAry does not refuse the trivial single-operand Union case");
+}
+
+// A fold step whose own Union comes back with 2+ loops (here, two disjoint
+// squares with no shared area at all) has no single std::vector<Point3d>
+// to carry into the next fold step - refused outright rather than silently
+// keeping only the first loop and discarding the second.
+void TestPolygonBooleanPlanarNAryRefusesMultiLoopFoldResult() {
+  using dino8::kernel::BooleanFailureReason;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::BooleanOperationError;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanarNAry;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point3d> disjoint_a = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  const std::vector<Point3d> disjoint_b = {Point3d(5, 5, 0), Point3d(6, 5, 0), Point3d(6, 6, 0), Point3d(5, 6, 0)};
+  const std::vector<Point3d> third = {Point3d(0.25, 0.25, 0), Point3d(0.75, 0.25, 0), Point3d(0.75, 0.75, 0),
+                                       Point3d(0.25, 0.75, 0)};
+
+  bool threw_typed = false;
+  BooleanFailureReason reason = BooleanFailureReason::CompoundOperand;
+  try {
+    PolygonBooleanPlanarNAry({disjoint_a, disjoint_b, third}, {}, plane, BooleanOp::Union);
+  } catch (const BooleanOperationError& e) {
+    threw_typed = true;
+    reason = e.reason();
+  }
+  Check(threw_typed && reason == BooleanFailureReason::MultiLoopFoldResult,
+        "PolygonBooleanPlanarNAry refuses a fold step whose own Union of two disjoint squares comes back with 2 "
+        "loops, as a typed BooleanFailureReason::MultiLoopFoldResult, rather than silently dropping one loop");
+}
+
 void TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion() {
   using dino8::kernel::BooleanCombineMixedNAry;
   using dino8::kernel::BooleanOp;
@@ -65226,6 +65430,11 @@ int main() {
   TestPolygonBooleanPlanarDifferenceLeavesARingWithHoleLoop();
   TestPolygonBooleanPlanarNegativeControls();
   TestPolygonBooleanPlanarRefusesSelfIntersectingOperand();
+  TestPolygonBooleanPlanarNAryUnionOfThreeOverlappingSquaresMatchesInclusionExclusion();
+  TestPolygonBooleanPlanarNAryIntersectionUnionsFirstGroupBeforeCombining();
+  TestPolygonBooleanPlanarNAryDifferenceAgainstTwoOverlappingToolsLeavesExpectedRing();
+  TestPolygonBooleanPlanarNAryNegativeControls();
+  TestPolygonBooleanPlanarNAryRefusesMultiLoopFoldResult();
   TestBooleanCombinePlanarDifferenceAcceptsCompoundFirstOperand();
   TestBooleanCombinePlanarDifferenceAcceptsCompoundSecondOperand();
   TestBooleanCombinePlanarIntersectionAcceptsCompoundOperand();

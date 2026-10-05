@@ -1430,6 +1430,61 @@ std::vector<std::vector<Point3d>> PolygonBooleanPlanar(const std::vector<Point3d
   return DissolveCoplanarFragments(base_fragments, tol);
 }
 
+std::vector<std::vector<Point3d>> PolygonBooleanPlanarNAry(const std::vector<std::vector<Point3d>>& first_group,
+                                                             const std::vector<std::vector<Point3d>>& second_group,
+                                                             const ON_Plane& plane, BooleanOp op, double tolerance) {
+  const char* caller = "PolygonBooleanPlanarNAry";
+  if (op == BooleanOp::SymmetricDifference) {
+    throw BooleanOperationError(
+        BooleanFailureReason::UnsupportedOperation, caller,
+        std::string("dino8::kernel::") + caller +
+            ": SymmetricDifference has no well-defined N-ary fold - its own pairwise result can carry 2+ loops "
+            "that cannot be fed into a further Union (see PolygonBooleanPlanar's own SymmetricDifference result "
+            "shape, and this function's own MultiLoopFoldResult refusal below)");
+  }
+  if (first_group.empty()) {
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperandGroup, caller,
+                                 std::string("dino8::kernel::") + caller + ": first_group is empty");
+  }
+
+  // Same left-to-right Union fold as BooleanCombinePlanarNAry, for 2D
+  // polygons instead - except each fold step's own result must collapse
+  // back down to exactly one loop before it can be the next step's `a`
+  // operand (PolygonBooleanPlanar's std::vector<Point3d> signature has
+  // nowhere to put a second loop) - see this function's own doc comment
+  // in boolean.h for the full rationale.
+  auto fold_union = [&plane, tolerance, caller](const std::vector<std::vector<Point3d>>& group) {
+    std::vector<Point3d> acc = group.front();
+    for (size_t i = 1; i < group.size(); ++i) {
+      std::vector<std::vector<Point3d>> result = PolygonBooleanPlanar(acc, group[i], plane, BooleanOp::Union, tolerance);
+      if (result.size() != 1) {
+        throw BooleanOperationError(
+            BooleanFailureReason::MultiLoopFoldResult, caller,
+            std::string("dino8::kernel::") + caller + ": an intermediate Union fold step came back with " +
+                std::to_string(result.size()) +
+                " loop(s), not exactly 1 - the next fold step has no single std::vector<Point3d> to continue with "
+                "(see BooleanFailureReason::MultiLoopFoldResult's own doc comment)");
+      }
+      acc = std::move(result.front());
+    }
+    return acc;
+  };
+
+  const std::vector<Point3d> folded_first = fold_union(first_group);
+  if (second_group.empty()) {
+    if (op != BooleanOp::Union) {
+      throw BooleanOperationError(
+          BooleanFailureReason::EmptyOperandGroup, caller,
+          std::string("dino8::kernel::") + caller +
+              ": second_group is empty but op is not Union - Intersection/Difference need a second operand to "
+              "combine against");
+    }
+    return {folded_first};
+  }
+  const std::vector<Point3d> folded_second = fold_union(second_group);
+  return PolygonBooleanPlanar(folded_first, folded_second, plane, op, tolerance);
+}
+
 namespace {
 // Signed area of a planar polygon (known to already lie in one plane,
 // with unit `normal`), via fan triangulation from the polygon's own
