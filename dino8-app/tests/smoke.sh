@@ -2149,6 +2149,16 @@ print("object count after GetPoint: %d" % len(dino8.doc.Objects.AllObjects()))
 # token (python_script.txt's "RunPythonScript @TMP@/t.py 20,20,20 Widget2").
 name = dino8.GetString("Name the marker point")
 print("got string: " + str(name))
+
+# dino8.GetReal/dino8.GetInteger: previously the last named gap in
+# PARITY_MAP.md's "GetObjects/GetReal/GetInteger-equivalents remain
+# entirely unported" note - mirror rs.GetReal/rs.GetInteger, same
+# worker-thread suspend as GetPoint/GetString above, fed by the third and
+# fourth trailing script tokens (python_script.txt's "... 3.5 7").
+r = dino8.GetReal("Pick a radius")
+print("got real: " + str(r))
+i = dino8.GetInteger("Pick a count")
+print("got integer: " + str(i) + " " + str(type(i).__name__))
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
 # Captured with set +e, not "|| { ...; exit 1; }": python_script.txt's own
@@ -2363,6 +2373,8 @@ else
   pscheck "picked point 20,20,20" "the resumed script read back the exact point the command line fed it"
   pscheck "history: object count after GetPoint: 37" "AddPoint(p) added the one new object the suspend-and-resume round trip was supposed to produce"
   pscheck "history: got string: Widget2" "dino8.GetString() suspended a second time (same worker-thread mechanism as GetPoint) and was fed by the second trailing script token, proving the suspend/resume round trip works for a second, different prompt type right after the first, not just once"
+  pscheck "history: got real: 3.5" "dino8.GetReal() suspended a third time (same worker-thread mechanism as GetPoint/GetString) and was fed by the third trailing script token (python_script.txt's \"... Widget2 3.5 7\"), mirroring rs.GetReal - previously entirely unported to Python per the PARITY_MAP app_scripting note"
+  pscheck "history: got integer: 7 int" "dino8.GetInteger() suspended a fourth time and was fed by the fourth trailing script token, returning a real Python int (not a float truncated for display), mirroring rs.GetInteger - previously entirely unported to Python per the same PARITY_MAP note"
   pscheck "^ok   expect_objects 37" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, the two fresh ObjectsByType test points, and the dino8.GetPoint() marker point (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script, and the undo/redo group's own point was undone again at the end)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
