@@ -7326,6 +7326,99 @@ checks passing, 0 failures - including the one pre-existing test this
 session's own fix required correcting (confirmed to fail before that
 correction, not merely assumed).
 
+**2026-10-05 follow-up, narrows two of this category's own still-`[partial]`
+items without flipping either (both remaining gaps stay real and
+disclosed):**
+
+1. **Quad-remeshing into a clean SubD-ready cage** — this item's own text
+   names `SubD::FromControlMesh` directly ("not wired into any
+   `dino8-app` command or into `SubD::FromControlMesh`"). A same-day
+   session already wired `Mesh::TrisToQuads()` into `BooleanToSubD()`'s
+   own narrower call path (see that method's own note above), but the
+   general-purpose entry point itself still took every mesh face as-is.
+   `SubD::FromControlMesh()` (subd.cpp:43, subd.h:157) now takes an
+   optional `tris_to_quads_max_dihedral_deg` parameter (default `0.0`, a
+   no-op - every existing caller's behavior is byte-identical to before
+   this parameter existed): when positive, a mutable copy of
+   `control_mesh` is run through the already-existing, already-tested
+   `Mesh::TrisToQuads()` before `ON_SubD::CreateFromMesh` ever sees it.
+   Verified by `TestSubDFromControlMeshCanRecombineTrianglesIntoQuads`
+   (tests/test_basic.cpp): a 1x1-tessellated unit box (12 triangles, via
+   `Brep::Box().TessellateToClosedMesh(1,1)`) still produces a
+   12-triangular-face SubD when the parameter is omitted (confirming old
+   behavior is genuinely unchanged, not just assumed), but collapses to
+   the expected 6 quad faces - same 8-vertex count, a clean
+   closed-manifold `Check()` (0 naked/non-manifold edges or vertices, 1
+   body), exact level-0 volume 1, and genuine further `Subdivide()`-
+   ability (volume strictly shrinks) - once the caller opts in; a
+   separate steep-vs-shallow hinge fixture (the same two-triangle "tent"
+   `TestMeshTrisToQuadsGatesOnDihedralAngle` already uses) confirms the
+   per-call threshold is genuinely threaded through to
+   `Mesh::TrisToQuads()`, not hardcoded - a 90-degree fold stays 2
+   separate triangular SubD faces at a 20-degree threshold, merges to 1
+   quad SubD face once the caller raises it past 90 degrees. Still
+   honestly `[partial]`, not `[present]`: no vertex relocation or global
+   flow-field alignment is attempted (the same scope `TrisToQuads()`'s
+   own doc comment, mesh.h, already discloses), and the `dino8-app`
+   command-level half of the gap (no app command calls this at all) is
+   completely untouched - this closes only the "...or into
+   `SubD::FromControlMesh`" half of the sentence, literally, not the
+   app-wiring half beside it.
+
+2. **SubD symmetry/mirror-in-place** — `Symmetrize()`'s own disclosed
+   remaining gap: "a vertex that starts strictly off-plane is always
+   duplicated (never welded to a same-side neighbor)." The single
+   `point_tolerance` argument did double duty - both classifying which
+   vertices sit ON the mirror plane (correctness-sensitive: loosening it
+   can silently change which boundary loop gets welded as a seam) AND
+   bounding `ON_SubD::FindOrAddVertex`'s own position-match weld for
+   every mirrored vertex - so there was no way to weld two genuinely-
+   distinct-but-nearly-coincident off-plane vertices (e.g. two
+   independently-modeled features meant to share a seam that drifted
+   apart at single-float `ON_3fPoint` precision) without also loosening
+   on-plane classification. `SubD::Symmetrize()` (subd.cpp:321,
+   subd.h:507) now takes an optional `weld_tolerance` parameter (default
+   `0.0`, meaning "reuse `point_tolerance`," exactly as before this
+   parameter existed): when positive, it is used instead of
+   `point_tolerance` for every `FindOrAddVertex` lookup, on-plane and
+   off-plane alike (harmless for the on-plane case, whose target position
+   is already exactly the original vertex's own point, so a looser search
+   there still only ever finds that same vertex). Verified by
+   `TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance`
+   (tests/test_basic.cpp): two off-plane quads built as entirely separate
+   vertex records, identical except for a 1e-4 x-shift (far bigger than
+   the tight 1e-9 default, modeling realistic float drift between two
+   "same" features), stay 8 distinct vertices after `FromControlMesh()`
+   (sanity: not silently merged by construction); mirroring at the
+   default tolerance produces 16 vertices total - the mirrored
+   near-duplicate pair stays just as unwelded as the original pair,
+   reproducing the disclosed gap exactly, byte-identical to this
+   method's behavior before `weld_tolerance` existed; mirroring with
+   `weld_tolerance = 1e-3` instead produces 12 - the mirrored pair welds
+   into one vertex, while the ORIGINAL pair (never touched by
+   `Symmetrize()`, which only ever processes vertices it is itself
+   mirroring) stays unwelded, confirming the fix is scoped to exactly the
+   vertices it claims to affect. Still honestly `[partial]`: this is not
+   a general "weld any two nearby vertices" tool - a duplicate already
+   present in the ORIGINAL half before `Symmetrize()` runs is untouched,
+   the same scope limit `SubD::Check()`'s own duplicate-vertex disclosure
+   already names (SubD has no `Mesh::MergeDuplicateVertices()`
+   counterpart) - and live constrained symmetric editing remains
+   out of scope, unchanged.
+
+Neither fix flips its own item's status, so this category's own
+present/partial/missing counts stay unchanged at 16/6/0/22 (86.4%), the
+kernel headline stays unchanged, and neither priority table above (nor
+the one near the top of this document) is touched - stated explicitly,
+per this document's own convention, rather than left ambiguous. This
+session's only source edits are `dino8-kernel/include/dino8/kernel/
+subd.h`, `dino8-kernel/src/subd.cpp`, and
+`dino8-kernel/tests/test_basic.cpp`. Full `dino8_kernel_tests` suite (via
+the test binary directly): 8682/8682 pre-existing checks still passing
+plus 14 new ones (9 in `TestSubDFromControlMeshCanRecombineTrianglesIntoQuads`,
+5 in `TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance`),
+8696/8696 total, 0 regressions.
+
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027
 
 | Category | Weight | Items | Present | Partial | Missing | Parity % |

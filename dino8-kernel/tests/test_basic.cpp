@@ -20579,6 +20579,95 @@ void TestSubDFromControlMeshRejectsEmptyMesh() {
   Check(threw, "SubD::FromControlMesh throws on a mesh with no faces");
 }
 
+// PARITY_MAP.md's subd_mesh "Quad-remeshing into a clean SubD-ready cage"
+// item's own disclosed gap names SubD::FromControlMesh() by name ("not
+// wired into any dino8-app command or into SubD::FromControlMesh"):
+// FromControlMesh()'s own new tris_to_quads_max_dihedral_deg parameter
+// closes that for the general-purpose entry point itself - BooleanToSubD()
+// already wired the same Mesh::TrisToQuads() composition into its own,
+// narrower call path (see TestSubDBooleanToSubDRecombinesUntouchedFacesInto
+// Quads above), this does the same thing directly inside FromControlMesh()
+// so any caller gets it, not just that one.
+void TestSubDFromControlMeshCanRecombineTrianglesIntoQuads() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const Mesh triangulated = Brep::Box(0, 0, 0, 1, 1, 1).TessellateToClosedMesh(1, 1);
+  Check(triangulated.FaceCount() == 12 && triangulated.VertexCount() == 8,
+        "sanity: a 1x1 tessellation of a unit box is 12 triangles over 8 corners");
+
+  // Default behavior (the parameter omitted entirely) is byte-identical
+  // to before this parameter existed: every triangle becomes its own
+  // 3-sided SubD face.
+  const SubD unmerged = SubD::FromControlMesh(triangulated);
+  Check(unmerged.FaceCount() == 12,
+        "by default, FromControlMesh() still keeps every triangle as its own SubD face - old behavior unchanged");
+
+  // Opting in recombines the 6 box faces back into 6 quads BEFORE
+  // ON_SubD::CreateFromMesh ever sees them - the same reduction
+  // Mesh::TrisToQuads() alone already gives, now reachable in the one
+  // FromControlMesh() call a caller already needed anyway.
+  const SubD merged = SubD::FromControlMesh(triangulated, /*crease_at_double_edges=*/false,
+                                             /*tris_to_quads_max_dihedral_deg=*/20.0);
+  Check(merged.FaceCount() == 6, "opting in recombines all 6 box faces into quads before building the SubD");
+  Check(merged.VertexCount() == 8, "no vertex was added, moved, or removed by the recombination");
+
+  // The recombined control cage is still a genuine, correct closed-
+  // manifold SubD matching the original box - not a corrupted/partial
+  // rebuild.
+  const SubD::SubDCheckReport report = merged.Check();
+  Check(report.naked_edges == 0 && report.non_manifold_edges == 0 && report.non_manifold_vertices == 0 &&
+            report.body_count == 1,
+        "the recombined SubD is a single clean closed-manifold body");
+
+  const Mesh level0 = merged.ToApproximateMesh();
+  Check(std::fabs(level0.Volume() - 1.0) < 1e-9,
+        "the recombined SubD's own level-0 mesh has the box's exact original volume (1)");
+
+  // And it genuinely subdivides further (a real control net, not a
+  // frozen copy) - volume strictly shrinks as Catmull-Clark rounds the
+  // box's corners.
+  SubD subdivided = merged;
+  subdivided.Subdivide(1);
+  Check(subdivided.ToApproximateMesh().Volume() < level0.Volume(),
+        "...and further Subdivide() genuinely rounds the shape (volume strictly shrinks)");
+
+  // Confirms the per-call threshold is genuinely threaded through to
+  // Mesh::TrisToQuads(), not hardcoded: the same shallow-vs-steep hinge
+  // fixture TestMeshTrisToQuadsGatesOnDihedralAngle above already uses.
+  {
+    Mesh hinge;
+    ON_Mesh& raw = hinge.raw();
+    const double theta = 90.0 * 3.14159265358979323846 / 180.0;  // steep fold
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));
+    raw.m_V.Append(ON_3fPoint(0.5f, 1.0f, 0.0f));
+    raw.m_V.Append(
+        ON_3fPoint(0.5f, static_cast<float>(-std::cos(theta)), static_cast<float>(std::sin(theta))));
+    ON_MeshFace fi;
+    fi.vi[0] = 0;
+    fi.vi[1] = 1;
+    fi.vi[2] = 2;
+    fi.vi[3] = 2;
+    raw.m_F.Append(fi);
+    ON_MeshFace fj;
+    fj.vi[0] = 1;
+    fj.vi[1] = 0;
+    fj.vi[2] = 3;
+    fj.vi[3] = 3;
+    raw.m_F.Append(fj);
+
+    const SubD at_default_threshold = SubD::FromControlMesh(hinge, false, 20.0);
+    Check(at_default_threshold.FaceCount() == 2,
+          "a 90deg fold is refused at a 20deg threshold - still 2 separate triangular SubD faces");
+
+    const SubD at_wide_threshold = SubD::FromControlMesh(hinge, false, 100.0);
+    Check(at_wide_threshold.FaceCount() == 1,
+          "the same 90deg fold merges into 1 quad SubD face once the caller raises the threshold past 90deg");
+  }
+}
+
 // Builds two 1x1 quads hinged along the segment from (0,0,0) to (1,0,0):
 // quad A in the y=0 plane (extending in +z), quad B in the z=0 plane
 // (extending in +y). Quad B's two hinge-edge vertices are separate array
@@ -21015,6 +21104,72 @@ void TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces() {
     threw = true;
   }
   Check(threw, "Symmetrize() throws std::invalid_argument for a zero plane_normal");
+}
+
+// PARITY_MAP.md's subd_mesh "SubD symmetry/mirror-in-place" item's own
+// disclosed remaining gap: "a vertex that starts strictly off-plane is
+// always duplicated, not welded to a same-side neighbor, so this only
+// closes gaps that coincide with the mirror plane itself, not general
+// internal seams." Symmetrize()'s own new weld_tolerance parameter
+// narrows that: two off-plane quads built as entirely separate vertex
+// records (same "wing" technique TestMeshMergeDuplicateVerticesWelds
+// CoincidentPairs above uses for Mesh) whose footprints are identical
+// except for a tiny (eps = 1e-4) x-shift - modeling two independently-
+// built features meant to be the same, drifted apart at single-float
+// (ON_3fPoint) precision - mirror into two STILL-separate near-duplicate
+// vertex pairs at the default (tight, 1e-9) tolerance, exactly the
+// disclosed gap, but weld into one pair once weld_tolerance is widened
+// past eps, with point_tolerance (on-plane classification) left
+// completely untouched.
+void TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+  using dino8::kernel::Vector3d;
+
+  const double eps = 1e-4;
+  Mesh half;
+  ON_Mesh& raw = half.raw();
+  const auto add_quad = [&raw](double x0, double z0) {
+    const int base = raw.m_V.Count();
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0), 0.0f, static_cast<float>(z0)));
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0 + 1.0), 0.0f, static_cast<float>(z0)));
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0 + 1.0), 0.0f, static_cast<float>(z0 + 0.5)));
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0), 0.0f, static_cast<float>(z0 + 0.5)));
+    ON_MeshFace f;
+    f.vi[0] = base;
+    f.vi[1] = base + 1;
+    f.vi[2] = base + 2;
+    f.vi[3] = base + 3;
+    raw.m_F.Append(f);
+  };
+  add_quad(0.0, 0.0);  // quad A: x in [0,1], z in [0,0.5] - entirely off the z=1 mirror plane
+  add_quad(eps, 0.0);  // quad B: the same footprint, shifted by eps in x only - a near-duplicate of A
+
+  const SubD subd = SubD::FromControlMesh(half);
+  Check(subd.VertexCount() == 8,
+        "sanity: quad A and quad B stay 8 DISTINCT vertices - eps is far bigger than FromControlMesh()'s "
+        "own exact-position weld, so the two near-duplicate quads are not silently merged by construction");
+  Check(subd.FaceCount() == 2, "sanity: 2 separate quad faces, neither touching the z=1 mirror plane");
+
+  // Default behavior (weld_tolerance omitted) is byte-identical to
+  // before this parameter existed: every off-plane vertex, including
+  // this near-duplicate pair, is mirrored as its own new, separate
+  // vertex.
+  const SubD default_doubled = subd.Symmetrize(Vector3d(0, 0, 1), 1.0, 1e-9);
+  Check(default_doubled.VertexCount() == 16,
+        "at the default (tight) tolerance, the mirrored near-duplicate pair (eps apart) stays just as "
+        "unwelded as the original pair - 8 original + 8 mirrored, exactly the disclosed 'always "
+        "duplicated, not welded to a same-side neighbor' gap");
+
+  // Widening weld_tolerance past eps - while leaving point_tolerance,
+  // the on-plane classification threshold, untouched at its original
+  // tight value - welds the mirrored near-duplicates to each other.
+  const SubD widened_doubled = subd.Symmetrize(Vector3d(0, 0, 1), 1.0, 1e-9, /*weld_tolerance=*/1e-3);
+  Check(widened_doubled.VertexCount() == 12,
+        "widening weld_tolerance past eps welds the mirrored near-duplicate pair into one vertex: 8 "
+        "original (still untouched - Symmetrize() never retroactively fixes the ORIGINAL half) + 4 "
+        "newly-welded mirrored vertices, instead of 8");
+  Check(widened_doubled.FaceCount() == 4, "4 faces total either way: the original 2 plus their 2 mirrored copies");
 }
 
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
@@ -64813,6 +64968,7 @@ int main() {
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
+  TestSubDFromControlMeshCanRecombineTrianglesIntoQuads();
   TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
   TestSubDIsValid();
   TestSubDMeshRoundTripIsExactAtLevelZero();
@@ -64820,6 +64976,7 @@ int main() {
   TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth();
   TestSubDTransformMovesScalesAndStaysValidUnderMirror();
   TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces();
+  TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetEdgeSharpnessSupportsPerEndVariableWeight();
   TestSubDEdgeSharpnessAtReadsBackWhatWasWritten();
