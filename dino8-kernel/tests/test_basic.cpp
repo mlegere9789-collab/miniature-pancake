@@ -45488,6 +45488,7 @@ void TestPolygonBooleanPlanarNAryNegativeControls() {
         "PolygonBooleanPlanarNAry with a single-element first_group and no second_group is a no-op fold (area 4)");
 }
 
+
 void TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion() {
   using dino8::kernel::BooleanCombineMixedNAry;
   using dino8::kernel::BooleanOp;
