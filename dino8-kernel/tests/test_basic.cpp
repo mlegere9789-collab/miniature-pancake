@@ -11670,6 +11670,157 @@ void TestBrepTrimmedPlanarFace() {
         "trimmed face's physical area matches the exact scaled trim-loop area");
 }
 
+// TrimmedPlanarFaceWelded() is the genuine-topology sibling of
+// TrimmedPlanarFace() just above, the same "Welded" convention
+// BoxWelded() already established for Box() - PARITY_MAP.md's own
+// "Genuine topology produced by every constructor" bullet names
+// TrimmedPlanarFace() as one of the surface-only factories still left
+// unaddressed there.
+void TestBrepTrimmedPlanarFaceWelded() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Same physical 10x10 flat square and trim loop
+  // TestBrepTrimmedPlanarFace() above already uses, so the resulting
+  // shape's own physical area (36.0) is already proven correct there -
+  // this test is about the TOPOLOGY difference, not a new shape.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0), Point3d(0, 10, 0), Point3d(10, 0, 0), Point3d(10, 10, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const std::vector<Point2d> trim_loop = {
+      Point2d(0.15, 0.15), Point2d(0.85, 0.15), Point2d(0.85, 0.85), Point2d(0.15, 0.85),
+  };
+
+  const Brep face = Brep::TrimmedPlanarFaceWelded(surface, trim_loop);
+  Check(face.FaceCount() == 1, "TrimmedPlanarFaceWelded is a single face");
+  ON_TextLog discard_log;
+  Check(face.raw().IsValid(&discard_log),
+        "TrimmedPlanarFaceWelded() is a valid ON_Brep, unlike TrimmedPlanarFace()");
+  Check(face.LiveVertexCount() == 4 && face.LiveEdgeCount() == 4,
+        "the outer trim loop's own 4 corners/edges become real welded vertices/edges, not a side-table polygon");
+  // A standalone single face's own outer boundary is naked by
+  // construction (nothing else to share it with) - the exact same
+  // "Check() reports exactly...NakedEdge, and nothing else" expectation
+  // TestBrepWireBody's own single-open-edge case already establishes for
+  // the identical reason - so Check() reports 4 NakedEdge issues (one
+  // per outer edge, other_index == 1), never IsClean(), and that is the
+  // CORRECT state, not a defect: what matters is that there is nothing
+  // ELSE wrong (no NonManifoldEdge, no InconsistentFaceOrientation).
+  const Brep::CheckReport report = face.Check();
+  Check(report.issues.size() == 4 && report.Count(Brep::CheckIssue::Kind::NakedEdge) == 4,
+        "TrimmedPlanarFaceWelded()'s own Check() report has exactly the 4 expected NakedEdge issues (the "
+        "standalone outer boundary), and nothing else");
+  Check(report.is_oriented, "...and the one face's own trim is still consistently oriented");
+
+  // TrimmedPlanarFace()'s own default exact_clip=false uses WHOLE-CELL
+  // approximate tessellation (see TestBrepTrimmedPlanarFace() above's
+  // own "fully-inside grid cells" comment) - its 36.0 is a quantized
+  // UNDER-estimate of the true analytic area, not the exact trim area.
+  // TrimmedPlanarFaceWelded() instead builds a REAL trim loop, so an
+  // ordinary trimmed-face tessellation (no whole-cell quantization) gets
+  // the exact analytic area: physical span (0.85-0.15)*10 = 7.0 per
+  // axis, so 7.0 x 7.0 = 49.0 exactly - confirmed directly against this
+  // test's own fixture via a `dino8_scratch_test` probe before writing
+  // this expectation, not assumed from the non-welded sibling's value.
+  const auto meshes = face.Tessellate(10, 10);
+  Check(meshes.size() == 1 && std::abs(meshes.front().Area() - 49.0) < 1e-6,
+        "TrimmedPlanarFaceWelded()'s own EXACT physical area (49.0) is the true trim area, not "
+        "TrimmedPlanarFace()'s own whole-cell-quantized approximation (36.0)");
+
+  // A real hole: a small 2x2-param-unit square centered in the trim
+  // loop's own interior, becoming a genuine ON_BrepLoop::inner loop
+  // (via the existing, already-tested AddHoleLoop()), not another
+  // side-table polygon.
+  const std::vector<Point2d> hole_loop = {
+      Point2d(0.4, 0.4), Point2d(0.6, 0.4), Point2d(0.6, 0.6), Point2d(0.4, 0.6),
+  };
+  const Brep holed = Brep::TrimmedPlanarFaceWelded(surface, trim_loop, {hole_loop});
+  Check(holed.FaceCount() == 1, "a face with one hole is still exactly one face");
+  Check(holed.LiveVertexCount() == 8 && holed.LiveEdgeCount() == 8,
+        "the hole's own 4 corners/edges add 4 more real vertices/edges on top of the outer loop's own 4");
+  // Both the outer loop's 4 edges AND the hole's own 4 edges are naked
+  // (neither borders a second face), so 8 NakedEdge issues total is the
+  // correct clean state here too - same reasoning as the un-holed case
+  // above, just with the hole's own boundary added.
+  const Brep::CheckReport holed_report = holed.Check();
+  Check(holed_report.issues.size() == 8 && holed_report.Count(Brep::CheckIssue::Kind::NakedEdge) == 8,
+        "the holed face's own Check() report has exactly the 8 expected NakedEdge issues (outer + hole "
+        "boundaries), and nothing else - no crossing, no bad orientation");
+  Check(holed_report.is_oriented, "...and the face (with its hole) is still consistently oriented");
+  // Real loop structure: a genuine ON_BrepLoop::outer plus an
+  // ON_BrepLoop::inner, not a side-table polygon - verified via
+  // TypeOfLoop() rather than by mesh area, since Tessellate() on a
+  // multi-loop face (confirmed directly via `dino8_scratch_test`, not
+  // assumed) does not reproduce the exact analytic area even on a flat
+  // face - the same "verify the region, not mesh area" honesty this
+  // kernel's own MergeSameSurfaceFaces tests already adopt for a holed
+  // curved face, found here to apply to this Tessellate() path too.
+  Check(holed.LoopCount(0) == 2, "the holed face has exactly 2 loops: the outer boundary plus the one hole");
+  const std::vector<int> holed_loops = holed.LoopsOfFace(0);
+  int outer_loops = 0, inner_loops = 0;
+  for (const int li : holed_loops) {
+    if (holed.TypeOfLoop(li) == Brep::LoopKind::Outer) ++outer_loops;
+    if (holed.TypeOfLoop(li) == Brep::LoopKind::Inner) ++inner_loops;
+  }
+  Check(outer_loops == 1 && inner_loops == 1,
+        "...classified as exactly one real Outer loop and one real Inner (hole) loop");
+  const auto holed_meshes = holed.Tessellate(10, 10);
+  Check(holed_meshes.size() == 1 && holed_meshes.front().Area() > 0.0 && holed_meshes.front().Area() < 49.0,
+        "the holed face's own tessellated area is strictly positive and strictly less than the un-holed "
+        "face's own 49.0 - the hole genuinely removes material");
+
+  // Refusal: fewer than 3 points in trim_loop_uv.
+  bool threw_too_few = false;
+  try {
+    (void)Brep::TrimmedPlanarFaceWelded(surface, {Point2d(0.1, 0.1), Point2d(0.9, 0.9)});
+  } catch (const std::invalid_argument&) {
+    threw_too_few = true;
+  }
+  Check(threw_too_few, "TrimmedPlanarFaceWelded() with fewer than 3 trim_loop_uv points throws std::invalid_argument");
+
+  // Refusal: the mapped 3D outer loop is not planar - one corner of the
+  // underlying surface raised out of the other three's own z=0 plane, so
+  // a full-domain trim loop's own 4 mapped corners are genuinely
+  // non-coplanar (a bilinear patch's own corners are always exactly its
+  // 4 control points, so this hits the raised corner exactly, not an
+  // interpolated point that might accidentally land back on the plane).
+  const std::vector<Point3d> warped_grid = {
+      Point3d(0, 0, 0), Point3d(0, 10, 0), Point3d(10, 0, 0), Point3d(10, 10, 5),
+  };
+  const NurbsSurface warped_surface = NurbsSurface::FromControlGrid(warped_grid, 2, 2, 1, 1);
+  const std::vector<Point2d> full_domain_loop = {
+      Point2d(0, 0), Point2d(1, 0), Point2d(1, 1), Point2d(0, 1),
+  };
+  bool threw_nonplanar = false;
+  try {
+    (void)Brep::TrimmedPlanarFaceWelded(warped_surface, full_domain_loop);
+  } catch (const std::invalid_argument&) {
+    threw_nonplanar = true;
+  }
+  Check(threw_nonplanar,
+        "TrimmedPlanarFaceWelded() on a surface whose mapped trim loop is not genuinely planar throws "
+        "std::invalid_argument, rather than silently flattening it the way FromPlanarFaces() alone would");
+
+  // Refusal: a hole that lands outside the outer boundary entirely -
+  // propagated from AddHoleLoop()'s own Result::Failed.
+  const std::vector<Point2d> outside_hole = {
+      Point2d(5.0, 5.0), Point2d(5.2, 5.0), Point2d(5.2, 5.2), Point2d(5.0, 5.2),
+  };
+  bool threw_outside_hole = false;
+  try {
+    (void)Brep::TrimmedPlanarFaceWelded(surface, trim_loop, {outside_hole});
+  } catch (const std::invalid_argument&) {
+    threw_outside_hole = true;
+  }
+  Check(threw_outside_hole,
+        "TrimmedPlanarFaceWelded() with a hole entirely outside the outer boundary throws std::invalid_argument, "
+        "propagating AddHoleLoop()'s own refusal rather than silently building an invalid face");
+}
+
 void TestWeldAcrossIndependentlyParameterizedSurfaces() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -67129,6 +67280,7 @@ int main() {
   TestBrepVolumeAndAreaMatchClosedForms();
   TestBrepTrimmedPlanarFaceRejectsTooFewPoints();
   TestBrepTrimmedPlanarFace();
+  TestBrepTrimmedPlanarFaceWelded();
   TestWeldAcrossIndependentlyParameterizedSurfaces();
   TestExtrudeUntrimmedFaceIntoSolid();
   TestExtrudeTrimmedFaceFeedsBoolean();
