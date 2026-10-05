@@ -415,11 +415,14 @@ struct CurveSurfaceOverlap {
 // samples whose closest-point distance is within opt.tolerance as one
 // overlap span. A curve nowhere near the surface returns empty; a curve
 // lying entirely on the surface returns one span with `entire_curve ==
-// true`. Honesty note: the span's own t0/t1 are only as precise as the
-// sampling resolution (no bisection refines the exact boundary where the
-// curve leaves the surface) - a caller needing the exact crossing
-// parameter there should follow up with IntersectCurveSurface() near that
-// boundary, the same way this function's own samples were seeded.
+// true`. Each boundary that has a genuine off-surface neighbour sample (not
+// the curve's own domain end) is then bisection-refined between that
+// on/off sample pair - 40 halvings of an already sampling-resolution-wide
+// bracket, closing this function's own previously-disclosed "t0/t1 are only
+// as precise as the sampling resolution" honesty gap: the reported boundary
+// is now the exact (to within opt.tolerance, not the coarser sampling
+// pitch) parameter where the curve leaves the surface, always landing on
+// the genuinely on-surface side of that transition.
 std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlap(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt);
 
 // One parallel plane section of a whole B-rep, as returned by
@@ -443,12 +446,46 @@ struct BrepContourSection {
 // picks a base plane and a spacing, not a station count). A section whose
 // plane produces zero hits (e.g. it only grazes the bounding box, not the
 // actual solid) is dropped rather than returned empty. `spacing <= 0` or
-// an invalid `base_plane` returns empty outright. Still honestly partial:
-// this is parallel sections of ONE object along ONE fixed direction
-// (`base_plane`'s own normal) - "ClippingSections" (multiple live, named,
-// arbitrarily-oriented clip planes, typically with hatching) is still
-// entirely unaddressed.
+// an invalid `base_plane` returns empty outright. This is parallel sections
+// of ONE object along ONE fixed direction (`base_plane`'s own normal) -
+// "ClippingSections" (multiple live, named, arbitrarily-oriented clip
+// planes) is the separate SectionBrepByPlanes() below.
 std::vector<BrepContourSection> ContourBrep(const ON_Brep& b, const ON_Plane& base_plane, double spacing, const IntersectOptions& opt);
+
+// One named clip-plane section, as returned by SectionBrepByPlanes() below -
+// `plane_index` is this section's position in the caller-supplied `planes`
+// list (so a caller can tell which of several independent, differently-
+// oriented clip planes produced it, the same way BrepContourSection::offset
+// identifies which parallel station ContourBrep() produced one from).
+struct BrepMultiPlaneSection {
+  int plane_index = -1;
+  std::vector<BrepPlaneIntersection> hits;
+};
+
+// Multiple independent, arbitrarily-oriented clip-plane sections of a whole
+// B-rep in one call - the "ClippingSections" half of PARITY_MAP.md's own
+// "Plane sections / contours of surfaces and B-reps (Section, Contour,
+// ClippingSections)" bullet, the one gap left after IntersectBrepByPlane()
+// closed "Section" (one plane) and ContourBrep() closed "Contour" (a family
+// of PARALLEL planes at even spacing). Rhino's own ClippingPlane objects are
+// not parallel siblings of one base plane - each is independently placed and
+// oriented by the user - so this takes a plain list of planes instead of a
+// base plane + spacing: each entry is run through IntersectBrepByPlane()
+// completely independently (no shared bounding-box precomputation across
+// planes, since two clip planes need not even be close to each other), and a
+// plane producing zero hits is dropped rather than returned empty, the same
+// convention ContourBrep() already uses. `plane_index` records the entry's
+// own position in `planes` (not a compacted output index), so a caller
+// matching sections back to named clip-plane objects does not have to
+// re-derive which input plane produced which output. An empty `planes` list
+// returns empty outright; an individual invalid plane is simply skipped
+// (IntersectBrepByPlane()'s own `!plane.IsValid()` guard already returns no
+// hits for it) rather than failing the whole call. The returned hatching
+// Rhino's own ClippingSections draws is an app-level display concern, not a
+// kernel geometry one, and stays out of scope here - this returns exact
+// section CURVES only, the same honest curves-not-fills scope
+// IntersectBrepByPlane()/ContourBrep() already have.
+std::vector<BrepMultiPlaneSection> SectionBrepByPlanes(const ON_Brep& b, const std::vector<ON_Plane>& planes, const IntersectOptions& opt);
 
 // Face-vs-face crossing test WITHIN a single B-rep - not through shared
 // topology (that is Brep::Check()'s own SelfIntersectingLoop/
@@ -627,10 +664,18 @@ std::vector<SurfaceTangentContact> FindSurfaceTangentContacts(const ON_Surface& 
 // re-seeded on failure - identical discipline to
 // IntersectCurveSurfaceOverlap()'s own per-sample projection), and every
 // maximal 4-connected run of on-`b` grid cells becomes one region, reported
-// as that run's own axis-aligned (u, v) bounding box in `a`'s domain (NOT an
-// exact boundary polygon - the same "as precise as the sampling resolution"
-// honesty IntersectCurveSurfaceOverlap() already discloses for its own
-// span endpoints, one dimension up). `entire_surface` is true when every
+// as that run's own axis-aligned (u, v) bounding box in `a`'s domain - NOT
+// an exact boundary polygon (a genuinely concave or multi-lobe coincident
+// patch is still only ever reported as its enclosing rectangle). Each of
+// the box's own four extents IS bisection-tightened, though, the same
+// RefineBoundary() idea IntersectCurveSurfaceOverlap() uses one dimension
+// down: 4-connectivity guarantees a genuine off-`b` neighbour just past
+// each extent along its own axis (if that neighbour were on-`b` too, it
+// would already be 4-connected into this very region, and the extent would
+// already have moved past it), so each of u0/u1/v0/v1 bisects against that
+// neighbour, along a representative transect at the grid line where the
+// extent was reached, down to machine precision rather than stopping at
+// the grid's own sampling pitch. `entire_surface` is true when every
 // sampled grid point across `a`'s WHOLE domain lies on `b` (the two surfaces
 // coincide everywhere `a` is defined, not just within this region's own
 // bounding box). A single isolated on-`b` grid cell with no on-`b` neighbour
@@ -644,6 +689,44 @@ struct SurfaceOverlapRegion {
   bool entire_surface = false;
 };
 std::vector<SurfaceOverlapRegion> IntersectSurfacesOverlap(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt);
+
+// The exact closed-form plane/sphere SSX - PARITY_MAP.md's own "Analytic/
+// analytic SSX closed forms (plane/plane, plane/cylinder, cylinder/cylinder,
+// plane/sphere, cone, torus)" bullet named plane/sphere directly as one of
+// the still-missing pairs: "No public analytic-SSX API, and no plane/sphere,
+// cone or torus closed form (the only general path is the mesh-seeded
+// IntersectSurfaces)." A plane and a sphere meet in, at most, one circle -
+// this solves that true geometric fact directly (the sphere center's signed
+// distance `d` from the plane via ON_Plane::DistanceTo(), the circle's own
+// center at the center's own projection onto the plane, radius
+// sqrt(r^2 - d^2)) rather than mesh-seeding IntersectSurfaces() and
+// Newton-polishing a chain of approximate points through an exact relation
+// that already has a one-line closed form. Degenerates honestly at both
+// ends: `|d| > r + tolerance` is a genuine miss (`empty == true`); `|d|`
+// within `tolerance` of `r` is a single tangent POINT, not a
+// zero-or-negative-radius "circle" (`tangent == true`, only `point` is
+// meaningful); otherwise the real circle is built directly as an ON_Circle
+// in a plane parallel to `plane` (same xaxis/yaxis, origin at the center's
+// projection) and converted to its own NURBS form via
+// ON_Circle::GetNurbForm(), the same exact-conversion primitive
+// Brep::Sphere()/Cone()/Torus() already rely on elsewhere in this kernel.
+// Still honestly scoped: only this one analytic pair (plane/sphere) is
+// closed by this function - plane/cylinder, cylinder/cylinder, plane/cone,
+// and plane/torus remain exactly as unaddressed as this bullet's own prior
+// evidence already named them (those closed forms still exist only inside
+// BooleanCombineMixed's own private splitters, not as a public API), and
+// this does not replace IntersectSurfaces() for a plane/sphere pair that
+// arrives as two generic ON_Surface references with no sphere-ness known
+// to the caller - a caller has to already know it is holding an ON_Sphere
+// to call this at all.
+struct PlaneSphereIntersection {
+  bool empty = true;     // true: the plane and sphere do not meet at all (|d| > r + tolerance)
+  bool tangent = false;  // true: a single tangent point only (|d| within tolerance of r); only `point` is meaningful then
+  Point3d point;         // the tangent point - meaningful only when tangent == true
+  ON_Circle circle;      // the intersection circle - meaningful only when !empty && !tangent
+  ON_NurbsCurve curve;   // circle's own NURBS form (ON_Circle::GetNurbForm) - meaningful only when !empty && !tangent
+};
+PlaneSphereIntersection IntersectPlaneSphere(const ON_Plane& plane, const ON_Sphere& sphere, double tolerance);
 
 // --- numerical helpers ------------------------------------------------------
 

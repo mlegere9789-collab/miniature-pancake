@@ -27,11 +27,12 @@
 // engine's own output_/print_buffer_ from two threads at once; the thread
 // only exists to get a real suspend point, not for parallelism. The GIL is
 // released (py::gil_scoped_release) for the duration of that block so nothing
-// is ever left holding it while idle. Scope: dino8.GetPoint(),
-// dino8.GetString(), dino8.GetReal() and dino8.GetInteger() are wired up
-// this way (mirroring rs.GetPoint/rs.GetString/rs.GetReal/rs.GetInteger);
-// rs.GetObjects-equivalent remains unported - a real but narrower gap than
-// "no interactive prompts at all".
+// is ever left holding it while idle. Scope: dino8.GetPoint(), dino8.GetString(),
+// dino8.GetReal(), dino8.GetInteger(), dino8.GetObject() and dino8.GetObjects()
+// are all wired up this way now (mirroring rs.GetPoint/rs.GetString/
+// rs.GetReal/rs.GetInteger/rs.GetObject/rs.GetObjects) - see WaitForNumber/
+// WaitForObjects below, the same suspend/resume shape as WaitForPoint/
+// WaitForText.
 #pragma once
 
 #include <condition_variable>
@@ -77,15 +78,18 @@ class PythonEngine {
   bool Suspended() const;
   const ScriptRequest& Request() const { return request_; }
 
-  // Resumes a suspended script with the point/text/number it asked for, or
-  // with "Enter/nothing given" (ResumeNil - dino8.GetPoint()/dino8.GetString()/
-  // dino8.GetReal()/dino8.GetInteger() then return None, unless the call had
-  // a default - see WaitForText/WaitForNumber). Each blocks until the script
-  // next finishes or suspends again, exactly like Start(), and returns the
-  // same way. False if nothing was suspended.
+  // Resumes a suspended script with the point/text/number/objects it asked
+  // for, or with "Enter/nothing given" (ResumeNil - dino8.GetPoint()/
+  // dino8.GetString()/dino8.GetReal()/dino8.GetInteger() then return None,
+  // unless GetString/GetReal/GetInteger had a default - see WaitForText/
+  // WaitForNumber; dino8.GetObjects()'s own "nothing given" is ResumeObjects
+  // with an empty list, not ResumeNil - see WaitForObjects). Each blocks
+  // until the script next finishes or suspends again, exactly like Start(),
+  // and returns the same way. False if nothing was suspended.
   bool ResumePoint(kernel::Point3d p);
   bool ResumeText(const std::string& text);
   bool ResumeNumber(double v);
+  bool ResumeObjects(const std::vector<ObjectId>& ids);
   bool ResumeNil();
   void Abort();  // Esc: cancel the suspended script, it stops with a RuntimeError the script could catch (uncaught, prints "Script cancelled: ...")
 
@@ -119,25 +123,37 @@ class PythonEngine {
   struct NumberWait {
     bool got_number = false;
     bool cancelled = false;
-    double number = 0;
+    double value = 0.0;
+  };
+  struct ObjectsWait {
+    bool cancelled = false;
+    std::vector<ObjectId> ids;  // empty: Enter with nothing selected (GetObjects) or no object (GetObject)
   };
   // Called only from the worker thread, by the embedded module's GetPoint/
-  // GetString/GetReal/GetInteger bindings (PyGetPoint/PyGetString/PyGetReal/
-  // PyGetInteger, in the .cpp): records the prompt, wakes anyone waiting in
-  // Start()/Resume*() on the UI thread, and blocks until
-  // ResumePoint/ResumeText/ResumeNumber/ResumeNil/Abort supplies an answer.
+  // GetString bindings (PyGetPoint/PyGetString, in the .cpp): records the
+  // prompt, wakes anyone waiting in Start()/Resume*() on the UI thread, and
+  // blocks until ResumePoint/ResumeText/ResumeNil/Abort supplies an answer.
   PointWait WaitForPoint(const std::string& prompt);
   // `default_text`, if set, is what a bare Enter on the command line
   // supplies (CommandEngine.cpp routes it straight to OnText instead of
   // OnEnter - see Command::WantText) - so ResumeNil here only means no
   // default was given either, matching rs.GetString(prompt) pushing nil.
   TextWait WaitForText(const std::string& prompt, const std::optional<std::string>& default_text);
-  // Mirrors WaitForText above for dino8.GetReal()/dino8.GetInteger() -
-  // `is_integer` only affects rounding (see ResumeNumber), the suspend/
-  // resume mechanics are identical. `default_number`, if set, is what a
-  // bare Enter on the command line supplies (Command::WantNumber), same
-  // relationship WaitForText's own `default_text` has to Command::WantText.
-  NumberWait WaitForNumber(const std::string& prompt, const std::optional<double>& default_number, bool is_integer);
+  // Mirrors WaitForText above for dino8.GetReal()/dino8.GetInteger() (the
+  // same ScriptWant::Number/Integer distinction LuaEngine.cpp's rs_GetReal/
+  // rs_GetInteger already set on ScriptRequest - see ResumeNumber, which
+  // pushes the raw double either way, matching LuaEngine::ResumeNumber's own
+  // integer-rounding happening only at the Lua-push site).
+  NumberWait WaitForNumber(const std::string& prompt, std::optional<double> default_number, bool is_integer);
+  // Mirrors WaitForPoint/WaitForText for dino8.GetObject()/dino8.GetObjects().
+  // `single_object` is PyGetObject's own request (mirroring LuaEngine.cpp's
+  // GetObjectsImpl(single=true)): WaitForObjects itself always returns every
+  // id CommandEngine resolved (ResumeObjects is handed the full selection,
+  // same as LuaEngine::ResumeObjects) - PyGetObject/PyGetObjects (the .cpp)
+  // take the first id or the whole list respectively, exactly like
+  // LuaEngine.cpp's rs_GetObject/rs_GetObjects read ids.front()/the whole
+  // table from the identical ScriptRequest.single_object flag.
+  ObjectsWait WaitForObjects(const std::string& prompt, int min_objects, bool single_object);
 
  private:
   enum class State { Idle, Running, Suspended, Finished };
@@ -161,7 +177,8 @@ class PythonEngine {
   bool resume_is_value_ = false;  // false means ResumeNil (Enter/nothing given), not a real point/text/number answer
   kernel::Point3d resume_point_;
   std::string resume_text_;
-  double resume_number_ = 0;
+  double resume_number_ = 0.0;
+  std::vector<ObjectId> resume_ids_;  // set directly by ResumeObjects, read by WaitForObjects regardless of resume_is_value_
   bool abort_requested_ = false;
   bool final_ok_ = true;
   bool cancelled_ = false;  // set by WaitForPoint right before throwing, read back in ThreadMain's catch

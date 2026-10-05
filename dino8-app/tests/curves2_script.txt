@@ -172,6 +172,25 @@ ArcBlend
 SelLast
 List
 SelNone
+# --- Blend Continuity=G3: the same two-arc pair as just above, now through
+# kernel::NurbsCurve::BlendCurves()'s own continuity=3 path - a degree-7
+# septic Hermite blend matching position/tangent/curvature AND third
+# derivative at both ends, the genuine new capability neither BlendCrv nor
+# Blend could reach at all before this wiring (both app commands used to
+# build their own inline cubic/quintic Hermite math directly, capped at
+# G2) - PARITY_MAP.md's own disclosed "BlendCrvCommand/BlendCommand...
+# completely untouched... app wiring... a separate increment" gap.
+SelAll
+Hide
+Arc 0,0,0 10,0,0 10,10,0
+Arc 30,10,0 30,20,0 20,20,0
+Blend
+Continuity=G3
+10,10,0
+30,20,0
+SelLast
+List
+SelNone
 # --- Domain: report, then actually set a new domain
 SelAll
 Hide
