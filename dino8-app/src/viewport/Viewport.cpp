@@ -130,8 +130,10 @@ Color Mix(Color a, Color b, float t) {
 }
 
 const Color kMonochromeFillColor = Color::FromBytes(200, 200, 205);
-
-const Color kPenArcticFillColor = Color::FromBytes(245, 245, 245);  // same tone ModeStyle::force_white uses
+// Pen/Arctic's shared flat fill (ModeStyle::force_white, both viewport-wide
+// and per-object via SetObjectDisplayMode Pen/Arctic below) - the two modes
+// differ only in `lit`, not in this colour.
+const Color kForceWhiteFillColor = Color::FromBytes(245, 245, 245);
 
 // SetObjectDisplayMode Ghosted/X-Ray/Monochrome/Pen/Arctic: an object
 // carrying one of these overrides always fills at that mode's own fixed
@@ -147,7 +149,7 @@ float EffectiveFillAlpha(const SceneObject& o, float viewport_alpha) {
   if (o.force_ghosted) return kGhostedFillAlpha;
   if (o.force_xray) return kXRayFillAlpha;
   if (o.force_monochrome) return kMonochromeFillColor.a;
-  if (o.force_pen || o.force_arctic) return kPenArcticFillColor.a;
+  if (o.force_pen || o.force_arctic) return kForceWhiteFillColor.a;
   return viewport_alpha;
 }
 
@@ -1068,8 +1070,8 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       // same mode-agnostic way the Ghosted/X-Ray overrides already win on
       // alpha.
       if (o.force_monochrome) c = kMonochromeFillColor;
-      else if (o.force_pen || o.force_arctic) c = kPenArcticFillColor;
-      else if (style.force_white) c = Color::FromBytes(245, 245, 245);
+      else if (o.force_pen || o.force_arctic) c = kForceWhiteFillColor;
+      else if (style.force_white) c = kForceWhiteFillColor;
       else if (style.monochrome) c = kMonochromeFillColor;
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
       if (o.selected) c = Mix(c, kSelectionColor, 0.55f);
@@ -1114,9 +1116,10 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       }
       // A Monochrome/Pen/Arctic-tagged object skips Rendered mode's
       // material/texture shading entirely and falls through to the same
-      // flat draw a non-Rendered viewport uses (lit or not - see the `lit`
-      // computation below), just like Ghosted/X-Ray skip it for their own
-      // fixed-alpha fill below (via the transparent-sort branch).
+      // flat draw a non-Rendered viewport uses (lit per-object for Arctic,
+      // always unlit for Pen, `style.lit` otherwise), just like Ghosted/
+      // X-Ray skip it for their own fixed-alpha fill below (via the
+      // transparent-sort branch).
       if (rendered && !o.force_monochrome && !o.force_pen && !o.force_arctic) {
         const Material m = doc.MaterialFor(o);
         if ((m.transparency > 0.001f || o.force_ghosted || o.force_xray) && !ctx.arctic) {
@@ -1162,7 +1165,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       if (d.triangles.empty()) continue;
       Color c = Color::FromBytes(205, 207, 212);
       if (o.force_monochrome) c = kMonochromeFillColor;
-      else if (o.force_pen || o.force_arctic) c = kPenArcticFillColor;
+      else if (o.force_pen || o.force_arctic) c = kForceWhiteFillColor;
       else if (!o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
       if (o.selected) c = Mix(c, kSelectionColor, 0.55f);

@@ -240,7 +240,10 @@ Viewport::FrameContext Application::MakeFrameContext() {
   // SceneObject has one shared display cache, not one per viewport, so a
   // viewport zoomed in close that isn't the *active* one must still be
   // able to ask for its own finer resolution rather than being silently
-  // capped at whatever the active viewport happens to want).
+  // capped at whatever the active viewport happens to want). Limited to
+  // *visible* viewports only (a maximized layout's hidden ones don't need
+  // their own resolution honoured until they are shown again, at which
+  // point EnsureAdaptiveDisplay rebuilds on demand anyway).
   std::vector<double> viewport_pixel_sizes;
   for (const auto& vp : viewports_) if (vp->Visible()) viewport_pixel_sizes.push_back(vp->ZoomPixelSize());
   ctx.lod_scale = FinestLodScale(viewport_pixel_sizes);

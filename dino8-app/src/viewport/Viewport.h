@@ -188,7 +188,9 @@ class Viewport {
     // DrawObjects this frame - not recomputed per viewport - so all open
     // viewports tessellate a given object identically and never fight over
     // its one shared SceneObject display cache by requesting different
-    // resolutions in the same frame. 1.0 (its default) means no scaling.
+    // resolutions in the same frame, while still never landing coarser
+    // than any one of them actually needs. 1.0 (its default) means no
+    // scaling.
     double lod_scale = 1.0;
     // App-wide surface analysis applied to objects whose own `analysis`
     // mode is None (null or mode None = plain shading).

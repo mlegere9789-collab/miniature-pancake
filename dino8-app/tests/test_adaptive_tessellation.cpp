@@ -74,6 +74,7 @@ int main() {
   // the active viewport's own, possibly much coarser, zoom wanted).
   Check(FinestLodScale({}) == 1.0, "no open viewports falls back to no scaling");
   Check(Near(FinestLodScale({0.1}), 1.0), "a single viewport at the reference zoom scales by exactly 1.0, same as before this existed");
+  Check(Near(FinestLodScale({0.1}), LodScaleForPixelSize(0.1)), "a single viewport matches the plain single-viewport call exactly");
   {
     // Two viewports, one zoomed in (0.01 -> a fine scale), one zoomed out
     // (1.0 -> a coarse scale): the combined result must be the FINE one -
@@ -84,6 +85,8 @@ int main() {
     Check(Near(combined, LodScaleForPixelSize(0.01)), "the finer of two open viewports' own scales wins, not the coarser one");
     Check(combined < LodScaleForPixelSize(1.0), "the combined scale is strictly finer than the zoomed-out viewport's own scale alone");
   }
+  Check(Near(FinestLodScale({0.2, 0.05, 1.0}), LodScaleForPixelSize(0.05)),
+        "three viewports at different zoom pick the most-zoomed-in (smallest pixel_size) one's own scale");
   {
     // Order must not matter - this is a plain minimum, not "whichever
     // viewport happens to be first/active".
@@ -91,6 +94,14 @@ int main() {
           "the combined scale does not depend on viewport order");
   }
   Check(Near(FinestLodScale({0.1, 0.1, 0.1}), 1.0), "every open viewport at the same zoom still scales by exactly 1.0");
+  // A viewport reporting a degenerate pixel_size (should never happen, but
+  // must never make the combined result COARSER than a real, valid open
+  // viewport needs - LodScaleForPixelSize's own 1.0 fallback for a bad
+  // entry can only ever pull the finest-of-all-entries minimum down or
+  // leave it unchanged, never push it up past a real entry's own need).
+  Check(FinestLodScale({0.0, 0.3, -5.0}) <= LodScaleForPixelSize(0.3),
+        "degenerate entries never make the combined scale coarser than a real open viewport's own need");
+  Check(FinestLodScale({0.0, -1.0}) == 1.0, "every entry degenerate falls back to no scaling, same as an empty list would");
 
   if (failures) std::printf("%d FAILED\n", failures);
   else std::printf("all passed\n");
