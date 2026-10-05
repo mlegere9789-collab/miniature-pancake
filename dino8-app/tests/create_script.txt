@@ -133,6 +133,35 @@ SelPt
 SelAll
 Delete
 @expect_objects 0
+# --- Divide Mode=SegmentLength: a length-40 line divided by segment
+# length 10 lands on the same 5 points Divide 4 (count-based) gives above,
+# since 40 / 10 is exactly 4 whole segments - proving the length-based
+# mode reaches NurbsCurve::DivideByLength, not just DivideByCount again.
+Line 0,0,0 40,0,0
+SelLast
+Divide Mode=SegmentLength 10
+SelNone
+SelPt
+@expect_selected 5
+SelAll
+Delete
+@expect_objects 0
+# --- Divide Mode=SegmentLength with a remainder: segment length 7 on the
+# same 40-length line leaves a shorter final stretch uncovered - floor(40/7)
+# = 5 whole steps from the start (0,7,14,21,28,35) PLUS the curve's own far
+# end (40, verified via List: the actual points are exactly these 7, not 6 -
+# the far end is always included here too, same as Mode=NumberOfSegments,
+# even though the last segment (35 to 40) is only 5 units, shorter than the
+# requested 7).
+Line 0,0,0 40,0,0
+SelLast
+Divide Mode=SegmentLength 7
+SelNone
+SelPt
+@expect_selected 7
+SelAll
+Delete
+@expect_objects 0
 # --- ClosestPt: find the closest point on a selected line to a test point
 Line 0,0,0 10,0,0
 SelLast
