@@ -238,6 +238,62 @@ class Brep {
                                  bool exact_clip = false,
                                  std::vector<std::vector<Point2d>> hole_loops_uv = {});
 
+  // The genuine-topology sibling of TrimmedPlanarFace() above, the same
+  // "promote an existing FromPlanarFaces()-shaped construction into its
+  // own kernel entry point" move BoxWelded() already made for Box() -
+  // closing one more of the five still-partial cases "Genuine topology
+  // produced by every constructor/primitive" names (Sphere()/Torus()/
+  // FromSurface() stay surface-only; a curved or single-surface primitive
+  // can't go through FromPlanarFaces() at all).
+  //
+  // `surface` must report NurbsSurface::IsPlanar() (true for every
+  // TrimmedPlanarFace() caller in practice, since the method's whole
+  // point - unlike FromSurface() - is a flat trimmed panel); throws
+  // std::invalid_argument otherwise, since a curved surface forced
+  // through this path would silently build a flat bilinear stand-in for
+  // it instead of the real curved shape. `trim_loop_uv` is evaluated via
+  // surface.PointAt(u, v) into a real 3D polygon and handed to
+  // FromPlanarFaces() - so, unlike TrimmedPlanarFace() itself, this has no
+  // exact_clip parameter of its own: Tessellate()'s own ResolveFace()
+  // derives trims from the real ON_BrepLoop this builds (there is no side
+  // table entry for this face) and sets exact_clip true automatically
+  // whenever the face has no holes (ResolveFace()'s own "out.exact_clip =
+  // !out.outer.empty() && out.holes.empty()" rule) - so a hole-free result
+  // tessellates via real boundary clipping, not the whole-cell
+  // approximation TrimmedPlanarFace()'s own exact_clip=false default
+  // uses; one WITH holes falls back to the same whole-cell path
+  // TrimmedPlanarFace()'s own hole_loops_uv already requires, for the
+  // identical reason (Sutherland-Hodgman clips one convex region, not a
+  // region with a hole subtracted). The result has real shared vertices/
+  // edges on its own boundary: raw().IsValid() reports true for it in
+  // isolation the same way SplitDisjointPieces()' own doc comment
+  // describes for any single FromPlanarFaces() face, and FacesOfEdge()/
+  // EdgesOfVertex() work on it; it is of course still open (a trimmed
+  // panel is a sheet, not a solid), so raw().IsSolid() is false, same as
+  // every other single-face Brep this kernel builds.
+  //
+  // `hole_loops_uv`, if non-empty, are additional closed polygons in the
+  // same (u, v) space, each punched as a genuine ON_BrepLoop::inner loop
+  // via AddHoleLoop() (see that method's own doc comment) rather than
+  // TrimmedPlanarFace()'s own side-table subtraction - a REAL topological
+  // hole, with its own real vertices/edges, not just a tessellation-time
+  // polygon. Each is evaluated into 3D the same way the outer loop is,
+  // built into a closed Brep::WireBody() of degree-1 NurbsCurve edges
+  // (one per polygon side, the same construction MergeCoplanarFaces()'
+  // own hole-restoration path already uses), then handed to AddHoleLoop()
+  // in order - so AddHoleLoop()'s own rules apply directly: a hole that
+  // properly crosses the outer boundary or another hole, or that nests
+  // inside or around one already punched, throws std::invalid_argument
+  // (AddHoleLoop()'s own refusal, surfaced here rather than swallowed),
+  // leaving no partial result.
+  //
+  // Throws std::invalid_argument if `trim_loop_uv` or any entry of
+  // `hole_loops_uv` has fewer than 3 points (the same check
+  // TrimmedPlanarFace() itself makes for its own outer loop).
+  static Brep TrimmedPlanarFaceWelded(const NurbsSurface& surface,
+                                       const std::vector<Point2d>& trim_loop_uv,
+                                       std::vector<std::vector<Point2d>> hole_loops_uv = {});
+
   // ------------------------------------------------------------------
   // Sweep-class factories (Parasolid "sweep/spin/loft/pipe" class) -
   // implemented in src/sweep.cpp. Every one of them builds REAL
