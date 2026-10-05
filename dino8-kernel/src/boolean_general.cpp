@@ -4611,6 +4611,56 @@ std::pair<Brep, Brep> SplitBrepByPlane(const Brep& target, Vector3d plane_normal
   return {std::move(inside), std::move(outside)};
 }
 
+std::vector<Brep> SplitBrepByManyPlanes(const Brep& target, Vector3d plane_normal,
+                                         const std::vector<double>& plane_offsets, double tolerance) {
+  if (target.raw().m_F.Count() == 0) {
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "SplitBrepByManyPlanes",
+                                 "dino8::kernel::SplitBrepByManyPlanes: target has no faces");
+  }
+  if (plane_offsets.empty()) {
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperandGroup, "SplitBrepByManyPlanes",
+                                 "dino8::kernel::SplitBrepByManyPlanes: plane_offsets is empty");
+  }
+  Vector3d n = plane_normal;
+  if (!n.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::SplitBrepByManyPlanes: plane_normal must be non-zero");
+  }
+  if (!(tolerance > 0.0)) {
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "SplitBrepByManyPlanes",
+                                 "dino8::kernel::SplitBrepByManyPlanes: tolerance must be positive");
+  }
+
+  std::vector<double> sorted_offsets = plane_offsets;
+  std::sort(sorted_offsets.begin(), sorted_offsets.end());
+  // Two offsets within `tolerance` of each other are deduplicated, not just
+  // harmless redundancy: a real pitfall found while testing this, not
+  // assumed - cutting `remainder` a second time at (near-)its own existing
+  // flat boundary face is a genuinely degenerate coincident-plane cut, and
+  // BooleanCombineGeneral() (via SplitBrepByPlane()) throws its own "an
+  // edge is claimed by 3 or more fragment loops" refusal on it rather than
+  // cleanly returning an empty slab the way a well-separated offset would.
+  // Collapsing near-duplicates up front avoids ever attempting that cut at
+  // all, which is also the semantically correct answer: a slice boundary
+  // at the same location twice can never produce a second real slab.
+  std::vector<double> offsets;
+  for (double offset : sorted_offsets) {
+    if (offsets.empty() || offset - offsets.back() > tolerance) offsets.push_back(offset);
+  }
+
+  std::vector<Brep> slabs;
+  Brep remainder = target;
+  for (double offset : offsets) {
+    // Peel off everything strictly below this offset as one finished slab
+    // - every remaining offset is >= this one (ascending order), so
+    // nothing left in `sorted_offsets` can ever cut it further.
+    auto [above, below] = SplitBrepByPlane(remainder, n, offset, tolerance);
+    if (below.raw().m_F.Count() > 0) slabs.push_back(std::move(below));
+    remainder = std::move(above);
+  }
+  if (remainder.raw().m_F.Count() > 0) slabs.push_back(std::move(remainder));
+  return slabs;
+}
+
 // --- MakeHole()/MakeCounterboreHole()/MakeCountersinkHole() ------------
 
 namespace {

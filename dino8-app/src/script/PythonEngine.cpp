@@ -1036,14 +1036,10 @@ py::object PyGetString(const std::string& prompt, py::object default_text) {
   return py::none();
 }
 
-// dino8.GetReal(prompt, default)/dino8.GetInteger(prompt, default): mirror
-// rs.GetReal/rs.GetInteger - suspend the running script until a number is
-// typed on the command line (or picked via the default on a bare Enter),
-// or return `default` (None if not given) otherwise. Same worker-thread
-// suspend mechanism as PyGetPoint/PyGetString above; `is_integer` only
-// changes the ScriptRequest's own want/prompt handling on the command-line
-// side (WaitForNumber) and how the resumed value is rounded here - the
-// PythonEngine thread itself has no separate "integer" state to track.
+// dino8.GetReal(prompt, default_value): mirrors rs.GetReal - suspends the
+// running script until a number is typed on the command line, or returns
+// `default_value` (default None) if Enter is pressed with nothing typed.
+// See PyGetPoint/PythonEngine.h for how the suspend/resume works.
 py::object PyGetReal(const std::string& prompt, py::object default_value) {
   if (!g_engine) throw std::runtime_error("GetReal: no script is running");
   std::optional<double> def;
@@ -1053,6 +1049,9 @@ py::object PyGetReal(const std::string& prompt, py::object default_value) {
   return py::none();
 }
 
+// dino8.GetInteger(prompt, default_value): mirrors rs.GetInteger - same
+// suspend as GetReal above, but rounds the resumed value to an int, the
+// same place LuaEngine::ResumeNumber's own rounding happens for rs.GetInteger.
 py::object PyGetInteger(const std::string& prompt, py::object default_value) {
   if (!g_engine) throw std::runtime_error("GetInteger: no script is running");
   std::optional<double> def;
@@ -1060,6 +1059,30 @@ py::object PyGetInteger(const std::string& prompt, py::object default_value) {
   PythonEngine::NumberWait w = g_engine->WaitForNumber(prompt, def, true);
   if (w.got_number) return py::cast(static_cast<long long>(std::llround(w.value)));
   return py::none();
+}
+
+// dino8.GetObject(prompt): mirrors rs.GetObject - suspends until exactly one
+// object is picked/selected, or returns None on Enter with nothing selected.
+// Returns a plain object id (matching every other dino8.doc.Objects.Add*/
+// rs.GetObject-style id-returning call) - dino8.doc.Objects.Find(id) wraps
+// it as a Dino8Object, same as everywhere else.
+py::object PyGetObject(const std::string& prompt) {
+  if (!g_engine) throw std::runtime_error("GetObject: no script is running");
+  PythonEngine::ObjectsWait w = g_engine->WaitForObjects(prompt, 1, true);
+  if (w.ids.empty()) return py::none();
+  return PyObjId(w.ids.front());
+}
+
+// dino8.GetObjects(prompt, minimum): mirrors rs.GetObjects - suspends until
+// objects are picked/selected, returning their ids (an empty list, never
+// None, on Enter with nothing selected - matching LuaEngine.cpp's
+// rs_GetObjects always pushing a table, even an empty one).
+py::object PyGetObjects(const std::string& prompt, int minimum) {
+  if (!g_engine) throw std::runtime_error("GetObjects: no script is running");
+  PythonEngine::ObjectsWait w = g_engine->WaitForObjects(prompt, std::max(0, minimum), false);
+  py::list out;
+  for (ObjectId id : w.ids) out.append(PyObjId(id));
+  return out;
 }
 
 }  // namespace
@@ -1202,14 +1225,22 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
         "Suspends the script until text is typed on the command line; returns default_text (None if not "
         "given) if Enter is pressed with nothing typed. Mirrors rs.GetString. Same suspend mechanism and "
         "the same compute-server caveat as GetPoint above.");
-  m.def("GetReal", &PyGetReal, py::arg("prompt") = std::string("Number"), py::arg("default") = py::none(),
-        "Suspends the script until a number is typed on the command line; returns default (None if not "
-        "given) if Enter is pressed with nothing typed. Mirrors rs.GetReal. Same suspend mechanism and "
+  m.def("GetReal", &PyGetReal, py::arg("prompt") = std::string("Number"), py::arg("default_value") = py::none(),
+        "Suspends the script until a number is typed on the command line; returns default_value (None if "
+        "not given) if Enter is pressed with nothing typed. Mirrors rs.GetReal. Same suspend mechanism and "
         "the same compute-server caveat as GetPoint above.");
-  m.def("GetInteger", &PyGetInteger, py::arg("prompt") = std::string("Integer"), py::arg("default") = py::none(),
-        "Suspends the script until an integer is typed on the command line; returns default (None if not "
-        "given, rounded to the nearest int otherwise) if Enter is pressed with nothing typed. Mirrors "
-        "rs.GetInteger. Same suspend mechanism and the same compute-server caveat as GetPoint above.");
+  m.def("GetInteger", &PyGetInteger, py::arg("prompt") = std::string("Integer"), py::arg("default_value") = py::none(),
+        "Suspends the script until an integer is typed on the command line; returns default_value (None if "
+        "not given) if Enter is pressed with nothing typed. Mirrors rs.GetInteger. Same suspend mechanism and "
+        "the same compute-server caveat as GetPoint above.");
+  m.def("GetObject", &PyGetObject, py::arg("prompt") = std::string("Select object"),
+        "Suspends the script until one object is picked/selected; returns its id, or None if Enter is "
+        "pressed with nothing selected. Mirrors rs.GetObject. Same suspend mechanism and the same "
+        "compute-server caveat as GetPoint above.");
+  m.def("GetObjects", &PyGetObjects, py::arg("prompt") = std::string("Select objects"), py::arg("minimum") = 1,
+        "Suspends the script until objects are picked/selected; returns their ids (an empty list, never "
+        "None, if Enter is pressed with nothing selected). Mirrors rs.GetObjects. Same suspend mechanism "
+        "and the same compute-server caveat as GetPoint above.");
   m.def("CommandHistory", &CommandHistory, "Every command-line history line so far, newline-separated.");
   m.def("ClearCommandHistory", &ClearCommandHistory, "Clears the command-line history.");
   m.def("Version", &Version, "The running Dino 8 version plus the embedded Python version.");
@@ -1426,10 +1457,14 @@ PythonEngine::TextWait PythonEngine::WaitForText(const std::string& prompt, cons
   return result;
 }
 
-// Mirrors WaitForText above, for dino8.GetReal()/dino8.GetInteger(). Checks
-// abort_requested_ up front for the same reason WaitForPoint/WaitForText do
-// - see WaitForPoint's own comment.
-PythonEngine::NumberWait PythonEngine::WaitForNumber(const std::string& prompt, const std::optional<double>& default_number, bool is_integer) {
+// Mirrors WaitForPoint/WaitForText above, for dino8.GetReal()/
+// dino8.GetInteger(). `is_integer` only decides whether the ScriptRequest
+// says Integer or Number (so CommandEngine's own command-line prompt text
+// and the Script Editor's status line read right); the resumed value itself
+// is always the raw double ResumeNumber was called with - PyGetInteger (the
+// .cpp) rounds it, mirroring LuaEngine::ResumeNumber's own rounding
+// happening only at the Lua-push site, not here.
+PythonEngine::NumberWait PythonEngine::WaitForNumber(const std::string& prompt, std::optional<double> default_number, bool is_integer) {
   std::unique_lock<std::mutex> lk(mu_);
   if (abort_requested_) {
     lk.unlock();
@@ -1457,6 +1492,52 @@ PythonEngine::NumberWait PythonEngine::WaitForNumber(const std::string& prompt, 
   } else if (resume_is_value_) {
     result.got_number = true;
     result.value = resume_number_;
+  }
+  state_ = State::Running;
+  lk.unlock();
+  cv_.notify_all();
+  if (result.cancelled) {
+    cancelled_ = true;
+    throw std::runtime_error("cancelled");
+  }
+  return result;
+}
+
+// Mirrors WaitForPoint/WaitForText above, for dino8.GetObject()/
+// dino8.GetObjects(). Unlike Point/Text/Number, "nothing given" (Enter with
+// an empty or insufficient selection) is itself a real answer - an empty
+// id list - not a separate ResumeNil path, so this reads resume_ids_
+// directly rather than branching on resume_is_value_ the way WaitForPoint/
+// WaitForText/WaitForNumber do (see ResumeObjects below, which always sets
+// resume_ids_ rather than ever calling the shared ResumeNil).
+PythonEngine::ObjectsWait PythonEngine::WaitForObjects(const std::string& prompt, int min_objects, bool single_object) {
+  std::unique_lock<std::mutex> lk(mu_);
+  if (abort_requested_) {
+    lk.unlock();
+    cancelled_ = true;
+    throw std::runtime_error("cancelled");
+  }
+  ScriptRequest r;
+  r.want = ScriptWant::Objects;
+  r.prompt = prompt;
+  r.min_objects = min_objects;
+  r.single_object = single_object;
+  request_ = r;
+  state_ = State::Suspended;
+  resume_ready_ = false;
+  lk.unlock();
+  cv_.notify_all();
+  lk.lock();
+  {
+    py::gil_scoped_release release;
+    cv_.wait(lk, [this] { return resume_ready_; });
+  }
+  resume_ready_ = false;  // see the matching comment in WaitForPoint above
+  ObjectsWait result;
+  if (abort_requested_) {
+    result.cancelled = true;
+  } else {
+    result.ids = resume_ids_;
   }
   state_ = State::Running;
   lk.unlock();
@@ -1585,6 +1666,17 @@ bool PythonEngine::ResumeNumber(double v) {
   return WaitUntilSuspendedOrFinished();
 }
 
+bool PythonEngine::ResumeObjects(const std::vector<ObjectId>& ids) {
+  if (!Suspended()) return false;
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    resume_ids_ = ids;
+    resume_ready_ = true;
+  }
+  cv_.notify_all();
+  return WaitUntilSuspendedOrFinished();
+}
+
 bool PythonEngine::ResumeNil() {
   if (!Suspended()) return false;
   {
@@ -1616,10 +1708,12 @@ bool PythonEngine::Running() const { return false; }
 bool PythonEngine::Suspended() const { return false; }
 PythonEngine::PointWait PythonEngine::WaitForPoint(const std::string&) { return {}; }
 PythonEngine::TextWait PythonEngine::WaitForText(const std::string&, const std::optional<std::string>&) { return {}; }
-PythonEngine::NumberWait PythonEngine::WaitForNumber(const std::string&, const std::optional<double>&, bool) { return {}; }
+PythonEngine::NumberWait PythonEngine::WaitForNumber(const std::string&, std::optional<double>, bool) { return {}; }
+PythonEngine::ObjectsWait PythonEngine::WaitForObjects(const std::string&, int, bool) { return {}; }
 bool PythonEngine::ResumePoint(kernel::Point3d) { return false; }
 bool PythonEngine::ResumeText(const std::string&) { return false; }
 bool PythonEngine::ResumeNumber(double) { return false; }
+bool PythonEngine::ResumeObjects(const std::vector<ObjectId>&) { return false; }
 bool PythonEngine::ResumeNil() { return false; }
 void PythonEngine::Abort() {}
 
