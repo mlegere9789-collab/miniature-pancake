@@ -328,6 +328,7 @@ c2check "TweenCurves: 3 curve(s) created" "TweenCurves interpolated between the 
 c2check "ArrayCrv: 6 object(s) placed" "ArrayCrv placed copies along the circle"
 c2check "best-fit line through 4 points" "LineThroughPt fitted a line"
 c2check "best-fit plane through 4 points" "PlaneThroughPt fitted a plane"
+c2check "knot removed (deviation 0) (2 control points)" "RemoveKnot now calls the kernel's real RemoveKnotAt() (exact round-trip, reported deviation), not RemoveKnotApprox's blind resample"
 c2check "MarkFoci: 1 point(s) added" "MarkFoci added the parabola's focus"
 c2check "0,5,0" "MarkFoci found the parabola focus (0,5,0) from curve geometry alone"
 c2check "MarkFoci: 2 point(s) added" "MarkFoci added both hyperbola foci"
@@ -3424,6 +3425,7 @@ crcheck "degree 1, 13 control points, non-rational, closed" "PolygonStar NumSide
 crcheck "Closest point 5,0,0 distance 5" "ClosestPt found the nearest point on the line"
 crcheck "degree 1 x 1, CVs 2 x 2" "Plane3Pt/SrfPt built flat 4-CV surfaces"
 crcheck "PointGrid: 3 x 4 grid of points" "PointGrid CountX=3 CountY=4 built a real, non-square grid, not the old hardcoded 5 x 5"
+crcheck "Divide: 1 curve(s) divided" "Divide (both NumberOfSegments and SegmentLength modes) printed a summary line"
 # Sketch: real continuous mouse-drag capture (Want::Drag), driven here via
 # create_script.txt's scripted drag-sample sequences (see CommandEngine's
 # FeedText Want::Drag case / FeedDragPolyline - the real mouse path lives in
@@ -6206,9 +6208,9 @@ if ! command -v curl >/dev/null 2>&1; then
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 8 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 10 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 8 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 10 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -6231,6 +6233,15 @@ else
     set +e
     RESP1="$(curl -s --max-time 10 -X POST --data 'rs.Command("Box 0,0,0 5,5,0 5")
 print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
+    # A real, if minimal, structured geometry wire format: narrows
+    # PARITY_MAP.md's own disclosed "no geometry (de)serialization format
+    # at all - a script gets and returns plain text" gap on both the
+    # response side (/run[/python]'s new Accept: application/json form)
+    # and the request/read side (GET /objects below) - taken right after
+    # RESP1 so the document holds exactly the one box it just built, with
+    # a known id/bounding box to check against.
+    RESP9="$(curl -s --max-time 10 -X POST -H 'Accept: application/json' --data 'print("hi")' "http://127.0.0.1:$SERVE_PORT/run")"
+    RESP10="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/objects")"
     CODE2="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP3="$(curl -s --max-time 10 -X POST --data 'rs.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP4="$(curl -s --max-time 10 -X POST --data 'import dino8
@@ -6262,6 +6273,9 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     CODE5="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'x' "http://127.0.0.1:$SERVE_PORT/run/nosuchroute")"
     set -e
     echo "$RESP1" | grep -q "^objects: 1$" && echo "ok   POST /run built a box over HTTP and read back its printed object count" || { echo "$RESP1"; echo "FAIL --serve POST /run did not report objects: 1"; fail=1; }
+    [ "$RESP9" = '{"ok":true,"output":["hi"]}' ] && echo "ok   POST /run with Accept: application/json returns a real structured {ok,output} response instead of plain print() text" || { echo "$RESP9"; echo "FAIL --serve POST /run Accept: application/json did not return the expected JSON body"; fail=1; }
+    echo "$RESP10" | grep -q '"type":"polysurface"' && echo "ok   GET /objects reports the box RESP1 just built as a real JSON object (type polysurface)" || { echo "$RESP10"; echo "FAIL --serve GET /objects did not report the box as a polysurface"; fail=1; }
+    echo "$RESP10" | grep -q '"min":\[0.000000,0.000000,0.000000\],"max":\[5.000000,5.000000,5.000000\]' && echo "ok   GET /objects reported the box's own real bounding box (0,0,0)-(5,5,5), not just a type/name/layer listing" || { echo "$RESP10"; echo "FAIL --serve GET /objects did not report the box's expected bounding box"; fail=1; }
     [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
     echo "$RESP3" | grep -q "compute error: script requires interactive input" && echo "ok   a script calling an interactive rs.Get* prompt is rejected instead of hanging the connection" || { echo "$RESP3"; echo "FAIL --serve interactive-prompt script was not rejected as expected"; fail=1; }
     if echo "$RESP4" | grep -q "DINO8_HAVE_PYTHON"; then
@@ -6280,7 +6294,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=8$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 8 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=10$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 10 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
     fi
   fi
 
