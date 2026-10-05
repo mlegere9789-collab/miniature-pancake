@@ -2955,6 +2955,135 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
 
 namespace {
 
+// Position + pure cross-boundary derivatives (up to order `continuity`)
+// of `s` along its own isoparametric edge where parameter `rail_dir`
+// varies and the OTHER parameter is fixed at `fixed_t` - the surface
+// analogue of curve.cpp's own (anonymous-namespace-private, so not
+// reusable across this translation unit boundary) `EvaluateBlendEnd`.
+// `der_array`'s layout for ON_Surface::Evaluate (opennurbs_evaluate_nurbs.h's
+// own doc comment: "Ds^i Dt^j is returned at n = stride*((i+j)*(i+j+1)/2
+// + j)") puts the PURE fixed-direction term of order k at block offset
+// k*(k+1)/2, plus j = k within that block when the fixed parameter is v
+// (rail_dir == 0, i.e. j indexes the Dt/v power), or j = 0 when the fixed
+// parameter is u (rail_dir == 1) - confirmed directly against that header
+// comment, not guessed. `flip` negates ODD orders only (BlendSurfaces()'s
+// own doc comment derives why), mirroring EvaluateBlendEnd's `reverse`.
+bool EvaluateSurfaceBlendEnd(const ON_Surface& s, int rail_dir, double rail_t, double fixed_t, bool flip,
+                             int continuity, Point3d& out_point, std::array<Vector3d, 3>& out_derivs) {
+  const double u = rail_dir == 0 ? rail_t : fixed_t;
+  const double v = rail_dir == 0 ? fixed_t : rail_t;
+  double der[3 * 10] = {0.0};
+  if (!s.Evaluate(u, v, continuity, 3, der)) return false;
+  out_point = Point3d(der[0], der[1], der[2]);
+  for (int k = 1; k <= continuity; ++k) {
+    const int j = rail_dir == 0 ? k : 0;
+    const int off = (k * (k + 1) / 2 + j) * 3;
+    Vector3d d(der[off + 0], der[off + 1], der[off + 2]);
+    if (flip && (k % 2 == 1)) d = -d;
+    out_derivs[static_cast<size_t>(k - 1)] = d;
+  }
+  return true;
+}
+
+// The exact same closed-form Hermite-Bezier control-point construction
+// NurbsCurve::BlendCurves() builds (curve.cpp) from one (position,
+// derivatives) pair at each end - duplicated here rather than shared
+// across the translation unit boundary, since that function's own
+// version is anonymous-namespace-private to curve.cpp (the same "each
+// file keeps its own copy of these small, already-proven helpers"
+// convention the app layer's cmd_fillet.cpp/cmd_srfedit.cpp already
+// follow for their own small object/face helpers). See BlendCurves()'s
+// own doc comment for the textbook forward/backward Bezier finite-
+// difference derivation this is lifted from verbatim.
+std::vector<Point3d> HermiteBlendRow(const Point3d& P0, const std::array<Vector3d, 3>& D0, const Point3d& P1,
+                                      const std::array<Vector3d, 3>& D1, int continuity) {
+  const int d = 2 * continuity + 1;
+  const double inv_d1 = 1.0 / static_cast<double>(d);
+  const double inv_d2 = 1.0 / static_cast<double>(d * (d - 1));
+  const double inv_d3 = 1.0 / static_cast<double>(d * (d - 1) * (d - 2));
+  std::vector<Point3d> ctrl(static_cast<size_t>(d) + 1);
+  ctrl[0] = P0;
+  if (continuity >= 1) ctrl[1] = ctrl[0] + D0[0] * inv_d1;
+  if (continuity >= 2) ctrl[2] = ctrl[1] + (ctrl[1] - ctrl[0]) + D0[1] * inv_d2;
+  if (continuity >= 3) ctrl[3] = ctrl[0] + 3.0 * (ctrl[2] - ctrl[1]) + D0[2] * inv_d3;
+
+  ctrl[static_cast<size_t>(d)] = P1;
+  if (continuity >= 1) ctrl[static_cast<size_t>(d - 1)] = ctrl[static_cast<size_t>(d)] - D1[0] * inv_d1;
+  if (continuity >= 2) {
+    ctrl[static_cast<size_t>(d - 2)] = ctrl[static_cast<size_t>(d - 1)] -
+                                        (ctrl[static_cast<size_t>(d)] - ctrl[static_cast<size_t>(d - 1)]) +
+                                        D1[1] * inv_d2;
+  }
+  if (continuity >= 3) {
+    ctrl[static_cast<size_t>(d - 3)] =
+        ctrl[static_cast<size_t>(d)] - 3.0 * (ctrl[static_cast<size_t>(d - 1)] - ctrl[static_cast<size_t>(d - 2)]) -
+        D1[2] * inv_d3;
+  }
+  return ctrl;
+}
+
+}  // namespace
+
+Result NurbsSurface::BlendSurfaces(const NurbsSurface& srf0, int dir0, bool at_max0, const NurbsSurface& srf1,
+                                    int dir1, bool at_max1, bool reverse_rail1, int continuity, int rows,
+                                    NurbsSurface& out) {
+  if (continuity < 1 || continuity > 3) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::BlendSurfaces: continuity must be 1 (G1), 2 (G2) or 3 (G3)");
+  }
+  if (dir0 < 0 || dir0 > 1 || dir1 < 0 || dir1 > 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::BlendSurfaces: dir0/dir1 must be 0 or 1");
+  }
+  if (rows < 2) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::BlendSurfaces: rows must be at least 2");
+  }
+  const ON_Surface& s0 = srf0.raw();
+  const ON_Surface& s1 = srf1.raw();
+  const ON_Interval rail_dom0 = s0.Domain(dir0);
+  const ON_Interval fixed_dom0 = s0.Domain(1 - dir0);
+  const double fixed_t0 = at_max0 ? fixed_dom0.Max() : fixed_dom0.Min();
+  const ON_Interval rail_dom1 = s1.Domain(dir1);
+  const ON_Interval fixed_dom1 = s1.Domain(1 - dir1);
+  const double fixed_t1 = at_max1 ? fixed_dom1.Max() : fixed_dom1.Min();
+  const bool flip0 = !at_max0;
+  const bool flip1 = !at_max1;
+
+  std::vector<ON_NurbsCurve> rowCurves;
+  rowCurves.reserve(static_cast<size_t>(rows));
+  for (int k = 0; k < rows; ++k) {
+    const double t = static_cast<double>(k) / static_cast<double>(rows - 1);
+    const double rail_t0 = rail_dom0.ParameterAt(t);
+    const double t1 = reverse_rail1 ? 1.0 - t : t;
+    const double rail_t1 = rail_dom1.ParameterAt(t1);
+
+    Point3d P0, P1;
+    std::array<Vector3d, 3> D0{}, D1{};
+    if (!EvaluateSurfaceBlendEnd(s0, dir0, rail_t0, fixed_t0, flip0, continuity, P0, D0) ||
+        !EvaluateSurfaceBlendEnd(s1, dir1, rail_t1, fixed_t1, flip1, continuity, P1, D1)) {
+      return Result::Failed;
+    }
+    const double scale = std::max(1.0, P0.DistanceTo(Point3d(0, 0, 0)));
+    if (P0.DistanceTo(P1) <= 1e-9 * scale) return Result::Failed;
+
+    const std::vector<Point3d> ctrl = HermiteBlendRow(P0, D0, P1, D1, continuity);
+    rowCurves.push_back(NurbsCurve::FromControlPoints(ctrl, 2 * continuity + 1).raw());
+  }
+
+  const char* caller = "BlendSurfaces";
+  const int q = std::min(3, rows - 1);
+  double period = 1.0;
+  const std::vector<double> params = SkinParameters(rowCurves, false, &period, caller);
+  std::unique_ptr<ON_NurbsSurface> skin;
+  if (q == 1 && rows == 2) {
+    skin = RuledBetween(rowCurves[0], rowCurves[1], 0.0, 1.0, caller);
+  } else {
+    skin = SkinSections(rowCurves, q, false, params, period, caller);
+  }
+  out.surface_ = *skin;
+  return Result::Ok;
+}
+
+namespace {
+
 // Piecewise-linear lookup over a (t, value) schedule, held flat at the
 // nearest endpoint's value outside the given range - the exact convention
 // PipeVariable()'s own radius_at() uses, shared here verbatim.
