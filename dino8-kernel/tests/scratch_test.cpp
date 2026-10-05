@@ -454,5 +454,80 @@ int main() {
       fflush(stdout);
     }
   }
+  // Debugging dino8-app's SplitBySheetCommand smoke test: a box built via
+  // ON_BrepBox (what the app's real "Box" command uses) cut by a flat
+  // Plane sheet throws "an edge is claimed by 3 or more fragment loops"
+  // from SplitBySheet, even though the kernel's own TestSplitBySheet* unit
+  // tests (which build the box via Brep::Box() instead) pass cleanly on an
+  // equivalent flat-sheet cut. Isolate whether this is ON_BrepBox's own
+  // structure, not the cut geometry.
+  {
+    ON_3dPoint corners[8] = {
+        ON_3dPoint(-2, -2, -2), ON_3dPoint(2, -2, -2), ON_3dPoint(2, 2, -2), ON_3dPoint(-2, 2, -2),
+        ON_3dPoint(-2, -2, 2), ON_3dPoint(2, -2, 2), ON_3dPoint(2, 2, 2), ON_3dPoint(-2, 2, 2),
+    };
+    ON_Brep* raw_box = ON_BrepBox(corners);
+    printf("=== ON_BrepBox + SplitBySheet repro ===\n"); fflush(stdout);
+    if (!raw_box) {
+      printf("ON_BrepBox returned nullptr\n"); fflush(stdout);
+    } else {
+      Brep box;
+      box.raw() = *raw_box;
+      // Exact grid order the app's own "Plane" command uses (cmd_create.cpp):
+      // {(u0,v0), (u1,v0), (u0,v1), (u1,v1)}, not the (u0,v0),(u0,v1),(u1,v0),(u1,v1)
+      // order tried first above.
+      std::vector<Point3d> grid = {Point3d(-3, -3, 0), Point3d(3, -3, 0), Point3d(-3, 3, 0), Point3d(3, 3, 0)};
+      NurbsSurface sheet_surf = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+      Brep sheet = Brep::FromSurface(sheet_surf);
+      printf("box: faces=%d valid=%d IsSolid=%d\n", box.FaceCount(), (int)box.raw().IsValid(), (int)box.raw().IsSolid());
+      fflush(stdout);
+      try {
+        auto [pos, neg] = SplitBySheet(box, sheet);
+        printf("SplitBySheet(ON_BrepBox) OK: pos faces=%d neg faces=%d\n", pos.FaceCount(), neg.FaceCount());
+      } catch (const std::exception& e) {
+        printf("SplitBySheet(ON_BrepBox) EXCEPTION: %s\n", e.what());
+      }
+      fflush(stdout);
+      // Compare against Brep::Box() with the identical corners/cut.
+      Brep box2 = Brep::Box(-2, -2, -2, 2, 2, 2);
+      printf("Brep::Box(): faces=%d valid=%d IsSolid=%d\n", box2.FaceCount(), (int)box2.raw().IsValid(), (int)box2.raw().IsSolid());
+      fflush(stdout);
+      try {
+        auto [pos2, neg2] = SplitBySheet(box2, sheet);
+        printf("SplitBySheet(Brep::Box()) OK: pos faces=%d neg faces=%d\n", pos2.FaceCount(), neg2.FaceCount());
+      } catch (const std::exception& e) {
+        printf("SplitBySheet(Brep::Box()) EXCEPTION: %s\n", e.what());
+      }
+      fflush(stdout);
+    }
+  }
+  {
+    Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+    std::vector<Point3d> grid;
+    for (int i = 0; i < 4; ++i) {
+      for (int j = 0; j < 4; ++j) {
+        const double x = -1.0 + (5.0 - -1.0) * i / 3.0;
+        const double y = -1.0 + (5.0 - -1.0) * j / 3.0;
+        const double z = 2.0 + ((i == 2 && j == 2) ? 0.6 : 0.0);
+        grid.push_back(Point3d(x, y, z));
+      }
+    }
+    NurbsSurface surf = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+    Brep sheet = Brep::FromSurface(surf);
+    printf("=== SplitBySheet curved-sheet repro ===\n"); fflush(stdout);
+    auto [pos, neg] = SplitBySheet(box, sheet);
+    printf("pos: faces=%d valid=%d\n", pos.FaceCount(), (int)pos.raw().IsValid()); fflush(stdout);
+    printf("neg: faces=%d valid=%d\n", neg.FaceCount(), (int)neg.raw().IsValid()); fflush(stdout);
+    for (int res : {16, 32, 64}) {
+      Mesh mp = TessellateGeneralBooleanClosedMesh(pos, res, res);
+      Mesh mn = TessellateGeneralBooleanClosedMesh(neg, res, res);
+      printf("GENERAL res=%d pos: closed=%d volume=%f  neg: closed=%d volume=%f\n", res,
+             (int)mp.IsClosedManifold(), mp.Volume(), (int)mn.IsClosedManifold(), mn.Volume());
+      fflush(stdout);
+      if (!mp.IsClosedManifold()) DiagnoseManifold("pos", pos, mp);
+      if (!mn.IsClosedManifold()) DiagnoseManifold("neg", neg, mn);
+      fflush(stdout);
+    }
+  }
   return 0;
 }

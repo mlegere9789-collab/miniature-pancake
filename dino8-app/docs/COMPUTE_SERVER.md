@@ -76,17 +76,16 @@ $ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer hunter2' --
 ## What this deliberately does not do
 
 - **No interactive prompts, over either language.** A script that calls
-  `rs.GetPoint`/`rs.GetObject`/etc. (Lua) or `dino8.GetPoint()` (Python, now
-  a real suspend/resume too - see `script/PythonEngine.h`) tries to suspend
-  and wait for a pick a synchronous HTTP request has no way to supply; the
-  server detects this (`app.Lua().Suspended()` / `app.Python().Suspended()`
-  right after `Start()` returns) and cancels the script (the same way
-  pressing Escape on an interactive `RunScript`/`RunPythonScript` would),
-  returning a `500` explaining why instead of hanging the connection open
-  forever. Python's other prompts (`rs.GetObject`/`rs.GetString`-equivalents)
-  remain entirely unported, so those simply aren't functions the module
-  defines - an `AttributeError`, same `500` status, but for a different
-  reason than the GetPoint case above.
+  `rs.GetPoint`/`rs.GetObject`/etc. (Lua) or `dino8.GetPoint()`/`GetString()`/
+  `GetReal()`/`GetInteger()`/`GetObject()`/`GetObjects()` (Python - all six
+  are a real suspend/resume now, see `script/PythonEngine.h`) tries to
+  suspend and wait for a pick a synchronous HTTP request has no way to
+  supply; the server detects this (`app.Lua().Suspended()` /
+  `app.Python().Suspended()` right after `Start()` returns) and cancels the
+  script (the same way pressing Escape on an interactive
+  `RunScript`/`RunPythonScript` would), returning a `500` explaining why
+  instead of hanging the connection open forever. Python has no remaining
+  unported prompt - every `rs.Get*`-equivalent now suspends the same way.
 - **No concurrency.** One connection is accepted and fully serviced (read
   request, run script, write response, close) before the next is even
   accepted - see `net/ComputeServer.h`'s `PollOnce`. A slow or malicious

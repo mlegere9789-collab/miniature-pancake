@@ -262,6 +262,81 @@ Continuity=Curvature
 SelLast
 List
 SelNone
+# --- BlendSrf: two genuinely independent, gap-separated faces (the facing
+# east/west faces of two separate boxes 10 units apart, each extracted) -
+# unlike VariableBlendSrf's own shared-corner-edge pick just above (where
+# both rails are actually the SAME physical box edge read through two
+# adjacent faces, so the exact construction below correctly rejects it as
+# degenerate - P0 == P1 at every t), this is the genuine gap-spanning case
+# BlendSrf exists for: each pick's own nearest boundary iso-edge is the
+# box's own TOP edge of the facing face, so the two rails are parallel,
+# 10 units apart, and never coincide. BlendSrfCommand now tries the exact
+# kernel::NurbsSurface::BlendSurfaces() Hermite-skin construction FIRST
+# here (both picks land on a genuine isoparametric boundary of their own
+# NurbsSurface - surface.h's own documented scope) ahead of the approximate
+# BuildBlendSurfaceG1/G2Adaptive fallback VariableBlendSrf still uses -
+# PARITY_MAP.md's own disclosed "kernel-only pass, no dino8-app command
+# calls this yet" gap for Surface-to-surface continuity blend. Three runs,
+# one per Continuity value, each on a fresh pair of boxes: Tangency (G1,
+# the default), Curvature (G2), and G3 - the genuine new capability neither
+# BlendSrf nor VariableBlendSrf could reach at all before this wiring,
+# since the app's own BuildBlendSurfaceG1/G2 cap out at G2.
+SelAll
+Hide
+Box 750,0,0 760,10,0 10
+ExtractSrf
+760,5,5
+Enter
+SelNone
+Box 770,0,0 780,10,0 10
+ExtractSrf
+770,5,5
+Enter
+SelNone
+BlendSrf
+760,5,10
+770,5,10
+SelLast
+List
+SelNone
+SelAll
+Hide
+Box 750,0,0 760,10,0 10
+ExtractSrf
+760,5,5
+Enter
+SelNone
+Box 770,0,0 780,10,0 10
+ExtractSrf
+770,5,5
+Enter
+SelNone
+BlendSrf
+Continuity=Curvature
+760,5,10
+770,5,10
+SelLast
+List
+SelNone
+SelAll
+Hide
+Box 750,0,0 760,10,0 10
+ExtractSrf
+760,5,5
+Enter
+SelNone
+Box 770,0,0 780,10,0 10
+ExtractSrf
+770,5,5
+Enter
+SelNone
+BlendSrf
+Continuity=G3
+760,5,10
+770,5,10
+SelLast
+List
+SelNone
 # --- FilletEdge on a solid cylinder's own flat-top rim (a full 360-degree
 # closed edge, one planar face + one cylindrical face) via the mesh
 # fallback: the exact B-rep trim only handles planar-planar adjacent
@@ -283,7 +358,7 @@ Enter
 SelAll
 Volume
 SelNone
-@expect_objects 41
+@expect_objects 56
 # --- FilletEdge Rho (exact conic fillet): kernel::FilletConvexEdgeConic
 # via the Rho option, on the same box-corner construction as the plain
 # FilletEdge/ChamferEdge cases above. At rho=0.5 the conic is the exact
