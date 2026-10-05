@@ -2989,7 +2989,61 @@ void TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan() {
     const ON_Interval d = bent.raw().Domain();
     const double corner_t = d.ParameterAt(0.5);  // FromControlPoints' clamped-uniform knots put the shared vertex at the curve's own domain midpoint
     Check(std::abs(bent_spans[0].t0 - d.Min()) < 1e-6, "the overlap span starts at the curve's own domain start");
-    Check(std::abs(bent_spans[0].t1 - corner_t) < 0.05, "the overlap span ends at (approximately) the polyline's own corner parameter, where the curve leaves the plane");
+    // Bisection-tightened to well past the ~0.0125-wide (opt.mesh_tolerance
+    // = 0.05-driven) sampling pitch this span's own boundary used to be
+    // limited to (the old, honestly-disclosed "only as precise as the
+    // sampling resolution" gap this function's own doc comment used to
+    // name) - this bound would fail against the un-bisected sample-grid
+    // boundary alone (off by up to ~0.0125), and only passes now that
+    // RefineBoundary() bisects the last on/off sample pair down to near
+    // machine precision. 1e-5, not opt.tolerance (1e-6) itself: the second
+    // leg's own dz/dt is 5 (3D length 5 over a unit parameter span), so the
+    // bisection's own stopping point - the parameter where distance-to-plane
+    // first reaches opt.tolerance, not the exact zero-distance corner -
+    // is itself offset from the true corner by ~opt.tolerance / 5, a real,
+    // geometry-dependent floor well under 1e-5 but not under 1e-7.
+    Check(std::abs(bent_spans[0].t1 - corner_t) < 1e-5, "the overlap span ends at the polyline's own exact corner parameter, bisection-tightened well past the sampling pitch");
+  }
+}
+
+// Same-pass follow-up: closes this function's own previously-disclosed "span
+// endpoints are only as precise as the sampling resolution" honesty gap -
+// see RefineBoundary() (surface_intersect.cpp). Deliberately uses a coarse
+// opt.mesh_tolerance so the un-bisected sampling pitch would be wide enough
+// (fractions of the curve's own total length) that a tight boundary check
+// could only pass after bisection, not by accident of a fine-enough grid.
+void TestIntersectCurveSurfaceOverlapBisectionTightensSpanBoundary() {
+  using dino8::kernel::CurveSurfaceOverlap;
+  using dino8::kernel::IntersectCurveSurfaceOverlap;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 5.0;  // deliberately coarse: forces the minimum-divisions (64-sample) floor, a wide pitch relative to this curve's own length
+
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-50, 50), true);
+  ground.SetExtents(1, ON_Interval(-50, 50), true);
+
+  // A leg in the plane from x=0 to x=37 (an awkward, non-grid-aligned
+  // length), then straight up - the exact same shape as the bent-polyline
+  // fixture above, at a scale where the forced-coarse sampling pitch
+  // (curve length / 64 =~ 1.16 in 3D, well over a percent of the leg) would
+  // leave the un-bisected boundary off by a visible fraction of the leg,
+  // not a negligible rounding error.
+  const NurbsCurve bent = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(37, 0, 0), Point3d(37, 0, 20)}, 1);
+  const ON_Interval d = bent.raw().Domain();
+  const double corner_t = d.ParameterAt(0.5);
+
+  const std::vector<CurveSurfaceOverlap> spans = IntersectCurveSurfaceOverlap(bent.raw(), ground, opt);
+  Check(spans.size() == 1, "the coarsely-sampled bent polyline still reports exactly one overlap span");
+  if (spans.size() == 1) {
+    // The un-bisected sample grid alone could not have landed this close -
+    // its own pitch here is on the order of the curve's total length / 64,
+    // many orders of magnitude looser than 1e-7.
+    Check(std::abs(spans[0].t1 - corner_t) < 1e-7, "the span's own boundary is bisection-tightened to near machine precision even under a deliberately coarse sampling pitch");
   }
 }
 
@@ -3214,8 +3268,18 @@ void TestIntersectSurfacesOverlapDetectsCoincidentRegion() {
   if (regions.size() == 1) {
     const SurfaceOverlapRegion& r = regions[0];
     Check(!r.entire_surface, "the overlap region does not cover all of a's own domain");
-    Check(std::abs(r.u0 - 0.0) < 0.5 && std::abs(r.u1 - 5.0) < 0.5, "the overlap region's own u-range matches the hand-derivable [0, 5] overlap");
-    Check(std::abs(r.v0 - 0.0) < 0.5 && std::abs(r.v1 - 5.0) < 0.5, "the overlap region's own v-range matches the hand-derivable [0, 5] overlap");
+    // u1/v1 sit at a's OWN domain edge (b's own far edge at x=y=10 is well
+    // past a's domain of [-5, 5], so a's own edge - not a genuine crossing -
+    // is what actually limits this side) and are exact already; u0/v0 are
+    // the genuine crossing boundaries (at b's near edge, x=y=0) and are now
+    // bisection-tightened well past the old grid-cell-sized (~0.175, at this
+    // opt.mesh_tolerance) honesty gap this function's own doc comment used
+    // to disclose for every extent. Not tighter than opt.tolerance (1e-6)
+    // itself: ErrOnB's own admission test is "within opt.tolerance", so the
+    // bisected crossing genuinely sits up to opt.tolerance past the exact
+    // geometric edge (slope 1 here - a flat in-plane distance), not AT it.
+    Check(std::abs(r.u0 - 0.0) < 1e-5 && std::abs(r.u1 - 5.0) < 1e-9, "the overlap region's own u-range matches the hand-derivable [0, 5] overlap to bisection precision");
+    Check(std::abs(r.v0 - 0.0) < 1e-5 && std::abs(r.v1 - 5.0) < 1e-9, "the overlap region's own v-range matches the hand-derivable [0, 5] overlap to bisection precision");
   }
 
   // Two surfaces with the exact same domain on the same plane coincide
@@ -3231,6 +3295,113 @@ void TestIntersectSurfacesOverlapDetectsCoincidentRegion() {
   offset.SetExtents(0, ON_Interval(-5, 5), true);
   offset.SetExtents(1, ON_Interval(-5, 5), true);
   Check(IntersectSurfacesOverlap(a, offset, opt).empty(), "two parallel, offset planes report no overlap region at all");
+}
+
+// Same-pass follow-up: closes this function's own previously-disclosed "as
+// precise as the sampling resolution" honesty gap for EVERY extent, not
+// just the one side the test above happens to exercise (its own u1/v1 sit
+// at a's own domain edge, already exact with or without bisection). This
+// fixture keeps `b` strictly INSIDE `a`'s domain on every side, so all four
+// of u0/u1/v0/v1 are genuine crossing boundaries that only bisection can
+// tighten - and deliberately uses a coarse opt.mesh_tolerance (forcing the
+// minimum 12x12 grid) so the un-bisected grid pitch here (~8.3 units) is
+// far too coarse to pass a tight check by accident.
+void TestIntersectSurfacesOverlapBisectionTightensRegionBoundary() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::IntersectSurfacesOverlap;
+  using dino8::kernel::SurfaceOverlapRegion;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 20.0;  // deliberately coarse: forces the minimum-divisions (12x12) grid floor
+
+  const ON_Plane shared_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  ON_PlaneSurface a(shared_plane);
+  a.SetExtents(0, ON_Interval(-50, 50), true);
+  a.SetExtents(1, ON_Interval(-50, 50), true);
+  ON_PlaneSurface b(shared_plane);
+  b.SetExtents(0, ON_Interval(10, 40), true);
+  b.SetExtents(1, ON_Interval(10, 40), true);
+
+  const std::vector<SurfaceOverlapRegion> regions = IntersectSurfacesOverlap(a, b, opt);
+  Check(regions.size() == 1, "a strictly-interior coincident rectangle reports exactly one overlap region, even under a coarse grid");
+  if (regions.size() == 1) {
+    const SurfaceOverlapRegion& r = regions[0];
+    // The un-bisected grid alone (cell size ~8.3 at this opt.mesh_tolerance)
+    // could not land within 1e-4 of any of these four hand-derivable
+    // boundaries by chance - only RefineBoundary()'s own bisection does.
+    Check(std::abs(r.u0 - 10.0) < 1e-4, "u0 bisection-tightens to b's own hand-derivable near edge (x=10), not the coarse grid line nearest it");
+    Check(std::abs(r.u1 - 40.0) < 1e-4, "u1 bisection-tightens to b's own hand-derivable far edge (x=40), not the coarse grid line nearest it");
+    Check(std::abs(r.v0 - 10.0) < 1e-4, "v0 bisection-tightens to b's own hand-derivable near edge (y=10), not the coarse grid line nearest it");
+    Check(std::abs(r.v1 - 40.0) < 1e-4, "v1 bisection-tightens to b's own hand-derivable far edge (y=40), not the coarse grid line nearest it");
+  }
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category, "Analytic/
+// analytic SSX closed forms (plane/plane, plane/cylinder, cylinder/cylinder,
+// plane/sphere, cone, torus)" bullet named plane/sphere directly as one of the
+// still-missing analytic pairs: "No public analytic-SSX API, and no
+// plane/sphere, cone or torus closed form." IntersectPlaneSphere() closes that
+// one named pair with a true closed form (no mesh seeding at all).
+void TestIntersectPlaneSphereClosedForm() {
+  using dino8::kernel::IntersectPlaneSphere;
+  using dino8::kernel::Point3d;
+
+  const ON_Plane ground(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const double tol = 1e-6;
+
+  // A sphere straddling the plane (center ON the plane) meets it in the
+  // hand-derivable great circle of the sphere's own radius, centered at the
+  // plane origin.
+  const ON_Sphere straddling(ON_3dPoint(0, 0, 0), 2.0);
+  const auto mid = IntersectPlaneSphere(ground, straddling, tol);
+  Check(!mid.empty && !mid.tangent, "a sphere centered exactly on the plane produces a genuine circle, not a miss or a tangent point");
+  if (!mid.empty && !mid.tangent) {
+    Check(mid.circle.Center().DistanceTo(Point3d(0, 0, 0)) < 1e-6, "the circle's own center is the hand-derivable plane origin");
+    Check(std::abs(mid.circle.Radius() - 2.0) < 1e-6, "the circle's own radius equals the sphere's full radius when the plane passes through its center");
+    Check(mid.curve.IsValid(), "the circle's own NURBS form (GetNurbForm) is a valid curve");
+    // Every sample of the fitted curve must stay exactly on the plane (z == 0)
+    // and at exactly the sphere's own radius from the origin - the defining
+    // property of this analytic circle, not merely "close to right".
+    bool all_on_plane_and_radius = true;
+    const ON_Interval cd = mid.curve.Domain();
+    for (int k = 0; k <= 16; ++k) {
+      const Point3d p = mid.curve.PointAt(cd.ParameterAt(static_cast<double>(k) / 16));
+      if (std::abs(p.z) > 1e-5 || std::abs(p.DistanceTo(Point3d(0, 0, 0)) - 2.0) > 1e-5) { all_on_plane_and_radius = false; break; }
+    }
+    Check(all_on_plane_and_radius, "every sampled point of the fitted circle curve lies exactly on the plane at exactly the sphere's own radius");
+  }
+
+  // A sphere resting ABOVE the plane, tangent to it from above at exactly
+  // one hand-derivable point (the origin) - the same degenerate case
+  // FindSurfaceTangentContacts()'s own sphere-on-plane test uses one
+  // function over.
+  const double radius = 2.0;
+  const ON_Sphere resting(ON_3dPoint(0, 0, radius), radius);
+  const auto touch = IntersectPlaneSphere(ground, resting, tol);
+  Check(!touch.empty && touch.tangent, "a sphere exactly tangent to the plane reports a tangent point, not a circle or a miss");
+  if (touch.tangent) Check(touch.point.DistanceTo(Point3d(0, 0, 0)) < 1e-6, "the tangent point is the hand-derivable origin");
+
+  // A sphere held well clear of the plane (center at z = 50, radius 2) does
+  // not meet it at all.
+  const ON_Sphere far(ON_3dPoint(0, 0, 50), radius);
+  Check(IntersectPlaneSphere(ground, far, tol).empty, "a sphere held well clear of the plane reports a genuine miss");
+
+  // A sphere genuinely crossing the plane (center at z = 1, radius 2: the
+  // plane cuts it at the hand-derivable height z = 0, radius sqrt(3)) must
+  // produce a real circle of that exact hand-derived radius.
+  const ON_Sphere crossing(ON_3dPoint(0, 0, 1.0), radius);
+  const auto cross = IntersectPlaneSphere(ground, crossing, tol);
+  Check(!cross.empty && !cross.tangent, "a sphere genuinely crossing the plane off-center produces a real circle");
+  if (!cross.empty && !cross.tangent) {
+    Check(std::abs(cross.circle.Radius() - std::sqrt(3.0)) < 1e-6, "the crossing circle's own radius matches the hand-derivable sqrt(r^2 - d^2)");
+    Check(cross.circle.Center().DistanceTo(Point3d(0, 0, 0)) < 1e-6, "the crossing circle's own center is the sphere center's projection onto the plane");
+  }
+
+  // Invalid input (zero-radius sphere) is refused outright, not treated as
+  // a degenerate circle.
+  const ON_Sphere degenerate(ON_3dPoint(0, 0, 0), 0.0);
+  Check(IntersectPlaneSphere(ground, degenerate, tol).empty, "a zero-radius sphere is refused as a genuine miss, not a degenerate circle");
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
@@ -66109,10 +66280,13 @@ int main() {
   TestContourBrepParallelSections();
   TestSectionBrepByPlanesIndependentlyOrientedClipPlanes();
   TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan();
+  TestIntersectCurveSurfaceOverlapBisectionTightensSpanBoundary();
   TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly();
   TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
   TestFindSurfaceTangentContactsSphereOnPlane();
   TestIntersectSurfacesOverlapDetectsCoincidentRegion();
+  TestIntersectSurfacesOverlapBisectionTightensRegionBoundary();
+  TestIntersectPlaneSphereClosedForm();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
