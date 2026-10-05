@@ -368,8 +368,9 @@ What
 SelAll
 Show
 SelNone
-# 72 from the rest of this script + 122 (21 + 101) from the
+# 75 from the rest of this script (72, plus the 2 Arcs + 1 Blend curve the
+# Continuity=G3 block above adds) + 122 (21 + 101) from the
 # CurveThroughSrfControlPt/ExtractPt dangling-pointer regression above,
 # which are hidden rather than deleted so List's layer output stays
 # checkable from the saved smoke-test log if this ever needs re-diagnosing.
-@expect_objects 194
+@expect_objects 197
