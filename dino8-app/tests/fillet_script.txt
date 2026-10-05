@@ -628,3 +628,41 @@ Radius=0.3
 SelAll
 List
 Area
+# --- FilletEdge: multi-edge plain-radius batching via kernel::
+# FilletConvexEdges/FilletConcaveEdges - closes PARITY_MAP.md's own "no app
+# command surfaces either function's own chain-pick at all" gap for the
+# plain circular case (Rho already reached the conic sibling in an earlier
+# session). Before this session, picking the 3 edges of one box corner in
+# a single FilletEdge run applied each pick immediately: the first edge's
+# own exact TryExactFillet call succeeds and leaves the object carrying a
+# curved cylindrical face, so PlanarFaces() rejects the second and third
+# picks outright and both fall through to the approximate BuildFillet path
+# instead, each adding its own disconnected surface object rather than one
+# clean solid. Every plain pick is now staged and flushed together at
+# Enter via one kernel::FilletConvexEdges call, which reaches that
+# function's own m == 3 trihedral spherical-corner blend - a single closed
+# solid, not three independent pieces. Expected volume (closed form,
+# FilletConvexEdges' own kernel-test derivation: one spherical corner on an
+# LxLxL box removes three (L-r)-long r^2(1-pi/4) prisms plus the corner
+# cube minus the ball octant r^3(1-pi/6)): L=10, r=2 ->
+# 1000 - 3*8*4*(1-pi/4) - 8*(1-pi/6) = 975.587 exactly (the kernel's own
+# TessellateToClosedMeshAdaptive(1e-6) check against this same closed form
+# in TestFilletConvexEdgesSingleCornerSphereWithNotchedFarEnds, test_basic.cpp,
+# confirms the construction itself is exact). The app's own Volume command
+# tessellates the spherical corner patch at a coarser, fixed resolution, so
+# it reads 975.4, not 975.587 - the same "no closed form at THIS display
+# precision, so check the actual reproducible number" convention the
+# FilletSrf Area check just above already uses; stable across repeated
+# runs (confirmed by running this script three times in a row).
+SelAll
+Hide
+Box 2000,0,0 2010,10,0 10
+FilletEdge
+Radius=2
+2005,0,0
+2000,5,0
+2000,0,5
+Enter
+SelAll
+List
+Volume

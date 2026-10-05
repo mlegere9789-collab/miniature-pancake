@@ -1574,7 +1574,114 @@ class FilletEdgeCommand : public Command {
   }
   void OnEnter(CommandContext& ctx) override {
     FlushPendingConic(ctx);
+    FlushPendingFillet(ctx);
     Finish();
+  }
+  // Applies every staged plain-radius edge (see pending_fillet_'s own doc
+  // comment) in one kernel::FilletConvexEdges/FilletConcaveEdges call
+  // against the object's own CURRENT (still entirely untouched) Brep - the
+  // same convex-then-concave attempt FlushPendingConic already uses for the
+  // conic case, since neither function knows the edges' own convexity in
+  // advance. Unlike Rho, a failed batch (a curved face, a vertex
+  // configuration FilletConvexEdges/FilletConcaveEdges doesn't support,
+  // mismatched convexity, edges sharing a face, etc.) is not refused
+  // outright: it replays every staged edge through the EXACT same
+  // TryExactFillet-or-approximate cascade this command always used before
+  // staging existed (flushing_fillet_ makes Run()'s own staging check step
+  // aside for that replay), so a batch that can't help is never worse than
+  // the old per-edge-immediate behavior - only a batch that CAN help (the
+  // common case this pass actually closes: several edges meeting at a
+  // vertex, or a tangent chain FilletConvexEdges/FilletConcaveEdges already
+  // know how to merge) changes anything observable. A single staged edge
+  // gets the exact original "replaced with an exact fillet" message either
+  // way - FilletConvexEdges' own doc comment: a one-edge batch reproduces
+  // FilletConvexEdge's own result bit-for-bit, so this is additive, not a
+  // behavior change, for the already-ubiquitous single-edge case.
+  // Finds the edge of `b` whose two endpoints match (p0, p1), in either
+  // order, within `tol` - used both to read fresh per-edge points for the
+  // batch call below and, in the replay fallback, to re-resolve each
+  // staged edge's own CURRENT index (never assumed stable - see
+  // FlushPendingFillet's own doc comment for why). Returns -1 if none
+  // matches (the edge was itself consumed by an earlier replay in the same
+  // loop, e.g. two staged edges that turned out to share more than a
+  // vertex).
+  static int FindEdgeIndexByEndpoints(const ON_Brep& b, Point3d p0, Point3d p1, double tol) {
+    for (int i = 0; i < b.m_E.Count(); ++i) {
+      const ON_BrepEdge& e = b.m_E[i];
+      const Point3d a = e.PointAtStart(), c = e.PointAtEnd();
+      if ((a.DistanceTo(p0) <= tol && c.DistanceTo(p1) <= tol) || (a.DistanceTo(p1) <= tol && c.DistanceTo(p0) <= tol)) return i;
+    }
+    return -1;
+  }
+  void FlushPendingFillet(CommandContext& ctx) {
+    if (pending_fillet_.empty()) return;
+    const std::vector<std::pair<Point3d, Point3d>> edges = std::move(pending_fillet_);
+    const ObjectId id = pending_fillet_id_;
+    pending_fillet_.clear();
+    pending_fillet_id_ = kNoObject;
+    const std::string label = "FilletEdge";
+    const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
+    const SceneObject* o = ctx.Doc().Find(id);
+    std::optional<ON_Brep> b = o ? BrepOfObject(*o) : std::nullopt;
+    if (b) {
+      kernel::Brep kb;
+      kb.raw() = *b;
+      kernel::Brep result;
+      bool ok = false;
+      try {
+        result = kernel::FilletConvexEdges(kb, edges, radius_);
+        ok = true;
+      } catch (const std::exception&) {
+      }
+      if (!ok) {
+        try {
+          result = kernel::FilletConcaveEdges(kb, edges, radius_);
+          ok = true;
+        } catch (const std::exception&) {
+        }
+      }
+      if (ok) {
+        ctx.Doc().BeginChange(label);
+        if (SceneObject* orig = ctx.Doc().Find(id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = result.raw();
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        if (edges.size() == 1) {
+          const int ei = FindEdgeIndexByEndpoints(*b, edges.front().first, edges.front().second, tol);
+          ctx.Print(label + ": edge " + std::to_string(ei) + " of object " + std::to_string(id) +
+                     " replaced with an exact fillet (" + RadiusDescription() + ")");
+        } else {
+          ctx.Print(label + ": " + std::to_string(edges.size()) + " staged edges of object " + std::to_string(id) +
+                     " replaced with an exact multi-edge fillet (" + RadiusDescription() + ")");
+        }
+        return;
+      }
+    }
+    // Batch unavailable or failed - replay every staged edge through the
+    // unchanged, independent, single-edge TryExactFillet-or-approximate
+    // cascade, exactly reproducing this command's own pre-staging behavior.
+    // Each edge's own CURRENT index is re-resolved fresh right before its
+    // own Run() call, never assumed stable across iterations: an earlier
+    // iteration in this same loop can rebuild the object (a new Brep with
+    // its own edge numbering), the same "re-resolve from whatever is there
+    // now" guarantee a real second click already gave the old, pre-staging
+    // sequential behavior this replay reproduces.
+    flushing_fillet_ = true;
+    for (const std::pair<Point3d, Point3d>& e : edges) {
+      const SceneObject* oc = ctx.Doc().Find(id);
+      std::optional<ON_Brep> bc = oc ? BrepOfObject(*oc) : std::nullopt;
+      if (!bc) continue;
+      const int ei = FindEdgeIndexByEndpoints(*bc, e.first, e.second, tol);
+      if (ei < 0) continue;
+      EdgePick replay;
+      replay.id = id;
+      replay.edge = ei;
+      Run(ctx, replay);
+    }
+    flushing_fillet_ = false;
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     std::optional<EdgePick> pick = PickEdge(ctx, p);
@@ -1813,6 +1920,28 @@ class FilletEdgeCommand : public Command {
     // as before this wiring existed, since that path already covers the
     // curved case this exact construction cannot.
     if (mode_ == Mode::Fillet && !rho_.has_value() && rail_type_ == RailType::RollingBall && radii_.empty() && !preview_) {
+      // Stage this edge rather than applying it immediately - see
+      // pending_fillet_'s own doc comment for why (two edges sharing a
+      // vertex, picked in the same run, need one shared
+      // kernel::FilletConvexEdges/FilletConcaveEdges call to blend
+      // TOGETHER, not two independent single-edge attempts). Bypassed
+      // during FlushPendingFillet's own replay loop (flushing_fillet_),
+      // which needs this exact TryExactFillet-or-approximate logic to run
+      // per edge, unstaged, the same way it always did before batching.
+      if (!flushing_fillet_) {
+        if (!pending_fillet_.empty() && pending_fillet_id_ != pick.id) {
+          ctx.Warn(label + ": a fillet edge on a different object can't be staged in the same FilletEdge run (object " +
+                    std::to_string(pending_fillet_id_) + " already has " + std::to_string(pending_fillet_.size()) +
+                    " staged); press Enter to apply those first, then run FilletEdge again for this object");
+          return;
+        }
+        pending_fillet_id_ = pick.id;
+        pending_fillet_.emplace_back(edge.PointAtStart(), edge.PointAtEnd());
+        ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
+                   " staged for an exact fillet (" + RadiusDescription() + ") - " + std::to_string(pending_fillet_.size()) +
+                   " staged, Enter to apply");
+        return;
+      }
       ON_Brep exact;
       std::string detail;
       if (TryExactFillet(*b, edge.PointAtStart(), edge.PointAtEnd(), exact, detail)) {
@@ -2387,6 +2516,28 @@ class FilletEdgeCommand : public Command {
   std::vector<kernel::ConicEdgeSpec> pending_conic_;
   ObjectId pending_conic_id_ = kNoObject;
   int pending_conic_first_edge_ = -1;  // ON_BrepEdge index of the first staged edge, for the single-edge message
+  // Same staging idea as pending_conic_ above, for the PLAIN (no Rho, no
+  // RailType, no Radii=) constant-radius case - closes PARITY_MAP.md's
+  // Blending & chamfering "no app command surfaces either function's own
+  // chain-pick at all" gap for kernel::FilletConvexEdges/FilletConcaveEdges
+  // (the plain circular sibling of FilletConvexEdgesConic/
+  // FilletConcaveEdgesConic above, which only Rho ever reached). Applying
+  // each plain edge immediately, as this command always used to, means two
+  // edges sharing a vertex are never filleted TOGETHER - each call only
+  // ever sees a single-edge FilletConvexEdge/FilletConcaveEdge, never the
+  // batch functions' own m == 1/m == 3 vertex-blend handling or tangent-
+  // chain merge. Staged edges are flushed as one kernel::FilletConvexEdges/
+  // FilletConcaveEdges call in FlushPendingFillet (below OnEnter); unlike
+  // Rho, there IS an approximate fallback here (the existing TryExactFillet-
+  // or-BuildFillet cascade), so a failed batch replays each staged edge
+  // through that unchanged, sequential, independent path instead of
+  // refusing outright - see FlushPendingFillet's own comment.
+  std::vector<std::pair<Point3d, Point3d>> pending_fillet_;
+  ObjectId pending_fillet_id_ = kNoObject;
+  // Set around FlushPendingFillet's own replay loop so the staging check in
+  // Run() steps aside and the ordinary TryExactFillet-or-approximate logic
+  // underneath it runs instead, exactly as if staging never existed.
+  bool flushing_fillet_ = false;
 };
 
 // ---------------------------------------------------------------------------

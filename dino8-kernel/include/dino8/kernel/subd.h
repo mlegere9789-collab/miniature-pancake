@@ -163,7 +163,11 @@ class SubD {
   // Catmull-Clark limit patch coincides with its own control points).
   //
   // Throws std::invalid_argument if u_divisions or v_divisions is less
-  // than 1, the same validation `TessellateGrid()` already applies.
+  // than 1, the same validation `TessellateGrid()` already applies, or if
+  // `surface` itself is not `IsValid()` (e.g. default-constructed) -
+  // previously ungated, this would reach `Domain()`/`PointAt()` on a
+  // surface with no real parameter domain or control points instead of
+  // failing with a named cause.
   static SubD FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_divisions);
 
   // Builds a SubD control cage from a whole Brep, one quad per face,
@@ -1226,6 +1230,16 @@ class SubD {
   // is never a worse bound - and reports `exact = false`. `tangent_u`/
   // `tangent_v` from that fallback are the flat interpolant's own (still
   // well-defined, just not limit-accurate) partial derivatives.
+  //
+  // Throws std::invalid_argument if `u` or `v` is outside [0, 1] (or
+  // NaN) or if `max_adaptive_levels` is negative - previously ungated,
+  // unlike `ToNurbsPatchesAdaptive()`'s own matching
+  // `max_adaptive_levels` check: an out-of-domain (u, v) silently
+  // extrapolated the quadrant-local Bezier math below into meaningless
+  // geometry instead of being refused, and a negative level count
+  // happened to be harmless (the recursion's own `depth_remaining <= 0`
+  // base case already catches it) but was never actually validated as
+  // such.
   //
   // Throws std::runtime_error if `face_id` doesn't identify a face of
   // the current subdivision level, or that face isn't a quad (same

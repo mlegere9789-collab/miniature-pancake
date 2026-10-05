@@ -60,6 +60,12 @@ SubD SubD::FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_
         "dino8::kernel::SubD::FromNurbsSurface: u_divisions and v_divisions "
         "must be at least 1");
   }
+  if (!surface.raw().IsValid()) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromNurbsSurface: surface is not IsValid() (e.g. "
+        "default-constructed or otherwise degenerate - has no usable domain or "
+        "control points to sample)");
+  }
   const Interval u_domain = surface.Domain(0);
   const Interval v_domain = surface.Domain(1);
 
@@ -2132,6 +2138,12 @@ SubDSurfacePoint EvaluateFaceAdaptive(ON_SubD& s, const ON_SubDFace* f, double u
 
 SubDSurfacePoint SubD::EvaluateFace(unsigned int face_id, double u, double v,
                                     int max_adaptive_levels) const {
+  if (!(u >= 0.0 && u <= 1.0) || !(v >= 0.0 && v <= 1.0)) {
+    throw std::invalid_argument("dino8::kernel::SubD::EvaluateFace: u and v must both be in [0, 1]");
+  }
+  if (max_adaptive_levels < 0) {
+    throw std::invalid_argument("dino8::kernel::SubD::EvaluateFace: max_adaptive_levels must be >= 0");
+  }
   const ON_SubDFace* f0 = subd_.FaceFromId(face_id);
   if (f0 == nullptr) {
     throw std::runtime_error(
