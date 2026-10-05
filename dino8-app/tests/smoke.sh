@@ -2149,6 +2149,16 @@ print("object count after GetPoint: %d" % len(dino8.doc.Objects.AllObjects()))
 # token (python_script.txt's "RunPythonScript @TMP@/t.py 20,20,20 Widget2").
 name = dino8.GetString("Name the marker point")
 print("got string: " + str(name))
+
+# dino8.GetReal/dino8.GetInteger: new this pass (PythonEngine.h/.cpp),
+# mirroring rs.GetReal/rs.GetInteger with the exact same worker-thread
+# suspend as GetPoint/GetString above - fed by the third and fourth
+# trailing script tokens (python_script.txt's "RunPythonScript @TMP@/t.py
+# 20,20,20 Widget2 3.5 7").
+r = dino8.GetReal("Enter a real number")
+print("got real: " + str(r))
+i = dino8.GetInteger("Enter an integer")
+print("got integer: " + str(i) + " type: " + type(i).__name__)
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
 # Captured with set +e, not "|| { ...; exit 1; }": python_script.txt's own
@@ -2363,7 +2373,9 @@ else
   pscheck "picked point 20,20,20" "the resumed script read back the exact point the command line fed it"
   pscheck "history: object count after GetPoint: 37" "AddPoint(p) added the one new object the suspend-and-resume round trip was supposed to produce"
   pscheck "history: got string: Widget2" "dino8.GetString() suspended a second time (same worker-thread mechanism as GetPoint) and was fed by the second trailing script token, proving the suspend/resume round trip works for a second, different prompt type right after the first, not just once"
-  pscheck "^ok   expect_objects 37" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, the two fresh ObjectsByType test points, and the dino8.GetPoint() marker point (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script, and the undo/redo group's own point was undone again at the end)"
+  pscheck "history: got real: 3.5" "dino8.GetReal() - new this pass, PythonEngine.h/.cpp - suspended a third time (same worker-thread mechanism as GetPoint/GetString) and was fed by the third trailing script token, returning a real Python float"
+  pscheck "history: got integer: 7 type: int" "dino8.GetInteger() - new this pass - suspended a fourth time and was fed by the fourth trailing script token, returning a real Python int (not a float), proving PyGetInteger's own std::llround rounds and retypes the resumed value rather than just reusing GetReal's float path"
+  pscheck "^ok   expect_objects 37" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, the two fresh ObjectsByType test points, and the dino8.GetPoint() marker point (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script, and the undo/redo group's own point was undone again at the end; dino8.GetReal()/GetInteger() add no objects of their own)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
@@ -5759,20 +5771,22 @@ fi
 # rejected instead of hanging the connection, a POST /run/python that
 # builds and queries geometry through the embedded Python module, a second
 # POST /run/python calling the now-real dino8.GetPoint() that must likewise
-# be rejected instead of hanging (or both /run/python checks are skipped
-# gracefully on a build with no Python support), and a POST to an unknown
-# path that must come back 404 - see tests/test_compute_server.cpp
-# for the lower-level, no-app unit coverage of the request parsing/response
-# formatting this end-to-end check builds on top of. A second, separate
+# be rejected instead of hanging, a third POST /run/python calling the new
+# dino8.GetInteger() that must be rejected the same way (or all three
+# /run/python checks are skipped gracefully on a build with no Python
+# support), and a POST to an unknown path that must come back 404 - see
+# tests/test_compute_server.cpp for the lower-level, no-app unit coverage
+# of the request parsing/response formatting this end-to-end check builds
+# on top of. A second, separate
 # server instance below covers --serve-token bearer-auth.
 if ! command -v curl >/dev/null 2>&1; then
   echo "skip --serve compute-server checks (curl not available)"
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 7 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 8 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 7 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 8 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -5818,6 +5832,11 @@ try:
 except Exception:
     pass
 dino8.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run/python")"
+    # dino8.GetInteger()/GetReal() (new this pass - PythonEngine.h/.cpp)
+    # share WaitForPoint/WaitForText's own suspend-and-abort machinery, so
+    # this must be rejected the same way RESP6's GetPoint() is, not hang.
+    RESP8="$(curl -s --max-time 10 -X POST --data 'import dino8
+dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     CODE5="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'x' "http://127.0.0.1:$SERVE_PORT/run/nosuchroute")"
     set -e
     echo "$RESP1" | grep -q "^objects: 1$" && echo "ok   POST /run built a box over HTTP and read back its printed object count" || { echo "$RESP1"; echo "FAIL --serve POST /run did not report objects: 1"; fail=1; }
@@ -5829,6 +5848,7 @@ dino8.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run/python")"
       echo "$RESP4" | grep -q "^volume: 125.0$" && echo "ok   POST /run/python built a box through the dino8 module over HTTP and read back its printed volume" || { echo "$RESP4"; echo "FAIL --serve POST /run/python did not report volume: 125.0"; fail=1; }
       echo "$RESP6" | grep -q "compute error: script requires interactive input" && echo "ok   a POST /run/python script calling the now-real dino8.GetPoint() is rejected instead of hanging the connection (PythonEngine suspends on a worker thread now - see PythonEngine.h - so this is a real regression risk main.cpp's compute_handler guards against)" || { echo "$RESP6"; echo "FAIL --serve POST /run/python dino8.GetPoint() was not rejected as expected"; fail=1; }
       echo "$RESP7" | grep -q "compute error: script requires interactive input" && echo "ok   a POST /run/python script that catches the cancelled GetPoint() and calls it again still gets an ordinary rejection, not a frozen connection/server" || { echo "$RESP7"; echo "FAIL --serve POST /run/python catch-and-retry GetPoint() hung or returned something unexpected"; fail=1; }
+      echo "$RESP8" | grep -q "compute error: script requires interactive input" && echo "ok   a POST /run/python script calling the new dino8.GetInteger() is rejected instead of hanging the connection, same as GetPoint/GetString" || { echo "$RESP8"; echo "FAIL --serve POST /run/python dino8.GetInteger() was not rejected as expected"; fail=1; }
     fi
     [ "$CODE5" = "404" ] && echo "ok   a POST to an unrecognized path is rejected with 404 Not Found" || { echo "FAIL --serve POST to an unknown path returned HTTP $CODE5, expected 404"; fail=1; }
 
@@ -5838,7 +5858,7 @@ dino8.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run/python")"
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=7$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 7 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=8$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 8 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
     fi
   fi
 

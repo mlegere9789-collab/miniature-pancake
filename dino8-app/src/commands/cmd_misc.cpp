@@ -242,7 +242,11 @@ class ScriptCommand : public Command {
     else ctx.App().Lua().ResumePoint(p);
     Pump(ctx);
   }
-  void OnNumber(CommandContext& ctx, double v) override { ctx.App().Lua().ResumeNumber(v); Pump(ctx); }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (python_active_) ctx.App().Python().ResumeNumber(v);
+    else ctx.App().Lua().ResumeNumber(v);
+    Pump(ctx);
+  }
   void OnText(CommandContext& ctx, const std::string& t) override {
     if (python_active_) ctx.App().Python().ResumeText(t);
     else ctx.App().Lua().ResumeText(t);
@@ -293,16 +297,22 @@ class ScriptCommand : public Command {
 
   // Reflects the running script's current rs.Get*/dino8.Get* prompt (or
   // finishes the command once the script itself has finished or failed).
-  // Python only ever requests Point or Text (see PythonEngine.h) - Objects/
-  // Number/Integer can't come from python_active_.
+  // Python can request Point, Text, Number or Integer (see PythonEngine.h) -
+  // Objects still can't come from python_active_, since dino8.GetObjects
+  // has no Python equivalent yet.
   void Pump(CommandContext& ctx) {
     if (python_active_) {
       PythonEngine& py = ctx.App().Python();
       if (!py.Running()) { Finish(); return; }
       const ScriptRequest& r = py.Request();
-      if (py.Suspended() && r.want == ScriptWant::Point) WantPoint(r.prompt);
-      else if (py.Suspended() && r.want == ScriptWant::Text) WantText(r.prompt, r.default_text);
-      else Finish();
+      if (!py.Suspended()) { Finish(); return; }
+      switch (r.want) {
+        case ScriptWant::Point: WantPoint(r.prompt); break;
+        case ScriptWant::Text: WantText(r.prompt, r.default_text); break;
+        case ScriptWant::Number:
+        case ScriptWant::Integer: WantNumber(r.prompt, r.default_number); break;
+        default: Finish(); break;
+      }
       return;
     }
     LuaEngine& lua = ctx.App().Lua();
@@ -372,21 +382,28 @@ class PythonScriptCommand : public Command {
 
   void OnPoint(CommandContext& ctx, Point3d p) override { ctx.App().Python().ResumePoint(p); Pump(ctx); }
   void OnText(CommandContext& ctx, const std::string& t) override { ctx.App().Python().ResumeText(t); Pump(ctx); }
+  void OnNumber(CommandContext& ctx, double v) override { ctx.App().Python().ResumeNumber(v); Pump(ctx); }
   void OnEnter(CommandContext& ctx) override { ctx.App().Python().ResumeNil(); Pump(ctx); }
   void OnCancel(CommandContext& ctx) override { ctx.App().Python().Abort(); }
 
  private:
-  // Reflects the running script's current dino8.GetPoint()/dino8.GetString()
-  // prompt (or finishes the command once the script itself has finished or
-  // failed). Only ScriptWant::Point/Text are ever possible here (see
-  // PythonEngine.h) - anything else just finishes, same as ScriptWant::Nothing.
+  // Reflects the running script's current dino8.GetPoint()/GetString()/
+  // GetReal()/GetInteger() prompt (or finishes the command once the script
+  // itself has finished or failed). ScriptWant::Objects is never possible
+  // here (see PythonEngine.h) - dino8.GetObjects has no Python equivalent
+  // yet - and falls through to Finish(), same as ScriptWant::Nothing.
   void Pump(CommandContext& ctx) {
     PythonEngine& py = ctx.App().Python();
     if (!py.Running()) { Finish(); return; }
     const ScriptRequest& r = py.Request();
-    if (py.Suspended() && r.want == ScriptWant::Point) WantPoint(r.prompt);
-    else if (py.Suspended() && r.want == ScriptWant::Text) WantText(r.prompt, r.default_text);
-    else Finish();
+    if (!py.Suspended()) { Finish(); return; }
+    switch (r.want) {
+      case ScriptWant::Point: WantPoint(r.prompt); break;
+      case ScriptWant::Text: WantText(r.prompt, r.default_text); break;
+      case ScriptWant::Number:
+      case ScriptWant::Integer: WantNumber(r.prompt, r.default_number); break;
+      default: Finish(); break;
+    }
   }
 };
 

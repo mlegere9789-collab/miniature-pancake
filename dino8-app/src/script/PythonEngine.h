@@ -27,10 +27,11 @@
 // engine's own output_/print_buffer_ from two threads at once; the thread
 // only exists to get a real suspend point, not for parallelism. The GIL is
 // released (py::gil_scoped_release) for the duration of that block so nothing
-// is ever left holding it while idle. Scope: dino8.GetPoint() and
-// dino8.GetString() are wired up this way (mirroring rs.GetPoint/
-// rs.GetString); rs.GetObjects/rs.GetReal/rs.GetInteger-equivalents remain
-// unported - a real but narrower gap than "no interactive prompts at all".
+// is ever left holding it while idle. Scope: dino8.GetPoint(),
+// dino8.GetString(), dino8.GetReal() and dino8.GetInteger() are wired up
+// this way (mirroring rs.GetPoint/rs.GetString/rs.GetReal/rs.GetInteger);
+// rs.GetObjects has no Python equivalent yet - a real but narrower gap than
+// "no interactive prompts at all".
 #pragma once
 
 #include <condition_variable>
@@ -83,6 +84,7 @@ class PythonEngine {
   // like Start(), and returns the same way. False if nothing was suspended.
   bool ResumePoint(kernel::Point3d p);
   bool ResumeText(const std::string& text);
+  bool ResumeNumber(double v);
   bool ResumeNil();
   void Abort();  // Esc: cancel the suspended script, it stops with a RuntimeError the script could catch (uncaught, prints "Script cancelled: ...")
 
@@ -113,6 +115,11 @@ class PythonEngine {
     bool cancelled = false;
     std::string text;
   };
+  struct NumberWait {
+    bool got_number = false;
+    bool cancelled = false;
+    double value = 0.0;
+  };
   // Called only from the worker thread, by the embedded module's GetPoint/
   // GetString bindings (PyGetPoint/PyGetString, in the .cpp): records the
   // prompt, wakes anyone waiting in Start()/Resume*() on the UI thread, and
@@ -123,6 +130,13 @@ class PythonEngine {
   // OnEnter - see Command::WantText) - so ResumeNil here only means no
   // default was given either, matching rs.GetString(prompt) pushing nil.
   TextWait WaitForText(const std::string& prompt, const std::optional<std::string>& default_text);
+  // Mirrors WaitForText above, for dino8.GetReal()/dino8.GetInteger()
+  // (PyGetReal/PyGetInteger in the .cpp). `is_integer` only affects how the
+  // ScriptRequest is tagged (ScriptWant::Integer vs ::Number) for the
+  // command line's own prompt/rounding - the resumed value always arrives
+  // here as a plain double, rounded by the caller (PyGetInteger) same as
+  // LuaEngine::ResumeNumber rounds for rs.GetInteger.
+  NumberWait WaitForNumber(const std::string& prompt, const std::optional<double>& default_number, bool is_integer);
 
  private:
   enum class State { Idle, Running, Suspended, Finished };
@@ -146,6 +160,7 @@ class PythonEngine {
   bool resume_is_value_ = false;  // false means ResumeNil (Enter/nothing given), not a real point/text answer
   kernel::Point3d resume_point_;
   std::string resume_text_;
+  double resume_number_ = 0.0;
   bool abort_requested_ = false;
   bool final_ok_ = true;
   bool cancelled_ = false;  // set by WaitForPoint right before throwing, read back in ThreadMain's catch

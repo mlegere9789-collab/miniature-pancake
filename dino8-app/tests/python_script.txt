@@ -72,11 +72,15 @@
 # rs.Undo/rs.Redo/rs.BeginUndo) - the last three round-tripped here through
 # a real add/undo/redo/undo cycle on a fresh point, not just called and
 # ignored, so the net object count below is unaffected.
-# dino8.GetPoint()/dino8.GetString() now suspend the script for real
-# (PythonEngine runs it on a worker thread, see PythonEngine.h) - like
-# script_script.txt's Lua test, the trailing "20,20,20 Widget2" below feeds
-# those two prompts in turn before the script resumes each time.
+# dino8.GetPoint()/dino8.GetString()/dino8.GetReal()/dino8.GetInteger() now
+# suspend the script for real (PythonEngine runs it on a worker thread, see
+# PythonEngine.h) - like script_script.txt's Lua test, the trailing
+# "20,20,20 Widget2 3.5 7" below feeds those four prompts in turn before the
+# script resumes each time. GetReal/GetInteger are new this pass: the
+# "GetObjects/GetReal/GetInteger-equivalents remain entirely unported" half
+# of PARITY_MAP.md's app_scripting "Python API breadth" item is narrowed to
+# just GetObjects now.
 # smoke.sh substitutes @TMP@ with a scratch directory and writes @TMP@/t.py
 # before running this.
-RunPythonScript @TMP@/t.py 20,20,20 Widget2
+RunPythonScript @TMP@/t.py 20,20,20 Widget2 3.5 7
 @expect_objects 37
