@@ -257,6 +257,22 @@ struct HatchPatternLine {
   std::vector<double> dashes;
 };
 
+// A hatch pattern's own metadata, read back from Model::HatchPatternAt()
+// below - the read-side counterpart to AddHatchPattern()'s own `name`/
+// `fill_type`/`description` parameters. Before this, nothing in this
+// kernel could read any of these three fields back at all: a caller had
+// only HatchPatternCount()/HatchPatternLineCount()/HatchPatternLineAt(),
+// which report a pattern's LINE table but never its own name, fill type,
+// or description - the exact "no read-side accessor" gap
+// ObjectAttributesAt()/LayerAt()/MaterialAt() etc. elsewhere in this file
+// already closed for their own component tables, just not yet for this
+// one.
+struct HatchPatternInfo {
+  std::string name;
+  HatchFillType fill_type = HatchFillType::Solid;
+  std::string description;
+};
+
 // A text dot read back from Model::TextDotAt() below - the read-side
 // counterpart to Model::AddTextDot()'s own parameters.
 struct TextDotInfo {
@@ -291,6 +307,22 @@ struct LeaderInfo {
   std::string text;
   std::vector<Point3d> points;
   ON_Plane plane;
+};
+
+// A linear dimension read back from Model::DimensionAt() below - the
+// read-side counterpart to Model::AddDimension()'s own extension_point0/
+// extension_point1/dimension_line_point/plane_normal parameters.
+// `measurement` is ON_DimLinear's own computed distance between
+// `extension_point0`/`extension_point1` (not re-derived here - this
+// struct reports whatever OpenNURBS itself computed, the same "ask
+// OpenNURBS, don't recompute" stance every other derived field in this
+// file already takes).
+struct DimensionInfo {
+  std::string name;
+  Point3d extension_point0;
+  Point3d extension_point1;
+  Point3d dimension_line_point;
+  double measurement = 0.0;
 };
 
 // Thin wrapper around ONX_Model so .3dm compatibility comes from
@@ -908,8 +940,29 @@ class Model {
   // ignoring a solid hatch's own unused line table), but not rejected for
   // `Solid` - a caller building a pattern it may later want to switch is
   // free to populate lines ahead of that.
+  //
+  // `description` closes the other half of PARITY_MAP.md's own remaining
+  // "ON_HatchPattern's own other fields" gap (`lines` above closed the
+  // first half): ON_HatchPattern::SetDescription()/Description() hold a
+  // short human-readable blurb distinct from `name` (Rhino's own Hatch
+  // Pattern dialog shows both side by side for a built-in pattern, e.g.
+  // name "Hatch1", description "1/16in 45 degree"). Empty by default -
+  // no behavior change for an existing caller.
   int AddHatchPattern(const std::string& name, HatchFillType fill_type = HatchFillType::Solid,
-                       const std::vector<HatchPatternLine>& lines = std::vector<HatchPatternLine>());
+                       const std::vector<HatchPatternLine>& lines = std::vector<HatchPatternLine>(),
+                       const std::string& description = std::string());
+
+  // Returns the hatch pattern's own name/fill_type/description at
+  // `pattern_index` (as returned by AddHatchPattern() above) - the
+  // read-side counterpart to AddHatchPattern()'s own parameters, a gap
+  // left open even after HatchPatternLineCount()/HatchPatternLineAt()
+  // closed the read side of the pattern's LINE table specifically: until
+  // now there was no way to read a pattern's own name, fill type, or
+  // description back at all, the same "no read-side accessor" situation
+  // ObjectAttributesAt()/LayerAt()/MaterialAt() etc. above each closed for
+  // their own tables. `pattern_index` not naming a hatch pattern this
+  // model actually has returns a default-constructed HatchPatternInfo.
+  HatchPatternInfo HatchPatternAt(int pattern_index) const;
 
   // Returns the number of hatch patterns added via AddHatchPattern() above.
   int HatchPatternCount() const;
@@ -1073,6 +1126,56 @@ class Model {
   // `leader_index` not naming a leader this model actually has returns a
   // default-constructed LeaderInfo.
   LeaderInfo LeaderAt(int leader_index) const;
+
+  // Adds a linear dimension (Rhino's own Dim/DimAligned command,
+  // ON_DimLinear underneath) to the model and returns its index (>= 0)
+  // among dimensions specifically - closing the "dimensions" half of
+  // PARITY_MAP.md's own "annotations besides plain ON_Text (dimensions,
+  // leaders)" gap, the one item left after AddLeader() above closed
+  // leaders. `extension_point0`/`extension_point1` are the two points
+  // being measured (an aligned dimension's own measurement is always the
+  // distance between these two, independent of where the dimension line
+  // itself is drawn); `dimension_line_point` is any point near the
+  // desired dimension line - it is projected onto the line parallel to
+  // `extension_point0`/`extension_point1` through that point, the same
+  // "a point near the line, not required to be exactly on it" contract
+  // Rhino's own Dim command gives an interactively-picked point (see
+  // ON_DimLinear::CreateAligned()'s own doc comment); `plane_normal`
+  // orients the dimension's own plane (perpendicular to the segment
+  // between the two extension points). Wraps
+  // ON_DimLinear::CreateAligned() against OpenNURBS' own built-in
+  // ON_DimStyle::Default, the same "no dimstyle table of its own"
+  // narrowing AddText()/AddLeader() above already accept. Only
+  // ON::AnnotationType::Aligned linear dimensions are supported -
+  // angular/radial/ordinate dimensions (ON_DimAngular/ON_DimRadial/
+  // ON_DimOrdinate) and a Rotated linear dimension (CreateRotated()'s own
+  // distinct, explicit-angle variant) remain a disclosed, larger
+  // remaining gap, the same "narrowing, not erasing" convention
+  // LightStyle's own Point/Directional-only support already uses
+  // elsewhere in this file. Returns -1 without adding anything if `name`
+  // is empty, or if CreateAligned() itself fails - which it does for
+  // coincident extension points (no line to align a dimension to) or a
+  // `plane_normal` parallel to that line (no plane can be built from two
+  // parallel vectors).
+  int AddDimension(Point3d extension_point0, Point3d extension_point1,
+                    Point3d dimension_line_point, Vector3d plane_normal,
+                    const std::string& name = std::string(), int layer_index = -1,
+                    std::optional<Color> render_color = std::nullopt,
+                    const UserStrings& user_strings = UserStrings(),
+                    std::optional<int> linetype_index = std::nullopt,
+                    const std::vector<int>& group_indices = std::vector<int>(),
+                    std::optional<int> material_index = std::nullopt);
+
+  // Returns the number of dimensions added via AddDimension() above.
+  int DimensionCount() const;
+
+  // Returns the dimension at `dimension_index` (as counted by
+  // DimensionCount() above) - the read-side counterpart to
+  // AddDimension()'s own parameters, the same read-side gap every other
+  // `*At()` accessor above closes for its own table. `dimension_index`
+  // not naming a dimension this model actually has returns a
+  // default-constructed DimensionInfo.
+  DimensionInfo DimensionAt(int dimension_index) const;
 
   // Sets the model's length unit system - closing PARITY_MAP.md's own
   // "kernel-level data exchange" evidence for "Unit-system conversion":

@@ -797,7 +797,8 @@ InstanceReferenceInfo Model::InstanceReferenceAt(int index) const {
 }
 
 int Model::AddHatchPattern(const std::string& name, HatchFillType fill_type,
-                            const std::vector<HatchPatternLine>& lines) {
+                            const std::vector<HatchPatternLine>& lines,
+                            const std::string& description) {
   if (name.empty()) {
     return -1;
   }
@@ -805,6 +806,9 @@ int Model::AddHatchPattern(const std::string& name, HatchFillType fill_type,
   pattern.SetName(ON_wString(name.c_str()));
   pattern.SetFillType(fill_type == HatchFillType::Lines ? ON_HatchPattern::HatchFillType::Lines
                                                          : ON_HatchPattern::HatchFillType::Solid);
+  if (!description.empty()) {
+    pattern.SetDescription(ON_wString(description.c_str()));
+  }
   for (const HatchPatternLine& line : lines) {
     ON_SimpleArray<double> dash_array;
     for (double dash : line.dashes) {
@@ -856,6 +860,25 @@ HatchPatternLine Model::HatchPatternLineAt(int pattern_index, int line_index) co
   for (int i = 0; i < line->DashCount(); ++i) {
     result.dashes.push_back(line->Dash(i));
   }
+  return result;
+}
+
+HatchPatternInfo Model::HatchPatternAt(int pattern_index) const {
+  HatchPatternInfo result;
+  if (pattern_index < 0) {
+    return result;
+  }
+  const ON_ModelComponentReference pattern_ref =
+      model_.ComponentFromIndex(ON_ModelComponent::Type::HatchPattern, pattern_index);
+  const ON_HatchPattern* pattern = ON_HatchPattern::Cast(pattern_ref.ModelComponent());
+  if (pattern == nullptr) {
+    return result;
+  }
+  result.name = ToStdString(pattern->Name());
+  result.fill_type = pattern->FillType() == ON_HatchPattern::HatchFillType::Lines
+                          ? HatchFillType::Lines
+                          : HatchFillType::Solid;
+  result.description = ToStdString(pattern->Description());
   return result;
 }
 
@@ -1133,6 +1156,74 @@ LeaderInfo Model::LeaderAt(int leader_index) const {
       for (int i = 0; i < points2d.Count(); ++i) {
         result.points.push_back(result.plane.PointAt(points2d[i].x, points2d[i].y));
       }
+      return result;
+    }
+    ++position;
+  }
+  return result;
+}
+
+int Model::AddDimension(Point3d extension_point0, Point3d extension_point1,
+                         Point3d dimension_line_point, Vector3d plane_normal,
+                         const std::string& name, int layer_index, std::optional<Color> render_color,
+                         const UserStrings& user_strings, std::optional<int> linetype_index,
+                         const std::vector<int>& group_indices, std::optional<int> material_index) {
+  if (name.empty()) {
+    return -1;
+  }
+  ON_DimLinear* dimension = ON_DimLinear::CreateAligned(
+      extension_point0, extension_point1, dimension_line_point, plane_normal,
+      ON_DimStyle::Default.Id(), nullptr);
+  if (dimension == nullptr) {
+    return -1;
+  }
+  const int index = DimensionCount();
+  ON_3dmObjectAttributes attributes = MakeAttributes(
+      name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
+  model_.AddModelGeometryComponent(dimension, &attributes);
+  return index;
+}
+
+int Model::DimensionCount() const {
+  int count = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    if (ON_DimLinear::Cast(geometry_component->Geometry(nullptr)) != nullptr) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+DimensionInfo Model::DimensionAt(int dimension_index) const {
+  DimensionInfo result;
+  if (dimension_index < 0) {
+    return result;
+  }
+  int position = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_DimLinear* dimension = ON_DimLinear::Cast(geometry_component->Geometry(nullptr));
+    if (dimension == nullptr) {
+      continue;
+    }
+    if (position == dimension_index) {
+      const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+      if (attributes != nullptr) {
+        result.name = ToStdString(attributes->Name());
+      }
+      ON_3dPoint defpt1 = ON_3dPoint::UnsetPoint;
+      ON_3dPoint defpt2 = ON_3dPoint::UnsetPoint;
+      ON_3dPoint dimline_pt = ON_3dPoint::UnsetPoint;
+      dimension->Get3dPoints(&defpt1, &defpt2, nullptr, nullptr, &dimline_pt, nullptr);
+      result.extension_point0 = defpt1;
+      result.extension_point1 = defpt2;
+      result.dimension_line_point = dimline_pt;
+      result.measurement = dimension->Measurement();
       return result;
     }
     ++position;

@@ -9216,6 +9216,61 @@ void TestModelAddHatchPatternLinesRoundTrips() {
   std::remove(path.c_str());
 }
 
+void TestModelHatchPatternMetadataRoundTrips() {
+  using dino8::kernel::HatchFillType;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  // Narrows PARITY_MAP.md's own remaining "ON_HatchPattern's own other
+  // fields" gap further (TestModelAddHatchPatternLinesRoundTrips above
+  // closed the pattern's own dash/offset LINE table), and closes a
+  // read-side gap this document never named explicitly but that turned
+  // out to be real while doing so: HatchPatternCount()/
+  // HatchPatternLineCount()/HatchPatternLineAt() only ever report a
+  // pattern's own line table - nothing in this kernel could read a hatch
+  // pattern's own name, fill type, or description back at all, until
+  // HatchPatternAt() below (the same "no read-side accessor apart from
+  // raw()" situation ObjectAttributesAt()/LayerAt()/MaterialAt() etc.
+  // elsewhere in this file already closed for their own tables).
+  Model model;
+  const int solid_index = model.AddHatchPattern("Plain Solid");
+  Check(solid_index == 0, "the first AddHatchPattern() call returns index 0");
+  const auto solid_info = model.HatchPatternAt(solid_index);
+  Check(solid_info.name == "Plain Solid", "HatchPatternAt() reports the name AddHatchPattern() was given");
+  Check(solid_info.fill_type == HatchFillType::Solid,
+        "HatchPatternAt() reports Solid for a pattern added with the default fill_type");
+  Check(solid_info.description.empty(),
+        "HatchPatternAt() reports an empty description for a pattern added with no description argument");
+
+  const int lines_index =
+      model.AddHatchPattern("Cross-Hatch Named", HatchFillType::Lines, {}, "1/16in 45 degree crosshatch");
+  Check(lines_index == 1, "the second AddHatchPattern() call returns index 1");
+  const auto lines_info = model.HatchPatternAt(lines_index);
+  Check(lines_info.name == "Cross-Hatch Named", "HatchPatternAt() reports the second pattern's exact name");
+  Check(lines_info.fill_type == HatchFillType::Lines, "HatchPatternAt() reports the Lines fill_type given");
+  Check(lines_info.description == "1/16in 45 degree crosshatch",
+        "HatchPatternAt() reports the exact description AddHatchPattern() was given");
+
+  const auto out_of_range = model.HatchPatternAt(9999);
+  Check(out_of_range.name.empty(),
+        "HatchPatternAt() on a pattern index this model doesn't have returns a "
+        "default-constructed HatchPatternInfo, same contract as HatchAt()/TextDotAt() etc.");
+
+  const std::string path = "dino8_kernel_model_hatch_pattern_metadata_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with two named hatch patterns succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  const auto reloaded = loaded.HatchPatternAt(lines_index);
+  Check(reloaded.name == "Cross-Hatch Named", "the reloaded pattern's name survives the .3dm round trip");
+  Check(reloaded.fill_type == HatchFillType::Lines,
+        "the reloaded pattern's fill_type survives the .3dm round trip");
+  Check(reloaded.description == "1/16in 45 degree crosshatch",
+        "the reloaded pattern's description survives the .3dm round trip");
+
+  std::remove(path.c_str());
+}
+
 void TestModelAddTextDotRoundTrips() {
   using dino8::kernel::Model;
   using dino8::kernel::Point3d;
@@ -9386,6 +9441,73 @@ void TestModelAddLeaderRoundTrips() {
   }
 
   std::remove(path_file.c_str());
+}
+
+void TestModelAddDimensionRoundTrips() {
+  using dino8::kernel::Model;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // Closes the "dimensions" half of PARITY_MAP.md's own "annotations
+  // besides plain ON_Text (dimensions, leaders)" gap - the one item left
+  // after TestModelAddLeaderRoundTrips above closed leaders; before this,
+  // nothing in this kernel could create an ON_Dimension of any kind.
+  Model model;
+  Check(model.DimensionCount() == 0, "a fresh Model has no dimensions");
+
+  const Point3d ext0(0, 0, 0);
+  const Point3d ext1(5, 0, 0);
+  const Point3d dim_line_pt(2.5, 2, 0);
+  const Vector3d normal(0, 0, 1);
+
+  Check(model.AddDimension(ext0, ext1, dim_line_pt, normal, "") == -1,
+        "AddDimension() returns -1 for an empty name, same contract as AddText()/AddLeader() etc.");
+  Check(model.AddDimension(ext0, ext0, dim_line_pt, normal, "Coincident") == -1,
+        "AddDimension() returns -1 for coincident extension points - "
+        "ON_DimLinear::CreateAligned() itself refuses, since there is no line to align a dimension to");
+  const Vector3d zero_normal(0, 0, 0);
+  Check(model.AddDimension(ext0, ext1, dim_line_pt, zero_normal, "Zero Normal") == -1,
+        "AddDimension() returns -1 for a zero plane_normal - no plane can be built from it");
+  Check(model.DimensionCount() == 0, "none of the refused calls above added anything");
+
+  const int index = model.AddDimension(ext0, ext1, dim_line_pt, normal, "Dim A");
+  Check(index == 0, "the first real AddDimension() call returns index 0");
+  Check(model.DimensionCount() == 1, "model has one dimension after AddDimension()");
+  Check(model.ObjectCount() == 1,
+        "a dimension is a real model geometry object, also counted by ObjectCount()");
+
+  const auto info = model.DimensionAt(0);
+  Check(info.name == "Dim A", "DimensionAt() reports the name AddDimension() was given");
+  Check(info.extension_point0.DistanceTo(ext0) < 1e-9,
+        "DimensionAt() reports the exact first extension point AddDimension() was given");
+  Check(info.extension_point1.DistanceTo(ext1) < 1e-9,
+        "DimensionAt() reports the exact second extension point AddDimension() was given");
+  Check(std::abs(info.measurement - 5.0) < 1e-9,
+        "the dimension's own Measurement() matches the exact distance between the two extension points, "
+        "regardless of where the dimension line itself was placed");
+
+  const auto out_of_range = model.DimensionAt(9999);
+  Check(out_of_range.name.empty(),
+        "DimensionAt() on an index this model doesn't have returns a default-constructed "
+        "DimensionInfo, same contract as LeaderAt() etc.");
+
+  const std::string path = "dino8_kernel_model_dimension_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a dimension succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.DimensionCount() == 1, "the dimension survives the .3dm round trip");
+  const auto reloaded = loaded.DimensionAt(0);
+  Check(reloaded.name == "Dim A", "the reloaded dimension's name survives the round trip");
+  Check(reloaded.extension_point0.DistanceTo(ext0) < 1e-6,
+        "the reloaded dimension's first extension point survives the round trip");
+  Check(reloaded.extension_point1.DistanceTo(ext1) < 1e-6,
+        "the reloaded dimension's second extension point survives the round trip");
+  Check(std::abs(reloaded.measurement - 5.0) < 1e-6,
+        "the reloaded dimension's measurement survives the round trip");
+
+  std::remove(path.c_str());
 }
 
 void TestModelUnitConversionFactor() {
@@ -64727,9 +64849,11 @@ int main() {
   TestModelAddInstanceReferenceRoundTrips();
   TestModelAddHatchRoundTrips();
   TestModelAddHatchPatternLinesRoundTrips();
+  TestModelHatchPatternMetadataRoundTrips();
   TestModelAddTextDotRoundTrips();
   TestModelAddTextAnnotationRoundTrips();
   TestModelAddLeaderRoundTrips();
+  TestModelAddDimensionRoundTrips();
   TestModelUnitConversionFactor();
   TestModelConvertUnitsScalesGeometryAndUpdatesUnitSystem();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
