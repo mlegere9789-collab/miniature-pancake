@@ -2136,6 +2136,8 @@ Screen-reader support and Plugin marketplace both moving `missing`->
 
 *2026-10-01 re-score correction: File I/O & interoperability's own row had already moved from 8/5/4 to 9/4/4 (61.8% -> 64.7%, OBJ/native .3dm/DXF rotation above) by the time of the prior update to this table, but this row's remaining-item count was left at the pre-rotation value of 9 instead of the post-rotation 4+4=8. Corrected here: ratio 0.111 -> 0.125. Rank order is unchanged (still 7th, between SubD & mesh modeling toolset at 0.150 and Ecosystem at 0.056).*
 
+*2026-10-05: 2D drafting's own remaining count dropped 3 -> 2 (Dynamic blocks closes `partial`->`present` - Stretch, the one gap left of the five parameter/action types this item tracks, is now real - see that category's own note below), moving its weight/remaining ratio from 0.333 to 0.500 - already rank 1, now further ahead of every other category in either table. Every other row is unchanged.*
+
 *2026-10-01, a further update: File I/O & interoperability's STEP AP242 bullet closes `[missing]`->`[present]` (10/4/3, 70.6%; see the category's own note above), dropping its remaining count 8 -> 7 and its ratio 0.125 -> 0.143 (DXF's own TEXT-writer narrowing the same pass doesn't change its partial/missing counts, so this is the only count change). Rank order is unchanged (still 7th, between SubD & mesh modeling toolset at 0.150 and Ecosystem at 0.056).*
 
 *2026-10-01, a further update (concurrent session): Viewport display, rendering & visualization's own remaining count dropped 5 -> 4 (Real-time shadow maps closed `partial`->`present` - see the category's own bullet above and its dated rotation note), moving its weight/remaining ratio 0.200 -> 0.250 - now tied with Scripting at rank 2 rather than sitting alone at rank 3 below it; Command system & core commands, untouched this pass, keeps rank 4 (the tie above it still skips 3, the same competition-ranking convention this table already uses elsewhere). Every other row is unchanged.*
@@ -7966,6 +7968,48 @@ and untagged-and-unaffected points; 4 for PlotStyle: two layers' shared red,
 both flipping to blue together, and the cleared layer's black versus the
 still-assigned layer's blue).
 
+**2026-10-05, a concurrent session attempting the same "Dynamic blocks"/"Print
+and plot output" closures above independently found both already landed by
+the rotation just recorded, reconciled to a net-zero no-op on those two
+items - but surfaced and fixed a real, independently-confirmed pre-existing
+bug along the way:** `Document::UserText()` (the `dino8.block_instances`
+JSON every `BlockInstance` field, including this category's own Flip/Array/
+Lookup/Stretch parameters, round-trips through) was never actually part of
+`Document::Capture()`/`Restore()` or the diff-based `StateDelta` Undo/Redo
+path - `BlockInstances.h`'s own comment claimed otherwise ("survives
+Undo/Redo for free"), but neither `BeginChange`/`BeginChangeForObjects`/
+`FinalizePending` nor `ApplyDelta` ever read or wrote `user_text_`, so
+`BlockToggleFlip`/`SetBlockInstanceArrayCount`/`SetBlockInstanceLookup`/
+`SetBlockInstanceStretch` (every dynamic-block command that only edits
+`UserText()`) silently left a placed instance's own record - and, since
+`RebuildBlockInstance` deletes and recreates its objects, the rebuilt
+geometry too - at the post-edit state after an `Undo()`. Fixed by adding
+`user_text`/`user_text_before`/`user_text_after` fields to `Document::
+Snapshot`/`StateDelta`/`PendingChange` (`doc/Document.h`) and wiring them
+through every call site that already handles `layers_`/`groups_`/etc. the
+same way (`Capture`/`Restore`/`CaptureSnapshotAsDocument`/
+`AdoptNamedSnapshotFromDocument`/`BeginChange`/`BeginChangeForObjects`/
+`FinalizePending`/`ApplyDelta`, `doc/Document.cpp`) - a pure addition
+alongside every existing field in those three structs, not a behavior
+change for anything that already worked. Proven with a new, Document-level,
+feature-independent test (`tests/test_document_undo_usertext.cpp`, not tied
+to blocks or any other `UserText()` consumer): two chained `BeginChange`
+edits to a plain `UserText()` key, each checked immediately after, then
+`Undo()` twice and `Redo()` twice, confirming the key's value actually
+rewinds/replays step by step (not just "ends up right") - and a
+`SaveNamedSnapshot`/`RestoreNamedSnapshot` round trip, proving the
+`Capture()`/`Restore()` path independently of the diff-based one. This
+category's own counts are unaffected (already correctly recorded above);
+the fix matters for every `UserText()`-backed feature on this branch, this
+category's dynamic-block parameters included. New source: none (fix only,
+no new files). Changed: `dino8-app/src/doc/Document.h`/`.cpp`. New test:
+`tests/test_document_undo_usertext.cpp` (`dino8_document_undo_usertext`
+ctest target). Full `ctest` suite re-run clean (37/37 targets, including
+this one new target) after merging onto the rotation above's own work,
+which landed concurrently and independently reached the identical
+`[present]`/16-2-0-18/94.4%/78.8% result this note's own earlier draft had
+also computed before the merge revealed the duplication.
+
 **2026-09-30 rotation on "Viewport display, rendering & visualization"**
 (app_display, a separate session on this same branch): two real, tested,
 narrower fixes on two already-`[partial]` items, neither flipping status -
@@ -8448,8 +8492,8 @@ top 40:
 - [app/app_commands] Surface construction commands — Patch beyond planar, tolerance-controlled sweeps (partial)
 - [app/app_commands] Command-level feature editing — broader parametric re-run (partial)
 - [app/app_drafting] Associative annotation updating — hook document edits (partial)
-- [app/app_drafting] Print and plot output — plot styles (CTB/STB) and printer-device output (partial; lineweights/print widths narrowed this closed 2026-09-30 - see the category bullet above)
-- [app/app_drafting] Dynamic blocks — stretch/array/lookup actions (partial; Flip narrowed this closed 2026-09-30 - see the category bullet above)
+- [app/app_drafting] Print and plot output — printer-device output (partial; lineweights/print widths/plot colors and a real named/reusable plot style table all narrowed this closed 2026-09-30/2026-10-05 - see the category bullet above)
+- [app/app_drafting] ~~Dynamic blocks — stretch/array/lookup actions~~ **closed** (present; Flip/Array/Lookup/Stretch are all real now, the last of them (Stretch) closing this 2026-10-05 - see the category bullet above for detail)
 - [app/app_drafting] ~~Live external data linking — native .xlsx~~ **closed** (present; drafting/Xlsx.h/.cpp is a real ZIP + minimal OOXML SpreadsheetML codec, dispatched by DataLink/DataLinkUpdate's File= extension - see the category bullet above for detail)
 - [app/app_display] Environments and image-based lighting — HDRI loader and lighting contribution (partial)
 - [app/app_scripting] Embedded Python 3 — enable on Windows builds (partial)
