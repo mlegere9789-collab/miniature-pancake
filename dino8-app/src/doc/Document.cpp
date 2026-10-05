@@ -28,6 +28,7 @@ void Document::Clear() {
   named_views_.clear();
   linetypes_ = DefaultLinetypes();
   annotation_styles_ = {AnnotationStyle{}};
+  plot_styles_.clear();
   layer_states_.clear();
   named_cplanes_.clear();
   guides_.clear();
@@ -604,6 +605,20 @@ bool Document::RemoveAnnotationStyle(const std::string& name) {
   const auto it = std::find_if(annotation_styles_.begin(), annotation_styles_.end(), [&](const AnnotationStyle& a) { return a.name == name; });
   if (it == annotation_styles_.end()) return false;
   annotation_styles_.erase(it);
+  Touch();
+  return true;
+}
+
+PlotStyle* Document::FindPlotStyle(const std::string& name) {
+  for (PlotStyle& s : plot_styles_) if (s.name == name) return &s;
+  return nullptr;
+}
+
+bool Document::RemovePlotStyle(const std::string& name) {
+  for (const Layer& l : layers_) if (l.plot_style == name) return false;
+  const auto it = std::find_if(plot_styles_.begin(), plot_styles_.end(), [&](const PlotStyle& s) { return s.name == name; });
+  if (it == plot_styles_.end()) return false;
+  plot_styles_.erase(it);
   Touch();
   return true;
 }

@@ -45,6 +45,10 @@ bool ObjectVisibleInState(const SceneObject& def_object, const std::string& stat
   return false;
 }
 
+bool ObjectMovesWithStretch(const SceneObject& def_object) {
+  return def_object.user_text.count(kBlockStretchKey) > 0;
+}
+
 std::vector<BlockInstance> LoadBlockInstances(const Document& doc) {
   std::vector<BlockInstance> out;
   auto it = const_cast<Document&>(doc).UserText().find(kUserTextKey);
@@ -66,6 +70,7 @@ std::vector<BlockInstance> LoadBlockInstances(const Document& doc) {
     // (kMaxBlockArrayCount) only helps once this is a well-defined int.
     b.array_count = arr.number > 0 ? static_cast<int>(std::min(arr.number, 1e9)) : 1;
     b.lookup_key = v["lookup"].AsString();
+    b.stretch_amount = v["stretch"].number;
     const json::Value& objs = v["objects"];
     for (size_t j = 0; j < objs.Size(); ++j) b.objects.push_back(static_cast<ObjectId>(objs[j].number));
     out.push_back(std::move(b));
@@ -82,6 +87,7 @@ void SaveBlockInstances(Document& doc, const std::vector<BlockInstance>& list) {
         << ",\"state\":\"" << JsonEscape(b.state) << "\""
         << ",\"ix\":" << b.insert.x << ",\"iy\":" << b.insert.y << ",\"iz\":" << b.insert.z
         << ",\"flip\":" << (b.flipped ? 1 : 0) << ",\"array\":" << b.array_count
+        << ",\"stretch\":" << b.stretch_amount
         << ",\"lookup\":\"" << JsonEscape(b.lookup_key) << "\",\"objects\":[";
     for (size_t j = 0; j < b.objects.size(); ++j) out << (j ? "," : "") << b.objects[j];
     out << "]}";
@@ -127,7 +133,17 @@ namespace {
 // above any plausible real use (a bolt-pattern/rebar array).
 constexpr int kMaxBlockArrayCount = 2000;
 
-std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, kernel::Point3d at, const std::string& state, bool flipped, int array_count) {
+// `stretch_amount` is a signed distance along `def.stretch_axis`; only
+// objects tagged kBlockStretchKey (BlockSetStretchGroup) actually move, and
+// only when `stretch_amount` is nonzero - a definition with no tagged
+// object, or an instance with amount 0 (the default), leaves every object
+// exactly where Flip/Array alone would put it. The stretch translation is
+// composed as the rightmost (innermost) factor, the same local-space-first
+// order the mirror-flip transform above already establishes ("transform in
+// place, then move"), so a tagged object's own stretch offset is itself
+// mirrored/arrayed along with the rest of the instance rather than applied
+// in world space afterward.
+std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, kernel::Point3d at, const std::string& state, bool flipped, int array_count, double stretch_amount) {
   ON_Xform xf = ON_Xform::TranslationTransformation(at - def.base);
   if (flipped) {
     const kernel::Vector3d n(1, 0, 0);
@@ -142,6 +158,9 @@ std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, k
     if (!step.Unitize()) step = kernel::Vector3d(1, 0, 0);
     step *= def.array_spacing;
   }
+  kernel::Vector3d stretch_dir = def.stretch_axis;
+  if (!stretch_dir.Unitize()) stretch_dir = kernel::Vector3d(1, 0, 0);
+  const ON_Xform stretch_local = ON_Xform::TranslationTransformation(stretch_dir * stretch_amount);
   std::vector<ObjectId> ids;
   for (int k = 0; k < count; ++k) {
     const ON_Xform step_xf = ON_Xform::TranslationTransformation(step * static_cast<double>(k)) * xf;
@@ -150,7 +169,8 @@ std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, k
       SceneObject c = o;
       c.id = kNoObject;
       c.selected = false;
-      c.Transform(step_xf);
+      const bool moves = stretch_amount != 0 && ObjectMovesWithStretch(o);
+      c.Transform(moves ? (step_xf * stretch_local) : step_xf);
       c.user_text["Block"] = def.name;
       c.user_text["BlockInsert"] = std::to_string(at.x) + "," + std::to_string(at.y) + "," + std::to_string(at.z);
       if (count > 1) c.user_text["BlockArrayIndex"] = std::to_string(k);
@@ -174,7 +194,7 @@ int InstantiateDynamicBlock(Document& doc, const std::string& name, kernel::Poin
   if (!def) return -1;
   std::string active = state;
   if (active.empty() && !def->states.empty()) active = def->states.front();
-  const std::vector<ObjectId> ids = PlaceFiltered(doc, *def, at, active, false, 1);
+  const std::vector<ObjectId> ids = PlaceFiltered(doc, *def, at, active, false, 1, 0.0);
   // Same anchor-object provenance as the static-block path in
   // InstantiateBlockInDocument (cmd_drafting.cpp) - see ProvenanceInfo's
   // comment in doc/Document.h.
@@ -202,7 +222,7 @@ bool RebuildBlockInstance(Document& doc, int group) {
   if (!def) return false;
   for (ObjectId id : it->objects) doc.Remove(id);
   const std::string place_state = ResolveLookupState(*def, it->lookup_key, it->state);
-  it->objects = PlaceFiltered(doc, *def, it->insert, place_state, it->flipped, it->array_count);
+  it->objects = PlaceFiltered(doc, *def, it->insert, place_state, it->flipped, it->array_count, it->stretch_amount);
   // Re-attach the fresh objects to the same group id so selection/explode
   // (which key off Document::Group membership) still find this instance,
   // and rebuild the anchor-object provenance the same way InstantiateDynamicBlock does.
@@ -244,6 +264,15 @@ bool SetBlockInstanceLookup(Document& doc, int group, const std::string& key) {
   auto it = std::find_if(list.begin(), list.end(), [&](const BlockInstance& b) { return b.group == group; });
   if (it == list.end()) return false;
   it->lookup_key = key;
+  SaveBlockInstances(doc, list);
+  return RebuildBlockInstance(doc, group);
+}
+
+bool SetBlockInstanceStretch(Document& doc, int group, double amount) {
+  std::vector<BlockInstance> list = LoadBlockInstances(doc);
+  auto it = std::find_if(list.begin(), list.end(), [&](const BlockInstance& b) { return b.group == group; });
+  if (it == list.end()) return false;
+  it->stretch_amount = amount;
   SaveBlockInstances(doc, list);
   return RebuildBlockInstance(doc, group);
 }
