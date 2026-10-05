@@ -148,6 +148,55 @@ struct HoleFeature {
 // no such case is known.
 std::vector<HoleFeature> RecognizeHoles(const Brep& solid);
 
+// Copies a recognized HoleFeature to a new location by cutting an
+// ADDITIONAL hole with the same radius/depth/through, at the image of
+// `hole`'s own (origin, axis) under `xform` - a real, B-rep feature-level
+// half of PARITY_MAP.md's "Move / copy / rotate / mirror a hole feature"
+// item (whose app-level ApplyHoleXform, cmd_solidtools.cpp, only ever
+// rebuilds a MESH by re-subtracting a stored cutter mesh - never a genuine
+// feature edit). A plain rotation/translation `xform` reproduces "copy" or
+// "rotate" (a bolt-circle pattern is exactly N calls, one per rotation,
+// about a shared external axis); a reflection `xform` (e.g.
+// ON_Xform::Mirror) reproduces "mirror" - the SAME code path handles all
+// three, since none of them needs anything beyond "transform the hole's own
+// axis frame, then drill again."
+//
+// `xform` is applied to `hole`'s own (origin, axis) together as a single
+// rigid frame (an arbitrary perpendicular x/y pair completing `axis` into a
+// full orthonormal basis, then ON_Plane::Transform(xform) on the whole
+// frame) rather than to `origin` and `axis` separately - the same
+// "transform a plane, not a bare point/vector pair" discipline
+// MoveFaceConvexPlanar() (boolean.h) already uses, so a reflection's own
+// linear part correctly flips the drilling direction along with the
+// location in one consistent step, and the transformed axis comes back
+// re-unitized by construction. The transformed origin/axis, together with
+// `hole`'s own UNCHANGED radius/depth/through, are fed straight to
+// MakeHole() (boolean_general.h), so this inherits MakeHole()'s own
+// preconditions and scope exactly - in particular, a `through` hole's own
+// cutter still extends an absolute distance derived from `solid`'s own
+// bounding box, not anything scaled by `xform`.
+//
+// Deliberately does NOT implement an in-place "move": that would also
+// require restoring material at the ORIGINAL (origin, axis, radius, depth,
+// through) location first - the geometric inverse of MakeHole(), which this
+// kernel has no general implementation of yet. Naively Union-ing
+// MakeHole()'s own cutting tool back in would NOT exactly restore the
+// original solid in every case: a through hole's own tool is deliberately
+// extended far past `solid`'s bounding box (and every tool is backed off
+// its own entry point by a small margin - see MakeHole()'s own doc
+// comment), so unioning it back would re-add material OUTSIDE the original
+// solid's own silhouette, not just refill the bore. A caller wanting the
+// appearance of a "move" today must call this function for the new
+// location and separately accept that the original hole remains - still a
+// real, disclosed gap in this same PARITY_MAP.md item.
+//
+// Throws std::invalid_argument if `xform`'s own linear part collapses
+// `hole.axis`'s completed frame to a degenerate (non-orthonormal-invertible)
+// plane, plus whatever MakeHole() itself throws for `hole`'s own
+// radius/depth/through (non-positive radius, non-positive depth on a blind
+// hole) or a `solid` with no faces at all.
+Brep CopyHoleFeature(const Brep& solid, const HoleFeature& hole, const ON_Xform& xform);
+
 // One boss/pin recognized on an existing solid (parity-map "Feature
 // recognition" - the "boss" half of its own "still no hole/boss/pocket
 // recognition" gap, closed alongside RecognizeHoles() above): the
