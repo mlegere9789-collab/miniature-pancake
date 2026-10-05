@@ -1172,6 +1172,13 @@ Interval NurbsCurve::Domain() const {
   return Interval{domain.Min(), domain.Max()};
 }
 
+Result NurbsCurve::SetDomain(double t0, double t1) {
+  if (!(t0 < t1)) return Result::Failed;
+  const Interval current = Domain();
+  if (current.min == t0 && current.max == t1) return Result::NoOpAlreadySatisfied;
+  return curve_.SetDomain(t0, t1) ? Result::Ok : Result::Failed;
+}
+
 Point3d NurbsCurve::PointAt(double t) const {
   ON_3dPoint pt;
   curve_.EvPoint(t, pt);
