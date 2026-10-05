@@ -736,7 +736,7 @@ if(DINO8_BUILD_TESTS)
   # dino8.block_instances JSON user-text every other BlockInstance field
   # already round-trips through, and is a no-op (falls back to `state`) on
   # a definition with no configured table. See PARITY_MAP.md's "Dynamic
-  # blocks" item - the fourth and last parameter/action type, after
+  # blocks" item - the fourth of five parameter/action types, after
   # Visibility states, Flip and Array. Same dependency shape as
   # dino8_test_block_array above.
   add_executable(dino8_test_block_lookup tests/test_block_lookup.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
@@ -745,6 +745,24 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_block_lookup PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_test_block_lookup PRIVATE dino8_kernel)
   add_test(NAME dino8_block_lookup COMMAND dino8_test_block_lookup)
+
+  # Dynamic-block Stretch parameter (src/doc/BlockInstances.cpp's
+  # SetBlockInstanceStretch/PlaceFiltered/StretchObjectInPlace): stretches a
+  # placed instance's own geometry to a target length along its block's
+  # stretch axis/frame, reusing the exact StretchMap point-map formula the
+  # app's own top-level Stretch command already applies to any selection
+  # (commands/cmd_meshtools.cpp), persists through the same
+  # dino8.block_instances JSON user-text every other BlockInstance field
+  # already round-trips through, and is a no-op on a definition with no
+  # configured frame. See PARITY_MAP.md's "Dynamic blocks" item - the fifth
+  # and last parameter/action type, after Visibility states, Flip, Array
+  # and Lookup. Same dependency shape as dino8_test_block_lookup above.
+  add_executable(dino8_test_block_stretch tests/test_block_stretch.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                           src/doc/SubObjectEdit.cpp src/doc/BlockInstances.cpp
+                                           src/geom/BrepMesher.cpp src/util/json_mini.cpp)
+  target_include_directories(dino8_test_block_stretch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_block_stretch PRIVATE dino8_kernel)
+  add_test(NAME dino8_block_stretch COMMAND dino8_test_block_stretch)
 
   # AnnotationStyle::precision/unit_suffix/ext_offset/ext_extension/
   # text_placement / DimStyleParams+FormatMeasurement (commands/DimGeometry.h)
@@ -778,6 +796,18 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_plot_color PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_test_plot_color PRIVATE dino8_kernel)
   add_test(NAME dino8_plot_color COMMAND dino8_test_plot_color)
+
+  # PlotStyle / Layer::plot_style_name / LayerPrints/EffectivePrintWidthMm/
+  # EffectivePlotColor's `style` resolution (doc/Document.h) - the actual
+  # "no named, reusable plot style table" gap PARITY_MAP.md's "Print and
+  # plot output" item still names after print_width_mm/plot_color closed
+  # the per-layer lineweight/color overrides above. See
+  # tests/test_plot_style_table.cpp's own file comment. Same purely-
+  # header-only dependency shape as dino8_test_print_width/dino8_test_plot_color.
+  add_executable(dino8_test_plot_style_table tests/test_plot_style_table.cpp)
+  target_include_directories(dino8_test_plot_style_table PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_plot_style_table PRIVATE dino8_kernel)
+  add_test(NAME dino8_plot_style_table COMMAND dino8_test_plot_style_table)
 
   # Keyboard-shortcut chord table (src/app/ShortcutRules.cpp's
   # IsReservedShortcut): every chord Application::HandleShortcuts hardcodes

@@ -76,33 +76,79 @@ struct Layer {
   // no spare channel to encode "unset" in in the first place.
   bool has_plot_color = false;
   Color plot_color = Color::FromBytes(0, 0, 0);
+  // Named plot style (PlotStyleTable/LayerPlotStyle, cmd_layer.cpp): the
+  // actual remaining "no *named, reusable* plot style table" gap
+  // PARITY_MAP.md's "Print and plot output" item still names after
+  // print_width_mm/plot_color above closed the per-layer lineweight/color
+  // halves - real Rhino/AutoCAD's CTB/STB table defines a style ("Thin",
+  // "Monochrome") once and assigns it to several layers, rather than each
+  // layer carrying its own independent two fields. Empty (the default)
+  // means "no named style assigned", so an ordinary layer with only its
+  // own print_width_mm/plot_color set is completely unaffected - see
+  // EffectivePrintWidthMm/EffectivePlotColor/LayerPrints below for how an
+  // assigned, resolved style takes over from those per-layer fields one
+  // channel at a time. Unlike print_width_mm/plot_color, this has no
+  // native .3dm field to round-trip through (OpenNURBS has no reusable
+  // named plot-style-table concept of its own) - persisted instead as a
+  // "Dino8.LayerPlotStyle.<layer name>" document user-string (io/File3dm.cpp),
+  // the same way LayerState's own per-layer data already is.
+  std::string plot_style_name;
+};
+
+// A named, reusable plot style (real Rhino/AutoCAD's CTB/STB "plot style
+// table" entry): one (color, lineweight) pair defined once and assigned by
+// name to any number of layers (Layer::plot_style_name), so changing the
+// one style changes every layer that uses it - the actual gap
+// PARITY_MAP.md's "Print and plot output" item still names after
+// Layer::print_width_mm/plot_color closed the equivalent *per-layer*
+// overrides. `has_color`/`width_mm == 0` mean "this style doesn't override
+// that channel" (the exact same per-channel optionality has_plot_color and
+// print_width_mm == 0 already have at the per-layer level) - a style can
+// set only a color, only a width, or both, and a width < 0 means "a layer
+// using this style does not print at all", mirroring print_width_mm's own
+// negative convention. Persisted as one "Dino8.PlotStyle.<name>" document
+// user-string per style (io/File3dm.cpp), the same way AnnotationStyles are.
+struct PlotStyle {
+  std::string name;
+  bool has_color = false;
+  Color color = Color::FromBytes(0, 0, 0);
+  double width_mm = 0;
 };
 
 // Whether a layer's objects should appear in a vector Print/Export at all -
 // io/FileExchange.cpp's CollectPaths skips every object on a layer this
-// returns false for (Layer::print_width_mm's negative case). Unrelated to
-// Layer::visible/locked (on-screen display), same as real Rhino's own
-// PlotWeight < 0 convention this mirrors.
-inline bool LayerPrints(const Layer& layer) { return layer.print_width_mm >= 0; }
+// returns false for (Layer::print_width_mm's negative case, or an assigned
+// `style`'s own width_mm < 0). Unrelated to Layer::visible/locked (on-screen
+// display), same as real Rhino's own PlotWeight < 0 convention this mirrors.
+// `style` is the layer's resolved Layer::plot_style_name lookup (Document::
+// FindPlotStyle), or nullptr when it has none/an unresolved one - the
+// default, so every pre-existing call site (no style in play) is unaffected.
+inline bool LayerPrints(const Layer& layer, const PlotStyle* style = nullptr) {
+  const double w = (style && style->width_mm != 0) ? style->width_mm : layer.print_width_mm;
+  return w >= 0;
+}
 
 // The print width a layer's paths should actually be stroked at
 // (io/FileExchange.cpp's ExportSvg/ExportPdf), once LayerPrints() has
-// already ruled out the non-printing case: an explicit positive
-// print_width_mm, else `doc_default` (DrawingOptions::line_width_mm) for
-// the default (0) case. Pure and header-only so it is unit-testable
-// (tests/test_print_width.cpp) without pulling in FileExchange.cpp's much
-// heavier Viewport/GL dependencies.
-inline double EffectivePrintWidthMm(const Layer& layer, double doc_default) {
-  return layer.print_width_mm > 0 ? layer.print_width_mm : doc_default;
+// already ruled out the non-printing case: an assigned style's own
+// width_mm when it sets one (non-zero), else the layer's own
+// print_width_mm if positive, else `doc_default`
+// (DrawingOptions::line_width_mm) for the default (0) case. Pure and
+// header-only so it is unit-testable (tests/test_print_width.cpp) without
+// pulling in FileExchange.cpp's much heavier Viewport/GL dependencies.
+inline double EffectivePrintWidthMm(const Layer& layer, double doc_default, const PlotStyle* style = nullptr) {
+  const double w = (style && style->width_mm != 0) ? style->width_mm : layer.print_width_mm;
+  return w > 0 ? w : doc_default;
 }
 
 // The pen color a layer's paths should actually be stroked at (io/
-// FileExchange.cpp's ExportSvg/ExportPdf): the layer's own plot_color
-// override when set (LayerPlotColor, cmd_layer.cpp), else `display_color`
-// (the object's own on-screen EffectiveColor) unchanged. Pure and
-// header-only for the same unit-testability reason EffectivePrintWidthMm
-// above is.
-inline Color EffectivePlotColor(const Layer& layer, const Color& display_color) {
+// FileExchange.cpp's ExportSvg/ExportPdf): an assigned style's own color
+// when it sets one, else the layer's own plot_color override when set
+// (LayerPlotColor, cmd_layer.cpp), else `display_color` (the object's own
+// on-screen EffectiveColor) unchanged. Pure and header-only for the same
+// unit-testability reason EffectivePrintWidthMm above is.
+inline Color EffectivePlotColor(const Layer& layer, const Color& display_color, const PlotStyle* style = nullptr) {
+  if (style && style->has_color) return style->color;
   return layer.has_plot_color ? layer.plot_color : display_color;
 }
 
@@ -145,6 +191,25 @@ struct BlockDefinition {
   // "no-op until configured" contract array_spacing == 0 gives Array.
   std::vector<std::string> lookup_keys;
   std::vector<std::string> lookup_states;
+  // Stretch parameter (BlockSetStretchFrame, doc/BlockInstances.h): the
+  // fifth and last dynamic-block parameter/action type alongside
+  // Visibility states, Flip, Array and Lookup. Names a stretch frame as one
+  // axis and one length from the block's own base point - the same
+  // axis+length shape `array_axis`/`array_spacing` already use for Array -
+  // and reuses the app's existing, already-tested `StretchMap` deformation
+  // (cmd_meshtools.cpp, the same math the real top-level `Stretch` command
+  // applies to any selection) rather than a new one-off formula: geometry
+  // at or before the base point along the axis stays put, geometry at or
+  // past `stretch_length` along the axis translates by the full change in
+  // length, and geometry in between scales linearly - a placed instance's
+  // own target length (BlockInstance::stretch_length, set via
+  // BlockSetStretch) is what it stretches to. A definition that never
+  // calls BlockSetStretchFrame keeps stretch_length at 0, which
+  // PlaceFiltered treats as "no stretch parameter defined" and leaves
+  // geometry exactly as built, the same "no-op until configured" contract
+  // array_spacing == 0 gives Array.
+  kernel::Vector3d stretch_axis{1, 0, 0};
+  double stretch_length = 0;
 };
 
 struct Group {
@@ -776,6 +841,11 @@ class Document {
   std::vector<LayerState>& LayerStates() { return layer_states_; }
   const std::vector<LayerState>& LayerStates() const { return layer_states_; }
   LayerState* FindLayerState(const std::string& name);
+  // ---- Plot styles (named, reusable CTB/STB-style color/lineweight table) --
+  std::vector<PlotStyle>& PlotStyles() { return plot_styles_; }
+  const std::vector<PlotStyle>& PlotStyles() const { return plot_styles_; }
+  PlotStyle* FindPlotStyle(const std::string& name);
+  const PlotStyle* FindPlotStyle(const std::string& name) const;
   // Removes an annotation style by name (refuses the current one, see
   // DocumentSettings::annotation_style). Returns false if not found or protected.
   bool RemoveAnnotationStyle(const std::string& name);
@@ -1204,6 +1274,7 @@ class Document {
   std::vector<Linetype> linetypes_;
   std::vector<AnnotationStyle> annotation_styles_;
   std::vector<LayerState> layer_states_;
+  std::vector<PlotStyle> plot_styles_;
   std::vector<ReferenceModel> reference_models_;
   std::map<ObjectId, HoleFeature> hole_features_;
   std::map<ObjectId, PipeFeature> pipe_features_;

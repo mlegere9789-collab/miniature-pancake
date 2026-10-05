@@ -1,0 +1,49 @@
+# BlockSetStretchFrame/BlockSetStretch command-line wiring (PARITY_MAP.md
+# "Dynamic blocks" Stretch parameter - the fifth and last parameter/action
+# type alongside Visibility states, Flip (BlockToggleFlip), Array
+# (BlockSetArraySpacing/BlockSetArrayCount) and Lookup
+# (BlockSetLookupTable/BlockSetLookup), which all four already closed). The
+# Document-level SetBlockInstanceStretch/PlaceFiltered/StretchObjectInPlace
+# math itself is unit-tested directly in test_block_stretch.cpp; this
+# instead exercises the real scriptable commands end to end.
+#
+# A one-Point block "StrBlk" (local point at 5,0,0) placed at insert point
+# 100,0,0, then configured with a 10-unit X-axis stretch frame from the
+# block's own base point and stretched to a target length of 20: the local
+# point sits inside the frame (0 <= 5 < 10), so it moves by the graded
+# StretchMap amount (5 -> 10, doubling with the frame), landing the placed
+# instance at exactly 110,0,0 (local 10,0,0 plus the 100,0,0 insert) - not
+# left at the plain unstretched 105,0,0.
+Point 5,0,0
+SelLast
+Block
+0,0,0
+StrBlk
+BlockAddState
+StrBlk
+Default
+BlockSetStretchFrame
+StrBlk
+Axis=X
+10
+Insert
+StrBlk
+100,0,0
+Enter
+SelLast
+BlockSetStretch
+20
+SelBlockInstanceOf
+StrBlk
+List
+
+# Reversible: setting the target length back to 0 clears the override and
+# falls back to the definition's own stretch_length (10, the identity
+# case), so the instance returns to its plain unstretched position
+# (local 5,0,0 plus the 100,0,0 insert = 105,0,0).
+SelLast
+BlockSetStretch
+0
+SelBlockInstanceOf
+StrBlk
+List

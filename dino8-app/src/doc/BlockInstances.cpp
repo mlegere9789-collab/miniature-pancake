@@ -66,6 +66,7 @@ std::vector<BlockInstance> LoadBlockInstances(const Document& doc) {
     // (kMaxBlockArrayCount) only helps once this is a well-defined int.
     b.array_count = arr.number > 0 ? static_cast<int>(std::min(arr.number, 1e9)) : 1;
     b.lookup_key = v["lookup"].AsString();
+    b.stretch_length = v["stretch"].number;
     const json::Value& objs = v["objects"];
     for (size_t j = 0; j < objs.Size(); ++j) b.objects.push_back(static_cast<ObjectId>(objs[j].number));
     out.push_back(std::move(b));
@@ -82,7 +83,8 @@ void SaveBlockInstances(Document& doc, const std::vector<BlockInstance>& list) {
         << ",\"state\":\"" << JsonEscape(b.state) << "\""
         << ",\"ix\":" << b.insert.x << ",\"iy\":" << b.insert.y << ",\"iz\":" << b.insert.z
         << ",\"flip\":" << (b.flipped ? 1 : 0) << ",\"array\":" << b.array_count
-        << ",\"lookup\":\"" << JsonEscape(b.lookup_key) << "\",\"objects\":[";
+        << ",\"lookup\":\"" << JsonEscape(b.lookup_key) << "\",\"stretch\":" << b.stretch_length
+        << ",\"objects\":[";
     for (size_t j = 0; j < b.objects.size(); ++j) out << (j ? "," : "") << b.objects[j];
     out << "]}";
   }
@@ -127,7 +129,44 @@ namespace {
 // above any plausible real use (a bolt-pattern/rebar array).
 constexpr int kMaxBlockArrayCount = 2000;
 
-std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, kernel::Point3d at, const std::string& state, bool flipped, int array_count) {
+// Stretch parameter: the exact same point-map formula as the app's
+// top-level `Stretch` command's own `StretchMap` (commands/cmd_meshtools.cpp)
+// - geometry at or before `a` along `u` is unmoved, geometry at or past
+// `a + u*len` translates by the full `new_len - len`, geometry in between
+// scales linearly - applied directly to an object's own points/control
+// points in its local (pre insert/flip/array) space, before PlaceFiltered's
+// other transforms. Mesh/Point/Curve cover every object kind a dynamic
+// block's own 2D-drafting geometry (lines, polylines, arcs, hatches as
+// curves, points) realistically uses; Brep/Surface/Mesh-backed solids are
+// left unstretched, the same honest scope limit `DeformObjects`
+// (cmd_meshtools.cpp) itself only lifts for those kinds by first converting
+// to a mesh via a CommandContext this header-only Document layer doesn't have.
+void StretchObjectInPlace(SceneObject& o, kernel::Point3d a, kernel::Vector3d u, double len, double new_len) {
+  auto map = [&](kernel::Point3d p) {
+    const double s = ON_DotProduct(p - a, u);
+    if (s <= 0) return p;
+    if (s < len) return p + u * (s * new_len / len - s);
+    return p + u * (new_len - len);
+  };
+  switch (o.kind) {
+    case ObjectKind::Point:
+      o.point = map(o.point);
+      break;
+    case ObjectKind::Curve:
+      for (int i = 0; i < o.curve->ControlPointCount(); ++i) o.curve->SetControlPointAt(i, map(o.curve->ControlPointAt(i)));
+      break;
+    case ObjectKind::Mesh:
+      for (int i = 0; i < o.mesh->raw().VertexCount(); ++i) o.mesh->raw().SetVertex(i, map(o.mesh->raw().Vertex(i)));
+      o.mesh->raw().DestroyRuntimeCache(true);
+      o.mesh->raw().ComputeFaceNormals();
+      o.mesh->raw().ComputeVertexNormals();
+      break;
+    default:
+      break;
+  }
+}
+
+std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, kernel::Point3d at, const std::string& state, bool flipped, int array_count, double stretch_length) {
   ON_Xform xf = ON_Xform::TranslationTransformation(at - def.base);
   if (flipped) {
     const kernel::Vector3d n(1, 0, 0);
@@ -142,6 +181,10 @@ std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, k
     if (!step.Unitize()) step = kernel::Vector3d(1, 0, 0);
     step *= def.array_spacing;
   }
+  const bool stretch_active = def.stretch_length > 0;
+  kernel::Vector3d su = def.stretch_axis;
+  if (stretch_active && !su.Unitize()) su = kernel::Vector3d(1, 0, 0);
+  const double new_len = stretch_length > 0 ? stretch_length : def.stretch_length;
   std::vector<ObjectId> ids;
   for (int k = 0; k < count; ++k) {
     const ON_Xform step_xf = ON_Xform::TranslationTransformation(step * static_cast<double>(k)) * xf;
@@ -150,6 +193,7 @@ std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, k
       SceneObject c = o;
       c.id = kNoObject;
       c.selected = false;
+      if (stretch_active) StretchObjectInPlace(c, def.base, su, def.stretch_length, new_len);
       c.Transform(step_xf);
       c.user_text["Block"] = def.name;
       c.user_text["BlockInsert"] = std::to_string(at.x) + "," + std::to_string(at.y) + "," + std::to_string(at.z);
@@ -174,7 +218,7 @@ int InstantiateDynamicBlock(Document& doc, const std::string& name, kernel::Poin
   if (!def) return -1;
   std::string active = state;
   if (active.empty() && !def->states.empty()) active = def->states.front();
-  const std::vector<ObjectId> ids = PlaceFiltered(doc, *def, at, active, false, 1);
+  const std::vector<ObjectId> ids = PlaceFiltered(doc, *def, at, active, false, 1, 0);
   // Same anchor-object provenance as the static-block path in
   // InstantiateBlockInDocument (cmd_drafting.cpp) - see ProvenanceInfo's
   // comment in doc/Document.h.
@@ -202,7 +246,7 @@ bool RebuildBlockInstance(Document& doc, int group) {
   if (!def) return false;
   for (ObjectId id : it->objects) doc.Remove(id);
   const std::string place_state = ResolveLookupState(*def, it->lookup_key, it->state);
-  it->objects = PlaceFiltered(doc, *def, it->insert, place_state, it->flipped, it->array_count);
+  it->objects = PlaceFiltered(doc, *def, it->insert, place_state, it->flipped, it->array_count, it->stretch_length);
   // Re-attach the fresh objects to the same group id so selection/explode
   // (which key off Document::Group membership) still find this instance,
   // and rebuild the anchor-object provenance the same way InstantiateDynamicBlock does.
@@ -244,6 +288,15 @@ bool SetBlockInstanceLookup(Document& doc, int group, const std::string& key) {
   auto it = std::find_if(list.begin(), list.end(), [&](const BlockInstance& b) { return b.group == group; });
   if (it == list.end()) return false;
   it->lookup_key = key;
+  SaveBlockInstances(doc, list);
+  return RebuildBlockInstance(doc, group);
+}
+
+bool SetBlockInstanceStretch(Document& doc, int group, double length) {
+  std::vector<BlockInstance> list = LoadBlockInstances(doc);
+  auto it = std::find_if(list.begin(), list.end(), [&](const BlockInstance& b) { return b.group == group; });
+  if (it == list.end()) return false;
+  it->stretch_length = std::max(0.0, length);
   SaveBlockInstances(doc, list);
   return RebuildBlockInstance(doc, group);
 }

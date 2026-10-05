@@ -2342,14 +2342,23 @@ std::vector<Path2> CollectPaths(const Document& doc, const Projector& proj, bool
   for (const SceneObject& o : doc.Objects()) {
     if (selected_only && !o.selected) continue;
     if (!doc.IsObjectVisible(o)) continue;
-    if (o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size() &&
-        !LayerPrints(doc.Layers()[static_cast<size_t>(o.layer_index)]))
-      continue;  // Layer::print_width_mm < 0: "does not print", still visible on screen
-    // A layer's own plot_color override (LayerPlotColor) takes over from
-    // the object's on-screen display color here - the color half of "plot
-    // styles (CTB/STB)", alongside print_width_mm's lineweight half above.
-    const Color color = o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size()
-                             ? EffectivePlotColor(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.EffectiveColor(o))
+    const bool valid_layer = o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size();
+    // A layer's assigned named plot style (LayerPlotStyle/PlotStyleTable -
+    // the actual "no named, reusable plot style table" gap PARITY_MAP.md's
+    // "Print and plot output" item still names) takes over from the
+    // layer's own print_width_mm/plot_color one channel at a time, same as
+    // every other LayerPrints/EffectivePrintWidthMm/EffectivePlotColor call
+    // site; nullptr (no style assigned, or an unresolved name) leaves this
+    // object's behavior exactly as it was before plot styles existed.
+    const PlotStyle* style = valid_layer ? doc.FindPlotStyle(doc.Layers()[static_cast<size_t>(o.layer_index)].plot_style_name) : nullptr;
+    if (valid_layer && !LayerPrints(doc.Layers()[static_cast<size_t>(o.layer_index)], style))
+      continue;  // Layer::print_width_mm < 0 (or the style's own width_mm < 0): "does not print", still visible on screen
+    // A layer's own plot_color override (LayerPlotColor), or its assigned
+    // style's color when it sets one, takes over from the object's
+    // on-screen display color here - the color half of "plot styles
+    // (CTB/STB)", alongside print_width_mm's lineweight half above.
+    const Color color = valid_layer
+                             ? EffectivePlotColor(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.EffectiveColor(o), style)
                              : doc.EffectiveColor(o);
     if (o.kind == ObjectKind::Point) {
       Path2 p;
@@ -2500,7 +2509,8 @@ bool ExportSvg(const Document& doc, const Viewport* view, const std::string& pat
   for (const auto& [layer, list] : by_layer) {
     const bool valid_layer = layer >= 0 && static_cast<size_t>(layer) < doc.Layers().size();
     std::string name = valid_layer ? doc.LayerFullPath(layer) : "Default";
-    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(layer)], default_width) : default_width;
+    const PlotStyle* style = valid_layer ? doc.FindPlotStyle(doc.Layers()[static_cast<size_t>(layer)].plot_style_name) : nullptr;
+    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(layer)], default_width, style) : default_width;
     os << "<g id=\"" << XmlEscape(name) << "\" stroke-width=\"" << Num(width, 3) << "\">\n";
     for (const Path2* p : list) {
       os << "<path stroke=\"" << HexColor(p->color) << "\" d=\"";
@@ -2542,7 +2552,8 @@ bool ExportPdf(const Document& doc, const Viewport* view, const std::string& pat
   double last_width = default_width;
   for (const Path2& p : paths) {
     const bool valid_layer = p.layer >= 0 && static_cast<size_t>(p.layer) < doc.Layers().size();
-    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(p.layer)], default_width) : default_width;
+    const PlotStyle* style = valid_layer ? doc.FindPlotStyle(doc.Layers()[static_cast<size_t>(p.layer)].plot_style_name) : nullptr;
+    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(p.layer)], default_width, style) : default_width;
     if (std::fabs(width - last_width) > 1e-9) { cs << Num(width * pt, 3) << " w\n"; last_width = width; }
     const std::string color = Num(p.color.r, 3) + " " + Num(p.color.g, 3) + " " + Num(p.color.b, 3) + " RG\n";
     if (color != last_color) { cs << color; last_color = color; }

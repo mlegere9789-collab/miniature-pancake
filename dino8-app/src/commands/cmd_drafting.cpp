@@ -531,6 +531,83 @@ class BlockSetLookupCommand : public Command {
   int group_ = -1;
 };
 
+// BlockSetStretchFrame: names the Stretch parameter's axis and frame length
+// on a block definition - the stretch-parameter analogue of
+// BlockSetArraySpacing naming the Array parameter's axis/spacing: it only
+// configures what a later BlockSetStretch on a placed instance has to work
+// with, it does not itself stretch anything. A definition that never calls
+// this keeps stretch_length at 0, so it has no stretch parameter at all,
+// same as array_spacing == 0 having no Array parameter.
+class BlockSetStretchFrameCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    if (ctx.Doc().Blocks().empty()) { ctx.Warn("No block definitions. Use Block to create one."); Finish(); return; }
+    std::string names;
+    for (const BlockDefinition& b : ctx.Doc().Blocks()) names += (names.empty() ? "" : ", ") + b.name;
+    ctx.Print("Blocks: " + names);
+    WantText("Block name", ctx.Doc().Blocks().back().name);
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    def_ = ctx.Doc().FindBlock(t);
+    if (!def_) { ctx.Warn("No block named '" + t + "'"); Finish(); return; }
+    name_ = t;
+    options = {{"Axis", std::string(1, axis_), {"X", "Y", "Z"}, false, false}};
+    WantNumber("Stretch frame length from the block's base point (model units)");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Axis" && !v.empty()) { axis_ = static_cast<char>(std::toupper(static_cast<unsigned char>(v[0]))); options[0].value = std::string(1, axis_); }
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (v <= 0) { ctx.Warn("BlockSetStretchFrame: frame length must be positive"); Finish(); return; }
+    ctx.Doc().BeginChange("BlockSetStretchFrame");
+    def_->stretch_axis = axis_ == 'Y' ? Vector3d(0, 1, 0) : axis_ == 'Z' ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+    def_->stretch_length = v;
+    ctx.Print("Block '" + name_ + "': stretch parameter set (" + std::string(1, axis_) + " axis, " + FormatNumber(v) + " long)");
+    Finish();
+  }
+  std::string name_;
+  BlockDefinition* def_ = nullptr;
+  char axis_ = 'X';
+};
+
+// BlockSetStretch: sets one placed dynamic-block instance's Stretch
+// parameter (target length along its definition's stretch axis/frame) and
+// rebuilds just that instance - the fifth and last dynamic-block
+// parameter/action type alongside Visibility states, Flip, Array and
+// Lookup. Only reachable on a placed dynamic-block instance, same scope
+// BlockSetState/BlockToggleFlip/BlockSetArrayCount/BlockSetLookup have;
+// storing a length on a definition with no configured frame
+// (BlockSetStretchFrame) is accepted but has no visible effect yet, the
+// same "no-op until configured" contract Array has on a definition with no
+// spacing, so the warning here is informational, not a hard stop.
+class BlockSetStretchCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select an object in the instance to stretch", 1); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    group_ = -1;
+    for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->group_id >= 0) { group_ = o->group_id; break; }
+    BlockInstance inst;
+    if (group_ < 0 || !FindBlockInstanceByGroup(ctx.Doc(), group_, inst)) {
+      ctx.Warn("Selection isn't a dynamic-block instance (use BlockAddState first)");
+      Finish();
+      return;
+    }
+    const BlockDefinition* def = ctx.Doc().FindBlock(inst.block);
+    const double current = def && inst.stretch_length <= 0 ? def->stretch_length : inst.stretch_length;
+    if (!def || def->stretch_length <= 0) ctx.Warn("Block '" + inst.block + "' has no stretch parameter yet (use BlockSetStretchFrame) - the length will be stored but has no visible effect until it does");
+    WantNumber("New length", current);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (v < 0) { ctx.Warn("BlockSetStretch: new length must not be negative"); Finish(); return; }
+    ctx.Doc().BeginChange("BlockSetStretch");
+    if (!SetBlockInstanceStretch(ctx.Doc(), group_, v)) ctx.Warn("Could not set stretch length");
+    else if (v == 0) ctx.Print("BlockSetStretch: override cleared, instance back to its definition's own stretch length");
+    else ctx.Print("BlockSetStretch: instance stretched to length " + FormatNumber(v));
+    Finish();
+  }
+  int group_ = -1;
+};
+
 }  // namespace
 
 // A block with no named visibility states behaves exactly as before (every
@@ -669,7 +746,7 @@ void RegisterDraftingCommands(CommandEngine& e) {
   Reg(e, "BlockSetArrayCount", Make<BlockSetArrayCountCommand>(), CommandStatus::Implemented,
       "Sets one placed dynamic-block instance's Array repeat count and rebuilds just that instance's objects, laid "
       "out along its definition's array axis/spacing (BlockSetArraySpacing); only reachable on a placed dynamic-block "
-      "instance, same scope BlockSetState/BlockToggleFlip have. Stretch parameter/action remains entirely unattempted.");
+      "instance, same scope BlockSetState/BlockToggleFlip have.");
   Reg(e, "BlockSetLookupTable", Make<BlockSetLookupTableCommand>(), CommandStatus::Implemented,
       "Names the Lookup parameter's key->state rows on a block definition (Lookup dynamic blocks - the fourth "
       "parameter/action type alongside Visibility states, Flip and Array), as a single comma-separated key:state "
@@ -680,6 +757,15 @@ void RegisterDraftingCommands(CommandEngine& e) {
       "objects, showing whichever state its definition's lookup table (BlockSetLookupTable) maps the key to, or "
       "falling back to the instance's own explicit state if the key is empty or matches no row; only reachable on "
       "a placed dynamic-block instance, same scope BlockSetState/BlockToggleFlip/BlockSetArrayCount have.");
+  Reg(e, "BlockSetStretchFrame", Make<BlockSetStretchFrameCommand>(), CommandStatus::Implemented,
+      "Names the Stretch parameter's axis and frame length on a block definition (Stretch dynamic blocks - the "
+      "fifth and last parameter/action type alongside Visibility states, Flip, Array and Lookup); does not itself "
+      "stretch anything, only configures what a later BlockSetStretch on a placed instance has to work with.");
+  Reg(e, "BlockSetStretch", Make<BlockSetStretchCommand>(), CommandStatus::Implemented,
+      "Sets one placed dynamic-block instance's Stretch target length and rebuilds just that instance's objects, "
+      "reusing the app's own StretchMap deformation (the same math the top-level Stretch command applies to any "
+      "selection) against its definition's stretch axis/frame (BlockSetStretchFrame); only reachable on a placed "
+      "dynamic-block instance, same scope BlockSetState/BlockToggleFlip/BlockSetArrayCount/BlockSetLookup have.");
 }
 
 // AT-SPI2-queryable snapshot of Document::Blocks() (see

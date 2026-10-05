@@ -998,6 +998,40 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
         if (LayerState* existing = doc.FindLayerState(ls.name)) *existing = ls; else doc.LayerStates().push_back(ls);
         continue;
       }
+      // "Dino8.PlotStyle.<name>" - a named, reusable plot style (PlotStyle,
+      // doc/Document.h): "hasColor;r;g;b;width" (hasColor 0/1, r/g/b 0-255,
+      // width in mm, same 0/>0/<0 convention as Layer::print_width_mm).
+      // Checked before the layer_plot_style_prefix below: distinct spelling
+      // ("PlotStyle." vs "LayerPlotStyle.") means the two prefixes can never
+      // collide either way, same non-collision guarantee style_prefix/
+      // precision_prefix above already rely on.
+      const std::string plot_style_prefix = "Dino8.PlotStyle.";
+      if (key.compare(0, plot_style_prefix.size(), plot_style_prefix) == 0) {
+        PlotStyle ps;
+        ps.name = key.substr(plot_style_prefix.size());
+        int has_color = 0, r = 0, g = 0, b = 0;
+        double width = 0;
+        if (std::sscanf(value.c_str(), "%d;%d;%d;%d;%lf", &has_color, &r, &g, &b, &width) == 5) {
+          ps.has_color = has_color != 0;
+          ps.color = Color::FromBytes(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255));
+          ps.width_mm = width;
+        }
+        if (PlotStyle* existing = doc.FindPlotStyle(ps.name)) *existing = ps; else doc.PlotStyles().push_back(ps);
+        continue;
+      }
+      // "Dino8.LayerPlotStyle.<layer full path>" - which named PlotStyle (if
+      // any) that layer is assigned to (Layer::plot_style_name). Layers are
+      // already fully loaded by this point (see the layer table pass above),
+      // so FindLayer/LayerFullPath resolve correctly; a path that no longer
+      // matches any layer (one renamed/deleted since this was written) is
+      // silently dropped, same as a stale LayerState entry would be.
+      const std::string layer_plot_style_prefix = "Dino8.LayerPlotStyle.";
+      if (key.compare(0, layer_plot_style_prefix.size(), layer_plot_style_prefix) == 0) {
+        const std::string layer_path = key.substr(layer_plot_style_prefix.size());
+        const int idx = doc.FindLayer(layer_path);
+        if (idx >= 0) doc.Layers()[static_cast<size_t>(idx)].plot_style_name = value;
+        continue;
+      }
       if (key.compare(0, 6, "Dino8.") == 0) continue;  // settings, handled above
       doc.UserText()[key] = value;
     }
@@ -1095,6 +1129,18 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
         packed += lname + "," + (vis_lock.first ? "1" : "0") + "," + (vis_lock.second ? "1" : "0");
       }
       model.SetDocumentUserString(ON_wString(("Dino8.LayerState." + ls.name).c_str()), ON_wString(packed.c_str()));
+    }
+    for (const PlotStyle& ps : doc.PlotStyles()) {
+      char ps_buf[64];
+      std::snprintf(ps_buf, sizeof(ps_buf), "%d;%d;%d;%d;%g", ps.has_color ? 1 : 0,
+                    static_cast<int>(ps.color.r * 255 + 0.5f), static_cast<int>(ps.color.g * 255 + 0.5f),
+                    static_cast<int>(ps.color.b * 255 + 0.5f), ps.width_mm);
+      model.SetDocumentUserString(ON_wString(("Dino8.PlotStyle." + ps.name).c_str()), ON_wString(ps_buf));
+    }
+    for (int i = 0; i < static_cast<int>(doc.Layers().size()); ++i) {
+      const Layer& L = doc.Layers()[static_cast<size_t>(i)];
+      if (L.plot_style_name.empty()) continue;
+      model.SetDocumentUserString(ON_wString(("Dino8.LayerPlotStyle." + doc.LayerFullPath(i)).c_str()), ON_wString(L.plot_style_name.c_str()));
     }
   }
 
