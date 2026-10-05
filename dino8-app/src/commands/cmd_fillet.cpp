@@ -3606,37 +3606,29 @@ class MergeCoplanarCommand : public Command {
 // drifted from approximate operations upstream.
 void RebuildEdgesReal(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
-  IntersectOptions opt;
-  opt.tolerance = tol;
-  opt.mesh_tolerance = std::max(tol * 4, 1e-4);
   ctx.Doc().BeginChange("RebuildEdges");
-  int refit = 0, kept = 0;
+  int refit = 0;
+  int total_two_trim_edges = 0;
   for (ObjectId id : ids) {
     SceneObject* o = ctx.Doc().Find(id);
     if (!o || o->kind != ObjectKind::Brep || !o->brep) continue;
-    ON_Brep& b = o->brep->raw();
-    for (int ei = 0; ei < b.m_E.Count(); ++ei) {
-      ON_BrepEdge& e = b.m_E[ei];
-      if (e.m_edge_index < 0 || e.TrimCount() != 2) { if (e.m_edge_index >= 0) ++kept; continue; }
-      const ON_BrepTrim &t0 = b.m_T[e.m_ti[0]], &t1 = b.m_T[e.m_ti[1]];
-      const int f0 = t0.FaceIndexOf(), f1 = t1.FaceIndexOf();
-      if (f0 < 0 || f1 < 0) continue;
-      ON_NurbsSurface s0, s1;
-      if (b.m_F[f0].SurfaceOf()->GetNurbForm(s0) <= 0 || b.m_F[f1].SurfaceOf()->GetNurbForm(s1) <= 0) continue;
-      std::vector<IntersectionCurve> ssx = IntersectSurfaces(s0, s1, opt);
-      if (ssx.empty()) { ++kept; continue; }
-      const Point3d mid = e.PointAt(e.Domain().Mid());
-      const IntersectionCurve* best = nullptr;
-      double bd = std::numeric_limits<double>::max();
-      for (const IntersectionCurve& c : ssx) { const double d = c.curve.PointAt(c.curve.Domain().Mid()).DistanceTo(mid); if (d < bd) { bd = d; best = &c; } }
-      if (!best || bd > tol * 200) { ++kept; continue; }
-      const int c3i = b.AddEdgeCurve(new ON_NurbsCurve(best->curve));
-      e.ChangeEdgeCurve(c3i);
-      ++refit;
+    const ON_Brep& raw = o->brep->raw();
+    for (int ei = 0; ei < raw.m_E.Count(); ++ei) {
+      if (raw.m_E[ei].m_edge_index >= 0 && raw.m_E[ei].TrimCount() == 2) ++total_two_trim_edges;
     }
-    b.SetTolerancesBoxesAndFlags();
+    // kernel::Brep::RebuildAllEdgeCurves() is the same real-SSX edge rebuild
+    // this command used to reimplement inline (midpoint-nearest curve pick,
+    // ChangeEdgeCurve with no 2D-trim refit). Routing through the kernel API
+    // instead gets the curve-vs-vertex matching that actually extracts the
+    // sub-arc between THIS edge's own endpoints (not just "closest curve by
+    // midpoint distance") and ReplaceEdgeCurve's trim re-projection, so the
+    // 2D trims stay consistent with the new 3D curve instead of silently
+    // drifting out of tolerance.
+    refit += o->brep->RebuildAllEdgeCurves(tol);
+    o->brep->raw().SetTolerancesBoxesAndFlags();
     o->InvalidateDisplay();
   }
+  const int kept = total_two_trim_edges - refit;
   ctx.Print("RebuildEdges: " + std::to_string(refit) + " edge(s) refit through the adjacent surfaces' intersection, " + std::to_string(kept) + " left as-is (naked or no SSX found)");
 }
 
