@@ -2,6 +2,10 @@
 
 **Fossilith vs Parasolid/ACIS = 70.8% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 79.9%.**
 
+**2026-10-05, fresh full re-score (doc-only, no build/tests run — scripted bullet audit against the current branch head, zero corrections needed):** re-ran the same bullet-by-bullet audit as the two re-scores immediately below (count every `- [partial]`/`- [missing]` line under each of the 17 kernel and 8 app `**category** (short_name):` section markers, cross-check the sum against each row's own Present/Partial/Missing/Items columns in both summary tables, Present re-derived as `Items - Partial - Missing`), this time against the branch head after the curve-operations round (`DivideByLength`/`RemoveKnotAt`, this document's own note just below) and the offsetshell round (Chamfer corners, offset self-intersection detection) had both landed on top of the prior re-score's own HEAD. **All 25 rows still match their own section's current bullet counts exactly — zero corrections needed**, consistent with both of those rounds' own count-neutral claims (each disclosed, and this pass independently confirms, that it closed real kernel-level ground without flipping any bullet's `[partial]`/`[missing]`/`[present]` status). Re-deriving both headlines fresh from the current tables the same way reproduces **70.8%** (70.83%) and **79.9%** (79.91%) exactly — both already correct at the top of this document, unchanged by this pass. Both "Priority order for maximum score-per-fix" tables were independently recomputed (`weight / (partial + missing)` per row, from the current kernel/app tables) and already match exactly, including the Scripting/Viewport-display rank-2 tie this document's own prior reconciliation-correction note (further below in the Priority order section) already fixed — no further table edit needed. `dino8_kernel_tests`/`dino8_app_tests`/`ctest`/`smoke.sh` not re-run (docs-only change, no source edited this pass).
+
+**2026-10-05, first dedicated round on `Fossilith kernel — Curve operations` (curveops), count-neutral:** this category ranks top-4 by weight/remaining-items in the "Priority order for maximum score-per-fix" table below but had never had a session of its own before this one. Closed real, tested kernel-level ground under two of its own `[partial]` bullets — `NurbsCurve::DivideByLength()` (the "no divide-by-length API" half of "Divide curve by N/fixed length") and `NurbsCurve::RemoveKnotAt()` (the "surfaces-only" half of "Knot insertion/removal", mirroring `NurbsSurface::RemoveKnotAt`) — detailed in that category's own dated follow-up further below, including the 17 new tests (9107/9107 `dino8_kernel_tests` checks passing, 0 regressions) proving each. Both stay honestly `[partial]`, not `[present]`: each closes a kernel-level gap while the item's own already-disclosed app-wiring gap (the `Divide` command only ever asks for a count; curve knot removal still only calls the approximate `RemoveKnotApprox`) stays open, so this round is count-neutral — the category's own row (17/11/0 of 28, 80.4%) and both document headlines above are unchanged by it, consistent with this map's own standing honesty convention of never flipping a status on a gap that hasn't actually closed.
+
 **2026-10-05, full fleet re-score (doc-only, no build/tests run — scripted bullet audit, zero corrections needed):** re-verified all 25 category rows (17 kernel + 8 app) by mechanically counting every `- [partial]`/`- [missing]` bullet under each of the `**category** (short_name):` section markers below (scripted line-range count, not eyeballed) and cross-checking against both summary tables' Present/Partial/Missing/Items columns (Present re-derived as `Items - Partial - Missing`): **all 25 rows already match their own section's current bullet counts exactly, zero corrections needed** — this despite several concurrent rounds having landed real fixes (including merge-reconciled duplicate work) in the roughly 4 hours since the prior 2026-10-04 full re-score below. A further scripted pass looked specifically for the double-counting risk that stall would create — two separate bullets naming the same underlying gap item within one category, left over from a merge that fixed one copy but not the other — by comparing each bullet's own leading item title within each category; none found. Re-deriving both headlines fresh from the current tables (`sum(weight * (present + 0.5*partial) / items) / 17.75` for the 17 kernel rows, `/ 7.75` for the 8 app rows) reproduces **70.8%** (70.83%) and **79.2%** (79.19%) exactly — both already correct at the top of this document AT THE TIME, unchanged by this pass. Both "Priority order for maximum score-per-fix" tables below were independently recomputed (`weight / (partial + missing)` per row) and already match exactly, so neither table nor its rank order needed any edit. HEAD at this pass: `04c291e` (merge-only on top of the last real kernel commit, `c4ce1df`, `Brep::TrimmedPlanarFaceWelded...`, already reflected in the topology row's own note below). `dino8_kernel_tests`/`dino8_app_tests`/`ctest`/`smoke.sh` not re-run (docs-only change, no source edited this pass).
 
 **2026-10-05, a further session on `kernel: Kernel-level data exchange`: detail views close, plus a real pre-existing bug found and fixed along the way, no item-classification change.** `Model::AddDetailView`/`DetailViewCount`/`DetailViewAt` (dino8-kernel/include/dino8/kernel/file_io.h; src/file_io.cpp) add this kernel's first `ON_DetailView` support - closing the one item `AddLayout()`'s own doc comment explicitly disclosed as not attempted: "Detail views (the viewport windows placed ON a layout, each framing part of model space at its own scale) are a separate, larger ON_Viewport-per-detail feature this call does not attempt." While building this, a real pre-existing defect surfaced: `AddLayout()` had never given its underlying `ON_Viewport` a genuine viewport id (a freshly-constructed one defaults to `ON_nil_uuid`), so every layout this kernel ever created was indistinguishable from every other by that id - harmless until a detail view needed to resolve which specific layout it belongs to. Fixed by having `AddLayout()` assign a fresh id via `ON_CreateUuid()`/`ON_Viewport::SetViewportId()`, a pure addition for every existing caller (that setter only ever succeeds on a still-nil id). See the category's own bullet below (".3dm attribute/metadata fidelity") for full construction and test detail. No category count change: this bullet was already `[partial]` for other reasons and stays `[partial]`. Full `dino8_kernel_tests` suite re-run clean: 8980 checks, 0 regressions.
@@ -6607,13 +6611,92 @@ re-run clean, 0 regressions, after adding these.
 - [partial] Match curve end continuity — `MatchCommand` (dino8-app/src/commands/cmd_curves2.cpp:1500), position/tangent only, app-only.
 - [partial] Offset curve — `NurbsCurve::OffsetInPlane` (dino8-kernel/src/curve.cpp:970 — corrected 2026-09-29, was mis-cited :793) exact for lines, arcs, and now polylines (exact per-corner miter, see the offsetshell category's own "Planar curve offset" bullet for the full construction and test detail), least-squares refit otherwise; app's `OffsetCommand` (cmd_edit.cpp:100) still has its own special cases, doesn't call the kernel.
 - [partial] Project/Pull curve onto surface/mesh — `ProjectCommand` (dino8-app/src/commands/cmd_surface.cpp:1327), CPlane sampling only.
-- [partial] Divide curve by N/fixed length — `NurbsCurve::DivideByCount` (curve.cpp:581) sits on `ParameterAtArcLength` (curve.cpp:544), which interpolates a 1000-sample polyline; no divide-by-length API.
+- [partial] Divide curve by N/fixed length — `NurbsCurve::DivideByCount` (curve.cpp:581) sits on `ParameterAtArcLength` (curve.cpp:544), which interpolates a 1000-sample polyline; **2026-10-05: the "no divide-by-length API" half closed** — see this bullet list's own dated follow-up below.
 - [partial] Simplify curve — `SimplifyCrv` (cmd_curves2.cpp:2393-2402) only replaces curves already exactly linear/arc.
 - [partial] Change curve degree — `ElevateDegree` (curve.cpp:337) exact; `ChangeDegreeCommand` (dino8-app/src/commands/cmd_edit.cpp:64, comment at line 62) "never lowers" — no reduction.
-- [partial] Knot insertion/removal — `InsertKnotAt` (curve.cpp:308) real Boehm insertion; curve knot removal is only `RemoveKnotApprox` (cmd_curves2.cpp:64); kernel's rigorous-bound removal (`RemoveKnotAt`, surface_edit.cpp:314) is surfaces-only.
+- [partial] Knot insertion/removal — `InsertKnotAt` (curve.cpp:308) real Boehm insertion; curve knot removal is only `RemoveKnotApprox` (cmd_curves2.cpp:64); **2026-10-05: the "surfaces-only" half of the kernel's rigorous-bound removal closed** — see this bullet list's own dated follow-up below.
 - [partial] Curve-curve end continuity analysis (GCon) — app-only (dino8-app/src/commands/cmd_remaining.cpp:1258-1276), sampled gap/tangent/curvature.
 - [partial] Curve-to-curve deviation (CrvDeviation) — app-only (dino8-app/src/commands/cmd_analyze.cpp:384), `DivideByCount(100)` sampling.
 - [partial] Curve length/arc-length parameterization — `NurbsCurve::Length` (curve.cpp:532) still a uniformly-sampled polyline measurement, no quadrature/tolerance guarantee.
+
+**2026-10-05 follow-up (first dedicated round on this category - "Curve
+operations" ranked top-4 by weight/remaining-items in this map's own
+"Priority order for maximum score-per-fix" table, previously untouched):**
+closes real, tested ground under two of this bullet list's own items,
+neither of which flips present/partial/missing status (same honesty
+convention several other same-day follow-ups elsewhere in this map already
+apply - a kernel-level gap closing while the item's own disclosed app-level
+gap remains open stays `partial`, not `present`):
+
+- **Divide curve by N/fixed length:** `NurbsCurve::DivideByLength(length,
+  samples = 1000)` (dino8-kernel/include/dino8/kernel/curve.h,
+  src/curve.cpp:1369) is the "no divide-by-length API" half this bullet's
+  own prior text named directly - built the same way `DivideByCount()`
+  itself already is, directly on `ParameterAtArcLength()`: walks `length`,
+  `2 * length`, `3 * length`, ... and stops one boundary short of the curve's
+  own end (a relative-tolerance guard against a last boundary landing within
+  a rounding-scale sliver of the total length, which would otherwise
+  duplicate the final `Domain().Max()` always pushed), so a curve whose
+  length isn't an exact multiple of `length` gets a genuine shorter leftover
+  final segment rather than an off-by-one or a silently dropped remainder.
+  Verified by 8 new checks (`TestCurveDivideByLength`, tests/test_basic.cpp):
+  a length-10 line divided by 4 lands its two interior boundaries at exactly
+  t=0.4/0.8 then stops (the leftover-segment case); dividing the same line
+  by its own exact half (5) returns exactly 3 values, not 4 - confirming the
+  rounding guard actually prevents the duplicate-boundary case it exists for,
+  not merely in theory; a length at or beyond the curve's own total length
+  correctly degrades to the single-segment `{Domain().Min(), Domain().Max()}`
+  case; and, on a full NURBS circle, `DivideByLength(circumference / 8)`
+  lands at the same parameter values as the pre-existing `DivideByCount(8)`
+  to within 1e-6 - two independently-reasoned-about ways of asking for the
+  same 8 equal-arc-length divisions agreeing with each other, not just each
+  looking correct in isolation. Full `dino8_kernel_tests` suite: 9107/9107
+  checks passing, 0 regressions. Still honestly `partial`, not `present`:
+  the app's own `Divide` command (`cmd_create.cpp:588`, `CurveCountCommand`)
+  only ever prompts for a segment count, never a length, so this new API -
+  like `DivideByCount()` already wired there - stays kernel-only; no
+  `dino8-app` command reaches it yet.
+
+- **Knot insertion/removal:** `NurbsCurve::RemoveKnotAt(knot_index,
+  tolerance, out_max_deviation = nullptr)` (dino8-kernel/include/dino8/kernel/
+  curve.h, src/curve.cpp:1011) is the curve-level counterpart to
+  `NurbsSurface::RemoveKnotAt` (surface_edit.cpp:314) this bullet's own prior
+  text called "surfaces-only" - the same Piegl & Tiller Algorithm A5.8
+  knot-removal construction (duplicated into curve.cpp's own anonymous
+  namespace rather than shared across translation units, the same
+  self-contained-per-file discipline this file already keeps for every
+  other curve-editing routine in it), with the same rational/non-rational
+  Euclidean deviation bound (eq. 5.30) gating whether the removal actually
+  commits. A refused removal leaves the curve completely untouched -
+  verified directly, not assumed. Verified by 9 new checks
+  (`TestCurveRemoveKnotAt`, tests/test_basic.cpp): a knot just added by
+  `InsertKnotAt()` is exactly removable (near-zero reported deviation, the
+  control net and knot count reverting exactly, and `PointAt()` matching the
+  pre-insertion curve to within 1e-6 at 5 parameter values - a genuine round
+  trip, not just reverted bookkeeping); a knot on a deliberately zigzagging
+  6-control-point cubic that genuinely carries shape information is refused
+  at tolerance 0.0 with a real nonzero `out_max_deviation` (not the initial
+  infinity sentinel) and leaves the curve's own control point/knot counts
+  unchanged; and raising the tolerance to just above that same
+  self-reported deviation value makes the identical removal succeed,
+  confirming `out_max_deviation` is a real, usable bound rather than a
+  diagnostic-only number. Full `dino8_kernel_tests` suite: 9107/9107 checks
+  passing, 0 regressions (includes the pre-existing `NurbsSurface::
+  RemoveKnotAt` tests, unaffected since this is a new, separate curve-level
+  method, not a change to the surface one it mirrors). Still honestly
+  `partial`, not `present`: the app's own curve knot removal command still
+  only ever calls `RemoveKnotApprox` (`cmd_curves2.cpp:64`, unchanged by
+  this pass) - a real Greville-resample heuristic with no deviation bound
+  at all - and does not call this new rigorous kernel method, so the
+  user-facing gap this bullet's own text already named stays open.
+
+Neither fix changes this category's own present/partial/missing counts
+(still 17/11/0 of 28, 80.4%) - both close real, kernel-level ground under
+an already-`partial` item without claiming the item's own disclosed
+app-wiring gap is solved, the same restraint this map applies throughout.
+This session's own source edits are `dino8-kernel/include/dino8/kernel/
+curve.h`, `dino8-kernel/src/curve.cpp`, and `dino8-kernel/tests/
+test_basic.cpp`.
 
 **Kernel Surface Operations (Fossilith / Dino 8)** (surfaceops):
 - [partial] Merge (MergeSrf) — `MergeSrf` (dino8-app/src/commands/cmd_srfedit.cpp:744-799) still brute-force edge match + grid resample + refit; prints "(refit through samples)" (line 799).
