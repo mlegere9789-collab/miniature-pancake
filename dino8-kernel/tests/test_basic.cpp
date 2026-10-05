@@ -22016,6 +22016,25 @@ void TestSubDFromNurbsSurfaceExactOnFlatGrid() {
   Check(matched == 25, "every one of the 25 grid points lands exactly on the flat surface's own P(u,v) = (u, v, 0)");
 }
 
+// FromNurbsSurface() previously went straight to `surface.Domain()`/
+// `PointAt()` with no check that `surface` itself is actually usable -
+// a default-constructed NurbsSurface (no CVs, no real knot vector) is
+// not `ON_NurbsSurface::IsValid()`, so it now throws std::invalid_argument
+// up front instead of sampling a degenerate domain.
+void TestSubDFromNurbsSurfaceThrowsOnInvalidSurface() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::SubD;
+
+  const NurbsSurface invalid;  // default-constructed: no CVs, not IsValid()
+  bool threw = false;
+  try {
+    (void)SubD::FromNurbsSurface(invalid, 4, 4);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SubD::FromNurbsSurface throws std::invalid_argument on a default-constructed (not IsValid()) surface");
+}
+
 // SubD::CapBoundaryLoop(): a flat 2x2 quad grid (9 vertices, 4 faces,
 // one 8-edge boundary loop around the outside, one fully interior
 // valence-4 vertex at the center) capped with a single new 8-sided
@@ -67611,6 +67630,7 @@ int main() {
   TestSubDIsValid();
   TestSubDMeshRoundTripIsExactAtLevelZero();
   TestSubDFromNurbsSurfaceExactOnFlatGrid();
+  TestSubDFromNurbsSurfaceThrowsOnInvalidSurface();
   TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth();
   TestSubDTransformMovesScalesAndStaysValidUnderMirror();
   TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces();

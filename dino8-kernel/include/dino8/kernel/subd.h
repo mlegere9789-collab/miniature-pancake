@@ -163,7 +163,11 @@ class SubD {
   // Catmull-Clark limit patch coincides with its own control points).
   //
   // Throws std::invalid_argument if u_divisions or v_divisions is less
-  // than 1, the same validation `TessellateGrid()` already applies.
+  // than 1, the same validation `TessellateGrid()` already applies, or if
+  // `surface` itself is not `IsValid()` (e.g. default-constructed) -
+  // previously ungated, this would reach `Domain()`/`PointAt()` on a
+  // surface with no real parameter domain or control points instead of
+  // failing with a named cause.
   static SubD FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_divisions);
 
   // Builds a SubD control cage from a whole Brep, one quad per face,
