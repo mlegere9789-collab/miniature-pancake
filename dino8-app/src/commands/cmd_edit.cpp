@@ -42,7 +42,14 @@ class RebuildCommand : public Command {
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Degree") { int d = std::atoi(v.c_str()); if (d >= 1 && d <= 11) degree_ = d; options[0].value = std::to_string(degree_); } }
   void OnNumber(CommandContext& ctx, double v) override {
-    const int n = std::max(2, static_cast<int>(v));
+    // Capped, not just floored: the Surface branch below builds an n x n
+    // control-point grid (O(n^2) points, then an O(n^2)-CV NurbsSurface),
+    // so an uncapped "Point count" typed into this command line - e.g. a
+    // pasted/misclicked large number, not necessarily a deliberately
+    // adversarial one - can demand gigabytes of memory and effectively
+    // hang the app from a single text entry. 200 is comfortably above any
+    // point count a real rebuild needs (the Curve branch is only O(n)).
+    const int n = std::clamp(static_cast<int>(v), 2, 200);
     ctx.Doc().BeginChange("Rebuild");
     for (ObjectId id : ids_) {
       SceneObject* o = ctx.Doc().Find(id);

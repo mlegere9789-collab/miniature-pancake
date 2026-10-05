@@ -4863,6 +4863,74 @@ void CollapseNotchRun(std::vector<Brep::PlanarFace>& other_faces, const Point3d&
   }
 }
 
+// CollapseNotchRun itself silently no-ops when it finds no matching run
+// (the plain, un-notched case - every PRE-EXISTING call site trusts that
+// silently, since a notch simply never existed there). Once a cap's own
+// `cap0_notch_points`/`cap1_notch_points` says a notch genuinely exists at
+// that end instead, that trust is no longer good enough: a notch this
+// function fails to actually find and collapse would otherwise leave the
+// restored solid broken (the oblique third face still carrying its own
+// dense notch polyline against a sharp edge that no longer has a cylinder
+// or cone to splice onto) with no signal beyond a possible, much-less-
+// specific validity failure further up the call stack. So when
+// `notch_points` is non-empty, verify a run WAS actually collapsed (the
+// combined loop size of every face in `other_faces` strictly shrinks)
+// rather than merely calling CollapseNotchRun and hoping; `which` names
+// the end for the error message. Shared by RemoveCylindricalBlend's own
+// (now oblique-end-capable) single-edge case and
+// RemoveSphericalVertexBlend's own far-end case.
+void CollapseNotchRunVerified(std::vector<Brep::PlanarFace>& other_faces, const std::vector<Point3d>& notch_points,
+                              const Point3d& p1, const Point3d& p2, const Point3d& restored, const char* which,
+                              double tol) {
+  if (notch_points.empty()) {
+    CollapseNotchRun(other_faces, p1, p2, restored, tol);
+    return;
+  }
+  size_t before = 0;
+  for (const Brep::PlanarFace& f : other_faces) before += f.loop.size();
+  CollapseNotchRun(other_faces, p1, p2, restored, tol);
+  size_t after = 0;
+  for (const Brep::PlanarFace& f : other_faces) after += f.loop.size();
+  if (after >= before) {
+    throw std::invalid_argument(std::string("dino8::kernel::RemoveBlend: this face's own ") + which +
+                                " end is marked as notched, but no matching notch run was found on any other "
+                                "planar face - not a genuine fillet-built oblique end (please report this as a bug "
+                                "if it was)");
+  }
+}
+
+// The restored sharp edge's own endpoint at a notched (oblique) end is NOT
+// `anchor + cf.length*e` (or any single rail's own crossing height): the
+// edge line, the i-rail and the j-rail are three DIFFERENT parallel lines
+// (see RemoveCylindricalBlend's own doc comment at its R0/R1/S0/S1 fix),
+// so an oblique plane generally crosses each of them at a DIFFERENT
+// height - confirmed directly, not assumed, by a case where the i-rail's
+// own crossing height, the j-rail's, and the true edge endpoint's all
+// three differ. The oblique plane itself is available directly from 3
+// well-separated points of the notch's own dense sample (front/middle/
+// back, all lying exactly on it by construction - the splice is a literal
+// shared boundary, not an approximation), so the edge's own crossing is
+// found by intersecting the KNOWN edge line (`anchor + s*e`, any point
+// `anchor` on that line plus its unit direction `e`) with that plane
+// directly, rather than extrapolated from either rail's own height.
+Point3d EdgePointAtObliquePlane(const Point3d& anchor, const Vector3d& e, const std::vector<Point3d>& notch) {
+  const Point3d& P0 = notch.front();
+  const Point3d& P1 = notch[notch.size() / 2];
+  const Point3d& P2 = notch.back();
+  Vector3d normal = ON_CrossProduct(P1 - P0, P2 - P0);
+  if (!normal.Unitize()) {
+    throw std::runtime_error("dino8::kernel::RemoveBlend: degenerate oblique end plane (please report this as a bug)");
+  }
+  const double denom = e * normal;
+  if (std::fabs(denom) < 1e-9) {
+    throw std::runtime_error(
+        "dino8::kernel::RemoveBlend: the fillet edge runs parallel to its own oblique end's plane (please report "
+        "this as a bug)");
+  }
+  const double s = ((P0 - anchor) * normal) / denom;
+  return anchor + s * e;
+}
+
 }  // namespace
 
 namespace {
@@ -4907,16 +4975,51 @@ int FindFaceWithEdge(const std::vector<Brep::PlanarFace>& faces, const Point3d& 
 Brep RemoveCylindricalBlend(const Brep::MixedFacesResult& mf, int best, const std::vector<Brep::PlanarFace>& faces,
                             double tol) {
   const Brep::CylindricalFace& cf = mf.cylindrical[static_cast<size_t>(best)];
-  if (!cf.cap0_notch_points.empty() || !cf.cap1_notch_points.empty()) {
+  // A zero-or-negative-length cylinder is the cylinder/cylinder boolean
+  // pipeline's own Steinmetz "eye" shape (BooleanCombineMixed) - never
+  // produced by FilletConvexEdge/FilletConcaveEdge, both of which
+  // explicitly reject any oblique end combination that would leave a
+  // non-positive length (see each function's own "leave no positive
+  // cylinder length" check). Rejecting it here, before the rail search
+  // below even runs, keeps that unrelated shape out of this function's
+  // scope exactly as before - only the cap-notch guard that used to sit
+  // here (see below) is relaxed.
+  if (!(cf.length > 0.0)) {
     throw std::invalid_argument(
-        "dino8::kernel::RemoveBlend: this cylindrical face has a sloped (oblique-end) or Steinmetz-style cap notch "
-        "- out of scope, see this function's own doc comment");
+        "dino8::kernel::RemoveBlend: this cylindrical face has non-positive length - not a FilletConvexEdge/"
+        "FilletConcaveEdge-built fillet rail (likely a cylinder/cylinder boolean piece, out of scope)");
   }
 
-  const Point3d R0 = cf.frame.origin + cf.radius * cf.frame.xaxis;
-  const Point3d R1 = R0 + cf.length * cf.frame.zaxis;
-  const Point3d S0 = cf.frame.origin + cf.radius * (std::cos(cf.angle) * cf.frame.xaxis + std::sin(cf.angle) * cf.frame.yaxis);
-  const Point3d S1 = S0 + cf.length * cf.frame.zaxis;
+  // The flat (v=0 / v=length) formula below is only correct when BOTH
+  // rails actually end at the SAME height - true for a plain
+  // perpendicular end, but NOT guaranteed for an oblique one: the oblique
+  // plane's own crossing height can differ between the angle-0 (i) and
+  // angle-`angle` (j) rails (CylindricalFace::cap0/cap1_notch_points' own
+  // doc comment explicitly allows this - "the LAST point must sit at
+  // angle `angle`, but its HEIGHT may differ from the flat corner's").
+  // Confirmed to actually happen, not just a theoretical edge case: a
+  // right-angle dihedral with the oblique plane's own normal perpendicular
+  // to face j leaves t_j == 0 (the j rail stays at the UNSHIFTED flat
+  // height) while t_i != 0 shifts the i rail - see
+  // TestFilletConvexEdgeObliqueEndFaceIsExactAndClosed's own hand-derived
+  // expect_Qi/expect_Qj. So when a cap is notched, its own two rail
+  // corners are read directly from that notch's own first/last points
+  // (guaranteed, per the same doc comment, to BE those two rail corners
+  // exactly) instead of recomputed from `cf.length` - the authoritative
+  // source either way, not a flat assumption that only happens to hold
+  // for the un-notched (perpendicular) case.
+  Point3d R0 = cf.frame.origin + cf.radius * cf.frame.xaxis;
+  Point3d S0 = cf.frame.origin + cf.radius * (std::cos(cf.angle) * cf.frame.xaxis + std::sin(cf.angle) * cf.frame.yaxis);
+  Point3d R1 = R0 + cf.length * cf.frame.zaxis;
+  Point3d S1 = S0 + cf.length * cf.frame.zaxis;
+  if (!cf.cap0_notch_points.empty()) {
+    R0 = cf.cap0_notch_points.front();
+    S0 = cf.cap0_notch_points.back();
+  }
+  if (!cf.cap1_notch_points.empty()) {
+    R1 = cf.cap1_notch_points.front();
+    S1 = cf.cap1_notch_points.back();
+  }
 
   const int idx_i = FindFaceWithEdge(faces, R0, R1, tol);
   const int idx_j = FindFaceWithEdge(faces, S0, S1, tol);
@@ -4948,8 +5051,23 @@ Brep RemoveCylindricalBlend(const Brep::MixedFacesResult& mf, int best, const st
   // axis_point is p + bis*offset, so inverting it needs the opposite
   // sign from FilletConvexEdge's own p - bis*offset.
   const double sign = cf.outward ? 1.0 : -1.0;
-  const Point3d edge_p0 = cf.frame.origin + sign * bis * offset;
-  const Point3d edge_p1 = edge_p0 + cf.length * cf.frame.zaxis;
+  // `edge_anchor` is the restored edge's own position at v=0 - always a
+  // valid point on the (infinite) edge line regardless of either end's
+  // own treatment, since the edge and the cylinder's axis are parallel
+  // lines offset by the fixed `sign*bis*offset` vector at every height.
+  // The actual restored endpoint at an UN-notched (flat) end is exactly
+  // this anchor (v=0 for cap0, v=length for cap1); at a NOTCHED (oblique)
+  // end it is instead EdgePointAtObliquePlane's own genuine plane
+  // intersection - see that function's own doc comment for why `cf.length`
+  // alone (the i-rail's own crossing height) is not interchangeable with
+  // the edge's own crossing height there.
+  const Point3d edge_anchor = cf.frame.origin + sign * bis * offset;
+  const Point3d edge_p0 = cf.cap0_notch_points.empty()
+                              ? edge_anchor
+                              : EdgePointAtObliquePlane(edge_anchor, cf.frame.zaxis, cf.cap0_notch_points);
+  const Point3d edge_p1 = cf.cap1_notch_points.empty()
+                              ? edge_anchor + cf.length * cf.frame.zaxis
+                              : EdgePointAtObliquePlane(edge_anchor, cf.frame.zaxis, cf.cap1_notch_points);
 
   // Reject a FilletConvexEdges-built spherical vertex blend's own corner
   // cylinder: such a cylinder is set back so its end rail corners are
@@ -4984,8 +5102,12 @@ Brep RemoveCylindricalBlend(const Brep::MixedFacesResult& mf, int best, const st
     others.push_back(mixed_planar[f]);
     others_idx.push_back(f);
   }
-  CollapseNotchRun(others, R0, S0, edge_p0, tol);
-  CollapseNotchRun(others, R1, S1, edge_p1, tol);
+  // A genuinely notched end (the oblique-end case this function used to
+  // reject outright) is verified, not merely attempted - see
+  // CollapseNotchRunVerified's own doc comment just above CollapseNotchRun.
+  CollapseNotchRunVerified(others, cf.cap0_notch_points, R0, S0, edge_p0, "cylindrical face's own cap0 (v=0)", tol);
+  CollapseNotchRunVerified(others, cf.cap1_notch_points, R1, S1, edge_p1, "cylindrical face's own cap1 (v=length)",
+                           tol);
   for (size_t o = 0; o < others.size(); ++o) mixed_planar[others_idx[o]] = std::move(others[o]);
 
   std::vector<Brep::CylindricalFace> remaining_cyl;
@@ -5210,10 +5332,21 @@ Brep RemoveSphericalVertexBlend(const Brep::MixedFacesResult& mf, int sphere_bes
 
   for (const Match& m : matches) {
     const Brep::CylindricalFace& cf = mf.cylindrical[static_cast<size_t>(m.cyl_index)];
-    if (!cf.cap0_notch_points.empty() || !cf.cap1_notch_points.empty()) {
+    // Only the FAR (non-sphere) end may legitimately carry a "third face"
+    // corner notch at all (see the comment a few lines below, at this
+    // function's own CollapseNotchRun calls: the sphere end is never
+    // spliced into a third planar face's own loop the way an ordinary
+    // fillet corner end is) - RemoveCylindricalBlend's own oblique-end
+    // relaxation above now lets that far-end notch, oblique or not,
+    // through the same way; the NEAR (sphere-adjacent) end carrying one
+    // instead would mean this isn't really a FilletConvexEdges-built
+    // trihedral corner cylinder at all, so that direction is still
+    // rejected outright rather than silently mishandled.
+    const std::vector<Point3d>& near_notch = m.sphere_at_h0 ? cf.cap0_notch_points : cf.cap1_notch_points;
+    if (!near_notch.empty()) {
       throw std::invalid_argument(
-          "dino8::kernel::RemoveBlend: a cylinder at this spherical corner has a sloped (oblique-end) or "
-          "Steinmetz-style cap notch at its OTHER end - out of scope, see this function's own doc comment");
+          "dino8::kernel::RemoveBlend: a cylinder at this spherical corner has a cap notch at its own SPHERE-"
+          "adjacent end - not a FilletConvexEdges-built trihedral vertex-blend corner, out of scope");
     }
     CylPlan p;
     p.cyl_index = m.cyl_index;
@@ -5222,6 +5355,21 @@ Brep RemoveSphericalVertexBlend(const Brep::MixedFacesResult& mf, int sphere_bes
     p.R1 = p.R0 + cf.length * cf.frame.zaxis;
     p.S0 = cf.frame.origin + cf.radius * (std::cos(cf.angle) * cf.frame.xaxis + std::sin(cf.angle) * cf.frame.yaxis);
     p.S1 = p.S0 + cf.length * cf.frame.zaxis;
+    // The far end's own rail corners, when notched (oblique or not), are
+    // read from the notch's own authoritative first/last points instead
+    // of the flat `cf.length`-based formula above - see
+    // RemoveCylindricalBlend's own identical fix and doc comment for why
+    // an oblique end's two rails can end at two DIFFERENT heights, not
+    // just the single `cf.length` this flat formula assumes. The near
+    // (sphere) end was already confirmed un-notched above, so only the
+    // far cap's own field is ever consulted here.
+    if (m.sphere_at_h0 && !cf.cap1_notch_points.empty()) {
+      p.R1 = cf.cap1_notch_points.front();
+      p.S1 = cf.cap1_notch_points.back();
+    } else if (!m.sphere_at_h0 && !cf.cap0_notch_points.empty()) {
+      p.R0 = cf.cap0_notch_points.front();
+      p.S0 = cf.cap0_notch_points.back();
+    }
 
     // The FAR end's own reconstruction formula below assumes it is a
     // PLAIN (non-sphere) end - see this function's own doc comment for
@@ -5304,11 +5452,20 @@ Brep RemoveSphericalVertexBlend(const Brep::MixedFacesResult& mf, int sphere_bes
     }
     const double offset = cf.radius / cosb;
     const double sign = cf.outward ? 1.0 : -1.0;
+    // The far end's own restored endpoint, when notched (oblique or not),
+    // comes from EdgePointAtObliquePlane the same way
+    // RemoveCylindricalBlend's own single-edge case does - see that
+    // function's own doc comment for why `cf.length` alone is not
+    // interchangeable with the edge's own true crossing height there. The
+    // near (sphere) end is simply V, already reconstructed above.
+    const Point3d edge_anchor = cf.frame.origin + sign * bis * offset;
     if (p.sphere_at_h0) {
       p.edge_p0 = V;
-      p.edge_p1 = cf.frame.origin + sign * bis * offset + cf.length * cf.frame.zaxis;
+      p.edge_p1 = cf.cap1_notch_points.empty() ? edge_anchor + cf.length * cf.frame.zaxis
+                                                : EdgePointAtObliquePlane(edge_anchor, cf.frame.zaxis, cf.cap1_notch_points);
     } else {
-      p.edge_p0 = cf.frame.origin + sign * bis * offset;
+      p.edge_p0 = cf.cap0_notch_points.empty() ? edge_anchor
+                                                : EdgePointAtObliquePlane(edge_anchor, cf.frame.zaxis, cf.cap0_notch_points);
       p.edge_p1 = V;
     }
 
@@ -5330,10 +5487,15 @@ Brep RemoveSphericalVertexBlend(const Brep::MixedFacesResult& mf, int sphere_bes
       others.push_back(mixed_planar[f]);
       others_idx.push_back(f);
     }
+    // Verified, not merely attempted, exactly like RemoveCylindricalBlend's
+    // own single-edge case - see CollapseNotchRunVerified's own doc
+    // comment. The near (sphere) end's own cap*_notch_points was already
+    // confirmed empty above, so only the far end's notch field (if any,
+    // oblique or not) is ever passed here.
     if (p.sphere_at_h0) {
-      CollapseNotchRun(others, p.R1, p.S1, p.edge_p1, tol);
+      CollapseNotchRunVerified(others, cf.cap1_notch_points, p.R1, p.S1, p.edge_p1, "far (cap1) end", tol);
     } else {
-      CollapseNotchRun(others, p.R0, p.S0, p.edge_p0, tol);
+      CollapseNotchRunVerified(others, cf.cap0_notch_points, p.R0, p.S0, p.edge_p0, "far (cap0) end", tol);
     }
     for (size_t o = 0; o < others.size(); ++o) mixed_planar[others_idx[o]] = std::move(others[o]);
   }

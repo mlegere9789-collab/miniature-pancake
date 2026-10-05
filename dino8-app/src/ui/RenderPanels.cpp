@@ -250,6 +250,7 @@ void DrawLightsPanel(Application& app) {
     t |= ImGui::SliderFloat("Sun intensity", &r.sun_intensity, 0.f, 3.f, "%.2f");
     t |= ColorEdit("Sun colour", r.sun_color);
     t |= ImGui::Checkbox("Skylight (ambient sky)", &r.skylight);
+    t |= ImGui::Checkbox("Ambient occlusion (SSAO)", &r.ssao);
     if (t) doc.Touch();
   }
   ImGui::Separator();
@@ -355,6 +356,7 @@ void DrawRenderingPanel(Application& app) {
   if (r.background == RenderSettings::Background::Gradient) { t |= ColorEdit("Top", r.gradient_top); t |= ColorEdit("Bottom", r.gradient_bottom); }
   t |= ImGui::Checkbox("Ground plane", &r.ground_plane);
   t |= ImGui::Checkbox("Skylight", &r.skylight);
+  t |= ImGui::Checkbox("Ambient occlusion (SSAO)", &r.ssao);
   ImGui::Separator();
   if (ImGui::Button("Render")) app.Engine().Execute("Render");
   ImGui::SameLine();
@@ -410,6 +412,7 @@ void DrawEnvironmentsPanel(Application& app) {
     if (ImGui::SliderFloat("Azimuth", &az, 0.f, 360.f, "%.0f deg")) { r.sun_azimuth = az; t = true; }
     if (ImGui::SliderFloat("Altitude", &alt, 0.f, 90.f, "%.0f deg")) { r.sun_altitude = alt; t = true; }
     t |= ImGui::Checkbox("Skylight", &r.skylight);
+    t |= ImGui::Checkbox("Ambient occlusion (SSAO)", &r.ssao);
   }
   if (t) doc.Touch();
   ImGui::End();
@@ -450,6 +453,7 @@ dino8::platform::AccessibleNode EnvironmentsAccessibleTree(Application& app) {
   entries.push_back({"Sun azimuth", FormatNumber(r.sun_azimuth) + " deg"});
   entries.push_back({"Sun altitude", FormatNumber(r.sun_altitude) + " deg"});
   entries.push_back({"Skylight", r.skylight ? "on" : "off"});
+  entries.push_back({"Ambient occlusion (SSAO)", r.ssao ? "on" : "off"});
   return dino8::platform::BuildEnvironmentsPanelNode(entries);
 }
 
