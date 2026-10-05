@@ -238,6 +238,48 @@ class Brep {
                                  bool exact_clip = false,
                                  std::vector<std::vector<Point2d>> hole_loops_uv = {});
 
+  // TrimmedPlanarFaceWelded: a genuine-topology sibling of
+  // TrimmedPlanarFace() above, the same "Welded" convention BoxWelded()
+  // already established for Box() - PARITY_MAP.md's own "Genuine
+  // topology produced by every constructor" bullet names
+  // TrimmedPlanarFace() as one of the surface-only factories (bare
+  // NewFace(int), no real vertices/edges/loop) still left unaddressed
+  // there. `trim_loop_uv`/`hole_loops_uv` are mapped through `surface`'s
+  // own PointAt(u, v) into real 3D polygons, fit to a plane via the
+  // same Newell's-method normal this file's own ExtractPlanarFace()
+  // helper already uses (robust to ordinary floating-point noise, and
+  // mutually consistent with the loop's own winding by construction),
+  // then handed to the existing, already-tested FromPlanarFaces() for
+  // the outer boundary - a real ON_BrepLoop::outer with genuine shared
+  // vertices/edges, `raw().IsValid()`/`IsPlanar()` both true, unlike
+  // TrimmedPlanarFace()'s own bare surface - and to the existing,
+  // already-tested AddHoleLoop() once per entry of `hole_loops_uv`,
+  // building a real ON_BrepLoop::inner for each. A thin composition of
+  // two already-proven primitives, not a new topology-assembly path.
+  //
+  // Inherits AddHoleLoop()'s own straight-edged-hole restriction
+  // directly (each hole_loops_uv entry becomes a closed wire body of
+  // straight edges, one per consecutive point pair - a curved hole
+  // boundary is out of scope here exactly as it already is for
+  // AddHoleLoop() itself) - unlike TrimmedPlanarFace()'s own
+  // hole_loops_uv, which are tessellator-side polygons that can
+  // approximate any shape, including a curve, since they carry no real
+  // topology to begin with. `exact_clip` has no equivalent parameter
+  // here: the built boundary - outer and every hole alike - IS the
+  // caller's own polygon exactly, a real trimmed edge loop, never a
+  // tessellation approximation of a curve to begin with.
+  //
+  // Throws std::invalid_argument if `trim_loop_uv` has fewer than 3
+  // points (same check TrimmedPlanarFace() itself already makes), if
+  // `surface`'s own mapped 3D points (the outer loop, or any hole) are
+  // not planar together within `tolerance::kDistance` of the outer
+  // loop's own Newell-fitted plane, or if any hole has fewer than 3
+  // points; otherwise propagates whatever FromPlanarFaces()/
+  // AddHoleLoop() themselves throw or refuse (e.g. two holes that cross,
+  // or a hole landing outside the outer boundary).
+  static Brep TrimmedPlanarFaceWelded(const NurbsSurface& surface, const std::vector<Point2d>& trim_loop_uv,
+                                       std::vector<std::vector<Point2d>> hole_loops_uv = {});
+
   // ------------------------------------------------------------------
   // Sweep-class factories (Parasolid "sweep/spin/loft/pipe" class) -
   // implemented in src/sweep.cpp. Every one of them builds REAL
