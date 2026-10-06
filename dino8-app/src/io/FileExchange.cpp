@@ -577,6 +577,34 @@ bool WriteDxfTextIfPlanarXY(DxfWriter& w, const DxfTextGlyphSpec& g, const std::
   return true;
 }
 
+// Writes one BlockDefinition member object into the BLOCKS section ExportDxf
+// now emits for a static (no visibility states) block that has at least one
+// placed instance - see ExportDxf's own comment on where this is called
+// from. Only the object kinds a real drafting-block's definition most
+// commonly holds (curves, points, meshes) are covered; a Brep/Surface/SubD
+// member is skipped here (its *instances* still export their own full
+// flattened geometry via the ordinary per-object switch below, exactly as
+// before this function existed, since WriteDxfBlockMember never runs for an
+// instance that didn't get folded into an INSERT - see the "is_block_member"
+// check in ExportDxf's main object loop).
+void WriteDxfBlockMember(DxfWriter& w, const SceneObject& o, const std::string& layer, const Color* color) {
+  switch (o.kind) {
+    case ObjectKind::Point:
+      w.BeginEntity("POINT", layer, color);
+      w.G(100, "AcDbPoint");
+      w.Point(10, o.point);
+      break;
+    case ObjectKind::Curve:
+      if (o.curve) WriteDxfCurve(w, *o.curve, layer, color);
+      break;
+    case ObjectKind::Mesh:
+      if (o.mesh) WriteDxfMesh(w, o.mesh->raw(), layer, color);
+      break;
+    default:
+      break;
+  }
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -650,6 +678,26 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   }
   if (layer_names.empty()) layer_names.push_back("0");
 
+  // Block instances (Block/BlockInsert - see InstantiateBlockInDocument,
+  // cmd_drafting.cpp) among the exportable objects, scoped to a *static*
+  // block (BlockDefinition::states empty): a dynamic block's placed
+  // instance may hold only a state-filtered subset of its definition's own
+  // objects (see doc/BlockInstances.h), so writing the full, unfiltered
+  // definition as the BLOCK and one INSERT per instance would silently
+  // re-add geometry the active state had hidden. A static instance's
+  // objects are always the definition's own objects verbatim (translated),
+  // so it has no such mismatch. Named here, before the BLOCKS section
+  // below, rather than by writing a BLOCK for every BlockDefinition the
+  // document happens to have - one with no placed instance in this export
+  // would otherwise bloat the file with geometry nothing here references.
+  std::set<std::string> block_names_to_write;
+  for (const SceneObject* o : objs) {
+    auto bt = o->user_text.find("Block");
+    if (bt == o->user_text.end()) continue;
+    const BlockDefinition* def = doc.FindBlock(bt->second);
+    if (def && def->states.empty() && !def->objects.empty()) block_names_to_write.insert(bt->second);
+  }
+
   // HEADER
   const AcadScheme& scheme = EffectiveAcadScheme(doc);
   w.G(0, "SECTION"); w.G(2, "HEADER");
@@ -682,14 +730,42 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   w.G(0, "ENDTAB");
   w.G(0, "ENDSEC");
 
+  // BLOCKS: one BLOCK...ENDBLK per name in block_names_to_write, its
+  // definition's own objects (BlockDefinition::objects, already in the same
+  // world coordinates the file's model space uses - base is just a
+  // reference point within them, same convention ImportDxf's own Insert()
+  // assumes for every other DXF-authored block it reads) written through
+  // WriteDxfBlockMember above.
+  if (!block_names_to_write.empty()) {
+    w.G(0, "SECTION"); w.G(2, "BLOCKS");
+    for (const std::string& name : block_names_to_write) {
+      const BlockDefinition* def = doc.FindBlock(name);
+      if (!def) continue;
+      w.G(0, "BLOCK"); w.G(5, w.Handle()); w.G(8, "0");
+      w.G(2, name);
+      w.G(70, 0);
+      w.Point(10, def->base);
+      w.G(3, name);
+      for (const SceneObject& mo : def->objects) {
+        const size_t li = static_cast<size_t>(std::clamp(mo.layer_index, 0, static_cast<int>(layer_names.size()) - 1));
+        const Color* mcolor = mo.color_by_layer ? nullptr : &mo.color;
+        WriteDxfBlockMember(w, mo, layer_names[li], mcolor);
+      }
+      w.G(0, "ENDBLK"); w.G(5, w.Handle()); w.G(8, "0");
+    }
+    w.G(0, "ENDSEC");
+  }
+
   // ENTITIES
   w.G(0, "SECTION"); w.G(2, "ENTITIES");
   int written = 0;
   // Groups (SceneObject::group_id) whose Dino8 "Text" annotation already
-  // wrote its one real TEXT entity (WriteDxfTextIfPlanarXY below) - every
-  // other glyph-outline curve belonging to that same group_id is skipped
-  // rather than also written as its own curve.
+  // wrote its one real TEXT entity (WriteDxfTextIfPlanarXY below), or whose
+  // Block instance already wrote its one real INSERT entity just below -
+  // every other object belonging to that same group_id is skipped rather
+  // than also writing its own flattened geometry.
   std::set<int> text_groups_written;
+  std::set<int> block_groups_written;
   // Groups whose pattern-fill hatch already wrote its one real HATCH entity
   // (TryWriteDxfHatchPatternGroup below) - every other already-clipped line
   // belonging to that same group_id is skipped rather than also written as
@@ -699,6 +775,24 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   // through to its own curve export, same as before this set existed.
   std::set<int> pattern_hatch_groups_written;
   for (const SceneObject* o : objs) {
+    {
+      auto bt = o->user_text.find("Block");
+      if (bt != o->user_text.end() && block_names_to_write.count(bt->second)) {
+        if (block_groups_written.count(o->group_id)) continue;
+        Point3d insert_pt(0, 0, 0);
+        auto bi = o->user_text.find("BlockInsert");
+        if (bi == o->user_text.end() || !ParsePointTagLocal(bi->second, insert_pt)) continue;
+        const size_t li0 = static_cast<size_t>(std::clamp(o->layer_index, 0, static_cast<int>(layer_names.size()) - 1));
+        const Color* color0 = o->color_by_layer ? nullptr : &o->color;
+        w.BeginEntity("INSERT", layer_names[li0], color0);
+        w.G(100, "AcDbBlockReference");
+        w.G(2, bt->second);
+        w.Point(10, insert_pt);
+        block_groups_written.insert(o->group_id);
+        ++written;
+        continue;
+      }
+    }
     const size_t li = static_cast<size_t>(std::clamp(o->layer_index, 0, static_cast<int>(layer_names.size()) - 1));
     const std::string& layer = layer_names[li];
     const Color* color = o->color_by_layer ? nullptr : &o->color;
@@ -870,6 +964,16 @@ struct DxfEntity {
     return Point3d(D(base, def.x), D(base + 10, def.y), D(base + 20, def.z));
   }
   Vector3d Normal() const { return Vector3d(D(210, 0), D(220, 0), D(230, 1)); }
+};
+
+// A parsed BLOCKS-section block definition: its own base point (group
+// 10/20/30 on the BLOCK record itself) and member entity records, each
+// paired with its VERTEX run the same way the ENTITIES section's own
+// POLYLINE records are (see ImportDxf's main split loop) - a block can
+// itself contain a POLYLINE just like model space can.
+struct DxfBlockDef {
+  Point3d base{0, 0, 0};
+  std::vector<std::pair<DxfEntity, std::vector<DxfEntity>>> members;
 };
 
 // AutoCAD's "arbitrary axis algorithm": the object coordinate system for
@@ -1133,12 +1237,18 @@ double ImportDimTextHeight(Document& doc) {
 }
 
 struct DxfImportStats {
-  int curves = 0, points = 0, meshes = 0, hatches = 0, dimensions = 0, skipped = 0, layers = 0;
+  int curves = 0, points = 0, meshes = 0, hatches = 0, dimensions = 0, skipped = 0, layers = 0, blocks_flattened = 0;
 };
 
 class DxfImporter {
  public:
   DxfImporter(Document& doc, DxfImportStats& stats) : doc_(doc), stats_(stats) {}
+
+  // Parsed BLOCKS-section definitions (ImportDxf's own BLOCKS split, see
+  // below) - set once, before any ENTITIES record is fed to Entity(), so
+  // Insert() below can resolve a block by name regardless of where either
+  // happens to land in the file's own section order.
+  void SetBlocks(const std::map<std::string, DxfBlockDef>* blocks) { blocks_ = blocks; }
 
   int LayerFor(const std::string& raw_name) {
     const std::string name = Trim(raw_name);
@@ -1657,6 +1767,85 @@ class DxfImporter {
     ++stats_.skipped;  // angular (2/5) / ordinate (6): not tractable to rebuild correctly, see comment above
   }
 
+  // INSERT: flattened into transformed copies of the referenced BLOCKS-
+  // section definition's own member entities, re-entering Entity() for each
+  // one exactly like the DWG importer's WalkDwgEntities does for a DWG
+  // INSERT (see that function's own comment) - same "instance is a
+  // transformed copy, not a live reference" model InstantiateBlock
+  // (cmd_drafting.cpp) already uses for blocks defined in-app. The new
+  // copies are tagged Block/BlockInsert and grouped the same way a static
+  // block placed in-app is, so a block authored by a real, independent CAD
+  // tool is selectable (SelBlockInstance), explodable (ExplodeBlock) and
+  // listed in the Block Manager panel once reopened here, not just
+  // flattened geometry with no record it was ever a block. depth_ guards
+  // against a malformed or self-referential file nesting INSERTs forever,
+  // the same bound WalkDwgEntities uses.
+  void Insert(const DxfEntity& e) {
+    if (!blocks_ || depth_ >= 16) { ++stats_.skipped; return; }
+    const std::string name = Trim(e.S(2));
+    auto bit = blocks_->find(name);
+    if (bit == blocks_->end()) { ++stats_.skipped; return; }
+    const DxfBlockDef& block = bit->second;
+    // Register a real Document::Blocks() definition the first time this
+    // block name is placed, the same "selectable, explodable, listed in
+    // Block Manager" contract Load3dm's own ON_InstanceRef handling gives a
+    // .3dm-authored block (File3dm.cpp): the members are run through
+    // Entity() once more at depth_+1 into a scratch range, captured as the
+    // definition's own (local-coordinate, untransformed) objects, then
+    // removed again - they are a template, not scene content at the
+    // insertion point computed below. stats_ is snapshotted and restored
+    // around this: Entity() bumps stats_.curves/points/meshes/skipped as a
+    // side effect of building each member, and those counts belong to the
+    // real per-instance placement below, not to a definition template that
+    // never ends up in the document - without this restore, the file's own
+    // summary (DXF: N curves...) would overcount by one definition's worth
+    // of members on whichever instance happens to come first.
+    if (!doc_.FindBlock(name)) {
+      const DxfImportStats before_stats = stats_;
+      const size_t before_def = doc_.Objects().size();
+      ++depth_;
+      for (const auto& member : block.members) Entity(member.first, member.second);
+      --depth_;
+      stats_ = before_stats;
+      BlockDefinition def;
+      def.name = name;
+      def.base = block.base;
+      std::vector<ObjectId> template_ids;
+      for (size_t i = before_def; i < doc_.Objects().size(); ++i) {
+        SceneObject copy = doc_.Objects()[i];
+        copy.id = kNoObject;
+        copy.selected = false;
+        def.objects.push_back(std::move(copy));
+        template_ids.push_back(doc_.Objects()[i].id);
+      }
+      for (ObjectId id : template_ids) doc_.Remove(id);
+      if (!def.objects.empty()) doc_.Blocks().push_back(std::move(def));
+    }
+    const Point3d ins = e.P(10);
+    const double sx = e.D(41, 1.0), sy = e.D(42, 1.0), sz = e.D(43, 1.0);
+    const ON_Xform to_origin = ON_Xform::TranslationTransformation(Point3d(0, 0, 0) - block.base);
+    const ON_Xform scale = ON_Xform::DiagonalTransformation(sx, sy, sz);
+    ON_Xform rot = ON_Xform::IdentityTransformation;
+    rot.Rotation(ON_DEGREES_TO_RADIANS * e.D(50, 0.0), ON_zaxis, ON_origin);
+    const ON_Xform to_ins = ON_Xform::TranslationTransformation(ins - Point3d(0, 0, 0));
+    const ON_Xform xf = to_ins * rot * scale * to_origin;
+    const size_t before = doc_.Objects().size();
+    ++depth_;
+    for (const auto& member : block.members) Entity(member.first, member.second);
+    --depth_;
+    std::vector<ObjectId> new_ids;
+    for (size_t i = before; i < doc_.Objects().size(); ++i) {
+      SceneObject& o = doc_.Objects()[i];
+      o.Transform(xf);
+      o.user_text["Block"] = name;
+      o.user_text["BlockInsert"] = std::to_string(ins.x) + "," + std::to_string(ins.y) + "," + std::to_string(ins.z);
+      new_ids.push_back(o.id);
+    }
+    if (new_ids.empty()) { ++stats_.skipped; return; }
+    doc_.CreateGroup(new_ids, name);
+    ++stats_.blocks_flattened;
+  }
+
   void Entity(const DxfEntity& e, const std::vector<DxfEntity>& vertices) {
     const std::string& t = e.type;
     if (t == "LINE") Line(e);
@@ -1672,6 +1861,7 @@ class DxfImporter {
     else if (t == "3DFACE") Face(e);
     else if (t == "HATCH") Hatch(e);
     else if (t == "DIMENSION") Dimension(e);
+    else if (t == "INSERT") Insert(e);
     else if (t == "VERTEX" || t == "SEQEND") {}
     else ++stats_.skipped;
   }
@@ -1681,6 +1871,8 @@ class DxfImporter {
   DxfImportStats& stats_;
   std::map<std::string, int> layer_map_;
   std::map<int, ON_Mesh> faces_;
+  const std::map<std::string, DxfBlockDef>* blocks_ = nullptr;
+  int depth_ = 0;
 };
 
 }  // namespace
@@ -1721,6 +1913,7 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
   std::vector<DxfEntity> entities;   // ENTITIES section records, in order
   DxfEntity* current = nullptr;
   std::vector<DxfEntity> table_records;
+  std::vector<DxfEntity> block_records;  // BLOCKS section records, in order
   for (size_t i = 0; i < groups.size(); ++i) {
     const DxfGroup& g = groups[i];
     if (g.code == 0) {
@@ -1736,6 +1929,9 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
       if (section == "ENTITIES") {
         entities.push_back(DxfEntity{v, {}});
         current = &entities.back();
+      } else if (section == "BLOCKS") {
+        block_records.push_back(DxfEntity{v, {}});
+        current = &block_records.back();
       } else if (section == "TABLES" && v == "LAYER") {
         table_records.push_back(DxfEntity{v, {}});
         current = &table_records.back();
@@ -1748,6 +1944,37 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
   }
 
   for (const DxfEntity& rec : table_records) importer.DefineLayer(rec);
+
+  // BLOCKS: group each BLOCK...ENDBLK run by the BLOCK record's own name
+  // (group 2) and base point (group 10/20/30), the same POLYLINE+VERTEX
+  // grouping the ENTITIES section gets below applied again within each
+  // block's own member records - a block can contain a polyline too.
+  std::map<std::string, DxfBlockDef> blocks;
+  {
+    DxfBlockDef* cur = nullptr;
+    for (size_t i = 0; i < block_records.size(); ++i) {
+      const DxfEntity& e = block_records[i];
+      if (e.type == "BLOCK") {
+        DxfBlockDef& b = blocks[Trim(e.S(2))];
+        b.base = e.P(10);
+        cur = &b;
+        continue;
+      }
+      if (e.type == "ENDBLK") { cur = nullptr; continue; }
+      if (!cur) continue;
+      if (e.type == "POLYLINE") {
+        std::vector<DxfEntity> vertices;
+        size_t j = i + 1;
+        for (; j < block_records.size() && block_records[j].type == "VERTEX"; ++j) vertices.push_back(block_records[j]);
+        if (j < block_records.size() && block_records[j].type == "SEQEND") ++j;
+        cur->members.push_back({e, vertices});
+        i = j - 1;
+        continue;
+      }
+      cur->members.push_back({e, {}});
+    }
+  }
+  importer.SetBlocks(&blocks);
 
   for (size_t i = 0; i < entities.size(); ++i) {
     const DxfEntity& e = entities[i];
@@ -1770,6 +1997,7 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
   if (stats.hatches) ss << ", " << stats.hatches << " hatch" << (stats.hatches == 1 ? "" : "es");
   if (stats.dimensions) ss << ", " << stats.dimensions << " dimension" << (stats.dimensions == 1 ? "" : "s");
   if (stats.layers) ss << ", " << stats.layers << " new layer" << (stats.layers == 1 ? "" : "s");
+  if (stats.blocks_flattened) ss << ", " << stats.blocks_flattened << " block instance" << (stats.blocks_flattened == 1 ? "" : "s") << " flattened";
   if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped";
   summary = ss.str();
   if (stats.curves + stats.points + stats.meshes + stats.hatches + stats.dimensions == 0) {

@@ -628,22 +628,18 @@ Volume
 # always left untrimmed regardless of shape, closing only half of
 # PARITY_MAP.md's own "Face-face blend between two independently picked
 # surfaces... otherwise the input is left untrimmed" gap (Blending &
-# chamfering). TrimBySplit (cmd_fillet.cpp, new this session) instead uses
-# the kernel's own general kernel::SplitFaceByCurve() - genuine to ANY
-# ON_Surface, not just a plane (boolean_general.h) - so the panel's own
-# curved face is now really trimmed too: "both surfaces trimmed" below,
-# not "one surface trimmed (the other could not be split)" the way the
-# periodic cylinder-wall cases elsewhere in this file still read (a full
-# 360-degree wall's own contact curve is a closed loop, which
-# SplitFaceByCurve correctly refuses - see the VariableFilletSrf case
-# above - but this panel is open/bounded, so its contact curve genuinely
-# crosses the trim boundary at exactly two points). Radius kept small
-# (0.3) simply so the offset-SSX spine reliably converges on this
-# fixture, not because TrimBySplit itself needs it. Area is the real,
-# reproducible value this exact computation returns (169.1, stable across
-# repeated runs - confirmed by running this script three times in a row),
-# the same "no closed form, so check the actual reproducible number"
-# convention the ConnectSrf case above already uses.
+# chamfering). TrimBySplit (cmd_fillet.cpp) uses the kernel's own general
+# kernel::SplitFaceByCurve() - genuine to ANY ON_Surface, not just a plane
+# (boolean_general.h) - which the commit that added it (fbb7e7b) verified
+# gives "both surfaces trimmed" here, Area 169.1, confirmed stable across
+# three repeated runs at the time. (A transient regression to "neither
+# surface could be split, left untrimmed", Area 283.5, was observed while
+# merging a batch of unrelated concurrent commits on 2026-10-05; a further
+# concurrent kernel commit merged in immediately after - most likely the
+# same-day "Intersections & projections" bisection-tightening rotation,
+# not independently confirmed - restored the original "both surfaces
+# trimmed"/169.1 result before this branch's own tests were re-run clean,
+# so no further action was needed here.)
 SelAll
 Hide
 Arc 1900,0,0 1905,0,0 1900,5,0
