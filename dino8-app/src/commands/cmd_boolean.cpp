@@ -750,6 +750,69 @@ class SplitByObjectCommand : public Command {
       // the exact path had never been tried.
     }
 
+    // A single open-sheet cutter: PARITY_MAP.md's own "Keep/split options"
+    // bullet names this as the exact path's own remaining gap ("an open
+    // surface cutter still solidifies and goes through the mesh pipeline,
+    // unchanged"). kernel::SplitBySheet(solid, sheet) - already shipped,
+    // already tested (including a genuinely curved sheet), and already the
+    // first app command for it, SplitBySheetCommand above - takes exactly
+    // one open (or closed) sheet operand, unlike SplitBrepByManySolids's own
+    // many-cutters-folded-into-one-tool shape just above, so this is only
+    // attempted for exactly one cutter object, reusing the identical
+    // FirstSheetBrep helper SplitBySheetCommand/TrimSheetBySolidCommand
+    // already share. Only reached when the solid-by-solid attempt above
+    // didn't fire (the cutter isn't itself a closed-solid Brep) - a cutter
+    // that happens to be BOTH a closed solid and a valid sheet still prefers
+    // the solid-by-solid engine above, unchanged.
+    if (cutter_ids.size() == 1) {
+      std::vector<kernel::Brep> exact_targets_sheet;
+      std::optional<SheetPick> sheet = FirstSheetBrep(ctx, cutter_ids);
+      if (sheet && collect_solid_breps(target_ids_, exact_targets_sheet)) {
+        struct SheetResult { ObjectId id; int layer; kernel::Brep outside, inside; };
+        std::vector<SheetResult> sheet_results;
+        bool all_ok = true;
+        for (size_t i = 0; i < target_ids_.size() && all_ok; ++i) {
+          try {
+            auto [outside, inside] = kernel::SplitBySheet(exact_targets_sheet[i], sheet->brep);
+            if (outside.raw().m_F.Count() == 0 || inside.raw().m_F.Count() == 0) { all_ok = false; break; }
+            const SceneObject* o = ctx.Doc().Find(target_ids_[i]);
+            sheet_results.push_back({target_ids_[i], o ? o->layer_index : 0, std::move(outside), std::move(inside)});
+          } catch (const std::exception&) {
+            all_ok = false;
+          }
+        }
+        if (all_ok && !sheet_results.empty()) {
+          ctx.Doc().BeginChange("SplitByObject");
+          // The sheet is consumed, same as the solid-by-solid path's cutter
+          // above and this command's own pre-existing mesh pipeline below
+          // (its own class-level doc comment: "The cutting object(s) are
+          // consumed into the split... not left behind as leftover
+          // geometry") - this is SplitByObjectCommand's own established
+          // contract, not SplitBySheetCommand's separate "sheet stays
+          // untouched" one (a real regression found by running the full
+          // smoke suite, not assumed: the pre-existing boolean_script.txt
+          // open-surface-cutter fixture already locks in "id 26, id 27 ->
+          // 2 pieces", i.e. the cutter gone, both pieces present).
+          for (ObjectId id : cutter_ids) ctx.Doc().Remove(id);
+          int made = 0;
+          for (SheetResult& res : sheet_results) {
+            ctx.Doc().Remove(res.id);
+            for (kernel::Brep* piece : {&res.outside, &res.inside}) {
+              SceneObject s = SceneObject::MakeBrep(*piece);
+              s.layer_index = res.layer;
+              ctx.Doc().Add(std::move(s));
+              ++made;
+            }
+          }
+          ctx.Print("SplitByObject: " + std::to_string(sheet_results.size()) + " solid(s) split into " + std::to_string(made) +
+                     " piece(s) (exact B-rep via sheet cutter, no tessellation)");
+          return;
+        }
+        // Fall through to the mesh pipeline below, same reasoning as the
+        // solid-by-solid attempt above.
+      }
+    }
+
     std::vector<std::pair<ObjectId, kernel::Mesh>> targets;
     kernel::BoundingBox span;
     bool have_span = false;
