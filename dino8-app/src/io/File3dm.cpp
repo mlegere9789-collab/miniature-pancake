@@ -1030,6 +1030,68 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       }
       continue;
     }
+    if (const ON_DimOrdinate* dim = ON_DimOrdinate::Cast(g)) {
+      // Real ON_DimOrdinate (Rhino's ordinate dimension: a base/reference
+      // point, a measured feature point, and a leader running out to a text
+      // label reading "X <value>"/"Y <value>") - checked ahead of the plain
+      // ON_Annotation branch below for the same reason as
+      // ON_DimLinear/ON_DimRadial/ON_Leader/ON_DimAngular above, closing
+      // this branch's own disclosed "the remaining Ordinate/..." gap.
+      // Rebuilt via the identical single-leader-line-plus-text shape a live
+      // `DimOrdinate` command bakes (`BuildOrdinateDimGroup`,
+      // `cmd_annotate2.cpp`) - reusing `dim_geom_detail::MakePolyline`
+      // (`commands/DimGeometry.h`) and `AddDimensionGroupToDocLocal` above
+      // rather than reimplementing either, same as the `ON_Leader` branch.
+      // `Get3dBasePoint`/`Get3dDefPt`/`Get3dLeaderPt` hand back real 3D
+      // points already resolved through the dimension's own plane, so no
+      // manual `PointAt` conversion is needed here (unlike the 2D-point
+      // accessors the other branches above use) - the file's own leader
+      // point is used directly for the text label's placement rather than
+      // recomputing one, so the label lands exactly where the original
+      // author put it even if this build's own text height differs from
+      // theirs.
+      const ON_Plane plane = dim->Plane();
+      const kernel::Point3d base = dim->Get3dBasePoint();
+      const kernel::Point3d feature = dim->Get3dDefPt();
+      const kernel::Point3d end = dim->Get3dLeaderPt();
+      const bool is_x = dim->GetMeasuredDirection() == ON_DimOrdinate::MeasuredDirection::Xaxis;
+      const char dir = is_x ? 'X' : 'Y';
+      double u0, v0, u1, v1;
+      plane.ClosestPointTo(base, &u0, &v0);
+      plane.ClosestPointTo(feature, &u1, &v1);
+      const double value = is_x ? u1 - u0 : v1 - v0;
+      const ON_ModelComponentReference dimstyle_ref =
+          model.ComponentFromId(ON_ModelComponent::Type::DimStyle, dim->DimensionStyleId());
+      const ON_DimStyle* dimstyle = ON_DimStyle::Cast(dimstyle_ref.ModelComponent());
+      double text_h = (dimstyle ? *dimstyle : ON_DimStyle::Default).TextHeight();
+      if (text_h <= 0) {
+        const AnnotationStyle& ast = doc.CurrentAnnotationStyle();
+        text_h = ast.text_height > 0 ? ast.text_height : std::max(doc.Settings().grid_spacing * 2.0, 1e-6);
+      }
+      int layer_idx = 0;
+      if (attr) {
+        auto lm = layer_map.find(attr->m_layer_index);
+        if (lm != layer_map.end()) layer_idx = lm->second;
+      }
+      std::vector<kernel::NurbsCurve> curves;
+      curves.push_back(dim_geom_detail::MakePolyline({feature, end}));
+      DimGlyphSpec ord_text;
+      ord_text.text = std::string(1, dir) + " " + FormatMeasurement(value, -1, "");
+      ord_text.height = text_h;
+      ord_text.plane = plane;
+      ord_text.plane.SetOrigin(is_x ? end + plane.yaxis * (text_h * 0.3)
+                                     : end + plane.xaxis * (text_h * 0.3) - plane.yaxis * (text_h * 0.5));
+      ord_text.center = is_x;
+      std::map<std::string, std::string> tags;
+      tags["DimOrdinateDir"] = std::string(1, dir);
+      tags["DimPlaneOrigin"] = DimPointTag(plane.origin);
+      tags["DimPlaneX"] = DimPointTag(kernel::Point3d(plane.xaxis));
+      tags["DimPlaneY"] = DimPointTag(kernel::Point3d(plane.yaxis));
+      tags["DimP0"] = DimPointTag(base);
+      tags["DimP1"] = DimPointTag(feature);
+      if (!AddDimensionGroupToDocLocal(doc, "DimOrdinate", layer_idx, curves, ord_text, tags)) ++skipped;
+      continue;
+    }
     if (const ON_Annotation* ann = ON_Annotation::Cast(g)) {
       // Previously entirely unhandled, like ON_Hatch/ON_InstanceRef above:
       // a real ON_Annotation (Rhino's Text/Dim*/Leader object kind) fell
@@ -1046,12 +1108,13 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       // PointTagLocal rather than via annotate_common.h - see its own
       // comment) so it round-trips, is selectable (FindText) and editable
       // (TextProperties) exactly like one made in-app. Linear/aligned,
-      // radius/diameter and angular/3-point-angular dimensions
-      // (ON_DimLinear/ON_DimRadial/ON_DimAngular) and ON_Leader are all
-      // handled in their own branches above, ahead of this one - only the
-      // remaining Ordinate/ArcLen/CenterMark annotation kinds still have no
-      // reader at all (no Dino8 command produces one of those to rebuild
-      // against), so they still count as skipped, same as before.
+      // radius/diameter, angular/3-point-angular and ordinate dimensions
+      // (ON_DimLinear/ON_DimRadial/ON_DimAngular/ON_DimOrdinate) and
+      // ON_Leader are all handled in their own branches above, ahead of
+      // this one - only the remaining ArcLen/CenterMark annotation kinds
+      // still have no reader at all (no shared Document-independent
+      // geometry builder exists yet for either, unlike every kind handled
+      // above), so they still count as skipped, same as before.
       if (ann->Type() != ON::AnnotationType::Text) { ++skipped; continue; }
       const std::string text = FromWide(ann->PlainText());
       const ON_Plane& plane = ann->Plane();
