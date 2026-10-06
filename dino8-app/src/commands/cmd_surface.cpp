@@ -1449,7 +1449,6 @@ class ProjectCommand : public Command {
       WantObjects(pull_ ? "Select surfaces, polysurfaces or meshes to pull to" : "Select surfaces, polysurfaces or meshes to project onto");
       return;
     }
-    std::vector<Target> targets;
     for (ObjectId id : ids) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o || o->kind == ObjectKind::Curve || o->kind == ObjectKind::Point) continue;
@@ -1458,13 +1457,31 @@ class ProjectCommand : public Command {
       std::optional<kernel::Mesh> m = MeshOf(*o, 0.002);
       if (!m) continue;
       t.mesh = *m;
-      targets.push_back(std::move(t));
+      targets_.push_back(std::move(t));
     }
-    if (targets.empty()) { ctx.Warn("Select surfaces, polysurfaces or meshes as targets"); Finish(); return; }
-    const Vector3d dir = ActiveNormal(ctx);
+    if (targets_.empty()) { ctx.Warn("Select surfaces, polysurfaces or meshes as targets"); Finish(); return; }
+    // Pull has no direction of its own (always the real nearest point), so
+    // it runs immediately. Project used to always sweep along the active
+    // CPlane normal with no way to choose otherwise - the real "CPlane
+    // sampling only" gap this command's own PARITY_MAP bullet named.
+    if (pull_) { DoWork(ctx, Vector3d()); Finish(); return; }
+    WantPoint("Direction start point, or Enter for the active CPlane normal");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!have_dir_start_) { dir_start_ = p; have_dir_start_ = true; WantPoint("Direction end point"); return; }
+    Vector3d dir = p - dir_start_;
+    if (!dir.Unitize()) { ctx.Warn("Project: direction points coincide, using the active CPlane normal instead"); dir = ActiveNormal(ctx); }
+    DoWork(ctx, dir);
+    Finish();
+  }
+  void OnEnter(CommandContext& ctx) override {
+    DoWork(ctx, ActiveNormal(ctx));
+    Finish();
+  }
+  void DoWork(CommandContext& ctx, Vector3d dir) {
     auto map = [&](Point3d p) -> std::optional<Point3d> {
       std::optional<Point3d> best;
-      for (const Target& t : targets) {
+      for (const Target& t : targets_) {
         std::optional<Point3d> q;
         if (pull_) q = t.surface ? t.surface->ClosestPoint(p, 40, 40) : t.mesh.ClosestPoint(p);
         else q = LineHit(t.mesh, p, dir);
@@ -1511,11 +1528,13 @@ class ProjectCommand : public Command {
       flush();
     }
     ctx.Print(std::string(label) + ": " + std::to_string(curves) + " curve(s), " + std::to_string(points) + " point(s)");
-    Finish();
   }
   bool pull_;
   bool have_sources_ = false;
+  bool have_dir_start_ = false;
+  Point3d dir_start_;
   std::vector<ObjectId> sources_;
+  std::vector<Target> targets_;
 };
 
 }  // namespace
@@ -1667,7 +1686,7 @@ void RegisterSurfaceCommands(CommandEngine& e) {
   Reg(e, "Shell", Make<ShellCommand>(), CommandStatus::Implemented, "Hollows a closed solid. With no face clicked to remove/open and no per-face thickness override, a polysurface whose faces are all planar and convex (a box or other simple polyhedron) now calls the kernel's exact ShellConvexPlanar first, giving a real B-rep result (exact volume, no tessellation) instead of a mesh; it fails open to the existing mesh construction (outer minus inward vertex-normal offset) for a curved or non-convex solid, or a thickness beyond that shape's own offset feasibility. Optionally click face(s) of a polysurface solid to remove/open before entering thickness (Enter with none picked keeps the old fully-closed behavior): the picked face(s) are dropped from the outer surface, the remainder gets the inward offset, and a rim mesh connects the two boundary loops - a real open shell (cup/case) for a single face, or a group of mutually-adjacent faces, on a simple box-like solid; a selection that would leave a non-manifold or multi-piece remainder is rejected with a warning rather than producing bad geometry, and mesh-only solids (no polysurface to pick faces on) still only support the fully-closed form. After face removal you can also click additional face(s) and type a thickness for each (repeat, then Enter for the default Thickness on the rest): every kept face's vertices then solve to the exact intersection of its own neighbours' offset planes, so two faces with different thickness meet in a real mitered corner rather than an average - numerically verified for a box (see tests/surface_script.txt) and, by the same plane-intersection algebra, correct for any solid whose kept faces are all planar (prisms and other polyhedra). If any kept face is curved, per-face overrides are detected and dropped for that solid (warned), falling back to the single default Thickness everywhere on it rather than applying an unverified per-triangle offset to a curved surface.");
   Reg(e, "ExtrudeCrvAlongCrv", Make<ExtrudeAlongCommand>(), CommandStatus::Implemented, "Exact translational sweep (sum surface); the profile is not rotated along the path.");
   Reg(e, "ExtrudeCrvTapered", Make<ExtrudeTaperedCommand>(), CommandStatus::Implemented, "Ruled surface to a copy of the profile scaled about its centroid by the draft angle (exact for circles, approximate corners).");
-  Reg(e, "Project", Make<ProjectCommand>(false), CommandStatus::Implemented, "Projects along the CPlane normal onto the target's render mesh; result curves are refit through the projected samples.");
+  Reg(e, "Project", Make<ProjectCommand>(false), CommandStatus::Implemented, "Projects onto the target's render mesh along a picked direction (two points), or the active CPlane normal on Enter; result curves are refit through the projected samples.");
   Reg(e, "Pull", Make<ProjectCommand>(true), CommandStatus::Implemented, "Pulls to the closest point on the target; result curves are refit through the pulled samples.");
 }
 

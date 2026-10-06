@@ -1069,6 +1069,92 @@ void TestCurveDeviationTo() {
   }
 }
 
+void TestCurveSimplify() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A straight line elevated to degree 3 (extra control points, but
+  // still geometrically exact straight) collapses to a genuine
+  // 2-control-point, degree-1 line - the exact case the old SimplifyCrv
+  // already special-cased, now moved into the kernel.
+  {
+    NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    Check(line.ElevateDegree(3) == Result::Ok, "Simplify: setup - a line elevates to degree 3");
+    const Result r = line.Simplify(0.001);
+    Check(r == Result::Ok, "Simplify: an elevated-degree line reports Result::Ok");
+    Check(line.Degree() == 1 && line.ControlPointCount() == 2,
+          "Simplify: an elevated-degree line collapses back to a genuine 2-control-point, degree-1 line");
+    Check(line.PointAt(line.Domain().min).DistanceTo(Point3d(0, 0, 0)) < 1e-9 &&
+              line.PointAt(line.Domain().max).DistanceTo(Point3d(10, 0, 0)) < 1e-9,
+          "Simplify: the collapsed line's own endpoints are exactly preserved");
+  }
+
+  // A full circle with an extra knot inserted (still geometrically an
+  // exact circle, just no longer the minimal NURBS representation of
+  // one) collapses back to the clean, minimal arc form - real curvature
+  // preserved exactly (every point still at radius 5), not just "fewer
+  // control points, who knows what shape".
+  {
+    const ON_Circle oncircle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0);
+    ON_NurbsCurve nc;
+    Check(oncircle.GetNurbForm(nc) != 0, "Simplify: the circle fixture builds a real NURBS form");
+    NurbsCurve circle;
+    circle.raw() = nc;
+    const int cvs_before = circle.ControlPointCount();
+    Check(circle.InsertKnotAt(circle.Domain().min + 0.37 * (circle.Domain().max - circle.Domain().min)) == Result::Ok,
+          "Simplify: setup - a knot inserts into the circle, growing its control point count");
+    Check(circle.ControlPointCount() == cvs_before + 1, "Simplify: the inserted knot really did add one control point");
+    const Result r = circle.Simplify(0.001);
+    Check(r == Result::Ok, "Simplify: the over-knotted circle reports Result::Ok");
+    Check(circle.ControlPointCount() <= cvs_before,
+          "Simplify: the over-knotted circle collapses back to AT MOST its original (minimal) control point count");
+    bool still_a_circle = true;
+    for (int i = 0; i <= 16; ++i) {
+      const double t = circle.Domain().min + (circle.Domain().max - circle.Domain().min) * i / 16;
+      if (std::abs(circle.PointAt(t).DistanceTo(Point3d(0, 0, 0)) - 5.0) > 1e-6) still_a_circle = false;
+    }
+    Check(still_a_circle, "Simplify: the collapsed curve is still exactly a radius-5 circle at every sampled point");
+  }
+
+  // A curve with a genuinely removable interior knot (inserted into an
+  // otherwise-smooth, non-linear, non-arc cubic) loses that knot - the
+  // real "remove excess complexity" case this bullet's own gap named,
+  // distinct from the exact line/arc special cases above.
+  {
+    NurbsCurve cubic = NurbsCurve::FromControlPoints(
+        {Point3d(0, 0, 0), Point3d(3, 5, 0), Point3d(7, -5, 0), Point3d(10, 0, 0)}, 3);
+    const int knots_before = cubic.KnotCount();
+    const dino8::kernel::Interval dom = cubic.Domain();
+    Check(cubic.InsertKnotAt(dom.min + 0.5 * (dom.max - dom.min)) == Result::Ok,
+          "Simplify: setup - a knot inserts into the smooth cubic");
+    Check(cubic.KnotCount() == knots_before + 1, "Simplify: the inserted knot really did add one knot");
+    const Result r = cubic.Simplify(0.001);
+    Check(r == Result::Ok, "Simplify: the over-knotted smooth cubic reports Result::Ok");
+    Check(cubic.KnotCount() <= knots_before, "Simplify: the over-knotted smooth cubic loses its genuinely removable knot");
+  }
+
+  // A curve that is already maximally simple (a bare 2-control-point
+  // line) has nothing to do.
+  {
+    NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    const Result r = line.Simplify(0.001);
+    Check(r == Result::NoOpAlreadySatisfied, "Simplify: an already-minimal 2-control-point line reports Result::NoOpAlreadySatisfied");
+  }
+
+  // A non-positive tolerance throws.
+  {
+    NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    bool threw = false;
+    try {
+      line.Simplify(0.0);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "Simplify: a non-positive tolerance throws std::invalid_argument");
+  }
+}
+
 void TestCurveKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -71222,6 +71308,7 @@ int main() {
   TestCurveMatchEnd();
   TestCurveAnalyzeEndContinuity();
   TestCurveDeviationTo();
+  TestCurveSimplify();
   TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();
