@@ -2800,6 +2800,9 @@ echo "$ED" | grep -q "^smoke:" || { echo "$ED"; echo "FAIL: edit script produced
 # invert it precisely, for both a curve and a surface - the headlessly-
 # verifiable half of Dir's real-glyph fix (see AUDIT.md's dated note).
 edcheck() { if echo "$ED" | grep -Eq "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ED" "$1"; fail=1; fi; }
+edcheck "Radius at picked point = 3" "Offset now delegates to the kernel's own NurbsCurve::OffsetInPlane() - a circle offset inward by 2 lands on an EXACT radius-3 concentric circle (the curve's own fitted-plane overload's real ON_Arc construction), not the old hand-rolled code's own less-general special case"
+edcheck "Bounding box min 47,-3,0 max 53,3,0" "that same offset circle's bounding box independently confirms the exact radius-3 result"
+edcheck "Bounding box min -0.4061,-2.649,-0.7442 max 12.24,12.66,10" "Offset no longer refuses a genuinely non-planar (non-coplanar 4-point interpolated) curve outright - it falls back to the kernel's active-CPlane-normal overload instead, closing the other half of this gap"
 edcheck "Curve [0-9]+: start 0,0,0 tangent 1,0,0" "Dir printed a fresh line's real start point and unit tangent"
 edcheck "Curve [0-9]+: start 10,0,0 tangent -1,0,0" "a plain Flip inverted that same curve's Dir-reported start/tangent exactly"
 edcheck "Surface [0-9]+: centre 5,5,0 normal 0,0,-1" "Dir printed a fresh planar surface's real domain-centre point and unit normal"
@@ -3114,6 +3117,8 @@ fi
 echo "$AN" | grep -E "^(ok|FAIL)"
 if echo "$AN" | grep -q "^FAIL"; then fail=1; fi
 echo "$AN" | grep -q "^smoke:" || { echo "$AN"; echo "FAIL: analyze script produced no smoke line"; fail=1; }
+azcheck() { if echo "$AN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$AN" "$1"; fail=1; fi; }
+azcheck "Deviation: min 1 max 1" "CrvDeviation now delegates to the kernel's own NurbsCurve::DeviationTo() - two parallel lines 1 unit apart converge to exactly that constant separation, not the old fixed-100-sample approximation"
 
 # Audit on a genuinely invalid object (not just a self-intersecting-but-valid
 # bowtie curve, see curve_adversarial_script.txt for that different case):
