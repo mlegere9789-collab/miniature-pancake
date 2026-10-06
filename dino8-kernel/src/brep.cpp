@@ -2878,61 +2878,63 @@ Brep Brep::FromPlanarFaces(const std::vector<Brep::PlanarFace>& faces) {
   return FromMixedFaces(faces, {});
 }
 
-Brep Brep::TrimmedPlanarFaceWelded(const NurbsSurface& surface,
-                                    const std::vector<Point2d>& trim_loop_uv,
+Brep Brep::TrimmedPlanarFaceWelded(const NurbsSurface& surface, const std::vector<Point2d>& trim_loop_uv,
                                     std::vector<std::vector<Point2d>> hole_loops_uv) {
+  const char* caller = "TrimmedPlanarFaceWelded";
   if (trim_loop_uv.size() < 3) {
-    throw std::invalid_argument(
-        "dino8::kernel::Brep::TrimmedPlanarFaceWelded: trim_loop_uv must have "
-        "at least 3 points (fewer isn't a closed polygon)");
+    throw std::invalid_argument(std::string("dino8::kernel::Brep::") + caller +
+                                 ": trim_loop_uv must have at least 3 points");
   }
-  for (const std::vector<Point2d>& hole_uv : hole_loops_uv) {
+
+  auto to_3d = [&](const std::vector<Point2d>& uv_loop) {
+    std::vector<Point3d> loop3d;
+    loop3d.reserve(uv_loop.size());
+    for (const Point2d& p : uv_loop) loop3d.push_back(surface.PointAt(p.x, p.y));
+    return loop3d;
+  };
+  auto require_planar = [&](const std::vector<Point3d>& loop3d, const ON_Plane& pl, const std::string& which) {
+    for (const Point3d& p : loop3d) {
+      if (std::fabs(pl.DistanceTo(ON_3dPoint(p.x, p.y, p.z))) > tolerance::kDistance) {
+        throw std::invalid_argument(std::string("dino8::kernel::Brep::") + caller + ": " + which +
+                                     "'s own points, mapped through surface's own PointAt(u, v), are not "
+                                     "planar within tolerance - TrimmedPlanarFaceWelded requires a genuinely "
+                                     "planar loop (TrimmedPlanarFace()'s own bare side-table polygons have no "
+                                     "such restriction, since they carry no real topology to begin with)");
+      }
+    }
+  };
+
+  const std::vector<Point3d> outer3d = to_3d(trim_loop_uv);
+  PlanarFace outer_face;
+  outer_face.loop = outer3d;
+  outer_face.plane = ON_Plane(outer3d[0], NewellNormal(outer3d));
+  require_planar(outer3d, outer_face.plane, "trim_loop_uv");
+
+  Brep result = FromPlanarFaces({outer_face});
+
+  for (size_t h = 0; h < hole_loops_uv.size(); ++h) {
+    const std::vector<Point2d>& hole_uv = hole_loops_uv[h];
     if (hole_uv.size() < 3) {
-      throw std::invalid_argument(
-          "dino8::kernel::Brep::TrimmedPlanarFaceWelded: every entry of "
-          "hole_loops_uv must have at least 3 points");
+      throw std::invalid_argument(std::string("dino8::kernel::Brep::") + caller + ": hole_loops_uv[" +
+                                   std::to_string(h) + "] must have at least 3 points");
     }
-  }
-  if (!surface.IsPlanar()) {
-    throw std::invalid_argument(
-        "dino8::kernel::Brep::TrimmedPlanarFaceWelded: surface is not planar "
-        "- this entry point builds the face's real boundary edges straight "
-        "from the uv trim polygon's own 3D positions, which only reproduces "
-        "the surface's actual shape when it is flat; TrimmedPlanarFace() "
-        "itself has no such restriction");
-  }
+    const std::vector<Point3d> hole3d = to_3d(hole_uv);
+    require_planar(hole3d, outer_face.plane, "hole_loops_uv[" + std::to_string(h) + "]");
 
-  PlanarFace face;
-  face.loop.reserve(trim_loop_uv.size());
-  for (const Point2d& uv : trim_loop_uv) {
-    face.loop.push_back(surface.PointAt(uv.x, uv.y));
-  }
-  const ON_3dVector n = NewellNormal(face.loop);
-  face.plane = ON_Plane(face.loop[0], n);
-
-  Brep result = FromPlanarFaces({face});
-  constexpr int kFaceIndex = 0;  // the single face FromPlanarFaces() just built
-  for (const std::vector<Point2d>& hole_uv : hole_loops_uv) {
-    std::vector<Point3d> hole_pts;
-    hole_pts.reserve(hole_uv.size());
-    for (const Point2d& uv : hole_uv) hole_pts.push_back(surface.PointAt(uv.x, uv.y));
-
-    const int n_pts = static_cast<int>(hole_pts.size());
     std::vector<NurbsCurve> hole_edges;
-    hole_edges.reserve(static_cast<size_t>(n_pts));
-    for (int k = 0; k < n_pts; ++k) {
-      hole_edges.push_back(NurbsCurve::FromControlPoints(
-          {hole_pts[static_cast<size_t>(k)], hole_pts[static_cast<size_t>((k + 1) % n_pts)]},
-          /*degree=*/1));
+    hole_edges.reserve(hole3d.size());
+    for (size_t k = 0; k < hole3d.size(); ++k) {
+      hole_edges.push_back(NurbsCurve::FromControlPoints({hole3d[k], hole3d[(k + 1) % hole3d.size()]}, /*degree=*/1));
     }
-    if (result.AddHoleLoop(kFaceIndex, Brep::WireBody(hole_edges)).result != Result::Ok) {
-      throw std::invalid_argument(
-          "dino8::kernel::Brep::TrimmedPlanarFaceWelded: a hole_loops_uv entry "
-          "was refused by AddHoleLoop() - it properly crosses the outer "
-          "boundary or another hole, or nests inside/around one already "
-          "punched (see AddHoleLoop()'s own doc comment)");
+    const Brep hole_wire = WireBody(hole_edges, tolerance::kDistance);
+    if (result.AddHoleLoop(0, hole_wire, tolerance::kDistance).result != Result::Ok) {
+      throw std::invalid_argument(std::string("dino8::kernel::Brep::") + caller + ": hole_loops_uv[" +
+                                   std::to_string(h) +
+                                   "] could not be punched (it may cross the outer boundary or an "
+                                   "already-punched hole, or land outside the outer boundary)");
     }
   }
+
   return result;
 }
 

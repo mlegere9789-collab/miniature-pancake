@@ -328,4 +328,20 @@ bool BuildBlendSurfaceG2Adaptive(const ON_Curve& ea, const ON_Surface& sa, const
   return AdaptiveRefine(build, max_gap, min_samples, max_samples, out, achieved_gap_out);
 }
 
+bool BuildBlendSurfaceKernelAdaptive(int dir0, bool at_max0, const kernel::NurbsSurface& srf0, int dir1, bool at_max1,
+                                      const kernel::NurbsSurface& srf1, bool reverse_rail1, int continuity,
+                                      double max_gap, int min_rows, int max_rows, ON_NurbsSurface& out,
+                                      double* achieved_gap_out) {
+  auto build = [&](int rows, ON_NurbsSurface& result) {
+    kernel::NurbsSurface built;
+    if (kernel::NurbsSurface::BlendSurfaces(srf0, dir0, at_max0, srf1, dir1, at_max1, reverse_rail1, continuity, rows,
+                                             built) != kernel::Result::Ok) {
+      return false;
+    }
+    result = built.raw();
+    return true;
+  };
+  return AdaptiveRefine(build, max_gap, min_rows, max_rows, out, achieved_gap_out);
+}
+
 }  // namespace dino8::app
