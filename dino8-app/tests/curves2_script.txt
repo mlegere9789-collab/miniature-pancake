@@ -386,7 +386,7 @@ SelAll
 Show
 SelNone
 # --- InsertKnot / RemoveKnot: insert a knot at a line's own domain
-# midpoint, then remove it from the very same spot - must round-trip
+# midpoint, then remove it from the very same spot - intended to round-trip
 # exactly back to the original 2-CV line (deviation ~0) via the kernel's
 # real Boehm/Tiller RemoveKnotAt(), not RemoveKnotApprox's blind
 # Greville-abscissa resample, which had no deviation bound to report at
@@ -431,7 +431,8 @@ Enter
 SelLast
 List
 Delete
-# 72 from the rest of this script + 122 (21 + 101) from the
+# 75 from the rest of this script (72, plus the 2 Arcs + 1 Blend curve the
+# Continuity=G3 block above adds) + 122 (21 + 101) from the
 # CurveThroughSrfControlPt/ExtractPt dangling-pointer regression above,
 # which are hidden rather than deleted so List's layer output stays
 # checkable from the saved smoke-test log if this ever needs re-diagnosing.

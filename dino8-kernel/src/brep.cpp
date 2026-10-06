@@ -7743,7 +7743,8 @@ int Brep::CheckReport::Count(CheckIssue::Kind kind) const {
   return n;
 }
 
-Brep::CheckReport Brep::Check(double tolerance, double sliver_width) const {
+Brep::CheckReport Brep::Check(double tolerance, double sliver_width,
+                               bool check_self_intersections) const {
   const ON_Brep& b = brep_;
   CheckReport report;
   const double tol = std::max(tolerance, 0.0);
@@ -7902,6 +7903,22 @@ Brep::CheckReport Brep::Check(double tolerance, double sliver_width) const {
       add(CheckKind::DegenerateFace, fi, outer_li, centroid, width);
     } else if (width <= sliver_width) {
       add(CheckKind::SliverFace, fi, outer_li, centroid, width);
+    }
+  }
+
+  // Face/face and face-interior self-intersection - opt-in, see Check()'s
+  // own doc comment for why this isn't folded into the unconditional
+  // passes above.
+  if (check_self_intersections) {
+    IntersectOptions opt;
+    opt.tolerance = std::max(tol, 1e-9);
+    for (const BrepBrepIntersection& hit : FindBrepSelfIntersections(b, opt)) {
+      ON_3dPoint where(0, 0, 0);
+      if (!hit.curve.points.empty()) where = hit.curve.points.front();
+      add(CheckKind::FaceFaceSelfIntersection, hit.face_a, hit.face_b, where, 0.0);
+    }
+    for (const FaceInteriorSelfIntersection& hit : FindFaceInteriorSelfIntersections(b, opt)) {
+      add(CheckKind::FaceInteriorSelfIntersection, hit.face_index, -1, hit.point, hit.gap);
     }
   }
 
