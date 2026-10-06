@@ -1305,6 +1305,23 @@ a2check "UpdateFields: 3 field(s) regenerated" "UpdateFields re-evaluated all 3 
 # dimension's own recorded style by name.
 a2check "Text = 100.00 mm.*0\.05" "DimStyle1 (Precision=2, Suffix=mm, TolMode=symmetric) baked \"100.00 mm\" plus the tolerance suffix for a dimension measuring exactly 100, not the old unstyled \"100\""
 a2check "Text = 100.0000 mm.*0\.05" "UpdateDimensions re-read DimStyle1's CURRENT precision (edited to 4 after the dimension was built) from the dimension's own recorded style by name and reformatted it to 4 decimal places, keeping the tolerance suffix through the rebuild"
+# --- Measured-dimension precision (DimArea/DimCurveLength/DimVolume/
+# DimOrdinate/DimCreaseAngle) now wired to a style's own Precision/
+# AngularPrecision via FormatMeasurement, the same way DimStyle1 just above
+# already proved for DimLinear/DimAngle - see PARITY_MAP.md's "Dimension
+# styles" entry, "DimOrdinate and the DimArea/DimCurveLength/DimVolume/
+# DimCreaseAngle measured-dimension family... not yet wired to a style's
+# precision" gap.
+a2check "DimArea: Area = 100.00 square Millimeters" "MeasStyle's Precision=2 baked \"100.00\" for the 10x10 rectangle's exactly-100 area, not the old unstyled \"100\""
+a2check "DimCurveLength: Length = 100.00 Millimeters" "MeasStyle's Precision=2 baked \"100.00\" for the exactly-100-unit line, not the old unstyled \"100\""
+a2check "DimVolume: Volume = 100.00 cubic Millimeters" "MeasStyle's Precision=2 baked \"100.00\" for the 10x10x1 box's exactly-100 volume, not the old unstyled \"100\""
+a2check "DimOrdinate: X 25.00" "MeasStyle's Precision=2 baked \"25.00\" for the exactly-25-unit ordinate, not the old unstyled \"25\""
+a2check "DimCreaseAngle: 90.00 deg" "MeasStyle's AngularPrecision=2 baked \"90.00 deg\" for the two perpendicular lines' exactly-90-degree crease, not the old unstyled \"90 deg\""
+a2check "UpdateMeasureDims:   DimArea now Area = 100.0000 square Millimeters" "UpdateMeasureDims re-read MeasStyle's CURRENT precision (edited to 4) from DimArea's own recorded style by name and reformatted it live"
+a2check "UpdateMeasureDims:   DimCurveLength now Length = 100.0000 Millimeters" "UpdateMeasureDims reformatted DimCurveLength to MeasStyle's edited Precision=4 live"
+a2check "UpdateMeasureDims:   DimVolume now Volume = 100.0000 cubic Millimeters" "UpdateMeasureDims reformatted DimVolume to MeasStyle's edited Precision=4 live"
+a2check "UpdateMeasureDims:   DimOrdinate now X 25.0000" "UpdateMeasureDims reformatted DimOrdinate to MeasStyle's edited Precision=4 live"
+a2check "UpdateMeasureDims:   DimCreaseAngle now 90.0000 deg" "UpdateMeasureDims reformatted DimCreaseAngle to MeasStyle's edited AngularPrecision=4 live"
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/solidtools_script.txt" > "$TMPW/solidtools_script.txt"
