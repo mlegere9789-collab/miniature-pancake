@@ -633,6 +633,52 @@ std::vector<std::vector<Point3d>> PolygonBooleanPlanar(const std::vector<Point3d
                                                          const std::vector<Point3d>& b, const ON_Plane& plane,
                                                          BooleanOp op, double tolerance = -1.0);
 
+// N-ary counterpart of PolygonBooleanPlanar - closes the specific gap its
+// own doc comment above names as untouched ("a/b may each only be a single
+// simple loop") for the common case of several polygons per side, the same
+// "No kernel N-ary API" PARITY_MAP.md's own "Multi-body / multi-tool
+// booleans" bullet already named for the three 3D engines before
+// BooleanCombinePlanarNAry/BooleanCombineMixedNAry/BooleanCombineGeneralNAry
+// closed it there; this is the identical fold shape for the 2D polygon
+// engine. Not a new reduction: every polygon in `first_group`/`second_group`
+// is still extruded into a right prism over the same shared `plane` via
+// PolygonBooleanPlanar's own PrismFromPolygon helper (one common height,
+// the combined bounding-box diagonal of every polygon in BOTH groups, so no
+// prism is a degenerate sliver relative to the full operand set), and the
+// prisms are folded via BooleanCombinePlanarNAry itself - `first_group`
+// left-to-right via Union, `second_group` the same way if non-empty, the
+// two folded solids then combined via one further BooleanCombinePlanar(...,
+// op) call, otherwise the folded `first_group` is returned directly (and
+// `op` must be Union) - the exact same two-stage fold
+// BooleanCombinePlanarNAry's own doc comment describes. The combined
+// solid's own base-plane faces are read back and dissolved into loops via
+// the identical DissolveCoplanarFragments step PolygonBooleanPlanar's own
+// pairwise case already uses - so Prism(2D_NAry_op(group)) ==
+// BooleanCombinePlanarNAry(Prisms(group), ..., op) is the same prism
+// identity PolygonBooleanPlanar's own doc comment already establishes for
+// N=2, simply generalized.
+//
+// Every polygon in either group is individually validated the same way
+// PolygonBooleanPlanar validates `a`/`b` (at least 3 vertices, every vertex
+// in `plane`, a simple non-self-intersecting boundary) via
+// BooleanFailureReason::InvalidPolygon. `first_group` empty throws
+// EmptyOperandGroup; `second_group` empty with `op != Union` throws the
+// same reason BooleanCombinePlanarNAry's own doc comment already
+// describes; SymmetricDifference is refused (UnsupportedOperation) for the
+// identical reason the 3D NAry wrappers already refuse it - its own
+// pairwise result cannot be folded further.
+//
+// Still partial, not present, the same input-side scope limit
+// PolygonBooleanPlanar's own doc comment already discloses: no polygon in
+// either group may itself carry a hole (Brep::PlanarFace has no loop-plus-
+// holes representation to build one from) - this closes the "N operands
+// per side" half of the "2D region / planar curve booleans" bullet's own
+// gap, not that one.
+std::vector<std::vector<Point3d>> PolygonBooleanPlanarNAry(const std::vector<std::vector<Point3d>>& first_group,
+                                                             const std::vector<std::vector<Point3d>>& second_group,
+                                                             const ON_Plane& plane, BooleanOp op,
+                                                             double tolerance = -1.0);
+
 // The Sutherland-Hodgman half-space clipper shared by
 // BooleanIntersectConvexPlanar (above) and ShellConvexPlanar (below) -
 // extracted here, not rewritten, so both operations run the same verified
@@ -931,12 +977,19 @@ Brep OffsetSolidConvexPlanar(const Brep& solid, double distance);
 //     clip (real, exact, and valid for a concave neighbour loop too - see
 //     SplitByHalfspace()'s own doc comment) - no new side walls are
 //     needed, since a retrimmed neighbour's own boundary now meets the
-//     new cap directly with no gap. Only a neighbour whose own plane is
-//     PERPENDICULAR to the pushed face's normal (checked directly, within
-//     1e-6) can be safely retrimmed this way (the shared edge then lies
-//     exactly along the clip plane on both the old and new cap); an
-//     OBLIQUE neighbour would need a genuine re-intersection this
-//     function does not attempt and refuses instead of guessing.
+//     new cap directly with no gap. **Any neighbour plane, perpendicular
+//     OR oblique, is handled exactly** (narrowed from "perpendicular
+//     only"): at a vertex where the pulled face meets two neighbours, a
+//     THIRD edge - shared between those two neighbours themselves, not
+//     with the pulled face - runs into the solid's own interior, and
+//     `new_loop`'s own corrected corner there is found via that edge's
+//     real intersection with the new cut plane (`PushPullCorrectedVertex()`,
+//     boolean.cpp) rather than a blind per-vertex offset along the normal;
+//     for a perpendicular neighbour this reduces algebraically to the
+//     exact same point the old offset already gave (see that function's
+//     own doc comment for the derivation and
+//     TestPushPullFaceObliqueNeighbourMatchesExactVolume for the proof on
+//     a genuinely oblique (non-right-angle) neighbour wall).
 //
 // Unlike OffsetFace()/ShellConvexPlanar()/OffsetSolidConvexPlanar(), this
 // has NO convexity precondition on `solid` at all - a push never touches
@@ -952,10 +1005,12 @@ Brep OffsetSolidConvexPlanar(const Brep& solid, double distance);
 //
 // Throws std::invalid_argument if `distance` is zero or non-finite,
 // `face_index` is out of range for `solid.PlanarFaces()`, the named
-// face's own boundary has fewer than 3 vertices, a PULL's own retrim
-// meets a neighbour that isn't perpendicular to the pulled face's normal,
-// or that retrim collapses a neighbour's own boundary to fewer than 3
-// vertices (too large a pull for this solid's own local geometry there).
+// face's own boundary has fewer than 3 vertices, a PULL's own corrected
+// corner collapses to a near-zero-length retrimmed edge (the neighbour
+// vertex and its own interior-edge neighbour land on the same side of the
+// new cut plane - too large a pull for this solid's own local geometry
+// there), or that retrim collapses a neighbour's own boundary to fewer
+// than 3 vertices.
 Brep PushPullFace(const Brep& solid, int face_index, double distance);
 
 // The batch generalization of `PushPullFace()` above: a caller-chosen SET
@@ -965,7 +1020,7 @@ Brep PushPullFace(const Brep& solid, int face_index, double distance);
 // sequential `PushPullFace()` calls each rebuilding the whole solid from
 // its own prior call's result. That sequencing matters here in a way it
 // doesn't for a pure push (which never touches another face): a PULL
-// retrims every perpendicular neighbour it touches, so a second sequential
+// retrims every neighbour it touches, so a second sequential
 // `PushPullFace()` call naming a face that the FIRST call already retrimmed
 // as a neighbour would run against that already-shrunken boundary, not the
 // original one - order-dependent in a way this single combined call never
@@ -982,13 +1037,14 @@ Brep PushPullFace(const Brep& solid, int face_index, double distance);
 // closer one) - genuinely ambiguous, not a case this function attempts to
 // reconcile. An unnamed face bordering exactly one named PULL is unaffected
 // by this restriction and is retrimmed exactly as `PushPullFace()` itself
-// would retrim it - including the identical perpendicular-neighbour-only
-// refusal - whether or not some OTHER, non-adjacent face is also named in
-// the same call.
+// would retrim it - oblique or perpendicular alike, via the identical
+// `PushPullCorrectedVertex()` per-corner correction, not merely the
+// perpendicular case - whether or not some OTHER, non-adjacent face is
+// also named in the same call.
 //
 // Every entry keeps `PushPullFace()`'s own per-entry validation (nonzero,
 // finite `distance`; in-range `face_index`; at least 3 boundary vertices;
-// any PULL's own neighbour-perpendicularity and non-collapse checks) -
+// any PULL's own corrected-corner and non-collapse checks) -
 // throws std::invalid_argument on the first violation found, leaving
 // nothing applied. Two entries naming the same `face_index` are refused as
 // ambiguous, the same discipline `MoveFacesConvexPlanar()`/
@@ -1203,24 +1259,29 @@ Brep FoldFaceConvexPlanar(const Brep& solid, int face_index, int hinge_loop_inde
 // around it" falls out for free rather than needing separate bookkeeping.
 //
 // Deliberately narrow, honest scope, not a general vertex-move: every face
-// incident to the moved vertex must be a TRIANGLE (exactly 3 vertices).
-// With only one vertex moving, a triangle's other two corners already fix
-// a plane no matter where the third moves - always well-defined - but a
-// face with 4+ vertices would need to stay planar with only 3 (or fewer)
-// of its corners fixed, which isn't guaranteed for an arbitrary
-// `new_position` and would otherwise silently produce a non-planar face
-// this class cannot represent; this throws instead of guessing. This
-// covers the common tetrahedron/pyramid-apex/triangulated-corner case (a
-// vertex where the incident faces already happen to be triangles) without
-// overclaiming a box corner (four vertices per face) move, which stays
-// unsupported here.
+// incident to the moved vertex must stay PLANAR afterward, checked
+// directly (via `PolygonNewellNormalRaw()`, boolean.cpp) rather than
+// assumed. A TRIANGLE always qualifies - its other two corners already fix
+// a plane no matter where the third moves - and a 4+-vertex face now also
+// qualifies whenever its own unmoved corners (which already pin its plane
+// exactly, since any 3 non-collinear points do) still contain the moved
+// one(s) within tolerance - e.g. a quad corner slid sideways WITHIN its own
+// face's existing plane. A move that would leave a 4+-vertex face genuinely
+// non-planar still throws instead of guessing. This covers the common
+// tetrahedron/pyramid-apex/triangulated-corner case AND, newly, a vertex
+// incident to a single 4+-sided face (e.g. a pyramid's own quad base
+// corner, moved within that base's own plane) - but a box corner, shared by
+// three mutually perpendicular quads, stays unsupported: no position other
+// than the original one can lie in all three of their planes at once, so
+// every genuinely new position is still refused, just via this same
+// planarity check rather than a separate triangle-count gate.
 //
 // Same convex-solid precondition and failure mode as
 // `OffsetFace()`/`DraftFacesConvexPlanar()`/`ReplaceFacePlaneConvexPlanar()`
 // above, plus: throws std::invalid_argument if `old_position` doesn't land
 // within tolerance of any vertex of `solid.PlanarFaces()`; if any incident
-// face isn't a triangle; if `new_position` would flip an incident
-// triangle's own outward orientation (its own newly-computed normal
+// face would end up non-planar; if `new_position` would flip an incident
+// face's own outward orientation (its own newly-computed normal
 // disagreeing in sign with its original one - moving the vertex through
 // the plane of its own opposite edge); or if `new_position` collapses any
 // face's own new boundary (including an incident one) to fewer than 3
@@ -1245,14 +1306,16 @@ Brep MoveVertexConvexPlanar(const Brep& solid, const Point3d& old_position, cons
 // neither keeps its own original plane and is re-clipped against the
 // updated planes the same way.
 //
-// Same triangle-only scope as `MoveVertexConvexPlanar()`, for the same
-// reason: every face incident to either endpoint must be a triangle,
-// since only a triangle's plane is always well-defined regardless of
-// where its corners sit. Throws std::invalid_argument if `old_p0` and
+// Same planarity-checked scope as `MoveVertexConvexPlanar()`, for the same
+// reason: every face incident to either endpoint must stay planar
+// afterward (a triangle always qualifies; a 4+-sided face qualifies when
+// its own unmoved corners still contain the moved one(s) within tolerance
+// - e.g. a quad's two adjacent corners both sliding within that quad's own
+// existing plane). Throws std::invalid_argument if `old_p0` and
 // `old_p1` coincide (a degenerate, zero-length edge - not a valid edge to
 // name), for the same per-endpoint failure modes
 // `MoveVertexConvexPlanar()` already documents (an endpoint not landing on
-// any vertex, a non-triangular incident face, an orientation flip, or a
+// any vertex, an incident face left non-planar, an orientation flip, or a
 // collapsed face), and propagates the same convex-solid precondition
 // failure `MoveVertexConvexPlanar()` shares with the rest of this family.
 Brep MoveEdgeConvexPlanar(const Brep& solid, const Point3d& old_p0, const Point3d& old_p1, const Point3d& new_p0,
@@ -1293,10 +1356,10 @@ Brep MoveEdgeConvexPlanar(const Brep& solid, const Point3d& old_p0, const Point3
 // tolerance) are refused outright as ambiguous - which of their two
 // `new_position`s should apply is undefined - rather than silently keeping
 // only the one that happens to be matched first internally. Every face
-// incident to any named vertex must still be a triangle, for the identical
-// reason `MoveVertexConvexPlanar()` documents. Same convex-solid
+// incident to any named vertex must still stay planar afterward, for the
+// identical reason `MoveVertexConvexPlanar()` documents. Same convex-solid
 // precondition and every other per-vertex failure mode (unmatched
-// `old_position`, non-triangular incident face, orientation flip, collapsed
+// `old_position`, an incident face left non-planar, orientation flip, collapsed
 // face) as `MoveVertexConvexPlanar()` above.
 Brep MoveVerticesConvexPlanar(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& moves);
 
@@ -1329,7 +1392,7 @@ struct EdgeMove {
 //
 // `edge_moves` must be non-empty - throws std::invalid_argument otherwise.
 // Same per-edge degenerate-edge check (`old_p0`/`old_p1` coincide) as
-// `MoveEdgeConvexPlanar()`, and the same triangle-only scope and every
+// `MoveEdgeConvexPlanar()`, and the same planarity-checked scope and every
 // other failure mode shared by the rest of this family.
 Brep MoveEdgesConvexPlanar(const Brep& solid, const std::vector<EdgeMove>& edge_moves);
 

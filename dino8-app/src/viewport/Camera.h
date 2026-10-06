@@ -20,6 +20,11 @@ struct Mat4 {
   static Mat4 LookAt(kernel::Point3d eye, kernel::Point3d target, kernel::Vector3d up);
   Mat4 operator*(const Mat4& other) const;
   const float* Data() const { return m.data(); }
+  // General 4x4 inverse (cofactor/adjugate method - correct for any
+  // invertible matrix, perspective or orthographic alike), used by
+  // GlRenderer's SSAO pass to unproject a depth-buffer sample back to
+  // view space. Returns Identity if `m` is (numerically) singular.
+  Mat4 Inverse() const;
 };
 
 struct Ray {

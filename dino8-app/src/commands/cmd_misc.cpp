@@ -242,17 +242,30 @@ class ScriptCommand : public Command {
     else ctx.App().Lua().ResumePoint(p);
     Pump(ctx);
   }
-  void OnNumber(CommandContext& ctx, double v) override { ctx.App().Lua().ResumeNumber(v); Pump(ctx); }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (python_active_) ctx.App().Python().ResumeNumber(v);
+    else ctx.App().Lua().ResumeNumber(v);
+    Pump(ctx);
+  }
   void OnText(CommandContext& ctx, const std::string& t) override {
     if (python_active_) ctx.App().Python().ResumeText(t);
     else ctx.App().Lua().ResumeText(t);
     Pump(ctx);
   }
-  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override { ctx.App().Lua().ResumeObjects(ids); Pump(ctx); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (python_active_) ctx.App().Python().ResumeObjects(ids);
+    else ctx.App().Lua().ResumeObjects(ids);
+    Pump(ctx);
+  }
   void OnEnter(CommandContext& ctx) override {
-    if (python_active_) ctx.App().Python().ResumeNil();
-    else if (want == Want::Objects) ctx.App().Lua().ResumeObjects({});
-    else ctx.App().Lua().ResumeNil();
+    if (python_active_) {
+      if (want == Want::Objects) ctx.App().Python().ResumeObjects({});
+      else ctx.App().Python().ResumeNil();
+    } else if (want == Want::Objects) {
+      ctx.App().Lua().ResumeObjects({});
+    } else {
+      ctx.App().Lua().ResumeNil();
+    }
     Pump(ctx);
   }
   void OnCancel(CommandContext& ctx) override {
@@ -293,16 +306,21 @@ class ScriptCommand : public Command {
 
   // Reflects the running script's current rs.Get*/dino8.Get* prompt (or
   // finishes the command once the script itself has finished or failed).
-  // Python only ever requests Point or Text (see PythonEngine.h) - Objects/
-  // Number/Integer can't come from python_active_.
+  // Python and Lua now both reach every ScriptWant (see PythonEngine.h), so
+  // both branches share the same switch.
   void Pump(CommandContext& ctx) {
     if (python_active_) {
       PythonEngine& py = ctx.App().Python();
-      if (!py.Running()) { Finish(); return; }
+      if (!py.Running() || !py.Suspended()) { Finish(); return; }
       const ScriptRequest& r = py.Request();
-      if (py.Suspended() && r.want == ScriptWant::Point) WantPoint(r.prompt);
-      else if (py.Suspended() && r.want == ScriptWant::Text) WantText(r.prompt, r.default_text);
-      else Finish();
+      switch (r.want) {
+        case ScriptWant::Point: WantPoint(r.prompt); break;
+        case ScriptWant::Objects: WantObjects(r.prompt, std::max(0, r.min_objects)); accept_preselection = true; break;
+        case ScriptWant::Text: WantText(r.prompt, r.default_text); break;
+        case ScriptWant::Number:
+        case ScriptWant::Integer: WantNumber(r.prompt, r.default_number); break;
+        case ScriptWant::Nothing: default: Finish(); break;
+      }
       return;
     }
     LuaEngine& lua = ctx.App().Lua();
@@ -327,11 +345,11 @@ class ScriptCommand : public Command {
 // (PythonEngine) when this build has one (DINO8_HAVE_PYTHON - see
 // CMakeLists.txt), or prints an honest "not available" message otherwise.
 //
-// PythonEngine.Start()/StartFile() now run the script on a worker thread and
-// suspend it there when it calls dino8.GetPoint() (see PythonEngine.h) -
-// Pump/OnPoint/OnEnter/OnCancel below mirror ScriptCommand's own Lua pump
-// loop so a RunPythonScript invocation can go interactive too, not just
-// finish in the same call that started it.
+// PythonEngine.Start()/StartFile() run the script on a worker thread and
+// suspend it there when it calls any dino8.Get*() prompt (see PythonEngine.h)
+// - Pump/OnPoint/OnNumber/OnText/OnObjects/OnEnter/OnCancel below mirror
+// ScriptCommand's own Lua pump loop so a RunPythonScript invocation can go
+// interactive too, not just finish in the same call that started it.
 class PythonScriptCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
@@ -371,46 +389,61 @@ class PythonScriptCommand : public Command {
   }
 
   void OnPoint(CommandContext& ctx, Point3d p) override { ctx.App().Python().ResumePoint(p); Pump(ctx); }
+  void OnNumber(CommandContext& ctx, double v) override { ctx.App().Python().ResumeNumber(v); Pump(ctx); }
   void OnText(CommandContext& ctx, const std::string& t) override { ctx.App().Python().ResumeText(t); Pump(ctx); }
-  void OnEnter(CommandContext& ctx) override { ctx.App().Python().ResumeNil(); Pump(ctx); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override { ctx.App().Python().ResumeObjects(ids); Pump(ctx); }
+  void OnEnter(CommandContext& ctx) override {
+    if (want == Want::Objects) ctx.App().Python().ResumeObjects({});
+    else ctx.App().Python().ResumeNil();
+    Pump(ctx);
+  }
   void OnCancel(CommandContext& ctx) override { ctx.App().Python().Abort(); }
 
  private:
-  // Reflects the running script's current dino8.GetPoint()/dino8.GetString()
-  // prompt (or finishes the command once the script itself has finished or
-  // failed). Only ScriptWant::Point/Text are ever possible here (see
-  // PythonEngine.h) - anything else just finishes, same as ScriptWant::Nothing.
+  // Reflects the running script's current dino8.Get*() prompt (or finishes
+  // the command once the script itself has finished or failed). Every
+  // ScriptWant now reaches here (see PythonEngine.h) - mirrors ScriptCommand's
+  // own Lua/Python Pump switch above.
   void Pump(CommandContext& ctx) {
     PythonEngine& py = ctx.App().Python();
-    if (!py.Running()) { Finish(); return; }
+    if (!py.Running() || !py.Suspended()) { Finish(); return; }
     const ScriptRequest& r = py.Request();
-    if (py.Suspended() && r.want == ScriptWant::Point) WantPoint(r.prompt);
-    else if (py.Suspended() && r.want == ScriptWant::Text) WantText(r.prompt, r.default_text);
-    else Finish();
+    switch (r.want) {
+      case ScriptWant::Point: WantPoint(r.prompt); break;
+      case ScriptWant::Objects: WantObjects(r.prompt, std::max(0, r.min_objects)); accept_preselection = true; break;
+      case ScriptWant::Text: WantText(r.prompt, r.default_text); break;
+      case ScriptWant::Number:
+      case ScriptWant::Integer: WantNumber(r.prompt, r.default_number); break;
+      case ScriptWant::Nothing: default: Finish(); break;
+    }
   }
 };
 
 // A genuine per-object display-mode override (SceneObject::force_wireframe /
-// force_shaded / force_ghosted / force_xray / force_monochrome /
-// force_arctic, honoured by Viewport::DrawObjects) for the six modes that
-// map onto a real per-object switch: Wireframe (never filled), Shaded
-// (always filled, same as ShadeSelected), Ghosted/X-Ray (always filled at
-// that mode's own fixed transparency - 0.35/0.18, the same alpha
-// Viewport.cpp's StyleFor uses for the viewport-wide versions of these
-// modes), Monochrome (always filled in that mode's own flat grey, fully
-// opaque), and now Arctic (always filled in that mode's own flat near-white
-// (245,245,245), fully opaque, still lit). The remaining Rhino display
-// modes (Rendered, Technical, Artistic, Pen, RayTraced, ...) are still
-// viewport-wide render styles with no per-object equivalent in this
-// renderer, so those fall back to clearing the override (UseViewport) with
-// an explanatory note.
+// force_shaded / force_ghosted / force_xray / force_monochrome / force_pen /
+// force_arctic, honoured by Viewport::DrawObjects) for the modes that map
+// onto a real per-object switch: Wireframe (never filled), Shaded (always
+// filled, same as ShadeSelected), Ghosted/X-Ray (always filled at that
+// mode's own fixed transparency - 0.35/0.18, the same alpha Viewport.cpp's
+// StyleFor uses for the viewport-wide versions of these modes), Monochrome
+// (always filled in that mode's own flat grey, fully opaque), and now Pen/
+// Arctic (always filled in that mode's own flat white, fully opaque - lit
+// for Arctic, unlit for Pen, the one difference between the two viewport-
+// wide modes themselves). The remaining Rhino display modes (Rendered,
+// Technical, Artistic, RayTraced, ...) are still viewport-wide render
+// styles with no per-object equivalent in this renderer (Technical/Artistic
+// would in any case be visually identical to Monochrome here - both already
+// resolve to the exact same flat fill colour, differing only in viewport-
+// wide edge/background colour, so a dedicated override would be a no-op
+// alias rather than a real new capability), so those fall back to clearing
+// the override (UseViewport) with an explanatory note.
 class SetObjectDisplayModeCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select objects to set a display mode for", 1); }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (ids.empty()) { Finish(); return; }
     ids_ = ids;
-    WantText("Mode (Wireframe/Shaded/Ghosted/X-Ray/Monochrome/Arctic/UseViewport)", "Shaded");
+    WantText("Mode (Wireframe/Shaded/Ghosted/X-Ray/Monochrome/Pen/Arctic/UseViewport)", "Shaded");
   }
   void OnText(CommandContext& ctx, const std::string& t) override {
     std::string mode = ToLower(t);
@@ -421,12 +454,13 @@ class SetObjectDisplayModeCommand : public Command {
       SceneObject* o = doc.Find(id);
       if (!o) continue;
       o->force_wireframe = o->force_shaded = o->force_ghosted = o->force_xray = o->force_monochrome =
-          o->force_arctic = false;
+          o->force_pen = o->force_arctic = false;
       if (mode == "wireframe" || mode == "w") o->force_wireframe = true;
       else if (mode == "shaded" || mode == "s") o->force_shaded = true;
       else if (mode == "ghosted" || mode == "g") o->force_ghosted = true;
       else if (mode == "xray" || mode == "x") o->force_xray = true;
       else if (mode == "monochrome" || mode == "m") o->force_monochrome = true;
+      else if (mode == "pen" || mode == "p") o->force_pen = true;
       else if (mode == "arctic" || mode == "a") o->force_arctic = true;
       o->InvalidateDisplay();
       ++n;
@@ -441,10 +475,12 @@ class SetObjectDisplayModeCommand : public Command {
       ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown X-Ray (18% opaque), even in Wireframe or another viewport display mode.");
     else if (mode == "monochrome" || mode == "m")
       ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown Monochrome (flat grey, fully opaque), even in Wireframe or another viewport display mode.");
+    else if (mode == "pen" || mode == "p")
+      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown Pen (flat white, unlit, fully opaque), even in Wireframe or another viewport display mode.");
     else if (mode == "arctic" || mode == "a")
-      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown Arctic (flat near-white, fully opaque), even in Wireframe or another viewport display mode.");
+      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown Arctic (flat white, lit, fully opaque), even in Wireframe or another viewport display mode.");
     else
-      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) reset to the viewport's own display mode. Other Rhino modes (Rendered/Technical/Artistic/Pen/RayTraced/...) are viewport-wide render styles here, with no per-object equivalent - use the Display panel to change the viewport itself.");
+      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) reset to the viewport's own display mode. Other Rhino modes (Rendered/Technical/Artistic/RayTraced/...) are viewport-wide render styles here, with no per-object equivalent - use the Display panel to change the viewport itself.");
     Finish();
   }
 
@@ -499,7 +535,7 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "Tutorials", Immediate([](CommandContext& ctx) { ctx.App().Panels().help = true; }));
   Reg(e, "SetRenderColor", Make<SetRenderColorCommand>(), CommandStatus::Implemented, "Sets the selected objects' own display colour to the given r,g,b value or colour name.");
   Reg(e, "SetObjectDisplayMode", Make<SetObjectDisplayModeCommand>(), CommandStatus::Implemented,
-      "A genuine per-object override for Wireframe, Shaded (see ShadeSelected), Ghosted, X-Ray and Monochrome; the other Rhino modes (Rendered/Technical/Artistic/...) are viewport-wide render styles with no per-object equivalent, so Mode=UseViewport (or any other name) clears the override instead.");
+      "A genuine per-object override for Wireframe, Shaded (see ShadeSelected), Ghosted, X-Ray, Monochrome, Pen and Arctic; the other Rhino modes (Rendered/Technical/Artistic/...) are viewport-wide render styles with no per-object equivalent, so Mode=UseViewport (or any other name) clears the override instead.");
   // Dragmode: same command name as cmd_state.cpp's "DragMode" (registry
   // keys are case-insensitive) - superseded by that real ChoiceCommand
   // (RegisterStateCommands runs after this file, so it always won here

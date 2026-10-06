@@ -10,6 +10,30 @@ namespace dino8::kernel {
 
 class NurbsSurface;
 
+// Corner treatment for the exact per-vertex polyline case of
+// `NurbsCurve::OffsetInPlane()` (PARITY_MAP.md's offsetshell category,
+// "Curve offset corner handling at kinks": "sharp (miter) only ... No
+// Round/Chamfer/Smooth corner modes" - this closes the Round and Chamfer
+// halves of that gap). `Sharp` (the default, and the only behavior before
+// this enum existed) is the exact angle-bisector miter point every corner
+// already used. `Round` and `Chamfer` only change a corner where that
+// miter point would otherwise stick out PAST the simple per-edge offset
+// distance on the expanding side of the turn - the "convex, fill-needed"
+// case where a genuine gap opens between the two offset edges - `Round`
+// replacing the sharp spike there with a circular arc of radius
+// `|distance|` centered on the ORIGINAL vertex, tangent to both offset
+// edges, and `Chamfer` replacing it with the single straight segment
+// connecting those same two tangent points directly (the arc's own chord,
+// never computing or returning to the original vertex at all). A corner on
+// the contracting side of the turn (offsetting there pulls the two edges
+// together rather than apart - e.g. a reflex vertex under an otherwise-
+// outward offset) is NOT a "fill" at all - the two offset lines simply
+// cross there, and both `Round` and `Chamfer` leave that exact crossing
+// point alone, same as `Sharp`: cutting a corner that never had a gap to
+// begin with is not standard behavior in any offset tool and isn't
+// invented here either.
+enum class CurveOffsetCornerStyle { Sharp, Round, Chamfer };
+
 // Wraps ON_NurbsCurve. Deliberately exposes the underlying ON_NurbsCurve
 // (via raw()) rather than re-declaring every accessor OpenNURBS already
 // has — later chunks (booleans, display) need the real object, not a
@@ -413,6 +437,35 @@ class NurbsCurve {
   // would require duplicating OpenNURBS' own knot-multiplicity search.
   Result InsertKnotAt(double knot_value, int multiplicity = 1);
 
+  // Rigorous, deviation-bounded knot removal - the curve-level
+  // counterpart to `NurbsSurface::RemoveKnotAt` (surface_edit.cpp),
+  // closing this kernel's own disclosed gap that curve knot removal
+  // only ever had an app-level *approximate* heuristic
+  // (`RemoveKnotApprox`, cmd_curves2.cpp), nothing in the kernel itself
+  // with a real, checked error bound. Removes one occurrence of the
+  // knot at `knot_index` (if its multiplicity is more than one, one
+  // copy of it, same as `InsertKnotAt()`'s own per-call granularity) via
+  // Piegl & Tiller's standard knot-removal construction (their
+  // Algorithm A5.8, the same one `NurbsSurface::RemoveKnotAt` already
+  // applies row-by-row to a surface - duplicated here, not shared
+  // across translation units, to keep this file self-contained the same
+  // way every other curve-editing routine in it already is): computes
+  // the new control polygon in homogeneous coordinates, measures the
+  // worst-case Euclidean deviation the removal would introduce (via the
+  // same rational/non-rational distance bound the surface version
+  // uses), and only commits the removal if that deviation is within
+  // `tolerance` - otherwise leaves the curve completely untouched and
+  // returns Result::Failed. `knot_index` must name a knot strictly
+  // inside the curve's own domain (throws std::out_of_range if out of
+  // `[0, KnotCount())`, std::invalid_argument if not strictly interior),
+  // and the curve must be clamped (an unclamped/periodic curve's ends
+  // have no single well-defined knot-removal case this handles).
+  // `out_max_deviation`, if non-null, always receives the measured
+  // deviation bound - even on a refused removal (as positive infinity
+  // before any measurement is possible, e.g. an unclamped curve), so a
+  // caller can see exactly how close a refused removal came.
+  Result RemoveKnotAt(int knot_index, double tolerance, double* out_max_deviation = nullptr);
+
   // Promotes the curve to rational (every control point gets an
   // explicit weight of 1.0) if it isn't already - delegates to
   // `ON_NurbsCurve::MakeRational()`. Genuinely shape-preserving: giving
@@ -443,6 +496,25 @@ class NurbsCurve {
   // Returns Result::NoOpAlreadySatisfied if `IsRational()` is already
   // false.
   Result MakeNonRational();
+
+  // Tolerance-bounded overload of `MakeNonRational()` above: performs the
+  // identical conversion, then measures the actual max 3D deviation the
+  // conversion introduced (dense uniform sampling over `Domain()`, at
+  // least 200 points or 20 per control point, whichever is larger,
+  // comparing this curve's own `PointAt(t)` before and after) and only
+  // keeps the conversion if that measured deviation is <= `tolerance` -
+  // otherwise restores the curve to its pre-call rational state and
+  // returns Result::Failed. `out_max_deviation`, if non-null, always
+  // receives the measured value, including on failure (zero if the
+  // curve was already non-rational, in which case this is the same
+  // Result::NoOpAlreadySatisfied no-op as the untoleranced overload).
+  // Unlike `NurbsSurface::RemoveKnotAt`'s rigorous analytic bound, this
+  // is a SAMPLED measurement, not a certified one - the same honesty
+  // tier `NurbsSurface::Rebuild()`'s own deviation bound already uses in
+  // this kernel, since there is no known closed-form error formula for
+  // this particular conversion (unlike knot removal's Piegl & Tiller eq.
+  // 5.30) to certify it analytically instead.
+  Result MakeNonRational(double tolerance, double* out_max_deviation);
 
   // Elevates the curve's degree in place, preserving its shape exactly
   // (to floating-point precision) - `PointAt(t)` is the same for every
@@ -682,6 +754,19 @@ class NurbsCurve {
   // `.min`/`.max`, not a method on the return value.
   Interval Domain() const;
 
+  // Reparameterizes the curve so `Domain()` becomes `[t0, t1]`, with every
+  // existing knot and evaluated point mapped by the same affine stretch
+  // (shape, control points and weights are untouched - only the parameter
+  // values change). The surface-level counterpart to `NurbsSurface::
+  // SetDomain(direction, t0, t1)`, minus the direction argument a curve
+  // doesn't have. Delegates to `ON_NurbsCurve::SetDomain`, the same real
+  // (non-stub) implementation `MakeCompatible()` (sweep.cpp) already
+  // relies on internally to normalize loft/sweep sections to `[0, 1]`
+  // before comparing their knot vectors. Returns Result::Failed if `t0 <
+  // t1` doesn't hold or OpenNURBS' own call fails, or
+  // Result::NoOpAlreadySatisfied if `[t0, t1]` already equals `Domain()`.
+  Result SetDomain(double t0, double t1);
+
   Point3d PointAt(double t) const;
 
   // Finds the parameter along the curve's own domain whose PointAt() is
@@ -747,6 +832,33 @@ class NurbsCurve {
   // sample count.
   double Length(int samples = 1000) const;
 
+  // Arc length via adaptive 5-point Gauss-Legendre quadrature of the
+  // curve's own speed `|C'(t)|` (the real OpenNURBS first derivative,
+  // `ON_Curve::Ev1Der`, not the unit `TangentAt()`), instead of
+  // `Length()`'s own polyline chord sum. Starts from one Gauss estimate
+  // over the whole domain, then recursively bisects any sub-interval
+  // whose own 5-point estimate disagrees with the sum of its two half-
+  // interval estimates by more than that sub-interval's own share of
+  // `tolerance` (the share halving at each recursion level, so every
+  // leaf sub-interval's worst-case total error budget still sums to at
+  // most `tolerance` overall) - the standard adaptive-quadrature error
+  // indicator (comparing a quadrature rule against its own refinement),
+  // capped at 20 recursion levels (2^20 leaf intervals) as a safety
+  // bound against runaway recursion on a pathological curve. This is a
+  // genuine accuracy IMPROVEMENT over `Length()` - 5th-order per
+  // interval instead of a 1st-order chord sum, and adaptive where
+  // `Length()` is uniform - but, like `NurbsSurface::Rebuild()`'s own
+  // deviation bound, the resulting accuracy is a numerically-robust
+  // estimate from comparing successive refinements, not a formally
+  // certified worst-case bound the way `RemoveKnotAt()`'s Piegl & Tiller
+  // eq. 5.30 bound is (there is no analogous closed-form error formula
+  // for Gauss-Legendre quadrature of an arbitrary NURBS curve's speed).
+  // `out_subintervals`, if non-null, receives the number of leaf
+  // intervals the adaptive refinement actually settled on - a cheap way
+  // for a caller to see how much work a given `tolerance` demanded.
+  // Throws std::invalid_argument if `tolerance` isn't positive.
+  double LengthToTolerance(double tolerance, int* out_subintervals = nullptr) const;
+
   // Finds the parameter `t` at which the curve has traveled
   // `target_length` of its own arc length from `Domain().Min()` -
   // the inverse of `Length()`: walking the same `samples`-point polyline
@@ -779,6 +891,31 @@ class NurbsCurve {
   // via equal consecutive-point chord lengths, not assumed from the
   // formula). Throws std::invalid_argument if `count <= 0`.
   std::vector<double> DivideByCount(int count, int samples = 1000) const;
+
+  // The "by fixed length" half of this kernel's "Divide curve by N/fixed
+  // length" gap - `DivideByCount()` above only ever covers "by N" (a
+  // caller-chosen segment count, whatever length each segment happens to
+  // come out to); this divides into sub-segments of a caller-chosen
+  // `length` instead, whatever count that happens to produce. Returns
+  // the parameter values at each full-`length` boundary, always starting
+  // at `Domain().Min()` and always ending at `Domain().Max()` - built the
+  // same way `DivideByCount()` is, directly on `ParameterAtArcLength()`:
+  // for a curve of `Length(samples) == L`, walks `length`, `2 * length`,
+  // `3 * length`, ... and calls `ParameterAtArcLength()` at each value
+  // that still leaves a non-negligible remainder before `L`, stopping
+  // one boundary short of the end so the final `Domain().Max()` pushed
+  // below is never duplicated by a last boundary landing within a
+  // rounding-scale sliver of `L` (the same "ulp past the end" hazard
+  // `ParameterAtArcLength()`'s own doc comment already discloses, here
+  // guarded with a relative tolerance instead of relying on that
+  // method's own clamp). The curve's own total length need not be an
+  // exact multiple of `length` - the final sub-segment is simply
+  // whatever is left over, which may be shorter than `length` (or, for
+  // a `length` greater than or equal to the whole curve, there is no
+  // interior boundary at all and this returns exactly `{Domain().Min(),
+  // Domain().Max()}`, the single-segment case). Throws
+  // std::invalid_argument if `length` isn't positive.
+  std::vector<double> DivideByLength(double length, int samples = 1000) const;
 
   // Unit tangent direction at parameter `t` - the direction of travel
   // along the curve, not a raw (unnormalized) derivative. Delegates to
@@ -844,6 +981,35 @@ class NurbsCurve {
   // Domain().Max()]` (2 values) - confirmed directly, not assumed.
   // Throws std::invalid_argument if `chord_tolerance <= 0`.
   std::vector<double> SuggestedParameterValues(double chord_tolerance, int max_depth = 12) const;
+
+  // Angle-based counterpart to SuggestedSamples(): instead of back-solving
+  // a maximum per-segment turning angle FROM a linear chord_tolerance via
+  // the sagitta formula, this takes that angular bound directly as
+  // `angle_tolerance` (radians) - PARITY_MAP's own disclosed "Angular
+  // tolerance control exposed as a general faceting-quality knob (as
+  // opposed to per-command heuristics)" gap: before this, the only places
+  // this kernel ever reasoned about facet/tangent angular deviation were
+  // ad hoc, buried inside chamfer/fillet/draft-specific code, with no
+  // general tessellation-quality entry point that takes an angle at all.
+  // Same curvature sampling and "assume the whole curve turns at its
+  // tightest sampled radius" conservative estimate SuggestedSamples()
+  // already uses, just skipping the chord_tolerance -> angle conversion
+  // and using `angle_tolerance` as the per-segment turning bound directly.
+  // Throws std::invalid_argument if `angle_tolerance` is not in (0, pi].
+  int SuggestedSamplesByAngle(double angle_tolerance, int curvature_samples = 50) const;
+
+  // Angle-based counterpart to SuggestedParameterValues(): the same
+  // recursive subdivision structure, but the per-interval test compares
+  // the tangent direction change across `[t0, t1]` (the angle between
+  // `TangentAt(t0)` and `TangentAt(t1)`) against `angle_tolerance`,
+  // instead of comparing the midpoint's distance from the chord against a
+  // linear chord_tolerance - a genuinely different quality criterion, not
+  // just the same number in different units: a tight loop whose chord
+  // stays short even as it turns sharply fails the angle test long before
+  // it would fail a chord-height one. Throws std::invalid_argument if
+  // `angle_tolerance` is not in (0, pi].
+  std::vector<double> SuggestedParameterValuesByAngle(double angle_tolerance,
+                                                       int max_depth = 12) const;
 
   // Offsets this curve, in its own fitted plane, by `distance` along the
   // in-plane direction `TangentAt(t) x plane.zaxis` (a consistent
@@ -952,7 +1118,27 @@ class NurbsCurve {
   // `NurbsSurface::OffsetAnalytic()`'s own doc comment already found for
   // the surface case, far tighter than anything but a hand-built exact
   // primitive tolerates.
-  Result OffsetInPlane(double distance, NurbsCurve& out, double tolerance = -1.0) const;
+  //
+  // `corner_style` (default `Sharp`, every prior caller's unchanged
+  // behavior) only affects the POLYLINE case above: see
+  // `CurveOffsetCornerStyle`'s own doc comment for exactly which corners
+  // `Round`/`Chamfer` change and why a reflex-under-outward-offset corner
+  // is left alone either way. A genuine bonus of `Round`/`Chamfer` beyond
+  // cosmetics: a convex corner whose turn is close enough to a full 180
+  // degrees that `Sharp`'s own finite-miter check (`denom <= 1e-9` below)
+  // would refuse it outright now succeeds instead, landing a
+  // correspondingly near-semicircular arc or long chamfer chord - neither
+  // style ever NEEDS the miter point at a fill corner at all, only the
+  // two tangent directions, so the same near-flat turn that has no finite
+  // sharp corner still has a perfectly well-defined round or chamfered
+  // one. For a CLOSED polyline, every style also refuses
+  // (`Result::Failed`) rather than silently returning a self-crossing
+  // loop when the exact `Sharp` miter polygon itself is not simple
+  // (`detail::IsSimplePolygon()`) - a detection-only guard for the
+  // long-disclosed "inward offset of a concave curve can self-intersect"
+  // gap, not a repair: a distance that is genuinely safe still succeeds.
+  Result OffsetInPlane(double distance, NurbsCurve& out, double tolerance = -1.0,
+                       CurveOffsetCornerStyle corner_style = CurveOffsetCornerStyle::Sharp) const;
 
   // Same construction as `OffsetInPlane(double, ...)` above, but the
   // sweep direction at every parameter is `TangentAt(t) x plane.zaxis`
@@ -1008,8 +1194,11 @@ class NurbsCurve {
   // tolerance-driven refit can't reach `tolerance` even at its own
   // maximum feasible control-point count. Throws `std::invalid_argument`
   // if `distance` isn't finite or `plane` isn't `ON_Plane::IsValid()`.
-  Result OffsetInPlane(const ON_Plane& plane, double distance, NurbsCurve& out,
-                       double tolerance = -1.0) const;
+  //
+  // `corner_style` - see the other overload's own doc comment - applies
+  // the same way to this overload's own coplanar-polyline case.
+  Result OffsetInPlane(const ON_Plane& plane, double distance, NurbsCurve& out, double tolerance = -1.0,
+                       CurveOffsetCornerStyle corner_style = CurveOffsetCornerStyle::Sharp) const;
 
   // Offsets this curve - assumed to (approximately) lie on `surface` -
   // along `surface`'s own normal, sampled and refit: the kernel

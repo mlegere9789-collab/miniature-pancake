@@ -168,6 +168,59 @@ struct LayoutInfo {
   double page_height_mm = 0.0;
 };
 
+// A detail view (the viewport window placed ON a layout page, framing
+// part of model space at its own scale) read back from
+// Model::DetailViewAt() below - the read-side counterpart to
+// Model::AddDetailView()'s own parameters. `layout_index` is the layout
+// (as returned by AddLayout() above) this detail is placed on, recovered
+// by matching the detail's own page-association attribute back against
+// each layout's own viewport id - -1 if no current layout matches (e.g.
+// the owning layout was somehow removed since). `x_mm`/`y_mm`/
+// `width_mm`/`height_mm` are the detail's own rectangular boundary, in
+// the same page-space millimeter coordinates AddLayout()'s own
+// page_width_mm/page_height_mm are measured in. `camera_location`/
+// `target_point` are std::nullopt when AddDetailView() was never given
+// a nested camera (the disclosed narrowing an earlier session on this
+// bullet left open: "this call does not attempt the detail's own nested
+// model-space camera") - the same std::nullopt-means-"not set" contract
+// `ObjectAttributes`' own `render_color`/`linetype_index` fields already
+// use elsewhere in this file.
+struct DetailViewInfo {
+  std::string name;
+  int layout_index = -1;
+  double x_mm = 0.0;
+  double y_mm = 0.0;
+  double width_mm = 0.0;
+  double height_mm = 0.0;
+  double page_per_model_ratio = 0.0;
+  std::optional<Point3d> camera_location;
+  std::optional<Point3d> target_point;
+  Vector3d camera_up = Vector3d(0.0, 0.0, 1.0);
+};
+
+// A straight-path extrusion (Rhino's own lightweight ON_Extrusion
+// surface representation - the result of e.g. ExtrudeCrv/ExtrudeSrf,
+// distinct from both a full Brep and a tessellated Mesh) read back from
+// Model::ExtrusionAt() below - the read-side counterpart to
+// Model::AddExtrusion()'s own parameters. `profile` is the closed 2D
+// outer cross-section, as (x, y) points in the extrusion's own local
+// profile plane (world XY, since AddExtrusion() always starts the path
+// at the world origin) - matching the WORLD-coordinate convention
+// AddHatch()'s own `boundary` parameter already uses for a 2D boundary
+// in this file, not OpenNURBS' internal plane-local curve storage.
+// `path_length` is the straight-line distance between the extrusion's
+// own path start and end (`ON_Extrusion::PathStart()`/`PathEnd()`), not
+// re-derived from `profile` - this kernel always starts the path at the
+// world origin along world +Z, so this is also simply the end point's
+// own Z coordinate, but reported via the real OpenNURBS accessors
+// rather than assumed.
+struct ExtrusionInfo {
+  std::string name;
+  std::vector<Point2d> profile;
+  double path_length = 0.0;
+  bool capped = false;
+};
+
 // One object's attributes, read back from Model::ObjectAttributesAt()
 // below - the read-side counterpart to every Add*() method's own name/
 // layer_index/render_color/user_strings/linetype_index/group_indices/
@@ -221,15 +274,20 @@ enum class HatchFillType {
 };
 
 // A hatch read back from Model::HatchAt() below - the read-side counterpart
-// to Model::AddHatch()'s own parameters. `boundary` is always the hatch's
-// OUTER loop only (in the hatch's own `plane`-relative (u, v) coordinates,
-// exactly as AddHatch()'s own `boundary` parameter is given) - AddHatch()
-// itself never creates more than one loop, so there is never an inner loop
-// (a hole) to report back.
+// to Model::AddHatch()'s own parameters. `boundary` is the hatch's OUTER
+// loop (in the hatch's own `plane`-relative (u, v) coordinates, exactly as
+// AddHatch()'s own `boundary` parameter is given). `hole_boundaries` is the
+// read-side counterpart to AddHatch()'s own `hole_boundaries` parameter -
+// closes the "AddHatch() itself never creates more than one loop, so there
+// is never an inner loop (a hole) to report back" gap this struct's own
+// doc comment used to carry: each entry is one inner (hole) loop, in the
+// same plane-relative (u, v) coordinates as `boundary` itself, in the same
+// order AddHatch() was given them.
 struct HatchInfo {
   std::string name;
   ON_Plane plane;
   std::vector<Point2d> boundary;
+  std::vector<std::vector<Point2d>> hole_boundaries;
   int pattern_index = -1;
   double pattern_rotation = 0.0;
   double pattern_scale = 1.0;
@@ -291,6 +349,30 @@ struct LeaderInfo {
   std::string text;
   std::vector<Point3d> points;
   ON_Plane plane;
+};
+
+// A linear dimension (Rhino's own Dimension command, ON_DimLinear
+// underneath) read back from Model::DimensionLinearAt() below - the
+// read-side counterpart to Model::AddDimensionLinear()'s own
+// extension_point0/extension_point1/dimension_line_point parameters.
+// Closes the last remaining half of PARITY_MAP.md's own "Rhino non-
+// geometry/composite objects in .3dm" evidence: "annotations besides
+// plain ON_Text (dimensions, leaders)" - AddLeader() above already closed
+// the leader half, this closes the dimension half. `extension_point0`/
+// `extension_point1`/`dimension_line_point` are reported in WORLD 3D
+// coordinates (converted back out of ON_DimLinear's own plane-local 2D
+// storage via `plane.PointAt()`, the same conversion LeaderInfo's own
+// `points` already uses for ON_Leader), matching the WORLD-space points
+// AddDimensionLinear() itself takes in. `measurement` is the dimension's
+// own computed distance between the two extension points
+// (ON_DimLinear::Measurement()) - reported for convenience, not an
+// independent value a caller sets directly.
+struct DimensionLinearInfo {
+  std::string name;
+  Point3d extension_point0;
+  Point3d extension_point1;
+  Point3d dimension_line_point;
+  double measurement = 0.0;
 };
 
 // Thin wrapper around ONX_Model so .3dm compatibility comes from
@@ -720,6 +802,137 @@ class Model {
   // LayoutInfo.
   LayoutInfo LayoutAt(int layout_index) const;
 
+  // Adds a detail view (Rhino's own Detail command - a rectangular window
+  // placed on a layout page that frames part of model space at its own
+  // scale, ON_DetailView underneath) to the model and returns its index
+  // (>= 0) among detail views specifically - closing the one item
+  // AddLayout() above explicitly disclosed as not attempted ("Detail
+  // views ... are a separate, larger ON_Viewport-per-detail feature this
+  // call does not attempt"), the last field left open on PARITY_MAP.md's
+  // own ".3dm attribute/metadata fidelity" evidence after every other
+  // named item (textures/named-views/lights/clipping-planes/layouts/
+  // units) closed in earlier sessions. `layout_index` (as returned by
+  // AddLayout() above) names the page this detail is placed ON;
+  // `x_mm`/`y_mm`/`width_mm`/`height_mm` are the detail's own rectangular
+  // boundary in that SAME page-space millimeter coordinate system
+  // AddLayout()'s own page_width_mm/page_height_mm are measured in -
+  // written into `ON_DetailView::m_boundary` (a closed `ON_NurbsCurve`
+  // rectangle, built by converting a 4-corner `ON_PolylineCurve` via its
+  // own `NurbsCurve()` call - the same "build a simple shape, then
+  // convert it to the real NURBS form a field demands" approach
+  // `AddHatch()` above takes for its own polyline boundary).
+  // `page_per_model_ratio` is written straight to
+  // `ON_DetailView::m_page_per_model_ratio` (page length / model length
+  // in one shared unit system - e.g. 0.02083 for "1/4 inch on the page =
+  // 1 foot in the model", that field's own documented example); this call
+  // does not attempt the detail's own nested model-space camera
+  // (`ON_DetailView::m_view`) UNLESS both `camera_location` and
+  // `target_point` are given (both default to `std::nullopt`, so every
+  // existing caller keeps getting the old unpopulated-`m_view` behavior
+  // unchanged) - closing that disclosed narrowing from an earlier
+  // session on this bullet. When given, `detail->m_view` is built the
+  // same way `AddNamedView()` above already builds its own `ON_3dmView`
+  // (`SetCameraLocation`/`SetCameraDirection`/`SetCameraUp`, the look
+  // direction derived from `target_point - camera_location` with the
+  // same degenerate-direction fallback to world `(0, 0, -1)`), with
+  // `m_view_type` set to `ON::view_type::nested_view_type` - the one
+  // field that marks a view as a detail's own nested view rather than a
+  // plain 3D view, the same role `page_view_type` plays for a layout in
+  // `AddLayout()` above. A detail IS an ordinary ModelGeometry object
+  // (`ON::detail_object`), but unlike a mesh or brep it is tied to one
+  // specific page via `ON_3dmObjectAttributes::m_viewport_id` (set to
+  // that layout's own `ON_Viewport::ViewportId()`) and `m_space`
+  // switched to `ON::active_space::page_space` - the same "an object
+  // restricted to one specific page" mechanism `m_viewport_id`'s own doc
+  // comment describes, not otherwise used anywhere else in this file.
+  // Returns -1 without adding anything if `name` is empty,
+  // `layout_index` does not name a layout this model actually has,
+  // `width_mm`/`height_mm` is not positive, or the polyline-to-NURBS
+  // conversion itself fails.
+  int AddDetailView(int layout_index, double x_mm, double y_mm, double width_mm, double height_mm,
+                     double page_per_model_ratio = 1.0, const std::string& name = std::string(),
+                     int layer_index = -1, std::optional<Color> render_color = std::nullopt,
+                     const UserStrings& user_strings = UserStrings(),
+                     std::optional<int> linetype_index = std::nullopt,
+                     const std::vector<int>& group_indices = std::vector<int>(),
+                     std::optional<int> material_index = std::nullopt,
+                     std::optional<Point3d> camera_location = std::nullopt,
+                     std::optional<Point3d> target_point = std::nullopt,
+                     Vector3d camera_up = Vector3d(0.0, 0.0, 1.0));
+
+  // Returns the number of detail views added via AddDetailView() above.
+  int DetailViewCount() const;
+
+  // Returns the detail view at `detail_view_index` (as counted by
+  // DetailViewCount() above) - the read-side counterpart to
+  // AddDetailView()'s own parameters, the same read-side gap every other
+  // `*At()` accessor above closes for its own table. `detail_view_index`
+  // not naming a detail view this model actually has returns a
+  // default-constructed DetailViewInfo.
+  DetailViewInfo DetailViewAt(int detail_view_index) const;
+
+  // Adds a straight-path extrusion (Rhino's own lightweight
+  // ON_Extrusion surface - the result of e.g. ExtrudeCrv/ExtrudeSrf,
+  // distinct from both a full Brep and a tessellated Mesh) to the model
+  // and returns its index (>= 0) among extrusions specifically -
+  // closing the "extrusions" item this category's own ".3dm
+  // attribute/metadata fidelity" bullet opening enumeration names
+  // ("layers, materials+textures, linetypes, named views, lights,
+  // clipping planes, layouts/details, units, user strings, point
+  // clouds, extrusions, groups"), the last item on that list left
+  // unaddressed after every other named field closed in earlier
+  // sessions: before this, nothing in this kernel's `Model` wrapper
+  // could create an `ON_Extrusion` at all (the app's own read cast
+  // chain already handles reading one written by ANOTHER application -
+  // see "Rhino non-geometry/composite objects in .3dm" below - but this
+  // kernel had no way to WRITE one). `profile` (at least 3 points,
+  // closed automatically - the first point is not repeated) is the
+  // extrusion's own 2D outer cross-section, taken in the world XY plane
+  // at the world origin; the path always runs straight from the world
+  // origin along world +Z by `path_length` - wraps
+  // `ON_Extrusion::SetPathAndUp(origin, (0,0,path_length), up=(0,1,0))`
+  // followed by `SetOuterProfile(profile, capped)`. `SetOuterProfile()`
+  // itself auto-corrects the profile's own winding direction
+  // (counter-clockwise) regardless of which way `profile` winds, and
+  // auto-converts it to a genuine 2D curve - the same "ask the real
+  // OpenNURBS constructor to validate/normalize, don't re-derive it"
+  // stance this file already takes elsewhere (e.g. `AddDimension()`'s
+  // own `ON_DimLinear::CreateAligned()` call). `capped` adds flat end
+  // caps at both ends when true (a capped extrusion is a solid; an
+  // uncapped one is an open sheet) - `ON_Extrusion::SetOuterProfile()`
+  // itself only ever takes one single `bCap` argument for both ends, so
+  // "cap one end only" is not a distinction this type can even express.
+  // Returns -1 without adding anything if `name` is empty, `profile`
+  // has fewer than 3 points, `path_length` is not positive, or the
+  // underlying `SetPathAndUp()`/`SetOuterProfile()` calls themselves
+  // fail - neither validates self-intersection, only degeneracy
+  // (a zero-length path, or a profile curve `ChangeDimension(2)`/
+  // bounding-box checks reject outright), so a self-intersecting but
+  // otherwise non-degenerate profile is not itself refused here. A
+  // non-straight/tapered path,
+  // inner profiles (holes through the extrusion), and placing the path
+  // anywhere but the world origin are each a disclosed, larger
+  // remaining gap - only the simplest single-outer-profile, straight,
+  // world-origin-anchored case is supported here.
+  int AddExtrusion(const std::vector<Point2d>& profile, double path_length, bool capped = true,
+                    const std::string& name = std::string(), int layer_index = -1,
+                    std::optional<Color> render_color = std::nullopt,
+                    const UserStrings& user_strings = UserStrings(),
+                    std::optional<int> linetype_index = std::nullopt,
+                    const std::vector<int>& group_indices = std::vector<int>(),
+                    std::optional<int> material_index = std::nullopt);
+
+  // Returns the number of extrusions added via AddExtrusion() above.
+  int ExtrusionCount() const;
+
+  // Returns the extrusion at `extrusion_index` (as counted by
+  // ExtrusionCount() above) - the read-side counterpart to
+  // AddExtrusion()'s own parameters, the same read-side gap every other
+  // `*At()` accessor above closes for its own table. `extrusion_index`
+  // not naming an extrusion this model actually has returns a
+  // default-constructed ExtrusionInfo.
+  ExtrusionInfo ExtrusionAt(int extrusion_index) const;
+
   // Adds a light (Rhino's own Point/Directional light object) to the model
   // and returns its index (>= 0) among lights specifically - "lights" is
   // the next field PARITY_MAP.md's own ".3dm attribute/metadata fidelity"
@@ -908,11 +1121,31 @@ class Model {
   // ignoring a solid hatch's own unused line table), but not rejected for
   // `Solid` - a caller building a pattern it may later want to switch is
   // free to populate lines ahead of that.
+  //
+  // `description` closes the "ON_HatchPattern's own other fields" gap
+  // PARITY_MAP.md's own "Rhino non-geometry/composite objects in .3dm"
+  // evidence names alongside "dimensions" as this bullet's own last two
+  // remaining open items - ON_HatchPattern::SetDescription()/Description()
+  // (opennurbs_hatch.h) is the one settable field besides fill type and
+  // lines this kernel had no way to write at all. Empty by default (the
+  // pre-existing behavior, unchanged for every existing caller - an empty
+  // description is also ON_HatchPattern's own constructor default, so this
+  // is a genuine no-op, not a forced empty-string write).
   int AddHatchPattern(const std::string& name, HatchFillType fill_type = HatchFillType::Solid,
-                       const std::vector<HatchPatternLine>& lines = std::vector<HatchPatternLine>());
+                       const std::vector<HatchPatternLine>& lines = std::vector<HatchPatternLine>(),
+                       const std::string& description = std::string());
 
   // Returns the number of hatch patterns added via AddHatchPattern() above.
   int HatchPatternCount() const;
+
+  // Returns the description AddHatchPattern()'s own `description`
+  // parameter gave the pattern at `pattern_index` - the read-side
+  // counterpart to that parameter, the same read-side gap
+  // HatchPatternLineAt() below already closes for `lines`.
+  // `pattern_index` not naming a hatch pattern this model actually has
+  // returns an empty string, same as a pattern added with no
+  // `description`.
+  std::string HatchPatternDescriptionAt(int pattern_index) const;
 
   // Returns the number of lines AddHatchPattern()'s own `lines` parameter
   // added to the pattern at `pattern_index` (as returned by
@@ -950,8 +1183,28 @@ class Model {
   // ObjectAttributesAt() alongside a mesh or brep, exactly like a clipping
   // plane does (see AddClippingPlane() above), so it also shows up in its
   // own HatchCount()/HatchAt() table below for the fields
-  // ObjectAttributesAt() doesn't carry (`plane`/`boundary`/`pattern_index`/
-  // `pattern_rotation`/`pattern_scale`).
+  // ObjectAttributesAt() doesn't carry (`plane`/`boundary`/
+  // `hole_boundaries`/`pattern_index`/`pattern_rotation`/`pattern_scale`).
+  //
+  // `hole_boundaries` (empty by default, the pre-existing "single outer
+  // loop only" behavior, unchanged for every existing caller - appended as
+  // the very last parameter, same "no behavior change for an existing
+  // positional caller" discipline AddMaterial()'s own trailing optional
+  // parameters above already follow) closes the "no inner loops/holes"
+  // gap this method's own doc comment used to disclose - PARITY_MAP.md's
+  // own "Rhino non-geometry/composite objects in .3dm" evidence named this
+  // directly: "ON_Hatch (single outer loop, given as plane-relative (u, v)
+  // points - no inner loops/holes)". Each entry is one more closed loop in
+  // the same plane-relative (u, v) coordinates as `boundary` itself
+  // (closed automatically, same as `boundary`), appended to
+  // `ON_Hatch::Create()`'s own `loops` array right after the outer one -
+  // that call already types every loop after the first as
+  // `ON_HatchLoop::ltInner` on its own (opennurbs_hatch.cpp:
+  // `pLoop->SetType(i ? ltInner : ltOuter)`), so no extra step is needed
+  // here beyond handing it more than one loop. A hole with fewer than 3
+  // points is rejected the same way `boundary` itself already is, leaving
+  // the hatch completely untouched (no partial add of only the valid
+  // holes).
   int AddHatch(const ON_Plane& plane, const std::vector<Point2d>& boundary, int pattern_index,
                double pattern_rotation = 0.0, double pattern_scale = 1.0,
                const std::string& name = std::string(), int layer_index = -1,
@@ -959,7 +1212,8 @@ class Model {
                const UserStrings& user_strings = UserStrings(),
                std::optional<int> linetype_index = std::nullopt,
                const std::vector<int>& group_indices = std::vector<int>(),
-               std::optional<int> material_index = std::nullopt);
+               std::optional<int> material_index = std::nullopt,
+               const std::vector<std::vector<Point2d>>& hole_boundaries = std::vector<std::vector<Point2d>>());
 
   // Returns the number of hatches added via AddHatch() above.
   int HatchCount() const;
@@ -1073,6 +1327,52 @@ class Model {
   // `leader_index` not naming a leader this model actually has returns a
   // default-constructed LeaderInfo.
   LeaderInfo LeaderAt(int leader_index) const;
+
+  // Adds a linear dimension (Rhino's own Dimension command - the aligned
+  // variant, ON_DimLinear underneath) to the model and returns its index
+  // (>= 0) among linear dimensions specifically - closing the last
+  // remaining half of PARITY_MAP.md's own "Rhino non-geometry/composite
+  // objects in .3dm" evidence: "annotations besides plain ON_Text
+  // (dimensions, leaders)" - AddLeader() above closed the leader half,
+  // this closes the dimension half, the one named gap this bullet's own
+  // most recent note still carried. `extension_point0`/`extension_point1`
+  // (in WORLD 3D coordinates) are the two points being measured between -
+  // the dimension's own plane is derived from the line between them
+  // (its x-axis) and `plane_normal` (its z-axis), the same "caller gives
+  // points and a normal, not a full plane" shape AddLeader() uses for its
+  // own `points`/`plane` pair, but one step more implicit here since
+  // ON_DimLinear::CreateAligned() (opennurbs_dimension.h), which this
+  // wraps, derives the plane itself rather than taking one directly.
+  // `dimension_line_point` is any point roughly on the desired dimension
+  // line (how far the dimension line itself sits from the two extension
+  // points) - CreateAligned() projects it onto the derived plane and
+  // clamps it to lie between the two extension points along that line,
+  // the same "nearest reasonable position" contract OpenNURBS itself
+  // documents for this parameter. Returns -1 without adding anything if
+  // `name` is empty, `extension_point0` and `extension_point1` coincide
+  // (or are otherwise too close to define a direction), or `plane_normal`
+  // fails to unitize - the same "degenerate input refused, not silently
+  // built into something meaningless" contract AddLeader()'s own
+  // degenerate-plane refusal already has.
+  int AddDimensionLinear(const Point3d& extension_point0, const Point3d& extension_point1,
+                          const Point3d& dimension_line_point, const Vector3d& plane_normal,
+                          const std::string& name = std::string(), int layer_index = -1,
+                          std::optional<Color> render_color = std::nullopt,
+                          const UserStrings& user_strings = UserStrings(),
+                          std::optional<int> linetype_index = std::nullopt,
+                          const std::vector<int>& group_indices = std::vector<int>(),
+                          std::optional<int> material_index = std::nullopt);
+
+  // Returns the number of linear dimensions added via AddDimensionLinear()
+  // above.
+  int DimensionLinearCount() const;
+
+  // Returns the linear dimension at `dimension_index` (as counted by
+  // DimensionLinearCount() above) - the read-side counterpart to
+  // AddDimensionLinear()'s own parameters. `dimension_index` not naming a
+  // linear dimension this model actually has returns a default-
+  // constructed DimensionLinearInfo.
+  DimensionLinearInfo DimensionLinearAt(int dimension_index) const;
 
   // Sets the model's length unit system - closing PARITY_MAP.md's own
   // "kernel-level data exchange" evidence for "Unit-system conversion":

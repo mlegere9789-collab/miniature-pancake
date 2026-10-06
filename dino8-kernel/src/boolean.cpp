@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 
 #include <manifold/manifold.h>
 
@@ -1342,51 +1343,84 @@ std::vector<std::vector<Point3d>> DissolveCoplanarFragments(const std::vector<st
   return loops;
 }
 
-}  // namespace
-
-std::vector<std::vector<Point3d>> PolygonBooleanPlanar(const std::vector<Point3d>& a, const std::vector<Point3d>& b,
-                                                         const ON_Plane& plane, BooleanOp op, double tolerance) {
-  const char* caller = "PolygonBooleanPlanar";
-  if (a.size() < 3 || b.size() < 3) {
-    throw BooleanOperationError(BooleanFailureReason::InvalidPolygon, caller,
-                                 std::string("dino8::kernel::") + caller +
-                                     ": both polygons need at least 3 vertices");
+// Validates one PolygonBooleanPlanar()/PolygonBooleanPlanarNAry() operand
+// (at least 3 vertices, every vertex lying in `plane`, a simple non-self-
+// intersecting boundary) - factored out so the pairwise and N-ary entry
+// points share one validation pass rather than two copies that could drift
+// apart. `max_extent` is threaded through and updated in place, the same
+// running combined-scale estimate every validated operand in a single call
+// contributes to (unchanged behavior for the pairwise caller, which used to
+// inline this same loop over `{&a, &b}`).
+void ValidatePlanarBooleanPolygon(const std::vector<Point3d>& poly, const ON_Plane& plane, double& max_extent,
+                                  const char* caller, const std::string& name) {
+  if (poly.size() < 3) {
+    throw BooleanOperationError(
+        BooleanFailureReason::InvalidPolygon, caller,
+        std::string("dino8::kernel::") + caller + ": polygon `" + name + "` needs at least 3 vertices");
   }
-
-  double max_extent = kConvexTol;
-  for (const std::vector<Point3d>* poly : {&a, &b}) {
-    for (const Point3d& p : *poly) {
-      max_extent = std::max({max_extent, std::fabs(p.x), std::fabs(p.y), std::fabs(p.z)});
-      if (std::fabs(plane.DistanceTo(p)) > max_extent * 1e-6) {
-        throw BooleanOperationError(BooleanFailureReason::InvalidPolygon, caller,
-                                     std::string("dino8::kernel::") + caller +
-                                         ": every vertex of both polygons must lie in `plane`");
-      }
+  for (const Point3d& p : poly) {
+    max_extent = std::max({max_extent, std::fabs(p.x), std::fabs(p.y), std::fabs(p.z)});
+    if (std::fabs(plane.DistanceTo(p)) > max_extent * 1e-6) {
+      throw BooleanOperationError(
+          BooleanFailureReason::InvalidPolygon, caller,
+          std::string("dino8::kernel::") + caller + ": every vertex of polygon `" + name + "` must lie in `plane`");
     }
   }
-
   // Self-intersecting input was previously silently fed through to
-  // PrismFromPolygon()/BooleanCombinePlanar() - see this function's own
-  // doc comment in boolean.h and BooleanFailureReason::InvalidPolygon's
+  // PrismFromPolygon()/BooleanCombinePlanar() - see PolygonBooleanPlanar's
+  // own doc comment in boolean.h and BooleanFailureReason::InvalidPolygon's
   // doc comment for why that's refused outright instead of attempted.
   // Checked in the polygon's own 2D (plane.xaxis, plane.yaxis) coordinates
   // - already-verified to lie in `plane` above - via the same
   // detail::IsSimplePolygon() surface.cpp/mesh.cpp's own concave-trim/
   // loft-cap clippers already rely on.
-  for (const auto& named : {std::make_pair(&a, "a"), std::make_pair(&b, "b")}) {
-    std::vector<Point2d> uv;
-    uv.reserve(named.first->size());
-    for (const Point3d& p : *named.first) {
-      const Vector3d rel = p - plane.origin;
-      uv.emplace_back(ON_DotProduct(rel, plane.xaxis), ON_DotProduct(rel, plane.yaxis));
-    }
-    if (!detail::IsSimplePolygon(uv)) {
-      throw BooleanOperationError(BooleanFailureReason::InvalidPolygon, caller,
-                                   std::string("dino8::kernel::") + caller + ": polygon `" + named.second +
-                                       "` is self-intersecting (two non-adjacent edges cross) - "
-                                       "BooleanCombinePlanar's own prism reduction assumes a simple boundary");
+  std::vector<Point2d> uv;
+  uv.reserve(poly.size());
+  for (const Point3d& p : poly) {
+    const Vector3d rel = p - plane.origin;
+    uv.emplace_back(ON_DotProduct(rel, plane.xaxis), ON_DotProduct(rel, plane.yaxis));
+  }
+  if (!detail::IsSimplePolygon(uv)) {
+    throw BooleanOperationError(BooleanFailureReason::InvalidPolygon, caller,
+                                 std::string("dino8::kernel::") + caller + ": polygon `" + name +
+                                     "` is self-intersecting (two non-adjacent edges cross) - "
+                                     "BooleanCombinePlanar's own prism reduction assumes a simple boundary");
+  }
+}
+
+// Reads back `combined`'s own base-plane faces - the bottom caps
+// PrismFromPolygon() built for every operand, lying exactly in `plane` - and
+// dissolves them into simple loops via DissolveCoplanarFragments(). Shared
+// tail step of PolygonBooleanPlanar()/PolygonBooleanPlanarNAry() alike, so
+// neither can drift out of sync with the other's own face-plane filter.
+std::vector<std::vector<Point3d>> ReadBackBasePlaneLoops(const Brep& combined, const ON_Plane& plane, double tol) {
+  std::vector<std::vector<Point3d>> base_fragments;
+  for (const Brep::PlanarFace& f : combined.PlanarFaces()) {
+    // The base-plane faces are exactly the ones whose outward normal is
+    // -plane.zaxis and whose plane coincides with `plane` itself - the
+    // bottom cap PrismFromPolygon built for each operand, and the only
+    // faces BooleanCombinePlanar's own classification ever keeps in that
+    // exact plane (every other kept face is either a side wall or the top
+    // cap, neither of which shares this plane).
+    if (f.plane.zaxis.IsParallelTo(plane.zaxis, 1e-6) == -1 && std::fabs(plane.DistanceTo(f.plane.origin)) <= tol) {
+      // f.loop is CCW as seen from -plane.zaxis (this face's own outward
+      // normal) - reverse it back to CCW as seen from +plane.zaxis, the
+      // convention every operand (and both functions' own return value)
+      // uses.
+      base_fragments.emplace_back(f.loop.rbegin(), f.loop.rend());
     }
   }
+  return DissolveCoplanarFragments(base_fragments, tol);
+}
+
+}  // namespace
+
+std::vector<std::vector<Point3d>> PolygonBooleanPlanar(const std::vector<Point3d>& a, const std::vector<Point3d>& b,
+                                                         const ON_Plane& plane, BooleanOp op, double tolerance) {
+  const char* caller = "PolygonBooleanPlanar";
+  double max_extent = kConvexTol;
+  ValidatePlanarBooleanPolygon(a, plane, max_extent, caller, "a");
+  ValidatePlanarBooleanPolygon(b, plane, max_extent, caller, "b");
 
   // The prism's height needs to be comparable to the footprint's own
   // extent (never a degenerate sliver relative to it, nor absurdly taller
@@ -1412,22 +1446,75 @@ std::vector<std::vector<Point3d>> PolygonBooleanPlanar(const std::vector<Point3d
   const Brep combined = BooleanCombinePlanar(prism_a, prism_b, op, tolerance);
 
   const double tol = tolerance >= 0.0 ? tolerance : std::max(kConvexTol, height * 1e-9);
-  std::vector<std::vector<Point3d>> base_fragments;
-  for (const Brep::PlanarFace& f : combined.PlanarFaces()) {
-    // The base-plane faces are exactly the ones whose outward normal is
-    // -plane.zaxis and whose plane coincides with `plane` itself - the
-    // bottom cap PrismFromPolygon built for each operand, and the only
-    // faces BooleanCombinePlanar's own classification ever keeps in that
-    // exact plane (every other kept face is either a side wall or the top
-    // cap, neither of which shares this plane).
-    if (f.plane.zaxis.IsParallelTo(plane.zaxis, 1e-6) == -1 && std::fabs(plane.DistanceTo(f.plane.origin)) <= tol) {
-      // f.loop is CCW as seen from -plane.zaxis (this face's own outward
-      // normal) - reverse it back to CCW as seen from +plane.zaxis, the
-      // convention `a`/`b` (and this function's own return value) use.
-      base_fragments.emplace_back(f.loop.rbegin(), f.loop.rend());
-    }
+  return ReadBackBasePlaneLoops(combined, plane, tol);
+}
+
+std::vector<std::vector<Point3d>> PolygonBooleanPlanarNAry(const std::vector<std::vector<Point3d>>& first_group,
+                                                             const std::vector<std::vector<Point3d>>& second_group,
+                                                             const ON_Plane& plane, BooleanOp op, double tolerance) {
+  const char* caller = "PolygonBooleanPlanarNAry";
+  if (op == BooleanOp::SymmetricDifference) {
+    throw BooleanOperationError(
+        BooleanFailureReason::UnsupportedOperation, caller,
+        std::string("dino8::kernel::") + caller +
+            ": SymmetricDifference has no well-defined N-ary fold - its own pairwise result cannot be folded "
+            "further (see BooleanCombinePlanarNAry's own identical refusal)");
   }
-  return DissolveCoplanarFragments(base_fragments, tol);
+  if (first_group.empty()) {
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperandGroup, caller,
+                                 std::string("dino8::kernel::") + caller + ": first_group is empty");
+  }
+  if (second_group.empty() && op != BooleanOp::Union) {
+    throw BooleanOperationError(
+        BooleanFailureReason::EmptyOperandGroup, caller,
+        std::string("dino8::kernel::") + caller +
+            ": second_group is empty but op is not Union - Intersection/Difference need a second operand group to "
+            "combine against");
+  }
+
+  double max_extent = kConvexTol;
+  Point3d lo, hi;
+  bool have_bbox = false;
+  auto validate_and_bound = [&](const std::vector<std::vector<Point3d>>& group, const char* group_name) {
+    for (size_t i = 0; i < group.size(); ++i) {
+      ValidatePlanarBooleanPolygon(group[i], plane, max_extent, caller,
+                                    std::string(group_name) + "[" + std::to_string(i) + "]");
+      for (const Point3d& p : group[i]) {
+        if (!have_bbox) { lo = hi = p; have_bbox = true; }
+        lo.x = std::min(lo.x, p.x); lo.y = std::min(lo.y, p.y); lo.z = std::min(lo.z, p.z);
+        hi.x = std::max(hi.x, p.x); hi.y = std::max(hi.y, p.y); hi.z = std::max(hi.z, p.z);
+      }
+    }
+  };
+  validate_and_bound(first_group, "first_group");
+  validate_and_bound(second_group, "second_group");
+
+  // Same "never a degenerate sliver relative to the full operand set" scale
+  // PolygonBooleanPlanar's own pairwise case already derives, just over
+  // every polygon in BOTH groups instead of just two.
+  double height = (hi - lo).Length();
+  if (!(height > 0.0)) height = 1.0;
+
+  auto build_prisms = [&](const std::vector<std::vector<Point3d>>& group) {
+    std::vector<Brep> prisms;
+    prisms.reserve(group.size());
+    for (const std::vector<Point3d>& poly : group) prisms.push_back(PrismFromPolygon(poly, plane, height, caller));
+    return prisms;
+  };
+  const std::vector<Brep> prisms_first = build_prisms(first_group);
+  const std::vector<Brep> prisms_second = build_prisms(second_group);
+
+  // BooleanCombinePlanarNAry itself folds first_group/second_group
+  // left-to-right via Union, then combines the two folds via `op` -
+  // Prism(2D_NAry_op(group)) == BooleanCombinePlanarNAry(Prisms(group), ...,
+  // op) is the same prism identity PolygonBooleanPlanar's own doc comment
+  // already establishes for the N=2 pairwise case, simply generalized: a
+  // vertical extrusion's cross-section at every height equals its own
+  // footprint, for every polygon folded in, not just two.
+  const Brep combined = BooleanCombinePlanarNAry(prisms_first, prisms_second, op, tolerance);
+
+  const double tol = tolerance >= 0.0 ? tolerance : std::max(kConvexTol, height * 1e-9);
+  return ReadBackBasePlaneLoops(combined, plane, tol);
 }
 
 namespace {
@@ -1960,6 +2047,63 @@ bool FacesShareEdge(const Brep::PlanarFace& a, const Brep::PlanarFace& b, double
   return false;
 }
 
+// Like FacesShareEdge() immediately above, but also returns WHERE the
+// match is: `face`'s own edge index `i` (the edge face.loop[i] ->
+// face.loop[(i+1)%nf]) together with `neighbor`'s own matching index `k`
+// (face.loop[i] ~ neighbor.loop[(k+1)%nn], face.loop[i+1] ~
+// neighbor.loop[k] - the same opposite-winding convention FacesShareEdge()
+// already checks). PushPullFace()/PushPullFaces() use this to find which
+// of `face`'s own two endpoints at that edge a given neighbor is
+// responsible for correcting below.
+std::optional<std::pair<size_t, size_t>> FindSharedEdgeIndices(const Brep::PlanarFace& face,
+                                                                 const Brep::PlanarFace& neighbor, double tol) {
+  const size_t nf = face.loop.size(), nn = neighbor.loop.size();
+  for (size_t i = 0; i < nf; ++i) {
+    const Point3d& a0 = face.loop[i];
+    const Point3d& a1 = face.loop[(i + 1) % nf];
+    for (size_t k = 0; k < nn; ++k) {
+      const Point3d& b0 = neighbor.loop[k];
+      const Point3d& b1 = neighbor.loop[(k + 1) % nn];
+      if (a0.DistanceTo(b1) <= tol && a1.DistanceTo(b0) <= tol) return std::make_pair(i, k);
+    }
+  }
+  return std::nullopt;
+}
+
+// The genuine re-intersection PushPullFace()'s own doc comment used to say
+// an oblique neighbour would need: at a Brep vertex where exactly three
+// faces meet (the pulled `face`, and two neighbours each sharing one of
+// `face`'s own two edges there), a THIRD edge - shared between those two
+// neighbours themselves, not with `face` - runs from that vertex into the
+// solid's own interior. Clipping either neighbour against `cut_plane`
+// finds its own crossing point on that SAME physical 3D edge, so the two
+// neighbours agree on the corrected vertex position NO MATTER which plane
+// either of them lies on (perpendicular or oblique) - this is exactly that
+// one intersection, computed directly from `from` (the vertex being
+// corrected) and `to` (the neighbour's own next vertex along that shared
+// interior edge) rather than guessed at via a blind translate. For a
+// neighbour whose plane happens to be perpendicular to `face`'s own
+// normal, `to - from` lies entirely within that plane, so this reduces
+// algebraically to the exact same point a plain offset along the normal
+// already gives - this is a strict generalization, not a separate,
+// possibly-divergent construction (see TestPushPullFacePerpendicularCase*
+// fixtures for confirmation this never moves at all on the pre-existing
+// box fixture).
+Point3d PushPullCorrectedVertex(const ON_Plane& cut_plane, const Point3d& from, const Point3d& to,
+                                 int neighbor_face_index) {
+  const double dc = cut_plane.DistanceTo(from);
+  const double dw = cut_plane.DistanceTo(to);
+  if (std::fabs(dc - dw) <= 1e-12) {
+    throw std::invalid_argument(
+        "dino8::kernel::PushPullFace: distance collapses neighbour face " +
+        std::to_string(neighbor_face_index) +
+        "'s own boundary (a near-zero-length retrimmed edge) - too large a pull for this solid's own "
+        "geometry there");
+  }
+  const double t = dc / (dc - dw);
+  return from + t * (to - from);
+}
+
 }  // namespace
 
 Brep PushPullFace(const Brep& solid, int face_index, double distance) {
@@ -1999,33 +2143,46 @@ Brep PushPullFace(const Brep& solid, int face_index, double distance) {
   for (int i = 0; i < n; ++i) {
     if (i == face_index) continue;
     Brep::PlanarFace g = faces[static_cast<size_t>(i)];
-    if (distance < 0.0 && FacesShareEdge(g, face, tol)) {
+    if (distance < 0.0) {
       // A pull genuinely REMOVES the slab between the old and new plane,
       // so every neighbour that used to bound that slab must be
       // retrimmed back to the new (closer) plane - unlike a push, which
       // only ever adds new geometry into previously-empty space and so
       // never needs to touch a neighbour at all (see this function's own
-      // doc comment). Only a neighbour whose own plane is PERPENDICULAR
-      // to the pushed face's normal can be safely retrimmed by a single
-      // half-space clip here (the shared edge then lies exactly along the
-      // clip plane on both the old and new cap, so the clip meets the new
-      // cap with no gap or overlap); an oblique neighbour would need a
-      // genuine re-intersection this function does not attempt.
-      if (std::fabs(ON_DotProduct(g.plane.zaxis, face.plane.zaxis)) > 1e-6) {
-        throw std::invalid_argument(
-            "dino8::kernel::PushPullFace: face " + std::to_string(i) +
-            " neighbours the pulled face but isn't perpendicular to its normal - "
-            "retrimming an oblique neighbour needs a genuine re-intersection this "
-            "function does not attempt, see its own doc comment");
+      // doc comment). `SplitByHalfspace()` is a genuine 3D-plane clip (see
+      // its own doc comment), exact for ANY neighbour plane - perpendicular
+      // or oblique - so it needs no restriction here; what DOES need an
+      // oblique-aware fix is `new_loop` itself, corrected below via
+      // `PushPullCorrectedVertex()` rather than a blind per-vertex offset.
+      if (auto match = FindSharedEdgeIndices(face, g, tol)) {
+        const auto [fi_edge, ng_edge] = *match;
+        const size_t ip1 = (fi_edge + 1) % m;
+        const size_t ng = g.loop.size();
+        if (ng >= 3) {
+          // `face.loop[fi_edge]` ~ `g.loop[(ng_edge+1)%ng]`,
+          // `face.loop[ip1]` ~ `g.loop[ng_edge]` (FindSharedEdgeIndices()'s
+          // own convention) - each corrected via the THIRD edge incident
+          // to that same vertex, shared between `g` and whichever OTHER
+          // face borders `face`'s own adjacent edge there (see
+          // PushPullCorrectedVertex()'s own doc comment for why this is
+          // exact regardless of `g`'s own orientation).
+          const size_t pos_fi = (ng_edge + 1) % ng;
+          const size_t pos_ip1 = ng_edge;
+          const Point3d w_for_fi = g.loop[(pos_fi + 1) % ng];
+          const Point3d w_for_ip1 = g.loop[(pos_ip1 + ng - 1) % ng];
+          new_loop[fi_edge] = PushPullCorrectedVertex(cut_plane, face.loop[fi_edge], w_for_fi, i);
+          new_loop[ip1] = PushPullCorrectedVertex(cut_plane, face.loop[ip1], w_for_ip1, i);
+        }
+
+        std::vector<Point3d> clipped = SplitByHalfspace(g.loop, cut_plane, tol).inside;
+        if (clipped.size() < 3) {
+          throw std::invalid_argument(
+              "dino8::kernel::PushPullFace: distance collapses neighbour face " + std::to_string(i) +
+              "'s own boundary to fewer than 3 vertices - too large a pull for this solid's own "
+              "geometry there");
+        }
+        g.loop = std::move(clipped);
       }
-      std::vector<Point3d> clipped = SplitByHalfspace(g.loop, cut_plane, tol).inside;
-      if (clipped.size() < 3) {
-        throw std::invalid_argument(
-            "dino8::kernel::PushPullFace: distance collapses neighbour face " + std::to_string(i) +
-            "'s own boundary to fewer than 3 vertices - too large a pull for this solid's own "
-            "geometry there");
-      }
-      g.loop = std::move(clipped);
     }
     result.push_back(std::move(g));
   }
@@ -2132,14 +2289,28 @@ Brep PushPullFaces(const Brep& solid, const std::vector<std::pair<int, double>>&
     for (const auto& [fi, distance] : face_distances) {
       if (distance >= 0.0) continue;  // a push never touches a neighbour
       const Brep::PlanarFace& pulled = faces[static_cast<size_t>(fi)];
-      if (!FacesShareEdge(g, pulled, tol)) continue;
-      if (std::fabs(ON_DotProduct(g.plane.zaxis, pulled.plane.zaxis)) > 1e-6) {
-        throw std::invalid_argument(
-            "dino8::kernel::PushPullFaces: face " + std::to_string(i) + " neighbours pulled face " +
-            std::to_string(fi) +
-            " but isn't perpendicular to its normal - retrimming an oblique neighbour needs a genuine "
-            "re-intersection this function does not attempt, see PushPullFace()'s own doc comment");
+      // SplitByHalfspace() is a genuine 3D-plane clip (see its own doc
+      // comment), exact for ANY neighbour plane - the oblique restriction
+      // PushPullFace() itself used to have is lifted here identically (see
+      // that function's own doc comment and PushPullCorrectedVertex()'s for
+      // the full derivation); `new_loops[fi]` is corrected in place below
+      // rather than left as a blind per-vertex offset.
+      auto match = FindSharedEdgeIndices(pulled, g, tol);
+      if (!match) continue;
+      const auto [fi_edge, ng_edge] = *match;
+      const size_t m_pulled = pulled.loop.size();
+      const size_t ip1 = (fi_edge + 1) % m_pulled;
+      const size_t ng = g.loop.size();
+      if (ng >= 3) {
+        const size_t pos_fi = (ng_edge + 1) % ng;
+        const size_t pos_ip1 = ng_edge;
+        const Point3d w_for_fi = g.loop[(pos_fi + 1) % ng];
+        const Point3d w_for_ip1 = g.loop[(pos_ip1 + ng - 1) % ng];
+        const ON_Plane& cp = cut_planes[static_cast<size_t>(fi)];
+        new_loops[static_cast<size_t>(fi)][fi_edge] = PushPullCorrectedVertex(cp, pulled.loop[fi_edge], w_for_fi, i);
+        new_loops[static_cast<size_t>(fi)][ip1] = PushPullCorrectedVertex(cp, pulled.loop[ip1], w_for_ip1, i);
       }
+
       std::vector<Point3d> clipped = SplitByHalfspace(g.loop, cut_planes[static_cast<size_t>(fi)], tol).inside;
       if (clipped.size() < 3) {
         throw std::invalid_argument(
@@ -2454,6 +2625,38 @@ Brep FoldFaceConvexPlanar(const Brep& solid, int face_index, int hinge_loop_inde
 
 namespace {
 
+// Newell's method: the same summed-cross-product-over-every-edge formula
+// Brep::PlanarFaces()'s own internal ExtractPlanarFace() helper
+// (brep.cpp's own anonymous-namespace NewellNormal()) and mesh.cpp's own
+// NewellNormal() already use elsewhere in this codebase to find a
+// polygon's own normal directly from its vertices - each translation unit
+// here keeps its own small anonymous-namespace copy of this exact
+// textbook formula rather than sharing one across a header (the same
+// precedent those two already set), so this is not new logic, just this
+// TU's own copy of it. Returns the RAW (not unitized) vector - its length
+// is exactly 2x the polygon's own planar area when the polygon genuinely
+// is planar, the same "near-zero length means near-zero area" signal a
+// plain two-edge cross product already gave MoveConvexPlanarPoints()'s own
+// per-face plane derivation below before this change, now generalized to
+// any vertex count. For a TRIANGLE this is mathematically identical to the
+// plain two-edge cross product (every other edge's own contribution to the
+// sum vanishes identically) - verified directly in
+// TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched,
+// whose own exact-volume check is unchanged by using this formula
+// uniformly instead of only for 4+-sided faces.
+Vector3d PolygonNewellNormalRaw(const std::vector<Point3d>& loop) {
+  Vector3d n(0.0, 0.0, 0.0);
+  const size_t k = loop.size();
+  for (size_t i = 0; i < k; ++i) {
+    const Point3d& p = loop[i];
+    const Point3d& q = loop[(i + 1) % k];
+    n.x += (p.y - q.y) * (p.z + q.z);
+    n.y += (p.z - q.z) * (p.x + q.x);
+    n.z += (p.x - q.x) * (p.y + q.y);
+  }
+  return n;
+}
+
 // Shared core of MoveVertexConvexPlanar()/MoveEdgeConvexPlanar(): moves
 // every (old, new) point in `moves` in place, one caller-named point per
 // entry, matched by position exactly as MoveVertexConvexPlanar()'s own doc
@@ -2521,47 +2724,78 @@ Brep MoveConvexPlanarPoints(const Brep& solid, const std::vector<std::pair<Point
   }
 
   // Every touched face's new plane: its own loop with every matched corner
-  // replaced by that move's own new position, re-derived from the (now
-  // three, since every touched face is required to be a triangle)
-  // corners; every other face's plane unchanged - see
-  // MoveVertexConvexPlanar()'s own doc comment for why only a triangle's
-  // plane is always well-defined with one or more corners free to move
-  // anywhere.
+  // replaced by that move's own new position, with the resulting normal
+  // derived via PolygonNewellNormalRaw() above rather than a plain
+  // two-edge cross product - mathematically identical for a TRIANGLE (see
+  // that function's own doc comment), so this introduces no behavior
+  // change for the triangle-only case every sibling in this family
+  // already had, but ALSO well-defined for a face with 4+ corners, where
+  // a plain two-edge cross product would only ever look at 2 of its
+  // (possibly several) edges. A 4+-sided face is no longer refused
+  // outright: every one of its own UNTOUCHED corners already pins its
+  // plane exactly (3 unmoved, non-collinear corners alone already
+  // determine a plane), so the moved corner(s) are only ever accepted
+  // when they land back in that exact same plane - checked directly
+  // below, not guessed - which is exactly the "a corner slid sideways
+  // WITHIN its own face's existing plane, or an edge's two corners tilted
+  // together to a new but still-common plane through the face's own
+  // other corners" case this category's "Move a single B-rep vertex
+  // directly"/"Move/transform edge" bullets named as their own remaining
+  // gap (a box corner, shared by three mutually perpendicular quads, is
+  // still refused - no single new position other than the old one can
+  // satisfy all three of THOSE planes at once - but a vertex or edge
+  // incident to only one 4+-sided face, e.g. a pyramid's own quad base
+  // corner, now genuinely can move).
   std::vector<ON_Plane> new_planes(static_cast<size_t>(n));
   for (int i = 0; i < n; ++i) new_planes[static_cast<size_t>(i)] = faces[static_cast<size_t>(i)].plane;
 
   for (int face_index = 0; face_index < n; ++face_index) {
     if (per_face[static_cast<size_t>(face_index)].empty()) continue;
     const Brep::PlanarFace& f = faces[static_cast<size_t>(face_index)];
-    if (f.loop.size() != 3) {
-      throw std::invalid_argument(std::string("dino8::kernel::") + caller_name + ": face " +
-                                   std::to_string(face_index) + " is incident to a moved point but has " +
-                                   std::to_string(f.loop.size()) +
-                                   " vertices, not 3 - moving a point shared by a non-triangular "
-                                   "face would need that face to either change topology or become "
-                                   "non-planar, both out of scope here");
-    }
     std::vector<Point3d> new_loop = f.loop;
     for (const auto& [loop_index, move_index] : per_face[static_cast<size_t>(face_index)]) {
       new_loop[static_cast<size_t>(loop_index)] = moves[static_cast<size_t>(move_index)].second;
     }
+    const int loop_n = static_cast<int>(new_loop.size());
 
     const Vector3d old_normal = f.plane.zaxis;
-    const Vector3d e1 = new_loop[1] - new_loop[0];
-    const Vector3d e2 = new_loop[2] - new_loop[0];
-    Vector3d new_normal = ON_CrossProduct(e1, e2);
-    const double new_normal_len = new_normal.Length();
-    if (new_normal_len <= tol * tol) {
+    const Vector3d raw_normal = PolygonNewellNormalRaw(new_loop);
+    const double raw_normal_len = raw_normal.Length();
+    if (raw_normal_len <= tol * tol) {
       throw std::invalid_argument(std::string("dino8::kernel::") + caller_name +
                                    ": the given new position(s) collapse face " + std::to_string(face_index) +
-                                   "'s own triangle to ~0 area");
+                                   "'s own boundary to ~0 area");
     }
-    new_normal.Unitize();
+    const Vector3d new_normal = raw_normal / raw_normal_len;
     if (ON_DotProduct(new_normal, old_normal) <= 0.0) {
       throw std::invalid_argument(std::string("dino8::kernel::") + caller_name +
                                    ": the given new position(s) flip face " + std::to_string(face_index) +
                                    "'s own outward orientation (move a point through the plane "
                                    "of its own opposite edge), out of scope here");
+    }
+
+    if (new_loop.size() > 3) {
+      // A triangle's own plane is always well-defined by any 3 points, so
+      // this check is vacuous (and skipped) for n == 3 - exactly the
+      // scope every sibling in this family already had. For 4+ corners,
+      // Newell's method always returns SOME best-fit normal even when the
+      // points genuinely aren't coplanar, so planarity itself must be
+      // checked directly rather than trusted: every corner's own signed
+      // distance from the candidate plane (through new_loop[0], along
+      // new_normal) must land within `tol`, including the corner(s) that
+      // just moved - the ones NOT already pinned by the rest of the loop.
+      for (const Point3d& v : new_loop) {
+        const double deviation = ON_DotProduct(new_normal, v - new_loop[0]);
+        if (std::fabs(deviation) > tol) {
+          throw std::invalid_argument(
+              std::string("dino8::kernel::") + caller_name + ": the given new position(s) leave face " +
+              std::to_string(face_index) + "'s own " + std::to_string(new_loop.size()) +
+              "-sided boundary non-planar (deviation " + std::to_string(std::fabs(deviation)) +
+              " exceeds tolerance " + std::to_string(tol) +
+              ") - a moved corner of a 4+-sided face must stay within tolerance of the plane its own "
+              "other, unmoved corners already pin exactly");
+        }
+      }
     }
 
     ON_Plane new_plane(new_loop[0], new_normal);

@@ -166,6 +166,59 @@ class NurbsSurface {
                             const NurbsCurve& right, NurbsSurface& out, double tolerance = 1e-6,
                             double* out_corner_gap = nullptr);
 
+  // Surface-to-surface continuity blend - the genuine kernel-library
+  // counterpart to NurbsCurve::BlendCurves() (curve.h), closing this
+  // PARITY_MAP.md gap's own "No G3/G4, no kernel API" half the same way
+  // BlendCurves already closed it for curve-to-curve blending: this goes
+  // past the app's own BuildBlendSurfaceG1/G2 (dino8-app/src/geom/
+  // BlendSurface.h), which cap out at G2 (curvature) and live entirely
+  // outside the kernel.
+  //
+  // Each rail is one ISOPARAMETRIC boundary of its own surface: `dir0` is
+  // which of srf0's two parameters runs ALONG the rail (0 = u varies, the
+  // other - v - is fixed; 1 = v varies, u is fixed), and `at_max0` says
+  // whether that FIXED parameter sits at Domain(1-dir0).Max() (true) or
+  // .Min() (false) - i.e. which of the surface's 4 edges this is. `dir1`/
+  // `at_max1` are the same for srf1. `reverse_rail1` runs srf1's own rail
+  // back to front (t -> 1-t) before pairing it with srf0's rail at the
+  // same t - needed whenever the two independently-parameterized
+  // surfaces happen to walk their shared/facing edge in opposite physical
+  // directions, exactly the role NurbsCurve::BlendCurves()'s own
+  // `reverse0`/`reverse1` play for a curve's two ends.
+  //
+  // At `rows` values of t in [0, 1], this samples each rail's own
+  // position plus its host surface's CROSS-BOUNDARY partial derivatives
+  // (purely in the fixed direction - Ds^i or Dt^i, never a mixed term)
+  // up to order `continuity` (1 = G1, 2 = G2, 3 = G3), each surface's own
+  // odd-order derivatives sign-flipped when its own fixed parameter sits
+  // at Domain.Min() (increasing from there moves INTO the surface, the
+  // opposite of the "outward, into the gap the blend crosses" direction
+  // the Hermite construction needs - unflipped at Domain.Max(), where
+  // increasing already moves outward) - the exact surface analogue of
+  // BlendCurves()'s own `reverse` sign convention, derived independently
+  // here since a surface's two parametric directions have no single
+  // notion of "forward" the way one curve parameter does. Each row is
+  // then the identical closed-form Hermite-Bezier segment (degree
+  // 2*continuity+1) BlendCurves() builds from one (position, derivatives)
+  // pair at either end, and the `rows` same-degree segments are lofted
+  // into one NurbsSurface via the SAME exact global-interpolation skin
+  // (SkinSections(), sweep.cpp) Brep::Loft() itself uses - every row is
+  // reproduced EXACTLY as the result's own isocurve at that row's station
+  // parameter, not merely approximated.
+  //
+  // Returns Result::Failed if continuity is outside {1, 2, 3}, rows < 2,
+  // dir0/dir1 are outside {0, 1}, either surface's derivatives fail to
+  // evaluate, or any row's two rail points coincide (the same degenerate
+  // case BlendCurves() rejects).
+  //
+  // SCOPE, stated plainly: isoparametric rails only (a rail that is some
+  // other curve on the surface, e.g. a genuinely trimmed edge, is out of
+  // scope); no shape/bulge handles; this is a kernel LIBRARY function
+  // only - no dino8-app command calls it yet, the identical disclosed
+  // "kernel-only pass" BlendCurves() itself was shipped under.
+  static Result BlendSurfaces(const NurbsSurface& srf0, int dir0, bool at_max0, const NurbsSurface& srf1, int dir1,
+                               bool at_max1, bool reverse_rail1, int continuity, int rows, NurbsSurface& out);
+
   int DegreeU() const;
   int DegreeV() const;
 
@@ -694,6 +747,26 @@ class NurbsSurface {
   std::vector<double> SuggestedParameterValues(int direction, double chord_tolerance,
                                                 int isocurve_samples = 5) const;
 
+  // Angle-based counterpart to SuggestedDivisions(): the surface-level
+  // sibling of `NurbsCurve::SuggestedSamplesByAngle()`, closing
+  // PARITY_MAP's own disclosed "Angular tolerance control exposed as a
+  // general faceting-quality knob" gap at the surface level the same way
+  // SuggestedDivisions() closes it for chord-height. Same isocurve
+  // sampling and "worst case wins" philosophy as SuggestedDivisions(),
+  // just asking each sampled isocurve for `SuggestedSamplesByAngle()`
+  // instead of `SuggestedSamples()`. Throws std::invalid_argument if
+  // `angle_tolerance` is not in (0, pi].
+  SurfaceDivisions SuggestedDivisionsByAngle(double angle_tolerance, int isocurve_samples = 5) const;
+
+  // Angle-based counterpart to SuggestedParameterValues(): same per-
+  // isocurve sampling and "keep whichever isocurve produced the most
+  // breakpoints" rule, driven by `NurbsCurve::SuggestedParameterValuesByAngle()`
+  // (tangent-turning-angle subdivision) instead of chord-height
+  // subdivision. Throws std::invalid_argument if `angle_tolerance` is not
+  // in (0, pi].
+  std::vector<double> SuggestedParameterValuesByAngle(int direction, double angle_tolerance,
+                                                       int isocurve_samples = 5) const;
+
   // Tessellates the surface into a triangle mesh by evaluating a
   // u_divisions x v_divisions grid of points across its parameter domain
   // and triangulating each grid cell. This is a from-scratch tessellator,
@@ -843,6 +916,55 @@ class NurbsSurface {
   // TessellateGridAdaptive(), same "one call instead of two" convenience.
   Mesh TessellateGridClippedExactAdaptive(double chord_tolerance,
                                            const std::vector<Point2d>& trim_polygon) const;
+
+  // Angle-based counterpart to TessellateGridAdaptive(): picks
+  // u_divisions/v_divisions via SuggestedDivisionsByAngle(angle_tolerance)
+  // instead of SuggestedDivisions(chord_tolerance) - the general angular
+  // faceting-quality knob exposed as an actual one-call tessellation path,
+  // not just the lower-level SuggestedDivisionsByAngle() a caller would
+  // otherwise have to know to call by hand.
+  Mesh TessellateGridAdaptiveByAngle(double angle_tolerance,
+                                      const std::vector<Point2d>* trim_polygon = nullptr,
+                                      const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;
+
+  // Angle-based counterpart to TessellateGridNonUniformAdaptive(): the
+  // genuine per-region-adaptive path, driven by
+  // SuggestedParameterValuesByAngle(direction, angle_tolerance) instead of
+  // SuggestedParameterValues(direction, chord_tolerance).
+  Mesh TessellateGridNonUniformAdaptiveByAngle(
+      double angle_tolerance, const std::vector<Point2d>* trim_polygon = nullptr,
+      const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;
+
+  // Angle-based counterpart to TessellateGridClippedExactAdaptive() - the
+  // exact-clip sibling of TessellateGridAdaptiveByAngle(), same "one call
+  // instead of two" convenience.
+  Mesh TessellateGridClippedExactAdaptiveByAngle(double angle_tolerance,
+                                                  const std::vector<Point2d>& trim_polygon) const;
+
+  // Closes PARITY_MAP's own disclosed "Post-tessellation deviation
+  // verification (measuring emitted facets against the true source
+  // surface and reporting a bound)" gap: before this, SuggestedDivisions()/
+  // SuggestedDivisionsByAngle() only ESTIMATED a sample count from
+  // curvature - nothing anywhere actually measured whether a resulting
+  // mesh stayed within the tolerance it was asked for. Reconstructs the
+  // exact u_divisions x v_divisions untrimmed grid TessellateGrid() builds
+  // (same even parameter spacing, same per-cell diagonal convention:
+  // triangle 1 = (i,j)-(i+1,j)-(i+1,j+1), triangle 2 =
+  // (i,j)-(i+1,j+1)-(i,j+1)), and for each of the two triangles per cell,
+  // samples several interior barycentric points - deliberately not the
+  // three corners, which coincide with the true surface by construction
+  // (`PointAt()` is exactly how the mesh vertices themselves were built)
+  // and would trivially report zero deviation everywhere. At each sample,
+  // evaluates the true surface at the same barycentric combination of the
+  // triangle's own three parameter-space corners and measures its
+  // distance to the matching barycentric combination of the triangle's
+  // own three 3D corners (the flat facet's interpolated point at that same
+  // location) - the real per-facet gap a certified mesher would need to
+  // bound. Returns the single worst (maximum) such distance found across
+  // the whole grid. Throws std::invalid_argument if either division count
+  // is less than 1.
+  double MeasureGridTessellationDeviation(int u_divisions, int v_divisions,
+                                           int samples_per_triangle = 6) const;
 
   // ---- Surface editing (implemented in src/surface_edit.cpp) ----
 

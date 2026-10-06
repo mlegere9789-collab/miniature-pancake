@@ -415,12 +415,38 @@ struct CurveSurfaceOverlap {
 // samples whose closest-point distance is within opt.tolerance as one
 // overlap span. A curve nowhere near the surface returns empty; a curve
 // lying entirely on the surface returns one span with `entire_curve ==
-// true`. Honesty note: the span's own t0/t1 are only as precise as the
-// sampling resolution (no bisection refines the exact boundary where the
-// curve leaves the surface) - a caller needing the exact crossing
-// parameter there should follow up with IntersectCurveSurface() near that
-// boundary, the same way this function's own samples were seeded.
+// true`. Each span's own t0/t1 boundary (where one exists inside the
+// curve's own domain, i.e. not already a domain endpoint) is then
+// bisection-refined against the identical on/off-surface predicate the
+// sampling loop uses, the same way IntersectCurveSurface() Newton-refines
+// a seed - narrowing the previously sampling-resolution-only boundary down
+// to within double-precision of the true crossing.
 std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlap(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt);
+
+// One overlap span between a curve and a specific (trimmed) face of a
+// B-rep, as returned by IntersectCurveBrepOverlap() below - the
+// coincident-region counterpart to CurveBrepHit above, the same way
+// CurveSurfaceOverlap is the coincident-region counterpart to
+// CurveSurfaceHit.
+struct CurveBrepOverlap {
+  int face_index = -1;
+  CurveSurfaceOverlap overlap;
+};
+
+// Curve/B-rep coincident-region detection - the curve/B-rep counterpart to
+// IntersectCurveBrep() above, but for a curve lying ON a face over a real
+// span rather than crossing through it. PARITY_MAP.md's own "CSX against
+// trimmed faces and curve-on-surface overlap (coincident) detection"
+// bullet named this directly as still missing even after
+// IntersectCurveSurfaceOverlap() closed the plain curve/surface case:
+// "this is curve/surface only (no curve/B-rep ... counterpart)". Runs the
+// same per-face bounding-box-pruned loop IntersectCurveBrep() already
+// uses, but calls IntersectCurveSurfaceOverlap() against each face's own
+// (untrimmed) surface with every on-surface sample ALSO required to pass
+// FaceContainsUV() - so a span that runs off one face's trim boundary and
+// onto a neighbour's is correctly reported as two separate (face_index,
+// overlap) entries, not one that silently ignores the trim.
+std::vector<CurveBrepOverlap> IntersectCurveBrepOverlap(const ON_Curve& c, const ON_Brep& b, const IntersectOptions& opt);
 
 // One parallel plane section of a whole B-rep, as returned by
 // ContourBrep() below - `offset` is the signed distance from
@@ -443,12 +469,46 @@ struct BrepContourSection {
 // picks a base plane and a spacing, not a station count). A section whose
 // plane produces zero hits (e.g. it only grazes the bounding box, not the
 // actual solid) is dropped rather than returned empty. `spacing <= 0` or
-// an invalid `base_plane` returns empty outright. Still honestly partial:
-// this is parallel sections of ONE object along ONE fixed direction
-// (`base_plane`'s own normal) - "ClippingSections" (multiple live, named,
-// arbitrarily-oriented clip planes, typically with hatching) is still
-// entirely unaddressed.
+// an invalid `base_plane` returns empty outright. This is parallel sections
+// of ONE object along ONE fixed direction (`base_plane`'s own normal) -
+// "ClippingSections" (multiple live, named, arbitrarily-oriented clip
+// planes) is the separate SectionBrepByPlanes() below.
 std::vector<BrepContourSection> ContourBrep(const ON_Brep& b, const ON_Plane& base_plane, double spacing, const IntersectOptions& opt);
+
+// One named clip-plane section, as returned by SectionBrepByPlanes() below -
+// `plane_index` is this section's position in the caller-supplied `planes`
+// list (so a caller can tell which of several independent, differently-
+// oriented clip planes produced it, the same way BrepContourSection::offset
+// identifies which parallel station ContourBrep() produced one from).
+struct BrepMultiPlaneSection {
+  int plane_index = -1;
+  std::vector<BrepPlaneIntersection> hits;
+};
+
+// Multiple independent, arbitrarily-oriented clip-plane sections of a whole
+// B-rep in one call - the "ClippingSections" half of PARITY_MAP.md's own
+// "Plane sections / contours of surfaces and B-reps (Section, Contour,
+// ClippingSections)" bullet, the one gap left after IntersectBrepByPlane()
+// closed "Section" (one plane) and ContourBrep() closed "Contour" (a family
+// of PARALLEL planes at even spacing). Rhino's own ClippingPlane objects are
+// not parallel siblings of one base plane - each is independently placed and
+// oriented by the user - so this takes a plain list of planes instead of a
+// base plane + spacing: each entry is run through IntersectBrepByPlane()
+// completely independently (no shared bounding-box precomputation across
+// planes, since two clip planes need not even be close to each other), and a
+// plane producing zero hits is dropped rather than returned empty, the same
+// convention ContourBrep() already uses. `plane_index` records the entry's
+// own position in `planes` (not a compacted output index), so a caller
+// matching sections back to named clip-plane objects does not have to
+// re-derive which input plane produced which output. An empty `planes` list
+// returns empty outright; an individual invalid plane is simply skipped
+// (IntersectBrepByPlane()'s own `!plane.IsValid()` guard already returns no
+// hits for it) rather than failing the whole call. The returned hatching
+// Rhino's own ClippingSections draws is an app-level display concern, not a
+// kernel geometry one, and stays out of scope here - this returns exact
+// section CURVES only, the same honest curves-not-fills scope
+// IntersectBrepByPlane()/ContourBrep() already have.
+std::vector<BrepMultiPlaneSection> SectionBrepByPlanes(const ON_Brep& b, const std::vector<ON_Plane>& planes, const IntersectOptions& opt);
 
 // Face-vs-face crossing test WITHIN a single B-rep - not through shared
 // topology (that is Brep::Check()'s own SelfIntersectingLoop/
@@ -627,10 +687,18 @@ std::vector<SurfaceTangentContact> FindSurfaceTangentContacts(const ON_Surface& 
 // re-seeded on failure - identical discipline to
 // IntersectCurveSurfaceOverlap()'s own per-sample projection), and every
 // maximal 4-connected run of on-`b` grid cells becomes one region, reported
-// as that run's own axis-aligned (u, v) bounding box in `a`'s domain (NOT an
-// exact boundary polygon - the same "as precise as the sampling resolution"
-// honesty IntersectCurveSurfaceOverlap() already discloses for its own
-// span endpoints, one dimension up). `entire_surface` is true when every
+// as that run's own axis-aligned (u, v) bounding box in `a`'s domain - NOT
+// an exact boundary polygon (a genuinely concave or multi-lobe coincident
+// patch is still only ever reported as its enclosing rectangle). Each of
+// the box's own four extents IS bisection-tightened, though, the same
+// RefineBoundary() idea IntersectCurveSurfaceOverlap() uses one dimension
+// down: 4-connectivity guarantees a genuine off-`b` neighbour just past
+// each extent along its own axis (if that neighbour were on-`b` too, it
+// would already be 4-connected into this very region, and the extent would
+// already have moved past it), so each of u0/u1/v0/v1 bisects against that
+// neighbour, along a representative transect at the grid line where the
+// extent was reached, down to machine precision rather than stopping at
+// the grid's own sampling pitch. `entire_surface` is true when every
 // sampled grid point across `a`'s WHOLE domain lies on `b` (the two surfaces
 // coincide everywhere `a` is defined, not just within this region's own
 // bounding box). A single isolated on-`b` grid cell with no on-`b` neighbour
@@ -644,6 +712,145 @@ struct SurfaceOverlapRegion {
   bool entire_surface = false;
 };
 std::vector<SurfaceOverlapRegion> IntersectSurfacesOverlap(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt);
+
+// The exact closed-form plane/sphere SSX - PARITY_MAP.md's own "Analytic/
+// analytic SSX closed forms (plane/plane, plane/cylinder, cylinder/cylinder,
+// plane/sphere, cone, torus)" bullet named plane/sphere directly as one of
+// the still-missing pairs: "No public analytic-SSX API, and no plane/sphere,
+// cone or torus closed form (the only general path is the mesh-seeded
+// IntersectSurfaces)." A plane and a sphere meet in, at most, one circle -
+// this solves that true geometric fact directly (the sphere center's signed
+// distance `d` from the plane via ON_Plane::DistanceTo(), the circle's own
+// center at the center's own projection onto the plane, radius
+// sqrt(r^2 - d^2)) rather than mesh-seeding IntersectSurfaces() and
+// Newton-polishing a chain of approximate points through an exact relation
+// that already has a one-line closed form. Degenerates honestly at both
+// ends: `|d| > r + tolerance` is a genuine miss (`empty == true`); `|d|`
+// within `tolerance` of `r` is a single tangent POINT, not a
+// zero-or-negative-radius "circle" (`tangent == true`, only `point` is
+// meaningful); otherwise the real circle is built directly as an ON_Circle
+// in a plane parallel to `plane` (same xaxis/yaxis, origin at the center's
+// projection) and converted to its own NURBS form via
+// ON_Circle::GetNurbForm(), the same exact-conversion primitive
+// Brep::Sphere()/Cone()/Torus() already rely on elsewhere in this kernel.
+// Still honestly scoped: only this one analytic pair (plane/sphere) is
+// closed by this function - plane/cylinder, cylinder/cylinder, plane/cone,
+// and plane/torus remain exactly as unaddressed as this bullet's own prior
+// evidence already named them (those closed forms still exist only inside
+// BooleanCombineMixed's own private splitters, not as a public API), and
+// this does not replace IntersectSurfaces() for a plane/sphere pair that
+// arrives as two generic ON_Surface references with no sphere-ness known
+// to the caller - a caller has to already know it is holding an ON_Sphere
+// to call this at all.
+struct PlaneSphereIntersection {
+  bool empty = true;     // true: the plane and sphere do not meet at all (|d| > r + tolerance)
+  bool tangent = false;  // true: a single tangent point only (|d| within tolerance of r); only `point` is meaningful then
+  Point3d point;         // the tangent point - meaningful only when tangent == true
+  ON_Circle circle;      // the intersection circle - meaningful only when !empty && !tangent
+  ON_NurbsCurve curve;   // circle's own NURBS form (ON_Circle::GetNurbForm) - meaningful only when !empty && !tangent
+};
+PlaneSphereIntersection IntersectPlaneSphere(const ON_Plane& plane, const ON_Sphere& sphere, double tolerance);
+
+// The exact closed-form plane/cylinder SSX - the "plane/cylinder" half of
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms (plane/plane,
+// plane/cylinder, cylinder/cylinder, plane/sphere, cone, torus)" bullet,
+// following IntersectPlaneSphere() above as the next of that same named
+// list: a true geometric closed form, no mesh seeding, no Newton polish.
+//
+// A plane and an infinite right-circular cylinder meet in one of two
+// shapes, depending on `C = dot(cylinder.Axis(), plane.zaxis)` (the signed
+// cosine between the cylinder's own axis and the plane's normal):
+//
+//  - |C| below an internal angular tolerance (the axis lies IN the plane -
+//    the plane is edge-on to the cylinder): the result is zero, one
+//    (`tangent`), or two lines, each parallel to the axis. The axis's own
+//    signed distance `d` to the plane is CONSTANT along its whole length
+//    here (moving along the axis changes distance by `t*C`, and `C` is
+//    the very thing that's ~0), so solving `d + radius*cos(phi) = 0` for
+//    the radial angle `phi` (measured from the plane's own normal `n`,
+//    which already lies entirely in the circular cross-section
+//    perpendicular to the axis when `C` is ~0) is immediate, not
+//    iterative: zero real `phi` when `|d| > radius`, one when `|d| ==
+//    radius` (the tangent line), two (symmetric about the axis/normal
+//    plane) when `|d| < radius`.
+//  - Otherwise: a true ellipse - a true CIRCLE in the special case the
+//    axis is exactly perpendicular to the plane (`|C| == 1`), the same
+//    closed form handling both without a separate branch. Built from its
+//    exact orthogonal semi-axis pair: the "minor" direction
+//    `cross(plane.zaxis, axis)` (perpendicular to the axis's own
+//    projected tilt; semi-axis length is exactly `radius`, unaffected by
+//    the cut angle) and the perpendicular "major" direction within the
+//    plane (semi-axis length `radius / sqrt(1 - C^2) * |C|`... in the
+//    form this function actually computes, `radius * sqrt(1 + (B/C)^2)`
+//    for the `B`/`C` it derives internally - see the .cpp for the full
+//    derivation) - this grows without bound as the cut becomes more
+//    edge-on, which is exactly the `|C| -> 0` limit the line-pair branch
+//    above takes over from.
+//
+// Deliberately operates on the cylinder's INFINITE lateral surface along
+// its own axis line - the same unbounded scope IntersectPlaneSphere()
+// takes for a sphere (which has no comparable bound at all). An
+// ON_Cylinder built with a finite `height` is NOT trimmed to that range
+// here; a caller holding a finite cylinder gets the line(s)/ellipse of its
+// unbounded extension and is responsible for trimming the result to the
+// finite height range itself - a strictly smaller, strictly easier,
+// follow-up problem (clip a line segment or an ellipse's own NURBS form
+// against two parallel end planes) than the SSX this function actually
+// solves. Still honestly scoped, matching this bullet's own prior
+// evidence: only plane/sphere and now plane/cylinder are closed forms here
+// - cylinder/cylinder, plane/cone, and plane/torus remain exactly as
+// unaddressed as before (still existing only inside BooleanCombineMixed's
+// own private splitters, not as a public API), and this does not replace
+// IntersectSurfaces() for a plane/cylinder pair arriving as two generic
+// ON_Surface references with no cylinder-ness known to the caller.
+struct PlaneCylinderIntersection {
+  bool empty = true;
+  bool parallel_to_axis = false;  // true: the plane is (within tolerance) edge-on to the axis - the result is line(s), not an ellipse
+  bool tangent = false;           // meaningful only when parallel_to_axis: a single tangent line (only line_a is meaningful then)
+  ON_Line line_a, line_b;         // meaningful only when parallel_to_axis && !empty; line_b meaningful only when !tangent too
+  ON_Ellipse ellipse;              // meaningful only when !parallel_to_axis && !empty
+  ON_NurbsCurve curve;             // ellipse's own NURBS form (ON_Ellipse::GetNurbForm) - meaningful only when !parallel_to_axis && !empty
+};
+PlaneCylinderIntersection IntersectPlaneCylinder(const ON_Plane& plane, const ON_Cylinder& cylinder, double tolerance);
+
+// The exact closed-form cylinder/cylinder SSX for the PARALLEL-AXIS special
+// case - narrows the "cylinder/cylinder" half of PARITY_MAP.md's own
+// "Analytic/analytic SSX closed forms" bullet (still not fully closed: the
+// general, non-parallel-axis pair stays exactly as unaddressed as before -
+// see this function's own `not_parallel` refusal). This is a public
+// extraction of the SAME closed form `BooleanCombineMixed`'s own private
+// `ComputeParallelCylinderCrossing` (boolean.cpp) already uses internally -
+// the standard circle/circle intersection (Weisstein/MathWorld; Paul
+// Bourke, 1997) of the two cylinders' cross-sectional circles, projected
+// into any plane perpendicular to their shared axis direction (valid at
+// every such plane identically, since neither axis has a component in
+// that projection direction) - but exposed here as a public API returning
+// the actual 3D line(s), not merely the angles `BooleanCombineMixed`'s own
+// internal angular-split bookkeeping needs.
+//
+// `axis_a`/`axis_b` must be parallel or antiparallel to within an internal
+// angular tolerance, or this refuses outright (`not_parallel == true`) -
+// a caller with two cylinders at a genuine angle needs the still-missing
+// general closed form (or the mesh-seeded `IntersectSurfaces()` instead).
+// Given that, the two circles (radius `r_a`/`r_b`, centers at each
+// cylinder's own `Center()`, both projected into a plane perpendicular to
+// `a`'s own axis) meet in zero, one (tangent), or two points via the
+// standard formula; each point extrudes to its own line, parallel to the
+// shared axis, through that point. Two cylinders sharing (to within
+// tolerance) the SAME axis line (concentric, including two genuinely
+// coincident cylinders) are a disclosed non-result (`empty == true`,
+// `not_parallel == false`) rather than a fabricated line pair: a shared
+// axis has no well-defined "lens" of 2D circle crossings at all (every
+// angle is either always-inside or always-outside the other circle, the
+// same structural fact `BooleanCombineMixed`'s own `CylinderCylinderNoInteraction`
+// relies on for its own disjoint/nested cases).
+struct CylinderCylinderParallelIntersection {
+  bool empty = true;
+  bool not_parallel = false;  // true: refused outright - the two axes are not (anti)parallel within tolerance; every other field is meaningless
+  bool tangent = false;       // a single tangent line (only line_a is meaningful then)
+  ON_Line line_a, line_b;     // meaningful only when !empty && !not_parallel; line_b meaningful only when !tangent too
+};
+CylinderCylinderParallelIntersection IntersectCylinderCylinderParallel(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance);
 
 // --- numerical helpers ------------------------------------------------------
 

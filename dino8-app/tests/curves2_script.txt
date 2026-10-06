@@ -172,6 +172,25 @@ ArcBlend
 SelLast
 List
 SelNone
+# --- Blend Continuity=G3: the same two-arc pair as just above, now through
+# kernel::NurbsCurve::BlendCurves()'s own continuity=3 path - a degree-7
+# septic Hermite blend matching position/tangent/curvature AND third
+# derivative at both ends, the genuine new capability neither BlendCrv nor
+# Blend could reach at all before this wiring (both app commands used to
+# build their own inline cubic/quintic Hermite math directly, capped at
+# G2) - PARITY_MAP.md's own disclosed "BlendCrvCommand/BlendCommand...
+# completely untouched... app wiring... a separate increment" gap.
+SelAll
+Hide
+Arc 0,0,0 10,0,0 10,10,0
+Arc 30,10,0 30,20,0 20,20,0
+Blend
+Continuity=G3
+10,10,0
+30,20,0
+SelLast
+List
+SelNone
 # --- Domain: report, then actually set a new domain
 SelAll
 Hide
@@ -349,8 +368,25 @@ What
 SelAll
 Show
 SelNone
+# --- InsertKnot / RemoveKnot: insert a knot at a line's own domain
+# midpoint, then remove it from the very same spot - must round-trip
+# exactly back to the original 2-CV line (deviation ~0) via the kernel's
+# real Boehm/Tiller RemoveKnotAt(), not RemoveKnotApprox's blind
+# Greville-abscissa resample, which had no deviation bound to report at
+# all. Deleted immediately after (not hidden), so it adds nothing to the
+# final @expect_objects count below.
+Line 0,0,0 40,0,0
+SelLast
+InsertKnot
+Enter
+RemoveKnot
+20,0,0
+Enter
+SelLast
+List
+Delete
 # 72 from the rest of this script + 122 (21 + 101) from the
 # CurveThroughSrfControlPt/ExtractPt dangling-pointer regression above,
 # which are hidden rather than deleted so List's layer output stays
 # checkable from the saved smoke-test log if this ever needs re-diagnosing.
-@expect_objects 194
+@expect_objects 197

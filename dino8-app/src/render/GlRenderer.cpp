@@ -6,6 +6,7 @@
 
 #include "render/ImageIO.h"
 #include "render/MaterialLibrary.h"
+#include "render/SsaoKernel.h"
 
 namespace dino8::app {
 
@@ -66,6 +67,9 @@ uniform int u_env_map_valid;
 const int MAX_LIGHTS = 8;
 uniform sampler2DArray u_shadow_map;  // one depth layer per light index (GlRenderer::BeginShadowPass)
 uniform int u_shadow_valid_mask;      // bit i set when light i's own shadow layer was rendered this frame
+uniform sampler2D u_ssao_map;  // screen-space AO buffer (GlRenderer::BeginSsaoPass/EndSsaoPass), valid only when u_ssao_valid == 1
+uniform int u_ssao_valid;
+uniform vec2 u_viewport_size;  // pixels - turns gl_FragCoord into u_ssao_map's own [0,1] UV
 uniform mat4 u_light_vp[MAX_LIGHTS];  // light index -> that light's own view-projection, world space in
 uniform int u_light_count;
 uniform vec4 u_light_pos[MAX_LIGHTS];    // xyz view space; w = 0: xyz is the direction towards a directional light
@@ -144,7 +148,12 @@ vec3 Shade(vec3 base, vec3 n, vec3 view_dir) {
   vec3 V = -view_dir;
   // Hemispherical sky light: brighter on up-facing surfaces.
   float up = clamp(normalize(v_nrm_world).z * 0.5 + 0.5, 0.0, 1.0);
-  vec3 color = base * u_ambient * mix(0.55, 1.0, up);
+  // Real SSAO (GlRenderer::BeginSsaoPass/EndSsaoPass): darkens only the
+  // ambient/sky term above, the same scope a direct light's own real
+  // shadow map (ShadowFactor) already covers for direct lighting - 1.0
+  // (no darkening at all) whenever no AO buffer was computed this frame.
+  float ao = (u_ssao_valid == 1) ? texture(u_ssao_map, gl_FragCoord.xy / u_viewport_size).r : 1.0;
+  vec3 color = base * u_ambient * mix(0.55, 1.0, up) * ao;
   for (int i = 0; i < u_light_count; ++i) {
     vec3 L = (u_light_pos[i].w < 0.5) ? normalize(u_light_pos[i].xyz) : normalize(u_light_pos[i].xyz - v_pos_view);
     float spot = 1.0;
@@ -354,6 +363,82 @@ void main() {
 }
 )";
 
+// SSAO compute: reuses kTexVS's fullscreen triangle (v_uv) - see
+// GlRenderer::EndSsaoPass. No separate G-buffer normal attachment: the
+// per-fragment normal comes straight from how the view-space position
+// reconstructed from u_depth changes across neighbouring pixels (screen-
+// space derivatives), the same "Alchemy AO" shortcut several shipped
+// engines use to avoid a second render target.
+const char* kSsaoFS = R"(#version 330 core
+in vec2 v_uv;
+uniform sampler2D u_depth;
+uniform mat4 u_inv_proj;
+uniform mat4 u_proj;
+uniform vec2 u_texel;
+uniform float u_radius;
+uniform float u_bias;
+const int KERNEL_SIZE = 16;
+uniform vec3 u_kernel[KERNEL_SIZE];
+out vec4 frag;
+
+vec3 ViewPosAt(vec2 uv) {
+  float d = texture(u_depth, uv).r;
+  vec4 ndc = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+  vec4 vp = u_inv_proj * ndc;
+  return vp.xyz / vp.w;
+}
+
+float Hash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
+
+void main() {
+  float center_depth = texture(u_depth, v_uv).r;
+  if (center_depth > 0.9999) { frag = vec4(1.0); return; }  // empty background: nothing to occlude
+  vec3 pos = ViewPosAt(v_uv);
+  vec3 dx = ViewPosAt(v_uv + vec2(u_texel.x, 0.0)) - pos;
+  vec3 dy = ViewPosAt(v_uv + vec2(0.0, u_texel.y)) - pos;
+  vec3 n = normalize(cross(dx, dy));
+  if (dot(n, -pos) < 0.0) n = -n;  // face the camera (the eye sits at the view-space origin)
+  float angle = Hash(v_uv) * 6.28318530718;
+  float ca = cos(angle), sa = sin(angle);
+  vec3 up = (abs(n.z) < 0.999) ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+  vec3 tangent = normalize(cross(up, n));
+  vec3 bitangent = cross(n, tangent);
+  mat3 tbn = mat3(tangent, bitangent, n);
+  float occlusion = 0.0;
+  for (int i = 0; i < KERNEL_SIZE; ++i) {
+    vec3 k = u_kernel[i];
+    vec3 kr = vec3(k.x * ca - k.y * sa, k.x * sa + k.y * ca, k.z);
+    vec3 sample_pos = pos + (tbn * kr) * u_radius;
+    vec4 clip = u_proj * vec4(sample_pos, 1.0);
+    if (clip.w <= 0.0) continue;
+    vec2 suv = (clip.xy / clip.w) * 0.5 + 0.5;
+    if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) continue;
+    vec3 sampled_pos = ViewPosAt(suv);
+    float range_check = smoothstep(0.0, 1.0, u_radius / max(1e-4, abs(pos.z - sampled_pos.z)));
+    occlusion += (sampled_pos.z >= sample_pos.z + u_bias ? 1.0 : 0.0) * range_check;
+  }
+  float ao = 1.0 - occlusion / float(KERNEL_SIZE);
+  frag = vec4(ao, ao, ao, 1.0);
+}
+)";
+
+// 4x4 box blur of the raw AO buffer above (reduces the kernel's inherent
+// per-pixel noise before Shade() samples it).
+const char* kSsaoBlurFS = R"(#version 330 core
+in vec2 v_uv;
+uniform sampler2D u_tex;
+uniform vec2 u_texel;
+out vec4 frag;
+void main() {
+  float sum = 0.0;
+  for (int dx = -1; dx <= 2; ++dx)
+    for (int dy = -1; dy <= 2; ++dy)
+      sum += texture(u_tex, v_uv + vec2(float(dx), float(dy)) * u_texel).r;
+  float ao = sum / 16.0;
+  frag = vec4(ao, ao, ao, 1.0);
+}
+)";
+
 GLuint CompileShader(GLenum type, const char* src, std::string& error) {
   GLuint shader = glCreateShader(type);
   glShaderSource(shader, 1, &src, nullptr);
@@ -478,6 +563,27 @@ bool GlRenderer::Init(std::string& error) {
   if (!env_bg_program_) return false;
   shadow_program_ = CompileProgram(kShadowVS, kShadowFS, error);
   if (!shadow_program_) return false;
+  ssao_program_ = CompileProgram(kTexVS, kSsaoFS, error);
+  if (!ssao_program_) return false;
+  ssao_blur_program_ = CompileProgram(kTexVS, kSsaoBlurFS, error);
+  if (!ssao_blur_program_) return false;
+  ssao_u_depth_ = glGetUniformLocation(ssao_program_, "u_depth");
+  ssao_u_inv_proj_ = glGetUniformLocation(ssao_program_, "u_inv_proj");
+  ssao_u_proj_ = glGetUniformLocation(ssao_program_, "u_proj");
+  ssao_u_texel_ = glGetUniformLocation(ssao_program_, "u_texel");
+  ssao_u_radius_ = glGetUniformLocation(ssao_program_, "u_radius");
+  ssao_u_bias_ = glGetUniformLocation(ssao_program_, "u_bias");
+  ssao_u_kernel_ = ArrayLocation(ssao_program_, "u_kernel");
+  ssao_blur_u_tex_ = glGetUniformLocation(ssao_blur_program_, "u_tex");
+  ssao_blur_u_texel_ = glGetUniformLocation(ssao_blur_program_, "u_texel");
+  {
+    const std::vector<std::array<float, 3>> kernel = BuildSsaoKernel(kSsaoKernelSize, 0x9e3779b9u);
+    for (int i = 0; i < kSsaoKernelSize && i < static_cast<int>(kernel.size()); ++i) {
+      ssao_kernel_[static_cast<size_t>(i) * 3 + 0] = kernel[static_cast<size_t>(i)][0];
+      ssao_kernel_[static_cast<size_t>(i) * 3 + 1] = kernel[static_cast<size_t>(i)][1];
+      ssao_kernel_[static_cast<size_t>(i) * 3 + 2] = kernel[static_cast<size_t>(i)][2];
+    }
+  }
   shadow_u_light_vp_ = glGetUniformLocation(shadow_program_, "u_light_vp");
   tex_u_sampler_ = glGetUniformLocation(tex_program_, "u_tex");
   env_bg_u_tex_ = glGetUniformLocation(env_bg_program_, "u_tex");
@@ -514,6 +620,9 @@ bool GlRenderer::Init(std::string& error) {
   mesh_u_ground_ = glGetUniformLocation(mesh_program_, "u_ground");
   mesh_u_env_map_ = glGetUniformLocation(mesh_program_, "u_env_map");
   mesh_u_env_map_valid_ = glGetUniformLocation(mesh_program_, "u_env_map_valid");
+  mesh_u_ssao_map_ = glGetUniformLocation(mesh_program_, "u_ssao_map");
+  mesh_u_ssao_valid_ = glGetUniformLocation(mesh_program_, "u_ssao_valid");
+  mesh_u_viewport_size_ = glGetUniformLocation(mesh_program_, "u_viewport_size");
   line_u_mvp_ = glGetUniformLocation(line_program_, "u_mvp");
   line_u_color_ = glGetUniformLocation(line_program_, "u_color");
   line_u_size_ = glGetUniformLocation(line_program_, "u_size");
@@ -540,6 +649,7 @@ bool GlRenderer::Init(std::string& error) {
   glUniform1i(mesh_u_texture_, 0);
   glUniform1i(mesh_u_env_map_, 1);
   glUniform1i(mesh_u_shadow_map_, 2);
+  glUniform1i(mesh_u_ssao_map_, 3);
   glUseProgram(0);
   glGenVertexArrays(1, &vao_);
   glGenBuffers(1, &vbo_);
@@ -561,6 +671,18 @@ void GlRenderer::Shutdown() {
   shadow_program_ = shadow_fbo_ = shadow_array_tex_ = 0;
   shadow_pass_ = false;
   shadow_valid_mask_ = 0;
+  if (ssao_program_) glDeleteProgram(ssao_program_);
+  if (ssao_blur_program_) glDeleteProgram(ssao_blur_program_);
+  if (ssao_depth_fbo_) glDeleteFramebuffers(1, &ssao_depth_fbo_);
+  if (ssao_depth_tex_) glDeleteTextures(1, &ssao_depth_tex_);
+  if (ssao_fbo_) glDeleteFramebuffers(1, &ssao_fbo_);
+  if (ssao_raw_tex_) glDeleteTextures(1, &ssao_raw_tex_);
+  if (ssao_blur_fbo_) glDeleteFramebuffers(1, &ssao_blur_fbo_);
+  if (ssao_blur_tex_) glDeleteTextures(1, &ssao_blur_tex_);
+  ssao_program_ = ssao_blur_program_ = ssao_depth_fbo_ = ssao_depth_tex_ = 0;
+  ssao_fbo_ = ssao_raw_tex_ = ssao_blur_fbo_ = ssao_blur_tex_ = ssao_tex_ = 0;
+  ssao_depth_w_ = ssao_depth_h_ = 0;
+  ssao_prepass_ = false;
   if (vbo_) glDeleteBuffers(1, &vbo_);
   if (color_vbo_) glDeleteBuffers(1, &color_vbo_);
   if (uv_vbo_) glDeleteBuffers(1, &uv_vbo_);
@@ -667,13 +789,17 @@ void GlRenderer::DrawMesh(const std::vector<float>& data, const std::vector<floa
                           const std::vector<float>* uvs, MeshMode mode, Color color, float param0, float param1) {
   if (data.empty()) return;
   const GLsizei vertex_count = static_cast<GLsizei>(data.size() / 6);
-  if (shadow_pass_) {
+  if (shadow_pass_ || ssao_prepass_) {
     // Depth-only: only positions (attribute 0 of the shared vao_/vbo_
     // layout) matter, so every other MeshMode/material/texture argument is
     // ignored here - the same triangle data still casts a correct shadow
-    // regardless of how the main pass would have shaded it.
+    // (shadow_pass_) or writes correct depth for the SSAO prepass
+    // (ssao_prepass_) regardless of how the main pass would have shaded
+    // it. shadow_program_'s "u_light_vp" uniform is really just "whatever
+    // mat4 maps a_pos to clip space" - the main camera's own mvp works
+    // through the exact same shader during the SSAO prepass.
     glUseProgram(shadow_program_);
-    glUniformMatrix4fv(shadow_u_light_vp_, 1, GL_FALSE, current_shadow_vp_.Data());
+    glUniformMatrix4fv(shadow_u_light_vp_, 1, GL_FALSE, (shadow_pass_ ? current_shadow_vp_ : ssao_prepass_mvp_).Data());
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(data.size() * sizeof(float)), data.data(), GL_DYNAMIC_DRAW);
@@ -721,6 +847,19 @@ void GlRenderer::DrawMesh(const std::vector<float>& data, const std::vector<floa
     glUniform1i(mesh_u_shadow_map_, 2);
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D_ARRAY, shadow_array_tex_);
+    glUniform1i(mesh_u_ssao_valid_, ssao_tex_ != 0 ? 1 : 0);
+    glUniform1i(mesh_u_ssao_map_, 3);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, ssao_tex_);
+    {
+      // SSAO is a screen-space buffer, sampled by this fragment's own
+      // gl_FragCoord rather than any mesh UV - it needs to know the
+      // current viewport's pixel size to turn that into a [0,1] texture
+      // coordinate (see kMeshFS's Shade()).
+      GLint vp[4] = {0, 0, 1, 1};
+      glGetIntegerv(GL_VIEWPORT, vp);
+      glUniform2f(mesh_u_viewport_size_, static_cast<float>(std::max(vp[2], 1)), static_cast<float>(std::max(vp[3], 1)));
+    }
     glActiveTexture(GL_TEXTURE0);
     if (mode == kGround) {
       float blobs[kMaxShadowBlobs * 4] = {}, strength[kMaxShadowBlobs] = {};
@@ -774,6 +913,8 @@ void GlRenderer::DrawMesh(const std::vector<float>& data, const std::vector<floa
     glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
   }
 }
@@ -898,8 +1039,109 @@ void GlRenderer::EndShadowPass() {
   glViewport(shadow_prev_viewport_[0], shadow_prev_viewport_[1], shadow_prev_viewport_[2], shadow_prev_viewport_[3]);
 }
 
+namespace {
+// A single-colour-attachment, no-depth FBO/texture pair, (re)created at
+// `width`x`height` - the shape every SSAO render target below shares
+// (the raw AO buffer, and the blurred one Shade() actually samples).
+bool EnsureColorTarget(GLuint& fbo, GLuint& tex, int width, int height) {
+  if (!fbo) glGenFramebuffers(1, &fbo);
+  if (!tex) glGenTextures(1, &tex);
+  glBindTexture(GL_TEXTURE_2D, tex);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+  const bool ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  return ok;
+}
+}  // namespace
+
+void GlRenderer::BeginSsaoPass() {
+  GLint vp[4] = {0, 0, 0, 0};
+  glGetIntegerv(GL_VIEWPORT, vp);
+  const int width = vp[2], height = vp[3];
+  if (width <= 0 || height <= 0) { ssao_prepass_ = false; return; }
+  if (width != ssao_depth_w_ || height != ssao_depth_h_ || !ssao_depth_fbo_) {
+    if (!ssao_depth_fbo_) glGenFramebuffers(1, &ssao_depth_fbo_);
+    if (!ssao_depth_tex_) glGenTextures(1, &ssao_depth_tex_);
+    glBindTexture(GL_TEXTURE_2D, ssao_depth_tex_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindFramebuffer(GL_FRAMEBUFFER, ssao_depth_fbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, ssao_depth_tex_, 0);
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+    const bool depth_ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    const bool raw_ok = EnsureColorTarget(ssao_fbo_, ssao_raw_tex_, width, height);
+    const bool blur_ok = EnsureColorTarget(ssao_blur_fbo_, ssao_blur_tex_, width, height);
+    if (!depth_ok || !raw_ok || !blur_ok) { ssao_depth_w_ = ssao_depth_h_ = 0; ssao_prepass_ = false; return; }
+    ssao_depth_w_ = width;
+    ssao_depth_h_ = height;
+  }
+  GLint prev_fbo = 0;
+  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
+  ssao_prepass_prev_fbo_ = static_cast<GLuint>(prev_fbo);
+  glGetIntegerv(GL_VIEWPORT, ssao_prepass_prev_viewport_);
+  ssao_prepass_mvp_ = proj_ * view_;
+  glBindFramebuffer(GL_FRAMEBUFFER, ssao_depth_fbo_);
+  glViewport(0, 0, width, height);
+  glClear(GL_DEPTH_BUFFER_BIT);
+  ssao_prepass_ = true;
+}
+
+void GlRenderer::EndSsaoPass() {
+  if (!ssao_prepass_) return;
+  ssao_prepass_ = false;
+  const int w = ssao_depth_w_, h = ssao_depth_h_;
+  const GLboolean depth_test_was_on = glIsEnabled(GL_DEPTH_TEST);
+  glDisable(GL_DEPTH_TEST);
+
+  // Compute the raw AO buffer from ssao_depth_tex_.
+  glBindFramebuffer(GL_FRAMEBUFFER, ssao_fbo_);
+  glViewport(0, 0, w, h);
+  glUseProgram(ssao_program_);
+  const Mat4 inv_proj = proj_.Inverse();
+  glUniformMatrix4fv(ssao_u_inv_proj_, 1, GL_FALSE, inv_proj.Data());
+  glUniformMatrix4fv(ssao_u_proj_, 1, GL_FALSE, proj_.Data());
+  glUniform2f(ssao_u_texel_, 1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
+  glUniform1f(ssao_u_radius_, ssao_radius_);
+  glUniform1f(ssao_u_bias_, ssao_bias_);
+  glUniform3fv(ssao_u_kernel_, kSsaoKernelSize, ssao_kernel_.data());
+  glUniform1i(ssao_u_depth_, 0);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, ssao_depth_tex_);
+  glBindVertexArray(bg_vao_);
+  glDrawArrays(GL_TRIANGLES, 0, 3);
+
+  // Blur it into ssao_blur_tex_ - the texture Shade() actually samples.
+  glBindFramebuffer(GL_FRAMEBUFFER, ssao_blur_fbo_);
+  glUseProgram(ssao_blur_program_);
+  glUniform1i(ssao_blur_u_tex_, 0);
+  glUniform2f(ssao_blur_u_texel_, 1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
+  glBindTexture(GL_TEXTURE_2D, ssao_raw_tex_);
+  glDrawArrays(GL_TRIANGLES, 0, 3);
+  glBindVertexArray(0);
+  glBindTexture(GL_TEXTURE_2D, 0);
+
+  glBindFramebuffer(GL_FRAMEBUFFER, ssao_prepass_prev_fbo_);
+  glViewport(ssao_prepass_prev_viewport_[0], ssao_prepass_prev_viewport_[1], ssao_prepass_prev_viewport_[2],
+             ssao_prepass_prev_viewport_[3]);
+  if (depth_test_was_on) glEnable(GL_DEPTH_TEST);
+  ssao_tex_ = ssao_blur_tex_;
+}
+
 void GlRenderer::DrawLines(const std::vector<float>& data, Color color, float width_px) {
-  if (data.empty() || shadow_pass_) return;  // only mesh triangles cast a shadow - see BeginShadowPass
+  if (data.empty() || shadow_pass_ || ssao_prepass_) return;  // only mesh triangles cast a shadow/write SSAO depth - see BeginShadowPass/BeginSsaoPass
   const Mat4 mvp = proj_ * view_;
   glUseProgram(line_program_);
   glUniformMatrix4fv(line_u_mvp_, 1, GL_FALSE, mvp.Data());
@@ -938,7 +1180,7 @@ void GlRenderer::DrawLines(const std::vector<float>& data, Color color, float wi
 }
 
 void GlRenderer::DrawPoints(const std::vector<float>& data, Color color, float size) {
-  if (data.empty() || shadow_pass_) return;  // only mesh triangles cast a shadow - see BeginShadowPass
+  if (data.empty() || shadow_pass_ || ssao_prepass_) return;  // only mesh triangles cast a shadow/write SSAO depth - see BeginShadowPass/BeginSsaoPass
   const Mat4 mvp = proj_ * view_;
   glEnable(GL_PROGRAM_POINT_SIZE);
   glUseProgram(line_program_);

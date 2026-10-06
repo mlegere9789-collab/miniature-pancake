@@ -64,6 +64,7 @@ BlendEdge
 Enter
 SelLast
 List
+Volume
 # --- MatchSrf: move a plane's near edge onto a target line
 SelAll
 Hide
@@ -262,6 +263,81 @@ Continuity=Curvature
 SelLast
 List
 SelNone
+# --- BlendSrf: two genuinely independent, gap-separated faces (the facing
+# east/west faces of two separate boxes 10 units apart, each extracted) -
+# unlike VariableBlendSrf's own shared-corner-edge pick just above (where
+# both rails are actually the SAME physical box edge read through two
+# adjacent faces, so the exact construction below correctly rejects it as
+# degenerate - P0 == P1 at every t), this is the genuine gap-spanning case
+# BlendSrf exists for: each pick's own nearest boundary iso-edge is the
+# box's own TOP edge of the facing face, so the two rails are parallel,
+# 10 units apart, and never coincide. BlendSrfCommand now tries the exact
+# kernel::NurbsSurface::BlendSurfaces() Hermite-skin construction FIRST
+# here (both picks land on a genuine isoparametric boundary of their own
+# NurbsSurface - surface.h's own documented scope) ahead of the approximate
+# BuildBlendSurfaceG1/G2Adaptive fallback VariableBlendSrf still uses -
+# PARITY_MAP.md's own disclosed "kernel-only pass, no dino8-app command
+# calls this yet" gap for Surface-to-surface continuity blend. Three runs,
+# one per Continuity value, each on a fresh pair of boxes: Tangency (G1,
+# the default), Curvature (G2), and G3 - the genuine new capability neither
+# BlendSrf nor VariableBlendSrf could reach at all before this wiring,
+# since the app's own BuildBlendSurfaceG1/G2 cap out at G2.
+SelAll
+Hide
+Box 750,0,0 760,10,0 10
+ExtractSrf
+760,5,5
+Enter
+SelNone
+Box 770,0,0 780,10,0 10
+ExtractSrf
+770,5,5
+Enter
+SelNone
+BlendSrf
+760,5,10
+770,5,10
+SelLast
+List
+SelNone
+SelAll
+Hide
+Box 750,0,0 760,10,0 10
+ExtractSrf
+760,5,5
+Enter
+SelNone
+Box 770,0,0 780,10,0 10
+ExtractSrf
+770,5,5
+Enter
+SelNone
+BlendSrf
+Continuity=Curvature
+760,5,10
+770,5,10
+SelLast
+List
+SelNone
+SelAll
+Hide
+Box 750,0,0 760,10,0 10
+ExtractSrf
+760,5,5
+Enter
+SelNone
+Box 770,0,0 780,10,0 10
+ExtractSrf
+770,5,5
+Enter
+SelNone
+BlendSrf
+Continuity=G3
+760,5,10
+770,5,10
+SelLast
+List
+SelNone
 # --- FilletEdge on a solid cylinder's own flat-top rim (a full 360-degree
 # closed edge, one planar face + one cylindrical face) via the mesh
 # fallback: the exact B-rep trim only handles planar-planar adjacent
@@ -283,7 +359,7 @@ Enter
 SelAll
 Volume
 SelNone
-@expect_objects 41
+@expect_objects 55
 # --- FilletEdge Rho (exact conic fillet): kernel::FilletConvexEdgeConic
 # via the Rho option, on the same box-corner construction as the plain
 # FilletEdge/ChamferEdge cases above. At rho=0.5 the conic is the exact
@@ -553,3 +629,41 @@ Radius=0.3
 SelAll
 List
 Area
+# --- FilletEdge: multi-edge plain-radius batching via kernel::
+# FilletConvexEdges/FilletConcaveEdges - closes PARITY_MAP.md's own "no app
+# command surfaces either function's own chain-pick at all" gap for the
+# plain circular case (Rho already reached the conic sibling in an earlier
+# session). Before this session, picking the 3 edges of one box corner in
+# a single FilletEdge run applied each pick immediately: the first edge's
+# own exact TryExactFillet call succeeds and leaves the object carrying a
+# curved cylindrical face, so PlanarFaces() rejects the second and third
+# picks outright and both fall through to the approximate BuildFillet path
+# instead, each adding its own disconnected surface object rather than one
+# clean solid. Every plain pick is now staged and flushed together at
+# Enter via one kernel::FilletConvexEdges call, which reaches that
+# function's own m == 3 trihedral spherical-corner blend - a single closed
+# solid, not three independent pieces. Expected volume (closed form,
+# FilletConvexEdges' own kernel-test derivation: one spherical corner on an
+# LxLxL box removes three (L-r)-long r^2(1-pi/4) prisms plus the corner
+# cube minus the ball octant r^3(1-pi/6)): L=10, r=2 ->
+# 1000 - 3*8*4*(1-pi/4) - 8*(1-pi/6) = 975.587 exactly (the kernel's own
+# TessellateToClosedMeshAdaptive(1e-6) check against this same closed form
+# in TestFilletConvexEdgesSingleCornerSphereWithNotchedFarEnds, test_basic.cpp,
+# confirms the construction itself is exact). The app's own Volume command
+# tessellates the spherical corner patch at a coarser, fixed resolution, so
+# it reads 975.4, not 975.587 - the same "no closed form at THIS display
+# precision, so check the actual reproducible number" convention the
+# FilletSrf Area check just above already uses; stable across repeated
+# runs (confirmed by running this script three times in a row).
+SelAll
+Hide
+Box 2000,0,0 2010,10,0 10
+FilletEdge
+Radius=2
+2005,0,0
+2000,5,0
+2000,0,5
+Enter
+SelAll
+List
+Volume

@@ -2038,7 +2038,15 @@ ProjectedCurveResult ProjectCurveToSurface(const ON_Curve& c, const ON_Surface& 
   return out;
 }
 
-std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlap(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt) {
+namespace {
+
+// Shared core of IntersectCurveSurfaceOverlap()/IntersectCurveBrepOverlap():
+// `trim_ok(u, v)` additionally gates whether a given (u, v) counts as
+// "on" - the plain curve/surface entry point below passes a trivial
+// always-true gate, IntersectCurveBrepOverlap() passes FaceContainsUV() so
+// a span never silently crosses a face's own trim boundary.
+template <typename TrimOk>
+std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlapImpl(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt, TrimOk trim_ok) {
   std::vector<CurveSurfaceOverlap> out;
   const ON_Interval d = c.Domain();
   if (!d.IsIncreasing()) return out;
@@ -2046,36 +2054,61 @@ std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlap(const ON_Curve& c,
   const double clen = cb.IsValid() ? cb.Diagonal().Length() : 1;
   const int n = static_cast<int>(Clamp(std::ceil(clen / std::max(opt.mesh_tolerance, 1e-6)), 64, 2000));
 
+  // Projects `t` onto `s`, seeded from (seed_u, seed_v), re-seeding
+  // globally on failure or a poor fit - the identical discipline the main
+  // sampling loop below uses for every sample after the first. Returns
+  // whether the projection is both within opt.tolerance AND trim_ok().
+  auto on_surface = [&](double t, double seed_u, double seed_v, double& out_u, double& out_v) -> bool {
+    const Point3d p = c.PointAt(t);
+    double u = seed_u, v = seed_v;
+    bool ok = SurfaceClosestPoint(s, p, u, v);
+    double err = ok ? s.PointAt(u, v).DistanceTo(p) : std::numeric_limits<double>::max();
+    if (!ok || err > std::max(opt.mesh_tolerance * 4, 1e-9)) {
+      double gu = u, gv = v;
+      const bool gok = SurfaceClosestPointGlobal(s, p, gu, gv);
+      const double gerr = gok ? s.PointAt(gu, gv).DistanceTo(p) : std::numeric_limits<double>::max();
+      if (gok && gerr < err) { u = gu; v = gv; err = gerr; ok = gok; }
+    }
+    out_u = u; out_v = v;
+    return ok && err <= opt.tolerance && trim_ok(u, v);
+  };
+
   std::vector<double> ts(static_cast<size_t>(n) + 1);
+  std::vector<ON_2dPoint> uvs(static_cast<size_t>(n) + 1);
   std::vector<bool> on(static_cast<size_t>(n) + 1, false);
   double u = 0, v = 0;
-  double prev_err = 0;
   for (int i = 0; i <= n; ++i) {
     const double t = d.ParameterAt(static_cast<double>(i) / n);
     ts[static_cast<size_t>(i)] = t;
-    const Point3d p = c.PointAt(t);
-    bool ok;
-    if (i == 0) {
-      ok = SurfaceClosestPointGlobal(s, p, u, v);
-    } else {
-      ok = SurfaceClosestPoint(s, p, u, v);  // seeded from the PREVIOUS sample's (u, v), same discipline as PullbackCurveToSurface()
-      const double try_err = ok ? s.PointAt(u, v).DistanceTo(p) : std::numeric_limits<double>::max();
-      if (!ok || try_err > std::max(opt.mesh_tolerance * 4, prev_err * 8 + 1e-9)) {
-        double gu = u, gv = v;
-        const bool gok = SurfaceClosestPointGlobal(s, p, gu, gv);
-        const double gerr = s.PointAt(gu, gv).DistanceTo(p);
-        if (gok && gerr < try_err) { u = gu; v = gv; }
-      }
-    }
-    const double err = s.PointAt(u, v).DistanceTo(p);
-    prev_err = err;
-    on[static_cast<size_t>(i)] = err <= opt.tolerance;
+    if (i == 0) SurfaceClosestPointGlobal(s, c.PointAt(t), u, v);
+    on[static_cast<size_t>(i)] = on_surface(t, u, v, u, v);  // seeded from the PREVIOUS sample's (u, v), same discipline as PullbackCurveToSurface()
+    uvs[static_cast<size_t>(i)] = ON_2dPoint(u, v);
   }
+
+  // Bisection-refines the boundary between a known off-surface sample at
+  // `t_off` and a known on-surface sample at `t_on` (seeded (u, v)
+  // `uv_on`) against the identical on_surface() predicate the sampling
+  // loop above uses, narrowing the result (biased toward the on-surface
+  // side, i.e. the tightest still-on-surface parameter found) to
+  // double-precision bisection width - the exact crossing
+  // IntersectCurveSurface() would find near this same seed.
+  auto refine_boundary = [&](double t_off, double t_on, ON_2dPoint uv_on) -> double {
+    double lo = t_off, hi = t_on;
+    double seed_u = uv_on.x, seed_v = uv_on.y;
+    for (int iter = 0; iter < 60 && lo != hi; ++iter) {
+      const double mid = lo + (hi - lo) * 0.5;
+      if (mid == lo || mid == hi) break;  // hit double precision - no narrower midpoint exists
+      double mu, mv;
+      if (on_surface(mid, seed_u, seed_v, mu, mv)) { hi = mid; seed_u = mu; seed_v = mv; } else { lo = mid; }
+    }
+    return hi;
+  };
 
   // Merge every maximal run of consecutive on-surface samples into one
   // span; a single isolated on-surface sample (both neighbours off) is a
   // transient touch, not an overlap, and is left for IntersectCurveSurface()
-  // to report as a discrete crossing instead.
+  // to report as a discrete crossing instead. Each non-domain-endpoint
+  // boundary of the resulting span is then bisection-refined above.
   int i = 0;
   while (i <= n) {
     if (!on[static_cast<size_t>(i)]) { ++i; continue; }
@@ -2083,12 +2116,38 @@ std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlap(const ON_Curve& c,
     while (j <= n && on[static_cast<size_t>(j)]) ++j;
     if (j - 1 > i) {
       CurveSurfaceOverlap ov;
-      ov.t0 = ts[static_cast<size_t>(i)];
-      ov.t1 = ts[static_cast<size_t>(j - 1)];
+      ov.t0 = (i > 0) ? refine_boundary(ts[static_cast<size_t>(i - 1)], ts[static_cast<size_t>(i)], uvs[static_cast<size_t>(i)]) : ts[static_cast<size_t>(i)];
+      ov.t1 = (j <= n) ? refine_boundary(ts[static_cast<size_t>(j)], ts[static_cast<size_t>(j - 1)], uvs[static_cast<size_t>(j - 1)]) : ts[static_cast<size_t>(j - 1)];
       ov.entire_curve = (i == 0 && j - 1 == n);
       out.push_back(ov);
     }
     i = j;
+  }
+  return out;
+}
+
+}  // namespace
+
+std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlap(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt) {
+  return IntersectCurveSurfaceOverlapImpl(c, s, opt, [](double, double) { return true; });
+}
+
+std::vector<CurveBrepOverlap> IntersectCurveBrepOverlap(const ON_Curve& c, const ON_Brep& b, const IntersectOptions& opt) {
+  std::vector<CurveBrepOverlap> out;
+  const ON_BoundingBox cb = c.BoundingBox();
+  const double pad = std::max(opt.mesh_tolerance, opt.tolerance * 4);
+  const int nf = b.m_F.Count();
+  for (int j = 0; j < nf; ++j) {
+    const ON_BrepFace& f = b.m_F[j];
+    const ON_Surface* s = f.SurfaceOf();
+    if (!s) continue;
+    ON_BoundingBox fb = s->BoundingBox();
+    fb.m_min -= ON_3dVector(pad, pad, pad);
+    fb.m_max += ON_3dVector(pad, pad, pad);
+    if (cb.IsValid() && fb.IsValid() && cb.IsDisjoint(fb)) continue;
+    for (const CurveSurfaceOverlap& ov : IntersectCurveSurfaceOverlapImpl(c, *s, opt, [&f](double u, double v) { return FaceContainsUV(f, u, v); })) {
+      out.push_back(CurveBrepOverlap{j, ov});
+    }
   }
   return out;
 }
@@ -2141,6 +2200,16 @@ std::vector<BrepContourSection> ContourBrep(const ON_Brep& b, const ON_Plane& ba
     std::vector<BrepPlaneIntersection> hits = IntersectBrepByPlane(b, plane, opt);
     if (hits.empty()) continue;
     out.push_back(BrepContourSection{off, std::move(hits)});
+  }
+  return out;
+}
+
+std::vector<BrepMultiPlaneSection> SectionBrepByPlanes(const ON_Brep& b, const std::vector<ON_Plane>& planes, const IntersectOptions& opt) {
+  std::vector<BrepMultiPlaneSection> out;
+  for (size_t i = 0; i < planes.size(); ++i) {
+    std::vector<BrepPlaneIntersection> hits = IntersectBrepByPlane(b, planes[i], opt);
+    if (hits.empty()) continue;
+    out.push_back(BrepMultiPlaneSection{static_cast<int>(i), std::move(hits)});
   }
   return out;
 }
@@ -2545,6 +2614,43 @@ std::vector<SurfaceOverlapRegion> IntersectSurfacesOverlap(const ON_Surface& a, 
   if (on_count == 0) return out;
   const bool whole_surface_coincides = (on_count == static_cast<int>(on.size()));
 
+  // Closest-point error of a's own (u, v) sample against b, used below to
+  // bisection-tighten each extent's representative transect - the same
+  // global-closest-point test the main grid pass above uses, not seeded
+  // from a neighbour, since a bisection midpoint is not guaranteed close to
+  // any one grid sample's own warm seed.
+  auto ErrOnB = [&](double uu, double vv) {
+    double bu = 0, bv = 0;
+    const bool ok = SurfaceClosestPointGlobal(b, a.PointAt(uu, vv), bu, bv);
+    return ok ? b.PointAt(bu, bv).DistanceTo(a.PointAt(uu, vv)) : std::numeric_limits<double>::max();
+  };
+  // Bisects `a`'s own u (resp. v) between a known on-`b` grid index (i_on)
+  // and a known off-`b` neighbour (i_off), holding the other coordinate
+  // fixed at a representative grid line - 40 halvings of the already
+  // grid-spacing-wide bracket, the same discipline
+  // IntersectCurveSurfaceOverlap()'s own RefineBoundary() uses one
+  // dimension down.
+  auto BisectU = [&](int i_on, int i_off, int j_fixed) {
+    double u_on = dua.ParameterAt(static_cast<double>(i_on) / n);
+    double u_off = dua.ParameterAt(static_cast<double>(i_off) / n);
+    const double vv = dva.ParameterAt(static_cast<double>(j_fixed) / n);
+    for (int it = 0; it < 40; ++it) {
+      const double um = 0.5 * (u_on + u_off);
+      if (ErrOnB(um, vv) <= opt.tolerance) u_on = um; else u_off = um;
+    }
+    return u_on;
+  };
+  auto BisectV = [&](int j_on, int j_off, int i_fixed) {
+    double v_on = dva.ParameterAt(static_cast<double>(j_on) / n);
+    double v_off = dva.ParameterAt(static_cast<double>(j_off) / n);
+    const double uu = dua.ParameterAt(static_cast<double>(i_fixed) / n);
+    for (int it = 0; it < 40; ++it) {
+      const double vm = 0.5 * (v_on + v_off);
+      if (ErrOnB(uu, vm) <= opt.tolerance) v_on = vm; else v_off = vm;
+    }
+    return v_on;
+  };
+
   // Maximal 4-connected runs of on-`b` grid cells, each reported as its own
   // axis-aligned (u, v) bounding box - not an exact boundary polygon (see
   // this function's own doc comment).
@@ -2558,13 +2664,21 @@ std::vector<SurfaceOverlapRegion> IntersectSurfacesOverlap(const ON_Surface& a, 
       stack.push_back({i0, j0});
       visited[idx0] = 1;
       int imin = i0, imax = i0, jmin = j0, jmax = j0;
+      // The grid column/row at which each extent was (most recently) seen -
+      // a 4-connected run guarantees the cell just past imin/imax/jmin/jmax
+      // along that one axis, AT this same representative coordinate, is
+      // genuinely off-`b` (see BisectU/BisectV's own call sites below for
+      // why), which is exactly what a bisection bracket needs.
+      int j_at_imin = j0, j_at_imax = j0, i_at_jmin = i0, i_at_jmax = i0;
       int cell_count = 0;
       while (!stack.empty()) {
         const auto [ci, cj] = stack.back();
         stack.pop_back();
         ++cell_count;
-        imin = std::min(imin, ci); imax = std::max(imax, ci);
-        jmin = std::min(jmin, cj); jmax = std::max(jmax, cj);
+        if (ci < imin) { imin = ci; j_at_imin = cj; }
+        if (ci > imax) { imax = ci; j_at_imax = cj; }
+        if (cj < jmin) { jmin = cj; i_at_jmin = ci; }
+        if (cj > jmax) { jmax = cj; i_at_jmax = ci; }
         static const int kDI[4] = {1, -1, 0, 0}, kDJ[4] = {0, 0, 1, -1};
         for (int k = 0; k < 4; ++k) {
           const int ni = ci + kDI[k], nj = cj + kDJ[k];
@@ -2577,14 +2691,170 @@ std::vector<SurfaceOverlapRegion> IntersectSurfacesOverlap(const ON_Surface& a, 
       }
       if (cell_count < 2) continue;  // a single isolated on-surface cell is a transient touch, not an overlap (FindSurfaceTangentContacts()'s job instead)
       SurfaceOverlapRegion region;
-      region.u0 = dua.ParameterAt(static_cast<double>(imin) / n);
-      region.u1 = dua.ParameterAt(static_cast<double>(imax) / n);
-      region.v0 = dva.ParameterAt(static_cast<double>(jmin) / n);
-      region.v1 = dva.ParameterAt(static_cast<double>(jmax) / n);
+      // Each extent is bisection-tightened along its own representative
+      // transect when a genuine off-`b` neighbour exists to bisect toward
+      // (4-connectivity guarantees that neighbour, at this same
+      // representative coordinate, is off - if it were on, it would be
+      // 4-connected to this very cell and imin/imax/jmin/jmax would already
+      // have moved past it). An extent sitting at `a`'s own domain edge has
+      // no such neighbour and stays exactly as the grid already has it (the
+      // domain edge itself, not an approximation).
+      region.u0 = imin > 0 ? BisectU(imin, imin - 1, j_at_imin) : dua.ParameterAt(0.0);
+      region.u1 = imax < n ? BisectU(imax, imax + 1, j_at_imax) : dua.ParameterAt(1.0);
+      region.v0 = jmin > 0 ? BisectV(jmin, jmin - 1, i_at_jmin) : dva.ParameterAt(0.0);
+      region.v1 = jmax < n ? BisectV(jmax, jmax + 1, i_at_jmax) : dva.ParameterAt(1.0);
       region.entire_surface = whole_surface_coincides;
       out.push_back(region);
     }
   }
+  return out;
+}
+
+PlaneSphereIntersection IntersectPlaneSphere(const ON_Plane& plane, const ON_Sphere& sphere, double tolerance) {
+  PlaneSphereIntersection out;
+  if (!plane.IsValid() || !sphere.IsValid() || !(sphere.Radius() > 0) || !(tolerance >= 0)) return out;  // stays empty
+  const double r = sphere.Radius();
+  const double d = plane.DistanceTo(sphere.Center());
+  const double ad = std::fabs(d);
+  if (ad > r + tolerance) return out;  // genuinely do not meet: stays empty
+
+  const Point3d center_proj = sphere.Center() - Vector3d(plane.zaxis) * d;
+  out.empty = false;
+  if (ad >= r - tolerance) {
+    // |d| within tolerance of r: a genuine positive radius would round to
+    // ~0 here, so this is the tangent-point degeneracy, not a sliver circle.
+    out.tangent = true;
+    out.point = center_proj;
+    return out;
+  }
+  const double circle_radius = std::sqrt(std::max(r * r - d * d, 0.0));
+  out.circle = ON_Circle(ON_Plane(center_proj, plane.xaxis, plane.yaxis), circle_radius);
+  if (out.circle.GetNurbForm(out.curve) == 0) {
+    // ON_Circle::GetNurbForm only fails for a degenerate (non-positive-
+    // radius) circle - already ruled out by the tangent branch above - or an
+    // invalid input plane, already ruled out by the IsValid() guard. Treated
+    // as a genuine miss rather than returning a circle with no usable curve.
+    out = PlaneSphereIntersection{};
+  }
+  return out;
+}
+
+PlaneCylinderIntersection IntersectPlaneCylinder(const ON_Plane& plane, const ON_Cylinder& cylinder, double tolerance) {
+  PlaneCylinderIntersection out;
+  if (!plane.IsValid() || !cylinder.IsValid() || !(cylinder.circle.radius > 0) || !(tolerance >= 0)) return out;  // stays empty
+
+  constexpr double kMinAbsC = 1e-6;  // same angular-degeneracy threshold ComputeEllipseFrame3d() (ellipse_clip3d.h) uses
+  const double r = cylinder.circle.radius;
+  const Vector3d axis = cylinder.Axis();
+  const Point3d c0 = cylinder.Center();
+  const Vector3d n = plane.zaxis;
+  const double C = ON_DotProduct(axis, n);
+  const double d = plane.DistanceTo(c0);
+
+  if (std::fabs(C) < kMinAbsC) {
+    // The axis lies (to within kMinAbsC) IN the plane, so its own signed
+    // distance to the plane is the same `d` at every point along it: moving
+    // by t*axis changes that distance by t*C, and C is the very thing that's
+    // ~0 here. `n` therefore already lies entirely in the circular
+    // cross-section perpendicular to the axis (dot(axis, n) == C ~ 0), so
+    // {n, m = axis x n} is a valid orthonormal in-plane-of-the-circle basis
+    // for the radial direction, with no need for an arbitrary third vector:
+    // a cylinder-surface point at radial angle phi from n sits at signed
+    // distance d + r*cos(phi) from the plane (see this function's own
+    // header doc comment for the full derivation).
+    out.parallel_to_axis = true;
+    const double ad = std::fabs(d);
+    if (ad > r + tolerance) return out;  // genuinely do not meet: stays empty
+    out.empty = false;
+    const Vector3d m = ON_CrossProduct(axis, n);  // already unit: |axis|=|n|=1, axis _|_ n here
+    auto line_at = [&](double phi) {
+      const Point3d p = c0 + r * (std::cos(phi) * n + std::sin(phi) * m);
+      return ON_Line(p, p + axis);
+    };
+    if (ad >= r - tolerance) {
+      // |d| within tolerance of r: a genuine two-line pair would be
+      // separated by less than tolerance here, so this is the single
+      // tangent-line degeneracy, not two near-coincident slivers.
+      out.tangent = true;
+      out.line_a = line_at(d > 0 ? kPi : 0.0);  // cos(phi) = -d/r -> +-1
+      return out;
+    }
+    const double phi0 = std::acos(Clamp(-d / r, -1.0, 1.0));
+    out.line_a = line_at(phi0);
+    out.line_b = line_at(-phi0);
+    return out;
+  }
+
+  // The general (non-edge-on) case: a true ellipse (a true circle when
+  // axis _|_ plane, |C| == 1 - the same formula below handles both). See
+  // this function's own header doc comment for the derivation summary.
+  const Vector3d minor_raw = ON_CrossProduct(n, axis);  // _|_ n and _|_ axis
+  const double minor_len = minor_raw.Length();
+  const Vector3d e0 = minor_len > 1e-9 ? minor_raw / minor_len : Vector3d(plane.xaxis);  // axis || n (|C|==1): minor direction is arbitrary in-plane, plane.xaxis already _|_ n and so _|_ axis too here
+  const Vector3d e1 = ON_CrossProduct(axis, e0);  // unit, _|_ axis and _|_ e0
+  const double B = ON_DotProduct(e1, n);
+  const Vector3d e1p = e1 - (B / C) * axis;  // _|_ e0, lies IN the plane (dot(e1p, n) == B - (B/C)*C == 0)
+  const double major_scale = std::sqrt(1.0 + (B / C) * (B / C));
+  const Vector3d major_dir = e1p / major_scale;  // unit, _|_ e0
+
+  out.empty = false;
+  const Point3d center = c0 - (d / C) * axis;
+  out.ellipse = ON_Ellipse(ON_Plane(center, e0, major_dir), r, r * major_scale);
+  if (out.ellipse.GetNurbForm(out.curve) == 0) {
+    // Only fails for a degenerate (non-positive) radius - already ruled out
+    // above (r > 0, major_scale >= 1) - or an invalid plane, already ruled
+    // out by the e0/major_dir construction. Treated as a genuine miss
+    // rather than returning an ellipse with no usable curve.
+    out = PlaneCylinderIntersection{};
+  }
+  return out;
+}
+
+CylinderCylinderParallelIntersection IntersectCylinderCylinderParallel(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance) {
+  CylinderCylinderParallelIntersection out;
+  if (!a.IsValid() || !b.IsValid() || !(a.circle.radius > 0) || !(b.circle.radius > 0) || !(tolerance >= 0)) return out;  // stays empty
+
+  constexpr double kAxisParallelTol = 1e-6;  // |cross(unit, unit)| = sin(angle between them); same scale as ComputeEllipseFrame3d's own min_abs_C guard
+  const Vector3d axis = a.Axis();
+  if (ON_CrossProduct(axis, b.Axis()).Length() > kAxisParallelTol) {
+    out.not_parallel = true;
+    return out;
+  }
+
+  // Project both axes into a plane _|_ `axis` (valid at any height along
+  // either infinite axis line identically - see this function's own header
+  // doc comment) using a robust arbitrary in-plane basis: cross `axis` with
+  // whichever world axis it is LEAST aligned with, avoiding the near-zero
+  // cross product a poorly-chosen helper could produce.
+  const Vector3d helper = std::fabs(axis.x) < 0.9 ? Vector3d(1, 0, 0) : Vector3d(0, 1, 0);
+  const Vector3d e0 = ON_CrossProduct(axis, helper).UnitVector();
+  const Vector3d e1 = ON_CrossProduct(axis, e0);  // already unit: axis _|_ e0, both unit
+
+  const Point3d c0 = a.Center();
+  const Vector3d d3 = b.Center() - c0;
+  const double dx = ON_DotProduct(d3, e0), dy = ON_DotProduct(d3, e1);
+  const double dist = std::hypot(dx, dy);
+  const double ra = a.circle.radius, rb = b.circle.radius;
+
+  if (dist <= tolerance) return out;  // (anti)parallel AND concentric axes - no well-defined 2D lens (see header doc comment); stays empty
+  if (dist > ra + rb + tolerance) return out;        // disjoint: genuinely too far apart
+  if (dist < std::fabs(ra - rb) - tolerance) return out;  // one nested entirely inside the other: no touch at any angle
+
+  out.empty = false;
+  const double p = (dist * dist + ra * ra - rb * rb) / (2.0 * dist);  // `a` in the Bourke derivation; renamed to avoid shadowing the ON_Cylinder parameter `a`
+  const double h = std::sqrt(std::max(ra * ra - p * p, 0.0));
+  const Point3d mid = c0 + (p * dx / dist) * e0 + (p * dy / dist) * e1;
+  auto line_through = [&](double sign) {
+    const Point3d pt = mid + (sign * h * (-dy / dist)) * e0 + (sign * h * (dx / dist)) * e1;
+    return ON_Line(pt, pt + axis);
+  };
+  if (h <= tolerance) {
+    out.tangent = true;
+    out.line_a = line_through(0.0);
+    return out;
+  }
+  out.line_a = line_through(1.0);
+  out.line_b = line_through(-1.0);
   return out;
 }
 
