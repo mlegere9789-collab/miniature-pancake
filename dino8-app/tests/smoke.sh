@@ -85,6 +85,16 @@ near() {
   prefix="${pat%%[0-9]*}"
   prefix="${prefix%%\\*}"
   prefix="${prefix%%[\[\]\(\)\.\*\^\$]*}"
+  # A pattern with no digits/regex-special char to trim at (e.g. a plain
+  # "Command: installed X" literal) leaves prefix == pat, which used to skip
+  # printing entirely - a self-grep for the exact string that already failed
+  # grep -q is pointless, but giving up there means a command that printed
+  # nothing AT ALL (or printed an error instead of its success line) shows
+  # no actual output here either, just "expected:" with nothing to compare
+  # against. Fall back to the pattern's own first word (most of this app's
+  # commands print "CommandName: <result or error>", so even an error line
+  # usually still starts with it) so at least something nearby surfaces.
+  if [ "$prefix" == "$pat" ]; then prefix="${pat%% *}"; fi
   echo "     expected: $pat"
   if [ -n "$prefix" ] && [ "$prefix" != "$pat" ]; then
     echo "$out" | grep -F -- "$prefix" | head -6 | sed 's/^/     actual:   /' || true
