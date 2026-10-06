@@ -394,6 +394,11 @@ class DimLinearCommand : public Command {
 // else (arc radius, extension-line length, text position) is a pure
 // function of those three points and the plane, so there is no separate
 // "layout minus measured geometry" struct to round-trip: just the plane.
+// The actual curve/text/measurement math now lives in
+// commands/DimGeometry.h's BuildAngleDimensionGeometry (shared verbatim with
+// DXF/DWG DIMENSION import, io/FileExchange.cpp, the same split
+// BuildLinearDimensionGroup/BuildRadiusDimensionGroup above already use) -
+// this wrapper just adds this command's own associativity tags on top.
 // Tags: DimPlaneOrigin/X/Y (the plane), DimP0/DimP1/DimP2 (the three points
 // as built, fallback), DimRefObj1/DimRefEnd1 (vertex), DimRefObj2/
 // DimRefEnd2 (first direction point), DimRefObj3/DimRefEnd3 (second
@@ -406,38 +411,15 @@ int BuildAngleDimensionGroup(CommandContext& ctx, Point3d vertex, Point3d p1, Po
                              bool has1, ObjectId ref1, const std::string& end1,
                              bool has2, ObjectId ref2, const std::string& end2, double* deg_out = nullptr,
                              int angular_precision = -1) {
-  Vector3d va = p1 - vertex, vb = p2 - vertex;
-  const double r = std::min(va.Length(), vb.Length()) * 0.7;
-  if (r <= 0) return -1;
-  va.Unitize(); vb.Unitize();
-  double a0 = std::atan2(ON_DotProduct(va, pl.yaxis), ON_DotProduct(va, pl.xaxis));
-  double a1 = std::atan2(ON_DotProduct(vb, pl.yaxis), ON_DotProduct(vb, pl.xaxis));
-  if (a1 < a0) std::swap(a0, a1);
-  if (a1 - a0 > ON_PI) { std::swap(a0, a1); a1 += 2 * ON_PI; }
-  ON_Plane cp = pl; cp.SetOrigin(vertex);
-  ON_Arc arc(ON_Circle(cp, r), ON_Interval(a0, a1));
   std::vector<kernel::NurbsCurve> curves;
-  ON_ArcCurve ac(arc);
-  kernel::NurbsCurve k;
-  if (CurveFromON(ac, k)) curves.push_back(k);
-  AddLine(curves, vertex, vertex + va * (r * 1.1));
-  AddLine(curves, vertex, vertex + vb * (r * 1.1));
-  const double mid = (a0 + a1) / 2;
-  const Point3d tp = cp.PointAt(std::cos(mid) * (r + text_h), std::sin(mid) * (r + text_h));
-  const double deg = (a1 - a0) * 180.0 / ON_PI;
-  if (deg_out) *deg_out = deg;
+  DimGlyphSpec dg;
   std::map<std::string, std::string> tags;
-  tags["DimPlaneOrigin"] = PointTag(pl.origin);
-  tags["DimPlaneX"] = PointTag(Point3d(pl.xaxis));
-  tags["DimPlaneY"] = PointTag(Point3d(pl.yaxis));
-  tags["DimP0"] = PointTag(vertex);
-  tags["DimP1"] = PointTag(p1);
-  tags["DimP2"] = PointTag(p2);
+  if (!BuildAngleDimensionGeometry(vertex, p1, p2, pl, text_h, curves, dg, tags, deg_out, angular_precision)) return -1;
   if (has0) { tags["DimRefObj1"] = std::to_string(ref0); tags["DimRefEnd1"] = end0; }
   if (has1) { tags["DimRefObj2"] = std::to_string(ref1); tags["DimRefEnd2"] = end1; }
   if (has2) { tags["DimRefObj3"] = std::to_string(ref2); tags["DimRefEnd3"] = end2; }
   GlyphSpec g;
-  g.text = FormatMeasurement(deg, angular_precision, "deg"); g.height = text_h; g.plane = pl; g.plane.SetOrigin(tp); g.center = true;
+  g.text = dg.text; g.height = dg.height; g.plane = dg.plane; g.center = dg.center;
   return AddAnnotationGroup(ctx, "DimAngle", curves, g, -1, tags);
 }
 

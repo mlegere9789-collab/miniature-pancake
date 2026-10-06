@@ -77,8 +77,18 @@ std::string DestPath(const MarketplaceEntry& entry) {
 }
 
 bool IsLoadedAt(const std::string& path) {
-  for (const LoadedPlugin& p : Manager::Get().Plugins())
-    if (p.loaded_ok && p.path == path) return true;
+  // fs::equivalent alongside the exact string match for the same reason
+  // Manager::Unload() now does (see its own comment): a loaded plugin's
+  // .path can come from a differently-built but equally valid
+  // representation of this same destination (e.g. ScanDefaultFolders()'s
+  // plain string-concatenated folder vs this file's own fs::path-built
+  // DestPath()), which compares unequal as text while naming the same file.
+  for (const LoadedPlugin& p : Manager::Get().Plugins()) {
+    if (!p.loaded_ok) continue;
+    if (p.path == path) return true;
+    std::error_code ec;
+    if (fs::equivalent(p.path, path, ec)) return true;
+  }
   return false;
 }
 

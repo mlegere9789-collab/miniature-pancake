@@ -1,13 +1,20 @@
 // Link-only shim for dino8_test_collab: io/File3dm.cpp's hatch-pattern
 // export path (BuildPatternHatch, drafting/HatchBuild.h, included inline
 // into File3dm.cpp's own translation unit) calls dino8::app::FormatNumber,
-// normally defined in commands/CommandEngine.cpp - which this minimal,
+// and its dimension-import path (commands/DimGeometry.h's FormatMeasurement,
+// included the same way) calls both FormatNumber and DecimalComma -
+// normally defined in commands/CommandEngine.cpp, which this minimal,
 // GUI-free test target deliberately does not link (CommandEngine.cpp pulls
-// in the full Application/Viewport dependency chain for a formatting
-// helper this test never actually exercises - test_collab.cpp never
-// touches hatch patterns). Byte-for-byte the same implementation as
-// CommandEngine.cpp's own FormatNumber; if that one's rounding/formatting
-// rule ever changes, this copy should change with it.
+// in the full Application/Viewport dependency chain for formatting helpers
+// this test never actually exercises - test_collab.cpp never touches hatch
+// patterns or dimensions). Byte-for-byte the same FormatNumber as
+// CommandEngine.cpp's own; if that one's rounding/formatting rule ever
+// changes, this copy should change with it. DecimalComma has no backing
+// g_decimal_comma global here (this link-only shim has no app state at
+// all), so it always reports the default (off) - FormatMeasurement only
+// consults it for the fixed-precision path, which this test's own
+// DimLinear/DimRadius default-style import never takes (precision stays
+// -1), so the stubbed value is never actually observed.
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -25,5 +32,7 @@ std::string FormatNumber(double v) {
   }
   return buf;
 }
+
+bool DecimalComma() { return false; }
 
 }  // namespace dino8::app

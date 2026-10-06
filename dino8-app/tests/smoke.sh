@@ -233,6 +233,24 @@ dwcheck "Exported $TMPW/dwg_v2018.dwg (Version=2018)" "Export Version=2018 (DWG)
 [ "$(grep -A2 '\$ACADVER' "$TMPW/dwg_v13.dxf" | tail -1)" = "AC1012" ] && echo "ok   Export Version=13 wrote \$ACADVER=AC1012 in the DXF header" || { echo "FAIL Export Version=13 (DXF) did not write \$ACADVER=AC1012"; fail=1; }
 [ "$(grep -A2 '\$ACADVER' "$TMPW/dwg_v2013.dxf" | tail -1)" = "AC1027" ] && echo "ok   the persistent AcadSchemes Version=2013 scheme made a later unversioned Export write \$ACADVER=AC1027 in the DXF header" || { echo "FAIL the persistent AcadSchemes Version=2013 scheme did not reach the DXF \$ACADVER"; fail=1; }
 [ "$(head -c 6 "$TMPW/dwg_saveas_v14.dwg")" = "AC1014" ] && echo "ok   SaveAs Version=14 wrote a real AC1014 (AutoCAD Release 14) DWG header" || { echo "FAIL SaveAs Version=14 did not write an AC1014 DWG"; fail=1; }
+# DWG DIMENSION: the new DXF DIMENSION writer (dxf_dimension_export_script.txt)
+# flows through to a real DWG for free via ExportDwg's own intermediate-DXF
+# step - LibreDWG's own dxf_read_file genuinely parses the new minimal
+# DIMENSION entity (no group 2 block reference, no group 1/11 text) into
+# its real native Dwg_Entity_DIMENSION_LINEAR struct (xline1_pt/xline2_pt/
+# def_pt/dim_rotation), which Dino8's own pre-existing WalkDwgEntities
+# DWG_TYPE_DIMENSION_LINEAR case (a separate reader from DXF's, reading raw
+# binary struct fields instead of text group codes, but feeding the exact
+# same BuildLinearDimensionGeometry/AddDimensionGroupToDoc reconstruction)
+# already knows how to rebuild - checked here rather than assumed, same as
+# the BLOCK/pattern-fill HATCH writers' own DWG inheritance was checked
+# when each was added.
+dwcheck "Exported $TMPW/dwg_dimension_roundtrip.dwg" "DWG export of a DimLinear ran"
+dwicheck "DWG: 0 curves, 0 points, 1 dimension" "the reopened DWG's DIMENSION_LINEAR entity round-tripped as one real dimension, not unrelated bare curves - the new DXF DIMENSION writer's own support flows through to a real binary DWG for free"
+dwicheck "Annotation = DimLinear" "the round-tripped DWG dimension carries the same Annotation=DimLinear tag WalkDwgEntities' own pre-existing DIMENSION_LINEAR case writes"
+dwicheck "DimP0 = 0,0,0" "the round-tripped DWG dimension's first measured point survived exactly"
+dwicheck "DimP1 = 40,0,0" "the round-tripped DWG dimension's second measured point survived exactly"
+dwicheck "DimOffset = 10" "the round-tripped DWG dimension's own dimension-line offset survived exactly"
 
 # Interactive UI replay: typed command, viewport picks, click-select, Delete, Undo.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -655,17 +673,19 @@ dbecheck "Block 'FixtureBlock': 2 object(s), base 0,0,0, 4 object(s) in instance
 grep -q "^BLOCK$" "$TMPW/dxf_block_export.dxf" && grep -q "^INSERT$" "$TMPW/dxf_block_export.dxf" && echo "ok   dxf_block_export.dxf contains real BLOCK/INSERT entities, not just flattened LINE entities" || { echo "FAIL dxf_block_export.dxf has no BLOCK/INSERT entity"; fail=1; }
 # DXF DIMENSION export/import: ExportDxf had no DIMENSION writer at all
 # before this change (see dxf_dimension_export_script.txt's own header
-# comment) - a Dino8 DimLinear/DimAligned/DimRadius/DimDiameter dimension
-# used to round-trip out as bare baked line/extension/arrow/glyph curves,
-# losing the fact it was ever a single parametric dimension. Checks both
-# the writer and the existing DIMENSION reader agree on the wire format for
-# both dimension families covered this pass: the reopened file's linear
-# dimension carries the exact same Annotation/DimP0/DimP1/DimOffset/
-# DimHorizontal tags the original had, the reopened radius dimension
-# carries the exact same Annotation/DimCenter/DimRadiusVal/DimIsDiameter
-# tags its own original had, and DxfImporter's own summary line counts
-# both as real dimensions (plus the one real circle object, not unrelated
-# bare curves for either).
+# comment) - a Dino8 DimLinear/DimAligned/DimRadius/DimDiameter/DimAngle
+# dimension used to round-trip out as bare baked line/extension/arrow/glyph
+# curves, losing the fact it was ever a single parametric dimension. Checks
+# both the writer and the existing DIMENSION reader agree on the wire
+# format for all three dimension families covered this pass: the reopened
+# file's linear dimension carries the exact same Annotation/DimP0/DimP1/
+# DimOffset/DimHorizontal tags the original had, the reopened radius
+# dimension carries the exact same Annotation/DimCenter/DimRadiusVal/
+# DimIsDiameter tags its own original had, the reopened angular dimension
+# carries the exact same Annotation/DimP0/DimP1/DimP2 tags its own original
+# had, and DxfImporter's own summary line counts all three as real
+# dimensions (plus the one real circle object, not unrelated bare curves
+# for any of them).
 sed "s|@TMP@|$TMPW|g" "$HERE/dxf_dimension_export_script.txt" > "$TMPW/dxf_dimension_export_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   DDE="$("$BIN" --smoke 30 --script "$TMPW/dxf_dimension_export_script.txt" 2>&1)" || { echo "$DDE"; echo "FAIL: DXF DIMENSION export script exited non-zero"; exit 1; }
@@ -674,7 +694,7 @@ else
 fi
 ddecheck() { if echo "$DDE" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DDE" "$1"; fail=1; fi; }
 ddecheck "Exported $TMPW/dxf_dimension_export.dxf" "ExportDxf wrote a file"
-ddecheck "DXF: 1 curve, 0 points, 0 meshes, 2 dimensions" "the reopened file's two DIMENSION entities round-tripped as two real dimensions plus the one real circle, not unrelated bare curves"
+ddecheck "DXF: 1 curve, 0 points, 0 meshes, 3 dimensions" "the reopened file's three DIMENSION entities round-tripped as three real dimensions plus the one real circle, not unrelated bare curves"
 ddecheck "Annotation = DimLinear" "the round-tripped linear dimension carries the same Annotation=DimLinear tag DxfImporter::Dimension() writes for a hand-written fixture"
 ddecheck "DimP0 = 0,0,0" "the round-tripped linear dimension's first measured point survived exactly"
 ddecheck "DimP1 = 40,0,0" "the round-tripped linear dimension's second measured point survived exactly"
@@ -684,7 +704,12 @@ ddecheck "Annotation = DimRadius" "the round-tripped radius dimension carries th
 ddecheck "DimCenter = 100,0,0" "the round-tripped radius dimension's own measured circle center survived exactly"
 ddecheck "DimRadiusVal = 5" "the round-tripped radius dimension's own measured radius survived exactly"
 ddecheck "DimIsDiameter = 0" "the round-tripped dimension is still recognized as a radius, not a diameter, dimension"
-[ "$(grep -c "^DIMENSION$" "$TMPW/dxf_dimension_export.dxf")" = "2" ] && echo "ok   dxf_dimension_export.dxf contains two real DIMENSION entities (one linear, one radius), not just baked line/arrow/text curves" || { echo "FAIL dxf_dimension_export.dxf does not have exactly two DIMENSION entities"; fail=1; }
+ddecheck "Annotation = DimAngle" "the round-tripped angular dimension carries the same Annotation=DimAngle tag DxfImporter::Dimension() writes for a hand-written fixture"
+ddecheck "DimP0 = 200,0,0" "the round-tripped angular dimension's vertex survived exactly"
+ddecheck "DimP1 = 210,0,0" "the round-tripped angular dimension's first direction point survived exactly"
+ddecheck "DimP2 = 200,10,0" "the round-tripped angular dimension's second direction point survived exactly"
+[ "$(grep -c "^DIMENSION$" "$TMPW/dxf_dimension_export.dxf")" = "3" ] && echo "ok   dxf_dimension_export.dxf contains three real DIMENSION entities (linear, radius, angular), not just baked line/arrow/text curves" || { echo "FAIL dxf_dimension_export.dxf does not have exactly three DIMENSION entities"; fail=1; }
+[ "$(grep -c "^AcDb3PointAngularDimension$" "$TMPW/dxf_dimension_export.dxf")" = "1" ] && echo "ok   dxf_dimension_export.dxf's angular DIMENSION carries the real AcDb3PointAngularDimension subclass marker (type 5), not a generic/wrong dimension subtype" || { echo "FAIL dxf_dimension_export.dxf's angular DIMENSION is missing its AcDb3PointAngularDimension subclass marker"; fail=1; }
 # DWG SPLINE: built via LibreDWG's own dwg_add_SPLINE (marked "Experimental.
 # Does not work yet properly" in dwg_api.h - confirmed by hand it only ever
 # populates fit_pts, never real NURBS control points), so this exercises
@@ -835,6 +860,49 @@ dxddcheck() { if echo "$DXDD" | grep -q "$1"; then echo "ok   $2"; else echo "FA
 dxddcheck "DXF: 0 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the type-3 (diameter) DIMENSION entity"
 dxddcheck "^history: 8 object(s) selected$" "SelDim found the imported diameter dimension's 8 curves (2-arrow diameter line + 2 arrows + 4 'D 10' glyph curves) as a real DimDiameter group"
 dxddcheck "UpdateDimensions:   DimDiameter now measures 10" "UpdateDimensions re-derived the exact hand-computed diameter (far_chord_pt (-5,0,0) to first_arc_pt (5,0,0) = 10 span, so diameter 10)"
+# Angular 3-point (type 5): center_pt(vertex)=(0,0,0), xline1_pt=(10,0,0)
+# (0 degrees), xline2_pt=(0,10,0) (90 degrees), def_pt=(5,5,0) (45 degrees -
+# inside the 0..90 degree sweep) -> exactly 90 degrees, and proves
+# DxfImporter::Dimension's own def_pt disambiguation (see its comment)
+# accepts a real, correctly-disambiguated 3-point angular DIMENSION rather
+# than just rejecting every one of them like before this change.
+cp "$HERE/dxf_dim_angle_fixture.dxf" "$TMPW/dxf_dim_angle_fixture.dxf"
+cat > "$TMPW/dxf_dim_angle_script.txt" <<EOS
+Open $TMPW/dxf_dim_angle_fixture.dxf
+SelDim
+List
+UpdateDimensions
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DXDG="$("$BIN" --smoke 30 --script "$TMPW/dxf_dim_angle_script.txt" 2>&1)" || { echo "$DXDG"; echo "FAIL: DXF DIMENSION (angle) script exited non-zero"; exit 1; }
+else
+  DXDG="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_dim_angle_script.txt" 2>&1)" || { echo "$DXDG"; echo "FAIL: DXF DIMENSION (angle) script exited non-zero"; exit 1; }
+fi
+dxdgcheck() { if echo "$DXDG" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DXDG" "$1"; fail=1; fi; }
+dxdgcheck "DXF: 0 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the type-5 (3-point angular) DIMENSION entity"
+dxdgcheck "^history: 13 object(s) selected$" "SelDim found the imported angular dimension's 13 curves (arc + 2 legs + 10 '90 deg' glyph curves) as a real DimAngle group"
+dxdgcheck "CV\[0\] 7,0,0" "the rebuilt arc starts exactly at radius 7 (min(10,10)*0.7) along the first leg (xline1_pt's own direction)"
+dxdgcheck "UpdateDimensions:   DimAngle now measures 90 deg" "UpdateDimensions re-derived the exact hand-computed angle (between xline1_pt and xline2_pt, 90 degrees) from the imported dimension's own tags, proving it round-trips exactly like a live DimAngle"
+# Same vertex/xline1_pt/xline2_pt as above, but def_pt=(-5,-5,0) (225
+# degrees) - on the REFLEX (270 degree) side of the two direction points,
+# not the 90-degree sweep Dino8's own DimAngle would draw - correctly
+# skipped rather than silently rebuilt as the wrong (90, not 270 degree)
+# angle: proves the def_pt disambiguation actually discriminates, not just
+# accepts every type-5 DIMENSION regardless of its own def_pt.
+cp "$HERE/dxf_dim_angle_reflex_fixture.dxf" "$TMPW/dxf_dim_angle_reflex_fixture.dxf"
+cat > "$TMPW/dxf_dim_angle_reflex_script.txt" <<EOS
+Open $TMPW/dxf_dim_angle_reflex_fixture.dxf
+SelAll
+What
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DXDGR="$("$BIN" --smoke 30 --script "$TMPW/dxf_dim_angle_reflex_script.txt" 2>&1)" || { echo "$DXDGR"; echo "FAIL: DXF DIMENSION (angle, reflex) script exited non-zero"; exit 1; }
+else
+  DXDGR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_dim_angle_reflex_script.txt" 2>&1)" || { echo "$DXDGR"; echo "FAIL: DXF DIMENSION (angle, reflex) script exited non-zero"; exit 1; }
+fi
+dxdgrcheck() { if echo "$DXDGR" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DXDGR" "$1"; fail=1; fi; }
+dxdgrcheck "DXF: 0 curves, 0 points, 0 meshes; 1 unsupported entity skipped" "ImportDxf declined the type-5 DIMENSION whose def_pt names the reflex sweep, rather than rebuilding a DimAngle with the wrong angle"
+dxdgrcheck "^history: 0 object(s) selected$" "no DimAngle group (or any other object) was created from the rejected entity"
 # DWG DIMENSION_LINEAR/DIMENSION_RADIUS: built via LibreDWG's own
 # dwg_add_DIMENSION_LINEAR/dwg_add_DIMENSION_RADIUS - unlike dwg_add_SPLINE/
 # dwg_add_MTEXT above, neither is marked "Experimental" in dwg_api.h, and
@@ -865,6 +933,47 @@ else
   echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the DIMENSION fixture check"
   fail=1
 fi
+# DWG DIMENSION_ANG3PT: unlike DIMENSION_LINEAR/DIMENSION_RADIUS above, this
+# one is NOT exercised via dwg_fixture_gen - LibreDWG's own
+# dwg_add_DIMENSION_ANG3PT (src/dwg_api.c) never sets def_pt at all (only
+# center_pt/xline1_pt/xline2_pt/text_midpt), so a fixture built through it
+# would carry an uncontrolled, meaningless def_pt and couldn't exercise
+# WalkDwgEntities' own def_pt disambiguation (see its
+# DWG_TYPE_DIMENSION_ANG3PT case's comment) at all. Instead this round-trips
+# a live DimAngle straight through Dino 8's own Export (DWG) - which always
+# writes a real, correctly-disambiguated def_pt (ExportDwg converts through
+# ExportDxf's own WriteDxfAngularDimension, then LibreDWG's dxf_read_file/
+# dwg_write_file carry that def_pt into the real DIMENSION_ANG3PT it writes)
+# - and back through Open, proving the new DWG reader case against a
+# genuine DIMENSION_ANG3PT entity, not just the DXF type-5 path tested above.
+# Vertex (0,0,0), legs toward (10,0,0) and (0,10,0) -> exactly 90 degrees.
+cat > "$TMPW/dwg_dim_angle_export_script.txt" <<EOS
+DimAngle
+0,0,0
+10,0,0
+0,10,0
+SelAll
+Export $TMPW/dwg_dim_angle_roundtrip.dwg
+EOS
+cat > "$TMPW/dwg_dim_angle_reopen_script.txt" <<EOS
+Open $TMPW/dwg_dim_angle_roundtrip.dwg
+SelDim
+UpdateDimensions
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DWDGE="$("$BIN" --smoke 30 --script "$TMPW/dwg_dim_angle_export_script.txt" 2>&1)" || { echo "$DWDGE"; echo "FAIL: DWG DIMENSION (angle) export script exited non-zero"; exit 1; }
+  DWDG="$("$BIN" --smoke 30 --script "$TMPW/dwg_dim_angle_reopen_script.txt" 2>&1)" || { echo "$DWDG"; echo "FAIL: DWG DIMENSION (angle) reopen script exited non-zero"; exit 1; }
+else
+  DWDGE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dwg_dim_angle_export_script.txt" 2>&1)" || { echo "$DWDGE"; echo "FAIL: DWG DIMENSION (angle) export script exited non-zero"; exit 1; }
+  DWDG="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dwg_dim_angle_reopen_script.txt" 2>&1)" || { echo "$DWDG"; echo "FAIL: DWG DIMENSION (angle) reopen script exited non-zero"; exit 1; }
+fi
+dwdgecheck() { if echo "$DWDGE" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DWDGE" "$1"; fail=1; fi; }
+dwdgcheck() { if echo "$DWDG" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DWDG" "$1"; fail=1; fi; }
+dwdgecheck "DimAngle 90 deg" "the live DimAngle command measured the hand-picked 90 degree angle before export"
+dwdgecheck "Exported $TMPW/dwg_dim_angle_roundtrip.dwg" "Export (DWG) wrote a real DIMENSION_ANG3PT entity via the DXF-then-LibreDWG conversion path"
+dwdgcheck "DWG: 0 curves, 0 points, 1 dimension" "WalkDwgEntities' new DWG_TYPE_DIMENSION_ANG3PT case read the real DIMENSION_ANG3PT entity back, not a frozen block"
+dwdgcheck "^history: 13 object(s) selected$" "SelDim found the reopened dimension's 13 curves as a real DimAngle group"
+dwdgcheck "UpdateDimensions:   DimAngle now measures 90 deg" "UpdateDimensions re-derived the exact same 90 degree angle from the DWG-reimported dimension's own tags, proving the DWG round trip is exact, not just visually similar"
 # Surfaces: Pipe, OffsetSrf, Shell, Sweep1/2, NetworkSrf, Patch, ExtrudeCrvAlongCrv,
 # ExtrudeCrvTapered, Project, Pull (see surface_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -5834,6 +5943,77 @@ EOS
   txfcheck "TextOrigin = 3,4,0" "the text anchor is the real ON_Text's own plane origin"
 else
   echo "FAIL text3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_Annotation fixture check"
+  fail=1
+fi
+
+# Native .3dm ON_DimLinear/ON_DimRadial import: previously Load3dm's
+# ON_Annotation branch (added for Text just above) counted every real
+# ON_DimLinear/ON_DimRadial dimension authored by a real, independent CAD
+# tool as skipped too (Dino 8's own Dim/DimAligned/DimRadius/DimDiameter
+# commands bake a group of curves plus Annotation/Dim* user_text instead -
+# see commands/DimGeometry.h), same gap as ON_Hatch/ON_InstanceRef/Text
+# before their own passes above. dimlinear3dm_fixture_gen builds four real
+# dimensions directly through OpenNURBS' own API (a rotated/horizontal
+# linear 0,0,0-40,0,0 at offset 10; an aligned linear 0,0,0-30,30,0 at
+# offset 5; a radius dimension on a center/radius-point/leader-tail of
+# 100,0,0 / 105,0,0 / 110,0,0; a diameter dimension on 200,0,0 / 203,0,0 /
+# 206,0,0), all four referencing a real custom ON_DimStyle table entry with
+# text height 1.5, independent of Dino 8's own exporter (which never writes
+# a real ON_DimLinear/ON_DimRadial at all). Each is rebuilt via
+# BuildLinearDimensionGeometry/BuildRadiusDimensionGeometry
+# (commands/DimGeometry.h), the exact math a live Dim/DimAligned/DimRadius/
+# DimDiameter command and DXF/DWG DIMENSION import already share, so the
+# checks below mirror the DXF DIMENSION test's own tag checks exactly.
+# "33 objects"/arrow-curve Length values are this build's own FreeType
+# glyph-contour counts for "40"/"42.43"/"R 5"/"D 3" plus the 5/5/2/3
+# line+extension+arrow geometry curves per dimension (9+12+5+7) - confirmed
+# by first actually running this fixture through the app rather than
+# hand-derived, same as text3dm_fixture_gen's own hardcoded "3 objects" for
+# "Hi"'s H/i-stem/i-dot. The arrow-curve Length checks below (2.688x the
+# text height, from AddArrow's own fixed 0.3x-width triangle) additionally
+# prove the custom DimStyle's text height (1.5) was actually resolved via
+# DimensionStyleId(), not ON_DimStyle::Default's own differing 1.0.
+DLFBIN="$(dirname "$BIN")/dimlinear3dm_fixture_gen"
+if [ -x "$DLFBIN" ]; then
+  "$DLFBIN" "$TMPW/dimlinear_fixture.3dm" >/dev/null || { echo "FAIL: dimlinear3dm_fixture_gen failed to write the dimension fixture"; exit 1; }
+  cat > "$TMPW/dimlinear3dm_script.txt" <<EOS
+Open $TMPW/dimlinear_fixture.3dm
+SelDim
+SelAll
+What
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    DLF="$("$BIN" --smoke 30 --script "$TMPW/dimlinear3dm_script.txt" 2>&1)" || { echo "$DLF"; echo "FAIL: dimlinear .3dm script exited non-zero"; exit 1; }
+  else
+    DLF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dimlinear3dm_script.txt" 2>&1)" || { echo "$DLF"; echo "FAIL: dimlinear .3dm script exited non-zero"; exit 1; }
+  fi
+  dlfcheck() { if echo "$DLF" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DLF" "$1"; fail=1; fi; }
+  dlfcheck "Opened $TMPW/dimlinear_fixture.3dm (33 objects)" "Load3dm read all four real ON_DimLinear/ON_DimRadial dimensions as real dimension groups (9+12+5+7 curves), not 0 (silently skipped, the old behaviour)"
+  dlfcheck "33 object(s) selected" "SelDim found every imported dimension's curves (real Annotation=Dim* user_text, not just ordinary curves)"
+  dlfcheck "Annotation = DimLinear" "the rotated linear dimension carries the same Annotation=DimLinear tag a live DimLinear command/DXF DIMENSION import already write"
+  dlfcheck "DimAligned = 0" "the rotated dimension is still recognized as rotated, not aligned"
+  dlfcheck "DimHorizontal = 1" "the rotated dimension's horizontal-vs-vertical rule (offset point farther outside the vertical span than the horizontal span) correctly recovered horizontal from the file's own DefPoint1/DefPoint2/DimlinePoint, matching cmd_annotate.cpp's own live-pick rule"
+  dlfcheck "DimOffset = 10" "the rotated dimension's dimension-line offset (DimlinePoint's own y=10) survived exactly"
+  dlfcheck "DimP0 = 0,0,0" "the rotated dimension's first measured point (DefPoint1) survived exactly"
+  dlfcheck "DimP1 = 40,0,0" "the rotated dimension's second measured point (DefPoint2) survived exactly"
+  dlfcheck "Length: 40" "the rotated dimension's own dimension line measures the exact hand-computed distance (40,0,0 - 0,0,0)"
+  dlfcheck "Annotation = DimAligned" "the aligned dimension carries the same Annotation=DimAligned tag a live DimAligned command/DXF DIMENSION import already write"
+  dlfcheck "DimAligned = 1" "the aligned dimension is still recognized as aligned, not rotated"
+  dlfcheck "DimOffset = 5" "the aligned dimension's own perpendicular offset (5, projected from DimlinePoint onto the plane normal x measured direction) survived exactly"
+  dlfcheck "DimP1 = 30,30,0" "the aligned dimension's second measured point (DefPoint2) survived exactly"
+  dlfcheck "Length: 42.4264" "the aligned dimension's own dimension line measures the exact hand-computed diagonal distance (30*sqrt(2))"
+  dlfcheck "Annotation = DimRadius" "the radius dimension carries the same Annotation=DimRadius tag a live DimRadius command/DXF DIMENSION import already write"
+  dlfcheck "DimCenter = 100,0,0" "the radius dimension's own measured center (CenterPoint) survived exactly"
+  dlfcheck "DimRadiusVal = 5" "the radius dimension's own measured radius (CenterPoint to RadiusPoint distance) survived exactly"
+  dlfcheck "DimIsDiameter = 0" "the radius dimension is still recognized as a radius, not a diameter, dimension"
+  dlfcheck "DimExtra = 5" "the radius dimension's own leader-tail overrun (DimlinePoint projected past RadiusPoint) survived exactly"
+  dlfcheck "Annotation = DimDiameter" "the diameter dimension carries the same Annotation=DimDiameter tag a live DimDiameter command/DXF DIMENSION import already write"
+  dlfcheck "DimCenter = 200,0,0" "the diameter dimension's own measured center survived exactly"
+  dlfcheck "DimRadiusVal = 3" "the diameter dimension's own measured radius (half the true 6-unit diameter) survived exactly"
+  dlfcheck "DimIsDiameter = 1" "the diameter dimension is still recognized as a diameter, not a radius, dimension"
+  dlfcheck "Length: 4.02838" "an arrowhead curve measures 2.688 x 1.5 (AddArrow's fixed triangle shape x the file's own custom ON_DimStyle text height), proving that custom height - not ON_DimStyle::Default's differing 1.0 - was actually resolved via DimensionStyleId()"
+else
+  echo "FAIL dimlinear3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_DimLinear/ON_DimRadial fixture check"
   fail=1
 fi
 

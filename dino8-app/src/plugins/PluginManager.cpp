@@ -495,8 +495,23 @@ bool Manager::LoadFile(Application& app, const std::string& path, std::string& e
 }
 
 bool Manager::Unload(const std::string& path) {
+  // An exact string match misses a loaded plugin whose own stored .path
+  // came from a differently-built (but equally valid) representation of
+  // the same file - e.g. ScanDefaultFolders()'s plain "+ \"/plugins\""
+  // string concatenation onto ConfigDirectory() (a forward slash) versus
+  // Marketplace.cpp's DestPath() building through fs::path's own operator/
+  // (the native, backslash separator on Windows): both name the identical
+  // file, but compare unequal as strings. On Windows this isn't just a
+  // cosmetic miss - it means the plugin never actually gets unloaded
+  // before Marketplace::InstallEntry tries to overwrite its backing file,
+  // which then fails with a genuine, PERSISTENT ERROR_SHARING_VIOLATION
+  // for the rest of the process's lifetime (confirmed in practice: not a
+  // brief transient race a retry-with-backoff can wait out). fs::equivalent
+  // compares what the paths actually resolve to on disk, not their text.
   for (size_t i = 0; i < plugins_.size(); ++i) {
-    if (plugins_[i].path == path) {
+    std::error_code ec;
+    const bool match = plugins_[i].path == path || fs::equivalent(plugins_[i].path, path, ec);
+    if (match) {
       using ShutdownFn = void (*)();
       if (plugins_[i].handle) {
         if (auto fn = reinterpret_cast<ShutdownFn>(DoSymbol(plugins_[i].handle, "dino8_plugin_shutdown"))) fn();

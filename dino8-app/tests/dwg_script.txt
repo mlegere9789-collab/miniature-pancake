@@ -70,3 +70,16 @@ Export Version=2018 @TMP@/dwg_v2018.dwg
 SelAll
 Export @TMP@/dwg_after_override.dwg
 SaveAs Version=14 @TMP@/dwg_saveas_v14.dwg
+
+# DWG DIMENSION: ExportDwg round-trips through a temporary DXF (see
+# FileExchange.cpp's own ExportDwg), so the new DXF DIMENSION writer
+# (WriteDxfLinearDimension - see dxf_dimension_export_script.txt) should
+# already flow through to DWG for free, with no DWG-specific code at all -
+# checked here rather than assumed. A fresh document, so this is
+# independent of the geometry/version checks above (see dwg_reopen_script.txt
+# for the matching Open + check, run as a separate process launch per this
+# file's own header comment).
+New
+DimLinear 0,0,0 40,0,0 0,10,0
+SelAll
+Export @TMP@/dwg_dimension_roundtrip.dwg

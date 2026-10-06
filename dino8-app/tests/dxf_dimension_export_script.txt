@@ -1,26 +1,33 @@
 # DXF DIMENSION export QC: ExportDxf had no DIMENSION writer function at
-# all before this change (see WriteDxfLinearDimension/WriteDxfRadiusDimension
-# in FileExchange.cpp) - a Dino8 DimLinear/DimAligned/DimRadius/DimDiameter
-# dimension used to round-trip out as its own baked line/extension/arrow/
-# glyph-text curves, losing the fact it was ever a single parametric
-# dimension. Builds one of each kind this pass covers - a horizontal
-# DimLinear (measuring 0,0,0 to 40,0,0, dimension line offset 10 units
-# away) and a DimRadius on a real 5-unit circle (leader toward 110,0,0, a
-# 5-unit stand-off past the circle) - exports both plus the circle itself,
-# and reopens the exported file in a fresh document: each reimported
-# dimension must carry the exact same Annotation/DimP0/DimP1/DimOffset (for
-# the linear one) or DimCenter/DimRadiusVal/DimIsDiameter (for the radius
-# one) tags DxfImporter::Dimension() already writes for a hand-written
-# DIMENSION fixture (the same group-code mapping that reader's own comment
+# all before this change (see WriteDxfLinearDimension/WriteDxfRadiusDimension/
+# WriteDxfAngularDimension in FileExchange.cpp) - a Dino8
+# DimLinear/DimAligned/DimRadius/DimDiameter/DimAngle dimension used to
+# round-trip out as its own baked line/extension/arrow/glyph-text curves,
+# losing the fact it was ever a single parametric dimension. Builds one of
+# each kind this pass covers - a horizontal DimLinear (measuring 0,0,0 to
+# 40,0,0, dimension line offset 10 units away), a DimRadius on a real
+# 5-unit circle (leader toward 110,0,0, a 5-unit stand-off past the circle),
+# and a 90-degree DimAngle (vertex 200,0,0, legs toward 210,0,0 and
+# 200,10,0, i.e. straight along +X then +Y) - exports all three plus the
+# circle itself, and reopens the exported file in a fresh document: each
+# reimported dimension must carry the exact same Annotation/DimP0/DimP1/
+# DimOffset (for the linear one), DimCenter/DimRadiusVal/DimIsDiameter (for
+# the radius one), or DimP0/DimP1/DimP2 (for the angular one) tags
+# DxfImporter::Dimension() already writes for a hand-written DIMENSION
+# fixture (the same group-code mapping that reader's own comment
 # documents), proving the new writer and the existing reader agree on the
-# wire format for both dimension families - a genuine round trip, not just
-# a file that happens to open.
+# wire format for all three dimension families - a genuine round trip, not
+# just a file that happens to open.
 # smoke.sh substitutes @TMP@ with a scratch directory before running this.
 DimLinear 0,0,0 40,0,0 0,10,0
 Circle 100,0,0 5
 SelLast
 DimRadius
 110,0,0
+DimAngle
+200,0,0
+210,0,0
+200,10,0
 SelAll
 Export @TMP@/dxf_dimension_export.dxf
 New
