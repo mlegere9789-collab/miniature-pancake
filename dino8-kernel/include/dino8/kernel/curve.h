@@ -497,6 +497,25 @@ class NurbsCurve {
   // false.
   Result MakeNonRational();
 
+  // Tolerance-bounded overload of `MakeNonRational()` above: performs the
+  // identical conversion, then measures the actual max 3D deviation the
+  // conversion introduced (dense uniform sampling over `Domain()`, at
+  // least 200 points or 20 per control point, whichever is larger,
+  // comparing this curve's own `PointAt(t)` before and after) and only
+  // keeps the conversion if that measured deviation is <= `tolerance` -
+  // otherwise restores the curve to its pre-call rational state and
+  // returns Result::Failed. `out_max_deviation`, if non-null, always
+  // receives the measured value, including on failure (zero if the
+  // curve was already non-rational, in which case this is the same
+  // Result::NoOpAlreadySatisfied no-op as the untoleranced overload).
+  // Unlike `NurbsSurface::RemoveKnotAt`'s rigorous analytic bound, this
+  // is a SAMPLED measurement, not a certified one - the same honesty
+  // tier `NurbsSurface::Rebuild()`'s own deviation bound already uses in
+  // this kernel, since there is no known closed-form error formula for
+  // this particular conversion (unlike knot removal's Piegl & Tiller eq.
+  // 5.30) to certify it analytically instead.
+  Result MakeNonRational(double tolerance, double* out_max_deviation);
+
   // Elevates the curve's degree in place, preserving its shape exactly
   // (to floating-point precision) - `PointAt(t)` is the same for every
   // `t` before and after. Returns NoOpAlreadySatisfied if `new_degree <=
@@ -812,6 +831,33 @@ class NurbsCurve {
   // a straight-line curve (no curvature to approximate) it's exact at any
   // sample count.
   double Length(int samples = 1000) const;
+
+  // Arc length via adaptive 5-point Gauss-Legendre quadrature of the
+  // curve's own speed `|C'(t)|` (the real OpenNURBS first derivative,
+  // `ON_Curve::Ev1Der`, not the unit `TangentAt()`), instead of
+  // `Length()`'s own polyline chord sum. Starts from one Gauss estimate
+  // over the whole domain, then recursively bisects any sub-interval
+  // whose own 5-point estimate disagrees with the sum of its two half-
+  // interval estimates by more than that sub-interval's own share of
+  // `tolerance` (the share halving at each recursion level, so every
+  // leaf sub-interval's worst-case total error budget still sums to at
+  // most `tolerance` overall) - the standard adaptive-quadrature error
+  // indicator (comparing a quadrature rule against its own refinement),
+  // capped at 20 recursion levels (2^20 leaf intervals) as a safety
+  // bound against runaway recursion on a pathological curve. This is a
+  // genuine accuracy IMPROVEMENT over `Length()` - 5th-order per
+  // interval instead of a 1st-order chord sum, and adaptive where
+  // `Length()` is uniform - but, like `NurbsSurface::Rebuild()`'s own
+  // deviation bound, the resulting accuracy is a numerically-robust
+  // estimate from comparing successive refinements, not a formally
+  // certified worst-case bound the way `RemoveKnotAt()`'s Piegl & Tiller
+  // eq. 5.30 bound is (there is no analogous closed-form error formula
+  // for Gauss-Legendre quadrature of an arbitrary NURBS curve's speed).
+  // `out_subintervals`, if non-null, receives the number of leaf
+  // intervals the adaptive refinement actually settled on - a cheap way
+  // for a caller to see how much work a given `tolerance` demanded.
+  // Throws std::invalid_argument if `tolerance` isn't positive.
+  double LengthToTolerance(double tolerance, int* out_subintervals = nullptr) const;
 
   // Finds the parameter `t` at which the curve has traveled
   // `target_length` of its own arc length from `Domain().Min()` -
