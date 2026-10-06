@@ -779,6 +779,138 @@ void TestCurveSetDomainReparameterizes() {
   Check(curve.SetDomain(9.0, 2.0) == Result::Failed, "SetDomain returns Failed when t0 > t1");
 }
 
+void TestCurveMatchEnd() {
+  using dino8::kernel::MatchContinuity;
+  using dino8::kernel::MatchEndReport;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Two distinct zigzagging cubics - neither a line, so Tangent/Curvature
+  // matching is actually exercising real, nonzero derivative values, not
+  // a degenerate straight-line case.
+  const std::vector<Point3d> a_pts = {Point3d(0, 0, 0), Point3d(1, 3, 0), Point3d(2, -3, 0), Point3d(3, 0, 0)};
+  const std::vector<Point3d> b_pts = {Point3d(10, 0, 0), Point3d(9, 2, 0), Point3d(8, -2, 0), Point3d(7, 1, 0)};
+  const NurbsCurve b = NurbsCurve::FromControlPoints(b_pts, /*degree=*/3);
+
+  auto tangent_at_end = [](const NurbsCurve& c, bool at_min) {
+    return c.TangentAt(at_min ? c.Domain().min : c.Domain().max);
+  };
+  auto point_at_end = [](const NurbsCurve& c, bool at_min) {
+    return c.PointAt(at_min ? c.Domain().min : c.Domain().max);
+  };
+  auto curvature_at_end = [](const NurbsCurve& c, bool at_min) {
+    return c.CurvatureAt(at_min ? c.Domain().min : c.Domain().max).Length();
+  };
+
+  // Position (G0): only `a`'s own max-end control point should move - its
+  // min end (the far one) must stay completely untouched.
+  {
+    NurbsCurve a = NurbsCurve::FromControlPoints(a_pts, 3);
+    const Point3d before_far_end = a.ControlPointAt(0);
+    MatchEndReport report;
+    const Result result = a.MatchEnd(/*at_min=*/false, b, /*target_at_min=*/true, MatchContinuity::Position, &report);
+    Check(result == Result::Ok, "MatchEnd(Position) returns Ok matching a's max end to b's min end");
+    Check(point_at_end(a, false).DistanceTo(point_at_end(b, true)) < 1e-6,
+          "MatchEnd(Position) makes a's own end point coincide with b's target end point");
+    Check((a.ControlPointAt(0) - before_far_end).Length() < 1e-9,
+          "MatchEnd(Position) leaves a's OTHER (far) end control point completely untouched");
+    Check(report.position_error < 1e-6 && report.tangent_error == 0.0 && report.curvature_error == 0.0,
+          "MatchEndReport only reports a nonzero error for position, which is itself near zero");
+    // Position-only was asked for - the tangent direction is NOT expected
+    // to line up, which is the genuine contrast proving this only edited
+    // what was requested, not a byproduct of some broader auto-alignment.
+    // (A match joining a's max end to b's min end wants a's own forward
+    // tangent there to end up pointing the SAME way as b's forward
+    // tangent at its min end - a straight-line continuation across the
+    // joint, not an antiparallel one; see the Tangent block below.)
+    const double angle_deg = ON_3dVector::Angle(tangent_at_end(a, false), tangent_at_end(b, true)) * 180.0 / ON_PI;
+    Check(angle_deg > 1.0,
+          "MatchEnd(Position) does NOT also happen to align the tangents - proving it only touched position");
+  }
+
+  // Tangent (G1): position AND tangent direction must now both match;
+  // curvature is not promised.
+  {
+    NurbsCurve a = NurbsCurve::FromControlPoints(a_pts, 3);
+    const Point3d before_far_end = a.ControlPointAt(0);
+    MatchEndReport report;
+    const Result result = a.MatchEnd(false, b, true, MatchContinuity::Tangent, &report);
+    Check(result == Result::Ok, "MatchEnd(Tangent) returns Ok");
+    Check(point_at_end(a, false).DistanceTo(point_at_end(b, true)) < 1e-6,
+          "MatchEnd(Tangent) still makes the end points coincide (G1 implies G0)");
+    // a's max end joins b's min end: a's own forward tangent arriving at
+    // the joint should point the SAME way as b's forward tangent leaving
+    // it (continuing straight across the joint) - not antiparallel.
+    const double angle_deg = ON_3dVector::Angle(tangent_at_end(a, false), tangent_at_end(b, true)) * 180.0 / ON_PI;
+    Check(angle_deg < 1e-3,
+          "MatchEnd(Tangent) makes a's own end tangent genuinely parallel to b's target end tangent, "
+          "continuing straight across the joint (independently verified via TangentAt(), not just the "
+          "method's own self-check)");
+    Check((a.ControlPointAt(0) - before_far_end).Length() < 1e-9,
+          "MatchEnd(Tangent) leaves a's OTHER (far) end control point completely untouched");
+    Check(report.tangent_error < 1e-6, "MatchEndReport reports a near-zero tangent_error for the accepted match");
+  }
+
+  // Curvature (G2): position, tangent, AND curvature magnitude should
+  // now all line up.
+  {
+    NurbsCurve a = NurbsCurve::FromControlPoints(a_pts, 3);
+    MatchEndReport report;
+    const Result result = a.MatchEnd(false, b, true, MatchContinuity::Curvature, &report);
+    Check(result == Result::Ok, "MatchEnd(Curvature) returns Ok");
+    Check(point_at_end(a, false).DistanceTo(point_at_end(b, true)) < 1e-6,
+          "MatchEnd(Curvature) still makes the end points coincide (G2 implies G0)");
+    const double angle_deg = ON_3dVector::Angle(tangent_at_end(a, false), tangent_at_end(b, true)) * 180.0 / ON_PI;
+    Check(angle_deg < 1e-3, "MatchEnd(Curvature) still makes the end tangents parallel (G2 implies G1)");
+    // Curvature VECTORS are reparametrization-invariant: once the
+    // tangent direction AND magnitude are matched via `scale` (G1), the
+    // same scale^2 relationship this method enforces on the raw second
+    // derivative makes the actual geometric curvature vectors come out
+    // exactly equal (the scale cancels), not merely proportional - a
+    // short differential-geometry derivation confirmed directly, not
+    // assumed, before relying on it here.
+    const double ka = curvature_at_end(a, false), kb = curvature_at_end(b, true);
+    Check(std::abs(ka - kb) < 1e-3 * std::max(1.0, kb),
+          "MatchEnd(Curvature) makes a's own end curvature match b's target end curvature exactly (no "
+          "leftover scale factor), independently re-evaluated via CurvatureAt()");
+    Check(report.curvature_error < 1e-4, "MatchEndReport reports a near-zero curvature_error for the accepted match");
+  }
+
+  // A 2-control-point line only has its own two endpoints as control
+  // points - Tangent continuity (rows_needed=2) can't move one without
+  // disturbing the other, so this must go through MatchEnd's own
+  // automatic interior-knot-insertion path (mirroring MatchEdge()'s
+  // own "not enough rows" fallback) rather than fail outright.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(5, 0, 0)};
+  NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, 1);
+  Check(line.ControlPointCount() == 2, "the line fixture starts with exactly 2 control points");
+  const Point3d line_far_end_before = line.ControlPointAt(0);
+  const Result line_result = line.MatchEnd(false, b, true, MatchContinuity::Tangent);
+  Check(line_result == Result::Ok,
+        "MatchEnd(Tangent) on a 2-CV line still succeeds, via automatic interior-knot insertion");
+  Check(line.ControlPointCount() > 2,
+        "MatchEnd inserted at least one interior knot/control point to make room for the Tangent edit");
+  Check((line.ControlPointAt(0) - line_far_end_before).Length() < 1e-9,
+        "...and the line's OTHER (far) end point is still completely unmoved");
+  Check(point_at_end(line, false).DistanceTo(point_at_end(b, true)) < 1e-6,
+        "...and the line's own (former) end still coincides with the target end point");
+
+  // A target whose own degree is too low for the requested continuity
+  // (a straight line has no second derivative at all) must be refused
+  // up front, not silently given a meaningless answer.
+  bool degree_threw = false;
+  try {
+    NurbsCurve a = NurbsCurve::FromControlPoints(a_pts, 3);
+    a.MatchEnd(false, line, true, MatchContinuity::Curvature);
+  } catch (const std::invalid_argument&) {
+    degree_threw = true;
+  }
+  Check(degree_threw,
+        "MatchEnd throws std::invalid_argument when the target's own degree is too low for the requested "
+        "continuity (Curvature against a degree-1 target)");
+}
+
 void TestCurveKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -69251,6 +69383,7 @@ int main() {
   TestCurveInsertKnotAt();
   TestCurveRemoveKnotAt();
   TestCurveSetDomainReparameterizes();
+  TestCurveMatchEnd();
   TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();

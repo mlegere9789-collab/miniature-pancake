@@ -50,9 +50,9 @@ struct SurfaceSize {
   double height;  // approximate size in the V direction
 };
 
-// Continuity order NurbsSurface::MatchEdge() enforces along the shared
-// edge: Position (G0), Tangent (G1), Curvature (G2).
-enum class MatchContinuity { Position, Tangent, Curvature };
+// `MatchContinuity` (the continuity order NurbsSurface::MatchEdge()
+// enforces along the shared edge) now lives in types.h, shared with
+// NurbsCurve::MatchEnd() below.
 
 // What NurbsSurface::MatchEdge() reports about the match it just made,
 // every number measured by evaluating both surfaces after the edit (not

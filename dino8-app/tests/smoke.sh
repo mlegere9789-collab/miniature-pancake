@@ -347,7 +347,12 @@ c2check "Blend: G3 (G3) blend curve created" "Blend Continuity=G3 reaches kernel
 c2check "degree 7, 8 control points, non-rational, open" "Blend's G3 output is the expected degree-7 (2*3+1), 8-control-point septic Bezier-basis curve - one degree past the G2 quintic case just above, matching position/tangent/curvature AND third derivative at both ends"
 c2check "Domain: 1 curve(s) now have domain 0 to 5" "Domain actually set a new domain, not just reported it"
 c2check "ModifyRadius: 1 curve(s) now have radius 12" "ModifyRadius rebuilt the circle in place"
-c2check "Match: reshaped curve .* to meet curve .* tangentially" "Match reshaped one curve's end to meet another"
+# Message format changed: Match now calls the kernel's own
+# NurbsCurve::MatchEnd() (curve.cpp) instead of a hand-rolled CV move, and
+# reports which continuity level actually ran plus the self-checked
+# position error, rather than a fixed "...tangentially" suffix.
+c2check "Match: reshaped curve .* to meet curve .* (Tangent, position error 0)" "Match reshaped one curve's end to meet another, position error 0 (default Continuity=Tangent)"
+c2check "Match: reshaped curve .* to meet curve .* (Curvature, position error 0)" "Match Continuity=Curvature reaches NurbsCurve::MatchEnd()'s own G2 path - the genuine new capability the old heuristic (position+tangent only, no kernel API at all) could never reach"
 c2check "Curve does not self-intersect" "IntersectSelf ran a genuine self-intersection check"
 c2check "SoftEditCrv: 4 control point(s) moved with falloff 5" "SoftEditCrv applied a real falloff drag"
 c2check "FixedLengthCrvEdit: point moved and curve rescaled .* to keep length 30" "FixedLengthCrvEdit preserved the curve's total length"
@@ -367,7 +372,7 @@ if echo "$C2" | grep -q "Bounding box: (30, 0, 9) to (40, 0, 9)"; then
 else
   echo "ok   RemoveSymmetry genuinely broke the live link (copy did NOT follow the source's post-removal move)"
 fi
-c2check "^ok   expect_objects 197" "curve-tools script produced the expected object count"
+c2check "^ok   expect_objects 199" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/exchange_script.txt" > "$TMPW/exchange_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
