@@ -2688,6 +2688,32 @@ class Brep {
   // TessellateNonUniformAdaptive() followed by Mesh::MergeAndWeld().
   Mesh TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) const;
 
+  // The Brep-level endpoint of NurbsSurface::TessellateGridCertifiedAdaptive()
+  // - closes PARITY_MAP's own disclosed "Adaptive tessellation of B-rep
+  // faces (curvature-driven refinement) — a fixed angular deviation
+  // heuristic, not a certified chordal-deviation bound" gap for every face
+  // the kernel can actually CERTIFY a bound for: an untrimmed (whole-cell)
+  // face gets TessellateGridCertifiedAdaptive() itself, an honest MEASURED
+  // (not merely estimated) chord-deviation guarantee. A genuinely trimmed
+  // face has no certified path (MeasureGridTessellationDeviation() itself
+  // is scoped to the plain untrimmed grid, not TessellateGrid()'s own
+  // trimmed/exact-clip siblings - see that function's own doc comment),
+  // so those faces fall back to the existing uncertified
+  // TessellateGridNonUniformAdaptive()/TessellateGridClippedExactAdaptive()
+  // heuristic, the same real, disclosed scope split
+  // TessellateNonUniformAdaptive() already uses for its own exact-clip
+  // fallback. If `out_certified` is non-null, it is resized to one entry
+  // per returned face and set to `true` exactly where that face's own
+  // mesh carries the certified guarantee, `false` where it's the
+  // uncertified fallback - so a caller can tell the two apart instead of
+  // this method silently blending a real bound with a heuristic one.
+  std::vector<Mesh> TessellateCertifiedAdaptive(double chord_tolerance, int max_refinements = 8,
+                                                 std::vector<bool>* out_certified = nullptr) const;
+
+  // TessellateCertifiedAdaptive() followed by Mesh::MergeAndWeld().
+  Mesh TessellateToClosedMeshCertifiedAdaptive(double chord_tolerance,
+                                                int max_refinements = 8) const;
+
   // Angle-based counterpart to TessellateAdaptive(): per-face divisions
   // come from NurbsSurface::SuggestedDivisionsByAngle(angle_tolerance)
   // instead of SuggestedDivisions(chord_tolerance) - the Brep-level entry
@@ -3458,34 +3484,48 @@ class Brep {
   // RemoveNakedMicroEdge()'s own sibling for the other half of PARITY_MAP.
   // md's "Remove small / sliver edges" gap: a SHARED (2-trim, interior)
   // micro edge - two faces meeting along a hairline-short common edge -
-  // rather than a naked (1-trim, boundary) one. Same isolated-sliver
-  // discipline, extended to two loops instead of one: `edge_index` must be
+  // rather than a naked (1-trim, boundary) one. `edge_index` must be
   // shorter than `tolerance` (the identical GetNurbForm + 20-sample
-  // polyline length test RemoveNakedMicroEdge() uses), border exactly two
-  // DIFFERENT faces (TrimCount() == 2 and the two trims' own FaceIndexOf()
-  // differ - a 2-trim edge with both trims on the SAME face is left alone
-  // rather than guessed at), and each of its own two loop-neighbors per
-  // side (four edges total: one on either side of each endpoint, one pair
-  // per face) must be the ONLY other thing either endpoint vertex touches
-  // in this WHOLE Brep - the same "no third edge, no non-manifold
-  // junction" isolation RemoveNakedMicroEdge() already requires, just
-  // checked against two allowed neighbors per vertex instead of one.
-  // Also refused: either face's own loop has fewer than 4 trims - removing
-  // the shared edge would leave that face's loop with only 2 edges left (a
+  // polyline length test RemoveNakedMicroEdge() uses), and border exactly
+  // two DIFFERENT faces (TrimCount() == 2 and the two trims' own
+  // FaceIndexOf() differ - a 2-trim edge with both trims on the SAME face
+  // is left alone rather than guessed at). Each face's own two
+  // loop-neighbors at this edge (one on either side of each endpoint, one
+  // pair per face - four edges total) must be four genuinely distinct
+  // edges, not a second shared edge between the same two faces at this
+  // same vertex (a bowtie this method declines to guess at). Also
+  // refused: either face's own loop has fewer than 4 trims - removing the
+  // shared edge would leave that face's loop with only 2 edges left (a
   // degenerate bigon, not a valid boundary), the same way
   // MergeContiguousEdges() refuses a valence check it can't satisfy rather
   // than emit a broken topology.
   //
+  // PARITY_MAP.md's own prior disclosure named "a non-isolated (valence-
+  // 4+... shared micro-edge is still left alone" as this item's own
+  // remaining gap: a FURTHER edge touching either endpoint, beyond the
+  // micro edge itself and its own two loop-neighbors, used to refuse the
+  // whole call outright. It no longer does - such an edge belongs to some
+  // third (or later) face merely pinching at this same vertex, not to
+  // either of the two faces actually being merged across, and its own
+  // OTHER endpoint is untouched; it is nudged to the shared merge point
+  // exactly like the two designated loop-neighbors already are (see
+  // below), rather than left for ON_Brep::CombineCoincidentVertices()
+  // to silently snap however it sees fit. The one case still refused: an
+  // edge touching BOTH endpoints (distinct from the micro edge itself),
+  // which this nudge would collapse to zero length - another bowtie
+  // shape this method declines to guess at.
+  //
   // The actual close mirrors RemoveNakedMicroEdge()'s own two-phase
   // "nudge every neighbor's curve to the shared midpoint via
   // SetStartPoint()/SetEndPoint(), THEN commit through ReplaceEdgeCurve()"
-  // shape, just run for all four neighbors (ReplaceEdgeCurve() already
-  // re-trims every face sharing whichever neighbor edge is passed to it,
-  // so a neighbor that is itself a shared edge with a THIRD face is
-  // handled for free, the same way RemoveNakedMicroEdge()'s own neighbors
-  // are re-trimmed) before the two endpoint vertices are combined
-  // (ON_Brep::CombineCoincidentVertices()) and the now fully degenerate
-  // shared edge and its two trims are deleted and the Brep is Compact()ed.
+  // shape, run for the four designated loop-neighbors and for however
+  // many further edges either endpoint turns out to carry
+  // (ReplaceEdgeCurve() already re-trims every face sharing whichever
+  // neighbor edge is passed to it, so a neighbor that is itself a shared
+  // edge with a further face is handled for free) before the two
+  // endpoint vertices are combined (ON_Brep::CombineCoincidentVertices())
+  // and the now fully degenerate shared edge and its two trims are
+  // deleted and the Brep is Compact()ed.
   //
   // Returns Result::Failed - not a thrown exception, the same "can't, but
   // that's not a bug" contract RemoveNakedMicroEdge() already has - for

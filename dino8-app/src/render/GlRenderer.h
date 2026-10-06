@@ -192,6 +192,19 @@ class GlRenderer {
   // present the path tracer's progressive accumulation texture.
   void DrawFullscreenTexture(GLuint texture);
 
+  // Rendered mode's Background::Image backdrop, as a real lat-long
+  // (equirectangular) unwarp around the camera's own view direction rather
+  // than DrawFullscreenTexture's flat UV stretch - see Viewport.cpp's
+  // DrawBackgroundImage, the only caller. `forward`/`right`/`up` are the
+  // camera's own view-space basis vectors (Camera::Forward/Right/Up),
+  // `tan_half_fov_y` is Camera::TanHalfFovY() (ignored when `ortho` is
+  // true: an orthographic camera samples one constant direction,
+  // `forward`, for every pixel - true parallel projection has no per-pixel
+  // ray spread, the same way Camera::ScreenRay's own ortho branch returns
+  // one constant `direction` for every screen point it is asked about).
+  void DrawEnvironmentBackground(GLuint texture, kernel::Vector3d forward, kernel::Vector3d right,
+                                  kernel::Vector3d up, double tan_half_fov_y, double aspect, bool ortho);
+
   // Texture cache: loads an image file into a GL texture (0 when the file
   // cannot be read; the failure is remembered until RefreshTextures). A
   // "proc:<kind>:<seed>" path (MaterialLibrary::IsProceduralTexture) is
@@ -210,8 +223,10 @@ class GlRenderer {
   void DrawMesh(const std::vector<float>& data, const std::vector<float>* colors, const std::vector<float>* uvs,
                 MeshMode mode, Color color, float param0, float param1);
   void UploadLights();
-  GLuint mesh_program_ = 0, line_program_ = 0, bg_program_ = 0, tex_program_ = 0;
+  GLuint mesh_program_ = 0, line_program_ = 0, bg_program_ = 0, tex_program_ = 0, env_bg_program_ = 0;
   GLint tex_u_sampler_ = -1;
+  GLint env_bg_u_tex_ = -1, env_bg_u_forward_ = -1, env_bg_u_right_ = -1, env_bg_u_up_ = -1, env_bg_u_tan_fov_ = -1,
+        env_bg_u_aspect_ = -1, env_bg_u_ortho_ = -1;
   GLuint vao_ = 0, vbo_ = 0, color_vbo_ = 0, uv_vbo_ = 0, bg_vao_ = 0;
   Mat4 view_ = Mat4::Identity(), proj_ = Mat4::Identity();
   kernel::Vector3d light_{0.3, 0.5, 1.0};

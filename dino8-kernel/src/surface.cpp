@@ -2145,6 +2145,36 @@ double NurbsSurface::MeasureGridTessellationDeviation(int u_divisions, int v_div
   return max_deviation;
 }
 
+Mesh NurbsSurface::TessellateGridCertifiedAdaptive(double chord_tolerance, int max_refinements,
+                                                    double* out_achieved_deviation) const {
+  if (!(chord_tolerance > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::TessellateGridCertifiedAdaptive: chord_tolerance must be "
+        "positive");
+  }
+  if (max_refinements < 0) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::TessellateGridCertifiedAdaptive: max_refinements must be "
+        "non-negative");
+  }
+
+  SurfaceDivisions div = SuggestedDivisions(chord_tolerance);
+  for (int attempt = 0; attempt <= max_refinements; ++attempt) {
+    const double deviation = MeasureGridTessellationDeviation(div.u, div.v);
+    if (deviation <= chord_tolerance) {
+      if (out_achieved_deviation) *out_achieved_deviation = deviation;
+      return TessellateGrid(div.u, div.v);
+    }
+    div.u *= 2;
+    div.v *= 2;
+  }
+
+  throw std::runtime_error(
+      "dino8::kernel::NurbsSurface::TessellateGridCertifiedAdaptive: could not certify "
+      "chord_tolerance within max_refinements doublings of SuggestedDivisions()'s own starting "
+      "resolution");
+}
+
 namespace {
 
 // Which of the two possible unit-normal fields `normal` belongs to,
