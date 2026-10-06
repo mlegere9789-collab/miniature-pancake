@@ -41456,6 +41456,108 @@ void TestFromMixedFacesNonManifoldBuildsFourPageFanAndMatchesStrictOnManifoldInp
         "the manifold box built through the non-manifold entry point is still a closed manifold");
 }
 
+// FromMixedFacesNonManifold()'s own N-trim-edge construction, exercised on
+// a genuinely CURVED shared edge instead of a straight spine -
+// PARITY_MAP.md's own "Non-manifold topology" bullet named this as
+// test-verified only for straight planar spines, "a curved cap arc shared
+// by 3+ faces takes the same code path but has no fixture." Fixture:
+// three SphericalFace wedges sharing the EXACT same longitude-0 meridian
+// arc (every wedge uses the identical frame/radius/lat0/lat1 - only
+// `angle`, the longitude EXTENT, and `outward` differ - and the u=0 edge
+// of a spherical patch depends only on frame/radius/lat0/lat1, never on
+// angle, per FromMixedFaces()'s own closed-form derivation), fanned open
+// to three different longitude extents - the curved analogue of
+// NonManifoldFanPages()'s own straight-spine book. `outward` alternates
+// true/false/true, the identical "two forward, one reversed" mix
+// NonManifoldFanPages()'s own i%2==0 winding already sets up, so
+// SplitNonManifoldEdge()'s own pairing behavior is directly comparable to
+// the straight-spine case rather than accidentally exercising its
+// different "no opposite-class partner at all" path (confirmed via
+// `dino8_scratch_test`: three SAME-orientation wedges instead split the
+// shared edge into three wholly separate copies, a genuinely different,
+// equally valid but NOT what this test is after - distinguishing a
+// curved-edge-specific bug from a known orientation-class interaction
+// would need a separate fixture of its own).
+void TestFromMixedFacesNonManifoldBuildsThreeWedgeFanOnACurvedMeridianArc() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  std::vector<Brep::SphericalFace> wedges;
+  int idx = 0;
+  for (double angle : {M_PI / 2, M_PI, 3 * M_PI / 2}) {
+    Brep::SphericalFace sf;
+    sf.frame = ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0));
+    sf.radius = 2.0;
+    sf.angle = angle;
+    sf.lat0 = -0.3;
+    sf.lat1 = 0.3;
+    sf.outward = (idx % 2 == 0);
+    wedges.push_back(sf);
+    ++idx;
+  }
+
+  Brep fan = Brep::FromMixedFacesNonManifold({}, {}, {}, wedges);
+  const ON_Brep& b = fan.raw();
+  Check(fan.FaceCount() == 3, "FromMixedFacesNonManifold builds all 3 wedges");
+  Check(b.m_E.Count() == 10, "10 edges: 1 shared meridian arc + 3 wedges * 3 own sides");
+  Check(b.m_V.Count() == 8, "8 vertices: 2 meridian ends welded once + 3 wedges * 2 outer corners");
+
+  int spine = -1;
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+    if (b.m_E[ei].TrimCount() == 3) {
+      Check(spine < 0, "only one edge carries 3 trims");
+      spine = ei;
+    } else {
+      Check(b.m_E[ei].TrimCount() == 1, "every other edge is an ordinary single-trim wedge side");
+    }
+  }
+  Check(spine >= 0, "the shared meridian arc carries all 3 wedges' trims");
+  if (spine < 0) return;
+  Check(!b.m_E[spine].IsLinear(), "the shared edge is genuinely CURVED, not a straight line - the whole point of "
+                                  "this fixture versus NonManifoldFanPages()'s own straight spine");
+
+  // Exact closed-form endpoints at phi=0 (frame.origin + radius*(cos(lat)*
+  // frame.xaxis + sin(lat)*frame.zaxis), per FromMixedFaces()'s own
+  // derivation for a SphericalFace's u=0 edge) - hand-derived, not
+  // measured after the fact.
+  const double r = 2.0;
+  const ON_3dPoint end_lo(r * std::cos(-0.3), 0.0, r * std::sin(-0.3));
+  const ON_3dPoint end_hi(r * std::cos(0.3), 0.0, r * std::sin(0.3));
+  const ON_3dPoint s0 = b.m_V[b.m_E[spine].m_vi[0]].point, s1 = b.m_V[b.m_E[spine].m_vi[1]].point;
+  Check((s0.DistanceTo(end_lo) < 1e-9 && s1.DistanceTo(end_hi) < 1e-9) ||
+            (s0.DistanceTo(end_hi) < 1e-9 && s1.DistanceTo(end_lo) < 1e-9),
+        "the 3-trim edge's own endpoints exactly match the meridian's closed-form lat0/lat1 points");
+
+  ON_TextLog log;
+  Check(b.IsValid(&log), "the non-manifold wedge fan is otherwise a valid ON_Brep");
+
+  const Brep::CheckReport before = fan.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1, "Check() reports exactly one NonManifoldEdge");
+  for (const Brep::CheckIssue& issue : before.issues) {
+    if (issue.kind == Brep::CheckIssue::Kind::NonManifoldEdge) {
+      Check(issue.index == spine && issue.other_index == 3, "...naming the shared meridian arc and its trim count (3)");
+    }
+  }
+  Check(before.Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0,
+        "no false NonManifoldVertex at the meridian's own ends - the wedges are connected through the shared edge");
+  Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 9, "the 9 wedge sides are naked, nothing else");
+  Check(before.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+        "no InconsistentFaceOrientation false positive on the curved 3-trim edge");
+
+  // The existing heal, run on this curved edge exactly as the straight
+  // spine's own test already proves it on a linear one.
+  Check(fan.SplitNonManifoldEdge(spine) == Result::Ok, "SplitNonManifoldEdge() heals the curved spine too");
+  Check(fan.raw().m_E.Count() == 11, "one new edge for the odd trim out (10 -> 11), same as the straight-spine case");
+  Check(fan.raw().m_E[spine].TrimCount() == 2, "the shared arc keeps exactly one opposite-direction manifold pair");
+  Check(!fan.raw().m_E[spine].IsLinear(), "...and is still the same genuinely curved edge, not replaced by a chord");
+  const Brep::CheckReport after = fan.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0, "no non-manifold edge remains after the heal");
+  Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 10, "9 wedge sides + the odd trim's own new naked copy");
+  Check(after.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+        "the surviving pair is well-oriented in Check()'s own sense");
+  Check(fan.raw().IsValid(), "still a valid ON_Brep after the heal");
+}
+
 // The strongest check this feature's own spec calls for: build a Brep
 // via FromPlanarFaces(), save it to a genuine .3dm, reload it, and wrap
 // the RELOADED raw ON_Brep in a FRESH dino8::kernel::Brep with EMPTY side
@@ -71135,6 +71237,7 @@ int main() {
   TestFromMixedFacesRejectsNonManifoldEdge();
   TestFromMixedFacesNonManifoldBuildsThreePageFan();
   TestFromMixedFacesNonManifoldBuildsFourPageFanAndMatchesStrictOnManifoldInput();
+  TestFromMixedFacesNonManifoldBuildsThreeWedgeFanOnACurvedMeridianArc();
   TestBrepFromPlanarFacesRoundTripsRealTopologyThroughDotThreeDM();
   TestFilletConvexEdgeRoundTripsCylindricalTopologyThroughDotThreeDM();
   TestMixedFacesRoundTripsCylindricalFace();
