@@ -1038,6 +1038,68 @@ struct SurfaceSilhouettePoint {
 };
 std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePoints(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt);
 
+// The perspective sibling of FindSurfaceSilhouettePoints() above - narrows
+// the "Silhouette / outline curves" bullet's own "orthographic projection
+// only" caveat, which that function's own header doc comment names as a
+// real remaining gap ("no perspective eye point, which would need a
+// per-point VARYING direction... not this function's own single fixed
+// one"). The silhouette (contour generator) for a perspective view from a
+// finite `eye` is, by definition, every point where the surface's own
+// tangent plane CONTAINS the viewing ray TO that point - the same `dot(
+// normal, direction) == 0` tangency test FindSurfaceSilhouettePoints()
+// already uses, just with `direction = point - eye` now genuinely varying
+// per sample instead of one fixed vector. Shares that same function's own
+// sampling/bisection/dedup machinery exactly (both are built on the one
+// internal grid-edge tangency-crossing finder this file now shares between
+// them) - only the direction a sample tests against differs. A grid sample
+// that happens to land exactly at `eye` itself (direction length ~0, no
+// ray to test tangency against there) is treated as "cannot verify", the
+// same honest skip RobustSurfaceNormal()'s own pole degeneracy already
+// gets. Still honestly scoped exactly as FindSurfaceSilhouettePoints() is:
+// point detections only, no curve-chaining (see FindSurfaceSilhouetteCurves()
+// below for that, which does not yet have a perspective sibling of its
+// own), and no visibility/self-occlusion resolution.
+std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePointsPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt);
+
+// Chains FindSurfaceSilhouettePoints()'s own isolated grid-edge crossings
+// into actual curves - narrows that function's own "point detections only"
+// caveat for the orthographic case. The silhouette is a continuous locus in
+// (u, v) (one equation in two unknowns), so a single Newton seed cannot pin
+// it to a unique point the way FindSurfaceTangentContacts()'s own fully-
+// determined systems do - but the SAME regular TessellateWithUV() grid
+// FindSurfaceSilhouettePoints() already samples gives every crossing a
+// known HOME EDGE, and two crossings on the four boundary edges of one grid
+// CELL are connected directly (the classical "marching squares" contour-
+// extraction idea, applied to this scalar tangency field instead of an
+// implicit function's own zero level set): a cell with exactly two crossing
+// edges links them; a cell with zero has no crossing to link; a cell with
+// all four (the "saddle" ambiguity marching squares is already well known
+// for, a genuine but measure-zero coincidence of the grid's own placement,
+// not a routine occurrence) is honestly skipped rather than guessed at with
+// an arbitrary diagonal pairing. Chaining these links across the whole grid
+// gives each crossing point degree 0 (dropped - not part of any clean
+// 2-crossing cell), 1 (an open chain's own endpoint - typically where the
+// silhouette runs off the surface's own parameter-domain boundary), or 2 (an
+// ordinary interior pass-through); walking every degree-1 start to its
+// matching endpoint recovers the open chains, and whatever links remain
+// afterward are closed loops (every remaining node degree 2) walked back to
+// their own start. Each chain's own ordered 3D points are fit via the same
+// InterpolateCubic()/ChordParams() global-interpolation pair this file
+// already uses for every other sampled curve (PullbackCurveToSurface()'s
+// `pulled_curve`, ContourAtPlane(), ...), not resampled. Still honestly
+// scoped: an isolated degree-0 crossing (dropped here) is still visible via
+// FindSurfaceSilhouettePoints() itself; saddle cells are skipped rather than
+// resolved; there is no perspective sibling of this function yet; and - the
+// one gap this bullet's own text keeps naming regardless of which of these
+// functions is asked - no visibility/self-occlusion resolution (a chain on
+// the surface's own far side from the viewer, or hidden behind a different
+// object, is reported exactly like a visible one).
+struct SurfaceSilhouetteCurve {
+  ON_NurbsCurve curve;
+  bool closed = false;
+};
+std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurves(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt);
+
 // --- numerical helpers ------------------------------------------------------
 
 // Damped Gauss-Newton on residual(x) (m equations, n unknowns) with box
