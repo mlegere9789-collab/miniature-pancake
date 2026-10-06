@@ -686,6 +686,20 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_inflate PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_inflate COMMAND dino8_test_inflate)
 
+  # Regression test for LoadPng's own max_output gap (ZlibInflate used to
+  # be called with no cap of its own, falling back to the generic
+  # kDefaultMaxInflateOutput ceiling regardless of what the PNG's own
+  # IHDR width/height actually needed - see ImageIO.cpp's LoadPng, the
+  # expected_raw_size/cap computation right before its ZlibInflate call).
+  # Hand-builds a 1x1 PNG whose IDAT stream decompresses to several/~100
+  # MB via ordinary DEFLATE back-references and confirms it's rejected
+  # (and rejected fast, not after actually decompressing that much),
+  # plus a genuine small-PNG round trip so the fix doesn't regress real
+  # files. Standalone like dino8_test_image_hdr/dino8_test_inflate.
+  add_executable(dino8_test_png_inflate_bomb tests/test_png_inflate_bomb.cpp src/render/ImageIO.cpp src/util/Inflate.cpp)
+  target_include_directories(dino8_test_png_inflate_bomb PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_png_inflate_bomb COMMAND dino8_test_png_inflate_bomb)
+
   # Numerically verifies VariableBlendSrf's own claim (cmd_fillet.cpp's
   # VariableBlendSrfCommand): that BuildBlendSurfaceG1/G2's new
   # width_frac_at hook makes the blend's cross-section width genuinely
