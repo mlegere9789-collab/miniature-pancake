@@ -5784,6 +5784,29 @@ mlibcheck "MacroDelete: no saved macro named 'saved macro'" "deleting an already
 mlibcheck "RunSavedMacro: no saved macro named 'saved macro'" "running a deleted name warns instead of silently doing nothing or crashing"
 mlibcheck "MacroLoad: no saved macro named 'saved macro'" "loading a deleted name warns instead of silently clearing the buffer"
 
+# Alias targets that are real command lines (CommandEngine::Execute's new
+# "!Find(name) && (space or ';')" branch) - see alias_macro_script.txt's
+# own header comment for exactly what this checks and why it used to be
+# silently broken rather than merely narrow. PARITY_MAP.md "Command
+# aliases and shortcut customization" (the fix itself) and "VBA-style
+# macro recorder and editor" (the "bind a saved macro to an alias" half
+# this fix also closes).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  AMAC="$("$BIN" --smoke 100 --script "$HERE/alias_macro_script.txt" 2>&1)" || { echo "$AMAC"; echo "FAIL: alias-macro script exited non-zero"; exit 1; }
+else
+  AMAC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/alias_macro_script.txt" 2>&1)" || { echo "$AMAC"; echo "FAIL: alias-macro script exited non-zero"; exit 1; }
+fi
+echo "$AMAC" | grep -E "^(ok|FAIL)"
+if echo "$AMAC" | grep -q "^FAIL"; then fail=1; fi
+echo "$AMAC" | grep -q "^smoke:" || { echo "$AMAC"; echo "FAIL: alias-macro script produced no smoke line"; fail=1; }
+amaccheck() { if echo "$AMAC" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$AMAC" "$1"; fail=1; fi; }
+amaccheck "Alias ln1 -> Line 0,0,0 10,0,0" "a multi-word alias target is captured verbatim, args included"
+amaccheck "Command: Line 0,0,0 10,0,0" "invoking the alias really runs its full target line (used to fail with Unknown command before this fix), proven by the real object it creates (expect_objects just above)"
+amaccheck "Command: Line 20,0,0 30,0,0" "a ';'-separated multi-command alias runs its first command"
+amaccheck "Command: Circle 40,0,0 5" "...and its second command, in order"
+amaccheck "Command: RunSavedMacro mymac" "a saved macro, bound to an alias, really runs when the alias is invoked"
+amaccheck "Bounding box min 50,0,0 max 55,5,5" "the alias-bound macro's own replayed Box is real, freshly-created geometry (SelLast), not a stale object or a printed-only confirmation"
+
 # BlockSetArraySpacing/BlockSetArrayCount command-line wiring: PARITY_MAP.md
 # "Dynamic blocks" Array parameter/action (the Document-level math itself is
 # unit-tested directly in dino8_block_array/test_block_array.cpp) - see
