@@ -3301,6 +3301,37 @@ Mesh Brep::TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) cons
   return Mesh::MergeAndWeld(TessellateNonUniformAdaptive(chord_tolerance));
 }
 
+std::vector<Mesh> Brep::TessellateCertifiedAdaptive(double chord_tolerance, int max_refinements,
+                                                     std::vector<bool>* out_certified) const {
+  std::vector<Mesh> result;
+  result.reserve(static_cast<size_t>(brep_.m_F.Count()));
+  if (out_certified) out_certified->clear();
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    FaceGeometry fg;
+    if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
+    NurbsSurface wrapper;
+    wrapper.raw() = fg.surface;
+    if (fg.outer.empty()) {
+      result.push_back(wrapper.TessellateGridCertifiedAdaptive(chord_tolerance, max_refinements));
+      if (out_certified) out_certified->push_back(true);
+    } else if (fg.exact_clip) {
+      result.push_back(wrapper.TessellateGridClippedExactAdaptive(chord_tolerance, fg.outer));
+      if (out_certified) out_certified->push_back(false);
+    } else {
+      const std::vector<std::vector<Point2d>>* holes = fg.holes.empty() ? nullptr : &fg.holes;
+      result.push_back(wrapper.TessellateGridNonUniformAdaptive(chord_tolerance, &fg.outer, holes));
+      if (out_certified) out_certified->push_back(false);
+    }
+    if (brep_.m_F[i].m_bRev) result.back() = result.back().FlipNormals();
+  }
+  return result;
+}
+
+Mesh Brep::TessellateToClosedMeshCertifiedAdaptive(double chord_tolerance,
+                                                    int max_refinements) const {
+  return Mesh::MergeAndWeld(TessellateCertifiedAdaptive(chord_tolerance, max_refinements));
+}
+
 std::vector<Mesh> Brep::TessellateAdaptiveByAngle(double angle_tolerance) const {
   std::vector<Mesh> result;
   result.reserve(static_cast<size_t>(brep_.m_F.Count()));

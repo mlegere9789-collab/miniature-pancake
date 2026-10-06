@@ -8798,6 +8798,101 @@ void TestSurfaceMeasureGridTessellationDeviation() {
         "when either division count is less than 1");
 }
 
+void TestSurfaceTessellateGridCertifiedAdaptive() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // A flat surface: SuggestedDivisions() already starts at the minimum,
+  // and a planar facet's deviation is exactly 0 regardless of tolerance,
+  // so this should certify on the very first attempt (no doubling).
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 10, 0),
+      Point3d(10, 0, 0),
+      Point3d(10, 10, 0),
+  };
+  const NurbsSurface flat =
+      NurbsSurface::FromControlGrid(flat_grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  double flat_achieved = -1.0;
+  const auto flat_mesh = flat.TessellateGridCertifiedAdaptive(0.01, 8, &flat_achieved);
+  Check(flat_mesh.FaceCount() > 0, "TessellateGridCertifiedAdaptive returns a real mesh for a flat surface");
+  Check(flat_achieved >= 0.0 && flat_achieved < 1e-12,
+        "TessellateGridCertifiedAdaptive's own achieved deviation is "
+        "exactly 0 for a flat surface");
+
+  // A genuinely curved surface (same unit-radius cylinder wall
+  // TestSurfaceMeasureGridTessellationDeviation() uses): per that test's
+  // own finding, SuggestedDivisions(chord_tolerance)'s own starting
+  // resolution measures 1.03-1.09x ABOVE chord_tolerance itself - so this
+  // function MUST actually refine (double at least once) to certify, not
+  // just trust the estimate the way every other *Adaptive sibling does.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  cylinder.GetNurbForm(cylinder_surface);
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+
+  const double chord_tolerance = 0.01;
+  const auto starting_divisions = wall.SuggestedDivisions(chord_tolerance);
+  const double starting_deviation =
+      wall.MeasureGridTessellationDeviation(starting_divisions.u, starting_divisions.v);
+  Check(starting_deviation > chord_tolerance,
+        "sanity: the cylinder wall's own SuggestedDivisions() starting "
+        "resolution does NOT already satisfy chord_tolerance on its own - "
+        "otherwise the refinement loop below would be untested");
+
+  double wall_achieved = -1.0;
+  const auto wall_mesh = wall.TessellateGridCertifiedAdaptive(chord_tolerance, 8, &wall_achieved);
+  Check(wall_mesh.FaceCount() > 0, "TessellateGridCertifiedAdaptive returns a real mesh for a curved surface");
+  Check(wall_achieved >= 0.0 && wall_achieved <= chord_tolerance,
+        "TessellateGridCertifiedAdaptive's own achieved deviation is "
+        "genuinely at or under chord_tolerance - a MEASURED guarantee, "
+        "not just the heuristic estimate");
+  // Independently re-measure the returned mesh's own resolution (reverse-
+  // engineered from its triangle count: 2 triangles per cell) to confirm
+  // the function actually refined beyond the untrimmed starting guess.
+  Check(wall_mesh.FaceCount() > starting_divisions.u * starting_divisions.v * 2,
+        "TessellateGridCertifiedAdaptive genuinely refined past "
+        "SuggestedDivisions()'s own starting resolution to reach the "
+        "measured bound, not just returned the unrefined estimate");
+
+  bool threw_tolerance = false;
+  try {
+    flat.TessellateGridCertifiedAdaptive(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_tolerance = true;
+  }
+  Check(threw_tolerance,
+        "TessellateGridCertifiedAdaptive throws std::invalid_argument for "
+        "a non-positive chord_tolerance");
+
+  bool threw_refinements = false;
+  try {
+    flat.TessellateGridCertifiedAdaptive(0.01, -1);
+  } catch (const std::invalid_argument&) {
+    threw_refinements = true;
+  }
+  Check(threw_refinements,
+        "TessellateGridCertifiedAdaptive throws std::invalid_argument for "
+        "a negative max_refinements");
+
+  // max_refinements = 0 forbids any doubling at all - on the cylinder
+  // wall, whose starting resolution is already confirmed above to exceed
+  // chord_tolerance, this must fail to certify and throw loudly rather
+  // than silently return a mesh that doesn't actually honor the bound.
+  bool threw_uncertifiable = false;
+  try {
+    wall.TessellateGridCertifiedAdaptive(chord_tolerance, 0);
+  } catch (const std::runtime_error&) {
+    threw_uncertifiable = true;
+  }
+  Check(threw_uncertifiable,
+        "TessellateGridCertifiedAdaptive throws std::runtime_error rather "
+        "than silently returning an uncertified mesh when max_refinements "
+        "is too small to reach the bound");
+}
+
 void TestBrepTessellateAdaptive() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -8935,6 +9030,77 @@ void TestBrepTessellateNonUniformAdaptive() {
         "the non-uniform adaptive sphere's volume is within 2% of the "
         "true analytic value (4/3 * pi * r^3), the same accuracy target "
         "the uniform adaptive path hits");
+}
+
+void TestBrepTessellateCertifiedAdaptive() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // Box(): every face is untrimmed (whole-cell) and flat, so every face
+  // should be reported as genuinely CERTIFIED, and the closed volume
+  // should still be exact.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  std::vector<bool> box_certified;
+  const auto box_faces = box.TessellateCertifiedAdaptive(0.01, 8, &box_certified);
+  Check(box_faces.size() == 6, "TessellateCertifiedAdaptive returns one mesh per Box() face (6)");
+  Check(box_certified.size() == 6, "out_certified has one entry per returned Box() face");
+  bool all_box_certified = true;
+  for (bool c : box_certified) all_box_certified = all_box_certified && c;
+  Check(all_box_certified,
+        "every Box() face is untrimmed, so TessellateCertifiedAdaptive "
+        "reports every one of them as genuinely certified");
+  const Mesh box_closed = box.TessellateToClosedMeshCertifiedAdaptive(0.01);
+  Check(std::abs(box_closed.Volume() - 8.0) < 1e-9,
+        "TessellateToClosedMeshCertifiedAdaptive's own volume is exactly "
+        "8.0 for a 2x2x2 box");
+
+  // A single genuinely TRIMMED, curved face (a wedge of the same unit
+  // cylinder wall used above, via TrimmedPlanarFace() - despite the name,
+  // it accepts any NurbsSurface, not just planar ones) has no certified
+  // path (MeasureGridTessellationDeviation() is scoped to the plain
+  // untrimmed grid), so it must fall back to the existing heuristic and
+  // be honestly reported as NOT certified - not silently blended in with
+  // a real bound. exact_clip=true (-> TessellateGridClippedExactAdaptive)
+  // is required here, not the whole-cell TessellateGridNonUniformAdaptive:
+  // a genuine, confirmed finding from a standalone dino8_scratch_test probe
+  // while building this test - the cylinder wall's own v (height) direction
+  // has zero curvature, so SuggestedParameterValues(1, ...) returns only
+  // the 2 domain endpoints (one single row spanning the FULL height), and
+  // a whole-cell in/out test can never find a cell whose corners (always
+  // exactly at v=0 and v=1) land inside any v-restricted trim polygon -
+  // confirmed directly to return 0 faces for exactly this reason, not a
+  // bug in TessellateCertifiedAdaptive itself.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  cylinder.GetNurbForm(cylinder_surface);
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  const auto wall_domain_u = wall.Domain(0);
+  const auto wall_domain_v = wall.Domain(1);
+  const double u0 = wall_domain_u.min + 0.25 * (wall_domain_u.max - wall_domain_u.min);
+  const double u1 = wall_domain_u.min + 0.75 * (wall_domain_u.max - wall_domain_u.min);
+  const double v0 = wall_domain_v.min + 0.1 * (wall_domain_v.max - wall_domain_v.min);
+  const double v1 = wall_domain_v.min + 0.9 * (wall_domain_v.max - wall_domain_v.min);
+  const std::vector<Point2d> trim = {
+      Point2d(u0, v0),
+      Point2d(u1, v0),
+      Point2d(u1, v1),
+      Point2d(u0, v1),
+  };
+  const Brep trimmed_wall = Brep::TrimmedPlanarFace(wall, trim, /*exact_clip=*/true);
+  std::vector<bool> wall_certified;
+  const auto wall_faces = trimmed_wall.TessellateCertifiedAdaptive(0.01, 8, &wall_certified);
+  Check(wall_faces.size() == 1, "TrimmedPlanarFace() produces exactly one face");
+  Check(wall_certified.size() == 1 && !wall_certified[0],
+        "a genuinely trimmed face has no certified path and is honestly "
+        "reported as NOT certified, not silently treated as if it were");
+  Check(wall_faces[0].FaceCount() > 0,
+        "the trimmed face still gets a real (uncertified, heuristic) "
+        "tessellation, not an empty result");
 }
 
 void TestFileRoundTrip() {
@@ -69869,9 +70035,11 @@ int main() {
   TestSurfaceSuggestedDivisionsByAngle();
   TestSurfaceTessellateGridAdaptiveByAngle();
   TestSurfaceMeasureGridTessellationDeviation();
+  TestSurfaceTessellateGridCertifiedAdaptive();
   TestBrepTessellateAdaptive();
   TestBrepTessellateAdaptiveByAngle();
   TestBrepTessellateNonUniformAdaptive();
+  TestBrepTessellateCertifiedAdaptive();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();
