@@ -5561,7 +5561,7 @@ echo "$HS" | grep -q "^smoke:" || { echo "$HS"; echo "FAIL: history script produ
 hcheck() { if echo "$HS" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HS" "$1"; fail=1; fi; }
 hcheck "History recording: off. 0 object(s) with live construction history" "History defaults Off and reports it"
 hcheck "UpdateHistory: 0 object(s) re-evaluated from their source curve(s)' current geometry" "an Extrude made while History was Off recorded nothing for UpdateHistory to redo"
-hcheck "History recording: on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe/Sweep1/Sweep2 (single section) results will remember their source curve(s) for UpdateHistory" "History On toggled recording on"
+hcheck "History recording: on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe/Sweep1/Sweep2 (single section)/Patch (single planar closed curve) results will remember their source curve(s) for UpdateHistory" "History On toggled recording on"
 hcheck "Bounding box min 20,0,0 max 30,0,5" "the freshly-extruded surface's bounding box, before the source curve moves"
 hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one object History was tracking"
 hcheck "Bounding box min 20,0,20 max 30,0,25" "UpdateHistory genuinely re-derived the extruded surface's geometry from the source curve's new z=20 position - not the z=0..5 box baked at creation time"
@@ -5622,6 +5622,27 @@ hs2check "Bounding box min -0.9073,-0.978,0 max 1,0.978,10" "the freshly-built s
 hs2check "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one Sweep2 History was tracking"
 hs2check "Bounding box min -0.9073,-0.978,5 max 1,0.978,15" "UpdateHistory genuinely re-derived the swept surface's geometry from the section curve's new +5 z offset - not the z=0..10 surface baked at creation time"
 
+# History extended to a ninth command, Patch's single-closed-planar-curve
+# case (the free Patch function, cmd_surface.cpp; RebuildPatch,
+# history_rebuild.h) - see history_patch_script.txt's own header comment
+# for exactly what this checks. Same real-bounding-box-move money check as
+# Pipe/Sweep1/Sweep2 above; the result is a flat Brep, so (like
+# history_script.txt's own flat Extrude case) BoundingBox never adds an
+# extra box object for it.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  HPA="$("$BIN" --smoke 100 --script "$HERE/history_patch_script.txt" 2>&1)" || { echo "$HPA"; echo "FAIL: history-patch script exited non-zero"; exit 1; }
+else
+  HPA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/history_patch_script.txt" 2>&1)" || { echo "$HPA"; echo "FAIL: history-patch script exited non-zero"; exit 1; }
+fi
+echo "$HPA" | grep -E "^(ok|FAIL)"
+if echo "$HPA" | grep -q "^FAIL"; then fail=1; fi
+echo "$HPA" | grep -q "^smoke:" || { echo "$HPA"; echo "FAIL: history-patch script produced no smoke line"; fail=1; }
+hpacheck() { if echo "$HPA" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HPA" "$1"; fail=1; fi; }
+hpacheck "object 2: Patch <- 1" "History tracks a Patch result (object 2) built from its closed curve (object 1)"
+hpacheck "Bounding box min -5,-5,0 max 5,5,0" "the freshly-patched circle's exact bounding box, before the source curve moves"
+hpacheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one Patch History was tracking"
+hpacheck "Bounding box min -5,-5,5 max 5,5,5" "UpdateHistory genuinely re-derived the patched face's geometry from the source circle's new z=5 position - not the z=0 flat face baked at creation time"
+
 # RecordMacro: a real action recorder for the Macro Editor's buffer (see
 # record_macro_script.txt's own header comment for exactly what this
 # checks) - PARITY_MAP.md's "VBA-style macro recorder and editor" item.
@@ -5642,6 +5663,31 @@ RMAC_LINE50_COUNT="$(echo "$RMAC" | grep -cF "Line 50,0,0 60,0,0" || true)"
 [ "$RMAC_LINE50_COUNT" = "1" ] && echo "ok   the Line command typed AFTER RecordMacro Off was run but NOT appended to the buffer (it appears exactly once, as the typed command line itself, not a second time in the final dump)" || { echo "FAIL a command typed after RecordMacro Off leaked into the buffer (expected 1 occurrence, got $RMAC_LINE50_COUNT)"; fail=1; }
 RMAC_SELF_COUNT="$(echo "$RMAC" | grep -cF "  RecordMacro" || true)"
 [ "$RMAC_SELF_COUNT" = "0" ] && echo "ok   RecordMacro never recorded itself into its own buffer" || { echo "FAIL RecordMacro recorded one of its own toggle lines into the buffer"; fail=1; }
+
+# Named macro library (MacroSave/MacroLoad/MacroDelete/RunSavedMacro,
+# cmd_misc.cpp) - see macro_library_script.txt's own header comment for
+# exactly what this checks - PARITY_MAP.md's "VBA-style macro recorder and
+# editor" item, the "only one macro could ever be kept at a time" half.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  MLIB="$("$BIN" --smoke 100 --script "$HERE/macro_library_script.txt" 2>&1)" || { echo "$MLIB"; echo "FAIL: macro-library script exited non-zero"; exit 1; }
+else
+  MLIB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/macro_library_script.txt" 2>&1)" || { echo "$MLIB"; echo "FAIL: macro-library script exited non-zero"; exit 1; }
+fi
+echo "$MLIB" | grep -E "^(ok|FAIL)"
+if echo "$MLIB" | grep -q "^FAIL"; then fail=1; fi
+echo "$MLIB" | grep -q "^smoke:" || { echo "$MLIB"; echo "FAIL: macro-library script produced no smoke line"; fail=1; }
+mlibcheck() { if echo "$MLIB" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$MLIB" "$1"; fail=1; fi; }
+mlibcheck "Saved macro 'saved macro'" "MacroSave confirms the name, including a space, round-tripped through Tokenize's quoting"
+mlibcheck "Bounding box min 20,0,0 max 25,5,5" "RunSavedMacro really executed its saved Box line - SelLast's real geometry, not just a printed confirmation, and immune to how many other lines the shared buffer happened to carry in from an earlier script in this same smoke.sh run"
+mlibcheck "  Line 0,0,0 10,0,0" "RunSavedMacro/MacroLoad's effect is visible via the buffer dump, starting with the saved Line text"
+mlibcheck "  Box 20,0,0 25,5,5 5" "the saved macro's second recorded line"
+MLIB_CIRCLE_IN_DUMP="$(echo "$MLIB" | grep -cF "  Circle 50,0,0 5" || true)"
+[ "$MLIB_CIRCLE_IN_DUMP" = "0" ] && echo "ok   the buffer dump after MacroLoad shows the saved snapshot, not the Circle line typed into the live buffer after MacroSave ran" || { echo "FAIL MacroLoad did not actually restore the saved snapshot - the later Circle edit leaked through"; fail=1; }
+mlibcheck "Loaded macro 'saved macro' into the Macro Editor buffer" "MacroLoad's own confirmation"
+mlibcheck "Deleted macro 'saved macro'" "MacroDelete's own confirmation"
+mlibcheck "MacroDelete: no saved macro named 'saved macro'" "deleting an already-deleted name warns instead of silently no-oping"
+mlibcheck "RunSavedMacro: no saved macro named 'saved macro'" "running a deleted name warns instead of silently doing nothing or crashing"
+mlibcheck "MacroLoad: no saved macro named 'saved macro'" "loading a deleted name warns instead of silently clearing the buffer"
 
 # BlockSetArraySpacing/BlockSetArrayCount command-line wiring: PARITY_MAP.md
 # "Dynamic blocks" Array parameter/action (the Document-level math itself is

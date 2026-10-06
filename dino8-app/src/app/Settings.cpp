@@ -121,6 +121,15 @@ bool LoadSettingsFrom(const std::string& path_str, Application& app, float& ui_s
     app.Engine().Aliases().clear();
     for (const auto& [k, v] : aliases.object) if (v.IsString()) app.Engine().Aliases()[k] = v.AsString();
   }
+  // Named macro library (MacroSave/MacroLoad/MacroDelete/RunSavedMacro,
+  // cmd_misc.cpp): same wholesale-replace-when-present contract as
+  // aliases above, so a macro deleted via MacroDelete stays deleted
+  // across a restart/import.
+  const json::Value& macros = root["macros"];
+  if (macros.IsObject()) {
+    app.State().macros.clear();
+    for (const auto& [k, v] : macros.object) if (v.IsString()) app.State().macros[k] = v.AsString();
+  }
   const json::Value& shortcuts = root["shortcuts"];
   if (shortcuts.IsArray()) {
     app.user_shortcuts.clear();
@@ -169,6 +178,12 @@ bool SaveSettingsTo(const std::string& path_str, const Application& app, float u
   {
     bool first = true;
     for (const auto& [k, v] : a.Engine().Aliases()) { out << (first ? "" : ", ") << "\"" << Escape(k) << "\": \"" << Escape(v) << "\""; first = false; }
+  }
+  out << "},\n";
+  out << "  \"macros\": {";
+  {
+    bool first = true;
+    for (const auto& [k, v] : a.State().macros) { out << (first ? "" : ", ") << "\"" << Escape(k) << "\": \"" << Escape(v) << "\""; first = false; }
   }
   out << "},\n";
   out << "  \"shortcuts\": [";

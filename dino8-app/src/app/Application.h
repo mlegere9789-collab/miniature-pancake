@@ -6,6 +6,7 @@
 #include <array>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -173,6 +174,7 @@ struct AppState {
   std::string content_filter;        // ContentFilter: case-insensitive name substring for the Materials/Textures/Environments panels
   std::string macro_text = "! _Box 0,0,0 10,10,10\n_ZoomExtents\n";  // MacroEditor's buffer (Options.cpp Settings persists this, like startup_script)
   bool macro_recording = false;      // RecordMacro On/Off: while on, CommandEngine::Execute appends each typed top-level command line to macro_text - see cmd_misc.cpp's RecordMacro
+  std::map<std::string, std::string> macros;  // Named macro library (MacroSave/MacroLoad/MacroDelete/RunSavedMacro, cmd_misc.cpp): a saved name -> ';'-or-newline-separated command text, independent of the single macro_text editor buffer. Persisted the same wholesale-replace way CommandEngine::Aliases() is (Settings.cpp's "macros" key).
 };
 
 struct FileDialogState {

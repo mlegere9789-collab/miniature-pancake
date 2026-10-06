@@ -84,4 +84,14 @@ std::optional<SceneObject> RebuildSweep2(CommandContext& ctx, const kernel::Nurb
                                           const kernel::NurbsCurve& rail1, const kernel::NurbsCurve& rail2,
                                           const HistoryRecord& rec);
 
+// Patch (the free Patch function, cmd_surface.cpp), single-closed-planar-
+// curve case only - ON_BrepTrimmedPlane against the curve's own fitted
+// plane. Reads no num parameters: this sub-case has none of its own.
+// Returns nullopt (no history recorded, object stays stale) if the curve
+// is no longer closed and planar after being edited - deliberately never
+// falls back to the live command's own non-planar-projection construction,
+// which would change the object's own shape in a way the recorded source
+// list (just this one curve) cannot honestly explain.
+std::optional<SceneObject> RebuildPatch(CommandContext& ctx, const kernel::NurbsCurve& curve, const HistoryRecord& rec);
+
 }  // namespace dino8::app
