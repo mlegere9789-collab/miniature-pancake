@@ -422,6 +422,36 @@ class NurbsCurve {
   Result DeviationTo(const NurbsCurve& other, double tolerance, double& out_min, double& out_max,
                       int* out_samples = nullptr) const;
 
+  // Area, centroid, and second moments of area of the planar region a
+  // closed, planar curve bounds - PARITY_MAP.md's "Mass properties &
+  // spatial queries" category, "Planar closed-curve region properties
+  // (area, centroid, moments)", whose disclosed gap was that this was
+  // "still app-only" (the app's own AreaMoments command always
+  // tessellates into a mesh first, even for a curve this exact rather
+  // than approximate). Computed via the standard parametric
+  // generalization of the polygon shoelace/centroid formulas (Green's
+  // theorem) in the curve's own fitted plane's local (u, v) coordinates
+  // (`ON_DotProduct(p - plane.origin, plane.xaxis/yaxis)`, the same
+  // convention `Brep`'s own planar-face helpers already use), sampled
+  // and doubled until two successive refinements agree on area,
+  // centroid, AND every second moment to within `tolerance` - the same
+  // "double until convergence" idiom `DeviationTo()` above already uses
+  // (there is no closed-form error bound for this either). `ixx`/`iyy`
+  // are the area moments about axes through the CENTROID parallel to the
+  // plane's own xaxis/yaxis (not the plane's origin); `ixy` is the
+  // corresponding product of inertia. `centroid` is reported in real 3D
+  // world coordinates (`plane.PointAt(u, v)`), not the local (u, v) pair.
+  // Returns `Result::Failed` if the curve isn't both `IsClosed()` and
+  // `IsPlanar(tolerance)`, or if convergence isn't reached within 20
+  // doublings. Throws `std::invalid_argument` if `tolerance` isn't
+  // positive.
+  struct RegionProperties {
+    double area = 0.0;
+    Point3d centroid;
+    double ixx = 0.0, iyy = 0.0, ixy = 0.0;
+  };
+  Result PlanarRegionProperties(RegionProperties& out, double tolerance) const;
+
   int Degree() const;
   int ControlPointCount() const;
 

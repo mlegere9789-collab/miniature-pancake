@@ -83,3 +83,42 @@ New
 DimLinear 0,0,0 40,0,0 0,10,0
 SelAll
 Export @TMP@/dwg_dimension_roundtrip.dwg
+
+# DWG pattern-fill HATCH: same "flows through ExportDwg's own intermediate-
+# DXF step for free" claim as DIMENSION above, for the existing DXF
+# pattern-fill HATCH writer (WriteDxfHatchPattern) - checked here rather
+# than assumed, same reason. A fresh document, independent of every check
+# above (see dwg_reopen_script.txt for the matching Open + check, run as a
+# separate process launch per this file's own header comment). Investigated
+# alongside this check, NOT included here since it genuinely fails rather
+# than being untested: a Block/Insert instance exported the same way loses
+# its block structure entirely on DWG reopen (0 objects back) - LibreDWG's
+# own dxf_read_file parses the intermediate DXF's BLOCK/INSERT entities
+# into a correct in-memory Dwg_Data just fine (confirmed directly against
+# LibreDWG's own dxf_read_file/dwg_write_file API, independent of this
+# app), but the written binary DWG's INSERT entity ends up with an
+# unresolved block_header handle reference on reopen - a real limitation of
+# round-tripping a minimal, non-AutoCAD-scaffolded BLOCKS section (no
+# BLOCK_RECORD symbol-table entry - WriteDxfBlockMember's own BLOCKS writer
+# never emits one, "readers create the rest with defaults" per ExportDxf's
+# own TABLES comment, true of Dino8's own DXF reader but not of LibreDWG's)
+# through LibreDWG's own by-name block-handle resolution, not a Dino8 app
+# bug - see this file's own DWG bullet in PARITY_MAP.md for the full
+# disclosure. Fixing it would mean patching LibreDWG's own vendored in_dxf.c
+# (this project's cmake/patch_libredwg.cmake does patch that library when a
+# root cause is confirmed - see its own header comment for the precedent),
+# which needs more investigation than this pass attempts.
+# Offset to Y=50-60 (not the DXF pattern-fill test's own 0,0,0-10,10,0)
+# purely to avoid colliding with the CV[0] 0,0,0 / CV[1] 12,0,0 uniqueness
+# checks the geometry section above already runs against this same reopened
+# output - one of this hatch's own pattern lines would otherwise land on
+# exactly 0,0,0 too. The resulting line count (80, not the DXF test's own
+# 81) is this exact boundary's own real, confirmed-by-running clip-edge
+# count, not carried over by assumption - see smoke.sh's own dwicheck
+# comment for the real count/endpoints.
+New
+Rectangle 0,50,0 10,60,0
+SelLast
+Hatch Pattern=ANSI31
+SelAll
+Export @TMP@/dwg_hatch_roundtrip.dwg

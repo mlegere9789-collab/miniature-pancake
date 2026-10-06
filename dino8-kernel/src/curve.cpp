@@ -1469,6 +1469,96 @@ Result NurbsCurve::DeviationTo(const NurbsCurve& other, double tolerance, double
   return Result::Failed;
 }
 
+namespace {
+// Standard closed-polygon shoelace/centroid/second-moment formulas (the
+// continuous Green's-theorem integrals' exact value on the piecewise-
+// linear approximation this function is handed), in LOCAL 2D (u, v)
+// plane coordinates. `uv` is implicitly closed (its last vertex connects
+// back to its first) - the caller never duplicates the first point as a
+// last one. Ixx/Iyy/Ixy come back about the ORIGIN of the (u, v) frame,
+// not yet shifted to the centroid - the caller's job, via the standard
+// parallel-axis theorem, once it knows the real centroid.
+void PolygonProperties(const std::vector<Point2d>& uv, double& area, double& cx, double& cy, double& ixx,
+                        double& iyy, double& ixy) {
+  area = 0.0;
+  double mx = 0.0, my = 0.0, sxx = 0.0, syy = 0.0, sxy = 0.0;
+  const size_t n = uv.size();
+  for (size_t i = 0; i < n; ++i) {
+    const Point2d& a = uv[i];
+    const Point2d& b = uv[(i + 1) % n];
+    const double cross = a.x * b.y - b.x * a.y;
+    area += cross;
+    mx += (a.x + b.x) * cross;
+    my += (a.y + b.y) * cross;
+    sxx += (a.y * a.y + a.y * b.y + b.y * b.y) * cross;
+    syy += (a.x * a.x + a.x * b.x + b.x * b.x) * cross;
+    sxy += (a.x * b.y + 2 * a.x * a.y + 2 * b.x * b.y + b.x * a.y) * cross;
+  }
+  area *= 0.5;
+  cx = area != 0.0 ? mx / (6.0 * area) : 0.0;
+  cy = area != 0.0 ? my / (6.0 * area) : 0.0;
+  ixx = sxx / 12.0;
+  iyy = syy / 12.0;
+  ixy = sxy / 24.0;
+}
+
+// One sample-and-measure pass at exactly `n` evenly spaced parameters.
+void SampleRegionProperties(const NurbsCurve& curve, const ON_Plane& plane, int n, double& area, double& cx,
+                             double& cy, double& ixx, double& iyy, double& ixy) {
+  const Interval dom = curve.Domain();
+  std::vector<Point2d> uv;
+  uv.reserve(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const double t = dom.min + (dom.max - dom.min) * i / n;
+    const Point3d p = curve.PointAt(t);
+    const Vector3d rel = p - plane.origin;
+    uv.emplace_back(ON_DotProduct(rel, plane.xaxis), ON_DotProduct(rel, plane.yaxis));
+  }
+  PolygonProperties(uv, area, cx, cy, ixx, iyy, ixy);
+}
+}  // namespace
+
+Result NurbsCurve::PlanarRegionProperties(RegionProperties& out, double tolerance) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::PlanarRegionProperties: tolerance must be positive");
+  }
+  if (!IsClosed()) return Result::Failed;
+  ON_Plane plane;
+  if (!curve_.IsPlanar(&plane, tolerance)) return Result::Failed;
+
+  int n = std::max(SuggestedSamples(tolerance), 20);
+  double area, cx, cy, ixx, iyy, ixy;
+  SampleRegionProperties(*this, plane, n, area, cx, cy, ixx, iyy, ixy);
+  for (int level = 0; level < 20; ++level) {
+    const int next_n = n * 2;
+    double next_area, next_cx, next_cy, next_ixx, next_iyy, next_ixy;
+    SampleRegionProperties(*this, plane, next_n, next_area, next_cx, next_cy, next_ixx, next_iyy, next_ixy);
+    const bool converged = std::fabs(next_area - area) <= tolerance && std::fabs(next_cx - cx) <= tolerance &&
+                            std::fabs(next_cy - cy) <= tolerance && std::fabs(next_ixx - ixx) <= tolerance &&
+                            std::fabs(next_iyy - iyy) <= tolerance && std::fabs(next_ixy - ixy) <= tolerance;
+    n = next_n;
+    area = next_area;
+    cx = next_cx;
+    cy = next_cy;
+    ixx = next_ixx;
+    iyy = next_iyy;
+    ixy = next_ixy;
+    if (converged) {
+      out.area = std::fabs(area);
+      out.centroid = plane.PointAt(cx, cy);
+      // Shift from about the (u, v) origin to about the real centroid -
+      // the standard parallel-axis theorem, with the SIGNED area (area
+      // can come out negative depending on the curve's own traversal
+      // direction, exactly like the signed cross-product terms above).
+      out.ixx = std::fabs(ixx - area * cy * cy);
+      out.iyy = std::fabs(iyy - area * cx * cx);
+      out.ixy = ixy - area * cx * cy;
+      return Result::Ok;
+    }
+  }
+  return Result::Failed;
+}
+
 Result NurbsCurve::Fair(double tolerance, int iterations, double factor, double* out_max_deviation) {
   if (!(tolerance > 0.0)) {
     throw std::invalid_argument("dino8::kernel::NurbsCurve::Fair: tolerance must be positive");

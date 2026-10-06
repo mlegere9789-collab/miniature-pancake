@@ -242,15 +242,27 @@ dwcheck "Exported $TMPW/dwg_v2018.dwg (Version=2018)" "Export Version=2018 (DWG)
 # DWG_TYPE_DIMENSION_LINEAR case (a separate reader from DXF's, reading raw
 # binary struct fields instead of text group codes, but feeding the exact
 # same BuildLinearDimensionGeometry/AddDimensionGroupToDoc reconstruction)
-# already knows how to rebuild - checked here rather than assumed, same as
-# the BLOCK/pattern-fill HATCH writers' own DWG inheritance was checked
-# when each was added.
+# already knows how to rebuild - checked here rather than assumed. (The
+# BLOCK/pattern-fill HATCH writers' own DWG inheritance is checked for real
+# just below, not merely assumed the way this comment used to claim before
+# that check existed - see its own comment for what it actually found.)
 dwcheck "Exported $TMPW/dwg_dimension_roundtrip.dwg" "DWG export of a DimLinear ran"
 dwicheck "DWG: 0 curves, 0 points, 1 dimension" "the reopened DWG's DIMENSION_LINEAR entity round-tripped as one real dimension, not unrelated bare curves - the new DXF DIMENSION writer's own support flows through to a real binary DWG for free"
 dwicheck "Annotation = DimLinear" "the round-tripped DWG dimension carries the same Annotation=DimLinear tag WalkDwgEntities' own pre-existing DIMENSION_LINEAR case writes"
 dwicheck "DimP0 = 0,0,0" "the round-tripped DWG dimension's first measured point survived exactly"
 dwicheck "DimP1 = 40,0,0" "the round-tripped DWG dimension's second measured point survived exactly"
 dwicheck "DimOffset = 10" "the round-tripped DWG dimension's own dimension-line offset survived exactly"
+# DWG pattern-fill HATCH: see dwg_script.txt's own matching comment for the
+# full "flows through for free, checked rather than assumed" rationale,
+# and for the sibling BLOCK/INSERT investigation this same pass ran
+# alongside it (genuinely fails on reopen - a real LibreDWG-level
+# named-block-handle-resolution gap, not a Dino8 bug - disclosed in
+# PARITY_MAP.md's own DWG bullet rather than silently left unmentioned).
+dwcheck "Exported $TMPW/dwg_hatch_roundtrip.dwg" "DWG export of a pattern-fill HATCH ran"
+dwicheck "DWG: 1 curve, 0 points, 1 hatch" "the reopened DWG's HATCH entity round-tripped as one real ANSI31 hatch plus its own boundary curve, not unrelated bare curves - the existing DXF pattern-fill HATCH writer's own support flows through to a real binary DWG for free"
+dwicheck "80 object(s) selected" "SelHatch found all 80 reopened ANSI31 pattern-line curves (the boundary curve itself is plain geometry, not part of the hatch's own group, same as every other hatch import in this app; 80 rather than the 81 the DXF-side test gets for the same 10-unit boundary width is this rectangle's own real, confirmed-by-running clip-edge-inclusion count at this Y offset, not a hand-derived guess)"
+dwicheck "CV\[0\] 9.875,50,0" "the reopened hatch's first ANSI31 pattern line starts at the exact, confirmed-by-running boundary edge"
+dwicheck "CV\[1\] 0,60,0" "the reopened hatch's last ANSI31 pattern line ends at the exact, confirmed-by-running opposite edge"
 
 # Interactive UI replay: typed command, viewport picks, click-select, Delete, Undo.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -6152,35 +6164,44 @@ fi
 # of curves plus Annotation/Dim*/Leader* user_text instead - see
 # commands/DimGeometry.h and cmd_annotate.cpp's own BuildLeaderGroup), same
 # gap as ON_Hatch/ON_InstanceRef/Text before their own passes above.
-# dimlinear3dm_fixture_gen builds six real dimension/leader objects directly
-# through OpenNURBS' own API (a rotated/horizontal linear 0,0,0-40,0,0 at
-# offset 10; an aligned linear 0,0,0-30,30,0 at offset 5; a radius dimension
-# on a center/radius-point/leader-tail of 100,0,0 / 105,0,0 / 110,0,0; a
-# diameter dimension on 200,0,0 / 203,0,0 / 206,0,0; a leader with arrowhead
-# tip 300,0,0, bend point 305,5,0 and tail/text landing 315,5,0; a 90-degree
-# angular dimension with vertex 400,0,0 and extension points 410,0,0/
-# 400,10,0), all six referencing a real custom ON_DimStyle table entry with
-# text height 1.5, independent of Dino 8's own exporter (which never writes
-# any of these annotation kinds natively). Each dimension is rebuilt via
+# dimlinear3dm_fixture_gen builds seven real dimension/leader objects
+# directly through OpenNURBS' own API (a rotated/horizontal linear
+# 0,0,0-40,0,0 at offset 10; an aligned linear 0,0,0-30,30,0 at offset 5; a
+# radius dimension on a center/radius-point/leader-tail of 100,0,0 /
+# 105,0,0 / 110,0,0; a diameter dimension on 200,0,0 / 203,0,0 / 206,0,0; a
+# leader with arrowhead tip 300,0,0, bend point 305,5,0 and tail/text
+# landing 315,5,0; a 90-degree angular dimension with vertex 400,0,0 and
+# extension points 410,0,0/400,10,0; an X-direction ordinate dimension with
+# base point 500,0,0 and measured feature point 520,8,0), all seven
+# referencing a real custom ON_DimStyle table entry with text height 1.5,
+# independent of Dino 8's own exporter (which never writes any of these
+# annotation kinds natively). Each dimension is rebuilt via
 # BuildLinearDimensionGeometry/BuildRadiusDimensionGeometry/
 # BuildAngleDimensionGeometry (commands/DimGeometry.h), the exact math a
 # live Dim/DimAligned/DimRadius/DimDiameter/DimAngle command and DXF/DWG
 # DIMENSION import already share; the leader is rebuilt via the same
-# polyline+arrow+left-aligned-text shape BuildLeaderGroup
-# (cmd_annotate.cpp) bakes for a live Leader command, so the checks below
-# mirror the DXF DIMENSION test's own tag checks exactly, plus new
-# Leader/DimAngle-specific ones. "63 objects"/arrow-curve Length values are
-# this build's own FreeType glyph-contour counts for "40"/"42.43"/"R 5"/
-# "D 3"/"LeaderText"/"90 deg" plus the 5/5/2/3/2/3 line+extension+arrow
-# geometry curves per dimension/leader (9+12+5+7+17+13) - confirmed by first
-# actually running this fixture through the app rather than hand-derived,
-# same as text3dm_fixture_gen's own hardcoded "3 objects" for "Hi"'s
-# H/i-stem/i-dot. The arrow-curve Length checks below (2.688x the text
-# height, from AddArrow's own fixed 0.3x-width triangle) additionally prove
-# the custom DimStyle's text height (1.5) was actually resolved via
-# DimensionStyleId(), not ON_DimStyle::Default's own differing 1.0. The
-# UpdateDimensions pass confirms every one of the six is genuinely
-# live/rebuildable from its own tags, not just a one-shot baked import.
+# polyline+arrow+left-aligned-text shape BuildLeaderGroup (cmd_annotate.cpp)
+# bakes for a live Leader command; the ordinate dimension is rebuilt via the
+# same single-leader-line-plus-text shape BuildOrdinateDimGroup
+# (cmd_annotate2.cpp) bakes for a live DimOrdinate command - so the checks
+# below mirror the DXF DIMENSION test's own tag checks exactly, plus new
+# Leader/DimAngle/DimOrdinate-specific ones. "68 objects"/arrow-curve Length
+# values are this build's own FreeType glyph-contour counts for "40"/
+# "42.43"/"R 5"/"D 3"/"LeaderText"/"90 deg"/"X 20" plus the
+# 5/5/2/3/2/3/1 line+extension+arrow geometry curves per dimension/leader
+# (9+12+5+7+17+13+5) - confirmed by first actually running this fixture
+# through the app rather than hand-derived, same as text3dm_fixture_gen's
+# own hardcoded "3 objects" for "Hi"'s H/i-stem/i-dot. The arrow-curve
+# Length checks below (2.688x the text height, from AddArrow's own fixed
+# 0.3x-width triangle) additionally prove the custom DimStyle's text height
+# (1.5) was actually resolved via DimensionStyleId(), not
+# ON_DimStyle::Default's own differing 1.0. The UpdateDimensions/
+# UpdateMeasureDims passes confirm every one of the seven is genuinely
+# live/rebuildable from its own tags, not just a one-shot baked import -
+# DimOrdinate is rebuilt by UpdateMeasureDims specifically, not
+# UpdateDimensions (the same split a live DimOrdinate already has, see
+# cmd_annotate2.cpp's own UpdateMeasureDims kKinds list), so both commands
+# are exercised here, each against the dimensions it actually owns.
 DLFBIN="$(dirname "$BIN")/dimlinear3dm_fixture_gen"
 if [ -x "$DLFBIN" ]; then
   "$DLFBIN" "$TMPW/dimlinear_fixture.3dm" >/dev/null || { echo "FAIL: dimlinear3dm_fixture_gen failed to write the dimension fixture"; exit 1; }
@@ -6191,6 +6212,7 @@ SelLeader
 SelAll
 What
 UpdateDimensions
+UpdateMeasureDims
 EOS
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     DLF="$("$BIN" --smoke 30 --script "$TMPW/dimlinear3dm_script.txt" 2>&1)" || { echo "$DLF"; echo "FAIL: dimlinear .3dm script exited non-zero"; exit 1; }
@@ -6198,9 +6220,9 @@ EOS
     DLF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dimlinear3dm_script.txt" 2>&1)" || { echo "$DLF"; echo "FAIL: dimlinear .3dm script exited non-zero"; exit 1; }
   fi
   dlfcheck() { if echo "$DLF" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DLF" "$1"; fail=1; fi; }
-  dlfcheck "Opened $TMPW/dimlinear_fixture.3dm (63 objects)" "Load3dm read all six real ON_DimLinear/ON_DimRadial/ON_Leader/ON_DimAngular dimensions/leaders as real dimension groups (9+12+5+7+17+13 curves), not 0 (silently skipped, the old behaviour)"
-  dlfcheck "46 object(s) selected" "SelDim found every imported Dim* dimension's curves (real Annotation=Dim* user_text, not just ordinary curves) - 46, not all 63, since SelDim's own group list doesn't include Leader"
-  dlfcheck "63 object(s) selected" "SelLeader (SelGroupNamed's own additive selection - see Document::SelectWhere's add=true) then added the imported leader's own remaining 17 curves on top of SelDim's 46, reaching the full 63 with no overlap and no double-count between the two distinct groups"
+  dlfcheck "Opened $TMPW/dimlinear_fixture.3dm (68 objects)" "Load3dm read all seven real ON_DimLinear/ON_DimRadial/ON_Leader/ON_DimAngular/ON_DimOrdinate dimensions/leaders as real dimension groups (9+12+5+7+17+13+5 curves), not 0 (silently skipped, the old behaviour)"
+  dlfcheck "51 object(s) selected" "SelDim found every imported Dim* dimension's curves including the ordinate's own (its group list does include DimOrdinate) - 51, not all 68, since SelDim's own group list still doesn't include Leader"
+  dlfcheck "68 object(s) selected" "SelLeader (SelGroupNamed's own additive selection - see Document::SelectWhere's add=true) then added the imported leader's own remaining 17 curves on top of SelDim's 51, reaching the full 68 with no overlap and no double-count between the two distinct groups"
   dlfcheck "Annotation = DimLinear" "the rotated linear dimension carries the same Annotation=DimLinear tag a live DimLinear command/DXF DIMENSION import already write"
   dlfcheck "DimAligned = 0" "the rotated dimension is still recognized as rotated, not aligned"
   dlfcheck "DimHorizontal = 1" "the rotated dimension's horizontal-vs-vertical rule (offset point farther outside the vertical span than the horizontal span) correctly recovered horizontal from the file's own DefPoint1/DefPoint2/DimlinePoint, matching cmd_annotate.cpp's own live-pick rule"
@@ -6232,9 +6254,15 @@ EOS
   dlfcheck "DimP2 = 400,10,0" "the angular dimension's own second extension point (DefPoint2) survived exactly"
   dlfcheck "UpdateDimensions:   Leader now points at 300,0,0" "UpdateDimensions re-derived the leader's own tip from its tags alone, proving it round-trips as a genuinely live, rebuildable leader exactly like one made in-app, not just a one-shot baked import"
   dlfcheck "UpdateDimensions:   DimAngle now measures 90 deg" "UpdateDimensions re-derived the exact hand-computed 90-degree angle between DefPoint1/DefPoint2 from the angular dimension's own tags alone"
-  dlfcheck "UpdateDimensions: 6 dimension(s) regenerated" "all six imported dimensions/leaders (2 linear, 2 radial, 1 leader, 1 angular) are genuinely live and rebuildable, not just baked geometry with no record of their own kind"
+  dlfcheck "UpdateDimensions: 6 dimension(s) regenerated" "all six UpdateDimensions-owned imported dimensions/leaders (2 linear, 2 radial, 1 leader, 1 angular) are genuinely live and rebuildable, not just baked geometry with no record of their own kind - the ordinate is deliberately not among these 6 (see the UpdateMeasureDims check below)"
+  dlfcheck "Annotation = DimOrdinate" "the ordinate dimension carries the same Annotation=DimOrdinate tag a live DimOrdinate command/BuildOrdinateDimGroup already write"
+  dlfcheck "DimOrdinateDir = X" "the ordinate dimension's own measured direction (ON_DimOrdinate::MeasuredDirection::Xaxis) survived exactly"
+  dlfcheck "DimP0 = 500,0,0" "the ordinate dimension's own base/reference point (Get3dBasePoint) survived exactly"
+  dlfcheck "DimP1 = 520,8,0" "the ordinate dimension's own measured feature point (Get3dDefPt) survived exactly"
+  dlfcheck "UpdateMeasureDims:   DimOrdinate now X 20" "UpdateMeasureDims (not UpdateDimensions - DimOrdinate is one of its own owned kinds, same split a live DimOrdinate already has) re-derived the exact hand-computed value (520 - 500 = 20 along the plane's own X axis) from the ordinate dimension's own tags alone, proving it round-trips exactly like a live DimOrdinate"
+  dlfcheck "UpdateMeasureDims: 1 updated, 0 skipped" "the single imported ordinate dimension updated cleanly, with nothing skipped"
 else
-  echo "FAIL dimlinear3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_DimLinear/ON_DimRadial/ON_Leader/ON_DimAngular fixture check"
+  echo "FAIL dimlinear3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_DimLinear/ON_DimRadial/ON_Leader/ON_DimAngular/ON_DimOrdinate fixture check"
   fail=1
 fi
 
