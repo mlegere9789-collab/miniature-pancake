@@ -17,6 +17,7 @@
 // HistoryEntry/PendingChange comments below for the exact mechanics.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -122,15 +123,19 @@ inline Color EffectivePlotColor(const Layer& layer, const Color& display_color) 
 // not print), and has_color/color mirror has_plot_color/plot_color exactly -
 // a PlotStyle row is simply those same two columns, factored out into a
 // table a layer can point at by name (Layer::plot_style) instead of storing
-// its own copy. Still honestly narrow, same as the flat fields it factors
-// out: two columns only (no line-type/transparency/screening a real CTB/STB
-// table has), and real printer-device/spooler output remains entirely
-// unattempted - this stays a vector page property, assignable by name.
+// its own copy. `transparency` adds a third real CTB/STB column (0 = fully
+// opaque, the default - no flat per-layer equivalent exists, unlike
+// color/width, since a style is the only place this ever lived): 0-100,
+// matching real Rhino/AutoCAD's own plot-style "Transparency" percentage.
+// Still honestly narrow: no line-type/screening column a real CTB/STB table
+// has, and real printer-device/spooler output remains entirely unattempted -
+// this stays a vector page property, assignable by name.
 struct PlotStyle {
   std::string name = "Default";
   bool has_color = false;
   Color color = Color::FromBytes(0, 0, 0);
   double width_mm = 0;
+  double transparency = 0;
 };
 
 // Resolves `layer`'s own named PlotStyle row in `styles` (Layer::plot_style),
@@ -166,6 +171,18 @@ inline double EffectivePrintWidthMm(const Layer& layer, const std::vector<PlotSt
 inline Color EffectivePlotColor(const Layer& layer, const std::vector<PlotStyle>& styles, const Color& display_color) {
   if (const PlotStyle* s = ResolvePlotStyle(layer, styles)) return s->has_color ? s->color : display_color;
   return EffectivePlotColor(layer, display_color);
+}
+
+// The alpha (0 = fully transparent, 1 = fully opaque) a layer's paths should
+// actually be stroked at (io/FileExchange.cpp's ExportSvg/ExportPdf) - the
+// third real CTB/STB plot-style column, alongside width/color above. No flat
+// per-layer field exists to fall back to (transparency only ever lives on a
+// named style, unlike width/color's own flat fields), so a layer with no
+// style, or one naming an unknown row, is simply fully opaque.
+inline float EffectivePlotAlpha(const Layer& layer, const std::vector<PlotStyle>& styles) {
+  const PlotStyle* s = ResolvePlotStyle(layer, styles);
+  if (!s) return 1.0f;
+  return 1.0f - static_cast<float>(std::clamp(s->transparency, 0.0, 100.0)) / 100.0f;
 }
 
 // A block definition: a named set of objects with a base point. Instances
