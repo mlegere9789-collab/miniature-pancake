@@ -15,3 +15,11 @@ New
 Open @TMP@/dwg_dimension_roundtrip.dwg
 SelAll
 What
+
+# DWG pattern-fill HATCH round trip - see dwg_script.txt's own matching
+# comment (the sibling Block/Insert check this same investigation also
+# tried is deliberately NOT here - it genuinely fails, see that comment).
+New
+Open @TMP@/dwg_hatch_roundtrip.dwg
+SelHatch
+List
