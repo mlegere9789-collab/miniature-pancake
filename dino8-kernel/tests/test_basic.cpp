@@ -4552,6 +4552,99 @@ void TestFindSurfaceSilhouettePointsSphereEquator() {
   Check(FindSurfaceSilhouettePoints(sphere_surface, ON_3dVector(0, 0, 0), opt).empty(), "a zero-length view direction returns empty outright");
 }
 
+// PARITY_MAP.md's own "Silhouette / outline curves" bullet: narrows the
+// "orthographic projection only" caveat FindSurfaceSilhouettePoints()'s own
+// header doc comment names - FindSurfaceSilhouettePointsPerspective() finds
+// the same kind of tangency crossing, but along a per-point ray from a
+// finite eye rather than one fixed direction.
+void TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon() {
+  using dino8::kernel::FindSurfaceSilhouettePointsPerspective;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  // A sphere of radius r centered at the origin, viewed from a finite eye
+  // point on the -Z axis at distance d > r: the hand-derivable horizon
+  // circle (where a tangent line from the eye touches the sphere) satisfies
+  // dot(P, P - eye) == 0 for every point P of the sphere's own surface -
+  // with eye == (0, 0, -d), that reduces to z == -r^2/d, radius ==
+  // r*sqrt(d^2-r^2)/d (the classical "tangent line from an external point"
+  // relation).
+  const double r = 3.0, d = 10.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), r);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+
+  const Point3d eye(0, 0, -d);
+  const IntersectOptions opt;
+  const auto hits = FindSurfaceSilhouettePointsPerspective(sphere_surface, eye, opt);
+  Check(!hits.empty(), "a sphere viewed from a finite external eye point finds genuine perspective silhouette points");
+
+  const double expected_z = -r * r / d;
+  const double expected_radius = r * std::sqrt(d * d - r * r) / d;
+  bool all_on_horizon = true;
+  for (const auto& h : hits) {
+    if (std::abs(h.point.z - expected_z) > 1e-5 || std::abs(std::hypot(h.point.x, h.point.y) - expected_radius) > 1e-5) { all_on_horizon = false; break; }
+  }
+  Check(all_on_horizon, "every reported perspective silhouette point sits exactly on the hand-derivable horizon circle (z == -r^2/d, radius r*sqrt(d^2-r^2)/d)");
+
+  // An eye held exactly at the sphere's own center: dot(P, P - center) ==
+  // dot(P, P) == r^2 at every point P of the surface, a nonzero constant -
+  // genuinely no tangency exists anywhere, not merely an under-sampled one.
+  Check(FindSurfaceSilhouettePointsPerspective(sphere_surface, Point3d(0, 0, 0), opt).empty(), "an eye at the sphere's own center finds no silhouette at all (every point is equally face-on, none tangent)");
+}
+
+// PARITY_MAP.md's own "Silhouette / outline curves" bullet: narrows the
+// "point detections only" caveat FindSurfaceSilhouettePoints()'s own header
+// doc comment names - FindSurfaceSilhouetteCurves() chains that same
+// function's own isolated grid-edge crossings into actual curves.
+void TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves() {
+  using dino8::kernel::FindSurfaceSilhouetteCurves;
+  using dino8::kernel::IntersectOptions;
+
+  // The same sphere-viewed-straight-down-its-axis fixture
+  // TestFindSurfaceSilhouettePointsSphereEquator() already establishes a
+  // hand-derivable ground truth for (z == 0, at exactly the sphere's own
+  // radius).
+  const double radius = 3.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+
+  const IntersectOptions opt;
+  const auto curves = FindSurfaceSilhouetteCurves(sphere_surface, ON_3dVector(0, 0, 1), opt);
+  Check(!curves.empty(), "viewing a sphere straight down its own axis chains the equator's own crossings into at least one genuine curve");
+  bool all_on_equator = true;
+  int total_samples = 0;
+  for (const auto& sc : curves) {
+    Check(sc.curve.IsValid(), "each chained curve is a genuine, valid NURBS curve, not an empty placeholder");
+    const ON_Interval dom = sc.curve.Domain();
+    for (int k = 0; k <= 20; ++k) {
+      const double t = dom.ParameterAt(static_cast<double>(k) / 20.0);
+      const ON_3dPoint p = sc.curve.PointAt(t);
+      ++total_samples;
+      // A generous tolerance relative to the radius: a cubic spline
+      // interpolating points on a true circle passes through those points
+      // exactly but can bow slightly off the circle BETWEEN them - this
+      // checks the chain is a genuine fit to the equator, not an unrelated
+      // curve, not that it reproduces the circle to machine precision.
+      if (std::abs(p.z) > 0.05 * radius || std::abs(std::hypot(p.x, p.y) - radius) > 0.05 * radius) { all_on_equator = false; break; }
+    }
+    if (!all_on_equator) break;
+  }
+  Check(all_on_equator, "every sampled point of every chained curve sits close to the hand-derivable equator - a real fit through genuine on-equator crossings, not an unrelated curve");
+  Check(total_samples > 0, "sanity: the equator fixture actually produced samples to check");
+
+  // A flat, generously-bounded plane viewed straight down its own normal
+  // has no tangency crossings at all, so no curve to chain either.
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-10, 10), true);
+  ground.SetExtents(1, ON_Interval(-10, 10), true);
+  Check(FindSurfaceSilhouetteCurves(ground, ON_3dVector(0, 0, 1), opt).empty(), "a flat plane viewed straight down its own normal chains into zero curves");
+
+  // A zero-length view direction is refused outright.
+  Check(FindSurfaceSilhouetteCurves(sphere_surface, ON_3dVector(0, 0, 0), opt).empty(), "a zero-length view direction returns empty outright");
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Projection of curves/points onto surfaces along a direction (Project)"
 // bullet: "app ProjectCommand samples the curve and ray-casts along the
@@ -70738,6 +70831,8 @@ int main() {
   TestIntersectPlaneConeClosedForm();
   TestIntersectPlaneTorusClosedForm();
   TestFindSurfaceSilhouettePointsSphereEquator();
+  TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon();
+  TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
