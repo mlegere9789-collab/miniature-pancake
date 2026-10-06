@@ -161,18 +161,26 @@ int main() {
   // Same-run, relative regression guard (see find_bench.cpp's comment on why
   // this is a runtime check, not assert()). kCopyCount=30 selected-id
   // rescans per old-path cycle vs one new-path resolve means the old path
-  // does on the order of 30x the index-building work the new path does; 8x
-  // is a wide margin below that, so this won't flake on a loaded machine
-  // while still catching a real regression back to a Find()-per-pair loop.
-  if (!(new_avg_ms * 8.0 < old_avg_ms)) {
+  // does on the order of 30x the index-building work the new path does, so
+  // an 8x margin looked wide on paper - but unlike find_bench.cpp/
+  // isolate_bench.cpp's pointer-only resolution cost, every copy here also
+  // pays a real, identical-either-way Transform()+BoundingBox() cost on an
+  // 8-face cylinder mesh, which dilutes the measured ratio well below the
+  // index-scan theory. Confirmed flaky in practice, not just in theory: CI
+  // (Windows, shared runner) measured 5.7x and 7.0x on two separate recent
+  // runs, both genuine resolve-once wins (never anywhere near a 1x no-op
+  // regression) but below the old 8x bar. 4x keeps a wide margin below both
+  // observed values while still failing hard on an actual regression back
+  // to a Find()-per-pair loop.
+  if (!(new_avg_ms * 4.0 < old_avg_ms)) {
     std::fprintf(stderr,
-                  "FAIL: resolve-once array build (%.4f ms) should be >8x faster than a Find()-per-(copy,id) loop "
+                  "FAIL: resolve-once array build (%.4f ms) should be >4x faster than a Find()-per-(copy,id) loop "
                   "(%.4f ms) on a %d-object document\n",
                   new_avg_ms, old_avg_ms, kDocSize);
     return 1;
   }
   std::printf(
-      "\nOK: resolve-once array build is >8x faster than the old Find()-per-(copy,id) loop on this %d-object "
+      "\nOK: resolve-once array build is >4x faster than the old Find()-per-(copy,id) loop on this %d-object "
       "document.\n",
       kDocSize);
   return 0;
