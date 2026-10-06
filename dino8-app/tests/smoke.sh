@@ -1558,6 +1558,9 @@ stcheck "Bounce: polyline with 1 bounce(s)" "Bounce traced a ray straight down o
 stcheck "CreateSolid: 1 surface(s) joined into a closed mesh solid" "CreateSolid welded a single closed Brep's own faces into a closed mesh solid"
 stcheck "Splop: placed 1 copy(ies) at 1 point(s)" "Splop placed a copy at the picked surface point"
 stcheck "Reflect: mirrored across the plane through 1005,0,0 and welded original . mirror image into one symmetric mesh" "Reflect mirrored and welded the mesh into one symmetric solid"
+stcheck "Reflect: mirrored across the plane through 1015,0,0 and welded original . mirror image into one symmetric SubD (12 faces)" "Reflect on a single SubD returns a real SubD (kernel::SubD::Symmetrize), not the facetted-mesh path the MeshBox case above still uses"
+stcheck "Object [0-9]* (SubD) layer Default" "Reflect's SubD output is genuinely ObjectKind::SubD, not a Mesh wearing a similar print statement"
+stcheck "12 faces, 20 edges, 12 vertices, 4 creases" "Reflect's reflected SubD has the real welded-seam topology: the mirror plane coincides with the box's own far face, so that face's 4 vertices weld into one real shared seam (now creased) instead of duplicating"
 stcheck "Radiate: baked diffuse.specular vertex colours from 1 light(s)/sun onto 1 mesh(es)" "Radiate baked vertex colours from the Sun onto the mesh"
 stcheck "RadiateFind: 0 enabled light source(s) selected (the Sun also lights Radiate" "RadiateFind reported the Sun as Radiate's only light source"
 stcheck "OrientCrvToEdge: placed 1 copy(ies) at 1 point(s)" "OrientCrvToEdge picked the box edge directly and oriented a copy onto it"
@@ -1581,7 +1584,7 @@ stcheck "ExtractOriginalCaptives: 1 original(s) restored as copies" "ExtractOrig
 stcheck "Bounding box min 1800,0,0 max 1810,10,10" "the restored original is the untouched pre-cage box (1800,0,0 to 1810,10,10), the exact geometry Box 1800,0,0 1810,10,0 10 created before it was ever bound to the cage"
 echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
-stcheck "smoke: frames=[1-4][0-9][0-9] objects=118" "solid-tools script produced the expected object count"
+stcheck "smoke: frames=[1-4][0-9][0-9] objects=119" "solid-tools script produced the expected object count"
 
 # RegionBoolean exact-polygon path: PlanarUnion/PlanarDifference/
 # CurveBoolean/CreateRegions's own 2-region case must now take
