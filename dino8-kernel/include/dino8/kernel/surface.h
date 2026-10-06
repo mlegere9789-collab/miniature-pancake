@@ -966,6 +966,33 @@ class NurbsSurface {
   double MeasureGridTessellationDeviation(int u_divisions, int v_divisions,
                                            int samples_per_triangle = 6) const;
 
+  // Closes PARITY_MAP's own disclosed "Adaptive tessellation of B-rep
+  // faces (curvature-driven refinement) — a fixed angular deviation
+  // heuristic, not a certified chordal-deviation bound" gap, for the one
+  // case the kernel can actually CERTIFY: the plain untrimmed grid
+  // MeasureGridTessellationDeviation() itself is scoped to (same
+  // restriction that function's own doc comment already carries - this
+  // is a thin composition of it with SuggestedDivisions(), not a new
+  // measurement algorithm). Starts from SuggestedDivisions(chord_
+  // tolerance)'s own single-direction sagitta ESTIMATE, actually MEASURES
+  // the resulting grid's real worst-case facet deviation, and - rather
+  // than trusting the estimate the way every other `*Adaptive` sibling in
+  // this class does - doubles both division counts and re-measures
+  // whenever the measured deviation still exceeds `chord_tolerance`, up
+  // to `max_refinements` doublings. Returns the first grid whose MEASURED
+  // (not estimated) deviation is proven to be at or under
+  // `chord_tolerance`, writing that achieved deviation to
+  // `*out_achieved_deviation` if non-null. Throws std::invalid_argument
+  // if `chord_tolerance <= 0` or `max_refinements < 0`, and
+  // std::runtime_error if no doubling within `max_refinements` certifies
+  // the tolerance - a real possibility this function surfaces loudly
+  // rather than silently returning a mesh that doesn't actually honor the
+  // bound its own name promises (e.g. a tolerance set near floating-point
+  // precision, or a genuinely non-smooth surface whose true deviation
+  // can't be driven arbitrarily low by refinement alone).
+  Mesh TessellateGridCertifiedAdaptive(double chord_tolerance, int max_refinements = 8,
+                                        double* out_achieved_deviation = nullptr) const;
+
   // ---- Surface editing (implemented in src/surface_edit.cpp) ----
 
   // Removes one multiplicity of the interior knot at ON-convention index
