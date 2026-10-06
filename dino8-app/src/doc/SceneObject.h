@@ -182,6 +182,12 @@ class SceneObject {
   // mutually exclusive with the four overrides above; Viewport::DrawObjects
   // honours it the same mode-agnostic way.
   bool force_monochrome = false;
+  // SetObjectDisplayMode Arctic: filled in the same flat near-white the
+  // viewport-wide Arctic display mode uses (245,245,245), fully opaque and
+  // still lit, regardless of the viewport's own display mode or this
+  // object's own material/colour - mutually exclusive with the five
+  // overrides above.
+  bool force_arctic = false;
   bool show_render_mesh_wires = false;  // ToggleRenderMesh/ShowRenderMesh: overlay the tessellation's triangle edges
   // Per-object display tolerance override for surface/brep/SubD tessellation
   // (SetMeshSurfaceParameters); <= 0 means "use the app-wide setting".

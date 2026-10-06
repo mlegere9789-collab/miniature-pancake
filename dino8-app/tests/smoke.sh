@@ -4397,6 +4397,163 @@ assert max(bn) - min(bn) <= 8, f'Box B while Monochrome-tagged is not a neutral 
 assert abs(bn[0] - 182) <= 15 and abs(bn[1] - 182) <= 15 and abs(bn[2] - 187) <= 15, f'Box B Monochrome grey is not the expected flat {{200,200,205}}-derived tone: {bn}'
 PY
 
+# SetObjectDisplayMode Arctic: pixel-level proof (PARITY_MAP.md's "Per-object
+# display mode override" item) that Arctic is a real sixth per-object
+# fill-colour override, not just a printed status line - two
+# differently-coloured boxes in a Shaded (never-Arctic) Top view; see
+# tests/arctic_script.txt for the full scene/capture sequence.
+mkdir -p "$TMPW/arctic"
+sed "s|@TMP@|$TMPW/arctic|g" "$HERE/arctic_script.txt" > "$TMPW/arctic_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  ARCTIC="$("$BIN" --smoke 30 --script "$TMPW/arctic_script.txt" 2>&1)" || { echo "$ARCTIC"; echo "FAIL: arctic script exited non-zero"; exit 1; }
+else
+  ARCTIC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/arctic_script.txt" 2>&1)" || { echo "$ARCTIC"; echo "FAIL: arctic script exited non-zero"; exit 1; }
+fi
+arcticcheck() { if echo "$ARCTIC" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ARCTIC" "$1"; fail=1; fi; }
+arcticcheck "^ok   expect_objects 2" "arctic script left exactly the two boxes"
+arcticcheck "gl_error=0" "arctic script ran without OpenGL errors"
+python3 - "$TMPW/arctic/arctic_off.bmp" "$TMPW/arctic/arctic_on.bmp" "$TMPW/arctic/arctic_off2.bmp" <<'PY' && echo "ok   SetObjectDisplayMode Arctic genuinely overrides one object's own fill colour with the mode's flat near-white, independent of the viewport's own (never-Arctic) display mode, and UseViewport genuinely restores the object's own colour afterward" || { echo "FAIL SetObjectDisplayMode Arctic pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+w, h, off = read_bmp(sys.argv[1])
+_, _, on = read_bmp(sys.argv[2])
+_, _, off2 = read_bmp(sys.argv[3])
+
+# Box A (left, never touched): find its red-dominant blob in the untouched
+# capture and sample its centre in all three captures.
+reds = [(x, y) for y in range(0, h, 2) for x in range(0, w, 2) if off(x, y)[0] > off(x, y)[1] + 30 and off(x, y)[0] > off(x, y)[2] + 30]
+assert reds, 'no red (Box A) pixels found in arctic_off.bmp'
+axs, ays = [p[0] for p in reds], [p[1] for p in reds]
+acx, acy = (min(axs) + max(axs)) // 2, (min(ays) + max(ays)) // 2
+ra, rb, rc = off(acx, acy), on(acx, acy), off2(acx, acy)
+print(f'Box A (untouched) sample: off={ra} on={rb} off2={rc}')
+assert ra == rb == rc, f'Box A changed even though it was never given a SetObjectDisplayMode override: {ra} {rb} {rc}'
+assert ra[0] > ra[1] + 30 and ra[0] > ra[2] + 30, f'Box A does not read as red: {ra}'
+
+# Box B (right, Arctic toggled on then off): find the blob where "off" and
+# "on" actually differ, and sample its centre in all three captures.
+diffs = [(x, y) for y in range(0, h) for x in range(0, w) if sum(abs(a - b) for a, b in zip(off(x, y), on(x, y))) > 15]
+assert diffs, 'Box B never changed between arctic_off.bmp and arctic_on.bmp - Arctic had no visible effect'
+bxs, bys = [p[0] for p in diffs], [p[1] for p in diffs]
+bcx, bcy = (min(bxs) + max(bxs)) // 2, (min(bys) + max(bys)) // 2
+bo, bn, bo2 = off(bcx, bcy), on(bcx, bcy), off2(bcx, bcy)
+print(f'Box B (Arctic toggled) sample: off={bo} on={bn} off2={bo2}')
+assert bo[2] > bo[0] + 30 and bo[2] > bo[1] + 30, f'Box B does not read as blue before the override: {bo}'
+assert bo == bo2, f'Box B does not return to its own colour after UseViewport: off={bo} off2={bo2}'
+assert min(bn) > 200, f'Box B while Arctic-tagged is not a near-white tone: {bn}'
+assert max(bn) - min(bn) <= 20, f'Box B while Arctic-tagged is not a low-saturation near-white: {bn}'
+PY
+
+# Background::Image lat-long unwarp: pixel-level proof (PARITY_MAP.md's
+# "Environments and image-based lighting" item) that the Rendered-mode
+# environment-image backdrop is now a real per-pixel equirectangular sample
+# of the camera's own view direction, not a flat UV-stretched quad - see
+# tests/env_bg_script.txt for the full derivation and scene/capture
+# sequence. The test texture has three distinct longitude bands (red at
+# u=0.25, green at u=0.5, blue at u=0.75); Back/Left/Front are all
+# orthographic standard views whose own computed equirectangular u
+# (u = atan2(fwd.y, fwd.x)/(2*pi)+0.5) lands exactly on one band each -
+# Back's forward (0,-1,0) -> u=0.25 (red); Left's forward (1,0,0) ->
+# u=0.5 (green); Front's forward (0,1,0) -> u=0.75 (blue) - and since an
+# orthographic camera samples one constant direction for every pixel
+# (Camera::ScreenRay's own ortho branch), each capture should come back
+# (almost) entirely that one band's colour - a flat UV stretch, independent
+# of camera direction, would instead show the exact same static multi-band
+# image in all three captures.
+mkdir -p "$TMPW/envbg"
+python3 -c "
+w, h = 200, 20
+BG, RED, GREEN, BLUE = (30, 30, 30), (255, 0, 0), (0, 255, 0), (0, 0, 255)
+row = bytearray()
+for x in range(w):
+    u = (x + 0.5) / w
+    if 0.20 <= u < 0.30: c = RED
+    elif 0.45 <= u < 0.55: c = GREEN
+    elif 0.70 <= u < 0.80: c = BLUE
+    else: c = BG
+    row += bytes(c)
+data = bytes(row) * h
+open('$TMPW/envbg/env_longitude.ppm', 'wb').write(b'P6\n%d %d\n255\n' % (w, h) + data)
+"
+sed "s|@TMP@|$TMPW/envbg|g" "$HERE/env_bg_script.txt" > "$TMPW/env_bg_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  ENVBG="$("$BIN" --smoke 30 --script "$TMPW/env_bg_script.txt" 2>&1)" || { echo "$ENVBG"; echo "FAIL: env_bg script exited non-zero"; exit 1; }
+else
+  ENVBG="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/env_bg_script.txt" 2>&1)" || { echo "$ENVBG"; echo "FAIL: env_bg script exited non-zero"; exit 1; }
+fi
+envbgcheck() { if echo "$ENVBG" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ENVBG" "$1"; fail=1; fi; }
+envbgcheck "^ok   expect_objects 0" "env_bg script left an empty document"
+envbgcheck "gl_error=0" "env_bg script ran without OpenGL errors"
+python3 - "$TMPW/envbg/env_back.bmp" "$TMPW/envbg/env_left.bmp" "$TMPW/envbg/env_front.bmp" <<'PY' && echo "ok   Background::Image is a real per-pixel equirectangular unwarp of the camera's own view direction, not a flat UV-stretched quad" || { echo "FAIL Background::Image lat-long unwarp pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+def fraction_matching(w, h, get, color, tol=20):
+    cr, cg, cb = color
+    n = 0
+    total = 0
+    for y in range(0, h, 2):
+        for x in range(0, w, 2):
+            total += 1
+            r, g, b = get(x, y)
+            if abs(r - cr) <= tol and abs(g - cg) <= tol and abs(b - cb) <= tol:
+                n += 1
+    return n / total
+
+RED, GREEN, BLUE = (255, 0, 0), (0, 255, 0), (0, 0, 255)
+
+bw, bh, back = read_bmp(sys.argv[1])
+lw, lh, left = read_bmp(sys.argv[2])
+fw, fh, front = read_bmp(sys.argv[3])
+
+back_red = fraction_matching(bw, bh, back, RED)
+left_green = fraction_matching(lw, lh, left, GREEN)
+front_blue = fraction_matching(fw, fh, front, BLUE)
+print(f'Back view: {back_red:.2f} of sampled pixels match the expected red (u=0.25) band')
+print(f'Left view: {left_green:.2f} of sampled pixels match the expected green (u=0.5) band')
+print(f'Front view: {front_blue:.2f} of sampled pixels match the expected blue (u=0.75) band')
+assert back_red > 0.6, f'Back view background is not predominantly the expected red longitude band ({back_red:.2f})'
+assert left_green > 0.6, f'Left view background is not predominantly the expected green longitude band ({left_green:.2f})'
+assert front_blue > 0.6, f'Front view background is not predominantly the expected blue longitude band ({front_blue:.2f})'
+
+# A flat UV-stretched quad would show the exact same static multi-band
+# image regardless of camera direction, so Back's own capture would ALSO
+# read mostly green/blue wherever those bands land on screen, not just red.
+back_green = fraction_matching(bw, bh, back, GREEN)
+back_blue = fraction_matching(bw, bh, back, BLUE)
+print(f'Back view cross-check: {back_green:.2f} green, {back_blue:.2f} blue (should both be near 0)')
+assert back_green < 0.1 and back_blue < 0.1, f'Back view also shows the other views own bands ({back_green:.2f} green, {back_blue:.2f} blue) - looks like a flat stretch, not a direction-dependent unwarp'
+PY
+
 # Real-time shadow maps (per-light shadow atlas): pixel-level proof
 # (PARITY_MAP.md's "Real-time shadow maps in the rasterized renderer" item)
 # that two simultaneously-enabled lights now each cast their own real

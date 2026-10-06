@@ -77,6 +77,11 @@ class Camera {
   kernel::Vector3d Right() const;
   kernel::Vector3d Up() const;
   double Distance() const;
+  // tan(fov_y / 2) for the current lens, written the same explicit
+  // atan-then-tan way every other fov call site in Camera.cpp already
+  // does. Meaningless (but harmless) when the camera is orthographic -
+  // callers ignore it in that case.
+  double TanHalfFovY() const;
 
   // Picking: normalized device coords in [-1,1] -> world ray.
   Ray ScreenRay(double ndc_x, double ndc_y, double aspect) const;

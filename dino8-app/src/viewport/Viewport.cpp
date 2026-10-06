@@ -131,15 +131,17 @@ Color Mix(Color a, Color b, float t) {
 
 const Color kMonochromeFillColor = Color::FromBytes(200, 200, 205);
 
-// SetObjectDisplayMode Ghosted/X-Ray/Monochrome: an object carrying one of
-// these overrides always fills at that mode's own fixed alpha, the same
-// mode-agnostic way force_wireframe/force_shaded already override the
+// SetObjectDisplayMode Ghosted/X-Ray/Monochrome/Arctic: an object carrying
+// one of these overrides always fills at that mode's own fixed alpha, the
+// same mode-agnostic way force_wireframe/force_shaded already override the
 // viewport's own display mode - so a Ghosted-tagged object stays
 // translucent even viewed in Shaded, Rendered or any other opaque viewport
-// mode (and a Monochrome-tagged object stays fully opaque even in a
-// translucent Ghosted/X-Ray viewport), and vice versa for a viewport that
-// is itself already one of these modes (the object's own override still
-// wins, since it names an alpha rather than merely "fill/don't").
+// mode (and a Monochrome- or Arctic-tagged object stays fully opaque even
+// in a translucent Ghosted/X-Ray viewport), and vice versa for a viewport
+// that is itself already one of these modes (the object's own override
+// still wins, since it names an alpha rather than merely "fill/don't").
+// Arctic needs no branch below - it is fully opaque, the same fall-through
+// default every mode except Ghosted/X-Ray already gets.
 float EffectiveFillAlpha(const SceneObject& o, float viewport_alpha) {
   if (o.force_ghosted) return kGhostedFillAlpha;
   if (o.force_xray) return kXRayFillAlpha;
@@ -187,23 +189,42 @@ void BackgroundFor(DisplayMode mode, const Document* doc, bool arctic, Color& to
   if (!r.gradient_view) top = bottom;
 }
 
-// A full-viewport textured quad drawn over the gradient clear, stretched to
-// fill (letterboxing/UV fitting is not attempted): Rendered mode's Image
-// background (part of the actual render, `for_render` or not), or
-// BackgroundBitmap's modelling-aid picture (every mode, interactive only --
-// never part of a final render). A no-op if neither applies or the file
-// fails to load.
-void DrawBackgroundImage(GlRenderer& renderer, const Document* doc, DisplayMode mode, bool arctic, bool for_render) {
+// Rendered mode's Background::Image backdrop (part of the actual render,
+// `for_render` or not) is now a real lat-long (equirectangular) unwarp
+// around the camera's own view direction - GlRenderer::
+// DrawEnvironmentBackground, using the exact same equirectangular mapping
+// as the mesh shader's SampleEnvMap (the reflective-surface env map
+// already shipped) and the exact same perspective-ray formula as
+// Camera::ScreenRay, so the background shows the same world direction at
+// each pixel ScreenRay would compute there for picking. BackgroundBitmap's
+// own modelling-aid picture (every mode, interactive only -- never part of
+// a final render) stays a deliberate flat full-viewport stretch
+// (letterboxing/UV fitting is not attempted) - it is meant as a traced-over
+// backdrop image, not an environment, so it keeps using
+// DrawFullscreenTexture exactly as before. A no-op if neither applies or
+// the file fails to load.
+void DrawBackgroundImage(GlRenderer& renderer, const Document* doc, DisplayMode mode, bool arctic, bool for_render,
+                          const Camera& camera, double aspect) {
   if (!doc || arctic) return;
   const RenderSettings& r = doc->Render();
   std::string path;
-  if (mode == DisplayMode::Rendered && r.background == RenderSettings::Background::Image && !r.environment_image.empty()) path = r.environment_image;
-  else if (!for_render && r.background_bitmap_enabled && !r.background_bitmap.empty()) path = r.background_bitmap;
+  bool is_environment_image = false;
+  if (mode == DisplayMode::Rendered && r.background == RenderSettings::Background::Image && !r.environment_image.empty()) {
+    path = r.environment_image;
+    is_environment_image = true;
+  } else if (!for_render && r.background_bitmap_enabled && !r.background_bitmap.empty()) {
+    path = r.background_bitmap;
+  }
   if (path.empty()) return;
   const GLuint tex = renderer.TextureFor(path);
   if (!tex) return;
   renderer.EnableDepthTest(false);
-  renderer.DrawFullscreenTexture(tex);
+  if (is_environment_image) {
+    renderer.DrawEnvironmentBackground(tex, camera.Forward(), camera.Right(), camera.Up(), camera.TanHalfFovY(),
+                                        aspect, !camera.State().perspective);
+  } else {
+    renderer.DrawFullscreenTexture(tex);
+  }
   renderer.EnableDepthTest(true);
 }
 
@@ -235,7 +256,7 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
   }
   renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(Aspect()));
   renderer.ClearGradient(top, bottom);
-  if (!ctx.show_zbuffer) DrawBackgroundImage(renderer, ctx.doc, mode_, false, false);
+  if (!ctx.show_zbuffer) DrawBackgroundImage(renderer, ctx.doc, mode_, false, false, camera_, Aspect());
   UpdateEnvironmentMap(renderer, ctx.doc, mode_, false);
   renderer.EnableDepthTest(true);
   renderer.EnableBlend(true);
@@ -345,7 +366,7 @@ bool Viewport::RenderToImage(GlRenderer& renderer, const FrameContext& base, int
   BackgroundFor(DisplayMode::Rendered, ctx.doc, arctic, top, bottom);
   renderer.SetMatrices(camera_.ViewMatrix(), camera_.BlowupProjectionMatrix(aspect, blowup[0], blowup[1], blowup[2], blowup[3]));
   renderer.ClearGradient(top, bottom);
-  DrawBackgroundImage(renderer, ctx.doc, DisplayMode::Rendered, arctic, true);
+  DrawBackgroundImage(renderer, ctx.doc, DisplayMode::Rendered, arctic, true, camera_, aspect);
   UpdateEnvironmentMap(renderer, ctx.doc, DisplayMode::Rendered, arctic);
   renderer.EnableDepthTest(true);
   renderer.EnableBlend(true);
@@ -1058,10 +1079,11 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       // object/layer colour.
       Color c = Color::FromBytes(205, 207, 212);
       if (rendered || !o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
-      // SetObjectDisplayMode Monochrome wins over both the object's own
-      // colour/material and the viewport's own style, the same mode-
+      // SetObjectDisplayMode Monochrome/Arctic win over both the object's
+      // own colour/material and the viewport's own style, the same mode-
       // agnostic way the Ghosted/X-Ray overrides already win on alpha.
       if (o.force_monochrome) c = kMonochromeFillColor;
+      else if (o.force_arctic) c = Color::FromBytes(245, 245, 245);
       else if (style.force_white) c = Color::FromBytes(245, 245, 245);
       else if (style.monochrome) c = kMonochromeFillColor;
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
@@ -1105,11 +1127,12 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
         renderer.DrawTriangles(d.triangles, d.mesh_vertex_colors, alpha);
         continue;
       }
-      // A Monochrome-tagged object skips Rendered mode's material/texture
-      // shading entirely and falls through to the same flat, lit draw a
-      // non-Rendered viewport uses, just like Ghosted/X-Ray skip it for
-      // their own fixed-alpha fill below (via the transparent-sort branch).
-      if (rendered && !o.force_monochrome) {
+      // A Monochrome- or Arctic-tagged object skips Rendered mode's
+      // material/texture shading entirely and falls through to the same
+      // flat, lit draw a non-Rendered viewport uses, just like Ghosted/
+      // X-Ray skip it for their own fixed-alpha fill below (via the
+      // transparent-sort branch).
+      if (rendered && !o.force_monochrome && !o.force_arctic) {
         const Material m = doc.MaterialFor(o);
         if ((m.transparency > 0.001f || o.force_ghosted || o.force_xray) && !ctx.arctic) {
           // Sort key: view-space depth of the bounding-box centre.
@@ -1137,14 +1160,16 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     for (std::size_t candidate_index : render_candidates) {
       const SceneObject& o = doc.Objects()[candidate_index];
       // ShadeSelected's force_shaded and SetObjectDisplayMode's
-      // force_ghosted/force_xray/force_monochrome all fill here - the only
-      // difference between them is the colour/alpha picked below.
-      if ((!o.force_shaded && !o.force_ghosted && !o.force_xray && !o.force_monochrome) || !shown(o)) continue;
+      // force_ghosted/force_xray/force_monochrome/force_arctic all fill
+      // here - the only difference between them is the colour/alpha picked
+      // below.
+      if ((!o.force_shaded && !o.force_ghosted && !o.force_xray && !o.force_monochrome && !o.force_arctic) || !shown(o)) continue;
       o.EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
       Color c = Color::FromBytes(205, 207, 212);
       if (o.force_monochrome) c = kMonochromeFillColor;
+      else if (o.force_arctic) c = Color::FromBytes(245, 245, 245);
       else if (!o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
       if (o.selected) c = Mix(c, kSelectionColor, 0.55f);

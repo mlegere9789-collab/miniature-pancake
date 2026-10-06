@@ -308,6 +308,52 @@ out vec4 frag;
 void main() { frag = vec4(texture(u_tex, v_uv).rgb, 1.0); }
 )";
 
+// Rendered mode's Background::Image backdrop, lat-long (equirectangular)
+// unwarped around the camera's own view direction - GlRenderer::
+// DrawEnvironmentBackground, used only by Viewport.cpp's DrawBackgroundImage
+// for the real environment-image case (never for BackgroundBitmap's
+// deliberately-flat modelling-aid stretch, which still uses kTexVS/kTexFS
+// above via DrawFullscreenTexture, unchanged). Same oversized fullscreen-
+// triangle trick as kBgVS, but both NDC components are carried to the
+// fragment shader instead of just v_t.
+const char* kEnvBgVS = R"(#version 330 core
+out vec2 v_ndc;
+void main() {
+  vec2 p = vec2((gl_VertexID == 1) ? 3.0 : -1.0, (gl_VertexID == 2) ? 3.0 : -1.0);
+  gl_Position = vec4(p, 0.999, 1.0);
+  v_ndc = p;
+}
+)";
+
+const char* kEnvBgFS = R"(#version 330 core
+in vec2 v_ndc;
+uniform sampler2D u_tex;
+uniform vec3 u_forward, u_right, u_up;
+uniform float u_tan_fov, u_aspect;
+uniform int u_ortho;
+out vec4 frag;
+void main() {
+  // Perspective: the exact same per-pixel ray formula Camera::ScreenRay
+  // uses on the CPU, so the background shows the same world direction at
+  // each pixel ScreenRay would compute there for picking.
+  // Orthographic: Camera::ScreenRay's own ortho branch returns one
+  // constant `direction` (u_forward) for every screen point it is asked
+  // about - true parallel projection has no per-pixel ray spread - so the
+  // background likewise samples one constant direction across the whole
+  // screen. That is a physically-correct consequence of parallel
+  // projection, not a bug, even though it looks odd next to a perspective
+  // view's varying backdrop.
+  vec3 dir = (u_ortho == 1) ? u_forward
+      : normalize(u_forward + u_right * (v_ndc.x * u_tan_fov * u_aspect) + u_up * (v_ndc.y * u_tan_fov));
+  // Same equirectangular mapping as GlRenderer's kMeshFS::SampleEnvMap
+  // (the reflective-surface env map already shipped), for consistency.
+  float theta = acos(clamp(dir.z, -1.0, 1.0));
+  float u = atan(dir.y, dir.x) / (2.0 * 3.14159265358979) + 0.5;
+  float v = 1.0 - theta / 3.14159265358979;
+  frag = vec4(texture(u_tex, vec2(fract(u), 1.0 - fract(v))).rgb, 1.0);
+}
+)";
+
 GLuint CompileShader(GLenum type, const char* src, std::string& error) {
   GLuint shader = glCreateShader(type);
   glShaderSource(shader, 1, &src, nullptr);
@@ -428,10 +474,19 @@ bool GlRenderer::Init(std::string& error) {
   if (!bg_program_) return false;
   tex_program_ = CompileProgram(kTexVS, kTexFS, error);
   if (!tex_program_) return false;
+  env_bg_program_ = CompileProgram(kEnvBgVS, kEnvBgFS, error);
+  if (!env_bg_program_) return false;
   shadow_program_ = CompileProgram(kShadowVS, kShadowFS, error);
   if (!shadow_program_) return false;
   shadow_u_light_vp_ = glGetUniformLocation(shadow_program_, "u_light_vp");
   tex_u_sampler_ = glGetUniformLocation(tex_program_, "u_tex");
+  env_bg_u_tex_ = glGetUniformLocation(env_bg_program_, "u_tex");
+  env_bg_u_forward_ = glGetUniformLocation(env_bg_program_, "u_forward");
+  env_bg_u_right_ = glGetUniformLocation(env_bg_program_, "u_right");
+  env_bg_u_up_ = glGetUniformLocation(env_bg_program_, "u_up");
+  env_bg_u_tan_fov_ = glGetUniformLocation(env_bg_program_, "u_tan_fov");
+  env_bg_u_aspect_ = glGetUniformLocation(env_bg_program_, "u_aspect");
+  env_bg_u_ortho_ = glGetUniformLocation(env_bg_program_, "u_ortho");
   mesh_u_mvp_ = glGetUniformLocation(mesh_program_, "u_mvp");
   mesh_u_view_ = glGetUniformLocation(mesh_program_, "u_view");
   mesh_u_light_vp_ = ArrayLocation(mesh_program_, "u_light_vp");
@@ -499,6 +554,7 @@ void GlRenderer::Shutdown() {
   if (line_program_) glDeleteProgram(line_program_);
   if (bg_program_) glDeleteProgram(bg_program_);
   if (tex_program_) glDeleteProgram(tex_program_);
+  if (env_bg_program_) glDeleteProgram(env_bg_program_);
   if (shadow_program_) glDeleteProgram(shadow_program_);
   if (shadow_fbo_) glDeleteFramebuffers(1, &shadow_fbo_);
   if (shadow_array_tex_) glDeleteTextures(1, &shadow_array_tex_);
@@ -513,7 +569,8 @@ void GlRenderer::Shutdown() {
   for (auto& [path, tex] : textures_) if (tex) glDeleteTextures(1, &tex);
   textures_.clear();
   missing_textures_.clear();
-  mesh_program_ = line_program_ = bg_program_ = tex_program_ = vao_ = vbo_ = color_vbo_ = uv_vbo_ = bg_vao_ = 0;
+  mesh_program_ = line_program_ = bg_program_ = tex_program_ = env_bg_program_ = vao_ = vbo_ = color_vbo_ = uv_vbo_ =
+      bg_vao_ = 0;
 }
 
 void GlRenderer::SetMatrices(const Mat4& view, const Mat4& projection) {
@@ -956,6 +1013,31 @@ void GlRenderer::DrawFullscreenTexture(GLuint texture) {
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, texture);
   glUniform1i(tex_u_sampler_, 0);
+  glBindVertexArray(bg_vao_);
+  glDrawArrays(GL_TRIANGLES, 0, 3);
+  glBindVertexArray(0);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glEnable(GL_DEPTH_TEST);
+}
+
+void GlRenderer::DrawEnvironmentBackground(GLuint texture, kernel::Vector3d forward, kernel::Vector3d right,
+                                            kernel::Vector3d up, double tan_half_fov_y, double aspect, bool ortho) {
+  if (!texture || !env_bg_program_) return;
+  // Mirrors DrawFullscreenTexture's own GL state handling exactly (the one
+  // caller, Viewport.cpp's DrawBackgroundImage, already wraps this in its
+  // own EnableDepthTest(false)/(true) too - the same harmless redundancy
+  // DrawFullscreenTexture's call site already has).
+  glDisable(GL_DEPTH_TEST);
+  glUseProgram(env_bg_program_);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, texture);
+  glUniform1i(env_bg_u_tex_, 0);
+  glUniform3f(env_bg_u_forward_, static_cast<float>(forward.x), static_cast<float>(forward.y), static_cast<float>(forward.z));
+  glUniform3f(env_bg_u_right_, static_cast<float>(right.x), static_cast<float>(right.y), static_cast<float>(right.z));
+  glUniform3f(env_bg_u_up_, static_cast<float>(up.x), static_cast<float>(up.y), static_cast<float>(up.z));
+  glUniform1f(env_bg_u_tan_fov_, static_cast<float>(tan_half_fov_y));
+  glUniform1f(env_bg_u_aspect_, static_cast<float>(aspect));
+  glUniform1i(env_bg_u_ortho_, ortho ? 1 : 0);
   glBindVertexArray(bg_vao_);
   glDrawArrays(GL_TRIANGLES, 0, 3);
   glBindVertexArray(0);
