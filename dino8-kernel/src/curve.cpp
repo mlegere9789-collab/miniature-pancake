@@ -1559,6 +1559,161 @@ Result NurbsCurve::PlanarRegionProperties(RegionProperties& out, double toleranc
   return Result::Failed;
 }
 
+namespace {
+// One coarse global search over `n` samples of `a`, each mapped to its
+// own closest point on `b`, followed by an alternating-projection local
+// polish from the best coarse candidate found.
+void RefineMinDistance(const NurbsCurve& a, const NurbsCurve& b, int n, double& best_dist, double& best_ta,
+                        double& best_tb) {
+  const Interval dom = a.Domain();
+  best_dist = std::numeric_limits<double>::max();
+  for (int i = 0; i <= n; ++i) {
+    const double ta = dom.min + (dom.max - dom.min) * i / n;
+    const Point3d pa = a.PointAt(ta);
+    const double tb = b.ClosestPointParameter(pa);
+    const double d = pa.DistanceTo(b.PointAt(tb));
+    if (d < best_dist) {
+      best_dist = d;
+      best_ta = ta;
+      best_tb = tb;
+    }
+  }
+  for (int iter = 0; iter < 30; ++iter) {
+    const double new_ta = a.ClosestPointParameter(b.PointAt(best_tb));
+    const double new_tb = b.ClosestPointParameter(a.PointAt(new_ta));
+    const double new_dist = a.PointAt(new_ta).DistanceTo(b.PointAt(new_tb));
+    if (new_dist >= best_dist - 1e-15) break;
+    best_dist = new_dist;
+    best_ta = new_ta;
+    best_tb = new_tb;
+  }
+}
+}  // namespace
+
+Result NurbsCurve::MinDistanceTo(const NurbsCurve& other, double tolerance, double& out_distance,
+                                   double* out_t_this, double* out_t_other) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::MinDistanceTo: tolerance must be positive");
+  }
+  int n = std::max(SuggestedSamples(tolerance), 20);
+  double dist, ta, tb;
+  RefineMinDistance(*this, other, n, dist, ta, tb);
+  for (int level = 0; level < 20; ++level) {
+    const int next_n = n * 2;
+    double next_dist, next_ta, next_tb;
+    RefineMinDistance(*this, other, next_n, next_dist, next_ta, next_tb);
+    const bool converged = std::fabs(next_dist - dist) <= tolerance;
+    n = next_n;
+    dist = next_dist;
+    ta = next_ta;
+    tb = next_tb;
+    if (converged) {
+      out_distance = dist;
+      if (out_t_this) *out_t_this = ta;
+      if (out_t_other) *out_t_other = tb;
+      return Result::Ok;
+    }
+  }
+  out_distance = dist;
+  if (out_t_this) *out_t_this = ta;
+  if (out_t_other) *out_t_other = tb;
+  return Result::Failed;
+}
+
+NurbsCurve::OrientedBox NurbsCurve::GetOrientedBoundingBox() const {
+  const int cv_count = ControlPointCount();
+  const int n = std::max(50, 4 * cv_count);
+
+  // Arc-length-even sampling (DivideByCount(), not a raw parameter-
+  // uniform loop): a curve made of segments with very different physical
+  // lengths but equal PARAMETER span (e.g. a non-square polyline
+  // rectangle) would otherwise over-sample its shorter segments relative
+  // to its longer ones, skewing the sampled covariance's principal axes
+  // measurably off the curve's own true geometric symmetry directions -
+  // confirmed directly by testing before this fix (a 20x10 rectangle's
+  // own axes came back rotated ~1.2 degrees off true X/Y, inflating the
+  // measured half-extents by 1-4%).
+  // DivideByCount() returns Domain().Min() AND Domain().Max() - for a
+  // CLOSED curve those map to the exact same point, so using every
+  // returned parameter would double-count that one seam point and skew
+  // the mean/covariance's own symmetry - confirmed directly by testing
+  // (a 20x10 rectangle's own sampled mean came back (9.8, 4.9), not its
+  // real (10, 5), before this fix). Dropping the final (duplicate)
+  // parameter for a closed curve restores the even, non-duplicated
+  // sampling an open curve already has.
+  std::vector<double> params = DivideByCount(n);
+  if (IsClosed() && params.size() > 1) params.pop_back();
+  Point3d mean(0, 0, 0);
+  std::vector<Point3d> samples(params.size());
+  for (size_t i = 0; i < params.size(); ++i) {
+    samples[i] = PointAt(params[i]);
+    mean = mean + Vector3d(samples[i]);
+  }
+  mean = Point3d(Vector3d(mean) / static_cast<double>(samples.size()));
+
+  double cxx = 0, cyy = 0, czz = 0, cxy = 0, cyz = 0, cxz = 0;
+  for (const Point3d& p : samples) {
+    const Vector3d d = p - mean;
+    cxx += d.x * d.x;
+    cyy += d.y * d.y;
+    czz += d.z * d.z;
+    cxy += d.x * d.y;
+    cyz += d.y * d.z;
+    cxz += d.x * d.z;
+  }
+
+  std::array<Vector3d, 3> axes;
+  double e[3];
+  Vector3d v[3];
+  if (ON_Sym3x3EigenSolver(cxx, cyy, czz, cxy, cyz, cxz, &e[0], v[0], &e[1], v[1], &e[2], v[2])) {
+    axes = {v[0], v[1], v[2]};
+    for (Vector3d& a : axes) a.Unitize();
+    // Make the frame right-handed - the cross product of the first two
+    // orthogonal eigenvectors is +/- the third and still an eigenvector
+    // of it, the same fix-up Mesh::GetOrientedBoundingBox() already
+    // applies.
+    axes[2] = ON_CrossProduct(axes[0], axes[1]);
+    axes[2].Unitize();
+  } else {
+    // A degenerate (e.g. near-singular, confirmed directly by testing a
+    // straight line's own exactly-rank-1 covariance) covariance matrix -
+    // any orthonormal basis is an equally valid PCA frame for a
+    // collapsed/degenerate variance direction, so this falls back to the
+    // world axes rather than failing outright; the control-point
+    // projection step below still gives a safe, correctly-sized box
+    // either way, regardless of which basis these axes end up being.
+    axes = {Vector3d(1, 0, 0), Vector3d(0, 1, 0), Vector3d(0, 0, 1)};
+  }
+
+  // Every CONTROL POINT's own projection onto each axis - NOT the
+  // sampled points above - so the box this returns provably contains
+  // the whole curve (the convex-hull property), never merely the
+  // sampled approximation of it.
+  double lo[3] = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
+                  std::numeric_limits<double>::max()};
+  double hi[3] = {-std::numeric_limits<double>::max(), -std::numeric_limits<double>::max(),
+                   -std::numeric_limits<double>::max()};
+  const Point3d origin = ControlPointAt(0);
+  for (int i = 0; i < cv_count; ++i) {
+    const Vector3d rel = ControlPointAt(i) - origin;
+    for (int k = 0; k < 3; ++k) {
+      const double proj = ON_DotProduct(rel, axes[static_cast<size_t>(k)]);
+      lo[k] = std::min(lo[k], proj);
+      hi[k] = std::max(hi[k], proj);
+    }
+  }
+
+  OrientedBox box;
+  box.axes = axes;
+  Point3d center = origin;
+  for (int k = 0; k < 3; ++k) {
+    box.half_extents[static_cast<size_t>(k)] = (hi[k] - lo[k]) / 2.0;
+    center = center + axes[static_cast<size_t>(k)] * ((hi[k] + lo[k]) / 2.0);
+  }
+  box.center = center;
+  return box;
+}
+
 Result NurbsCurve::Fair(double tolerance, int iterations, double factor, double* out_max_deviation) {
   if (!(tolerance > 0.0)) {
     throw std::invalid_argument("dino8::kernel::NurbsCurve::Fair: tolerance must be positive");
