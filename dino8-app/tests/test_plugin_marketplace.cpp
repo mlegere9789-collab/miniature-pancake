@@ -230,6 +230,31 @@ int main(int argc, char** argv) {
   Check(CompareVersions("1.0.0", "1.0.0-beta") == 0, "CompareVersions: a non-numeric suffix component counts as 0");
   Check(CompareVersions("", "") == 0, "CompareVersions: two empty strings compare equal");
 
+  // A version component with more digits than `long` can hold - a
+  // malicious or merely malformed marketplace index entry's own
+  // min_app_version/version field, fetched straight off the network by
+  // LoadIndexFromUrl - must not crash the process (it used to: VersionParts
+  // ran this through std::stol, which throws std::out_of_range on overflow,
+  // uncaught anywhere above CheckCompatibility/CompareVersions/
+  // CheckForUpdate). It's enough that this returns instead of aborting;
+  // the exact ordering against an absurdly large component doesn't matter.
+  Check(CompareVersions("1.0.0", "99999999999999999999.0") < 0,
+        "CompareVersions: an oversized (overflow-prone) version component does not crash the process, and still "
+        "compares as the larger one");
+  Check(CompareVersions("99999999999999999999999999999999.0", "1.0.0") > 0,
+        "CompareVersions: an oversized component on the other side doesn't crash either");
+  {
+    MarketplaceEntry huge_min;
+    huge_min.id = "huge";
+    huge_min.name = "Huge";
+    huge_min.version = "1.0";
+    huge_min.min_app_version = "99999999999999999999.0";
+    Check(CheckCompatibility(huge_min, "8.0.0") == Compatibility::AppTooOld,
+          "CheckCompatibility: an oversized min_app_version doesn't crash - it's just (correctly) never satisfied");
+  }
+  Check(CheckForUpdate("1.0.0", "99999999999999999999.0") == UpdateStatus::UpdateAvailable,
+        "CheckForUpdate: an oversized available version doesn't crash, and still reads as an update");
+
   // ---- CheckForUpdate ------------------------------------------------------
   Check(CheckForUpdate("1.0.0", "1.1.0") == UpdateStatus::UpdateAvailable,
         "CheckForUpdate: a newer index version is UpdateAvailable");

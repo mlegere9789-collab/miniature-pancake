@@ -854,6 +854,45 @@ Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_m
 // that face or guessing a replacement.
 Brep OffsetFace(const Brep& solid, int face_index, double distance);
 
+// PARITY_MAP.md's offsetshell "Inset" item's own disclosed "no SubD or
+// Brep-level inset" remainder: `Mesh::InsetFace()` (mesh.h) already gives
+// an exact, in-plane, edge-parallel inset at mesh level, but only for one
+// triangle or quad face at a time (`ON_Mesh` has no general n-gon face).
+// This is the identical construction - every edge of the named face's own
+// closed polygon loop moves inward parallel to itself by `distance`, each
+// new corner the exact mitered intersection of its two adjacent moved
+// edges, `depth` (if nonzero) additionally lifting only the inset ring
+// along the face's own normal - applied instead to `solid.PlanarFaces()`'s
+// own `loop` (an arbitrary-length polygon, not capped at 4 vertices), a
+// genuine generalization beyond `Mesh::InsetFace()`'s own n <= 4 scope
+// restriction, which came from `ON_MeshFace`'s own representation, not
+// from anything about the algorithm itself.
+//
+// Unlike `OffsetFace()`/`ShellConvexPlanar()` above, this does NOT require
+// `solid` as a whole to be convex: insetting one face only ever replaces
+// THAT face (with a ring of `n` new planar "frame" quads around the inset
+// boundary, one per original edge, plus the inset polygon itself as a new
+// inner face) and never touches any other face's own plane or boundary at
+// all, so whatever manifoldness the rest of `solid` already has is
+// preserved automatically by `FromPlanarFaces()`'s own vertex-welding -
+// each frame quad's own OUTER edge is literally the original face's own
+// edge, already shared with its neighbour, so that sharing survives
+// unchanged. Only the NAMED face itself must be convex and simple (the
+// same precondition `Mesh::InsetFace()` already carries, for the same
+// reason: a reflex corner's own inset can self-intersect, which this does
+// not detect or repair).
+//
+// Throws std::invalid_argument if `face_index` is out of range for
+// `solid.PlanarFaces()`, if `distance` is not finite or not strictly
+// positive, if `depth` is not finite, if the named face's own loop isn't
+// planar, isn't a simple (non-self-intersecting) polygon, has a reflex
+// corner, has a zero-length edge, folds back on itself at a near-180-
+// degree corner (no finite miter exists), or if `distance` reaches or
+// exceeds that face's own inradius (an inset edge would invert past the
+// opposite side) - the identical argument-check surface `Mesh::InsetFace()`
+// already has, for the identical reasons.
+Brep InsetPlanarFace(const Brep& solid, int face_index, double distance, double depth = 0.0);
+
 // PARITY_MAP's kernel: Local / direct-edit operations "Move/transform face
 // (tweak face, neighbours adjust)" gap: neither OffsetFace() (translate
 // along the face's OWN normal only) nor FoldFaceConvexPlanar()/

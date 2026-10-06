@@ -167,6 +167,11 @@ Vector3d Camera::Up() const {
   return u;
 }
 
+double Camera::TanHalfFovY() const {
+  const double fov = 2.0 * std::atan(18.0 / state_.lens_mm);  // 36mm sensor
+  return std::tan(fov / 2.0);
+}
+
 namespace {
 // Rotates `v` by `yaw` (about world Z) then `pitch` (about the axis
 // perpendicular to both world Z and v, clamped so the result never flips
