@@ -395,3 +395,21 @@ List
 SelAll
 Delete
 @expect_objects 0
+# --- BlendEdge on a curved-adjacent-face edge (a solid cylinder's own
+# flat-top rim: one planar face, one cylindrical face) - the new exact
+# trim-and-join path (closing this document's own "Edge blend trimmed and
+# joined into the polysurface" gap, see fillet_script.txt's own box-corner
+# case) needs TrimPlanarFace to succeed on BOTH adjacent faces, which
+# refuses outright on a non-planar one, so this falls through unchanged to
+# the pre-existing "added as a separate surface" behaviour - the cylinder
+# itself must survive completely untouched, same as before this pass.
+Cylinder 1300400,0,0 5 20
+BlendEdge
+1300400,5,20
+Enter
+SelAll
+List
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0
