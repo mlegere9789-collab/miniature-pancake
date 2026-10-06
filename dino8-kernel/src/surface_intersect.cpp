@@ -2889,6 +2889,170 @@ PlanePlaneIntersection IntersectPlanePlane(const ON_Plane& a, const ON_Plane& b,
   return out;
 }
 
+PlaneConeIntersection IntersectPlaneCone(const ON_Plane& plane, const ON_Cone& cone, double tolerance) {
+  PlaneConeIntersection out;
+  if (!plane.IsValid() || !cone.IsValid() || !(tolerance >= 0)) return out;  // stays empty
+
+  constexpr double kDiscriminantEps = 1e-9;  // dimensionless (A/B/C are bounded ~O(1) direction-cosine combinations) - same scale as this file's other angular-degeneracy guards
+  const Point3d apex = cone.ApexPoint();
+  const Vector3d axis = cone.Axis();
+  const double alpha = std::fabs(cone.AngleInRadians());
+  if (!(alpha > 1e-9) || alpha > kPi / 2.0 - 1e-9) return out;  // not a genuine double-napped cone (degenerate to a line or a flat plane)
+
+  const Vector3d e1 = plane.xaxis, e2 = plane.yaxis;
+  const double a1 = ON_DotProduct(e1, axis), a2 = ON_DotProduct(e2, axis);
+  const double k = std::cos(alpha) * std::cos(alpha);
+  const double A = a1 * a1 - k, B = 2.0 * a1 * a2, C = a2 * a2 - k;
+  const double Delta = B * B - 4.0 * A * C;
+
+  if (std::fabs(plane.DistanceTo(apex)) <= tolerance) {
+    // Through the apex: D, E, F of the restricted conic all vanish in
+    // apex-centered local coordinates, leaving the homogeneous direction
+    // equation A*cos(theta)^2 + B*cos(theta)*sin(theta) + C*sin(theta)^2 ==
+    // 0 - see this function's own header doc comment for the double-angle
+    // closed form. Real solutions exist exactly when Delta >= 0 (the same
+    // discriminant as the restricted conic itself - the apex is always the
+    // boundary point where an ellipse-type section degenerates to a point,
+    // a parabola-type to one line, and a hyperbola-type to a line pair).
+    out.through_apex = true;
+    out.empty = false;
+    if (Delta < -kDiscriminantEps) {
+      out.line_count = 0;  // the plane touches the (infinite) cone at the apex point only
+      return out;
+    }
+    const double Rx = (A - C) / 2.0, Ry = B / 2.0;
+    const double R = std::hypot(Rx, Ry);
+    const double phi = std::atan2(Ry, Rx);
+    const double rhs = -(A + C) / 2.0;
+    const double cos_arg = R > 1e-300 ? Clamp(rhs / R, -1.0, 1.0) : 0.0;
+    const double dtheta = std::acos(cos_arg);  // in [0, pi]
+    auto line_at = [&](double theta) {
+      const Vector3d dir = std::cos(theta) * e1 + std::sin(theta) * e2;
+      return ON_Line(apex, apex + dir);
+    };
+    if (Delta <= kDiscriminantEps) {
+      out.line_count = 1;
+      out.line_a = line_at(phi / 2.0);
+      return out;
+    }
+    out.line_count = 2;
+    out.line_a = line_at((phi - dtheta) / 2.0);
+    out.line_b = line_at((phi + dtheta) / 2.0);
+    return out;
+  }
+
+  if (Delta >= -kDiscriminantEps) {
+    out.unsupported = true;  // parabola (Delta ~ 0) or hyperbola (Delta > 0) - not built here
+    return out;
+  }
+
+  // Ellipse-type (Delta < 0, plane clear of the apex): the restricted
+  // conic's center solves the critical-point system 2A*s0+B*t0+D==0,
+  // B*s0+2C*t0+E==0 - see this function's own header doc comment.
+  const Vector3d v0 = plane.origin - apex;
+  const double a0 = ON_DotProduct(v0, axis);
+  const double b0 = ON_DotProduct(v0, v0), b1 = ON_DotProduct(v0, e1), b2 = ON_DotProduct(v0, e2);
+  const double D = 2.0 * (a0 * a1 - k * b1), E = 2.0 * (a0 * a2 - k * b2), F = a0 * a0 - k * b0;
+
+  const double det = 4.0 * A * C - B * B;  // == -Delta > 0 here
+  const double s0 = (-D * 2.0 * C - B * (-E)) / det;
+  const double t0 = (2.0 * A * (-E) - B * (-D)) / det;
+  const double Fp = A * s0 * s0 + B * s0 * t0 + C * t0 * t0 + D * s0 + E * t0 + F;  // Q evaluated at the center
+
+  // 2x2 symmetric eigen-decomposition of [[A, B/2], [B/2, C]] - the
+  // classical conic-rotation angle (cot(2*theta) == (A-C)/B).
+  const double theta = 0.5 * std::atan2(B, A - C);
+  const double c1 = std::cos(theta), s1 = std::sin(theta);
+  const double lam1 = A * c1 * c1 + B * c1 * s1 + C * s1 * s1;
+  const double lam2 = A * s1 * s1 - B * c1 * s1 + C * c1 * c1;  // orthogonal direction (theta + pi/2)
+  const double sq1 = -Fp / lam1, sq2 = -Fp / lam2;
+  if (!(sq1 > 1e-18) || !(sq2 > 1e-18)) {
+    // Degenerates below usable precision (would need a genuinely malformed
+    // cone/plane pair given Delta < 0 and the apex already ruled clear by
+    // the branch above) - treated as a genuine miss rather than NaN.
+    return out;
+  }
+
+  const Vector3d dir1 = c1 * e1 + s1 * e2;    // unit (e1, e2 orthonormal)
+  const Vector3d dir2 = -s1 * e1 + c1 * e2;   // unit, _|_ dir1
+  const Point3d center = plane.origin + s0 * e1 + t0 * e2;
+
+  out.empty = false;
+  out.ellipse = ON_Ellipse(ON_Plane(center, dir1, dir2), std::sqrt(sq1), std::sqrt(sq2));
+  if (out.ellipse.GetNurbForm(out.curve) == 0) {
+    out = PlaneConeIntersection{};  // only fails for a degenerate radius, already ruled out above, or an invalid plane, already ruled out by dir1/dir2's construction
+  }
+  return out;
+}
+
+PlaneTorusIntersection IntersectPlaneTorus(const ON_Plane& plane, const ON_Torus& torus, double tolerance) {
+  PlaneTorusIntersection out;
+  if (!plane.IsValid() || !torus.IsValid() || !(tolerance >= 0)) return out;  // stays empty
+
+  constexpr double kAngleTol = 1e-6;  // same scale as IntersectPlaneCylinder's own kMinAbsC edge-on guard
+  const Point3d center = torus.plane.origin;
+  const Vector3d taxis = torus.plane.zaxis;
+  const Vector3d n = plane.zaxis;
+  const double R = torus.major_radius, r = torus.minor_radius;
+
+  const double axis_in_plane = ON_DotProduct(taxis, n);  // ~0 when the torus axis lies IN the plane (meridian candidate)
+  if (std::fabs(axis_in_plane) < kAngleTol && std::fabs(plane.DistanceTo(center)) <= tolerance) {
+    // MERIDIAN: the torus axis lies in the plane AND the plane passes
+    // through the torus center (an axis LINE lies in a plane only if the
+    // plane contains one of the axis's own points too - checking the
+    // center directly is simpler and equally exact, since the axis is a
+    // single line through that center). The two circles sit on either
+    // side of the axis, both at the plane's own perpendicular direction
+    // to the axis within the plane: `radial = n x taxis` is _|_ both n
+    // (so it lies IN the plane) and taxis (so it is a genuine in-plane
+    // radial direction), and `taxis` itself is the other in-plane axis
+    // (dot(taxis, n) ~ 0 here, so taxis already lies in the plane too).
+    const Vector3d radial = ON_CrossProduct(n, taxis);
+    const double radial_len = radial.Length();
+    if (!(radial_len > 1e-9) || !(r > 0)) return out;  // degenerate basis or invalid torus
+    const Vector3d radial_dir = radial / radial_len;
+    out.empty = false;
+    out.meridian = true;
+    out.circle_count = 2;
+    out.circle_a = ON_Circle(ON_Plane(center + R * radial_dir, taxis, ON_CrossProduct(radial_dir, taxis)), r);
+    out.circle_b = ON_Circle(ON_Plane(center - R * radial_dir, taxis, ON_CrossProduct(radial_dir, taxis)), r);
+    if (out.circle_a.GetNurbForm(out.curve_a) == 0 || out.circle_b.GetNurbForm(out.curve_b) == 0) out = PlaneTorusIntersection{};
+    return out;
+  }
+
+  if (std::fabs(std::fabs(axis_in_plane) - 1.0) < kAngleTol) {
+    // AXIAL: the plane's own normal is (anti)parallel to the torus axis -
+    // a horizontal slice at signed height z along that axis.
+    const double z = ON_DotProduct(plane.origin - center, taxis);
+    const double az = std::fabs(z);
+    if (az > r + tolerance) return out;  // genuinely clear of the torus: stays empty
+    out.empty = false;
+    out.axial = true;
+    const Point3d slice_center = center + z * taxis;
+    const ON_Plane circle_plane(slice_center, torus.plane.xaxis, torus.plane.yaxis);
+    const double inner_sq = r * r - z * z;  // >= 0 here (az <= r + tolerance, clamped below)
+    const double inner = std::sqrt(std::max(inner_sq, 0.0));
+    const double outer_radius = R + inner;
+    const double inner_radius = R - inner;
+    if (az >= r - tolerance || !(inner_radius > tolerance)) {
+      // Tangent at the very top/bottom, or the central hole doesn't reach
+      // this far in (inner_radius would be non-positive): one circle only.
+      out.circle_count = 1;
+      out.circle_a = ON_Circle(circle_plane, outer_radius);
+      if (out.circle_a.GetNurbForm(out.curve_a) == 0) out = PlaneTorusIntersection{};
+      return out;
+    }
+    out.circle_count = 2;
+    out.circle_a = ON_Circle(circle_plane, outer_radius);
+    out.circle_b = ON_Circle(circle_plane, inner_radius);
+    if (out.circle_a.GetNurbForm(out.curve_a) == 0 || out.circle_b.GetNurbForm(out.curve_b) == 0) out = PlaneTorusIntersection{};
+    return out;
+  }
+
+  out.unsupported = true;  // a general oblique plane/torus section is a quartic space curve - not built here
+  return out;
+}
+
 std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePoints(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt) {
   std::vector<SurfaceSilhouettePoint> out;
   if (view_direction.Length() < 1e-12) return out;  // no direction to test tangency against

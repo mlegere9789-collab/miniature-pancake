@@ -4231,6 +4231,154 @@ void TestIntersectPlanePlaneClosedForm() {
   Check(IntersectPlanePlane(invalid_plane, vertical, 1e-6).empty, "an invalid plane operand is refused as a genuine miss");
 }
 
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet named
+// "cone" directly as one of the still entirely-unaddressed pairs.
+// IntersectPlaneCone() closes the ellipse/circle and through-apex-line(s)
+// cases with a true closed form (no mesh seeding, no Newton polish),
+// honestly reporting `unsupported` for the parabola/hyperbola cases it
+// does not build.
+void TestIntersectPlaneConeClosedForm() {
+  using dino8::kernel::IntersectPlaneCone;
+  using dino8::kernel::Point3d;
+
+  // A cone with apex at the origin, axis +Z, half-angle 30 degrees
+  // (radius = tan(30deg) at height 1).
+  const double half_angle = 30.0 * 3.14159265358979323846 / 180.0;
+  const ON_Cone cone(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0, std::tan(half_angle));
+  Check(cone.IsValid(), "sanity: the test cone is genuinely valid");
+
+  // A plane perpendicular to the axis at height 4: the hand-derivable
+  // result is the exact same circle ON_Cone::CircleAt(4) already reports
+  // via its own, independent construction - a genuine ground truth, not a
+  // hardcoded number.
+  const ON_Plane perp(ON_3dPoint(0, 0, 4), ON_3dVector(0, 0, 1));
+  const auto circle_case = IntersectPlaneCone(perp, cone, 1e-6);
+  Check(!circle_case.unsupported && !circle_case.empty && !circle_case.through_apex, "a plane perpendicular to the axis reports a genuine ellipse (circle), not unsupported/empty/through-apex");
+  if (!circle_case.unsupported && !circle_case.empty && !circle_case.through_apex) {
+    Check(circle_case.ellipse.IsCircle(), "perpendicular to the axis is exactly the circle special case");
+    const ON_Circle expected = cone.CircleAt(4.0);
+    Check(std::abs(circle_case.ellipse.Radius(0) - expected.Radius()) < 1e-6, "the reported circle's radius matches ON_Cone::CircleAt's own independent construction");
+    Check(circle_case.ellipse.Center().DistanceTo(expected.Center()) < 1e-6, "the reported circle's center matches ON_Cone::CircleAt's own independent construction too");
+  }
+
+  // A general oblique plane, steep enough to still cut only one nappe
+  // (its own angle to the axis is well above the 30-degree half-angle):
+  // verified against the cone's own defining relation directly, not a
+  // hardcoded expected ellipse.
+  const ON_Plane oblique(ON_3dPoint(0, 0, 5), ON_3dVector(0.3, 0, 1).UnitVector());
+  const auto ellipse_case = IntersectPlaneCone(oblique, cone, 1e-6);
+  Check(!ellipse_case.unsupported && !ellipse_case.empty && !ellipse_case.through_apex, "a sufficiently steep oblique plane also reports a genuine ellipse");
+  if (!ellipse_case.unsupported && !ellipse_case.empty && !ellipse_case.through_apex) {
+    bool all_on_cone_and_plane = true;
+    ON_NurbsCurve curve = ellipse_case.curve;
+    for (double t : {0.0, 0.25, 0.5, 0.75}) {
+      const Point3d p = curve.PointAt(curve.Domain().ParameterAt(t));
+      const ON_3dVector v = p - cone.ApexPoint();
+      const double lhs = ON_DotProduct(v, cone.Axis());
+      const double rhs = std::cos(half_angle) * std::cos(half_angle) * ON_DotProduct(v, v);
+      if (std::abs(lhs * lhs - rhs) > 1e-4 || std::abs(oblique.DistanceTo(p)) > 1e-6) { all_on_cone_and_plane = false; break; }
+    }
+    Check(all_on_cone_and_plane, "every sampled point of the reported ellipse lies exactly on both the cone's own defining relation and the cutting plane");
+  }
+
+  // A plane through the apex, oblique enough to genuinely cross both
+  // nappes (shallower than the half-angle - a plane containing the axis
+  // itself always qualifies): reports two real lines through the apex.
+  const ON_Plane through_apex_crossing(ON_3dPoint(0, 0, 0), ON_3dVector(0, 1, 0));
+  const auto two_lines = IntersectPlaneCone(through_apex_crossing, cone, 1e-6);
+  Check(!two_lines.unsupported && !two_lines.empty && two_lines.through_apex && two_lines.line_count == 2, "a plane through the apex containing the axis reports two genuine lines through the apex");
+  if (two_lines.line_count == 2) {
+    for (const ON_Line& line : {two_lines.line_a, two_lines.line_b}) {
+      const ON_3dVector dir = line.PointAt(1.0) - line.PointAt(0.0);
+      const double lhs = ON_DotProduct(dir, cone.Axis());
+      const double rhs = std::cos(half_angle) * std::cos(half_angle) * ON_DotProduct(dir, dir);
+      Check(std::abs(lhs * lhs - rhs) < 1e-6, "each reported line through the apex genuinely satisfies the cone's own defining relation");
+      Check(line.PointAt(0.0).DistanceTo(cone.ApexPoint()) < 1e-9, "each reported line genuinely passes through the apex");
+    }
+  }
+
+  // A plane through the apex but steep enough to miss the cone everywhere
+  // except the apex itself (e.g. the plane perpendicular to the axis,
+  // through the apex: every nonzero direction in it is at 90 degrees from
+  // the axis, well above the 30-degree half-angle) reports zero lines.
+  const ON_Plane through_apex_missing(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const auto zero_lines = IntersectPlaneCone(through_apex_missing, cone, 1e-6);
+  Check(!zero_lines.unsupported && !zero_lines.empty && zero_lines.through_apex && zero_lines.line_count == 0, "a plane through the apex too steep to reach the cone anywhere else reports the apex-point-only degeneracy");
+
+  // A plane parallel to the axis (not through the apex): genuinely crosses
+  // both nappes (any angle below the axis, including 0, is shallower than
+  // a positive half-angle) - a hyperbola, honestly unsupported rather than
+  // misreported as an ellipse.
+  const ON_Plane hyperbola_plane(ON_3dPoint(2, 0, 0), ON_3dVector(1, 0, 0));
+  Check(IntersectPlaneCone(hyperbola_plane, cone, 1e-6).unsupported, "a plane parallel to the axis (a hyperbola section) is honestly reported unsupported, not guessed at");
+
+  // Invalid input is refused outright.
+  const ON_Cone invalid_cone;
+  Check(!invalid_cone.IsValid(), "sanity: a default-constructed ON_Cone is genuinely invalid");
+  Check(IntersectPlaneCone(perp, invalid_cone, 1e-6).empty, "an invalid cone operand is refused as a genuine miss");
+}
+
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet named
+// "torus" directly as one of the still entirely-unaddressed pairs.
+// IntersectPlaneTorus() closes the two special orientations (meridian,
+// axial) that reduce to a circle or circle pair with a true closed form,
+// honestly reporting `unsupported` for a general oblique section (a
+// quartic space curve this function does not attempt).
+void TestIntersectPlaneTorusClosedForm() {
+  using dino8::kernel::IntersectPlaneTorus;
+
+  const double R = 5.0, r = 2.0;
+  const ON_Torus torus(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), R, r);
+  Check(torus.IsValid(), "sanity: the test torus is genuinely valid");
+
+  // MERIDIAN: a plane containing the torus axis (the world XZ plane, y=0)
+  // reports exactly two circles, each of the torus's own minor_radius,
+  // centered at the hand-derivable (+-R, 0, 0).
+  const ON_Plane meridian_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 1, 0));
+  const auto meridian = IntersectPlaneTorus(meridian_plane, torus, 1e-6);
+  Check(!meridian.unsupported && !meridian.empty && meridian.meridian && meridian.circle_count == 2, "a plane containing the torus axis reports exactly two circles");
+  if (meridian.circle_count == 2) {
+    Check(std::abs(meridian.circle_a.Radius() - r) < 1e-6 && std::abs(meridian.circle_b.Radius() - r) < 1e-6, "both meridian circles have exactly the torus's own minor_radius");
+    const double d0 = meridian.circle_a.Center().DistanceTo(ON_3dPoint(0, 0, 0));
+    const double d1 = meridian.circle_b.Center().DistanceTo(ON_3dPoint(0, 0, 0));
+    Check(std::abs(d0 - R) < 1e-6 && std::abs(d1 - R) < 1e-6, "both meridian circle centers sit at exactly the torus's own major_radius from the torus center");
+    Check(meridian.circle_a.Center().DistanceTo(meridian.circle_b.Center()) > 1e-6, "the two meridian circles are genuinely distinct, not the same circle reported twice");
+  }
+
+  // AXIAL, through the center (z=0): two concentric circles at the
+  // hand-derivable radii R+r and R-r.
+  const ON_Plane axial_mid(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const auto axial_mid_case = IntersectPlaneTorus(axial_mid, torus, 1e-6);
+  Check(!axial_mid_case.unsupported && !axial_mid_case.empty && axial_mid_case.axial && axial_mid_case.circle_count == 2, "a plane perpendicular to the axis through the torus center reports two concentric circles");
+  if (axial_mid_case.circle_count == 2) {
+    const double ra = std::max(axial_mid_case.circle_a.Radius(), axial_mid_case.circle_b.Radius());
+    const double rb = std::min(axial_mid_case.circle_a.Radius(), axial_mid_case.circle_b.Radius());
+    Check(std::abs(ra - (R + r)) < 1e-6, "the outer axial circle's radius matches the hand-derivable R+r exactly");
+    Check(std::abs(rb - (R - r)) < 1e-6, "the inner axial circle's radius matches the hand-derivable R-r exactly");
+  }
+
+  // AXIAL, tangent at the very top (z == r): collapses to one circle of
+  // radius R.
+  const ON_Plane axial_top(ON_3dPoint(0, 0, r), ON_3dVector(0, 0, 1));
+  const auto axial_top_case = IntersectPlaneTorus(axial_top, torus, 1e-6);
+  Check(!axial_top_case.unsupported && !axial_top_case.empty && axial_top_case.axial && axial_top_case.circle_count == 1, "a plane tangent at the very top of the torus reports exactly one circle");
+  if (axial_top_case.circle_count == 1) Check(std::abs(axial_top_case.circle_a.Radius() - R) < 1e-6, "the single tangent-height circle's radius matches the hand-derivable major_radius exactly");
+
+  // AXIAL, genuinely clear of the torus (z > r): a genuine miss.
+  const ON_Plane axial_clear(ON_3dPoint(0, 0, r + 1.0), ON_3dVector(0, 0, 1));
+  Check(IntersectPlaneTorus(axial_clear, torus, 1e-6).empty, "a plane perpendicular to the axis, genuinely clear of the torus, reports a genuine miss");
+
+  // A general oblique plane (neither meridian nor axial) is honestly
+  // unsupported, not guessed at.
+  const ON_Plane oblique(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 1).UnitVector());
+  Check(IntersectPlaneTorus(oblique, torus, 1e-6).unsupported, "a general oblique plane/torus section is honestly reported unsupported, not guessed at");
+
+  // Invalid input is refused outright.
+  const ON_Torus invalid_torus;
+  Check(!invalid_torus.IsValid(), "sanity: a default-constructed ON_Torus is genuinely invalid");
+  Check(IntersectPlaneTorus(meridian_plane, invalid_torus, 1e-6).empty, "an invalid torus operand is refused as a genuine miss");
+}
+
 // PARITY_MAP.md's own "Silhouette / outline curves" bullet: "still app-only
 // and mesh-based ... No kernel silhouette." FindSurfaceSilhouettePoints is
 // a genuine kernel-level silhouette primitive for a fixed orthographic
@@ -69946,6 +70094,8 @@ int main() {
   TestIntersectPlaneCylinderClosedForm();
   TestIntersectCylinderCylinderParallelClosedForm();
   TestIntersectPlanePlaneClosedForm();
+  TestIntersectPlaneConeClosedForm();
+  TestIntersectPlaneTorusClosedForm();
   TestFindSurfaceSilhouettePointsSphereEquator();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
