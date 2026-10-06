@@ -1152,6 +1152,33 @@ Result NurbsCurve::MakeNonRational() {
   return curve_.MakeNonRational() ? Result::Ok : Result::Failed;
 }
 
+Result NurbsCurve::MakeNonRational(double tolerance, double* out_max_deviation) {
+  if (out_max_deviation) *out_max_deviation = 0.0;
+  if (!curve_.IsRational()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  const ON_NurbsCurve backup = curve_;
+  if (!curve_.MakeNonRational()) {
+    curve_ = backup;
+    return Result::Failed;
+  }
+  NurbsCurve before;
+  before.raw() = backup;
+  const Interval domain = Domain();
+  const int samples = std::max(200, 20 * backup.CVCount());
+  double max_deviation = 0.0;
+  for (int i = 0; i <= samples; ++i) {
+    const double t = domain.min + (domain.max - domain.min) * i / samples;
+    max_deviation = std::max(max_deviation, (PointAt(t) - before.PointAt(t)).Length());
+  }
+  if (out_max_deviation) *out_max_deviation = max_deviation;
+  if (max_deviation > tolerance) {
+    curve_ = backup;
+    return Result::Failed;
+  }
+  return Result::Ok;
+}
+
 Result NurbsCurve::ElevateDegree(int new_degree) {
   if (new_degree <= Degree()) {
     return Result::NoOpAlreadySatisfied;
@@ -1405,6 +1432,64 @@ double NurbsCurve::Length(int samples) const {
     length += (current - previous).Length();
     previous = current;
   }
+  return length;
+}
+
+namespace {
+
+// 5-point Gauss-Legendre nodes/weights on [-1, 1] (standard tabulated
+// values, exact for any polynomial speed up to degree 9).
+constexpr int kGaussPoints = 5;
+constexpr double kGaussNodes[kGaussPoints] = {-0.9061798459386640, -0.5384693101056831, 0.0,
+                                               0.5384693101056831, 0.9061798459386640};
+constexpr double kGaussWeights[kGaussPoints] = {0.2369268850561891, 0.4786286704993665, 0.5688888888888889,
+                                                 0.4786286704993665, 0.2369268850561891};
+
+double CurveSpeedAt(const ON_NurbsCurve& c, double t) {
+  ON_3dPoint point;
+  ON_3dVector first_derivative;
+  c.Ev1Der(t, point, first_derivative);
+  return first_derivative.Length();
+}
+
+double GaussSegmentLength(const ON_NurbsCurve& c, double a, double b) {
+  const double mid = 0.5 * (a + b), half = 0.5 * (b - a);
+  double sum = 0.0;
+  for (int i = 0; i < kGaussPoints; ++i) sum += kGaussWeights[i] * CurveSpeedAt(c, mid + half * kGaussNodes[i]);
+  return sum * half;
+}
+
+// Recursively bisects [a, b] (whose own Gauss estimate is `whole`) until
+// that estimate agrees with the sum of its two half-interval estimates
+// to within `tolerance`, halving the tolerance budget passed to each
+// half so the two leaves' worst-case errors still sum to at most the
+// `tolerance` this call started with - the standard adaptive-quadrature
+// error indicator, not a certified bound (see LengthToTolerance()'s own
+// doc comment in curve.h).
+double AdaptiveGaussLength(const ON_NurbsCurve& c, double a, double b, double whole, double tolerance, int depth,
+                            int& subintervals) {
+  const double mid = 0.5 * (a + b);
+  const double left = GaussSegmentLength(c, a, mid);
+  const double right = GaussSegmentLength(c, mid, b);
+  if (depth >= 20 || std::abs((left + right) - whole) <= tolerance) {
+    ++subintervals;
+    return left + right;
+  }
+  return AdaptiveGaussLength(c, a, mid, left, tolerance * 0.5, depth + 1, subintervals) +
+         AdaptiveGaussLength(c, mid, b, right, tolerance * 0.5, depth + 1, subintervals);
+}
+
+}  // namespace
+
+double NurbsCurve::LengthToTolerance(double tolerance, int* out_subintervals) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::LengthToTolerance: tolerance must be positive");
+  }
+  const ON_Interval domain = curve_.Domain();
+  int subintervals = 0;
+  const double whole = GaussSegmentLength(curve_, domain.Min(), domain.Max());
+  const double length = AdaptiveGaussLength(curve_, domain.Min(), domain.Max(), whole, tolerance, 0, subintervals);
+  if (out_subintervals) *out_subintervals = subintervals;
   return length;
 }
 

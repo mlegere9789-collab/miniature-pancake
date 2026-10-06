@@ -12,9 +12,10 @@ real, if minimal, structured JSON listing of what's in the document - not
 the curve/surface geometry data itself, which still only comes back as
 whatever a script's own `print()` output happens to contain (plain text by
 default; `/run`/`/run/python` also answer with structured JSON instead of
-plain text when asked - see below). Authentication is real but minimal - an
-optional shared bearer token, not OAuth/API keys/per-user accounts. See
-"What this deliberately does not do" below for the honest scope.
+plain text when asked - see below). Authentication is real but minimal - one
+or more bearer tokens, each optionally naming its own caller, not OAuth/API
+keys/real accounts. See "What this deliberately does not do" below for the
+honest scope.
 
 ## Running it
 
@@ -39,10 +40,19 @@ same as every other headless mode this app already has).
 - `--serve-max-requests N` exits the process after N requests have been
   serviced, instead of running until killed - used by `tests/smoke.sh` for
   a deterministic, self-terminating run; end users normally omit it.
-- `--serve-token TOKEN` requires every request to carry a matching
+- `--serve-token [NAME:]TOKEN` requires every request to carry a matching
   `Authorization: Bearer TOKEN` header; a request with no such header, or
-  the wrong one, gets back `401 Unauthorized` before the body is ever run as
-  a script. Omit the flag to keep the server fully open, as before.
+  one matching none of the registered tokens, gets back `401 Unauthorized`
+  before the body is ever run as a script. Omit the flag entirely to keep
+  the server fully open, as before. Repeatable - give it more than once to
+  register more than one acceptable token, so distinct callers (a CI job, a
+  local tool, a teammate's script) can each hold their own instead of
+  sharing one secret; a `NAME:` prefix names that token's caller (e.g.
+  `--serve-token ci:abc123 --serve-token alice:def456`), echoed back as
+  `"caller"` in a JSON response (`Accept: application/json` - see below) so
+  a caller can confirm which of its own credentials authenticated the
+  request. A bare `TOKEN` with no prefix works exactly as it always did
+  (anonymous - no `"caller"` field in the JSON response).
 - `POST /run` runs the request body as a **Lua** script; `POST /run/python`
   runs it as a **Python** script against the embedded `dino8` module (only
   on a build with Python support - see `BATCH_SCRIPTING.md`/`PythonEngine.h`;
@@ -61,11 +71,12 @@ same as every other headless mode this app already has).
   (there prefixed with `history: `; the compute server's response is the
   raw text only) - unless the request carries `Accept: application/json`, in
   which case the same output comes back as `{"ok": true|false, "output":
-  [...], "error": "..."}` (the `error` field only present when the script
-  was rejected for suspending on an interactive prompt - see below) instead
-  of plain text. HTTP status is `200` on success or `500` if the script
-  raised an error or tried to suspend on an interactive prompt (see below) -
-  the same either way, JSON or not.
+  [...], "error": "...", "caller": "..."}` (`error` only present when the
+  script was rejected for suspending on an interactive prompt - see below;
+  `caller` only present when `--serve-token` named the token that
+  authenticated this request) instead of plain text. HTTP status is `200`
+  on success or `500` if the script raised an error or tried to suspend on
+  an interactive prompt (see below) - the same either way, JSON or not.
 - `GET /objects` returns every object currently in the document as a JSON
   array - `id`, `type` (the same name `What`/`ObjectType` print, e.g.
   `"polysurface"`), `name`, `layer` (its full path), and `bbox` (`{"min":
@@ -86,6 +97,12 @@ $ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer hunter2' --
 200
 ```
 (the second pair assumes the server was started with `--serve-token hunter2`.)
+
+```
+$ curl -s -H 'Accept: application/json' -H 'Authorization: Bearer abc123' --data 'print(1)' http://127.0.0.1:8080/run
+{"ok":true,"output":["1"],"caller":"ci"}
+```
+(assumes `--serve-token ci:abc123` - a named token's caller comes back in the JSON response so it can confirm which credential authenticated it; a bare, unnamed token like `hunter2` above never adds a `"caller"` field.)
 
 ```
 $ curl -s -H 'Accept: application/json' --data 'print("hi")' http://127.0.0.1:8080/run
@@ -113,17 +130,20 @@ $ curl -s http://127.0.0.1:8080/objects
   client gets a bounded read timeout and a maximum request size instead of
   being able to hang the server, but there is no queueing or parallel
   execution of multiple scripts.
-- **No TLS, and auth is a single shared secret, not real accounts.**
-  `--serve-token` is a plain-text bearer token (`main.cpp`'s
-  `ConstantTimeEquals` - a real constant-time comparison, so an unrelated
-  local process can't learn it one byte at a time by timing repeated
-  guesses, but still no hashing, no per-caller tokens, no rotation) over a
-  plaintext loopback-only socket - good enough to stop an unrelated local
-  process or script from hitting an unprotected endpoint by accident,
-  nowhere near OAuth/API-key-management. This binds `127.0.0.1` and is meant
-  for local automation (a build script, a CI job, a local tool talking to a
-  running Dino 8), not for exposing to a network you don't trust even with
-  a token set.
+- **No TLS, and auth is a handful of plain-text secrets, not real accounts.**
+  Each `--serve-token` is a plain-text bearer token, checked with `main.cpp`'s
+  `ConstantTimeEquals` (a real constant-time comparison against every
+  registered candidate, so an unrelated local process can't learn one byte
+  at a time by timing repeated guesses) over a plaintext loopback-only
+  socket - distinct callers can now each hold their own named token rather
+  than sharing exactly one secret (see above), but there is still no
+  hashing, no rotation, no expiry, and no revocation short of restarting
+  the server with a different set of `--serve-token` flags. Good enough to
+  stop an unrelated local process or script from hitting an unprotected
+  endpoint by accident, nowhere near OAuth/API-key-management. This binds
+  `127.0.0.1` and is meant for local automation (a build script, a CI job,
+  a teammate's script talking to a running Dino 8), not for exposing to a
+  network you don't trust even with tokens set.
 - **No geometry (de)serialization format for the geometry itself.** `GET
   /objects` (above) is a real JSON listing of *which* objects exist, their
   type/name/layer and bounding box - genuine structured data, not printed
