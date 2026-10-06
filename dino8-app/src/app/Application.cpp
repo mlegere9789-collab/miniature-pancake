@@ -91,6 +91,7 @@ void RegisterHistoryCommands(CommandEngine&);   // History/RecordHistory/UpdateH
 void RegisterCollabCommands(CommandEngine&);    // CollabHost/CollabJoin/CollabLeave/CollabStatus (cmd_collab.cpp)
 void UpdateCollabSession(Document&);  // net/CollabSession.cpp: pushes/applies a real-time collaboration session's snapshots
 void RegisterAiCommands(CommandEngine&);        // AiSuggestCommand (cmd_ai.cpp)
+void RegisterWebViewerCommands(CommandEngine&);  // ExportWebViewer (cmd_webviewer.cpp)
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -390,6 +391,7 @@ void Application::RegisterCommands() {
   RegisterHistoryCommands(*engine_);     // History/RecordHistory/UpdateHistory - runs last so it always wins over cmd_misc.cpp's dead stub comment
   RegisterCollabCommands(*engine_);      // CollabHost/CollabJoin/CollabLeave/CollabStatus
   RegisterAiCommands(*engine_);          // AiSuggestCommand
+  RegisterWebViewerCommands(*engine_);    // ExportWebViewer
   RegisterFlowCommands(*engine_);       // very last: Dino Flow + plug-ins, replaces the Grasshopper/plug-in stubs
 }
 
