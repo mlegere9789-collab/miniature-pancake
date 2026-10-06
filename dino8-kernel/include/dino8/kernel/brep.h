@@ -2688,6 +2688,32 @@ class Brep {
   // TessellateNonUniformAdaptive() followed by Mesh::MergeAndWeld().
   Mesh TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) const;
 
+  // The Brep-level endpoint of NurbsSurface::TessellateGridCertifiedAdaptive()
+  // - closes PARITY_MAP's own disclosed "Adaptive tessellation of B-rep
+  // faces (curvature-driven refinement) — a fixed angular deviation
+  // heuristic, not a certified chordal-deviation bound" gap for every face
+  // the kernel can actually CERTIFY a bound for: an untrimmed (whole-cell)
+  // face gets TessellateGridCertifiedAdaptive() itself, an honest MEASURED
+  // (not merely estimated) chord-deviation guarantee. A genuinely trimmed
+  // face has no certified path (MeasureGridTessellationDeviation() itself
+  // is scoped to the plain untrimmed grid, not TessellateGrid()'s own
+  // trimmed/exact-clip siblings - see that function's own doc comment),
+  // so those faces fall back to the existing uncertified
+  // TessellateGridNonUniformAdaptive()/TessellateGridClippedExactAdaptive()
+  // heuristic, the same real, disclosed scope split
+  // TessellateNonUniformAdaptive() already uses for its own exact-clip
+  // fallback. If `out_certified` is non-null, it is resized to one entry
+  // per returned face and set to `true` exactly where that face's own
+  // mesh carries the certified guarantee, `false` where it's the
+  // uncertified fallback - so a caller can tell the two apart instead of
+  // this method silently blending a real bound with a heuristic one.
+  std::vector<Mesh> TessellateCertifiedAdaptive(double chord_tolerance, int max_refinements = 8,
+                                                 std::vector<bool>* out_certified = nullptr) const;
+
+  // TessellateCertifiedAdaptive() followed by Mesh::MergeAndWeld().
+  Mesh TessellateToClosedMeshCertifiedAdaptive(double chord_tolerance,
+                                                int max_refinements = 8) const;
+
   // Angle-based counterpart to TessellateAdaptive(): per-face divisions
   // come from NurbsSurface::SuggestedDivisionsByAngle(angle_tolerance)
   // instead of SuggestedDivisions(chord_tolerance) - the Brep-level entry

@@ -8,12 +8,14 @@ all.
 
 **It is not Rhino.Compute.** There is no concurrency (one request is
 serviced at a time) and no REST resource model. `GET /objects` (below) is a
-real, if minimal, structured JSON listing of what's in the document - not
-the curve/surface geometry data itself, which still only comes back as
-whatever a script's own `print()` output happens to contain (plain text by
-default; `/run`/`/run/python` also answer with structured JSON instead of
-plain text when asked - see below). Authentication is real but minimal - one
-or more bearer tokens, each optionally naming its own caller, not OAuth/API
+real, if minimal, structured JSON listing of what's in the document, and
+`?geometry=1` adds each object's own point/vertex data for the two kinds
+simple enough to serialize honestly right now (point, mesh) - every other
+kind (curve, surface, polysurface, SubD) still only comes back as whatever
+a script's own `print()` output happens to contain (plain text by default;
+`/run`/`/run/python` also answer with structured JSON instead of plain text
+when asked - see below). Authentication is real but minimal - one or more
+bearer tokens, each optionally naming its own caller, not OAuth/API
 keys/real accounts. See "What this deliberately does not do" below for the
 honest scope.
 
@@ -82,8 +84,17 @@ same as every other headless mode this app already has).
   `"polysurface"`), `name`, `layer` (its full path), and `bbox` (`{"min":
   [x,y,z], "max": [x,y,z]}`, or `null` for an object `BoundingBoxOf` can't
   box). A real, minimal structured wire format for *what exists and roughly
-  where* - not the curve/surface geometry itself, which a caller still has
-  to `print()` out of a script.
+  where*.
+- `GET /objects?geometry=1` additionally carries each object's own
+  `geometry` field: `{"point": [x,y,z]}` for a point, `{"vertices":
+  [[x,y,z], ...], "faces": [[i,i,i], ...]}` for a mesh (0-based indices,
+  a 4-entry face for a quad) - the two object kinds simple enough to
+  serialize honestly as plain JSON right now. Every other kind (curve,
+  surface, polysurface, SubD, point cloud) gets `"geometry": null` -
+  genuinely not a (de)serialization format for NURBS curve/surface/Brep/
+  SubD data (control points, knots, weights, trims - a substantially
+  larger undertaking than this), and still no way to POST geometry *in*
+  either; a caller still has to `print()` that out of a script.
 
 ```
 $ curl -s -X POST --data 'import dino8
@@ -110,6 +121,14 @@ $ curl -s -H 'Accept: application/json' --data 'print("hi")' http://127.0.0.1:80
 $ curl -s http://127.0.0.1:8080/objects
 [{"id":1,"type":"polysurface","name":"","layer":"Default","bbox":{"min":[0.000000,0.000000,0.000000],"max":[5.000000,5.000000,5.000000]}}]
 ```
+
+```
+$ curl -s --data 'rs.AddPoint(1,2,3)' http://127.0.0.1:8080/run >/dev/null
+$ curl -s http://127.0.0.1:8080/objects?geometry=1
+[{"id":1,"type":"polysurface", ..., "geometry":null},
+ {"id":2,"type":"point", ..., "geometry":{"point":[1.000000,2.000000,3.000000]}}]
+```
+(the box's `"geometry"` is `null` - polysurfaces aren't one of the two kinds `?geometry=1` serializes yet.)
 
 ## What this deliberately does not do
 
@@ -144,15 +163,19 @@ $ curl -s http://127.0.0.1:8080/objects
   `127.0.0.1` and is meant for local automation (a build script, a CI job,
   a teammate's script talking to a running Dino 8), not for exposing to a
   network you don't trust even with tokens set.
-- **No geometry (de)serialization format for the geometry itself.** `GET
-  /objects` (above) is a real JSON listing of *which* objects exist, their
-  type/name/layer and bounding box - genuine structured data, not printed
-  text - but it carries no curve/surface/mesh payload at all. Getting the
-  actual shape data out still means having a script `print()` whatever
-  representation you need (coordinates, a JSON string you build yourself
-  with `dino8`'s/`rs`'s existing query functions, ...); there is no way to
-  POST geometry *in* as structured data either - every script still arrives
-  as Lua/Python source text, same as the command line.
+- **No geometry (de)serialization format for most geometry.** `GET
+  /objects?geometry=1` (above) now carries real point/vertex data for
+  points and meshes - genuine structured data, not printed text - but
+  curves, surfaces, polysurfaces, SubDs and point clouds all still come
+  back with `"geometry": null`: reconstructing one of those needs its own
+  control points/knots/weights/trim structure, each a substantially larger
+  design than a flat vertex/face array, and none of that exists yet.
+  Getting their actual shape data out still means having a script `print()`
+  whatever representation you need (coordinates, a JSON string you build
+  yourself with `dino8`'s/`rs`'s existing query functions, ...); there is
+  also no way to POST geometry *in* as structured data for any kind -
+  every script still arrives as Lua/Python source text, same as the
+  command line.
 
 Closing any of the above further is real, separate follow-up work, not
 something this server already does quietly.

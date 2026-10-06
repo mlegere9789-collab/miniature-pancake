@@ -2858,4 +2858,83 @@ CylinderCylinderParallelIntersection IntersectCylinderCylinderParallel(const ON_
   return out;
 }
 
+PlanePlaneIntersection IntersectPlanePlane(const ON_Plane& a, const ON_Plane& b, double tolerance) {
+  PlanePlaneIntersection out;
+  if (!a.IsValid() || !b.IsValid() || !(tolerance >= 0)) return out;  // stays empty
+
+  constexpr double kAxisParallelTol = 1e-9;  // same scale as IntersectCylinderCylinderParallel's own axis-parallel guard
+  const Vector3d na = a.zaxis, nb = b.zaxis;
+  if (ON_CrossProduct(na, nb).Length() <= kAxisParallelTol) {
+    // Parallel (or antiparallel) normals: no single line can exist. Decide
+    // coincident-vs-disjoint directly from `b`'s own distance to `a`'s plane
+    // (constant everywhere on `b`, since `b` is flat and parallel to `a`).
+    if (std::fabs(a.DistanceTo(b.origin)) <= tolerance) {
+      out.empty = false;
+      out.coincident = true;
+    }
+    return out;
+  }
+
+  const double c = ON_DotProduct(na, nb);
+  const double ha = ON_DotProduct(na, Vector3d(a.origin));
+  const double hb = ON_DotProduct(nb, Vector3d(b.origin));
+  const double denom = 1.0 - c * c;
+  const double alpha = (ha - c * hb) / denom;
+  const double beta = (hb - c * ha) / denom;
+  const Point3d p0 = alpha * na + beta * nb;
+  const Vector3d dir = ON_CrossProduct(na, nb).UnitVector();
+
+  out.empty = false;
+  out.line = ON_Line(p0, p0 + dir);
+  return out;
+}
+
+std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePoints(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt) {
+  std::vector<SurfaceSilhouettePoint> out;
+  if (view_direction.Length() < 1e-12) return out;  // no direction to test tangency against
+
+  auto normal_dot = [&](double u, double v, bool& ok) {
+    const Vector3d n = RobustSurfaceNormal(s, u, v);
+    ok = n.Length() > 1e-9;
+    return ON_DotProduct(n, view_direction);
+  };
+
+  const SurfaceMesh grid = TessellateWithUV(s, opt);
+  const int nu = grid.nu, nv = grid.nv;
+  auto id = [&](int i, int j) { return j * (nu + 1) + i; };
+
+  auto try_edge = [&](const ON_2dPoint& uv0, const ON_2dPoint& uv1) {
+    bool ok0 = false, ok1 = false;
+    const double f0 = normal_dot(uv0.x, uv0.y, ok0);
+    const double f1 = normal_dot(uv1.x, uv1.y, ok1);
+    if (!ok0 || !ok1 || (f0 > 0) == (f1 > 0)) return;  // no verifiable sign change on this edge
+    const bool sign0_positive = f0 > 0;
+    double t0 = 0.0, t1 = 1.0;
+    for (int iter = 0; iter < 40; ++iter) {
+      const double tm = 0.5 * (t0 + t1);
+      const double um = uv0.x + tm * (uv1.x - uv0.x), vm = uv0.y + tm * (uv1.y - uv0.y);
+      bool okm = false;
+      const double fm = normal_dot(um, vm, okm);
+      if (!okm) break;  // degenerate mid-point: stop refining, keep the best bracket found so far
+      if ((fm > 0) == sign0_positive) t0 = tm; else t1 = tm;
+    }
+    const double tm = 0.5 * (t0 + t1);
+    const double u = uv0.x + tm * (uv1.x - uv0.x), v = uv0.y + tm * (uv1.y - uv0.y);
+    SurfaceSilhouettePoint pt;
+    pt.uv = ON_2dPoint(u, v);
+    pt.point = s.PointAt(u, v);
+    for (const auto& prev : out) {
+      if (prev.point.DistanceTo(pt.point) < opt.tolerance * 4) return;  // same dedup radius IntersectCurveSurface/IntersectCurves use
+    }
+    out.push_back(pt);
+  };
+
+  for (int j = 0; j <= nv; ++j)
+    for (int i = 0; i < nu; ++i) try_edge(grid.uv[static_cast<size_t>(id(i, j))], grid.uv[static_cast<size_t>(id(i + 1, j))]);
+  for (int j = 0; j < nv; ++j)
+    for (int i = 0; i <= nu; ++i) try_edge(grid.uv[static_cast<size_t>(id(i, j))], grid.uv[static_cast<size_t>(id(i, j + 1))]);
+
+  return out;
+}
+
 }  // namespace dino8::kernel
