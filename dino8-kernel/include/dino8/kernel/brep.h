@@ -3470,26 +3470,42 @@ class Brep {
   //
   // Deliberately scoped to the one case this can close WITHOUT guessing at
   // unrelated topology: `edge_index` must be naked (TrimCount() == 1,
-  // same detection the app layer already uses), its two loop-neighboring
-  // edges (ON_Brep::PrevTrim()/NextTrim() on its own single trim) must
-  // ALSO be naked, and each of the micro edge's own two vertices must
-  // touch NOTHING ELSE in this Brep besides the micro edge and that one
-  // neighbor - i.e. a genuine, isolated sliver on one face's own open
-  // boundary (the common "bad trim left a hairline gap" case), never a
-  // vertex a third edge, a second face's shared edge, or a non-manifold
-  // junction also depends on. Returns Result::Failed - not a thrown
-  // exception, the same "can't, but that's not a bug" contract
-  // UnjoinEdge() above already has - for every case outside that scope,
-  // or if closing the gap failed for a reason specific to this edge's own
-  // geometry (see below); the edge is left exactly as it was.
+  // same detection the app layer already uses). Returns Result::Failed -
+  // not a thrown exception, the same "can't, but that's not a bug"
+  // contract UnjoinEdge() above already has - for every case outside that
+  // scope, or if closing the gap failed for a reason specific to this
+  // edge's own geometry (see below); the edge is left exactly as it was.
   //
-  // The actual close: each neighbor edge's own curve is duplicated and
-  // nudged, via ON_Curve::SetStartPoint()/SetEndPoint() (whichever end
-  // touches the micro edge), to reach the midpoint of the micro edge's
-  // own two vertices instead of its own old endpoint - then committed
-  // through ReplaceEdgeCurve() itself (re-trimming that neighbor's own
-  // one face against the nudged curve, exactly the "re-trim the two faces
-  // on either side to close the gap" this is built on), before the two
+  // 2026-10-06: two restrictions this method used to enforce are both
+  // narrowed, mirroring the identical relaxations RemoveSharedMicroEdge()
+  // below already shipped for its own two endpoints:
+  //  - its two loop-neighboring edges (ON_Brep::PrevTrim()/NextTrim() on
+  //    its own single trim) no longer need to ALSO be naked - a neighbor
+  //    that is itself SHARED with a second face (TrimCount() == 2, the
+  //    free boundary running straight into a seam) is nudged and
+  //    re-trimmed exactly like a naked neighbor already was, since
+  //    ReplaceEdgeCurve() below already re-trims every trim an edge
+  //    carries, one or two, generically. A genuinely non-manifold (3+
+  //    trim) neighbor is still left alone.
+  //  - each of the micro edge's own two vertices no longer needs to touch
+  //    NOTHING ELSE besides the micro edge and its one designated
+  //    neighbor - a FURTHER edge at either endpoint (some third face, or
+  //    a further naked boundary, merely pinching at that same vertex) is
+  //    now nudged to the shared merge point too, exactly like the
+  //    designated neighbor already is, rather than refusing the whole
+  //    call outright. The one case still refused: an edge touching BOTH
+  //    endpoints at once (would collapse to zero length under the nudge),
+  //    the same bowtie discipline RemoveSharedMicroEdge() already applies.
+  //
+  // The actual close: each neighbor edge's own curve (the two designated
+  // loop-neighbors, plus however many further edges either endpoint turns
+  // out to carry) is duplicated and nudged, via
+  // ON_Curve::SetStartPoint()/SetEndPoint() (whichever end touches the
+  // micro edge), to reach the midpoint of the micro edge's own two
+  // vertices instead of its own old endpoint - then committed through
+  // ReplaceEdgeCurve() itself (re-trimming every face bordering that
+  // neighbor against the nudged curve, exactly the "re-trim the faces on
+  // either side to close the gap" this is built on), before the two
   // vertices are combined (ON_Brep::CombineCoincidentVertices()) and the
   // now fully degenerate micro edge/trim are deleted and the Brep is
   // Compact()ed. If SetStartPoint()/SetEndPoint() can't move a neighbor's

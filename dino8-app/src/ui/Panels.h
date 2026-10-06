@@ -135,6 +135,13 @@ dino8::platform::AccessibleNode CommandAliasesAccessibleTree(Application& app);
 // mirroring each shortcut's human-readable key combo and the command it
 // runs, the same way that tab's own row formats them.
 dino8::platform::AccessibleNode KeyboardShortcutsAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of the Options window's own fixed,
+// non-customizable built-in-shortcuts reference tab (options.tab_keyboard)
+// - distinct from KeyboardShortcutsAccessibleTree above, which mirrors the
+// user's own customized shortcuts instead. Independent of whether that tab
+// is open, built from the same fixed table that tab itself renders from
+// (ui/Panels.cpp's kBuiltinShortcutRow1/2/3), so it can't drift out of sync.
+dino8::platform::AccessibleNode BuiltinShortcutsAccessibleTree(Application& app);
 // The AT-SPI2-queryable snapshot of DocumentSettings' units, tolerances,
 // grid and saved metadata - independent of whether the Document Properties
 // window is open, mirroring the same facts DrawDocumentPropertiesWindow's

@@ -123,6 +123,7 @@ using dino8::platform::PluginSummary;
 using dino8::platform::BuildCommandListNode;
 using dino8::platform::BuildCommandAliasesNode;
 using dino8::platform::BuildKeyboardShortcutsNode;
+using dino8::platform::BuildBuiltinShortcutsNode;
 using dino8::platform::CommandListEntrySummary;
 using dino8::platform::CommandAliasSummary;
 using dino8::platform::KeyboardShortcutSummary;
@@ -964,6 +965,36 @@ int main() {
     Check(empty_shortcuts.children.empty(), "no shortcuts -> no ListItem children, not a missing accessible");
   }
 
+  // Keyboard Shortcuts Reference: the Options window's own fixed,
+  // non-customizable built-in shortcuts (its built-in-shortcuts reference
+  // tab) - same row shape as Keyboard Shortcuts above, but a distinct
+  // accessible name so a screen-reader user can tell the two apart, and
+  // never empty in a real build since the table is fixed, not user data.
+  {
+    std::vector<KeyboardShortcutSummary> shortcuts;
+    shortcuts.push_back({"F1", "Command list"});
+    shortcuts.push_back({"Ctrl+Z/Y", "Undo/Redo"});
+    const dino8::platform::AccessibleNode list = BuildBuiltinShortcutsNode(shortcuts);
+    Check(list.name == "Keyboard Shortcuts Reference", "built-in shortcuts list is named \"Keyboard Shortcuts Reference\"");
+    Check(list.name != "Keyboard Shortcuts", "distinct accessible name from the user-customized Keyboard Shortcuts list");
+    Check(list.role == dino8::platform::AccessibleRole::List, "built-in shortcuts list role is List");
+    Check(list.description == "2 built-in keyboard shortcuts", "shortcut count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per shortcut");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "shortcut row role is ListItem");
+      Check(list.children[0].name == "F1", "first row is named after its key combo");
+      Check(list.children[0].description == "Command list", "first row's Description is the action it runs");
+      Check(list.children[1].name == "Ctrl+Z/Y", "second row's combo is carried exactly");
+      Check(list.children[1].description == "Undo/Redo", "second row's Description is present");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_builtin = BuildBuiltinShortcutsNode({});
+    Check(empty_builtin.name == "Keyboard Shortcuts Reference", "still named \"Keyboard Shortcuts Reference\" with no rows given");
+    Check(empty_builtin.description == "0 built-in keyboard shortcuts", "empty built-in list still carries a 0-count Description");
+    Check(empty_builtin.children.empty(), "no rows given -> no ListItem children, not a missing accessible");
+  }
+
   // Document Properties: one ListItem per Label: value fact about the
   // document's units, tolerances, grid and saved metadata - the same
   // label/value PropertyEntry shape Environments already uses, just under
@@ -1073,6 +1104,7 @@ int main() {
     dino8::platform::AccessibleNode command_list = BuildCommandListNode({});
     dino8::platform::AccessibleNode command_aliases = BuildCommandAliasesNode({});
     dino8::platform::AccessibleNode keyboard_shortcuts = BuildKeyboardShortcutsNode({});
+    dino8::platform::AccessibleNode builtin_shortcuts = BuildBuiltinShortcutsNode({});
     dino8::platform::AccessibleNode document_properties = BuildDocumentPropertiesNode({});
     dino8::platform::AccessibleNode textures = BuildTexturesPanelNode({});
     dino8::platform::AccessibleNode display = BuildDisplayPanelNode({});
@@ -1082,14 +1114,16 @@ int main() {
         {menu_bar, cmd_options, layers, props, viewports, activity_log, named_views, named_cplanes, linetypes,
          materials, clipping_planes, layouts, block_manager, layer_state_manager, document_user_text, lights,
          annotation_styles, document_notes, environments, audit_results, undo_history, redo_history, hatch_patterns,
-         plugins, command_list, command_aliases, keyboard_shortcuts, document_properties, textures, display});
-    Check(root.children.size() == 31,
+         plugins, command_list, command_aliases, keyboard_shortcuts, builtin_shortcuts, document_properties,
+         textures, display});
+    Check(root.children.size() == 32,
           "command line + menu bar + command options + layers + properties + viewports + activity log + "
           "named views + named cplanes + linetypes + materials + clipping planes + layouts + block manager + "
           "layer state manager + document user text + lights + annotation styles + document notes + "
           "environments + audit results + undo history + redo history + hatch patterns + plugins + command list "
-          "+ command aliases + keyboard shortcuts + document properties + textures + display = 31 top-level children");
-    if (root.children.size() == 31) {
+          "+ command aliases + keyboard shortcuts + builtin shortcuts + document properties + textures + display "
+          "= 32 top-level children");
+    if (root.children.size() == 32) {
       Check(root.children[0].role == AccessibleRole::Log, "child 0 is still the command line");
       Check(root.children[1].role == dino8::platform::AccessibleRole::MenuBar, "child 1 is the menu bar");
       Check(root.children[2].name == "Command Options", "child 2 is the command options list");
@@ -1118,9 +1152,10 @@ int main() {
       Check(root.children[25].name == "Command List", "child 25 is the command list panel");
       Check(root.children[26].name == "Command Aliases", "child 26 is the command aliases panel");
       Check(root.children[27].name == "Keyboard Shortcuts", "child 27 is the keyboard shortcuts panel");
-      Check(root.children[28].name == "Document Properties", "child 28 is the document properties panel");
-      Check(root.children[29].name == "Textures", "child 29 is the textures panel");
-      Check(root.children[30].name == "Display", "child 30 is the display panel");
+      Check(root.children[28].name == "Keyboard Shortcuts Reference", "child 28 is the built-in shortcuts panel");
+      Check(root.children[29].name == "Document Properties", "child 29 is the document properties panel");
+      Check(root.children[30].name == "Textures", "child 30 is the textures panel");
+      Check(root.children[31].name == "Display", "child 31 is the display panel");
     }
   }
 
