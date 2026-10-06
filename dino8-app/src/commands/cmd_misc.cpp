@@ -480,7 +480,7 @@ class SetObjectDisplayModeCommand : public Command {
     else if (mode == "arctic" || mode == "a")
       ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown Arctic (flat white, lit, fully opaque), even in Wireframe or another viewport display mode.");
     else
-      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) reset to the viewport's own display mode. Other Rhino modes (Rendered/Technical/Artistic/...) are viewport-wide render styles here, with no per-object equivalent - use the Display panel to change the viewport itself.");
+      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) reset to the viewport's own display mode. Other Rhino modes (Rendered/Technical/Artistic/RayTraced/...) are viewport-wide render styles here, with no per-object equivalent - use the Display panel to change the viewport itself.");
     Finish();
   }
 
