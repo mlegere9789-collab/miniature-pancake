@@ -39,3 +39,41 @@ Enter
 SelAll
 Delete
 @expect_objects 0
+
+# --- A single open-sheet cutter (round 41): SplitByObject's own exact path
+# above requires every cutter to be a closed-solid Brep (kernel::
+# SplitBrepByManySolids); PARITY_MAP.md's own "Keep/split options" bullet
+# named "an open surface cutter still solidifies and goes through the mesh
+# pipeline, unchanged" as the exact path's own remaining gap. Now a single
+# open sheet cutter routes through kernel::SplitBySheet instead (the same
+# kernel function/FirstSheetBrep helper SplitBySheetCommand already uses -
+# splitbysheet_trimsheet_script.txt), reached only when there is exactly
+# one cutter and it isn't itself a closed solid. Identical box/sheet shape
+# to that script's own first case (a box split at its genuine middle by an
+# oversized flat open Surface sheet), but the sheet is CONSUMED here, not
+# left untouched - SplitByObjectCommand's own established contract (every
+# cutter is consumed, same as the solid-by-solid case above and the mesh
+# pipeline below; SplitBySheetCommand's separate "sheet stays untouched"
+# contract does not apply to this command). Ids keep incrementing past
+# the first block's own 1/2 (both consumed by that block's own exact
+# path, which removes target AND cutter and adds 2 new pieces at ids
+# 3/4 - also deleted, same "never reused" convention
+# splitbysheet_trimsheet_script.txt's own comment already documents), so
+# this block's Box/Plane land at ids 5/6. Both the box (id 5) and the
+# sheet (id 6) are gone afterward, replaced by the box's own two real
+# B-rep pieces - 2 (pieces) only.
+SetActiveViewport Top
+Box 0,0,0 4,4,0 4
+Plane -1,-1,0 5,5,0
+SelNone
+SelID 6
+Move 0,0,0 0,0,2
+SelNone
+SelID 5
+SplitByObject
+SelID 6
+Enter
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0

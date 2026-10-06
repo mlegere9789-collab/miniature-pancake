@@ -2903,8 +2903,10 @@ echo "$SBO" | grep -q "^smoke:" || { echo "$SBO"; echo "FAIL: splitbyobject-regr
 # SplitByObject exact B-rep path: when target and cutter are both plain
 # closed solid Breps that genuinely cross, SplitByObject must now take the
 # new kernel::SplitBrepByManySolids path (real B-rep pieces, no
-# tessellation) rather than silently falling back to the mesh pipeline
-# (see splitbyobject_exact_brep_script.txt) - PARITY_MAP.md's "kernel:
+# tessellation) rather than silently falling back to the mesh pipeline -
+# and, as of round 41, a single open-sheet cutter must take the
+# kernel::SplitBySheet path instead (see
+# splitbyobject_exact_brep_script.txt) - PARITY_MAP.md's "kernel:
 # Boolean operations" category's "Keep/split options" bullet.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   SBX="$("$BIN" --smoke 200 --script "$HERE/splitbyobject_exact_brep_script.txt" 2>&1)" || { echo "$SBX"; echo "FAIL: splitbyobject-exact-brep script exited non-zero"; exit 1; }
@@ -2914,7 +2916,8 @@ fi
 echo "$SBX" | grep -E "^(ok|FAIL)"
 if echo "$SBX" | grep -q "^FAIL"; then fail=1; fi
 echo "$SBX" | grep -q "^smoke:" || { echo "$SBX"; echo "FAIL: splitbyobject-exact-brep script produced no smoke line"; fail=1; }
-echo "$SBX" | grep -q "exact B-rep, no tessellation" || { echo "$SBX"; echo "FAIL: splitbyobject-exact-brep script did not take the exact B-rep path"; fail=1; }
+echo "$SBX" | grep -q "exact B-rep, no tessellation" || { echo "$SBX"; echo "FAIL: splitbyobject-exact-brep script did not take the exact solid-by-solid B-rep path"; fail=1; }
+echo "$SBX" | grep -q "exact B-rep via sheet cutter, no tessellation" || { echo "$SBX"; echo "FAIL: splitbyobject-exact-brep script did not take the exact sheet-cutter B-rep path"; fail=1; }
 
 # Adversarial booleans: near-tangent/barely-overlapping/coincident solids,
 # an extreme-aspect-ratio sliver, a huge-coordinate-scale pair, a 10-deep

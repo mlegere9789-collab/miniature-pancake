@@ -896,6 +896,91 @@ std::vector<Vector3d> Mesh::ComputeVertexNormals() const {
   return normals;
 }
 
+std::vector<Vector3d> Mesh::ComputeFaceNormals() const {
+  std::vector<Vector3d> normals(static_cast<size_t>(mesh_.m_F.Count()), Vector3d(0, 0, 0));
+
+  auto triangle_normal = [&](int i0, int i1, int i2) {
+    const Point3d a(mesh_.m_V[i0]);
+    const Point3d b(mesh_.m_V[i1]);
+    const Point3d c(mesh_.m_V[i2]);
+    return ON_CrossProduct(b - a, c - a);
+  };
+
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    Vector3d n = triangle_normal(f.vi[0], f.vi[1], f.vi[2]);
+    if (f.IsQuad()) {
+      n += triangle_normal(f.vi[0], f.vi[2], f.vi[3]);
+    }
+    if (n.Length() > tolerance::kZero) {
+      n.Unitize();
+    }
+    normals[static_cast<size_t>(i)] = n;
+  }
+  return normals;
+}
+
+Mesh Mesh::Faceted() const {
+  Mesh result;
+  ON_Mesh& out = result.mesh_;
+  const bool has_tc = HasTextureCoordinates();
+  const bool has_colors = HasVertexColors();
+
+  const int corner_count_upper_bound = mesh_.m_F.Count() * 4;
+  out.m_V.Reserve(corner_count_upper_bound);
+  out.m_F.Reserve(mesh_.m_F.Count());
+  if (has_tc) out.m_S.Reserve(corner_count_upper_bound);
+  if (has_colors) out.m_C.Reserve(corner_count_upper_bound);
+
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    const int corner_count = f.IsQuad() ? 4 : 3;
+    ON_MeshFace new_face;
+    for (int c = 0; c < corner_count; ++c) {
+      const int src = f.vi[c];
+      const int dst = out.m_V.Count();
+      out.m_V.Append(mesh_.m_V[src]);
+      if (has_tc) out.m_S.Append(mesh_.m_S[src]);
+      if (has_colors) out.m_C.Append(mesh_.m_C[src]);
+      new_face.vi[c] = dst;
+    }
+    if (corner_count == 3) {
+      new_face.vi[3] = new_face.vi[2];
+    }
+    out.m_F.Append(new_face);
+  }
+  return result;
+}
+
+std::vector<Point2d> Mesh::ComputeBoxMappingUVs(double scale) const {
+  if (!std::isfinite(scale) || scale <= 0.0) {
+    throw std::invalid_argument("dino8::kernel::Mesh::ComputeBoxMappingUVs: scale must be finite and positive");
+  }
+
+  const std::vector<Vector3d> normals = ComputeVertexNormals();
+  std::vector<Point2d> uvs(static_cast<size_t>(mesh_.m_V.Count()));
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const Point3d p(mesh_.m_V[i]);
+    const Vector3d& n = normals[static_cast<size_t>(i)];
+    const double ax = std::fabs(n.x);
+    const double ay = std::fabs(n.y);
+    const double az = std::fabs(n.z);
+    double u, v;
+    if (ax >= ay && ax >= az) {
+      u = (n.x >= 0.0 ? p.y : -p.y) / scale;
+      v = p.z / scale;
+    } else if (ay >= ax && ay >= az) {
+      u = (n.y >= 0.0 ? -p.x : p.x) / scale;
+      v = p.z / scale;
+    } else {
+      u = (n.z >= 0.0 ? p.x : -p.x) / scale;
+      v = p.y / scale;
+    }
+    uvs[static_cast<size_t>(i)] = Point2d(u, v);
+  }
+  return uvs;
+}
+
 Result Mesh::SetTextureCoordinates(const std::vector<Point2d>& uvs) {
   if (static_cast<int>(uvs.size()) != mesh_.m_V.Count()) {
     return Result::Failed;
