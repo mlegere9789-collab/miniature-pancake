@@ -700,10 +700,26 @@ bool TakeLoftStyle(CommandContext& ctx) {
 void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, const char* label, bool to_subd) {
   ctx.Doc().BeginChange(label);
   int made = 0;
+  // ToSubD/MeshToSubD (to_subd) tessellate a Brep's real surface at the
+  // document's own modeling tolerance (ctx.Settings().absolute_tolerance)
+  // rather than surface_display_tolerance - a viewport-quality setting
+  // with no geometric meaning, which previously gave this conversion's
+  // control cage no actual fidelity bound at all (only "whatever happens
+  // to look right on screen"). MeshBrepClosed's own chord_tolerance option
+  // (threaded through MeshOf, cmd_common.h) bounds every tessellated
+  // vertex to within that tolerance of the true Brep surface, so the
+  // resulting SubD's CONTROL CAGE now has a real, documented fidelity
+  // guarantee tied to the document's tolerance. This still doesn't cover
+  // the whole category gap: Catmull-Clark smoothing pulls the SubD's own
+  // LIMIT surface further from that control cage than the tessellation
+  // tolerance alone bounds, so the plain "Mesh" command (to_subd == false,
+  // whose own output IS the final shape) keeps using the display
+  // tolerance unchanged.
+  const double tol = to_subd ? ctx.Settings().absolute_tolerance : ctx.App().surface_display_tolerance;
   for (ObjectId id : ids) {
     SceneObject* o = ctx.Doc().Find(id);
     if (!o) continue;
-    std::optional<kernel::Mesh> m = MeshOf(*o, ctx.App().surface_display_tolerance);
+    std::optional<kernel::Mesh> m = MeshOf(*o, tol);
     if (!m || m->FaceCount() == 0) continue;
     SceneObject n = to_subd ? SceneObject::MakeSubD(kernel::SubD::FromControlMesh(*m)) : SceneObject::MakeMesh(*m);
     n.layer_index = o->layer_index;
@@ -774,17 +790,23 @@ void RegisterSolidCommands(CommandEngine& e) {
           if (!o) continue;
           if (o->kind == ObjectKind::SubD) {
             // Real Catmull-Clark limit-surface conversion (kernel::SubD::
-            // ToNurbsPatches(), see its own doc comment for the math):
-            // every face whose 4 corners are ordinary interior vertices
-            // gets its mathematically exact bicubic Bezier patch; every
-            // face touching an extraordinary vertex, crease, or boundary
-            // gets a tolerance-bounded flat approximation instead. First
-            // subdivide (Catmull-Clark refinement, real and non-stub -
-            // see the class comment on kernel::SubD) a few rounds so (a)
+            // ToNurbsPatchesAdaptive(), see its own doc comment for the
+            // math): every face whose 4 corners are ordinary interior
+            // vertices gets its mathematically exact bicubic Bezier patch;
+            // every face touching an extraordinary vertex, crease, or
+            // boundary has no such closed form, so ToNurbsPatchesAdaptive()
+            // recursively splits just that irregular region (not the whole
+            // mesh) into progressively smaller exact regular patches plus
+            // one still-approximated flat patch at its core - the same
+            // local technique EvaluateFace() uses for a single (u, v)
+            // query, applied to every (u, v) of the face at once. First
+            // subdivide (Catmull-Clark refinement, real and non-stub - see
+            // the class comment on kernel::SubD) a few rounds so (a)
             // triangle/n-gon input becomes quad-only, and (b) the
-            // irregular patches shrink to a tight tolerance before being
-            // approximated - each round roughly quarters their maximum
-            // deviation from the true limit surface (see
+            // irregular patches shrink to a tight tolerance before the
+            // adaptive split further narrows them - each round (whole-mesh
+            // or adaptive) roughly quarters the remaining irregular
+            // region's maximum deviation from the true limit surface (see
             // ToNurbsPatches()'s doc comment).
             kernel::SubD refined = *o->subd;
             // Cap subdivision rounds (and hence patch count) much lower than
@@ -797,9 +819,19 @@ void RegisterSolidCommands(CommandEngine& e) {
             int faces = refined.FaceCount(), levels = 0;
             while (levels < 2 && faces > 0 && faces * 4 <= 4000) { faces *= 4; ++levels; }
             if (levels == 0) levels = 1;  // always at least one round, to guarantee quad faces
+            // Beyond that whole-mesh pre-refinement, spend a further couple
+            // of ADAPTIVE levels narrowing only the faces that are still
+            // irregular after it - cheap, since (unlike Subdivide() above)
+            // this never touches an already-regular face, only recursing
+            // into each irregular face's own shrinking approximated corner
+            // (see ToNurbsPatchesAdaptive()'s own doc comment for the exact
+            // growth shape). This is the "newer kernel adaptive converter"
+            // PARITY_MAP.md's app_subd_mesh category previously flagged as
+            // not wired into this command.
+            const int kAdaptiveLevels = 2;
             try {
               refined.Subdivide(levels);
-              std::vector<kernel::SubDNurbsPatch> patches = refined.ToNurbsPatches();
+              std::vector<kernel::SubDNurbsPatch> patches = refined.ToNurbsPatchesAdaptive(kAdaptiveLevels);
               if (!patches.empty()) {
                 ON_Brep combined;
                 for (kernel::SubDNurbsPatch& p : patches) {
@@ -840,16 +872,19 @@ void RegisterSolidCommands(CommandEngine& e) {
         ctx.Print(msg);
       }), CommandStatus::Implemented,
       "SubD input: converts to a real multi-patch NURBS Brep via Catmull-Clark limit-surface evaluation "
-      "(kernel::SubD::ToNurbsPatches) - every face whose 4 corners are ordinary interior (valence-4) "
-      "vertices becomes the mathematically exact bicubic Bezier patch (the well-known, non-proprietary "
-      "fact that a regular Catmull-Clark control net *is* a uniform bicubic B-spline lattice; adjacent "
-      "exact patches share bit-identical boundary curves and join into one seamless polysurface). Faces "
-      "touching an extraordinary vertex, a crease, or a boundary have no such closed form and instead get "
-      "a flat bilinear approximation whose deviation from the true limit surface shrinks with a few rounds "
-      "of Catmull-Clark pre-refinement (applied automatically, up to 2 rounds bounded by face count) - "
-      "those patches stay unjoined at their approximate edges rather than being silently forced to look "
-      "exact. The status line reports how many patches of each kind were produced. Mesh input converts "
-      "exactly (unchanged).");
+      "(kernel::SubD::ToNurbsPatchesAdaptive) - every face whose 4 corners are ordinary interior "
+      "(valence-4) vertices becomes the mathematically exact bicubic Bezier patch (the well-known, "
+      "non-proprietary fact that a regular Catmull-Clark control net *is* a uniform bicubic B-spline "
+      "lattice; adjacent exact patches share bit-identical boundary curves and join into one seamless "
+      "polysurface). Faces touching an extraordinary vertex, a crease, or a boundary have no such closed "
+      "form: after a few rounds of whole-mesh Catmull-Clark pre-refinement (applied automatically, up to "
+      "2 rounds bounded by face count), each one is further adaptively split (2 more levels) into "
+      "progressively smaller exact regular patches around a single still-approximated flat corner patch, "
+      "rather than left as one coarse flat approximation across the whole original face - those final "
+      "corner patches stay unjoined at their approximate edges rather than being silently forced to look "
+      "exact, and the adaptive split itself can introduce further naked T-junction edges where a split "
+      "patch neighbors an unsplit regular one. The status line reports how many patches of each kind were "
+      "produced. Mesh input converts exactly (unchanged).");
   Reg(e, "MeshToNURB", OnSelection("Select meshes", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("MeshToNURB");
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Mesh) if (ON_Brep* b = ON_BrepFromMesh(o->mesh->raw().Topology())) ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); }
