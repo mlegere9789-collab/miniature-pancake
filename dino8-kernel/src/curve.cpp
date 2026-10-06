@@ -1337,6 +1337,56 @@ Result NurbsCurve::MatchEnd(bool at_min, const NurbsCurve& target, bool target_a
   return Result::Ok;
 }
 
+Result NurbsCurve::ReduceDegree(int target_degree, double tolerance, double* out_max_deviation) {
+  if (target_degree < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::ReduceDegree: target_degree must be at least 1");
+  }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::ReduceDegree: tolerance must be positive");
+  }
+  if (out_max_deviation) *out_max_deviation = 0.0;
+  if (target_degree >= Degree()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+
+  const int original_cv_count = ControlPointCount();
+  const Interval domain = Domain();
+  const int sample_count = std::max(200, 20 * original_cv_count);
+  std::vector<Point3d> samples;
+  samples.reserve(static_cast<size_t>(sample_count) + 1);
+  for (int i = 0; i <= sample_count; ++i) {
+    samples.push_back(PointAt(domain.min + (domain.max - domain.min) * i / sample_count));
+  }
+
+  std::vector<int> candidate_counts;
+  for (int cv = target_degree + 1; cv < original_cv_count; cv *= 2) candidate_counts.push_back(cv);
+  if (candidate_counts.empty() || candidate_counts.back() != original_cv_count) {
+    candidate_counts.push_back(original_cv_count);
+  }
+
+  double last_worst = 0.0;
+  for (int cv_count : candidate_counts) {
+    NurbsCurve candidate;
+    if (NurbsCurve::FitLeastSquares(samples, target_degree, cv_count, candidate) != Result::Ok) {
+      continue;
+    }
+    double worst = 0.0;
+    for (const Point3d& p : samples) {
+      worst = std::max(worst, (p - candidate.ClosestPoint(p)).Length());
+    }
+    last_worst = worst;
+    if (worst <= tolerance) {
+      curve_ = candidate.raw();
+      if (out_max_deviation) *out_max_deviation = worst;
+      return Result::Ok;
+    }
+  }
+  if (out_max_deviation) *out_max_deviation = last_worst;
+  return Result::Failed;
+}
+
 Interval NurbsCurve::Domain() const {
   const ON_Interval domain = curve_.Domain();
   return Interval{domain.Min(), domain.Max()};
