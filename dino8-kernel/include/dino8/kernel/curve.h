@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <vector>
 
 #include <opennurbs.h>
@@ -451,6 +452,79 @@ class NurbsCurve {
     double ixx = 0.0, iyy = 0.0, ixy = 0.0;
   };
   Result PlanarRegionProperties(RegionProperties& out, double tolerance) const;
+
+  // Exact curve-to-curve minimum distance - PARITY_MAP.md's "Mass
+  // properties & spatial queries" category, "Entity-pair minimum
+  // distance for curves/surfaces", whose disclosed gap was "no exact
+  // curve/curve" (only `Mesh::DistanceTo()`/`MinGap()`'s own mesh-level
+  // queries existed). A coarse global search - sampling this curve,
+  // doubling until convergence the same way `DeviationTo()` does, taking
+  // `other.ClosestPointParameter()` at each sample to find the best
+  // starting pair - followed by a local alternating-projection polish
+  // (each curve's own closest point to the other's current point, back
+  // and forth, the standard iterative refinement for this problem) from
+  // that best candidate. Honestly not a formally certified global
+  // minimum (alternating projection can converge to a local, not the
+  // global, minimum on a pathological pair of curves with multiple
+  // near-equal close approaches - the coarse global search's own
+  // doubling is what catches the right starting BASIN in the ordinary
+  // case, not a proof it always will) - the same tier `DeviationTo()`
+  // itself already carries. `out_t_this`/`out_t_other`, if non-null,
+  // receive the parameter on each curve where the minimum was found.
+  // Returns `Result::Failed` if convergence isn't reached within 20
+  // doublings. Throws `std::invalid_argument` if `tolerance` isn't
+  // positive.
+  Result MinDistanceTo(const NurbsCurve& other, double tolerance, double& out_distance,
+                        double* out_t_this = nullptr, double* out_t_other = nullptr) const;
+
+  // An oriented bounding box - PARITY_MAP.md's "Mass properties & spatial
+  // queries" category, "Oriented / CPlane-aligned / minimal-volume
+  // bounding box", whose disclosed gap was `Mesh::GetOrientedBoundingBox()`
+  // being "mesh-only": a box exactly `2 * half_extents[k]` long along
+  // each `axes[k]` (unit, mutually orthogonal, right-handed), centered
+  // at `center`. The axes come from PCA on this curve's own DENSELY
+  // SAMPLED points (the standard point-cloud PCA construction
+  // `Mesh::GetOrientedBoundingBox()` uses too, but on volume-weighted
+  // covariance there; a curve has no volume, so this uses a plain
+  // sample-point covariance via the same `ON_Sym3x3EigenSolver`), sampled
+  // at ARC-LENGTH-even parameters (`DivideByCount()`, not the curve's own
+  // raw parameter) specifically so a curve made of physically unequal-
+  // length segments at equal parameter spacing (e.g. a non-square
+  // polyline rectangle) doesn't over-sample its shorter segments and skew
+  // the measured covariance's axes off the curve's own true geometric
+  // symmetry directions - and, for a CLOSED curve, drops the final
+  // parameter `DivideByCount()` returns, since it maps to the exact same
+  // point as the first one (`Domain().Min()`/`Domain().Max()` both land
+  // on the shared seam) and would otherwise double-count that one point,
+  // skewing the sampled mean away from the curve's own true center -
+  // confirmed directly by testing: a 20x10 rectangle's own sampled mean
+  // came back measurably off its real (10, 5) center before this second
+  // fix. `half_extents`/`center` are the exact min/max projection of
+  // every one of this curve's own CONTROL POINTS onto each chosen axis -
+  // not the sampled points - so
+  // the result is PROVABLY SAFE regardless: since the curve lies within
+  // the convex hull of its own control points (the defining property of
+  // a B-spline), bounding every control point along each axis bounds the
+  // whole curve too, exactly, never merely approximately. Honest scope,
+  // the same as `Mesh`'s own version: this is the standard PCA-aligned
+  // box, not a search for the globally minimum-volume box over every
+  // possible orientation - the box this returns is always safe (every
+  // control point provably inside it) even on a shape whose true
+  // tightest orientation diverges from its own PCA frame, just not
+  // always the tightest PCA-aligned box achievable then. On a
+  // genuinely degenerate covariance (confirmed directly by testing: a
+  // straight line's own exactly-rank-1 covariance makes the eigensolver
+  // itself report failure), this falls back to the world X/Y/Z axes
+  // rather than failing outright - any orthonormal basis is an equally
+  // valid frame for a collapsed variance direction, and the control-
+  // point projection step is what actually keeps the box safe either
+  // way, not the particular axis choice.
+  struct OrientedBox {
+    Point3d center;
+    std::array<Vector3d, 3> axes;
+    std::array<double, 3> half_extents{};
+  };
+  OrientedBox GetOrientedBoundingBox() const;
 
   int Degree() const;
   int ControlPointCount() const;

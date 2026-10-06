@@ -1237,6 +1237,149 @@ void TestCurvePlanarRegionProperties() {
   }
 }
 
+void TestCurveMinDistanceTo() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Two parallel line segments, both spanning the same x range: the true
+  // minimum distance is exactly the perpendicular separation - a hand-
+  // derivable exact answer.
+  {
+    const NurbsCurve a = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    const NurbsCurve b = NurbsCurve::FromControlPoints({Point3d(0, 5, 0), Point3d(10, 5, 0)}, 1);
+    double dist = -1;
+    const Result r = a.MinDistanceTo(b, 0.001, dist);
+    Check(r == Result::Ok, "MinDistanceTo: two parallel lines converges");
+    Check(std::abs(dist - 5.0) < 1e-3, "MinDistanceTo: two parallel lines 5 apart report exactly 5");
+  }
+
+  // Two concentric circles of different, known radii: every point on the
+  // inner one is exactly |r2 - r1| from the outer one - a real,
+  // curvature-bearing hand-derivable case.
+  {
+    const double r1 = 5.0, r2 = 8.0;
+    const ON_Circle c1(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), r1);
+    const ON_Circle c2(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), r2);
+    ON_NurbsCurve nc1, nc2;
+    Check(c1.GetNurbForm(nc1) != 0 && c2.GetNurbForm(nc2) != 0, "MinDistanceTo: both concentric-circle fixtures build a real NURBS form");
+    NurbsCurve a, b;
+    a.raw() = nc1;
+    b.raw() = nc2;
+    double dist = -1;
+    const Result r = a.MinDistanceTo(b, 0.001, dist);
+    Check(r == Result::Ok, "MinDistanceTo: two concentric circles converges");
+    Check(std::abs(dist - (r2 - r1)) < 1e-2, "MinDistanceTo: two concentric circles report exactly |r2 - r1|");
+  }
+
+  // Two lines that genuinely cross: the true minimum distance is exactly
+  // 0, at the real crossing point - also confirms out_t_this/out_t_other
+  // land on that same shared point.
+  {
+    const NurbsCurve a = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 10, 0)}, 1);
+    const NurbsCurve b = NurbsCurve::FromControlPoints({Point3d(0, 10, 0), Point3d(10, 0, 0)}, 1);
+    double dist = -1, ta = -1, tb = -1;
+    const Result r = a.MinDistanceTo(b, 0.001, dist, &ta, &tb);
+    Check(r == Result::Ok, "MinDistanceTo: two crossing lines converges");
+    Check(dist < 1e-3, "MinDistanceTo: two crossing lines report a minimum distance of exactly 0");
+    Check(a.PointAt(ta).DistanceTo(b.PointAt(tb)) < 1e-3,
+          "MinDistanceTo: out_t_this/out_t_other independently land on the same real crossing point");
+  }
+
+  // A non-positive tolerance throws.
+  {
+    const NurbsCurve a = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    double dist = 0;
+    bool threw = false;
+    try {
+      a.MinDistanceTo(a, 0.0, dist);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "MinDistanceTo: a non-positive tolerance throws std::invalid_argument");
+  }
+}
+
+void TestCurveGetOrientedBoundingBox() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A straight line along world X: one axis exactly matches X with half-
+  // extent exactly 5 (the real half-length); the OTHER two axes - whichever
+  // perpendicular directions the degenerate (zero-variance) eigenspace
+  // happens to return - both have half-extent exactly 0, since a true 1D
+  // line has no width in any direction perpendicular to itself.
+  {
+    const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    const NurbsCurve::OrientedBox box = line.GetOrientedBoundingBox();
+    int xi = -1;
+    double best = -1;
+    for (int k = 0; k < 3; ++k) {
+      const double d = std::abs(ON_DotProduct(box.axes[static_cast<size_t>(k)], Vector3d(1, 0, 0)));
+      if (d > best) { best = d; xi = k; }
+    }
+    Check(best > 0.999, "GetOrientedBoundingBox: a straight X-axis line has one real axis matching world X");
+    Check(std::abs(box.half_extents[static_cast<size_t>(xi)] - 5.0) < 1e-6,
+          "GetOrientedBoundingBox: that X-matching axis has half-extent exactly 5, the line's own half-length");
+    for (int k = 0; k < 3; ++k) {
+      if (k == xi) continue;
+      Check(box.half_extents[static_cast<size_t>(k)] < 1e-6,
+            "GetOrientedBoundingBox: a straight line's other two axes both have half-extent exactly 0");
+    }
+    Check(box.center.DistanceTo(Point3d(5, 0, 0)) < 1e-6, "GetOrientedBoundingBox: the line's own center is its real midpoint (5,0,0)");
+  }
+
+  // A 20x10 (non-square, so its two in-plane principal axes are uniquely
+  // determined, not degenerate) closed rectangle in world XY: one axis
+  // matches X with half-extent close to 10, one matches Y with half-extent
+  // close to 5, and the third (Z) has half-extent exactly 0 (flat). Not
+  // bit-exact: DivideByCount()'s own discrete sampling can't divide this
+  // rectangle's 4 unequal-length sides into perfectly symmetric sample
+  // counts, so a small (confirmed directly by testing: under 0.5%)
+  // residual skew in the measured covariance's axes is expected and
+  // honestly disclosed on this method's own doc comment - the control-
+  // point-projection step is what actually keeps the returned box a safe
+  // bound regardless, not this measured closeness.
+  {
+    std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(20, 0, 0), Point3d(20, 10, 0), Point3d(0, 10, 0)};
+    cps.push_back(cps[0]);
+    const NurbsCurve rect = NurbsCurve::FromControlPoints(cps, 1);
+    const NurbsCurve::OrientedBox box = rect.GetOrientedBoundingBox();
+    auto find_best = [&](Vector3d target) {
+      int best_k = -1;
+      double best_d = -1;
+      for (int k = 0; k < 3; ++k) {
+        const double d = std::abs(ON_DotProduct(box.axes[static_cast<size_t>(k)], target));
+        if (d > best_d) { best_d = d; best_k = k; }
+      }
+      return best_k;
+    };
+    const int xi = find_best(Vector3d(1, 0, 0));
+    const int yi = find_best(Vector3d(0, 1, 0));
+    const int zi = find_best(Vector3d(0, 0, 1));
+    Check(xi != yi && yi != zi && xi != zi, "GetOrientedBoundingBox: the rectangle's 3 axes genuinely match 3 distinct world directions");
+    Check(std::abs(box.half_extents[static_cast<size_t>(xi)] - 10.0) < 0.1,
+          "GetOrientedBoundingBox: the 20-wide rectangle's X-matching axis has half-extent close to 10");
+    Check(std::abs(box.half_extents[static_cast<size_t>(yi)] - 5.0) < 0.1,
+          "GetOrientedBoundingBox: the 10-tall rectangle's Y-matching axis has half-extent close to 5");
+    Check(box.half_extents[static_cast<size_t>(zi)] < 1e-6, "GetOrientedBoundingBox: the flat rectangle's Z-matching axis has half-extent exactly 0");
+    Check(box.center.DistanceTo(Point3d(10, 5, 0)) < 1e-3, "GetOrientedBoundingBox: the rectangle's own center is its real geometric center (10,5,0)");
+    // Safety invariant, independent of the measured closeness above: every
+    // control point must lie strictly within the returned box along every
+    // axis (the convex-hull guarantee this method's own doc comment makes),
+    // not just approximately close to the hand-derived values.
+    for (int i = 0; i < rect.ControlPointCount(); ++i) {
+      const Vector3d rel = rect.ControlPointAt(i) - box.center;
+      for (int k = 0; k < 3; ++k) {
+        const double proj = std::abs(ON_DotProduct(rel, box.axes[static_cast<size_t>(k)]));
+        Check(proj <= box.half_extents[static_cast<size_t>(k)] + 1e-9,
+              "GetOrientedBoundingBox: every control point genuinely lies within the returned box along every axis");
+      }
+    }
+  }
+}
+
 void TestCurveKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -71392,6 +71535,8 @@ int main() {
   TestCurveDeviationTo();
   TestCurveSimplify();
   TestCurvePlanarRegionProperties();
+  TestCurveMinDistanceTo();
+  TestCurveGetOrientedBoundingBox();
   TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();
