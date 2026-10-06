@@ -1328,6 +1328,23 @@ a2check "UpdateFields: 3 field(s) regenerated" "UpdateFields re-evaluated all 3 
 # dimension's own recorded style by name.
 a2check "Text = 100.00 mm.*0\.05" "DimStyle1 (Precision=2, Suffix=mm, TolMode=symmetric) baked \"100.00 mm\" plus the tolerance suffix for a dimension measuring exactly 100, not the old unstyled \"100\""
 a2check "Text = 100.0000 mm.*0\.05" "UpdateDimensions re-read DimStyle1's CURRENT precision (edited to 4 after the dimension was built) from the dimension's own recorded style by name and reformatted it to 4 decimal places, keeping the tolerance suffix through the rebuild"
+# --- Measured-dimension precision (DimArea/DimCurveLength/DimVolume/
+# DimOrdinate/DimCreaseAngle) now wired to a style's own Precision/
+# AngularPrecision via FormatMeasurement, the same way DimStyle1 just above
+# already proved for DimLinear/DimAngle - see PARITY_MAP.md's "Dimension
+# styles" entry, "DimOrdinate and the DimArea/DimCurveLength/DimVolume/
+# DimCreaseAngle measured-dimension family... not yet wired to a style's
+# precision" gap.
+a2check "DimArea: Area = 100.00 square Millimeters" "MeasStyle's Precision=2 baked \"100.00\" for the 10x10 rectangle's exactly-100 area, not the old unstyled \"100\""
+a2check "DimCurveLength: Length = 100.00 Millimeters" "MeasStyle's Precision=2 baked \"100.00\" for the exactly-100-unit line, not the old unstyled \"100\""
+a2check "DimVolume: Volume = 100.00 cubic Millimeters" "MeasStyle's Precision=2 baked \"100.00\" for the 10x10x1 box's exactly-100 volume, not the old unstyled \"100\""
+a2check "DimOrdinate: X 25.00" "MeasStyle's Precision=2 baked \"25.00\" for the exactly-25-unit ordinate, not the old unstyled \"25\""
+a2check "DimCreaseAngle: 90.00 deg" "MeasStyle's AngularPrecision=2 baked \"90.00 deg\" for the two perpendicular lines' exactly-90-degree crease, not the old unstyled \"90 deg\""
+a2check "UpdateMeasureDims:   DimArea now Area = 100.0000 square Millimeters" "UpdateMeasureDims re-read MeasStyle's CURRENT precision (edited to 4) from DimArea's own recorded style by name and reformatted it live"
+a2check "UpdateMeasureDims:   DimCurveLength now Length = 100.0000 Millimeters" "UpdateMeasureDims reformatted DimCurveLength to MeasStyle's edited Precision=4 live"
+a2check "UpdateMeasureDims:   DimVolume now Volume = 100.0000 cubic Millimeters" "UpdateMeasureDims reformatted DimVolume to MeasStyle's edited Precision=4 live"
+a2check "UpdateMeasureDims:   DimOrdinate now X 25.0000" "UpdateMeasureDims reformatted DimOrdinate to MeasStyle's edited Precision=4 live"
+a2check "UpdateMeasureDims:   DimCreaseAngle now 90.0000 deg" "UpdateMeasureDims reformatted DimCreaseAngle to MeasStyle's edited AngularPrecision=4 live"
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/solidtools_script.txt" > "$TMPW/solidtools_script.txt"
@@ -4648,6 +4665,101 @@ assert bpen == (245, 245, 245), f'Box B Pen is not the exact unlit flat white (2
 assert max(barc) - min(barc) <= 8, f'Box B Arctic is not a neutral white/grey: {barc}'
 assert all(barc[i] < bpen[i] - 10 for i in range(3)), f'Box B Arctic ({barc}) is not darker than Box B Pen ({bpen}) - lit vs unlit has no visible effect'
 assert all(barc[i] > 150 for i in range(3)), f'Box B Arctic ({barc}) is too dark to read as the Arctic/Pen family of flat whites'
+PY
+
+# Background::Image lat-long unwarp: pixel-level proof (PARITY_MAP.md's
+# "Environments and image-based lighting" item) that the Rendered-mode
+# environment-image backdrop is now a real per-pixel equirectangular sample
+# of the camera's own view direction, not a flat UV-stretched quad - see
+# tests/env_bg_script.txt for the full derivation and scene/capture
+# sequence. The test texture has three distinct longitude bands (red at
+# u=0.25, green at u=0.5, blue at u=0.75); Back/Left/Front are all
+# orthographic standard views whose own computed equirectangular u
+# (u = atan2(fwd.y, fwd.x)/(2*pi)+0.5) lands exactly on one band each -
+# Back's forward (0,-1,0) -> u=0.25 (red); Left's forward (1,0,0) ->
+# u=0.5 (green); Front's forward (0,1,0) -> u=0.75 (blue) - and since an
+# orthographic camera samples one constant direction for every pixel
+# (Camera::ScreenRay's own ortho branch), each capture should come back
+# (almost) entirely that one band's colour - a flat UV stretch, independent
+# of camera direction, would instead show the exact same static multi-band
+# image in all three captures.
+mkdir -p "$TMPW/envbg"
+python3 -c "
+w, h = 200, 20
+BG, RED, GREEN, BLUE = (30, 30, 30), (255, 0, 0), (0, 255, 0), (0, 0, 255)
+row = bytearray()
+for x in range(w):
+    u = (x + 0.5) / w
+    if 0.20 <= u < 0.30: c = RED
+    elif 0.45 <= u < 0.55: c = GREEN
+    elif 0.70 <= u < 0.80: c = BLUE
+    else: c = BG
+    row += bytes(c)
+data = bytes(row) * h
+open('$TMPW/envbg/env_longitude.ppm', 'wb').write(b'P6\n%d %d\n255\n' % (w, h) + data)
+"
+sed "s|@TMP@|$TMPW/envbg|g" "$HERE/env_bg_script.txt" > "$TMPW/env_bg_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  ENVBG="$("$BIN" --smoke 30 --script "$TMPW/env_bg_script.txt" 2>&1)" || { echo "$ENVBG"; echo "FAIL: env_bg script exited non-zero"; exit 1; }
+else
+  ENVBG="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/env_bg_script.txt" 2>&1)" || { echo "$ENVBG"; echo "FAIL: env_bg script exited non-zero"; exit 1; }
+fi
+envbgcheck() { if echo "$ENVBG" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ENVBG" "$1"; fail=1; fi; }
+envbgcheck "^ok   expect_objects 0" "env_bg script left an empty document"
+envbgcheck "gl_error=0" "env_bg script ran without OpenGL errors"
+python3 - "$TMPW/envbg/env_back.bmp" "$TMPW/envbg/env_left.bmp" "$TMPW/envbg/env_front.bmp" <<'PY' && echo "ok   Background::Image is a real per-pixel equirectangular unwarp of the camera's own view direction, not a flat UV-stretched quad" || { echo "FAIL Background::Image lat-long unwarp pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+def fraction_matching(w, h, get, color, tol=20):
+    cr, cg, cb = color
+    n = 0
+    total = 0
+    for y in range(0, h, 2):
+        for x in range(0, w, 2):
+            total += 1
+            r, g, b = get(x, y)
+            if abs(r - cr) <= tol and abs(g - cg) <= tol and abs(b - cb) <= tol:
+                n += 1
+    return n / total
+
+RED, GREEN, BLUE = (255, 0, 0), (0, 255, 0), (0, 0, 255)
+
+bw, bh, back = read_bmp(sys.argv[1])
+lw, lh, left = read_bmp(sys.argv[2])
+fw, fh, front = read_bmp(sys.argv[3])
+
+back_red = fraction_matching(bw, bh, back, RED)
+left_green = fraction_matching(lw, lh, left, GREEN)
+front_blue = fraction_matching(fw, fh, front, BLUE)
+print(f'Back view: {back_red:.2f} of sampled pixels match the expected red (u=0.25) band')
+print(f'Left view: {left_green:.2f} of sampled pixels match the expected green (u=0.5) band')
+print(f'Front view: {front_blue:.2f} of sampled pixels match the expected blue (u=0.75) band')
+assert back_red > 0.6, f'Back view background is not predominantly the expected red longitude band ({back_red:.2f})'
+assert left_green > 0.6, f'Left view background is not predominantly the expected green longitude band ({left_green:.2f})'
+assert front_blue > 0.6, f'Front view background is not predominantly the expected blue longitude band ({front_blue:.2f})'
+
+# A flat UV-stretched quad would show the exact same static multi-band
+# image regardless of camera direction, so Back's own capture would ALSO
+# read mostly green/blue wherever those bands land on screen, not just red.
+back_green = fraction_matching(bw, bh, back, GREEN)
+back_blue = fraction_matching(bw, bh, back, BLUE)
+print(f'Back view cross-check: {back_green:.2f} green, {back_blue:.2f} blue (should both be near 0)')
+assert back_green < 0.1 and back_blue < 0.1, f'Back view also shows the other views own bands ({back_green:.2f} green, {back_blue:.2f} blue) - looks like a flat stretch, not a direction-dependent unwarp'
 PY
 
 # SSAO: pixel-level proof (PARITY_MAP.md's "SSAO in the rasterized

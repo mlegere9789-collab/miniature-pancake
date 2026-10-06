@@ -120,7 +120,20 @@ std::vector<long> VersionParts(const std::string& v) {
     const std::string part = v.substr(i, dot == std::string::npos ? std::string::npos : dot - i);
     size_t digits = 0;
     while (digits < part.size() && std::isdigit(static_cast<unsigned char>(part[digits]))) ++digits;
-    out.push_back(digits > 0 ? std::stol(part.substr(0, digits)) : 0);
+    // std::strtol, not std::stol: this used to be std::stol(part.substr(0,
+    // digits)), which throws std::out_of_range for a component with more
+    // digits than `long` can hold (e.g. a marketplace index entry's
+    // min_app_version/version field - untrusted input straight off the
+    // network, see LoadIndexFromUrl - or just a typo), uncaught anywhere
+    // above this and crashing whatever called CheckCompatibility/
+    // CompareVersions/CheckForUpdate the moment such an entry is merely
+    // looked at (confirmed directly: a min_app_version of
+    // "99999999999999999999.0" aborts the process). strtol never throws -
+    // it saturates to LONG_MAX/LONG_MIN on overflow instead - which is
+    // exactly the right behavior here: an absurdly large version component
+    // should just compare as "larger than anything reasonable," not crash
+    // the marketplace panel.
+    out.push_back(digits > 0 ? std::strtol(part.substr(0, digits).c_str(), nullptr, 10) : 0);
     if (dot == std::string::npos) break;
     i = dot + 1;
   }
