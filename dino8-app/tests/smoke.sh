@@ -5445,6 +5445,30 @@ grep -aq '/ExtGState' "$TMPW/plot_style_transparent.pdf" && echo "ok   plot_styl
 grep -aq '/CA 0.5' "$TMPW/plot_style_transparent.pdf" && echo "ok   the ExtGState's own /CA (stroking alpha) is 0.5, matching the style's 50% transparency" || { echo "FAIL plot_style_transparent.pdf: no /CA 0.5 ExtGState"; fail=1; }
 grep -aq '/GS1 gs' "$TMPW/plot_style_transparent.pdf" && echo "ok   the content stream switches the ExtGState in with a real \"gs\" operator before the stroked paths" || { echo "FAIL plot_style_transparent.pdf: no /GS1 gs operator in the content stream"; fail=1; }
 
+# Print/Export linetype (dash pattern) wiring: PARITY_MAP.md "Print and
+# plot output" item - ExportSvg/ExportPdf (io/FileExchange.cpp) now carry
+# each curve's own real linetype through to a real vector dasharray/d
+# operator, independent of the on-screen-only "Linetype Display" toggle
+# (see dash_export_script.txt's own header comment for the real bug this
+# fixes: the old behavior silently depended on that cosmetic toggle).
+# Checked directly against the real exported SVG/PDF files, with an exact
+# forced Scale=1 from a Top (parallel) view so the expected values are
+# exact, not fit-to-page-dependent.
+sed "s|@TMP@|$TMPW|g" "$HERE/dash_export_script.txt" > "$TMPW/dash_export_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DES="$("$BIN" --smoke 30 --script "$TMPW/dash_export_script.txt" 2>&1)" || { echo "$DES"; echo "FAIL: dash-export script exited non-zero"; exit 1; }
+else
+  DES="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dash_export_script.txt" 2>&1)" || { echo "$DES"; echo "FAIL: dash-export script exited non-zero"; exit 1; }
+fi
+echo "$DES" | grep -E "^(ok|FAIL)" || true
+if echo "$DES" | grep -q "^FAIL"; then fail=1; fi
+grep -q 'stroke-dasharray="5,3"' "$TMPW/dash_scale1.svg" && echo "ok   a dashed line's real linetype (5,3) is exported as a real SVG stroke-dasharray, not a silently solid stroke, even with on-screen Linetype Display off" || { echo "FAIL dash_scale1.svg: no stroke-dasharray=\"5,3\""; fail=1; }
+grep -aq '\[14.173 8.504\] 0 d' "$TMPW/dash_scale1.pdf" && echo "ok   the same linetype reaches ExportPdf as a real \"d\" dash operator (14.173/8.504 pt = 5/3 mm at Scale=1)" || { echo "FAIL dash_scale1.pdf: no [14.173 8.504] 0 d operator"; fail=1; }
+grep -q 'stroke-dasharray' "$TMPW/solid_scale1.svg" && grep -q 'stroke-dasharray="5,3"' "$TMPW/solid_scale1.svg" || { echo "FAIL solid_scale1.svg: expected exactly one dasharray (the dashed line), none or more found"; fail=1; }
+SOLID_DASH_COUNT="$(grep -c 'stroke-dasharray' "$TMPW/solid_scale1.svg" || true)"
+[ "$SOLID_DASH_COUNT" = "1" ] && echo "ok   the Continuous-linetype line exported alongside it has no stray dasharray of its own" || { echo "FAIL solid_scale1.svg: expected exactly 1 stroke-dasharray (only the dashed line's), got $SOLID_DASH_COUNT"; fail=1; }
+grep -aq '\[\] 0 d' "$TMPW/solid_scale1.pdf" && echo "ok   ExportPdf resets to a plain solid \"[] 0 d\" before the Continuous-linetype line, not leaking the other line's dash pattern" || { echo "FAIL solid_scale1.pdf: no [] 0 d reset operator"; fail=1; }
+
 # Undo id-reuse regression (see the last section of history_script.txt):
 # a Box drawn right after undoing a tracked Extrude used to be handed the
 # undone extrusion's own id (6), so its HistoryRecord/Provenance entries -

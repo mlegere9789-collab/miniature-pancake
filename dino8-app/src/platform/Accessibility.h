@@ -8,7 +8,8 @@
 // Annotation Styles, its Notes, its render Environment settings, the last
 // Audit run's results, its pending Undo/Redo history, the loaded Hatch
 // Pattern library, its loaded plug-ins, the ~1055-command Rhino 8 reference
-// catalog, its saved command aliases, its customized keyboard shortcuts, its
+// catalog, its saved command aliases, its customized keyboard shortcuts, the
+// Options window's own fixed built-in-shortcuts reference tab, its
 // units/tolerances/grid/metadata Document Properties, the materials that
 // carry a Texture, and its active-viewport/grid/display-tolerance Display
 // settings to assistive technology, so a screen reader can read and be
@@ -47,7 +48,8 @@ void InitAccessibility(const std::string& app_name);
 // `annotation_styles`, `document_notes`, `environments`, `audit_results`,
 // `undo_history`, `redo_history`, `hatch_patterns`, `plugins`,
 // `command_list`, `command_aliases`, `keyboard_shortcuts`,
-// `document_properties`, `textures` and `display` are typically
+// `builtin_shortcuts`, `document_properties`, `textures` and `display` are
+// typically
 // ui::LastMenuBarAccessibleTree(), ui::CommandOptionsAccessibleTree(app),
 // ui::LayersPanelAccessibleTree(app), ui::PropertiesPanelAccessibleTree(app),
 // ui::ViewportsAccessibleTree(app), ui::ActivityLogAccessibleTree(app),
@@ -61,7 +63,8 @@ void InitAccessibility(const std::string& app_name);
 // ui::UndoHistoryAccessibleTree(app), ui::RedoHistoryAccessibleTree(app),
 // ui::HatchPatternsAccessibleTree(), plugins::PluginsAccessibleTree(),
 // ui::CommandListAccessibleTree(app), ui::CommandAliasesAccessibleTree(app),
-// ui::KeyboardShortcutsAccessibleTree(app), ui::DocumentPropertiesAccessibleTree(app),
+// ui::KeyboardShortcutsAccessibleTree(app), ui::BuiltinShortcutsAccessibleTree(app),
+// ui::DocumentPropertiesAccessibleTree(app),
 // ui::TexturesAccessibleTree(app) and ui::DisplayAccessibleTree(app) (see
 // src/ui/Panels.h and src/plugins/PluginPanel.h) - passed in rather than
 // computed here so this module stays independent of app::Application/Document.
@@ -80,8 +83,8 @@ void UpdateAccessibility(const std::string& prompt, const std::string& command_i
                           const AccessibleNode& redo_history, const AccessibleNode& hatch_patterns,
                           const AccessibleNode& plugins, const AccessibleNode& command_list,
                           const AccessibleNode& command_aliases, const AccessibleNode& keyboard_shortcuts,
-                          const AccessibleNode& document_properties, const AccessibleNode& textures,
-                          const AccessibleNode& display);
+                          const AccessibleNode& builtin_shortcuts, const AccessibleNode& document_properties,
+                          const AccessibleNode& textures, const AccessibleNode& display);
 
 // Just the request-processing half of UpdateAccessibility, without touching
 // any published content. Used by main.cpp's `waitfile` script directive

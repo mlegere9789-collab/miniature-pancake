@@ -164,17 +164,19 @@ class WorksessionCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
     options = {{"Attach", "", {}, false, false}, {"Detach", "", {}, false, false}, {"List", "", {}, false, false},
-               {"Save", "", {}, false, false}, {"Load", "", {}, false, false}};
+               {"Save", "", {}, false, false}, {"Load", "", {}, false, false}, {"Reload", "", {}, false, false}};
     if (auto t = ctx.Engine().TakePendingInput()) { OnOption(ctx, *t, ""); return; }
-    WantEnter("Worksession (Attach/Detach/List/Save/Load)");
+    WantEnter("Worksession (Attach/Detach/List/Save/Load/Reload)");
   }
   void OnOption(CommandContext& ctx, const std::string& n, const std::string&) override {
     const std::string l = Lower(n);
     if (l == "list") { List(ctx); Finish(); return; }
-    if (l != "attach" && l != "detach" && l != "save" && l != "load") { ctx.Warn("Worksession: unknown option '" + n + "'"); Finish(); return; }
+    if (l != "attach" && l != "detach" && l != "save" && l != "load" && l != "reload") { ctx.Warn("Worksession: unknown option '" + n + "'"); Finish(); return; }
     action_ = l;
     if (auto t = ctx.Engine().TakePendingInput()) { OnText(ctx, *t); return; }
-    WantText(action_ == "detach" ? "Model to detach (path, alias, or All)" : "File path");
+    WantText(action_ == "detach" ? "Model to detach (path, alias, or All)"
+             : action_ == "reload" ? "Model to reload (path, alias, or All)"
+                                    : "File path");
   }
   void OnText(CommandContext& ctx, const std::string& text) override {
     if (action_.empty()) { OnOption(ctx, text, ""); return; }
@@ -196,6 +198,10 @@ class WorksessionCommand : public Command {
       const int n = LoadWorksessionFile(doc, text, error);
       if (n == 0 && !error.empty()) ctx.Warn("Worksession: " + error);
       else ctx.Print("Worksession: attached " + std::to_string(n) + " model(s) from " + text);
+    } else if (action_ == "reload") {
+      const int n = ReloadWorksession(doc, text, error);
+      if (n < 0) ctx.Warn("Worksession: " + error);
+      else ctx.Print("Worksession: reloaded " + std::to_string(n) + " object(s)" + (error.empty() ? "" : " (" + error + ")"));
     }
     Finish();
   }
@@ -316,7 +322,7 @@ void RegisterSessionCommands(CommandEngine& e) {
 
   // ---- Worksession / LimitReferenceModel --------------------------------
   Reg(e, "Worksession", Make<WorksessionCommand>(), CommandStatus::Implemented,
-      "Attach/Detach/List/Save/Load reference models (other .3dm files, copied in locked). Copies objects in rather than a live link, unlike Rhino's worksessions.");
+      "Attach/Detach/List/Save/Load/Reload reference models (other .3dm files, copied in locked). Copies objects in rather than a live link, unlike Rhino's worksessions - Reload re-reads a model's source file on demand, but nothing watches it for changes automatically.");
   Reg(e, "LimitReferenceModel", Make<LimitReferenceModelCommand>(), CommandStatus::Implemented,
       "Re-filters an attached reference model down to the objects whose bounding box intersects two picked corner points.");
 

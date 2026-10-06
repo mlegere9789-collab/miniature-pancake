@@ -30,14 +30,18 @@
 // BuildPluginsNode), the ~1055-command Rhino 8 reference catalog (see
 // BuildCommandListNode), the user's saved command aliases (see
 // BuildCommandAliasesNode), the user's customized keyboard shortcuts (see
-// BuildKeyboardShortcutsNode), the document's units/tolerances/grid/
+// BuildKeyboardShortcutsNode), the Options window's own fixed, non-
+// customizable built-in-shortcuts reference tab (see
+// BuildBuiltinShortcutsNode), the document's units/tolerances/grid/
 // metadata Document Properties (see BuildDocumentPropertiesNode), the
 // materials that carry an assigned Texture (see BuildTexturesPanelNode),
 // and the active viewport/grid/display-tolerance Display settings (see
 // BuildDisplayPanelNode).
 // The 3D viewport's own rendered content and the ~18 remaining panels/
-// dialogs (plus most of the Options window - only its Aliases and
-// Shortcuts tabs are covered above) are still not mirrored into this tree.
+// dialogs (plus most of the Options window - only its Aliases, Shortcuts
+// and built-in-shortcuts reference tabs are covered above; General,
+// Modeling Aids, View and Toolbar remain unreached) are still not mirrored
+// into this tree.
 #pragma once
 
 #include <cstdint>
@@ -661,6 +665,19 @@ struct KeyboardShortcutSummary {
 // Audit Results/Undo History use, not the "never empty" shape Command
 // Aliases uses.
 AccessibleNode BuildKeyboardShortcutsNode(const std::vector<KeyboardShortcutSummary>& shortcuts);
+
+// Builds the "Keyboard Shortcuts Reference" List accessible: one ListItem
+// per fixed, non-customizable shortcut the Options window's own
+// built-in-shortcuts reference tab lists (its three BulletText rows,
+// DrawOptionsWindow's options.tab_keyboard - distinct from the Shortcuts
+// tab's user-customized ones above), reusing KeyboardShortcutSummary's same
+// combo/command shape even though these come from a fixed table
+// (ui/Panels.cpp's kBuiltinShortcutRow1/2/3) rather than
+// Application::user_shortcuts. Named differently from "Keyboard Shortcuts"
+// so a screen-reader user can tell the two apart. Never empty in a real
+// build, the same "never empty" shape Command Aliases/Command List use,
+// since the table is fixed, not user data.
+AccessibleNode BuildBuiltinShortcutsNode(const std::vector<KeyboardShortcutSummary>& shortcuts);
 
 // Builds the "Document Properties" List accessible: one ListItem per Label:
 // value fact about the document's units, tolerances, grid and saved
