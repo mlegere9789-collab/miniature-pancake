@@ -6366,16 +6366,19 @@ print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
     # a known id/bounding box to check against.
     RESP9="$(curl -s --max-time 10 -X POST -H 'Accept: application/json' --data 'print("hi")' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP10="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/objects")"
-    # GET /objects?geometry=1: the actual point/vertex data for the two
-    # object kinds simple enough to serialize honestly as plain JSON arrays
-    # (point, mesh) - narrows PARITY_MAP.md's own disclosed "no geometry
-    # (de)serialization format" gap a step further than the bare metadata
-    # listing above. Adds one point and one triangle mesh so both real
-    # payloads can be checked in the same request, plus confirms the
-    # pre-existing box (a polysurface, neither kind) reports "geometry":null
-    # rather than silently omitting the key or guessing at a payload.
+    # GET /objects?geometry=1: the actual point/vertex/curve data for the
+    # three object kinds simple enough to serialize honestly as plain JSON
+    # right now (point, mesh, and now a NURBS curve's own degree/control
+    # points/weights/knots) - narrows PARITY_MAP.md's own disclosed "no
+    # geometry (de)serialization format" gap a step further than the bare
+    # metadata listing above. Adds one point, one triangle mesh and one
+    # straight (degree-1, non-rational) line so all three real payloads can
+    # be checked in the same request, plus confirms the pre-existing box (a
+    # polysurface, none of the three) reports "geometry":null rather than
+    # silently omitting the key or guessing at a payload.
     RESP11="$(curl -s --max-time 10 -X POST --data 'rs.AddPoint(20,20,20)
-rs.AddMesh({{0,0,0},{1,0,0},{0,1,0}}, {{1,2,3}})' "http://127.0.0.1:$SERVE_PORT/run")"
+rs.AddMesh({{0,0,0},{1,0,0},{0,1,0}}, {{1,2,3}})
+rs.AddLine({0,0,0},{10,0,0})' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP12="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/objects?geometry=1")"
     CODE2="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP3="$(curl -s --max-time 10 -X POST --data 'rs.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run")"
@@ -6413,6 +6416,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     echo "$RESP10" | grep -q '"min":\[0.000000,0.000000,0.000000\],"max":\[5.000000,5.000000,5.000000\]' && echo "ok   GET /objects reported the box's own real bounding box (0,0,0)-(5,5,5), not just a type/name/layer listing" || { echo "$RESP10"; echo "FAIL --serve GET /objects did not report the box's expected bounding box"; fail=1; }
     echo "$RESP12" | grep -q '"geometry":{"point":\[20.000000,20.000000,20.000000\]}' && echo "ok   GET /objects?geometry=1 reports a real point object's own coordinates, not just its bounding box" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report the point's coordinates"; fail=1; }
     echo "$RESP12" | grep -q '"geometry":{"vertices":\[\[0.000000,0.000000,0.000000\],\[1.000000,0.000000,0.000000\],\[0.000000,1.000000,0.000000\]\],"faces":\[\[0,1,2\]\]}' && echo "ok   GET /objects?geometry=1 reports a real mesh object's own vertices/faces (0-based indices), not just its bounding box" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report the mesh's expected vertices/faces"; fail=1; }
+    echo "$RESP12" | grep -q '"type":"curve".*"geometry":{"degree":1,"rational":false,"control_points":\[\[0.000000,0.000000,0.000000\],\[10.000000,0.000000,0.000000\]\],"knots":\[0.000000,1.000000\]}' && echo "ok   GET /objects?geometry=1 reports a real NURBS curve's own degree/control points/knots (no \"weights\" field for a non-rational curve), not just sampled points" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report the line's expected NURBS curve definition"; fail=1; }
     echo "$RESP12" | grep -q '"type":"polysurface".*"geometry":null' && echo "ok   GET /objects?geometry=1 honestly reports \"geometry\":null for a kind (polysurface) this pass doesn't serialize, rather than guessing at a payload" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report null geometry for the box"; fail=1; }
     [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
     echo "$RESP3" | grep -q "compute error: script requires interactive input" && echo "ok   a script calling an interactive rs.Get* prompt is rejected instead of hanging the connection" || { echo "$RESP3"; echo "FAIL --serve interactive-prompt script was not rejected as expected"; fail=1; }
