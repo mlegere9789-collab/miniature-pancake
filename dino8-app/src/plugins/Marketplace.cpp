@@ -83,31 +83,34 @@ bool IsLoadedAt(const std::string& path) {
 }
 
 // Windows can keep a just-unloaded (or just-exited-process-owned) DLL file
-// handle open for a brief moment after Manager::Unload()/process exit
-// returns - FreeLibrary and process teardown are not guaranteed synchronous
-// at the filesystem level, and a real-time antivirus scan of the freshly
-// written file can hold its own transient handle too. A same-session
-// Unload() right before this call handles the common case (see the comment
-// at this function's own call site), but a DIFFERENT process that recently
-// held the same destination file (e.g. an earlier, already-exited
+// handle open for a while after Manager::Unload()/process exit returns -
+// FreeLibrary and process teardown are not guaranteed synchronous at the
+// filesystem level, and a real-time antivirus scan of the freshly written
+// file can hold its own transient handle too. A same-session Unload()
+// right before this call handles the common case (see the comment at this
+// function's own call site), but a DIFFERENT process that recently held
+// the same destination file (e.g. an earlier, already-exited
 // `--smoke`/`--script` run reusing the same <config>/plugins destination,
 // as this app's own test suite does across many sections) can still leave
-// the OS reporting ERROR_SHARING_VIOLATION for a few dozen milliseconds
-// after that process is gone - observed in practice on Windows CI
-// (PluginMarketplaceInstall failing with "could not copy...: The process
-// cannot access the file because it is being used by another process").
-// POSIX's unlink-then-replace semantics never hit this, so the retry is a
-// harmless no-op there (the first attempt always succeeds): it costs
-// nothing extra on Linux/macOS and only spends time on Windows's own
-// documented, transient failure mode. Bounded at ~1s total so a genuine,
-// persistent lock (something else entirely holding the file open) still
-// fails loudly rather than hanging.
+// the OS reporting ERROR_SHARING_VIOLATION for a while after that process
+// is gone - observed in practice on Windows CI (PluginMarketplaceInstall
+// failing with "could not copy...: The process cannot access the file
+// because it is being used by another process"), and still reproducing at
+// a 1s-total retry bound (10 attempts, 100ms apart) - tightened too close
+// to the theoretical "a few dozen milliseconds" case instead of the
+// several-seconds-under-real-CI-load one actually observed. POSIX's
+// unlink-then-replace semantics never hit this, so the retry is a harmless
+// no-op there (the first attempt always succeeds): it costs nothing extra
+// on Linux/macOS and only spends time on Windows's own documented,
+// transient failure mode. Bounded at ~6s total so a genuine, persistent
+// lock (something else entirely holding the file open) still fails loudly
+// rather than hanging.
 void CopyFileWithRetry(const std::string& from, const std::string& to, std::error_code& ec) {
-  constexpr int kAttempts = 10;
+  constexpr int kAttempts = 30;
   for (int attempt = 1; attempt <= kAttempts; ++attempt) {
     fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
     if (!ec || attempt == kAttempts) return;
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
 }
 
