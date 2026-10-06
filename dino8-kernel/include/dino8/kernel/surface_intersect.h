@@ -751,6 +751,107 @@ struct PlaneSphereIntersection {
 };
 PlaneSphereIntersection IntersectPlaneSphere(const ON_Plane& plane, const ON_Sphere& sphere, double tolerance);
 
+// The exact closed-form plane/cylinder SSX - the "plane/cylinder" half of
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms (plane/plane,
+// plane/cylinder, cylinder/cylinder, plane/sphere, cone, torus)" bullet,
+// following IntersectPlaneSphere() above as the next of that same named
+// list: a true geometric closed form, no mesh seeding, no Newton polish.
+//
+// A plane and an infinite right-circular cylinder meet in one of two
+// shapes, depending on `C = dot(cylinder.Axis(), plane.zaxis)` (the signed
+// cosine between the cylinder's own axis and the plane's normal):
+//
+//  - |C| below an internal angular tolerance (the axis lies IN the plane -
+//    the plane is edge-on to the cylinder): the result is zero, one
+//    (`tangent`), or two lines, each parallel to the axis. The axis's own
+//    signed distance `d` to the plane is CONSTANT along its whole length
+//    here (moving along the axis changes distance by `t*C`, and `C` is
+//    the very thing that's ~0), so solving `d + radius*cos(phi) = 0` for
+//    the radial angle `phi` (measured from the plane's own normal `n`,
+//    which already lies entirely in the circular cross-section
+//    perpendicular to the axis when `C` is ~0) is immediate, not
+//    iterative: zero real `phi` when `|d| > radius`, one when `|d| ==
+//    radius` (the tangent line), two (symmetric about the axis/normal
+//    plane) when `|d| < radius`.
+//  - Otherwise: a true ellipse - a true CIRCLE in the special case the
+//    axis is exactly perpendicular to the plane (`|C| == 1`), the same
+//    closed form handling both without a separate branch. Built from its
+//    exact orthogonal semi-axis pair: the "minor" direction
+//    `cross(plane.zaxis, axis)` (perpendicular to the axis's own
+//    projected tilt; semi-axis length is exactly `radius`, unaffected by
+//    the cut angle) and the perpendicular "major" direction within the
+//    plane (semi-axis length `radius / sqrt(1 - C^2) * |C|`... in the
+//    form this function actually computes, `radius * sqrt(1 + (B/C)^2)`
+//    for the `B`/`C` it derives internally - see the .cpp for the full
+//    derivation) - this grows without bound as the cut becomes more
+//    edge-on, which is exactly the `|C| -> 0` limit the line-pair branch
+//    above takes over from.
+//
+// Deliberately operates on the cylinder's INFINITE lateral surface along
+// its own axis line - the same unbounded scope IntersectPlaneSphere()
+// takes for a sphere (which has no comparable bound at all). An
+// ON_Cylinder built with a finite `height` is NOT trimmed to that range
+// here; a caller holding a finite cylinder gets the line(s)/ellipse of its
+// unbounded extension and is responsible for trimming the result to the
+// finite height range itself - a strictly smaller, strictly easier,
+// follow-up problem (clip a line segment or an ellipse's own NURBS form
+// against two parallel end planes) than the SSX this function actually
+// solves. Still honestly scoped, matching this bullet's own prior
+// evidence: only plane/sphere and now plane/cylinder are closed forms here
+// - cylinder/cylinder, plane/cone, and plane/torus remain exactly as
+// unaddressed as before (still existing only inside BooleanCombineMixed's
+// own private splitters, not as a public API), and this does not replace
+// IntersectSurfaces() for a plane/cylinder pair arriving as two generic
+// ON_Surface references with no cylinder-ness known to the caller.
+struct PlaneCylinderIntersection {
+  bool empty = true;
+  bool parallel_to_axis = false;  // true: the plane is (within tolerance) edge-on to the axis - the result is line(s), not an ellipse
+  bool tangent = false;           // meaningful only when parallel_to_axis: a single tangent line (only line_a is meaningful then)
+  ON_Line line_a, line_b;         // meaningful only when parallel_to_axis && !empty; line_b meaningful only when !tangent too
+  ON_Ellipse ellipse;              // meaningful only when !parallel_to_axis && !empty
+  ON_NurbsCurve curve;             // ellipse's own NURBS form (ON_Ellipse::GetNurbForm) - meaningful only when !parallel_to_axis && !empty
+};
+PlaneCylinderIntersection IntersectPlaneCylinder(const ON_Plane& plane, const ON_Cylinder& cylinder, double tolerance);
+
+// The exact closed-form cylinder/cylinder SSX for the PARALLEL-AXIS special
+// case - narrows the "cylinder/cylinder" half of PARITY_MAP.md's own
+// "Analytic/analytic SSX closed forms" bullet (still not fully closed: the
+// general, non-parallel-axis pair stays exactly as unaddressed as before -
+// see this function's own `not_parallel` refusal). This is a public
+// extraction of the SAME closed form `BooleanCombineMixed`'s own private
+// `ComputeParallelCylinderCrossing` (boolean.cpp) already uses internally -
+// the standard circle/circle intersection (Weisstein/MathWorld; Paul
+// Bourke, 1997) of the two cylinders' cross-sectional circles, projected
+// into any plane perpendicular to their shared axis direction (valid at
+// every such plane identically, since neither axis has a component in
+// that projection direction) - but exposed here as a public API returning
+// the actual 3D line(s), not merely the angles `BooleanCombineMixed`'s own
+// internal angular-split bookkeeping needs.
+//
+// `axis_a`/`axis_b` must be parallel or antiparallel to within an internal
+// angular tolerance, or this refuses outright (`not_parallel == true`) -
+// a caller with two cylinders at a genuine angle needs the still-missing
+// general closed form (or the mesh-seeded `IntersectSurfaces()` instead).
+// Given that, the two circles (radius `r_a`/`r_b`, centers at each
+// cylinder's own `Center()`, both projected into a plane perpendicular to
+// `a`'s own axis) meet in zero, one (tangent), or two points via the
+// standard formula; each point extrudes to its own line, parallel to the
+// shared axis, through that point. Two cylinders sharing (to within
+// tolerance) the SAME axis line (concentric, including two genuinely
+// coincident cylinders) are a disclosed non-result (`empty == true`,
+// `not_parallel == false`) rather than a fabricated line pair: a shared
+// axis has no well-defined "lens" of 2D circle crossings at all (every
+// angle is either always-inside or always-outside the other circle, the
+// same structural fact `BooleanCombineMixed`'s own `CylinderCylinderNoInteraction`
+// relies on for its own disjoint/nested cases).
+struct CylinderCylinderParallelIntersection {
+  bool empty = true;
+  bool not_parallel = false;  // true: refused outright - the two axes are not (anti)parallel within tolerance; every other field is meaningless
+  bool tangent = false;       // a single tangent line (only line_a is meaningful then)
+  ON_Line line_a, line_b;     // meaningful only when !empty && !not_parallel; line_b meaningful only when !tangent too
+};
+CylinderCylinderParallelIntersection IntersectCylinderCylinderParallel(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance);
+
 // --- numerical helpers ------------------------------------------------------
 
 // Damped Gauss-Newton on residual(x) (m equations, n unknowns) with box

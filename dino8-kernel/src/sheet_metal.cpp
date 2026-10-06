@@ -28,6 +28,30 @@ NurbsCurve ArcCurve(Point3d center, Vector3d xaxis, Vector3d yaxis, double radiu
   return result;
 }
 
+// A flat rectangular plate `flat_length` x `width` x `thickness`, used by
+// UnfoldBend()/UnfoldMultiBend() below for their own flat-pattern result.
+// Built via Brep::Extrude() of a rectangular profile (the same
+// AssembleSweptBody() construction Bend()/MultiBend() themselves use, not
+// Brep::BoxWelded()): a FromPlanarFaces()-built BoxWelded() genuinely
+// welds its own topology but trims each face with a real ON_BrepLoop, so
+// Brep::FaceCoversWholeDomain() (brep.cpp) correctly reports it as
+// trimmed and Brep::Volume()'s own exact per-face integration refuses it
+// outright ("face 0 is trimmed") - confirmed directly, dino8_scratch_test,
+// reproducing the exact same refusal on a bare `Brep::BoxWelded(0,0,0,2,
+// 3,4)` with no sheet-metal code involved at all. Extrude()'s own faces,
+// by contrast, get a real ON_Brep loop running along the surface's own
+// boundary (`raw().FaceIsSurface()` - see FaceCoversWholeDomain()'s own
+// doc comment), so Volume() integrates them directly - verified exact to
+// float precision for this rectangular, axis-aligned case,
+// dino8_scratch_test.
+Brep FlatPlate(double flat_length, double width, double thickness) {
+  const NurbsCurve rect = NurbsCurve::FromControlPoints(
+      {Point3d(0, 0, 0), Point3d(flat_length, 0, 0), Point3d(flat_length, width, 0), Point3d(0, width, 0),
+       Point3d(0, 0, 0)},
+      1);
+  return Brep::Extrude(rect, Vector3d(0, 0, 1) * thickness, /*cap=*/true);
+}
+
 }  // namespace
 
 double BendAllowance(double thickness, double inside_radius, double bend_angle_degrees, double k_factor) {
@@ -263,6 +287,55 @@ Brep MultiBend(const std::vector<double>& leg_lengths, const std::vector<double>
   }
 
   return Brep::Extrude(profile, zaxis * width, /*cap=*/true);
+}
+
+Brep UnfoldBend(double leg1_length, double leg2_length, double width, double thickness, double inside_radius,
+                double bend_angle_degrees, double k_factor) {
+  if (!(leg1_length > 0.0)) throw std::invalid_argument("dino8::kernel::UnfoldBend: leg1_length must be positive");
+  if (!(leg2_length > 0.0)) throw std::invalid_argument("dino8::kernel::UnfoldBend: leg2_length must be positive");
+  if (!(width > 0.0)) throw std::invalid_argument("dino8::kernel::UnfoldBend: width must be positive");
+
+  // Delegates thickness/inside_radius/bend_angle_degrees/k_factor
+  // validation to BendAllowance() itself (same preconditions Bend() would
+  // enforce on those same four parameters) rather than duplicating it.
+  const double allowance = BendAllowance(thickness, inside_radius, bend_angle_degrees, k_factor);
+  const double flat_length = leg1_length + leg2_length + allowance;
+  return FlatPlate(flat_length, width, thickness);
+}
+
+Brep UnfoldMultiBend(const std::vector<double>& leg_lengths, const std::vector<double>& bend_angles_degrees,
+                      const std::vector<double>& inside_radii, double width, double thickness, double k_factor) {
+  const size_t num_bends = bend_angles_degrees.size();
+  if (num_bends < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::UnfoldMultiBend: at least one bend is required (bend_angles_degrees is empty)");
+  }
+  if (leg_lengths.size() != num_bends + 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::UnfoldMultiBend: leg_lengths must have exactly one more entry than bend_angles_degrees");
+  }
+  if (inside_radii.size() != num_bends) {
+    throw std::invalid_argument("dino8::kernel::UnfoldMultiBend: inside_radii must have exactly one entry per bend");
+  }
+  if (!(width > 0.0)) throw std::invalid_argument("dino8::kernel::UnfoldMultiBend: width must be positive");
+  for (double len : leg_lengths) {
+    if (!(len > 0.0)) {
+      throw std::invalid_argument("dino8::kernel::UnfoldMultiBend: every leg length must be positive");
+    }
+  }
+
+  double flat_length = 0.0;
+  for (double len : leg_lengths) flat_length += len;
+  // Delegates each bend's own thickness/inside_radius/bend_angle_degrees/
+  // k_factor validation to BendAllowance() itself, exactly like
+  // UnfoldBend() above - thrown at the first invalid bend encountered,
+  // not necessarily the first one in the array (matching MultiBend()'s
+  // own "throws if ANY bend angle is out of range, not just the first"
+  // convention).
+  for (size_t i = 0; i < num_bends; ++i) {
+    flat_length += BendAllowance(thickness, inside_radii[i], bend_angles_degrees[i], k_factor);
+  }
+  return FlatPlate(flat_length, width, thickness);
 }
 
 }  // namespace dino8::kernel

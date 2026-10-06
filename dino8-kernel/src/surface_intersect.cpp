@@ -2739,4 +2739,123 @@ PlaneSphereIntersection IntersectPlaneSphere(const ON_Plane& plane, const ON_Sph
   return out;
 }
 
+PlaneCylinderIntersection IntersectPlaneCylinder(const ON_Plane& plane, const ON_Cylinder& cylinder, double tolerance) {
+  PlaneCylinderIntersection out;
+  if (!plane.IsValid() || !cylinder.IsValid() || !(cylinder.circle.radius > 0) || !(tolerance >= 0)) return out;  // stays empty
+
+  constexpr double kMinAbsC = 1e-6;  // same angular-degeneracy threshold ComputeEllipseFrame3d() (ellipse_clip3d.h) uses
+  const double r = cylinder.circle.radius;
+  const Vector3d axis = cylinder.Axis();
+  const Point3d c0 = cylinder.Center();
+  const Vector3d n = plane.zaxis;
+  const double C = ON_DotProduct(axis, n);
+  const double d = plane.DistanceTo(c0);
+
+  if (std::fabs(C) < kMinAbsC) {
+    // The axis lies (to within kMinAbsC) IN the plane, so its own signed
+    // distance to the plane is the same `d` at every point along it: moving
+    // by t*axis changes that distance by t*C, and C is the very thing that's
+    // ~0 here. `n` therefore already lies entirely in the circular
+    // cross-section perpendicular to the axis (dot(axis, n) == C ~ 0), so
+    // {n, m = axis x n} is a valid orthonormal in-plane-of-the-circle basis
+    // for the radial direction, with no need for an arbitrary third vector:
+    // a cylinder-surface point at radial angle phi from n sits at signed
+    // distance d + r*cos(phi) from the plane (see this function's own
+    // header doc comment for the full derivation).
+    out.parallel_to_axis = true;
+    const double ad = std::fabs(d);
+    if (ad > r + tolerance) return out;  // genuinely do not meet: stays empty
+    out.empty = false;
+    const Vector3d m = ON_CrossProduct(axis, n);  // already unit: |axis|=|n|=1, axis _|_ n here
+    auto line_at = [&](double phi) {
+      const Point3d p = c0 + r * (std::cos(phi) * n + std::sin(phi) * m);
+      return ON_Line(p, p + axis);
+    };
+    if (ad >= r - tolerance) {
+      // |d| within tolerance of r: a genuine two-line pair would be
+      // separated by less than tolerance here, so this is the single
+      // tangent-line degeneracy, not two near-coincident slivers.
+      out.tangent = true;
+      out.line_a = line_at(d > 0 ? kPi : 0.0);  // cos(phi) = -d/r -> +-1
+      return out;
+    }
+    const double phi0 = std::acos(Clamp(-d / r, -1.0, 1.0));
+    out.line_a = line_at(phi0);
+    out.line_b = line_at(-phi0);
+    return out;
+  }
+
+  // The general (non-edge-on) case: a true ellipse (a true circle when
+  // axis _|_ plane, |C| == 1 - the same formula below handles both). See
+  // this function's own header doc comment for the derivation summary.
+  const Vector3d minor_raw = ON_CrossProduct(n, axis);  // _|_ n and _|_ axis
+  const double minor_len = minor_raw.Length();
+  const Vector3d e0 = minor_len > 1e-9 ? minor_raw / minor_len : Vector3d(plane.xaxis);  // axis || n (|C|==1): minor direction is arbitrary in-plane, plane.xaxis already _|_ n and so _|_ axis too here
+  const Vector3d e1 = ON_CrossProduct(axis, e0);  // unit, _|_ axis and _|_ e0
+  const double B = ON_DotProduct(e1, n);
+  const Vector3d e1p = e1 - (B / C) * axis;  // _|_ e0, lies IN the plane (dot(e1p, n) == B - (B/C)*C == 0)
+  const double major_scale = std::sqrt(1.0 + (B / C) * (B / C));
+  const Vector3d major_dir = e1p / major_scale;  // unit, _|_ e0
+
+  out.empty = false;
+  const Point3d center = c0 - (d / C) * axis;
+  out.ellipse = ON_Ellipse(ON_Plane(center, e0, major_dir), r, r * major_scale);
+  if (out.ellipse.GetNurbForm(out.curve) == 0) {
+    // Only fails for a degenerate (non-positive) radius - already ruled out
+    // above (r > 0, major_scale >= 1) - or an invalid plane, already ruled
+    // out by the e0/major_dir construction. Treated as a genuine miss
+    // rather than returning an ellipse with no usable curve.
+    out = PlaneCylinderIntersection{};
+  }
+  return out;
+}
+
+CylinderCylinderParallelIntersection IntersectCylinderCylinderParallel(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance) {
+  CylinderCylinderParallelIntersection out;
+  if (!a.IsValid() || !b.IsValid() || !(a.circle.radius > 0) || !(b.circle.radius > 0) || !(tolerance >= 0)) return out;  // stays empty
+
+  constexpr double kAxisParallelTol = 1e-6;  // |cross(unit, unit)| = sin(angle between them); same scale as ComputeEllipseFrame3d's own min_abs_C guard
+  const Vector3d axis = a.Axis();
+  if (ON_CrossProduct(axis, b.Axis()).Length() > kAxisParallelTol) {
+    out.not_parallel = true;
+    return out;
+  }
+
+  // Project both axes into a plane _|_ `axis` (valid at any height along
+  // either infinite axis line identically - see this function's own header
+  // doc comment) using a robust arbitrary in-plane basis: cross `axis` with
+  // whichever world axis it is LEAST aligned with, avoiding the near-zero
+  // cross product a poorly-chosen helper could produce.
+  const Vector3d helper = std::fabs(axis.x) < 0.9 ? Vector3d(1, 0, 0) : Vector3d(0, 1, 0);
+  const Vector3d e0 = ON_CrossProduct(axis, helper).UnitVector();
+  const Vector3d e1 = ON_CrossProduct(axis, e0);  // already unit: axis _|_ e0, both unit
+
+  const Point3d c0 = a.Center();
+  const Vector3d d3 = b.Center() - c0;
+  const double dx = ON_DotProduct(d3, e0), dy = ON_DotProduct(d3, e1);
+  const double dist = std::hypot(dx, dy);
+  const double ra = a.circle.radius, rb = b.circle.radius;
+
+  if (dist <= tolerance) return out;  // (anti)parallel AND concentric axes - no well-defined 2D lens (see header doc comment); stays empty
+  if (dist > ra + rb + tolerance) return out;        // disjoint: genuinely too far apart
+  if (dist < std::fabs(ra - rb) - tolerance) return out;  // one nested entirely inside the other: no touch at any angle
+
+  out.empty = false;
+  const double p = (dist * dist + ra * ra - rb * rb) / (2.0 * dist);  // `a` in the Bourke derivation; renamed to avoid shadowing the ON_Cylinder parameter `a`
+  const double h = std::sqrt(std::max(ra * ra - p * p, 0.0));
+  const Point3d mid = c0 + (p * dx / dist) * e0 + (p * dy / dist) * e1;
+  auto line_through = [&](double sign) {
+    const Point3d pt = mid + (sign * h * (-dy / dist)) * e0 + (sign * h * (dx / dist)) * e1;
+    return ON_Line(pt, pt + axis);
+  };
+  if (h <= tolerance) {
+    out.tangent = true;
+    out.line_a = line_through(0.0);
+    return out;
+  }
+  out.line_a = line_through(1.0);
+  out.line_b = line_through(-1.0);
+  return out;
+}
+
 }  // namespace dino8::kernel
