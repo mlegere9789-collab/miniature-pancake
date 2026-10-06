@@ -5401,6 +5401,97 @@ re-run clean (no kernel source touched this pass); `dino8-app`'s own
 `tests/smoke.sh` re-run clean through the `regionboolean-exact-polygon`
 section, including the new N=3 Union/Difference/Intersection checks.
 
+**Twenty-sixth note on this category's score (this pass): one more
+app-wiring closure, a second, closely-related sibling of the
+Twenty-fifth note's own "give an existing app command the exact path it
+was missing" pattern - no bucket moves.**
+
+**"Keep/split options":** `SplitByObjectCommand`'s own exact B-rep path
+(`SplitBrepByManySolids`, the Twenty-fourth note above) required every
+cutter to be a closed-solid Brep; this bullet's own prior wording named
+the remaining gap by name ("an open surface cutter still solidifies and
+goes through the mesh pipeline, unchanged"). A single open-sheet cutter
+(the common "cut this box with a flat trimming surface" case) now routes
+through `kernel::SplitBySheet(solid, sheet)` instead - already-shipped,
+already-tested kernel code (this category's own "Sheet/solid trim"
+bullet) that already had its own first app command, `SplitBySheetCommand`
+(`cmd_boolean.cpp`), but had never been reachable from `SplitByObject`'s
+own general cutting-object entry point. Reuses the identical
+`FirstSheetBrep` helper `SplitBySheetCommand`/`TrimSheetBySolidCommand`
+already share (so a bare `Surface`-kind pick, e.g. a plain `Plane`
+result, is wrapped via `Brep::FromSurface()` the same way); only
+attempted for exactly one cutter object (`SplitBySheet` takes one sheet
+operand, unlike `SplitBrepByManySolids`'s own many-cutters-folded-into-
+one-tool shape just above it), and only once the solid-by-solid attempt
+above has already declined (a cutter that happens to be both a closed
+solid and a valid sheet still prefers the solid-by-solid engine,
+unchanged). The sheet is consumed, the same as the solid-by-solid path's
+cutter above - `SplitByObjectCommand`'s own established contract (its own
+class-level doc comment: "The cutting object(s) are consumed into the
+split... not left behind as leftover geometry"), NOT `SplitBySheetCommand`'s
+separate "sheet stays untouched" one. **A real regression caught by
+running the full `tests/smoke.sh` suite, not assumed:** the first version
+of this closure left the sheet untouched (borrowing `SplitBySheetCommand`'s
+own contract instead of this command's), which silently changed the
+pre-existing `boolean_script.txt` open-surface-cutter fixture's own
+long-locked-in result ("id 26, id 27 -> 2 pieces", i.e. cutter gone) from
+2 objects to 3 - caught by that exact `@expect_objects 2` assertion
+failing, not noticed by inspection; fixed before this pass was shipped by
+consuming `cutter_ids` the same way the solid-by-solid path already does,
+confirmed against that fixture and a dedicated new one both now passing.
+Falls through silently to the existing mesh pipeline, unchanged, whenever
+there is more than one cutter, the single cutter isn't sheet-eligible
+either, any target isn't a closed-solid Brep, or the kernel itself throws
+(`SplitBySheet`'s own inherited `BooleanCombineGeneral` scope limits) or
+returns an empty half (the sheet missed the target entirely). Verified
+end-to-end through the real command (`dino8-app/tests/
+splitbyobject_exact_brep_script.txt`, wired into `smoke.sh`): a 4x4x4 box
+split by an oversized flat open `Surface` sheet at its genuine middle -
+the same box/sheet shape `splitbysheet_trimsheet_script.txt`'s own first
+case uses - prints "exact B-rep via sheet cutter, no tessellation" and
+replaces both the box AND the sheet with the box's own two real pieces (2
+objects, not 3); the pre-existing solid-by-solid fixture in the same
+script (a box pierced by a sphere) is unaffected and still prints the
+unchanged "exact B-rep, no tessellation" message, and the pre-existing
+`boolean_script.txt` open-surface-cutter fixture above now takes this new
+exact path instead of its old mesh-pipeline one while keeping its own
+original "id 26, id 27 -> 2 pieces" result exactly. Still partial:
+`BooleanSplit`/`MeshSplit`/`MeshBooleanSplit` remain plane-only and
+mesh-level by deliberate design (not a wiring gap - see this file's own
+header comments in `cmd_boolean.cpp`, "a plane through two points only"),
+unchanged; `SplitByObject`'s own solid-by-solid path still can't accept a
+MIX of solid and sheet cutters in one call (an open sheet alongside a
+closed-solid cutter still falls through to the mesh pipeline, since
+`SplitBySheet` has no multi-cutter form to fold a sheet into); and a
+genuinely curved sheet, while kernel-tested (this category's own "Sheet/
+solid trim" bullet), is unexercised through this specific new call site
+(the script above uses the identical flat-sheet fixture
+`splitbysheet_trimsheet_script.txt` already verifies, not a new curved
+one). `dino8_kernel_tests` suite re-run clean (no kernel source touched
+this pass, same as the Twenty-fifth note).
+
+**A real regression caught AND a real, pre-existing, unrelated defect
+newly exposed, both via the full `tests/smoke.sh` suite, neither assumed:**
+the first version of this closure (fixed before being shipped, see above)
+silently broke `boolean_script.txt`'s own pre-existing open-surface-cutter
+`SplitByObject` fixture - caught precisely because that script's own
+`@expect_objects 2` check failed, which (this smoke harness's own
+`exit 1`-on-script-failure behavior, `smoke.sh`) halted the ENTIRE suite
+right there, before it ever reached two LATER, unrelated sections. Once
+the regression above was fixed and the suite re-run reached further,
+`tests/smoke.sh` ran clean through this bullet's own concerns but
+surfaced two genuinely pre-existing failures that the earlier abort had
+been silently hiding, neither touched by this pass: `RemoveKnot`'s own
+exact round-trip check (`curve_script.txt`) and a `Divide Mode=
+SegmentLength 7` selection-count check (`create_script.txt`, `expect_
+selected 6 (got 7)`) - both traced (`git log -- dino8-kernel/src/
+curve.cpp dino8-app/src/commands/cmd_create.cpp`) to the same concurrent
+session's own merged commit (`c820251`, "real curve DivideByLength +
+RemoveKnotAt, wired into Divide/RemoveKnot") under `Fossilith kernel —
+Curve operations`, a different category this pass does not touch or
+investigate further - disclosed here rather than silently left for the
+next full re-score to discover as an unexplained headline drop.
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
