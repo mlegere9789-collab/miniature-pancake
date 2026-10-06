@@ -121,6 +121,14 @@ bool RebuildOneHistoryObject(CommandContext& ctx, SceneObject& target, const His
     if (!rail2_src || rail2_src->kind != ObjectKind::Curve) return false;
     if (!section_src || section_src->kind != ObjectKind::Curve) return false;
     fresh = RebuildSweep2(ctx, *section_src->curve, *rail1_src->curve, *rail2_src->curve, rec);
+  } else if (rec.command == "Patch") {
+    // Source recorded as {closed curve} (Patch's single-closed-planar-
+    // curve case only - see RebuildPatch's own comment for why the
+    // non-planar-boundary fallback is deliberately never recorded).
+    if (rec.sources.size() != 1) return false;
+    const SceneObject* src = ctx.Doc().Find(rec.sources[0]);
+    if (!src || src->kind != ObjectKind::Curve) return false;
+    fresh = RebuildPatch(ctx, *src->curve, rec);
   } else {
     return false;  // unknown/future command name in an old side-table entry
   }
@@ -145,7 +153,7 @@ void ToggleOrReport(CommandContext& ctx, bool report) {
     if (v == "on" || v == "yes" || v == "y" || v == "1") on = true;
     else if (v == "off" || v == "no" || v == "n" || v == "0") on = false;
     else { ctx.Warn("History: expected On or Off"); return; }
-    ctx.Print(std::string("History recording: ") + (on ? "on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe/Sweep1/Sweep2 (single section) results will remember their source curve(s) for UpdateHistory"
+    ctx.Print(std::string("History recording: ") + (on ? "on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe/Sweep1/Sweep2 (single section)/Patch (single planar closed curve) results will remember their source curve(s) for UpdateHistory"
                                                          : "off - new construction results will not remember their source"));
     return;
   }

@@ -30,6 +30,91 @@ class AliasCommand : public Command {
   std::optional<std::string> alias_;
 };
 
+// Named macro library (PARITY_MAP.md's "VBA-style macro recorder and
+// editor" item): the Macro Editor's buffer (AppState::macro_text) is a
+// single shared text box, so there was previously no way to keep more
+// than one macro around except by overwriting it or copy-pasting text out
+// by hand - unlike Rhino's own macro-per-toolbar-button model, where any
+// number of distinct macros coexist, each callable by name. AppState::
+// macros (a saved name -> command text map, persisted the same wholesale-
+// replace way CommandEngine::Aliases() already is - see Settings.cpp)
+// closes that gap: MacroSave/MacroLoad mirror Alias's own "name, then
+// Enter to list" two-step shape above, and RunSavedMacro executes a saved
+// macro's lines directly without disturbing the live Macro Editor buffer.
+class MacroSaveCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantText("Name to save the Macro Editor's current buffer as (or Enter to list saved macros)"); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    ctx.App().State().macros[t] = ctx.App().State().macro_text;
+    ctx.Print("Saved macro '" + t + "'");
+    Finish();
+  }
+  void OnEnter(CommandContext& ctx) override {
+    const auto& macros = ctx.App().State().macros;
+    if (macros.empty()) ctx.Print("No saved macros.");
+    else for (const auto& [name, text] : macros) ctx.Print(name);
+    Finish();
+  }
+};
+
+class MacroLoadCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantText("Saved macro name to load into the Macro Editor buffer (or Enter to list saved macros)"); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    auto& macros = ctx.App().State().macros;
+    auto it = macros.find(t);
+    if (it == macros.end()) { ctx.Warn("MacroLoad: no saved macro named '" + t + "'"); Finish(); return; }
+    ctx.App().State().macro_text = it->second;
+    ctx.Print("Loaded macro '" + t + "' into the Macro Editor buffer");
+    Finish();
+  }
+  void OnEnter(CommandContext& ctx) override {
+    const auto& macros = ctx.App().State().macros;
+    if (macros.empty()) ctx.Print("No saved macros.");
+    else for (const auto& [name, text] : macros) ctx.Print(name);
+    Finish();
+  }
+};
+
+class MacroDeleteCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantText("Saved macro name to delete"); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (ctx.App().State().macros.erase(t)) ctx.Print("Deleted macro '" + t + "'");
+    else ctx.Warn("MacroDelete: no saved macro named '" + t + "'");
+    Finish();
+  }
+};
+
+// Runs a saved macro's lines directly (one command per line, each line
+// also split on ';' the same way the typed-text Macro command already
+// splits its own argument) without loading it into, or disturbing, the
+// live Macro Editor buffer - the "a saved macro is itself runnable, the
+// way a toolbar button would run it" half of the gap.
+class RunSavedMacroCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantText("Saved macro name to run (or Enter to list saved macros)"); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    Finish();
+    const auto& macros = ctx.App().State().macros;
+    auto it = macros.find(t);
+    if (it == macros.end()) { ctx.Warn("RunSavedMacro: no saved macro named '" + t + "'"); return; }
+    std::istringstream lines(it->second);
+    std::string line;
+    while (std::getline(lines, line)) {
+      std::istringstream parts(line);
+      std::string part;
+      while (std::getline(parts, part, ';')) if (!part.empty()) ctx.Engine().Execute(part);
+    }
+  }
+  void OnEnter(CommandContext& ctx) override {
+    const auto& macros = ctx.App().State().macros;
+    if (macros.empty()) ctx.Print("No saved macros.");
+    else for (const auto& [name, text] : macros) ctx.Print(name);
+    Finish();
+  }
+};
+
 class CalcCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantText("Expression"); }
@@ -505,6 +590,13 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "CalcRPN", Make<CalcRPNCommand>(), CommandStatus::Implemented, "Evaluates a postfix expression (numbers then + - * / ^ or sqrt/neg/sin/cos/tan/abs) with an explicit operand stack.");
   Reg(e, "Macro", Make<MacroRunCommand>());
   Reg(e, "MacroEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().macro_editor = true; }));
+  Reg(e, "MacroSave", Make<MacroSaveCommand>(), CommandStatus::Implemented,
+      "Saves the Macro Editor's current buffer under a name in a named macro library (AppState::macros), independent of and never overwriting that single shared buffer again by accident. No argument lists every saved name.");
+  Reg(e, "MacroLoad", Make<MacroLoadCommand>(), CommandStatus::Implemented,
+      "Loads a macro previously saved with MacroSave into the Macro Editor's buffer, replacing its current contents. No argument lists every saved name.");
+  Reg(e, "MacroDelete", Make<MacroDeleteCommand>(), CommandStatus::Implemented, "Removes a named macro from the saved macro library.");
+  Reg(e, "RunSavedMacro", Make<RunSavedMacroCommand>(), CommandStatus::Implemented,
+      "Runs a macro previously saved with MacroSave directly, one command per line (each also split on ';'), without loading it into or disturbing the Macro Editor's own buffer - the same way a toolbar button bound to a macro would run it. No argument lists every saved name.");
   Reg(e, "RecordMacro", Immediate(ToggleOrReportMacroRecording), CommandStatus::Implemented,
       "A real action recorder for the Macro Editor's buffer: with no argument, reports the On/Off state and dumps the buffer's current contents line by line; On/Off (Yes/No/1/0 also accepted) toggles it. While on, every top-level command line you type on the command line (or via the Macro Editor's own Record button) is appended verbatim to the Macro Editor's buffer, which already Run/Copy and persists across restarts - so a session of typed commands can be replayed or saved as a macro without retyping them. Scope: this observes typed command LINES, the same unit Rhino's own command-line macro recording captures - not raw mouse clicks or panel interactions with no command-line equivalent.");
   Reg(e, "ReadCommandFile", Immediate([](CommandContext& ctx) {

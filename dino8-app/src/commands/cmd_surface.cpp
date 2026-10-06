@@ -711,6 +711,7 @@ void NetworkSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
 void Patch(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   Row pts;
   std::vector<kernel::NurbsCurve> closed;
+  std::vector<ObjectId> closed_ids;
   int npts = 0, ncrv = 0;
   for (ObjectId id : ids) {
     const SceneObject* o = ctx.Doc().Find(id);
@@ -719,7 +720,7 @@ void Patch(CommandContext& ctx, const std::vector<ObjectId>& ids) {
     else if (o->kind == ObjectKind::Curve && o->curve) {
       Row s = SampleCurve(*o->curve, 32, o->curve->IsClosed());
       pts.insert(pts.end(), s.begin(), s.end());
-      if (o->curve->IsClosed()) closed.push_back(*o->curve);
+      if (o->curve->IsClosed()) { closed.push_back(*o->curve); closed_ids.push_back(id); }
       ++ncrv;
     }
   }
@@ -729,7 +730,8 @@ void Patch(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   if (closed.size() == 1) {
     ON_Plane own;
     ON_Brep* b = nullptr;
-    if (closed[0].raw().IsPlanar(&own, ctx.Settings().absolute_tolerance)) b = ON_BrepTrimmedPlane(own, closed[0].raw());
+    const bool exact_plane = closed[0].raw().IsPlanar(&own, ctx.Settings().absolute_tolerance);
+    if (exact_plane) b = ON_BrepTrimmedPlane(own, closed[0].raw());
     if (!b) {
       // Non-planar boundary: project its samples onto the fitted plane.
       Row loop = SampleCurve(closed[0], 64, true);
@@ -740,7 +742,19 @@ void Patch(CommandContext& ctx, const std::vector<ObjectId>& ids) {
       ON_PolylineCurve pc(pl);
       b = ON_BrepTrimmedPlane(fit, pc);
     }
-    if (b) { ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); ctx.Print("Patch: planar face bounded by the closed curve"); return; }
+    if (b) {
+      const ObjectId new_id = ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b)));
+      // History (UpdateHistory, cmd_history.cpp's RebuildPatch dispatch):
+      // only the exact-planar-trim sub-case is recorded, since that is the
+      // only one RebuildPatch above reproduces - the non-planar-boundary
+      // fallback just above depends on `fit`, derived from every point and
+      // curve in the whole selection, not just this one curve, so it is
+      // deliberately left unrecorded rather than recorded with a
+      // misleadingly narrow source list.
+      if (exact_plane) RecordHistoryIfEnabled(ctx, new_id, "Patch", {closed_ids[0]}, {});
+      ctx.Print("Patch: planar face bounded by the closed curve");
+      return;
+    }
   }
   double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
   bool first = true;
@@ -1586,6 +1600,30 @@ std::optional<SceneObject> RebuildPipe(CommandContext&, const kernel::NurbsCurve
     return SceneObject::MakeMesh(m);
   }
   return SceneObject::MakeSurface(SurfaceFromRows(rows, true, false));
+}
+
+// Shared by the Patch free function below and UpdateHistory
+// (cmd_history.cpp) - same "single source of truth" shape as RebuildPipe
+// above, scoped to Patch's single-planar-closed-curve case only (Patch's
+// own "closed.size() == 1" branch when the curve is already planar, the
+// `ON_BrepTrimmedPlane(own, closed[0].raw())` call): that result depends
+// only on the one curve's own current geometry, never on any other point
+// or curve also selected at build time (those only ever feed the
+// non-planar-boundary fallback or the multi-point least-squares branch,
+// neither of which this covers), so it is exactly as self-contained as
+// RebuildPipe's single rail. Returns nullopt if the curve is no longer
+// closed+planar after being edited (a hard failure, not silently
+// replaced by the mesh-projection fallback this file's own Patch uses
+// live - same "degrade to stale rather than switch construction methods
+// underneath the object" contract RebuildExtrude/RebuildPipe already
+// have for their own degenerate-after-edit case).
+std::optional<SceneObject> RebuildPatch(CommandContext& ctx, const kernel::NurbsCurve& c, const HistoryRecord&) {
+  if (!c.IsClosed()) return std::nullopt;
+  ON_Plane own;
+  if (!c.raw().IsPlanar(&own, ctx.Settings().absolute_tolerance)) return std::nullopt;
+  ON_Brep* b = ON_BrepTrimmedPlane(own, c.raw());
+  if (!b) return std::nullopt;
+  return SceneObject::MakeBrep(WrapBrep(b));
 }
 
 // Shared by Sweep1Command::Build above and UpdateHistory (cmd_history.cpp) -
