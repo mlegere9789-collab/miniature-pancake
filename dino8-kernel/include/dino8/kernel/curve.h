@@ -58,6 +58,35 @@ struct MatchEndReport {
   double scale = 1.0;
 };
 
+// What NurbsCurve::AnalyzeEndContinuity() reports about the continuity
+// between the NEAREST pair of ends of two curves - the kernel-level,
+// always-exact (never sampled) counterpart to the app's own `GCon`
+// command, which until now duplicated this exact computation inline
+// with no kernel API behind it at all.
+struct EndContinuityReport {
+  // 3D distance between the two curves' own nearest end points.
+  double gap = 0.0;
+  // Angle, in degrees, between the two curves' own tangent directions
+  // at those nearest ends, each first flipped (if needed) to point
+  // AWAY from the shared joint - 0 degrees means the two curves
+  // continue perfectly straight across the joint (G1), the same "both
+  // tangents pointing away from the joint, then compare" convention
+  // `MatchEnd()`'s own doc comment above already uses for the
+  // identical idea.
+  double tangent_angle_degrees = 0.0;
+  // The two curves' own curvature magnitudes (kappa = 1/radius, 0 for
+  // a straight segment) at those same nearest ends - reported
+  // separately, not just their difference, since a caller may want
+  // the actual values, not merely how close they are.
+  double curvature_a = 0.0;
+  double curvature_b = 0.0;
+  // |curvature_a - curvature_b| / max(1e-9, max(curvature_a,
+  // curvature_b)) - exactly 0 when both curvatures are already
+  // negligible (e.g. two straight lines), not a divide-by-near-zero
+  // artifact.
+  double curvature_relative_difference = 0.0;
+};
+
 // Wraps ON_NurbsCurve. Deliberately exposes the underlying ON_NurbsCurve
 // (via raw()) rather than re-declaring every accessor OpenNURBS already
 // has — later chunks (booleans, display) need the real object, not a
@@ -354,6 +383,21 @@ class NurbsCurve {
   // self-check's own real measured errors.
   Result MatchEnd(bool at_min, const NurbsCurve& target, bool target_at_min, MatchContinuity continuity,
                    MatchEndReport* report = nullptr, double end_derivative_scale = 0.0);
+
+  // Analyzes end continuity (G0/G1/G2) between this curve and `other`,
+  // automatically picking whichever pair of ends - this curve's own
+  // `Domain().min`/`Domain().max` against `other`'s own - land closest
+  // together in 3D, the same "nearest ends" semantics the app's own
+  // `GCon` command already used before this method existed (moved
+  // here, not duplicated, so a future caller doesn't have to re-derive
+  // the same "which end, which sign flip" logic by hand - see
+  // `MatchEnd()`'s own analogous normalization above). Every number
+  // comes from real evaluation at the curves' own exact domain
+  // endpoints (`PointAt()`/`TangentAt()`/`CurvatureAt()`) - never
+  // sampled or interpolated, unlike a full-edge continuity check over
+  // many interior points (a materially different, larger problem this
+  // method does not attempt).
+  EndContinuityReport AnalyzeEndContinuity(const NurbsCurve& other) const;
 
   int Degree() const;
   int ControlPointCount() const;

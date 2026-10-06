@@ -57,6 +57,23 @@ Weight
 SelLast
 List
 Delete
+# --- ChangeDegree now also LOWERS degree (NurbsCurve::ReduceDegree, curve.cpp):
+# elevate a line to degree 3, then reduce it back to degree 1 - exact for a
+# straight line (a least-squares refit at degree 1 reproduces a line's own
+# shape exactly), so this must genuinely drop back to 2 control points, not
+# silently no-op the way ChangeDegree always used to on a lower target.
+Line 0,0,0 10,0,0
+SelLast
+ChangeDegree
+3
+SelLast
+List
+SelLast
+ChangeDegree
+1
+SelLast
+List
+Delete
 Line 0,0,0 10,0,0
 SelLast
 InsertKnot

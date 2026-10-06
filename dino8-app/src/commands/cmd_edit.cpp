@@ -95,12 +95,17 @@ class ChangeDegreeCommand : public Command {
   void OnNumber(CommandContext& ctx, double v) override {
     const int target = std::clamp(static_cast<int>(v + 0.5), 1, 11);
     ctx.Doc().BeginChange("ChangeDegree");
-    int done = 0;
+    int done = 0, reduced = 0;
+    const double tol = ctx.Settings().absolute_tolerance;
     for (ObjectId id : ids_) {
       SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
       if (o->kind == ObjectKind::Curve) {
-        if (target > o->curve->Degree() && o->curve->ElevateDegree(target) != kernel::Result::Failed) { o->InvalidateDisplay(); ++done; }
+        if (target > o->curve->Degree() && o->curve->ElevateDegree(target) != kernel::Result::Failed) {
+          o->InvalidateDisplay(); ++done;
+        } else if (target < o->curve->Degree() && o->curve->ReduceDegree(target, tol) == kernel::Result::Ok) {
+          o->InvalidateDisplay(); ++done; ++reduced;
+        }
       } else if (o->kind == ObjectKind::Surface) {
         bool changed = false;
         if (target > o->surface->DegreeU() && o->surface->ElevateDegree(0, target) != kernel::Result::Failed) changed = true;
@@ -108,7 +113,8 @@ class ChangeDegreeCommand : public Command {
         if (changed) { o->InvalidateDisplay(); ++done; }
       }
     }
-    ctx.Print("ChangeDegree: " + std::to_string(done) + " object(s) elevated to degree " + std::to_string(target));
+    ctx.Print("ChangeDegree: " + std::to_string(done) + " object(s) changed to degree " + std::to_string(target) +
+               (reduced > 0 ? " (" + std::to_string(reduced) + " degree-reduced)" : ""));
     Finish();
   }
   std::vector<ObjectId> ids_;

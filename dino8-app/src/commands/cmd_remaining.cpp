@@ -1255,25 +1255,22 @@ void EdgeContinuity(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   ctx.RequestRedraw();
 }
 
-// GCon: continuity between the nearest ends of two curves.
+// GCon: continuity between the nearest ends of two curves. Delegates
+// the actual geometry to the kernel's own NurbsCurve::AnalyzeEndContinuity()
+// (curve.h/curve.cpp) - this command used to duplicate that exact
+// nearest-end/sign-flip computation inline with no kernel API behind
+// it at all; the app-level Continuity/Grade() pair (shared with
+// EdgeContinuity's own sampled full-edge check above) is unchanged.
 void GCon(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   auto curves = CurvesIn(ctx, ids);
   if (curves.size() < 2) { ctx.Warn("Select two curves"); return; }
   const kernel::NurbsCurve &a = curves[0].second, &b = curves[1].second;
-  const double ends[2][2] = {{a.Domain().min, a.Domain().max}, {b.Domain().min, b.Domain().max}};
-  double best = 1e300; int ia = 0, ib = 0;
-  for (int i = 0; i < 2; ++i) for (int j = 0; j < 2; ++j) { const double d = a.PointAt(ends[0][i]).DistanceTo(b.PointAt(ends[1][j])); if (d < best) { best = d; ia = i; ib = j; } }
+  const kernel::EndContinuityReport r = a.AnalyzeEndContinuity(b);
   Continuity c;
-  c.gap = best;
-  Vector3d ta = a.TangentAt(ends[0][ia]), tb = b.TangentAt(ends[1][ib]);
-  if (ia == 1) ta = -ta;  // both tangents pointing away from the joint
-  if (ib == 1) tb = -tb;
-  double ang = ON_3dVector::Angle(ta, -tb) * 180.0 / ON_PI;
-  c.angle = ang;
-  const double ka = a.CurvatureAt(ends[0][ia]).Length(), kb = b.CurvatureAt(ends[1][ib]).Length();
-  c.curvature = std::fabs(ka - kb) / std::max(1e-9, std::max(ka, kb));
-  if (ka < 1e-9 && kb < 1e-9) c.curvature = 0;
-  ctx.Print("GCon: end gap " + FormatNumber(c.gap) + ", tangent angle " + FormatNumber(c.angle) + " deg, curvature " + FormatNumber(ka) + " vs " + FormatNumber(kb) + ": " + Grade(c, ctx.Settings().absolute_tolerance, ctx.Settings().angle_tolerance_degrees));
+  c.gap = r.gap;
+  c.angle = r.tangent_angle_degrees;
+  c.curvature = r.curvature_relative_difference;
+  ctx.Print("GCon: end gap " + FormatNumber(c.gap) + ", tangent angle " + FormatNumber(c.angle) + " deg, curvature " + FormatNumber(r.curvature_a) + " vs " + FormatNumber(r.curvature_b) + ": " + Grade(c, ctx.Settings().absolute_tolerance, ctx.Settings().angle_tolerance_degrees));
 }
 
 bool ParseUV(const std::string& t, double& u, double& v) { return std::sscanf(t.c_str(), "%lf,%lf", &u, &v) == 2; }

@@ -911,6 +911,96 @@ void TestCurveMatchEnd() {
         "continuity (Curvature against a degree-1 target)");
 }
 
+void TestCurveAnalyzeEndContinuity() {
+  using dino8::kernel::EndContinuityReport;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Two collinear lines sharing an exact endpoint, continuing straight
+  // across the joint: gap 0, tangent angle 0 (the "both away from the
+  // joint, then compare" convention reports a perfect straight-through
+  // continuation as 0 degrees, not 180), both curvatures 0 (straight
+  // segments), so the relative difference must be the "both negligible"
+  // 0 case, not a divide-by-near-zero artifact.
+  {
+    const NurbsCurve a = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    const NurbsCurve b = NurbsCurve::FromControlPoints({Point3d(10, 0, 0), Point3d(20, 0, 0)}, 1);
+    const EndContinuityReport r = a.AnalyzeEndContinuity(b);
+    Check(r.gap < 1e-9, "AnalyzeEndContinuity: two collinear lines sharing an endpoint report gap ~0");
+    Check(r.tangent_angle_degrees < 1e-6,
+          "AnalyzeEndContinuity: two collinear lines continuing straight across the joint report tangent "
+          "angle ~0 degrees, not 180");
+    Check(r.curvature_a == 0.0 && r.curvature_b == 0.0, "AnalyzeEndContinuity: both straight lines report curvature exactly 0");
+    Check(r.curvature_relative_difference == 0.0,
+          "AnalyzeEndContinuity: curvature_relative_difference is exactly 0 for two negligible curvatures, "
+          "not a 0/0 NaN");
+  }
+
+  // Two lines meeting at a right-angle corner (not tangent-continuous):
+  // a real, nonzero tangent angle, independently re-derivable as exactly
+  // 90 degrees for a perpendicular corner.
+  {
+    const NurbsCurve a = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    const NurbsCurve b = NurbsCurve::FromControlPoints({Point3d(10, 0, 0), Point3d(10, 10, 0)}, 1);
+    const EndContinuityReport r = a.AnalyzeEndContinuity(b);
+    Check(r.gap < 1e-9, "AnalyzeEndContinuity: the right-angle corner fixture's own shared endpoint still reports gap ~0");
+    Check(std::abs(r.tangent_angle_degrees - 90.0) < 1e-6,
+          "AnalyzeEndContinuity: a perpendicular corner reports exactly 90 degrees of tangent angle");
+  }
+
+  // Nearest-end selection generalizes beyond the trivial (min, min) case:
+  // build the two lines so it's each curve's own MAX end that is nearest
+  // the other (by reversing both from the fixture above), and confirm
+  // the same gap/angle numbers still come out - proving the method
+  // genuinely searches all 4 (min/max) x (min/max) combinations, not
+  // just the first one.
+  {
+    NurbsCurve a = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    NurbsCurve b = NurbsCurve::FromControlPoints({Point3d(10, 10, 0), Point3d(10, 0, 0)}, 1);
+    const EndContinuityReport r = a.AnalyzeEndContinuity(b);
+    Check(r.gap < 1e-9, "AnalyzeEndContinuity: nearest-end selection finds the shared point even when it's each curve's own MAX end");
+    Check(std::abs(r.tangent_angle_degrees - 90.0) < 1e-6,
+          "AnalyzeEndContinuity: the same right-angle corner reports the same 90 degrees regardless of which "
+          "end of each curve happens to be nearest");
+  }
+
+  // Two genuinely separated curves (no shared point at all): gap is the
+  // real, independently-verifiable 3D distance between the two actual
+  // nearest endpoints, not 0 and not some other pair's distance.
+  {
+    const NurbsCurve a = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    const NurbsCurve b = NurbsCurve::FromControlPoints({Point3d(15, 0, 0), Point3d(25, 0, 0)}, 1);
+    const EndContinuityReport r = a.AnalyzeEndContinuity(b);
+    Check(std::abs(r.gap - 5.0) < 1e-9,
+          "AnalyzeEndContinuity: two separated lines (nearest points 5 units apart) report that exact gap, "
+          "independently verifiable by hand");
+  }
+
+  // Two full circles of different, known radii: curvature is constant
+  // everywhere around a circle, so whichever (arbitrary, parameterization-
+  // dependent) point each one's own domain min/max happens to land on,
+  // the reported curvature there must still be exactly 1/radius - real,
+  // distinct values, and a relative difference independently
+  // re-derivable from those same two radii.
+  {
+    const double r1 = 5.0, r2 = 8.0;
+    const ON_Circle c1(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), r1);
+    const ON_Circle c2(ON_Plane(ON_3dPoint(0, r1 + r2, 0), ON_3dVector(0, 0, 1)), r2);
+    ON_NurbsCurve nc1, nc2;
+    Check(c1.GetNurbForm(nc1) != 0 && c2.GetNurbForm(nc2) != 0, "AnalyzeEndContinuity: both circle fixtures build a real NURBS form");
+    NurbsCurve a, b;
+    a.raw() = nc1;
+    b.raw() = nc2;
+    const EndContinuityReport r = a.AnalyzeEndContinuity(b);
+    Check(std::abs(r.curvature_a - 1.0 / r1) < 1e-6 && std::abs(r.curvature_b - 1.0 / r2) < 1e-6,
+          "AnalyzeEndContinuity: two circles of known radii report curvature == 1/radius for each, exactly");
+    const double expected_relative = std::abs(1.0 / r1 - 1.0 / r2) / std::max(1.0 / r1, 1.0 / r2);
+    Check(std::abs(r.curvature_relative_difference - expected_relative) < 1e-6,
+          "AnalyzeEndContinuity: the reported curvature_relative_difference matches the hand-derived value "
+          "from the two circles' own known radii");
+  }
+}
+
 void TestCurveKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -71062,6 +71152,7 @@ int main() {
   TestCurveRemoveKnotAt();
   TestCurveSetDomainReparameterizes();
   TestCurveMatchEnd();
+  TestCurveAnalyzeEndContinuity();
   TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();
