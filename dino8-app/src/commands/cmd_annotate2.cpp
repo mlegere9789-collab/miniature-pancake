@@ -157,11 +157,18 @@ bool MeasureOne(const SceneObject& o, MeasureDimKind kind, double& v, Point3d& a
   return false;
 }
 
-std::string MeasureDimText(MeasureDimKind kind, double value, const std::string& units) {
+// `precision` is the current/recorded AnnotationStyle's linear precision
+// (-1 = FormatNumber's own auto behavior, matching every call site before
+// this parameter existed) - the style's own `suffix` is deliberately not
+// applied here, unlike DimLinear/DimOrdinate: these three already carry
+// their own explicit unit word (`units`, "square mm"/"mm"/"cubic mm"), so
+// appending the style's suffix too would double up the unit label.
+std::string MeasureDimText(MeasureDimKind kind, double value, const std::string& units, int precision = -1) {
+  const std::string v = FormatMeasurement(value, precision, "");
   switch (kind) {
-    case MeasureDimKind::Area: return "Area = " + FormatNumber(value) + " square " + units;
-    case MeasureDimKind::Length: return "Length = " + FormatNumber(value) + " " + units;
-    default: return "Volume = " + FormatNumber(value) + " cubic " + units;
+    case MeasureDimKind::Area: return "Area = " + v + " square " + units;
+    case MeasureDimKind::Length: return "Length = " + v + " " + units;
+    default: return "Volume = " + v + " cubic " + units;
   }
 }
 
@@ -192,7 +199,7 @@ class MeasureDimCommand : public Command {
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ctx.ClearPreview();
     const std::string label = MeasureDimLabel(kind_);
-    const std::string text = MeasureDimText(kind_, value_, Units(ctx));
+    const std::string text = MeasureDimText(kind_, value_, Units(ctx), ctx.Doc().CurrentAnnotationStyle().precision);
     ctx.Doc().BeginChange(label);
     AddLeaderText(ctx, label, anchor_, p, text, {{"MeasureRefIds", ObjIdsTag(ids_)}, {"MeasureAt", PointTag(p)}});
     ctx.Print(label + ": " + text + " (associative to the measured object(s))");
@@ -373,7 +380,8 @@ class FieldCommand : public Command {
 // key names can't collide).
 int BuildOrdinateDimGroup(CommandContext& ctx, Point3d base, Point3d feature, char dir, const ON_Plane& pl, double h,
                           bool has_ref_base, ObjectId ref_base, const std::string& end_base,
-                          bool has_ref_feat, ObjectId ref_feat, const std::string& end_feat, double* value_out = nullptr) {
+                          bool has_ref_feat, ObjectId ref_feat, const std::string& end_feat, double* value_out = nullptr,
+                          const DimStyleParams& style = DimStyleParams()) {
   double u0, v0, u1, v1;
   pl.ClosestPointTo(base, &u0, &v0);
   pl.ClosestPointTo(feature, &u1, &v1);
@@ -383,7 +391,7 @@ int BuildOrdinateDimGroup(CommandContext& ctx, Point3d base, Point3d feature, ch
   const Point3d end = feature + leader * (h * 2.5);
   std::vector<kernel::NurbsCurve> curves = {PolylineCurve({feature, end})};
   GlyphSpec g;
-  g.text = std::string(1, dir) + " " + FormatNumber(value);
+  g.text = std::string(1, dir) + " " + FormatMeasurement(value, style.precision, style.suffix);
   g.height = h; g.plane = pl; g.center = dir == 'X';
   g.plane.SetOrigin(dir == 'X' ? end + pl.yaxis * (h * 0.3) : end + pl.xaxis * (h * 0.3) - pl.yaxis * (h * 0.5));
   std::map<std::string, std::string> tags = {
@@ -469,9 +477,10 @@ class DimOrdinateCommand : public Command {
     const bool has_feat_ref = FindPointAnchor(ctx.Doc(), p, feat_ref, feat_end);
     ctx.Doc().BeginChange("DimOrdinate");
     double value = 0;
-    BuildOrdinateDimGroup(ctx, *base_, p, dir_, pl, h, has_base_ref_, base_ref_, base_end_, has_feat_ref, feat_ref, feat_end, &value);
+    const DimStyleParams style = StyleParamsOf(ctx);
+    BuildOrdinateDimGroup(ctx, *base_, p, dir_, pl, h, has_base_ref_, base_ref_, base_end_, has_feat_ref, feat_ref, feat_end, &value, style);
     ++made_;
-    ctx.Print("DimOrdinate: " + std::string(1, dir_) + " " + FormatNumber(value));
+    ctx.Print("DimOrdinate: " + std::string(1, dir_) + " " + FormatMeasurement(value, style.precision, style.suffix));
     WantPoint("Feature point (Enter to finish)");
   }
   void OnEnter(CommandContext& ctx) override { ctx.ClearPreview(); ctx.Print("DimOrdinate: " + std::to_string(made_) + " ordinate(s)"); Finish(); }
@@ -556,7 +565,9 @@ class DimCreaseAngleCommand : public Command {
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ctx.ClearPreview();
-    const std::string text = FormatNumber(angle_) + " deg" + (normal_ ? " (crease " + FormatNumber(180.0 - angle_) + " deg)" : "");
+    const int angular_precision = ctx.Doc().CurrentAnnotationStyle().angular_precision;
+    const std::string text = FormatMeasurement(angle_, angular_precision, "deg") +
+                              (normal_ ? " (crease " + FormatMeasurement(180.0 - angle_, angular_precision, "deg") + ")" : "");
     ctx.Doc().BeginChange("DimCreaseAngle");
     AddLeaderText(ctx, "DimCreaseAngle", anchor_, p, text,
                   {{"DimRefObj1", std::to_string(ref_ids_[0])}, {"DimRefObj2", std::to_string(ref_ids_[1])}, {"MeasureAt", PointTag(p)}});
@@ -1709,14 +1720,15 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
               if (has2 && o.user_text.count("DimRefEnd2")) end2 = o.user_text.at("DimRefEnd2");
             }
             const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
+            const DimStyleParams style = StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g));
             for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
             double value = 0;
             const int new_g = BuildOrdinateDimGroup(ctx, base, feature, dir, pl, h, has1, r1, end1.empty() ? "point" : end1,
-                                                     has2, r2, end2.empty() ? "point" : end2, &value);
+                                                     has2, r2, end2.empty() ? "point" : end2, &value, style);
             if (new_g >= 0) {
               ReapplyToleranceSuffix(ctx, new_g, tol);
               ++updated;
-              ctx.Print("UpdateMeasureDims:   DimOrdinate now " + std::string(1, dir) + " " + FormatNumber(value));
+              ctx.Print("UpdateMeasureDims:   DimOrdinate now " + std::string(1, dir) + " " + FormatMeasurement(value, style.precision, style.suffix));
             } else ++skipped;
             continue;
           }
@@ -1732,7 +1744,13 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
             const double angle = std::acos(c) * 180.0 / ON_PI;
             const bool normal = n1 || n2;
             const Point3d anchor = (c1 + c2) / 2.0;
-            const std::string text = FormatNumber(angle) + " deg" + (normal ? " (crease " + FormatNumber(180.0 - angle) + " deg)" : "");
+            int angular_precision = -1;
+            {
+              const std::string style_name = GroupStyleName(ctx.Doc(), g);
+              if (const AnnotationStyle* st = ctx.Doc().FindAnnotationStyle(style_name)) angular_precision = st->angular_precision;
+            }
+            const std::string text = FormatMeasurement(angle, angular_precision, "deg") +
+                                      (normal ? " (crease " + FormatMeasurement(180.0 - angle, angular_precision, "deg") + ")" : "");
             GlyphSpec old_glyph;
             const std::string tol = GroupGlyphSpec(ctx, g, old_glyph) ? GroupToleranceSuffix(ctx, g, old_glyph) : "";
             for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
@@ -1755,7 +1773,7 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
             value += v; anchor = a; any = true;
           }
           if (!any) { ++skipped; continue; }
-          const std::string text = MeasureDimText(mk, value, Units(ctx));
+          const std::string text = MeasureDimText(mk, value, Units(ctx), StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g)).precision);
           GlyphSpec old_glyph;
           const std::string tol = GroupGlyphSpec(ctx, g, old_glyph) ? GroupToleranceSuffix(ctx, g, old_glyph) : "";
           for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
