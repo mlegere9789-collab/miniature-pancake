@@ -233,6 +233,24 @@ dwcheck "Exported $TMPW/dwg_v2018.dwg (Version=2018)" "Export Version=2018 (DWG)
 [ "$(grep -A2 '\$ACADVER' "$TMPW/dwg_v13.dxf" | tail -1)" = "AC1012" ] && echo "ok   Export Version=13 wrote \$ACADVER=AC1012 in the DXF header" || { echo "FAIL Export Version=13 (DXF) did not write \$ACADVER=AC1012"; fail=1; }
 [ "$(grep -A2 '\$ACADVER' "$TMPW/dwg_v2013.dxf" | tail -1)" = "AC1027" ] && echo "ok   the persistent AcadSchemes Version=2013 scheme made a later unversioned Export write \$ACADVER=AC1027 in the DXF header" || { echo "FAIL the persistent AcadSchemes Version=2013 scheme did not reach the DXF \$ACADVER"; fail=1; }
 [ "$(head -c 6 "$TMPW/dwg_saveas_v14.dwg")" = "AC1014" ] && echo "ok   SaveAs Version=14 wrote a real AC1014 (AutoCAD Release 14) DWG header" || { echo "FAIL SaveAs Version=14 did not write an AC1014 DWG"; fail=1; }
+# DWG DIMENSION: the new DXF DIMENSION writer (dxf_dimension_export_script.txt)
+# flows through to a real DWG for free via ExportDwg's own intermediate-DXF
+# step - LibreDWG's own dxf_read_file genuinely parses the new minimal
+# DIMENSION entity (no group 2 block reference, no group 1/11 text) into
+# its real native Dwg_Entity_DIMENSION_LINEAR struct (xline1_pt/xline2_pt/
+# def_pt/dim_rotation), which Dino8's own pre-existing WalkDwgEntities
+# DWG_TYPE_DIMENSION_LINEAR case (a separate reader from DXF's, reading raw
+# binary struct fields instead of text group codes, but feeding the exact
+# same BuildLinearDimensionGeometry/AddDimensionGroupToDoc reconstruction)
+# already knows how to rebuild - checked here rather than assumed, same as
+# the BLOCK/pattern-fill HATCH writers' own DWG inheritance was checked
+# when each was added.
+dwcheck "Exported $TMPW/dwg_dimension_roundtrip.dwg" "DWG export of a DimLinear ran"
+dwicheck "DWG: 0 curves, 0 points, 1 dimension" "the reopened DWG's DIMENSION_LINEAR entity round-tripped as one real dimension, not unrelated bare curves - the new DXF DIMENSION writer's own support flows through to a real binary DWG for free"
+dwicheck "Annotation = DimLinear" "the round-tripped DWG dimension carries the same Annotation=DimLinear tag WalkDwgEntities' own pre-existing DIMENSION_LINEAR case writes"
+dwicheck "DimP0 = 0,0,0" "the round-tripped DWG dimension's first measured point survived exactly"
+dwicheck "DimP1 = 40,0,0" "the round-tripped DWG dimension's second measured point survived exactly"
+dwicheck "DimOffset = 10" "the round-tripped DWG dimension's own dimension-line offset survived exactly"
 
 # Interactive UI replay: typed command, viewport picks, click-select, Delete, Undo.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -5824,6 +5842,77 @@ EOS
   txfcheck "TextOrigin = 3,4,0" "the text anchor is the real ON_Text's own plane origin"
 else
   echo "FAIL text3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_Annotation fixture check"
+  fail=1
+fi
+
+# Native .3dm ON_DimLinear/ON_DimRadial import: previously Load3dm's
+# ON_Annotation branch (added for Text just above) counted every real
+# ON_DimLinear/ON_DimRadial dimension authored by a real, independent CAD
+# tool as skipped too (Dino 8's own Dim/DimAligned/DimRadius/DimDiameter
+# commands bake a group of curves plus Annotation/Dim* user_text instead -
+# see commands/DimGeometry.h), same gap as ON_Hatch/ON_InstanceRef/Text
+# before their own passes above. dimlinear3dm_fixture_gen builds four real
+# dimensions directly through OpenNURBS' own API (a rotated/horizontal
+# linear 0,0,0-40,0,0 at offset 10; an aligned linear 0,0,0-30,30,0 at
+# offset 5; a radius dimension on a center/radius-point/leader-tail of
+# 100,0,0 / 105,0,0 / 110,0,0; a diameter dimension on 200,0,0 / 203,0,0 /
+# 206,0,0), all four referencing a real custom ON_DimStyle table entry with
+# text height 1.5, independent of Dino 8's own exporter (which never writes
+# a real ON_DimLinear/ON_DimRadial at all). Each is rebuilt via
+# BuildLinearDimensionGeometry/BuildRadiusDimensionGeometry
+# (commands/DimGeometry.h), the exact math a live Dim/DimAligned/DimRadius/
+# DimDiameter command and DXF/DWG DIMENSION import already share, so the
+# checks below mirror the DXF DIMENSION test's own tag checks exactly.
+# "33 objects"/arrow-curve Length values are this build's own FreeType
+# glyph-contour counts for "40"/"42.43"/"R 5"/"D 3" plus the 5/5/2/3
+# line+extension+arrow geometry curves per dimension (9+12+5+7) - confirmed
+# by first actually running this fixture through the app rather than
+# hand-derived, same as text3dm_fixture_gen's own hardcoded "3 objects" for
+# "Hi"'s H/i-stem/i-dot. The arrow-curve Length checks below (2.688x the
+# text height, from AddArrow's own fixed 0.3x-width triangle) additionally
+# prove the custom DimStyle's text height (1.5) was actually resolved via
+# DimensionStyleId(), not ON_DimStyle::Default's own differing 1.0.
+DLFBIN="$(dirname "$BIN")/dimlinear3dm_fixture_gen"
+if [ -x "$DLFBIN" ]; then
+  "$DLFBIN" "$TMPW/dimlinear_fixture.3dm" >/dev/null || { echo "FAIL: dimlinear3dm_fixture_gen failed to write the dimension fixture"; exit 1; }
+  cat > "$TMPW/dimlinear3dm_script.txt" <<EOS
+Open $TMPW/dimlinear_fixture.3dm
+SelDim
+SelAll
+What
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    DLF="$("$BIN" --smoke 30 --script "$TMPW/dimlinear3dm_script.txt" 2>&1)" || { echo "$DLF"; echo "FAIL: dimlinear .3dm script exited non-zero"; exit 1; }
+  else
+    DLF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dimlinear3dm_script.txt" 2>&1)" || { echo "$DLF"; echo "FAIL: dimlinear .3dm script exited non-zero"; exit 1; }
+  fi
+  dlfcheck() { if echo "$DLF" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DLF" "$1"; fail=1; fi; }
+  dlfcheck "Opened $TMPW/dimlinear_fixture.3dm (33 objects)" "Load3dm read all four real ON_DimLinear/ON_DimRadial dimensions as real dimension groups (9+12+5+7 curves), not 0 (silently skipped, the old behaviour)"
+  dlfcheck "33 object(s) selected" "SelDim found every imported dimension's curves (real Annotation=Dim* user_text, not just ordinary curves)"
+  dlfcheck "Annotation = DimLinear" "the rotated linear dimension carries the same Annotation=DimLinear tag a live DimLinear command/DXF DIMENSION import already write"
+  dlfcheck "DimAligned = 0" "the rotated dimension is still recognized as rotated, not aligned"
+  dlfcheck "DimHorizontal = 1" "the rotated dimension's horizontal-vs-vertical rule (offset point farther outside the vertical span than the horizontal span) correctly recovered horizontal from the file's own DefPoint1/DefPoint2/DimlinePoint, matching cmd_annotate.cpp's own live-pick rule"
+  dlfcheck "DimOffset = 10" "the rotated dimension's dimension-line offset (DimlinePoint's own y=10) survived exactly"
+  dlfcheck "DimP0 = 0,0,0" "the rotated dimension's first measured point (DefPoint1) survived exactly"
+  dlfcheck "DimP1 = 40,0,0" "the rotated dimension's second measured point (DefPoint2) survived exactly"
+  dlfcheck "Length: 40" "the rotated dimension's own dimension line measures the exact hand-computed distance (40,0,0 - 0,0,0)"
+  dlfcheck "Annotation = DimAligned" "the aligned dimension carries the same Annotation=DimAligned tag a live DimAligned command/DXF DIMENSION import already write"
+  dlfcheck "DimAligned = 1" "the aligned dimension is still recognized as aligned, not rotated"
+  dlfcheck "DimOffset = 5" "the aligned dimension's own perpendicular offset (5, projected from DimlinePoint onto the plane normal x measured direction) survived exactly"
+  dlfcheck "DimP1 = 30,30,0" "the aligned dimension's second measured point (DefPoint2) survived exactly"
+  dlfcheck "Length: 42.4264" "the aligned dimension's own dimension line measures the exact hand-computed diagonal distance (30*sqrt(2))"
+  dlfcheck "Annotation = DimRadius" "the radius dimension carries the same Annotation=DimRadius tag a live DimRadius command/DXF DIMENSION import already write"
+  dlfcheck "DimCenter = 100,0,0" "the radius dimension's own measured center (CenterPoint) survived exactly"
+  dlfcheck "DimRadiusVal = 5" "the radius dimension's own measured radius (CenterPoint to RadiusPoint distance) survived exactly"
+  dlfcheck "DimIsDiameter = 0" "the radius dimension is still recognized as a radius, not a diameter, dimension"
+  dlfcheck "DimExtra = 5" "the radius dimension's own leader-tail overrun (DimlinePoint projected past RadiusPoint) survived exactly"
+  dlfcheck "Annotation = DimDiameter" "the diameter dimension carries the same Annotation=DimDiameter tag a live DimDiameter command/DXF DIMENSION import already write"
+  dlfcheck "DimCenter = 200,0,0" "the diameter dimension's own measured center survived exactly"
+  dlfcheck "DimRadiusVal = 3" "the diameter dimension's own measured radius (half the true 6-unit diameter) survived exactly"
+  dlfcheck "DimIsDiameter = 1" "the diameter dimension is still recognized as a diameter, not a radius, dimension"
+  dlfcheck "Length: 4.02838" "an arrowhead curve measures 2.688 x 1.5 (AddArrow's fixed triangle shape x the file's own custom ON_DimStyle text height), proving that custom height - not ON_DimStyle::Default's differing 1.0 - was actually resolved via DimensionStyleId()"
+else
+  echo "FAIL dimlinear3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_DimLinear/ON_DimRadial fixture check"
   fail=1
 fi
 

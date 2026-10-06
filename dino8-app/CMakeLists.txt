@@ -1198,6 +1198,18 @@ if(DINO8_BUILD_TESTS)
   add_executable(text3dm_fixture_gen tests/text3dm_fixture_gen.cpp)
   target_include_directories(text3dm_fixture_gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(text3dm_fixture_gen PRIVATE dino8_kernel)
+
+  # Real-ON_DimLinear/ON_DimRadial .3dm fixture generator (see
+  # tests/dimlinear3dm_fixture_gen.cpp and smoke.sh's Load3dm ON_DimLinear/
+  # ON_DimRadial-import section): Dino 8 never writes a native ON_DimLinear/
+  # ON_DimRadial itself (its own Dim/DimAligned/DimRadius/DimDiameter
+  # commands bake curves plus Annotation/Dim* user_text instead - see
+  # commands/DimGeometry.h), so this generator gives Load3dm's new
+  # ON_DimLinear/ON_DimRadial handling real externally-authored dimension
+  # objects to read.
+  add_executable(dimlinear3dm_fixture_gen tests/dimlinear3dm_fixture_gen.cpp)
+  target_include_directories(dimlinear3dm_fixture_gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dimlinear3dm_fixture_gen PRIVATE dino8_kernel)
 endif()
 
 # ---------------------------------------------------------------------------

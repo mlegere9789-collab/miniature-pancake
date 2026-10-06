@@ -9,3 +9,9 @@ Open @TMP@/dwg_roundtrip.dwg
 SelAll
 List
 Length
+
+# DWG DIMENSION round trip - see dwg_script.txt's own matching comment.
+New
+Open @TMP@/dwg_dimension_roundtrip.dwg
+SelAll
+What

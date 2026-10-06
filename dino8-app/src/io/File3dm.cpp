@@ -15,6 +15,7 @@
 #include <optional>
 #include <sstream>
 
+#include "commands/DimGeometry.h"
 #include "drafting/HatchBuild.h"
 #include "drafting/HatchLibrary.h"
 #include "geom/TextOutline.h"
@@ -311,6 +312,51 @@ std::string NumberTagLocal(double v) {
   char buf[48];
   std::snprintf(buf, sizeof(buf), "%.10g", v);
   return buf;
+}
+
+// Same curve+label+tag-group assembly as io/FileExchange.cpp's own (file-
+// local, anonymous-namespace) AddDimensionGroupToDoc, for the exact same
+// reason PointTagLocal/NumberTagLocal above duplicate annotate_common.h's
+// tag codecs rather than pull it in: that helper is itself file-local to
+// FileExchange.cpp, consistent with this codebase's convention of keeping
+// these Document-dependent dimension builders un-shared across translation
+// units (only the Document-independent math in commands/DimGeometry.h is
+// actually shared). Reconstructs a native-.3dm ON_DimLinear/ON_DimRadial
+// read below into the identical tagged curve group a live Dim/DimRadius
+// command or a DXF/DWG DIMENSION import already produces, so it is
+// selectable (SelDim) and rebuildable (UpdateDimensions) exactly the same
+// way.
+bool AddDimensionGroupToDocLocal(Document& doc, const std::string& kind, int layer,
+                                  const std::vector<kernel::NurbsCurve>& curves, const DimGlyphSpec& text,
+                                  const std::map<std::string, std::string>& tags) {
+  std::vector<ObjectId> ids;
+  for (const kernel::NurbsCurve& c : curves) {
+    SceneObject o = SceneObject::MakeCurve(c);
+    o.layer_index = layer;
+    o.user_text["Annotation"] = kind;
+    o.user_text["Style"] = "Standard";
+    for (const auto& [k, v] : tags) o.user_text[k] = v;
+    ids.push_back(doc.Add(std::move(o)));
+  }
+  if (!text.text.empty()) {
+    std::vector<kernel::NurbsCurve> glyphs;
+    std::string font_used;
+    double width = 0;
+    if (TextToCurves(text.text, text.height, text.plane, glyphs, font_used, &width)) {
+      const ON_Xform shift = ON_Xform::TranslationTransformation(-text.plane.xaxis * (text.center ? width / 2 : 0));
+      for (kernel::NurbsCurve gc : glyphs) {
+        if (text.center) gc.raw().Transform(shift);
+        SceneObject o = SceneObject::MakeCurve(gc);
+        o.layer_index = layer;
+        o.user_text["Annotation"] = kind;
+        o.user_text["Style"] = "Standard";
+        ids.push_back(doc.Add(std::move(o)));
+      }
+    }
+  }
+  if (ids.empty()) return false;
+  doc.CreateGroup(ids, kind);
+  return true;
 }
 
 void CameraToViewport(const CameraState& c, ON_Viewport& vp) {
@@ -754,6 +800,112 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       if (!built) ++skipped;
       continue;
     }
+    if (const ON_DimLinear* dim = ON_DimLinear::Cast(g)) {
+      // Real ON_DimLinear (Rhino's Aligned/Rotated linear dimension),
+      // checked ahead of the plain ON_Annotation branch below (which would
+      // also match - ON_DimLinear derives from ON_Annotation - but only
+      // knows PlainText()/Plane(), not a dimension's own def-points) since
+      // this closes part of that branch's own disclosed "Dim*/Leader... still
+      // unhandled" gap. Rebuilt via BuildLinearDimensionGeometry
+      // (commands/DimGeometry.h), the exact math a live Dim/DimAligned
+      // command and DXF/DWG DIMENSION import already share, fed the file's
+      // own three plane-local points (DefPoint1/DefPoint2/DimlinePoint)
+      // instead of a third live pick. Horizontal-vs-vertical for a Rotated
+      // dimension is decided by the identical "offset point lies farther
+      // outside the points' vertical span than their horizontal span" rule
+      // cmd_annotate.cpp's own DimLinearCommand::Build uses for a live pick.
+      const ON_Plane plane = dim->Plane();
+      const ON_2dPoint p0_2d = dim->DefPoint1();
+      const ON_2dPoint p1_2d = dim->DefPoint2();
+      const ON_2dPoint dl_2d = dim->DimlinePoint();
+      const bool aligned = dim->Type() == ON::AnnotationType::Aligned;
+      LinearDimLayout L;
+      L.plane = plane;
+      L.aligned = aligned;
+      const kernel::Point3d p0 = plane.PointAt(p0_2d.x, p0_2d.y);
+      const kernel::Point3d p1 = plane.PointAt(p1_2d.x, p1_2d.y);
+      const kernel::Point3d dl = plane.PointAt(dl_2d.x, dl_2d.y);
+      if (!aligned) {
+        const double dx_out = std::max(0.0, std::fabs(dl_2d.x - (p0_2d.x + p1_2d.x) / 2) - std::fabs(p1_2d.x - p0_2d.x) / 2);
+        const double dy_out = std::max(0.0, std::fabs(dl_2d.y - (p0_2d.y + p1_2d.y) / 2) - std::fabs(p1_2d.y - p0_2d.y) / 2);
+        bool horizontal = dy_out >= dx_out;
+        if (horizontal && std::fabs(p1_2d.x - p0_2d.x) < 1e-9) horizontal = false;
+        if (!horizontal && std::fabs(p1_2d.y - p0_2d.y) < 1e-9) horizontal = true;
+        L.horizontal = horizontal;
+        L.offset = horizontal ? dl_2d.y : dl_2d.x;
+      } else {
+        kernel::Vector3d n = ON_CrossProduct(plane.zaxis, kernel::Vector3d(p1 - p0));
+        n.Unitize();
+        L.offset = ON_DotProduct(kernel::Vector3d(dl - p0), n);
+      }
+      const ON_ModelComponentReference dimstyle_ref =
+          model.ComponentFromId(ON_ModelComponent::Type::DimStyle, dim->DimensionStyleId());
+      const ON_DimStyle* dimstyle = ON_DimStyle::Cast(dimstyle_ref.ModelComponent());
+      double text_h = (dimstyle ? *dimstyle : ON_DimStyle::Default).TextHeight();
+      if (text_h <= 0) {
+        const AnnotationStyle& ast = doc.CurrentAnnotationStyle();
+        text_h = ast.text_height > 0 ? ast.text_height : std::max(doc.Settings().grid_spacing * 2.0, 1e-6);
+      }
+      int layer_idx = 0;
+      if (attr) {
+        auto lm = layer_map.find(attr->m_layer_index);
+        if (lm != layer_map.end()) layer_idx = lm->second;
+      }
+      std::vector<kernel::NurbsCurve> curves;
+      DimGlyphSpec dim_text;
+      std::map<std::string, std::string> tags;
+      if (!BuildLinearDimensionGeometry(p0, p1, L, text_h, curves, dim_text, tags) ||
+          !AddDimensionGroupToDocLocal(doc, aligned ? "DimAligned" : "DimLinear", layer_idx, curves, dim_text, tags)) {
+        ++skipped;
+      }
+      continue;
+    }
+    if (const ON_DimRadial* dim = ON_DimRadial::Cast(g)) {
+      // Real ON_DimRadial (Rhino's Radius/Diameter dimension) - same
+      // rationale and gap-closing as the ON_DimLinear branch above, via
+      // BuildRadiusDimensionGeometry instead. `extra` (how far the tag point
+      // sits beyond the measured radius point, RadiusDimLayout's own field)
+      // is recovered from the file's own leader-tail DimlinePoint, projected
+      // onto the center->radius-point direction.
+      const bool diameter = dim->Type() == ON::AnnotationType::Diameter;
+      const ON_Plane plane = dim->Plane();
+      const ON_2dPoint c_2d = dim->CenterPoint();
+      const ON_2dPoint r_2d = dim->RadiusPoint();
+      const ON_2dPoint dl_2d = dim->DimlinePoint();
+      const kernel::Point3d center = plane.PointAt(c_2d.x, c_2d.y);
+      const kernel::Point3d radius_pt = plane.PointAt(r_2d.x, r_2d.y);
+      const kernel::Point3d dl_pt = plane.PointAt(dl_2d.x, dl_2d.y);
+      kernel::Vector3d dir = radius_pt - center;
+      const double radius = dir.Length();
+      if (radius <= 0 || !dir.Unitize()) { ++skipped; continue; }
+      const double extra = ON_DotProduct(kernel::Vector3d(dl_pt - center), dir) - radius;
+      RadiusDimLayout L;
+      L.diameter = diameter;
+      L.plane = plane;
+      L.dir = dir;
+      L.extra = extra;
+      const ON_ModelComponentReference dimstyle_ref =
+          model.ComponentFromId(ON_ModelComponent::Type::DimStyle, dim->DimensionStyleId());
+      const ON_DimStyle* dimstyle = ON_DimStyle::Cast(dimstyle_ref.ModelComponent());
+      double text_h = (dimstyle ? *dimstyle : ON_DimStyle::Default).TextHeight();
+      if (text_h <= 0) {
+        const AnnotationStyle& ast = doc.CurrentAnnotationStyle();
+        text_h = ast.text_height > 0 ? ast.text_height : std::max(doc.Settings().grid_spacing * 2.0, 1e-6);
+      }
+      int layer_idx = 0;
+      if (attr) {
+        auto lm = layer_map.find(attr->m_layer_index);
+        if (lm != layer_map.end()) layer_idx = lm->second;
+      }
+      std::vector<kernel::NurbsCurve> curves;
+      DimGlyphSpec dim_text;
+      std::map<std::string, std::string> tags;
+      if (!BuildRadiusDimensionGeometry(center, radius, L, text_h, curves, dim_text, tags) ||
+          !AddDimensionGroupToDocLocal(doc, diameter ? "DimDiameter" : "DimRadius", layer_idx, curves, dim_text, tags)) {
+        ++skipped;
+      }
+      continue;
+    }
     if (const ON_Annotation* ann = ON_Annotation::Cast(g)) {
       // Previously entirely unhandled, like ON_Hatch/ON_InstanceRef above:
       // a real ON_Annotation (Rhino's Text/Dim*/Leader object kind) fell
@@ -769,10 +921,13 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       // produces (TagGlyph's tags, reimplemented locally above as
       // PointTagLocal rather than via annotate_common.h - see its own
       // comment) so it round-trips, is selectable (FindText) and editable
-      // (TextProperties) exactly like one made in-app. Dim*/Leader/other
-      // annotation types still have no reader at all (no Dino8 command
-      // produces a real ON_DimStyle-driven dimension/leader to rebuild
-      // one against), so they still count as skipped, same as before.
+      // (TextProperties) exactly like one made in-app. Linear/aligned and
+      // radius/diameter dimensions (ON_DimLinear/ON_DimRadial) are handled
+      // in their own branches above, ahead of this one - only Leader and
+      // the remaining annotation kinds (Angular, Ordinate, ArcLen,
+      // CenterMark, Angular3pt) still have no reader at all (no Dino8
+      // command produces one of those to rebuild against), so they still
+      // count as skipped, same as before.
       if (ann->Type() != ON::AnnotationType::Text) { ++skipped; continue; }
       const std::string text = FromWide(ann->PlainText());
       const ON_Plane& plane = ann->Plane();
