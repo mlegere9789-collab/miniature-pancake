@@ -193,6 +193,19 @@ class SceneObject {
   // viewport-wide Arctic mode (force_white alone, lit left at its default).
   bool force_pen = false;
   bool force_arctic = false;
+  // SetObjectDisplayMode Rendered: the one remaining per-object-meaningful
+  // viewport-wide mode (Technical/Artistic would be no-op aliases of
+  // Monochrome here, and RayTraced is a whole-frame path-traced image, not
+  // a per-object concept at all - see SetObjectDisplayModeCommand's own
+  // file comment). Forces this object through the exact same material/
+  // texture/lighting/reflectivity path (Viewport::DrawObjects' own
+  // draw_rendered lambda) a Rendered viewport already gives every object,
+  // including the back-to-front transparent sort for a transparent
+  // material - even in a Wireframe/Shaded/Ghosted/etc. viewport that would
+  // otherwise never run that path at all, not just a viewport whose own
+  // mode happens to already be Rendered. Mutually exclusive with every
+  // override above and each other, same convention.
+  bool force_rendered = false;
   bool show_render_mesh_wires = false;  // ToggleRenderMesh/ShowRenderMesh: overlay the tessellation's triangle edges
   // Per-object display tolerance override for surface/brep/SubD tessellation
   // (SetMeshSurfaceParameters); <= 0 means "use the app-wide setting".
