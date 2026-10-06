@@ -5057,6 +5057,83 @@ assert all(barc[i] < bpen[i] - 10 for i in range(3)), f'Box B Arctic ({barc}) is
 assert all(barc[i] > 150 for i in range(3)), f'Box B Arctic ({barc}) is too dark to read as the Arctic/Pen family of flat whites'
 PY
 
+# SetObjectDisplayMode Rendered: pixel-level proof (PARITY_MAP.md's
+# "Per-object display mode override" item) that Rendered is a genuine
+# seventh per-object override - the one that routes through the full
+# material/texture/lighting/transparency path (`draw_rendered`, the exact
+# lambda a Rendered viewport's own fill pass already uses) rather than a
+# flat colour, honoured even in a Wireframe viewport that otherwise fills
+# nothing at all; see tests/rendered_script.txt for the full scene/capture
+# sequence, including the material-transparency comparison this check
+# relies on.
+mkdir -p "$TMPW/rendered"
+sed "s|@TMP@|$TMPW/rendered|g" "$HERE/rendered_script.txt" > "$TMPW/rendered_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RDR="$("$BIN" --smoke 30 --script "$TMPW/rendered_script.txt" 2>&1)" || { echo "$RDR"; echo "FAIL: rendered script exited non-zero"; exit 1; }
+else
+  RDR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/rendered_script.txt" 2>&1)" || { echo "$RDR"; echo "FAIL: rendered script exited non-zero"; exit 1; }
+fi
+rdrcheck() { if echo "$RDR" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RDR" "$1"; fail=1; fi; }
+rdrcheck "^ok   expect_objects 2" "rendered script left exactly the two boxes"
+rdrcheck "gl_error=0" "rendered script ran without OpenGL errors"
+python3 - "$TMPW/rendered/rendered_off.bmp" "$TMPW/rendered/rendered_on.bmp" "$TMPW/rendered/rendered_off2.bmp" "$TMPW/rendered/rendered_opaque.bmp" <<'PY' && echo "ok   SetObjectDisplayMode Rendered genuinely routes one object through the full material/transparency draw_rendered path, independent of the viewport's own (never-Rendered) Wireframe display mode, blending by the material's own transparency value (not a fixed Ghosted/X-Ray-style alpha), and UseViewport genuinely restores the unfilled wireframe look after" || { echo "FAIL SetObjectDisplayMode Rendered pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+w, h, off = read_bmp(sys.argv[1])
+_, _, on = read_bmp(sys.argv[2])
+_, _, off2 = read_bmp(sys.argv[3])
+_, _, opaque = read_bmp(sys.argv[4])
+
+# Box B (right, Rendered toggled on with a 50%-transparent material, then
+# off, then on again with the same material pushed to fully opaque): find
+# the blob where "off" and "on" actually differ, and sample its centre
+# everywhere - the same approach the Pen/Arctic check above uses for its
+# own Box B.
+diffs = [(x, y) for y in range(0, h) for x in range(0, w) if sum(abs(a - b) for a, b in zip(off(x, y), on(x, y))) > 15]
+assert diffs, 'Box B never changed between rendered_off.bmp and rendered_on.bmp - Rendered had no visible effect'
+bxs, bys = [p[0] for p in diffs], [p[1] for p in diffs]
+bcx, bcy = (min(bxs) + max(bxs)) // 2, (min(bys) + max(bys)) // 2
+bg, b50, bg2, bop = off(bcx, bcy), on(bcx, bcy), off2(bcx, bcy), opaque(bcx, bcy)
+print(f'Box B sample: off={bg} on(0.5)={b50} off2={bg2} opaque={bop}')
+# Before the override (plain Wireframe, no fill at all) and after
+# UseViewport clears it, Box B must read as the unfilled background -
+# proving Rendered genuinely stops applying once reset, not just once set.
+assert bg == bg2, f'Box B does not return to the unfilled background after Rendered + UseViewport: off={bg} off2={bg2}'
+# The fully-opaque capture must differ from the unfilled background (a real
+# fill happened) and must not be one of the OTHER fixed per-object override
+# colours (Monochrome's flat grey, Pen/Arctic's flat white) - this is a lit
+# material colour, not a reused flat-colour path.
+assert bop != bg, f'Box B opaque Rendered capture never filled at all: {bop}'
+assert bop != (200, 200, 205), 'Box B opaque Rendered reads as the flat Monochrome grey - reusing that path instead of a real material fill'
+assert bop != (245, 245, 245), 'Box B opaque Rendered reads as the flat Pen/Arctic white - reusing that path instead of a real material fill'
+# The core proof: the 50%-transparency capture must read as the real
+# alpha-blended midpoint between the unfilled background and the fully-
+# opaque capture of the exact same material/lighting - not a fixed
+# Ghosted (0.35)/X-Ray (0.18) alpha, and not the raw material colour
+# un-blended. A material-driven blend is linear in alpha, so the midpoint
+# at alpha=0.5 must land almost exactly halfway between the two, per
+# channel - checked with a small tolerance for 8-bit rounding, not an
+# exact equality.
+for ch, name in enumerate('rgb'):
+    mid = (bg[ch] + bop[ch]) / 2.0
+    assert abs(b50[ch] - mid) <= 4, f'Box B 50%-transparency {name} channel ({b50[ch]}) is not the midpoint of background ({bg[ch]}) and opaque ({bop[ch]}) = {mid} - blending does not track the material\'s own Transparency value'
+PY
+
 # Background::Image lat-long unwarp: pixel-level proof (PARITY_MAP.md's
 # "Environments and image-based lighting" item) that the Rendered-mode
 # environment-image backdrop is now a real per-pixel equirectangular sample
@@ -6984,9 +7061,9 @@ if ! command -v curl >/dev/null 2>&1; then
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 18 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 19 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 18 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 19 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -7044,6 +7121,14 @@ rs.AddLine({0,0,0},{10,0,0})' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP13="$(curl -s --max-time 10 -X POST --data '{"type":"point","point":[7,8,9]}' "http://127.0.0.1:$SERVE_PORT/objects")"
     RESP14="$(curl -s --max-time 10 -X POST --data '{"type":"mesh","vertices":[[0,0,0],[2,0,0],[0,2,0]],"faces":[[0,1,2]]}' "http://127.0.0.1:$SERVE_PORT/objects")"
     RESP15="$(curl -s --max-time 10 -X POST --data '{"type":"curve","degree":1,"control_points":[[0,0,5],[20,0,5]]}' "http://127.0.0.1:$SERVE_PORT/objects")"
+    # The fourth geometry kind (surface, alongside point/mesh/curve above):
+    # a degree-(1,1) bilinear patch, posted with no explicit "knots_u"/
+    # "knots_v" so FromControlGrid's own clamped knot vectors get checked
+    # the same way RESP15's curve already checks FromControlPoints' own
+    # filled-in knots. Lands at the next predictable id (8) right alongside
+    # RESP13/14/15, so the one RESP16 GET just below reads all four kinds
+    # back in a single request.
+    RESP18="$(curl -s --max-time 10 -X POST --data '{"type":"surface","degree_u":1,"degree_v":1,"u_count":2,"v_count":2,"control_points":[[0,0,0],[0,5,1],[9,0,0],[9,5,1]]}' "http://127.0.0.1:$SERVE_PORT/objects")"
     RESP16="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/objects?geometry=1")"
     RESP17="$(curl -s --max-time 10 -X POST --data '{"type":"bogus"}' "http://127.0.0.1:$SERVE_PORT/objects")"
     CODE14="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'not json' "http://127.0.0.1:$SERVE_PORT/objects")"
@@ -7088,9 +7173,11 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     [ "$RESP13" = '{"ok":true,"id":5}' ] && echo "ok   POST /objects {type:point} added a real point object at the expected id" || { echo "$RESP13"; echo "FAIL --serve POST /objects point did not return the expected {ok,id}"; fail=1; }
     [ "$RESP14" = '{"ok":true,"id":6}' ] && echo "ok   POST /objects {type:mesh} added a real mesh object at the expected id" || { echo "$RESP14"; echo "FAIL --serve POST /objects mesh did not return the expected {ok,id}"; fail=1; }
     [ "$RESP15" = '{"ok":true,"id":7}' ] && echo "ok   POST /objects {type:curve} added a real NURBS curve object at the expected id" || { echo "$RESP15"; echo "FAIL --serve POST /objects curve did not return the expected {ok,id}"; fail=1; }
+    [ "$RESP18" = '{"ok":true,"id":8}' ] && echo "ok   POST /objects {type:surface} added a real NURBS surface object at the expected id" || { echo "$RESP18"; echo "FAIL --serve POST /objects surface did not return the expected {ok,id}"; fail=1; }
     echo "$RESP16" | grep -q '"id":5,"type":"point".*"geometry":{"point":\[7.000000,8.000000,9.000000\]}' && echo "ok   the point POSTed via /objects reads back through GET /objects?geometry=1 with its own exact coordinates - a genuine round trip, not just an accepted write" || { echo "$RESP16"; echo "FAIL --serve GET /objects?geometry=1 did not read back the POSTed point"; fail=1; }
     echo "$RESP16" | grep -q '"id":6,"type":"mesh".*"geometry":{"vertices":\[\[0.000000,0.000000,0.000000\],\[2.000000,0.000000,0.000000\],\[0.000000,2.000000,0.000000\]\],"faces":\[\[0,1,2\]\]}' && echo "ok   the mesh POSTed via /objects reads back with its own exact vertices/faces - a genuine round trip" || { echo "$RESP16"; echo "FAIL --serve GET /objects?geometry=1 did not read back the POSTed mesh"; fail=1; }
     echo "$RESP16" | grep -q '"id":7,"type":"curve".*"geometry":{"degree":1,"rational":false,"control_points":\[\[0.000000,0.000000,5.000000\],\[20.000000,0.000000,5.000000\]\]' && echo "ok   the curve POSTed via /objects (with no explicit \"knots\") reads back with its own exact control points and a real knot vector FromControlPoints filled in - a genuine round trip" || { echo "$RESP16"; echo "FAIL --serve GET /objects?geometry=1 did not read back the POSTed curve"; fail=1; }
+    echo "$RESP16" | grep -q '"id":8,"type":"surface".*"geometry":{"degree_u":1,"degree_v":1,"u_count":2,"v_count":2,"rational":false,"control_points":\[\[0.000000,0.000000,0.000000\],\[0.000000,5.000000,1.000000\],\[9.000000,0.000000,0.000000\],\[9.000000,5.000000,1.000000\]\],"knots_u":\[0.000000,1.000000\],"knots_v":\[0.000000,1.000000\]}' && echo "ok   the surface POSTed via /objects (with no explicit \"knots_u\"/\"knots_v\") reads back with its own exact control grid and real clamped knot vectors FromControlGrid filled in, in each direction - the fourth geometry kind this wire format now covers, a genuine round trip" || { echo "$RESP16"; echo "FAIL --serve GET /objects?geometry=1 did not read back the POSTed surface"; fail=1; }
     echo "$RESP17" | grep -q '^{"ok":false,"error":"unknown or missing' && echo "ok   POST /objects rejects an unrecognized \"type\" with a clear JSON error instead of silently doing nothing" || { echo "$RESP17"; echo "FAIL --serve POST /objects did not reject an unknown type as expected"; fail=1; }
     [ "$CODE14" = "400" ] && echo "ok   POST /objects rejects a malformed (non-JSON) body with 400 Bad Request" || { echo "FAIL --serve POST /objects malformed body returned HTTP $CODE14, expected 400"; fail=1; }
     [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
@@ -7111,7 +7198,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=18$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 18 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=19$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 19 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
     fi
   fi
 

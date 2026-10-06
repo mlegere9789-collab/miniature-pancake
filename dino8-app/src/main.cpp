@@ -735,15 +735,17 @@ int main(int argc, char** argv) {
     // the id/type/name/layer/bounding-box of every object currently in the
     // running document, as JSON - rather than only the plain print() text
     // /run[/python] return. `?geometry=1` additionally carries each
-    // object's own geometry for three kinds: point (coordinates), mesh
-    // (vertices/faces), and curve (degree/control points/weights/knots -
-    // the exact NURBS definition, enough to reconstruct the curve, not
-    // just sampled points). Every other kind (surface, polysurface, SubD,
-    // point cloud) still gets "geometry":null - a surface's own two-
-    // direction knot vectors and a Brep's multiple trimmed faces are a
-    // substantially larger undertaking than one curve's single control
-    // polygon, not attempted here. POST /objects (right below) closes the
-    // other half - sending one of these same three shapes back in adds
+    // object's own geometry for four kinds: point (coordinates), mesh
+    // (vertices/faces), curve (degree/control points/weights/knots), and
+    // surface (the same shape as curve, in each of its two directions) -
+    // the exact NURBS definition in both the curve and surface cases,
+    // enough to reconstruct the object exactly, not just sampled points.
+    // Every other kind (polysurface, SubD, point cloud) still gets
+    // "geometry":null - a Brep's multiple trimmed faces (each with its own
+    // trimming curves) and a SubD's control-cage topology are a
+    // substantially larger undertaking than one untrimmed surface's single
+    // control grid, not attempted here. POST /objects (right below) closes
+    // the other half - sending one of these same four shapes back in adds
     // that exact geometry to the document, the first way to get geometry
     // *into* this server as structured data rather than Lua/Python source.
     if (path == "/objects" && req.method == "GET") {
@@ -822,6 +824,52 @@ int main(int argc, char** argv) {
               body += ",\"weights\":" + weights;
             }
             body += ",\"knots\":" + knots + "}";
+          } else if (o.kind == dino8::app::ObjectKind::Surface && o.surface) {
+            // A single untrimmed NURBS surface's own degree/control grid/
+            // weights/knots in each of its two directions - the exact
+            // OpenNURBS definition, same "reconstruct it exactly, not a
+            // sampled approximation" contract the curve payload above
+            // already has. `control_points` is flattened in the same
+            // `u * v_count + v` order `NurbsSurface::FromControlGrid()`
+            // itself takes (see that method's own comment) - POST
+            // /objects below passes this array straight through to it, so
+            // a GET round-tripped straight into a POST reconstructs the
+            // identical surface, not just an equivalent-looking one.
+            const dino8::kernel::NurbsSurface& s = *o.surface;
+            const int cu = s.CVCountU(), cv = s.CVCountV();
+            const bool rational = s.IsRational();
+            std::string cvs = "[";
+            for (int i = 0; i < cu; ++i) {
+              for (int j = 0; j < cv; ++j) {
+                if (i || j) cvs += ',';
+                const dino8::kernel::Point3d p = s.ControlPointAt(i, j);
+                cvs += "[" + std::to_string(p.x) + "," + std::to_string(p.y) + "," + std::to_string(p.z) + "]";
+              }
+            }
+            cvs += ']';
+            auto knot_array = [&](int direction) {
+              std::string k = "[";
+              for (int i = 0; i < s.KnotCount(direction); ++i) {
+                if (i) k += ',';
+                k += std::to_string(s.KnotAt(direction, i));
+              }
+              return k + ']';
+            };
+            body += "{\"degree_u\":" + std::to_string(s.DegreeU()) + ",\"degree_v\":" + std::to_string(s.DegreeV()) +
+                    ",\"u_count\":" + std::to_string(cu) + ",\"v_count\":" + std::to_string(cv) +
+                    ",\"rational\":" + (rational ? "true" : "false") + ",\"control_points\":" + cvs;
+            if (rational) {
+              std::string weights = "[";
+              for (int i = 0; i < cu; ++i) {
+                for (int j = 0; j < cv; ++j) {
+                  if (i || j) weights += ',';
+                  weights += std::to_string(s.WeightAt(i, j));
+                }
+              }
+              weights += ']';
+              body += ",\"weights\":" + weights;
+            }
+            body += ",\"knots_u\":" + knot_array(0) + ",\"knots_v\":" + knot_array(1) + "}";
           } else {
             body += "null";
           }
@@ -835,8 +883,8 @@ int main(int argc, char** argv) {
     }
     // POST /objects: the other half of the geometry wire format GET
     // /objects?geometry=1 (above) reads - sends one of that same route's
-    // own three shapes (point/mesh/curve) back in as a JSON request body
-    // and adds it to the document, the first way geometry can get *into*
+    // own four shapes (point/mesh/curve/surface) back in as a JSON request
+    // body and adds it to the document, the first way geometry can get *into*
     // this server as structured data rather than Lua/Python source text.
     // Uses the existing util/json_mini.h reader (previously only ever fed
     // trusted local config files - its own depth cap already bounds a
@@ -856,7 +904,7 @@ int main(int argc, char** argv) {
       const std::string type = root["type"].AsString();
       dino8::app::Document& doc = app.Doc();
       dino8::app::ObjectId new_id = dino8::app::kNoObject;
-      std::string error = "unknown or missing \"type\" (expected \"point\", \"mesh\" or \"curve\")";
+      std::string error = "unknown or missing \"type\" (expected \"point\", \"mesh\", \"curve\" or \"surface\")";
       if (type == "point") {
         dino8::kernel::Point3d p;
         if (ComputeJsonPoint3d(root["point"], p)) {
@@ -945,6 +993,63 @@ int main(int argc, char** argv) {
           error = "curve: expected an integer \"degree\">=1, at least degree+1 \"control_points\" ([x,y,z] each), "
                   "an optional \"knots\" with exactly degree+control_points-1 entries, and an optional \"weights\" "
                   "with exactly one entry per control point";
+        }
+      } else if (type == "surface") {
+        // The other half of the surface payload GET /objects?geometry=1
+        // (above) reads - same shape, same "FromControlGrid() takes this
+        // exact flat array" round-trip contract curve's own POST branch
+        // above already has. `control_points` is u_count*v_count entries
+        // flattened in FromControlGrid's own `u * v_count + v` order.
+        const dino8::json::Value& du_json = root["degree_u"];
+        const dino8::json::Value& dv_json = root["degree_v"];
+        const dino8::json::Value& uc_json = root["u_count"];
+        const dino8::json::Value& vc_json = root["v_count"];
+        const dino8::json::Value& cvs_json = root["control_points"];
+        const int du = static_cast<int>(du_json.number), dv = static_cast<int>(dv_json.number);
+        const int uc = static_cast<int>(uc_json.number), vc = static_cast<int>(vc_json.number);
+        bool ok = du_json.type == dino8::json::Value::Type::Number && dv_json.type == dino8::json::Value::Type::Number &&
+                  uc_json.type == dino8::json::Value::Type::Number && vc_json.type == dino8::json::Value::Type::Number &&
+                  du >= 1 && dv >= 1 && uc >= du + 1 && vc >= dv + 1 &&
+                  cvs_json.IsArray() && static_cast<int>(cvs_json.Size()) == uc * vc;
+        std::vector<dino8::kernel::Point3d> cvs;
+        if (ok) {
+          cvs.reserve(cvs_json.Size());
+          for (size_t i = 0; ok && i < cvs_json.Size(); ++i) {
+            dino8::kernel::Point3d p;
+            if (ComputeJsonPoint3d(cvs_json[i], p)) cvs.push_back(p); else ok = false;
+          }
+        }
+        if (ok) {
+          dino8::kernel::NurbsSurface s = dino8::kernel::NurbsSurface::FromControlGrid(cvs, uc, vc, du, dv);
+          for (int dir = 0; dir < 2 && ok; ++dir) {
+            const dino8::json::Value& knots_json = root[dir == 0 ? "knots_u" : "knots_v"];
+            if (!knots_json.IsArray()) continue;
+            ok = static_cast<int>(knots_json.Size()) == s.KnotCount(dir);
+            for (int i = 0; ok && i < s.KnotCount(dir); ++i) {
+              const dino8::json::Value& kv = knots_json[static_cast<size_t>(i)];
+              ok = kv.type == dino8::json::Value::Type::Number && s.SetKnotAt(dir, i, kv.number) == dino8::kernel::Result::Ok;
+            }
+          }
+          const dino8::json::Value& weights_json = root["weights"];
+          if (ok && weights_json.IsArray()) {
+            ok = static_cast<int>(weights_json.Size()) == uc * vc;
+            for (int i = 0; ok && i < uc; ++i) {
+              for (int j = 0; ok && j < vc; ++j) {
+                const dino8::json::Value& wv = weights_json[static_cast<size_t>(i * vc + j)];
+                ok = wv.type == dino8::json::Value::Type::Number && s.SetWeightAt(i, j, wv.number) == dino8::kernel::Result::Ok;
+              }
+            }
+          }
+          if (ok) {
+            doc.BeginChange("compute: AddSurface");
+            new_id = doc.Add(dino8::app::SceneObject::MakeSurface(s));
+          }
+        }
+        if (new_id == dino8::app::kNoObject) {
+          error = "surface: expected integers \"degree_u\">=1/\"degree_v\">=1 and \"u_count\">=degree_u+1/"
+                  "\"v_count\">=degree_v+1, \"control_points\" (u_count*v_count [x,y,z] entries, flattened "
+                  "u*v_count+v), an optional \"knots_u\"/\"knots_v\", and an optional \"weights\" with exactly "
+                  "one entry per control point";
         }
       }
       resp.content_type = "application/json";

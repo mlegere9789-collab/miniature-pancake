@@ -89,16 +89,16 @@ Lua script to `/run` (or a Python script to `/run/python`), get back its
 printed output (or a structured `{ok, output}` JSON response, with `Accept:
 application/json`), against the same running document every request shares.
 `GET /objects` lists the document's current objects (id/type/name/layer/
-bounding box) as JSON, and `?geometry=1` adds each point/mesh/curve
+bounding box) as JSON, and `?geometry=1` adds each point/mesh/curve/surface
 object's own coordinates/vertices+faces/NURBS definition (every other kind
-still comes back `null`); `POST /objects` takes one of those same three
+still comes back `null`); `POST /objects` takes one of those same four
 shapes and adds it to the document, the first way to get geometry *into*
 the server as structured data. One or more `--serve-token [NAME:]TOKEN` flags
 require a matching `Authorization: Bearer TOKEN` header, letting distinct
 callers each hold their own named token instead of one shared secret. A
 first, deliberately small step toward a Rhino.Compute-style story - no
 concurrency, no TLS, and still no wire
-format for surface/polysurface/SubD/point-cloud geometry. See
+format for polysurface/SubD/point-cloud geometry. See
 [`docs/COMPUTE_SERVER.md`](docs/COMPUTE_SERVER.md).
 
 ## Packaging
