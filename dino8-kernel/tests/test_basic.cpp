@@ -52609,6 +52609,113 @@ void TestRemoveSharedMicroEdgeRefusesNakedEdgeAndDegenerateLoop() {
   }
 }
 
+// Brep::RemoveSharedMicroEdge() generalized to a non-isolated (valence-4+)
+// endpoint - PARITY_MAP.md's own "Remove edge / collapse micro edge"
+// bullet named "a non-isolated... shared micro-edge is still left alone"
+// as this item's own remaining gap. Fixture: the exact same A/B pair
+// TwoQuadsSharingAMicroEdge() builds (sharing the micro edge between
+// R1=(2,3,0) and R2=(2+eps,3,0)), plus a third face C - a vertical quad
+// in the plane y=3, OUTSIDE A/B's own z=0 plane and well clear of their
+// own footprint otherwise - sharing ONLY the single point R1 with A (no
+// shared edge, no shared plane), the same pure point-coincidence weld
+// this document's own bowtie/pinch-vertex fixtures already rely on. R1's
+// own vertex record picks up C's own two adjacent edges on top of its
+// pre-existing valence-3 (micro edge + one A neighbor + one B neighbor),
+// reaching valence 5 - squarely the case the prior, isolated-only version
+// of this method refused outright.
+dino8::kernel::Brep TwoQuadsSharingAMicroEdgeWithAThirdFacePinchingAtR1() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const double eps = 1e-4;
+  Brep::PlanarFace a, b, c;
+  a.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  a.loop = {Point3d(0, 0, 0), Point3d(4, 0, 0), Point3d(2 + eps, 3, 0), Point3d(2, 3, 0)};
+  b.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  b.loop = {Point3d(2, 3, 0), Point3d(0, -5, 0), Point3d(6, -5, 0), Point3d(2 + eps, 3, 0)};
+  // R1 = (2, 3, 0), shared with A alone (a single point, no shared edge).
+  // Winding chosen so (P1-P0) x (P3-P0) = (0,0,4) x (-4,0,0) = (0,-16,0)
+  // matches the plane's own (0,-1,0) normal.
+  c.plane = ON_Plane(Point3d(2, 3, 0), ON_3dVector(0, -1, 0));
+  c.loop = {Point3d(2, 3, 0), Point3d(2, 3, 4), Point3d(-2, 3, 4), Point3d(-2, 3, 0)};
+  return Brep::FromPlanarFaces({a, b, c});
+}
+
+void TestRemoveSharedMicroEdgeClosesSeamWithAThirdFacePinchingAtOneEndpoint() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  Brep flat = TwoQuadsSharingAMicroEdgeWithAThirdFacePinchingAtR1();
+  Check(flat.FaceCount() == 3, "the three-face fixture starts with exactly 3 faces");
+  Check(flat.raw().IsValid(), "the three-face fixture is a valid ON_Brep before the fix");
+  // 4 (A) + 2 new (B's own unshared corners) + 3 new (C's own unshared
+  // corners, since C shares only the single point R1 with A) = 9.
+  Check(flat.raw().m_V.Count() == 9, "9 vertices: A's 4, B's 2 new, C's 3 new (R1 shared with A)");
+  // 7 (the original two-quad fixture's own edge count) + C's own 4 edges
+  // (none shared with A or B - only the one corner POINT coincides) = 11.
+  Check(flat.raw().m_E.Count() == 11, "11 edges: the original 7 plus C's own 4 unshared edges");
+  Check(flat.raw().m_F[2].Loop(0)->TrimCount() == 4, "C is a genuine 4-trim quad, untouched by the setup");
+
+  int micro_index = -1;
+  int r1_vertex = -1;
+  for (int i = 0; i < flat.raw().m_E.Count(); ++i) {
+    const ON_BrepEdge& e = flat.raw().m_E[i];
+    if (e.m_edge_index < 0 || e.TrimCount() != 2) continue;
+    ON_NurbsCurve nc;
+    if (e.GetNurbForm(nc) <= 0) continue;
+    dino8::kernel::NurbsCurve k;
+    k.raw() = nc;
+    if (k.Length(20) < 0.01) {
+      micro_index = i;
+      // Whichever endpoint sits at (2, 3, 0) is R1 - the one C also
+      // touches.
+      for (int side = 0; side < 2; ++side) {
+        const int vi = e.m_vi[side];
+        if (flat.raw().m_V[vi].point.DistanceTo(ON_3dPoint(2, 3, 0)) < 1e-6) r1_vertex = vi;
+      }
+      break;
+    }
+  }
+  Check(micro_index >= 0, "found the shared micro edge between A and B");
+  Check(r1_vertex >= 0, "identified R1, the micro edge's own endpoint C also touches");
+  Check(flat.raw().m_V[r1_vertex].m_ei.Count() == 5,
+        "R1 starts at valence 5: the micro edge, one A neighbor, one B neighbor, and C's own two edges");
+
+  auto total_area = [&]() {
+    double a = 0;
+    for (const dino8::kernel::Mesh& m : flat.Tessellate(24, 24)) a += m.Area();
+    return a;
+  };
+  const double area_before = total_area();
+
+  const Result r = flat.RemoveSharedMicroEdge(micro_index, 0.01);
+  Check(r == Result::Ok, "RemoveSharedMicroEdge() now succeeds despite R1's own non-isolated valence-5");
+  Check(flat.raw().IsValid(), "the Brep is still a valid ON_Brep after the fix");
+  Check(flat.FaceCount() == 3, "still exactly 3 faces - C itself is never touched structurally");
+  Check(flat.raw().m_V.Count() == 8, "R1 and R2 merged into one: 8 vertices left, not 9");
+  Check(flat.raw().m_E.Count() == 10, "the shared micro edge is genuinely gone: 10 edges left, not 11");
+  Check(flat.raw().m_F[0].Loop(0)->TrimCount() == 3 && flat.raw().m_F[1].Loop(0)->TrimCount() == 3,
+        "A and B are now plain triangles, same as the isolated-case fix");
+  Check(flat.raw().m_F[2].Loop(0)->TrimCount() == 4, "C is still a genuine 4-trim quad - its own loop never changed");
+
+  // C's own two edges at R1 were nudged to the shared merge point right
+  // alongside the two designated loop-neighbors - confirmed directly
+  // against C's own loop, not merely inferred from Result::Ok.
+  const ON_BrepLoop& c_loop = *flat.raw().m_F[2].Loop(0);
+  bool c_corner_found = false;
+  for (int k = 0; k < c_loop.TrimCount(); ++k) {
+    const ON_BrepTrim& t = *c_loop.Trim(k);
+    const int vi = t.m_vi[0];
+    if (flat.raw().m_V[vi].point.DistanceTo(ON_3dPoint(2, 3, 0)) < 1e-2) c_corner_found = true;
+  }
+  Check(c_corner_found, "C's own corner at R1 is still right where it was (within the micro-scale nudge)");
+
+  const double area_after = total_area();
+  Check(std::abs(area_after - area_before) < 1e-3,
+        "closing the shared seam left the combined area unchanged within a tight tolerance, even with "
+        "C's own extra geometry nudged along with it");
+}
+
 // Brep::RemoveAllNakedMicroEdges() - the one-call "strip every naked
 // sliver this Brep has" convenience for RemoveNakedMicroEdge(), the same
 // single/all pairing MergeContiguousEdges()/MergeAllContiguousEdges()
@@ -70035,6 +70142,7 @@ int main() {
   TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge();
   TestRemoveSharedMicroEdgeClosesIsolatedSeamBetweenTwoFaces();
   TestRemoveSharedMicroEdgeRefusesNakedEdgeAndDegenerateLoop();
+  TestRemoveSharedMicroEdgeClosesSeamWithAThirdFacePinchingAtOneEndpoint();
   TestRemoveAllNakedMicroEdgesStripsEveryIsolatedSliverInOneCall();
   TestRemoveAllSharedMicroEdgesStripsEveryIsolatedSeamInOneCall();
   TestMergeContiguousEdgesCombinesTwoCollinearNakedEdges();
