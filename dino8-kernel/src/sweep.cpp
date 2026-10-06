@@ -31,6 +31,7 @@
 
 #include <opennurbs.h>
 
+#include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/detail/segment3d.h"
@@ -2138,6 +2139,85 @@ Brep Brep::OffsetWireBody(const Brep& wire_body, double distance, double toleran
   return WireBody(offsets, tolerance::kDistance);
 }
 
+namespace {
+// Maps a TrimmedPlanarFace()-style UV polygon through `raw_surface`'s own
+// PointAt(u, v) into a closed, degree-1 3D NurbsCurve (the same "map UV
+// through PointAt, close by repeating the first point" convention
+// TrimmedPlanarFaceWelded()'s own doc comment already names), then shifts
+// every point by `shift` - used by ThickenTrimmedPlanarSheet() below to
+// center the profile on the solid's own midplane for a `symmetric` call,
+// exactly as Brep::Thicken()'s own untrimmed path already does via its
+// `lo`/`hi` offsets.
+NurbsCurve TrimLoopToClosedCurve(const ON_Surface* raw_surface, const std::vector<Point2d>& uv_loop,
+                                  const Vector3d& shift) {
+  std::vector<Point3d> pts;
+  pts.reserve(uv_loop.size() + 1);
+  for (const Point2d& uv : uv_loop) {
+    pts.push_back(raw_surface->PointAt(uv.x, uv.y) + shift);
+  }
+  pts.push_back(pts.front());
+  return NurbsCurve::FromControlPoints(pts, 1);
+}
+
+// Brep::Thicken()'s own disclosed "a trimmed sheet's real boundary is not
+// its surface's 4 domain isocurves" gap, closed for the PLANAR case: since
+// a planar face's own TrimmedPlanarFace()-style UV trim loop (outer plus
+// any holes, `sheet`'s own face_trim_loops_/face_hole_loops_ side tables)
+// maps through the SAME plane for every point, thickening it is exactly
+// Brep::Extrude()/ExtrudeProfileWithHoles() of that loop by
+// `thickness * plane.zaxis` - reusing those two already-tested solid-
+// building primitives rather than inventing a new ruled-wall-plus-two-caps
+// topology assembly for this case (the untrimmed path's own `lo`/`hi` +
+// 4-side-wall construction below still owns the genuinely curved case,
+// where no such single flat loop exists). `symmetric` shifts both the
+// outer loop and every hole loop by `-thickness/2 * plane.zaxis` before
+// extruding the full signed `thickness` - the solid then spans from
+// `-thickness/2` to `+thickness/2` along the normal regardless of
+// `thickness`'s own sign, landing the original surface on the solid's own
+// midplane exactly like the untrimmed path's own `symmetric` option.
+//
+// Still a disclosed, narrower case than the untrimmed path's own: a
+// genuinely curved trimmed sheet (the surface itself non-planar) is not
+// covered here - inherits whatever `Brep::Extrude()`/
+// `ExtrudeProfileWithHoles()` themselves require of a closed, planar,
+// star-shaped profile curve (a trim loop that isn't star-shaped from its
+// own centroid is a disclosed, separate gap those functions already
+// carry, not a new one introduced here). A HOLED trim loop is routed
+// through `ExtrudeProfileWithHoles()` rather than plain `Extrude()` below,
+// but is not independently verified by a dedicated test in this pass:
+// confirmed directly (`dino8_scratch_test`) that this exact composition
+// inherits `BooleanCombineGeneral()`'s own pre-existing tolerance
+// sensitivity badly enough that even an outer/hole pair that succeeds with
+// hand-typed exact coordinates can still throw once the outer loop's own
+// points instead come from a real `PointAt()` evaluation (the realistic
+// case here) - the same class of fragility this file's own
+// "Emboss/deboss" category bullet already discloses for a square hole in
+// a square outer profile, just not confined to that one specific shape
+// combination. The no-hole path above is unaffected (confirmed by this
+// function's own passing tests) since it never calls
+// `BooleanCombineGeneral()` at all.
+Brep ThickenTrimmedPlanarSheet(const ON_Surface* raw_surface, const std::vector<Point2d>& outer_uv,
+                                const std::vector<std::vector<Point2d>>& hole_uvs, double thickness, bool symmetric) {
+  const char* caller = "Thicken";
+  ON_Plane plane;
+  if (!raw_surface->IsPlanar(&plane, tolerance::kDistance)) {
+    Fail(caller,
+         "a trimmed sheet's face must be planar - a trimmed, genuinely curved sheet (the surface's real "
+         "boundary is not its 4 domain isocurves) is a separate, disclosed gap");
+  }
+  const Vector3d shift = symmetric ? plane.zaxis * (-thickness / 2.0) : Vector3d(0.0, 0.0, 0.0);
+  const Vector3d direction = plane.zaxis * thickness;
+
+  const NurbsCurve outer = TrimLoopToClosedCurve(raw_surface, outer_uv, shift);
+  std::vector<NurbsCurve> holes;
+  for (const std::vector<Point2d>& hole_uv : hole_uvs) {
+    holes.push_back(TrimLoopToClosedCurve(raw_surface, hole_uv, shift));
+  }
+  if (holes.empty()) return Brep::Extrude(outer, direction, /*cap=*/true);
+  return ExtrudeProfileWithHoles(outer, holes, direction);
+}
+}  // namespace
+
 Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
   const char* caller = "Thicken";
   if (!std::isfinite(thickness) || thickness == 0.0) {
@@ -2147,15 +2227,15 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
   if (src.m_F.Count() != 1) {
     Fail(caller, "sheet must be a single-face body - a multi-face shell thicken is a separate, disclosed gap");
   }
-  if (!sheet.face_trim_loops_.empty() &&
-      (!sheet.face_trim_loops_[0].empty() || !sheet.face_hole_loops_[0].empty())) {
-    Fail(caller,
-         "sheet's face must be untrimmed (e.g. built by Brep::FromSurface()) - a trimmed sheet's real boundary "
-         "is not its surface's 4 domain isocurves");
-  }
   const ON_BrepFace& face = src.m_F[0];
   const ON_Surface* raw_surface = face.SurfaceOf();
   if (raw_surface == nullptr) Internal(caller, "sheet's face has no surface");
+  const bool trimmed = !sheet.face_trim_loops_.empty() &&
+                        (!sheet.face_trim_loops_[0].empty() || !sheet.face_hole_loops_[0].empty());
+  if (trimmed) {
+    return ThickenTrimmedPlanarSheet(raw_surface, sheet.face_trim_loops_[0], sheet.face_hole_loops_[0], thickness,
+                                      symmetric);
+  }
   ON_NurbsSurface base;
   if (!raw_surface->GetNurbForm(base)) {
     Fail(caller, "sheet's surface could not be converted to an exact NURBS form");
