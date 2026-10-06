@@ -435,6 +435,126 @@ void TestCurveMakeRationalAndNonRational() {
         "MakeNonRational reports NoOpAlreadySatisfied when already non-rational");
 }
 
+void TestCurveMakeNonRationalWithTolerance() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Non-rational curve: genuine no-op, zero deviation.
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+  NurbsCurve line = NurbsCurve::FromControlPoints(pts, /*degree=*/2);
+  double deviation = -1.0;
+  Check(line.MakeNonRational(1e-9, &deviation) == Result::NoOpAlreadySatisfied,
+        "MakeNonRational(tolerance) reports NoOpAlreadySatisfied on an already non-rational curve");
+  Check(deviation == 0.0, "...and reports zero deviation for that no-op");
+
+  // Uniform-weight rational curve - the same fixture
+  // TestCurveMakeRationalAndNonRational already proves is exactly
+  // shape-preserving - must succeed at a tight tolerance with ~0
+  // reported deviation.
+  NurbsCurve uniform = NurbsCurve::FromControlPoints(pts, /*degree=*/2);
+  Check(uniform.MakeRational() == Result::Ok, "setup: MakeRational succeeds");
+  deviation = -1.0;
+  Check(uniform.MakeNonRational(1e-9, &deviation) == Result::Ok,
+        "MakeNonRational(tolerance) succeeds on a uniform-weight rational curve");
+  Check(deviation >= 0.0 && deviation < 1e-9,
+        "...with ~0 measured deviation, since uniform weights are exactly shape-preserving");
+
+  // Genuine radius-5 circle (the same fixture
+  // TestCurveMakeRationalAndNonRational uses): a tight tolerance must
+  // REFUSE, since the conversion is known to measurably change the
+  // shape (radius drifting away from 5 elsewhere on the curve).
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const NurbsCurve circle_original = circle;
+  deviation = -1.0;
+  const Result refused = circle.MakeNonRational(1e-6, &deviation);
+  Check(refused == Result::Failed,
+        "MakeNonRational(tolerance) refuses the circle at a tight tolerance, since the "
+        "conversion is known to measurably change its shape");
+  Check(deviation > 1e-6,
+        "...and the reported deviation genuinely exceeds the refused tolerance, not just an "
+        "arbitrary failure");
+  Check(circle.IsRational(), "a refused MakeNonRational(tolerance) leaves the curve rational");
+  double cv_err = 0.0;
+  for (int i = 0; i < circle.ControlPointCount(); ++i) {
+    cv_err = std::max(cv_err, circle.ControlPointAt(i).DistanceTo(circle_original.ControlPointAt(i)));
+  }
+  Check(cv_err == 0.0, "a refused MakeNonRational(tolerance) leaves the control points byte-for-byte unchanged");
+
+  // The same circle at a loose enough tolerance must succeed, proving
+  // the refusal above was genuinely tolerance-driven, not hardcoded.
+  double loose_deviation = -1.0;
+  Check(circle.MakeNonRational(1.0, &loose_deviation) == Result::Ok,
+        "MakeNonRational(tolerance) succeeds on the same circle at a loose enough tolerance");
+  Check(!circle.IsRational(), "...and the curve is genuinely non-rational afterward");
+  Check(std::abs(loose_deviation - deviation) < 1e-9,
+        "the deviation reported on the accepted conversion matches the one reported on the "
+        "earlier refusal (both measure the identical conversion)");
+}
+
+void TestCurveLengthToTolerance() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // A straight line: constant speed (degree 1, so the first derivative
+  // is a degree-0 polynomial) - a single 5-point Gauss-Legendre segment
+  // is already exact, so this must settle in exactly one leaf
+  // sub-interval even at a very tight tolerance.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(3, 4, 0)};
+  NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  int subintervals = -1;
+  const double line_length = line.LengthToTolerance(1e-12, &subintervals);
+  Check(std::abs(line_length - 5.0) < 1e-9, "LengthToTolerance is exact (5.0) for a 3-4-5 line");
+  Check(subintervals == 1,
+        "a constant-speed line settles in exactly one leaf sub-interval, even at a tight "
+        "tolerance");
+
+  // A genuine radius-7 circle: known closed-form circumference.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(1, 2, 3), ON_3dVector(0, 0, 1)), 7.0);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const double circle_length = circle.LengthToTolerance(1e-8);
+  Check(std::abs(circle_length - 2.0 * ON_PI * 7.0) < 1e-6,
+        "LengthToTolerance matches the closed-form circumference (2*pi*7) of a genuine NURBS "
+        "circle");
+
+  // A wiggly cubic with no closed-form length: cross-check against
+  // Length()'s own very-fine-polyline estimate - two independently-
+  // reasoned-about ways of measuring the same curve should agree
+  // closely, not just each look plausible in isolation.
+  std::vector<Point3d> wiggly_pts;
+  for (int i = 0; i < 6; ++i) wiggly_pts.push_back(Point3d(i, std::sin(1.7 * i), 0.3 * std::cos(0.9 * i)));
+  NurbsCurve wiggly = NurbsCurve::FromControlPoints(wiggly_pts, /*degree=*/3);
+  const double wiggly_adaptive = wiggly.LengthToTolerance(1e-6);
+  const double wiggly_polyline = wiggly.Length(200000);
+  Check(std::abs(wiggly_adaptive - wiggly_polyline) < 1e-3,
+        "LengthToTolerance agrees with a very fine Length() polyline estimate on a curve with "
+        "no closed-form length");
+
+  // A tighter tolerance must never need FEWER leaf sub-intervals than a
+  // looser one on the same curve - the adaptive refinement genuinely
+  // responds to the requested tolerance, not a fixed subdivision.
+  int loose_subintervals = -1, tight_subintervals = -1;
+  wiggly.LengthToTolerance(1e-2, &loose_subintervals);
+  wiggly.LengthToTolerance(1e-10, &tight_subintervals);
+  Check(tight_subintervals >= loose_subintervals,
+        "a tighter tolerance needs at least as many leaf sub-intervals as a looser one");
+
+  bool threw = false;
+  try {
+    wiggly.LengthToTolerance(0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "LengthToTolerance throws std::invalid_argument for a non-positive tolerance");
+}
+
 void TestCurveInsertKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -68879,12 +68999,14 @@ int main() {
   TestCurveDegreeElevation();
   TestCurveFromControlPointsRejectsDegenerateInput();
   TestCurveLength();
+  TestCurveLengthToTolerance();
   TestCurveParameterAtArcLength();
   TestCurveDivideByCount();
   TestCurveDivideByLength();
   TestCurveIsRational();
   TestCurveSetWeightAt();
   TestCurveMakeRationalAndNonRational();
+  TestCurveMakeNonRationalWithTolerance();
   TestCurveInsertKnotAt();
   TestCurveRemoveKnotAt();
   TestCurveSetDomainReparameterizes();
