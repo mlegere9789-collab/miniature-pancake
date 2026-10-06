@@ -351,6 +351,7 @@ set(DINO8_SOURCES
   src/util/json_mini.cpp
   src/util/Sha256.cpp
   src/util/Inflate.cpp
+  src/util/ExprEval.cpp
   src/drafting/Xlsx.cpp
   src/util/BigUint.cpp
   src/io/DigitalSignature.cpp
@@ -686,6 +687,19 @@ if(DINO8_BUILD_TESTS)
   add_executable(dino8_test_inflate tests/test_inflate.cpp src/util/Inflate.cpp)
   target_include_directories(dino8_test_inflate PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_inflate COMMAND dino8_test_inflate)
+
+  # util/ExprEval.cpp's recursion-depth guard: ordinary arithmetic/
+  # functions/error paths, plus the actual regression - a short (well
+  # under 100 KB) expression of deeply nested parens, a long run of unary
+  # minuses, or deep nesting inside a function argument used to recurse
+  # one C++ stack frame per level with no limit, reliably segfaulting via
+  # stack overflow. Reachable from untrusted input: a Flow "Expression"
+  # node's text comes straight from a loaded .dflow file and is evaluated
+  # automatically the moment such a node loads. Standalone like
+  # dino8_test_inflate - no kernel/UI dependency.
+  add_executable(dino8_test_expr_eval tests/test_expr_eval.cpp src/util/ExprEval.cpp)
+  target_include_directories(dino8_test_expr_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_expr_eval COMMAND dino8_test_expr_eval)
 
   # Regression test for LoadPng's own max_output gap (ZlibInflate used to
   # be called with no cap of its own, falling back to the generic

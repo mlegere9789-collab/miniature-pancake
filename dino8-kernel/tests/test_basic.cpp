@@ -18401,25 +18401,21 @@ void TestBrepSplitNakedEdgeAtRefusesACurvedEdge() {
         "introduced by the refused attempt (the specific failure mode direct testing found before this guard existed)");
 }
 
-// SplitNakedEdgeAt's own refusals and thrown-exception contract: a
-// shared (non-naked) edge and a point too far from the curve both return
-// Result::Failed (an ordinary, expected outcome per this method's own
-// doc comment), while an out-of-range or already-deleted edge_index
-// throws - the same two-tier contract UnjoinEdge()/RemoveNakedMicroEdge()
-// already establish, verified here for THIS method specifically rather
-// than assumed to carry over.
+// SplitNakedEdgeAt's own refusals and thrown-exception contract: a point
+// too far from the curve returns Result::Failed (an ordinary, expected
+// outcome per this method's own doc comment), while an out-of-range or
+// already-deleted edge_index throws - the same two-tier contract
+// UnjoinEdge()/RemoveNakedMicroEdge() already establish, verified here
+// for THIS method specifically rather than assumed to carry over. A
+// shared (2-trim) edge is no longer in this refusal list - see
+// TestBrepSplitNakedEdgeAtSplitsSharedEdgeOnBothFaces() below for the new,
+// genuinely supported case; a non-manifold (3+ trim) edge remains out of
+// scope and untested here (no convenient fixture at hand, not chased
+// down this pass).
 void TestBrepSplitNakedEdgeAtRefusesInvalidInputs() {
   using dino8::kernel::Brep;
   using dino8::kernel::Point3d;
   using dino8::kernel::Result;
-
-  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
-  Check(box.raw().IsValid() && box.raw().IsSolid(), "the closed-box fixture is a valid solid to begin with");
-
-  // Every edge of a closed box is shared (2-trim) - not naked.
-  Check(box.SplitNakedEdgeAt(0, box.raw().m_E[0].PointAt(box.raw().m_E[0].Domain().Mid())) == Result::Failed,
-        "SplitNakedEdgeAt returns Result::Failed on a shared (2-trim) edge, not a thrown exception");
-  Check(box.raw().m_E.Count() == 12, "...and leaves the box completely untouched (still 12 edges)");
 
   Brep::PlanarFace bottom = CheckHealFace(
       {Point3d(0, 1, 0), Point3d(1, 1, 0), Point3d(1, 0, 0), Point3d(0, 0, 0)}, ON_3dVector(0, 0, -1));
@@ -18454,6 +18450,73 @@ void TestBrepSplitNakedEdgeAtRefusesInvalidInputs() {
     threw_deleted = true;
   }
   Check(threw_deleted, "edge_index 0 marked deleted (m_edge_index < 0) throws std::invalid_argument, not Result::Failed");
+}
+
+// SplitNakedEdgeAt() generalized from naked (1-trim) edges to a plain,
+// simple SHARED (2-trim) straight edge - the ordinary two-manifold-edge
+// case, still refusing a genuinely non-manifold (3+ trim) one. Verified
+// on a closed unit box (every edge shared): splitting edge 0 at its own
+// midpoint must correctly update BOTH faces that meet there, not just
+// one, and must leave the box a genuinely valid, correctly-oriented
+// solid - not merely report success while silently producing a
+// self-crossing loop on one side (a REAL defect this generalization hit
+// and fixed during development: an earlier attempt spliced the two new
+// trims into one of the two faces' own loop in the wrong relative order
+// whenever that face's own trim happened to walk the edge in the
+// direction OPPOSITE the edge's own stored one - i.e. m_bRev3d == true,
+// which is exactly one of the two sides of ANY shared edge by the
+// ordinary two-manifold convention - producing a loop whose own trim
+// count and edge set looked completely ordinary, Check() included, but
+// whose tessellated area came out 3x too large on that one face).
+void TestBrepSplitNakedEdgeAtSplitsSharedEdgeOnBothFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "the closed-box fixture is a valid solid to begin with");
+  Check(box.raw().m_E[0].TrimCount() == 2, "setup: edge 0 is a genuine shared (2-trim) edge, like every box edge");
+  const int face_a = box.raw().m_E[0].m_ti[0] >= 0 ? box.raw().m_T[box.raw().m_E[0].m_ti[0]].FaceIndexOf() : -1;
+  const int face_b = box.raw().m_T[box.raw().m_E[0].m_ti[1]].FaceIndexOf();
+  Check(face_a >= 0 && face_b >= 0 && face_a != face_b, "setup: edge 0's own two trims sit on two DIFFERENT faces");
+  const int trims_a_before = box.raw().m_F[face_a].Loop(0)->TrimCount();
+  const int trims_b_before = box.raw().m_F[face_b].Loop(0)->TrimCount();
+
+  const Point3d mid = box.raw().m_E[0].PointAt(box.raw().m_E[0].Domain().Mid());
+  const Result r = box.SplitNakedEdgeAt(0, mid);
+  Check(r == Result::Ok, "SplitNakedEdgeAt() now succeeds on a shared edge, not Result::Failed");
+  Check(box.raw().m_V.Count() == 9 && box.raw().m_E.Count() == 13,
+        "the split added exactly 1 vertex (8 -> 9) and 1 edge (12 -> 13, one edge split into two)");
+  Check(box.raw().IsValid(), "the split box is still a genuinely valid ON_Brep");
+  bool oriented = false, boundary = true;
+  Check(box.raw().IsManifold(&oriented, &boundary) && oriented && !boundary,
+        "the split box is still a closed, CONSISTENTLY ORIENTED 2-manifold - not just trim-count-valid");
+  Check(box.raw().IsSolid(), "the split box still reports IsSolid()");
+
+  Check(box.raw().m_F[face_a].Loop(0)->TrimCount() == trims_a_before + 1 &&
+            box.raw().m_F[face_b].Loop(0)->TrimCount() == trims_b_before + 1,
+        "BOTH faces that met at the split edge gained exactly one more trim (quad -> pentagon each) - the real "
+        "defect this generalization fixed: an earlier version updated only one side correctly");
+
+  const double volume = box.TessellateToClosedMesh().Volume();
+  Check(std::fabs(volume - 1.0) < 1e-9,
+        "the box's own volume is EXACTLY unchanged (still the unit cube's 1.0) - the specific, hand-derived proof "
+        "that neither face was silently given a self-crossing (and therefore wrong-area) loop by the split");
+
+  int naked_at_mid = 0;
+  for (int i = 0; i < box.raw().m_E.Count(); ++i) {
+    const ON_BrepEdge& e = box.raw().m_E[i];
+    if (e.m_edge_index < 0) continue;
+    Check(e.TrimCount() == 2, "every edge of the split box, old or new, is still a genuine 2-trim shared edge - a "
+                               "closed box never grows a naked boundary");
+    if (e.PointAtStart().DistanceTo(mid) < 1e-9 || e.PointAtEnd().DistanceTo(mid) < 1e-9) ++naked_at_mid;
+  }
+  Check(naked_at_mid == 2, "exactly 2 edges touch the new split point - the two halves, shared by the same two "
+                           "faces the original single edge was, meeting there and nowhere else");
+
+  Check(box.SplitNakedEdgeAt(0, Point3d(10, 10, 10)) == Result::Failed,
+        "a point far from edge 0's own (now shorter, half-length) curve is still refused post-split");
 }
 
 // SewTJunctions() on the classic T-junction: a unit square A (x in
@@ -51776,6 +51839,133 @@ TwoAdjacentFacesFixture BuildTwoAdjacentPlanarFaces() {
   return fixture;
 }
 
+// Brep::ExtendFaceInPlace() - closes the "a multi-face polysurface is
+// detached into a brand-new, separate object" half of PARITY_MAP.md's own
+// ExtendSrf gap. Reuses BuildTwoAdjacentPlanarFaces() above (face_a spans
+// physical x in [0,4]/y in [0,4], surface domain u == x/4, v == y/4,
+// genuinely SHARING its x==4 edge with face_b, the exact "extend away
+// from a real neighbour" shape this method exists for) rather than a
+// lone single-face plate, specifically so the neighbour-untouched half of
+// this method's own contract has something real to prove itself against.
+void TestBrepExtendFaceInPlaceNakedSideGrowsExactRectangleAndLeavesSharedNeighbourUntouched() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+  ON_Brep& b = fixture.brep.raw();
+  // Not checked IsValid() here (unlike most other fixtures in this file):
+  // BuildTwoAdjacentPlanarFaces() builds its own topology by hand and
+  // never calls FixUnsetEdgeTolerances() itself, so its edges carry the
+  // raw ON_UNSET_VALUE tolerance SetTolerancesBoxesAndFlags() leaves them
+  // at (see brep.cpp's own comment on FixUnsetEdgeTolerances() for why) -
+  // a known, pre-existing, benign property of this exact fixture, not
+  // something this test's own target function introduces or must fix.
+
+  // Locate the shared edge (the only edge face_a and face_b both use) and
+  // its two vertices (4,0,0)/(4,4,0) - captured by VALUE now, checked
+  // again after the call for exact, byte-for-byte equality.
+  int shared_ei = -1;
+  for (int i = 0; i < b.m_E.Count(); ++i) {
+    if (b.m_E[i].m_edge_index >= 0 && b.m_E[i].TrimCount() == 2) { shared_ei = i; break; }
+  }
+  Check(shared_ei >= 0, "setup: exactly one shared (2-trim) edge exists - the x==4 seam");
+  const Point3d shared_v0_before = b.m_E[shared_ei].PointAtStart();
+  const Point3d shared_v1_before = b.m_E[shared_ei].PointAtEnd();
+  const int face_b_si_before = b.m_F[fixture.face_b].m_si;
+  const int v_count_before = b.m_V.Count();
+  const int e_count_before = b.m_E.Count();
+
+  // Tessellate() gives one Mesh per face, in face order (its own doc
+  // comment) - face_b's own entry alone, a plain 4x4 square, area 16.
+  const double area_b_before = fixture.brep.Tessellate(8, 8)[static_cast<size_t>(fixture.face_b)].Area();
+  Check(std::fabs(area_b_before - 16.0) < 1e-4, "setup: face_b alone tessellates to its own exact 4x4 area, 16");
+
+  // Extend face_a's own LEFT (naked, u == 0) side from physical x == 0
+  // out to x == -2 (u == -0.5) - a straight (linear) extension, away from
+  // the shared x == 4 edge entirely. t1 == 1.0 exactly matches the
+  // current max, so only the min end actually moves.
+  const Result r = fixture.brep.ExtendFaceInPlace(fixture.face_a, /*direction=*/0, -0.5, 1.0, /*linear=*/true);
+  Check(r == Result::Ok, "ExtendFaceInPlace succeeds extending face_a's own naked left side away from face_b");
+  Check(b.IsValid(), "the Brep is still a valid ON_Brep after the extension");
+
+  Check(b.m_V.Count() == v_count_before && b.m_E.Count() == e_count_before,
+        "vertex and edge counts are UNCHANGED (2 corners/3 edges replaced, 2 corners/3 edges deleted - a wash), "
+        "not grown by a detached new object");
+
+  const double area_a_after = fixture.brep.Tessellate(8, 8)[static_cast<size_t>(fixture.face_a)].Area();
+  // The extended rectangle is physical x in [-2, 4], y in [0, 4]: 6 * 4 = 24,
+  // exactly 8 more than the original 4x4 == 16 - the closed-form area a
+  // straight, exact rectangle extension implies, not merely "grew some".
+  Check(std::fabs(area_a_after - 24.0) < 1e-4,
+        "face_a alone now tessellates to the exact closed-form extended-rectangle area, 24.0 (16.0 original + "
+        "2*4 == 8.0 added strip)");
+
+  // The neighbour itself: untouched, vertex for vertex and edge for edge.
+  Check(b.m_F[fixture.face_b].m_si == face_b_si_before, "face_b's own surface index is unchanged - never replaced");
+  Check(b.m_E[shared_ei].m_edge_index >= 0 && b.m_E[shared_ei].TrimCount() == 2,
+        "the shared edge is still exactly that - still 2-trim, never deleted or touched");
+  Check(b.m_E[shared_ei].PointAtStart().DistanceTo(shared_v0_before) < 1e-9 &&
+            b.m_E[shared_ei].PointAtEnd().DistanceTo(shared_v1_before) < 1e-9,
+        "the shared edge's own two endpoints are at the EXACT same 3D positions as before - not even nudged");
+
+  const double area_b_after = fixture.brep.Tessellate(8, 8)[static_cast<size_t>(fixture.face_b)].Area();
+  Check(std::fabs(area_b_after - area_b_before) < 1e-9,
+        "face_b's own area is UNCHANGED to far tighter precision than the 1e-4 tessellation floor above - "
+        "extending its neighbour genuinely never touches it at all");
+}
+
+// Refusal/scope-boundary contract: extending TOWARD the shared edge
+// (the neighbour would need to grow too) is refused rather than guessed
+// at; [t0, t1] already inside the current domain is a genuine no-op;
+// requesting both ends of `direction` extended in one call is out of
+// scope; and the usual thrown-exception cases for bad arguments.
+void TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  {
+    TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+    ON_Brep& b = fixture.brep.raw();
+    const int v_before = b.m_V.Count(), e_before = b.m_E.Count();
+    const Result r = fixture.brep.ExtendFaceInPlace(fixture.face_a, 0, 0.0, 1.5, /*linear=*/true);
+    Check(r == Result::Failed,
+          "extending face_a's own RIGHT side (shared with face_b) is refused - the cap trim there is not naked");
+    Check(b.m_V.Count() == v_before && b.m_E.Count() == e_before, "...and the Brep is left completely untouched");
+  }
+  {
+    TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+    const Result r = fixture.brep.ExtendFaceInPlace(fixture.face_a, 0, 0.2, 0.8, /*linear=*/true);
+    Check(r == Result::NoOpAlreadySatisfied, "[0.2, 0.8] already sits inside face_a's own [0, 1] u-domain - a "
+                                              "genuine no-op, the same convention NurbsSurface::Extend() uses");
+  }
+  {
+    TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+    const Result r = fixture.brep.ExtendFaceInPlace(fixture.face_a, 0, -1.0, 2.0, /*linear=*/true);
+    Check(r == Result::Failed, "extending BOTH ends of `direction` in one call is out of scope, refused");
+  }
+  {
+    TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+    bool threw = false;
+    try {
+      fixture.brep.ExtendFaceInPlace(fixture.face_a, 2, -0.5, 1.0, true);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "direction outside {0, 1} throws std::invalid_argument");
+  }
+  {
+    TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+    bool threw = false;
+    try {
+      fixture.brep.ExtendFaceInPlace(fixture.brep.raw().m_F.Count() + 50, 0, -0.5, 1.0, true);
+    } catch (const std::out_of_range&) {
+      threw = true;
+    }
+    Check(threw, "an out-of-range face_index throws std::out_of_range");
+  }
+}
+
 // MergeCoplanarFaces()'s own new "faces with holes" capability: the
 // "Still partial: ... MergeCoplanarFaces still refuses any face with
 // holes" gap PARITY_MAP.md's own Topology & data structure category named
@@ -67452,6 +67642,118 @@ void TestCurveElevateDegreePreservesShapeWithNonUniformKnots() {
   }
 }
 
+void TestCurveReduceDegree() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Requesting a degree at or above the current one is a no-op, the same
+  // convention ElevateDegree() uses for the symmetric case.
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+    NurbsCurve c = NurbsCurve::FromControlPoints(pts, /*degree=*/2);
+    double deviation = -1.0;
+    Check(c.ReduceDegree(2, 1e-9, &deviation) == Result::NoOpAlreadySatisfied,
+          "ReduceDegree(target_degree == Degree()) reports NoOpAlreadySatisfied");
+    Check(deviation == 0.0, "...and reports zero deviation for that no-op");
+    Check(c.ReduceDegree(5, 1e-9, &deviation) == Result::NoOpAlreadySatisfied,
+          "ReduceDegree(target_degree > Degree()) also reports NoOpAlreadySatisfied, not an error");
+  }
+
+  // A genuinely straight line, elevated to a high degree (so it has many
+  // more control points than a line needs), reduces exactly back to
+  // degree 1 at a tight tolerance - a straight line is EXACTLY
+  // representable at degree 1, so this is a real, hand-verifiable
+  // positive control, not just "it ran".
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+    NurbsCurve line = NurbsCurve::FromControlPoints(pts, /*degree=*/1);
+    Check(line.ElevateDegree(5) == Result::Ok && line.Degree() == 5, "setup: line elevates to degree 5");
+    double deviation = -1.0;
+    Check(line.ReduceDegree(1, 1e-9, &deviation) == Result::Ok,
+          "ReduceDegree(1) succeeds on a degree-5 curve that is genuinely a straight line");
+    Check(line.Degree() == 1, "...and the result is genuinely degree 1, not left at the old degree");
+    Check(deviation >= 0.0 && deviation < 1e-9, "...with ~0 measured deviation, since a line is exactly degree-1");
+    Check(std::abs((line.PointAt(line.Domain().min) - Point3d(0, 0, 0)).Length()) < 1e-6,
+          "the reduced line still starts at its original start point");
+    Check(std::abs((line.PointAt(line.Domain().max) - Point3d(10, 0, 0)).Length()) < 1e-6,
+          "the reduced line still ends at its original end point");
+  }
+
+  // A genuinely wiggly cubic (the same construction
+  // TestCurveLengthToTolerance() uses: no closed-form shape, real
+  // curvature variation) cannot be represented at degree 1 (a single
+  // straight segment) without real, measurable error - a tight tolerance
+  // must REFUSE, leaving the curve completely untouched, and a loose
+  // enough tolerance must succeed, proving the refusal is genuinely
+  // tolerance-driven rather than a hardcoded failure.
+  {
+    std::vector<Point3d> wiggly_pts;
+    for (int i = 0; i < 8; ++i) wiggly_pts.push_back(Point3d(i, std::sin(1.7 * i), 0.3 * std::cos(0.9 * i)));
+    NurbsCurve wiggly = NurbsCurve::FromControlPoints(wiggly_pts, /*degree=*/3);
+    const NurbsCurve wiggly_original = wiggly;
+
+    double tight_deviation = -1.0;
+    const Result refused = wiggly.ReduceDegree(1, 1e-6, &tight_deviation);
+    Check(refused == Result::Failed,
+          "ReduceDegree(1) refuses a genuinely wiggly cubic at a tight tolerance - a straight "
+          "segment cannot represent real curvature");
+    Check(tight_deviation > 1e-6,
+          "...and the reported deviation genuinely exceeds the refused tolerance, not an "
+          "arbitrary failure");
+    Check(wiggly.Degree() == 3, "a refused ReduceDegree leaves the curve's own degree unchanged");
+    double cv_err = 0.0;
+    for (int i = 0; i < wiggly.ControlPointCount(); ++i) {
+      cv_err = std::max(cv_err, wiggly.ControlPointAt(i).DistanceTo(wiggly_original.ControlPointAt(i)));
+    }
+    Check(cv_err == 0.0, "a refused ReduceDegree leaves the control points byte-for-byte unchanged");
+
+    double loose_deviation = -1.0;
+    Check(wiggly.ReduceDegree(1, 10.0, &loose_deviation) == Result::Ok,
+          "ReduceDegree(1) succeeds on the same wiggly cubic at a loose enough tolerance");
+    Check(wiggly.Degree() == 1, "...and the result is genuinely degree 1");
+  }
+
+  // A reduction that genuinely succeeds never needs MORE control points
+  // than the original curve already had - more complexity at a LOWER
+  // degree than the original had at its HIGHER one would defeat the
+  // entire point of reducing degree, so this is a real invariant of the
+  // search, not just an incidental outcome on one fixture.
+  {
+    std::vector<Point3d> pts;
+    for (int i = 0; i < 10; ++i) pts.emplace_back(i, 2.0 * std::sin(0.6 * i), 1.0 * std::cos(0.8 * i));
+    NurbsCurve c = NurbsCurve::FromControlPoints(pts, /*degree=*/5);
+    const int original_cv_count = c.ControlPointCount();
+    double deviation = -1.0;
+    // Loose enough that some lower degree should be representable within
+    // the original control-point budget.
+    if (c.ReduceDegree(2, 0.5, &deviation) == Result::Ok) {
+      Check(c.ControlPointCount() <= original_cv_count,
+            "a successful ReduceDegree never ends up with MORE control points than the "
+            "original curve had");
+      Check(c.Degree() == 2, "a successful ReduceDegree(2) genuinely lands at degree 2");
+    }
+  }
+
+  bool threw_degree = false;
+  try {
+    NurbsCurve c = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(2, 0, 0)}, 2);
+    c.ReduceDegree(0, 1e-6);
+  } catch (const std::invalid_argument&) {
+    threw_degree = true;
+  }
+  Check(threw_degree, "ReduceDegree throws std::invalid_argument for a target_degree below 1");
+
+  bool threw_tolerance = false;
+  try {
+    NurbsCurve c = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(2, 0, 0)}, 2);
+    c.ReduceDegree(1, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw_tolerance = true;
+  }
+  Check(threw_tolerance, "ReduceDegree throws std::invalid_argument for a non-positive tolerance");
+}
+
 // Surface counterpart: ON_NurbsSurface::IncreaseDegree packs the rows into
 // one high-dimensional ON_NurbsCurve and calls the same broken routine.
 // Fixed inputs derived from the same probe (21x4 grid, degrees (12, 2),
@@ -70810,6 +71112,9 @@ int main() {
   TestBooleanCombineMixedInsideDiscProducerCoversSealedEndBoundary();
   TestSplitMixedAgainstAllFacesPassThroughCarriesArcRuns();
 
+  TestBrepExtendFaceInPlaceNakedSideGrowsExactRectangleAndLeavesSharedNeighbourUntouched();
+  TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs();
+
   TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne();
   TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane();
   TestMergeCoplanarFacesPreservesExistingHoleOnMergedFace();
@@ -70889,6 +71194,7 @@ int main() {
   TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly();
   TestBrepSplitNakedEdgeAtRefusesACurvedEdge();
   TestBrepSplitNakedEdgeAtRefusesInvalidInputs();
+  TestBrepSplitNakedEdgeAtSplitsSharedEdgeOnBothFaces();
   TestBrepSewTJunctionsClosesActualTJunction();
   TestBrepSewTJunctionsNoOpOnCleanBreps();
   TestBrepDeleteFaceRemovesArbitraryFaceAndRefusesBadIndices();
@@ -71104,6 +71410,7 @@ int main() {
 
 
   TestCurveElevateDegreePreservesShapeWithNonUniformKnots();
+  TestCurveReduceDegree();
   TestSurfaceElevateDegreePreservesShapeWithNonUniformKnots();
   TestCurveClosestPointAcrossClampedSeamKink();
   TestCurveParameterAtArcLengthStaysInsideDomain();
