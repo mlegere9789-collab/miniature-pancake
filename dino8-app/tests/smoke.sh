@@ -1714,6 +1714,8 @@ stcheck "Reflect: mirrored across the plane through 1005,0,0 and welded original
 stcheck "Reflect: mirrored across the plane through 1015,0,0 and welded original . mirror image into one symmetric SubD (12 faces)" "Reflect on a single SubD returns a real SubD (kernel::SubD::Symmetrize), not the facetted-mesh path the MeshBox case above still uses"
 stcheck "Object [0-9]* (SubD) layer Default" "Reflect's SubD output is genuinely ObjectKind::SubD, not a Mesh wearing a similar print statement"
 stcheck "12 faces, 20 edges, 12 vertices, 4 creases" "Reflect's reflected SubD has the real welded-seam topology: the mirror plane coincides with the box's own far face, so that face's 4 vertices weld into one real shared seam (now creased) instead of duplicating"
+stcheck "Reflect: mirrored across the plane through 1020,5,0 and welded original . mirror image into one symmetric SubD (24 faces)" "Reflect on TWO SubDs at once still returns a real SubD (each Symmetrize()d separately, then folded together via SubD::BooleanToSubD), not just the single-object case"
+stcheck "24 faces, 48 edges, 32 vertices, 0 creases" "Reflect's two-SubD result has the expected topology: two 6-face boxes, each mirrored (x2) and folded together (no shared seam this time, since neither box touches the mirror plane)"
 stcheck "Radiate: baked diffuse.specular vertex colours from 1 light(s)/sun onto 1 mesh(es)" "Radiate baked vertex colours from the Sun onto the mesh"
 stcheck "RadiateFind: 0 enabled light source(s) selected (the Sun also lights Radiate" "RadiateFind reported the Sun as Radiate's only light source"
 stcheck "OrientCrvToEdge: placed 1 copy(ies) at 1 point(s)" "OrientCrvToEdge picked the box edge directly and oriented a copy onto it"
@@ -1737,7 +1739,7 @@ stcheck "ExtractOriginalCaptives: 1 original(s) restored as copies" "ExtractOrig
 stcheck "Bounding box min 1800,0,0 max 1810,10,10" "the restored original is the untouched pre-cage box (1800,0,0 to 1810,10,10), the exact geometry Box 1800,0,0 1810,10,0 10 created before it was ever bound to the cage"
 echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
-stcheck "smoke: frames=[1-4][0-9][0-9] objects=119" "solid-tools script produced the expected object count"
+stcheck "smoke: frames=[1-4][0-9][0-9] objects=120" "solid-tools script produced the expected object count"
 
 # RegionBoolean exact-polygon path: PlanarUnion/PlanarDifference/
 # CurveBoolean/CreateRegions's own 2-region case must now take
@@ -3227,12 +3229,18 @@ bocheck() { if echo "$BO" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $
 # SubD booleans: BooleanUnion/BooleanDifference/BooleanIntersection now
 # return a genuine SubD via kernel::SubD::BooleanToSubD when every operand
 # is a SubD (PARITY_MAP.md's own "SubD booleans" item, previously missing
-# outright), falling back to the old generic mesh path for a mixed SubD +
-# Brep selection.
+# outright). Narrowed further: a MIXED selection (at least one true SubD
+# alongside a Brep/Mesh) now ALSO returns a real SubD, promoting the
+# non-SubD operand's own existing tessellation via SubD::FromControlMesh
+# instead of collapsing everything to a Mesh - gated so an all-Brep
+# selection still takes the exact B-rep path and an all-Mesh selection
+# still comes back as a plain Mesh, both unaffected.
 bocheck "BooleanUnion: SubD boolean (mesh-approximate, via BooleanToSubD), 19 face(s)" "BooleanUnion on two overlapping SubD boxes returns a real SubD, not a tessellated Mesh"
 bocheck "BooleanDifference: SubD boolean (mesh-approximate, via BooleanToSubD), 12 face(s)" "BooleanDifference on two SubD boxes returns a real SubD"
 bocheck "BooleanIntersection: SubD boolean (mesh-approximate, via BooleanToSubD), 6 face(s)" "BooleanIntersection on two SubD boxes returns a real SubD"
-bocheck "BooleanUnion: 38 faces, volume 14" "BooleanUnion on a mixed SubD + Brep selection still falls back to the generic mesh path (TrySubDBoolean declines on a non-SubD operand)"
+bocheck "BooleanUnion: SubD boolean (mesh-approximate, via BooleanToSubD), 20 face(s)" "BooleanUnion on a mixed SubD + Brep selection now ALSO returns a real SubD (TrySubDBoolean promotes the Brep's own tessellation to a SubD) instead of collapsing to a Mesh"
+bocheck "BooleanUnion: exact B-rep boolean (no tessellation), 26 face(s)" "BooleanUnion on an all-Brep selection is unaffected by the mixed-type change - still the exact B-rep path, never downgraded to a SubD"
+bocheck "BooleanUnion: 36 faces, volume 14" "BooleanUnion on an all-Mesh selection is unaffected by the mixed-type change - still a plain Mesh, never surprise-upgraded to a SubD"
 echo "$BO" | grep -E "^(ok|FAIL)"
 if echo "$BO" | grep -q "^FAIL"; then fail=1; fi
 echo "$BO" | grep -q "^smoke:" || { echo "$BO"; echo "FAIL: boolean script produced no smoke line"; fail=1; }
@@ -5776,6 +5784,29 @@ mlibcheck "MacroDelete: no saved macro named 'saved macro'" "deleting an already
 mlibcheck "RunSavedMacro: no saved macro named 'saved macro'" "running a deleted name warns instead of silently doing nothing or crashing"
 mlibcheck "MacroLoad: no saved macro named 'saved macro'" "loading a deleted name warns instead of silently clearing the buffer"
 
+# Alias targets that are real command lines (CommandEngine::Execute's new
+# "!Find(name) && (space or ';')" branch) - see alias_macro_script.txt's
+# own header comment for exactly what this checks and why it used to be
+# silently broken rather than merely narrow. PARITY_MAP.md "Command
+# aliases and shortcut customization" (the fix itself) and "VBA-style
+# macro recorder and editor" (the "bind a saved macro to an alias" half
+# this fix also closes).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  AMAC="$("$BIN" --smoke 100 --script "$HERE/alias_macro_script.txt" 2>&1)" || { echo "$AMAC"; echo "FAIL: alias-macro script exited non-zero"; exit 1; }
+else
+  AMAC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/alias_macro_script.txt" 2>&1)" || { echo "$AMAC"; echo "FAIL: alias-macro script exited non-zero"; exit 1; }
+fi
+echo "$AMAC" | grep -E "^(ok|FAIL)"
+if echo "$AMAC" | grep -q "^FAIL"; then fail=1; fi
+echo "$AMAC" | grep -q "^smoke:" || { echo "$AMAC"; echo "FAIL: alias-macro script produced no smoke line"; fail=1; }
+amaccheck() { if echo "$AMAC" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$AMAC" "$1"; fail=1; fi; }
+amaccheck "Alias ln1 -> Line 0,0,0 10,0,0" "a multi-word alias target is captured verbatim, args included"
+amaccheck "Command: Line 0,0,0 10,0,0" "invoking the alias really runs its full target line (used to fail with Unknown command before this fix), proven by the real object it creates (expect_objects just above)"
+amaccheck "Command: Line 20,0,0 30,0,0" "a ';'-separated multi-command alias runs its first command"
+amaccheck "Command: Circle 40,0,0 5" "...and its second command, in order"
+amaccheck "Command: RunSavedMacro mymac" "a saved macro, bound to an alias, really runs when the alias is invoked"
+amaccheck "Bounding box min 50,0,0 max 55,5,5" "the alias-bound macro's own replayed Box is real, freshly-created geometry (SelLast), not a stale object or a printed-only confirmation"
+
 # BlockSetArraySpacing/BlockSetArrayCount command-line wiring: PARITY_MAP.md
 # "Dynamic blocks" Array parameter/action (the Document-level math itself is
 # unit-tested directly in dino8_block_array/test_block_array.cpp) - see
@@ -6082,13 +6113,29 @@ fi
 # round trip" proof hatch3dm_fixture_gen already gives ON_Hatch. The scale
 # placement's imported line must come back 3 units long (not 1), proving
 # Load3dm applied the ref's full ON_Xform, not just an insertion-point
-# translation.
+# translation. It also builds a second, outer ON_InstanceDefinition
+# ("OuterBlock") whose own one member is a NESTED ON_InstanceRef placing
+# TestBlock inside it (translated (0,5,0) within the definition itself) -
+# a real Rhino feature (one block definition may place another block)
+# BuildBlockDefinitionFromIdef (File3dm.cpp) previously silently dropped
+# along with every other geometry kind it has no Dino8-side equivalent
+# for, same as nested instance refs' own prior disclosed gap. Flattened
+# rather than truly nested (Dino8's own BlockDefinition::objects is a flat
+# geometry list - even a block authored live in Dino8 can never nest one
+# inside another): the nested ref's own xform is baked into the member
+# line before it's added to OuterBlock's own definition, so OuterBlock's
+# placement at (100,0,0) must compose BOTH transforms, landing the line at
+# (100,5,0)-(101,5,0), not (100,0,0)-(101,0,0) (nested xform dropped) or
+# (0,5,0)-(1,5,0) (placement xform dropped).
 IREFBIN="$(dirname "$BIN")/instanceref3dm_fixture_gen"
 if [ -x "$IREFBIN" ]; then
   "$IREFBIN" "$TMPW/instanceref_fixture.3dm" >/dev/null || { echo "FAIL: instanceref3dm_fixture_gen failed to write the instance-ref fixture"; exit 1; }
   cat > "$TMPW/instanceref3dm_script.txt" <<EOS
 Open $TMPW/instanceref_fixture.3dm
 SelBlockInstanceOf TestBlock
+What
+SelNone
+SelBlockInstanceOf OuterBlock
 What
 EOS
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -6097,12 +6144,16 @@ EOS
     IRF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/instanceref3dm_script.txt" 2>&1)" || { echo "$IRF"; echo "FAIL: instance-ref .3dm script exited non-zero"; exit 1; }
   fi
   irfcheck() { if echo "$IRF" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$IRF" "$1"; fail=1; fi; }
-  irfcheck "Opened $TMPW/instanceref_fixture.3dm (2 objects)" "Load3dm placed both ON_InstanceRef instances as 2 real objects (0 before the fix: both silently skipped), and did not also add the idef's own member line as a 3rd, un-transformed object (ON::idef_object skip)"
-  irfcheck "SelBlockInstanceOf: selected 2 object(s) in instances of 'TestBlock'" "both placements landed as real Dino8 block instances, tagged and grouped under the idef's own name, not ordinary untagged objects"
+  irfcheck "Opened $TMPW/instanceref_fixture.3dm (3 objects)" "Load3dm placed all 3 ON_InstanceRef instances (2 TestBlock + 1 OuterBlock) as 3 real objects (0 before the fix: all silently skipped), and did not also add either idef's own member geometry as extra, un-transformed objects (ON::idef_object skip)"
+  irfcheck "SelBlockInstanceOf: selected 2 object(s) in instances of 'TestBlock'" "both direct placements landed as real Dino8 block instances, tagged and grouped under the idef's own name, not ordinary untagged objects"
   irfcheck "Length: 1" "the plain-translation placement's line kept its original unit length"
   irfcheck "Length: 3" "the scale+translate placement's line came back 3 units long - proof Load3dm applied the ref's full ON_Xform (scale included), not just a translation to the insertion point"
   irfcheck "BlockInsert = 2.000000,3.000000,0.000000" "the plain-translation placement's insertion point is exactly where it was placed"
   irfcheck "BlockInsert = 10.000000,0.000000,0.000000" "the scale+translate placement's insertion point is the translation component alone, not shifted by the scale (both ops shared a single ON_Xform, origin-fixed scale then translate)"
+  irfcheck "SelBlockInstanceOf: selected 1 object(s) in instances of 'OuterBlock'" "the OuterBlock placement - whose own definition's one member is a NESTED ON_InstanceRef placing TestBlock, not ordinary geometry - was found by name, proving BuildBlockDefinitionFromIdef resolved the nested reference into real flattened geometry rather than silently dropping the whole member and leaving OuterBlock's own definition empty"
+  irfcheck "Bounding box: (100, 5, 0) to (101, 5, 0)" "OuterBlock's placement at (100,0,0) composed with the nested member's own (0,5,0) translation baked into the definition - both transforms applied, not just one"
+  irfcheck "Block = OuterBlock" "the flattened nested-block line carries the outer block's own name, not the inner TestBlock's"
+  irfcheck "BlockInsert = 100.000000,0.000000,0.000000" "the OuterBlock placement's own insertion point survived exactly, independent of the nested member's own baked-in offset"
 else
   echo "FAIL instanceref3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_InstanceRef fixture check"
   fail=1
@@ -6924,9 +6975,9 @@ if ! command -v curl >/dev/null 2>&1; then
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 18 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 19 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 18 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 19 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -6984,6 +7035,14 @@ rs.AddLine({0,0,0},{10,0,0})' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP13="$(curl -s --max-time 10 -X POST --data '{"type":"point","point":[7,8,9]}' "http://127.0.0.1:$SERVE_PORT/objects")"
     RESP14="$(curl -s --max-time 10 -X POST --data '{"type":"mesh","vertices":[[0,0,0],[2,0,0],[0,2,0]],"faces":[[0,1,2]]}' "http://127.0.0.1:$SERVE_PORT/objects")"
     RESP15="$(curl -s --max-time 10 -X POST --data '{"type":"curve","degree":1,"control_points":[[0,0,5],[20,0,5]]}' "http://127.0.0.1:$SERVE_PORT/objects")"
+    # The fourth geometry kind (surface, alongside point/mesh/curve above):
+    # a degree-(1,1) bilinear patch, posted with no explicit "knots_u"/
+    # "knots_v" so FromControlGrid's own clamped knot vectors get checked
+    # the same way RESP15's curve already checks FromControlPoints' own
+    # filled-in knots. Lands at the next predictable id (8) right alongside
+    # RESP13/14/15, so the one RESP16 GET just below reads all four kinds
+    # back in a single request.
+    RESP18="$(curl -s --max-time 10 -X POST --data '{"type":"surface","degree_u":1,"degree_v":1,"u_count":2,"v_count":2,"control_points":[[0,0,0],[0,5,1],[9,0,0],[9,5,1]]}' "http://127.0.0.1:$SERVE_PORT/objects")"
     RESP16="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/objects?geometry=1")"
     RESP17="$(curl -s --max-time 10 -X POST --data '{"type":"bogus"}' "http://127.0.0.1:$SERVE_PORT/objects")"
     CODE14="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'not json' "http://127.0.0.1:$SERVE_PORT/objects")"
@@ -7028,9 +7087,11 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     [ "$RESP13" = '{"ok":true,"id":5}' ] && echo "ok   POST /objects {type:point} added a real point object at the expected id" || { echo "$RESP13"; echo "FAIL --serve POST /objects point did not return the expected {ok,id}"; fail=1; }
     [ "$RESP14" = '{"ok":true,"id":6}' ] && echo "ok   POST /objects {type:mesh} added a real mesh object at the expected id" || { echo "$RESP14"; echo "FAIL --serve POST /objects mesh did not return the expected {ok,id}"; fail=1; }
     [ "$RESP15" = '{"ok":true,"id":7}' ] && echo "ok   POST /objects {type:curve} added a real NURBS curve object at the expected id" || { echo "$RESP15"; echo "FAIL --serve POST /objects curve did not return the expected {ok,id}"; fail=1; }
+    [ "$RESP18" = '{"ok":true,"id":8}' ] && echo "ok   POST /objects {type:surface} added a real NURBS surface object at the expected id" || { echo "$RESP18"; echo "FAIL --serve POST /objects surface did not return the expected {ok,id}"; fail=1; }
     echo "$RESP16" | grep -q '"id":5,"type":"point".*"geometry":{"point":\[7.000000,8.000000,9.000000\]}' && echo "ok   the point POSTed via /objects reads back through GET /objects?geometry=1 with its own exact coordinates - a genuine round trip, not just an accepted write" || { echo "$RESP16"; echo "FAIL --serve GET /objects?geometry=1 did not read back the POSTed point"; fail=1; }
     echo "$RESP16" | grep -q '"id":6,"type":"mesh".*"geometry":{"vertices":\[\[0.000000,0.000000,0.000000\],\[2.000000,0.000000,0.000000\],\[0.000000,2.000000,0.000000\]\],"faces":\[\[0,1,2\]\]}' && echo "ok   the mesh POSTed via /objects reads back with its own exact vertices/faces - a genuine round trip" || { echo "$RESP16"; echo "FAIL --serve GET /objects?geometry=1 did not read back the POSTed mesh"; fail=1; }
     echo "$RESP16" | grep -q '"id":7,"type":"curve".*"geometry":{"degree":1,"rational":false,"control_points":\[\[0.000000,0.000000,5.000000\],\[20.000000,0.000000,5.000000\]\]' && echo "ok   the curve POSTed via /objects (with no explicit \"knots\") reads back with its own exact control points and a real knot vector FromControlPoints filled in - a genuine round trip" || { echo "$RESP16"; echo "FAIL --serve GET /objects?geometry=1 did not read back the POSTed curve"; fail=1; }
+    echo "$RESP16" | grep -q '"id":8,"type":"surface".*"geometry":{"degree_u":1,"degree_v":1,"u_count":2,"v_count":2,"rational":false,"control_points":\[\[0.000000,0.000000,0.000000\],\[0.000000,5.000000,1.000000\],\[9.000000,0.000000,0.000000\],\[9.000000,5.000000,1.000000\]\],"knots_u":\[0.000000,1.000000\],"knots_v":\[0.000000,1.000000\]}' && echo "ok   the surface POSTed via /objects (with no explicit \"knots_u\"/\"knots_v\") reads back with its own exact control grid and real clamped knot vectors FromControlGrid filled in, in each direction - the fourth geometry kind this wire format now covers, a genuine round trip" || { echo "$RESP16"; echo "FAIL --serve GET /objects?geometry=1 did not read back the POSTed surface"; fail=1; }
     echo "$RESP17" | grep -q '^{"ok":false,"error":"unknown or missing' && echo "ok   POST /objects rejects an unrecognized \"type\" with a clear JSON error instead of silently doing nothing" || { echo "$RESP17"; echo "FAIL --serve POST /objects did not reject an unknown type as expected"; fail=1; }
     [ "$CODE14" = "400" ] && echo "ok   POST /objects rejects a malformed (non-JSON) body with 400 Bad Request" || { echo "FAIL --serve POST /objects malformed body returned HTTP $CODE14, expected 400"; fail=1; }
     [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
@@ -7051,7 +7112,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=18$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 18 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=19$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 19 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
     fi
   fi
 

@@ -461,14 +461,29 @@ std::string HatchPatternNameFor(const ONX_Model& model, int pattern_index) {
 // shape - the same conversions (Point/Curve/Brep/Surface/Mesh/SubD/
 // Extrusion) the main loop already applies to ordinary document objects,
 // factored out so this function and that loop share one copy. A member
-// object whose geometry kind has no Dino8 scene-object equivalent (nested
-// instance refs, annotations, hatches, point clouds inside a block - none
-// of which Rhino itself actually allows inside a block definition anyway
-// except nested instance refs) is silently dropped from the definition,
-// the same per-object "no made flag" convention the main loop already
-// uses for a whole-object skip.
+// object whose geometry kind has no Dino8 scene-object equivalent
+// (annotations, hatches, point clouds inside a block - none of which Rhino
+// itself actually allows inside a block definition anyway) is silently
+// dropped from the definition, the same per-object "no made flag"
+// convention the main loop already uses for a whole-object skip.
+//
+// A nested ON_InstanceRef member (Rhino DOES allow a block definition to
+// contain a placed instance of another block) is handled separately,
+// below, by flattening rather than true live nesting: Dino8's own
+// BlockDefinition::objects is a flat geometry list with no
+// ObjectKind::BlockInstance at all - even a block authored live in Dino8
+// itself can never nest one inside another - so a real nested instance
+// isn't representable here either way. The nested idef is resolved
+// recursively (same function, `depth + 1`) and each of its own resolved
+// objects gets the nested ref's own ON_Xform baked in before being
+// appended to this definition's object list - the member geometry
+// survives and places correctly, just as fully-baked geometry rather than
+// a live sub-instance, same honest tradeoff an exploded nested block
+// already is in any tool without live nested blocks. `depth` is capped
+// (8) against a malformed or circular idef graph rather than looping
+// forever or overflowing the call stack.
 BlockDefinition BuildBlockDefinitionFromIdef(const ONX_Model& model, const ON_InstanceDefinition& idef,
-                                              const std::map<int, int>& layer_map) {
+                                              const std::map<int, int>& layer_map, int depth = 0) {
   BlockDefinition def;
   def.name = FromWide(idef.Name());
   if (def.name.empty()) def.name = "Block";
@@ -478,6 +493,21 @@ BlockDefinition BuildBlockDefinitionFromIdef(const ONX_Model& model, const ON_In
     const ON_ModelGeometryComponent& mg = model.ModelGeometryComponentFromId(member_ids[i]);
     const ON_Geometry* g = mg.Geometry(nullptr);
     if (!g) continue;
+    if (const ON_InstanceRef* nested_iref = ON_InstanceRef::Cast(g)) {
+      if (depth < 8) {
+        const ON_ModelComponentReference nested_ref = model.ComponentFromId(
+            ON_ModelComponent::Type::InstanceDefinition, nested_iref->m_instance_definition_uuid);
+        if (const ON_InstanceDefinition* nested_idef = ON_InstanceDefinition::Cast(nested_ref.ModelComponent())) {
+          BlockDefinition nested_def = BuildBlockDefinitionFromIdef(model, *nested_idef, layer_map, depth + 1);
+          for (const SceneObject& nested_member : nested_def.objects) {
+            SceneObject copy = nested_member;
+            copy.Transform(nested_iref->m_xform);
+            def.objects.push_back(std::move(copy));
+          }
+        }
+      }
+      continue;
+    }
     SceneObject obj;
     bool made = false;
     if (const ON_Point* p = ON_Point::Cast(g)) {

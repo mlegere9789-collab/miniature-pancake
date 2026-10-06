@@ -90,28 +90,58 @@ std::optional<kernel::Brep> TryExactBrepBoolean(CommandContext& ctx, const std::
 // `first_ids`'s own fold against `second_ids`'s own fold via `op` - the
 // caller is expected to have already applied any `swap_sides` itself by
 // choosing which operand group is `first_ids` vs `second_ids`, exactly as
-// TryExactBrepBoolean's own caller does above. Returns nullopt - a silent,
-// ordinary fallback to RunBoolean's mesh path, not a user-visible failure -
-// whenever any operand isn't a plain SubD, a group is empty, or
-// BooleanToSubD itself throws (an open, non-watertight SubD on either side -
-// its own disclosed precondition, inherited unchanged from
-// Boolean()/BooleanCombine()).
+// TryExactBrepBoolean's own caller does above.
+//
+// Narrowed further than the first version of this function: a MIXED
+// selection (at least one plain SubD alongside a Brep/Mesh/Surface) no
+// longer always falls back to the old generic mesh path either. Any
+// non-SubD operand is tessellated via the same `MeshOf`/
+// `AdaptiveMeshTolerance` this file's own generic mesh path already uses,
+// then promoted to a (flat-faceted, display-tolerance-approximate) SubD
+// via `SubD::FromControlMesh` - no new approximation beyond what that
+// operand's own tessellation already was, just kept as an editable SubD
+// afterward instead of being collapsed into a plain Mesh. Gated on `any_subd`
+// so an all-Brep selection still takes the exact path above, and an
+// all-Mesh selection still comes back as a Mesh (a caller of a plain mesh
+// boolean has no reason to expect a SubD back) - this path only activates
+// when at least one TRUE SubD is present somewhere in the selection.
+//
+// Returns nullopt - a silent, ordinary fallback to RunBoolean's mesh path,
+// not a user-visible failure - whenever no operand is a true SubD, any
+// operand can't produce a mesh (and isn't already a SubD), a group ends up
+// empty, or BooleanToSubD/FromControlMesh itself throws (an open,
+// non-watertight SubD or mesh on either side - BooleanToSubD's own
+// disclosed precondition, inherited unchanged from Boolean()/
+// BooleanCombine()).
 std::optional<kernel::SubD> TrySubDBoolean(CommandContext& ctx, const std::vector<ObjectId>& first_ids, const std::vector<ObjectId>& second_ids,
                                             kernel::BooleanOp op) {
-  auto collect = [&](const std::vector<ObjectId>& ids, std::vector<const kernel::SubD*>& out) -> bool {
+  bool any_subd = false;
+  auto collect = [&](const std::vector<ObjectId>& ids, std::vector<kernel::SubD>& out) -> bool {
     for (ObjectId id : ids) {
       const SceneObject* o = ctx.Doc().Find(id);
-      if (!o || o->kind != ObjectKind::SubD || !o->subd) return false;
-      out.push_back(o->subd.get());
+      if (!o) return false;
+      if (o->kind == ObjectKind::SubD && o->subd) {
+        out.push_back(*o->subd);
+        any_subd = true;
+        continue;
+      }
+      std::optional<kernel::Mesh> m = MeshOf(*o, AdaptiveMeshTolerance(*o));
+      if (!m || m->FaceCount() == 0) return false;
+      try {
+        out.push_back(kernel::SubD::FromControlMesh(*m));
+      } catch (const std::exception&) {
+        return false;
+      }
     }
     return !out.empty();
   };
-  std::vector<const kernel::SubD*> g1, g2;
+  std::vector<kernel::SubD> g1, g2;
   if (!collect(first_ids, g1)) return std::nullopt;
   if (!second_ids.empty() && !collect(second_ids, g2)) return std::nullopt;
-  auto fold = [](const std::vector<const kernel::SubD*>& v, kernel::BooleanOp fold_op) {
-    kernel::SubD result = *v[0];
-    for (size_t i = 1; i < v.size(); ++i) result = result.BooleanToSubD(*v[i], fold_op);
+  if (!any_subd) return std::nullopt;
+  auto fold = [](const std::vector<kernel::SubD>& v, kernel::BooleanOp fold_op) {
+    kernel::SubD result = v[0];
+    for (size_t i = 1; i < v.size(); ++i) result = result.BooleanToSubD(v[i], fold_op);
     return result;
   };
   try {

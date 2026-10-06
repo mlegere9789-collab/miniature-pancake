@@ -5,9 +5,16 @@
 // translation, one a translation combined with a uniform scale, so the
 // placements are only distinguishable if the reader applies the full
 // ON_InstanceRef::m_xform rather than just an insertion-point translation.
-// Built directly through OpenNURBS' own ONX_Model/ON_InstanceDefinition/
-// ON_InstanceRef API - the same API src/io/File3dm.cpp's Load3dm uses -
-// rather than through Dino 8's own Open/Save round trip.
+// Also writes a second, outer ON_InstanceDefinition ("OuterBlock") whose
+// own one member is a NESTED ON_InstanceRef placing TestBlock inside it
+// (also tagged ON::idef_object, same as any other block-definition
+// member) - a real Rhino feature (a block definition may itself place
+// another block) BuildBlockDefinitionFromIdef (File3dm.cpp) previously
+// silently dropped along with every other geometry kind it has no
+// Dino8-side equivalent for. Built directly through OpenNURBS' own
+// ONX_Model/ON_InstanceDefinition/ON_InstanceRef API - the same API
+// src/io/File3dm.cpp's Load3dm uses - rather than through Dino 8's own
+// Open/Save round trip.
 //
 // Regression coverage: Dino 8's own blocks (doc/BlockInstances.h) persist
 // through .3dm as tagged ordinary geometry plus a private
@@ -83,11 +90,54 @@ int main(int argc, char** argv) {
     model.AddModelGeometryComponent(new ON_InstanceRef(iref), &attr);
   }
 
+  // Outer block: one member, a nested ON_InstanceRef placing TestBlock at a
+  // translation of (0,5,0) *within the definition itself* - baked into
+  // OuterBlock's own member list, not a top-level placement. Written with
+  // ON::idef_object mode, same as the plain-line member above, so Load3dm's
+  // main loop skips it rather than adding it as an ordinary loose object.
+  {
+    ON_InstanceRef nested_iref;
+    nested_iref.m_instance_definition_uuid = added_idef->Id();
+    nested_iref.m_xform = ON_Xform::TranslationTransformation(ON_3dVector(0, 5, 0));
+    ON_3dmObjectAttributes nested_attr;
+    nested_attr.SetMode(ON::idef_object);
+    const ON_ModelComponentReference nested_ref =
+        model.AddModelGeometryComponent(new ON_InstanceRef(nested_iref), &nested_attr, true);
+    const ON_ModelGeometryComponent* nested_geom = ON_ModelGeometryComponent::Cast(nested_ref.ModelComponent());
+    const ON_3dmObjectAttributes* added_nested_attr = nested_geom ? nested_geom->Attributes(nullptr) : nullptr;
+    if (!added_nested_attr) {
+      std::fprintf(stderr, "instanceref3dm_fixture_gen: could not add the nested idef member\n");
+      return 1;
+    }
+
+    ON_InstanceDefinition outer_idef;
+    outer_idef.SetName(L"OuterBlock");
+    outer_idef.AddInstanceGeometryId(added_nested_attr->m_uuid);
+    const ON_ModelComponentReference outer_idef_ref = model.AddModelComponent(outer_idef, true);
+    const ON_InstanceDefinition* added_outer_idef = ON_InstanceDefinition::Cast(outer_idef_ref.ModelComponent());
+    if (!added_outer_idef) {
+      std::fprintf(stderr, "instanceref3dm_fixture_gen: could not add the outer instance definition\n");
+      return 1;
+    }
+
+    // Placement 3: OuterBlock translated to (100,0,0) - the nested
+    // TestBlock member line (0,0,0)-(1,0,0), already shifted to
+    // (0,5,0)-(1,5,0) by the nested ref's own xform baked into OuterBlock's
+    // definition, lands at (100,5,0)-(101,5,0): correct only if the reader
+    // composes both transforms (nested-member xform, then placement xform),
+    // not just the outer placement alone.
+    ON_InstanceRef outer_placement;
+    outer_placement.m_instance_definition_uuid = added_outer_idef->Id();
+    outer_placement.m_xform = ON_Xform::TranslationTransformation(ON_3dVector(100, 0, 0));
+    ON_3dmObjectAttributes outer_attr;
+    model.AddModelGeometryComponent(new ON_InstanceRef(outer_placement), &outer_attr);
+  }
+
   ON_TextLog log;
   if (!model.Write(path, 0, &log)) {
     std::fprintf(stderr, "instanceref3dm_fixture_gen: OpenNURBS could not write %s\n", path);
     return 1;
   }
-  std::printf("wrote %s (1 idef, 2 instance refs)\n", path);
+  std::printf("wrote %s (2 idefs [one nested], 3 instance refs)\n", path);
   return 0;
 }
