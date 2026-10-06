@@ -11,14 +11,16 @@ serviced at a time) and no REST resource model. `GET /objects` (below) is a
 real, if minimal, structured JSON listing of what's in the document, and
 `?geometry=1` adds each object's own geometry for the three kinds simple
 enough to serialize honestly right now (point, mesh, and a NURBS curve's
-own degree/control points/weights/knots) - every other kind (surface,
-polysurface, SubD, point cloud) still only comes back as whatever a
-script's own `print()` output happens to contain (plain text by default;
-`/run`/`/run/python` also answer with structured JSON instead of plain text
-when asked - see below). Authentication is real but minimal - one or more
-bearer tokens, each optionally naming its own caller, not OAuth/API
-keys/real accounts. See "What this deliberately does not do" below for the
-honest scope.
+own degree/control points/weights/knots); `POST /objects` is the other
+direction - send one of those same three shapes back in and it's added to
+the document - so geometry can now get *into* this server as structured
+data too, not just out. Every other kind (surface, polysurface, SubD,
+point cloud) still only comes back as whatever a script's own `print()`
+output happens to contain (plain text by default; `/run`/`/run/python`
+also answer with structured JSON instead of plain text when asked - see
+below). Authentication is real but minimal - one or more bearer tokens,
+each optionally naming its own caller, not OAuth/API keys/real accounts.
+See "What this deliberately does not do" below for the honest scope.
 
 ## Running it
 
@@ -98,9 +100,23 @@ same as every other headless mode this app already has).
   other kind (surface, polysurface, SubD, point cloud) still gets
   `"geometry": null` - a surface's own two-direction knot vectors and a
   Brep's multiple trimmed faces are a substantially larger undertaking
-  than one curve's single control polygon, not attempted here - and
-  there is still no way to POST geometry *in* for any kind either; a
-  caller still has to `print()` that out of a script.
+  than one curve's single control polygon, not attempted here.
+- `POST /objects` is the write side: send a JSON body shaped like one of
+  the three `"geometry"` payloads above, tagged with a `"type"` field
+  (`"point"`, `"mesh"` or `"curve"`), and it's added to the document -
+  `{"ok": true, "id": N}` on success (the new object's id), or
+  `{"ok": false, "error": "..."}` with `400 Bad Request` for a malformed
+  body, an unrecognized `"type"`, or a shape that doesn't parse (wrong
+  array lengths, a `"knots"` count that doesn't match
+  `degree + control_points - 1`, ...). A `"curve"` needs `"degree"` and
+  `"control_points"`; `"knots"`/`"weights"` are optional (when omitted,
+  the curve gets a real, if generic, clamped-uniform knot vector instead
+  of the exact one `GET`'s own payload for an existing curve would show).
+  Still genuinely limited to the same three kinds `GET`'s own `?geometry=1`
+  already serializes - there is no way to POST a surface, polysurface,
+  SubD or point cloud in as structured data, and a caller still has to
+  build one of those by `print()`ing a script that constructs it the
+  normal way.
 
 ```
 $ curl -s -X POST --data 'import dino8
@@ -138,6 +154,14 @@ $ curl -s http://127.0.0.1:8080/objects?geometry=1
 ```
 (the box's `"geometry"` is `null` - polysurfaces aren't one of the three kinds `?geometry=1` serializes yet.)
 
+```
+$ curl -s --data '{"type":"mesh","vertices":[[0,0,0],[1,0,0],[0,1,0]],"faces":[[0,1,2]]}' http://127.0.0.1:8080/objects
+{"ok":true,"id":4}
+$ curl -s --data '{"type":"bogus"}' http://127.0.0.1:8080/objects
+{"ok":false,"error":"unknown or missing \"type\" (expected \"point\", \"mesh\" or \"curve\")"}
+```
+(the mesh just POSTed shows up at id 4 in a follow-up `GET /objects?geometry=1`, with the exact vertices/faces sent.)
+
 ## What this deliberately does not do
 
 - **No interactive prompts, over either language.** A script that calls
@@ -172,19 +196,18 @@ $ curl -s http://127.0.0.1:8080/objects?geometry=1
   a teammate's script talking to a running Dino 8), not for exposing to a
   network you don't trust even with tokens set.
 - **No geometry (de)serialization format for most geometry.** `GET
-  /objects?geometry=1` (above) now carries real data for points, meshes
-  and curves (the curve's own exact degree/control points/weights/knots,
-  not sampled points) - genuine structured data, not printed text - but
-  surfaces, polysurfaces, SubDs and point clouds all still come back with
-  `"geometry": null`: a surface's own two-direction knot vectors and a
+  /objects?geometry=1`/`POST /objects` (above) now carry real data both
+  ways for points, meshes and curves (the curve's own exact degree/
+  control points/weights/knots, not sampled points) - genuine structured
+  data, not printed text - but surfaces, polysurfaces, SubDs and point
+  clouds all still come back `"geometry": null` from `GET` and can't be
+  `POST`ed at all: a surface's own two-direction knot vectors and a
   Brep's multiple trimmed faces are each a substantially larger design
   than one curve's single control polygon, and none of that exists yet.
-  Getting their actual shape data out still means having a script `print()`
-  whatever representation you need (coordinates, a JSON string you build
-  yourself with `dino8`'s/`rs`'s existing query functions, ...); there is
-  also no way to POST geometry *in* as structured data for any kind -
-  every script still arrives as Lua/Python source text, same as the
-  command line.
+  Getting their actual shape data out, or building one from scratch,
+  still means having a script `print()`/construct whatever representation
+  you need (coordinates, a JSON string you build yourself with `dino8`'s/
+  `rs`'s existing query functions, ...).
 
 Closing any of the above further is real, separate follow-up work, not
 something this server already does quietly.
