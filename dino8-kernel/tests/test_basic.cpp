@@ -67981,6 +67981,117 @@ void TestCurveReduceDegree() {
   Check(threw_tolerance, "ReduceDegree throws std::invalid_argument for a non-positive tolerance");
 }
 
+void TestCurveFair() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A straight line with only 2 control points has no interior point to
+  // move at all.
+  {
+    NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    double deviation = -1.0;
+    Check(line.Fair(1e-6, 10, 0.5, &deviation) == Result::NoOpAlreadySatisfied,
+          "Fair() on a 2-control-point curve reports NoOpAlreadySatisfied");
+    Check(deviation == 0.0, "...and reports zero deviation for that no-op");
+  }
+
+  // A 7-control-point curve, straight along x except its exact middle
+  // control point (index 3) displaced perpendicular by 5 - a single,
+  // isolated kink with hand-derivable neighbors. One iteration at
+  // factor=1.0 replaces CV[3] with EXACTLY the midpoint of its own two
+  // (unperturbed) neighbors, CV[2]=(2,0,0) and CV[4]=(4,0,0) - a real,
+  // hand-verifiable exact answer, not just "it moved somewhere".
+  std::vector<Point3d> kinked_pts;
+  for (int i = 0; i < 7; ++i) kinked_pts.emplace_back(i, (i == 3) ? 5.0 : 0.0, 0.0);
+  {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, /*degree=*/3);
+    double deviation = -1.0;
+    Check(c.Fair(100.0, /*iterations=*/1, /*factor=*/1.0, &deviation) == Result::Ok,
+          "Fair(iterations=1, factor=1.0) succeeds at a loose tolerance");
+    const Point3d flattened = c.ControlPointAt(3);
+    Check((flattened - Point3d(3, 0, 0)).Length() < 1e-9,
+          "a single factor=1.0 iteration replaces the isolated kink's control point with EXACTLY "
+          "the midpoint of its own two unperturbed neighbors");
+    Check(deviation > 0.0, "fairing a genuine kink reports a real, nonzero measured deviation");
+  }
+
+  // Endpoints are never touched by Fair(), regardless of how much
+  // smoothing is requested.
+  {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, /*degree=*/3);
+    c.Fair(100.0, 5, 0.8);
+    Check((c.ControlPointAt(0) - kinked_pts.front()).Length() < 1e-12,
+          "Fair() never moves the curve's own first control point");
+    Check((c.ControlPointAt(6) - kinked_pts.back()).Length() < 1e-12,
+          "Fair() never moves the curve's own last control point");
+  }
+
+  // The same isolated kink at a tight tolerance must be REFUSED - genuinely
+  // flattening it moves the curve's own shape near the bump by more than a
+  // tiny tolerance can allow - leaving every control point byte-for-byte
+  // unchanged; the same fixture at a loose enough tolerance must succeed,
+  // proving the refusal is genuinely tolerance-driven.
+  {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, /*degree=*/3);
+    const NurbsCurve original = c;
+    double tight_deviation = -1.0;
+    const Result refused = c.Fair(1e-6, 1, 1.0, &tight_deviation);
+    Check(refused == Result::Failed, "Fair() refuses to flatten a genuine kink at a tight tolerance");
+    Check(tight_deviation > 1e-6,
+          "...and the reported deviation genuinely exceeds the refused tolerance, not an "
+          "arbitrary failure");
+    double cv_err = 0.0;
+    for (int i = 0; i < c.ControlPointCount(); ++i) {
+      cv_err = std::max(cv_err, c.ControlPointAt(i).DistanceTo(original.ControlPointAt(i)));
+    }
+    Check(cv_err == 0.0, "a refused Fair() leaves every control point byte-for-byte unchanged");
+
+    double loose_deviation = -1.0;
+    Check(c.Fair(100.0, 1, 1.0, &loose_deviation) == Result::Ok,
+          "Fair() succeeds on the identical kink once the tolerance is loosened");
+    Check(std::abs(loose_deviation - tight_deviation) < 1e-9,
+          "the deviation reported on the accepted fair matches the one reported on the earlier "
+          "refusal (both measure the identical smoothing)");
+  }
+
+  bool threw_tolerance = false;
+  try {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, 3);
+    c.Fair(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_tolerance = true;
+  }
+  Check(threw_tolerance, "Fair() throws std::invalid_argument for a non-positive tolerance");
+
+  bool threw_iterations = false;
+  try {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, 3);
+    c.Fair(1e-3, 0);
+  } catch (const std::invalid_argument&) {
+    threw_iterations = true;
+  }
+  Check(threw_iterations, "Fair() throws std::invalid_argument for iterations below 1");
+
+  bool threw_factor = false;
+  try {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, 3);
+    c.Fair(1e-3, 5, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw_factor = true;
+  }
+  Check(threw_factor, "Fair() throws std::invalid_argument for a non-positive factor");
+
+  bool threw_factor_high = false;
+  try {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, 3);
+    c.Fair(1e-3, 5, 1.5);
+  } catch (const std::invalid_argument&) {
+    threw_factor_high = true;
+  }
+  Check(threw_factor_high, "Fair() throws std::invalid_argument for a factor above 1");
+}
+
 // Surface counterpart: ON_NurbsSurface::IncreaseDegree packs the rows into
 // one high-dimensional ON_NurbsCurve and calls the same broken routine.
 // Fixed inputs derived from the same probe (21x4 grid, degrees (12, 2),
@@ -71641,6 +71752,7 @@ int main() {
 
   TestCurveElevateDegreePreservesShapeWithNonUniformKnots();
   TestCurveReduceDegree();
+  TestCurveFair();
   TestSurfaceElevateDegreePreservesShapeWithNonUniformKnots();
   TestCurveClosestPointAcrossClampedSeamKink();
   TestCurveParameterAtArcLengthStaysInsideDomain();
