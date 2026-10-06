@@ -1,7 +1,7 @@
 # Surface QC: Pipe, OffsetSrf, Shell, Sweep1/2, NetworkSrf, Patch, ExtrudeCrvAlongCrv,
 # ExtrudeCrvTapered, Project, Pull. Each section hides what came before so
 # SelCrv/SelSrf only see its own objects.
-# --- Pipe radius 1 along a 10-long line: closed mesh, volume ~ pi*10
+# --- Pipe radius 1 along a 10-long line: exact capped B-rep, volume ~ pi*10
 Line 0,0,0 10,0,0
 SelLast
 Pipe
