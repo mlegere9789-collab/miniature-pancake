@@ -369,12 +369,27 @@ SelAll
 Show
 SelNone
 # --- InsertKnot / RemoveKnot: insert a knot at a line's own domain
-# midpoint, then remove it from the very same spot - must round-trip
+# midpoint, then remove it from the very same spot - intended to round-trip
 # exactly back to the original 2-CV line (deviation ~0) via the kernel's
 # real Boehm/Tiller RemoveKnotAt(), not RemoveKnotApprox's blind
-# Greville-abscissa resample, which had no deviation bound to report at
-# all. Deleted immediately after (not hidden), so it adds nothing to the
-# final @expect_objects count below.
+# Greville-abscissa resample, which had no deviation bound to report at all.
+#
+# PRE-EXISTING ISSUE, found while merging a later, unrelated pass
+# (2026-10-06): in a fresh document with only this one Line, the pick at
+# 20,0,0 (the exact inserted-knot location) succeeds exactly as described
+# above. Run here, after ~1200 prior commands in this same long-running
+# document/session, the identical pick on the identical curve (confirmed
+# via List: object id, CV count and all three CV coordinates match the
+# isolated case exactly) instead warns "Could not edit the curve there"
+# and leaves the knot in place (3 CVs, not 2) - some accumulated session
+# state (not the curve's own geometry, which is identical either way)
+# changes NearestCurveTo's returned t or RemoveKnotAt's own interior-knot
+# search enough to miss the one candidate knot. Not bisected (a kernel
+# function from a different, unrelated concurrent session, outside this
+# pass's own File I/O scope); left as a pointer for whichever session next
+# touches Geometry representation/curve editing. Deleted immediately after
+# either way (not hidden), so it adds nothing to the final @expect_objects
+# count below regardless of which outcome this run hits.
 Line 0,0,0 40,0,0
 SelLast
 InsertKnot
