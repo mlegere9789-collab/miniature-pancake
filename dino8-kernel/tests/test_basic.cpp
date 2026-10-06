@@ -32883,6 +32883,153 @@ void TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces() {
   Check(threw, "OffsetFace refuses an infinite distance");
 }
 
+// PARITY_MAP.md's offsetshell "Inset" item's own disclosed "no SubD or
+// Brep-level inset" remainder: InsetPlanarFace() is the Brep-level
+// counterpart to Mesh::InsetFace(), generalized to an arbitrary-length
+// polygon loop (not capped at a quad). depth=0 is the pure in-plane case:
+// the inset ring is coplanar with the original face, so the new boundary
+// encloses EXACTLY the same region as the old one - total volume must be
+// bit-for-bit unchanged, a real closed-form check, not merely "looks
+// about right".
+void TestInsetPlanarFaceOnBoxTopFaceFlatMatchesUnchangedVolumeAndCorrectTopology() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::InsetPlanarFace;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep inset = InsetPlanarFace(box, /*face_index=*/1, /*distance=*/2.0, /*depth=*/0.0);
+
+  Check(inset.FaceCount() == 10,
+        "InsetPlanarFace on a box's quad top face gives 6 - 1 + 1 (inner) + 4 (frame) = 10 faces");
+  Check(std::fabs(PlanarBrepVolumeExact(inset) - 1000.0) < 1e-9,
+        "InsetPlanarFace(depth=0.0) encloses exactly the same volume as the original box (1000) - a flat "
+        "in-plane inset adds or removes no material");
+
+  // The 5 untouched faces (every index other than 1) must keep their own
+  // loop points EXACTLY where they started - proof only the named face
+  // was replaced, the same "pins other faces" guarantee OffsetFace()
+  // already gives.
+  const auto original_faces = box.PlanarFaces();
+  const auto inset_faces = inset.PlanarFaces();
+  int untouched_matches = 0;
+  for (const auto& of : original_faces) {
+    if (of.loop.size() != 4) continue;  // only the quad faces are checked point-for-point below
+    for (const auto& nf : inset_faces) {
+      if (nf.loop.size() != of.loop.size()) continue;
+      bool all_match = true;
+      for (size_t i = 0; i < of.loop.size(); ++i) {
+        if (of.loop[i].DistanceTo(nf.loop[i]) > 1e-9) { all_match = false; break; }
+      }
+      if (all_match) { ++untouched_matches; break; }
+    }
+  }
+  Check(untouched_matches == 5,
+        "all 5 of the box's other faces (bottom, front, back, left, right) survive in the result with their own "
+        "loop points exactly unchanged - only the named top face was replaced");
+
+  // The inset ring's own 4 corners, hand-computed independently: an
+  // axis-aligned square shrinking by `distance` from each of its 4 edges
+  // moves every corner toward the face's own center by exactly `distance`
+  // along each in-plane axis.
+  const std::vector<Point3d> expected_inner = {Point3d(2, 2, 10), Point3d(8, 2, 10), Point3d(8, 8, 10),
+                                                Point3d(2, 8, 10)};
+  bool found_inner = false;
+  for (const auto& nf : inset_faces) {
+    if (nf.loop.size() != 4) continue;
+    if (std::fabs(nf.plane.origin.z - 10.0) > 1e-9) continue;
+    // candidate: check if it's the SMALL (inset) square, not one of the 5 originals, by area.
+    double area = 0.0;
+    for (size_t i = 0; i < 4; ++i) {
+      const Point3d& p = nf.loop[i];
+      const Point3d& q = nf.loop[(i + 1) % 4];
+      area += p.x * q.y - q.x * p.y;
+    }
+    area = std::fabs(area) * 0.5;
+    if (std::fabs(area - 36.0) > 1e-6) continue;  // the inset 6x6 square's own area
+    bool all_corners_match = true;
+    for (const Point3d& expected : expected_inner) {
+      bool hit = false;
+      for (const Point3d& actual : nf.loop) {
+        if (actual.DistanceTo(expected) < 1e-9) { hit = true; break; }
+      }
+      all_corners_match = all_corners_match && hit;
+    }
+    if (all_corners_match) { found_inner = true; break; }
+  }
+  Check(found_inner, "the inset ring's own 4 corners land exactly on the independently hand-computed "
+                      "concentric 6x6 square at z=10");
+}
+
+// depth != 0 raises the inset ring along the face's own outward normal,
+// turning the flat inset into a genuine pyramidal-frustum-shaped plinth
+// bulging out from the original face - an exact, independently-derivable
+// closed form distinct from the flat (depth=0) case above: the frustum
+// volume (h/3)(A0 + A1 + sqrt(A0*A1)) between the ORIGINAL (unmoved,
+// area A0) outer boundary and the raised (area A1) inset boundary.
+void TestInsetPlanarFaceOnBoxTopFaceWithDepthMatchesExactFrustumVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::InsetPlanarFace;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const double distance = 1.0, depth = 0.5;
+  const Brep inset = InsetPlanarFace(box, 1, distance, depth);
+
+  const double a0 = 10.0 * 10.0;                                    // the original top face's own area
+  const double side1 = 10.0 - 2.0 * distance;                       // the inset square's own side length
+  const double a1 = side1 * side1;
+  const double frustum_volume = (depth / 3.0) * (a0 + a1 + std::sqrt(a0 * a1));
+  const double expected_total = 1000.0 + frustum_volume;
+
+  Check(std::fabs(PlanarBrepVolumeExact(inset) - expected_total) < 1e-6,
+        "InsetPlanarFace(distance=1.0, depth=0.5) on a box's top face matches the exact closed-form pyramidal "
+        "frustum volume added above the original flat face - not merely a plausible-looking number");
+}
+
+void TestInsetPlanarFaceArgumentChecks() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::InsetPlanarFace;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  bool threw = false;
+  try { InsetPlanarFace(box, 99, 1.0, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses an out-of-range face_index");
+
+  threw = false;
+  try { InsetPlanarFace(box, 1, 0.0, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses a zero distance");
+
+  threw = false;
+  try { InsetPlanarFace(box, 1, -1.0, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses a negative distance");
+
+  threw = false;
+  try { InsetPlanarFace(box, 1, std::numeric_limits<double>::quiet_NaN(), 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses a NaN distance");
+
+  threw = false;
+  try { InsetPlanarFace(box, 1, std::numeric_limits<double>::infinity(), 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses an infinite distance");
+
+  threw = false;
+  try { InsetPlanarFace(box, 1, 1.0, std::numeric_limits<double>::quiet_NaN()); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses a NaN depth");
+
+  threw = false;
+  try { InsetPlanarFace(box, 1, 1.0, std::numeric_limits<double>::infinity()); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses an infinite depth");
+
+  // distance reaching the face's own inradius (5.0 for a 10x10 square)
+  // folds a corner past the opposite side - no valid inset exists.
+  threw = false;
+  try { InsetPlanarFace(box, 1, 5.0, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses a distance reaching the face's own inradius");
+
+  threw = false;
+  try { InsetPlanarFace(box, 1, 8.0, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses a distance exceeding the face's own inradius");
+}
+
 // A right tetrahedron (apex at the origin, base triangle in the plane
 // z=h) is a genuinely non-axis-aligned, non-rectangular convex solid -
 // moving its BASE face outward by `d` (the other 3 face planes, which
@@ -69665,6 +69812,9 @@ int main() {
   TestShellClosedSphereMatchesExactShellVolume();
   TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle();
   TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces();
+  TestInsetPlanarFaceOnBoxTopFaceFlatMatchesUnchangedVolumeAndCorrectTopology();
+  TestInsetPlanarFaceOnBoxTopFaceWithDepthMatchesExactFrustumVolume();
+  TestInsetPlanarFaceArgumentChecks();
   TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling();
   TestOffsetSolidConvexPlanarUniformBoxMatchesExactVolume();
   TestOffsetSolidConvexPlanarPerFaceBoxMatchesExactBoundingBox();
