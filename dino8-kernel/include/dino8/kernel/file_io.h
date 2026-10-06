@@ -178,7 +178,13 @@ struct LayoutInfo {
 // the owning layout was somehow removed since). `x_mm`/`y_mm`/
 // `width_mm`/`height_mm` are the detail's own rectangular boundary, in
 // the same page-space millimeter coordinates AddLayout()'s own
-// page_width_mm/page_height_mm are measured in.
+// page_width_mm/page_height_mm are measured in. `camera_location`/
+// `target_point` are std::nullopt when AddDetailView() was never given
+// a nested camera (the disclosed narrowing an earlier session on this
+// bullet left open: "this call does not attempt the detail's own nested
+// model-space camera") - the same std::nullopt-means-"not set" contract
+// `ObjectAttributes`' own `render_color`/`linetype_index` fields already
+// use elsewhere in this file.
 struct DetailViewInfo {
   std::string name;
   int layout_index = -1;
@@ -187,6 +193,32 @@ struct DetailViewInfo {
   double width_mm = 0.0;
   double height_mm = 0.0;
   double page_per_model_ratio = 0.0;
+  std::optional<Point3d> camera_location;
+  std::optional<Point3d> target_point;
+  Vector3d camera_up = Vector3d(0.0, 0.0, 1.0);
+};
+
+// A straight-path extrusion (Rhino's own lightweight ON_Extrusion
+// surface representation - the result of e.g. ExtrudeCrv/ExtrudeSrf,
+// distinct from both a full Brep and a tessellated Mesh) read back from
+// Model::ExtrusionAt() below - the read-side counterpart to
+// Model::AddExtrusion()'s own parameters. `profile` is the closed 2D
+// outer cross-section, as (x, y) points in the extrusion's own local
+// profile plane (world XY, since AddExtrusion() always starts the path
+// at the world origin) - matching the WORLD-coordinate convention
+// AddHatch()'s own `boundary` parameter already uses for a 2D boundary
+// in this file, not OpenNURBS' internal plane-local curve storage.
+// `path_length` is the straight-line distance between the extrusion's
+// own path start and end (`ON_Extrusion::PathStart()`/`PathEnd()`), not
+// re-derived from `profile` - this kernel always starts the path at the
+// world origin along world +Z, so this is also simply the end point's
+// own Z coordinate, but reported via the real OpenNURBS accessors
+// rather than assumed.
+struct ExtrusionInfo {
+  std::string name;
+  std::vector<Point2d> profile;
+  double path_length = 0.0;
+  bool capped = false;
 };
 
 // One object's attributes, read back from Model::ObjectAttributesAt()
@@ -794,27 +826,39 @@ class Model {
   // in one shared unit system - e.g. 0.02083 for "1/4 inch on the page =
   // 1 foot in the model", that field's own documented example); this call
   // does not attempt the detail's own nested model-space camera
-  // (`ON_DetailView::m_view`), left at its default, unpopulated state - a
-  // caller gets a real page-space rectangle and scale but not yet a
-  // specific view into model space, a disclosed narrowing rather than
-  // the "separate, larger feature" AddLayout() deferred entirely. A
-  // detail IS an ordinary ModelGeometry object (`ON::detail_object`), but
-  // unlike a mesh or brep it is tied to one specific page via
-  // `ON_3dmObjectAttributes::m_viewport_id` (set to that layout's own
-  // `ON_Viewport::ViewportId()`) and `m_space` switched to
-  // `ON::active_space::page_space` - the same "an object restricted to
-  // one specific page" mechanism `m_viewport_id`'s own doc comment
-  // describes, not otherwise used anywhere else in this file. Returns -1
-  // without adding anything if `name` is empty, `layout_index` does not
-  // name a layout this model actually has, `width_mm`/`height_mm` is not
-  // positive, or the polyline-to-NURBS conversion itself fails.
+  // (`ON_DetailView::m_view`) UNLESS both `camera_location` and
+  // `target_point` are given (both default to `std::nullopt`, so every
+  // existing caller keeps getting the old unpopulated-`m_view` behavior
+  // unchanged) - closing that disclosed narrowing from an earlier
+  // session on this bullet. When given, `detail->m_view` is built the
+  // same way `AddNamedView()` above already builds its own `ON_3dmView`
+  // (`SetCameraLocation`/`SetCameraDirection`/`SetCameraUp`, the look
+  // direction derived from `target_point - camera_location` with the
+  // same degenerate-direction fallback to world `(0, 0, -1)`), with
+  // `m_view_type` set to `ON::view_type::nested_view_type` - the one
+  // field that marks a view as a detail's own nested view rather than a
+  // plain 3D view, the same role `page_view_type` plays for a layout in
+  // `AddLayout()` above. A detail IS an ordinary ModelGeometry object
+  // (`ON::detail_object`), but unlike a mesh or brep it is tied to one
+  // specific page via `ON_3dmObjectAttributes::m_viewport_id` (set to
+  // that layout's own `ON_Viewport::ViewportId()`) and `m_space`
+  // switched to `ON::active_space::page_space` - the same "an object
+  // restricted to one specific page" mechanism `m_viewport_id`'s own doc
+  // comment describes, not otherwise used anywhere else in this file.
+  // Returns -1 without adding anything if `name` is empty,
+  // `layout_index` does not name a layout this model actually has,
+  // `width_mm`/`height_mm` is not positive, or the polyline-to-NURBS
+  // conversion itself fails.
   int AddDetailView(int layout_index, double x_mm, double y_mm, double width_mm, double height_mm,
                      double page_per_model_ratio = 1.0, const std::string& name = std::string(),
                      int layer_index = -1, std::optional<Color> render_color = std::nullopt,
                      const UserStrings& user_strings = UserStrings(),
                      std::optional<int> linetype_index = std::nullopt,
                      const std::vector<int>& group_indices = std::vector<int>(),
-                     std::optional<int> material_index = std::nullopt);
+                     std::optional<int> material_index = std::nullopt,
+                     std::optional<Point3d> camera_location = std::nullopt,
+                     std::optional<Point3d> target_point = std::nullopt,
+                     Vector3d camera_up = Vector3d(0.0, 0.0, 1.0));
 
   // Returns the number of detail views added via AddDetailView() above.
   int DetailViewCount() const;
@@ -826,6 +870,68 @@ class Model {
   // not naming a detail view this model actually has returns a
   // default-constructed DetailViewInfo.
   DetailViewInfo DetailViewAt(int detail_view_index) const;
+
+  // Adds a straight-path extrusion (Rhino's own lightweight
+  // ON_Extrusion surface - the result of e.g. ExtrudeCrv/ExtrudeSrf,
+  // distinct from both a full Brep and a tessellated Mesh) to the model
+  // and returns its index (>= 0) among extrusions specifically -
+  // closing the "extrusions" item this category's own ".3dm
+  // attribute/metadata fidelity" bullet opening enumeration names
+  // ("layers, materials+textures, linetypes, named views, lights,
+  // clipping planes, layouts/details, units, user strings, point
+  // clouds, extrusions, groups"), the last item on that list left
+  // unaddressed after every other named field closed in earlier
+  // sessions: before this, nothing in this kernel's `Model` wrapper
+  // could create an `ON_Extrusion` at all (the app's own read cast
+  // chain already handles reading one written by ANOTHER application -
+  // see "Rhino non-geometry/composite objects in .3dm" below - but this
+  // kernel had no way to WRITE one). `profile` (at least 3 points,
+  // closed automatically - the first point is not repeated) is the
+  // extrusion's own 2D outer cross-section, taken in the world XY plane
+  // at the world origin; the path always runs straight from the world
+  // origin along world +Z by `path_length` - wraps
+  // `ON_Extrusion::SetPathAndUp(origin, (0,0,path_length), up=(0,1,0))`
+  // followed by `SetOuterProfile(profile, capped)`. `SetOuterProfile()`
+  // itself auto-corrects the profile's own winding direction
+  // (counter-clockwise) regardless of which way `profile` winds, and
+  // auto-converts it to a genuine 2D curve - the same "ask the real
+  // OpenNURBS constructor to validate/normalize, don't re-derive it"
+  // stance this file already takes elsewhere (e.g. `AddDimension()`'s
+  // own `ON_DimLinear::CreateAligned()` call). `capped` adds flat end
+  // caps at both ends when true (a capped extrusion is a solid; an
+  // uncapped one is an open sheet) - `ON_Extrusion::SetOuterProfile()`
+  // itself only ever takes one single `bCap` argument for both ends, so
+  // "cap one end only" is not a distinction this type can even express.
+  // Returns -1 without adding anything if `name` is empty, `profile`
+  // has fewer than 3 points, `path_length` is not positive, or the
+  // underlying `SetPathAndUp()`/`SetOuterProfile()` calls themselves
+  // fail - neither validates self-intersection, only degeneracy
+  // (a zero-length path, or a profile curve `ChangeDimension(2)`/
+  // bounding-box checks reject outright), so a self-intersecting but
+  // otherwise non-degenerate profile is not itself refused here. A
+  // non-straight/tapered path,
+  // inner profiles (holes through the extrusion), and placing the path
+  // anywhere but the world origin are each a disclosed, larger
+  // remaining gap - only the simplest single-outer-profile, straight,
+  // world-origin-anchored case is supported here.
+  int AddExtrusion(const std::vector<Point2d>& profile, double path_length, bool capped = true,
+                    const std::string& name = std::string(), int layer_index = -1,
+                    std::optional<Color> render_color = std::nullopt,
+                    const UserStrings& user_strings = UserStrings(),
+                    std::optional<int> linetype_index = std::nullopt,
+                    const std::vector<int>& group_indices = std::vector<int>(),
+                    std::optional<int> material_index = std::nullopt);
+
+  // Returns the number of extrusions added via AddExtrusion() above.
+  int ExtrusionCount() const;
+
+  // Returns the extrusion at `extrusion_index` (as counted by
+  // ExtrusionCount() above) - the read-side counterpart to
+  // AddExtrusion()'s own parameters, the same read-side gap every other
+  // `*At()` accessor above closes for its own table. `extrusion_index`
+  // not naming an extrusion this model actually has returns a
+  // default-constructed ExtrusionInfo.
+  ExtrusionInfo ExtrusionAt(int extrusion_index) const;
 
   // Adds a light (Rhino's own Point/Directional light object) to the model
   // and returns its index (>= 0) among lights specifically - "lights" is
