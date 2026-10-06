@@ -1,0 +1,71 @@
+# Alias targets that are real command LINES, not just a bare command name
+# (CommandEngine::Execute/ResolveName) - a real bug fix, not a scope
+# narrowing: `Alias` (cmd_misc.cpp's `AliasCommand`) has always happily
+# captured ANY typed text as an alias's target, including one with its own
+# arguments or several ';'-separated commands - but invoking the alias fed
+# that whole string straight to `RunCommand` as if it were itself one
+# literal registered command name, so anything beyond a bare name (like
+# the shipped "b" -> "Box") failed with "Unknown command: <the whole alias
+# text>", never a disclosed/narrowed scope limit, just silently broken.
+# This also meant a saved macro (MacroSave/RunSavedMacro, cmd_misc.cpp)
+# could never actually be bound to an alias - PARITY_MAP.md's "VBA-style
+# macro recorder and editor" item's own "nothing here binds a saved macro
+# to a toolbar button or alias yet" line - since `RunSavedMacro <name>` is
+# exactly the multi-word alias target this bug broke.
+#
+# Every multi-word alias target below is quoted (CommandEngine::Tokenize
+# keeps double-quoted text as one token - the same reason MacroSave/
+# MacroLoad quote a multi-word name elsewhere in this test suite): a
+# script line is tokenized the same way typed input is, so an UNQUOTED
+# multi-word line here would only ever capture its own first token as the
+# alias target, same as typing one at a real command line would.
+#
+# Object ids/counts below assume a fresh, empty document (true regardless
+# of the shared macro_text buffer other scripts in this smoke.sh run may
+# have already left content in - see macro_library_script.txt's own header
+# comment for why that's a safe assumption to make about THIS document,
+# unlike the shared buffer itself).
+
+Alias
+ln1
+"Line 0,0,0 10,0,0"
+SelNone
+ln1
+@expect_objects 1
+
+# A ';'-separated multi-command alias, the same macro shape Macro/
+# RunSavedMacro already execute.
+Alias
+multi1
+"Line 20,0,0 30,0,0;Circle 40,0,0 5"
+SelNone
+multi1
+@expect_objects 3
+
+# A plain bare-name alias (the pre-existing, already-working case) must be
+# completely unaffected by this fix - same shipped default "b" -> "Box"
+# InstallDefaultAliases installs, with its own trailing typed args (the
+# pre-existing "extra args after a bare alias" path, also unchanged).
+SelNone
+b 0,0,0 10,10,10 5
+@expect_objects 4
+
+# Binding a saved macro to an alias: the specific case this fix was aimed
+# at. SelLast + BoundingBox reads the real geometry of the alias's own
+# replayed Box line back - immune to how many other lines the shared
+# macro_text buffer happens to carry in from an earlier script in this
+# same smoke.sh run (see macro_library_script.txt's own header comment),
+# since RecordMacro only ever appends, so this script's own Box line is
+# always the LAST line replayed.
+RecordMacro On
+Box 50,0,0 55,5,5 5
+RecordMacro Off
+MacroSave mymac
+Alias
+runmac1
+"RunSavedMacro mymac"
+SelNone
+runmac1
+SelNone
+SelLast
+BoundingBox

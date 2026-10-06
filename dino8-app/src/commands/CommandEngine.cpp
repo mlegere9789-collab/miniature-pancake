@@ -349,6 +349,25 @@ void CommandEngine::Execute(const std::string& raw_input) {
     app_.State().macro_text += input + "\n";
   }
   pending_inputs_.assign(rest.begin(), rest.end());
+  // An alias's own target can be a real command LINE with its own
+  // arguments, or several ';'-separated command lines - the same macro
+  // shape Macro/RunSavedMacro (cmd_misc.cpp) already execute - not just a
+  // single bare command name the way InstallDefaultAliases' own "b" ->
+  // "Box" is. Before this, Alias happily stored that richer text
+  // (`AliasCommand` never restricted what it captures) but invoking the
+  // alias fed the WHOLE stored string straight to `RunCommand` as if it
+  // were itself one literal registered command name, so anything beyond
+  // a bare name failed with "Unknown command: <the whole alias text>" -
+  // every bare-name case (whether from an alias, a direct typed name, or
+  // a unique prefix match) already has `Find(name)` succeed, so this only
+  // ever changes behavior for the new case: an alias target that does
+  // NOT, by itself, name one registered command.
+  if (!Find(name) && (name.find(' ') != std::string::npos || name.find(';') != std::string::npos)) {
+    std::istringstream alias_lines(name);
+    std::string alias_line;
+    while (std::getline(alias_lines, alias_line, ';')) if (!alias_line.empty()) Execute(alias_line);
+    return;
+  }
   RunCommand(name, script);
 }
 
