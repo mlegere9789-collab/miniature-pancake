@@ -541,6 +541,40 @@ class NurbsCurve {
   // is. A periodic curve comes back clamped (same as before).
   Result ElevateDegree(int new_degree);
 
+  // Degree REDUCTION - the direction `ElevateDegree()` above does not
+  // attempt (per its own doc comment, "never lowers"), closing
+  // PARITY_MAP's own disclosed "Change curve degree ... no reduction"
+  // gap. Unlike `ElevateDegree()`'s exact, shape-preserving Bezier
+  // construction, there is no exact closed form for lowering a general
+  // NURBS curve's degree while keeping its shape - a genuine least-
+  // squares APPROXIMATION is the honest answer here, the same tier this
+  // class's own `OffsetInPlane()` general-curve case and
+  // `MakeNonRational(tolerance, ...)` already use: sample this curve
+  // densely (`max(200, 20 * ControlPointCount())` points), then refit at
+  // `target_degree` via the already-tested `FitLeastSquares()`, starting
+  // from the minimum possible control-point count (`target_degree + 1`,
+  // a single Bezier segment) and doubling it - exactly `OffsetInPlane()`'s
+  // own "start small, double, measure, stop once the real worst-case
+  // deviation (each sample's `ClosestPoint()` on the fresh fit, not the
+  // least-squares residual `FitLeastSquares()` itself minimizes) is at or
+  // under `tolerance`" search, capped at this curve's own current
+  // `ControlPointCount()` (more control points at a LOWER degree than
+  // the original already had at its higher one defeats the entire point
+  // of reducing degree, so this refuses rather than silently returning a
+  // "reduced" curve that is not actually smaller). Mutates this curve in
+  // place only on success; returns `Result::Failed` (curve left
+  // untouched) if `tolerance` still isn't met at that ceiling, and
+  // `Result::NoOpAlreadySatisfied` if `target_degree >= Degree()` (there
+  // is nothing to reduce - mirroring `ElevateDegree()`'s own convention
+  // for the symmetric case, rather than silently no-op-ing a request this
+  // method was never asked to do). Throws std::invalid_argument if
+  // `target_degree < 1` or `tolerance` is not positive. `out_max_deviation`,
+  // if non-null, receives the achieved (or, on failure, the best
+  // attempted) worst-case deviation - a sampled, not formally certified,
+  // bound, the same honesty this file's other sampling-based deviation
+  // checks already disclose.
+  Result ReduceDegree(int target_degree, double tolerance, double* out_max_deviation = nullptr);
+
   // Whether the curve's start and end points coincide - either because
   // it's genuinely periodic (its own knot vector wraps) or because a
   // clamped curve's own two endpoints just happen to be the same point
