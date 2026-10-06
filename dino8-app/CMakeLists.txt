@@ -380,6 +380,11 @@ set(DINO8_SOURCES
   src/commands/cmd_compare.cpp
   src/commands/cmd_sheetset.cpp
   src/net/ComputeServer.cpp
+  src/net/Collab.cpp
+  src/net/CollabSession.cpp
+  src/commands/cmd_collab.cpp
+  src/ml/CommandPredictor.cpp
+  src/commands/cmd_ai.cpp
 )
 
 # Real OS-clipboard image backend for ViewCaptureToClipboard/
@@ -517,6 +522,13 @@ add_custom_command(TARGET Dino8 POST_BUILD
   # panel's "Load Bundled Index" button work with no path or URL typed in.
   COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Dino8>/data/plugin-index
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/plugin-index/index.json $<TARGET_FILE_DIR:Dino8>/data/plugin-index/
+  # The trained CommandPredictor weights (data/ml/command_predictor_weights.txt,
+  # see tools/train_command_predictor.cpp) ship next to the executable too -
+  # AiSuggestCommand's own FindWeightsPath (src/commands/cmd_ai.cpp) looks
+  # for it there first, the same "real runtime asset copied at build time"
+  # treatment plugin-index/index.json gets just above.
+  COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Dino8>/data/ml
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/ml/command_predictor_weights.txt $<TARGET_FILE_DIR:Dino8>/data/ml/
   COMMENT "Copying Dino8 data files next to the executable")
 
 # ---------------------------------------------------------------------------
@@ -930,6 +942,50 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_compute_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_compute_server COMMAND dino8_test_compute_server)
 
+  # Real-time multi-user collaboration relay (src/net/Collab.h/.cpp) and its
+  # app-level session wrapper (src/net/CollabSession.h/.cpp) - see
+  # PARITY_MAP.md's "Real-time multi-user collaboration / co-editing"
+  # (app_ecosystem) / "Real-time multi-user collaborative editing" (app_ux)
+  # items, which had no network code of any kind before this. Collab.cpp has
+  # no Document dependency (standalone, like dino8_test_compute_server
+  # above); CollabSession.cpp needs a real Document plus io/File3dm.cpp's
+  # .3dm reader/writer to round-trip a snapshot through, so this target pulls
+  # in the same Document/BrepMesher/File3dm dependency set
+  # dino8_test_object_grid above already needs, rather than linking the
+  # whole app.
+  add_executable(dino8_test_collab tests/test_collab.cpp src/net/Collab.cpp src/net/CollabSession.cpp
+                                    src/doc/Document.cpp src/doc/SceneObject.cpp src/doc/SubObjectEdit.cpp
+                                    src/geom/BrepMesher.cpp src/spatial/ObjectGrid.cpp src/io/File3dm.cpp
+                                    src/drafting/HatchLibrary.cpp src/geom/TextOutline.cpp src/util/json_mini.cpp
+                                    tests/test_collab_format_number_shim.cpp)
+  # geom/TextOutline.cpp (text-as-curves, used by File3dm.cpp's text export
+  # path) needs OpenNURBS' own bundled FreeType headers/library - the exact
+  # same include dir and target Dino8 itself links a few hundred lines above.
+  target_include_directories(dino8_test_collab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${opennurbs_SOURCE_DIR}/freetype263/include)
+  target_link_libraries(dino8_test_collab PRIVATE dino8_kernel opennurbs_public_freetype)
+  add_test(NAME dino8_collab COMMAND dino8_test_collab)
+
+  # A real, small, trained neural network (src/ml/CommandPredictor.h/.cpp) -
+  # see PARITY_MAP.md's "Real AI/ML-based modeling assistance"
+  # (app_ecosystem) / "AI-assisted modeling or scripting" (app_scripting)
+  # items, which had no neural/inference code anywhere before this (the
+  # existing Smart Blocks clustering feature explicitly documents itself as
+  # classical geometry, not ML - see cmd_smartblocks.cpp). Standalone, no
+  # Document/app dependency at all.
+  add_executable(dino8_test_command_predictor tests/test_command_predictor.cpp src/ml/CommandPredictor.cpp)
+  target_include_directories(dino8_test_command_predictor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_command_predictor COMMAND dino8_test_command_predictor)
+
+  # Offline trainer for the same CommandPredictor (tools/
+  # train_command_predictor.cpp) - not a test (nothing to assert; it writes
+  # data/ml/command_predictor_weights.txt, the real runtime asset
+  # AiSuggestCommand loads), built here for the same reason dino8_undo_bench
+  # above is: a standalone CLI tool, not part of the GUI app, with no reason
+  # to drag in GLFW/ImGui/GL to build it.
+  add_executable(dino8_train_command_predictor tools/train_command_predictor.cpp src/ml/CommandPredictor.cpp
+                                                src/util/json_mini.cpp)
+  target_include_directories(dino8_train_command_predictor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
   # Standalone timing benchmark for Document's diff-based undo/redo history
   # (see tests/undo_bench.cpp and tests/undo_scaling_notes.md) - not an
   # add_test(), it has nothing to assert, just numbers to print.
@@ -1141,16 +1197,19 @@ if(APPLE)
   install(FILES ${DINO8_DATA_FILES} DESTINATION "Dino8.app/Contents/Resources/data" COMPONENT app)
   install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n DESTINATION "Dino8.app/Contents/Resources/data" COMPONENT app)
   install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/plugin-index/index.json DESTINATION "Dino8.app/Contents/Resources/data/plugin-index" COMPONENT app)
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/ml/command_predictor_weights.txt DESTINATION "Dino8.app/Contents/Resources/data/ml" COMPONENT app)
 elseif(WIN32)
   install(TARGETS Dino8 RUNTIME DESTINATION . COMPONENT app)
   install(FILES ${DINO8_DATA_FILES} DESTINATION data COMPONENT app)
   install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n DESTINATION data COMPONENT app)
   install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/plugin-index/index.json DESTINATION data/plugin-index COMPONENT app)
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/ml/command_predictor_weights.txt DESTINATION data/ml COMPONENT app)
 else()
   install(TARGETS Dino8 RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT app)
   install(FILES ${DINO8_DATA_FILES} DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data COMPONENT app)
   install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data COMPONENT app)
   install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/plugin-index/index.json DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data/plugin-index COMPONENT app)
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/ml/command_predictor_weights.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data/ml COMPONENT app)
   install(FILES packaging/linux/dino8.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications COMPONENT app)
   install(FILES resources/dino8.png DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps RENAME dino8.png COMPONENT app OPTIONAL)
 endif()

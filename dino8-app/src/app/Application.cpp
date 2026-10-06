@@ -88,6 +88,9 @@ void RegisterSessionCommands(CommandEngine&);  // Dig* digitizer, Worksession/Li
 void RegisterCompareCommands(CommandEngine&);  // DwgCompare/XrefCompare/CompareClear
 void RegisterSheetSetCommands(CommandEngine&);  // SheetSetNew/Add/Open/Plot/Publish (cmd_sheetset.cpp)
 void RegisterHistoryCommands(CommandEngine&);   // History/RecordHistory/UpdateHistory (cmd_history.cpp)
+void RegisterCollabCommands(CommandEngine&);    // CollabHost/CollabJoin/CollabLeave/CollabStatus (cmd_collab.cpp)
+void UpdateCollabSession(Document&);  // net/CollabSession.cpp: pushes/applies a real-time collaboration session's snapshots
+void RegisterAiCommands(CommandEngine&);        // AiSuggestCommand (cmd_ai.cpp)
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -385,6 +388,8 @@ void Application::RegisterCommands() {
   dino8::app::RegisterStandardsCommands(*engine_);  // Standards, CheckStandards (CAD Standards Checker subset)
   RegisterSheetSetCommands(*engine_);    // SheetSetNew/Add/Open/Plot/Publish
   RegisterHistoryCommands(*engine_);     // History/RecordHistory/UpdateHistory - runs last so it always wins over cmd_misc.cpp's dead stub comment
+  RegisterCollabCommands(*engine_);      // CollabHost/CollabJoin/CollabLeave/CollabStatus
+  RegisterAiCommands(*engine_);          // AiSuggestCommand
   RegisterFlowCommands(*engine_);       // very last: Dino Flow + plug-ins, replaces the Grasshopper/plug-in stubs
 }
 
@@ -1105,6 +1110,7 @@ void Application::Frame() {
     Notify(std::to_string(refreshed) + (refreshed == 1 ? " worksession reference model auto-reloaded from disk"
                                                          : " worksession reference models auto-reloaded from disk"));
   }
+  UpdateCollabSession(doc_);
   HandleShortcuts();
   ViewToolsFrame(*this);
   dino8::input::Frame(*this);  // SpaceMouse: apply queued 6-DOF deltas, draw its options page
