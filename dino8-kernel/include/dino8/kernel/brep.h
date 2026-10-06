@@ -2688,6 +2688,19 @@ class Brep {
   // TessellateNonUniformAdaptive() followed by Mesh::MergeAndWeld().
   Mesh TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) const;
 
+  // Angle-based counterpart to TessellateAdaptive(): per-face divisions
+  // come from NurbsSurface::SuggestedDivisionsByAngle(angle_tolerance)
+  // instead of SuggestedDivisions(chord_tolerance) - the Brep-level entry
+  // point for PARITY_MAP's own disclosed "Angular tolerance control
+  // exposed as a general faceting-quality knob (as opposed to per-command
+  // heuristics)" gap: a caller tessellating a whole body can now ask for a
+  // maximum facet-turning-angle bound directly, the same one-call
+  // convenience TessellateAdaptive() already gives chord_tolerance.
+  std::vector<Mesh> TessellateAdaptiveByAngle(double angle_tolerance) const;
+
+  // TessellateAdaptiveByAngle() followed by Mesh::MergeAndWeld().
+  Mesh TessellateToClosedMeshAdaptiveByAngle(double angle_tolerance) const;
+
   // A purely additive, opt-in sibling of Tessellate() that closes
   // BooleanCombineMixed's own disclosed mesh-watertightness gap (see
   // detail::ClipPolygonByCircle3d's own doc comment, and

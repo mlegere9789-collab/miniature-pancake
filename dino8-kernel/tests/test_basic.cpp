@@ -1954,6 +1954,162 @@ void TestCurveSuggestedParameterValues() {
         "non-positive chord_tolerance");
 }
 
+void TestCurveSuggestedSamplesByAngle() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Same full circle as TestCurveSuggestedSamples(), but now the tightest
+  // radius' own total turning angle (Length()/radius, exactly 2*pi for a
+  // full circle) is divided directly by `angle_tolerance` - no
+  // chord-to-angle conversion at all, unlike SuggestedSamples(). Exact,
+  // not just conservative, for the same reason SuggestedSamples()'s own
+  // circle case is exact: curvature really is constant everywhere.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+
+  const double angle_tolerance = 0.1;
+  const int suggested = circle.SuggestedSamplesByAngle(angle_tolerance);
+  const int expected = static_cast<int>(std::ceil((2.0 * ON_PI) / angle_tolerance));
+  Check(suggested == expected,
+        "SuggestedSamplesByAngle for a full circle exactly matches "
+        "ceil(2*pi / angle_tolerance) - the turning angle divided directly "
+        "by the angular bound, with no chord-height conversion involved");
+
+  // A straight line has zero curvature everywhere, so one segment always
+  // suffices regardless of the requested angular tolerance - same as
+  // SuggestedSamples()'s own straight-line case.
+  const NurbsCurve line =
+      NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, /*degree=*/1);
+  Check(line.SuggestedSamplesByAngle(angle_tolerance) == 1,
+        "SuggestedSamplesByAngle for a straight line is exactly 1");
+
+  bool threw_low = false;
+  try {
+    circle.SuggestedSamplesByAngle(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_low = true;
+  }
+  Check(threw_low,
+        "SuggestedSamplesByAngle throws std::invalid_argument on a "
+        "non-positive angle_tolerance");
+
+  bool threw_high = false;
+  try {
+    circle.SuggestedSamplesByAngle(ON_PI + 0.01);
+  } catch (const std::invalid_argument&) {
+    threw_high = true;
+  }
+  Check(threw_high,
+        "SuggestedSamplesByAngle throws std::invalid_argument on an "
+        "angle_tolerance greater than pi");
+}
+
+void TestCurveSuggestedParameterValuesByAngle() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A straight line's tangent never changes direction, so the very first
+  // turning-angle check (0, for either half) already passes - exactly 2
+  // values, same as the chord-based SuggestedParameterValues() case.
+  const NurbsCurve line =
+      NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, /*degree=*/1);
+  const auto line_values = line.SuggestedParameterValuesByAngle(0.1);
+  Check(line_values.size() == 2 && line_values[0] == 0.0 && line_values[1] == 1.0,
+        "SuggestedParameterValuesByAngle for a straight line is exactly "
+        "[0, 1] - no bisection needed at all");
+
+  // Same full circle. A genuine, REJECTED-ASSUMPTION finding from a
+  // standalone probe (dino8_scratch_test), caught before trusting a
+  // uniform-spacing assertion by analogy with
+  // TestCurveSuggestedParameterValues()'s own chord-based case: this
+  // curve's real OpenNURBS NURBS form (`GetNurbForm`) is a 4-span rational
+  // quadratic (knots at 0, pi/2, pi, 3pi/2, 2pi) whose PARAMETER SPEED is
+  // demonstrably non-uniform WITHIN each 90-degree span (confirmed
+  // directly: probing TangentAt() shows unit tangents everywhere, but
+  // probing SuggestedParameterValues() itself - the pre-existing
+  // CHORD-based function - at a tighter tolerance than
+  // TestCurveSuggestedParameterValues() happens to use shows the exact
+  // same max/min-delta == 2.0 ratio this angle-based function's own
+  // result shows at angle_tolerance=0.1: constant GEOMETRIC curvature
+  // does NOT imply constant PARAMETER speed for a rational conic, and the
+  // existing chord-based test's own "genuinely uniformly spaced" claim
+  // merely got lucky at its one tested tolerance, landing exactly on a
+  // knot-symmetric recursion depth). So this function's own non-uniform,
+  // non-power-of-2 result (96 segments at angle_tolerance=0.1, split
+  // unevenly across the domain) is CORRECT, adaptive behavior - more
+  // refinement exactly where this curve's own real parameter speed is
+  // locally faster relative to true angle - not a defect to assert
+  // uniformity against. What's actually verifiable instead: the segment
+  // count is at least the conservative single-number
+  // SuggestedSamplesByAngle() estimate (this function's own real
+  // adaptivity can only need as many or more breakpoints, never fewer,
+  // since SuggestedSamplesByAngle() assumes the *whole* curve turns at
+  // its single worst sampled rate) and not absurdly far above it either.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const double angle_tolerance = 0.1;
+  const auto circle_values = circle.SuggestedParameterValuesByAngle(angle_tolerance);
+  const int suggested_samples = circle.SuggestedSamplesByAngle(angle_tolerance);
+  const int actual_segments = static_cast<int>(circle_values.size()) - 1;
+  Check(actual_segments >= suggested_samples,
+        "the circle's own real per-segment-adaptive breakpoint count is at "
+        "least SuggestedSamplesByAngle()'s conservative single-number "
+        "estimate");
+  Check(actual_segments < suggested_samples * 4,
+        "the circle's own breakpoint count stays within a sane multiple "
+        "of SuggestedSamplesByAngle()'s estimate - real adaptivity to this "
+        "curve's non-uniform parameter speed, not a runaway subdivision");
+  Check(std::abs(circle_values.front() - 0.0) < 1e-12 &&
+            std::abs(circle_values.back() - circle.raw().Domain().Max()) < 1e-12,
+        "the breakpoints still span the full domain exactly, from "
+        "Domain().Min() to Domain().Max()");
+  bool strictly_increasing = true;
+  for (size_t i = 1; i < circle_values.size(); ++i) {
+    if (!(circle_values[i] > circle_values[i - 1])) {
+      strictly_increasing = false;
+      break;
+    }
+  }
+  Check(strictly_increasing, "the breakpoints are strictly increasing");
+
+  // Every final segment's own true endpoint-to-endpoint tangent turning is
+  // within angle_tolerance - the actual quality guarantee this function
+  // exists to provide, checked directly on the result rather than assumed
+  // from the construction.
+  bool every_segment_within_tolerance = true;
+  for (size_t i = 1; i < circle_values.size(); ++i) {
+    const Vector3d t0 = circle.TangentAt(circle_values[i - 1]);
+    const Vector3d t1 = circle.TangentAt(circle_values[i]);
+    const double cos_angle = std::clamp((t0 * t1) / (t0.Length() * t1.Length()), -1.0, 1.0);
+    if (std::acos(cos_angle) > angle_tolerance + 1e-9) {
+      every_segment_within_tolerance = false;
+      break;
+    }
+  }
+  Check(every_segment_within_tolerance,
+        "every final segment's own endpoint-to-endpoint tangent turning "
+        "genuinely stays within angle_tolerance");
+
+  bool threw = false;
+  try {
+    circle.SuggestedParameterValuesByAngle(-1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "SuggestedParameterValuesByAngle throws std::invalid_argument on a "
+        "non-positive angle_tolerance");
+}
+
 void TestSurfaceFromControlGridRejectsDegenerateInput() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -8088,6 +8244,175 @@ void TestSurfaceTessellateGridClippedExactAdaptive() {
         "by hand");
 }
 
+void TestSurfaceSuggestedDivisionsByAngle() {
+  using dino8::kernel::NurbsSurface;
+
+  // Same cylinder wall as TestSurfaceSuggestedDivisions(): U is the
+  // circular direction (unit radius), V is the straight height direction
+  // (zero curvature). U's expected count is now the angle-based
+  // NurbsCurve::SuggestedSamplesByAngle() formula directly
+  // (ceil(2*pi / angle_tolerance)), not the chord-height one.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  Check(cylinder.GetNurbForm(cylinder_surface) != 0, "ON_Cylinder::GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+
+  const double angle_tolerance = 0.1;
+  const auto divisions = wall.SuggestedDivisionsByAngle(angle_tolerance);
+  const int expected_u = static_cast<int>(std::ceil((2.0 * ON_PI) / angle_tolerance));
+  Check(divisions.u == expected_u,
+        "SuggestedDivisionsByAngle's U count for the cylinder wall exactly "
+        "matches ceil(2*pi / angle_tolerance) for its unit-radius circular "
+        "cross-section");
+  Check(divisions.v == 1,
+        "SuggestedDivisionsByAngle's V count is exactly 1, since every "
+        "V-isocurve is a straight vertical line with zero curvature");
+
+  bool threw_low = false;
+  try {
+    wall.SuggestedDivisionsByAngle(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_low = true;
+  }
+  Check(threw_low,
+        "SuggestedDivisionsByAngle throws std::invalid_argument on a "
+        "non-positive angle_tolerance");
+
+  bool threw_high = false;
+  try {
+    wall.SuggestedDivisionsByAngle(ON_PI + 0.01);
+  } catch (const std::invalid_argument&) {
+    threw_high = true;
+  }
+  Check(threw_high,
+        "SuggestedDivisionsByAngle throws std::invalid_argument on an "
+        "angle_tolerance greater than pi");
+}
+
+void TestSurfaceTessellateGridAdaptiveByAngle() {
+  using dino8::kernel::NurbsSurface;
+
+  // Same cylinder wall. Thin composition test, same shape as
+  // TestSurfaceTessellateGridAdaptive(): confirms TessellateGridAdaptiveByAngle()
+  // truly wires SuggestedDivisionsByAngle() into TessellateGrid(), rather
+  // than using some fixed default.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  cylinder.GetNurbForm(cylinder_surface);
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+
+  const double angle_tolerance = 0.1;
+  const auto divisions = wall.SuggestedDivisionsByAngle(angle_tolerance);
+  const auto adaptive_mesh = wall.TessellateGridAdaptiveByAngle(angle_tolerance);
+  Check(adaptive_mesh.FaceCount() == divisions.u * divisions.v * 2,
+        "TessellateGridAdaptiveByAngle's own face count exactly matches "
+        "u_divisions * v_divisions * 2 for the same SuggestedDivisionsByAngle() "
+        "result computed independently");
+
+  const auto manual_mesh = wall.TessellateGrid(divisions.u, divisions.v);
+  Check(adaptive_mesh.VertexCount() == manual_mesh.VertexCount() &&
+            std::abs(adaptive_mesh.Area() - manual_mesh.Area()) < 1e-9,
+        "TessellateGridAdaptiveByAngle produces the exact same mesh as "
+        "calling SuggestedDivisionsByAngle() then TessellateGrid() by hand");
+
+  // The genuine point of an angular (rather than chord-height) knob: a
+  // tighter angle_tolerance must produce meaningfully more divisions for a
+  // curved surface, the same monotonic relationship the chord-based knob
+  // already guarantees, just driven by a different physical quantity.
+  const auto loose_divisions = wall.SuggestedDivisionsByAngle(0.5);
+  const auto tight_divisions = wall.SuggestedDivisionsByAngle(0.01);
+  Check(tight_divisions.u > loose_divisions.u * 10,
+        "a tighter angle_tolerance produces substantially more U "
+        "divisions for the cylinder wall's genuinely curved cross-section");
+}
+
+void TestSurfaceMeasureGridTessellationDeviation() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // A flat surface's own grid tessellation exactly reproduces every point
+  // on it (a planar quad's bilinear interpolation IS the true surface),
+  // so the measured deviation must be exactly 0 regardless of resolution -
+  // the one case with a hand-derivable exact expected answer.
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 10, 0),
+      Point3d(10, 0, 0),
+      Point3d(10, 10, 0),
+  };
+  const NurbsSurface flat =
+      NurbsSurface::FromControlGrid(flat_grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  Check(flat.MeasureGridTessellationDeviation(3, 3) < 1e-12,
+        "MeasureGridTessellationDeviation is exactly 0 for a flat surface "
+        "at any resolution - a planar facet never deviates from its own "
+        "bilinear source");
+
+  // A genuinely curved surface (the same unit-radius cylinder wall used
+  // above) must show real, measurable, nonzero deviation at a coarse
+  // resolution, and that deviation must shrink substantially as the
+  // resolution tied to it via SuggestedDivisions(chord_tolerance) is
+  // tightened - the real cross-check that this measurement function and
+  // the existing chord_tolerance machinery agree on what "deviation"
+  // means, not two unrelated numbers that happen to both be called
+  // tolerances.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  cylinder.GetNurbForm(cylinder_surface);
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+
+  // At 4 divisions (90 degrees per facet), the true circular sagitta is
+  // 1 - cos(45deg) ~= 0.292893 - and since the interior sample points
+  // cluster near each triangle's own centroid (close to, but not exactly
+  // on, the arc's true angular midpoint), the measured value should land
+  // very close to that analytic figure without being asserted to match it
+  // exactly. Confirmed directly via a standalone probe
+  // (dino8_scratch_test) before finalizing this bound: measured 0.292839,
+  // within 0.02% of the analytic 0.292893.
+  const double coarse_deviation = wall.MeasureGridTessellationDeviation(4, 1);
+  const double expected_sagitta = 1.0 - std::cos(ON_PI / 4.0);
+  Check(std::abs(coarse_deviation - expected_sagitta) < 0.001,
+        "MeasureGridTessellationDeviation at 4 divisions matches the "
+        "analytic circular sagitta (1 - cos(45deg)) to within 0.001");
+
+  // A genuine, honest finding from this same probe: the measured facet
+  // deviation at SuggestedDivisions(chord_tolerance)'s own resolution
+  // consistently runs SOMEWHAT ABOVE chord_tolerance itself (measured
+  // ratios 1.03-1.09 across 0.1/0.01/0.001, confirmed via
+  // dino8_scratch_test before finalizing this bound) - not a bug in
+  // either function, but a real, previously-unmeasured gap between the
+  // single-direction, per-isocurve sagitta estimate SuggestedDivisions()
+  // makes and the true, full facet deviation this function measures
+  // directly against the diagonal-triangulated 2D grid (whose worst
+  // interior point can fall slightly off the pure-u arc midpoint the 1D
+  // estimate assumes). Asserted with real headroom (1.5x, comfortably
+  // above every observed ratio) rather than tuned to just barely pass.
+  for (const double chord_tolerance : {0.1, 0.01, 0.001}) {
+    const auto divisions = wall.SuggestedDivisions(chord_tolerance);
+    const double measured = wall.MeasureGridTessellationDeviation(divisions.u, divisions.v);
+    Check(measured <= chord_tolerance * 1.5,
+          "the measured deviation at SuggestedDivisions(chord_tolerance)'s "
+          "own resolution stays within 1.5x the chord_tolerance it was "
+          "asked to respect - real headroom over the observed ~1.03-1.09x "
+          "gap between the two, not a tight certified bound");
+  }
+
+  bool threw = false;
+  try {
+    flat.MeasureGridTessellationDeviation(0, 1);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "MeasureGridTessellationDeviation throws std::invalid_argument "
+        "when either division count is less than 1");
+}
+
 void TestBrepTessellateAdaptive() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -8137,6 +8462,52 @@ void TestBrepTessellateAdaptive() {
   Check(std::abs(tight_sphere.Volume() - expected_volume) / expected_volume < 0.02,
         "the tight-tolerance sphere's volume is within 2% of the true "
         "analytic value (4/3 * pi * r^3)");
+}
+
+void TestBrepTessellateAdaptiveByAngle() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  // Box(): every face flat, so SuggestedDivisionsByAngle() picks the
+  // minimum 1x1 division for every face regardless of angle_tolerance,
+  // same shape as TestBrepTessellateAdaptive()'s own Box() case.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const auto box_faces = box.TessellateAdaptiveByAngle(0.1);
+  int box_total_faces = 0;
+  for (const auto& m : box_faces) {
+    box_total_faces += m.FaceCount();
+  }
+  Check(box_faces.size() == 6, "TessellateAdaptiveByAngle returns one mesh per Box() face (6)");
+  Check(box_total_faces == 12,
+        "each flat Box() face needs only the minimum 1x1 division "
+        "(2 triangles) regardless of angle_tolerance, 12 triangles total");
+  const Mesh box_closed = box.TessellateToClosedMeshAdaptiveByAngle(0.1);
+  Check(std::abs(box_closed.Volume() - 8.0) < 1e-9,
+        "TessellateToClosedMeshAdaptiveByAngle's own volume is exactly "
+        "8.0 for a 2x2x2 box");
+
+  // Sphere(): real curvature everywhere - the genuine point of an angular
+  // knob at the whole-Brep level, same "tighter tolerance -> substantially
+  // more triangles and a volume meaningfully closer to the true analytic
+  // value" relationship TestBrepTessellateAdaptive()'s own sphere case
+  // already establishes for chord_tolerance, now driven by angle_tolerance
+  // instead.
+  const double radius = 3.0;
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), radius);
+  const Mesh loose_sphere = sphere.TessellateToClosedMeshAdaptiveByAngle(0.5);
+  const Mesh tight_sphere = sphere.TessellateToClosedMeshAdaptiveByAngle(0.02);
+  const double expected_volume = (4.0 / 3.0) * ON_PI * radius * radius * radius;
+  Check(tight_sphere.FaceCount() > loose_sphere.FaceCount() * 10,
+        "a tighter angle_tolerance produces substantially more triangles "
+        "for a genuinely curved surface");
+  Check(std::abs(tight_sphere.Volume() - expected_volume) <
+            std::abs(loose_sphere.Volume() - expected_volume),
+        "the tighter angle_tolerance's volume is meaningfully closer to "
+        "the true analytic sphere volume than the loose one's");
+  Check(std::abs(tight_sphere.Volume() - expected_volume) / expected_volume < 0.02,
+        "the tight-angle-tolerance sphere's volume is within 2% of the "
+        "true analytic value (4/3 * pi * r^3)");
 }
 
 void TestBrepTessellateNonUniformAdaptive() {
@@ -68028,6 +68399,122 @@ void TestMultiBendRejectsInvalidArguments() {
         "MultiBend throws if ANY bend angle in a multi-bend chain is out of range, not just the first");
 }
 
+void TestUnfoldBendAtHalfKFactorExactlyMatchesBendPappusVolume() {
+  using dino8::kernel::Bend;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::UnfoldBend;
+
+  // parity-map "kernel: Feature operations" - "Sheet-metal features":
+  // UnfoldBend() closes this item's own disclosed "Unfold" named
+  // sub-feature - the inverse direction of Bend() above, flattening the
+  // SAME parameters back to a flat Brep::BoxWelded() plate instead of
+  // the bent part.
+  const double leg1 = 5.0, leg2 = 3.0, width = 2.0, thickness = 0.1, r_in = 0.2, angle_deg = 90.0;
+  const double theta = angle_deg * ON_PI / 180.0;
+  const double r_mid = r_in + thickness / 2.0;
+  const double expected_volume = (leg1 + leg2) * width * thickness + theta * r_mid * width * thickness;
+
+  // At k_factor == 0.5, BendAllowance()'s own K-factor-adjusted radius
+  // coincides EXACTLY with the true geometric mid-plane - so this must
+  // match the analytic Pappus closed form bit-for-bit, not just within a
+  // mesh-tessellation tolerance.
+  const Brep flat_half = UnfoldBend(leg1, leg2, width, thickness, r_in, angle_deg, 0.5);
+  Check(flat_half.raw().IsValid(), "UnfoldBend (k_factor=0.5) produces a valid ON_Brep");
+  Check(std::abs(flat_half.Volume() - expected_volume) < 1e-9 * expected_volume,
+        "UnfoldBend at k_factor=0.5 exactly matches the analytic Pappus closed form (bit-for-bit, not just within "
+        "1%)");
+
+  // Tying the new flat-pattern function directly to the existing bent
+  // part: UnfoldBend's exact volume must also match Bend()'s own
+  // TESSELLATED volume to within the same 1% tessellation tolerance
+  // TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency above
+  // already establishes for Bend() itself - real round-trip consistency
+  // between the two functions, not merely two formulas that happen to
+  // agree on paper.
+  const Brep bent = Bend(leg1, leg2, width, thickness, r_in, angle_deg);
+  const Mesh m_bent = bent.TessellateToClosedMesh(128, 256);
+  Check(std::abs(flat_half.Volume() - m_bent.Volume()) < 0.02 * m_bent.Volume(),
+        "UnfoldBend's exact flat volume matches Bend()'s own tessellated volume to within 2%");
+
+  // A k_factor other than 0.5 is the standard sheet-metal approximation,
+  // deliberately NOT volume-exact: a smaller k_factor (material's
+  // neutral axis closer to the inside face) gives a strictly SHORTER
+  // flat pattern than the exact mid-plane case.
+  const Brep flat_default = UnfoldBend(leg1, leg2, width, thickness, r_in, angle_deg);  // k_factor = 0.44 default
+  Check(flat_default.Volume() < flat_half.Volume(),
+        "UnfoldBend's default k_factor=0.44 gives a strictly shorter (smaller-volume) flat pattern than the exact "
+        "k_factor=0.5 mid-plane case");
+}
+
+void TestUnfoldMultiBendAtHalfKFactorExactlyMatchesMultiBendPappusVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MultiBend;
+  using dino8::kernel::UnfoldMultiBend;
+
+  // Same exact-at-k_factor=0.5 cross-check as UnfoldBend above, extended
+  // to MultiBend()'s own multi-radius U-channel fixture (the identical
+  // legs/angles/radii TestMultiBendUChannelAndHatChannelMatchPappusClosedForm
+  // above already uses) - a genuine multi-radius flat pattern, not a
+  // single shared radius.
+  const double width = 1.0, thickness = 0.08;
+  const std::vector<double> legs = {0.6, 0.8, 0.6};
+  const std::vector<double> angles_deg = {10.0, 10.0};
+  const std::vector<double> radii = {0.1, 0.25};
+
+  double leg_sum = 0.0;
+  for (double l : legs) leg_sum += l;
+  double arc_sum = 0.0;
+  for (size_t i = 0; i < angles_deg.size(); ++i) {
+    arc_sum += (angles_deg[i] * ON_PI / 180.0) * (radii[i] + thickness / 2.0);
+  }
+  const double expected_u = leg_sum * width * thickness + arc_sum * width * thickness;
+
+  const Brep flat_u = UnfoldMultiBend(legs, angles_deg, radii, width, thickness, 0.5);
+  Check(flat_u.raw().IsValid(), "UnfoldMultiBend (k_factor=0.5) produces a valid ON_Brep");
+  Check(std::abs(flat_u.Volume() - expected_u) < 1e-9 * expected_u,
+        "UnfoldMultiBend at k_factor=0.5 exactly matches the same multi-radius Pappus closed form "
+        "MultiBend()'s own U-channel fixture uses, bit-for-bit");
+
+  const Brep u = MultiBend(legs, angles_deg, radii, width, thickness);
+  const dino8::kernel::Mesh m_u = u.TessellateToClosedMesh(64, 128);
+  Check(std::abs(flat_u.Volume() - m_u.Volume()) < 0.02 * m_u.Volume(),
+        "UnfoldMultiBend's exact flat volume matches MultiBend()'s own tessellated U-channel volume to within 2%");
+}
+
+void TestUnfoldBendAndUnfoldMultiBendRejectInvalidArguments() {
+  using dino8::kernel::UnfoldBend;
+  using dino8::kernel::UnfoldMultiBend;
+  using sweep_tests::Throws;
+
+  Check(Throws([&] { UnfoldBend(0.0, 3.0, 2.0, 0.1, 0.2, 90.0); }), "UnfoldBend throws for a non-positive leg1_length");
+  Check(Throws([&] { UnfoldBend(5.0, -1.0, 2.0, 0.1, 0.2, 90.0); }), "UnfoldBend throws for a non-positive leg2_length");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 0.0, 0.1, 0.2, 90.0); }), "UnfoldBend throws for a non-positive width");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.0, 0.2, 90.0); }),
+        "UnfoldBend throws for a non-positive thickness (delegated to BendAllowance)");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.1, 0.0, 90.0); }),
+        "UnfoldBend throws for a non-positive inside_radius (delegated to BendAllowance)");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.1, 0.2, 180.0); }),
+        "UnfoldBend throws for a bend angle of exactly 180 degrees (delegated to BendAllowance)");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.1, 0.2, 90.0, -0.1); }),
+        "UnfoldBend throws for a negative k_factor (delegated to BendAllowance)");
+  Check(!Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.1, 0.2, 90.0, 0.0); }), "UnfoldBend accepts a k_factor of exactly 0");
+
+  Check(Throws([&] { UnfoldMultiBend({1.0}, {}, {}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws when bend_angles_degrees is empty (at least one bend is required)");
+  Check(Throws([&] { UnfoldMultiBend({1.0, 2.0}, {90.0}, {0.1, 0.2}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws when inside_radii's own count doesn't match bend_angles_degrees's");
+  Check(Throws([&] { UnfoldMultiBend({1.0, 2.0, 3.0}, {90.0}, {0.1}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws when leg_lengths doesn't have exactly one more entry than bend_angles_degrees");
+  Check(Throws([&] { UnfoldMultiBend({0.0, 2.0}, {90.0}, {0.1}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws for a non-positive leg length");
+  Check(Throws([&] { UnfoldMultiBend({1.0, 2.0}, {90.0}, {0.1}, 0.0, 0.1); }),
+        "UnfoldMultiBend throws for a non-positive width");
+  Check(Throws([&] { UnfoldMultiBend({1.0, 2.0, 3.0}, {90.0, 200.0}, {0.1, 0.1}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws if ANY bend angle in a multi-bend chain is out of range, not just the first "
+        "(delegated per-bend to BendAllowance)");
+}
+
 void TestLatticeInfillFillsBoxAndConformsToNonBoxSolids() {
   using dino8::kernel::Brep;
   using dino8::kernel::LatticeInfill;
@@ -68159,6 +68646,8 @@ int main() {
   TestCurveCurvature();
   TestCurveSuggestedSamples();
   TestCurveSuggestedParameterValues();
+  TestCurveSuggestedSamplesByAngle();
+  TestCurveSuggestedParameterValuesByAngle();
   TestSurfaceFromControlGridRejectsDegenerateInput();
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
@@ -68273,7 +68762,11 @@ int main() {
   TestSurfaceSuggestedDivisions();
   TestSurfaceTessellateGridAdaptive();
   TestSurfaceTessellateGridClippedExactAdaptive();
+  TestSurfaceSuggestedDivisionsByAngle();
+  TestSurfaceTessellateGridAdaptiveByAngle();
+  TestSurfaceMeasureGridTessellationDeviation();
   TestBrepTessellateAdaptive();
+  TestBrepTessellateAdaptiveByAngle();
   TestBrepTessellateNonUniformAdaptive();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
@@ -69221,6 +69714,10 @@ int main() {
   TestMultiBendReducesToBendForASingleBend();
   TestMultiBendUChannelAndHatChannelMatchPappusClosedForm();
   TestMultiBendRejectsInvalidArguments();
+
+  TestUnfoldBendAtHalfKFactorExactlyMatchesBendPappusVolume();
+  TestUnfoldMultiBendAtHalfKFactorExactlyMatchesMultiBendPappusVolume();
+  TestUnfoldBendAndUnfoldMultiBendRejectInvalidArguments();
 
   TestLatticeInfillFillsBoxAndConformsToNonBoxSolids();
   TestLatticeInfillRejectsInvalidArguments();

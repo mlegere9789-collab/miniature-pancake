@@ -1323,6 +1323,85 @@ std::vector<double> NurbsSurface::SuggestedParameterValues(int direction, double
   return best_values;
 }
 
+SurfaceDivisions NurbsSurface::SuggestedDivisionsByAngle(double angle_tolerance,
+                                                          int isocurve_samples) const {
+  if (!(angle_tolerance > 0.0) || angle_tolerance > ON_PI) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::SuggestedDivisionsByAngle: "
+        "angle_tolerance must be in (0, pi]");
+  }
+
+  const ON_Interval u_domain = surface_.Domain(0);
+  const ON_Interval v_domain = surface_.Domain(1);
+
+  int u_divisions = 1;
+  for (int i = 0; i <= isocurve_samples; ++i) {
+    const double v = v_domain.ParameterAt(static_cast<double>(i) / isocurve_samples);
+    ON_Curve* iso = surface_.IsoCurve(0, v);
+    if (iso == nullptr) {
+      continue;
+    }
+    if (ON_NurbsCurve* nurbs_iso = ON_NurbsCurve::Cast(iso)) {
+      NurbsCurve wrapped;
+      wrapped.raw() = *nurbs_iso;
+      u_divisions = std::max(u_divisions, wrapped.SuggestedSamplesByAngle(angle_tolerance));
+    }
+    delete iso;
+  }
+
+  int v_divisions = 1;
+  for (int i = 0; i <= isocurve_samples; ++i) {
+    const double u = u_domain.ParameterAt(static_cast<double>(i) / isocurve_samples);
+    ON_Curve* iso = surface_.IsoCurve(1, u);
+    if (iso == nullptr) {
+      continue;
+    }
+    if (ON_NurbsCurve* nurbs_iso = ON_NurbsCurve::Cast(iso)) {
+      NurbsCurve wrapped;
+      wrapped.raw() = *nurbs_iso;
+      v_divisions = std::max(v_divisions, wrapped.SuggestedSamplesByAngle(angle_tolerance));
+    }
+    delete iso;
+  }
+
+  return SurfaceDivisions{u_divisions, v_divisions};
+}
+
+std::vector<double> NurbsSurface::SuggestedParameterValuesByAngle(int direction,
+                                                                   double angle_tolerance,
+                                                                   int isocurve_samples) const {
+  if (!(angle_tolerance > 0.0) || angle_tolerance > ON_PI) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::SuggestedParameterValuesByAngle: "
+        "angle_tolerance must be in (0, pi]");
+  }
+
+  const ON_Interval other_domain = surface_.Domain(1 - direction);
+  std::vector<double> best_values;
+  for (int i = 0; i <= isocurve_samples; ++i) {
+    const double c = other_domain.ParameterAt(static_cast<double>(i) / isocurve_samples);
+    ON_Curve* iso = surface_.IsoCurve(direction, c);
+    if (iso == nullptr) {
+      continue;
+    }
+    if (ON_NurbsCurve* nurbs_iso = ON_NurbsCurve::Cast(iso)) {
+      NurbsCurve wrapped;
+      wrapped.raw() = *nurbs_iso;
+      std::vector<double> values = wrapped.SuggestedParameterValuesByAngle(angle_tolerance);
+      if (values.size() > best_values.size()) {
+        best_values = std::move(values);
+      }
+    }
+    delete iso;
+  }
+
+  if (best_values.size() < 2) {
+    const ON_Interval domain = surface_.Domain(direction);
+    best_values = {domain.Min(), domain.Max()};
+  }
+  return best_values;
+}
+
 namespace {
 
 // Shared body of TessellateGrid()/TessellateGridNonUniform(): builds a
@@ -1967,6 +2046,103 @@ Mesh NurbsSurface::TessellateGridClippedExactAdaptive(double chord_tolerance,
                                                         const std::vector<Point2d>& trim_polygon) const {
   const SurfaceDivisions divisions = SuggestedDivisions(chord_tolerance);
   return TessellateGridClippedExact(divisions.u, divisions.v, trim_polygon);
+}
+
+Mesh NurbsSurface::TessellateGridAdaptiveByAngle(
+    double angle_tolerance, const std::vector<Point2d>* trim_polygon,
+    const std::vector<std::vector<Point2d>>* hole_polygons) const {
+  const SurfaceDivisions divisions = SuggestedDivisionsByAngle(angle_tolerance);
+  return TessellateGrid(divisions.u, divisions.v, trim_polygon, hole_polygons);
+}
+
+Mesh NurbsSurface::TessellateGridNonUniformAdaptiveByAngle(
+    double angle_tolerance, const std::vector<Point2d>* trim_polygon,
+    const std::vector<std::vector<Point2d>>* hole_polygons) const {
+  const std::vector<double> u_values = SuggestedParameterValuesByAngle(0, angle_tolerance);
+  const std::vector<double> v_values = SuggestedParameterValuesByAngle(1, angle_tolerance);
+  return TessellateGridNonUniform(u_values, v_values, trim_polygon, hole_polygons);
+}
+
+Mesh NurbsSurface::TessellateGridClippedExactAdaptiveByAngle(
+    double angle_tolerance, const std::vector<Point2d>& trim_polygon) const {
+  const SurfaceDivisions divisions = SuggestedDivisionsByAngle(angle_tolerance);
+  return TessellateGridClippedExact(divisions.u, divisions.v, trim_polygon);
+}
+
+double NurbsSurface::MeasureGridTessellationDeviation(int u_divisions, int v_divisions,
+                                                       int samples_per_triangle) const {
+  if (u_divisions < 1 || v_divisions < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::MeasureGridTessellationDeviation: "
+        "u_divisions and v_divisions must each be at least 1");
+  }
+
+  const ON_Interval u_domain = surface_.Domain(0);
+  const ON_Interval v_domain = surface_.Domain(1);
+
+  // Interior barycentric sample points for a triangle (a, b, c), a+b+c=1,
+  // deliberately excluding the three corners (a=1, b=1 or c=1) where the
+  // flat facet and the true surface coincide exactly by construction.
+  std::vector<std::array<double, 3>> samples;
+  samples.reserve(static_cast<size_t>(samples_per_triangle));
+  for (int k = 0; k < samples_per_triangle; ++k) {
+    const double theta = (2.0 * ON_PI * k) / samples_per_triangle;
+    // A small ring around the centroid plus the centroid itself (k == 0
+    // reduces to the pure centroid below) - several distinct interior
+    // points rather than just the one that might accidentally sit at a
+    // low-deviation spot for a particular surface.
+    double a = 1.0 / 3.0 + 0.2 * std::cos(theta);
+    double b = 1.0 / 3.0 + 0.2 * std::sin(theta);
+    double c = 1.0 - a - b;
+    if (a <= 0.0 || b <= 0.0 || c <= 0.0) {
+      a = b = c = 1.0 / 3.0;
+    }
+    samples.push_back({a, b, c});
+  }
+
+  auto evaluate_triangle_deviation = [&](double u0, double v0, double u1, double v1, double u2,
+                                          double v2, const Point3d& p0, const Point3d& p1,
+                                          const Point3d& p2) {
+    double worst = 0.0;
+    for (const auto& bary : samples) {
+      const double a = bary[0];
+      const double b = bary[1];
+      const double c = bary[2];
+      const double u = a * u0 + b * u1 + c * u2;
+      const double v = a * v0 + b * v1 + c * v2;
+      const Point3d true_point = PointAt(u, v);
+      const Point3d facet_point(a * p0.x + b * p1.x + c * p2.x, a * p0.y + b * p1.y + c * p2.y,
+                                 a * p0.z + b * p1.z + c * p2.z);
+      const double deviation = (true_point - facet_point).Length();
+      worst = std::max(worst, deviation);
+    }
+    return worst;
+  };
+
+  double max_deviation = 0.0;
+  for (int i = 0; i < u_divisions; ++i) {
+    const double u0 = u_domain.ParameterAt(static_cast<double>(i) / u_divisions);
+    const double u1 = u_domain.ParameterAt(static_cast<double>(i + 1) / u_divisions);
+    for (int j = 0; j < v_divisions; ++j) {
+      const double v0 = v_domain.ParameterAt(static_cast<double>(j) / v_divisions);
+      const double v1 = v_domain.ParameterAt(static_cast<double>(j + 1) / v_divisions);
+
+      const Point3d p00 = PointAt(u0, v0);
+      const Point3d p10 = PointAt(u1, v0);
+      const Point3d p11 = PointAt(u1, v1);
+      const Point3d p01 = PointAt(u0, v1);
+
+      // Same diagonal convention TessellateFromValues() uses: triangle 1 =
+      // (u0,v0)-(u1,v0)-(u1,v1), triangle 2 = (u0,v0)-(u1,v1)-(u0,v1).
+      max_deviation =
+          std::max(max_deviation,
+                    evaluate_triangle_deviation(u0, v0, u1, v0, u1, v1, p00, p10, p11));
+      max_deviation =
+          std::max(max_deviation,
+                    evaluate_triangle_deviation(u0, v0, u1, v1, u0, v1, p00, p11, p01));
+    }
+  }
+  return max_deviation;
 }
 
 namespace {
