@@ -4552,6 +4552,99 @@ void TestFindSurfaceSilhouettePointsSphereEquator() {
   Check(FindSurfaceSilhouettePoints(sphere_surface, ON_3dVector(0, 0, 0), opt).empty(), "a zero-length view direction returns empty outright");
 }
 
+// PARITY_MAP.md's own "Silhouette / outline curves" bullet: narrows the
+// "orthographic projection only" caveat FindSurfaceSilhouettePoints()'s own
+// header doc comment names - FindSurfaceSilhouettePointsPerspective() finds
+// the same kind of tangency crossing, but along a per-point ray from a
+// finite eye rather than one fixed direction.
+void TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon() {
+  using dino8::kernel::FindSurfaceSilhouettePointsPerspective;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  // A sphere of radius r centered at the origin, viewed from a finite eye
+  // point on the -Z axis at distance d > r: the hand-derivable horizon
+  // circle (where a tangent line from the eye touches the sphere) satisfies
+  // dot(P, P - eye) == 0 for every point P of the sphere's own surface -
+  // with eye == (0, 0, -d), that reduces to z == -r^2/d, radius ==
+  // r*sqrt(d^2-r^2)/d (the classical "tangent line from an external point"
+  // relation).
+  const double r = 3.0, d = 10.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), r);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+
+  const Point3d eye(0, 0, -d);
+  const IntersectOptions opt;
+  const auto hits = FindSurfaceSilhouettePointsPerspective(sphere_surface, eye, opt);
+  Check(!hits.empty(), "a sphere viewed from a finite external eye point finds genuine perspective silhouette points");
+
+  const double expected_z = -r * r / d;
+  const double expected_radius = r * std::sqrt(d * d - r * r) / d;
+  bool all_on_horizon = true;
+  for (const auto& h : hits) {
+    if (std::abs(h.point.z - expected_z) > 1e-5 || std::abs(std::hypot(h.point.x, h.point.y) - expected_radius) > 1e-5) { all_on_horizon = false; break; }
+  }
+  Check(all_on_horizon, "every reported perspective silhouette point sits exactly on the hand-derivable horizon circle (z == -r^2/d, radius r*sqrt(d^2-r^2)/d)");
+
+  // An eye held exactly at the sphere's own center: dot(P, P - center) ==
+  // dot(P, P) == r^2 at every point P of the surface, a nonzero constant -
+  // genuinely no tangency exists anywhere, not merely an under-sampled one.
+  Check(FindSurfaceSilhouettePointsPerspective(sphere_surface, Point3d(0, 0, 0), opt).empty(), "an eye at the sphere's own center finds no silhouette at all (every point is equally face-on, none tangent)");
+}
+
+// PARITY_MAP.md's own "Silhouette / outline curves" bullet: narrows the
+// "point detections only" caveat FindSurfaceSilhouettePoints()'s own header
+// doc comment names - FindSurfaceSilhouetteCurves() chains that same
+// function's own isolated grid-edge crossings into actual curves.
+void TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves() {
+  using dino8::kernel::FindSurfaceSilhouetteCurves;
+  using dino8::kernel::IntersectOptions;
+
+  // The same sphere-viewed-straight-down-its-axis fixture
+  // TestFindSurfaceSilhouettePointsSphereEquator() already establishes a
+  // hand-derivable ground truth for (z == 0, at exactly the sphere's own
+  // radius).
+  const double radius = 3.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+
+  const IntersectOptions opt;
+  const auto curves = FindSurfaceSilhouetteCurves(sphere_surface, ON_3dVector(0, 0, 1), opt);
+  Check(!curves.empty(), "viewing a sphere straight down its own axis chains the equator's own crossings into at least one genuine curve");
+  bool all_on_equator = true;
+  int total_samples = 0;
+  for (const auto& sc : curves) {
+    Check(sc.curve.IsValid(), "each chained curve is a genuine, valid NURBS curve, not an empty placeholder");
+    const ON_Interval dom = sc.curve.Domain();
+    for (int k = 0; k <= 20; ++k) {
+      const double t = dom.ParameterAt(static_cast<double>(k) / 20.0);
+      const ON_3dPoint p = sc.curve.PointAt(t);
+      ++total_samples;
+      // A generous tolerance relative to the radius: a cubic spline
+      // interpolating points on a true circle passes through those points
+      // exactly but can bow slightly off the circle BETWEEN them - this
+      // checks the chain is a genuine fit to the equator, not an unrelated
+      // curve, not that it reproduces the circle to machine precision.
+      if (std::abs(p.z) > 0.05 * radius || std::abs(std::hypot(p.x, p.y) - radius) > 0.05 * radius) { all_on_equator = false; break; }
+    }
+    if (!all_on_equator) break;
+  }
+  Check(all_on_equator, "every sampled point of every chained curve sits close to the hand-derivable equator - a real fit through genuine on-equator crossings, not an unrelated curve");
+  Check(total_samples > 0, "sanity: the equator fixture actually produced samples to check");
+
+  // A flat, generously-bounded plane viewed straight down its own normal
+  // has no tangency crossings at all, so no curve to chain either.
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-10, 10), true);
+  ground.SetExtents(1, ON_Interval(-10, 10), true);
+  Check(FindSurfaceSilhouetteCurves(ground, ON_3dVector(0, 0, 1), opt).empty(), "a flat plane viewed straight down its own normal chains into zero curves");
+
+  // A zero-length view direction is refused outright.
+  Check(FindSurfaceSilhouetteCurves(sphere_surface, ON_3dVector(0, 0, 0), opt).empty(), "a zero-length view direction returns empty outright");
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Projection of curves/points onto surfaces along a direction (Project)"
 // bullet: "app ProjectCommand samples the curve and ray-casts along the
@@ -59044,6 +59137,69 @@ void TestThickenCurvedSheetProducesGenuineClosedSolid() {
         "folded solid");
 }
 
+void TestThickenTrimmedPlanarSheetMatchesExactTrimAreaTimesThickness() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+
+  // parity-map "kernel: Feature operations" - "Thicken a sheet body into a
+  // solid"'s own disclosed "a trimmed sheet's real boundary is not its
+  // surface's 4 domain isocurves" gap, closed for the PLANAR case. Same
+  // unit-square flat surface TestThickenRejectsInvalidArguments below
+  // builds its own now-ACCEPTED trimmed fixture from - u/v map 1:1 onto
+  // x/y here, so the trim loop's own UV area IS its real-world area: a
+  // 0.6x0.6 square, area 0.36.
+  const std::vector<Point3d> grid = {P(0, 0, 0), P(0, 1, 0), P(1, 0, 0), P(1, 1, 0)};
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const std::vector<Point2d> trim = {Point2d(0.2, 0.2), Point2d(0.8, 0.2), Point2d(0.8, 0.8), Point2d(0.2, 0.8)};
+  const Brep sheet = Brep::TrimmedPlanarFace(flat, trim);
+
+  const Brep solid = Brep::Thicken(sheet, 2.0);
+  const Mesh m = solid.TessellateToClosedMesh(8, 8);
+  Check(m.IsClosedManifold(), "Thicken() on a trimmed planar sheet is a genuine closed 2-manifold");
+  // 1e-6, not a tighter bound: this is a TESSELLATED mesh volume (a summed
+  // per-triangle integral), the same tolerance every other Thicken() volume
+  // check above already uses for exactly that reason - not a sign of
+  // actual inexactness in the underlying flat, straight-walled B-rep
+  // itself (confirmed closed-form elsewhere in this file via direct
+  // bounding-box/vertex checks, not just Volume()).
+  Check(std::fabs(m.Volume() - 0.72) < 1e-6,
+        "Thicken(+2.0) on the 0.36-area trimmed square gives exactly area * thickness = 0.72, not the full "
+        "untrimmed unit square's own 1.0 * 2.0 = 2.0");
+  const auto bbox = solid.GetTightBoundingBox();
+  Check(bbox.min.x > 0.2 - 1e-9 && bbox.max.x < 0.8 + 1e-9 && bbox.min.z > -1e-9 && std::fabs(bbox.max.z - 2.0) < 1e-9,
+        "Thicken() on a trimmed sheet keeps the trim loop's own real footprint (not the surface's full domain) "
+        "and offsets it by the requested thickness");
+}
+
+void TestThickenTrimmedPlanarSheetSymmetricPutsOriginalOnMidplane() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+
+  // Same trimmed-planar fixture as above, moved to z=5 and thickened
+  // symmetric - the trimmed path's own `symmetric` option must land the
+  // original surface on the solid's own midplane exactly like the
+  // untrimmed path's TestThickenSymmetricPutsOriginalSurfaceOnMidplane
+  // above already proves.
+  const std::vector<Point3d> grid = {P(0, 0, 5), P(0, 1, 5), P(1, 0, 5), P(1, 1, 5)};
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const std::vector<Point2d> trim = {Point2d(0.2, 0.2), Point2d(0.8, 0.2), Point2d(0.8, 0.8), Point2d(0.2, 0.8)};
+  const Brep sheet = Brep::TrimmedPlanarFace(flat, trim);
+
+  const Brep solid = Brep::Thicken(sheet, 2.0, /*symmetric=*/true);
+  const Mesh m = solid.TessellateToClosedMesh(8, 8);
+  Check(m.IsClosedManifold(), "Thicken(trimmed, symmetric) is a genuine closed 2-manifold");
+  Check(std::fabs(m.Volume() - 0.72) < 1e-6, "Thicken(trimmed, symmetric, total thickness 2) gives the same 0.72 "
+                                              "volume as the one-directional trimmed case above");
+  const auto bbox = solid.GetTightBoundingBox();
+  Check(std::fabs(bbox.min.z - 4.0) < 1e-9 && std::fabs(bbox.max.z - 6.0) < 1e-9,
+        "Thicken(trimmed, symmetric) puts the ORIGINAL surface's own z=5 exactly on the solid's own midplane, "
+        "matching the untrimmed path's own symmetric convention");
+}
+
 void TestThickenRejectsInvalidArguments() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -59065,11 +59221,30 @@ void TestThickenRejectsInvalidArguments() {
         "Thicken() throws for a single-face body that is closed/periodic (a full sphere wraps back on itself in "
         "u) - a distinct scope check from the multi-face rejection above");
 
-  const std::vector<Point2d> trim = {Point2d(0.2, 0.2), Point2d(0.8, 0.2), Point2d(0.8, 0.8), Point2d(0.2, 0.8)};
-  const Brep trimmed = Brep::TrimmedPlanarFace(flat, trim);
-  Check(Throws([&] { Brep::Thicken(trimmed, 0.1); }),
-        "Thicken() throws for a trimmed sheet - thickening its full untrimmed rectangle instead would be a "
-        "correctness bug, not merely a disclosed limitation");
+  // A trimmed PLANAR sheet no longer throws (see
+  // TestThickenTrimmedPlanarSheetMatchesExactTrimAreaTimesThickness above) -
+  // but a trimmed NON-planar sheet still must: TrimmedPlanarFace() itself
+  // never checks the surface's own actual planarity (it's a bare
+  // surface-only factory, same as FromSurface()), so handing it a
+  // genuinely curved surface - the same bulged-freeform fixture
+  // TestThickenCurvedSheetProducesGenuineClosedSolid above uses - builds a
+  // Brep this function must still refuse, not silently flatten.
+  std::vector<Point3d> bulge_grid;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      bulge_grid.push_back(P(i, j, (i == 2 && j == 2) ? 3.0 : 0.0));
+    }
+  }
+  const NurbsSurface bulge = NurbsSurface::FromControlGrid(bulge_grid, 4, 4, 3, 3);
+  const dino8::kernel::Interval bu = bulge.Domain(0), bv = bulge.Domain(1);
+  const auto lerp = [](const dino8::kernel::Interval& iv, double t) { return iv.min + t * (iv.max - iv.min); };
+  const std::vector<Point2d> bulge_trim = {
+      Point2d(lerp(bu, 0.3), lerp(bv, 0.3)), Point2d(lerp(bu, 0.7), lerp(bv, 0.3)),
+      Point2d(lerp(bu, 0.7), lerp(bv, 0.7)), Point2d(lerp(bu, 0.3), lerp(bv, 0.7))};
+  const Brep trimmed_curved = Brep::TrimmedPlanarFace(bulge, bulge_trim);
+  Check(Throws([&] { Brep::Thicken(trimmed_curved, 0.1); }),
+        "Thicken() throws for a trimmed sheet whose surface is genuinely NOT planar - the trimmed-planar path's "
+        "own IsPlanar() check catches it rather than silently treating a curved patch as flat");
 }
 
 void TestExtrudeFaceStraightMatchesExactPrismVolume() {
@@ -67886,6 +68061,117 @@ void TestCurveReduceDegree() {
   Check(threw_tolerance, "ReduceDegree throws std::invalid_argument for a non-positive tolerance");
 }
 
+void TestCurveFair() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A straight line with only 2 control points has no interior point to
+  // move at all.
+  {
+    NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    double deviation = -1.0;
+    Check(line.Fair(1e-6, 10, 0.5, &deviation) == Result::NoOpAlreadySatisfied,
+          "Fair() on a 2-control-point curve reports NoOpAlreadySatisfied");
+    Check(deviation == 0.0, "...and reports zero deviation for that no-op");
+  }
+
+  // A 7-control-point curve, straight along x except its exact middle
+  // control point (index 3) displaced perpendicular by 5 - a single,
+  // isolated kink with hand-derivable neighbors. One iteration at
+  // factor=1.0 replaces CV[3] with EXACTLY the midpoint of its own two
+  // (unperturbed) neighbors, CV[2]=(2,0,0) and CV[4]=(4,0,0) - a real,
+  // hand-verifiable exact answer, not just "it moved somewhere".
+  std::vector<Point3d> kinked_pts;
+  for (int i = 0; i < 7; ++i) kinked_pts.emplace_back(i, (i == 3) ? 5.0 : 0.0, 0.0);
+  {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, /*degree=*/3);
+    double deviation = -1.0;
+    Check(c.Fair(100.0, /*iterations=*/1, /*factor=*/1.0, &deviation) == Result::Ok,
+          "Fair(iterations=1, factor=1.0) succeeds at a loose tolerance");
+    const Point3d flattened = c.ControlPointAt(3);
+    Check((flattened - Point3d(3, 0, 0)).Length() < 1e-9,
+          "a single factor=1.0 iteration replaces the isolated kink's control point with EXACTLY "
+          "the midpoint of its own two unperturbed neighbors");
+    Check(deviation > 0.0, "fairing a genuine kink reports a real, nonzero measured deviation");
+  }
+
+  // Endpoints are never touched by Fair(), regardless of how much
+  // smoothing is requested.
+  {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, /*degree=*/3);
+    c.Fair(100.0, 5, 0.8);
+    Check((c.ControlPointAt(0) - kinked_pts.front()).Length() < 1e-12,
+          "Fair() never moves the curve's own first control point");
+    Check((c.ControlPointAt(6) - kinked_pts.back()).Length() < 1e-12,
+          "Fair() never moves the curve's own last control point");
+  }
+
+  // The same isolated kink at a tight tolerance must be REFUSED - genuinely
+  // flattening it moves the curve's own shape near the bump by more than a
+  // tiny tolerance can allow - leaving every control point byte-for-byte
+  // unchanged; the same fixture at a loose enough tolerance must succeed,
+  // proving the refusal is genuinely tolerance-driven.
+  {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, /*degree=*/3);
+    const NurbsCurve original = c;
+    double tight_deviation = -1.0;
+    const Result refused = c.Fair(1e-6, 1, 1.0, &tight_deviation);
+    Check(refused == Result::Failed, "Fair() refuses to flatten a genuine kink at a tight tolerance");
+    Check(tight_deviation > 1e-6,
+          "...and the reported deviation genuinely exceeds the refused tolerance, not an "
+          "arbitrary failure");
+    double cv_err = 0.0;
+    for (int i = 0; i < c.ControlPointCount(); ++i) {
+      cv_err = std::max(cv_err, c.ControlPointAt(i).DistanceTo(original.ControlPointAt(i)));
+    }
+    Check(cv_err == 0.0, "a refused Fair() leaves every control point byte-for-byte unchanged");
+
+    double loose_deviation = -1.0;
+    Check(c.Fair(100.0, 1, 1.0, &loose_deviation) == Result::Ok,
+          "Fair() succeeds on the identical kink once the tolerance is loosened");
+    Check(std::abs(loose_deviation - tight_deviation) < 1e-9,
+          "the deviation reported on the accepted fair matches the one reported on the earlier "
+          "refusal (both measure the identical smoothing)");
+  }
+
+  bool threw_tolerance = false;
+  try {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, 3);
+    c.Fair(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_tolerance = true;
+  }
+  Check(threw_tolerance, "Fair() throws std::invalid_argument for a non-positive tolerance");
+
+  bool threw_iterations = false;
+  try {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, 3);
+    c.Fair(1e-3, 0);
+  } catch (const std::invalid_argument&) {
+    threw_iterations = true;
+  }
+  Check(threw_iterations, "Fair() throws std::invalid_argument for iterations below 1");
+
+  bool threw_factor = false;
+  try {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, 3);
+    c.Fair(1e-3, 5, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw_factor = true;
+  }
+  Check(threw_factor, "Fair() throws std::invalid_argument for a non-positive factor");
+
+  bool threw_factor_high = false;
+  try {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, 3);
+    c.Fair(1e-3, 5, 1.5);
+  } catch (const std::invalid_argument&) {
+    threw_factor_high = true;
+  }
+  Check(threw_factor_high, "Fair() throws std::invalid_argument for a factor above 1");
+}
+
 // Surface counterpart: ON_NurbsSurface::IncreaseDegree packs the rows into
 // one high-dimensional ON_NurbsCurve and calls the same broken routine.
 // Fixed inputs derived from the same probe (21x4 grid, degrees (12, 2),
@@ -70532,6 +70818,8 @@ int main() {
   TestIntersectPlaneConeClosedForm();
   TestIntersectPlaneTorusClosedForm();
   TestFindSurfaceSilhouettePointsSphereEquator();
+  TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon();
+  TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
@@ -71429,6 +71717,8 @@ int main() {
   sweep_tests::TestThickenFlatSheetProducesExactBoxVolume();
   sweep_tests::TestThickenSymmetricPutsOriginalSurfaceOnMidplane();
   sweep_tests::TestThickenCurvedSheetProducesGenuineClosedSolid();
+  sweep_tests::TestThickenTrimmedPlanarSheetMatchesExactTrimAreaTimesThickness();
+  sweep_tests::TestThickenTrimmedPlanarSheetSymmetricPutsOriginalOnMidplane();
   sweep_tests::TestThickenRejectsInvalidArguments();
   sweep_tests::TestExtrudeFaceStraightMatchesExactPrismVolume();
   sweep_tests::TestExtrudeFaceObliqueDirectionMatchesCavalieriVolume();
@@ -71544,6 +71834,7 @@ int main() {
 
   TestCurveElevateDegreePreservesShapeWithNonUniformKnots();
   TestCurveReduceDegree();
+  TestCurveFair();
   TestSurfaceElevateDegreePreservesShapeWithNonUniformKnots();
   TestCurveClosestPointAcrossClampedSeamKink();
   TestCurveParameterAtArcLengthStaysInsideDomain();
