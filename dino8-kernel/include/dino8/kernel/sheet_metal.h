@@ -144,4 +144,83 @@ Brep Bend(double leg1_length, double leg2_length, double width, double thickness
 Brep MultiBend(const std::vector<double>& leg_lengths, const std::vector<double>& bend_angles_degrees,
                const std::vector<double>& inside_radii, double width, double thickness);
 
+// Flattens a Bend()-built part back to its own flat pattern - the inverse
+// direction of Bend() above, and this kernel's answer to the parity-map
+// "Sheet-metal features" item's own disclosed "Unfold" named sub-feature
+// (previously Bend()/MultiBend() only built the bent 3D part; nothing
+// produced the flat blank a press brake actually starts from).
+//
+// Takes the IDENTICAL parameters Bend() itself takes (plus `k_factor`,
+// passed straight through to BendAllowance() above), rather than
+// reverse-engineering an arbitrary Brep: Bend() builds its own solid
+// directly from these parameters with no intermediate flat-pattern
+// representation to invert, so this recomputes the flat length from the
+// same inputs instead. The result is a single flat rectangular plate -
+// `thickness` thick, `width` wide, and `leg1_length + leg2_length +
+// BendAllowance(thickness, inside_radius, bend_angle_degrees, k_factor)`
+// long (`BendAllowance()`'s own doc comment above derives that length) -
+// built the same way Bend() itself is, via Brep::Extrude() of a
+// rectangular profile, NOT Brep::BoxWelded(): a FromPlanarFaces()-built
+// BoxWelded() genuinely welds its own topology but trims each face with a
+// real ON_BrepLoop, so Brep::FaceCoversWholeDomain() (brep.cpp) correctly
+// reports it as trimmed and Brep::Volume()'s own exact per-face
+// integration refuses it outright ("face 0 is trimmed") - tried first and
+// confirmed to fail this way, dino8_scratch_test, on a bare
+// `Brep::BoxWelded(0,0,0,2,3,4)` with no sheet-metal code involved at
+// all. Extrude()'s own faces get a real ON_Brep loop running along the
+// surface's own boundary instead (`raw().FaceIsSurface()`), which
+// Volume() DOES integrate directly - exact to float precision for this
+// rectangular, axis-aligned case.
+//
+// At `k_factor == 0.5`, this is not just an industry approximation:
+// Bend()'s own doc comment proves its TRUE geometric volume already uses
+// the identical mid-plane radius (`inside_radius + thickness/2`)
+// BendAllowance() reaches at `k_factor == 0.5` - so
+// `UnfoldBend(..., 0.5).Volume()` matches Bend(...)'s own exact Pappus
+// volume bit-for-bit, not just approximately - verified directly,
+// TestUnfoldBendAtHalfKFactorExactlyMatchesBendPappusVolume. Any other
+// `k_factor` is the standard sheet-metal approximation (deliberately NOT
+// volume-exact - a K-factor other than 0.5 models where a real press
+// actually puts the neutral axis, not where the material's own geometric
+// mid-plane sits).
+//
+// Throws std::invalid_argument for a non-positive leg1_length/leg2_length/
+// width, or whatever BendAllowance() itself throws for a non-positive
+// thickness/inside_radius, a bend_angle_degrees out of (0, 180), or a
+// k_factor out of [0, 1].
+Brep UnfoldBend(double leg1_length, double leg2_length, double width, double thickness, double inside_radius,
+                double bend_angle_degrees, double k_factor = 0.44);
+
+// The MultiBend() generalization of UnfoldBend() above, exactly the same
+// "flat length = sum of legs + sum of each bend's own BendAllowance()"
+// construction extended from one bend to a chain of N - closing the same
+// "Unfold" sub-feature for a real multi-bend flat pattern (a U-channel or
+// hat-channel's own flat blank), not just a single bend's.
+//
+// Takes the identical `leg_lengths`/`bend_angles_degrees`/`inside_radii`
+// parameters MultiBend() itself takes (plus `width`/`thickness`/
+// `k_factor`); the result is, again, a single flat Extrude()-built plate
+// (see UnfoldBend()'s own doc comment for why Brep::BoxWelded() is
+// deliberately NOT used here) of `leg_lengths` summed plus one
+// BendAllowance() call per bend
+// (each at its OWN `inside_radii[i]`/`bend_angles_degrees[i]`, a genuine
+// multi-radius flat pattern, not a single shared radius).
+//
+// At `k_factor == 0.5`, exactly like UnfoldBend() above, this matches
+// MultiBend(...)'s own exact multi-radius Pappus volume (leg lengths
+// summed plus each bend's own `bend_angle_radians*(inside_radii[i] +
+// thickness/2)`) bit-for-bit - verified directly against the identical
+// U-channel/hat-channel fixtures
+// TestMultiBendUChannelAndHatChannelMatchPappusClosedForm already uses,
+// TestUnfoldMultiBendAtHalfKFactorExactlyMatchesMultiBendPappusVolume.
+//
+// Throws std::invalid_argument if `bend_angles_degrees` is empty, if
+// `leg_lengths`/`inside_radii` don't each have the same counts
+// MultiBend() itself requires, for a non-positive leg length or width, or
+// whatever BendAllowance() itself throws for any one bend's own
+// thickness/inside_radius/bend_angle_degrees/k_factor.
+Brep UnfoldMultiBend(const std::vector<double>& leg_lengths, const std::vector<double>& bend_angles_degrees,
+                      const std::vector<double>& inside_radii, double width, double thickness,
+                      double k_factor = 0.44);
+
 }  // namespace dino8::kernel

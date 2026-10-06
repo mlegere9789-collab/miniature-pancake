@@ -3301,6 +3301,31 @@ Mesh Brep::TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) cons
   return Mesh::MergeAndWeld(TessellateNonUniformAdaptive(chord_tolerance));
 }
 
+std::vector<Mesh> Brep::TessellateAdaptiveByAngle(double angle_tolerance) const {
+  std::vector<Mesh> result;
+  result.reserve(static_cast<size_t>(brep_.m_F.Count()));
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    FaceGeometry fg;
+    if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
+    NurbsSurface wrapper;
+    wrapper.raw() = fg.surface;
+    if (fg.outer.empty()) {
+      result.push_back(wrapper.TessellateGridAdaptiveByAngle(angle_tolerance));
+    } else if (fg.exact_clip) {
+      result.push_back(wrapper.TessellateGridClippedExactAdaptiveByAngle(angle_tolerance, fg.outer));
+    } else {
+      const std::vector<std::vector<Point2d>>* holes = fg.holes.empty() ? nullptr : &fg.holes;
+      result.push_back(wrapper.TessellateGridAdaptiveByAngle(angle_tolerance, &fg.outer, holes));
+    }
+    if (brep_.m_F[i].m_bRev) result.back() = result.back().FlipNormals();
+  }
+  return result;
+}
+
+Mesh Brep::TessellateToClosedMeshAdaptiveByAngle(double angle_tolerance) const {
+  return Mesh::MergeAndWeld(TessellateAdaptiveByAngle(angle_tolerance));
+}
+
 namespace {
 
 // A run of a wedge PlanarFace's own trim loop being substituted with a

@@ -936,6 +936,35 @@ class NurbsCurve {
   // Throws std::invalid_argument if `chord_tolerance <= 0`.
   std::vector<double> SuggestedParameterValues(double chord_tolerance, int max_depth = 12) const;
 
+  // Angle-based counterpart to SuggestedSamples(): instead of back-solving
+  // a maximum per-segment turning angle FROM a linear chord_tolerance via
+  // the sagitta formula, this takes that angular bound directly as
+  // `angle_tolerance` (radians) - PARITY_MAP's own disclosed "Angular
+  // tolerance control exposed as a general faceting-quality knob (as
+  // opposed to per-command heuristics)" gap: before this, the only places
+  // this kernel ever reasoned about facet/tangent angular deviation were
+  // ad hoc, buried inside chamfer/fillet/draft-specific code, with no
+  // general tessellation-quality entry point that takes an angle at all.
+  // Same curvature sampling and "assume the whole curve turns at its
+  // tightest sampled radius" conservative estimate SuggestedSamples()
+  // already uses, just skipping the chord_tolerance -> angle conversion
+  // and using `angle_tolerance` as the per-segment turning bound directly.
+  // Throws std::invalid_argument if `angle_tolerance` is not in (0, pi].
+  int SuggestedSamplesByAngle(double angle_tolerance, int curvature_samples = 50) const;
+
+  // Angle-based counterpart to SuggestedParameterValues(): the same
+  // recursive subdivision structure, but the per-interval test compares
+  // the tangent direction change across `[t0, t1]` (the angle between
+  // `TangentAt(t0)` and `TangentAt(t1)`) against `angle_tolerance`,
+  // instead of comparing the midpoint's distance from the chord against a
+  // linear chord_tolerance - a genuinely different quality criterion, not
+  // just the same number in different units: a tight loop whose chord
+  // stays short even as it turns sharply fails the angle test long before
+  // it would fail a chord-height one. Throws std::invalid_argument if
+  // `angle_tolerance` is not in (0, pi].
+  std::vector<double> SuggestedParameterValuesByAngle(double angle_tolerance,
+                                                       int max_depth = 12) const;
+
   // Offsets this curve, in its own fitted plane, by `distance` along the
   // in-plane direction `TangentAt(t) x plane.zaxis` (a consistent
   // "right of travel, as seen from +plane.zaxis" side at every
