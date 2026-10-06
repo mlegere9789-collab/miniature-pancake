@@ -300,3 +300,46 @@ SelLast
 GetUserText
 SelNone
 AnnotationStyles Name=Default Current=Yes
+# --- Measured-dimension precision now wired to a style's own Precision/
+# AngularPrecision, the same way DimStyle1 above already proved for
+# DimLinear/DimAngle: DimArea/DimCurveLength/DimVolume/DimOrdinate/
+# DimCreaseAngle all format their value through FormatMeasurement instead
+# of a bare FormatNumber now (cmd_annotate2.cpp's MeasureDimText/
+# BuildOrdinateDimGroup/DimCreaseAngleCommand::OnPoint). MeasStyle's
+# Precision=2/AngularPrecision=2 bakes "100.00"/"25.00"/"90.00 deg" for an
+# exactly-100-unit area/length/volume, an exactly-25-unit ordinate and an
+# exactly-90-degree crease - not the old unstyled "100"/"25"/"90 deg" -
+# and editing the style afterward (Precision=4/AngularPrecision=4) plus a
+# further UpdateMeasureDims reformats every one of the five kinds live,
+# through each dimension's own recorded style name, same as DimStyle1.
+AnnotationStyles Name=MeasStyle Precision=2 AngularPrecision=2 Current=Yes
+Rectangle 5000,0,0 5010,10,0
+SelLast
+DimArea
+5005,20,0
+SelNone
+Line 5000,-30,0 5100,-30,0
+SelLast
+DimCurveLength
+5050,-40,0
+SelNone
+Box 5000,100,0 5010,110,0 1
+SelLast
+DimVolume
+5020,120,0
+SelNone
+DimOrdinate
+5000,200,0
+5025,220,0
+Enter
+SelNone
+NewLayer MeasCreaseTest
+Line 5000,300,0 5000,310,0
+Line 5000,300,0 5010,300,0
+SelLayer
+DimCreaseAngle
+5010,310,0
+SelNone
+AnnotationStyles Name=MeasStyle Precision=4 AngularPrecision=4
+UpdateMeasureDims
+AnnotationStyles Name=Default Current=Yes
