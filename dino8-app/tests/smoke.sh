@@ -2738,6 +2738,14 @@ edcheck "name 'MyName \\(2\\)'" "SetObjectName numbered the second object '(2)',
 # 25-trillion-point grid instead of baking instantly. After the fix the
 # count is clamped to 200 before it drives any allocation.
 edcheck "degree 3 x 3, CVs 200 x 200" "Rebuild clamped an absurd 5000000 point count down to a sane 200 x 200 control-point grid instead of hanging/OOMing on the n x n allocation"
+# ChangeDegree now also calls the kernel's real NurbsCurve::ReduceDegree()
+# for a lower target, not just silently no-op-ing the way it always used to
+# (the elevate branch's own `target > Degree()` guard never covered
+# lowering at all) - a line elevated to degree 3 (4 CVs) must genuinely
+# drop back to degree 1 (2 CVs) when asked, not stay stuck at 3.
+edcheck "degree 3, 4 control points, non-rational, open" "ChangeDegree elevated the line to degree 3 (4 control points)"
+edcheck "ChangeDegree: 1 object\(s\) changed to degree 1 \(1 degree-reduced\)" "ChangeDegree's own reduce path actually ran (ReduceDegree, not a silent no-op)"
+edcheck "degree 1, 2 control points, non-rational, open" "ChangeDegree genuinely reduced the line back to degree 1 (2 control points), not left at degree 3"
 if echo "$ED" | grep -q "name 'MyName (1)'"; then echo "FAIL SetObjectName still off-by-one: an object was suffixed '(1)'"; fail=1; else echo "ok   no object was suffixed 'MyName (1)'"; fi
 
 # Real NURBS algorithm QC: ExtractPipedCurve/MakePeriodic Smooth=No/RefitTrim
@@ -4170,6 +4178,14 @@ rncheck2 "LayerBook: all [0-9]* layer(s) on" "LayerBook All turned every layer b
 rncheck2 "IsolateLock: " "IsolateLock locked the rest of the scene"
 rncheck2 "JoinCopy: " "JoinCopy joined copies of the selection"
 rncheck2 "MatchProperties: layer, color, material, linetype" "MatchProperties copied properties across"
+# GCon now delegates its own exact nearest-end continuity computation to
+# the kernel's real NurbsCurve::AnalyzeEndContinuity() (curve.h/curve.cpp)
+# instead of duplicating it inline with no kernel API behind it at all -
+# the fixture above (two collinear lines sharing an endpoint) is a
+# perfect G2 join: gap 0, tangent angle 0, curvature 0 vs 0 (both
+# straight), so the printed message (and its own Grade() classification,
+# unchanged app-level logic) must come out exactly as before.
+rncheck2 "GCon: end gap 0, tangent angle 0 deg, curvature 0 vs 0: G2 (curvature)" "GCon now calls the kernel's own NurbsCurve::AnalyzeEndContinuity() and still reports the same exact perfect-join numbers for two collinear lines"
 rncheck2 "MoveTargetToObjects: " "MoveTargetToObjects moved the camera target"
 rncheck2 "ClearAllObjectDisplayModes: " "ClearAllObjectDisplayModes ran"
 rncheck2 "SaveWindowLayout: saved QCLayout" "SaveWindowLayout wrote a layout"

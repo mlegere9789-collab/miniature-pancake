@@ -1387,6 +1387,47 @@ Result NurbsCurve::ReduceDegree(int target_degree, double tolerance, double* out
   return Result::Failed;
 }
 
+EndContinuityReport NurbsCurve::AnalyzeEndContinuity(const NurbsCurve& other) const {
+  const Interval da = Domain(), db = other.Domain();
+  const double ends_a[2] = {da.min, da.max};
+  const double ends_b[2] = {db.min, db.max};
+  double best = std::numeric_limits<double>::max();
+  int ia = 0, ib = 0;
+  for (int i = 0; i < 2; ++i) {
+    for (int j = 0; j < 2; ++j) {
+      const double d = PointAt(ends_a[i]).DistanceTo(other.PointAt(ends_b[j]));
+      if (d < best) {
+        best = d;
+        ia = i;
+        ib = j;
+      }
+    }
+  }
+
+  EndContinuityReport report;
+  report.gap = best;
+
+  // Both tangents flipped (if needed) to point away from the shared
+  // joint - the same convention MatchEnd() already uses - before
+  // comparing them, so a perfect straight-through continuation reads
+  // as 0 degrees, not 180.
+  Vector3d ta = TangentAt(ends_a[ia]);
+  Vector3d tb = other.TangentAt(ends_b[ib]);
+  if (ia == 1) ta = -ta;
+  if (ib == 1) tb = -tb;
+  report.tangent_angle_degrees = ON_3dVector::Angle(ta, -tb) * 180.0 / ON_PI;
+
+  report.curvature_a = CurvatureAt(ends_a[ia]).Length();
+  report.curvature_b = other.CurvatureAt(ends_b[ib]).Length();
+  if (report.curvature_a < 1e-9 && report.curvature_b < 1e-9) {
+    report.curvature_relative_difference = 0.0;
+  } else {
+    report.curvature_relative_difference =
+        std::fabs(report.curvature_a - report.curvature_b) / std::max(1e-9, std::max(report.curvature_a, report.curvature_b));
+  }
+  return report;
+}
+
 Interval NurbsCurve::Domain() const {
   const ON_Interval domain = curve_.Domain();
   return Interval{domain.Min(), domain.Max()};
