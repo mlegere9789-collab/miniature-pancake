@@ -704,7 +704,7 @@ else
 fi
 ddecheck() { if echo "$DDE" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DDE" "$1"; fail=1; fi; }
 ddecheck "Exported $TMPW/dxf_dimension_export.dxf" "ExportDxf wrote a file"
-ddecheck "DXF: 4 curves, 0 points, 0 meshes, 4 dimensions" "the reopened file's three DIMENSION entities plus one LEADER entity round-tripped as four real dimensions/leaders plus the circle and the leader's own 3 'Hi' glyph curves, not unrelated bare curves standing in for any of the four themselves"
+ddecheck "DXF: 4 curves, 0 points, 0 meshes, 5 dimensions" "the reopened file's four DIMENSION entities plus one LEADER entity round-tripped as five real dimensions/leaders plus the circle and the leader's own 3 'Hi' glyph curves, not unrelated bare curves standing in for any of the five themselves"
 ddecheck "Annotation = DimLinear" "the round-tripped linear dimension carries the same Annotation=DimLinear tag DxfImporter::Dimension() writes for a hand-written fixture"
 ddecheck "DimP0 = 0,0,0" "the round-tripped linear dimension's first measured point survived exactly"
 ddecheck "DimP1 = 40,0,0" "the round-tripped linear dimension's second measured point survived exactly"
@@ -721,8 +721,13 @@ ddecheck "DimP2 = 200,10,0" "the round-tripped angular dimension's second direct
 ddecheck "Annotation = Leader" "the round-tripped leader carries the same Annotation=Leader tag DxfImporter::Leader() writes for a hand-written fixture"
 ddecheck "LeaderTip = 300,0,0" "the round-tripped leader's arrowhead point survived exactly"
 ddecheck "LeaderRest = 5,10,0;20,10,0" "the round-tripped leader's bend point (305,10,0) and tail point (320,10,0), as offsets from the tip, survived exactly"
-[ "$(grep -c "^DIMENSION$" "$TMPW/dxf_dimension_export.dxf")" = "3" ] && echo "ok   dxf_dimension_export.dxf contains three real DIMENSION entities (linear, radius, angular), not just baked line/arrow/text curves" || { echo "FAIL dxf_dimension_export.dxf does not have exactly three DIMENSION entities"; fail=1; }
+ddecheck "Annotation = DimOrdinate" "the round-tripped ordinate dimension carries the same Annotation=DimOrdinate tag DxfImporter::Dimension() writes for a hand-written fixture"
+ddecheck "DimOrdinateDir = X" "the round-tripped ordinate dimension is still recognized as measuring the X axis"
+ddecheck "DimP0 = 0,0,0" "the round-tripped ordinate dimension's base point (assumed world origin, the only base DIMENSION_ORDINATE's own fields can represent) survived exactly"
+ddecheck "DimP1 = 400,10,0" "the round-tripped ordinate dimension's feature point survived exactly"
+[ "$(grep -c "^DIMENSION$" "$TMPW/dxf_dimension_export.dxf")" = "4" ] && echo "ok   dxf_dimension_export.dxf contains four real DIMENSION entities (linear, radius, angular, ordinate), not just baked line/arrow/text curves" || { echo "FAIL dxf_dimension_export.dxf does not have exactly four DIMENSION entities"; fail=1; }
 [ "$(grep -c "^AcDb3PointAngularDimension$" "$TMPW/dxf_dimension_export.dxf")" = "1" ] && echo "ok   dxf_dimension_export.dxf's angular DIMENSION carries the real AcDb3PointAngularDimension subclass marker (type 5), not a generic/wrong dimension subtype" || { echo "FAIL dxf_dimension_export.dxf's angular DIMENSION is missing its AcDb3PointAngularDimension subclass marker"; fail=1; }
+[ "$(grep -c "^AcDbOrdinateDimension$" "$TMPW/dxf_dimension_export.dxf")" = "1" ] && echo "ok   dxf_dimension_export.dxf's ordinate DIMENSION carries the real AcDbOrdinateDimension subclass marker (type 6), not a generic/wrong dimension subtype" || { echo "FAIL dxf_dimension_export.dxf's ordinate DIMENSION is missing its AcDbOrdinateDimension subclass marker"; fail=1; }
 [ "$(grep -c "^LEADER$" "$TMPW/dxf_dimension_export.dxf")" = "1" ] && echo "ok   dxf_dimension_export.dxf contains one real LEADER entity, not just baked polyline/arrow/text curves" || { echo "FAIL dxf_dimension_export.dxf does not have exactly one LEADER entity"; fail=1; }
 # DWG SPLINE: built via LibreDWG's own dwg_add_SPLINE (marked "Experimental.
 # Does not work yet properly" in dwg_api.h - confirmed by hand it only ever
@@ -940,6 +945,29 @@ dxlcheck "DXF: 0 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the re
 dxlcheck "^history: 2 object(s) selected$" "SelLeader found the imported leader's 2 shape curves (polyline + arrowhead) as a real Leader group"
 dxlcheck "CV\[0\] 0,0,0" "the rebuilt polyline starts exactly at the LEADER's own first point (the tip)"
 dxlcheck "UpdateDimensions:   Leader now points at 0,0,0" "UpdateDimensions re-resolved the exact same tip from the imported leader's own tags, proving it round-trips exactly like a live Leader"
+# Ordinate (type 6): feature_location_pt (13) = (40,15,0), group 70 = 134
+# (6 | 0x80, "use X axis") - measuring the X axis gives exactly 40 (the
+# feature's own X coordinate), independent of its Y (15), proving the
+# axis-select bit is actually read, not just always defaulting to one
+# axis. Base point is assumed world (0,0,0), the only one
+# DIMENSION_ORDINATE's own fields can represent at all - see
+# DxfImporter::Dimension's own type==6 comment.
+cp "$HERE/dxf_dim_ordinate_fixture.dxf" "$TMPW/dxf_dim_ordinate_fixture.dxf"
+cat > "$TMPW/dxf_ordinate_script.txt" <<EOS
+Open $TMPW/dxf_dim_ordinate_fixture.dxf
+SelDim
+List
+UpdateMeasureDims
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DXO="$("$BIN" --smoke 30 --script "$TMPW/dxf_ordinate_script.txt" 2>&1)" || { echo "$DXO"; echo "FAIL: DXF ordinate DIMENSION script exited non-zero"; exit 1; }
+else
+  DXO="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_ordinate_script.txt" 2>&1)" || { echo "$DXO"; echo "FAIL: DXF ordinate DIMENSION script exited non-zero"; exit 1; }
+fi
+dxocheck() { if echo "$DXO" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DXO" "$1"; fail=1; fi; }
+dxocheck "DXF: 0 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the type-6 (ordinate) DIMENSION entity"
+dxocheck "CV\[0\] 40,15,0" "the rebuilt leader starts exactly at the DIMENSION's own feature_location_pt"
+dxocheck "UpdateMeasureDims:   DimOrdinate now X 40" "UpdateMeasureDims re-derived the exact hand-computed X-axis offset (feature's own X coordinate, 40, relative to the assumed world-origin base) from the imported dimension's own tags, proving it round-trips exactly like a live DimOrdinate"
 # DWG DIMENSION_LINEAR/DIMENSION_RADIUS: built via LibreDWG's own
 # dwg_add_DIMENSION_LINEAR/dwg_add_DIMENSION_RADIUS - unlike dwg_add_SPLINE/
 # dwg_add_MTEXT above, neither is marked "Experimental" in dwg_api.h, and
@@ -968,6 +996,45 @@ EOS
   dwdcheck "UpdateDimensions:   DimRadius now measures 5" "UpdateDimensions re-derived the exact hand-computed radius (chord_pt (45,0,0) - center_pt (40,0,0) = 5)"
 else
   echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the DIMENSION fixture check"
+  fail=1
+fi
+# DWG DIMENSION_ORDINATE: unlike DIMENSION_ANG3PT below, LibreDWG's own
+# dwg_add_DIMENSION_ORDINATE (src/dwg_api.c) DOES let the caller set the
+# one field that matters here - `use_x_axis`, stored cleanly into `flag2`
+# - so this gets its own real fixture (`dwg_fixture_gen ordinate`) rather
+# than a round-trip through Dino 8's own Export (DWG): exporting a
+# DimOrdinate through ExportDwg's own DXF-then-LibreDWG conversion path
+# does NOT preserve the X/Y axis bit (confirmed by hand: LibreDWG's own
+# DXF-ASCII importer, in_dxf.c, never derives DIMENSION_ORDINATE's flag2
+# from the group 70 value it reads at all - a real upstream LibreDWG gap,
+# not a Dino 8 one; see DxfImporter::Dimension's own type==6 comment and
+# the DWG bullet's own note in PARITY_MAP.md), so this fixture - built
+# directly through LibreDWG's own API, independent of either side of that
+# broken conversion - is what actually proves WalkDwgEntities' new
+# DWG_TYPE_DIMENSION_ORDINATE case reads a real DIMENSION_ORDINATE
+# correctly. X-axis: feature_location_pt=(30,20,0) -> measures 30 (its own
+# X). Y-axis: feature_location_pt=(15,25,0) -> measures 25 (its own Y) -
+# both from the same assumed world-origin base DIMENSION_ORDINATE's own
+# fields can represent at all.
+if [ -x "$DWGBIN" ]; then
+  "$DWGBIN" "$TMPW/dwg_ordinate_fixture.dwg" ordinate >/dev/null || { echo "FAIL: dwg_fixture_gen failed to write the ordinate fixture"; exit 1; }
+  cat > "$TMPW/dwg_ordinate_script.txt" <<EOS
+Open $TMPW/dwg_ordinate_fixture.dwg
+SelDim
+UpdateMeasureDims
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    DWO="$("$BIN" --smoke 30 --script "$TMPW/dwg_ordinate_script.txt" 2>&1)" || { echo "$DWO"; echo "FAIL: DWG ordinate script exited non-zero"; exit 1; }
+  else
+    DWO="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dwg_ordinate_script.txt" 2>&1)" || { echo "$DWO"; echo "FAIL: DWG ordinate script exited non-zero"; exit 1; }
+  fi
+  dwocheck() { if echo "$DWO" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DWO" "$1"; fail=1; fi; }
+  dwocheck "DWG: 0 curves, 0 points, 2 dimensions" "WalkDwgEntities' new DWG_TYPE_DIMENSION_ORDINATE case read both real DIMENSION_ORDINATE entities"
+  dwocheck "^history: 9 object(s) selected$" "SelDim found both imported ordinate dimensions' curves as real DimOrdinate groups"
+  dwocheck "UpdateMeasureDims:   DimOrdinate now X 30" "UpdateMeasureDims re-derived the exact hand-computed X-axis offset (feature_location_pt's own X, 30) from the X-axis fixture's flag2, proving the axis bit round-trips through LibreDWG's real binary encode/decode, not just always defaulting to one axis"
+  dwocheck "UpdateMeasureDims:   DimOrdinate now Y 25" "UpdateMeasureDims re-derived the exact hand-computed Y-axis offset (feature_location_pt's own Y, 25) from the Y-axis fixture's flag2"
+else
+  echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the DIMENSION_ORDINATE fixture check"
   fail=1
 fi
 # DWG DIMENSION_ANG3PT: unlike DIMENSION_LINEAR/DIMENSION_RADIUS above, this

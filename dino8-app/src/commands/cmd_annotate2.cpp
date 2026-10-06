@@ -371,40 +371,26 @@ class FieldCommand : public Command {
 // ---------------------------------------------------------------------------
 
 // Builds (or rebuilds) one DimOrdinate group from its base/feature points and
-// fixed layout (plane, direction, text height), tagging it the same way
-// BuildLinearDimensionGroup tags DimLinear: DimP0/DimP1 as built, DimRefObj1/
-// DimRefEnd1 and DimRefObj2/DimRefEnd2 when FindPointAnchor matched a real
-// object at the base/feature point respectively, plus DimOrdinateDir and the
-// plane (DimPlaneOrigin/DimPlaneX/DimPlaneY, same tags LoadLinearDimLayout
-// reads for DimLinear - the two dimension types never share a group so the
-// key names can't collide).
+// fixed layout (plane, direction, text height). The actual leader/text math
+// now lives in commands/DimGeometry.h's BuildOrdinateDimensionGeometry
+// (shared with DXF/DWG DIMENSION import, io/FileExchange.cpp, the same split
+// BuildLinearDimensionGroup/BuildRadiusDimensionGroup/BuildAngleDimensionGroup/
+// BuildLeaderGeometry already use) - this wrapper just adds this command's
+// own associativity tags on top: DimRefObj1/DimRefEnd1 and DimRefObj2/
+// DimRefEnd2 when FindPointAnchor matched a real object at the base/feature
+// point respectively.
 int BuildOrdinateDimGroup(CommandContext& ctx, Point3d base, Point3d feature, char dir, const ON_Plane& pl, double h,
                           bool has_ref_base, ObjectId ref_base, const std::string& end_base,
                           bool has_ref_feat, ObjectId ref_feat, const std::string& end_feat, double* value_out = nullptr,
                           const DimStyleParams& style = DimStyleParams()) {
-  double u0, v0, u1, v1;
-  pl.ClosestPointTo(base, &u0, &v0);
-  pl.ClosestPointTo(feature, &u1, &v1);
-  const double value = dir == 'X' ? u1 - u0 : v1 - v0;
-  // The leader runs away from the feature along the other axis.
-  const Vector3d leader = dir == 'X' ? pl.yaxis : pl.xaxis;
-  const Point3d end = feature + leader * (h * 2.5);
-  std::vector<kernel::NurbsCurve> curves = {PolylineCurve({feature, end})};
-  GlyphSpec g;
-  g.text = std::string(1, dir) + " " + FormatMeasurement(value, style.precision, style.suffix);
-  g.height = h; g.plane = pl; g.center = dir == 'X';
-  g.plane.SetOrigin(dir == 'X' ? end + pl.yaxis * (h * 0.3) : end + pl.xaxis * (h * 0.3) - pl.yaxis * (h * 0.5));
-  std::map<std::string, std::string> tags = {
-      {"DimOrdinateDir", std::string(1, dir)},
-      {"DimPlaneOrigin", PointTag(pl.origin)},
-      {"DimPlaneX", PointTag(Point3d(pl.xaxis))},
-      {"DimPlaneY", PointTag(Point3d(pl.yaxis))},
-      {"DimP0", PointTag(base)},
-      {"DimP1", PointTag(feature)},
-  };
+  std::vector<kernel::NurbsCurve> curves;
+  DimGlyphSpec dg;
+  std::map<std::string, std::string> tags;
+  if (!BuildOrdinateDimensionGeometry(base, feature, dir, pl, h, curves, dg, tags, value_out, style)) return -1;
   if (has_ref_base) { tags["DimRefObj1"] = std::to_string(ref_base); tags["DimRefEnd1"] = end_base; }
   if (has_ref_feat) { tags["DimRefObj2"] = std::to_string(ref_feat); tags["DimRefEnd2"] = end_feat; }
-  if (value_out) *value_out = value;
+  GlyphSpec g;
+  g.text = dg.text; g.height = dg.height; g.plane = dg.plane; g.center = dg.center;
   return AddAnnotationGroup(ctx, "DimOrdinate", curves, g, -1, tags);
 }
 
