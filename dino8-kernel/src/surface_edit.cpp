@@ -14,6 +14,7 @@
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/surface.h"
+#include "dino8/kernel/surface_intersect.h"
 #include "dino8/kernel/tolerance.h"
 
 namespace dino8::kernel {
@@ -502,6 +503,96 @@ Result NurbsSurface::Rebuild(int u_count, int v_count, int u_degree, int v_degre
     }
     *out_max_deviation = worst;
   }
+  return Result::Ok;
+}
+
+Result NurbsSurface::InterpolateThroughGrid(const std::vector<Point3d>& grid, int u_count, int v_count,
+                                             NurbsSurface& out) {
+  if (u_count < 2 || v_count < 2) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::InterpolateThroughGrid: u_count and v_count must each be >= 2");
+  }
+  const size_t expected = static_cast<size_t>(u_count) * static_cast<size_t>(v_count);
+  if (grid.size() != expected) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::InterpolateThroughGrid: grid must have exactly u_count * v_count = " +
+        std::to_string(expected) + " entries, got " + std::to_string(grid.size()));
+  }
+  auto at = [&](int u, int v) -> ON_3dPoint {
+    return grid[static_cast<size_t>(u) * static_cast<size_t>(v_count) + static_cast<size_t>(v)];
+  };
+
+  // Shared U params: average every row's (fixed v) own [0, 1]-normalized
+  // chord-length parameterization - Piegl & Tiller's own prescribed
+  // method for surface interpolation, so every row is interpolated at
+  // the identical parameter values (see this method's own doc comment
+  // in surface.h for why that's what makes the two passes below combine
+  // into one consistent tensor-product surface at all).
+  std::vector<double> u_params(static_cast<size_t>(u_count), 0.0);
+  for (int v = 0; v < v_count; ++v) {
+    std::vector<ON_3dPoint> row(static_cast<size_t>(u_count));
+    for (int u = 0; u < u_count; ++u) row[static_cast<size_t>(u)] = at(u, v);
+    const std::vector<double> cp = ChordParams(row, /*closed=*/false);
+    const double total = cp.back();
+    if (!(total > 0.0)) {
+      throw std::invalid_argument("dino8::kernel::NurbsSurface::InterpolateThroughGrid: row v=" +
+                                   std::to_string(v) + " is degenerate (every point coincides)");
+    }
+    for (int u = 0; u < u_count; ++u) u_params[static_cast<size_t>(u)] += cp[static_cast<size_t>(u)] / total;
+  }
+  for (double& p : u_params) p /= v_count;
+
+  // Shared V params: the same averaging, over every column (fixed u).
+  std::vector<double> v_params(static_cast<size_t>(v_count), 0.0);
+  for (int u = 0; u < u_count; ++u) {
+    std::vector<ON_3dPoint> col(static_cast<size_t>(v_count));
+    for (int v = 0; v < v_count; ++v) col[static_cast<size_t>(v)] = at(u, v);
+    const std::vector<double> cp = ChordParams(col, /*closed=*/false);
+    const double total = cp.back();
+    if (!(total > 0.0)) {
+      throw std::invalid_argument("dino8::kernel::NurbsSurface::InterpolateThroughGrid: column u=" +
+                                   std::to_string(u) + " is degenerate (every point coincides)");
+    }
+    for (int v = 0; v < v_count; ++v) v_params[static_cast<size_t>(v)] += cp[static_cast<size_t>(v)] / total;
+  }
+  for (double& p : v_params) p /= u_count;
+
+  // Pass 1: interpolate every row (fixed v) along U -> intermediate[v][u].
+  std::vector<std::vector<ON_3dPoint>> intermediate(static_cast<size_t>(v_count));
+  ON_NurbsCurve u_curve;
+  for (int v = 0; v < v_count; ++v) {
+    std::vector<ON_3dPoint> row(static_cast<size_t>(u_count));
+    for (int u = 0; u < u_count; ++u) row[static_cast<size_t>(u)] = at(u, v);
+    const ON_NurbsCurve c = InterpolateCubic(row, u_params, /*closed=*/false, /*dim=*/3);
+    if (!c.IsValid() || c.CVCount() != u_count) return Result::Failed;
+    if (v == 0) u_curve = c;
+    intermediate[static_cast<size_t>(v)].resize(static_cast<size_t>(u_count));
+    for (int u = 0; u < u_count; ++u) c.GetCV(u, intermediate[static_cast<size_t>(v)][static_cast<size_t>(u)]);
+  }
+
+  // Pass 2: interpolate every column (fixed u) of the intermediate
+  // control points along V -> final_cv[u][v].
+  ON_NurbsCurve v_curve;
+  std::vector<std::vector<ON_3dPoint>> final_cv(static_cast<size_t>(u_count));
+  for (int u = 0; u < u_count; ++u) {
+    std::vector<ON_3dPoint> col(static_cast<size_t>(v_count));
+    for (int v = 0; v < v_count; ++v) col[static_cast<size_t>(v)] = intermediate[static_cast<size_t>(v)][static_cast<size_t>(u)];
+    const ON_NurbsCurve c = InterpolateCubic(col, v_params, /*closed=*/false, /*dim=*/3);
+    if (!c.IsValid() || c.CVCount() != v_count) return Result::Failed;
+    if (u == 0) v_curve = c;
+    final_cv[static_cast<size_t>(u)].resize(static_cast<size_t>(v_count));
+    for (int v = 0; v < v_count; ++v) c.GetCV(v, final_cv[static_cast<size_t>(u)][static_cast<size_t>(v)]);
+  }
+
+  ON_NurbsSurface result;
+  if (!result.Create(3, false, u_curve.Order(), v_curve.Order(), u_count, v_count)) return Result::Failed;
+  for (int k = 0; k < result.KnotCount(0); ++k) result.SetKnot(0, k, u_curve.Knot(k));
+  for (int k = 0; k < result.KnotCount(1); ++k) result.SetKnot(1, k, v_curve.Knot(k));
+  for (int u = 0; u < u_count; ++u) {
+    for (int v = 0; v < v_count; ++v) result.SetCV(u, v, final_cv[static_cast<size_t>(u)][static_cast<size_t>(v)]);
+  }
+  if (!result.IsValid()) return Result::Failed;
+  out.surface_ = result;
   return Result::Ok;
 }
 

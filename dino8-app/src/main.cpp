@@ -337,6 +337,26 @@ bool ConstantTimeEquals(const std::string& a, const std::string& b) {
   return diff == 0;
 }
 
+// Reads one boolean-ish query parameter ("geometry=1" or "geometry=true")
+// out of a raw HTTP query string ("a=1&geometry=1&b=2") - not a general
+// query-string parser (no URL-decoding, no repeated-key handling), just
+// enough for GET /objects's own single `?geometry=1` flag below.
+bool ComputeQueryFlagSet(const std::string& query, const std::string& key) {
+  size_t pos = 0;
+  while (pos < query.size()) {
+    const size_t amp = query.find('&', pos);
+    const std::string pair = query.substr(pos, amp == std::string::npos ? std::string::npos : amp - pos);
+    const size_t eq = pair.find('=');
+    if (eq != std::string::npos && pair.substr(0, eq) == key) {
+      const std::string value = pair.substr(eq + 1);
+      if (value == "1" || value == "true") return true;
+    }
+    if (amp == std::string::npos) break;
+    pos = amp + 1;
+  }
+  return false;
+}
+
 // Minimal string escaping for the compute server's JSON responses (GET
 // /objects, and /run[/python]'s Accept: application/json form) - the same
 // local, dependency-free convention every other JSON writer in this
@@ -662,8 +682,15 @@ int main(int argc, char** argv) {
   };
   const dino8::app::ComputeHandler compute_handler = [&app, &serve_tokens, json_wrap_output](const dino8::app::HttpRequest& req) {
     dino8::app::HttpResponse resp;
-    const bool is_run = req.path == "/run" || req.path == "/run/python";
-    if ((is_run && req.method != "POST") || (req.path == "/objects" && req.method != "GET")) {
+    // TryParseHttpRequest hands back the request-line path verbatim,
+    // query string and all ("/objects?geometry=1") - split it once here so
+    // every route comparison below matches on the bare path, with `query`
+    // available for GET /objects's own `?geometry=1` flag.
+    const size_t qpos = req.path.find('?');
+    const std::string path = qpos == std::string::npos ? req.path : req.path.substr(0, qpos);
+    const std::string query = qpos == std::string::npos ? std::string() : req.path.substr(qpos + 1);
+    const bool is_run = path == "/run" || path == "/run/python";
+    if ((is_run && req.method != "POST") || (path == "/objects" && req.method != "GET")) {
       resp.status = 405;
       resp.body = "Dino 8 compute service: /run and /run/python take POST, /objects takes GET\n";
       return resp;
@@ -693,12 +720,16 @@ int main(int argc, char** argv) {
     // GET /objects: a real, if minimal, structured geometry wire format -
     // the id/type/name/layer/bounding-box of every object currently in the
     // running document, as JSON - rather than only the plain print() text
-    // /run[/python] return. Not a geometry (de)serialization format for the
-    // curve/surface data itself (still none of that here, honestly) - this
-    // is metadata a client can act on (which ids exist, roughly where they
-    // are) without parsing a script's own printed text.
-    if (req.path == "/objects") {
+    // /run[/python] return. `?geometry=1` additionally carries the actual
+    // point/vertex data for the two object kinds simple enough to serialize
+    // honestly as plain JSON arrays (point, mesh); every other kind gets
+    // "geometry":null - still genuinely not a (de)serialization format for
+    // curve/surface/Brep/SubD geometry (control points, knots, weights,
+    // trims - a far larger undertaking than this pass attempts), and still
+    // no way to POST geometry *in* either.
+    if (path == "/objects") {
       const dino8::app::Document& doc = app.Doc();
+      const bool want_geometry = ComputeQueryFlagSet(query, "geometry");
       std::string body = "[";
       bool first = true;
       for (const dino8::app::SceneObject& o : doc.Objects()) {
@@ -716,6 +747,33 @@ int main(int argc, char** argv) {
         } else {
           body += "null";
         }
+        if (want_geometry) {
+          body += ",\"geometry\":";
+          if (o.kind == dino8::app::ObjectKind::Point) {
+            body += "{\"point\":[" + std::to_string(o.point.x) + "," + std::to_string(o.point.y) + "," + std::to_string(o.point.z) + "]}";
+          } else if (o.kind == dino8::app::ObjectKind::Mesh && o.mesh) {
+            const ON_Mesh& m = o.mesh->raw();
+            std::string verts = "[";
+            for (int i = 0; i < m.VertexCount(); ++i) {
+              if (i) verts += ',';
+              const ON_3dPoint v = m.Vertex(i);
+              verts += "[" + std::to_string(v.x) + "," + std::to_string(v.y) + "," + std::to_string(v.z) + "]";
+            }
+            verts += ']';
+            std::string faces = "[";
+            for (int i = 0; i < m.FaceCount(); ++i) {
+              if (i) faces += ',';
+              const ON_MeshFace& f = m.m_F[i];
+              faces += "[" + std::to_string(f.vi[0]) + "," + std::to_string(f.vi[1]) + "," + std::to_string(f.vi[2]);
+              if (f.IsQuad()) faces += "," + std::to_string(f.vi[3]);
+              faces += ']';
+            }
+            faces += ']';
+            body += "{\"vertices\":" + verts + ",\"faces\":" + faces + "}";
+          } else {
+            body += "null";
+          }
+        }
         body += '}';
       }
       body += "]\n";
@@ -723,7 +781,7 @@ int main(int argc, char** argv) {
       resp.body = body;
       return resp;
     }
-    if (req.path == "/run") {
+    if (path == "/run") {
       const bool ok = app.Lua().Start(req.body, "compute-request");
       const bool suspended = app.Lua().Suspended();
       if (suspended) app.Lua().Abort();
@@ -741,7 +799,7 @@ int main(int argc, char** argv) {
       resp.status = (ok && !suspended) ? 200 : 500;
       return resp;
     }
-    if (req.path == "/run/python") {
+    if (path == "/run/python") {
       if (!dino8::app::PythonEngine::Available()) {
         resp.status = 500;
         resp.body = "Dino 8 compute service: this build was compiled without a Python 3 development install (no DINO8_HAVE_PYTHON)\n";
