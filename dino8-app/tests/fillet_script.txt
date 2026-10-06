@@ -414,6 +414,36 @@ RailType=DistBetweenRails
 Enter
 SelAll
 Volume
+# --- FilletEdge RailType=DistFromEdge, multi-edge batching via kernel::
+# FilletConvexEdgesByDistanceFromEdge - closes PARITY_MAP.md's own "no
+# multi-edge/vertex-blend form" gap for the RailType case, the same
+# pending_rail_ staging idea pending_conic_/pending_fillet_ already
+# established for Rho/plain-radius. Before this pass, RailType applied each
+# pick immediately: the first edge's own exact result already carries a
+# curved rolling-ball wall face, so the second and third picks' own
+# PlanarFaces() check would reject them outright. All 3 edges of one box
+# corner are staged here and flushed together in one
+# FilletConvexEdgesByDistanceFromEdge call, reaching that function's own
+# m == 3 trihedral spherical-corner blend - every edge of a box corner
+# shares the identical 90-degree dihedral, so DistFromEdge's own closed
+# form (radius = distance * tan(45deg) = distance) converts all three to
+# the SAME radius = 2, landing on the identical Volume = 975.4 the plain
+# multi-edge Radius=2 case below already verifies (bit-for-bit the same
+# kernel construction, just reached via distance instead of a literal
+# radius).
+SelAll
+Hide
+Box 970,0,0 980,10,0 10
+FilletEdge
+Radius=2
+RailType=DistFromEdge
+975,0,0
+970,5,0
+970,0,5
+Enter
+SelAll
+List
+Volume
 # --- RemoveFillet: exact kernel::RemoveBlend inverse of FilletEdge, round-
 # tripping a plain box-corner fillet back to its own original 1000 volume -
 # PARITY_MAP.md's Blending & chamfering "Blend removal / defeaturing with
