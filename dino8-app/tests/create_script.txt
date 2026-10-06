@@ -147,16 +147,16 @@ SelAll
 Delete
 @expect_objects 0
 # --- Divide Mode=SegmentLength with a remainder: segment length 7 on the
-# same 40-length line leaves a shorter final stretch uncovered -
-# floor(40/7)=5 whole steps plus the start point, 6 points total, unlike
-# Mode=NumberOfSegments which always pins its last point to the curve's
-# far end.
+# same 40-length line still always ends at the curve's own far end (same
+# as Mode=NumberOfSegments) - 5 interior boundaries at 7,14,21,28,35 plus
+# the start and end, 7 points total, with the final 35->40 stretch a
+# genuine 5-unit leftover segment shorter than the other six.
 Line 0,0,0 40,0,0
 SelLast
 Divide Mode=SegmentLength 7
 SelNone
 SelPt
-@expect_selected 6
+@expect_selected 7
 SelAll
 Delete
 @expect_objects 0
