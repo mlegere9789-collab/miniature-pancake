@@ -6082,13 +6082,29 @@ fi
 # round trip" proof hatch3dm_fixture_gen already gives ON_Hatch. The scale
 # placement's imported line must come back 3 units long (not 1), proving
 # Load3dm applied the ref's full ON_Xform, not just an insertion-point
-# translation.
+# translation. It also builds a second, outer ON_InstanceDefinition
+# ("OuterBlock") whose own one member is a NESTED ON_InstanceRef placing
+# TestBlock inside it (translated (0,5,0) within the definition itself) -
+# a real Rhino feature (one block definition may place another block)
+# BuildBlockDefinitionFromIdef (File3dm.cpp) previously silently dropped
+# along with every other geometry kind it has no Dino8-side equivalent
+# for, same as nested instance refs' own prior disclosed gap. Flattened
+# rather than truly nested (Dino8's own BlockDefinition::objects is a flat
+# geometry list - even a block authored live in Dino8 can never nest one
+# inside another): the nested ref's own xform is baked into the member
+# line before it's added to OuterBlock's own definition, so OuterBlock's
+# placement at (100,0,0) must compose BOTH transforms, landing the line at
+# (100,5,0)-(101,5,0), not (100,0,0)-(101,0,0) (nested xform dropped) or
+# (0,5,0)-(1,5,0) (placement xform dropped).
 IREFBIN="$(dirname "$BIN")/instanceref3dm_fixture_gen"
 if [ -x "$IREFBIN" ]; then
   "$IREFBIN" "$TMPW/instanceref_fixture.3dm" >/dev/null || { echo "FAIL: instanceref3dm_fixture_gen failed to write the instance-ref fixture"; exit 1; }
   cat > "$TMPW/instanceref3dm_script.txt" <<EOS
 Open $TMPW/instanceref_fixture.3dm
 SelBlockInstanceOf TestBlock
+What
+SelNone
+SelBlockInstanceOf OuterBlock
 What
 EOS
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -6097,12 +6113,16 @@ EOS
     IRF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/instanceref3dm_script.txt" 2>&1)" || { echo "$IRF"; echo "FAIL: instance-ref .3dm script exited non-zero"; exit 1; }
   fi
   irfcheck() { if echo "$IRF" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$IRF" "$1"; fail=1; fi; }
-  irfcheck "Opened $TMPW/instanceref_fixture.3dm (2 objects)" "Load3dm placed both ON_InstanceRef instances as 2 real objects (0 before the fix: both silently skipped), and did not also add the idef's own member line as a 3rd, un-transformed object (ON::idef_object skip)"
-  irfcheck "SelBlockInstanceOf: selected 2 object(s) in instances of 'TestBlock'" "both placements landed as real Dino8 block instances, tagged and grouped under the idef's own name, not ordinary untagged objects"
+  irfcheck "Opened $TMPW/instanceref_fixture.3dm (3 objects)" "Load3dm placed all 3 ON_InstanceRef instances (2 TestBlock + 1 OuterBlock) as 3 real objects (0 before the fix: all silently skipped), and did not also add either idef's own member geometry as extra, un-transformed objects (ON::idef_object skip)"
+  irfcheck "SelBlockInstanceOf: selected 2 object(s) in instances of 'TestBlock'" "both direct placements landed as real Dino8 block instances, tagged and grouped under the idef's own name, not ordinary untagged objects"
   irfcheck "Length: 1" "the plain-translation placement's line kept its original unit length"
   irfcheck "Length: 3" "the scale+translate placement's line came back 3 units long - proof Load3dm applied the ref's full ON_Xform (scale included), not just a translation to the insertion point"
   irfcheck "BlockInsert = 2.000000,3.000000,0.000000" "the plain-translation placement's insertion point is exactly where it was placed"
   irfcheck "BlockInsert = 10.000000,0.000000,0.000000" "the scale+translate placement's insertion point is the translation component alone, not shifted by the scale (both ops shared a single ON_Xform, origin-fixed scale then translate)"
+  irfcheck "SelBlockInstanceOf: selected 1 object(s) in instances of 'OuterBlock'" "the OuterBlock placement - whose own definition's one member is a NESTED ON_InstanceRef placing TestBlock, not ordinary geometry - was found by name, proving BuildBlockDefinitionFromIdef resolved the nested reference into real flattened geometry rather than silently dropping the whole member and leaving OuterBlock's own definition empty"
+  irfcheck "Bounding box: (100, 5, 0) to (101, 5, 0)" "OuterBlock's placement at (100,0,0) composed with the nested member's own (0,5,0) translation baked into the definition - both transforms applied, not just one"
+  irfcheck "Block = OuterBlock" "the flattened nested-block line carries the outer block's own name, not the inner TestBlock's"
+  irfcheck "BlockInsert = 100.000000,0.000000,0.000000" "the OuterBlock placement's own insertion point survived exactly, independent of the nested member's own baked-in offset"
 else
   echo "FAIL instanceref3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_InstanceRef fixture check"
   fail=1
