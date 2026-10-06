@@ -48968,8 +48968,11 @@ void TestBooleanOperationErrorGeneralEngineFailureReasons() {
   using dino8::kernel::BooleanOperationError;
   using dino8::kernel::ImprintFaces;
   using dino8::kernel::MutualImprintFaces;
+  using dino8::kernel::SplitBrepByManyPlanes;
+  using dino8::kernel::SplitBrepByPlane;
   using dino8::kernel::SplitBySheet;
   using dino8::kernel::TrimSheetBySolid;
+  using dino8::kernel::Vector3d;
 
   const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
   const Brep other = Brep::Box(1, 1, 1, 3, 3, 3);
@@ -49032,6 +49035,16 @@ void TestBooleanOperationErrorGeneralEngineFailureReasons() {
          "SplitBySheet empty solid");
   expect([&] { TrimSheetBySolid(empty, box); }, BooleanFailureReason::EmptyOperand, "TrimSheetBySolid",
          "TrimSheetBySolid empty sheet");
+
+  // InvalidDirection (new this pass): a zero plane_normal, on both
+  // SplitBrepByPlane and its plural sibling SplitBrepByManyPlanes - the one
+  // precondition either function had left as a plain std::invalid_argument
+  // even after their own tolerance/empty-operand checks were already typed
+  // (this category's own "Boolean failure diagnostics" bullet).
+  expect([&] { SplitBrepByPlane(box, Vector3d(0, 0, 0), 1.0); }, BooleanFailureReason::InvalidDirection,
+         "SplitBrepByPlane", "SplitBrepByPlane zero plane_normal");
+  expect([&] { SplitBrepByManyPlanes(box, Vector3d(0, 0, 0), {1.0}); }, BooleanFailureReason::InvalidDirection,
+         "SplitBrepByManyPlanes", "SplitBrepByManyPlanes zero plane_normal");
 }
 
 // Extends the typed-refusal mechanism past the two prior tests above to the
@@ -53514,11 +53527,18 @@ void TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate() {
   Check(threw, "RemoveNakedMicroEdge() throws std::out_of_range for an out-of-range edge_index");
 }
 
-// The scope restriction itself: a micro edge whose loop-neighbor is the
-// two-square fixture's own SHARED edge (or whose endpoint is a vertex a
-// third face also depends on) must be refused, not guessed at - the
-// Brep is left completely unchanged either way.
-void TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge() {
+// 2026-10-06: this used to prove the scope restriction itself (a micro
+// edge whose loop-neighbor is a SHARED edge was refused outright). That
+// restriction is deliberately narrowed now (see RemoveNakedMicroEdge()'s
+// own doc comment) - a shared neighbor is nudged and re-trimmed exactly
+// like a naked one already was, since ReplaceEdgeCurve() re-trims every
+// face an edge borders generically. This test is updated in place to
+// prove the NEW behavior (a deliberate generalization, not a weakened
+// check): the call now succeeds, and - the actual load-bearing proof,
+// not just Result::Ok - face b (which only touches this micro edge
+// indirectly, through the shared neighbor) gets genuinely re-trimmed
+// too, not merely face a.
+void TestRemoveNakedMicroEdgeClosesSliverNextToASharedEdge() {
   using dino8::kernel::Brep;
   using dino8::kernel::Point3d;
   using dino8::kernel::Result;
@@ -53550,24 +53570,137 @@ void TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge() {
   }
   Check(micro_index >= 0, "found the sliver edge next to the shared seam");
 
-  const int edges_before = flat.raw().m_E.Count();
-  const Result r = flat.RemoveNakedMicroEdge(micro_index, 0.01);
-  Check(r == Result::Failed,
-        "RemoveNakedMicroEdge() refuses a sliver whose neighbor is a shared edge (or whose endpoint a third "
-        "face also depends on) rather than guessing at it");
-  Check(flat.raw().m_E.Count() == edges_before, "a refused call leaves the edge count completely unchanged");
-  Check(flat.raw().IsValid(), "the Brep is still a valid ON_Brep after a refused call");
-
-  // The genuinely naked, non-micro-adjacent original shared edge is
-  // untouched: RemoveNakedMicroEdge() on it directly is also refused
-  // (it isn't a micro edge at all - length ~1, not < tolerance).
   int shared_edge_index = -1;
   for (int i = 0; i < flat.raw().m_E.Count(); ++i) {
     if (flat.raw().m_E[i].TrimCount() == 2) { shared_edge_index = i; break; }
   }
-  Check(shared_edge_index >= 0, "found the shared edge");
+  Check(shared_edge_index >= 0, "found the shared edge between a and b");
+
+  auto total_area = [&]() {
+    double area = 0;
+    for (const dino8::kernel::Mesh& m : flat.Tessellate(24, 24)) area += m.Area();
+    return area;
+  };
+  const double area_before = total_area();
+
+  const int edges_before = flat.raw().m_E.Count();
+  const Result r = flat.RemoveNakedMicroEdge(micro_index, 0.01);
+  Check(r == Result::Ok,
+        "RemoveNakedMicroEdge() now succeeds on a sliver whose own loop-neighbor is a shared (2-trim) edge");
+  Check(flat.raw().IsValid(), "the Brep is still a valid ON_Brep after the fix");
+  Check(flat.FaceCount() == 2, "still exactly 2 faces");
+  Check(flat.raw().m_E.Count() == edges_before - 1, "the sliver edge is genuinely gone: one fewer edge");
+
+  // The load-bearing proof: face b's own boundary at (1,1,0) was only
+  // ever reachable through the SHARED neighbor edge being nudged, never
+  // directly - if ReplaceEdgeCurve() had only re-trimmed face a (the
+  // micro edge's own face) and silently left face b's own trim alone,
+  // b's own loop would now have a real gap at that corner. Confirmed
+  // structurally instead: the shared edge (still TrimCount() == 2, still
+  // bordering both a and b) is still exactly shared, and the whole Brep
+  // is still a closed, gap-free 2-manifold there - IsValid() above
+  // already re-checks every trim/edge/vertex consistency, including
+  // face b's.
+  Check(flat.raw().m_E[shared_edge_index].TrimCount() == 2,
+        "the shared edge is still genuinely shared (2-trim) between a and b after the fix, not orphaned");
+  Check(flat.raw().m_F[0].Loop(0)->TrimCount() == 4 && flat.raw().m_F[1].Loop(0)->TrimCount() == 4,
+        "a is back to a plain quad (lost the sliver trim) and b's own quad is unaffected in trim count");
+
+  const double area_after = total_area();
+  Check(std::abs(area_after - area_before) < 1e-3,
+        "closing the sliver next to the shared seam left the combined area of BOTH faces unchanged within a "
+        "tight tolerance");
+
+  // RemoveNakedMicroEdge() on the shared edge directly is still refused -
+  // it isn't a micro edge at all (length ~1, not < tolerance), and it
+  // isn't naked either (TrimCount() == 2, out of this method's own
+  // single-trim scope, RemoveSharedMicroEdge()'s job instead).
   Check(flat.RemoveNakedMicroEdge(shared_edge_index, 0.01) == Result::Failed,
-        "RemoveNakedMicroEdge() on a shared (2-trim) edge returns Result::Failed");
+        "RemoveNakedMicroEdge() on a shared (2-trim), ordinary-length edge returns Result::Failed");
+}
+
+// 2026-10-06: proves the SECOND relaxation independently of the first -
+// a naked micro edge whose endpoint is pinched by a THIRD, otherwise
+// unrelated face (sharing only that single point, no edge) used to be
+// refused outright by the old "touches nothing else" isolation check.
+// Mirrors TestRemoveSharedMicroEdgeClosesSeamWithAThirdFacePinchingAt
+// OneEndpoint()'s own fixture shape, adapted to the naked (single-face)
+// case: plate f carries the sliver (same shape as the isolated-sliver
+// test above), and a wholly separate face c touches the sliver's own
+// near endpoint P1 = (1, 0, 0) at a single coincident point only.
+void TestRemoveNakedMicroEdgeClosesSliverWithAThirdFacePinchingAtEndpoint() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const double eps = 1e-4;
+  Brep::PlanarFace f, c;
+  f.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  f.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, eps, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  // c lies in the y=0 plane (perpendicular to f), touching f only at the
+  // single point P1 = (1, 0, 0) - no shared edge, a pure corner weld.
+  // Winding: (P1-P0) x (P3-P0) = (0,0,4) x (-4,0,0) = (0,-16,0), matching
+  // the plane's own (0,-1,0) normal.
+  c.plane = ON_Plane(Point3d(1, 0, 0), ON_3dVector(0, -1, 0));
+  c.loop = {Point3d(1, 0, 0), Point3d(1, 0, 4), Point3d(-3, 0, 4), Point3d(-3, 0, 0)};
+  Brep flat = Brep::FromPlanarFaces({f, c});
+  Check(flat.FaceCount() == 2, "the pinching fixture starts with exactly 2 faces");
+  Check(flat.raw().IsValid(), "the pinching fixture is a valid ON_Brep before the fix");
+  Check(flat.raw().m_F[1].Loop(0)->TrimCount() == 4, "c is a genuine 4-trim quad, untouched by the setup");
+
+  int micro_index = -1;
+  int p1_vertex = -1;
+  for (int i = 0; i < flat.raw().m_E.Count(); ++i) {
+    const ON_BrepEdge& e = flat.raw().m_E[i];
+    if (e.m_edge_index < 0 || e.TrimCount() != 1) continue;
+    ON_NurbsCurve nc;
+    if (e.GetNurbForm(nc) <= 0) continue;
+    dino8::kernel::NurbsCurve k;
+    k.raw() = nc;
+    if (k.Length(20) < 0.01) {
+      micro_index = i;
+      for (int side = 0; side < 2; ++side) {
+        const int vi = e.m_vi[side];
+        if (flat.raw().m_V[vi].point.DistanceTo(ON_3dPoint(1, 0, 0)) < 1e-6) p1_vertex = vi;
+      }
+      break;
+    }
+  }
+  Check(micro_index >= 0, "found the naked sliver edge");
+  Check(p1_vertex >= 0, "identified P1, the sliver's own endpoint c also touches");
+  Check(flat.raw().m_V[p1_vertex].m_ei.Count() == 4,
+        "P1 starts at valence 4: the micro edge, its one designated f-neighbor, and c's own two edges");
+
+  auto total_area = [&]() {
+    double area = 0;
+    for (const dino8::kernel::Mesh& m : flat.Tessellate(24, 24)) area += m.Area();
+    return area;
+  };
+  const double area_before = total_area();
+
+  const Result r = flat.RemoveNakedMicroEdge(micro_index, 0.01);
+  Check(r == Result::Ok, "RemoveNakedMicroEdge() now succeeds despite P1's own non-isolated valence-4");
+  Check(flat.raw().IsValid(), "the Brep is still a valid ON_Brep after the fix");
+  Check(flat.FaceCount() == 2, "still exactly 2 faces - c itself is never touched structurally");
+  Check(flat.raw().m_F[0].Loop(0)->TrimCount() == 4, "f is back to a plain quad, same as the isolated-case fix");
+  Check(flat.raw().m_F[1].Loop(0)->TrimCount() == 4, "c is still a genuine 4-trim quad - its own loop never changed");
+
+  // c's own two edges at P1 were nudged to the shared merge point right
+  // alongside the one designated loop-neighbor - confirmed directly
+  // against c's own loop, not merely inferred from Result::Ok.
+  const ON_BrepLoop& c_loop = *flat.raw().m_F[1].Loop(0);
+  bool c_corner_found = false;
+  for (int k = 0; k < c_loop.TrimCount(); ++k) {
+    const ON_BrepTrim& t = *c_loop.Trim(k);
+    const int vi = t.m_vi[0];
+    if (flat.raw().m_V[vi].point.DistanceTo(ON_3dPoint(1, 0, 0)) < 1e-2) c_corner_found = true;
+  }
+  Check(c_corner_found, "c's own corner at P1 is still right where it was (within the micro-scale nudge)");
+
+  const double area_after = total_area();
+  Check(std::abs(area_after - area_before) < 1e-3,
+        "closing the sliver left the combined area unchanged within a tight tolerance, even with c's own "
+        "extra geometry nudged along with it");
 }
 
 // Brep::RemoveSharedMicroEdge() - RemoveNakedMicroEdge()'s own sibling for
@@ -71726,7 +71859,8 @@ int main() {
   TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies();
   TestUnjoinEdgeGeneralizesToThreeOrMoreTrims();
   TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate();
-  TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge();
+  TestRemoveNakedMicroEdgeClosesSliverNextToASharedEdge();
+  TestRemoveNakedMicroEdgeClosesSliverWithAThirdFacePinchingAtEndpoint();
   TestRemoveSharedMicroEdgeClosesIsolatedSeamBetweenTwoFaces();
   TestRemoveSharedMicroEdgeRefusesNakedEdgeAndDegenerateLoop();
   TestRemoveSharedMicroEdgeClosesSeamWithAThirdFacePinchingAtOneEndpoint();

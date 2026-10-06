@@ -1121,6 +1121,62 @@ dino8::platform::AccessibleNode KeyboardShortcutsAccessibleTree(Application& app
   return dino8::platform::BuildKeyboardShortcutsNode(summaries);
 }
 
+namespace {
+// Dino 8's own fixed keyboard shortcuts (not user-customizable - those are
+// Options > Shortcuts, see KeyboardShortcutsAccessibleTree above), shown as
+// three BulletText rows in the Options window's built-in-shortcuts
+// reference tab (DrawOptionsWindow's options.tab_keyboard) below. Kept as
+// one data table feeding both that display and
+// BuiltinShortcutsAccessibleTree so the two can never drift out of sync.
+struct BuiltinShortcutEntry {
+  const char* combo;
+  const char* action;
+};
+constexpr BuiltinShortcutEntry kBuiltinShortcutRow1[] = {
+    {"F1", "Command list"}, {"F2", "History"},    {"F3", "Properties"},    {"F7", "Grid"},
+    {"F8", "Ortho"},        {"F9", "Grid snap"},  {"F10/F11", "Points on/off"},
+};
+constexpr BuiltinShortcutEntry kBuiltinShortcutRow2[] = {
+    {"Ctrl+N/O/S", "New/Open/Save"}, {"Ctrl+Z/Y", "Undo/Redo"}, {"Ctrl+A", "Select all"},
+    {"Ctrl+G", "Group"},             {"Ctrl+H", "Hide"},
+};
+constexpr BuiltinShortcutEntry kBuiltinShortcutRow3[] = {
+    {"Home", "Undo view"}, {"PgUp/PgDn", "zoom"}, {"Arrow keys", "orbit"},
+    {"Esc", "cancel / deselect"}, {"Enter", "repeat last"},
+};
+
+template <size_t N>
+std::string JoinBuiltinShortcutRow(const BuiltinShortcutEntry (&row)[N]) {
+  std::string out;
+  for (size_t i = 0; i < N; ++i) {
+    if (i) out += "   ";
+    out += row[i].combo;
+    out += ' ';
+    out += row[i].action;
+  }
+  return out;
+}
+
+template <size_t N>
+void AppendBuiltinShortcutRow(const BuiltinShortcutEntry (&row)[N],
+                               std::vector<dino8::platform::KeyboardShortcutSummary>& out) {
+  for (const BuiltinShortcutEntry& e : row) out.push_back({e.combo, e.action});
+}
+}  // namespace
+
+// AT-SPI2-queryable snapshot of the Options window's own built-in-shortcuts
+// reference tab (options.tab_keyboard, DrawOptionsWindow below): one entry
+// per fixed shortcut from kBuiltinShortcutRow1/2/3, the same table that
+// tab's three BulletText rows are generated from, so this can never drift
+// out of sync with what's actually displayed there.
+dino8::platform::AccessibleNode BuiltinShortcutsAccessibleTree(Application&) {
+  std::vector<dino8::platform::KeyboardShortcutSummary> summaries;
+  AppendBuiltinShortcutRow(kBuiltinShortcutRow1, summaries);
+  AppendBuiltinShortcutRow(kBuiltinShortcutRow2, summaries);
+  AppendBuiltinShortcutRow(kBuiltinShortcutRow3, summaries);
+  return dino8::platform::BuildBuiltinShortcutsNode(summaries);
+}
+
 void DrawOptionsWindow(Application& app) {
   ImGui::SetNextWindowSize(ImVec2(620, 460), ImGuiCond_Appearing);
   if (!ImGui::Begin(PanelTitle("panel.options", "Options").c_str(), &app.Panels().options)) { ImGui::End(); return; }
@@ -1452,9 +1508,9 @@ void DrawOptionsWindow(Application& app) {
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem(Tr("options.tab_keyboard").c_str())) {
-      ImGui::BulletText("F1 Command list   F2 History   F3 Properties   F7 Grid   F8 Ortho   F9 Grid snap   F10/F11 Points on/off");
-      ImGui::BulletText("Ctrl+N/O/S New/Open/Save   Ctrl+Z/Y Undo/Redo   Ctrl+A Select all   Ctrl+G Group   Ctrl+H Hide");
-      ImGui::BulletText("Home Undo view   PgUp/PgDn zoom   Arrow keys orbit   Esc cancel / deselect   Enter repeat last");
+      ImGui::BulletText("%s", JoinBuiltinShortcutRow(kBuiltinShortcutRow1).c_str());
+      ImGui::BulletText("%s", JoinBuiltinShortcutRow(kBuiltinShortcutRow2).c_str());
+      ImGui::BulletText("%s", JoinBuiltinShortcutRow(kBuiltinShortcutRow3).c_str());
       ImGui::EndTabItem();
     }
     ImGui::EndTabBar();

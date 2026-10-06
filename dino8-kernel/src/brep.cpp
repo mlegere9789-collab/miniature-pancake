@@ -6800,29 +6800,54 @@ Result Brep::RemoveNakedMicroEdge(int edge_index, double tolerance) {
   if (ei_prev < 0 || ei_next < 0 || ei_prev == edge_index || ei_next == edge_index) return Result::Failed;
   const ON_BrepEdge& edge_prev = brep_.m_E[ei_prev];
   const ON_BrepEdge& edge_next = brep_.m_E[ei_next];
-  // Scoped to naked neighbors only (see this method's own doc comment):
-  // a neighbor shared with a second face, or itself non-manifold, is left
-  // for a caller to handle by hand rather than guessed at here.
-  if (edge_prev.TrimCount() != 1 || edge_next.TrimCount() != 1) return Result::Failed;
+  // 2026-10-06: narrowed from "naked neighbors only" to "manifold
+  // (1- or 2-trim) neighbors" - a neighbor that is itself SHARED with a
+  // second face (the free boundary running into a seam) is no longer
+  // refused outright: ReplaceEdgeCurve() below already re-trims every
+  // trim an edge carries, one or two, generically (it loops
+  // `edge.m_ti.Count()` times, see its own Phase 1), so nudging a shared
+  // neighbor's curve re-trims that further face "for free" exactly like a
+  // naked neighbor's own single face already was. A genuinely
+  // non-manifold (3+ trim) neighbor is still left alone rather than
+  // guessed at.
+  if (edge_prev.TrimCount() < 1 || edge_prev.TrimCount() > 2 || edge_next.TrimCount() < 1 ||
+      edge_next.TrimCount() > 2) {
+    return Result::Failed;
+  }
 
   const int v_start = trim.m_vi[0];
   const int v_end = trim.m_vi[1];
   if (v_start < 0 || v_end < 0 || v_start == v_end) return Result::Failed;
   if (v_start >= brep_.m_V.Count() || v_end >= brep_.m_V.Count()) return Result::Failed;
 
-  // Isolated-sliver check: each endpoint may touch nothing in this WHOLE
-  // Brep besides the micro edge itself and its own one loop-neighbor - a
-  // vertex a third edge (another face, a non-manifold junction, ...) also
-  // depends on is left alone rather than risked.
-  auto only_touches = [&](int vi, int allowed_other_edge) {
+  // 2026-10-06: the strict "each endpoint touches NOTHING else" isolation
+  // check narrows to the identical, already-shipped relaxation
+  // RemoveSharedMicroEdge() gives its own two endpoints (see that
+  // method's own `collect_extras`): any FURTHER edge at either endpoint,
+  // beyond the micro edge itself and its one designated loop-neighbor,
+  // belongs to some third face (or a further naked boundary) merely
+  // pinching at that same vertex, not to the one face this call actually
+  // closes a gap on - so it is nudged to the shared merge point exactly
+  // like the designated neighbor already is, rather than refusing the
+  // whole call outright.
+  auto collect_extras = [&](int vi, int allowed_other_edge) {
+    std::vector<int> extras;
     const ON_BrepVertex& v = brep_.m_V[vi];
     for (int k = 0; k < v.m_ei.Count(); ++k) {
       const int e = v.m_ei[k];
-      if (e != edge_index && e != allowed_other_edge) return false;
+      if (e != edge_index && e != allowed_other_edge) extras.push_back(e);
     }
-    return true;
+    return extras;
   };
-  if (!only_touches(v_start, ei_prev) || !only_touches(v_end, ei_next)) return Result::Failed;
+  const std::vector<int> extra_start = collect_extras(v_start, ei_prev);
+  const std::vector<int> extra_end = collect_extras(v_end, ei_next);
+  // An edge touching BOTH endpoints (distinct from the micro edge itself)
+  // would get nudged at both ends and collapse to zero length - refused
+  // rather than guessed at, the same bowtie discipline
+  // RemoveSharedMicroEdge() already applies to its own extras.
+  for (int e : extra_start) {
+    if (std::find(extra_end.begin(), extra_end.end(), e) != extra_end.end()) return Result::Failed;
+  }
 
   const ON_3dPoint p_start = brep_.m_V[v_start].point;
   const ON_3dPoint p_end = brep_.m_V[v_end].point;
@@ -6832,8 +6857,9 @@ Result Brep::RemoveNakedMicroEdge(int edge_index, double tolerance) {
   // and nudge the ONE end that touches the micro edge over to `merged`
   // via ON_Curve::SetStartPoint()/SetEndPoint() - the standard OpenNURBS
   // "close a small gap without reshaping the rest of the curve" primitive.
-  // If either can't be moved this way, bail before touching this Brep.
-  auto nudge = [&](const ON_BrepEdge& e, int vi) -> std::optional<NurbsCurve> {
+  // If any can't be moved this way, bail before touching this Brep.
+  auto nudge = [&](int ei, int vi) -> std::optional<NurbsCurve> {
+    const ON_BrepEdge& e = brep_.m_E[ei];
     ON_Curve* dup = e.DuplicateCurve();
     if (!dup) return std::nullopt;
     const bool at_end = (e.m_vi[1] == vi);
@@ -6847,9 +6873,20 @@ Result Brep::RemoveNakedMicroEdge(int edge_index, double tolerance) {
     out.raw() = nc;
     return out;
   };
-  std::optional<NurbsCurve> new_prev = nudge(edge_prev, v_start);
-  std::optional<NurbsCurve> new_next = nudge(edge_next, v_end);
+  std::optional<NurbsCurve> new_prev = nudge(ei_prev, v_start);
+  std::optional<NurbsCurve> new_next = nudge(ei_next, v_end);
   if (!new_prev || !new_next) return Result::Failed;
+  std::vector<NurbsCurve> new_extra_start, new_extra_end;
+  for (int e : extra_start) {
+    std::optional<NurbsCurve> n = nudge(e, v_start);
+    if (!n) return Result::Failed;
+    new_extra_start.push_back(*n);
+  }
+  for (int e : extra_end) {
+    std::optional<NurbsCurve> n = nudge(e, v_end);
+    if (!n) return Result::Failed;
+    new_extra_end.push_back(*n);
+  }
 
   // Phase 2: commit. Move the two vertices to their shared merged point
   // FIRST, so ReplaceEdgeCurve()'s own "new curve endpoints must land
@@ -6861,10 +6898,12 @@ Result Brep::RemoveNakedMicroEdge(int edge_index, double tolerance) {
   try {
     ReplaceEdgeCurve(ei_prev, *new_prev, retrim_tolerance);
     ReplaceEdgeCurve(ei_next, *new_next, retrim_tolerance);
+    for (size_t k = 0; k < extra_start.size(); ++k) ReplaceEdgeCurve(extra_start[k], new_extra_start[k], retrim_tolerance);
+    for (size_t k = 0; k < extra_end.size(); ++k) ReplaceEdgeCurve(extra_end[k], new_extra_end[k], retrim_tolerance);
   } catch (const std::exception&) {
-    // Leaves this Brep with, at most, one neighbor's curve nudged by the
-    // same micro-scale amount this whole operation is trying to close (a
-    // no-op-sized change, never a structural one) and the micro edge
+    // Leaves this Brep with, at most, a few neighbors' curves nudged by
+    // the same micro-scale amount this whole operation is trying to close
+    // (a no-op-sized change, never a structural one) and the micro edge
     // itself untouched - a safe, honest "couldn't", not a corrupted Brep.
     return Result::Failed;
   }
