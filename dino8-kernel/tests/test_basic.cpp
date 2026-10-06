@@ -58574,6 +58574,69 @@ void TestThickenCurvedSheetProducesGenuineClosedSolid() {
         "folded solid");
 }
 
+void TestThickenTrimmedPlanarSheetMatchesExactTrimAreaTimesThickness() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+
+  // parity-map "kernel: Feature operations" - "Thicken a sheet body into a
+  // solid"'s own disclosed "a trimmed sheet's real boundary is not its
+  // surface's 4 domain isocurves" gap, closed for the PLANAR case. Same
+  // unit-square flat surface TestThickenRejectsInvalidArguments below
+  // builds its own now-ACCEPTED trimmed fixture from - u/v map 1:1 onto
+  // x/y here, so the trim loop's own UV area IS its real-world area: a
+  // 0.6x0.6 square, area 0.36.
+  const std::vector<Point3d> grid = {P(0, 0, 0), P(0, 1, 0), P(1, 0, 0), P(1, 1, 0)};
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const std::vector<Point2d> trim = {Point2d(0.2, 0.2), Point2d(0.8, 0.2), Point2d(0.8, 0.8), Point2d(0.2, 0.8)};
+  const Brep sheet = Brep::TrimmedPlanarFace(flat, trim);
+
+  const Brep solid = Brep::Thicken(sheet, 2.0);
+  const Mesh m = solid.TessellateToClosedMesh(8, 8);
+  Check(m.IsClosedManifold(), "Thicken() on a trimmed planar sheet is a genuine closed 2-manifold");
+  // 1e-6, not a tighter bound: this is a TESSELLATED mesh volume (a summed
+  // per-triangle integral), the same tolerance every other Thicken() volume
+  // check above already uses for exactly that reason - not a sign of
+  // actual inexactness in the underlying flat, straight-walled B-rep
+  // itself (confirmed closed-form elsewhere in this file via direct
+  // bounding-box/vertex checks, not just Volume()).
+  Check(std::fabs(m.Volume() - 0.72) < 1e-6,
+        "Thicken(+2.0) on the 0.36-area trimmed square gives exactly area * thickness = 0.72, not the full "
+        "untrimmed unit square's own 1.0 * 2.0 = 2.0");
+  const auto bbox = solid.GetTightBoundingBox();
+  Check(bbox.min.x > 0.2 - 1e-9 && bbox.max.x < 0.8 + 1e-9 && bbox.min.z > -1e-9 && std::fabs(bbox.max.z - 2.0) < 1e-9,
+        "Thicken() on a trimmed sheet keeps the trim loop's own real footprint (not the surface's full domain) "
+        "and offsets it by the requested thickness");
+}
+
+void TestThickenTrimmedPlanarSheetSymmetricPutsOriginalOnMidplane() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+
+  // Same trimmed-planar fixture as above, moved to z=5 and thickened
+  // symmetric - the trimmed path's own `symmetric` option must land the
+  // original surface on the solid's own midplane exactly like the
+  // untrimmed path's TestThickenSymmetricPutsOriginalSurfaceOnMidplane
+  // above already proves.
+  const std::vector<Point3d> grid = {P(0, 0, 5), P(0, 1, 5), P(1, 0, 5), P(1, 1, 5)};
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const std::vector<Point2d> trim = {Point2d(0.2, 0.2), Point2d(0.8, 0.2), Point2d(0.8, 0.8), Point2d(0.2, 0.8)};
+  const Brep sheet = Brep::TrimmedPlanarFace(flat, trim);
+
+  const Brep solid = Brep::Thicken(sheet, 2.0, /*symmetric=*/true);
+  const Mesh m = solid.TessellateToClosedMesh(8, 8);
+  Check(m.IsClosedManifold(), "Thicken(trimmed, symmetric) is a genuine closed 2-manifold");
+  Check(std::fabs(m.Volume() - 0.72) < 1e-6, "Thicken(trimmed, symmetric, total thickness 2) gives the same 0.72 "
+                                              "volume as the one-directional trimmed case above");
+  const auto bbox = solid.GetTightBoundingBox();
+  Check(std::fabs(bbox.min.z - 4.0) < 1e-9 && std::fabs(bbox.max.z - 6.0) < 1e-9,
+        "Thicken(trimmed, symmetric) puts the ORIGINAL surface's own z=5 exactly on the solid's own midplane, "
+        "matching the untrimmed path's own symmetric convention");
+}
+
 void TestThickenRejectsInvalidArguments() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -58595,11 +58658,30 @@ void TestThickenRejectsInvalidArguments() {
         "Thicken() throws for a single-face body that is closed/periodic (a full sphere wraps back on itself in "
         "u) - a distinct scope check from the multi-face rejection above");
 
-  const std::vector<Point2d> trim = {Point2d(0.2, 0.2), Point2d(0.8, 0.2), Point2d(0.8, 0.8), Point2d(0.2, 0.8)};
-  const Brep trimmed = Brep::TrimmedPlanarFace(flat, trim);
-  Check(Throws([&] { Brep::Thicken(trimmed, 0.1); }),
-        "Thicken() throws for a trimmed sheet - thickening its full untrimmed rectangle instead would be a "
-        "correctness bug, not merely a disclosed limitation");
+  // A trimmed PLANAR sheet no longer throws (see
+  // TestThickenTrimmedPlanarSheetMatchesExactTrimAreaTimesThickness above) -
+  // but a trimmed NON-planar sheet still must: TrimmedPlanarFace() itself
+  // never checks the surface's own actual planarity (it's a bare
+  // surface-only factory, same as FromSurface()), so handing it a
+  // genuinely curved surface - the same bulged-freeform fixture
+  // TestThickenCurvedSheetProducesGenuineClosedSolid above uses - builds a
+  // Brep this function must still refuse, not silently flatten.
+  std::vector<Point3d> bulge_grid;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      bulge_grid.push_back(P(i, j, (i == 2 && j == 2) ? 3.0 : 0.0));
+    }
+  }
+  const NurbsSurface bulge = NurbsSurface::FromControlGrid(bulge_grid, 4, 4, 3, 3);
+  const dino8::kernel::Interval bu = bulge.Domain(0), bv = bulge.Domain(1);
+  const auto lerp = [](const dino8::kernel::Interval& iv, double t) { return iv.min + t * (iv.max - iv.min); };
+  const std::vector<Point2d> bulge_trim = {
+      Point2d(lerp(bu, 0.3), lerp(bv, 0.3)), Point2d(lerp(bu, 0.7), lerp(bv, 0.3)),
+      Point2d(lerp(bu, 0.7), lerp(bv, 0.7)), Point2d(lerp(bu, 0.3), lerp(bv, 0.7))};
+  const Brep trimmed_curved = Brep::TrimmedPlanarFace(bulge, bulge_trim);
+  Check(Throws([&] { Brep::Thicken(trimmed_curved, 0.1); }),
+        "Thicken() throws for a trimmed sheet whose surface is genuinely NOT planar - the trimmed-planar path's "
+        "own IsPlanar() check catches it rather than silently treating a curved patch as flat");
 }
 
 void TestExtrudeFaceStraightMatchesExactPrismVolume() {
@@ -70840,6 +70922,8 @@ int main() {
   sweep_tests::TestThickenFlatSheetProducesExactBoxVolume();
   sweep_tests::TestThickenSymmetricPutsOriginalSurfaceOnMidplane();
   sweep_tests::TestThickenCurvedSheetProducesGenuineClosedSolid();
+  sweep_tests::TestThickenTrimmedPlanarSheetMatchesExactTrimAreaTimesThickness();
+  sweep_tests::TestThickenTrimmedPlanarSheetSymmetricPutsOriginalOnMidplane();
   sweep_tests::TestThickenRejectsInvalidArguments();
   sweep_tests::TestExtrudeFaceStraightMatchesExactPrismVolume();
   sweep_tests::TestExtrudeFaceObliqueDirectionMatchesCavalieriVolume();
