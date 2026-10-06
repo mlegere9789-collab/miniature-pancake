@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 
 #include <manifold/manifold.h>
 
@@ -2046,6 +2047,63 @@ bool FacesShareEdge(const Brep::PlanarFace& a, const Brep::PlanarFace& b, double
   return false;
 }
 
+// Like FacesShareEdge() immediately above, but also returns WHERE the
+// match is: `face`'s own edge index `i` (the edge face.loop[i] ->
+// face.loop[(i+1)%nf]) together with `neighbor`'s own matching index `k`
+// (face.loop[i] ~ neighbor.loop[(k+1)%nn], face.loop[i+1] ~
+// neighbor.loop[k] - the same opposite-winding convention FacesShareEdge()
+// already checks). PushPullFace()/PushPullFaces() use this to find which
+// of `face`'s own two endpoints at that edge a given neighbor is
+// responsible for correcting below.
+std::optional<std::pair<size_t, size_t>> FindSharedEdgeIndices(const Brep::PlanarFace& face,
+                                                                 const Brep::PlanarFace& neighbor, double tol) {
+  const size_t nf = face.loop.size(), nn = neighbor.loop.size();
+  for (size_t i = 0; i < nf; ++i) {
+    const Point3d& a0 = face.loop[i];
+    const Point3d& a1 = face.loop[(i + 1) % nf];
+    for (size_t k = 0; k < nn; ++k) {
+      const Point3d& b0 = neighbor.loop[k];
+      const Point3d& b1 = neighbor.loop[(k + 1) % nn];
+      if (a0.DistanceTo(b1) <= tol && a1.DistanceTo(b0) <= tol) return std::make_pair(i, k);
+    }
+  }
+  return std::nullopt;
+}
+
+// The genuine re-intersection PushPullFace()'s own doc comment used to say
+// an oblique neighbour would need: at a Brep vertex where exactly three
+// faces meet (the pulled `face`, and two neighbours each sharing one of
+// `face`'s own two edges there), a THIRD edge - shared between those two
+// neighbours themselves, not with `face` - runs from that vertex into the
+// solid's own interior. Clipping either neighbour against `cut_plane`
+// finds its own crossing point on that SAME physical 3D edge, so the two
+// neighbours agree on the corrected vertex position NO MATTER which plane
+// either of them lies on (perpendicular or oblique) - this is exactly that
+// one intersection, computed directly from `from` (the vertex being
+// corrected) and `to` (the neighbour's own next vertex along that shared
+// interior edge) rather than guessed at via a blind translate. For a
+// neighbour whose plane happens to be perpendicular to `face`'s own
+// normal, `to - from` lies entirely within that plane, so this reduces
+// algebraically to the exact same point a plain offset along the normal
+// already gives - this is a strict generalization, not a separate,
+// possibly-divergent construction (see TestPushPullFacePerpendicularCase*
+// fixtures for confirmation this never moves at all on the pre-existing
+// box fixture).
+Point3d PushPullCorrectedVertex(const ON_Plane& cut_plane, const Point3d& from, const Point3d& to,
+                                 int neighbor_face_index) {
+  const double dc = cut_plane.DistanceTo(from);
+  const double dw = cut_plane.DistanceTo(to);
+  if (std::fabs(dc - dw) <= 1e-12) {
+    throw std::invalid_argument(
+        "dino8::kernel::PushPullFace: distance collapses neighbour face " +
+        std::to_string(neighbor_face_index) +
+        "'s own boundary (a near-zero-length retrimmed edge) - too large a pull for this solid's own "
+        "geometry there");
+  }
+  const double t = dc / (dc - dw);
+  return from + t * (to - from);
+}
+
 }  // namespace
 
 Brep PushPullFace(const Brep& solid, int face_index, double distance) {
@@ -2085,33 +2143,46 @@ Brep PushPullFace(const Brep& solid, int face_index, double distance) {
   for (int i = 0; i < n; ++i) {
     if (i == face_index) continue;
     Brep::PlanarFace g = faces[static_cast<size_t>(i)];
-    if (distance < 0.0 && FacesShareEdge(g, face, tol)) {
+    if (distance < 0.0) {
       // A pull genuinely REMOVES the slab between the old and new plane,
       // so every neighbour that used to bound that slab must be
       // retrimmed back to the new (closer) plane - unlike a push, which
       // only ever adds new geometry into previously-empty space and so
       // never needs to touch a neighbour at all (see this function's own
-      // doc comment). Only a neighbour whose own plane is PERPENDICULAR
-      // to the pushed face's normal can be safely retrimmed by a single
-      // half-space clip here (the shared edge then lies exactly along the
-      // clip plane on both the old and new cap, so the clip meets the new
-      // cap with no gap or overlap); an oblique neighbour would need a
-      // genuine re-intersection this function does not attempt.
-      if (std::fabs(ON_DotProduct(g.plane.zaxis, face.plane.zaxis)) > 1e-6) {
-        throw std::invalid_argument(
-            "dino8::kernel::PushPullFace: face " + std::to_string(i) +
-            " neighbours the pulled face but isn't perpendicular to its normal - "
-            "retrimming an oblique neighbour needs a genuine re-intersection this "
-            "function does not attempt, see its own doc comment");
+      // doc comment). `SplitByHalfspace()` is a genuine 3D-plane clip (see
+      // its own doc comment), exact for ANY neighbour plane - perpendicular
+      // or oblique - so it needs no restriction here; what DOES need an
+      // oblique-aware fix is `new_loop` itself, corrected below via
+      // `PushPullCorrectedVertex()` rather than a blind per-vertex offset.
+      if (auto match = FindSharedEdgeIndices(face, g, tol)) {
+        const auto [fi_edge, ng_edge] = *match;
+        const size_t ip1 = (fi_edge + 1) % m;
+        const size_t ng = g.loop.size();
+        if (ng >= 3) {
+          // `face.loop[fi_edge]` ~ `g.loop[(ng_edge+1)%ng]`,
+          // `face.loop[ip1]` ~ `g.loop[ng_edge]` (FindSharedEdgeIndices()'s
+          // own convention) - each corrected via the THIRD edge incident
+          // to that same vertex, shared between `g` and whichever OTHER
+          // face borders `face`'s own adjacent edge there (see
+          // PushPullCorrectedVertex()'s own doc comment for why this is
+          // exact regardless of `g`'s own orientation).
+          const size_t pos_fi = (ng_edge + 1) % ng;
+          const size_t pos_ip1 = ng_edge;
+          const Point3d w_for_fi = g.loop[(pos_fi + 1) % ng];
+          const Point3d w_for_ip1 = g.loop[(pos_ip1 + ng - 1) % ng];
+          new_loop[fi_edge] = PushPullCorrectedVertex(cut_plane, face.loop[fi_edge], w_for_fi, i);
+          new_loop[ip1] = PushPullCorrectedVertex(cut_plane, face.loop[ip1], w_for_ip1, i);
+        }
+
+        std::vector<Point3d> clipped = SplitByHalfspace(g.loop, cut_plane, tol).inside;
+        if (clipped.size() < 3) {
+          throw std::invalid_argument(
+              "dino8::kernel::PushPullFace: distance collapses neighbour face " + std::to_string(i) +
+              "'s own boundary to fewer than 3 vertices - too large a pull for this solid's own "
+              "geometry there");
+        }
+        g.loop = std::move(clipped);
       }
-      std::vector<Point3d> clipped = SplitByHalfspace(g.loop, cut_plane, tol).inside;
-      if (clipped.size() < 3) {
-        throw std::invalid_argument(
-            "dino8::kernel::PushPullFace: distance collapses neighbour face " + std::to_string(i) +
-            "'s own boundary to fewer than 3 vertices - too large a pull for this solid's own "
-            "geometry there");
-      }
-      g.loop = std::move(clipped);
     }
     result.push_back(std::move(g));
   }
@@ -2218,14 +2289,28 @@ Brep PushPullFaces(const Brep& solid, const std::vector<std::pair<int, double>>&
     for (const auto& [fi, distance] : face_distances) {
       if (distance >= 0.0) continue;  // a push never touches a neighbour
       const Brep::PlanarFace& pulled = faces[static_cast<size_t>(fi)];
-      if (!FacesShareEdge(g, pulled, tol)) continue;
-      if (std::fabs(ON_DotProduct(g.plane.zaxis, pulled.plane.zaxis)) > 1e-6) {
-        throw std::invalid_argument(
-            "dino8::kernel::PushPullFaces: face " + std::to_string(i) + " neighbours pulled face " +
-            std::to_string(fi) +
-            " but isn't perpendicular to its normal - retrimming an oblique neighbour needs a genuine "
-            "re-intersection this function does not attempt, see PushPullFace()'s own doc comment");
+      // SplitByHalfspace() is a genuine 3D-plane clip (see its own doc
+      // comment), exact for ANY neighbour plane - the oblique restriction
+      // PushPullFace() itself used to have is lifted here identically (see
+      // that function's own doc comment and PushPullCorrectedVertex()'s for
+      // the full derivation); `new_loops[fi]` is corrected in place below
+      // rather than left as a blind per-vertex offset.
+      auto match = FindSharedEdgeIndices(pulled, g, tol);
+      if (!match) continue;
+      const auto [fi_edge, ng_edge] = *match;
+      const size_t m_pulled = pulled.loop.size();
+      const size_t ip1 = (fi_edge + 1) % m_pulled;
+      const size_t ng = g.loop.size();
+      if (ng >= 3) {
+        const size_t pos_fi = (ng_edge + 1) % ng;
+        const size_t pos_ip1 = ng_edge;
+        const Point3d w_for_fi = g.loop[(pos_fi + 1) % ng];
+        const Point3d w_for_ip1 = g.loop[(pos_ip1 + ng - 1) % ng];
+        const ON_Plane& cp = cut_planes[static_cast<size_t>(fi)];
+        new_loops[static_cast<size_t>(fi)][fi_edge] = PushPullCorrectedVertex(cp, pulled.loop[fi_edge], w_for_fi, i);
+        new_loops[static_cast<size_t>(fi)][ip1] = PushPullCorrectedVertex(cp, pulled.loop[ip1], w_for_ip1, i);
       }
+
       std::vector<Point3d> clipped = SplitByHalfspace(g.loop, cut_planes[static_cast<size_t>(fi)], tol).inside;
       if (clipped.size() < 3) {
         throw std::invalid_argument(
