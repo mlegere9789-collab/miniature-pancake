@@ -357,4 +357,47 @@ inline bool BuildAngleDimensionGeometry(Point3d vertex, Point3d p1, Point3d p2, 
   return true;
 }
 
+// Builds the curve list + label text + tag map for one Leader annotation
+// from its arrowhead point (`tip`), the rest of its polyline stored as
+// fixed offsets *from* the tip, a fixed plane and its (arbitrary,
+// user-typed - not recomputed, unlike every other Build*DimensionGeometry
+// above) label text - identical math to what the live Leader command
+// computes (cmd_annotate.cpp's own BuildLeaderGroup now just calls this and
+// adds its own associativity tag on top, the same split
+// BuildLinearDimensionGroup/BuildRadiusDimensionGroup/
+// BuildAngleDimensionGroup above already use), extracted so native `.3dm`
+// `ON_Leader` import (io/File3dm.cpp) can share it exactly - same "no
+// CommandContext" story as the other Build*Geometry functions above.
+// Returns false (nothing built) if fewer than 2 points result (a Leader
+// with only its arrowhead point and no bend/end point - the same failure
+// the live command already refuses).
+inline bool BuildLeaderGeometry(Point3d tip, const std::vector<Vector3d>& rest_offsets, const ON_Plane& pl, double text_h,
+                                const std::string& label, std::vector<kernel::NurbsCurve>& curves, DimGlyphSpec& text,
+                                std::map<std::string, std::string>& tags) {
+  using namespace dim_geom_detail;
+  std::vector<Point3d> pts;
+  pts.push_back(tip);
+  for (const Vector3d& off : rest_offsets) pts.push_back(tip + off);
+  if (pts.size() < 2) return false;
+  curves.clear();
+  curves.push_back(MakePolyline(pts));
+  AddArrow(curves, pts[0], pts[0] - pts[1], text_h, pl);
+  tags.clear();
+  tags["DimPlaneOrigin"] = DimPointTag(pl.origin);
+  tags["DimPlaneX"] = DimPointTag(Point3d(pl.xaxis));
+  tags["DimPlaneY"] = DimPointTag(Point3d(pl.yaxis));
+  tags["LeaderTip"] = DimPointTag(tip);
+  {
+    std::string s;
+    for (const Vector3d& off : rest_offsets) { if (!s.empty()) s += ";"; s += DimPointTag(Point3d(off)); }
+    tags["LeaderRest"] = s;
+  }
+  text.text = label;
+  text.height = text_h;
+  text.plane = pl;
+  text.plane.SetOrigin(pts.back() + pl.xaxis * (text_h * 0.4) - pl.yaxis * (text_h * 0.5));
+  text.center = false;
+  return true;
+}
+
 }  // namespace dino8::app
