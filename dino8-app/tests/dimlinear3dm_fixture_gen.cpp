@@ -1,15 +1,18 @@
-// dimlinear3dm_fixture_gen - writes a small, real .3dm file containing four
-// externally-authored dimension objects (ON_DimLinear x2, ON_DimRadial x2),
-// built directly through OpenNURBS' own ONX_Model/ON_DimLinear/ON_DimRadial/
-// ON_DimStyle API - the same API src/io/File3dm.cpp's Load3dm uses - rather
-// than through Dino 8's own Open/Save round trip. Same role as
-// text3dm_fixture_gen/hatch3dm_fixture_gen: Dino8 itself never writes a
-// native ON_DimLinear/ON_DimRadial object (its own Dim/DimAligned/DimRadius/
-// DimDiameter commands bake a group of curves plus Annotation/Dim* user_text
-// instead - see commands/DimGeometry.h), so Load3dm's own ON_DimLinear/
-// ON_DimRadial reader has no Dino8-authored file to prove itself against.
+// dimlinear3dm_fixture_gen - writes a small, real .3dm file containing six
+// externally-authored dimension/leader objects (ON_DimLinear x2,
+// ON_DimRadial x2, ON_Leader, ON_DimAngular), built directly through
+// OpenNURBS' own ONX_Model/ON_DimLinear/ON_DimRadial/ON_Leader/
+// ON_DimAngular/ON_DimStyle API - the same API src/io/File3dm.cpp's Load3dm
+// uses - rather than through Dino 8's own Open/Save round trip. Same role as
+// text3dm_fixture_gen/hatch3dm_fixture_gen: Dino8 itself never writes any of
+// these native annotation kinds (its own Dim/DimAligned/DimRadius/
+// DimDiameter/Leader/DimAngle commands bake a group of curves plus
+// Annotation/Dim*/Leader* user_text instead - see commands/DimGeometry.h and
+// cmd_annotate.cpp's own BuildLeaderGroup), so Load3dm's own readers for
+// these have no Dino8-authored file to prove themselves against.
 //
-// Four objects, chosen to exercise both branches of each reader:
+// Six objects, chosen to exercise both branches of each dimension reader
+// plus the leader and angular readers:
 //   1. Rotated (non-aligned) linear: (0,0,0)-(40,0,0), horizontal dimension
 //      line at y=10 -> expected measured length 40, DimHorizontal=1,
 //      DimOffset=10.
@@ -19,8 +22,15 @@
 //      out to (110,0,0) [extra=5] -> expected DimRadiusVal=5.
 //   4. Diameter: center (200,0,0), radius point (203,0,0) [r=3], leader tail
 //      out to (206,0,0) [extra=3] -> expected DimRadiusVal=3 (diameter 6).
+//   5. Leader: arrowhead tip (300,0,0), one bend point (305,5,0), tail/text
+//      landing (315,5,0), text "LeaderText" -> expected LeaderTip=300,0,0,
+//      one LeaderRest offset of 5,5,0 (bend) joined with 15,5,0 (tail).
+//   6. Angular: vertex (400,0,0), extension points (410,0,0) and
+//      (400,10,0) (a 90-degree angle), dimension-arc point at 45 degrees
+//      -> expected DimP0=400,0,0, DimP1=410,0,0, DimP2=400,10,0, measured
+//      angle 90 degrees.
 // A custom ON_DimStyle (text height 1.5, distinct from ON_DimStyle::Default's
-// own value) is referenced by all four, so the reader's DimStyle-table
+// own value) is referenced by all six, so the reader's DimStyle-table
 // lookup is actually exercised, same as text3dm_fixture_gen's own style.
 #include <opennurbs.h>
 
@@ -99,11 +109,38 @@ int main(int argc, char** argv) {
     model.AddModelGeometryComponent(&diameter_dim, &attr);
   }
 
+  // 5. Leader: arrowhead tip, one bend point, tail/landing point, text.
+  {
+    const ON_3dPoint pts[3] = {ON_3dPoint(300.0, 0.0, 0.0), ON_3dPoint(305.0, 5.0, 0.0), ON_3dPoint(315.0, 5.0, 0.0)};
+    ON_Leader leader;
+    if (!leader.Create(L"LeaderText", added_style, 3, pts, ON_xy_plane, false, 0.0)) {
+      std::fprintf(stderr, "dimlinear3dm_fixture_gen: ON_Leader::Create failed\n");
+      return 1;
+    }
+    leader.SetDimensionStyleId(added_style->Id());
+    ON_3dmObjectAttributes attr;
+    model.AddModelGeometryComponent(&leader, &attr);
+  }
+
+  // 6. Angular dimension: vertex plus two extension points (a 90-degree
+  // angle), dimension-arc point at the 45-degree bisector.
+  {
+    ON_DimAngular angle_dim;
+    if (!angle_dim.Create(style_id, ON_xy_plane, ON_3dVector(1.0, 0.0, 0.0), ON_3dPoint(400.0, 0.0, 0.0),
+                           ON_3dPoint(410.0, 0.0, 0.0), ON_3dPoint(400.0, 10.0, 0.0),
+                           ON_3dPoint(400.0 + 5.0 / std::sqrt(2.0), 5.0 / std::sqrt(2.0), 0.0))) {
+      std::fprintf(stderr, "dimlinear3dm_fixture_gen: ON_DimAngular::Create failed\n");
+      return 1;
+    }
+    ON_3dmObjectAttributes attr;
+    model.AddModelGeometryComponent(&angle_dim, &attr);
+  }
+
   ON_TextLog log;
   if (!model.Write(path, 0, &log)) {
     std::fprintf(stderr, "dimlinear3dm_fixture_gen: OpenNURBS could not write %s\n", path);
     return 1;
   }
-  std::printf("wrote %s (ON_DimLinear x2, ON_DimRadial x2)\n", path);
+  std::printf("wrote %s (ON_DimLinear x2, ON_DimRadial x2, ON_Leader, ON_DimAngular)\n", path);
   return 0;
 }

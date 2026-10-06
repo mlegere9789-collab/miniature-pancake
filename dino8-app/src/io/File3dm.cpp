@@ -906,6 +906,130 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       }
       continue;
     }
+    if (const ON_Leader* leader = ON_Leader::Cast(g)) {
+      // Real ON_Leader (Rhino's arrowhead-plus-bend-points-plus-text
+      // annotation) - checked ahead of the plain ON_Annotation branch below
+      // for the same reason as ON_DimLinear/ON_DimRadial above, closing the
+      // "Leader... still have no reader at all" half of that branch's own
+      // disclosed gap. Rebuilt via the exact same curve/tag shape a live
+      // `Leader` command bakes (`BuildLeaderGroup`, `commands/cmd_annotate.cpp`:
+      // a polyline through the leader's own points, an arrowhead at the
+      // first point pointing away from the second, and left-aligned glyph
+      // text near the last point) - reusing `dim_geom_detail::MakePolyline`/
+      // `AddArrow` (`commands/DimGeometry.h`, a named, not anonymous,
+      // namespace, so already reachable here) and `AddDimensionGroupToDocLocal`
+      // above for the text-glyph-plus-group assembly, rather than
+      // reimplementing either. `ON_Leader`'s own point order (arrowhead
+      // first, tail/landing last - confirmed against its own `TailDirection`/
+      // `LandingLine` doc comments naming the *last* point the tail) matches
+      // `BuildLeaderGroup`'s `pts_[0]` = arrowhead convention exactly, so no
+      // reordering is needed. `LeaderTip`/`LeaderRest` tags are written the
+      // same way so `UpdateDimensions`/`SelLeader` both work on it exactly
+      // like a live leader (no `DimRefObj1`/`DimRefEnd1` association, since
+      // there is no Dino8 object for an externally-authored point to
+      // reference - it behaves like a live leader whose arrowhead wasn't on
+      // any object either, the same documented fallback).
+      const ON_Plane plane = leader->Plane();
+      const ON__UINT32 n = leader->PointCount();
+      if (n < 2) { ++skipped; continue; }
+      std::vector<kernel::Point3d> pts;
+      for (ON__UINT32 i = 0; i < n; ++i) {
+        ON_2dPoint p2;
+        if (!leader->Point2d(static_cast<int>(i), p2)) { pts.clear(); break; }
+        pts.push_back(plane.PointAt(p2.x, p2.y));
+      }
+      if (pts.size() < 2) { ++skipped; continue; }
+      const ON_ModelComponentReference dimstyle_ref =
+          model.ComponentFromId(ON_ModelComponent::Type::DimStyle, leader->DimensionStyleId());
+      const ON_DimStyle* dimstyle = ON_DimStyle::Cast(dimstyle_ref.ModelComponent());
+      double text_h = (dimstyle ? *dimstyle : ON_DimStyle::Default).TextHeight();
+      if (text_h <= 0) {
+        const AnnotationStyle& ast = doc.CurrentAnnotationStyle();
+        text_h = ast.text_height > 0 ? ast.text_height : std::max(doc.Settings().grid_spacing * 2.0, 1e-6);
+      }
+      int layer_idx = 0;
+      if (attr) {
+        auto lm = layer_map.find(attr->m_layer_index);
+        if (lm != layer_map.end()) layer_idx = lm->second;
+      }
+      std::vector<kernel::NurbsCurve> curves;
+      curves.push_back(dim_geom_detail::MakePolyline(pts));
+      dim_geom_detail::AddArrow(curves, pts[0], kernel::Vector3d(pts[0] - pts[1]), text_h, plane);
+      DimGlyphSpec leader_text;
+      leader_text.text = FromWide(leader->PlainText());
+      leader_text.height = text_h;
+      leader_text.plane = plane;
+      leader_text.plane.SetOrigin(pts.back() + plane.xaxis * (text_h * 0.4) - plane.yaxis * (text_h * 0.5));
+      leader_text.center = false;
+      std::map<std::string, std::string> tags;
+      tags["DimPlaneOrigin"] = DimPointTag(plane.origin);
+      tags["DimPlaneX"] = DimPointTag(kernel::Point3d(plane.xaxis));
+      tags["DimPlaneY"] = DimPointTag(kernel::Point3d(plane.yaxis));
+      tags["LeaderTip"] = DimPointTag(pts[0]);
+      {
+        std::string s;
+        for (size_t i = 1; i < pts.size(); ++i) {
+          if (!s.empty()) s += ";";
+          s += DimPointTag(kernel::Point3d(pts[i] - pts[0]));
+        }
+        tags["LeaderRest"] = s;
+      }
+      if (!AddDimensionGroupToDocLocal(doc, "Leader", layer_idx, curves, leader_text, tags)) ++skipped;
+      continue;
+    }
+    if (const ON_DimAngular* dim = ON_DimAngular::Cast(g)) {
+      // Real ON_DimAngular (Rhino's Angular/Angular3pt dimension) - checked
+      // ahead of the plain ON_Annotation branch below for the same reason as
+      // ON_DimLinear/ON_DimRadial/ON_Leader above. Rebuilt via
+      // `BuildAngleDimensionGeometry` (`commands/DimGeometry.h`), extracted
+      // from `cmd_annotate.cpp`'s own `BuildAngleDimensionGroup` for exactly
+      // this kind of sharing (the DXF/DWG `DIMENSION_ANG3PT` reader, added
+      // this same day, already reuses it the same way - see
+      // `FileExchange.cpp`'s own `DxfImporter::Dimension` type==5 case),
+      // from the dimension's own `CenterPoint`/`DefPoint1`/`DefPoint2` (the
+      // vertex and a point out along each leg - the same shape a live
+      // `DimAngle` command's own three picked points already are, not unit
+      // direction vectors) rather than `ExtDir1`/`ExtDir2`, so the real
+      // extension-point distances (not an arbitrary unit length) drive the
+      // rebuilt arc's own radius exactly like a live dimension would.
+      // `BuildAngleDimensionGeometry` always measures the <=180-degree angle
+      // between the two legs (Dino8's own `DimAngle` has no way to draw the
+      // complementary reflex angle) - a real reflex `ON_DimAngular` reads
+      // back as the acute/obtuse complement instead of being declined
+      // outright, an honestly narrower contract than the DXF/DWG reader's
+      // own explicit def_pt-based reflex detection (that importer has a
+      // third, independent `def_pt` field to check against; `ON_DimAngular`
+      // has no equivalent third point here, only the two already-used
+      // extension points, so there is nothing left to disambiguate with).
+      const ON_Plane plane = dim->Plane();
+      const ON_2dPoint v2 = dim->CenterPoint();
+      const ON_2dPoint p1_2 = dim->DefPoint1();
+      const ON_2dPoint p2_2 = dim->DefPoint2();
+      const kernel::Point3d vertex = plane.PointAt(v2.x, v2.y);
+      const kernel::Point3d p1 = plane.PointAt(p1_2.x, p1_2.y);
+      const kernel::Point3d p2 = plane.PointAt(p2_2.x, p2_2.y);
+      const ON_ModelComponentReference dimstyle_ref =
+          model.ComponentFromId(ON_ModelComponent::Type::DimStyle, dim->DimensionStyleId());
+      const ON_DimStyle* dimstyle = ON_DimStyle::Cast(dimstyle_ref.ModelComponent());
+      double text_h = (dimstyle ? *dimstyle : ON_DimStyle::Default).TextHeight();
+      if (text_h <= 0) {
+        const AnnotationStyle& ast = doc.CurrentAnnotationStyle();
+        text_h = ast.text_height > 0 ? ast.text_height : std::max(doc.Settings().grid_spacing * 2.0, 1e-6);
+      }
+      int layer_idx = 0;
+      if (attr) {
+        auto lm = layer_map.find(attr->m_layer_index);
+        if (lm != layer_map.end()) layer_idx = lm->second;
+      }
+      std::vector<kernel::NurbsCurve> curves;
+      DimGlyphSpec angle_text;
+      std::map<std::string, std::string> tags;
+      if (!BuildAngleDimensionGeometry(vertex, p1, p2, plane, text_h, curves, angle_text, tags) ||
+          !AddDimensionGroupToDocLocal(doc, "DimAngle", layer_idx, curves, angle_text, tags)) {
+        ++skipped;
+      }
+      continue;
+    }
     if (const ON_Annotation* ann = ON_Annotation::Cast(g)) {
       // Previously entirely unhandled, like ON_Hatch/ON_InstanceRef above:
       // a real ON_Annotation (Rhino's Text/Dim*/Leader object kind) fell
@@ -921,13 +1045,13 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       // produces (TagGlyph's tags, reimplemented locally above as
       // PointTagLocal rather than via annotate_common.h - see its own
       // comment) so it round-trips, is selectable (FindText) and editable
-      // (TextProperties) exactly like one made in-app. Linear/aligned and
-      // radius/diameter dimensions (ON_DimLinear/ON_DimRadial) are handled
-      // in their own branches above, ahead of this one - only Leader and
-      // the remaining annotation kinds (Angular, Ordinate, ArcLen,
-      // CenterMark, Angular3pt) still have no reader at all (no Dino8
-      // command produces one of those to rebuild against), so they still
-      // count as skipped, same as before.
+      // (TextProperties) exactly like one made in-app. Linear/aligned,
+      // radius/diameter and angular/3-point-angular dimensions
+      // (ON_DimLinear/ON_DimRadial/ON_DimAngular) and ON_Leader are all
+      // handled in their own branches above, ahead of this one - only the
+      // remaining Ordinate/ArcLen/CenterMark annotation kinds still have no
+      // reader at all (no Dino8 command produces one of those to rebuild
+      // against), so they still count as skipped, same as before.
       if (ann->Type() != ON::AnnotationType::Text) { ++skipped; continue; }
       const std::string text = FromWide(ann->PlainText());
       const ON_Plane& plane = ann->Plane();

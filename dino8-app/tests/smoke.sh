@@ -5938,39 +5938,51 @@ fi
 
 # Native .3dm ON_DimLinear/ON_DimRadial import: previously Load3dm's
 # ON_Annotation branch (added for Text just above) counted every real
-# ON_DimLinear/ON_DimRadial dimension authored by a real, independent CAD
-# tool as skipped too (Dino 8's own Dim/DimAligned/DimRadius/DimDiameter
-# commands bake a group of curves plus Annotation/Dim* user_text instead -
-# see commands/DimGeometry.h), same gap as ON_Hatch/ON_InstanceRef/Text
-# before their own passes above. dimlinear3dm_fixture_gen builds four real
-# dimensions directly through OpenNURBS' own API (a rotated/horizontal
-# linear 0,0,0-40,0,0 at offset 10; an aligned linear 0,0,0-30,30,0 at
-# offset 5; a radius dimension on a center/radius-point/leader-tail of
-# 100,0,0 / 105,0,0 / 110,0,0; a diameter dimension on 200,0,0 / 203,0,0 /
-# 206,0,0), all four referencing a real custom ON_DimStyle table entry with
+# ON_DimLinear/ON_DimRadial/ON_Leader/ON_DimAngular dimension/leader
+# authored by a real, independent CAD tool as skipped too (Dino 8's own
+# Dim/DimAligned/DimRadius/DimDiameter/Leader/DimAngle commands bake a group
+# of curves plus Annotation/Dim*/Leader* user_text instead - see
+# commands/DimGeometry.h and cmd_annotate.cpp's own BuildLeaderGroup), same
+# gap as ON_Hatch/ON_InstanceRef/Text before their own passes above.
+# dimlinear3dm_fixture_gen builds six real dimension/leader objects directly
+# through OpenNURBS' own API (a rotated/horizontal linear 0,0,0-40,0,0 at
+# offset 10; an aligned linear 0,0,0-30,30,0 at offset 5; a radius dimension
+# on a center/radius-point/leader-tail of 100,0,0 / 105,0,0 / 110,0,0; a
+# diameter dimension on 200,0,0 / 203,0,0 / 206,0,0; a leader with arrowhead
+# tip 300,0,0, bend point 305,5,0 and tail/text landing 315,5,0; a 90-degree
+# angular dimension with vertex 400,0,0 and extension points 410,0,0/
+# 400,10,0), all six referencing a real custom ON_DimStyle table entry with
 # text height 1.5, independent of Dino 8's own exporter (which never writes
-# a real ON_DimLinear/ON_DimRadial at all). Each is rebuilt via
-# BuildLinearDimensionGeometry/BuildRadiusDimensionGeometry
-# (commands/DimGeometry.h), the exact math a live Dim/DimAligned/DimRadius/
-# DimDiameter command and DXF/DWG DIMENSION import already share, so the
-# checks below mirror the DXF DIMENSION test's own tag checks exactly.
-# "33 objects"/arrow-curve Length values are this build's own FreeType
-# glyph-contour counts for "40"/"42.43"/"R 5"/"D 3" plus the 5/5/2/3
-# line+extension+arrow geometry curves per dimension (9+12+5+7) - confirmed
-# by first actually running this fixture through the app rather than
-# hand-derived, same as text3dm_fixture_gen's own hardcoded "3 objects" for
-# "Hi"'s H/i-stem/i-dot. The arrow-curve Length checks below (2.688x the
-# text height, from AddArrow's own fixed 0.3x-width triangle) additionally
-# prove the custom DimStyle's text height (1.5) was actually resolved via
-# DimensionStyleId(), not ON_DimStyle::Default's own differing 1.0.
+# any of these annotation kinds natively). Each dimension is rebuilt via
+# BuildLinearDimensionGeometry/BuildRadiusDimensionGeometry/
+# BuildAngleDimensionGeometry (commands/DimGeometry.h), the exact math a
+# live Dim/DimAligned/DimRadius/DimDiameter/DimAngle command and DXF/DWG
+# DIMENSION import already share; the leader is rebuilt via the same
+# polyline+arrow+left-aligned-text shape BuildLeaderGroup
+# (cmd_annotate.cpp) bakes for a live Leader command, so the checks below
+# mirror the DXF DIMENSION test's own tag checks exactly, plus new
+# Leader/DimAngle-specific ones. "63 objects"/arrow-curve Length values are
+# this build's own FreeType glyph-contour counts for "40"/"42.43"/"R 5"/
+# "D 3"/"LeaderText"/"90 deg" plus the 5/5/2/3/2/3 line+extension+arrow
+# geometry curves per dimension/leader (9+12+5+7+17+13) - confirmed by first
+# actually running this fixture through the app rather than hand-derived,
+# same as text3dm_fixture_gen's own hardcoded "3 objects" for "Hi"'s
+# H/i-stem/i-dot. The arrow-curve Length checks below (2.688x the text
+# height, from AddArrow's own fixed 0.3x-width triangle) additionally prove
+# the custom DimStyle's text height (1.5) was actually resolved via
+# DimensionStyleId(), not ON_DimStyle::Default's own differing 1.0. The
+# UpdateDimensions pass confirms every one of the six is genuinely
+# live/rebuildable from its own tags, not just a one-shot baked import.
 DLFBIN="$(dirname "$BIN")/dimlinear3dm_fixture_gen"
 if [ -x "$DLFBIN" ]; then
   "$DLFBIN" "$TMPW/dimlinear_fixture.3dm" >/dev/null || { echo "FAIL: dimlinear3dm_fixture_gen failed to write the dimension fixture"; exit 1; }
   cat > "$TMPW/dimlinear3dm_script.txt" <<EOS
 Open $TMPW/dimlinear_fixture.3dm
 SelDim
+SelLeader
 SelAll
 What
+UpdateDimensions
 EOS
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     DLF="$("$BIN" --smoke 30 --script "$TMPW/dimlinear3dm_script.txt" 2>&1)" || { echo "$DLF"; echo "FAIL: dimlinear .3dm script exited non-zero"; exit 1; }
@@ -5978,8 +5990,9 @@ EOS
     DLF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dimlinear3dm_script.txt" 2>&1)" || { echo "$DLF"; echo "FAIL: dimlinear .3dm script exited non-zero"; exit 1; }
   fi
   dlfcheck() { if echo "$DLF" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DLF" "$1"; fail=1; fi; }
-  dlfcheck "Opened $TMPW/dimlinear_fixture.3dm (33 objects)" "Load3dm read all four real ON_DimLinear/ON_DimRadial dimensions as real dimension groups (9+12+5+7 curves), not 0 (silently skipped, the old behaviour)"
-  dlfcheck "33 object(s) selected" "SelDim found every imported dimension's curves (real Annotation=Dim* user_text, not just ordinary curves)"
+  dlfcheck "Opened $TMPW/dimlinear_fixture.3dm (63 objects)" "Load3dm read all six real ON_DimLinear/ON_DimRadial/ON_Leader/ON_DimAngular dimensions/leaders as real dimension groups (9+12+5+7+17+13 curves), not 0 (silently skipped, the old behaviour)"
+  dlfcheck "46 object(s) selected" "SelDim found every imported Dim* dimension's curves (real Annotation=Dim* user_text, not just ordinary curves) - 46, not all 63, since SelDim's own group list doesn't include Leader"
+  dlfcheck "63 object(s) selected" "SelLeader (SelGroupNamed's own additive selection - see Document::SelectWhere's add=true) then added the imported leader's own remaining 17 curves on top of SelDim's 46, reaching the full 63 with no overlap and no double-count between the two distinct groups"
   dlfcheck "Annotation = DimLinear" "the rotated linear dimension carries the same Annotation=DimLinear tag a live DimLinear command/DXF DIMENSION import already write"
   dlfcheck "DimAligned = 0" "the rotated dimension is still recognized as rotated, not aligned"
   dlfcheck "DimHorizontal = 1" "the rotated dimension's horizontal-vs-vertical rule (offset point farther outside the vertical span than the horizontal span) correctly recovered horizontal from the file's own DefPoint1/DefPoint2/DimlinePoint, matching cmd_annotate.cpp's own live-pick rule"
@@ -6002,8 +6015,18 @@ EOS
   dlfcheck "DimRadiusVal = 3" "the diameter dimension's own measured radius (half the true 6-unit diameter) survived exactly"
   dlfcheck "DimIsDiameter = 1" "the diameter dimension is still recognized as a diameter, not a radius, dimension"
   dlfcheck "Length: 4.02838" "an arrowhead curve measures 2.688 x 1.5 (AddArrow's fixed triangle shape x the file's own custom ON_DimStyle text height), proving that custom height - not ON_DimStyle::Default's differing 1.0 - was actually resolved via DimensionStyleId()"
+  dlfcheck "Annotation = Leader" "the leader carries the same Annotation=Leader tag a live Leader command/BuildLeaderGroup already write"
+  dlfcheck "LeaderTip = 300,0,0" "the leader's own arrowhead point (ON_Leader's first point) survived exactly"
+  dlfcheck "LeaderRest = 5,5,0;15,5,0" "the leader's bend point (305,5,0) and tail/text-landing point (315,5,0), recorded as fixed offsets from the tip per BuildLeaderGroup's own convention, survived exactly"
+  dlfcheck "Annotation = DimAngle" "the angular dimension carries the same Annotation=DimAngle tag a live DimAngle command/DXF-DWG DIMENSION_ANG3PT import already write"
+  dlfcheck "DimP0 = 400,0,0" "the angular dimension's own vertex (CenterPoint) survived exactly"
+  dlfcheck "DimP1 = 410,0,0" "the angular dimension's own first extension point (DefPoint1) survived exactly"
+  dlfcheck "DimP2 = 400,10,0" "the angular dimension's own second extension point (DefPoint2) survived exactly"
+  dlfcheck "UpdateDimensions:   Leader now points at 300,0,0" "UpdateDimensions re-derived the leader's own tip from its tags alone, proving it round-trips as a genuinely live, rebuildable leader exactly like one made in-app, not just a one-shot baked import"
+  dlfcheck "UpdateDimensions:   DimAngle now measures 90 deg" "UpdateDimensions re-derived the exact hand-computed 90-degree angle between DefPoint1/DefPoint2 from the angular dimension's own tags alone"
+  dlfcheck "UpdateDimensions: 6 dimension(s) regenerated" "all six imported dimensions/leaders (2 linear, 2 radial, 1 leader, 1 angular) are genuinely live and rebuildable, not just baked geometry with no record of their own kind"
 else
-  echo "FAIL dimlinear3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_DimLinear/ON_DimRadial fixture check"
+  echo "FAIL dimlinear3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_DimLinear/ON_DimRadial/ON_Leader/ON_DimAngular fixture check"
   fail=1
 fi
 
