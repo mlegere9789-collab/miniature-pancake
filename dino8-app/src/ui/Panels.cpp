@@ -1872,6 +1872,35 @@ void DrawMacroEditor(Application& app) {
   if (recording) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.15f, 0.15f, 1));
   if (ImGui::Button(recording ? "Recording... (click to stop)" : "Record")) app.Engine().Execute(recording ? "RecordMacro Off" : "RecordMacro On");
   if (recording) ImGui::PopStyleColor();
+  // Named macro library (MacroSave/MacroLoad/MacroDelete/RunSavedMacro,
+  // cmd_misc.cpp): lets this one shared buffer stand in for any number of
+  // saved macros, each selectable by name, rather than overwriting the
+  // only copy every time. Goes through Execute (quoted, since a saved
+  // name may contain spaces) the same way the Record button above does,
+  // so command-line feedback and this panel never disagree.
+  static char name_buf[128] = "";
+  ImGui::Separator();
+  ImGui::TextDisabled("Saved macros");
+  ImGui::InputText("##macro_name", name_buf, sizeof(name_buf));
+  ImGui::SameLine();
+  if (ImGui::Button("Save") && name_buf[0]) app.Engine().Execute("MacroSave \"" + std::string(name_buf) + "\"");
+  // Copied out up front: a Load/Run/Delete button clicked below calls
+  // Execute synchronously, which can erase from app.State().macros while
+  // this loop is still walking it - iterating a snapshot of the names
+  // instead of the live map keeps that safe.
+  std::vector<std::string> saved_names;
+  for (const auto& [saved_name, saved_text] : app.State().macros) saved_names.push_back(saved_name);
+  for (const std::string& saved_name : saved_names) {
+    ImGui::PushID(saved_name.c_str());
+    ImGui::BulletText("%s", saved_name.c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Load")) app.Engine().Execute("MacroLoad \"" + saved_name + "\"");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Run")) app.Engine().Execute("RunSavedMacro \"" + saved_name + "\"");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Delete")) app.Engine().Execute("MacroDelete \"" + saved_name + "\"");
+    ImGui::PopID();
+  }
   ImGui::End();
 }
 

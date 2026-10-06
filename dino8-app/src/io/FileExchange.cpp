@@ -792,6 +792,81 @@ bool WriteDxfAngularDimension(DxfWriter& w, const DxfAngleDimLayout& L, const st
   return true;
 }
 
+// A Leader group's own fixed layout, re-parsed directly from the tags
+// BuildLeaderGeometry (commands/DimGeometry.h, shared with the live Leader
+// command) stamps on the group's own shape curves (not its glyph-text
+// curves - see the main entity loop's own "Glyph" check below for why) -
+// DimPlaneOrigin/X/Y (plane), LeaderTip (the arrowhead point) and
+// LeaderRest (the rest of the polyline, as ";"-joined offsets *from* the
+// tip) - same "plain-data re-read" precedent as DxfLinearDimLayoutOf above.
+struct DxfLeaderLayout {
+  ON_Plane plane;
+  Point3d tip;
+  std::vector<Vector3d> rest;
+};
+
+bool DxfLeaderLayoutOf(const SceneObject& o, DxfLeaderLayout& L) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *org = get("DimPlaneOrigin"), *ax = get("DimPlaneX"), *ay = get("DimPlaneY");
+  const std::string *tips = get("LeaderTip"), *rests = get("LeaderRest");
+  if (!org || !ax || !ay || !tips) return false;
+  Point3d o3, px, py;
+  if (!ParsePointTagLocal(*org, o3) || !ParsePointTagLocal(*ax, px) || !ParsePointTagLocal(*ay, py)) return false;
+  if (!ParsePointTagLocal(*tips, L.tip)) return false;
+  L.plane = ON_Plane(o3, Vector3d(px.x, px.y, px.z), Vector3d(py.x, py.y, py.z));
+  L.rest.clear();
+  if (rests) {
+    std::stringstream ss(*rests);
+    std::string tok;
+    while (std::getline(ss, tok, ';')) {
+      Point3d off;
+      if (!tok.empty() && ParsePointTagLocal(tok, off)) L.rest.push_back(Vector3d(off.x, off.y, off.z));
+    }
+  }
+  return true;
+}
+
+// A real DXF LEADER entity for a Leader group's own shape (the polyline
+// through its points plus its arrowhead - NOT its glyph-text curves, which
+// this writer deliberately leaves to fall through to their own ordinary
+// curve export just below, same as before this writer existed): group 76
+// is the point count, followed by one real 10/20/30 triple per point (the
+// same repeated-group-code convention this file's own SPLINE reader
+// already parses for control points, see DxfImporter::Spline) -
+// AutoCAD/Rhino's own real point-list encoding for a LEADER, verified
+// against LibreDWG's dwg.spec DWG_ENTITY(LEADER) (`FIELD_3DPOINT_VECTOR
+// (points, num_points, 10)`). `annot_type`=73 is 3 ("none") - deliberately:
+// unlike a DimLinear/DimRadius/DimAngle measurement (always recomputable
+// from the def points alone), a Leader's own label is an arbitrary,
+// un-recomputable user string, so this writer has nothing deterministic to
+// hand a text-annotated LEADER's own group 1/dimstyle-handle fields even if
+// it tried - carrying it via the group's OWN separate glyph curves (as
+// plain, disconnected curves, exactly like a pre-this-writer Leader always
+// exported) is the honest choice here, not a text override this file's
+// other narrow writers already decline for an unrelated reason (a
+// recomputable measurement). `path_type`=72 is 0 (straight) - Dino8's own
+// Leader has no spline-leader mode to ever need 1. `arrowhead_on`=71 is
+// true, matching the arrowhead this writer's own shape curves always
+// include. Returns false (nothing written) if fewer than 2 points result
+// (a leader with only its own arrowhead and nothing else - the same
+// failure BuildLeaderGeometry itself refuses).
+bool WriteDxfLeader(DxfWriter& w, const DxfLeaderLayout& L, const std::string& layer, const Color* color) {
+  std::vector<Point3d> pts;
+  pts.push_back(L.tip);
+  for (const Vector3d& off : L.rest) pts.push_back(L.tip + off);
+  if (pts.size() < 2) return false;
+  w.BeginEntity("LEADER", layer, color);
+  w.G(100, "AcDbLeader");
+  w.G(3, "Standard");
+  w.G(71, 1);
+  w.G(72, 0);
+  w.G(73, 3);
+  w.G(76, static_cast<int>(pts.size()));
+  for (const Point3d& p : pts) w.Point(10, p);
+  w.Point(210, Point3d(L.plane.zaxis));
+  return true;
+}
+
 // Writes one BlockDefinition member object into the BLOCKS section ExportDxf
 // now emits for a static (no visibility states) block that has at least one
 // placed instance - see ExportDxf's own comment on where this is called
@@ -990,13 +1065,14 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   // through to its own curve export, same as before this set existed.
   std::set<int> pattern_hatch_groups_written;
   // Groups whose DimLinear/DimAligned/DimRadius/DimDiameter/DimAngle
-  // dimension already wrote its one real DIMENSION entity
-  // (WriteDxfLinearDimension/WriteDxfRadiusDimension/
-  // WriteDxfAngularDimension below) - every other baked line/extension/
-  // arrow/arc curve belonging to that same group_id is skipped rather than
-  // also written on its own. Only populated on success, same "harmless
-  // independent retry" convention as pattern_hatch_groups_written just
-  // above.
+  // dimension, or Leader, already wrote its one real DIMENSION/LEADER
+  // entity (WriteDxfLinearDimension/WriteDxfRadiusDimension/
+  // WriteDxfAngularDimension/WriteDxfLeader below) - every other baked
+  // line/extension/arrow/arc shape curve belonging to that same group_id is
+  // skipped rather than also written on its own (a Leader's own glyph-text
+  // curves are a deliberate exception - see WriteDxfLeader's own call site
+  // above). Only populated on success, same "harmless independent retry"
+  // convention as pattern_hatch_groups_written just above.
   std::set<int> dimension_groups_written;
   for (const SceneObject* o : objs) {
     {
@@ -1070,6 +1146,23 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
           if (dimension_groups_written.count(o->group_id)) break;  // this group's DIMENSION entity already written
           DxfAngleDimLayout L;
           if (DxfAngleDimLayoutOf(*o, L) && WriteDxfAngularDimension(w, L, layer, color)) {
+            dimension_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
+          // Same harmless-independent-retry convention as the linear case above.
+        }
+        // "Leader" group, shape curve only (the polyline/arrowhead - NOT a
+        // glyph-text curve, which also carries Annotation=Leader but is
+        // excluded here by its own "Glyph" tag, so it falls through to its
+        // own ordinary curve export below unaffected by this dedup - see
+        // WriteDxfLeader's own comment on why a Leader's text can't be
+        // carried by the LEADER entity itself the way a recomputable
+        // DimLinear/DimRadius/DimAngle measurement is).
+        if (ann != o->user_text.end() && ann->second == "Leader" && glyph == o->user_text.end()) {
+          if (dimension_groups_written.count(o->group_id)) break;  // this group's LEADER entity already written
+          DxfLeaderLayout L;
+          if (DxfLeaderLayoutOf(*o, L) && WriteDxfLeader(w, L, layer, color)) {
             dimension_groups_written.insert(o->group_id);
             ++written;
             break;
@@ -2062,6 +2155,49 @@ class DxfImporter {
     ++stats_.skipped;  // type-2 angular / ordinate (6), or a type-5 reflex sweep: not representable, see comment above
   }
 
+  // LEADER: rebuilds a real, live/re-measurable Dino8 Leader
+  // (BuildLeaderGeometry, commands/DimGeometry.h - the exact point-to-curve
+  // math the live Leader command uses) from the entity's own point list,
+  // the inverse of WriteDxfLeader above (that function's comment has the
+  // full dwg.spec-verified field layout this mirrors: group 76 is the
+  // point count, followed by one real 10/20/30 triple per point, the same
+  // repeated-group-code convention this file's own Spline() already reads
+  // for control points). Unlike DIMENSION, there is no ambiguity to decode
+  // here - a point list is a point list - so every real LEADER with 2+
+  // points is accepted; `annot_type`=73 (text/tolerance/insert/none) is
+  // read but not acted on, since this importer has no way to recover an
+  // arbitrary associated annotation string from group codes alone (the
+  // written label, if any, lives in a separate MTEXT/INSERT/TOLERANCE
+  // entity this importer does not cross-reference) - the rebuilt Leader
+  // simply carries no label text, same honest "shape captured, text not"
+  // scope WriteDxfLeader's own write side already discloses.
+  void Leader(const DxfEntity& e) {
+    const double h = ImportDimTextHeight(doc_);
+    const int layer = LayerFor(e.S(8, "0"));
+    const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), e.Normal());
+    std::vector<Point3d> pts;
+    for (const DxfGroup& g : e.groups) {
+      const double v = std::atof(g.value.c_str());
+      switch (g.code) {
+        case 10: pts.push_back(Point3d(v, 0, 0)); break;
+        case 20: if (!pts.empty()) pts.back().y = v; break;
+        case 30: if (!pts.empty()) pts.back().z = v; break;
+        default: break;
+      }
+    }
+    if (pts.size() < 2) { ++stats_.skipped; return; }
+    const ON_Plane pl(pts[0], ocs.xaxis, ocs.yaxis);
+    const Point3d tip = pts[0];
+    std::vector<Vector3d> rest;
+    for (size_t i = 1; i < pts.size(); ++i) rest.push_back(pts[i] - tip);
+    std::vector<kernel::NurbsCurve> curves;
+    DimGlyphSpec text;
+    std::map<std::string, std::string> tags;
+    if (!BuildLeaderGeometry(tip, rest, pl, h, "", curves, text, tags)) { ++stats_.skipped; return; }
+    if (AddDimensionGroupToDoc(doc_, "Leader", layer, curves, text, tags)) ++stats_.dimensions;
+    else ++stats_.skipped;
+  }
+
   // INSERT: flattened into transformed copies of the referenced BLOCKS-
   // section definition's own member entities, re-entering Entity() for each
   // one exactly like the DWG importer's WalkDwgEntities does for a DWG
@@ -2156,6 +2292,7 @@ class DxfImporter {
     else if (t == "3DFACE") Face(e);
     else if (t == "HATCH") Hatch(e);
     else if (t == "DIMENSION") Dimension(e);
+    else if (t == "LEADER") Leader(e);
     else if (t == "INSERT") Insert(e);
     else if (t == "VERTEX" || t == "SEQEND") {}
     else ++stats_.skipped;
@@ -2754,6 +2891,30 @@ void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, s
         if (!BuildAngleDimensionGeometry(vertex, p1, p2, pl, ImportDimTextHeight(doc), curves, text, tags)) { ++stats.skipped; break; }
         const int layer = DwgLayerFor(doc, layer_map, ent, stats);
         if (AddDimensionGroupToDoc(doc, "DimAngle", layer, curves, text, tags)) ++stats.dimensions;
+        else ++stats.skipped;
+        break;
+      }
+      case DWG_TYPE_LEADER: {
+        // Same rebuild-from-points approach as DxfImporter::Leader (see
+        // its own comment) - LibreDWG's own Dwg_Entity_LEADER stores its
+        // point list as a real array (`points`/`num_points`, dwg.h), unlike
+        // DIMENSION's fixed named point fields, so no group-code-style
+        // switch is needed to collect them.
+        Dwg_Entity_LEADER* e = ent->tio.LEADER;
+        if (e->num_points < 2 || !e->points) { ++stats.skipped; break; }
+        std::vector<Point3d> pts;
+        for (BITCODE_BL i = 0; i < e->num_points; ++i) pts.push_back(xf * Point3d(e->points[i].x, e->points[i].y, e->points[i].z));
+        const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), Vector3d(e->extrusion.x, e->extrusion.y, e->extrusion.z));
+        const ON_Plane pl(pts[0], ocs.xaxis, ocs.yaxis);
+        const Point3d tip = pts[0];
+        std::vector<Vector3d> rest;
+        for (size_t i = 1; i < pts.size(); ++i) rest.push_back(pts[i] - tip);
+        std::vector<kernel::NurbsCurve> curves;
+        DimGlyphSpec text;
+        std::map<std::string, std::string> tags;
+        if (!BuildLeaderGeometry(tip, rest, pl, ImportDimTextHeight(doc), "", curves, text, tags)) { ++stats.skipped; break; }
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        if (AddDimensionGroupToDoc(doc, "Leader", layer, curves, text, tags)) ++stats.dimensions;
         else ++stats.skipped;
         break;
       }

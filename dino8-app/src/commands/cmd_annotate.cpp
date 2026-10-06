@@ -622,33 +622,24 @@ class DimRadiusCommand : public Command {
 // Builds (or rebuilds) one Leader group from its arrowhead point (`tip`)
 // plus the rest of its polyline stored as fixed offsets *from* the tip -
 // so when the tip's anchor moves, the whole leader shape translates with it
-// rather than needing to re-derive a bend shape from nothing. Tags:
-// DimPlaneOrigin/X/Y (plane orientation), LeaderTip (fallback tip),
+// rather than needing to re-derive a bend shape from nothing. The actual
+// curve/text math now lives in commands/DimGeometry.h's
+// BuildLeaderGeometry (shared with native `.3dm` `ON_Leader` import,
+// io/File3dm.cpp, the same split BuildLinearDimensionGroup/
+// BuildRadiusDimensionGroup/BuildAngleDimensionGroup above already use) -
+// this wrapper just adds this command's own associativity tag on top.
+// Tags: DimPlaneOrigin/X/Y (plane orientation), LeaderTip (fallback tip),
 // LeaderRest (";"-joined offsets), DimRefObj1/DimRefEnd1 (the tip's
 // FindPointAnchor match, when any).
 int BuildLeaderGroup(CommandContext& ctx, Point3d tip, const std::vector<Vector3d>& rest_offsets, const ON_Plane& pl, double text_h,
                      const std::string& text, bool has_ref, ObjectId ref, const std::string& end) {
-  std::vector<Point3d> pts;
-  pts.push_back(tip);
-  for (const Vector3d& off : rest_offsets) pts.push_back(tip + off);
-  if (pts.size() < 2) return -1;
   std::vector<kernel::NurbsCurve> curves;
-  curves.push_back(PolylineCurve(pts));
-  AddArrow(curves, pts[0], pts[0] - pts[1], text_h, pl);
+  DimGlyphSpec dg;
   std::map<std::string, std::string> tags;
-  tags["DimPlaneOrigin"] = PointTag(pl.origin);
-  tags["DimPlaneX"] = PointTag(Point3d(pl.xaxis));
-  tags["DimPlaneY"] = PointTag(Point3d(pl.yaxis));
-  tags["LeaderTip"] = PointTag(tip);
-  {
-    std::string s;
-    for (const Vector3d& off : rest_offsets) { if (!s.empty()) s += ";"; s += PointTag(Point3d(off)); }
-    tags["LeaderRest"] = s;
-  }
+  if (!BuildLeaderGeometry(tip, rest_offsets, pl, text_h, text, curves, dg, tags)) return -1;
   if (has_ref) { tags["DimRefObj1"] = std::to_string(ref); tags["DimRefEnd1"] = end; }
   GlyphSpec g;
-  g.text = text; g.height = text_h; g.plane = pl; g.center = false;
-  g.plane.SetOrigin(pts.back() + pl.xaxis * (text_h * 0.4) - pl.yaxis * (text_h * 0.5));
+  g.text = dg.text; g.height = dg.height; g.plane = dg.plane; g.center = dg.center;
   return AddAnnotationGroup(ctx, "Leader", curves, g, -1, tags);
 }
 
