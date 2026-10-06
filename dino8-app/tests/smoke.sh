@@ -1109,20 +1109,34 @@ sdcheck "PackSubDFaces: object 11: 6 face(s) packed independently (own island ea
 sdcheck "PackSubDFaces: object 12: 48 face(s) packed independently (own island each, no adjacent-face grouping) via per-face planar unwrap + shelf bin-packing; UV bounds \[0\.[0-9]*,0\.[0-9]*\]x\[0\.[0-9]*,0\.[0-9]*\] within \[0,1\]x\[0,1\], 0 overlapping island pair(s), coverage [3-9][0-9]\.[0-9]*%" "PackSubDFaces built a real, non-overlapping, in-bounds UV atlas for a SubD sphere (48 faces) with reasonable (>=30%) coverage"
 sdcheck "gl_error=0" "subd script ran without OpenGL errors"
 # ToNURBS: a real Catmull-Clark limit-surface-to-bicubic-NURBS conversion
-# (kernel::SubD::ToNurbsPatches), not the old flat-facetted dense mesh. The
-# regular-patch count on SubDPlane (a mostly-interior-regular quad grid)
-# must be genuinely nonzero - that's the real regular-stencil code path
-# actually firing, not just "didn't crash" - and the resulting Brep's own
-# face count (from List) must match the refined SubD's own face count
-# (one bicubic patch per finest-level face), not the original 16/6 control
-# faces a facetted conversion would have produced.
-sdcheck "Converted 1 object(s) (160 exact, 224 approximated near extraordinary vertices/creases/boundaries)" "ToNURBS on SubDPlane produced real exact regular-patch NURBS (not facetted) - 160 of 384 total patches are the mathematically exact Catmull-Clark bicubic patch, not an approximation"
-sdcheck "384 faces, 1536 edges, open" "ToNURBS's SubDPlane Brep has 384 real per-patch faces (SubDPlane's control net is actually a triangulated grid - TessellateGrid splits each cell into 2 triangles - so 1 round of Catmull-Clark turns 32 triangles into 96 quads, and a 2nd round turns those into 384), not the facetted mesh-to-Brep conversion's flat triangle-per-facet Brep"
-sdcheck "Converted 1 object(s) (72 exact, 24 approximated near extraordinary vertices/creases/boundaries)" "ToNURBS on SubDBox produced 72 real exact regular-patch NURBS away from the cube's corners, and honestly approximated only the 24 patches touching the 8 extraordinary (valence-3, a cube corner) vertices"
-sdcheck "96 faces, 384 edges, open" "ToNURBS's SubDBox Brep has 96 real per-patch faces (6 box faces x 16 from 2 refinement rounds); it reports open, not closed, because the approximate patches at the 8 corners are deliberately left unjoined from their exact neighbors rather than faked into looking seamless"
+# (kernel::SubD::ToNurbsPatchesAdaptive), not the old flat-facetted dense
+# mesh, and not the plain non-adaptive ToNurbsPatches() either - the
+# adaptive converter is now wired in (2 extra levels beyond the existing
+# whole-mesh pre-refinement), replacing each irregular face's one coarse
+# flat patch with several smaller, more accurate ones. The regular-patch
+# count on SubDPlane (a mostly-interior-regular quad grid) must be
+# genuinely nonzero - that's the real regular-stencil code path actually
+# firing, not just "didn't crash" - and the resulting Brep's own face
+# count (from List) must match the adaptively-split SubD's own patch
+# count, not the original 16/6 control faces a facetted conversion would
+# have produced, nor the smaller non-adaptive patch count either.
+sdcheck "Converted 1 object(s) (1504 exact, 416 approximated near extraordinary vertices/creases/boundaries)" "ToNURBS on SubDPlane produced real exact regular-patch NURBS via the adaptive converter (not facetted, not the non-adaptive 160/224 split) - 1504 of 1920 total patches are the mathematically exact Catmull-Clark bicubic patch, not an approximation"
+sdcheck "1920 faces, 7680 edges, open" "ToNURBS's SubDPlane Brep has 1920 real per-patch faces (the non-adaptive conversion's own 384 patches, each irregular one of which the adaptive converter further splits into several smaller exact patches plus one smaller, tighter approximation)"
+sdcheck "Converted 1 object(s) (216 exact, 24 approximated near extraordinary vertices/creases/boundaries)" "ToNURBS on SubDBox produced 216 real exact regular-patch NURBS away from the cube's corners (72 from the non-adaptive pre-refinement plus 144 more from adaptively splitting each of the 8 corners' own irregular patches), and still honestly approximates only 24 patches total - the same count as the non-adaptive conversion, now each one a tighter (16x smaller deviation, 2 further adaptive levels) approximation of its own corner, not a coarser single patch across the whole irregular region"
+sdcheck "240 faces, 960 edges, open" "ToNURBS's SubDBox Brep has 240 real per-patch faces (96 from the non-adaptive conversion, plus 144 more from the adaptive split); it reports open, not closed, because both the original approximate patches and the adaptive split's own T-junction boundaries are deliberately left unjoined rather than faked into looking seamless"
+# ToSubD: a Brep -> SubD conversion now tessellates at the document's real
+# modeling tolerance (ctx.Settings().absolute_tolerance, default 0.001)
+# instead of the display-quality surface_display_tolerance (default 0.05,
+# 50x coarser) it used before - a real, documented chord-tolerance fidelity
+# bound on the control cage, not "whatever happens to look right on
+# screen". The face count below is a real, measured consequence of that
+# tighter tolerance actually driving the tessellation, not just "didn't
+# crash"; this command had no test coverage at all before this check.
+sdcheck "ToSubD: created 1 object(s)" "ToSubD converted the Brep sphere"
+sdcheck "11310 faces, 16965 edges, 5657 vertices, 0 creases" "ToSubD's sphere SubD control cage is tessellated at the document's tight 0.001 modeling tolerance (a real Euler check: 5657 - 16965 + 11310 = 2, a genuinely closed surface), not the coarse 0.05 display tolerance a sphere this size would need far fewer faces for"
 echo "$SD" | grep -E "^(ok|FAIL)"
 if echo "$SD" | grep -q "^FAIL"; then fail=1; fi
-sdcheck "smoke: frames=150 objects=13" "subd script produced the expected object count"
+sdcheck "smoke: frames=150 objects=15" "subd script produced the expected object count"
 # Rendering: materials (scripted options), texture mapping, lights, sun, ground plane,
 # Render / RenderArctic / SaveRenderWindowAs, ExtractRenderMesh, .3dm round-trip (see render_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/render_script.txt" > "$TMPW/render_script.txt"

@@ -156,4 +156,17 @@ SelLast
 ToNURBS
 SelLast
 List
-@expect_objects 13
+# --- ToSubD: a Brep -> SubD conversion now tessellates at the document's
+# real modeling tolerance (ctx.Settings().absolute_tolerance, default
+# 0.001) instead of the display-quality surface_display_tolerance (default
+# 0.05) it used before - a much finer, tolerance-bound control cage, not
+# "whatever happens to look right on screen". List's face count below is
+# smoke.sh's real check that the tight tolerance is actually driving the
+# tessellation, not just "didn't crash" - see cmd_solids.cpp's
+# MeshFromSelection.
+Sphere 200,0,0 5
+SelLast
+ToSubD
+SelLast
+List
+@expect_objects 15

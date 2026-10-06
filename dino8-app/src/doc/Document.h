@@ -512,6 +512,13 @@ struct ReferenceModel {
   std::vector<ObjectId> object_ids;  // this model's objects in the current document
   bool has_limit_box = false;        // LimitReferenceModel restricted which objects loaded
   kernel::Point3d limit_min{0, 0, 0}, limit_max{0, 0, 0};
+  // `path`'s own last-write-time (nanoseconds since the filesystem clock's
+  // epoch) as of the most recent (re)load - see session/Worksession.h's
+  // RefreshLiveWorksessions, which compares this against the file's
+  // current mtime each call to detect an on-disk edit and reload
+  // automatically, without a manual Reload. 0 means "never recorded"
+  // (always triggers a check on the next refresh call).
+  int64_t source_mtime_ns = 0;
 };
 
 // The data behind an editable hole feature (RoundHole/PlaceHole/

@@ -95,6 +95,31 @@ Purge
 # Detach/Purge above all modify it).
 Worksession Detach All
 
+# --- Worksession: live link. An attached model's own source file changing
+# on disk - here, overwritten with different content via a second Save to
+# the exact same path, no Worksession Reload run at any point - is picked
+# up automatically on a later frame (Application::Frame calls
+# RefreshLiveWorksessions, session/Worksession.h, once per frame; the
+# one-script-line-per-frame harness gives it several real frames to run in
+# between the lines below). Closes the "no live link" half of this
+# category's own remaining Worksessions gap - see PARITY_MAP.md.
+New
+Box 500,0,0 510,10,0 10
+SelLast
+Save @TMP@/live.3dm
+New
+Worksession Attach @TMP@/live.3dm
+@expect_objects 1
+Worksession List
+Point 1,1,1
+Point 2,2,2
+@expect_objects 3
+Save @TMP@/live.3dm
+@wait 5
+@expect_objects 4
+Worksession List
+Worksession Detach All
+
 # --- Snapshots: named, full-document restore points independent of Undo/Redo
 New
 @expect_objects 0

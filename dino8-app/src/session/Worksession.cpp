@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -17,6 +18,20 @@ namespace fs = std::filesystem;
 std::string Lower(std::string s) {
   for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   return s;
+}
+
+// `path`'s own last-write-time as nanoseconds since the filesystem clock's
+// epoch (an opaque, monotonically-comparable value - only ever compared
+// against another call's own result, never interpreted as a real
+// timestamp), or 0 if `path` cannot be stat'd (missing, permissions) -
+// ReferenceModel::source_mtime_ns's own "0 means never recorded" sentinel
+// relies on a real file's mtime never legitimately landing on exactly 0
+// (true of every real filesystem clock epoch in practice).
+int64_t FileMTimeNs(const std::string& path) {
+  std::error_code ec;
+  const fs::file_time_type t = fs::last_write_time(path, ec);
+  if (ec) return 0;
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(t.time_since_epoch()).count();
 }
 
 bool BoxesIntersect(kernel::Point3d amin, kernel::Point3d amax, kernel::Point3d bmin, kernel::Point3d bmax) {
@@ -74,6 +89,7 @@ int AttachWorksession(Document& doc, const std::string& path, std::string& error
   rm.has_limit_box = has_limit;
   rm.limit_min = limit_min;
   rm.limit_max = limit_max;
+  rm.source_mtime_ns = FileMTimeNs(path);
   doc.BeginChange("Worksession Attach");
   int layer_idx = doc.AddLayer("Ref: " + rm.alias);
   doc.Layers()[static_cast<size_t>(layer_idx)].locked = true;
@@ -171,10 +187,26 @@ int ReloadOneModel(Document& doc, ReferenceModel& m, std::string& error) {
     new_ids.push_back(doc.Add(std::move(o)));
   }
   m.object_ids = new_ids;
+  m.source_mtime_ns = FileMTimeNs(m.path);
   return static_cast<int>(new_ids.size());
 }
 
 }  // namespace
+
+int RefreshLiveWorksessions(Document& doc) {
+  int refreshed = 0;
+  for (ReferenceModel& m : doc.ReferenceModels()) {
+    const int64_t mtime = FileMTimeNs(m.path);
+    // 0 means the file is currently missing/unreadable - leave this
+    // model's prior objects alone and retry on the next call, same as a
+    // real edit still in progress (a half-written file) would; an
+    // unchanged mtime means nothing to do this frame, the common case.
+    if (mtime == 0 || mtime == m.source_mtime_ns) continue;
+    std::string error;
+    if (ReloadOneModel(doc, m, error) >= 0) ++refreshed;  // failure leaves m untouched, retried next call
+  }
+  return refreshed;
+}
 
 int ReloadWorksession(Document& doc, const std::string& alias_or_path, std::string& error) {
   const bool all = Lower(alias_or_path) == "all" || alias_or_path == "*";

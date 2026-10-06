@@ -1,9 +1,12 @@
 // Worksession: attaching other .3dm files as locked, read-only reference
 // models (Rhino's Worksession command / panel), with LimitReferenceModel
-// restricting a model to the objects inside a picked box, and a session
-// .rws JSON file that lists the attached paths so a session can be saved
-// and restored (Rhino's own worksession files, kept as plain-text JSON
-// here rather than Rhino's binary format).
+// restricting a model to the objects inside a picked box, a session .rws
+// JSON file that lists the attached paths so a session can be saved and
+// restored (Rhino's own worksession files, kept as plain-text JSON here
+// rather than Rhino's binary format), and a real live link
+// (RefreshLiveWorksessions, called once per frame from Application::Frame)
+// that auto-reloads a model the moment its own source file changes on
+// disk, with no user action needed.
 #pragma once
 
 #include <string>
@@ -51,6 +54,21 @@ int LimitWorksessionModel(Document& doc, const std::string& alias_or_path, kerne
 // rest) any one model whose file fails to load, leaving that one
 // model's prior objects attached unchanged.
 int ReloadWorksession(Document& doc, const std::string& alias_or_path, std::string& error);
+
+// The live-link half of ReloadWorksession above: checks every attached
+// reference model's own source file for a last-write-time newer than the
+// one recorded at its last (re)load (ReferenceModel::source_mtime_ns,
+// doc/Document.h) and reloads any that changed, exactly as
+// ReloadWorksession("*", ...) would - same alias/layer/limit-box
+// preservation, same per-model failure isolation. Meant to be called once
+// per frame (see app/Application.cpp's Frame()) so an edit to a still-open
+// source file appears in this document on its own, closing the "no live
+// link" half of the gap ReloadWorksession's own header comment names.
+// A model whose file is currently missing or unreadable is left with its
+// prior objects and recorded mtime untouched, retried on every later call.
+// Returns the number of models actually reloaded (0 most frames, once
+// nothing has changed on disk).
+int RefreshLiveWorksessions(Document& doc);
 
 // The session file: a JSON array of {"path", "alias"} for every currently
 // attached reference model.
