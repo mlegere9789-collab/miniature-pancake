@@ -115,4 +115,50 @@ MeshSmooth
 @expect_objects 1
 SelAll
 Delete
+# --- SubD booleans: BooleanUnion/BooleanDifference/BooleanIntersection now
+# return a genuine, editable SubD (kernel::SubD::BooleanToSubD) when every
+# operand on both sides is already a SubD, instead of silently tessellating
+# to a Mesh first like every other object kind - PARITY_MAP.md's own
+# "SubD booleans" item, previously missing outright. Two overlapping SubD
+# boxes, BooleanUnion (single-set, ids 33, 34 -> SubD id 35).
+SubDBox 0,0,0 2,2,0 2
+SubDBox 1,1,1 3,3,3 2
+SelAll
+BooleanUnion
+@expect_objects 1
+SelAll
+Delete
+# --- BooleanDifference on two SubD boxes (two-set: ids 36, 37 -> SubD id 38)
+SubDBox 0,0,0 2,2,0 2
+SubDBox 1,1,1 3,3,3 2
+SelNone
+SelID 36
+BooleanDifference
+SelID 37
+Enter
+@expect_objects 1
+SelAll
+Delete
+# --- BooleanIntersection on two SubD boxes (ids 39, 40 -> SubD id 41)
+SubDBox 0,0,0 2,2,0 2
+SubDBox 1,1,1 3,3,3 2
+SelNone
+SelID 39
+BooleanIntersection
+SelID 40
+Enter
+@expect_objects 1
+SelAll
+Delete
+# --- Mixed SubD + Brep operands still fall back to the generic mesh path
+# (TrySubDBoolean declines whenever any operand isn't a plain SubD, the
+# same silent-fallback contract TryExactBrepBoolean already has) - a
+# regression guard, not a new capability (ids 42, 43 -> mesh id 44).
+SubDBox 0,0,0 2,2,0 2
+Box 1,1,1 3,3,3 2
+SelAll
+BooleanUnion
+@expect_objects 1
+SelAll
+Delete
 @expect_objects 0

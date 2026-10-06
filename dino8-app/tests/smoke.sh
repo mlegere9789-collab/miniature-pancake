@@ -2923,6 +2923,16 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   BO="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/boolean_script.txt" 2>&1)" || { echo "$BO"; echo "FAIL: boolean script exited non-zero"; exit 1; }
 fi
+bocheck() { if echo "$BO" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$BO" "$1"; fail=1; fi; }
+# SubD booleans: BooleanUnion/BooleanDifference/BooleanIntersection now
+# return a genuine SubD via kernel::SubD::BooleanToSubD when every operand
+# is a SubD (PARITY_MAP.md's own "SubD booleans" item, previously missing
+# outright), falling back to the old generic mesh path for a mixed SubD +
+# Brep selection.
+bocheck "BooleanUnion: SubD boolean (mesh-approximate, via BooleanToSubD), 19 face(s)" "BooleanUnion on two overlapping SubD boxes returns a real SubD, not a tessellated Mesh"
+bocheck "BooleanDifference: SubD boolean (mesh-approximate, via BooleanToSubD), 12 face(s)" "BooleanDifference on two SubD boxes returns a real SubD"
+bocheck "BooleanIntersection: SubD boolean (mesh-approximate, via BooleanToSubD), 6 face(s)" "BooleanIntersection on two SubD boxes returns a real SubD"
+bocheck "BooleanUnion: 38 faces, volume 14" "BooleanUnion on a mixed SubD + Brep selection still falls back to the generic mesh path (TrySubDBoolean declines on a non-SubD operand)"
 echo "$BO" | grep -E "^(ok|FAIL)"
 if echo "$BO" | grep -q "^FAIL"; then fail=1; fi
 echo "$BO" | grep -q "^smoke:" || { echo "$BO"; echo "FAIL: boolean script produced no smoke line"; fail=1; }

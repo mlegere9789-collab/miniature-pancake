@@ -71,14 +71,67 @@ std::optional<kernel::Brep> TryExactBrepBoolean(CommandContext& ctx, const std::
   }
 }
 
+// Tries a genuine SubD-preserving boolean before RunBoolean's own mesh path,
+// the same priority TryExactBrepBoolean above has for Brep operands -
+// PARITY_MAP.md's own "Dino 8: SubD & mesh modeling toolset (app level)"
+// category names "SubD booleans" as missing outright: every app boolean
+// command tessellates a SubD operand via MeshOf first, so even two SubD
+// inputs only ever produce a flat Mesh result, never a SubD a caller could
+// keep editing or Subdivide()ing further. `kernel::SubD::BooleanToSubD`
+// (subd.h) already exists and is real, tested kernel code - mesh-approximate
+// (same Manifold-backed engine every other boolean command here already
+// uses), but a genuine SubD result, not a stub - just never wired into any
+// app command. This closes that specific wiring gap for every operand on
+// both sides already being a plain SubD (ObjectKind::SubD): each side's own
+// set first folds together via BooleanToSubD(..., Union) (mirroring
+// RunBoolean's own two-phase union-then-combine structure for meshes), then
+// the two sides combine via `op`. `second_ids` empty means a single-group
+// Union (RunBoolean's own !two_sets case); a non-empty `second_ids` combines
+// `first_ids`'s own fold against `second_ids`'s own fold via `op` - the
+// caller is expected to have already applied any `swap_sides` itself by
+// choosing which operand group is `first_ids` vs `second_ids`, exactly as
+// TryExactBrepBoolean's own caller does above. Returns nullopt - a silent,
+// ordinary fallback to RunBoolean's mesh path, not a user-visible failure -
+// whenever any operand isn't a plain SubD, a group is empty, or
+// BooleanToSubD itself throws (an open, non-watertight SubD on either side -
+// its own disclosed precondition, inherited unchanged from
+// Boolean()/BooleanCombine()).
+std::optional<kernel::SubD> TrySubDBoolean(CommandContext& ctx, const std::vector<ObjectId>& first_ids, const std::vector<ObjectId>& second_ids,
+                                            kernel::BooleanOp op) {
+  auto collect = [&](const std::vector<ObjectId>& ids, std::vector<const kernel::SubD*>& out) -> bool {
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->kind != ObjectKind::SubD || !o->subd) return false;
+      out.push_back(o->subd.get());
+    }
+    return !out.empty();
+  };
+  std::vector<const kernel::SubD*> g1, g2;
+  if (!collect(first_ids, g1)) return std::nullopt;
+  if (!second_ids.empty() && !collect(second_ids, g2)) return std::nullopt;
+  auto fold = [](const std::vector<const kernel::SubD*>& v, kernel::BooleanOp fold_op) {
+    kernel::SubD result = *v[0];
+    for (size_t i = 1; i < v.size(); ++i) result = result.BooleanToSubD(*v[i], fold_op);
+    return result;
+  };
+  try {
+    if (second_ids.empty()) return fold(g1, kernel::BooleanOp::Union);
+    kernel::SubD ra = fold(g1, kernel::BooleanOp::Union);
+    kernel::SubD rb = fold(g2, kernel::BooleanOp::Union);
+    return ra.BooleanToSubD(rb, op);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 // Shared by BooleanCommand and Boolean2ObjectsCommand: unions each side's
 // own set (when there are several objects per side), then combines the two
 // sides with `op`. `swap_sides` runs the op with the sides reversed, so
 // e.g. Difference(A,B) can be flipped to Difference(B,A) without the caller
 // re-collecting meshes. `try_exact_brep` (BooleanUnion/BooleanDifference/
 // BooleanIntersection/Boolean2Objects; never the Mesh* aliases, which
-// promise a mesh result) tries TryExactBrepBoolean above first, ahead of
-// this function's own mesh path.
+// promise a mesh result) tries TryExactBrepBoolean above first, then
+// TrySubDBoolean, ahead of this function's own generic mesh path.
 void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::vector<ObjectId>& b, kernel::BooleanOp op,
                 bool two_sets, const std::string& label, bool swap_sides = false, bool try_exact_brep = false) {
   std::vector<ObjectId> all = a;
@@ -98,6 +151,21 @@ void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::
         n.layer_index = layer;
         ctx.Doc().Add(std::move(n));
         ctx.Print(label + ": exact B-rep boolean (no tessellation), " + std::to_string(result->raw().m_F.Count()) + " face(s)");
+      } else {
+        ctx.Print(label + ": result is empty");
+      }
+      return;
+    }
+    if (std::optional<kernel::SubD> result = TrySubDBoolean(ctx, first_ids, second_ids, op)) {
+      ctx.Doc().BeginChange(label);
+      int layer = 0;
+      if (const SceneObject* o = ctx.Doc().Find(all.front())) layer = o->layer_index;
+      for (ObjectId id : all) ctx.Doc().Remove(id);
+      if (result->FaceCount() > 0) {
+        SceneObject n = SceneObject::MakeSubD(*result);
+        n.layer_index = layer;
+        ctx.Doc().Add(std::move(n));
+        ctx.Print(label + ": SubD boolean (mesh-approximate, via BooleanToSubD), " + std::to_string(result->FaceCount()) + " face(s)");
       } else {
         ctx.Print(label + ": result is empty");
       }
