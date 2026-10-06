@@ -2617,7 +2617,10 @@ bool ExportSvg(const Document& doc, const Viewport* view, const std::string& pat
     const bool valid_layer = layer >= 0 && static_cast<size_t>(layer) < doc.Layers().size();
     std::string name = valid_layer ? doc.LayerFullPath(layer) : "Default";
     const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(layer)], doc.PlotStyles(), default_width) : default_width;
-    os << "<g id=\"" << XmlEscape(name) << "\" stroke-width=\"" << Num(width, 3) << "\">\n";
+    const float alpha = valid_layer ? EffectivePlotAlpha(doc.Layers()[static_cast<size_t>(layer)], doc.PlotStyles()) : 1.0f;
+    os << "<g id=\"" << XmlEscape(name) << "\" stroke-width=\"" << Num(width, 3) << "\"";
+    if (alpha < 1.0f) os << " stroke-opacity=\"" << Num(alpha, 3) << "\"";
+    os << ">\n";
     for (const Path2* p : list) {
       os << "<path stroke=\"" << HexColor(p->color) << "\" d=\"";
       if (p->is_point) {
@@ -2650,16 +2653,38 @@ bool ExportPdf(const Document& doc, const Viewport* view, const std::string& pat
   const double W = L.width_mm * pt, H = L.height_mm * pt;
   const double marker = 1.0 * pt;
 
-  // Content stream.
+  // Content stream. Stroke alpha (PlotStyle::transparency, the third real
+  // CTB/STB column alongside width/color above) needs a PDF ExtGState
+  // resource switched in via the "gs" operator - unlike width/color, it
+  // can't just be set inline in the content stream. `gs_alphas`/`gs_by_key`
+  // collect only the DISTINCT alpha values paths actually use (GSn, n = the
+  // 1-based index into gs_alphas), so a document that never uses
+  // transparency (the common case) builds none at all and the PDF's object
+  // numbering/Resources dict stay exactly what they were before this
+  // feature existed.
   const double default_width = opts.line_width_mm > 0 ? opts.line_width_mm : 0.25;
+  std::vector<float> gs_alphas;
+  std::map<int, std::string> gs_by_key;
+  auto gs_name_for = [&](float alpha) -> std::string {
+    const int key = static_cast<int>(std::lround(alpha * 1000.0f));
+    auto it = gs_by_key.find(key);
+    if (it != gs_by_key.end()) return it->second;
+    gs_alphas.push_back(alpha);
+    const std::string nm = "GS" + std::to_string(gs_alphas.size());
+    gs_by_key[key] = nm;
+    return nm;
+  };
   std::ostringstream cs;
   cs << "q\n" << Num(default_width * pt, 3) << " w 1 J 1 j\n";
   std::string last_color;
   double last_width = default_width;
+  float last_alpha = 1.0f;
   for (const Path2& p : paths) {
     const bool valid_layer = p.layer >= 0 && static_cast<size_t>(p.layer) < doc.Layers().size();
     const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(p.layer)], doc.PlotStyles(), default_width) : default_width;
     if (std::fabs(width - last_width) > 1e-9) { cs << Num(width * pt, 3) << " w\n"; last_width = width; }
+    const float alpha = valid_layer ? EffectivePlotAlpha(doc.Layers()[static_cast<size_t>(p.layer)], doc.PlotStyles()) : 1.0f;
+    if (std::fabs(alpha - last_alpha) > 1e-4f) { cs << "/" << gs_name_for(alpha) << " gs\n"; last_alpha = alpha; }
     const std::string color = Num(p.color.r, 3) + " " + Num(p.color.g, 3) + " " + Num(p.color.b, 3) + " RG\n";
     if (color != last_color) { cs << color; last_color = color; }
     if (p.is_point) {
@@ -2677,9 +2702,12 @@ bool ExportPdf(const Document& doc, const Viewport* view, const std::string& pat
   cs << "Q\n";
   const std::string content = cs.str();
 
-  // Objects: 1 catalog, 2 pages, 3 page, 4 content, 5 info.
+  // Objects: 1 catalog, 2 pages, 3 page, 4 content, 5..5+N-1 ExtGStates (N =
+  // gs_alphas.size(), 0 for a document using no transparency), 5+N info.
+  const int n_gs = static_cast<int>(gs_alphas.size());
+  const int info_obj = 5 + n_gs;
   std::string out;
-  std::vector<size_t> offsets(6, 0);
+  std::vector<size_t> offsets(static_cast<size_t>(info_obj) + 1, 0);
   out += "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
   auto obj = [&](int n, const std::string& body) {
     offsets[static_cast<size_t>(n)] = out.size();
@@ -2687,19 +2715,29 @@ bool ExportPdf(const Document& doc, const Viewport* view, const std::string& pat
   };
   obj(1, "<< /Type /Catalog /Pages 2 0 R >>");
   obj(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
-  obj(3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + Num(W, 3) + " " + Num(H, 3) + "] /Contents 4 0 R /Resources << >> >>");
+  std::string resources = "<< >>";
+  if (n_gs > 0) {
+    std::string gs_dict = "<< /ExtGState << ";
+    for (int i = 0; i < n_gs; ++i) gs_dict += "/GS" + std::to_string(i + 1) + " " + std::to_string(5 + i) + " 0 R ";
+    gs_dict += ">> >>";
+    resources = gs_dict;
+  }
+  obj(3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + Num(W, 3) + " " + Num(H, 3) + "] /Contents 4 0 R /Resources " + resources + " >>");
   obj(4, "<< /Length " + std::to_string(content.size()) + " >>\nstream\n" + content + "endstream");
+  for (int i = 0; i < n_gs; ++i) {
+    obj(5 + i, "<< /Type /ExtGState /ca " + Num(gs_alphas[static_cast<size_t>(i)], 3) + " /CA " + Num(gs_alphas[static_cast<size_t>(i)], 3) + " >>");
+  }
   const std::string title = doc.Settings().title.empty() ? std::filesystem::path(path).stem().string() : doc.Settings().title;
-  obj(5, "<< /Producer (Dino 8) /Creator (Dino 8) /Title (" + PdfEscape(title) + ")" +
+  obj(info_obj, "<< /Producer (Dino 8) /Creator (Dino 8) /Title (" + PdfEscape(title) + ")" +
              (doc.Settings().author.empty() ? "" : " /Author (" + PdfEscape(doc.Settings().author) + ")") + " >>");
   const size_t xref = out.size();
-  out += "xref\n0 6\n0000000000 65535 f \n";
-  for (int i = 1; i <= 5; ++i) {
+  out += "xref\n0 " + std::to_string(info_obj + 1) + "\n0000000000 65535 f \n";
+  for (int i = 1; i <= info_obj; ++i) {
     char line[32];
     std::snprintf(line, sizeof(line), "%010zu 00000 n \n", offsets[static_cast<size_t>(i)]);
     out += line;
   }
-  out += "trailer\n<< /Size 6 /Root 1 0 R /Info 5 0 R >>\nstartxref\n" + std::to_string(xref) + "\n%%EOF\n";
+  out += "trailer\n<< /Size " + std::to_string(info_obj + 1) + " /Root 1 0 R /Info " + std::to_string(info_obj) + " 0 R >>\nstartxref\n" + std::to_string(xref) + "\n%%EOF\n";
 
   std::ofstream os(path, std::ios::binary);
   if (!os) { error = "Could not write " + path; return false; }

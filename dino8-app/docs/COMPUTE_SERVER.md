@@ -9,10 +9,11 @@ all.
 **It is not Rhino.Compute.** There is no concurrency (one request is
 serviced at a time) and no REST resource model. `GET /objects` (below) is a
 real, if minimal, structured JSON listing of what's in the document, and
-`?geometry=1` adds each object's own point/vertex data for the two kinds
-simple enough to serialize honestly right now (point, mesh) - every other
-kind (curve, surface, polysurface, SubD) still only comes back as whatever
-a script's own `print()` output happens to contain (plain text by default;
+`?geometry=1` adds each object's own geometry for the three kinds simple
+enough to serialize honestly right now (point, mesh, and a NURBS curve's
+own degree/control points/weights/knots) - every other kind (surface,
+polysurface, SubD, point cloud) still only comes back as whatever a
+script's own `print()` output happens to contain (plain text by default;
 `/run`/`/run/python` also answer with structured JSON instead of plain text
 when asked - see below). Authentication is real but minimal - one or more
 bearer tokens, each optionally naming its own caller, not OAuth/API
@@ -86,15 +87,20 @@ same as every other headless mode this app already has).
   box). A real, minimal structured wire format for *what exists and roughly
   where*.
 - `GET /objects?geometry=1` additionally carries each object's own
-  `geometry` field: `{"point": [x,y,z]}` for a point, `{"vertices":
+  `geometry` field: `{"point": [x,y,z]}` for a point; `{"vertices":
   [[x,y,z], ...], "faces": [[i,i,i], ...]}` for a mesh (0-based indices,
-  a 4-entry face for a quad) - the two object kinds simple enough to
-  serialize honestly as plain JSON right now. Every other kind (curve,
-  surface, polysurface, SubD, point cloud) gets `"geometry": null` -
-  genuinely not a (de)serialization format for NURBS curve/surface/Brep/
-  SubD data (control points, knots, weights, trims - a substantially
-  larger undertaking than this), and still no way to POST geometry *in*
-  either; a caller still has to `print()` that out of a script.
+  a 4-entry face for a quad); and `{"degree": d, "rational": bool,
+  "control_points": [[x,y,z], ...], "weights": [...], "knots": [...]}`
+  for a curve (the exact NURBS definition OpenNURBS itself stores -
+  enough to reconstruct the curve exactly, not sampled points; `weights`
+  is only present when `rational` is `true`) - the three object kinds
+  simple enough to serialize honestly as plain JSON right now. Every
+  other kind (surface, polysurface, SubD, point cloud) still gets
+  `"geometry": null` - a surface's own two-direction knot vectors and a
+  Brep's multiple trimmed faces are a substantially larger undertaking
+  than one curve's single control polygon, not attempted here - and
+  there is still no way to POST geometry *in* for any kind either; a
+  caller still has to `print()` that out of a script.
 
 ```
 $ curl -s -X POST --data 'import dino8
@@ -123,12 +129,14 @@ $ curl -s http://127.0.0.1:8080/objects
 ```
 
 ```
-$ curl -s --data 'rs.AddPoint(1,2,3)' http://127.0.0.1:8080/run >/dev/null
+$ curl -s --data 'rs.AddPoint(1,2,3)
+rs.AddLine({0,0,0},{10,0,0})' http://127.0.0.1:8080/run >/dev/null
 $ curl -s http://127.0.0.1:8080/objects?geometry=1
 [{"id":1,"type":"polysurface", ..., "geometry":null},
- {"id":2,"type":"point", ..., "geometry":{"point":[1.000000,2.000000,3.000000]}}]
+ {"id":2,"type":"point", ..., "geometry":{"point":[1.000000,2.000000,3.000000]}},
+ {"id":3,"type":"curve", ..., "geometry":{"degree":1,"rational":false,"control_points":[[0.000000,0.000000,0.000000],[10.000000,0.000000,0.000000]],"knots":[0.000000,1.000000]}}]
 ```
-(the box's `"geometry"` is `null` - polysurfaces aren't one of the two kinds `?geometry=1` serializes yet.)
+(the box's `"geometry"` is `null` - polysurfaces aren't one of the three kinds `?geometry=1` serializes yet.)
 
 ## What this deliberately does not do
 
@@ -164,12 +172,13 @@ $ curl -s http://127.0.0.1:8080/objects?geometry=1
   a teammate's script talking to a running Dino 8), not for exposing to a
   network you don't trust even with tokens set.
 - **No geometry (de)serialization format for most geometry.** `GET
-  /objects?geometry=1` (above) now carries real point/vertex data for
-  points and meshes - genuine structured data, not printed text - but
-  curves, surfaces, polysurfaces, SubDs and point clouds all still come
-  back with `"geometry": null`: reconstructing one of those needs its own
-  control points/knots/weights/trim structure, each a substantially larger
-  design than a flat vertex/face array, and none of that exists yet.
+  /objects?geometry=1` (above) now carries real data for points, meshes
+  and curves (the curve's own exact degree/control points/weights/knots,
+  not sampled points) - genuine structured data, not printed text - but
+  surfaces, polysurfaces, SubDs and point clouds all still come back with
+  `"geometry": null`: a surface's own two-direction knot vectors and a
+  Brep's multiple trimmed faces are each a substantially larger design
+  than one curve's single control polygon, and none of that exists yet.
   Getting their actual shape data out still means having a script `print()`
   whatever representation you need (coordinates, a JSON string you build
   yourself with `dino8`'s/`rs`'s existing query functions, ...); there is
