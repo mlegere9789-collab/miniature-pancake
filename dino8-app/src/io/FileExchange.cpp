@@ -3348,7 +3348,14 @@ std::vector<Path2> CollectPaths(const Document& doc, const Projector& proj, bool
     // on-screen-only distinctions).
     std::vector<double> dashes;
     if (o.kind == ObjectKind::Curve) {
-      if (const Linetype* lt = doc.FindLinetype(doc.EffectiveLinetype(o)); lt && !lt->pattern.empty()) {
+      // A layer's own named PlotStyle may force a different linetype than
+      // the object's own (LayerPlotStyle/PlotStyleTable's own linetype
+      // column) - the fourth real CTB/STB plot-style override, alongside
+      // width/color above and transparency below.
+      std::string lt_name = doc.EffectiveLinetype(o);
+      if (o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size())
+        lt_name = EffectivePlotLinetypeName(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.PlotStyles(), lt_name);
+      if (const Linetype* lt = doc.FindLinetype(lt_name); lt && !lt->pattern.empty()) {
         const double ls = doc.Settings().linetype_scale > 0 ? doc.Settings().linetype_scale : 1.0;
         for (double d : lt->pattern) dashes.push_back(std::max(0.0, d) * ls);
       }

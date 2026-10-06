@@ -22,6 +22,7 @@ using dino8::app::Color;
 using dino8::app::Document;
 using dino8::app::EffectivePlotAlpha;
 using dino8::app::EffectivePlotColor;
+using dino8::app::EffectivePlotLinetypeName;
 using dino8::app::EffectivePrintWidthMm;
 using dino8::app::Layer;
 using dino8::app::LayerPrints;
@@ -120,6 +121,24 @@ int main() {
     Layer overflow;
     overflow.plot_style = "Over";
     Check(EffectivePlotAlpha(overflow, styles) == 0.0f, "a transparency past 100 is clamped, not UB (never a negative alpha)");
+
+    // --- EffectivePlotLinetypeName: the fourth real CTB/STB column, a
+    // linetype override - no flat per-layer field exists either, so an
+    // unassigned/unknown-style layer (or a style that never set its own
+    // override) all fall back to the object's own already-resolved
+    // linetype name, passed in as `object_linetype`.
+    Check(EffectivePlotLinetypeName(unassigned, styles, "Dashed") == "Dashed", "no style assigned: the object's own linetype passes through unchanged");
+    Check(EffectivePlotLinetypeName(unknown, styles, "Dashed") == "Dashed", "an unknown/deleted style name: the object's own linetype passes through");
+    Check(EffectivePlotLinetypeName(assigned, styles, "Dashed") == "Dashed", "Monochrome never set its own linetype override, so the object's own linetype still wins");
+
+    PlotStyle forced;
+    forced.name = "ForceHidden";
+    forced.linetype = "Hidden";
+    styles.push_back(forced);
+    Layer forced_layer;
+    forced_layer.plot_style = "ForceHidden";
+    Check(EffectivePlotLinetypeName(forced_layer, styles, "Dashed") == "Hidden", "ForceHidden's own linetype override wins over the object's own real linetype");
+    Check(EffectivePlotLinetypeName(forced_layer, styles, "Continuous") == "Hidden", "...regardless of which linetype the object itself actually has");
   }
 
   // --- Document::FindPlotStyle / RemovePlotStyle, including the "can't

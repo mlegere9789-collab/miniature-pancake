@@ -45,3 +45,46 @@ PlotStyleTable Mono 0,0,255 0.5 50
 SelAll
 Export @TMP@/plot_style_transparent.svg
 Export @TMP@/plot_style_transparent.pdf
+
+# --- Linetype override: the fourth and last real CTB/STB column this
+# bullet's own wording named as missing (alongside color/width/
+# transparency above) - a style can force a different linetype than the
+# object's own, the same way a real CTB/STB table's own linetype column
+# works. A line on the real "Dashed" (5,3) linetype (SetCustomLinetype/
+# SetLinetype, the same fixture dash_export_script.txt's own linetype-
+# for-print test already proved), on a fresh layer pointed at a style
+# whose own linetype column names "Hidden" (2,2): printed from a forced
+# Scale=1 parallel view, the exported SVG must carry the STYLE's own
+# "2,2" dasharray, not the object's real "5,3" - proving the override
+# actually drives the printed dash pattern, not merely the object's
+# pre-existing one. Re-saving the style with the linetype token omitted
+# (PlotStyleTable's own "one-shot, set every field" convention - a later
+# call without a token resets it, same as transparency above already
+# does) must revert the same line back to its own real "5,3" in a second
+# export.
+LinetypeDisplay Enable=No
+SetCustomLinetype Dashed 5,3
+SetCustomLinetype Hidden 2,2
+NewLayer
+LinetypeLayer
+Line 0,20,0 100,20,0
+SelLast
+SetLinetype Dashed
+PlotStyleTable LTStyle ByLayer 0.5 0 Hidden
+LayerPlotStyle LinetypeLayer LTStyle
+Top
+Print @TMP@/plot_style_linetype_override.svg Scale=1
+PlotStyleTable LTStyle ByLayer 0.5
+Print @TMP@/plot_style_linetype_cleared.svg Scale=1
+
+# .3dm persistence: a PlotStyle row (including this round's new linetype
+# column) is a document-level user string (Dino8.PlotStyle.<name>,
+# io/File3dm.cpp), round-tripped through a real Save/Open, not just kept
+# in memory for the rest of this one process - re-set LTStyle's own
+# linetype column back to Hidden first (cleared just above) so the saved
+# file actually has a real override to round-trip.
+PlotStyleTable LTStyle ByLayer 0.5 0 Hidden
+SaveAs @TMP@/plot_style_persist.3dm
+New
+Open @TMP@/plot_style_persist.3dm
+PlotStyleTable

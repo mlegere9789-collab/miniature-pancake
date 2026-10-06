@@ -5917,6 +5917,15 @@ OPACITY_COUNT="$(grep -c 'stroke-opacity="0.5"' "$TMPW/plot_style_transparent.sv
 grep -aq '/ExtGState' "$TMPW/plot_style_transparent.pdf" && echo "ok   plot_style_transparent.pdf's page carries a real /ExtGState resource dict, not just a printed confirmation" || { echo "FAIL plot_style_transparent.pdf: no /ExtGState resource"; fail=1; }
 grep -aq '/CA 0.5' "$TMPW/plot_style_transparent.pdf" && echo "ok   the ExtGState's own /CA (stroking alpha) is 0.5, matching the style's 50% transparency" || { echo "FAIL plot_style_transparent.pdf: no /CA 0.5 ExtGState"; fail=1; }
 grep -aq '/GS1 gs' "$TMPW/plot_style_transparent.pdf" && echo "ok   the content stream switches the ExtGState in with a real \"gs\" operator before the stroked paths" || { echo "FAIL plot_style_transparent.pdf: no /GS1 gs operator in the content stream"; fail=1; }
+# Linetype override (PlotStyle::linetype, the fourth and last real CTB/STB
+# column this bullet named as missing): LinetypeLayer's line is really on
+# the "Dashed" (5,3) linetype, but its own style (LTStyle) names "Hidden"
+# (2,2) - the exported SVG must carry the STYLE's own dasharray, not the
+# object's real one, and clearing the style's linetype column (PlotStyleTable
+# re-saved without that token) must revert it back to the object's own.
+grep -q 'stroke-dasharray="2,2"' "$TMPW/plot_style_linetype_override.svg" && echo "ok   a named style's own linetype override (Hidden, 2,2) drives the exported dasharray, not the object's own real linetype (Dashed, 5,3)" || { echo "FAIL plot_style_linetype_override.svg: expected a 2,2 dasharray from the style's own linetype override"; fail=1; }
+grep -q 'stroke-dasharray="5,3"' "$TMPW/plot_style_linetype_cleared.svg" && echo "ok   clearing the style's own linetype column (PlotStyleTable re-saved without that token) reverts the same line to its own real linetype (Dashed, 5,3)" || { echo "FAIL plot_style_linetype_cleared.svg: expected the object's own 5,3 dasharray once the style's override was cleared"; fail=1; }
+echo "$PST" | grep -qF "PlotStyle 'LTStyle': color ByLayer, width 0.5 mm, transparency 0%, linetype Hidden" && echo "ok   the linetype column survives a real Save/Open round trip through the native .3dm file (Dino8.PlotStyle.<name> user string, io/File3dm.cpp), not just kept in memory for this one process" || { echo "FAIL PlotStyleTable's own linetype column did not survive a real .3dm Save/Open round trip"; fail=1; }
 
 # Print/Export linetype (dash pattern) wiring: PARITY_MAP.md "Print and
 # plot output" item - ExportSvg/ExportPdf (io/FileExchange.cpp) now carry

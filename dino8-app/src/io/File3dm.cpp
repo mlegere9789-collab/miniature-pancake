@@ -1630,24 +1630,34 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       }
       const std::string plot_style_prefix = "Dino8.PlotStyle.";
       if (key.compare(0, plot_style_prefix.size(), plot_style_prefix) == 0) {
-        // "has_color;r;g;b;width_mm;transparency" - the same flat two-column
-        // shape Layer::has_plot_color/plot_color/print_width_mm already
-        // have, just named and stored once per row instead of once per
-        // layer, plus a third transparency column with no flat per-layer
-        // equivalent. A file saved before transparency existed has only the
-        // first 5 fields; sscanf's own return count tells the two apart, and
-        // a missing field reads back as 0 (fully opaque), the same harmless
-        // no-op default a fresh PlotStyle already has.
+        // "has_color;r;g;b;width_mm;transparency;linetype" - the same flat
+        // two-column shape Layer::has_plot_color/plot_color/print_width_mm
+        // already have, just named and stored once per row instead of once
+        // per layer, plus a transparency column with no flat per-layer
+        // equivalent and a trailing linetype-name column (empty = unset,
+        // the same convention Layer::plot_style's own name field uses,
+        // needing no separate has_* flag). A file saved before transparency
+        // (5 fields) or linetype (6 fields) existed is read back correctly
+        // either way: sscanf's own return count (%n doesn't add to it)
+        // tells how many of the two trailing numeric fields are present,
+        // and the raw byte offset %n leaves behind locates the optional
+        // ";linetype" suffix after them (absent, or cut off entirely on a
+        // 5-field file, both read back as "" - the same harmless no-op
+        // default a fresh PlotStyle already has).
         PlotStyle st;
         st.name = key.substr(plot_style_prefix.size());
         int has_color = 0, r = 0, g = 0, b = 0;
         double width = 0, transparency = 0;
-        const int n = std::sscanf(value.c_str(), "%d;%d;%d;%d;%lf;%lf", &has_color, &r, &g, &b, &width, &transparency);
+        int consumed = 0;
+        const int n = std::sscanf(value.c_str(), "%d;%d;%d;%d;%lf;%lf%n", &has_color, &r, &g, &b, &width, &transparency, &consumed);
         if (n >= 5) {
           st.has_color = has_color != 0;
           st.color = Color::FromBytes(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255));
           st.width_mm = width;
           st.transparency = n >= 6 ? std::clamp(transparency, 0.0, 100.0) : 0.0;
+          if (n >= 6 && consumed > 0 && static_cast<size_t>(consumed) < value.size() && value[static_cast<size_t>(consumed)] == ';') {
+            st.linetype = value.substr(static_cast<size_t>(consumed) + 1);
+          }
         }
         if (PlotStyle* existing = doc.FindPlotStyle(st.name)) *existing = st; else doc.PlotStyles().push_back(st);
         continue;
@@ -1755,7 +1765,9 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
       std::snprintf(style_buf, sizeof(style_buf), "%d;%d;%d;%d;%g;%g", st.has_color ? 1 : 0,
                     static_cast<int>(st.color.r * 255 + 0.5f), static_cast<int>(st.color.g * 255 + 0.5f),
                     static_cast<int>(st.color.b * 255 + 0.5f), st.width_mm, st.transparency);
-      model.SetDocumentUserString(ON_wString(("Dino8.PlotStyle." + st.name).c_str()), ON_wString(style_buf));
+      std::string packed = style_buf;
+      if (!st.linetype.empty()) packed += ";" + st.linetype;
+      model.SetDocumentUserString(ON_wString(("Dino8.PlotStyle." + st.name).c_str()), ON_wString(packed.c_str()));
     }
   }
 

@@ -280,27 +280,30 @@ void RegisterLayerCommands(CommandEngine& e) {
   // per-layer-only fields above: a named row (color + lineweight) a layer
   // can point at by name (LayerPlotStyle below) instead of carrying its own
   // copy, so several layers sharing one style name all change together when
-  // the row is edited here. Three-or-four-token scriptable form
-  // "PlotStyleTable <name> <r,g,b|ByLayer> <width> [transparency]" (same
-  // TakePendingInput pattern as LayerPrintWidth/LayerPlotColor);
-  // `transparency` (0-100, 0 = fully opaque) is optional and defaults to 0
-  // when omitted, so every pre-existing 3-token call site is unaffected.
-  // With no name queued, lists every row.
+  // the row is edited here. Three-to-five-token scriptable form
+  // "PlotStyleTable <name> <r,g,b|ByLayer> <width> [transparency] [linetype]"
+  // (same TakePendingInput pattern as LayerPrintWidth/LayerPlotColor);
+  // `transparency` (0-100, 0 = fully opaque) and `linetype` (a named
+  // Linetype - SetCustomLinetype creates one - or "None"/omitted to leave
+  // each object's own linetype alone) are optional and default to
+  // 0/unset when omitted, so every pre-existing 3-or-4-token call site is
+  // unaffected. With no name queued, lists every row.
   Reg(e, "PlotStyleTable", Immediate([](CommandContext& ctx) {
         auto name = ctx.Engine().TakePendingInput();
         if (!name) {
-          if (ctx.Doc().PlotStyles().empty()) { ctx.Print("No plot styles defined. Use PlotStyleTable <name> <r,g,b|ByLayer> <width> [transparency] to create one."); return; }
+          if (ctx.Doc().PlotStyles().empty()) { ctx.Print("No plot styles defined. Use PlotStyleTable <name> <r,g,b|ByLayer> <width> [transparency] [linetype] to create one."); return; }
           for (const PlotStyle& s : ctx.Doc().PlotStyles()) {
             const std::string color = s.has_color ? std::to_string(static_cast<int>(s.color.r * 255 + 0.5f)) + "," + std::to_string(static_cast<int>(s.color.g * 255 + 0.5f)) + "," + std::to_string(static_cast<int>(s.color.b * 255 + 0.5f)) : "ByLayer";
             ctx.Print("PlotStyle '" + s.name + "': color " + color + ", width " + (s.width_mm > 0 ? FormatNumber(s.width_mm) + " mm" : (s.width_mm < 0 ? "does not print" : "document default")) +
-                      ", transparency " + FormatNumber(s.transparency) + "%");
+                      ", transparency " + FormatNumber(s.transparency) + "%, linetype " + (s.linetype.empty() ? "ByLayer" : s.linetype));
           }
           return;
         }
         auto color_text = ctx.Engine().TakePendingInput();
         auto width_text = ctx.Engine().TakePendingInput();
         auto transparency_text = ctx.Engine().TakePendingInput();
-        if (!color_text || !width_text) { ctx.Warn("Usage: PlotStyleTable <name> <r,g,b|ByLayer> <width> [transparency]"); return; }
+        auto linetype_text = ctx.Engine().TakePendingInput();
+        if (!color_text || !width_text) { ctx.Warn("Usage: PlotStyleTable <name> <r,g,b|ByLayer> <width> [transparency] [linetype]"); return; }
         bool clear = true;
         Color c;
         if (!ParsePlotColorArg(*color_text, clear, c)) { ctx.Warn("'" + *color_text + "' is not r,g,b or ByLayer/Default/None"); return; }
@@ -312,6 +315,11 @@ void RegisterLayerCommands(CommandEngine& e) {
           transparency = std::clamp(std::strtod(transparency_text->c_str(), &end), 0.0, 100.0);
           if (end == transparency_text->c_str()) { ctx.Warn("'" + *transparency_text + "' is not a number"); return; }
         }
+        std::string linetype;
+        if (linetype_text && ToLower(*linetype_text) != "none") {
+          if (!ctx.Doc().FindLinetype(*linetype_text)) { ctx.Warn("No linetype named '" + *linetype_text + "' (use SetCustomLinetype to create one)"); return; }
+          linetype = *linetype_text;
+        }
         ctx.Doc().BeginChange("PlotStyleTable");
         PlotStyle* st = ctx.Doc().FindPlotStyle(*name);
         if (!st) { PlotStyle fresh; fresh.name = *name; ctx.Doc().PlotStyles().push_back(fresh); st = &ctx.Doc().PlotStyles().back(); }
@@ -319,7 +327,8 @@ void RegisterLayerCommands(CommandEngine& e) {
         if (!clear) st->color = c;
         st->width_mm = w;
         st->transparency = transparency;
-        ctx.Print("PlotStyleTable: '" + *name + "' saved (color " + (st->has_color ? *color_text : "ByLayer") + ", width " + FormatNumber(w) + " mm, transparency " + FormatNumber(transparency) + "%)");
+        st->linetype = linetype;
+        ctx.Print("PlotStyleTable: '" + *name + "' saved (color " + (st->has_color ? *color_text : "ByLayer") + ", width " + FormatNumber(w) + " mm, transparency " + FormatNumber(transparency) + "%, linetype " + (linetype.empty() ? "ByLayer" : linetype) + ")");
       }));
   // LayerPlotStyle: assigns a layer's named PlotStyle row (PlotStyleTable
   // above) - Layer::plot_style, read by ResolvePlotStyle/LayerPrints/

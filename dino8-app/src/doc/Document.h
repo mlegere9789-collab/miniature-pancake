@@ -127,15 +127,22 @@ inline Color EffectivePlotColor(const Layer& layer, const Color& display_color) 
 // opaque, the default - no flat per-layer equivalent exists, unlike
 // color/width, since a style is the only place this ever lived): 0-100,
 // matching real Rhino/AutoCAD's own plot-style "Transparency" percentage.
-// Still honestly narrow: no line-type/screening column a real CTB/STB table
-// has, and real printer-device/spooler output remains entirely unattempted -
-// this stays a vector page property, assignable by name.
+// `linetype` adds a fourth real CTB/STB column: a named Linetype
+// (Document::FindLinetype) this style forces regardless of each object's
+// own effective linetype, or empty (the default) to leave it alone - the
+// same "empty = unset" convention Layer::plot_style itself already uses for
+// a name-type field, needing no separate has_* bool the way color (which
+// has no spare sentinel) does.
+// Still honestly narrow: no screening column a real CTB/STB table has, and
+// real printer-device/spooler output remains entirely unattempted - this
+// stays a vector page property, assignable by name.
 struct PlotStyle {
   std::string name = "Default";
   bool has_color = false;
   Color color = Color::FromBytes(0, 0, 0);
   double width_mm = 0;
   double transparency = 0;
+  std::string linetype;
 };
 
 // Resolves `layer`'s own named PlotStyle row in `styles` (Layer::plot_style),
@@ -183,6 +190,24 @@ inline float EffectivePlotAlpha(const Layer& layer, const std::vector<PlotStyle>
   const PlotStyle* s = ResolvePlotStyle(layer, styles);
   if (!s) return 1.0f;
   return 1.0f - static_cast<float>(std::clamp(s->transparency, 0.0, 100.0)) / 100.0f;
+}
+
+// The linetype name (Document::FindLinetype) a layer's paths should
+// actually be dashed with when printed/exported (io/FileExchange.cpp's
+// CollectPaths) - the fourth real CTB/STB plot-style column, alongside
+// width/color/transparency above. A named PlotStyle's own linetype override
+// takes over from `object_linetype` (the object's own, already-resolved
+// Document::EffectiveLinetype) when set (PlotStyleTable); a layer with no
+// style, one naming an unknown row, or a style that never set its own
+// linetype override all fall back to `object_linetype` unchanged - the same
+// "override or pass the fallback through" shape EffectivePlotColor above
+// already has, just taking the pre-resolved name as its own fallback
+// parameter instead of re-deriving it (CollectPaths already has the
+// object's own effective linetype in hand by the time it needs this).
+inline std::string EffectivePlotLinetypeName(const Layer& layer, const std::vector<PlotStyle>& styles,
+                                              const std::string& object_linetype) {
+  if (const PlotStyle* s = ResolvePlotStyle(layer, styles); s && !s->linetype.empty()) return s->linetype;
+  return object_linetype;
 }
 
 // A block definition: a named set of objects with a base point. Instances
