@@ -4175,6 +4175,103 @@ void TestIntersectCylinderCylinderParallelClosedForm() {
   Check(IntersectCylinderCylinderParallel(cyl_a, degenerate, tol).empty, "a zero-radius cylinder operand is refused as a genuine miss");
 }
 
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
+// "plane/plane" half - the easiest of its named pairs, closed here with
+// the exact classical formula (no mesh seeding, no Newton polish).
+void TestIntersectPlanePlaneClosedForm() {
+  using dino8::kernel::IntersectPlanePlane;
+  using dino8::kernel::Point3d;
+
+  // Two genuinely crossing planes: the horizontal z=0 plane and a vertical
+  // plane x=0 - they meet exactly along the y-axis.
+  const ON_Plane horizontal(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const ON_Plane vertical(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0));
+  const auto crossing = IntersectPlanePlane(horizontal, vertical, 1e-6);
+  Check(!crossing.empty && !crossing.coincident, "two genuinely crossing planes report a real line, not a miss or coincidence");
+  if (!crossing.empty && !crossing.coincident) {
+    const Point3d p0 = crossing.line.PointAt(0.0), p1 = crossing.line.PointAt(1.0);
+    Check(std::abs(p0.x) < 1e-9 && std::abs(p0.z) < 1e-9, "the line's own first point sits exactly on the hand-derivable y-axis (x=0, z=0)");
+    Check(std::abs(p1.x) < 1e-9 && std::abs(p1.z) < 1e-9, "the line's own second point also sits exactly on the y-axis");
+    Check(std::abs(p1.y - p0.y) > 1e-6, "the line genuinely runs along y (not a degenerate single point)");
+  }
+
+  // A general oblique pair, verified by the implicit plane equations
+  // directly rather than a hardcoded expected line: a plane tilted off
+  // horizontal and a vertical plane through the origin at an angle.
+  const ON_Plane oblique_a(ON_3dPoint(0, 0, 1), ON_3dVector(0, 1, 1));
+  const ON_Plane oblique_b(ON_3dPoint(0, 0, 0), ON_3dVector(1, 1, 0));
+  const auto general_case = IntersectPlanePlane(oblique_a, oblique_b, 1e-6);
+  Check(!general_case.empty && !general_case.coincident, "a general oblique pair reports a real line");
+  if (!general_case.empty && !general_case.coincident) {
+    bool both_on_both_planes = true;
+    for (double t : {0.0, 1.0, -3.7}) {
+      const Point3d p = general_case.line.PointAt(t);
+      if (std::abs(oblique_a.DistanceTo(p)) > 1e-6 || std::abs(oblique_b.DistanceTo(p)) > 1e-6) { both_on_both_planes = false; break; }
+    }
+    Check(both_on_both_planes, "every sampled point of the reported line lies exactly on both original planes simultaneously");
+  }
+
+  // Two coincident planes (same plane, described via two different but
+  // equal origins/normals) report the coincident degeneracy, not a line.
+  const ON_Plane plane_a(ON_3dPoint(0, 0, 5), ON_3dVector(0, 0, 1));
+  const ON_Plane plane_b(ON_3dPoint(3, 7, 5), ON_3dVector(0, 0, 1));
+  const auto coincident = IntersectPlanePlane(plane_a, plane_b, 1e-6);
+  Check(!coincident.empty && coincident.coincident, "two descriptions of the same plane report the coincident degeneracy");
+
+  // Two parallel, distinct planes never meet.
+  const ON_Plane plane_c(ON_3dPoint(0, 0, 9), ON_3dVector(0, 0, 1));
+  Check(IntersectPlanePlane(plane_a, plane_c, 1e-6).empty, "two genuinely parallel, distinct planes report a genuine miss");
+
+  // Invalid input (a plane built from a zero-length normal, genuinely
+  // IsValid() == false - unlike a default-constructed ON_Plane, which is
+  // a perfectly valid world XY plane, not an invalid one) is refused
+  // outright.
+  const ON_Plane invalid_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 0));
+  Check(!invalid_plane.IsValid(), "sanity: a zero-normal plane is genuinely IsValid() == false");
+  Check(IntersectPlanePlane(invalid_plane, vertical, 1e-6).empty, "an invalid plane operand is refused as a genuine miss");
+}
+
+// PARITY_MAP.md's own "Silhouette / outline curves" bullet: "still app-only
+// and mesh-based ... No kernel silhouette." FindSurfaceSilhouettePoints is
+// a genuine kernel-level silhouette primitive for a fixed orthographic
+// view direction, against the exact surface (not a tessellated stand-in).
+void TestFindSurfaceSilhouettePointsSphereEquator() {
+  using dino8::kernel::FindSurfaceSilhouettePoints;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  // A sphere centered exactly at the origin: viewed straight down +Z, the
+  // hand-derivable silhouette is the equator itself (z=0, x^2+y^2=radius^2)
+  // - every point of the sphere's own normal (always radially outward from
+  // the center) is exactly perpendicular to (0,0,1) there, and nowhere
+  // else.
+  const double radius = 3.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+
+  const IntersectOptions opt;
+  const auto hits = FindSurfaceSilhouettePoints(sphere_surface, ON_3dVector(0, 0, 1), opt);
+  Check(!hits.empty(), "viewing a sphere straight down its own axis finds genuine silhouette points along the equator");
+  bool all_on_equator = true;
+  for (const auto& h : hits) {
+    if (std::abs(h.point.z) > 1e-6 || std::abs(std::hypot(h.point.x, h.point.y) - radius) > 1e-6) { all_on_equator = false; break; }
+  }
+  Check(all_on_equator, "every reported silhouette point sits exactly on the hand-derivable equator (z=0, at exactly the sphere's own radius from the axis)");
+
+  // A flat, generously-bounded plane viewed straight down its own normal:
+  // the normal is constant and never perpendicular to the view direction
+  // anywhere, so there is genuinely no silhouette at all.
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-10, 10), true);
+  ground.SetExtents(1, ON_Interval(-10, 10), true);
+  Check(FindSurfaceSilhouettePoints(ground, ON_3dVector(0, 0, 1), opt).empty(), "a flat plane viewed straight down its own normal has no silhouette points at all");
+
+  // A zero-length view direction is refused outright (no direction to test
+  // tangency against).
+  Check(FindSurfaceSilhouettePoints(sphere_surface, ON_3dVector(0, 0, 0), opt).empty(), "a zero-length view direction returns empty outright");
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Projection of curves/points onto surfaces along a direction (Project)"
 // bullet: "app ProjectCommand samples the curve and ray-casts along the
@@ -69307,6 +69404,8 @@ int main() {
   TestIntersectPlaneSphereClosedForm();
   TestIntersectPlaneCylinderClosedForm();
   TestIntersectCylinderCylinderParallelClosedForm();
+  TestIntersectPlanePlaneClosedForm();
+  TestFindSurfaceSilhouettePointsSphereEquator();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
