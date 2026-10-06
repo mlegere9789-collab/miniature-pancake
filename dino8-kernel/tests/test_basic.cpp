@@ -53600,6 +53600,127 @@ void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
   Check(threw, "Rebuild throws on fewer samples than control points");
 }
 
+void TestSurfaceInterpolateThroughGrid() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A genuinely non-planar, non-separable 5x4 grid of points (no shared
+  // u*v product term, no mirror symmetry in either direction, the same
+  // "not secretly ruled/translational" care WigglyBicubic()'s own grid
+  // above already takes).
+  const int u_count = 5, v_count = 4;
+  std::vector<Point3d> grid;
+  for (int u = 0; u < u_count; ++u) {
+    for (int v = 0; v < v_count; ++v) {
+      grid.push_back(Point3d(u * 1.3, v * 0.9, std::sin(1.7 * u) * std::cos(1.3 * v) + 0.2 * u * v));
+    }
+  }
+
+  NurbsSurface surf;
+  Check(NurbsSurface::InterpolateThroughGrid(grid, u_count, v_count, surf) == Result::Ok,
+        "InterpolateThroughGrid succeeds on a genuinely non-planar, non-separable grid");
+  Check(surf.CVCountU() == u_count && surf.CVCountV() == v_count,
+        "...and produces exactly the requested u_count x v_count control net");
+  Check(surf.DegreeU() == 3 && surf.DegreeV() == 3,
+        "...at the expected degree-3 cap for 5 (and 4) points per direction");
+  Check(!surf.IsRational(), "InterpolateThroughGrid's output is non-rational");
+
+  // Re-derive the construction's own documented shared-parameter method
+  // (average every row's/column's own [0,1]-normalized chord-length
+  // parameterization) independently here, then confirm the surface
+  // genuinely passes through every grid point AT those parameter pairs -
+  // exact interpolation, not merely a close fit.
+  auto chord_params = [](const std::vector<Point3d>& pts) {
+    std::vector<double> t = {0.0};
+    for (size_t i = 1; i < pts.size(); ++i) t.push_back(t.back() + pts[i].DistanceTo(pts[i - 1]));
+    return t;
+  };
+  std::vector<double> u_params(static_cast<size_t>(u_count), 0.0);
+  for (int v = 0; v < v_count; ++v) {
+    std::vector<Point3d> row;
+    for (int u = 0; u < u_count; ++u) row.push_back(grid[static_cast<size_t>(u * v_count + v)]);
+    const std::vector<double> cp = chord_params(row);
+    for (int u = 0; u < u_count; ++u) u_params[static_cast<size_t>(u)] += cp[static_cast<size_t>(u)] / cp.back();
+  }
+  for (double& p : u_params) p /= v_count;
+
+  std::vector<double> v_params(static_cast<size_t>(v_count), 0.0);
+  for (int u = 0; u < u_count; ++u) {
+    std::vector<Point3d> col;
+    for (int v = 0; v < v_count; ++v) col.push_back(grid[static_cast<size_t>(u * v_count + v)]);
+    const std::vector<double> cp = chord_params(col);
+    for (int v = 0; v < v_count; ++v) v_params[static_cast<size_t>(v)] += cp[static_cast<size_t>(v)] / cp.back();
+  }
+  for (double& p : v_params) p /= u_count;
+
+  double max_err = 0.0;
+  for (int u = 0; u < u_count; ++u) {
+    for (int v = 0; v < v_count; ++v) {
+      max_err = std::max(max_err, surf.PointAt(u_params[static_cast<size_t>(u)], v_params[static_cast<size_t>(v)])
+                                       .DistanceTo(grid[static_cast<size_t>(u * v_count + v)]));
+    }
+  }
+  Check(max_err < 1e-9,
+        "InterpolateThroughGrid's surface passes through all 20 grid points exactly (< 1e-9) at "
+        "the independently-recomputed shared parameter pairs");
+
+  bool size_threw = false;
+  try {
+    NurbsSurface bad;
+    NurbsSurface::InterpolateThroughGrid(grid, 1, v_count, bad);
+  } catch (const std::invalid_argument&) {
+    size_threw = true;
+  }
+  Check(size_threw, "InterpolateThroughGrid throws std::invalid_argument for u_count < 2");
+
+  bool count_threw = false;
+  try {
+    NurbsSurface bad;
+    NurbsSurface::InterpolateThroughGrid(grid, u_count, v_count + 1, bad);
+  } catch (const std::invalid_argument&) {
+    count_threw = true;
+  }
+  Check(count_threw,
+        "InterpolateThroughGrid throws std::invalid_argument when grid.size() != u_count * v_count");
+
+  // Every V-column (fixed u) coincides - degenerate, must be refused.
+  std::vector<Point3d> degenerate_grid;
+  for (int u = 0; u < u_count; ++u) {
+    for (int v = 0; v < v_count; ++v) degenerate_grid.push_back(Point3d(u, 0, 0));
+  }
+  bool degenerate_threw = false;
+  try {
+    NurbsSurface bad;
+    NurbsSurface::InterpolateThroughGrid(degenerate_grid, u_count, v_count, bad);
+  } catch (const std::invalid_argument&) {
+    degenerate_threw = true;
+  }
+  Check(degenerate_threw,
+        "InterpolateThroughGrid throws std::invalid_argument when every column is degenerate "
+        "(coincident points)");
+
+  // Minimal 2x2 grid: degree 1x1 (capped by only 2 points per
+  // direction), and the result must still interpolate all 4 corners
+  // exactly.
+  const std::vector<Point3d> quad = {Point3d(0, 0, 0), Point3d(0, 1, 1), Point3d(1, 0, 2), Point3d(1, 1, 0)};
+  NurbsSurface quad_surf;
+  Check(NurbsSurface::InterpolateThroughGrid(quad, 2, 2, quad_surf) == Result::Ok,
+        "InterpolateThroughGrid succeeds on the minimal 2x2 grid");
+  Check(quad_surf.DegreeU() == 1 && quad_surf.DegreeV() == 1,
+        "...at degree 1x1, the cap for only 2 points per direction");
+  double quad_err = 0.0;
+  for (double u : {0.0, 1.0}) {
+    for (double v : {0.0, 1.0}) {
+      const Point3d& expected = (u == 0.0) ? (v == 0.0 ? quad[0] : quad[1]) : (v == 0.0 ? quad[2] : quad[3]);
+      quad_err = std::max(quad_err, quad_surf.PointAt(u, v).DistanceTo(expected));
+    }
+  }
+  Check(quad_err < 1e-9,
+        "InterpolateThroughGrid's degree-1 surface interpolates all 4 corners of the minimal grid "
+        "exactly");
+}
+
 // ---- NurbsSurface::DecomposeToBeziers ----
 
 void TestSurfaceDecomposeToBeziersProducesExactSpanPatches() {
@@ -70406,6 +70527,7 @@ int main() {
 
   TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape();
   TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise();
+  TestSurfaceInterpolateThroughGrid();
   TestSurfaceDecomposeToBeziersProducesExactSpanPatches();
 
   TestSurfaceMatchEdgePositionTangentCurvature();
