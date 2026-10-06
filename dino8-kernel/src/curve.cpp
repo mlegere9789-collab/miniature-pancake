@@ -1520,6 +1520,61 @@ Result NurbsCurve::Fair(double tolerance, int iterations, double factor, double*
   return Result::Ok;
 }
 
+Result NurbsCurve::Simplify(double tolerance) {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Simplify: tolerance must be positive");
+  }
+
+  if (IsLinear(tolerance) && ControlPointCount() > 2) {
+    const Interval dom = Domain();
+    const NurbsCurve line = FromControlPoints({PointAt(dom.min), PointAt(dom.max)}, 1);
+    curve_ = line.curve_;
+    return Result::Ok;
+  }
+
+  if (!IsRational()) {
+    ON_Arc arc;
+    if (curve_.IsArc(nullptr, &arc, tolerance)) {
+      ON_ArcCurve ac(arc);
+      ON_NurbsCurve nc;
+      if (ac.GetNurbForm(nc) > 0) {
+        curve_ = nc;
+        return Result::Ok;
+      }
+    }
+  }
+
+  bool changed = false;
+
+  // Remove every removable interior knot, re-scanning from scratch after
+  // each success since RemoveKnotAt() shifts every later index.
+  bool progress = true;
+  while (progress) {
+    progress = false;
+    const Interval dom = Domain();
+    for (int i = 0; i < KnotCount(); ++i) {
+      const double u = curve_.Knot(i);
+      if (!(u > dom.min && u < dom.max)) continue;
+      if (RemoveKnotAt(i, tolerance) == Result::Ok) {
+        changed = true;
+        progress = true;
+        break;
+      }
+    }
+  }
+
+  // Reduce degree as far as tolerance allows, trying the lowest degree
+  // first - the maximal simplification, not just the first one found.
+  for (int d = 1; d < Degree(); ++d) {
+    if (ReduceDegree(d, tolerance) == Result::Ok) {
+      changed = true;
+      break;
+    }
+  }
+
+  return changed ? Result::Ok : Result::NoOpAlreadySatisfied;
+}
+
 Interval NurbsCurve::Domain() const {
   const ON_Interval domain = curve_.Domain();
   return Interval{domain.Min(), domain.Max()};

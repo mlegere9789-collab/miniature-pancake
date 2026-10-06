@@ -58,6 +58,31 @@ Enter
 SelLast
 ReducePolyline
 List
+# --- SimplifyCrv now does real simplification, not just the old exact
+# line/arc special cases: an elevated-degree line still collapses exactly
+# (unchanged behavior), and a smooth curve with a genuinely removable
+# inserted knot actually loses it (the real gap PARITY_MAP.md's own
+# "Simplify curve" bullet named - "only replaces curves already exactly
+# linear/arc").
+SelAll
+Hide
+Line 500,0,0 510,0,0
+SelLast
+ChangeDegree
+3
+SelLast
+SimplifyCrv
+List
+Curve 520,0,0 530,5,0 540,-5,0 550,0,0
+Enter
+SelLast
+InsertKnot
+535,0,0
+SelLast
+List
+SelLast
+SimplifyCrv
+List
 # --- SubCrv keeps the picked span of a line
 SelAll
 Hide
@@ -440,4 +465,4 @@ Delete
 # alongside the pre-existing Continuity=Tangent fixture above, same "left
 # visible, never deleted" convention that fixture's own two lines already
 # use) - 197 -> 199.
-@expect_objects 199
+@expect_objects 201

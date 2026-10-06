@@ -131,7 +131,8 @@ ExtrudeCrvTapered
 5
 SelPolysrf
 List
-# --- Project a line below a plane onto it (along the CPlane normal)
+# --- Project a line below a plane onto it (Enter keeps the active CPlane
+# normal, the old default behavior)
 SelAll
 Hide
 Plane 220,0,0 240,20,0
@@ -140,6 +141,24 @@ SelCrv
 Project
 SelSrf
 Enter
+Enter
+SelLast
+List
+# --- Project the same line again, this time along an explicit custom
+# direction (straight up, +Z) instead of the CPlane normal - the real
+# "no way to choose a direction" gap this command's own PARITY_MAP bullet
+# named. The two direction points share the same (x,y); only Z differs, so
+# the picked direction is exactly +Z, landing the result exactly back on
+# the plane's own Z=0 (identical to the CPlane-normal case above, a
+# deliberately exact, hand-verifiable cross-check that a DIFFERENT, user-
+# chosen direction still lands on the correct target).
+Line 220,0,-5 240,20,-5
+SelCrv
+Project
+SelSrf
+Enter
+0,0,0
+0,0,1
 SelLast
 List
 # --- Pull a point to the plane

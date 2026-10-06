@@ -758,6 +758,39 @@ class NurbsCurve {
   Result Fair(double tolerance, int iterations = 10, double factor = 0.5,
               double* out_max_deviation = nullptr);
 
+  // Simplifies the curve to the most compact honest representation
+  // within `tolerance` - PARITY_MAP.md's "Simplify curve" gap, whose
+  // disclosed limitation was that the app's own `SimplifyCrv` "only
+  // replaces curves already exactly linear/arc" and never actually
+  // reduced a curve's own excess complexity. This does both:
+  //  1. Exact line/arc conversion (the same cases `SimplifyCrv` already
+  //     special-cased, moved here so the app no longer duplicates the
+  //     detection logic): an `IsLinear(tolerance)` curve collapses to a
+  //     genuine 2-control-point line; a non-rational `IsArc(tolerance)`
+  //     curve collapses to a genuine `ON_ArcCurve`'s NURBS form. Either
+  //     one returns immediately - a curve that already IS a line or arc
+  //     has nothing further to simplify.
+  //  2. Otherwise, the real missing half: every removable INTERIOR knot
+  //     (`RemoveKnotAt`, re-scanning from `KnotCount() == 0` after each
+  //     success since indices shift - the same "re-scan from scratch"
+  //     discipline `RemoveAllNakedMicroEdges` already uses) is removed
+  //     within `tolerance`, then degree is reduced (`ReduceDegree`) as
+  //     far as `tolerance` allows - tried from `1` upward, stopping at
+  //     the first degree that succeeds, the maximal simplification
+  //     `ReduceDegree`'s own tolerance search can reach.
+  // Returns `Result::Ok` if anything changed (any knot removed, degree
+  // reduced, or an exact line/arc conversion), `Result::NoOpAlreadySatisfied`
+  // if the curve was already maximally simple at this tolerance. Never
+  // `Result::Failed` - "nothing more could be simplified" is a valid,
+  // ordinary outcome, not an error. Honestly NOT a globally optimal
+  // simplification (knot removal runs before degree reduction, in that
+  // fixed order, not the true minimum-complexity search over both
+  // dimensions jointly) - the same "sampled/greedy, not certified
+  // optimal" tier `OffsetInPlane()`'s general case and `ReduceDegree()`
+  // itself already carry. Throws `std::invalid_argument` if `tolerance`
+  // isn't positive.
+  Result Simplify(double tolerance);
+
   // Whether the curve's start and end points coincide - either because
   // it's genuinely periodic (its own knot vector wraps) or because a
   // clamped curve's own two endpoints just happen to be the same point

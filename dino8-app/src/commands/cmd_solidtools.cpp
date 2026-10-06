@@ -2179,15 +2179,50 @@ void OrientCrvToEdge(CommandContext& ctx, const Input& in) {
 // half would have to re-run and re-apply live) - genuinely out of scope.
 // What *is* real and useful without that machinery: mirror the selection
 // once across the picked plane and weld the original and its mirror image
-// into a single symmetric mesh, the same MergeAndWeld CreateSolid uses.
-// One-shot, not live, but an honest, working "make this symmetric" tool.
+// into a single symmetric whole, one-shot, not live, but an honest,
+// working "make this symmetric" tool. A single selected SubD now stays a
+// SubD (kernel::SubD::Symmetrize, see below); every other input kind, or
+// more than one selected object, still goes through the same
+// MergeAndWeld CreateSolid uses, producing a Mesh.
 void Reflect(CommandContext& ctx, const Input& in) {
   const std::vector<ObjectId>& ids = in.O(0);
   const Vector3d dir = in.P(2) - in.P(1);
   Vector3d n = ON_CrossProduct(dir, ActiveNormal(ctx));
   if (n.Length() <= 0) n = ActivePlane(ctx).yaxis;
   n.Unitize();
-  const ON_Xform xf = ON_Xform::MirrorTransformation(ON_PlaneEquation(n.x, n.y, n.z, -ON_DotProduct(n, in.P(1))));
+  const double plane_offset = ON_DotProduct(n, in.P(1));
+  // A single selected SubD now stays a SubD: kernel::SubD::Symmetrize
+  // already mirrors the whole control cage across a plane, flips each
+  // mirrored face's winding (right-side-out, not a bare Transform()'s
+  // inside-out copy), and welds any already-on-plane vertex into a real
+  // shared seam instead of a duplicate - a genuine, editable SubD result,
+  // not the dense facetted mesh every other input kind still goes through
+  // below. Scoped to exactly one selected SubD (Symmetrize mirrors ONE
+  // control cage; combining several different objects into one welded
+  // whole, as the multi-object mesh path below does, has no SubD-level
+  // counterpart), and only as a best-effort fast path - any throw (a
+  // pathological/non-manifold SubD) falls back to the generic mesh path
+  // exactly as if this block were never attempted.
+  if (ids.size() == 1) {
+    const SceneObject* o = ctx.Doc().Find(ids[0]);
+    if (o && o->kind == ObjectKind::SubD && o->subd) {
+      try {
+        kernel::SubD result = o->subd->Symmetrize(n, plane_offset, 1e-9, std::max(ctx.Settings().absolute_tolerance, 1e-4));
+        ctx.Doc().BeginChange("Reflect");
+        const int layer = o->layer_index;
+        if (in.Yes("DeleteInput")) ctx.Doc().Remove(ids[0]);
+        SceneObject n_obj = SceneObject::MakeSubD(result);
+        n_obj.layer_index = layer;
+        ctx.Doc().Add(std::move(n_obj));
+        ctx.Print("Reflect: mirrored across the plane through " + FormatPoint(in.P(1)) + " and welded original + mirror image into one symmetric SubD (" +
+                   std::to_string(result.FaceCount()) + " faces)");
+        return;
+      } catch (const std::exception&) {
+        // Fall through to the generic mesh path below.
+      }
+    }
+  }
+  const ON_Xform xf = ON_Xform::MirrorTransformation(ON_PlaneEquation(n.x, n.y, n.z, -plane_offset));
   std::vector<kernel::Mesh> parts;
   int layer = -1;
   for (ObjectId id : ids) {
@@ -2447,7 +2482,7 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
   Reg(e, "RadiateFind", Immediate(RadiateFind), CommandStatus::Implemented, "Selects every enabled light Radiate would bake from (the Sun also contributes but has no selectable object).");
   Reg(e, "Reflect", Tool({ObjectsStep("Select the surfaces/meshes/SubDs to mirror into a symmetric whole"), PointStep("Start of mirror plane"), PointStep("End of mirror plane")},
                          {Toggle("DeleteInput", true)}, Guarded("Reflect", Reflect)), CommandStatus::Implemented,
-      "A one-shot 'make symmetric' tool: mirrors the selection across the picked plane and welds the original and its mirror image into a single mesh (CreateSolid's MergeAndWeld). Rhino's live symmetric-SubD-editing mode - where every later edit to one half re-applies to the other - needs an ongoing mirror-constraint system this app doesn't have; this covers the one-shot case honestly instead of only printing guidance.");
+      "A one-shot 'make symmetric' tool: mirrors the selection across the picked plane and welds the original and its mirror image into a single symmetric whole. A single selected SubD comes back as a real, editable SubD (kernel::SubD::Symmetrize); every other input kind, or more than one selected object, comes back as a single mesh (CreateSolid's MergeAndWeld). Rhino's live symmetric-SubD-editing mode - where every later edit to one half re-applies to the other - needs an ongoing mirror-constraint system this app doesn't have; this covers the one-shot case honestly instead of only printing guidance.");
   Reg(e, "ScaleByPlane", Tool({ObjectsStep("Select objects to scale"), PointStep("Origin of the scaling plane"), PointStep("Point on the plane normal"), NumberStep("Scale factor", 2)},
                               {Toggle("Copy", false)}, Guarded("ScaleByPlane", ScaleByPlane)));
   Reg(e, "ScalePositions", Tool({ObjectsStep("Select objects"), PointStep("Base point"), NumberStep("Scale factor", 2)}, {Toggle("Copy", false)}, Guarded("ScalePositions", ScalePositions)));

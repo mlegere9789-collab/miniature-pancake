@@ -2420,15 +2420,18 @@ void RegisterCurves2Commands(CommandEngine& e) {
       }));
   Reg(e, "MergeCrv", OnSelection("Select two or more curves to merge", MergeCurves, 2));
   Reg(e, "SimplifyCrv", OnSelection("Select curves to simplify", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        // Delegates to the kernel's own NurbsCurve::Simplify() - the exact
+        // line/arc cases this command used to special-case by hand, PLUS
+        // the real missing half this bullet's own PARITY_MAP gap named:
+        // removing genuinely excess knots and reducing degree as far as
+        // tolerance allows on a curve that isn't already a line or arc.
         ctx.Doc().BeginChange("SimplifyCrv");
         int n = 0;
         const double tol = ctx.Settings().absolute_tolerance;
-        for (const CurveCopy& c : CopyCurves(ctx, ids)) {
-          ON_Arc arc;
-          if (c.curve.IsLinear(tol) && c.curve.ControlPointCount() > 2) { ReplaceCurve(ctx, c.id, PolylineCurve({c.curve.PointAt(c.curve.Domain().min), c.curve.PointAt(c.curve.Domain().max)})); ++n; }
-          else if (c.curve.raw().IsArc(nullptr, &arc, tol) && !c.curve.IsRational()) { ON_ArcCurve ac(arc); kernel::NurbsCurve k; if (CurveFromON(ac, k)) { ReplaceCurve(ctx, c.id, k); ++n; } }
+        for (CurveCopy c : CopyCurves(ctx, ids)) {
+          if (c.curve.Simplify(tol) == kernel::Result::Ok) { ReplaceCurve(ctx, c.id, c.curve); ++n; }
         }
-        ctx.Print("SimplifyCrv: " + std::to_string(n) + " curve(s) replaced by lines/arcs");
+        ctx.Print("SimplifyCrv: " + std::to_string(n) + " curve(s) simplified");
       }));
   Reg(e, "ReducePolyline", OnSelection("Select polylines to reduce", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("ReducePolyline");

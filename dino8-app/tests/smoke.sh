@@ -359,6 +359,10 @@ c2check "Hyperbola: a = 5" "Hyperbola built from center and vertex"
 c2check "Catenary: length 50" "Catenary solved for the cable length"
 c2check "CloseCrv: 1 curve(s) closed" "CloseCrv closed the polyline"
 c2check "ReducePolyline: 1 polyline(s) reduced" "ReducePolyline dropped collinear vertices"
+c2check "SimplifyCrv: 1 curve(s) simplified" "SimplifyCrv now delegates to the kernel's own NurbsCurve::Simplify()"
+c2check "degree 1, 2 control points, non-rational, open" "SimplifyCrv collapsed an elevated-degree line back to a genuine 2-control-point, degree-1 line - the exact case it already special-cased, now moved into the kernel"
+c2check "degree 3, 5 control points, non-rational, open" "a knot inserted into a smooth cubic genuinely grew its own control point count first"
+c2check "degree 3, 4 control points, non-rational, open" "SimplifyCrv then removed that genuinely excess knot, collapsing the cubic back to its own original 4 control points exactly - the real \"only replaces curves already exactly linear/arc\" gap PARITY_MAP.md named is now closed"
 c2check "CV\[0\] 120,0,0" "SubCrv kept the picked span"
 c2check "Contour: 3 curve(s) from 5 plane(s)" "Contour sliced the sphere"
 c2check "Section: 1 curve(s)" "Section cut the sphere"
@@ -412,7 +416,7 @@ if echo "$C2" | grep -q "Bounding box: (30, 0, 9) to (40, 0, 9)"; then
 else
   echo "ok   RemoveSymmetry genuinely broke the live link (copy did NOT follow the source's post-removal move)"
 fi
-c2check "^ok   expect_objects 199" "curve-tools script produced the expected object count"
+c2check "^ok   expect_objects 201" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/exchange_script.txt" > "$TMPW/exchange_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -1083,6 +1087,7 @@ sfcheck "ExtrudeCrvTapered: distance 5, draft 10 deg, 1 object(s)" "ExtrudeCrvTa
 sfcheck "3 faces, 5 edges, closed solid" "ExtrudeCrvTapered capped and joined into a closed solid"
 sfcheck "Project: 1 curve(s), 0 point(s)" "Project produced one curve"
 sfcheck "CV\[1\] 240,20,0" "Project landed the line on the plane"
+if [ "$(echo "$SF" | grep -c "CV\[1\] 240,20,0")" -eq 2 ]; then echo "ok   Project with an explicit custom direction (two typed points, +Z) lands on the exact same result as the CPlane-normal default - the real \"no way to choose a direction\" gap this command's own PARITY_MAP bullet named is now closed"; else echo "FAIL Project with an explicit custom direction (two typed points, +Z) lands on the exact same result as the CPlane-normal default"; near "$SF" "CV\[1\] 240,20,0"; fail=1; fi
 sfcheck "Pull: 0 curve(s), 1 point(s)" "Pull produced one point"
 sfcheck "  225,5,0" "Pull moved the point onto the plane"
 # Shell (open): picking the top face before entering thickness removes that
@@ -1111,7 +1116,7 @@ sfcheck "Shell: thickness 1, 1 face(s) at their own thickness, closed, volume 20
 sfcheck "Area = 2680 square" "Shell (per-face) area matches outer 1600 + inner 1080 (two disjoint nested boxes, no boolean rework needed)"
 sfcheck "Bounding box min 340,0,0 max 360,20,10" "Shell (per-face) left the outer wall's own bounding box untouched"
 sfcheck "Volume = 2056 cubic" "Shell (per-face) volume is exactly 4000 - 18*18*6 (inner box shrunk to height 6 by the top face's own thickness 3, not the default 1) - 648 less material removed than the same box's uniform thickness-1 shell above (1408), i.e. 1408 + 18*18*2 = 2056"
-sfcheck "smoke: frames=200 objects=43" "surface script produced the expected object count"
+sfcheck "smoke: frames=200 objects=47" "surface script produced the expected object count"
 # Solids: Ellipsoid/SubDEllipsoid (real axis picking), Pyramid (NumSides=),
 # Loft (Normal vs Style=Straight), Cap (multiple separate openings) (see solids_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -1639,6 +1644,9 @@ stcheck "Bounce: polyline with 1 bounce(s)" "Bounce traced a ray straight down o
 stcheck "CreateSolid: 1 surface(s) joined into a closed mesh solid" "CreateSolid welded a single closed Brep's own faces into a closed mesh solid"
 stcheck "Splop: placed 1 copy(ies) at 1 point(s)" "Splop placed a copy at the picked surface point"
 stcheck "Reflect: mirrored across the plane through 1005,0,0 and welded original . mirror image into one symmetric mesh" "Reflect mirrored and welded the mesh into one symmetric solid"
+stcheck "Reflect: mirrored across the plane through 1015,0,0 and welded original . mirror image into one symmetric SubD (12 faces)" "Reflect on a single SubD returns a real SubD (kernel::SubD::Symmetrize), not the facetted-mesh path the MeshBox case above still uses"
+stcheck "Object [0-9]* (SubD) layer Default" "Reflect's SubD output is genuinely ObjectKind::SubD, not a Mesh wearing a similar print statement"
+stcheck "12 faces, 20 edges, 12 vertices, 4 creases" "Reflect's reflected SubD has the real welded-seam topology: the mirror plane coincides with the box's own far face, so that face's 4 vertices weld into one real shared seam (now creased) instead of duplicating"
 stcheck "Radiate: baked diffuse.specular vertex colours from 1 light(s)/sun onto 1 mesh(es)" "Radiate baked vertex colours from the Sun onto the mesh"
 stcheck "RadiateFind: 0 enabled light source(s) selected (the Sun also lights Radiate" "RadiateFind reported the Sun as Radiate's only light source"
 stcheck "OrientCrvToEdge: placed 1 copy(ies) at 1 point(s)" "OrientCrvToEdge picked the box edge directly and oriented a copy onto it"
@@ -1662,7 +1670,7 @@ stcheck "ExtractOriginalCaptives: 1 original(s) restored as copies" "ExtractOrig
 stcheck "Bounding box min 1800,0,0 max 1810,10,10" "the restored original is the untouched pre-cage box (1800,0,0 to 1810,10,10), the exact geometry Box 1800,0,0 1810,10,0 10 created before it was ever bound to the cage"
 echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
-stcheck "smoke: frames=[1-4][0-9][0-9] objects=118" "solid-tools script produced the expected object count"
+stcheck "smoke: frames=[1-4][0-9][0-9] objects=119" "solid-tools script produced the expected object count"
 
 # RegionBoolean exact-polygon path: PlanarUnion/PlanarDifference/
 # CurveBoolean/CreateRegions's own 2-region case must now take
