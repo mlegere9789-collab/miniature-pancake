@@ -29,6 +29,7 @@
 #include "plugins/PluginManager.h"
 #include "plugins/MarketplacePanel.h"
 #include "plugins/PluginPanel.h"
+#include "session/Worksession.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -1100,6 +1101,10 @@ void Application::Frame() {
   if (std::getenv("DINO8_UI_DEBUG") && (ImGui::GetFrameCount() == 5 || ImGui::GetFrameCount() == 90)) { const ImVec4& w = ImGui::GetStyle().Colors[ImGuiCol_WindowBg]; std::fprintf(stderr, "[theme] mode=%d WindowBg=%.2f %.2f %.2f a=%.2f\n", theme_mode, w.x, w.y, w.z, w.w); }
   UpdateCageCaptives(doc_);
   UpdateSymmetryLive(doc_);
+  if (const int refreshed = RefreshLiveWorksessions(doc_); refreshed > 0) {
+    Notify(std::to_string(refreshed) + (refreshed == 1 ? " worksession reference model auto-reloaded from disk"
+                                                         : " worksession reference models auto-reloaded from disk"));
+  }
   HandleShortcuts();
   ViewToolsFrame(*this);
   dino8::input::Frame(*this);  // SpaceMouse: apply queued 6-DOF deltas, draw its options page
