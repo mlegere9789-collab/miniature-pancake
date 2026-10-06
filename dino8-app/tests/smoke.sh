@@ -673,19 +673,25 @@ dbecheck "Block 'FixtureBlock': 2 object(s), base 0,0,0, 4 object(s) in instance
 grep -q "^BLOCK$" "$TMPW/dxf_block_export.dxf" && grep -q "^INSERT$" "$TMPW/dxf_block_export.dxf" && echo "ok   dxf_block_export.dxf contains real BLOCK/INSERT entities, not just flattened LINE entities" || { echo "FAIL dxf_block_export.dxf has no BLOCK/INSERT entity"; fail=1; }
 # DXF DIMENSION export/import: ExportDxf had no DIMENSION writer at all
 # before this change (see dxf_dimension_export_script.txt's own header
-# comment) - a Dino8 DimLinear/DimAligned/DimRadius/DimDiameter/DimAngle
-# dimension used to round-trip out as bare baked line/extension/arrow/glyph
-# curves, losing the fact it was ever a single parametric dimension. Checks
-# both the writer and the existing DIMENSION reader agree on the wire
-# format for all three dimension families covered this pass: the reopened
-# file's linear dimension carries the exact same Annotation/DimP0/DimP1/
-# DimOffset/DimHorizontal tags the original had, the reopened radius
-# dimension carries the exact same Annotation/DimCenter/DimRadiusVal/
-# DimIsDiameter tags its own original had, the reopened angular dimension
-# carries the exact same Annotation/DimP0/DimP1/DimP2 tags its own original
-# had, and DxfImporter's own summary line counts all three as real
-# dimensions (plus the one real circle object, not unrelated bare curves
-# for any of them).
+# comment) - a Dino8 DimLinear/DimAligned/DimRadius/DimDiameter/DimAngle/
+# Leader used to round-trip out as bare baked line/extension/arrow/glyph
+# curves (or, for Leader, as no real LEADER entity at all). Checks both the
+# writers and the reader agree on the wire format for all four families
+# covered this pass: the reopened file's linear dimension carries the
+# exact same Annotation/DimP0/DimP1/DimOffset/DimHorizontal tags the
+# original had, the reopened radius dimension carries the exact same
+# Annotation/DimCenter/DimRadiusVal/DimIsDiameter tags its own original
+# had, the reopened angular dimension carries the exact same
+# Annotation/DimP0/DimP1/DimP2 tags its own original had, the reopened
+# leader carries the exact same Annotation/LeaderTip/LeaderRest tags its
+# own original had (its "Hi" label text falls through to 3 ordinary,
+# unrelated glyph curves - not lost, but not reconnected to the leader
+# either - see WriteDxfLeader's own comment on why a Leader's arbitrary
+# text can't be carried by the LEADER entity the way a recomputable
+# measurement is), and DxfImporter's own summary line counts all four as
+# real dimensions (plus the circle and the 3 "Hi" glyph curves, 4 bare
+# curves total, not unrelated curves standing in for any of the four
+# dimensions/leaders themselves).
 sed "s|@TMP@|$TMPW|g" "$HERE/dxf_dimension_export_script.txt" > "$TMPW/dxf_dimension_export_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   DDE="$("$BIN" --smoke 30 --script "$TMPW/dxf_dimension_export_script.txt" 2>&1)" || { echo "$DDE"; echo "FAIL: DXF DIMENSION export script exited non-zero"; exit 1; }
@@ -694,7 +700,7 @@ else
 fi
 ddecheck() { if echo "$DDE" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DDE" "$1"; fail=1; fi; }
 ddecheck "Exported $TMPW/dxf_dimension_export.dxf" "ExportDxf wrote a file"
-ddecheck "DXF: 1 curve, 0 points, 0 meshes, 3 dimensions" "the reopened file's three DIMENSION entities round-tripped as three real dimensions plus the one real circle, not unrelated bare curves"
+ddecheck "DXF: 4 curves, 0 points, 0 meshes, 4 dimensions" "the reopened file's three DIMENSION entities plus one LEADER entity round-tripped as four real dimensions/leaders plus the circle and the leader's own 3 'Hi' glyph curves, not unrelated bare curves standing in for any of the four themselves"
 ddecheck "Annotation = DimLinear" "the round-tripped linear dimension carries the same Annotation=DimLinear tag DxfImporter::Dimension() writes for a hand-written fixture"
 ddecheck "DimP0 = 0,0,0" "the round-tripped linear dimension's first measured point survived exactly"
 ddecheck "DimP1 = 40,0,0" "the round-tripped linear dimension's second measured point survived exactly"
@@ -708,8 +714,12 @@ ddecheck "Annotation = DimAngle" "the round-tripped angular dimension carries th
 ddecheck "DimP0 = 200,0,0" "the round-tripped angular dimension's vertex survived exactly"
 ddecheck "DimP1 = 210,0,0" "the round-tripped angular dimension's first direction point survived exactly"
 ddecheck "DimP2 = 200,10,0" "the round-tripped angular dimension's second direction point survived exactly"
+ddecheck "Annotation = Leader" "the round-tripped leader carries the same Annotation=Leader tag DxfImporter::Leader() writes for a hand-written fixture"
+ddecheck "LeaderTip = 300,0,0" "the round-tripped leader's arrowhead point survived exactly"
+ddecheck "LeaderRest = 5,10,0;20,10,0" "the round-tripped leader's bend point (305,10,0) and tail point (320,10,0), as offsets from the tip, survived exactly"
 [ "$(grep -c "^DIMENSION$" "$TMPW/dxf_dimension_export.dxf")" = "3" ] && echo "ok   dxf_dimension_export.dxf contains three real DIMENSION entities (linear, radius, angular), not just baked line/arrow/text curves" || { echo "FAIL dxf_dimension_export.dxf does not have exactly three DIMENSION entities"; fail=1; }
 [ "$(grep -c "^AcDb3PointAngularDimension$" "$TMPW/dxf_dimension_export.dxf")" = "1" ] && echo "ok   dxf_dimension_export.dxf's angular DIMENSION carries the real AcDb3PointAngularDimension subclass marker (type 5), not a generic/wrong dimension subtype" || { echo "FAIL dxf_dimension_export.dxf's angular DIMENSION is missing its AcDb3PointAngularDimension subclass marker"; fail=1; }
+[ "$(grep -c "^LEADER$" "$TMPW/dxf_dimension_export.dxf")" = "1" ] && echo "ok   dxf_dimension_export.dxf contains one real LEADER entity, not just baked polyline/arrow/text curves" || { echo "FAIL dxf_dimension_export.dxf does not have exactly one LEADER entity"; fail=1; }
 # DWG SPLINE: built via LibreDWG's own dwg_add_SPLINE (marked "Experimental.
 # Does not work yet properly" in dwg_api.h - confirmed by hand it only ever
 # populates fit_pts, never real NURBS control points), so this exercises
@@ -903,6 +913,29 @@ fi
 dxdgrcheck() { if echo "$DXDGR" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DXDGR" "$1"; fail=1; fi; }
 dxdgrcheck "DXF: 0 curves, 0 points, 0 meshes; 1 unsupported entity skipped" "ImportDxf declined the type-5 DIMENSION whose def_pt names the reflex sweep, rather than rebuilding a DimAngle with the wrong angle"
 dxdgrcheck "^history: 0 object(s) selected$" "no DimAngle group (or any other object) was created from the rejected entity"
+# LEADER (no type flag, unlike DIMENSION): tip (0,0,0), bend point
+# (5,10,0), tail point (25,10,0) - unlike DIMENSION there is no ambiguity
+# to decode here (a point list is a point list), so DxfImporter::Leader
+# accepts any real LEADER with 2+ points; the entity's own annot_type=3
+# ("none") matches this writer/reader pair's own honest "shape only, no
+# text" scope (see WriteDxfLeader's comment).
+cp "$HERE/dxf_leader_fixture.dxf" "$TMPW/dxf_leader_fixture.dxf"
+cat > "$TMPW/dxf_leader_script.txt" <<EOS
+Open $TMPW/dxf_leader_fixture.dxf
+SelLeader
+List
+UpdateDimensions
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DXL="$("$BIN" --smoke 30 --script "$TMPW/dxf_leader_script.txt" 2>&1)" || { echo "$DXL"; echo "FAIL: DXF LEADER script exited non-zero"; exit 1; }
+else
+  DXL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_leader_script.txt" 2>&1)" || { echo "$DXL"; echo "FAIL: DXF LEADER script exited non-zero"; exit 1; }
+fi
+dxlcheck() { if echo "$DXL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DXL" "$1"; fail=1; fi; }
+dxlcheck "DXF: 0 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the real LEADER entity as a real Leader group, not an unrelated curve"
+dxlcheck "^history: 2 object(s) selected$" "SelLeader found the imported leader's 2 shape curves (polyline + arrowhead) as a real Leader group"
+dxlcheck "CV\[0\] 0,0,0" "the rebuilt polyline starts exactly at the LEADER's own first point (the tip)"
+dxlcheck "UpdateDimensions:   Leader now points at 0,0,0" "UpdateDimensions re-resolved the exact same tip from the imported leader's own tags, proving it round-trips exactly like a live Leader"
 # DWG DIMENSION_LINEAR/DIMENSION_RADIUS: built via LibreDWG's own
 # dwg_add_DIMENSION_LINEAR/dwg_add_DIMENSION_RADIUS - unlike dwg_add_SPLINE/
 # dwg_add_MTEXT above, neither is marked "Experimental" in dwg_api.h, and
@@ -974,6 +1007,42 @@ dwdgecheck "Exported $TMPW/dwg_dim_angle_roundtrip.dwg" "Export (DWG) wrote a re
 dwdgcheck "DWG: 0 curves, 0 points, 1 dimension" "WalkDwgEntities' new DWG_TYPE_DIMENSION_ANG3PT case read the real DIMENSION_ANG3PT entity back, not a frozen block"
 dwdgcheck "^history: 13 object(s) selected$" "SelDim found the reopened dimension's 13 curves as a real DimAngle group"
 dwdgcheck "UpdateDimensions:   DimAngle now measures 90 deg" "UpdateDimensions re-derived the exact same 90 degree angle from the DWG-reimported dimension's own tags, proving the DWG round trip is exact, not just visually similar"
+# DWG LEADER: same round-trip-through-Dino8's-own-Export story as
+# DIMENSION_ANG3PT just above - WalkDwgEntities' new DWG_TYPE_LEADER case
+# (dino8-app/src/io/FileExchange.cpp) reads LibreDWG's real
+# Dwg_Entity_LEADER (a real points/num_points array, unlike DIMENSION's
+# fixed named point fields) via the same BuildLeaderGeometry a live Leader
+# command and DxfImporter::Leader already share. Tip (700,0,0), bend point
+# (705,10,0), tail (720,10,0), text "Hi".
+cat > "$TMPW/dwg_leader_export_script.txt" <<EOS
+Leader
+700,0,0
+705,10,0
+720,10,0
+Enter
+Hi
+SelAll
+Export $TMPW/dwg_leader_roundtrip.dwg
+EOS
+cat > "$TMPW/dwg_leader_reopen_script.txt" <<EOS
+Open $TMPW/dwg_leader_roundtrip.dwg
+SelLeader
+UpdateDimensions
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DWLE="$("$BIN" --smoke 30 --script "$TMPW/dwg_leader_export_script.txt" 2>&1)" || { echo "$DWLE"; echo "FAIL: DWG LEADER export script exited non-zero"; exit 1; }
+  DWL="$("$BIN" --smoke 30 --script "$TMPW/dwg_leader_reopen_script.txt" 2>&1)" || { echo "$DWL"; echo "FAIL: DWG LEADER reopen script exited non-zero"; exit 1; }
+else
+  DWLE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dwg_leader_export_script.txt" 2>&1)" || { echo "$DWLE"; echo "FAIL: DWG LEADER export script exited non-zero"; exit 1; }
+  DWL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dwg_leader_reopen_script.txt" 2>&1)" || { echo "$DWL"; echo "FAIL: DWG LEADER reopen script exited non-zero"; exit 1; }
+fi
+dwlecheck() { if echo "$DWLE" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DWLE" "$1"; fail=1; fi; }
+dwlcheck() { if echo "$DWL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DWL" "$1"; fail=1; fi; }
+dwlecheck "Leader Hi" "the live Leader command built the hand-picked leader before export"
+dwlecheck "Exported $TMPW/dwg_leader_roundtrip.dwg" "Export (DWG) wrote a real LEADER entity via the DXF-then-LibreDWG conversion path"
+dwlcheck "DWG: 3 curves, 0 points, 1 dimension" "WalkDwgEntities' new DWG_TYPE_LEADER case read the real LEADER entity back as a real Leader group, plus the \"Hi\" label's 3 glyph curves that fell through as plain, unrelated curves (not lost, but not reconnected to the leader - see WriteDxfLeader's own comment)"
+dwlcheck "^history: 2 object(s) selected$" "SelLeader found the reopened leader's 2 shape curves as a real Leader group"
+dwlcheck "UpdateDimensions:   Leader now points at 700,0,0" "UpdateDimensions re-derived the exact same tip from the DWG-reimported leader's own tags, proving the DWG round trip is exact, not just visually similar"
 # Surfaces: Pipe, OffsetSrf, Shell, Sweep1/2, NetworkSrf, Patch, ExtrudeCrvAlongCrv,
 # ExtrudeCrvTapered, Project, Pull (see surface_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
