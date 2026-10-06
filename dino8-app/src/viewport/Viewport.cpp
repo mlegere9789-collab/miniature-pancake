@@ -144,7 +144,9 @@ const Color kForceWhiteFillColor = Color::FromBytes(245, 245, 245);
 // opaque even in a translucent Ghosted/X-Ray viewport), and vice versa for
 // a viewport that is itself already one of these modes (the object's own
 // override still wins, since it names an alpha rather than merely
-// "fill/don't").
+// "fill/don't"). Pen/Arctic need no branch below - both are fully opaque,
+// the same fall-through default every mode except Ghosted/X-Ray already
+// gets.
 float EffectiveFillAlpha(const SceneObject& o, float viewport_alpha) {
   if (o.force_ghosted) return kGhostedFillAlpha;
   if (o.force_xray) return kXRayFillAlpha;
@@ -193,23 +195,42 @@ void BackgroundFor(DisplayMode mode, const Document* doc, bool arctic, Color& to
   if (!r.gradient_view) top = bottom;
 }
 
-// A full-viewport textured quad drawn over the gradient clear, stretched to
-// fill (letterboxing/UV fitting is not attempted): Rendered mode's Image
-// background (part of the actual render, `for_render` or not), or
-// BackgroundBitmap's modelling-aid picture (every mode, interactive only --
-// never part of a final render). A no-op if neither applies or the file
-// fails to load.
-void DrawBackgroundImage(GlRenderer& renderer, const Document* doc, DisplayMode mode, bool arctic, bool for_render) {
+// Rendered mode's Background::Image backdrop (part of the actual render,
+// `for_render` or not) is now a real lat-long (equirectangular) unwarp
+// around the camera's own view direction - GlRenderer::
+// DrawEnvironmentBackground, using the exact same equirectangular mapping
+// as the mesh shader's SampleEnvMap (the reflective-surface env map
+// already shipped) and the exact same perspective-ray formula as
+// Camera::ScreenRay, so the background shows the same world direction at
+// each pixel ScreenRay would compute there for picking. BackgroundBitmap's
+// own modelling-aid picture (every mode, interactive only -- never part of
+// a final render) stays a deliberate flat full-viewport stretch
+// (letterboxing/UV fitting is not attempted) - it is meant as a traced-over
+// backdrop image, not an environment, so it keeps using
+// DrawFullscreenTexture exactly as before. A no-op if neither applies or
+// the file fails to load.
+void DrawBackgroundImage(GlRenderer& renderer, const Document* doc, DisplayMode mode, bool arctic, bool for_render,
+                          const Camera& camera, double aspect) {
   if (!doc || arctic) return;
   const RenderSettings& r = doc->Render();
   std::string path;
-  if (mode == DisplayMode::Rendered && r.background == RenderSettings::Background::Image && !r.environment_image.empty()) path = r.environment_image;
-  else if (!for_render && r.background_bitmap_enabled && !r.background_bitmap.empty()) path = r.background_bitmap;
+  bool is_environment_image = false;
+  if (mode == DisplayMode::Rendered && r.background == RenderSettings::Background::Image && !r.environment_image.empty()) {
+    path = r.environment_image;
+    is_environment_image = true;
+  } else if (!for_render && r.background_bitmap_enabled && !r.background_bitmap.empty()) {
+    path = r.background_bitmap;
+  }
   if (path.empty()) return;
   const GLuint tex = renderer.TextureFor(path);
   if (!tex) return;
   renderer.EnableDepthTest(false);
-  renderer.DrawFullscreenTexture(tex);
+  if (is_environment_image) {
+    renderer.DrawEnvironmentBackground(tex, camera.Forward(), camera.Right(), camera.Up(), camera.TanHalfFovY(),
+                                        aspect, !camera.State().perspective);
+  } else {
+    renderer.DrawFullscreenTexture(tex);
+  }
   renderer.EnableDepthTest(true);
 }
 
@@ -241,7 +262,7 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
   }
   renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(Aspect()));
   renderer.ClearGradient(top, bottom);
-  if (!ctx.show_zbuffer) DrawBackgroundImage(renderer, ctx.doc, mode_, false, false);
+  if (!ctx.show_zbuffer) DrawBackgroundImage(renderer, ctx.doc, mode_, false, false, camera_, Aspect());
   UpdateEnvironmentMap(renderer, ctx.doc, mode_, false);
   renderer.EnableDepthTest(true);
   renderer.EnableBlend(true);
@@ -351,7 +372,7 @@ bool Viewport::RenderToImage(GlRenderer& renderer, const FrameContext& base, int
   BackgroundFor(DisplayMode::Rendered, ctx.doc, arctic, top, bottom);
   renderer.SetMatrices(camera_.ViewMatrix(), camera_.BlowupProjectionMatrix(aspect, blowup[0], blowup[1], blowup[2], blowup[3]));
   renderer.ClearGradient(top, bottom);
-  DrawBackgroundImage(renderer, ctx.doc, DisplayMode::Rendered, arctic, true);
+  DrawBackgroundImage(renderer, ctx.doc, DisplayMode::Rendered, arctic, true, camera_, aspect);
   UpdateEnvironmentMap(renderer, ctx.doc, DisplayMode::Rendered, arctic);
   renderer.EnableDepthTest(true);
   renderer.EnableBlend(true);

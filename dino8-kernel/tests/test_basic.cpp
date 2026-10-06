@@ -4175,6 +4175,103 @@ void TestIntersectCylinderCylinderParallelClosedForm() {
   Check(IntersectCylinderCylinderParallel(cyl_a, degenerate, tol).empty, "a zero-radius cylinder operand is refused as a genuine miss");
 }
 
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
+// "plane/plane" half - the easiest of its named pairs, closed here with
+// the exact classical formula (no mesh seeding, no Newton polish).
+void TestIntersectPlanePlaneClosedForm() {
+  using dino8::kernel::IntersectPlanePlane;
+  using dino8::kernel::Point3d;
+
+  // Two genuinely crossing planes: the horizontal z=0 plane and a vertical
+  // plane x=0 - they meet exactly along the y-axis.
+  const ON_Plane horizontal(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const ON_Plane vertical(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0));
+  const auto crossing = IntersectPlanePlane(horizontal, vertical, 1e-6);
+  Check(!crossing.empty && !crossing.coincident, "two genuinely crossing planes report a real line, not a miss or coincidence");
+  if (!crossing.empty && !crossing.coincident) {
+    const Point3d p0 = crossing.line.PointAt(0.0), p1 = crossing.line.PointAt(1.0);
+    Check(std::abs(p0.x) < 1e-9 && std::abs(p0.z) < 1e-9, "the line's own first point sits exactly on the hand-derivable y-axis (x=0, z=0)");
+    Check(std::abs(p1.x) < 1e-9 && std::abs(p1.z) < 1e-9, "the line's own second point also sits exactly on the y-axis");
+    Check(std::abs(p1.y - p0.y) > 1e-6, "the line genuinely runs along y (not a degenerate single point)");
+  }
+
+  // A general oblique pair, verified by the implicit plane equations
+  // directly rather than a hardcoded expected line: a plane tilted off
+  // horizontal and a vertical plane through the origin at an angle.
+  const ON_Plane oblique_a(ON_3dPoint(0, 0, 1), ON_3dVector(0, 1, 1));
+  const ON_Plane oblique_b(ON_3dPoint(0, 0, 0), ON_3dVector(1, 1, 0));
+  const auto general_case = IntersectPlanePlane(oblique_a, oblique_b, 1e-6);
+  Check(!general_case.empty && !general_case.coincident, "a general oblique pair reports a real line");
+  if (!general_case.empty && !general_case.coincident) {
+    bool both_on_both_planes = true;
+    for (double t : {0.0, 1.0, -3.7}) {
+      const Point3d p = general_case.line.PointAt(t);
+      if (std::abs(oblique_a.DistanceTo(p)) > 1e-6 || std::abs(oblique_b.DistanceTo(p)) > 1e-6) { both_on_both_planes = false; break; }
+    }
+    Check(both_on_both_planes, "every sampled point of the reported line lies exactly on both original planes simultaneously");
+  }
+
+  // Two coincident planes (same plane, described via two different but
+  // equal origins/normals) report the coincident degeneracy, not a line.
+  const ON_Plane plane_a(ON_3dPoint(0, 0, 5), ON_3dVector(0, 0, 1));
+  const ON_Plane plane_b(ON_3dPoint(3, 7, 5), ON_3dVector(0, 0, 1));
+  const auto coincident = IntersectPlanePlane(plane_a, plane_b, 1e-6);
+  Check(!coincident.empty && coincident.coincident, "two descriptions of the same plane report the coincident degeneracy");
+
+  // Two parallel, distinct planes never meet.
+  const ON_Plane plane_c(ON_3dPoint(0, 0, 9), ON_3dVector(0, 0, 1));
+  Check(IntersectPlanePlane(plane_a, plane_c, 1e-6).empty, "two genuinely parallel, distinct planes report a genuine miss");
+
+  // Invalid input (a plane built from a zero-length normal, genuinely
+  // IsValid() == false - unlike a default-constructed ON_Plane, which is
+  // a perfectly valid world XY plane, not an invalid one) is refused
+  // outright.
+  const ON_Plane invalid_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 0));
+  Check(!invalid_plane.IsValid(), "sanity: a zero-normal plane is genuinely IsValid() == false");
+  Check(IntersectPlanePlane(invalid_plane, vertical, 1e-6).empty, "an invalid plane operand is refused as a genuine miss");
+}
+
+// PARITY_MAP.md's own "Silhouette / outline curves" bullet: "still app-only
+// and mesh-based ... No kernel silhouette." FindSurfaceSilhouettePoints is
+// a genuine kernel-level silhouette primitive for a fixed orthographic
+// view direction, against the exact surface (not a tessellated stand-in).
+void TestFindSurfaceSilhouettePointsSphereEquator() {
+  using dino8::kernel::FindSurfaceSilhouettePoints;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  // A sphere centered exactly at the origin: viewed straight down +Z, the
+  // hand-derivable silhouette is the equator itself (z=0, x^2+y^2=radius^2)
+  // - every point of the sphere's own normal (always radially outward from
+  // the center) is exactly perpendicular to (0,0,1) there, and nowhere
+  // else.
+  const double radius = 3.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+
+  const IntersectOptions opt;
+  const auto hits = FindSurfaceSilhouettePoints(sphere_surface, ON_3dVector(0, 0, 1), opt);
+  Check(!hits.empty(), "viewing a sphere straight down its own axis finds genuine silhouette points along the equator");
+  bool all_on_equator = true;
+  for (const auto& h : hits) {
+    if (std::abs(h.point.z) > 1e-6 || std::abs(std::hypot(h.point.x, h.point.y) - radius) > 1e-6) { all_on_equator = false; break; }
+  }
+  Check(all_on_equator, "every reported silhouette point sits exactly on the hand-derivable equator (z=0, at exactly the sphere's own radius from the axis)");
+
+  // A flat, generously-bounded plane viewed straight down its own normal:
+  // the normal is constant and never perpendicular to the view direction
+  // anywhere, so there is genuinely no silhouette at all.
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-10, 10), true);
+  ground.SetExtents(1, ON_Interval(-10, 10), true);
+  Check(FindSurfaceSilhouettePoints(ground, ON_3dVector(0, 0, 1), opt).empty(), "a flat plane viewed straight down its own normal has no silhouette points at all");
+
+  // A zero-length view direction is refused outright (no direction to test
+  // tangency against).
+  Check(FindSurfaceSilhouettePoints(sphere_surface, ON_3dVector(0, 0, 0), opt).empty(), "a zero-length view direction returns empty outright");
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Projection of curves/points onto surfaces along a direction (Project)"
 // bullet: "app ProjectCommand samples the curve and ray-casts along the
@@ -33049,6 +33146,153 @@ void TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces() {
   Check(threw, "OffsetFace refuses an infinite distance");
 }
 
+// PARITY_MAP.md's offsetshell "Inset" item's own disclosed "no SubD or
+// Brep-level inset" remainder: InsetPlanarFace() is the Brep-level
+// counterpart to Mesh::InsetFace(), generalized to an arbitrary-length
+// polygon loop (not capped at a quad). depth=0 is the pure in-plane case:
+// the inset ring is coplanar with the original face, so the new boundary
+// encloses EXACTLY the same region as the old one - total volume must be
+// bit-for-bit unchanged, a real closed-form check, not merely "looks
+// about right".
+void TestInsetPlanarFaceOnBoxTopFaceFlatMatchesUnchangedVolumeAndCorrectTopology() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::InsetPlanarFace;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep inset = InsetPlanarFace(box, /*face_index=*/1, /*distance=*/2.0, /*depth=*/0.0);
+
+  Check(inset.FaceCount() == 10,
+        "InsetPlanarFace on a box's quad top face gives 6 - 1 + 1 (inner) + 4 (frame) = 10 faces");
+  Check(std::fabs(PlanarBrepVolumeExact(inset) - 1000.0) < 1e-9,
+        "InsetPlanarFace(depth=0.0) encloses exactly the same volume as the original box (1000) - a flat "
+        "in-plane inset adds or removes no material");
+
+  // The 5 untouched faces (every index other than 1) must keep their own
+  // loop points EXACTLY where they started - proof only the named face
+  // was replaced, the same "pins other faces" guarantee OffsetFace()
+  // already gives.
+  const auto original_faces = box.PlanarFaces();
+  const auto inset_faces = inset.PlanarFaces();
+  int untouched_matches = 0;
+  for (const auto& of : original_faces) {
+    if (of.loop.size() != 4) continue;  // only the quad faces are checked point-for-point below
+    for (const auto& nf : inset_faces) {
+      if (nf.loop.size() != of.loop.size()) continue;
+      bool all_match = true;
+      for (size_t i = 0; i < of.loop.size(); ++i) {
+        if (of.loop[i].DistanceTo(nf.loop[i]) > 1e-9) { all_match = false; break; }
+      }
+      if (all_match) { ++untouched_matches; break; }
+    }
+  }
+  Check(untouched_matches == 5,
+        "all 5 of the box's other faces (bottom, front, back, left, right) survive in the result with their own "
+        "loop points exactly unchanged - only the named top face was replaced");
+
+  // The inset ring's own 4 corners, hand-computed independently: an
+  // axis-aligned square shrinking by `distance` from each of its 4 edges
+  // moves every corner toward the face's own center by exactly `distance`
+  // along each in-plane axis.
+  const std::vector<Point3d> expected_inner = {Point3d(2, 2, 10), Point3d(8, 2, 10), Point3d(8, 8, 10),
+                                                Point3d(2, 8, 10)};
+  bool found_inner = false;
+  for (const auto& nf : inset_faces) {
+    if (nf.loop.size() != 4) continue;
+    if (std::fabs(nf.plane.origin.z - 10.0) > 1e-9) continue;
+    // candidate: check if it's the SMALL (inset) square, not one of the 5 originals, by area.
+    double area = 0.0;
+    for (size_t i = 0; i < 4; ++i) {
+      const Point3d& p = nf.loop[i];
+      const Point3d& q = nf.loop[(i + 1) % 4];
+      area += p.x * q.y - q.x * p.y;
+    }
+    area = std::fabs(area) * 0.5;
+    if (std::fabs(area - 36.0) > 1e-6) continue;  // the inset 6x6 square's own area
+    bool all_corners_match = true;
+    for (const Point3d& expected : expected_inner) {
+      bool hit = false;
+      for (const Point3d& actual : nf.loop) {
+        if (actual.DistanceTo(expected) < 1e-9) { hit = true; break; }
+      }
+      all_corners_match = all_corners_match && hit;
+    }
+    if (all_corners_match) { found_inner = true; break; }
+  }
+  Check(found_inner, "the inset ring's own 4 corners land exactly on the independently hand-computed "
+                      "concentric 6x6 square at z=10");
+}
+
+// depth != 0 raises the inset ring along the face's own outward normal,
+// turning the flat inset into a genuine pyramidal-frustum-shaped plinth
+// bulging out from the original face - an exact, independently-derivable
+// closed form distinct from the flat (depth=0) case above: the frustum
+// volume (h/3)(A0 + A1 + sqrt(A0*A1)) between the ORIGINAL (unmoved,
+// area A0) outer boundary and the raised (area A1) inset boundary.
+void TestInsetPlanarFaceOnBoxTopFaceWithDepthMatchesExactFrustumVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::InsetPlanarFace;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const double distance = 1.0, depth = 0.5;
+  const Brep inset = InsetPlanarFace(box, 1, distance, depth);
+
+  const double a0 = 10.0 * 10.0;                                    // the original top face's own area
+  const double side1 = 10.0 - 2.0 * distance;                       // the inset square's own side length
+  const double a1 = side1 * side1;
+  const double frustum_volume = (depth / 3.0) * (a0 + a1 + std::sqrt(a0 * a1));
+  const double expected_total = 1000.0 + frustum_volume;
+
+  Check(std::fabs(PlanarBrepVolumeExact(inset) - expected_total) < 1e-6,
+        "InsetPlanarFace(distance=1.0, depth=0.5) on a box's top face matches the exact closed-form pyramidal "
+        "frustum volume added above the original flat face - not merely a plausible-looking number");
+}
+
+void TestInsetPlanarFaceArgumentChecks() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::InsetPlanarFace;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  bool threw = false;
+  try { InsetPlanarFace(box, 99, 1.0, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses an out-of-range face_index");
+
+  threw = false;
+  try { InsetPlanarFace(box, 1, 0.0, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses a zero distance");
+
+  threw = false;
+  try { InsetPlanarFace(box, 1, -1.0, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses a negative distance");
+
+  threw = false;
+  try { InsetPlanarFace(box, 1, std::numeric_limits<double>::quiet_NaN(), 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses a NaN distance");
+
+  threw = false;
+  try { InsetPlanarFace(box, 1, std::numeric_limits<double>::infinity(), 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses an infinite distance");
+
+  threw = false;
+  try { InsetPlanarFace(box, 1, 1.0, std::numeric_limits<double>::quiet_NaN()); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses a NaN depth");
+
+  threw = false;
+  try { InsetPlanarFace(box, 1, 1.0, std::numeric_limits<double>::infinity()); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses an infinite depth");
+
+  // distance reaching the face's own inradius (5.0 for a 10x10 square)
+  // folds a corner past the opposite side - no valid inset exists.
+  threw = false;
+  try { InsetPlanarFace(box, 1, 5.0, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses a distance reaching the face's own inradius");
+
+  threw = false;
+  try { InsetPlanarFace(box, 1, 8.0, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "InsetPlanarFace refuses a distance exceeding the face's own inradius");
+}
+
 // A right tetrahedron (apex at the origin, base triangle in the plane
 // z=h) is a genuinely non-axis-aligned, non-rectangular convex solid -
 // moving its BASE face outward by `d` (the other 3 face planes, which
@@ -53415,6 +53659,127 @@ void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
   Check(threw, "Rebuild throws on fewer samples than control points");
 }
 
+void TestSurfaceInterpolateThroughGrid() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A genuinely non-planar, non-separable 5x4 grid of points (no shared
+  // u*v product term, no mirror symmetry in either direction, the same
+  // "not secretly ruled/translational" care WigglyBicubic()'s own grid
+  // above already takes).
+  const int u_count = 5, v_count = 4;
+  std::vector<Point3d> grid;
+  for (int u = 0; u < u_count; ++u) {
+    for (int v = 0; v < v_count; ++v) {
+      grid.push_back(Point3d(u * 1.3, v * 0.9, std::sin(1.7 * u) * std::cos(1.3 * v) + 0.2 * u * v));
+    }
+  }
+
+  NurbsSurface surf;
+  Check(NurbsSurface::InterpolateThroughGrid(grid, u_count, v_count, surf) == Result::Ok,
+        "InterpolateThroughGrid succeeds on a genuinely non-planar, non-separable grid");
+  Check(surf.CVCountU() == u_count && surf.CVCountV() == v_count,
+        "...and produces exactly the requested u_count x v_count control net");
+  Check(surf.DegreeU() == 3 && surf.DegreeV() == 3,
+        "...at the expected degree-3 cap for 5 (and 4) points per direction");
+  Check(!surf.IsRational(), "InterpolateThroughGrid's output is non-rational");
+
+  // Re-derive the construction's own documented shared-parameter method
+  // (average every row's/column's own [0,1]-normalized chord-length
+  // parameterization) independently here, then confirm the surface
+  // genuinely passes through every grid point AT those parameter pairs -
+  // exact interpolation, not merely a close fit.
+  auto chord_params = [](const std::vector<Point3d>& pts) {
+    std::vector<double> t = {0.0};
+    for (size_t i = 1; i < pts.size(); ++i) t.push_back(t.back() + pts[i].DistanceTo(pts[i - 1]));
+    return t;
+  };
+  std::vector<double> u_params(static_cast<size_t>(u_count), 0.0);
+  for (int v = 0; v < v_count; ++v) {
+    std::vector<Point3d> row;
+    for (int u = 0; u < u_count; ++u) row.push_back(grid[static_cast<size_t>(u * v_count + v)]);
+    const std::vector<double> cp = chord_params(row);
+    for (int u = 0; u < u_count; ++u) u_params[static_cast<size_t>(u)] += cp[static_cast<size_t>(u)] / cp.back();
+  }
+  for (double& p : u_params) p /= v_count;
+
+  std::vector<double> v_params(static_cast<size_t>(v_count), 0.0);
+  for (int u = 0; u < u_count; ++u) {
+    std::vector<Point3d> col;
+    for (int v = 0; v < v_count; ++v) col.push_back(grid[static_cast<size_t>(u * v_count + v)]);
+    const std::vector<double> cp = chord_params(col);
+    for (int v = 0; v < v_count; ++v) v_params[static_cast<size_t>(v)] += cp[static_cast<size_t>(v)] / cp.back();
+  }
+  for (double& p : v_params) p /= u_count;
+
+  double max_err = 0.0;
+  for (int u = 0; u < u_count; ++u) {
+    for (int v = 0; v < v_count; ++v) {
+      max_err = std::max(max_err, surf.PointAt(u_params[static_cast<size_t>(u)], v_params[static_cast<size_t>(v)])
+                                       .DistanceTo(grid[static_cast<size_t>(u * v_count + v)]));
+    }
+  }
+  Check(max_err < 1e-9,
+        "InterpolateThroughGrid's surface passes through all 20 grid points exactly (< 1e-9) at "
+        "the independently-recomputed shared parameter pairs");
+
+  bool size_threw = false;
+  try {
+    NurbsSurface bad;
+    NurbsSurface::InterpolateThroughGrid(grid, 1, v_count, bad);
+  } catch (const std::invalid_argument&) {
+    size_threw = true;
+  }
+  Check(size_threw, "InterpolateThroughGrid throws std::invalid_argument for u_count < 2");
+
+  bool count_threw = false;
+  try {
+    NurbsSurface bad;
+    NurbsSurface::InterpolateThroughGrid(grid, u_count, v_count + 1, bad);
+  } catch (const std::invalid_argument&) {
+    count_threw = true;
+  }
+  Check(count_threw,
+        "InterpolateThroughGrid throws std::invalid_argument when grid.size() != u_count * v_count");
+
+  // Every V-column (fixed u) coincides - degenerate, must be refused.
+  std::vector<Point3d> degenerate_grid;
+  for (int u = 0; u < u_count; ++u) {
+    for (int v = 0; v < v_count; ++v) degenerate_grid.push_back(Point3d(u, 0, 0));
+  }
+  bool degenerate_threw = false;
+  try {
+    NurbsSurface bad;
+    NurbsSurface::InterpolateThroughGrid(degenerate_grid, u_count, v_count, bad);
+  } catch (const std::invalid_argument&) {
+    degenerate_threw = true;
+  }
+  Check(degenerate_threw,
+        "InterpolateThroughGrid throws std::invalid_argument when every column is degenerate "
+        "(coincident points)");
+
+  // Minimal 2x2 grid: degree 1x1 (capped by only 2 points per
+  // direction), and the result must still interpolate all 4 corners
+  // exactly.
+  const std::vector<Point3d> quad = {Point3d(0, 0, 0), Point3d(0, 1, 1), Point3d(1, 0, 2), Point3d(1, 1, 0)};
+  NurbsSurface quad_surf;
+  Check(NurbsSurface::InterpolateThroughGrid(quad, 2, 2, quad_surf) == Result::Ok,
+        "InterpolateThroughGrid succeeds on the minimal 2x2 grid");
+  Check(quad_surf.DegreeU() == 1 && quad_surf.DegreeV() == 1,
+        "...at degree 1x1, the cap for only 2 points per direction");
+  double quad_err = 0.0;
+  for (double u : {0.0, 1.0}) {
+    for (double v : {0.0, 1.0}) {
+      const Point3d& expected = (u == 0.0) ? (v == 0.0 ? quad[0] : quad[1]) : (v == 0.0 ? quad[2] : quad[3]);
+      quad_err = std::max(quad_err, quad_surf.PointAt(u, v).DistanceTo(expected));
+    }
+  }
+  Check(quad_err < 1e-9,
+        "InterpolateThroughGrid's degree-1 surface interpolates all 4 corners of the minimal grid "
+        "exactly");
+}
+
 // ---- NurbsSurface::DecomposeToBeziers ----
 
 void TestSurfaceDecomposeToBeziersProducesExactSpanPatches() {
@@ -69473,6 +69838,8 @@ int main() {
   TestIntersectPlaneSphereClosedForm();
   TestIntersectPlaneCylinderClosedForm();
   TestIntersectCylinderCylinderParallelClosedForm();
+  TestIntersectPlanePlaneClosedForm();
+  TestFindSurfaceSilhouettePointsSphereEquator();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
@@ -69833,6 +70200,9 @@ int main() {
   TestShellClosedSphereMatchesExactShellVolume();
   TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle();
   TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces();
+  TestInsetPlanarFaceOnBoxTopFaceFlatMatchesUnchangedVolumeAndCorrectTopology();
+  TestInsetPlanarFaceOnBoxTopFaceWithDepthMatchesExactFrustumVolume();
+  TestInsetPlanarFaceArgumentChecks();
   TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling();
   TestOffsetSolidConvexPlanarUniformBoxMatchesExactVolume();
   TestOffsetSolidConvexPlanarPerFaceBoxMatchesExactBoundingBox();
@@ -70217,6 +70587,7 @@ int main() {
 
   TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape();
   TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise();
+  TestSurfaceInterpolateThroughGrid();
   TestSurfaceDecomposeToBeziersProducesExactSpanPatches();
 
   TestSurfaceMatchEdgePositionTangentCurvature();
