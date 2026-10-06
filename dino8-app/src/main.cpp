@@ -41,10 +41,21 @@
 //   --serve-max-requests N   with --serve: exit after N requests have been
 //                 serviced instead of running until killed (used by
 //                 tests/smoke.sh for a deterministic, self-terminating run).
-//   --serve-token TOKEN   with --serve: require every request to carry a
-//                 matching "Authorization: Bearer TOKEN" header, rejecting
-//                 any other request with 401 before it ever reaches the
-//                 script engine. Omit for the previous, fully open behavior.
+//   --serve-token [NAME:]TOKEN   with --serve: require every request to
+//                 carry a matching "Authorization: Bearer TOKEN" header,
+//                 rejecting any other request with 401 before it ever
+//                 reaches the script engine. Omit for the previous, fully
+//                 open behavior. Repeatable: each occurrence registers one
+//                 more acceptable token, so distinct callers can each carry
+//                 their own (real per-caller credentials, not one shared
+//                 secret for everyone - still no rotation/expiry/revocation,
+//                 and still no TLS between the token and the wire). A
+//                 "NAME:" prefix on a token names its caller (e.g.
+//                 "--serve-token ci:abc123"), echoed back as "caller" in a
+//                 /run[/python] JSON response (Accept: application/json) so
+//                 a caller can confirm which credential authenticated it;
+//                 a bare TOKEN with no prefix works exactly as before
+//                 (anonymous, no "caller" field in the JSON response).
 //
 // Script lines starting with '@' are synthetic input for UI tests:
 //   @move X Y | @down [button] | @up [button] | @click X Y [button]
@@ -85,6 +96,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "gl/gl_loader.h"
@@ -390,7 +402,12 @@ int main(int argc, char** argv) {
   std::string cull_screenshot_path;
   int serve_port = -1;
   int serve_max_requests = -1;
-  std::string serve_token;
+  // Each --serve-token occurrence becomes one (name, token) pair - name
+  // empty for a bare "TOKEN" with no "NAME:" prefix. Checked in order, first
+  // match wins (see compute_handler below); an empty vector means the
+  // server stays fully open, exactly as when there was only ever one
+  // optional shared token.
+  std::vector<std::pair<std::string, std::string>> serve_tokens;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--smoke") == 0 && i + 1 < argc) smoke_frames = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--stress") == 0 && i + 1 < argc) stress_count = std::atoi(argv[++i]);
@@ -400,7 +417,12 @@ int main(int argc, char** argv) {
     else if (std::strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) screenshot_path = argv[++i];
     else if (std::strcmp(argv[i], "--serve") == 0 && i + 1 < argc) serve_port = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--serve-max-requests") == 0 && i + 1 < argc) serve_max_requests = std::atoi(argv[++i]);
-    else if (std::strcmp(argv[i], "--serve-token") == 0 && i + 1 < argc) serve_token = argv[++i];
+    else if (std::strcmp(argv[i], "--serve-token") == 0 && i + 1 < argc) {
+      const std::string spec = argv[++i];
+      const size_t colon = spec.find(':');
+      if (colon == std::string::npos) serve_tokens.emplace_back("", spec);
+      else serve_tokens.emplace_back(spec.substr(0, colon), spec.substr(colon + 1));
+    }
     else if (std::strcmp(argv[i], "--version") == 0) { std::printf("Dino 8 %s\n", DINO8_VERSION); return 0; }
     else if (argv[i][0] != '-') open_path = argv[i];
   }
@@ -598,9 +620,11 @@ int main(int argc, char** argv) {
   // PythonEngine.h for how PythonEngine's own worker-thread suspend works)
   // can't be satisfied over a synchronous HTTP request, so that case is
   // aborted (Abort()) and reported as a compute error in the response body
-  // instead of hanging the connection. --serve-token, when given,
-  // requires a matching "Authorization: Bearer TOKEN" header on every
-  // request, checked here before either engine ever sees the body.
+  // instead of hanging the connection. Each --serve-token given requires a
+  // matching "Authorization: Bearer TOKEN" header on every request (any one
+  // of the registered tokens, each optionally named - "NAME:TOKEN" - so
+  // distinct callers can each hold their own), checked here before either
+  // engine ever sees the body.
   dino8::app::ComputeServer compute_server;
   int serve_requests_handled = 0;
   if (serve_port >= 0) {
@@ -620,7 +644,7 @@ int main(int argc, char** argv) {
   // response side here and for GET /objects (below) on the request side.
   // Still plain text by default: a caller that never asks for JSON sees no
   // behavior change at all.
-  auto json_wrap_output = [](bool ok, const std::vector<std::string>& output, const std::string& error_line) {
+  auto json_wrap_output = [](bool ok, const std::vector<std::string>& output, const std::string& error_line, const std::string& caller_name) {
     std::string body = "{\"ok\":";
     body += ok ? "true" : "false";
     body += ",\"output\":[";
@@ -632,10 +656,11 @@ int main(int argc, char** argv) {
     }
     body += ']';
     if (!error_line.empty()) { body += ",\"error\":\""; body += ComputeJsonEscape(error_line); body += '"'; }
+    if (!caller_name.empty()) { body += ",\"caller\":\""; body += ComputeJsonEscape(caller_name); body += '"'; }
     body += "}\n";
     return body;
   };
-  const dino8::app::ComputeHandler compute_handler = [&app, &serve_token, json_wrap_output](const dino8::app::HttpRequest& req) {
+  const dino8::app::ComputeHandler compute_handler = [&app, &serve_tokens, json_wrap_output](const dino8::app::HttpRequest& req) {
     dino8::app::HttpResponse resp;
     const bool is_run = req.path == "/run" || req.path == "/run/python";
     if ((is_run && req.method != "POST") || (req.path == "/objects" && req.method != "GET")) {
@@ -643,9 +668,23 @@ int main(int argc, char** argv) {
       resp.body = "Dino 8 compute service: /run and /run/python take POST, /objects takes GET\n";
       return resp;
     }
-    if (!serve_token.empty()) {
+    // Checked against every registered --serve-token in order (constant-time
+    // per candidate, same as the single-token version always did) rather
+    // than, say, hashing the header into a lookup map - there are at most a
+    // handful of tokens for a local-automation tool like this, so a linear
+    // scan costs nothing a caller would notice and keeps every comparison
+    // genuinely constant-time against its own candidate, with no shared
+    // table lookup leaking anything about *which* candidate it resembles.
+    std::string caller_name;  // stays "" for an unauthenticated server or an anonymous (no "NAME:") token
+    if (!serve_tokens.empty()) {
       const auto it = req.headers.find("authorization");
-      if (it == req.headers.end() || !ConstantTimeEquals(it->second, "Bearer " + serve_token)) {
+      bool matched = false;
+      if (it != req.headers.end()) {
+        for (const auto& [name, token] : serve_tokens) {
+          if (ConstantTimeEquals(it->second, "Bearer " + token)) { caller_name = name; matched = true; break; }
+        }
+      }
+      if (!matched) {
         resp.status = 401;
         resp.body = "Dino 8 compute service: missing or incorrect Authorization: Bearer token\n";
         return resp;
@@ -692,7 +731,7 @@ int main(int argc, char** argv) {
       const auto accept = req.headers.find("accept");
       if (accept != req.headers.end() && accept->second.find("application/json") != std::string::npos) {
         resp.content_type = "application/json";
-        resp.body = json_wrap_output(ok && !suspended, app.Lua().LastOutput(), error_line);
+        resp.body = json_wrap_output(ok && !suspended, app.Lua().LastOutput(), error_line, caller_name);
       } else {
         std::string out;
         for (const std::string& line : app.Lua().LastOutput()) { out += line; out += '\n'; }
@@ -715,7 +754,7 @@ int main(int argc, char** argv) {
       const auto accept = req.headers.find("accept");
       if (accept != req.headers.end() && accept->second.find("application/json") != std::string::npos) {
         resp.content_type = "application/json";
-        resp.body = json_wrap_output(ok && !suspended, app.Python().LastOutput(), error_line);
+        resp.body = json_wrap_output(ok && !suspended, app.Python().LastOutput(), error_line, caller_name);
       } else {
         std::string out;
         for (const std::string& line : app.Python().LastOutput()) { out += line; out += '\n'; }

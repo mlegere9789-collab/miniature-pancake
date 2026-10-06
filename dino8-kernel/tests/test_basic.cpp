@@ -55457,6 +55457,113 @@ void TestLoftInterpolatesSectionsExactly() {
   Check(!Throws([&] { Brep::Loft({ring[0], ring[1], ring[2], ring[3]}, 3, /*closed=*/true); }), "...and 4 sections suffice");
 }
 
+void TestBrepRibbonFromCurveStraightLineMatchesExactRectangle() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  const NurbsCurve line = Polyline({P(0, 0, 0), P(10, 0, 0)});
+  const ON_Plane plane = ON_xy_plane;
+
+  Brep ribbon;
+  Check(Brep::RibbonFromCurve(line, plane, 3.0, ribbon) == Result::Ok,
+        "RibbonFromCurve succeeds on a straight line in the given plane");
+  Check(ribbon.FaceCount() == 1, "a ribbon between 2 open sections is a single-face Brep - Loft's own degree-1 "
+                                 "ruled interpolant, never capped");
+
+  Check(std::abs(ribbon.Area() - 10.0 * 3.0) < 1e-9,
+        "RibbonFromCurve's own Area() matches the exact flat-rectangle closed form (length * width)");
+
+  // The 4 expected corners, hand-computed independently of this method's
+  // own construction: line_direction x plane.zaxis = (1,0,0) x (0,0,1) =
+  // (0,-1,0), so the offset side runs along -y.
+  const std::vector<Point3d> expected = {P(0, 0, 0), P(10, 0, 0), P(0, -3, 0), P(10, -3, 0)};
+  const NurbsSurface surface = FaceSurface(ribbon, 0);
+  const auto du = surface.Domain(0), dv = surface.Domain(1);
+  const std::vector<Point3d> corners = {surface.PointAt(du.min, dv.min), surface.PointAt(du.max, dv.min),
+                                         surface.PointAt(du.min, dv.max), surface.PointAt(du.max, dv.max)};
+  bool each_corner_matches_one_expected = true;
+  std::vector<bool> used(expected.size(), false);
+  for (const Point3d& c : corners) {
+    bool found = false;
+    for (size_t i = 0; i < expected.size(); ++i) {
+      if (!used[i] && c.DistanceTo(expected[i]) < 1e-9) {
+        used[i] = true;
+        found = true;
+        break;
+      }
+    }
+    each_corner_matches_one_expected = each_corner_matches_one_expected && found;
+  }
+  Check(each_corner_matches_one_expected,
+        "every one of the ribbon surface's 4 domain corners lands exactly on one of the 4 independently "
+        "hand-computed rectangle corners - the surface really is the exact flat strip, not merely the right area");
+}
+
+// A ribbon between a CLOSED curve and its own offset must stay a genuine
+// open annular strip - never capped into a solid-looking tube, which
+// RibbonFromCurve's own doc comment explains Loft()'s `cap` option would
+// wrongly do (a disk bounded by only ONE of the two different sections).
+void TestBrepRibbonFromCurveClosedCurveStaysUncappedAnnularStrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  const NurbsCurve circle = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 5.0);
+  Brep ribbon;
+  Check(Brep::RibbonFromCurve(circle, ON_xy_plane, 1.0, ribbon) == Result::Ok,
+        "RibbonFromCurve succeeds on a closed curve (a circle)");
+  Check(ribbon.FaceCount() == 1,
+        "a closed-curve ribbon is still exactly 1 face - no end caps were added despite both sections being closed");
+  Check(!ribbon.raw().IsSolid(),
+        "a closed-curve ribbon is an open annular strip, not a solid - confirms Loft()'s own disk-capping (meant "
+        "for a tube between IDENTICAL-shape profiles) was correctly suppressed, not merely absent by accident");
+}
+
+void TestBrepRibbonFromCurveArgumentChecks() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  const NurbsCurve line = Polyline({P(0, 0, 0), P(10, 0, 0)});
+
+  Check(Throws([&] {
+          Brep out;
+          Brep::RibbonFromCurve(line, ON_xy_plane, 0.0, out);
+        }),
+        "RibbonFromCurve(width=0.0) throws std::invalid_argument");
+  Check(Throws([&] {
+          Brep out;
+          Brep::RibbonFromCurve(line, ON_xy_plane, std::numeric_limits<double>::quiet_NaN(), out);
+        }),
+        "RibbonFromCurve(width=NaN) throws std::invalid_argument");
+  Check(Throws([&] {
+          Brep out;
+          Brep::RibbonFromCurve(line, ON_xy_plane, std::numeric_limits<double>::infinity(), out);
+        }),
+        "RibbonFromCurve(width=+infinity) throws std::invalid_argument");
+  Check(Throws([&] {
+          Brep out;
+          // A zero-normal plane is the established "invalid ON_Plane"
+          // fixture this file already uses elsewhere (e.g.
+          // TestCurveOffsetInPlaneWithExplicitPlaneThrowsOnInvalidArguments) -
+          // a default-constructed ON_Plane is the (valid) world XY plane,
+          // not an invalid one.
+          const ON_Plane invalid_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 0));
+          Brep::RibbonFromCurve(line, invalid_plane, 1.0, out);
+        }),
+        "RibbonFromCurve with an invalid plane throws std::invalid_argument");
+
+  // A genuinely infeasible offset (not an argument error) comes back as
+  // Result::Failed, not an exception - the same degenerate case
+  // OffsetInPlane's own explicit-plane line overload already refuses: a
+  // vertical line's tangent is exactly parallel to the world XY plane's
+  // own normal, so no offset direction (tangent x plane.zaxis) exists.
+  const NurbsCurve vertical_line = Polyline({P(0, 0, 0), P(0, 0, 5)});
+  Brep infeasible;
+  Check(Brep::RibbonFromCurve(vertical_line, ON_xy_plane, 1.0, infeasible) == Result::Failed,
+        "RibbonFromCurve returns Result::Failed (not a throw) when the curve's tangent is parallel to the "
+        "plane's normal - the same degenerate case OffsetInPlane itself already refuses");
+}
+
 void TestLoftTangentConstrainedEndsMatchExactly() {
   // Four straight 2-point sections (degree 1 in u), stacked at z = 0..3,
   // all in the y = 0 plane - an ordinary cubic loft through them would
@@ -69837,6 +69944,9 @@ int main() {
   sweep_tests::TestRevolveExactSolidsAndCaps();
   sweep_tests::TestRevolveStartAngleShiftsSweepExactly();
   sweep_tests::TestLoftInterpolatesSectionsExactly();
+  sweep_tests::TestBrepRibbonFromCurveStraightLineMatchesExactRectangle();
+  sweep_tests::TestBrepRibbonFromCurveClosedCurveStaysUncappedAnnularStrip();
+  sweep_tests::TestBrepRibbonFromCurveArgumentChecks();
   sweep_tests::TestLoftTangentConstrainedEndsMatchExactly();
   sweep_tests::TestSweep1AndPipe();
   sweep_tests::TestPipeRoundCaps();
