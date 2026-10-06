@@ -962,6 +962,16 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     }
     renderer.DrawTrianglesRendered(d.triangles, uvs, rm);
   };
+  // Shared sort key for the transparent queue above: view-space depth of an
+  // object's own bounding-box centre, the same key both the Rendered-mode
+  // fill pass and SetObjectDisplayMode Rendered's own force_rendered path
+  // below use, factored out so the two call sites (one per style.fill
+  // branch further down) can't drift apart.
+  auto transparent_sort_key = [&](const SceneObject& o) {
+    const DisplayCache& d = o.Display();
+    const Point3d centre = d.has_bbox ? Point3d((d.bbox.min.x + d.bbox.max.x) / 2, (d.bbox.min.y + d.bbox.max.y) / 2, (d.bbox.min.z + d.bbox.max.z) / 2) : Point3d(0, 0, 0);
+    return (centre - camera_.State().eye) * camera_.Forward();
+  };
   auto shown = [&](const SceneObject& o) {
     if (!doc.IsObjectVisible(o)) return false;
     if (ctx.hidden_layers && std::find(ctx.hidden_layers->begin(), ctx.hidden_layers->end(), o.layer_index) != ctx.hidden_layers->end()) return false;
@@ -1164,13 +1174,16 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       // flat draw a non-Rendered viewport uses (lit per-object for Arctic,
       // always unlit for Pen, `style.lit` otherwise), just like Ghosted/
       // X-Ray skip it for their own fixed-alpha fill below (via the
-      // transparent-sort branch).
-      if (rendered && !o.force_monochrome && !o.force_pen && !o.force_arctic) {
+      // transparent-sort branch). SetObjectDisplayMode Rendered
+      // (force_rendered) runs this exact same path even when the viewport
+      // itself is NOT in Rendered mode - the one override that needs the
+      // full material/texture/lighting pass rather than a flat colour, so
+      // it is checked here alongside `rendered` rather than down with the
+      // flat-colour overrides below.
+      if ((rendered || o.force_rendered) && !o.force_monochrome && !o.force_pen && !o.force_arctic) {
         const Material m = doc.MaterialFor(o);
         if ((m.transparency > 0.001f || o.force_ghosted || o.force_xray) && !ctx.arctic) {
-          // Sort key: view-space depth of the bounding-box centre.
-          const Point3d centre = d.has_bbox ? Point3d((d.bbox.min.x + d.bbox.max.x) / 2, (d.bbox.min.y + d.bbox.max.y) / 2, (d.bbox.min.z + d.bbox.max.z) / 2) : Point3d(0, 0, 0);
-          transparent.emplace_back((centre - camera_.State().eye) * camera_.Forward(), &o);
+          transparent.emplace_back(transparent_sort_key(o), &o);
           continue;
         }
         draw_rendered(o, m);
@@ -1185,13 +1198,6 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       const bool lit = o.force_pen ? false : (o.force_arctic ? true : style.lit);
       renderer.DrawTriangles(d.triangles, c, lit);
     }
-    if (!transparent.empty()) {
-      std::sort(transparent.begin(), transparent.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-      renderer.EnableDepthWrite(false);
-      for (const auto& [depth, o] : transparent) draw_rendered(*o, doc.MaterialFor(*o));
-      renderer.EnableDepthWrite(true);
-    }
-    renderer.EnablePolygonOffset(false);
   } else {
     // ShadeSelected: fill just the objects it marked `force_shaded`, even
     // though this display mode (Wireframe) draws no fills otherwise.
@@ -1200,14 +1206,27 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     for (std::size_t candidate_index : render_candidates) {
       const SceneObject& o = doc.Objects()[candidate_index];
       // ShadeSelected's force_shaded and SetObjectDisplayMode's
-      // force_ghosted/force_xray/force_monochrome/force_pen/force_arctic
-      // all fill here - the only difference between them is the
-      // colour/alpha/lit-ness picked below.
-      if ((!o.force_shaded && !o.force_ghosted && !o.force_xray && !o.force_monochrome && !o.force_pen && !o.force_arctic) ||
+      // force_ghosted/force_xray/force_monochrome/force_pen/force_arctic/
+      // force_rendered all fill here - the only difference between them is
+      // the colour/alpha/lit-ness picked below (force_rendered goes
+      // through the full material/texture/lighting `draw_rendered` path
+      // instead, same as it does in the `style.fill` branch above, so a
+      // Rendered-tagged object looks identical whether the viewport itself
+      // happens to be Wireframe or something else entirely).
+      if ((!o.force_shaded && !o.force_ghosted && !o.force_xray && !o.force_monochrome && !o.force_pen && !o.force_arctic && !o.force_rendered) ||
           !shown(o)) continue;
       o.EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
+      if (o.force_rendered) {
+        const Material m = doc.MaterialFor(o);
+        if (m.transparency > 0.001f && !ctx.arctic) {
+          transparent.emplace_back(transparent_sort_key(o), &o);
+          continue;
+        }
+        draw_rendered(o, m);
+        continue;
+      }
       Color c = Color::FromBytes(205, 207, 212);
       if (o.force_monochrome) c = kMonochromeFillColor;
       else if (o.force_pen || o.force_arctic) c = kForceWhiteFillColor;
@@ -1218,8 +1237,21 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       const bool lit = o.force_pen ? false : (o.force_arctic ? true : shaded_style.lit);
       renderer.DrawTriangles(d.triangles, c, lit);
     }
-    renderer.EnablePolygonOffset(false);
   }
+  // Drains the transparent queue either branch above may have fed
+  // (Rendered-mode/force_ghosted/force_xray transparent materials from the
+  // `style.fill` branch, or a force_rendered transparent material from the
+  // ShadeSelected branch) - done once, after both, so a force_rendered
+  // object sorts correctly against the rest regardless of which branch
+  // found it. Still inside the polygon-offset scope either branch opened,
+  // same ordering as before this was factored out.
+  if (!transparent.empty()) {
+    std::sort(transparent.begin(), transparent.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    renderer.EnableDepthWrite(false);
+    for (const auto& [depth, o] : transparent) draw_rendered(*o, doc.MaterialFor(*o));
+    renderer.EnableDepthWrite(true);
+  }
+  renderer.EnablePolygonOffset(false);
   // Pass 2: curves, edges, isocurves, points, control points.
   // Draw order (BringToFront/SendToBack/...) is stored per-object as the
   // "DrawOrder" user text (higher draws later, i.e. on top). It only ever

@@ -5057,6 +5057,83 @@ assert all(barc[i] < bpen[i] - 10 for i in range(3)), f'Box B Arctic ({barc}) is
 assert all(barc[i] > 150 for i in range(3)), f'Box B Arctic ({barc}) is too dark to read as the Arctic/Pen family of flat whites'
 PY
 
+# SetObjectDisplayMode Rendered: pixel-level proof (PARITY_MAP.md's
+# "Per-object display mode override" item) that Rendered is a genuine
+# seventh per-object override - the one that routes through the full
+# material/texture/lighting/transparency path (`draw_rendered`, the exact
+# lambda a Rendered viewport's own fill pass already uses) rather than a
+# flat colour, honoured even in a Wireframe viewport that otherwise fills
+# nothing at all; see tests/rendered_script.txt for the full scene/capture
+# sequence, including the material-transparency comparison this check
+# relies on.
+mkdir -p "$TMPW/rendered"
+sed "s|@TMP@|$TMPW/rendered|g" "$HERE/rendered_script.txt" > "$TMPW/rendered_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RDR="$("$BIN" --smoke 30 --script "$TMPW/rendered_script.txt" 2>&1)" || { echo "$RDR"; echo "FAIL: rendered script exited non-zero"; exit 1; }
+else
+  RDR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/rendered_script.txt" 2>&1)" || { echo "$RDR"; echo "FAIL: rendered script exited non-zero"; exit 1; }
+fi
+rdrcheck() { if echo "$RDR" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RDR" "$1"; fail=1; fi; }
+rdrcheck "^ok   expect_objects 2" "rendered script left exactly the two boxes"
+rdrcheck "gl_error=0" "rendered script ran without OpenGL errors"
+python3 - "$TMPW/rendered/rendered_off.bmp" "$TMPW/rendered/rendered_on.bmp" "$TMPW/rendered/rendered_off2.bmp" "$TMPW/rendered/rendered_opaque.bmp" <<'PY' && echo "ok   SetObjectDisplayMode Rendered genuinely routes one object through the full material/transparency draw_rendered path, independent of the viewport's own (never-Rendered) Wireframe display mode, blending by the material's own transparency value (not a fixed Ghosted/X-Ray-style alpha), and UseViewport genuinely restores the unfilled wireframe look after" || { echo "FAIL SetObjectDisplayMode Rendered pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+w, h, off = read_bmp(sys.argv[1])
+_, _, on = read_bmp(sys.argv[2])
+_, _, off2 = read_bmp(sys.argv[3])
+_, _, opaque = read_bmp(sys.argv[4])
+
+# Box B (right, Rendered toggled on with a 50%-transparent material, then
+# off, then on again with the same material pushed to fully opaque): find
+# the blob where "off" and "on" actually differ, and sample its centre
+# everywhere - the same approach the Pen/Arctic check above uses for its
+# own Box B.
+diffs = [(x, y) for y in range(0, h) for x in range(0, w) if sum(abs(a - b) for a, b in zip(off(x, y), on(x, y))) > 15]
+assert diffs, 'Box B never changed between rendered_off.bmp and rendered_on.bmp - Rendered had no visible effect'
+bxs, bys = [p[0] for p in diffs], [p[1] for p in diffs]
+bcx, bcy = (min(bxs) + max(bxs)) // 2, (min(bys) + max(bys)) // 2
+bg, b50, bg2, bop = off(bcx, bcy), on(bcx, bcy), off2(bcx, bcy), opaque(bcx, bcy)
+print(f'Box B sample: off={bg} on(0.5)={b50} off2={bg2} opaque={bop}')
+# Before the override (plain Wireframe, no fill at all) and after
+# UseViewport clears it, Box B must read as the unfilled background -
+# proving Rendered genuinely stops applying once reset, not just once set.
+assert bg == bg2, f'Box B does not return to the unfilled background after Rendered + UseViewport: off={bg} off2={bg2}'
+# The fully-opaque capture must differ from the unfilled background (a real
+# fill happened) and must not be one of the OTHER fixed per-object override
+# colours (Monochrome's flat grey, Pen/Arctic's flat white) - this is a lit
+# material colour, not a reused flat-colour path.
+assert bop != bg, f'Box B opaque Rendered capture never filled at all: {bop}'
+assert bop != (200, 200, 205), 'Box B opaque Rendered reads as the flat Monochrome grey - reusing that path instead of a real material fill'
+assert bop != (245, 245, 245), 'Box B opaque Rendered reads as the flat Pen/Arctic white - reusing that path instead of a real material fill'
+# The core proof: the 50%-transparency capture must read as the real
+# alpha-blended midpoint between the unfilled background and the fully-
+# opaque capture of the exact same material/lighting - not a fixed
+# Ghosted (0.35)/X-Ray (0.18) alpha, and not the raw material colour
+# un-blended. A material-driven blend is linear in alpha, so the midpoint
+# at alpha=0.5 must land almost exactly halfway between the two, per
+# channel - checked with a small tolerance for 8-bit rounding, not an
+# exact equality.
+for ch, name in enumerate('rgb'):
+    mid = (bg[ch] + bop[ch]) / 2.0
+    assert abs(b50[ch] - mid) <= 4, f'Box B 50%-transparency {name} channel ({b50[ch]}) is not the midpoint of background ({bg[ch]}) and opaque ({bop[ch]}) = {mid} - blending does not track the material\'s own Transparency value'
+PY
+
 # Background::Image lat-long unwarp: pixel-level proof (PARITY_MAP.md's
 # "Environments and image-based lighting" item) that the Rendered-mode
 # environment-image backdrop is now a real per-pixel equirectangular sample
