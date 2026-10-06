@@ -2,14 +2,17 @@
 // CTB/STB-table half of PARITY_MAP.md's "Print and plot output" item,
 // alongside Layer::print_width_mm/has_plot_color/plot_color's own flat
 // per-layer-only fields (tests/test_print_width.cpp, test_plot_color.cpp
-// already cover those). Exercises ResolvePlotStyle and the 3-argument
+// already cover those). Exercises ResolvePlotStyle, the 3-argument
 // LayerPrints/EffectivePrintWidthMm/EffectivePlotColor overloads
 // (io/FileExchange.cpp's ExportSvg/ExportPdf call these, not the flat-only
-// 1-/2-argument ones), plus Document::FindPlotStyle/RemovePlotStyle's
+// 1-/2-argument ones), EffectivePlotAlpha (PlotStyle::transparency, the
+// third real CTB/STB column - no flat per-layer field exists for it), plus
+// Document::FindPlotStyle/RemovePlotStyle's
 // "can't delete what's in use" rule - the same shape
 // Document::RemoveAnnotationStyle already has for the current annotation
 // style, just checked against every layer's own plot_style field instead of
 // one document-wide "current" setting.
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -17,6 +20,7 @@
 
 using dino8::app::Color;
 using dino8::app::Document;
+using dino8::app::EffectivePlotAlpha;
 using dino8::app::EffectivePlotColor;
 using dino8::app::EffectivePrintWidthMm;
 using dino8::app::Layer;
@@ -85,6 +89,37 @@ int main() {
     Layer skip;
     skip.plot_style = "NoPrint";
     Check(!LayerPrints(skip, styles), "a style with a negative width makes its assigned layers not print");
+
+    // --- EffectivePlotAlpha: the third real CTB/STB column, transparency -
+    // no flat per-layer field exists to fall back to, so an unassigned or
+    // unknown-style layer is simply fully opaque.
+    Check(EffectivePlotAlpha(unassigned, styles) == 1.0f, "no style assigned: fully opaque (1.0)");
+    Check(EffectivePlotAlpha(unknown, styles) == 1.0f, "an unknown/deleted style name: fully opaque (1.0)");
+    Check(EffectivePlotAlpha(assigned, styles) == 1.0f, "Monochrome's own transparency defaults to 0 (fully opaque)");
+
+    PlotStyle fade;
+    fade.name = "Fade50";
+    fade.transparency = 50;
+    styles.push_back(fade);
+    Layer faded;
+    faded.plot_style = "Fade50";
+    Check(std::fabs(EffectivePlotAlpha(faded, styles) - 0.5f) < 1e-6f, "Fade50's 50% transparency resolves to alpha 0.5");
+
+    PlotStyle ghost;
+    ghost.name = "Ghost100";
+    ghost.transparency = 100;
+    styles.push_back(ghost);
+    Layer ghosted;
+    ghosted.plot_style = "Ghost100";
+    Check(EffectivePlotAlpha(ghosted, styles) == 0.0f, "100% transparency resolves to alpha 0.0 (fully transparent)");
+
+    PlotStyle over;
+    over.name = "Over";
+    over.transparency = 150;  // out of the real 0-100 range
+    styles.push_back(over);
+    Layer overflow;
+    overflow.plot_style = "Over";
+    Check(EffectivePlotAlpha(overflow, styles) == 0.0f, "a transparency past 100 is clamped, not UB (never a negative alpha)");
   }
 
   // --- Document::FindPlotStyle / RemovePlotStyle, including the "can't
