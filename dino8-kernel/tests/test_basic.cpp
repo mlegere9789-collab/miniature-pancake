@@ -33491,6 +33491,140 @@ void TestPushPullFacesRefusesInvalidInput() {
   Check(threw, "PushPullFaces refuses two named targets that share an edge");
 }
 
+// PushPullFace()'s own new oblique-neighbour support: `DraftFacesConvexPlanar`
+// on all 4 walls of a box (the identical construction
+// TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume below
+// already builds and verifies independently) produces a genuine frustum
+// whose 4 side walls are NOT perpendicular to the top cap's own +z normal -
+// exactly the case PushPullFace() used to throw std::invalid_argument on
+// outright ("a pull refuses an oblique neighbour"). Pulling the top face
+// down must retrim all 4 oblique walls to the frustum's own TRUE
+// cross-section at the new height (not a blindly-translated top polygon,
+// which would leave each wall with a gap or overlap against the new cap),
+// verified against the same textbook frustum-of-a-pyramid volume formula
+// used elsewhere in this file, independent of this function's own
+// arithmetic, plus the new cap's own exact (u,v) extent directly.
+void TestPushPullFaceObliqueNeighbourMatchesExactFrustumVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::DraftFacesConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PushPullFace;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const ON_Plane neutral(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  const double tan_theta = 0.1;
+  const Brep frustum = DraftFacesConvexPlanar(box, {2, 3, 4, 5}, neutral, std::atan(tan_theta));
+
+  // Confirm the 4 walls really are oblique to the top cap's own normal
+  // (not perpendicular) before trusting anything measured below - the
+  // exact case this function's own doc comment names.
+  const std::vector<Brep::PlanarFace> pf = frustum.PlanarFaces();
+  for (size_t i = 2; i <= 5; ++i) {
+    Check(std::fabs(pf[i].plane.zaxis.z) > 0.05,
+          "setup: each of the 4 drafted walls is genuinely oblique to the top cap's own +z normal, not "
+          "perpendicular - the case PushPullFace() used to refuse outright");
+  }
+
+  const double pull = 4.0;
+  const Brep pulled = PushPullFace(frustum, 1, -pull);
+
+  Check(pulled.FaceCount() == 6,
+        "pulling the frustum's top face keeps the original 6-face topology - all 4 oblique walls are "
+        "retrimmed in place, no new wall is added, just like the perpendicular (plain box) case above");
+
+  const double a0 = 100.0;
+  const double new_height = 10.0 - pull;
+  const double new_side = 10.0 - 2.0 * new_height * tan_theta;
+  const double a1 = new_side * new_side;
+  const double expected_volume = (new_height / 3.0) * (a0 + a1 + std::sqrt(a0 * a1));
+  Check(std::fabs(expected_volume - 530.88) < 1e-9,
+        "the hand-derived expected volume for this specific pull is exactly 530.88 (height 6, A0=100, "
+        "A1=77.44, sqrt(A0*A1)=88 exactly) - a sanity check on the formula itself, not on PushPullFace");
+  const double measured_volume = PlanarBrepVolumeExact(pulled);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "PushPullFace's oblique-neighbour pull matches the classical frustum-of-a-pyramid volume at the "
+        "NEW height exactly - proof the 4 retrimmed walls meet the new, smaller top cap with no gap or "
+        "overlap, not merely that nothing crashed");
+
+  // The new top cap itself (the last face FromPlanarFaces() appends, per
+  // PushPullFace()'s own construction order) must be the exact concentric
+  // square the hand formula assumes - the direct, geometric proof the fix
+  // is doing the right thing, not just getting a lucky volume integral.
+  const std::vector<Brep::PlanarFace> pulled_faces = pulled.PlanarFaces();
+  const Brep::PlanarFace& new_top = pulled_faces.back();
+  double min_x = new_top.loop[0].x, max_x = new_top.loop[0].x;
+  double min_y = new_top.loop[0].y, max_y = new_top.loop[0].y;
+  for (const Point3d& p : new_top.loop) {
+    Check(std::fabs(p.z - new_height) < 1e-9, "every new-top-face vertex lands exactly at the new height z=6");
+    min_x = std::min(min_x, p.x);
+    max_x = std::max(max_x, p.x);
+    min_y = std::min(min_y, p.y);
+    max_y = std::max(max_y, p.y);
+  }
+  Check(std::fabs(min_x - 0.6) < 1e-9 && std::fabs(max_x - 9.4) < 1e-9 && std::fabs(min_y - 0.6) < 1e-9 &&
+            std::fabs(max_y - 9.4) < 1e-9,
+        "the new top cap is the exact concentric [0.6,9.4]x[0.6,9.4] square the frustum's own linear taper "
+        "implies at z=6 - NOT the old [1,9]x[1,9] square merely translated down by 4, which a blind "
+        "per-vertex offset along the normal would have wrongly produced");
+
+  Check(pulled.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the pulled frustum also tessellates to a closed, watertight manifold - the 4 retrimmed oblique "
+        "walls genuinely meet the new cap with no gap");
+
+  bool threw = false;
+  try {
+    PushPullFace(frustum, 1, -11.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "PushPullFace still refuses a pull so large the new cut plane passes beyond EVERY one of an "
+        "oblique wall's own vertices (collapsing its retrimmed boundary to nothing) - a genuine geometric "
+        "limit, not the old blanket oblique refusal this pass just lifted");
+}
+
+// `PushPullFaces()`'s own identical oblique-neighbour fix (the batch
+// sibling's own copy of the same restriction, lifted the same way): a
+// single-entry `PushPullFaces()` call on the SAME oblique-walled frustum
+// above must match `PushPullFace()`'s own result bit-for-bit, vertex for
+// vertex - the same "no divergence of its own for the one-target case"
+// guarantee `TestPushPullFacesSingleEntryMatchesPushPullFace` above already
+// proves for the perpendicular (plain box) case, now extended to oblique
+// neighbours.
+void TestPushPullFacesObliqueNeighbourMatchesPushPullFace() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::DraftFacesConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PushPullFace;
+  using dino8::kernel::PushPullFaces;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const ON_Plane neutral(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  const Brep frustum = DraftFacesConvexPlanar(box, {2, 3, 4, 5}, neutral, std::atan(0.1));
+
+  const Brep pull_single = PushPullFace(frustum, 1, -4.0);
+  const Brep pull_batch = PushPullFaces(frustum, {{1, -4.0}});
+
+  Check(pull_single.FaceCount() == pull_batch.FaceCount(),
+        "PushPullFaces' single-entry oblique pull has the same face count as PushPullFace's own");
+  const std::vector<Brep::PlanarFace> fa = pull_single.PlanarFaces();
+  const std::vector<Brep::PlanarFace> fb = pull_batch.PlanarFaces();
+  for (size_t i = 0; i < fa.size() && i < fb.size(); ++i) {
+    Check(fa[i].loop.size() == fb[i].loop.size(),
+          "PushPullFaces' oblique pull: same vertex count per face as PushPullFace's own");
+    for (size_t j = 0; j < fa[i].loop.size() && j < fb[i].loop.size(); ++j) {
+      Check(fa[i].loop[j].DistanceTo(fb[i].loop[j]) < 1e-9,
+            "PushPullFaces' oblique pull: every vertex matches PushPullFace's own exactly, including the "
+            "4 retrimmed oblique walls' own new corners");
+    }
+  }
+
+  Check(pull_batch.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "PushPullFaces' own oblique-neighbour pull also tessellates to a closed, watertight manifold");
+}
+
 // The exact B-rep draft/taper-an-existing-body feature - PARITY_MAP's
 // "Draft/taper faces of an existing body about a neutral plane" gap
 // (OffsetFace()/OffsetSolidConvexPlanar() above only translate a face's
@@ -69434,6 +69568,8 @@ int main() {
   TestPushPullFacesSingleEntryMatchesPushPullFace();
   TestPushPullFacesTwoIndependentPushPullMatchesEitherSequentialOrder();
   TestPushPullFacesRefusesInvalidInput();
+  TestPushPullFaceObliqueNeighbourMatchesExactFrustumVolume();
+  TestPushPullFacesObliqueNeighbourMatchesPushPullFace();
   TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume();
   TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched();
   TestDraftFacesConvexPlanarPerFaceAnglesMatchesEitherSequentialOrder();
