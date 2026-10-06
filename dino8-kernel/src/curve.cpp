@@ -1428,6 +1428,47 @@ EndContinuityReport NurbsCurve::AnalyzeEndContinuity(const NurbsCurve& other) co
   return report;
 }
 
+namespace {
+// One min/max sweep of `curve` against `other`, at exactly `n` evenly
+// spaced parameters across `curve`'s own domain (0 and n both inclusive).
+void SampleDeviation(const NurbsCurve& curve, const NurbsCurve& other, int n, double& out_min, double& out_max) {
+  const Interval dom = curve.Domain();
+  out_min = std::numeric_limits<double>::max();
+  out_max = 0.0;
+  for (int i = 0; i <= n; ++i) {
+    const double t = dom.min + (dom.max - dom.min) * i / n;
+    const Point3d p = curve.PointAt(t);
+    const double d = other.ClosestPoint(p).DistanceTo(p);
+    out_min = std::min(out_min, d);
+    out_max = std::max(out_max, d);
+  }
+}
+}  // namespace
+
+Result NurbsCurve::DeviationTo(const NurbsCurve& other, double tolerance, double& out_min, double& out_max,
+                                 int* out_samples) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::DeviationTo: tolerance must be positive");
+  }
+  int n = std::max(SuggestedSamples(tolerance), 20);
+  SampleDeviation(*this, other, n, out_min, out_max);
+  for (int level = 0; level < 20; ++level) {
+    const int next_n = n * 2;
+    double next_min, next_max;
+    SampleDeviation(*this, other, next_n, next_min, next_max);
+    const bool converged = std::fabs(next_min - out_min) <= tolerance && std::fabs(next_max - out_max) <= tolerance;
+    n = next_n;
+    out_min = next_min;
+    out_max = next_max;
+    if (converged) {
+      if (out_samples) *out_samples = n;
+      return Result::Ok;
+    }
+  }
+  if (out_samples) *out_samples = n;
+  return Result::Failed;
+}
+
 Result NurbsCurve::Fair(double tolerance, int iterations, double factor, double* out_max_deviation) {
   if (!(tolerance > 0.0)) {
     throw std::invalid_argument("dino8::kernel::NurbsCurve::Fair: tolerance must be positive");

@@ -2534,6 +2534,11 @@ class StepModel {
 
 struct StepImportStats {
   int curves = 0, points = 0, breps = 0, faces_trimmed = 0, faces_untrimmed_fallback = 0, meshes = 0, skipped = 0, layers = 0;
+  // Shapes placed through a real MAPPED_ITEM assembly transform (see
+  // ResolveMappedItem) rather than read at face value from a top-level
+  // entity - already counted in breps/meshes/curves/points above too, this
+  // is purely an informative sub-count for ImportStep's own summary line.
+  int assembly_parts = 0;
 };
 
 // Reads all ADVANCED_FACE ids inside a shell's own face list.
@@ -2655,6 +2660,62 @@ bool BuildMeshFromFacetedBrep(StepModel& m, int shell_id, kernel::Mesh& out_mesh
   return true;
 }
 
+// Resolves one MAPPED_ITEM into the transform that places its component's
+// own local-frame geometry into the assembly/world frame, plus the list of
+// shape-entity ids making up that component - PARITY_MAP.md's STEP
+// AP203/AP214 "the reader has no assembly structure at all ... multi-part
+// assemblies lose their part placement transforms" gap. This is the
+// standard STEP part-instancing idiom real-world exporters (SolidWorks,
+// Fusion 360, Onshape) use for a sub-assembly/component placement:
+//
+//   MAPPED_ITEM('name', #mapping_source, #mapping_target)
+//     mapping_source -> REPRESENTATION_MAP(#origin_axis, #mapped_representation)
+//     mapping_target -> an AXIS2_PLACEMENT_3D: where the component sits
+//                        in the assembly that places it
+//   mapped_representation -> a *_SHAPE_REPRESENTATION('name', (items...), #context)
+//     naming the component's own shape entities, defined relative to
+//     origin_axis (almost always the identity placement in practice, but
+//     resolved generally here rather than assumed)
+//
+// ON_Xform::Rotation(plane0, plane1) is exactly "map a point defined
+// relative to plane0 to the corresponding point relative to plane1" (see
+// its own doc comment: "maps P0 to P1, P0+X0 to P1+X1, ..."), so
+// Rotation(origin_plane, target_plane) is precisely the component-local-
+// to-assembly transform this component's geometry needs.
+//
+// Scoped to one level of instancing (a component directly containing
+// ordinary shape entities) - a component that is itself another assembly
+// (nested MAPPED_ITEMs) is not resolved recursively; this covers the
+// overwhelming common case (a top-level assembly of parts) honestly, not
+// arbitrary assembly-of-assemblies depth. Returns false (leaving `xform`/
+// `component_items` unspecified) if any link in this chain doesn't
+// resolve as expected - a deliberately narrow, standard-conformant reader,
+// not a tolerant one that guesses at a malformed or unusual file.
+bool ResolveMappedItem(StepModel& model, int mapped_item_id, ON_Xform& xform, std::vector<int>& component_items) {
+  const StepEntity* mi = model.Get(mapped_item_id);
+  if (!mi) return false;
+  const StepPart* mip = mi->Find("MAPPED_ITEM");
+  if (!mip || mip->args.size() < 3 || !IsRef(mip->args[1]) || !IsRef(mip->args[2])) return false;
+  const StepEntity* source = model.Get(StepRef(mip->args[1]));
+  if (!source) return false;
+  const StepPart* rm = source->Find("REPRESENTATION_MAP");
+  if (!rm || rm->args.size() < 2 || !IsRef(rm->args[0]) || !IsRef(rm->args[1])) return false;
+  const StepEntity* rep = model.Get(StepRef(rm->args[1]));
+  if (!rep) return false;
+  const StepPart* sr = rep->Find("SHAPE_REPRESENTATION");
+  if (!sr) sr = rep->Find("ADVANCED_BREP_SHAPE_REPRESENTATION");
+  if (!sr) sr = rep->Find("MANIFOLD_SURFACE_SHAPE_REPRESENTATION");
+  if (!sr) sr = rep->Find("GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION");
+  if (!sr || sr->args.size() < 2) return false;
+  component_items = StepRefList(sr->args[1]);
+  if (component_items.empty()) return false;
+  const ON_Plane origin_plane = model.Placement(StepRef(rm->args[0]));
+  const ON_Plane target_plane = model.Placement(StepRef(mip->args[2]));
+  xform = ON_Xform();
+  xform.Rotation(origin_plane, target_plane);
+  return true;
+}
+
 // Parses any ISO-10303-21 physical file's DATA section into `model` -
 // generic Part 21 framing, not specific to STEP's AP203/AP214 entity set,
 // so ImportIfc below (IFC is the same Part 21 physical-file syntax, just a
@@ -2767,7 +2828,25 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
     if (const StepPart* p = e.Find("GEOMETRIC_CURVE_SET")) if (p->args.size() > 1) for (int r : StepRefList(p->args[1])) consumed.insert(r);
   }
 
+  // Real assembly structure (MAPPED_ITEM/REPRESENTATION_MAP - see
+  // ResolveMappedItem's own comment): every component a MAPPED_ITEM places
+  // is read ONLY through its own resolved transform below, not a second
+  // time at identity placement by the ordinary top-level loop just below -
+  // mapped_component_ids is exactly the exclusion set that keeps it from
+  // double-reading those ids.
+  struct StepMappedInstance { ON_Xform xform; std::vector<int> item_ids; };
+  std::vector<StepMappedInstance> mapped_instances;
+  std::set<int> mapped_component_ids;
   for (const auto& [id, e] : model.entities) {
+    if (!e.Find("MAPPED_ITEM")) continue;
+    StepMappedInstance inst;
+    if (!ResolveMappedItem(model, id, inst.xform, inst.item_ids)) continue;
+    for (int item_id : inst.item_ids) mapped_component_ids.insert(item_id);
+    mapped_instances.push_back(std::move(inst));
+  }
+
+  for (const auto& [id, e] : model.entities) {
+    if (mapped_component_ids.count(id)) continue;
     if (e.Find("MANIFOLD_SOLID_BREP")) {
       const StepPart* p = e.Find("MANIFOLD_SOLID_BREP");
       if (p->args.size() < 2 || !IsRef(p->args[1])) continue;
@@ -2840,6 +2919,93 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
     }
   }
 
+  // Real assembly instances: every component a MAPPED_ITEM resolved above
+  // gets built exactly like the ordinary top-level loop above would build
+  // the same entity kind, then placed via its own resolved transform
+  // (ResolveMappedItem) instead of being added at face value - two
+  // distinct instances of the same component definition land at two
+  // distinct, correctly-transformed world positions, not both at
+  // whatever local origin the component's own raw coordinates happened
+  // to use.
+  for (const StepMappedInstance& inst : mapped_instances) {
+    for (int item_id : inst.item_ids) {
+      const StepEntity* e = model.Get(item_id);
+      if (!e) continue;
+      if (const StepPart* p = e->Find("MANIFOLD_SOLID_BREP")) {
+        if (p->args.size() < 2 || !IsRef(p->args[1])) continue;
+        ON_Brep brep;
+        for (int fid : ShellFaces(model, StepRef(p->args[1]))) BuildFaceInto(model, brep, fid, tol, stats);
+        JoinEdges(brep, tol * 10);
+        SewTJunctionsHealed(brep, tol * 10);
+        FinishBrepTrims(brep);
+        if (brep.m_F.Count() == 0) continue;
+        kernel::Brep k;
+        k.raw() = brep;
+        SceneObject o = SceneObject::MakeBrep(k);
+        o.name = name_of(*e, "MANIFOLD_SOLID_BREP");
+        if (model.HasColour(item_id)) { o.color_by_layer = false; o.color = model.ColourOfItem(item_id); }
+        o.Transform(inst.xform);
+        doc.Add(std::move(o));
+        ++stats.breps; ++stats.assembly_parts;
+      } else if (const StepPart* p = e->Find("SHELL_BASED_SURFACE_MODEL")) {
+        if (p->args.size() < 2) continue;
+        for (int sid : StepRefList(p->args[1])) {
+          ON_Brep brep;
+          for (int fid : ShellFaces(model, sid)) BuildFaceInto(model, brep, fid, tol, stats);
+          if (brep.m_F.Count() == 0) continue;
+          JoinEdges(brep, tol * 10);
+          SewTJunctionsHealed(brep, tol * 10);
+          FinishBrepTrims(brep);
+          kernel::Brep k;
+          k.raw() = brep;
+          SceneObject o = SceneObject::MakeBrep(k);
+          o.name = name_of(*e, "SHELL_BASED_SURFACE_MODEL");
+          if (model.HasColour(item_id)) { o.color_by_layer = false; o.color = model.ColourOfItem(item_id); }
+          o.Transform(inst.xform);
+          doc.Add(std::move(o));
+          ++stats.breps; ++stats.assembly_parts;
+        }
+      } else if (const StepPart* p = e->Find("FACETED_BREP")) {
+        if (p->args.size() < 2 || !IsRef(p->args[1])) continue;
+        kernel::Mesh mesh;
+        if (BuildMeshFromFacetedBrep(model, StepRef(p->args[1]), mesh)) {
+          SceneObject o = SceneObject::MakeMesh(mesh);
+          o.name = name_of(*e, "FACETED_BREP");
+          if (model.HasColour(item_id)) { o.color_by_layer = false; o.color = model.ColourOfItem(item_id); }
+          o.Transform(inst.xform);
+          doc.Add(std::move(o));
+          ++stats.meshes; ++stats.assembly_parts;
+        }
+      } else if (const StepPart* p = e->Find("GEOMETRIC_CURVE_SET")) {
+        if (p->args.size() < 2) continue;
+        for (int r : StepRefList(p->args[1])) {
+          const StepEntity* re = model.Get(r);
+          if (!re) continue;
+          if (re->Find("CARTESIAN_POINT")) {
+            SceneObject o = SceneObject::MakePoint(model.Point(r));
+            o.name = name_of(*e, "GEOMETRIC_CURVE_SET");
+            o.Transform(inst.xform);
+            doc.Add(std::move(o));
+            ++stats.points; ++stats.assembly_parts;
+          } else {
+            ON_NurbsCurve nc;
+            if (model.Curve(r, nc)) {
+              kernel::NurbsCurve k;
+              k.raw() = nc;
+              SceneObject o = SceneObject::MakeCurve(k);
+              o.name = name_of(*e, "GEOMETRIC_CURVE_SET");
+              o.Transform(inst.xform);
+              doc.Add(std::move(o));
+              ++stats.curves; ++stats.assembly_parts;
+            } else {
+              ++stats.skipped;
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Any advanced face never claimed by a shell (a lone ADVANCED_FACE some
   // exporters emit outside a shell) becomes its own single-face brep.
   for (const auto& [id, e] : model.entities) {
@@ -2859,6 +3025,7 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
      << ", " << stats.curves << " curve" << (stats.curves == 1 ? "" : "s") << ", " << stats.points << " point" << (stats.points == 1 ? "" : "s");
   if (stats.meshes) ss << ", " << stats.meshes << " mesh" << (stats.meshes == 1 ? "" : "es");
   if (stats.faces_untrimmed_fallback) ss << ", " << stats.faces_untrimmed_fallback << " face" << (stats.faces_untrimmed_fallback == 1 ? "" : "s") << " fell back to untrimmed";
+  if (stats.assembly_parts) ss << ", " << stats.assembly_parts << " part" << (stats.assembly_parts == 1 ? "" : "s") << " placed via real assembly (MAPPED_ITEM) transforms";
   if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped";
   summary = ss.str();
   if (stats.breps + stats.curves + stats.points + stats.meshes == 0) { summary = "No usable geometry found in " + path; return false; }

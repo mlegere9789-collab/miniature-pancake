@@ -653,6 +653,38 @@ dbecheck "DXF: 4 curves, 0 points, 0 meshes, 2 block instances flattened" "the r
 dbecheck "Block = FixtureBlock" "the round-tripped curves carry the same Block user-text tag InstantiateBlockInDocument already writes"
 dbecheck "Block 'FixtureBlock': 2 object(s), base 0,0,0, 4 object(s) in instances" "BlockManager reports the same definition/instance counts after the round trip as before export"
 grep -q "^BLOCK$" "$TMPW/dxf_block_export.dxf" && grep -q "^INSERT$" "$TMPW/dxf_block_export.dxf" && echo "ok   dxf_block_export.dxf contains real BLOCK/INSERT entities, not just flattened LINE entities" || { echo "FAIL dxf_block_export.dxf has no BLOCK/INSERT entity"; fail=1; }
+# DXF DIMENSION export/import: ExportDxf had no DIMENSION writer at all
+# before this change (see dxf_dimension_export_script.txt's own header
+# comment) - a Dino8 DimLinear/DimAligned/DimRadius/DimDiameter dimension
+# used to round-trip out as bare baked line/extension/arrow/glyph curves,
+# losing the fact it was ever a single parametric dimension. Checks both
+# the writer and the existing DIMENSION reader agree on the wire format for
+# both dimension families covered this pass: the reopened file's linear
+# dimension carries the exact same Annotation/DimP0/DimP1/DimOffset/
+# DimHorizontal tags the original had, the reopened radius dimension
+# carries the exact same Annotation/DimCenter/DimRadiusVal/DimIsDiameter
+# tags its own original had, and DxfImporter's own summary line counts
+# both as real dimensions (plus the one real circle object, not unrelated
+# bare curves for either).
+sed "s|@TMP@|$TMPW|g" "$HERE/dxf_dimension_export_script.txt" > "$TMPW/dxf_dimension_export_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DDE="$("$BIN" --smoke 30 --script "$TMPW/dxf_dimension_export_script.txt" 2>&1)" || { echo "$DDE"; echo "FAIL: DXF DIMENSION export script exited non-zero"; exit 1; }
+else
+  DDE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_dimension_export_script.txt" 2>&1)" || { echo "$DDE"; echo "FAIL: DXF DIMENSION export script exited non-zero"; exit 1; }
+fi
+ddecheck() { if echo "$DDE" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DDE" "$1"; fail=1; fi; }
+ddecheck "Exported $TMPW/dxf_dimension_export.dxf" "ExportDxf wrote a file"
+ddecheck "DXF: 1 curve, 0 points, 0 meshes, 2 dimensions" "the reopened file's two DIMENSION entities round-tripped as two real dimensions plus the one real circle, not unrelated bare curves"
+ddecheck "Annotation = DimLinear" "the round-tripped linear dimension carries the same Annotation=DimLinear tag DxfImporter::Dimension() writes for a hand-written fixture"
+ddecheck "DimP0 = 0,0,0" "the round-tripped linear dimension's first measured point survived exactly"
+ddecheck "DimP1 = 40,0,0" "the round-tripped linear dimension's second measured point survived exactly"
+ddecheck "DimOffset = 10" "the round-tripped linear dimension's own dimension-line offset survived exactly"
+ddecheck "DimHorizontal = 1" "the round-tripped linear dimension is still recognized as horizontal, not vertical or oblique"
+ddecheck "Annotation = DimRadius" "the round-tripped radius dimension carries the same Annotation=DimRadius tag DxfImporter::Dimension() writes for a hand-written fixture"
+ddecheck "DimCenter = 100,0,0" "the round-tripped radius dimension's own measured circle center survived exactly"
+ddecheck "DimRadiusVal = 5" "the round-tripped radius dimension's own measured radius survived exactly"
+ddecheck "DimIsDiameter = 0" "the round-tripped dimension is still recognized as a radius, not a diameter, dimension"
+[ "$(grep -c "^DIMENSION$" "$TMPW/dxf_dimension_export.dxf")" = "2" ] && echo "ok   dxf_dimension_export.dxf contains two real DIMENSION entities (one linear, one radius), not just baked line/arrow/text curves" || { echo "FAIL dxf_dimension_export.dxf does not have exactly two DIMENSION entities"; fail=1; }
 # DWG SPLINE: built via LibreDWG's own dwg_add_SPLINE (marked "Experimental.
 # Does not work yet properly" in dwg_api.h - confirmed by hand it only ever
 # populates fit_pts, never real NURBS control points), so this exercises
@@ -2768,6 +2800,9 @@ echo "$ED" | grep -q "^smoke:" || { echo "$ED"; echo "FAIL: edit script produced
 # invert it precisely, for both a curve and a surface - the headlessly-
 # verifiable half of Dir's real-glyph fix (see AUDIT.md's dated note).
 edcheck() { if echo "$ED" | grep -Eq "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ED" "$1"; fail=1; fi; }
+edcheck "Radius at picked point = 3" "Offset now delegates to the kernel's own NurbsCurve::OffsetInPlane() - a circle offset inward by 2 lands on an EXACT radius-3 concentric circle (the curve's own fitted-plane overload's real ON_Arc construction), not the old hand-rolled code's own less-general special case"
+edcheck "Bounding box min 47,-3,0 max 53,3,0" "that same offset circle's bounding box independently confirms the exact radius-3 result"
+edcheck "Bounding box min -0.4061,-2.649,-0.7442 max 12.24,12.66,10" "Offset no longer refuses a genuinely non-planar (non-coplanar 4-point interpolated) curve outright - it falls back to the kernel's active-CPlane-normal overload instead, closing the other half of this gap"
 edcheck "Curve [0-9]+: start 0,0,0 tangent 1,0,0" "Dir printed a fresh line's real start point and unit tangent"
 edcheck "Curve [0-9]+: start 10,0,0 tangent -1,0,0" "a plain Flip inverted that same curve's Dir-reported start/tangent exactly"
 edcheck "Surface [0-9]+: centre 5,5,0 normal 0,0,-1" "Dir printed a fresh planar surface's real domain-centre point and unit normal"
@@ -3072,6 +3107,8 @@ fi
 echo "$AN" | grep -E "^(ok|FAIL)"
 if echo "$AN" | grep -q "^FAIL"; then fail=1; fi
 echo "$AN" | grep -q "^smoke:" || { echo "$AN"; echo "FAIL: analyze script produced no smoke line"; fail=1; }
+azcheck() { if echo "$AN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$AN" "$1"; fail=1; fi; }
+azcheck "Deviation: min 1 max 1" "CrvDeviation now delegates to the kernel's own NurbsCurve::DeviationTo() - two parallel lines 1 unit apart converge to exactly that constant separation, not the old fixed-100-sample approximation"
 
 # Audit on a genuinely invalid object (not just a self-intersecting-but-valid
 # bowtie curve, see curve_adversarial_script.txt for that different case):
@@ -3829,6 +3866,27 @@ grep -q "Segmentation fault\|core dumped" <<<"$IS" && { echo "FAIL: iges/step sc
 grep -qE "^ {5}128" "$TMPW/t.igs" && grep -qE "^ {5}144" "$TMPW/t.igs" && echo "ok   t.igs uses 128 (surface) and 144 (trimmed surface) entities" || { echo "FAIL t.igs entity types"; fail=1; }
 grep -q "=ADVANCED_FACE(" "$TMPW/t.stp" && grep -q "B_SPLINE_SURFACE_WITH_KNOTS(" "$TMPW/t.stp" && echo "ok   t.stp uses ADVANCED_FACE and B_SPLINE_SURFACE_WITH_KNOTS entities" || { echo "FAIL t.stp entity types"; fail=1; }
 grep -q "^ISO-10303-21;$" "$TMPW/t.stp" && grep -q "^END-ISO-10303-21;$" "$TMPW/t.stp" && echo "ok   t.stp is a complete Part 21 file" || { echo "FAIL t.stp malformed"; fail=1; }
+
+# Real STEP AP214 assembly structure (MAPPED_ITEM/REPRESENTATION_MAP) read
+# support - see step_assembly_script.txt/step_assembly_fixture.stp and
+# FileIgesStep.cpp's ResolveMappedItem. The fixture places the same 10x10
+# square-face "Bracket" component three times (identity, translated,
+# translated+rotated 90 about Z); each instance's own BoundingBox must
+# reflect its own real transform, not all three landing at the same
+# (component-local) coordinates.
+sed "s|@TMP@|$TMPW|g" "$HERE/step_assembly_script.txt" > "$TMPW/step_assembly_script.txt"
+cp "$HERE/step_assembly_fixture.stp" "$TMPW/step_assembly_fixture.stp"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  ASM="$("$BIN" --smoke 60 --script "$TMPW/step_assembly_script.txt" 2>&1)" || { echo "$ASM"; echo "FAIL: step assembly script exited non-zero"; exit 1; }
+else
+  ASM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/step_assembly_script.txt" 2>&1)" || { echo "$ASM"; echo "FAIL: step assembly script exited non-zero"; exit 1; }
+fi
+asmcheck() { if echo "$ASM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ASM" "$1"; fail=1; fi; }
+asmcheck "^ok   expect_objects 3" "the assembly fixture's three MAPPED_ITEM instances each became one real object (not 0, not merged into 1)"
+asmcheck "part.*placed via real assembly" "ImportStep's own summary line reports real assembly-placed parts, confirming this code path actually ran"
+asmcheck "Bounding box min 0,0,0 max 10,10,0" "instance 1 (identity placement) landed exactly where the un-instanced component's own raw coordinates already are"
+asmcheck "Bounding box min 50,0,0 max 60,10,0" "instance 2 (translated to 50,0,0) landed at its own real translated position, not at the component's local origin"
+asmcheck "Bounding box min -10,50,0 max 0,60,0" "instance 3 (translated to 0,50,0 AND rotated 90 about Z) landed with its rotation genuinely applied, not just its translation"
 
 # SpaceMouse / 3Dconnexion: Protocol=File replay drives a real background
 # thread (see input/SpaceMouse.cpp) that Application::Frame() drains every

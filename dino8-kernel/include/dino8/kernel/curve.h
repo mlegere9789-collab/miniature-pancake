@@ -399,6 +399,29 @@ class NurbsCurve {
   // method does not attempt).
   EndContinuityReport AnalyzeEndContinuity(const NurbsCurve& other) const;
 
+  // Curve-to-curve deviation (PARITY_MAP.md's Curve operations category,
+  // "Curve-to-curve deviation (CrvDeviation)"): the real minimum and
+  // maximum closest-point distance from this curve to `other`, sampled
+  // across this curve's own parameter domain. Unlike the app's old
+  // CrvDeviation command (a fixed 100-sample `DivideByCount` with no
+  // tolerance guarantee at all), this doubles the sample count - starting
+  // from `SuggestedSamples(tolerance)` - until two successive refinements'
+  // own min AND max both agree to within `tolerance`, the same
+  // "numerically-robust estimate from comparing successive refinements"
+  // tier `LengthToTolerance()` already uses (no closed-form error bound
+  // exists for an arbitrary NURBS curve's closest-point distance either,
+  // so this is honestly not a formally certified bound). Returns
+  // `Result::Failed` (leaving `out_min`/`out_max` at whatever the last
+  // attempted refinement measured) if convergence isn't reached within 20
+  // doublings - a pathological case (e.g. the two curves osculating at a
+  // point where closest-point distance varies non-smoothly) rather than
+  // silently reporting an unconverged estimate as final. `out_samples`,
+  // if non-null, receives the sample count the converged estimate actually
+  // settled on. Throws `std::invalid_argument` if `tolerance` isn't
+  // positive.
+  Result DeviationTo(const NurbsCurve& other, double tolerance, double& out_min, double& out_max,
+                      int* out_samples = nullptr) const;
+
   int Degree() const;
   int ControlPointCount() const;
 

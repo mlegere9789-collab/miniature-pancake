@@ -1001,6 +1001,74 @@ void TestCurveAnalyzeEndContinuity() {
   }
 }
 
+void TestCurveDeviationTo() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Two parallel line segments, both spanning the same x range: every
+  // point on `a` has its closest point on `b` directly across (same x),
+  // so min and max deviation are both exactly the perpendicular
+  // separation - a hand-derivable exact answer, and the two should agree
+  // (converge) at the very first refinement since the true deviation
+  // function is perfectly constant.
+  {
+    const NurbsCurve a = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    const NurbsCurve b = NurbsCurve::FromControlPoints({Point3d(0, 5, 0), Point3d(10, 5, 0)}, 1);
+    double mn = -1, mx = -1;
+    int samples = 0;
+    const Result r = a.DeviationTo(b, 0.001, mn, mx, &samples);
+    Check(r == Result::Ok, "DeviationTo: two parallel lines 5 apart converges");
+    Check(std::abs(mn - 5.0) < 1e-6 && std::abs(mx - 5.0) < 1e-6,
+          "DeviationTo: two parallel lines report both min and max deviation exactly 5, the real perpendicular separation");
+    Check(samples > 0, "DeviationTo: out_samples reports the real sample count the converged estimate settled on");
+  }
+
+  // A curve compared to itself: every point's closest point on the other
+  // copy is itself, so both min and max must be exactly 0.
+  {
+    const NurbsCurve a = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 3, 0), Point3d(20, 0, 0)}, 2);
+    double mn = -1, mx = -1;
+    const Result r = a.DeviationTo(a, 0.001, mn, mx);
+    Check(r == Result::Ok, "DeviationTo: a curve compared to itself converges");
+    Check(mn < 1e-9 && mx < 1e-9, "DeviationTo: a curve compared to itself reports both min and max deviation exactly 0");
+  }
+
+  // Two concentric circles of different, known radii (same plane): every
+  // point on the inner circle is exactly radially outward from the
+  // outer one, at the constant distance |r2 - r1| - real curvature-
+  // bearing curves, not just lines, with a hand-derivable exact answer.
+  {
+    const double r1 = 5.0, r2 = 8.0;
+    const ON_Circle c1(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), r1);
+    const ON_Circle c2(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), r2);
+    ON_NurbsCurve nc1, nc2;
+    Check(c1.GetNurbForm(nc1) != 0 && c2.GetNurbForm(nc2) != 0, "DeviationTo: both concentric-circle fixtures build a real NURBS form");
+    NurbsCurve a, b;
+    a.raw() = nc1;
+    b.raw() = nc2;
+    double mn = -1, mx = -1;
+    const Result r = a.DeviationTo(b, 0.001, mn, mx);
+    Check(r == Result::Ok, "DeviationTo: two concentric circles converges");
+    Check(std::abs(mn - (r2 - r1)) < 1e-3 && std::abs(mx - (r2 - r1)) < 1e-3,
+          "DeviationTo: two concentric circles report both min and max deviation exactly |r2 - r1|, the real radial gap");
+  }
+
+  // A non-positive tolerance throws rather than silently using some
+  // default.
+  {
+    const NurbsCurve a = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    double mn = 0, mx = 0;
+    bool threw = false;
+    try {
+      a.DeviationTo(a, 0.0, mn, mx);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "DeviationTo: a non-positive tolerance throws std::invalid_argument");
+  }
+}
+
 void TestCurveKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -71153,6 +71221,7 @@ int main() {
   TestCurveSetDomainReparameterizes();
   TestCurveMatchEnd();
   TestCurveAnalyzeEndContinuity();
+  TestCurveDeviationTo();
   TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();

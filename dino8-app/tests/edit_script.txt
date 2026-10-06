@@ -95,6 +95,30 @@ SelLast
 Offset Distance=2 50,0,0
 SelLast
 List
+SelLast
+Radius
+Enter
+SelLast
+BoundingBox
+SelAll
+Delete
+# --- Offset a non-planar (genuinely 3D) curve: no longer refused outright,
+# the real 3D-offset half of this gap (see PARITY_MAP.md's Curve operations
+# category, "Offset curve"). These 4 interpolation points are not coplanar
+# (the first 3 define Z=0; the 4th has Z=10), so the curve's own
+# fitted-plane overload correctly refuses it and Offset falls back to the
+# active CPlane's normal instead of refusing outright the way the old
+# hand-rolled Make() (which always swept along the CPlane normal, with no
+# planarity check either way, but also no fallback/refusal logic at all)
+# never even distinguished.
+InterpCrv 0,0,0 10,0,0 10,10,0 0,10,10
+Enter
+@expect_objects 1
+SelLast
+Offset Distance=1 0,20,0
+@expect_objects 2
+SelLast
+BoundingBox
 SelAll
 Delete
 Line 0,0,0 10,0,0
