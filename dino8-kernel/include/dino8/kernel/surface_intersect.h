@@ -881,6 +881,113 @@ struct PlanePlaneIntersection {
 };
 PlanePlaneIntersection IntersectPlanePlane(const ON_Plane& a, const ON_Plane& b, double tolerance);
 
+// The exact closed-form plane/cone SSX, restricted to the two cases that
+// reduce to a construction this kernel already has elsewhere - the "cone"
+// half of PARITY_MAP.md's own "Analytic/analytic SSX closed forms (plane/
+// plane, plane/cylinder, cylinder/cylinder, plane/sphere, cone, torus)"
+// bullet, previously entirely unaddressed: unlike every other pair this
+// bullet names, a plane/cone closed form exists nowhere in this kernel,
+// not even inside BooleanCombineMixed's own private splitters.
+//
+// A right circular (double-napped) cone with apex `cone.ApexPoint()`, unit
+// axis `cone.Axis()`, and half-angle `alpha = |cone.AngleInRadians()|`
+// satisfies the homogeneous relation `dot(V, axis)^2 == cos(alpha)^2 *
+// dot(V, V)` for `V = point - apex` (true on either nappe at once, with no
+// separate sign case). Restricting this to the plane's own in-plane (s, t)
+// coordinates (`point = plane.origin + s*plane.xaxis + t*plane.yaxis`)
+// gives a single 2D conic `A*s^2 + B*s*t + C*t^2 + D*s + E*t + F == 0` -
+// the classical "quadric meets a plane" reduction, with A/B/C depending
+// only on the direction cosines of plane.xaxis/plane.yaxis against the
+// cone's own axis (so the SAME A, B, C apply regardless of where the
+// plane's own origin sits). This function closes only the two cases that
+// follow directly from that reduction without needing a general conic-
+// family constructor of its own:
+//
+//  - The plane does not pass through the apex (`plane.DistanceTo(apex)`
+//    outside `tolerance`), and the restricted conic's own discriminant
+//    `B^2 - 4*A*C` is negative - the plane is steeper than the cone's own
+//    generators relative to the axis, cutting only one nappe in a closed
+//    loop: a genuine ELLIPSE (a true circle in the special case the plane
+//    is exactly perpendicular to the axis - the same "one formula handles
+//    both" shape IntersectPlaneCylinder() already established), built
+//    directly from the conic matrix [[A, B/2], [B/2, C]]'s own 2x2 eigen-
+//    decomposition (a closed form for a 2x2 symmetric matrix - no general
+//    numerical eigensolver needed) rather than sampled or Newton-polished.
+//  - The plane passes through the apex (within `tolerance`): every D/E/F
+//    term of the restricted conic vanishes identically (the apex itself,
+//    (0,0) in apex-centered local coordinates, is always a root), so the
+//    conic collapses to the homogeneous `A*ds^2 + B*ds*dt + C*dt^2 == 0`
+//    in a direction `(ds, dt)` alone - solved directly via the same
+//    discriminant (`< 0`: no real direction, the plane touches the cone
+//    at the apex point only; `== 0`: one real direction, a single tangent
+//    line through the apex; `> 0`: two real directions, a genuine line
+//    pair through the apex) by writing the direction as `cos(theta)*
+//    plane.xaxis + sin(theta)*plane.yaxis` and solving `A*cos(theta)^2 +
+//    B*cos(theta)*sin(theta) + C*sin(theta)^2 == 0` via its own double-
+//    angle closed form - no case split on A or C individually being zero.
+//
+// Everything else - the plane does not reach the apex but is not steep
+// enough relative to the cone's own half-angle (cuts both nappes: a
+// hyperbola) or is exactly parallel to one generator (a parabola) - is
+// honestly reported as `unsupported == true` rather than guessed at or
+// silently misreported as an ellipse: a caller checks `unsupported` FIRST,
+// before `empty`/`through_apex`/anything else. Deliberately scoped to the
+// cone's INFINITE double nappe along its own axis line, the same unbounded
+// scope IntersectPlaneCylinder()/IntersectPlaneSphere() already take; a
+// finite `cone.height` is not trimmed to that range here, and this does
+// not replace IntersectSurfaces() for a plane/cone pair arriving as two
+// generic ON_Surface references with no cone-ness known to the caller.
+struct PlaneConeIntersection {
+  bool unsupported = false;   // true: this pair's conic is a parabola or hyperbola, not built here - every other field is meaningless; checked FIRST
+  bool empty = true;          // true: a genuine miss (only reachable via a guarded-against numerical edge case; kept for symmetry with this file's other closed forms)
+  bool through_apex = false;  // true: the plane passes through the cone's own apex - line_count/line_a/line_b are meaningful, not ellipse/curve
+  int line_count = 0;         // meaningful only when through_apex: 0 (apex point only), 1 (tangent, only line_a meaningful), or 2
+  ON_Line line_a, line_b;     // meaningful only when through_apex; line_b meaningful only when line_count == 2
+  ON_Ellipse ellipse;         // meaningful only when !through_apex && !empty && !unsupported
+  ON_NurbsCurve curve;        // ellipse's own NURBS form - meaningful under the same condition as `ellipse`
+};
+PlaneConeIntersection IntersectPlaneCone(const ON_Plane& plane, const ON_Cone& cone, double tolerance);
+
+// The exact closed-form plane/torus SSX, restricted to the two special
+// plane orientations that reduce directly to a circle (or circle pair) -
+// the "torus" half of PARITY_MAP.md's own "Analytic/analytic SSX closed
+// forms" bullet, previously entirely unaddressed: a general oblique plane/
+// torus section is a quartic space curve with no simple closed form
+// (including the classical Villarceau-circle case at one special oblique
+// angle), and this does not attempt either.
+//
+//  - MERIDIAN: the plane contains the torus's own axis (within
+//    tolerance) - the classical "slice a donut straight through the
+//    middle" cut. Writing the torus's own defining relation `(hypot(x, y)
+//    - R)^2 + z^2 == r^2` (R = major_radius, r = minor_radius, z along the
+//    torus axis) restricted to any single half-plane at a fixed angle
+//    around that axis gives exactly one circle of radius r centered at
+//    distance R from the axis, in that half-plane; the full plane (both
+//    half-planes at once, on either side of the axis) always produces
+//    the two symmetric copies of that circle, both returned at once.
+//  - AXIAL: the plane is perpendicular to the torus's own axis (within
+//    tolerance), at signed height `z` from the torus center along that
+//    axis - an ordinary horizontal slice. Solving the same defining
+//    relation for a fixed z gives `hypot(x, y) == R +/- sqrt(r^2 - z^2)`:
+//    two concentric circles when `|z| < r` and the inner radius is
+//    genuinely positive, collapsing to a single circle when `|z| == r`
+//    (the tangent degeneracy at the very top/bottom of the torus) or when
+//    the torus's own central hole does not reach this far in (the inner
+//    radius would be non-positive), and a genuine miss when `|z| > r`.
+//
+// Every other plane orientation is honestly `unsupported == true`, not
+// guessed at.
+struct PlaneTorusIntersection {
+  bool unsupported = false;
+  bool empty = true;
+  bool meridian = false;     // true: the plane contains the torus axis - circle_a and circle_b (always both) are meaningful
+  bool axial = false;        // true: the plane is _|_ the torus axis - circle_a is meaningful whenever !empty; circle_b only when circle_count == 2
+  int circle_count = 0;      // meridian: always 2; axial: 1 or 2
+  ON_Circle circle_a, circle_b;
+  ON_NurbsCurve curve_a, curve_b;  // NURBS forms of circle_a/circle_b - meaningful under the same conditions as those circles
+};
+PlaneTorusIntersection IntersectPlaneTorus(const ON_Plane& plane, const ON_Torus& torus, double tolerance);
+
 // A single point where a surface's own silhouette for a FIXED, PARALLEL
 // (orthographic) viewing direction crosses one edge of a regular sampling
 // grid over its (u, v) domain - PARITY_MAP.md's own "Silhouette / outline
