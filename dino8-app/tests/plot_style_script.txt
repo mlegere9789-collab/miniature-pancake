@@ -34,3 +34,14 @@ Export @TMP@/plot_style_blue.svg
 LayerPlotStyle Default None
 SelAll
 Export @TMP@/plot_style_cleared.svg
+# --- Transparency: the third real CTB/STB plot-style column (PlotStyle::
+# transparency, no flat per-layer equivalent). Setting Mono's own
+# transparency to 50% (the optional 4th PlotStyleTable token) must halve
+# both lines' stroke-opacity in a re-exported SVG, and a re-exported PDF
+# must carry a real /ExtGState resource (/CA 0.5) switched in via "gs"
+# before the stroked paths - not just a printed command confirmation.
+LayerPlotStyle Default Mono
+PlotStyleTable Mono 0,0,255 0.5 50
+SelAll
+Export @TMP@/plot_style_transparent.svg
+Export @TMP@/plot_style_transparent.pdf

@@ -5428,6 +5428,17 @@ BLUE_COUNT="$(grep -c 'stroke="#0000ff"' "$TMPW/plot_style_blue.svg" || true)"
 [ "$BLUE_COUNT" = "2" ] && echo "ok   editing the shared style's color to blue changes both layers' lines together, with neither layer touched again" || { echo "FAIL plot_style_blue.svg: expected 2 blue strokes, got $BLUE_COUNT"; fail=1; }
 grep -q 'stroke="#000000"' "$TMPW/plot_style_cleared.svg" && echo "ok   LayerPlotStyle None on the Default layer clears it back to its own display color (black)" || { echo "FAIL plot_style_cleared.svg: Default layer's line is not black after clearing its style"; fail=1; }
 grep -q 'stroke="#0000ff"' "$TMPW/plot_style_cleared.svg" && echo "ok   ...while SecondLayer, never cleared, still strokes the shared style's current color (blue)" || { echo "FAIL plot_style_cleared.svg: SecondLayer's line lost its still-assigned style's color"; fail=1; }
+# Transparency (PlotStyle::transparency, the third real CTB/STB plot-style
+# column - no flat per-layer equivalent, so only reachable through a named
+# style): Mono's own transparency set to 50% must halve the stroke-opacity
+# of both layers sharing it in the exported SVG, and the exported PDF must
+# carry a real ExtGState resource switched in via "gs" before the stroked
+# content, not just a printed confirmation.
+OPACITY_COUNT="$(grep -c 'stroke-opacity="0.5"' "$TMPW/plot_style_transparent.svg" || true)"
+[ "$OPACITY_COUNT" = "2" ] && echo "ok   PlotStyleTable's optional 4th token (50% transparency) halves both layers' stroke-opacity to 0.5 in the exported SVG" || { echo "FAIL plot_style_transparent.svg: expected 2 stroke-opacity=\"0.5\" groups (one per layer sharing the style), got $OPACITY_COUNT"; fail=1; }
+grep -aq '/ExtGState' "$TMPW/plot_style_transparent.pdf" && echo "ok   plot_style_transparent.pdf's page carries a real /ExtGState resource dict, not just a printed confirmation" || { echo "FAIL plot_style_transparent.pdf: no /ExtGState resource"; fail=1; }
+grep -aq '/CA 0.5' "$TMPW/plot_style_transparent.pdf" && echo "ok   the ExtGState's own /CA (stroking alpha) is 0.5, matching the style's 50% transparency" || { echo "FAIL plot_style_transparent.pdf: no /CA 0.5 ExtGState"; fail=1; }
+grep -aq '/GS1 gs' "$TMPW/plot_style_transparent.pdf" && echo "ok   the content stream switches the ExtGState in with a real \"gs\" operator before the stroked paths" || { echo "FAIL plot_style_transparent.pdf: no /GS1 gs operator in the content stream"; fail=1; }
 
 # Undo id-reuse regression (see the last section of history_script.txt):
 # a Box drawn right after undoing a tracked Extrude used to be handed the
@@ -6366,16 +6377,19 @@ print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
     # a known id/bounding box to check against.
     RESP9="$(curl -s --max-time 10 -X POST -H 'Accept: application/json' --data 'print("hi")' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP10="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/objects")"
-    # GET /objects?geometry=1: the actual point/vertex data for the two
-    # object kinds simple enough to serialize honestly as plain JSON arrays
-    # (point, mesh) - narrows PARITY_MAP.md's own disclosed "no geometry
-    # (de)serialization format" gap a step further than the bare metadata
-    # listing above. Adds one point and one triangle mesh so both real
-    # payloads can be checked in the same request, plus confirms the
-    # pre-existing box (a polysurface, neither kind) reports "geometry":null
-    # rather than silently omitting the key or guessing at a payload.
+    # GET /objects?geometry=1: the actual point/vertex/curve data for the
+    # three object kinds simple enough to serialize honestly as plain JSON
+    # right now (point, mesh, and now a NURBS curve's own degree/control
+    # points/weights/knots) - narrows PARITY_MAP.md's own disclosed "no
+    # geometry (de)serialization format" gap a step further than the bare
+    # metadata listing above. Adds one point, one triangle mesh and one
+    # straight (degree-1, non-rational) line so all three real payloads can
+    # be checked in the same request, plus confirms the pre-existing box (a
+    # polysurface, none of the three) reports "geometry":null rather than
+    # silently omitting the key or guessing at a payload.
     RESP11="$(curl -s --max-time 10 -X POST --data 'rs.AddPoint(20,20,20)
-rs.AddMesh({{0,0,0},{1,0,0},{0,1,0}}, {{1,2,3}})' "http://127.0.0.1:$SERVE_PORT/run")"
+rs.AddMesh({{0,0,0},{1,0,0},{0,1,0}}, {{1,2,3}})
+rs.AddLine({0,0,0},{10,0,0})' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP12="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/objects?geometry=1")"
     CODE2="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP3="$(curl -s --max-time 10 -X POST --data 'rs.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run")"
@@ -6413,6 +6427,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     echo "$RESP10" | grep -q '"min":\[0.000000,0.000000,0.000000\],"max":\[5.000000,5.000000,5.000000\]' && echo "ok   GET /objects reported the box's own real bounding box (0,0,0)-(5,5,5), not just a type/name/layer listing" || { echo "$RESP10"; echo "FAIL --serve GET /objects did not report the box's expected bounding box"; fail=1; }
     echo "$RESP12" | grep -q '"geometry":{"point":\[20.000000,20.000000,20.000000\]}' && echo "ok   GET /objects?geometry=1 reports a real point object's own coordinates, not just its bounding box" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report the point's coordinates"; fail=1; }
     echo "$RESP12" | grep -q '"geometry":{"vertices":\[\[0.000000,0.000000,0.000000\],\[1.000000,0.000000,0.000000\],\[0.000000,1.000000,0.000000\]\],"faces":\[\[0,1,2\]\]}' && echo "ok   GET /objects?geometry=1 reports a real mesh object's own vertices/faces (0-based indices), not just its bounding box" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report the mesh's expected vertices/faces"; fail=1; }
+    echo "$RESP12" | grep -q '"type":"curve".*"geometry":{"degree":1,"rational":false,"control_points":\[\[0.000000,0.000000,0.000000\],\[10.000000,0.000000,0.000000\]\],"knots":\[0.000000,1.000000\]}' && echo "ok   GET /objects?geometry=1 reports a real NURBS curve's own degree/control points/knots (no \"weights\" field for a non-rational curve), not just sampled points" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report the line's expected NURBS curve definition"; fail=1; }
     echo "$RESP12" | grep -q '"type":"polysurface".*"geometry":null' && echo "ok   GET /objects?geometry=1 honestly reports \"geometry\":null for a kind (polysurface) this pass doesn't serialize, rather than guessing at a payload" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report null geometry for the box"; fail=1; }
     [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
     echo "$RESP3" | grep -q "compute error: script requires interactive input" && echo "ok   a script calling an interactive rs.Get* prompt is rejected instead of hanging the connection" || { echo "$RESP3"; echo "FAIL --serve interactive-prompt script was not rejected as expected"; fail=1; }
