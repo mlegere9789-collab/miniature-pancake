@@ -2953,6 +2953,30 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
 }
 
+Result Brep::RibbonFromCurve(const NurbsCurve& curve, const ON_Plane& plane, double width, Brep& out,
+                              double tolerance) {
+  if (!ON_IsValid(width) || width == 0.0) {
+    throw std::invalid_argument("dino8::kernel::Brep::RibbonFromCurve: width must be finite and nonzero");
+  }
+  if (!plane.IsValid()) {
+    throw std::invalid_argument("dino8::kernel::Brep::RibbonFromCurve: plane must be valid");
+  }
+  NurbsCurve offset;
+  const Result offset_result = curve.OffsetInPlane(plane, width, offset, tolerance);
+  if (offset_result != Result::Ok) {
+    return offset_result;
+  }
+  // `cap=false`: `Loft()`'s own capping is meant for a tube swept between
+  // profiles at the SAME station (so a flat disk bounded by one profile
+  // closes the end) - for a ribbon between a closed curve and its own
+  // offset, the two sections are DIFFERENT curves, and a disk capped to
+  // just the first one would ignore the offset entirely, not close the
+  // annular strip between them. A ribbon is never capped, open curve or
+  // closed.
+  out = Brep::Loft({curve, offset}, /*degree=*/1, /*closed=*/false, /*cap=*/false);
+  return Result::Ok;
+}
+
 namespace {
 
 // Position + pure cross-boundary derivatives (up to order `continuity`)

@@ -859,6 +859,45 @@ class Brep {
                    bool cap = true, const NurbsCurve* start_tangent = nullptr,
                    const NurbsCurve* end_tangent = nullptr);
 
+  // PARITY_MAP.md's offsetshell "Offset-derived constructions (Ribbon,
+  // RibbonOffset, Fin, Slab)" gap: every one of those is currently
+  // sample-and-fit, app-only (`dino8-app`'s own `RibbonCommand`,
+  // cmd_srfedit.cpp, samples 49 points, offsets each sideways by a fixed
+  // vector, then hands the two point rows to a RELAXATION-based
+  // `SurfaceThroughRows()` helper that only approximately passes through
+  // them - the exact "doesn't actually interpolate its own samples"
+  // anti-pattern this file's own `CoonsPatch()` doc comment above already
+  // calls out for a sibling command). This gives a genuine kernel-level
+  // Ribbon with NO such approximation anywhere: a ribbon is exactly the
+  // degree-1 (ruled) `Loft()` between `curve` and its own sideways offset,
+  // `curve.OffsetInPlane(plane, width)` (curve.h's explicit-plane
+  // overload - the same construction the app's own per-sample `side =
+  // cross(up, tangent)` computes by hand, here delegated to that already-
+  // exact, already-tested kernel method instead of re-derived). `Loft()`
+  // at `degree == 1` is itself documented to be the EXACT ruled
+  // interpolant (every section lies exactly on the result at its own v_k)
+  // - so this method is a thin composition of two independently-exact,
+  // already-tested primitives, not a new fitting algorithm, the same
+  // "two names, one shared construction" pattern this file already uses
+  // elsewhere (`SplitByObjectCommand`/`DraftFacesConvexPlanar`, credited
+  // under two different PARITY_MAP.md items). Never capped, open curve or
+  // closed: `Loft()`'s own `cap` option closes a TUBE's end with a disk
+  // bounded by one profile, which would ignore the OTHER section (the
+  // offset curve) entirely for a closed-curve ribbon - a materially wrong
+  // result, not a style choice, so this always passes `cap=false`.
+  //
+  // Returns `Result::Failed` (`out` untouched) exactly when
+  // `curve.OffsetInPlane(plane, width, ..., tolerance)` itself would -
+  // see that method's own doc comment (curve.h) for the full list (a
+  // tangent parallel to `plane`'s normal anywhere, a refit that can't
+  // reach `tolerance`, etc.). Throws `std::invalid_argument` if `width`
+  // is zero or non-finite, or `plane` is not `ON_Plane::IsValid()` - the
+  // same checks `OffsetInPlane`'s own explicit-plane overload already
+  // makes, surfaced here before that call rather than relied upon
+  // implicitly.
+  static Result RibbonFromCurve(const NurbsCurve& curve, const ON_Plane& plane, double width, Brep& out,
+                                 double tolerance = -1.0);
+
   // Sweep1: `section` carried along `rail` by rotation-minimizing
   // frames (Wang et al. 2008's double-reflection method, evaluated at
   // `stations` equal-arc-length stations) and skinned through the
