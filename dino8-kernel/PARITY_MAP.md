@@ -2194,6 +2194,8 @@ Ecosystem's remaining count also dropped by one for the same reason (Plugin
 marketplace), but it started so far behind (0.5 weight over 16 items) that
 it stays last.
 
+**2026-10-05, merge note: two concurrent sessions independently built the identical `Brep::TrimmedPlanarFaceWelded(surface, trim_loop_uv, hole_loops_uv)`.** A second, independent same-day rotation on this exact bullet (see the dated note above this document's own kernel table, and the bullet itself below) arrived at essentially the same design - map `trim_loop_uv`/each hole to 3D via `surface.PointAt(u, v)`, fit a plane via `NewellNormal()`, compose `FromPlanarFaces()` with `AddHoleLoop()` - before this session's own commit reached `origin`. Reconciled by keeping the first-landed implementation and its own test (`TestBrepTrimmedPlanarFaceWelded`, tests/test_basic.cpp) as the single canonical one and dropping this session's own duplicate function body/tests entirely, rather than carrying two definitions of the same symbol (a straight compile conflict) or two redundant test functions covering the same new API. No further count or headline change from this reconciliation itself.
+
 ## Kernel: Fossilith vs Parasolid/ACIS
 
 | Category | Weight | Items | Present | Partial | Missing | Parity % |

@@ -6304,17 +6304,21 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
   fi
 
   # --serve-token: a second, independent server instance (its own ephemeral
-  # port) started with a bearer token required. Checks both directions: a
+  # port) started with TWO bearer tokens required - a bare, anonymous one
+  # ("hunter2") and a named one ("ci:abc123"), checking that --serve-token
+  # is genuinely repeatable and that a named token's own caller comes back
+  # in the JSON response, not just that auth works at all. Checks: a
   # request with no/wrong Authorization header is rejected with 401 (its
   # script body, "should not run", is never passed to Lua.Start at all -
   # see main.cpp's compute_handler, which checks the token before touching
-  # req.path/req.body), and the same request with the right header succeeds
-  # exactly like the token-less server above.
+  # req.path/req.body); the bare token succeeds exactly like the token-less
+  # server above, with no "caller" field; and the named token succeeds AND
+  # echoes its own name back as "caller" (Accept: application/json).
   TOKEN_LOG="$TMPW/serve_token.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-token hunter2 --serve-max-requests 3 > "$TOKEN_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-token hunter2 --serve-token ci:abc123 --serve-max-requests 4 > "$TOKEN_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token hunter2 --serve-max-requests 3 > "$TOKEN_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token hunter2 --serve-token ci:abc123 --serve-max-requests 4 > "$TOKEN_LOG" 2>&1 &
   fi
   TOKEN_PID=$!
 
@@ -6338,10 +6342,12 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     CODE_NOAUTH="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'print("should not run")' "http://127.0.0.1:$TOKEN_PORT/run")"
     CODE_WRONGAUTH="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer wrongtoken' -X POST --data 'print("should not run")' "http://127.0.0.1:$TOKEN_PORT/run")"
     RESP_OKAUTH="$(curl -s --max-time 10 -H 'Authorization: Bearer hunter2' -X POST --data 'print("authorized ok")' "http://127.0.0.1:$TOKEN_PORT/run")"
+    RESP_NAMEDAUTH="$(curl -s --max-time 10 -H 'Authorization: Bearer abc123' -H 'Accept: application/json' -X POST --data 'print("authorized ok")' "http://127.0.0.1:$TOKEN_PORT/run")"
     set -e
     [ "$CODE_NOAUTH" = "401" ] && echo "ok   --serve-token rejects a request with no Authorization header with 401" || { echo "FAIL --serve-token no-auth request returned HTTP $CODE_NOAUTH, expected 401"; fail=1; }
     [ "$CODE_WRONGAUTH" = "401" ] && echo "ok   --serve-token rejects a request with the wrong bearer token with 401" || { echo "FAIL --serve-token wrong-token request returned HTTP $CODE_WRONGAUTH, expected 401"; fail=1; }
     echo "$RESP_OKAUTH" | grep -q "^authorized ok$" && echo "ok   --serve-token accepts a request with the correct Authorization: Bearer header and runs the script" || { echo "$RESP_OKAUTH"; echo "FAIL --serve-token correct-token request did not run the script"; fail=1; }
+    [ "$RESP_NAMEDAUTH" = '{"ok":true,"output":["authorized ok"],"caller":"ci"}' ] && echo "ok   a second, named --serve-token (ci:abc123) authenticates independently of the bare one and echoes its own caller name back in the JSON response" || { echo "$RESP_NAMEDAUTH"; echo "FAIL --serve-token named-token request did not return the expected caller-tagged JSON"; fail=1; }
 
     set +e; wait "$TOKEN_PID"; TOKEN_EC=$?; set -e
     if [ "$TOKEN_EC" -eq 124 ]; then
@@ -6349,7 +6355,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     elif [ "$TOKEN_EC" -ne 0 ]; then
       cat "$TOKEN_LOG"; echo "FAIL: --serve-token process exited $TOKEN_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=3$" "$TOKEN_LOG" && echo "ok   --serve-token server exited cleanly on its own after 3 real HTTP requests" || { cat "$TOKEN_LOG"; echo "FAIL --serve-token done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=4$" "$TOKEN_LOG" && echo "ok   --serve-token server exited cleanly on its own after 4 real HTTP requests" || { cat "$TOKEN_LOG"; echo "FAIL --serve-token done-summary line missing or wrong"; fail=1; }
     fi
   fi
 fi
