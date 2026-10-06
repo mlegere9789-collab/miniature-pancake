@@ -108,8 +108,16 @@ Export @TMP@/dwg_dimension_roundtrip.dwg
 # (this project's cmake/patch_libredwg.cmake does patch that library when a
 # root cause is confirmed - see its own header comment for the precedent),
 # which needs more investigation than this pass attempts.
+# Offset to Y=50-60 (not the DXF pattern-fill test's own 0,0,0-10,10,0)
+# purely to avoid colliding with the CV[0] 0,0,0 / CV[1] 12,0,0 uniqueness
+# checks the geometry section above already runs against this same reopened
+# output - one of this hatch's own pattern lines would otherwise land on
+# exactly 0,0,0 too. The resulting line count (80, not the DXF test's own
+# 81) is this exact boundary's own real, confirmed-by-running clip-edge
+# count, not carried over by assumption - see smoke.sh's own dwicheck
+# comment for the real count/endpoints.
 New
-Rectangle 0,0,0 10,10,0
+Rectangle 0,50,0 10,60,0
 SelLast
 Hatch Pattern=ANSI31
 SelAll

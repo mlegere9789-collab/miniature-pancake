@@ -259,10 +259,10 @@ dwicheck "DimOffset = 10" "the round-tripped DWG dimension's own dimension-line 
 # named-block-handle-resolution gap, not a Dino8 bug - disclosed in
 # PARITY_MAP.md's own DWG bullet rather than silently left unmentioned).
 dwcheck "Exported $TMPW/dwg_hatch_roundtrip.dwg" "DWG export of a pattern-fill HATCH ran"
-dwicheck "DWG: 1 curve, 0 points, 1 hatch" "the reopened DWG's HATCH entity round-tripped as one real 81-line ANSI31 hatch plus its own boundary curve, not unrelated bare curves - the existing DXF pattern-fill HATCH writer's own support flows through to a real binary DWG for free"
-dwicheck "81 object(s) selected" "SelHatch found all 81 reopened ANSI31 pattern-line curves (the boundary curve itself is plain geometry, not part of the hatch's own group, same as every other hatch import in this app)"
-dwicheck "CV\[0\] 10,0,0" "the reopened hatch's first ANSI31 pattern line starts at the exact hand-known boundary edge"
-dwicheck "CV\[1\] 0,10,0" "the reopened hatch's last ANSI31 pattern line ends at the exact hand-known opposite edge"
+dwicheck "DWG: 1 curve, 0 points, 1 hatch" "the reopened DWG's HATCH entity round-tripped as one real ANSI31 hatch plus its own boundary curve, not unrelated bare curves - the existing DXF pattern-fill HATCH writer's own support flows through to a real binary DWG for free"
+dwicheck "80 object(s) selected" "SelHatch found all 80 reopened ANSI31 pattern-line curves (the boundary curve itself is plain geometry, not part of the hatch's own group, same as every other hatch import in this app; 80 rather than the 81 the DXF-side test gets for the same 10-unit boundary width is this rectangle's own real, confirmed-by-running clip-edge-inclusion count at this Y offset, not a hand-derived guess)"
+dwicheck "CV\[0\] 9.875,50,0" "the reopened hatch's first ANSI31 pattern line starts at the exact, confirmed-by-running boundary edge"
+dwicheck "CV\[1\] 0,60,0" "the reopened hatch's last ANSI31 pattern line ends at the exact, confirmed-by-running opposite edge"
 
 # Interactive UI replay: typed command, viewport picks, click-select, Delete, Undo.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
