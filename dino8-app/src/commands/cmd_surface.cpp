@@ -785,14 +785,15 @@ class PipeCommand : public Command {
     HistoryRecord rec;
     rec.command = "Pipe";
     rec.num = {{"radius", radius_}, {"cap", cap_ ? 1.0 : 0.0}};
-    int made = 0;
+    int made = 0, made_brep = 0;
     for (ObjectId id : ids_) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o || o->kind != ObjectKind::Curve) continue;
       std::optional<SceneObject> built = RebuildPipe(ctx, *o->curve, rec);
       if (!built) continue;
+      if (built->kind == ObjectKind::Brep) ++made_brep;
       // Tag with the rail curve (see PipeFeature, Document.h) regardless of
-      // Cap/mesh-vs-surface, as real geometry (a value copy, not a
+      // Cap/mesh-vs-surface/B-rep, as real geometry (a value copy, not a
       // reference to the source object, which may since have been
       // deleted) - so ExtractPipedCurve works either way. Copied before
       // Add() moves `built`.
@@ -802,7 +803,14 @@ class PipeCommand : public Command {
       RecordHistoryIfEnabled(ctx, new_id, "Pipe", {id}, rec.num);
       ++made;
     }
-    ctx.Print("Pipe: radius " + FormatNumber(radius_) + ", " + std::to_string(made) + " pipe(s)" + (cap_ ? " (capped mesh)" : ""));
+    // An open rail's capped pipe is now the kernel's own exact Brep::Pipe
+    // (see RebuildPipe above); a closed rail, or an open rail whose
+    // Brep::Pipe call threw on a degenerate station, still falls back to
+    // the hand-rolled mesh - report honestly which one this batch actually
+    // built rather than always claiming "mesh".
+    std::string kind_note;
+    if (cap_) kind_note = made == 0 ? "" : made_brep == made ? " (exact capped B-rep)" : made_brep == 0 ? " (capped mesh)" : " (mixed exact B-rep/mesh)";
+    ctx.Print("Pipe: radius " + FormatNumber(radius_) + ", " + std::to_string(made) + " pipe(s)" + kind_note);
     Finish();
   }
   std::vector<ObjectId> ids_;
@@ -1533,6 +1541,26 @@ std::optional<SceneObject> RebuildPipe(CommandContext&, const kernel::NurbsCurve
   if (radius <= 0) return std::nullopt;
   const bool cap = num("cap") != 0.0;
   const bool wrap = c.IsClosed();
+  // An open, capped rail now calls the kernel's own exact Brep::Pipe first
+  // (an exact rational cylinder wall along a straight rail, real flat-disc
+  // end caps) instead of unconditionally falling through to this file's
+  // own hand-rolled ring-loft-and-weld mesh below - the same "exact kernel
+  // call first, fail closed to the existing construction" shape
+  // RebuildSweep1/RebuildSweep2 above already use for their own single-
+  // section case. A closed rail is untouched (Brep::Pipe's own tube has no
+  // ends to cap, so there is nothing this call would add over the existing
+  // mesh path); the kernel throws std::invalid_argument for a genuinely
+  // degenerate rail (zero tangent, touching stations) - caught here so the
+  // hand-rolled construction below still runs, the same "degrade
+  // gracefully" contract every other Rebuild* function in this file
+  // follows.
+  if (cap && !wrap) {
+    try {
+      return SceneObject::MakeBrep(kernel::Brep::Pipe(c, radius, /*cap=*/true, /*stations=*/32, /*round_caps=*/false));
+    } catch (const std::exception&) {
+      // Fall through to the mesh construction below.
+    }
+  }
   const int nrows = c.IsLinear() && !wrap ? 2 : kRailSamples;
   const std::vector<double> params = ArcLengthParams(c, wrap ? nrows + 1 : nrows, false);
   const std::vector<Frame> frames = RmfFrames(c, params, ON_zaxis, wrap);
@@ -1634,7 +1662,7 @@ void RegisterSurfaceCommands(CommandEngine& e) {
   Reg(e, "Sweep2", Make<Sweep2Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep2 (two-rail frame transport and skin; still an uncapped surface, same as before) and records History (History On) for UpdateHistory to rebuild against the rails/section's current shape; multiple cross sections still blend as an approximated two-rail-scaled sweep fitted to a degree-3 surface, with no history recorded.");
   Reg(e, "NetworkSrf", OnSelection("Select curves in network (2, 3 or 4)", NetworkSrf, 2), CommandStatus::Implemented, "Two curves give an exact ruled surface; three or four give a bilinear Coons patch fitted as a degree-3 surface.");
   Reg(e, "Patch", OnSelection("Select curves and points to fit a surface through", Patch), CommandStatus::Implemented, "Planar patch only: a least-squares plane trimmed by the single closed curve, or a fitted rectangle.");
-  Reg(e, "Pipe", Make<PipeCommand>(), CommandStatus::Implemented, "Single radius. Cap=Yes gives a closed mesh solid; Cap=No a periodic NURBS surface (circle approximated by a cubic). Records History (History On, see cmd_history.cpp) for UpdateHistory to rebuild against the rail curve's current shape.");
+  Reg(e, "Pipe", Make<PipeCommand>(), CommandStatus::Implemented, "Single radius. Cap=Yes on an open rail calls the kernel's exact Brep::Pipe (real flat-disc end caps, exact rational cylinder wall along a straight rail); a closed rail still gives a closed mesh tube. Cap=No gives a periodic NURBS surface (circle approximated by a cubic). Records History (History On, see cmd_history.cpp) for UpdateHistory to rebuild against the rail curve's current shape.");
   Reg(e, "OffsetSrf", Make<OffsetSrfCommand>(), CommandStatus::Implemented, "Surfaces: control points offset along Greville normals (exact for planes). Polysurfaces and meshes are offset as meshes along vertex normals; Solid=Yes closes the shell as a mesh.");
   Reg(e, "Shell", Make<ShellCommand>(), CommandStatus::Implemented, "Hollows a closed solid. With no face clicked to remove/open and no per-face thickness override, a polysurface whose faces are all planar and convex (a box or other simple polyhedron) now calls the kernel's exact ShellConvexPlanar first, giving a real B-rep result (exact volume, no tessellation) instead of a mesh; it fails open to the existing mesh construction (outer minus inward vertex-normal offset) for a curved or non-convex solid, or a thickness beyond that shape's own offset feasibility. Optionally click face(s) of a polysurface solid to remove/open before entering thickness (Enter with none picked keeps the old fully-closed behavior): the picked face(s) are dropped from the outer surface, the remainder gets the inward offset, and a rim mesh connects the two boundary loops - a real open shell (cup/case) for a single face, or a group of mutually-adjacent faces, on a simple box-like solid; a selection that would leave a non-manifold or multi-piece remainder is rejected with a warning rather than producing bad geometry, and mesh-only solids (no polysurface to pick faces on) still only support the fully-closed form. After face removal you can also click additional face(s) and type a thickness for each (repeat, then Enter for the default Thickness on the rest): every kept face's vertices then solve to the exact intersection of its own neighbours' offset planes, so two faces with different thickness meet in a real mitered corner rather than an average - numerically verified for a box (see tests/surface_script.txt) and, by the same plane-intersection algebra, correct for any solid whose kept faces are all planar (prisms and other polyhedra). If any kept face is curved, per-face overrides are detected and dropped for that solid (warned), falling back to the single default Thickness everywhere on it rather than applying an unverified per-triangle offset to a curved surface.");
   Reg(e, "ExtrudeCrvAlongCrv", Make<ExtrudeAlongCommand>(), CommandStatus::Implemented, "Exact translational sweep (sum surface); the profile is not rotated along the path.");

@@ -9,7 +9,7 @@
 # Object ids below are the deterministic 1-based counter Document::Add
 # assigns, in creation order. BoundingBox (cmd_analyze.cpp) both prints a
 # report AND adds a real box Brep object for a genuinely 3D selection (a
-# capped pipe mesh has volume in all three axes, unlike history_script.txt's
+# capped pipe (exact B-rep, open rail) has volume in all three axes, unlike history_script.txt's
 # own flat/degenerate extrusion, where ON_BrepBox silently fails and adds
 # nothing) - the @expect_objects counts below account for that extra
 # object each time BoundingBox runs.
@@ -22,9 +22,11 @@ Pipe
 1
 @expect_objects 2
 
-# Radius-1 capped mesh pipe around the line from (0,0,0) to (10,0,0): exact
-# bounding box min 0,-1,-1 max 10,1,1 (mesh ring radius has no CV-circle
-# correction, unlike the open-surface Cap=No case).
+# Radius-1 capped pipe (now the kernel's exact Brep::Pipe on this open
+# rail) around the line from (0,0,0) to (10,0,0): exact bounding box
+# min 0,-1,-1 max 10,1,1 - the display-mesh tessellation of the exact
+# cylinder wall still samples the cardinal angles exactly, unlike the
+# open-surface Cap=No case's own CV-circle correction.
 SelNone
 SelID 2
 BoundingBox
