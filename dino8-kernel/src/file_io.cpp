@@ -518,6 +518,20 @@ int Model::AddLayout(const std::string& name, double page_width_mm, double page_
   view.m_view_type = ON::view_type::page_view_type;
   view.m_page_settings.m_width_mm = page_width_mm;
   view.m_page_settings.m_height_mm = page_height_mm;
+  // A real pre-existing bug, found while building AddDetailView() below,
+  // not merely disclosed after the fact: a freshly-constructed
+  // ON_Viewport's own m_viewport_id defaults to ON_nil_uuid, and nothing
+  // here ever gave it a real one - every layout this method ever added
+  // was therefore indistinguishable from every other by viewport id.
+  // Harmless while nothing used that id, but AddDetailView() needs a
+  // genuinely distinct id per layout to know which page a detail belongs
+  // on, so every new layout now gets one via SetViewportId() (which only
+  // ever succeeds on a still-nil id - OpenNURBS' own "never change the
+  // viewport id once set" contract - so this is a pure addition, not a
+  // behavior change, for a view that was never given one before).
+  ON_UUID viewport_id;
+  ON_CreateUuid(viewport_id);
+  view.m_vp.SetViewportId(viewport_id);
   model_.m_settings.m_views.Append(view);
   return model_.m_settings.m_views.Count() - 1;
 }
@@ -535,6 +549,204 @@ LayoutInfo Model::LayoutAt(int layout_index) const {
   result.name = ToStdString(view.m_name);
   result.page_width_mm = view.m_page_settings.m_width_mm;
   result.page_height_mm = view.m_page_settings.m_height_mm;
+  return result;
+}
+
+int Model::AddDetailView(int layout_index, double x_mm, double y_mm, double width_mm, double height_mm,
+                          double page_per_model_ratio, const std::string& name, int layer_index,
+                          std::optional<Color> render_color, const UserStrings& user_strings,
+                          std::optional<int> linetype_index, const std::vector<int>& group_indices,
+                          std::optional<int> material_index, std::optional<Point3d> camera_location,
+                          std::optional<Point3d> target_point, Vector3d camera_up) {
+  if (name.empty() || layout_index < 0 || layout_index >= model_.m_settings.m_views.Count() ||
+      !(width_mm > 0.0) || !(height_mm > 0.0)) {
+    return -1;
+  }
+  const ON_UUID layout_viewport_id = model_.m_settings.m_views[layout_index].m_vp.ViewportId();
+
+  ON_3dPointArray corners;
+  corners.Append(ON_3dPoint(x_mm, y_mm, 0.0));
+  corners.Append(ON_3dPoint(x_mm + width_mm, y_mm, 0.0));
+  corners.Append(ON_3dPoint(x_mm + width_mm, y_mm + height_mm, 0.0));
+  corners.Append(ON_3dPoint(x_mm, y_mm + height_mm, 0.0));
+  corners.Append(corners[0]);  // ON_PolylineCurve requires an explicitly closed point list
+  const ON_PolylineCurve boundary_polyline(corners);
+
+  auto* detail = new ON_DetailView();
+  if (boundary_polyline.NurbsCurve(&detail->m_boundary) == nullptr) {
+    delete detail;
+    return -1;
+  }
+  detail->m_page_per_model_ratio = page_per_model_ratio;
+
+  if (camera_location.has_value() && target_point.has_value()) {
+    detail->m_view.m_vp.SetCameraLocation(*camera_location);
+    Vector3d direction = *target_point - *camera_location;
+    if (!direction.IsValid() || direction.IsZero()) {
+      direction = Vector3d(0, 0, -1);
+    } else {
+      direction.Unitize();
+    }
+    detail->m_view.m_vp.SetCameraDirection(direction);
+    detail->m_view.m_vp.SetCameraUp(camera_up);
+    detail->m_view.SetTargetPoint(*target_point);
+    detail->m_view.m_view_type = ON::view_type::nested_view_type;
+  }
+
+  const int index = DetailViewCount();
+  ON_3dmObjectAttributes attributes = MakeAttributes(
+      name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
+  attributes.m_space = ON::active_space::page_space;
+  attributes.m_viewport_id = layout_viewport_id;
+  model_.AddModelGeometryComponent(detail, &attributes);
+  return index;
+}
+
+int Model::DetailViewCount() const {
+  int count = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    if (ON_DetailView::Cast(geometry_component->Geometry(nullptr)) != nullptr) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+DetailViewInfo Model::DetailViewAt(int detail_view_index) const {
+  DetailViewInfo result;
+  if (detail_view_index < 0) {
+    return result;
+  }
+  int position = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_DetailView* detail = ON_DetailView::Cast(geometry_component->Geometry(nullptr));
+    if (detail == nullptr) {
+      continue;
+    }
+    if (position == detail_view_index) {
+      const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+      if (attributes != nullptr) {
+        result.name = ToStdString(attributes->Name());
+        for (int i = 0; i < model_.m_settings.m_views.Count(); ++i) {
+          if (ON_UuidCompare(model_.m_settings.m_views[i].m_vp.ViewportId(), attributes->m_viewport_id) ==
+              0) {
+            result.layout_index = i;
+            break;
+          }
+        }
+      }
+      const ON_BoundingBox bbox = detail->m_boundary.BoundingBox();
+      result.x_mm = bbox.m_min.x;
+      result.y_mm = bbox.m_min.y;
+      result.width_mm = bbox.m_max.x - bbox.m_min.x;
+      result.height_mm = bbox.m_max.y - bbox.m_min.y;
+      result.page_per_model_ratio = detail->m_page_per_model_ratio;
+      if (detail->m_view.m_view_type == ON::view_type::nested_view_type) {
+        result.camera_location = detail->m_view.m_vp.CameraLocation();
+        result.target_point = detail->m_view.TargetPoint();
+        result.camera_up = detail->m_view.m_vp.CameraUp();
+      }
+      return result;
+    }
+    ++position;
+  }
+  return result;
+}
+
+int Model::AddExtrusion(const std::vector<Point2d>& profile, double path_length, bool capped,
+                         const std::string& name, int layer_index, std::optional<Color> render_color,
+                         const UserStrings& user_strings, std::optional<int> linetype_index,
+                         const std::vector<int>& group_indices, std::optional<int> material_index) {
+  if (name.empty() || profile.size() < 3 || !(path_length > 0.0)) {
+    return -1;
+  }
+  ON_3dPointArray profile_points;
+  for (const Point2d& p : profile) {
+    profile_points.Append(ON_3dPoint(p.x, p.y, 0.0));
+  }
+  profile_points.Append(profile_points[0]);  // ON_PolylineCurve requires an explicitly closed point list
+  auto* outer_profile = new ON_PolylineCurve(profile_points);
+
+  auto* extrusion = new ON_Extrusion();
+  if (!extrusion->SetPathAndUp(ON_3dPoint(0.0, 0.0, 0.0), ON_3dPoint(0.0, 0.0, path_length),
+                                ON_3dVector(0.0, 1.0, 0.0))) {
+    delete outer_profile;
+    delete extrusion;
+    return -1;
+  }
+  if (!extrusion->SetOuterProfile(outer_profile, capped)) {
+    // SetOuterProfile() only takes ownership of outer_profile on success
+    // (ON_Extrusion's own documented contract) - still ours to delete here.
+    delete outer_profile;
+    delete extrusion;
+    return -1;
+  }
+
+  const int index = ExtrusionCount();
+  ON_3dmObjectAttributes attributes = MakeAttributes(
+      name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
+  model_.AddModelGeometryComponent(extrusion, &attributes);
+  return index;
+}
+
+int Model::ExtrusionCount() const {
+  int count = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    if (ON_Extrusion::Cast(geometry_component->Geometry(nullptr)) != nullptr) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+ExtrusionInfo Model::ExtrusionAt(int extrusion_index) const {
+  ExtrusionInfo result;
+  if (extrusion_index < 0) {
+    return result;
+  }
+  int position = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_Extrusion* extrusion = ON_Extrusion::Cast(geometry_component->Geometry(nullptr));
+    if (extrusion == nullptr) {
+      continue;
+    }
+    if (position == extrusion_index) {
+      const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+      if (attributes != nullptr) {
+        result.name = ToStdString(attributes->Name());
+      }
+      result.path_length = extrusion->PathStart().DistanceTo(extrusion->PathEnd());
+      result.capped = (extrusion->IsCapped() == 3);
+      const ON_Curve* profile_curve = extrusion->Profile(0);
+      if (profile_curve != nullptr) {
+        ON_3dPointArray points;
+        if (profile_curve->IsPolyline(&points) >= 2) {
+          // The curve this kernel built for SetOuterProfile() always has
+          // an explicitly duplicated closing point (same convention
+          // AddHatch()'s own boundary loop uses) - dropped here so
+          // `profile` round-trips exactly what AddExtrusion() was given.
+          const int usable = points.Count() - 1;
+          for (int i = 0; i < usable; ++i) {
+            result.profile.push_back(Point2d(points[i].x, points[i].y));
+          }
+        }
+      }
+      return result;
+    }
+    ++position;
+  }
   return result;
 }
 
@@ -797,7 +1009,7 @@ InstanceReferenceInfo Model::InstanceReferenceAt(int index) const {
 }
 
 int Model::AddHatchPattern(const std::string& name, HatchFillType fill_type,
-                            const std::vector<HatchPatternLine>& lines) {
+                            const std::vector<HatchPatternLine>& lines, const std::string& description) {
   if (name.empty()) {
     return -1;
   }
@@ -805,6 +1017,9 @@ int Model::AddHatchPattern(const std::string& name, HatchFillType fill_type,
   pattern.SetName(ON_wString(name.c_str()));
   pattern.SetFillType(fill_type == HatchFillType::Lines ? ON_HatchPattern::HatchFillType::Lines
                                                          : ON_HatchPattern::HatchFillType::Solid);
+  if (!description.empty()) {
+    pattern.SetDescription(ON_wString(description.c_str()));
+  }
   for (const HatchPatternLine& line : lines) {
     ON_SimpleArray<double> dash_array;
     for (double dash : line.dashes) {
@@ -821,6 +1036,16 @@ int Model::AddHatchPattern(const std::string& name, HatchFillType fill_type,
 
 int Model::HatchPatternCount() const {
   return static_cast<int>(model_.ActiveComponentCount(ON_ModelComponent::Type::HatchPattern));
+}
+
+std::string Model::HatchPatternDescriptionAt(int pattern_index) const {
+  if (pattern_index < 0) {
+    return std::string();
+  }
+  const ON_ModelComponentReference pattern_ref =
+      model_.ComponentFromIndex(ON_ModelComponent::Type::HatchPattern, pattern_index);
+  const ON_HatchPattern* pattern = ON_HatchPattern::Cast(pattern_ref.ModelComponent());
+  return pattern != nullptr ? ToStdString(pattern->Description()) : std::string();
 }
 
 int Model::HatchPatternLineCount(int pattern_index) const {
@@ -863,9 +1088,19 @@ int Model::AddHatch(const ON_Plane& plane, const std::vector<Point2d>& boundary,
                      double pattern_rotation, double pattern_scale, const std::string& name,
                      int layer_index, std::optional<Color> render_color, const UserStrings& user_strings,
                      std::optional<int> linetype_index, const std::vector<int>& group_indices,
-                     std::optional<int> material_index) {
+                     std::optional<int> material_index,
+                     const std::vector<std::vector<Point2d>>& hole_boundaries) {
   if (name.empty() || boundary.size() < 3 || pattern_index < 0) {
     return -1;
+  }
+  // Every hole is validated up front, before any ON_Curve (let alone the
+  // ON_Hatch itself) is built, so a bad hole leaves this call a no-op
+  // exactly like a bad `boundary` already does - never a hatch with only
+  // some of its requested holes.
+  for (const std::vector<Point2d>& hole : hole_boundaries) {
+    if (hole.size() < 3) {
+      return -1;
+    }
   }
   const ON_ModelComponentReference pattern_ref =
       model_.ComponentFromIndex(ON_ModelComponent::Type::HatchPattern, pattern_index);
@@ -873,18 +1108,35 @@ int Model::AddHatch(const ON_Plane& plane, const std::vector<Point2d>& boundary,
     return -1;
   }
   // ON_HatchLoop's own doc comment: "the 2d loop curve in the hatch's plane
-  // coordinates ... really a 3d curve with z coordinates = 0" - so `boundary`
+  // coordinates ... really a 3d curve with z coordinates = 0" - so each
+  // loop (the outer `boundary`, then every entry of `hole_boundaries`)
   // becomes a closed 3D polyline with each (u, v) point's z forced to 0,
-  // not a curve in world coordinates.
-  ON_3dPointArray loop_points;
-  for (const Point2d& uv : boundary) {
-    loop_points.Append(ON_3dPoint(uv.x, uv.y, 0.0));
-  }
-  loop_points.Append(loop_points[0]);  // ON_PolylineCurve requires an explicitly closed point list
-  ON_PolylineCurve loop_curve(loop_points);
+  // not a curve in world coordinates. Every loop curve is built into one
+  // `loop_curves` array up front (reserved to its final size so no
+  // reallocation ever invalidates a pointer already appended to `loops`
+  // below) and kept alive until `hatch->Create()` returns, since that call
+  // only reads from the `ON_Curve*` pointers it's given - it doesn't take
+  // ownership of them.
+  std::vector<ON_PolylineCurve> loop_curves;
+  loop_curves.reserve(1 + hole_boundaries.size());
   ON_SimpleArray<const ON_Curve*> loops;
-  loops.Append(static_cast<const ON_Curve*>(&loop_curve));
+  auto append_loop = [&loop_curves, &loops](const std::vector<Point2d>& uv_points) {
+    ON_3dPointArray loop_points;
+    for (const Point2d& uv : uv_points) {
+      loop_points.Append(ON_3dPoint(uv.x, uv.y, 0.0));
+    }
+    loop_points.Append(loop_points[0]);  // ON_PolylineCurve requires an explicitly closed point list
+    loop_curves.emplace_back(loop_points);
+    loops.Append(static_cast<const ON_Curve*>(&loop_curves.back()));
+  };
+  append_loop(boundary);
+  for (const std::vector<Point2d>& hole : hole_boundaries) {
+    append_loop(hole);
+  }
   auto* hatch = new ON_Hatch();
+  // ON_Hatch::Create() types loops.Append()'s own first entry
+  // ON_HatchLoop::ltOuter and every one after it ltInner automatically
+  // (opennurbs_hatch.cpp) - `hole_boundaries` needs no explicit type here.
   if (!hatch->Create(plane, loops, pattern_index, pattern_rotation, pattern_scale)) {
     delete hatch;
     return -1;
@@ -929,21 +1181,35 @@ HatchInfo Model::HatchAt(int hatch_index) const {
         result.name = ToStdString(attributes->Name());
       }
       result.plane = hatch->Plane();
-      if (hatch->LoopCount() > 0) {
-        const ON_HatchLoop* loop = hatch->Loop(0);
+      // Loop 0 is always the outer boundary (AddHatch() appends it first,
+      // and ON_Hatch::Create() types loops.Append()'s own first entry
+      // ltOuter); every loop after it is one hole, in the same order
+      // AddHatch()'s own `hole_boundaries` was given - the read-side
+      // counterpart to that parameter.
+      for (int loop_index = 0; loop_index < hatch->LoopCount(); ++loop_index) {
+        const ON_HatchLoop* loop = hatch->Loop(loop_index);
         const ON_Curve* loop_curve = loop != nullptr ? loop->Curve() : nullptr;
-        if (loop_curve != nullptr) {
-          // The loop curve is a closed polyline whose last point duplicates
-          // its first (see AddHatch() above, which appends that duplicate
-          // to close ON_PolylineCurve's own point list) - dropped here so
-          // `boundary` round-trips exactly what AddHatch() was given.
-          ON_3dPointArray points;
-          if (loop_curve->IsPolyline(&points) >= 2) {
-            const int usable = points.Count() - 1;
-            for (int i = 0; i < usable; ++i) {
-              result.boundary.push_back(Point2d(points[i].x, points[i].y));
-            }
-          }
+        if (loop_curve == nullptr) {
+          continue;
+        }
+        // The loop curve is a closed polyline whose last point duplicates
+        // its first (see AddHatch() above, which appends that duplicate to
+        // close ON_PolylineCurve's own point list) - dropped here so
+        // `boundary`/each `hole_boundaries` entry round-trips exactly what
+        // AddHatch() was given.
+        ON_3dPointArray points;
+        if (loop_curve->IsPolyline(&points) < 2) {
+          continue;
+        }
+        std::vector<Point2d> loop_uv;
+        const int usable = points.Count() - 1;
+        for (int i = 0; i < usable; ++i) {
+          loop_uv.emplace_back(points[i].x, points[i].y);
+        }
+        if (loop_index == 0) {
+          result.boundary = std::move(loop_uv);
+        } else {
+          result.hole_boundaries.push_back(std::move(loop_uv));
         }
       }
       result.pattern_index = hatch->PatternIndex();
@@ -1133,6 +1399,74 @@ LeaderInfo Model::LeaderAt(int leader_index) const {
       for (int i = 0; i < points2d.Count(); ++i) {
         result.points.push_back(result.plane.PointAt(points2d[i].x, points2d[i].y));
       }
+      return result;
+    }
+    ++position;
+  }
+  return result;
+}
+
+int Model::AddDimensionLinear(const Point3d& extension_point0, const Point3d& extension_point1,
+                               const Point3d& dimension_line_point, const Vector3d& plane_normal,
+                               const std::string& name, int layer_index, std::optional<Color> render_color,
+                               const UserStrings& user_strings, std::optional<int> linetype_index,
+                               const std::vector<int>& group_indices, std::optional<int> material_index) {
+  if (name.empty()) {
+    return -1;
+  }
+  auto* annotation = new ON_DimLinear();
+  if (ON_DimLinear::CreateAligned(extension_point0, extension_point1, dimension_line_point, plane_normal,
+                                   ON_DimStyle::Default.Id(), annotation) == nullptr) {
+    delete annotation;
+    return -1;
+  }
+  const int index = DimensionLinearCount();
+  ON_3dmObjectAttributes attributes = MakeAttributes(
+      name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
+  model_.AddModelGeometryComponent(annotation, &attributes);
+  return index;
+}
+
+int Model::DimensionLinearCount() const {
+  int count = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    if (ON_DimLinear::Cast(geometry_component->Geometry(nullptr)) != nullptr) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+DimensionLinearInfo Model::DimensionLinearAt(int dimension_index) const {
+  DimensionLinearInfo result;
+  if (dimension_index < 0) {
+    return result;
+  }
+  int position = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_DimLinear* annotation = ON_DimLinear::Cast(geometry_component->Geometry(nullptr));
+    if (annotation == nullptr) {
+      continue;
+    }
+    if (position == dimension_index) {
+      const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+      if (attributes != nullptr) {
+        result.name = ToStdString(attributes->Name());
+      }
+      const ON_Plane& plane = annotation->Plane();
+      const ON_2dPoint p1 = annotation->DefPoint1();
+      const ON_2dPoint p2 = annotation->DefPoint2();
+      const ON_2dPoint dl = annotation->DimlinePoint();
+      result.extension_point0 = plane.PointAt(p1.x, p1.y);
+      result.extension_point1 = plane.PointAt(p2.x, p2.y);
+      result.dimension_line_point = plane.PointAt(dl.x, dl.y);
+      result.measurement = annotation->Measurement();
       return result;
     }
     ++position;

@@ -27,3 +27,93 @@ PlanarUnion
 SelAll
 Delete
 @expect_objects 0
+
+# --- N-ary exact path (round 40): the exact-polygon fast path above used
+# to be hardcoded to exactly 2 regions (RegionBoolean, cmd_solidtools.cpp,
+# "set->regions.size() == 2") even though kernel::PolygonBooleanPlanarNAry
+# already existed and was already tested standalone, with zero callers
+# anywhere in dino8-app - PARITY_MAP.md's own "2D region / planar curve
+# booleans" bullet named this gap by name ("no dino8-app command calls
+# this function... for more than two operands yet"). Now PlanarUnion/
+# PlanarDifference/CurveBoolean take the exact path for N>=2 plain-
+# polygon regions. Three right-nested rectangles sharing the same right
+# edge (x=4): a=[0,4]x[0,4] (area 16), b=[1,4]x[0,4] (area 12, a strict
+# subset of a), c=[2,4]x[0,4] (area 8, a strict subset of b) - every pair
+# genuinely overlaps (never "touching only" along a zero-area edge), so
+# the left-to-right fold order PolygonBooleanPlanarNAry uses internally
+# can't hit the degenerate fold-order case this category's own kernel-
+# level "Twenty-fourth note" already disclosed for a touching-only pair.
+New
+SetActiveViewport Top
+Rectangle 0,0,0 4,4,0
+Rectangle 1,0,0 4,4,0
+Rectangle 2,0,0 4,4,0
+SelNone
+SelID 1
+SelID 2
+SelID 3
+# Union of all three == a alone (b, c are each a strict subset of a):
+# one exact closed curve, the three sources left in place (DeleteInput
+# defaults to false) - 3 + 1 = 4.
+PlanarUnion
+@expect_objects 4
+SelAll
+Delete
+@expect_objects 0
+
+New
+SetActiveViewport Top
+Rectangle 0,0,0 4,4,0
+Rectangle 1,0,0 4,4,0
+Rectangle 2,0,0 4,4,0
+SelNone
+SelID 1
+SelID 2
+SelID 3
+# PlanarDifference is "first minus the rest": a - b - c == a - (b union c)
+# == a - b (c is already a subset of b) == [0,1]x[0,4], one exact closed
+# curve - 3 + 1 = 4. This is the one case that cannot route through a
+# single PolygonBooleanPlanarNAry call with every region in one group
+# the way Union does (first_group={a}, second_group={b, c}).
+PlanarDifference
+@expect_objects 4
+SelAll
+Delete
+@expect_objects 0
+
+New
+SetActiveViewport Top
+Rectangle 0,0,0 4,4,0
+Rectangle 1,0,0 4,4,0
+Rectangle 2,0,0 4,4,0
+SelNone
+# CurveBoolean's own Operation option can't be set via a trailing
+# "Operation=Intersection" token on the SAME line as a preselected
+# invocation ("SelID 1/2/3" then "CurveBoolean Operation=..."): with
+# objects already selected, CommandEngine::AfterCallback's own
+# preselection check (CommandEngine.cpp) hands them to the command and
+# finishes it immediately, before CurveBoolean's own queued option token
+# is ever drained - a real, pre-existing engine quirk (CurveBoolean's
+# Tool has exactly one step, Objects, so there is nothing left to do once
+# objects arrive), found while writing this test, not assumed. Starting
+# the command with NOTHING selected instead avoids it: the option is
+# drained and applied while the command is still waiting for objects
+# (CurveBoolean's own Tool has no preselection left to consume at that
+# point), then SelID/Enter - the same "nested selection command, then
+# Enter to submit" sequence this file's own CageEdit/SelControls section
+# in solidtools_script.txt already uses - supplies the three regions.
+CurveBoolean Operation=Intersection
+SelID 1
+SelID 2
+SelID 3
+Enter
+# Intersection has no single PolygonBooleanPlanarNAry call that means
+# "intersect every region" (its own Intersection op unions each GROUP
+# first, then intersects the two unions) - RegionBoolean instead chains
+# pairwise kernel::PolygonBooleanPlanar calls region-by-region. a∩b∩c ==
+# c (c is a subset of b is a subset of a) == [2,4]x[0,4], one exact
+# closed curve - 3 + 1 = 4.
+@expect_objects 4
+SelAll
+Delete
+@expect_objects 0

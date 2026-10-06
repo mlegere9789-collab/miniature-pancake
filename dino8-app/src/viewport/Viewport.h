@@ -182,12 +182,15 @@ class Viewport {
     // View-dependent adaptive tessellation: curve_tolerance/surface_tolerance
     // above scaled by this factor before use (see AdaptiveTessellation.h's
     // LodScaleForPixelSize). Set once per frame by Application::
-    // MakeFrameContext from the *active*
-    // viewport's own current zoom and shared by every viewport's DrawObjects
-    // this frame - not recomputed per viewport - so all open viewports
-    // tessellate a given object identically and never fight over its one
-    // shared SceneObject display cache by requesting different resolutions
-    // in the same frame. 1.0 (its default) means no scaling.
+    // MakeFrameContext from FinestLodScale across every open, visible
+    // viewport's own current zoom (not just the active one - see that
+    // function's own comment for why) and shared by every viewport's
+    // DrawObjects this frame - not recomputed per viewport - so all open
+    // viewports tessellate a given object identically and never fight over
+    // its one shared SceneObject display cache by requesting different
+    // resolutions in the same frame, while still never landing coarser
+    // than any one of them actually needs. 1.0 (its default) means no
+    // scaling.
     double lod_scale = 1.0;
     // App-wide surface analysis applied to objects whose own `analysis`
     // mode is None (null or mode None = plain shading).
@@ -337,6 +340,10 @@ class Viewport {
   // skipped (renderer keeps no shadow for it this frame) if there is
   // nothing visible or that light has no usable direction.
   void DrawShadowPass(GlRenderer& renderer, const FrameContext& ctx, const std::vector<GpuLight>& lights);
+  // Real screen-space ambient occlusion (GlRenderer::BeginSsaoPass/
+  // EndSsaoPass): a depth-only prepass of the opaque scene, exactly like
+  // DrawShadowPass's own recursive DrawObjects call below.
+  void DrawSsaoPass(GlRenderer& renderer, const FrameContext& ctx);
   void DrawGroundPlane(GlRenderer& renderer, const FrameContext& ctx);
   void DrawLightWidgets(GlRenderer& renderer, const Document& doc);
   void DrawAxesGizmo(GlRenderer& renderer);

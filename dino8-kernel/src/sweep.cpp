@@ -1930,14 +1930,26 @@ Brep Brep::ExtrudeFace(const Brep& body, int face_index, Vector3d direction, boo
 
 namespace {
 
-// Walks `wire_body`'s own edge/vertex graph into one ordered, fully-
-// connected chain of edge indices - shared machinery for
-// Brep::ExtrudeWireBody() below. Returns an empty vector to signal
-// refusal (a branch point, or more than one disjoint wire component) -
-// never ambiguous with success, since a genuine IsWireBody() Brep always
-// has at least one live edge, so a successful walk is never itself
-// empty.
-std::vector<int> WalkWireChain(const Brep& wire_body) {
+// Walks `wire_body`'s own edge/vertex graph into one ordered edge-index
+// chain PER CONNECTED COMPONENT - shared machinery for
+// Brep::ExtrudeWireBody()/Brep::OffsetWireBody() below, the multi-
+// component generalization of this file's own prior single-chain-only
+// walk (every caller now wants every component, not just a refusal the
+// moment a second one is found). A branch point (any vertex touching 3
+// or more live edges, anywhere in the
+// body, in any component) still refuses the WHOLE call by returning an
+// empty outer vector - only "more than one disjoint wire component" is
+// no longer, by itself, a refusal reason: each component independently
+// walks as either a single open path (two degree-1 endpoint vertices)
+// or a single closed loop (every vertex degree exactly 2, including the
+// one-edge case of a curve closed on itself through a single self-
+// referencing vertex - a self-closed edge's own single vertex lists
+// that edge twice, so it reports degree 2, correctly routing it into
+// the closed-loop case rather than being mistaken for a chain end). A
+// genuine IsWireBody() Brep always has at least one live edge, so
+// success is never itself an empty outer vector, and no chain inside it
+// is ever itself empty.
+std::vector<std::vector<int>> WalkWireChains(const Brep& wire_body) {
   const ON_Brep& b = wire_body.raw();
 
   std::vector<int> live_edges;
@@ -1947,11 +1959,10 @@ std::vector<int> WalkWireChain(const Brep& wire_body) {
   if (live_edges.empty()) return {};
 
   // A vertex touching 3+ live edges is a branch point - refused up
-  // front, before any walk is attempted. A degree-1 vertex is one of
-  // (at most two) chain ends; a self-closed edge's own single vertex
-  // lists that edge twice (see KillEdgeVertex()'s own doc comment), so
-  // it reports degree 2, correctly routing it into the "closed loop"
-  // case below rather than being mistaken for a chain end.
+  // front, before any walk is attempted, exactly as the single-chain
+  // version of this check always has. Every other live vertex is degree
+  // 1 (a leaf - one of some component's own two chain ends) or degree 2
+  // (an interior chain vertex, or every vertex of a closed loop).
   std::vector<int> leaves;
   for (int vi = 0; vi < b.m_V.Count(); ++vi) {
     if (b.m_V[vi].m_vertex_index < 0) continue;
@@ -1960,57 +1971,67 @@ std::vector<int> WalkWireChain(const Brep& wire_body) {
     if (degree > 2) return {};
     if (degree == 1) leaves.push_back(vi);
   }
-  // Exactly 0 (one or more closed loops) or exactly 2 (one open chain)
-  // ends are structurally sound so far; anything else (e.g. 4, from two
-  // disjoint open chains) is refused here without even attempting a
-  // walk. Whether a lone open chain plus a separate closed loop (0 + 2 =
-  // 2 leaves, structurally passing this check) is genuinely one
-  // component is caught below instead, by the walk not covering every
-  // live edge.
-  if (!leaves.empty() && leaves.size() != 2) return {};
 
-  const int start_vertex = leaves.empty() ? b.m_E[live_edges.front()].m_vi[0] : leaves.front();
-
-  std::vector<int> order;
   std::vector<bool> visited(static_cast<size_t>(b.m_E.Count()), false);
-  int current = start_vertex;
-  while (order.size() < live_edges.size()) {
-    int next_edge = -1;
-    for (const int ei : wire_body.EdgesOfVertex(current)) {
-      if (!visited[static_cast<size_t>(ei)]) {
-        next_edge = ei;
-        break;
+  auto walk_from = [&](int start_vertex) {
+    std::vector<int> order;
+    int current = start_vertex;
+    while (true) {
+      int next_edge = -1;
+      for (const int ei : wire_body.EdgesOfVertex(current)) {
+        if (!visited[static_cast<size_t>(ei)]) {
+          next_edge = ei;
+          break;
+        }
       }
+      if (next_edge < 0) break;  // this component's own chain end (or back to a closed loop's start) reached
+      visited[static_cast<size_t>(next_edge)] = true;
+      order.push_back(next_edge);
+      const ON_BrepEdge& e = b.m_E[next_edge];
+      current = (e.m_vi[0] == current) ? e.m_vi[1] : e.m_vi[0];
     }
-    if (next_edge < 0) break;  // chain end reached
-    visited[static_cast<size_t>(next_edge)] = true;
-    order.push_back(next_edge);
-    const ON_BrepEdge& e = b.m_E[next_edge];
-    current = (e.m_vi[0] == current) ? e.m_vi[1] : e.m_vi[0];
+    return order;
+  };
+
+  std::vector<std::vector<int>> chains;
+  // Open-chain components: start from each leaf, skipping the second
+  // leaf of a chain this loop already walked from its other end (its
+  // one touching edge is already visited by then).
+  for (const int leaf : leaves) {
+    bool already_visited = false;
+    for (const int ei : wire_body.EdgesOfVertex(leaf)) {
+      already_visited = already_visited || visited[static_cast<size_t>(ei)];
+    }
+    if (already_visited) continue;
+    chains.push_back(walk_from(leaf));
   }
-  // A short walk means a branch was taken that didn't reach every live
-  // edge (e.g. the lone-open-chain-plus-closed-loop case above) - a
-  // disjoint second component this function refuses rather than guesses
-  // which one the caller meant.
-  if (order.size() != live_edges.size()) return {};
-  return order;
+  // Closed-loop components: no leaf touches one at all (every one of
+  // its vertices is degree 2), so any live edge still unvisited once
+  // every open chain above is walked belongs to one.
+  for (const int ei : live_edges) {
+    if (visited[static_cast<size_t>(ei)]) continue;
+    chains.push_back(walk_from(b.m_E[ei].m_vi[0]));
+  }
+
+  // Defensive self-check only: with no branch point anywhere (already
+  // refused above), every connected component IS a single open chain or
+  // a single closed loop, so every live edge is necessarily walked into
+  // exactly one chain above - this can't actually trip.
+  size_t total = 0;
+  for (const std::vector<int>& chain : chains) total += chain.size();
+  if (total != live_edges.size()) return {};
+  return chains;
 }
 
 }  // namespace
 
-Brep Brep::ExtrudeWireBody(const Brep& wire_body, Vector3d direction, bool cap) {
-  const char* caller = "ExtrudeWireBody";
-  if (!(direction.Length() > 0.0)) Fail(caller, "direction must be non-zero (its length is the extrusion distance)");
-  if (!wire_body.IsWireBody()) {
-    Fail(caller, "wire_body must satisfy IsWireBody() (at least one live edge, zero live faces)");
-  }
-  const std::vector<int> chain = WalkWireChain(wire_body);
-  if (chain.empty()) {
-    Fail(caller,
-         "wire_body's own edge graph must be a single simple open chain or closed loop - a branch point (a "
-         "vertex touching 3 or more edges) or more than one disjoint wire component is out of scope");
-  }
+namespace {
 
+// Joins one WalkWireChains() chain's own edge curves, in walk order,
+// into one continuous profile - the shared per-chain step
+// ExtrudeWireBody()/OffsetWireBody() each now apply once per component
+// rather than once per whole call.
+NurbsCurve JoinWireChainProfile(const Brep& wire_body, const std::vector<int>& chain, const char* caller) {
   const ON_Brep& b = wire_body.raw();
   auto edge_curve = [&](int edge_index) {
     ON_NurbsCurve nc;
@@ -2025,8 +2046,8 @@ Brep Brep::ExtrudeWireBody(const Brep& wire_body, Vector3d direction, bool cap) 
   NurbsCurve profile = edge_curve(chain.front());
   for (size_t k = 1; k < chain.size(); ++k) {
     NurbsCurve next = edge_curve(chain[k]);
-    // The walk above only ever follows edges sharing a real ON_BrepVertex,
-    // so `next` is always genuinely meant to continue `profile` - measure
+    // The walk only ever follows edges sharing a real ON_BrepVertex, so
+    // `next` is always genuinely meant to continue `profile` - measure
     // the actual gap (rather than assuming WireBody()'s/AddWireCurves()'
     // own possibly-looser caller-chosen weld tolerance matches Join()'s
     // fixed 1e-6 default) and pass a tolerance comfortably above it, so
@@ -2041,8 +2062,42 @@ Brep Brep::ExtrudeWireBody(const Brep& wire_body, Vector3d direction, bool cap) 
                        "sharing a vertex - a wire-body invariant this function relies on was violated");
     }
   }
+  return profile;
+}
 
-  return Extrude(profile, direction, cap);
+}  // namespace
+
+Brep Brep::ExtrudeWireBody(const Brep& wire_body, Vector3d direction, bool cap) {
+  const char* caller = "ExtrudeWireBody";
+  if (!(direction.Length() > 0.0)) Fail(caller, "direction must be non-zero (its length is the extrusion distance)");
+  if (!wire_body.IsWireBody()) {
+    Fail(caller, "wire_body must satisfy IsWireBody() (at least one live edge, zero live faces)");
+  }
+  const std::vector<std::vector<int>> chains = WalkWireChains(wire_body);
+  if (chains.empty()) {
+    Fail(caller,
+         "wire_body's own edge graph must be made up of simple open chains and/or closed loops only - a branch "
+         "point (a vertex touching 3 or more edges) anywhere is out of scope");
+  }
+
+  if (chains.size() == 1) {
+    return Extrude(JoinWireChainProfile(wire_body, chains.front(), caller), direction, cap);
+  }
+
+  // Several disjoint wire components (e.g. two separate closed loops,
+  // or an open chain plus a separate closed loop, in the same wire
+  // body): extrude each one independently, exactly as the single-
+  // component case above does, then concatenate the results via the
+  // existing multi-lump Compound() - deliberately unwelded, the same
+  // "Lumps are deliberately NOT welded to each other" contract
+  // Compound() already documents, since these components never shared
+  // any geometry with each other to begin with.
+  std::vector<Brep> pieces;
+  pieces.reserve(chains.size());
+  for (const std::vector<int>& chain : chains) {
+    pieces.push_back(Extrude(JoinWireChainProfile(wire_body, chain, caller), direction, cap));
+  }
+  return Compound(pieces);
 }
 
 Brep Brep::OffsetWireBody(const Brep& wire_body, double distance, double tolerance) {
@@ -2050,48 +2105,37 @@ Brep Brep::OffsetWireBody(const Brep& wire_body, double distance, double toleran
   if (!wire_body.IsWireBody()) {
     Fail(caller, "wire_body must satisfy IsWireBody() (at least one live edge, zero live faces)");
   }
-  const std::vector<int> chain = WalkWireChain(wire_body);
-  if (chain.empty()) {
+  const std::vector<std::vector<int>> chains = WalkWireChains(wire_body);
+  if (chains.empty()) {
     Fail(caller,
-         "wire_body's own edge graph must be a single simple open chain or closed loop - a branch point (a "
-         "vertex touching 3 or more edges) or more than one disjoint wire component is out of scope");
+         "wire_body's own edge graph must be made up of simple open chains and/or closed loops only - a branch "
+         "point (a vertex touching 3 or more edges) anywhere is out of scope");
   }
 
-  const ON_Brep& b = wire_body.raw();
-  auto edge_curve = [&](int edge_index) {
-    ON_NurbsCurve nc;
-    if (b.m_E[edge_index].GetNurbForm(nc) <= 0) {
-      Internal(caller, "a wire edge's own curve could not be converted to an exact NURBS form");
+  // Each component's own joined profile is offset independently (same
+  // single-component construction OffsetWireBody() always used), then
+  // every resulting offset curve is rebuilt into ONE fresh, independent
+  // wire body via a single WireBody() call - which already welds
+  // curves that happen to share an endpoint and leaves genuinely
+  // disjoint ones apart (see WireBody()'s/AddWireCurves()'s own tests),
+  // so a multi-component input's own disjointness is preserved for free
+  // rather than needing a separate compounding step the way
+  // ExtrudeWireBody() needs Compound() (a pure wire body has zero
+  // faces, so Compound() itself would just discard it - see Compound()'s
+  // own "the empty set: contributes nothing" rule).
+  std::vector<NurbsCurve> offsets;
+  offsets.reserve(chains.size());
+  for (const std::vector<int>& chain : chains) {
+    NurbsCurve profile = JoinWireChainProfile(wire_body, chain, caller);
+    NurbsCurve offset;
+    if (profile.OffsetInPlane(distance, offset, tolerance) != Result::Ok) {
+      Fail(caller, "the wire body's own joined profile could not be offset - it is not planar within tolerance, "
+                   "or the requested distance folds it through itself or through its own center of curvature");
     }
-    NurbsCurve c;
-    c.raw() = nc;
-    return c;
-  };
-
-  NurbsCurve profile = edge_curve(chain.front());
-  for (size_t k = 1; k < chain.size(); ++k) {
-    NurbsCurve next = edge_curve(chain[k]);
-    // Same actual-gap-driven join tolerance ExtrudeWireBody() uses above,
-    // for the same reason: don't assume Join()'s fixed 1e-6 default
-    // matches whatever caller-chosen weld tolerance WireBody()/
-    // AddWireCurves() built the wire body with.
-    const Point3d end = profile.PointAt(profile.Domain().max);
-    const Interval nd = next.Domain();
-    const double gap = std::min(end.DistanceTo(next.PointAt(nd.min)), end.DistanceTo(next.PointAt(nd.max)));
-    const double join_tolerance = std::max(tolerance::kDistance, 2.0 * gap + tolerance::kDistance);
-    if (profile.Join(next, join_tolerance) != Result::Ok) {
-      Internal(caller, "the wire body's own edge curves failed to join into one continuous profile despite "
-                       "sharing a vertex - a wire-body invariant this function relies on was violated");
-    }
+    offsets.push_back(offset);
   }
 
-  NurbsCurve offset;
-  if (profile.OffsetInPlane(distance, offset, tolerance) != Result::Ok) {
-    Fail(caller, "the wire body's own joined profile could not be offset - it is not planar within tolerance, "
-                 "or the requested distance folds it through itself or through its own center of curvature");
-  }
-
-  return WireBody({offset}, tolerance::kDistance);
+  return WireBody(offsets, tolerance::kDistance);
 }
 
 Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
@@ -2907,6 +2951,135 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
     }
   }
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
+}
+
+namespace {
+
+// Position + pure cross-boundary derivatives (up to order `continuity`)
+// of `s` along its own isoparametric edge where parameter `rail_dir`
+// varies and the OTHER parameter is fixed at `fixed_t` - the surface
+// analogue of curve.cpp's own (anonymous-namespace-private, so not
+// reusable across this translation unit boundary) `EvaluateBlendEnd`.
+// `der_array`'s layout for ON_Surface::Evaluate (opennurbs_evaluate_nurbs.h's
+// own doc comment: "Ds^i Dt^j is returned at n = stride*((i+j)*(i+j+1)/2
+// + j)") puts the PURE fixed-direction term of order k at block offset
+// k*(k+1)/2, plus j = k within that block when the fixed parameter is v
+// (rail_dir == 0, i.e. j indexes the Dt/v power), or j = 0 when the fixed
+// parameter is u (rail_dir == 1) - confirmed directly against that header
+// comment, not guessed. `flip` negates ODD orders only (BlendSurfaces()'s
+// own doc comment derives why), mirroring EvaluateBlendEnd's `reverse`.
+bool EvaluateSurfaceBlendEnd(const ON_Surface& s, int rail_dir, double rail_t, double fixed_t, bool flip,
+                             int continuity, Point3d& out_point, std::array<Vector3d, 3>& out_derivs) {
+  const double u = rail_dir == 0 ? rail_t : fixed_t;
+  const double v = rail_dir == 0 ? fixed_t : rail_t;
+  double der[3 * 10] = {0.0};
+  if (!s.Evaluate(u, v, continuity, 3, der)) return false;
+  out_point = Point3d(der[0], der[1], der[2]);
+  for (int k = 1; k <= continuity; ++k) {
+    const int j = rail_dir == 0 ? k : 0;
+    const int off = (k * (k + 1) / 2 + j) * 3;
+    Vector3d d(der[off + 0], der[off + 1], der[off + 2]);
+    if (flip && (k % 2 == 1)) d = -d;
+    out_derivs[static_cast<size_t>(k - 1)] = d;
+  }
+  return true;
+}
+
+// The exact same closed-form Hermite-Bezier control-point construction
+// NurbsCurve::BlendCurves() builds (curve.cpp) from one (position,
+// derivatives) pair at each end - duplicated here rather than shared
+// across the translation unit boundary, since that function's own
+// version is anonymous-namespace-private to curve.cpp (the same "each
+// file keeps its own copy of these small, already-proven helpers"
+// convention the app layer's cmd_fillet.cpp/cmd_srfedit.cpp already
+// follow for their own small object/face helpers). See BlendCurves()'s
+// own doc comment for the textbook forward/backward Bezier finite-
+// difference derivation this is lifted from verbatim.
+std::vector<Point3d> HermiteBlendRow(const Point3d& P0, const std::array<Vector3d, 3>& D0, const Point3d& P1,
+                                      const std::array<Vector3d, 3>& D1, int continuity) {
+  const int d = 2 * continuity + 1;
+  const double inv_d1 = 1.0 / static_cast<double>(d);
+  const double inv_d2 = 1.0 / static_cast<double>(d * (d - 1));
+  const double inv_d3 = 1.0 / static_cast<double>(d * (d - 1) * (d - 2));
+  std::vector<Point3d> ctrl(static_cast<size_t>(d) + 1);
+  ctrl[0] = P0;
+  if (continuity >= 1) ctrl[1] = ctrl[0] + D0[0] * inv_d1;
+  if (continuity >= 2) ctrl[2] = ctrl[1] + (ctrl[1] - ctrl[0]) + D0[1] * inv_d2;
+  if (continuity >= 3) ctrl[3] = ctrl[0] + 3.0 * (ctrl[2] - ctrl[1]) + D0[2] * inv_d3;
+
+  ctrl[static_cast<size_t>(d)] = P1;
+  if (continuity >= 1) ctrl[static_cast<size_t>(d - 1)] = ctrl[static_cast<size_t>(d)] - D1[0] * inv_d1;
+  if (continuity >= 2) {
+    ctrl[static_cast<size_t>(d - 2)] = ctrl[static_cast<size_t>(d - 1)] -
+                                        (ctrl[static_cast<size_t>(d)] - ctrl[static_cast<size_t>(d - 1)]) +
+                                        D1[1] * inv_d2;
+  }
+  if (continuity >= 3) {
+    ctrl[static_cast<size_t>(d - 3)] =
+        ctrl[static_cast<size_t>(d)] - 3.0 * (ctrl[static_cast<size_t>(d - 1)] - ctrl[static_cast<size_t>(d - 2)]) -
+        D1[2] * inv_d3;
+  }
+  return ctrl;
+}
+
+}  // namespace
+
+Result NurbsSurface::BlendSurfaces(const NurbsSurface& srf0, int dir0, bool at_max0, const NurbsSurface& srf1,
+                                    int dir1, bool at_max1, bool reverse_rail1, int continuity, int rows,
+                                    NurbsSurface& out) {
+  if (continuity < 1 || continuity > 3) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::BlendSurfaces: continuity must be 1 (G1), 2 (G2) or 3 (G3)");
+  }
+  if (dir0 < 0 || dir0 > 1 || dir1 < 0 || dir1 > 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::BlendSurfaces: dir0/dir1 must be 0 or 1");
+  }
+  if (rows < 2) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::BlendSurfaces: rows must be at least 2");
+  }
+  const ON_Surface& s0 = srf0.raw();
+  const ON_Surface& s1 = srf1.raw();
+  const ON_Interval rail_dom0 = s0.Domain(dir0);
+  const ON_Interval fixed_dom0 = s0.Domain(1 - dir0);
+  const double fixed_t0 = at_max0 ? fixed_dom0.Max() : fixed_dom0.Min();
+  const ON_Interval rail_dom1 = s1.Domain(dir1);
+  const ON_Interval fixed_dom1 = s1.Domain(1 - dir1);
+  const double fixed_t1 = at_max1 ? fixed_dom1.Max() : fixed_dom1.Min();
+  const bool flip0 = !at_max0;
+  const bool flip1 = !at_max1;
+
+  std::vector<ON_NurbsCurve> rowCurves;
+  rowCurves.reserve(static_cast<size_t>(rows));
+  for (int k = 0; k < rows; ++k) {
+    const double t = static_cast<double>(k) / static_cast<double>(rows - 1);
+    const double rail_t0 = rail_dom0.ParameterAt(t);
+    const double t1 = reverse_rail1 ? 1.0 - t : t;
+    const double rail_t1 = rail_dom1.ParameterAt(t1);
+
+    Point3d P0, P1;
+    std::array<Vector3d, 3> D0{}, D1{};
+    if (!EvaluateSurfaceBlendEnd(s0, dir0, rail_t0, fixed_t0, flip0, continuity, P0, D0) ||
+        !EvaluateSurfaceBlendEnd(s1, dir1, rail_t1, fixed_t1, flip1, continuity, P1, D1)) {
+      return Result::Failed;
+    }
+    const double scale = std::max(1.0, P0.DistanceTo(Point3d(0, 0, 0)));
+    if (P0.DistanceTo(P1) <= 1e-9 * scale) return Result::Failed;
+
+    const std::vector<Point3d> ctrl = HermiteBlendRow(P0, D0, P1, D1, continuity);
+    rowCurves.push_back(NurbsCurve::FromControlPoints(ctrl, 2 * continuity + 1).raw());
+  }
+
+  const char* caller = "BlendSurfaces";
+  const int q = std::min(3, rows - 1);
+  double period = 1.0;
+  const std::vector<double> params = SkinParameters(rowCurves, false, &period, caller);
+  std::unique_ptr<ON_NurbsSurface> skin;
+  if (q == 1 && rows == 2) {
+    skin = RuledBetween(rowCurves[0], rowCurves[1], 0.0, 1.0, caller);
+  } else {
+    skin = SkinSections(rowCurves, q, false, params, period, caller);
+  }
+  out.surface_ = *skin;
+  return Result::Ok;
 }
 
 namespace {

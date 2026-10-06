@@ -1574,7 +1574,114 @@ class FilletEdgeCommand : public Command {
   }
   void OnEnter(CommandContext& ctx) override {
     FlushPendingConic(ctx);
+    FlushPendingFillet(ctx);
     Finish();
+  }
+  // Applies every staged plain-radius edge (see pending_fillet_'s own doc
+  // comment) in one kernel::FilletConvexEdges/FilletConcaveEdges call
+  // against the object's own CURRENT (still entirely untouched) Brep - the
+  // same convex-then-concave attempt FlushPendingConic already uses for the
+  // conic case, since neither function knows the edges' own convexity in
+  // advance. Unlike Rho, a failed batch (a curved face, a vertex
+  // configuration FilletConvexEdges/FilletConcaveEdges doesn't support,
+  // mismatched convexity, edges sharing a face, etc.) is not refused
+  // outright: it replays every staged edge through the EXACT same
+  // TryExactFillet-or-approximate cascade this command always used before
+  // staging existed (flushing_fillet_ makes Run()'s own staging check step
+  // aside for that replay), so a batch that can't help is never worse than
+  // the old per-edge-immediate behavior - only a batch that CAN help (the
+  // common case this pass actually closes: several edges meeting at a
+  // vertex, or a tangent chain FilletConvexEdges/FilletConcaveEdges already
+  // know how to merge) changes anything observable. A single staged edge
+  // gets the exact original "replaced with an exact fillet" message either
+  // way - FilletConvexEdges' own doc comment: a one-edge batch reproduces
+  // FilletConvexEdge's own result bit-for-bit, so this is additive, not a
+  // behavior change, for the already-ubiquitous single-edge case.
+  // Finds the edge of `b` whose two endpoints match (p0, p1), in either
+  // order, within `tol` - used both to read fresh per-edge points for the
+  // batch call below and, in the replay fallback, to re-resolve each
+  // staged edge's own CURRENT index (never assumed stable - see
+  // FlushPendingFillet's own doc comment for why). Returns -1 if none
+  // matches (the edge was itself consumed by an earlier replay in the same
+  // loop, e.g. two staged edges that turned out to share more than a
+  // vertex).
+  static int FindEdgeIndexByEndpoints(const ON_Brep& b, Point3d p0, Point3d p1, double tol) {
+    for (int i = 0; i < b.m_E.Count(); ++i) {
+      const ON_BrepEdge& e = b.m_E[i];
+      const Point3d a = e.PointAtStart(), c = e.PointAtEnd();
+      if ((a.DistanceTo(p0) <= tol && c.DistanceTo(p1) <= tol) || (a.DistanceTo(p1) <= tol && c.DistanceTo(p0) <= tol)) return i;
+    }
+    return -1;
+  }
+  void FlushPendingFillet(CommandContext& ctx) {
+    if (pending_fillet_.empty()) return;
+    const std::vector<std::pair<Point3d, Point3d>> edges = std::move(pending_fillet_);
+    const ObjectId id = pending_fillet_id_;
+    pending_fillet_.clear();
+    pending_fillet_id_ = kNoObject;
+    const std::string label = "FilletEdge";
+    const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
+    const SceneObject* o = ctx.Doc().Find(id);
+    std::optional<ON_Brep> b = o ? BrepOfObject(*o) : std::nullopt;
+    if (b) {
+      kernel::Brep kb;
+      kb.raw() = *b;
+      kernel::Brep result;
+      bool ok = false;
+      try {
+        result = kernel::FilletConvexEdges(kb, edges, radius_);
+        ok = true;
+      } catch (const std::exception&) {
+      }
+      if (!ok) {
+        try {
+          result = kernel::FilletConcaveEdges(kb, edges, radius_);
+          ok = true;
+        } catch (const std::exception&) {
+        }
+      }
+      if (ok) {
+        ctx.Doc().BeginChange(label);
+        if (SceneObject* orig = ctx.Doc().Find(id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = result.raw();
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        if (edges.size() == 1) {
+          const int ei = FindEdgeIndexByEndpoints(*b, edges.front().first, edges.front().second, tol);
+          ctx.Print(label + ": edge " + std::to_string(ei) + " of object " + std::to_string(id) +
+                     " replaced with an exact fillet (" + RadiusDescription() + ")");
+        } else {
+          ctx.Print(label + ": " + std::to_string(edges.size()) + " staged edges of object " + std::to_string(id) +
+                     " replaced with an exact multi-edge fillet (" + RadiusDescription() + ")");
+        }
+        return;
+      }
+    }
+    // Batch unavailable or failed - replay every staged edge through the
+    // unchanged, independent, single-edge TryExactFillet-or-approximate
+    // cascade, exactly reproducing this command's own pre-staging behavior.
+    // Each edge's own CURRENT index is re-resolved fresh right before its
+    // own Run() call, never assumed stable across iterations: an earlier
+    // iteration in this same loop can rebuild the object (a new Brep with
+    // its own edge numbering), the same "re-resolve from whatever is there
+    // now" guarantee a real second click already gave the old, pre-staging
+    // sequential behavior this replay reproduces.
+    flushing_fillet_ = true;
+    for (const std::pair<Point3d, Point3d>& e : edges) {
+      const SceneObject* oc = ctx.Doc().Find(id);
+      std::optional<ON_Brep> bc = oc ? BrepOfObject(*oc) : std::nullopt;
+      if (!bc) continue;
+      const int ei = FindEdgeIndexByEndpoints(*bc, e.first, e.second, tol);
+      if (ei < 0) continue;
+      EdgePick replay;
+      replay.id = id;
+      replay.edge = ei;
+      Run(ctx, replay);
+    }
+    flushing_fillet_ = false;
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     std::optional<EdgePick> pick = PickEdge(ctx, p);
@@ -1813,6 +1920,28 @@ class FilletEdgeCommand : public Command {
     // as before this wiring existed, since that path already covers the
     // curved case this exact construction cannot.
     if (mode_ == Mode::Fillet && !rho_.has_value() && rail_type_ == RailType::RollingBall && radii_.empty() && !preview_) {
+      // Stage this edge rather than applying it immediately - see
+      // pending_fillet_'s own doc comment for why (two edges sharing a
+      // vertex, picked in the same run, need one shared
+      // kernel::FilletConvexEdges/FilletConcaveEdges call to blend
+      // TOGETHER, not two independent single-edge attempts). Bypassed
+      // during FlushPendingFillet's own replay loop (flushing_fillet_),
+      // which needs this exact TryExactFillet-or-approximate logic to run
+      // per edge, unstaged, the same way it always did before batching.
+      if (!flushing_fillet_) {
+        if (!pending_fillet_.empty() && pending_fillet_id_ != pick.id) {
+          ctx.Warn(label + ": a fillet edge on a different object can't be staged in the same FilletEdge run (object " +
+                    std::to_string(pending_fillet_id_) + " already has " + std::to_string(pending_fillet_.size()) +
+                    " staged); press Enter to apply those first, then run FilletEdge again for this object");
+          return;
+        }
+        pending_fillet_id_ = pick.id;
+        pending_fillet_.emplace_back(edge.PointAtStart(), edge.PointAtEnd());
+        ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
+                   " staged for an exact fillet (" + RadiusDescription() + ") - " + std::to_string(pending_fillet_.size()) +
+                   " staged, Enter to apply");
+        return;
+      }
       ON_Brep exact;
       std::string detail;
       if (TryExactFillet(*b, edge.PointAtStart(), edge.PointAtEnd(), exact, detail)) {
@@ -2387,6 +2516,28 @@ class FilletEdgeCommand : public Command {
   std::vector<kernel::ConicEdgeSpec> pending_conic_;
   ObjectId pending_conic_id_ = kNoObject;
   int pending_conic_first_edge_ = -1;  // ON_BrepEdge index of the first staged edge, for the single-edge message
+  // Same staging idea as pending_conic_ above, for the PLAIN (no Rho, no
+  // RailType, no Radii=) constant-radius case - closes PARITY_MAP.md's
+  // Blending & chamfering "no app command surfaces either function's own
+  // chain-pick at all" gap for kernel::FilletConvexEdges/FilletConcaveEdges
+  // (the plain circular sibling of FilletConvexEdgesConic/
+  // FilletConcaveEdgesConic above, which only Rho ever reached). Applying
+  // each plain edge immediately, as this command always used to, means two
+  // edges sharing a vertex are never filleted TOGETHER - each call only
+  // ever sees a single-edge FilletConvexEdge/FilletConcaveEdge, never the
+  // batch functions' own m == 1/m == 3 vertex-blend handling or tangent-
+  // chain merge. Staged edges are flushed as one kernel::FilletConvexEdges/
+  // FilletConcaveEdges call in FlushPendingFillet (below OnEnter); unlike
+  // Rho, there IS an approximate fallback here (the existing TryExactFillet-
+  // or-BuildFillet cascade), so a failed batch replays each staged edge
+  // through that unchanged, sequential, independent path instead of
+  // refusing outright - see FlushPendingFillet's own comment.
+  std::vector<std::pair<Point3d, Point3d>> pending_fillet_;
+  ObjectId pending_fillet_id_ = kNoObject;
+  // Set around FlushPendingFillet's own replay loop so the staging check in
+  // Run() steps aside and the ordinary TryExactFillet-or-approximate logic
+  // underneath it runs instead, exactly as if staging never existed.
+  bool flushing_fillet_ = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -2548,13 +2699,61 @@ class MatchSrfCommand : public Command {
 // falls back to a mesh trim note when exact planar trimming isn't possible).
 // ---------------------------------------------------------------------------
 
+// The nearest-boundary-isocurve edge pick BlendSrfCommand/VariableBlendSrfCommand
+// both use, factored out once: it is ALWAYS exactly one of `s`'s own 4
+// isoparametric edges (never a trimmed sub-curve), so the caller also gets
+// that edge's own (dir, at_max) description for free - the same pair
+// kernel::NurbsSurface::BlendSurfaces() itself needs (surface.h) and the
+// same convention MatchSrf's own target_fixed_dir/target_at_min derivation
+// above already establishes (dir = which parameter VARIES along the edge;
+// at_max = whether the OTHER, fixed parameter sits at Domain().Max()).
+// Caller owns the returned curve. Internal linkage: a file-local helper,
+// the same "each file keeps its own copy" convention this file's own
+// BlendCurves()-duplication comment elsewhere in this document describes.
+static ON_Curve* NearestBoundaryIsoEdge(const ON_NurbsSurface& s, Point3d p, int* dir_out, bool* at_max_out) {
+  double u, v;
+  SurfaceClosestPointGlobal(s, p, u, v);
+  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+  const double eu0 = u - du.Min(), eu1 = du.Max() - u, ev0 = v - dv.Min(), ev1 = dv.Max() - v;
+  const double m = std::min({eu0, eu1, ev0, ev1});
+  if (m == eu0) { *dir_out = 1; *at_max_out = false; return s.IsoCurve(1, du.Min()); }
+  if (m == eu1) { *dir_out = 1; *at_max_out = true; return s.IsoCurve(1, du.Max()); }
+  if (m == ev0) { *dir_out = 0; *at_max_out = false; return s.IsoCurve(0, dv.Min()); }
+  *dir_out = 0; *at_max_out = true;
+  return s.IsoCurve(0, dv.Max());
+}
+
+// Whether srf1's own rail (as returned by NearestBoundaryIsoEdge) needs to
+// run back-to-front (kernel::NurbsSurface::BlendSurfaces()'s own
+// `reverse_rail1`) before pairing with srf0's rail at the same t - i.e.
+// whether the two independently-parameterized surfaces walk their own
+// (possibly facing, possibly just nearby) edge in opposite physical
+// directions. Picked, not guessed: compares the SAME-t and swapped-t total
+// endpoint distance (the "orient like a" pattern TweenCurvesCommand::OnNumber
+// already uses above, generalized from one comparison to a sum over both
+// ends so a genuinely skew pair - not just a reversed one - still picks the
+// less-twisted pairing).
+static bool BlendRailsNeedReversal(const ON_Curve& ea, const ON_Curve& eb) {
+  const ON_Interval da = ea.Domain(), db = eb.Domain();
+  const Point3d a0 = ea.PointAt(da.Min()), a1 = ea.PointAt(da.Max());
+  const Point3d b0 = eb.PointAt(db.Min()), b1 = eb.PointAt(db.Max());
+  const double same = a0.DistanceTo(b0) + a1.DistanceTo(b1);
+  const double swapped = a0.DistanceTo(b1) + a1.DistanceTo(b0);
+  return swapped < same;
+}
+
+// Continuity=Tangency/Curvature/G3 -> kernel::NurbsSurface::BlendSurfaces()'s
+// own continuity argument (1/2/3) - shared by BlendSrfCommand and
+// VariableBlendSrfCommand's identical Continuity option.
+static int ContinuityOptionToInt(const std::string& v) { return v == "G3" ? 3 : (v == "Curvature" ? 2 : 1); }
+
 class BlendSrfCommand : public Command {
  public:
   void Begin(CommandContext&) override {
-    options = {{"Continuity", "Tangency", {"Tangency", "Curvature"}, false, false}};
+    options = {{"Continuity", "Tangency", {"Tangency", "Curvature", "G3"}, false, false}};
     WantPoint("Click the first surface edge (near the edge to blend from)");
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Continuity") curvature_ = (v == "Curvature"); }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Continuity") continuity_ = ContinuityOptionToInt(v); }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     if (!first_) {
       first_ = PickFace(ctx, p);
@@ -2573,40 +2772,54 @@ class BlendSrfCommand : public Command {
     if (!oa || !ob) return;
     std::optional<ON_NurbsSurface> sa = SurfaceOfObject(*oa, fa.face), sb = SurfaceOfObject(*ob, fb.face);
     if (!sa || !sb) { ctx.Warn("Could not read the surfaces"); return; }
-    // Nearest boundary iso curve to each pick becomes the edge to blend from.
-    auto boundary_curve = [&](const ON_NurbsSurface& s, Point3d p) -> ON_Curve* {
-      double u, v;
-      SurfaceClosestPointGlobal(s, p, u, v);
-      const ON_Interval du = s.Domain(0), dv = s.Domain(1);
-      const double eu0 = u - du.Min(), eu1 = du.Max() - u, ev0 = v - dv.Min(), ev1 = dv.Max() - v;
-      const double m = std::min({eu0, eu1, ev0, ev1});
-      if (m == eu0) return s.IsoCurve(1, du.Min());
-      if (m == eu1) return s.IsoCurve(1, du.Max());
-      if (m == ev0) return s.IsoCurve(0, dv.Min());
-      return s.IsoCurve(0, dv.Max());
-    };
-    ON_Curve* ea = boundary_curve(*sa, pa);
-    ON_Curve* eb = boundary_curve(*sb, pb);
+    // Nearest boundary iso curve to each pick becomes the edge to blend
+    // from - always a genuine isoparametric boundary of sa/sb (never a
+    // trimmed sub-curve), so dir_a/dir_b/at_max_a/at_max_b below are always
+    // meaningful for the exact kernel path tried first.
+    int dir_a, dir_b;
+    bool at_max_a, at_max_b;
+    ON_Curve* ea = NearestBoundaryIsoEdge(*sa, pa, &dir_a, &at_max_a);
+    ON_Curve* eb = NearestBoundaryIsoEdge(*sb, pb, &dir_b, &at_max_b);
     if (!ea || !eb) { ctx.Warn("BlendSrf: could not find a boundary edge at the pick"); delete ea; delete eb; return; }
-    auto uv_on = [&](const ON_NurbsSurface& s, const ON_Curve& c, double t01) {
-      const ON_Interval d = c.Domain();
-      const Point3d p3 = c.PointAt(d.ParameterAt(t01));
-      double u, v;
-      SurfaceClosestPoint(s, p3, u, v);
-      return ON_2dPoint(u, v);
-    };
-    auto uv_a_fn = [&](double t) { return uv_on(*sa, *ea, t); };
-    auto uv_b_fn = [&](double t) { return uv_on(*sb, *eb, t); };
-    ON_NurbsSurface built;
-    // Adaptive, tolerance-enforcing build - see FilletEdgeCommand's own
-    // Mode::Blend block (cmd_fillet.cpp, above) for the full rationale;
-    // same scale-aware max_gap floor.
     const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
     const double max_gap = std::max(std::max(SurfaceScale(*sa), SurfaceScale(*sb)) * 1e-3, tol * 10);
+    ON_NurbsSurface built;
     double achieved_gap = std::numeric_limits<double>::infinity();
-    curvature_ ? BuildBlendSurfaceG2Adaptive(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, max_gap, 24, 384, built, &achieved_gap)
-               : BuildBlendSurfaceG1Adaptive(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, false, max_gap, 24, 384, built, &achieved_gap);
-    const bool ok = std::isfinite(achieved_gap);
+    // Try the exact kernel::NurbsSurface::BlendSurfaces() Hermite-skin
+    // construction FIRST - reachable here because both rails are genuine
+    // isoparametric boundaries (surface.h's own documented scope) - ahead
+    // of the app's own generic BuildBlendSurfaceG1/G2Adaptive fallback,
+    // the same "exact kernel construction first, fail open" structure
+    // TryExactFillet/TryExactChamfer already establish elsewhere in this
+    // file. This is also the only path that reaches Continuity=G3 at all.
+    kernel::NurbsSurface ksa, ksb;
+    ksa.raw() = *sa;
+    ksb.raw() = *sb;
+    const bool reverse1 = BlendRailsNeedReversal(*ea, *eb);
+    const bool exact_ok = BuildBlendSurfaceKernelAdaptive(dir_a, at_max_a, ksa, dir_b, at_max_b, ksb, reverse1,
+                                                           continuity_, max_gap, 8, 256, built, &achieved_gap);
+    bool ok = exact_ok && std::isfinite(achieved_gap);
+    bool used_exact = ok;
+    if (!ok && continuity_ != 3) {
+      // G1/G2 can still fall back to the app's own generic Hermite build
+      // (e.g. the exact construction's own degenerate-rail rejection); a
+      // caller-requested G3 has no approximate equivalent to fall back to
+      // at all, so it is reported as a failure instead of silently
+      // dropping to a G1/G2 result the caller never asked for.
+      auto uv_on = [&](const ON_NurbsSurface& s, const ON_Curve& c, double t01) {
+        const ON_Interval d = c.Domain();
+        const Point3d p3 = c.PointAt(d.ParameterAt(t01));
+        double u, v;
+        SurfaceClosestPoint(s, p3, u, v);
+        return ON_2dPoint(u, v);
+      };
+      auto uv_a_fn = [&](double t) { return uv_on(*sa, *ea, t); };
+      auto uv_b_fn = [&](double t) { return uv_on(*sb, *eb, t); };
+      achieved_gap = std::numeric_limits<double>::infinity();
+      continuity_ == 2 ? BuildBlendSurfaceG2Adaptive(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, max_gap, 24, 384, built, &achieved_gap)
+                        : BuildBlendSurfaceG1Adaptive(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, false, max_gap, 24, 384, built, &achieved_gap);
+      ok = std::isfinite(achieved_gap);
+    }
     delete ea;
     delete eb;
     if (!ok) { ctx.Warn("BlendSrf: could not build the blend"); return; }
@@ -2614,13 +2827,15 @@ class BlendSrfCommand : public Command {
     SceneObject like = *oa;
     ObjectId nid = AddSurfaceFrom(ctx, built, like);
     ctx.Doc().Select(nid, true);
-    ctx.Print(std::string("BlendSrf: blend surface added between object ") + std::to_string(fa.id) + " and " + std::to_string(fb.id) + (curvature_ ? " (Continuity=Curvature: quintic blend, cross-boundary curvature matched exactly to both surfaces)" : " (Continuity=Tangency)"));
+    const char* cname = continuity_ == 3 ? "G3" : (continuity_ == 2 ? "Curvature" : "Tangency");
+    ctx.Print(std::string("BlendSrf: blend surface added between object ") + std::to_string(fa.id) + " and " + std::to_string(fb.id) +
+               " (Continuity=" + cname + (used_exact ? ", exact kernel blend" : "") + ")");
   }
 
  private:
   std::optional<FacePick> first_;
   Point3d first_pt_{0, 0, 0};
-  bool curvature_ = false;
+  int continuity_ = 1;
 };
 
 // ---------------------------------------------------------------------------

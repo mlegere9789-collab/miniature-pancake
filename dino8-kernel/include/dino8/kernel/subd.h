@@ -163,7 +163,11 @@ class SubD {
   // Catmull-Clark limit patch coincides with its own control points).
   //
   // Throws std::invalid_argument if u_divisions or v_divisions is less
-  // than 1, the same validation `TessellateGrid()` already applies.
+  // than 1, the same validation `TessellateGrid()` already applies, or if
+  // `surface` itself is not `IsValid()` (e.g. default-constructed) -
+  // previously ungated, this would reach `Domain()`/`PointAt()` on a
+  // surface with no real parameter domain or control points instead of
+  // failing with a named cause.
   static SubD FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_divisions);
 
   // Builds a SubD control cage from a whole Brep, one quad per face,
@@ -230,6 +234,70 @@ class SubD {
   // real trim boundary or a degenerate corner and returning wrong
   // geometry.
   static SubD FromBrep(const Brep& brep, int divisions, double weld_tolerance = tolerance::kWeld);
+
+  // Narrows PARITY_MAP.md's subd_mesh "Quad-remeshing into a clean
+  // SubD-ready cage" gap for the GENERAL case: until now, the only place
+  // `Mesh::TrisToQuads()` ever fed `FromControlMesh()` was
+  // `BooleanToSubD()`'s own boolean-result path (see its doc comment) -
+  // any other triangulated mesh a caller already had (a tessellated
+  // Brep, an imported OBJ/STL, a `ToApproximateMesh()` snapshot) had no
+  // way to become a quad-dominant SubD cage at all. This exposes that
+  // same, already-tested composition directly: runs `mesh.TrisToQuads(
+  // max_dihedral_deg)` on a copy, then `FromControlMesh()` on the
+  // result. Both steps already carry their own full set of guarantees
+  // (TrisToQuads() never moves/adds/removes a vertex and is a no-op
+  // wherever nothing qualifies; FromControlMesh() accepts the resulting
+  // mix of quads and untouched triangles directly, same as any other
+  // triangle/quad/n-gon mesh) - nothing new is asserted here beyond their
+  // composition. `crease_at_double_edges` forwards unchanged to
+  // `FromControlMesh()` (see its own doc comment); TrisToQuads() never
+  // touches vertex indices, so a caller's double-edge seams survive it
+  // untouched either way.
+  //
+  // Still honestly a LOCAL remesher, not a true retopology: a mesh whose
+  // triangles are already irregular (no coplanar/low-dihedral pair to
+  // merge) comes out with just as many irregular quads/triangles as
+  // before - the same scope limit `TrisToQuads()`'s own doc comment
+  // already discloses, not a new one invented here. Throws
+  // std::runtime_error if `FromControlMesh()` rejects the (post-remesh)
+  // topology.
+  static SubD FromMeshQuadRemeshed(const Mesh& mesh, double max_dihedral_deg = 20.0,
+                                     bool crease_at_double_edges = false);
+
+  // A second, materially different answer to the SAME "SubD from NURBS/
+  // B-rep conversion" gap FromBrep() above only closes for the narrow
+  // planar/untrimmed/axis-aligned-quad case: this one accepts ANY Brep -
+  // curved faces, trimmed faces, fillets, disc caps, the works - by going
+  // through the kernel's own real tessellator instead of per-face exact
+  // bilinear grids. `brep.TessellateToClosedMesh(u_divisions, v_divisions)`
+  // (Tessellate() + Mesh::MergeAndWeld(), already real and already used
+  // throughout this kernel for boolean/mass-property work) produces one
+  // watertight triangle mesh with every shared Brep edge already welded
+  // into one seam; that mesh is then handed to FromMeshQuadRemeshed()
+  // above with `crease_at_double_edges=true` (matching FromBrep()'s own
+  // convention: an open shell's naked boundary comes out a real SubD
+  // crease, every interior two-face seam stays smooth) so the common
+  // case - a box-like region of the tessellation, away from any curved
+  // patch - recombines back into clean quads instead of staying raw
+  // triangles from the tessellator.
+  //
+  // Deliberately NOT what FromBrep() is for the shape it accepts (exact):
+  // this is a tessellation-resolution-bounded APPROXIMATION of the true
+  // Brep, same tradeoff `Tessellate()`/`FromNurbsSurface()` already
+  // disclose for theirs - a curved face's control cage only approaches
+  // the real surface as `u_divisions`/`v_divisions` increase, and further
+  // Subdivide()ing the resulting SubD smooths the TESSELLATION's own
+  // facets, not the original curved surface, so it will not converge back
+  // onto the exact Brep shape no matter how many levels are applied. A
+  // genuinely trimmed boundary's own triangulated edge is irregular by
+  // construction (TrisToQuads() has no coplanar partner to pair it with
+  // there), so it stays triangulated in the resulting cage rather than
+  // becoming a clean quad row. Throws std::invalid_argument if the Brep
+  // has no faces or either division count is less than 1; propagates
+  // FromMeshQuadRemeshed()'s own std::runtime_error for an unbuildable
+  // (post-remesh) topology.
+  static SubD FromBrepTessellated(const Brep& brep, int u_divisions = 8, int v_divisions = 8,
+                                    double max_dihedral_deg = 20.0);
 
   // Applies `levels` rounds of real Catmull-Clark global subdivision in
   // place. Each round refines every face, edge, and vertex of the
@@ -320,7 +388,16 @@ class SubD {
   // own dihedral/convexity/winding gates simply don't fire there in
   // general, so this is an honest, bounded narrowing of the disclosed gap,
   // not a claim that the cut itself is now quad-clean.
-  SubD BooleanToSubD(const SubD& other, BooleanOp op) const;
+  //
+  // `max_dihedral_deg` (same follow-up as FromMeshQuadRemeshed() above):
+  // forwarded straight through to that internal TrisToQuads() call instead
+  // of a hardcoded 20.0 - a caller whose two operands meet at a shallower
+  // or steeper angle than the default threshold along their own untouched
+  // faces can now tune how aggressively the away-from-the-cut faces
+  // recombine, the same knob TrisToQuads() always exposed to every other
+  // caller. Defaults to 20.0, this method's own prior fixed value, so
+  // every existing 2-argument call keeps its exact prior behavior.
+  SubD BooleanToSubD(const SubD& other, BooleanOp op, double max_dihedral_deg = 20.0) const;
 
   // Applies `xform` to a copy of this SubD's ENTIRE control cage (every
   // level it currently holds, not just the active one) and returns it -
@@ -414,6 +491,37 @@ class SubD {
   // `distance` is 0 or if this SubD has no vertices.
   SubD Offset(double distance) const;
 
+  // The "Solid" half of PARITY_MAP.md's offsetshell "SubD offset /
+  // thicken" gap `Offset()`'s own doc comment above names as still
+  // missing: `dino8-app`'s own `OffsetNet` Solid option thickens the raw
+  // CONTROL NET by hand (a flipped copy plus side quads); this gives the
+  // same "thicken a sheet into a closed solid" result but starting from
+  // the actual LIMIT SURFACE, tessellated via `Tessellate()` - a real,
+  // not cosmetic, improvement in accuracy for anything but a very fine
+  // cage, the same "limit surface, not the polygonal cage" upgrade
+  // `Offset()` itself already makes over the app's technique. The
+  // tessellated mesh is then handed directly to `Mesh::Thicken()` - the
+  // existing, already-tested "open mesh -> closed solid via a stitched
+  // naked-edge side wall" construction - rather than inventing a second
+  // one; this method is a thin composition of two independent, already-
+  // verified pieces, not a new offset algorithm. The resulting mesh's own
+  // vertex normals (used internally by `Mesh::Thicken()`'s own
+  // `Offset()` call to build the outer wall) come from the tessellated
+  // mesh's geometry, not from `SubD::Offset()`'s own exact Catmull-Clark
+  // limit normal - a materially different, simpler offset than this
+  // class's own `Offset()` method, disclosed here rather than implied.
+  //
+  // `tessellation_tolerance`/`max_resolution` are passed straight through
+  // to `Tessellate()` (see that method's own doc comment for their
+  // meaning). Throws whatever `Tessellate()` itself throws for this
+  // SubD's own shape, and whatever `Mesh::Thicken()` throws for the
+  // tessellated result - in particular, `std::invalid_argument` if
+  // `distance` is zero or non-finite, and if this SubD has no boundary
+  // at all (already a closed cage - Thicken() only handles the open-
+  // sheet case, the same scope restriction its mesh-level counterpart
+  // already has).
+  Mesh Thicken(double distance, double tessellation_tolerance, int max_resolution = 16) const;
+
   // Mirrors this SubD's entire control cage across the plane
   // `{p : p . plane_normal == plane_offset}` (same convention as
   // `SplitByPlane()` in boolean.h) and combines the original half with
@@ -440,15 +548,47 @@ class SubD {
   // symmetric editing (a later edit to one half automatically
   // re-mirroring into the other) is a distinct, materially larger
   // feature - this produces one static symmetrized snapshot, with no
-  // ongoing relationship between the two halves afterward. A vertex
-  // that starts strictly off-plane is always duplicated (never welded
-  // to a same-side neighbor), so this only closes gaps that coincide
-  // with the mirror plane itself, not general internal seams.
+  // ongoing relationship between the two halves afterward.
+  //
+  // `weld_tolerance` narrows the other disclosed gap - a vertex that
+  // starts strictly off-plane used to be ALWAYS duplicated, never welded
+  // to a same-side neighbor, because the single `point_tolerance` value
+  // did double duty: it both decided whether a vertex counts as "on the
+  // mirror plane" (correctness-sensitive - loosening it can silently
+  // change which boundary loop gets welded-as-a-seam vs. mirrored as an
+  // ordinary vertex) AND was the only tolerance `ON_SubD::FindOrAddVertex`
+  // used to decide whether a newly mirrored vertex reuses an existing one
+  // or adds a new one. Two genuinely independent vertices representing
+  // the "same" point - e.g. two features modeled separately that were
+  // meant to share an off-plane seam but drifted apart at single-float
+  // (`ON_3fPoint`) precision - are often many orders of magnitude farther
+  // apart than `point_tolerance`'s tight default (1e-9) but still close
+  // enough that a caller wants them welded, not left open; there was no
+  // way to ask for that without ALSO loosening on-plane classification.
+  // `weld_tolerance`, when positive, is used instead of `point_tolerance`
+  // for every `FindOrAddVertex` lookup (on-plane and off-plane alike -
+  // harmless for the on-plane case, since its own target position is
+  // already exactly the original vertex's own point, so a looser search
+  // still only ever finds that same vertex); when zero or negative (the
+  // default), behavior is byte-identical to before this parameter
+  // existed - `point_tolerance` is reused for both roles, exactly as it
+  // always was.
+  //
+  // Still not a general "weld any two nearby vertices" tool: this only
+  // ever affects vertices this call itself is actively mirroring (an
+  // off-plane vertex already duplicated in the ORIGINAL, pre-Symmetrize
+  // half is untouched - the same scope limit `SubD::Check()`'s own
+  // duplicate-vertex disclosure already names, since SubD has no
+  // `Mesh::MergeDuplicateVertices()` counterpart), and it welds by
+  // position only, same as the on-plane case always did - no averaging,
+  // no "closest neighbor" search beyond `ON_SubD::FindOrAddVertex`'s own
+  // first-match-within-tolerance rule.
   //
   // Throws std::invalid_argument if `plane_normal` is zero (or too
   // close to it to unitize), the same failure convention `Transform()`
   // above uses for a degenerate input.
-  SubD Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance = 1e-9) const;
+  SubD Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance = 1e-9,
+                   double weld_tolerance = 0.0) const;
 
   // Converts the *current* subdivision level's control net to real NURBS
   // patches, one per face - a genuine Catmull-Clark limit-surface
@@ -507,6 +647,14 @@ class SubD {
   // neighbors' (it's a different, approximate construction), so those
   // stay as naked, unjoined edges - deliberately: no silently making
   // that approximation look exact.
+  //
+  // Throws std::runtime_error if no quad face exists to convert (an empty
+  // SubD, or one built entirely from a non-quad n-gon/triangle mesh at
+  // level 0 - see the per-face skip above) - matching Subdivide()'s own
+  // convention of a named exception over a silently empty result, since a
+  // caller iterating the returned vector would otherwise have no way to
+  // tell "nothing to convert" apart from "converted to zero patches" after
+  // the fact.
   std::vector<SubDNurbsPatch> ToNurbsPatches() const;
 
   // Like ToNurbsPatches(), but replaces each IRREGULAR face's single
@@ -530,6 +678,8 @@ class SubD {
   // EvaluateFace() takes: 0 makes this identical to ToNurbsPatches()
   // (every irregular face returned as one flat patch, no splitting).
   // Throws std::invalid_argument if `max_adaptive_levels` is negative.
+  // Throws std::runtime_error if no quad face exists to convert - same
+  // empty-result convention and reasoning as ToNurbsPatches() above.
   //
   // Cost and the large-mesh fallback are the same as EvaluateFace()'s:
   // each split clones the current subdivision level's WHOLE control net
@@ -1111,6 +1261,16 @@ class SubD {
   // is never a worse bound - and reports `exact = false`. `tangent_u`/
   // `tangent_v` from that fallback are the flat interpolant's own (still
   // well-defined, just not limit-accurate) partial derivatives.
+  //
+  // Throws std::invalid_argument if `u` or `v` is outside [0, 1] (or
+  // NaN) or if `max_adaptive_levels` is negative - previously ungated,
+  // unlike `ToNurbsPatchesAdaptive()`'s own matching
+  // `max_adaptive_levels` check: an out-of-domain (u, v) silently
+  // extrapolated the quadrant-local Bezier math below into meaningless
+  // geometry instead of being refused, and a negative level count
+  // happened to be harmless (the recursion's own `depth_remaining <= 0`
+  // base case already catches it) but was never actually validated as
+  // such.
   //
   // Throws std::runtime_error if `face_id` doesn't identify a face of
   // the current subdivision level, or that face isn't a quad (same

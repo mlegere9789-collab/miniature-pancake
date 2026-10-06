@@ -32,6 +32,17 @@ Rebuild Degree=2 12
 SelLast
 List
 Delete
+# --- Rebuild point-count clamp: a flat Surface rebuilt with an absurd
+# point count (5000000, a pasted/misclicked number rather than a
+# deliberately adversarial one) must still bake instantly with a sane,
+# clamped control-point grid (200 x 200), not try to allocate an n x n
+# grid straight from the typed number and hang/OOM the app.
+Plane 0,0,0 10,10,0
+SelLast
+Rebuild Degree=3 5000000
+SelLast
+List
+Delete
 # --- ChangeDegree raises a line to degree 3, Weight sets a control point's weight (making it rational), InsertKnot adds a knot at the picked point
 Line 0,0,0 10,0,0
 SelLast
