@@ -385,6 +385,8 @@ set(DINO8_SOURCES
   src/commands/cmd_collab.cpp
   src/ml/CommandPredictor.cpp
   src/commands/cmd_ai.cpp
+  src/io/WebViewer.cpp
+  src/commands/cmd_webviewer.cpp
 )
 
 # Real OS-clipboard image backend for ViewCaptureToClipboard/
@@ -975,6 +977,19 @@ if(DINO8_BUILD_TESTS)
   add_executable(dino8_test_command_predictor tests/test_command_predictor.cpp src/ml/CommandPredictor.cpp)
   target_include_directories(dino8_test_command_predictor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_command_predictor COMMAND dino8_test_command_predictor)
+
+  # Self-contained HTML/WebGL model viewer export (src/io/WebViewer.h/.cpp) -
+  # see PARITY_MAP.md's "Cloud model viewer / app builder (ShapeDiver
+  # equivalent)" item, which had no web-viewer/embed code of any kind before
+  # this. Needs a real Document (SceneObject/BrepMesher) to build a scene
+  # from, same dependency set as dino8_test_object_grid above, but no
+  # File3dm/FreeType chain (WebViewer.cpp never touches io/File3dm.h).
+  add_executable(dino8_test_web_viewer tests/test_web_viewer.cpp src/io/WebViewer.cpp src/doc/Document.cpp
+                                        src/doc/SceneObject.cpp src/doc/SubObjectEdit.cpp src/geom/BrepMesher.cpp
+                                        src/spatial/ObjectGrid.cpp)
+  target_include_directories(dino8_test_web_viewer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_web_viewer PRIVATE dino8_kernel)
+  add_test(NAME dino8_web_viewer COMMAND dino8_test_web_viewer)
 
   # Offline trainer for the same CommandPredictor (tools/
   # train_command_predictor.cpp) - not a test (nothing to assert; it writes
