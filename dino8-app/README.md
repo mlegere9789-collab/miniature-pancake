@@ -89,9 +89,11 @@ Lua script to `/run` (or a Python script to `/run/python`), get back its
 printed output (or a structured `{ok, output}` JSON response, with `Accept:
 application/json`), against the same running document every request shares.
 `GET /objects` lists the document's current objects (id/type/name/layer/
-bounding box) as JSON. An optional `--serve-token TOKEN` requires a matching
-`Authorization: Bearer TOKEN` header. A first, deliberately small step
-toward a Rhino.Compute-style story - no concurrency, no TLS, and no wire
+bounding box) as JSON. One or more `--serve-token [NAME:]TOKEN` flags
+require a matching `Authorization: Bearer TOKEN` header, letting distinct
+callers each hold their own named token instead of one shared secret. A
+first, deliberately small step toward a Rhino.Compute-style story - no
+concurrency, no TLS, and no wire
 format for the geometry data itself. See
 [`docs/COMPUTE_SERVER.md`](docs/COMPUTE_SERVER.md).
 
