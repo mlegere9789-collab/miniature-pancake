@@ -1,20 +1,21 @@
 // Pure dimension geometry: the exact curve/arrow/tag math that turns a
 // dimension's measured points (+ a fixed, replay-safe layout) into real
 // Dino8 dimension geometry. Shared, line-for-line, by:
-//   - cmd_annotate.cpp's BuildLinearDimensionGroup/BuildRadiusDimensionGroup,
-//     which wrap these to add the result to the live document via
-//     CommandContext (live Dim/DimAligned/DimRadius/DimDiameter commands,
-//     and UpdateDimensions rebuilding an edited one), and
+//   - cmd_annotate.cpp's BuildLinearDimensionGroup/BuildRadiusDimensionGroup/
+//     BuildAngleDimensionGroup, which wrap these to add the result to the
+//     live document via CommandContext (live Dim/DimAligned/DimRadius/
+//     DimDiameter/DimAngle commands, and UpdateDimensions rebuilding an
+//     edited one), and
 //   - DXF/DWG DIMENSION import (io/FileExchange.cpp, which has no
 //     CommandContext at all).
-// So an imported linear/aligned/radius/diameter dimension gets
+// So an imported linear/aligned/radius/diameter/angular dimension gets
 // geometrically and tag-for-tag identical curves to one drawn in-app from
 // the same measured points - selectable via SelDim (group name) and
 // rebuildable via UpdateDimensions (the DimPlaneOrigin/X/Y, DimAligned,
 // DimHorizontal, DimOffset / DimIsDiameter, DimDir, DimExtra, DimCenter,
-// DimRadiusVal tags below are exactly what cmd_annotate.cpp's
-// LoadLinearDimLayout/LoadRadiusDimLayout read back) the same way a dim
-// built by hand is.
+// DimRadiusVal / DimP0, DimP1, DimP2 tags below are exactly what
+// cmd_annotate.cpp's LoadLinearDimLayout/LoadRadiusDimLayout/
+// ResolveAngleDimPoints read back) the same way a dim built by hand is.
 //
 // No Document/CommandContext dependency at all (unlike commands/cmd_common.h,
 // which drags in app/Application.h, commands/Command.h, commands/
@@ -118,6 +119,12 @@ struct RadiusDimLayout {
   Vector3d dir;
   double extra = 0;
 };
+
+// A DimAngle dimension has no separate "layout minus measured geometry"
+// split at all (unlike Linear/Radius above) - its vertex + two direction
+// points and a fixed plane are everything BuildAngleDimensionGeometry below
+// needs, so there is no struct for it; callers just pass those three points
+// and the plane directly.
 
 // A label to place as centred/left-aligned glyph-outline text. Structurally
 // identical to annotate_common.h's GlyphSpec, but named distinctly for the
@@ -283,6 +290,69 @@ inline bool BuildRadiusDimensionGeometry(Point3d center, double radius, const Ra
   text.height = text_h;
   text.plane = pl;
   text.plane.SetOrigin(p + d * text_h);
+  text.center = true;
+  return true;
+}
+
+// Builds the curve list + label text + tag map for one DimAngle dimension
+// from its vertex and two direction points and a fixed plane - identical
+// math to what the live DimAngle command computes (cmd_annotate.cpp's own
+// BuildAngleDimensionGroup now just calls this and adds its own
+// associativity tags, the same split BuildLinearDimensionGroup/
+// BuildRadiusDimensionGroup above already use), extracted so DXF/DWG
+// DIMENSION import (io/FileExchange.cpp, type 5 / DIMENSION_ANG3PT) can
+// share it exactly - same "no CommandContext" story as
+// BuildLinearDimensionGeometry/BuildRadiusDimensionGeometry.
+//
+// Always measures the <=180 degree angle between the two rays (a0/a1 are
+// normalized into that range below, swapping and adding a full turn
+// exactly as before this extraction) - Dino8's own DimAngle has no way to
+// draw the complementary reflex (>180 degree) angle between two rays, which
+// is why a DXF/DWG DIMENSION_ANG3PT's own def_pt (a point on the actual
+// rendered arc) must be checked against this same normalization before
+// accepting it as a DimAngle: see io/FileExchange.cpp's own
+// DxfImporter::Dimension type==5 comment and WalkDwgEntities'
+// DWG_TYPE_DIMENSION_ANG3PT case for that disambiguation.
+//
+// Returns false (nothing built) if the two direction vectors are
+// degenerate or parallel (a zero-radius arc) - the same failure the live
+// command already refuses (`r <= 0` below).
+inline bool BuildAngleDimensionGeometry(Point3d vertex, Point3d p1, Point3d p2, const ON_Plane& pl, double text_h,
+                                        std::vector<kernel::NurbsCurve>& curves, DimGlyphSpec& text,
+                                        std::map<std::string, std::string>& tags, double* deg_out = nullptr,
+                                        int precision = -1) {
+  using namespace dim_geom_detail;
+  Vector3d va = p1 - vertex, vb = p2 - vertex;
+  const double r = std::min(va.Length(), vb.Length()) * 0.7;
+  if (r <= 0) return false;
+  va.Unitize(); vb.Unitize();
+  double a0 = std::atan2(ON_DotProduct(va, pl.yaxis), ON_DotProduct(va, pl.xaxis));
+  double a1 = std::atan2(ON_DotProduct(vb, pl.yaxis), ON_DotProduct(vb, pl.xaxis));
+  if (a1 < a0) std::swap(a0, a1);
+  if (a1 - a0 > ON_PI) { std::swap(a0, a1); a1 += 2 * ON_PI; }
+  ON_Plane cp = pl; cp.SetOrigin(vertex);
+  ON_Arc arc(ON_Circle(cp, r), ON_Interval(a0, a1));
+  curves.clear();
+  ON_ArcCurve ac(arc);
+  kernel::NurbsCurve k;
+  if (ToNurbsCurve(ac, k)) curves.push_back(k);
+  AddLine(curves, vertex, vertex + va * (r * 1.1));
+  AddLine(curves, vertex, vertex + vb * (r * 1.1));
+  const double mid = (a0 + a1) / 2;
+  const Point3d tp = cp.PointAt(std::cos(mid) * (r + text_h), std::sin(mid) * (r + text_h));
+  const double deg = (a1 - a0) * 180.0 / ON_PI;
+  if (deg_out) *deg_out = deg;
+  tags.clear();
+  tags["DimPlaneOrigin"] = DimPointTag(pl.origin);
+  tags["DimPlaneX"] = DimPointTag(Point3d(pl.xaxis));
+  tags["DimPlaneY"] = DimPointTag(Point3d(pl.yaxis));
+  tags["DimP0"] = DimPointTag(vertex);
+  tags["DimP1"] = DimPointTag(p1);
+  tags["DimP2"] = DimPointTag(p2);
+  text.text = FormatMeasurement(deg, precision, "deg");
+  text.height = text_h;
+  text.plane = pl;
+  text.plane.SetOrigin(tp);
   text.center = true;
   return true;
 }

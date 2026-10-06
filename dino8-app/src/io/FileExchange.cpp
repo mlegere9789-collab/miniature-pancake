@@ -718,6 +718,80 @@ bool WriteDxfRadiusDimension(DxfWriter& w, const DxfRadiusDimLayout& L, const st
   return true;
 }
 
+// A DimAngle group's own fixed layout, re-parsed directly from the tags
+// BuildAngleDimensionGeometry (commands/DimGeometry.h, shared with the live
+// DimAngle command) stamps on every one of the group's own curves -
+// DimPlaneOrigin/X/Y (plane) and DimP0/DimP1/DimP2 (vertex and the two
+// direction points) - same "plain-data re-read" precedent as
+// DxfLinearDimLayoutOf/DxfRadiusDimLayoutOf above. Unlike those two structs,
+// there is no separate "layout minus measured geometry" split: the written
+// DIMENSION's own xline1_pt/xline2_pt/center_pt groups ARE DimP1/DimP2/DimP0
+// verbatim - see WriteDxfAngularDimension below for the one extra value
+// (def_pt, group 10) that still has to be derived rather than just copied.
+struct DxfAngleDimLayout {
+  ON_Plane plane;
+  Point3d vertex, p1, p2;
+};
+
+bool DxfAngleDimLayoutOf(const SceneObject& o, DxfAngleDimLayout& L) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *org = get("DimPlaneOrigin"), *ax = get("DimPlaneX"), *ay = get("DimPlaneY");
+  const std::string *p0s = get("DimP0"), *p1s = get("DimP1"), *p2s = get("DimP2");
+  if (!org || !ax || !ay || !p0s || !p1s || !p2s) return false;
+  Point3d o3, px, py;
+  if (!ParsePointTagLocal(*org, o3) || !ParsePointTagLocal(*ax, px) || !ParsePointTagLocal(*ay, py)) return false;
+  if (!ParsePointTagLocal(*p0s, L.vertex) || !ParsePointTagLocal(*p1s, L.p1) || !ParsePointTagLocal(*p2s, L.p2)) return false;
+  L.plane = ON_Plane(o3, Vector3d(px.x, px.y, px.z), Vector3d(py.x, py.y, py.z));
+  return true;
+}
+
+// A real DXF DIMENSION entity (type 5, 3-point angular / DIMENSION_ANG3PT)
+// for a DimAngle group, instead of its own baked arc/leg/text curves - the
+// inverse of DxfImporter::Dimension below's own type==5 branch (that
+// function's comment has the dwg.spec-verified field layout this mirrors:
+// DWG_ENTITY(DIMENSION_ANG3PT) - xline1_pt=13, xline2_pt=14, center_pt=15
+// is the VERTEX despite its name, def_pt=10 is a point ON the actual
+// rendered dimension arc).
+//
+// def_pt is the one group this writer cannot just copy from a tag: a bare
+// center_pt+xline1_pt+xline2_pt only fixes the angle BETWEEN the two rays up
+// to its own 360-minus-itself complement (which of the two ways around the
+// vertex the dimension arc sweeps) - real AutoCAD always disambiguates that
+// with def_pt, a point a reader can test against each candidate sweep to
+// recover the one actually drawn (see the reader's own matching logic, and
+// commands/DimGeometry.h's BuildAngleDimensionGeometry comment on why this
+// matters at all). This writer places def_pt on the SAME minor (<=180
+// degree) arc BuildAngleDimensionGeometry itself draws - its a0/a1
+// normalization ("if a1<a0 swap; if a1-a0>PI swap, a1+=2*PI") recomputed
+// here identically - so a reopen through this file's own
+// DxfImporter::Dimension always finds def_pt on the expected side and
+// rebuilds a geometrically identical DimAngle.
+//
+// Returns false (nothing written) if the two direction vectors are
+// degenerate or parallel - same failure BuildAngleDimensionGeometry itself
+// refuses (a zero-radius arc).
+bool WriteDxfAngularDimension(DxfWriter& w, const DxfAngleDimLayout& L, const std::string& layer, const Color* color) {
+  Vector3d va = L.p1 - L.vertex, vb = L.p2 - L.vertex;
+  if (!va.Unitize() || !vb.Unitize()) return false;
+  double a0 = std::atan2(ON_DotProduct(va, L.plane.yaxis), ON_DotProduct(va, L.plane.xaxis));
+  double a1 = std::atan2(ON_DotProduct(vb, L.plane.yaxis), ON_DotProduct(vb, L.plane.xaxis));
+  if (a1 < a0) std::swap(a0, a1);
+  if (a1 - a0 > ON_PI) { std::swap(a0, a1); a1 += 2 * ON_PI; }
+  if (a1 - a0 < 1e-9) return false;
+  const double mid = (a0 + a1) / 2.0;
+  ON_Plane cp = L.plane; cp.SetOrigin(L.vertex);
+  const Point3d def_pt = cp.PointAt(std::cos(mid), std::sin(mid));
+  w.BeginEntity("DIMENSION", layer, color);
+  w.G(100, "AcDbDimension");
+  w.Point(10, def_pt);
+  w.G(70, 5 | 32);  // bit 32: always set by a real AutoCAD-authored DIMENSION
+  w.G(100, "AcDb3PointAngularDimension");
+  w.Point(13, L.p1);
+  w.Point(14, L.p2);
+  w.Point(15, L.vertex);
+  return true;
+}
+
 // Writes one BlockDefinition member object into the BLOCKS section ExportDxf
 // now emits for a static (no visibility states) block that has at least one
 // placed instance - see ExportDxf's own comment on where this is called
@@ -915,12 +989,14 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   // independently (and harmlessly) retries the same lookup and falls
   // through to its own curve export, same as before this set existed.
   std::set<int> pattern_hatch_groups_written;
-  // Groups whose DimLinear/DimAligned dimension already wrote its one real
-  // DIMENSION entity (WriteDxfLinearDimension below) - every other baked
-  // line/extension/arrow curve belonging to that same group_id is skipped
-  // rather than also written on its own. Only populated on success, same
-  // "harmless independent retry" convention as pattern_hatch_groups_written
-  // just above.
+  // Groups whose DimLinear/DimAligned/DimRadius/DimDiameter/DimAngle
+  // dimension already wrote its one real DIMENSION entity
+  // (WriteDxfLinearDimension/WriteDxfRadiusDimension/
+  // WriteDxfAngularDimension below) - every other baked line/extension/
+  // arrow/arc curve belonging to that same group_id is skipped rather than
+  // also written on its own. Only populated on success, same "harmless
+  // independent retry" convention as pattern_hatch_groups_written just
+  // above.
   std::set<int> dimension_groups_written;
   for (const SceneObject* o : objs) {
     {
@@ -984,6 +1060,16 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
           if (dimension_groups_written.count(o->group_id)) break;  // this group's DIMENSION entity already written
           DxfRadiusDimLayout L;
           if (DxfRadiusDimLayoutOf(*o, L) && WriteDxfRadiusDimension(w, L, layer, color)) {
+            dimension_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
+          // Same harmless-independent-retry convention as the linear case above.
+        }
+        if (ann != o->user_text.end() && ann->second == "DimAngle") {
+          if (dimension_groups_written.count(o->group_id)) break;  // this group's DIMENSION entity already written
+          DxfAngleDimLayout L;
+          if (DxfAngleDimLayoutOf(*o, L) && WriteDxfAngularDimension(w, L, layer, color)) {
             dimension_groups_written.insert(o->group_id);
             ++written;
             break;
@@ -1862,6 +1948,13 @@ class DxfImporter {
   //     opposite (per dwg.spec's own comment on DIMENSION_DIAMETER's def_pt)
   //     - so center = midpoint(15,10), radius = half their distance;
   //     leader_len=40 same meaning as radius.
+  //   type 5 (3-point angular, DIMENSION_ANG3PT): xline1_pt=13/23/33 and
+  //     xline2_pt=14/24/34 are the two direction points, center_pt=15/25/35
+  //     is the measured VERTEX (despite its name - see dwg.spec's own
+  //     DWG_ENTITY(DIMENSION_ANG3PT)), def_pt=10/20/30 is a point ON the
+  //     actual rendered dimension arc - used only to pick which of the two
+  //     complementary sweeps between the direction points was drawn, see
+  //     below.
   // All DIMENSION point groups are full 3D (13/23/33 etc., unlike LINE/
   // TEXT/CIRCLE's OCS-relative 10/20/30) so they need no extrusion-plane
   // transform to read; only the *orientation* used to build arrows/text
@@ -1872,16 +1965,27 @@ class DxfImporter {
   //   - type 0 with an oblique (not ~0/~90 degree) dim_rotation: Dino8's own
   //     DimLinear only models horizontal/vertical dimension lines, so an
   //     arbitrarily rotated one has no faithful representation to rebuild.
-  //   - angular dimensions (types 2/5): the measured angle depends on which
-  //     of two complementary arc sweeps AutoCAD chose, which DXF does not
-  //     encode anywhere this importer can recover - guessing risks silently
-  //     measuring the wrong angle.
+  //   - type 5 (3-point angular) whose def_pt names the REFLEX (>180 degree)
+  //     complementary sweep between xline1_pt/xline2_pt rather than the
+  //     <=180 degree one: Dino8's own DimAngle (BuildAngleDimensionGeometry,
+  //     commands/DimGeometry.h) always normalizes to the <=180 degree sweep
+  //     between its two direction points and has no way to draw the reflex
+  //     one instead, so rebuilding from the raw points alone would silently
+  //     show the wrong (complementary) angle - detected below by checking
+  //     def_pt's own angular position against that same normalization, not
+  //     guessed at.
+  //   - type 2 (2-line angular, DIMENSION_ANG2LN): a fundamentally different
+  //     point model (two full lines, no vertex point at all - dwg.spec's own
+  //     DWG_ENTITY(DIMENSION_ANG2LN) has xline1start_pt/xline1end_pt/
+  //     xline2start_pt/xline2end_pt/def_pt, none of which is "the vertex")
+  //     that doesn't reduce to Dino8's own vertex+p1+p2 DimAngle shape at
+  //     all, not just an ambiguity to resolve.
   //   - ordinate dimensions (type 6): which axis (X or Y) is being read is
   //     carried only in the "use X axis" bit inside the same flag byte as
   //     the block-reference/associativity bits this importer does not
   //     otherwise need to decode, and a wrong guess silently reports the
   //     wrong offset - not attempted.
-  // Both categories fall into the ordinary skipped-entity count.
+  // All three fall into the ordinary skipped-entity count.
   void Dimension(const DxfEntity& e) {
     const int type = e.I(70) & 7;
     const double h = ImportDimTextHeight(doc_);
@@ -1935,7 +2039,27 @@ class DxfImporter {
       else ++stats_.skipped;
       return;
     }
-    ++stats_.skipped;  // angular (2/5) / ordinate (6): not tractable to rebuild correctly, see comment above
+    if (type == 5) {
+      const Point3d def_pt = e.P(10), vertex = e.P(15), p1 = e.P(13), p2 = e.P(14);
+      Vector3d va = p1 - vertex, vb = p2 - vertex, vd = def_pt - vertex;
+      if (!va.Unitize() || !vb.Unitize() || !vd.Unitize()) { ++stats_.skipped; return; }
+      const ON_Plane pl(vertex, ocs.xaxis, ocs.yaxis);
+      double a0 = std::atan2(ON_DotProduct(va, pl.yaxis), ON_DotProduct(va, pl.xaxis));
+      double a1 = std::atan2(ON_DotProduct(vb, pl.yaxis), ON_DotProduct(vb, pl.xaxis));
+      if (a1 < a0) std::swap(a0, a1);
+      if (a1 - a0 > ON_PI) { std::swap(a0, a1); a1 += 2 * ON_PI; }
+      double ad = std::atan2(ON_DotProduct(vd, pl.yaxis), ON_DotProduct(vd, pl.xaxis));
+      while (ad < a0 - 1e-6) ad += 2 * ON_PI;
+      if (ad > a1 + 1e-6) { ++stats_.skipped; return; }  // def_pt names the reflex sweep - not representable, see comment above
+      std::vector<kernel::NurbsCurve> curves;
+      DimGlyphSpec text;
+      std::map<std::string, std::string> tags;
+      if (!BuildAngleDimensionGeometry(vertex, p1, p2, pl, h, curves, text, tags)) { ++stats_.skipped; return; }
+      if (AddDimensionGroupToDoc(doc_, "DimAngle", layer, curves, text, tags)) ++stats_.dimensions;
+      else ++stats_.skipped;
+      return;
+    }
+    ++stats_.skipped;  // type-2 angular / ordinate (6), or a type-5 reflex sweep: not representable, see comment above
   }
 
   // INSERT: flattened into transformed copies of the referenced BLOCKS-
@@ -2522,8 +2646,12 @@ void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, s
       // xline1_pt/xline2_pt/def_pt for linear+aligned (def_pt is
       // DIMENSION_COMMON's shared field, the dimension-line location point,
       // same as DXF group 10), first_arc_pt/def_pt/leader_len for
-      // radius+diameter (def_pt = far_chord_pt for diameter). Angular
-      // (ANG2LN/ANG3PT) and ordinate (ORDINATE) DIMENSION subtypes, and the
+      // radius+diameter (def_pt = far_chord_pt for diameter),
+      // xline1_pt/xline2_pt/center_pt/def_pt for ANG3PT (center_pt is the
+      // measured VERTEX despite its name; def_pt disambiguates which of the
+      // two complementary sweeps was drawn - same DxfImporter::Dimension
+      // type==5 logic, see its comment for the full rationale). 2-line
+      // angular (ANG2LN) and ordinate (ORDINATE) DIMENSION subtypes, and the
       // jogged-radius LARGE_RADIAL_DIMENSION/ARC_DIMENSION entities, fall
       // into the default case below (skipped), same honest scope as DXF.
       case DWG_TYPE_DIMENSION_LINEAR:
@@ -2600,6 +2728,32 @@ void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, s
         if (!BuildRadiusDimensionGeometry(center, radius, L, ImportDimTextHeight(doc), curves, text, tags)) { ++stats.skipped; break; }
         const int layer = DwgLayerFor(doc, layer_map, ent, stats);
         if (AddDimensionGroupToDoc(doc, diameter ? "DimDiameter" : "DimRadius", layer, curves, text, tags)) ++stats.dimensions;
+        else ++stats.skipped;
+        break;
+      }
+      case DWG_TYPE_DIMENSION_ANG3PT: {
+        Dwg_Entity_DIMENSION_ANG3PT* e = ent->tio.DIMENSION_ANG3PT;
+        const Point3d vertex = xf * Point3d(e->center_pt.x, e->center_pt.y, e->center_pt.z);
+        const Point3d p1 = xf * Point3d(e->xline1_pt.x, e->xline1_pt.y, e->xline1_pt.z);
+        const Point3d p2 = xf * Point3d(e->xline2_pt.x, e->xline2_pt.y, e->xline2_pt.z);
+        const Point3d def_pt = xf * Point3d(e->def_pt.x, e->def_pt.y, e->def_pt.z);
+        Vector3d va = p1 - vertex, vb = p2 - vertex, vd = def_pt - vertex;
+        if (!va.Unitize() || !vb.Unitize() || !vd.Unitize()) { ++stats.skipped; break; }
+        const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), Vector3d(e->extrusion.x, e->extrusion.y, e->extrusion.z));
+        const ON_Plane pl(vertex, ocs.xaxis, ocs.yaxis);
+        double a0 = std::atan2(ON_DotProduct(va, pl.yaxis), ON_DotProduct(va, pl.xaxis));
+        double a1 = std::atan2(ON_DotProduct(vb, pl.yaxis), ON_DotProduct(vb, pl.xaxis));
+        if (a1 < a0) std::swap(a0, a1);
+        if (a1 - a0 > ON_PI) { std::swap(a0, a1); a1 += 2 * ON_PI; }
+        double ad = std::atan2(ON_DotProduct(vd, pl.yaxis), ON_DotProduct(vd, pl.xaxis));
+        while (ad < a0 - 1e-6) ad += 2 * ON_PI;
+        if (ad > a1 + 1e-6) { ++stats.skipped; break; }  // def_pt names the reflex sweep - not representable, see DxfImporter::Dimension
+        std::vector<kernel::NurbsCurve> curves;
+        DimGlyphSpec text;
+        std::map<std::string, std::string> tags;
+        if (!BuildAngleDimensionGeometry(vertex, p1, p2, pl, ImportDimTextHeight(doc), curves, text, tags)) { ++stats.skipped; break; }
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        if (AddDimensionGroupToDoc(doc, "DimAngle", layer, curves, text, tags)) ++stats.dimensions;
         else ++stats.skipped;
         break;
       }
