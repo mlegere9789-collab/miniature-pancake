@@ -1574,6 +1574,7 @@ class FilletEdgeCommand : public Command {
   }
   void OnEnter(CommandContext& ctx) override {
     FlushPendingConic(ctx);
+    FlushPendingRail(ctx);
     FlushPendingFillet(ctx);
     Finish();
   }
@@ -1770,6 +1771,82 @@ class FilletEdgeCommand : public Command {
                  " replaced with an exact multi-edge conic fillet");
     }
   }
+  // Applies every staged RailType edge (see the Run() RailType block above)
+  // in one kernel::FilletConvexEdgesByDistanceFromEdge/ByDistanceBetweenRails
+  // (or concave mirror) batch call - the identical convex-then-concave
+  // cascade FlushPendingConic/FlushPendingFillet already use, since neither
+  // function knows the edges' own convexity in advance. Like Rho (and
+  // unlike the plain-radius case), there is deliberately no replay-to-
+  // approximate fallback on a failed batch: RailType's own dihedral-angle-
+  // to-distance conversion has no meaning on a curved face, so a failure
+  // here is reported as-is rather than silently reinterpreted. A no-op
+  // when nothing was staged.
+  void FlushPendingRail(CommandContext& ctx) {
+    if (pending_rail_.empty()) return;
+    const std::vector<std::pair<Point3d, Point3d>> edges = std::move(pending_rail_);
+    const ObjectId id = pending_rail_id_;
+    pending_rail_.clear();
+    pending_rail_id_ = kNoObject;
+    const std::string label = "FilletEdge";
+    const std::string rail_name = rail_type_ == RailType::DistFromEdge ? "DistFromEdge" : "DistBetweenRails";
+    const bool from_edge = rail_type_ == RailType::DistFromEdge;
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o) return;
+    std::optional<ON_Brep> b = BrepOfObject(*o);
+    if (!b) return;
+    kernel::Brep kb;
+    kb.raw() = *b;
+    kernel::Brep result;
+    std::string convex_err, concave_err;
+    bool ok = false;
+    try {
+      result = from_edge ? kernel::FilletConvexEdgesByDistanceFromEdge(kb, edges, radius_)
+                          : kernel::FilletConvexEdgesByDistanceBetweenRails(kb, edges, radius_);
+      ok = true;
+    } catch (const std::exception& ex) {
+      convex_err = ex.what();
+    }
+    if (!ok) {
+      try {
+        result = from_edge ? kernel::FilletConcaveEdgesByDistanceFromEdge(kb, edges, radius_)
+                            : kernel::FilletConcaveEdgesByDistanceBetweenRails(kb, edges, radius_);
+        ok = true;
+      } catch (const std::exception& ex) {
+        concave_err = ex.what();
+      }
+    }
+    if (!ok) {
+      const std::string detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err;
+      if (edges.size() == 1) {
+        ctx.Warn(label + ": an exact RailType=" + rail_name + " fillet needs the whole object to be planar-faced at this edge (" +
+                  detail + "); RailType has no approximate rolling-ball-by-radius equivalent, so this cannot silently fall back");
+      } else {
+        ctx.Warn(label + ": an exact RailType=" + rail_name + " fillet of the " + std::to_string(edges.size()) +
+                  " staged edge(s) on object " + std::to_string(id) + " failed (" + detail +
+                  "); RailType has no approximate equivalent, so this cannot silently fall back - edges sharing a "
+                  "face, a mix of convex and concave edges, or edges whose dihedral angles convert this distance to "
+                  "genuinely different radii are out of scope for one FilletEdge run");
+      }
+      return;
+    }
+    ctx.Doc().BeginChange(label);
+    if (SceneObject* orig = ctx.Doc().Find(id)) {
+      orig->kind = ObjectKind::Brep;
+      if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+      orig->brep->raw() = result.raw();
+      orig->surface.reset();
+      orig->InvalidateDisplay();
+    }
+    if (edges.size() == 1) {
+      const int ei = FindEdgeIndexByEndpoints(*b, edges.front().first, edges.front().second,
+                                               std::max(ctx.Settings().absolute_tolerance, 1e-5));
+      ctx.Print(label + ": edge " + std::to_string(ei) + " of object " + std::to_string(id) +
+                 " replaced with an exact fillet (RailType=" + rail_name + ", distance " + FormatNumber(radius_) + ")");
+    } else {
+      ctx.Print(label + ": " + std::to_string(edges.size()) + " staged edges of object " + std::to_string(id) +
+                 " replaced with an exact multi-edge fillet (RailType=" + rail_name + ", distance " + FormatNumber(radius_) + ")");
+    }
+  }
   void Run(CommandContext& ctx, const EdgePick& pick) {
     const SceneObject* o = ctx.Doc().Find(pick.id);
     if (!o) return;
@@ -1882,26 +1959,34 @@ class FilletEdgeCommand : public Command {
     // falling back to the approximate path under a mismatched distance
     // interpretation (that path only ever takes Radius as a literal
     // radius, not a DistFromEdge/DistBetweenRails distance).
+    //
+    // Every RailType pick is STAGED (pending_rail_) rather than applied
+    // here, for the identical reason pending_conic_ above stages every Rho
+    // pick: committing the first edge immediately leaves the object
+    // carrying a curved rolling-ball wall face, so PlanarFaces() (called
+    // first by every one of these kernel functions) would reject a SECOND
+    // independent RailType edge picked in the same run with a confusing
+    // "not planar-faced" warning about a perfectly ordinary planar edge.
+    // Staging and building the whole batch together at Enter, via the new
+    // kernel::FilletConvexEdgesByDistanceFromEdge/ByDistanceBetweenRails
+    // (and concave mirrors) - which already existed in the kernel but had
+    // zero call sites anywhere in dino8-app - closes that app-reachability
+    // gap the same way pending_conic_/pending_fillet_ already did for
+    // their own batch functions. See FlushPendingRail (below OnEnter) for
+    // the actual build.
     if (mode_ == Mode::Fillet && rail_type_ != RailType::RollingBall && radii_.empty() && !preview_) {
-      ON_Brep exact;
-      std::string detail;
-      if (TryExactRailFillet(*b, edge.PointAtStart(), edge.PointAtEnd(), exact, detail)) {
-        ctx.Doc().BeginChange(label);
-        if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
-          orig->kind = ObjectKind::Brep;
-          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
-          orig->brep->raw() = exact;
-          orig->surface.reset();
-          orig->InvalidateDisplay();
-        }
-        const std::string rail_name = rail_type_ == RailType::DistFromEdge ? "DistFromEdge" : "DistBetweenRails";
-        ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
-                   " replaced with an exact fillet (RailType=" + rail_name + ", distance " + FormatNumber(radius_) + ")");
+      if (!pending_rail_.empty() && pending_rail_id_ != pick.id) {
+        ctx.Warn(label + ": a RailType fillet edge on a different object can't be staged in the same FilletEdge run (object " +
+                  std::to_string(pending_rail_id_) + " already has " + std::to_string(pending_rail_.size()) +
+                  " staged); press Enter to apply those first, then run FilletEdge again for this object");
         return;
       }
-      ctx.Warn(label + ": an exact RailType=" + std::string(rail_type_ == RailType::DistFromEdge ? "DistFromEdge" : "DistBetweenRails") +
-                " fillet needs the whole object to be planar-faced at this edge (" + detail +
-                "); RailType has no approximate rolling-ball-by-radius equivalent, so this cannot silently fall back");
+      pending_rail_id_ = pick.id;
+      pending_rail_.emplace_back(edge.PointAtStart(), edge.PointAtEnd());
+      const std::string rail_name = rail_type_ == RailType::DistFromEdge ? "DistFromEdge" : "DistBetweenRails";
+      ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
+                 " staged for an exact fillet (RailType=" + rail_name + ", distance " + FormatNumber(radius_) + ") - " +
+                 std::to_string(pending_rail_.size()) + " staged, Enter to apply");
       return;
     }
     // Exact rolling-ball fillet, tried FIRST for the ordinary case (default
@@ -2689,6 +2774,11 @@ class FilletEdgeCommand : public Command {
   std::vector<kernel::ConicEdgeSpec> pending_conic_;
   ObjectId pending_conic_id_ = kNoObject;
   int pending_conic_first_edge_ = -1;  // ON_BrepEdge index of the first staged edge, for the single-edge message
+  // Same staging idea as pending_conic_ above, for the RailType
+  // (DistFromEdge/DistBetweenRails) case - see the Run() RailType block and
+  // FlushPendingRail for why staging is needed and how the batch is built.
+  std::vector<std::pair<Point3d, Point3d>> pending_rail_;
+  ObjectId pending_rail_id_ = kNoObject;
   // Same staging idea as pending_conic_ above, for the PLAIN (no Rho, no
   // RailType, no Radii=) constant-radius case - closes PARITY_MAP.md's
   // Blending & chamfering "no app command surfaces either function's own
