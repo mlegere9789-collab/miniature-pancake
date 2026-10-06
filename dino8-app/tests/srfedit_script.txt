@@ -525,8 +525,11 @@ BoundingBox
 # naked neighbors (both still part of the same ring) - exactly
 # Brep::RemoveNakedMicroEdge()'s own safely-automatable case. The OTHER
 # new micro edge this leaves next to the corner (whose other neighbor is
-# the box's own shared vertical edge, not naked) is correctly left in
-# place and reported instead of guessed at.
+# the box's own shared vertical edge) used to be left in place and
+# reported instead of guessed at; as of 2026-10-06's TrimCount/collect_extras
+# relaxation (mirroring RemoveSharedMicroEdge's own fix), a shared-trim or
+# third-face-pinched neighbor is nudged and re-trimmed too, so both micro
+# edges close in this one call now.
 SelAll
 Hide
 Box 3800,0,0 3810,10,0 10
