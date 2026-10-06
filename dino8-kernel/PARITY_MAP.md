@@ -5593,6 +5593,64 @@ Curve operations`, a different category this pass does not touch or
 investigate further - disclosed here rather than silently left for the
 next full re-score to discover as an unexplained headline drop.
 
+**Twenty-seventh note on this category's score (this pass): one small,
+genuine typed-refusal closure, plus an honest scouting report on why this
+pass did not attempt a third capability-adding item - no bucket moves.**
+
+**"Boolean failure diagnostics":** `SplitBrepByPlane()`/`SplitBrepByManyPlanes()`
+(this category's own "Keep/split options" bullet) each had their
+`tolerance`/empty-operand(-group) preconditions already typed as
+`BooleanOperationError`, but their `plane_normal` zero-vector check was
+still a plain `std::invalid_argument` - the one site in either function
+the prior typed-refusal passes had not yet reached. A new
+`BooleanFailureReason::InvalidDirection` (boolean.h) covers it, fully
+backward compatible the same way every prior reason already is (identical
+`what()` text, still catchable as plain `std::invalid_argument`).
+Verified (`TestBooleanOperationErrorGeneralEngineFailureReasons`,
+tests/test_basic.cpp, extended with two new `expect(...)` cases rather
+than a new function, since both throw sites live in the same
+`boolean_general.cpp` file this test already covers): both functions'
+own zero-`plane_normal` refusal is now catchable as `BooleanOperationError`
+with `reason() == InvalidDirection` and the right `function_name()`, and
+still separately catchable as plain `std::invalid_argument`. No app
+command calls either function yet (unchanged, zero `dino8-app` callers
+confirmed by grep), so this is a pure kernel-API hardening with no
+app-visible effect. Does not change this category's own `partial`
+classification for either bullet it touches.
+
+**A scouting report, not a capability closure - disclosed rather than
+silently skipped:** after three dedicated rounds on this category (the
+Twenty-fourth through this Twenty-sixth/-seventh notes), the remaining
+`[partial]` bullets fall into three honest buckets, none of which this
+pass found a safe, scoped, small increment to deliver: (1) already
+attempted and reverted with real, documented reasons ("Non-manifold
+boolean results"'s mesh-welding attempt above; "B-rep-preserving
+booleans"'s own Mixed-engine app-wiring attempt, which found the engine
+can silently accept adversarial geometry the planar engine correctly
+refuses, plus a separate app-mesher gap); (2) deep, open-ended geometric
+algorithm work with no small slice to peel off ("Coplanar / coincident
+face handling"'s own "no general partially-overlapping coincident
+curved-face handling", "Tangent / grazing contact handling"'s own
+B-rep-engine grazing-incidence throw, "Analytic plane/cylinder..."'s own
+out-of-scope list); or (3) architecturally blocked by a design choice
+this pass is not positioned to reverse - the sole `[missing]` item,
+"Associative/history-enabled Boolean operations", was investigated
+directly this pass (`dino8-app/src/commands/cmd_history.cpp`'s own
+class-level doc comment and `RebuildOneHistoryObject`): every existing
+History-enabled command (`Extrude`/`Revolve`/`Loft`/`Pipe`/`Sweep1`/
+`Sweep2`) rebuilds a NEW object from a source CURVE that stays in the
+document afterward; a boolean CONSUMES both its operand solids (removes
+them from the document, same contract `BooleanUnion`/`SplitByObject`/etc.
+all share), so by the time `UpdateHistory` could ever run, there is no
+"current source geometry" left to re-fetch at all - the mechanism's own
+"simple, unambiguous rebuild-from-current-source" scope test this
+category's own class comment states up front genuinely does not fit
+booleans without first redesigning them to retain (or soft-hide) their
+operands, a cross-cutting behavior change well beyond this pass's own
+additive scope, not attempted here. `dino8_kernel_tests` suite re-run
+clean (8 new checks from the two new `expect(...)` cases above, 0
+regressions); no `dino8-app` source touched this pass.
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.

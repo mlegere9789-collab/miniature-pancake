@@ -100,6 +100,15 @@ enum class BooleanFailureReason {
   // Refused outright instead, the same "fail loud, not quietly wrong"
   // principle every other named scope limit in this file already follows.
   InvalidPolygon,
+  // A caller-supplied direction/normal vector is zero (or otherwise fails
+  // to unitize) - SplitBrepByPlane()/SplitBrepByManyPlanes()'s own
+  // `plane_normal` precondition (boolean_general.cpp), the one check in
+  // either function the "Tolerant booleans"/"Boolean failure diagnostics"
+  // typed-refusal pass had not yet reached (both functions' own tolerance
+  // and empty-operand/operand-group checks were already typed). Distinct
+  // from InvalidPolygon above, which is about a 2D vertex loop's own
+  // shape, not a single direction vector.
+  InvalidDirection,
 };
 
 // Thrown by RefuseCompoundOperand (boolean.cpp, boolean_general.cpp) in

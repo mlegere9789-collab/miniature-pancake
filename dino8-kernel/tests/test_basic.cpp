@@ -48704,8 +48704,11 @@ void TestBooleanOperationErrorGeneralEngineFailureReasons() {
   using dino8::kernel::BooleanOperationError;
   using dino8::kernel::ImprintFaces;
   using dino8::kernel::MutualImprintFaces;
+  using dino8::kernel::SplitBrepByManyPlanes;
+  using dino8::kernel::SplitBrepByPlane;
   using dino8::kernel::SplitBySheet;
   using dino8::kernel::TrimSheetBySolid;
+  using dino8::kernel::Vector3d;
 
   const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
   const Brep other = Brep::Box(1, 1, 1, 3, 3, 3);
@@ -48768,6 +48771,16 @@ void TestBooleanOperationErrorGeneralEngineFailureReasons() {
          "SplitBySheet empty solid");
   expect([&] { TrimSheetBySolid(empty, box); }, BooleanFailureReason::EmptyOperand, "TrimSheetBySolid",
          "TrimSheetBySolid empty sheet");
+
+  // InvalidDirection (new this pass): a zero plane_normal, on both
+  // SplitBrepByPlane and its plural sibling SplitBrepByManyPlanes - the one
+  // precondition either function had left as a plain std::invalid_argument
+  // even after their own tolerance/empty-operand checks were already typed
+  // (this category's own "Boolean failure diagnostics" bullet).
+  expect([&] { SplitBrepByPlane(box, Vector3d(0, 0, 0), 1.0); }, BooleanFailureReason::InvalidDirection,
+         "SplitBrepByPlane", "SplitBrepByPlane zero plane_normal");
+  expect([&] { SplitBrepByManyPlanes(box, Vector3d(0, 0, 0), {1.0}); }, BooleanFailureReason::InvalidDirection,
+         "SplitBrepByManyPlanes", "SplitBrepByManyPlanes zero plane_normal");
 }
 
 // Extends the typed-refusal mechanism past the two prior tests above to the
