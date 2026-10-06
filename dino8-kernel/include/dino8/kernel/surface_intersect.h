@@ -852,6 +852,85 @@ struct CylinderCylinderParallelIntersection {
 };
 CylinderCylinderParallelIntersection IntersectCylinderCylinderParallel(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance);
 
+// The exact closed-form plane/plane SSX - closes the "plane/plane" half of
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
+// easiest of its named pairs and, until now, still unaddressed as a public
+// API (the bullet's own evidence: "closed forms still exist only inside
+// ... the planar boolean's plane/plane path"). Two planes meet in a line
+// (the general case), are the SAME plane (coincident), or never meet
+// (parallel but distinct) - no mesh seeding, no Newton polish, the exact
+// classical formula: writing each plane's own unit normal/offset as
+// `n, h = dot(n, plane.origin)` (so the plane's own equation is `dot(n, X)
+// == h`), a point common to both planes decomposes uniquely as `alpha*n_a +
+// beta*n_b` (the only directions that can affect either dot product) via
+// the 2x2 system `alpha + beta*c == h_a`, `alpha*c + beta == h_b` (`c =
+// dot(n_a, n_b)`, and `n_a.n_a == n_b.n_b == 1` since both are unit),
+// solved directly as `alpha = (h_a - c*h_b)/(1-c^2)`, `beta = (h_b -
+// c*h_a)/(1-c^2)` - valid whenever the planes are not parallel (`1-c^2`
+// bounded away from 0), giving the line's own point `alpha*n_a + beta*n_b`
+// and direction `cross(n_a, n_b)` directly. When `|c|` is within an
+// internal angular tolerance of 1 (the planes ARE parallel), that formula's
+// own denominator degenerates; this instead checks `a`'s own distance to
+// `b`'s plane directly: within `tolerance` means the same plane
+// (`coincident == true`, every point shared, no single line to report);
+// otherwise two genuinely parallel, disjoint planes (`empty == true`).
+struct PlanePlaneIntersection {
+  bool empty = true;
+  bool coincident = false;  // true: the two planes are the same plane (parallel AND within tolerance of each other) - every point is shared, `line` is meaningless
+  ON_Line line;              // meaningful only when !empty && !coincident
+};
+PlanePlaneIntersection IntersectPlanePlane(const ON_Plane& a, const ON_Plane& b, double tolerance);
+
+// A single point where a surface's own silhouette for a FIXED, PARALLEL
+// (orthographic) viewing direction crosses one edge of a regular sampling
+// grid over its (u, v) domain - PARITY_MAP.md's own "Silhouette / outline
+// curves" bullet: "still app-only and mesh-based ... No kernel silhouette."
+// The silhouette (contour generator) for an orthographic view along
+// `view_direction` is, by definition, every point where the surface's own
+// tangent plane CONTAINS `view_direction` - equivalently, where the
+// surface's normal is exactly perpendicular to it (`dot(normal,
+// view_direction) == 0`): the viewing ray grazes the surface tangentially
+// there rather than piercing it transversally. This is found by sampling
+// `f(u, v) = dot(RobustSurfaceNormal(s, u, v), view_direction)` (the same
+// nudge-off-a-pole-safe normal `FindSurfaceTangentContacts()` already
+// relies on, here for the identical reason: a contact or a silhouette
+// crossing landing exactly on a coordinate pole must not be missed just
+// because the raw `d/du`/`d/dv` vanish there) at every vertex of the SAME
+// regular `TessellateWithUV()` grid every other function in this file
+// already tessellates with, and bisecting along every grid EDGE (both
+// horizontal and vertical) whose two endpoints disagree in `f`'s own sign -
+// the one-dimensional "on/off" sign test every other sampling-based
+// detector in this file already uses (`IntersectCurveSurfaceOverlap`'s own
+// on/off-surface predicate, `IntersectSurfacesOverlap`'s own on-`b`/off-`b`
+// grid cells), applied here to a scalar tangency test instead. Reported as
+// isolated POINTS, not stitched into a curve - the silhouette is, in
+// general, a continuous curve in (u, v) space (one equation in two
+// unknowns, structurally under-determined the way a single Newton seed
+// cannot pin to a unique point the way `FindSurfaceTangentContacts()`'s own
+// fully-determined systems do), the same honestly-scoped choice this file's
+// other inherently-continuous-locus detectors already make when full
+// curve-chaining is out of scope. Duplicate crossings within
+// `opt.tolerance * 4` of an already-accepted point are dropped, the same
+// dedup radius `IntersectCurveSurface`/`IntersectCurves` already use for
+// their own crossing points. A grid edge where `RobustSurfaceNormal`
+// degenerates at either endpoint (a genuinely malformed surface there, not
+// merely a pole - `RobustSurfaceNormal`'s own nudge already handles an
+// ordinary pole) is skipped outright ("cannot verify", not guessed), and a
+// zero-length `view_direction` returns empty outright (there is no
+// direction to test tangency against). Still honestly scoped: orthographic
+// projection only (no perspective eye point - a ray from a finite viewpoint
+// needs a per-point VARYING direction, `point - eye`, not this function's
+// own single fixed `view_direction`); point detections only, as above; no
+// visibility/self-occlusion resolution (a point behind the surface's own
+// near side from the viewer, or hidden behind a different object entirely,
+// is reported exactly like a visible one); and no `dino8-app` command calls
+// it yet (the app's own `Silhouette` stays mesh-based, unchanged).
+struct SurfaceSilhouettePoint {
+  ON_2dPoint uv;
+  Point3d point;
+};
+std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePoints(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt);
+
 // --- numerical helpers ------------------------------------------------------
 
 // Damped Gauss-Newton on residual(x) (m equations, n unknowns) with box

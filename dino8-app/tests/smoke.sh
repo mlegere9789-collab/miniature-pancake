@@ -6351,9 +6351,9 @@ if ! command -v curl >/dev/null 2>&1; then
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 10 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 12 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 10 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 12 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -6385,6 +6385,17 @@ print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
     # a known id/bounding box to check against.
     RESP9="$(curl -s --max-time 10 -X POST -H 'Accept: application/json' --data 'print("hi")' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP10="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/objects")"
+    # GET /objects?geometry=1: the actual point/vertex data for the two
+    # object kinds simple enough to serialize honestly as plain JSON arrays
+    # (point, mesh) - narrows PARITY_MAP.md's own disclosed "no geometry
+    # (de)serialization format" gap a step further than the bare metadata
+    # listing above. Adds one point and one triangle mesh so both real
+    # payloads can be checked in the same request, plus confirms the
+    # pre-existing box (a polysurface, neither kind) reports "geometry":null
+    # rather than silently omitting the key or guessing at a payload.
+    RESP11="$(curl -s --max-time 10 -X POST --data 'rs.AddPoint(20,20,20)
+rs.AddMesh({{0,0,0},{1,0,0},{0,1,0}}, {{1,2,3}})' "http://127.0.0.1:$SERVE_PORT/run")"
+    RESP12="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/objects?geometry=1")"
     CODE2="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP3="$(curl -s --max-time 10 -X POST --data 'rs.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP4="$(curl -s --max-time 10 -X POST --data 'import dino8
@@ -6419,6 +6430,9 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     [ "$RESP9" = '{"ok":true,"output":["hi"]}' ] && echo "ok   POST /run with Accept: application/json returns a real structured {ok,output} response instead of plain print() text" || { echo "$RESP9"; echo "FAIL --serve POST /run Accept: application/json did not return the expected JSON body"; fail=1; }
     echo "$RESP10" | grep -q '"type":"polysurface"' && echo "ok   GET /objects reports the box RESP1 just built as a real JSON object (type polysurface)" || { echo "$RESP10"; echo "FAIL --serve GET /objects did not report the box as a polysurface"; fail=1; }
     echo "$RESP10" | grep -q '"min":\[0.000000,0.000000,0.000000\],"max":\[5.000000,5.000000,5.000000\]' && echo "ok   GET /objects reported the box's own real bounding box (0,0,0)-(5,5,5), not just a type/name/layer listing" || { echo "$RESP10"; echo "FAIL --serve GET /objects did not report the box's expected bounding box"; fail=1; }
+    echo "$RESP12" | grep -q '"geometry":{"point":\[20.000000,20.000000,20.000000\]}' && echo "ok   GET /objects?geometry=1 reports a real point object's own coordinates, not just its bounding box" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report the point's coordinates"; fail=1; }
+    echo "$RESP12" | grep -q '"geometry":{"vertices":\[\[0.000000,0.000000,0.000000\],\[1.000000,0.000000,0.000000\],\[0.000000,1.000000,0.000000\]\],"faces":\[\[0,1,2\]\]}' && echo "ok   GET /objects?geometry=1 reports a real mesh object's own vertices/faces (0-based indices), not just its bounding box" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report the mesh's expected vertices/faces"; fail=1; }
+    echo "$RESP12" | grep -q '"type":"polysurface".*"geometry":null' && echo "ok   GET /objects?geometry=1 honestly reports \"geometry\":null for a kind (polysurface) this pass doesn't serialize, rather than guessing at a payload" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report null geometry for the box"; fail=1; }
     [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
     echo "$RESP3" | grep -q "compute error: script requires interactive input" && echo "ok   a script calling an interactive rs.Get* prompt is rejected instead of hanging the connection" || { echo "$RESP3"; echo "FAIL --serve interactive-prompt script was not rejected as expected"; fail=1; }
     if echo "$RESP4" | grep -q "DINO8_HAVE_PYTHON"; then
@@ -6437,7 +6451,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=10$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 10 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=12$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 12 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
     fi
   fi
 

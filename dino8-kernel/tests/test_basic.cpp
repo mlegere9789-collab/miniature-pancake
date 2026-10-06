@@ -4175,6 +4175,103 @@ void TestIntersectCylinderCylinderParallelClosedForm() {
   Check(IntersectCylinderCylinderParallel(cyl_a, degenerate, tol).empty, "a zero-radius cylinder operand is refused as a genuine miss");
 }
 
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
+// "plane/plane" half - the easiest of its named pairs, closed here with
+// the exact classical formula (no mesh seeding, no Newton polish).
+void TestIntersectPlanePlaneClosedForm() {
+  using dino8::kernel::IntersectPlanePlane;
+  using dino8::kernel::Point3d;
+
+  // Two genuinely crossing planes: the horizontal z=0 plane and a vertical
+  // plane x=0 - they meet exactly along the y-axis.
+  const ON_Plane horizontal(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const ON_Plane vertical(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0));
+  const auto crossing = IntersectPlanePlane(horizontal, vertical, 1e-6);
+  Check(!crossing.empty && !crossing.coincident, "two genuinely crossing planes report a real line, not a miss or coincidence");
+  if (!crossing.empty && !crossing.coincident) {
+    const Point3d p0 = crossing.line.PointAt(0.0), p1 = crossing.line.PointAt(1.0);
+    Check(std::abs(p0.x) < 1e-9 && std::abs(p0.z) < 1e-9, "the line's own first point sits exactly on the hand-derivable y-axis (x=0, z=0)");
+    Check(std::abs(p1.x) < 1e-9 && std::abs(p1.z) < 1e-9, "the line's own second point also sits exactly on the y-axis");
+    Check(std::abs(p1.y - p0.y) > 1e-6, "the line genuinely runs along y (not a degenerate single point)");
+  }
+
+  // A general oblique pair, verified by the implicit plane equations
+  // directly rather than a hardcoded expected line: a plane tilted off
+  // horizontal and a vertical plane through the origin at an angle.
+  const ON_Plane oblique_a(ON_3dPoint(0, 0, 1), ON_3dVector(0, 1, 1));
+  const ON_Plane oblique_b(ON_3dPoint(0, 0, 0), ON_3dVector(1, 1, 0));
+  const auto general_case = IntersectPlanePlane(oblique_a, oblique_b, 1e-6);
+  Check(!general_case.empty && !general_case.coincident, "a general oblique pair reports a real line");
+  if (!general_case.empty && !general_case.coincident) {
+    bool both_on_both_planes = true;
+    for (double t : {0.0, 1.0, -3.7}) {
+      const Point3d p = general_case.line.PointAt(t);
+      if (std::abs(oblique_a.DistanceTo(p)) > 1e-6 || std::abs(oblique_b.DistanceTo(p)) > 1e-6) { both_on_both_planes = false; break; }
+    }
+    Check(both_on_both_planes, "every sampled point of the reported line lies exactly on both original planes simultaneously");
+  }
+
+  // Two coincident planes (same plane, described via two different but
+  // equal origins/normals) report the coincident degeneracy, not a line.
+  const ON_Plane plane_a(ON_3dPoint(0, 0, 5), ON_3dVector(0, 0, 1));
+  const ON_Plane plane_b(ON_3dPoint(3, 7, 5), ON_3dVector(0, 0, 1));
+  const auto coincident = IntersectPlanePlane(plane_a, plane_b, 1e-6);
+  Check(!coincident.empty && coincident.coincident, "two descriptions of the same plane report the coincident degeneracy");
+
+  // Two parallel, distinct planes never meet.
+  const ON_Plane plane_c(ON_3dPoint(0, 0, 9), ON_3dVector(0, 0, 1));
+  Check(IntersectPlanePlane(plane_a, plane_c, 1e-6).empty, "two genuinely parallel, distinct planes report a genuine miss");
+
+  // Invalid input (a plane built from a zero-length normal, genuinely
+  // IsValid() == false - unlike a default-constructed ON_Plane, which is
+  // a perfectly valid world XY plane, not an invalid one) is refused
+  // outright.
+  const ON_Plane invalid_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 0));
+  Check(!invalid_plane.IsValid(), "sanity: a zero-normal plane is genuinely IsValid() == false");
+  Check(IntersectPlanePlane(invalid_plane, vertical, 1e-6).empty, "an invalid plane operand is refused as a genuine miss");
+}
+
+// PARITY_MAP.md's own "Silhouette / outline curves" bullet: "still app-only
+// and mesh-based ... No kernel silhouette." FindSurfaceSilhouettePoints is
+// a genuine kernel-level silhouette primitive for a fixed orthographic
+// view direction, against the exact surface (not a tessellated stand-in).
+void TestFindSurfaceSilhouettePointsSphereEquator() {
+  using dino8::kernel::FindSurfaceSilhouettePoints;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  // A sphere centered exactly at the origin: viewed straight down +Z, the
+  // hand-derivable silhouette is the equator itself (z=0, x^2+y^2=radius^2)
+  // - every point of the sphere's own normal (always radially outward from
+  // the center) is exactly perpendicular to (0,0,1) there, and nowhere
+  // else.
+  const double radius = 3.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+
+  const IntersectOptions opt;
+  const auto hits = FindSurfaceSilhouettePoints(sphere_surface, ON_3dVector(0, 0, 1), opt);
+  Check(!hits.empty(), "viewing a sphere straight down its own axis finds genuine silhouette points along the equator");
+  bool all_on_equator = true;
+  for (const auto& h : hits) {
+    if (std::abs(h.point.z) > 1e-6 || std::abs(std::hypot(h.point.x, h.point.y) - radius) > 1e-6) { all_on_equator = false; break; }
+  }
+  Check(all_on_equator, "every reported silhouette point sits exactly on the hand-derivable equator (z=0, at exactly the sphere's own radius from the axis)");
+
+  // A flat, generously-bounded plane viewed straight down its own normal:
+  // the normal is constant and never perpendicular to the view direction
+  // anywhere, so there is genuinely no silhouette at all.
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-10, 10), true);
+  ground.SetExtents(1, ON_Interval(-10, 10), true);
+  Check(FindSurfaceSilhouettePoints(ground, ON_3dVector(0, 0, 1), opt).empty(), "a flat plane viewed straight down its own normal has no silhouette points at all");
+
+  // A zero-length view direction is refused outright (no direction to test
+  // tangency against).
+  Check(FindSurfaceSilhouettePoints(sphere_surface, ON_3dVector(0, 0, 0), opt).empty(), "a zero-length view direction returns empty outright");
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Projection of curves/points onto surfaces along a direction (Project)"
 // bullet: "app ProjectCommand samples the curve and ray-casts along the
@@ -8701,6 +8798,101 @@ void TestSurfaceMeasureGridTessellationDeviation() {
         "when either division count is less than 1");
 }
 
+void TestSurfaceTessellateGridCertifiedAdaptive() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // A flat surface: SuggestedDivisions() already starts at the minimum,
+  // and a planar facet's deviation is exactly 0 regardless of tolerance,
+  // so this should certify on the very first attempt (no doubling).
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 10, 0),
+      Point3d(10, 0, 0),
+      Point3d(10, 10, 0),
+  };
+  const NurbsSurface flat =
+      NurbsSurface::FromControlGrid(flat_grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  double flat_achieved = -1.0;
+  const auto flat_mesh = flat.TessellateGridCertifiedAdaptive(0.01, 8, &flat_achieved);
+  Check(flat_mesh.FaceCount() > 0, "TessellateGridCertifiedAdaptive returns a real mesh for a flat surface");
+  Check(flat_achieved >= 0.0 && flat_achieved < 1e-12,
+        "TessellateGridCertifiedAdaptive's own achieved deviation is "
+        "exactly 0 for a flat surface");
+
+  // A genuinely curved surface (same unit-radius cylinder wall
+  // TestSurfaceMeasureGridTessellationDeviation() uses): per that test's
+  // own finding, SuggestedDivisions(chord_tolerance)'s own starting
+  // resolution measures 1.03-1.09x ABOVE chord_tolerance itself - so this
+  // function MUST actually refine (double at least once) to certify, not
+  // just trust the estimate the way every other *Adaptive sibling does.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  cylinder.GetNurbForm(cylinder_surface);
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+
+  const double chord_tolerance = 0.01;
+  const auto starting_divisions = wall.SuggestedDivisions(chord_tolerance);
+  const double starting_deviation =
+      wall.MeasureGridTessellationDeviation(starting_divisions.u, starting_divisions.v);
+  Check(starting_deviation > chord_tolerance,
+        "sanity: the cylinder wall's own SuggestedDivisions() starting "
+        "resolution does NOT already satisfy chord_tolerance on its own - "
+        "otherwise the refinement loop below would be untested");
+
+  double wall_achieved = -1.0;
+  const auto wall_mesh = wall.TessellateGridCertifiedAdaptive(chord_tolerance, 8, &wall_achieved);
+  Check(wall_mesh.FaceCount() > 0, "TessellateGridCertifiedAdaptive returns a real mesh for a curved surface");
+  Check(wall_achieved >= 0.0 && wall_achieved <= chord_tolerance,
+        "TessellateGridCertifiedAdaptive's own achieved deviation is "
+        "genuinely at or under chord_tolerance - a MEASURED guarantee, "
+        "not just the heuristic estimate");
+  // Independently re-measure the returned mesh's own resolution (reverse-
+  // engineered from its triangle count: 2 triangles per cell) to confirm
+  // the function actually refined beyond the untrimmed starting guess.
+  Check(wall_mesh.FaceCount() > starting_divisions.u * starting_divisions.v * 2,
+        "TessellateGridCertifiedAdaptive genuinely refined past "
+        "SuggestedDivisions()'s own starting resolution to reach the "
+        "measured bound, not just returned the unrefined estimate");
+
+  bool threw_tolerance = false;
+  try {
+    flat.TessellateGridCertifiedAdaptive(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_tolerance = true;
+  }
+  Check(threw_tolerance,
+        "TessellateGridCertifiedAdaptive throws std::invalid_argument for "
+        "a non-positive chord_tolerance");
+
+  bool threw_refinements = false;
+  try {
+    flat.TessellateGridCertifiedAdaptive(0.01, -1);
+  } catch (const std::invalid_argument&) {
+    threw_refinements = true;
+  }
+  Check(threw_refinements,
+        "TessellateGridCertifiedAdaptive throws std::invalid_argument for "
+        "a negative max_refinements");
+
+  // max_refinements = 0 forbids any doubling at all - on the cylinder
+  // wall, whose starting resolution is already confirmed above to exceed
+  // chord_tolerance, this must fail to certify and throw loudly rather
+  // than silently return a mesh that doesn't actually honor the bound.
+  bool threw_uncertifiable = false;
+  try {
+    wall.TessellateGridCertifiedAdaptive(chord_tolerance, 0);
+  } catch (const std::runtime_error&) {
+    threw_uncertifiable = true;
+  }
+  Check(threw_uncertifiable,
+        "TessellateGridCertifiedAdaptive throws std::runtime_error rather "
+        "than silently returning an uncertified mesh when max_refinements "
+        "is too small to reach the bound");
+}
+
 void TestBrepTessellateAdaptive() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -8838,6 +9030,77 @@ void TestBrepTessellateNonUniformAdaptive() {
         "the non-uniform adaptive sphere's volume is within 2% of the "
         "true analytic value (4/3 * pi * r^3), the same accuracy target "
         "the uniform adaptive path hits");
+}
+
+void TestBrepTessellateCertifiedAdaptive() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // Box(): every face is untrimmed (whole-cell) and flat, so every face
+  // should be reported as genuinely CERTIFIED, and the closed volume
+  // should still be exact.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  std::vector<bool> box_certified;
+  const auto box_faces = box.TessellateCertifiedAdaptive(0.01, 8, &box_certified);
+  Check(box_faces.size() == 6, "TessellateCertifiedAdaptive returns one mesh per Box() face (6)");
+  Check(box_certified.size() == 6, "out_certified has one entry per returned Box() face");
+  bool all_box_certified = true;
+  for (bool c : box_certified) all_box_certified = all_box_certified && c;
+  Check(all_box_certified,
+        "every Box() face is untrimmed, so TessellateCertifiedAdaptive "
+        "reports every one of them as genuinely certified");
+  const Mesh box_closed = box.TessellateToClosedMeshCertifiedAdaptive(0.01);
+  Check(std::abs(box_closed.Volume() - 8.0) < 1e-9,
+        "TessellateToClosedMeshCertifiedAdaptive's own volume is exactly "
+        "8.0 for a 2x2x2 box");
+
+  // A single genuinely TRIMMED, curved face (a wedge of the same unit
+  // cylinder wall used above, via TrimmedPlanarFace() - despite the name,
+  // it accepts any NurbsSurface, not just planar ones) has no certified
+  // path (MeasureGridTessellationDeviation() is scoped to the plain
+  // untrimmed grid), so it must fall back to the existing heuristic and
+  // be honestly reported as NOT certified - not silently blended in with
+  // a real bound. exact_clip=true (-> TessellateGridClippedExactAdaptive)
+  // is required here, not the whole-cell TessellateGridNonUniformAdaptive:
+  // a genuine, confirmed finding from a standalone dino8_scratch_test probe
+  // while building this test - the cylinder wall's own v (height) direction
+  // has zero curvature, so SuggestedParameterValues(1, ...) returns only
+  // the 2 domain endpoints (one single row spanning the FULL height), and
+  // a whole-cell in/out test can never find a cell whose corners (always
+  // exactly at v=0 and v=1) land inside any v-restricted trim polygon -
+  // confirmed directly to return 0 faces for exactly this reason, not a
+  // bug in TessellateCertifiedAdaptive itself.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  cylinder.GetNurbForm(cylinder_surface);
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  const auto wall_domain_u = wall.Domain(0);
+  const auto wall_domain_v = wall.Domain(1);
+  const double u0 = wall_domain_u.min + 0.25 * (wall_domain_u.max - wall_domain_u.min);
+  const double u1 = wall_domain_u.min + 0.75 * (wall_domain_u.max - wall_domain_u.min);
+  const double v0 = wall_domain_v.min + 0.1 * (wall_domain_v.max - wall_domain_v.min);
+  const double v1 = wall_domain_v.min + 0.9 * (wall_domain_v.max - wall_domain_v.min);
+  const std::vector<Point2d> trim = {
+      Point2d(u0, v0),
+      Point2d(u1, v0),
+      Point2d(u1, v1),
+      Point2d(u0, v1),
+  };
+  const Brep trimmed_wall = Brep::TrimmedPlanarFace(wall, trim, /*exact_clip=*/true);
+  std::vector<bool> wall_certified;
+  const auto wall_faces = trimmed_wall.TessellateCertifiedAdaptive(0.01, 8, &wall_certified);
+  Check(wall_faces.size() == 1, "TrimmedPlanarFace() produces exactly one face");
+  Check(wall_certified.size() == 1 && !wall_certified[0],
+        "a genuinely trimmed face has no certified path and is honestly "
+        "reported as NOT certified, not silently treated as if it were");
+  Check(wall_faces[0].FaceCount() > 0,
+        "the trimmed face still gets a real (uncertified, heuristic) "
+        "tessellation, not an empty result");
 }
 
 void TestFileRoundTrip() {
@@ -53396,6 +53659,127 @@ void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
   Check(threw, "Rebuild throws on fewer samples than control points");
 }
 
+void TestSurfaceInterpolateThroughGrid() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A genuinely non-planar, non-separable 5x4 grid of points (no shared
+  // u*v product term, no mirror symmetry in either direction, the same
+  // "not secretly ruled/translational" care WigglyBicubic()'s own grid
+  // above already takes).
+  const int u_count = 5, v_count = 4;
+  std::vector<Point3d> grid;
+  for (int u = 0; u < u_count; ++u) {
+    for (int v = 0; v < v_count; ++v) {
+      grid.push_back(Point3d(u * 1.3, v * 0.9, std::sin(1.7 * u) * std::cos(1.3 * v) + 0.2 * u * v));
+    }
+  }
+
+  NurbsSurface surf;
+  Check(NurbsSurface::InterpolateThroughGrid(grid, u_count, v_count, surf) == Result::Ok,
+        "InterpolateThroughGrid succeeds on a genuinely non-planar, non-separable grid");
+  Check(surf.CVCountU() == u_count && surf.CVCountV() == v_count,
+        "...and produces exactly the requested u_count x v_count control net");
+  Check(surf.DegreeU() == 3 && surf.DegreeV() == 3,
+        "...at the expected degree-3 cap for 5 (and 4) points per direction");
+  Check(!surf.IsRational(), "InterpolateThroughGrid's output is non-rational");
+
+  // Re-derive the construction's own documented shared-parameter method
+  // (average every row's/column's own [0,1]-normalized chord-length
+  // parameterization) independently here, then confirm the surface
+  // genuinely passes through every grid point AT those parameter pairs -
+  // exact interpolation, not merely a close fit.
+  auto chord_params = [](const std::vector<Point3d>& pts) {
+    std::vector<double> t = {0.0};
+    for (size_t i = 1; i < pts.size(); ++i) t.push_back(t.back() + pts[i].DistanceTo(pts[i - 1]));
+    return t;
+  };
+  std::vector<double> u_params(static_cast<size_t>(u_count), 0.0);
+  for (int v = 0; v < v_count; ++v) {
+    std::vector<Point3d> row;
+    for (int u = 0; u < u_count; ++u) row.push_back(grid[static_cast<size_t>(u * v_count + v)]);
+    const std::vector<double> cp = chord_params(row);
+    for (int u = 0; u < u_count; ++u) u_params[static_cast<size_t>(u)] += cp[static_cast<size_t>(u)] / cp.back();
+  }
+  for (double& p : u_params) p /= v_count;
+
+  std::vector<double> v_params(static_cast<size_t>(v_count), 0.0);
+  for (int u = 0; u < u_count; ++u) {
+    std::vector<Point3d> col;
+    for (int v = 0; v < v_count; ++v) col.push_back(grid[static_cast<size_t>(u * v_count + v)]);
+    const std::vector<double> cp = chord_params(col);
+    for (int v = 0; v < v_count; ++v) v_params[static_cast<size_t>(v)] += cp[static_cast<size_t>(v)] / cp.back();
+  }
+  for (double& p : v_params) p /= u_count;
+
+  double max_err = 0.0;
+  for (int u = 0; u < u_count; ++u) {
+    for (int v = 0; v < v_count; ++v) {
+      max_err = std::max(max_err, surf.PointAt(u_params[static_cast<size_t>(u)], v_params[static_cast<size_t>(v)])
+                                       .DistanceTo(grid[static_cast<size_t>(u * v_count + v)]));
+    }
+  }
+  Check(max_err < 1e-9,
+        "InterpolateThroughGrid's surface passes through all 20 grid points exactly (< 1e-9) at "
+        "the independently-recomputed shared parameter pairs");
+
+  bool size_threw = false;
+  try {
+    NurbsSurface bad;
+    NurbsSurface::InterpolateThroughGrid(grid, 1, v_count, bad);
+  } catch (const std::invalid_argument&) {
+    size_threw = true;
+  }
+  Check(size_threw, "InterpolateThroughGrid throws std::invalid_argument for u_count < 2");
+
+  bool count_threw = false;
+  try {
+    NurbsSurface bad;
+    NurbsSurface::InterpolateThroughGrid(grid, u_count, v_count + 1, bad);
+  } catch (const std::invalid_argument&) {
+    count_threw = true;
+  }
+  Check(count_threw,
+        "InterpolateThroughGrid throws std::invalid_argument when grid.size() != u_count * v_count");
+
+  // Every V-column (fixed u) coincides - degenerate, must be refused.
+  std::vector<Point3d> degenerate_grid;
+  for (int u = 0; u < u_count; ++u) {
+    for (int v = 0; v < v_count; ++v) degenerate_grid.push_back(Point3d(u, 0, 0));
+  }
+  bool degenerate_threw = false;
+  try {
+    NurbsSurface bad;
+    NurbsSurface::InterpolateThroughGrid(degenerate_grid, u_count, v_count, bad);
+  } catch (const std::invalid_argument&) {
+    degenerate_threw = true;
+  }
+  Check(degenerate_threw,
+        "InterpolateThroughGrid throws std::invalid_argument when every column is degenerate "
+        "(coincident points)");
+
+  // Minimal 2x2 grid: degree 1x1 (capped by only 2 points per
+  // direction), and the result must still interpolate all 4 corners
+  // exactly.
+  const std::vector<Point3d> quad = {Point3d(0, 0, 0), Point3d(0, 1, 1), Point3d(1, 0, 2), Point3d(1, 1, 0)};
+  NurbsSurface quad_surf;
+  Check(NurbsSurface::InterpolateThroughGrid(quad, 2, 2, quad_surf) == Result::Ok,
+        "InterpolateThroughGrid succeeds on the minimal 2x2 grid");
+  Check(quad_surf.DegreeU() == 1 && quad_surf.DegreeV() == 1,
+        "...at degree 1x1, the cap for only 2 points per direction");
+  double quad_err = 0.0;
+  for (double u : {0.0, 1.0}) {
+    for (double v : {0.0, 1.0}) {
+      const Point3d& expected = (u == 0.0) ? (v == 0.0 ? quad[0] : quad[1]) : (v == 0.0 ? quad[2] : quad[3]);
+      quad_err = std::max(quad_err, quad_surf.PointAt(u, v).DistanceTo(expected));
+    }
+  }
+  Check(quad_err < 1e-9,
+        "InterpolateThroughGrid's degree-1 surface interpolates all 4 corners of the minimal grid "
+        "exactly");
+}
+
 // ---- NurbsSurface::DecomposeToBeziers ----
 
 void TestSurfaceDecomposeToBeziersProducesExactSpanPatches() {
@@ -69454,6 +69838,8 @@ int main() {
   TestIntersectPlaneSphereClosedForm();
   TestIntersectPlaneCylinderClosedForm();
   TestIntersectCylinderCylinderParallelClosedForm();
+  TestIntersectPlanePlaneClosedForm();
+  TestFindSurfaceSilhouettePointsSphereEquator();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
@@ -69542,9 +69928,11 @@ int main() {
   TestSurfaceSuggestedDivisionsByAngle();
   TestSurfaceTessellateGridAdaptiveByAngle();
   TestSurfaceMeasureGridTessellationDeviation();
+  TestSurfaceTessellateGridCertifiedAdaptive();
   TestBrepTessellateAdaptive();
   TestBrepTessellateAdaptiveByAngle();
   TestBrepTessellateNonUniformAdaptive();
+  TestBrepTessellateCertifiedAdaptive();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();
@@ -70199,6 +70587,7 @@ int main() {
 
   TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape();
   TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise();
+  TestSurfaceInterpolateThroughGrid();
   TestSurfaceDecomposeToBeziersProducesExactSpanPatches();
 
   TestSurfaceMatchEdgePositionTangentCurvature();
