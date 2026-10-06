@@ -720,13 +720,16 @@ int main(int argc, char** argv) {
     // GET /objects: a real, if minimal, structured geometry wire format -
     // the id/type/name/layer/bounding-box of every object currently in the
     // running document, as JSON - rather than only the plain print() text
-    // /run[/python] return. `?geometry=1` additionally carries the actual
-    // point/vertex data for the two object kinds simple enough to serialize
-    // honestly as plain JSON arrays (point, mesh); every other kind gets
-    // "geometry":null - still genuinely not a (de)serialization format for
-    // curve/surface/Brep/SubD geometry (control points, knots, weights,
-    // trims - a far larger undertaking than this pass attempts), and still
-    // no way to POST geometry *in* either.
+    // /run[/python] return. `?geometry=1` additionally carries each
+    // object's own geometry for three kinds: point (coordinates), mesh
+    // (vertices/faces), and now curve (degree/control points/weights/knots
+    // - the exact NURBS definition, enough to reconstruct the curve, not
+    // just sampled points). Every other kind (surface, polysurface, SubD,
+    // point cloud) still gets "geometry":null - a surface's own two-
+    // direction knot vectors and a Brep's multiple trimmed faces are a
+    // substantially larger undertaking than one curve's single control
+    // polygon, not attempted here - and there is still no way to POST
+    // geometry *in* for any kind either.
     if (path == "/objects") {
       const dino8::app::Document& doc = app.Doc();
       const bool want_geometry = ComputeQueryFlagSet(query, "geometry");
@@ -770,6 +773,39 @@ int main(int argc, char** argv) {
             }
             faces += ']';
             body += "{\"vertices\":" + verts + ",\"faces\":" + faces + "}";
+          } else if (o.kind == dino8::app::ObjectKind::Curve && o.curve) {
+            // A NURBS curve's degree/control points/weights/knots are
+            // exactly the information OpenNURBS itself stores - enough to
+            // reconstruct the curve exactly, not an approximation sampled
+            // down to points the way the mesh/point payloads above are a
+            // dead end for anything that needs the real curve back.
+            const dino8::kernel::NurbsCurve& c = *o.curve;
+            const bool rational = c.IsRational();
+            std::string cvs = "[";
+            for (int i = 0; i < c.ControlPointCount(); ++i) {
+              if (i) cvs += ',';
+              const dino8::kernel::Point3d p = c.ControlPointAt(i);
+              cvs += "[" + std::to_string(p.x) + "," + std::to_string(p.y) + "," + std::to_string(p.z) + "]";
+            }
+            cvs += ']';
+            std::string knots = "[";
+            for (int i = 0; i < c.KnotCount(); ++i) {
+              if (i) knots += ',';
+              knots += std::to_string(c.KnotAt(i));
+            }
+            knots += ']';
+            body += "{\"degree\":" + std::to_string(c.Degree()) + ",\"rational\":" + (rational ? "true" : "false") +
+                    ",\"control_points\":" + cvs;
+            if (rational) {
+              std::string weights = "[";
+              for (int i = 0; i < c.ControlPointCount(); ++i) {
+                if (i) weights += ',';
+                weights += std::to_string(c.WeightAt(i));
+              }
+              weights += ']';
+              body += ",\"weights\":" + weights;
+            }
+            body += ",\"knots\":" + knots + "}";
           } else {
             body += "null";
           }

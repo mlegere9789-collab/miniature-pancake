@@ -18,6 +18,7 @@
 #include "script/LuaEngine.h"
 #include "ui/Icons.h"
 #include "ui/Theme.h"
+#include "util/ExprEval.h"
 
 namespace dino8::app {
 
@@ -46,116 +47,6 @@ bool ColorEdit(const char* label, Color& color) {
 
 namespace {
 
-// Tiny recursive-descent expression evaluator for the calculator and for
-// numeric input fields (Rhino accepts "2*3" wherever a number is asked for).
-class Expr {
- public:
-  explicit Expr(const std::string& s) : s_(s) {}
-  bool Eval(double& out, std::string& err) {
-    pos_ = 0;
-    ok_ = true;
-    out = ParseAdd();
-    SkipWs();
-    if (ok_ && pos_ != s_.size()) { ok_ = false; err_ = "unexpected '" + std::string(1, s_[pos_]) + "'"; }
-    err = err_;
-    return ok_;
-  }
-
- private:
-  void SkipWs() { while (pos_ < s_.size() && std::isspace(static_cast<unsigned char>(s_[pos_]))) ++pos_; }
-  bool Peek(char c) { SkipWs(); return pos_ < s_.size() && s_[pos_] == c; }
-  double ParseAdd() {
-    double v = ParseMul();
-    for (;;) {
-      if (Peek('+')) { ++pos_; v += ParseMul(); }
-      else if (Peek('-')) { ++pos_; v -= ParseMul(); }
-      else return v;
-    }
-  }
-  double ParseMul() {
-    double v = ParsePow();
-    for (;;) {
-      if (Peek('*')) { ++pos_; v *= ParsePow(); }
-      else if (Peek('/')) { ++pos_; double d = ParsePow(); if (d == 0) { ok_ = false; err_ = "division by zero"; return 0; } v /= d; }
-      else if (Peek('%')) { ++pos_; v = std::fmod(v, ParsePow()); }
-      else return v;
-    }
-  }
-  double ParsePow() {
-    double v = ParseUnary();
-    if (Peek('^')) { ++pos_; v = std::pow(v, ParsePow()); }
-    return v;
-  }
-  double ParseUnary() {
-    if (Peek('-')) { ++pos_; return -ParseUnary(); }
-    if (Peek('+')) { ++pos_; return ParseUnary(); }
-    return ParsePrimary();
-  }
-  double ParsePrimary() {
-    SkipWs();
-    if (pos_ >= s_.size()) { ok_ = false; err_ = "unexpected end"; return 0; }
-    if (s_[pos_] == '(') {
-      ++pos_;
-      double v = ParseAdd();
-      if (!Peek(')')) { ok_ = false; err_ = "missing ')'"; return 0; }
-      ++pos_;
-      return v;
-    }
-    if (std::isdigit(static_cast<unsigned char>(s_[pos_])) || s_[pos_] == '.') {
-      size_t start = pos_;
-      while (pos_ < s_.size() && (std::isdigit(static_cast<unsigned char>(s_[pos_])) || s_[pos_] == '.' || s_[pos_] == 'e' || s_[pos_] == 'E')) ++pos_;
-      return std::atof(s_.substr(start, pos_ - start).c_str());
-    }
-    if (std::isalpha(static_cast<unsigned char>(s_[pos_]))) {
-      size_t start = pos_;
-      while (pos_ < s_.size() && std::isalnum(static_cast<unsigned char>(s_[pos_]))) ++pos_;
-      std::string name = s_.substr(start, pos_ - start);
-      for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-      if (name == "pi") return ON_PI;
-      if (name == "e") return 2.718281828459045;
-      if (!Peek('(')) { ok_ = false; err_ = "unknown symbol " + name; return 0; }
-      ++pos_;
-      std::vector<double> args;
-      if (!Peek(')')) {
-        args.push_back(ParseAdd());
-        while (Peek(',')) { ++pos_; args.push_back(ParseAdd()); }
-      }
-      if (!Peek(')')) { ok_ = false; err_ = "missing ')'"; return 0; }
-      ++pos_;
-      auto a0 = [&]() { return args.empty() ? 0.0 : args[0]; };
-      if (name == "sqrt") return std::sqrt(a0());
-      if (name == "sin") return std::sin(a0() * ON_PI / 180.0);
-      if (name == "cos") return std::cos(a0() * ON_PI / 180.0);
-      if (name == "tan") return std::tan(a0() * ON_PI / 180.0);
-      if (name == "asin") return std::asin(a0()) * 180.0 / ON_PI;
-      if (name == "acos") return std::acos(a0()) * 180.0 / ON_PI;
-      if (name == "atan") return std::atan(a0()) * 180.0 / ON_PI;
-      if (name == "abs") return std::fabs(a0());
-      if (name == "ln") return std::log(a0());
-      if (name == "log") return std::log10(a0());
-      if (name == "exp") return std::exp(a0());
-      if (name == "floor") return std::floor(a0());
-      if (name == "ceil") return std::ceil(a0());
-      if (name == "round") return std::round(a0());
-      if (name == "min" && args.size() >= 2) return std::min(args[0], args[1]);
-      if (name == "max" && args.size() >= 2) return std::max(args[0], args[1]);
-      if (name == "pow" && args.size() >= 2) return std::pow(args[0], args[1]);
-      if (name == "hypot" && args.size() >= 2) return std::hypot(args[0], args[1]);
-      ok_ = false;
-      err_ = "unknown function " + name;
-      return 0;
-    }
-    ok_ = false;
-    err_ = "unexpected '" + std::string(1, s_[pos_]) + "'";
-    return 0;
-  }
-
-  std::string s_;
-  size_t pos_ = 0;
-  bool ok_ = true;
-  std::string err_;
-};
-
 bool InputString(const char* label, std::string& value, ImGuiInputTextFlags flags = 0) {
   char buf[512];
   std::snprintf(buf, sizeof(buf), "%s", value.c_str());
@@ -179,8 +70,7 @@ ImVec4 StatusColor(CommandStatus s) {
 }  // namespace
 
 bool EvaluateExpression(const std::string& text, double& out, std::string& error) {
-  Expr e(text);
-  return e.Eval(out, error);
+  return dino8::util::EvaluateExpression(text, out, error);
 }
 
 // ---------------------------------------------------------------------------

@@ -280,35 +280,46 @@ void RegisterLayerCommands(CommandEngine& e) {
   // per-layer-only fields above: a named row (color + lineweight) a layer
   // can point at by name (LayerPlotStyle below) instead of carrying its own
   // copy, so several layers sharing one style name all change together when
-  // the row is edited here. Three-token scriptable form "PlotStyleTable
-  // <name> <r,g,b|ByLayer> <width>" (same TakePendingInput pattern as
-  // LayerPrintWidth/LayerPlotColor); with no name queued, lists every row.
+  // the row is edited here. Three-or-four-token scriptable form
+  // "PlotStyleTable <name> <r,g,b|ByLayer> <width> [transparency]" (same
+  // TakePendingInput pattern as LayerPrintWidth/LayerPlotColor);
+  // `transparency` (0-100, 0 = fully opaque) is optional and defaults to 0
+  // when omitted, so every pre-existing 3-token call site is unaffected.
+  // With no name queued, lists every row.
   Reg(e, "PlotStyleTable", Immediate([](CommandContext& ctx) {
         auto name = ctx.Engine().TakePendingInput();
         if (!name) {
-          if (ctx.Doc().PlotStyles().empty()) { ctx.Print("No plot styles defined. Use PlotStyleTable <name> <r,g,b|ByLayer> <width> to create one."); return; }
+          if (ctx.Doc().PlotStyles().empty()) { ctx.Print("No plot styles defined. Use PlotStyleTable <name> <r,g,b|ByLayer> <width> [transparency] to create one."); return; }
           for (const PlotStyle& s : ctx.Doc().PlotStyles()) {
             const std::string color = s.has_color ? std::to_string(static_cast<int>(s.color.r * 255 + 0.5f)) + "," + std::to_string(static_cast<int>(s.color.g * 255 + 0.5f)) + "," + std::to_string(static_cast<int>(s.color.b * 255 + 0.5f)) : "ByLayer";
-            ctx.Print("PlotStyle '" + s.name + "': color " + color + ", width " + (s.width_mm > 0 ? FormatNumber(s.width_mm) + " mm" : (s.width_mm < 0 ? "does not print" : "document default")));
+            ctx.Print("PlotStyle '" + s.name + "': color " + color + ", width " + (s.width_mm > 0 ? FormatNumber(s.width_mm) + " mm" : (s.width_mm < 0 ? "does not print" : "document default")) +
+                      ", transparency " + FormatNumber(s.transparency) + "%");
           }
           return;
         }
         auto color_text = ctx.Engine().TakePendingInput();
         auto width_text = ctx.Engine().TakePendingInput();
-        if (!color_text || !width_text) { ctx.Warn("Usage: PlotStyleTable <name> <r,g,b|ByLayer> <width>"); return; }
+        auto transparency_text = ctx.Engine().TakePendingInput();
+        if (!color_text || !width_text) { ctx.Warn("Usage: PlotStyleTable <name> <r,g,b|ByLayer> <width> [transparency]"); return; }
         bool clear = true;
         Color c;
         if (!ParsePlotColorArg(*color_text, clear, c)) { ctx.Warn("'" + *color_text + "' is not r,g,b or ByLayer/Default/None"); return; }
         char* end = nullptr;
         const double w = std::strtod(width_text->c_str(), &end);
         if (end == width_text->c_str()) { ctx.Warn("'" + *width_text + "' is not a number"); return; }
+        double transparency = 0;
+        if (transparency_text) {
+          transparency = std::clamp(std::strtod(transparency_text->c_str(), &end), 0.0, 100.0);
+          if (end == transparency_text->c_str()) { ctx.Warn("'" + *transparency_text + "' is not a number"); return; }
+        }
         ctx.Doc().BeginChange("PlotStyleTable");
         PlotStyle* st = ctx.Doc().FindPlotStyle(*name);
         if (!st) { PlotStyle fresh; fresh.name = *name; ctx.Doc().PlotStyles().push_back(fresh); st = &ctx.Doc().PlotStyles().back(); }
         st->has_color = !clear;
         if (!clear) st->color = c;
         st->width_mm = w;
-        ctx.Print("PlotStyleTable: '" + *name + "' saved (color " + (st->has_color ? *color_text : "ByLayer") + ", width " + FormatNumber(w) + " mm)");
+        st->transparency = transparency;
+        ctx.Print("PlotStyleTable: '" + *name + "' saved (color " + (st->has_color ? *color_text : "ByLayer") + ", width " + FormatNumber(w) + " mm, transparency " + FormatNumber(transparency) + "%)");
       }));
   // LayerPlotStyle: assigns a layer's named PlotStyle row (PlotStyleTable
   // above) - Layer::plot_style, read by ResolvePlotStyle/LayerPrints/

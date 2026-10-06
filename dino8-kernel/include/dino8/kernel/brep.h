@@ -4687,19 +4687,30 @@ class Brep {
   // never a resampled refit) for a straight FromPlanarFaces() boundary,
   // the one case this is proven correct on.
   //
-  // Which piece of the exact split (the curve's own "before"/"after" the
-  // split parameter) corresponds to which physical half (old-start-to-
-  // new-vertex vs. new-vertex-to-old-end) is decided by DIRECT 3D
+  // Which 3D edge piece (old-start-to-new-vertex vs. new-vertex-to-old-
+  // end) each new trim is built against is decided by DIRECT 3D
   // measurement - which piece's own start point is closer to the edge's
-  // existing start vertex - never assumed from the curve's own
-  // parameter direction or the trim's own m_bRev3d flag.
+  // existing start vertex - never assumed from the curve's own parameter
+  // direction. A naked (1-trim) edge has one trim to update this way; a
+  // plain SHARED (2-trim) straight edge - the ordinary two-manifold-edge
+  // case, generalized in later than the naked-only original version -
+  // has two, generally on two different faces/surfaces with no
+  // relationship between their own local (u, v) parameterizations, each
+  // measured and spliced independently. Exactly one of a shared edge's
+  // two trims has m_bRev3d == true by the ordinary convention (its own
+  // 2D curve direction opposite the edge's 3D one) - the new trim built
+  // against THAT side needs its own bRev3d flipped to match (found by
+  // testing: an earlier version always committed bRev3d == false, which
+  // spliced that side's two new trims into its own loop in the wrong
+  // relative order - same trim count, same edges, Check() none the
+  // wiser - producing a genuinely self-crossing loop only a tessellated-
+  // area check caught).
   //
   // Returns Result::Failed - not a thrown exception, the same "can't,
   // but that's not a bug" contract UnjoinEdge()/RemoveNakedMicroEdge()
-  // already have - if `edge_index` refers to an edge that is not
-  // exactly naked (TrimCount() != 1; a shared or non-manifold edge is
-  // out of scope here, same restriction RemoveNakedMicroEdge() places on
-  // its own neighbours), if the edge is not LINEAR (see the
+  // already have - if `edge_index` refers to a non-manifold edge
+  // (TrimCount() > 2; naked and plain-shared are the only two supported
+  // trim counts), if the edge is not LINEAR (see the
   // implementation's own comment: tested directly against a clean,
   // Check()-verified open curved fixture - a partial-angle cylindrical
   // wedge's own un-capped rim - and found to silently produce real
@@ -4761,6 +4772,61 @@ class Brep {
   // per-face side tables whenever it performs at least one split (see
   // SplitNakedEdgeAt()'s own comment for why).
   int SewTJunctions(double tolerance = tolerance::kEdgeJoin);
+
+  // Extends face_index's own surface past one end of its current (u, v)
+  // domain in `direction` (0 = U, 1 = V) to include [t0, t1] - the
+  // Brep-level counterpart to NurbsSurface::Extend()/ExtendLinear()
+  // (`linear` picks which), applied to a single named face INSIDE a
+  // possibly multi-face Brep rather than a free-standing surface.
+  // Closes the "a multi-face polysurface is detached into a brand-new,
+  // separate object" half of PARITY_MAP.md's own ExtendSrf gap
+  // (dino8-app's ExtendSrfCommand, cmd_srfedit.cpp): on success
+  // face_index keeps its own index, its own surface grows in place
+  // (swapped for a new ON_Surface via AddSurface(), the old one simply
+  // left unreferenced), and its own trim loop/edges/vertices are rebuilt
+  // to match - no DeleteFace()/Compact()/AddBrepFrom() detour, and every
+  // OTHER face of this Brep is completely untouched.
+  //
+  // Scoped narrowly, by direct construction rather than by trial and
+  // error: face_index's own loop must be exactly one outer loop (no
+  // holes) of exactly 4 trims, each one running along a WHOLE side of
+  // the surface's own (u, v) domain rectangle - i.e. face_index must be
+  // untrimmed (its loop reproduces the surface's own natural boundary
+  // exactly), the common case for a primitive or boolean-fragment face
+  // that was never itself re-trimmed. [t0, t1] must extend EXACTLY one
+  // end of `direction`'s current domain - the other end of `direction`,
+  // and the entirety of the other direction, stay fixed; extending both
+  // ends of `direction` in one call is a narrower follow-up, not
+  // attempted here. The CAP trim at the end actually being extended, and
+  // BOTH trims that run ALONG `direction` (the two "rails" connecting
+  // the two ends), must be naked (TrimCount() == 1): rebuilding any of
+  // those three edges' own 3D curve is only safe when no other trim -
+  // on any other face - also references it. The FAR cap (the end NOT
+  // being extended) is left completely untouched, vertices and edges
+  // alike, whether it is naked or genuinely shared with a neighbour -
+  // this is exactly how a face sharing one edge with a neighbour extends
+  // AWAY from that neighbour in place; extending TOWARD a shared edge
+  // instead (the neighbour would need to grow too, to stay watertight)
+  // is refused, since that cap or rail trim then isn't naked.
+  //
+  // Each of the 3 replaced trims' own new 2D/3D curves comes directly
+  // from the extended surface's own IsoCurve() (never a resampled refit,
+  // the same exactness BuildTwoFaceCylinderFixture-style trim
+  // construction already relies on elsewhere in this codebase), oriented
+  // by DIRECT measurement against each corner's own known new position -
+  // never assumed from the old trim's own m_bRev3d or parameter
+  // direction, the same discipline SplitNakedEdgeAt() already uses.
+  //
+  // Throws std::out_of_range if `face_index` is out of range, or
+  // std::invalid_argument if it refers to an already-deleted face or if
+  // `direction` isn't 0/1. Returns Result::NoOpAlreadySatisfied if
+  // [t0, t1] already sits inside the current domain (nothing to do, the
+  // same convention NurbsSurface::Extend()/ExtendLinear() already use)
+  // and Result::Failed - this Brep left completely untouched - for every
+  // scope restriction above, a surface with no real NURBS form, a
+  // surface closed in `direction`, or an extend that itself fails.
+  Result ExtendFaceInPlace(int face_index, int direction, double t0, double t1, bool linear,
+                           double tolerance = tolerance::kDistance);
 
   // Caps every planar hole in this Brep's
   // planar face - Rhino's own Cap for the case Check() reports as a
