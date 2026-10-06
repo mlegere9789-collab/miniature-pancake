@@ -64,6 +64,7 @@ BlendEdge
 Enter
 SelLast
 List
+Volume
 # --- MatchSrf: move a plane's near edge onto a target line
 SelAll
 Hide
@@ -358,7 +359,7 @@ Enter
 SelAll
 Volume
 SelNone
-@expect_objects 56
+@expect_objects 55
 # --- FilletEdge Rho (exact conic fillet): kernel::FilletConvexEdgeConic
 # via the Rho option, on the same box-corner construction as the plain
 # FilletEdge/ChamferEdge cases above. At rho=0.5 the conic is the exact
