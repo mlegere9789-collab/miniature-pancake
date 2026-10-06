@@ -9621,7 +9621,12 @@ Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
     throw std::invalid_argument("dino8::kernel::Brep::SplitNakedEdgeAt: edge_index " +
                                 std::to_string(edge_index) + " refers to a deleted edge");
   }
-  if (edge.TrimCount() != 1) return Result::Failed;  // not naked - out of scope
+  const int trim_count = edge.TrimCount();
+  // Naked (1 trim) or a plain, simple SHARED edge (exactly 2 trims, one
+  // per side - the ordinary two-manifold-edge case): a non-manifold edge
+  // (3+ trims) is still out of scope. See this method's own doc comment
+  // for how the 2-trim case generalizes the original naked-only one.
+  if (trim_count != 1 && trim_count != 2) return Result::Failed;
   const double tol = std::max(tolerance, 0.0);
   // Restricted to LINEAR edges: found by testing, not assumed. A clean
   // (Check()-verified baseline) open curved fixture - a partial-angle
@@ -9636,18 +9641,41 @@ Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
   // sewing gap" case) - the same "curved boundary refused, not guessed
   // at" restriction CapPlanarHoles() already places on itself.
   if (!edge.IsLinear(tol)) return Result::Failed;
-  const int ti = edge.m_ti[0];
-  if (ti < 0 || ti >= b.m_T.Count()) return Result::Failed;
-  ON_BrepTrim& trim = b.m_T[ti];
-  if (trim.m_li < 0 || trim.m_li >= b.m_L.Count()) return Result::Failed;
-  ON_BrepLoop& loop = b.m_L[trim.m_li];
-  const ON_BrepFace* face = trim.Face();
-  const ON_Surface* srf = face ? face->SurfaceOf() : nullptr;
-  if (!srf) return Result::Failed;
+
+  // Resolve each of the edge's own trim(s) to its own loop/face/surface
+  // up front - for the 2-trim case these are generally two DIFFERENT
+  // faces (that is what "shared edge" means), each needing its own (u, v)
+  // projection in step 2 below.
+  struct TrimCtx {
+    int ti;
+    ON_BrepLoop* loop;
+    NurbsSurface srf_wrap;
+  };
+  std::vector<TrimCtx> ctxs;
+  for (int k = 0; k < trim_count; ++k) {
+    const int ti_k = edge.m_ti[k];
+    if (ti_k < 0 || ti_k >= b.m_T.Count()) return Result::Failed;
+    ON_BrepTrim& trim_k = b.m_T[ti_k];
+    if (trim_k.m_li < 0 || trim_k.m_li >= b.m_L.Count()) return Result::Failed;
+    const ON_BrepFace* face_k = trim_k.Face();
+    const ON_Surface* srf_k = face_k ? face_k->SurfaceOf() : nullptr;
+    if (!srf_k) return Result::Failed;
+    ON_NurbsSurface ns_k;
+    if (const auto* cast = ON_NurbsSurface::Cast(srf_k)) {
+      ns_k = *cast;
+    } else if (srf_k->GetNurbForm(ns_k) <= 0) {
+      return Result::Failed;
+    }
+    NurbsSurface wrap_k;
+    wrap_k.raw() = ns_k;
+    ctxs.push_back(TrimCtx{ti_k, &b.m_L[trim_k.m_li], std::move(wrap_k)});
+  }
 
   // 1. Locate the split point ON the edge's own curve, via this kernel's
   // proven closest-point solver - the projected point (not the caller's
-  // raw `point`) becomes the new vertex.
+  // raw `point`) becomes the new vertex. Shared by every trim below:
+  // there is only ever one physical 3D edge curve to split, regardless
+  // of how many trims reference it.
   ON_NurbsCurve edge_nc;
   if (edge.GetNurbForm(edge_nc) <= 0) return Result::Failed;
   NurbsCurve edge_wrap;
@@ -9662,58 +9690,95 @@ Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
   if (!edge_nc.Split(t_split, left3d_raw, right3d_raw)) return Result::Failed;
   std::unique_ptr<ON_Curve> left3d(left3d_raw), right3d(right3d_raw);
 
-  // 2. Locate the matching split parameter on the trim's own 2D curve:
-  // project the (already curve-exact) split point through the face's
-  // surface into (u, v), then find the trim's own closest parameter to
-  // that (u, v) point - the same "measure, don't assume" technique used
-  // below to pair the split halves, since a trim's own local
-  // parameterization has no guaranteed relationship to the edge's.
-  NurbsSurface srf_wrap;
-  ON_NurbsSurface ns;
-  if (const auto* cast = ON_NurbsSurface::Cast(srf)) {
-    ns = *cast;
-  } else if (srf->GetNurbForm(ns) <= 0) {
-    return Result::Failed;
-  }
-  srf_wrap.raw() = ns;
-  const Point2d uv = srf_wrap.ClosestPointParameter(p_on_edge, 60, 60);
-
-  const ON_Curve* trim_curve = trim.TrimCurveOf();
-  if (!trim_curve) return Result::Failed;
-  ON_NurbsCurve trim_nc;
-  if (trim_curve->GetNurbForm(trim_nc) <= 0) return Result::Failed;
-  NurbsCurve trim_wrap;
-  trim_wrap.raw() = trim_nc;
-  const double s_split = trim_wrap.ClosestPointParameter(Point3d(uv.x, uv.y, 0.0), 200);
-  const ON_Interval sdom = trim_nc.Domain();
-  if (s_split <= sdom.Min() || s_split >= sdom.Max()) return Result::Failed;
-
-  ON_Curve *left2d_raw = nullptr, *right2d_raw = nullptr;
-  if (!trim_nc.Split(s_split, left2d_raw, right2d_raw)) return Result::Failed;
-  std::unique_ptr<ON_Curve> left2d(left2d_raw), right2d(right2d_raw);
-
   const int old_start_vi = edge.m_vi[0];
   const int old_end_vi = edge.m_vi[1];
   const Point3d old_start = b.m_V[old_start_vi].point;
 
-  // 3. Pair each split's two pieces to "old-start-to-new-vertex" vs.
-  // "new-vertex-to-old-end" by DIRECT measurement (see this method's own
-  // doc comment) - never by trusting the curve's or trim's own
-  // parameter direction.
+  // 3 (3D half, done once). Pair the 3D split's two pieces to
+  // "old-start-to-new-vertex" vs. "new-vertex-to-old-end" by DIRECT
+  // measurement (see this method's own doc comment) - never by trusting
+  // the curve's own parameter direction.
   const bool d3_forward = left3d->PointAtStart().DistanceTo(old_start) <=
                           right3d->PointAtStart().DistanceTo(old_start);
   ON_Curve* first3d = d3_forward ? left3d.get() : right3d.get();
   ON_Curve* second3d = d3_forward ? right3d.get() : left3d.get();
 
-  const Point3d left2d_start_3d = srf_wrap.PointAt(left2d->PointAtStart().x, left2d->PointAtStart().y);
-  const Point3d right2d_start_3d = srf_wrap.PointAt(right2d->PointAtStart().x, right2d->PointAtStart().y);
-  const bool d2_forward = left2d_start_3d.DistanceTo(old_start) <= right2d_start_3d.DistanceTo(old_start);
-  ON_Curve* first2d = d2_forward ? left2d.get() : right2d.get();
-  ON_Curve* second2d = d2_forward ? right2d.get() : left2d.get();
+  // 2 and 3 (2D half, once PER TRIM): project the (already curve-exact)
+  // split point through THAT trim's own face's surface into (u, v), find
+  // that trim's own closest parameter to it, split its own 2D curve
+  // there, and pair the two pieces by the SAME direct-measurement
+  // technique as the 3D case above - independent per trim, since a
+  // shared edge's two trims generally live on two different surfaces
+  // with no relationship between their own local parameterizations.
+  // A trim's own 2D curve direction need NOT agree with the edge's 3D
+  // direction (that disagreement is exactly what m_bRev3d records): the
+  // ORIGINAL (pre-split) trim curve's own domain-Min end is old_start
+  // for one trim of a shared edge and old_end for the OTHER (the naked,
+  // single-trim case only ever exercises the bRev3d == false side of
+  // this, which is why a genuine SHARED-edge fixture, not just a second
+  // naked one, was needed to surface it: on a closed box, every edge is
+  // shared, so exactly one of its two trims always hits the bRev3d ==
+  // true side). `left2d`/`right2d` (the exact, unresampled domain-order
+  // split of that ORIGINAL curve - never reversed) are kept in their own
+  // natural domain order either way - that order IS the loop's own walk
+  // order by definition, bRev3d or not - and `min_is_old_start` instead
+  // picks which physical edge piece (edge_first or edge_second) each one
+  // corresponds to, and whether using it needs its own bRev3d flipped to
+  // true: when domain-Min is old_end (not old_start), `left2d` physically
+  // runs old_end -> split - the OPPOSITE of edge_second's own stored
+  // old_end's "second3d" direction, which runs split -> old_end - so
+  // referencing edge_second from a trim whose 2D curve runs the other
+  // way needs bRev3d == true; `right2d` (split -> old_start) is
+  // similarly the reverse of edge_first's own old_start -> split, same
+  // reasoning. Found by testing, not assumed: an earlier version of this
+  // fix instead reversed the CURVES to always start at old_start and
+  // committed bRev3d == false unconditionally - geometrically plausible
+  // per curve, but it broke the LOOP's own walk order on exactly this
+  // (bRev3d == true) side, producing a self-crossing loop Check() never
+  // caught (same 5-trim count, same two edges used) and only a 3x-too-
+  // large tessellated area exposed.
+  struct SplitTrim {
+    int old_ti;
+    ON_BrepLoop* loop;
+    std::unique_ptr<ON_Curve> left2d, right2d;  // natural domain order - loop order, always
+    bool min_is_old_start;
+  };
+  std::vector<SplitTrim> split_trims;
+  for (TrimCtx& ctx : ctxs) {
+    const ON_BrepTrim& trim_k = b.m_T[ctx.ti];
+    const Point2d uv = ctx.srf_wrap.ClosestPointParameter(p_on_edge, 60, 60);
+    const ON_Curve* trim_curve = trim_k.TrimCurveOf();
+    if (!trim_curve) return Result::Failed;
+    ON_NurbsCurve trim_nc;
+    if (trim_curve->GetNurbForm(trim_nc) <= 0) return Result::Failed;
+    NurbsCurve trim_wrap;
+    trim_wrap.raw() = trim_nc;
+    const double s_split = trim_wrap.ClosestPointParameter(Point3d(uv.x, uv.y, 0.0), 200);
+    const ON_Interval sdom = trim_nc.Domain();
+    if (s_split <= sdom.Min() || s_split >= sdom.Max()) return Result::Failed;
+
+    ON_Curve *left2d_raw = nullptr, *right2d_raw = nullptr;
+    if (!trim_nc.Split(s_split, left2d_raw, right2d_raw)) return Result::Failed;
+    std::unique_ptr<ON_Curve> left2d(left2d_raw), right2d(right2d_raw);
+
+    // Measured directly against the curve's own TWO REAL endpoints
+    // (domain-Min via left2d's own start, domain-Max via right2d's own
+    // end) - never against an interior split point, and never assumed.
+    const Point3d dom_min_3d = ctx.srf_wrap.PointAt(left2d->PointAtStart().x, left2d->PointAtStart().y);
+    const Point3d dom_max_3d = ctx.srf_wrap.PointAt(right2d->PointAtEnd().x, right2d->PointAtEnd().y);
+    const bool min_is_old_start = dom_min_3d.DistanceTo(old_start) <= dom_max_3d.DistanceTo(old_start);
+    SplitTrim st;
+    st.old_ti = ctx.ti;
+    st.loop = ctx.loop;
+    st.left2d = std::move(left2d);
+    st.right2d = std::move(right2d);
+    st.min_is_old_start = min_is_old_start;
+    split_trims.push_back(std::move(st));
+  }
 
   // 4. Commit: a new vertex at the exact split point, two new edges
-  // (old-start -> new, new -> old-end) each with their own exact curve
-  // piece, and two new trims sharing this face's own loop.
+  // (old-start -> new, new -> old-end) shared by every trim below, and
+  // two new trims per ORIGINAL trim (one per loop the edge was in).
   ON_BrepVertex& new_v = b.NewVertex(p_on_edge, 0.0);
   const int c3i_first = b.AddEdgeCurve(first3d->Duplicate());
   const int c3i_second = b.AddEdgeCurve(second3d->Duplicate());
@@ -9722,33 +9787,44 @@ Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
   edge_first.m_tolerance = 0.0;
   edge_second.m_tolerance = 0.0;
 
-  const int c2i_first = b.AddTrimCurve(first2d->Duplicate());
-  const int c2i_second = b.AddTrimCurve(second2d->Duplicate());
-  ON_BrepTrim& trim_first = b.NewTrim(edge_first, /*bRev3d=*/false, loop, c2i_first);
-  ON_BrepTrim& trim_second = b.NewTrim(edge_second, /*bRev3d=*/false, loop, c2i_second);
-  trim_first.m_tolerance[0] = trim_first.m_tolerance[1] = 0.0;
-  trim_second.m_tolerance[0] = trim_second.m_tolerance[1] = 0.0;
-  const int ti_first = trim_first.m_trim_index;
-  const int ti_second = trim_second.m_trim_index;
+  // `left2d`/`right2d` are committed in that exact (natural domain)
+  // order - always the loop's own walk order, bRev3d or not (see the
+  // SplitTrim loop's own comment above) - each against whichever of
+  // edge_first/edge_second it physically agrees with, with bRev3d set
+  // only when it doesn't.
+  for (const SplitTrim& st : split_trims) {
+    ON_BrepEdge& edge_for_left = st.min_is_old_start ? edge_first : edge_second;
+    ON_BrepEdge& edge_for_right = st.min_is_old_start ? edge_second : edge_first;
+    const bool rev = !st.min_is_old_start;
+    const int c2i_left = b.AddTrimCurve(st.left2d->Duplicate());
+    const int c2i_right = b.AddTrimCurve(st.right2d->Duplicate());
+    ON_BrepTrim& trim_left = b.NewTrim(edge_for_left, rev, *st.loop, c2i_left);
+    ON_BrepTrim& trim_right = b.NewTrim(edge_for_right, rev, *st.loop, c2i_right);
+    trim_left.m_tolerance[0] = trim_left.m_tolerance[1] = 0.0;
+    trim_right.m_tolerance[0] = trim_right.m_tolerance[1] = 0.0;
+    const int ti_left = trim_left.m_trim_index;
+    const int ti_right = trim_right.m_trim_index;
 
-  // NewTrim(edge, bRev3d, loop, c2i) APPENDS to loop.m_ti itself
-  // (confirmed empirically, not merely assumed from its own doc
-  // comment). Undo that append, then splice both new trim indices in at
-  // the ORIGINAL trim's own position, preserving the loop's cyclic
-  // order.
-  int pos = -1;
-  for (int k = 0; k < loop.m_ti.Count(); ++k) {
-    if (loop.m_ti[k] == ti) {
-      pos = k;
-      break;
+    // NewTrim(edge, bRev3d, loop, c2i) APPENDS to loop.m_ti itself
+    // (confirmed empirically, not merely assumed from its own doc
+    // comment). Undo that append, then splice both new trim indices in
+    // at the ORIGINAL trim's own position, preserving the loop's cyclic
+    // order.
+    ON_BrepLoop& loop_ref = *st.loop;
+    int pos = -1;
+    for (int k = 0; k < loop_ref.m_ti.Count(); ++k) {
+      if (loop_ref.m_ti[k] == st.old_ti) {
+        pos = k;
+        break;
+      }
     }
+    if (pos < 0) return Result::Failed;  // shouldn't happen - defensive only
+    loop_ref.m_ti.Remove(loop_ref.m_ti.Count() - 1);  // undo append of ti_right
+    loop_ref.m_ti.Remove(loop_ref.m_ti.Count() - 1);  // undo append of ti_left
+    loop_ref.m_ti.Remove(pos);                         // remove the original trim's own slot
+    loop_ref.m_ti.Insert(pos, ti_right);
+    loop_ref.m_ti.Insert(pos, ti_left);
   }
-  if (pos < 0) return Result::Failed;  // shouldn't happen - defensive only
-  loop.m_ti.Remove(loop.m_ti.Count() - 1);  // undo append of ti_second
-  loop.m_ti.Remove(loop.m_ti.Count() - 1);  // undo append of ti_first
-  loop.m_ti.Remove(pos);                     // remove the original trim's own slot
-  loop.m_ti.Insert(pos, ti_second);
-  loop.m_ti.Insert(pos, ti_first);
 
   // 5. Remove the deleted edge's own index from its two (former)
   // endpoint vertices' m_ei lists - ON_Brep::Compact()/
@@ -9764,7 +9840,7 @@ Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
   remove_from_vertex(old_start_vi, edge_index);
   remove_from_vertex(old_end_vi, edge_index);
   b.m_E[edge_index].m_edge_index = -1;
-  b.m_T[ti].m_trim_index = -1;
+  for (const SplitTrim& st : split_trims) b.m_T[st.old_ti].m_trim_index = -1;
 
   b.Compact();
   b.SetTolerancesBoxesAndFlags();
@@ -9843,6 +9919,294 @@ int Brep::SewTJunctions(double tolerance) {
   }
   if (splits > 0) JoinNakedEdges(tol);
   return splits;
+}
+
+Result Brep::ExtendFaceInPlace(int face_index, int direction, double t0, double t1, bool linear, double tolerance) {
+  if (direction != 0 && direction != 1) {
+    throw std::invalid_argument("dino8::kernel::Brep::ExtendFaceInPlace: direction must be 0 (U) or 1 (V)");
+  }
+  ON_Brep& b = brep_;
+  if (face_index < 0 || face_index >= b.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::ExtendFaceInPlace: face_index " + std::to_string(face_index) +
+                            " is out of range (this Brep has " + std::to_string(b.m_F.Count()) + " face slot(s))");
+  }
+  ON_BrepFace& face = b.m_F[face_index];
+  if (face.m_face_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::ExtendFaceInPlace: face_index " +
+                                std::to_string(face_index) + " refers to an already-deleted face");
+  }
+  if (t0 >= t1) return Result::Failed;
+  if (face.m_li.Count() != 1) return Result::Failed;  // no holes - exactly one loop
+  ON_BrepLoop& loop = b.m_L[face.m_li[0]];
+  if (loop.m_type != ON_BrepLoop::outer || loop.TrimCount() != 4) return Result::Failed;
+
+  const ON_Surface* srf = face.SurfaceOf();
+  if (!srf) return Result::Failed;
+  ON_NurbsSurface ns;
+  if (const auto* cast = ON_NurbsSurface::Cast(srf)) {
+    ns = *cast;
+  } else if (srf->GetNurbForm(ns) <= 0) {
+    return Result::Failed;
+  }
+  if (ns.IsClosed(direction)) return Result::Failed;
+
+  const double tol = std::max(tolerance, 0.0);
+  const int other = 1 - direction;
+  const ON_Interval old_dir = ns.Domain(direction);
+  const ON_Interval old_other = ns.Domain(other);
+  if (t0 >= old_dir.Min() - tol && t1 <= old_dir.Max() + tol) return Result::NoOpAlreadySatisfied;
+  const bool extend_min = t0 < old_dir.Min() - tol;
+  const bool extend_max = t1 > old_dir.Max() + tol;
+  if (extend_min == extend_max) return Result::Failed;  // both or neither in one call - out of scope
+
+  // Classify the loop's own 4 trims against the surface's (u, v) domain
+  // rectangle: a CAP trim is constant in `direction` (its 2D curve's two
+  // endpoints agree there, disagree in `other`); a RAIL trim is the
+  // mirror image. A trim's own 2D curve is read as an ON_3dPoint with
+  // z == 0 (how OpenNURBS stores every 2D trim curve) so [direction]/
+  // [other] index it directly as (u, v) - a trim that genuinely deviates
+  // from the domain rectangle fails this and refuses the whole call.
+  int cap_min_trim = -1, cap_max_trim = -1, rail_lo_trim = -1, rail_hi_trim = -1;
+  for (int k = 0; k < 4; ++k) {
+    const ON_BrepTrim* t = loop.Trim(k);
+    if (!t) return Result::Failed;
+    const ON_Curve* c2 = t->TrimCurveOf();
+    if (!c2) return Result::Failed;
+    const ON_3dPoint p0 = c2->PointAtStart();
+    const ON_3dPoint p1 = c2->PointAtEnd();
+    const bool const_in_dir = std::fabs(p0[direction] - p1[direction]) <= tol;
+    const bool const_in_other = std::fabs(p0[other] - p1[other]) <= tol;
+    if (const_in_dir && !const_in_other) {
+      const double v = p0[direction];
+      if (std::fabs(v - old_dir.Min()) <= tol) cap_min_trim = t->m_trim_index;
+      else if (std::fabs(v - old_dir.Max()) <= tol) cap_max_trim = t->m_trim_index;
+      else return Result::Failed;
+    } else if (const_in_other && !const_in_dir) {
+      const double v = p0[other];
+      if (std::fabs(v - old_other.Min()) <= tol) rail_lo_trim = t->m_trim_index;
+      else if (std::fabs(v - old_other.Max()) <= tol) rail_hi_trim = t->m_trim_index;
+      else return Result::Failed;
+    } else {
+      return Result::Failed;  // not axis-aligned - out of scope
+    }
+  }
+  if (cap_min_trim < 0 || cap_max_trim < 0 || rail_lo_trim < 0 || rail_hi_trim < 0) return Result::Failed;
+
+  const int cap_trim_to_extend = extend_min ? cap_min_trim : cap_max_trim;
+
+  auto edge_is_naked = [&](int ti) {
+    const ON_BrepTrim& t = b.m_T[ti];
+    return t.m_ei >= 0 && t.m_ei < b.m_E.Count() && b.m_E[t.m_ei].TrimCount() == 1;
+  };
+  if (!edge_is_naked(cap_trim_to_extend) || !edge_is_naked(rail_lo_trim) || !edge_is_naked(rail_hi_trim)) {
+    return Result::Failed;
+  }
+
+  // Recover the 4 corner vertices by DIRECT topology lookup, not by
+  // assuming any particular winding: the cap trim being extended has 2
+  // vertices; whichever of those is ALSO on rail_lo's edge is the "near"
+  // corner at other == other.Min() (to be replaced); rail_lo's OTHER
+  // vertex is the "far" corner there (left untouched). Same for rail_hi.
+  const ON_BrepTrim& cap_trim_obj = b.m_T[cap_trim_to_extend];
+  const ON_BrepEdge& cap_edge_obj = b.m_E[cap_trim_obj.m_ei];
+  const int cap_vA = cap_edge_obj.m_vi[0], cap_vB = cap_edge_obj.m_vi[1];
+  const ON_BrepEdge& rail_lo_edge_obj = b.m_E[b.m_T[rail_lo_trim].m_ei];
+  const ON_BrepEdge& rail_hi_edge_obj = b.m_E[b.m_T[rail_hi_trim].m_ei];
+  auto edge_has_vertex = [](const ON_BrepEdge& e, int vi) { return e.m_vi[0] == vi || e.m_vi[1] == vi; };
+  auto other_vertex = [](const ON_BrepEdge& e, int vi) { return e.m_vi[0] == vi ? e.m_vi[1] : e.m_vi[0]; };
+
+  int old_near_lo_vi = -1, far_lo_vi = -1;
+  if (edge_has_vertex(rail_lo_edge_obj, cap_vA)) {
+    old_near_lo_vi = cap_vA;
+    far_lo_vi = other_vertex(rail_lo_edge_obj, cap_vA);
+  } else if (edge_has_vertex(rail_lo_edge_obj, cap_vB)) {
+    old_near_lo_vi = cap_vB;
+    far_lo_vi = other_vertex(rail_lo_edge_obj, cap_vB);
+  } else {
+    return Result::Failed;  // defensive - shouldn't happen for a valid loop
+  }
+  int old_near_hi_vi = -1, far_hi_vi = -1;
+  if (edge_has_vertex(rail_hi_edge_obj, cap_vA)) {
+    old_near_hi_vi = cap_vA;
+    far_hi_vi = other_vertex(rail_hi_edge_obj, cap_vA);
+  } else if (edge_has_vertex(rail_hi_edge_obj, cap_vB)) {
+    old_near_hi_vi = cap_vB;
+    far_hi_vi = other_vertex(rail_hi_edge_obj, cap_vB);
+  } else {
+    return Result::Failed;
+  }
+  if (old_near_lo_vi < 0 || old_near_hi_vi < 0 || old_near_lo_vi == old_near_hi_vi) return Result::Failed;
+  // The 4 corners must be genuinely distinct, and each near corner must
+  // belong to EXACTLY the cap edge and its own one rail edge - nothing
+  // else - or deleting it below would silently orphan some unrelated
+  // trim elsewhere in this Brep that happens to share the same vertex.
+  if (far_lo_vi < 0 || far_hi_vi < 0 || far_lo_vi == far_hi_vi || far_lo_vi == old_near_lo_vi ||
+      far_lo_vi == old_near_hi_vi || far_hi_vi == old_near_lo_vi || far_hi_vi == old_near_hi_vi) {
+    return Result::Failed;
+  }
+  if (b.m_V[old_near_lo_vi].m_ei.Count() != 2 || b.m_V[old_near_hi_vi].m_ei.Count() != 2) return Result::Failed;
+
+  // Extend a local SCRATCH copy of the surface first - this Brep is not
+  // touched at all until every later step is already known to succeed
+  // (IsoCurve() on a valid NURBS surface over its own real domain cannot
+  // fail, so once this far, nothing below can discover a new problem).
+  NurbsSurface ks;
+  ks.raw() = ns;
+  const Result ext_result = linear ? ks.ExtendLinear(direction, t0, t1) : ks.Extend(direction, t0, t1);
+  if (ext_result != Result::Ok) return Result::Failed;
+  ON_NurbsSurface& ext = ks.raw();
+  const ON_Interval final_dir = ext.Domain(direction);
+  const double new_cap_value = extend_min ? final_dir.Min() : final_dir.Max();
+  const double other_min = old_other.Min(), other_max = old_other.Max();
+
+  auto corner_point = [&](double dir_val, double other_val) {
+    double u = 0.0, v = 0.0;
+    if (direction == 0) { u = dir_val; v = other_val; } else { u = other_val; v = dir_val; }
+    ON_3dPoint p;
+    ext.EvPoint(u, v, p);
+    return p;
+  };
+  const ON_3dPoint p_new_lo = corner_point(new_cap_value, other_min);
+  const ON_3dPoint p_new_hi = corner_point(new_cap_value, other_max);
+
+  // Everything below only ever touches this Brep (`b`) from here on.
+  ON_NurbsSurface* new_srf = new ON_NurbsSurface(ext);
+  const int new_si = b.AddSurface(new_srf);
+  face.m_si = new_si;
+  // ON_BrepFace derives from ON_SurfaceProxy and caches its own proxy
+  // surface pointer/domain at NewFace() time (confirmed directly in
+  // ON_Brep::NewFace(int) - it calls SetProxySurface(m_S[si]) right
+  // after setting m_si) - reassigning m_si alone leaves that cache
+  // stale (SurfaceOf()/Domain() kept reporting the OLD surface's domain,
+  // confirmed directly: a real, found-by-testing bug, not a hypothetical
+  // one). Refreshing it here is the same "finish what NewFace() itself
+  // already does for m_si" fix.
+  face.SetProxySurface(b.m_S[new_si]);
+
+  const int new_v_lo_i = b.NewVertex(p_new_lo, 0.0).m_vertex_index;
+  const int new_v_hi_i = b.NewVertex(p_new_hi, 0.0).m_vertex_index;
+
+  auto remap_vertex = [&](int vi) {
+    if (vi == old_near_lo_vi) return new_v_lo_i;
+    if (vi == old_near_hi_vi) return new_v_hi_i;
+    return vi;  // far_lo_vi / far_hi_vi - unchanged
+  };
+  const double far_cap_value = extend_min ? final_dir.Max() : final_dir.Min();
+  auto uv_for_vertex = [&](int vi) {
+    double dir_val, other_val;
+    if (vi == new_v_lo_i) { dir_val = new_cap_value; other_val = other_min; }
+    else if (vi == new_v_hi_i) { dir_val = new_cap_value; other_val = other_max; }
+    else if (vi == far_lo_vi) { dir_val = far_cap_value; other_val = other_min; }
+    else { dir_val = far_cap_value; other_val = other_max; }
+    return direction == 0 ? ON_2dPoint(dir_val, other_val) : ON_2dPoint(other_val, dir_val);
+  };
+
+  // Builds one new trim (and its own new edge) from v_start to v_end,
+  // reusing `edge3d` (freshly taken from the extended surface's own
+  // IsoCurve(), full ownership transferred here) - oriented by direct
+  // measurement against v_start's own known position, never assumed.
+  // Always committed with bRev3d == false: the 2D curve below is built
+  // in the SAME v_start -> v_end order the (possibly reversed) 3D curve
+  // is oriented to, so the two never disagree.
+  auto commit_trim = [&](int old_ti, ON_Curve* edge3d, int v_start, int v_end) {
+    const ON_3dPoint start_pt = b.m_V[v_start].point;
+    const ON_3dPoint end_pt = b.m_V[v_end].point;
+    if (edge3d->PointAtStart().DistanceTo(start_pt) > edge3d->PointAtStart().DistanceTo(end_pt)) {
+      edge3d->Reverse();
+    }
+    const int c3i = b.AddEdgeCurve(edge3d);
+    ON_BrepEdge& edge = b.NewEdge(b.m_V[v_start], b.m_V[v_end], c3i);
+    edge.m_tolerance = 0.0;
+    ON_Curve* c2 = new ON_LineCurve(uv_for_vertex(v_start), uv_for_vertex(v_end));
+    c2->SetDomain(0.0, 1.0);
+    const int c2i = b.AddTrimCurve(c2);
+    ON_BrepTrim& trim = b.NewTrim(edge, /*bRev3d=*/false, loop, c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    const int new_ti = trim.m_trim_index;
+    // NewTrim() appends to loop.m_ti itself (confirmed empirically
+    // elsewhere in this file - see SplitNakedEdgeAt()'s own comment);
+    // undo that append, then overwrite the OLD trim's own slot in place,
+    // preserving the loop's cyclic order exactly.
+    loop.m_ti.Remove(loop.m_ti.Count() - 1);
+    for (int k = 0; k < loop.m_ti.Count(); ++k) {
+      if (loop.m_ti[k] == old_ti) {
+        loop.m_ti[k] = new_ti;
+        return;
+      }
+    }
+  };
+
+  // Each replaced trim's own OLD effective start/end (the vertex pair in
+  // the LOOP's own walking order, from m_bRev3d - never assumed to match
+  // the edge's own stored direction) is remapped vertex-by-vertex (far
+  // corners pass through unchanged; near corners become the new ones),
+  // so this works regardless of which way the loop happens to wind.
+  auto effective_endpoints = [&](int ti, int& v_start, int& v_end) {
+    const ON_BrepTrim& t = b.m_T[ti];
+    const ON_BrepEdge& e = b.m_E[t.m_ei];
+    v_start = t.m_bRev3d ? e.m_vi[1] : e.m_vi[0];
+    v_end = t.m_bRev3d ? e.m_vi[0] : e.m_vi[1];
+  };
+
+  const int cap_old_ei = cap_trim_obj.m_ei;
+  const int rail_lo_old_ei = b.m_T[rail_lo_trim].m_ei;
+  const int rail_hi_old_ei = b.m_T[rail_hi_trim].m_ei;
+
+  {
+    int v_start = 0, v_end = 0;
+    effective_endpoints(cap_trim_to_extend, v_start, v_end);
+    ON_Curve* edge3d = ext.IsoCurve(other, new_cap_value);
+    commit_trim(cap_trim_to_extend, edge3d, remap_vertex(v_start), remap_vertex(v_end));
+  }
+  {
+    int v_start = 0, v_end = 0;
+    effective_endpoints(rail_lo_trim, v_start, v_end);
+    ON_Curve* edge3d = ext.IsoCurve(direction, other_min);
+    commit_trim(rail_lo_trim, edge3d, remap_vertex(v_start), remap_vertex(v_end));
+  }
+  {
+    int v_start = 0, v_end = 0;
+    effective_endpoints(rail_hi_trim, v_start, v_end);
+    ON_Curve* edge3d = ext.IsoCurve(direction, other_max);
+    commit_trim(rail_hi_trim, edge3d, remap_vertex(v_start), remap_vertex(v_end));
+  }
+
+  // Delete the 3 old trims/edges and the 2 now-orphaned near vertices -
+  // the same explicit "remove the edge reference, cull the vertex if
+  // nothing else is left" discipline RemoveHoleLoop() already uses.
+  b.m_T[cap_trim_to_extend].m_trim_index = -1;
+  b.m_T[rail_lo_trim].m_trim_index = -1;
+  b.m_T[rail_hi_trim].m_trim_index = -1;
+  b.m_E[cap_old_ei].m_edge_index = -1;
+  b.m_E[rail_lo_old_ei].m_edge_index = -1;
+  b.m_E[rail_hi_old_ei].m_edge_index = -1;
+  const std::vector<int> deleted_edges = {cap_old_ei, rail_lo_old_ei, rail_hi_old_ei};
+  auto cull_vertex = [&](int vi) {
+    ON_BrepVertex& v = b.m_V[vi];
+    for (int k = v.m_ei.Count() - 1; k >= 0; --k) {
+      if (std::find(deleted_edges.begin(), deleted_edges.end(), v.m_ei[k]) != deleted_edges.end()) {
+        v.m_ei.Remove(k);
+      }
+    }
+    if (v.m_ei.Count() == 0) v.m_vertex_index = -1;
+  };
+  // The two NEAR corners lose both their own incident edges (the cap and
+  // their own one rail) and are fully culled; the two FAR corners keep
+  // every other edge they have (e.g. a still-live shared edge elsewhere,
+  // as in the "extends away from a neighbour" case this method exists
+  // for) and only need their own now-deleted rail edge's stale reference
+  // removed - left in place, SetVertexTolerances() below would walk
+  // straight into it.
+  cull_vertex(old_near_lo_vi);
+  cull_vertex(old_near_hi_vi);
+  cull_vertex(far_lo_vi);
+  cull_vertex(far_hi_vi);
+
+  b.Compact();
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  ClearFaceSideTables();
+  return Result::Ok;
 }
 
 Mesh Brep::TessellateToClosedMeshTolerant(int u_divisions, int v_divisions) const {

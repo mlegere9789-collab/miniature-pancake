@@ -17990,25 +17990,21 @@ void TestBrepSplitNakedEdgeAtRefusesACurvedEdge() {
         "introduced by the refused attempt (the specific failure mode direct testing found before this guard existed)");
 }
 
-// SplitNakedEdgeAt's own refusals and thrown-exception contract: a
-// shared (non-naked) edge and a point too far from the curve both return
-// Result::Failed (an ordinary, expected outcome per this method's own
-// doc comment), while an out-of-range or already-deleted edge_index
-// throws - the same two-tier contract UnjoinEdge()/RemoveNakedMicroEdge()
-// already establish, verified here for THIS method specifically rather
-// than assumed to carry over.
+// SplitNakedEdgeAt's own refusals and thrown-exception contract: a point
+// too far from the curve returns Result::Failed (an ordinary, expected
+// outcome per this method's own doc comment), while an out-of-range or
+// already-deleted edge_index throws - the same two-tier contract
+// UnjoinEdge()/RemoveNakedMicroEdge() already establish, verified here
+// for THIS method specifically rather than assumed to carry over. A
+// shared (2-trim) edge is no longer in this refusal list - see
+// TestBrepSplitNakedEdgeAtSplitsSharedEdgeOnBothFaces() below for the new,
+// genuinely supported case; a non-manifold (3+ trim) edge remains out of
+// scope and untested here (no convenient fixture at hand, not chased
+// down this pass).
 void TestBrepSplitNakedEdgeAtRefusesInvalidInputs() {
   using dino8::kernel::Brep;
   using dino8::kernel::Point3d;
   using dino8::kernel::Result;
-
-  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
-  Check(box.raw().IsValid() && box.raw().IsSolid(), "the closed-box fixture is a valid solid to begin with");
-
-  // Every edge of a closed box is shared (2-trim) - not naked.
-  Check(box.SplitNakedEdgeAt(0, box.raw().m_E[0].PointAt(box.raw().m_E[0].Domain().Mid())) == Result::Failed,
-        "SplitNakedEdgeAt returns Result::Failed on a shared (2-trim) edge, not a thrown exception");
-  Check(box.raw().m_E.Count() == 12, "...and leaves the box completely untouched (still 12 edges)");
 
   Brep::PlanarFace bottom = CheckHealFace(
       {Point3d(0, 1, 0), Point3d(1, 1, 0), Point3d(1, 0, 0), Point3d(0, 0, 0)}, ON_3dVector(0, 0, -1));
@@ -18043,6 +18039,73 @@ void TestBrepSplitNakedEdgeAtRefusesInvalidInputs() {
     threw_deleted = true;
   }
   Check(threw_deleted, "edge_index 0 marked deleted (m_edge_index < 0) throws std::invalid_argument, not Result::Failed");
+}
+
+// SplitNakedEdgeAt() generalized from naked (1-trim) edges to a plain,
+// simple SHARED (2-trim) straight edge - the ordinary two-manifold-edge
+// case, still refusing a genuinely non-manifold (3+ trim) one. Verified
+// on a closed unit box (every edge shared): splitting edge 0 at its own
+// midpoint must correctly update BOTH faces that meet there, not just
+// one, and must leave the box a genuinely valid, correctly-oriented
+// solid - not merely report success while silently producing a
+// self-crossing loop on one side (a REAL defect this generalization hit
+// and fixed during development: an earlier attempt spliced the two new
+// trims into one of the two faces' own loop in the wrong relative order
+// whenever that face's own trim happened to walk the edge in the
+// direction OPPOSITE the edge's own stored one - i.e. m_bRev3d == true,
+// which is exactly one of the two sides of ANY shared edge by the
+// ordinary two-manifold convention - producing a loop whose own trim
+// count and edge set looked completely ordinary, Check() included, but
+// whose tessellated area came out 3x too large on that one face).
+void TestBrepSplitNakedEdgeAtSplitsSharedEdgeOnBothFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "the closed-box fixture is a valid solid to begin with");
+  Check(box.raw().m_E[0].TrimCount() == 2, "setup: edge 0 is a genuine shared (2-trim) edge, like every box edge");
+  const int face_a = box.raw().m_E[0].m_ti[0] >= 0 ? box.raw().m_T[box.raw().m_E[0].m_ti[0]].FaceIndexOf() : -1;
+  const int face_b = box.raw().m_T[box.raw().m_E[0].m_ti[1]].FaceIndexOf();
+  Check(face_a >= 0 && face_b >= 0 && face_a != face_b, "setup: edge 0's own two trims sit on two DIFFERENT faces");
+  const int trims_a_before = box.raw().m_F[face_a].Loop(0)->TrimCount();
+  const int trims_b_before = box.raw().m_F[face_b].Loop(0)->TrimCount();
+
+  const Point3d mid = box.raw().m_E[0].PointAt(box.raw().m_E[0].Domain().Mid());
+  const Result r = box.SplitNakedEdgeAt(0, mid);
+  Check(r == Result::Ok, "SplitNakedEdgeAt() now succeeds on a shared edge, not Result::Failed");
+  Check(box.raw().m_V.Count() == 9 && box.raw().m_E.Count() == 13,
+        "the split added exactly 1 vertex (8 -> 9) and 1 edge (12 -> 13, one edge split into two)");
+  Check(box.raw().IsValid(), "the split box is still a genuinely valid ON_Brep");
+  bool oriented = false, boundary = true;
+  Check(box.raw().IsManifold(&oriented, &boundary) && oriented && !boundary,
+        "the split box is still a closed, CONSISTENTLY ORIENTED 2-manifold - not just trim-count-valid");
+  Check(box.raw().IsSolid(), "the split box still reports IsSolid()");
+
+  Check(box.raw().m_F[face_a].Loop(0)->TrimCount() == trims_a_before + 1 &&
+            box.raw().m_F[face_b].Loop(0)->TrimCount() == trims_b_before + 1,
+        "BOTH faces that met at the split edge gained exactly one more trim (quad -> pentagon each) - the real "
+        "defect this generalization fixed: an earlier version updated only one side correctly");
+
+  const double volume = box.TessellateToClosedMesh().Volume();
+  Check(std::fabs(volume - 1.0) < 1e-9,
+        "the box's own volume is EXACTLY unchanged (still the unit cube's 1.0) - the specific, hand-derived proof "
+        "that neither face was silently given a self-crossing (and therefore wrong-area) loop by the split");
+
+  int naked_at_mid = 0;
+  for (int i = 0; i < box.raw().m_E.Count(); ++i) {
+    const ON_BrepEdge& e = box.raw().m_E[i];
+    if (e.m_edge_index < 0) continue;
+    Check(e.TrimCount() == 2, "every edge of the split box, old or new, is still a genuine 2-trim shared edge - a "
+                               "closed box never grows a naked boundary");
+    if (e.PointAtStart().DistanceTo(mid) < 1e-9 || e.PointAtEnd().DistanceTo(mid) < 1e-9) ++naked_at_mid;
+  }
+  Check(naked_at_mid == 2, "exactly 2 edges touch the new split point - the two halves, shared by the same two "
+                           "faces the original single edge was, meeting there and nowhere else");
+
+  Check(box.SplitNakedEdgeAt(0, Point3d(10, 10, 10)) == Result::Failed,
+        "a point far from edge 0's own (now shorter, half-length) curve is still refused post-split");
 }
 
 // SewTJunctions() on the classic T-junction: a unit square A (x in
@@ -51218,6 +51281,133 @@ TwoAdjacentFacesFixture BuildTwoAdjacentPlanarFaces() {
   return fixture;
 }
 
+// Brep::ExtendFaceInPlace() - closes the "a multi-face polysurface is
+// detached into a brand-new, separate object" half of PARITY_MAP.md's own
+// ExtendSrf gap. Reuses BuildTwoAdjacentPlanarFaces() above (face_a spans
+// physical x in [0,4]/y in [0,4], surface domain u == x/4, v == y/4,
+// genuinely SHARING its x==4 edge with face_b, the exact "extend away
+// from a real neighbour" shape this method exists for) rather than a
+// lone single-face plate, specifically so the neighbour-untouched half of
+// this method's own contract has something real to prove itself against.
+void TestBrepExtendFaceInPlaceNakedSideGrowsExactRectangleAndLeavesSharedNeighbourUntouched() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+  ON_Brep& b = fixture.brep.raw();
+  // Not checked IsValid() here (unlike most other fixtures in this file):
+  // BuildTwoAdjacentPlanarFaces() builds its own topology by hand and
+  // never calls FixUnsetEdgeTolerances() itself, so its edges carry the
+  // raw ON_UNSET_VALUE tolerance SetTolerancesBoxesAndFlags() leaves them
+  // at (see brep.cpp's own comment on FixUnsetEdgeTolerances() for why) -
+  // a known, pre-existing, benign property of this exact fixture, not
+  // something this test's own target function introduces or must fix.
+
+  // Locate the shared edge (the only edge face_a and face_b both use) and
+  // its two vertices (4,0,0)/(4,4,0) - captured by VALUE now, checked
+  // again after the call for exact, byte-for-byte equality.
+  int shared_ei = -1;
+  for (int i = 0; i < b.m_E.Count(); ++i) {
+    if (b.m_E[i].m_edge_index >= 0 && b.m_E[i].TrimCount() == 2) { shared_ei = i; break; }
+  }
+  Check(shared_ei >= 0, "setup: exactly one shared (2-trim) edge exists - the x==4 seam");
+  const Point3d shared_v0_before = b.m_E[shared_ei].PointAtStart();
+  const Point3d shared_v1_before = b.m_E[shared_ei].PointAtEnd();
+  const int face_b_si_before = b.m_F[fixture.face_b].m_si;
+  const int v_count_before = b.m_V.Count();
+  const int e_count_before = b.m_E.Count();
+
+  // Tessellate() gives one Mesh per face, in face order (its own doc
+  // comment) - face_b's own entry alone, a plain 4x4 square, area 16.
+  const double area_b_before = fixture.brep.Tessellate(8, 8)[static_cast<size_t>(fixture.face_b)].Area();
+  Check(std::fabs(area_b_before - 16.0) < 1e-4, "setup: face_b alone tessellates to its own exact 4x4 area, 16");
+
+  // Extend face_a's own LEFT (naked, u == 0) side from physical x == 0
+  // out to x == -2 (u == -0.5) - a straight (linear) extension, away from
+  // the shared x == 4 edge entirely. t1 == 1.0 exactly matches the
+  // current max, so only the min end actually moves.
+  const Result r = fixture.brep.ExtendFaceInPlace(fixture.face_a, /*direction=*/0, -0.5, 1.0, /*linear=*/true);
+  Check(r == Result::Ok, "ExtendFaceInPlace succeeds extending face_a's own naked left side away from face_b");
+  Check(b.IsValid(), "the Brep is still a valid ON_Brep after the extension");
+
+  Check(b.m_V.Count() == v_count_before && b.m_E.Count() == e_count_before,
+        "vertex and edge counts are UNCHANGED (2 corners/3 edges replaced, 2 corners/3 edges deleted - a wash), "
+        "not grown by a detached new object");
+
+  const double area_a_after = fixture.brep.Tessellate(8, 8)[static_cast<size_t>(fixture.face_a)].Area();
+  // The extended rectangle is physical x in [-2, 4], y in [0, 4]: 6 * 4 = 24,
+  // exactly 8 more than the original 4x4 == 16 - the closed-form area a
+  // straight, exact rectangle extension implies, not merely "grew some".
+  Check(std::fabs(area_a_after - 24.0) < 1e-4,
+        "face_a alone now tessellates to the exact closed-form extended-rectangle area, 24.0 (16.0 original + "
+        "2*4 == 8.0 added strip)");
+
+  // The neighbour itself: untouched, vertex for vertex and edge for edge.
+  Check(b.m_F[fixture.face_b].m_si == face_b_si_before, "face_b's own surface index is unchanged - never replaced");
+  Check(b.m_E[shared_ei].m_edge_index >= 0 && b.m_E[shared_ei].TrimCount() == 2,
+        "the shared edge is still exactly that - still 2-trim, never deleted or touched");
+  Check(b.m_E[shared_ei].PointAtStart().DistanceTo(shared_v0_before) < 1e-9 &&
+            b.m_E[shared_ei].PointAtEnd().DistanceTo(shared_v1_before) < 1e-9,
+        "the shared edge's own two endpoints are at the EXACT same 3D positions as before - not even nudged");
+
+  const double area_b_after = fixture.brep.Tessellate(8, 8)[static_cast<size_t>(fixture.face_b)].Area();
+  Check(std::fabs(area_b_after - area_b_before) < 1e-9,
+        "face_b's own area is UNCHANGED to far tighter precision than the 1e-4 tessellation floor above - "
+        "extending its neighbour genuinely never touches it at all");
+}
+
+// Refusal/scope-boundary contract: extending TOWARD the shared edge
+// (the neighbour would need to grow too) is refused rather than guessed
+// at; [t0, t1] already inside the current domain is a genuine no-op;
+// requesting both ends of `direction` extended in one call is out of
+// scope; and the usual thrown-exception cases for bad arguments.
+void TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  {
+    TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+    ON_Brep& b = fixture.brep.raw();
+    const int v_before = b.m_V.Count(), e_before = b.m_E.Count();
+    const Result r = fixture.brep.ExtendFaceInPlace(fixture.face_a, 0, 0.0, 1.5, /*linear=*/true);
+    Check(r == Result::Failed,
+          "extending face_a's own RIGHT side (shared with face_b) is refused - the cap trim there is not naked");
+    Check(b.m_V.Count() == v_before && b.m_E.Count() == e_before, "...and the Brep is left completely untouched");
+  }
+  {
+    TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+    const Result r = fixture.brep.ExtendFaceInPlace(fixture.face_a, 0, 0.2, 0.8, /*linear=*/true);
+    Check(r == Result::NoOpAlreadySatisfied, "[0.2, 0.8] already sits inside face_a's own [0, 1] u-domain - a "
+                                              "genuine no-op, the same convention NurbsSurface::Extend() uses");
+  }
+  {
+    TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+    const Result r = fixture.brep.ExtendFaceInPlace(fixture.face_a, 0, -1.0, 2.0, /*linear=*/true);
+    Check(r == Result::Failed, "extending BOTH ends of `direction` in one call is out of scope, refused");
+  }
+  {
+    TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+    bool threw = false;
+    try {
+      fixture.brep.ExtendFaceInPlace(fixture.face_a, 2, -0.5, 1.0, true);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "direction outside {0, 1} throws std::invalid_argument");
+  }
+  {
+    TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+    bool threw = false;
+    try {
+      fixture.brep.ExtendFaceInPlace(fixture.brep.raw().m_F.Count() + 50, 0, -0.5, 1.0, true);
+    } catch (const std::out_of_range&) {
+      threw = true;
+    }
+    Check(threw, "an out-of-range face_index throws std::out_of_range");
+  }
+}
+
 // MergeCoplanarFaces()'s own new "faces with holes" capability: the
 // "Still partial: ... MergeCoplanarFaces still refuses any face with
 // holes" gap PARITY_MAP.md's own Topology & data structure category named
@@ -70015,6 +70205,9 @@ int main() {
   TestBooleanCombineMixedInsideDiscProducerCoversSealedEndBoundary();
   TestSplitMixedAgainstAllFacesPassThroughCarriesArcRuns();
 
+  TestBrepExtendFaceInPlaceNakedSideGrowsExactRectangleAndLeavesSharedNeighbourUntouched();
+  TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs();
+
   TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne();
   TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane();
   TestMergeCoplanarFacesPreservesExistingHoleOnMergedFace();
@@ -70092,6 +70285,7 @@ int main() {
   TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly();
   TestBrepSplitNakedEdgeAtRefusesACurvedEdge();
   TestBrepSplitNakedEdgeAtRefusesInvalidInputs();
+  TestBrepSplitNakedEdgeAtSplitsSharedEdgeOnBothFaces();
   TestBrepSewTJunctionsClosesActualTJunction();
   TestBrepSewTJunctionsNoOpOnCleanBreps();
   TestBrepDeleteFaceRemovesArbitraryFaceAndRefusesBadIndices();
