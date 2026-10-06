@@ -1512,51 +1512,65 @@ class ContinueCurveCommand : public Command {
 };
 
 // Match: reshapes the END of the first-picked curve so it meets the
-// second-picked curve tangentially, by moving that curve's own last two
-// control points (position match at the CV itself, tangent match by
-// rotating the adjacent CV to the target's own away-from-curve direction
-// while preserving its original distance) - unlike Blend/BlendCrv, this
-// modifies the picked curve in place rather than building a new one
-// between the two.
+// second-picked curve with the requested continuity, via the kernel's
+// own `NurbsCurve::MatchEnd()` (curve.cpp) - closes this category's own
+// "Match curve end continuity" gap, which until now was only ever this
+// app-level, position/tangent-only heuristic (hand-rolled CV moves, no
+// kernel API, no Curvature option at all, and no real deviation check -
+// a tangent "match" here was always accepted whatever the result).
+// `MatchEnd()` additionally self-checks the result (refusing - leaving
+// the curve untouched - rather than silently committing a bad edit) and
+// reports the real achieved errors, which this command now prints.
 class MatchCommand : public Command {
  public:
-  void Begin(CommandContext&) override { WantPoint("Select curve to reshape, near the end to move"); }
+  void Begin(CommandContext&) override {
+    options = {{"Continuity", "Tangent", {"Position", "Tangent", "Curvature"}, false, false}};
+    WantPoint("Select curve to reshape, near the end to move");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "Continuity") return;
+    continuity_ = v;
+    options[0].value = v;
+  }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     double t = 0;
     std::optional<CurveCopy> c = NearestCurveTo(ctx, p, &t);
     if (!c) { ctx.Warn("No curve near that point"); return; }
     kernel::Interval d = c->curve.Domain();
     bool at_end = std::fabs(t - d.max) < std::fabs(t - d.min);
-    Point3d e = c->curve.PointAt(at_end ? d.max : d.min);
-    Vector3d away = c->curve.TangentAt(at_end ? d.max : d.min);
-    if (!at_end) away = -away;
     if (!moving_) {
       moving_ = c; moving_at_end_ = at_end;
       WantPoint("Select curve to match to, near the corresponding end");
       return;
     }
-    // `c`/`e`/`away` here describe the fixed TARGET curve.
+    // `c`/`at_end` here describe the fixed TARGET curve.
+    const kernel::MatchContinuity mc = continuity_ == "Position" ? kernel::MatchContinuity::Position
+                                        : continuity_ == "Curvature" ? kernel::MatchContinuity::Curvature
+                                                                      : kernel::MatchContinuity::Tangent;
+    kernel::NurbsCurve k = moving_->curve;
+    kernel::MatchEndReport report;
+    kernel::Result result;
+    try {
+      result = k.MatchEnd(!moving_at_end_, c->curve, !at_end, mc, &report);
+    } catch (const std::invalid_argument& ex) {
+      ctx.Warn(std::string("Match: ") + ex.what());
+      Finish();
+      return;
+    }
+    if (result != kernel::Result::Ok) {
+      ctx.Warn("Match: could not match that continuity within tolerance (try a lower Continuity level)");
+      Finish();
+      return;
+    }
     ctx.Doc().BeginChange("Match");
-    ON_NurbsCurve nc = moving_->curve.raw();
-    const int n = nc.CVCount();
-    if (n < 2) { Finish(); return; }
-    const Vector3d desired = -away;  // moving curve should head away in the opposite sense of the target
-    ON_3dPoint cv_end, cv_next;
-    const int i_end = moving_at_end_ ? n - 1 : 0, i_next = moving_at_end_ ? n - 2 : 1;
-    nc.GetCV(i_end, cv_end);
-    nc.GetCV(i_next, cv_next);
-    const double mag = cv_end.DistanceTo(cv_next);
-    nc.SetCV(i_end, e);
-    Point3d new_next = e - desired * mag;
-    nc.SetCV(i_next, new_next);
-    kernel::NurbsCurve k;
-    k.raw() = nc;
     ReplaceCurve(ctx, moving_->id, k);
-    ctx.Print("Match: reshaped curve " + std::to_string(moving_->id) + " to meet curve " + std::to_string(c->id) + " tangentially");
+    ctx.Print("Match: reshaped curve " + std::to_string(moving_->id) + " to meet curve " + std::to_string(c->id) +
+               " (" + continuity_ + ", position error " + FormatNumber(report.position_error) + ")");
     Finish();
   }
   std::optional<CurveCopy> moving_;
   bool moving_at_end_ = true;
+  std::string continuity_ = "Tangent";
 };
 
 // EndBulge: scales the "bulge" (the distance from a curve's end control

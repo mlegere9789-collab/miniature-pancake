@@ -222,6 +222,23 @@ Match
 SelAll
 List
 SelNone
+# --- Match Continuity=Curvature: the genuine new capability behind the
+# message-format change above - NurbsCurve::MatchEnd()'s own G2 level,
+# unreachable before this pass (the old hand-rolled heuristic only ever
+# moved 2 control points, position+tangent, no curvature option at all).
+# Two radius-10 arcs: matching curvature end to end means the moved arc's
+# own end curvature should come out equal to the target's (same radius),
+# not just tangent.
+SelAll
+Hide
+Arc 0,0,0 10,0,0 10,10,0
+Arc 30,10,0 30,20,0 20,20,0
+Match Continuity=Curvature
+10,10,0
+30,20,0
+SelAll
+List
+SelNone
 # --- IntersectSelf on a single curve (reuses Intersect's own self-intersect mode)
 SelAll
 Hide
@@ -372,30 +389,44 @@ SelNone
 # midpoint, then remove it from the very same spot - intended to round-trip
 # exactly back to the original 2-CV line (deviation ~0) via the kernel's
 # real Boehm/Tiller RemoveKnotAt(), not RemoveKnotApprox's blind
-# Greville-abscissa resample, which had no deviation bound to report at all.
+# Greville-abscissa resample, which had no deviation bound to report at
+# all. Deleted immediately after (not hidden), so it adds nothing to the
+# final @expect_objects count below.
 #
-# PRE-EXISTING ISSUE, found while merging a later, unrelated pass
-# (2026-10-06): in a fresh document with only this one Line, the pick at
-# 20,0,0 (the exact inserted-knot location) succeeds exactly as described
-# above. Run here, after ~1200 prior commands in this same long-running
-# document/session, the identical pick on the identical curve (confirmed
-# via List: object id, CV count and all three CV coordinates match the
-# isolated case exactly) instead warns "Could not edit the curve there"
-# and leaves the knot in place (3 CVs, not 2) - some accumulated session
-# state (not the curve's own geometry, which is identical either way)
-# changes NearestCurveTo's returned t or RemoveKnotAt's own interior-knot
-# search enough to miss the one candidate knot. Not bisected (a kernel
-# function from a different, unrelated concurrent session, outside this
-# pass's own File I/O scope); left as a pointer for whichever session next
-# touches Geometry representation/curve editing. Deleted immediately after
-# either way (not hidden), so it adds nothing to the final @expect_objects
-# count below regardless of which outcome this run hits.
-Line 0,0,0 40,0,0
+# Y=1000 (not 0) is deliberate, not cosmetic: NearestCurveTo() (used by
+# both InsertKnot's and RemoveKnot's own point-picking, cmd_curves2.cpp)
+# searches every visible curve in the WHOLE document by raw 3D proximity
+# to the picked point - it does not consult the current selection at
+# all, so "SelLast" above has no effect on which curve actually gets
+# edited. At Y=0 this collided with this script's own earlier `Conic
+# 0,0,0 20,0,0 10,10,0 10,4,0` (line ~43 above), whose own second point
+# IS world (20,0,0) - exactly this fixture's intended pick point, and a
+# curve already present earlier in the document, so a `d < bd` tie
+# between the two equal (both exactly 0) distances silently kept the
+# conic (visited first) rather than this line - reproduced directly by
+# instrumenting NearestCurveTo's own caller, not guessed. The conic's
+# own domain MAX also lands there, which has no interior knot at all, so
+# RemoveKnot's own "no knot found near t" case silently fired instead of
+# ever touching this fixture's own line - "Could not edit the curve
+# there" with the line's own control net completely unchanged (3 CVs,
+# never reverting to 2). Y=1000 keeps this fixture's own pick point
+# somewhere nothing else in this script passes through (confirmed by
+# grep over the whole file) rather than touching NearestCurveTo's own
+# document-wide, selection-blind search, which plenty of other commands
+# in this same file already rely on behaving exactly that way. Hiding
+# everything else first (the same "SelAll \n Hide" every other fixture in
+# this file already opens with, for this exact reason) is defense in
+# depth on top of the coordinate move - NearestCurveTo already skips
+# hidden objects (IsObjectVisible), so a future fixture reusing Y=1000
+# by coincidence still can't collide with this one either.
+SelAll
+Hide
+Line 0,1000,0 40,1000,0
 SelLast
 InsertKnot
 Enter
 RemoveKnot
-20,0,0
+20,1000,0
 Enter
 SelLast
 List
@@ -405,4 +436,8 @@ Delete
 # CurveThroughSrfControlPt/ExtractPt dangling-pointer regression above,
 # which are hidden rather than deleted so List's layer output stays
 # checkable from the saved smoke-test log if this ever needs re-diagnosing.
-@expect_objects 197
+# +2 for the Match Continuity=Curvature fixture's own two arcs (added
+# alongside the pre-existing Continuity=Tangent fixture above, same "left
+# visible, never deleted" convention that fixture's own two lines already
+# use) - 197 -> 199.
+@expect_objects 199

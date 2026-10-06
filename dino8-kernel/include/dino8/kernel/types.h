@@ -40,6 +40,15 @@ struct Interval {
   double max;
 };
 
+// Continuity order a Match operation enforces at a shared edge/point -
+// Position (G0), Tangent (G1), Curvature (G2). Originally
+// surface.h-only (NurbsSurface::MatchEdge()'s own `continuity`
+// parameter); moved here so curve.h can use it too, for
+// NurbsCurve::MatchEnd() below - the same three-level continuity
+// concept, just applied to a curve's single end point instead of a
+// surface's whole shared edge.
+enum class MatchContinuity { Position, Tangent, Curvature };
+
 // A plain 0-255 RGB triple, kept independent of ON_Color so a caller
 // naming a color (a layer's, a vertex's, ...) doesn't need to know the
 // OpenNURBS type underneath. Originally file_io.h-only (Model::AddLayer()'s
