@@ -616,17 +616,33 @@ class Brep {
   // shell thicken - matching neighbouring walls at shared edges - is a
   // separate, larger gap left open, the same one kernel: Offsetting,
   // shelling, thickening's own "no general Brep offset/shell for curved or
-  // non-convex bodies" note already discloses); that face must be
-  // UNTRIMMED (checked directly against this Brep's own face_trim_loops_/
-  // face_hole_loops_ side tables, not assumed) - a trimmed sheet's real
-  // boundary is not its surface's 4 domain isocurves, and silently
-  // thickening the full untrimmed rectangle instead would be a
-  // correctness bug, not a disclosed limitation; and that surface must be
-  // open (IsClosed() false) in BOTH parametric directions - a partially or
-  // fully closed sheet (a full cylinder/cone wall, a sphere or torus patch
-  // that wraps back on itself) needs a different, variable side-wall count
-  // (a closed direction has no free boundary to wall at all) this pass
-  // does not attempt. `thickness` must be finite and non-zero.
+  // non-convex bodies" note already discloses).
+  //
+  // If that face is TRIMMED (checked directly against this Brep's own
+  // face_trim_loops_/face_hole_loops_ side tables, not assumed - e.g. a
+  // Brep::TrimmedPlanarFace() sheet), the surface must be PLANAR: the trim
+  // loop (outer, plus any holes) is mapped through the plane and handed to
+  // Brep::Extrude()/ExtrudeProfileWithHoles(), rather than this function's
+  // own ruled-wall construction below (which needs the untrimmed case's
+  // own "the boundary IS the surface's 4 domain isocurves" property to
+  // know what to wall at all) - `symmetric` shifts the loop by
+  // `-thickness/2 * normal` first exactly like the untrimmed path's own
+  // `lo`/`hi` offsets do. A trimmed, genuinely CURVED sheet - a trimmed
+  // patch of a cylinder, sphere, or freeform surface - is a separate,
+  // still-disclosed gap neither path covers. A HOLED trimmed-planar sheet
+  // is still structurally routed through the same machinery, but inherits
+  // BooleanCombineGeneral()'s own pre-existing tolerance sensitivity badly
+  // enough (confirmed directly) that it is not independently verified by
+  // a dedicated test - see src/sweep.cpp's own ThickenTrimmedPlanarSheet()
+  // doc comment for the specific finding.
+  //
+  // If UNTRIMMED, that surface must be open (IsClosed() false) in BOTH
+  // parametric directions - a partially or fully closed sheet (a full
+  // cylinder/cone wall, a sphere or torus patch that wraps back on itself)
+  // needs a different, variable side-wall count (a closed direction has no
+  // free boundary to wall at all) this pass does not attempt.
+  //
+  // `thickness` must be finite and non-zero in every case.
   static Brep Thicken(const Brep& sheet, double thickness, bool symmetric = false);
 
   // ExtrudeToPoint: `profile` coned to a single apex point (Rhino/AutoCAD
