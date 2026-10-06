@@ -747,6 +747,26 @@ class NurbsSurface {
   std::vector<double> SuggestedParameterValues(int direction, double chord_tolerance,
                                                 int isocurve_samples = 5) const;
 
+  // Angle-based counterpart to SuggestedDivisions(): the surface-level
+  // sibling of `NurbsCurve::SuggestedSamplesByAngle()`, closing
+  // PARITY_MAP's own disclosed "Angular tolerance control exposed as a
+  // general faceting-quality knob" gap at the surface level the same way
+  // SuggestedDivisions() closes it for chord-height. Same isocurve
+  // sampling and "worst case wins" philosophy as SuggestedDivisions(),
+  // just asking each sampled isocurve for `SuggestedSamplesByAngle()`
+  // instead of `SuggestedSamples()`. Throws std::invalid_argument if
+  // `angle_tolerance` is not in (0, pi].
+  SurfaceDivisions SuggestedDivisionsByAngle(double angle_tolerance, int isocurve_samples = 5) const;
+
+  // Angle-based counterpart to SuggestedParameterValues(): same per-
+  // isocurve sampling and "keep whichever isocurve produced the most
+  // breakpoints" rule, driven by `NurbsCurve::SuggestedParameterValuesByAngle()`
+  // (tangent-turning-angle subdivision) instead of chord-height
+  // subdivision. Throws std::invalid_argument if `angle_tolerance` is not
+  // in (0, pi].
+  std::vector<double> SuggestedParameterValuesByAngle(int direction, double angle_tolerance,
+                                                       int isocurve_samples = 5) const;
+
   // Tessellates the surface into a triangle mesh by evaluating a
   // u_divisions x v_divisions grid of points across its parameter domain
   // and triangulating each grid cell. This is a from-scratch tessellator,
@@ -896,6 +916,55 @@ class NurbsSurface {
   // TessellateGridAdaptive(), same "one call instead of two" convenience.
   Mesh TessellateGridClippedExactAdaptive(double chord_tolerance,
                                            const std::vector<Point2d>& trim_polygon) const;
+
+  // Angle-based counterpart to TessellateGridAdaptive(): picks
+  // u_divisions/v_divisions via SuggestedDivisionsByAngle(angle_tolerance)
+  // instead of SuggestedDivisions(chord_tolerance) - the general angular
+  // faceting-quality knob exposed as an actual one-call tessellation path,
+  // not just the lower-level SuggestedDivisionsByAngle() a caller would
+  // otherwise have to know to call by hand.
+  Mesh TessellateGridAdaptiveByAngle(double angle_tolerance,
+                                      const std::vector<Point2d>* trim_polygon = nullptr,
+                                      const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;
+
+  // Angle-based counterpart to TessellateGridNonUniformAdaptive(): the
+  // genuine per-region-adaptive path, driven by
+  // SuggestedParameterValuesByAngle(direction, angle_tolerance) instead of
+  // SuggestedParameterValues(direction, chord_tolerance).
+  Mesh TessellateGridNonUniformAdaptiveByAngle(
+      double angle_tolerance, const std::vector<Point2d>* trim_polygon = nullptr,
+      const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;
+
+  // Angle-based counterpart to TessellateGridClippedExactAdaptive() - the
+  // exact-clip sibling of TessellateGridAdaptiveByAngle(), same "one call
+  // instead of two" convenience.
+  Mesh TessellateGridClippedExactAdaptiveByAngle(double angle_tolerance,
+                                                  const std::vector<Point2d>& trim_polygon) const;
+
+  // Closes PARITY_MAP's own disclosed "Post-tessellation deviation
+  // verification (measuring emitted facets against the true source
+  // surface and reporting a bound)" gap: before this, SuggestedDivisions()/
+  // SuggestedDivisionsByAngle() only ESTIMATED a sample count from
+  // curvature - nothing anywhere actually measured whether a resulting
+  // mesh stayed within the tolerance it was asked for. Reconstructs the
+  // exact u_divisions x v_divisions untrimmed grid TessellateGrid() builds
+  // (same even parameter spacing, same per-cell diagonal convention:
+  // triangle 1 = (i,j)-(i+1,j)-(i+1,j+1), triangle 2 =
+  // (i,j)-(i+1,j+1)-(i,j+1)), and for each of the two triangles per cell,
+  // samples several interior barycentric points - deliberately not the
+  // three corners, which coincide with the true surface by construction
+  // (`PointAt()` is exactly how the mesh vertices themselves were built)
+  // and would trivially report zero deviation everywhere. At each sample,
+  // evaluates the true surface at the same barycentric combination of the
+  // triangle's own three parameter-space corners and measures its
+  // distance to the matching barycentric combination of the triangle's
+  // own three 3D corners (the flat facet's interpolated point at that same
+  // location) - the real per-facet gap a certified mesher would need to
+  // bound. Returns the single worst (maximum) such distance found across
+  // the whole grid. Throws std::invalid_argument if either division count
+  // is less than 1.
+  double MeasureGridTessellationDeviation(int u_divisions, int v_divisions,
+                                           int samples_per_triangle = 6) const;
 
   // ---- Surface editing (implemented in src/surface_edit.cpp) ----
 

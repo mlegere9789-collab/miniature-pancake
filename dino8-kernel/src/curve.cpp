@@ -433,6 +433,53 @@ void SubdivideForFlatness(const NurbsCurve& curve, double t0, double t1, double 
   }
 }
 
+// Angle between the curve's own tangent direction at t0 and at t1, used by
+// SubdivideForAngle() below in place of SubdivideForFlatness()'s chord-
+// height test. A tangent that fails to unitize (a cusp, or any other point
+// where TangentAt() cannot determine a direction) reports the maximal
+// possible turning angle (pi) rather than being silently skipped or
+// treated as straight - the conservative choice, forcing refinement right
+// up to `max_depth` exactly where the curve is least well-behaved, instead
+// of risking an under-sampled cusp.
+double TangentTurningAngle(const NurbsCurve& curve, double t0, double t1) {
+  const Vector3d tan0 = curve.TangentAt(t0);
+  const Vector3d tan1 = curve.TangentAt(t1);
+  const double len0 = tan0.Length();
+  const double len1 = tan1.Length();
+  if (len0 <= 1e-12 || len1 <= 1e-12) {
+    return ON_PI;
+  }
+  const double cos_angle = std::clamp((tan0 * tan1) / (len0 * len1), -1.0, 1.0);
+  return std::acos(cos_angle);
+}
+
+void SubdivideForAngle(const NurbsCurve& curve, double t0, double t1, double angle_tolerance,
+                        int depth, int max_depth, std::vector<double>& out) {
+  // Estimates this whole interval's own total tangent turning as the SUM
+  // of its two half-interval turning angles (t0->tm and tm->t1), not the
+  // single t0->t1 turning angle directly - a closed curve's full domain is
+  // the degenerate case a naive endpoint-to-endpoint comparison would get
+  // wrong: a full loop's tangent at `Domain().Min()` and at
+  // `Domain().Max()` is the SAME direction (the curve returns to where it
+  // started), so a t0->t1-only test would read a turning angle of 0 -
+  // "perfectly flat" - for a curve that actually turned a full 2*pi, and
+  // stop before ever subdividing. Routing through the midpoint and summing
+  // the two legs sidesteps this exactly the way SubdivideForFlatness()'s
+  // own midpoint-deviation (rather than endpoint-distance) chord test
+  // does: for a full circle, the tangent at the midpoint points exactly
+  // opposite the tangent at either endpoint, so each leg alone already
+  // reports the maximal turning angle (pi) and their sum correctly
+  // reflects the interval's real 2*pi turn.
+  const double tm = 0.5 * (t0 + t1);
+  const double turning = TangentTurningAngle(curve, t0, tm) + TangentTurningAngle(curve, tm, t1);
+  if (turning > angle_tolerance && depth < max_depth) {
+    SubdivideForAngle(curve, t0, tm, angle_tolerance, depth + 1, max_depth, out);
+    SubdivideForAngle(curve, tm, t1, angle_tolerance, depth + 1, max_depth, out);
+  } else {
+    out.push_back(t1);
+  }
+}
+
 // Value of basis function N_i(t) for the clamped B-spline defined by
 // `knot` (ON's own compressed convention), `cv_count` control points and
 // `order` = degree + 1. Used to build the least-squares normal equations
@@ -1209,6 +1256,48 @@ std::vector<double> NurbsCurve::SuggestedParameterValues(double chord_tolerance,
   std::vector<double> out;
   out.push_back(domain.Min());
   SubdivideForFlatness(*this, domain.Min(), domain.Max(), chord_tolerance, 0, max_depth, out);
+  return out;
+}
+
+int NurbsCurve::SuggestedSamplesByAngle(double angle_tolerance, int curvature_samples) const {
+  if (!(angle_tolerance > 0.0) || angle_tolerance > ON_PI) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::SuggestedSamplesByAngle: angle_tolerance "
+        "must be in (0, pi]");
+  }
+
+  const ON_Interval domain = curve_.Domain();
+  double max_kappa = 0.0;
+  for (int i = 0; i <= curvature_samples; ++i) {
+    const double t = domain.ParameterAt(static_cast<double>(i) / curvature_samples);
+    max_kappa = std::max(max_kappa, CurvatureAt(t).Length());
+  }
+
+  if (max_kappa < 1e-12) {
+    return 1;  // negligible curvature everywhere - a straight line needs one segment
+  }
+
+  const double radius = 1.0 / max_kappa;
+  // Same conservative "whole curve turns at the tightest radius found"
+  // approximation SuggestedSamples() uses, but with `angle_tolerance`
+  // itself as the per-segment turning bound directly, instead of a bound
+  // back-solved from a linear chord_tolerance via the sagitta formula.
+  const double total_angle = Length() / radius;
+  return std::max(1, static_cast<int>(std::ceil(total_angle / angle_tolerance)));
+}
+
+std::vector<double> NurbsCurve::SuggestedParameterValuesByAngle(double angle_tolerance,
+                                                                 int max_depth) const {
+  if (!(angle_tolerance > 0.0) || angle_tolerance > ON_PI) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::SuggestedParameterValuesByAngle: "
+        "angle_tolerance must be in (0, pi]");
+  }
+
+  const ON_Interval domain = curve_.Domain();
+  std::vector<double> out;
+  out.push_back(domain.Min());
+  SubdivideForAngle(*this, domain.Min(), domain.Max(), angle_tolerance, 0, max_depth, out);
   return out;
 }
 
