@@ -650,6 +650,47 @@ class NurbsCurve {
   // checks already disclose.
   Result ReduceDegree(int target_degree, double tolerance, double* out_max_deviation = nullptr);
 
+  // Curve FAIRING (Rhino's own Fair command) - closes PARITY_MAP's own
+  // disclosed "Curve fairing/smoothing ... no kernel fairing" gap: the
+  // existing Laplacian smoothing (`dino8-app/src/commands/cmd_meshtools.cpp`/
+  // `cmd_remaining.cpp`) operates on a TESSELLATED MESH approximation of a
+  // curve, with no tolerance guarantee at all; this is a genuine kernel-
+  // native NURBS operation, smoothing the actual control polygon, not a
+  // sampled proxy of it. Every INTERIOR control point (index 1 through
+  // `ControlPointCount() - 2`; the two endpoints, index 0 and the last,
+  // are never touched, so the curve's own start/end position is always
+  // preserved exactly) is relaxed `iterations` times toward the midpoint
+  // of its own two immediate neighbors - `cv[i] = (1 - factor) * cv[i] +
+  // factor * 0.5 * (cv[i-1] + cv[i+1])`, the standard explicit Laplacian
+  // smoothing step, applied to every interior point SIMULTANEOUSLY each
+  // iteration (not sequentially, which would bias later-indexed points
+  // toward whatever their already-moved neighbor just became). This is a
+  // real curvature-variation reducer - repeatedly averaging a sharp kink's
+  // neighbors pulls it toward their shared line - but, like
+  // `ReduceDegree()`/`MakeNonRational(tolerance, ...)`, an honestly-
+  // disclosed APPROXIMATION with no formally certified bound. What this
+  // method does NOT skip, unlike a naive "just smooth it" implementation:
+  // the actual resulting shape change is MEASURED (dense sampling, `PointAt`
+  // before vs. after at the same parameter values - valid directly, since
+  // relaxing control points never touches the knot vector or domain) and
+  // the whole operation is refused (`Result::Failed`, curve left
+  // untouched) if that measured deviation exceeds `tolerance`, exactly the
+  // same "sampled, not certified, but genuinely checked" tier this class's
+  // other approximate reshaping methods already use - a caller never gets
+  // a silently-over-smoothed curve dressed up as satisfying a tolerance it
+  // doesn't meet. Returns `Result::NoOpAlreadySatisfied` if
+  // `ControlPointCount() < 3` (no interior control point exists to move at
+  // all - a line or single-span Bezier with only 2 control points has
+  // nothing this method could do). Throws `std::invalid_argument` if
+  // `tolerance` isn't positive, `iterations < 1`, or `factor` isn't in
+  // `(0, 1]` (0 would move nothing; a `factor` of exactly 1 fully replaces
+  // each interior point with its neighbor midpoint every iteration, the
+  // strongest smoothing this method allows in one step). `out_max_deviation`,
+  // if non-null, receives the achieved (or, on refusal, the attempted)
+  // worst-case deviation.
+  Result Fair(double tolerance, int iterations = 10, double factor = 0.5,
+              double* out_max_deviation = nullptr);
+
   // Whether the curve's start and end points coincide - either because
   // it's genuinely periodic (its own knot vector wraps) or because a
   // clamped curve's own two endpoints just happen to be the same point
