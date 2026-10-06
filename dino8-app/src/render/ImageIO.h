@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "util/Inflate.h"
+
 namespace dino8::app {
 
 struct Image {
@@ -54,7 +56,16 @@ bool SaveImageRGB(const std::string& path, int width, int height, const std::vec
                   std::string& error);
 
 // Inflates a zlib stream (RFC 1950/1951). Exposed for tests; used by PNG.
-bool ZlibInflate(const unsigned char* data, size_t size, std::vector<unsigned char>& out, std::string& error);
+// `max_output` bounds the decompressed size exactly like
+// util::InflateRaw's own parameter of the same name (defaulting to
+// util::kDefaultMaxInflateOutput) - LoadPng() passes the image's own
+// declared, pre-decompression raw-scanline size here rather than letting
+// a tiny-dimensioned file's IDAT stream decompress far past what its own
+// width/height could ever need (see util/Inflate.h's doc comment on why
+// the generic default alone isn't enough once a caller knows its own
+// expected size).
+bool ZlibInflate(const unsigned char* data, size_t size, std::vector<unsigned char>& out, std::string& error,
+                  size_t max_output = dino8::util::kDefaultMaxInflateOutput);
 
 // Encodes an RGB buffer (top-down rows, 3 bytes per pixel) as an in-memory
 // 8-bit truecolor PNG (RFC 2083): IHDR/IDAT/IEND chunks, filter type None

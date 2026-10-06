@@ -977,12 +977,19 @@ Brep OffsetSolidConvexPlanar(const Brep& solid, double distance);
 //     clip (real, exact, and valid for a concave neighbour loop too - see
 //     SplitByHalfspace()'s own doc comment) - no new side walls are
 //     needed, since a retrimmed neighbour's own boundary now meets the
-//     new cap directly with no gap. Only a neighbour whose own plane is
-//     PERPENDICULAR to the pushed face's normal (checked directly, within
-//     1e-6) can be safely retrimmed this way (the shared edge then lies
-//     exactly along the clip plane on both the old and new cap); an
-//     OBLIQUE neighbour would need a genuine re-intersection this
-//     function does not attempt and refuses instead of guessing.
+//     new cap directly with no gap. **Any neighbour plane, perpendicular
+//     OR oblique, is handled exactly** (narrowed from "perpendicular
+//     only"): at a vertex where the pulled face meets two neighbours, a
+//     THIRD edge - shared between those two neighbours themselves, not
+//     with the pulled face - runs into the solid's own interior, and
+//     `new_loop`'s own corrected corner there is found via that edge's
+//     real intersection with the new cut plane (`PushPullCorrectedVertex()`,
+//     boolean.cpp) rather than a blind per-vertex offset along the normal;
+//     for a perpendicular neighbour this reduces algebraically to the
+//     exact same point the old offset already gave (see that function's
+//     own doc comment for the derivation and
+//     TestPushPullFaceObliqueNeighbourMatchesExactVolume for the proof on
+//     a genuinely oblique (non-right-angle) neighbour wall).
 //
 // Unlike OffsetFace()/ShellConvexPlanar()/OffsetSolidConvexPlanar(), this
 // has NO convexity precondition on `solid` at all - a push never touches
@@ -998,10 +1005,12 @@ Brep OffsetSolidConvexPlanar(const Brep& solid, double distance);
 //
 // Throws std::invalid_argument if `distance` is zero or non-finite,
 // `face_index` is out of range for `solid.PlanarFaces()`, the named
-// face's own boundary has fewer than 3 vertices, a PULL's own retrim
-// meets a neighbour that isn't perpendicular to the pulled face's normal,
-// or that retrim collapses a neighbour's own boundary to fewer than 3
-// vertices (too large a pull for this solid's own local geometry there).
+// face's own boundary has fewer than 3 vertices, a PULL's own corrected
+// corner collapses to a near-zero-length retrimmed edge (the neighbour
+// vertex and its own interior-edge neighbour land on the same side of the
+// new cut plane - too large a pull for this solid's own local geometry
+// there), or that retrim collapses a neighbour's own boundary to fewer
+// than 3 vertices.
 Brep PushPullFace(const Brep& solid, int face_index, double distance);
 
 // The batch generalization of `PushPullFace()` above: a caller-chosen SET
@@ -1011,7 +1020,7 @@ Brep PushPullFace(const Brep& solid, int face_index, double distance);
 // sequential `PushPullFace()` calls each rebuilding the whole solid from
 // its own prior call's result. That sequencing matters here in a way it
 // doesn't for a pure push (which never touches another face): a PULL
-// retrims every perpendicular neighbour it touches, so a second sequential
+// retrims every neighbour it touches, so a second sequential
 // `PushPullFace()` call naming a face that the FIRST call already retrimmed
 // as a neighbour would run against that already-shrunken boundary, not the
 // original one - order-dependent in a way this single combined call never
@@ -1028,13 +1037,14 @@ Brep PushPullFace(const Brep& solid, int face_index, double distance);
 // closer one) - genuinely ambiguous, not a case this function attempts to
 // reconcile. An unnamed face bordering exactly one named PULL is unaffected
 // by this restriction and is retrimmed exactly as `PushPullFace()` itself
-// would retrim it - including the identical perpendicular-neighbour-only
-// refusal - whether or not some OTHER, non-adjacent face is also named in
-// the same call.
+// would retrim it - oblique or perpendicular alike, via the identical
+// `PushPullCorrectedVertex()` per-corner correction, not merely the
+// perpendicular case - whether or not some OTHER, non-adjacent face is
+// also named in the same call.
 //
 // Every entry keeps `PushPullFace()`'s own per-entry validation (nonzero,
 // finite `distance`; in-range `face_index`; at least 3 boundary vertices;
-// any PULL's own neighbour-perpendicularity and non-collapse checks) -
+// any PULL's own corrected-corner and non-collapse checks) -
 // throws std::invalid_argument on the first violation found, leaving
 // nothing applied. Two entries naming the same `face_index` are refused as
 // ambiguous, the same discipline `MoveFacesConvexPlanar()`/
