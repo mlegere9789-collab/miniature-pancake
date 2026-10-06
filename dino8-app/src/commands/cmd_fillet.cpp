@@ -2713,12 +2713,14 @@ class FilletEdgeCommand : public Command {
   // construction PARITY_MAP.md's Blending & chamfering entry documents as
   // still never called from here, the same gap TryExactFillet's own
   // plain-Radius case already closed. On a convex-attempt failure, falls
-  // through to kernel::FilletConcaveEdgeTapered - but ONLY for the plain
-  // two-station (one Radius=/EndRadius= pair, no interior Radii= handle)
-  // case: FilletConcaveEdgeTapered has no N-station overload yet (see its
-  // own doc comment, fillet.h), so a run with an interior handle still has
-  // no concave exact path and falls through unchanged to the approximate
-  // cascade below, exactly as before this concave wiring existed.
+  // through to kernel::FilletConcaveEdgeTapered's own N-station overload -
+  // closes the "FilletConcaveEdgeTapered has no N-station overload yet"
+  // restriction this used to carry: that overload now exists (fillet.h)
+  // and its own doc comment establishes it agrees bit-for-bit with the
+  // plain two-radius overload at the 2-station case, so there is no longer
+  // any reason to special-case stations.size() == 2 here - a run with an
+  // interior Radii= handle now reaches a genuine exact concave fillet too,
+  // not just the approximate cascade below.
   bool TryExactTaperedFillet(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail) const {
     kernel::Brep kb;
     kb.raw() = solid;
@@ -2732,17 +2734,13 @@ class FilletEdgeCommand : public Command {
     } catch (const std::exception& ex) {
       convex_err = ex.what();
     }
-    if (stations.size() == 2) {
-      try {
-        out = kernel::FilletConcaveEdgeTapered(kb, p0, p1, stations[0].radius, stations[1].radius).raw();
-        return true;
-      } catch (const std::exception& ex) {
-        detail = "convex attempt: " + convex_err + "; concave attempt: " + ex.what();
-        return false;
-      }
+    try {
+      out = kernel::FilletConcaveEdgeTapered(kb, p0, p1, stations).raw();
+      return true;
+    } catch (const std::exception& ex) {
+      detail = "convex attempt: " + convex_err + "; concave attempt: " + ex.what();
+      return false;
     }
-    detail = convex_err;
-    return false;
   }
 
   Mode mode_;
