@@ -27055,6 +27055,210 @@ void TestMeshComputeVertexNormals() {
   }
 }
 
+void TestMeshComputeFaceNormals() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Vector3d;
+
+  // MakeQuadBoxMesh's 6 faces are each a single flat unit-square quad with
+  // a known, hand-derivable axis-aligned normal - unlike a vertex (shared
+  // by 3 faces, so its own ComputeVertexNormals() result is a blended
+  // diagonal), a face's own normal has no neighbor to blend against at
+  // all, so every one of the 6 must come back exactly axis-aligned.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const std::vector<Vector3d> face_normals = box.ComputeFaceNormals();
+  Check(static_cast<int>(face_normals.size()) == box.FaceCount(),
+        "ComputeFaceNormals returns exactly one normal per face");
+
+  const Vector3d expected[6] = {
+      Vector3d(0, 0, -1),  // bottom
+      Vector3d(0, 0, 1),   // top
+      Vector3d(0, -1, 0),  // front
+      Vector3d(0, 1, 0),   // back
+      Vector3d(-1, 0, 0),  // left
+      Vector3d(1, 0, 0),   // right
+  };
+  for (int i = 0; i < 6; ++i) {
+    const Vector3d& n = face_normals[static_cast<size_t>(i)];
+    Check(std::abs(n.x - expected[i].x) < 1e-9 && std::abs(n.y - expected[i].y) < 1e-9 &&
+              std::abs(n.z - expected[i].z) < 1e-9,
+          "MakeQuadBoxMesh's own face normals are exactly axis-aligned, "
+          "one per cube face, matching that face's own known outward "
+          "direction");
+  }
+}
+
+void TestMeshFacetedGivesFlatShading() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Vector3d;
+
+  // The whole point of Faceted(): splitting every shared vertex into one
+  // independent copy per face means ComputeVertexNormals() on the result
+  // reduces to that one owning face's own flat normal everywhere, with no
+  // blending - verified here by cross-checking against
+  // ComputeFaceNormals() on the ORIGINAL (unfaceted) mesh, a completely
+  // independent code path, rather than assumed from the construction.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const std::vector<Vector3d> original_face_normals = box.ComputeFaceNormals();
+  const Mesh faceted = box.Faceted();
+
+  Check(faceted.FaceCount() == box.FaceCount(),
+        "Faceted() keeps exactly the same face count - it only ever "
+        "duplicates vertices, never splits or merges faces");
+  Check(faceted.VertexCount() == box.FaceCount() * 4,
+        "Faceted() gives every one of the 6 quad faces its own private "
+        "4 vertices - 24 total, none shared between faces");
+
+  const std::vector<Vector3d> faceted_vertex_normals = faceted.ComputeVertexNormals();
+  bool every_corner_matches_its_own_face = true;
+  for (int f = 0; f < faceted.FaceCount(); ++f) {
+    const Vector3d& face_normal = original_face_normals[static_cast<size_t>(f)];
+    for (int corner = 0; corner < 4; ++corner) {
+      const int vertex_index = f * 4 + corner;
+      const Vector3d& vn = faceted_vertex_normals[static_cast<size_t>(vertex_index)];
+      if (std::abs(vn.x - face_normal.x) > 1e-9 || std::abs(vn.y - face_normal.y) > 1e-9 ||
+          std::abs(vn.z - face_normal.z) > 1e-9) {
+        every_corner_matches_its_own_face = false;
+      }
+    }
+  }
+  Check(every_corner_matches_its_own_face,
+        "every corner of the Faceted() mesh gets exactly its own one "
+        "owning face's flat normal via the ordinary ComputeVertexNormals() "
+        "call - flat shading falls out of the existing averaging function "
+        "for free once the mesh is split, no separate 'flat mode' needed");
+
+  // Faceted() is topology-destructive (deliberately): the original box
+  // stays a genuine closed manifold, but the faceted copy is not, since
+  // no two faces share any vertex at all any more to close the seam.
+  Check(box.IsClosedManifold(), "the original box is still a genuine closed manifold");
+  Check(!faceted.IsClosedManifold(),
+        "the faceted copy is NOT a closed manifold - every one of its "
+        "former shared edges is now a naked boundary on both sides, the "
+        "disclosed topology-destructive tradeoff");
+}
+
+void TestMeshComputeBoxMappingUVs() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A flat quad in the z=0 plane, CCW from +z (same fixture
+  // TestMeshComputeVertexNormals already establishes gets the clean
+  // normal (0,0,1) at every corner, with nothing to blend against) - the
+  // Z-dominant branch of the box-mapping axis choice, a positive normal
+  // so no sign flip: u = x/scale, v = y/scale exactly.
+  Mesh flat;
+  ON_Mesh& raw = flat.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace face;
+  face.vi[0] = 0;
+  face.vi[1] = 1;
+  face.vi[2] = 2;
+  face.vi[3] = 3;
+  raw.m_F.Append(face);
+
+  const auto uvs1 = flat.ComputeBoxMappingUVs(1.0);
+  Check(static_cast<int>(uvs1.size()) == flat.VertexCount(),
+        "ComputeBoxMappingUVs returns exactly one UV per vertex");
+  const Point2d expected1[4] = {Point2d(0, 0), Point2d(1, 0), Point2d(1, 1), Point2d(0, 1)};
+  bool scale1_matches = true;
+  for (int i = 0; i < 4; ++i) {
+    if (std::abs(uvs1[static_cast<size_t>(i)].x - expected1[i].x) > 1e-9 ||
+        std::abs(uvs1[static_cast<size_t>(i)].y - expected1[i].y) > 1e-9) {
+      scale1_matches = false;
+    }
+  }
+  Check(scale1_matches,
+        "at scale=1, the flat +z-facing quad's own box-mapping UVs are "
+        "exactly its own (x, y) positions - the Z-dominant branch with no "
+        "sign flip, since its normal already points +z");
+
+  const auto uvs2 = flat.ComputeBoxMappingUVs(2.0);
+  bool scale2_matches = true;
+  for (int i = 0; i < 4; ++i) {
+    if (std::abs(uvs2[static_cast<size_t>(i)].x - expected1[i].x / 2.0) > 1e-9 ||
+        std::abs(uvs2[static_cast<size_t>(i)].y - expected1[i].y / 2.0) > 1e-9) {
+      scale2_matches = false;
+    }
+  }
+  Check(scale2_matches, "doubling scale exactly halves every UV coordinate - a real-world-unit "
+                         "divisor, not a 0..1 normalization");
+
+  // A flat quad in the x=0 plane, wound to face -x (cross-product-verified
+  // below, not assumed) - the X-dominant branch, with a NEGATIVE normal,
+  // so this exercises the u-sign-flip half of that branch: u = -y/scale,
+  // v = z/scale.
+  Mesh facing_minus_x;
+  ON_Mesh& raw2 = facing_minus_x.raw();
+  raw2.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw2.m_V.Append(ON_3fPoint(0, 0, 1));
+  raw2.m_V.Append(ON_3fPoint(0, 1, 1));
+  raw2.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace face2;
+  face2.vi[0] = 0;
+  face2.vi[1] = 1;
+  face2.vi[2] = 2;
+  face2.vi[3] = 3;
+  raw2.m_F.Append(face2);
+  const auto face_normals = facing_minus_x.ComputeFaceNormals();
+  Check(std::abs(face_normals[0].x - (-1.0)) < 1e-9 && std::abs(face_normals[0].y) < 1e-9 &&
+            std::abs(face_normals[0].z) < 1e-9,
+        "the x=0 quad's own winding genuinely produces an outward normal "
+        "of exactly (-1, 0, 0), independently confirmed via "
+        "ComputeFaceNormals() before trusting the box-mapping result below");
+
+  const auto uvs3 = facing_minus_x.ComputeBoxMappingUVs(1.0);
+  const Point2d expected3[4] = {Point2d(0, 0), Point2d(0, 1), Point2d(-1, 1), Point2d(-1, 0)};
+  bool minus_x_matches = true;
+  for (int i = 0; i < 4; ++i) {
+    if (std::abs(uvs3[static_cast<size_t>(i)].x - expected3[i].x) > 1e-9 ||
+        std::abs(uvs3[static_cast<size_t>(i)].y - expected3[i].y) > 1e-9) {
+      minus_x_matches = false;
+    }
+  }
+  Check(minus_x_matches,
+        "the -x-facing quad's own box-mapping UVs match the hand-derived "
+        "X-dominant, negative-normal formula (u = -y/scale, v = z/scale) "
+        "exactly, confirming the sign-flip branch and not just the "
+        "default positive-normal case above");
+
+  // Round-trips cleanly into the existing SetTextureCoordinates() storage
+  // slot - the two new generation functions and the pre-existing setter
+  // are meant to compose, not duplicate each other's job.
+  Check(flat.SetTextureCoordinates(flat.ComputeBoxMappingUVs(1.0)) == Result::Ok,
+        "ComputeBoxMappingUVs' own output is directly accepted by "
+        "SetTextureCoordinates with no further conversion");
+  Check(flat.HasTextureCoordinates(), "the mesh now reports real texture coordinates");
+
+  bool threw_zero = false;
+  try {
+    flat.ComputeBoxMappingUVs(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_zero = true;
+  }
+  Check(threw_zero, "ComputeBoxMappingUVs throws std::invalid_argument for a zero scale");
+
+  bool threw_negative = false;
+  try {
+    flat.ComputeBoxMappingUVs(-1.0);
+  } catch (const std::invalid_argument&) {
+    threw_negative = true;
+  }
+  Check(threw_negative, "ComputeBoxMappingUVs throws std::invalid_argument for a negative scale");
+
+  bool threw_nan = false;
+  try {
+    flat.ComputeBoxMappingUVs(std::numeric_limits<double>::quiet_NaN());
+  } catch (const std::invalid_argument&) {
+    threw_nan = true;
+  }
+  Check(threw_nan, "ComputeBoxMappingUVs throws std::invalid_argument for a NaN scale");
+}
+
 void TestMeshSaveObjRoundTrips() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
@@ -69023,6 +69227,9 @@ int main() {
   TestSubDFromMeshQuadRemeshedRespectsMaxDihedralDegThreshold();
   TestSubDBooleanToSubDMaxDihedralDegDefaultMatchesExplicitValue();
   TestMeshComputeVertexNormals();
+  TestMeshComputeFaceNormals();
+  TestMeshFacetedGivesFlatShading();
+  TestMeshComputeBoxMappingUVs();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
   TestMeshLoadObjPreservesUvSeams();
