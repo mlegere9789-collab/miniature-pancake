@@ -1917,6 +1917,133 @@ Brep OffsetFace(const Brep& solid, int face_index, double distance) {
   return Brep::FromPlanarFaces(result);
 }
 
+Brep InsetPlanarFace(const Brep& solid, int face_index, double distance, double depth) {
+  std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const int face_count = static_cast<int>(faces.size());
+  if (face_index < 0 || face_index >= face_count) {
+    throw std::invalid_argument(
+        "dino8::kernel::InsetPlanarFace: face_index is out of range for solid.PlanarFaces()");
+  }
+  if (!std::isfinite(distance) || !(distance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::InsetPlanarFace: distance must be finite and strictly positive");
+  }
+  if (!std::isfinite(depth)) {
+    throw std::invalid_argument("dino8::kernel::InsetPlanarFace: depth must be finite");
+  }
+
+  const Brep::PlanarFace& target = faces[static_cast<size_t>(face_index)];
+  const std::vector<Point3d>& ring = target.loop;
+  const int n = static_cast<int>(ring.size());
+  if (n < 3) {
+    throw std::invalid_argument("dino8::kernel::InsetPlanarFace: face has fewer than 3 vertices");
+  }
+  const Vector3d normal = target.plane.zaxis;
+
+  // Per-edge direction and inward (in-plane) normal - the exact
+  // Mesh::InsetFace() (mesh.cpp) construction, applied to this Brep
+  // face's own arbitrary-length polygon loop instead of a 3- or 4-vertex
+  // ON_MeshFace.
+  std::vector<Vector3d> edir(static_cast<size_t>(n)), ndir(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    Vector3d d = ring[static_cast<size_t>((i + 1) % n)] - ring[static_cast<size_t>(i)];
+    if (!d.Unitize()) {
+      throw std::invalid_argument("dino8::kernel::InsetPlanarFace: face has a zero-length edge");
+    }
+    edir[static_cast<size_t>(i)] = d;
+    Vector3d nrm = ON_CrossProduct(normal, d);
+    if (!nrm.Unitize()) {
+      throw std::invalid_argument("dino8::kernel::InsetPlanarFace: degenerate edge inward direction");
+    }
+    ndir[static_cast<size_t>(i)] = nrm;
+  }
+
+  // Convexity: every turn must agree in sign, the same test
+  // Mesh::InsetFace()/OffsetConvexPolyline() use (a reflex corner risks a
+  // self-intersecting inset this method does not detect/repair).
+  {
+    double sign = 0.0;
+    for (int i = 0; i < n; ++i) {
+      const Vector3d& a = edir[static_cast<size_t>(i)];
+      const Vector3d& b = edir[static_cast<size_t>((i + 1) % n)];
+      const double cross = ON_DotProduct(ON_CrossProduct(a, b), normal);
+      if (std::fabs(cross) <= 1e-9) continue;
+      const double this_sign = cross > 0.0 ? 1.0 : -1.0;
+      if (sign == 0.0) {
+        sign = this_sign;
+      } else if (this_sign != sign) {
+        throw std::invalid_argument(
+            "dino8::kernel::InsetPlanarFace: face has a reflex (concave) corner - only a convex face can be inset");
+      }
+    }
+  }
+
+  // Mitered inset corner = exact intersection of the two adjacent moved
+  // (parallel-translated inward by `distance`) edges.
+  std::vector<Point3d> inset(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const Vector3d& n0 = ndir[static_cast<size_t>((i - 1 + n) % n)];
+    const Vector3d& n1 = ndir[static_cast<size_t>(i)];
+    const double denom = 1.0 + ON_DotProduct(n0, n1);
+    if (denom <= 1e-9) {
+      throw std::invalid_argument(
+          "dino8::kernel::InsetPlanarFace: the face folds back on itself at a near-180-degree corner - "
+          "no finite miter inset exists there");
+    }
+    inset[static_cast<size_t>(i)] = ring[static_cast<size_t>(i)] + (distance / denom) * (n0 + n1);
+  }
+
+  // Validity: every inset edge must be a positive multiple of its own
+  // original direction - a `distance` past the face's own inradius fails
+  // this.
+  for (int i = 0; i < n; ++i) {
+    const Vector3d e = inset[static_cast<size_t>((i + 1) % n)] - inset[static_cast<size_t>(i)];
+    if (ON_DotProduct(e, edir[static_cast<size_t>(i)]) <= 0.0) {
+      throw std::invalid_argument(
+          "dino8::kernel::InsetPlanarFace: distance exceeds the face's own inradius - "
+          "the inset would invert past a corner");
+    }
+  }
+
+  if (depth != 0.0) {
+    for (Point3d& p : inset) p = p + depth * normal;
+  }
+
+  // Every other face is untouched; the named face is replaced by one
+  // inner face (the inset ring itself) plus `n` frame quads, one per
+  // original edge - the identical replacement Mesh::InsetFace() makes,
+  // generalized to an arbitrary-length loop instead of a tri/quad-only
+  // ON_MeshFace.
+  std::vector<Brep::PlanarFace> result;
+  result.reserve(static_cast<size_t>(face_count + n));
+  for (int i = 0; i < face_count; ++i) {
+    if (i != face_index) result.push_back(faces[static_cast<size_t>(i)]);
+  }
+  {
+    Brep::PlanarFace inner;
+    inner.plane = target.plane;
+    inner.plane.origin = inner.plane.origin + depth * normal;
+    inner.plane.UpdateEquation();
+    inner.loop = inset;
+    result.push_back(std::move(inner));
+  }
+  for (int i = 0; i < n; ++i) {
+    const Point3d& a = ring[static_cast<size_t>(i)];
+    const Point3d& b = ring[static_cast<size_t>((i + 1) % n)];
+    const Point3d& c = inset[static_cast<size_t>((i + 1) % n)];
+    const Point3d& d = inset[static_cast<size_t>(i)];
+    Vector3d frame_normal = ON_CrossProduct(b - a, d - a);
+    if (!frame_normal.Unitize()) {
+      throw std::invalid_argument("dino8::kernel::InsetPlanarFace: a frame quad degenerated to zero area");
+    }
+    Brep::PlanarFace frame;
+    frame.plane = ON_Plane(a, frame_normal);
+    frame.loop = {a, b, c, d};
+    result.push_back(std::move(frame));
+  }
+
+  return Brep::FromPlanarFaces(result);
+}
+
 Brep MoveFaceConvexPlanar(const Brep& solid, int face_index, const ON_Xform& xform) {
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const int n = static_cast<int>(faces.size());
