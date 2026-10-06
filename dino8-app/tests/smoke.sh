@@ -1477,6 +1477,8 @@ flcheck "FilletEdge: edge 10 of object .* replaced with an exact fillet (RailTyp
 flcheck "Volume = 991.4 cubic" "a 10x10x10 box minus a DistFromEdge=2 edge fillet: on a box corner (dihedral 90 degrees) radius = distance*tan(45deg) = 2 exactly, the same r=2 rolling-ball fillet the very first FilletEdge case already verified, now reached via the distance-based RailType path"
 flcheck "FilletEdge: edge 10 of object .* replaced with an exact fillet (RailType=DistBetweenRails, distance 2)" "FilletEdge's RailType=DistBetweenRails option wires straight to kernel::FilletConvexEdgeByDistanceBetweenRails, the same rolling-ball circular fillet specified by the straight-line distance between the two rails instead of the radius"
 flcheck "Volume = 995.7 cubic" "a 10x10x10 box minus a DistBetweenRails=2 edge fillet: radius = rail_distance/(2*cos(45deg)) gives radius^2 = 2 exactly, so removed volume = 10*2*(1-pi/4) = 4.292, leaving 1000 - 4.292 = 995.7"
+flcheck "FilletEdge: 3 staged edges of object .* replaced with an exact multi-edge fillet (RailType=DistFromEdge, distance 2)" "closes PARITY_MAP.md's Blending .. chamfering Alternative blend rail types .no multi-edge/vertex-blend form. gap: FilletEdgeCommand's pending_rail_ staging now batches every RailType pick into one kernel::FilletConvexEdgesByDistanceFromEdge call, the same staging idea pending_conic_/pending_fillet_ already established, reaching that function's own m == 3 trihedral spherical-corner blend instead of rejecting the 2nd/3rd pick's own PlanarFaces() check"
+flcheck "Volume = 975.4 cubic" "all 3 edges of a fresh box corner share the identical 90-degree dihedral, so DistFromEdge's own closed-form distance-to-radius conversion lands every edge on radius = 2, the identical closed solid and tessellated volume the plain multi-edge Radius=2 FilletConvexEdges case verifies elsewhere in this script"
 flcheck "RemoveFillet: fillet on object .* removed, sharp edge.vertex restored" "RemoveFillet's kernel::RemoveBlend wiring inverts a plain box-corner FilletEdge, restoring the sharp edge purely from the solid's own geometry - PARITY_MAP.md's Blending .. chamfering .Blend removal . defeaturing with healing. entry's own .nothing in the app calls any of these. gap"
 flcheck "Volume = 1000 cubic" "RemoveFillet's fillet round trip restores the box's own exact original volume"
 flcheck "RemoveFillet: chamfer on object .* removed, sharp edge.vertex restored" "RemoveFillet's kernel::RemoveChamfer wiring inverts a plain box-corner ChamferEdge the same way, dispatched automatically since RemoveFillet tries RemoveBlend then RemoveChamfer then RemoveChamferVertex from a single picked face with no separate face-type option"
@@ -1536,6 +1538,8 @@ facheck "FilletEdge: edge 10 of object 8 replaced with an exact conic fillet (rh
 facheck "Volume = 986.7 cubic" "a 10x10x10 box minus an asymmetric distance1=2/distance2=4 rho=0.5 conic edge fillet has volume 1000 - 2*4*sin(90deg)*10/6 = 986.7"
 facheck "! FilletEdge: an exact conic .Rho. fillet needs the whole object to be planar-faced at this edge" "a Rho request on a cylinder's curved-adjacent-face rim edge fails outright instead of silently building a plain circular rolling-ball fillet that quietly ignores Rho - unlike Chamfer's symmetric-distance case, there is no approximate fallback a non-circular conic could ever be represented by"
 facheck "! FilletEdge: an exact RailType=DistFromEdge fillet needs the whole object to be planar-faced at this edge" "a RailType=DistFromEdge request on a cylinder's curved-adjacent-face rim edge fails outright instead of silently building a plain radius=1 rolling-ball fillet under a mismatched distance interpretation - like Rho, the dihedral-angle-to-radius conversion has no meaning on a curved adjacent face"
+facheck "! FilletEdge: an exact RailType=DistFromEdge fillet of the 2 staged edge.s. on object .* failed" "two RailType edges staged in one FilletEdge run that meet at a shared vertex (TOP-FRONT and TOP-LEFT, an m == 2 configuration whose third edge stays sharp) are rejected atomically by FilletConvexEdgesByDistanceFromEdge's own documented scope limit - the pending_rail_ staging this pass added - rather than silently applying the first pick and failing the second"
+facheck "Volume = 1000 cubic" "the two-RailType-edges-meeting-at-a-vertex batch rejection leaves the box completely untouched, not a partially-filleted result"
 facheck "! FilletSrf: the offset surfaces do not meet" "FilletSrf on two nearly-flat planes failed with its own clear diagnostic instead of a garbage surface"
 facheck "ChamferSrf: built between object .* and .*, radius 1" "ChamferSrf on a cylinder's own flat-top cap and curved side wall falls through to the approximate RuledBetween path (kernel::ChamferConvexEdge needs the WHOLE solid planar-faced, which a cylindrical face fails outright) instead of crashing or silently misbuilding"
 facheck "ChamferSrf: built between object .* and .*, radius 2" "ChamferSrf Trim=No on an otherwise-exact planar box corner also falls through to the approximate path - the exact kernel path always replaces the whole solid with an already-trimmed result, not the untrimmed separate surface Trim=No asks for"
@@ -4644,6 +4648,101 @@ assert all(barc[i] < bpen[i] - 10 for i in range(3)), f'Box B Arctic ({barc}) is
 assert all(barc[i] > 150 for i in range(3)), f'Box B Arctic ({barc}) is too dark to read as the Arctic/Pen family of flat whites'
 PY
 
+# Background::Image lat-long unwarp: pixel-level proof (PARITY_MAP.md's
+# "Environments and image-based lighting" item) that the Rendered-mode
+# environment-image backdrop is now a real per-pixel equirectangular sample
+# of the camera's own view direction, not a flat UV-stretched quad - see
+# tests/env_bg_script.txt for the full derivation and scene/capture
+# sequence. The test texture has three distinct longitude bands (red at
+# u=0.25, green at u=0.5, blue at u=0.75); Back/Left/Front are all
+# orthographic standard views whose own computed equirectangular u
+# (u = atan2(fwd.y, fwd.x)/(2*pi)+0.5) lands exactly on one band each -
+# Back's forward (0,-1,0) -> u=0.25 (red); Left's forward (1,0,0) ->
+# u=0.5 (green); Front's forward (0,1,0) -> u=0.75 (blue) - and since an
+# orthographic camera samples one constant direction for every pixel
+# (Camera::ScreenRay's own ortho branch), each capture should come back
+# (almost) entirely that one band's colour - a flat UV stretch, independent
+# of camera direction, would instead show the exact same static multi-band
+# image in all three captures.
+mkdir -p "$TMPW/envbg"
+python3 -c "
+w, h = 200, 20
+BG, RED, GREEN, BLUE = (30, 30, 30), (255, 0, 0), (0, 255, 0), (0, 0, 255)
+row = bytearray()
+for x in range(w):
+    u = (x + 0.5) / w
+    if 0.20 <= u < 0.30: c = RED
+    elif 0.45 <= u < 0.55: c = GREEN
+    elif 0.70 <= u < 0.80: c = BLUE
+    else: c = BG
+    row += bytes(c)
+data = bytes(row) * h
+open('$TMPW/envbg/env_longitude.ppm', 'wb').write(b'P6\n%d %d\n255\n' % (w, h) + data)
+"
+sed "s|@TMP@|$TMPW/envbg|g" "$HERE/env_bg_script.txt" > "$TMPW/env_bg_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  ENVBG="$("$BIN" --smoke 30 --script "$TMPW/env_bg_script.txt" 2>&1)" || { echo "$ENVBG"; echo "FAIL: env_bg script exited non-zero"; exit 1; }
+else
+  ENVBG="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/env_bg_script.txt" 2>&1)" || { echo "$ENVBG"; echo "FAIL: env_bg script exited non-zero"; exit 1; }
+fi
+envbgcheck() { if echo "$ENVBG" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ENVBG" "$1"; fail=1; fi; }
+envbgcheck "^ok   expect_objects 0" "env_bg script left an empty document"
+envbgcheck "gl_error=0" "env_bg script ran without OpenGL errors"
+python3 - "$TMPW/envbg/env_back.bmp" "$TMPW/envbg/env_left.bmp" "$TMPW/envbg/env_front.bmp" <<'PY' && echo "ok   Background::Image is a real per-pixel equirectangular unwarp of the camera's own view direction, not a flat UV-stretched quad" || { echo "FAIL Background::Image lat-long unwarp pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+def fraction_matching(w, h, get, color, tol=20):
+    cr, cg, cb = color
+    n = 0
+    total = 0
+    for y in range(0, h, 2):
+        for x in range(0, w, 2):
+            total += 1
+            r, g, b = get(x, y)
+            if abs(r - cr) <= tol and abs(g - cg) <= tol and abs(b - cb) <= tol:
+                n += 1
+    return n / total
+
+RED, GREEN, BLUE = (255, 0, 0), (0, 255, 0), (0, 0, 255)
+
+bw, bh, back = read_bmp(sys.argv[1])
+lw, lh, left = read_bmp(sys.argv[2])
+fw, fh, front = read_bmp(sys.argv[3])
+
+back_red = fraction_matching(bw, bh, back, RED)
+left_green = fraction_matching(lw, lh, left, GREEN)
+front_blue = fraction_matching(fw, fh, front, BLUE)
+print(f'Back view: {back_red:.2f} of sampled pixels match the expected red (u=0.25) band')
+print(f'Left view: {left_green:.2f} of sampled pixels match the expected green (u=0.5) band')
+print(f'Front view: {front_blue:.2f} of sampled pixels match the expected blue (u=0.75) band')
+assert back_red > 0.6, f'Back view background is not predominantly the expected red longitude band ({back_red:.2f})'
+assert left_green > 0.6, f'Left view background is not predominantly the expected green longitude band ({left_green:.2f})'
+assert front_blue > 0.6, f'Front view background is not predominantly the expected blue longitude band ({front_blue:.2f})'
+
+# A flat UV-stretched quad would show the exact same static multi-band
+# image regardless of camera direction, so Back's own capture would ALSO
+# read mostly green/blue wherever those bands land on screen, not just red.
+back_green = fraction_matching(bw, bh, back, GREEN)
+back_blue = fraction_matching(bw, bh, back, BLUE)
+print(f'Back view cross-check: {back_green:.2f} green, {back_blue:.2f} blue (should both be near 0)')
+assert back_green < 0.1 and back_blue < 0.1, f'Back view also shows the other views own bands ({back_green:.2f} green, {back_blue:.2f} blue) - looks like a flat stretch, not a direction-dependent unwarp'
+PY
+
 # SSAO: pixel-level proof (PARITY_MAP.md's "SSAO in the rasterized
 # renderer" item) that AmbientOcclusion is a real, localized darkening
 # effect, not just a printed status line or a flat global dimming - a flat
@@ -6233,9 +6332,9 @@ if ! command -v curl >/dev/null 2>&1; then
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 10 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 12 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 10 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 12 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -6267,6 +6366,17 @@ print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
     # a known id/bounding box to check against.
     RESP9="$(curl -s --max-time 10 -X POST -H 'Accept: application/json' --data 'print("hi")' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP10="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/objects")"
+    # GET /objects?geometry=1: the actual point/vertex data for the two
+    # object kinds simple enough to serialize honestly as plain JSON arrays
+    # (point, mesh) - narrows PARITY_MAP.md's own disclosed "no geometry
+    # (de)serialization format" gap a step further than the bare metadata
+    # listing above. Adds one point and one triangle mesh so both real
+    # payloads can be checked in the same request, plus confirms the
+    # pre-existing box (a polysurface, neither kind) reports "geometry":null
+    # rather than silently omitting the key or guessing at a payload.
+    RESP11="$(curl -s --max-time 10 -X POST --data 'rs.AddPoint(20,20,20)
+rs.AddMesh({{0,0,0},{1,0,0},{0,1,0}}, {{1,2,3}})' "http://127.0.0.1:$SERVE_PORT/run")"
+    RESP12="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/objects?geometry=1")"
     CODE2="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP3="$(curl -s --max-time 10 -X POST --data 'rs.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP4="$(curl -s --max-time 10 -X POST --data 'import dino8
@@ -6301,6 +6411,9 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     [ "$RESP9" = '{"ok":true,"output":["hi"]}' ] && echo "ok   POST /run with Accept: application/json returns a real structured {ok,output} response instead of plain print() text" || { echo "$RESP9"; echo "FAIL --serve POST /run Accept: application/json did not return the expected JSON body"; fail=1; }
     echo "$RESP10" | grep -q '"type":"polysurface"' && echo "ok   GET /objects reports the box RESP1 just built as a real JSON object (type polysurface)" || { echo "$RESP10"; echo "FAIL --serve GET /objects did not report the box as a polysurface"; fail=1; }
     echo "$RESP10" | grep -q '"min":\[0.000000,0.000000,0.000000\],"max":\[5.000000,5.000000,5.000000\]' && echo "ok   GET /objects reported the box's own real bounding box (0,0,0)-(5,5,5), not just a type/name/layer listing" || { echo "$RESP10"; echo "FAIL --serve GET /objects did not report the box's expected bounding box"; fail=1; }
+    echo "$RESP12" | grep -q '"geometry":{"point":\[20.000000,20.000000,20.000000\]}' && echo "ok   GET /objects?geometry=1 reports a real point object's own coordinates, not just its bounding box" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report the point's coordinates"; fail=1; }
+    echo "$RESP12" | grep -q '"geometry":{"vertices":\[\[0.000000,0.000000,0.000000\],\[1.000000,0.000000,0.000000\],\[0.000000,1.000000,0.000000\]\],"faces":\[\[0,1,2\]\]}' && echo "ok   GET /objects?geometry=1 reports a real mesh object's own vertices/faces (0-based indices), not just its bounding box" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report the mesh's expected vertices/faces"; fail=1; }
+    echo "$RESP12" | grep -q '"type":"polysurface".*"geometry":null' && echo "ok   GET /objects?geometry=1 honestly reports \"geometry\":null for a kind (polysurface) this pass doesn't serialize, rather than guessing at a payload" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report null geometry for the box"; fail=1; }
     [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
     echo "$RESP3" | grep -q "compute error: script requires interactive input" && echo "ok   a script calling an interactive rs.Get* prompt is rejected instead of hanging the connection" || { echo "$RESP3"; echo "FAIL --serve interactive-prompt script was not rejected as expected"; fail=1; }
     if echo "$RESP4" | grep -q "DINO8_HAVE_PYTHON"; then
@@ -6319,7 +6432,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=10$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 10 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=12$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 12 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
     fi
   fi
 

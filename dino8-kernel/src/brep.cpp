@@ -3301,6 +3301,37 @@ Mesh Brep::TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) cons
   return Mesh::MergeAndWeld(TessellateNonUniformAdaptive(chord_tolerance));
 }
 
+std::vector<Mesh> Brep::TessellateCertifiedAdaptive(double chord_tolerance, int max_refinements,
+                                                     std::vector<bool>* out_certified) const {
+  std::vector<Mesh> result;
+  result.reserve(static_cast<size_t>(brep_.m_F.Count()));
+  if (out_certified) out_certified->clear();
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    FaceGeometry fg;
+    if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
+    NurbsSurface wrapper;
+    wrapper.raw() = fg.surface;
+    if (fg.outer.empty()) {
+      result.push_back(wrapper.TessellateGridCertifiedAdaptive(chord_tolerance, max_refinements));
+      if (out_certified) out_certified->push_back(true);
+    } else if (fg.exact_clip) {
+      result.push_back(wrapper.TessellateGridClippedExactAdaptive(chord_tolerance, fg.outer));
+      if (out_certified) out_certified->push_back(false);
+    } else {
+      const std::vector<std::vector<Point2d>>* holes = fg.holes.empty() ? nullptr : &fg.holes;
+      result.push_back(wrapper.TessellateGridNonUniformAdaptive(chord_tolerance, &fg.outer, holes));
+      if (out_certified) out_certified->push_back(false);
+    }
+    if (brep_.m_F[i].m_bRev) result.back() = result.back().FlipNormals();
+  }
+  return result;
+}
+
+Mesh Brep::TessellateToClosedMeshCertifiedAdaptive(double chord_tolerance,
+                                                    int max_refinements) const {
+  return Mesh::MergeAndWeld(TessellateCertifiedAdaptive(chord_tolerance, max_refinements));
+}
+
 std::vector<Mesh> Brep::TessellateAdaptiveByAngle(double angle_tolerance) const {
   std::vector<Mesh> result;
   result.reserve(static_cast<size_t>(brep_.m_F.Count()));
@@ -6963,19 +6994,38 @@ Result Brep::RemoveSharedMicroEdge(int edge_index, double tolerance) {
     return Result::Failed;
   }
 
-  // Isolated-sliver check, extended to two allowed neighbors per vertex:
-  // each endpoint may touch nothing in this WHOLE Brep besides the micro
-  // edge itself and its own two loop-neighbors (one per face).
-  auto only_touches = [&](int vi, int allowed_a, int allowed_b) {
+  // Any FURTHER edge touching either endpoint, beyond the micro edge
+  // itself and its own two loop-neighbors, used to refuse the whole call
+  // outright (an "isolated-sliver" requirement). No longer: such an edge
+  // belongs to some third face merely pinching at this same vertex, not
+  // to either of the two faces this call actually merges across - its
+  // own OTHER endpoint is untouched, and CombineCoincidentVertices() is
+  // about to move ITS end to the shared point regardless, so it is
+  // nudged there explicitly first (the identical `nudge()` primitive the
+  // two designated loop-neighbors already get, just applied to however
+  // many extra edges a vertex happens to carry) rather than left to
+  // silently snap however `CombineCoincidentVertices()` itself sees fit.
+  // ReplaceEdgeCurve() already re-trims whichever further face(s) it
+  // borders, the same "handled for free" property the two designated
+  // neighbors already rely on.
+  auto collect_extras = [&](int vi, int allowed_a, int allowed_b) {
+    std::vector<int> extras;
     const ON_BrepVertex& v = brep_.m_V[vi];
     for (int k = 0; k < v.m_ei.Count(); ++k) {
       const int e = v.m_ei[k];
-      if (e != edge_index && e != allowed_a && e != allowed_b) return false;
+      if (e != edge_index && e != allowed_a && e != allowed_b) extras.push_back(e);
     }
-    return true;
+    return extras;
   };
-  if (!only_touches(v_start, e0_at_start, e1_at_start)) return Result::Failed;
-  if (!only_touches(v_end, e0_at_end, e1_at_end)) return Result::Failed;
+  const std::vector<int> extra_start = collect_extras(v_start, e0_at_start, e1_at_start);
+  const std::vector<int> extra_end = collect_extras(v_end, e0_at_end, e1_at_end);
+  // An edge touching BOTH endpoints (distinct from the micro edge itself)
+  // would get nudged at both ends and collapse to zero length - refused
+  // rather than guessed at, the same "won't guess at a bowtie" discipline
+  // the four-distinct-neighbors check above already applies.
+  for (int e : extra_start) {
+    if (std::find(extra_end.begin(), extra_end.end(), e) != extra_end.end()) return Result::Failed;
+  }
 
   const ON_3dPoint p_start = brep_.m_V[v_start].point;
   const ON_3dPoint p_end = brep_.m_V[v_end].point;
@@ -7010,6 +7060,19 @@ Result Brep::RemoveSharedMicroEdge(int edge_index, double tolerance) {
   std::optional<NurbsCurve> new_e1_start = nudge(e1_at_start, v_start);
   std::optional<NurbsCurve> new_e1_end = nudge(e1_at_end, v_end);
   if (!new_e0_start || !new_e0_end || !new_e1_start || !new_e1_end) return Result::Failed;
+  // Same nudge, for however many further edges (beyond the two
+  // designated loop-neighbors) each endpoint turned out to carry.
+  std::vector<NurbsCurve> new_extra_start, new_extra_end;
+  for (int e : extra_start) {
+    std::optional<NurbsCurve> n = nudge(e, v_start);
+    if (!n) return Result::Failed;
+    new_extra_start.push_back(*n);
+  }
+  for (int e : extra_end) {
+    std::optional<NurbsCurve> n = nudge(e, v_end);
+    if (!n) return Result::Failed;
+    new_extra_end.push_back(*n);
+  }
 
   // Phase 2: commit. Move the two vertices to their shared merged point
   // FIRST, same reason RemoveNakedMicroEdge() does - so ReplaceEdgeCurve()'s
@@ -7023,6 +7086,12 @@ Result Brep::RemoveSharedMicroEdge(int edge_index, double tolerance) {
     ReplaceEdgeCurve(e0_at_end, *new_e0_end, retrim_tolerance);
     ReplaceEdgeCurve(e1_at_start, *new_e1_start, retrim_tolerance);
     ReplaceEdgeCurve(e1_at_end, *new_e1_end, retrim_tolerance);
+    for (size_t k = 0; k < extra_start.size(); ++k) {
+      ReplaceEdgeCurve(extra_start[k], new_extra_start[k], retrim_tolerance);
+    }
+    for (size_t k = 0; k < extra_end.size(); ++k) {
+      ReplaceEdgeCurve(extra_end[k], new_extra_end[k], retrim_tolerance);
+    }
   } catch (const std::exception&) {
     // Leaves this Brep with, at most, some neighbors' curves nudged by the
     // same micro-scale amount this whole operation is trying to close (a

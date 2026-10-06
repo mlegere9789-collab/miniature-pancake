@@ -966,6 +966,33 @@ class NurbsSurface {
   double MeasureGridTessellationDeviation(int u_divisions, int v_divisions,
                                            int samples_per_triangle = 6) const;
 
+  // Closes PARITY_MAP's own disclosed "Adaptive tessellation of B-rep
+  // faces (curvature-driven refinement) — a fixed angular deviation
+  // heuristic, not a certified chordal-deviation bound" gap, for the one
+  // case the kernel can actually CERTIFY: the plain untrimmed grid
+  // MeasureGridTessellationDeviation() itself is scoped to (same
+  // restriction that function's own doc comment already carries - this
+  // is a thin composition of it with SuggestedDivisions(), not a new
+  // measurement algorithm). Starts from SuggestedDivisions(chord_
+  // tolerance)'s own single-direction sagitta ESTIMATE, actually MEASURES
+  // the resulting grid's real worst-case facet deviation, and - rather
+  // than trusting the estimate the way every other `*Adaptive` sibling in
+  // this class does - doubles both division counts and re-measures
+  // whenever the measured deviation still exceeds `chord_tolerance`, up
+  // to `max_refinements` doublings. Returns the first grid whose MEASURED
+  // (not estimated) deviation is proven to be at or under
+  // `chord_tolerance`, writing that achieved deviation to
+  // `*out_achieved_deviation` if non-null. Throws std::invalid_argument
+  // if `chord_tolerance <= 0` or `max_refinements < 0`, and
+  // std::runtime_error if no doubling within `max_refinements` certifies
+  // the tolerance - a real possibility this function surfaces loudly
+  // rather than silently returning a mesh that doesn't actually honor the
+  // bound its own name promises (e.g. a tolerance set near floating-point
+  // precision, or a genuinely non-smooth surface whose true deviation
+  // can't be driven arbitrarily low by refinement alone).
+  Mesh TessellateGridCertifiedAdaptive(double chord_tolerance, int max_refinements = 8,
+                                        double* out_achieved_deviation = nullptr) const;
+
   // ---- Surface editing (implemented in src/surface_edit.cpp) ----
 
   // Removes one multiplicity of the interior knot at ON-convention index
@@ -1049,6 +1076,51 @@ class NurbsSurface {
   // (an underdetermined fit).
   Result Rebuild(int u_count, int v_count, int u_degree, int v_degree, NurbsSurface& out,
                  double* out_max_deviation = nullptr, int u_samples = 64, int v_samples = 64) const;
+
+  // Exact (not least-squares) interpolation through a `u_count` x
+  // `v_count` grid of points - the construction `Rebuild()`'s own doc
+  // comment above and `FromControlGrid()`'s own doc comment distinguish
+  // from both of those: unlike `Rebuild()`, there is no source surface
+  // being refit, only raw points; unlike `FromControlGrid()`, the result
+  // genuinely PASSES THROUGH every grid point (a B-spline does not pass
+  // through its own control points in general - `FromControlGrid()`
+  // treats `grid` itself as the control net, this treats it as points to
+  // interpolate). Same row-then-column tensor-product technique
+  // `Rebuild()` already uses, with two differences: each pass is exact
+  // interpolation (`NurbsCurve::InterpolateCubic`'s own global cubic
+  // collocation solve, surface_intersect.h) rather than least-squares,
+  // and both passes share ONE averaged, [0,1]-normalized chord-length
+  // parameter array per direction (Piegl & Tiller's own prescribed
+  // method for surface interpolation: average every row's own
+  // normalized chord-length parameterization to get the shared U
+  // params, every column's to get the shared V params) instead of a
+  // fixed sample grid - so every row (and, in the second pass, every
+  // column) is interpolated at the IDENTICAL parameter values, which is
+  // what makes the two passes combine into one consistent tensor-product
+  // surface at all (two curves fit at different parameter values
+  // wouldn't share a knot vector). `grid[u * v_count + v]` is the point
+  // at grid position `(u, v)` - the same indexing `FromControlGrid()`
+  // uses. Degree in each direction is `min(3, count - 1)`, matching
+  // `NurbsCurve::InterpolateCubic`'s own degree cap for a short input
+  // (e.g. 3 points in a direction gives degree 2 there, not a forced
+  // cubic). The result is always non-rational, the same consequence
+  // `Rebuild()` has from reusing the identical collocation/least-squares
+  // machinery family. Verified (`TestSurfaceInterpolateThroughGrid`,
+  // tests/test_basic.cpp): `PointAt()` at every one of the shared
+  // parameter pairs reproduces its own grid point to within 1e-9 (exact
+  // interpolation, not a fit), including on a genuinely non-planar,
+  // non-separable grid (so the result isn't secretly a ruled or
+  // translational surface in disguise); a degenerate (coincident-point)
+  // row or column is refused rather than silently producing garbage
+  // parameters. Only the open (non-closed) case is supported - a closed
+  // grid in either direction is not attempted here, disclosed rather
+  // than assumed solved. Throws std::invalid_argument if `u_count` or
+  // `v_count` is below 2, `grid.size() != u_count * v_count`, or any row
+  // or column of `grid` is degenerate (every point in it coincides, so
+  // chord-length parameterization has nothing to normalize against).
+  // Returns Result::Failed if the underlying collocation solve fails.
+  static Result InterpolateThroughGrid(const std::vector<Point3d>& grid, int u_count, int v_count,
+                                        NurbsSurface& out);
 
   // Splits this surface into an independent tensor-product Bezier patch
   // for every (u-span, v-span) cell of its knot vectors - the surface
