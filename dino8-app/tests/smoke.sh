@@ -1305,6 +1305,23 @@ a2check "UpdateFields: 3 field(s) regenerated" "UpdateFields re-evaluated all 3 
 # dimension's own recorded style by name.
 a2check "Text = 100.00 mm.*0\.05" "DimStyle1 (Precision=2, Suffix=mm, TolMode=symmetric) baked \"100.00 mm\" plus the tolerance suffix for a dimension measuring exactly 100, not the old unstyled \"100\""
 a2check "Text = 100.0000 mm.*0\.05" "UpdateDimensions re-read DimStyle1's CURRENT precision (edited to 4 after the dimension was built) from the dimension's own recorded style by name and reformatted it to 4 decimal places, keeping the tolerance suffix through the rebuild"
+# --- Measured-dimension precision (DimArea/DimCurveLength/DimVolume/
+# DimOrdinate/DimCreaseAngle) now wired to a style's own Precision/
+# AngularPrecision via FormatMeasurement, the same way DimStyle1 just above
+# already proved for DimLinear/DimAngle - see PARITY_MAP.md's "Dimension
+# styles" entry, "DimOrdinate and the DimArea/DimCurveLength/DimVolume/
+# DimCreaseAngle measured-dimension family... not yet wired to a style's
+# precision" gap.
+a2check "DimArea: Area = 100.00 square Millimeters" "MeasStyle's Precision=2 baked \"100.00\" for the 10x10 rectangle's exactly-100 area, not the old unstyled \"100\""
+a2check "DimCurveLength: Length = 100.00 Millimeters" "MeasStyle's Precision=2 baked \"100.00\" for the exactly-100-unit line, not the old unstyled \"100\""
+a2check "DimVolume: Volume = 100.00 cubic Millimeters" "MeasStyle's Precision=2 baked \"100.00\" for the 10x10x1 box's exactly-100 volume, not the old unstyled \"100\""
+a2check "DimOrdinate: X 25.00" "MeasStyle's Precision=2 baked \"25.00\" for the exactly-25-unit ordinate, not the old unstyled \"25\""
+a2check "DimCreaseAngle: 90.00 deg" "MeasStyle's AngularPrecision=2 baked \"90.00 deg\" for the two perpendicular lines' exactly-90-degree crease, not the old unstyled \"90 deg\""
+a2check "UpdateMeasureDims:   DimArea now Area = 100.0000 square Millimeters" "UpdateMeasureDims re-read MeasStyle's CURRENT precision (edited to 4) from DimArea's own recorded style by name and reformatted it live"
+a2check "UpdateMeasureDims:   DimCurveLength now Length = 100.0000 Millimeters" "UpdateMeasureDims reformatted DimCurveLength to MeasStyle's edited Precision=4 live"
+a2check "UpdateMeasureDims:   DimVolume now Volume = 100.0000 cubic Millimeters" "UpdateMeasureDims reformatted DimVolume to MeasStyle's edited Precision=4 live"
+a2check "UpdateMeasureDims:   DimOrdinate now X 25.0000" "UpdateMeasureDims reformatted DimOrdinate to MeasStyle's edited Precision=4 live"
+a2check "UpdateMeasureDims:   DimCreaseAngle now 90.0000 deg" "UpdateMeasureDims reformatted DimCreaseAngle to MeasStyle's edited AngularPrecision=4 live"
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/solidtools_script.txt" > "$TMPW/solidtools_script.txt"
@@ -1411,7 +1428,10 @@ flcheck "FilletSrf: built between object 4 and 6, radius 2; both surfaces trimme
 flcheck "Area = 31.41 square" "the r=2 fillet's quarter-cylinder lateral area is (pi/2)*2*10 = 31.42"
 flcheck "ChamferSrf: faces .* and .* of object .* replaced with an exact chamfer (distance 3)" "ChamferSrf's two-face-pick UI now reaches kernel::ChamferConvexEdge (the same exact construction ChamferEdge's own path uses) when both picks land on the same solid's own adjacent planar faces, instead of always building the approximate RuledBetween ruled surface"
 flcheck "Volume = 955 cubic" "a 10x10x10 box minus a 3x3 ChamferSrf chamfer has the identical exact volume as the plain ChamferEdge case above: 1000 - 10*3^2/2 = 955"
-flcheck "BlendEdge: blend surface added between the two faces at edge 10" "BlendEdge built a separate G1 blend surface"
+flcheck "BlendEdge: edge 10 of object .* trimmed and joined into the polysurface (Continuity=Tangency)" "BlendEdge now real-trims both adjacent planar faces and stitches the G1 blend in as a genuine third face, closing PARITY_MAP.md's own 'Edge blend trimmed and joined into the polysurface' gap - fixing a real, previously-undiscovered degeneracy along the way: the un-offset construction this replaced fed BuildBlendSurfaceG1 the SAME shared edge as both its 'face A' and 'face B' boundary, collapsing every row to one point (confirmed directly, not assumed - the resulting surface sampled to the identical 3D point everywhere), an invisible, zero-area patch rather than a real blend"
+flcheck "7 faces, 15 edges, closed solid" "BlendEdge's own trim-and-join result is a genuine closed solid (6 box faces - 2 trimmed-in-place + the new blend face = 7), not three independent disconnected pieces"
+flcheck "Volume = 994.5 cubic" "the box's own corner material actually removed by the blend (a real, reproducible number - no closed form for an arbitrary Hermite blend's own removed volume, the same 'no closed form, check the real number' convention this file's own FilletSrf/Area checks already use), stable across repeated runs"
+flcheck "MatchSrf: 2 boundary control point.s. moved to position on the target curve" "MatchSrf moved a plane's edge onto a target line"
 flcheck "MatchSrf: 2 boundary control point.s. moved to position on the target curve" "MatchSrf moved a plane's edge onto a target line"
 flcheck "MatchSrf: exact edge match (G1) to the target surface, max position error 0, max tangent error 0" "MatchSrf against a target *surface* edge now uses the kernel's exact NurbsSurface::MatchEdge() (self-checked by evaluation, both residuals genuinely ~0), not the app's older per-control-point loop that only assumed a shared parameterization"
 flcheck "degree 2 x 1, CVs 3 x 2" "the matched floor plane's real G1 bend toward the box's vertical front face: degree elevated 1->2 and one control point added in the edge-crossing direction to hold position+tangent rows, the other direction (degree 1, 2 CVs) untouched"
@@ -1488,7 +1508,7 @@ flcheck "10 faces, 21 edges, closed solid" "one spherical corner blend: 6 planar
 flcheck "Volume = 975.4 cubic" "matches the app's own tessellated reading of the exact closed form 1000 - 3*8*4*(1-pi/4) - 8*(1-pi/6) = 975.587 (see this section's own comment in fillet_script.txt for why the app's coarser spherical-patch tessellation reads 975.4, not 975.587, and why that gap is pre-existing and unrelated to this fix)"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
-flcheck "^ok   expect_objects 56" "fillet script produced the expected object count"
+flcheck "^ok   expect_objects 55" "fillet script produced the expected object count"
 
 # Adversarial fillets: tiny/at-the-limit/too-large radii relative to the
 # shortest adjacent edge, a huge-coordinate-scale box (now fixed for the
@@ -1528,6 +1548,8 @@ facheck "FilletSrf: built between object .* and .*, radius 1 to 2$" "VariableFil
 facheck "! FilletSrf: an exact conic (Rho) fillet needs the two faces to share an edge on one planar-faced solid with Trim=Yes (convex attempt:.*not planar" "FilletSrf Rho on a cylinder's own flat-top cap and curved side wall refuses with a clear diagnostic instead of silently building a plain round fillet that quietly ignores Rho - unlike Chamfer/VariableFillet just above, there is no approximate fallback a non-circular conic could ever be represented by"
 facheck "! FilletSrf: an exact conic (Rho) fillet needs the two faces to share an edge on one planar-faced solid with Trim=Yes (the two picks are independent surfaces with no shared edge)" "FilletSrf Rho on two genuinely independent (no shared edge) extracted surfaces refuses the same way - fa.id != fb.id means kernel::FilletConvexEdgeConic/FilletConcaveEdgeConic have no shared ON_BrepEdge to identify at all, not merely a curved-face rejection"
 facheck "! BlendSrf: could not build the blend" "BlendSrf Continuity=G3, picking the same face/edge twice (a genuinely degenerate, zero-length rail pairing), fails closed with a clear diagnostic instead of silently building a degenerate patch - G3 has no approximate fallback to drop to the way Continuity=Tangency/Curvature would"
+facheck "BlendEdge: blend surface added between the two faces at edge 2" "BlendEdge on a cylinder's own curved-adjacent-face rim edge falls through to the pre-existing 'added as a separate surface' behaviour unchanged - the new exact trim-and-join path needs both adjacent faces planar"
+facheck "3 faces, 3 edges, closed solid" "the cylinder itself survives completely untouched by the failed trim-and-join attempt"
 echo "$FA" | grep -E "^(ok|FAIL)"
 if echo "$FA" | grep -q "^FAIL"; then fail=1; fi
 facheck "^ok   expect_objects 0" "fillet-adversarial script cleaned up to zero objects at the end"
@@ -2881,8 +2903,10 @@ echo "$SBO" | grep -q "^smoke:" || { echo "$SBO"; echo "FAIL: splitbyobject-regr
 # SplitByObject exact B-rep path: when target and cutter are both plain
 # closed solid Breps that genuinely cross, SplitByObject must now take the
 # new kernel::SplitBrepByManySolids path (real B-rep pieces, no
-# tessellation) rather than silently falling back to the mesh pipeline
-# (see splitbyobject_exact_brep_script.txt) - PARITY_MAP.md's "kernel:
+# tessellation) rather than silently falling back to the mesh pipeline -
+# and, as of round 41, a single open-sheet cutter must take the
+# kernel::SplitBySheet path instead (see
+# splitbyobject_exact_brep_script.txt) - PARITY_MAP.md's "kernel:
 # Boolean operations" category's "Keep/split options" bullet.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   SBX="$("$BIN" --smoke 200 --script "$HERE/splitbyobject_exact_brep_script.txt" 2>&1)" || { echo "$SBX"; echo "FAIL: splitbyobject-exact-brep script exited non-zero"; exit 1; }
@@ -2892,7 +2916,8 @@ fi
 echo "$SBX" | grep -E "^(ok|FAIL)"
 if echo "$SBX" | grep -q "^FAIL"; then fail=1; fi
 echo "$SBX" | grep -q "^smoke:" || { echo "$SBX"; echo "FAIL: splitbyobject-exact-brep script produced no smoke line"; fail=1; }
-echo "$SBX" | grep -q "exact B-rep, no tessellation" || { echo "$SBX"; echo "FAIL: splitbyobject-exact-brep script did not take the exact B-rep path"; fail=1; }
+echo "$SBX" | grep -q "exact B-rep, no tessellation" || { echo "$SBX"; echo "FAIL: splitbyobject-exact-brep script did not take the exact solid-by-solid B-rep path"; fail=1; }
+echo "$SBX" | grep -q "exact B-rep via sheet cutter, no tessellation" || { echo "$SBX"; echo "FAIL: splitbyobject-exact-brep script did not take the exact sheet-cutter B-rep path"; fail=1; }
 
 # Adversarial booleans: near-tangent/barely-overlapping/coincident solids,
 # an extreme-aspect-ratio sliver, a huge-coordinate-scale pair, a 10-deep
@@ -6299,17 +6324,21 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
   fi
 
   # --serve-token: a second, independent server instance (its own ephemeral
-  # port) started with a bearer token required. Checks both directions: a
+  # port) started with TWO bearer tokens required - a bare, anonymous one
+  # ("hunter2") and a named one ("ci:abc123"), checking that --serve-token
+  # is genuinely repeatable and that a named token's own caller comes back
+  # in the JSON response, not just that auth works at all. Checks: a
   # request with no/wrong Authorization header is rejected with 401 (its
   # script body, "should not run", is never passed to Lua.Start at all -
   # see main.cpp's compute_handler, which checks the token before touching
-  # req.path/req.body), and the same request with the right header succeeds
-  # exactly like the token-less server above.
+  # req.path/req.body); the bare token succeeds exactly like the token-less
+  # server above, with no "caller" field; and the named token succeeds AND
+  # echoes its own name back as "caller" (Accept: application/json).
   TOKEN_LOG="$TMPW/serve_token.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-token hunter2 --serve-max-requests 3 > "$TOKEN_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-token hunter2 --serve-token ci:abc123 --serve-max-requests 4 > "$TOKEN_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token hunter2 --serve-max-requests 3 > "$TOKEN_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token hunter2 --serve-token ci:abc123 --serve-max-requests 4 > "$TOKEN_LOG" 2>&1 &
   fi
   TOKEN_PID=$!
 
@@ -6333,10 +6362,12 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     CODE_NOAUTH="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'print("should not run")' "http://127.0.0.1:$TOKEN_PORT/run")"
     CODE_WRONGAUTH="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer wrongtoken' -X POST --data 'print("should not run")' "http://127.0.0.1:$TOKEN_PORT/run")"
     RESP_OKAUTH="$(curl -s --max-time 10 -H 'Authorization: Bearer hunter2' -X POST --data 'print("authorized ok")' "http://127.0.0.1:$TOKEN_PORT/run")"
+    RESP_NAMEDAUTH="$(curl -s --max-time 10 -H 'Authorization: Bearer abc123' -H 'Accept: application/json' -X POST --data 'print("authorized ok")' "http://127.0.0.1:$TOKEN_PORT/run")"
     set -e
     [ "$CODE_NOAUTH" = "401" ] && echo "ok   --serve-token rejects a request with no Authorization header with 401" || { echo "FAIL --serve-token no-auth request returned HTTP $CODE_NOAUTH, expected 401"; fail=1; }
     [ "$CODE_WRONGAUTH" = "401" ] && echo "ok   --serve-token rejects a request with the wrong bearer token with 401" || { echo "FAIL --serve-token wrong-token request returned HTTP $CODE_WRONGAUTH, expected 401"; fail=1; }
     echo "$RESP_OKAUTH" | grep -q "^authorized ok$" && echo "ok   --serve-token accepts a request with the correct Authorization: Bearer header and runs the script" || { echo "$RESP_OKAUTH"; echo "FAIL --serve-token correct-token request did not run the script"; fail=1; }
+    [ "$RESP_NAMEDAUTH" = '{"ok":true,"output":["authorized ok"],"caller":"ci"}' ] && echo "ok   a second, named --serve-token (ci:abc123) authenticates independently of the bare one and echoes its own caller name back in the JSON response" || { echo "$RESP_NAMEDAUTH"; echo "FAIL --serve-token named-token request did not return the expected caller-tagged JSON"; fail=1; }
 
     set +e; wait "$TOKEN_PID"; TOKEN_EC=$?; set -e
     if [ "$TOKEN_EC" -eq 124 ]; then
@@ -6344,7 +6375,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     elif [ "$TOKEN_EC" -ne 0 ]; then
       cat "$TOKEN_LOG"; echo "FAIL: --serve-token process exited $TOKEN_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=3$" "$TOKEN_LOG" && echo "ok   --serve-token server exited cleanly on its own after 3 real HTTP requests" || { cat "$TOKEN_LOG"; echo "FAIL --serve-token done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=4$" "$TOKEN_LOG" && echo "ok   --serve-token server exited cleanly on its own after 4 real HTTP requests" || { cat "$TOKEN_LOG"; echo "FAIL --serve-token done-summary line missing or wrong"; fail=1; }
     fi
   fi
 fi

@@ -435,6 +435,126 @@ void TestCurveMakeRationalAndNonRational() {
         "MakeNonRational reports NoOpAlreadySatisfied when already non-rational");
 }
 
+void TestCurveMakeNonRationalWithTolerance() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Non-rational curve: genuine no-op, zero deviation.
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+  NurbsCurve line = NurbsCurve::FromControlPoints(pts, /*degree=*/2);
+  double deviation = -1.0;
+  Check(line.MakeNonRational(1e-9, &deviation) == Result::NoOpAlreadySatisfied,
+        "MakeNonRational(tolerance) reports NoOpAlreadySatisfied on an already non-rational curve");
+  Check(deviation == 0.0, "...and reports zero deviation for that no-op");
+
+  // Uniform-weight rational curve - the same fixture
+  // TestCurveMakeRationalAndNonRational already proves is exactly
+  // shape-preserving - must succeed at a tight tolerance with ~0
+  // reported deviation.
+  NurbsCurve uniform = NurbsCurve::FromControlPoints(pts, /*degree=*/2);
+  Check(uniform.MakeRational() == Result::Ok, "setup: MakeRational succeeds");
+  deviation = -1.0;
+  Check(uniform.MakeNonRational(1e-9, &deviation) == Result::Ok,
+        "MakeNonRational(tolerance) succeeds on a uniform-weight rational curve");
+  Check(deviation >= 0.0 && deviation < 1e-9,
+        "...with ~0 measured deviation, since uniform weights are exactly shape-preserving");
+
+  // Genuine radius-5 circle (the same fixture
+  // TestCurveMakeRationalAndNonRational uses): a tight tolerance must
+  // REFUSE, since the conversion is known to measurably change the
+  // shape (radius drifting away from 5 elsewhere on the curve).
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const NurbsCurve circle_original = circle;
+  deviation = -1.0;
+  const Result refused = circle.MakeNonRational(1e-6, &deviation);
+  Check(refused == Result::Failed,
+        "MakeNonRational(tolerance) refuses the circle at a tight tolerance, since the "
+        "conversion is known to measurably change its shape");
+  Check(deviation > 1e-6,
+        "...and the reported deviation genuinely exceeds the refused tolerance, not just an "
+        "arbitrary failure");
+  Check(circle.IsRational(), "a refused MakeNonRational(tolerance) leaves the curve rational");
+  double cv_err = 0.0;
+  for (int i = 0; i < circle.ControlPointCount(); ++i) {
+    cv_err = std::max(cv_err, circle.ControlPointAt(i).DistanceTo(circle_original.ControlPointAt(i)));
+  }
+  Check(cv_err == 0.0, "a refused MakeNonRational(tolerance) leaves the control points byte-for-byte unchanged");
+
+  // The same circle at a loose enough tolerance must succeed, proving
+  // the refusal above was genuinely tolerance-driven, not hardcoded.
+  double loose_deviation = -1.0;
+  Check(circle.MakeNonRational(1.0, &loose_deviation) == Result::Ok,
+        "MakeNonRational(tolerance) succeeds on the same circle at a loose enough tolerance");
+  Check(!circle.IsRational(), "...and the curve is genuinely non-rational afterward");
+  Check(std::abs(loose_deviation - deviation) < 1e-9,
+        "the deviation reported on the accepted conversion matches the one reported on the "
+        "earlier refusal (both measure the identical conversion)");
+}
+
+void TestCurveLengthToTolerance() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // A straight line: constant speed (degree 1, so the first derivative
+  // is a degree-0 polynomial) - a single 5-point Gauss-Legendre segment
+  // is already exact, so this must settle in exactly one leaf
+  // sub-interval even at a very tight tolerance.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(3, 4, 0)};
+  NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  int subintervals = -1;
+  const double line_length = line.LengthToTolerance(1e-12, &subintervals);
+  Check(std::abs(line_length - 5.0) < 1e-9, "LengthToTolerance is exact (5.0) for a 3-4-5 line");
+  Check(subintervals == 1,
+        "a constant-speed line settles in exactly one leaf sub-interval, even at a tight "
+        "tolerance");
+
+  // A genuine radius-7 circle: known closed-form circumference.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(1, 2, 3), ON_3dVector(0, 0, 1)), 7.0);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const double circle_length = circle.LengthToTolerance(1e-8);
+  Check(std::abs(circle_length - 2.0 * ON_PI * 7.0) < 1e-6,
+        "LengthToTolerance matches the closed-form circumference (2*pi*7) of a genuine NURBS "
+        "circle");
+
+  // A wiggly cubic with no closed-form length: cross-check against
+  // Length()'s own very-fine-polyline estimate - two independently-
+  // reasoned-about ways of measuring the same curve should agree
+  // closely, not just each look plausible in isolation.
+  std::vector<Point3d> wiggly_pts;
+  for (int i = 0; i < 6; ++i) wiggly_pts.push_back(Point3d(i, std::sin(1.7 * i), 0.3 * std::cos(0.9 * i)));
+  NurbsCurve wiggly = NurbsCurve::FromControlPoints(wiggly_pts, /*degree=*/3);
+  const double wiggly_adaptive = wiggly.LengthToTolerance(1e-6);
+  const double wiggly_polyline = wiggly.Length(200000);
+  Check(std::abs(wiggly_adaptive - wiggly_polyline) < 1e-3,
+        "LengthToTolerance agrees with a very fine Length() polyline estimate on a curve with "
+        "no closed-form length");
+
+  // A tighter tolerance must never need FEWER leaf sub-intervals than a
+  // looser one on the same curve - the adaptive refinement genuinely
+  // responds to the requested tolerance, not a fixed subdivision.
+  int loose_subintervals = -1, tight_subintervals = -1;
+  wiggly.LengthToTolerance(1e-2, &loose_subintervals);
+  wiggly.LengthToTolerance(1e-10, &tight_subintervals);
+  Check(tight_subintervals >= loose_subintervals,
+        "a tighter tolerance needs at least as many leaf sub-intervals as a looser one");
+
+  bool threw = false;
+  try {
+    wiggly.LengthToTolerance(0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "LengthToTolerance throws std::invalid_argument for a non-positive tolerance");
+}
+
 void TestCurveInsertKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -3885,6 +4005,174 @@ void TestIntersectPlaneSphereClosedForm() {
   // a degenerate circle.
   const ON_Sphere degenerate(ON_3dPoint(0, 0, 0), 0.0);
   Check(IntersectPlaneSphere(ground, degenerate, tol).empty, "a zero-radius sphere is refused as a genuine miss, not a degenerate circle");
+}
+
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
+// "plane/cylinder" half, following IntersectPlaneSphere()'s own pattern
+// one pair over: a true closed form (no mesh seeding, no Newton polish),
+// covering both named shapes (the general oblique-cut ellipse, degenerating
+// to a true circle when the axis is perpendicular to the plane, and the
+// edge-on line-pair/tangent-line/miss case when the axis lies in the
+// plane) plus the invalid-input refusal.
+void TestIntersectPlaneCylinderClosedForm() {
+  using dino8::kernel::IntersectPlaneCylinder;
+  using dino8::kernel::Point3d;
+
+  // An infinite cylinder of radius 2 centered on the z-axis.
+  const ON_Cylinder cyl(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0));
+  const double tol = 1e-6;
+
+  // --- Perpendicular cut: a horizontal plane at z = 3 meets the cylinder
+  // in the hand-derivable circle of the cylinder's own radius, centered
+  // directly above the origin at the plane's own height.
+  const ON_Plane horizontal(ON_3dPoint(0, 0, 3), ON_3dVector(0, 0, 1));
+  const auto perp = IntersectPlaneCylinder(horizontal, cyl, tol);
+  Check(!perp.empty && !perp.parallel_to_axis, "a plane perpendicular to the cylinder's axis produces an ellipse branch result, not a miss or a line pair");
+  if (!perp.empty && !perp.parallel_to_axis) {
+    Check(perp.ellipse.IsCircle(), "a plane exactly perpendicular to the axis degenerates to a true circle, not a general ellipse");
+    Check(perp.ellipse.Center().DistanceTo(Point3d(0, 0, 3)) < 1e-6, "the circle's own center is the hand-derivable point where the axis pierces the plane");
+    Check(std::abs(perp.ellipse.Radius(0) - 2.0) < 1e-6 && std::abs(perp.ellipse.Radius(1) - 2.0) < 1e-6, "both of the circle's own semi-axes equal the cylinder's exact radius");
+    Check(perp.curve.IsValid(), "the circle's own fitted NURBS form is a valid curve");
+    bool all_on_cylinder = true;
+    const ON_Interval cd = perp.curve.Domain();
+    for (int k = 0; k <= 16; ++k) {
+      const Point3d p = perp.curve.PointAt(cd.ParameterAt(static_cast<double>(k) / 16));
+      if (std::abs(p.z - 3.0) > 1e-5 || std::abs(std::hypot(p.x, p.y) - 2.0) > 1e-5) { all_on_cylinder = false; break; }
+    }
+    Check(all_on_cylinder, "every sampled point of the fitted circle lies exactly on the plane at exactly the cylinder's own radius from the axis");
+  }
+
+  // --- Oblique cut: a plane through the origin tilted 60 degrees off
+  // horizontal (normal = (0, sin60, cos60)) meets the SAME cylinder in the
+  // hand-derivable ellipse of semi-minor = radius (unaffected by the tilt,
+  // along the direction - the global x-axis here - untouched by a tilt
+  // confined to the y/z plane) and semi-major = radius / cos(60deg) = 2*radius.
+  const double a = ON_PI / 3.0;  // 60 degrees
+  const ON_Plane oblique(ON_3dPoint(0, 0, 0), ON_3dVector(0, std::sin(a), std::cos(a)));
+  const auto obl = IntersectPlaneCylinder(oblique, cyl, tol);
+  Check(!obl.empty && !obl.parallel_to_axis, "a genuinely oblique (not edge-on, not perpendicular) plane also takes the ellipse branch");
+  if (!obl.empty && !obl.parallel_to_axis) {
+    Check(!obl.ellipse.IsCircle(), "a genuinely oblique cut is a real ellipse, not a degenerate circle");
+    Check(obl.ellipse.Center().DistanceTo(Point3d(0, 0, 0)) < 1e-6, "the ellipse's own center is the hand-derivable origin (the plane passes through the axis there)");
+    const double minor = std::min(obl.ellipse.Radius(0), obl.ellipse.Radius(1));
+    const double major = std::max(obl.ellipse.Radius(0), obl.ellipse.Radius(1));
+    Check(std::abs(minor - 2.0) < 1e-6, "the oblique ellipse's own semi-minor axis is the cylinder's exact radius, unaffected by the tilt");
+    Check(std::abs(major - 4.0) < 1e-6, "the oblique ellipse's own semi-major axis matches the hand-derivable radius/cos(60deg) = 2*radius");
+    Check(obl.curve.IsValid(), "the oblique ellipse's own fitted NURBS form is a valid curve");
+    bool all_on_cylinder = true;
+    const ON_Interval cd = obl.curve.Domain();
+    for (int k = 0; k <= 16; ++k) {
+      const Point3d p = obl.curve.PointAt(cd.ParameterAt(static_cast<double>(k) / 16));
+      const double dist_from_axis = std::hypot(p.x, p.y);
+      const double dist_from_plane = oblique.DistanceTo(p);
+      if (std::abs(dist_from_axis - 2.0) > 1e-5 || std::abs(dist_from_plane) > 1e-5) { all_on_cylinder = false; break; }
+    }
+    Check(all_on_cylinder, "every sampled point of the fitted oblique ellipse lies exactly on both the cutting plane and the cylinder's own lateral surface");
+  }
+
+  // --- Edge-on (axis-parallel) cases: a vertical plane x = x0 (normal
+  // (1,0,0), so the z-axis-aligned cylinder's own axis lies entirely IN
+  // this plane) against the same radius-2 cylinder.
+
+  // x0 = 0: the plane passes straight through the axis, crossing the
+  // cylinder along its own two hand-derivable rulings at (0, +-2, z).
+  const ON_Plane through_axis(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0));
+  const auto two_lines = IntersectPlaneCylinder(through_axis, cyl, tol);
+  Check(!two_lines.empty && two_lines.parallel_to_axis && !two_lines.tangent, "a plane through the axis itself is edge-on and crosses in two genuine lines, not a tangent or a miss");
+  if (!two_lines.empty && two_lines.parallel_to_axis && !two_lines.tangent) {
+    const Point3d pa = two_lines.line_a.PointAt(0.0), pb = two_lines.line_b.PointAt(0.0);
+    const bool a_at_plus2 = std::abs(pa.x) < 1e-6 && std::abs(std::abs(pa.y) - 2.0) < 1e-6;
+    const bool b_at_plus2 = std::abs(pb.x) < 1e-6 && std::abs(std::abs(pb.y) - 2.0) < 1e-6;
+    Check(a_at_plus2 && b_at_plus2, "both reported lines sit at the hand-derivable x=0, y=+-2 rulings");
+    Check(std::abs(pa.y - pb.y) > 1e-3, "the two lines are genuinely distinct, not the same ruling reported twice");
+  }
+
+  // x0 = 2 (= the exact radius): the plane is tangent to the cylinder,
+  // touching along exactly one hand-derivable ruling at (2, 0, z).
+  const ON_Plane tangent_plane(ON_3dPoint(2, 0, 0), ON_3dVector(1, 0, 0));
+  const auto tangent_case = IntersectPlaneCylinder(tangent_plane, cyl, tol);
+  Check(!tangent_case.empty && tangent_case.parallel_to_axis && tangent_case.tangent, "a plane exactly tangent to the cylinder reports the single-line degeneracy");
+  if (tangent_case.tangent) {
+    const Point3d p = tangent_case.line_a.PointAt(0.0);
+    Check(std::hypot(p.x - 2.0, p.y) < 1e-6, "the tangent line sits exactly at the hand-derivable (2, 0) ruling");
+  }
+
+  // x0 = 3 (beyond the radius): the plane is edge-on but clear of the
+  // cylinder entirely - a genuine miss, not a spurious line.
+  const ON_Plane clear_plane(ON_3dPoint(3, 0, 0), ON_3dVector(1, 0, 0));
+  const auto miss = IntersectPlaneCylinder(clear_plane, cyl, tol);
+  Check(miss.empty && miss.parallel_to_axis, "an edge-on plane held clear of the cylinder reports a genuine miss, not a fabricated line");
+
+  // Invalid input (zero-radius cylinder) is refused outright.
+  const ON_Cylinder degenerate_cyl(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 0.0));
+  Check(IntersectPlaneCylinder(horizontal, degenerate_cyl, tol).empty, "a zero-radius cylinder is refused as a genuine miss");
+}
+
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
+// "cylinder/cylinder" half, narrowed to the parallel-axis special case - a
+// public extraction of the SAME closed form BooleanCombineMixed's own
+// private ComputeParallelCylinderCrossing (boolean.cpp) already uses for
+// its own angular-split bookkeeping, but returning the actual 3D lines.
+void TestIntersectCylinderCylinderParallelClosedForm() {
+  using dino8::kernel::IntersectCylinderCylinderParallel;
+  using dino8::kernel::Point3d;
+
+  auto cyl_at = [](double x, double radius) {
+    return ON_Cylinder(ON_Circle(ON_Plane(ON_3dPoint(x, 0, 0), ON_3dVector(0, 0, 1)), radius));
+  };
+  const double tol = 1e-6;
+
+  // Two genuinely crossing cylinders (radius 2 at the origin, radius 1 at
+  // x = 2.5): the standard circle/circle closed form gives two points,
+  // independently hand-verifiable here not by their decimal values but by
+  // the defining property itself - each result point sits at EXACTLY
+  // radius 2 from cylinder A's own axis AND exactly radius 1 from
+  // cylinder B's own axis simultaneously.
+  const ON_Cylinder cyl_a = cyl_at(0.0, 2.0), cyl_b = cyl_at(2.5, 1.0);
+  const auto crossing = IntersectCylinderCylinderParallel(cyl_a, cyl_b, tol);
+  Check(!crossing.empty && !crossing.not_parallel && !crossing.tangent, "two genuinely crossing parallel cylinders report two real lines, not a miss or a tangent");
+  if (!crossing.empty && !crossing.not_parallel && !crossing.tangent) {
+    const Point3d pa = crossing.line_a.PointAt(0.0), pb = crossing.line_b.PointAt(0.0);
+    Check(std::abs(std::hypot(pa.x, pa.y) - 2.0) < 1e-6 && std::abs(std::hypot(pa.x - 2.5, pa.y) - 1.0) < 1e-6, "the first line sits at exactly radius 2 from A's axis and exactly radius 1 from B's axis simultaneously");
+    Check(std::abs(std::hypot(pb.x, pb.y) - 2.0) < 1e-6 && std::abs(std::hypot(pb.x - 2.5, pb.y) - 1.0) < 1e-6, "the second line meets the same two-circle condition");
+    Check(std::abs(pa.y - pb.y) > 1e-3, "the two lines are genuinely distinct crossings, not the same one reported twice");
+    const Point3d pa_up = crossing.line_a.PointAt(1.0);
+    Check(std::abs(pa_up.x - pa.x) < 1e-9 && std::abs(pa_up.y - pa.y) < 1e-9 && std::abs(pa_up.z - pa.z - 1.0) < 1e-9, "each returned line runs parallel to the shared axis (x, y fixed, z advancing)");
+  }
+
+  // Externally tangent cylinders (radius 2 at the origin, radius 1 at
+  // x = 3.0 = r_a + r_b exactly): touch at exactly one hand-derivable
+  // point, (2, 0), on the line joining the two centers.
+  const ON_Cylinder cyl_c = cyl_at(3.0, 1.0);
+  const auto tangent_case = IntersectCylinderCylinderParallel(cyl_a, cyl_c, tol);
+  Check(!tangent_case.empty && tangent_case.tangent, "externally tangent parallel cylinders report the single-line degeneracy");
+  if (tangent_case.tangent) {
+    const Point3d p = tangent_case.line_a.PointAt(0.0);
+    Check(std::hypot(p.x - 2.0, p.y) < 1e-6, "the tangent line sits exactly at the hand-derivable (2, 0) point");
+  }
+
+  // Genuinely disjoint cylinders (too far apart to touch at all).
+  const ON_Cylinder cyl_far = cyl_at(10.0, 1.0);
+  Check(IntersectCylinderCylinderParallel(cyl_a, cyl_far, tol).empty, "two parallel cylinders held well clear of each other report a genuine miss");
+
+  // One cylinder entirely nested inside the other (radius 5 at the origin,
+  // radius 1 at x = 1): never touches at any angle.
+  const ON_Cylinder cyl_outer = cyl_at(0.0, 5.0), cyl_inner = cyl_at(1.0, 1.0);
+  Check(IntersectCylinderCylinderParallel(cyl_outer, cyl_inner, tol).empty, "one cylinder entirely nested inside the other reports a genuine miss, not a fabricated touch");
+
+  // Concentric (same-axis) cylinders of different radii: no well-defined
+  // 2D lens exists at all (every angle is uniformly inside or outside).
+  const ON_Cylinder cyl_concentric_a = cyl_at(0.0, 2.0), cyl_concentric_b = cyl_at(0.0, 1.0);
+  const auto concentric = IntersectCylinderCylinderParallel(cyl_concentric_a, cyl_concentric_b, tol);
+  Check(concentric.empty && !concentric.not_parallel, "concentric cylinders report the disclosed concentric-axis non-result, not a refusal and not a fabricated line");
+
+  // Non-parallel axes are refused outright rather than silently misused.
+  const ON_Cylinder cyl_perp(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0)), 2.0));
+  Check(IntersectCylinderCylinderParallel(cyl_a, cyl_perp, tol).not_parallel, "two cylinders whose axes are not parallel are refused outright, not silently misanswered");
+
+  // Invalid input (zero-radius cylinder) is refused outright.
+  const ON_Cylinder degenerate = cyl_at(0.0, 0.0);
+  Check(IntersectCylinderCylinderParallel(cyl_a, degenerate, tol).empty, "a zero-radius cylinder operand is refused as a genuine miss");
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
@@ -26887,6 +27175,210 @@ void TestMeshComputeVertexNormals() {
   }
 }
 
+void TestMeshComputeFaceNormals() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Vector3d;
+
+  // MakeQuadBoxMesh's 6 faces are each a single flat unit-square quad with
+  // a known, hand-derivable axis-aligned normal - unlike a vertex (shared
+  // by 3 faces, so its own ComputeVertexNormals() result is a blended
+  // diagonal), a face's own normal has no neighbor to blend against at
+  // all, so every one of the 6 must come back exactly axis-aligned.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const std::vector<Vector3d> face_normals = box.ComputeFaceNormals();
+  Check(static_cast<int>(face_normals.size()) == box.FaceCount(),
+        "ComputeFaceNormals returns exactly one normal per face");
+
+  const Vector3d expected[6] = {
+      Vector3d(0, 0, -1),  // bottom
+      Vector3d(0, 0, 1),   // top
+      Vector3d(0, -1, 0),  // front
+      Vector3d(0, 1, 0),   // back
+      Vector3d(-1, 0, 0),  // left
+      Vector3d(1, 0, 0),   // right
+  };
+  for (int i = 0; i < 6; ++i) {
+    const Vector3d& n = face_normals[static_cast<size_t>(i)];
+    Check(std::abs(n.x - expected[i].x) < 1e-9 && std::abs(n.y - expected[i].y) < 1e-9 &&
+              std::abs(n.z - expected[i].z) < 1e-9,
+          "MakeQuadBoxMesh's own face normals are exactly axis-aligned, "
+          "one per cube face, matching that face's own known outward "
+          "direction");
+  }
+}
+
+void TestMeshFacetedGivesFlatShading() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Vector3d;
+
+  // The whole point of Faceted(): splitting every shared vertex into one
+  // independent copy per face means ComputeVertexNormals() on the result
+  // reduces to that one owning face's own flat normal everywhere, with no
+  // blending - verified here by cross-checking against
+  // ComputeFaceNormals() on the ORIGINAL (unfaceted) mesh, a completely
+  // independent code path, rather than assumed from the construction.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const std::vector<Vector3d> original_face_normals = box.ComputeFaceNormals();
+  const Mesh faceted = box.Faceted();
+
+  Check(faceted.FaceCount() == box.FaceCount(),
+        "Faceted() keeps exactly the same face count - it only ever "
+        "duplicates vertices, never splits or merges faces");
+  Check(faceted.VertexCount() == box.FaceCount() * 4,
+        "Faceted() gives every one of the 6 quad faces its own private "
+        "4 vertices - 24 total, none shared between faces");
+
+  const std::vector<Vector3d> faceted_vertex_normals = faceted.ComputeVertexNormals();
+  bool every_corner_matches_its_own_face = true;
+  for (int f = 0; f < faceted.FaceCount(); ++f) {
+    const Vector3d& face_normal = original_face_normals[static_cast<size_t>(f)];
+    for (int corner = 0; corner < 4; ++corner) {
+      const int vertex_index = f * 4 + corner;
+      const Vector3d& vn = faceted_vertex_normals[static_cast<size_t>(vertex_index)];
+      if (std::abs(vn.x - face_normal.x) > 1e-9 || std::abs(vn.y - face_normal.y) > 1e-9 ||
+          std::abs(vn.z - face_normal.z) > 1e-9) {
+        every_corner_matches_its_own_face = false;
+      }
+    }
+  }
+  Check(every_corner_matches_its_own_face,
+        "every corner of the Faceted() mesh gets exactly its own one "
+        "owning face's flat normal via the ordinary ComputeVertexNormals() "
+        "call - flat shading falls out of the existing averaging function "
+        "for free once the mesh is split, no separate 'flat mode' needed");
+
+  // Faceted() is topology-destructive (deliberately): the original box
+  // stays a genuine closed manifold, but the faceted copy is not, since
+  // no two faces share any vertex at all any more to close the seam.
+  Check(box.IsClosedManifold(), "the original box is still a genuine closed manifold");
+  Check(!faceted.IsClosedManifold(),
+        "the faceted copy is NOT a closed manifold - every one of its "
+        "former shared edges is now a naked boundary on both sides, the "
+        "disclosed topology-destructive tradeoff");
+}
+
+void TestMeshComputeBoxMappingUVs() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A flat quad in the z=0 plane, CCW from +z (same fixture
+  // TestMeshComputeVertexNormals already establishes gets the clean
+  // normal (0,0,1) at every corner, with nothing to blend against) - the
+  // Z-dominant branch of the box-mapping axis choice, a positive normal
+  // so no sign flip: u = x/scale, v = y/scale exactly.
+  Mesh flat;
+  ON_Mesh& raw = flat.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace face;
+  face.vi[0] = 0;
+  face.vi[1] = 1;
+  face.vi[2] = 2;
+  face.vi[3] = 3;
+  raw.m_F.Append(face);
+
+  const auto uvs1 = flat.ComputeBoxMappingUVs(1.0);
+  Check(static_cast<int>(uvs1.size()) == flat.VertexCount(),
+        "ComputeBoxMappingUVs returns exactly one UV per vertex");
+  const Point2d expected1[4] = {Point2d(0, 0), Point2d(1, 0), Point2d(1, 1), Point2d(0, 1)};
+  bool scale1_matches = true;
+  for (int i = 0; i < 4; ++i) {
+    if (std::abs(uvs1[static_cast<size_t>(i)].x - expected1[i].x) > 1e-9 ||
+        std::abs(uvs1[static_cast<size_t>(i)].y - expected1[i].y) > 1e-9) {
+      scale1_matches = false;
+    }
+  }
+  Check(scale1_matches,
+        "at scale=1, the flat +z-facing quad's own box-mapping UVs are "
+        "exactly its own (x, y) positions - the Z-dominant branch with no "
+        "sign flip, since its normal already points +z");
+
+  const auto uvs2 = flat.ComputeBoxMappingUVs(2.0);
+  bool scale2_matches = true;
+  for (int i = 0; i < 4; ++i) {
+    if (std::abs(uvs2[static_cast<size_t>(i)].x - expected1[i].x / 2.0) > 1e-9 ||
+        std::abs(uvs2[static_cast<size_t>(i)].y - expected1[i].y / 2.0) > 1e-9) {
+      scale2_matches = false;
+    }
+  }
+  Check(scale2_matches, "doubling scale exactly halves every UV coordinate - a real-world-unit "
+                         "divisor, not a 0..1 normalization");
+
+  // A flat quad in the x=0 plane, wound to face -x (cross-product-verified
+  // below, not assumed) - the X-dominant branch, with a NEGATIVE normal,
+  // so this exercises the u-sign-flip half of that branch: u = -y/scale,
+  // v = z/scale.
+  Mesh facing_minus_x;
+  ON_Mesh& raw2 = facing_minus_x.raw();
+  raw2.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw2.m_V.Append(ON_3fPoint(0, 0, 1));
+  raw2.m_V.Append(ON_3fPoint(0, 1, 1));
+  raw2.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace face2;
+  face2.vi[0] = 0;
+  face2.vi[1] = 1;
+  face2.vi[2] = 2;
+  face2.vi[3] = 3;
+  raw2.m_F.Append(face2);
+  const auto face_normals = facing_minus_x.ComputeFaceNormals();
+  Check(std::abs(face_normals[0].x - (-1.0)) < 1e-9 && std::abs(face_normals[0].y) < 1e-9 &&
+            std::abs(face_normals[0].z) < 1e-9,
+        "the x=0 quad's own winding genuinely produces an outward normal "
+        "of exactly (-1, 0, 0), independently confirmed via "
+        "ComputeFaceNormals() before trusting the box-mapping result below");
+
+  const auto uvs3 = facing_minus_x.ComputeBoxMappingUVs(1.0);
+  const Point2d expected3[4] = {Point2d(0, 0), Point2d(0, 1), Point2d(-1, 1), Point2d(-1, 0)};
+  bool minus_x_matches = true;
+  for (int i = 0; i < 4; ++i) {
+    if (std::abs(uvs3[static_cast<size_t>(i)].x - expected3[i].x) > 1e-9 ||
+        std::abs(uvs3[static_cast<size_t>(i)].y - expected3[i].y) > 1e-9) {
+      minus_x_matches = false;
+    }
+  }
+  Check(minus_x_matches,
+        "the -x-facing quad's own box-mapping UVs match the hand-derived "
+        "X-dominant, negative-normal formula (u = -y/scale, v = z/scale) "
+        "exactly, confirming the sign-flip branch and not just the "
+        "default positive-normal case above");
+
+  // Round-trips cleanly into the existing SetTextureCoordinates() storage
+  // slot - the two new generation functions and the pre-existing setter
+  // are meant to compose, not duplicate each other's job.
+  Check(flat.SetTextureCoordinates(flat.ComputeBoxMappingUVs(1.0)) == Result::Ok,
+        "ComputeBoxMappingUVs' own output is directly accepted by "
+        "SetTextureCoordinates with no further conversion");
+  Check(flat.HasTextureCoordinates(), "the mesh now reports real texture coordinates");
+
+  bool threw_zero = false;
+  try {
+    flat.ComputeBoxMappingUVs(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_zero = true;
+  }
+  Check(threw_zero, "ComputeBoxMappingUVs throws std::invalid_argument for a zero scale");
+
+  bool threw_negative = false;
+  try {
+    flat.ComputeBoxMappingUVs(-1.0);
+  } catch (const std::invalid_argument&) {
+    threw_negative = true;
+  }
+  Check(threw_negative, "ComputeBoxMappingUVs throws std::invalid_argument for a negative scale");
+
+  bool threw_nan = false;
+  try {
+    flat.ComputeBoxMappingUVs(std::numeric_limits<double>::quiet_NaN());
+  } catch (const std::invalid_argument&) {
+    threw_nan = true;
+  }
+  Check(threw_nan, "ComputeBoxMappingUVs throws std::invalid_argument for a NaN scale");
+}
+
 void TestMeshSaveObjRoundTrips() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
@@ -32997,6 +33489,140 @@ void TestPushPullFacesRefusesInvalidInput() {
     threw = true;
   }
   Check(threw, "PushPullFaces refuses two named targets that share an edge");
+}
+
+// PushPullFace()'s own new oblique-neighbour support: `DraftFacesConvexPlanar`
+// on all 4 walls of a box (the identical construction
+// TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume below
+// already builds and verifies independently) produces a genuine frustum
+// whose 4 side walls are NOT perpendicular to the top cap's own +z normal -
+// exactly the case PushPullFace() used to throw std::invalid_argument on
+// outright ("a pull refuses an oblique neighbour"). Pulling the top face
+// down must retrim all 4 oblique walls to the frustum's own TRUE
+// cross-section at the new height (not a blindly-translated top polygon,
+// which would leave each wall with a gap or overlap against the new cap),
+// verified against the same textbook frustum-of-a-pyramid volume formula
+// used elsewhere in this file, independent of this function's own
+// arithmetic, plus the new cap's own exact (u,v) extent directly.
+void TestPushPullFaceObliqueNeighbourMatchesExactFrustumVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::DraftFacesConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PushPullFace;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const ON_Plane neutral(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  const double tan_theta = 0.1;
+  const Brep frustum = DraftFacesConvexPlanar(box, {2, 3, 4, 5}, neutral, std::atan(tan_theta));
+
+  // Confirm the 4 walls really are oblique to the top cap's own normal
+  // (not perpendicular) before trusting anything measured below - the
+  // exact case this function's own doc comment names.
+  const std::vector<Brep::PlanarFace> pf = frustum.PlanarFaces();
+  for (size_t i = 2; i <= 5; ++i) {
+    Check(std::fabs(pf[i].plane.zaxis.z) > 0.05,
+          "setup: each of the 4 drafted walls is genuinely oblique to the top cap's own +z normal, not "
+          "perpendicular - the case PushPullFace() used to refuse outright");
+  }
+
+  const double pull = 4.0;
+  const Brep pulled = PushPullFace(frustum, 1, -pull);
+
+  Check(pulled.FaceCount() == 6,
+        "pulling the frustum's top face keeps the original 6-face topology - all 4 oblique walls are "
+        "retrimmed in place, no new wall is added, just like the perpendicular (plain box) case above");
+
+  const double a0 = 100.0;
+  const double new_height = 10.0 - pull;
+  const double new_side = 10.0 - 2.0 * new_height * tan_theta;
+  const double a1 = new_side * new_side;
+  const double expected_volume = (new_height / 3.0) * (a0 + a1 + std::sqrt(a0 * a1));
+  Check(std::fabs(expected_volume - 530.88) < 1e-9,
+        "the hand-derived expected volume for this specific pull is exactly 530.88 (height 6, A0=100, "
+        "A1=77.44, sqrt(A0*A1)=88 exactly) - a sanity check on the formula itself, not on PushPullFace");
+  const double measured_volume = PlanarBrepVolumeExact(pulled);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "PushPullFace's oblique-neighbour pull matches the classical frustum-of-a-pyramid volume at the "
+        "NEW height exactly - proof the 4 retrimmed walls meet the new, smaller top cap with no gap or "
+        "overlap, not merely that nothing crashed");
+
+  // The new top cap itself (the last face FromPlanarFaces() appends, per
+  // PushPullFace()'s own construction order) must be the exact concentric
+  // square the hand formula assumes - the direct, geometric proof the fix
+  // is doing the right thing, not just getting a lucky volume integral.
+  const std::vector<Brep::PlanarFace> pulled_faces = pulled.PlanarFaces();
+  const Brep::PlanarFace& new_top = pulled_faces.back();
+  double min_x = new_top.loop[0].x, max_x = new_top.loop[0].x;
+  double min_y = new_top.loop[0].y, max_y = new_top.loop[0].y;
+  for (const Point3d& p : new_top.loop) {
+    Check(std::fabs(p.z - new_height) < 1e-9, "every new-top-face vertex lands exactly at the new height z=6");
+    min_x = std::min(min_x, p.x);
+    max_x = std::max(max_x, p.x);
+    min_y = std::min(min_y, p.y);
+    max_y = std::max(max_y, p.y);
+  }
+  Check(std::fabs(min_x - 0.6) < 1e-9 && std::fabs(max_x - 9.4) < 1e-9 && std::fabs(min_y - 0.6) < 1e-9 &&
+            std::fabs(max_y - 9.4) < 1e-9,
+        "the new top cap is the exact concentric [0.6,9.4]x[0.6,9.4] square the frustum's own linear taper "
+        "implies at z=6 - NOT the old [1,9]x[1,9] square merely translated down by 4, which a blind "
+        "per-vertex offset along the normal would have wrongly produced");
+
+  Check(pulled.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the pulled frustum also tessellates to a closed, watertight manifold - the 4 retrimmed oblique "
+        "walls genuinely meet the new cap with no gap");
+
+  bool threw = false;
+  try {
+    PushPullFace(frustum, 1, -11.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "PushPullFace still refuses a pull so large the new cut plane passes beyond EVERY one of an "
+        "oblique wall's own vertices (collapsing its retrimmed boundary to nothing) - a genuine geometric "
+        "limit, not the old blanket oblique refusal this pass just lifted");
+}
+
+// `PushPullFaces()`'s own identical oblique-neighbour fix (the batch
+// sibling's own copy of the same restriction, lifted the same way): a
+// single-entry `PushPullFaces()` call on the SAME oblique-walled frustum
+// above must match `PushPullFace()`'s own result bit-for-bit, vertex for
+// vertex - the same "no divergence of its own for the one-target case"
+// guarantee `TestPushPullFacesSingleEntryMatchesPushPullFace` above already
+// proves for the perpendicular (plain box) case, now extended to oblique
+// neighbours.
+void TestPushPullFacesObliqueNeighbourMatchesPushPullFace() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::DraftFacesConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PushPullFace;
+  using dino8::kernel::PushPullFaces;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const ON_Plane neutral(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  const Brep frustum = DraftFacesConvexPlanar(box, {2, 3, 4, 5}, neutral, std::atan(0.1));
+
+  const Brep pull_single = PushPullFace(frustum, 1, -4.0);
+  const Brep pull_batch = PushPullFaces(frustum, {{1, -4.0}});
+
+  Check(pull_single.FaceCount() == pull_batch.FaceCount(),
+        "PushPullFaces' single-entry oblique pull has the same face count as PushPullFace's own");
+  const std::vector<Brep::PlanarFace> fa = pull_single.PlanarFaces();
+  const std::vector<Brep::PlanarFace> fb = pull_batch.PlanarFaces();
+  for (size_t i = 0; i < fa.size() && i < fb.size(); ++i) {
+    Check(fa[i].loop.size() == fb[i].loop.size(),
+          "PushPullFaces' oblique pull: same vertex count per face as PushPullFace's own");
+    for (size_t j = 0; j < fa[i].loop.size() && j < fb[i].loop.size(); ++j) {
+      Check(fa[i].loop[j].DistanceTo(fb[i].loop[j]) < 1e-9,
+            "PushPullFaces' oblique pull: every vertex matches PushPullFace's own exactly, including the "
+            "4 retrimmed oblique walls' own new corners");
+    }
+  }
+
+  Check(pull_batch.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "PushPullFaces' own oblique-neighbour pull also tessellates to a closed, watertight manifold");
 }
 
 // The exact B-rep draft/taper-an-existing-body feature - PARITY_MAP's
@@ -55035,6 +55661,113 @@ void TestLoftInterpolatesSectionsExactly() {
   Check(!Throws([&] { Brep::Loft({ring[0], ring[1], ring[2], ring[3]}, 3, /*closed=*/true); }), "...and 4 sections suffice");
 }
 
+void TestBrepRibbonFromCurveStraightLineMatchesExactRectangle() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  const NurbsCurve line = Polyline({P(0, 0, 0), P(10, 0, 0)});
+  const ON_Plane plane = ON_xy_plane;
+
+  Brep ribbon;
+  Check(Brep::RibbonFromCurve(line, plane, 3.0, ribbon) == Result::Ok,
+        "RibbonFromCurve succeeds on a straight line in the given plane");
+  Check(ribbon.FaceCount() == 1, "a ribbon between 2 open sections is a single-face Brep - Loft's own degree-1 "
+                                 "ruled interpolant, never capped");
+
+  Check(std::abs(ribbon.Area() - 10.0 * 3.0) < 1e-9,
+        "RibbonFromCurve's own Area() matches the exact flat-rectangle closed form (length * width)");
+
+  // The 4 expected corners, hand-computed independently of this method's
+  // own construction: line_direction x plane.zaxis = (1,0,0) x (0,0,1) =
+  // (0,-1,0), so the offset side runs along -y.
+  const std::vector<Point3d> expected = {P(0, 0, 0), P(10, 0, 0), P(0, -3, 0), P(10, -3, 0)};
+  const NurbsSurface surface = FaceSurface(ribbon, 0);
+  const auto du = surface.Domain(0), dv = surface.Domain(1);
+  const std::vector<Point3d> corners = {surface.PointAt(du.min, dv.min), surface.PointAt(du.max, dv.min),
+                                         surface.PointAt(du.min, dv.max), surface.PointAt(du.max, dv.max)};
+  bool each_corner_matches_one_expected = true;
+  std::vector<bool> used(expected.size(), false);
+  for (const Point3d& c : corners) {
+    bool found = false;
+    for (size_t i = 0; i < expected.size(); ++i) {
+      if (!used[i] && c.DistanceTo(expected[i]) < 1e-9) {
+        used[i] = true;
+        found = true;
+        break;
+      }
+    }
+    each_corner_matches_one_expected = each_corner_matches_one_expected && found;
+  }
+  Check(each_corner_matches_one_expected,
+        "every one of the ribbon surface's 4 domain corners lands exactly on one of the 4 independently "
+        "hand-computed rectangle corners - the surface really is the exact flat strip, not merely the right area");
+}
+
+// A ribbon between a CLOSED curve and its own offset must stay a genuine
+// open annular strip - never capped into a solid-looking tube, which
+// RibbonFromCurve's own doc comment explains Loft()'s `cap` option would
+// wrongly do (a disk bounded by only ONE of the two different sections).
+void TestBrepRibbonFromCurveClosedCurveStaysUncappedAnnularStrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  const NurbsCurve circle = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 5.0);
+  Brep ribbon;
+  Check(Brep::RibbonFromCurve(circle, ON_xy_plane, 1.0, ribbon) == Result::Ok,
+        "RibbonFromCurve succeeds on a closed curve (a circle)");
+  Check(ribbon.FaceCount() == 1,
+        "a closed-curve ribbon is still exactly 1 face - no end caps were added despite both sections being closed");
+  Check(!ribbon.raw().IsSolid(),
+        "a closed-curve ribbon is an open annular strip, not a solid - confirms Loft()'s own disk-capping (meant "
+        "for a tube between IDENTICAL-shape profiles) was correctly suppressed, not merely absent by accident");
+}
+
+void TestBrepRibbonFromCurveArgumentChecks() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  const NurbsCurve line = Polyline({P(0, 0, 0), P(10, 0, 0)});
+
+  Check(Throws([&] {
+          Brep out;
+          Brep::RibbonFromCurve(line, ON_xy_plane, 0.0, out);
+        }),
+        "RibbonFromCurve(width=0.0) throws std::invalid_argument");
+  Check(Throws([&] {
+          Brep out;
+          Brep::RibbonFromCurve(line, ON_xy_plane, std::numeric_limits<double>::quiet_NaN(), out);
+        }),
+        "RibbonFromCurve(width=NaN) throws std::invalid_argument");
+  Check(Throws([&] {
+          Brep out;
+          Brep::RibbonFromCurve(line, ON_xy_plane, std::numeric_limits<double>::infinity(), out);
+        }),
+        "RibbonFromCurve(width=+infinity) throws std::invalid_argument");
+  Check(Throws([&] {
+          Brep out;
+          // A zero-normal plane is the established "invalid ON_Plane"
+          // fixture this file already uses elsewhere (e.g.
+          // TestCurveOffsetInPlaneWithExplicitPlaneThrowsOnInvalidArguments) -
+          // a default-constructed ON_Plane is the (valid) world XY plane,
+          // not an invalid one.
+          const ON_Plane invalid_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 0));
+          Brep::RibbonFromCurve(line, invalid_plane, 1.0, out);
+        }),
+        "RibbonFromCurve with an invalid plane throws std::invalid_argument");
+
+  // A genuinely infeasible offset (not an argument error) comes back as
+  // Result::Failed, not an exception - the same degenerate case
+  // OffsetInPlane's own explicit-plane line overload already refuses: a
+  // vertical line's tangent is exactly parallel to the world XY plane's
+  // own normal, so no offset direction (tangent x plane.zaxis) exists.
+  const NurbsCurve vertical_line = Polyline({P(0, 0, 0), P(0, 0, 5)});
+  Brep infeasible;
+  Check(Brep::RibbonFromCurve(vertical_line, ON_xy_plane, 1.0, infeasible) == Result::Failed,
+        "RibbonFromCurve returns Result::Failed (not a throw) when the curve's tangent is parallel to the "
+        "plane's normal - the same degenerate case OffsetInPlane itself already refuses");
+}
+
 void TestLoftTangentConstrainedEndsMatchExactly() {
   // Four straight 2-point sections (degree 1 in u), stacked at z = 0..3,
   // all in the y = 0 plane - an ordinary cubic loft through them would
@@ -68292,6 +69025,122 @@ void TestMultiBendRejectsInvalidArguments() {
         "MultiBend throws if ANY bend angle in a multi-bend chain is out of range, not just the first");
 }
 
+void TestUnfoldBendAtHalfKFactorExactlyMatchesBendPappusVolume() {
+  using dino8::kernel::Bend;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::UnfoldBend;
+
+  // parity-map "kernel: Feature operations" - "Sheet-metal features":
+  // UnfoldBend() closes this item's own disclosed "Unfold" named
+  // sub-feature - the inverse direction of Bend() above, flattening the
+  // SAME parameters back to a flat Brep::BoxWelded() plate instead of
+  // the bent part.
+  const double leg1 = 5.0, leg2 = 3.0, width = 2.0, thickness = 0.1, r_in = 0.2, angle_deg = 90.0;
+  const double theta = angle_deg * ON_PI / 180.0;
+  const double r_mid = r_in + thickness / 2.0;
+  const double expected_volume = (leg1 + leg2) * width * thickness + theta * r_mid * width * thickness;
+
+  // At k_factor == 0.5, BendAllowance()'s own K-factor-adjusted radius
+  // coincides EXACTLY with the true geometric mid-plane - so this must
+  // match the analytic Pappus closed form bit-for-bit, not just within a
+  // mesh-tessellation tolerance.
+  const Brep flat_half = UnfoldBend(leg1, leg2, width, thickness, r_in, angle_deg, 0.5);
+  Check(flat_half.raw().IsValid(), "UnfoldBend (k_factor=0.5) produces a valid ON_Brep");
+  Check(std::abs(flat_half.Volume() - expected_volume) < 1e-9 * expected_volume,
+        "UnfoldBend at k_factor=0.5 exactly matches the analytic Pappus closed form (bit-for-bit, not just within "
+        "1%)");
+
+  // Tying the new flat-pattern function directly to the existing bent
+  // part: UnfoldBend's exact volume must also match Bend()'s own
+  // TESSELLATED volume to within the same 1% tessellation tolerance
+  // TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency above
+  // already establishes for Bend() itself - real round-trip consistency
+  // between the two functions, not merely two formulas that happen to
+  // agree on paper.
+  const Brep bent = Bend(leg1, leg2, width, thickness, r_in, angle_deg);
+  const Mesh m_bent = bent.TessellateToClosedMesh(128, 256);
+  Check(std::abs(flat_half.Volume() - m_bent.Volume()) < 0.02 * m_bent.Volume(),
+        "UnfoldBend's exact flat volume matches Bend()'s own tessellated volume to within 2%");
+
+  // A k_factor other than 0.5 is the standard sheet-metal approximation,
+  // deliberately NOT volume-exact: a smaller k_factor (material's
+  // neutral axis closer to the inside face) gives a strictly SHORTER
+  // flat pattern than the exact mid-plane case.
+  const Brep flat_default = UnfoldBend(leg1, leg2, width, thickness, r_in, angle_deg);  // k_factor = 0.44 default
+  Check(flat_default.Volume() < flat_half.Volume(),
+        "UnfoldBend's default k_factor=0.44 gives a strictly shorter (smaller-volume) flat pattern than the exact "
+        "k_factor=0.5 mid-plane case");
+}
+
+void TestUnfoldMultiBendAtHalfKFactorExactlyMatchesMultiBendPappusVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MultiBend;
+  using dino8::kernel::UnfoldMultiBend;
+
+  // Same exact-at-k_factor=0.5 cross-check as UnfoldBend above, extended
+  // to MultiBend()'s own multi-radius U-channel fixture (the identical
+  // legs/angles/radii TestMultiBendUChannelAndHatChannelMatchPappusClosedForm
+  // above already uses) - a genuine multi-radius flat pattern, not a
+  // single shared radius.
+  const double width = 1.0, thickness = 0.08;
+  const std::vector<double> legs = {0.6, 0.8, 0.6};
+  const std::vector<double> angles_deg = {10.0, 10.0};
+  const std::vector<double> radii = {0.1, 0.25};
+
+  double leg_sum = 0.0;
+  for (double l : legs) leg_sum += l;
+  double arc_sum = 0.0;
+  for (size_t i = 0; i < angles_deg.size(); ++i) {
+    arc_sum += (angles_deg[i] * ON_PI / 180.0) * (radii[i] + thickness / 2.0);
+  }
+  const double expected_u = leg_sum * width * thickness + arc_sum * width * thickness;
+
+  const Brep flat_u = UnfoldMultiBend(legs, angles_deg, radii, width, thickness, 0.5);
+  Check(flat_u.raw().IsValid(), "UnfoldMultiBend (k_factor=0.5) produces a valid ON_Brep");
+  Check(std::abs(flat_u.Volume() - expected_u) < 1e-9 * expected_u,
+        "UnfoldMultiBend at k_factor=0.5 exactly matches the same multi-radius Pappus closed form "
+        "MultiBend()'s own U-channel fixture uses, bit-for-bit");
+
+  const Brep u = MultiBend(legs, angles_deg, radii, width, thickness);
+  const dino8::kernel::Mesh m_u = u.TessellateToClosedMesh(64, 128);
+  Check(std::abs(flat_u.Volume() - m_u.Volume()) < 0.02 * m_u.Volume(),
+        "UnfoldMultiBend's exact flat volume matches MultiBend()'s own tessellated U-channel volume to within 2%");
+}
+
+void TestUnfoldBendAndUnfoldMultiBendRejectInvalidArguments() {
+  using dino8::kernel::UnfoldBend;
+  using dino8::kernel::UnfoldMultiBend;
+  using sweep_tests::Throws;
+
+  Check(Throws([&] { UnfoldBend(0.0, 3.0, 2.0, 0.1, 0.2, 90.0); }), "UnfoldBend throws for a non-positive leg1_length");
+  Check(Throws([&] { UnfoldBend(5.0, -1.0, 2.0, 0.1, 0.2, 90.0); }), "UnfoldBend throws for a non-positive leg2_length");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 0.0, 0.1, 0.2, 90.0); }), "UnfoldBend throws for a non-positive width");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.0, 0.2, 90.0); }),
+        "UnfoldBend throws for a non-positive thickness (delegated to BendAllowance)");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.1, 0.0, 90.0); }),
+        "UnfoldBend throws for a non-positive inside_radius (delegated to BendAllowance)");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.1, 0.2, 180.0); }),
+        "UnfoldBend throws for a bend angle of exactly 180 degrees (delegated to BendAllowance)");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.1, 0.2, 90.0, -0.1); }),
+        "UnfoldBend throws for a negative k_factor (delegated to BendAllowance)");
+  Check(!Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.1, 0.2, 90.0, 0.0); }), "UnfoldBend accepts a k_factor of exactly 0");
+
+  Check(Throws([&] { UnfoldMultiBend({1.0}, {}, {}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws when bend_angles_degrees is empty (at least one bend is required)");
+  Check(Throws([&] { UnfoldMultiBend({1.0, 2.0}, {90.0}, {0.1, 0.2}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws when inside_radii's own count doesn't match bend_angles_degrees's");
+  Check(Throws([&] { UnfoldMultiBend({1.0, 2.0, 3.0}, {90.0}, {0.1}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws when leg_lengths doesn't have exactly one more entry than bend_angles_degrees");
+  Check(Throws([&] { UnfoldMultiBend({0.0, 2.0}, {90.0}, {0.1}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws for a non-positive leg length");
+  Check(Throws([&] { UnfoldMultiBend({1.0, 2.0}, {90.0}, {0.1}, 0.0, 0.1); }),
+        "UnfoldMultiBend throws for a non-positive width");
+  Check(Throws([&] { UnfoldMultiBend({1.0, 2.0, 3.0}, {90.0, 200.0}, {0.1, 0.1}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws if ANY bend angle in a multi-bend chain is out of range, not just the first "
+        "(delegated per-bend to BendAllowance)");
+}
+
 void TestLatticeInfillFillsBoxAndConformsToNonBoxSolids() {
   using dino8::kernel::Brep;
   using dino8::kernel::LatticeInfill;
@@ -68391,12 +69240,14 @@ int main() {
   TestCurveDegreeElevation();
   TestCurveFromControlPointsRejectsDegenerateInput();
   TestCurveLength();
+  TestCurveLengthToTolerance();
   TestCurveParameterAtArcLength();
   TestCurveDivideByCount();
   TestCurveDivideByLength();
   TestCurveIsRational();
   TestCurveSetWeightAt();
   TestCurveMakeRationalAndNonRational();
+  TestCurveMakeNonRationalWithTolerance();
   TestCurveInsertKnotAt();
   TestCurveRemoveKnotAt();
   TestCurveSetDomainReparameterizes();
@@ -68454,6 +69305,8 @@ int main() {
   TestIntersectSurfacesOverlapDetectsCoincidentRegion();
   TestIntersectSurfacesOverlapBisectionTightensRegionBoundary();
   TestIntersectPlaneSphereClosedForm();
+  TestIntersectPlaneCylinderClosedForm();
+  TestIntersectCylinderCylinderParallelClosedForm();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
@@ -68737,6 +69590,9 @@ int main() {
   TestSubDFromMeshQuadRemeshedRespectsMaxDihedralDegThreshold();
   TestSubDBooleanToSubDMaxDihedralDegDefaultMatchesExplicitValue();
   TestMeshComputeVertexNormals();
+  TestMeshComputeFaceNormals();
+  TestMeshFacetedGivesFlatShading();
+  TestMeshComputeBoxMappingUVs();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
   TestMeshLoadObjPreservesUvSeams();
@@ -68819,6 +69675,8 @@ int main() {
   TestPushPullFacesSingleEntryMatchesPushPullFace();
   TestPushPullFacesTwoIndependentPushPullMatchesEitherSequentialOrder();
   TestPushPullFacesRefusesInvalidInput();
+  TestPushPullFaceObliqueNeighbourMatchesExactFrustumVolume();
+  TestPushPullFacesObliqueNeighbourMatchesPushPullFace();
   TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume();
   TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched();
   TestDraftFacesConvexPlanarPerFaceAnglesMatchesEitherSequentialOrder();
@@ -69293,6 +70151,9 @@ int main() {
   sweep_tests::TestRevolveExactSolidsAndCaps();
   sweep_tests::TestRevolveStartAngleShiftsSweepExactly();
   sweep_tests::TestLoftInterpolatesSectionsExactly();
+  sweep_tests::TestBrepRibbonFromCurveStraightLineMatchesExactRectangle();
+  sweep_tests::TestBrepRibbonFromCurveClosedCurveStaysUncappedAnnularStrip();
+  sweep_tests::TestBrepRibbonFromCurveArgumentChecks();
   sweep_tests::TestLoftTangentConstrainedEndsMatchExactly();
   sweep_tests::TestSweep1AndPipe();
   sweep_tests::TestPipeRoundCaps();
@@ -69488,6 +70349,10 @@ int main() {
   TestMultiBendReducesToBendForASingleBend();
   TestMultiBendUChannelAndHatChannelMatchPappusClosedForm();
   TestMultiBendRejectsInvalidArguments();
+
+  TestUnfoldBendAtHalfKFactorExactlyMatchesBendPappusVolume();
+  TestUnfoldMultiBendAtHalfKFactorExactlyMatchesMultiBendPappusVolume();
+  TestUnfoldBendAndUnfoldMultiBendRejectInvalidArguments();
 
   TestLatticeInfillFillsBoxAndConformsToNonBoxSolids();
   TestLatticeInfillRejectsInvalidArguments();
