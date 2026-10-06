@@ -2014,8 +2014,76 @@ class FilletEdgeCommand : public Command {
         ON_3dPoint uv = trim.PointAt(d.ParameterAt(trim.m_bRev3d ? 1 - t01 : t01));
         return ON_2dPoint(uv.x, uv.y);
       };
-      auto uv_a_fn = [&](double t) { return uv_at(t0, t); };
-      auto uv_b_fn = [&](double t) { return uv_at(t1, t); };
+      // BuildBlendSurfaceG1/G2's own `pa`/`pb` (each row's boundary
+      // position, per their own doc comments) come from `ea.PointAt`/
+      // `sb.PointAt(uv_b_at(...))` directly - genuinely correct for
+      // BlendSrf (two INDEPENDENTLY picked, already-apart boundaries), but
+      // wrong for BlendEdge: `uv_at(t0, t)`/`uv_at(t1, t)` both trace the
+      // SAME physical edge (edge.m_ti[0]/[1] are the two trims of ONE
+      // shared edge), so the un-offset `uv_a_fn`/`uv_b_fn` this bullet used
+      // to pass gave `pa == pb` at every row - confirmed directly (not
+      // assumed): the resulting `built` sampled to the IDENTICAL 3D point
+      // at every (u, v), a fully degenerate, invisible patch collapsed
+      // onto the edge, not a blend surface at all. Offsetting each side's
+      // own (u, v) a short distance INTO that face's own interior before
+      // handing it to BuildBlendSurfaceG1/G2 is the actual fix - genuinely
+      // non-coincident `pa`/`pb`, matching what BlendSrf's own independent
+      // picks already give it for free. No user-adjustable bulge handle
+      // exists yet (unlike real Rhino's own draggable BlendEdge handles),
+      // so this picks one fixed, disclosed-as-heuristic width - the same
+      // "visually fair, not a rigorous optimum" spirit
+      // BuildBlendSurfaceG1's own 0.35/0.55 tangent-magnitude fractions
+      // already use - scaled off the SMALLER adjacent face's own size so
+      // it stays sane for both a tiny and a huge edge.
+      const double setback = std::max(0.1 * std::min(SurfaceScale(*sa), SurfaceScale(*sb)), tol * 100);
+      // The offset direction is kept STRICTLY perpendicular to the edge's
+      // own tangent, within the face's own tangent plane (normal x edge
+      // tangent) - not `InteriorDirection3d`'s generic "toward the
+      // surface's own domain centre" probe, which points diagonally
+      // in/along the edge too at a sample exactly AT a corner (t=0 or
+      // t=1), shortening the resulting offset curve at both ends instead
+      // of spanning the full edge length the way a real rolling-ball
+      // fillet's own contact curves already do (confirmed directly: an
+      // earlier version of this fix, using `InteriorDirection3d` alone,
+      // produced an offset curve running only 1/9 instead of 0/10 along a
+      // 10-unit edge, which TrimPlanarFace then correctly refused to
+      // splice). Only `perp`'s own SIGN (not its direction) is chosen
+      // toward the face's own domain centre, so it stays perpendicular to
+      // the edge everywhere, including exactly at its two endpoints.
+      auto offset_uv = [&](const ON_BrepTrim& trim, const ON_Surface& s, double t01) {
+        const ON_2dPoint uv0 = uv_at(trim, t01);
+        const Point3d edge_pt = s.PointAt(uv0.x, uv0.y);
+        const Vector3d edge_tan = ec.TangentAt(ec.Domain().ParameterAt(t01));
+        Vector3d perp = ON_CrossProduct(s.NormalAt(uv0.x, uv0.y), edge_tan);
+        if (!perp.Unitize()) perp = InteriorDirection3d(s, uv0.x, uv0.y);
+        else {
+          const Point3d center3d = s.PointAt(s.Domain(0).Mid(), s.Domain(1).Mid());
+          if (ON_DotProduct(perp, center3d - edge_pt) < 0) perp = -perp;
+        }
+        const Point3d target = edge_pt + perp * setback;
+        double u = uv0.x, v = uv0.y;
+        SurfaceClosestPointGlobal(s, target, u, v);
+        return ON_2dPoint(u, v);
+      };
+      auto uv_a_fn = [&](double t) { return offset_uv(t0, *sa, t); };
+      auto uv_b_fn = [&](double t) { return offset_uv(t1, *sb, t); };
+      // `ea`'s own PointAt (not a surface evaluation) supplies `pa`
+      // directly, so it must be a genuine curve through the OFFSET
+      // positions above, not the bare shared edge `ec` - built the same
+      // way this command already derives a curve from sampled points
+      // elsewhere (InterpolateCubic). `eb` is never read for `pb`
+      // (BuildBlendSurfaceG1/G2 both discard it, `(void)eb;` in their own
+      // source) so `ec` is passed there unchanged, same as before.
+      const int offset_samples = 24;
+      std::vector<ON_3dPoint> ea_pts;
+      std::vector<double> ea_params;
+      for (int i = 0; i <= offset_samples; ++i) {
+        const double t = static_cast<double>(i) / offset_samples;
+        const ON_2dPoint uva = uv_a_fn(t);
+        ea_pts.push_back(sa->PointAt(uva.x, uva.y));
+        ea_params.push_back(t);
+      }
+      const ON_NurbsCurve ea_offset = InterpolateCubic(ea_pts, ea_params, false, 3);
       // Adaptive, tolerance-enforcing build (geom/BlendSurface.h) instead
       // of a bare fixed-24-sample call - closes the "tolerance enforcement
       // exists in the geometry library but is not yet reachable from any
@@ -2031,8 +2099,8 @@ class FilletEdgeCommand : public Command {
       // failure, exactly the fixed-sample call's own failure mode.
       const double max_gap = std::max(std::max(SurfaceScale(*sa), SurfaceScale(*sb)) * 1e-3, tol * 10);
       double achieved_gap = std::numeric_limits<double>::infinity();
-      curvature_ ? BuildBlendSurfaceG2Adaptive(ec, *sa, uv_a_fn, ec, *sb, uv_b_fn, max_gap, 24, 384, built, &achieved_gap)
-                 : BuildBlendSurfaceG1Adaptive(ec, *sa, uv_a_fn, ec, *sb, uv_b_fn, false, max_gap, 24, 384, built, &achieved_gap);
+      curvature_ ? BuildBlendSurfaceG2Adaptive(ea_offset, *sa, uv_a_fn, ec, *sb, uv_b_fn, max_gap, 24, 384, built, &achieved_gap)
+                 : BuildBlendSurfaceG1Adaptive(ea_offset, *sa, uv_a_fn, ec, *sb, uv_b_fn, false, max_gap, 24, 384, built, &achieved_gap);
       ok = std::isfinite(achieved_gap);
       if (!ok) err = "could not build the blend surface";
     } else {
@@ -2282,6 +2350,111 @@ class FilletEdgeCommand : public Command {
       }
       ctx.Warn(label + ": could not trim (non-planar adjacent surface and no usable mesh fallback)");
       return;
+    }
+    // Blend: try the SAME exact trim-and-join pipeline the Fillet/Chamfer
+    // block above already uses (TrimPlanarFace/RoundFaceCorner/
+    // JoinNakedEdges) - closes PARITY_MAP.md's own "Edge blend trimmed and
+    // joined into the polysurface (Rhino BlendEdge TrimAndJoin)" gap for
+    // the planar-adjacent-face case. `built`'s own u=0/u=max boundary
+    // isocurves ARE the exact curves to trim faces i/j back to (the
+    // Hermite blend's own edge lies exactly on each face by construction -
+    // HermiteRowG1/G2's own c0/c3 Bezier endpoints, BlendSurface.cpp - so
+    // no separate contact-curve derivation is needed the way the rolling-
+    // ball fillet's offset+SSX construction above needs one). Still
+    // planar-adjacent-face only, the same scope every other exact block in
+    // this file shares - a curved adjacent face falls through unchanged to
+    // the pre-existing "added as a separate surface" behaviour below.
+    if (mode_ == Mode::Blend) {
+      const int trim_idx0 = FindOuterTrimForEdge(*b, fi0, pick.edge);
+      const int trim_idx1 = FindOuterTrimForEdge(*b, fi1, pick.edge);
+      ON_Curve* iso_a = built.IsoCurve(1, built.Domain(0).Min());
+      ON_Curve* iso_b = built.IsoCurve(1, built.Domain(0).Max());
+      bool exact_ok = false;
+      ON_Brep remainder;
+      if (iso_a && iso_b && trim_idx0 >= 0 && trim_idx1 >= 0) {
+        std::optional<ON_Brep> ra = TrimPlanarFace(*b, fi0, trim_idx0, *iso_a, false, tol);
+        if (!ra) ra = TrimPlanarFace(*b, fi0, trim_idx0, *iso_a, true, tol);
+        std::optional<ON_Brep> rb = TrimPlanarFace(*b, fi1, trim_idx1, *iso_b, false, tol);
+        if (!rb) rb = TrimPlanarFace(*b, fi1, trim_idx1, *iso_b, true, tol);
+        if (ra && rb) {
+          remainder = *b;
+          const int hi = std::max(fi0, fi1), lo = std::min(fi0, fi1);
+          remainder.DeleteFace(remainder.m_F[hi], true);
+          remainder.Compact();
+          remainder.DeleteFace(remainder.m_F[lo < hi ? lo : lo - 1], true);
+          remainder.Compact();
+          const int ra_index = remainder.m_F.Count();
+          remainder.Append(*ra);
+          const int rb_index = remainder.m_F.Count();
+          remainder.Append(*rb);
+          ON_Brep blend_brep;
+          ON_NurbsSurface* blend_srf = new ON_NurbsSurface(built);
+          blend_brep.Create(blend_srf);
+          const int blend_index = remainder.m_F.Count();
+          remainder.Append(blend_brep);
+          // Same "also round the third face at each end vertex" step the
+          // Fillet/Chamfer block above already does (a box-corner edge
+          // blend also clips the corner of whichever OTHER face shares
+          // that vertex) - `built`'s own cross-section isocurve at v=min/
+          // max (the "across the blend" direction, held at each end of
+          // the edge) is that corner's own exact replacement boundary,
+          // the identical role FilletConvexEdge's own cap arc plays there.
+          const Point3d v0 = edge.PointAtStart(), v1 = edge.PointAtEnd();
+          ON_Curve* cross_min = built.IsoCurve(0, built.Domain(1).Min());
+          ON_Curve* cross_max = built.IsoCurve(0, built.Domain(1).Max());
+          auto arc_for = [&](Point3d v) -> ON_Curve* {
+            if (!cross_min || !cross_max) return nullptr;
+            const double dmin = cross_min->PointAt(cross_min->Domain().Mid()).DistanceTo(v);
+            const double dmax = cross_max->PointAt(cross_max->Domain().Mid()).DistanceTo(v);
+            return dmin <= dmax ? cross_min : cross_max;
+          };
+          for (Point3d v : {v0, v1}) {
+            ON_Curve* arc = arc_for(v);
+            if (!arc) continue;
+            for (int fi = 0; fi < remainder.m_F.Count(); ++fi) {
+              if (fi == ra_index || fi == rb_index || fi == blend_index || remainder.m_F[fi].m_face_index < 0) continue;
+              std::optional<ON_Brep> rounded = RoundFaceCorner(remainder, fi, v, *arc, tol);
+              if (!rounded) continue;
+              remainder.DeleteFace(remainder.m_F[fi], true);
+              remainder.Append(*rounded);
+              break;
+            }
+          }
+          remainder.Compact();
+          delete cross_min;
+          delete cross_max;
+          JoinNakedEdges(remainder, std::max(tol * 20, 1e-4));
+          remainder.Compact();
+          remainder.SetTolerancesBoxesAndFlags();
+          exact_ok = true;
+          for (int ei = 0; ei < remainder.m_E.Count() && exact_ok; ++ei) {
+            const ON_BrepEdge& e = remainder.m_E[ei];
+            if (e.m_edge_index >= 0 && e.TrimCount() == 1) exact_ok = false;
+          }
+          if (exact_ok) {
+            BrepMeshOptions check_opt;
+            check_opt.chord_tolerance = std::max(tol * 4, 1e-4);
+            exact_ok = MeshBrepClosed(remainder, check_opt).IsClosedManifold();
+          }
+        }
+      }
+      delete iso_a;
+      delete iso_b;
+      if (exact_ok) {
+        if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = remainder;
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
+                   " trimmed and joined into the polysurface (" + std::string(curvature_ ? "Continuity=Curvature" : "Continuity=Tangency") + ")");
+        return;
+      }
+      // Exact trim-and-join unavailable (a non-planar adjacent face, or a
+      // join that didn't fully close) - fall through to the pre-existing
+      // "added as a separate surface" behaviour below, unchanged.
     }
     // Blend: added as a separate surface (does not replace the polysurface).
     SceneObject like = *o;
@@ -4111,7 +4284,7 @@ void RegisterFilletCommands(CommandEngine& e) {
   Reg(e, "ChamferEdge", Make<FilletEdgeCommand>(FilletEdgeCommand::Mode::Chamfer), CommandStatus::Implemented,
       "Same trimming strategy as FilletEdge, a ruled chamfer instead of an arc.");
   Reg(e, "BlendEdge", Make<FilletEdgeCommand>(FilletEdgeCommand::Mode::Blend), CommandStatus::Implemented,
-      "Hermite blend surface added between the two faces (not stitched into the polysurface). Continuity=Tangency is a degree-3x3 G1 blend. Continuity=Curvature is a degree-5x3 blend whose cross-boundary second derivative is set to each face's own exact analytic directional second derivative (Ev2Der, not a finite difference), so its curvature vector matches each face's curvature exactly in that direction (numerically verified in tests/test_g2_blend.cpp for both flat and curved faces) - real G2 in the cross-boundary direction, not full surface-wide G2 in every direction, and it silently falls back to the plain G1 tangent at any sample where a face's own parametrization is singular there.");
+      "Hermite blend surface trimmed and stitched into the polysurface when both adjacent faces are planar; otherwise added between the two faces as a separate, untouched surface (not stitched in). Continuity=Tangency is a degree-3x3 G1 blend. Continuity=Curvature is a degree-5x3 blend whose cross-boundary second derivative is set to each face's own exact analytic directional second derivative (Ev2Der, not a finite difference), so its curvature vector matches each face's curvature exactly in that direction (numerically verified in tests/test_g2_blend.cpp for both flat and curved faces) - real G2 in the cross-boundary direction, not full surface-wide G2 in every direction, and it silently falls back to the plain G1 tangent at any sample where a face's own parametrization is singular there.");
   Reg(e, "VariableBlendSrf", Make<VariableBlendSrfCommand>(), CommandStatus::Implemented,
       "A genuine independent blend-tangent variant of BlendSrf (not the rolling-ball fillet VariableFilletSrf uses): the same BuildBlendSurfaceG1/G2 Hermite/quintic blend between two picked surface edges, with the blend's own cross-section width interpolated linearly along the rail from Width= to EndWidth=, the same piecewise-linear-along-the-rail technique FilletTwoSurfacesCommand uses for Radius=/EndRadius=. Continuity=Curvature gets the same real, numerically-verified G2 cross-boundary curvature match as BlendSrf (see tests/test_g2_blend.cpp and tests/test_variable_blend.cpp), independent of the width, which no fixed-cross-section rolling-ball fillet construction can do except at one coincidental radius.");
   Reg(e, "MatchSrf", Make<MatchSrfCommand>(), CommandStatus::Implemented,
