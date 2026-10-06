@@ -653,6 +653,38 @@ dbecheck "DXF: 4 curves, 0 points, 0 meshes, 2 block instances flattened" "the r
 dbecheck "Block = FixtureBlock" "the round-tripped curves carry the same Block user-text tag InstantiateBlockInDocument already writes"
 dbecheck "Block 'FixtureBlock': 2 object(s), base 0,0,0, 4 object(s) in instances" "BlockManager reports the same definition/instance counts after the round trip as before export"
 grep -q "^BLOCK$" "$TMPW/dxf_block_export.dxf" && grep -q "^INSERT$" "$TMPW/dxf_block_export.dxf" && echo "ok   dxf_block_export.dxf contains real BLOCK/INSERT entities, not just flattened LINE entities" || { echo "FAIL dxf_block_export.dxf has no BLOCK/INSERT entity"; fail=1; }
+# DXF DIMENSION export/import: ExportDxf had no DIMENSION writer at all
+# before this change (see dxf_dimension_export_script.txt's own header
+# comment) - a Dino8 DimLinear/DimAligned/DimRadius/DimDiameter dimension
+# used to round-trip out as bare baked line/extension/arrow/glyph curves,
+# losing the fact it was ever a single parametric dimension. Checks both
+# the writer and the existing DIMENSION reader agree on the wire format for
+# both dimension families covered this pass: the reopened file's linear
+# dimension carries the exact same Annotation/DimP0/DimP1/DimOffset/
+# DimHorizontal tags the original had, the reopened radius dimension
+# carries the exact same Annotation/DimCenter/DimRadiusVal/DimIsDiameter
+# tags its own original had, and DxfImporter's own summary line counts
+# both as real dimensions (plus the one real circle object, not unrelated
+# bare curves for either).
+sed "s|@TMP@|$TMPW|g" "$HERE/dxf_dimension_export_script.txt" > "$TMPW/dxf_dimension_export_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DDE="$("$BIN" --smoke 30 --script "$TMPW/dxf_dimension_export_script.txt" 2>&1)" || { echo "$DDE"; echo "FAIL: DXF DIMENSION export script exited non-zero"; exit 1; }
+else
+  DDE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_dimension_export_script.txt" 2>&1)" || { echo "$DDE"; echo "FAIL: DXF DIMENSION export script exited non-zero"; exit 1; }
+fi
+ddecheck() { if echo "$DDE" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DDE" "$1"; fail=1; fi; }
+ddecheck "Exported $TMPW/dxf_dimension_export.dxf" "ExportDxf wrote a file"
+ddecheck "DXF: 1 curve, 0 points, 0 meshes, 2 dimensions" "the reopened file's two DIMENSION entities round-tripped as two real dimensions plus the one real circle, not unrelated bare curves"
+ddecheck "Annotation = DimLinear" "the round-tripped linear dimension carries the same Annotation=DimLinear tag DxfImporter::Dimension() writes for a hand-written fixture"
+ddecheck "DimP0 = 0,0,0" "the round-tripped linear dimension's first measured point survived exactly"
+ddecheck "DimP1 = 40,0,0" "the round-tripped linear dimension's second measured point survived exactly"
+ddecheck "DimOffset = 10" "the round-tripped linear dimension's own dimension-line offset survived exactly"
+ddecheck "DimHorizontal = 1" "the round-tripped linear dimension is still recognized as horizontal, not vertical or oblique"
+ddecheck "Annotation = DimRadius" "the round-tripped radius dimension carries the same Annotation=DimRadius tag DxfImporter::Dimension() writes for a hand-written fixture"
+ddecheck "DimCenter = 100,0,0" "the round-tripped radius dimension's own measured circle center survived exactly"
+ddecheck "DimRadiusVal = 5" "the round-tripped radius dimension's own measured radius survived exactly"
+ddecheck "DimIsDiameter = 0" "the round-tripped dimension is still recognized as a radius, not a diameter, dimension"
+[ "$(grep -c "^DIMENSION$" "$TMPW/dxf_dimension_export.dxf")" = "2" ] && echo "ok   dxf_dimension_export.dxf contains two real DIMENSION entities (one linear, one radius), not just baked line/arrow/text curves" || { echo "FAIL dxf_dimension_export.dxf does not have exactly two DIMENSION entities"; fail=1; }
 # DWG SPLINE: built via LibreDWG's own dwg_add_SPLINE (marked "Experimental.
 # Does not work yet properly" in dwg_api.h - confirmed by hand it only ever
 # populates fit_pts, never real NURBS control points), so this exercises

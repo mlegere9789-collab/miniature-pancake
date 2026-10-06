@@ -577,6 +577,147 @@ bool WriteDxfTextIfPlanarXY(DxfWriter& w, const DxfTextGlyphSpec& g, const std::
   return true;
 }
 
+// A DimLinear/DimAligned group's own fixed layout, re-parsed directly from
+// the tags BuildLinearDimensionGeometry (commands/DimGeometry.h) stamps on
+// every one of the group's own curves - DimPlaneOrigin/X/Y (plane),
+// DimAligned/DimHorizontal/DimOffset (the fixed layout a hand-picked third
+// "dimension line location" point reduces to), DimP0/DimP1 (the two
+// measured points, always present even for an anchored dimension - see
+// that header's own comment on why). Same "plain-data re-read instead of
+// including annotate_common.h" precedent as DxfTextGlyphSpecOf above -
+// cmd_annotate.cpp's own LoadLinearDimLayout/ResolveLinearDimPoints read
+// the identical tags but live in that file's anonymous namespace (and
+// ResolveLinearDimPoints additionally resolves a live anchor object's
+// *current* position when one exists, which this file has no
+// CommandContext to need: DimP0/DimP1 already hold the point the group's
+// own baked curves were actually drawn from, which is what should export).
+struct DxfLinearDimLayout {
+  bool aligned = false, horizontal = true;
+  double offset = 0;
+  ON_Plane plane;
+  Point3d p0, p1;
+};
+
+bool DxfLinearDimLayoutOf(const SceneObject& o, DxfLinearDimLayout& L) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *aligned = get("DimAligned"), *horiz = get("DimHorizontal"), *offset = get("DimOffset");
+  const std::string *org = get("DimPlaneOrigin"), *ax = get("DimPlaneX"), *ay = get("DimPlaneY");
+  const std::string *p0s = get("DimP0"), *p1s = get("DimP1");
+  if (!aligned || !horiz || !offset || !org || !ax || !ay || !p0s || !p1s) return false;
+  Point3d o3, px, py;
+  if (!ParsePointTagLocal(*org, o3) || !ParsePointTagLocal(*ax, px) || !ParsePointTagLocal(*ay, py)) return false;
+  if (!ParsePointTagLocal(*p0s, L.p0) || !ParsePointTagLocal(*p1s, L.p1)) return false;
+  L.aligned = *aligned == "1";
+  L.horizontal = *horiz == "1";
+  L.offset = std::atof(offset->c_str());
+  L.plane = ON_Plane(o3, Vector3d(px.x, px.y, px.z), Vector3d(py.x, py.y, py.z));
+  return true;
+}
+
+// A real DXF DIMENSION entity (type 0 rotated/horizontal/vertical, or type
+// 1 aligned) for a DimLinear/DimAligned group, instead of its own baked
+// line/extension/arrow/text curves - the inverse of DxfImporter::Dimension
+// below's own group-code mapping (that function's comment has the full
+// dwg.spec-verified field layout this mirrors: 13/14 = the two measured
+// points, 10 = any point ON the dimension line, 50 = rotation for type 0 /
+// extension-line oblique angle for type 1). `loc` (group 10) is re-derived
+// with the *exact* projection BuildLinearDimensionGeometry itself uses to
+// place its own dimension-line endpoints from `L` - not an independent
+// reconstruction, so a reopen through this file's own DxfImporter::Dimension
+// rebuilds a geometrically identical dimension. Scoped like every other
+// narrow writer in this file: no anonymous block (group 2) of pre-rendered
+// geometry - this app's own reader never needed one, rebuilding the
+// dimension fresh from these same semantic points instead - and no text
+// override (group 1) or text-midpoint (group 11), since the reader always
+// recomputes the measurement and label placement from 13/14 too. Returns
+// false (nothing written) if the two points coincide once projected onto
+// the fixed dimension line - the same degenerate case
+// BuildLinearDimensionGeometry itself refuses.
+bool WriteDxfLinearDimension(DxfWriter& w, const DxfLinearDimLayout& L, const std::string& layer, const Color* color) {
+  Point3d loc;
+  double rot = 0.0;
+  if (!L.aligned) {
+    double ua, va, ub, vb;
+    L.plane.ClosestPointTo(L.p0, &ua, &va);
+    L.plane.ClosestPointTo(L.p1, &ub, &vb);
+    const Point3d a = L.horizontal ? L.plane.PointAt(ua, L.offset) : L.plane.PointAt(L.offset, va);
+    const Point3d b = L.horizontal ? L.plane.PointAt(ub, L.offset) : L.plane.PointAt(L.offset, vb);
+    if (a.DistanceTo(b) < 1e-9) return false;
+    loc = a;
+    rot = L.horizontal ? 0.0 : 90.0;
+  } else {
+    Vector3d n = ON_CrossProduct(L.plane.zaxis, Vector3d(L.p1 - L.p0));
+    if (n.Length() < 1e-12 || L.p0.DistanceTo(L.p1) < 1e-9) return false;
+    n.Unitize();
+    loc = L.p0 + n * L.offset;
+    rot = 0.0;  // extension-line oblique angle; this app never sets one
+  }
+  w.BeginEntity("DIMENSION", layer, color);
+  w.G(100, "AcDbDimension");
+  w.Point(10, loc);
+  w.G(70, (L.aligned ? 1 : 0) | 32);  // bit 32: always set by a real AutoCAD-authored DIMENSION
+  w.G(100, L.aligned ? "AcDbAlignedDimension" : "AcDbRotatedDimension");
+  w.Point(13, L.p0);
+  w.Point(14, L.p1);
+  w.G(50, rot);
+  return true;
+}
+
+// A DimRadius/DimDiameter group's own fixed layout, re-parsed directly from
+// the tags BuildRadiusDimensionGeometry (commands/DimGeometry.h) stamps on
+// every one of the group's own curves - DimIsDiameter, DimDir (the leader
+// direction off center), DimExtra (the stand-off past the circle, AutoCAD's
+// own leader_len), DimCenter and DimRadiusVal (the measured circle/arc's
+// own center and radius) - same "plain-data re-read" precedent as
+// DxfLinearDimLayoutOf above. DimPlaneOrigin/X/Y are also stamped but
+// unneeded here: DimCenter/DimDir/DimRadiusVal already carry everything
+// group 10/15/40 below needs.
+struct DxfRadiusDimLayout {
+  bool diameter = false;
+  Point3d center, dir;
+  double radius = 0, extra = 0;
+};
+
+bool DxfRadiusDimLayoutOf(const SceneObject& o, DxfRadiusDimLayout& L) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *diam = get("DimIsDiameter"), *dir = get("DimDir"), *extra = get("DimExtra");
+  const std::string *center = get("DimCenter"), *radius = get("DimRadiusVal");
+  if (!diam || !dir || !extra || !center || !radius) return false;
+  if (!ParsePointTagLocal(*dir, L.dir) || !ParsePointTagLocal(*center, L.center)) return false;
+  L.diameter = *diam == "1";
+  L.extra = std::atof(extra->c_str());
+  L.radius = std::atof(radius->c_str());
+  return L.radius > 0;
+}
+
+// A real DXF DIMENSION entity (type 4 radius, or type 3 diameter) for a
+// DimRadius/DimDiameter group - the inverse of DxfImporter::Dimension
+// below's own group-code mapping for these two types (that function's
+// comment has the full field layout: def_pt=10 is the circle CENTER for
+// radius or the far_chord_pt diametrically opposite first_arc_pt for
+// diameter; first_arc_pt=15 is always a real point on the circle;
+// leader_len=40 is the stand-off past it). `on` below is exactly the same
+// point BuildRadiusDimensionGeometry's own `on = center + d*radius`
+// computes, so reopening through this file's own DxfImporter::Dimension
+// rebuilds a geometrically identical dimension. Same scope choice as
+// WriteDxfLinearDimension above: no anonymous block (group 2), no text
+// override (group 1) - the reader always recomputes the measurement and
+// "R "/"D " label from 10/15 too.
+bool WriteDxfRadiusDimension(DxfWriter& w, const DxfRadiusDimLayout& L, const std::string& layer, const Color* color) {
+  Vector3d d = L.dir;
+  if (!d.Unitize()) return false;
+  const Point3d on = L.center + d * L.radius;
+  const Point3d p10 = L.diameter ? (L.center - d * L.radius) : L.center;
+  w.BeginEntity("DIMENSION", layer, color);
+  w.G(100, "AcDbDimension");
+  w.Point(10, p10);
+  w.G(70, (L.diameter ? 3 : 4) | 32);  // bit 32: always set by a real AutoCAD-authored DIMENSION
+  w.G(100, L.diameter ? "AcDbDiametricDimension" : "AcDbRadialDimension");
+  w.Point(15, on);
+  w.G(40, L.extra);
+  return true;
+}
+
 // Writes one BlockDefinition member object into the BLOCKS section ExportDxf
 // now emits for a static (no visibility states) block that has at least one
 // placed instance - see ExportDxf's own comment on where this is called
@@ -774,6 +915,13 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   // independently (and harmlessly) retries the same lookup and falls
   // through to its own curve export, same as before this set existed.
   std::set<int> pattern_hatch_groups_written;
+  // Groups whose DimLinear/DimAligned dimension already wrote its one real
+  // DIMENSION entity (WriteDxfLinearDimension below) - every other baked
+  // line/extension/arrow curve belonging to that same group_id is skipped
+  // rather than also written on its own. Only populated on success, same
+  // "harmless independent retry" convention as pattern_hatch_groups_written
+  // just above.
+  std::set<int> dimension_groups_written;
   for (const SceneObject* o : objs) {
     {
       auto bt = o->user_text.find("Block");
@@ -819,6 +967,29 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
           // and loses, the same attempt).
         }
         auto glyph = o->user_text.find("Glyph"), ann = o->user_text.find("Annotation"), align = o->user_text.find("TextAlign");
+        if (ann != o->user_text.end() && (ann->second == "DimLinear" || ann->second == "DimAligned")) {
+          if (dimension_groups_written.count(o->group_id)) break;  // this group's DIMENSION entity already written
+          DxfLinearDimLayout L;
+          if (DxfLinearDimLayoutOf(*o, L) && WriteDxfLinearDimension(w, L, layer, color)) {
+            dimension_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
+          // Malformed/missing tags (shouldn't happen for a dimension this
+          // app itself built or imported) - falls through to this curve's
+          // own export below, same harmless-independent-retry convention
+          // the hatch-pattern branch above already uses.
+        }
+        if (ann != o->user_text.end() && (ann->second == "DimRadius" || ann->second == "DimDiameter")) {
+          if (dimension_groups_written.count(o->group_id)) break;  // this group's DIMENSION entity already written
+          DxfRadiusDimLayout L;
+          if (DxfRadiusDimLayoutOf(*o, L) && WriteDxfRadiusDimension(w, L, layer, color)) {
+            dimension_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
+          // Same harmless-independent-retry convention as the linear case above.
+        }
         // Only the plain Text command's own left-aligned glyph groups (not
         // Dim*/Leader, whose glyph curves share a group with non-glyph
         // dimension-line/arrow geometry too) - a centered Text's own
