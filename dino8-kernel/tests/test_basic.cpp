@@ -1155,6 +1155,88 @@ void TestCurveSimplify() {
   }
 }
 
+void TestCurvePlanarRegionProperties() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A 10x10 closed square in the world XY plane: area, centroid, and
+  // second moments of area are all hand-derivable exactly (a square of
+  // side s has Ixx == Iyy == s^4/12 about its own centroid, by symmetry
+  // Ixy == 0).
+  {
+    std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+    cps.push_back(cps[0]);
+    const NurbsCurve square = NurbsCurve::FromControlPoints(cps, 1);
+    Check(square.IsClosed(), "PlanarRegionProperties: the square fixture is closed");
+    NurbsCurve::RegionProperties r;
+    const Result res = square.PlanarRegionProperties(r, 0.001);
+    Check(res == Result::Ok, "PlanarRegionProperties: the square converges");
+    Check(std::abs(r.area - 100.0) < 0.01, "PlanarRegionProperties: the 10x10 square's area is exactly 100");
+    Check(r.centroid.DistanceTo(Point3d(5, 5, 0)) < 0.01,
+          "PlanarRegionProperties: the square's centroid is exactly its own geometric center (5,5,0)");
+    Check(std::abs(r.ixx - 10000.0 / 12.0) < 1.0 && std::abs(r.iyy - 10000.0 / 12.0) < 1.0,
+          "PlanarRegionProperties: the square's Ixx and Iyy both match the hand-derived s^4/12 = 833.33");
+    Check(std::abs(r.ixy) < 1.0, "PlanarRegionProperties: the square's Ixy is ~0 by symmetry");
+  }
+
+  // A full circle of known radius: area = pi*r^2, centroid at the
+  // circle's own center, Ixx == Iyy == pi*r^4/4 (the standard area
+  // moment of a disc about a centroidal diameter), Ixy == 0.
+  {
+    const double r1 = 5.0;
+    const ON_Circle oncircle(ON_Plane(ON_3dPoint(20, 0, 0), ON_3dVector(0, 0, 1)), r1);
+    ON_NurbsCurve nc;
+    Check(oncircle.GetNurbForm(nc) != 0, "PlanarRegionProperties: the circle fixture builds a real NURBS form");
+    NurbsCurve circle;
+    circle.raw() = nc;
+    NurbsCurve::RegionProperties r;
+    const Result res = circle.PlanarRegionProperties(r, 0.001);
+    Check(res == Result::Ok, "PlanarRegionProperties: the circle converges");
+    Check(std::abs(r.area - ON_PI * r1 * r1) < 0.01, "PlanarRegionProperties: the radius-5 circle's area matches pi*r^2 exactly");
+    Check(r.centroid.DistanceTo(Point3d(20, 0, 0)) < 0.01, "PlanarRegionProperties: the circle's centroid is its own real center");
+    const double expected_i = ON_PI * r1 * r1 * r1 * r1 / 4.0;
+    Check(std::abs(r.ixx - expected_i) < 1.0 && std::abs(r.iyy - expected_i) < 1.0,
+          "PlanarRegionProperties: the circle's Ixx and Iyy both match the hand-derived pi*r^4/4");
+    Check(std::abs(r.ixy) < 1.0, "PlanarRegionProperties: the circle's Ixy is ~0 by symmetry");
+  }
+
+  // An OPEN curve (not closed) is refused - there is no well-defined
+  // bounded region to measure.
+  {
+    const NurbsCurve open = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0)}, 1);
+    Check(!open.IsClosed(), "PlanarRegionProperties: the open fixture really is open");
+    NurbsCurve::RegionProperties r;
+    Check(open.PlanarRegionProperties(r, 0.001) == Result::Failed, "PlanarRegionProperties: an open curve is refused");
+  }
+
+  // A genuinely non-planar closed curve is refused.
+  {
+    std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(10, 0, 5), Point3d(10, 10, 0), Point3d(0, 10, 5)};
+    cps.push_back(cps[0]);
+    const NurbsCurve nonplanar = NurbsCurve::FromControlPoints(cps, 1);
+    Check(nonplanar.IsClosed(), "PlanarRegionProperties: the non-planar fixture is still closed");
+    Check(!nonplanar.IsPlanar(0.001), "PlanarRegionProperties: the non-planar fixture really isn't planar at a tight tolerance");
+    NurbsCurve::RegionProperties r;
+    Check(nonplanar.PlanarRegionProperties(r, 0.001) == Result::Failed, "PlanarRegionProperties: a non-planar closed curve is refused");
+  }
+
+  // A non-positive tolerance throws.
+  {
+    std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+    cps.push_back(cps[0]);
+    const NurbsCurve square = NurbsCurve::FromControlPoints(cps, 1);
+    NurbsCurve::RegionProperties r;
+    bool threw = false;
+    try {
+      square.PlanarRegionProperties(r, 0.0);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "PlanarRegionProperties: a non-positive tolerance throws std::invalid_argument");
+  }
+}
+
 void TestCurveKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -71309,6 +71391,7 @@ int main() {
   TestCurveAnalyzeEndContinuity();
   TestCurveDeviationTo();
   TestCurveSimplify();
+  TestCurvePlanarRegionProperties();
   TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();
