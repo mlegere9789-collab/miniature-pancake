@@ -2646,6 +2646,19 @@ struct Path2 {
   bool is_point = false;
   Color color;
   int layer = 0;
+  // The curve's own effective linetype pattern (Document::FindLinetype's
+  // raw model-unit dash/gap lengths, alternating starting with a dash,
+  // Linetype::pattern's own convention - SceneObject::DashPolyline already
+  // reads it the same way for on-screen display), unscaled by the page's
+  // own LayoutPage::scale (not known yet when CollectPaths runs, since
+  // LayoutPage itself needs every path's points first) - ExportSvg/
+  // ExportPdf scale it by that factor once they have it, the same way they
+  // already resolve width/color from the layer at write time rather than
+  // storing a page-scaled value here. Empty means solid (Continuous, or
+  // linetype display doesn't gate this - unlike the on-screen
+  // SceneObject::display_dashes_, printing always honors the real
+  // linetype regardless of the viewport's own display toggle).
+  std::vector<double> dash_pattern;
 };
 
 // World -> drawing plane. Parallel cameras project in world units (so a
@@ -2695,6 +2708,19 @@ std::vector<Path2> CollectPaths(const Document& doc, const Projector& proj, bool
     const Color color = o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size()
                              ? EffectivePlotColor(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.PlotStyles(), doc.EffectiveColor(o))
                              : doc.EffectiveColor(o);
+    // The object's own real linetype, regardless of the on-screen
+    // "linetype display" viewport toggle (Document::EffectiveDashes gates
+    // on that toggle deliberately, since it is a display-only helper - see
+    // its own comment - but Print/Export should always honor the real
+    // linetype, the same way it already ignores Layer::visible/locked's
+    // on-screen-only distinctions).
+    std::vector<double> dashes;
+    if (o.kind == ObjectKind::Curve) {
+      if (const Linetype* lt = doc.FindLinetype(doc.EffectiveLinetype(o)); lt && !lt->pattern.empty()) {
+        const double ls = doc.Settings().linetype_scale > 0 ? doc.Settings().linetype_scale : 1.0;
+        for (double d : lt->pattern) dashes.push_back(std::max(0.0, d) * ls);
+      }
+    }
     if (o.kind == ObjectKind::Point) {
       Path2 p;
       ON_2dPoint q;
@@ -2710,6 +2736,7 @@ std::vector<Path2> CollectPaths(const Document& doc, const Projector& proj, bool
       Path2 p;
       p.color = color;
       p.layer = o.layer_index;
+      p.dash_pattern = dashes;
       bool all_ok = true;
       for (const Point3d& w : pl.pts) {
         ON_2dPoint q;
@@ -2850,7 +2877,13 @@ bool ExportSvg(const Document& doc, const Viewport* view, const std::string& pat
     if (alpha < 1.0f) os << " stroke-opacity=\"" << Num(alpha, 3) << "\"";
     os << ">\n";
     for (const Path2* p : list) {
-      os << "<path stroke=\"" << HexColor(p->color) << "\" d=\"";
+      os << "<path stroke=\"" << HexColor(p->color) << "\"";
+      if (!p->dash_pattern.empty()) {
+        os << " stroke-dasharray=\"";
+        for (size_t i = 0; i < p->dash_pattern.size(); ++i) os << (i ? "," : "") << Num(p->dash_pattern[i] * L.scale, 3);
+        os << "\"";
+      }
+      os << " d=\"";
       if (p->is_point) {
         const double x = L.ToPageX(p->pts[0].x), y = H - L.ToPageY(p->pts[0].y);
         os << "M" << Num(x - marker, 3) << " " << Num(y, 3) << " L" << Num(x + marker, 3) << " " << Num(y, 3)
@@ -2907,6 +2940,7 @@ bool ExportPdf(const Document& doc, const Viewport* view, const std::string& pat
   std::string last_color;
   double last_width = default_width;
   float last_alpha = 1.0f;
+  std::string last_dash = "[] 0 d\n";  // solid - the default, so a document with no dashed curves emits no "d" operators at all
   for (const Path2& p : paths) {
     const bool valid_layer = p.layer >= 0 && static_cast<size_t>(p.layer) < doc.Layers().size();
     const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(p.layer)], doc.PlotStyles(), default_width) : default_width;
@@ -2915,6 +2949,15 @@ bool ExportPdf(const Document& doc, const Viewport* view, const std::string& pat
     if (std::fabs(alpha - last_alpha) > 1e-4f) { cs << "/" << gs_name_for(alpha) << " gs\n"; last_alpha = alpha; }
     const std::string color = Num(p.color.r, 3) + " " + Num(p.color.g, 3) + " " + Num(p.color.b, 3) + " RG\n";
     if (color != last_color) { cs << color; last_color = color; }
+    std::string dash_op = "[] 0 d\n";
+    if (!p.dash_pattern.empty()) {
+      std::ostringstream da;
+      da << "[";
+      for (size_t i = 0; i < p.dash_pattern.size(); ++i) da << (i ? " " : "") << Num(p.dash_pattern[i] * L.scale * pt, 3);
+      da << "] 0 d\n";
+      dash_op = da.str();
+    }
+    if (dash_op != last_dash) { cs << dash_op; last_dash = dash_op; }
     if (p.is_point) {
       const double x = L.ToPageX(p.pts[0].x) * pt, y = L.ToPageY(p.pts[0].y) * pt;
       cs << Num(x - marker, 3) << " " << Num(y, 3) << " m " << Num(x + marker, 3) << " " << Num(y, 3) << " l S\n";
