@@ -35,6 +35,23 @@ int DetachWorksession(Document& doc, const std::string& alias_or_path);
 int LimitWorksessionModel(Document& doc, const std::string& alias_or_path, kernel::Point3d limit_min,
                          kernel::Point3d limit_max);
 
+// Re-reads `alias_or_path`'s matching reference model(s) ("*"/"all"
+// reloads every attached model) from their source file on disk and
+// replaces their currently-attached objects with what the file now
+// contains - the manual refresh AttachWorksession's own header comment
+// names as missing (there is still no live link: nothing watches the
+// source file, so an edit there has no effect until this is called).
+// The model's own alias, layer and limit box (if any) are preserved and
+// re-applied to the freshly-loaded objects. Returns the number of
+// objects now attached across every model reloaded (post-reload, not a
+// delta), or -1 on error (see `error`) when `alias_or_path` names no
+// attached model, or isn't "*"/"all" and its one file fails to load -
+// in either of those two failure cases nothing is changed. Reloading
+// "*"/"all" instead skips (and reports via `error`, continuing with the
+// rest) any one model whose file fails to load, leaving that one
+// model's prior objects attached unchanged.
+int ReloadWorksession(Document& doc, const std::string& alias_or_path, std::string& error);
+
 // The session file: a JSON array of {"path", "alias"} for every currently
 // attached reference model.
 bool SaveWorksessionFile(const Document& doc, const std::string& path, std::string& error);

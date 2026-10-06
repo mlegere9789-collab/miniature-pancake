@@ -549,6 +549,24 @@ AccessibleNode BuildKeyboardShortcutsNode(const std::vector<KeyboardShortcutSumm
   return list;
 }
 
+AccessibleNode BuildBuiltinShortcutsNode(const std::vector<KeyboardShortcutSummary>& shortcuts) {
+  AccessibleNode list;
+  list.name = "Keyboard Shortcuts Reference";
+  list.role = AccessibleRole::List;
+  char count_buf[48];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu built-in keyboard shortcuts", shortcuts.size());
+  list.description = count_buf;
+
+  for (const KeyboardShortcutSummary& s : shortcuts) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = s.combo_text;
+    item.description = s.command;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
 AccessibleNode BuildDocumentPropertiesNode(const std::vector<PropertyEntry>& entries) {
   return BuildLabelValueListNode("Document Properties", entries);
 }

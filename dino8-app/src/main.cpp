@@ -992,6 +992,7 @@ int main(int argc, char** argv) {
                                           dino8::app::CommandListAccessibleTree(app),
                                           dino8::app::CommandAliasesAccessibleTree(app),
                                           dino8::app::KeyboardShortcutsAccessibleTree(app),
+                                          dino8::app::BuiltinShortcutsAccessibleTree(app),
                                           dino8::app::DocumentPropertiesAccessibleTree(app),
                                           dino8::app::TexturesAccessibleTree(app),
                                           dino8::app::DisplayAccessibleTree(app));
