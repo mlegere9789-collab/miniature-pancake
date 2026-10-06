@@ -385,8 +385,16 @@ void RegisterAnalyzeCommands(CommandEngine& e) {
         if (ids.size() < 2) return;
         const SceneObject* a = ctx.Doc().Find(ids[0]); const SceneObject* b = ctx.Doc().Find(ids[1]);
         if (!a || !b || a->kind != ObjectKind::Curve || b->kind != ObjectKind::Curve) return;
-        double mn = 1e300, mx = 0;
-        for (double t : a->curve->DivideByCount(100)) { double d = (b->curve->ClosestPoint(a->curve->PointAt(t)) - a->curve->PointAt(t)).Length(); mn = std::min(mn, d); mx = std::max(mx, d); }
+        // Delegates to the kernel's own NurbsCurve::DeviationTo() - doubles
+        // the sample count until two successive refinements agree within
+        // tolerance, instead of the old fixed 100-sample DivideByCount with
+        // no convergence check at all.
+        double mn = 0, mx = 0;
+        const kernel::Result r = a->curve->DeviationTo(*b->curve, ctx.Settings().absolute_tolerance, mn, mx);
+        if (r != kernel::Result::Ok) {
+          ctx.Warn("Deviation: min " + FormatNumber(mn) + " max " + FormatNumber(mx) + " (did not converge to tolerance " + FormatNumber(ctx.Settings().absolute_tolerance) + " - treat as approximate)");
+          return;
+        }
         ctx.Print("Deviation: min " + FormatNumber(mn) + " max " + FormatNumber(mx));
       }, 2));
   Reg(e, "PointDeviation", OnSelection("Select points then a surface or mesh", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {

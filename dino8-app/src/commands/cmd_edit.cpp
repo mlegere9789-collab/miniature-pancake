@@ -156,34 +156,26 @@ class OffsetCommand : public Command {
     Vector3d n = ON_CrossProduct(tan, ActiveNormal(ctx));
     return ON_DotProduct(side - c.PointAt(t), n) >= 0 ? 1 : -1;
   }
+  // Delegates to the kernel's own `NurbsCurve::OffsetInPlane()` instead of
+  // this command's own prior hand-rolled special cases. Tries the curve's
+  // OWN fitted plane first - exact for a line, a coplanar polyline (now
+  // per-corner mitered, not blurred into a smooth refit the way the old
+  // generic sampled fallback did), and a circular arc/full circle (the old
+  // code only special-cased a circle built as a literal `ON_Arc`, not an
+  // arc genuinely recognized via `IsArc()`) - falling back to the active
+  // CPlane's normal only when the curve isn't planar in its own right,
+  // which closes the other half of this gap too: a genuinely non-planar
+  // 3D curve used to have no offset at all (the old code's own generic
+  // path assumed the CPlane normal was a sensible sweep axis for every
+  // curve, planar or not); now it gets the real kernel's tolerance-driven,
+  // curvature-fold-guarded sampled refit along that CPlane normal instead.
   void Make(CommandContext& ctx, const kernel::NurbsCurve& c, double d, int layer) {
-    std::vector<Point3d> pts;
-    Vector3d up = ActiveNormal(ctx);
-    if (c.IsLinear()) {
-      kernel::Interval dom = c.Domain();
-      Vector3d tan = c.TangentAt(dom.min); Vector3d s = ON_CrossProduct(tan, up); s.Unitize();
-      SceneObject n = SceneObject::MakeCurve(PolylineCurve({c.PointAt(dom.min) + s * d, c.PointAt(dom.max) + s * d}));
-      n.layer_index = layer; ctx.Doc().Add(std::move(n));
-      return;
-    }
-    if (c.IsCircle()) {
-      // Exact: a concentric circle.
-      ON_Arc arc;
-      if (c.raw().IsArc(nullptr, &arc)) {
-        ON_Circle circ = arc;
-        kernel::Interval dom = c.Domain();
-        Vector3d tan = c.TangentAt(dom.min); Vector3d s = ON_CrossProduct(tan, up); s.Unitize();
-        const double newr = circ.radius + (ON_DotProduct(s, c.PointAt(dom.min) - circ.Center()) > 0 ? d : -d);
-        if (newr > 0) { ON_ArcCurve ac(ON_Circle(circ.plane, newr)); kernel::NurbsCurve k; if (CurveFromON(ac, k)) { SceneObject n = SceneObject::MakeCurve(k); n.layer_index = layer; ctx.Doc().Add(std::move(n)); } }
-        return;
-      }
-    }
-    for (double t : c.SuggestedParameterValues(0.005)) {
-      Vector3d tan = c.TangentAt(t); Vector3d s = ON_CrossProduct(tan, up); s.Unitize();
-      pts.push_back(c.PointAt(t) + s * d);
-    }
-    if (pts.size() < 2) return;
-    SceneObject n = SceneObject::MakeCurve(c.Degree() == 1 ? PolylineCurve(pts) : kernel::NurbsCurve::FromControlPoints(pts, std::min(3, static_cast<int>(pts.size()) - 1)));
+    kernel::NurbsCurve out;
+    const double tol = ctx.Settings().absolute_tolerance;
+    kernel::Result r = c.OffsetInPlane(d, out, tol);
+    if (r != kernel::Result::Ok) r = c.OffsetInPlane(ActivePlane(ctx), d, out, tol);
+    if (r != kernel::Result::Ok) return;
+    SceneObject n = SceneObject::MakeCurve(out);
     n.layer_index = layer;
     ctx.Doc().Add(std::move(n));
   }
