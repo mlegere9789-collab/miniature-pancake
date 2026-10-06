@@ -221,6 +221,17 @@ connection, the same way a screen reader would - to prove:
       show_grid, so its "Show grid" row is checked to flip from "Yes" to
       "No" once it runs - the same before/after pattern check 10 uses for
       Named Views.
+  34. A "Keyboard Shortcuts Reference" accessible (role LIST) is
+      discoverable and reports all 17 of Dino8's own fixed, non-
+      customizable shortcuts (F1/F2/.../Enter) - mirroring
+      ui/Panels.cpp's kBuiltinShortcutRow1/2/3, the same fixed table the
+      Options window's own built-in-shortcuts reference tab renders its
+      three BulletText rows from, so this can't drift out of sync with
+      what that tab actually shows. Never empty in a real build, the same
+      "never empty" shape check 26/27/29 use for Hatch Patterns/Plug-ins/
+      Command Aliases - distinct from check 30's "Keyboard Shortcuts",
+      which is the user's own customizable shortcuts and starts empty. No
+      mutation check here: the table is fixed source, not user data.
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -953,6 +964,30 @@ def main():
             else:
                 ok("Display reports the default Perspective viewport's facts plus the document's default "
                    "grid/display-tolerance facts")
+
+        builtin_shortcuts = find_child_by_name(app, "Keyboard Shortcuts Reference", 10)
+        if builtin_shortcuts is None:
+            fail('"Keyboard Shortcuts Reference" accessible not found among the application\'s children')
+        else:
+            ok('"Keyboard Shortcuts Reference" accessible is discoverable via the real AT-SPI2 desktop')
+            # Never empty in a real build: the table is fixed source (see
+            # ui/Panels.cpp's kBuiltinShortcutRow1/2/3), not user data.
+            expected_combos = [
+                "F1", "F2", "F3", "F7", "F8", "F9", "F10/F11",
+                "Ctrl+N/O/S", "Ctrl+Z/Y", "Ctrl+A", "Ctrl+G", "Ctrl+H",
+                "Home", "PgUp/PgDn", "Arrow keys", "Esc", "Enter",
+            ]
+            got_combos = [builtin_shortcuts.getChildAtIndex(j).name for j in range(builtin_shortcuts.childCount)]
+            if got_combos != expected_combos:
+                fail(f"Keyboard Shortcuts Reference's rows are {got_combos!r} (expected {expected_combos!r})")
+            else:
+                ok("Keyboard Shortcuts Reference reports all 17 of Dino8's own fixed shortcuts, in order")
+                first = builtin_shortcuts.getChildAtIndex(0)
+                if first is None or first.description != "Command list":
+                    got = None if first is None else first.description
+                    fail(f'Keyboard Shortcuts Reference\'s "F1" row has Description {got!r} (expected "Command list")')
+                else:
+                    ok('Keyboard Shortcuts Reference\'s "F1" row carries "Command list" as its Description')
 
         viewports = find_child_by_name(app, "Viewports", 10)
         if viewports is None:

@@ -1428,6 +1428,57 @@ EndContinuityReport NurbsCurve::AnalyzeEndContinuity(const NurbsCurve& other) co
   return report;
 }
 
+Result NurbsCurve::Fair(double tolerance, int iterations, double factor, double* out_max_deviation) {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Fair: tolerance must be positive");
+  }
+  if (iterations < 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Fair: iterations must be at least 1");
+  }
+  if (!(factor > 0.0) || factor > 1.0) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Fair: factor must be in (0, 1]");
+  }
+  if (out_max_deviation) *out_max_deviation = 0.0;
+
+  const int n = ControlPointCount();
+  if (n < 3) {
+    return Result::NoOpAlreadySatisfied;
+  }
+
+  NurbsCurve candidate = *this;
+  std::vector<Point3d> current(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) current[static_cast<size_t>(i)] = candidate.ControlPointAt(i);
+
+  for (int iter = 0; iter < iterations; ++iter) {
+    std::vector<Point3d> next = current;
+    for (int i = 1; i < n - 1; ++i) {
+      const Point3d& prev = current[static_cast<size_t>(i - 1)];
+      const Point3d& here = current[static_cast<size_t>(i)];
+      const Point3d& after = current[static_cast<size_t>(i + 1)];
+      next[static_cast<size_t>(i)] =
+          Point3d((1.0 - factor) * here.x + factor * 0.5 * (prev.x + after.x),
+                  (1.0 - factor) * here.y + factor * 0.5 * (prev.y + after.y),
+                  (1.0 - factor) * here.z + factor * 0.5 * (prev.z + after.z));
+    }
+    current = std::move(next);
+  }
+  for (int i = 1; i < n - 1; ++i) candidate.SetControlPointAt(i, current[static_cast<size_t>(i)]);
+
+  const Interval domain = Domain();
+  const int sample_count = std::max(200, 20 * n);
+  double worst = 0.0;
+  for (int i = 0; i <= sample_count; ++i) {
+    const double t = domain.min + (domain.max - domain.min) * i / sample_count;
+    worst = std::max(worst, (PointAt(t) - candidate.PointAt(t)).Length());
+  }
+  if (out_max_deviation) *out_max_deviation = worst;
+  if (worst > tolerance) {
+    return Result::Failed;
+  }
+  curve_ = candidate.raw();
+  return Result::Ok;
+}
+
 Interval NurbsCurve::Domain() const {
   const ON_Interval domain = curve_.Domain();
   return Interval{domain.Min(), domain.Max()};

@@ -4541,7 +4541,8 @@ std::pair<Brep, Brep> SplitBrepByPlane(const Brep& target, Vector3d plane_normal
   }
   Vector3d n = plane_normal;
   if (!n.Unitize()) {
-    throw std::invalid_argument("dino8::kernel::SplitBrepByPlane: plane_normal must be non-zero");
+    throw BooleanOperationError(BooleanFailureReason::InvalidDirection, "SplitBrepByPlane",
+                                 "dino8::kernel::SplitBrepByPlane: plane_normal must be non-zero");
   }
   if (!(tolerance > 0.0)) {
     throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "SplitBrepByPlane",
@@ -4623,7 +4624,8 @@ std::vector<Brep> SplitBrepByManyPlanes(const Brep& target, Vector3d plane_norma
   }
   Vector3d n = plane_normal;
   if (!n.Unitize()) {
-    throw std::invalid_argument("dino8::kernel::SplitBrepByManyPlanes: plane_normal must be non-zero");
+    throw BooleanOperationError(BooleanFailureReason::InvalidDirection, "SplitBrepByManyPlanes",
+                                 "dino8::kernel::SplitBrepByManyPlanes: plane_normal must be non-zero");
   }
   if (!(tolerance > 0.0)) {
     throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "SplitBrepByManyPlanes",

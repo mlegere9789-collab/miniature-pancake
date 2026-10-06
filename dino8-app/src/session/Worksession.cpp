@@ -139,6 +139,62 @@ int LimitWorksessionModel(Document& doc, const std::string& alias_or_path, kerne
   return removed;
 }
 
+namespace {
+
+// Shared by ReloadWorksession's single-model and "all" paths: re-reads
+// `m`'s own source file and swaps in the freshly-loaded objects for the
+// ones `m.object_ids` currently names, preserving `m`'s alias, layer and
+// limit box. On failure (bad path/file), `m` and the document are left
+// untouched and `error` is set.
+int ReloadOneModel(Document& doc, ReferenceModel& m, std::string& error) {
+  Document ref;
+  if (!Load3dm(ref, m.path, error)) return -1;
+  doc.BeginChange("Worksession Reload");
+  for (ObjectId id : m.object_ids) doc.Remove(id);
+  int layer_idx = doc.FindLayer("Ref: " + m.alias);
+  if (layer_idx < 0) {
+    layer_idx = doc.AddLayer("Ref: " + m.alias);
+    doc.Layers()[static_cast<size_t>(layer_idx)].locked = true;
+    doc.Layers()[static_cast<size_t>(layer_idx)].color = Color::FromBytes(140, 140, 140);
+  }
+  std::vector<ObjectId> new_ids;
+  for (SceneObject& o : ref.Objects()) {
+    if (m.has_limit_box) {
+      const kernel::BoundingBox bb = o.BoundingBox();
+      if (!BoxesIntersect(bb.min, bb.max, m.limit_min, m.limit_max)) continue;
+    }
+    o.selected = false;
+    o.locked = true;
+    o.visible = true;
+    o.layer_index = layer_idx;
+    o.user_text["Dino8.Reference"] = m.path;
+    new_ids.push_back(doc.Add(std::move(o)));
+  }
+  m.object_ids = new_ids;
+  return static_cast<int>(new_ids.size());
+}
+
+}  // namespace
+
+int ReloadWorksession(Document& doc, const std::string& alias_or_path, std::string& error) {
+  const bool all = Lower(alias_or_path) == "all" || alias_or_path == "*";
+  if (!all) {
+    ReferenceModel* m = FindModel(doc, alias_or_path);
+    if (!m) { error = "No attached reference model matches '" + alias_or_path + "'"; return -1; }
+    return ReloadOneModel(doc, *m, error);
+  }
+  int total = 0;
+  std::string first_error;
+  for (ReferenceModel& m : doc.ReferenceModels()) {
+    std::string err;
+    const int n = ReloadOneModel(doc, m, err);
+    if (n < 0) { if (first_error.empty()) first_error = m.alias + ": " + err; continue; }
+    total += n;
+  }
+  error = first_error;
+  return total;
+}
+
 bool SaveWorksessionFile(const Document& doc, const std::string& path, std::string& error) {
   std::ofstream out(path);
   if (!out) { error = "Could not write " + path; return false; }

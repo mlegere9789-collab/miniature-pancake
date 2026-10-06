@@ -116,6 +116,7 @@
 #include "ui/Panels.h"
 #include "ui/Theme.h"
 #include "util/ThreadPool.h"
+#include "util/json_mini.h"
 #include "viewport/Viewport.h"
 
 namespace {
@@ -355,6 +356,17 @@ bool ComputeQueryFlagSet(const std::string& query, const std::string& key) {
     pos = amp + 1;
   }
   return false;
+}
+
+// Reads a 3-element JSON array ("[x,y,z]") into a Point3d for POST
+// /objects below - false (p left unchanged) if `v` isn't an array of
+// exactly 3 numbers, the same honest-refusal shape the rest of that
+// route uses rather than defaulting unset coordinates to 0.
+bool ComputeJsonPoint3d(const dino8::json::Value& v, dino8::kernel::Point3d& p) {
+  if (!v.IsArray() || v.Size() != 3) return false;
+  for (size_t i = 0; i < 3; ++i) if (v[i].type != dino8::json::Value::Type::Number) return false;
+  p = dino8::kernel::Point3d(v[0].number, v[1].number, v[2].number);
+  return true;
 }
 
 // Minimal string escaping for the compute server's JSON responses (GET
@@ -690,9 +702,11 @@ int main(int argc, char** argv) {
     const std::string path = qpos == std::string::npos ? req.path : req.path.substr(0, qpos);
     const std::string query = qpos == std::string::npos ? std::string() : req.path.substr(qpos + 1);
     const bool is_run = path == "/run" || path == "/run/python";
-    if ((is_run && req.method != "POST") || (path == "/objects" && req.method != "GET")) {
+    const bool is_objects = path == "/objects";
+    if ((is_run && req.method != "POST") ||
+        (is_objects && req.method != "GET" && req.method != "POST")) {
       resp.status = 405;
-      resp.body = "Dino 8 compute service: /run and /run/python take POST, /objects takes GET\n";
+      resp.body = "Dino 8 compute service: /run and /run/python take POST, /objects takes GET or POST\n";
       return resp;
     }
     // Checked against every registered --serve-token in order (constant-time
@@ -722,15 +736,17 @@ int main(int argc, char** argv) {
     // running document, as JSON - rather than only the plain print() text
     // /run[/python] return. `?geometry=1` additionally carries each
     // object's own geometry for three kinds: point (coordinates), mesh
-    // (vertices/faces), and now curve (degree/control points/weights/knots
-    // - the exact NURBS definition, enough to reconstruct the curve, not
+    // (vertices/faces), and curve (degree/control points/weights/knots -
+    // the exact NURBS definition, enough to reconstruct the curve, not
     // just sampled points). Every other kind (surface, polysurface, SubD,
     // point cloud) still gets "geometry":null - a surface's own two-
     // direction knot vectors and a Brep's multiple trimmed faces are a
     // substantially larger undertaking than one curve's single control
-    // polygon, not attempted here - and there is still no way to POST
-    // geometry *in* for any kind either.
-    if (path == "/objects") {
+    // polygon, not attempted here. POST /objects (right below) closes the
+    // other half - sending one of these same three shapes back in adds
+    // that exact geometry to the document, the first way to get geometry
+    // *into* this server as structured data rather than Lua/Python source.
+    if (path == "/objects" && req.method == "GET") {
       const dino8::app::Document& doc = app.Doc();
       const bool want_geometry = ComputeQueryFlagSet(query, "geometry");
       std::string body = "[";
@@ -815,6 +831,129 @@ int main(int argc, char** argv) {
       body += "]\n";
       resp.content_type = "application/json";
       resp.body = body;
+      return resp;
+    }
+    // POST /objects: the other half of the geometry wire format GET
+    // /objects?geometry=1 (above) reads - sends one of that same route's
+    // own three shapes (point/mesh/curve) back in as a JSON request body
+    // and adds it to the document, the first way geometry can get *into*
+    // this server as structured data rather than Lua/Python source text.
+    // Uses the existing util/json_mini.h reader (previously only ever fed
+    // trusted local config files - its own depth cap already bounds a
+    // maliciously-nested body, and ComputeServer's 8 MiB request-size cap
+    // already bounds the body's total size, so reusing it here against
+    // network input adds no new unguarded trust boundary).
+    if (path == "/objects" && req.method == "POST") {
+      dino8::json::Value root;
+      std::string parse_error;
+      if (!dino8::json::Parse(req.body, root, parse_error) || !root.IsObject()) {
+        resp.status = 400;
+        resp.content_type = "application/json";
+        resp.body = "{\"ok\":false,\"error\":\"malformed JSON body: " +
+                    ComputeJsonEscape(parse_error.empty() ? "expected a JSON object" : parse_error) + "\"}\n";
+        return resp;
+      }
+      const std::string type = root["type"].AsString();
+      dino8::app::Document& doc = app.Doc();
+      dino8::app::ObjectId new_id = dino8::app::kNoObject;
+      std::string error = "unknown or missing \"type\" (expected \"point\", \"mesh\" or \"curve\")";
+      if (type == "point") {
+        dino8::kernel::Point3d p;
+        if (ComputeJsonPoint3d(root["point"], p)) {
+          doc.BeginChange("compute: AddPoint");
+          new_id = doc.Add(dino8::app::SceneObject::MakePoint(p));
+        } else {
+          error = "point: expected \"point\": [x, y, z]";
+        }
+      } else if (type == "mesh") {
+        const dino8::json::Value& verts_json = root["vertices"];
+        const dino8::json::Value& faces_json = root["faces"];
+        bool ok = verts_json.IsArray() && faces_json.IsArray() && verts_json.Size() > 0 && faces_json.Size() > 0;
+        std::vector<dino8::kernel::Point3d> verts;
+        if (ok) {
+          verts.reserve(verts_json.Size());
+          for (size_t i = 0; ok && i < verts_json.Size(); ++i) {
+            dino8::kernel::Point3d p;
+            if (ComputeJsonPoint3d(verts_json[i], p)) verts.push_back(p); else ok = false;
+          }
+        }
+        dino8::kernel::Mesh m;
+        if (ok) {
+          ON_Mesh& r = m.raw();
+          for (size_t i = 0; i < verts.size(); ++i) r.SetVertex(static_cast<int>(i), verts[i]);
+          for (size_t f = 0; ok && f < faces_json.Size(); ++f) {
+            const dino8::json::Value& face = faces_json[f];
+            if (!face.IsArray() || (face.Size() != 3 && face.Size() != 4)) { ok = false; break; }
+            int idx[4] = {0, 0, 0, 0};
+            for (size_t k = 0; k < face.Size(); ++k) {
+              const dino8::json::Value& vi = face[k];
+              const int v = static_cast<int>(vi.number);
+              if (vi.type != dino8::json::Value::Type::Number || v < 0 || v >= static_cast<int>(verts.size())) { ok = false; break; }
+              idx[k] = v;
+            }
+            if (!ok) break;
+            if (face.Size() == 3) r.SetTriangle(static_cast<int>(f), idx[0], idx[1], idx[2]);
+            else r.SetQuad(static_cast<int>(f), idx[0], idx[1], idx[2], idx[3]);
+          }
+        }
+        if (ok) {
+          m.raw().ComputeFaceNormals();
+          m.raw().ComputeVertexNormals();
+          doc.BeginChange("compute: AddMesh");
+          new_id = doc.Add(dino8::app::SceneObject::MakeMesh(m));
+        } else {
+          error = "mesh: expected non-empty \"vertices\" ([x,y,z] each) and \"faces\" (3 or 4 valid 0-based indices each)";
+        }
+      } else if (type == "curve") {
+        const dino8::json::Value& cvs_json = root["control_points"];
+        const dino8::json::Value& degree_json = root["degree"];
+        const int degree = static_cast<int>(degree_json.number);
+        bool ok = degree_json.type == dino8::json::Value::Type::Number && degree >= 1 &&
+                   cvs_json.IsArray() && static_cast<int>(cvs_json.Size()) >= degree + 1;
+        std::vector<dino8::kernel::Point3d> cvs;
+        if (ok) {
+          cvs.reserve(cvs_json.Size());
+          for (size_t i = 0; ok && i < cvs_json.Size(); ++i) {
+            dino8::kernel::Point3d p;
+            if (ComputeJsonPoint3d(cvs_json[i], p)) cvs.push_back(p); else ok = false;
+          }
+        }
+        if (ok) {
+          dino8::kernel::NurbsCurve c = dino8::kernel::NurbsCurve::FromControlPoints(cvs, degree);
+          const dino8::json::Value& knots_json = root["knots"];
+          if (knots_json.IsArray()) {
+            ok = static_cast<int>(knots_json.Size()) == c.KnotCount();
+            for (int i = 0; ok && i < c.KnotCount(); ++i) {
+              const dino8::json::Value& kv = knots_json[static_cast<size_t>(i)];
+              ok = kv.type == dino8::json::Value::Type::Number && c.SetKnotAt(i, kv.number) == dino8::kernel::Result::Ok;
+            }
+          }
+          const dino8::json::Value& weights_json = root["weights"];
+          if (ok && weights_json.IsArray()) {
+            ok = static_cast<int>(weights_json.Size()) == c.ControlPointCount();
+            for (int i = 0; ok && i < c.ControlPointCount(); ++i) {
+              const dino8::json::Value& wv = weights_json[static_cast<size_t>(i)];
+              ok = wv.type == dino8::json::Value::Type::Number && c.SetWeightAt(i, wv.number) == dino8::kernel::Result::Ok;
+            }
+          }
+          if (ok) {
+            doc.BeginChange("compute: AddCurve");
+            new_id = doc.Add(dino8::app::SceneObject::MakeCurve(c));
+          }
+        }
+        if (new_id == dino8::app::kNoObject) {
+          error = "curve: expected an integer \"degree\">=1, at least degree+1 \"control_points\" ([x,y,z] each), "
+                  "an optional \"knots\" with exactly degree+control_points-1 entries, and an optional \"weights\" "
+                  "with exactly one entry per control point";
+        }
+      }
+      resp.content_type = "application/json";
+      if (new_id == dino8::app::kNoObject) {
+        resp.status = 400;
+        resp.body = "{\"ok\":false,\"error\":\"" + ComputeJsonEscape(error) + "\"}\n";
+      } else {
+        resp.body = "{\"ok\":true,\"id\":" + std::to_string(new_id) + "}\n";
+      }
       return resp;
     }
     if (path == "/run") {
@@ -1028,6 +1167,7 @@ int main(int argc, char** argv) {
                                           dino8::app::CommandListAccessibleTree(app),
                                           dino8::app::CommandAliasesAccessibleTree(app),
                                           dino8::app::KeyboardShortcutsAccessibleTree(app),
+                                          dino8::app::BuiltinShortcutsAccessibleTree(app),
                                           dino8::app::DocumentPropertiesAccessibleTree(app),
                                           dino8::app::TexturesAccessibleTree(app),
                                           dino8::app::DisplayAccessibleTree(app));

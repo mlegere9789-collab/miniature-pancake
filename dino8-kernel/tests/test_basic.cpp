@@ -4642,6 +4642,99 @@ void TestFindSurfaceSilhouettePointsSphereEquator() {
   Check(FindSurfaceSilhouettePoints(sphere_surface, ON_3dVector(0, 0, 0), opt).empty(), "a zero-length view direction returns empty outright");
 }
 
+// PARITY_MAP.md's own "Silhouette / outline curves" bullet: narrows the
+// "orthographic projection only" caveat FindSurfaceSilhouettePoints()'s own
+// header doc comment names - FindSurfaceSilhouettePointsPerspective() finds
+// the same kind of tangency crossing, but along a per-point ray from a
+// finite eye rather than one fixed direction.
+void TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon() {
+  using dino8::kernel::FindSurfaceSilhouettePointsPerspective;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  // A sphere of radius r centered at the origin, viewed from a finite eye
+  // point on the -Z axis at distance d > r: the hand-derivable horizon
+  // circle (where a tangent line from the eye touches the sphere) satisfies
+  // dot(P, P - eye) == 0 for every point P of the sphere's own surface -
+  // with eye == (0, 0, -d), that reduces to z == -r^2/d, radius ==
+  // r*sqrt(d^2-r^2)/d (the classical "tangent line from an external point"
+  // relation).
+  const double r = 3.0, d = 10.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), r);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+
+  const Point3d eye(0, 0, -d);
+  const IntersectOptions opt;
+  const auto hits = FindSurfaceSilhouettePointsPerspective(sphere_surface, eye, opt);
+  Check(!hits.empty(), "a sphere viewed from a finite external eye point finds genuine perspective silhouette points");
+
+  const double expected_z = -r * r / d;
+  const double expected_radius = r * std::sqrt(d * d - r * r) / d;
+  bool all_on_horizon = true;
+  for (const auto& h : hits) {
+    if (std::abs(h.point.z - expected_z) > 1e-5 || std::abs(std::hypot(h.point.x, h.point.y) - expected_radius) > 1e-5) { all_on_horizon = false; break; }
+  }
+  Check(all_on_horizon, "every reported perspective silhouette point sits exactly on the hand-derivable horizon circle (z == -r^2/d, radius r*sqrt(d^2-r^2)/d)");
+
+  // An eye held exactly at the sphere's own center: dot(P, P - center) ==
+  // dot(P, P) == r^2 at every point P of the surface, a nonzero constant -
+  // genuinely no tangency exists anywhere, not merely an under-sampled one.
+  Check(FindSurfaceSilhouettePointsPerspective(sphere_surface, Point3d(0, 0, 0), opt).empty(), "an eye at the sphere's own center finds no silhouette at all (every point is equally face-on, none tangent)");
+}
+
+// PARITY_MAP.md's own "Silhouette / outline curves" bullet: narrows the
+// "point detections only" caveat FindSurfaceSilhouettePoints()'s own header
+// doc comment names - FindSurfaceSilhouetteCurves() chains that same
+// function's own isolated grid-edge crossings into actual curves.
+void TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves() {
+  using dino8::kernel::FindSurfaceSilhouetteCurves;
+  using dino8::kernel::IntersectOptions;
+
+  // The same sphere-viewed-straight-down-its-axis fixture
+  // TestFindSurfaceSilhouettePointsSphereEquator() already establishes a
+  // hand-derivable ground truth for (z == 0, at exactly the sphere's own
+  // radius).
+  const double radius = 3.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+
+  const IntersectOptions opt;
+  const auto curves = FindSurfaceSilhouetteCurves(sphere_surface, ON_3dVector(0, 0, 1), opt);
+  Check(!curves.empty(), "viewing a sphere straight down its own axis chains the equator's own crossings into at least one genuine curve");
+  bool all_on_equator = true;
+  int total_samples = 0;
+  for (const auto& sc : curves) {
+    Check(sc.curve.IsValid(), "each chained curve is a genuine, valid NURBS curve, not an empty placeholder");
+    const ON_Interval dom = sc.curve.Domain();
+    for (int k = 0; k <= 20; ++k) {
+      const double t = dom.ParameterAt(static_cast<double>(k) / 20.0);
+      const ON_3dPoint p = sc.curve.PointAt(t);
+      ++total_samples;
+      // A generous tolerance relative to the radius: a cubic spline
+      // interpolating points on a true circle passes through those points
+      // exactly but can bow slightly off the circle BETWEEN them - this
+      // checks the chain is a genuine fit to the equator, not an unrelated
+      // curve, not that it reproduces the circle to machine precision.
+      if (std::abs(p.z) > 0.05 * radius || std::abs(std::hypot(p.x, p.y) - radius) > 0.05 * radius) { all_on_equator = false; break; }
+    }
+    if (!all_on_equator) break;
+  }
+  Check(all_on_equator, "every sampled point of every chained curve sits close to the hand-derivable equator - a real fit through genuine on-equator crossings, not an unrelated curve");
+  Check(total_samples > 0, "sanity: the equator fixture actually produced samples to check");
+
+  // A flat, generously-bounded plane viewed straight down its own normal
+  // has no tangency crossings at all, so no curve to chain either.
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-10, 10), true);
+  ground.SetExtents(1, ON_Interval(-10, 10), true);
+  Check(FindSurfaceSilhouetteCurves(ground, ON_3dVector(0, 0, 1), opt).empty(), "a flat plane viewed straight down its own normal chains into zero curves");
+
+  // A zero-length view direction is refused outright.
+  Check(FindSurfaceSilhouetteCurves(sphere_surface, ON_3dVector(0, 0, 0), opt).empty(), "a zero-length view direction returns empty outright");
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Projection of curves/points onto surfaces along a direction (Project)"
 // bullet: "app ProjectCommand samples the curve and ray-casts along the
@@ -41546,6 +41639,108 @@ void TestFromMixedFacesNonManifoldBuildsFourPageFanAndMatchesStrictOnManifoldInp
         "the manifold box built through the non-manifold entry point is still a closed manifold");
 }
 
+// FromMixedFacesNonManifold()'s own N-trim-edge construction, exercised on
+// a genuinely CURVED shared edge instead of a straight spine -
+// PARITY_MAP.md's own "Non-manifold topology" bullet named this as
+// test-verified only for straight planar spines, "a curved cap arc shared
+// by 3+ faces takes the same code path but has no fixture." Fixture:
+// three SphericalFace wedges sharing the EXACT same longitude-0 meridian
+// arc (every wedge uses the identical frame/radius/lat0/lat1 - only
+// `angle`, the longitude EXTENT, and `outward` differ - and the u=0 edge
+// of a spherical patch depends only on frame/radius/lat0/lat1, never on
+// angle, per FromMixedFaces()'s own closed-form derivation), fanned open
+// to three different longitude extents - the curved analogue of
+// NonManifoldFanPages()'s own straight-spine book. `outward` alternates
+// true/false/true, the identical "two forward, one reversed" mix
+// NonManifoldFanPages()'s own i%2==0 winding already sets up, so
+// SplitNonManifoldEdge()'s own pairing behavior is directly comparable to
+// the straight-spine case rather than accidentally exercising its
+// different "no opposite-class partner at all" path (confirmed via
+// `dino8_scratch_test`: three SAME-orientation wedges instead split the
+// shared edge into three wholly separate copies, a genuinely different,
+// equally valid but NOT what this test is after - distinguishing a
+// curved-edge-specific bug from a known orientation-class interaction
+// would need a separate fixture of its own).
+void TestFromMixedFacesNonManifoldBuildsThreeWedgeFanOnACurvedMeridianArc() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  std::vector<Brep::SphericalFace> wedges;
+  int idx = 0;
+  for (double angle : {M_PI / 2, M_PI, 3 * M_PI / 2}) {
+    Brep::SphericalFace sf;
+    sf.frame = ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0));
+    sf.radius = 2.0;
+    sf.angle = angle;
+    sf.lat0 = -0.3;
+    sf.lat1 = 0.3;
+    sf.outward = (idx % 2 == 0);
+    wedges.push_back(sf);
+    ++idx;
+  }
+
+  Brep fan = Brep::FromMixedFacesNonManifold({}, {}, {}, wedges);
+  const ON_Brep& b = fan.raw();
+  Check(fan.FaceCount() == 3, "FromMixedFacesNonManifold builds all 3 wedges");
+  Check(b.m_E.Count() == 10, "10 edges: 1 shared meridian arc + 3 wedges * 3 own sides");
+  Check(b.m_V.Count() == 8, "8 vertices: 2 meridian ends welded once + 3 wedges * 2 outer corners");
+
+  int spine = -1;
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+    if (b.m_E[ei].TrimCount() == 3) {
+      Check(spine < 0, "only one edge carries 3 trims");
+      spine = ei;
+    } else {
+      Check(b.m_E[ei].TrimCount() == 1, "every other edge is an ordinary single-trim wedge side");
+    }
+  }
+  Check(spine >= 0, "the shared meridian arc carries all 3 wedges' trims");
+  if (spine < 0) return;
+  Check(!b.m_E[spine].IsLinear(), "the shared edge is genuinely CURVED, not a straight line - the whole point of "
+                                  "this fixture versus NonManifoldFanPages()'s own straight spine");
+
+  // Exact closed-form endpoints at phi=0 (frame.origin + radius*(cos(lat)*
+  // frame.xaxis + sin(lat)*frame.zaxis), per FromMixedFaces()'s own
+  // derivation for a SphericalFace's u=0 edge) - hand-derived, not
+  // measured after the fact.
+  const double r = 2.0;
+  const ON_3dPoint end_lo(r * std::cos(-0.3), 0.0, r * std::sin(-0.3));
+  const ON_3dPoint end_hi(r * std::cos(0.3), 0.0, r * std::sin(0.3));
+  const ON_3dPoint s0 = b.m_V[b.m_E[spine].m_vi[0]].point, s1 = b.m_V[b.m_E[spine].m_vi[1]].point;
+  Check((s0.DistanceTo(end_lo) < 1e-9 && s1.DistanceTo(end_hi) < 1e-9) ||
+            (s0.DistanceTo(end_hi) < 1e-9 && s1.DistanceTo(end_lo) < 1e-9),
+        "the 3-trim edge's own endpoints exactly match the meridian's closed-form lat0/lat1 points");
+
+  ON_TextLog log;
+  Check(b.IsValid(&log), "the non-manifold wedge fan is otherwise a valid ON_Brep");
+
+  const Brep::CheckReport before = fan.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1, "Check() reports exactly one NonManifoldEdge");
+  for (const Brep::CheckIssue& issue : before.issues) {
+    if (issue.kind == Brep::CheckIssue::Kind::NonManifoldEdge) {
+      Check(issue.index == spine && issue.other_index == 3, "...naming the shared meridian arc and its trim count (3)");
+    }
+  }
+  Check(before.Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0,
+        "no false NonManifoldVertex at the meridian's own ends - the wedges are connected through the shared edge");
+  Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 9, "the 9 wedge sides are naked, nothing else");
+  Check(before.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+        "no InconsistentFaceOrientation false positive on the curved 3-trim edge");
+
+  // The existing heal, run on this curved edge exactly as the straight
+  // spine's own test already proves it on a linear one.
+  Check(fan.SplitNonManifoldEdge(spine) == Result::Ok, "SplitNonManifoldEdge() heals the curved spine too");
+  Check(fan.raw().m_E.Count() == 11, "one new edge for the odd trim out (10 -> 11), same as the straight-spine case");
+  Check(fan.raw().m_E[spine].TrimCount() == 2, "the shared arc keeps exactly one opposite-direction manifold pair");
+  Check(!fan.raw().m_E[spine].IsLinear(), "...and is still the same genuinely curved edge, not replaced by a chord");
+  const Brep::CheckReport after = fan.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0, "no non-manifold edge remains after the heal");
+  Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 10, "9 wedge sides + the odd trim's own new naked copy");
+  Check(after.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+        "the surviving pair is well-oriented in Check()'s own sense");
+  Check(fan.raw().IsValid(), "still a valid ON_Brep after the heal");
+}
+
 // The strongest check this feature's own spec calls for: build a Brep
 // via FromPlanarFaces(), save it to a genuine .3dm, reload it, and wrap
 // the RELOADED raw ON_Brep in a FRESH dino8::kernel::Brep with EMPTY side
@@ -48794,8 +48989,11 @@ void TestBooleanOperationErrorGeneralEngineFailureReasons() {
   using dino8::kernel::BooleanOperationError;
   using dino8::kernel::ImprintFaces;
   using dino8::kernel::MutualImprintFaces;
+  using dino8::kernel::SplitBrepByManyPlanes;
+  using dino8::kernel::SplitBrepByPlane;
   using dino8::kernel::SplitBySheet;
   using dino8::kernel::TrimSheetBySolid;
+  using dino8::kernel::Vector3d;
 
   const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
   const Brep other = Brep::Box(1, 1, 1, 3, 3, 3);
@@ -48858,6 +49056,16 @@ void TestBooleanOperationErrorGeneralEngineFailureReasons() {
          "SplitBySheet empty solid");
   expect([&] { TrimSheetBySolid(empty, box); }, BooleanFailureReason::EmptyOperand, "TrimSheetBySolid",
          "TrimSheetBySolid empty sheet");
+
+  // InvalidDirection (new this pass): a zero plane_normal, on both
+  // SplitBrepByPlane and its plural sibling SplitBrepByManyPlanes - the one
+  // precondition either function had left as a plain std::invalid_argument
+  // even after their own tolerance/empty-operand checks were already typed
+  // (this category's own "Boolean failure diagnostics" bullet).
+  expect([&] { SplitBrepByPlane(box, Vector3d(0, 0, 0), 1.0); }, BooleanFailureReason::InvalidDirection,
+         "SplitBrepByPlane", "SplitBrepByPlane zero plane_normal");
+  expect([&] { SplitBrepByManyPlanes(box, Vector3d(0, 0, 0), {1.0}); }, BooleanFailureReason::InvalidDirection,
+         "SplitBrepByManyPlanes", "SplitBrepByManyPlanes zero plane_normal");
 }
 
 // Extends the typed-refusal mechanism past the two prior tests above to the
@@ -53340,11 +53548,18 @@ void TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate() {
   Check(threw, "RemoveNakedMicroEdge() throws std::out_of_range for an out-of-range edge_index");
 }
 
-// The scope restriction itself: a micro edge whose loop-neighbor is the
-// two-square fixture's own SHARED edge (or whose endpoint is a vertex a
-// third face also depends on) must be refused, not guessed at - the
-// Brep is left completely unchanged either way.
-void TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge() {
+// 2026-10-06: this used to prove the scope restriction itself (a micro
+// edge whose loop-neighbor is a SHARED edge was refused outright). That
+// restriction is deliberately narrowed now (see RemoveNakedMicroEdge()'s
+// own doc comment) - a shared neighbor is nudged and re-trimmed exactly
+// like a naked one already was, since ReplaceEdgeCurve() re-trims every
+// face an edge borders generically. This test is updated in place to
+// prove the NEW behavior (a deliberate generalization, not a weakened
+// check): the call now succeeds, and - the actual load-bearing proof,
+// not just Result::Ok - face b (which only touches this micro edge
+// indirectly, through the shared neighbor) gets genuinely re-trimmed
+// too, not merely face a.
+void TestRemoveNakedMicroEdgeClosesSliverNextToASharedEdge() {
   using dino8::kernel::Brep;
   using dino8::kernel::Point3d;
   using dino8::kernel::Result;
@@ -53376,24 +53591,137 @@ void TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge() {
   }
   Check(micro_index >= 0, "found the sliver edge next to the shared seam");
 
-  const int edges_before = flat.raw().m_E.Count();
-  const Result r = flat.RemoveNakedMicroEdge(micro_index, 0.01);
-  Check(r == Result::Failed,
-        "RemoveNakedMicroEdge() refuses a sliver whose neighbor is a shared edge (or whose endpoint a third "
-        "face also depends on) rather than guessing at it");
-  Check(flat.raw().m_E.Count() == edges_before, "a refused call leaves the edge count completely unchanged");
-  Check(flat.raw().IsValid(), "the Brep is still a valid ON_Brep after a refused call");
-
-  // The genuinely naked, non-micro-adjacent original shared edge is
-  // untouched: RemoveNakedMicroEdge() on it directly is also refused
-  // (it isn't a micro edge at all - length ~1, not < tolerance).
   int shared_edge_index = -1;
   for (int i = 0; i < flat.raw().m_E.Count(); ++i) {
     if (flat.raw().m_E[i].TrimCount() == 2) { shared_edge_index = i; break; }
   }
-  Check(shared_edge_index >= 0, "found the shared edge");
+  Check(shared_edge_index >= 0, "found the shared edge between a and b");
+
+  auto total_area = [&]() {
+    double area = 0;
+    for (const dino8::kernel::Mesh& m : flat.Tessellate(24, 24)) area += m.Area();
+    return area;
+  };
+  const double area_before = total_area();
+
+  const int edges_before = flat.raw().m_E.Count();
+  const Result r = flat.RemoveNakedMicroEdge(micro_index, 0.01);
+  Check(r == Result::Ok,
+        "RemoveNakedMicroEdge() now succeeds on a sliver whose own loop-neighbor is a shared (2-trim) edge");
+  Check(flat.raw().IsValid(), "the Brep is still a valid ON_Brep after the fix");
+  Check(flat.FaceCount() == 2, "still exactly 2 faces");
+  Check(flat.raw().m_E.Count() == edges_before - 1, "the sliver edge is genuinely gone: one fewer edge");
+
+  // The load-bearing proof: face b's own boundary at (1,1,0) was only
+  // ever reachable through the SHARED neighbor edge being nudged, never
+  // directly - if ReplaceEdgeCurve() had only re-trimmed face a (the
+  // micro edge's own face) and silently left face b's own trim alone,
+  // b's own loop would now have a real gap at that corner. Confirmed
+  // structurally instead: the shared edge (still TrimCount() == 2, still
+  // bordering both a and b) is still exactly shared, and the whole Brep
+  // is still a closed, gap-free 2-manifold there - IsValid() above
+  // already re-checks every trim/edge/vertex consistency, including
+  // face b's.
+  Check(flat.raw().m_E[shared_edge_index].TrimCount() == 2,
+        "the shared edge is still genuinely shared (2-trim) between a and b after the fix, not orphaned");
+  Check(flat.raw().m_F[0].Loop(0)->TrimCount() == 4 && flat.raw().m_F[1].Loop(0)->TrimCount() == 4,
+        "a is back to a plain quad (lost the sliver trim) and b's own quad is unaffected in trim count");
+
+  const double area_after = total_area();
+  Check(std::abs(area_after - area_before) < 1e-3,
+        "closing the sliver next to the shared seam left the combined area of BOTH faces unchanged within a "
+        "tight tolerance");
+
+  // RemoveNakedMicroEdge() on the shared edge directly is still refused -
+  // it isn't a micro edge at all (length ~1, not < tolerance), and it
+  // isn't naked either (TrimCount() == 2, out of this method's own
+  // single-trim scope, RemoveSharedMicroEdge()'s job instead).
   Check(flat.RemoveNakedMicroEdge(shared_edge_index, 0.01) == Result::Failed,
-        "RemoveNakedMicroEdge() on a shared (2-trim) edge returns Result::Failed");
+        "RemoveNakedMicroEdge() on a shared (2-trim), ordinary-length edge returns Result::Failed");
+}
+
+// 2026-10-06: proves the SECOND relaxation independently of the first -
+// a naked micro edge whose endpoint is pinched by a THIRD, otherwise
+// unrelated face (sharing only that single point, no edge) used to be
+// refused outright by the old "touches nothing else" isolation check.
+// Mirrors TestRemoveSharedMicroEdgeClosesSeamWithAThirdFacePinchingAt
+// OneEndpoint()'s own fixture shape, adapted to the naked (single-face)
+// case: plate f carries the sliver (same shape as the isolated-sliver
+// test above), and a wholly separate face c touches the sliver's own
+// near endpoint P1 = (1, 0, 0) at a single coincident point only.
+void TestRemoveNakedMicroEdgeClosesSliverWithAThirdFacePinchingAtEndpoint() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const double eps = 1e-4;
+  Brep::PlanarFace f, c;
+  f.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  f.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, eps, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  // c lies in the y=0 plane (perpendicular to f), touching f only at the
+  // single point P1 = (1, 0, 0) - no shared edge, a pure corner weld.
+  // Winding: (P1-P0) x (P3-P0) = (0,0,4) x (-4,0,0) = (0,-16,0), matching
+  // the plane's own (0,-1,0) normal.
+  c.plane = ON_Plane(Point3d(1, 0, 0), ON_3dVector(0, -1, 0));
+  c.loop = {Point3d(1, 0, 0), Point3d(1, 0, 4), Point3d(-3, 0, 4), Point3d(-3, 0, 0)};
+  Brep flat = Brep::FromPlanarFaces({f, c});
+  Check(flat.FaceCount() == 2, "the pinching fixture starts with exactly 2 faces");
+  Check(flat.raw().IsValid(), "the pinching fixture is a valid ON_Brep before the fix");
+  Check(flat.raw().m_F[1].Loop(0)->TrimCount() == 4, "c is a genuine 4-trim quad, untouched by the setup");
+
+  int micro_index = -1;
+  int p1_vertex = -1;
+  for (int i = 0; i < flat.raw().m_E.Count(); ++i) {
+    const ON_BrepEdge& e = flat.raw().m_E[i];
+    if (e.m_edge_index < 0 || e.TrimCount() != 1) continue;
+    ON_NurbsCurve nc;
+    if (e.GetNurbForm(nc) <= 0) continue;
+    dino8::kernel::NurbsCurve k;
+    k.raw() = nc;
+    if (k.Length(20) < 0.01) {
+      micro_index = i;
+      for (int side = 0; side < 2; ++side) {
+        const int vi = e.m_vi[side];
+        if (flat.raw().m_V[vi].point.DistanceTo(ON_3dPoint(1, 0, 0)) < 1e-6) p1_vertex = vi;
+      }
+      break;
+    }
+  }
+  Check(micro_index >= 0, "found the naked sliver edge");
+  Check(p1_vertex >= 0, "identified P1, the sliver's own endpoint c also touches");
+  Check(flat.raw().m_V[p1_vertex].m_ei.Count() == 4,
+        "P1 starts at valence 4: the micro edge, its one designated f-neighbor, and c's own two edges");
+
+  auto total_area = [&]() {
+    double area = 0;
+    for (const dino8::kernel::Mesh& m : flat.Tessellate(24, 24)) area += m.Area();
+    return area;
+  };
+  const double area_before = total_area();
+
+  const Result r = flat.RemoveNakedMicroEdge(micro_index, 0.01);
+  Check(r == Result::Ok, "RemoveNakedMicroEdge() now succeeds despite P1's own non-isolated valence-4");
+  Check(flat.raw().IsValid(), "the Brep is still a valid ON_Brep after the fix");
+  Check(flat.FaceCount() == 2, "still exactly 2 faces - c itself is never touched structurally");
+  Check(flat.raw().m_F[0].Loop(0)->TrimCount() == 4, "f is back to a plain quad, same as the isolated-case fix");
+  Check(flat.raw().m_F[1].Loop(0)->TrimCount() == 4, "c is still a genuine 4-trim quad - its own loop never changed");
+
+  // c's own two edges at P1 were nudged to the shared merge point right
+  // alongside the one designated loop-neighbor - confirmed directly
+  // against c's own loop, not merely inferred from Result::Ok.
+  const ON_BrepLoop& c_loop = *flat.raw().m_F[1].Loop(0);
+  bool c_corner_found = false;
+  for (int k = 0; k < c_loop.TrimCount(); ++k) {
+    const ON_BrepTrim& t = *c_loop.Trim(k);
+    const int vi = t.m_vi[0];
+    if (flat.raw().m_V[vi].point.DistanceTo(ON_3dPoint(1, 0, 0)) < 1e-2) c_corner_found = true;
+  }
+  Check(c_corner_found, "c's own corner at P1 is still right where it was (within the micro-scale nudge)");
+
+  const double area_after = total_area();
+  Check(std::abs(area_after - area_before) < 1e-3,
+        "closing the sliver left the combined area unchanged within a tight tolerance, even with c's own "
+        "extra geometry nudged along with it");
 }
 
 // Brep::RemoveSharedMicroEdge() - RemoveNakedMicroEdge()'s own sibling for
@@ -68058,6 +68386,117 @@ void TestCurveReduceDegree() {
   Check(threw_tolerance, "ReduceDegree throws std::invalid_argument for a non-positive tolerance");
 }
 
+void TestCurveFair() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A straight line with only 2 control points has no interior point to
+  // move at all.
+  {
+    NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    double deviation = -1.0;
+    Check(line.Fair(1e-6, 10, 0.5, &deviation) == Result::NoOpAlreadySatisfied,
+          "Fair() on a 2-control-point curve reports NoOpAlreadySatisfied");
+    Check(deviation == 0.0, "...and reports zero deviation for that no-op");
+  }
+
+  // A 7-control-point curve, straight along x except its exact middle
+  // control point (index 3) displaced perpendicular by 5 - a single,
+  // isolated kink with hand-derivable neighbors. One iteration at
+  // factor=1.0 replaces CV[3] with EXACTLY the midpoint of its own two
+  // (unperturbed) neighbors, CV[2]=(2,0,0) and CV[4]=(4,0,0) - a real,
+  // hand-verifiable exact answer, not just "it moved somewhere".
+  std::vector<Point3d> kinked_pts;
+  for (int i = 0; i < 7; ++i) kinked_pts.emplace_back(i, (i == 3) ? 5.0 : 0.0, 0.0);
+  {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, /*degree=*/3);
+    double deviation = -1.0;
+    Check(c.Fair(100.0, /*iterations=*/1, /*factor=*/1.0, &deviation) == Result::Ok,
+          "Fair(iterations=1, factor=1.0) succeeds at a loose tolerance");
+    const Point3d flattened = c.ControlPointAt(3);
+    Check((flattened - Point3d(3, 0, 0)).Length() < 1e-9,
+          "a single factor=1.0 iteration replaces the isolated kink's control point with EXACTLY "
+          "the midpoint of its own two unperturbed neighbors");
+    Check(deviation > 0.0, "fairing a genuine kink reports a real, nonzero measured deviation");
+  }
+
+  // Endpoints are never touched by Fair(), regardless of how much
+  // smoothing is requested.
+  {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, /*degree=*/3);
+    c.Fair(100.0, 5, 0.8);
+    Check((c.ControlPointAt(0) - kinked_pts.front()).Length() < 1e-12,
+          "Fair() never moves the curve's own first control point");
+    Check((c.ControlPointAt(6) - kinked_pts.back()).Length() < 1e-12,
+          "Fair() never moves the curve's own last control point");
+  }
+
+  // The same isolated kink at a tight tolerance must be REFUSED - genuinely
+  // flattening it moves the curve's own shape near the bump by more than a
+  // tiny tolerance can allow - leaving every control point byte-for-byte
+  // unchanged; the same fixture at a loose enough tolerance must succeed,
+  // proving the refusal is genuinely tolerance-driven.
+  {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, /*degree=*/3);
+    const NurbsCurve original = c;
+    double tight_deviation = -1.0;
+    const Result refused = c.Fair(1e-6, 1, 1.0, &tight_deviation);
+    Check(refused == Result::Failed, "Fair() refuses to flatten a genuine kink at a tight tolerance");
+    Check(tight_deviation > 1e-6,
+          "...and the reported deviation genuinely exceeds the refused tolerance, not an "
+          "arbitrary failure");
+    double cv_err = 0.0;
+    for (int i = 0; i < c.ControlPointCount(); ++i) {
+      cv_err = std::max(cv_err, c.ControlPointAt(i).DistanceTo(original.ControlPointAt(i)));
+    }
+    Check(cv_err == 0.0, "a refused Fair() leaves every control point byte-for-byte unchanged");
+
+    double loose_deviation = -1.0;
+    Check(c.Fair(100.0, 1, 1.0, &loose_deviation) == Result::Ok,
+          "Fair() succeeds on the identical kink once the tolerance is loosened");
+    Check(std::abs(loose_deviation - tight_deviation) < 1e-9,
+          "the deviation reported on the accepted fair matches the one reported on the earlier "
+          "refusal (both measure the identical smoothing)");
+  }
+
+  bool threw_tolerance = false;
+  try {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, 3);
+    c.Fair(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_tolerance = true;
+  }
+  Check(threw_tolerance, "Fair() throws std::invalid_argument for a non-positive tolerance");
+
+  bool threw_iterations = false;
+  try {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, 3);
+    c.Fair(1e-3, 0);
+  } catch (const std::invalid_argument&) {
+    threw_iterations = true;
+  }
+  Check(threw_iterations, "Fair() throws std::invalid_argument for iterations below 1");
+
+  bool threw_factor = false;
+  try {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, 3);
+    c.Fair(1e-3, 5, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw_factor = true;
+  }
+  Check(threw_factor, "Fair() throws std::invalid_argument for a non-positive factor");
+
+  bool threw_factor_high = false;
+  try {
+    NurbsCurve c = NurbsCurve::FromControlPoints(kinked_pts, 3);
+    c.Fair(1e-3, 5, 1.5);
+  } catch (const std::invalid_argument&) {
+    threw_factor_high = true;
+  }
+  Check(threw_factor_high, "Fair() throws std::invalid_argument for a factor above 1");
+}
+
 // Surface counterpart: ON_NurbsSurface::IncreaseDegree packs the rows into
 // one high-dimensional ON_NurbsCurve and calls the same broken routine.
 // Fixed inputs derived from the same probe (21x4 grid, degrees (12, 2),
@@ -70705,6 +71144,8 @@ int main() {
   TestIntersectPlaneConeClosedForm();
   TestIntersectPlaneTorusClosedForm();
   TestFindSurfaceSilhouettePointsSphereEquator();
+  TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon();
+  TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
@@ -71226,6 +71667,7 @@ int main() {
   TestFromMixedFacesRejectsNonManifoldEdge();
   TestFromMixedFacesNonManifoldBuildsThreePageFan();
   TestFromMixedFacesNonManifoldBuildsFourPageFanAndMatchesStrictOnManifoldInput();
+  TestFromMixedFacesNonManifoldBuildsThreeWedgeFanOnACurvedMeridianArc();
   TestBrepFromPlanarFacesRoundTripsRealTopologyThroughDotThreeDM();
   TestFilletConvexEdgeRoundTripsCylindricalTopologyThroughDotThreeDM();
   TestMixedFacesRoundTripsCylindricalFace();
@@ -71438,7 +71880,8 @@ int main() {
   TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies();
   TestUnjoinEdgeGeneralizesToThreeOrMoreTrims();
   TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate();
-  TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge();
+  TestRemoveNakedMicroEdgeClosesSliverNextToASharedEdge();
+  TestRemoveNakedMicroEdgeClosesSliverWithAThirdFacePinchingAtEndpoint();
   TestRemoveSharedMicroEdgeClosesIsolatedSeamBetweenTwoFaces();
   TestRemoveSharedMicroEdgeRefusesNakedEdgeAndDegenerateLoop();
   TestRemoveSharedMicroEdgeClosesSeamWithAThirdFacePinchingAtOneEndpoint();
@@ -71719,6 +72162,7 @@ int main() {
 
   TestCurveElevateDegreePreservesShapeWithNonUniformKnots();
   TestCurveReduceDegree();
+  TestCurveFair();
   TestSurfaceElevateDegreePreservesShapeWithNonUniformKnots();
   TestCurveClosestPointAcrossClampedSeamKink();
   TestCurveParameterAtArcLengthStaysInsideDomain();
