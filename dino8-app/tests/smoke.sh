@@ -3830,6 +3830,27 @@ grep -qE "^ {5}128" "$TMPW/t.igs" && grep -qE "^ {5}144" "$TMPW/t.igs" && echo "
 grep -q "=ADVANCED_FACE(" "$TMPW/t.stp" && grep -q "B_SPLINE_SURFACE_WITH_KNOTS(" "$TMPW/t.stp" && echo "ok   t.stp uses ADVANCED_FACE and B_SPLINE_SURFACE_WITH_KNOTS entities" || { echo "FAIL t.stp entity types"; fail=1; }
 grep -q "^ISO-10303-21;$" "$TMPW/t.stp" && grep -q "^END-ISO-10303-21;$" "$TMPW/t.stp" && echo "ok   t.stp is a complete Part 21 file" || { echo "FAIL t.stp malformed"; fail=1; }
 
+# Real STEP AP214 assembly structure (MAPPED_ITEM/REPRESENTATION_MAP) read
+# support - see step_assembly_script.txt/step_assembly_fixture.stp and
+# FileIgesStep.cpp's ResolveMappedItem. The fixture places the same 10x10
+# square-face "Bracket" component three times (identity, translated,
+# translated+rotated 90 about Z); each instance's own BoundingBox must
+# reflect its own real transform, not all three landing at the same
+# (component-local) coordinates.
+sed "s|@TMP@|$TMPW|g" "$HERE/step_assembly_script.txt" > "$TMPW/step_assembly_script.txt"
+cp "$HERE/step_assembly_fixture.stp" "$TMPW/step_assembly_fixture.stp"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  ASM="$("$BIN" --smoke 60 --script "$TMPW/step_assembly_script.txt" 2>&1)" || { echo "$ASM"; echo "FAIL: step assembly script exited non-zero"; exit 1; }
+else
+  ASM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/step_assembly_script.txt" 2>&1)" || { echo "$ASM"; echo "FAIL: step assembly script exited non-zero"; exit 1; }
+fi
+asmcheck() { if echo "$ASM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ASM" "$1"; fail=1; fi; }
+asmcheck "^ok   expect_objects 3" "the assembly fixture's three MAPPED_ITEM instances each became one real object (not 0, not merged into 1)"
+asmcheck "part.*placed via real assembly" "ImportStep's own summary line reports real assembly-placed parts, confirming this code path actually ran"
+asmcheck "Bounding box min 0,0,0 max 10,10,0" "instance 1 (identity placement) landed exactly where the un-instanced component's own raw coordinates already are"
+asmcheck "Bounding box min 50,0,0 max 60,10,0" "instance 2 (translated to 50,0,0) landed at its own real translated position, not at the component's local origin"
+asmcheck "Bounding box min -10,50,0 max 0,60,0" "instance 3 (translated to 0,50,0 AND rotated 90 about Z) landed with its rotation genuinely applied, not just its translation"
+
 # SpaceMouse / 3Dconnexion: Protocol=File replay drives a real background
 # thread (see input/SpaceMouse.cpp) that Application::Frame() drains every
 # frame, so @wait gives it real wall-clock time before each check below.
