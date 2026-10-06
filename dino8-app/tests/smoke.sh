@@ -1702,6 +1702,8 @@ stcheck "Reflect: mirrored across the plane through 1005,0,0 and welded original
 stcheck "Reflect: mirrored across the plane through 1015,0,0 and welded original . mirror image into one symmetric SubD (12 faces)" "Reflect on a single SubD returns a real SubD (kernel::SubD::Symmetrize), not the facetted-mesh path the MeshBox case above still uses"
 stcheck "Object [0-9]* (SubD) layer Default" "Reflect's SubD output is genuinely ObjectKind::SubD, not a Mesh wearing a similar print statement"
 stcheck "12 faces, 20 edges, 12 vertices, 4 creases" "Reflect's reflected SubD has the real welded-seam topology: the mirror plane coincides with the box's own far face, so that face's 4 vertices weld into one real shared seam (now creased) instead of duplicating"
+stcheck "Reflect: mirrored across the plane through 1020,5,0 and welded original . mirror image into one symmetric SubD (24 faces)" "Reflect on TWO SubDs at once still returns a real SubD (each Symmetrize()d separately, then folded together via SubD::BooleanToSubD), not just the single-object case"
+stcheck "24 faces, 48 edges, 32 vertices, 0 creases" "Reflect's two-SubD result has the expected topology: two 6-face boxes, each mirrored (x2) and folded together (no shared seam this time, since neither box touches the mirror plane)"
 stcheck "Radiate: baked diffuse.specular vertex colours from 1 light(s)/sun onto 1 mesh(es)" "Radiate baked vertex colours from the Sun onto the mesh"
 stcheck "RadiateFind: 0 enabled light source(s) selected (the Sun also lights Radiate" "RadiateFind reported the Sun as Radiate's only light source"
 stcheck "OrientCrvToEdge: placed 1 copy(ies) at 1 point(s)" "OrientCrvToEdge picked the box edge directly and oriented a copy onto it"
@@ -1725,7 +1727,7 @@ stcheck "ExtractOriginalCaptives: 1 original(s) restored as copies" "ExtractOrig
 stcheck "Bounding box min 1800,0,0 max 1810,10,10" "the restored original is the untouched pre-cage box (1800,0,0 to 1810,10,10), the exact geometry Box 1800,0,0 1810,10,0 10 created before it was ever bound to the cage"
 echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
-stcheck "smoke: frames=[1-4][0-9][0-9] objects=119" "solid-tools script produced the expected object count"
+stcheck "smoke: frames=[1-4][0-9][0-9] objects=120" "solid-tools script produced the expected object count"
 
 # RegionBoolean exact-polygon path: PlanarUnion/PlanarDifference/
 # CurveBoolean/CreateRegions's own 2-region case must now take
@@ -3215,12 +3217,18 @@ bocheck() { if echo "$BO" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $
 # SubD booleans: BooleanUnion/BooleanDifference/BooleanIntersection now
 # return a genuine SubD via kernel::SubD::BooleanToSubD when every operand
 # is a SubD (PARITY_MAP.md's own "SubD booleans" item, previously missing
-# outright), falling back to the old generic mesh path for a mixed SubD +
-# Brep selection.
+# outright). Narrowed further: a MIXED selection (at least one true SubD
+# alongside a Brep/Mesh) now ALSO returns a real SubD, promoting the
+# non-SubD operand's own existing tessellation via SubD::FromControlMesh
+# instead of collapsing everything to a Mesh - gated so an all-Brep
+# selection still takes the exact B-rep path and an all-Mesh selection
+# still comes back as a plain Mesh, both unaffected.
 bocheck "BooleanUnion: SubD boolean (mesh-approximate, via BooleanToSubD), 19 face(s)" "BooleanUnion on two overlapping SubD boxes returns a real SubD, not a tessellated Mesh"
 bocheck "BooleanDifference: SubD boolean (mesh-approximate, via BooleanToSubD), 12 face(s)" "BooleanDifference on two SubD boxes returns a real SubD"
 bocheck "BooleanIntersection: SubD boolean (mesh-approximate, via BooleanToSubD), 6 face(s)" "BooleanIntersection on two SubD boxes returns a real SubD"
-bocheck "BooleanUnion: 38 faces, volume 14" "BooleanUnion on a mixed SubD + Brep selection still falls back to the generic mesh path (TrySubDBoolean declines on a non-SubD operand)"
+bocheck "BooleanUnion: SubD boolean (mesh-approximate, via BooleanToSubD), 20 face(s)" "BooleanUnion on a mixed SubD + Brep selection now ALSO returns a real SubD (TrySubDBoolean promotes the Brep's own tessellation to a SubD) instead of collapsing to a Mesh"
+bocheck "BooleanUnion: exact B-rep boolean (no tessellation), 26 face(s)" "BooleanUnion on an all-Brep selection is unaffected by the mixed-type change - still the exact B-rep path, never downgraded to a SubD"
+bocheck "BooleanUnion: 36 faces, volume 14" "BooleanUnion on an all-Mesh selection is unaffected by the mixed-type change - still a plain Mesh, never surprise-upgraded to a SubD"
 echo "$BO" | grep -E "^(ok|FAIL)"
 if echo "$BO" | grep -q "^FAIL"; then fail=1; fi
 echo "$BO" | grep -q "^smoke:" || { echo "$BO"; echo "FAIL: boolean script produced no smoke line"; fail=1; }

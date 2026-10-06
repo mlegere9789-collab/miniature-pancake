@@ -150,14 +150,44 @@ Enter
 @expect_objects 1
 SelAll
 Delete
-# --- Mixed SubD + Brep operands still fall back to the generic mesh path
-# (TrySubDBoolean declines whenever any operand isn't a plain SubD, the
-# same silent-fallback contract TryExactBrepBoolean already has) - a
-# regression guard, not a new capability (ids 42, 43 -> mesh id 44).
+# --- A mixed SubD + Brep selection now ALSO returns a real SubD
+# (TrySubDBoolean promotes the non-SubD operand to a SubD via
+# SubD::FromControlMesh over its own already-tessellated mesh, the same
+# tessellation MeshOf always gave it - no new approximation, just kept
+# editable afterward instead of collapsed into a plain Mesh), as long as
+# at least one TRUE SubD is present somewhere in the selection
+# (ids 42, 43 -> SubD id 44).
+SelNone
 SubDBox 0,0,0 2,2,0 2
 Box 1,1,1 3,3,3 2
 SelAll
 BooleanUnion
+SelLast
+List
+@expect_objects 1
+SelAll
+Delete
+# --- An all-Brep selection is unaffected (still the exact B-rep path
+# above, never downgraded to a SubD) and an all-Mesh selection is also
+# unaffected (still a plain Mesh, never surprise-upgraded to a SubD) -
+# TrySubDBoolean's own `any_subd` gate only activates with a TRUE SubD
+# operand somewhere in the mix (ids 45, 46 -> polysurface id 47; ids 48,
+# 49 -> mesh id 50).
+Box 0,0,0 2,2,0 2
+Box 1,1,1 3,3,3 2
+SelAll
+BooleanUnion
+SelLast
+List
+@expect_objects 1
+SelAll
+Delete
+MeshBox 0,0,0 2,2,0 2
+MeshBox 1,1,1 3,3,3 2
+SelAll
+BooleanUnion
+SelLast
+List
 @expect_objects 1
 SelAll
 Delete

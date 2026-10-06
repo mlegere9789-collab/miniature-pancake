@@ -304,6 +304,22 @@ Reflect
 SelLast
 List
 @expect_objects 93
+# --- Reflect on TWO SubDs at once: each is individually Symmetrize()d
+# across the same plane, then folded together via SubD::BooleanToSubD -
+# still a real, editable SubD, not just the single-object case above.
+# (SelID, not SelAll, since the document already holds 93 earlier objects
+# by this point - ids 103, 104.)
+SelNone
+SubDBox 1020,0,0 1022,2,0 2
+SubDBox 1025,0,0 1027,2,0 2
+SelNone
+SelID 103 104
+Reflect
+1020,5,0
+1020,5,10
+SelLast
+List
+@expect_objects 94
 # --- Radiate / RadiateFind: bake vertex colours from the Sun, then find the lights used
 SelNone
 MeshSphere 1100,0,0 5
@@ -311,7 +327,7 @@ SelLast
 Sun On
 Radiate
 RadiateFind
-@expect_objects 94
+@expect_objects 95
 # --- OrientCrvToEdge: orients a copy directly onto a picked polysurface edge, no DupEdge needed
 SelNone
 Box 1200,0,0 1210,10,0 10
@@ -322,7 +338,7 @@ OrientCrvToEdge
 1200,0,5
 1200,0,3
 Enter
-@expect_objects 97
+@expect_objects 98
 # --- NonmanifoldMerge: two coplanar adjacent planes joined into one
 # polysurface via real Brep::MergeCoplanarFaces() B-rep topology surgery
 # (walks the joined ON_Brep's own edge/face adjacency directly - no mesh
@@ -337,7 +353,7 @@ SelAll
 NonmanifoldMerge
 SelLast
 Area
-@expect_objects 98
+@expect_objects 99
 # --- CreateRegions: an open-curve network - 3 open Line segments meeting
 # end-to-end into a closed right triangle (legs 30 and 40), the real fix for
 # "open-curve networks are planned" (AUDIT.md). Verified with an exact area,
@@ -354,7 +370,7 @@ SelLast
 PlanarSrf
 SelLast
 Area
-@expect_objects 103
+@expect_objects 104
 # --- CreateRegions: a mix of an assembled open-curve loop (an Arc + a Line
 # closing its diameter into a semicircle, r=10) and a separate, non-touching
 # closed Circle (r=5) -> 2 distinct regions, the "open curves alongside
@@ -372,7 +388,7 @@ SelLast
 PlanarSrf
 SelLast
 Area
-@expect_objects 109
+@expect_objects 110
 # --- CreateRegions: a branch point (3 open Lines meeting at one shared
 # point, a "Y") admits more than one possible face - ChainOpenCurvesIntoLoops
 # refuses to guess which one was meant, warns, and skips them instead of
@@ -384,7 +400,7 @@ Line 1700,0,0 1710,0,0
 Line 1700,0,0 1690,-5,0
 SelAll
 CreateRegions
-@expect_objects 112
+@expect_objects 113
 # --- ExtractOriginalCaptives survives a Save -> New -> Open round trip (the
 # actual point of CageBinding/Captive now living in Document::CageBindings()
 # and being written to/read back from the .3dm - see io/File3dm.cpp and the
@@ -413,7 +429,7 @@ SelCaptives
 ExtractOriginalCaptives
 SelLast
 BoundingBox
-@expect_objects 116
+@expect_objects 117
 # --- Clash CreateSolids=Yes: the real AutoCAD-style INTERFERE solid
 # (kernel::ComputeAllInterference - the actual Boolean intersection of the
 # clashing pair, not just the plain triangle-triangle yes/no the earlier
@@ -439,4 +455,4 @@ SelName ClashPair
 Enter
 SelLast
 Volume
-@expect_objects 119
+@expect_objects 120
