@@ -68460,6 +68460,122 @@ void TestMultiBendRejectsInvalidArguments() {
         "MultiBend throws if ANY bend angle in a multi-bend chain is out of range, not just the first");
 }
 
+void TestUnfoldBendAtHalfKFactorExactlyMatchesBendPappusVolume() {
+  using dino8::kernel::Bend;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::UnfoldBend;
+
+  // parity-map "kernel: Feature operations" - "Sheet-metal features":
+  // UnfoldBend() closes this item's own disclosed "Unfold" named
+  // sub-feature - the inverse direction of Bend() above, flattening the
+  // SAME parameters back to a flat Brep::BoxWelded() plate instead of
+  // the bent part.
+  const double leg1 = 5.0, leg2 = 3.0, width = 2.0, thickness = 0.1, r_in = 0.2, angle_deg = 90.0;
+  const double theta = angle_deg * ON_PI / 180.0;
+  const double r_mid = r_in + thickness / 2.0;
+  const double expected_volume = (leg1 + leg2) * width * thickness + theta * r_mid * width * thickness;
+
+  // At k_factor == 0.5, BendAllowance()'s own K-factor-adjusted radius
+  // coincides EXACTLY with the true geometric mid-plane - so this must
+  // match the analytic Pappus closed form bit-for-bit, not just within a
+  // mesh-tessellation tolerance.
+  const Brep flat_half = UnfoldBend(leg1, leg2, width, thickness, r_in, angle_deg, 0.5);
+  Check(flat_half.raw().IsValid(), "UnfoldBend (k_factor=0.5) produces a valid ON_Brep");
+  Check(std::abs(flat_half.Volume() - expected_volume) < 1e-9 * expected_volume,
+        "UnfoldBend at k_factor=0.5 exactly matches the analytic Pappus closed form (bit-for-bit, not just within "
+        "1%)");
+
+  // Tying the new flat-pattern function directly to the existing bent
+  // part: UnfoldBend's exact volume must also match Bend()'s own
+  // TESSELLATED volume to within the same 1% tessellation tolerance
+  // TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency above
+  // already establishes for Bend() itself - real round-trip consistency
+  // between the two functions, not merely two formulas that happen to
+  // agree on paper.
+  const Brep bent = Bend(leg1, leg2, width, thickness, r_in, angle_deg);
+  const Mesh m_bent = bent.TessellateToClosedMesh(128, 256);
+  Check(std::abs(flat_half.Volume() - m_bent.Volume()) < 0.02 * m_bent.Volume(),
+        "UnfoldBend's exact flat volume matches Bend()'s own tessellated volume to within 2%");
+
+  // A k_factor other than 0.5 is the standard sheet-metal approximation,
+  // deliberately NOT volume-exact: a smaller k_factor (material's
+  // neutral axis closer to the inside face) gives a strictly SHORTER
+  // flat pattern than the exact mid-plane case.
+  const Brep flat_default = UnfoldBend(leg1, leg2, width, thickness, r_in, angle_deg);  // k_factor = 0.44 default
+  Check(flat_default.Volume() < flat_half.Volume(),
+        "UnfoldBend's default k_factor=0.44 gives a strictly shorter (smaller-volume) flat pattern than the exact "
+        "k_factor=0.5 mid-plane case");
+}
+
+void TestUnfoldMultiBendAtHalfKFactorExactlyMatchesMultiBendPappusVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MultiBend;
+  using dino8::kernel::UnfoldMultiBend;
+
+  // Same exact-at-k_factor=0.5 cross-check as UnfoldBend above, extended
+  // to MultiBend()'s own multi-radius U-channel fixture (the identical
+  // legs/angles/radii TestMultiBendUChannelAndHatChannelMatchPappusClosedForm
+  // above already uses) - a genuine multi-radius flat pattern, not a
+  // single shared radius.
+  const double width = 1.0, thickness = 0.08;
+  const std::vector<double> legs = {0.6, 0.8, 0.6};
+  const std::vector<double> angles_deg = {10.0, 10.0};
+  const std::vector<double> radii = {0.1, 0.25};
+
+  double leg_sum = 0.0;
+  for (double l : legs) leg_sum += l;
+  double arc_sum = 0.0;
+  for (size_t i = 0; i < angles_deg.size(); ++i) {
+    arc_sum += (angles_deg[i] * ON_PI / 180.0) * (radii[i] + thickness / 2.0);
+  }
+  const double expected_u = leg_sum * width * thickness + arc_sum * width * thickness;
+
+  const Brep flat_u = UnfoldMultiBend(legs, angles_deg, radii, width, thickness, 0.5);
+  Check(flat_u.raw().IsValid(), "UnfoldMultiBend (k_factor=0.5) produces a valid ON_Brep");
+  Check(std::abs(flat_u.Volume() - expected_u) < 1e-9 * expected_u,
+        "UnfoldMultiBend at k_factor=0.5 exactly matches the same multi-radius Pappus closed form "
+        "MultiBend()'s own U-channel fixture uses, bit-for-bit");
+
+  const Brep u = MultiBend(legs, angles_deg, radii, width, thickness);
+  const dino8::kernel::Mesh m_u = u.TessellateToClosedMesh(64, 128);
+  Check(std::abs(flat_u.Volume() - m_u.Volume()) < 0.02 * m_u.Volume(),
+        "UnfoldMultiBend's exact flat volume matches MultiBend()'s own tessellated U-channel volume to within 2%");
+}
+
+void TestUnfoldBendAndUnfoldMultiBendRejectInvalidArguments() {
+  using dino8::kernel::UnfoldBend;
+  using dino8::kernel::UnfoldMultiBend;
+  using sweep_tests::Throws;
+
+  Check(Throws([&] { UnfoldBend(0.0, 3.0, 2.0, 0.1, 0.2, 90.0); }), "UnfoldBend throws for a non-positive leg1_length");
+  Check(Throws([&] { UnfoldBend(5.0, -1.0, 2.0, 0.1, 0.2, 90.0); }), "UnfoldBend throws for a non-positive leg2_length");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 0.0, 0.1, 0.2, 90.0); }), "UnfoldBend throws for a non-positive width");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.0, 0.2, 90.0); }),
+        "UnfoldBend throws for a non-positive thickness (delegated to BendAllowance)");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.1, 0.0, 90.0); }),
+        "UnfoldBend throws for a non-positive inside_radius (delegated to BendAllowance)");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.1, 0.2, 180.0); }),
+        "UnfoldBend throws for a bend angle of exactly 180 degrees (delegated to BendAllowance)");
+  Check(Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.1, 0.2, 90.0, -0.1); }),
+        "UnfoldBend throws for a negative k_factor (delegated to BendAllowance)");
+  Check(!Throws([&] { UnfoldBend(5.0, 3.0, 2.0, 0.1, 0.2, 90.0, 0.0); }), "UnfoldBend accepts a k_factor of exactly 0");
+
+  Check(Throws([&] { UnfoldMultiBend({1.0}, {}, {}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws when bend_angles_degrees is empty (at least one bend is required)");
+  Check(Throws([&] { UnfoldMultiBend({1.0, 2.0}, {90.0}, {0.1, 0.2}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws when inside_radii's own count doesn't match bend_angles_degrees's");
+  Check(Throws([&] { UnfoldMultiBend({1.0, 2.0, 3.0}, {90.0}, {0.1}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws when leg_lengths doesn't have exactly one more entry than bend_angles_degrees");
+  Check(Throws([&] { UnfoldMultiBend({0.0, 2.0}, {90.0}, {0.1}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws for a non-positive leg length");
+  Check(Throws([&] { UnfoldMultiBend({1.0, 2.0}, {90.0}, {0.1}, 0.0, 0.1); }),
+        "UnfoldMultiBend throws for a non-positive width");
+  Check(Throws([&] { UnfoldMultiBend({1.0, 2.0, 3.0}, {90.0, 200.0}, {0.1, 0.1}, 1.0, 0.1); }),
+        "UnfoldMultiBend throws if ANY bend angle in a multi-bend chain is out of range, not just the first "
+        "(delegated per-bend to BendAllowance)");
+}
+
 void TestLatticeInfillFillsBoxAndConformsToNonBoxSolids() {
   using dino8::kernel::Brep;
   using dino8::kernel::LatticeInfill;
@@ -69658,6 +69774,10 @@ int main() {
   TestMultiBendReducesToBendForASingleBend();
   TestMultiBendUChannelAndHatChannelMatchPappusClosedForm();
   TestMultiBendRejectsInvalidArguments();
+
+  TestUnfoldBendAtHalfKFactorExactlyMatchesBendPappusVolume();
+  TestUnfoldMultiBendAtHalfKFactorExactlyMatchesMultiBendPappusVolume();
+  TestUnfoldBendAndUnfoldMultiBendRejectInvalidArguments();
 
   TestLatticeInfillFillsBoxAndConformsToNonBoxSolids();
   TestLatticeInfillRejectsInvalidArguments();

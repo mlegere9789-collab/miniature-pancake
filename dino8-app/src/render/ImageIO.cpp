@@ -153,12 +153,30 @@ bool LoadPng(const std::vector<unsigned char>& d, Image& img, std::string& error
   }
   if (depth != 1 && depth != 2 && depth != 4 && depth != 8 && depth != 16) { error = "unsupported PNG bit depth"; return false; }
   if ((depth < 8 && ctype != 0 && ctype != 3) || (depth == 16 && ctype == 3)) { error = "unsupported PNG depth/colour combination"; return false; }
-  std::vector<unsigned char> raw;
-  if (!ZlibInflate(idat.data(), idat.size(), raw, error)) return false;
   const size_t bits_per_pixel = static_cast<size_t>(channels) * depth;
   const size_t stride = (static_cast<size_t>(w) * bits_per_pixel + 7) / 8;
   const size_t bpp = std::max<size_t>(1, bits_per_pixel / 8);
-  if (raw.size() < (stride + 1) * static_cast<size_t>(h)) { error = "PNG image data too short"; return false; }
+  // Cap decompression at exactly what this image's own declared
+  // width/height/depth/colour type need (clamped to the generic ceiling
+  // in case even that legitimate size is absurd) - not the generic
+  // kDefaultMaxInflateOutput default alone. Without this, a file
+  // declaring tiny dimensions (e.g. 1x1) can carry an IDAT stream that
+  // decompresses, via ordinary DEFLATE back-references, to the full
+  // 256 MiB default ceiling regardless of what the image actually needs
+  // - confirmed directly: a ~31 KB crafted 1x1 PNG forced a ~5 MB
+  // allocation, and a ~1.6 MB one forced ~260 MB and over a second of
+  // CPU, before this file's own "too short" check below ever got a
+  // chance to reject anything (that check only catches too LITTLE
+  // decompressed data, never too much). See
+  // Inflate.h's own kDefaultMaxInflateOutput doc comment, which already
+  // names "a PNG's width*height" as exactly the kind of caller-known
+  // bound that should be used instead of the generic ceiling - this is
+  // that fix, applied here.
+  const size_t expected_raw_size = (stride + 1) * static_cast<size_t>(h);
+  const size_t cap = std::min(expected_raw_size, dino8::util::kDefaultMaxInflateOutput);
+  std::vector<unsigned char> raw;
+  if (!ZlibInflate(idat.data(), idat.size(), raw, error, cap)) return false;
+  if (raw.size() < expected_raw_size) { error = "PNG image data too short"; return false; }
   // Unfilter in place (scanlines are prefixed by their filter type).
   std::vector<unsigned char> prev(stride, 0), cur(stride);
   img.width = w; img.height = h;
@@ -366,10 +384,11 @@ bool EncodePng(int width, int height, const std::vector<unsigned char>& rgb, std
   return true;
 }
 
-bool ZlibInflate(const unsigned char* data, size_t size, std::vector<unsigned char>& out, std::string& error) {
+bool ZlibInflate(const unsigned char* data, size_t size, std::vector<unsigned char>& out, std::string& error,
+                  size_t max_output) {
   if (size < 2 || (data[0] & 0x0f) != 8 || ((data[0] << 8) | data[1]) % 31 != 0) { error = "bad zlib header"; return false; }
   if (data[1] & 0x20) { error = "zlib preset dictionaries are not supported"; return false; }
-  if (!dino8::util::InflateRaw(data + 2, size - 2, out)) { error = "corrupt deflate stream"; return false; }
+  if (!dino8::util::InflateRaw(data + 2, size - 2, out, max_output)) { error = "corrupt deflate stream"; return false; }
   return true;
 }
 
