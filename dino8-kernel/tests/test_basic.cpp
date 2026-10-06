@@ -3911,6 +3911,75 @@ void TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace() {
   Check(FindFaceInteriorSelfIntersections(flat_brep.raw(), opt).empty(), "a plain, non-self-crossing flat face reports zero face-interior self-intersections");
 }
 
+// PARITY_MAP.md's own "kernel: Healing, repair, validation, tolerant
+// modeling" category, "Geometric consistency validation" and
+// "Self-intersection detection" bullets' own named remaining gap: "no
+// face/face self-intersection check between faces sharing no boundary".
+// FindBrepSelfIntersections()/FindFaceInteriorSelfIntersections() above are
+// the real, independently-tested kernel primitives for exactly this; this
+// test is Brep::Check()'s own new opt-in wiring of them
+// (`check_self_intersections = true`), reusing the two fixtures above
+// rather than re-deriving new ones, since the question here is only
+// "does Check() report what those functions already find", not whether
+// the functions themselves are correct (settled above).
+void TestBrepCheckOptInReportsFaceSelfIntersections() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  namespace tol = dino8::kernel::tolerance;
+
+  // Face/face: same overlapping-compound-boxes fixture as
+  // TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly() above.
+  const Brep clean_box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep overlapping = Brep::Compound({Brep::Box(0, 0, 0, 2, 2, 2), Brep::Box(1, 1, 1, 3, 3, 3)});
+
+  Check(clean_box.Check(1e-6, tol::kEdgeJoin, /*check_self_intersections=*/true)
+            .Count(Brep::CheckIssue::Kind::FaceFaceSelfIntersection) == 0,
+        "Check(..., true) reports zero FaceFaceSelfIntersection on a single valid box");
+  Check(overlapping.Check(1e-6, tol::kEdgeJoin, /*check_self_intersections=*/true)
+            .Count(Brep::CheckIssue::Kind::FaceFaceSelfIntersection) > 0,
+        "Check(..., true) reports at least one FaceFaceSelfIntersection on two overlapping compounded lumps");
+  Check(overlapping.Check(1e-6, tol::kEdgeJoin, /*check_self_intersections=*/false)
+            .Count(Brep::CheckIssue::Kind::FaceFaceSelfIntersection) == 0,
+        "the same overlapping Brep reports zero FaceFaceSelfIntersection when the flag is left at its default "
+        "false - opt-in, not automatic");
+
+  // Face-interior: same extruded-bowtie-profile fixture as
+  // TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace() above.
+  const double L = 4.0;
+  const std::vector<std::pair<double, double>> profile_xz = {
+      {0, 0}, {10, 10}, {10, 0}, {0, 10}, {0, 0},
+  };
+  std::vector<Point3d> grid;
+  for (const auto& [x, z] : profile_xz) {
+    grid.emplace_back(x, 0.0, z);
+    grid.emplace_back(x, L, z);
+  }
+  const NurbsSurface folded = NurbsSurface::FromControlGrid(
+      grid, /*u_count=*/static_cast<int>(profile_xz.size()), /*v_count=*/2, /*u_degree=*/1, /*v_degree=*/1);
+  const Brep folded_brep = Brep::FromSurface(folded);
+
+  const std::vector<std::pair<double, double>> flat_xz = {{0, 0}, {10, 0}};
+  std::vector<Point3d> flat_grid;
+  for (const auto& [x, z] : flat_xz) {
+    flat_grid.emplace_back(x, 0.0, z);
+    flat_grid.emplace_back(x, L, z);
+  }
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1);
+  const Brep flat_brep = Brep::FromSurface(flat);
+
+  Check(folded_brep.Check(1e-5, tol::kEdgeJoin, /*check_self_intersections=*/true)
+            .Count(Brep::CheckIssue::Kind::FaceInteriorSelfIntersection) > 0,
+        "Check(..., true) reports at least one FaceInteriorSelfIntersection on the folded (self-crossing) face");
+  Check(folded_brep.Check(1e-5, tol::kEdgeJoin, /*check_self_intersections=*/false)
+            .Count(Brep::CheckIssue::Kind::FaceInteriorSelfIntersection) == 0,
+        "the same folded Brep reports zero FaceInteriorSelfIntersection when the flag is left at its default "
+        "false - opt-in, not automatic");
+  Check(flat_brep.Check(1e-5, tol::kEdgeJoin, /*check_self_intersections=*/true)
+            .Count(Brep::CheckIssue::Kind::FaceInteriorSelfIntersection) == 0,
+        "Check(..., true) reports zero FaceInteriorSelfIntersection on a plain, non-self-crossing flat face");
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
 // tangent / grazing contact (surfaces touching along a point or curve)"
 // bullet, named entirely `[missing]`: "There is no SSX tangency capability
@@ -71043,6 +71112,7 @@ int main() {
   TestIntersectCurveBrepOverlapScopesSpanToFaceTrim();
   TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly();
   TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
+  TestBrepCheckOptInReportsFaceSelfIntersections();
   TestFindSurfaceTangentContactsSphereOnPlane();
   TestIntersectSurfacesOverlapDetectsCoincidentRegion();
   TestIntersectSurfacesOverlapBisectionTightensRegionBoundary();

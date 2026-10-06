@@ -3766,6 +3766,33 @@ class Brep {
       // exact test and its honest limitations (nearly-parallel segments
       // are not checked - that is SliverFace's own job, not this one's).
       SelfIntersectingLoop3d,
+      // Two faces that do NOT already share an edge nonetheless cross:
+      // one face's trimmed region runs through the other's, in 3D -
+      // PARITY_MAP.md's own "Geometric consistency validation"/
+      // "Self-intersection detection" bullets' named remaining gap
+      // ("no face/face self-intersection check between faces sharing no
+      // boundary"). Only reported when Check() is called with
+      // `check_self_intersections = true` (see Check()'s own doc comment
+      // for why this is opt-in, not automatic): detection via
+      // FindBrepSelfIntersections() (surface_intersect.h), the same
+      // mesh-seeded SSX every other intersection-shaped function in this
+      // kernel already uses, composed across one Brep's own faces instead
+      // of two separate Breps' - already real and independently tested
+      // there; this only wires its result into Check()'s report. `index`
+      // and `other_index` are the two crossing faces; `location` the
+      // midpoint of the first sampled point of the crossing curve found
+      // between them; `measure` is always 0 (a crossing is boolean, not
+      // a graded distance).
+      FaceFaceSelfIntersection,
+      // One face's own interior crosses itself (the surface folds back
+      // onto a different part of its own domain) without ever reaching
+      // another face's boundary - the other half of the same two
+      // bullets' named gap, distinct from FaceFaceSelfIntersection above.
+      // Detection via FindFaceInteriorSelfIntersections() (surface_
+      // intersect.h); same opt-in gate. `index` is the face; `location`
+      // the shared 3D point; `measure` the residual gap after refinement
+      // (always <= tolerance, since that is what makes it a hit).
+      FaceInteriorSelfIntersection,
     };
     Kind kind = Kind::NakedEdge;
     int index = -1;
@@ -3803,8 +3830,23 @@ class Brep {
   // loop's own samples through the surface, 16 samples per edge curve),
   // not exact minimum-width computations - fine for the "is this
   // essentially zero" question they answer, not a general shape metric.
+  //
+  // `check_self_intersections`, when true, additionally runs
+  // FindBrepSelfIntersections()/FindFaceInteriorSelfIntersections()
+  // (surface_intersect.h) and reports any hit as FaceFaceSelfIntersection/
+  // FaceInteriorSelfIntersection - the "no face/face self-intersection
+  // check between faces sharing no boundary" gap this bullet named.
+  // Defaulted to false, not folded into every Check() call unconditionally:
+  // both functions are real, mesh-seeded O(face_count^2) SSX work, not the
+  // O(1)-per-element bookkeeping every other check above does, so turning
+  // it on by default would silently make every existing Check() call (this
+  // kernel's own validity gate, called after nearly every topology-mutating
+  // method) slower in proportion to face count for a question most callers
+  // never asked. Never throws and never modifies this Brep, same as the
+  // rest of Check().
   CheckReport Check(double tolerance = tolerance::kDistance,
-                    double sliver_width = tolerance::kEdgeJoin) const;
+                    double sliver_width = tolerance::kEdgeJoin,
+                    bool check_self_intersections = false) const;
 
   // Joins every pair of naked (single-trim) edges whose endpoints (and
   // midpoints) coincide within `tolerance`, in either direction, into

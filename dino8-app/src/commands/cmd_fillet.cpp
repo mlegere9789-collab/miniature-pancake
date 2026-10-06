@@ -2713,12 +2713,14 @@ class FilletEdgeCommand : public Command {
   // construction PARITY_MAP.md's Blending & chamfering entry documents as
   // still never called from here, the same gap TryExactFillet's own
   // plain-Radius case already closed. On a convex-attempt failure, falls
-  // through to kernel::FilletConcaveEdgeTapered - but ONLY for the plain
-  // two-station (one Radius=/EndRadius= pair, no interior Radii= handle)
-  // case: FilletConcaveEdgeTapered has no N-station overload yet (see its
-  // own doc comment, fillet.h), so a run with an interior handle still has
-  // no concave exact path and falls through unchanged to the approximate
-  // cascade below, exactly as before this concave wiring existed.
+  // through to kernel::FilletConcaveEdgeTapered's own N-station overload -
+  // closes the "FilletConcaveEdgeTapered has no N-station overload yet"
+  // restriction this used to carry: that overload now exists (fillet.h)
+  // and its own doc comment establishes it agrees bit-for-bit with the
+  // plain two-radius overload at the 2-station case, so there is no longer
+  // any reason to special-case stations.size() == 2 here - a run with an
+  // interior Radii= handle now reaches a genuine exact concave fillet too,
+  // not just the approximate cascade below.
   bool TryExactTaperedFillet(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail) const {
     kernel::Brep kb;
     kb.raw() = solid;
@@ -2732,17 +2734,13 @@ class FilletEdgeCommand : public Command {
     } catch (const std::exception& ex) {
       convex_err = ex.what();
     }
-    if (stations.size() == 2) {
-      try {
-        out = kernel::FilletConcaveEdgeTapered(kb, p0, p1, stations[0].radius, stations[1].radius).raw();
-        return true;
-      } catch (const std::exception& ex) {
-        detail = "convex attempt: " + convex_err + "; concave attempt: " + ex.what();
-        return false;
-      }
+    try {
+      out = kernel::FilletConcaveEdgeTapered(kb, p0, p1, stations).raw();
+      return true;
+    } catch (const std::exception& ex) {
+      detail = "convex attempt: " + convex_err + "; concave attempt: " + ex.what();
+      return false;
     }
-    detail = convex_err;
-    return false;
   }
 
   Mode mode_;
@@ -4020,37 +4018,29 @@ class MergeCoplanarCommand : public Command {
 // drifted from approximate operations upstream.
 void RebuildEdgesReal(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
-  IntersectOptions opt;
-  opt.tolerance = tol;
-  opt.mesh_tolerance = std::max(tol * 4, 1e-4);
   ctx.Doc().BeginChange("RebuildEdges");
-  int refit = 0, kept = 0;
+  int refit = 0;
+  int total_two_trim_edges = 0;
   for (ObjectId id : ids) {
     SceneObject* o = ctx.Doc().Find(id);
     if (!o || o->kind != ObjectKind::Brep || !o->brep) continue;
-    ON_Brep& b = o->brep->raw();
-    for (int ei = 0; ei < b.m_E.Count(); ++ei) {
-      ON_BrepEdge& e = b.m_E[ei];
-      if (e.m_edge_index < 0 || e.TrimCount() != 2) { if (e.m_edge_index >= 0) ++kept; continue; }
-      const ON_BrepTrim &t0 = b.m_T[e.m_ti[0]], &t1 = b.m_T[e.m_ti[1]];
-      const int f0 = t0.FaceIndexOf(), f1 = t1.FaceIndexOf();
-      if (f0 < 0 || f1 < 0) continue;
-      ON_NurbsSurface s0, s1;
-      if (b.m_F[f0].SurfaceOf()->GetNurbForm(s0) <= 0 || b.m_F[f1].SurfaceOf()->GetNurbForm(s1) <= 0) continue;
-      std::vector<IntersectionCurve> ssx = IntersectSurfaces(s0, s1, opt);
-      if (ssx.empty()) { ++kept; continue; }
-      const Point3d mid = e.PointAt(e.Domain().Mid());
-      const IntersectionCurve* best = nullptr;
-      double bd = std::numeric_limits<double>::max();
-      for (const IntersectionCurve& c : ssx) { const double d = c.curve.PointAt(c.curve.Domain().Mid()).DistanceTo(mid); if (d < bd) { bd = d; best = &c; } }
-      if (!best || bd > tol * 200) { ++kept; continue; }
-      const int c3i = b.AddEdgeCurve(new ON_NurbsCurve(best->curve));
-      e.ChangeEdgeCurve(c3i);
-      ++refit;
+    const ON_Brep& raw = o->brep->raw();
+    for (int ei = 0; ei < raw.m_E.Count(); ++ei) {
+      if (raw.m_E[ei].m_edge_index >= 0 && raw.m_E[ei].TrimCount() == 2) ++total_two_trim_edges;
     }
-    b.SetTolerancesBoxesAndFlags();
+    // kernel::Brep::RebuildAllEdgeCurves() is the same real-SSX edge rebuild
+    // this command used to reimplement inline (midpoint-nearest curve pick,
+    // ChangeEdgeCurve with no 2D-trim refit). Routing through the kernel API
+    // instead gets the curve-vs-vertex matching that actually extracts the
+    // sub-arc between THIS edge's own endpoints (not just "closest curve by
+    // midpoint distance") and ReplaceEdgeCurve's trim re-projection, so the
+    // 2D trims stay consistent with the new 3D curve instead of silently
+    // drifting out of tolerance.
+    refit += o->brep->RebuildAllEdgeCurves(tol);
+    o->brep->raw().SetTolerancesBoxesAndFlags();
     o->InvalidateDisplay();
   }
+  const int kept = total_two_trim_edges - refit;
   ctx.Print("RebuildEdges: " + std::to_string(refit) + " edge(s) refit through the adjacent surfaces' intersection, " + std::to_string(kept) + " left as-is (naked or no SSX found)");
 }
 
