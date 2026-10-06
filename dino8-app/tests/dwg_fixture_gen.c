@@ -291,6 +291,76 @@ write_dim_fixture (const char *path)
   return 0;
 }
 
+/* Two real DIMENSION_ORDINATE entities, built via LibreDWG's own
+ * dwg_add_DIMENSION_ORDINATE - not marked "Experimental" in dwg_api.h, and
+ * confirmed by reading its implementation (src/dwg_api.c) directly: it
+ * stores feature_location_pt/leader_endpt verbatim and `use_x_axis` into
+ * flag2 (a clean 0/1 field - unlike DIMENSION_ANG3PT's own def_pt, which
+ * that function never lets the caller set at all, this one is a direct,
+ * controllable parameter), so this fixture - unlike that one - CAN
+ * meaningfully exercise WalkDwgEntities' own def_pt/flag2 reading, same
+ * field mapping DxfImporter::Dimension's own type==6 case expects (see
+ * that function's own comment in FileExchange.cpp for why this importer
+ * only ever assumes a base point of world (0,0,0): neither DXF nor DWG's
+ * own DIMENSION_ORDINATE structure stores an explicit "base" point at
+ * all - AutoCAD's own ordinate dimension always measures from whatever
+ * UCS origin was active, which the entity itself never records).
+ *
+ * X-axis ordinate: feature_location_pt=(30,20,0), use_x_axis=true -> the
+ * measured value is the feature's own X coordinate, 30 (independent of
+ * its Y, 20 - proving the X/Y axis-select bit is actually read, not just
+ * always defaulting to one axis).
+ * Y-axis ordinate: feature_location_pt=(15,25,0), use_x_axis=false -> the
+ * measured value is the feature's own Y coordinate, 25.
+ */
+static int
+write_ordinate_fixture (const char *path)
+{
+  Dwg_Data *dwg = dwg_new_Document (R_2000, 0, 0);
+  if (!dwg)
+    {
+      fprintf (stderr, "dwg_new_Document failed\n");
+      return 1;
+    }
+  Dwg_Object *mspace = dwg_model_space_object (dwg);
+  if (!mspace)
+    {
+      fprintf (stderr, "dwg_model_space_object failed\n");
+      return 1;
+    }
+  Dwg_Object_BLOCK_HEADER *hdr = mspace->tio.object->tio.BLOCK_HEADER;
+
+  const dwg_point_3d feat_x = { 30.0, 20.0, 0.0 };
+  const dwg_point_3d leader_x = { 30.0, 30.0, 0.0 };
+  Dwg_Entity_DIMENSION_ORDINATE *ord_x
+      = dwg_add_DIMENSION_ORDINATE (hdr, &feat_x, &leader_x, true);
+  if (!ord_x)
+    {
+      fprintf (stderr, "dwg_add_DIMENSION_ORDINATE (X) failed\n");
+      return 1;
+    }
+
+  const dwg_point_3d feat_y = { 15.0, 25.0, 0.0 };
+  const dwg_point_3d leader_y = { 15.0, 35.0, 0.0 };
+  Dwg_Entity_DIMENSION_ORDINATE *ord_y
+      = dwg_add_DIMENSION_ORDINATE (hdr, &feat_y, &leader_y, false);
+  if (!ord_y)
+    {
+      fprintf (stderr, "dwg_add_DIMENSION_ORDINATE (Y) failed\n");
+      return 1;
+    }
+
+  const int werr = dwg_write_file (path, dwg);
+  dwg_free (dwg);
+  if (werr >= DWG_ERR_CRITICAL)
+    {
+      fprintf (stderr, "dwg_write_file failed: 0x%x\n", werr);
+      return 1;
+    }
+  printf ("wrote %s\n", path);
+  return 0;
+}
+
 int
 main (int argc, char **argv)
 {
@@ -302,9 +372,11 @@ main (int argc, char **argv)
     return write_mtext_fixture (argv[1]);
   if (argc == 3 && strcmp (argv[2], "dim") == 0)
     return write_dim_fixture (argv[1]);
+  if (argc == 3 && strcmp (argv[2], "ordinate") == 0)
+    return write_ordinate_fixture (argv[1]);
   if (argc != 2)
     {
-      fprintf (stderr, "usage: %s <output.dwg> [hatch|spline|mtext|dim]\n", argv[0]);
+      fprintf (stderr, "usage: %s <output.dwg> [hatch|spline|mtext|dim|ordinate]\n", argv[0]);
       return 2;
     }
 

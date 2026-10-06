@@ -400,4 +400,50 @@ inline bool BuildLeaderGeometry(Point3d tip, const std::vector<Vector3d>& rest_o
   return true;
 }
 
+// Builds the single leader curve + label text + tag map for one DimOrdinate
+// dimension from its base point, feature point, axis direction ('X' or
+// 'Y') and a fixed plane - identical math to what the live DimOrdinate
+// command computes (cmd_annotate2.cpp's own BuildOrdinateDimGroup now just
+// calls this and adds its own associativity tags on top, the same split
+// BuildLinearDimensionGroup/BuildRadiusDimensionGroup/
+// BuildAngleDimensionGroup/BuildLeaderGeometry above already use),
+// extracted so DXF/DWG DIMENSION import (io/FileExchange.cpp, type 6 /
+// DIMENSION_ORDINATE) can share it exactly - same "no CommandContext"
+// story as the other Build*Geometry functions above. The leader always
+// runs from the feature point along the OTHER axis from the one being
+// measured (X measured -> leader runs in +Y, and vice versa) - the same
+// fixed layout the live command already uses, not a free pick. Returns
+// false only if the plane is degenerate enough that `pl.ClosestPointTo`
+// itself would fail, which it never does for a real `ON_Plane` - kept for
+// signature symmetry with the other Build*Geometry functions, and in case
+// a future caller feeds a genuinely degenerate plane.
+inline bool BuildOrdinateDimensionGeometry(Point3d base, Point3d feature, char dir, const ON_Plane& pl, double text_h,
+                                           std::vector<kernel::NurbsCurve>& curves, DimGlyphSpec& text,
+                                           std::map<std::string, std::string>& tags, double* value_out = nullptr,
+                                           const DimStyleParams& style = {}) {
+  using namespace dim_geom_detail;
+  double u0, v0, u1, v1;
+  pl.ClosestPointTo(base, &u0, &v0);
+  pl.ClosestPointTo(feature, &u1, &v1);
+  const double value = dir == 'X' ? u1 - u0 : v1 - v0;
+  const Vector3d leader = dir == 'X' ? pl.yaxis : pl.xaxis;
+  const Point3d end = feature + leader * (text_h * 2.5);
+  curves.clear();
+  curves.push_back(MakePolyline({feature, end}));
+  if (value_out) *value_out = value;
+  tags.clear();
+  tags["DimOrdinateDir"] = std::string(1, dir);
+  tags["DimPlaneOrigin"] = DimPointTag(pl.origin);
+  tags["DimPlaneX"] = DimPointTag(Point3d(pl.xaxis));
+  tags["DimPlaneY"] = DimPointTag(Point3d(pl.yaxis));
+  tags["DimP0"] = DimPointTag(base);
+  tags["DimP1"] = DimPointTag(feature);
+  text.text = std::string(1, dir) + " " + FormatMeasurement(value, style.precision, style.suffix);
+  text.height = text_h;
+  text.plane = pl;
+  text.plane.SetOrigin(dir == 'X' ? end + pl.yaxis * (text_h * 0.3) : end + pl.xaxis * (text_h * 0.3) - pl.yaxis * (text_h * 0.5));
+  text.center = dir == 'X';
+  return true;
+}
+
 }  // namespace dino8::app

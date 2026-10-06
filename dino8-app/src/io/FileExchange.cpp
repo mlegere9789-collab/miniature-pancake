@@ -867,6 +867,76 @@ bool WriteDxfLeader(DxfWriter& w, const DxfLeaderLayout& L, const std::string& l
   return true;
 }
 
+// A DimOrdinate group's own fixed layout, re-parsed directly from the tags
+// BuildOrdinateDimensionGeometry (commands/DimGeometry.h) stamps on every
+// one of the group's own curves - DimPlaneOrigin/X/Y (plane), DimP0 (the
+// base/origin point), DimP1 (the feature point) and DimOrdinateDir ('X' or
+// 'Y') - same "plain-data re-read" precedent as DxfLinearDimLayoutOf above.
+// `base` is only kept to let DxfOrdinateDimLayoutOf refuse a group whose
+// base isn't at world origin (see WriteDxfOrdinateDimension's own comment
+// on why) - it is never itself written to the DXF entity.
+struct DxfOrdinateDimLayout {
+  ON_Plane plane;
+  Point3d base, feature;
+  char dir = 'X';
+};
+
+bool DxfOrdinateDimLayoutOf(const SceneObject& o, DxfOrdinateDimLayout& L) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *org = get("DimPlaneOrigin"), *ax = get("DimPlaneX"), *ay = get("DimPlaneY");
+  const std::string *p0s = get("DimP0"), *p1s = get("DimP1"), *dirs = get("DimOrdinateDir");
+  if (!org || !ax || !ay || !p0s || !p1s) return false;
+  Point3d o3, px, py;
+  if (!ParsePointTagLocal(*org, o3) || !ParsePointTagLocal(*ax, px) || !ParsePointTagLocal(*ay, py)) return false;
+  if (!ParsePointTagLocal(*p0s, L.base) || !ParsePointTagLocal(*p1s, L.feature)) return false;
+  L.plane = ON_Plane(o3, Vector3d(px.x, px.y, px.z), Vector3d(py.x, py.y, py.z));
+  L.dir = (dirs && *dirs == "Y") ? 'Y' : 'X';
+  return true;
+}
+
+// A real DXF DIMENSION entity (type 6, ordinate) for a DimOrdinate group,
+// instead of its own baked leader/text curves - the inverse of
+// DxfImporter::Dimension's own type==6 branch below (that function's own
+// comment has the dwg.spec-verified field layout this mirrors: group 70's
+// bit 0x80 is "ordinate uses the X axis" when set, Y otherwise -
+// LibreDWG's own dwg_add_DIMENSION_ORDINATE stores this cleanly as a plain
+// `flag2` 0/1 field, and its COMMON_ENTITY_DIMENSION decoder folds that bit
+// into the shared `flag`/group-70 value at 0x80 - the mask the decoder's
+// own code actually uses, not the "set bit 6" (0x40) its comment claims;
+// code over a stale comment, cross-checked against this writer's own real
+// round trip below - `feature_location_pt`=13 is the measured point).
+//
+// Unlike every other DIMENSION type this file writes, there is no DXF
+// group anywhere in DIMENSION_ORDINATE for the "base" point an ordinate
+// measurement is actually relative to - AutoCAD's own ordinate dimension
+// always measures from whatever UCS origin was active when it was placed,
+// which the entity itself never records (only the measured feature point
+// and a cosmetic leader-end point are stored). So this writer - and the
+// matching reader - only handle a `DimOrdinate` whose own base point is
+// genuinely at world `(0,0,0)`: a real, common case (many ordinate
+// dimensions ARE referenced from the part's own modeling origin), honestly
+// scoped rather than silently wrong for any other base point, which falls
+// through to this group's own baked curves unchanged (same documented
+// fallback convention every other narrow writer in this file already
+// uses). `def_pt` (group 10) is written as a duplicate of the feature
+// point - this reader's own type==6 branch never reads group 10 for
+// ordinate at all, so any valid, non-degenerate value there is fine; a
+// real AutoCAD-authored file would use it differently, but that's exactly
+// the kind of group-2/text-override richness this file's own narrow
+// writers already decline to reproduce (see WriteDxfLinearDimension's own
+// comment on the same "minimal, no block/text override" scope).
+bool WriteDxfOrdinateDimension(DxfWriter& w, const DxfOrdinateDimLayout& L, const std::string& layer, const Color* color) {
+  if (L.base.DistanceTo(Point3d(0, 0, 0)) > 1e-9) return false;
+  w.BeginEntity("DIMENSION", layer, color);
+  w.G(100, "AcDbDimension");
+  w.Point(10, L.feature);
+  w.G(70, 6 | (L.dir == 'X' ? 0x80 : 0));
+  w.G(100, "AcDbOrdinateDimension");
+  w.Point(13, L.feature);
+  w.Point(14, L.feature);
+  return true;
+}
+
 // Writes one BlockDefinition member object into the BLOCKS section ExportDxf
 // now emits for a static (no visibility states) block that has at least one
 // placed instance - see ExportDxf's own comment on where this is called
@@ -1168,6 +1238,17 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
             break;
           }
           // Same harmless-independent-retry convention as the linear case above.
+        }
+        if (ann != o->user_text.end() && ann->second == "DimOrdinate") {
+          if (dimension_groups_written.count(o->group_id)) break;  // this group's DIMENSION entity already written
+          DxfOrdinateDimLayout L;
+          if (DxfOrdinateDimLayoutOf(*o, L) && WriteDxfOrdinateDimension(w, L, layer, color)) {
+            dimension_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
+          // Same harmless-independent-retry convention as the linear case above - also hit, by design,
+          // whenever this group's own base point isn't at world origin (see WriteDxfOrdinateDimension's comment).
         }
         // Only the plain Text command's own left-aligned glyph groups (not
         // Dim*/Leader, whose glyph curves share a group with non-glyph
@@ -2048,6 +2129,18 @@ class DxfImporter {
   //     actual rendered dimension arc - used only to pick which of the two
   //     complementary sweeps between the direction points was drawn, see
   //     below.
+  //   type 6 (ordinate, DIMENSION_ORDINATE): feature_location_pt=13/23/33
+  //     is the measured point; group 70's bit 0x80 is set when the
+  //     ordinate measures the X axis, clear for Y (LibreDWG's own
+  //     dwg_add_DIMENSION_ORDINATE stores this cleanly as a plain flag2
+  //     0/1 field; its COMMON_ENTITY_DIMENSION decoder folds that bit into
+  //     the shared flag/group-70 value at mask 0x80 - the mask the
+  //     decoder's own code actually uses, not the "set bit 6" (0x40) its
+  //     own comment claims, cross-checked against this importer's own real
+  //     round trip, see WriteDxfOrdinateDimension's comment). Unlike every
+  //     other type here, there is no DXF group anywhere in
+  //     DIMENSION_ORDINATE for the "base" point the measurement is
+  //     actually relative to - see below.
   // All DIMENSION point groups are full 3D (13/23/33 etc., unlike LINE/
   // TEXT/CIRCLE's OCS-relative 10/20/30) so they need no extrusion-plane
   // transform to read; only the *orientation* used to build arrows/text
@@ -2073,12 +2166,15 @@ class DxfImporter {
   //     xline2start_pt/xline2end_pt/def_pt, none of which is "the vertex")
   //     that doesn't reduce to Dino8's own vertex+p1+p2 DimAngle shape at
   //     all, not just an ambiguity to resolve.
-  //   - ordinate dimensions (type 6): which axis (X or Y) is being read is
-  //     carried only in the "use X axis" bit inside the same flag byte as
-  //     the block-reference/associativity bits this importer does not
-  //     otherwise need to decode, and a wrong guess silently reports the
-  //     wrong offset - not attempted.
-  // All three fall into the ordinary skipped-entity count.
+  //   - ordinate dimensions (type 6) are rebuilt (see below), but always
+  //     under the assumption their own base point is world (0,0,0) - the
+  //     only base DIMENSION_ORDINATE's own fields can represent at all
+  //     (AutoCAD's own ordinate dimension always measures from whatever
+  //     UCS was active when placed, which the entity itself never
+  //     records); a real file measuring from some other base reads back
+  //     with the wrong offset, an honest format limitation rather than a
+  //     guess this importer could get right with more code.
+  // The first three fall into the ordinary skipped-entity count.
   void Dimension(const DxfEntity& e) {
     const int type = e.I(70) & 7;
     const double h = ImportDimTextHeight(doc_);
@@ -2152,7 +2248,27 @@ class DxfImporter {
       else ++stats_.skipped;
       return;
     }
-    ++stats_.skipped;  // type-2 angular / ordinate (6), or a type-5 reflex sweep: not representable, see comment above
+    if (type == 6) {
+      // Base point is always assumed to be world (0,0,0) - neither DXF nor
+      // DWG's own DIMENSION_ORDINATE stores an explicit base point at all,
+      // see WriteDxfOrdinateDimension's own comment for the full rationale.
+      // That writer only ever produces a file consistent with this
+      // assumption, and a real AutoCAD-authored one is, by the format's
+      // own design, always relative to whatever UCS was active - which for
+      // a file with no other context this importer has no way to recover
+      // except by assuming world origin too.
+      const bool use_x = (e.I(70) & 0x80) != 0;
+      const Point3d feature = e.P(13);
+      const ON_Plane pl(Point3d(0, 0, 0), ocs.xaxis, ocs.yaxis);
+      std::vector<kernel::NurbsCurve> curves;
+      DimGlyphSpec text;
+      std::map<std::string, std::string> tags;
+      if (!BuildOrdinateDimensionGeometry(Point3d(0, 0, 0), feature, use_x ? 'X' : 'Y', pl, h, curves, text, tags)) { ++stats_.skipped; return; }
+      if (AddDimensionGroupToDoc(doc_, "DimOrdinate", layer, curves, text, tags)) ++stats_.dimensions;
+      else ++stats_.skipped;
+      return;
+    }
+    ++stats_.skipped;  // type-2 angular, or a type-5 reflex sweep: not representable, see comment above
   }
 
   // LEADER: rebuilds a real, live/re-measurable Dino8 Leader
@@ -2787,10 +2903,14 @@ void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, s
       // xline1_pt/xline2_pt/center_pt/def_pt for ANG3PT (center_pt is the
       // measured VERTEX despite its name; def_pt disambiguates which of the
       // two complementary sweeps was drawn - same DxfImporter::Dimension
-      // type==5 logic, see its comment for the full rationale). 2-line
-      // angular (ANG2LN) and ordinate (ORDINATE) DIMENSION subtypes, and the
-      // jogged-radius LARGE_RADIAL_DIMENSION/ARC_DIMENSION entities, fall
-      // into the default case below (skipped), same honest scope as DXF.
+      // type==5 logic, see its comment for the full rationale), and
+      // feature_location_pt/flag2 for ORDINATE (flag2 is a clean 0/1
+      // "use_x_axis" field here, unlike DXF's own folded-into-a-shared-byte
+      // group 70 bit - see that importer's own type==6 comment for why
+      // both assume a world-origin base point regardless). 2-line angular
+      // (ANG2LN) DIMENSION subtypes, and the jogged-radius
+      // LARGE_RADIAL_DIMENSION/ARC_DIMENSION entities, fall into the
+      // default case below (skipped), same honest scope as DXF.
       case DWG_TYPE_DIMENSION_LINEAR:
       case DWG_TYPE_DIMENSION_ALIGNED: {
         const bool aligned = (o->fixedtype == DWG_TYPE_DIMENSION_ALIGNED);
@@ -2865,6 +2985,32 @@ void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, s
         if (!BuildRadiusDimensionGeometry(center, radius, L, ImportDimTextHeight(doc), curves, text, tags)) { ++stats.skipped; break; }
         const int layer = DwgLayerFor(doc, layer_map, ent, stats);
         if (AddDimensionGroupToDoc(doc, diameter ? "DimDiameter" : "DimRadius", layer, curves, text, tags)) ++stats.dimensions;
+        else ++stats.skipped;
+        break;
+      }
+      case DWG_TYPE_DIMENSION_ORDINATE: {
+        // Same base-is-always-world-origin assumption as
+        // DxfImporter::Dimension's own type==6 case (see its comment for
+        // the full rationale) - `xf * Point3d(0,0,0)` rather than a bare
+        // `Point3d(0,0,0)` so a block-local ordinate dimension's own
+        // "local origin" still maps to the correct world point when this
+        // entity lives inside an INSERT (same transform already applied
+        // to every real stored point in every other case here). Unlike
+        // the DXF reader, which has to recover the axis from a bit folded
+        // into a shared flag byte, LibreDWG's own Dwg_Entity_DIMENSION_
+        // ORDINATE exposes `flag2` as a clean 0/1 "use_x_axis" field
+        // directly (dwg.h) - no bit-masking needed.
+        Dwg_Entity_DIMENSION_ORDINATE* e = ent->tio.DIMENSION_ORDINATE;
+        const Point3d base = xf * Point3d(0, 0, 0);
+        const Point3d feature = xf * Point3d(e->feature_location_pt.x, e->feature_location_pt.y, e->feature_location_pt.z);
+        const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), Vector3d(e->extrusion.x, e->extrusion.y, e->extrusion.z));
+        const ON_Plane pl(base, ocs.xaxis, ocs.yaxis);
+        std::vector<kernel::NurbsCurve> curves;
+        DimGlyphSpec text;
+        std::map<std::string, std::string> tags;
+        if (!BuildOrdinateDimensionGeometry(base, feature, e->flag2 ? 'X' : 'Y', pl, ImportDimTextHeight(doc), curves, text, tags)) { ++stats.skipped; break; }
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        if (AddDimensionGroupToDoc(doc, "DimOrdinate", layer, curves, text, tags)) ++stats.dimensions;
         else ++stats.skipped;
         break;
       }
