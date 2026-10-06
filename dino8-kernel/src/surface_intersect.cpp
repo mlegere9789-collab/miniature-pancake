@@ -3053,21 +3053,41 @@ PlaneTorusIntersection IntersectPlaneTorus(const ON_Plane& plane, const ON_Torus
   return out;
 }
 
-std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePoints(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt) {
-  std::vector<SurfaceSilhouettePoint> out;
-  if (view_direction.Length() < 1e-12) return out;  // no direction to test tangency against
+namespace {
 
-  auto normal_dot = [&](double u, double v, bool& ok) {
-    const Vector3d n = RobustSurfaceNormal(s, u, v);
-    ok = n.Length() > 1e-9;
-    return ON_DotProduct(n, view_direction);
-  };
+// Shared by FindSurfaceSilhouettePoints()/FindSurfaceSilhouettePointsPerspective()/
+// FindSurfaceSilhouetteCurves(): finds, for every edge of the surface's own
+// regular TessellateWithUV() grid, the point (if any) where `direction_at`
+// (evaluated at the 3D point under test - a fixed vector for the
+// orthographic case, `point - eye` for the perspective one) crosses from
+// one side of the surface's own tangent plane to the other -
+// dot(RobustSurfaceNormal(s, u, v), direction_at(point)) changing sign
+// along that edge - bisected to the true crossing the same way every other
+// sampling-based detector in this file already does. Keyed by the edge's
+// own two grid-vertex ids (lo, hi), not returned as a flat list, so
+// FindSurfaceSilhouetteCurves() can tell which crossings share a grid cell
+// and chain them; the two point-returning functions just flatten the map's
+// own values.
+struct GridSilhouetteCrossing {
+  ON_2dPoint uv;
+  Point3d point;
+};
+using SilhouetteEdgeKey = std::pair<int, int>;
 
-  const SurfaceMesh grid = TessellateWithUV(s, opt);
+std::map<SilhouetteEdgeKey, GridSilhouetteCrossing> FindTangencyCrossingsOnGrid(
+    const ON_Surface& s, const SurfaceMesh& grid, const std::function<Vector3d(const Point3d&)>& direction_at) {
+  std::map<SilhouetteEdgeKey, GridSilhouetteCrossing> out;
   const int nu = grid.nu, nv = grid.nv;
   auto id = [&](int i, int j) { return j * (nu + 1) + i; };
 
-  auto try_edge = [&](const ON_2dPoint& uv0, const ON_2dPoint& uv1) {
+  auto normal_dot = [&](double u, double v, bool& ok) {
+    const Vector3d n = RobustSurfaceNormal(s, u, v);
+    const Vector3d dir = direction_at(s.PointAt(u, v));
+    ok = n.Length() > 1e-9 && dir.Length() > 1e-12;
+    return ON_DotProduct(n, dir);
+  };
+
+  auto try_edge = [&](int id0, int id1, const ON_2dPoint& uv0, const ON_2dPoint& uv1) {
     bool ok0 = false, ok1 = false;
     const double f0 = normal_dot(uv0.x, uv0.y, ok0);
     const double f1 = normal_dot(uv1.x, uv1.y, ok1);
@@ -3084,19 +3104,135 @@ std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePoints(const ON_Surface
     }
     const double tm = 0.5 * (t0 + t1);
     const double u = uv0.x + tm * (uv1.x - uv0.x), v = uv0.y + tm * (uv1.y - uv0.y);
-    SurfaceSilhouettePoint pt;
-    pt.uv = ON_2dPoint(u, v);
-    pt.point = s.PointAt(u, v);
-    for (const auto& prev : out) {
-      if (prev.point.DistanceTo(pt.point) < opt.tolerance * 4) return;  // same dedup radius IntersectCurveSurface/IntersectCurves use
-    }
-    out.push_back(pt);
+    GridSilhouetteCrossing c;
+    c.uv = ON_2dPoint(u, v);
+    c.point = s.PointAt(u, v);
+    out[{std::min(id0, id1), std::max(id0, id1)}] = c;
   };
 
   for (int j = 0; j <= nv; ++j)
-    for (int i = 0; i < nu; ++i) try_edge(grid.uv[static_cast<size_t>(id(i, j))], grid.uv[static_cast<size_t>(id(i + 1, j))]);
+    for (int i = 0; i < nu; ++i) try_edge(id(i, j), id(i + 1, j), grid.uv[static_cast<size_t>(id(i, j))], grid.uv[static_cast<size_t>(id(i + 1, j))]);
   for (int j = 0; j < nv; ++j)
-    for (int i = 0; i <= nu; ++i) try_edge(grid.uv[static_cast<size_t>(id(i, j))], grid.uv[static_cast<size_t>(id(i, j + 1))]);
+    for (int i = 0; i <= nu; ++i) try_edge(id(i, j), id(i, j + 1), grid.uv[static_cast<size_t>(id(i, j))], grid.uv[static_cast<size_t>(id(i, j + 1))]);
+
+  return out;
+}
+
+std::vector<SurfaceSilhouettePoint> FlattenSilhouetteCrossings(const std::map<SilhouetteEdgeKey, GridSilhouetteCrossing>& crossings, double dedup_radius) {
+  std::vector<SurfaceSilhouettePoint> out;
+  for (const auto& [key, c] : crossings) {
+    bool dup = false;
+    for (const auto& prev : out) {
+      if (prev.point.DistanceTo(c.point) < dedup_radius) { dup = true; break; }  // same dedup radius IntersectCurveSurface/IntersectCurves use
+    }
+    if (dup) continue;
+    SurfaceSilhouettePoint pt;
+    pt.uv = c.uv;
+    pt.point = c.point;
+    out.push_back(pt);
+  }
+  return out;
+}
+
+}  // namespace
+
+std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePoints(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt) {
+  if (view_direction.Length() < 1e-12) return {};  // no direction to test tangency against
+  const SurfaceMesh grid = TessellateWithUV(s, opt);
+  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d&) { return view_direction; });
+  return FlattenSilhouetteCrossings(crossings, opt.tolerance * 4);
+}
+
+std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePointsPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt) {
+  const SurfaceMesh grid = TessellateWithUV(s, opt);
+  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d& p) { return Vector3d(p - eye); });
+  return FlattenSilhouetteCrossings(crossings, opt.tolerance * 4);
+}
+
+std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurves(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt) {
+  std::vector<SurfaceSilhouetteCurve> out;
+  if (view_direction.Length() < 1e-12) return out;
+  const SurfaceMesh grid = TessellateWithUV(s, opt);
+  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d&) { return view_direction; });
+  if (crossings.empty()) return out;
+
+  const int nu = grid.nu, nv = grid.nv;
+  auto id = [&](int i, int j) { return j * (nu + 1) + i; };
+  auto edge_key = [&](int a, int b) { return SilhouetteEdgeKey{std::min(a, b), std::max(a, b)}; };
+  auto has_crossing = [&](const SilhouetteEdgeKey& k) { return crossings.find(k) != crossings.end(); };
+
+  // One link per grid cell whose boundary has exactly two crossing edges -
+  // the clean marching-squares case; 0 crossings means no link, and 4 (the
+  // "saddle" ambiguity) is honestly skipped rather than guessed at - see
+  // this function's own header doc comment.
+  std::vector<std::pair<SilhouetteEdgeKey, SilhouetteEdgeKey>> links;
+  for (int j = 0; j < nv; ++j) {
+    for (int i = 0; i < nu; ++i) {
+      const SilhouetteEdgeKey edges[4] = {edge_key(id(i, j), id(i + 1, j)), edge_key(id(i, j + 1), id(i + 1, j + 1)),
+                                           edge_key(id(i, j), id(i, j + 1)), edge_key(id(i + 1, j), id(i + 1, j + 1))};
+      SilhouetteEdgeKey hits[4];
+      int n_hits = 0;
+      for (const auto& e : edges) if (has_crossing(e)) hits[n_hits++] = e;
+      if (n_hits == 2) links.push_back({hits[0], hits[1]});
+    }
+  }
+
+  std::map<SilhouetteEdgeKey, std::vector<size_t>> touching;
+  for (size_t li = 0; li < links.size(); ++li) {
+    touching[links[li].first].push_back(li);
+    touching[links[li].second].push_back(li);
+  }
+  std::vector<bool> used(links.size(), false);
+  auto other_end = [&](size_t li, const SilhouetteEdgeKey& from) { return links[li].first == from ? links[li].second : links[li].first; };
+  auto unused_link_at = [&](const SilhouetteEdgeKey& node) -> long {
+    for (size_t li : touching[node]) if (!used[li]) return static_cast<long>(li);
+    return -1;
+  };
+
+  auto emit = [&](const std::vector<SilhouetteEdgeKey>& chain_keys, bool closed) {
+    if (chain_keys.size() < 2) return;
+    std::vector<Point3d> pts;
+    pts.reserve(chain_keys.size());
+    for (const auto& k : chain_keys) pts.push_back(crossings.at(k).point);
+    SurfaceSilhouetteCurve sc;
+    sc.closed = closed;
+    sc.curve = InterpolateCubic(pts, ChordParams(pts, closed), closed, 3);
+    if (sc.curve.IsValid()) out.push_back(sc);
+  };
+
+  // Open chains: walk every still-unused degree-1 node to its matching
+  // endpoint.
+  for (const auto& [node, lis] : touching) {
+    if (lis.size() != 1 || used[lis[0]]) continue;
+    std::vector<SilhouetteEdgeKey> chain = {node};
+    SilhouetteEdgeKey cur = node;
+    for (size_t guard = 0; guard < links.size() + 1; ++guard) {
+      const long li = unused_link_at(cur);
+      if (li < 0) break;
+      used[static_cast<size_t>(li)] = true;
+      cur = other_end(static_cast<size_t>(li), cur);
+      chain.push_back(cur);
+    }
+    emit(chain, false);
+  }
+
+  // Whatever links remain now form closed loops (every remaining touched
+  // node has degree 2) - walk each back to its own start.
+  for (size_t start_li = 0; start_li < links.size(); ++start_li) {
+    if (used[start_li]) continue;
+    const SilhouetteEdgeKey start = links[start_li].first;
+    used[start_li] = true;
+    SilhouetteEdgeKey cur = other_end(start_li, start);
+    std::vector<SilhouetteEdgeKey> chain = {start, cur};
+    for (size_t guard = 0; guard < links.size() + 1 && cur != start; ++guard) {
+      const long li = unused_link_at(cur);
+      if (li < 0) break;
+      used[static_cast<size_t>(li)] = true;
+      cur = other_end(static_cast<size_t>(li), cur);
+      if (cur != start) chain.push_back(cur);
+    }
+    emit(chain, true);
+  }
 
   return out;
 }
