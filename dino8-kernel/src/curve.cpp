@@ -1194,6 +1194,199 @@ Result NurbsCurve::ElevateDegree(int new_degree) {
   return Result::Ok;
 }
 
+namespace {
+
+// Textbook knot V_k (k >= 1) of `c`: ON's compressed Knot(k - 1) - the
+// same simple reindexing NurbsSurface::MatchEdge()'s own helper
+// (surface_edit.cpp) uses (no padding needed, unlike RemoveKnotAt's own
+// u_full above, since this only ever reads knots already inside the
+// compressed array).
+double TextbookCurveKnot(const ON_NurbsCurve& c, int k) { return c.Knot(k - 1); }
+
+ON_4dPoint HomogeneousCurveCV(const ON_NurbsCurve& c, int i) {
+  ON_4dPoint cv;
+  c.GetCV(i, cv);
+  if (!c.IsRational()) cv.w = 1.0;
+  return cv;
+}
+
+void SetHomogeneousCurveCV(ON_NurbsCurve& c, int i, const ON_4dPoint& cv) {
+  if (c.IsRational()) c.SetCV(i, cv);
+  else c.SetCV(i, ON_3dPoint(cv.x, cv.y, cv.z));
+}
+
+}  // namespace
+
+Result NurbsCurve::MatchEnd(bool at_min, const NurbsCurve& target, bool target_at_min, MatchContinuity continuity,
+                             MatchEndReport* report, double end_derivative_scale) {
+  const int rows_needed = continuity == MatchContinuity::Position ? 1 : continuity == MatchContinuity::Tangent ? 2 : 3;
+  if (target.curve_.Degree() < rows_needed - 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::MatchEnd: target's degree is too low for the requested continuity");
+  }
+  if (!curve_.IsClamped(2) || !target.curve_.IsClamped(2)) return Result::Failed;
+
+  // Everything below edits only this local copy `s` - `curve_` itself
+  // is never touched until the final, self-checked commit, so an early
+  // `Result::Failed` return always leaves the curve untouched without
+  // needing a separate backup/restore (unlike MatchEdge(), which edits
+  // `surface_` in place and must restore a backup on failure).
+  ON_NurbsCurve s = curve_;
+  ON_NurbsCurve t = target.curve_;
+
+  // Normalize both to "match at the min end" so one set of end-derivative
+  // formulas applies - Reverse() is shape-preserving.
+  if (!at_min && !s.Reverse()) return Result::Failed;
+  if (!target_at_min && !t.Reverse()) return Result::Failed;
+
+  // Enough control points in `s` to leave its OTHER end alone - the
+  // same two preconditions MatchEdge() enforces on its own surface's
+  // cross direction (degree first, since the end-derivative formulas
+  // below need it; then control point count).
+  if (s.Degree() < rows_needed - 1) {
+    ON_NurbsCurve elevated;
+    if (!detail::DegreeElevateNurbsCurve(s, rows_needed - 1, elevated)) return Result::Failed;
+    s = elevated;
+  }
+  if (s.CVCount() <= rows_needed) {
+    const ON_Interval dom = s.Domain();
+    if (!s.InsertKnot(dom.Mid(), 1)) return Result::Failed;
+  }
+  if (s.CVCount() <= rows_needed) return Result::Failed;
+
+  // Scale: this curve's own pre-edit end speed over the target's,
+  // measured by real derivative evaluation (correct on a rational curve
+  // too, unlike reconstructing a derivative by hand from raw control
+  // points) - the curve-end counterpart to MatchEdge()'s own
+  // MeanCrossSpeedAtMin(), with no averaging needed since there's no
+  // "cross direction" to sample over for a single end point.
+  double scale = end_derivative_scale;
+  if (!(scale > 0.0)) {
+    ON_3dPoint s_pt, t_pt;
+    ON_3dVector s_d1, t_d1;
+    s.Ev1Der(s.Domain().Min(), s_pt, s_d1);
+    t.Ev1Der(t.Domain().Min(), t_pt, t_d1);
+    const double s_speed = s_d1.Length(), t_speed = t_d1.Length();
+    scale = (s_speed > 0.0 && t_speed > 0.0) ? s_speed / t_speed : 1.0;
+  }
+
+  // Rows and end-derivative coefficients (textbook knots; both curves
+  // are clamped so V_1 is the domain start) - exactly MatchEdge()'s own
+  // per-row R0/R1/R2 recurrence (surface_edit.cpp), here evaluated once
+  // (a single control point, not a row indexed along a shared edge).
+  const int p = s.Degree(), q = t.Degree();
+  const ON_4dPoint t0 = HomogeneousCurveCV(t, 0);
+  ON_4dPoint r0 = t0, r1 = r0, r2 = r0;
+  if (rows_needed >= 2) {
+    const ON_4dPoint t1 = HomogeneousCurveCV(t, 1);
+    const double dt1 = TextbookCurveKnot(t, q + 1) - TextbookCurveKnot(t, 1);
+    const double ds1 = TextbookCurveKnot(s, p + 1) - TextbookCurveKnot(s, 1);
+    // A = q / dt1 * (T1 - T0); R1 = R0 + ds1 / p * (-scale * A).
+    const ON_4dPoint a = Scale4(Sub4(t1, t0), q / dt1);
+    r1 = Add4(r0, Scale4(a, -scale * ds1 / p));
+    if (rows_needed >= 3) {
+      const ON_4dPoint t2 = HomogeneousCurveCV(t, 2);
+      const double dt2 = TextbookCurveKnot(t, q + 2) - TextbookCurveKnot(t, 2);
+      const double ds2 = TextbookCurveKnot(s, p + 2) - TextbookCurveKnot(s, 2);
+      // B = q (q-1) / dt1 * [ (T2 - T1) / dt2 - (T1 - T0) / dt1 ];
+      // S_vv = p (p-1) / ds1 * [ (R2 - R1) / ds2 - (R1 - R0) / ds1 ] = scale^2 B.
+      const ON_4dPoint b = Scale4(Sub4(Scale4(Sub4(t2, t1), 1.0 / dt2), Scale4(Sub4(t1, t0), 1.0 / dt1)), q * (q - 1.0) / dt1);
+      const ON_4dPoint d1 = Scale4(Sub4(r1, r0), 1.0 / ds1);
+      const ON_4dPoint inner = Add4(Scale4(b, scale * scale * ds1 / (p * (p - 1.0))), d1);
+      r2 = Add4(r1, Scale4(inner, ds2));
+    }
+  }
+
+  if (t.IsRational() && !s.IsRational()) s.MakeRational();
+  if (s.IsRational()) {
+    if (!(r0.w > 0.0) || (rows_needed >= 2 && !(r1.w > 0.0)) || (rows_needed >= 3 && !(r2.w > 0.0))) {
+      return Result::Failed;
+    }
+  }
+  SetHomogeneousCurveCV(s, 0, r0);
+  if (rows_needed >= 2) SetHomogeneousCurveCV(s, 1, r1);
+  if (rows_needed >= 3) SetHomogeneousCurveCV(s, 2, r2);
+
+  // Self-check by evaluation at the end, then undo the normalizing
+  // reversal - the same discipline MatchEdge() already applies.
+  MatchEndReport local;
+  local.scale = scale;
+  double size = 0.0;
+  {
+    ON_BoundingBox bb, tb;
+    s.GetBoundingBox(bb, false);
+    t.GetBoundingBox(tb, false);
+    size = std::max({1.0, bb.Diagonal().Length(), tb.Diagonal().Length()});
+  }
+  ON_3dPoint s_pt, t_pt;
+  ON_3dVector s_d1, t_d1, s_d2, t_d2;
+  s.Ev2Der(s.Domain().Min(), s_pt, s_d1, s_d2);
+  t.Ev2Der(t.Domain().Min(), t_pt, t_d1, t_d2);
+  local.position_error = s_pt.DistanceTo(t_pt);
+  if (rows_needed >= 2) local.tangent_error = (s_d1 + scale * t_d1).Length();
+  if (rows_needed >= 3) local.curvature_error = (s_d2 - scale * scale * t_d2).Length();
+
+  if (!at_min && !s.Reverse()) return Result::Failed;
+  if (report) *report = local;
+  const double tol = 1e-9 * size;
+  if (!(local.position_error <= tol) || !(local.tangent_error <= tol * std::max(1.0, scale)) ||
+      !(local.curvature_error <= tol * std::max(1.0, scale * scale) * 10.0) || !s.IsValid()) {
+    return Result::Failed;
+  }
+  curve_ = s;
+  return Result::Ok;
+}
+
+Result NurbsCurve::ReduceDegree(int target_degree, double tolerance, double* out_max_deviation) {
+  if (target_degree < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::ReduceDegree: target_degree must be at least 1");
+  }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::ReduceDegree: tolerance must be positive");
+  }
+  if (out_max_deviation) *out_max_deviation = 0.0;
+  if (target_degree >= Degree()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+
+  const int original_cv_count = ControlPointCount();
+  const Interval domain = Domain();
+  const int sample_count = std::max(200, 20 * original_cv_count);
+  std::vector<Point3d> samples;
+  samples.reserve(static_cast<size_t>(sample_count) + 1);
+  for (int i = 0; i <= sample_count; ++i) {
+    samples.push_back(PointAt(domain.min + (domain.max - domain.min) * i / sample_count));
+  }
+
+  std::vector<int> candidate_counts;
+  for (int cv = target_degree + 1; cv < original_cv_count; cv *= 2) candidate_counts.push_back(cv);
+  if (candidate_counts.empty() || candidate_counts.back() != original_cv_count) {
+    candidate_counts.push_back(original_cv_count);
+  }
+
+  double last_worst = 0.0;
+  for (int cv_count : candidate_counts) {
+    NurbsCurve candidate;
+    if (NurbsCurve::FitLeastSquares(samples, target_degree, cv_count, candidate) != Result::Ok) {
+      continue;
+    }
+    double worst = 0.0;
+    for (const Point3d& p : samples) {
+      worst = std::max(worst, (p - candidate.ClosestPoint(p)).Length());
+    }
+    last_worst = worst;
+    if (worst <= tolerance) {
+      curve_ = candidate.raw();
+      if (out_max_deviation) *out_max_deviation = worst;
+      return Result::Ok;
+    }
+  }
+  if (out_max_deviation) *out_max_deviation = last_worst;
+  return Result::Failed;
+}
+
 Interval NurbsCurve::Domain() const {
   const ON_Interval domain = curve_.Domain();
   return Interval{domain.Min(), domain.Max()};

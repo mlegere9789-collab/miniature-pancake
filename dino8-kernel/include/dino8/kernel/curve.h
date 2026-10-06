@@ -34,6 +34,30 @@ class NurbsSurface;
 // invented here either.
 enum class CurveOffsetCornerStyle { Sharp, Round, Chamfer };
 
+// What NurbsCurve::MatchEnd() reports about the match it just made,
+// every number measured by evaluating both curves after the edit (not
+// inferred from the construction) - the curve-end counterpart to
+// NurbsSurface::MatchEdge()'s own `MatchEdgeReport`.
+struct MatchEndReport {
+  // 3D distance between this curve's own end point and the target's,
+  // after the edit (0 for an exact match - a clamped curve's endpoint
+  // is exactly its end control point, so Position match is always
+  // exact up to floating-point rounding).
+  double position_error = 0.0;
+  // |this curve's end derivative + scale * target's end derivative|
+  // (0 unless Tangent or Curvature was requested) - both derivatives
+  // taken pointing INTO their own curve from the shared end, so a
+  // perfect match makes them exactly antiparallel (scaled), the same
+  // "both tangents pointing away from the joint" convention this
+  // kernel's own GCon-style continuity analysis already uses.
+  double tangent_error = 0.0;
+  // |this curve's end second derivative - scale^2 * target's| (0
+  // unless Curvature was requested).
+  double curvature_error = 0.0;
+  // The end-derivative scale factor used (see MatchEnd()).
+  double scale = 1.0;
+};
+
 // Wraps ON_NurbsCurve. Deliberately exposes the underlying ON_NurbsCurve
 // (via raw()) rather than re-declaring every accessor OpenNURBS already
 // has — later chunks (booleans, display) need the real object, not a
@@ -279,6 +303,57 @@ class NurbsCurve {
   // derivatives at either parameter (e.g. a degenerate/invalid curve).
   static Result BlendCurves(const NurbsCurve& curve0, double t0, bool reverse0, const NurbsCurve& curve1, double t1,
                              bool reverse1, int continuity, NurbsCurve& out);
+
+  // Edits this curve, near the end named by `at_min`, so it meets
+  // `target`'s own end (named by `target_at_min`) with the requested
+  // continuity - the curve-level counterpart to `NurbsSurface::
+  // MatchEdge()` (surface_edit.cpp), closing this kernel's own
+  // disclosed gap that curve end-continuity matching only ever existed
+  // as an app-level heuristic (`MatchCommand`, cmd_curves2.cpp,
+  // position/tangent only). Genuinely simpler than the surface version:
+  // matching one curve's single end point against another's needs no
+  // knot-vector-compatibility reconciliation at all (that whole step
+  // exists for `MatchEdge()` only because a shared EDGE is itself a
+  // curve with its own parameterization that must line up point-for-
+  // point along its full length) - this only ever touches this curve's
+  // own first 1-3 control points near `at_min`, using exactly the same
+  // clamped-B-spline end-derivative formulas `MatchEdge()`'s own per-row
+  // construction already applies, here evaluated once (a single point,
+  // not a row indexed along an edge) instead of per control point along
+  // a shared edge.
+  //
+  // `continuity` selects how many of this curve's own end control
+  // points move: `Position` (G0) moves only the very end one, to
+  // `target`'s own end point exactly (a clamped curve's endpoint
+  // literally IS its end control point, so this is always exact, up to
+  // rounding). `Tangent` (G1) also adjusts the next one in so this
+  // curve's own end derivative becomes `-scale` times the target's
+  // (antiparallel - both pointing away from the shared joint, the same
+  // sign convention this kernel's GCon-style continuity analysis
+  // already uses), where `scale` is this curve's own pre-edit end speed
+  // over the target's (so the edit changes direction, not magnitude)
+  // unless a positive `end_derivative_scale` is passed to force a
+  // specific value instead - matching `MatchEdge()`'s own
+  // `cross_scale` parameter. `Curvature` (G2) additionally adjusts a
+  // third control point so the end second derivative matches `scale^2`
+  // times the target's, the same scale-squared relationship a genuine
+  // reparameterization-invariant curvature match requires (and
+  // `MatchEdge()`'s own S_vv/B relationship already derives).
+  // Transparently elevates this curve's own degree (via
+  // `ElevateDegree()`, already shape-preserving) and inserts an
+  // interior knot if there aren't enough control points to satisfy the
+  // requested continuity without disturbing the curve's OTHER end - the
+  // same two preconditions `MatchEdge()` enforces on its own surface's
+  // cross direction. Both curves must be clamped (`IsClamped(2)`);
+  // throws std::invalid_argument if `target.Degree() < ` the derivative
+  // order `continuity` needs. Self-checks the result by evaluating both
+  // curves' own ends after the edit (not just trusting the construction)
+  // and refuses (`Result::Failed`, curve left completely unchanged) if
+  // that check or `IsValid()` fails - the same discipline `MatchEdge()`
+  // already applies. `report`, if non-null, always receives the
+  // self-check's own real measured errors.
+  Result MatchEnd(bool at_min, const NurbsCurve& target, bool target_at_min, MatchContinuity continuity,
+                   MatchEndReport* report = nullptr, double end_derivative_scale = 0.0);
 
   int Degree() const;
   int ControlPointCount() const;
@@ -540,6 +615,40 @@ class NurbsCurve {
   // probed; most degree <= 8 ones) but not guaranteed; the shape always
   // is. A periodic curve comes back clamped (same as before).
   Result ElevateDegree(int new_degree);
+
+  // Degree REDUCTION - the direction `ElevateDegree()` above does not
+  // attempt (per its own doc comment, "never lowers"), closing
+  // PARITY_MAP's own disclosed "Change curve degree ... no reduction"
+  // gap. Unlike `ElevateDegree()`'s exact, shape-preserving Bezier
+  // construction, there is no exact closed form for lowering a general
+  // NURBS curve's degree while keeping its shape - a genuine least-
+  // squares APPROXIMATION is the honest answer here, the same tier this
+  // class's own `OffsetInPlane()` general-curve case and
+  // `MakeNonRational(tolerance, ...)` already use: sample this curve
+  // densely (`max(200, 20 * ControlPointCount())` points), then refit at
+  // `target_degree` via the already-tested `FitLeastSquares()`, starting
+  // from the minimum possible control-point count (`target_degree + 1`,
+  // a single Bezier segment) and doubling it - exactly `OffsetInPlane()`'s
+  // own "start small, double, measure, stop once the real worst-case
+  // deviation (each sample's `ClosestPoint()` on the fresh fit, not the
+  // least-squares residual `FitLeastSquares()` itself minimizes) is at or
+  // under `tolerance`" search, capped at this curve's own current
+  // `ControlPointCount()` (more control points at a LOWER degree than
+  // the original already had at its higher one defeats the entire point
+  // of reducing degree, so this refuses rather than silently returning a
+  // "reduced" curve that is not actually smaller). Mutates this curve in
+  // place only on success; returns `Result::Failed` (curve left
+  // untouched) if `tolerance` still isn't met at that ceiling, and
+  // `Result::NoOpAlreadySatisfied` if `target_degree >= Degree()` (there
+  // is nothing to reduce - mirroring `ElevateDegree()`'s own convention
+  // for the symmetric case, rather than silently no-op-ing a request this
+  // method was never asked to do). Throws std::invalid_argument if
+  // `target_degree < 1` or `tolerance` is not positive. `out_max_deviation`,
+  // if non-null, receives the achieved (or, on failure, the best
+  // attempted) worst-case deviation - a sampled, not formally certified,
+  // bound, the same honesty this file's other sampling-based deviation
+  // checks already disclose.
+  Result ReduceDegree(int target_degree, double tolerance, double* out_max_deviation = nullptr);
 
   // Whether the curve's start and end points coincide - either because
   // it's genuinely periodic (its own knot vector wraps) or because a

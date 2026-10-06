@@ -347,7 +347,12 @@ c2check "Blend: G3 (G3) blend curve created" "Blend Continuity=G3 reaches kernel
 c2check "degree 7, 8 control points, non-rational, open" "Blend's G3 output is the expected degree-7 (2*3+1), 8-control-point septic Bezier-basis curve - one degree past the G2 quintic case just above, matching position/tangent/curvature AND third derivative at both ends"
 c2check "Domain: 1 curve(s) now have domain 0 to 5" "Domain actually set a new domain, not just reported it"
 c2check "ModifyRadius: 1 curve(s) now have radius 12" "ModifyRadius rebuilt the circle in place"
-c2check "Match: reshaped curve .* to meet curve .* tangentially" "Match reshaped one curve's end to meet another"
+# Message format changed: Match now calls the kernel's own
+# NurbsCurve::MatchEnd() (curve.cpp) instead of a hand-rolled CV move, and
+# reports which continuity level actually ran plus the self-checked
+# position error, rather than a fixed "...tangentially" suffix.
+c2check "Match: reshaped curve .* to meet curve .* (Tangent, position error 0)" "Match reshaped one curve's end to meet another, position error 0 (default Continuity=Tangent)"
+c2check "Match: reshaped curve .* to meet curve .* (Curvature, position error 0)" "Match Continuity=Curvature reaches NurbsCurve::MatchEnd()'s own G2 path - the genuine new capability the old heuristic (position+tangent only, no kernel API at all) could never reach"
 c2check "Curve does not self-intersect" "IntersectSelf ran a genuine self-intersection check"
 c2check "SoftEditCrv: 4 control point(s) moved with falloff 5" "SoftEditCrv applied a real falloff drag"
 c2check "FixedLengthCrvEdit: point moved and curve rescaled .* to keep length 30" "FixedLengthCrvEdit preserved the curve's total length"
@@ -367,7 +372,7 @@ if echo "$C2" | grep -q "Bounding box: (30, 0, 9) to (40, 0, 9)"; then
 else
   echo "ok   RemoveSymmetry genuinely broke the live link (copy did NOT follow the source's post-removal move)"
 fi
-c2check "^ok   expect_objects 197" "curve-tools script produced the expected object count"
+c2check "^ok   expect_objects 199" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/exchange_script.txt" > "$TMPW/exchange_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -1491,6 +1496,8 @@ flcheck "FilletEdge: edge 10 of object .* replaced with an exact fillet (RailTyp
 flcheck "Volume = 991.4 cubic" "a 10x10x10 box minus a DistFromEdge=2 edge fillet: on a box corner (dihedral 90 degrees) radius = distance*tan(45deg) = 2 exactly, the same r=2 rolling-ball fillet the very first FilletEdge case already verified, now reached via the distance-based RailType path"
 flcheck "FilletEdge: edge 10 of object .* replaced with an exact fillet (RailType=DistBetweenRails, distance 2)" "FilletEdge's RailType=DistBetweenRails option wires straight to kernel::FilletConvexEdgeByDistanceBetweenRails, the same rolling-ball circular fillet specified by the straight-line distance between the two rails instead of the radius"
 flcheck "Volume = 995.7 cubic" "a 10x10x10 box minus a DistBetweenRails=2 edge fillet: radius = rail_distance/(2*cos(45deg)) gives radius^2 = 2 exactly, so removed volume = 10*2*(1-pi/4) = 4.292, leaving 1000 - 4.292 = 995.7"
+flcheck "FilletEdge: 3 staged edges of object .* replaced with an exact multi-edge fillet (RailType=DistFromEdge, distance 2)" "closes PARITY_MAP.md's Blending .. chamfering Alternative blend rail types .no multi-edge/vertex-blend form. gap: FilletEdgeCommand's pending_rail_ staging now batches every RailType pick into one kernel::FilletConvexEdgesByDistanceFromEdge call, the same staging idea pending_conic_/pending_fillet_ already established, reaching that function's own m == 3 trihedral spherical-corner blend instead of rejecting the 2nd/3rd pick's own PlanarFaces() check"
+flcheck "Volume = 975.4 cubic" "all 3 edges of a fresh box corner share the identical 90-degree dihedral, so DistFromEdge's own closed-form distance-to-radius conversion lands every edge on radius = 2, the identical closed solid and tessellated volume the plain multi-edge Radius=2 FilletConvexEdges case verifies elsewhere in this script"
 flcheck "RemoveFillet: fillet on object .* removed, sharp edge.vertex restored" "RemoveFillet's kernel::RemoveBlend wiring inverts a plain box-corner FilletEdge, restoring the sharp edge purely from the solid's own geometry - PARITY_MAP.md's Blending .. chamfering .Blend removal . defeaturing with healing. entry's own .nothing in the app calls any of these. gap"
 flcheck "Volume = 1000 cubic" "RemoveFillet's fillet round trip restores the box's own exact original volume"
 flcheck "RemoveFillet: chamfer on object .* removed, sharp edge.vertex restored" "RemoveFillet's kernel::RemoveChamfer wiring inverts a plain box-corner ChamferEdge the same way, dispatched automatically since RemoveFillet tries RemoveBlend then RemoveChamfer then RemoveChamferVertex from a single picked face with no separate face-type option"
@@ -1550,6 +1557,8 @@ facheck "FilletEdge: edge 10 of object 8 replaced with an exact conic fillet (rh
 facheck "Volume = 986.7 cubic" "a 10x10x10 box minus an asymmetric distance1=2/distance2=4 rho=0.5 conic edge fillet has volume 1000 - 2*4*sin(90deg)*10/6 = 986.7"
 facheck "! FilletEdge: an exact conic .Rho. fillet needs the whole object to be planar-faced at this edge" "a Rho request on a cylinder's curved-adjacent-face rim edge fails outright instead of silently building a plain circular rolling-ball fillet that quietly ignores Rho - unlike Chamfer's symmetric-distance case, there is no approximate fallback a non-circular conic could ever be represented by"
 facheck "! FilletEdge: an exact RailType=DistFromEdge fillet needs the whole object to be planar-faced at this edge" "a RailType=DistFromEdge request on a cylinder's curved-adjacent-face rim edge fails outright instead of silently building a plain radius=1 rolling-ball fillet under a mismatched distance interpretation - like Rho, the dihedral-angle-to-radius conversion has no meaning on a curved adjacent face"
+facheck "! FilletEdge: an exact RailType=DistFromEdge fillet of the 2 staged edge.s. on object .* failed" "two RailType edges staged in one FilletEdge run that meet at a shared vertex (TOP-FRONT and TOP-LEFT, an m == 2 configuration whose third edge stays sharp) are rejected atomically by FilletConvexEdgesByDistanceFromEdge's own documented scope limit - the pending_rail_ staging this pass added - rather than silently applying the first pick and failing the second"
+facheck "Volume = 1000 cubic" "the two-RailType-edges-meeting-at-a-vertex batch rejection leaves the box completely untouched, not a partially-filleted result"
 facheck "! FilletSrf: the offset surfaces do not meet" "FilletSrf on two nearly-flat planes failed with its own clear diagnostic instead of a garbage surface"
 facheck "ChamferSrf: built between object .* and .*, radius 1" "ChamferSrf on a cylinder's own flat-top cap and curved side wall falls through to the approximate RuledBetween path (kernel::ChamferConvexEdge needs the WHOLE solid planar-faced, which a cylindrical face fails outright) instead of crashing or silently misbuilding"
 facheck "ChamferSrf: built between object .* and .*, radius 2" "ChamferSrf Trim=No on an otherwise-exact planar box corner also falls through to the approximate path - the exact kernel path always replaces the whole solid with an already-trimmed result, not the untrimmed separate surface Trim=No asks for"
@@ -5438,6 +5447,17 @@ BLUE_COUNT="$(grep -c 'stroke="#0000ff"' "$TMPW/plot_style_blue.svg" || true)"
 [ "$BLUE_COUNT" = "2" ] && echo "ok   editing the shared style's color to blue changes both layers' lines together, with neither layer touched again" || { echo "FAIL plot_style_blue.svg: expected 2 blue strokes, got $BLUE_COUNT"; fail=1; }
 grep -q 'stroke="#000000"' "$TMPW/plot_style_cleared.svg" && echo "ok   LayerPlotStyle None on the Default layer clears it back to its own display color (black)" || { echo "FAIL plot_style_cleared.svg: Default layer's line is not black after clearing its style"; fail=1; }
 grep -q 'stroke="#0000ff"' "$TMPW/plot_style_cleared.svg" && echo "ok   ...while SecondLayer, never cleared, still strokes the shared style's current color (blue)" || { echo "FAIL plot_style_cleared.svg: SecondLayer's line lost its still-assigned style's color"; fail=1; }
+# Transparency (PlotStyle::transparency, the third real CTB/STB plot-style
+# column - no flat per-layer equivalent, so only reachable through a named
+# style): Mono's own transparency set to 50% must halve the stroke-opacity
+# of both layers sharing it in the exported SVG, and the exported PDF must
+# carry a real ExtGState resource switched in via "gs" before the stroked
+# content, not just a printed confirmation.
+OPACITY_COUNT="$(grep -c 'stroke-opacity="0.5"' "$TMPW/plot_style_transparent.svg" || true)"
+[ "$OPACITY_COUNT" = "2" ] && echo "ok   PlotStyleTable's optional 4th token (50% transparency) halves both layers' stroke-opacity to 0.5 in the exported SVG" || { echo "FAIL plot_style_transparent.svg: expected 2 stroke-opacity=\"0.5\" groups (one per layer sharing the style), got $OPACITY_COUNT"; fail=1; }
+grep -aq '/ExtGState' "$TMPW/plot_style_transparent.pdf" && echo "ok   plot_style_transparent.pdf's page carries a real /ExtGState resource dict, not just a printed confirmation" || { echo "FAIL plot_style_transparent.pdf: no /ExtGState resource"; fail=1; }
+grep -aq '/CA 0.5' "$TMPW/plot_style_transparent.pdf" && echo "ok   the ExtGState's own /CA (stroking alpha) is 0.5, matching the style's 50% transparency" || { echo "FAIL plot_style_transparent.pdf: no /CA 0.5 ExtGState"; fail=1; }
+grep -aq '/GS1 gs' "$TMPW/plot_style_transparent.pdf" && echo "ok   the content stream switches the ExtGState in with a real \"gs\" operator before the stroked paths" || { echo "FAIL plot_style_transparent.pdf: no /GS1 gs operator in the content stream"; fail=1; }
 
 # Undo id-reuse regression (see the last section of history_script.txt):
 # a Box drawn right after undoing a tracked Extrude used to be handed the
@@ -6376,16 +6396,19 @@ print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
     # a known id/bounding box to check against.
     RESP9="$(curl -s --max-time 10 -X POST -H 'Accept: application/json' --data 'print("hi")' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP10="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/objects")"
-    # GET /objects?geometry=1: the actual point/vertex data for the two
-    # object kinds simple enough to serialize honestly as plain JSON arrays
-    # (point, mesh) - narrows PARITY_MAP.md's own disclosed "no geometry
-    # (de)serialization format" gap a step further than the bare metadata
-    # listing above. Adds one point and one triangle mesh so both real
-    # payloads can be checked in the same request, plus confirms the
-    # pre-existing box (a polysurface, neither kind) reports "geometry":null
-    # rather than silently omitting the key or guessing at a payload.
+    # GET /objects?geometry=1: the actual point/vertex/curve data for the
+    # three object kinds simple enough to serialize honestly as plain JSON
+    # right now (point, mesh, and now a NURBS curve's own degree/control
+    # points/weights/knots) - narrows PARITY_MAP.md's own disclosed "no
+    # geometry (de)serialization format" gap a step further than the bare
+    # metadata listing above. Adds one point, one triangle mesh and one
+    # straight (degree-1, non-rational) line so all three real payloads can
+    # be checked in the same request, plus confirms the pre-existing box (a
+    # polysurface, none of the three) reports "geometry":null rather than
+    # silently omitting the key or guessing at a payload.
     RESP11="$(curl -s --max-time 10 -X POST --data 'rs.AddPoint(20,20,20)
-rs.AddMesh({{0,0,0},{1,0,0},{0,1,0}}, {{1,2,3}})' "http://127.0.0.1:$SERVE_PORT/run")"
+rs.AddMesh({{0,0,0},{1,0,0},{0,1,0}}, {{1,2,3}})
+rs.AddLine({0,0,0},{10,0,0})' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP12="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/objects?geometry=1")"
     CODE2="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP3="$(curl -s --max-time 10 -X POST --data 'rs.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run")"
@@ -6423,6 +6446,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     echo "$RESP10" | grep -q '"min":\[0.000000,0.000000,0.000000\],"max":\[5.000000,5.000000,5.000000\]' && echo "ok   GET /objects reported the box's own real bounding box (0,0,0)-(5,5,5), not just a type/name/layer listing" || { echo "$RESP10"; echo "FAIL --serve GET /objects did not report the box's expected bounding box"; fail=1; }
     echo "$RESP12" | grep -q '"geometry":{"point":\[20.000000,20.000000,20.000000\]}' && echo "ok   GET /objects?geometry=1 reports a real point object's own coordinates, not just its bounding box" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report the point's coordinates"; fail=1; }
     echo "$RESP12" | grep -q '"geometry":{"vertices":\[\[0.000000,0.000000,0.000000\],\[1.000000,0.000000,0.000000\],\[0.000000,1.000000,0.000000\]\],"faces":\[\[0,1,2\]\]}' && echo "ok   GET /objects?geometry=1 reports a real mesh object's own vertices/faces (0-based indices), not just its bounding box" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report the mesh's expected vertices/faces"; fail=1; }
+    echo "$RESP12" | grep -q '"type":"curve".*"geometry":{"degree":1,"rational":false,"control_points":\[\[0.000000,0.000000,0.000000\],\[10.000000,0.000000,0.000000\]\],"knots":\[0.000000,1.000000\]}' && echo "ok   GET /objects?geometry=1 reports a real NURBS curve's own degree/control points/knots (no \"weights\" field for a non-rational curve), not just sampled points" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report the line's expected NURBS curve definition"; fail=1; }
     echo "$RESP12" | grep -q '"type":"polysurface".*"geometry":null' && echo "ok   GET /objects?geometry=1 honestly reports \"geometry\":null for a kind (polysurface) this pass doesn't serialize, rather than guessing at a payload" || { echo "$RESP12"; echo "FAIL --serve GET /objects?geometry=1 did not report null geometry for the box"; fail=1; }
     [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
     echo "$RESP3" | grep -q "compute error: script requires interactive input" && echo "ok   a script calling an interactive rs.Get* prompt is rejected instead of hanging the connection" || { echo "$RESP3"; echo "FAIL --serve interactive-prompt script was not rejected as expected"; fail=1; }

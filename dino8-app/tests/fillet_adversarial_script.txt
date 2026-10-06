@@ -195,6 +195,36 @@ SelAll
 @expect_objects 1
 SelAll
 Delete
+# --- FilletEdge RailType=DistFromEdge, two edges meeting at a shared
+# vertex staged in ONE run (an m == 2 configuration - two fillets meeting
+# at a corner whose third edge, FRONT-LEFT here, stays sharp): closes
+# PARITY_MAP.md's Blending & chamfering "Alternative blend rail types"
+# entry's own "no multi-edge/vertex-blend form" gap (the kernel::
+# FilletConvexEdgesByDistanceFromEdge/ByDistanceBetweenRails batch
+# functions already existed but had zero app call sites). Before this
+# pass, RailType applied each pick immediately: the first edge's own exact
+# result already carries a curved rolling-ball wall face, so the second
+# pick's own PlanarFaces() check would fail with a confusing "not
+# planar-faced" warning about a perfectly ordinary planar edge, after
+# already having silently applied the first edge's own fillet - a
+# partially-applied, order-dependent result. The two picks here land on
+# TOP-FRONT and TOP-LEFT, which meet at the box's own (x0, 0, 10) vertex -
+# exactly FilletConvexEdges' own documented m == 2 scope limit (shared by
+# the RailType dispatch, since it hands off to the same function
+# unchanged), so the whole staged batch is rejected atomically and NEITHER
+# edge is touched - the box survives with its exact original volume, not
+# a partial fillet.
+Box 1300100,0,0 1300110,10,0 10
+FilletEdge
+Radius=2
+RailType=DistFromEdge
+1300105,0,10
+1300100,5,10
+Enter
+SelAll
+@expect_objects 1
+SelAll
+Delete
 # --- FilletSrf on two nearly-flat (shallow bend, not a sharp corner)
 # planes: the offset surfaces diverge rather than converge at this shallow
 # an angle for the requested radius, so BuildFillet reports its own clear
