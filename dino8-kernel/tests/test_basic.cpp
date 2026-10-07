@@ -4507,6 +4507,100 @@ void TestFindSurfaceTangentContactsSphereOnPlane() {
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
+// across periodic seams and at singular points (poles)" bullet: seam
+// handling is real (SplitAtSeams/SeamCrossing), but "poles have no
+// dedicated singular-point treatment beyond a closest-point pole fix" (a
+// different function entirely - SurfaceClosestPoint's own narrowing-window
+// fix, not this one). SplitAtPoles() (surface_intersect.cpp) closes that
+// half: a sample landing exactly at a surface's own pole has its
+// degenerate (azimuth) coordinate re-derived by extrapolation from its
+// nearest non-pole neighbors, instead of trusting RefineSurfaceSurfacePoint's
+// own 4-unknown Newton solve, whose Jacobian column for that coordinate is
+// exactly zero right at a pole.
+void TestIntersectSurfacesHandlesSpherePoleCrossing() {
+  using dino8::kernel::IntersectionCurve;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::IntersectSurfaces;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;  // default tolerance (0.001) / mesh_tolerance (0.02) - the exact settings that exposed this bug
+
+  // A meridian plane through a sphere's own polar axis - deliberately
+  // tilted 0.37 radians off the sphere's own u = 0 seam, so this isolates
+  // the POLE degeneracy from the separately-handled SEAM one. The SSX is
+  // a genuine great circle through both poles; ordinary mesh-seeded
+  // chaining already (correctly) returns it as two open half-circle arcs,
+  // each one ending exactly at a different pole - this test is about
+  // whether each arc's own (u, v) pcurve on the sphere stays accurate
+  // right up to that pole endpoint, not about the topology (already
+  // right).
+  const double radius = 2.0;
+  const double theta = 0.37;
+  const ON_Sphere on_sphere(Point3d(0, 0, 0), radius);
+  ON_NurbsSurface sphere_nurbs;
+  Check(on_sphere.GetNurbForm(sphere_nurbs) != 0, "ON_Sphere::GetNurbForm succeeds");
+
+  ON_PlaneSurface meridian_plane(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(std::sin(theta), -std::cos(theta), 0)));
+  meridian_plane.SetExtents(0, ON_Interval(-10, 10), true);
+  meridian_plane.SetExtents(1, ON_Interval(-10, 10), true);
+
+  const std::vector<IntersectionCurve> curves = IntersectSurfaces(meridian_plane, sphere_nurbs, opt);
+  Check(curves.size() == 2, "a tilted meridian plane through a full sphere comes back as exactly two half-great-circle arcs");
+  if (curves.size() != 2) return;
+
+  int pole_endpoints_checked = 0;
+  for (const IntersectionCurve& c : curves) {
+    Check(!c.closed && c.points.size() >= 3, "each half-circle arc is open with several samples");
+    // Both ends of each arc land at a hand-derivable pole (north or south,
+    // at exactly (0, 0, +-radius)).
+    const Point3d p0 = c.points.front(), p1 = c.points.back();
+    const bool p0_is_pole = p0.DistanceTo(Point3d(0, 0, radius)) < 1e-3 || p0.DistanceTo(Point3d(0, 0, -radius)) < 1e-3;
+    const bool p1_is_pole = p1.DistanceTo(Point3d(0, 0, radius)) < 1e-3 || p1.DistanceTo(Point3d(0, 0, -radius)) < 1e-3;
+    Check(p0_is_pole && p1_is_pole, "both endpoints of the arc land exactly at a hand-derivable sphere pole");
+
+    // The REAL regression guard: each pole endpoint's own reported
+    // azimuth (uv_b.x) must be close to its immediate interior
+    // neighbor's - before this fix, the raw Newton-refined pole sample's
+    // own azimuth could differ from its neighbor's by up to ~0.15
+    // radians (a confirmed, measured defect; the un-fixed value here was
+    // 0.5236/0.2618/3.4034/3.5151 against a true limiting value near
+    // theta=0.37), against every genuinely non-pole sample on the same
+    // arc staying within ~0.02 radians of its own neighbor.
+    const double az0 = c.uv_b.front().x, az1 = c.uv_b.back().x;
+    const double az0_neighbor = c.uv_b[1].x, az1_neighbor = c.uv_b[c.uv_b.size() - 2].x;
+    Check(std::fabs(az0 - az0_neighbor) < 0.01, "the first pole sample's own azimuth is now consistent with its interior neighbor, not an outlier");
+    Check(std::fabs(az1 - az1_neighbor) < 0.01, "the last pole sample's own azimuth is now consistent with its interior neighbor, not an outlier");
+    pole_endpoints_checked += 2;
+
+    // The end-to-end correctness check: sampling the fitted 3D curve and
+    // re-evaluating the sphere at the SAME parameter through pcurve_b
+    // must round-trip to within a small multiple of the requested
+    // tolerance everywhere along the arc, including right next to each
+    // pole - before this fix, the fitted pcurve's own swing near a pole
+    // measured up to ~0.0075 units of 3D deviation (7.5x this engine's
+    // own default 0.001 tolerance) on this exact fixture.
+    double max_dev = 0;
+    for (int k = 0; k <= 200; ++k) {
+      const double t = c.params.front() + (c.params.back() - c.params.front()) * static_cast<double>(k) / 200.0;
+      const Point3d p3 = c.curve.PointAt(t);
+      const ON_3dPoint uv = c.pcurve_b.PointAt(t);
+      const Point3d on_sphere_pt = sphere_nurbs.PointAt(uv.x, uv.y);
+      max_dev = std::max(max_dev, p3.DistanceTo(on_sphere_pt));
+    }
+    Check(max_dev < 0.005, "the fitted pcurve round-trips through the sphere to within a small multiple of tolerance everywhere, including right at the pole");
+
+    // A gross-error guard independent of the per-sample azimuth checks
+    // above: the arc's own total 3D length must match a hand-derivable
+    // half-great-circle (pi * radius), confirming the curve is genuinely
+    // one coherent half-circle, not some other shape entirely.
+    double length3d = 0;
+    for (size_t i = 1; i < c.points.size(); ++i) length3d += c.points[i - 1].DistanceTo(c.points[i]);
+    Check(std::fabs(length3d - 3.14159265358979323846 * radius) < 0.05, "the arc's own chord length matches the hand-derivable half-great-circle length");
+  }
+  Check(pole_endpoints_checked == 4, "all four pole endpoints across both arcs were actually checked");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
 // coincident / overlapping surface regions" bullet: "IntersectSurfaces
 // still returns nothing for coincident surfaces. The only coincidence
 // handling is inside planar booleans." IntersectSurfacesOverlap() closes
@@ -71883,6 +71977,7 @@ int main() {
   TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
   TestBrepCheckOptInReportsFaceSelfIntersections();
   TestFindSurfaceTangentContactsSphereOnPlane();
+  TestIntersectSurfacesHandlesSpherePoleCrossing();
   TestIntersectSurfacesOverlapDetectsCoincidentRegion();
   TestIntersectSurfacesOverlapBisectionTightensRegionBoundary();
   TestIntersectSurfacesReturnsBoundaryCurveForCoincidentRegion();
