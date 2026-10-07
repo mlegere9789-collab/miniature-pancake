@@ -1681,6 +1681,13 @@ class DxfImporter {
   // happens to land in the file's own section order.
   void SetBlocks(const std::map<std::string, DxfBlockDef>* blocks) { blocks_ = blocks; }
 
+  // Handle (group 5) -> ENTITIES-section record, built once up front by
+  // ImportDxf (see below) over the same `entities` vector it already holds
+  // fully in memory before any dispatch - lets Leader() below resolve a
+  // LEADER's own group 340 hard reference to its associated MTEXT, the
+  // cross-reference this bullet's own prior pass disclosed as missing.
+  void SetHandles(const std::map<std::string, const DxfEntity*>* handles) { handles_ = handles; }
+
   int LayerFor(const std::string& raw_name) {
     const std::string name = Trim(raw_name);
     auto it = layer_map_.find(name);
@@ -2271,6 +2278,39 @@ class DxfImporter {
     ++stats_.skipped;  // type-2 angular, or a type-5 reflex sweep: not representable, see comment above
   }
 
+  // A real LEADER's own written label, if any, is never on the LEADER
+  // entity itself: group 340 is a hard handle reference to a separate
+  // MTEXT/TOLERANCE/INSERT annotation entity elsewhere in the file - the
+  // exact cross-reference this bullet's own prior pass disclosed as
+  // missing ("which this importer does not cross-reference"). Resolved
+  // here via `handles_` (set by ImportDxf below over the same ENTITIES
+  // records it already holds fully in memory before any dispatch), for
+  // the MTEXT case only - the common one, and the one this reader already
+  // knows how to pull plain text out of (the same group-3-then-group-1
+  // concatenation MText() uses, immediately below). TOLERANCE (a feature-
+  // control-frame symbol, not text) and INSERT (a block placement, not
+  // text) are left unhandled, and a handle this file's own ENTITIES
+  // section doesn't contain (an external reference, or simply absent)
+  // resolves to nothing - both honestly declined rather than guessed at.
+  // Only the first formatting-stripped line is used: a Leader's own label
+  // here is one baseline of glyph curves (TextToCurves, via
+  // BuildLeaderGeometry/AddDimensionGroupToDoc below), not a real
+  // multi-line layout the way BuildMTextGlyphs gives a standalone MTEXT.
+  std::string AssociatedLeaderLabel(const DxfEntity& e) const {
+    if (!handles_) return "";
+    const std::string handle = Upper(Trim(e.S(340)));
+    if (handle.empty()) return "";
+    const auto it = handles_->find(handle);
+    if (it == handles_->end() || it->second->type != "MTEXT") return "";
+    const DxfEntity& m = *it->second;
+    std::string raw;
+    for (const DxfGroup& g : m.groups) if (g.code == 3) raw += g.value;
+    raw += m.S(1);
+    if (raw.empty()) return "";
+    const std::vector<std::string> lines = MTextToLines(raw);
+    return lines.empty() ? "" : lines[0];
+  }
+
   // LEADER: rebuilds a real, live/re-measurable Dino8 Leader
   // (BuildLeaderGeometry, commands/DimGeometry.h - the exact point-to-curve
   // math the live Leader command uses) from the entity's own point list,
@@ -2281,12 +2321,9 @@ class DxfImporter {
   // for control points). Unlike DIMENSION, there is no ambiguity to decode
   // here - a point list is a point list - so every real LEADER with 2+
   // points is accepted; `annot_type`=73 (text/tolerance/insert/none) is
-  // read but not acted on, since this importer has no way to recover an
-  // arbitrary associated annotation string from group codes alone (the
-  // written label, if any, lives in a separate MTEXT/INSERT/TOLERANCE
-  // entity this importer does not cross-reference) - the rebuilt Leader
-  // simply carries no label text, same honest "shape captured, text not"
-  // scope WriteDxfLeader's own write side already discloses.
+  // read but not acted on - AssociatedLeaderLabel above resolves the real
+  // associated-annotation handle (group 340) directly instead, which is
+  // authoritative regardless of what `annot_type` claims.
   void Leader(const DxfEntity& e) {
     const double h = ImportDimTextHeight(doc_);
     const int layer = LayerFor(e.S(8, "0"));
@@ -2309,7 +2346,7 @@ class DxfImporter {
     std::vector<kernel::NurbsCurve> curves;
     DimGlyphSpec text;
     std::map<std::string, std::string> tags;
-    if (!BuildLeaderGeometry(tip, rest, pl, h, "", curves, text, tags)) { ++stats_.skipped; return; }
+    if (!BuildLeaderGeometry(tip, rest, pl, h, AssociatedLeaderLabel(e), curves, text, tags)) { ++stats_.skipped; return; }
     if (AddDimensionGroupToDoc(doc_, "Leader", layer, curves, text, tags)) ++stats_.dimensions;
     else ++stats_.skipped;
   }
@@ -2420,6 +2457,7 @@ class DxfImporter {
   std::map<std::string, int> layer_map_;
   std::map<int, ON_Mesh> faces_;
   const std::map<std::string, DxfBlockDef>* blocks_ = nullptr;
+  const std::map<std::string, const DxfEntity*>* handles_ = nullptr;
   int depth_ = 0;
 };
 
@@ -2523,6 +2561,22 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
     }
   }
   importer.SetBlocks(&blocks);
+
+  // Handle (group 5) -> record, over the same ENTITIES-section records
+  // already fully parsed above - `entities` is never resized again past
+  // this point, so these pointers stay valid for the whole dispatch loop
+  // below. Lets Leader() resolve a LEADER's own group 340 hard reference
+  // to its associated MTEXT regardless of where in the file it appears
+  // relative to the LEADER itself (DXF handles are not required to be in
+  // any particular order). AutoCAD writes handles as uppercase hex with no
+  // fixed width; normalized here so a lowercase or differently-padded
+  // third-party handle still matches.
+  std::map<std::string, const DxfEntity*> handle_index;
+  for (const DxfEntity& e : entities) {
+    const std::string h = Upper(Trim(e.S(5)));
+    if (!h.empty()) handle_index[h] = &e;
+  }
+  importer.SetHandles(&handle_index);
 
   for (size_t i = 0; i < entities.size(); ++i) {
     const DxfEntity& e = entities[i];
@@ -2666,6 +2720,31 @@ void ApplyDwgColor(SceneObject& o, const Dwg_Color& c) {
     o.color_by_layer = false;
     o.color = Color::FromBytes(rgb[0], rgb[1], rgb[2]);
   }
+}
+
+// A real LEADER's own written label, if any, is never on the LEADER
+// entity itself: `associated_annotation` (DXF group 340's own binary
+// counterpart) is a hard handle reference to a separate MTEXT/TOLERANCE/
+// INSERT entity elsewhere in the file - the same cross-reference
+// DxfImporter::AssociatedLeaderLabel (above, DXF side) resolves, mirrored
+// here against LibreDWG's own real struct layout instead of DXF group
+// codes. Scoped to the MTEXT case only, for the same reason as that
+// function's own comment (TOLERANCE is a feature-control-frame symbol and
+// INSERT a block placement, neither plain text); the resolved handle's own
+// `fixedtype` decides, not `annot_type` (read but not trusted, same as
+// DWG_TYPE_INSERT's own `block_header` resolution below already does for
+// its handle) - an unresolved or non-MTEXT handle is declined, not guessed
+// at. Only the first formatting-stripped line is used: a Leader's own
+// label here is one baseline of glyph curves (TextToCurves, via
+// BuildLeaderGeometry/AddDimensionGroupToDoc below), not a real multi-line
+// layout the way the DWG_TYPE_MTEXT case above gives a standalone MTEXT.
+std::string DwgLeaderLabel(Dwg_Entity_LEADER* e) {
+  Dwg_Object* obj = e->associated_annotation ? e->associated_annotation->obj : nullptr;
+  if (!obj || obj->fixedtype != DWG_TYPE_MTEXT || !obj->tio.entity) return "";
+  Dwg_Entity_MTEXT* m = obj->tio.entity->tio.MTEXT;
+  if (!m || !m->text) return "";
+  const std::vector<std::string> lines = MTextToLines(m->text);
+  return lines.empty() ? "" : lines[0];
 }
 
 // Walks the entities directly owned by `block_obj` (a BLOCK_HEADER object -
@@ -3045,7 +3124,9 @@ void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, s
         // its own comment) - LibreDWG's own Dwg_Entity_LEADER stores its
         // point list as a real array (`points`/`num_points`, dwg.h), unlike
         // DIMENSION's fixed named point fields, so no group-code-style
-        // switch is needed to collect them.
+        // switch is needed to collect them. DwgLeaderLabel (above) resolves
+        // the real associated-annotation handle for the label, the same
+        // cross-reference the DXF side's AssociatedLeaderLabel now does.
         Dwg_Entity_LEADER* e = ent->tio.LEADER;
         if (e->num_points < 2 || !e->points) { ++stats.skipped; break; }
         std::vector<Point3d> pts;
@@ -3058,7 +3139,7 @@ void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, s
         std::vector<kernel::NurbsCurve> curves;
         DimGlyphSpec text;
         std::map<std::string, std::string> tags;
-        if (!BuildLeaderGeometry(tip, rest, pl, ImportDimTextHeight(doc), "", curves, text, tags)) { ++stats.skipped; break; }
+        if (!BuildLeaderGeometry(tip, rest, pl, ImportDimTextHeight(doc), DwgLeaderLabel(e), curves, text, tags)) { ++stats.skipped; break; }
         const int layer = DwgLayerFor(doc, layer_map, ent, stats);
         if (AddDimensionGroupToDoc(doc, "Leader", layer, curves, text, tags)) ++stats.dimensions;
         else ++stats.skipped;

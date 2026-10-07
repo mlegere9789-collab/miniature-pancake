@@ -304,6 +304,28 @@ class NurbsSurface {
   // `ON_NurbsSurface::MakeNonRational()`.
   Result MakeNonRational();
 
+  // Tolerance-bounded overload of `MakeNonRational()` above - the direct
+  // surface-level counterpart to `NurbsCurve::MakeNonRational(tolerance,
+  // out_max_deviation)`, closing PARITY_MAP's own disclosed "`NurbsSurface::
+  // MakeNonRational` has no tolerance-bounded overload of its own" gap
+  // (kernel: Geometry representation's "Rational <-> non-rational
+  // conversion" bullet). Performs the identical conversion, then measures
+  // the actual max 3D deviation it introduced (dense uniform sampling over
+  // BOTH `Domain(0)` and `Domain(1)`, at least 20 samples per direction or
+  // 4 per control point in that direction, whichever is larger, comparing
+  // this surface's own `PointAt(u, v)` before and after at every sampled
+  // (u, v) pair) and only keeps the conversion if that measured deviation
+  // is <= `tolerance` - otherwise restores the surface to its pre-call
+  // rational state and returns `Result::Failed`. `out_max_deviation`, if
+  // non-null, always receives the measured value, including on failure
+  // (zero if the surface was already non-rational, the same
+  // `Result::NoOpAlreadySatisfied` no-op as the untoleranced overload).
+  // Like `NurbsCurve::MakeNonRational(tolerance, ...)`, this is a SAMPLED
+  // measurement, not a formally certified bound - the same honesty tier
+  // `Rebuild()`'s own deviation bound already uses in this class, since
+  // there is no known closed-form error formula for this conversion.
+  Result MakeNonRational(double tolerance, double* out_max_deviation);
+
   // Elevates degree in the given direction (0 = U, 1 = V), preserving the
   // surface's shape exactly (to floating-point precision). Returns
   // NoOpAlreadySatisfied if the surface is already at or above that

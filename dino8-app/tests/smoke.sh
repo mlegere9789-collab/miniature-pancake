@@ -968,6 +968,32 @@ dxlcheck "DXF: 0 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the re
 dxlcheck "^history: 2 object(s) selected$" "SelLeader found the imported leader's 2 shape curves (polyline + arrowhead) as a real Leader group"
 dxlcheck "CV\[0\] 0,0,0" "the rebuilt polyline starts exactly at the LEADER's own first point (the tip)"
 dxlcheck "UpdateDimensions:   Leader now points at 0,0,0" "UpdateDimensions re-resolved the exact same tip from the imported leader's own tags, proving it round-trips exactly like a live Leader"
+# LEADER with a real associated-annotation cross-reference: group 340 on
+# the LEADER points at a separate MTEXT entity's own handle (group 5) -
+# the cross-reference the plain (no-annotation, annot_type=3) fixture
+# above does not exercise. AssociatedLeaderLabel (DxfImporter, src/io/
+# FileExchange.cpp) resolves the handle, confirms the referenced entity is
+# a real MTEXT (not a TOLERANCE/INSERT, and not unresolved), and uses its
+# own (formatting-stripped) text as the Leader's label - "Hi" decomposes
+# into the same 3 glyph curves (H, i-stem, i-dot) text3dm_fixture_gen's
+# own fixture already proves, added on top of the Leader's own 2 shape
+# curves (polyline+arrowhead) - 5 total, not 2, proving the label text was
+# genuinely pulled from the separate MTEXT entity and rebuilt as real
+# glyph geometry, not just silently left blank the way this importer
+# handled every LEADER before this pass.
+cp "$HERE/dxf_leader_mtext_fixture.dxf" "$TMPW/dxf_leader_mtext_fixture.dxf"
+cat > "$TMPW/dxf_leader_mtext_script.txt" <<EOS
+Open $TMPW/dxf_leader_mtext_fixture.dxf
+SelLeader
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DXLM="$("$BIN" --smoke 30 --script "$TMPW/dxf_leader_mtext_script.txt" 2>&1)" || { echo "$DXLM"; echo "FAIL: DXF LEADER+MTEXT script exited non-zero"; exit 1; }
+else
+  DXLM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_leader_mtext_script.txt" 2>&1)" || { echo "$DXLM"; echo "FAIL: DXF LEADER+MTEXT script exited non-zero"; exit 1; }
+fi
+dxlmcheck() { if echo "$DXLM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DXLM" "$1"; fail=1; fi; }
+dxlmcheck "DXF: 3 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the MTEXT entity as its own independent standalone Text object too (3 curves - a real file's MTEXT referenced by a LEADER is still its own real entity in model space, not consumed/hidden by the cross-reference) alongside the one Leader dimension group"
+dxlmcheck "^history: 5 object(s) selected$" "SelLeader found only the Leader-tagged group: the leader's 2 shape curves (polyline+arrowhead) PLUS 3 real glyph curves for its own resolved label (the cross-referenced MTEXT's \"Hi\" text, rebuilt independently of that MTEXT's own separate standalone Text object counted above) - not just the 2 shape curves the plain (no-annotation) fixture above gets, proving the label was genuinely resolved via the group 340 handle"
 # Ordinate (type 6): feature_location_pt (13) = (40,15,0), group 70 = 134
 # (6 | 0x80, "use X axis") - measuring the X axis gives exactly 40 (the
 # feature's own X coordinate), independent of its Y (15), proving the
@@ -1058,6 +1084,40 @@ EOS
   dwocheck "UpdateMeasureDims:   DimOrdinate now Y 25" "UpdateMeasureDims re-derived the exact hand-computed Y-axis offset (feature_location_pt's own Y, 25) from the Y-axis fixture's flag2"
 else
   echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the DIMENSION_ORDINATE fixture check"
+  fail=1
+fi
+# DWG LEADER with a real associated_annotation: unlike the plain LEADER
+# round trip above (whose "Hi" label fell through as 3 unrelated plain
+# curves, "not reconnected to the leader"), dwg_add_LEADER's own
+# `associated_annotation` parameter DOES let the caller set the one field
+# that matters here, confirmed genuinely set (not just silently ignored,
+# despite the "Experimental" warning in dwg_api.h) by write_leader_mtext_
+# fixture's own in-memory check before writing the file - see
+# dwg_fixture_gen.c's own comment. DwgLeaderLabel (WalkDwgEntities,
+# src/io/FileExchange.cpp) resolves that handle against a real DWG binary
+# (not Dino8's own export, which never sets this field at all) and rebuilds
+# the Leader's label from the referenced MTEXT's own text, the same
+# cross-reference the DXF side's AssociatedLeaderLabel resolves from group
+# 340. The MTEXT is also its own real model-space entity independent of
+# the Leader (same as the DXF fixture above), so it shows up twice: once
+# as its own standalone 3-curve Text object, and once folded into the
+# Leader's own group as its resolved label.
+if [ -x "$DWGBIN" ]; then
+  "$DWGBIN" "$TMPW/dwg_leader_mtext_fixture.dwg" leader_mtext >/dev/null || { echo "FAIL: dwg_fixture_gen failed to write the LEADER+MTEXT fixture"; exit 1; }
+  cat > "$TMPW/dwg_leader_mtext_script.txt" <<EOS
+Open $TMPW/dwg_leader_mtext_fixture.dwg
+SelLeader
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    DWLM="$("$BIN" --smoke 30 --script "$TMPW/dwg_leader_mtext_script.txt" 2>&1)" || { echo "$DWLM"; echo "FAIL: DWG LEADER+MTEXT script exited non-zero"; exit 1; }
+  else
+    DWLM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dwg_leader_mtext_script.txt" 2>&1)" || { echo "$DWLM"; echo "FAIL: DWG LEADER+MTEXT script exited non-zero"; exit 1; }
+  fi
+  dwlmcheck() { if echo "$DWLM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DWLM" "$1"; fail=1; fi; }
+  dwlmcheck "DWG: 3 curves, 0 points, 1 dimension" "WalkDwgEntities read the MTEXT as its own independent standalone Text object (3 curves) alongside the one Leader dimension group - the real binary carries both, same as the DXF side"
+  dwlmcheck "^history: 5 object(s) selected$" "SelLeader found only the Leader-tagged group: 2 shape curves (polyline+arrowhead) PLUS 3 real glyph curves for the label DwgLeaderLabel resolved from the real associated_annotation handle - not just the 2 shape curves a LEADER with no (or an unresolved) annotation handle would get"
+else
+  echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the LEADER+MTEXT fixture check"
   fail=1
 fi
 # DWG DIMENSION_ANG3PT: unlike DIMENSION_LINEAR/DIMENSION_RADIUS above, this

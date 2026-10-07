@@ -718,6 +718,37 @@ Result NurbsSurface::MakeNonRational() {
   return surface_.MakeNonRational() ? Result::Ok : Result::Failed;
 }
 
+Result NurbsSurface::MakeNonRational(double tolerance, double* out_max_deviation) {
+  if (out_max_deviation) *out_max_deviation = 0.0;
+  if (!surface_.IsRational()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  const ON_NurbsSurface backup = surface_;
+  if (!surface_.MakeNonRational()) {
+    surface_ = backup;
+    return Result::Failed;
+  }
+  NurbsSurface before;
+  before.raw() = backup;
+  const Interval du = Domain(0), dv = Domain(1);
+  const int u_samples = std::max(20, 4 * CVCountU());
+  const int v_samples = std::max(20, 4 * CVCountV());
+  double max_deviation = 0.0;
+  for (int i = 0; i <= u_samples; ++i) {
+    const double u = du.min + (du.max - du.min) * i / u_samples;
+    for (int j = 0; j <= v_samples; ++j) {
+      const double v = dv.min + (dv.max - dv.min) * j / v_samples;
+      max_deviation = std::max(max_deviation, PointAt(u, v).DistanceTo(before.PointAt(u, v)));
+    }
+  }
+  if (out_max_deviation) *out_max_deviation = max_deviation;
+  if (max_deviation > tolerance) {
+    surface_ = backup;
+    return Result::Failed;
+  }
+  return Result::Ok;
+}
+
 Result NurbsSurface::ElevateDegree(int direction, int new_degree) {
   if (direction != 0 && direction != 1) {
     return Result::Failed;
