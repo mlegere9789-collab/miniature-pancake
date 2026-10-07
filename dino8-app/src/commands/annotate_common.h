@@ -465,18 +465,20 @@ inline bool ResolveArcAnchor(Document& doc, ObjectId obj, ON_Arc& out) {
 // from the live radius on every rebuild) or "Fixed" (the value the command
 // was given via Size=, which never changes); either way `size` is the value
 // actually drawn this time and gets stored back as the fallback CenterSize.
+// The two crossing lines + their CenterCenter/CenterPlaneOrigin/X/Y/
+// CenterSize tags themselves come from `BuildCentermarkGeometry`
+// (commands/DimGeometry.h, extracted from this function for a real,
+// externally-authored `ON_Centermark` - io/File3dm.cpp - to share exactly);
+// this wrapper just adds the live command's own CenterSizeMode/DimRefObj1
+// associativity tags on top, the same split cmd_annotate2.cpp's own
+// BuildOrdinateDimGroup already uses for its own DimGeometry.h counterpart
+// (BuildOrdinateDimensionGeometry).
 inline int BuildCentermarkGroup(CommandContext& ctx, Point3d center, const ON_Plane& pl, double size, int layer,
                                 bool has_ref, ObjectId ref, const std::string& size_mode) {
-  if (size <= 0) return -1;
-  std::vector<kernel::NurbsCurve> curves = {PolylineCurve({center - pl.xaxis * size, center + pl.xaxis * size}),
-                                            PolylineCurve({center - pl.yaxis * size, center + pl.yaxis * size})};
+  std::vector<kernel::NurbsCurve> curves;
   std::map<std::string, std::string> tags;
-  tags["CenterCenter"] = PointTag(center);
-  tags["CenterPlaneOrigin"] = PointTag(pl.origin);
-  tags["CenterPlaneX"] = PointTag(Point3d(pl.xaxis));
-  tags["CenterPlaneY"] = PointTag(Point3d(pl.yaxis));
+  if (!BuildCentermarkGeometry(center, pl, size, curves, tags)) return -1;
   tags["CenterSizeMode"] = size_mode;
-  tags["CenterSize"] = FormatNumber(size);
   if (has_ref) tags["DimRefObj1"] = std::to_string(ref);
   return AddAnnotationGroup(ctx, "Centermark", curves, GlyphSpec{}, layer, tags);
 }
