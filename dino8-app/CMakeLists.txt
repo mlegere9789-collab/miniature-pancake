@@ -672,6 +672,21 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_i18n_coverage PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_i18n_coverage COMMAND dino8_test_i18n_coverage ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n)
 
+  # End-to-end check of the bounded cmddesc.* command-description subset
+  # (I18n.h's TrOrDefault, wired into the Command List/Help panels and the
+  # toolbar tooltip - see ui/Panels.cpp's LocalizedCommandDescription):
+  # loads the real data/i18n/*.json and data/commands.json, confirms a
+  # command inside the subset gets a real, distinct translation per
+  # language, and a command outside it falls back to its own English text
+  # rather than leaking a raw "cmddesc.<name>" key. Dependency-free like
+  # dino8_test_i18n_coverage: real I18n.cpp/CommandCatalog.cpp loaders,
+  # no live app::Application.
+  add_executable(dino8_test_i18n_cmddesc tests/test_i18n_cmddesc.cpp
+    src/i18n/I18n.cpp src/commands/CommandCatalog.cpp src/util/json_mini.cpp)
+  target_include_directories(dino8_test_i18n_cmddesc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_i18n_cmddesc COMMAND dino8_test_i18n_cmddesc
+    ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n ${CMAKE_CURRENT_SOURCE_DIR}/data/commands.json)
+
   # Radiance .hdr (RGBE) codec (src/render/ImageIO.cpp's LoadImageHdr/
   # SaveImageHdr): an encode/decode round trip well above the [0,1] range
   # PNG/BMP/PPM are stuck at, a real-world-shaped new-style-RLE scanline
@@ -680,6 +695,17 @@ if(DINO8_BUILD_TESTS)
   add_executable(dino8_test_image_hdr tests/test_image_hdr.cpp src/render/ImageIO.cpp src/util/Inflate.cpp)
   target_include_directories(dino8_test_image_hdr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_image_hdr COMMAND dino8_test_image_hdr)
+
+  # Minimal OpenEXR codec (src/render/ImageIO.cpp's LoadImageExr/
+  # SaveImageExr): a FLOAT-channel encode/decode round trip well above the
+  # [0,1] range PNG/BMP/PPM are stuck at, a real-world-shaped HALF-channel
+  # scanline decoded by hand, and the malformed/out-of-scope-input error
+  # paths (tiled, multi-part, deep, compressed, missing R/G/B, truncated).
+  # Standalone like dino8_test_image_hdr - ImageIO.cpp has no dino8_kernel
+  # dependency.
+  add_executable(dino8_test_image_exr tests/test_image_exr.cpp src/render/ImageIO.cpp src/util/Inflate.cpp)
+  target_include_directories(dino8_test_image_exr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_image_exr COMMAND dino8_test_image_exr)
 
   # ZIP + minimal OOXML SpreadsheetML reader/writer (src/drafting/Xlsx.cpp):
   # a real, valid .xlsx round trip (special characters, empty cells, several

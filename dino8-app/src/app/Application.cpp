@@ -2048,7 +2048,7 @@ void Application::DrawCommandLine() {
           if (is_alias) {
             ImGui::TextDisabled("Alias for %s", row.alias_target.c_str());
           } else {
-            std::string desc = row.info->description;
+            std::string desc = LocalizedCommandDescription(*row.info);
             const size_t nl = desc.find('\n');
             if (nl != std::string::npos) desc.erase(nl);
             if (desc.size() > 52) desc = desc.substr(0, 49) + "...";

@@ -63,6 +63,7 @@ SelLast
 What
 ToolbarAddCommand Fillet
 ToolbarAddCommand NotARealCommandXYZ
+ToolbarAddCommand b
 EOS
 
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -115,7 +116,17 @@ check "length = 14.14" "line length measured"
 # itself are not scriptable headlessly, but this exercises the exact code
 # path they invoke, via the scriptable ToolbarAddCommand command.
 check "Added 'Fillet' to the Standard toolbar" "icon-grid picker's add-to-toolbar path (ToolbarAddCommand) accepted a known command"
-check "Unknown command: NotARealCommandXYZ" "icon-grid picker's add-to-toolbar path rejects an unknown command"
+check "Unknown command or alias: NotARealCommandXYZ" "icon-grid picker's add-to-toolbar path rejects an unknown command"
+# AddToolbarCommand used to accept ONLY a literal registered command name -
+# a registered Alias (shipped default "b" -> Box here, no setup needed) was
+# rejected the same way NotARealCommandXYZ just above still is, even though
+# DrawButtonRow's click handler already calls the generic Engine().Execute()
+# that resolves an alias fine. Closes PARITY_MAP.md's "VBA-style macro
+# recorder and editor" item's own "nothing here binds a saved macro to a
+# toolbar button... yet" line (a macro bound to an alias, see
+# alias_macro_script.txt's own "ToolbarAddCommand runmac1" check, can now go
+# on a toolbar button the exact same way).
+check "Added 'b' to the Standard toolbar" "AddToolbarCommand now also accepts a registered alias, not only a literal command name"
 test -s "$TMPW/test.3dm" && echo "ok   test.3dm exists" || { echo "FAIL test.3dm missing"; fail=1; }
 test -s "$TMPW/test.obj" && echo "ok   test.obj exists" || { echo "FAIL test.obj missing"; fail=1; }
 check "gl_error=0" "no OpenGL errors"
@@ -1428,9 +1439,27 @@ sdcheck "240 faces, 960 edges, open" "ToNURBS's SubDBox Brep has 240 real per-pa
 # crash"; this command had no test coverage at all before this check.
 sdcheck "ToSubD: created 1 object(s)" "ToSubD converted the Brep sphere"
 sdcheck "11310 faces, 16965 edges, 5657 vertices, 0 creases" "ToSubD's sphere SubD control cage is tessellated at the document's tight 0.001 modeling tolerance (a real Euler check: 5657 - 16965 + 11310 = 2, a genuinely closed surface), not the coarse 0.05 display tolerance a sphere this size would need far fewer faces for"
+# ToSubD limit-surface fidelity: BuildSubDVerifiedAgainstBrep (cmd_solids.cpp)
+# now measures the resulting SubD's own true Catmull-Clark LIMIT surface
+# against the original Brep - not just the control cage's own tessellation
+# tolerance, which is all the two checks above cover - and reports a real,
+# measured bound instead of no guarantee at all. The sphere's cage is almost
+# entirely extraordinary vertices (every original triangle corner), and its
+# own tessellation is already at the mesher's per-edge subdivision cap, so
+# retightening can't shrink it further; the exact deviation below is this
+# check's own honestly-disclosed, unconverged measurement, not a success
+# silently claimed.
+sdcheck "ToSubD: created 1 object(s) (0 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0.016850)" "ToSubD on the Brep sphere measures and discloses a real (not fully within tolerance) Catmull-Clark limit-surface deviation from the original Brep"
+# The opposite, provable case: a flat planar patch's control points are all
+# already coplanar, so Catmull-Clark's own limit-point formula (an affine
+# combination of coplanar points) introduces no deviation regardless of
+# valence - this must fully verify on the very first round, proving the
+# "verified" branch of the same check genuinely fires, not only the
+# "honest miss" branch above.
+sdcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0.000000)" "ToSubD on a flat planar patch fully verifies its limit surface against the original Brep within tolerance"
 echo "$SD" | grep -E "^(ok|FAIL)"
 if echo "$SD" | grep -q "^FAIL"; then fail=1; fi
-sdcheck "smoke: frames=150 objects=15" "subd script produced the expected object count"
+sdcheck "smoke: frames=150 objects=18" "subd script produced the expected object count"
 # Rendering: materials (scripted options), texture mapping, lights, sun, ground plane,
 # Render / RenderArctic / SaveRenderWindowAs, ExtractRenderMesh, .3dm round-trip (see render_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/render_script.txt" > "$TMPW/render_script.txt"
@@ -3097,6 +3126,14 @@ edcheck "degree 3 x 3, CVs 200 x 200" "Rebuild clamped an absurd 5000000 point c
 edcheck "degree 3, 4 control points, non-rational, open" "ChangeDegree elevated the line to degree 3 (4 control points)"
 edcheck "ChangeDegree: 1 object\(s\) changed to degree 1 \(1 degree-reduced\)" "ChangeDegree's own reduce path actually ran (ReduceDegree, not a silent no-op)"
 edcheck "degree 1, 2 control points, non-rational, open" "ChangeDegree genuinely reduced the line back to degree 1 (2 control points), not left at degree 3"
+
+# Same "never lowers" gap, now closed for SURFACES too (NurbsSurface::
+# ReduceDegree, surface_edit.cpp) - a flat Plane (degree 1x1, 2x2 CVs)
+# elevated to degree 3x3 (4x4 CVs) must genuinely drop back to degree
+# 1x1 (2x2 CVs) when asked, in BOTH directions, not stay stuck at 3x3.
+edcheck "degree 3 x 3, CVs 4 x 4" "ChangeDegree elevated the flat Plane to degree 3 x 3 (4 x 4 control points)"
+edcheck "ChangeDegree: 1 object\(s\) changed to degree 1 \(2 degree-reduced\)" "ChangeDegree's own surface reduce path actually ran in both U and V (ReduceDegree, not a silent no-op)"
+edcheck "degree 1 x 1, CVs 2 x 2" "ChangeDegree genuinely reduced the flat Plane back to degree 1 x 1 (2 x 2 control points), not left at degree 3 x 3"
 if echo "$ED" | grep -q "name 'MyName (1)'"; then echo "FAIL SetObjectName still off-by-one: an object was suffixed '(1)'"; fail=1; else echo "ok   no object was suffixed 'MyName (1)'"; fi
 
 # Real NURBS algorithm QC: ExtractPipedCurve/MakePeriodic Smooth=No/RefitTrim
@@ -5231,6 +5268,98 @@ print(f'Back view cross-check: {back_green:.2f} green, {back_blue:.2f} blue (sho
 assert back_green < 0.1 and back_blue < 0.1, f'Back view also shows the other views own bands ({back_green:.2f} green, {back_blue:.2f} blue) - looks like a flat stretch, not a direction-dependent unwarp'
 PY
 
+# Background::Image .exr: pixel-level proof (PARITY_MAP.md's "Environments
+# and image-based lighting" item - the ".exr is still entirely unsupported"
+# half this pass closes) that a real OpenEXR file drives the exact same
+# Rendered-mode equirectangular backdrop path the .ppm/.hdr check above
+# already exercises, not a separate, untested code path - see
+# tests/env_exr_script.txt for the full scene/capture sequence. The fixture
+# is a solid, genuinely-HDR (above [0,1]) R=3.0/G=0.5/B=0.2 colour; an
+# orthographic Top view samples one constant direction for the whole frame
+# (same mechanism as the Back/Left/Front check above), so a successful
+# load/unwarp should fill the ENTIRE backdrop with one flat tone-mapped
+# colour whose R>G>B ordering survives the tone-map, distinctly different
+# from the procedural Sky background it replaces.
+mkdir -p "$TMPW/envexr"
+python3 -c "
+import struct
+
+def cstr(s): return s.encode() + b'\x00'
+def i32(v): return struct.pack('<i', v)
+def i64(v): return struct.pack('<q', v)
+def u8(v): return bytes([v])
+def f32(v): return struct.pack('<f', v)
+
+w, h = 8, 8
+r_val, g_val, b_val = 3.0, 0.5, 0.2  # genuinely above [0,1] - the whole point versus a PNG/BMP/PPM texture
+
+buf = bytearray()
+buf += b'\x76\x2f\x31\x01'
+buf += i32(2)
+names = [b'B', b'G', b'R']  # spec-required alphabetical channel order
+chlist_size = 1
+for n in names: chlist_size += len(n) + 1 + 16
+buf += cstr('channels') + cstr('chlist') + i32(chlist_size)
+for n in names:
+    buf += n + b'\x00' + i32(2) + u8(0) + u8(0) + u8(0) + u8(0) + i32(1) + i32(1)
+buf += u8(0)
+buf += cstr('compression') + cstr('compression') + i32(1) + u8(0)  # NO_COMPRESSION
+buf += cstr('dataWindow') + cstr('box2i') + i32(16) + i32(0) + i32(0) + i32(w - 1) + i32(h - 1)
+buf += cstr('lineOrder') + cstr('lineOrder') + i32(1) + u8(0)
+buf += u8(0)
+header_end = len(buf)
+chunk_size = 8 + w * 4 * 3
+data_start = header_end + h * 8
+for y in range(h): buf += i64(data_start + y * chunk_size)
+for y in range(h):
+    buf += i32(y) + i32(w * 4 * 3)
+    buf += f32(b_val) * w + f32(g_val) * w + f32(r_val) * w  # planar B,G,R rows
+open('$TMPW/envexr/env_bright.exr', 'wb').write(bytes(buf))
+"
+sed "s|@TMP@|$TMPW/envexr|g" "$HERE/env_exr_script.txt" > "$TMPW/env_exr_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  ENVEXR="$("$BIN" --smoke 30 --script "$TMPW/env_exr_script.txt" 2>&1)" || { echo "$ENVEXR"; echo "FAIL: env_exr script exited non-zero"; exit 1; }
+else
+  ENVEXR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/env_exr_script.txt" 2>&1)" || { echo "$ENVEXR"; echo "FAIL: env_exr script exited non-zero"; exit 1; }
+fi
+envexrcheck() { if echo "$ENVEXR" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ENVEXR" "$1"; fail=1; fi; }
+envexrcheck "^ok   expect_objects 0" "env_exr script left an empty document"
+envexrcheck "gl_error=0" "env_exr script ran without OpenGL errors"
+envexrcheck "Environment: background Image" "Environments genuinely switched to the real .exr file, not silently rejecting it and staying on Sky"
+python3 - "$TMPW/envexr/env_exr_off.bmp" "$TMPW/envexr/env_exr_on.bmp" <<'PY' && echo "ok   a real .exr environment image drives the same per-pixel equirectangular backdrop a .ppm/.hdr source already does, with its own genuinely-HDR R>G>B channel ordering surviving the tone-map" || { echo "FAIL Background::Image .exr pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+w, h, off = read_bmp(sys.argv[1])
+_, _, on = read_bmp(sys.argv[2])
+pts = [(5, 5), (w - 5, 5), (5, h - 5), (w - 5, h - 5), (w // 4, h // 4), (3 * w // 4, 3 * h // 4)]
+on_samples = [on(x, y) for x, y in pts]
+off_samples = [off(x, y) for x, y in pts]
+print('on samples:', on_samples)
+print('off samples:', off_samples)
+first = on_samples[0]
+for s in on_samples[1:]:
+    assert all(abs(a - b) <= 3 for a, b in zip(s, first)), f'env_exr_on.bmp is not a flat, direction-independent colour across the frame (an orthographic camera samples one constant direction): {on_samples}'
+r, g, b = first
+assert r > g + 15 and g > b + 15, f'the tone-mapped backdrop colour does not preserve R>G>B ordering from the source R=3.0/G=0.5/B=0.2 values: {first}'
+for off_s, on_s in zip(off_samples, on_samples):
+    assert sum(abs(a - b) for a, b in zip(off_s, on_s)) > 30, f'env_exr_on.bmp reads the same as the Sky backdrop it should have replaced: off={off_s} on={on_s}'
+PY
+
 # SSAO: pixel-level proof (PARITY_MAP.md's "SSAO in the rasterized
 # renderer" item) that AmbientOcclusion is a real, localized darkening
 # effect, not just a printed status line or a flat global dimming - a flat
@@ -5885,6 +6014,7 @@ amaccheck "Command: Line 20,0,0 30,0,0" "a ';'-separated multi-command alias run
 amaccheck "Command: Circle 40,0,0 5" "...and its second command, in order"
 amaccheck "Command: RunSavedMacro mymac" "a saved macro, bound to an alias, really runs when the alias is invoked"
 amaccheck "Bounding box min 50,0,0 max 55,5,5" "the alias-bound macro's own replayed Box is real, freshly-created geometry (SelLast), not a stale object or a printed-only confirmation"
+amaccheck "Added 'runmac1' to the Standard toolbar" "a macro-bound alias (not just a bare command name) can now go on a toolbar button via AddToolbarCommand - the toolbar half of the same fix"
 
 # BlockSetArraySpacing/BlockSetArrayCount command-line wiring: PARITY_MAP.md
 # "Dynamic blocks" Array parameter/action (the Document-level math itself is

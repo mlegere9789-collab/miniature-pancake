@@ -1,8 +1,9 @@
 // Tiny dependency-free image codecs for textures and render output:
 // reads PPM (P3/P6), BMP (24/32-bit uncompressed), PNG (8/16-bit,
-// non-interlaced, via a small zlib inflate) and Radiance HDR/RGBE
-// (8-bit-per-channel-with-shared-exponent, true unclamped radiance);
-// writes BMP, PPM, PNG and HDR.
+// non-interlaced, via a small zlib inflate), Radiance HDR/RGBE
+// (8-bit-per-channel-with-shared-exponent, true unclamped radiance) and
+// OpenEXR (single-part scanline, uncompressed, HALF/FLOAT R/G/B[/A] only -
+// see LoadImageExr); writes BMP, PPM, PNG, HDR and EXR.
 #pragma once
 
 #include <string>
@@ -49,6 +50,29 @@ bool LoadImageHdr(const std::string& path, ImageHdr& out, std::string& error);
 // any non-negative range — not clamped to [0,1]) as a flat-encoded
 // Radiance .hdr file.
 bool SaveImageHdr(const std::string& path, int width, int height, const std::vector<float>& rgb, std::string& error);
+
+// Loads an OpenEXR (.exr) file: the 4-byte magic/version, a sequence of
+// name/type/size/value header attributes (only `channels`/`compression`/
+// `dataWindow`/`lineOrder` are actually read; the rest are skipped by their
+// own declared size), the scanline offset table, then the scanline chunks
+// themselves. Deliberately narrow, the same honestly-scoped way
+// LoadImageHdr only supports top-down orientation: single-part (no
+// multi-part container), scanline (not tiled), non-deep, `NO_COMPRESSION`
+// only (every *compressed* EXR variant - ZIP/PIZ/PXR24/B44/DWA - needs a
+// real decompressor this file deliberately doesn't carry), and the channel
+// list must contain plain `R`/`G`/`B` channels (any `A` or anything else is
+// ignored) in `HALF` or `FLOAT` (not `UINT`) with no subsampling - the
+// shape every real-world HDRI/IBL panorama in this format actually is.
+// Rejects anything outside that scope with a clear `error` rather than
+// silently misreading it.
+bool LoadImageExr(const std::string& path, ImageHdr& out, std::string& error);
+
+// Writes a linear-radiance RGB buffer (top-down rows, 3 floats per pixel,
+// any non-negative range) as a single-part scanline, uncompressed,
+// FLOAT-channel EXR file - the same "write the simplest valid encoding"
+// convention SaveImageHdr already follows for its own flat (non-RLE)
+// output, round-trippable by LoadImageExr above.
+bool SaveImageExr(const std::string& path, int width, int height, const std::vector<float>& rgb, std::string& error);
 
 // Writes an RGB buffer (top-down rows, 3 bytes per pixel) as a 24-bit BMP
 // or binary PPM depending on the extension (.ppm -> PPM, anything else BMP).

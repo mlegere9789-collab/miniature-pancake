@@ -506,6 +506,62 @@ Result NurbsSurface::Rebuild(int u_count, int v_count, int u_degree, int v_degre
   return Result::Ok;
 }
 
+Result NurbsSurface::ReduceDegree(int direction, int target_degree, double tolerance,
+                                   double* out_max_deviation) {
+  if (direction != 0 && direction != 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::ReduceDegree: direction must be 0 or 1");
+  }
+  if (target_degree < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::ReduceDegree: target_degree must be at least 1");
+  }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::ReduceDegree: tolerance must be positive");
+  }
+  if (out_max_deviation) *out_max_deviation = 0.0;
+
+  const int current_degree = direction == 0 ? DegreeU() : DegreeV();
+  if (target_degree >= current_degree) {
+    return Result::NoOpAlreadySatisfied;
+  }
+
+  const int original_u_count = CVCountU();
+  const int original_v_count = CVCountV();
+  const int original_u_degree = DegreeU();
+  const int original_v_degree = DegreeV();
+  const int original_count = direction == 0 ? original_u_count : original_v_count;
+
+  std::vector<int> candidate_counts;
+  for (int cv = target_degree + 1; cv < original_count; cv *= 2) candidate_counts.push_back(cv);
+  if (candidate_counts.empty() || candidate_counts.back() != original_count) {
+    candidate_counts.push_back(original_count);
+  }
+
+  double last_worst = 0.0;
+  for (int cv_count : candidate_counts) {
+    const int u_count = direction == 0 ? cv_count : original_u_count;
+    const int v_count = direction == 1 ? cv_count : original_v_count;
+    const int u_degree = direction == 0 ? target_degree : original_u_degree;
+    const int v_degree = direction == 1 ? target_degree : original_v_degree;
+    const int u_samples = std::max(64, u_count);
+    const int v_samples = std::max(64, v_count);
+
+    NurbsSurface candidate;
+    double worst = 0.0;
+    if (Rebuild(u_count, v_count, u_degree, v_degree, candidate, &worst, u_samples, v_samples) != Result::Ok) {
+      continue;
+    }
+    last_worst = worst;
+    if (worst <= tolerance) {
+      surface_ = candidate.raw();
+      if (out_max_deviation) *out_max_deviation = worst;
+      return Result::Ok;
+    }
+  }
+  if (out_max_deviation) *out_max_deviation = last_worst;
+  return Result::Failed;
+}
+
 Result NurbsSurface::InterpolateThroughGrid(const std::vector<Point3d>& grid, int u_count, int v_count,
                                              NurbsSurface& out) {
   if (u_count < 2 || v_count < 2) {

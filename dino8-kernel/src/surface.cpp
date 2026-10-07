@@ -718,6 +718,37 @@ Result NurbsSurface::MakeNonRational() {
   return surface_.MakeNonRational() ? Result::Ok : Result::Failed;
 }
 
+Result NurbsSurface::MakeNonRational(double tolerance, double* out_max_deviation) {
+  if (out_max_deviation) *out_max_deviation = 0.0;
+  if (!surface_.IsRational()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  const ON_NurbsSurface backup = surface_;
+  if (!surface_.MakeNonRational()) {
+    surface_ = backup;
+    return Result::Failed;
+  }
+  NurbsSurface before;
+  before.raw() = backup;
+  const Interval du = Domain(0), dv = Domain(1);
+  const int u_samples = std::max(20, 4 * CVCountU());
+  const int v_samples = std::max(20, 4 * CVCountV());
+  double max_deviation = 0.0;
+  for (int i = 0; i <= u_samples; ++i) {
+    const double u = du.min + (du.max - du.min) * i / u_samples;
+    for (int j = 0; j <= v_samples; ++j) {
+      const double v = dv.min + (dv.max - dv.min) * j / v_samples;
+      max_deviation = std::max(max_deviation, PointAt(u, v).DistanceTo(before.PointAt(u, v)));
+    }
+  }
+  if (out_max_deviation) *out_max_deviation = max_deviation;
+  if (max_deviation > tolerance) {
+    surface_ = backup;
+    return Result::Failed;
+  }
+  return Result::Ok;
+}
+
 Result NurbsSurface::ElevateDegree(int direction, int new_degree) {
   if (direction != 0 && direction != 1) {
     return Result::Failed;
@@ -2173,6 +2204,130 @@ Mesh NurbsSurface::TessellateGridCertifiedAdaptive(double chord_tolerance, int m
       "dino8::kernel::NurbsSurface::TessellateGridCertifiedAdaptive: could not certify "
       "chord_tolerance within max_refinements doublings of SuggestedDivisions()'s own starting "
       "resolution");
+}
+
+double NurbsSurface::MeasureMeshTessellationDeviation(const Mesh& mesh, int samples_per_triangle,
+                                                       int closest_point_divisions) const {
+  if (samples_per_triangle < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::MeasureMeshTessellationDeviation: samples_per_triangle "
+        "must be at least 1");
+  }
+  if (closest_point_divisions < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::MeasureMeshTessellationDeviation: "
+        "closest_point_divisions must be at least 1");
+  }
+
+  // Same interior barycentric sampling ring MeasureGridTessellationDeviation()
+  // above uses - deliberately excluding the three corners, where the flat
+  // facet and the true surface coincide exactly by construction.
+  std::vector<std::array<double, 3>> samples;
+  samples.reserve(static_cast<size_t>(samples_per_triangle));
+  for (int k = 0; k < samples_per_triangle; ++k) {
+    const double theta = (2.0 * ON_PI * k) / samples_per_triangle;
+    double a = 1.0 / 3.0 + 0.2 * std::cos(theta);
+    double b = 1.0 / 3.0 + 0.2 * std::sin(theta);
+    double c = 1.0 - a - b;
+    if (a <= 0.0 || b <= 0.0 || c <= 0.0) {
+      a = b = c = 1.0 / 3.0;
+    }
+    samples.push_back({a, b, c});
+  }
+
+  auto triangle_deviation = [&](const Point3d& p0, const Point3d& p1, const Point3d& p2) {
+    double worst = 0.0;
+    for (const auto& bary : samples) {
+      const double a = bary[0], b = bary[1], c = bary[2];
+      const Point3d facet_point(a * p0.x + b * p1.x + c * p2.x, a * p0.y + b * p1.y + c * p2.y,
+                                 a * p0.z + b * p1.z + c * p2.z);
+      const Point3d closest =
+          ClosestPoint(facet_point, closest_point_divisions, closest_point_divisions);
+      worst = std::max(worst, (closest - facet_point).Length());
+    }
+    return worst;
+  };
+
+  const ON_Mesh& raw = mesh.raw();
+  double max_deviation = 0.0;
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    const ON_MeshFace& f = raw.m_F[i];
+    const Point3d p0(raw.m_V[f.vi[0]]);
+    const Point3d p1(raw.m_V[f.vi[1]]);
+    const Point3d p2(raw.m_V[f.vi[2]]);
+    max_deviation = std::max(max_deviation, triangle_deviation(p0, p1, p2));
+    if (f.IsQuad()) {
+      const Point3d p3(raw.m_V[f.vi[3]]);
+      max_deviation = std::max(max_deviation, triangle_deviation(p0, p2, p3));
+    }
+  }
+  return max_deviation;
+}
+
+Mesh NurbsSurface::TessellateGridClippedExactCertifiedAdaptive(
+    double chord_tolerance, const std::vector<Point2d>& trim_polygon, int max_refinements,
+    double* out_achieved_deviation) const {
+  if (!(chord_tolerance > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::TessellateGridClippedExactCertifiedAdaptive: "
+        "chord_tolerance must be positive");
+  }
+  if (max_refinements < 0) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::TessellateGridClippedExactCertifiedAdaptive: "
+        "max_refinements must be non-negative");
+  }
+
+  SurfaceDivisions div = SuggestedDivisions(chord_tolerance);
+  for (int attempt = 0; attempt <= max_refinements; ++attempt) {
+    Mesh candidate = TessellateGridClippedExact(div.u, div.v, trim_polygon);
+    const double deviation = MeasureMeshTessellationDeviation(candidate);
+    if (deviation <= chord_tolerance) {
+      if (out_achieved_deviation) *out_achieved_deviation = deviation;
+      return candidate;
+    }
+    div.u *= 2;
+    div.v *= 2;
+  }
+
+  throw std::runtime_error(
+      "dino8::kernel::NurbsSurface::TessellateGridClippedExactCertifiedAdaptive: could not "
+      "certify chord_tolerance within max_refinements doublings of SuggestedDivisions()'s own "
+      "starting resolution");
+}
+
+Mesh NurbsSurface::TessellateGridNonUniformCertifiedAdaptive(
+    double chord_tolerance, const std::vector<Point2d>* trim_polygon,
+    const std::vector<std::vector<Point2d>>* hole_polygons, int max_refinements,
+    double* out_achieved_deviation) const {
+  if (!(chord_tolerance > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::TessellateGridNonUniformCertifiedAdaptive: "
+        "chord_tolerance must be positive");
+  }
+  if (max_refinements < 0) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::TessellateGridNonUniformCertifiedAdaptive: "
+        "max_refinements must be non-negative");
+  }
+
+  double effective_tolerance = chord_tolerance;
+  for (int attempt = 0; attempt <= max_refinements; ++attempt) {
+    const std::vector<double> u_values = SuggestedParameterValues(0, effective_tolerance);
+    const std::vector<double> v_values = SuggestedParameterValues(1, effective_tolerance);
+    Mesh candidate = TessellateGridNonUniform(u_values, v_values, trim_polygon, hole_polygons);
+    const double deviation = MeasureMeshTessellationDeviation(candidate);
+    if (deviation <= chord_tolerance) {
+      if (out_achieved_deviation) *out_achieved_deviation = deviation;
+      return candidate;
+    }
+    effective_tolerance *= 0.5;
+  }
+
+  throw std::runtime_error(
+      "dino8::kernel::NurbsSurface::TessellateGridNonUniformCertifiedAdaptive: could not "
+      "certify chord_tolerance within max_refinements refinements of SuggestedParameterValues()'s "
+      "own starting resolution");
 }
 
 namespace {

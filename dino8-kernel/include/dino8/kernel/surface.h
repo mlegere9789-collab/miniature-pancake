@@ -304,6 +304,28 @@ class NurbsSurface {
   // `ON_NurbsSurface::MakeNonRational()`.
   Result MakeNonRational();
 
+  // Tolerance-bounded overload of `MakeNonRational()` above - the direct
+  // surface-level counterpart to `NurbsCurve::MakeNonRational(tolerance,
+  // out_max_deviation)`, closing PARITY_MAP's own disclosed "`NurbsSurface::
+  // MakeNonRational` has no tolerance-bounded overload of its own" gap
+  // (kernel: Geometry representation's "Rational <-> non-rational
+  // conversion" bullet). Performs the identical conversion, then measures
+  // the actual max 3D deviation it introduced (dense uniform sampling over
+  // BOTH `Domain(0)` and `Domain(1)`, at least 20 samples per direction or
+  // 4 per control point in that direction, whichever is larger, comparing
+  // this surface's own `PointAt(u, v)` before and after at every sampled
+  // (u, v) pair) and only keeps the conversion if that measured deviation
+  // is <= `tolerance` - otherwise restores the surface to its pre-call
+  // rational state and returns `Result::Failed`. `out_max_deviation`, if
+  // non-null, always receives the measured value, including on failure
+  // (zero if the surface was already non-rational, the same
+  // `Result::NoOpAlreadySatisfied` no-op as the untoleranced overload).
+  // Like `NurbsCurve::MakeNonRational(tolerance, ...)`, this is a SAMPLED
+  // measurement, not a formally certified bound - the same honesty tier
+  // `Rebuild()`'s own deviation bound already uses in this class, since
+  // there is no known closed-form error formula for this conversion.
+  Result MakeNonRational(double tolerance, double* out_max_deviation);
+
   // Elevates degree in the given direction (0 = U, 1 = V), preserving the
   // surface's shape exactly (to floating-point precision). Returns
   // NoOpAlreadySatisfied if the surface is already at or above that
@@ -318,6 +340,56 @@ class NurbsSurface {
   // detail/degree_elevate.h), with the same "minimal control-point count
   // when it verifies, exact piecewise-Bezier form otherwise" guarantee.
   Result ElevateDegree(int direction, int new_degree);
+
+  // Degree REDUCTION in one direction (0 = U, 1 = V) - the direction
+  // `ElevateDegree()` above does not attempt, closing PARITY_MAP's own
+  // disclosed "Degree reduction (curve and surface, with error bound)"
+  // gap for surfaces (the curve side already has `NurbsCurve::
+  // ReduceDegree()`, this is its direct surface-level counterpart,
+  // mirroring the same algorithm one tensor-product direction at a
+  // time). Unlike `ElevateDegree()`'s exact, shape-preserving
+  // construction, there is no exact closed form for lowering a general
+  // NURBS surface's degree while keeping its shape - a genuine least-
+  // squares APPROXIMATION is the honest answer here, built on this
+  // class's own already-tested `Rebuild()`: starting from the minimum
+  // possible control-point count in `direction` (`target_degree + 1`)
+  // and doubling it, `Rebuild()` is called with `direction`'s own count
+  // and degree set to the candidate/`target_degree` pair while the
+  // OTHER direction's count and degree are held at this surface's own
+  // current values - the identical "start small, double, measure, stop
+  // once the real worst-case deviation is at or under `tolerance`"
+  // search `NurbsCurve::ReduceDegree()` already uses, capped at this
+  // direction's own current control-point count (more control points in
+  // `direction` at a LOWER degree than the original already had at its
+  // higher one defeats the entire point of reducing degree, so this
+  // refuses rather than silently returning a "reduced" surface that is
+  // not actually smaller in that direction). The measured deviation
+  // reuses `Rebuild()`'s own fine-grid `out_max_deviation` (comparing
+  // `PointAt(u, v)` on the original against the candidate at matching
+  // parameters over BOTH directions, at twice the fit density) rather
+  // than a `ClosestPoint()` search - valid here, unlike a naive point
+  // comparison would be elsewhere, because `Rebuild()` preserves this
+  // surface's own domain and parameterization exactly, so comparing at
+  // identical (u, v) pairs is a true pointwise measurement, not an
+  // approximation of one. One real consequence worth disclosing: because
+  // `Rebuild()` always refits BOTH directions at once (clamped uniform
+  // knots in each), the OTHER direction is not necessarily preserved
+  // bit-for-bit even though its own degree and control-point count are
+  // held fixed - the measured deviation covers the whole surface, so any
+  // refit error introduced there is honestly included in the tolerance
+  // check, not hidden. Mutates this surface in place only on success;
+  // returns `Result::Failed` (surface left untouched) if `tolerance`
+  // still isn't met at that ceiling, and `Result::NoOpAlreadySatisfied`
+  // if `target_degree` is at or above the current degree in `direction`
+  // (mirroring `ElevateDegree()`'s own convention for the symmetric
+  // case). Throws `std::invalid_argument` if `direction` isn't 0/1,
+  // `target_degree < 1`, or `tolerance` is not positive. `out_max_deviation`,
+  // if non-null, receives the achieved (or, on failure, the best
+  // attempted) worst-case deviation - a sampled, not formally certified,
+  // bound, the same honesty tier `Rebuild()`/`NurbsCurve::ReduceDegree()`
+  // already disclose.
+  Result ReduceDegree(int direction, int target_degree, double tolerance,
+                       double* out_max_deviation = nullptr);
 
   // Whether the surface wraps seamlessly onto itself in `direction`
   // (0 = U, 1 = V) - the boundary curves at the two ends of that
@@ -992,6 +1064,92 @@ class NurbsSurface {
   // can't be driven arbitrarily low by refinement alone).
   Mesh TessellateGridCertifiedAdaptive(double chord_tolerance, int max_refinements = 8,
                                         double* out_achieved_deviation = nullptr) const;
+
+  // The general counterpart to MeasureGridTessellationDeviation() above,
+  // closing this category's own disclosed "a genuinely trimmed B-rep face
+  // still has no certified path at all (only the plain untrimmed grid can
+  // be measured this way)" scope limit: unlike that function, this one
+  // does not assume `mesh` is TessellateGrid()'s own untrimmed, evenly-
+  // spaced output - it works on ANY mesh built from this surface,
+  // trimmed or not, by reading `mesh`'s own triangles directly (a quad
+  // face, `ON_MeshFace::IsQuad()`, is split into its two triangles the
+  // same way every other per-triangle operation in this codebase already
+  // does) rather than reconstructing a grid from division counts. Samples
+  // the same interior-barycentric-ring pattern MeasureGridTessellationDeviation()
+  // uses (deliberately excluding the three corners, which coincide with
+  // the true surface by construction whenever a vertex really is a
+  // `PointAt()` evaluation) on each triangle's own 3D corners, but - since
+  // an arbitrary mesh's vertices carry no recorded (u, v) parameter this
+  // function could re-evaluate the true surface at directly - measures
+  // each interior sample's distance to its CLOSEST point on the true
+  // surface (`ClosestPoint()` above) instead of the true surface at a
+  // shared parameter. This is a genuinely different (and for a
+  // certification bound, more directly meaningful) notion of deviation -
+  // true closest-point distance is the real Hausdorff-style gap between
+  // the facet and the surface, and is never larger than the matching-
+  // parameter distance MeasureGridTessellationDeviation() reports on the
+  // one case both can measure (confirmed: the two agree to within
+  // `ClosestPoint()`'s own search tolerance on a plain untrimmed grid,
+  // see `TestSurfaceMeasureMeshTessellationDeviation`,
+  // tests/test_basic.cpp) - but it inherits `ClosestPoint()`'s own
+  // documented "not a guaranteed global minimum" search caveat, so this is
+  // a measured, not infinitely-precise, bound. `closest_point_divisions`
+  // is forwarded to every `ClosestPoint()` call. Throws
+  // std::invalid_argument if `samples_per_triangle` or
+  // `closest_point_divisions` is less than 1.
+  double MeasureMeshTessellationDeviation(const Mesh& mesh, int samples_per_triangle = 6,
+                                           int closest_point_divisions = 20) const;
+
+  // TessellateGridCertifiedAdaptive()'s own refinement loop, applied to
+  // TessellateGridClippedExact() instead of the plain untrimmed
+  // TessellateGrid() - the first certified path for a genuinely TRIMMED
+  // face this kernel has ever had, closing the other half of this
+  // category's own disclosed "Adaptive tessellation of B-rep faces" scope
+  // limit (`MeasureMeshTessellationDeviation()` above is what makes
+  // measuring - not just estimating - deviation on a trimmed, non-grid
+  // mesh possible at all). Starts from `SuggestedDivisions(chord_
+  // tolerance)`'s own estimate, actually measures the resulting
+  // exact-clipped mesh's real worst-case deviation via
+  // `MeasureMeshTessellationDeviation()`, and doubles both division
+  // counts and re-measures whenever the measured deviation still exceeds
+  // `chord_tolerance`, up to `max_refinements` doublings - identical
+  // doubling strategy to `TessellateGridCertifiedAdaptive()`, just driving
+  // `TessellateGridClippedExact()` instead of `TessellateGrid()`. Returns
+  // the first mesh whose MEASURED deviation is proven at or under
+  // `chord_tolerance`, writing that achieved deviation to
+  // `*out_achieved_deviation` if non-null. Throws std::invalid_argument if
+  // `chord_tolerance <= 0` or `max_refinements < 0` (same as
+  // `TessellateGridCertifiedAdaptive()`), and std::runtime_error if no
+  // doubling within `max_refinements` certifies the tolerance.
+  Mesh TessellateGridClippedExactCertifiedAdaptive(double chord_tolerance,
+                                                    const std::vector<Point2d>& trim_polygon,
+                                                    int max_refinements = 8,
+                                                    double* out_achieved_deviation = nullptr) const;
+
+  // The general (possibly-holed, non-uniform) counterpart to
+  // TessellateGridClippedExactCertifiedAdaptive() above, covering the
+  // other trimmed-tessellation path this kernel has (`TessellateGridNonUniformAdaptive()`,
+  // used whenever a face has inner-loop holes or isn't exact-clipped).
+  // `TessellateGridNonUniform()`'s own breakpoints come from
+  // `SuggestedParameterValues(direction, chord_tolerance)` - a LIST, not a
+  // single division count, so this refines by re-deriving that list from
+  // a progressively TIGHTER effective tolerance (`chord_tolerance /
+  // 2^attempt`) each retry rather than doubling a count directly; a
+  // tighter tolerance always yields at least as many breakpoints as a
+  // looser one (`SubdivideForFlatness()`'s own recursive bisection only
+  // ever subdivides MORE for a smaller target, never less), so this
+  // strictly refines the same way the grid-based doubling above does.
+  // Measures via `MeasureMeshTessellationDeviation()` above - the same
+  // function that makes a trimmed, holed mesh measurable at all - and
+  // returns the first mesh proven at or under `chord_tolerance`, writing
+  // the achieved deviation to `*out_achieved_deviation` if non-null.
+  // Throws std::invalid_argument if `chord_tolerance <= 0` or
+  // `max_refinements < 0`, and std::runtime_error if no refinement within
+  // `max_refinements` certifies the tolerance.
+  Mesh TessellateGridNonUniformCertifiedAdaptive(
+      double chord_tolerance, const std::vector<Point2d>* trim_polygon = nullptr,
+      const std::vector<std::vector<Point2d>>* hole_polygons = nullptr, int max_refinements = 8,
+      double* out_achieved_deviation = nullptr) const;
 
   // ---- Surface editing (implemented in src/surface_edit.cpp) ----
 
