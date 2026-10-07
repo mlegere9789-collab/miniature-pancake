@@ -5743,6 +5743,119 @@ additive scope, not attempted here. `dino8_kernel_tests` suite re-run
 clean (8 new checks from the two new `expect(...)` cases above, 0
 regressions); no `dino8-app` source touched this pass.
 
+**Twenty-eighth note on this category's score (this pass): a real
+fold-order correctness fix across all three B-rep N-ary wrappers, closing
+the specific limitation the Twenty-fourth note's own "Multi-body /
+multi-tool booleans" finding disclosed and explicitly left unfixed ("a
+smarter overlap-aware fold order... would be a substantially larger change
+than this pass's own additive scope") - no bucket moves, same "narrowing,
+not a flip" pattern as every note above.**
+
+`BooleanCombinePlanarNAry`/`BooleanCombineMixedNAry` (boolean.cpp) and
+`BooleanCombineGeneralNAry` (boolean_general.cpp) each used to fold their
+own `first_group`/`second_group` strictly left-to-right via repeated
+pairwise Union calls, so the FIRST fold step's own two operands were
+combined with no other operand's geometry around to help classify them -
+if those two merely TOUCH along a coincident, zero-volume face (rather
+than genuinely overlapping), the pairwise Union throws the pre-existing
+non-manifold reassembly refusal (`Brep::FromMixedFaces`'s "an edge is
+shared by 3 or more faces" / `BuildLoop`'s "an edge is claimed by 3 or more
+fragment loops") even when a DIFFERENT fold order - absorbing a genuinely-
+overlapping third operand first - would reach the exact same final answer
+cleanly (Union is associative/commutative regardless of pairing order).
+This is now fixed: a new file-local `FoldViaUnionRobust(group, union_fn)`
+helper (one copy in boolean.cpp's existing anonymous namespace next to
+`RefuseCompoundOperand`, a second, identical copy in boolean_general.cpp
+next to `BooleanCombineGeneralNAry` - duplicated per translation unit, the
+same shape `RefuseCompoundOperand` itself already uses twice) replaces each
+of the three functions' own plain `fold_union` loop. Each round tries every
+operand still in a `remaining` queue against the current accumulator in
+turn (front first); one that throws is DEFERRED - rotated to the back of
+the queue, never discarded - and the next candidate is tried instead, so an
+operand that only touches the accumulator today gets another chance once
+more geometry has folded in. Only when an entire round finds no candidate
+anywhere in `remaining` that can be folded in does this propagate the first
+exception seen that round, so a genuinely unresolvable input (not merely an
+unlucky starting order) still throws exactly as before - this is additive
+robustness, not a relaxed precondition.
+
+Verified (`TestBooleanCombineMixedNAryUnionFoldOrderRobustToTouchingOnlyFirstPair`,
+`TestBooleanCombinePlanarNAryUnionFoldOrderRobustToTouchingOnlyFirstPair`,
+tests/test_basic.cpp - two NEW tests exercising this directly at the 3D
+level for the first time, since the pre-existing 3D fold-order-independence
+tests never happened to try the throwing order) against the identical
+three-box chain (`a=[0,2]`, `b=[1,3]`, `c=[2,4]`, all `x[0,2]x[0,2]`) the
+Twenty-fourth note's own finding used: folding `{c, a, b}` - `c`/`a` touch
+only at x=2, `b` genuinely overlaps both - no longer throws for either
+engine and reaches the identical 16.0 volume (the 4x2x2 slab) every other
+fold order already gets. The 2D delegate this bug was ORIGINALLY found
+through (`PolygonBooleanPlanarNAry`, which reduces to `BooleanCombinePlanarNAry`
+over right prisms) is updated to match: the dedicated test that used to
+assert `{c, a, b}` throws is rewritten to assert it now succeeds with the
+correct area 8
+(`TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairNowSucceeds`,
+renamed from `...Throws`), and `TestPolygonBooleanPlanarNAryUnionFoldOrderIndependence`
+now checks this fourth order alongside its original three. A new negative
+control (`TestBooleanCombinePlanarNAryNegativeControls`, extended with one
+more case) confirms the fix does not paper over a genuinely unresolvable
+input: folding ONLY the two touching boxes (`{a, c}`, no `b` to rescue the
+pair) still throws, since there is nothing else in the queue left to defer
+to - proving this is order-robustness, not a weakened precondition.
+
+**Honest scope limit, not re-tested for the General engine specifically:**
+`BooleanCombineGeneralNAry` receives the textually-identical fix (its own
+`FoldViaUnionRobust` copy, boolean_general.cpp), and the full suite run
+below confirms zero regressions in every existing `BooleanCombineGeneralNAry`
+test, but this pass does NOT add a dedicated General-engine repro of the
+original throwing order the way it does for Planar/Mixed. The reason is
+disclosed, not an oversight: the axis-aligned box-chain fixture this bug
+was found on has `a`/`b`/`c` sharing several coincident, PARTIALLY-
+OVERLAPPING side faces (not just the `a`/`c` touching face) - and this
+category's own "Multi-body / multi-tool booleans" bullet's own "Fifth
+note" above already found, by direct standalone reproduction, that a plain
+`BooleanCombineGeneral(a, b, Union)` call on this exact fixture throws
+regardless of fold order, hitting the General engine's own separate,
+already-disclosed "no general partially-overlapping coincident curved-face
+handling" scope limit (this category's own neighboring bullet) - a
+different, pre-existing limitation this pass does not touch. The General
+engine's own existing N-ary fixtures (`TestBooleanCombineGeneralNAryUnion
+ThreeOverlappingBoxesMatchesInclusionExclusion` et al.) already use a
+diagonally-staggered box arrangement instead, specifically to stay clear of
+that limitation - and in that arrangement, the two "touching" boxes share
+only a single corner POINT (zero area, not a coincident face), which the
+engine's own per-face ray-cast classification may never have actually
+mis-handled via the naive fold at all, so re-using it would not have been a
+meaningful regression test either way. Constructing a fixture that isolates
+a genuine face-touching-only pair from a genuine face-overlapping third
+operand, while also staying inside the General engine's own separate
+scope limits, is left for a future pass rather than forced here with a
+weak or misleading test.
+
+Net effect: this closes a REAL, previously-disclosed, previously-unfixed
+correctness defect (a deterministic, fold-order-dependent spurious throw
+on otherwise-valid input) across the Planar and Mixed engines, with the
+identical fix also applied (but only indirectly verified by regression,
+not freshly fixture-tested) to the General engine - but it does not cross
+any bullet from `partial` to `present`: "Multi-body / multi-tool booleans"
+stays `partial` (compound-operand support for `Union`/`SymmetricDifference`
+is still refused on all three engines, unchanged; no app command calls any
+of the three `*NAry` wrappers directly; and the General engine's own
+coincident-face scope limit above is untouched), so the category's 9/15/1/25
+(66.0%) split is unchanged - the same "genuine new evidence, unchanged
+partial score" pattern as every note above. The `[kernel/booleans]`
+checklist line for this bullet is left as-is for the same reason (still
+accurately `(partial)`, no flip to narrow). Full `dino8_kernel_tests` suite
+rebuilt and run clean end to end: **9747 checks, 0 failures, exit code 0**
+(9742 checks before this pass - 9741 passing plus the one genuinely-failing
+`...Throws` check this pass rewrites - plus 5 net new `Check()` calls: +1
+from widening `TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairNowSucceeds`'s
+own single throw-assertion into two success assertions, +1 from the new
+Mixed-engine 3D test, +2 from the new Planar-engine 3D test (volume plus
+`IsValid()`), +1 from the new negative control, and the pre-existing
+`TestPolygonBooleanPlanarNAryUnionFoldOrderIndependence` widened in place
+with no change in its own `Check()` count), 0 regressions. The kernel-only
+headline is unaffected (no bucket moved).
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.

@@ -48671,39 +48671,54 @@ void TestPolygonBooleanPlanarNAryUnionFoldOrderIndependence() {
   // Same three orderings TestBooleanCombineMixedNAryUnionFoldOrderIndependence's
   // own identical box fixture already uses (forward/reversed/mixed) - every
   // one of them makes a genuine interior-overlapping pair ("a,b" / "c,b" /
-  // "b,a") the FIRST pairwise fold step. {c, a, b} is deliberately NOT
-  // tried here: see TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairThrows
-  // just below for why that one is a real, disclosed scope limit, not an
-  // oversight.
+  // "b,a") the FIRST pairwise fold step. {c, a, b} - the order whose FIRST
+  // step pairs the two operands that only touch along a coincident edge -
+  // used to be deliberately excluded here (it threw; see
+  // TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairNowSucceeds
+  // just below for that fix) and is included in this independence check too
+  // now that it no longer does.
   const double forward = area_of({a, b, c});
   const double reversed = area_of({c, b, a});
   const double mixed = area_of({b, a, c});
-  Check(Within(forward, 8.0, 1e-9) && Within(reversed, 8.0, 1e-9) && Within(mixed, 8.0, 1e-9),
-        "PolygonBooleanPlanarNAry Union of the same three squares in three different fold orders all agree (area "
+  const double touching_first = area_of({c, a, b});
+  Check(Within(forward, 8.0, 1e-9) && Within(reversed, 8.0, 1e-9) && Within(mixed, 8.0, 1e-9) &&
+            Within(touching_first, 8.0, 1e-9),
+        "PolygonBooleanPlanarNAry Union of the same three squares in four different fold orders all agree (area "
         "8), matching every order TestBooleanCombineMixedNAryUnionFoldOrderIndependence's own 3D fixture already "
-        "verifies");
+        "verifies, now including the touching-pair-first order the fold-order-robustness fix closes");
 }
 
 // A real, previously-unknown limitation found while testing fold-order
-// independence above, not assumed: BooleanCombinePlanarNAry (and, by the
-// identical shared fold shape, BooleanCombineMixedNAry/BooleanCombineGeneralNAry)
-// folds left-to-right via repeated pairwise Union calls, so the FIRST fold
-// step's own two operands are combined with no other operand's geometry
-// around to help. `a` and `c` here (the same three-square chain the test
-// above uses) share only a coincident TOUCHING face at x=2 (zero interior
-// overlap - "a single zero-volume plane", the same phrase this category's
-// own "Multi-body / multi-tool booleans" bullet already uses for the
-// identical 3D box chain) rather than a true overlap; folding them FIRST,
-// before `b` (which genuinely overlaps both) ever joins in, reproduces the
-// exact non-manifold reassembly refusal
+// independence above (this category's own "Multi-body / multi-tool
+// booleans" bullet, "Twenty-fourth note"), now CLOSED: BooleanCombinePlanarNAry/
+// BooleanCombineMixedNAry/BooleanCombineGeneralNAry used to fold strictly
+// left-to-right via repeated pairwise Union calls, so the FIRST fold
+// step's own two operands were combined with no other operand's geometry
+// around to help classify them. `a` and `c` here (the same three-square
+// chain the test above uses) share only a coincident TOUCHING face at x=2
+// (zero interior overlap - "a single zero-volume plane", the same phrase
+// this category's own "Multi-body / multi-tool booleans" bullet already
+// uses for the identical 3D box chain) rather than a true overlap; folding
+// them FIRST, before `b` (which genuinely overlaps both) ever joined in,
+// used to reproduce the exact non-manifold reassembly refusal
 // (`Brep::FromMixedFaces: an edge is shared by 3 or more faces`) this
 // category's own "Coplanar / coincident face handling"/"Non-manifold
-// boolean results" bullets already disclose as out of scope for
-// `BooleanCombinePlanar`'s shared reassembly engine - confirmed directly
-// (a clean, deterministic, repeatable throw on this exact fixture), not
-// papered over by silently excluding this order from the test above
-// without saying why.
-void TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairThrows() {
+// boolean results" bullets disclose as out of scope for
+// `BooleanCombinePlanar`'s shared reassembly engine - confirmed directly at
+// the time (a clean, deterministic, repeatable throw on this exact
+// fixture). **Fixed this pass:** all three `*NAry` wrappers' own
+// `fold_union` step now goes through a shared `FoldViaUnionRobust` helper
+// (one copy each in boolean.cpp/boolean_general.cpp, the same "duplicated
+// file-local helper" shape `RefuseCompoundOperand` already established)
+// that defers (to the back of the queue, not discarding) any operand whose
+// pairwise Union against the current accumulator throws, and retries the
+// next one instead - so a pairing that only touches TODAY gets another
+// chance once more geometry has folded in, and only a GENUINELY
+// unresolvable input (every remaining candidate throwing in the same
+// round) still propagates the original refusal. This fixture is exactly
+// such a case: {c, a, b} no longer throws at all, and reaches the identical
+// answer every other fold order already gets.
+void TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairNowSucceeds() {
   using dino8::kernel::BooleanOp;
   using dino8::kernel::Point3d;
   using dino8::kernel::PolygonBooleanPlanarNAry;
@@ -48713,17 +48728,15 @@ void TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairThrows() 
   const std::vector<Point3d> b = {Point3d(1, 0, 0), Point3d(3, 0, 0), Point3d(3, 2, 0), Point3d(1, 2, 0)};
   const std::vector<Point3d> c = {Point3d(2, 0, 0), Point3d(4, 0, 0), Point3d(4, 2, 0), Point3d(2, 2, 0)};
 
-  bool threw = false;
-  try {
-    PolygonBooleanPlanarNAry({c, a, b}, {}, plane, BooleanOp::Union);
-  } catch (const std::invalid_argument&) {
-    threw = true;
-  }
-  Check(threw,
-        "PolygonBooleanPlanarNAry's left-to-right fold genuinely throws when its FIRST step folds two operands "
-        "that only touch along a coincident face (c, a here), rather than silently misclassifying them - a real, "
-        "disclosed fold-order scope limit inherited from BooleanCombinePlanar's own shared reassembly engine, not "
-        "something this function papers over");
+  const auto result = PolygonBooleanPlanarNAry({c, a, b}, {}, plane, BooleanOp::Union);
+  double total = 0.0;
+  for (const auto& loop : result) total += PolygonLoopArea(loop);
+  Check(result.size() == 1,
+        "PolygonBooleanPlanarNAry's fold order {c, a, b} (the one whose FIRST step used to pair two "
+        "touching-only operands and throw) now succeeds, reaching one connected result polygon");
+  Check(Within(total, 8.0, 1e-9),
+        "PolygonBooleanPlanarNAry's fold order {c, a, b} reaches the identical area (8) every other fold order "
+        "already does, via FoldViaUnionRobust deferring the touching-only pair until b has joined in");
 }
 
 void TestPolygonBooleanPlanarNAryDifferenceMatchesHandChainedPairwise() {
@@ -48890,6 +48903,37 @@ void TestBooleanCombineMixedNAryUnionFoldOrderIndependence() {
         "three boxes all produce the same volume");
 }
 
+// The one fold order the test above deliberately never tried: {c, a, b},
+// whose FIRST pairwise step folds `c` and `a` - the two boxes in this exact
+// fixture that only touch along a coincident, zero-volume face at x=2,
+// rather than genuinely overlapping. This category's own "Multi-body /
+// multi-tool booleans" bullet ("Twenty-fourth note") found this order threw
+// `Brep::FromMixedFaces`'s "an edge is shared by 3 or more faces" refusal at
+// the 2D `PolygonBooleanPlanarNAry` level (the only place it was actually
+// exercised at the time) and left it disclosed, not fixed, as a genuine
+// fold-order limitation inherited by this 3D engine's identical left-to-
+// right fold shape too - never independently demonstrated at this level
+// before now. Closed this pass: `BooleanCombineMixedNAry`'s own
+// `fold_union` now goes through `FoldViaUnionRobust` (boolean.cpp), which
+// defers a throwing pairwise candidate to the back of the queue and retries
+// the next one instead of giving up - `c`/`a` fail first, `b` (which
+// genuinely overlaps both) is tried next and succeeds, and `a` then folds
+// into the grown accumulator cleanly on the next round.
+void TestBooleanCombineMixedNAryUnionFoldOrderRobustToTouchingOnlyFirstPair() {
+  using dino8::kernel::BooleanCombineMixedNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 0, 0, 3, 2, 2);
+  const Brep c = Brep::Box(2, 0, 0, 4, 2, 2);
+
+  const Brep touching_first = BooleanCombineMixedNAry({c, a, b}, {}, BooleanOp::Union);
+  Check(Within(NAryTestVolume(touching_first), 16.0, 1e-9),
+        "BooleanCombineMixedNAry's fold order {c, a, b} (c/a touch only, at x=2) no longer throws and reaches the "
+        "identical 4x2x2 slab volume (16) every other fold order of the same three boxes already gets");
+}
+
 void TestBooleanCombineMixedNAryDifferenceSubtractsEveryToolInSecondGroup() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanCombineMixedNAry;
@@ -49045,6 +49089,28 @@ void TestBooleanCombinePlanarNAryUnionFoldOrderIndependence() {
         "same three boxes all produce the same volume");
 }
 
+// The Planar-engine sibling of
+// TestBooleanCombineMixedNAryUnionFoldOrderRobustToTouchingOnlyFirstPair
+// above - see that test's own doc comment for the full rationale. Same
+// fixture, same previously-throwing order ({c, a, b}, c/a touching only at
+// x=2), same fix (`BooleanCombinePlanarNAry`'s `fold_union` now goes
+// through the identical `FoldViaUnionRobust` helper, boolean.cpp).
+void TestBooleanCombinePlanarNAryUnionFoldOrderRobustToTouchingOnlyFirstPair() {
+  using dino8::kernel::BooleanCombinePlanarNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 0, 0, 3, 2, 2);
+  const Brep c = Brep::Box(2, 0, 0, 4, 2, 2);
+
+  const Brep touching_first = BooleanCombinePlanarNAry({c, a, b}, {}, BooleanOp::Union);
+  Check(Within(NAryTestVolume(touching_first), 16.0, 1e-9),
+        "BooleanCombinePlanarNAry's fold order {c, a, b} (c/a touch only, at x=2) no longer throws and reaches "
+        "the identical 4x2x2 slab volume (16) every other fold order of the same three boxes already gets");
+  Check(touching_first.raw().IsValid(), "the result of folding the touching-pair-first order is a valid ON_Brep");
+}
+
 void TestBooleanCombinePlanarNAryDifferenceSubtractsEveryToolInSecondGroup() {
   using dino8::kernel::BooleanCombinePlanar;
   using dino8::kernel::BooleanCombinePlanarNAry;
@@ -49139,6 +49205,31 @@ void TestBooleanCombinePlanarNAryNegativeControls() {
     Check(Within(result.Volume(), box.Volume(), 1e-9),
           "a single-element first_group with an empty second_group and op=Union returns that operand unchanged "
           "(the trivial N=1 fold)");
+  }
+  {
+    // FoldViaUnionRobust (boolean.cpp) defers a throwing pairwise candidate
+    // and retries a different one - but with only TWO operands in the
+    // group and nothing else to try, a pair that genuinely only touches
+    // along a coincident face still has no rescuing third operand to wait
+    // for, so this must still throw, not silently succeed or hang. `a`/`c`
+    // here are the exact two boxes from
+    // TestBooleanCombinePlanarNAryUnionFoldOrderRobustToTouchingOnlyFirstPair's
+    // own three-box fixture that only touch at x=2 - `b`, the box that
+    // rescues that order THERE, is deliberately left out of first_group
+    // here.
+    const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+    const Brep c = Brep::Box(2, 0, 0, 4, 2, 2);
+    bool threw = false;
+    try {
+      BooleanCombinePlanarNAry({a, c}, {}, BooleanOp::Union);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw,
+          "a two-element first_group whose only two operands merely touch along a coincident face (no third "
+          "operand to defer to) still throws the genuine non-manifold reassembly refusal - FoldViaUnionRobust's "
+          "own retry does not paper over an input that is genuinely unresolvable in every order, nor does it "
+          "hang trying");
   }
 }
 
@@ -72239,11 +72330,13 @@ int main() {
   TestBooleanCombineMixedUnsupportedGeometryRefusalsAreTyped();
   TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion();
   TestBooleanCombineMixedNAryUnionFoldOrderIndependence();
+  TestBooleanCombineMixedNAryUnionFoldOrderRobustToTouchingOnlyFirstPair();
   TestBooleanCombineMixedNAryDifferenceSubtractsEveryToolInSecondGroup();
   TestBooleanCombineMixedNAryIntersectionUnionsEachSideBeforeCombining();
   TestBooleanCombineMixedNAryNegativeControls();
   TestBooleanCombinePlanarNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion();
   TestBooleanCombinePlanarNAryUnionFoldOrderIndependence();
+  TestBooleanCombinePlanarNAryUnionFoldOrderRobustToTouchingOnlyFirstPair();
   TestBooleanCombinePlanarNAryDifferenceSubtractsEveryToolInSecondGroup();
   TestBooleanCombinePlanarNAryIntersectionUnionsEachSideBeforeCombining();
   TestBooleanCombinePlanarNAryNegativeControls();
@@ -72257,7 +72350,7 @@ int main() {
   TestPolygonBooleanPlanarRefusesSelfIntersectingOperand();
   TestPolygonBooleanPlanarNAryUnionThreeOverlappingSquaresMatchesInclusionExclusion();
   TestPolygonBooleanPlanarNAryUnionFoldOrderIndependence();
-  TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairThrows();
+  TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairNowSucceeds();
   TestPolygonBooleanPlanarNAryDifferenceMatchesHandChainedPairwise();
   TestPolygonBooleanPlanarNAryIntersectionUnionsEachSideIndependently();
   TestPolygonBooleanPlanarNAryNegativeControls();
