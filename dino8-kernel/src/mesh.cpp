@@ -1040,6 +1040,84 @@ std::vector<Point2d> Mesh::ComputeSphericalMappingUVs() const {
   return uvs;
 }
 
+Mesh Mesh::SplitUVSeam(const std::vector<Point2d>& uvs, double wrap_threshold) const {
+  if (static_cast<int>(uvs.size()) != mesh_.m_V.Count()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::SplitUVSeam: uvs.size() must equal VertexCount()");
+  }
+  if (!(wrap_threshold > 0.0) || !(wrap_threshold < 1.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::SplitUVSeam: wrap_threshold must be strictly between 0 and 1");
+  }
+
+  Mesh result;
+  ON_Mesh& out = result.mesh_;
+  const bool has_colors = HasVertexColors();
+  out.m_V.Reserve(mesh_.m_V.Count());
+  out.m_S.Reserve(mesh_.m_V.Count());
+  if (has_colors) out.m_C.Reserve(mesh_.m_V.Count());
+  out.m_F.Reserve(mesh_.m_F.Count());
+
+  // A shared (non-seam) vertex is appended lazily, at most once, so a
+  // vertex touched only by faces away from the seam keeps exactly one
+  // copy - the same as before this function ran.
+  std::vector<int> shared_index(static_cast<size_t>(mesh_.m_V.Count()), -1);
+  auto append_shared = [&](int src) {
+    int& dst = shared_index[static_cast<size_t>(src)];
+    if (dst < 0) {
+      dst = out.m_V.Count();
+      out.m_V.Append(mesh_.m_V[src]);
+      const Point2d& uv = uvs[static_cast<size_t>(src)];
+      out.m_S.Append(ON_2dPoint(uv.x, uv.y));
+      if (has_colors) out.m_C.Append(mesh_.m_C[src]);
+    }
+    return dst;
+  };
+
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    const int corner_count = f.IsQuad() ? 4 : 3;
+    double u_min = uvs[static_cast<size_t>(f.vi[0])].x;
+    double u_max = u_min;
+    for (int c = 1; c < corner_count; ++c) {
+      const double u = uvs[static_cast<size_t>(f.vi[c])].x;
+      u_min = std::min(u_min, u);
+      u_max = std::max(u_max, u);
+    }
+
+    ON_MeshFace new_face;
+    if (u_max - u_min > wrap_threshold) {
+      // A genuine seam crossing: duplicate every corner into its own
+      // private vertex (never shared with any other face), unwrapping
+      // each one's own u relative to the face's own first corner.
+      const double u_ref = uvs[static_cast<size_t>(f.vi[0])].x;
+      for (int c = 0; c < corner_count; ++c) {
+        const int src = f.vi[c];
+        double u = uvs[static_cast<size_t>(src)].x;
+        if (u - u_ref > 0.5) {
+          u -= 1.0;
+        } else if (u_ref - u > 0.5) {
+          u += 1.0;
+        }
+        const int dst = out.m_V.Count();
+        out.m_V.Append(mesh_.m_V[src]);
+        out.m_S.Append(ON_2dPoint(u, uvs[static_cast<size_t>(src)].y));
+        if (has_colors) out.m_C.Append(mesh_.m_C[src]);
+        new_face.vi[c] = dst;
+      }
+    } else {
+      for (int c = 0; c < corner_count; ++c) {
+        new_face.vi[c] = append_shared(f.vi[c]);
+      }
+    }
+    if (corner_count == 3) {
+      new_face.vi[3] = new_face.vi[2];
+    }
+    out.m_F.Append(new_face);
+  }
+  return result;
+}
+
 Result Mesh::SetTextureCoordinates(const std::vector<Point2d>& uvs) {
   if (static_cast<int>(uvs.size()) != mesh_.m_V.Count()) {
     return Result::Failed;
