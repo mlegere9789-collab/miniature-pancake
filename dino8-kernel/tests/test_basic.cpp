@@ -4510,11 +4510,17 @@ void TestFindSurfaceTangentContactsSphereOnPlane() {
 // coincident / overlapping surface regions" bullet: "IntersectSurfaces
 // still returns nothing for coincident surfaces. The only coincidence
 // handling is inside planar booleans." IntersectSurfacesOverlap() closes
-// the general-purpose-detection half of that gap.
+// the general-purpose-detection half of that gap; IntersectSurfaces() itself
+// now also returns a real boundary curve for a coincident region (round 21,
+// see TestIntersectSurfacesReturnsBoundaryCurveForCoincidentRegion below) -
+// the assertion right below, which used to confirm IntersectSurfaces()
+// found nothing here, is updated to match.
 void TestIntersectSurfacesOverlapDetectsCoincidentRegion() {
+  using dino8::kernel::IntersectionCurve;
   using dino8::kernel::IntersectOptions;
   using dino8::kernel::IntersectSurfaces;
   using dino8::kernel::IntersectSurfacesOverlap;
+  using dino8::kernel::Point3d;
   using dino8::kernel::SurfaceOverlapRegion;
 
   IntersectOptions opt;
@@ -4525,8 +4531,11 @@ void TestIntersectSurfacesOverlapDetectsCoincidentRegion() {
   // [-5, 5]; `b` spans x, y in [0, 10]. They genuinely coincide (lie in the
   // same plane) over the overlapping quarter [0, 5] x [0, 5] of `a`'s own
   // domain, and nowhere else. No triangle pair of two coplanar surfaces
-  // ever actually crosses, so IntersectSurfaces() finds nothing here either
-  // - confirming this is genuinely the gap PARITY_MAP.md names.
+  // ever actually crosses, so IntersectSurfaces()'s own ORDINARY
+  // crossing-chain search finds nothing here either - but, since round 21,
+  // IntersectSurfaces() itself now recognizes that empty result is the
+  // coincident-region case (not a non-meet) and returns a real boundary
+  // curve for it instead of staying empty.
   const ON_Plane shared_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
   ON_PlaneSurface a(shared_plane);
   a.SetExtents(0, ON_Interval(-5, 5), true);
@@ -4534,7 +4543,18 @@ void TestIntersectSurfacesOverlapDetectsCoincidentRegion() {
   ON_PlaneSurface b(shared_plane);
   b.SetExtents(0, ON_Interval(0, 10), true);
   b.SetExtents(1, ON_Interval(0, 10), true);
-  Check(IntersectSurfaces(a, b, opt).empty(), "IntersectSurfaces() itself finds no crossing curve for two coincident coplanar surfaces");
+  {
+    const std::vector<IntersectionCurve> boundary = IntersectSurfaces(a, b, opt);
+    Check(boundary.size() == 1, "IntersectSurfaces() now reports exactly one boundary curve for two coincident coplanar surfaces");
+    if (boundary.size() == 1) {
+      Check(boundary[0].closed, "the coincident-region boundary curve is closed");
+      ON_BoundingBox bb;
+      for (const Point3d& p : boundary[0].points) bb.Set(p, true);
+      Check(bb.IsValid() && std::abs(bb.Min().x - 0.0) < 1e-3 && std::abs(bb.Max().x - 5.0) < 1e-3 &&
+                std::abs(bb.Min().y - 0.0) < 1e-3 && std::abs(bb.Max().y - 5.0) < 1e-3,
+            "the boundary curve's own 3D extent matches the hand-derivable [0,5]x[0,5] overlap square");
+    }
+  }
 
   const std::vector<SurfaceOverlapRegion> regions = IntersectSurfacesOverlap(a, b, opt);
   Check(regions.size() == 1, "two partially-overlapping coplanar surfaces report exactly one overlap region");
@@ -4607,6 +4627,127 @@ void TestIntersectSurfacesOverlapBisectionTightensRegionBoundary() {
     Check(std::abs(r.u1 - 40.0) < 1e-4, "u1 bisection-tightens to b's own hand-derivable far edge (x=40), not the coarse grid line nearest it");
     Check(std::abs(r.v0 - 10.0) < 1e-4, "v0 bisection-tightens to b's own hand-derivable near edge (y=10), not the coarse grid line nearest it");
     Check(std::abs(r.v1 - 40.0) < 1e-4, "v1 bisection-tightens to b's own hand-derivable far edge (y=40), not the coarse grid line nearest it");
+  }
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
+// coincident / overlapping surface regions" bullet, round 21: the one
+// remaining named gap this bullet's own text called out directly -
+// "IntersectSurfaces still returns nothing for coincident surfaces" - is now
+// closed for the cases IntersectSurfaces()'s own ordinary mesh-seeded
+// crossing search genuinely finds nothing at all to chain (see
+// CoincidentOverlapBoundaryCurves()'s own doc comment, surface_intersect.cpp,
+// for exactly which cases that covers and which it honestly does not).
+//
+// TWO REAL LIMITATIONS FOUND WHILE BUILDING THIS EVIDENCE, neither assumed
+// away:
+//
+// (1) A genuinely CURVED coincident pair essentially never reaches
+// CoincidentOverlapBoundaryCurves() at all with the current mesh-seeded
+// architecture - confirmed directly on TWO different fixtures, not just
+// assumed from one: a cylinder wall `b` trimmed to a strictly-interior
+// sub-rectangle of a larger cylinder `a` (361 raw crossing segments from the
+// resulting grid-resolution mismatch alone - `a`/`b` tessellate at different
+// divisions since TessellateWithUV()'s own DivisionsFor() depends on each
+// surface's own domain/arc-length); AND, more surprisingly, even two
+// FULL-EXTENT cylinder walls from two independent `ON_Cylinder::GetNurbForm()`
+// calls on the IDENTICAL cylinder, which DO tessellate at matching
+// divisions (confirmed: both nu=24/nv=6) - still produced 756 raw crossing
+// segments, not zero. The two tessellations' matching triangles ARE exactly
+// coincident (zero crossing there), but ADJACENT triangles across a curved
+// facet's own hinge line are only approximately coplanar with each other
+// (unlike a flat surface, where adjacent facets stay exactly coplanar too) -
+// close enough that the spatial-pruning pass still tests cross-mesh
+// triangle pairs near each shared edge, and the resulting near-degenerate
+// seam noise is enough to produce a nonzero `segs`. A flat/coplanar surface
+// has no such hinge-line approximation error at all (every facet, and every
+// pair of adjacent facets, is EXACTLY flat regardless of tessellation grid),
+// which is the real, structural reason the fix reaches
+// CoincidentOverlapBoundaryCurves() reliably for flat surfaces of ANY two
+// domains but not for curved ones - an honest limit of the existing
+// mesh-seeded architecture this file already relies on everywhere else, not
+// a defect in the new code, disclosed directly in IntersectSurfaces()'s own
+// doc comment (surface_intersect.h) rather than silently assumed closed.
+//
+// (2) A genuine regression, caught by this round's own full-suite run before
+// being fixed, not after: wiring CoincidentOverlapBoundaryCurves() into
+// IntersectSurfaces() at first broke the pre-existing
+// TestFindSurfaceTangentContactsSphereOnPlane fixture above (a sphere
+// resting tangent on a plane, previously and correctly reported as EMPTY by
+// IntersectSurfaces() - that is the whole premise FindSurfaceTangentContacts()
+// exists to fill). The cause: IntersectSurfacesOverlap()'s own grid sampling,
+// right at a surface's coordinate POLE (where an entire row of (u, v)
+// samples collapses onto nearly the same 3D point - PARITY_MAP.md's own
+// still-`[partial]` "SSX across periodic seams and at singular points
+// (poles)" bullet, a DIFFERENT gap than this one), can report a small but
+// genuine multi-cell "region" there even though the true shape is a single
+// isolated touch point, not a coincident AREA. Fixed in
+// CoincidentOverlapBoundaryCurves() itself (surface_intersect.cpp): a
+// candidate region's own 3D bounding-box diagonal must be at least
+// opt.mesh_tolerance before it is trusted as a genuine area - exactly
+// IntersectSurfacesOverlap()'s own existing "a single isolated on-`b` cell
+// is a transient touch, not an overlap" principle, extended to a pole's own
+// multi-cell degeneracy. `TestFindSurfaceTangentContactsSphereOnPlane`'s own
+// `IntersectSurfaces(...).empty()` assertion passes again with this guard in
+// place - this is tested THERE (its own pre-existing fixture, now a
+// regression guard for this exact gate), not duplicated here.
+void TestIntersectSurfacesReturnsBoundaryCurveForCoincidentRegion() {
+  using dino8::kernel::IntersectionCurve;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::IntersectSurfaces;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.5;
+
+  // First scenario: two FLAT, coplanar plane surfaces, one a genuine PROPER
+  // SUBSET of the other's domain, strictly interior on every side - the
+  // general "overlap region smaller than `a`'s own domain" shape
+  // TestIntersectSurfacesOverlapDetectsCoincidentRegion's own quarter-overlap
+  // fixture does not fully exercise (there, u1/v1 happen to sit at `a`'s own
+  // domain edge). Here EVERY one of the four extents is a genuine interior
+  // crossing boundary, confirmed by the hand-derivable bounding box below.
+  {
+    const ON_Plane shared_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+    ON_PlaneSurface pa(shared_plane), pb(shared_plane);
+    pa.SetExtents(0, ON_Interval(-50, 50), true);
+    pa.SetExtents(1, ON_Interval(-50, 50), true);
+    pb.SetExtents(0, ON_Interval(10, 40), true);
+    pb.SetExtents(1, ON_Interval(10, 40), true);
+    const std::vector<IntersectionCurve> interior = IntersectSurfaces(pa, pb, opt);
+    Check(interior.size() == 1, "a strictly-interior coincident rectangle reports exactly one boundary curve");
+    if (interior.size() == 1) {
+      Check(interior[0].closed, "the strictly-interior boundary curve is closed");
+      ON_BoundingBox bb;
+      for (const Point3d& p : interior[0].points) bb.Set(p, true);
+      Check(bb.IsValid() && std::abs(bb.Min().x - 10.0) < 1e-3 && std::abs(bb.Max().x - 40.0) < 1e-3 &&
+                std::abs(bb.Min().y - 10.0) < 1e-3 && std::abs(bb.Max().y - 40.0) < 1e-3,
+            "the strictly-interior boundary curve's own extent matches the hand-derivable [10,40]x[10,40] overlap square");
+    }
+  }
+
+  // Second scenario: two IDENTICAL coplanar plane surfaces (the
+  // `entire_surface == true` case of IntersectSurfacesOverlap()) - must have
+  // IntersectSurfaces() trace `a`'s own FULL domain boundary as one closed
+  // curve.
+  {
+    const ON_Plane shared_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+    ON_PlaneSurface pa(shared_plane), pb(shared_plane);
+    pa.SetExtents(0, ON_Interval(-7, 7), true);
+    pa.SetExtents(1, ON_Interval(-7, 7), true);
+    pb.SetExtents(0, ON_Interval(-7, 7), true);
+    pb.SetExtents(1, ON_Interval(-7, 7), true);
+    const std::vector<IntersectionCurve> whole = IntersectSurfaces(pa, pb, opt);
+    Check(whole.size() == 1, "two identical coplanar plane surfaces report exactly one boundary curve (the entire_surface case)");
+    if (whole.size() == 1) {
+      Check(whole[0].closed, "the entire_surface boundary curve is closed");
+      ON_BoundingBox bb;
+      for (const Point3d& p : whole[0].points) bb.Set(p, true);
+      Check(bb.IsValid() && std::abs(bb.Min().x + 7.0) < 1e-3 && std::abs(bb.Max().x - 7.0) < 1e-3 &&
+                std::abs(bb.Min().y + 7.0) < 1e-3 && std::abs(bb.Max().y - 7.0) < 1e-3,
+            "the entire_surface boundary curve's own extent matches a's full [-7,7]x[-7,7] domain");
+    }
   }
 }
 
@@ -9804,6 +9945,222 @@ void TestSurfaceTessellateGridCertifiedAdaptive() {
         "is too small to reach the bound");
 }
 
+void TestSurfaceMeasureMeshTessellationDeviation() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // A flat surface's own grid mesh exactly reproduces every point on it,
+  // so the measured (closest-point-based) deviation must be exactly 0,
+  // the same hand-derivable case MeasureGridTessellationDeviation()'s own
+  // test uses.
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 10, 0),
+      Point3d(10, 0, 0),
+      Point3d(10, 10, 0),
+  };
+  const NurbsSurface flat =
+      NurbsSurface::FromControlGrid(flat_grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  const Mesh flat_mesh = flat.TessellateGrid(3, 3);
+  Check(flat.MeasureMeshTessellationDeviation(flat_mesh) < 1e-9,
+        "MeasureMeshTessellationDeviation is exactly 0 for a flat "
+        "surface's own grid mesh");
+
+  // Cross-check against MeasureGridTessellationDeviation() on the SAME
+  // untrimmed grid mesh, the one case both functions can measure: since
+  // closest-point distance can only be <= the matching-parameter distance
+  // the grid-only function reports (the matching-parameter point is always
+  // one candidate the closest-point search considers), this measures
+  // somewhat LOWER or equal, never higher, and the gap should be small on
+  // a smooth, non-degenerate surface like this cylinder wall.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  cylinder.GetNurbForm(cylinder_surface);
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  const Mesh wall_grid_mesh = wall.TessellateGrid(4, 1);
+  const double grid_based = wall.MeasureGridTessellationDeviation(4, 1);
+  const double mesh_based = wall.MeasureMeshTessellationDeviation(wall_grid_mesh);
+  Check(mesh_based <= grid_based + 1e-6,
+        "on the identical untrimmed grid mesh, the closest-point-based "
+        "measurement never reports MORE deviation than the matching-"
+        "parameter-based one");
+  Check(mesh_based > grid_based * 0.9,
+        "the two measurements agree closely (within 10%) on this smooth "
+        "surface - genuinely cross-checking, not just two unrelated "
+        "numbers that happen to both be called deviation");
+
+  bool threw_samples = false;
+  try {
+    flat.MeasureMeshTessellationDeviation(flat_mesh, 0);
+  } catch (const std::invalid_argument&) {
+    threw_samples = true;
+  }
+  Check(threw_samples,
+        "MeasureMeshTessellationDeviation throws std::invalid_argument "
+        "when samples_per_triangle is less than 1");
+
+  bool threw_divisions = false;
+  try {
+    flat.MeasureMeshTessellationDeviation(flat_mesh, 6, 0);
+  } catch (const std::invalid_argument&) {
+    threw_divisions = true;
+  }
+  Check(threw_divisions,
+        "MeasureMeshTessellationDeviation throws std::invalid_argument "
+        "when closest_point_divisions is less than 1");
+}
+
+void TestSurfaceTessellateGridClippedExactCertifiedAdaptive() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+
+  // Same quarter-wedge trim of the unit cylinder wall
+  // TestBrepTessellateCertifiedAdaptive() uses at the Brep level - a
+  // genuinely trimmed, genuinely curved face, exactly the case this
+  // function exists to certify.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  cylinder.GetNurbForm(cylinder_surface);
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  const auto du = wall.Domain(0);
+  const auto dv = wall.Domain(1);
+  const double u0 = du.min + 0.25 * (du.max - du.min);
+  const double u1 = du.min + 0.75 * (du.max - du.min);
+  const double v0 = dv.min + 0.1 * (dv.max - dv.min);
+  const double v1 = dv.min + 0.9 * (dv.max - dv.min);
+  const std::vector<Point2d> trim = {
+      Point2d(u0, v0),
+      Point2d(u1, v0),
+      Point2d(u1, v1),
+      Point2d(u0, v1),
+  };
+
+  const double chord_tolerance = 0.01;
+  double achieved = -1.0;
+  const auto mesh =
+      wall.TessellateGridClippedExactCertifiedAdaptive(chord_tolerance, trim, 8, &achieved);
+  Check(mesh.FaceCount() > 0,
+        "TessellateGridClippedExactCertifiedAdaptive returns a real mesh "
+        "for a genuinely trimmed, curved face");
+  Check(achieved >= 0.0 && achieved <= chord_tolerance,
+        "TessellateGridClippedExactCertifiedAdaptive's own achieved "
+        "deviation is genuinely at or under chord_tolerance - a MEASURED "
+        "guarantee on a TRIMMED face, not previously possible at all");
+  // Independently re-measure the returned mesh via the same general
+  // function the implementation itself uses, confirming the achieved
+  // deviation isn't just trusted from inside the refinement loop.
+  const double independently_measured = wall.MeasureMeshTessellationDeviation(mesh);
+  Check(std::abs(independently_measured - achieved) < 1e-9,
+        "the achieved deviation matches an independent re-measurement of "
+        "the returned mesh exactly");
+
+  bool threw_tolerance = false;
+  try {
+    wall.TessellateGridClippedExactCertifiedAdaptive(0.0, trim);
+  } catch (const std::invalid_argument&) {
+    threw_tolerance = true;
+  }
+  Check(threw_tolerance,
+        "TessellateGridClippedExactCertifiedAdaptive throws "
+        "std::invalid_argument for a non-positive chord_tolerance");
+
+  bool threw_refinements = false;
+  try {
+    wall.TessellateGridClippedExactCertifiedAdaptive(chord_tolerance, trim, -1);
+  } catch (const std::invalid_argument&) {
+    threw_refinements = true;
+  }
+  Check(threw_refinements,
+        "TessellateGridClippedExactCertifiedAdaptive throws "
+        "std::invalid_argument for a negative max_refinements");
+}
+
+void TestSurfaceTessellateGridNonUniformCertifiedAdaptive() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+
+  // A sphere's full domain (untrimmed, but routed through the general
+  // non-uniform path directly rather than TessellateGridCertifiedAdaptive's
+  // own uniform grid) - the same singular-pole surface investigated in
+  // this category's prior round, now exercised through the genuinely
+  // adaptive (per-direction breakpoint) non-uniform path instead of a
+  // single division count.
+  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 1.0);
+  ON_NurbsSurface sphere_surface;
+  sphere.GetNurbForm(sphere_surface);
+  NurbsSurface s;
+  s.raw() = sphere_surface;
+
+  const double chord_tolerance = 0.01;
+  double achieved = -1.0;
+  const auto mesh = s.TessellateGridNonUniformCertifiedAdaptive(
+      chord_tolerance, nullptr, nullptr, 8, &achieved);
+  Check(mesh.FaceCount() > 0,
+        "TessellateGridNonUniformCertifiedAdaptive returns a real mesh "
+        "for a sphere");
+  Check(achieved >= 0.0 && achieved <= chord_tolerance,
+        "TessellateGridNonUniformCertifiedAdaptive's own achieved "
+        "deviation is genuinely at or under chord_tolerance on a surface "
+        "with singular poles");
+
+  // A genuinely trimmed, holed case: the sphere's full outer domain with
+  // a small square hole cut near the equator.
+  const auto du = s.Domain(0);
+  const auto dv = s.Domain(1);
+  const std::vector<Point2d> outer = {
+      Point2d(du.min, dv.min),
+      Point2d(du.max, dv.min),
+      Point2d(du.max, dv.max),
+      Point2d(du.min, dv.max),
+  };
+  const double hu0 = du.min + 0.4 * (du.max - du.min);
+  const double hu1 = du.min + 0.6 * (du.max - du.min);
+  const double hv0 = dv.min + 0.45 * (dv.max - dv.min);
+  const double hv1 = dv.min + 0.55 * (dv.max - dv.min);
+  const std::vector<std::vector<Point2d>> holes = {{
+      Point2d(hu0, hv0),
+      Point2d(hu1, hv0),
+      Point2d(hu1, hv1),
+      Point2d(hu0, hv1),
+  }};
+  double holed_achieved = -1.0;
+  const auto holed_mesh = s.TessellateGridNonUniformCertifiedAdaptive(
+      chord_tolerance, &outer, &holes, 8, &holed_achieved);
+  Check(holed_mesh.FaceCount() > 0,
+        "TessellateGridNonUniformCertifiedAdaptive returns a real mesh "
+        "for a holed surface");
+  Check(holed_achieved >= 0.0 && holed_achieved <= chord_tolerance,
+        "TessellateGridNonUniformCertifiedAdaptive's own achieved "
+        "deviation is genuinely at or under chord_tolerance on a holed "
+        "surface too");
+
+  bool threw_tolerance = false;
+  try {
+    s.TessellateGridNonUniformCertifiedAdaptive(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_tolerance = true;
+  }
+  Check(threw_tolerance,
+        "TessellateGridNonUniformCertifiedAdaptive throws "
+        "std::invalid_argument for a non-positive chord_tolerance");
+
+  bool threw_refinements = false;
+  try {
+    s.TessellateGridNonUniformCertifiedAdaptive(chord_tolerance, nullptr, nullptr, -1);
+  } catch (const std::invalid_argument&) {
+    threw_refinements = true;
+  }
+  Check(threw_refinements,
+        "TessellateGridNonUniformCertifiedAdaptive throws "
+        "std::invalid_argument for a negative max_refinements");
+}
+
 void TestBrepTessellateAdaptive() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -9970,20 +10327,21 @@ void TestBrepTessellateCertifiedAdaptive() {
 
   // A single genuinely TRIMMED, curved face (a wedge of the same unit
   // cylinder wall used above, via TrimmedPlanarFace() - despite the name,
-  // it accepts any NurbsSurface, not just planar ones) has no certified
-  // path (MeasureGridTessellationDeviation() is scoped to the plain
-  // untrimmed grid), so it must fall back to the existing heuristic and
-  // be honestly reported as NOT certified - not silently blended in with
-  // a real bound. exact_clip=true (-> TessellateGridClippedExactAdaptive)
-  // is required here, not the whole-cell TessellateGridNonUniformAdaptive:
-  // a genuine, confirmed finding from a standalone dino8_scratch_test probe
-  // while building this test - the cylinder wall's own v (height) direction
-  // has zero curvature, so SuggestedParameterValues(1, ...) returns only
-  // the 2 domain endpoints (one single row spanning the FULL height), and
-  // a whole-cell in/out test can never find a cell whose corners (always
-  // exactly at v=0 and v=1) land inside any v-restricted trim polygon -
-  // confirmed directly to return 0 faces for exactly this reason, not a
-  // bug in TessellateCertifiedAdaptive itself.
+  // it accepts any NurbsSurface, not just planar ones) - NOW genuinely
+  // certified too, via NurbsSurface::TessellateGridClippedExactCertifiedAdaptive()/
+  // MeasureMeshTessellationDeviation() (this category's own prior round
+  // only had a certified path for the plain untrimmed grid; this round
+  // closes the trimmed half). exact_clip=true (->
+  // TessellateGridClippedExactCertifiedAdaptive) is required here, not the
+  // whole-cell non-uniform path: a genuine, confirmed finding from a
+  // standalone dino8_scratch_test probe while building the ORIGINAL
+  // (uncertified) version of this test - the cylinder wall's own v
+  // (height) direction has zero curvature, so SuggestedParameterValues(1,
+  // ...) returns only the 2 domain endpoints (one single row spanning the
+  // FULL height), and a whole-cell in/out test can never find a cell
+  // whose corners (always exactly at v=0 and v=1) land inside any
+  // v-restricted trim polygon - confirmed directly to return 0 faces for
+  // exactly this reason, not a bug in TessellateCertifiedAdaptive itself.
   const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
   const ON_Cylinder cylinder(circle, 1.0);
   ON_NurbsSurface cylinder_surface;
@@ -10006,12 +10364,12 @@ void TestBrepTessellateCertifiedAdaptive() {
   std::vector<bool> wall_certified;
   const auto wall_faces = trimmed_wall.TessellateCertifiedAdaptive(0.01, 8, &wall_certified);
   Check(wall_faces.size() == 1, "TrimmedPlanarFace() produces exactly one face");
-  Check(wall_certified.size() == 1 && !wall_certified[0],
-        "a genuinely trimmed face has no certified path and is honestly "
-        "reported as NOT certified, not silently treated as if it were");
+  Check(wall_certified.size() == 1 && wall_certified[0],
+        "a genuinely trimmed face now has a certified path too, and is "
+        "reported as such");
   Check(wall_faces[0].FaceCount() > 0,
-        "the trimmed face still gets a real (uncertified, heuristic) "
-        "tessellation, not an empty result");
+        "the trimmed face still gets a real, now-certified tessellation, "
+        "not an empty result");
 }
 
 void TestFileRoundTrip() {
@@ -25036,6 +25394,119 @@ void TestSubDToNurbsPatchesExactOnRegularFlatGrid() {
         "(1+u, 1+v, 0) at every sampled (u,v) - confirming ToNurbsPatches' "
         "neighbor-gathering and B-spline-to-Bezier conversion are both "
         "correct for the regular case, not just plausible");
+}
+
+// Closes real, previously-unaddressed ground under PARTY_MAP.md's own
+// "SubD -> NURBS patch conversion" item: an IRREGULAR face's patch corner
+// used to be the face's raw, un-limited control-net vertex position - a
+// genuinely different point from the true Catmull-Clark limit surface on
+// any non-flat geometry (TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace's
+// own comment already establishes this: "a regular vertex's Catmull-Clark
+// limit point generally does NOT coincide with its own control-net
+// position on curved geometry"). This checks the irregular case against
+// the SAME kind of hand-derived closed-form ground truth
+// TestSubDLimitPointsExactCubeAndFlatGrid uses below for LimitPoints():
+// every corner of the plain cube cage (no Subdivide() at all - all 8
+// vertices are already valence-3 extraordinary, so all 6 faces are
+// irregular) has a known-by-symmetry exact limit position of exactly half
+// its own control-net position.
+void TestSubDToNurbsPatchesIrregularCornersMatchKnownLimitPoint() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDNurbsPatch;
+
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(cube);
+  const std::vector<SubDNurbsPatch> patches = subd.ToNurbsPatches();
+  Check(patches.size() == 6, "the cube cage's 6 quad faces give 6 patches");
+
+  const double corner_uv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  bool any_patch_inexact = false;
+  bool every_corner_matches_half_scale = true;
+  bool any_corner_still_equals_raw_control_point = false;
+
+  size_t i = 0;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace(), ++i) {
+    Check(i < patches.size(), "every face of the cube cage has a corresponding patch");
+    if (!patches[i].exact) any_patch_inexact = true;
+    for (int k = 0; k < 4; ++k) {
+      const ON_SubDVertex* v = f->Vertex(static_cast<unsigned int>(k));
+      const Point3d control = v->ControlNetPoint();
+      const Point3d expected_limit(0.5 * control.x, 0.5 * control.y, 0.5 * control.z);
+      const Point3d got = patches[i].surface.PointAt(corner_uv[k][0], corner_uv[k][1]);
+      if (got.DistanceTo(expected_limit) > 1e-9) every_corner_matches_half_scale = false;
+      if (got.DistanceTo(control) < 1e-6) any_corner_still_equals_raw_control_point = true;
+    }
+  }
+  Check(any_patch_inexact,
+        "sanity: every cube-cage face is still reported inexact (irregular) - this checks the "
+        "corners of an approximate patch, not a claim the whole patch is now exact");
+  Check(every_corner_matches_half_scale,
+        "every irregular patch's own 4 corners now land exactly on the hand-derived "
+        "closed-form Catmull-Clark limit point (half the raw control-net position) instead "
+        "of the raw control-net position itself");
+  Check(!any_corner_still_equals_raw_control_point,
+        "negative control: no patch corner is still the old (pre-fix) raw control-net point - "
+        "the limit-point substitution actually fired, not a no-op that happened to coincide");
+}
+
+// The fallback half of the same fix: a corner touching a semi-sharp edge
+// is deliberately NOT given the limit-point treatment above (doing that
+// correctly needs the same working-copy GlobalSubdivide() decay
+// ExactVertexCorner() pays for a single-point query - ToNurbsPatches()
+// loops over every face, so paying that per corner here would be a real
+// cost regression, not just a style choice) - so it must still fall back
+// to exactly its old, pre-fix raw control-net point, not silently use
+// the now-wrong (sharpness-ignoring) smooth limit point as if it applied.
+void TestSubDToNurbsPatchesIrregularCornerFallsBackOnSemiSharpEdge() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDNurbsPatch;
+
+  Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  SubD subd = SubD::FromControlMesh(cube);
+
+  const ON_SubDVertex* v0 = nullptr;
+  const ON_SubDEdge* sharp_edge = nullptr;
+  ON_SubDVertexIterator vit = subd.raw().VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr && sharp_edge == nullptr;
+       v = vit.NextVertex()) {
+    for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+      const ON_SubDEdge* e = v->Edge(i);
+      if (e != nullptr && e->IsSmooth()) {
+        v0 = v;
+        sharp_edge = e;
+        break;
+      }
+    }
+  }
+  Check(sharp_edge != nullptr, "found a smooth cube-cage edge to make semi-sharp");
+  const ON_SubDVertex* v1 = sharp_edge->OtherEndVertex(v0);
+  Check(subd.SetEdgeSharpness(v0->ControlNetPoint(), v1->ControlNetPoint(), 1.0, 1e-9),
+        "SetEdgeSharpness(1.0) succeeds on this edge");
+
+  const std::vector<SubDNurbsPatch> patches = subd.ToNurbsPatches();
+  const double corner_uv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  bool found_v0_corner = false, v0_corner_is_raw_control_point = false;
+
+  size_t i = 0;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace(), ++i) {
+    for (int k = 0; k < 4; ++k) {
+      if (f->Vertex(static_cast<unsigned int>(k)) != v0) continue;
+      found_v0_corner = true;
+      const Point3d got = patches[i].surface.PointAt(corner_uv[k][0], corner_uv[k][1]);
+      if (got.DistanceTo(v0->ControlNetPoint()) < 1e-9) v0_corner_is_raw_control_point = true;
+    }
+  }
+  Check(found_v0_corner, "the semi-sharp vertex is a corner of at least one patch");
+  Check(v0_corner_is_raw_control_point,
+        "a corner touching a semi-sharp edge still falls back to its old, pre-fix raw "
+        "control-net point - the un-decayed smooth limit point GetSurfacePoint() would "
+        "otherwise silently (and wrongly) report is never used here");
 }
 
 void TestSubDLimitPointsExactCubeAndFlatGrid() {
@@ -48824,39 +49295,54 @@ void TestPolygonBooleanPlanarNAryUnionFoldOrderIndependence() {
   // Same three orderings TestBooleanCombineMixedNAryUnionFoldOrderIndependence's
   // own identical box fixture already uses (forward/reversed/mixed) - every
   // one of them makes a genuine interior-overlapping pair ("a,b" / "c,b" /
-  // "b,a") the FIRST pairwise fold step. {c, a, b} is deliberately NOT
-  // tried here: see TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairThrows
-  // just below for why that one is a real, disclosed scope limit, not an
-  // oversight.
+  // "b,a") the FIRST pairwise fold step. {c, a, b} - the order whose FIRST
+  // step pairs the two operands that only touch along a coincident edge -
+  // used to be deliberately excluded here (it threw; see
+  // TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairNowSucceeds
+  // just below for that fix) and is included in this independence check too
+  // now that it no longer does.
   const double forward = area_of({a, b, c});
   const double reversed = area_of({c, b, a});
   const double mixed = area_of({b, a, c});
-  Check(Within(forward, 8.0, 1e-9) && Within(reversed, 8.0, 1e-9) && Within(mixed, 8.0, 1e-9),
-        "PolygonBooleanPlanarNAry Union of the same three squares in three different fold orders all agree (area "
+  const double touching_first = area_of({c, a, b});
+  Check(Within(forward, 8.0, 1e-9) && Within(reversed, 8.0, 1e-9) && Within(mixed, 8.0, 1e-9) &&
+            Within(touching_first, 8.0, 1e-9),
+        "PolygonBooleanPlanarNAry Union of the same three squares in four different fold orders all agree (area "
         "8), matching every order TestBooleanCombineMixedNAryUnionFoldOrderIndependence's own 3D fixture already "
-        "verifies");
+        "verifies, now including the touching-pair-first order the fold-order-robustness fix closes");
 }
 
 // A real, previously-unknown limitation found while testing fold-order
-// independence above, not assumed: BooleanCombinePlanarNAry (and, by the
-// identical shared fold shape, BooleanCombineMixedNAry/BooleanCombineGeneralNAry)
-// folds left-to-right via repeated pairwise Union calls, so the FIRST fold
-// step's own two operands are combined with no other operand's geometry
-// around to help. `a` and `c` here (the same three-square chain the test
-// above uses) share only a coincident TOUCHING face at x=2 (zero interior
-// overlap - "a single zero-volume plane", the same phrase this category's
-// own "Multi-body / multi-tool booleans" bullet already uses for the
-// identical 3D box chain) rather than a true overlap; folding them FIRST,
-// before `b` (which genuinely overlaps both) ever joins in, reproduces the
-// exact non-manifold reassembly refusal
+// independence above (this category's own "Multi-body / multi-tool
+// booleans" bullet, "Twenty-fourth note"), now CLOSED: BooleanCombinePlanarNAry/
+// BooleanCombineMixedNAry/BooleanCombineGeneralNAry used to fold strictly
+// left-to-right via repeated pairwise Union calls, so the FIRST fold
+// step's own two operands were combined with no other operand's geometry
+// around to help classify them. `a` and `c` here (the same three-square
+// chain the test above uses) share only a coincident TOUCHING face at x=2
+// (zero interior overlap - "a single zero-volume plane", the same phrase
+// this category's own "Multi-body / multi-tool booleans" bullet already
+// uses for the identical 3D box chain) rather than a true overlap; folding
+// them FIRST, before `b` (which genuinely overlaps both) ever joined in,
+// used to reproduce the exact non-manifold reassembly refusal
 // (`Brep::FromMixedFaces: an edge is shared by 3 or more faces`) this
 // category's own "Coplanar / coincident face handling"/"Non-manifold
-// boolean results" bullets already disclose as out of scope for
-// `BooleanCombinePlanar`'s shared reassembly engine - confirmed directly
-// (a clean, deterministic, repeatable throw on this exact fixture), not
-// papered over by silently excluding this order from the test above
-// without saying why.
-void TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairThrows() {
+// boolean results" bullets disclose as out of scope for
+// `BooleanCombinePlanar`'s shared reassembly engine - confirmed directly at
+// the time (a clean, deterministic, repeatable throw on this exact
+// fixture). **Fixed this pass:** all three `*NAry` wrappers' own
+// `fold_union` step now goes through a shared `FoldViaUnionRobust` helper
+// (one copy each in boolean.cpp/boolean_general.cpp, the same "duplicated
+// file-local helper" shape `RefuseCompoundOperand` already established)
+// that defers (to the back of the queue, not discarding) any operand whose
+// pairwise Union against the current accumulator throws, and retries the
+// next one instead - so a pairing that only touches TODAY gets another
+// chance once more geometry has folded in, and only a GENUINELY
+// unresolvable input (every remaining candidate throwing in the same
+// round) still propagates the original refusal. This fixture is exactly
+// such a case: {c, a, b} no longer throws at all, and reaches the identical
+// answer every other fold order already gets.
+void TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairNowSucceeds() {
   using dino8::kernel::BooleanOp;
   using dino8::kernel::Point3d;
   using dino8::kernel::PolygonBooleanPlanarNAry;
@@ -48866,17 +49352,15 @@ void TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairThrows() 
   const std::vector<Point3d> b = {Point3d(1, 0, 0), Point3d(3, 0, 0), Point3d(3, 2, 0), Point3d(1, 2, 0)};
   const std::vector<Point3d> c = {Point3d(2, 0, 0), Point3d(4, 0, 0), Point3d(4, 2, 0), Point3d(2, 2, 0)};
 
-  bool threw = false;
-  try {
-    PolygonBooleanPlanarNAry({c, a, b}, {}, plane, BooleanOp::Union);
-  } catch (const std::invalid_argument&) {
-    threw = true;
-  }
-  Check(threw,
-        "PolygonBooleanPlanarNAry's left-to-right fold genuinely throws when its FIRST step folds two operands "
-        "that only touch along a coincident face (c, a here), rather than silently misclassifying them - a real, "
-        "disclosed fold-order scope limit inherited from BooleanCombinePlanar's own shared reassembly engine, not "
-        "something this function papers over");
+  const auto result = PolygonBooleanPlanarNAry({c, a, b}, {}, plane, BooleanOp::Union);
+  double total = 0.0;
+  for (const auto& loop : result) total += PolygonLoopArea(loop);
+  Check(result.size() == 1,
+        "PolygonBooleanPlanarNAry's fold order {c, a, b} (the one whose FIRST step used to pair two "
+        "touching-only operands and throw) now succeeds, reaching one connected result polygon");
+  Check(Within(total, 8.0, 1e-9),
+        "PolygonBooleanPlanarNAry's fold order {c, a, b} reaches the identical area (8) every other fold order "
+        "already does, via FoldViaUnionRobust deferring the touching-only pair until b has joined in");
 }
 
 void TestPolygonBooleanPlanarNAryDifferenceMatchesHandChainedPairwise() {
@@ -49043,6 +49527,37 @@ void TestBooleanCombineMixedNAryUnionFoldOrderIndependence() {
         "three boxes all produce the same volume");
 }
 
+// The one fold order the test above deliberately never tried: {c, a, b},
+// whose FIRST pairwise step folds `c` and `a` - the two boxes in this exact
+// fixture that only touch along a coincident, zero-volume face at x=2,
+// rather than genuinely overlapping. This category's own "Multi-body /
+// multi-tool booleans" bullet ("Twenty-fourth note") found this order threw
+// `Brep::FromMixedFaces`'s "an edge is shared by 3 or more faces" refusal at
+// the 2D `PolygonBooleanPlanarNAry` level (the only place it was actually
+// exercised at the time) and left it disclosed, not fixed, as a genuine
+// fold-order limitation inherited by this 3D engine's identical left-to-
+// right fold shape too - never independently demonstrated at this level
+// before now. Closed this pass: `BooleanCombineMixedNAry`'s own
+// `fold_union` now goes through `FoldViaUnionRobust` (boolean.cpp), which
+// defers a throwing pairwise candidate to the back of the queue and retries
+// the next one instead of giving up - `c`/`a` fail first, `b` (which
+// genuinely overlaps both) is tried next and succeeds, and `a` then folds
+// into the grown accumulator cleanly on the next round.
+void TestBooleanCombineMixedNAryUnionFoldOrderRobustToTouchingOnlyFirstPair() {
+  using dino8::kernel::BooleanCombineMixedNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 0, 0, 3, 2, 2);
+  const Brep c = Brep::Box(2, 0, 0, 4, 2, 2);
+
+  const Brep touching_first = BooleanCombineMixedNAry({c, a, b}, {}, BooleanOp::Union);
+  Check(Within(NAryTestVolume(touching_first), 16.0, 1e-9),
+        "BooleanCombineMixedNAry's fold order {c, a, b} (c/a touch only, at x=2) no longer throws and reaches the "
+        "identical 4x2x2 slab volume (16) every other fold order of the same three boxes already gets");
+}
+
 void TestBooleanCombineMixedNAryDifferenceSubtractsEveryToolInSecondGroup() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanCombineMixedNAry;
@@ -49198,6 +49713,28 @@ void TestBooleanCombinePlanarNAryUnionFoldOrderIndependence() {
         "same three boxes all produce the same volume");
 }
 
+// The Planar-engine sibling of
+// TestBooleanCombineMixedNAryUnionFoldOrderRobustToTouchingOnlyFirstPair
+// above - see that test's own doc comment for the full rationale. Same
+// fixture, same previously-throwing order ({c, a, b}, c/a touching only at
+// x=2), same fix (`BooleanCombinePlanarNAry`'s `fold_union` now goes
+// through the identical `FoldViaUnionRobust` helper, boolean.cpp).
+void TestBooleanCombinePlanarNAryUnionFoldOrderRobustToTouchingOnlyFirstPair() {
+  using dino8::kernel::BooleanCombinePlanarNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 0, 0, 3, 2, 2);
+  const Brep c = Brep::Box(2, 0, 0, 4, 2, 2);
+
+  const Brep touching_first = BooleanCombinePlanarNAry({c, a, b}, {}, BooleanOp::Union);
+  Check(Within(NAryTestVolume(touching_first), 16.0, 1e-9),
+        "BooleanCombinePlanarNAry's fold order {c, a, b} (c/a touch only, at x=2) no longer throws and reaches "
+        "the identical 4x2x2 slab volume (16) every other fold order of the same three boxes already gets");
+  Check(touching_first.raw().IsValid(), "the result of folding the touching-pair-first order is a valid ON_Brep");
+}
+
 void TestBooleanCombinePlanarNAryDifferenceSubtractsEveryToolInSecondGroup() {
   using dino8::kernel::BooleanCombinePlanar;
   using dino8::kernel::BooleanCombinePlanarNAry;
@@ -49292,6 +49829,31 @@ void TestBooleanCombinePlanarNAryNegativeControls() {
     Check(Within(result.Volume(), box.Volume(), 1e-9),
           "a single-element first_group with an empty second_group and op=Union returns that operand unchanged "
           "(the trivial N=1 fold)");
+  }
+  {
+    // FoldViaUnionRobust (boolean.cpp) defers a throwing pairwise candidate
+    // and retries a different one - but with only TWO operands in the
+    // group and nothing else to try, a pair that genuinely only touches
+    // along a coincident face still has no rescuing third operand to wait
+    // for, so this must still throw, not silently succeed or hang. `a`/`c`
+    // here are the exact two boxes from
+    // TestBooleanCombinePlanarNAryUnionFoldOrderRobustToTouchingOnlyFirstPair's
+    // own three-box fixture that only touch at x=2 - `b`, the box that
+    // rescues that order THERE, is deliberately left out of first_group
+    // here.
+    const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+    const Brep c = Brep::Box(2, 0, 0, 4, 2, 2);
+    bool threw = false;
+    try {
+      BooleanCombinePlanarNAry({a, c}, {}, BooleanOp::Union);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw,
+          "a two-element first_group whose only two operands merely touch along a coincident face (no third "
+          "operand to defer to) still throws the genuine non-manifold reassembly refusal - FoldViaUnionRobust's "
+          "own retry does not paper over an input that is genuinely unresolvable in every order, nor does it "
+          "hang trying");
   }
 }
 
@@ -71744,6 +72306,7 @@ int main() {
   TestFindSurfaceTangentContactsSphereOnPlane();
   TestIntersectSurfacesOverlapDetectsCoincidentRegion();
   TestIntersectSurfacesOverlapBisectionTightensRegionBoundary();
+  TestIntersectSurfacesReturnsBoundaryCurveForCoincidentRegion();
   TestIntersectPlaneSphereClosedForm();
   TestIntersectPlaneCylinderClosedForm();
   TestIntersectCylinderCylinderParallelClosedForm();
@@ -71842,6 +72405,9 @@ int main() {
   TestSurfaceTessellateGridAdaptiveByAngle();
   TestSurfaceMeasureGridTessellationDeviation();
   TestSurfaceTessellateGridCertifiedAdaptive();
+  TestSurfaceMeasureMeshTessellationDeviation();
+  TestSurfaceTessellateGridClippedExactCertifiedAdaptive();
+  TestSurfaceTessellateGridNonUniformCertifiedAdaptive();
   TestBrepTessellateAdaptive();
   TestBrepTessellateAdaptiveByAngle();
   TestBrepTessellateNonUniformAdaptive();
@@ -71979,6 +72545,8 @@ int main() {
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestSubDToNurbsPatchesExactOnRegularFlatGrid();
+  TestSubDToNurbsPatchesIrregularCornersMatchKnownLimitPoint();
+  TestSubDToNurbsPatchesIrregularCornerFallsBackOnSemiSharpEdge();
   TestSubDLimitPointsExactCubeAndFlatGrid();
   TestSubDOffsetCubeMovesEachCornerAlongItsOwnExactBodyDiagonalLimitNormal();
   TestSubDOffsetZeroDistanceLeavesEveryPositionUnchanged();
@@ -72395,11 +72963,13 @@ int main() {
   TestBooleanCombineMixedUnsupportedGeometryRefusalsAreTyped();
   TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion();
   TestBooleanCombineMixedNAryUnionFoldOrderIndependence();
+  TestBooleanCombineMixedNAryUnionFoldOrderRobustToTouchingOnlyFirstPair();
   TestBooleanCombineMixedNAryDifferenceSubtractsEveryToolInSecondGroup();
   TestBooleanCombineMixedNAryIntersectionUnionsEachSideBeforeCombining();
   TestBooleanCombineMixedNAryNegativeControls();
   TestBooleanCombinePlanarNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion();
   TestBooleanCombinePlanarNAryUnionFoldOrderIndependence();
+  TestBooleanCombinePlanarNAryUnionFoldOrderRobustToTouchingOnlyFirstPair();
   TestBooleanCombinePlanarNAryDifferenceSubtractsEveryToolInSecondGroup();
   TestBooleanCombinePlanarNAryIntersectionUnionsEachSideBeforeCombining();
   TestBooleanCombinePlanarNAryNegativeControls();
@@ -72413,7 +72983,7 @@ int main() {
   TestPolygonBooleanPlanarRefusesSelfIntersectingOperand();
   TestPolygonBooleanPlanarNAryUnionThreeOverlappingSquaresMatchesInclusionExclusion();
   TestPolygonBooleanPlanarNAryUnionFoldOrderIndependence();
-  TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairThrows();
+  TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairNowSucceeds();
   TestPolygonBooleanPlanarNAryDifferenceMatchesHandChainedPairwise();
   TestPolygonBooleanPlanarNAryIntersectionUnionsEachSideIndependently();
   TestPolygonBooleanPlanarNAryNegativeControls();

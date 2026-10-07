@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cmath>
+#include <vector>
 #include "dino8/kernel/surface.h"
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/mesh.h"
@@ -9,113 +10,132 @@ int main() {
   ON::Begin();
   using namespace dino8::kernel;
 
-  // A unit-radius full sphere: two genuine singular sides (poles), where
-  // ON_Surface::IsSingular collapses an entire row of the NURBS grid to a
-  // single point - does SuggestedDivisions()/SuggestedParameterValues()'s
-  // isocurve-sampling-based curvature estimate actually resolve the real
-  // facet deviation near a pole, where the OTHER direction's isocurve
-  // (a circle of latitude) shrinks toward zero radius and its curvature
-  // (1/radius) blows up?
+  // 1) Flat surface: MeasureMeshTessellationDeviation should be ~0.
+  {
+    const std::vector<Point3d> flat_grid = {
+        Point3d(0, 0, 0), Point3d(0, 10, 0), Point3d(10, 0, 0), Point3d(10, 10, 0)};
+    NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1);
+    Mesh flat_mesh = flat.TessellateGrid(3, 3);
+    const double dev = flat.MeasureMeshTessellationDeviation(flat_mesh);
+    std::printf("[1] flat mesh deviation = %g (expect ~0)\n", dev);
+  }
+
+  // 2) Cylinder wall cross-check: grid-based vs mesh-based on same mesh.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  cylinder.GetNurbForm(cylinder_surface);
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  {
+    Mesh grid_mesh = wall.TessellateGrid(4, 1);
+    const double grid_based = wall.MeasureGridTessellationDeviation(4, 1);
+    const double mesh_based = wall.MeasureMeshTessellationDeviation(grid_mesh);
+    std::printf("[2] grid_based=%g mesh_based=%g (mesh_based should be <= grid_based, close)\n",
+                grid_based, mesh_based);
+  }
+
+  // 3) Trimmed curved wedge: certified exact-clip path.
+  {
+    const auto du = wall.Domain(0);
+    const auto dv = wall.Domain(1);
+    const double u0 = du.min + 0.25 * (du.max - du.min);
+    const double u1 = du.min + 0.75 * (du.max - du.min);
+    const double v0 = dv.min + 0.1 * (dv.max - dv.min);
+    const double v1 = dv.min + 0.9 * (dv.max - dv.min);
+    const std::vector<Point2d> trim = {Point2d(u0, v0), Point2d(u1, v0), Point2d(u1, v1),
+                                        Point2d(u0, v1)};
+    for (double tol : {0.1, 0.01, 0.001}) {
+      try {
+        double achieved = -1.0;
+        Mesh m = wall.TessellateGridClippedExactCertifiedAdaptive(tol, trim, 8, &achieved);
+        std::printf("[3] tol=%g faces=%d achieved=%g (<=tol? %d)\n", tol, m.FaceCount(), achieved,
+                    achieved <= tol);
+      } catch (const std::exception& e) {
+        std::printf("[3] tol=%g threw: %s\n", tol, e.what());
+      }
+    }
+  }
+
+  // 4) Sphere (singular poles) via general non-uniform certified path, untrimmed.
   const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 1.0);
   ON_NurbsSurface sphere_surface;
-  const int rc = sphere.GetNurbForm(sphere_surface);
-  std::printf("GetNurbForm rc=%d\n", rc);
+  sphere.GetNurbForm(sphere_surface);
   NurbsSurface s;
   s.raw() = sphere_surface;
-
-  const auto du = s.Domain(0);
-  const auto dv = s.Domain(1);
-  std::printf("u domain: [%f, %f]\n", du.min, du.max);
-  std::printf("v domain: [%f, %f]\n", dv.min, dv.max);
-  std::printf("IsSingular(side 0, v=min): %d\n", s.raw().IsSingular(0));
-  std::printf("IsSingular(side 1, u=max): %d\n", s.raw().IsSingular(1));
-  std::printf("IsSingular(side 2, v=max): %d\n", s.raw().IsSingular(2));
-  std::printf("IsSingular(side 3, u=min): %d\n", s.raw().IsSingular(3));
-
-  for (double chord_tolerance : {0.1, 0.01, 0.001}) {
-    for (int samples : {5, 10, 20, 40}) {
-      const auto divs = s.SuggestedDivisions(chord_tolerance, samples);
-      const double measured = s.MeasureGridTessellationDeviation(divs.u, divs.v);
-      std::printf("tol=%g  isocurve_samples=%d  SuggestedDivisions u=%d v=%d  measured=%g  ratio=%.3f\n",
-                  chord_tolerance, samples, divs.u, divs.v, measured, measured / chord_tolerance);
-    }
-  }
-
-  // Isolate which direction's UNIFORM-parameter-spacing grid dominates
-  // the excess deviation: hold u_divisions artificially high (so U can't
-  // be the bottleneck) and vary only v_divisions.
-  for (double chord_tolerance : {0.01}) {
-    const auto divs = s.SuggestedDivisions(chord_tolerance);
-    for (int test_u : {divs.u, 400}) {
-      const double measured = s.MeasureGridTessellationDeviation(test_u, divs.v);
-      std::printf("tol=%g  u_divisions=%d (v fixed at suggested %d)  measured=%g  ratio=%.3f\n",
-                  chord_tolerance, test_u, divs.v, measured, measured / chord_tolerance);
-    }
-    for (int test_v : {divs.v, 200}) {
-      const double measured = s.MeasureGridTessellationDeviation(divs.u, test_v);
-      std::printf("tol=%g  v_divisions=%d (u fixed at suggested %d)  measured=%g  ratio=%.3f\n",
-                  chord_tolerance, test_v, divs.u, measured, measured / chord_tolerance);
-    }
-  }
-
-  // Does the REAL non-uniform SuggestedParameterValues(1, tol) (genuine
-  // per-region adaptivity, via recursive 3D midpoint-deviation bisection -
-  // not assuming uniform parameter speed) actually bound deviation near
-  // the poles the way the uniform SuggestedDivisions()/TessellateGrid()
-  // path above apparently does not?
-  for (double chord_tolerance : {0.1, 0.01, 0.001}) {
-    const auto v_values = s.SuggestedParameterValues(1, chord_tolerance);
-    double worst = 0.0;
-    double worst_v0 = 0, worst_v1 = 0;
-    const int u_probe_samples = 40;
-    for (size_t vi = 0; vi + 1 < v_values.size(); ++vi) {
-      const double v0 = v_values[vi], v1 = v_values[vi + 1];
-      const double vm = 0.5 * (v0 + v1);
-      for (int ui = 0; ui <= u_probe_samples; ++ui) {
-        const double u = du.min + (du.max - du.min) * static_cast<double>(ui) / u_probe_samples;
-        const Point3d p0 = s.PointAt(u, v0);
-        const Point3d p1 = s.PointAt(u, v1);
-        const Point3d pm_true = s.PointAt(u, vm);
-        const Point3d chord_mid((p0.x + p1.x) * 0.5, (p0.y + p1.y) * 0.5, (p0.z + p1.z) * 0.5);
-        const double dev = (pm_true - chord_mid).Length();
-        if (dev > worst) { worst = dev; worst_v0 = v0; worst_v1 = v1; }
-      }
-    }
-    std::printf("tol=%g  SuggestedParameterValues(1) count=%zu  worst V-direction midpoint "
-                "deviation=%g  ratio=%.3f  (worst segment v=[%g,%g])\n",
-                chord_tolerance, v_values.size(), worst, worst / chord_tolerance, worst_v0, worst_v1);
-  }
-
-  // Direct geometric check of the hypothesis: does the U-direction
-  // isocurve (circle of latitude) shrink toward zero radius approaching
-  // each pole, meaning its curvature (1/radius) grows without bound even
-  // though SuggestedDivisions()'s own isocurve_samples are spaced evenly
-  // across the FULL v domain and may land nowhere near the pole where
-  // that spike is sharpest?
   {
-    const double v_min = dv.min, v_max = dv.max;
-    for (double frac : {0.0, 0.001, 0.01, 0.05, 0.1, 0.2, 0.5}) {
-      const double v = v_min + frac * (v_max - v_min);
-      ON_Curve* iso = s.raw().IsoCurve(0, v);
-      double radius = -1.0;
-      if (iso != nullptr) {
-        const ON_3dPoint p0 = iso->PointAt(iso->Domain().Mid());
-        const ON_3dPoint center(0, 0, p0.z);
-        radius = p0.DistanceTo(center);
-        delete iso;
+    for (double tol : {0.1, 0.01, 0.001}) {
+      try {
+        double achieved = -1.0;
+        Mesh m = s.TessellateGridNonUniformCertifiedAdaptive(tol, nullptr, nullptr, 8, &achieved);
+        std::printf("[4] sphere untrimmed tol=%g faces=%d achieved=%g (<=tol? %d)\n", tol,
+                    m.FaceCount(), achieved, achieved <= tol);
+      } catch (const std::exception& e) {
+        std::printf("[4] sphere untrimmed tol=%g threw: %s\n", tol, e.what());
       }
-      std::printf("v-frac-from-pole=%.4f  latitude radius=%g\n", frac, radius);
     }
   }
 
-  for (double chord_tolerance : {0.1, 0.01, 0.001}) {
+  // 5) Sphere with a hole: general non-uniform certified path.
+  {
+    const auto du = s.Domain(0);
+    const auto dv = s.Domain(1);
+    const std::vector<Point2d> outer = {Point2d(du.min, dv.min), Point2d(du.max, dv.min),
+                                         Point2d(du.max, dv.max), Point2d(du.min, dv.max)};
+    const double hu0 = du.min + 0.4 * (du.max - du.min);
+    const double hu1 = du.min + 0.6 * (du.max - du.min);
+    const double hv0 = dv.min + 0.45 * (dv.max - dv.min);
+    const double hv1 = dv.min + 0.55 * (dv.max - dv.min);
+    const std::vector<std::vector<Point2d>> holes = {
+        {Point2d(hu0, hv0), Point2d(hu1, hv0), Point2d(hu1, hv1), Point2d(hu0, hv1)}};
+    for (double tol : {0.1, 0.01}) {
+      try {
+        double achieved = -1.0;
+        Mesh m = s.TessellateGridNonUniformCertifiedAdaptive(tol, &outer, &holes, 8, &achieved);
+        std::printf("[5] sphere holed tol=%g faces=%d achieved=%g (<=tol? %d)\n", tol,
+                    m.FaceCount(), achieved, achieved <= tol);
+      } catch (const std::exception& e) {
+        std::printf("[5] sphere holed tol=%g threw: %s\n", tol, e.what());
+      }
+    }
+  }
+
+  // 6) Brep-level: TrimmedPlanarFace wedge should now report certified=true.
+  {
+    const auto du = wall.Domain(0);
+    const auto dv = wall.Domain(1);
+    const double u0 = du.min + 0.25 * (du.max - du.min);
+    const double u1 = du.min + 0.75 * (du.max - du.min);
+    const double v0 = dv.min + 0.1 * (dv.max - dv.min);
+    const double v1 = dv.min + 0.9 * (dv.max - dv.min);
+    const std::vector<Point2d> trim = {Point2d(u0, v0), Point2d(u1, v0), Point2d(u1, v1),
+                                        Point2d(u0, v1)};
+    Brep trimmed_wall = Brep::TrimmedPlanarFace(wall, trim, /*exact_clip=*/true);
+    std::vector<bool> certified;
     try {
-      double achieved = 0.0;
-      const Mesh m = s.TessellateGridCertifiedAdaptive(chord_tolerance, 8, &achieved);
-      std::printf("tol=%g  TessellateGridCertifiedAdaptive OK, faces=%d achieved=%g ratio=%.3f\n",
-                  chord_tolerance, m.FaceCount(), achieved, achieved / chord_tolerance);
+      auto faces = trimmed_wall.TessellateCertifiedAdaptive(0.01, 8, &certified);
+      std::printf("[6] faces=%zu certified.size=%zu certified[0]=%d facecount[0]=%d\n",
+                  faces.size(), certified.size(), certified.empty() ? -1 : (int)certified[0],
+                  faces.empty() ? -1 : faces[0].FaceCount());
     } catch (const std::exception& e) {
-      std::printf("tol=%g  TessellateGridCertifiedAdaptive threw: %s\n", chord_tolerance, e.what());
+      std::printf("[6] threw: %s\n", e.what());
+    }
+  }
+
+  // 7) Brep::Sphere() (whole-domain, untrimmed, but goes through the
+  // normal fg.outer.empty() -> TessellateGridCertifiedAdaptive branch) and
+  // Brep::Torus() exercised through TessellateCertifiedAdaptive for a
+  // broader sanity check across existing primitives.
+  {
+    Brep sph = Brep::Sphere(Point3d(0, 0, 0), 2.0);
+    std::vector<bool> certified;
+    try {
+      auto faces = sph.TessellateCertifiedAdaptive(0.05, 8, &certified);
+      bool all_true = true;
+      for (bool c : certified) all_true = all_true && c;
+      std::printf("[7] Brep::Sphere faces=%zu all_certified=%d\n", faces.size(), all_true);
+    } catch (const std::exception& e) {
+      std::printf("[7] Brep::Sphere threw: %s\n", e.what());
     }
   }
 

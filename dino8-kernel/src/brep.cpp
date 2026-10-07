@@ -3315,12 +3315,14 @@ std::vector<Mesh> Brep::TessellateCertifiedAdaptive(double chord_tolerance, int 
       result.push_back(wrapper.TessellateGridCertifiedAdaptive(chord_tolerance, max_refinements));
       if (out_certified) out_certified->push_back(true);
     } else if (fg.exact_clip) {
-      result.push_back(wrapper.TessellateGridClippedExactAdaptive(chord_tolerance, fg.outer));
-      if (out_certified) out_certified->push_back(false);
+      result.push_back(wrapper.TessellateGridClippedExactCertifiedAdaptive(chord_tolerance,
+                                                                             fg.outer, max_refinements));
+      if (out_certified) out_certified->push_back(true);
     } else {
       const std::vector<std::vector<Point2d>>* holes = fg.holes.empty() ? nullptr : &fg.holes;
-      result.push_back(wrapper.TessellateGridNonUniformAdaptive(chord_tolerance, &fg.outer, holes));
-      if (out_certified) out_certified->push_back(false);
+      result.push_back(wrapper.TessellateGridNonUniformCertifiedAdaptive(chord_tolerance, &fg.outer,
+                                                                           holes, max_refinements));
+      if (out_certified) out_certified->push_back(true);
     }
     if (brep_.m_F[i].m_bRev) result.back() = result.back().FlipNormals();
   }
