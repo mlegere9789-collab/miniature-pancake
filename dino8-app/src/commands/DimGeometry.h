@@ -446,4 +446,31 @@ inline bool BuildOrdinateDimensionGeometry(Point3d base, Point3d feature, char d
   return true;
 }
 
+// Builds the two crossing-line curves + tag map for one Centermark from its
+// resolved center/plane/size - identical math to what the live Centermark
+// command bakes (cmd_annotate2.cpp's own CentermarkCommand via annotate_
+// common.h's BuildCentermarkGroup, which now just calls this and adds its
+// own associativity/size-mode tag on top), extracted so a real, externally-
+// authored `ON_Centermark` (io/File3dm.cpp) can share it exactly - same
+// "no CommandContext" story as the other Build*Geometry functions above.
+// No text/label (a Centermark carries none, live or imported). Returns
+// false (nothing built) if size <= 0, the same contract
+// BuildCentermarkGroup's own pre-existing caller already checks.
+inline bool BuildCentermarkGeometry(Point3d center, const ON_Plane& pl, double size,
+                                    std::vector<kernel::NurbsCurve>& curves,
+                                    std::map<std::string, std::string>& tags) {
+  using namespace dim_geom_detail;
+  if (size <= 0) return false;
+  curves.clear();
+  curves.push_back(MakePolyline({center - pl.xaxis * size, center + pl.xaxis * size}));
+  curves.push_back(MakePolyline({center - pl.yaxis * size, center + pl.yaxis * size}));
+  tags.clear();
+  tags["CenterCenter"] = DimPointTag(center);
+  tags["CenterPlaneOrigin"] = DimPointTag(pl.origin);
+  tags["CenterPlaneX"] = DimPointTag(Point3d(pl.xaxis));
+  tags["CenterPlaneY"] = DimPointTag(Point3d(pl.yaxis));
+  tags["CenterSize"] = FormatNumber(size);
+  return true;
+}
+
 }  // namespace dino8::app

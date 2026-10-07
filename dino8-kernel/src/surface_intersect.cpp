@@ -1325,6 +1325,171 @@ bool TrimCrossing(const IntersectionCurve& c, size_t in_idx, size_t out_idx, con
   return found;
 }
 
+// Boundary curve(s) of the coincident/overlap region(s) between `a` and `b` -
+// PARITY_MAP.md's own "SSX coincident / overlapping surface regions" bullet
+// named this directly as the one remaining gap IntersectSurfacesOverlap()
+// (added separately, see its own doc comment) did NOT close: "IntersectSurfaces
+// still returns nothing for coincident surfaces." Called from IntersectSurfaces()
+// itself, below, ONLY when its own mesh-seeded triangle-crossing search finds
+// literally no crossing segment at all (`segs.empty()` at that call site) - the
+// same structural reason IntersectSurfacesOverlap() exists instead of reusing
+// IntersectCurveSurfaceOverlap()'s own one-dimension-down logic: two surfaces
+// that coincide over a real patch produce no clean triangle-pair CROSSING there
+// (the triangles lie in, not athwart, each other), so the ordinary chainer has
+// nothing to chain and would otherwise just report empty, silently discarding
+// the coincidence entirely rather than only declining to describe it as a
+// crossing curve (which it genuinely is not).
+//
+// Delegates the actual coincidence DETECTION to IntersectSurfacesOverlap() -
+// this file's own existing answer to "where, in a's own (u, v) domain, does a
+// lie on b", bisection-tightened to each region's own true (u0,v0)-(u1,v1)
+// extents - then turns each reported region into an actual IntersectionCurve:
+// the region's own rectangle is walked around its four edges in a's parameter
+// space (samples per edge apportioned by that edge's own 3D length, so a long
+// edge is not under-sampled relative to a short one), each sampled point
+// closest-point-projected onto `b` (row-continuity-seeded along the walk from
+// the previous sample, globally re-seeded on a poor projection - the identical
+// discipline IntersectSurfacesOverlap()'s own per-sample projection already
+// uses), and the whole loop fit through InterpolateCubic() exactly the way
+// every other IntersectionCurve in this file is built (see fit() inside
+// FinishCurve() above).
+//
+// Honesty notes, read before trusting the result:
+//  - This is the overlap REGION's own rectangular (u, v) boundary in `a`'s
+//    domain, not an exact boundary polygon of the coincident patch itself -
+//    the same "not an exact boundary polygon (a genuinely concave or
+//    multi-lobe coincident patch is still only ever reported as its enclosing
+//    rectangle)" scope IntersectSurfacesOverlap() already discloses,
+//    inherited here unchanged. A caller needing the exact (u0,v0)/(u1,v1)
+//    extents rather than a fitted 3D curve through them should call
+//    IntersectSurfacesOverlap() directly instead.
+//  - The fitted curve's own four corners are literal SAMPLE points (an
+//    InterpolateCubic() curve always passes through every point it is given),
+//    but the cubic segments immediately either side of a corner are not
+//    themselves straight/sharp - the same ordinary consequence of fitting ANY
+//    polyline with corners through one smooth cubic spline this file already
+//    accepts everywhere else (FinishCurve()'s own fit() does the same for an
+//    ordinary crossing curve, corners and all).
+//  - A degenerate (zero-width or zero-height) region report, or one whose
+//    closest-point walk cannot gather at least 4 distinct points, is silently
+//    skipped rather than fit into a bogus curve.
+//  - No seam-unwrapping is attempted for a region whose rectangle spans a
+//    whole closed parameter direction of `a` (unlike PullbackCurveToSurface()'s
+//    own seam-aware fit) - a coincident patch that genuinely wraps all the way
+//    around a closed direction is walked exactly as any other rectangle would
+//    be, not specially detected as a full wraparound.
+//  - A candidate region's own 3D bounding-box diagonal must be at least
+//    opt.mesh_tolerance (checked below) before it is trusted as a genuine
+//    coincident AREA - a real, confirmed guard, not a defensive guess: a
+//    surface's own coordinate POLE (an entire row of (u, v) samples
+//    collapsing onto nearly the same 3D point) can make
+//    IntersectSurfacesOverlap() report a small but genuine multi-cell
+//    "region" there even for an ordinary tangent TOUCH (e.g. a sphere
+//    resting on a plane at its own pole), not a real area - exactly
+//    IntersectSurfacesOverlap()'s own existing "a single isolated cell is a
+//    transient touch, not an overlap" principle, extended here to a pole's
+//    multi-cell version of the same trap (confirmed directly: without this
+//    guard, a sphere-resting-on-a-plane fixture that IntersectSurfaces() has
+//    always correctly reported as empty started reporting a spurious
+//    pole-sized "coincident region" instead).
+//  - This function is only ever reached from IntersectSurfaces() when
+//    `segs.empty()` there - and that is, in practice, essentially only ever
+//    true for FLAT/coplanar operands (of any two domains). Two curved
+//    surfaces' independent tessellations are not bit-for-bit coincident at
+//    shared points the way two flat ones always are, even when their own
+//    (u, v) domains and tessellation divisions match exactly (adjacent
+//    facets across one curved mesh's own hinge lines are only approximately
+//    coplanar with each other, unlike a flat mesh's), so a curved coincident
+//    pair generally produces real, if tiny, crossing-search noise instead
+//    of a clean empty result and never reaches this function at all - see
+//    IntersectSurfaces()'s own doc comment (surface_intersect.h) for the two
+//    confirmed fixtures (a sub-rectangle AND a full-domain match) this was
+//    actually measured on, not merely asserted.
+std::vector<IntersectionCurve> CoincidentOverlapBoundaryCurves(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
+  std::vector<IntersectionCurve> out;
+  for (const SurfaceOverlapRegion& region : IntersectSurfacesOverlap(a, b, opt)) {
+    const double u0 = region.u0, u1 = region.u1, v0 = region.v0, v1 = region.v1;
+    if (!(u1 > u0) || !(v1 > v0)) continue;  // a degenerate (zero-area) report - nothing to walk
+
+    struct Edge { double u0, v0, u1, v1; };
+    const Edge edges[4] = {{u0, v0, u1, v0}, {u1, v0, u1, v1}, {u1, v1, u0, v1}, {u0, v1, u0, v0}};
+    double elens[4];
+    for (int e = 0; e < 4; ++e) elens[e] = a.PointAt(edges[e].u0, edges[e].v0).DistanceTo(a.PointAt(edges[e].u1, edges[e].v1));
+    const double sum_len = std::max(elens[0] + elens[1] + elens[2] + elens[3], 1e-12);
+    const int total = static_cast<int>(Clamp(std::ceil(sum_len / std::max(opt.mesh_tolerance, 1e-6)), 16.0, 192.0));
+
+    std::vector<ON_2dPoint> uv;
+    for (int e = 0; e < 4; ++e) {
+      const int n_e = std::max(3, static_cast<int>(std::round(total * elens[e] / sum_len)));
+      for (int i = 0; i < n_e; ++i) {  // the edge's own last sample is the next edge's first - every edge stops one short, the closed loop supplies the wrap
+        const double t = static_cast<double>(i) / n_e;
+        uv.emplace_back(edges[e].u0 + t * (edges[e].u1 - edges[e].u0), edges[e].v0 + t * (edges[e].v1 - edges[e].v0));
+      }
+    }
+    if (uv.size() < 4) continue;
+
+    IntersectionCurve ic;
+    ic.closed = true;
+    double max_err = 0;
+    double seed_u = 0, seed_v = 0;
+    for (size_t i = 0; i < uv.size(); ++i) {
+      const Point3d p = a.PointAt(uv[i].x, uv[i].y);
+      double bu = seed_u, bv = seed_v;
+      bool ok = i == 0 ? SurfaceClosestPointGlobal(b, p, bu, bv) : SurfaceClosestPoint(b, p, bu, bv);
+      double err = ok ? b.PointAt(bu, bv).DistanceTo(p) : std::numeric_limits<double>::max();
+      if (i != 0 && (!ok || err > opt.mesh_tolerance * 4)) {
+        double gu = bu, gv = bv;
+        const bool gok = SurfaceClosestPointGlobal(b, p, gu, gv);
+        const double gerr = gok ? b.PointAt(gu, gv).DistanceTo(p) : std::numeric_limits<double>::max();
+        if (gok && gerr < err) { bu = gu; bv = gv; err = gerr; ok = true; }
+      }
+      if (!ok) continue;
+      seed_u = bu; seed_v = bv;
+      max_err = std::max(max_err, err);
+      if (!ic.points.empty() && ic.points.back().DistanceTo(p) <= opt.tolerance * 0.1) continue;  // a near-duplicate edge sample
+      ic.points.push_back(p);
+      ic.uv_a.push_back(uv[i]);
+      ic.uv_b.emplace_back(bu, bv);
+    }
+    if (ic.points.size() < 4) continue;
+    // A genuine coincident AREA must have a non-trivial physical size at the
+    // resolution opt.mesh_tolerance itself describes - otherwise this is
+    // almost certainly a parametrization artifact (most commonly a surface
+    // pole, where an entire row of (u, v) grid samples collapses onto
+    // nearly the same 3D point, so IntersectSurfacesOverlap()'s own
+    // connected-run detector sees a wide multi-cell "region" there even
+    // though the true shape is a single isolated touch point - exactly
+    // PARITY_MAP.md's own still-open "SSX across periodic seams and at
+    // singular points (poles)" gap, not the coincident-region gap this
+    // function closes). A real, confirmed regression found while building
+    // this evidence: a sphere resting tangent on a plane, sampled at a fine
+    // opt.mesh_tolerance, reported a small but genuine multi-cell region
+    // right at the sphere's own pole (where the longitude direction is
+    // degenerate) - this check keeps that case (and PullbackCurveToSurface()-
+    // adjacent pole artifacts in general) from being misreported as a
+    // coincident AREA, leaving it to FindSurfaceTangentContacts() instead,
+    // exactly as IntersectSurfacesOverlap()'s own doc comment already
+    // intends for a single isolated cell (this is that same intent, applied
+    // to a pole's own multi-cell degeneracy too).
+    ON_BoundingBox region_bbox;
+    for (const Point3d& p : ic.points) region_bbox.Set(p, true);
+    if (!region_bbox.IsValid() || region_bbox.Diagonal().Length() < std::max(opt.mesh_tolerance, 1e-9)) continue;
+    ic.max_error = max_err;
+    std::vector<ON_3dPoint> p3, pa3, pb3;
+    for (size_t i = 0; i < ic.points.size(); ++i) {
+      p3.push_back(ic.points[i]);
+      pa3.emplace_back(ic.uv_a[i].x, ic.uv_a[i].y, 0);
+      pb3.emplace_back(ic.uv_b[i].x, ic.uv_b[i].y, 0);
+    }
+    ic.params = ChordParams(p3, true);
+    ic.curve = InterpolateCubic(p3, ic.params, true, 3);
+    ic.pcurve_a = InterpolateCubic(pa3, ic.params, true, 2);
+    ic.pcurve_b = InterpolateCubic(pb3, ic.params, true, 2);
+    out.push_back(std::move(ic));
+  }
+  return out;
+}
+
 }  // namespace
 
 std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
@@ -1335,7 +1500,17 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
   const double diag = both.IsValid() ? both.Diagonal().Length() : 1;
   const double eps = std::max(1e-9 * diag, 1e-12);
   const std::vector<Seg> segs = MeshSegments(ma, mb, eps);
-  if (segs.empty()) return out;
+  // A completely empty crossing search is genuinely ambiguous on its own: two
+  // surfaces that never meet at all, and two surfaces that COINCIDE over a
+  // real patch (which produces no clean triangle-pair crossing either - the
+  // triangles lie in, not athwart, each other), both land here with
+  // `segs.empty()`. CoincidentOverlapBoundaryCurves() resolves that ambiguity
+  // via IntersectSurfacesOverlap() (empty back out for a genuine non-meet,
+  // real boundary curves for a genuine coincident region) rather than this
+  // function continuing to report every coincident pair as indistinguishable
+  // from a non-meet, the exact gap PARITY_MAP.md's own "SSX coincident /
+  // overlapping surface regions" bullet named.
+  if (segs.empty()) return CoincidentOverlapBoundaryCurves(a, b, opt);
   std::vector<SeedPolyline> chains = ChainSegments(segs, std::max(eps * 100, 1e-7 * diag));
   for (const SeedPolyline& pl : chains) {
     IntersectionCurve ic;

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <exception>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -983,6 +984,55 @@ void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
           "not have yet; see Brep::Compound's own doc comment in brep.h");
 }
 
+// Folds `group` into one solid via repeated pairwise Union calls through
+// `union_fn`, but robust to fold ORDER - closing the specific limitation
+// PARITY_MAP.md's own "Multi-body / multi-tool booleans" bullet's
+// "Twenty-fourth note" disclosed and left unfixed ("a smarter overlap-aware
+// fold order... would be a substantially larger change than this pass's
+// own additive scope"). A naive left-to-right fold (`acc = union(acc,
+// group[i])` in order) throws the pre-existing "an edge is shared by 3 or
+// more faces" non-manifold reassembly refusal whenever its FIRST step
+// happens to pair two operands that only TOUCH along a coincident,
+// zero-volume face - even though a different fold order, absorbing a
+// genuinely-overlapping operand first, would reach the exact same final
+// answer cleanly (Union is associative/commutative regardless of pairing
+// order - the three-box chain this bug was found on is already proven
+// fold-order-INDEPENDENT for every order that doesn't hit this).
+//
+// Each round tries every operand still in `remaining` against the current
+// accumulator in turn (front first); one that throws is deferred - moved
+// to the BACK of the queue, not discarded - and the next candidate is
+// tried instead, so an operand that only touches the ACCUMULATOR today
+// gets another chance once more geometry has folded in. Only when an
+// entire round finds no candidate anywhere in `remaining` that can be
+// folded in does this propagate the first exception seen that round - the
+// same genuine refusal a truly degenerate input (not merely an unlucky
+// starting order) would still throw, so no existing negative-control test
+// for a genuinely bad operand can be silently papered over by this.
+template <typename UnionFn>
+Brep FoldViaUnionRobust(const std::vector<Brep>& group, UnionFn union_fn) {
+  Brep acc = group.front();
+  std::vector<Brep> remaining(group.begin() + 1, group.end());
+  while (!remaining.empty()) {
+    bool progressed = false;
+    std::exception_ptr first_failure;
+    const size_t round_size = remaining.size();
+    for (size_t attempt = 0; attempt < round_size; ++attempt) {
+      try {
+        acc = union_fn(acc, remaining.front());
+        remaining.erase(remaining.begin());
+        progressed = true;
+        break;
+      } catch (const std::exception&) {
+        if (!first_failure) first_failure = std::current_exception();
+        std::rotate(remaining.begin(), remaining.begin() + 1, remaining.end());
+      }
+    }
+    if (!progressed) std::rethrow_exception(first_failure);
+  }
+  return acc;
+}
+
 }  // namespace
 
 Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
@@ -1165,15 +1215,14 @@ Brep BooleanCombinePlanarNAry(const std::vector<Brep>& first_group, const std::v
                                  "dino8::kernel::BooleanCombinePlanarNAry: first_group is empty");
   }
 
-  // Same left-to-right Union fold as BooleanCombineMixedNAry, for the
-  // planar engine instead - see that function's own doc comment for the
-  // full rationale.
+  // Same fold-order-robust Union fold as BooleanCombineMixedNAry, for the
+  // planar engine instead - see FoldViaUnionRobust's own doc comment above
+  // for the full rationale (closing the "Multi-body / multi-tool booleans"
+  // bullet's own disclosed fold-order limitation).
   auto fold_union = [tolerance](const std::vector<Brep>& group) {
-    Brep acc = group.front();
-    for (size_t i = 1; i < group.size(); ++i) {
-      acc = BooleanCombinePlanar(acc, group[i], BooleanOp::Union, tolerance);
-    }
-    return acc;
+    return FoldViaUnionRobust(group, [tolerance](const Brep& x, const Brep& y) {
+      return BooleanCombinePlanar(x, y, BooleanOp::Union, tolerance);
+    });
   };
 
   const Brep folded_first = fold_union(first_group);
@@ -8363,13 +8412,15 @@ Brep BooleanCombineMixedNAry(const std::vector<Brep>& first_group, const std::ve
   // is mathematically associative/commutative regardless of pairing order
   // (verified directly by TestBooleanCombineMixedNAryUnionOrderIndependence,
   // which unions the same three boxes in two different orders and checks
-  // the volumes agree).
+  // the volumes agree). Folded via FoldViaUnionRobust (above) rather than a
+  // plain left-to-right loop, so a pairing order that happens to touch two
+  // operands along only a coincident face first no longer throws when a
+  // different pairing would have reached the identical answer cleanly -
+  // see that helper's own doc comment for the full rationale.
   auto fold_union = [tolerance](const std::vector<Brep>& group) {
-    Brep acc = group.front();
-    for (size_t i = 1; i < group.size(); ++i) {
-      acc = BooleanCombineMixed(acc, group[i], BooleanOp::Union, tolerance);
-    }
-    return acc;
+    return FoldViaUnionRobust(group, [tolerance](const Brep& x, const Brep& y) {
+      return BooleanCombineMixed(x, y, BooleanOp::Union, tolerance);
+    });
   };
 
   const Brep folded_first = fold_union(first_group);
