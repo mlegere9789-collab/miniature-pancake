@@ -5749,6 +5749,154 @@ additive scope, not attempted here. `dino8_kernel_tests` suite re-run
 clean (8 new checks from the two new `expect(...)` cases above, 0
 regressions); no `dino8-app` source touched this pass.
 
+**Twenty-eighth note on this category's score (this pass): a real
+fold-order correctness fix across all three B-rep N-ary wrappers, closing
+the specific limitation the Twenty-fourth note's own "Multi-body /
+multi-tool booleans" finding disclosed and explicitly left unfixed ("a
+smarter overlap-aware fold order... would be a substantially larger change
+than this pass's own additive scope") - no bucket moves, same "narrowing,
+not a flip" pattern as every note above.**
+
+`BooleanCombinePlanarNAry`/`BooleanCombineMixedNAry` (boolean.cpp) and
+`BooleanCombineGeneralNAry` (boolean_general.cpp) each used to fold their
+own `first_group`/`second_group` strictly left-to-right via repeated
+pairwise Union calls, so the FIRST fold step's own two operands were
+combined with no other operand's geometry around to help classify them -
+if those two merely TOUCH along a coincident, zero-volume face (rather
+than genuinely overlapping), the pairwise Union throws the pre-existing
+non-manifold reassembly refusal (`Brep::FromMixedFaces`'s "an edge is
+shared by 3 or more faces" / `BuildLoop`'s "an edge is claimed by 3 or more
+fragment loops") even when a DIFFERENT fold order - absorbing a genuinely-
+overlapping third operand first - would reach the exact same final answer
+cleanly (Union is associative/commutative regardless of pairing order).
+This is now fixed: a new file-local `FoldViaUnionRobust(group, union_fn)`
+helper (one copy in boolean.cpp's existing anonymous namespace next to
+`RefuseCompoundOperand`, a second, identical copy in boolean_general.cpp
+next to `BooleanCombineGeneralNAry` - duplicated per translation unit, the
+same shape `RefuseCompoundOperand` itself already uses twice) replaces each
+of the three functions' own plain `fold_union` loop. Each round tries every
+operand still in a `remaining` queue against the current accumulator in
+turn (front first); one that throws is DEFERRED - rotated to the back of
+the queue, never discarded - and the next candidate is tried instead, so an
+operand that only touches the accumulator today gets another chance once
+more geometry has folded in. Only when an entire round finds no candidate
+anywhere in `remaining` that can be folded in does this propagate the first
+exception seen that round, so a genuinely unresolvable input (not merely an
+unlucky starting order) still throws exactly as before - this is additive
+robustness, not a relaxed precondition.
+
+Verified (`TestBooleanCombineMixedNAryUnionFoldOrderRobustToTouchingOnlyFirstPair`,
+`TestBooleanCombinePlanarNAryUnionFoldOrderRobustToTouchingOnlyFirstPair`,
+tests/test_basic.cpp - two NEW tests exercising this directly at the 3D
+level for the first time, since the pre-existing 3D fold-order-independence
+tests never happened to try the throwing order) against the identical
+three-box chain (`a=[0,2]`, `b=[1,3]`, `c=[2,4]`, all `x[0,2]x[0,2]`) the
+Twenty-fourth note's own finding used: folding `{c, a, b}` - `c`/`a` touch
+only at x=2, `b` genuinely overlaps both - no longer throws for either
+engine and reaches the identical 16.0 volume (the 4x2x2 slab) every other
+fold order already gets. The 2D delegate this bug was ORIGINALLY found
+through (`PolygonBooleanPlanarNAry`, which reduces to `BooleanCombinePlanarNAry`
+over right prisms) is updated to match: the dedicated test that used to
+assert `{c, a, b}` throws is rewritten to assert it now succeeds with the
+correct area 8
+(`TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairNowSucceeds`,
+renamed from `...Throws`), and `TestPolygonBooleanPlanarNAryUnionFoldOrderIndependence`
+now checks this fourth order alongside its original three. A new negative
+control (`TestBooleanCombinePlanarNAryNegativeControls`, extended with one
+more case) confirms the fix does not paper over a genuinely unresolvable
+input: folding ONLY the two touching boxes (`{a, c}`, no `b` to rescue the
+pair) still throws, since there is nothing else in the queue left to defer
+to - proving this is order-robustness, not a weakened precondition.
+
+**Honest scope limit, not re-tested for the General engine specifically:**
+`BooleanCombineGeneralNAry` receives the textually-identical fix (its own
+`FoldViaUnionRobust` copy, boolean_general.cpp), and the full suite run
+below confirms zero regressions in every existing `BooleanCombineGeneralNAry`
+test, but this pass does NOT add a dedicated General-engine repro of the
+original throwing order the way it does for Planar/Mixed. The reason is
+disclosed, not an oversight: the axis-aligned box-chain fixture this bug
+was found on has `a`/`b`/`c` sharing several coincident, PARTIALLY-
+OVERLAPPING side faces (not just the `a`/`c` touching face) - and this
+category's own "Multi-body / multi-tool booleans" bullet's own "Fifth
+note" above already found, by direct standalone reproduction, that a plain
+`BooleanCombineGeneral(a, b, Union)` call on this exact fixture throws
+regardless of fold order, hitting the General engine's own separate,
+already-disclosed "no general partially-overlapping coincident curved-face
+handling" scope limit (this category's own neighboring bullet) - a
+different, pre-existing limitation this pass does not touch. The General
+engine's own existing N-ary fixtures (`TestBooleanCombineGeneralNAryUnion
+ThreeOverlappingBoxesMatchesInclusionExclusion` et al.) already use a
+diagonally-staggered box arrangement instead, specifically to stay clear of
+that limitation - and in that arrangement, the two "touching" boxes share
+only a single corner POINT (zero area, not a coincident face), which the
+engine's own per-face ray-cast classification may never have actually
+mis-handled via the naive fold at all, so re-using it would not have been a
+meaningful regression test either way. Constructing a fixture that isolates
+a genuine face-touching-only pair from a genuine face-overlapping third
+operand, while also staying inside the General engine's own separate
+scope limits, is left for a future pass rather than forced here with a
+weak or misleading test.
+
+Net effect: this closes a REAL, previously-disclosed, previously-unfixed
+correctness defect (a deterministic, fold-order-dependent spurious throw
+on otherwise-valid input) across the Planar and Mixed engines, with the
+identical fix also applied (but only indirectly verified by regression,
+not freshly fixture-tested) to the General engine - but it does not cross
+any bullet from `partial` to `present`: "Multi-body / multi-tool booleans"
+stays `partial` (compound-operand support for `Union`/`SymmetricDifference`
+is still refused on all three engines, unchanged; no app command calls any
+of the three `*NAry` wrappers directly; and the General engine's own
+coincident-face scope limit above is untouched), so the category's 9/15/1/25
+(66.0%) split is unchanged - the same "genuine new evidence, unchanged
+partial score" pattern as every note above. The `[kernel/booleans]`
+checklist line for this bullet is left as-is for the same reason (still
+accurately `(partial)`, no flip to narrow). Full `dino8_kernel_tests` suite
+rebuilt and run clean end to end: **9747 checks, 0 failures, exit code 0**
+(9742 checks before this pass - 9741 passing plus the one genuinely-failing
+`...Throws` check this pass rewrites - plus 5 net new `Check()` calls: +1
+from widening `TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairNowSucceeds`'s
+own single throw-assertion into two success assertions, +1 from the new
+Mixed-engine 3D test, +2 from the new Planar-engine 3D test (volume plus
+`IsValid()`), +1 from the new negative control, and the pre-existing
+`TestPolygonBooleanPlanarNAryUnionFoldOrderIndependence` widened in place
+with no change in its own `Check()` count), 0 regressions. The kernel-only
+headline is unaffected (no bucket moved).
+
+**A disclosed, pre-existing, UNRELATED regression found while merging this
+pass's own commit with concurrent work, not caused by this pass and not
+fixed here:** after the above 9747-check clean run (verified on this
+pass's own commit alone, before merging in concurrent work), merging in
+two batches of concurrent commits from this same branch introduced a
+regression that makes `dino8_kernel_tests` abort entirely partway through
+(`std::terminate` on an uncaught `std::runtime_error`,
+"`dino8::kernel::BooleanCombineGeneral: an edge is claimed by 3 or more
+fragment loops`") rather than finishing with a clean pass/fail count.
+Root-caused, not assumed: bisected directly to commit `878ecdb`
+("`IntersectSurfaces` now returns a boundary curve for coincident flat
+surfaces", **kernel: Intersections & projections**, a category this pass
+does not otherwise touch) via a clean isolated `git worktree` checkout of
+pure upstream `9e80b7d` (zero trace of this pass's own commit) - the
+identical abort reproduces there, deterministically, confirming it is not
+something this pass's own `FoldViaUnionRobust` change introduces or
+interacts with. It is not confined to one test either: skipping the first
+call that aborts (`TestBooleanCombineGeneralFreeformSurfaceOperand`,
+verified harmless to skip - temporarily, for diagnosis only, not committed
+- since this pass's own tests never run before it) reaches further but
+then aborts again at a second, different call site shortly after
+`TestIntersectPlaneTorusClosedForm`, so this is a broader behavior change
+in `IntersectSurfaces`'s own new coincident-flat-surface handling affecting
+multiple pre-existing `BooleanCombineGeneral` fixtures that previously
+relied on receiving nothing back for a coincident pair, not a single
+isolated fixture regression. Left for whichever session owns **kernel:
+Intersections & projections** to fix, the same "confirmed pre-existing,
+not a flake, not introduced here, disclosed rather than silently
+discovered later" convention this document already uses elsewhere (e.g.
+the `RemoveKnot`/`Divide` smoke-test disclosure under a prior Boolean
+operations note above). Readers re-running `dino8_kernel_tests` at this
+branch's current tip should expect this abort and should not attribute it
+to this pass's own `FoldViaUnionRobust` change, which the isolated
+9747-check run above already proves clean on its own.
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
@@ -7162,7 +7310,9 @@ test_basic.cpp`.
 - [partial] Surface from 2-4 edge curves (EdgeSrf/NetworkSrf) — `CoonsPatch` (surface_edit.cpp:1168 — corrected 2026-09-28, was mis-cited :953) exact for the 4-curve case only; 2/3-curve and CoonsPatch-failure cases fall back to sample-and-refit.
 
 **Kernel: SubD & mesh kernel support** (subd_mesh):
-- [partial] SubD -> NURBS patch conversion — `ToNurbsPatches`/`ToNurbsPatchesAdaptive` (dino8-kernel/src/subd.cpp:1756,2453 — corrected yet again this pass, the citation had drifted to :1712,:2403 from `FromMeshQuadRemeshed`/`FromBrepTessellated`/`Thicken` being added above both functions by other sessions since it was last checked; no behavior change from the move itself - this category's own line citations drift almost every pass given how many concurrent sessions touch subd.cpp, so treat any un-dated citation here as a hint, not a guarantee, and re-grep before relying on it); app's ToNURBS (dino8-app/src/commands/cmd_solids.cpp:802,843) still calls only the non-adaptive `ToNurbsPatches`. No dependency on `Brep::Check()`/`RemoveDegenerateFaces` found in subd.cpp — the DegenerateFace false-flag defect does not touch this item.
+- [partial] SubD -> NURBS patch conversion — `ToNurbsPatches`/`ToNurbsPatchesAdaptive` (dino8-kernel/src/subd.cpp:1803,2500 — re-grepped fresh this pass, drifted again from :1756,:2453). **Stale-citation correction, this pass:** the prior text here claimed "app's ToNURBS still calls only the non-adaptive `ToNurbsPatches`" - checked directly against current `cmd_solids.cpp` rather than trusting the old note, and that is no longer true: `ef0f8af` ("wire ToNurbsPatchesAdaptive into ToNURBS") already rewired the app's own ToNURBS command onto `ToNurbsPatchesAdaptive` a prior session, and no caller of the plain non-adaptive `ToNurbsPatches` remains anywhere in `cmd_solids.cpp` (grepped: zero matches). This was always App-level evidence text, not this (kernel-level) row's own scoring criterion - the same "app-wiring doesn't hold a kernel row back from `present`" precedent this category's own "Kernel-native SubD local edit operators" item note already established - so correcting it doesn't flip this item's status either way; it was never why this item stayed partial.
+
+  **Same-pass follow-up (closes a real, previously-unaddressed quality gap, not the stale citation above):** every irregular face's patch (the `exact = false` case) used to fill its own 4 corners from the face's raw, un-limited control-net vertex positions before bilinearly interpolating between them - a genuinely different point from the true Catmull-Clark limit surface on any non-flat geometry (as `TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace`'s own pre-existing comment already establishes: "a regular vertex's Catmull-Clark limit point generally does NOT coincide with its own control-net position on curved geometry"). A new free function, `IrregularCornerLimitOrControlPoint()` (subd.cpp), now fills those 4 corners from each vertex's own true limit point instead - reusing the exact same `ON_SubDVertex::GetSurfacePoint()` eigenbasis call this category's own "SubD extraordinary-vertex limit-tangent quality" item already proved is OpenNURBS' genuine, non-stub Stam evaluator (see that item's own round of follow-ups) - falling back to the prior raw control-net point, per corner, only where an incident edge carries a semi-sharp weight (decaying that correctly needs a mutable working-copy `GlobalSubdivide()` step `ExactVertexCorner()` pays for a single-point query; paying that per corner across every face of a potentially large SubD here would be a real cost regression, not just style, so it's deliberately not attempted). `ToNurbsPatchesAdaptive()`'s own leaf patches inherit this for free (same shared `BuildFaceBezierGrid()`/`GridToPatch()` construction). Verified by 2 new tests (tests/test_basic.cpp): on the plain (un-subdivided) cube cage, every one of the 6 irregular faces' patch corners now matches the hand-derived closed-form valence-3 limit point (`TestSubDLimitPointsExactCubeAndFlatGrid`'s own "exactly half the control position" ground truth) to 1e-9, where before every one of them was the raw, un-halved control point instead - a genuine change, not a coincidental match (`TestSubDToNurbsPatchesIrregularCornersMatchKnownLimitPoint`); and a corner touching a semi-sharp edge still falls back to exactly its old raw control-net point, confirmed unaffected (`TestSubDToNurbsPatchesIrregularCornerFallsBackOnSemiSharpEdge`). Full `dino8_kernel_tests` suite re-run clean on a real rebuild, 0 regressions (see this document's own top-of-file verification note for the exact count). Still honestly `partial`, not `present`: only the 4 corners are now limit-exact - the interior between them is still the same flat bilinear fill as before, and a true full-patch closed form for an irregular face (a Gregory-patch-style G1 construction, or a full per-vertex eigenbasis surface rather than just its single limit point) remains the "materially bigger problem" this item's own doc comment already names as out of scope. This session's only source edits are `dino8-kernel/src/subd.cpp`, `dino8-kernel/include/dino8/kernel/subd.h`, and `dino8-kernel/tests/test_basic.cpp`. This category's own present/partial/missing counts (16/6/0 of 22, 86.4%) are therefore UNCHANGED - the item was already `partial` and stays `partial` - so neither the category table nor the kernel headline nor the Priority order table (still rank 3, weight 0.75, 6 remaining) needs any arithmetic change from this pass.
 
   **2026-10-05 follow-up (closes a real, previously-undisclosed, untested gap - not the app-wiring gap above):** both methods silently `continue` past any non-quad face (`EdgeCount() != 4`, the per-face skip their own doc comments already disclose), but neither one disclosed or tested what happens when EVERY face is skipped - a genuinely empty SubD, or one built entirely from a triangle/n-gon mesh at level 0 (e.g. an octahedron) - previously came back as a bare empty `std::vector`, indistinguishable from "nothing to convert" vs. "something existed and got silently dropped." Both now throw `std::runtime_error` instead, matching `Subdivide()`'s own established convention of a named exception over a silent no-op result on an empty SubD, rather than inventing a new one. Verified by 2 new tests (`TestSubDToNurbsPatchesThrowsOnNoQuadFaces`, `TestSubDToNurbsPatchesAdaptiveThrowsOnNoQuadFaces`, dino8-kernel/tests/test_basic.cpp): a faceless `SubD` and a closed 8-triangle octahedron `SubD` both throw for each method (the octahedron case confirmed via `FaceCount() == 8` first, so the throw is genuinely about face SHAPE, not face count), while an ordinary quad box still returns its real patches unaffected (6 for `ToNurbsPatches`, a non-empty set for `ToNurbsPatchesAdaptive`) - negative control proving this only fires when the result would otherwise be empty. Full `dino8_kernel_tests` suite: 100% passing (8691-line run log, "all checks passed"), 0 regressions. This does not flip the item's own partial status - the app-wiring gap and the single-surface/no-general-Brep limitations named above are untouched - and only this file's own `src/subd.cpp`, `include/dino8/kernel/subd.h`, and `tests/test_basic.cpp` were edited.
 - [partial] SubD boolean operations — **upgraded from missing, this session.** `SubD::Boolean(other, op)` (subd.cpp, subd.h) now exists: converts both operands via their own already-existing `ToApproximateMesh()`, then hands them to the kernel's real mesh-boolean engine (`dino8::kernel::BooleanCombine`, boolean.h/boolean.cpp - Manifold-backed) and returns the resulting `Mesh` - the same "solid-modeling boolean result as a mesh" scope the app's own BooleanUnion/Difference/Intersection commands already accept for Brep operands (cmd_boolean.cpp, "mesh-based, via Manifold"; see this category's own app-level counterpart below), just reached here starting from two SubD operands directly rather than requiring a caller to hand-roll the same two-call composition itself (as e.g. `TestSubDFromBoxSubdividesToExactCatmullClarkCounts`, tests/test_basic.cpp, already did inline before this method existed). Verified by 4 new tests (tests/test_basic.cpp): union of two disjoint 2x2x2 box SubDs has exactly the summed volume (8+8=16) and is a genuine `IsClosedManifold()` result, not merely a plausible-looking triangle count; intersection and difference of two overlapping box SubDs ([0,2]^3 and [1,3]^3) match their hand-derivable exact volumes (1 and 7 respectively); and an operand whose `ToApproximateMesh()` is genuinely open (a single flat quad with 4 naked boundary edges) is refused with `std::runtime_error`, inheriting `BooleanCombine()`'s own closed/watertight precondition rather than silently producing a corrupt result. Still honestly `partial`, not `present`: this is a mesh-approximate boolean, not a real topological SubD-to-SubD boolean (a result that comes back as a new, editable SubD control cage with correct creases/valences along the cut) - that is a materially bigger problem (re-triangulating a subdivision surface's own control net at an arbitrary cut curve), the same scope this class's own `FromBrep()`/`Tessellate()` doc comments already establish the "materially bigger problem" phrase for, and squarely out of scope here. **2026-10-06 follow-up:** now wired into the app after all - `BooleanUnion`/`BooleanDifference`/`BooleanIntersection`/`Boolean2Objects` (cmd_boolean.cpp) call `BooleanToSubD` directly whenever every operand on both sides is already a plain SubD, closing the app-level "SubD booleans" bullet's own `[missing]` -> `[partial]` (see **Dino 8: SubD & mesh modeling toolset (app level)**'s own bullet below for the app-side detail) - a real, separate App-level gap this row's own kernel-level scope never measured either way, so this row's own status/count is unaffected by it either way. **2026-10-04, round 26 follow-up:** `BooleanToSubD()`'s own internal `TrisToQuads()` call (routed through `FromMeshQuadRemeshed()`, see round 25's own note under the "Quad-remeshing" bullet below) now takes a `max_dihedral_deg` parameter instead of a hardcoded 20.0, defaulting to that same prior value so every existing 2-argument call is unaffected - see that bullet's own round-26 follow-up for the detail and tests. Does not touch this item's own disclosed scope limits (still mesh-approximate, still unwired from any app command).
