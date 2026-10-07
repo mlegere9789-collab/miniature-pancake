@@ -418,8 +418,14 @@ bool LoadImageFile(const std::string& path, Image& out, std::string& error) {
     TonemapHdrToRgba(hdr, out);
     return true;
   }
+  if (data.size() >= 4 && data[0] == 0x76 && data[1] == 0x2f && data[2] == 0x31 && data[3] == 0x01) {
+    ImageHdr hdr;
+    if (!LoadImageExr(path, hdr, error)) return false;
+    TonemapHdrToRgba(hdr, out);
+    return true;
+  }
   if (data.size() >= 2 && data[0] == 'P') return LoadPpm(data, out, error);
-  error = "Unsupported image format: " + LowerExt(path) + " (BMP, PPM/PGM, PNG and HDR are supported)";
+  error = "Unsupported image format: " + LowerExt(path) + " (BMP, PPM/PGM, PNG, HDR and EXR are supported)";
   return false;
 }
 
@@ -502,6 +508,281 @@ bool SaveImageHdr(const std::string& path, int w, int h, const std::vector<float
     }
     std::fwrite(row.data(), 1, row.size(), f);
   }
+  std::fclose(f);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// OpenEXR (minimal: single-part scanline, NO_COMPRESSION, HALF/FLOAT R/G/B)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// IEEE 754-2008 binary16 -> binary32. Handles subnormals, inf and NaN; a
+// zero-exponent/zero-mantissa half (±0) falls out of the general subnormal
+// branch's own `mant == 0` check into a plain signed-zero float, so no
+// separate case is needed for it.
+float DecodeHalf(uint16_t h) {
+  const uint32_t sign = static_cast<uint32_t>(h & 0x8000u) << 16;
+  uint32_t exp = (h >> 10) & 0x1fu;
+  uint32_t mant = h & 0x3ffu;
+  uint32_t bits;
+  if (exp == 0) {
+    if (mant == 0) {
+      bits = sign;
+    } else {
+      exp = 1;
+      while ((mant & 0x400u) == 0) { mant <<= 1; --exp; }
+      mant &= 0x3ffu;
+      bits = sign | ((exp + (127 - 15)) << 23) | (mant << 13);
+    }
+  } else if (exp == 0x1fu) {
+    bits = sign | 0x7f800000u | (mant << 13);
+  } else {
+    bits = sign | ((exp + (127 - 15)) << 23) | (mant << 13);
+  }
+  float f;
+  std::memcpy(&f, &bits, sizeof(f));
+  return f;
+}
+
+struct ExrChannel {
+  std::string name;
+  int32_t pixel_type = 1;  // 0=UINT, 1=HALF, 2=FLOAT
+  int32_t x_sampling = 1, y_sampling = 1;
+};
+
+uint32_t ReadLe32(const unsigned char* p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) | (static_cast<uint32_t>(p[2]) << 16) |
+         (static_cast<uint32_t>(p[3]) << 24);
+}
+
+}  // namespace
+
+bool LoadImageExr(const std::string& path, ImageHdr& out, std::string& error) {
+  std::vector<unsigned char> d;
+  if (!ReadFile(path, d)) { error = "Cannot read " + path; return false; }
+  if (d.size() < 8 || d[0] != 0x76 || d[1] != 0x2f || d[2] != 0x31 || d[3] != 0x01) { error = "Not an EXR file"; return false; }
+  const uint32_t version_flags = ReadLe32(&d[4]);
+  if ((version_flags & 0xffu) != 2) { error = "Unsupported EXR version"; return false; }
+  if (version_flags & (1u << 9)) { error = "Tiled EXR files are not supported"; return false; }
+  if (version_flags & (1u << 11)) { error = "Deep-data EXR files are not supported"; return false; }
+  if (version_flags & (1u << 12)) { error = "Multi-part EXR files are not supported"; return false; }
+
+  size_t pos = 8;
+  auto read_i32 = [&](int32_t& v) {
+    if (pos + 4 > d.size()) return false;
+    v = static_cast<int32_t>(ReadLe32(&d[pos]));
+    pos += 4;
+    return true;
+  };
+  auto read_i64 = [&](int64_t& v) {
+    if (pos + 8 > d.size()) return false;
+    uint64_t u = 0;
+    for (int i = 0; i < 8; ++i) u |= static_cast<uint64_t>(d[pos + static_cast<size_t>(i)]) << (8 * i);
+    v = static_cast<int64_t>(u);
+    pos += 8;
+    return true;
+  };
+  auto read_cstr = [&](std::string& s) {
+    s.clear();
+    while (pos < d.size() && d[pos] != 0) s.push_back(static_cast<char>(d[pos++]));
+    if (pos >= d.size()) return false;
+    ++pos;
+    return true;
+  };
+
+  std::vector<ExrChannel> channels;
+  int32_t data_xmin = 0, data_ymin = 0, data_xmax = -1, data_ymax = -1;
+  bool have_data_window = false;
+  int compression = -1;
+  int line_order = 0;
+
+  for (;;) {
+    if (pos >= d.size()) { error = "Truncated EXR header"; return false; }
+    if (d[pos] == 0) { ++pos; break; }  // zero-length name ends the attribute list
+    std::string name, type;
+    int32_t size = 0;
+    if (!read_cstr(name) || !read_cstr(type) || !read_i32(size) || size < 0 || pos + static_cast<size_t>(size) > d.size()) {
+      error = "Truncated or malformed EXR attribute";
+      return false;
+    }
+    const size_t value_start = pos;
+    if (name == "channels" && type == "chlist") {
+      size_t p = value_start;
+      const size_t end = value_start + static_cast<size_t>(size);
+      while (p < end && d[p] != 0) {
+        std::string cname;
+        while (p < d.size() && d[p] != 0) cname.push_back(static_cast<char>(d[p++]));
+        if (p >= d.size() || p + 17 > d.size()) { error = "Truncated EXR channel entry"; return false; }
+        ++p;  // skip the channel name's own terminating null
+        ExrChannel ch;
+        ch.name = cname;
+        ch.pixel_type = static_cast<int32_t>(ReadLe32(&d[p])); p += 4;
+        p += 4;  // pLinear (1 byte) + reserved (3 bytes)
+        ch.x_sampling = static_cast<int32_t>(ReadLe32(&d[p])); p += 4;
+        ch.y_sampling = static_cast<int32_t>(ReadLe32(&d[p])); p += 4;
+        channels.push_back(std::move(ch));
+      }
+    } else if (name == "compression" && type == "compression" && size >= 1) {
+      compression = d[value_start];
+    } else if (name == "dataWindow" && type == "box2i" && size >= 16) {
+      data_xmin = static_cast<int32_t>(ReadLe32(&d[value_start]));
+      data_ymin = static_cast<int32_t>(ReadLe32(&d[value_start + 4]));
+      data_xmax = static_cast<int32_t>(ReadLe32(&d[value_start + 8]));
+      data_ymax = static_cast<int32_t>(ReadLe32(&d[value_start + 12]));
+      have_data_window = true;
+    } else if (name == "lineOrder" && type == "lineOrder" && size >= 1) {
+      line_order = d[value_start];
+    }
+    pos = value_start + static_cast<size_t>(size);
+  }
+
+  if (!have_data_window || data_xmax < data_xmin || data_ymax < data_ymin) { error = "Missing or invalid EXR dataWindow"; return false; }
+  if (compression != 0) { error = "Only uncompressed (NO_COMPRESSION) EXR files are supported"; return false; }
+  if (line_order == 2) { error = "Random-order EXR scanlines are not supported"; return false; }
+
+  int r_idx = -1, g_idx = -1, b_idx = -1;
+  for (size_t i = 0; i < channels.size(); ++i) {
+    if (channels[i].name == "R") r_idx = static_cast<int>(i);
+    else if (channels[i].name == "G") g_idx = static_cast<int>(i);
+    else if (channels[i].name == "B") b_idx = static_cast<int>(i);
+  }
+  if (r_idx < 0 || g_idx < 0 || b_idx < 0) {
+    error = "EXR file has no R/G/B channels (only single-layer RGB/RGBA environment images are supported)";
+    return false;
+  }
+  for (const ExrChannel& c : channels) {
+    if (c.pixel_type != 1 && c.pixel_type != 2) { error = "Unsupported EXR channel pixel type (only HALF and FLOAT are supported)"; return false; }
+    if (c.x_sampling != 1 || c.y_sampling != 1) { error = "Subsampled EXR channels are not supported"; return false; }
+  }
+
+  const int w = data_xmax - data_xmin + 1;
+  const int h = data_ymax - data_ymin + 1;
+  if (w <= 0 || h <= 0 || static_cast<int64_t>(w) * h > (1 << 28)) { error = "Invalid EXR dimensions"; return false; }
+
+  std::vector<int64_t> offsets(static_cast<size_t>(h));
+  for (int64_t i = 0; i < h; ++i) {
+    if (!read_i64(offsets[static_cast<size_t>(i)])) { error = "Truncated EXR offset table"; return false; }
+  }
+
+  out.width = w; out.height = h;
+  out.rgb.assign(static_cast<size_t>(w) * h * 3, 0.0f);
+
+  auto channel_bytes = [](const ExrChannel& c) { return c.pixel_type == 1 ? 2 : 4; };
+
+  for (int64_t i = 0; i < h; ++i) {
+    const int64_t off = offsets[static_cast<size_t>(i)];
+    if (off < 0 || static_cast<size_t>(off) + 8 > d.size()) { error = "Invalid EXR chunk offset"; return false; }
+    size_t p = static_cast<size_t>(off);
+    const int32_t y = static_cast<int32_t>(ReadLe32(&d[p])); p += 4;
+    const int32_t data_size = static_cast<int32_t>(ReadLe32(&d[p])); p += 4;
+    if (data_size < 0 || p + static_cast<size_t>(data_size) > d.size()) { error = "Truncated EXR scanline chunk"; return false; }
+    if (y < data_ymin || y > data_ymax) { error = "EXR scanline y coordinate out of range"; return false; }
+    const int row = y - data_ymin;
+    // Channels are stored in header order, each channel's own full `w`-sample
+    // row contiguous (planar), not interleaved per pixel - the layout every
+    // conformant EXR writer uses for a NO_COMPRESSION scanline chunk.
+    std::vector<const unsigned char*> channel_ptr(channels.size());
+    size_t cp = p;
+    for (size_t ci = 0; ci < channels.size(); ++ci) {
+      channel_ptr[ci] = &d[cp];
+      cp += static_cast<size_t>(w) * static_cast<size_t>(channel_bytes(channels[ci]));
+    }
+    if (cp - p != static_cast<size_t>(data_size)) { error = "EXR scanline size does not match its own channel layout"; return false; }
+    auto sample_at = [&](int ci, int x) {
+      const ExrChannel& c = channels[static_cast<size_t>(ci)];
+      const unsigned char* base = channel_ptr[static_cast<size_t>(ci)] + static_cast<size_t>(x) * static_cast<size_t>(channel_bytes(c));
+      if (c.pixel_type == 1) return DecodeHalf(static_cast<uint16_t>(base[0] | (base[1] << 8)));
+      float f;
+      const uint32_t bits = ReadLe32(base);
+      std::memcpy(&f, &bits, sizeof(f));
+      return f;
+    };
+    for (int x = 0; x < w; ++x) {
+      const size_t o = (static_cast<size_t>(row) * w + x) * 3;
+      out.rgb[o] = sample_at(r_idx, x);
+      out.rgb[o + 1] = sample_at(g_idx, x);
+      out.rgb[o + 2] = sample_at(b_idx, x);
+    }
+  }
+  return true;
+}
+
+bool SaveImageExr(const std::string& path, int w, int h, const std::vector<float>& rgb, std::string& error) {
+  if (w <= 0 || h <= 0 || rgb.size() < static_cast<size_t>(w) * h * 3) { error = "Nothing to save"; return false; }
+  std::vector<unsigned char> buf;
+  auto w_bytes = [&](const void* p, size_t n) { const unsigned char* b = static_cast<const unsigned char*>(p); buf.insert(buf.end(), b, b + n); };
+  auto w_u8 = [&](unsigned char v) { buf.push_back(v); };
+  auto w_i32 = [&](int32_t v) { unsigned char b[4]; for (int i = 0; i < 4; ++i) b[i] = static_cast<unsigned char>((static_cast<uint32_t>(v) >> (8 * i)) & 0xff); w_bytes(b, 4); };
+  auto w_i64 = [&](int64_t v) { unsigned char b[8]; const uint64_t u = static_cast<uint64_t>(v); for (int i = 0; i < 8; ++i) b[i] = static_cast<unsigned char>((u >> (8 * i)) & 0xff); w_bytes(b, 8); };
+  auto w_float = [&](float v) { unsigned char b[4]; std::memcpy(b, &v, 4); w_bytes(b, 4); };
+  auto w_cstr = [&](const char* s) { w_bytes(s, std::strlen(s) + 1); };
+  auto w_attr = [&](const char* name, const char* type, int32_t size) { w_cstr(name); w_cstr(type); w_i32(size); };
+
+  w_u8(0x76); w_u8(0x2f); w_u8(0x31); w_u8(0x01);
+  w_i32(2);  // version 2, no flags (single-part scanline, non-deep)
+
+  // Channel list (chlist): B, G, R - alphabetical order, the order the
+  // spec requires a conformant writer to use (and the order the scanline
+  // chunk data below must then also use) - all FLOAT, no subsampling.
+  static const char* const kChannelNames[3] = {"B", "G", "R"};
+  int32_t chlist_size = 1;  // the list's own terminating null byte
+  for (const char* n : kChannelNames) chlist_size += static_cast<int32_t>(std::strlen(n)) + 1 + 16;
+  w_attr("channels", "chlist", chlist_size);
+  for (const char* n : kChannelNames) {
+    w_cstr(n);
+    w_i32(2);              // pixelType = FLOAT
+    w_u8(0);               // pLinear
+    w_u8(0); w_u8(0); w_u8(0);  // reserved
+    w_i32(1); w_i32(1);    // x/ySampling
+  }
+  w_u8(0);  // end of chlist
+
+  w_attr("compression", "compression", 1);
+  w_u8(0);  // NO_COMPRESSION
+
+  w_attr("dataWindow", "box2i", 16);
+  w_i32(0); w_i32(0); w_i32(w - 1); w_i32(h - 1);
+
+  w_attr("displayWindow", "box2i", 16);
+  w_i32(0); w_i32(0); w_i32(w - 1); w_i32(h - 1);
+
+  w_attr("lineOrder", "lineOrder", 1);
+  w_u8(0);  // INCREASING_Y
+
+  w_attr("pixelAspectRatio", "float", 4);
+  w_float(1.0f);
+
+  w_attr("screenWindowCenter", "v2f", 8);
+  w_float(0.0f); w_float(0.0f);
+
+  w_attr("screenWindowWidth", "float", 4);
+  w_float(1.0f);
+
+  w_u8(0);  // end of header attribute list
+
+  // Scanline offset table: one entry per row (NO_COMPRESSION means exactly
+  // one scanline per chunk), each chunk a fixed `8 + w*4*3` bytes (y +
+  // dataSize + 3 planar FLOAT channel rows), so every offset is known
+  // analytically from the header's own already-written size.
+  const size_t header_end = buf.size();
+  const size_t chunk_size = 8 + static_cast<size_t>(w) * 4 * 3;
+  const size_t data_start = header_end + static_cast<size_t>(h) * 8;
+  for (int y = 0; y < h; ++y) w_i64(static_cast<int64_t>(data_start + static_cast<size_t>(y) * chunk_size));
+
+  for (int y = 0; y < h; ++y) {
+    w_i32(y);
+    w_i32(static_cast<int32_t>(static_cast<size_t>(w) * 4 * 3));
+    // Planar, alphabetical (B, G, R) to match the channel list above.
+    for (int c = 2; c >= 0; --c) {  // rgb[] is R,G,B per pixel; write B(2),G(1),R(0)
+      for (int x = 0; x < w; ++x) w_float(std::max(0.0f, rgb[(static_cast<size_t>(y) * w + x) * 3 + static_cast<size_t>(c)]));
+    }
+  }
+
+  FILE* f = std::fopen(path.c_str(), "wb");
+  if (!f) { error = "Cannot write " + path; return false; }
+  std::fwrite(buf.data(), 1, buf.size(), f);
   std::fclose(f);
   return true;
 }

@@ -1380,6 +1380,72 @@ void TestCurveGetOrientedBoundingBox() {
   }
 }
 
+void TestCurveGetTightBoundingBoxOverload() {
+  using dino8::kernel::BoundingBox;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // A quadratic Bezier (P0=(0,0,0), P1=(10,10,0), P2=(20,0,0)): x(t)=20t is
+  // linear (no interior extremum, matches the control-point box exactly in
+  // x), but y(t)=20t(1-t) has its true analytic maximum at t=0.5, y=5 -
+  // HALF of the control point's own y=10. The existing no-argument overload
+  // (control-point box) must report y up to 10; the new tolerance overload
+  // must find the real interior extremum and report y up to exactly 5.
+  {
+    const NurbsCurve bez = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 10, 0), Point3d(20, 0, 0)}, 2);
+    const BoundingBox loose = bez.GetTightBoundingBox();
+    Check(std::abs(loose.max.y - 10.0) < 1e-9,
+          "GetTightBoundingBox(): setup - the existing control-point-box overload reports y up to 10, confirming this fixture reproduces the documented gap");
+    const BoundingBox tight = bez.GetTightBoundingBox(0.0001);
+    Check(std::abs(tight.max.y - 5.0) < 1e-6,
+          "GetTightBoundingBox(tolerance): finds the real analytic extremum - y maxes out at exactly 5, not the control point's own 10");
+    Check(std::abs(tight.min.x - 0.0) < 1e-6 && std::abs(tight.max.x - 20.0) < 1e-6,
+          "GetTightBoundingBox(tolerance): x has no interior extremum (x(t)=20t is linear), so it still spans the full 0 to 20");
+    Check(std::abs(tight.min.y - 0.0) < 1e-6, "GetTightBoundingBox(tolerance): y's own minimum is still exactly 0, at both endpoints");
+  }
+
+  // A full circle of known radius: the true tight bbox is exactly
+  // [-r, r] x [-r, r] x [0, 0] - a real, independently hand-derivable
+  // answer, strictly smaller than the control-point box a rational
+  // circle's own CVs overshoot.
+  {
+    const double r = 5.0;
+    const ON_Circle oncircle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), r);
+    ON_NurbsCurve nc;
+    Check(oncircle.GetNurbForm(nc) != 0, "GetTightBoundingBox(tolerance): the circle fixture builds a real NURBS form");
+    NurbsCurve circle;
+    circle.raw() = nc;
+    const BoundingBox tight = circle.GetTightBoundingBox(0.0001);
+    Check(std::abs(tight.min.x - (-r)) < 1e-4 && std::abs(tight.max.x - r) < 1e-4,
+          "GetTightBoundingBox(tolerance): a radius-5 circle's own X range is exactly [-5, 5]");
+    Check(std::abs(tight.min.y - (-r)) < 1e-4 && std::abs(tight.max.y - r) < 1e-4,
+          "GetTightBoundingBox(tolerance): a radius-5 circle's own Y range is exactly [-5, 5]");
+    Check(std::abs(tight.min.z) < 1e-9 && std::abs(tight.max.z) < 1e-9,
+          "GetTightBoundingBox(tolerance): a planar circle's own Z range is exactly 0");
+    // Safety invariant: the new tolerance overload must never report a
+    // box LARGER than the existing control-point-box overload, along any
+    // axis, on either fixture above - the mathematical guarantee this
+    // method's own doc comment makes, checked directly rather than
+    // assumed.
+    const BoundingBox loose = circle.GetTightBoundingBox();
+    Check(tight.min.x >= loose.min.x - 1e-9 && tight.max.x <= loose.max.x + 1e-9 && tight.min.y >= loose.min.y - 1e-9 &&
+              tight.max.y <= loose.max.y + 1e-9,
+          "GetTightBoundingBox(tolerance): the circle's tight box never exceeds the looser control-point box on either axis");
+  }
+
+  // A non-positive tolerance throws.
+  {
+    const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    bool threw = false;
+    try {
+      line.GetTightBoundingBox(0.0);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "GetTightBoundingBox(tolerance): a non-positive tolerance throws std::invalid_argument");
+  }
+}
+
 void TestCurveKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -72605,6 +72671,7 @@ int main() {
   TestCurvePlanarRegionProperties();
   TestCurveMinDistanceTo();
   TestCurveGetOrientedBoundingBox();
+  TestCurveGetTightBoundingBoxOverload();
   TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();

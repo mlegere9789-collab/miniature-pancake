@@ -696,6 +696,17 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_image_hdr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_image_hdr COMMAND dino8_test_image_hdr)
 
+  # Minimal OpenEXR codec (src/render/ImageIO.cpp's LoadImageExr/
+  # SaveImageExr): a FLOAT-channel encode/decode round trip well above the
+  # [0,1] range PNG/BMP/PPM are stuck at, a real-world-shaped HALF-channel
+  # scanline decoded by hand, and the malformed/out-of-scope-input error
+  # paths (tiled, multi-part, deep, compressed, missing R/G/B, truncated).
+  # Standalone like dino8_test_image_hdr - ImageIO.cpp has no dino8_kernel
+  # dependency.
+  add_executable(dino8_test_image_exr tests/test_image_exr.cpp src/render/ImageIO.cpp src/util/Inflate.cpp)
+  target_include_directories(dino8_test_image_exr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_image_exr COMMAND dino8_test_image_exr)
+
   # ZIP + minimal OOXML SpreadsheetML reader/writer (src/drafting/Xlsx.cpp):
   # a real, valid .xlsx round trip (special characters, empty cells, several
   # rows/cols), a hand-built "real-world-shaped" entry using zip method 8
