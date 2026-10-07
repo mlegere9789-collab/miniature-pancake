@@ -23,6 +23,7 @@
 namespace dino8::app {
 
 using dino8::i18n::Tr;
+using dino8::i18n::TrOrDefault;
 
 // A translated window title, with a "###<id>" suffix ImGui ignores for the
 // visible label but uses as the window's identity - so switching language
@@ -690,13 +691,20 @@ dino8::platform::AccessibleNode AuditResultsAccessibleTree(Application& app) {
   return dino8::platform::BuildAuditResultsNode(summaries);
 }
 
+// A command's description, in the active UI language when this command is
+// one of the bounded cmddesc.* subset I18n.h documents, else its real
+// English description unchanged (TrOrDefault's fallback, not a raw key).
+const std::string& LocalizedCommandDescription(const CommandInfo& info) {
+  return TrOrDefault("cmddesc." + ToLower(info.name), info.description);
+}
+
 // AT-SPI2-queryable snapshot of CommandEngine::Registry() (see
 // docs/ACCESSIBILITY.md): built straight from the command registry,
 // independent of whether DrawCommandListPanel itself has ever been drawn or
 // is open right now - mirrors the same name/status/description facts the
 // on-screen table's Command/Status/Description columns show per row, using
-// exactly the `rc.info ? rc.info->description : rc.note` choice
-// DrawCommandListPanel/DrawHelpPanel already make. Never empty in a real
+// exactly the `rc.info ? LocalizedCommandDescription(*rc.info) : rc.note`
+// choice DrawCommandListPanel/DrawHelpPanel already make. Never empty in a real
 // build: RegisterCatalogPlaceholders registers the ~1055-command Rhino 8
 // reference catalog at startup even for commands with no implementation
 // yet.
@@ -704,7 +712,7 @@ dino8::platform::AccessibleNode CommandListAccessibleTree(Application& app) {
   std::vector<dino8::platform::CommandListEntrySummary> summaries;
   summaries.reserve(app.Engine().Registry().size());
   for (const auto& [key, rc] : app.Engine().Registry()) {
-    const std::string desc = rc.info ? rc.info->description : rc.note;
+    const std::string desc = rc.info ? LocalizedCommandDescription(*rc.info) : rc.note;
     summaries.push_back({rc.name, CommandStatusName(rc.status), desc});
   }
   return dino8::platform::BuildCommandListNode(summaries);
@@ -736,7 +744,7 @@ void DrawCommandListPanel(Application& app, std::string& filter, int& status_fil
       if (status_filter == 1 && rc.status != CommandStatus::Implemented) continue;
       if (status_filter == 2 && rc.status != CommandStatus::Partial) continue;
       if (status_filter == 3 && rc.status != CommandStatus::Planned) continue;
-      const std::string desc = rc.info ? rc.info->description : rc.note;
+      const std::string desc = rc.info ? LocalizedCommandDescription(*rc.info) : rc.note;
       if (!f.empty() && key.find(f) == std::string::npos && ToLower(desc).find(f) == std::string::npos) continue;
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
@@ -792,7 +800,7 @@ void DrawHelpPanel(Application& app, std::string& search) {
     // description is always printed right below.
   }
   if (ImGui::SmallButton("Run")) app.Engine().Execute(info->name);
-  ImGui::TextWrapped("%s", info->description.c_str());
+  ImGui::TextWrapped("%s", LocalizedCommandDescription(*info).c_str());
   if (!info->toolbars.empty()) ImGui::TextDisabled("Toolbars: %s", info->toolbars.c_str());
   if (!info->menu.empty()) ImGui::TextDisabled("Menu: %s", info->menu.c_str());
   if (!info->options.empty()) {

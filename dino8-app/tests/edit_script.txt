@@ -74,6 +74,24 @@ ChangeDegree
 SelLast
 List
 Delete
+# --- ChangeDegree now also LOWERS degree for SURFACES
+# (NurbsSurface::ReduceDegree, surface_edit.cpp): a flat Plane elevated to
+# degree 3x3 then reduced back to 1x1 is exact (a flat, evenly-spaced grid
+# is genuinely bilinear), so both directions must genuinely drop back to
+# a 2x2 control net, not silently no-op the way ChangeDegree always used
+# to on a lower target for surfaces.
+Plane 0,0,0 10,10,0
+SelLast
+ChangeDegree
+3
+SelLast
+List
+SelLast
+ChangeDegree
+1
+SelLast
+List
+Delete
 Line 0,0,0 10,0,0
 SelLast
 InsertKnot

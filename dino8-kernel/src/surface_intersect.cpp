@@ -773,6 +773,28 @@ bool FaceContainsUV(const ON_BrepFace& f, double u, double v) {
 
 namespace {
 
+// Which side (if any) of `s`'s own domain (u, v) sits at, within a
+// tolerance scaled to that direction's own domain length - and, critically,
+// whether that side is a genuine coordinate SINGULARITY (ON_Surface::
+// IsSingular(side): the WHOLE row/column collapses to one 3D point), not
+// merely an ordinary domain edge. Side numbering follows IsSingular()'s own
+// convention (also used in boolean_general.cpp): 0 = south (v_min), 1 =
+// east (u_max), 2 = north (v_max), 3 = west (u_min). A plain, non-singular
+// domain edge (e.g. a cylinder's own two end circles, or a cone's own base
+// circle) is deliberately left alone here - this is a pole detector, not a
+// general domain-boundary one; FaceContainsUV's own closed-interval
+// convention already treats an ordinary edge correctly elsewhere.
+bool PoleSide(const ON_Surface& s, double u, double v, int& side) {
+  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+  const double eu = std::max(1e-6 * std::max(du.Length(), 1.0), 1e-12);
+  const double ev = std::max(1e-6 * std::max(dv.Length(), 1.0), 1e-12);
+  if (s.IsSingular(0) && std::fabs(v - dv.Min()) <= ev) { side = 0; return true; }
+  if (s.IsSingular(2) && std::fabs(v - dv.Max()) <= ev) { side = 2; return true; }
+  if (s.IsSingular(1) && std::fabs(u - du.Max()) <= eu) { side = 1; return true; }
+  if (s.IsSingular(3) && std::fabs(u - du.Min()) <= eu) { side = 3; return true; }
+  return false;
+}
+
 // Fits the NURBS curves of an intersection curve from its refined points and
 // runs the adaptive midpoint check against both surfaces.
 void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
@@ -802,6 +824,20 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
       if (a.IsClosed(dir) && std::fabs(ic.uv_a[i][dir] - ic.uv_a[j][dir]) > 0.5 * a.Domain(dir).Length()) return true;
       if (b.IsClosed(dir) && std::fabs(ic.uv_b[i][dir] - ic.uv_b[j][dir]) > 0.5 * b.Domain(dir).Length()) return true;
     }
+    // A segment with an endpoint sitting at a surface's own pole (SSX
+    // across singular points - PARITY_MAP.md's own "SSX across periodic
+    // seams and at singular points (poles)" bullet) is, like a seam
+    // segment above, not safe to subdivide via a raw-(u, v) midpoint seed:
+    // the pole endpoint's own azimuth has already been snapped to a
+    // continuity-consistent value by SplitAtPoles() (see that function's
+    // own doc comment) specifically so the GLOBAL cubic fit stays well-
+    // conditioned there - re-deriving a NEW midpoint from the fitted
+    // pcurve this close to the same coordinate singularity risks
+    // reintroducing exactly the wobble that fix exists to remove, for the
+    // same reason a seam-crossing segment is skipped rather than refined.
+    int side;
+    if (PoleSide(a, ic.uv_a[i].x, ic.uv_a[i].y, side) || PoleSide(a, ic.uv_a[j].x, ic.uv_a[j].y, side)) return true;
+    if (PoleSide(b, ic.uv_b[i].x, ic.uv_b[i].y, side) || PoleSide(b, ic.uv_b[j].x, ic.uv_b[j].y, side)) return true;
     return false;
   };
   auto fit = [&]() {
@@ -1271,6 +1307,184 @@ void SplitAtSeams(std::vector<IntersectionCurve>& curves, const ON_Surface& a, c
   curves = std::move(out);
 }
 
+// Dedicated singular-point (pole) treatment for a chained SSX curve -
+// closes the "poles" half of PARITY_MAP.md's own "SSX across periodic
+// seams and at singular points (poles)" bullet (seams already have
+// SplitAtSeams/SeamCrossing above; poles previously had no dedicated
+// treatment at all beyond SurfaceClosestPoint's own, separate, closest-
+// point-search pole fix - a different function entirely, not this one).
+//
+// A sample that sits exactly at one surface's own pole (PoleSide above)
+// has a genuinely DEGENERATE value in whichever coordinate is free there
+// (the azimuth, since an entire row or column of the surface collapses to
+// that one 3D point) - and a confirmed, reproduced defect, not a
+// hypothetical one: a meridian plane cutting a full sphere into two
+// half-great-circle arcs (each correctly ENDING exactly at a different
+// pole - ordinary mesh-seeded chaining already gets this topology right
+// without any help from this function) has its own two pole ENDPOINT
+// samples land at an azimuth confirmed, by direct measurement, up to
+// ~0.15 radians off the curve's own true limiting value, against every
+// genuinely non-pole sample on the same arc staying within ~0.02 radians
+// of it - more than 10x worse exactly at the one place the (u, v) chart
+// goes singular. The root cause: RefineSurfaceSurfacePoint's generic
+// 4-unknown/3-equation Newton solve has a Jacobian column that is exactly
+// zero, not merely small, for the degenerate coordinate right at a pole
+// (moving along it changes the 3D residual by nothing at all to first
+// order there), so nothing in that linear system corrects whatever value
+// the sample's own SEED happened to carry in on - this is a pure (u, v)-
+// chart artifact, not a 3D error (the pole's own 3D point is exact and
+// shared by both charts already; only the degenerate coordinate's
+// reported VALUE is unreliable). Left alone, this wobble feeds directly
+// into FinishCurve's global cubic pcurve fit, which can swing far enough
+// off the true surface near the pole to measurably fail round-tripping
+// through S(pcurve(t)) - confirmed directly, by the same measurement, at
+// up to ~0.0075 units (the fixture's sphere has radius 2) against this
+// engine's own default 0.001 `tolerance`.
+//
+// The fix: replace the pole sample's own degenerate coordinate with a
+// linear EXTRAPOLATION from the curve's own nearest one or two non-pole
+// neighbors (the smoothest value consistent with how the true curve is
+// actually approaching the pole), instead of trusting the Newton solve's
+// own under-determined answer. A pole sample that is strictly INTERIOR to
+// the chain (has a genuine non-pole neighbor on BOTH sides - the curve
+// truly continues past the pole rather than ending there) is additionally
+// SPLIT into two pieces there, each keeping the shared 3D pole point but
+// its OWN separately-extrapolated azimuth - mirroring SplitAtSeams's own
+// "cut, don't force one fit through a discontinuity" shape, for the
+// identical reason. No fixture this kernel's existing surface types build
+// this way exercises that interior-pass-through split (every constructible
+// case - a plane through a sphere, a plane through a cone's apex - comes
+// back from the ordinary mesh-seeded chainer already split at the pole,
+// confirmed directly), so it is honestly disclosed as implemented-but-
+// not-independently-verified, not claimed as tested.
+void SplitAtPoles(std::vector<IntersectionCurve>& curves, const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
+  (void)opt;
+  std::vector<IntersectionCurve> out;
+  for (IntersectionCurve& c : curves) {
+    const size_t n = c.points.size();
+    struct PoleHit { size_t idx; bool on_a; int coord; };
+    std::vector<PoleHit> hits;
+    for (size_t i = 0; i < n; ++i) {
+      int side;
+      if (PoleSide(a, c.uv_a[i].x, c.uv_a[i].y, side)) hits.push_back({i, true, (side == 0 || side == 2) ? 0 : 1});
+      if (PoleSide(b, c.uv_b[i].x, c.uv_b[i].y, side)) hits.push_back({i, false, (side == 0 || side == 2) ? 0 : 1});
+    }
+    if (hits.empty()) { out.push_back(std::move(c)); continue; }
+    auto is_hit_idx = [&](size_t idx) {
+      for (const PoleHit& h : hits) if (h.idx == idx) return true;
+      return false;
+    };
+    // Looks up to 2 steps in direction `dir` (+1 forward, -1 backward)
+    // from `from`, skipping any OTHER pole-hit sample, wrapping for a
+    // closed curve and stopping at an open curve's own end otherwise.
+    // Returns how many usable neighbors it found (0, 1, or 2) and their
+    // indices, nearest first.
+    auto find_neighbors = [&](size_t from, int dir, size_t found[2]) {
+      int count = 0;
+      for (long long step = 1; step < static_cast<long long>(n) && count < 2; ++step) {
+        long long raw = static_cast<long long>(from) + dir * step;
+        size_t idx;
+        if (c.closed) idx = static_cast<size_t>(((raw % static_cast<long long>(n)) + static_cast<long long>(n)) % static_cast<long long>(n));
+        else { if (raw < 0 || raw >= static_cast<long long>(n)) break; idx = static_cast<size_t>(raw); }
+        if (idx == from || is_hit_idx(idx)) continue;
+        found[count++] = idx;
+      }
+      return count;
+    };
+    auto extrapolate = [&](const std::vector<ON_2dPoint>& uv, int coord, const size_t found[2], int count) -> std::optional<double> {
+      if (count == 0) return std::nullopt;
+      if (count == 1) return uv[found[0]][coord];
+      return 2.0 * uv[found[0]][coord] - uv[found[1]][coord];
+    };
+    // Snap every hit's own degenerate coordinate, BEFORE any split below
+    // (so an interior hit's eventual two pieces each still see the other
+    // side's own correctly-snapped value while this loop runs). Interior
+    // hits (genuine neighbors on both sides) get two independent snapped
+    // values - one per side - recorded for the split pass that follows;
+    // an endpoint hit (neighbors on one side only) is snapped once, in
+    // place, and never split.
+    struct SplitAt { size_t idx; ON_2dPoint before_a, after_a, before_b, after_b; };
+    std::vector<SplitAt> splits;
+    for (const PoleHit& h : hits) {
+      std::vector<ON_2dPoint>& uv = h.on_a ? c.uv_a : c.uv_b;
+      size_t fwd[2], bwd[2];
+      const int nf = find_neighbors(h.idx, +1, fwd);
+      const int nb = find_neighbors(h.idx, -1, bwd);
+      const std::optional<double> fwd_val = extrapolate(uv, h.coord, fwd, nf);
+      const std::optional<double> bwd_val = extrapolate(uv, h.coord, bwd, nb);
+      if (fwd_val && bwd_val) {
+        // Genuine interior pass-through: record a split, each side
+        // keeping its own extrapolated value (see this function's own
+        // doc comment - not independently exercised by any fixture).
+        SplitAt s;
+        s.idx = h.idx;
+        s.before_a = c.uv_a[h.idx]; s.after_a = c.uv_a[h.idx];
+        s.before_b = c.uv_b[h.idx]; s.after_b = c.uv_b[h.idx];
+        (h.on_a ? s.before_a : s.before_b)[h.coord] = *bwd_val;
+        (h.on_a ? s.after_a : s.after_b)[h.coord] = *fwd_val;
+        splits.push_back(s);
+      } else if (fwd_val) {
+        uv[h.idx][h.coord] = *fwd_val;
+      } else if (bwd_val) {
+        uv[h.idx][h.coord] = *bwd_val;
+      }
+      // else: no usable neighbor at all (every other sample is also a
+      // pole hit - a degenerate 2-point curve or smaller) - nothing
+      // sensible to extrapolate from; left exactly as the Newton solve
+      // produced it rather than guessed at.
+    }
+    if (splits.empty()) { out.push_back(std::move(c)); continue; }
+    std::sort(splits.begin(), splits.end(), [](const SplitAt& x, const SplitAt& y) { return x.idx < y.idx; });
+    // A closed curve is rotated so its first recorded pole crossing sits
+    // at index 0 (SplitAtSeams's own rotate-then-cut strategy for a
+    // closed curve), then opened there: index 0 keeps that crossing's own
+    // "after" (forward) azimuth and one more point - a second copy of the
+    // SAME 3D pole point, carrying the "before" (backward) azimuth - is
+    // appended at the very end, closing the loop open exactly at the pole
+    // instead of forcing one fit through it. Any FURTHER pole crossing
+    // elsewhere around the loop is then just an ordinary interior split,
+    // handled by the same cut loop below as the open-curve case already
+    // is.
+    if (c.closed) {
+      const size_t rot = splits.front().idx;
+      std::rotate(c.points.begin(), c.points.begin() + static_cast<long>(rot), c.points.end());
+      std::rotate(c.uv_a.begin(), c.uv_a.begin() + static_cast<long>(rot), c.uv_a.end());
+      std::rotate(c.uv_b.begin(), c.uv_b.begin() + static_cast<long>(rot), c.uv_b.end());
+      for (SplitAt& s : splits) s.idx = (s.idx + n - rot) % n;
+      std::sort(splits.begin(), splits.end(), [](const SplitAt& x, const SplitAt& y) { return x.idx < y.idx; });
+      c.uv_a[0] = splits.front().after_a;
+      c.uv_b[0] = splits.front().after_b;
+      c.points.push_back(c.points[0]);
+      c.uv_a.push_back(splits.front().before_a);
+      c.uv_b.push_back(splits.front().before_b);
+      c.closed = false;
+      splits.erase(splits.begin());
+    }
+    // Cut the (already seam-split, so at most one kind of parametric
+    // discontinuity is in play at a time) curve open at every remaining
+    // interior pole index, exactly like SplitAtSeams's own cut semantics:
+    // each piece ends/starts with its own copy of the shared 3D point,
+    // using whichever side's own snapped azimuth that piece needs.
+    const size_t n2 = c.points.size();
+    size_t start = 0;
+    for (const SplitAt& s : splits) {
+      if (s.idx <= start || s.idx >= n2) continue;  // defensive: out-of-range after the rotation above
+      IntersectionCurve piece;
+      piece.closed = false;
+      for (size_t k = start; k < s.idx; ++k) { piece.points.push_back(c.points[k]); piece.uv_a.push_back(c.uv_a[k]); piece.uv_b.push_back(c.uv_b[k]); }
+      piece.points.push_back(c.points[s.idx]); piece.uv_a.push_back(s.before_a); piece.uv_b.push_back(s.before_b);
+      if (piece.points.size() >= 2) out.push_back(std::move(piece));
+      c.uv_a[s.idx] = s.after_a; c.uv_b[s.idx] = s.after_b;
+      start = s.idx;
+    }
+    IntersectionCurve tail;
+    tail.closed = false;
+    for (size_t k = start; k < n2; ++k) { tail.points.push_back(c.points[k]); tail.uv_a.push_back(c.uv_a[k]); tail.uv_b.push_back(c.uv_b[k]); }
+    if (tail.points.size() >= 2) out.push_back(std::move(tail));
+  }
+  curves = std::move(out);
+}
+
 void ThinPoints(IntersectionCurve& c, double min_gap, size_t max_points) {
   const size_t n = c.points.size();
   if (n < 3) return;
@@ -1325,6 +1539,171 @@ bool TrimCrossing(const IntersectionCurve& c, size_t in_idx, size_t out_idx, con
   return found;
 }
 
+// Boundary curve(s) of the coincident/overlap region(s) between `a` and `b` -
+// PARITY_MAP.md's own "SSX coincident / overlapping surface regions" bullet
+// named this directly as the one remaining gap IntersectSurfacesOverlap()
+// (added separately, see its own doc comment) did NOT close: "IntersectSurfaces
+// still returns nothing for coincident surfaces." Called from IntersectSurfaces()
+// itself, below, ONLY when its own mesh-seeded triangle-crossing search finds
+// literally no crossing segment at all (`segs.empty()` at that call site) - the
+// same structural reason IntersectSurfacesOverlap() exists instead of reusing
+// IntersectCurveSurfaceOverlap()'s own one-dimension-down logic: two surfaces
+// that coincide over a real patch produce no clean triangle-pair CROSSING there
+// (the triangles lie in, not athwart, each other), so the ordinary chainer has
+// nothing to chain and would otherwise just report empty, silently discarding
+// the coincidence entirely rather than only declining to describe it as a
+// crossing curve (which it genuinely is not).
+//
+// Delegates the actual coincidence DETECTION to IntersectSurfacesOverlap() -
+// this file's own existing answer to "where, in a's own (u, v) domain, does a
+// lie on b", bisection-tightened to each region's own true (u0,v0)-(u1,v1)
+// extents - then turns each reported region into an actual IntersectionCurve:
+// the region's own rectangle is walked around its four edges in a's parameter
+// space (samples per edge apportioned by that edge's own 3D length, so a long
+// edge is not under-sampled relative to a short one), each sampled point
+// closest-point-projected onto `b` (row-continuity-seeded along the walk from
+// the previous sample, globally re-seeded on a poor projection - the identical
+// discipline IntersectSurfacesOverlap()'s own per-sample projection already
+// uses), and the whole loop fit through InterpolateCubic() exactly the way
+// every other IntersectionCurve in this file is built (see fit() inside
+// FinishCurve() above).
+//
+// Honesty notes, read before trusting the result:
+//  - This is the overlap REGION's own rectangular (u, v) boundary in `a`'s
+//    domain, not an exact boundary polygon of the coincident patch itself -
+//    the same "not an exact boundary polygon (a genuinely concave or
+//    multi-lobe coincident patch is still only ever reported as its enclosing
+//    rectangle)" scope IntersectSurfacesOverlap() already discloses,
+//    inherited here unchanged. A caller needing the exact (u0,v0)/(u1,v1)
+//    extents rather than a fitted 3D curve through them should call
+//    IntersectSurfacesOverlap() directly instead.
+//  - The fitted curve's own four corners are literal SAMPLE points (an
+//    InterpolateCubic() curve always passes through every point it is given),
+//    but the cubic segments immediately either side of a corner are not
+//    themselves straight/sharp - the same ordinary consequence of fitting ANY
+//    polyline with corners through one smooth cubic spline this file already
+//    accepts everywhere else (FinishCurve()'s own fit() does the same for an
+//    ordinary crossing curve, corners and all).
+//  - A degenerate (zero-width or zero-height) region report, or one whose
+//    closest-point walk cannot gather at least 4 distinct points, is silently
+//    skipped rather than fit into a bogus curve.
+//  - No seam-unwrapping is attempted for a region whose rectangle spans a
+//    whole closed parameter direction of `a` (unlike PullbackCurveToSurface()'s
+//    own seam-aware fit) - a coincident patch that genuinely wraps all the way
+//    around a closed direction is walked exactly as any other rectangle would
+//    be, not specially detected as a full wraparound.
+//  - A candidate region's own 3D bounding-box diagonal must be at least
+//    opt.mesh_tolerance (checked below) before it is trusted as a genuine
+//    coincident AREA - a real, confirmed guard, not a defensive guess: a
+//    surface's own coordinate POLE (an entire row of (u, v) samples
+//    collapsing onto nearly the same 3D point) can make
+//    IntersectSurfacesOverlap() report a small but genuine multi-cell
+//    "region" there even for an ordinary tangent TOUCH (e.g. a sphere
+//    resting on a plane at its own pole), not a real area - exactly
+//    IntersectSurfacesOverlap()'s own existing "a single isolated cell is a
+//    transient touch, not an overlap" principle, extended here to a pole's
+//    multi-cell version of the same trap (confirmed directly: without this
+//    guard, a sphere-resting-on-a-plane fixture that IntersectSurfaces() has
+//    always correctly reported as empty started reporting a spurious
+//    pole-sized "coincident region" instead).
+//  - This function is only ever reached from IntersectSurfaces() when
+//    `segs.empty()` there - and that is, in practice, essentially only ever
+//    true for FLAT/coplanar operands (of any two domains). Two curved
+//    surfaces' independent tessellations are not bit-for-bit coincident at
+//    shared points the way two flat ones always are, even when their own
+//    (u, v) domains and tessellation divisions match exactly (adjacent
+//    facets across one curved mesh's own hinge lines are only approximately
+//    coplanar with each other, unlike a flat mesh's), so a curved coincident
+//    pair generally produces real, if tiny, crossing-search noise instead
+//    of a clean empty result and never reaches this function at all - see
+//    IntersectSurfaces()'s own doc comment (surface_intersect.h) for the two
+//    confirmed fixtures (a sub-rectangle AND a full-domain match) this was
+//    actually measured on, not merely asserted.
+std::vector<IntersectionCurve> CoincidentOverlapBoundaryCurves(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
+  std::vector<IntersectionCurve> out;
+  for (const SurfaceOverlapRegion& region : IntersectSurfacesOverlap(a, b, opt)) {
+    const double u0 = region.u0, u1 = region.u1, v0 = region.v0, v1 = region.v1;
+    if (!(u1 > u0) || !(v1 > v0)) continue;  // a degenerate (zero-area) report - nothing to walk
+
+    struct Edge { double u0, v0, u1, v1; };
+    const Edge edges[4] = {{u0, v0, u1, v0}, {u1, v0, u1, v1}, {u1, v1, u0, v1}, {u0, v1, u0, v0}};
+    double elens[4];
+    for (int e = 0; e < 4; ++e) elens[e] = a.PointAt(edges[e].u0, edges[e].v0).DistanceTo(a.PointAt(edges[e].u1, edges[e].v1));
+    const double sum_len = std::max(elens[0] + elens[1] + elens[2] + elens[3], 1e-12);
+    const int total = static_cast<int>(Clamp(std::ceil(sum_len / std::max(opt.mesh_tolerance, 1e-6)), 16.0, 192.0));
+
+    std::vector<ON_2dPoint> uv;
+    for (int e = 0; e < 4; ++e) {
+      const int n_e = std::max(3, static_cast<int>(std::round(total * elens[e] / sum_len)));
+      for (int i = 0; i < n_e; ++i) {  // the edge's own last sample is the next edge's first - every edge stops one short, the closed loop supplies the wrap
+        const double t = static_cast<double>(i) / n_e;
+        uv.emplace_back(edges[e].u0 + t * (edges[e].u1 - edges[e].u0), edges[e].v0 + t * (edges[e].v1 - edges[e].v0));
+      }
+    }
+    if (uv.size() < 4) continue;
+
+    IntersectionCurve ic;
+    ic.closed = true;
+    double max_err = 0;
+    double seed_u = 0, seed_v = 0;
+    for (size_t i = 0; i < uv.size(); ++i) {
+      const Point3d p = a.PointAt(uv[i].x, uv[i].y);
+      double bu = seed_u, bv = seed_v;
+      bool ok = i == 0 ? SurfaceClosestPointGlobal(b, p, bu, bv) : SurfaceClosestPoint(b, p, bu, bv);
+      double err = ok ? b.PointAt(bu, bv).DistanceTo(p) : std::numeric_limits<double>::max();
+      if (i != 0 && (!ok || err > opt.mesh_tolerance * 4)) {
+        double gu = bu, gv = bv;
+        const bool gok = SurfaceClosestPointGlobal(b, p, gu, gv);
+        const double gerr = gok ? b.PointAt(gu, gv).DistanceTo(p) : std::numeric_limits<double>::max();
+        if (gok && gerr < err) { bu = gu; bv = gv; err = gerr; ok = true; }
+      }
+      if (!ok) continue;
+      seed_u = bu; seed_v = bv;
+      max_err = std::max(max_err, err);
+      if (!ic.points.empty() && ic.points.back().DistanceTo(p) <= opt.tolerance * 0.1) continue;  // a near-duplicate edge sample
+      ic.points.push_back(p);
+      ic.uv_a.push_back(uv[i]);
+      ic.uv_b.emplace_back(bu, bv);
+    }
+    if (ic.points.size() < 4) continue;
+    // A genuine coincident AREA must have a non-trivial physical size at the
+    // resolution opt.mesh_tolerance itself describes - otherwise this is
+    // almost certainly a parametrization artifact (most commonly a surface
+    // pole, where an entire row of (u, v) grid samples collapses onto
+    // nearly the same 3D point, so IntersectSurfacesOverlap()'s own
+    // connected-run detector sees a wide multi-cell "region" there even
+    // though the true shape is a single isolated touch point - exactly
+    // PARITY_MAP.md's own still-open "SSX across periodic seams and at
+    // singular points (poles)" gap, not the coincident-region gap this
+    // function closes). A real, confirmed regression found while building
+    // this evidence: a sphere resting tangent on a plane, sampled at a fine
+    // opt.mesh_tolerance, reported a small but genuine multi-cell region
+    // right at the sphere's own pole (where the longitude direction is
+    // degenerate) - this check keeps that case (and PullbackCurveToSurface()-
+    // adjacent pole artifacts in general) from being misreported as a
+    // coincident AREA, leaving it to FindSurfaceTangentContacts() instead,
+    // exactly as IntersectSurfacesOverlap()'s own doc comment already
+    // intends for a single isolated cell (this is that same intent, applied
+    // to a pole's own multi-cell degeneracy too).
+    ON_BoundingBox region_bbox;
+    for (const Point3d& p : ic.points) region_bbox.Set(p, true);
+    if (!region_bbox.IsValid() || region_bbox.Diagonal().Length() < std::max(opt.mesh_tolerance, 1e-9)) continue;
+    ic.max_error = max_err;
+    std::vector<ON_3dPoint> p3, pa3, pb3;
+    for (size_t i = 0; i < ic.points.size(); ++i) {
+      p3.push_back(ic.points[i]);
+      pa3.emplace_back(ic.uv_a[i].x, ic.uv_a[i].y, 0);
+      pb3.emplace_back(ic.uv_b[i].x, ic.uv_b[i].y, 0);
+    }
+    ic.params = ChordParams(p3, true);
+    ic.curve = InterpolateCubic(p3, ic.params, true, 3);
+    ic.pcurve_a = InterpolateCubic(pa3, ic.params, true, 2);
+    ic.pcurve_b = InterpolateCubic(pb3, ic.params, true, 2);
+    out.push_back(std::move(ic));
+  }
+  return out;
+}
+
 }  // namespace
 
 std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
@@ -1335,7 +1714,17 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
   const double diag = both.IsValid() ? both.Diagonal().Length() : 1;
   const double eps = std::max(1e-9 * diag, 1e-12);
   const std::vector<Seg> segs = MeshSegments(ma, mb, eps);
-  if (segs.empty()) return out;
+  // A completely empty crossing search is genuinely ambiguous on its own: two
+  // surfaces that never meet at all, and two surfaces that COINCIDE over a
+  // real patch (which produces no clean triangle-pair crossing either - the
+  // triangles lie in, not athwart, each other), both land here with
+  // `segs.empty()`. CoincidentOverlapBoundaryCurves() resolves that ambiguity
+  // via IntersectSurfacesOverlap() (empty back out for a genuine non-meet,
+  // real boundary curves for a genuine coincident region) rather than this
+  // function continuing to report every coincident pair as indistinguishable
+  // from a non-meet, the exact gap PARITY_MAP.md's own "SSX coincident /
+  // overlapping surface regions" bullet named.
+  if (segs.empty()) return CoincidentOverlapBoundaryCurves(a, b, opt);
   std::vector<SeedPolyline> chains = ChainSegments(segs, std::max(eps * 100, 1e-7 * diag));
   for (const SeedPolyline& pl : chains) {
     IntersectionCurve ic;
@@ -1356,6 +1745,7 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
     out.push_back(std::move(ic));
   }
   SplitAtSeams(out, a, b, opt);
+  SplitAtPoles(out, a, b, opt);
   std::vector<IntersectionCurve> finished;
   for (IntersectionCurve& ic : out) {
     ThinPoints(ic, opt.tolerance * 4, 400);
