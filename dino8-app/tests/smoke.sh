@@ -63,6 +63,7 @@ SelLast
 What
 ToolbarAddCommand Fillet
 ToolbarAddCommand NotARealCommandXYZ
+ToolbarAddCommand b
 EOS
 
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -115,7 +116,17 @@ check "length = 14.14" "line length measured"
 # itself are not scriptable headlessly, but this exercises the exact code
 # path they invoke, via the scriptable ToolbarAddCommand command.
 check "Added 'Fillet' to the Standard toolbar" "icon-grid picker's add-to-toolbar path (ToolbarAddCommand) accepted a known command"
-check "Unknown command: NotARealCommandXYZ" "icon-grid picker's add-to-toolbar path rejects an unknown command"
+check "Unknown command or alias: NotARealCommandXYZ" "icon-grid picker's add-to-toolbar path rejects an unknown command"
+# AddToolbarCommand used to accept ONLY a literal registered command name -
+# a registered Alias (shipped default "b" -> Box here, no setup needed) was
+# rejected the same way NotARealCommandXYZ just above still is, even though
+# DrawButtonRow's click handler already calls the generic Engine().Execute()
+# that resolves an alias fine. Closes PARITY_MAP.md's "VBA-style macro
+# recorder and editor" item's own "nothing here binds a saved macro to a
+# toolbar button... yet" line (a macro bound to an alias, see
+# alias_macro_script.txt's own "ToolbarAddCommand runmac1" check, can now go
+# on a toolbar button the exact same way).
+check "Added 'b' to the Standard toolbar" "AddToolbarCommand now also accepts a registered alias, not only a literal command name"
 test -s "$TMPW/test.3dm" && echo "ok   test.3dm exists" || { echo "FAIL test.3dm missing"; fail=1; }
 test -s "$TMPW/test.obj" && echo "ok   test.obj exists" || { echo "FAIL test.obj missing"; fail=1; }
 check "gl_error=0" "no OpenGL errors"
@@ -5909,6 +5920,7 @@ amaccheck "Command: Line 20,0,0 30,0,0" "a ';'-separated multi-command alias run
 amaccheck "Command: Circle 40,0,0 5" "...and its second command, in order"
 amaccheck "Command: RunSavedMacro mymac" "a saved macro, bound to an alias, really runs when the alias is invoked"
 amaccheck "Bounding box min 50,0,0 max 55,5,5" "the alias-bound macro's own replayed Box is real, freshly-created geometry (SelLast), not a stale object or a printed-only confirmation"
+amaccheck "Added 'runmac1' to the Standard toolbar" "a macro-bound alias (not just a bare command name) can now go on a toolbar button via AddToolbarCommand - the toolbar half of the same fix"
 
 # BlockSetArraySpacing/BlockSetArrayCount command-line wiring: PARITY_MAP.md
 # "Dynamic blocks" Array parameter/action (the Document-level math itself is
