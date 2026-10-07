@@ -5921,6 +5921,93 @@ branch's current tip should expect this abort and should not attribute it
 to this pass's own `FoldViaUnionRobust` change, which the isolated
 9747-check run above already proves clean on its own.
 
+*Twenty-ninth note on this category's score (this pass): a real,
+previously-unexercised fixture added - `TestBooleanCombineGeneralFreeformVsFreeformOperand`
+(tests/test_basic.cpp) - closing the specific gap the "Free-form
+(non-analytic) NURBS operand coverage" bullet's own prior wording named as
+still open ("a freeform operand pair ... remains completely unexercised"),
+plus a genuine new tessellation-robustness finding surfaced while building
+it - no bucket moves, same "narrowing, not a flip" pattern as every note
+above.
+
+`freeform_a` reuses `TestBooleanCombineGeneralFreeformSurfaceOperand`'s own
+bicubic Bezier bump verbatim; `freeform_b` is a SECOND, independently-built,
+genuinely asymmetric bicubic bump (no mirror symmetry, no separable u*v
+term, so neither operand is secretly congruent to or a disguised copy of
+the other), thickened into its own closed blob with the identical
+engulfing footprint/depth that test's own analytic BOX operand used - so
+BOTH operands booleaned here are genuinely non-analytic `NurbsSurface`-
+backed Breps, not one freeform plus one primitive, while the actual
+crossing shape stays the same already-proven-simple topology (one
+engulfing operand's curved top surface cutting the other's 4 flat side
+walls in a single loop) rather than inventing a new one. `BooleanCombineGeneral`
+itself handles this correctly for every op: `Union`/`Intersection`/both
+`Difference` directions each return a valid `ON_Brep`
+(`TestBooleanCombineGeneralFreeformVsFreeformOperand`'s own `IsValid()`
+checks) whose `TessellateGeneralBooleanClosedMesh()` volume satisfies the
+implementation-independent inclusion-exclusion identities (`Volume(Union) +
+Volume(Intersection) == Volume(freeform_a) + Volume(freeform_b)`, both
+`Difference` directions against `Volume(Intersection)`) within a 0.05
+tolerance, and the intersection is a genuine, strictly-smaller-than-either-
+operand partial overlap, not a degenerate touching/disjoint case.
+
+**A real, previously-undocumented limitation found while building this,
+not assumed:** unlike every curved-vs-ANALYTIC fixture already in this
+file, `TessellateGeneralBooleanClosedMesh()`'s own `IsClosedManifold()` is
+NOT reliably true at a fixed resolution once BOTH operands are genuinely
+curved - confirmed directly (`dino8_scratch_test`, not assumed) by sweeping
+this exact fixture's Intersection/Difference results across resolutions
+16/24/32/48/64/96: `IsClosedManifold()` flips true/false non-monotonically
+between adjacent resolutions (e.g. Intersection closes at 16/24/48/64 but
+NOT 32/96) while the tessellated volume itself stays stable and correct
+throughout, matching the identities above at every resolution tried - the
+identical "orientation_consistent=0, a directed edge walked twice by two
+differently-wound degenerate fan triangles" signature `Mesh::IsClosedManifold()`'s
+own `DINO8_MESH_DEBUG` trace already documents for other still-failing
+curved-face cases (box+cylinder etc.), now additionally confirmed for a
+genuine freeform-vs-freeform crossing. A first attempt used a diagonally-
+staggered fixture instead (neither operand's footprint containing the
+other's, the same "no two operands share a coplanar face" discipline this
+category's own N-ary tests use) - that shape's own `Difference(freeform_b,
+freeform_a)` stayed non-closed even at resolution 384, a worse, resolution-
+independent failure, which is why the committed fixture uses the engulfing
+topology instead and why the test itself asserts `IsValid()` plus the
+volume identities rather than `IsClosedManifold()` on any of the four
+results (asserting closure at one hardcoded resolution here would be
+asserting a coin flip, not a verified property, given the sweep above).
+Not fixed here - a real fix belongs in `TessellateGeneralBooleanClosedMesh()`'s
+own fan-insertion passes (`StitchTJunctionsOnce`/`ReconcileChainToChord`),
+a substantially larger, separate undertaking, the same "genuinely new lead
+for a future pass" `Mesh::IsClosedManifold()`'s own doc comment already
+flagged for the box+cylinder case - disclosed as a genuine new finding on
+an already-correct `BooleanCombineGeneral()` instead.
+
+Before adding this test, `git log` was checked for a fix to the unrelated,
+already-disclosed `878ecdb` regression (**kernel: Intersections &
+projections**) the Twenty-eighth note above found mid-merge: none has
+landed - `TestBooleanCombineGeneralCoplanarBoxes` (the very next test in
+this file's own run order) still aborts the binary the same way. Confirmed
+directly, not assumed, that this pass's own new test is unaffected either
+way: a baseline run of the pre-existing binary (this pass's own changes
+stashed) aborts at the identical point one test earlier (859 checks, 0
+`FAILED:` lines, then the same `BooleanCombineGeneral: an edge is claimed
+by 3 or more fragment loops` abort) - confirming the new test's own 8
+`Check()` calls (859 -> 867) are genuinely clean and the abort itself is
+exactly as pre-existing and unrelated as previously disclosed, not
+something this pass's own additive test triggers. This bullet's own
+`partial` classification is unaffected by either finding (the new
+coverage closes what it closes; the new tessellation-robustness finding
+is additional, disclosed scope, not a reason to narrow further on its
+own) - the category's 9/15/1/25 (66.0%) split is unchanged, the same
+"genuine new evidence, unchanged partial score" pattern as every note
+above. The `[kernel/booleans]` checklist line for this bullet is left
+as-is for the same reason (still accurately `(partial)`, no flip to
+narrow). `dino8_kernel_tests` run end to end from this pass's own HEAD:
+867 checks, 0 `FAILED:` lines, then the same pre-existing, already-
+disclosed `878ecdb` abort (confirmed above to start one test later than
+without this pass's changes, and not one check earlier) - the kernel-only
+headline is unaffected (no bucket moved).*
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
