@@ -8,10 +8,14 @@
 // half-translated language degrades gracefully instead of breaking the UI.
 //
 // Scope: this covers the highest-visibility UI chrome (menu bar, panel
-// titles, the status bar, common dialogs) - NOT the ~1055 commands' help
-// text in data/commands.json, which stays English-only for every language
-// (see RHINO8_KILLER_AUDIT.md). Any string not registered as an i18n key
-// simply isn't translated yet; Tr() never fails, it just echoes English.
+// titles, the status bar, common dialogs), plus - via TrOrDefault below - a
+// deliberately bounded subset of commands' one-line descriptions
+// (cmddesc.<lowercase name>, ~70 of the ~1055 commands in
+// data/commands.json: the everyday creation/edit/transform/file/view
+// commands a new user reaches for first). Translating all ~1055 commands'
+// full help text is out of scope for one pass; any string not registered
+// as an i18n key simply isn't translated yet. Tr() never fails, it just
+// echoes English (or the key itself if even English doesn't have it).
 #pragma once
 
 #include <string>
@@ -55,5 +59,14 @@ std::vector<LanguageEntry> AvailableLanguages();
 // entirely unknown key is visible as its key rather than an empty string
 // or a crash).
 const std::string& Tr(const std::string& key);
+
+// Like Tr(), but for a key that is only *sometimes* registered (the bounded
+// cmddesc.* command-description subset above): if `key` isn't found in the
+// active language's table OR the English table, returns `fallback` itself
+// (the command's real, always-present English description) instead of
+// echoing the raw key - a sparse, optional key set must never surface a
+// literal "cmddesc.circle" in the UI for one of the ~980 commands this
+// pass didn't translate.
+const std::string& TrOrDefault(const std::string& key, const std::string& fallback);
 
 }  // namespace dino8::i18n
