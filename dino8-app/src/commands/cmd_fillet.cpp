@@ -235,6 +235,87 @@ kernel::NurbsSurface OffsetBy(const ON_NurbsSurface& in, double d) {
   return out;
 }
 
+// Offsets a NURBS surface by `d` the same way as OffsetBy above, EXCEPT
+// the offset points come from sampling the real surface on a `samples_u`
+// x `samples_v` parameter grid (PointAt/NormalAt, always a real point and
+// a real normal ON the true surface) instead of translating its control
+// points - which can sit well off the true surface (e.g. the extra
+// control points any rational representation of a circle always
+// carries), so translating THEM along their own local normal does not
+// converge to a true offset as the net densifies on its own (confirmed
+// empirically: an earlier version of this file tried densifying OffsetBy's
+// own control net via knot insertion instead of this sampling approach,
+// and it measurably made a real curved-face FilletEdge fixture's own
+// result WORSE, not better - see BuildFilletAdaptive's own dated
+// PARITY_MAP.md note for the full story). Every sampled point here, by
+// contrast, is genuinely ON the surface, so increasing the grid
+// resolution genuinely converges towards the true offset surface - the
+// same point-sampling convergence BuildBlendSurfaceG1Adaptive/G2Adaptive
+// (geom/BlendSurface.cpp) already rely on elsewhere in this file, just
+// for an offset instead of a blend row. The grid is reassembled into a
+// NURBS surface via the kernel's own `NurbsSurface::InterpolateThroughGrid`
+// (surface.h/surface_edit.cpp) - exact tensor-product interpolation
+// through every sampled point, not a least-squares fit - so the result
+// is exact on a plane regardless of resolution (every sampled point and
+// its own constant normal direction stay within the plane, and
+// interpolating through in-plane data can't leave it either), matching
+// OffsetBy's own exactness there.
+bool OffsetBySampled(const ON_NurbsSurface& in, double d, int samples_u, int samples_v, ON_NurbsSurface& out) {
+  samples_u = std::max(samples_u, 4);
+  samples_v = std::max(samples_v, 4);
+  const ON_Interval du = in.Domain(0), dv = in.Domain(1);
+  // A CLOSED direction's own parameter max is the SAME physical point as
+  // its min (e.g. a cylinder wall's full-circumference seam) - sampling
+  // both would hand InterpolateThroughGrid a row/column whose own last
+  // two points coincide, a zero-length chord that starves its shared
+  // chord-length parameterization (confirmed directly: this is exactly
+  // what made an earlier version of this function return a wildly wrong
+  // surface on a real solid-cylinder FilletEdge fixture - PARITY_MAP.md's
+  // own dated note has the full story). Sampling only up to (not
+  // including) the max in a closed direction avoids the duplicate
+  // altogether; an open direction keeps both ends included, same as
+  // before, so the offset genuinely covers the original surface's own
+  // full domain there.
+  const bool closed_u = in.IsClosed(0), closed_v = in.IsClosed(1);
+  std::vector<Point3d> grid;
+  grid.reserve(static_cast<size_t>(samples_u) * static_cast<size_t>(samples_v));
+  for (int i = 0; i < samples_u; ++i) {
+    const double u = du.ParameterAt(static_cast<double>(i) / (closed_u ? samples_u : samples_u - 1));
+    for (int j = 0; j < samples_v; ++j) {
+      const double v = dv.ParameterAt(static_cast<double>(j) / (closed_v ? samples_v : samples_v - 1));
+      const Point3d p = in.PointAt(u, v);
+      ON_3dVector n = in.NormalAt(u, v);
+      if (!n.Unitize()) return false;
+      grid.push_back(p + n * d);
+    }
+  }
+  kernel::NurbsSurface result;
+  if (kernel::NurbsSurface::InterpolateThroughGrid(grid, samples_u, samples_v, result) != kernel::Result::Ok) return false;
+  out = result.raw();
+  // InterpolateThroughGrid's own chord-length parameterization has no
+  // relation at all to `in`'s own domain - left as-is, a caller seeding a
+  // closest-point search on the ORIGINAL surface from a (u, v) read off
+  // THIS offset result (exactly what BuildFillet's own per-spine-sample
+  // loop below does, the same way it already does for OffsetBy's result)
+  // would be seeding it with a parameter value from an unrelated domain,
+  // landing the search on the wrong part of the surface entirely -
+  // confirmed directly: this is exactly what made an earlier version of
+  // this function (without the fix on the next two lines) report a
+  // wildly wrong max_gap on a real solid-cylinder FilletEdge fixture,
+  // even though the offset surface it built was itself already a good,
+  // converging approximation of the true offset - see PARITY_MAP.md's own
+  // dated note for the full story. Rescaling the result's own domain back
+  // onto `in`'s domain fixes this with no shape change at all (`SetDomain`
+  // only reparameterizes): the grid above was sampled at `in`-domain
+  // fractions in the same order InterpolateThroughGrid lays its own
+  // output's (u, v) out in, so a seed point near a given fraction of
+  // `in`'s domain is now near the SAME fraction of the offset result's
+  // domain too.
+  out.SetDomain(0, du.Min(), du.Max());
+  out.SetDomain(1, dv.Min(), dv.Max());
+  return true;
+}
+
 // Picks the offset sign that moves the surface towards `target` (its
 // domain-centre point is compared to the offset centre point).
 double OffsetSign(const ON_NurbsSurface& s, Point3d target) {
@@ -318,7 +399,13 @@ double SurfaceScale(const ON_NurbsSurface& s) {
 // size doesn't make an otherwise-valid fillet spuriously fail (floor too
 // tight for a huge pair of surfaces) or accept geometric noise as a real
 // spine (floor too loose for a tiny pair).
-FilletBuild BuildFillet(const ON_NurbsSurface& a, const ON_NurbsSurface& b, const std::function<double(double)>& radius_at, double tol) {
+// `offset_samples` is 0 by default (OffsetBy's own per-CV translation,
+// unchanged behavior for every pre-existing caller) or, when positive,
+// the (offset_samples x offset_samples) grid resolution to build the
+// offset surfaces with OffsetBySampled instead - the only thing
+// BuildFilletAdaptive below varies between its own successive attempts.
+FilletBuild BuildFillet(const ON_NurbsSurface& a, const ON_NurbsSurface& b, const std::function<double(double)>& radius_at, double tol,
+                        int offset_samples = 0) {
   FilletBuild out;
   const double scale = std::max(SurfaceScale(a), SurfaceScale(b));
   // 1e-6 of the surfaces' own scale - the same relative floor used for
@@ -347,8 +434,18 @@ FilletBuild BuildFillet(const ON_NurbsSurface& a, const ON_NurbsSurface& b, cons
   // then intersect the offsets to find the spine.
   const double sa = OffsetSign(a, b.PointAt(b.Domain(0).Mid(), b.Domain(1).Mid()));
   const double sb = OffsetSign(b, a.PointAt(a.Domain(0).Mid(), a.Domain(1).Mid()));
-  const kernel::NurbsSurface offA = OffsetBy(a, sa * r0), offB = OffsetBy(b, sb * r0);
-  std::vector<IntersectionCurve> ssx = IntersectSurfaces(offA.raw(), offB.raw(), opt);
+  ON_NurbsSurface off_a_raw, off_b_raw;
+  if (offset_samples > 0) {
+    if (!OffsetBySampled(a, sa * r0, offset_samples, offset_samples, off_a_raw) ||
+        !OffsetBySampled(b, sb * r0, offset_samples, offset_samples, off_b_raw)) {
+      out.error = "could not build a sampled offset surface at this resolution";
+      return out;
+    }
+  } else {
+    off_a_raw = OffsetBy(a, sa * r0).raw();
+    off_b_raw = OffsetBy(b, sb * r0).raw();
+  }
+  std::vector<IntersectionCurve> ssx = IntersectSurfaces(off_a_raw, off_b_raw, opt);
   if (ssx.empty()) { out.error = "the offset surfaces do not meet (surfaces too far apart or parallel, radius too small to reach, or - just as often - radius too LARGE for the surfaces to still overlap once offset that far)"; return out; }
   // Longest curve is the spine.
   const IntersectionCurve* best = &ssx.front();
@@ -411,6 +508,69 @@ FilletBuild BuildFillet(const ON_NurbsSurface& a, const ON_NurbsSurface& b, cons
   out.pcurve_b = InterpolateCubic(pub, params, false, 2);
   out.ok = true;
   return out;
+}
+
+// Adaptive, tolerance-enforcing counterpart to BuildFillet() above -
+// closes PARITY_MAP.md's own long-standing "Rolling-ball blend surface
+// accuracy on freeform surfaces... the recorded max_gap quality signal is
+// never enforced against a tolerance" gap. BuildFillet() already computes
+// max_gap (how far each contact point lands from the true radius - the
+// one real error the offset step can introduce on a curved face; it is
+// exactly zero on a plane), but previously nothing ever compared it
+// against anything.
+//
+// This retries with a progressively finer OffsetBySampled() grid (see its
+// own doc comment above for why point sampling, not OffsetBy's per-CV
+// translation, is what this needed) whenever the achieved gap is still
+// above `max_gap`, tracking whichever attempt reached the SMALLEST gap
+// so far - not simply the latest one, since a finer grid is not
+// guaranteed to beat a coarser one on every single attempt (sampling
+// noise near a difficult region of the surface), only to converge on
+// average as the grid densifies; always taking "the latest" could
+// silently regress on an unlucky attempt (confirmed possible in exactly
+// this way during development - see this function's own git history and
+// PARITY_MAP.md's dated note for the real fixture that caught the
+// earlier knot-insertion approach doing exactly this). A plane (or a
+// pair where the very first, coarsest attempt already certifies) needs
+// no retry at all and returns on the first try, same as a bare
+// BuildFillet() call would, since level 0 there is already the identical
+// unrefined OffsetBy() construction (offset_samples=0) for maximum
+// backward compatibility with every other existing caller.
+//
+// `max_refine_levels` bounds the sampling-grid growth (each level
+// doubles the grid resolution in both directions, starting from a
+// modest base) - a budget-exhausted certification still returns the
+// best (smallest-gap) attempt reached, with `max_gap` honestly reporting
+// what was actually achieved rather than silently claiming success, the
+// same "best effort, honestly measured" contract
+// BuildBlendSurfaceG1Adaptive/G2Adaptive (geom/BlendSurface.cpp) already
+// established for the unrelated Hermite-blend construction.
+FilletBuild BuildFilletAdaptive(const ON_NurbsSurface& a, const ON_NurbsSurface& b,
+                                 const std::function<double(double)>& radius_at, double tol,
+                                 double max_gap, int max_refine_levels = 5) {
+  FilletBuild best = BuildFillet(a, b, radius_at, tol, /*offset_samples=*/0);
+  // An outright failure here (e.g. "the offset surfaces do not meet" for a
+  // radius genuinely too large for the geometry) is not something a finer
+  // sampling grid should ever be asked to "rescue" - confirmed directly
+  // this is a real, not just a theoretical, risk: an earlier version of
+  // this function retried unconditionally on any failure too, and on a
+  // real adversarial fixture (radius 5 on a box edge only 2 units tall,
+  // more than double what the geometry can resolve) the finer
+  // OffsetBySampled grid found a spurious near-degenerate "intersection"
+  // the unrefined OffsetBy correctly found none of, reporting success on
+  // a fillet that removed essentially no material (Volume stayed at the
+  // ORIGINAL box's own 1000, not a real cut) instead of the correct,
+  // honest failure - see this function's own dated PARITY_MAP.md note.
+  // Escalating a genuine accuracy problem (ok already true, gap too
+  // large) is this function's own actual job; rescuing an outright
+  // infeasibility is not.
+  if (!best.ok) return best;
+  int grid = 8;
+  for (int level = 0; level < max_refine_levels && best.max_gap > max_gap; ++level, grid *= 2) {
+    FilletBuild next = BuildFillet(a, b, radius_at, tol, /*offset_samples=*/grid);
+    if (next.ok && next.max_gap < best.max_gap) best = next;
+  }
+  return best;
 }
 
 // Genuinely exact variable-radius fillet between two PLANAR faces meeting
@@ -1263,7 +1423,18 @@ class FilletTwoSurfacesCommand : public Command {
         fb2 = BuildPlaneCylinderVariableFillet(*sa, *sb, best->curve, radius_at, tol);
       }
     }
-    if (!fb2.ok) fb2 = BuildFillet(*sa, *sb, radius_at, tol);
+    if (!fb2.ok) {
+      // Adaptive, not a bare fixed-net call - closes PARITY_MAP.md's own
+      // "Rolling-ball blend surface accuracy on freeform surfaces...
+      // max_gap is never enforced against a tolerance" gap for this
+      // command's own general (curved-face) fallback. Same scale-aware
+      // floor FilletEdgeCommand's own blend/tapered-fillet wiring already
+      // uses elsewhere in this file (SurfaceScale * 1e-3, clamped against
+      // the document tolerance), so a tiny or huge surface pair gets a
+      // sane target either way.
+      const double max_gap = std::max(std::max(SurfaceScale(*sa), SurfaceScale(*sb)) * 1e-3, tol * 10);
+      fb2 = BuildFilletAdaptive(*sa, *sb, radius_at, tol, max_gap);
+    }
     if (!fb2.ok) { ctx.Warn(std::string(chamfer ? "ChamferSrf" : "FilletSrf") + ": " + fb2.error); return; }
     ctx.Doc().BeginChange(chamfer ? "ChamferSrf" : "FilletSrf");
     ON_NurbsSurface result_surface = fb2.fillet;
@@ -2091,6 +2262,7 @@ class FilletEdgeCommand : public Command {
     ON_NurbsCurve ca, cb;                // contact curves, kept for exact trimming below
     bool ok = false;
     std::string err;
+    double achieved_fillet_gap = 0.0;    // BuildFilletAdaptive's own fb.max_gap, kept past its own block's scope for the two prints below
     if (mode_ == Mode::Blend) {
       ON_NurbsCurve ec;
       edge.GetNurbForm(ec);
@@ -2214,9 +2386,19 @@ class FilletEdgeCommand : public Command {
         if (!fb.ok) fb = BuildPlaneCylinderVariableFillet(*sa, *sb, ec, radius_at, tol);
         variable_engine_used_ = fb.ok;
       }
-      if (!fb.ok) fb = BuildFillet(*sa, *sb, radius_at, tol);
+      if (!fb.ok) {
+        // Adaptive, not a bare fixed-net call - closes PARITY_MAP.md's own
+        // "Rolling-ball blend surface accuracy on freeform surfaces...
+        // max_gap is never enforced against a tolerance" gap for this
+        // command's own general (curved-face) fallback, the identical
+        // floor FilletTwoSurfacesCommand::Run's own FilletSrf/ChamferSrf
+        // fallback above already uses.
+        const double max_gap = std::max(std::max(SurfaceScale(*sa), SurfaceScale(*sb)) * 1e-3, tol * 10);
+        fb = BuildFilletAdaptive(*sa, *sb, radius_at, tol, max_gap);
+      }
       ok = fb.ok;
       err = fb.error;
+      achieved_fillet_gap = fb.max_gap;
       if (ok) {
         built = mode_ == Mode::Fillet ? fb.fillet : FilletTwoSurfacesCommand::RuledBetween(fb.contact_curve_a, fb.contact_curve_b);
         spine = fb.spine_pts;
@@ -2429,7 +2611,8 @@ class FilletEdgeCommand : public Command {
           ctx.Doc().Remove(pick.id);
           ObjectId nid = ctx.Doc().Add(std::move(repl));
           ctx.Doc().Select(nid, true);
-          ctx.Print(label + ": edge " + std::to_string(pick.edge) + " -- mesh fallback (exact B-rep trim unavailable here; result is an approximate mesh, not a clean B-rep)");
+          ctx.Print(label + ": edge " + std::to_string(pick.edge) + " -- mesh fallback (exact B-rep trim unavailable here; result is an approximate mesh, not a clean B-rep)" +
+                     (achieved_fillet_gap > tol * 10 ? " (surface quality: contact points off by up to " + FormatNumber(achieved_fillet_gap) + ")" : ""));
           return;
         } catch (const std::exception& ex) { ctx.Warn(label + ": mesh fallback failed (" + std::string(ex.what()) + ")"); }
       }
