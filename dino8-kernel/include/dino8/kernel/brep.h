@@ -2707,22 +2707,22 @@ class Brep {
   // The Brep-level endpoint of NurbsSurface::TessellateGridCertifiedAdaptive()
   // - closes PARITY_MAP's own disclosed "Adaptive tessellation of B-rep
   // faces (curvature-driven refinement) — a fixed angular deviation
-  // heuristic, not a certified chordal-deviation bound" gap for every face
-  // the kernel can actually CERTIFY a bound for: an untrimmed (whole-cell)
-  // face gets TessellateGridCertifiedAdaptive() itself, an honest MEASURED
-  // (not merely estimated) chord-deviation guarantee. A genuinely trimmed
-  // face has no certified path (MeasureGridTessellationDeviation() itself
-  // is scoped to the plain untrimmed grid, not TessellateGrid()'s own
-  // trimmed/exact-clip siblings - see that function's own doc comment),
-  // so those faces fall back to the existing uncertified
-  // TessellateGridNonUniformAdaptive()/TessellateGridClippedExactAdaptive()
-  // heuristic, the same real, disclosed scope split
-  // TessellateNonUniformAdaptive() already uses for its own exact-clip
-  // fallback. If `out_certified` is non-null, it is resized to one entry
-  // per returned face and set to `true` exactly where that face's own
-  // mesh carries the certified guarantee, `false` where it's the
-  // uncertified fallback - so a caller can tell the two apart instead of
-  // this method silently blending a real bound with a heuristic one.
+  // heuristic, not a certified chordal-deviation bound" gap for EVERY
+  // face, trimmed or not: an untrimmed (whole-cell) face gets
+  // TessellateGridCertifiedAdaptive() itself, an exact-clipped face gets
+  // NurbsSurface::TessellateGridClippedExactCertifiedAdaptive(), and every
+  // other trimmed/holed face gets
+  // NurbsSurface::TessellateGridNonUniformCertifiedAdaptive() - all three
+  // share the identical "measure via NurbsSurface::MeasureMeshTessellation
+  // Deviation()/MeasureGridTessellationDeviation(), refine, re-measure"
+  // shape, so no face is left with only a heuristic ESTIMATE the way
+  // every other `*Adaptive` sibling in this class still is. `out_certified`,
+  // if non-null, is resized to one entry per returned face and set to
+  // `true` for every one of them - kept as a parameter (rather than
+  // removed now that it's always `true`) so an existing caller reading it
+  // doesn't need to change, and because a future face representation this
+  // method doesn't yet know how to measure could still need to report
+  // `false` here without an ABI break.
   std::vector<Mesh> TessellateCertifiedAdaptive(double chord_tolerance, int max_refinements = 8,
                                                  std::vector<bool>* out_certified = nullptr) const;
 
