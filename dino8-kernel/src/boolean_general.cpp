@@ -661,6 +661,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -3308,6 +3309,48 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
   return result;
 }
 
+namespace {
+
+// The identical fold-order-robust Union fold boolean.cpp's own
+// FoldViaUnionRobust (BooleanCombinePlanarNAry/BooleanCombineMixedNAry)
+// already uses, duplicated here (this is a separate translation unit) for
+// the SSX-driven general engine - closes the same "Multi-body / multi-tool
+// booleans" bullet's disclosed fold-order limitation (this category's own
+// "Twenty-fourth note") for the third and last B-rep engine. A naive
+// left-to-right fold throws this engine's own "an edge is claimed by 3 or
+// more fragment loops"/`BuildLoop` non-manifold refusal whenever its FIRST
+// step pairs two operands that only touch along a coincident face; this
+// defers (to the back of the queue, not discarding) any candidate that
+// throws against the current accumulator and tries the next one instead,
+// retrying a whole round before giving up and propagating the first
+// exception seen - see boolean.cpp's own FoldViaUnionRobust doc comment
+// for the full rationale, identical here.
+template <typename UnionFn>
+Brep FoldViaUnionRobust(const std::vector<Brep>& group, UnionFn union_fn) {
+  Brep acc = group.front();
+  std::vector<Brep> remaining(group.begin() + 1, group.end());
+  while (!remaining.empty()) {
+    bool progressed = false;
+    std::exception_ptr first_failure;
+    const size_t round_size = remaining.size();
+    for (size_t attempt = 0; attempt < round_size; ++attempt) {
+      try {
+        acc = union_fn(acc, remaining.front());
+        remaining.erase(remaining.begin());
+        progressed = true;
+        break;
+      } catch (const std::exception&) {
+        if (!first_failure) first_failure = std::current_exception();
+        std::rotate(remaining.begin(), remaining.begin() + 1, remaining.end());
+      }
+    }
+    if (!progressed) std::rethrow_exception(first_failure);
+  }
+  return acc;
+}
+
+}  // namespace
+
 Brep BooleanCombineGeneralNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
                                 BooleanOp op, double tolerance) {
   if (op == BooleanOp::SymmetricDifference) {
@@ -3322,17 +3365,15 @@ Brep BooleanCombineGeneralNAry(const std::vector<Brep>& first_group, const std::
                                  "dino8::kernel::BooleanCombineGeneralNAry: first_group is empty");
   }
 
-  // Same left-to-right Union fold as BooleanCombineMixedNAry/
+  // Same fold-order-robust Union fold as BooleanCombineMixedNAry/
   // BooleanCombinePlanarNAry (dino8/kernel/boolean.h/.cpp), for the general
-  // SSX-driven engine instead - see BooleanCombineMixedNAry's own doc
-  // comment for the full rationale. `tolerance` is forwarded unchanged to
-  // every pairwise call.
+  // SSX-driven engine instead - see this file's own FoldViaUnionRobust doc
+  // comment above for the full rationale. `tolerance` is forwarded
+  // unchanged to every pairwise call.
   auto fold_union = [op_tol = tolerance](const std::vector<Brep>& group) {
-    Brep acc = group.front();
-    for (size_t i = 1; i < group.size(); ++i) {
-      acc = BooleanCombineGeneral(acc, group[i], BooleanOp::Union, op_tol);
-    }
-    return acc;
+    return FoldViaUnionRobust(group, [op_tol](const Brep& x, const Brep& y) {
+      return BooleanCombineGeneral(x, y, BooleanOp::Union, op_tol);
+    });
   };
 
   const Brep folded_first = fold_union(first_group);

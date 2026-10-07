@@ -616,16 +616,27 @@ class SubD {
   // floating-point precision, not an approximation.
   //
   // For every "irregular" face - touches an extraordinary vertex
-  // (valence != 4), a crease, or a boundary - no such closed form exists
-  // from the control net alone (that needs either Stam's per-vertex
-  // eigenbasis, which requires solving that vertex's subdivision
-  // matrix's eigenstructure, or a Gregory-patch-style G1 construction);
-  // this instead returns an `exact = false` bicubic patch built by
-  // bilinearly interpolating the face's 4 control-net corner points and
-  // degree-elevating that to a (still flat, but topologically bicubic)
-  // Bezier patch. That patch's deviation from the true limit surface is
-  // bounded by the face's own size (it's the face's flat corner
-  // interpolant, not the curved limit surface), which is why callers
+  // (valence != 4), a crease, or a boundary - no closed form covering the
+  // whole face exists from the control net alone (that would need either
+  // a full per-vertex Stam eigenbasis surface everywhere, not just at one
+  // point, or a Gregory-patch-style G1 construction); this instead
+  // returns an `exact = false` bicubic patch built by bilinearly
+  // interpolating the face's 4 corners and degree-elevating that to a
+  // (still flat between them, but topologically bicubic) Bezier patch.
+  // As of this pass, those 4 corners are each the vertex's own true
+  // Catmull-Clark LIMIT point - `ON_SubDVertex::GetSurfacePoint()`, the
+  // same genuine eigenbasis evaluator EvaluateFace()'s own
+  // ExactVertexCorner() uses for a single-point corner query - rather
+  // than the earlier, cruder raw control-net point (falling back to that
+  // raw point only where a semi-sharp edge is incident, since decaying
+  // that correctly needs a mutable working-copy subdivide this
+  // many-faces-at-once builder doesn't do; see
+  // IrregularCornerLimitOrControlPoint() in subd.cpp for the exact
+  // condition). So the patch's own 4 corners already sit exactly on the
+  // limit surface in the common (no nearby semi-sharp edge) case, same as
+  // a regular patch's corners always have; only the interior between
+  // them is still the flat bilinear fill, whose deviation from the true
+  // limit surface is bounded by the face's own size, which is why callers
   // needing a tighter bound should Subdivide() first: Catmull-Clark
   // subdivision shrinks every face's linear size by 2x per level while
   // leaving the number of irregular faces fixed (exactly one per
