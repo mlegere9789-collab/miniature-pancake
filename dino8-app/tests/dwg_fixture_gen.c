@@ -361,6 +361,108 @@ write_ordinate_fixture (const char *path)
   return 0;
 }
 
+/* A real LEADER whose own `associated_annotation` field (DXF group 340's
+ * binary counterpart) genuinely points at a real MTEXT entity - built via
+ * dwg_add_LEADER's own `associated_annotation`/`type` parameters, marked
+ * "Experimental" in dwg_api.h like dwg_add_MTEXT/dwg_add_SPLINE above, so
+ * checked by hand before relying on it here too: passing the MTEXT
+ * dwg_add_MTEXT just returned, plus type 0 ("text/mtext" - dwg.h's own
+ * `annot_type` comment), genuinely sets the written LEADER's own
+ * `associated_annotation` handle's `absolute_ref` to that MTEXT's own
+ * handle value (confirmed below, right after creation, by comparing
+ * against the same `dwg_obj_generic_handlevalue` dwg_add_LEADER's own
+ * implementation - src/dwg_api.c - uses internally; its `->obj` pointer
+ * is NOT resolved yet at this point - see that check's own comment - so
+ * only `absolute_ref` is meaningful to compare this early) - this is the
+ * one field WalkDwgEntities' new DwgLeaderLabel (src/io/FileExchange.cpp)
+ * needs to resolve a real Leader's label from a real DWG binary, the
+ * cross-reference that function's own comment names as the gap this
+ * fixture closes (previously `dwg_fixture_gen` had no case exercising it
+ * at all, since the original LEADER closure needed no annotation field).
+ *
+ * Leader points: tip (0,0,0), bend (5,10,0), tail (25,10,0) - same shape
+ * as the plain (no-annotation) `dxf_leader_fixture.dxf` case, so only the
+ * label itself is new here. MTEXT: insertion point (25,10,0) - at the
+ * leader's own tail, where a real landing label actually sits - text
+ * "Hi" (no inline formatting codes this time; MTextToLines' own stripping
+ * is already proven elsewhere, so this fixture isolates the handle
+ * resolution itself).
+ */
+static int
+write_leader_mtext_fixture (const char *path)
+{
+  Dwg_Data *dwg = dwg_new_Document (R_2000, 0, 0);
+  if (!dwg)
+    {
+      fprintf (stderr, "dwg_new_Document failed\n");
+      return 1;
+    }
+  Dwg_Object *mspace = dwg_model_space_object (dwg);
+  if (!mspace)
+    {
+      fprintf (stderr, "dwg_model_space_object failed\n");
+      return 1;
+    }
+  Dwg_Object_BLOCK_HEADER *hdr = mspace->tio.object->tio.BLOCK_HEADER;
+
+  const dwg_point_3d mtext_pt = { 25.0, 10.0, 0.0 };
+  Dwg_Entity_MTEXT *mtext = dwg_add_MTEXT (hdr, &mtext_pt, 0.0, "Hi");
+  if (!mtext)
+    {
+      fprintf (stderr, "dwg_add_MTEXT failed\n");
+      return 1;
+    }
+  /* Same override write_mtext_fixture above already needs: dwg_add_MTEXT's
+   * own default text_height comes from the document's $TEXTSIZE header
+   * variable, not a known value - WalkDwgEntities' DWG_TYPE_MTEXT case
+   * skips a non-positive height outright, so this fixture sets one
+   * explicitly rather than trusting a fresh dwg_new_Document's default. */
+  mtext->text_height = 5.0;
+
+  const dwg_point_3d pts[3] = { { 0.0, 0.0, 0.0 },
+                                 { 5.0, 10.0, 0.0 },
+                                 { 25.0, 10.0, 0.0 } };
+  Dwg_Entity_LEADER *leader
+      = dwg_add_LEADER (hdr, 3, pts, mtext, 0 /* text/mtext */);
+  if (!leader)
+    {
+      fprintf (stderr, "dwg_add_LEADER failed\n");
+      return 1;
+    }
+  /* dwg_add_handleref (src/dwg.c) deliberately leaves a freshly-created
+   * handle's own ->obj NULL ("fill ->obj later" - it only gets resolved by
+   * a real read-back pass, not immediately after an in-memory dwg_add_*
+   * call sequence like this one), so comparing ->obj here - the first,
+   * more obvious check this fixture tried - always fails even when the
+   * handle itself is genuinely correct. absolute_ref is set immediately,
+   * though, and is exactly what gets written to and read back from the
+   * real DWG binary - comparing it against the MTEXT's own handle value
+   * (the same dwg_obj_generic_handlevalue dwg_add_LEADER's own
+   * implementation - src/dwg_api.c - uses to build this same handle) is
+   * the real test of whether the "Experimental" annotation wiring actually
+   * works, not just whether it compiles. */
+  if (!leader->associated_annotation
+      || leader->associated_annotation->absolute_ref
+             != dwg_obj_generic_handlevalue (mtext))
+    {
+      fprintf (stderr,
+               "dwg_add_LEADER did not actually set associated_annotation "
+               "to the real MTEXT's own handle - dwg_add_LEADER's own "
+               "\"Experimental\" warning was right to be suspicious\n");
+      return 1;
+    }
+
+  const int werr = dwg_write_file (path, dwg);
+  dwg_free (dwg);
+  if (werr >= DWG_ERR_CRITICAL)
+    {
+      fprintf (stderr, "dwg_write_file failed: 0x%x\n", werr);
+      return 1;
+    }
+  printf ("wrote %s\n", path);
+  return 0;
+}
+
 int
 main (int argc, char **argv)
 {
@@ -374,9 +476,11 @@ main (int argc, char **argv)
     return write_dim_fixture (argv[1]);
   if (argc == 3 && strcmp (argv[2], "ordinate") == 0)
     return write_ordinate_fixture (argv[1]);
+  if (argc == 3 && strcmp (argv[2], "leader_mtext") == 0)
+    return write_leader_mtext_fixture (argv[1]);
   if (argc != 2)
     {
-      fprintf (stderr, "usage: %s <output.dwg> [hatch|spline|mtext|dim|ordinate]\n", argv[0]);
+      fprintf (stderr, "usage: %s <output.dwg> [hatch|spline|mtext|dim|ordinate|leader_mtext]\n", argv[0]);
       return 2;
     }
 
