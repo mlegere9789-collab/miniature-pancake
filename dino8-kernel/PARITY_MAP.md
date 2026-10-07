@@ -5901,6 +5901,51 @@ branch's current tip should expect this abort and should not attribute it
 to this pass's own `FoldViaUnionRobust` change, which the isolated
 9747-check run above already proves clean on its own.
 
+**A second disclosed, pre-existing, UNRELATED `dino8-app` `tests/smoke.sh`
+failure found while verifying a `kernel: Mass properties & spatial
+queries` pass's own merge with concurrent work, not caused by this pass
+and not fixed here:** the complete `tests/smoke.sh` suite now reports 4
+`FAIL` lines, all inside `fillet_adversarial_script.txt`'s own fixed
+object-numbering expectations (`facheck`, smoke.sh:1883/1885/1888 - e.g.
+expects `"ChamferEdge: edge 10 of object 5 ..."`, actually gets `"...
+object 6 ..."`). Root-caused, not assumed: the script's own third section
+(a radius of 5 on a box whose shortest adjacent edge is only 2 units,
+smoke.sh's own `facheck` at line 1880 - `"a radius more than double what
+the geometry supports failed with a clear diagnostic, not a hang or
+garbage surface"`) no longer fails the way that assertion's own text
+still expects; `FilletEdge` now falls through to `cmd_fillet.cpp`'s own
+pre-existing mesh-fallback path (`"edge 10 -- mesh fallback (exact B-rep
+trim unavailable here; result is an approximate mesh, not a clean
+B-rep)"`) and succeeds with an approximate mesh instead of refusing
+outright - a genuine behavioral improvement (graceful degradation instead
+of a hard failure), but the mesh-fallback object consumes one extra
+scene-object id that the original box's own id never did, shifting every
+later `facheck` in this script's own fixed-id assertions up by exactly
+one (object 5->6, 6->7, 8->9) - confirmed by running the script
+standalone and diffing the resulting object ids directly, not just
+observing the `FAIL` lines. Confirmed NOT introduced by this pass's own
+`GetTightBoundingBox`/`GetOrientedBoundingBox`/`MinDistanceTo` curve-only
+kernel work (none of which this pass's commits touch `cmd_fillet.cpp`,
+`fillet.cpp`, or `fillet_adversarial_script.txt` at all - verified via
+`git log` over the merge range): reproduces identically, deterministically,
+on a clean isolated `git worktree` checkout of the concurrent tree's own
+tip `08bab0b` (prior to this pass's own merge), confirming it predates
+this pass entirely. Left for whichever session owns **Blending &
+chamfering** (the `FilletEdge`/`ChamferEdge` category) to fix - either by
+updating `fillet_adversarial_script.txt`'s own three stale `facheck`
+object-id expectations to match the (correct, improved) mesh-fallback
+behavior, or by giving the mesh-fallback path's own temporary object the
+same id as the one it replaces - the same "confirmed pre-existing, not a
+flake, not introduced here, disclosed rather than silently discovered
+later" convention used just above for the kernel-side `BooleanCombineGeneral`
+regression. This pass's own massprops work is unaffected and independently
+verified clean before this disclosure was written: all `MinDistanceTo`/
+`GetOrientedBoundingBox`/`GetTightBoundingBox(tolerance)` checks in
+`dino8_kernel_tests` pass (0 `FAIL`), and the `dino8-app` build succeeds;
+only these 4 pre-existing `fillet_adversarial_script.txt` lines are
+affected, out of several thousand other `tests/smoke.sh` checks that all
+still report `ok`.
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
