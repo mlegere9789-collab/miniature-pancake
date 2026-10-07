@@ -9945,6 +9945,222 @@ void TestSurfaceTessellateGridCertifiedAdaptive() {
         "is too small to reach the bound");
 }
 
+void TestSurfaceMeasureMeshTessellationDeviation() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // A flat surface's own grid mesh exactly reproduces every point on it,
+  // so the measured (closest-point-based) deviation must be exactly 0,
+  // the same hand-derivable case MeasureGridTessellationDeviation()'s own
+  // test uses.
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 10, 0),
+      Point3d(10, 0, 0),
+      Point3d(10, 10, 0),
+  };
+  const NurbsSurface flat =
+      NurbsSurface::FromControlGrid(flat_grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  const Mesh flat_mesh = flat.TessellateGrid(3, 3);
+  Check(flat.MeasureMeshTessellationDeviation(flat_mesh) < 1e-9,
+        "MeasureMeshTessellationDeviation is exactly 0 for a flat "
+        "surface's own grid mesh");
+
+  // Cross-check against MeasureGridTessellationDeviation() on the SAME
+  // untrimmed grid mesh, the one case both functions can measure: since
+  // closest-point distance can only be <= the matching-parameter distance
+  // the grid-only function reports (the matching-parameter point is always
+  // one candidate the closest-point search considers), this measures
+  // somewhat LOWER or equal, never higher, and the gap should be small on
+  // a smooth, non-degenerate surface like this cylinder wall.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  cylinder.GetNurbForm(cylinder_surface);
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  const Mesh wall_grid_mesh = wall.TessellateGrid(4, 1);
+  const double grid_based = wall.MeasureGridTessellationDeviation(4, 1);
+  const double mesh_based = wall.MeasureMeshTessellationDeviation(wall_grid_mesh);
+  Check(mesh_based <= grid_based + 1e-6,
+        "on the identical untrimmed grid mesh, the closest-point-based "
+        "measurement never reports MORE deviation than the matching-"
+        "parameter-based one");
+  Check(mesh_based > grid_based * 0.9,
+        "the two measurements agree closely (within 10%) on this smooth "
+        "surface - genuinely cross-checking, not just two unrelated "
+        "numbers that happen to both be called deviation");
+
+  bool threw_samples = false;
+  try {
+    flat.MeasureMeshTessellationDeviation(flat_mesh, 0);
+  } catch (const std::invalid_argument&) {
+    threw_samples = true;
+  }
+  Check(threw_samples,
+        "MeasureMeshTessellationDeviation throws std::invalid_argument "
+        "when samples_per_triangle is less than 1");
+
+  bool threw_divisions = false;
+  try {
+    flat.MeasureMeshTessellationDeviation(flat_mesh, 6, 0);
+  } catch (const std::invalid_argument&) {
+    threw_divisions = true;
+  }
+  Check(threw_divisions,
+        "MeasureMeshTessellationDeviation throws std::invalid_argument "
+        "when closest_point_divisions is less than 1");
+}
+
+void TestSurfaceTessellateGridClippedExactCertifiedAdaptive() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+
+  // Same quarter-wedge trim of the unit cylinder wall
+  // TestBrepTessellateCertifiedAdaptive() uses at the Brep level - a
+  // genuinely trimmed, genuinely curved face, exactly the case this
+  // function exists to certify.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  cylinder.GetNurbForm(cylinder_surface);
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  const auto du = wall.Domain(0);
+  const auto dv = wall.Domain(1);
+  const double u0 = du.min + 0.25 * (du.max - du.min);
+  const double u1 = du.min + 0.75 * (du.max - du.min);
+  const double v0 = dv.min + 0.1 * (dv.max - dv.min);
+  const double v1 = dv.min + 0.9 * (dv.max - dv.min);
+  const std::vector<Point2d> trim = {
+      Point2d(u0, v0),
+      Point2d(u1, v0),
+      Point2d(u1, v1),
+      Point2d(u0, v1),
+  };
+
+  const double chord_tolerance = 0.01;
+  double achieved = -1.0;
+  const auto mesh =
+      wall.TessellateGridClippedExactCertifiedAdaptive(chord_tolerance, trim, 8, &achieved);
+  Check(mesh.FaceCount() > 0,
+        "TessellateGridClippedExactCertifiedAdaptive returns a real mesh "
+        "for a genuinely trimmed, curved face");
+  Check(achieved >= 0.0 && achieved <= chord_tolerance,
+        "TessellateGridClippedExactCertifiedAdaptive's own achieved "
+        "deviation is genuinely at or under chord_tolerance - a MEASURED "
+        "guarantee on a TRIMMED face, not previously possible at all");
+  // Independently re-measure the returned mesh via the same general
+  // function the implementation itself uses, confirming the achieved
+  // deviation isn't just trusted from inside the refinement loop.
+  const double independently_measured = wall.MeasureMeshTessellationDeviation(mesh);
+  Check(std::abs(independently_measured - achieved) < 1e-9,
+        "the achieved deviation matches an independent re-measurement of "
+        "the returned mesh exactly");
+
+  bool threw_tolerance = false;
+  try {
+    wall.TessellateGridClippedExactCertifiedAdaptive(0.0, trim);
+  } catch (const std::invalid_argument&) {
+    threw_tolerance = true;
+  }
+  Check(threw_tolerance,
+        "TessellateGridClippedExactCertifiedAdaptive throws "
+        "std::invalid_argument for a non-positive chord_tolerance");
+
+  bool threw_refinements = false;
+  try {
+    wall.TessellateGridClippedExactCertifiedAdaptive(chord_tolerance, trim, -1);
+  } catch (const std::invalid_argument&) {
+    threw_refinements = true;
+  }
+  Check(threw_refinements,
+        "TessellateGridClippedExactCertifiedAdaptive throws "
+        "std::invalid_argument for a negative max_refinements");
+}
+
+void TestSurfaceTessellateGridNonUniformCertifiedAdaptive() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+
+  // A sphere's full domain (untrimmed, but routed through the general
+  // non-uniform path directly rather than TessellateGridCertifiedAdaptive's
+  // own uniform grid) - the same singular-pole surface investigated in
+  // this category's prior round, now exercised through the genuinely
+  // adaptive (per-direction breakpoint) non-uniform path instead of a
+  // single division count.
+  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 1.0);
+  ON_NurbsSurface sphere_surface;
+  sphere.GetNurbForm(sphere_surface);
+  NurbsSurface s;
+  s.raw() = sphere_surface;
+
+  const double chord_tolerance = 0.01;
+  double achieved = -1.0;
+  const auto mesh = s.TessellateGridNonUniformCertifiedAdaptive(
+      chord_tolerance, nullptr, nullptr, 8, &achieved);
+  Check(mesh.FaceCount() > 0,
+        "TessellateGridNonUniformCertifiedAdaptive returns a real mesh "
+        "for a sphere");
+  Check(achieved >= 0.0 && achieved <= chord_tolerance,
+        "TessellateGridNonUniformCertifiedAdaptive's own achieved "
+        "deviation is genuinely at or under chord_tolerance on a surface "
+        "with singular poles");
+
+  // A genuinely trimmed, holed case: the sphere's full outer domain with
+  // a small square hole cut near the equator.
+  const auto du = s.Domain(0);
+  const auto dv = s.Domain(1);
+  const std::vector<Point2d> outer = {
+      Point2d(du.min, dv.min),
+      Point2d(du.max, dv.min),
+      Point2d(du.max, dv.max),
+      Point2d(du.min, dv.max),
+  };
+  const double hu0 = du.min + 0.4 * (du.max - du.min);
+  const double hu1 = du.min + 0.6 * (du.max - du.min);
+  const double hv0 = dv.min + 0.45 * (dv.max - dv.min);
+  const double hv1 = dv.min + 0.55 * (dv.max - dv.min);
+  const std::vector<std::vector<Point2d>> holes = {{
+      Point2d(hu0, hv0),
+      Point2d(hu1, hv0),
+      Point2d(hu1, hv1),
+      Point2d(hu0, hv1),
+  }};
+  double holed_achieved = -1.0;
+  const auto holed_mesh = s.TessellateGridNonUniformCertifiedAdaptive(
+      chord_tolerance, &outer, &holes, 8, &holed_achieved);
+  Check(holed_mesh.FaceCount() > 0,
+        "TessellateGridNonUniformCertifiedAdaptive returns a real mesh "
+        "for a holed surface");
+  Check(holed_achieved >= 0.0 && holed_achieved <= chord_tolerance,
+        "TessellateGridNonUniformCertifiedAdaptive's own achieved "
+        "deviation is genuinely at or under chord_tolerance on a holed "
+        "surface too");
+
+  bool threw_tolerance = false;
+  try {
+    s.TessellateGridNonUniformCertifiedAdaptive(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_tolerance = true;
+  }
+  Check(threw_tolerance,
+        "TessellateGridNonUniformCertifiedAdaptive throws "
+        "std::invalid_argument for a non-positive chord_tolerance");
+
+  bool threw_refinements = false;
+  try {
+    s.TessellateGridNonUniformCertifiedAdaptive(chord_tolerance, nullptr, nullptr, -1);
+  } catch (const std::invalid_argument&) {
+    threw_refinements = true;
+  }
+  Check(threw_refinements,
+        "TessellateGridNonUniformCertifiedAdaptive throws "
+        "std::invalid_argument for a negative max_refinements");
+}
+
 void TestBrepTessellateAdaptive() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -10111,20 +10327,21 @@ void TestBrepTessellateCertifiedAdaptive() {
 
   // A single genuinely TRIMMED, curved face (a wedge of the same unit
   // cylinder wall used above, via TrimmedPlanarFace() - despite the name,
-  // it accepts any NurbsSurface, not just planar ones) has no certified
-  // path (MeasureGridTessellationDeviation() is scoped to the plain
-  // untrimmed grid), so it must fall back to the existing heuristic and
-  // be honestly reported as NOT certified - not silently blended in with
-  // a real bound. exact_clip=true (-> TessellateGridClippedExactAdaptive)
-  // is required here, not the whole-cell TessellateGridNonUniformAdaptive:
-  // a genuine, confirmed finding from a standalone dino8_scratch_test probe
-  // while building this test - the cylinder wall's own v (height) direction
-  // has zero curvature, so SuggestedParameterValues(1, ...) returns only
-  // the 2 domain endpoints (one single row spanning the FULL height), and
-  // a whole-cell in/out test can never find a cell whose corners (always
-  // exactly at v=0 and v=1) land inside any v-restricted trim polygon -
-  // confirmed directly to return 0 faces for exactly this reason, not a
-  // bug in TessellateCertifiedAdaptive itself.
+  // it accepts any NurbsSurface, not just planar ones) - NOW genuinely
+  // certified too, via NurbsSurface::TessellateGridClippedExactCertifiedAdaptive()/
+  // MeasureMeshTessellationDeviation() (this category's own prior round
+  // only had a certified path for the plain untrimmed grid; this round
+  // closes the trimmed half). exact_clip=true (->
+  // TessellateGridClippedExactCertifiedAdaptive) is required here, not the
+  // whole-cell non-uniform path: a genuine, confirmed finding from a
+  // standalone dino8_scratch_test probe while building the ORIGINAL
+  // (uncertified) version of this test - the cylinder wall's own v
+  // (height) direction has zero curvature, so SuggestedParameterValues(1,
+  // ...) returns only the 2 domain endpoints (one single row spanning the
+  // FULL height), and a whole-cell in/out test can never find a cell
+  // whose corners (always exactly at v=0 and v=1) land inside any
+  // v-restricted trim polygon - confirmed directly to return 0 faces for
+  // exactly this reason, not a bug in TessellateCertifiedAdaptive itself.
   const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
   const ON_Cylinder cylinder(circle, 1.0);
   ON_NurbsSurface cylinder_surface;
@@ -10147,12 +10364,12 @@ void TestBrepTessellateCertifiedAdaptive() {
   std::vector<bool> wall_certified;
   const auto wall_faces = trimmed_wall.TessellateCertifiedAdaptive(0.01, 8, &wall_certified);
   Check(wall_faces.size() == 1, "TrimmedPlanarFace() produces exactly one face");
-  Check(wall_certified.size() == 1 && !wall_certified[0],
-        "a genuinely trimmed face has no certified path and is honestly "
-        "reported as NOT certified, not silently treated as if it were");
+  Check(wall_certified.size() == 1 && wall_certified[0],
+        "a genuinely trimmed face now has a certified path too, and is "
+        "reported as such");
   Check(wall_faces[0].FaceCount() > 0,
-        "the trimmed face still gets a real (uncertified, heuristic) "
-        "tessellation, not an empty result");
+        "the trimmed face still gets a real, now-certified tessellation, "
+        "not an empty result");
 }
 
 void TestFileRoundTrip() {
@@ -25177,6 +25394,119 @@ void TestSubDToNurbsPatchesExactOnRegularFlatGrid() {
         "(1+u, 1+v, 0) at every sampled (u,v) - confirming ToNurbsPatches' "
         "neighbor-gathering and B-spline-to-Bezier conversion are both "
         "correct for the regular case, not just plausible");
+}
+
+// Closes real, previously-unaddressed ground under PARTY_MAP.md's own
+// "SubD -> NURBS patch conversion" item: an IRREGULAR face's patch corner
+// used to be the face's raw, un-limited control-net vertex position - a
+// genuinely different point from the true Catmull-Clark limit surface on
+// any non-flat geometry (TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace's
+// own comment already establishes this: "a regular vertex's Catmull-Clark
+// limit point generally does NOT coincide with its own control-net
+// position on curved geometry"). This checks the irregular case against
+// the SAME kind of hand-derived closed-form ground truth
+// TestSubDLimitPointsExactCubeAndFlatGrid uses below for LimitPoints():
+// every corner of the plain cube cage (no Subdivide() at all - all 8
+// vertices are already valence-3 extraordinary, so all 6 faces are
+// irregular) has a known-by-symmetry exact limit position of exactly half
+// its own control-net position.
+void TestSubDToNurbsPatchesIrregularCornersMatchKnownLimitPoint() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDNurbsPatch;
+
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(cube);
+  const std::vector<SubDNurbsPatch> patches = subd.ToNurbsPatches();
+  Check(patches.size() == 6, "the cube cage's 6 quad faces give 6 patches");
+
+  const double corner_uv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  bool any_patch_inexact = false;
+  bool every_corner_matches_half_scale = true;
+  bool any_corner_still_equals_raw_control_point = false;
+
+  size_t i = 0;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace(), ++i) {
+    Check(i < patches.size(), "every face of the cube cage has a corresponding patch");
+    if (!patches[i].exact) any_patch_inexact = true;
+    for (int k = 0; k < 4; ++k) {
+      const ON_SubDVertex* v = f->Vertex(static_cast<unsigned int>(k));
+      const Point3d control = v->ControlNetPoint();
+      const Point3d expected_limit(0.5 * control.x, 0.5 * control.y, 0.5 * control.z);
+      const Point3d got = patches[i].surface.PointAt(corner_uv[k][0], corner_uv[k][1]);
+      if (got.DistanceTo(expected_limit) > 1e-9) every_corner_matches_half_scale = false;
+      if (got.DistanceTo(control) < 1e-6) any_corner_still_equals_raw_control_point = true;
+    }
+  }
+  Check(any_patch_inexact,
+        "sanity: every cube-cage face is still reported inexact (irregular) - this checks the "
+        "corners of an approximate patch, not a claim the whole patch is now exact");
+  Check(every_corner_matches_half_scale,
+        "every irregular patch's own 4 corners now land exactly on the hand-derived "
+        "closed-form Catmull-Clark limit point (half the raw control-net position) instead "
+        "of the raw control-net position itself");
+  Check(!any_corner_still_equals_raw_control_point,
+        "negative control: no patch corner is still the old (pre-fix) raw control-net point - "
+        "the limit-point substitution actually fired, not a no-op that happened to coincide");
+}
+
+// The fallback half of the same fix: a corner touching a semi-sharp edge
+// is deliberately NOT given the limit-point treatment above (doing that
+// correctly needs the same working-copy GlobalSubdivide() decay
+// ExactVertexCorner() pays for a single-point query - ToNurbsPatches()
+// loops over every face, so paying that per corner here would be a real
+// cost regression, not just a style choice) - so it must still fall back
+// to exactly its old, pre-fix raw control-net point, not silently use
+// the now-wrong (sharpness-ignoring) smooth limit point as if it applied.
+void TestSubDToNurbsPatchesIrregularCornerFallsBackOnSemiSharpEdge() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDNurbsPatch;
+
+  Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  SubD subd = SubD::FromControlMesh(cube);
+
+  const ON_SubDVertex* v0 = nullptr;
+  const ON_SubDEdge* sharp_edge = nullptr;
+  ON_SubDVertexIterator vit = subd.raw().VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr && sharp_edge == nullptr;
+       v = vit.NextVertex()) {
+    for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+      const ON_SubDEdge* e = v->Edge(i);
+      if (e != nullptr && e->IsSmooth()) {
+        v0 = v;
+        sharp_edge = e;
+        break;
+      }
+    }
+  }
+  Check(sharp_edge != nullptr, "found a smooth cube-cage edge to make semi-sharp");
+  const ON_SubDVertex* v1 = sharp_edge->OtherEndVertex(v0);
+  Check(subd.SetEdgeSharpness(v0->ControlNetPoint(), v1->ControlNetPoint(), 1.0, 1e-9),
+        "SetEdgeSharpness(1.0) succeeds on this edge");
+
+  const std::vector<SubDNurbsPatch> patches = subd.ToNurbsPatches();
+  const double corner_uv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  bool found_v0_corner = false, v0_corner_is_raw_control_point = false;
+
+  size_t i = 0;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace(), ++i) {
+    for (int k = 0; k < 4; ++k) {
+      if (f->Vertex(static_cast<unsigned int>(k)) != v0) continue;
+      found_v0_corner = true;
+      const Point3d got = patches[i].surface.PointAt(corner_uv[k][0], corner_uv[k][1]);
+      if (got.DistanceTo(v0->ControlNetPoint()) < 1e-9) v0_corner_is_raw_control_point = true;
+    }
+  }
+  Check(found_v0_corner, "the semi-sharp vertex is a corner of at least one patch");
+  Check(v0_corner_is_raw_control_point,
+        "a corner touching a semi-sharp edge still falls back to its old, pre-fix raw "
+        "control-net point - the un-decayed smooth limit point GetSurfacePoint() would "
+        "otherwise silently (and wrongly) report is never used here");
 }
 
 void TestSubDLimitPointsExactCubeAndFlatGrid() {
@@ -72075,6 +72405,9 @@ int main() {
   TestSurfaceTessellateGridAdaptiveByAngle();
   TestSurfaceMeasureGridTessellationDeviation();
   TestSurfaceTessellateGridCertifiedAdaptive();
+  TestSurfaceMeasureMeshTessellationDeviation();
+  TestSurfaceTessellateGridClippedExactCertifiedAdaptive();
+  TestSurfaceTessellateGridNonUniformCertifiedAdaptive();
   TestBrepTessellateAdaptive();
   TestBrepTessellateAdaptiveByAngle();
   TestBrepTessellateNonUniformAdaptive();
@@ -72212,6 +72545,8 @@ int main() {
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestSubDToNurbsPatchesExactOnRegularFlatGrid();
+  TestSubDToNurbsPatchesIrregularCornersMatchKnownLimitPoint();
+  TestSubDToNurbsPatchesIrregularCornerFallsBackOnSemiSharpEdge();
   TestSubDLimitPointsExactCubeAndFlatGrid();
   TestSubDOffsetCubeMovesEachCornerAlongItsOwnExactBodyDiagonalLimitNormal();
   TestSubDOffsetZeroDistanceLeavesEveryPositionUnchanged();

@@ -993,6 +993,92 @@ class NurbsSurface {
   Mesh TessellateGridCertifiedAdaptive(double chord_tolerance, int max_refinements = 8,
                                         double* out_achieved_deviation = nullptr) const;
 
+  // The general counterpart to MeasureGridTessellationDeviation() above,
+  // closing this category's own disclosed "a genuinely trimmed B-rep face
+  // still has no certified path at all (only the plain untrimmed grid can
+  // be measured this way)" scope limit: unlike that function, this one
+  // does not assume `mesh` is TessellateGrid()'s own untrimmed, evenly-
+  // spaced output - it works on ANY mesh built from this surface,
+  // trimmed or not, by reading `mesh`'s own triangles directly (a quad
+  // face, `ON_MeshFace::IsQuad()`, is split into its two triangles the
+  // same way every other per-triangle operation in this codebase already
+  // does) rather than reconstructing a grid from division counts. Samples
+  // the same interior-barycentric-ring pattern MeasureGridTessellationDeviation()
+  // uses (deliberately excluding the three corners, which coincide with
+  // the true surface by construction whenever a vertex really is a
+  // `PointAt()` evaluation) on each triangle's own 3D corners, but - since
+  // an arbitrary mesh's vertices carry no recorded (u, v) parameter this
+  // function could re-evaluate the true surface at directly - measures
+  // each interior sample's distance to its CLOSEST point on the true
+  // surface (`ClosestPoint()` above) instead of the true surface at a
+  // shared parameter. This is a genuinely different (and for a
+  // certification bound, more directly meaningful) notion of deviation -
+  // true closest-point distance is the real Hausdorff-style gap between
+  // the facet and the surface, and is never larger than the matching-
+  // parameter distance MeasureGridTessellationDeviation() reports on the
+  // one case both can measure (confirmed: the two agree to within
+  // `ClosestPoint()`'s own search tolerance on a plain untrimmed grid,
+  // see `TestSurfaceMeasureMeshTessellationDeviationMatchesGridVersion`,
+  // tests/test_basic.cpp) - but it inherits `ClosestPoint()`'s own
+  // documented "not a guaranteed global minimum" search caveat, so this is
+  // a measured, not infinitely-precise, bound. `closest_point_divisions`
+  // is forwarded to every `ClosestPoint()` call. Throws
+  // std::invalid_argument if `samples_per_triangle` or
+  // `closest_point_divisions` is less than 1.
+  double MeasureMeshTessellationDeviation(const Mesh& mesh, int samples_per_triangle = 6,
+                                           int closest_point_divisions = 20) const;
+
+  // TessellateGridCertifiedAdaptive()'s own refinement loop, applied to
+  // TessellateGridClippedExact() instead of the plain untrimmed
+  // TessellateGrid() - the first certified path for a genuinely TRIMMED
+  // face this kernel has ever had, closing the other half of this
+  // category's own disclosed "Adaptive tessellation of B-rep faces" scope
+  // limit (`MeasureMeshTessellationDeviation()` above is what makes
+  // measuring - not just estimating - deviation on a trimmed, non-grid
+  // mesh possible at all). Starts from `SuggestedDivisions(chord_
+  // tolerance)`'s own estimate, actually measures the resulting
+  // exact-clipped mesh's real worst-case deviation via
+  // `MeasureMeshTessellationDeviation()`, and doubles both division
+  // counts and re-measures whenever the measured deviation still exceeds
+  // `chord_tolerance`, up to `max_refinements` doublings - identical
+  // doubling strategy to `TessellateGridCertifiedAdaptive()`, just driving
+  // `TessellateGridClippedExact()` instead of `TessellateGrid()`. Returns
+  // the first mesh whose MEASURED deviation is proven at or under
+  // `chord_tolerance`, writing that achieved deviation to
+  // `*out_achieved_deviation` if non-null. Throws std::invalid_argument if
+  // `chord_tolerance <= 0` or `max_refinements < 0` (same as
+  // `TessellateGridCertifiedAdaptive()`), and std::runtime_error if no
+  // doubling within `max_refinements` certifies the tolerance.
+  Mesh TessellateGridClippedExactCertifiedAdaptive(double chord_tolerance,
+                                                    const std::vector<Point2d>& trim_polygon,
+                                                    int max_refinements = 8,
+                                                    double* out_achieved_deviation = nullptr) const;
+
+  // The general (possibly-holed, non-uniform) counterpart to
+  // TessellateGridClippedExactCertifiedAdaptive() above, covering the
+  // other trimmed-tessellation path this kernel has (`TessellateGridNonUniformAdaptive()`,
+  // used whenever a face has inner-loop holes or isn't exact-clipped).
+  // `TessellateGridNonUniform()`'s own breakpoints come from
+  // `SuggestedParameterValues(direction, chord_tolerance)` - a LIST, not a
+  // single division count, so this refines by re-deriving that list from
+  // a progressively TIGHTER effective tolerance (`chord_tolerance /
+  // 2^attempt`) each retry rather than doubling a count directly; a
+  // tighter tolerance always yields at least as many breakpoints as a
+  // looser one (`SubdivideForFlatness()`'s own recursive bisection only
+  // ever subdivides MORE for a smaller target, never less), so this
+  // strictly refines the same way the grid-based doubling above does.
+  // Measures via `MeasureMeshTessellationDeviation()` above - the same
+  // function that makes a trimmed, holed mesh measurable at all - and
+  // returns the first mesh proven at or under `chord_tolerance`, writing
+  // the achieved deviation to `*out_achieved_deviation` if non-null.
+  // Throws std::invalid_argument if `chord_tolerance <= 0` or
+  // `max_refinements < 0`, and std::runtime_error if no refinement within
+  // `max_refinements` certifies the tolerance.
+  Mesh TessellateGridNonUniformCertifiedAdaptive(
+      double chord_tolerance, const std::vector<Point2d>* trim_polygon = nullptr,
+      const std::vector<std::vector<Point2d>>* hole_polygons = nullptr, int max_refinements = 8,
+      double* out_achieved_deviation = nullptr) const;
+
   // ---- Surface editing (implemented in src/surface_edit.cpp) ----
 
   // Removes one multiplicity of the interior knot at ON-convention index

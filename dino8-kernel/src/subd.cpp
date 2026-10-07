@@ -1650,6 +1650,45 @@ void GridToBezier(ON_3dPoint grid[4][4]) {
   }
 }
 
+// True Catmull-Clark limit-surface position at an irregular face's own
+// corner vertex, used by BuildFaceBezierGrid()'s irregular branch below in
+// place of the raw, flat control-net point ToNurbsPatches()/
+// ToNurbsPatchesAdaptive() used at every irregular patch corner before
+// this - the same `ON_SubDVertex::GetSurfacePoint()` eigenbasis call
+// ExactVertexCorner() above already proved out for EvaluateFace()'s own
+// single-(u,v)-query corner case (see its own doc comment for why this is
+// the genuine Stam eigenbasis evaluator, not a hand-rolled approximation).
+// Unlike ExactVertexCorner(), this is a plain `const` free function with no
+// working-copy clone or GlobalSubdivide() step at all, deliberately: this
+// is called from a tight loop over every face of a (possibly large) SubD,
+// where cloning the whole net per corner query - the only safe way to
+// decay a semi-sharp edge first, since that mutates the clone in place -
+// would turn an O(faces) conversion into something far worse. So this
+// takes the one case ExactVertexCorner() already proves is safe without
+// any mutation at all (zero semi-sharp sharpness on every incident smooth
+// edge, the common case) and handles only that: it calls GetSurfacePoint()
+// directly on the CURRENT (un-subdivided) vertex/face, exactly as
+// ExactVertexCorner() itself does when its own `max_incident_sharpness`
+// is 0. Whenever a semi-sharp edge IS present nearby - or GetSurfacePoint()
+// itself can't resolve a limit point, e.g. a non-manifold neighborhood -
+// this falls back to the prior raw control-net point unchanged, per
+// corner, so a caller always gets a valid point and a face with 3
+// ordinary corners and 1 semi-sharp one still improves the 3 it can.
+ON_3dPoint IrregularCornerLimitOrControlPoint(const ON_SubDFace* f, int corner_index) {
+  const ON_SubDVertex* v = f->Vertex(static_cast<unsigned int>(corner_index));
+  if (v == nullptr) return ON_3dPoint::UnsetPoint;
+  for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = v->Edge(i);
+    if (e != nullptr && e->IsSmooth() && e->EndSharpness(v) > 0.0) return v->ControlNetPoint();
+  }
+  ON_SubDSectorSurfacePoint limit_point;
+  if (v->GetSurfacePoint(f, /*bUndefinedNormalIsPossible=*/true, limit_point)) {
+    const ON_3dPoint p = limit_point.Point();
+    if (p.IsValid()) return p;
+  }
+  return v->ControlNetPoint();
+}
+
 // Builds `f`'s 4x4 Bezier-form control grid: the exact regular
 // Catmull-Clark patch (grid[row][col], row/col = 0..3, row 0/3 = the
 // v=0/v=1 boundary curve's Bezier control points, col 0/3 = the u=0/u=1
@@ -1659,7 +1698,25 @@ void GridToBezier(ON_3dPoint grid[4][4]) {
 // - see ToNurbsPatches()'s own doc comment for what each case means.
 // `f` must be a quad (caller's responsibility - see ToNurbsPatches()'s
 // own n-gon-skipping comment). Sets `regular_out` to which case applied.
-void BuildFaceBezierGrid(const ON_SubDFace* f, ON_3dPoint grid[4][4], bool& regular_out) {
+//
+// `exact_irregular_corners`, when true, additionally substitutes each
+// IRREGULAR-case corner with its own true limit point via
+// IrregularCornerLimitOrControlPoint() above, instead of the raw
+// control-net point - see that function's own doc comment for why and
+// its disclosed semi-sharp-edge fallback. Deliberately NOT the default,
+// and deliberately NOT threaded through to every caller: ToNurbsPatches()/
+// ToNurbsPatchesAdaptiveRecurse() (the only two callers whose own `grid`
+// actually becomes patch output a caller keeps) pass true;
+// SubD::EvaluateFace()'s own top-level call and EvaluateFaceAdaptive()'s
+// internal one both pass false and are UNCHANGED by this parameter's
+// existence - their own irregular-face handling always resolves a
+// face-corner query through ExactVertexCorner() directly (never through
+// this grid at all) and otherwise only ever consults this grid for a
+// genuinely INTERIOR (u, v), where the flat bilinear fill (not just its
+// corners) was always understood as the approximation, not something
+// this pass changes for them.
+void BuildFaceBezierGrid(const ON_SubDFace* f, ON_3dPoint grid[4][4], bool& regular_out,
+                          bool exact_irregular_corners) {
   const ON_SubDVertex* v[4] = {f->Vertex(0), f->Vertex(1), f->Vertex(2), f->Vertex(3)};
   const ON_SubDEdge* e[4] = {f->Edge(0), f->Edge(1), f->Edge(2), f->Edge(3)};
   const ON_SubDFace* nf[4] = {
@@ -1727,18 +1784,30 @@ void BuildFaceBezierGrid(const ON_SubDFace* f, ON_3dPoint grid[4][4], bool& regu
   } else {
     // Irregular face (extraordinary vertex, crease, or boundary): no
     // closed-form regular stencil applies. Fill the grid as a bilinear
-    // interpolant of the 4 known corners, sampled at parameter values
-    // i/3, j/3 - since a bilinear (ruled) surface's iso-parameter lines
-    // are straight lines, any monotonic sampling along them still lies
+    // interpolant of the 4 corners, sampled at parameter values i/3, j/3
+    // - since a bilinear (ruled) surface's iso-parameter lines are
+    // straight lines, any monotonic sampling along them still lies
     // exactly on that ruled surface, so the resulting "Bezier" patch
     // below reproduces the flat corner interpolant exactly (only the
     // internal parametrization is nonuniform, which is harmless for an
-    // untrimmed Brep face). This is the tolerance-bounded
-    // approximation documented on ToNurbsPatches().
-    const ON_3dPoint c00 = grid[1][1];
-    const ON_3dPoint c10 = grid[1][2];
-    const ON_3dPoint c11 = grid[2][2];
-    const ON_3dPoint c01 = grid[2][1];
+    // untrimmed Brep face). This is the tolerance-bounded approximation
+    // documented on ToNurbsPatches() - narrowed, as of this pass, from a
+    // flat interpolant of the raw CONTROL-NET corners (this face's own
+    // 4 un-limited vertex positions) to one of their true Catmull-Clark
+    // LIMIT-surface positions instead (IrregularCornerLimitOrControlPoint()
+    // above): the patch's 4 corners now land exactly on the limit
+    // surface, same as a regular patch's corners always have, even
+    // though the interior between them is still the same flat bilinear
+    // fill as before - a real, bounded reduction in the approximation's
+    // own error, not a claim that the interior is now exact too.
+    const ON_3dPoint c00 =
+        exact_irregular_corners ? IrregularCornerLimitOrControlPoint(f, 0) : grid[1][1];
+    const ON_3dPoint c10 =
+        exact_irregular_corners ? IrregularCornerLimitOrControlPoint(f, 1) : grid[1][2];
+    const ON_3dPoint c11 =
+        exact_irregular_corners ? IrregularCornerLimitOrControlPoint(f, 2) : grid[2][2];
+    const ON_3dPoint c01 =
+        exact_irregular_corners ? IrregularCornerLimitOrControlPoint(f, 3) : grid[2][1];
     for (int r = 0; r < 4; ++r) {
       const double t = r / 3.0;
       for (int c = 0; c < 4; ++c) {
@@ -1767,7 +1836,7 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatches() const {
 
     ON_3dPoint grid[4][4];
     bool regular = false;
-    BuildFaceBezierGrid(f, grid, regular);
+    BuildFaceBezierGrid(f, grid, regular, /*exact_irregular_corners=*/true);
 
     std::vector<Point3d> cvs(16);
     for (int u = 0; u < 4; ++u) {
@@ -2098,7 +2167,7 @@ SubDSurfacePoint EvaluateFaceAdaptive(ON_SubD& s, const ON_SubDFace* f, double u
                                       int depth_remaining) {
   ON_3dPoint grid[4][4];
   bool regular = false;
-  BuildFaceBezierGrid(f, grid, regular);
+  BuildFaceBezierGrid(f, grid, regular, /*exact_irregular_corners=*/false);
   if (regular) {
     return EvalPatchPoint(grid, u, v, true);
   }
@@ -2163,7 +2232,7 @@ SubDSurfacePoint SubD::EvaluateFace(unsigned int face_id, double u, double v,
 
   ON_3dPoint grid[4][4];
   bool regular = false;
-  BuildFaceBezierGrid(f0, grid, regular);
+  BuildFaceBezierGrid(f0, grid, regular, /*exact_irregular_corners=*/false);
   if (regular) {
     // Skip the clone below entirely when it can't possibly be needed -
     // a real (if minor) cost saving, not just a style choice, since
@@ -2385,7 +2454,7 @@ void ToNurbsPatchesAdaptiveRecurse(const ON_SubD& s, unsigned int face_id, int d
 
   ON_3dPoint grid[4][4];
   bool regular = false;
-  BuildFaceBezierGrid(f, grid, regular);
+  BuildFaceBezierGrid(f, grid, regular, /*exact_irregular_corners=*/true);
 
   constexpr unsigned int kMaxWorkingFaceCount = 500000;
   if (regular || depth_remaining <= 0 || s.FaceCount() > kMaxWorkingFaceCount) {
