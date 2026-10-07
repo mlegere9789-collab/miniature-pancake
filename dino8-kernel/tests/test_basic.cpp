@@ -28616,6 +28616,159 @@ void TestMeshComputeBoxMappingUVs() {
   Check(threw_nan, "ComputeBoxMappingUVs throws std::invalid_argument for a NaN scale");
 }
 
+void TestMeshComputePlanarMappingUVs() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Result;
+
+  // Planar always flattens onto world XY regardless of which way a vertex
+  // faces - unlike Box, there's no per-vertex axis choice, so every corner
+  // of a plain box mesh should land at exactly (x / scale, y / scale),
+  // including the top face's vertices (same XY as the bottom ones,
+  // despite facing +z rather than -z).
+  auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+  const auto uvs = box.ComputePlanarMappingUVs(1.0);
+  Check(static_cast<int>(uvs.size()) == box.VertexCount(),
+        "ComputePlanarMappingUVs returns exactly one UV per vertex");
+  const double expected_x[8] = {0, 2, 2, 0, 0, 2, 2, 0};
+  const double expected_y[8] = {0, 0, 3, 3, 0, 0, 3, 3};
+  bool matches = true;
+  for (int i = 0; i < 8; ++i) {
+    if (std::abs(uvs[static_cast<size_t>(i)].x - expected_x[i]) > 1e-9 ||
+        std::abs(uvs[static_cast<size_t>(i)].y - expected_y[i]) > 1e-9) {
+      matches = false;
+    }
+  }
+  Check(matches, "ComputePlanarMappingUVs projects every vertex onto world XY, "
+                 "regardless of which face it belongs to");
+
+  const auto uvs_scaled = box.ComputePlanarMappingUVs(2.0);
+  Check(std::abs(uvs_scaled[2].x - 1.0) < 1e-9 && std::abs(uvs_scaled[2].y - 1.5) < 1e-9,
+        "doubling scale exactly halves every UV coordinate - a real-world-unit "
+        "divisor, same convention ComputeBoxMappingUVs() already established");
+
+  Check(box.SetTextureCoordinates(box.ComputePlanarMappingUVs(1.0)) == Result::Ok,
+        "ComputePlanarMappingUVs' own output is directly accepted by SetTextureCoordinates");
+
+  bool threw_zero = false;
+  try {
+    box.ComputePlanarMappingUVs(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_zero = true;
+  }
+  Check(threw_zero, "ComputePlanarMappingUVs throws std::invalid_argument for a zero scale");
+}
+
+void TestMeshComputeCylindricalMappingUVs() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Result;
+
+  // Two rings of 4 points each, at the cardinal directions around the
+  // world Z axis, radius 1, at z=0 and z=2 - the mesh's own bounding box
+  // is then exactly x:[-1,1], y:[-1,1], z:[0,2], centering the mapping
+  // axis at the world origin with no separate centering step needed.
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  const double ring_z[2] = {0.0, 2.0};
+  for (double z : ring_z) {
+    raw.m_V.Append(ON_3fPoint(1, 0, z));
+    raw.m_V.Append(ON_3fPoint(0, 1, z));
+    raw.m_V.Append(ON_3fPoint(-1, 0, z));
+    raw.m_V.Append(ON_3fPoint(0, -1, z));
+  }
+
+  const auto uvs = m.ComputeCylindricalMappingUVs(1.0);
+  Check(static_cast<int>(uvs.size()) == m.VertexCount(),
+        "ComputeCylindricalMappingUVs returns exactly one UV per vertex");
+  // u = atan2(dy, dx) / (2*pi) + 0.5: (1,0)->0.5, (0,1)->0.75, (-1,0)->1.0, (0,-1)->0.25.
+  const double expected_u[4] = {0.5, 0.75, 1.0, 0.25};
+  bool u_matches = true;
+  for (int i = 0; i < 4; ++i) {
+    if (std::abs(uvs[static_cast<size_t>(i)].x - expected_u[i]) > 1e-9) u_matches = false;
+  }
+  Check(u_matches, "ComputeCylindricalMappingUVs' own azimuthal angle matches the hand-derived "
+                   "atan2-based formula exactly at the four cardinal directions");
+  Check(std::abs(uvs[0].y - 0.0) < 1e-9 && std::abs(uvs[4].y - 2.0) < 1e-9,
+        "the v coordinate is height above the box's own minimum Z, divided by scale - "
+        "the z=0 ring reads 0, the z=2 ring reads 2 at scale=1");
+
+  const auto uvs_scaled = m.ComputeCylindricalMappingUVs(2.0);
+  Check(std::abs(uvs_scaled[0].x - 0.5) < 1e-9 && std::abs(uvs_scaled[4].y - 1.0) < 1e-9,
+        "scale divides v (a real length) but leaves u (a dimensionless angle fraction) "
+        "alone - doubling scale halves v only");
+
+  bool threw_on_axis = false;
+  Mesh degenerate;
+  degenerate.raw().m_V.Append(ON_3fPoint(1, 0, 0));
+  degenerate.raw().m_V.Append(ON_3fPoint(-1, 0, 0));
+  degenerate.raw().m_V.Append(ON_3fPoint(0, 1, 0));
+  degenerate.raw().m_V.Append(ON_3fPoint(0, -1, 0));
+  degenerate.raw().m_V.Append(ON_3fPoint(0, 0, 0));  // bbox center -> exactly on the axis
+  try {
+    degenerate.ComputeCylindricalMappingUVs(1.0);
+  } catch (const std::invalid_argument&) {
+    threw_on_axis = true;
+  }
+  Check(threw_on_axis, "ComputeCylindricalMappingUVs throws std::invalid_argument for a "
+                       "vertex lying exactly on the mapping axis, rather than returning an "
+                       "arbitrary angle");
+
+  bool threw_zero = false;
+  try {
+    m.ComputeCylindricalMappingUVs(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_zero = true;
+  }
+  Check(threw_zero, "ComputeCylindricalMappingUVs throws std::invalid_argument for a zero scale");
+}
+
+void TestMeshComputeSphericalMappingUVs() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+
+  // Six points at the unit sphere's own +-X/+-Y/+-Z poles, centered at the
+  // world origin (so the mesh's own bounding box center exactly matches
+  // the mapping center with no separate offset).
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 0: +X
+  raw.m_V.Append(ON_3fPoint(-1, 0, 0));  // 1: -X
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));   // 2: +Y
+  raw.m_V.Append(ON_3fPoint(0, -1, 0));  // 3: -Y
+  raw.m_V.Append(ON_3fPoint(0, 0, 1));   // 4: +Z (north pole)
+  raw.m_V.Append(ON_3fPoint(0, 0, -1));  // 5: -Z (south pole)
+
+  const auto uvs = m.ComputeSphericalMappingUVs();
+  Check(static_cast<int>(uvs.size()) == m.VertexCount(),
+        "ComputeSphericalMappingUVs returns exactly one UV per vertex");
+  // +X: dz=0 -> v = 1 - acos(0)/pi = 1 - 0.5 = 0.5; u = atan2(0,1)/(2pi)+0.5 = 0.5.
+  Check(std::abs(uvs[0].x - 0.5) < 1e-9 && std::abs(uvs[0].y - 0.5) < 1e-9,
+        "+X direction lands at the equator (v=0.5) with u=0.5, matching the "
+        "hand-derived atan2/acos formula");
+  // North pole (+Z): dz=1 -> v = 1 - acos(1)/pi = 1 - 0 = 1.
+  Check(std::abs(uvs[4].y - 1.0) < 1e-9, "the +Z pole maps to v=1 exactly");
+  // South pole (-Z): dz=-1 -> v = 1 - acos(-1)/pi = 1 - 1 = 0.
+  Check(std::abs(uvs[5].y - 0.0) < 1e-9, "the -Z pole maps to v=0 exactly");
+  // -Y: atan2(-1,0) = -pi/2 -> u = -0.25 + 0.5 = 0.25.
+  Check(std::abs(uvs[3].x - 0.25) < 1e-9, "-Y direction's own azimuthal angle matches "
+                                         "the hand-derived formula");
+
+  bool threw_at_center = false;
+  Mesh degenerate;
+  degenerate.raw().m_V.Append(ON_3fPoint(1, 0, 0));
+  degenerate.raw().m_V.Append(ON_3fPoint(-1, 0, 0));
+  degenerate.raw().m_V.Append(ON_3fPoint(0, 0, 0));  // bbox center -> exactly at the mapping center
+  try {
+    degenerate.ComputeSphericalMappingUVs();
+  } catch (const std::invalid_argument&) {
+    threw_at_center = true;
+  }
+  Check(threw_at_center, "ComputeSphericalMappingUVs throws std::invalid_argument for a "
+                        "vertex lying exactly at the mapping center, rather than returning an "
+                        "arbitrary direction");
+}
+
 void TestMeshSaveObjRoundTrips() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
@@ -71979,6 +72132,9 @@ int main() {
   TestMeshComputeFaceNormals();
   TestMeshFacetedGivesFlatShading();
   TestMeshComputeBoxMappingUVs();
+  TestMeshComputePlanarMappingUVs();
+  TestMeshComputeCylindricalMappingUVs();
+  TestMeshComputeSphericalMappingUVs();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
   TestMeshLoadObjPreservesUvSeams();
