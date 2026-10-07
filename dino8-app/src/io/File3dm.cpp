@@ -1122,6 +1122,57 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       if (!AddDimensionGroupToDocLocal(doc, "DimOrdinate", layer_idx, curves, ord_text, tags)) ++skipped;
       continue;
     }
+    if (const ON_Centermark* cm = ON_Centermark::Cast(g)) {
+      // Real ON_Centermark (Rhino's small "+" mark at a circle/arc's
+      // center) - checked ahead of the plain ON_Annotation branch below for
+      // the same reason as ON_DimLinear/ON_DimRadial/ON_Leader/
+      // ON_DimAngular/ON_DimOrdinate above, closing half of that branch's
+      // own disclosed "the remaining ArcLen/CenterMark annotation kinds"
+      // gap. Rebuilt via `BuildCentermarkGeometry` (commands/DimGeometry.h,
+      // extracted from cmd_annotate2.cpp's own live `Centermark` command
+      // via annotate_common.h's `BuildCentermarkGroup` for exactly this
+      // kind of sharing), the identical two-crossing-lines shape a live
+      // `Centermark` command bakes. The file's own `CenterMarkSize` (the
+      // dimstyle-resolved mark half-length Rhino actually stores, an
+      // override on the object itself winning over the dimstyle's own
+      // value exactly like `TextHeight`/`ArcLengthSymbol` already resolve
+      // above) is used directly rather than a quarter of some circle's
+      // radius (Dino8's own live "Auto" mode default) - the file already
+      // records the real intended size outright, and there is no circle
+      // object of this document's own to measure a radius from in the
+      // first place. Imports as a static, "Fixed"-mode mark with no
+      // DimRefObj1 - like `ON_Leader` above, there is no Dino8 object for
+      // an externally-authored point to reference. Honestly narrower than
+      // the live command in one respect: a real `MarkAndLines` style (the
+      // mark plus four lines out to the circle's own radius) draws
+      // identically to plain `Mark` here - this app's own Centermark has
+      // only ever drawn the one shape, live or imported - and a real
+      // `None` style (no mark at all) is correctly declined rather than
+      // drawing one anyway. Still unhandled: `ArcLen` (a curve's arc-length
+      // dimension) - unlike every other kind in this bullet, current
+      // OpenNURBS has no constructible class for it at all (no `Create()`
+      // of any kind sets `ON::AnnotationType::ArcLen`), so there is no real
+      // fixture to verify a reader against in the first place.
+      const ON_Plane plane = cm->Plane();
+      const ON_2dPoint c2 = cm->CenterPoint();
+      const kernel::Point3d center = plane.PointAt(c2.x, c2.y);
+      const ON_ModelComponentReference dimstyle_ref =
+          model.ComponentFromId(ON_ModelComponent::Type::DimStyle, cm->DimensionStyleId());
+      const ON_DimStyle* dimstyle = ON_DimStyle::Cast(dimstyle_ref.ModelComponent());
+      if (cm->CenterMarkStyle(dimstyle) == ON_DimStyle::centermark_style::None) { ++skipped; continue; }
+      const double size = cm->CenterMarkSize(dimstyle);
+      int layer_idx = 0;
+      if (attr) {
+        auto lm = layer_map.find(attr->m_layer_index);
+        if (lm != layer_map.end()) layer_idx = lm->second;
+      }
+      std::vector<kernel::NurbsCurve> curves;
+      std::map<std::string, std::string> tags;
+      if (!BuildCentermarkGeometry(center, plane, size, curves, tags)) { ++skipped; continue; }
+      tags["CenterSizeMode"] = "Fixed";
+      if (!AddDimensionGroupToDocLocal(doc, "Centermark", layer_idx, curves, DimGlyphSpec{}, tags)) ++skipped;
+      continue;
+    }
     if (const ON_Annotation* ann = ON_Annotation::Cast(g)) {
       // Previously entirely unhandled, like ON_Hatch/ON_InstanceRef above:
       // a real ON_Annotation (Rhino's Text/Dim*/Leader object kind) fell
@@ -1139,12 +1190,13 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       // comment) so it round-trips, is selectable (FindText) and editable
       // (TextProperties) exactly like one made in-app. Linear/aligned,
       // radius/diameter, angular/3-point-angular and ordinate dimensions
-      // (ON_DimLinear/ON_DimRadial/ON_DimAngular/ON_DimOrdinate) and
-      // ON_Leader are all handled in their own branches above, ahead of
-      // this one - only the remaining ArcLen/CenterMark annotation kinds
-      // still have no reader at all (no shared Document-independent
-      // geometry builder exists yet for either, unlike every kind handled
-      // above), so they still count as skipped, same as before.
+      // (ON_DimLinear/ON_DimRadial/ON_DimAngular/ON_DimOrdinate),
+      // ON_Leader and now ON_Centermark are all handled in their own
+      // branches above, ahead of this one - only ArcLen (a curve's
+      // arc-length dimension) still has no reader, since current
+      // OpenNURBS has no constructible class for it at all (see the
+      // ON_Centermark branch's own note above), so it still counts as
+      // skipped, same as before.
       if (ann->Type() != ON::AnnotationType::Text) { ++skipped; continue; }
       const std::string text = FromWide(ann->PlainText());
       const ON_Plane& plane = ann->Plane();
