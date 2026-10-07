@@ -1018,7 +1018,7 @@ class NurbsSurface {
   // parameter distance MeasureGridTessellationDeviation() reports on the
   // one case both can measure (confirmed: the two agree to within
   // `ClosestPoint()`'s own search tolerance on a plain untrimmed grid,
-  // see `TestSurfaceMeasureMeshTessellationDeviationMatchesGridVersion`,
+  // see `TestSurfaceMeasureMeshTessellationDeviation`,
   // tests/test_basic.cpp) - but it inherits `ClosestPoint()`'s own
   // documented "not a guaranteed global minimum" search caveat, so this is
   // a measured, not infinitely-precise, bound. `closest_point_divisions`
