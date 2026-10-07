@@ -5923,37 +5923,20 @@ branch's current tip should expect this abort and should not attribute it
 to this pass's own `FoldViaUnionRobust` change, which the isolated
 9747-check run above already proves clean on its own.
 
-**A second disclosed, pre-existing, UNRELATED regression, found while
-merging a later batch of concurrent work for the `app_subd_mesh` session
-below, not caused by that session and not fixed here:** after that
-session's own isolated, clean full-suite verification (`dino8_kernel_tests`
-9742 checks, `ctest` 43/43, `tests/smoke.sh` 2549 checks, all 0 failures,
-captured before merging), merging in further concurrent commits (including
-`e7a3228` "SubD -> NURBS irregular patch corners now limit-exact" and
-`68ecf81`/`423aa9f` "certified tessellation for trimmed B-rep faces")
-produces 4 `FAIL` lines in `tests/smoke.sh`'s existing `fillet_script.txt`
-section (`ChamferEdge`/`FilletEdge` Distance2/Angle/Rho checks - an
-object-numbering drift, e.g. an assertion expecting "object 5" seeing
-"object 6", and one diagnostic-message check no longer finding its
-expected "offset surfaces do not meet" text). Confirmed NOT introduced by
-the `app_subd_mesh` session's own commit: `dino8-app/src/commands/
-cmd_fillet.cpp` and `dino8-app/tests/fillet_script.txt` are both untouched
-across the entire merged range (`git log` for either path between this
-branch's pre-merge tip and the new one returns zero commits), and that
-session's own changes are confined to `cmd_solids.cpp` and the unrelated
-`subd_script.txt`/`smoke.sh` SubD sections - `tests/smoke.sh`'s own `ok
-subd script produced the expected object count` line directly above
-confirms that section is unaffected. Not independently root-caused to one
-specific commit the way the `BooleanCombineGeneral` abort above was (no
-isolated-worktree bisection was run, for the same time-budget reason this
-document's "confirmed pre-existing... disclosed rather than silently
-discovered later" convention doesn't require re-proving every merge
-collision from scratch) - left for whichever session owns **Blending &
-chamfering (app level)** to investigate and fix. Readers re-running
-`tests/smoke.sh` at this branch's current tip should expect these 4 FAIL
-lines and should not attribute them to the `app_subd_mesh` session's own
-ToSubD fidelity-check change, which its own isolated 2549-check clean run
-above already proves unaffected.
+**A second disclosed, pre-existing, UNRELATED issue, found independently
+while merging a later batch of concurrent work for the `app_subd_mesh`
+session below, not caused by that session and not fixed here:** the same
+4 `tests/smoke.sh` `FAIL` lines around `fillet_script.txt`'s `ChamferEdge`/
+`FilletEdge` Distance2/Angle/Rho checks that session's own merge turned up
+(confirmed not its own doing - `cmd_fillet.cpp`/`fillet_script.txt` are
+both untouched by its commit) - already root-caused and disclosed in full
+under **Dino 8: Command system & core commands**'s own "Flagged, not
+touched" note below (a missing test-fixture script section, not a
+functional regression). Not duplicated here; see that note for the actual
+cause. Readers re-running `tests/smoke.sh` at this branch's current tip
+should expect these 4 FAIL lines and should not attribute them to the
+`app_subd_mesh` session's own ToSubD fidelity-check change, which its own
+isolated 2549-check clean run above already proves unaffected.
 
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
