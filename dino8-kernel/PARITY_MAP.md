@@ -5862,6 +5862,41 @@ Mixed-engine 3D test, +2 from the new Planar-engine 3D test (volume plus
 with no change in its own `Check()` count), 0 regressions. The kernel-only
 headline is unaffected (no bucket moved).
 
+**A disclosed, pre-existing, UNRELATED regression found while merging this
+pass's own commit with concurrent work, not caused by this pass and not
+fixed here:** after the above 9747-check clean run (verified on this
+pass's own commit alone, before merging in concurrent work), merging in
+two batches of concurrent commits from this same branch introduced a
+regression that makes `dino8_kernel_tests` abort entirely partway through
+(`std::terminate` on an uncaught `std::runtime_error`,
+"`dino8::kernel::BooleanCombineGeneral: an edge is claimed by 3 or more
+fragment loops`") rather than finishing with a clean pass/fail count.
+Root-caused, not assumed: bisected directly to commit `878ecdb`
+("`IntersectSurfaces` now returns a boundary curve for coincident flat
+surfaces", **kernel: Intersections & projections**, a category this pass
+does not otherwise touch) via a clean isolated `git worktree` checkout of
+pure upstream `9e80b7d` (zero trace of this pass's own commit) - the
+identical abort reproduces there, deterministically, confirming it is not
+something this pass's own `FoldViaUnionRobust` change introduces or
+interacts with. It is not confined to one test either: skipping the first
+call that aborts (`TestBooleanCombineGeneralFreeformSurfaceOperand`,
+verified harmless to skip - temporarily, for diagnosis only, not committed
+- since this pass's own tests never run before it) reaches further but
+then aborts again at a second, different call site shortly after
+`TestIntersectPlaneTorusClosedForm`, so this is a broader behavior change
+in `IntersectSurfaces`'s own new coincident-flat-surface handling affecting
+multiple pre-existing `BooleanCombineGeneral` fixtures that previously
+relied on receiving nothing back for a coincident pair, not a single
+isolated fixture regression. Left for whichever session owns **kernel:
+Intersections & projections** to fix, the same "confirmed pre-existing,
+not a flake, not introduced here, disclosed rather than silently
+discovered later" convention this document already uses elsewhere (e.g.
+the `RemoveKnot`/`Divide` smoke-test disclosure under a prior Boolean
+operations note above). Readers re-running `dino8_kernel_tests` at this
+branch's current tip should expect this abort and should not attribute it
+to this pass's own `FoldViaUnionRobust` change, which the isolated
+9747-check run above already proves clean on its own.
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
