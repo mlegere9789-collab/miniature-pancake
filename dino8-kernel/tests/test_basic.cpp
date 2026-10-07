@@ -25396,6 +25396,119 @@ void TestSubDToNurbsPatchesExactOnRegularFlatGrid() {
         "correct for the regular case, not just plausible");
 }
 
+// Closes real, previously-unaddressed ground under PARTY_MAP.md's own
+// "SubD -> NURBS patch conversion" item: an IRREGULAR face's patch corner
+// used to be the face's raw, un-limited control-net vertex position - a
+// genuinely different point from the true Catmull-Clark limit surface on
+// any non-flat geometry (TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace's
+// own comment already establishes this: "a regular vertex's Catmull-Clark
+// limit point generally does NOT coincide with its own control-net
+// position on curved geometry"). This checks the irregular case against
+// the SAME kind of hand-derived closed-form ground truth
+// TestSubDLimitPointsExactCubeAndFlatGrid uses below for LimitPoints():
+// every corner of the plain cube cage (no Subdivide() at all - all 8
+// vertices are already valence-3 extraordinary, so all 6 faces are
+// irregular) has a known-by-symmetry exact limit position of exactly half
+// its own control-net position.
+void TestSubDToNurbsPatchesIrregularCornersMatchKnownLimitPoint() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDNurbsPatch;
+
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(cube);
+  const std::vector<SubDNurbsPatch> patches = subd.ToNurbsPatches();
+  Check(patches.size() == 6, "the cube cage's 6 quad faces give 6 patches");
+
+  const double corner_uv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  bool any_patch_inexact = false;
+  bool every_corner_matches_half_scale = true;
+  bool any_corner_still_equals_raw_control_point = false;
+
+  size_t i = 0;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace(), ++i) {
+    Check(i < patches.size(), "every face of the cube cage has a corresponding patch");
+    if (!patches[i].exact) any_patch_inexact = true;
+    for (int k = 0; k < 4; ++k) {
+      const ON_SubDVertex* v = f->Vertex(static_cast<unsigned int>(k));
+      const Point3d control = v->ControlNetPoint();
+      const Point3d expected_limit(0.5 * control.x, 0.5 * control.y, 0.5 * control.z);
+      const Point3d got = patches[i].surface.PointAt(corner_uv[k][0], corner_uv[k][1]);
+      if (got.DistanceTo(expected_limit) > 1e-9) every_corner_matches_half_scale = false;
+      if (got.DistanceTo(control) < 1e-6) any_corner_still_equals_raw_control_point = true;
+    }
+  }
+  Check(any_patch_inexact,
+        "sanity: every cube-cage face is still reported inexact (irregular) - this checks the "
+        "corners of an approximate patch, not a claim the whole patch is now exact");
+  Check(every_corner_matches_half_scale,
+        "every irregular patch's own 4 corners now land exactly on the hand-derived "
+        "closed-form Catmull-Clark limit point (half the raw control-net position) instead "
+        "of the raw control-net position itself");
+  Check(!any_corner_still_equals_raw_control_point,
+        "negative control: no patch corner is still the old (pre-fix) raw control-net point - "
+        "the limit-point substitution actually fired, not a no-op that happened to coincide");
+}
+
+// The fallback half of the same fix: a corner touching a semi-sharp edge
+// is deliberately NOT given the limit-point treatment above (doing that
+// correctly needs the same working-copy GlobalSubdivide() decay
+// ExactVertexCorner() pays for a single-point query - ToNurbsPatches()
+// loops over every face, so paying that per corner here would be a real
+// cost regression, not just a style choice) - so it must still fall back
+// to exactly its old, pre-fix raw control-net point, not silently use
+// the now-wrong (sharpness-ignoring) smooth limit point as if it applied.
+void TestSubDToNurbsPatchesIrregularCornerFallsBackOnSemiSharpEdge() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDNurbsPatch;
+
+  Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  SubD subd = SubD::FromControlMesh(cube);
+
+  const ON_SubDVertex* v0 = nullptr;
+  const ON_SubDEdge* sharp_edge = nullptr;
+  ON_SubDVertexIterator vit = subd.raw().VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr && sharp_edge == nullptr;
+       v = vit.NextVertex()) {
+    for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+      const ON_SubDEdge* e = v->Edge(i);
+      if (e != nullptr && e->IsSmooth()) {
+        v0 = v;
+        sharp_edge = e;
+        break;
+      }
+    }
+  }
+  Check(sharp_edge != nullptr, "found a smooth cube-cage edge to make semi-sharp");
+  const ON_SubDVertex* v1 = sharp_edge->OtherEndVertex(v0);
+  Check(subd.SetEdgeSharpness(v0->ControlNetPoint(), v1->ControlNetPoint(), 1.0, 1e-9),
+        "SetEdgeSharpness(1.0) succeeds on this edge");
+
+  const std::vector<SubDNurbsPatch> patches = subd.ToNurbsPatches();
+  const double corner_uv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  bool found_v0_corner = false, v0_corner_is_raw_control_point = false;
+
+  size_t i = 0;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace(), ++i) {
+    for (int k = 0; k < 4; ++k) {
+      if (f->Vertex(static_cast<unsigned int>(k)) != v0) continue;
+      found_v0_corner = true;
+      const Point3d got = patches[i].surface.PointAt(corner_uv[k][0], corner_uv[k][1]);
+      if (got.DistanceTo(v0->ControlNetPoint()) < 1e-9) v0_corner_is_raw_control_point = true;
+    }
+  }
+  Check(found_v0_corner, "the semi-sharp vertex is a corner of at least one patch");
+  Check(v0_corner_is_raw_control_point,
+        "a corner touching a semi-sharp edge still falls back to its old, pre-fix raw "
+        "control-net point - the un-decayed smooth limit point GetSurfacePoint() would "
+        "otherwise silently (and wrongly) report is never used here");
+}
+
 void TestSubDLimitPointsExactCubeAndFlatGrid() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -72341,6 +72454,8 @@ int main() {
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestSubDToNurbsPatchesExactOnRegularFlatGrid();
+  TestSubDToNurbsPatchesIrregularCornersMatchKnownLimitPoint();
+  TestSubDToNurbsPatchesIrregularCornerFallsBackOnSemiSharpEdge();
   TestSubDLimitPointsExactCubeAndFlatGrid();
   TestSubDOffsetCubeMovesEachCornerAlongItsOwnExactBodyDiagonalLimitNormal();
   TestSubDOffsetZeroDistanceLeavesEveryPositionUnchanged();
