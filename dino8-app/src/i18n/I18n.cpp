@@ -147,4 +147,18 @@ const std::string& Tr(const std::string& key) {
   return key;
 }
 
+const std::string& TrOrDefault(const std::string& key, const std::string& fallback) {
+  const auto active_it = Tables().find(ActiveCode());
+  if (active_it != Tables().end()) {
+    const auto it = active_it->second.find(key);
+    if (it != active_it->second.end()) return it->second;
+  }
+  const auto en_it = Tables().find("en");
+  if (en_it != Tables().end()) {
+    const auto it = en_it->second.find(key);
+    if (it != en_it->second.end()) return it->second;
+  }
+  return fallback;
+}
+
 }  // namespace dino8::i18n

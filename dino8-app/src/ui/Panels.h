@@ -11,6 +11,14 @@
 namespace dino8::app {
 
 class Application;
+struct CommandInfo;
+
+// A command's description, in the active UI language when this command is
+// one of the bounded cmddesc.* subset (see i18n/I18n.h), else its real
+// English description unchanged - never a raw, untranslated i18n key.
+// Shared by the Command List/Help panels (Panels.cpp) and the toolbar
+// tooltip (Toolbars.cpp).
+const std::string& LocalizedCommandDescription(const CommandInfo& info);
 
 void DrawMenuBar(Application& app);
 // The AT-SPI2-queryable accessible tree for exactly what DrawMenuBar drew

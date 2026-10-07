@@ -259,7 +259,7 @@ void RichTooltip(Application& app, const ToolButton* b, const std::string& comma
     StatusBadge(CommandStatusName(rc->status), col);
   }
   std::string desc;
-  if (info && !info->description.empty()) desc = info->description;
+  if (info && !info->description.empty()) desc = LocalizedCommandDescription(*info);
   else if (b && b->tip) desc = b->tip;
   if (!desc.empty()) ImGui::TextUnformatted(desc.c_str());
   // rc->note is internal engineering commentary (source files, function
