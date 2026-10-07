@@ -3337,9 +3337,20 @@ std::vector<Path2> CollectPaths(const Document& doc, const Projector& proj, bool
     // takes over from the object's on-screen display color here - the
     // color half of "plot styles (CTB/STB)", alongside print_width_mm's
     // lineweight half above.
-    const Color color = o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size()
+    Color color = o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size()
                              ? EffectivePlotColor(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.PlotStyles(), doc.EffectiveColor(o))
                              : doc.EffectiveColor(o);
+    // A layer's own named PlotStyle may also screen that color toward white
+    // (PlotStyleTable's own screening column) - the fifth and last real
+    // CTB/STB plot-style override, alongside width/color/transparency/
+    // linetype above. Unlike transparency (a separate alpha channel the
+    // writers apply at write time), screening changes the color itself, so
+    // it is baked into Path2::color here rather than carried as its own
+    // field.
+    if (o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size()) {
+      const double screening = EffectivePlotScreening(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.PlotStyles());
+      if (screening < 100.0) color = ApplyScreening(color, screening);
+    }
     // The object's own real linetype, regardless of the on-screen
     // "linetype display" viewport toggle (Document::EffectiveDashes gates
     // on that toggle deliberately, since it is a display-only helper - see

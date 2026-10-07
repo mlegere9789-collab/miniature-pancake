@@ -88,3 +88,25 @@ SaveAs @TMP@/plot_style_persist.3dm
 New
 Open @TMP@/plot_style_persist.3dm
 PlotStyleTable
+
+# Screening (PlotStyleTable's own sixth token, alongside color/width/
+# transparency above) - the fifth and last real CTB/STB column (real
+# AutoCAD's own CTB "Screening" percentage): a style lightens its own
+# color toward white by (100 - screening)% without making it see-through
+# the way Transparency does (a screened color still fully occludes
+# whatever is behind it on a printed page). A line colored pure black,
+# printed through a layer pointed at a style whose own color is black and
+# whose screening column is 50%, must stroke exactly mid-gray (#808080) -
+# not black - and re-saving the style with the screening token omitted
+# (the same "one-shot, set every field" convention transparency/linetype
+# above already have - resets to the 100% full-intensity-ink default) must
+# revert the same line to full black.
+NewLayer
+ScreenLayer
+Line 0,40,0 100,40,0
+SelLast
+PlotStyleTable ScreenStyle 0,0,0 0.5 0 None 50
+LayerPlotStyle ScreenLayer ScreenStyle
+Export @TMP@/plot_style_screening_on.svg
+PlotStyleTable ScreenStyle 0,0,0 0.5
+Export @TMP@/plot_style_screening_cleared.svg

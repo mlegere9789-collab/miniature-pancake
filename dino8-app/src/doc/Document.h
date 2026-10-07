@@ -133,9 +133,17 @@ inline Color EffectivePlotColor(const Layer& layer, const Color& display_color) 
 // same "empty = unset" convention Layer::plot_style itself already uses for
 // a name-type field, needing no separate has_* bool the way color (which
 // has no spare sentinel) does.
-// Still honestly narrow: no screening column a real CTB/STB table has, and
-// real printer-device/spooler output remains entirely unattempted - this
-// stays a vector page property, assignable by name.
+// `screening` adds a fifth and last real CTB/STB column: 0-100 (100 = full-
+// intensity ink, the default), matching real AutoCAD's own CTB "Screening"
+// percentage. Unlike `transparency`, a screened color is not see-through -
+// it still fully occludes whatever is behind it on a printed page, just
+// lightened toward white/paper, the same distinction a real plot-style
+// table itself draws between its Screening and Transparency columns.
+// Still honestly narrow: real printer-device/spooler output remains
+// entirely unattempted - this stays a vector page property, assignable by
+// name, not an OS print-queue integration (see the "Print and plot output"
+// bullet in PARITY_MAP.md for why that is a disclosed, permanently
+// out-of-scope capability rather than a remaining gap in this table).
 struct PlotStyle {
   std::string name = "Default";
   bool has_color = false;
@@ -143,6 +151,7 @@ struct PlotStyle {
   double width_mm = 0;
   double transparency = 0;
   std::string linetype;
+  double screening = 100;
 };
 
 // Resolves `layer`'s own named PlotStyle row in `styles` (Layer::plot_style),
@@ -208,6 +217,34 @@ inline std::string EffectivePlotLinetypeName(const Layer& layer, const std::vect
                                               const std::string& object_linetype) {
   if (const PlotStyle* s = ResolvePlotStyle(layer, styles); s && !s->linetype.empty()) return s->linetype;
   return object_linetype;
+}
+
+// The screening percentage (0-100, 100 = full-intensity ink, the default -
+// the fifth and last real CTB/STB plot-style column, alongside
+// width/color/transparency/linetype above) a layer's paths should actually
+// be stroked at (io/FileExchange.cpp's CollectPaths). No flat per-layer
+// field exists to fall back to (screening only ever lives on a named
+// style, unlike width/color's own flat fields), so a layer with no style,
+// or one naming an unknown row, screens at 100% (no lightening) - the same
+// "unassigned/unknown falls back cleanly" contract EffectivePlotAlpha above
+// already has.
+inline double EffectivePlotScreening(const Layer& layer, const std::vector<PlotStyle>& styles) {
+  const PlotStyle* s = ResolvePlotStyle(layer, styles);
+  if (!s) return 100.0;
+  return std::clamp(s->screening, 0.0, 100.0);
+}
+
+// Blends `color` toward white by (100 - screening)% - the actual pixel-
+// level effect a real CTB Screening column has on a plotted color (as
+// opposed to Transparency, which blends toward the page/background via a
+// separate alpha channel - see EffectivePlotAlpha above). Applied directly
+// to Path2::color at collection time (io/FileExchange.cpp's CollectPaths)
+// rather than as a separate SVG/PDF attribute, since screening is a
+// property of the color itself, not an alpha-blend operator the way
+// Transparency needs stroke-opacity/ExtGState for.
+inline Color ApplyScreening(const Color& color, double screening) {
+  const float f = static_cast<float>(std::clamp(screening, 0.0, 100.0) / 100.0);
+  return Color{color.r * f + (1.0f - f), color.g * f + (1.0f - f), color.b * f + (1.0f - f), color.a};
 }
 
 // A block definition: a named set of objects with a base point. Instances

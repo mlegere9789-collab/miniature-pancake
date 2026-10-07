@@ -6002,7 +6002,15 @@ grep -aq '/GS1 gs' "$TMPW/plot_style_transparent.pdf" && echo "ok   the content 
 # re-saved without that token) must revert it back to the object's own.
 grep -q 'stroke-dasharray="2,2"' "$TMPW/plot_style_linetype_override.svg" && echo "ok   a named style's own linetype override (Hidden, 2,2) drives the exported dasharray, not the object's own real linetype (Dashed, 5,3)" || { echo "FAIL plot_style_linetype_override.svg: expected a 2,2 dasharray from the style's own linetype override"; fail=1; }
 grep -q 'stroke-dasharray="5,3"' "$TMPW/plot_style_linetype_cleared.svg" && echo "ok   clearing the style's own linetype column (PlotStyleTable re-saved without that token) reverts the same line to its own real linetype (Dashed, 5,3)" || { echo "FAIL plot_style_linetype_cleared.svg: expected the object's own 5,3 dasharray once the style's override was cleared"; fail=1; }
-echo "$PST" | grep -qF "PlotStyle 'LTStyle': color ByLayer, width 0.5 mm, transparency 0%, linetype Hidden" && echo "ok   the linetype column survives a real Save/Open round trip through the native .3dm file (Dino8.PlotStyle.<name> user string, io/File3dm.cpp), not just kept in memory for this one process" || { echo "FAIL PlotStyleTable's own linetype column did not survive a real .3dm Save/Open round trip"; fail=1; }
+echo "$PST" | grep -qF "PlotStyle 'LTStyle': color ByLayer, width 0.5 mm, transparency 0%, linetype Hidden, screening 100%" && echo "ok   the linetype column survives a real Save/Open round trip through the native .3dm file (Dino8.PlotStyle.<name> user string, io/File3dm.cpp), not just kept in memory for this one process" || { echo "FAIL PlotStyleTable's own linetype column did not survive a real .3dm Save/Open round trip"; fail=1; }
+# Screening (PlotStyle::screening, the fifth and last real CTB/STB column):
+# ScreenStyle's own color is pure black and its screening column is 50% -
+# the exported SVG must stroke exact mid-gray (#808080), not black, and
+# re-saving the style with the screening token omitted (the same "one-shot,
+# set every field" convention transparency/linetype above already have)
+# must revert the same line to full black.
+grep -q 'stroke="#808080"' "$TMPW/plot_style_screening_on.svg" && echo "ok   a named style's own 50% screening lightens its black color to exact mid-gray (#808080) in the exported SVG, not a see-through alpha blend" || { echo "FAIL plot_style_screening_on.svg: expected a #808080 stroke from the style's own 50% screening"; fail=1; }
+grep -q 'stroke="#000000"' "$TMPW/plot_style_screening_cleared.svg" && echo "ok   clearing the style's own screening column (PlotStyleTable re-saved without that token, resetting to 100%) reverts the same line to full black" || { echo "FAIL plot_style_screening_cleared.svg: expected a #000000 stroke once the style's screening was cleared"; fail=1; }
 
 # Print/Export linetype (dash pattern) wiring: PARITY_MAP.md "Print and
 # plot output" item - ExportSvg/ExportPdf (io/FileExchange.cpp) now carry

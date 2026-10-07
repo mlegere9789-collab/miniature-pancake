@@ -6,8 +6,11 @@
 // LayerPrints/EffectivePrintWidthMm/EffectivePlotColor overloads
 // (io/FileExchange.cpp's ExportSvg/ExportPdf call these, not the flat-only
 // 1-/2-argument ones), EffectivePlotAlpha (PlotStyle::transparency, the
-// third real CTB/STB column - no flat per-layer field exists for it), plus
-// Document::FindPlotStyle/RemovePlotStyle's
+// third real CTB/STB column - no flat per-layer field exists for it),
+// EffectivePlotLinetypeName (the fourth), EffectivePlotScreening/
+// ApplyScreening (PlotStyle::screening, the fifth and last - also no flat
+// per-layer field, same as transparency), plus Document::FindPlotStyle/
+// RemovePlotStyle's
 // "can't delete what's in use" rule - the same shape
 // Document::RemoveAnnotationStyle already has for the current annotation
 // style, just checked against every layer's own plot_style field instead of
@@ -20,9 +23,11 @@
 
 using dino8::app::Color;
 using dino8::app::Document;
+using dino8::app::ApplyScreening;
 using dino8::app::EffectivePlotAlpha;
 using dino8::app::EffectivePlotColor;
 using dino8::app::EffectivePlotLinetypeName;
+using dino8::app::EffectivePlotScreening;
 using dino8::app::EffectivePrintWidthMm;
 using dino8::app::Layer;
 using dino8::app::LayerPrints;
@@ -139,6 +144,40 @@ int main() {
     forced_layer.plot_style = "ForceHidden";
     Check(EffectivePlotLinetypeName(forced_layer, styles, "Dashed") == "Hidden", "ForceHidden's own linetype override wins over the object's own real linetype");
     Check(EffectivePlotLinetypeName(forced_layer, styles, "Continuous") == "Hidden", "...regardless of which linetype the object itself actually has");
+
+    // --- EffectivePlotScreening / ApplyScreening: the fifth and last real
+    // CTB/STB column - no flat per-layer field exists either, so an
+    // unassigned/unknown-style layer (or a style that never set its own
+    // screening) all resolve to 100% (full-intensity ink, no lightening).
+    Check(EffectivePlotScreening(unassigned, styles) == 100.0, "no style assigned: full-intensity ink (100%)");
+    Check(EffectivePlotScreening(unknown, styles) == 100.0, "an unknown/deleted style name: full-intensity ink");
+    Check(EffectivePlotScreening(assigned, styles) == 100.0, "Monochrome never set its own screening, so it defaults to full-intensity ink");
+
+    PlotStyle screened;
+    screened.name = "Screen50";
+    screened.screening = 50;
+    styles.push_back(screened);
+    Layer screened_layer;
+    screened_layer.plot_style = "Screen50";
+    Check(EffectivePlotScreening(screened_layer, styles) == 50.0, "Screen50's own 50% screening resolves correctly");
+
+    PlotStyle screen_over;
+    screen_over.name = "ScreenOver";
+    screen_over.screening = 150;  // out of the real 0-100 range
+    styles.push_back(screen_over);
+    Layer screen_over_layer;
+    screen_over_layer.plot_style = "ScreenOver";
+    Check(EffectivePlotScreening(screen_over_layer, styles) == 100.0, "a screening past 100 is clamped, not UB");
+
+    const Color black = Color::FromBytes(0, 0, 0);
+    Check(SameColor(ApplyScreening(black, 100), black), "100% screening leaves a color unchanged");
+    const Color half = ApplyScreening(black, 50);
+    Check(std::fabs(half.r - 0.5f) < 1e-5f && std::fabs(half.g - 0.5f) < 1e-5f && std::fabs(half.b - 0.5f) < 1e-5f,
+          "50% screening blends pure black exactly halfway to white (0.5, 0.5, 0.5)");
+    const Color zero = ApplyScreening(black, 0);
+    Check(std::fabs(zero.r - 1.0f) < 1e-5f && std::fabs(zero.g - 1.0f) < 1e-5f && std::fabs(zero.b - 1.0f) < 1e-5f,
+          "0% screening blends any color fully to white");
+    Check(ApplyScreening(black, 100).a == black.a, "screening never touches the color's own alpha channel (a separate CTB/STB column, transparency)");
   }
 
   // --- Document::FindPlotStyle / RemovePlotStyle, including the "can't
