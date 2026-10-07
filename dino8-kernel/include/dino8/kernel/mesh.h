@@ -477,6 +477,44 @@ class Mesh {
   // the cylindrical mapping above.
   std::vector<Point2d> ComputeSphericalMappingUVs() const;
 
+  // Closes this category's own disclosed "hard seams at every axis
+  // boundary... there is still no seam-aware/LSCM-style unwrapping
+  // anywhere in this kernel" scope limit for the PERIODIC-wrap half of
+  // it (`ComputeCylindricalMappingUVs()`/`ComputeSphericalMappingUVs()`'s
+  // own `u`, which wraps back to 0 at exactly the point this function
+  // exists to fix) - not a general distortion-minimizing (LSCM) unwrap,
+  // which is a different, harder problem (minimizing stretch everywhere,
+  // not just avoiding a crack at one seam) and stays out of scope here.
+  // `SetTextureCoordinates()`'s own doc comment above already names the
+  // root cause honestly: one stored UV per VERTEX, shared by every face
+  // touching it, can't represent two different values the same vertex
+  // needs on either side of a wrap seam. This splits it the standard way
+  // (the same technique `Faceted()` above already uses for vertex
+  // NORMALS, applied here to UVs instead): for every face whose own
+  // corners' `u` values span more than `wrap_threshold` of the assumed
+  // [0, 1) period (a real seam crossing, not merely a face that happens
+  // to cover a wide `u` range), every one of that face's corners is
+  // duplicated into its own private vertex (never shared with any other
+  // face, the same unconditional duplication `Faceted()` already does,
+  // just restricted to seam faces only - a face nowhere near the seam
+  // keeps sharing vertices exactly as before) and each corner's own `u`
+  // is unwrapped by +-1 relative to the face's own first corner so the
+  // whole face's UV footprint becomes contiguous, with no in-face jump
+  // left for a renderer to smear a texture across. The returned mesh
+  // already carries these corrected UVs via `SetTextureCoordinates()`
+  // internally - no separate call needed. Throws std::invalid_argument
+  // if `uvs.size()` doesn't equal `VertexCount()`, or if
+  // `wrap_threshold` is not strictly between 0 and 1. Still honestly
+  // scoped: assumes a period of exactly 1.0 (this class's own
+  // normalization convention for every periodic mapping above), and a
+  // face whose true own footprint genuinely spans more than
+  // `wrap_threshold` of that period without actually crossing the seam
+  // (an extremely coarse tessellation relative to the mapping) would be
+  // mistaken for a seam crossing - the same kind of coarse-tessellation
+  // caveat `MeasureGridTessellationDeviation()` above already discloses
+  // for its own sampling.
+  Mesh SplitUVSeam(const std::vector<Point2d>& uvs, double wrap_threshold = 0.5) const;
+
   // Sets one (u, v) texture coordinate per vertex, stored in ON_Mesh's own
   // `m_S` array (not the deprecated `m_T` - OpenNURBS' own header flags
   // `m_T` "DEPRECATED... use m_S instead", confirmed by reading
