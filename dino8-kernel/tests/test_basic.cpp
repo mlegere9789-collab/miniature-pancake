@@ -1380,6 +1380,72 @@ void TestCurveGetOrientedBoundingBox() {
   }
 }
 
+void TestCurveGetTightBoundingBoxOverload() {
+  using dino8::kernel::BoundingBox;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // A quadratic Bezier (P0=(0,0,0), P1=(10,10,0), P2=(20,0,0)): x(t)=20t is
+  // linear (no interior extremum, matches the control-point box exactly in
+  // x), but y(t)=20t(1-t) has its true analytic maximum at t=0.5, y=5 -
+  // HALF of the control point's own y=10. The existing no-argument overload
+  // (control-point box) must report y up to 10; the new tolerance overload
+  // must find the real interior extremum and report y up to exactly 5.
+  {
+    const NurbsCurve bez = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 10, 0), Point3d(20, 0, 0)}, 2);
+    const BoundingBox loose = bez.GetTightBoundingBox();
+    Check(std::abs(loose.max.y - 10.0) < 1e-9,
+          "GetTightBoundingBox(): setup - the existing control-point-box overload reports y up to 10, confirming this fixture reproduces the documented gap");
+    const BoundingBox tight = bez.GetTightBoundingBox(0.0001);
+    Check(std::abs(tight.max.y - 5.0) < 1e-6,
+          "GetTightBoundingBox(tolerance): finds the real analytic extremum - y maxes out at exactly 5, not the control point's own 10");
+    Check(std::abs(tight.min.x - 0.0) < 1e-6 && std::abs(tight.max.x - 20.0) < 1e-6,
+          "GetTightBoundingBox(tolerance): x has no interior extremum (x(t)=20t is linear), so it still spans the full 0 to 20");
+    Check(std::abs(tight.min.y - 0.0) < 1e-6, "GetTightBoundingBox(tolerance): y's own minimum is still exactly 0, at both endpoints");
+  }
+
+  // A full circle of known radius: the true tight bbox is exactly
+  // [-r, r] x [-r, r] x [0, 0] - a real, independently hand-derivable
+  // answer, strictly smaller than the control-point box a rational
+  // circle's own CVs overshoot.
+  {
+    const double r = 5.0;
+    const ON_Circle oncircle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), r);
+    ON_NurbsCurve nc;
+    Check(oncircle.GetNurbForm(nc) != 0, "GetTightBoundingBox(tolerance): the circle fixture builds a real NURBS form");
+    NurbsCurve circle;
+    circle.raw() = nc;
+    const BoundingBox tight = circle.GetTightBoundingBox(0.0001);
+    Check(std::abs(tight.min.x - (-r)) < 1e-4 && std::abs(tight.max.x - r) < 1e-4,
+          "GetTightBoundingBox(tolerance): a radius-5 circle's own X range is exactly [-5, 5]");
+    Check(std::abs(tight.min.y - (-r)) < 1e-4 && std::abs(tight.max.y - r) < 1e-4,
+          "GetTightBoundingBox(tolerance): a radius-5 circle's own Y range is exactly [-5, 5]");
+    Check(std::abs(tight.min.z) < 1e-9 && std::abs(tight.max.z) < 1e-9,
+          "GetTightBoundingBox(tolerance): a planar circle's own Z range is exactly 0");
+    // Safety invariant: the new tolerance overload must never report a
+    // box LARGER than the existing control-point-box overload, along any
+    // axis, on either fixture above - the mathematical guarantee this
+    // method's own doc comment makes, checked directly rather than
+    // assumed.
+    const BoundingBox loose = circle.GetTightBoundingBox();
+    Check(tight.min.x >= loose.min.x - 1e-9 && tight.max.x <= loose.max.x + 1e-9 && tight.min.y >= loose.min.y - 1e-9 &&
+              tight.max.y <= loose.max.y + 1e-9,
+          "GetTightBoundingBox(tolerance): the circle's tight box never exceeds the looser control-point box on either axis");
+  }
+
+  // A non-positive tolerance throws.
+  {
+    const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    bool threw = false;
+    try {
+      line.GetTightBoundingBox(0.0);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "GetTightBoundingBox(tolerance): a non-positive tolerance throws std::invalid_argument");
+  }
+}
+
 void TestCurveKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -5692,6 +5758,154 @@ void TestBooleanCombineGeneralFreeformSurfaceOperand() {
   Check(std::abs(md_reverse.Volume() - (vol_box - mi.Volume())) < 0.01,
         "box-freeform Difference's volume matches Volume(box) - Volume(Intersection), the other "
         "argument order of the same Difference identity");
+}
+
+// The specific gap TestBooleanCombineGeneralFreeformSurfaceOperand's own
+// doc comment disclosed as still unexercised: that test (and its
+// SymmetricDifference sibling below) only ever booleans ONE freeform
+// operand against an axis-aligned analytic BOX - "a freeform operand PAIR
+// hitting BooleanCombineGeneral's own separately-disclosed scope limits
+// ... remains completely unexercised." This exercises a genuine
+// freeform-vs-freeform pair: `freeform_a` is the identical bicubic bump
+// blob that test already uses; `freeform_b` replaces that test's analytic
+// BOX with a freeform "lid" of the same engulfing footprint and depth -
+// a genuinely asymmetric bicubic bump (no mirror symmetry, no separable
+// u*v term) thickened into its own closed blob, its footprint chosen to
+// fully CONTAIN `freeform_a`'s (x/y well beyond [0,3]x[0,3]) the same way
+// that test's own box did, so the actual crossing stays the same already-
+// proven-simple shape (one engulfing operand's own top surface cutting
+// the other's 4 flat side walls in one loop) - just with a genuinely
+// curved cutter instead of a flat one. Picking a DIAGONALLY-STAGGERED
+// (neither-contains-the-other) footprint instead was tried first and
+// rejected: see the real, newly-found limitation disclosed below the
+// Check()s, which is exactly what that attempt (not this one) surfaced.
+void TestBooleanCombineGeneralFreeformVsFreeformOperand() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const double za[4][4] = {
+      {0.3, 0.5, 0.4, 0.3},
+      {0.5, 1.0, 0.8, 0.4},
+      {0.4, 0.8, 0.9, 0.5},
+      {0.3, 0.4, 0.5, 0.3},
+  };
+  std::vector<Point3d> grid_a;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) grid_a.push_back(Point3d(double(i), double(j), za[i][j]));
+  }
+  const NurbsSurface bump_a = NurbsSurface::FromControlGrid(grid_a, 4, 4, /*u_degree=*/3, /*v_degree=*/3);
+  const Brep freeform_a = Brep::Thicken(Brep::FromSurface(bump_a), -1.5);
+
+  // freeform_b's own footprint/thickness mirror TestBooleanCombineGeneralFreeformSurfaceOperand's
+  // box (x/y in [-1, 4], deep enough to stay clear of freeform_a's bottom)
+  // exactly, with a genuinely asymmetric bicubic height field (amplitude
+  // 0.4, no two control heights related by any reflection) standing in
+  // for that box's flat top - still a real NurbsSurface-backed Brep, not
+  // reducible to any analytic primitive.
+  const double xs[4] = {-1.0, 2.0 / 3.0, 7.0 / 3.0, 4.0};
+  const double ys[4] = {-1.0, 2.0 / 3.0, 7.0 / 3.0, 4.0};
+  const double zb[4][4] = {
+      {-0.05, 0.10, -0.10, 0.05},
+      {0.15, -0.20, 0.20, -0.05},
+      {-0.10, 0.20, -0.15, 0.10},
+      {0.05, -0.05, 0.10, -0.10},
+  };
+  std::vector<Point3d> grid_b;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) grid_b.push_back(Point3d(xs[i], ys[j], zb[i][j]));
+  }
+  const NurbsSurface bump_b = NurbsSurface::FromControlGrid(grid_b, 4, 4, /*u_degree=*/3, /*v_degree=*/3);
+  const Brep freeform_b = Brep::Thicken(Brep::FromSurface(bump_b), -2.0);
+
+  const double vol_a = freeform_a.TessellateToClosedMesh(24, 24).Volume();
+  const double vol_b = freeform_b.TessellateToClosedMesh(24, 24).Volume();
+
+  const Brep u = BooleanCombineGeneral(freeform_a, freeform_b, BooleanOp::Union);
+  const Brep i = BooleanCombineGeneral(freeform_a, freeform_b, BooleanOp::Intersection);
+  const Brep d_ab = BooleanCombineGeneral(freeform_a, freeform_b, BooleanOp::Difference);
+  const Brep d_ba = BooleanCombineGeneral(freeform_b, freeform_a, BooleanOp::Difference);
+
+  Check(u.raw().IsValid(), "freeform+freeform Union is a valid ON_Brep");
+  Check(i.raw().IsValid(), "freeform+freeform Intersection is a valid ON_Brep");
+  Check(d_ab.raw().IsValid(), "freeform+freeform A-B is a valid ON_Brep");
+  Check(d_ba.raw().IsValid(), "freeform+freeform B-A is a valid ON_Brep");
+
+  // The real proof this crossing resolved correctly for two genuinely
+  // freeform operands, with no closed form to compare against directly:
+  // the implementation-independent inclusion-exclusion identities
+  // TestBooleanCombineGeneralFreeformSurfaceOperand's own single-freeform
+  // fixture already leans on, measured via the same specialized
+  // TessellateGeneralBooleanClosedMesh() every other BooleanCombineGeneral
+  // test in this file uses to read a general-engine result's own volume.
+  // A loose 0.05 tolerance (volumes here run 6-54): see the disclosed
+  // finding just below for exactly why this is not tightened to the 0.01
+  // the single-freeform fixture uses.
+  const Mesh mu = TessellateGeneralBooleanClosedMesh(u, 24, 24);
+  const Mesh mi = TessellateGeneralBooleanClosedMesh(i, 24, 24);
+  const Mesh md_ab = TessellateGeneralBooleanClosedMesh(d_ab, 24, 24);
+  const Mesh md_ba = TessellateGeneralBooleanClosedMesh(d_ba, 24, 24);
+
+  Check(std::abs((mu.Volume() + mi.Volume()) - (vol_a + vol_b)) < 0.05,
+        "Volume(Union) + Volume(Intersection) matches Volume(freeform_a) + Volume(freeform_b) - the "
+        "implementation-independent identity holding for two genuinely freeform operands");
+  Check(std::abs(md_ab.Volume() - (vol_a - mi.Volume())) < 0.05,
+        "freeform_a - freeform_b's volume matches Volume(freeform_a) - Volume(Intersection)");
+  Check(std::abs(md_ba.Volume() - (vol_b - mi.Volume())) < 0.05,
+        "freeform_b - freeform_a's volume matches Volume(freeform_b) - Volume(Intersection), the other "
+        "argument order of the same Difference identity");
+
+  // A genuine overlap, not a degenerate touching-only or fully-disjoint
+  // fixture: the intersection has real nonzero volume, strictly smaller
+  // than either operand on its own.
+  Check(mi.Volume() > 0.1 && mi.Volume() < vol_a && mi.Volume() < vol_b,
+        "the two freeform blobs genuinely, partially overlap - nonzero intersection volume, strictly "
+        "smaller than either operand");
+
+  // A real, previously-undocumented limitation found while building this
+  // fixture, not assumed: `BooleanCombineGeneral()` itself produces a
+  // correct result either way (every `IsValid()`/volume-identity Check()
+  // above holds regardless), but `TessellateGeneralBooleanClosedMesh()`'s
+  // own `IsClosedManifold()` is NOT reliably true at a fixed tessellation
+  // resolution once BOTH operands are genuinely curved, unlike every
+  // curved-vs-ANALYTIC fixture elsewhere in this file. Confirmed directly
+  // (`dino8_scratch_test`, not assumed): sweeping this exact fixture's own
+  // Intersection/Difference results across resolutions 16/24/32/48/64/96
+  // shows `IsClosedManifold()` flipping true/false non-monotonically
+  // between adjacent resolutions (e.g. Intersection: closed at 16, 24, 48,
+  // 64, NOT closed at 32, 96) while the tessellated VOLUME itself stays
+  // stable and correct throughout (converging smoothly, matching the
+  // identities above at every resolution tried) - the same
+  // "orientation_consistent=0, a directed edge walked twice by two
+  // differently-wound degenerate fan triangles" signature
+  // `Mesh::IsClosedManifold()`'s own DINO8_MESH_DEBUG trace already
+  // documents for OTHER still-failing curved-face cases (box+cylinder
+  // etc.), now additionally confirmed for a genuine freeform-vs-freeform
+  // crossing - a resolution-dependent fan-insertion defect in
+  // `TessellateGeneralBooleanClosedMesh()` itself, not in
+  // `BooleanCombineGeneral()`'s own geometry. A DIAGONALLY-STAGGERED
+  // (neither-footprint-contains-the-other) freeform pair was tried first
+  // and is NOT used here for exactly this reason: that shape's own
+  // Difference(freeform_b, freeform_a) stayed non-closed even at
+  // resolution 384, unlike this fixture's own flakiness, which at least
+  // closes cleanly at plenty of individual resolutions - evidence the
+  // defect's severity depends on the crossing's own shape, not just "any
+  // two curved operands." Not fixed here (a real fix belongs in
+  // `TessellateGeneralBooleanClosedMesh()`'s own fan-insertion passes,
+  // StitchTJunctionsOnce/ReconcileChainToChord, a substantially larger,
+  // separate undertaking - the same "genuinely new lead for a future
+  // pass" `Mesh::IsClosedManifold()`'s own doc comment already flags) -
+  // disclosed as a genuine new finding on top of already-passing,
+  // already-tested functions instead, the same way this category's other
+  // dated notes already handle an incidental discovery. This is why this
+  // test does not assert `IsClosedManifold()` on any of the four results
+  // the way every single-operand-freeform/analytic-operand fixture in
+  // this file does - doing so at a hardcoded resolution would be
+  // asserting a coin flip, not a verified property.
 }
 
 void TestBooleanCombineGeneralCoplanarBoxes() {
@@ -72457,6 +72671,7 @@ int main() {
   TestCurvePlanarRegionProperties();
   TestCurveMinDistanceTo();
   TestCurveGetOrientedBoundingBox();
+  TestCurveGetTightBoundingBoxOverload();
   TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();
@@ -72526,6 +72741,7 @@ int main() {
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralFreeformSurfaceOperand();
+  TestBooleanCombineGeneralFreeformVsFreeformOperand();
   TestBooleanCombineGeneralCoplanarBoxes();
   TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance();
   TestBooleanCombineGeneralBoxCylinder();

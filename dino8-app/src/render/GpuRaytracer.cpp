@@ -643,23 +643,27 @@ void GpuRaytracer::UploadTextureAtlas(const std::vector<app::Material>& mats) {
 
 // Builds/rebuilds env_tex_ for Background::Image, closing the "no env-map
 // sampling on GPU" gap the old bg_mode_ = 0 override left (see
-// UploadScene below and gpu_render_notes.md). A true .hdr source uploads
-// as GL_RGB32F so an above-1.0 highlight/sun reaches the shader unclamped,
-// exactly like PathTracer::TexCache::hdr on the CPU path; every other
-// supported format uploads as the ordinary 8-bit GL_RGB8 the atlas already
-// uses.
+// UploadScene below and gpu_render_notes.md). A true .hdr/.exr source
+// uploads as GL_RGB32F so an above-1.0 highlight/sun reaches the shader
+// unclamped, exactly like PathTracer::TexCache::hdr on the CPU path; every
+// other supported format uploads as the ordinary 8-bit GL_RGB8 the atlas
+// already uses.
 void GpuRaytracer::UploadEnvironmentMap(const std::string& path) {
   if (env_tex_) { glDeleteTextures(1, &env_tex_); env_tex_ = 0; }
   env_path_ = path;
   if (path.empty()) return;
   int w = 0, h = 0;
   bool is_hdr = path.size() > 4 && path.compare(path.size() - 4, 4, ".hdr") == 0;
+  const bool is_exr = path.size() > 4 && path.compare(path.size() - 4, 4, ".exr") == 0;
   std::vector<float> hdr_rgb;
   std::vector<unsigned char> ldr_rgba;
   if (is_hdr) {
     app::ImageHdr img; std::string err;
     if (app::LoadImageHdr(path, img, err) && img.Valid()) { hdr_rgb = std::move(img.rgb); w = img.width; h = img.height; }
     else is_hdr = false;  // fall through to the LDR loader below (e.g. a mis-named file)
+  } else if (is_exr) {
+    app::ImageHdr img; std::string err;
+    if (app::LoadImageExr(path, img, err) && img.Valid()) { hdr_rgb = std::move(img.rgb); w = img.width; h = img.height; is_hdr = true; }
   }
   if (!is_hdr) {
     app::Image img; std::string err;
