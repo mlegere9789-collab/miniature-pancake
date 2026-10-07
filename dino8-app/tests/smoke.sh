@@ -1428,9 +1428,27 @@ sdcheck "240 faces, 960 edges, open" "ToNURBS's SubDBox Brep has 240 real per-pa
 # crash"; this command had no test coverage at all before this check.
 sdcheck "ToSubD: created 1 object(s)" "ToSubD converted the Brep sphere"
 sdcheck "11310 faces, 16965 edges, 5657 vertices, 0 creases" "ToSubD's sphere SubD control cage is tessellated at the document's tight 0.001 modeling tolerance (a real Euler check: 5657 - 16965 + 11310 = 2, a genuinely closed surface), not the coarse 0.05 display tolerance a sphere this size would need far fewer faces for"
+# ToSubD limit-surface fidelity: BuildSubDVerifiedAgainstBrep (cmd_solids.cpp)
+# now measures the resulting SubD's own true Catmull-Clark LIMIT surface
+# against the original Brep - not just the control cage's own tessellation
+# tolerance, which is all the two checks above cover - and reports a real,
+# measured bound instead of no guarantee at all. The sphere's cage is almost
+# entirely extraordinary vertices (every original triangle corner), and its
+# own tessellation is already at the mesher's per-edge subdivision cap, so
+# retightening can't shrink it further; the exact deviation below is this
+# check's own honestly-disclosed, unconverged measurement, not a success
+# silently claimed.
+sdcheck "ToSubD: created 1 object(s) (0 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0.014720)" "ToSubD on the Brep sphere measures and discloses a real (not fully within tolerance) Catmull-Clark limit-surface deviation from the original Brep"
+# The opposite, provable case: a flat planar patch's control points are all
+# already coplanar, so Catmull-Clark's own limit-point formula (an affine
+# combination of coplanar points) introduces no deviation regardless of
+# valence - this must fully verify on the very first round, proving the
+# "verified" branch of the same check genuinely fires, not only the
+# "honest miss" branch above.
+sdcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0.000000)" "ToSubD on a flat planar patch fully verifies its limit surface against the original Brep within tolerance"
 echo "$SD" | grep -E "^(ok|FAIL)"
 if echo "$SD" | grep -q "^FAIL"; then fail=1; fi
-sdcheck "smoke: frames=150 objects=15" "subd script produced the expected object count"
+sdcheck "smoke: frames=150 objects=18" "subd script produced the expected object count"
 # Rendering: materials (scripted options), texture mapping, lights, sun, ground plane,
 # Render / RenderArctic / SaveRenderWindowAs, ExtractRenderMesh, .3dm round-trip (see render_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/render_script.txt" > "$TMPW/render_script.txt"

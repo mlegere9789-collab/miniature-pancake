@@ -170,3 +170,25 @@ ToSubD
 SelLast
 List
 @expect_objects 15
+# --- ToSubD limit-surface-fidelity check: BuildSubDVerifiedAgainstBrep
+# (cmd_solids.cpp) now measures the resulting SubD's own true
+# Catmull-Clark LIMIT surface against the original Brep, not just the
+# control cage's own tessellation tolerance. The sphere above is a real,
+# honestly-disclosed MISS (its triangulated cage is almost entirely
+# extraordinary vertices, and already sits at this mesher's own per-edge
+# subdivision cap, so retightening can't shrink it further - see
+# smoke.sh's own check of the exact reported deviation). A flat planar
+# patch is the opposite, provable case: every control point already lies
+# in one plane, so Catmull-Clark's own limit-point formula (an affine
+# combination of coplanar points) can introduce no deviation at all,
+# regardless of valence - this must fully verify on the very first
+# round, proving the "verified" branch genuinely fires, not just the
+# "honest miss" branch above.
+Rectangle 300,0,0 320,10,0
+SelLast
+PlanarSrf
+SelLast
+ToSubD
+SelLast
+List
+@expect_objects 18
