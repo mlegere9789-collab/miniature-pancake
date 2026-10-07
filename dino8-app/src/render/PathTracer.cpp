@@ -294,11 +294,14 @@ const PathTracer::TexCache* PathTracer::TextureFor(const std::string& path) cons
   } else {
     Image img; std::string err;
     if (LoadImageFile(path, img, err) && img.Valid()) { tc.rgba = img.rgba; tc.w = img.width; tc.h = img.height; ok = true; }
-    // A true .hdr source also gets its real, unclamped linear radiance
+    // A true .hdr/.exr source also gets its real, unclamped linear radiance
     // cached alongside the tone-mapped 8-bit copy above - see TexCache::hdr.
     if (ok && path.size() > 4 && path.compare(path.size() - 4, 4, ".hdr") == 0) {
       ImageHdr hdr_img;
       if (LoadImageHdr(path, hdr_img, err) && hdr_img.Valid()) tc.hdr = std::move(hdr_img.rgb);
+    } else if (ok && path.size() > 4 && path.compare(path.size() - 4, 4, ".exr") == 0) {
+      ImageHdr hdr_img;
+      if (LoadImageExr(path, hdr_img, err) && hdr_img.Valid()) tc.hdr = std::move(hdr_img.rgb);
     }
   }
   tex_cache_.emplace_back(path, ok ? tc : TexCache{});

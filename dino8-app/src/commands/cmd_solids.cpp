@@ -697,9 +697,127 @@ bool TakeLoftStyle(CommandContext& ctx) {
   return false;
 }
 
+// Closes (for the one case where it's actually measurable - a Brep
+// operand, which has a true surface to measure against) PARITY_MAP.md's
+// app_subd_mesh "NURBS/Brep to SubD" item's own disclosed remaining gap:
+// the control cage's tessellation has a real chord-tolerance bound on the
+// ORIGINAL Brep (see MeshFromSelection's own comment below), but
+// Catmull-Clark smoothing then pulls the SubD's own LIMIT surface - the
+// shape a user actually sees and edits - further away from that cage
+// than the cage's own tessellation tolerance alone bounds, with no
+// guarantee on the final shape at all.
+//
+// `SubD::ToNurbsPatches()` already gives a real, independent handle on
+// that limit surface: a REGULAR face's own patch (`exact == true`) is
+// the mathematically exact Catmull-Clark limit patch, not a flat facet
+// of the control cage, and this is the SAME cheap, non-adaptive,
+// single-pass-over-the-mesh construction `ToNURBS` (see the command
+// below) already uses at this exact scale. (`EvaluateFace()`/
+// `SubD::Tessellate()` were tried first and rejected: both internally
+// clone and globally re-subdivide an ENTIRE working copy on every single
+// call that touches an irregular region, per their own doc comments -
+// fine for a handful of queries, but ToNurbsPatches()'s own doc comment
+// shows that cost compounding across every sample point here, which
+// measurably hung on a mid-size SubD in manual testing - and `Tessellate()`
+// additionally and silently returns an EMPTY mesh for any non-quad
+// level-0 face, exactly what a Brep's own triangle tessellation always
+// produces, which would have made this whole check a no-op false
+// positive.) Sampling the CENTER of a bounded number of patches (cheap:
+// `NurbsSurface::PointAt()` is a single Bezier evaluation, not an
+// adaptive search) and comparing against `reference` (a tol-chord-
+// tolerance tessellation of the ORIGINAL Brep - the same kind of mesh
+// `MeshBrepClosed` already guarantees lands within `tol` of the true
+// Brep surface everywhere) gives a real, MEASURED bound on how far the
+// FINAL SubD shape sits from the surface it was converted from, not just
+// on its intermediate cage. The patches themselves come from a disposable
+// working copy (`refined`, subdivided a couple of whole-mesh rounds first
+// - the same pre-refinement `ToNURBS` below applies, to shrink irregular
+// regions and guarantee quad faces) - the actual SubD kept as this
+// round's result (`sd`) is the plain, unsubdivided cage, so a caller
+// still gets the control net its own tessellation tolerance implies, not
+// a needlessly denser one.
+//
+// If the measured deviation exceeds `tol`, the cage is rebuilt from a
+// tighter tessellation (chord tolerance halved) and remeasured, up to
+// `kMaxFidelityRounds` times, each capped by `kMaxFidelityCageFaces` (the
+// same kind of face-count safety cap `ToNURBS`'s own adaptive converter
+// already applies) since each round's tessellation can grow the cage
+// roughly 4x. A bounded sample count (`kMaxFidelitySamples`) keeps this
+// check's own cost from scaling with however many patches the finest
+// attempted cage actually has - `Mesh::ClosestPoint()` is a brute-force
+// per-triangle search with no spatial acceleration structure (see its own
+// doc comment), so an unbounded sample count against a large reference
+// mesh would make this check itself the slow part of the conversion.
+//
+// Still honestly disclosed either way: the achieved bound (met or not)
+// is reported to the caller, and running out of rounds (or hitting the
+// face-count cap) without converging is reported as exactly that - a
+// measured, disclosed miss - never silently claimed as success.
+struct SubDFidelityResult {
+  kernel::SubD subd;
+  double achieved_deviation = 0.0;
+  bool verified = false;
+  int rounds = 0;
+};
+
+constexpr int kMaxFidelityRounds = 3;
+constexpr int kMaxFidelitySamples = 400;
+constexpr int kMaxFidelityCageFaces = 300000;
+
+std::optional<SubDFidelityResult> BuildSubDVerifiedAgainstBrep(const SceneObject& o, double tol) {
+  std::optional<kernel::Mesh> reference = MeshOf(o, tol);
+  if (!reference || reference->FaceCount() == 0) return std::nullopt;
+  SubDFidelityResult best;
+  bool have_best = false;
+  double cage_tol = tol;
+  int last_cage_faces = -1;
+  for (int round = 0; round < kMaxFidelityRounds; ++round) {
+    std::optional<kernel::Mesh> cage = (round == 0) ? reference : MeshOf(o, cage_tol);
+    if (!cage || cage->FaceCount() == 0 || cage->FaceCount() > kMaxFidelityCageFaces) break;
+    // MeshBrepClosed's own per-edge subdivision count is capped
+    // (BrepMesher.cpp), so a Brep already fine enough to hit that cap at
+    // `tol` retessellates to the SAME face count no matter how far
+    // `cage_tol` is tightened beyond it - retrying would just repeat an
+    // identical, already-measured cage for the remaining rounds. Stop as
+    // soon as that plateau is detected instead of burning the rest of
+    // `kMaxFidelityRounds` on no-op reruns.
+    if (round > 0 && cage->FaceCount() == last_cage_faces) break;
+    last_cage_faces = cage->FaceCount();
+    kernel::SubD sd;
+    std::vector<kernel::SubDNurbsPatch> patches;
+    try {
+      sd = kernel::SubD::FromControlMesh(*cage);
+      kernel::SubD refined = sd;
+      int faces = refined.FaceCount(), levels = 0;
+      while (levels < 3 && faces > 0 && faces * 4 <= kMaxFidelityCageFaces) { faces *= 4; ++levels; }
+      if (levels == 0) levels = 1;
+      refined.Subdivide(levels);
+      patches = refined.ToNurbsPatches();
+    } catch (const std::exception&) {
+      break;
+    }
+    double dev = 0.0;
+    const int n = static_cast<int>(patches.size());
+    if (n > 0) {
+      const int step = std::max(1, n / kMaxFidelitySamples);
+      for (int i = 0; i < n; i += step) {
+        const Point3d p = patches[static_cast<size_t>(i)].surface.PointAt(0.5, 0.5);
+        dev = std::max(dev, (reference->ClosestPoint(p) - p).Length());
+      }
+    }
+    best = SubDFidelityResult{sd, dev, dev <= tol, round + 1};
+    have_best = true;
+    if (best.verified) break;
+    cage_tol *= 0.5;
+  }
+  return have_best ? std::make_optional(best) : std::nullopt;
+}
+
 void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, const char* label, bool to_subd) {
   ctx.Doc().BeginChange(label);
   int made = 0;
+  int fidelity_checked = 0, fidelity_verified = 0;
+  double fidelity_worst = 0.0;
   // ToSubD/MeshToSubD (to_subd) tessellate a Brep's real surface at the
   // document's own modeling tolerance (ctx.Settings().absolute_tolerance)
   // rather than surface_display_tolerance - a viewport-quality setting
@@ -714,20 +832,39 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
   // LIMIT surface further from that control cage than the tessellation
   // tolerance alone bounds, so the plain "Mesh" command (to_subd == false,
   // whose own output IS the final shape) keeps using the display
-  // tolerance unchanged.
+  // tolerance unchanged. For a Brep operand specifically (the only input
+  // kind with a true surface to measure the result against),
+  // BuildSubDVerifiedAgainstBrep() above now closes that remaining half
+  // too - see its own doc comment.
   const double tol = to_subd ? ctx.Settings().absolute_tolerance : ctx.App().surface_display_tolerance;
   for (ObjectId id : ids) {
     SceneObject* o = ctx.Doc().Find(id);
     if (!o) continue;
-    std::optional<kernel::Mesh> m = MeshOf(*o, tol);
-    if (!m || m->FaceCount() == 0) continue;
-    SceneObject n = to_subd ? SceneObject::MakeSubD(kernel::SubD::FromControlMesh(*m)) : SceneObject::MakeMesh(*m);
+    SceneObject n;
+    if (to_subd && o->kind == ObjectKind::Brep) {
+      std::optional<SubDFidelityResult> fr = BuildSubDVerifiedAgainstBrep(*o, tol);
+      if (!fr) continue;
+      ++fidelity_checked;
+      if (fr->verified) ++fidelity_verified;
+      fidelity_worst = std::max(fidelity_worst, fr->achieved_deviation);
+      n = SceneObject::MakeSubD(fr->subd);
+    } else {
+      std::optional<kernel::Mesh> m = MeshOf(*o, tol);
+      if (!m || m->FaceCount() == 0) continue;
+      n = to_subd ? SceneObject::MakeSubD(kernel::SubD::FromControlMesh(*m)) : SceneObject::MakeMesh(*m);
+    }
     n.layer_index = o->layer_index;
     n.name = o->name;
     ctx.Doc().Add(std::move(n));
     ++made;
   }
-  ctx.Print(std::string(label) + ": created " + std::to_string(made) + " object(s)");
+  std::string msg = std::string(label) + ": created " + std::to_string(made) + " object(s)";
+  if (fidelity_checked > 0) {
+    msg += " (" + std::to_string(fidelity_verified) + " of " + std::to_string(fidelity_checked) +
+           " limit-surface-fidelity verified within tolerance " + std::to_string(tol) +
+           ", worst measured deviation " + std::to_string(fidelity_worst) + ")";
+  }
+  ctx.Print(msg);
 }
 
 }  // namespace

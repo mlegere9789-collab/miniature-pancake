@@ -69,3 +69,14 @@ runmac1
 SelNone
 SelLast
 BoundingBox
+
+# The other half of the same gap: AddToolbarCommand (ui/Toolbars.cpp, the
+# ToolbarAddCommand command's own backing function) used to accept ONLY a
+# literal registered command name, rejecting even a bare alias - so a
+# macro-bound alias like runmac1 above could never actually go on a
+# toolbar button either, even though the click handler (DrawButtonRow)
+# already calls the same generic Execute() that runs it fine when typed.
+# Now it also accepts a registered alias, closing PARITY_MAP.md's "VBA-
+# style macro recorder and editor" item's own "nothing here binds a saved
+# macro to a toolbar button... yet" line for real, not just in theory.
+ToolbarAddCommand runmac1
