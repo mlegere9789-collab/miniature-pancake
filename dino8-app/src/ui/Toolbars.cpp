@@ -314,9 +314,27 @@ std::vector<std::string> AllToolbarButtonCommands() {
 
 bool AddToolbarCommand(Application& app, const std::string& name) {
   const RegisteredCommand* rc = app.Engine().Find(name);
-  if (!rc) return false;
   if (app.toolbar_commands.empty()) app.toolbar_commands = DefaultToolbarCommands();
-  app.toolbar_commands.push_back(rc->name);
+  if (rc) {
+    app.toolbar_commands.push_back(rc->name);
+    return true;
+  }
+  // Not a literal registered command - but a registered ALIAS (Alias,
+  // cmd_misc.cpp) is just as runnable: DrawButtonRow's click handler
+  // below already calls the generic Engine().Execute(command), which
+  // (since CommandEngine::Execute's alias-target fix) resolves a
+  // multi-word or ';'-separated alias target as a real command line, not
+  // only a bare name - so an alias bound to RunSavedMacro (closing
+  // PARITY_MAP.md's own "VBA-style macro recorder" item's "not bound to
+  // a toolbar button... yet" line) already runs correctly once it's in
+  // this list; only the add-time gate below was still name-only. No
+  // icon/label exists for an alias name either way - DrawIcon's own
+  // fallback box and DrawButtonRow's own `b ? b->label : command` already
+  // degrade to the alias's own name, same as any other unrecognized
+  // command string already does.
+  const auto& aliases = app.Engine().Aliases();
+  if (aliases.find(ToLower(name)) == aliases.end()) return false;
+  app.toolbar_commands.push_back(ToLower(name));
   return true;
 }
 

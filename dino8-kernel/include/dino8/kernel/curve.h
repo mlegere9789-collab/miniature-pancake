@@ -1171,6 +1171,37 @@ class NurbsCurve {
   // std::runtime_error if OpenNURBS' own call fails.
   BoundingBox GetTightBoundingBox() const;
 
+  // The GENUINE tight bound the no-argument overload above's own doc
+  // comment discloses as missing - PARITY_MAP.md's "Mass properties &
+  // spatial queries" category, "Tight (exact) bounding box of curved
+  // geometry", whose own named gap was exactly this: "NurbsCurve::
+  // GetTightBoundingBox control-point box only". A new overload (not a
+  // behavior change to the existing one - zero risk to any existing
+  // caller) so both tiers stay available, the same "simpler/exact-cases
+  // overload plus a more general one" shape `OffsetInPlane()` already
+  // uses. For each of the 3 world axes, finds every parameter where that
+  // axis' own coordinate has a local extremum - a zero of
+  // `ON_Curve::Ev1Der`'s own derivative component, found by densely
+  // sampling each axis' derivative (`max(50, 8 * ControlPointCount())`
+  // points) and bisecting every detected sign change to a real zero
+  // crossing (60 iterations - double-precision overkill, not tied to
+  // `tolerance`) - then evaluates `PointAt()` at the domain's own two
+  // endpoints plus every one of those genuine extrema and takes the
+  // real min/max per axis. `tolerance` only controls how early a
+  // bisection may stop once two candidate parameters' own evaluated
+  // points are already within `tolerance` of each other - it does not
+  // loosen the result, only how much wasted precision past that point
+  // is skipped. Honestly NOT a formally certified bound (dense sampling
+  // could in principle miss two extrema that both fall strictly between
+  // two adjacent samples with no net derivative sign change) - the same
+  // "genuinely computed, not just assumed" tier `ReduceDegree()`'s own
+  // search already carries - but it is mathematically guaranteed to
+  // never return a box LARGER than the no-argument overload's own
+  // (looser) control-point box, since every candidate it evaluates is a
+  // real point on the curve itself. Throws `std::invalid_argument` if
+  // `tolerance` isn't positive.
+  BoundingBox GetTightBoundingBox(double tolerance) const;
+
   // Approximate arc length via polyline sampling: evaluates `samples + 1`
   // points evenly across the curve's own parameter domain and sums the
   // straight-line distance between consecutive ones. This is a
