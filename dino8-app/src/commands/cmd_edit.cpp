@@ -110,6 +110,8 @@ class ChangeDegreeCommand : public Command {
         bool changed = false;
         if (target > o->surface->DegreeU() && o->surface->ElevateDegree(0, target) != kernel::Result::Failed) changed = true;
         if (target > o->surface->DegreeV() && o->surface->ElevateDegree(1, target) != kernel::Result::Failed) changed = true;
+        if (target < o->surface->DegreeU() && o->surface->ReduceDegree(0, target, tol) == kernel::Result::Ok) { changed = true; ++reduced; }
+        if (target < o->surface->DegreeV() && o->surface->ReduceDegree(1, target, tol) == kernel::Result::Ok) { changed = true; ++reduced; }
         if (changed) { o->InvalidateDisplay(); ++done; }
       }
     }
