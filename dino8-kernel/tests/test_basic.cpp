@@ -9158,6 +9158,75 @@ void TestSurfaceMakeRationalAndNonRational() {
         "MakeNonRational reports NoOpAlreadySatisfied when already non-rational");
 }
 
+void TestSurfaceMakeNonRationalWithTolerance() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Non-rational surface: genuine no-op, zero deviation.
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1);
+  double deviation = -1.0;
+  Check(flat.MakeNonRational(1e-9, &deviation) == Result::NoOpAlreadySatisfied,
+        "MakeNonRational(tolerance) reports NoOpAlreadySatisfied on an already non-rational surface");
+  Check(deviation == 0.0, "...and reports zero deviation for that no-op");
+
+  // Uniform-weight rational surface - the same fixture
+  // TestSurfaceMakeRationalAndNonRational already proves is exactly
+  // shape-preserving - must succeed at a tight tolerance with ~0
+  // reported deviation.
+  NurbsSurface uniform = NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1);
+  Check(uniform.MakeRational() == Result::Ok, "setup: MakeRational succeeds");
+  deviation = -1.0;
+  Check(uniform.MakeNonRational(1e-9, &deviation) == Result::Ok,
+        "MakeNonRational(tolerance) succeeds on a uniform-weight rational surface");
+  Check(deviation >= 0.0 && deviation < 1e-9,
+        "...with ~0 measured deviation, since uniform weights are exactly shape-preserving");
+
+  // Genuine radius-3 sphere (the same fixture
+  // TestSurfaceMakeRationalAndNonRational uses): a tight tolerance must
+  // REFUSE, since the conversion is known to measurably change the shape
+  // (distance from center drifting away from 3.0 elsewhere on the
+  // surface).
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), 3.0);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "setup: ON_Sphere::GetNurbForm succeeds");
+  NurbsSurface sphere;
+  sphere.raw() = sphere_surface;
+  const NurbsSurface sphere_original = sphere;
+  deviation = -1.0;
+  const Result refused = sphere.MakeNonRational(1e-6, &deviation);
+  Check(refused == Result::Failed,
+        "MakeNonRational(tolerance) refuses the sphere at a tight tolerance, since the "
+        "conversion is known to measurably change its shape");
+  Check(deviation > 1e-6,
+        "...and the reported deviation genuinely exceeds the refused tolerance, not just an "
+        "arbitrary failure");
+  Check(sphere.IsRational(), "a refused MakeNonRational(tolerance) leaves the surface rational");
+  double cv_err = 0.0;
+  for (int i = 0; i < sphere.CVCountU(); ++i) {
+    for (int j = 0; j < sphere.CVCountV(); ++j) {
+      cv_err = std::max(cv_err, sphere.ControlPointAt(i, j).DistanceTo(sphere_original.ControlPointAt(i, j)));
+    }
+  }
+  Check(cv_err == 0.0, "a refused MakeNonRational(tolerance) leaves the control points byte-for-byte unchanged");
+
+  // The same sphere at a loose enough tolerance must succeed, proving
+  // the refusal above was genuinely tolerance-driven, not hardcoded.
+  double loose_deviation = -1.0;
+  Check(sphere.MakeNonRational(1.0, &loose_deviation) == Result::Ok,
+        "MakeNonRational(tolerance) succeeds on the same sphere at a loose enough tolerance");
+  Check(!sphere.IsRational(), "...and the surface is genuinely non-rational afterward");
+  Check(std::abs(loose_deviation - deviation) < 1e-9,
+        "the deviation reported on the accepted conversion matches the one reported on the "
+        "earlier refusal (both measure the identical conversion)");
+}
+
 void TestSurfaceInsertKnotAt() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -72945,6 +73014,7 @@ int main() {
   TestSurfaceIsRational();
   TestSurfaceSetWeightAt();
   TestSurfaceMakeRationalAndNonRational();
+  TestSurfaceMakeNonRationalWithTolerance();
   TestSurfaceInsertKnotAt();
   TestSurfaceKnotAt();
   TestSurfaceControlPointAt();
