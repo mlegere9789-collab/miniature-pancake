@@ -29557,6 +29557,142 @@ void TestMeshComputeSphericalMappingUVs() {
                         "arbitrary direction");
 }
 
+void TestMeshSplitUVSeam() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+
+  // A 4-column, 2-row cylindrical strip (8 vertices, 4 quad side faces)
+  // with hand-assigned per-column u values (independent of
+  // ComputeCylindricalMappingUVs() - this function only cares about the
+  // uvs array it's given, not how it was generated): columns at
+  // u = 0.1, 0.35, 0.6, 0.85. Three consecutive faces (col0-col1,
+  // col1-col2, col2-col3) each span only 0.25 of the period - no seam.
+  // The WRAP face (col3-col0, closing the ring) spans 0.75 - a genuine
+  // seam crossing, the only one of the four.
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  const double col_u[4] = {0.1, 0.35, 0.6, 0.85};
+  for (int col = 0; col < 4; ++col) {
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(col), 0, 0));  // bottom row
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(col), 0, 1));  // top row
+  }
+  auto add_quad = [&raw](int a, int b, int c, int d) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = c;
+    f.vi[3] = d;
+    raw.m_F.Append(f);
+  };
+  // Column i's bottom/top vertices are at indices 2*i / 2*i+1.
+  add_quad(0, 2, 3, 1);  // col0-col1, no seam
+  add_quad(2, 4, 5, 3);  // col1-col2, no seam
+  add_quad(4, 6, 7, 5);  // col2-col3, no seam
+  add_quad(6, 0, 1, 7);  // col3-col0, THE seam (wraps 0.85 -> 0.1)
+
+  std::vector<Point2d> uvs(8);
+  for (int col = 0; col < 4; ++col) {
+    uvs[static_cast<size_t>(2 * col)] = Point2d(col_u[col], 0.0);
+    uvs[static_cast<size_t>(2 * col + 1)] = Point2d(col_u[col], 1.0);
+  }
+
+  const Mesh split = m.SplitUVSeam(uvs, 0.5);
+  Check(split.FaceCount() == m.FaceCount(),
+        "SplitUVSeam preserves the exact same face count");
+  Check(split.VertexCount() == m.VertexCount() + 4,
+        "SplitUVSeam duplicates exactly the 4 corners of the one seam-"
+        "crossing face, leaving the other 3 faces' vertices shared "
+        "exactly as before");
+  Check(split.HasTextureCoordinates(),
+        "the returned mesh already carries its own corrected texture "
+        "coordinates, no separate SetTextureCoordinates() call needed");
+
+  // The new (duplicated) vertices are appended after the original 8, in
+  // the seam face's own corner order: col3-bottom, col0-bottom,
+  // col0-top, col3-top. col3's own u (0.85) is within 0.5 of itself (the
+  // reference corner) so it is unchanged; col0's own u (0.1) is more
+  // than 0.5 BELOW the reference 0.85, so it is unwrapped to 1.1.
+  const Point2d new0 = split.TextureCoordinateAt(8);
+  const Point2d new1 = split.TextureCoordinateAt(9);
+  const Point2d new2 = split.TextureCoordinateAt(10);
+  const Point2d new3 = split.TextureCoordinateAt(11);
+  Check(std::abs(new0.x - 0.85) < 1e-9, "the seam face's own col3 corner (the "
+                                        "reference) keeps its real u unchanged");
+  Check(std::abs(new1.x - 1.1) < 1e-9, "the seam face's own col0 corner is "
+                                       "unwrapped to 1.1 (0.1 + 1.0), contiguous "
+                                       "with the reference 0.85 rather than "
+                                       "jumping backwards across the seam");
+  Check(std::abs(new2.x - 1.1) < 1e-9 && std::abs(new3.x - 0.85) < 1e-9,
+        "the seam face's top-row corners are corrected identically to "
+        "their own bottom-row counterparts");
+  const double seam_face_spread =
+      std::max({new0.x, new1.x, new2.x, new3.x}) - std::min({new0.x, new1.x, new2.x, new3.x});
+  Check(seam_face_spread < 0.5,
+        "after correction, the seam face's own 4 corners span well under "
+        "the wrap_threshold - no in-face jump left for a renderer to "
+        "smear a texture across");
+
+  // The three non-seam faces' own vertices are untouched: col1/col2 are
+  // never duplicated (shared_index path only, each appended at most
+  // once, in order of first use across the three non-seam faces) - new
+  // index 2 is col1's own TOP vertex by that renumbering (bottom lands
+  // at index 1), but both of col1's vertices carry the identical
+  // uncorrected u = 0.35, so either one confirms the same thing: a
+  // vertex belonging only to non-seam faces keeps its own real u, not
+  // duplicated.
+  Check(std::abs(split.TextureCoordinateAt(2).x - 0.35) < 1e-9,
+        "a vertex belonging only to non-seam faces keeps its own real u "
+        "unchanged, not duplicated");
+
+  // Sanity: a mesh with NO seam-crossing face at all is returned with
+  // the identical vertex count (no spurious duplication).
+  Mesh no_seam;
+  ON_Mesh& raw2 = no_seam.raw();
+  raw2.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw2.m_V.Append(ON_3fPoint(1, 0, 0));
+  raw2.m_V.Append(ON_3fPoint(1, 1, 0));
+  raw2.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace nf;
+  nf.vi[0] = 0;
+  nf.vi[1] = 1;
+  nf.vi[2] = 2;
+  nf.vi[3] = 3;
+  raw2.m_F.Append(nf);
+  const std::vector<Point2d> no_seam_uvs = {Point2d(0.1, 0), Point2d(0.2, 0), Point2d(0.2, 1),
+                                             Point2d(0.1, 1)};
+  const Mesh no_seam_split = no_seam.SplitUVSeam(no_seam_uvs);
+  Check(no_seam_split.VertexCount() == no_seam.VertexCount(),
+        "a mesh with no seam-crossing face at all gets no vertices "
+        "duplicated");
+
+  bool threw_size = false;
+  try {
+    m.SplitUVSeam({Point2d(0, 0)});
+  } catch (const std::invalid_argument&) {
+    threw_size = true;
+  }
+  Check(threw_size, "SplitUVSeam throws std::invalid_argument when uvs.size() "
+                     "doesn't match VertexCount()");
+
+  bool threw_threshold_low = false;
+  try {
+    m.SplitUVSeam(uvs, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw_threshold_low = true;
+  }
+  Check(threw_threshold_low,
+        "SplitUVSeam throws std::invalid_argument for a zero wrap_threshold");
+
+  bool threw_threshold_high = false;
+  try {
+    m.SplitUVSeam(uvs, 1.0);
+  } catch (const std::invalid_argument&) {
+    threw_threshold_high = true;
+  }
+  Check(threw_threshold_high,
+        "SplitUVSeam throws std::invalid_argument for a wrap_threshold of exactly 1.0");
+}
+
 void TestMeshSaveObjRoundTrips() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
@@ -73034,6 +73170,7 @@ int main() {
   TestMeshComputePlanarMappingUVs();
   TestMeshComputeCylindricalMappingUVs();
   TestMeshComputeSphericalMappingUVs();
+  TestMeshSplitUVSeam();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
   TestMeshLoadObjPreservesUvSeams();
