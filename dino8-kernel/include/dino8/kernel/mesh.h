@@ -435,6 +435,48 @@ class Mesh {
   // facing neighbors.
   std::vector<Point2d> ComputeBoxMappingUVs(double scale = 1.0) const;
 
+  // Narrows this category's own disclosed "Texture coordinate generation
+  // on tessellation" gap further, the Planar counterpart to
+  // `ComputeBoxMappingUVs()` above: before this, `dino8-app`'s own
+  // `TextureMapping::Planar`/`Cylindrical`/`Spherical` modes (SceneObject.h)
+  // had no kernel-level equivalent at all - only Box did, from the prior
+  // round. Flattens straight onto the world XY plane: every vertex gets
+  // the SAME projection (u = x / scale, v = y / scale) regardless of which
+  // way it faces, the defining difference from Box's own per-vertex
+  // dominant-axis choice. Throws std::invalid_argument if `scale` is not
+  // finite and positive.
+  std::vector<Point2d> ComputePlanarMappingUVs(double scale = 1.0) const;
+
+  // Cylindrical counterpart: wraps UVs around the world Z axis running
+  // through this mesh's own `GetBoundingBox()` center, rather than
+  // projecting onto a flat plane. `u` is the azimuthal angle
+  // atan2(y - center.y, x - center.x), normalized to [0, 1) once around -
+  // intentionally NOT divided by `scale`, unlike every length-based UV
+  // this class computes elsewhere: an angle has no length to divide down
+  // the way a position does, so scaling it would just rescale how many
+  // times the texture wraps, not how large a real-world unit maps to one
+  // UV unit. `v` IS a length (height above the box's own minimum Z) and
+  // does divide by `scale`, consistent with every other mapping here.
+  // Throws std::invalid_argument if `scale` is not finite and positive,
+  // or if any vertex lies exactly on the mapping axis (x == center.x and
+  // y == center.y), where the azimuthal angle is genuinely undefined -
+  // fails loud rather than silently picking an arbitrary angle, the same
+  // convention `GetBoundingBox()` above already uses for an empty mesh.
+  std::vector<Point2d> ComputeCylindricalMappingUVs(double scale = 1.0) const;
+
+  // Spherical counterpart: wraps UVs around this mesh's own
+  // `GetBoundingBox()` center in both directions at once - `u` the same
+  // azimuthal angle `ComputeCylindricalMappingUVs()` above uses, `v` the
+  // polar angle measured from the +Z pole (1 - acos(dz) / pi), both
+  // already normalized to exactly [0, 1] and, like `u` above, carrying no
+  // length to divide by `scale` - so unlike every other mapping in this
+  // class, this one takes no `scale` parameter at all; it would be a
+  // genuinely unused argument, not an honest one. Throws
+  // std::invalid_argument if any vertex lies exactly at the mapping
+  // center, where direction is undefined - same fail-loud convention as
+  // the cylindrical mapping above.
+  std::vector<Point2d> ComputeSphericalMappingUVs() const;
+
   // Sets one (u, v) texture coordinate per vertex, stored in ON_Mesh's own
   // `m_S` array (not the deprecated `m_T` - OpenNURBS' own header flags
   // `m_T` "DEPRECATED... use m_S instead", confirmed by reading
