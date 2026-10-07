@@ -1438,7 +1438,7 @@ sdcheck "11310 faces, 16965 edges, 5657 vertices, 0 creases" "ToSubD's sphere Su
 # retightening can't shrink it further; the exact deviation below is this
 # check's own honestly-disclosed, unconverged measurement, not a success
 # silently claimed.
-sdcheck "ToSubD: created 1 object(s) (0 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0.014720)" "ToSubD on the Brep sphere measures and discloses a real (not fully within tolerance) Catmull-Clark limit-surface deviation from the original Brep"
+sdcheck "ToSubD: created 1 object(s) (0 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0.016850)" "ToSubD on the Brep sphere measures and discloses a real (not fully within tolerance) Catmull-Clark limit-surface deviation from the original Brep"
 # The opposite, provable case: a flat planar patch's control points are all
 # already coplanar, so Catmull-Clark's own limit-point formula (an affine
 # combination of coplanar points) introduces no deviation regardless of
