@@ -1,7 +1,7 @@
 #include <cstdio>
 #include <cmath>
-#include <vector>
 #include "dino8/kernel/surface.h"
+#include "dino8/kernel/surface_intersect.h"
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/mesh.h"
 #include "opennurbs.h"
@@ -10,135 +10,105 @@ int main() {
   ON::Begin();
   using namespace dino8::kernel;
 
-  // 1) Flat surface: MeasureMeshTessellationDeviation should be ~0.
-  {
-    const std::vector<Point3d> flat_grid = {
-        Point3d(0, 0, 0), Point3d(0, 10, 0), Point3d(10, 0, 0), Point3d(10, 10, 0)};
-    NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1);
-    Mesh flat_mesh = flat.TessellateGrid(3, 3);
-    const double dev = flat.MeasureMeshTessellationDeviation(flat_mesh);
-    std::printf("[1] flat mesh deviation = %g (expect ~0)\n", dev);
-  }
+  // Probe: a meridian plane (contains the sphere's own polar axis) against
+  // a full sphere - the SSX result is a genuine great circle that passes
+  // THROUGH both poles, continuing on the opposite longitude on the far
+  // side of each pole. Does IntersectSurfaces() produce a sane (u, v)
+  // pcurve on the sphere across a pole crossing, or does the raw cubic fit
+  // swing through a bogus intermediate azimuth the way it used to for a
+  // periodic seam crossing before SplitAtSeams/SeamCrossing existed?
+  const double r = 2.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), r);
+  ON_NurbsSurface sphere_nurbs;
+  std::printf("GetNurbForm rc=%d\n", on_sphere.GetNurbForm(sphere_nurbs));
+  NurbsSurface sphere_surface;
+  sphere_surface.raw() = sphere_nurbs;
 
-  // 2) Cylinder wall cross-check: grid-based vs mesh-based on same mesh.
-  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
-  const ON_Cylinder cylinder(circle, 1.0);
-  ON_NurbsSurface cylinder_surface;
-  cylinder.GetNurbForm(cylinder_surface);
-  NurbsSurface wall;
-  wall.raw() = cylinder_surface;
-  {
-    Mesh grid_mesh = wall.TessellateGrid(4, 1);
-    const double grid_based = wall.MeasureGridTessellationDeviation(4, 1);
-    const double mesh_based = wall.MeasureMeshTessellationDeviation(grid_mesh);
-    std::printf("[2] grid_based=%g mesh_based=%g (mesh_based should be <= grid_based, close)\n",
-                grid_based, mesh_based);
-  }
+  const auto du = sphere_surface.Domain(0);
+  const auto dv = sphere_surface.Domain(1);
+  std::printf("u domain: [%f, %f]  closed(0)=%d\n", du.min, du.max, sphere_surface.raw().IsClosed(0));
+  std::printf("v domain: [%f, %f]  closed(1)=%d\n", dv.min, dv.max, sphere_surface.raw().IsClosed(1));
+  std::printf("IsSingular(0,v=min)=%d IsSingular(2,v=max)=%d\n", sphere_surface.raw().IsSingular(0), sphere_surface.raw().IsSingular(2));
 
-  // 3) Trimmed curved wedge: certified exact-clip path.
-  {
-    const auto du = wall.Domain(0);
-    const auto dv = wall.Domain(1);
-    const double u0 = du.min + 0.25 * (du.max - du.min);
-    const double u1 = du.min + 0.75 * (du.max - du.min);
-    const double v0 = dv.min + 0.1 * (dv.max - dv.min);
-    const double v1 = dv.min + 0.9 * (dv.max - dv.min);
-    const std::vector<Point2d> trim = {Point2d(u0, v0), Point2d(u1, v0), Point2d(u1, v1),
-                                        Point2d(u0, v1)};
-    for (double tol : {0.1, 0.01, 0.001}) {
-      try {
-        double achieved = -1.0;
-        Mesh m = wall.TessellateGridClippedExactCertifiedAdaptive(tol, trim, 8, &achieved);
-        std::printf("[3] tol=%g faces=%d achieved=%g (<=tol? %d)\n", tol, m.FaceCount(), achieved,
-                    achieved <= tol);
-      } catch (const std::exception& e) {
-        std::printf("[3] tol=%g threw: %s\n", tol, e.what());
-      }
+  // A meridian plane through the z-axis, deliberately tilted OFF the
+  // sphere's own u=0 seam (so we isolate the pole degeneracy from the
+  // already-separately-handled seam degeneracy) - normal (sin37, -cos37,0).
+  const double theta = 0.37;
+  ON_PlaneSurface plane_surface(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(std::sin(theta), -std::cos(theta), 0)));
+  plane_surface.SetExtents(0, ON_Interval(-10, 10), true);
+  plane_surface.SetExtents(1, ON_Interval(-10, 10), true);
+
+  IntersectOptions opt;
+  const auto ma = TessellateWithUV(plane_surface, opt);
+  const auto mb = TessellateWithUV(sphere_surface.raw(), opt);
+  std::printf("plane mesh pts=%zu bbox valid=%d min=(%f,%f,%f) max=(%f,%f,%f)\n", ma.pts.size(), ma.bbox.IsValid(),
+              ma.bbox.Min().x, ma.bbox.Min().y, ma.bbox.Min().z, ma.bbox.Max().x, ma.bbox.Max().y, ma.bbox.Max().z);
+  std::printf("sphere mesh pts=%zu bbox valid=%d min=(%f,%f,%f) max=(%f,%f,%f)\n", mb.pts.size(), mb.bbox.IsValid(),
+              mb.bbox.Min().x, mb.bbox.Min().y, mb.bbox.Min().z, mb.bbox.Max().x, mb.bbox.Max().y, mb.bbox.Max().z);
+
+  const auto curves = IntersectSurfaces(plane_surface, sphere_surface.raw(), opt);
+  std::printf("curve count: %zu\n", curves.size());
+  for (size_t ci = 0; ci < curves.size(); ++ci) {
+    const auto& c = curves[ci];
+    std::printf("curve %zu: closed=%d points=%zu\n", ci, c.closed, c.points.size());
+    double max_u_jump = 0;
+    for (size_t i = 0; i + 1 < c.uv_b.size(); ++i) {
+      const double du_ = std::fabs(c.uv_b[i].x - c.uv_b[i + 1].x);
+      max_u_jump = std::max(max_u_jump, du_);
+    }
+    std::printf("  max consecutive-sample u(sphere) jump: %f (domain length %f)\n", max_u_jump, du.max - du.min);
+    // Sample the fitted pcurve_b (sphere uv) at many interior parameters
+    // and re-evaluate the sphere there, comparing to the fitted 3D curve
+    // at the same parameter - a bogus swing shows up as a large deviation.
+    double max_dev = 0;
+    for (int k = 0; k <= 200; ++k) {
+      const double t = c.params.front() + (c.params.back() - c.params.front()) * k / 200.0;
+      const ON_3dPoint p3 = c.curve.PointAt(t);
+      const ON_3dPoint uv = c.pcurve_b.PointAt(t);
+      const ON_3dPoint p_on_sphere = sphere_surface.raw().PointAt(uv.x, uv.y);
+      const double dev = p3.DistanceTo(p_on_sphere);
+      max_dev = std::max(max_dev, dev);
+    }
+    std::printf("  max |fitted 3D curve - sphere(pcurve_b)| over params: %f (r=%f)\n", max_dev, r);
+    for (size_t i = 0; i < c.points.size(); ++i) {
+      std::printf("   [%zu] p=(%.4f,%.4f,%.4f) uv_b=(%.4f,%.4f)\n", i, c.points[i].x, c.points[i].y, c.points[i].z, c.uv_b[i].x, c.uv_b[i].y);
     }
   }
 
-  // 4) Sphere (singular poles) via general non-uniform certified path, untrimmed.
-  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 1.0);
-  ON_NurbsSurface sphere_surface;
-  sphere.GetNurbForm(sphere_surface);
-  NurbsSurface s;
-  s.raw() = sphere_surface;
-  {
-    for (double tol : {0.1, 0.01, 0.001}) {
-      try {
-        double achieved = -1.0;
-        Mesh m = s.TessellateGridNonUniformCertifiedAdaptive(tol, nullptr, nullptr, 8, &achieved);
-        std::printf("[4] sphere untrimmed tol=%g faces=%d achieved=%g (<=tol? %d)\n", tol,
-                    m.FaceCount(), achieved, achieved <= tol);
-      } catch (const std::exception& e) {
-        std::printf("[4] sphere untrimmed tol=%g threw: %s\n", tol, e.what());
-      }
+  // Second probe: a plane through a cone's own axis AND apex - the apex
+  // is a genuine single-point pole (IsSingular at one v end only, unlike
+  // a sphere's two).
+  std::printf("\n--- cone apex probe ---\n");
+  const ON_Cone on_cone(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 4.0, 1.5);
+  ON_NurbsSurface cone_nurbs;
+  std::printf("Cone GetNurbForm rc=%d\n", on_cone.GetNurbForm(cone_nurbs));
+  NurbsSurface cone_surface;
+  cone_surface.raw() = cone_nurbs;
+  const auto cdu = cone_surface.Domain(0);
+  const auto cdv = cone_surface.Domain(1);
+  std::printf("cone u domain: [%f, %f]  v domain: [%f, %f]\n", cdu.min, cdu.max, cdv.min, cdv.max);
+  std::printf("cone IsSingular(0)=%d (1)=%d (2)=%d (3)=%d\n", cone_surface.raw().IsSingular(0), cone_surface.raw().IsSingular(1), cone_surface.raw().IsSingular(2), cone_surface.raw().IsSingular(3));
+
+  ON_PlaneSurface cone_plane_surface(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(std::sin(theta), -std::cos(theta), 0)));
+  cone_plane_surface.SetExtents(0, ON_Interval(-20, 20), true);
+  cone_plane_surface.SetExtents(1, ON_Interval(-20, 20), true);
+  const auto cone_curves = IntersectSurfaces(cone_plane_surface, cone_surface.raw(), opt);
+  std::printf("cone curve count: %zu\n", cone_curves.size());
+  for (size_t ci = 0; ci < cone_curves.size(); ++ci) {
+    const auto& c = cone_curves[ci];
+    std::printf("cone curve %zu: closed=%d points=%zu\n", ci, c.closed, c.points.size());
+    double max_dev = 0;
+    for (int k = 0; k <= 200; ++k) {
+      const double t = c.params.front() + (c.params.back() - c.params.front()) * k / 200.0;
+      const ON_3dPoint p3 = c.curve.PointAt(t);
+      const ON_3dPoint uv = c.pcurve_b.PointAt(t);
+      const ON_3dPoint p_on_cone = cone_surface.raw().PointAt(uv.x, uv.y);
+      max_dev = std::max(max_dev, p3.DistanceTo(p_on_cone));
+    }
+    std::printf("  max |fitted 3D curve - cone(pcurve_b)|: %f\n", max_dev);
+    for (size_t i = 0; i < c.points.size(); ++i) {
+      std::printf("   [%zu] p=(%.4f,%.4f,%.4f) uv_b=(%.4f,%.4f)\n", i, c.points[i].x, c.points[i].y, c.points[i].z, c.uv_b[i].x, c.uv_b[i].y);
     }
   }
-
-  // 5) Sphere with a hole: general non-uniform certified path.
-  {
-    const auto du = s.Domain(0);
-    const auto dv = s.Domain(1);
-    const std::vector<Point2d> outer = {Point2d(du.min, dv.min), Point2d(du.max, dv.min),
-                                         Point2d(du.max, dv.max), Point2d(du.min, dv.max)};
-    const double hu0 = du.min + 0.4 * (du.max - du.min);
-    const double hu1 = du.min + 0.6 * (du.max - du.min);
-    const double hv0 = dv.min + 0.45 * (dv.max - dv.min);
-    const double hv1 = dv.min + 0.55 * (dv.max - dv.min);
-    const std::vector<std::vector<Point2d>> holes = {
-        {Point2d(hu0, hv0), Point2d(hu1, hv0), Point2d(hu1, hv1), Point2d(hu0, hv1)}};
-    for (double tol : {0.1, 0.01}) {
-      try {
-        double achieved = -1.0;
-        Mesh m = s.TessellateGridNonUniformCertifiedAdaptive(tol, &outer, &holes, 8, &achieved);
-        std::printf("[5] sphere holed tol=%g faces=%d achieved=%g (<=tol? %d)\n", tol,
-                    m.FaceCount(), achieved, achieved <= tol);
-      } catch (const std::exception& e) {
-        std::printf("[5] sphere holed tol=%g threw: %s\n", tol, e.what());
-      }
-    }
-  }
-
-  // 6) Brep-level: TrimmedPlanarFace wedge should now report certified=true.
-  {
-    const auto du = wall.Domain(0);
-    const auto dv = wall.Domain(1);
-    const double u0 = du.min + 0.25 * (du.max - du.min);
-    const double u1 = du.min + 0.75 * (du.max - du.min);
-    const double v0 = dv.min + 0.1 * (dv.max - dv.min);
-    const double v1 = dv.min + 0.9 * (dv.max - dv.min);
-    const std::vector<Point2d> trim = {Point2d(u0, v0), Point2d(u1, v0), Point2d(u1, v1),
-                                        Point2d(u0, v1)};
-    Brep trimmed_wall = Brep::TrimmedPlanarFace(wall, trim, /*exact_clip=*/true);
-    std::vector<bool> certified;
-    try {
-      auto faces = trimmed_wall.TessellateCertifiedAdaptive(0.01, 8, &certified);
-      std::printf("[6] faces=%zu certified.size=%zu certified[0]=%d facecount[0]=%d\n",
-                  faces.size(), certified.size(), certified.empty() ? -1 : (int)certified[0],
-                  faces.empty() ? -1 : faces[0].FaceCount());
-    } catch (const std::exception& e) {
-      std::printf("[6] threw: %s\n", e.what());
-    }
-  }
-
-  // 7) Brep::Sphere() (whole-domain, untrimmed, but goes through the
-  // normal fg.outer.empty() -> TessellateGridCertifiedAdaptive branch) and
-  // Brep::Torus() exercised through TessellateCertifiedAdaptive for a
-  // broader sanity check across existing primitives.
-  {
-    Brep sph = Brep::Sphere(Point3d(0, 0, 0), 2.0);
-    std::vector<bool> certified;
-    try {
-      auto faces = sph.TessellateCertifiedAdaptive(0.05, 8, &certified);
-      bool all_true = true;
-      for (bool c : certified) all_true = all_true && c;
-      std::printf("[7] Brep::Sphere faces=%zu all_certified=%d\n", faces.size(), all_true);
-    } catch (const std::exception& e) {
-      std::printf("[7] Brep::Sphere threw: %s\n", e.what());
-    }
-  }
-
-  ON::End();
   return 0;
 }
