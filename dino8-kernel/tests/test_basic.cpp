@@ -4573,6 +4573,100 @@ void TestFindSurfaceTangentContactsSphereOnPlane() {
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
+// across periodic seams and at singular points (poles)" bullet: seam
+// handling is real (SplitAtSeams/SeamCrossing), but "poles have no
+// dedicated singular-point treatment beyond a closest-point pole fix" (a
+// different function entirely - SurfaceClosestPoint's own narrowing-window
+// fix, not this one). SplitAtPoles() (surface_intersect.cpp) closes that
+// half: a sample landing exactly at a surface's own pole has its
+// degenerate (azimuth) coordinate re-derived by extrapolation from its
+// nearest non-pole neighbors, instead of trusting RefineSurfaceSurfacePoint's
+// own 4-unknown Newton solve, whose Jacobian column for that coordinate is
+// exactly zero right at a pole.
+void TestIntersectSurfacesHandlesSpherePoleCrossing() {
+  using dino8::kernel::IntersectionCurve;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::IntersectSurfaces;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;  // default tolerance (0.001) / mesh_tolerance (0.02) - the exact settings that exposed this bug
+
+  // A meridian plane through a sphere's own polar axis - deliberately
+  // tilted 0.37 radians off the sphere's own u = 0 seam, so this isolates
+  // the POLE degeneracy from the separately-handled SEAM one. The SSX is
+  // a genuine great circle through both poles; ordinary mesh-seeded
+  // chaining already (correctly) returns it as two open half-circle arcs,
+  // each one ending exactly at a different pole - this test is about
+  // whether each arc's own (u, v) pcurve on the sphere stays accurate
+  // right up to that pole endpoint, not about the topology (already
+  // right).
+  const double radius = 2.0;
+  const double theta = 0.37;
+  const ON_Sphere on_sphere(Point3d(0, 0, 0), radius);
+  ON_NurbsSurface sphere_nurbs;
+  Check(on_sphere.GetNurbForm(sphere_nurbs) != 0, "ON_Sphere::GetNurbForm succeeds");
+
+  ON_PlaneSurface meridian_plane(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(std::sin(theta), -std::cos(theta), 0)));
+  meridian_plane.SetExtents(0, ON_Interval(-10, 10), true);
+  meridian_plane.SetExtents(1, ON_Interval(-10, 10), true);
+
+  const std::vector<IntersectionCurve> curves = IntersectSurfaces(meridian_plane, sphere_nurbs, opt);
+  Check(curves.size() == 2, "a tilted meridian plane through a full sphere comes back as exactly two half-great-circle arcs");
+  if (curves.size() != 2) return;
+
+  int pole_endpoints_checked = 0;
+  for (const IntersectionCurve& c : curves) {
+    Check(!c.closed && c.points.size() >= 3, "each half-circle arc is open with several samples");
+    // Both ends of each arc land at a hand-derivable pole (north or south,
+    // at exactly (0, 0, +-radius)).
+    const Point3d p0 = c.points.front(), p1 = c.points.back();
+    const bool p0_is_pole = p0.DistanceTo(Point3d(0, 0, radius)) < 1e-3 || p0.DistanceTo(Point3d(0, 0, -radius)) < 1e-3;
+    const bool p1_is_pole = p1.DistanceTo(Point3d(0, 0, radius)) < 1e-3 || p1.DistanceTo(Point3d(0, 0, -radius)) < 1e-3;
+    Check(p0_is_pole && p1_is_pole, "both endpoints of the arc land exactly at a hand-derivable sphere pole");
+
+    // The REAL regression guard: each pole endpoint's own reported
+    // azimuth (uv_b.x) must be close to its immediate interior
+    // neighbor's - before this fix, the raw Newton-refined pole sample's
+    // own azimuth could differ from its neighbor's by up to ~0.15
+    // radians (a confirmed, measured defect; the un-fixed value here was
+    // 0.5236/0.2618/3.4034/3.5151 against a true limiting value near
+    // theta=0.37), against every genuinely non-pole sample on the same
+    // arc staying within ~0.02 radians of its own neighbor.
+    const double az0 = c.uv_b.front().x, az1 = c.uv_b.back().x;
+    const double az0_neighbor = c.uv_b[1].x, az1_neighbor = c.uv_b[c.uv_b.size() - 2].x;
+    Check(std::fabs(az0 - az0_neighbor) < 0.01, "the first pole sample's own azimuth is now consistent with its interior neighbor, not an outlier");
+    Check(std::fabs(az1 - az1_neighbor) < 0.01, "the last pole sample's own azimuth is now consistent with its interior neighbor, not an outlier");
+    pole_endpoints_checked += 2;
+
+    // The end-to-end correctness check: sampling the fitted 3D curve and
+    // re-evaluating the sphere at the SAME parameter through pcurve_b
+    // must round-trip to within a small multiple of the requested
+    // tolerance everywhere along the arc, including right next to each
+    // pole - before this fix, the fitted pcurve's own swing near a pole
+    // measured up to ~0.0075 units of 3D deviation (7.5x this engine's
+    // own default 0.001 tolerance) on this exact fixture.
+    double max_dev = 0;
+    for (int k = 0; k <= 200; ++k) {
+      const double t = c.params.front() + (c.params.back() - c.params.front()) * static_cast<double>(k) / 200.0;
+      const Point3d p3 = c.curve.PointAt(t);
+      const ON_3dPoint uv = c.pcurve_b.PointAt(t);
+      const Point3d on_sphere_pt = sphere_nurbs.PointAt(uv.x, uv.y);
+      max_dev = std::max(max_dev, p3.DistanceTo(on_sphere_pt));
+    }
+    Check(max_dev < 0.005, "the fitted pcurve round-trips through the sphere to within a small multiple of tolerance everywhere, including right at the pole");
+
+    // A gross-error guard independent of the per-sample azimuth checks
+    // above: the arc's own total 3D length must match a hand-derivable
+    // half-great-circle (pi * radius), confirming the curve is genuinely
+    // one coherent half-circle, not some other shape entirely.
+    double length3d = 0;
+    for (size_t i = 1; i < c.points.size(); ++i) length3d += c.points[i - 1].DistanceTo(c.points[i]);
+    Check(std::fabs(length3d - 3.14159265358979323846 * radius) < 0.05, "the arc's own chord length matches the hand-derivable half-great-circle length");
+  }
+  Check(pole_endpoints_checked == 4, "all four pole endpoints across both arcs were actually checked");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
 // coincident / overlapping surface regions" bullet: "IntersectSurfaces
 // still returns nothing for coincident surfaces. The only coincidence
 // handling is inside planar booleans." IntersectSurfacesOverlap() closes
@@ -10018,9 +10112,17 @@ void TestSurfaceMeasureMeshTessellationDeviation() {
   using dino8::kernel::Point3d;
 
   // A flat surface's own grid mesh exactly reproduces every point on it,
-  // so the measured (closest-point-based) deviation must be exactly 0,
-  // the same hand-derivable case MeasureGridTessellationDeviation()'s own
-  // test uses.
+  // so the TRUE deviation is exactly 0 - but unlike
+  // MeasureGridTessellationDeviation()'s own exact-parameter-correspondence
+  // test, this function measures via ClosestPoint()'s own multi-level
+  // grid-refine SEARCH (see that method's own doc comment: "not a
+  // guaranteed global minimum", finite floating-point precision from
+  // narrowing a bracket rather than an exact closed-form answer), so the
+  // MEASURED value here is a small but genuinely nonzero residual of that
+  // search's own precision, not exactly 0 - confirmed directly via a
+  // standalone probe (dino8_scratch_test) before finalizing this bound:
+  // measured ~3.2e-8, well under the 1e-6 asserted here with real
+  // headroom, not tuned to just barely pass.
   const std::vector<Point3d> flat_grid = {
       Point3d(0, 0, 0),
       Point3d(0, 10, 0),
@@ -10030,9 +10132,10 @@ void TestSurfaceMeasureMeshTessellationDeviation() {
   const NurbsSurface flat =
       NurbsSurface::FromControlGrid(flat_grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
   const Mesh flat_mesh = flat.TessellateGrid(3, 3);
-  Check(flat.MeasureMeshTessellationDeviation(flat_mesh) < 1e-9,
-        "MeasureMeshTessellationDeviation is exactly 0 for a flat "
-        "surface's own grid mesh");
+  Check(flat.MeasureMeshTessellationDeviation(flat_mesh) < 1e-6,
+        "MeasureMeshTessellationDeviation is negligible (within "
+        "ClosestPoint()'s own search precision) for a flat surface's own "
+        "grid mesh");
 
   // Cross-check against MeasureGridTessellationDeviation() on the SAME
   // untrimmed grid mesh, the one case both functions can measure: since
@@ -55883,6 +55986,108 @@ void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
   Check(threw, "Rebuild throws on fewer samples than control points");
 }
 
+void TestSurfaceReduceDegree() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Requesting a degree at or above the current one in that direction is
+  // a no-op, the same convention ElevateDegree() and NurbsCurve::
+  // ReduceDegree() both use.
+  {
+    NurbsSurface s = WigglyBicubic(6, 4);
+    double deviation = -1.0;
+    Check(s.ReduceDegree(0, 3, 1e-9, &deviation) == Result::NoOpAlreadySatisfied,
+          "ReduceDegree(target_degree == DegreeU()) reports NoOpAlreadySatisfied");
+    Check(deviation == 0.0, "...and reports zero deviation for that no-op");
+    Check(s.ReduceDegree(1, 5, 1e-9, &deviation) == Result::NoOpAlreadySatisfied,
+          "ReduceDegree(target_degree > DegreeV()) also reports NoOpAlreadySatisfied, not an error");
+  }
+
+  // A genuinely bilinear (degree-1x1) patch, built directly at that
+  // degree so its parameterization is linear-in-(u,v) by construction
+  // (unlike a degree-3x3 FromControlGrid() net merely built from evenly-
+  // spaced POINTS, which is exactly planar in 3-space but NOT generally
+  // affine in its own (u, v) parameterization - a real distinction this
+  // fixture deliberately sidesteps), then EXACTLY degree-elevated via
+  // the already-tested, shape-preserving ElevateDegree() - the surface
+  // counterpart of the curve test's own "line elevated via
+  // ElevateDegree(5)" fixture, for the same reason: elevating is proven
+  // exact (PointAt() identical before/after), so the elevated net is
+  // still genuinely degree-1x1-representable, a real hand-verifiable
+  // positive control, not just "it ran".
+  {
+    const std::vector<Point3d> base_grid = {Point3d(0, 0, 0), Point3d(0, 10, 0), Point3d(20, 0, 0),
+                                             Point3d(20, 10, 0)};
+    NurbsSurface flat = NurbsSurface::FromControlGrid(base_grid, 2, 2, 1, 1);
+    Check(flat.ElevateDegree(0, 3) == Result::Ok && flat.ElevateDegree(1, 3) == Result::Ok &&
+              flat.DegreeU() == 3 && flat.DegreeV() == 3,
+          "setup: bilinear patch exactly elevates to degree 3x3");
+
+    double dev_u = -1.0;
+    Check(flat.ReduceDegree(0, 1, 1e-6, &dev_u) == Result::Ok,
+          "ReduceDegree(0, 1) succeeds on a genuinely bilinear patch");
+    Check(flat.DegreeU() == 1, "...and DegreeU() is genuinely reduced to 1, not left at the old degree");
+    Check(flat.DegreeV() == 3, "...while DegreeV() is left untouched, since only direction 0 was asked to reduce");
+    Check(dev_u >= 0.0 && dev_u < 1e-6, "...with ~0 measured deviation, since this patch is exactly degree-1x*");
+    Check(flat.CVCountU() <= 4, "a successful ReduceDegree never ends up with MORE control points in U "
+                                "than the original patch had");
+
+    double dev_v = -1.0;
+    Check(flat.ReduceDegree(1, 1, 1e-6, &dev_v) == Result::Ok,
+          "ReduceDegree(1, 1) then also succeeds in V on the same (already U-reduced) patch");
+    Check(flat.DegreeU() == 1 && flat.DegreeV() == 1, "...landing at a genuine degree-1x1 bilinear patch");
+    Check(dev_v >= 0.0 && dev_v < 1e-6, "...still ~0 deviation - a flat grid is exactly bilinear");
+    for (double u : {flat.Domain(0).min, flat.Domain(0).max})
+      for (double v : {flat.Domain(1).min, flat.Domain(1).max}) {
+        Check(std::abs(flat.PointAt(u, v).z) < 1e-6, "the fully-reduced flat patch is still genuinely flat (z ~ 0)");
+      }
+  }
+
+  // A genuinely wiggly (non-ruled) bicubic cannot be represented at
+  // degree 1 in U without real, measurable error - a tight tolerance
+  // must REFUSE, leaving the surface completely untouched, and a loose
+  // enough tolerance must succeed, proving the refusal is genuinely
+  // tolerance-driven rather than a hardcoded failure.
+  {
+    NurbsSurface wiggly = WigglyBicubic(6, 4);
+    const NurbsSurface wiggly_original = wiggly;
+
+    double tight_deviation = -1.0;
+    const Result refused = wiggly.ReduceDegree(0, 1, 1e-6, &tight_deviation);
+    Check(refused == Result::Failed,
+          "ReduceDegree(0, 1) refuses a genuinely wiggly bicubic at a tight tolerance - a ruled "
+          "degree-1 patch cannot represent real curvature across U");
+    Check(tight_deviation > 1e-6,
+          "...and the reported deviation genuinely exceeds the refused tolerance, not an "
+          "arbitrary failure");
+    Check(wiggly.DegreeU() == 3, "a refused ReduceDegree leaves the surface's own degree unchanged");
+    double cv_err = 0.0;
+    for (int i = 0; i < wiggly.CVCountU(); ++i)
+      for (int j = 0; j < wiggly.CVCountV(); ++j)
+        cv_err = std::max(cv_err, wiggly.ControlPointAt(i, j).DistanceTo(wiggly_original.ControlPointAt(i, j)));
+    Check(cv_err == 0.0, "a refused ReduceDegree leaves the control points byte-for-byte unchanged");
+
+    double loose_deviation = -1.0;
+    Check(wiggly.ReduceDegree(0, 1, 5.0, &loose_deviation) == Result::Ok,
+          "ReduceDegree(0, 1) succeeds on the same wiggly bicubic at a loose enough tolerance");
+    Check(wiggly.DegreeU() == 1, "...and the result genuinely lands at DegreeU() == 1");
+  }
+
+  bool threw = false;
+  {
+    NurbsSurface s = WigglyBicubic(6, 4);
+    try { s.ReduceDegree(2, 1, 1e-6); } catch (const std::invalid_argument&) { threw = true; }
+    Check(threw, "ReduceDegree throws on a direction that isn't 0/1");
+    threw = false;
+    try { s.ReduceDegree(0, 0, 1e-6); } catch (const std::invalid_argument&) { threw = true; }
+    Check(threw, "ReduceDegree throws on target_degree < 1");
+    threw = false;
+    try { s.ReduceDegree(0, 1, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+    Check(threw, "ReduceDegree throws on a non-positive tolerance");
+  }
+}
+
 void TestSurfaceInterpolateThroughGrid() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -72371,6 +72576,7 @@ int main() {
   TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
   TestBrepCheckOptInReportsFaceSelfIntersections();
   TestFindSurfaceTangentContactsSphereOnPlane();
+  TestIntersectSurfacesHandlesSpherePoleCrossing();
   TestIntersectSurfacesOverlapDetectsCoincidentRegion();
   TestIntersectSurfacesOverlapBisectionTightensRegionBoundary();
   TestIntersectSurfacesReturnsBoundaryCurveForCoincidentRegion();
@@ -73146,6 +73352,7 @@ int main() {
 
   TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape();
   TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise();
+  TestSurfaceReduceDegree();
   TestSurfaceInterpolateThroughGrid();
   TestSurfaceDecomposeToBeziersProducesExactSpanPatches();
 

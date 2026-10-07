@@ -3095,6 +3095,14 @@ edcheck "degree 3 x 3, CVs 200 x 200" "Rebuild clamped an absurd 5000000 point c
 edcheck "degree 3, 4 control points, non-rational, open" "ChangeDegree elevated the line to degree 3 (4 control points)"
 edcheck "ChangeDegree: 1 object\(s\) changed to degree 1 \(1 degree-reduced\)" "ChangeDegree's own reduce path actually ran (ReduceDegree, not a silent no-op)"
 edcheck "degree 1, 2 control points, non-rational, open" "ChangeDegree genuinely reduced the line back to degree 1 (2 control points), not left at degree 3"
+
+# Same "never lowers" gap, now closed for SURFACES too (NurbsSurface::
+# ReduceDegree, surface_edit.cpp) - a flat Plane (degree 1x1, 2x2 CVs)
+# elevated to degree 3x3 (4x4 CVs) must genuinely drop back to degree
+# 1x1 (2x2 CVs) when asked, in BOTH directions, not stay stuck at 3x3.
+edcheck "degree 3 x 3, CVs 4 x 4" "ChangeDegree elevated the flat Plane to degree 3 x 3 (4 x 4 control points)"
+edcheck "ChangeDegree: 1 object\(s\) changed to degree 1 \(2 degree-reduced\)" "ChangeDegree's own surface reduce path actually ran in both U and V (ReduceDegree, not a silent no-op)"
+edcheck "degree 1 x 1, CVs 2 x 2" "ChangeDegree genuinely reduced the flat Plane back to degree 1 x 1 (2 x 2 control points), not left at degree 3 x 3"
 if echo "$ED" | grep -q "name 'MyName (1)'"; then echo "FAIL SetObjectName still off-by-one: an object was suffixed '(1)'"; fail=1; else echo "ok   no object was suffixed 'MyName (1)'"; fi
 
 # Real NURBS algorithm QC: ExtractPipedCurve/MakePeriodic Smooth=No/RefitTrim
