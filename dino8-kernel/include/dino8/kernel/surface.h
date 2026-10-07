@@ -319,6 +319,56 @@ class NurbsSurface {
   // when it verifies, exact piecewise-Bezier form otherwise" guarantee.
   Result ElevateDegree(int direction, int new_degree);
 
+  // Degree REDUCTION in one direction (0 = U, 1 = V) - the direction
+  // `ElevateDegree()` above does not attempt, closing PARITY_MAP's own
+  // disclosed "Degree reduction (curve and surface, with error bound)"
+  // gap for surfaces (the curve side already has `NurbsCurve::
+  // ReduceDegree()`, this is its direct surface-level counterpart,
+  // mirroring the same algorithm one tensor-product direction at a
+  // time). Unlike `ElevateDegree()`'s exact, shape-preserving
+  // construction, there is no exact closed form for lowering a general
+  // NURBS surface's degree while keeping its shape - a genuine least-
+  // squares APPROXIMATION is the honest answer here, built on this
+  // class's own already-tested `Rebuild()`: starting from the minimum
+  // possible control-point count in `direction` (`target_degree + 1`)
+  // and doubling it, `Rebuild()` is called with `direction`'s own count
+  // and degree set to the candidate/`target_degree` pair while the
+  // OTHER direction's count and degree are held at this surface's own
+  // current values - the identical "start small, double, measure, stop
+  // once the real worst-case deviation is at or under `tolerance`"
+  // search `NurbsCurve::ReduceDegree()` already uses, capped at this
+  // direction's own current control-point count (more control points in
+  // `direction` at a LOWER degree than the original already had at its
+  // higher one defeats the entire point of reducing degree, so this
+  // refuses rather than silently returning a "reduced" surface that is
+  // not actually smaller in that direction). The measured deviation
+  // reuses `Rebuild()`'s own fine-grid `out_max_deviation` (comparing
+  // `PointAt(u, v)` on the original against the candidate at matching
+  // parameters over BOTH directions, at twice the fit density) rather
+  // than a `ClosestPoint()` search - valid here, unlike a naive point
+  // comparison would be elsewhere, because `Rebuild()` preserves this
+  // surface's own domain and parameterization exactly, so comparing at
+  // identical (u, v) pairs is a true pointwise measurement, not an
+  // approximation of one. One real consequence worth disclosing: because
+  // `Rebuild()` always refits BOTH directions at once (clamped uniform
+  // knots in each), the OTHER direction is not necessarily preserved
+  // bit-for-bit even though its own degree and control-point count are
+  // held fixed - the measured deviation covers the whole surface, so any
+  // refit error introduced there is honestly included in the tolerance
+  // check, not hidden. Mutates this surface in place only on success;
+  // returns `Result::Failed` (surface left untouched) if `tolerance`
+  // still isn't met at that ceiling, and `Result::NoOpAlreadySatisfied`
+  // if `target_degree` is at or above the current degree in `direction`
+  // (mirroring `ElevateDegree()`'s own convention for the symmetric
+  // case). Throws `std::invalid_argument` if `direction` isn't 0/1,
+  // `target_degree < 1`, or `tolerance` is not positive. `out_max_deviation`,
+  // if non-null, receives the achieved (or, on failure, the best
+  // attempted) worst-case deviation - a sampled, not formally certified,
+  // bound, the same honesty tier `Rebuild()`/`NurbsCurve::ReduceDegree()`
+  // already disclose.
+  Result ReduceDegree(int direction, int target_degree, double tolerance,
+                       double* out_max_deviation = nullptr);
+
   // Whether the surface wraps seamlessly onto itself in `direction`
   // (0 = U, 1 = V) - the boundary curves at the two ends of that
   // parameter coincide exactly, either because the surface is periodic
