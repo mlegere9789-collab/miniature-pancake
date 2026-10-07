@@ -981,6 +981,65 @@ std::vector<Point2d> Mesh::ComputeBoxMappingUVs(double scale) const {
   return uvs;
 }
 
+std::vector<Point2d> Mesh::ComputePlanarMappingUVs(double scale) const {
+  if (!std::isfinite(scale) || scale <= 0.0) {
+    throw std::invalid_argument("dino8::kernel::Mesh::ComputePlanarMappingUVs: scale must be finite and positive");
+  }
+
+  std::vector<Point2d> uvs(static_cast<size_t>(mesh_.m_V.Count()));
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const Point3d p(mesh_.m_V[i]);
+    uvs[static_cast<size_t>(i)] = Point2d(p.x / scale, p.y / scale);
+  }
+  return uvs;
+}
+
+std::vector<Point2d> Mesh::ComputeCylindricalMappingUVs(double scale) const {
+  if (!std::isfinite(scale) || scale <= 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::ComputeCylindricalMappingUVs: scale must be finite and positive");
+  }
+
+  const BoundingBox box = GetBoundingBox();
+  const double cx = (box.min.x + box.max.x) / 2.0;
+  const double cy = (box.min.y + box.max.y) / 2.0;
+  std::vector<Point2d> uvs(static_cast<size_t>(mesh_.m_V.Count()));
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const Point3d p(mesh_.m_V[i]);
+    const double dx = p.x - cx;
+    const double dy = p.y - cy;
+    if (dx == 0.0 && dy == 0.0) {
+      throw std::invalid_argument(
+          "dino8::kernel::Mesh::ComputeCylindricalMappingUVs: a vertex lies exactly on the "
+          "mapping axis - its azimuthal angle is undefined");
+    }
+    const double u = std::atan2(dy, dx) / (2.0 * ON_PI) + 0.5;
+    const double v = (p.z - box.min.z) / scale;
+    uvs[static_cast<size_t>(i)] = Point2d(u, v);
+  }
+  return uvs;
+}
+
+std::vector<Point2d> Mesh::ComputeSphericalMappingUVs() const {
+  const BoundingBox box = GetBoundingBox();
+  const Point3d center((box.min.x + box.max.x) / 2.0, (box.min.y + box.max.y) / 2.0,
+                        (box.min.z + box.max.z) / 2.0);
+  std::vector<Point2d> uvs(static_cast<size_t>(mesh_.m_V.Count()));
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const Point3d p(mesh_.m_V[i]);
+    Vector3d d(p.x - center.x, p.y - center.y, p.z - center.z);
+    if (!d.Unitize()) {
+      throw std::invalid_argument(
+          "dino8::kernel::Mesh::ComputeSphericalMappingUVs: a vertex lies exactly at the "
+          "mapping center - its direction is undefined");
+    }
+    const double u = std::atan2(d.y, d.x) / (2.0 * ON_PI) + 0.5;
+    const double v = 1.0 - std::acos(std::clamp(d.z, -1.0, 1.0)) / ON_PI;
+    uvs[static_cast<size_t>(i)] = Point2d(u, v);
+  }
+  return uvs;
+}
+
 Result Mesh::SetTextureCoordinates(const std::vector<Point2d>& uvs) {
   if (static_cast<int>(uvs.size()) != mesh_.m_V.Count()) {
     return Result::Failed;
