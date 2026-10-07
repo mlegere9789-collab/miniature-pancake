@@ -4510,11 +4510,17 @@ void TestFindSurfaceTangentContactsSphereOnPlane() {
 // coincident / overlapping surface regions" bullet: "IntersectSurfaces
 // still returns nothing for coincident surfaces. The only coincidence
 // handling is inside planar booleans." IntersectSurfacesOverlap() closes
-// the general-purpose-detection half of that gap.
+// the general-purpose-detection half of that gap; IntersectSurfaces() itself
+// now also returns a real boundary curve for a coincident region (round 21,
+// see TestIntersectSurfacesReturnsBoundaryCurveForCoincidentRegion below) -
+// the assertion right below, which used to confirm IntersectSurfaces()
+// found nothing here, is updated to match.
 void TestIntersectSurfacesOverlapDetectsCoincidentRegion() {
+  using dino8::kernel::IntersectionCurve;
   using dino8::kernel::IntersectOptions;
   using dino8::kernel::IntersectSurfaces;
   using dino8::kernel::IntersectSurfacesOverlap;
+  using dino8::kernel::Point3d;
   using dino8::kernel::SurfaceOverlapRegion;
 
   IntersectOptions opt;
@@ -4525,8 +4531,11 @@ void TestIntersectSurfacesOverlapDetectsCoincidentRegion() {
   // [-5, 5]; `b` spans x, y in [0, 10]. They genuinely coincide (lie in the
   // same plane) over the overlapping quarter [0, 5] x [0, 5] of `a`'s own
   // domain, and nowhere else. No triangle pair of two coplanar surfaces
-  // ever actually crosses, so IntersectSurfaces() finds nothing here either
-  // - confirming this is genuinely the gap PARITY_MAP.md names.
+  // ever actually crosses, so IntersectSurfaces()'s own ORDINARY
+  // crossing-chain search finds nothing here either - but, since round 21,
+  // IntersectSurfaces() itself now recognizes that empty result is the
+  // coincident-region case (not a non-meet) and returns a real boundary
+  // curve for it instead of staying empty.
   const ON_Plane shared_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
   ON_PlaneSurface a(shared_plane);
   a.SetExtents(0, ON_Interval(-5, 5), true);
@@ -4534,7 +4543,18 @@ void TestIntersectSurfacesOverlapDetectsCoincidentRegion() {
   ON_PlaneSurface b(shared_plane);
   b.SetExtents(0, ON_Interval(0, 10), true);
   b.SetExtents(1, ON_Interval(0, 10), true);
-  Check(IntersectSurfaces(a, b, opt).empty(), "IntersectSurfaces() itself finds no crossing curve for two coincident coplanar surfaces");
+  {
+    const std::vector<IntersectionCurve> boundary = IntersectSurfaces(a, b, opt);
+    Check(boundary.size() == 1, "IntersectSurfaces() now reports exactly one boundary curve for two coincident coplanar surfaces");
+    if (boundary.size() == 1) {
+      Check(boundary[0].closed, "the coincident-region boundary curve is closed");
+      ON_BoundingBox bb;
+      for (const Point3d& p : boundary[0].points) bb.Set(p, true);
+      Check(bb.IsValid() && std::abs(bb.Min().x - 0.0) < 1e-3 && std::abs(bb.Max().x - 5.0) < 1e-3 &&
+                std::abs(bb.Min().y - 0.0) < 1e-3 && std::abs(bb.Max().y - 5.0) < 1e-3,
+            "the boundary curve's own 3D extent matches the hand-derivable [0,5]x[0,5] overlap square");
+    }
+  }
 
   const std::vector<SurfaceOverlapRegion> regions = IntersectSurfacesOverlap(a, b, opt);
   Check(regions.size() == 1, "two partially-overlapping coplanar surfaces report exactly one overlap region");
@@ -4607,6 +4627,127 @@ void TestIntersectSurfacesOverlapBisectionTightensRegionBoundary() {
     Check(std::abs(r.u1 - 40.0) < 1e-4, "u1 bisection-tightens to b's own hand-derivable far edge (x=40), not the coarse grid line nearest it");
     Check(std::abs(r.v0 - 10.0) < 1e-4, "v0 bisection-tightens to b's own hand-derivable near edge (y=10), not the coarse grid line nearest it");
     Check(std::abs(r.v1 - 40.0) < 1e-4, "v1 bisection-tightens to b's own hand-derivable far edge (y=40), not the coarse grid line nearest it");
+  }
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
+// coincident / overlapping surface regions" bullet, round 21: the one
+// remaining named gap this bullet's own text called out directly -
+// "IntersectSurfaces still returns nothing for coincident surfaces" - is now
+// closed for the cases IntersectSurfaces()'s own ordinary mesh-seeded
+// crossing search genuinely finds nothing at all to chain (see
+// CoincidentOverlapBoundaryCurves()'s own doc comment, surface_intersect.cpp,
+// for exactly which cases that covers and which it honestly does not).
+//
+// TWO REAL LIMITATIONS FOUND WHILE BUILDING THIS EVIDENCE, neither assumed
+// away:
+//
+// (1) A genuinely CURVED coincident pair essentially never reaches
+// CoincidentOverlapBoundaryCurves() at all with the current mesh-seeded
+// architecture - confirmed directly on TWO different fixtures, not just
+// assumed from one: a cylinder wall `b` trimmed to a strictly-interior
+// sub-rectangle of a larger cylinder `a` (361 raw crossing segments from the
+// resulting grid-resolution mismatch alone - `a`/`b` tessellate at different
+// divisions since TessellateWithUV()'s own DivisionsFor() depends on each
+// surface's own domain/arc-length); AND, more surprisingly, even two
+// FULL-EXTENT cylinder walls from two independent `ON_Cylinder::GetNurbForm()`
+// calls on the IDENTICAL cylinder, which DO tessellate at matching
+// divisions (confirmed: both nu=24/nv=6) - still produced 756 raw crossing
+// segments, not zero. The two tessellations' matching triangles ARE exactly
+// coincident (zero crossing there), but ADJACENT triangles across a curved
+// facet's own hinge line are only approximately coplanar with each other
+// (unlike a flat surface, where adjacent facets stay exactly coplanar too) -
+// close enough that the spatial-pruning pass still tests cross-mesh
+// triangle pairs near each shared edge, and the resulting near-degenerate
+// seam noise is enough to produce a nonzero `segs`. A flat/coplanar surface
+// has no such hinge-line approximation error at all (every facet, and every
+// pair of adjacent facets, is EXACTLY flat regardless of tessellation grid),
+// which is the real, structural reason the fix reaches
+// CoincidentOverlapBoundaryCurves() reliably for flat surfaces of ANY two
+// domains but not for curved ones - an honest limit of the existing
+// mesh-seeded architecture this file already relies on everywhere else, not
+// a defect in the new code, disclosed directly in IntersectSurfaces()'s own
+// doc comment (surface_intersect.h) rather than silently assumed closed.
+//
+// (2) A genuine regression, caught by this round's own full-suite run before
+// being fixed, not after: wiring CoincidentOverlapBoundaryCurves() into
+// IntersectSurfaces() at first broke the pre-existing
+// TestFindSurfaceTangentContactsSphereOnPlane fixture above (a sphere
+// resting tangent on a plane, previously and correctly reported as EMPTY by
+// IntersectSurfaces() - that is the whole premise FindSurfaceTangentContacts()
+// exists to fill). The cause: IntersectSurfacesOverlap()'s own grid sampling,
+// right at a surface's coordinate POLE (where an entire row of (u, v)
+// samples collapses onto nearly the same 3D point - PARITY_MAP.md's own
+// still-`[partial]` "SSX across periodic seams and at singular points
+// (poles)" bullet, a DIFFERENT gap than this one), can report a small but
+// genuine multi-cell "region" there even though the true shape is a single
+// isolated touch point, not a coincident AREA. Fixed in
+// CoincidentOverlapBoundaryCurves() itself (surface_intersect.cpp): a
+// candidate region's own 3D bounding-box diagonal must be at least
+// opt.mesh_tolerance before it is trusted as a genuine area - exactly
+// IntersectSurfacesOverlap()'s own existing "a single isolated on-`b` cell
+// is a transient touch, not an overlap" principle, extended to a pole's own
+// multi-cell degeneracy. `TestFindSurfaceTangentContactsSphereOnPlane`'s own
+// `IntersectSurfaces(...).empty()` assertion passes again with this guard in
+// place - this is tested THERE (its own pre-existing fixture, now a
+// regression guard for this exact gate), not duplicated here.
+void TestIntersectSurfacesReturnsBoundaryCurveForCoincidentRegion() {
+  using dino8::kernel::IntersectionCurve;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::IntersectSurfaces;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.5;
+
+  // First scenario: two FLAT, coplanar plane surfaces, one a genuine PROPER
+  // SUBSET of the other's domain, strictly interior on every side - the
+  // general "overlap region smaller than `a`'s own domain" shape
+  // TestIntersectSurfacesOverlapDetectsCoincidentRegion's own quarter-overlap
+  // fixture does not fully exercise (there, u1/v1 happen to sit at `a`'s own
+  // domain edge). Here EVERY one of the four extents is a genuine interior
+  // crossing boundary, confirmed by the hand-derivable bounding box below.
+  {
+    const ON_Plane shared_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+    ON_PlaneSurface pa(shared_plane), pb(shared_plane);
+    pa.SetExtents(0, ON_Interval(-50, 50), true);
+    pa.SetExtents(1, ON_Interval(-50, 50), true);
+    pb.SetExtents(0, ON_Interval(10, 40), true);
+    pb.SetExtents(1, ON_Interval(10, 40), true);
+    const std::vector<IntersectionCurve> interior = IntersectSurfaces(pa, pb, opt);
+    Check(interior.size() == 1, "a strictly-interior coincident rectangle reports exactly one boundary curve");
+    if (interior.size() == 1) {
+      Check(interior[0].closed, "the strictly-interior boundary curve is closed");
+      ON_BoundingBox bb;
+      for (const Point3d& p : interior[0].points) bb.Set(p, true);
+      Check(bb.IsValid() && std::abs(bb.Min().x - 10.0) < 1e-3 && std::abs(bb.Max().x - 40.0) < 1e-3 &&
+                std::abs(bb.Min().y - 10.0) < 1e-3 && std::abs(bb.Max().y - 40.0) < 1e-3,
+            "the strictly-interior boundary curve's own extent matches the hand-derivable [10,40]x[10,40] overlap square");
+    }
+  }
+
+  // Second scenario: two IDENTICAL coplanar plane surfaces (the
+  // `entire_surface == true` case of IntersectSurfacesOverlap()) - must have
+  // IntersectSurfaces() trace `a`'s own FULL domain boundary as one closed
+  // curve.
+  {
+    const ON_Plane shared_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+    ON_PlaneSurface pa(shared_plane), pb(shared_plane);
+    pa.SetExtents(0, ON_Interval(-7, 7), true);
+    pa.SetExtents(1, ON_Interval(-7, 7), true);
+    pb.SetExtents(0, ON_Interval(-7, 7), true);
+    pb.SetExtents(1, ON_Interval(-7, 7), true);
+    const std::vector<IntersectionCurve> whole = IntersectSurfaces(pa, pb, opt);
+    Check(whole.size() == 1, "two identical coplanar plane surfaces report exactly one boundary curve (the entire_surface case)");
+    if (whole.size() == 1) {
+      Check(whole[0].closed, "the entire_surface boundary curve is closed");
+      ON_BoundingBox bb;
+      for (const Point3d& p : whole[0].points) bb.Set(p, true);
+      Check(bb.IsValid() && std::abs(bb.Min().x + 7.0) < 1e-3 && std::abs(bb.Max().x - 7.0) < 1e-3 &&
+                std::abs(bb.Min().y + 7.0) < 1e-3 && std::abs(bb.Max().y - 7.0) < 1e-3,
+            "the entire_surface boundary curve's own extent matches a's full [-7,7]x[-7,7] domain");
+    }
   }
 }
 
@@ -71835,6 +71976,7 @@ int main() {
   TestFindSurfaceTangentContactsSphereOnPlane();
   TestIntersectSurfacesOverlapDetectsCoincidentRegion();
   TestIntersectSurfacesOverlapBisectionTightensRegionBoundary();
+  TestIntersectSurfacesReturnsBoundaryCurveForCoincidentRegion();
   TestIntersectPlaneSphereClosedForm();
   TestIntersectPlaneCylinderClosedForm();
   TestIntersectCylinderCylinderParallelClosedForm();

@@ -77,6 +77,69 @@ struct IntersectionCurve {
 
 // All intersection curves of two surfaces (untrimmed). Empty when they do
 // not meet (or only touch tangentially within the mesh tolerance).
+//
+// Also handles the coincident/overlapping case, closing PARITY_MAP.md's own
+// "SSX coincident / overlapping surface regions" bullet's remaining gap
+// ("IntersectSurfaces still returns nothing for coincident surfaces"): when
+// the ordinary mesh-seeded triangle-crossing search finds no crossing
+// segment at all (a genuine non-meet, OR two surfaces that coincide over a
+// real patch - coincident triangles never produce a clean crossing segment
+// either), IntersectSurfacesOverlap() (below) is consulted to tell the two
+// apart; a genuine coincident region's own bisection-tightened (u0,v0)-
+// (u1,v1) rectangle is then walked and fit into one closed IntersectionCurve
+// per region (uv_b found by closest-point projection onto `b`, not by the
+// crossing relation this function otherwise solves) rather than silently
+// reporting empty. This is the overlap REGION's own rectangular boundary,
+// not an exact polygon of the coincident patch - see
+// CoincidentOverlapBoundaryCurves()'s own doc comment, surface_intersect.cpp,
+// for the full construction and disclosed scope. A genuine non-meet is
+// unaffected and still returns empty.
+//
+// Two real, confirmed limitations, found while testing this rather than
+// assumed away:
+//
+//  - "the ordinary crossing search finds nothing" is NOT a reliable
+//    coincidence signal for two CURVED surfaces - confirmed on two different
+//    fixtures, not just one: a cylinder wall `b` trimmed to a
+//    strictly-interior sub-rectangle of a larger cylinder `a` (361 raw
+//    crossing segments from a genuine grid-RESOLUTION mismatch alone -
+//    TessellateWithUV()'s own divisions depend on each surface's own
+//    domain/arc-length, so differently-domained operands tessellate at
+//    different resolutions); AND, more surprisingly, even two FULL-EXTENT
+//    walls of the IDENTICAL cylinder from two independent
+//    `ON_Cylinder::GetNurbForm()` calls, which DO tessellate at matching
+//    divisions (confirmed nu/nv-equal) - still produced 756 raw segments,
+//    not zero: matching triangles between the two meshes are exactly
+//    coincident, but ADJACENT triangles across one curved facet's own hinge
+//    line are only approximately coplanar with each other (unlike a flat
+//    surface, where every pair of adjacent facets stays exactly coplanar
+//    regardless of tessellation grid), and that per-hinge approximation
+//    error alone is enough seam noise to make `segs` nonzero. This
+//    function's own coincident-region path is therefore reliable for FLAT/
+//    coplanar surfaces of any two domains (confirmed by
+//    `TestIntersectSurfacesReturnsBoundaryCurveForCoincidentRegion`'s own
+//    two plane fixtures, tests/test_basic.cpp - a strictly-interior
+//    sub-rectangle AND an entire-surface match), but NOT for a genuinely
+//    curved coincident pair of any shape - disclosed here rather than
+//    silently assumed closed.
+//  - A pole/singular-point false positive, caught by this round's own
+//    full-suite run and fixed before landing, not after: IntersectSurfacesOverlap()'s
+//    own grid sampling right at a surface's coordinate pole (where an entire
+//    row of (u, v) samples collapses onto nearly the same 3D point -
+//    PARITY_MAP.md's own separate, still-`[partial]` "SSX across periodic
+//    seams and at singular points (poles)" bullet) can report a small but
+//    genuine multi-cell "region" there even for an ordinary tangent TOUCH
+//    (e.g. a sphere resting on a plane at its own pole), not a real
+//    coincident area - which this function very nearly misreported as one.
+//    CoincidentOverlapBoundaryCurves() (surface_intersect.cpp) guards
+//    against this directly: a candidate region's own 3D bounding-box
+//    diagonal must be at least opt.mesh_tolerance before it is trusted,
+//    extending IntersectSurfacesOverlap()'s own existing "a single isolated
+//    cell is a transient touch" principle to a pole's multi-cell version of
+//    the same trap. `TestFindSurfaceTangentContactsSphereOnPlane`'s own
+//    pre-existing `IntersectSurfaces(...).empty()` assertion is the
+//    regression guard for this (confirmed it still passes with the guard in
+//    place), not duplicated in the new test.
 std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt);
 
 // Restricts SSX curves to the trimmed region of the faces (points whose
@@ -673,9 +736,12 @@ std::vector<SurfaceTangentContact> FindSurfaceTangentContacts(const ON_Surface& 
 // A connected region of `a`'s own (u, v) domain, reported in that domain's
 // own axis-aligned bounding box, whose points all lie ON `b` within
 // tolerance - PARITY_MAP.md's own "SSX coincident / overlapping surface
-// regions" bullet: "IntersectSurfaces still returns nothing for coincident
-// surfaces. The only coincidence handling is inside planar booleans."
-// IntersectSurfaces() is the wrong tool for a coincident region for the same
+// regions" bullet, as it stood when this function was written: "IntersectSurfaces
+// still returns nothing for coincident surfaces. The only coincidence
+// handling is inside planar booleans." (IntersectSurfaces() itself now DOES
+// return a real boundary curve for a coincident region, built directly on
+// top of this function - see its own doc comment above for that later
+// addition.) IntersectSurfaces()'s own ORDINARY crossing-chain search is the wrong tool for a coincident region for the same
 // reason IntersectCurveSurfaceOverlap() already exists instead of reusing
 // IntersectCurveSurface(): two surfaces that coincide over a real patch
 // produce no clean triangle-pair CROSSING there at all (the triangles lie
