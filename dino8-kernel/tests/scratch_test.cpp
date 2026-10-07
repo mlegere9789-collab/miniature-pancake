@@ -9,67 +9,56 @@ int main() {
   ON::Begin();
   using namespace dino8::kernel;
 
-  // A cone: a genuine apex singularity (the whole row of control points
-  // collapses to one point), unlike a cylinder (no singularity at all) or
-  // a sphere (two isolated poles, but the row still has nonzero radius
-  // infinitesimally close to each pole).
-  const ON_Plane base_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
-  const ON_Cone cone(base_plane, /*height=*/5.0, /*radius=*/2.0);
-  ON_NurbsSurface cone_surface;
-  const int rc = cone.GetNurbForm(cone_surface);
+  // A unit-radius full sphere: two genuine singular sides (poles), where
+  // ON_Surface::IsSingular collapses an entire row of the NURBS grid to a
+  // single point - does SuggestedDivisions()/SuggestedParameterValues()'s
+  // isocurve-sampling-based curvature estimate actually resolve the real
+  // facet deviation near a pole, where the OTHER direction's isocurve
+  // (a circle of latitude) shrinks toward zero radius and its curvature
+  // (1/radius) blows up?
+  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 1.0);
+  ON_NurbsSurface sphere_surface;
+  const int rc = sphere.GetNurbForm(sphere_surface);
   std::printf("GetNurbForm rc=%d\n", rc);
-  NurbsSurface wall;
-  wall.raw() = cone_surface;
+  NurbsSurface s;
+  s.raw() = sphere_surface;
 
-  const auto du = wall.Domain(0);
-  const auto dv = wall.Domain(1);
+  const auto du = s.Domain(0);
+  const auto dv = s.Domain(1);
   std::printf("u domain: [%f, %f]\n", du.min, du.max);
   std::printf("v domain: [%f, %f]\n", dv.min, dv.max);
+  std::printf("IsSingular(side 0, v=min): %d\n", s.raw().IsSingular(0));
+  std::printf("IsSingular(side 1, u=max): %d\n", s.raw().IsSingular(1));
+  std::printf("IsSingular(side 2, v=max): %d\n", s.raw().IsSingular(2));
+  std::printf("IsSingular(side 3, u=min): %d\n", s.raw().IsSingular(3));
 
-  try {
-    const auto divs = wall.SuggestedDivisions(0.01);
-    std::printf("SuggestedDivisions: u=%d v=%d\n", divs.u, divs.v);
-  } catch (const std::exception& e) {
-    std::printf("SuggestedDivisions threw: %s\n", e.what());
+  for (double chord_tolerance : {0.1, 0.01, 0.001}) {
+    const auto divs = s.SuggestedDivisions(chord_tolerance);
+    const double measured = s.MeasureGridTessellationDeviation(divs.u, divs.v);
+    std::printf("tol=%g  SuggestedDivisions u=%d v=%d  measured(whole grid)=%g  ratio=%.3f\n",
+                chord_tolerance, divs.u, divs.v, measured, measured / chord_tolerance);
   }
 
-  try {
-    const auto values_u = wall.SuggestedParameterValues(0, 0.01);
-    std::printf("SuggestedParameterValues(0) count=%zu\n", values_u.size());
-  } catch (const std::exception& e) {
-    std::printf("SuggestedParameterValues(0) threw: %s\n", e.what());
-  }
-  try {
-    const auto values_v = wall.SuggestedParameterValues(1, 0.01);
-    std::printf("SuggestedParameterValues(1) count=%zu\n", values_v.size());
-    for (double v : values_v) std::printf("  v=%f\n", v);
-  } catch (const std::exception& e) {
-    std::printf("SuggestedParameterValues(1) threw: %s\n", e.what());
-  }
-
-  try {
-    const Mesh m = wall.TessellateGridAdaptive(0.01);
-    std::printf("TessellateGridAdaptive face count: %d\n", m.FaceCount());
-  } catch (const std::exception& e) {
-    std::printf("TessellateGridAdaptive threw: %s\n", e.what());
-  }
-
-  try {
-    const Mesh m = wall.TessellateGridNonUniformAdaptive(0.01);
-    std::printf("TessellateGridNonUniformAdaptive face count: %d\n", m.FaceCount());
-  } catch (const std::exception& e) {
-    std::printf("TessellateGridNonUniformAdaptive threw: %s\n", e.what());
-  }
-
-  // Which end is the apex (v=domain.min or v=domain.max)? Check radius of
-  // the isocurve at each end via two sampled points' distance apart.
+  // Direct geometric check of the hypothesis: does the U-direction
+  // isocurve (circle of latitude) shrink toward zero radius approaching
+  // each pole, meaning its curvature (1/radius) grows without bound even
+  // though SuggestedDivisions()'s own isocurve_samples are spaced evenly
+  // across the FULL v domain and may land nowhere near the pole where
+  // that spike is sharpest?
   {
-    const Point3d p0 = wall.PointAt(du.min, dv.min);
-    const Point3d p1 = wall.PointAt(du.max * 0.5 + du.min * 0.5, dv.min);
-    std::printf("v=min isocurve spread: %f\n", (p0 - p1).Length());
-    const Point3d q0 = wall.PointAt(du.min, dv.max);
-    const Point3d q1 = wall.PointAt(du.max * 0.5 + du.min * 0.5, dv.max);
-    std::printf("v=max isocurve spread: %f\n", (q0 - q1).Length());
+    const double v_min = dv.min, v_max = dv.max;
+    for (double frac : {0.0, 0.001, 0.01, 0.05, 0.1, 0.2, 0.5}) {
+      const double v = v_min + frac * (v_max - v_min);
+      ON_Curve* iso = s.raw().IsoCurve(0, v);
+      double radius = -1.0;
+      if (iso != nullptr) {
+        const ON_3dPoint p0 = iso->PointAt(iso->Domain().Mid());
+        const ON_3dPoint center(0, 0, p0.z);
+        radius = p0.DistanceTo(center);
+        delete iso;
+      }
+      std::printf("v-frac-from-pole=%.4f  latitude radius=%g\n", frac, radius);
+    }
   }
 
   ON::End();
