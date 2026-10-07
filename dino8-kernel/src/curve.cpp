@@ -2049,6 +2049,60 @@ BoundingBox NurbsCurve::GetTightBoundingBox() const {
   return BoundingBox{box.Min(), box.Max()};
 }
 
+BoundingBox NurbsCurve::GetTightBoundingBox(double tolerance) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::GetTightBoundingBox: tolerance must be positive");
+  }
+  const Interval dom = Domain();
+  std::vector<double> candidates = {dom.min, dom.max};
+
+  const int n = std::max(50, 8 * ControlPointCount());
+  for (int axis = 0; axis < 3; ++axis) {
+    auto deriv_component = [&](double t) {
+      Point3d pt;
+      Vector3d d1;
+      curve_.Ev1Der(t, pt, d1);
+      return axis == 0 ? d1.x : (axis == 1 ? d1.y : d1.z);
+    };
+    double prev_t = dom.min;
+    double prev_d = deriv_component(prev_t);
+    for (int i = 1; i <= n; ++i) {
+      const double t = dom.min + (dom.max - dom.min) * i / n;
+      const double d = deriv_component(t);
+      if ((prev_d <= 0.0 && d >= 0.0) || (prev_d >= 0.0 && d <= 0.0)) {
+        double lo = prev_t, hi = t, dlo = prev_d;
+        for (int iter = 0; iter < 60; ++iter) {
+          if (PointAt(lo).DistanceTo(PointAt(hi)) <= tolerance) break;
+          const double mid = (lo + hi) / 2.0;
+          const double dmid = deriv_component(mid);
+          if ((dlo <= 0.0 && dmid >= 0.0) || (dlo >= 0.0 && dmid <= 0.0)) {
+            hi = mid;
+          } else {
+            lo = mid;
+            dlo = dmid;
+          }
+        }
+        candidates.push_back((lo + hi) / 2.0);
+      }
+      prev_t = t;
+      prev_d = d;
+    }
+  }
+
+  Point3d lo(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
+  Point3d hi(-std::numeric_limits<double>::max(), -std::numeric_limits<double>::max(), -std::numeric_limits<double>::max());
+  for (double t : candidates) {
+    const Point3d p = PointAt(t);
+    lo.x = std::min(lo.x, p.x);
+    lo.y = std::min(lo.y, p.y);
+    lo.z = std::min(lo.z, p.z);
+    hi.x = std::max(hi.x, p.x);
+    hi.y = std::max(hi.y, p.y);
+    hi.z = std::max(hi.z, p.z);
+  }
+  return BoundingBox{lo, hi};
+}
+
 double NurbsCurve::Length(int samples) const {
   const ON_Interval domain = curve_.Domain();
   Point3d previous = PointAt(domain.ParameterAt(0.0));
