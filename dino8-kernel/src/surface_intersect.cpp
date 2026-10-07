@@ -3248,6 +3248,72 @@ CylinderCylinderParallelIntersection IntersectCylinderCylinderParallel(const ON_
   return out;
 }
 
+CylinderCylinderIntersectingIntersection IntersectCylinderCylinderIntersecting(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance) {
+  CylinderCylinderIntersectingIntersection out;
+  if (!a.IsValid() || !b.IsValid() || !(a.circle.radius > 0) || !(b.circle.radius > 0) || !(tolerance >= 0)) return out;  // stays empty
+
+  constexpr double kAxisParallelTol = 1e-6;  // same scale IntersectCylinderCylinderParallel/ComputeEllipseFrame3d already use
+  const Vector3d axis_a = a.Axis(), axis_b = b.Axis();
+  if (ON_CrossProduct(axis_a, axis_b).Length() <= kAxisParallelTol) {
+    out.parallel = true;
+    return out;
+  }
+
+  const double radius_tol = std::max(tolerance, 1e-9 * std::max(a.circle.radius, b.circle.radius));  // same relative-tolerance idiom CylinderPairRadiusTolerance (boolean.cpp) uses for the identical question
+  if (std::fabs(a.circle.radius - b.circle.radius) > radius_tol) {
+    out.unequal_radius = true;
+    return out;
+  }
+
+  // Closest points of the two infinite axis lines - the identical standard
+  // closed form IntersectCylinderCylinderParallel()'s own ComputeSteinmetzCrossing
+  // sibling in boolean.cpp already uses for two lines O_a + s*axis_a,
+  // O_b + t*axis_b with unit directions.
+  const Point3d c0 = a.Center(), c1 = b.Center();
+  const Vector3d w = c0 - c1;
+  const double d_ab = ON_DotProduct(axis_a, axis_b);
+  const double d_aw = ON_DotProduct(axis_a, w);
+  const double d_bw = ON_DotProduct(axis_b, w);
+  const double denom = 1.0 - d_ab * d_ab;  // sin^2(alpha), bounded away from 0 by the parallel guard above
+  const double s = (d_ab * d_bw - d_aw) / denom;
+  const double t = (d_bw - d_ab * d_aw) / denom;
+  const Point3d on_a = c0 + s * axis_a;
+  const Point3d on_b = c1 + t * axis_b;
+  if (on_a.DistanceTo(on_b) > tolerance) {
+    out.skew = true;  // non-parallel axes that genuinely do not meet: no closed form here, see this function's own header doc comment
+    return out;
+  }
+  const Point3d q = on_a;
+
+  // The two Steinmetz planes through Q (normal axis_a - axis_b, axis_a +
+  // axis_b - see this function's own header doc comment for the algebraic
+  // derivation): each cuts BOTH cylinders in the identical 3D ellipse, so
+  // compute each one only once, by reusing the already-closed-form
+  // IntersectPlaneCylinder() against cylinder `a` alone.
+  auto steinmetz_ellipse = [&](const Vector3d& raw_normal) {
+    const ON_Plane plane(q, raw_normal.UnitVector());
+    return IntersectPlaneCylinder(plane, a, tolerance);
+  };
+  const PlaneCylinderIntersection e1 = steinmetz_ellipse(axis_a - axis_b);
+  const PlaneCylinderIntersection e2 = steinmetz_ellipse(axis_a + axis_b);
+  if (e1.parallel_to_axis || e2.parallel_to_axis || e1.empty || e2.empty) {
+    // Only reachable for a degenerate input already ruled out above: for
+    // any genuine alpha strictly between 0 and pi, dot(axis_a, axis_a -
+    // axis_b) == 1 - cos(alpha) and dot(axis_a, axis_a + axis_b) == 1 +
+    // cos(alpha) are both bounded away from 0, so IntersectPlaneCylinder()
+    // always takes its ellipse branch here, and a plane through the
+    // cylinder's own axis-closest point always meets it.
+    return out;
+  }
+
+  out.empty = false;
+  out.ellipse_a = e1.ellipse;
+  out.curve_a = e1.curve;
+  out.ellipse_b = e2.ellipse;
+  out.curve_b = e2.curve;
+  return out;
+}
+
 PlanePlaneIntersection IntersectPlanePlane(const ON_Plane& a, const ON_Plane& b, double tolerance) {
   PlanePlaneIntersection out;
   if (!a.IsValid() || !b.IsValid() || !(tolerance >= 0)) return out;  // stays empty

@@ -5147,6 +5147,91 @@ void TestIntersectCylinderCylinderParallelClosedForm() {
 }
 
 // PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
+// "cylinder/cylinder" half's EQUAL-RADIUS, INTERSECTING-AXES (Steinmetz)
+// special case - the second narrowing of that pair, alongside the
+// parallel-axis case the test directly above already covers.
+void TestIntersectCylinderCylinderIntersectingClosedForm() {
+  using dino8::kernel::IntersectCylinderCylinderIntersecting;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Distance from a point to an infinite axis line (through `origin`,
+  // unit `axis`) - the defining per-cylinder membership test every curve
+  // point below is checked against, not a hardcoded expected curve.
+  auto dist_to_axis = [](const Point3d& p, const Point3d& origin, const Vector3d& axis) {
+    const Vector3d v = p - origin;
+    const double along = ON_DotProduct(v, axis);
+    const Vector3d radial = v - along * axis;
+    return radial.Length();
+  };
+
+  const double tol = 1e-6;
+  const double r = 2.0;
+  const Point3d q(0, 0, 0);
+  const Vector3d axis_a(0, 0, 1);
+
+  // A general oblique crossing (60 degrees between the axes), both
+  // cylinders radius 2, axes meeting exactly at the origin.
+  const double alpha = M_PI / 3.0;
+  const Vector3d axis_b(std::sin(alpha), 0, std::cos(alpha));
+  const ON_Cylinder cyl_a(ON_Circle(ON_Plane(q, axis_a), r));
+  const ON_Cylinder cyl_b(ON_Circle(ON_Plane(q, axis_b), r));
+  const auto crossing = IntersectCylinderCylinderIntersecting(cyl_a, cyl_b, tol);
+  Check(!crossing.empty && !crossing.unequal_radius && !crossing.parallel && !crossing.skew,
+        "two equal-radius cylinders with genuinely intersecting, non-parallel axes report two real ellipses");
+  if (!crossing.empty) {
+    for (const ON_NurbsCurve* curve : {&crossing.curve_a, &crossing.curve_b}) {
+      Check(curve->IsValid(), "each reported Steinmetz ellipse has a valid NURBS form");
+      bool all_on_both = true;
+      const int n = 24;
+      for (int i = 0; i <= n; ++i) {
+        const double t = curve->Domain().ParameterAt(static_cast<double>(i) / n);
+        const Point3d p = curve->PointAt(t);
+        if (std::abs(dist_to_axis(p, q, axis_a) - r) > 1e-5 || std::abs(dist_to_axis(p, q, axis_b) - r) > 1e-5) {
+          all_on_both = false;
+          break;
+        }
+      }
+      Check(all_on_both, "every sampled point of the ellipse sits at exactly radius r from BOTH cylinder axes simultaneously");
+    }
+    const Point3d mid_a = crossing.curve_a.PointAt(crossing.curve_a.Domain().ParameterAt(0.5));
+    const Point3d mid_b = crossing.curve_b.PointAt(crossing.curve_b.Domain().ParameterAt(0.5));
+    Check(mid_a.DistanceTo(mid_b) > 1e-3, "the two ellipses are genuinely distinct curves, not the same one reported twice");
+  }
+
+  // The classical perpendicular (alpha = 90 degrees) Steinmetz solid case.
+  const Vector3d axis_perp(1, 0, 0);
+  const ON_Cylinder cyl_perp(ON_Circle(ON_Plane(q, axis_perp), r));
+  const auto perp_crossing = IntersectCylinderCylinderIntersecting(cyl_a, cyl_perp, tol);
+  Check(!perp_crossing.empty && !perp_crossing.parallel && !perp_crossing.skew, "the classical perpendicular-axes bicylinder case reports two real ellipses");
+  if (!perp_crossing.empty) {
+    const Point3d p = perp_crossing.curve_a.PointAt(perp_crossing.curve_a.Domain().ParameterAt(0.5));
+    Check(std::abs(dist_to_axis(p, q, axis_a) - r) < 1e-5 && std::abs(dist_to_axis(p, q, axis_perp) - r) < 1e-5,
+          "the perpendicular case's own ellipse also sits at radius r from both axes");
+  }
+
+  // Unequal radii are refused outright - this closed form requires the
+  // subtraction of the two implicit cylinder equations to cancel r^2, and
+  // that only happens when both radii are equal.
+  const ON_Cylinder cyl_b_small(ON_Circle(ON_Plane(q, axis_b), 1.0));
+  Check(IntersectCylinderCylinderIntersecting(cyl_a, cyl_b_small, tol).unequal_radius, "two equal-angle cylinders of DIFFERENT radii are refused outright, not silently misanswered");
+
+  // (Anti)parallel axes are refused outright - that is IntersectCylinderCylinderParallel()'s own case, not this one's.
+  const ON_Cylinder cyl_parallel(ON_Circle(ON_Plane(Point3d(0, 0, 5), axis_a), r));
+  Check(IntersectCylinderCylinderIntersecting(cyl_a, cyl_parallel, tol).parallel, "parallel axes are refused outright, not misrouted into a fabricated ellipse");
+
+  // Genuinely skew axes (non-parallel, but the infinite lines never meet)
+  // are refused outright - the one configuration this closed form has no
+  // answer for at all.
+  const ON_Cylinder cyl_skew(ON_Circle(ON_Plane(Point3d(0, 5, 0), axis_b), r));
+  Check(IntersectCylinderCylinderIntersecting(cyl_a, cyl_skew, tol).skew, "genuinely skew (non-intersecting, non-parallel) axes are refused outright, not forced through the Steinmetz construction");
+
+  // Invalid input (zero-radius cylinder) is refused outright.
+  const ON_Cylinder degenerate(ON_Circle(ON_Plane(q, axis_b), 0.0));
+  Check(IntersectCylinderCylinderIntersecting(cyl_a, degenerate, tol).empty, "a zero-radius cylinder operand is refused as a genuine miss");
+}
+
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
 // "plane/plane" half - the easiest of its named pairs, closed here with
 // the exact classical formula (no mesh seeding, no Newton polish).
 void TestIntersectPlanePlaneClosedForm() {
@@ -72731,6 +72816,7 @@ int main() {
   TestIntersectPlaneSphereClosedForm();
   TestIntersectPlaneCylinderClosedForm();
   TestIntersectCylinderCylinderParallelClosedForm();
+  TestIntersectCylinderCylinderIntersectingClosedForm();
   TestIntersectPlanePlaneClosedForm();
   TestIntersectPlaneConeClosedForm();
   TestIntersectPlaneTorusClosedForm();
