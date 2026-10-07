@@ -918,6 +918,66 @@ struct CylinderCylinderParallelIntersection {
 };
 CylinderCylinderParallelIntersection IntersectCylinderCylinderParallel(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance);
 
+// The exact closed-form cylinder/cylinder SSX for the EQUAL-RADIUS,
+// INTERSECTING-AXES (Steinmetz/bicylinder) special case - a second
+// narrowing of the "cylinder/cylinder" half of PARITY_MAP.md's own
+// "Analytic/analytic SSX closed forms" bullet, alongside the parallel-axis
+// case IntersectCylinderCylinderParallel() above already closes (still not
+// fully closed: the general unequal-radius or genuinely skew-axes pair
+// stays exactly as unaddressed as before - see this function's own
+// `unequal_radius`/`skew` refusals). This is a public extraction of the
+// SAME closed form `BooleanCombineMixed`'s own private
+// `ComputeSteinmetzCrossing`/`SplitCylindricalBySteinmetzCylinder`
+// (boolean.cpp) already rely on internally for their own wall-splitting
+// bookkeeping - the classical public-domain Steinmetz fact that two
+// equal-radius cylinders whose axes meet at a point Q factor their
+// intersection into two PLANAR ELLIPSES: subtracting the two implicit
+// cylinder equations `|p-Q|^2 - dot(p-Q, axis_a)^2 == r^2` and
+// `|p-Q|^2 - dot(p-Q, axis_b)^2 == r^2` (equal `r` on both sides is what
+// makes this work at all - this is NOT available for unequal radii) leaves
+// `dot(p-Q, axis_a - axis_b) == 0` or `dot(p-Q, axis_a + axis_b) == 0`,
+// i.e. two planes through Q; each one cuts EITHER cylinder in the
+// identical 3D ellipse (a point on one of these planes sits at the same
+// distance from both axes by construction), so this function computes
+// each ellipse only once, as cylinder `a`'s own
+// `IntersectPlaneCylinder()` result against that plane - not a fresh
+// derivation, and not sampled or Newton-polished.
+//
+// `a`/`b` must have equal radius (to within an internal relative
+// tolerance) or this refuses outright (`unequal_radius == true`): a
+// caller with two different-radius cylinders at a genuine angle needs the
+// still-missing general closed form (or `IntersectSurfaces()` instead).
+// `axis_a`/`axis_b` must also be genuinely non-parallel (otherwise this is
+// `IntersectCylinderCylinderParallel()`'s own case, `parallel == true`
+// here) AND their infinite axis lines must actually meet at a point
+// within `tolerance` (`skew == true` when they are non-parallel but
+// genuinely skew, the one configuration this closed form has no answer
+// for at all - the general skew case needs a genuine NURBS-NURBS surface
+// intersection). Given all of that, `ellipse_a`/`ellipse_b` are the two
+// Steinmetz ellipses, each built as `IntersectPlaneCylinder(plane, a,
+// tolerance)` against the plane with normal `axis_a - axis_b` (ellipse_a)
+// or `axis_a + axis_b` (ellipse_b), both through the axes' own crossing
+// point - never the line-pair branch of that function, since neither
+// normal can lie in a plane edge-on to `a`'s own axis for any genuine
+// angle strictly between 0 and pi (dot(axis_a, axis_a-axis_b) == 1 -
+// cos(alpha), dot(axis_a, axis_a+axis_b) == 1 + cos(alpha), both bounded
+// away from 0 once the parallel/antiparallel guard above has ruled out
+// alpha == 0 or pi).
+//
+// Deliberately operates on both cylinders' own INFINITE lateral surfaces,
+// the same unbounded scope every other closed form in this file already
+// takes; a caller holding finite cylinders is responsible for trimming
+// the result to each one's own finite height range itself.
+struct CylinderCylinderIntersectingIntersection {
+  bool empty = true;
+  bool unequal_radius = false;  // true: refused outright - `a`/`b` do not have the same radius; every other field is meaningless
+  bool parallel = false;        // true: refused outright - the two axes are (anti)parallel within tolerance; use IntersectCylinderCylinderParallel() instead
+  bool skew = false;            // true: refused outright - the axes are non-parallel but their infinite lines do not actually meet within tolerance
+  ON_Ellipse ellipse_a, ellipse_b;      // the two Steinmetz ellipses - meaningful only when !empty && !unequal_radius && !parallel && !skew
+  ON_NurbsCurve curve_a, curve_b;       // each ellipse's own NURBS form - meaningful under the same condition
+};
+CylinderCylinderIntersectingIntersection IntersectCylinderCylinderIntersecting(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance);
+
 // The exact closed-form plane/plane SSX - closes the "plane/plane" half of
 // PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
 // easiest of its named pairs and, until now, still unaddressed as a public
