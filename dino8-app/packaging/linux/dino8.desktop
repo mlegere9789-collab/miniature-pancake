@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Dino 8
+GenericName=3D NURBS Modeler
+Comment=Free NURBS, SubD and mesh modeler with the Rhino 8 command set
+Exec=Dino8 %f
+Icon=dino8
+Terminal=false
+Categories=Graphics;3DGraphics;Engineering;
+MimeType=model/x-3dm;model/obj;model/stl;
+Keywords=CAD;NURBS;3D;modeling;rhino;

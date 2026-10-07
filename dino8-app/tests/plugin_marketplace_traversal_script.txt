@@ -1,0 +1,2 @@
+PluginMarketplaceIndex @DINO8ROOT@/tests/plugin_marketplace_traversal_index.json
+PluginMarketplaceInstall evilfilename

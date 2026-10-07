@@ -1,0 +1,4100 @@
+#include "io/FileExchange.h"
+
+#include "commands/DimGeometry.h"
+#include "io/AciPalette.h"
+#include "drafting/HatchBuild.h"
+#include "drafting/HatchLibrary.h"
+#include "geom/TextOutline.h"
+#include "util/ThreadPool.h"
+#include "viewport/Viewport.h"
+
+#include <opennurbs.h>
+
+// GNU LibreDWG (see the "DWG (via GNU LibreDWG)" section below and
+// docs/INTEROP_LIMITATIONS.md / THIRD_PARTY_LICENSES.md). Pure C headers,
+// but both are extern "C"-guarded for C++ already.
+#include <dwg.h>
+#include <dwg_api.h>
+
+#if defined(_MSC_VER)
+// EXCEPTION_EXECUTE_HANDLER / __try / __except (Structured Exception
+// Handling) - see DwgReadFileSafe below.
+#include <excpt.h>
+// _resetstkoflw - see DwgReadFileSafe below.
+#include <malloc.h>
+// EXCEPTION_STACK_OVERFLOW (winnt.h, via windows.h - excpt.h alone does not
+// declare it). NOMINMAX/WIN32_LEAN_AND_MEAN keep windows.h from clobbering
+// std::min/std::max (used throughout this file below this point) with
+// function-like macros, and from pulling in the full Win32 API surface this
+// file has no other need for.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <optional>
+#include <set>
+#include <sstream>
+#include <vector>
+
+namespace dino8::app {
+
+using kernel::Point3d;
+using kernel::Vector3d;
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Small shared helpers
+// ---------------------------------------------------------------------------
+
+std::string Num(double v, int decimals = 6) {
+  if (!std::isfinite(v)) v = 0.0;
+  if (std::fabs(v) < 1e-12) v = 0.0;
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%.*f", decimals, v);
+  // Trim trailing zeros (and a dangling '.') so files stay compact.
+  std::string s(buf);
+  if (s.find('.') != std::string::npos) {
+    while (!s.empty() && s.back() == '0') s.pop_back();
+    if (!s.empty() && s.back() == '.') s.pop_back();
+  }
+  if (s == "-0") s = "0";
+  return s;
+}
+
+std::string Trim(const std::string& s) {
+  size_t a = 0, b = s.size();
+  while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
+  while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
+  return s.substr(a, b - a);
+}
+
+std::string Upper(std::string s) {
+  for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  return s;
+}
+
+bool CurveFromON(const ON_Curve& c, kernel::NurbsCurve& out) {
+  ON_NurbsCurve nc;
+  if (c.GetNurbForm(nc) <= 0 || !nc.IsValid()) return false;
+  out.raw() = nc;
+  return true;
+}
+
+// Millimetres per document unit, so a forced print scale is meaningful.
+double MillimetresPerUnit(const Document& doc) {
+  const std::string& u = doc.Settings().unit_system;
+  if (u == "Inches") return 25.4;
+  if (u == "Feet") return 304.8;
+  if (u == "Centimeters") return 10.0;
+  if (u == "Meters") return 1000.0;
+  return 1.0;
+}
+
+// ---- AutoCAD colour index (ACI) palette ------------------------------------
+// AciToRgb / RgbToAci live in io/AciPalette.cpp (unit-tested on their own).
+
+int ColorToAci(const Color& c) {
+  return RgbToAci(static_cast<int>(std::lround(c.r * 255)), static_cast<int>(std::lround(c.g * 255)),
+                  static_cast<int>(std::lround(c.b * 255)));
+}
+
+// DXF group code 420 is a 24-bit 0x00RRGGBB integer. `long long` rather than
+// `long` so the width is the same on Windows (LLP64, 32-bit long) as
+// elsewhere - the value itself always fits in 32 bits, but keeping every
+// integer in this file that is not a plain `int` at 64 bits leaves nothing
+// to reason about per platform (see RgbToAci in AciPalette.cpp for the case
+// where it actually bit).
+long long ColorToTrueColor(const Color& c) {
+  return (static_cast<long long>(std::lround(c.r * 255)) << 16) |
+         (static_cast<long long>(std::lround(c.g * 255)) << 8) | static_cast<long long>(std::lround(c.b * 255));
+}
+
+Color TrueColorToColor(long long v) {
+  return Color::FromBytes(static_cast<int>((v >> 16) & 255), static_cast<int>((v >> 8) & 255),
+                          static_cast<int>(v & 255));
+}
+
+// ---- Display-cache polylines -----------------------------------------------
+
+struct Polyline3 {
+  std::vector<Point3d> pts;
+  bool closed = false;
+};
+
+// Chains the display cache's segment pairs into polylines. Consecutive
+// segments that share an endpoint (every sampled curve, every brep edge)
+// become one polyline; a polyline whose two ends coincide is marked closed
+// and its duplicated last point dropped.
+std::vector<Polyline3> ChainSegments(const std::vector<float>& lines) {
+  std::vector<Polyline3> out;
+  double extent = 1.0;
+  for (size_t i = 0; i + 2 < lines.size(); i += 3) {
+    extent = std::max({extent, std::fabs(static_cast<double>(lines[i])), std::fabs(static_cast<double>(lines[i + 1])),
+                       std::fabs(static_cast<double>(lines[i + 2]))});
+  }
+  const double eps = 1e-6 * extent;
+  for (size_t i = 0; i + 5 < lines.size(); i += 6) {
+    const Point3d a(lines[i], lines[i + 1], lines[i + 2]);
+    const Point3d b(lines[i + 3], lines[i + 4], lines[i + 5]);
+    if (a.DistanceTo(b) <= eps) continue;
+    if (!out.empty() && out.back().pts.back().DistanceTo(a) <= eps) {
+      out.back().pts.push_back(b);
+    } else {
+      Polyline3 p;
+      p.pts = {a, b};
+      out.push_back(std::move(p));
+    }
+  }
+  for (Polyline3& p : out) {
+    if (p.pts.size() >= 4 && p.pts.front().DistanceTo(p.pts.back()) <= eps * 10) {
+      p.closed = true;
+      p.pts.pop_back();
+    }
+    // Drop interior samples that sit on the segment joining their
+    // neighbours (straight brep edges are sampled 32 times in the cache).
+    std::vector<Point3d> kept;
+    kept.reserve(p.pts.size());
+    const size_t n = p.pts.size();
+    for (size_t i = 0; i < n; ++i) {
+      const bool interior = p.closed ? n >= 4 : (i > 0 && i + 1 < n);
+      if (interior) {
+        const Point3d& a = p.closed ? (kept.empty() ? p.pts[(i + n - 1) % n] : kept.back()) : kept.back();
+        const Point3d& c = p.pts[(i + 1) % n];
+        ON_Line seg(a, c);
+        if (seg.Length() > eps && seg.DistanceTo(p.pts[i]) <= eps * 10 &&
+            ON_DotProduct(p.pts[i] - a, c - p.pts[i]) > 0) {
+          continue;
+        }
+      }
+      kept.push_back(p.pts[i]);
+    }
+    if (kept.size() >= 2) p.pts.swap(kept);
+  }
+  return out;
+}
+
+std::vector<Polyline3> ObjectPolylines(const SceneObject& o) {
+  o.EnsureDisplay(0.01, 0.05);
+  return ChainSegments(o.Display().lines);
+}
+
+// Samples a NURBS curve for formats that only know polylines.
+std::vector<Point3d> SampleCurve(const kernel::NurbsCurve& c, double tol) {
+  std::vector<double> params = c.SuggestedParameterValues(tol, 10);
+  if (params.size() < 8) {
+    const kernel::Interval d = c.Domain();
+    params.clear();
+    for (int i = 0; i <= 24; ++i) params.push_back(d.min + (d.max - d.min) * i / 24.0);
+  }
+  std::vector<Point3d> pts;
+  pts.reserve(params.size());
+  for (double t : params) pts.push_back(c.PointAt(t));
+  return pts;
+}
+
+// ---------------------------------------------------------------------------
+// DXF writer
+// ---------------------------------------------------------------------------
+
+class DxfWriter {
+ public:
+  explicit DxfWriter(std::ostream& os) : os_(os) {}
+
+  void G(int code, const std::string& v) { os_ << code << "\n" << v << "\n"; }
+  void G(int code, double v) { G(code, Num(v, 9)); }
+  void G(int code, int v) { G(code, std::to_string(v)); }
+  void G(int code, long long v) { G(code, std::to_string(v)); }
+  std::string Handle() {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%llX", next_handle_++);
+    return buf;
+  }
+  unsigned long long NextHandleValue() const { return next_handle_; }
+
+  void Point(int base, Point3d p) { G(base, p.x); G(base + 10, p.y); G(base + 20, p.z); }
+
+  void BeginEntity(const char* type, const std::string& layer, const Color* color) {
+    G(0, std::string(type));
+    G(5, Handle());
+    G(100, "AcDbEntity");
+    G(8, layer);
+    if (color) {
+      G(62, ColorToAci(*color));
+      G(420, ColorToTrueColor(*color));
+    }
+  }
+
+ private:
+  std::ostream& os_;
+  // DXF handles are hex strings with no fixed width; 64-bit (not `long`,
+  // which is 32-bit on Windows) so the counter's range does not depend on
+  // the platform.
+  unsigned long long next_handle_ = 0x100;
+};
+
+std::string DxfLayerName(std::string name) {
+  for (char& c : name) {
+    if (std::strchr("<>/\\\":;?*|=`", c) != nullptr) c = '_';
+  }
+  name = Trim(name);
+  return name.empty() ? std::string("0") : name;
+}
+
+double DxfAngleDeg(Point3d center, Point3d p) {
+  double a = std::atan2(p.y - center.y, p.x - center.x) * 180.0 / ON_PI;
+  if (a < 0) a += 360.0;
+  return a;
+}
+
+void WriteDxfPolyline(DxfWriter& w, const std::vector<Point3d>& pts, bool closed, const std::string& layer,
+                      const Color* color) {
+  if (pts.size() < 2) return;
+  bool planar = true;
+  for (const Point3d& p : pts) if (std::fabs(p.z - pts.front().z) > 1e-9) { planar = false; break; }
+  if (planar) {
+    w.BeginEntity("LWPOLYLINE", layer, color);
+    w.G(100, "AcDbPolyline");
+    w.G(90, static_cast<int>(pts.size()));
+    w.G(70, closed ? 1 : 0);
+    w.G(38, pts.front().z);
+    for (const Point3d& p : pts) { w.G(10, p.x); w.G(20, p.y); }
+    return;
+  }
+  w.BeginEntity("POLYLINE", layer, color);
+  w.G(100, "AcDb3dPolyline");
+  w.G(66, 1);
+  w.G(10, 0.0); w.G(20, 0.0); w.G(30, 0.0);
+  w.G(70, (closed ? 1 : 0) | 8);
+  for (const Point3d& p : pts) {
+    w.BeginEntity("VERTEX", layer, nullptr);
+    w.G(100, "AcDbVertex");
+    w.G(100, "AcDb3dPolylineVertex");
+    w.Point(10, p);
+    w.G(70, 32);
+  }
+  w.G(0, "SEQEND");
+  w.G(5, w.Handle());
+  w.G(100, "AcDbEntity");
+  w.G(8, layer);
+}
+
+// A generic freeform NURBS curve, exact: DXF's SPLINE entity carries the
+// full control-point/knot/weight data, so (unlike the polyline fallback)
+// re-importing this reconstructs the identical curve rather than a chord
+// approximation of it. DXF's knot vector has two more entries than
+// OpenNURBS' (it doesn't elide the duplicated first/last knot), matching
+// what DxfImporter::Spline()'s "knots.size() == want + 2" branch expects.
+void WriteDxfSpline(DxfWriter& w, const ON_NurbsCurve& nc, const std::string& layer, const Color* color) {
+  const int order = nc.Order();
+  const int cv_count = nc.CVCount();
+  const bool rational = nc.IsRational();
+  w.BeginEntity("SPLINE", layer, color);
+  w.G(100, "AcDbSpline");
+  int flags = 0;
+  if (nc.IsClosed()) flags |= 1;
+  if (nc.IsPeriodic()) flags |= 2;
+  if (rational) flags |= 4;
+  w.G(70, flags);
+  w.G(71, order - 1);
+  const int knot_count = nc.KnotCount() + 2;
+  w.G(72, knot_count);
+  w.G(73, cv_count);
+  w.G(74, 0);
+  w.G(40, nc.Knot(0));
+  for (int i = 0; i < nc.KnotCount(); ++i) w.G(40, nc.Knot(i));
+  w.G(40, nc.Knot(nc.KnotCount() - 1));
+  for (int i = 0; i < cv_count; ++i) {
+    if (rational) w.G(41, nc.Weight(i));
+    ON_3dPoint p;
+    nc.GetCV(i, p);
+    w.Point(10, p);
+  }
+}
+
+void WriteDxfCurve(DxfWriter& w, const kernel::NurbsCurve& curve, const std::string& layer, const Color* color) {
+  const ON_NurbsCurve& nc = curve.raw();
+  const double tol = 1e-6;
+  if (nc.IsLinear(tol)) {
+    w.BeginEntity("LINE", layer, color);
+    w.G(100, "AcDbLine");
+    w.Point(10, nc.PointAtStart());
+    w.Point(11, nc.PointAtEnd());
+    return;
+  }
+  ON_Arc arc;
+  if (nc.IsArc(nullptr, &arc, tol) && arc.IsValid()) {
+    const double nz = arc.plane.zaxis.z;
+    if (std::fabs(std::fabs(nz) - 1.0) < 1e-6) {
+      const Point3d c = arc.Center();
+      if (arc.IsCircle()) {
+        w.BeginEntity("CIRCLE", layer, color);
+        w.G(100, "AcDbCircle");
+        w.Point(10, c);
+        w.G(40, arc.radius);
+        return;
+      }
+      // DXF arcs always run counter-clockwise about +Z: swap the ends when
+      // the arc's own plane points down.
+      const Point3d a = nz > 0 ? arc.StartPoint() : arc.EndPoint();
+      const Point3d b = nz > 0 ? arc.EndPoint() : arc.StartPoint();
+      w.BeginEntity("ARC", layer, color);
+      w.G(100, "AcDbCircle");
+      w.Point(10, c);
+      w.G(40, arc.radius);
+      w.G(100, "AcDbArc");
+      w.G(50, DxfAngleDeg(c, a));
+      w.G(51, DxfAngleDeg(c, b));
+      return;
+    }
+  }
+  if (nc.Degree() == 1) {
+    std::vector<Point3d> pts;
+    for (int i = 0; i < nc.CVCount(); ++i) { ON_3dPoint p; nc.GetCV(i, p); pts.push_back(p); }
+    bool closed = false;
+    if (pts.size() >= 3 && pts.front().DistanceTo(pts.back()) <= tol) { closed = true; pts.pop_back(); }
+    WriteDxfPolyline(w, pts, closed, layer, color);
+    return;
+  }
+  // Any other freeform curve (including non-circular ellipses - OpenNURBS'
+  // own ON_Curve::IsEllipse() only ever recognizes circles, delegating to
+  // IsArc(), so there is no reliable way to single a true ellipse back out
+  // of its NURBS form here): write the exact NURBS as a SPLINE instead of
+  // flattening it to a polyline, so export-then-reimport round-trips the
+  // real control points/knots/weights rather than a chord approximation.
+  if (nc.IsValid() && nc.CVCount() >= 2) {
+    WriteDxfSpline(w, nc, layer, color);
+    return;
+  }
+  std::vector<Point3d> pts = SampleCurve(curve, 0.01);
+  bool closed = false;
+  if (pts.size() >= 3 && nc.IsClosed()) { closed = true; pts.pop_back(); }
+  WriteDxfPolyline(w, pts, closed, layer, color);
+}
+
+void WriteDxfMesh(DxfWriter& w, const ON_Mesh& m, const std::string& layer, const Color* color) {
+  for (int i = 0; i < m.FaceCount(); ++i) {
+    const ON_MeshFace& f = m.m_F[i];
+    w.BeginEntity("3DFACE", layer, color);
+    w.G(100, "AcDbFace");
+    w.Point(10, m.Vertex(f.vi[0]));
+    w.Point(11, m.Vertex(f.vi[1]));
+    w.Point(12, m.Vertex(f.vi[2]));
+    w.Point(13, m.Vertex(f.vi[3]));
+  }
+}
+
+// A solid-fill HATCH with a single polyline boundary path, world-XY-plane
+// only (same "elevation, no tilted-plane OCS" simplification
+// WriteDxfPolyline's own LWPOLYLINE branch already makes - a genuinely
+// tilted hatch falls back to the caller's old edge-curve export instead).
+// The group-code sequence matches exactly what this file's own
+// DxfImporter::Hatch() (see the reader above) reads back: 91=1 (one
+// boundary path), 92 with bit 0x2 set (polyline path type), 72=0 (no
+// bulges), 93=vertex count, one 10/20 pair per vertex, 70=1 (solid fill).
+// Was entirely missing before this change: DXF's own writer had no HATCH
+// function at all, so a Dino8-made or DXF-imported solid hatch round-
+// tripped out to bare boundary LINE/polyline entities, losing its fill.
+void WriteDxfHatchSolid(DxfWriter& w, const std::vector<Point3d>& pts, const std::string& layer, const Color* color) {
+  if (pts.size() < 3) return;
+  w.BeginEntity("HATCH", layer, color);
+  w.G(100, "AcDbHatch");
+  w.G(10, 0.0); w.G(20, 0.0); w.G(30, pts.front().z);  // elevation point
+  w.G(210, 0.0); w.G(220, 0.0); w.G(230, 1.0);         // extrusion normal: +Z
+  w.G(2, "SOLID");
+  w.G(70, 1);  // solid fill
+  w.G(71, 0);  // not associative
+  w.G(91, 1);  // one boundary path
+  w.G(92, 2);  // boundary path type: polyline
+  w.G(72, 0);  // no bulges
+  w.G(73, 1);  // closed
+  w.G(93, static_cast<int>(pts.size()));
+  for (const Point3d& p : pts) { w.G(10, p.x); w.G(20, p.y); }
+  w.G(97, 0);  // no source boundary objects
+  w.G(75, 0);  // hatch style: normal
+  w.G(76, 1);  // pattern type: predefined
+  w.G(98, 0);  // no seed points
+}
+
+// A pattern-fill HATCH, world-XY-plane only (same restriction
+// WriteDxfHatchSolid above already has): one polyline boundary path exactly
+// like the solid case, plus the named pattern's own real definition lines
+// (group 78 count, then 53/43/44/45/46/79/49 per line) instead of just a
+// name a reader may or may not recognize. `pattern`'s own HatchFamily list
+// (drafting/HatchLibrary.h) is parsed straight out of an AutoCAD .pat file,
+// so its angle/x0/y0/dx/dy/dashes fields are already in exactly the field
+// order and convention a DXF pattern definition line uses - this writes
+// them unscaled/unrotated (53=fam.angle, 43/44=fam.x0/y0, 45/46=fam.dx/dy,
+// 49=each dash length, positive=dash/negative=gap/0=dot, the same
+// convention HatchFamily::dashes already documents) and carries the
+// document's own applied scale/rotation separately as 41/52 - the exact
+// composition this file's own drafting::HatchPatternCurves/ClipFamily
+// (HatchLibrary.cpp) already performs (angle+rotation, x0/y0/dx/dy*scale),
+// so a real AutoCAD/Rhino reader renders the identical fill this app's own
+// viewport does, not an approximation. Was entirely missing before this
+// change: a pattern-fill hatch round-tripped out as its own N already-
+// clipped line segments (one LINE per clipped run) with no HATCH entity and
+// no record it was ever one fill.
+void WriteDxfHatchPattern(DxfWriter& w, const drafting::HatchPattern& pattern, const std::vector<Point3d>& pts,
+                           double scale, double rotation, const std::string& layer, const Color* color) {
+  if (pts.size() < 3) return;
+  if (scale <= 0) scale = 1;  // drafting::HatchPatternCurves' own fallback, mirrored here
+  w.BeginEntity("HATCH", layer, color);
+  w.G(100, "AcDbHatch");
+  w.G(10, 0.0); w.G(20, 0.0); w.G(30, pts.front().z);  // elevation point
+  w.G(210, 0.0); w.G(220, 0.0); w.G(230, 1.0);         // extrusion normal: +Z
+  w.G(2, pattern.name);
+  w.G(70, 0);  // pattern fill (not solid)
+  w.G(71, 0);  // not associative
+  w.G(91, 1);  // one boundary path
+  w.G(92, 2);  // boundary path type: polyline
+  w.G(72, 0);  // no bulges
+  w.G(73, 1);  // closed
+  w.G(93, static_cast<int>(pts.size()));
+  for (const Point3d& p : pts) { w.G(10, p.x); w.G(20, p.y); }
+  w.G(97, 0);  // no source boundary objects
+  w.G(75, 0);  // hatch style: normal
+  w.G(76, 1);  // pattern type: predefined
+  w.G(52, rotation);
+  w.G(41, scale);
+  w.G(77, 0);  // pattern not double
+  w.G(78, static_cast<int>(pattern.families.size()));
+  for (const drafting::HatchFamily& fam : pattern.families) {
+    w.G(53, fam.angle);
+    w.G(43, fam.x0);
+    w.G(44, fam.y0);
+    w.G(45, fam.dx);
+    w.G(46, fam.dy);
+    w.G(79, static_cast<int>(fam.dashes.size()));
+    for (double d : fam.dashes) w.G(49, d);
+  }
+  w.G(98, 0);  // no seed points
+}
+
+// Resolves a pattern-fill hatch line object (SceneObject::user_text's
+// "Hatch" tag set to a library pattern name by drafting::BuildPatternHatch,
+// not "Solid"/"Bitmap" - see HatchBuild.h) back into its real pattern,
+// scale, rotation and - the one piece BuildPatternHatch itself never stores
+// as geometry, only as a "HatchBoundary" object-id reference - its original
+// boundary loop, still live in the document, so WriteDxfHatchPattern above
+// can write one real HATCH entity for the whole group instead of each
+// already-clipped line writing its own LINE entity. Returns false (nothing
+// written) if the pattern name isn't in the library, the boundary object no
+// longer exists, isn't a closed curve, or isn't planar in world-XY - the
+// same "falls through to the caller's own per-line export" contract
+// WriteDxfHatchSolid/WriteDxfTextIfPlanarXY's own callers already follow.
+bool TryWriteDxfHatchPatternGroup(const Document& doc, const SceneObject& o, const std::string& pattern_name,
+                                   DxfWriter& w, const std::string& layer, const Color* color) {
+  const drafting::HatchPattern* pat = drafting::HatchLibrary::Instance().Find(pattern_name);
+  if (!pat) return false;
+  auto bid_it = o.user_text.find("HatchBoundary");
+  if (bid_it == o.user_text.end()) return false;
+  const ObjectId bid = static_cast<ObjectId>(std::strtoull(bid_it->second.c_str(), nullptr, 10));
+  const SceneObject* bnd = bid == kNoObject ? nullptr : doc.Find(bid);
+  if (!bnd || bnd->kind != ObjectKind::Curve || !bnd->curve || !bnd->curve->IsClosed()) return false;
+  const std::vector<Polyline3> loops = ObjectPolylines(*bnd);
+  if (loops.empty() || !loops.front().closed || loops.front().pts.size() < 3) return false;
+  const std::vector<Point3d>& pts = loops.front().pts;
+  for (const Point3d& p : pts) if (std::fabs(p.z - pts.front().z) > 1e-9) return false;  // world-XY only
+  auto num = [&](const char* key, double fallback) {
+    auto it = o.user_text.find(key);
+    return it == o.user_text.end() ? fallback : std::atof(it->second.c_str());
+  };
+  WriteDxfHatchPattern(w, *pat, pts, num("HatchSpacing", 1.0), num("HatchRotation", 0.0), layer, color);
+  return true;
+}
+
+// A Dino8-authored "Text" command annotation is a group of glyph-outline
+// curves, every one of them tagged (commands/annotate_common.h's TagGlyph)
+// with the same Text/TextHeight/TextOrigin/TextX/TextY/TextAlign values -
+// re-parsed here directly from those tags (rather than including
+// commands/annotate_common.h itself, which pulls in app/Application.h
+// through commands/cmd_common.h - DimGeometry.h above is this file's own
+// precedent for staying with a plain-data read of the same tag convention
+// instead of that heavier header) so WriteDxfTextIfPlanarXY below can write
+// one real DXF TEXT entity for the whole string instead of N separate
+// glyph-outline curves.
+bool ParsePointTagLocal(const std::string& s, Point3d& out) {
+  double x = 0, y = 0, z = 0;
+  if (std::sscanf(s.c_str(), "%lf,%lf,%lf", &x, &y, &z) != 3) return false;
+  out = Point3d(x, y, z);
+  return true;
+}
+
+struct DxfTextGlyphSpec {
+  std::string text;
+  double height = 0;
+  ON_Plane plane;
+};
+
+bool DxfTextGlyphSpecOf(const SceneObject& o, DxfTextGlyphSpec& g) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *t = get("Text"), *h = get("TextHeight"), *org = get("TextOrigin"), *x = get("TextX"), *y = get("TextY");
+  if (!t || !h || !org || !x || !y) return false;
+  Point3d o3, px, py;
+  if (!ParsePointTagLocal(*org, o3) || !ParsePointTagLocal(*x, px) || !ParsePointTagLocal(*y, py)) return false;
+  g.text = *t;
+  g.height = std::atof(h->c_str());
+  g.plane = ON_Plane(o3, Vector3d(px.x, px.y, px.z), Vector3d(py.x, py.y, py.z));
+  return g.height > 0 && !g.text.empty();
+}
+
+// A TEXT entity for a Dino8 "Text" command's glyph-curve group, instead of
+// writing each glyph outline as its own curve - the same "named primitive
+// instead of its own baked geometry" shortcut WriteDxfHatchSolid above
+// takes for a solid hatch's boundary. World-XY-plane only, with no
+// extrusion/rotation-OCS handling (same simplification WriteDxfHatchSolid/
+// WriteDxfPolyline's LWPOLYLINE branch already make - this writer embeds
+// exact 3D geometry everywhere else instead of using AutoCAD's own OCS
+// convention) - a tilted text plane falls back to the caller's own
+// per-glyph curve export, so nothing is lost either way. Group codes
+// (10/40/1/50) match exactly what this file's own DxfImporter::Text() (see
+// the reader below) reads back, verified end-to-end through the real app.
+bool WriteDxfTextIfPlanarXY(DxfWriter& w, const DxfTextGlyphSpec& g, const std::string& layer, const Color* color) {
+  if (std::fabs(g.plane.zaxis.x) > 1e-6 || std::fabs(g.plane.zaxis.y) > 1e-6 || g.plane.zaxis.z < 1.0 - 1e-6) return false;
+  w.BeginEntity("TEXT", layer, color);
+  w.G(100, "AcDbText");
+  w.Point(10, g.plane.origin);
+  w.G(40, g.height);
+  w.G(1, g.text);
+  w.G(50, std::atan2(g.plane.xaxis.y, g.plane.xaxis.x) * 180.0 / ON_PI);
+  return true;
+}
+
+// A DimLinear/DimAligned group's own fixed layout, re-parsed directly from
+// the tags BuildLinearDimensionGeometry (commands/DimGeometry.h) stamps on
+// every one of the group's own curves - DimPlaneOrigin/X/Y (plane),
+// DimAligned/DimHorizontal/DimOffset (the fixed layout a hand-picked third
+// "dimension line location" point reduces to), DimP0/DimP1 (the two
+// measured points, always present even for an anchored dimension - see
+// that header's own comment on why). Same "plain-data re-read instead of
+// including annotate_common.h" precedent as DxfTextGlyphSpecOf above -
+// cmd_annotate.cpp's own LoadLinearDimLayout/ResolveLinearDimPoints read
+// the identical tags but live in that file's anonymous namespace (and
+// ResolveLinearDimPoints additionally resolves a live anchor object's
+// *current* position when one exists, which this file has no
+// CommandContext to need: DimP0/DimP1 already hold the point the group's
+// own baked curves were actually drawn from, which is what should export).
+struct DxfLinearDimLayout {
+  bool aligned = false, horizontal = true;
+  double offset = 0;
+  ON_Plane plane;
+  Point3d p0, p1;
+};
+
+bool DxfLinearDimLayoutOf(const SceneObject& o, DxfLinearDimLayout& L) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *aligned = get("DimAligned"), *horiz = get("DimHorizontal"), *offset = get("DimOffset");
+  const std::string *org = get("DimPlaneOrigin"), *ax = get("DimPlaneX"), *ay = get("DimPlaneY");
+  const std::string *p0s = get("DimP0"), *p1s = get("DimP1");
+  if (!aligned || !horiz || !offset || !org || !ax || !ay || !p0s || !p1s) return false;
+  Point3d o3, px, py;
+  if (!ParsePointTagLocal(*org, o3) || !ParsePointTagLocal(*ax, px) || !ParsePointTagLocal(*ay, py)) return false;
+  if (!ParsePointTagLocal(*p0s, L.p0) || !ParsePointTagLocal(*p1s, L.p1)) return false;
+  L.aligned = *aligned == "1";
+  L.horizontal = *horiz == "1";
+  L.offset = std::atof(offset->c_str());
+  L.plane = ON_Plane(o3, Vector3d(px.x, px.y, px.z), Vector3d(py.x, py.y, py.z));
+  return true;
+}
+
+// A real DXF DIMENSION entity (type 0 rotated/horizontal/vertical, or type
+// 1 aligned) for a DimLinear/DimAligned group, instead of its own baked
+// line/extension/arrow/text curves - the inverse of DxfImporter::Dimension
+// below's own group-code mapping (that function's comment has the full
+// dwg.spec-verified field layout this mirrors: 13/14 = the two measured
+// points, 10 = any point ON the dimension line, 50 = rotation for type 0 /
+// extension-line oblique angle for type 1). `loc` (group 10) is re-derived
+// with the *exact* projection BuildLinearDimensionGeometry itself uses to
+// place its own dimension-line endpoints from `L` - not an independent
+// reconstruction, so a reopen through this file's own DxfImporter::Dimension
+// rebuilds a geometrically identical dimension. Scoped like every other
+// narrow writer in this file: no anonymous block (group 2) of pre-rendered
+// geometry - this app's own reader never needed one, rebuilding the
+// dimension fresh from these same semantic points instead - and no text
+// override (group 1) or text-midpoint (group 11), since the reader always
+// recomputes the measurement and label placement from 13/14 too. Returns
+// false (nothing written) if the two points coincide once projected onto
+// the fixed dimension line - the same degenerate case
+// BuildLinearDimensionGeometry itself refuses.
+bool WriteDxfLinearDimension(DxfWriter& w, const DxfLinearDimLayout& L, const std::string& layer, const Color* color) {
+  Point3d loc;
+  double rot = 0.0;
+  if (!L.aligned) {
+    double ua, va, ub, vb;
+    L.plane.ClosestPointTo(L.p0, &ua, &va);
+    L.plane.ClosestPointTo(L.p1, &ub, &vb);
+    const Point3d a = L.horizontal ? L.plane.PointAt(ua, L.offset) : L.plane.PointAt(L.offset, va);
+    const Point3d b = L.horizontal ? L.plane.PointAt(ub, L.offset) : L.plane.PointAt(L.offset, vb);
+    if (a.DistanceTo(b) < 1e-9) return false;
+    loc = a;
+    rot = L.horizontal ? 0.0 : 90.0;
+  } else {
+    Vector3d n = ON_CrossProduct(L.plane.zaxis, Vector3d(L.p1 - L.p0));
+    if (n.Length() < 1e-12 || L.p0.DistanceTo(L.p1) < 1e-9) return false;
+    n.Unitize();
+    loc = L.p0 + n * L.offset;
+    rot = 0.0;  // extension-line oblique angle; this app never sets one
+  }
+  w.BeginEntity("DIMENSION", layer, color);
+  w.G(100, "AcDbDimension");
+  w.Point(10, loc);
+  w.G(70, (L.aligned ? 1 : 0) | 32);  // bit 32: always set by a real AutoCAD-authored DIMENSION
+  w.G(100, L.aligned ? "AcDbAlignedDimension" : "AcDbRotatedDimension");
+  w.Point(13, L.p0);
+  w.Point(14, L.p1);
+  w.G(50, rot);
+  return true;
+}
+
+// A DimRadius/DimDiameter group's own fixed layout, re-parsed directly from
+// the tags BuildRadiusDimensionGeometry (commands/DimGeometry.h) stamps on
+// every one of the group's own curves - DimIsDiameter, DimDir (the leader
+// direction off center), DimExtra (the stand-off past the circle, AutoCAD's
+// own leader_len), DimCenter and DimRadiusVal (the measured circle/arc's
+// own center and radius) - same "plain-data re-read" precedent as
+// DxfLinearDimLayoutOf above. DimPlaneOrigin/X/Y are also stamped but
+// unneeded here: DimCenter/DimDir/DimRadiusVal already carry everything
+// group 10/15/40 below needs.
+struct DxfRadiusDimLayout {
+  bool diameter = false;
+  Point3d center, dir;
+  double radius = 0, extra = 0;
+};
+
+bool DxfRadiusDimLayoutOf(const SceneObject& o, DxfRadiusDimLayout& L) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *diam = get("DimIsDiameter"), *dir = get("DimDir"), *extra = get("DimExtra");
+  const std::string *center = get("DimCenter"), *radius = get("DimRadiusVal");
+  if (!diam || !dir || !extra || !center || !radius) return false;
+  if (!ParsePointTagLocal(*dir, L.dir) || !ParsePointTagLocal(*center, L.center)) return false;
+  L.diameter = *diam == "1";
+  L.extra = std::atof(extra->c_str());
+  L.radius = std::atof(radius->c_str());
+  return L.radius > 0;
+}
+
+// A real DXF DIMENSION entity (type 4 radius, or type 3 diameter) for a
+// DimRadius/DimDiameter group - the inverse of DxfImporter::Dimension
+// below's own group-code mapping for these two types (that function's
+// comment has the full field layout: def_pt=10 is the circle CENTER for
+// radius or the far_chord_pt diametrically opposite first_arc_pt for
+// diameter; first_arc_pt=15 is always a real point on the circle;
+// leader_len=40 is the stand-off past it). `on` below is exactly the same
+// point BuildRadiusDimensionGeometry's own `on = center + d*radius`
+// computes, so reopening through this file's own DxfImporter::Dimension
+// rebuilds a geometrically identical dimension. Same scope choice as
+// WriteDxfLinearDimension above: no anonymous block (group 2), no text
+// override (group 1) - the reader always recomputes the measurement and
+// "R "/"D " label from 10/15 too.
+bool WriteDxfRadiusDimension(DxfWriter& w, const DxfRadiusDimLayout& L, const std::string& layer, const Color* color) {
+  Vector3d d = L.dir;
+  if (!d.Unitize()) return false;
+  const Point3d on = L.center + d * L.radius;
+  const Point3d p10 = L.diameter ? (L.center - d * L.radius) : L.center;
+  w.BeginEntity("DIMENSION", layer, color);
+  w.G(100, "AcDbDimension");
+  w.Point(10, p10);
+  w.G(70, (L.diameter ? 3 : 4) | 32);  // bit 32: always set by a real AutoCAD-authored DIMENSION
+  w.G(100, L.diameter ? "AcDbDiametricDimension" : "AcDbRadialDimension");
+  w.Point(15, on);
+  w.G(40, L.extra);
+  return true;
+}
+
+// A DimAngle group's own fixed layout, re-parsed directly from the tags
+// BuildAngleDimensionGeometry (commands/DimGeometry.h, shared with the live
+// DimAngle command) stamps on every one of the group's own curves -
+// DimPlaneOrigin/X/Y (plane) and DimP0/DimP1/DimP2 (vertex and the two
+// direction points) - same "plain-data re-read" precedent as
+// DxfLinearDimLayoutOf/DxfRadiusDimLayoutOf above. Unlike those two structs,
+// there is no separate "layout minus measured geometry" split: the written
+// DIMENSION's own xline1_pt/xline2_pt/center_pt groups ARE DimP1/DimP2/DimP0
+// verbatim - see WriteDxfAngularDimension below for the one extra value
+// (def_pt, group 10) that still has to be derived rather than just copied.
+struct DxfAngleDimLayout {
+  ON_Plane plane;
+  Point3d vertex, p1, p2;
+};
+
+bool DxfAngleDimLayoutOf(const SceneObject& o, DxfAngleDimLayout& L) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *org = get("DimPlaneOrigin"), *ax = get("DimPlaneX"), *ay = get("DimPlaneY");
+  const std::string *p0s = get("DimP0"), *p1s = get("DimP1"), *p2s = get("DimP2");
+  if (!org || !ax || !ay || !p0s || !p1s || !p2s) return false;
+  Point3d o3, px, py;
+  if (!ParsePointTagLocal(*org, o3) || !ParsePointTagLocal(*ax, px) || !ParsePointTagLocal(*ay, py)) return false;
+  if (!ParsePointTagLocal(*p0s, L.vertex) || !ParsePointTagLocal(*p1s, L.p1) || !ParsePointTagLocal(*p2s, L.p2)) return false;
+  L.plane = ON_Plane(o3, Vector3d(px.x, px.y, px.z), Vector3d(py.x, py.y, py.z));
+  return true;
+}
+
+// A real DXF DIMENSION entity (type 5, 3-point angular / DIMENSION_ANG3PT)
+// for a DimAngle group, instead of its own baked arc/leg/text curves - the
+// inverse of DxfImporter::Dimension below's own type==5 branch (that
+// function's comment has the dwg.spec-verified field layout this mirrors:
+// DWG_ENTITY(DIMENSION_ANG3PT) - xline1_pt=13, xline2_pt=14, center_pt=15
+// is the VERTEX despite its name, def_pt=10 is a point ON the actual
+// rendered dimension arc).
+//
+// def_pt is the one group this writer cannot just copy from a tag: a bare
+// center_pt+xline1_pt+xline2_pt only fixes the angle BETWEEN the two rays up
+// to its own 360-minus-itself complement (which of the two ways around the
+// vertex the dimension arc sweeps) - real AutoCAD always disambiguates that
+// with def_pt, a point a reader can test against each candidate sweep to
+// recover the one actually drawn (see the reader's own matching logic, and
+// commands/DimGeometry.h's BuildAngleDimensionGeometry comment on why this
+// matters at all). This writer places def_pt on the SAME minor (<=180
+// degree) arc BuildAngleDimensionGeometry itself draws - its a0/a1
+// normalization ("if a1<a0 swap; if a1-a0>PI swap, a1+=2*PI") recomputed
+// here identically - so a reopen through this file's own
+// DxfImporter::Dimension always finds def_pt on the expected side and
+// rebuilds a geometrically identical DimAngle.
+//
+// Returns false (nothing written) if the two direction vectors are
+// degenerate or parallel - same failure BuildAngleDimensionGeometry itself
+// refuses (a zero-radius arc).
+bool WriteDxfAngularDimension(DxfWriter& w, const DxfAngleDimLayout& L, const std::string& layer, const Color* color) {
+  Vector3d va = L.p1 - L.vertex, vb = L.p2 - L.vertex;
+  if (!va.Unitize() || !vb.Unitize()) return false;
+  double a0 = std::atan2(ON_DotProduct(va, L.plane.yaxis), ON_DotProduct(va, L.plane.xaxis));
+  double a1 = std::atan2(ON_DotProduct(vb, L.plane.yaxis), ON_DotProduct(vb, L.plane.xaxis));
+  if (a1 < a0) std::swap(a0, a1);
+  if (a1 - a0 > ON_PI) { std::swap(a0, a1); a1 += 2 * ON_PI; }
+  if (a1 - a0 < 1e-9) return false;
+  const double mid = (a0 + a1) / 2.0;
+  ON_Plane cp = L.plane; cp.SetOrigin(L.vertex);
+  const Point3d def_pt = cp.PointAt(std::cos(mid), std::sin(mid));
+  w.BeginEntity("DIMENSION", layer, color);
+  w.G(100, "AcDbDimension");
+  w.Point(10, def_pt);
+  w.G(70, 5 | 32);  // bit 32: always set by a real AutoCAD-authored DIMENSION
+  w.G(100, "AcDb3PointAngularDimension");
+  w.Point(13, L.p1);
+  w.Point(14, L.p2);
+  w.Point(15, L.vertex);
+  return true;
+}
+
+// A Leader group's own fixed layout, re-parsed directly from the tags
+// BuildLeaderGeometry (commands/DimGeometry.h, shared with the live Leader
+// command) stamps on the group's own shape curves (not its glyph-text
+// curves - see the main entity loop's own "Glyph" check below for why) -
+// DimPlaneOrigin/X/Y (plane), LeaderTip (the arrowhead point) and
+// LeaderRest (the rest of the polyline, as ";"-joined offsets *from* the
+// tip) - same "plain-data re-read" precedent as DxfLinearDimLayoutOf above.
+struct DxfLeaderLayout {
+  ON_Plane plane;
+  Point3d tip;
+  std::vector<Vector3d> rest;
+};
+
+bool DxfLeaderLayoutOf(const SceneObject& o, DxfLeaderLayout& L) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *org = get("DimPlaneOrigin"), *ax = get("DimPlaneX"), *ay = get("DimPlaneY");
+  const std::string *tips = get("LeaderTip"), *rests = get("LeaderRest");
+  if (!org || !ax || !ay || !tips) return false;
+  Point3d o3, px, py;
+  if (!ParsePointTagLocal(*org, o3) || !ParsePointTagLocal(*ax, px) || !ParsePointTagLocal(*ay, py)) return false;
+  if (!ParsePointTagLocal(*tips, L.tip)) return false;
+  L.plane = ON_Plane(o3, Vector3d(px.x, px.y, px.z), Vector3d(py.x, py.y, py.z));
+  L.rest.clear();
+  if (rests) {
+    std::stringstream ss(*rests);
+    std::string tok;
+    while (std::getline(ss, tok, ';')) {
+      Point3d off;
+      if (!tok.empty() && ParsePointTagLocal(tok, off)) L.rest.push_back(Vector3d(off.x, off.y, off.z));
+    }
+  }
+  return true;
+}
+
+// A real DXF LEADER entity for a Leader group's own shape (the polyline
+// through its points plus its arrowhead - NOT its glyph-text curves, which
+// this writer deliberately leaves to fall through to their own ordinary
+// curve export just below, same as before this writer existed): group 76
+// is the point count, followed by one real 10/20/30 triple per point (the
+// same repeated-group-code convention this file's own SPLINE reader
+// already parses for control points, see DxfImporter::Spline) -
+// AutoCAD/Rhino's own real point-list encoding for a LEADER, verified
+// against LibreDWG's dwg.spec DWG_ENTITY(LEADER) (`FIELD_3DPOINT_VECTOR
+// (points, num_points, 10)`). `annot_type`=73 is 3 ("none") - deliberately:
+// unlike a DimLinear/DimRadius/DimAngle measurement (always recomputable
+// from the def points alone), a Leader's own label is an arbitrary,
+// un-recomputable user string, so this writer has nothing deterministic to
+// hand a text-annotated LEADER's own group 1/dimstyle-handle fields even if
+// it tried - carrying it via the group's OWN separate glyph curves (as
+// plain, disconnected curves, exactly like a pre-this-writer Leader always
+// exported) is the honest choice here, not a text override this file's
+// other narrow writers already decline for an unrelated reason (a
+// recomputable measurement). `path_type`=72 is 0 (straight) - Dino8's own
+// Leader has no spline-leader mode to ever need 1. `arrowhead_on`=71 is
+// true, matching the arrowhead this writer's own shape curves always
+// include. Returns false (nothing written) if fewer than 2 points result
+// (a leader with only its own arrowhead and nothing else - the same
+// failure BuildLeaderGeometry itself refuses).
+bool WriteDxfLeader(DxfWriter& w, const DxfLeaderLayout& L, const std::string& layer, const Color* color) {
+  std::vector<Point3d> pts;
+  pts.push_back(L.tip);
+  for (const Vector3d& off : L.rest) pts.push_back(L.tip + off);
+  if (pts.size() < 2) return false;
+  w.BeginEntity("LEADER", layer, color);
+  w.G(100, "AcDbLeader");
+  w.G(3, "Standard");
+  w.G(71, 1);
+  w.G(72, 0);
+  w.G(73, 3);
+  w.G(76, static_cast<int>(pts.size()));
+  for (const Point3d& p : pts) w.Point(10, p);
+  w.Point(210, Point3d(L.plane.zaxis));
+  return true;
+}
+
+// A DimOrdinate group's own fixed layout, re-parsed directly from the tags
+// BuildOrdinateDimensionGeometry (commands/DimGeometry.h) stamps on every
+// one of the group's own curves - DimPlaneOrigin/X/Y (plane), DimP0 (the
+// base/origin point), DimP1 (the feature point) and DimOrdinateDir ('X' or
+// 'Y') - same "plain-data re-read" precedent as DxfLinearDimLayoutOf above.
+// `base` is only kept to let DxfOrdinateDimLayoutOf refuse a group whose
+// base isn't at world origin (see WriteDxfOrdinateDimension's own comment
+// on why) - it is never itself written to the DXF entity.
+struct DxfOrdinateDimLayout {
+  ON_Plane plane;
+  Point3d base, feature;
+  char dir = 'X';
+};
+
+bool DxfOrdinateDimLayoutOf(const SceneObject& o, DxfOrdinateDimLayout& L) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *org = get("DimPlaneOrigin"), *ax = get("DimPlaneX"), *ay = get("DimPlaneY");
+  const std::string *p0s = get("DimP0"), *p1s = get("DimP1"), *dirs = get("DimOrdinateDir");
+  if (!org || !ax || !ay || !p0s || !p1s) return false;
+  Point3d o3, px, py;
+  if (!ParsePointTagLocal(*org, o3) || !ParsePointTagLocal(*ax, px) || !ParsePointTagLocal(*ay, py)) return false;
+  if (!ParsePointTagLocal(*p0s, L.base) || !ParsePointTagLocal(*p1s, L.feature)) return false;
+  L.plane = ON_Plane(o3, Vector3d(px.x, px.y, px.z), Vector3d(py.x, py.y, py.z));
+  L.dir = (dirs && *dirs == "Y") ? 'Y' : 'X';
+  return true;
+}
+
+// A real DXF DIMENSION entity (type 6, ordinate) for a DimOrdinate group,
+// instead of its own baked leader/text curves - the inverse of
+// DxfImporter::Dimension's own type==6 branch below (that function's own
+// comment has the dwg.spec-verified field layout this mirrors: group 70's
+// bit 0x80 is "ordinate uses the X axis" when set, Y otherwise -
+// LibreDWG's own dwg_add_DIMENSION_ORDINATE stores this cleanly as a plain
+// `flag2` 0/1 field, and its COMMON_ENTITY_DIMENSION decoder folds that bit
+// into the shared `flag`/group-70 value at 0x80 - the mask the decoder's
+// own code actually uses, not the "set bit 6" (0x40) its comment claims;
+// code over a stale comment, cross-checked against this writer's own real
+// round trip below - `feature_location_pt`=13 is the measured point).
+//
+// Unlike every other DIMENSION type this file writes, there is no DXF
+// group anywhere in DIMENSION_ORDINATE for the "base" point an ordinate
+// measurement is actually relative to - AutoCAD's own ordinate dimension
+// always measures from whatever UCS origin was active when it was placed,
+// which the entity itself never records (only the measured feature point
+// and a cosmetic leader-end point are stored). So this writer - and the
+// matching reader - only handle a `DimOrdinate` whose own base point is
+// genuinely at world `(0,0,0)`: a real, common case (many ordinate
+// dimensions ARE referenced from the part's own modeling origin), honestly
+// scoped rather than silently wrong for any other base point, which falls
+// through to this group's own baked curves unchanged (same documented
+// fallback convention every other narrow writer in this file already
+// uses). `def_pt` (group 10) is written as a duplicate of the feature
+// point - this reader's own type==6 branch never reads group 10 for
+// ordinate at all, so any valid, non-degenerate value there is fine; a
+// real AutoCAD-authored file would use it differently, but that's exactly
+// the kind of group-2/text-override richness this file's own narrow
+// writers already decline to reproduce (see WriteDxfLinearDimension's own
+// comment on the same "minimal, no block/text override" scope).
+bool WriteDxfOrdinateDimension(DxfWriter& w, const DxfOrdinateDimLayout& L, const std::string& layer, const Color* color) {
+  if (L.base.DistanceTo(Point3d(0, 0, 0)) > 1e-9) return false;
+  w.BeginEntity("DIMENSION", layer, color);
+  w.G(100, "AcDbDimension");
+  w.Point(10, L.feature);
+  w.G(70, 6 | (L.dir == 'X' ? 0x80 : 0));
+  w.G(100, "AcDbOrdinateDimension");
+  w.Point(13, L.feature);
+  w.Point(14, L.feature);
+  return true;
+}
+
+// Writes one BlockDefinition member object into the BLOCKS section ExportDxf
+// now emits for a static (no visibility states) block that has at least one
+// placed instance - see ExportDxf's own comment on where this is called
+// from. Only the object kinds a real drafting-block's definition most
+// commonly holds (curves, points, meshes) are covered; a Brep/Surface/SubD
+// member is skipped here (its *instances* still export their own full
+// flattened geometry via the ordinary per-object switch below, exactly as
+// before this function existed, since WriteDxfBlockMember never runs for an
+// instance that didn't get folded into an INSERT - see the "is_block_member"
+// check in ExportDxf's main object loop).
+void WriteDxfBlockMember(DxfWriter& w, const SceneObject& o, const std::string& layer, const Color* color) {
+  switch (o.kind) {
+    case ObjectKind::Point:
+      w.BeginEntity("POINT", layer, color);
+      w.G(100, "AcDbPoint");
+      w.Point(10, o.point);
+      break;
+    case ObjectKind::Curve:
+      if (o.curve) WriteDxfCurve(w, *o.curve, layer, color);
+      break;
+    case ObjectKind::Mesh:
+      if (o.mesh) WriteDxfMesh(w, o.mesh->raw(), layer, color);
+      break;
+    default:
+      break;
+  }
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// AcadSchemes: the DWG/DXF export "scheme" (target release) - see
+// FileExchange.h's AcadScheme/AcadSchemesList/NormalizeAcadScheme comment
+// for why exactly these seven releases (and not R2007) are offered.
+// ---------------------------------------------------------------------------
+
+const std::vector<AcadScheme>& AcadSchemesList() {
+  static const std::vector<AcadScheme> kSchemes = {
+      {"13", "AC1012", "AutoCAD Release 13"},
+      {"14", "AC1014", "AutoCAD Release 14"},
+      {"2000", "AC1015", "AutoCAD 2000"},
+      {"2004", "AC1018", "AutoCAD 2004"},
+      {"2010", "AC1024", "AutoCAD 2010"},
+      {"2013", "AC1027", "AutoCAD 2013"},
+      {"2018", "AC1032", "AutoCAD 2018"},
+  };
+  return kSchemes;
+}
+
+std::string NormalizeAcadScheme(const std::string& input) {
+  std::string s = Trim(input);
+  for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  // Accept a leading "R"/"R_" (as in LibreDWG's own r2013/r14 naming).
+  if (!s.empty() && s.front() == 'R') s.erase(0, s[1] == '_' ? 2 : 1);
+  for (const AcadScheme& sch : AcadSchemesList()) {
+    std::string key_upper = sch.key, ac_upper = sch.acadver;
+    for (char& c : key_upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    for (char& c : ac_upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    if (s == key_upper || s == ac_upper) return sch.key;
+  }
+  return "";
+}
+
+const AcadScheme& EffectiveAcadScheme(const Document& doc) {
+  const std::string key = NormalizeAcadScheme(doc.Settings().dwg_export_scheme);
+  const std::vector<AcadScheme>& schemes = AcadSchemesList();
+  for (const AcadScheme& sch : schemes) {
+    if (sch.key == (key.empty() ? "2000" : key)) return sch;
+  }
+  return schemes[2];  // "2000" - always present, keeps this a safe fallback
+}
+
+bool ExportDxf(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  std::vector<const SceneObject*> objs;
+  for (const SceneObject& o : doc.Objects()) {
+    if (selected_only && !o.selected) continue;
+    if (!doc.IsObjectVisible(o)) continue;
+    objs.push_back(&o);
+  }
+  if (objs.empty()) {
+    error = "Nothing to export";
+    return false;
+  }
+  std::ofstream os(path, std::ios::binary);
+  if (!os) {
+    error = "Could not write " + path;
+    return false;
+  }
+  DxfWriter w(os);
+
+  // Layer names, de-duplicated after sanitising.
+  std::vector<std::string> layer_names;
+  std::map<std::string, int> used;
+  for (size_t i = 0; i < doc.Layers().size(); ++i) {
+    std::string n = DxfLayerName(doc.LayerFullPath(static_cast<int>(i)));
+    if (used.count(n)) n += "_" + std::to_string(++used[n]);
+    used[n] = 0;
+    layer_names.push_back(n);
+  }
+  if (layer_names.empty()) layer_names.push_back("0");
+
+  // Block instances (Block/BlockInsert - see InstantiateBlockInDocument,
+  // cmd_drafting.cpp) among the exportable objects, scoped to a *static*
+  // block (BlockDefinition::states empty): a dynamic block's placed
+  // instance may hold only a state-filtered subset of its definition's own
+  // objects (see doc/BlockInstances.h), so writing the full, unfiltered
+  // definition as the BLOCK and one INSERT per instance would silently
+  // re-add geometry the active state had hidden. A static instance's
+  // objects are always the definition's own objects verbatim (translated),
+  // so it has no such mismatch. Named here, before the BLOCKS section
+  // below, rather than by writing a BLOCK for every BlockDefinition the
+  // document happens to have - one with no placed instance in this export
+  // would otherwise bloat the file with geometry nothing here references.
+  std::set<std::string> block_names_to_write;
+  for (const SceneObject* o : objs) {
+    auto bt = o->user_text.find("Block");
+    if (bt == o->user_text.end()) continue;
+    const BlockDefinition* def = doc.FindBlock(bt->second);
+    if (def && def->states.empty() && !def->objects.empty()) block_names_to_write.insert(bt->second);
+  }
+
+  // HEADER
+  const AcadScheme& scheme = EffectiveAcadScheme(doc);
+  w.G(0, "SECTION"); w.G(2, "HEADER");
+  w.G(9, "$ACADVER"); w.G(1, scheme.acadver);
+  w.G(9, "$INSUNITS");
+  {
+    const std::string& u = doc.Settings().unit_system;
+    int units = 4;  // millimetres
+    if (u == "Inches") units = 1; else if (u == "Feet") units = 2; else if (u == "Centimeters") units = 5; else if (u == "Meters") units = 6;
+    w.G(70, units);
+  }
+  w.G(9, "$HANDSEED"); w.G(5, "FFFF");
+  w.G(0, "ENDSEC");
+
+  // TABLES (just LAYER; readers create the rest with defaults)
+  w.G(0, "SECTION"); w.G(2, "TABLES");
+  w.G(0, "TABLE"); w.G(2, "LAYER"); w.G(5, "2"); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
+  w.G(70, static_cast<int>(layer_names.size()));
+  for (size_t i = 0; i < layer_names.size(); ++i) {
+    const Layer* L = i < doc.Layers().size() ? &doc.Layers()[i] : nullptr;
+    w.G(0, "LAYER"); w.G(5, w.Handle()); w.G(330, "2");
+    w.G(100, "AcDbSymbolTableRecord"); w.G(100, "AcDbLayerTableRecord");
+    w.G(2, layer_names[i]);
+    w.G(70, L && L->locked ? 4 : 0);
+    const int aci = L ? ColorToAci(L->color) : 7;
+    w.G(62, L && !L->visible ? -aci : aci);
+    if (L) w.G(420, ColorToTrueColor(L->color));
+    w.G(6, "Continuous");
+  }
+  w.G(0, "ENDTAB");
+  w.G(0, "ENDSEC");
+
+  // BLOCKS: one BLOCK...ENDBLK per name in block_names_to_write, its
+  // definition's own objects (BlockDefinition::objects, already in the same
+  // world coordinates the file's model space uses - base is just a
+  // reference point within them, same convention ImportDxf's own Insert()
+  // assumes for every other DXF-authored block it reads) written through
+  // WriteDxfBlockMember above.
+  if (!block_names_to_write.empty()) {
+    w.G(0, "SECTION"); w.G(2, "BLOCKS");
+    for (const std::string& name : block_names_to_write) {
+      const BlockDefinition* def = doc.FindBlock(name);
+      if (!def) continue;
+      w.G(0, "BLOCK"); w.G(5, w.Handle()); w.G(8, "0");
+      w.G(2, name);
+      w.G(70, 0);
+      w.Point(10, def->base);
+      w.G(3, name);
+      for (const SceneObject& mo : def->objects) {
+        const size_t li = static_cast<size_t>(std::clamp(mo.layer_index, 0, static_cast<int>(layer_names.size()) - 1));
+        const Color* mcolor = mo.color_by_layer ? nullptr : &mo.color;
+        WriteDxfBlockMember(w, mo, layer_names[li], mcolor);
+      }
+      w.G(0, "ENDBLK"); w.G(5, w.Handle()); w.G(8, "0");
+    }
+    w.G(0, "ENDSEC");
+  }
+
+  // ENTITIES
+  w.G(0, "SECTION"); w.G(2, "ENTITIES");
+  int written = 0;
+  // Groups (SceneObject::group_id) whose Dino8 "Text" annotation already
+  // wrote its one real TEXT entity (WriteDxfTextIfPlanarXY below), or whose
+  // Block instance already wrote its one real INSERT entity just below -
+  // every other object belonging to that same group_id is skipped rather
+  // than also writing its own flattened geometry.
+  std::set<int> text_groups_written;
+  std::set<int> block_groups_written;
+  // Groups whose pattern-fill hatch already wrote its one real HATCH entity
+  // (TryWriteDxfHatchPatternGroup below) - every other already-clipped line
+  // belonging to that same group_id is skipped rather than also written as
+  // its own curve. Only populated on success - a group whose boundary
+  // couldn't be resolved is never added here, so every one of its lines
+  // independently (and harmlessly) retries the same lookup and falls
+  // through to its own curve export, same as before this set existed.
+  std::set<int> pattern_hatch_groups_written;
+  // Groups whose DimLinear/DimAligned/DimRadius/DimDiameter/DimAngle
+  // dimension, or Leader, already wrote its one real DIMENSION/LEADER
+  // entity (WriteDxfLinearDimension/WriteDxfRadiusDimension/
+  // WriteDxfAngularDimension/WriteDxfLeader below) - every other baked
+  // line/extension/arrow/arc shape curve belonging to that same group_id is
+  // skipped rather than also written on its own (a Leader's own glyph-text
+  // curves are a deliberate exception - see WriteDxfLeader's own call site
+  // above). Only populated on success, same "harmless independent retry"
+  // convention as pattern_hatch_groups_written just above.
+  std::set<int> dimension_groups_written;
+  for (const SceneObject* o : objs) {
+    {
+      auto bt = o->user_text.find("Block");
+      if (bt != o->user_text.end() && block_names_to_write.count(bt->second)) {
+        if (block_groups_written.count(o->group_id)) continue;
+        Point3d insert_pt(0, 0, 0);
+        auto bi = o->user_text.find("BlockInsert");
+        if (bi == o->user_text.end() || !ParsePointTagLocal(bi->second, insert_pt)) continue;
+        const size_t li0 = static_cast<size_t>(std::clamp(o->layer_index, 0, static_cast<int>(layer_names.size()) - 1));
+        const Color* color0 = o->color_by_layer ? nullptr : &o->color;
+        w.BeginEntity("INSERT", layer_names[li0], color0);
+        w.G(100, "AcDbBlockReference");
+        w.G(2, bt->second);
+        w.Point(10, insert_pt);
+        block_groups_written.insert(o->group_id);
+        ++written;
+        continue;
+      }
+    }
+    const size_t li = static_cast<size_t>(std::clamp(o->layer_index, 0, static_cast<int>(layer_names.size()) - 1));
+    const std::string& layer = layer_names[li];
+    const Color* color = o->color_by_layer ? nullptr : &o->color;
+    switch (o->kind) {
+      case ObjectKind::Point:
+        w.BeginEntity("POINT", layer, color);
+        w.G(100, "AcDbPoint");
+        w.Point(10, o->point);
+        ++written;
+        break;
+      case ObjectKind::Curve: {
+        if (!o->curve) break;
+        auto hatch_tag = o->user_text.find("Hatch");
+        if (hatch_tag != o->user_text.end() && hatch_tag->second != "Solid" && hatch_tag->second != "Bitmap") {
+          if (pattern_hatch_groups_written.count(o->group_id)) break;  // this group's HATCH entity already written
+          if (TryWriteDxfHatchPatternGroup(doc, *o, hatch_tag->second, w, layer, color)) {
+            pattern_hatch_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
+          // No live, planar-XY boundary to recover - falls through to this
+          // line's own curve export below, same as before this branch
+          // existed (every other line in the group independently makes,
+          // and loses, the same attempt).
+        }
+        auto glyph = o->user_text.find("Glyph"), ann = o->user_text.find("Annotation"), align = o->user_text.find("TextAlign");
+        if (ann != o->user_text.end() && (ann->second == "DimLinear" || ann->second == "DimAligned")) {
+          if (dimension_groups_written.count(o->group_id)) break;  // this group's DIMENSION entity already written
+          DxfLinearDimLayout L;
+          if (DxfLinearDimLayoutOf(*o, L) && WriteDxfLinearDimension(w, L, layer, color)) {
+            dimension_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
+          // Malformed/missing tags (shouldn't happen for a dimension this
+          // app itself built or imported) - falls through to this curve's
+          // own export below, same harmless-independent-retry convention
+          // the hatch-pattern branch above already uses.
+        }
+        if (ann != o->user_text.end() && (ann->second == "DimRadius" || ann->second == "DimDiameter")) {
+          if (dimension_groups_written.count(o->group_id)) break;  // this group's DIMENSION entity already written
+          DxfRadiusDimLayout L;
+          if (DxfRadiusDimLayoutOf(*o, L) && WriteDxfRadiusDimension(w, L, layer, color)) {
+            dimension_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
+          // Same harmless-independent-retry convention as the linear case above.
+        }
+        if (ann != o->user_text.end() && ann->second == "DimAngle") {
+          if (dimension_groups_written.count(o->group_id)) break;  // this group's DIMENSION entity already written
+          DxfAngleDimLayout L;
+          if (DxfAngleDimLayoutOf(*o, L) && WriteDxfAngularDimension(w, L, layer, color)) {
+            dimension_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
+          // Same harmless-independent-retry convention as the linear case above.
+        }
+        // "Leader" group, shape curve only (the polyline/arrowhead - NOT a
+        // glyph-text curve, which also carries Annotation=Leader but is
+        // excluded here by its own "Glyph" tag, so it falls through to its
+        // own ordinary curve export below unaffected by this dedup - see
+        // WriteDxfLeader's own comment on why a Leader's text can't be
+        // carried by the LEADER entity itself the way a recomputable
+        // DimLinear/DimRadius/DimAngle measurement is).
+        if (ann != o->user_text.end() && ann->second == "Leader" && glyph == o->user_text.end()) {
+          if (dimension_groups_written.count(o->group_id)) break;  // this group's LEADER entity already written
+          DxfLeaderLayout L;
+          if (DxfLeaderLayoutOf(*o, L) && WriteDxfLeader(w, L, layer, color)) {
+            dimension_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
+          // Same harmless-independent-retry convention as the linear case above.
+        }
+        if (ann != o->user_text.end() && ann->second == "DimOrdinate") {
+          if (dimension_groups_written.count(o->group_id)) break;  // this group's DIMENSION entity already written
+          DxfOrdinateDimLayout L;
+          if (DxfOrdinateDimLayoutOf(*o, L) && WriteDxfOrdinateDimension(w, L, layer, color)) {
+            dimension_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
+          // Same harmless-independent-retry convention as the linear case above - also hit, by design,
+          // whenever this group's own base point isn't at world origin (see WriteDxfOrdinateDimension's comment).
+        }
+        // Only the plain Text command's own left-aligned glyph groups (not
+        // Dim*/Leader, whose glyph curves share a group with non-glyph
+        // dimension-line/arrow geometry too) - a centered Text's own
+        // TextOrigin is the pre-shift anchor AddGlyphCurves shifted the
+        // glyph curves away from, not the actual visual-center insertion
+        // point a real DXF TEXT with group 72=1 would need, so that case
+        // still falls through to its own baked curves below rather than
+        // writing a TEXT entity at the wrong point.
+        const bool is_left_text_glyph = glyph != o->user_text.end() && glyph->second == "1" && ann != o->user_text.end() &&
+                                         ann->second == "Text" && (align == o->user_text.end() || align->second == "Left");
+        if (is_left_text_glyph) {
+          if (text_groups_written.count(o->group_id)) break;  // this group's TEXT entity already written
+          DxfTextGlyphSpec g;
+          if (DxfTextGlyphSpecOf(*o, g) && WriteDxfTextIfPlanarXY(w, g, layer, color)) {
+            text_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
+        }
+        WriteDxfCurve(w, *o->curve, layer, color);
+        ++written;
+        break;
+      }
+      case ObjectKind::Mesh:
+        if (o->mesh) { WriteDxfMesh(w, o->mesh->raw(), layer, color); ++written; }
+        break;
+      case ObjectKind::Brep: {
+        if (!o->brep) break;
+        // A solid-fill hatch (drafting::BuildSolidHatch's own trimmed-
+        // planar-brep, tagged Hatch=Solid - see HatchBuild.h) writes as a
+        // real HATCH entity instead of its bare boundary curves, so the
+        // fill survives export, not just the outline. Only for a boundary
+        // lying in a world-XY-parallel plane (WriteDxfHatchSolid's own
+        // documented scope, matching WriteDxfPolyline's LWPOLYLINE branch);
+        // anything else falls through to the ordinary edge-curve export
+        // below, same as before this case existed.
+        auto ht = o->user_text.find("Hatch");
+        if (ht != o->user_text.end() && ht->second == "Solid") {
+          const std::vector<Polyline3> loops = ObjectPolylines(*o);
+          if (!loops.empty() && loops.front().closed && loops.front().pts.size() >= 3) {
+            const std::vector<Point3d>& pts = loops.front().pts;
+            bool planar_xy = true;
+            for (const Point3d& p : pts) if (std::fabs(p.z - pts.front().z) > 1e-9) { planar_xy = false; break; }
+            if (planar_xy) {
+              WriteDxfHatchSolid(w, pts, layer, color);
+              ++written;
+              break;
+            }
+          }
+        }
+        // Exact edge curves: a box becomes twelve LINEs, a cylinder two
+        // CIRCLEs and a seam line.
+        const ON_Brep& b = o->brep->raw();
+        int edges = 0;
+        for (int i = 0; i < b.m_E.Count(); ++i) {
+          const ON_BrepEdge& e = b.m_E[i];
+          if (e.m_edge_index < 0) continue;
+          kernel::NurbsCurve k;
+          if (!CurveFromON(e, k)) continue;
+          WriteDxfCurve(w, k, layer, color);
+          ++edges;
+        }
+        if (edges == 0) for (const Polyline3& pl : ObjectPolylines(*o)) WriteDxfPolyline(w, pl.pts, pl.closed, layer, color);
+        ++written;
+        break;
+      }
+      case ObjectKind::Surface: {
+        // The four boundary curves, exact.
+        if (!o->surface) break;
+        const ON_NurbsSurface& srf = o->surface->raw();
+        int edges = 0;
+        for (int dir = 0; dir < 2; ++dir) {
+          const ON_Interval d = srf.Domain(1 - dir);
+          for (int end = 0; end < 2; ++end) {
+            ON_Curve* c = srf.IsoCurve(dir, end == 0 ? d.Min() : d.Max());
+            if (!c) continue;
+            kernel::NurbsCurve k;
+            if (CurveFromON(*c, k)) { WriteDxfCurve(w, k, layer, color); ++edges; }
+            delete c;
+          }
+        }
+        if (edges == 0) for (const Polyline3& pl : ObjectPolylines(*o)) WriteDxfPolyline(w, pl.pts, pl.closed, layer, color);
+        ++written;
+        break;
+      }
+      case ObjectKind::SubD: {
+        for (const Polyline3& pl : ObjectPolylines(*o)) WriteDxfPolyline(w, pl.pts, pl.closed, layer, color);
+        ++written;
+        break;
+      }
+    }
+  }
+  w.G(0, "ENDSEC");
+  w.G(0, "EOF");
+  if (!os) {
+    error = "Could not write " + path;
+    return false;
+  }
+  if (written == 0) {
+    error = "Nothing exportable in the selection";
+    return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// DXF reader
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct DxfGroup {
+  int code;
+  std::string value;
+};
+
+struct DxfEntity {
+  std::string type;
+  std::vector<DxfGroup> groups;
+
+  bool Has(int code) const {
+    for (const DxfGroup& g : groups) if (g.code == code) return true;
+    return false;
+  }
+  std::string S(int code, const std::string& def = "") const {
+    for (const DxfGroup& g : groups) if (g.code == code) return g.value;
+    return def;
+  }
+  double D(int code, double def = 0.0) const {
+    for (const DxfGroup& g : groups) if (g.code == code) return std::atof(g.value.c_str());
+    return def;
+  }
+  int I(int code, int def = 0) const {
+    for (const DxfGroup& g : groups) if (g.code == code) return std::atoi(g.value.c_str());
+    return def;
+  }
+  std::vector<double> All(int code) const {
+    std::vector<double> v;
+    for (const DxfGroup& g : groups) if (g.code == code) v.push_back(std::atof(g.value.c_str()));
+    return v;
+  }
+  Point3d P(int base, Point3d def = Point3d(0, 0, 0)) const {
+    return Point3d(D(base, def.x), D(base + 10, def.y), D(base + 20, def.z));
+  }
+  Vector3d Normal() const { return Vector3d(D(210, 0), D(220, 0), D(230, 1)); }
+};
+
+// A parsed BLOCKS-section block definition: its own base point (group
+// 10/20/30 on the BLOCK record itself) and member entity records, each
+// paired with its VERTEX run the same way the ENTITIES section's own
+// POLYLINE records are (see ImportDxf's main split loop) - a block can
+// itself contain a POLYLINE just like model space can.
+struct DxfBlockDef {
+  Point3d base{0, 0, 0};
+  std::vector<std::pair<DxfEntity, std::vector<DxfEntity>>> members;
+};
+
+// AutoCAD's "arbitrary axis algorithm": the object coordinate system for
+// an extrusion direction.
+ON_Plane OcsPlane(Point3d origin, Vector3d n) {
+  if (!n.Unitize()) n = Vector3d(0, 0, 1);
+  Vector3d ax = (std::fabs(n.x) < 1.0 / 64.0 && std::fabs(n.y) < 1.0 / 64.0) ? ON_CrossProduct(Vector3d(0, 1, 0), n)
+                                                                              : ON_CrossProduct(Vector3d(0, 0, 1), n);
+  ax.Unitize();
+  Vector3d ay = ON_CrossProduct(n, ax);
+  ay.Unitize();
+  return ON_Plane(origin, ax, ay);
+}
+
+Point3d OcsToWorld(const ON_Plane& ocs, Point3d p) { return ocs.PointAt(p.x, p.y, p.z); }
+
+// A polyline vertex with an optional bulge (tan of a quarter of the arc's
+// included angle) leading to the next vertex.
+struct BulgeVertex {
+  Point3d p;
+  double bulge = 0.0;
+};
+
+// Builds a curve from bulge-polyline vertices: an ON_PolyCurve of lines and
+// exact arcs when any bulge is present, a plain polyline otherwise.
+bool BulgePolylineCurve(const std::vector<BulgeVertex>& verts, bool closed, kernel::NurbsCurve& out) {
+  if (verts.size() < 2) return false;
+  bool any_bulge = false;
+  for (const BulgeVertex& v : verts) if (std::fabs(v.bulge) > 1e-12) any_bulge = true;
+  const size_t n = verts.size();
+  const size_t segs = closed ? n : n - 1;
+  if (!any_bulge) {
+    ON_Polyline pl;
+    for (const BulgeVertex& v : verts) pl.Append(v.p);
+    if (closed) pl.Append(verts.front().p);
+    return CurveFromON(ON_PolylineCurve(pl), out);
+  }
+  ON_PolyCurve pc;
+  for (size_t i = 0; i < segs; ++i) {
+    const Point3d a = verts[i].p;
+    const Point3d b = verts[(i + 1) % n].p;
+    const double bulge = verts[i].bulge;
+    if (a.DistanceTo(b) < 1e-12) continue;
+    if (std::fabs(bulge) < 1e-12) {
+      pc.Append(new ON_LineCurve(a, b));
+      continue;
+    }
+    // Arc midpoint: chord midpoint pushed sideways by the sagitta.
+    const Vector3d chord = b - a;
+    const double d = chord.Length();
+    const double s = bulge * d / 2.0;
+    Vector3d right(chord.y, -chord.x, 0.0);
+    right.Unitize();
+    const Point3d mid = (a + b) * 0.5 + right * s;
+    ON_Arc arc(a, mid, b);
+    if (!arc.IsValid()) { pc.Append(new ON_LineCurve(a, b)); continue; }
+    pc.Append(new ON_ArcCurve(arc));
+  }
+  if (pc.Count() == 0) return false;
+  return CurveFromON(pc, out);
+}
+
+// ---- MTEXT: inline-formatting-code stripping and glyph-outline layout -----
+//
+// Shared by both DXF (DxfImporter::MText below) and DWG (WalkDwgEntities'
+// DWG_TYPE_MTEXT case, further down) - both carry the identical inline
+// markup, just concatenated differently (DXF's repeated group-3 chunks plus
+// a final group-1 chunk vs. DWG's single `text` field).
+
+// Vertical line spacing, as a multiple of cap height. MTEXT's own metric
+// (DXF group 44 / DWG's linespace_factor, a percentage of "3-on-5" font
+// leading) is not read - this is a fixed typographic default instead, the
+// same honest-approximation category as everything else this function
+// documents. 1.5x reads comfortably for the DejaVu/Liberation/FreeSans
+// fallback fonts TextOutline.h uses.
+constexpr double kMTextLineSpacingFactor = 1.5;
+
+// Strips MTEXT's inline formatting codes down to plain text, split into
+// lines on \P (paragraph break - the only code that changes the line
+// count). Handled: \P -> newline, \~ -> a plain space (non-breaking is not
+// a distinction this importer's plain-text output preserves), \\ \{ \} ->
+// literal backslash/brace, { and } (formatting-group grouping) dropped,
+// and every \<letter>...; run (\Cn; colour, \Fname; font, \Hn; height,
+// \Wn; width factor, \Qn; oblique, \Tn; tracking, \An alignment, \Sn/d;
+// stacked fractions, etc.) dropped as one unit up to its terminating ';',
+// or just the two-character code itself when it takes no argument (\L \l
+// \O \o \K \k - underline/overline/strikethrough on/off). This is the
+// tractable, common-case subset: it renders MTEXT as plain, unstyled
+// multi-line text (no per-run colour/font/height override, no real
+// stacked-fraction typesetting, no field-code substitution) - an honest
+// simplification, not a silent wrong-output case. A \S stacked-fraction
+// run's numerator/denominator text is dropped along with its \S...; code
+// (same treatment as every other bracketed formatting code here) rather
+// than approximated as "num/den", since the generic ';'-terminated scan
+// can't tell \S's argument apart from any other code's.
+std::vector<std::string> MTextToLines(const std::string& raw) {
+  std::string plain;
+  plain.reserve(raw.size());
+  for (size_t i = 0; i < raw.size(); ++i) {
+    const char c = raw[i];
+    if (c == '\\' && i + 1 < raw.size()) {
+      const char n = raw[i + 1];
+      if (n == 'P') { plain += '\n'; ++i; continue; }
+      if (n == '~') { plain += ' '; ++i; continue; }
+      if (n == '\\' || n == '{' || n == '}') { plain += n; ++i; continue; }
+      if (std::isalpha(static_cast<unsigned char>(n))) {
+        size_t j = i + 2;
+        while (j < raw.size() && raw[j] != ';' && raw[j] != '\\' && raw[j] != '{' && raw[j] != '}' && raw[j] != '\n') ++j;
+        if (j < raw.size() && raw[j] == ';') { i = j; continue; }
+        // No terminating ';' before the next control character: a
+        // no-argument code (\L \l \O \o \K \k and similar) - drop just the
+        // two characters, keep whatever follows as literal text.
+        ++i;
+        continue;
+      }
+      // An escape this doesn't recognise: drop the backslash, keep the
+      // character literally rather than losing it.
+      plain += n;
+      ++i;
+      continue;
+    }
+    if (c == '{' || c == '}') continue;  // formatting-group braces
+    if (c == '\r') continue;
+    plain += c;
+  }
+  std::vector<std::string> lines;
+  std::string cur;
+  for (char c : plain) {
+    if (c == '\n') { lines.push_back(cur); cur.clear(); }
+    else cur += c;
+  }
+  lines.push_back(cur);
+  return lines;
+}
+
+// Lays out MTEXT's plain (already formatting-stripped) lines as stacked
+// glyph-outline curves, one TextToCurves call per line (same conversion as
+// TEXT import), anchored per `attachment` (1-9, a 3x3 grid: 1=top-left,
+// 2=top-center, 3=top-right, 4=middle-left, ..., 9=bottom-right - DXF group
+// 71 / DWG's identical `attachment` field) relative to `base` (base.origin
+// is the MTEXT insertion point; base's plane already carries the entity's
+// own rotation and any accumulated block-instance transform).
+//
+// What's exact: attachment 1 (top-left, the default and by far the most
+// common) needs zero extra offset in either axis and positions the first
+// line's cap-top exactly at the insertion point, same as TEXT's own
+// baseline-at-insertion-point convention.
+//
+// What's approximated, honestly: the other 8 attachment points position
+// the block using this function's own kMTextLineSpacingFactor-based total
+// height, not real font leading/descender metrics, so vertical placement
+// for middle/bottom attachment can be off by a small fraction of a line
+// versus what AutoCAD would compute. Horizontal centring/right-justifying
+// (attachment columns 2/3/5/6/8/9) aligns each line about its OWN width
+// independently (via TextToCurves' advance_width), not against a shared
+// paragraph-box width computed from the widest line the way AutoCAD
+// justifies a real (possibly word-wrapped) MTEXT paragraph - so a
+// multi-line block with very different line lengths will have each line
+// individually centred/right-aligned rather than sharing one ragged edge.
+// Word-wrap itself (DXF group 41 / DWG rect_width, a reference box width)
+// is not applied at all - every line is exactly the line the \P breaks
+// define, unbounded, matching this session's existing "treat as unbounded"
+// scoping for that field.
+bool BuildMTextGlyphs(const std::vector<std::string>& lines, double height, int attachment, const ON_Plane& base,
+                      std::vector<std::vector<kernel::NurbsCurve>>& out_lines, std::string& font_used) {
+  if (lines.empty() || height <= 0) return false;
+  attachment = std::clamp(attachment, 1, 9);
+  const int col = (attachment - 1) % 3;  // 0 left, 1 center, 2 right
+  const int row = (attachment - 1) / 3;  // 0 top, 1 middle, 2 bottom
+  const double n = static_cast<double>(lines.size());
+  const double total_height = height + (n - 1.0) * height * kMTextLineSpacingFactor;
+  double top_y = 0.0;
+  if (row == 1) top_y = total_height * 0.5;
+  else if (row == 2) top_y = total_height;
+  out_lines.assign(lines.size(), {});
+  bool any = false;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (lines[i].empty()) continue;  // a genuinely blank paragraph: nothing to lay out
+    const double baseline_y = top_y - height - static_cast<double>(i) * height * kMTextLineSpacingFactor;
+    double advance = 0.0;
+    std::vector<kernel::NurbsCurve> glyphs;
+    std::string f;
+    const ON_Plane pl(base.PointAt(0.0, baseline_y), base.xaxis, base.yaxis);
+    if (!TextToCurves(lines[i], height, pl, glyphs, f, &advance) || glyphs.empty()) continue;
+    if (col != 0) {
+      const double dx = col == 1 ? -advance * 0.5 : -advance;
+      const ON_Xform shift = ON_Xform::TranslationTransformation(base.xaxis * dx);
+      for (kernel::NurbsCurve& g : glyphs) g.raw().Transform(shift);
+    }
+    out_lines[i] = std::move(glyphs);
+    font_used = f;
+    any = true;
+  }
+  return any;
+}
+
+// Adds one rebuilt dimension's curves + label text as a group to `doc`,
+// tagged and named exactly like AddAnnotationGroup (commands/
+// annotate_common.h) would - so SelDim finds it (group name match) and
+// UpdateDimensions can rebuild it (the tags in `tags` are exactly what
+// cmd_annotate.cpp's LoadLinearDimLayout/LoadRadiusDimLayout read back, see
+// commands/DimGeometry.h). Shared by DXF DIMENSION import
+// (DxfImporter::Dimension below) and DWG DIMENSION import (WalkDwgEntities,
+// further down this file - a single unnamed namespace spans the whole
+// translation unit, so this is visible there too). No DimRefObj#/
+// DimRefEnd# associativity tags: an imported dimension has no live document
+// object it was measured from (the source geometry it once referenced
+// isn't tracked by handle here), so UpdateDimensions falls back to the
+// static DimP0/DimP1/DimCenter/DimRadiusVal points recorded in `tags` -
+// same as a live dimension whose picked points didn't land on a real
+// object. Returns false if there is nothing to add (degenerate geometry or
+// a font-less environment with no arrow/line curves either, which cannot
+// happen here since BuildLinearDimensionGeometry/BuildRadiusDimensionGeometry
+// always produce at least the line/arrow curves independent of the font).
+bool AddDimensionGroupToDoc(Document& doc, const std::string& kind, int layer,
+                            const std::vector<kernel::NurbsCurve>& curves, const DimGlyphSpec& text,
+                            const std::map<std::string, std::string>& tags) {
+  std::vector<ObjectId> ids;
+  for (const kernel::NurbsCurve& c : curves) {
+    SceneObject o = SceneObject::MakeCurve(c);
+    o.layer_index = layer;
+    o.user_text["Annotation"] = kind;
+    o.user_text["Style"] = "Standard";
+    for (const auto& [k, v] : tags) o.user_text[k] = v;
+    ids.push_back(doc.Add(std::move(o)));
+  }
+  if (!text.text.empty()) {
+    std::vector<kernel::NurbsCurve> glyphs;
+    std::string font_used;
+    double width = 0;
+    if (TextToCurves(text.text, text.height, text.plane, glyphs, font_used, &width)) {
+      const ON_Xform shift = ON_Xform::TranslationTransformation(-text.plane.xaxis * (text.center ? width / 2 : 0));
+      for (kernel::NurbsCurve gc : glyphs) {
+        if (text.center) gc.raw().Transform(shift);
+        SceneObject o = SceneObject::MakeCurve(gc);
+        o.layer_index = layer;
+        o.user_text["Annotation"] = kind;
+        o.user_text["Style"] = "Standard";
+        ids.push_back(doc.Add(std::move(o)));
+      }
+    }
+  }
+  if (ids.empty()) return false;
+  doc.CreateGroup(ids, kind);
+  return true;
+}
+
+// Text height fallback for an imported dimension's label: the document's
+// current annotation style, or twice its grid spacing - same as
+// commands/annotate_common.h's AnnotationTextHeight(CommandContext&), which
+// this has no CommandContext to call. Neither DXF's nor DWG's DIMENSION
+// entity carries the dimension's own text height directly (it lives in the
+// referenced DIMSTYLE, which this importer does not resolve - see
+// DxfImporter::Dimension's comment below), so this is the same honest
+// fallback default used for a document with no annotation style at all.
+// Shared by both DXF and DWG DIMENSION import, same reasoning as
+// AddDimensionGroupToDoc above.
+double ImportDimTextHeight(Document& doc) {
+  const AnnotationStyle& ast = doc.CurrentAnnotationStyle();
+  return ast.text_height > 0 ? ast.text_height : std::max(doc.Settings().grid_spacing * 2.0, 1e-6);
+}
+
+struct DxfImportStats {
+  int curves = 0, points = 0, meshes = 0, hatches = 0, dimensions = 0, skipped = 0, layers = 0, blocks_flattened = 0;
+};
+
+class DxfImporter {
+ public:
+  DxfImporter(Document& doc, DxfImportStats& stats) : doc_(doc), stats_(stats) {}
+
+  // Parsed BLOCKS-section definitions (ImportDxf's own BLOCKS split, see
+  // below) - set once, before any ENTITIES record is fed to Entity(), so
+  // Insert() below can resolve a block by name regardless of where either
+  // happens to land in the file's own section order.
+  void SetBlocks(const std::map<std::string, DxfBlockDef>* blocks) { blocks_ = blocks; }
+
+  // Handle (group 5) -> ENTITIES-section record, built once up front by
+  // ImportDxf (see below) over the same `entities` vector it already holds
+  // fully in memory before any dispatch - lets Leader() below resolve a
+  // LEADER's own group 340 hard reference to its associated MTEXT, the
+  // cross-reference this bullet's own prior pass disclosed as missing.
+  void SetHandles(const std::map<std::string, const DxfEntity*>* handles) { handles_ = handles; }
+
+  int LayerFor(const std::string& raw_name) {
+    const std::string name = Trim(raw_name);
+    auto it = layer_map_.find(name);
+    if (it != layer_map_.end()) return it->second;
+    int idx;
+    if (name.empty() || name == "0") {
+      idx = 0;
+    } else {
+      idx = doc_.FindLayer(name);
+      if (idx < 0) { idx = doc_.AddLayer(name); ++stats_.layers; }
+    }
+    layer_map_[name] = idx;
+    return idx;
+  }
+
+  void DefineLayer(const DxfEntity& e) {
+    const std::string name = Trim(e.S(2));
+    if (name.empty()) return;
+    const int idx = LayerFor(name);
+    Layer& L = doc_.Layers()[static_cast<size_t>(idx)];
+    if (e.Has(420)) L.color = TrueColorToColor(std::strtoll(e.S(420).c_str(), nullptr, 10));
+    else if (e.Has(62)) {
+      const int aci = std::abs(e.I(62));
+      const std::array<int, 3> rgb = AciToRgb(aci);
+      L.color = Color::FromBytes(rgb[0], rgb[1], rgb[2]);
+      if (e.I(62) < 0) L.visible = false;
+    }
+    const int flags = e.I(70);
+    if (flags & 1) L.visible = false;   // frozen
+    if (flags & 4) L.locked = true;
+  }
+
+  void ApplyAttributes(SceneObject& o, const DxfEntity& e) {
+    o.layer_index = LayerFor(e.S(8, "0"));
+    if (e.Has(420)) {
+      o.color_by_layer = false;
+      o.color = TrueColorToColor(std::strtoll(e.S(420).c_str(), nullptr, 10));
+    } else if (e.Has(62)) {
+      const int aci = e.I(62);
+      if (aci > 0 && aci < 256) {
+        const std::array<int, 3> rgb = AciToRgb(aci);
+        o.color_by_layer = false;
+        o.color = Color::FromBytes(rgb[0], rgb[1], rgb[2]);
+      }
+    }
+  }
+
+  void AddCurve(const ON_Curve& c, const DxfEntity& e) {
+    kernel::NurbsCurve k;
+    if (!CurveFromON(c, k)) { ++stats_.skipped; return; }
+    AddCurve(k, e);
+  }
+  void AddCurve(const kernel::NurbsCurve& k, const DxfEntity& e) {
+    SceneObject o = SceneObject::MakeCurve(k);
+    ApplyAttributes(o, e);
+    doc_.Add(std::move(o));
+    ++stats_.curves;
+  }
+
+  void Line(const DxfEntity& e) { AddCurve(ON_LineCurve(e.P(10), e.P(11)), e); }
+
+  void Point(const DxfEntity& e) {
+    SceneObject o = SceneObject::MakePoint(e.P(10));
+    ApplyAttributes(o, e);
+    doc_.Add(std::move(o));
+    ++stats_.points;
+  }
+
+  void Text(const DxfEntity& e) {
+    const std::string value = e.S(1);
+    const double height = e.D(40, 1.0);
+    if (value.empty() || height <= 0) { ++stats_.skipped; return; }
+    const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), e.Normal());
+    ON_Plane pl(OcsToWorld(ocs, e.P(10)), ocs.xaxis, ocs.yaxis);
+    pl.Rotate(ON_DEGREES_TO_RADIANS * e.D(50, 0.0), ocs.zaxis);
+    std::vector<kernel::NurbsCurve> glyphs;
+    std::string font_used;
+    if (!TextToCurves(value, height, pl, glyphs, font_used) || glyphs.empty()) { ++stats_.skipped; return; }
+    for (kernel::NurbsCurve& g : glyphs) {
+      SceneObject o = SceneObject::MakeCurve(g);
+      ApplyAttributes(o, e);
+      o.user_text["Annotation"] = "Text";
+      o.user_text["Style"] = "Standard";
+      o.user_text["Text"] = value;
+      doc_.Add(std::move(o));
+      ++stats_.curves;
+    }
+  }
+
+  // MTEXT: group 1 is the final (<=250-char) text chunk, and any number of
+  // repeated group 3 entries are the earlier chunks in file order -
+  // concatenated (group 3s first, then group 1) they form the full raw
+  // text, inline formatting codes and all. See MTextToLines/BuildMTextGlyphs
+  // above for exactly what's stripped/approximated; converted to real
+  // glyph-outline curves the same way TEXT is (TextToCurves), one call per
+  // plain-text line.
+  void MText(const DxfEntity& e) {
+    std::string raw;
+    for (const DxfGroup& g : e.groups) if (g.code == 3) raw += g.value;
+    raw += e.S(1);
+    const double height = e.D(40, 1.0);
+    if (raw.empty() || height <= 0) { ++stats_.skipped; return; }
+    const std::vector<std::string> lines = MTextToLines(raw);
+    const int attachment = e.I(71, 1);
+    const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), e.Normal());
+    ON_Plane base(OcsToWorld(ocs, e.P(10)), ocs.xaxis, ocs.yaxis);
+    base.Rotate(ON_DEGREES_TO_RADIANS * e.D(50, 0.0), ocs.zaxis);
+    std::vector<std::vector<kernel::NurbsCurve>> per_line;
+    std::string font_used;
+    if (!BuildMTextGlyphs(lines, height, attachment, base, per_line, font_used)) { ++stats_.skipped; return; }
+    // SelText's "Text" user-text filter should match the plain (formatting
+    // stripped) content, not the raw markup - lines rejoined with \n.
+    std::string plain_joined;
+    for (size_t i = 0; i < lines.size(); ++i) { if (i) plain_joined += "\n"; plain_joined += lines[i]; }
+    for (std::vector<kernel::NurbsCurve>& glyphs : per_line) {
+      for (kernel::NurbsCurve& g : glyphs) {
+        SceneObject o = SceneObject::MakeCurve(g);
+        ApplyAttributes(o, e);
+        o.user_text["Annotation"] = "Text";
+        o.user_text["Style"] = "Standard";
+        o.user_text["Text"] = plain_joined;
+        doc_.Add(std::move(o));
+        ++stats_.curves;
+      }
+    }
+  }
+
+  void Circle(const DxfEntity& e) {
+    const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), e.Normal());
+    const Point3d center = OcsToWorld(ocs, e.P(10));
+    ON_Circle c(ON_Plane(center, ocs.xaxis, ocs.yaxis), e.D(40, 1.0));
+    AddCurve(ON_ArcCurve(c), e);
+  }
+
+  void Arc(const DxfEntity& e) {
+    const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), e.Normal());
+    const Point3d center = OcsToWorld(ocs, e.P(10));
+    double a0 = e.D(50, 0.0) * ON_PI / 180.0;
+    double a1 = e.D(51, 360.0) * ON_PI / 180.0;
+    while (a1 <= a0 + 1e-12) a1 += 2.0 * ON_PI;
+    ON_Circle c(ON_Plane(center, ocs.xaxis, ocs.yaxis), e.D(40, 1.0));
+    ON_Arc arc(c, ON_Interval(a0, a1));
+    AddCurve(ON_ArcCurve(arc), e);
+  }
+
+  void Ellipse(const DxfEntity& e) {
+    const Point3d center = e.P(10);
+    const Vector3d major = Vector3d(e.D(11), e.D(21), e.D(31));
+    Vector3d n = e.Normal();
+    if (!n.Unitize()) n = Vector3d(0, 0, 1);
+    const double a = major.Length();
+    const double ratio = e.D(40, 1.0);
+    if (a < 1e-12 || ratio <= 0) { ++stats_.skipped; return; }
+    Vector3d x = major; x.Unitize();
+    Vector3d y = ON_CrossProduct(n, x); y.Unitize();
+    const ON_Plane plane(center, x, y);
+    double t0 = e.D(41, 0.0), t1 = e.D(42, 2.0 * ON_PI);
+    while (t1 <= t0 + 1e-12) t1 += 2.0 * ON_PI;
+    if (t1 - t0 > 2.0 * ON_PI) t1 = t0 + 2.0 * ON_PI;
+    // A circular arc of radius `a` in the ellipse plane, then squashed along
+    // the minor axis: NURBS geometry is exact under affine maps, so this is
+    // the DXF parameterisation exactly.
+    ON_Arc arc(ON_Circle(plane, a), ON_Interval(t0, t1));
+    ON_NurbsCurve nc;
+    if (ON_ArcCurve(arc).GetNurbForm(nc) <= 0) { ++stats_.skipped; return; }
+    // Note: ON_Xform::Scale(plane, x, y, z) forwards its factors as
+    // (x, z, y) in OpenNURBS 8, so use the underlying factory directly.
+    const ON_Xform squash = ON_Xform::ScaleTransformation(plane, 1.0, ratio, 1.0);
+    nc.Transform(squash);
+    kernel::NurbsCurve k;
+    k.raw() = nc;
+    AddCurve(k, e);
+  }
+
+  void Spline(const DxfEntity& e) {
+    const int flags = e.I(70);
+    const int degree = std::max(1, e.I(71, 3));
+    std::vector<Point3d> cvs;
+    std::vector<Point3d> fit;
+    std::vector<double> knots, weights;
+    for (const DxfGroup& g : e.groups) {
+      const double v = std::atof(g.value.c_str());
+      switch (g.code) {
+        case 10: cvs.push_back(Point3d(v, 0, 0)); break;
+        case 20: if (!cvs.empty()) cvs.back().y = v; break;
+        case 30: if (!cvs.empty()) cvs.back().z = v; break;
+        case 11: fit.push_back(Point3d(v, 0, 0)); break;
+        case 21: if (!fit.empty()) fit.back().y = v; break;
+        case 31: if (!fit.empty()) fit.back().z = v; break;
+        case 40: knots.push_back(v); break;
+        case 41: weights.push_back(v); break;
+        default: break;
+      }
+    }
+    if (cvs.size() < 2) {
+      if (fit.size() >= 2) {
+        ON_Polyline pl;
+        for (const Point3d& p : fit) pl.Append(p);
+        AddCurve(ON_PolylineCurve(pl), e);
+      } else {
+        ++stats_.skipped;
+      }
+      return;
+    }
+    const int order = std::min(degree + 1, static_cast<int>(cvs.size()));
+    const bool rational = weights.size() == cvs.size();
+    ON_NurbsCurve nc;
+    nc.Create(3, rational, order, static_cast<int>(cvs.size()));
+    for (size_t i = 0; i < cvs.size(); ++i) {
+      if (rational) {
+        // ON_NurbsCurve::SetCV(ON_3dPoint) followed by SetWeight() does NOT
+        // do what it looks like it does: SetCV(ON_3dPoint) always stamps the
+        // homogeneous weight component to 1 first, and SetWeight() then
+        // overwrites just that component without rescaling x/y/z - so the
+        // pair silently rescales the point by 1/weight instead of setting a
+        // weighted control point. Feed the already-weighted homogeneous
+        // coordinates directly (SetCV(ON_4dPoint) stores them as-is on a
+        // rational curve) so a weight != 1 lands on the exact control point
+        // DXF specified, not on a corrupted one.
+        const double w = weights[i];
+        const Point3d& p = cvs[i];
+        nc.SetCV(static_cast<int>(i), ON_4dPoint(p.x * w, p.y * w, p.z * w, w));
+      } else {
+        nc.SetCV(static_cast<int>(i), cvs[i]);
+      }
+    }
+    // DXF stores cv_count + order knots (clamped); OpenNURBS drops the two
+    // superfluous end knots.
+    const int want = nc.KnotCount();
+    if (static_cast<int>(knots.size()) == want + 2) {
+      for (int i = 0; i < want; ++i) nc.SetKnot(i, knots[static_cast<size_t>(i + 1)]);
+    } else if (static_cast<int>(knots.size()) == want) {
+      for (int i = 0; i < want; ++i) nc.SetKnot(i, knots[static_cast<size_t>(i)]);
+    } else if ((flags & 2) && cvs.size() > static_cast<size_t>(order)) {
+      nc.MakePeriodicUniformKnotVector();
+    } else {
+      nc.MakeClampedUniformKnotVector();
+    }
+    if (!nc.IsValid()) {
+      nc.MakeClampedUniformKnotVector();
+      if (!nc.IsValid()) { ++stats_.skipped; return; }
+    }
+    kernel::NurbsCurve k;
+    k.raw() = nc;
+    AddCurve(k, e);
+  }
+
+  void LwPolyline(const DxfEntity& e) {
+    const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), e.Normal());
+    const double elevation = e.D(38, 0.0);
+    std::vector<BulgeVertex> verts;
+    for (const DxfGroup& g : e.groups) {
+      const double v = std::atof(g.value.c_str());
+      if (g.code == 10) { BulgeVertex bv; bv.p = Point3d(v, 0, elevation); verts.push_back(bv); }
+      else if (g.code == 20 && !verts.empty()) verts.back().p.y = v;
+      else if (g.code == 42 && !verts.empty()) verts.back().bulge = v;
+    }
+    const bool closed = (e.I(70) & 1) != 0;
+    kernel::NurbsCurve k;
+    if (!BulgePolylineCurve(verts, closed, k)) { ++stats_.skipped; return; }
+    if (e.Has(210)) {
+      ON_Xform x;
+      x.Rotation(ON_Plane(ON_origin, ON_xaxis, ON_yaxis), ocs);
+      k.raw().Transform(x);
+    }
+    AddCurve(k, e);
+  }
+
+  // POLYLINE + VERTEX... + SEQEND. Handles 2D/3D polylines and polyface meshes.
+  void Polyline(const DxfEntity& e, const std::vector<DxfEntity>& vertices) {
+    const int flags = e.I(70);
+    if (flags & 64) {  // polyface mesh
+      ON_Mesh m;
+      for (const DxfEntity& v : vertices) {
+        const int vf = v.I(70);
+        if ((vf & 128) && !(vf & 64)) {
+          int idx[4] = {std::abs(v.I(71)), std::abs(v.I(72)), std::abs(v.I(73)), std::abs(v.I(74))};
+          if (idx[0] <= 0 || idx[1] <= 0 || idx[2] <= 0) continue;
+          ON_MeshFace f;
+          f.vi[0] = idx[0] - 1; f.vi[1] = idx[1] - 1; f.vi[2] = idx[2] - 1;
+          f.vi[3] = idx[3] > 0 ? idx[3] - 1 : f.vi[2];
+          bool ok = true;
+          for (int i : f.vi) if (i < 0 || i >= m.VertexCount()) ok = false;
+          if (ok) m.m_F.Append(f);
+        } else if (vf & 64) {
+          m.m_V.Append(ON_3fPoint(v.P(10)));
+        }
+      }
+      if (m.FaceCount() == 0) { ++stats_.skipped; return; }
+      m.ComputeVertexNormals();
+      kernel::Mesh k;
+      k.raw() = m;
+      SceneObject o = SceneObject::MakeMesh(k);
+      ApplyAttributes(o, e);
+      doc_.Add(std::move(o));
+      ++stats_.meshes;
+      return;
+    }
+    if (flags & 16) { ++stats_.skipped; return; }  // polygon mesh: not supported
+    std::vector<BulgeVertex> verts;
+    for (const DxfEntity& v : vertices) {
+      const int vf = v.I(70);
+      if (vf & (16 | 128)) continue;  // spline frame control points / face records
+      BulgeVertex bv;
+      bv.p = v.P(10);
+      bv.bulge = v.D(42, 0.0);
+      verts.push_back(bv);
+    }
+    kernel::NurbsCurve k;
+    if (!BulgePolylineCurve(verts, (flags & 1) != 0, k)) { ++stats_.skipped; return; }
+    if (!(flags & 8) && e.Has(210)) {
+      ON_Xform x;
+      x.Rotation(ON_Plane(ON_origin, ON_xaxis, ON_yaxis), OcsPlane(Point3d(0, 0, 0), e.Normal()));
+      k.raw().Transform(x);
+    }
+    AddCurve(k, e);
+  }
+
+  void Face(const DxfEntity& e) {
+    const int layer = LayerFor(e.S(8, "0"));
+    ON_Mesh& m = faces_[layer];
+    const Point3d p[4] = {e.P(10), e.P(11), e.P(12), e.Has(13) ? e.P(13) : e.P(12)};
+    const int base = m.VertexCount();
+    ON_MeshFace f;
+    for (int i = 0; i < 3; ++i) { m.m_V.Append(ON_3fPoint(p[i])); f.vi[i] = base + i; }
+    if (p[3].DistanceTo(p[2]) > 1e-12) { m.m_V.Append(ON_3fPoint(p[3])); f.vi[3] = base + 3; }
+    else f.vi[3] = f.vi[2];
+    m.m_F.Append(f);
+  }
+
+  void FlushFaces() {
+    for (auto& [layer, m] : faces_) {
+      if (m.FaceCount() == 0) continue;
+      m.CombineIdenticalVertices(true, true);
+      m.ComputeVertexNormals();
+      kernel::Mesh k;
+      k.raw() = m;
+      SceneObject o = SceneObject::MakeMesh(k);
+      o.layer_index = layer;
+      doc_.Add(std::move(o));
+      ++stats_.meshes;
+    }
+    faces_.clear();
+  }
+
+  // HATCH: real import for the common, tractable case only - one boundary
+  // path of type "polyline" (a closed sequence of straight/bulge-arc
+  // vertices, group code 92 bit 0x2), which is what the overwhelming
+  // majority of real-world HATCH entities use (matching what ExportDxf's
+  // own WriteDxfHatchSolid/WriteDxfHatchPattern now write - both solid and
+  // pattern fills - for exactly this single-polyline-loop case). Group
+  // codes 10/20/42/72/73/92/93 repeat per vertex/path, so unlike every
+  // other entity here this can't be read with DxfEntity::S()/D()/I()
+  // (first-occurrence lookups) - it walks e.groups in file order like a
+  // small state machine instead. Pattern-fill definition-line data
+  // (78/53/43/44/45/46/79/49, written by WriteDxfHatchPattern for a real
+  // third-party reader's benefit) is deliberately not read back here: the
+  // pattern NAME (group 2) is enough to re-resolve the exact same
+  // HatchLibrary entry this app itself wrote the lines from.
+  //
+  // Explicitly NOT handled, detected and skipped rather than guessed at:
+  //   - more than one boundary path (islands/holes: group code 91 != 1)
+  //   - edge-type boundaries (LINE/ARC/ELLIPSE/SPLINE edge records instead
+  //     of a polyline vertex list - group 92 without bit 0x2)
+  // Both fall into the ordinary skipped-entity count, same as DIMENSION/
+  // SPLINE-boundary elsewhere in this importer.
+  void Hatch(const DxfEntity& e) {
+    if (e.I(91, 0) != 1) { ++stats_.skipped; return; }  // multiple loops/islands: unsupported
+    size_t i = 0;
+    bool is_polyline = false;
+    for (; i < e.groups.size(); ++i) {
+      if (e.groups[i].code == 92) { is_polyline = (std::atoi(e.groups[i].value.c_str()) & 2) != 0; ++i; break; }
+    }
+    if (!is_polyline) { ++stats_.skipped; return; }  // edge-type (arc/spline) boundary: unsupported
+    bool has_bulge = false;
+    int nverts = -1;
+    for (; i < e.groups.size(); ++i) {
+      const DxfGroup& g = e.groups[i];
+      if (g.code == 72) has_bulge = std::atoi(g.value.c_str()) != 0;
+      else if (g.code == 93) { nverts = std::atoi(g.value.c_str()); ++i; break; }
+      else if (g.code == 10) break;  // no explicit 93 before the vertices: malformed, bail below
+    }
+    if (nverts < 3) { ++stats_.skipped; return; }
+    std::vector<BulgeVertex> verts;
+    for (; i < e.groups.size() && static_cast<int>(verts.size()) < nverts; ++i) {
+      if (e.groups[i].code != 10) continue;
+      BulgeVertex bv;
+      bv.p = Point3d(std::atof(e.groups[i].value.c_str()), 0, 0);
+      if (i + 1 < e.groups.size() && e.groups[i + 1].code == 20) { bv.p.y = std::atof(e.groups[i + 1].value.c_str()); ++i; }
+      if (has_bulge && i + 1 < e.groups.size() && e.groups[i + 1].code == 42) { bv.bulge = std::atof(e.groups[i + 1].value.c_str()); ++i; }
+      verts.push_back(bv);
+    }
+    if (static_cast<int>(verts.size()) != nverts) { ++stats_.skipped; return; }
+    kernel::NurbsCurve boundary;
+    if (!BulgePolylineCurve(verts, /*closed=*/true, boundary)) { ++stats_.skipped; return; }
+    const int layer = LayerFor(e.S(8, "0"));
+    const double tol = doc_.Settings().absolute_tolerance;
+    bool built = false;
+    if (e.I(70, 0) != 0) {  // solid fill flag
+      built = drafting::BuildSolidHatch(doc_, boundary, kNoObject, layer, tol);
+    } else {
+      const drafting::HatchPattern* pat = drafting::HatchLibrary::Instance().Find(e.S(2, "ANSI31"));
+      if (!pat) pat = drafting::HatchLibrary::Instance().Find("ANSI31");
+      if (pat) {
+        double scale = e.D(41, 1.0);
+        if (scale <= 0) scale = 1.0;
+        built = drafting::BuildPatternHatch(doc_, *pat, boundary, kNoObject, layer, tol, scale, e.D(52, 0.0), doc_.Settings().hatch_base);
+      }
+    }
+    if (!built) { ++stats_.skipped; return; }
+    ++stats_.hatches;
+  }
+
+  // DIMENSION: rebuilds a real, live/re-measurable Dino8 dimension
+  // (BuildLinearDimensionGeometry/BuildRadiusDimensionGeometry, commands/
+  // DimGeometry.h - the exact point-to-curve math cmd_annotate.cpp's own
+  // live Dim/DimAligned/DimRadius/DimDiameter commands use) from the
+  // entity's semantic definition points, rather than copying its
+  // pre-rendered anonymous block (group 2) - a rebuilt dimension is
+  // selectable via SelDim and re-measurable via UpdateDimensions, which
+  // frozen block geometry could never be.
+  //
+  // Group-code -> point mapping verified against LibreDWG's dwg.spec (the
+  // same struct layouts drive both its DWG encode/decode AND its DXF ascii
+  // export, so they are authoritative for what a real DXF file contains -
+  // see DWG_ENTITY(DIMENSION_LINEAR/ALIGNED/RADIUS/DIAMETER) in
+  // build/_deps/libredwg-src/src/dwg.spec):
+  //   type 0 (rotated/linear): xline1_pt=13/23/33, xline2_pt=14/24/34,
+  //     def_pt=10/20/30 (a point ON the dimension line - exactly what the
+  //     live DimLinear command's third "dimension line location" pick
+  //     supplies), dim_rotation=50 (degrees, 0 default = horizontal).
+  //   type 1 (aligned): same 13/14/10, but group 50 is the extension-line
+  //     obliquing angle instead of a dimension-line rotation.
+  //   type 4 (radius): def_pt=10/20/30 is the arc/circle CENTER,
+  //     first_arc_pt=15/25/35 is the point on the circle the leader/
+  //     dimension line touches, leader_len=40 is the stand-off beyond it.
+  //   type 3 (diameter): first_arc_pt=15/25/35 is one point on the circle,
+  //     def_pt=10/20/30 is "far_chord_pt" - the point diametrically
+  //     opposite (per dwg.spec's own comment on DIMENSION_DIAMETER's def_pt)
+  //     - so center = midpoint(15,10), radius = half their distance;
+  //     leader_len=40 same meaning as radius.
+  //   type 5 (3-point angular, DIMENSION_ANG3PT): xline1_pt=13/23/33 and
+  //     xline2_pt=14/24/34 are the two direction points, center_pt=15/25/35
+  //     is the measured VERTEX (despite its name - see dwg.spec's own
+  //     DWG_ENTITY(DIMENSION_ANG3PT)), def_pt=10/20/30 is a point ON the
+  //     actual rendered dimension arc - used only to pick which of the two
+  //     complementary sweeps between the direction points was drawn, see
+  //     below.
+  //   type 6 (ordinate, DIMENSION_ORDINATE): feature_location_pt=13/23/33
+  //     is the measured point; group 70's bit 0x80 is set when the
+  //     ordinate measures the X axis, clear for Y (LibreDWG's own
+  //     dwg_add_DIMENSION_ORDINATE stores this cleanly as a plain flag2
+  //     0/1 field; its COMMON_ENTITY_DIMENSION decoder folds that bit into
+  //     the shared flag/group-70 value at mask 0x80 - the mask the
+  //     decoder's own code actually uses, not the "set bit 6" (0x40) its
+  //     own comment claims, cross-checked against this importer's own real
+  //     round trip, see WriteDxfOrdinateDimension's comment). Unlike every
+  //     other type here, there is no DXF group anywhere in
+  //     DIMENSION_ORDINATE for the "base" point the measurement is
+  //     actually relative to - see below.
+  // All DIMENSION point groups are full 3D (13/23/33 etc., unlike LINE/
+  // TEXT/CIRCLE's OCS-relative 10/20/30) so they need no extrusion-plane
+  // transform to read; only the *orientation* used to build arrows/text
+  // (which side is "up") comes from the extrusion normal (group 210), same
+  // OcsPlane helper as every other entity here.
+  //
+  // Explicitly NOT rebuilt, detected and skipped rather than guessed at:
+  //   - type 0 with an oblique (not ~0/~90 degree) dim_rotation: Dino8's own
+  //     DimLinear only models horizontal/vertical dimension lines, so an
+  //     arbitrarily rotated one has no faithful representation to rebuild.
+  //   - type 5 (3-point angular) whose def_pt names the REFLEX (>180 degree)
+  //     complementary sweep between xline1_pt/xline2_pt rather than the
+  //     <=180 degree one: Dino8's own DimAngle (BuildAngleDimensionGeometry,
+  //     commands/DimGeometry.h) always normalizes to the <=180 degree sweep
+  //     between its two direction points and has no way to draw the reflex
+  //     one instead, so rebuilding from the raw points alone would silently
+  //     show the wrong (complementary) angle - detected below by checking
+  //     def_pt's own angular position against that same normalization, not
+  //     guessed at.
+  //   - type 2 (2-line angular, DIMENSION_ANG2LN): a fundamentally different
+  //     point model (two full lines, no vertex point at all - dwg.spec's own
+  //     DWG_ENTITY(DIMENSION_ANG2LN) has xline1start_pt/xline1end_pt/
+  //     xline2start_pt/xline2end_pt/def_pt, none of which is "the vertex")
+  //     that doesn't reduce to Dino8's own vertex+p1+p2 DimAngle shape at
+  //     all, not just an ambiguity to resolve.
+  //   - ordinate dimensions (type 6) are rebuilt (see below), but always
+  //     under the assumption their own base point is world (0,0,0) - the
+  //     only base DIMENSION_ORDINATE's own fields can represent at all
+  //     (AutoCAD's own ordinate dimension always measures from whatever
+  //     UCS was active when placed, which the entity itself never
+  //     records); a real file measuring from some other base reads back
+  //     with the wrong offset, an honest format limitation rather than a
+  //     guess this importer could get right with more code.
+  // The first three fall into the ordinary skipped-entity count.
+  void Dimension(const DxfEntity& e) {
+    const int type = e.I(70) & 7;
+    const double h = ImportDimTextHeight(doc_);
+    const int layer = LayerFor(e.S(8, "0"));
+    const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), e.Normal());
+    if (type == 0 || type == 1) {
+      const Point3d p0 = e.P(13), p1 = e.P(14), loc = e.P(10);
+      if (p0.DistanceTo(p1) < 1e-9) { ++stats_.skipped; return; }
+      LinearDimLayout L;
+      L.plane = ON_Plane(p0, ocs.xaxis, ocs.yaxis);
+      L.aligned = (type == 1);
+      if (!L.aligned) {
+        const double rot = std::fmod(std::fabs(e.D(50, 0.0)), 180.0);
+        const bool near0 = rot < 1.0 || rot > 179.0;
+        const bool near90 = rot > 89.0 && rot < 91.0;
+        if (!near0 && !near90) { ++stats_.skipped; return; }  // oblique rotation: not representable, see comment above
+        L.horizontal = near0;
+        double ua, va, ub, vb, ul, vl;
+        L.plane.ClosestPointTo(p0, &ua, &va); L.plane.ClosestPointTo(p1, &ub, &vb); L.plane.ClosestPointTo(loc, &ul, &vl);
+        L.offset = L.horizontal ? vl : ul;
+      } else {
+        Vector3d n = ON_CrossProduct(L.plane.zaxis, Vector3d(p1 - p0));
+        n.Unitize();
+        L.offset = ON_DotProduct(loc - p0, n);
+      }
+      std::vector<kernel::NurbsCurve> curves;
+      DimGlyphSpec text;
+      std::map<std::string, std::string> tags;
+      if (!BuildLinearDimensionGeometry(p0, p1, L, h, curves, text, tags)) { ++stats_.skipped; return; }
+      if (AddDimensionGroupToDoc(doc_, L.aligned ? "DimAligned" : "DimLinear", layer, curves, text, tags)) ++stats_.dimensions;
+      else ++stats_.skipped;
+      return;
+    }
+    if (type == 3 || type == 4) {
+      const bool diameter = (type == 3);
+      const Point3d p10 = e.P(10), arc_pt = e.P(15);
+      Point3d center; double radius;
+      if (diameter) { center = (p10 + arc_pt) / 2.0; radius = p10.DistanceTo(arc_pt) / 2.0; }
+      else { center = p10; radius = p10.DistanceTo(arc_pt); }
+      if (radius < 1e-9) { ++stats_.skipped; return; }
+      RadiusDimLayout L;
+      L.diameter = diameter;
+      L.plane = ON_Plane(center, ocs.xaxis, ocs.yaxis);
+      L.dir = Vector3d(arc_pt - center);
+      L.extra = e.D(40, 0.0);
+      std::vector<kernel::NurbsCurve> curves;
+      DimGlyphSpec text;
+      std::map<std::string, std::string> tags;
+      if (!BuildRadiusDimensionGeometry(center, radius, L, h, curves, text, tags)) { ++stats_.skipped; return; }
+      if (AddDimensionGroupToDoc(doc_, diameter ? "DimDiameter" : "DimRadius", layer, curves, text, tags)) ++stats_.dimensions;
+      else ++stats_.skipped;
+      return;
+    }
+    if (type == 5) {
+      const Point3d def_pt = e.P(10), vertex = e.P(15), p1 = e.P(13), p2 = e.P(14);
+      Vector3d va = p1 - vertex, vb = p2 - vertex, vd = def_pt - vertex;
+      if (!va.Unitize() || !vb.Unitize() || !vd.Unitize()) { ++stats_.skipped; return; }
+      const ON_Plane pl(vertex, ocs.xaxis, ocs.yaxis);
+      double a0 = std::atan2(ON_DotProduct(va, pl.yaxis), ON_DotProduct(va, pl.xaxis));
+      double a1 = std::atan2(ON_DotProduct(vb, pl.yaxis), ON_DotProduct(vb, pl.xaxis));
+      if (a1 < a0) std::swap(a0, a1);
+      if (a1 - a0 > ON_PI) { std::swap(a0, a1); a1 += 2 * ON_PI; }
+      double ad = std::atan2(ON_DotProduct(vd, pl.yaxis), ON_DotProduct(vd, pl.xaxis));
+      while (ad < a0 - 1e-6) ad += 2 * ON_PI;
+      if (ad > a1 + 1e-6) { ++stats_.skipped; return; }  // def_pt names the reflex sweep - not representable, see comment above
+      std::vector<kernel::NurbsCurve> curves;
+      DimGlyphSpec text;
+      std::map<std::string, std::string> tags;
+      if (!BuildAngleDimensionGeometry(vertex, p1, p2, pl, h, curves, text, tags)) { ++stats_.skipped; return; }
+      if (AddDimensionGroupToDoc(doc_, "DimAngle", layer, curves, text, tags)) ++stats_.dimensions;
+      else ++stats_.skipped;
+      return;
+    }
+    if (type == 6) {
+      // Base point is always assumed to be world (0,0,0) - neither DXF nor
+      // DWG's own DIMENSION_ORDINATE stores an explicit base point at all,
+      // see WriteDxfOrdinateDimension's own comment for the full rationale.
+      // That writer only ever produces a file consistent with this
+      // assumption, and a real AutoCAD-authored one is, by the format's
+      // own design, always relative to whatever UCS was active - which for
+      // a file with no other context this importer has no way to recover
+      // except by assuming world origin too.
+      const bool use_x = (e.I(70) & 0x80) != 0;
+      const Point3d feature = e.P(13);
+      const ON_Plane pl(Point3d(0, 0, 0), ocs.xaxis, ocs.yaxis);
+      std::vector<kernel::NurbsCurve> curves;
+      DimGlyphSpec text;
+      std::map<std::string, std::string> tags;
+      if (!BuildOrdinateDimensionGeometry(Point3d(0, 0, 0), feature, use_x ? 'X' : 'Y', pl, h, curves, text, tags)) { ++stats_.skipped; return; }
+      if (AddDimensionGroupToDoc(doc_, "DimOrdinate", layer, curves, text, tags)) ++stats_.dimensions;
+      else ++stats_.skipped;
+      return;
+    }
+    ++stats_.skipped;  // type-2 angular, or a type-5 reflex sweep: not representable, see comment above
+  }
+
+  // A real LEADER's own written label, if any, is never on the LEADER
+  // entity itself: group 340 is a hard handle reference to a separate
+  // MTEXT/TOLERANCE/INSERT annotation entity elsewhere in the file - the
+  // exact cross-reference this bullet's own prior pass disclosed as
+  // missing ("which this importer does not cross-reference"). Resolved
+  // here via `handles_` (set by ImportDxf below over the same ENTITIES
+  // records it already holds fully in memory before any dispatch), for
+  // the MTEXT case only - the common one, and the one this reader already
+  // knows how to pull plain text out of (the same group-3-then-group-1
+  // concatenation MText() uses, immediately below). TOLERANCE (a feature-
+  // control-frame symbol, not text) and INSERT (a block placement, not
+  // text) are left unhandled, and a handle this file's own ENTITIES
+  // section doesn't contain (an external reference, or simply absent)
+  // resolves to nothing - both honestly declined rather than guessed at.
+  // Only the first formatting-stripped line is used: a Leader's own label
+  // here is one baseline of glyph curves (TextToCurves, via
+  // BuildLeaderGeometry/AddDimensionGroupToDoc below), not a real
+  // multi-line layout the way BuildMTextGlyphs gives a standalone MTEXT.
+  std::string AssociatedLeaderLabel(const DxfEntity& e) const {
+    if (!handles_) return "";
+    const std::string handle = Upper(Trim(e.S(340)));
+    if (handle.empty()) return "";
+    const auto it = handles_->find(handle);
+    if (it == handles_->end() || it->second->type != "MTEXT") return "";
+    const DxfEntity& m = *it->second;
+    std::string raw;
+    for (const DxfGroup& g : m.groups) if (g.code == 3) raw += g.value;
+    raw += m.S(1);
+    if (raw.empty()) return "";
+    const std::vector<std::string> lines = MTextToLines(raw);
+    return lines.empty() ? "" : lines[0];
+  }
+
+  // LEADER: rebuilds a real, live/re-measurable Dino8 Leader
+  // (BuildLeaderGeometry, commands/DimGeometry.h - the exact point-to-curve
+  // math the live Leader command uses) from the entity's own point list,
+  // the inverse of WriteDxfLeader above (that function's comment has the
+  // full dwg.spec-verified field layout this mirrors: group 76 is the
+  // point count, followed by one real 10/20/30 triple per point, the same
+  // repeated-group-code convention this file's own Spline() already reads
+  // for control points). Unlike DIMENSION, there is no ambiguity to decode
+  // here - a point list is a point list - so every real LEADER with 2+
+  // points is accepted; `annot_type`=73 (text/tolerance/insert/none) is
+  // read but not acted on - AssociatedLeaderLabel above resolves the real
+  // associated-annotation handle (group 340) directly instead, which is
+  // authoritative regardless of what `annot_type` claims.
+  void Leader(const DxfEntity& e) {
+    const double h = ImportDimTextHeight(doc_);
+    const int layer = LayerFor(e.S(8, "0"));
+    const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), e.Normal());
+    std::vector<Point3d> pts;
+    for (const DxfGroup& g : e.groups) {
+      const double v = std::atof(g.value.c_str());
+      switch (g.code) {
+        case 10: pts.push_back(Point3d(v, 0, 0)); break;
+        case 20: if (!pts.empty()) pts.back().y = v; break;
+        case 30: if (!pts.empty()) pts.back().z = v; break;
+        default: break;
+      }
+    }
+    if (pts.size() < 2) { ++stats_.skipped; return; }
+    const ON_Plane pl(pts[0], ocs.xaxis, ocs.yaxis);
+    const Point3d tip = pts[0];
+    std::vector<Vector3d> rest;
+    for (size_t i = 1; i < pts.size(); ++i) rest.push_back(pts[i] - tip);
+    std::vector<kernel::NurbsCurve> curves;
+    DimGlyphSpec text;
+    std::map<std::string, std::string> tags;
+    if (!BuildLeaderGeometry(tip, rest, pl, h, AssociatedLeaderLabel(e), curves, text, tags)) { ++stats_.skipped; return; }
+    if (AddDimensionGroupToDoc(doc_, "Leader", layer, curves, text, tags)) ++stats_.dimensions;
+    else ++stats_.skipped;
+  }
+
+  // INSERT: flattened into transformed copies of the referenced BLOCKS-
+  // section definition's own member entities, re-entering Entity() for each
+  // one exactly like the DWG importer's WalkDwgEntities does for a DWG
+  // INSERT (see that function's own comment) - same "instance is a
+  // transformed copy, not a live reference" model InstantiateBlock
+  // (cmd_drafting.cpp) already uses for blocks defined in-app. The new
+  // copies are tagged Block/BlockInsert and grouped the same way a static
+  // block placed in-app is, so a block authored by a real, independent CAD
+  // tool is selectable (SelBlockInstance), explodable (ExplodeBlock) and
+  // listed in the Block Manager panel once reopened here, not just
+  // flattened geometry with no record it was ever a block. depth_ guards
+  // against a malformed or self-referential file nesting INSERTs forever,
+  // the same bound WalkDwgEntities uses.
+  void Insert(const DxfEntity& e) {
+    if (!blocks_ || depth_ >= 16) { ++stats_.skipped; return; }
+    const std::string name = Trim(e.S(2));
+    auto bit = blocks_->find(name);
+    if (bit == blocks_->end()) { ++stats_.skipped; return; }
+    const DxfBlockDef& block = bit->second;
+    // Register a real Document::Blocks() definition the first time this
+    // block name is placed, the same "selectable, explodable, listed in
+    // Block Manager" contract Load3dm's own ON_InstanceRef handling gives a
+    // .3dm-authored block (File3dm.cpp): the members are run through
+    // Entity() once more at depth_+1 into a scratch range, captured as the
+    // definition's own (local-coordinate, untransformed) objects, then
+    // removed again - they are a template, not scene content at the
+    // insertion point computed below. stats_ is snapshotted and restored
+    // around this: Entity() bumps stats_.curves/points/meshes/skipped as a
+    // side effect of building each member, and those counts belong to the
+    // real per-instance placement below, not to a definition template that
+    // never ends up in the document - without this restore, the file's own
+    // summary (DXF: N curves...) would overcount by one definition's worth
+    // of members on whichever instance happens to come first.
+    if (!doc_.FindBlock(name)) {
+      const DxfImportStats before_stats = stats_;
+      const size_t before_def = doc_.Objects().size();
+      ++depth_;
+      for (const auto& member : block.members) Entity(member.first, member.second);
+      --depth_;
+      stats_ = before_stats;
+      BlockDefinition def;
+      def.name = name;
+      def.base = block.base;
+      std::vector<ObjectId> template_ids;
+      for (size_t i = before_def; i < doc_.Objects().size(); ++i) {
+        SceneObject copy = doc_.Objects()[i];
+        copy.id = kNoObject;
+        copy.selected = false;
+        def.objects.push_back(std::move(copy));
+        template_ids.push_back(doc_.Objects()[i].id);
+      }
+      for (ObjectId id : template_ids) doc_.Remove(id);
+      if (!def.objects.empty()) doc_.Blocks().push_back(std::move(def));
+    }
+    const Point3d ins = e.P(10);
+    const double sx = e.D(41, 1.0), sy = e.D(42, 1.0), sz = e.D(43, 1.0);
+    const ON_Xform to_origin = ON_Xform::TranslationTransformation(Point3d(0, 0, 0) - block.base);
+    const ON_Xform scale = ON_Xform::DiagonalTransformation(sx, sy, sz);
+    ON_Xform rot = ON_Xform::IdentityTransformation;
+    rot.Rotation(ON_DEGREES_TO_RADIANS * e.D(50, 0.0), ON_zaxis, ON_origin);
+    const ON_Xform to_ins = ON_Xform::TranslationTransformation(ins - Point3d(0, 0, 0));
+    const ON_Xform xf = to_ins * rot * scale * to_origin;
+    const size_t before = doc_.Objects().size();
+    ++depth_;
+    for (const auto& member : block.members) Entity(member.first, member.second);
+    --depth_;
+    std::vector<ObjectId> new_ids;
+    for (size_t i = before; i < doc_.Objects().size(); ++i) {
+      SceneObject& o = doc_.Objects()[i];
+      o.Transform(xf);
+      o.user_text["Block"] = name;
+      o.user_text["BlockInsert"] = std::to_string(ins.x) + "," + std::to_string(ins.y) + "," + std::to_string(ins.z);
+      new_ids.push_back(o.id);
+    }
+    if (new_ids.empty()) { ++stats_.skipped; return; }
+    doc_.CreateGroup(new_ids, name);
+    ++stats_.blocks_flattened;
+  }
+
+  void Entity(const DxfEntity& e, const std::vector<DxfEntity>& vertices) {
+    const std::string& t = e.type;
+    if (t == "LINE") Line(e);
+    else if (t == "POINT") Point(e);
+    else if (t == "CIRCLE") Circle(e);
+    else if (t == "ARC") Arc(e);
+    else if (t == "TEXT") Text(e);
+    else if (t == "MTEXT") MText(e);
+    else if (t == "ELLIPSE") Ellipse(e);
+    else if (t == "SPLINE") Spline(e);
+    else if (t == "LWPOLYLINE") LwPolyline(e);
+    else if (t == "POLYLINE") Polyline(e, vertices);
+    else if (t == "3DFACE") Face(e);
+    else if (t == "HATCH") Hatch(e);
+    else if (t == "DIMENSION") Dimension(e);
+    else if (t == "LEADER") Leader(e);
+    else if (t == "INSERT") Insert(e);
+    else if (t == "VERTEX" || t == "SEQEND") {}
+    else ++stats_.skipped;
+  }
+
+ private:
+  Document& doc_;
+  DxfImportStats& stats_;
+  std::map<std::string, int> layer_map_;
+  std::map<int, ON_Mesh> faces_;
+  const std::map<std::string, DxfBlockDef>* blocks_ = nullptr;
+  const std::map<std::string, const DxfEntity*>* handles_ = nullptr;
+  int depth_ = 0;
+};
+
+}  // namespace
+
+bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
+  summary.clear();
+  std::ifstream is(path, std::ios::binary);
+  if (!is) {
+    summary = "Could not open " + path;
+    return false;
+  }
+  std::vector<DxfGroup> groups;
+  {
+    std::string code_line, value_line;
+    while (std::getline(is, code_line)) {
+      if (!std::getline(is, value_line)) break;
+      if (!code_line.empty() && code_line.back() == '\r') code_line.pop_back();
+      if (!value_line.empty() && value_line.back() == '\r') value_line.pop_back();
+      const std::string c = Trim(code_line);
+      if (c.empty()) continue;
+      char* end = nullptr;
+      const long code = std::strtol(c.c_str(), &end, 10);
+      if (end == c.c_str()) continue;
+      groups.push_back({static_cast<int>(code), Trim(value_line)});
+    }
+  }
+  if (groups.empty()) {
+    summary = "Not a DXF file: " + path;
+    return false;
+  }
+
+  DxfImportStats stats;
+  DxfImporter importer(doc, stats);
+
+  // Split into sections, then each section into entities (records) at
+  // every group-0 boundary.
+  std::string section;
+  std::vector<DxfEntity> entities;   // ENTITIES section records, in order
+  DxfEntity* current = nullptr;
+  std::vector<DxfEntity> table_records;
+  std::vector<DxfEntity> block_records;  // BLOCKS section records, in order
+  for (size_t i = 0; i < groups.size(); ++i) {
+    const DxfGroup& g = groups[i];
+    if (g.code == 0) {
+      const std::string v = Upper(g.value);
+      if (v == "SECTION") {
+        section.clear();
+        if (i + 1 < groups.size() && groups[i + 1].code == 2) { section = Upper(groups[i + 1].value); ++i; }
+        current = nullptr;
+        continue;
+      }
+      if (v == "ENDSEC") { section.clear(); current = nullptr; continue; }
+      if (v == "EOF") break;
+      if (section == "ENTITIES") {
+        entities.push_back(DxfEntity{v, {}});
+        current = &entities.back();
+      } else if (section == "BLOCKS") {
+        block_records.push_back(DxfEntity{v, {}});
+        current = &block_records.back();
+      } else if (section == "TABLES" && v == "LAYER") {
+        table_records.push_back(DxfEntity{v, {}});
+        current = &table_records.back();
+      } else {
+        current = nullptr;
+      }
+      continue;
+    }
+    if (current) current->groups.push_back(g);
+  }
+
+  for (const DxfEntity& rec : table_records) importer.DefineLayer(rec);
+
+  // BLOCKS: group each BLOCK...ENDBLK run by the BLOCK record's own name
+  // (group 2) and base point (group 10/20/30), the same POLYLINE+VERTEX
+  // grouping the ENTITIES section gets below applied again within each
+  // block's own member records - a block can contain a polyline too.
+  std::map<std::string, DxfBlockDef> blocks;
+  {
+    DxfBlockDef* cur = nullptr;
+    for (size_t i = 0; i < block_records.size(); ++i) {
+      const DxfEntity& e = block_records[i];
+      if (e.type == "BLOCK") {
+        DxfBlockDef& b = blocks[Trim(e.S(2))];
+        b.base = e.P(10);
+        cur = &b;
+        continue;
+      }
+      if (e.type == "ENDBLK") { cur = nullptr; continue; }
+      if (!cur) continue;
+      if (e.type == "POLYLINE") {
+        std::vector<DxfEntity> vertices;
+        size_t j = i + 1;
+        for (; j < block_records.size() && block_records[j].type == "VERTEX"; ++j) vertices.push_back(block_records[j]);
+        if (j < block_records.size() && block_records[j].type == "SEQEND") ++j;
+        cur->members.push_back({e, vertices});
+        i = j - 1;
+        continue;
+      }
+      cur->members.push_back({e, {}});
+    }
+  }
+  importer.SetBlocks(&blocks);
+
+  // Handle (group 5) -> record, over the same ENTITIES-section records
+  // already fully parsed above - `entities` is never resized again past
+  // this point, so these pointers stay valid for the whole dispatch loop
+  // below. Lets Leader() resolve a LEADER's own group 340 hard reference
+  // to its associated MTEXT regardless of where in the file it appears
+  // relative to the LEADER itself (DXF handles are not required to be in
+  // any particular order). AutoCAD writes handles as uppercase hex with no
+  // fixed width; normalized here so a lowercase or differently-padded
+  // third-party handle still matches.
+  std::map<std::string, const DxfEntity*> handle_index;
+  for (const DxfEntity& e : entities) {
+    const std::string h = Upper(Trim(e.S(5)));
+    if (!h.empty()) handle_index[h] = &e;
+  }
+  importer.SetHandles(&handle_index);
+
+  for (size_t i = 0; i < entities.size(); ++i) {
+    const DxfEntity& e = entities[i];
+    std::vector<DxfEntity> vertices;
+    if (e.type == "POLYLINE") {
+      size_t j = i + 1;
+      for (; j < entities.size() && entities[j].type == "VERTEX"; ++j) vertices.push_back(entities[j]);
+      if (j < entities.size() && entities[j].type == "SEQEND") ++j;
+      importer.Entity(e, vertices);
+      i = j - 1;
+      continue;
+    }
+    importer.Entity(e, vertices);
+  }
+  importer.FlushFaces();
+
+  std::ostringstream ss;
+  ss << "DXF: " << stats.curves << " curve" << (stats.curves == 1 ? "" : "s") << ", " << stats.points << " point"
+     << (stats.points == 1 ? "" : "s") << ", " << stats.meshes << " mesh" << (stats.meshes == 1 ? "" : "es");
+  if (stats.hatches) ss << ", " << stats.hatches << " hatch" << (stats.hatches == 1 ? "" : "es");
+  if (stats.dimensions) ss << ", " << stats.dimensions << " dimension" << (stats.dimensions == 1 ? "" : "s");
+  if (stats.layers) ss << ", " << stats.layers << " new layer" << (stats.layers == 1 ? "" : "s");
+  if (stats.blocks_flattened) ss << ", " << stats.blocks_flattened << " block instance" << (stats.blocks_flattened == 1 ? "" : "s") << " flattened";
+  if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped";
+  summary = ss.str();
+  if (stats.curves + stats.points + stats.meshes + stats.hatches + stats.dimensions == 0) {
+    if (entities.empty()) summary = "No entities found in " + path;
+    return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// DWG (via GNU LibreDWG)
+// ---------------------------------------------------------------------------
+//
+// DWG is not a published format the way DXF is (see FileExchange.h and
+// docs/INTEROP_LIMITATIONS.md), so unlike every writer/reader above this one
+// is not hand-rolled: it links GNU LibreDWG, a genuine GPLv3 open-source
+// implementation, the same way FreeCAD's importDWG addon does.
+//
+// Export bridges through Dino 8's own, already-tested DXF writer: write a
+// temporary ASCII DXF with ExportDxf, hand it to LibreDWG's DXF reader
+// (dxf_read_file - a public, documented entry point), then LibreDWG's own
+// DWG writer (dwg_write_file). This is not a shortcut taken to avoid real
+// work: LibreDWG's DXF<->DWG bridge is its own best-tested, most heavily
+// exercised path (its test suite's dxf-roundtrip.sh does exactly this in
+// reverse), so composing it with Dino 8's mature DXF writer gives every
+// entity ExportDxf already supports (LINE/CIRCLE/ARC/LWPOLYLINE/POLYLINE/
+// 3DFACE, layers, colours) real DWG bytes, without a second, independently-
+// written and independently-buggy geometry-to-DWG-struct translator.
+//
+// Import cannot use the same trick symmetrically: LibreDWG's DWG-to-DXF
+// writer (dwg_write_dxf) is only reachable through its internal headers
+// (src/out_dxf.h / src/bits.h), not the public include/dwg.h and
+// include/dwg_api.h this project links against. So ImportDwg instead reads
+// the decoded Dwg_Data directly through the same public, stable dwg_api.h
+// struct layout LibreDWG's own add_test.c and dwgadd.c programs use to
+// build DWGs by hand, walking model-space entities with
+// get_first_owned_entity/get_next_owned_entity (both public, declared in
+// dwg.h) and switching on `fixedtype`. Coverage: LINE, POINT, CIRCLE, ARC,
+// LWPOLYLINE (bulges + closed flag), TEXT and MTEXT (converted to real
+// glyph-outline curves, see geom/TextOutline.h - MTEXT's inline formatting
+// codes are stripped to plain multi-line text, see MTextToLines/
+// BuildMTextGlyphs above for exactly what's exact vs. approximated),
+// INSERT (flattened recursively into transformed copies of the referenced
+// block's own entities - the same "instance is a transformed copy, not a
+// live GPU reference" model InstantiateBlock (cmd_drafting.cpp) already
+// uses for blocks defined in-app), and HATCH for the common case only:
+// exactly one boundary path that is a polyline loop (Dwg_HATCH_Path::flag
+// bit 2) - built through the same drafting::BuildSolidHatch/
+// BuildPatternHatch helpers the in-app Hatch command uses
+// (src/drafting/HatchBuild.h), so an imported hatch is a real hatch
+// (selectable via SelHatch, rebuildable via HatchScale). Multiple boundary
+// paths (islands/holes) and edge-type (line/arc/spline segment) boundaries
+// fall into the skipped count, like SPLINE, 3D solids/meshes, xrefs and
+// anything else outside this importer's coverage - exactly ImportDxf's own
+// honest gap for entities it can't read. DIMENSION_LINEAR/DIMENSION_ALIGNED/
+// DIMENSION_RADIUS/DIMENSION_DIAMETER (DWG splits DIMENSION into distinct
+// entity subtypes by fixedtype, unlike DXF's one entity + a type flag) are
+// rebuilt the same way as DxfImporter::Dimension - real Dino8 dimension
+// geometry (commands/DimGeometry.h) from the entity's semantic definition
+// points, not its frozen pre-rendered block. Angular/ordinate DIMENSION
+// subtypes and the jogged-radius LARGE_RADIAL_DIMENSION/ARC_DIMENSION fall
+// into the skipped count, same honest scope as DXF's angular/ordinate gap.
+
+namespace {
+
+// A process-unique temp file path next to `hint` (same directory, so the
+// rename/open is on one filesystem) rather than a fixed name, so two
+// concurrent exports never collide.
+std::string TempPathNear(const std::string& hint, const std::string& suffix) {
+  std::error_code ec;
+  std::filesystem::path dir = std::filesystem::path(hint).parent_path();
+  if (dir.empty()) dir = std::filesystem::current_path(ec);
+  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+  return (dir / (".dino8_dwg_" + std::to_string(stamp) + suffix)).string();
+}
+
+struct DwgImportStats {
+  int curves = 0, points = 0, blocks_flattened = 0, hatches = 0, dimensions = 0, skipped = 0, layers = 0;
+};
+
+// Resolves a DWG entity's layer name ("0" when unset - DWG's default layer,
+// same convention as DXF group 8) and finds or creates the matching Dino 8
+// layer, colouring a freshly-created one from the DWG LAYER's ACI index when
+// available.
+int DwgLayerFor(Document& doc, std::map<std::string, int>& layer_map, Dwg_Object_Entity* ent, DwgImportStats& stats) {
+  std::string name = "0";
+  int aci = 7;  // ACI 7 = white/black, DXF/DWG's implicit default
+  if (ent->layer && ent->layer->obj && ent->layer->obj->tio.object &&
+      ent->layer->obj->fixedtype == DWG_TYPE_LAYER) {
+    Dwg_Object_LAYER* L = ent->layer->obj->tio.object->tio.LAYER;
+    if (L->name && *L->name) name = L->name;
+    if (L->color.index > 0 && L->color.index < 256) aci = L->color.index;
+  }
+  auto it = layer_map.find(name);
+  if (it != layer_map.end()) return it->second;
+  int idx;
+  if (name == "0") {
+    idx = 0;
+  } else {
+    idx = doc.FindLayer(name);
+    if (idx < 0) {
+      idx = doc.AddLayer(name);
+      ++stats.layers;
+      const std::array<int, 3> rgb = AciToRgb(aci);
+      doc.Layers()[static_cast<size_t>(idx)].color = Color::FromBytes(rgb[0], rgb[1], rgb[2]);
+    }
+  }
+  layer_map[name] = idx;
+  return idx;
+}
+
+// Per-entity colour override (mirrors DxfImporter::ApplyAttributes): only
+// set when the entity carries an explicit ACI 1-255, i.e. not
+// BYLAYER (256) or BYBLOCK (0).
+void ApplyDwgColor(SceneObject& o, const Dwg_Color& c) {
+  if (c.index > 0 && c.index < 256) {
+    const std::array<int, 3> rgb = AciToRgb(c.index);
+    o.color_by_layer = false;
+    o.color = Color::FromBytes(rgb[0], rgb[1], rgb[2]);
+  }
+}
+
+// A real LEADER's own written label, if any, is never on the LEADER
+// entity itself: `associated_annotation` (DXF group 340's own binary
+// counterpart) is a hard handle reference to a separate MTEXT/TOLERANCE/
+// INSERT entity elsewhere in the file - the same cross-reference
+// DxfImporter::AssociatedLeaderLabel (above, DXF side) resolves, mirrored
+// here against LibreDWG's own real struct layout instead of DXF group
+// codes. Scoped to the MTEXT case only, for the same reason as that
+// function's own comment (TOLERANCE is a feature-control-frame symbol and
+// INSERT a block placement, neither plain text); the resolved handle's own
+// `fixedtype` decides, not `annot_type` (read but not trusted, same as
+// DWG_TYPE_INSERT's own `block_header` resolution below already does for
+// its handle) - an unresolved or non-MTEXT handle is declined, not guessed
+// at. Only the first formatting-stripped line is used: a Leader's own
+// label here is one baseline of glyph curves (TextToCurves, via
+// BuildLeaderGeometry/AddDimensionGroupToDoc below), not a real multi-line
+// layout the way the DWG_TYPE_MTEXT case above gives a standalone MTEXT.
+std::string DwgLeaderLabel(Dwg_Entity_LEADER* e) {
+  Dwg_Object* obj = e->associated_annotation ? e->associated_annotation->obj : nullptr;
+  if (!obj || obj->fixedtype != DWG_TYPE_MTEXT || !obj->tio.entity) return "";
+  Dwg_Entity_MTEXT* m = obj->tio.entity->tio.MTEXT;
+  if (!m || !m->text) return "";
+  const std::vector<std::string> lines = MTextToLines(m->text);
+  return lines.empty() ? "" : lines[0];
+}
+
+// Walks the entities directly owned by `block_obj` (a BLOCK_HEADER object -
+// model space itself, or a named block definition reached through an
+// INSERT) and adds them to `doc`, transformed by `xf`. Recurses into INSERT
+// with an accumulated transform so nested blocks flatten correctly; `depth`
+// guards against a malformed or self-referential DWG looping forever.
+void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, std::map<std::string, int>& layer_map,
+                     DwgImportStats& stats, int depth) {
+  if (!block_obj || depth > 16) return;
+  for (Dwg_Object* o = get_first_owned_entity(block_obj); o; o = get_next_owned_entity(block_obj, o)) {
+    if (!o || o->supertype != DWG_SUPERTYPE_ENTITY || !o->tio.entity) continue;
+    Dwg_Object_Entity* ent = o->tio.entity;
+    switch (o->fixedtype) {
+      case DWG_TYPE_LINE: {
+        Dwg_Entity_LINE* e = ent->tio.LINE;
+        kernel::NurbsCurve k;
+        if (!CurveFromON(ON_LineCurve(Point3d(e->start.x, e->start.y, e->start.z), Point3d(e->end.x, e->end.y, e->end.z)), k)) { ++stats.skipped; break; }
+        k.raw().Transform(xf);
+        SceneObject so = SceneObject::MakeCurve(k);
+        so.layer_index = DwgLayerFor(doc, layer_map, ent, stats);
+        ApplyDwgColor(so, ent->color);
+        doc.Add(std::move(so));
+        ++stats.curves;
+        break;
+      }
+      case DWG_TYPE_CIRCLE: {
+        Dwg_Entity_CIRCLE* e = ent->tio.CIRCLE;
+        ON_Circle c(ON_Plane(Point3d(e->center.x, e->center.y, e->center.z), ON_xaxis, ON_yaxis), e->radius);
+        kernel::NurbsCurve k;
+        if (!CurveFromON(ON_ArcCurve(c), k)) { ++stats.skipped; break; }
+        k.raw().Transform(xf);
+        SceneObject so = SceneObject::MakeCurve(k);
+        so.layer_index = DwgLayerFor(doc, layer_map, ent, stats);
+        ApplyDwgColor(so, ent->color);
+        doc.Add(std::move(so));
+        ++stats.curves;
+        break;
+      }
+      case DWG_TYPE_ARC: {
+        Dwg_Entity_ARC* e = ent->tio.ARC;
+        double a0 = e->start_angle, a1 = e->end_angle;
+        while (a1 <= a0 + 1e-12) a1 += 2.0 * ON_PI;
+        ON_Circle c(ON_Plane(Point3d(e->center.x, e->center.y, e->center.z), ON_xaxis, ON_yaxis), e->radius);
+        ON_Arc arc(c, ON_Interval(a0, a1));
+        kernel::NurbsCurve k;
+        if (!CurveFromON(ON_ArcCurve(arc), k)) { ++stats.skipped; break; }
+        k.raw().Transform(xf);
+        SceneObject so = SceneObject::MakeCurve(k);
+        so.layer_index = DwgLayerFor(doc, layer_map, ent, stats);
+        ApplyDwgColor(so, ent->color);
+        doc.Add(std::move(so));
+        ++stats.curves;
+        break;
+      }
+      case DWG_TYPE_SPLINE: {
+        Dwg_Entity_SPLINE* e = ent->tio.SPLINE;
+        kernel::NurbsCurve k;
+        bool ok = false;
+        if (e->num_ctrl_pts >= 2 && e->ctrl_pts) {
+          const int degree = std::max(1, static_cast<int>(e->degree));
+          const int order = std::min(degree + 1, static_cast<int>(e->num_ctrl_pts));
+          const bool rational = e->weighted != 0;
+          ON_NurbsCurve nc;
+          nc.Create(3, rational, order, static_cast<int>(e->num_ctrl_pts));
+          for (unsigned i = 0; i < e->num_ctrl_pts; ++i) {
+            const Dwg_SPLINE_control_point& cp = e->ctrl_pts[i];
+            if (rational) nc.SetCV(static_cast<int>(i), ON_4dPoint(cp.x * cp.w, cp.y * cp.w, cp.z * cp.w, cp.w));
+            else nc.SetCV(static_cast<int>(i), ON_3dPoint(cp.x, cp.y, cp.z));
+          }
+          if (e->num_knots == static_cast<unsigned>(nc.KnotCount()) && e->knots) {
+            for (int i = 0; i < nc.KnotCount(); ++i) nc.SetKnot(i, e->knots[i]);
+          } else {
+            nc.MakeClampedUniformKnotVector();
+          }
+          ok = CurveFromON(nc, k);
+        } else if (e->num_fit_pts >= 2 && e->fit_pts) {
+          // No real control-point data (some writers - including LibreDWG's
+          // own dwg_add_SPLINE - only ever emit fit points, matching DXF
+          // SPLINE import's identical fallback): approximate with a
+          // polyline through the fit points rather than skip entirely.
+          ON_Polyline pl;
+          for (unsigned i = 0; i < e->num_fit_pts; ++i) pl.Append(Point3d(e->fit_pts[i].x, e->fit_pts[i].y, e->fit_pts[i].z));
+          ok = CurveFromON(ON_PolylineCurve(pl), k);
+        }
+        if (!ok) { ++stats.skipped; break; }
+        k.raw().Transform(xf);
+        SceneObject so = SceneObject::MakeCurve(k);
+        so.layer_index = DwgLayerFor(doc, layer_map, ent, stats);
+        ApplyDwgColor(so, ent->color);
+        doc.Add(std::move(so));
+        ++stats.curves;
+        break;
+      }
+      case DWG_TYPE_TEXT: {
+        Dwg_Entity_TEXT* e = ent->tio.TEXT;
+        if (!e->text_value || !*e->text_value || e->height <= 0) { ++stats.skipped; break; }
+        ON_Plane pl(Point3d(e->ins_pt.x, e->ins_pt.y, e->elevation), ON_xaxis, ON_yaxis);
+        pl.Rotate(e->rotation, ON_zaxis);
+        pl.Transform(xf);
+        std::vector<kernel::NurbsCurve> glyphs;
+        std::string font_used;
+        if (!TextToCurves(e->text_value, e->height, pl, glyphs, font_used) || glyphs.empty()) { ++stats.skipped; break; }
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        for (kernel::NurbsCurve& g : glyphs) {
+          SceneObject so = SceneObject::MakeCurve(g);
+          so.layer_index = layer;
+          so.user_text["Annotation"] = "Text";
+          so.user_text["Style"] = "Standard";
+          so.user_text["Text"] = e->text_value;
+          ApplyDwgColor(so, ent->color);
+          doc.Add(std::move(so));
+          ++stats.curves;
+        }
+        break;
+      }
+      // MTEXT: DWG's single `text` field carries the same concatenated,
+      // formatting-code-laden content as DXF's group 3/1 chunks (see
+      // MTextToLines/BuildMTextGlyphs above for what's stripped/
+      // approximated). No `rotation` field on this struct - x_axis_dir is
+      // the rotation vector, same as DXF group 11 would be.
+      case DWG_TYPE_MTEXT: {
+        Dwg_Entity_MTEXT* e = ent->tio.MTEXT;
+        if (!e->text || !*e->text || e->text_height <= 0) { ++stats.skipped; break; }
+        const std::vector<std::string> lines = MTextToLines(e->text);
+        const int attachment = static_cast<int>(e->attachment);
+        double angle = 0.0;
+        if (std::fabs(e->x_axis_dir.x) > 1e-12 || std::fabs(e->x_axis_dir.y) > 1e-12) {
+          angle = std::atan2(e->x_axis_dir.y, e->x_axis_dir.x);
+        }
+        ON_Plane pl(Point3d(e->ins_pt.x, e->ins_pt.y, e->ins_pt.z), ON_xaxis, ON_yaxis);
+        pl.Rotate(angle, ON_zaxis);
+        pl.Transform(xf);
+        std::vector<std::vector<kernel::NurbsCurve>> per_line;
+        std::string font_used;
+        if (!BuildMTextGlyphs(lines, e->text_height, attachment, pl, per_line, font_used)) { ++stats.skipped; break; }
+        std::string plain_joined;
+        for (size_t i = 0; i < lines.size(); ++i) { if (i) plain_joined += "\n"; plain_joined += lines[i]; }
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        for (std::vector<kernel::NurbsCurve>& glyphs : per_line) {
+          for (kernel::NurbsCurve& g : glyphs) {
+            SceneObject so = SceneObject::MakeCurve(g);
+            so.layer_index = layer;
+            so.user_text["Annotation"] = "Text";
+            so.user_text["Style"] = "Standard";
+            so.user_text["Text"] = plain_joined;
+            ApplyDwgColor(so, ent->color);
+            doc.Add(std::move(so));
+            ++stats.curves;
+          }
+        }
+        break;
+      }
+      case DWG_TYPE_POINT: {
+        Dwg_Entity_POINT* e = ent->tio.POINT;
+        Point3d p(e->x, e->y, e->z);
+        p = xf * p;
+        SceneObject so = SceneObject::MakePoint(p);
+        so.layer_index = DwgLayerFor(doc, layer_map, ent, stats);
+        ApplyDwgColor(so, ent->color);
+        doc.Add(std::move(so));
+        ++stats.points;
+        break;
+      }
+      case DWG_TYPE_LWPOLYLINE: {
+        Dwg_Entity_LWPOLYLINE* e = ent->tio.LWPOLYLINE;
+        if (e->num_points < 2) { ++stats.skipped; break; }
+        std::vector<BulgeVertex> verts;
+        verts.reserve(e->num_points);
+        for (unsigned i = 0; i < e->num_points; ++i) {
+          BulgeVertex bv;
+          bv.p = Point3d(e->points[i].x, e->points[i].y, e->elevation);
+          if (e->bulges && i < e->num_bulges) bv.bulge = e->bulges[i];
+          verts.push_back(bv);
+        }
+        const bool closed = (e->flag & 512) != 0;  // DXF 70 bit 512
+        kernel::NurbsCurve k;
+        if (!BulgePolylineCurve(verts, closed, k)) { ++stats.skipped; break; }
+        k.raw().Transform(xf);
+        SceneObject so = SceneObject::MakeCurve(k);
+        so.layer_index = DwgLayerFor(doc, layer_map, ent, stats);
+        ApplyDwgColor(so, ent->color);
+        doc.Add(std::move(so));
+        ++stats.curves;
+        break;
+      }
+      // HATCH: same "common case only" scope as ImportDxf's HATCH handler -
+      // exactly one boundary path that is a polyline loop. Multiple loops
+      // (islands/holes) and edge-type (line/arc/spline segment) boundaries
+      // are detected and skipped, not approximated.
+      case DWG_TYPE_HATCH: {
+        Dwg_Entity_HATCH* e = ent->tio.HATCH;
+        if (e->num_paths != 1 || !e->paths) { ++stats.skipped; break; }
+        const Dwg_HATCH_Path& path = e->paths[0];
+        if (!(path.flag & 2) || !path.polyline_paths || path.num_segs_or_paths < 3) { ++stats.skipped; break; }
+        std::vector<BulgeVertex> verts;
+        verts.reserve(path.num_segs_or_paths);
+        for (BITCODE_BL i = 0; i < path.num_segs_or_paths; ++i) {
+          BulgeVertex bv;
+          bv.p = Point3d(path.polyline_paths[i].point.x, path.polyline_paths[i].point.y, e->elevation);
+          if (path.bulges_present) bv.bulge = path.polyline_paths[i].bulge;
+          verts.push_back(bv);
+        }
+        kernel::NurbsCurve boundary;
+        if (!BulgePolylineCurve(verts, /*closed=*/true, boundary)) { ++stats.skipped; break; }
+        boundary.raw().Transform(xf);
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        const double tol = doc.Settings().absolute_tolerance;
+        bool built = false;
+        if (e->is_solid_fill) {
+          built = drafting::BuildSolidHatch(doc, boundary, kNoObject, layer, tol);
+        } else {
+          const drafting::HatchPattern* pat = drafting::HatchLibrary::Instance().Find(e->name && *e->name ? e->name : "ANSI31");
+          if (!pat) pat = drafting::HatchLibrary::Instance().Find("ANSI31");
+          if (pat) {
+            const double scale = e->scale_spacing > 0 ? e->scale_spacing : 1.0;
+            built = drafting::BuildPatternHatch(doc, *pat, boundary, kNoObject, layer, tol, scale, e->angle * 180.0 / ON_PI, doc.Settings().hatch_base);
+          }
+        }
+        if (!built) { ++stats.skipped; break; }
+        ++stats.hatches;
+        break;
+      }
+      // DIMENSION: same rebuild-from-semantic-points approach and the same
+      // commands/DimGeometry.h math as DxfImporter::Dimension (see its
+      // comment for the full group-code/field rationale, verified against
+      // this exact dwg.spec). DWG splits DIMENSION by fixedtype instead of a
+      // single entity + a type flag, so LINEAR/ALIGNED and RADIUS/DIAMETER
+      // are separate cases with their own struct layouts
+      // (Dwg_Entity_DIMENSION_LINEAR/ALIGNED/RADIUS/DIAMETER, dwg_api.h) -
+      // xline1_pt/xline2_pt/def_pt for linear+aligned (def_pt is
+      // DIMENSION_COMMON's shared field, the dimension-line location point,
+      // same as DXF group 10), first_arc_pt/def_pt/leader_len for
+      // radius+diameter (def_pt = far_chord_pt for diameter),
+      // xline1_pt/xline2_pt/center_pt/def_pt for ANG3PT (center_pt is the
+      // measured VERTEX despite its name; def_pt disambiguates which of the
+      // two complementary sweeps was drawn - same DxfImporter::Dimension
+      // type==5 logic, see its comment for the full rationale), and
+      // feature_location_pt/flag2 for ORDINATE (flag2 is a clean 0/1
+      // "use_x_axis" field here, unlike DXF's own folded-into-a-shared-byte
+      // group 70 bit - see that importer's own type==6 comment for why
+      // both assume a world-origin base point regardless). 2-line angular
+      // (ANG2LN) DIMENSION subtypes, and the jogged-radius
+      // LARGE_RADIAL_DIMENSION/ARC_DIMENSION entities, fall into the
+      // default case below (skipped), same honest scope as DXF.
+      case DWG_TYPE_DIMENSION_LINEAR:
+      case DWG_TYPE_DIMENSION_ALIGNED: {
+        const bool aligned = (o->fixedtype == DWG_TYPE_DIMENSION_ALIGNED);
+        BITCODE_3BD raw1, raw2, raw_def, raw_ext;
+        double dim_rotation = 0.0;
+        if (aligned) {
+          Dwg_Entity_DIMENSION_ALIGNED* e = ent->tio.DIMENSION_ALIGNED;
+          raw1 = e->xline1_pt; raw2 = e->xline2_pt; raw_def = e->def_pt; raw_ext = e->extrusion;
+        } else {
+          Dwg_Entity_DIMENSION_LINEAR* e = ent->tio.DIMENSION_LINEAR;
+          raw1 = e->xline1_pt; raw2 = e->xline2_pt; raw_def = e->def_pt; raw_ext = e->extrusion;
+          dim_rotation = e->dim_rotation * 180.0 / ON_PI;  // DWG stores radians; DXF group 50 is degrees
+        }
+        const Point3d p0 = xf * Point3d(raw1.x, raw1.y, raw1.z);
+        const Point3d p1 = xf * Point3d(raw2.x, raw2.y, raw2.z);
+        const Point3d loc = xf * Point3d(raw_def.x, raw_def.y, raw_def.z);
+        if (p0.DistanceTo(p1) < 1e-9) { ++stats.skipped; break; }
+        const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), Vector3d(raw_ext.x, raw_ext.y, raw_ext.z));
+        LinearDimLayout L;
+        L.plane = ON_Plane(p0, ocs.xaxis, ocs.yaxis);
+        L.aligned = aligned;
+        if (!aligned) {
+          const double rot = std::fmod(std::fabs(dim_rotation), 180.0);
+          const bool near0 = rot < 1.0 || rot > 179.0;
+          const bool near90 = rot > 89.0 && rot < 91.0;
+          if (!near0 && !near90) { ++stats.skipped; break; }  // oblique: not representable, see DxfImporter::Dimension
+          L.horizontal = near0;
+          double ua, va, ub, vb, ul, vl;
+          L.plane.ClosestPointTo(p0, &ua, &va); L.plane.ClosestPointTo(p1, &ub, &vb); L.plane.ClosestPointTo(loc, &ul, &vl);
+          L.offset = L.horizontal ? vl : ul;
+        } else {
+          Vector3d n = ON_CrossProduct(L.plane.zaxis, Vector3d(p1 - p0));
+          n.Unitize();
+          L.offset = ON_DotProduct(loc - p0, n);
+        }
+        std::vector<kernel::NurbsCurve> curves;
+        DimGlyphSpec text;
+        std::map<std::string, std::string> tags;
+        if (!BuildLinearDimensionGeometry(p0, p1, L, ImportDimTextHeight(doc), curves, text, tags)) { ++stats.skipped; break; }
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        if (AddDimensionGroupToDoc(doc, aligned ? "DimAligned" : "DimLinear", layer, curves, text, tags)) ++stats.dimensions;
+        else ++stats.skipped;
+        break;
+      }
+      case DWG_TYPE_DIMENSION_RADIUS:
+      case DWG_TYPE_DIMENSION_DIAMETER: {
+        const bool diameter = (o->fixedtype == DWG_TYPE_DIMENSION_DIAMETER);
+        BITCODE_3BD raw_arc, raw_def, raw_ext;
+        double leader_len;
+        if (diameter) {
+          Dwg_Entity_DIMENSION_DIAMETER* e = ent->tio.DIMENSION_DIAMETER;
+          raw_arc = e->first_arc_pt; raw_def = e->def_pt; leader_len = e->leader_len; raw_ext = e->extrusion;
+        } else {
+          Dwg_Entity_DIMENSION_RADIUS* e = ent->tio.DIMENSION_RADIUS;
+          raw_arc = e->first_arc_pt; raw_def = e->def_pt; leader_len = e->leader_len; raw_ext = e->extrusion;
+        }
+        const Point3d arc_pt = xf * Point3d(raw_arc.x, raw_arc.y, raw_arc.z);
+        const Point3d p10 = xf * Point3d(raw_def.x, raw_def.y, raw_def.z);
+        Point3d center; double radius;
+        if (diameter) { center = (p10 + arc_pt) / 2.0; radius = p10.DistanceTo(arc_pt) / 2.0; }
+        else { center = p10; radius = p10.DistanceTo(arc_pt); }
+        if (radius < 1e-9) { ++stats.skipped; break; }
+        const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), Vector3d(raw_ext.x, raw_ext.y, raw_ext.z));
+        RadiusDimLayout L;
+        L.diameter = diameter;
+        L.plane = ON_Plane(center, ocs.xaxis, ocs.yaxis);
+        L.dir = Vector3d(arc_pt - center);
+        L.extra = leader_len;
+        std::vector<kernel::NurbsCurve> curves;
+        DimGlyphSpec text;
+        std::map<std::string, std::string> tags;
+        if (!BuildRadiusDimensionGeometry(center, radius, L, ImportDimTextHeight(doc), curves, text, tags)) { ++stats.skipped; break; }
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        if (AddDimensionGroupToDoc(doc, diameter ? "DimDiameter" : "DimRadius", layer, curves, text, tags)) ++stats.dimensions;
+        else ++stats.skipped;
+        break;
+      }
+      case DWG_TYPE_DIMENSION_ORDINATE: {
+        // Same base-is-always-world-origin assumption as
+        // DxfImporter::Dimension's own type==6 case (see its comment for
+        // the full rationale) - `xf * Point3d(0,0,0)` rather than a bare
+        // `Point3d(0,0,0)` so a block-local ordinate dimension's own
+        // "local origin" still maps to the correct world point when this
+        // entity lives inside an INSERT (same transform already applied
+        // to every real stored point in every other case here). Unlike
+        // the DXF reader, which has to recover the axis from a bit folded
+        // into a shared flag byte, LibreDWG's own Dwg_Entity_DIMENSION_
+        // ORDINATE exposes `flag2` as a clean 0/1 "use_x_axis" field
+        // directly (dwg.h) - no bit-masking needed.
+        Dwg_Entity_DIMENSION_ORDINATE* e = ent->tio.DIMENSION_ORDINATE;
+        const Point3d base = xf * Point3d(0, 0, 0);
+        const Point3d feature = xf * Point3d(e->feature_location_pt.x, e->feature_location_pt.y, e->feature_location_pt.z);
+        const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), Vector3d(e->extrusion.x, e->extrusion.y, e->extrusion.z));
+        const ON_Plane pl(base, ocs.xaxis, ocs.yaxis);
+        std::vector<kernel::NurbsCurve> curves;
+        DimGlyphSpec text;
+        std::map<std::string, std::string> tags;
+        if (!BuildOrdinateDimensionGeometry(base, feature, e->flag2 ? 'X' : 'Y', pl, ImportDimTextHeight(doc), curves, text, tags)) { ++stats.skipped; break; }
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        if (AddDimensionGroupToDoc(doc, "DimOrdinate", layer, curves, text, tags)) ++stats.dimensions;
+        else ++stats.skipped;
+        break;
+      }
+      case DWG_TYPE_DIMENSION_ANG3PT: {
+        Dwg_Entity_DIMENSION_ANG3PT* e = ent->tio.DIMENSION_ANG3PT;
+        const Point3d vertex = xf * Point3d(e->center_pt.x, e->center_pt.y, e->center_pt.z);
+        const Point3d p1 = xf * Point3d(e->xline1_pt.x, e->xline1_pt.y, e->xline1_pt.z);
+        const Point3d p2 = xf * Point3d(e->xline2_pt.x, e->xline2_pt.y, e->xline2_pt.z);
+        const Point3d def_pt = xf * Point3d(e->def_pt.x, e->def_pt.y, e->def_pt.z);
+        Vector3d va = p1 - vertex, vb = p2 - vertex, vd = def_pt - vertex;
+        if (!va.Unitize() || !vb.Unitize() || !vd.Unitize()) { ++stats.skipped; break; }
+        const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), Vector3d(e->extrusion.x, e->extrusion.y, e->extrusion.z));
+        const ON_Plane pl(vertex, ocs.xaxis, ocs.yaxis);
+        double a0 = std::atan2(ON_DotProduct(va, pl.yaxis), ON_DotProduct(va, pl.xaxis));
+        double a1 = std::atan2(ON_DotProduct(vb, pl.yaxis), ON_DotProduct(vb, pl.xaxis));
+        if (a1 < a0) std::swap(a0, a1);
+        if (a1 - a0 > ON_PI) { std::swap(a0, a1); a1 += 2 * ON_PI; }
+        double ad = std::atan2(ON_DotProduct(vd, pl.yaxis), ON_DotProduct(vd, pl.xaxis));
+        while (ad < a0 - 1e-6) ad += 2 * ON_PI;
+        if (ad > a1 + 1e-6) { ++stats.skipped; break; }  // def_pt names the reflex sweep - not representable, see DxfImporter::Dimension
+        std::vector<kernel::NurbsCurve> curves;
+        DimGlyphSpec text;
+        std::map<std::string, std::string> tags;
+        if (!BuildAngleDimensionGeometry(vertex, p1, p2, pl, ImportDimTextHeight(doc), curves, text, tags)) { ++stats.skipped; break; }
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        if (AddDimensionGroupToDoc(doc, "DimAngle", layer, curves, text, tags)) ++stats.dimensions;
+        else ++stats.skipped;
+        break;
+      }
+      case DWG_TYPE_LEADER: {
+        // Same rebuild-from-points approach as DxfImporter::Leader (see
+        // its own comment) - LibreDWG's own Dwg_Entity_LEADER stores its
+        // point list as a real array (`points`/`num_points`, dwg.h), unlike
+        // DIMENSION's fixed named point fields, so no group-code-style
+        // switch is needed to collect them. DwgLeaderLabel (above) resolves
+        // the real associated-annotation handle for the label, the same
+        // cross-reference the DXF side's AssociatedLeaderLabel now does.
+        Dwg_Entity_LEADER* e = ent->tio.LEADER;
+        if (e->num_points < 2 || !e->points) { ++stats.skipped; break; }
+        std::vector<Point3d> pts;
+        for (BITCODE_BL i = 0; i < e->num_points; ++i) pts.push_back(xf * Point3d(e->points[i].x, e->points[i].y, e->points[i].z));
+        const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), Vector3d(e->extrusion.x, e->extrusion.y, e->extrusion.z));
+        const ON_Plane pl(pts[0], ocs.xaxis, ocs.yaxis);
+        const Point3d tip = pts[0];
+        std::vector<Vector3d> rest;
+        for (size_t i = 1; i < pts.size(); ++i) rest.push_back(pts[i] - tip);
+        std::vector<kernel::NurbsCurve> curves;
+        DimGlyphSpec text;
+        std::map<std::string, std::string> tags;
+        if (!BuildLeaderGeometry(tip, rest, pl, ImportDimTextHeight(doc), DwgLeaderLabel(e), curves, text, tags)) { ++stats.skipped; break; }
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        if (AddDimensionGroupToDoc(doc, "Leader", layer, curves, text, tags)) ++stats.dimensions;
+        else ++stats.skipped;
+        break;
+      }
+      case DWG_TYPE_INSERT: {
+        Dwg_Entity_INSERT* e = ent->tio.INSERT;
+        Dwg_Object* blkdef = e->block_header ? e->block_header->obj : nullptr;
+        if (!blkdef || blkdef->fixedtype != DWG_TYPE_BLOCK_HEADER || !blkdef->tio.object) { ++stats.skipped; break; }
+        Dwg_Object_BLOCK_HEADER* bh = blkdef->tio.object->tio.BLOCK_HEADER;
+        const Point3d base(bh->base_pt.x, bh->base_pt.y, bh->base_pt.z);
+        const Point3d ins(e->ins_pt.x, e->ins_pt.y, e->ins_pt.z);
+        const double sx = e->scale.x != 0.0 ? e->scale.x : 1.0;
+        const double sy = e->scale.y != 0.0 ? e->scale.y : 1.0;
+        const double sz = e->scale.z != 0.0 ? e->scale.z : 1.0;
+        ON_Xform to_origin = ON_Xform::TranslationTransformation(-Vector3d(base.x, base.y, base.z));
+        ON_Xform scale = ON_Xform::DiagonalTransformation(sx, sy, sz);
+        ON_Xform rot = ON_Xform::IdentityTransformation;
+        rot.Rotation(e->rotation, ON_zaxis, ON_origin);
+        ON_Xform to_ins = ON_Xform::TranslationTransformation(Vector3d(ins.x, ins.y, ins.z));
+        const ON_Xform local = to_ins * rot * scale * to_origin;
+        WalkDwgEntities(doc, blkdef, xf * local, layer_map, stats, depth + 1);
+        ++stats.blocks_flattened;
+        break;
+      }
+      default:
+        ++stats.skipped;
+        break;
+    }
+  }
+}
+
+}  // namespace
+
+#if defined(_MSC_VER)
+namespace {
+// dwg_read_file (LibreDWG's own decoder - vendored third-party GPLv3 C code,
+// not this project's) has a confirmed Windows-only hard crash decoding at
+// least one real DWG this app's own ExportDwg produced: bisected all the
+// way down to this exact call via CommandEngine's live history-print hook
+// (see CommandEngine.h's on_print_line) - "Command: Open <path>" prints,
+// then the process dies with zero further output, deterministically,
+// unaffected by retries or delay. The same file content round-trips fine on
+// Linux/macOS, which points at a platform-specific bug in the vendored C
+// decoder itself (LibreDWG's decode.c/bits.c use plain `long` for several
+// bit-position/offset computations, which is 32-bit on Windows/LLP64 but
+// 64-bit on Linux/macOS's LP64 - a plausible, not yet confirmed, candidate)
+// rather than anything in this project's own code. Root-causing it further
+// needs real Windows-native debugging tools this environment does not have.
+//
+// Wrapping the call in Structured Exception Handling turns that crash into
+// an ordinary "could not read this file" error instead of taking the whole
+// application down - the correct behavior for a real user who hits the same
+// bug on some other DWG this app didn't necessarily write itself, not just
+// a CI workaround. dwg is left in a possibly-inconsistent state if this
+// fires (the crash can happen mid-decode, after some of it has already been
+// populated), so the caller must NOT call dwg_free() on it in that case -
+// crashed reports whether that happened.
+//
+// An earlier version of this same __try/__except wrap appeared on CI to not
+// catch anything at all (identical zero-output crash signature, with or
+// without it). The real reason: when the underlying fault is a genuine
+// stack overflow (very plausible for LibreDWG's recursive decode of a
+// handle-chained object table / nested block references, especially with a
+// 32-bit `long` bit-offset walking off the rails on Windows/LLP64), Windows
+// only grants the thread a small, one-shot emergency guard-page allowance to
+// run the __except filter/handler itself - see _resetstkoflw's own MSDN
+// page, whose sample code is exactly this pattern. Without calling
+// _resetstkoflw() before returning, that guard page stays depleted, and the
+// very next stack-hungry call (even ImportDwg's own std::string/
+// std::ostringstream error-message building immediately after this
+// function returns) re-faults instantly and unrecoverably - a second,
+// uncatchable hard crash with the identical zero-output signature, making
+// the __except block look like it never ran. Restoring the guard page here,
+// while still on the handler's own stack frame (the documented, correct
+// place to call it), is the fix; the larger /STACK reserve+commit in
+// CMakeLists.txt (an earlier, insufficient-on-its-own attempt at this same
+// bug) is kept too since a bigger stack still reduces how often this path
+// is hit in the first place.
+int DwgReadFileSafe(const char* path, Dwg_Data* dwg, bool& crashed) {
+  crashed = false;
+  __try {
+    return dwg_read_file(path, dwg);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    crashed = true;
+    if (GetExceptionCode() == EXCEPTION_STACK_OVERFLOW) {
+      _resetstkoflw();
+    }
+    return DWG_ERR_INTERNALERROR;
+  }
+}
+}  // namespace
+#endif
+
+bool ImportDwg(Document& doc, const std::string& path, std::string& summary) {
+  summary.clear();
+  Dwg_Data dwg{};
+#if defined(_MSC_VER)
+  bool crashed = false;
+  const int err = DwgReadFileSafe(path.c_str(), &dwg, crashed);
+#else
+  const int err = dwg_read_file(path.c_str(), &dwg);
+#endif
+  if (err >= DWG_ERR_CRITICAL) {
+    summary = "Could not read " + path + " (LibreDWG error 0x" + [&] { std::ostringstream h; h << std::hex << err; return h.str(); }() + ")";
+#if defined(_MSC_VER)
+    if (!crashed) dwg_free(&dwg);
+#else
+    dwg_free(&dwg);
+#endif
+    return false;
+  }
+  Dwg_Object* mspace = dwg_model_space_object(&dwg);
+  if (!mspace) {
+    summary = "No model space found in " + path;
+    dwg_free(&dwg);
+    return false;
+  }
+  std::map<std::string, int> layer_map;
+  DwgImportStats stats;
+  WalkDwgEntities(doc, mspace, ON_Xform::IdentityTransformation, layer_map, stats, 0);
+  dwg_free(&dwg);
+
+  std::ostringstream ss;
+  ss << "DWG: " << stats.curves << " curve" << (stats.curves == 1 ? "" : "s") << ", " << stats.points << " point"
+     << (stats.points == 1 ? "" : "s");
+  if (stats.hatches) ss << ", " << stats.hatches << " hatch" << (stats.hatches == 1 ? "" : "es");
+  if (stats.dimensions) ss << ", " << stats.dimensions << " dimension" << (stats.dimensions == 1 ? "" : "s");
+  if (stats.layers) ss << ", " << stats.layers << " new layer" << (stats.layers == 1 ? "" : "s");
+  if (stats.blocks_flattened) ss << ", " << stats.blocks_flattened << " block instance" << (stats.blocks_flattened == 1 ? "" : "s") << " flattened";
+  if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped (angular/ordinate dimensions, multi-loop/edge-boundary hatches, 3D solids and meshes are not read back yet)";
+  summary = ss.str();
+  if (stats.curves + stats.points + stats.hatches + stats.dimensions == 0) {
+    summary = "No supported entities found in " + path + (stats.skipped ? " (" + std::to_string(stats.skipped) + " unsupported entities skipped)" : "");
+    return false;
+  }
+  return true;
+}
+
+bool ExportDwg(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  const std::string tmp_dxf = TempPathNear(path, ".dxf");
+  if (!ExportDxf(doc, tmp_dxf, selected_only, error)) return false;
+
+  Dwg_Data dwg{};
+  int err = dxf_read_file(tmp_dxf.c_str(), &dwg);
+  std::error_code ec;
+  std::filesystem::remove(tmp_dxf, ec);
+  if (err >= DWG_ERR_CRITICAL) {
+    error = "LibreDWG could not parse the intermediate DXF (error 0x" + [&] { std::ostringstream h; h << std::hex << err; return h.str(); }() + ")";
+    dwg_free(&dwg);
+    return false;
+  }
+  // AcadSchemes' Version=: the intermediate DXF already carries the chosen
+  // scheme's $ACADVER (ExportDxf, above), so dxf_read_file's own
+  // from_version already matches it - but set dwg.header.version explicitly
+  // from the same scheme, the same way LibreDWG's own dwgwrite program does
+  // after its `--as rNNNN` option (see programs/dwgwrite.c), rather than
+  // relying on that implicit agreement. dwg_version_hdr_type is LibreDWG's
+  // own public header-string-to-enum lookup (include/dwg.h), so this uses
+  // its real symbol/table, not a hand-guessed enum mapping.
+  const AcadScheme& scheme = EffectiveAcadScheme(doc);
+  const Dwg_Version_Type version = dwg_version_hdr_type(scheme.acadver.c_str());
+  if (version != R_INVALID) dwg.header.version = version;
+  // dwg_write_file() deliberately refuses to touch a path that already
+  // exists (stat() succeeds -> "The file already exists. We won't
+  // overwrite it.", src/dwg.c) - a safety check meant for LibreDWG's own
+  // CLI tools, not for an app whose Export/SaveAs command is expected to
+  // overwrite like every other format here does.
+  //
+  // Write to a fresh temp path and rename it into place, rather than
+  // writing straight to `path`, for two independent reasons: it makes the
+  // export atomic (a crash mid-write never leaves a half-written file at
+  // `path`), and - the reason this was actually found - a Windows-only
+  // smoke-test crash traced to exactly this pattern: a process that writes
+  // a file and then, moments later, reopens that *exact* path itself
+  // (e.g. Export followed by Open in the same session) triggered a
+  // deterministic, silent process kill (bisected across 6 CI scenarios:
+  // every combination EXCEPT "write path P, reopen path P in the same
+  // process" succeeded cleanly - two exports to different paths, a
+  // version-switched export, opening a file a *different* process wrote,
+  // and opening one *different* file after exporting another all worked).
+  // That failure shape (deterministic, instant, zero output even from the
+  // startup banner) matches known Windows filesystem-metadata-staleness
+  // and antivirus/EDR write-then-reread heuristics, not a logic bug in the
+  // DWG codec itself. Renaming a fully-written temp file into place means
+  // the final path is never the file this process itself just held open
+  // for writing, sidestepping the trigger entirely rather than guessing
+  // at which OS/AV subsystem causes it.
+  const std::string tmp_dwg = TempPathNear(path, ".dwg");
+  std::filesystem::remove(tmp_dwg, ec);
+  err = dwg_write_file(tmp_dwg.c_str(), &dwg);
+  dwg_free(&dwg);
+  if (err >= DWG_ERR_CRITICAL) {
+    std::filesystem::remove(tmp_dwg, ec);
+    error = "Could not write " + path + " (LibreDWG error 0x" + [&] { std::ostringstream h; h << std::hex << err; return h.str(); }() + ")";
+    return false;
+  }
+  std::filesystem::remove(path, ec);
+  std::filesystem::rename(tmp_dwg, path, ec);
+  if (ec) {
+    error = "Could not move the written DWG into place at " + path + " (" + ec.message() + ")";
+    std::filesystem::remove(tmp_dwg, ec);
+    return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Vector drawing (shared by SVG and PDF)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct Path2 {
+  std::vector<ON_2dPoint> pts;
+  bool closed = false;
+  bool is_point = false;
+  Color color;
+  int layer = 0;
+  // The curve's own effective linetype pattern (Document::FindLinetype's
+  // raw model-unit dash/gap lengths, alternating starting with a dash,
+  // Linetype::pattern's own convention - SceneObject::DashPolyline already
+  // reads it the same way for on-screen display), unscaled by the page's
+  // own LayoutPage::scale (not known yet when CollectPaths runs, since
+  // LayoutPage itself needs every path's points first) - ExportSvg/
+  // ExportPdf scale it by that factor once they have it, the same way they
+  // already resolve width/color from the layer at write time rather than
+  // storing a page-scaled value here. Empty means solid (Continuous, or
+  // linetype display doesn't gate this - unlike the on-screen
+  // SceneObject::display_dashes_, printing always honors the real
+  // linetype regardless of the viewport's own display toggle).
+  std::vector<double> dash_pattern;
+};
+
+// World -> drawing plane. Parallel cameras project in world units (so a
+// forced scale is meaningful); perspective cameras go through the viewport's
+// pixel projection (y flipped so +y is up); no viewport means Top.
+struct Projector {
+  const Viewport* vp = nullptr;
+  bool perspective = false;
+  Point3d eye{0, 0, 0};
+  Vector3d right{1, 0, 0}, up{0, 1, 0};
+
+  explicit Projector(const Viewport* v) : vp(v) {
+    if (!vp) return;
+    const Camera& cam = vp->GetCamera();
+    perspective = cam.State().perspective;
+    eye = cam.State().eye;
+    right = cam.Right();
+    up = cam.Up();
+  }
+  bool Project(Point3d p, ON_2dPoint& out) const {
+    if (!vp) { out.Set(p.x, p.y); return true; }
+    if (perspective) {
+      double px, py;
+      if (!vp->WorldToPixel(p, px, py)) return false;
+      out.Set(px, -py);
+      return true;
+    }
+    const Vector3d rel = p - eye;
+    out.Set(ON_DotProduct(rel, right), ON_DotProduct(rel, up));
+    return true;
+  }
+};
+
+std::vector<Path2> CollectPaths(const Document& doc, const Projector& proj, bool selected_only) {
+  std::vector<Path2> paths;
+  for (const SceneObject& o : doc.Objects()) {
+    if (selected_only && !o.selected) continue;
+    if (!doc.IsObjectVisible(o)) continue;
+    if (o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size() &&
+        !LayerPrints(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.PlotStyles()))
+      continue;  // Layer::print_width_mm < 0 (or its named PlotStyle's width_mm): "does not print", still visible on screen
+    // A layer's own plot_color override (LayerPlotColor), or its named
+    // PlotStyle's color (LayerPlotStyle/PlotStyleTable) when it has one,
+    // takes over from the object's on-screen display color here - the
+    // color half of "plot styles (CTB/STB)", alongside print_width_mm's
+    // lineweight half above.
+    Color color = o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size()
+                             ? EffectivePlotColor(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.PlotStyles(), doc.EffectiveColor(o))
+                             : doc.EffectiveColor(o);
+    // A layer's own named PlotStyle may also screen that color toward white
+    // (PlotStyleTable's own screening column) - the fifth and last real
+    // CTB/STB plot-style override, alongside width/color/transparency/
+    // linetype above. Unlike transparency (a separate alpha channel the
+    // writers apply at write time), screening changes the color itself, so
+    // it is baked into Path2::color here rather than carried as its own
+    // field.
+    if (o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size()) {
+      const double screening = EffectivePlotScreening(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.PlotStyles());
+      if (screening < 100.0) color = ApplyScreening(color, screening);
+    }
+    // The object's own real linetype, regardless of the on-screen
+    // "linetype display" viewport toggle (Document::EffectiveDashes gates
+    // on that toggle deliberately, since it is a display-only helper - see
+    // its own comment - but Print/Export should always honor the real
+    // linetype, the same way it already ignores Layer::visible/locked's
+    // on-screen-only distinctions).
+    std::vector<double> dashes;
+    if (o.kind == ObjectKind::Curve) {
+      // A layer's own named PlotStyle may force a different linetype than
+      // the object's own (LayerPlotStyle/PlotStyleTable's own linetype
+      // column) - the fourth real CTB/STB plot-style override, alongside
+      // width/color above and transparency below.
+      std::string lt_name = doc.EffectiveLinetype(o);
+      if (o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size())
+        lt_name = EffectivePlotLinetypeName(doc.Layers()[static_cast<size_t>(o.layer_index)], doc.PlotStyles(), lt_name);
+      if (const Linetype* lt = doc.FindLinetype(lt_name); lt && !lt->pattern.empty()) {
+        const double ls = doc.Settings().linetype_scale > 0 ? doc.Settings().linetype_scale : 1.0;
+        for (double d : lt->pattern) dashes.push_back(std::max(0.0, d) * ls);
+      }
+    }
+    if (o.kind == ObjectKind::Point) {
+      Path2 p;
+      ON_2dPoint q;
+      if (!proj.Project(o.point, q)) continue;
+      p.pts.push_back(q);
+      p.is_point = true;
+      p.color = color;
+      p.layer = o.layer_index;
+      paths.push_back(std::move(p));
+      continue;
+    }
+    for (const Polyline3& pl : ObjectPolylines(o)) {
+      Path2 p;
+      p.color = color;
+      p.layer = o.layer_index;
+      p.dash_pattern = dashes;
+      bool all_ok = true;
+      for (const Point3d& w : pl.pts) {
+        ON_2dPoint q;
+        if (!proj.Project(w, q)) {
+          all_ok = false;
+          if (p.pts.size() >= 2) paths.push_back(p);
+          p.pts.clear();
+          continue;
+        }
+        p.pts.push_back(q);
+      }
+      if (p.pts.size() >= 2) {
+        p.closed = pl.closed && all_ok;
+        paths.push_back(std::move(p));
+      }
+    }
+  }
+  return paths;
+}
+
+// Page layout: maps drawing-plane coordinates to page millimetres with the
+// origin at the bottom-left corner and +y up.
+struct PageLayout {
+  double width_mm = 297, height_mm = 210;
+  double scale = 1.0;
+  double ox = 0, oy = 0;  // drawing-plane point that lands at the margin corner
+  double margin = 10;
+  double min_x = 0, min_y = 0;
+  double ToPageX(double x) const { return ox + (x - min_x) * scale; }
+  double ToPageY(double y) const { return oy + (y - min_y) * scale; }
+};
+
+PageLayout LayoutPage(const std::vector<Path2>& paths, const DrawingOptions& opts, const Document& doc, bool perspective) {
+  PageLayout L;
+  L.width_mm = opts.page_width_mm > 0 ? opts.page_width_mm : 297.0;
+  L.height_mm = opts.page_height_mm > 0 ? opts.page_height_mm : 210.0;
+  L.margin = std::max(0.0, opts.margin_mm);
+  double minx = 1e300, miny = 1e300, maxx = -1e300, maxy = -1e300;
+  for (const Path2& p : paths) {
+    for (const ON_2dPoint& q : p.pts) {
+      minx = std::min(minx, q.x); maxx = std::max(maxx, q.x);
+      miny = std::min(miny, q.y); maxy = std::max(maxy, q.y);
+    }
+  }
+  if (minx > maxx) { minx = miny = 0; maxx = maxy = 1; }
+  const double bw = std::max(maxx - minx, 1e-9), bh = std::max(maxy - miny, 1e-9);
+  L.min_x = minx; L.min_y = miny;
+  const double avail_w = std::max(L.width_mm - 2 * L.margin, 1.0);
+  const double avail_h = std::max(L.height_mm - 2 * L.margin, 1.0);
+  if (opts.scale > 0 && !perspective) {
+    L.scale = opts.scale * MillimetresPerUnit(doc);
+    // Grow the page rather than clip a forced-scale print.
+    L.width_mm = std::max(L.width_mm, bw * L.scale + 2 * L.margin);
+    L.height_mm = std::max(L.height_mm, bh * L.scale + 2 * L.margin);
+  } else {
+    L.scale = std::min(avail_w / bw, avail_h / bh);
+  }
+  L.ox = (L.width_mm - bw * L.scale) / 2.0;
+  L.oy = (L.height_mm - bh * L.scale) / 2.0;
+  return L;
+}
+
+std::string HexColor(const Color& c) {
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "#%02x%02x%02x", static_cast<int>(std::lround(c.r * 255)),
+                static_cast<int>(std::lround(c.g * 255)), static_cast<int>(std::lround(c.b * 255)));
+  return buf;
+}
+
+std::string XmlEscape(const std::string& s) {
+  std::string o;
+  for (char c : s) {
+    switch (c) {
+      case '&': o += "&amp;"; break;
+      case '<': o += "&lt;"; break;
+      case '>': o += "&gt;"; break;
+      case '"': o += "&quot;"; break;
+      default: o += c;
+    }
+  }
+  return o;
+}
+
+std::string PdfEscape(const std::string& s) {
+  std::string o;
+  for (char c : s) {
+    if (c == '(' || c == ')' || c == '\\') o += '\\';
+    if (static_cast<unsigned char>(c) < 32 || static_cast<unsigned char>(c) > 126) o += '?';
+    else o += c;
+  }
+  return o;
+}
+
+bool PrepareDrawing(const Document& doc, const Viewport* view, bool selected_only, const DrawingOptions& opts,
+                    std::vector<Path2>& paths, PageLayout& layout, std::string& error) {
+  Projector proj(view);
+  paths = CollectPaths(doc, proj, selected_only);
+  if (paths.empty()) {
+    error = selected_only ? "Nothing to export: select some visible objects" : "Nothing to export: the document is empty";
+    return false;
+  }
+  layout = LayoutPage(paths, opts, doc, proj.perspective);
+  return true;
+}
+
+}  // namespace
+
+bool ExportSvg(const Document& doc, const Viewport* view, const std::string& path, bool selected_only,
+               const DrawingOptions& opts, std::string& error) {
+  std::vector<Path2> paths;
+  PageLayout L;
+  if (!PrepareDrawing(doc, view, selected_only, opts, paths, L, error)) return false;
+  std::ofstream os(path, std::ios::binary);
+  if (!os) { error = "Could not write " + path; return false; }
+  const double W = L.width_mm, H = L.height_mm;
+  const double marker = 1.0;  // point marker half-size in mm
+  os << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  os << "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"" << Num(W, 3) << "mm\" height=\"" << Num(H, 3)
+     << "mm\" viewBox=\"0 0 " << Num(W, 3) << " " << Num(H, 3) << "\">\n";
+  os << "<title>" << XmlEscape(doc.Settings().title.empty() ? std::filesystem::path(path).stem().string() : doc.Settings().title) << "</title>\n";
+  os << "<desc>Exported by Dino 8" << (view ? " from the " + view->Name() + " viewport" : std::string(" (Top view)")) << "</desc>\n";
+  os << "<g fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n";
+  // One group per layer so Illustrator / Inkscape keep the structure - also
+  // exactly the right granularity for a per-layer print width/lineweight
+  // (DocumentSettings has none; Layer::print_width_mm does - see
+  // EffectivePrintWidthMm, doc/Document.h), since every path in one <g>
+  // shares a layer already.
+  const double default_width = opts.line_width_mm > 0 ? opts.line_width_mm : 0.25;
+  std::map<int, std::vector<const Path2*>> by_layer;
+  for (const Path2& p : paths) by_layer[p.layer].push_back(&p);
+  int written = 0;
+  for (const auto& [layer, list] : by_layer) {
+    const bool valid_layer = layer >= 0 && static_cast<size_t>(layer) < doc.Layers().size();
+    std::string name = valid_layer ? doc.LayerFullPath(layer) : "Default";
+    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(layer)], doc.PlotStyles(), default_width) : default_width;
+    const float alpha = valid_layer ? EffectivePlotAlpha(doc.Layers()[static_cast<size_t>(layer)], doc.PlotStyles()) : 1.0f;
+    os << "<g id=\"" << XmlEscape(name) << "\" stroke-width=\"" << Num(width, 3) << "\"";
+    if (alpha < 1.0f) os << " stroke-opacity=\"" << Num(alpha, 3) << "\"";
+    os << ">\n";
+    for (const Path2* p : list) {
+      os << "<path stroke=\"" << HexColor(p->color) << "\"";
+      if (!p->dash_pattern.empty()) {
+        os << " stroke-dasharray=\"";
+        for (size_t i = 0; i < p->dash_pattern.size(); ++i) os << (i ? "," : "") << Num(p->dash_pattern[i] * L.scale, 3);
+        os << "\"";
+      }
+      os << " d=\"";
+      if (p->is_point) {
+        const double x = L.ToPageX(p->pts[0].x), y = H - L.ToPageY(p->pts[0].y);
+        os << "M" << Num(x - marker, 3) << " " << Num(y, 3) << " L" << Num(x + marker, 3) << " " << Num(y, 3)
+           << " M" << Num(x, 3) << " " << Num(y - marker, 3) << " L" << Num(x, 3) << " " << Num(y + marker, 3);
+      } else {
+        for (size_t i = 0; i < p->pts.size(); ++i) {
+          os << (i == 0 ? "M" : " L") << Num(L.ToPageX(p->pts[i].x), 3) << " " << Num(H - L.ToPageY(p->pts[i].y), 3);
+        }
+        if (p->closed) os << " Z";
+      }
+      os << "\"/>\n";
+      ++written;
+    }
+    os << "</g>\n";
+  }
+  os << "</g>\n</svg>\n";
+  if (!os) { error = "Could not write " + path; return false; }
+  (void)written;
+  return true;
+}
+
+bool ExportPdf(const Document& doc, const Viewport* view, const std::string& path, bool selected_only,
+               const DrawingOptions& opts, std::string& error) {
+  std::vector<Path2> paths;
+  PageLayout L;
+  if (!PrepareDrawing(doc, view, selected_only, opts, paths, L, error)) return false;
+  const double pt = 72.0 / 25.4;  // points per millimetre
+  const double W = L.width_mm * pt, H = L.height_mm * pt;
+  const double marker = 1.0 * pt;
+
+  // Content stream. Stroke alpha (PlotStyle::transparency, the third real
+  // CTB/STB column alongside width/color above) needs a PDF ExtGState
+  // resource switched in via the "gs" operator - unlike width/color, it
+  // can't just be set inline in the content stream. `gs_alphas`/`gs_by_key`
+  // collect only the DISTINCT alpha values paths actually use (GSn, n = the
+  // 1-based index into gs_alphas), so a document that never uses
+  // transparency (the common case) builds none at all and the PDF's object
+  // numbering/Resources dict stay exactly what they were before this
+  // feature existed.
+  const double default_width = opts.line_width_mm > 0 ? opts.line_width_mm : 0.25;
+  std::vector<float> gs_alphas;
+  std::map<int, std::string> gs_by_key;
+  auto gs_name_for = [&](float alpha) -> std::string {
+    const int key = static_cast<int>(std::lround(alpha * 1000.0f));
+    auto it = gs_by_key.find(key);
+    if (it != gs_by_key.end()) return it->second;
+    gs_alphas.push_back(alpha);
+    const std::string nm = "GS" + std::to_string(gs_alphas.size());
+    gs_by_key[key] = nm;
+    return nm;
+  };
+  std::ostringstream cs;
+  cs << "q\n" << Num(default_width * pt, 3) << " w 1 J 1 j\n";
+  std::string last_color;
+  double last_width = default_width;
+  float last_alpha = 1.0f;
+  std::string last_dash = "[] 0 d\n";  // solid - the default, so a document with no dashed curves emits no "d" operators at all
+  for (const Path2& p : paths) {
+    const bool valid_layer = p.layer >= 0 && static_cast<size_t>(p.layer) < doc.Layers().size();
+    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(p.layer)], doc.PlotStyles(), default_width) : default_width;
+    if (std::fabs(width - last_width) > 1e-9) { cs << Num(width * pt, 3) << " w\n"; last_width = width; }
+    const float alpha = valid_layer ? EffectivePlotAlpha(doc.Layers()[static_cast<size_t>(p.layer)], doc.PlotStyles()) : 1.0f;
+    if (std::fabs(alpha - last_alpha) > 1e-4f) { cs << "/" << gs_name_for(alpha) << " gs\n"; last_alpha = alpha; }
+    const std::string color = Num(p.color.r, 3) + " " + Num(p.color.g, 3) + " " + Num(p.color.b, 3) + " RG\n";
+    if (color != last_color) { cs << color; last_color = color; }
+    std::string dash_op = "[] 0 d\n";
+    if (!p.dash_pattern.empty()) {
+      std::ostringstream da;
+      da << "[";
+      for (size_t i = 0; i < p.dash_pattern.size(); ++i) da << (i ? " " : "") << Num(p.dash_pattern[i] * L.scale * pt, 3);
+      da << "] 0 d\n";
+      dash_op = da.str();
+    }
+    if (dash_op != last_dash) { cs << dash_op; last_dash = dash_op; }
+    if (p.is_point) {
+      const double x = L.ToPageX(p.pts[0].x) * pt, y = L.ToPageY(p.pts[0].y) * pt;
+      cs << Num(x - marker, 3) << " " << Num(y, 3) << " m " << Num(x + marker, 3) << " " << Num(y, 3) << " l S\n";
+      cs << Num(x, 3) << " " << Num(y - marker, 3) << " m " << Num(x, 3) << " " << Num(y + marker, 3) << " l S\n";
+      continue;
+    }
+    for (size_t i = 0; i < p.pts.size(); ++i) {
+      cs << Num(L.ToPageX(p.pts[i].x) * pt, 3) << " " << Num(L.ToPageY(p.pts[i].y) * pt, 3) << (i == 0 ? " m\n" : " l\n");
+    }
+    if (p.closed) cs << "h\n";
+    cs << "S\n";
+  }
+  cs << "Q\n";
+  const std::string content = cs.str();
+
+  // Objects: 1 catalog, 2 pages, 3 page, 4 content, 5..5+N-1 ExtGStates (N =
+  // gs_alphas.size(), 0 for a document using no transparency), 5+N info.
+  const int n_gs = static_cast<int>(gs_alphas.size());
+  const int info_obj = 5 + n_gs;
+  std::string out;
+  std::vector<size_t> offsets(static_cast<size_t>(info_obj) + 1, 0);
+  out += "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
+  auto obj = [&](int n, const std::string& body) {
+    offsets[static_cast<size_t>(n)] = out.size();
+    out += std::to_string(n) + " 0 obj\n" + body + "\nendobj\n";
+  };
+  obj(1, "<< /Type /Catalog /Pages 2 0 R >>");
+  obj(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+  std::string resources = "<< >>";
+  if (n_gs > 0) {
+    std::string gs_dict = "<< /ExtGState << ";
+    for (int i = 0; i < n_gs; ++i) gs_dict += "/GS" + std::to_string(i + 1) + " " + std::to_string(5 + i) + " 0 R ";
+    gs_dict += ">> >>";
+    resources = gs_dict;
+  }
+  obj(3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + Num(W, 3) + " " + Num(H, 3) + "] /Contents 4 0 R /Resources " + resources + " >>");
+  obj(4, "<< /Length " + std::to_string(content.size()) + " >>\nstream\n" + content + "endstream");
+  for (int i = 0; i < n_gs; ++i) {
+    obj(5 + i, "<< /Type /ExtGState /ca " + Num(gs_alphas[static_cast<size_t>(i)], 3) + " /CA " + Num(gs_alphas[static_cast<size_t>(i)], 3) + " >>");
+  }
+  const std::string title = doc.Settings().title.empty() ? std::filesystem::path(path).stem().string() : doc.Settings().title;
+  obj(info_obj, "<< /Producer (Dino 8) /Creator (Dino 8) /Title (" + PdfEscape(title) + ")" +
+             (doc.Settings().author.empty() ? "" : " /Author (" + PdfEscape(doc.Settings().author) + ")") + " >>");
+  const size_t xref = out.size();
+  out += "xref\n0 " + std::to_string(info_obj + 1) + "\n0000000000 65535 f \n";
+  for (int i = 1; i <= info_obj; ++i) {
+    char line[32];
+    std::snprintf(line, sizeof(line), "%010zu 00000 n \n", offsets[static_cast<size_t>(i)]);
+    out += line;
+  }
+  out += "trailer\n<< /Size " + std::to_string(info_obj + 1) + " /Root 1 0 R /Info " + std::to_string(info_obj) + " 0 R >>\nstartxref\n" + std::to_string(xref) + "\n%%EOF\n";
+
+  std::ofstream os(path, std::ios::binary);
+  if (!os) { error = "Could not write " + path; return false; }
+  os.write(out.data(), static_cast<std::streamsize>(out.size()));
+  if (!os) { error = "Could not write " + path; return false; }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// PLY
+// ---------------------------------------------------------------------------
+
+bool ExportPly(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  std::vector<const ON_Mesh*> meshes;
+  // Pass 1 (serial, cheap): which objects are actually included, in
+  // Objects() order - order matters for reproducible output, so this list
+  // is decided up front rather than as a side effect of the parallel loop.
+  std::vector<const SceneObject*> included;
+  for (const SceneObject& o : doc.Objects()) {
+    if (selected_only && !o.selected) continue;
+    if (!doc.IsObjectVisible(o)) continue;
+    if ((o.kind == ObjectKind::Mesh && o.mesh) || (o.kind == ObjectKind::Surface && o.surface) ||
+        (o.kind == ObjectKind::SubD && o.subd) || (o.kind == ObjectKind::Brep && o.brep)) {
+      included.push_back(&o);
+    }
+  }
+  // Pass 2 (parallel): tessellate each included object into its own slot.
+  // Safe to parallelize - each iteration only reads its own SceneObject
+  // (a distinct unique_ptr<Surface/SubD/Brep> per object, none shared) and
+  // writes only to `results[i]`, its own std::optional. This is the same
+  // "each object's work is fully independent of every other object's"
+  // shape as EnsureDisplay's warmup pass in main.cpp's RunStressTest - see
+  // util/ThreadPool.h - and unlike HoleArray's cutter generation (see the
+  // comment there) nothing here calls into kernel::BooleanCombine/Manifold,
+  // only tessellation (TessellateGridAdaptive/ToApproximateMesh/
+  // EnsureDisplay), so there is no boolean-library thread-safety question
+  // to be cautious about. The actual file write below stays a single
+  // serial pass over an ordinary std::ofstream, as it must.
+  std::vector<std::optional<kernel::Mesh>> results(included.size());
+  ParallelFor(included.size(), [&](std::size_t i) {
+    const SceneObject& o = *included[i];
+    if (o.kind == ObjectKind::Mesh && o.mesh) {
+      results[i] = *o.mesh;
+    } else if (o.kind == ObjectKind::Surface && o.surface) {
+      results[i] = o.surface->TessellateGridAdaptive(0.01);
+    } else if (o.kind == ObjectKind::SubD && o.subd) {
+      results[i] = o.subd->ToApproximateMesh();
+    } else if (o.kind == ObjectKind::Brep && o.brep) {
+      // Use the display tessellation (already a closed render mesh).
+      o.EnsureDisplay(0.01, 0.05);
+      const std::vector<float>& t = o.Display().triangles;
+      kernel::Mesh m;
+      ON_Mesh& raw = m.raw();
+      for (size_t k2 = 0; k2 + 17 < t.size(); k2 += 18) {
+        const int base = raw.VertexCount();
+        for (int k = 0; k < 3; ++k) raw.m_V.Append(ON_3fPoint(t[k2 + k * 6], t[k2 + k * 6 + 1], t[k2 + k * 6 + 2]));
+        ON_MeshFace f; f.vi[0] = base; f.vi[1] = base + 1; f.vi[2] = base + 2; f.vi[3] = base + 2;
+        raw.m_F.Append(f);
+      }
+      raw.CombineIdenticalVertices(true, true);
+      if (raw.FaceCount() > 0) results[i] = m;
+    }
+  });
+  std::vector<kernel::Mesh> owned;
+  owned.reserve(results.size());
+  for (std::optional<kernel::Mesh>& r : results) if (r) owned.push_back(std::move(*r));
+  for (const kernel::Mesh& m : owned) meshes.push_back(&m.raw());
+  if (meshes.empty()) {
+    error = "Nothing to export: select meshes, surfaces, polysurfaces or SubDs";
+    return false;
+  }
+  std::ofstream os(path, std::ios::binary);
+  if (!os) { error = "Could not write " + path; return false; }
+  int nv = 0, nf = 0;
+  bool normals = true;
+  for (const ON_Mesh* m : meshes) {
+    nv += m->VertexCount();
+    nf += m->FaceCount();
+    if (m->m_N.Count() != m->VertexCount()) normals = false;
+  }
+  os << "ply\nformat ascii 1.0\ncomment Exported by Dino 8\n";
+  os << "element vertex " << nv << "\nproperty float x\nproperty float y\nproperty float z\n";
+  if (normals) os << "property float nx\nproperty float ny\nproperty float nz\n";
+  os << "element face " << nf << "\nproperty list uchar int vertex_indices\nend_header\n";
+  for (const ON_Mesh* m : meshes) {
+    for (int i = 0; i < m->VertexCount(); ++i) {
+      const ON_3dPoint p = m->Vertex(i);
+      os << Num(p.x) << " " << Num(p.y) << " " << Num(p.z);
+      if (normals) { const ON_3fVector& n = m->m_N[i]; os << " " << Num(n.x) << " " << Num(n.y) << " " << Num(n.z); }
+      os << "\n";
+    }
+  }
+  int base = 0;
+  for (const ON_Mesh* m : meshes) {
+    for (int i = 0; i < m->FaceCount(); ++i) {
+      const ON_MeshFace& f = m->m_F[i];
+      if (f.IsTriangle()) os << "3 " << base + f.vi[0] << " " << base + f.vi[1] << " " << base + f.vi[2] << "\n";
+      else os << "4 " << base + f.vi[0] << " " << base + f.vi[1] << " " << base + f.vi[2] << " " << base + f.vi[3] << "\n";
+    }
+    base += m->VertexCount();
+  }
+  if (!os) { error = "Could not write " + path; return false; }
+  return true;
+}
+
+namespace {
+
+struct PlyProperty {
+  std::string name;
+  std::string type;        // scalar type, or the item type of a list
+  std::string count_type;  // non-empty for list properties
+};
+
+struct PlyElement {
+  std::string name;
+  long count = 0;
+  std::vector<PlyProperty> props;
+};
+
+// Real PLY list properties (a face's vertex-index list, chiefly) never run
+// beyond a few hundred entries; this is generous headroom above any
+// legitimate use, just large enough to reject a corrupt/malicious count
+// outright rather than spend seconds to minutes (or gigabytes of memory)
+// discovering the file ran out of data.
+constexpr long kMaxPlyListCount = 1 << 20;
+
+size_t PlyTypeSize(const std::string& t) {
+  if (t == "char" || t == "uchar" || t == "int8" || t == "uint8") return 1;
+  if (t == "short" || t == "ushort" || t == "int16" || t == "uint16") return 2;
+  if (t == "int" || t == "uint" || t == "float" || t == "int32" || t == "uint32" || t == "float32") return 4;
+  if (t == "double" || t == "float64") return 8;
+  return 4;
+}
+
+double PlyReadBinary(std::istream& is, const std::string& t, bool big_endian) {
+  unsigned char buf[8];
+  const size_t n = PlyTypeSize(t);
+  is.read(reinterpret_cast<char*>(buf), static_cast<std::streamsize>(n));
+  if (big_endian) std::reverse(buf, buf + n);
+  if (t == "char" || t == "int8") return static_cast<signed char>(buf[0]);
+  if (t == "uchar" || t == "uint8") return buf[0];
+  if (t == "short" || t == "int16") { std::int16_t v; std::memcpy(&v, buf, 2); return v; }
+  if (t == "ushort" || t == "uint16") { std::uint16_t v; std::memcpy(&v, buf, 2); return v; }
+  if (t == "int" || t == "int32") { std::int32_t v; std::memcpy(&v, buf, 4); return v; }
+  if (t == "uint" || t == "uint32") { std::uint32_t v; std::memcpy(&v, buf, 4); return v; }
+  if (t == "double" || t == "float64") { double v; std::memcpy(&v, buf, 8); return v; }
+  float v; std::memcpy(&v, buf, 4); return v;
+}
+
+}  // namespace
+
+bool ImportPly(Document& doc, const std::string& path, std::string& error) {
+  std::ifstream is(path, std::ios::binary);
+  if (!is) { error = "Could not open " + path; return false; }
+  std::string line;
+  if (!std::getline(is, line) || Trim(line) != "ply") { error = "Not a PLY file: " + path; return false; }
+  std::string format;
+  std::vector<PlyElement> elements;
+  while (std::getline(is, line)) {
+    line = Trim(line);
+    std::istringstream ls(line);
+    std::string kw;
+    ls >> kw;
+    if (kw == "format") { ls >> format; }
+    else if (kw == "element") { PlyElement e; ls >> e.name >> e.count; elements.push_back(e); }
+    else if (kw == "property" && !elements.empty()) {
+      PlyProperty p;
+      std::string t;
+      ls >> t;
+      if (t == "list") { ls >> p.count_type >> p.type >> p.name; }
+      else { p.type = t; ls >> p.name; }
+      elements.back().props.push_back(p);
+    } else if (kw == "end_header") break;
+  }
+  const bool ascii = format == "ascii";
+  const bool big = format == "binary_big_endian";
+  if (!ascii && !big && format != "binary_little_endian") { error = "Unsupported PLY format: " + format; return false; }
+
+  kernel::Mesh mesh;
+  ON_Mesh& m = mesh.raw();
+  for (const PlyElement& e : elements) {
+    int ix = -1, iy = -1, iz = -1, inx = -1, iny = -1, inz = -1;
+    for (size_t i = 0; i < e.props.size(); ++i) {
+      const std::string& n = e.props[i].name;
+      if (n == "x") ix = static_cast<int>(i); else if (n == "y") iy = static_cast<int>(i); else if (n == "z") iz = static_cast<int>(i);
+      else if (n == "nx") inx = static_cast<int>(i); else if (n == "ny") iny = static_cast<int>(i); else if (n == "nz") inz = static_cast<int>(i);
+    }
+    const bool is_vertex = e.name == "vertex" && ix >= 0 && iy >= 0 && iz >= 0;
+    const bool is_face = e.name == "face";
+    for (long r = 0; r < e.count; ++r) {
+      std::vector<double> scalars(e.props.size(), 0.0);
+      std::vector<long> indices;
+      if (ascii) {
+        if (!std::getline(is, line)) { error = "PLY file ended early"; return false; }
+        std::istringstream ls(line);
+        for (size_t i = 0; i < e.props.size(); ++i) {
+          if (!e.props[i].count_type.empty()) {
+            long cnt = 0; ls >> cnt;
+            // cnt comes straight from the file with no upper bound. A
+            // corrupt/malicious line like "3 2000000000" (a huge list count
+            // with no values behind it) used to spin this loop billions of
+            // times pushing the failed extraction's leftover 0 into
+            // indices every time - an unbounded-allocation DoS from a
+            // few-byte file. Reject an unreasonable count outright, and
+            // bail the moment a value actually fails to parse instead of
+            // ploughing on past the end of the line.
+            if (!ls || cnt < 0 || cnt > kMaxPlyListCount) { error = "PLY file has an invalid list count"; return false; }
+            for (long k = 0; k < cnt; ++k) {
+              long v = 0; ls >> v;
+              if (!ls) { error = "PLY file ended early"; return false; }
+              if (i == 0 || is_face) indices.push_back(v);
+            }
+          } else {
+            ls >> scalars[i];
+          }
+        }
+      } else {
+        for (size_t i = 0; i < e.props.size(); ++i) {
+          if (!e.props[i].count_type.empty()) {
+            const long cnt = static_cast<long>(PlyReadBinary(is, e.props[i].count_type, big));
+            // Same hazard as the ascii branch above, but worse: PlyReadBinary
+            // keeps returning (stale/zero) values once the stream hits EOF
+            // instead of throwing, so an attacker-chosen cnt near
+            // std::numeric_limits<uint32_t>::max() used to spin this loop
+            // ~4 billion times - a CPU-hang DoS - before the one "!is" check
+            // that existed, which ran only after the whole row finished.
+            // Bound cnt and check the stream on every iteration instead.
+            if (!is || cnt < 0 || cnt > kMaxPlyListCount) { error = "PLY file ended early"; return false; }
+            for (long k = 0; k < cnt; ++k) {
+              const long v = static_cast<long>(PlyReadBinary(is, e.props[i].type, big));
+              if (!is) { error = "PLY file ended early"; return false; }
+              if (is_face && indices.size() < 64) indices.push_back(v);
+            }
+          } else {
+            scalars[i] = PlyReadBinary(is, e.props[i].type, big);
+          }
+        }
+        if (!is) { error = "PLY file ended early"; return false; }
+      }
+      if (is_vertex) {
+        m.m_V.Append(ON_3fPoint(static_cast<float>(scalars[static_cast<size_t>(ix)]), static_cast<float>(scalars[static_cast<size_t>(iy)]), static_cast<float>(scalars[static_cast<size_t>(iz)])));
+        if (inx >= 0 && iny >= 0 && inz >= 0) {
+          m.m_N.Append(ON_3fVector(static_cast<float>(scalars[static_cast<size_t>(inx)]), static_cast<float>(scalars[static_cast<size_t>(iny)]), static_cast<float>(scalars[static_cast<size_t>(inz)])));
+        }
+      } else if (is_face && indices.size() >= 3) {
+        // Fan-triangulate anything beyond a quad.
+        auto valid = [&](long v) { return v >= 0 && v < m.VertexCount(); };
+        if (indices.size() == 4 && valid(indices[0]) && valid(indices[1]) && valid(indices[2]) && valid(indices[3])) {
+          ON_MeshFace f;
+          for (int k = 0; k < 4; ++k) f.vi[k] = static_cast<int>(indices[static_cast<size_t>(k)]);
+          m.m_F.Append(f);
+        } else {
+          for (size_t k = 1; k + 1 < indices.size(); ++k) {
+            if (!valid(indices[0]) || !valid(indices[k]) || !valid(indices[k + 1])) continue;
+            ON_MeshFace f;
+            f.vi[0] = static_cast<int>(indices[0]); f.vi[1] = static_cast<int>(indices[k]); f.vi[2] = static_cast<int>(indices[k + 1]); f.vi[3] = f.vi[2];
+            m.m_F.Append(f);
+          }
+        }
+      }
+    }
+  }
+  if (m.m_N.Count() != m.VertexCount()) { m.m_N.Destroy(); }
+  if (m.FaceCount() == 0) { error = "No faces found in " + path; return false; }
+  if (m.m_N.Count() == 0) m.ComputeVertexNormals();
+  SceneObject o = SceneObject::MakeMesh(mesh);
+  o.name = std::filesystem::path(path).stem().string();
+  doc.Add(std::move(o));
+  return true;
+}
+
+namespace {
+
+// Merges every PointCloud object in `doc` (or just the selected ones, when
+// `selected_only` is true) into a single kernel::PointCloud, in Objects()
+// order - the same "decide up front which objects are in, in document
+// order" shape ExportPly's own `included` pass above uses. Colors carry
+// over only if every contributing cloud has them (PointCloud::SetColors()'
+// own "all or nothing" convention would otherwise silently drop a partial
+// set down to none anyway; this just avoids assembling `colors` at all in
+// that case). Returns an empty cloud (PointCount() == 0) if nothing
+// qualified, which every Save*() caller below already treats as "nothing to
+// export".
+kernel::PointCloud CollectPointClouds(const Document& doc, bool selected_only) {
+  std::vector<const SceneObject*> included;
+  for (const SceneObject& o : doc.Objects()) {
+    if (selected_only && !o.selected) continue;
+    if (!doc.IsObjectVisible(o)) continue;
+    if (o.kind == ObjectKind::PointCloud && o.point_cloud) included.push_back(&o);
+  }
+  bool all_colored = !included.empty();
+  for (const SceneObject* o : included) if (!o->point_cloud->HasColors()) all_colored = false;
+  kernel::PointCloud merged;
+  std::vector<ON_Color> colors;
+  for (const SceneObject* o : included) {
+    const kernel::PointCloud& pc = *o->point_cloud;
+    for (int i = 0; i < pc.PointCount(); ++i) {
+      merged.AppendPoint(pc.PointAt(i));
+      if (all_colored) colors.push_back(pc.ColorAt(i));
+    }
+  }
+  if (all_colored && !colors.empty()) merged.SetColors(colors);
+  return merged;
+}
+
+// Adds `pc` to `doc` as one new PointCloud object named after `path`'s
+// filename stem, the same naming ImportPly above gives an imported mesh.
+void AddPointCloudObject(Document& doc, const kernel::PointCloud& pc, const std::string& path) {
+  SceneObject o = SceneObject::MakePointCloud(pc);
+  o.name = std::filesystem::path(path).stem().string();
+  doc.Add(std::move(o));
+}
+
+}  // namespace
+
+bool ExportXyz(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  kernel::PointCloud pc = CollectPointClouds(doc, selected_only);
+  if (pc.PointCount() == 0) { error = "Nothing to export: select a point cloud"; return false; }
+  if (pc.SaveXyz(path) != kernel::Result::Ok) { error = "Could not write " + path; return false; }
+  return true;
+}
+
+bool ImportXyz(Document& doc, const std::string& path, std::string& error) {
+  kernel::PointCloud pc;
+  if (kernel::PointCloud::LoadXyz(path, pc) != kernel::Result::Ok) { error = "Could not read " + path; return false; }
+  AddPointCloudObject(doc, pc, path);
+  return true;
+}
+
+bool ExportPts(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  kernel::PointCloud pc = CollectPointClouds(doc, selected_only);
+  if (pc.PointCount() == 0) { error = "Nothing to export: select a point cloud"; return false; }
+  if (pc.SavePts(path) != kernel::Result::Ok) { error = "Could not write " + path; return false; }
+  return true;
+}
+
+bool ImportPts(Document& doc, const std::string& path, std::string& error) {
+  kernel::PointCloud pc;
+  if (kernel::PointCloud::LoadPts(path, pc) != kernel::Result::Ok) { error = "Could not read " + path; return false; }
+  AddPointCloudObject(doc, pc, path);
+  return true;
+}
+
+bool ExportLas(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  kernel::PointCloud pc = CollectPointClouds(doc, selected_only);
+  if (pc.PointCount() == 0) { error = "Nothing to export: select a point cloud"; return false; }
+  if (pc.SaveLas(path) != kernel::Result::Ok) { error = "Could not write " + path; return false; }
+  return true;
+}
+
+bool ImportLas(Document& doc, const std::string& path, std::string& error) {
+  kernel::PointCloud pc;
+  if (kernel::PointCloud::LoadLas(path, pc) != kernel::Result::Ok) { error = "Could not read " + path; return false; }
+  AddPointCloudObject(doc, pc, path);
+  return true;
+}
+
+}  // namespace dino8::app

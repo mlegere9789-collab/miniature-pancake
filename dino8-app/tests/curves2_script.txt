@@ -1,0 +1,468 @@
+# Curve tools QC: conics, catenary, closing, reducing, sub-curves, slicing, arrays, alignment, tweening.
+# --- CurveThroughSrfControlPt / ExtractPt (N x N control grid): regression
+# for a dangling Document::objects_ pointer, the same bug class as
+# CutVolume's own fix (see cmd_solidtools.cpp). Both
+# BuildCurveThroughSrfControlPt and ExtractPt (cmd_curves2.cpp) captured
+# their source object as a raw SceneObject*, then re-dereferenced that same
+# pointer (o->layer_index) once per row/column or once per point, after
+# ctx.Doc().Add() had already run earlier in that same loop. Add() can
+# reallocate Document::objects_, so once one of the many Add() calls below
+# grows past current capacity, `o` dangles for every row/column/point after
+# that - and the very next one's own allocations (its curve, its user_text
+# map) are likely to reuse the freed SceneObject slot, so the stale read
+# lands on already-overwritten memory rather than surviving by luck. Run
+# first, against a still-empty document (Document::objects_ starts at
+# capacity 0, so the very first Add() below already has to grow it) so
+# there's no leftover capacity headroom from later in the script that could
+# mask it - a 10x10 control grid (20 Add() calls for the curve case, 100
+# for the point case) is far more than enough.
+Plane 0,0,0 10,10,0
+SelLast
+ChangeLayer CvGridLayer
+SelLast
+Rebuild
+10
+SelLast
+CurveThroughSrfControlPt
+SelAll
+List
+SelAll
+Hide
+Plane 0,0,0 10,10,0
+SelLast
+ChangeLayer PtGridLayer
+SelLast
+Rebuild
+10
+SelLast
+ExtractPt
+SelAll
+List
+SelAll
+Hide
+Conic 0,0,0 20,0,0 10,10,0 10,4,0
+Parabola 0,0,0 0,5,0 10,5,0
+Hyperbola 0,0,0 5,0,0 10,8,0
+Catenary 0,0,0 40,0,0 50
+SelAll
+Hide
+# --- CloseCrv on a polyline, ReducePolyline on a wiggly polyline
+Polyline 0,0,0 10,0,0 10,10,0 0,10,0
+Enter
+SelAll
+CloseCrv
+List
+SelNone
+Polyline 20,0,0 25,0.001,0 30,0,0 35,0,0 40,10,0
+Enter
+SelLast
+ReducePolyline
+List
+# --- SimplifyCrv now does real simplification, not just the old exact
+# line/arc special cases: an elevated-degree line still collapses exactly
+# (unchanged behavior), and a smooth curve with a genuinely removable
+# inserted knot actually loses it (the real gap PARITY_MAP.md's own
+# "Simplify curve" bullet named - "only replaces curves already exactly
+# linear/arc").
+SelAll
+Hide
+Line 500,0,0 510,0,0
+SelLast
+ChangeDegree
+3
+SelLast
+SimplifyCrv
+List
+Curve 520,0,0 530,5,0 540,-5,0 550,0,0
+Enter
+SelLast
+InsertKnot
+535,0,0
+SelLast
+List
+SelLast
+SimplifyCrv
+List
+# --- SubCrv keeps the picked span of a line
+SelAll
+Hide
+Line 100,0,0 200,0,0
+SubCrv
+120,0,0
+180,0,0
+SelAll
+List
+# --- Contour a sphere every 5 units along Z
+SelAll
+Hide
+Sphere 0,0,0 10
+SelAll
+Contour
+0,0,-10
+0,0,10
+5
+# --- Section through the sphere
+SelSrf
+SelPolysrf
+Section
+-20,0,0
+20,0,0
+# --- Align and Distribute three boxes
+SelAll
+Hide
+Box 0,0,0 10,10,0 10
+Box 30,5,0 40,15,0 10
+Box 70,-3,0 80,7,0 10
+SelAll
+Align
+Bottom
+SelAll
+Distribute
+X
+# --- TweenCurves between two lines, ArrayCrv of a point along a circle
+SelAll
+Hide
+Line 0,0,0 50,0,0
+Line 0,20,0 50,20,0
+SelAll
+TweenCurves
+3
+SelAll
+Hide
+Point 0,0,0
+Circle 0,0,0 30
+SelPt
+ArrayCrv
+SelCrv
+Enter
+6
+# --- LineThroughPt and PlaneThroughPt
+SelAll
+Hide
+Point 0,0,0
+Point 10,1,0
+Point 20,-1,0
+Point 30,0,1
+SelPt
+LineThroughPt
+SelPt
+PlaneThroughPt
+SelNone
+# --- MarkFoci: parabola/hyperbola foci match known analytic geometry
+SelAll
+Hide
+Parabola 0,0,0 0,5,0 10,5,0
+SelLast
+MarkFoci
+SelNone
+SelPt
+List
+SelAll
+Hide
+Hyperbola 0,0,0 5,0,0 10,8,0
+SelLast
+MarkFoci
+SelNone
+SelPt
+List
+SelNone
+# --- MergeCrv: two tangent lines merge into a true single span
+SelAll
+Hide
+Line 100,0,0 110,0,0
+Line 110,0,0 120,0,0
+SelAll
+MergeCrv
+SelLast
+List
+SelNone
+# --- Blend (curvature-continuous option) and ArcBlend (two-arc biarc)
+SelAll
+Hide
+Arc 0,0,0 10,0,0 10,10,0
+Arc 30,10,0 30,20,0 20,20,0
+Blend
+10,10,0
+30,20,0
+SelLast
+List
+SelNone
+SelAll
+Hide
+Arc 0,0,0 10,0,0 10,10,0
+Arc 30,10,0 30,20,0 20,20,0
+ArcBlend
+10,10,0
+30,20,0
+SelLast
+List
+SelNone
+# --- Blend Continuity=G3: the same two-arc pair as just above, now through
+# kernel::NurbsCurve::BlendCurves()'s own continuity=3 path - a degree-7
+# septic Hermite blend matching position/tangent/curvature AND third
+# derivative at both ends, the genuine new capability neither BlendCrv nor
+# Blend could reach at all before this wiring (both app commands used to
+# build their own inline cubic/quintic Hermite math directly, capped at
+# G2) - PARITY_MAP.md's own disclosed "BlendCrvCommand/BlendCommand...
+# completely untouched... app wiring... a separate increment" gap.
+SelAll
+Hide
+Arc 0,0,0 10,0,0 10,10,0
+Arc 30,10,0 30,20,0 20,20,0
+Blend
+Continuity=G3
+10,10,0
+30,20,0
+SelLast
+List
+SelNone
+# --- Domain: report, then actually set a new domain
+SelAll
+Hide
+Line 0,0,0 10,0,0
+SelLast
+Domain
+"0 5"
+SelLast
+List
+SelNone
+# --- ModifyRadius rebuilds a circle at a new radius in place
+SelAll
+Hide
+Circle 0,0,0 5
+SelLast
+ModifyRadius
+12
+SelLast
+List
+SelNone
+# --- Match reshapes one curve's end to meet another tangentially
+SelAll
+Hide
+Line 0,0,0 10,0,0
+Line 20,10,0 20,20,0
+Match
+10,0,0
+20,10,0
+SelAll
+List
+SelNone
+# --- Match Continuity=Curvature: the genuine new capability behind the
+# message-format change above - NurbsCurve::MatchEnd()'s own G2 level,
+# unreachable before this pass (the old hand-rolled heuristic only ever
+# moved 2 control points, position+tangent, no curvature option at all).
+# Two radius-10 arcs: matching curvature end to end means the moved arc's
+# own end curvature should come out equal to the target's (same radius),
+# not just tangent.
+SelAll
+Hide
+Arc 0,0,0 10,0,0 10,10,0
+Arc 30,10,0 30,20,0 20,20,0
+Match Continuity=Curvature
+10,10,0
+30,20,0
+SelAll
+List
+SelNone
+# --- IntersectSelf on a single curve (reuses Intersect's own self-intersect mode)
+SelAll
+Hide
+Curve 0,0,0 10,10,0 0,10,0 10,0,0
+Enter
+SelLast
+IntersectSelf
+SelAll
+List
+SelNone
+# --- SoftEditCrv: falloff-limited control point drag
+SelAll
+Hide
+Curve 0,0,0 10,0,0 20,0,0 30,0,0
+Enter
+SelLast
+SoftEditCrv
+15,0,0
+15,8,0
+5
+SelLast
+List
+SelNone
+# --- FixedLengthCrvEdit: edit a point, total length stays fixed
+SelAll
+Hide
+Curve 0,0,0 10,0,0 20,0,0 30,0,0
+Enter
+SelLast
+Length
+SelLast
+FixedLengthCrvEdit
+10,0,0
+10,8,0
+SelLast
+Length
+SelNone
+# --- CurveThroughSrfControlPt: curves through a surface's own CV grid
+SelAll
+Hide
+Plane 0,0,0 10,10,0
+SelLast
+CurveThroughSrfControlPt
+SelAll
+List
+SelNone
+# --- OffsetMultiple: several offsets from one pick
+SelAll
+Hide
+Line 0,0,0 10,0,0
+SelLast
+OffsetMultiple
+0,5,0
+SelAll
+List
+SelNone
+# --- InsertLineIntoCrv: split, insert a line, rejoin - all one command
+SelAll
+Hide
+Line 0,0,0 20,0,0
+SelLast
+InsertLineIntoCrv
+10,0,0
+5
+SelLast
+List
+SelNone
+# --- CSec: cross-sections perpendicular to a rail curve
+SelAll
+Hide
+Line -5,5,5 15,5,5
+Box 0,0,0 10,10,0 10
+SelLast
+CSec
+SelCrv
+Enter
+5
+SelAll
+List
+SelNone
+# --- ContinueCurve: extends a curve and Joins it in one step
+SelAll
+Hide
+Line 0,0,0 10,0,0
+ContinueCurve
+10,0,0
+20,5,0
+30,0,0
+Enter
+SelLast
+List
+SelNone
+# --- EndBulge: scales the end tangent handle length in place
+SelAll
+Hide
+Curve 0,0,0 10,0,0 20,5,0 30,0,0
+Enter
+SelLast
+EndBulge
+0,0,0
+2
+SelLast
+List
+SelNone
+# --- InterpCrvOnSrf: points projected onto a surface before interpolating
+SelAll
+Hide
+Sphere 0,0,0 10
+SelSrf
+SelPolysrf
+InterpCrvOnSrf
+8.66,0,5
+0,8.66,5
+-8.66,0,5
+Enter
+SelLast
+List
+SelNone
+# --- Symmetry / RemoveSymmetry: a real live mirrored copy (Document::
+# SymmetryLink + UpdateSymmetryPairs, called every frame from
+# Application::Frame alongside UpdateCageCaptives - not a one-time Mirror
+# bake). Moving SymSource updates SymCopy automatically with no rebuild
+# command; after RemoveSymmetry, moving SymSource again leaves SymCopy
+# exactly where it was.
+SelAll
+Hide
+Line 0,0,0 10,0,0
+SelLast
+SetObjectName SymSource
+Symmetry 20,0,0 20,1,0
+SelLast
+SetObjectName SymCopy
+What
+SelName SymSource
+Move 0,0,0 0,0,5
+SelName SymCopy
+What
+SelName SymSource
+RemoveSymmetry
+SelName SymSource
+Move 0,0,5 0,0,9
+SelName SymCopy
+What
+SelAll
+Show
+SelNone
+# --- InsertKnot / RemoveKnot: insert a knot at a line's own domain
+# midpoint, then remove it from the very same spot - intended to round-trip
+# exactly back to the original 2-CV line (deviation ~0) via the kernel's
+# real Boehm/Tiller RemoveKnotAt(), not RemoveKnotApprox's blind
+# Greville-abscissa resample, which had no deviation bound to report at
+# all. Deleted immediately after (not hidden), so it adds nothing to the
+# final @expect_objects count below.
+#
+# Y=1000 (not 0) is deliberate, not cosmetic: NearestCurveTo() (used by
+# both InsertKnot's and RemoveKnot's own point-picking, cmd_curves2.cpp)
+# searches every visible curve in the WHOLE document by raw 3D proximity
+# to the picked point - it does not consult the current selection at
+# all, so "SelLast" above has no effect on which curve actually gets
+# edited. At Y=0 this collided with this script's own earlier `Conic
+# 0,0,0 20,0,0 10,10,0 10,4,0` (line ~43 above), whose own second point
+# IS world (20,0,0) - exactly this fixture's intended pick point, and a
+# curve already present earlier in the document, so a `d < bd` tie
+# between the two equal (both exactly 0) distances silently kept the
+# conic (visited first) rather than this line - reproduced directly by
+# instrumenting NearestCurveTo's own caller, not guessed. The conic's
+# own domain MAX also lands there, which has no interior knot at all, so
+# RemoveKnot's own "no knot found near t" case silently fired instead of
+# ever touching this fixture's own line - "Could not edit the curve
+# there" with the line's own control net completely unchanged (3 CVs,
+# never reverting to 2). Y=1000 keeps this fixture's own pick point
+# somewhere nothing else in this script passes through (confirmed by
+# grep over the whole file) rather than touching NearestCurveTo's own
+# document-wide, selection-blind search, which plenty of other commands
+# in this same file already rely on behaving exactly that way. Hiding
+# everything else first (the same "SelAll \n Hide" every other fixture in
+# this file already opens with, for this exact reason) is defense in
+# depth on top of the coordinate move - NearestCurveTo already skips
+# hidden objects (IsObjectVisible), so a future fixture reusing Y=1000
+# by coincidence still can't collide with this one either.
+SelAll
+Hide
+Line 0,1000,0 40,1000,0
+SelLast
+InsertKnot
+Enter
+RemoveKnot
+20,1000,0
+Enter
+SelLast
+List
+Delete
+# 75 from the rest of this script (72, plus the 2 Arcs + 1 Blend curve the
+# Continuity=G3 block above adds) + 122 (21 + 101) from the
+# CurveThroughSrfControlPt/ExtractPt dangling-pointer regression above,
+# which are hidden rather than deleted so List's layer output stays
+# checkable from the saved smoke-test log if this ever needs re-diagnosing.
+# +2 for the Match Continuity=Curvature fixture's own two arcs (added
+# alongside the pre-existing Continuity=Tangent fixture above, same "left
+# visible, never deleted" convention that fixture's own two lines already
+# use) - 197 -> 199.
+@expect_objects 201

@@ -1,0 +1,51 @@
+# DXF DIMENSION export QC: ExportDxf had no DIMENSION writer function at
+# all before this change (see WriteDxfLinearDimension/WriteDxfRadiusDimension/
+# WriteDxfAngularDimension/WriteDxfLeader/WriteDxfOrdinateDimension in
+# FileExchange.cpp) - a Dino8 DimLinear/DimAligned/DimRadius/DimDiameter/
+# DimAngle/Leader/DimOrdinate used to round-trip out as its own baked
+# line/extension/arrow/glyph-text curves, losing the fact it was ever a
+# single parametric dimension (or, for Leader, a single real LEADER
+# entity). Builds one of each kind this pass covers - a horizontal
+# DimLinear (measuring 0,0,0 to 40,0,0, dimension line offset 10 units
+# away), a DimRadius on a real 5-unit circle (leader toward 110,0,0, a
+# 5-unit stand-off past the circle), a 90-degree DimAngle (vertex 200,0,0,
+# legs toward 210,0,0 and 200,10,0, i.e. straight along +X then +Y), a
+# Leader (arrowhead tip 300,0,0, bend point 305,10,0, tail 320,10,0, text
+# "Hi"), and an X-axis DimOrdinate (base 0,0,0, feature 400,10,0, measuring
+# 400) - exports all five plus the circle itself, and reopens the exported
+# file in a fresh document: each reimported dimension must carry the exact
+# same Annotation/DimP0/DimP1/DimOffset (for the linear one),
+# DimCenter/DimRadiusVal/DimIsDiameter (for the radius one), DimP0/DimP1/
+# DimP2 (for the angular one), LeaderTip/LeaderRest (for the leader), or
+# DimOrdinateDir/DimP0/DimP1 (for the ordinate) tags
+# DxfImporter::Dimension()/Leader() already write for a hand-written
+# DIMENSION/LEADER fixture (the same group-code mapping those readers' own
+# comments document), proving the new writers and the existing/new readers
+# agree on the wire format for all five families - a genuine round trip,
+# not just a file that happens to open.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+DimLinear 0,0,0 40,0,0 0,10,0
+Circle 100,0,0 5
+SelLast
+DimRadius
+110,0,0
+DimAngle
+200,0,0
+210,0,0
+200,10,0
+Leader
+300,0,0
+305,10,0
+320,10,0
+Enter
+Hi
+DimOrdinate Direction=X
+0,0,0
+400,10,0
+Enter
+SelAll
+Export @TMP@/dxf_dimension_export.dxf
+New
+Open @TMP@/dxf_dimension_export.dxf
+SelAll
+What

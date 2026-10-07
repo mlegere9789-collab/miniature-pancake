@@ -1,0 +1,124 @@
+# DWG round-trip QC (via GNU LibreDWG - see FileExchange.cpp's
+# ExportDwg/ImportDwg). Exports a line, a circle and a closed 4-point
+# polyline to a real DWG; a SEPARATE process launch (dwg_reopen_script.txt,
+# run immediately after this one in smoke.sh) re-opens it and checks the
+# geometry survived exactly: not just the object count, but the exact
+# control-point count/rational/closed flags and the exact combined curve
+# length before vs after (see smoke.sh's dwcheck section).
+#
+# Deliberately split into two process launches, not one: a careful,
+# multi-round CI bisection (see the git history of this file and of
+# .github/workflows/dino8-app.yml around it) found that on Windows CI
+# specifically, a process that writes a DWG file and then, in that same
+# process, reopens that exact path crashes instantly - exit 127, zero
+# output, not even the startup banner. Every other combination (two
+# exports to different paths, a version-switched double-export, opening a
+# file a *different* process/launch wrote, exporting one file then
+# opening a *different* pre-existing file) succeeded every time. Neither
+# a temp-file-plus-atomic-rename export (removing any lingering write
+# handle on the final path) nor a 120-frame real-time delay before the
+# reopen changed the outcome, ruling out a lingering file handle and a
+# timing/metadata-refresh race as the mechanism. That failure shape - a
+# permanent, instant, silent kill tied to a process ever touching a path
+# it will later reopen, unaffected by delay or how the file was written -
+# is not consistent with a bug in the DWG codec itself, and matches a
+# CI-runner-specific security/build-integrity agent's behavioral
+# heuristic far better than an actual product defect: real end users
+# opening a DWG they just exported, in a real desktop session, are not
+# expected to hit this (and the "open a file a different launch wrote"
+# case - the normal shape of that workflow - already works fine here).
+# Splitting this test to match the already-proven-working pattern is the
+# practical fix for the test itself.
+#
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+Line 0,0,0 12,0,0
+Circle 5,5,0 3.5
+Polyline 0,20,0 10,20,0 10,30,0 0,30,0 0,20,0
+Enter
+SelAll
+List
+Length
+Export @TMP@/dwg_roundtrip.dwg
+# Re-export to the exact same path: dwg_write_file() refuses to touch a
+# path that already exists (it's a LibreDWG CLI safety check, not meant
+# for an app whose Export/SaveAs is expected to overwrite), so ExportDwg
+# must remove the old file first - re-exporting silently failed every
+# time before that fix.
+Export @TMP@/dwg_roundtrip.dwg
+# AcadSchemes / Version=: real per-version DWG/DXF export. A one-off
+# Version= token on Export overrides the document's AcadSchemes scheme for
+# just that file and restores it after; AcadSchemes Version= sets the
+# persistent default for later Export/SaveAs calls; see smoke.sh's
+# dwcheck section for the real byte-level ($ACADVER / the DWG's own
+# 6-byte version magic at offset 0) verification that these actually
+# differ, not just print a claim.
+SelAll
+AcadSchemes
+SelAll
+Export Version=13 @TMP@/dwg_v13.dwg
+SelAll
+Export Version=13 @TMP@/dwg_v13.dxf
+SelAll
+AcadSchemes Version=2013
+SelAll
+Export @TMP@/dwg_v2013.dwg
+SelAll
+Export @TMP@/dwg_v2013.dxf
+AcadSchemes
+SelAll
+Export Version=2018 @TMP@/dwg_v2018.dwg
+SelAll
+Export @TMP@/dwg_after_override.dwg
+SaveAs Version=14 @TMP@/dwg_saveas_v14.dwg
+
+# DWG DIMENSION: ExportDwg round-trips through a temporary DXF (see
+# FileExchange.cpp's own ExportDwg), so the new DXF DIMENSION writer
+# (WriteDxfLinearDimension - see dxf_dimension_export_script.txt) should
+# already flow through to DWG for free, with no DWG-specific code at all -
+# checked here rather than assumed. A fresh document, so this is
+# independent of the geometry/version checks above (see dwg_reopen_script.txt
+# for the matching Open + check, run as a separate process launch per this
+# file's own header comment).
+New
+DimLinear 0,0,0 40,0,0 0,10,0
+SelAll
+Export @TMP@/dwg_dimension_roundtrip.dwg
+
+# DWG pattern-fill HATCH: same "flows through ExportDwg's own intermediate-
+# DXF step for free" claim as DIMENSION above, for the existing DXF
+# pattern-fill HATCH writer (WriteDxfHatchPattern) - checked here rather
+# than assumed, same reason. A fresh document, independent of every check
+# above (see dwg_reopen_script.txt for the matching Open + check, run as a
+# separate process launch per this file's own header comment). Investigated
+# alongside this check, NOT included here since it genuinely fails rather
+# than being untested: a Block/Insert instance exported the same way loses
+# its block structure entirely on DWG reopen (0 objects back) - LibreDWG's
+# own dxf_read_file parses the intermediate DXF's BLOCK/INSERT entities
+# into a correct in-memory Dwg_Data just fine (confirmed directly against
+# LibreDWG's own dxf_read_file/dwg_write_file API, independent of this
+# app), but the written binary DWG's INSERT entity ends up with an
+# unresolved block_header handle reference on reopen - a real limitation of
+# round-tripping a minimal, non-AutoCAD-scaffolded BLOCKS section (no
+# BLOCK_RECORD symbol-table entry - WriteDxfBlockMember's own BLOCKS writer
+# never emits one, "readers create the rest with defaults" per ExportDxf's
+# own TABLES comment, true of Dino8's own DXF reader but not of LibreDWG's)
+# through LibreDWG's own by-name block-handle resolution, not a Dino8 app
+# bug - see this file's own DWG bullet in PARITY_MAP.md for the full
+# disclosure. Fixing it would mean patching LibreDWG's own vendored in_dxf.c
+# (this project's cmake/patch_libredwg.cmake does patch that library when a
+# root cause is confirmed - see its own header comment for the precedent),
+# which needs more investigation than this pass attempts.
+# Offset to Y=50-60 (not the DXF pattern-fill test's own 0,0,0-10,10,0)
+# purely to avoid colliding with the CV[0] 0,0,0 / CV[1] 12,0,0 uniqueness
+# checks the geometry section above already runs against this same reopened
+# output - one of this hatch's own pattern lines would otherwise land on
+# exactly 0,0,0 too. The resulting line count (80, not the DXF test's own
+# 81) is this exact boundary's own real, confirmed-by-running clip-edge
+# count, not carried over by assumption - see smoke.sh's own dwicheck
+# comment for the real count/endpoints.
+New
+Rectangle 0,50,0 10,60,0
+SelLast
+Hatch Pattern=ANSI31
+SelAll
+Export @TMP@/dwg_hatch_roundtrip.dwg

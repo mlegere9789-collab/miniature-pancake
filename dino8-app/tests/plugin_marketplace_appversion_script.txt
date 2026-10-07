@@ -1,0 +1,3 @@
+PluginMarketplaceIndex @DINO8ROOT@/tests/plugin_marketplace_appversion_index.json
+PluginMarketplaceList
+PluginMarketplaceInstall futureplugin

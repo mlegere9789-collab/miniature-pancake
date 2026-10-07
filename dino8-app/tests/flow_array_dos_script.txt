@@ -1,0 +1,25 @@
+# Dino Flow list/array node Count-clamp QC (see flow_array_dos_graph.dflow).
+# Range/Series/Random/Divide Curve/Linear Array/Polar Array all size a loop
+# and/or an output vector straight from a Count-ish Access::Item input that
+# can come straight from a .dflow file's JSON - the same untrusted-file
+# allocation/CPU hazard already fixed for RunSolverNode's
+# gene_count/Population/Generations, just never closed off for these six
+# nodes. This graph feeds each one a literal 2000000000 (Range instead gets
+# 1e300, on its Steps input, to also cover EvalContext::Int()'s own
+# clamp-before-llround fix - std::llround() is undefined behavior once the
+# rounded value falls outside the range of its return type, and every
+# Access::Item integer input in Dino Flow goes through that one function).
+# Before the fix: Range/Series/Random/Divide Curve pushed a vector::resize
+# straight from that count (a 2000000000-double vector alone is ~16GB), and
+# Linear/Polar Array did the same but with a full geometry Transformed()
+# clone per slot - any one of the six alone was enough to crash or hang
+# opening this file. After the fix, each Count is clamped (Range/Series/
+# Random to 100000, the geometry-cloning/per-point ones to 10000 - see the
+# node eval comments for why the ceiling differs), so this bakes 6 points
+# normally in bounded time and memory, each one's X coordinate reporting the
+# clamped list length the node actually produced.
+Grasshopper
+GrasshopperPlayer @ARRAYDOSFILE@ Bake=Yes
+@expect_objects 6
+SelAll
+List

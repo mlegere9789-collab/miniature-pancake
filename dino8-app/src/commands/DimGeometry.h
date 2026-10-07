@@ -1,0 +1,476 @@
+// Pure dimension geometry: the exact curve/arrow/tag math that turns a
+// dimension's measured points (+ a fixed, replay-safe layout) into real
+// Dino8 dimension geometry. Shared, line-for-line, by:
+//   - cmd_annotate.cpp's BuildLinearDimensionGroup/BuildRadiusDimensionGroup/
+//     BuildAngleDimensionGroup, which wrap these to add the result to the
+//     live document via CommandContext (live Dim/DimAligned/DimRadius/
+//     DimDiameter/DimAngle commands, and UpdateDimensions rebuilding an
+//     edited one), and
+//   - DXF/DWG DIMENSION import (io/FileExchange.cpp, which has no
+//     CommandContext at all).
+// So an imported linear/aligned/radius/diameter/angular dimension gets
+// geometrically and tag-for-tag identical curves to one drawn in-app from
+// the same measured points - selectable via SelDim (group name) and
+// rebuildable via UpdateDimensions (the DimPlaneOrigin/X/Y, DimAligned,
+// DimHorizontal, DimOffset / DimIsDiameter, DimDir, DimExtra, DimCenter,
+// DimRadiusVal / DimP0, DimP1, DimP2 tags below are exactly what
+// cmd_annotate.cpp's LoadLinearDimLayout/LoadRadiusDimLayout/
+// ResolveAngleDimPoints read back) the same way a dim built by hand is.
+//
+// No Document/CommandContext dependency at all (unlike commands/cmd_common.h,
+// which drags in app/Application.h, commands/Command.h, commands/
+// CommandEngine.h - see drafting/HatchBuild.h's comment for the exact
+// io/FileExchange.cpp CurveFromON collision this avoids by staying
+// decoupled), so this header is safe to include from io/FileExchange.cpp.
+#pragma once
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <map>
+#include <string>
+#include <vector>
+
+#include <opennurbs.h>
+
+#include "dino8/kernel/curve.h"
+
+namespace dino8::app {
+
+using kernel::Point3d;
+using kernel::Vector3d;
+
+// Defined in commands/CommandEngine.cpp; declared here rather than pulled in
+// via commands/cmd_common.h (see the collision note above) - same pattern as
+// drafting/HatchBuild.h.
+std::string FormatNumber(double v);
+bool DecimalComma();
+
+// A dimension style's text-formatting/extension-line/text-placement
+// properties (doc/Document.h's AnnotationStyle, reduced to the plain
+// numbers this decoupled header can use with no Document dependency) -
+// threaded through BuildLinearDimensionGeometry/BuildRadiusDimensionGeometry
+// below by both the live Dim/DimRadius/DimDiameter commands (cmd_annotate.cpp,
+// which resolve it from the current or a named AnnotationStyle) and DXF/DWG
+// DIMENSION import (io/FileExchange.cpp). The default-constructed value
+// reproduces this header's own pre-existing behavior exactly (FormatNumber's
+// auto precision, no suffix, no extension-line offset/overshoot, text above
+// an unbroken line), so every existing caller that doesn't pass one is
+// unaffected.
+struct DimStyleParams {
+  int precision = -1;
+  std::string suffix;
+  double ext_offset = 0;
+  double ext_extension = 0;
+  bool text_centered_on_line = false;
+};
+
+// Formats a measurement using a dimension style's precision/suffix:
+// `precision` < 0 falls back to FormatNumber's own auto ("%.4g", integers
+// bare) behavior; `precision` >= 0 formats with exactly that many fixed
+// decimal places (DecimalComma() still applies, matching FormatNumber's own
+// convention). `suffix`, when non-empty, is appended after one space (e.g.
+// "25.400 mm").
+inline std::string FormatMeasurement(double v, int precision, const std::string& suffix) {
+  std::string s;
+  if (precision < 0) {
+    s = FormatNumber(v);
+  } else {
+    char buf[64];
+    const int p = std::clamp(precision, 0, 15);
+    std::snprintf(buf, sizeof(buf), "%.*f", p, v);
+    // Never "-0.00": see FormatNumber's own comment on the same sign-of-zero issue.
+    if (std::strtod(buf, nullptr) == 0) std::snprintf(buf, sizeof(buf), "%.*f", p, 0.0);
+    s = buf;
+    if (DecimalComma()) for (char& c : s) if (c == '.') c = ',';
+  }
+  if (!suffix.empty()) { s += ' '; s += suffix; }
+  return s;
+}
+
+// Point tag codec (same "%.10g,%.10g,%.10g" format as annotate_common.h's
+// PointTag/ParsePointTag, which cmd_annotate.cpp's LoadLinearDimLayout/
+// LoadRadiusDimLayout/ResolveLinearDimPoints/ResolveRadiusDimGeom read back
+// with) - named distinctly (Dim-prefixed) so this header can be included
+// alongside annotate_common.h in the same translation unit without a
+// redefinition clash.
+inline std::string DimPointTag(Point3d p) {
+  char buf[128];
+  std::snprintf(buf, sizeof(buf), "%.10g,%.10g,%.10g", p.x, p.y, p.z);
+  return buf;
+}
+
+// A DimLinear/DimAligned dimension's fixed layout - see cmd_annotate.cpp's
+// original comment on this struct for the full rationale (`horizontal` only
+// applies when !aligned; `offset` is the fixed dimension-line coordinate).
+struct LinearDimLayout {
+  bool aligned = false;
+  bool horizontal = true;
+  double offset = 0;
+  ON_Plane plane;
+};
+
+// A DimRadius/DimDiameter dimension's fixed layout - see cmd_annotate.cpp's
+// original comment on this struct.
+struct RadiusDimLayout {
+  bool diameter = false;
+  ON_Plane plane;
+  Vector3d dir;
+  double extra = 0;
+};
+
+// A DimAngle dimension has no separate "layout minus measured geometry"
+// split at all (unlike Linear/Radius above) - its vertex + two direction
+// points and a fixed plane are everything BuildAngleDimensionGeometry below
+// needs, so there is no struct for it; callers just pass those three points
+// and the plane directly.
+
+// A label to place as centred/left-aligned glyph-outline text. Structurally
+// identical to annotate_common.h's GlyphSpec, but named distinctly for the
+// same reason as DimPointTag above.
+struct DimGlyphSpec {
+  std::string text;
+  double height = 1;
+  ON_Plane plane;
+  bool center = false;
+};
+
+namespace dim_geom_detail {
+
+inline bool ToNurbsCurve(const ON_Curve& c, kernel::NurbsCurve& out) {
+  ON_NurbsCurve nc;
+  if (c.GetNurbForm(nc) <= 0) return false;
+  out.raw() = nc;
+  return true;
+}
+
+inline kernel::NurbsCurve MakePolyline(const std::vector<Point3d>& pts) {
+  ON_Polyline pl;
+  for (const Point3d& p : pts) pl.Append(p);
+  ON_PolylineCurve pc(pl);
+  kernel::NurbsCurve out;
+  ToNurbsCurve(pc, out);
+  return out;
+}
+
+inline void AddLine(std::vector<kernel::NurbsCurve>& out, Point3d a, Point3d b) { out.push_back(MakePolyline({a, b})); }
+
+// An extension line from the measured point `from` to the dimension line at
+// `to`, per a style's ext_offset (a gap left near the measured point, so the
+// line doesn't touch it) / ext_extension (how far it overshoots `to`, past
+// the dimension line) - AutoCAD's own DIMEXO/DIMEXE. Both 0 reproduces a
+// plain AddLine(from, to), the pre-existing geometry exactly.
+inline void AddExtensionLine(std::vector<kernel::NurbsCurve>& out, Point3d from, Point3d to, double offset, double extension) {
+  const Vector3d d = to - from;
+  const double len = d.Length();
+  if (len < 1e-12 || (offset <= 0 && extension <= 0)) { out.push_back(MakePolyline({from, to})); return; }
+  const Vector3d u = d / len;
+  const Point3d start = from + u * std::min(std::max(offset, 0.0), len * 0.95);
+  const Point3d end = to + u * std::max(extension, 0.0);
+  out.push_back(MakePolyline({start, end}));
+}
+
+inline void AddArrow(std::vector<kernel::NurbsCurve>& out, Point3d tip, Vector3d dir, double size, const ON_Plane& pl) {
+  dir.Unitize();
+  Vector3d side = ON_CrossProduct(pl.zaxis, dir);
+  side.Unitize();
+  const Point3d a = tip - dir * size + side * (size * 0.3), b = tip - dir * size - side * (size * 0.3);
+  out.push_back(MakePolyline({a, tip, b, a}));
+}
+
+}  // namespace dim_geom_detail
+
+// Builds the curve list + label text + tag map for one DimLinear/DimAligned
+// dimension from its two measured points and fixed layout - identical math
+// to what the live Dim/DimAligned command computes from a hand-picked
+// dimension-line location, just with the derived layout (aligned/
+// horizontal/offset/plane) passed in directly instead of derived from a
+// third pick point. Returns false (nothing built) if the two points
+// coincide once projected onto the fixed dimension line, the same failure
+// as the live command's zero-length pick.
+inline bool BuildLinearDimensionGeometry(Point3d p0, Point3d p1, const LinearDimLayout& L, double text_h,
+                                         std::vector<kernel::NurbsCurve>& curves, DimGlyphSpec& text,
+                                         std::map<std::string, std::string>& tags, double* len_out = nullptr,
+                                         const DimStyleParams& style = {}) {
+  using namespace dim_geom_detail;
+  const ON_Plane& pl = L.plane;
+  Point3d a = p0, b = p1;
+  Vector3d dir = b - a;
+  if (!L.aligned) {
+    double ua, va, ub, vb;
+    pl.ClosestPointTo(a, &ua, &va); pl.ClosestPointTo(b, &ub, &vb);
+    if (L.horizontal) { a = pl.PointAt(ua, L.offset); b = pl.PointAt(ub, L.offset); }
+    else { a = pl.PointAt(L.offset, va); b = pl.PointAt(L.offset, vb); }
+    dir = b - a;
+  } else {
+    Vector3d n = ON_CrossProduct(pl.zaxis, dir);
+    n.Unitize();
+    a = a + n * L.offset; b = b + n * L.offset;
+  }
+  const double len = dir.Length();
+  if (len_out) *len_out = len;
+  if (len <= 0) return false;
+  curves.clear();
+  Vector3d up = ON_CrossProduct(pl.zaxis, dir);
+  up.Unitize();
+  if (ON_DotProduct(up, pl.yaxis) < 0) up = -up;
+  const std::string measured = FormatMeasurement(len, style.precision, style.suffix);
+  if (style.text_centered_on_line) {
+    // A gap in the dimension line, centered on it, sized to the (approximate
+    // - no font metrics here, a documented estimate) width of the text that
+    // sits in it - AutoCAD's own DIMTAD=0 style, vs. the default unbroken-
+    // line-with-text-above below.
+    const double half_gap = std::min((text_h * 0.62) * static_cast<double>(measured.size()) / 2.0, len * 0.45);
+    if (half_gap > 1e-9) {
+      const Vector3d u = dir / len;
+      AddLine(curves, a, a + u * (len / 2.0 - half_gap));
+      AddLine(curves, b - u * (len / 2.0 - half_gap), b);
+    } else {
+      AddLine(curves, a, b);
+    }
+  } else {
+    AddLine(curves, a, b);
+  }
+  AddExtensionLine(curves, p0, a, style.ext_offset, style.ext_extension);
+  AddExtensionLine(curves, p1, b, style.ext_offset, style.ext_extension);
+  AddArrow(curves, a, a - b, text_h, pl);
+  AddArrow(curves, b, b - a, text_h, pl);
+  text.text = measured;
+  text.height = text_h;
+  text.plane = pl;
+  text.plane.SetOrigin(style.text_centered_on_line ? (a + b) / 2.0 : (a + b) / 2.0 + up * (text_h * 0.6));
+  text.center = true;
+  tags.clear();
+  tags["DimAligned"] = L.aligned ? "1" : "0";
+  tags["DimHorizontal"] = L.horizontal ? "1" : "0";
+  tags["DimOffset"] = FormatNumber(L.offset);
+  tags["DimPlaneOrigin"] = DimPointTag(pl.origin);
+  tags["DimPlaneX"] = DimPointTag(Point3d(pl.xaxis));
+  tags["DimPlaneY"] = DimPointTag(Point3d(pl.yaxis));
+  tags["DimP0"] = DimPointTag(p0);
+  tags["DimP1"] = DimPointTag(p1);
+  return true;
+}
+
+// Builds the curve list + label text + tag map for one DimRadius/
+// DimDiameter dimension from the measured circle/arc's center+radius and
+// fixed layout - identical math to what the live DimRadius/DimDiameter
+// command computes. Returns false for a non-positive radius (degenerate;
+// never happens from a real selected arc/circle, but import can hand this a
+// zero-radius pair of coincident points, so it is checked here rather than
+// silently producing a zero-length dimension).
+inline bool BuildRadiusDimensionGeometry(Point3d center, double radius, const RadiusDimLayout& L, double text_h,
+                                         std::vector<kernel::NurbsCurve>& curves, DimGlyphSpec& text,
+                                         std::map<std::string, std::string>& tags, double* val_out = nullptr,
+                                         const DimStyleParams& style = {}) {
+  using namespace dim_geom_detail;
+  if (radius <= 0) return false;
+  const ON_Plane& pl = L.plane;
+  Vector3d d = L.dir;
+  if (!d.Unitize()) d = pl.xaxis;
+  const Point3d on = center + d * radius;
+  const Point3d p = center + d * (radius + L.extra);
+  curves.clear();
+  if (L.diameter) { AddLine(curves, center - d * radius, p); AddArrow(curves, center - d * radius, -d, text_h, pl); }
+  else AddLine(curves, center, p);
+  AddArrow(curves, on, d, text_h, pl);
+  const double val = L.diameter ? radius * 2 : radius;
+  if (val_out) *val_out = val;
+  tags.clear();
+  tags["DimIsDiameter"] = L.diameter ? "1" : "0";
+  tags["DimPlaneOrigin"] = DimPointTag(pl.origin);
+  tags["DimPlaneX"] = DimPointTag(Point3d(pl.xaxis));
+  tags["DimPlaneY"] = DimPointTag(Point3d(pl.yaxis));
+  tags["DimDir"] = DimPointTag(Point3d(d));
+  tags["DimExtra"] = FormatNumber(L.extra);
+  tags["DimCenter"] = DimPointTag(center);
+  tags["DimRadiusVal"] = FormatNumber(radius);
+  text.text = std::string(L.diameter ? "D " : "R ") + FormatMeasurement(val, style.precision, style.suffix);
+  text.height = text_h;
+  text.plane = pl;
+  text.plane.SetOrigin(p + d * text_h);
+  text.center = true;
+  return true;
+}
+
+// Builds the curve list + label text + tag map for one DimAngle dimension
+// from its vertex and two direction points and a fixed plane - identical
+// math to what the live DimAngle command computes (cmd_annotate.cpp's own
+// BuildAngleDimensionGroup now just calls this and adds its own
+// associativity tags, the same split BuildLinearDimensionGroup/
+// BuildRadiusDimensionGroup above already use), extracted so DXF/DWG
+// DIMENSION import (io/FileExchange.cpp, type 5 / DIMENSION_ANG3PT) can
+// share it exactly - same "no CommandContext" story as
+// BuildLinearDimensionGeometry/BuildRadiusDimensionGeometry.
+//
+// Always measures the <=180 degree angle between the two rays (a0/a1 are
+// normalized into that range below, swapping and adding a full turn
+// exactly as before this extraction) - Dino8's own DimAngle has no way to
+// draw the complementary reflex (>180 degree) angle between two rays, which
+// is why a DXF/DWG DIMENSION_ANG3PT's own def_pt (a point on the actual
+// rendered arc) must be checked against this same normalization before
+// accepting it as a DimAngle: see io/FileExchange.cpp's own
+// DxfImporter::Dimension type==5 comment and WalkDwgEntities'
+// DWG_TYPE_DIMENSION_ANG3PT case for that disambiguation.
+//
+// Returns false (nothing built) if the two direction vectors are
+// degenerate or parallel (a zero-radius arc) - the same failure the live
+// command already refuses (`r <= 0` below).
+inline bool BuildAngleDimensionGeometry(Point3d vertex, Point3d p1, Point3d p2, const ON_Plane& pl, double text_h,
+                                        std::vector<kernel::NurbsCurve>& curves, DimGlyphSpec& text,
+                                        std::map<std::string, std::string>& tags, double* deg_out = nullptr,
+                                        int precision = -1) {
+  using namespace dim_geom_detail;
+  Vector3d va = p1 - vertex, vb = p2 - vertex;
+  const double r = std::min(va.Length(), vb.Length()) * 0.7;
+  if (r <= 0) return false;
+  va.Unitize(); vb.Unitize();
+  double a0 = std::atan2(ON_DotProduct(va, pl.yaxis), ON_DotProduct(va, pl.xaxis));
+  double a1 = std::atan2(ON_DotProduct(vb, pl.yaxis), ON_DotProduct(vb, pl.xaxis));
+  if (a1 < a0) std::swap(a0, a1);
+  if (a1 - a0 > ON_PI) { std::swap(a0, a1); a1 += 2 * ON_PI; }
+  ON_Plane cp = pl; cp.SetOrigin(vertex);
+  ON_Arc arc(ON_Circle(cp, r), ON_Interval(a0, a1));
+  curves.clear();
+  ON_ArcCurve ac(arc);
+  kernel::NurbsCurve k;
+  if (ToNurbsCurve(ac, k)) curves.push_back(k);
+  AddLine(curves, vertex, vertex + va * (r * 1.1));
+  AddLine(curves, vertex, vertex + vb * (r * 1.1));
+  const double mid = (a0 + a1) / 2;
+  const Point3d tp = cp.PointAt(std::cos(mid) * (r + text_h), std::sin(mid) * (r + text_h));
+  const double deg = (a1 - a0) * 180.0 / ON_PI;
+  if (deg_out) *deg_out = deg;
+  tags.clear();
+  tags["DimPlaneOrigin"] = DimPointTag(pl.origin);
+  tags["DimPlaneX"] = DimPointTag(Point3d(pl.xaxis));
+  tags["DimPlaneY"] = DimPointTag(Point3d(pl.yaxis));
+  tags["DimP0"] = DimPointTag(vertex);
+  tags["DimP1"] = DimPointTag(p1);
+  tags["DimP2"] = DimPointTag(p2);
+  text.text = FormatMeasurement(deg, precision, "deg");
+  text.height = text_h;
+  text.plane = pl;
+  text.plane.SetOrigin(tp);
+  text.center = true;
+  return true;
+}
+
+// Builds the curve list + label text + tag map for one Leader annotation
+// from its arrowhead point (`tip`), the rest of its polyline stored as
+// fixed offsets *from* the tip, a fixed plane and its (arbitrary,
+// user-typed - not recomputed, unlike every other Build*DimensionGeometry
+// above) label text - identical math to what the live Leader command
+// computes (cmd_annotate.cpp's own BuildLeaderGroup now just calls this and
+// adds its own associativity tag on top, the same split
+// BuildLinearDimensionGroup/BuildRadiusDimensionGroup/
+// BuildAngleDimensionGroup above already use), extracted so native `.3dm`
+// `ON_Leader` import (io/File3dm.cpp) can share it exactly - same "no
+// CommandContext" story as the other Build*Geometry functions above.
+// Returns false (nothing built) if fewer than 2 points result (a Leader
+// with only its arrowhead point and no bend/end point - the same failure
+// the live command already refuses).
+inline bool BuildLeaderGeometry(Point3d tip, const std::vector<Vector3d>& rest_offsets, const ON_Plane& pl, double text_h,
+                                const std::string& label, std::vector<kernel::NurbsCurve>& curves, DimGlyphSpec& text,
+                                std::map<std::string, std::string>& tags) {
+  using namespace dim_geom_detail;
+  std::vector<Point3d> pts;
+  pts.push_back(tip);
+  for (const Vector3d& off : rest_offsets) pts.push_back(tip + off);
+  if (pts.size() < 2) return false;
+  curves.clear();
+  curves.push_back(MakePolyline(pts));
+  AddArrow(curves, pts[0], pts[0] - pts[1], text_h, pl);
+  tags.clear();
+  tags["DimPlaneOrigin"] = DimPointTag(pl.origin);
+  tags["DimPlaneX"] = DimPointTag(Point3d(pl.xaxis));
+  tags["DimPlaneY"] = DimPointTag(Point3d(pl.yaxis));
+  tags["LeaderTip"] = DimPointTag(tip);
+  {
+    std::string s;
+    for (const Vector3d& off : rest_offsets) { if (!s.empty()) s += ";"; s += DimPointTag(Point3d(off)); }
+    tags["LeaderRest"] = s;
+  }
+  text.text = label;
+  text.height = text_h;
+  text.plane = pl;
+  text.plane.SetOrigin(pts.back() + pl.xaxis * (text_h * 0.4) - pl.yaxis * (text_h * 0.5));
+  text.center = false;
+  return true;
+}
+
+// Builds the single leader curve + label text + tag map for one DimOrdinate
+// dimension from its base point, feature point, axis direction ('X' or
+// 'Y') and a fixed plane - identical math to what the live DimOrdinate
+// command computes (cmd_annotate2.cpp's own BuildOrdinateDimGroup now just
+// calls this and adds its own associativity tags on top, the same split
+// BuildLinearDimensionGroup/BuildRadiusDimensionGroup/
+// BuildAngleDimensionGroup/BuildLeaderGeometry above already use),
+// extracted so DXF/DWG DIMENSION import (io/FileExchange.cpp, type 6 /
+// DIMENSION_ORDINATE) can share it exactly - same "no CommandContext"
+// story as the other Build*Geometry functions above. The leader always
+// runs from the feature point along the OTHER axis from the one being
+// measured (X measured -> leader runs in +Y, and vice versa) - the same
+// fixed layout the live command already uses, not a free pick. Returns
+// false only if the plane is degenerate enough that `pl.ClosestPointTo`
+// itself would fail, which it never does for a real `ON_Plane` - kept for
+// signature symmetry with the other Build*Geometry functions, and in case
+// a future caller feeds a genuinely degenerate plane.
+inline bool BuildOrdinateDimensionGeometry(Point3d base, Point3d feature, char dir, const ON_Plane& pl, double text_h,
+                                           std::vector<kernel::NurbsCurve>& curves, DimGlyphSpec& text,
+                                           std::map<std::string, std::string>& tags, double* value_out = nullptr,
+                                           const DimStyleParams& style = {}) {
+  using namespace dim_geom_detail;
+  double u0, v0, u1, v1;
+  pl.ClosestPointTo(base, &u0, &v0);
+  pl.ClosestPointTo(feature, &u1, &v1);
+  const double value = dir == 'X' ? u1 - u0 : v1 - v0;
+  const Vector3d leader = dir == 'X' ? pl.yaxis : pl.xaxis;
+  const Point3d end = feature + leader * (text_h * 2.5);
+  curves.clear();
+  curves.push_back(MakePolyline({feature, end}));
+  if (value_out) *value_out = value;
+  tags.clear();
+  tags["DimOrdinateDir"] = std::string(1, dir);
+  tags["DimPlaneOrigin"] = DimPointTag(pl.origin);
+  tags["DimPlaneX"] = DimPointTag(Point3d(pl.xaxis));
+  tags["DimPlaneY"] = DimPointTag(Point3d(pl.yaxis));
+  tags["DimP0"] = DimPointTag(base);
+  tags["DimP1"] = DimPointTag(feature);
+  text.text = std::string(1, dir) + " " + FormatMeasurement(value, style.precision, style.suffix);
+  text.height = text_h;
+  text.plane = pl;
+  text.plane.SetOrigin(dir == 'X' ? end + pl.yaxis * (text_h * 0.3) : end + pl.xaxis * (text_h * 0.3) - pl.yaxis * (text_h * 0.5));
+  text.center = dir == 'X';
+  return true;
+}
+
+// Builds the two crossing-line curves + tag map for one Centermark from its
+// resolved center/plane/size - identical math to what the live Centermark
+// command bakes (cmd_annotate2.cpp's own CentermarkCommand via annotate_
+// common.h's BuildCentermarkGroup, which now just calls this and adds its
+// own associativity/size-mode tag on top), extracted so a real, externally-
+// authored `ON_Centermark` (io/File3dm.cpp) can share it exactly - same
+// "no CommandContext" story as the other Build*Geometry functions above.
+// No text/label (a Centermark carries none, live or imported). Returns
+// false (nothing built) if size <= 0, the same contract
+// BuildCentermarkGroup's own pre-existing caller already checks.
+inline bool BuildCentermarkGeometry(Point3d center, const ON_Plane& pl, double size,
+                                    std::vector<kernel::NurbsCurve>& curves,
+                                    std::map<std::string, std::string>& tags) {
+  using namespace dim_geom_detail;
+  if (size <= 0) return false;
+  curves.clear();
+  curves.push_back(MakePolyline({center - pl.xaxis * size, center + pl.xaxis * size}));
+  curves.push_back(MakePolyline({center - pl.yaxis * size, center + pl.yaxis * size}));
+  tags.clear();
+  tags["CenterCenter"] = DimPointTag(center);
+  tags["CenterPlaneOrigin"] = DimPointTag(pl.origin);
+  tags["CenterPlaneX"] = DimPointTag(Point3d(pl.xaxis));
+  tags["CenterPlaneY"] = DimPointTag(Point3d(pl.yaxis));
+  tags["CenterSize"] = FormatNumber(size);
+  return true;
+}
+
+}  // namespace dino8::app

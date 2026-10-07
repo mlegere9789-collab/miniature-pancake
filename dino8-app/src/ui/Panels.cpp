@@ -1,0 +1,2285 @@
+// Dockable panels and dialogs.
+#include "ui/Panels.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <map>
+#include <sstream>
+#include <vector>
+
+#include "app/Application.h"
+#include "i18n/I18n.h"
+#include "imgui.h"
+#include "script/LuaEngine.h"
+#include "ui/Icons.h"
+#include "ui/Theme.h"
+#include "util/ExprEval.h"
+
+namespace dino8::app {
+
+using dino8::i18n::Tr;
+using dino8::i18n::TrOrDefault;
+
+// A translated window title, with a "###<id>" suffix ImGui ignores for the
+// visible label but uses as the window's identity - so switching language
+// changes what's on screen without resetting the saved dock layout (which
+// keys off the part of the title after "###", per ImGui's ID rules).
+std::string PanelTitle(const std::string& key, const char* stable_id) {
+  return Tr(key) + "###" + stable_id;
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+bool ColorEdit(const char* label, Color& color) {
+  float c[4] = {color.r, color.g, color.b, color.a};
+  if (ImGui::ColorEdit4(label, c, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaPreview)) {
+    color = Color{c[0], c[1], c[2], c[3]};
+    return true;
+  }
+  return false;
+}
+
+namespace {
+
+bool InputString(const char* label, std::string& value, ImGuiInputTextFlags flags = 0) {
+  char buf[512];
+  std::snprintf(buf, sizeof(buf), "%s", value.c_str());
+  if (ImGui::InputText(label, buf, sizeof(buf), flags)) {
+    value = buf;
+    return true;
+  }
+  return false;
+}
+
+const char* StatusName(CommandStatus s) { return CommandStatusName(s); }
+
+ImVec4 StatusColor(CommandStatus s) {
+  switch (s) {
+    case CommandStatus::Implemented: return ImVec4(ThemeColors::kOk[0], ThemeColors::kOk[1], ThemeColors::kOk[2], 1);
+    case CommandStatus::Partial: return ImVec4(ThemeColors::kWarn[0], ThemeColors::kWarn[1], ThemeColors::kWarn[2], 1);
+    default: return ImVec4(ThemeColors::kMuted[0], ThemeColors::kMuted[1], ThemeColors::kMuted[2], 1);
+  }
+}
+
+}  // namespace
+
+bool EvaluateExpression(const std::string& text, double& out, std::string& error) {
+  return dino8::util::EvaluateExpression(text, out, error);
+}
+
+// ---------------------------------------------------------------------------
+// Layers
+// ---------------------------------------------------------------------------
+
+void DrawLayersPanel(Application& app) {
+  Document& doc = app.Doc();
+  if (!ImGui::Begin(PanelTitle("panel.layers", "Layers").c_str(), &app.Panels().layers)) { ImGui::End(); return; }
+  static char new_name[128] = "";
+  if (ImGui::Button("New Layer")) {
+    doc.BeginChange("New layer");
+    std::string name = std::strlen(new_name) ? new_name : "Layer " + std::to_string(doc.Layers().size() + 1);
+    int idx = doc.AddLayer(name);
+    doc.SetCurrentLayer(idx);
+    new_name[0] = 0;
+  }
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(140);
+  ImGui::InputTextWithHint("##newlayer", "name", new_name, sizeof(new_name));
+  ImGui::SameLine();
+  if (ImGui::Button("Sublayer")) {
+    doc.BeginChange("New sublayer");
+    int idx = doc.AddLayer("Sublayer", Color::FromBytes(0, 0, 0), doc.CurrentLayer());
+    doc.SetCurrentLayer(idx);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Delete")) {
+    doc.BeginChange("Delete layer");
+    if (!doc.RemoveLayer(doc.CurrentLayer())) app.Notify("Layer is in use or is the only layer");
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("States")) app.Panels().layer_state_manager = true;
+  ImGui::Separator();
+
+  if (ImGui::BeginTable("layers", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable)) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Cur", ImGuiTableColumnFlags_WidthFixed, 30);
+    ImGui::TableSetupColumn("On", ImGuiTableColumnFlags_WidthFixed, 30);
+    ImGui::TableSetupColumn("Lock", ImGuiTableColumnFlags_WidthFixed, 36);
+    ImGui::TableSetupColumn("Color", ImGuiTableColumnFlags_WidthFixed, 40);
+    ImGui::TableSetupColumn("Objects", ImGuiTableColumnFlags_WidthFixed, 56);
+    ImGui::TableHeadersRow();
+
+    std::vector<int> counts(doc.Layers().size(), 0);
+    for (const SceneObject& o : doc.Objects()) {
+      if (o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < counts.size()) ++counts[static_cast<size_t>(o.layer_index)];
+    }
+    // Draw as a tree by parent.
+    std::function<void(int)> draw_children = [&](int parent) {
+      for (int i = 0; i < static_cast<int>(doc.Layers().size()); ++i) {
+        Layer& L = doc.Layers()[static_cast<size_t>(i)];
+        if (L.parent != parent) continue;
+        ImGui::PushID(i);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        bool has_children = false;
+        for (const Layer& c : doc.Layers()) if (c.parent == i) { has_children = true; break; }
+        ImGuiTreeNodeFlags tf = ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_DefaultOpen;
+        if (!has_children) tf |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+        if (i == doc.CurrentLayer()) tf |= ImGuiTreeNodeFlags_Selected;
+        const bool highlighted = std::find(app.highlight_layers.begin(), app.highlight_layers.end(), i) != app.highlight_layers.end();
+        if (highlighted) ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImVec4(1.0f, 0.75f, 0.2f, 0.35f)));
+        const bool open = ImGui::TreeNodeEx("##node", tf, "%s", L.name.c_str());
+        if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) doc.SetCurrentLayer(i);
+        if (ImGui::BeginPopupContextItem("layer_ctx")) {
+          static char rename[128];
+          if (ImGui::IsWindowAppearing()) std::snprintf(rename, sizeof(rename), "%s", L.name.c_str());
+          if (ImGui::InputText("Rename", rename, sizeof(rename), ImGuiInputTextFlags_EnterReturnsTrue)) {
+            doc.BeginChange("Rename layer");
+            L.name = rename;
+            ImGui::CloseCurrentPopup();
+          }
+          static char desc[512];
+          if (ImGui::IsWindowAppearing()) std::snprintf(desc, sizeof(desc), "%s", L.description.c_str());
+          if (ImGui::InputTextMultiline("Notes", desc, sizeof(desc), ImVec2(240, 60))) L.description = desc;
+          {
+            float pw = static_cast<float>(L.print_width_mm);
+            if (ImGui::InputFloat("Print width mm (0=default, <0=no print)", &pw, 0, 0, "%.3f")) { doc.BeginChange("Layer print width"); L.print_width_mm = pw; }
+          }
+          if (ImGui::MenuItem("Select objects on layer")) {
+            doc.SelectWhere([i](const SceneObject& o) { return o.layer_index == i; });
+          }
+          if (ImGui::MenuItem("Move selected objects here")) {
+            doc.BeginChange("Change layer");
+            for (SceneObject& o : doc.Objects()) if (o.selected) o.layer_index = i;
+          }
+          if (ImGui::MenuItem("One layer on (isolate)")) {
+            for (Layer& other : doc.Layers()) other.visible = false;
+            L.visible = true;
+          }
+          if (ImGui::MenuItem("All layers on")) for (Layer& other : doc.Layers()) other.visible = true;
+          if (ImGui::MenuItem("Delete layer")) {
+            doc.BeginChange("Delete layer");
+            if (!doc.RemoveLayer(i)) app.Notify("Layer is in use or is the only layer");
+            ImGui::EndPopup();
+            ImGui::PopID();
+            if (open && has_children) ImGui::TreePop();
+            return;
+          }
+          ImGui::EndPopup();
+        }
+        ImGui::TableNextColumn();
+        if (ImGui::RadioButton("##cur", i == doc.CurrentLayer())) doc.SetCurrentLayer(i);
+        ImGui::TableNextColumn();
+        if (ImGui::Checkbox("##on", &L.visible)) doc.Touch();
+        ImGui::TableNextColumn();
+        if (ImGui::Checkbox("##lock", &L.locked)) doc.Touch();
+        ImGui::TableNextColumn();
+        if (ColorEdit("##color", L.color)) {
+          doc.Touch();
+          for (SceneObject& o : doc.Objects()) if (o.layer_index == i) o.InvalidateDisplay();
+        }
+        ImGui::TableNextColumn();
+        ImGui::Text("%d", counts[static_cast<size_t>(i)]);
+        if (open && has_children) {
+          draw_children(i);
+          ImGui::TreePop();
+        }
+        ImGui::PopID();
+      }
+    };
+    draw_children(-1);
+    ImGui::EndTable();
+  }
+  ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
+// Properties
+// ---------------------------------------------------------------------------
+
+void DrawPropertiesPanel(Application& app) {
+  Document& doc = app.Doc();
+  if (!ImGui::Begin(PanelTitle("panel.properties", "Properties").c_str(), &app.Panels().properties)) { ImGui::End(); return; }
+  std::vector<ObjectId> sel = doc.SelectedIds();
+  if (sel.empty()) {
+    ImGui::TextDisabled("No objects selected.");
+    ImGui::Separator();
+    ImGui::Text("Document");
+    ImGui::BulletText("%zu objects, %zu layers", doc.ObjectCount(), doc.Layers().size());
+    ImGui::BulletText("Units: %s", doc.Settings().unit_system.c_str());
+    ImGui::BulletText("Tolerance: %g", doc.Settings().absolute_tolerance);
+    if (Viewport* vp = app.ActiveViewport()) {
+      ImGui::Separator();
+      ImGui::Text("Viewport: %s", vp->Name().c_str());
+      ImGui::BulletText("Display mode: %s", DisplayModeName(vp->Mode()));
+      const CameraState& c = vp->GetCamera().State();
+      ImGui::BulletText("Camera: %s", FormatPoint(c.eye).c_str());
+      ImGui::BulletText("Target: %s", FormatPoint(c.target).c_str());
+      ImGui::BulletText("Projection: %s", c.perspective ? "Perspective" : "Parallel");
+    }
+    ImGui::End();
+    return;
+  }
+  SceneObject* first = doc.Find(sel[0]);
+  if (!first) { ImGui::End(); return; }
+  ImGui::Text("%zu object%s selected", sel.size(), sel.size() == 1 ? "" : "s");
+  ImGui::Separator();
+
+  if (ImGui::CollapsingHeader("Object", ImGuiTreeNodeFlags_DefaultOpen)) {
+    std::string name = first->name;
+    if (InputString("Name", name, ImGuiInputTextFlags_EnterReturnsTrue)) {
+      doc.BeginChange("Rename");
+      for (ObjectId id : sel) if (SceneObject* o = doc.Find(id)) o->name = name;
+    }
+    ImGui::Text("Type: %s", ObjectKindName(first->kind));
+    // Layer combo.
+    std::string current = doc.LayerFullPath(first->layer_index);
+    if (ImGui::BeginCombo("Layer", current.c_str())) {
+      for (int i = 0; i < static_cast<int>(doc.Layers().size()); ++i) {
+        if (ImGui::Selectable(doc.LayerFullPath(i).c_str(), i == first->layer_index)) {
+          doc.BeginChange("Change layer");
+          for (ObjectId id : sel) if (SceneObject* o = doc.Find(id)) o->layer_index = i;
+        }
+      }
+      ImGui::EndCombo();
+    }
+    bool by_layer = first->color_by_layer;
+    if (ImGui::Checkbox("Color by layer", &by_layer)) {
+      doc.BeginChange("Color source");
+      for (ObjectId id : sel) if (SceneObject* o = doc.Find(id)) { o->color_by_layer = by_layer; o->InvalidateDisplay(); }
+    }
+    if (!by_layer) {
+      Color c = first->color;
+      if (ColorEdit("Object color", c)) {
+        doc.BeginChange("Object color");
+        for (ObjectId id : sel) if (SceneObject* o = doc.Find(id)) { o->color = c; o->InvalidateDisplay(); }
+      }
+    }
+    bool locked = first->locked;
+    if (ImGui::Checkbox("Locked", &locked)) {
+      doc.BeginChange("Lock");
+      for (ObjectId id : sel) if (SceneObject* o = doc.Find(id)) o->locked = locked;
+    }
+    bool cps = first->show_control_points;
+    if (ImGui::Checkbox("Show control points", &cps)) {
+      for (ObjectId id : sel) if (SceneObject* o = doc.Find(id)) { o->show_control_points = cps; o->InvalidateDisplay(); }
+    }
+    if (first->group_id >= 0) ImGui::Text("Group: %d", first->group_id);
+    if (ImGui::BeginCombo("Linetype", first->linetype.c_str())) {
+      auto pick = [&](const std::string& lt) { doc.BeginChange("Linetype"); for (ObjectId id : sel) if (SceneObject* o = doc.Find(id)) { o->linetype = lt; o->InvalidateDisplay(); } };
+      if (ImGui::Selectable("ByLayer", first->linetype == "ByLayer")) pick("ByLayer");
+      for (const Linetype& lt : doc.Linetypes()) if (ImGui::Selectable(lt.name.c_str(), lt.name == first->linetype)) pick(lt.name);
+      ImGui::EndCombo();
+    }
+    std::string mat = first->material_name;
+    if (InputString("Material", mat, ImGuiInputTextFlags_EnterReturnsTrue)) {
+      doc.BeginChange("Material");
+      for (ObjectId id : sel) if (SceneObject* o = doc.Find(id)) o->material_name = mat;
+    }
+  }
+  if (sel.size() == 1 && ImGui::CollapsingHeader("Details", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::TextWrapped("%s", first->Describe().c_str());
+    kernel::BoundingBox bb;
+    if (doc.BoundingBoxOf(sel, bb)) {
+      ImGui::Text("Bounding box:");
+      ImGui::BulletText("min %s", FormatPoint(bb.min).c_str());
+      ImGui::BulletText("max %s", FormatPoint(bb.max).c_str());
+      ImGui::BulletText("size %s x %s x %s", FormatNumber(bb.max.x - bb.min.x).c_str(), FormatNumber(bb.max.y - bb.min.y).c_str(), FormatNumber(bb.max.z - bb.min.z).c_str());
+    }
+  }
+  if (ImGui::CollapsingHeader("Attribute User Text")) {
+    static char key[128], value[256];
+    for (auto it = first->user_text.begin(); it != first->user_text.end();) {
+      ImGui::PushID(it->first.c_str());
+      ImGui::Text("%s = %s", it->first.c_str(), it->second.c_str());
+      ImGui::SameLine();
+      bool erase = ImGui::SmallButton("x");
+      ImGui::PopID();
+      if (erase) { doc.BeginChange("Remove user text"); it = first->user_text.erase(it); }
+      else ++it;
+    }
+    ImGui::SetNextItemWidth(100);
+    ImGui::InputText("Key", key, sizeof(key));
+    ImGui::SetNextItemWidth(140);
+    ImGui::InputText("Value", value, sizeof(value));
+    if (ImGui::Button("Set") && key[0]) {
+      doc.BeginChange("Set user text");
+      for (ObjectId id : sel) if (SceneObject* o = doc.Find(id)) o->user_text[key] = value;
+    }
+  }
+  ImGui::End();
+}
+
+// AT-SPI2-queryable snapshot of the Layers panel's current content (see
+// docs/ACCESSIBILITY.md), built straight from Document state - independent
+// of DrawLayersPanel and of whether that window is even open right now, so
+// a screen reader can always ask what layers exist. Same per-layer object
+// count DrawLayersPanel itself computes, in doc.Layers() index order rather
+// than the tree-by-parent draw order (simpler, and every layer name is
+// still unambiguous).
+dino8::platform::AccessibleNode LayersPanelAccessibleTree(Application& app) {
+  Document& doc = app.Doc();
+  std::vector<int> counts(doc.Layers().size(), 0);
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < counts.size()) ++counts[static_cast<size_t>(o.layer_index)];
+  }
+  std::vector<dino8::platform::LayerSummary> summaries;
+  summaries.reserve(doc.Layers().size());
+  for (size_t i = 0; i < doc.Layers().size(); ++i) {
+    const Layer& l = doc.Layers()[i];
+    dino8::platform::LayerSummary s;
+    s.name = l.name;
+    s.current = static_cast<int>(i) == doc.CurrentLayer();
+    s.visible = l.visible;
+    s.locked = l.locked;
+    s.object_count = counts[i];
+    summaries.push_back(std::move(s));
+  }
+  return dino8::platform::BuildLayersPanelNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of the Properties panel's current content (see
+// docs/ACCESSIBILITY.md): the same facts DrawPropertiesPanel shows - either
+// about the current selection, or about the document/active viewport when
+// nothing is selected - reduced to plain label/value text.
+dino8::platform::AccessibleNode PropertiesPanelAccessibleTree(Application& app) {
+  Document& doc = app.Doc();
+  std::vector<ObjectId> sel = doc.SelectedIds();
+  std::vector<dino8::platform::PropertyEntry> entries;
+
+  if (sel.empty()) {
+    // Nothing selected: every row here is a fact about the document/active
+    // viewport (DrawPropertiesPanel shows them as plain text, not a widget),
+    // so none is editable.
+    entries.push_back({"Objects", std::to_string(doc.ObjectCount())});
+    entries.push_back({"Layers", std::to_string(doc.Layers().size())});
+    entries.push_back({"Units", doc.Settings().unit_system});
+    entries.push_back({"Tolerance", FormatNumber(doc.Settings().absolute_tolerance)});
+    if (Viewport* vp = app.ActiveViewport()) {
+      entries.push_back({"Viewport", vp->Name()});
+      entries.push_back({"Display mode", DisplayModeName(vp->Mode())});
+      const CameraState& c = vp->GetCamera().State();
+      entries.push_back({"Camera position", FormatPoint(c.eye)});
+      entries.push_back({"Camera target", FormatPoint(c.target)});
+      entries.push_back({"Projection", c.perspective ? "Perspective" : "Parallel"});
+    }
+    return dino8::platform::BuildPropertiesPanelNode("No selection", entries);
+  }
+
+  SceneObject* first = doc.Find(sel[0]);
+  if (!first) return dino8::platform::BuildPropertiesPanelNode("No selection", entries);
+
+  // Each `editable=true` row below mirrors a real widget in
+  // DrawPropertiesPanel's "Object" section (an InputString/Checkbox/
+  // BeginCombo the user can actually change); Type and Group are read-only
+  // facts DrawPropertiesPanel only ever prints as text.
+  entries.push_back({"Name", first->name, /*editable=*/true});
+  entries.push_back({"Type", ObjectKindName(first->kind)});
+  entries.push_back({"Layer", doc.LayerFullPath(first->layer_index), /*editable=*/true});
+  entries.push_back({"Color source", first->color_by_layer ? "By layer" : "Object color", /*editable=*/true});
+  entries.push_back({"Locked", first->locked ? "Yes" : "No", /*editable=*/true});
+  if (first->group_id >= 0) entries.push_back({"Group", std::to_string(first->group_id)});
+  entries.push_back({"Linetype", first->linetype, /*editable=*/true});
+  if (!first->material_name.empty()) entries.push_back({"Material", first->material_name, /*editable=*/true});
+
+  const std::string heading =
+      std::to_string(sel.size()) + (sel.size() == 1 ? " object selected" : " objects selected");
+  return dino8::platform::BuildPropertiesPanelNode(heading, entries);
+}
+
+// AT-SPI2-queryable snapshot of the option chips DrawCommandLine draws next
+// to the prompt while a command is running (see docs/ACCESSIBILITY.md and
+// Command.h's OptionSpec) - built straight from CommandEngine::CurrentOptions,
+// independent of whether DrawCommandLine itself drew this frame (it doesn't,
+// when the command prompt is hidden - see Application::state_.command_prompt),
+// so a screen reader can always ask what options the running command offers.
+dino8::platform::AccessibleNode CommandOptionsAccessibleTree(Application& app) {
+  std::vector<dino8::platform::CommandOptionSummary> summaries;
+  if (const std::vector<OptionSpec>* opts = app.Engine().CurrentOptions()) {
+    summaries.reserve(opts->size());
+    for (const OptionSpec& o : *opts) {
+      summaries.push_back({o.name, o.value, o.choices, o.numeric, o.toggle});
+    }
+  }
+  return dino8::platform::BuildCommandOptionsNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of every viewport's title/view-menu button
+// state (see docs/ACCESSIBILITY.md): the same name/active/maximized/
+// display-mode facts Viewport.cpp's title-overlay block and corner label
+// show, reduced to plain text, independent of which viewport window happens
+// to be visible right now.
+dino8::platform::AccessibleNode ViewportsAccessibleTree(Application& app) {
+  std::vector<dino8::platform::ViewportSummary> summaries;
+  summaries.reserve(app.Viewports().size());
+  for (const auto& vp : app.Viewports()) {
+    dino8::platform::ViewportSummary s;
+    s.name = vp->Name();
+    s.active = vp->IsActive();
+    s.maximized = vp->Maximized();
+    s.display_mode = DisplayModeName(vp->Mode());
+    summaries.push_back(std::move(s));
+  }
+  return dino8::platform::BuildViewportsPanelNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of Document::ActivityLog() (see
+// docs/ACCESSIBILITY.md): the persisted, structured record of every
+// finalized edit, built straight from Document state, independent of
+// whether DrawActivityLogPanel itself has ever been drawn or is open right
+// now - distinct from the "Command Line" accessible's raw text log, which
+// mirrors CommandEngine::History() rather than Document::ActivityLog().
+dino8::platform::AccessibleNode ActivityLogAccessibleTree(Application& app) {
+  std::vector<dino8::platform::ActivityLogSummary> summaries;
+  summaries.reserve(app.Doc().ActivityLog().size());
+  for (const auto& e : app.Doc().ActivityLog()) {
+    summaries.push_back({e.timestamp_utc, e.label, e.summary});
+  }
+  return dino8::platform::BuildActivityLogNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of Document::NamedViews() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawNamedViewsPanel itself has ever been drawn or is open right
+// now - mirrors only the name per row, matching what DrawNamedViewsPanel
+// itself shows on screen (no camera detail).
+dino8::platform::AccessibleNode NamedViewsAccessibleTree(Application& app) {
+  std::vector<dino8::platform::NamedViewSummary> summaries;
+  summaries.reserve(app.Doc().NamedViews().size());
+  for (const auto& v : app.Doc().NamedViews()) {
+    summaries.push_back({v.name});
+  }
+  return dino8::platform::BuildNamedViewsNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of Document::NamedCPlanes() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawNamedCPlanesPanel itself has ever been drawn or is open right
+// now - mirrors only the name per row, matching what DrawNamedCPlanesPanel
+// itself shows on screen (origin/axes are a hover tooltip there, not part of
+// the row).
+dino8::platform::AccessibleNode NamedCPlanesAccessibleTree(Application& app) {
+  std::vector<dino8::platform::NamedCPlaneSummary> summaries;
+  summaries.reserve(app.Doc().NamedCPlanes().size());
+  for (const auto& c : app.Doc().NamedCPlanes()) {
+    summaries.push_back({c.name});
+  }
+  return dino8::platform::BuildNamedCPlanesNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of Document::Linetypes() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawLinetypesPanel itself has ever been drawn or is open right now
+// - mirrors the same name and pattern text DrawLinetypesPanel's Name/Pattern
+// columns show per row, including its "continuous" fallback for an empty
+// pattern.
+dino8::platform::AccessibleNode LinetypesAccessibleTree(Application& app) {
+  std::vector<dino8::platform::LinetypeSummary> summaries;
+  summaries.reserve(app.Doc().Linetypes().size());
+  for (const auto& lt : app.Doc().Linetypes()) {
+    std::string pattern;
+    for (double d : lt.pattern) pattern += (pattern.empty() ? "" : ", ") + FormatNumber(d);
+    summaries.push_back({lt.name, pattern.empty() ? "continuous" : pattern});
+  }
+  return dino8::platform::BuildLinetypesNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of Document::ClippingPlanes() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawClippingPlanesPanel itself has ever been drawn or is open
+// right now - mirrors the same on/off state its row's checkbox shows and the
+// same "clips every viewport" vs. specific-viewport scope its row's hover
+// tooltip shows (the origin/normal stay tooltip-only, as with Named CPlanes).
+dino8::platform::AccessibleNode ClippingPlanesAccessibleTree(Application& app) {
+  std::vector<dino8::platform::ClippingPlaneSummary> summaries;
+  summaries.reserve(app.Doc().ClippingPlanes().size());
+  for (const auto& cp : app.Doc().ClippingPlanes()) {
+    dino8::platform::ClippingPlaneSummary s;
+    s.name = cp.name;
+    s.enabled = cp.enabled;
+    s.clips_every_viewport = cp.viewports.empty();
+    s.clipped_viewport_count = static_cast<int>(cp.viewports.size());
+    summaries.push_back(std::move(s));
+  }
+  return dino8::platform::BuildClippingPlanesPanelNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of Document::Layouts() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawLayoutsPanel itself has ever been drawn or is open right now -
+// mirrors only the name per row plus which one is active, matching what
+// DrawLayoutsPanel's own top-level Selectable row shows (page size and
+// details only appear once a row is expanded, so they stay out of this
+// mirror the same way Named Views/CPlanes leave their own extra state out).
+dino8::platform::AccessibleNode LayoutsAccessibleTree(Application& app) {
+  std::vector<dino8::platform::LayoutSummary> summaries;
+  summaries.reserve(app.Doc().Layouts().size());
+  for (size_t i = 0; i < app.Doc().Layouts().size(); ++i) {
+    dino8::platform::LayoutSummary s;
+    s.name = app.Doc().Layouts()[i].name;
+    s.active = static_cast<int>(i) == app.ActiveLayoutIndex();
+    summaries.push_back(std::move(s));
+  }
+  return dino8::platform::BuildLayoutsPanelNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of Document::LayerStates() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent
+// of whether DrawLayerStateManager itself has ever been drawn or is open
+// right now - mirrors the saved state's name plus how many layers it
+// records a visible/locked snapshot for, a fact the on-screen row (a bare
+// Selectable naming the state) doesn't itself show.
+dino8::platform::AccessibleNode LayerStateManagerAccessibleTree(Application& app) {
+  std::vector<dino8::platform::LayerStateSummary> summaries;
+  summaries.reserve(app.Doc().LayerStates().size());
+  for (const auto& s : app.Doc().LayerStates()) {
+    summaries.push_back({s.name, static_cast<int>(s.layers.size())});
+  }
+  return dino8::platform::BuildLayerStateManagerNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of Document::UserText() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent
+// of whether DrawDocumentUserTextPanel itself has ever been drawn or is
+// open right now - mirrors the same "key = value" pair its own row shows
+// per entry, in Document::UserText()'s std::map key order.
+dino8::platform::AccessibleNode DocumentUserTextAccessibleTree(Application& app) {
+  std::vector<dino8::platform::DocumentUserTextSummary> summaries;
+  summaries.reserve(app.Doc().UserText().size());
+  for (const auto& [k, v] : app.Doc().UserText()) summaries.push_back({k, v});
+  return dino8::platform::BuildDocumentUserTextNode(summaries);
+}
+
+// ---------------------------------------------------------------------------
+// Command history / list / help
+// ---------------------------------------------------------------------------
+
+void DrawCommandHistoryPanel(Application& app) {
+  if (!ImGui::Begin(PanelTitle("panel.command_history", "CommandHistory").c_str(), &app.Panels().command_history)) { ImGui::End(); return; }
+  if (ImGui::SmallButton("Clear")) app.Engine().ClearHistory();
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Copy all")) {
+    std::string all;
+    for (const std::string& l : app.Engine().History()) all += l + "\n";
+    ImGui::SetClipboardText(all.c_str());
+  }
+  ImGui::Separator();
+  ImGui::BeginChild("hist", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
+  for (const std::string& l : app.Engine().History()) {
+    if (!l.empty() && l[0] == '!') ImGui::TextColored(ImVec4(ThemeColors::kWarn[0], ThemeColors::kWarn[1], ThemeColors::kWarn[2], 1), "%s", l.c_str() + 1);
+    else ImGui::TextUnformatted(l.c_str());
+  }
+  if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 20) ImGui::SetScrollHereY(1.0f);
+  ImGui::EndChild();
+  ImGui::End();
+}
+
+// Activity Log: browses Document::ActivityLog() - the persisted, labeled
+// record of every finalized edit (see Document::RecordActivityLogEntry) -
+// as a scrollable, filterable table, plus a button to run ActivityExport.
+// Matches DrawCommandListPanel's table style above.
+void DrawActivityLogPanel(Application& app, std::string& filter, char* from_date, char* to_date) {
+  if (!ImGui::Begin(PanelTitle("panel.activity_log", "ActivityLog").c_str(), &app.Panels().activity_log)) { ImGui::End(); return; }
+  const auto& log = app.Doc().ActivityLog();
+  ImGui::Text("%zu recorded activit%s", log.size(), log.size() == 1 ? "y" : "ies");
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Export CSV...")) app.Engine().Execute("ActivityExport");
+  InputString("Filter", filter);
+  ImGui::SetNextItemWidth(110);
+  ImGui::InputTextWithHint("From (YYYY-MM-DD)", "YYYY-MM-DD", from_date, 16);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(110);
+  ImGui::InputTextWithHint("To (YYYY-MM-DD)", "YYYY-MM-DD", to_date, 16);
+  ImGui::Separator();
+  const std::string f = ToLower(filter);
+  const std::string from = from_date;
+  const std::string to = to_date;
+  if (ImGui::BeginTable("activity", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable)) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Time (UTC)", ImGuiTableColumnFlags_WidthFixed, 150);
+    ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, 140);
+    ImGui::TableSetupColumn("Detail", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableHeadersRow();
+    for (const auto& e : log) {
+      // e.timestamp_utc is "YYYY-MM-DD HH:MM:SS"; its first 10 chars sort
+      // and compare lexicographically identically to the "YYYY-MM-DD"
+      // bounds typed above, so plain string comparison is an exact,
+      // correct inclusive date-range test with no date parsing needed.
+      const std::string day = e.timestamp_utc.substr(0, 10);
+      if (!from.empty() && day < from) continue;
+      if (!to.empty() && day > to) continue;
+      if (!f.empty() && ToLower(e.label).find(f) == std::string::npos && ToLower(e.summary).find(f) == std::string::npos) continue;
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(e.timestamp_utc.c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(e.label.c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(e.summary.c_str());
+    }
+    ImGui::EndTable();
+  }
+  ImGui::End();
+}
+
+void DrawAuditResultsPanel(Application& app) {
+  Document& doc = app.Doc();
+  ImGui::SetNextWindowSize(ImVec2(560, 320), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.audit_results", "AuditResults").c_str(), &app.Panels().audit_results)) { ImGui::End(); return; }
+  const std::vector<AuditIssue>& results = app.AuditResults();
+  if (results.empty()) {
+    ImGui::TextWrapped("No invalid objects found. Run Audit again after editing the document to re-check it.");
+    ImGui::End();
+    return;
+  }
+  ImGui::Text("%zu invalid object(s)", results.size());
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Select all")) { doc.SelectNone(); for (const AuditIssue& iss : results) doc.Select(iss.id, true); }
+  ImGui::Separator();
+  if (ImGui::BeginTable("audit", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable, ImVec2(0, 0))) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 70);
+    ImGui::TableSetupColumn("Problem", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("##select", ImGuiTableColumnFlags_WidthFixed, 60);
+    ImGui::TableSetupColumn("##zoom", ImGuiTableColumnFlags_WidthFixed, 70);
+    ImGui::TableHeadersRow();
+    for (size_t i = 0; i < results.size(); ++i) {
+      const AuditIssue& issue = results[i];
+      ImGui::PushID(static_cast<int>(i));
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(issue.type.c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextWrapped("Object %llu: %s", static_cast<unsigned long long>(issue.id), issue.description.c_str());
+      ImGui::TableNextColumn();
+      // A missing object (deleted since the audit ran) still lists here -
+      // the buttons just no-op via Find()'s nullptr rather than crashing.
+      const bool exists = doc.Find(issue.id) != nullptr;
+      ImGui::BeginDisabled(!exists);
+      if (ImGui::SmallButton("Select")) { doc.SelectNone(); doc.Select(issue.id, true); }
+      ImGui::TableNextColumn();
+      if (ImGui::SmallButton("Zoom To")) {
+        kernel::BoundingBox bb;
+        if (Viewport* vp = app.ActiveViewport()) { if (doc.BoundingBoxOf({issue.id}, bb)) vp->ZoomTo(bb); }
+      }
+      ImGui::EndDisabled();
+      ImGui::PopID();
+    }
+    ImGui::EndTable();
+  }
+  ImGui::End();
+}
+
+// AT-SPI2-queryable snapshot of Application::AuditResults() (see
+// docs/ACCESSIBILITY.md): built straight from the last Audit run's results,
+// independent of whether DrawAuditResultsPanel itself has ever been drawn or
+// is open right now - mirrors the same id/type/description the on-screen
+// table's Type and Problem columns show per row. Starts empty (Audit hasn't
+// run yet, or found nothing) the same way Named Views/CPlanes start empty.
+dino8::platform::AccessibleNode AuditResultsAccessibleTree(Application& app) {
+  std::vector<dino8::platform::AuditIssueSummary> summaries;
+  summaries.reserve(app.AuditResults().size());
+  for (const AuditIssue& issue : app.AuditResults()) summaries.push_back({issue.id, issue.type, issue.description});
+  return dino8::platform::BuildAuditResultsNode(summaries);
+}
+
+// A command's description, in the active UI language when this command is
+// one of the bounded cmddesc.* subset I18n.h documents, else its real
+// English description unchanged (TrOrDefault's fallback, not a raw key).
+const std::string& LocalizedCommandDescription(const CommandInfo& info) {
+  return TrOrDefault("cmddesc." + ToLower(info.name), info.description);
+}
+
+// AT-SPI2-queryable snapshot of CommandEngine::Registry() (see
+// docs/ACCESSIBILITY.md): built straight from the command registry,
+// independent of whether DrawCommandListPanel itself has ever been drawn or
+// is open right now - mirrors the same name/status/description facts the
+// on-screen table's Command/Status/Description columns show per row, using
+// exactly the `rc.info ? LocalizedCommandDescription(*rc.info) : rc.note`
+// choice DrawCommandListPanel/DrawHelpPanel already make. Never empty in a real
+// build: RegisterCatalogPlaceholders registers the ~1055-command Rhino 8
+// reference catalog at startup even for commands with no implementation
+// yet.
+dino8::platform::AccessibleNode CommandListAccessibleTree(Application& app) {
+  std::vector<dino8::platform::CommandListEntrySummary> summaries;
+  summaries.reserve(app.Engine().Registry().size());
+  for (const auto& [key, rc] : app.Engine().Registry()) {
+    const std::string desc = rc.info ? LocalizedCommandDescription(*rc.info) : rc.note;
+    summaries.push_back({rc.name, CommandStatusName(rc.status), desc});
+  }
+  return dino8::platform::BuildCommandListNode(summaries);
+}
+
+void DrawCommandListPanel(Application& app, std::string& filter, int& status_filter) {
+  if (!ImGui::Begin(PanelTitle("panel.command_list", "CommandList").c_str(), &app.Panels().command_list)) { ImGui::End(); return; }
+  CommandEngine& eng = app.Engine();
+  const size_t n_impl = eng.CountWithStatus(CommandStatus::Implemented);
+  const size_t n_part = eng.CountWithStatus(CommandStatus::Partial);
+  const size_t n_plan = eng.CountWithStatus(CommandStatus::Planned);
+  ImGui::Text("%zu commands in the Rhino 8 reference.", eng.Registry().size());
+  ImGui::TextColored(StatusColor(CommandStatus::Implemented), "%zu implemented", n_impl); ImGui::SameLine();
+  ImGui::TextColored(StatusColor(CommandStatus::Partial), "%zu partial", n_part); ImGui::SameLine();
+  ImGui::TextColored(StatusColor(CommandStatus::Planned), "%zu planned (help only)", n_plan);
+  InputString("Search", filter);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(120);
+  ImGui::Combo("##status", &status_filter, "All\0Implemented\0Partial\0Planned\0");
+  ImGui::Separator();
+  const std::string f = ToLower(filter);
+  if (ImGui::BeginTable("cmds", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable)) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Command", ImGuiTableColumnFlags_WidthFixed, 180);
+    ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 90);
+    ImGui::TableSetupColumn("Description", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableHeadersRow();
+    for (const auto& [key, rc] : eng.Registry()) {
+      if (status_filter == 1 && rc.status != CommandStatus::Implemented) continue;
+      if (status_filter == 2 && rc.status != CommandStatus::Partial) continue;
+      if (status_filter == 3 && rc.status != CommandStatus::Planned) continue;
+      const std::string desc = rc.info ? LocalizedCommandDescription(*rc.info) : rc.note;
+      if (!f.empty() && key.find(f) == std::string::npos && ToLower(desc).find(f) == std::string::npos) continue;
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      if (ImGui::Selectable(rc.name.c_str(), false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick)) {
+        if (ImGui::IsMouseDoubleClicked(0)) eng.Execute(rc.name);
+        else app.ShowHelpFor(rc.name);
+      }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click: help.  Double-click: run.");
+      ImGui::TableNextColumn();
+      ImGui::TextColored(StatusColor(rc.status), "%s", StatusName(rc.status));
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(desc.c_str());
+    }
+    ImGui::EndTable();
+  }
+  ImGui::End();
+}
+
+void DrawHelpPanel(Application& app, std::string& search) {
+  if (!ImGui::Begin(PanelTitle("panel.help", "Help").c_str(), &app.Panels().help)) { ImGui::End(); return; }
+  if (InputString("Find command", search)) {
+    const CommandInfo* exact = app.Catalog().Find(search);
+    if (exact) app.help_command = exact->name;
+  }
+  if (!search.empty()) {
+    auto matches = app.Catalog().WithPrefix(search, 8);
+    for (const CommandInfo* m : matches) {
+      if (ImGui::SmallButton(m->name.c_str())) { app.help_command = m->name; search.clear(); }
+      ImGui::SameLine();
+    }
+    ImGui::NewLine();
+  }
+  ImGui::Separator();
+  const CommandInfo* info = app.help_command.empty() ? nullptr : app.Catalog().Find(app.help_command);
+  if (!info) {
+    ImGui::TextWrapped("Type a command name above, click a command in the Command List, or press F1 while a command runs.");
+    ImGui::Spacing();
+    ImGui::TextWrapped("Mouse: right-drag orbits (perspective) or pans (parallel views); Shift+right-drag pans; wheel zooms toward the cursor; left-click selects; drag left-to-right for window select, right-to-left for crossing select.");
+    ImGui::TextWrapped("Command line: type a name and Enter. Options show as buttons; type an option name or click it. Enter repeats the last command. Esc cancels. Coordinates: x,y,z  @dx,dy (relative)  <angle (polar)  or a plain distance to constrain along the cursor direction.");
+    ImGui::End();
+    return;
+  }
+  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(ThemeColors::kAccent[0], ThemeColors::kAccent[1], ThemeColors::kAccent[2], 1));
+  ImGui::Text("%s", info->name.c_str());
+  ImGui::PopStyleColor();
+  if (const RegisteredCommand* rc = app.Engine().Find(info->name)) {
+    ImGui::SameLine();
+    ImGui::TextColored(StatusColor(rc->status), "[%s]", StatusName(rc->status));
+    // rc->note is internal engineering commentary written for other
+    // developers reading the source (it names source files, functions, and
+    // other internal command names) - never shown here, since `info` is
+    // guaranteed non-null on this path and its own real, user-facing
+    // description is always printed right below.
+  }
+  if (ImGui::SmallButton("Run")) app.Engine().Execute(info->name);
+  ImGui::TextWrapped("%s", LocalizedCommandDescription(*info).c_str());
+  if (!info->toolbars.empty()) ImGui::TextDisabled("Toolbars: %s", info->toolbars.c_str());
+  if (!info->menu.empty()) ImGui::TextDisabled("Menu: %s", info->menu.c_str());
+  if (!info->options.empty()) {
+    ImGui::Separator();
+    ImGui::Text("Options");
+    for (const std::string& o : info->options) ImGui::BulletText("%s", o.c_str());
+  }
+  if (!info->help.empty()) {
+    ImGui::Separator();
+    ImGui::BeginChild("helpbody", ImVec2(0, 0), ImGuiChildFlags_None);
+    ImGui::TextWrapped("%s", info->help.c_str());
+    ImGui::EndChild();
+  }
+  ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
+// Smaller panels
+// ---------------------------------------------------------------------------
+
+void DrawNotificationsPanel(Application& app) {
+  if (!ImGui::Begin(PanelTitle("panel.notifications", "Notifications").c_str(), &app.Panels().notifications)) { ImGui::End(); return; }
+  ImGui::TextWrapped("Dino 8 is free software. There are no licences, subscriptions, sign-ins or update nags to manage.");
+  ImGui::Separator();
+  ImGui::Text("Recent messages:");
+  int shown = 0;
+  const auto& h = app.Engine().History();
+  for (auto it = h.rbegin(); it != h.rend() && shown < 30; ++it, ++shown) ImGui::BulletText("%s", it->c_str());
+  ImGui::End();
+}
+
+void DrawNamedViewsPanel(Application& app) {
+  Document& doc = app.Doc();
+  if (!ImGui::Begin(PanelTitle("panel.named_views", "NamedViews").c_str(), &app.Panels().named_views)) { ImGui::End(); return; }
+  static char name[128] = "";
+  ImGui::InputTextWithHint("##nv", "view name", name, sizeof(name));
+  ImGui::SameLine();
+  if (ImGui::Button("Save current") && app.ActiveViewport()) {
+    NamedView nv;
+    nv.name = std::strlen(name) ? name : "View " + std::to_string(doc.NamedViews().size() + 1);
+    nv.camera = app.ActiveViewport()->GetCamera().State();
+    doc.NamedViews().push_back(nv);
+    doc.Touch();
+    name[0] = 0;
+  }
+  ImGui::Separator();
+  for (size_t i = 0; i < doc.NamedViews().size(); ++i) {
+    ImGui::PushID(static_cast<int>(i));
+    if (ImGui::Selectable(doc.NamedViews()[i].name.c_str())) {
+      if (Viewport* vp = app.ActiveViewport()) vp->GetCamera().SetState(doc.NamedViews()[i].camera);
+    }
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20);
+    if (ImGui::SmallButton("x")) { doc.NamedViews().erase(doc.NamedViews().begin() + static_cast<long>(i)); doc.Touch(); ImGui::PopID(); break; }
+    ImGui::PopID();
+  }
+  ImGui::End();
+}
+
+void DrawNotesPanel(Application& app, char* buffer, size_t buffer_size) {
+  Document& doc = app.Doc();
+  if (!ImGui::Begin(PanelTitle("panel.notes", "Notes").c_str(), &app.Panels().notes)) { ImGui::End(); return; }
+  if (std::strcmp(buffer, doc.Notes().c_str()) != 0 && !ImGui::IsAnyItemActive()) std::snprintf(buffer, buffer_size, "%s", doc.Notes().c_str());
+  if (ImGui::InputTextMultiline("##notes", buffer, buffer_size, ImVec2(-1, -1))) {
+    doc.Notes() = buffer;
+    doc.Touch();
+  }
+  ImGui::End();
+}
+
+// AT-SPI2-queryable snapshot of Document::Notes() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether the Notes panel itself has ever been drawn or is open right now -
+// mirrors the exact text the on-screen ##notes multiline box edits, the same
+// single-Text-value shape as the "Command Line" accessible rather than a
+// List, matching what the on-screen widget itself is.
+dino8::platform::AccessibleNode DocumentNotesAccessibleTree(Application& app) {
+  return dino8::platform::BuildDocumentNotesNode(app.Doc().Notes());
+}
+
+void DrawDocumentUserTextPanel(Application& app) {
+  Document& doc = app.Doc();
+  if (!ImGui::Begin(PanelTitle("panel.document_user_text", "DocumentUserText").c_str(), &app.Panels().document_user_text)) { ImGui::End(); return; }
+  static char key[128], value[512];
+  ImGui::InputText("Key", key, sizeof(key));
+  ImGui::InputText("Value", value, sizeof(value));
+  if (ImGui::Button("Set") && key[0]) { doc.UserText()[key] = value; doc.Touch(); }
+  ImGui::Separator();
+  for (auto it = doc.UserText().begin(); it != doc.UserText().end();) {
+    ImGui::PushID(it->first.c_str());
+    ImGui::Text("%s = %s", it->first.c_str(), it->second.c_str());
+    ImGui::SameLine();
+    const bool erase = ImGui::SmallButton("x");
+    ImGui::PopID();
+    if (erase) { it = doc.UserText().erase(it); doc.Touch(); }
+    else ++it;
+  }
+  ImGui::End();
+}
+
+void DrawDisplayPanel(Application& app) {
+  if (!ImGui::Begin(PanelTitle("panel.display", "Display").c_str(), &app.Panels().display)) { ImGui::End(); return; }
+  Viewport* vp = app.ActiveViewport();
+  if (vp) {
+    ImGui::Text("Viewport: %s", vp->Name().c_str());
+    int mode = static_cast<int>(vp->Mode());
+    std::string names;
+    for (DisplayMode m : AllDisplayModes()) { names += DisplayModeName(m); names.push_back('\0'); }
+    names.push_back('\0');
+    if (ImGui::Combo("Display mode", &mode, names.c_str())) vp->SetMode(static_cast<DisplayMode>(mode));
+    CameraState& c = vp->GetCamera().State();
+    if (ImGui::Checkbox("Perspective projection", &c.perspective)) {}
+    float lens = static_cast<float>(c.lens_mm);
+    if (ImGui::SliderFloat("Lens (mm)", &lens, 10.0f, 200.0f)) c.lens_mm = lens;
+  }
+  DocumentSettings& s = app.Doc().Settings();
+  ImGui::Separator();
+  ImGui::Checkbox("Show grid", &s.show_grid);
+  ImGui::Checkbox("Show axes", &s.show_axes);
+  float spacing = static_cast<float>(s.grid_spacing);
+  if (ImGui::InputFloat("Grid spacing", &spacing, 0.5f, 5.0f)) s.grid_spacing = std::max(0.001f, spacing);
+  ImGui::InputInt("Major line every", &s.grid_major_every);
+  ImGui::InputInt("Grid extents", &s.grid_extents);
+  ImGui::Separator();
+  float ct = static_cast<float>(app.curve_display_tolerance), st = static_cast<float>(app.surface_display_tolerance);
+  if (ImGui::SliderFloat("Curve display tolerance", &ct, 0.001f, 0.5f, "%.3f")) {
+    app.curve_display_tolerance = ct;
+    for (SceneObject& o : app.Doc().Objects()) o.InvalidateDisplay();
+  }
+  if (ImGui::SliderFloat("Surface display tolerance", &st, 0.001f, 1.0f, "%.3f")) {
+    app.surface_display_tolerance = st;
+    for (SceneObject& o : app.Doc().Objects()) o.InvalidateDisplay();
+  }
+  ImGui::Checkbox("Control points on selected", &app.show_control_points_for_selected);
+  ImGui::End();
+}
+
+// AT-SPI2-queryable snapshot of the active viewport's display
+// mode/projection/lens and the document's grid/display-tolerance settings
+// (see docs/ACCESSIBILITY.md): built straight from Viewport/Document/
+// Application state, independent of whether DrawDisplayPanel itself has
+// ever been drawn or is open right now - mirrors the same facts that
+// panel's own Combo/Checkbox/Slider widgets show.
+dino8::platform::AccessibleNode DisplayAccessibleTree(Application& app) {
+  std::vector<dino8::platform::PropertyEntry> entries;
+  Viewport* vp = app.ActiveViewport();
+  entries.push_back({"Active viewport", vp ? vp->Name() : "(none)"});
+  if (vp) {
+    entries.push_back({"Display mode", DisplayModeName(vp->Mode())});
+    const CameraState& c = vp->GetCamera().State();
+    entries.push_back({"Perspective projection", c.perspective ? "Yes" : "No"});
+    entries.push_back({"Lens (mm)", FormatNumber(c.lens_mm)});
+  }
+  DocumentSettings& s = app.Doc().Settings();
+  entries.push_back({"Show grid", s.show_grid ? "Yes" : "No"});
+  entries.push_back({"Show axes", s.show_axes ? "Yes" : "No"});
+  entries.push_back({"Grid spacing", FormatNumber(s.grid_spacing)});
+  entries.push_back({"Major line every", std::to_string(s.grid_major_every)});
+  entries.push_back({"Grid extents", std::to_string(s.grid_extents)});
+  entries.push_back({"Curve display tolerance", FormatNumber(app.curve_display_tolerance)});
+  entries.push_back({"Surface display tolerance", FormatNumber(app.surface_display_tolerance)});
+  entries.push_back({"Control points on selected", app.show_control_points_for_selected ? "Yes" : "No"});
+  return dino8::platform::BuildDisplayPanelNode(entries);
+}
+
+void DrawCalculatorPanel(Application& app, std::string& input, std::string& result) {
+  if (!ImGui::Begin(PanelTitle("panel.calculator", "Calculator").c_str(), &app.Panels().calculator)) { ImGui::End(); return; }
+  ImGui::TextDisabled("+ - * / ^ %%  sqrt sin cos tan asin acos atan abs ln log exp floor ceil round min max pow hypot pi e");
+  if (InputString("Expression", input, ImGuiInputTextFlags_EnterReturnsTrue) || ImGui::Button("Evaluate")) {
+    double v = 0;
+    std::string err;
+    result = EvaluateExpression(input, v, err) ? FormatNumber(v) : "Error: " + err;
+  }
+  ImGui::Text("= %s", result.c_str());
+  if (!result.empty() && result.rfind("Error", 0) != 0) {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Copy")) ImGui::SetClipboardText(result.c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Send to command line")) app.Engine().FeedText(result);
+  }
+  ImGui::End();
+}
+
+void DrawAboutWindow(Application& app) {
+  ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.about", "About").c_str(), &app.Panels().about, ImGuiWindowFlags_NoDocking)) { ImGui::End(); return; }
+  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(ThemeColors::kAccent[0], ThemeColors::kAccent[1], ThemeColors::kAccent[2], 1));
+  ImGui::Text("Dino 8  %s", DINO8_VERSION);
+  ImGui::PopStyleColor();
+  ImGui::TextWrapped("%s", Tr("about.blurb").c_str());
+  ImGui::TextDisabled("By LegeLabs (a Mike Legere company)");
+  ImGui::Separator();
+  ImGui::BulletText("%s", Tr("about.kernel").c_str());
+  ImGui::BulletText("%s", Tr("about.ui_stack").c_str());
+  ImGui::BulletText(Tr("about.commands").c_str(), app.Catalog().Size());
+  ImGui::BulletText("%s", Tr("about.file_format").c_str());
+  ImGui::Separator();
+  ImGui::TextWrapped("%s", Tr("about.keyboard").c_str());
+  if (ImGui::Button(Tr("about.close").c_str())) app.Panels().about = false;
+  ImGui::End();
+}
+
+namespace {
+
+// One changelog entry: a version heading ("## 0.1.0") and its bullet lines
+// ("- ...") underneath, in file order (newest first, by convention of how
+// data/changelog.md is written).
+struct ChangelogVersion {
+  std::string version;
+  std::vector<std::string> bullets;
+};
+
+// Minimal changelog.md parser: "## <version>" starts a new version block,
+// "- <text>" is a bullet under the current block, everything else (blank
+// lines, the leading commentary paragraph, other heading levels) is
+// ignored. No general Markdown support is needed for a file this simple.
+std::vector<ChangelogVersion> ParseChangelog(const std::string& text) {
+  std::vector<ChangelogVersion> versions;
+  std::istringstream in(text);
+  std::string line;
+  while (std::getline(in, line)) {
+    // Trim trailing \r for files that round-tripped through Windows.
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.rfind("## ", 0) == 0) {
+      versions.push_back(ChangelogVersion{line.substr(3), {}});
+    } else if (!versions.empty() && line.rfind("- ", 0) == 0) {
+      versions.back().bullets.push_back(line.substr(2));
+    } else if (!versions.empty() && line.rfind("  ", 0) == 0 && !versions.back().bullets.empty()) {
+      // A continuation line (wrapped bullet, indented two spaces, no "- ")
+      // gets folded onto the previous bullet instead of becoming its own.
+      std::string cont = line.substr(2);
+      size_t start = cont.find_first_not_of(' ');
+      if (start != std::string::npos) versions.back().bullets.back() += " " + cont.substr(start);
+    }
+  }
+  return versions;
+}
+
+// Loaded once per process and cached: the same search order Application::
+// Init() uses for data/commands.json and data/i18n, so the changelog is
+// found next to the executable in an install, in the build tree, or run
+// from the source checkout.
+const std::vector<ChangelogVersion>& Changelog(Application& app) {
+  static std::vector<ChangelogVersion> cached;
+  static bool loaded = false;
+  if (loaded) return cached;
+  loaded = true;
+  const std::string& exe_dir = app.ExeDir();
+  const std::vector<std::string> candidates = {
+      exe_dir + "/data/changelog.md",           exe_dir + "/../Resources/data/changelog.md",
+      exe_dir + "/../share/dino8/data/changelog.md", exe_dir + "/../../data/changelog.md",
+      exe_dir + "/../../../dino8-app/data/changelog.md", "data/changelog.md",
+  };
+  for (const std::string& path : candidates) {
+    std::ifstream in(path);
+    if (!in) continue;
+    std::stringstream buf;
+    buf << in.rdbuf();
+    cached = ParseChangelog(buf.str());
+    break;
+  }
+  return cached;
+}
+
+}  // namespace
+
+void DrawWhatsNewWindow(Application& app) {
+  ImGui::SetNextWindowSize(ImVec2(560, 480), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.whats_new", "WhatsNew").c_str(), &app.Panels().whats_new, ImGuiWindowFlags_NoDocking)) { ImGui::End(); return; }
+  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(ThemeColors::kAccent[0], ThemeColors::kAccent[1], ThemeColors::kAccent[2], 1));
+  ImGui::Text("What's new in Dino 8");
+  ImGui::PopStyleColor();
+  ImGui::TextDisabled("Running %s", DINO8_VERSION);
+  ImGui::Separator();
+  const std::vector<ChangelogVersion>& versions = Changelog(app);
+  if (versions.empty()) {
+    ImGui::TextWrapped("The changelog (data/changelog.md) could not be found next to this build.");
+  } else {
+    ImGui::BeginChild("##whats_new_scroll", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()));
+    for (const ChangelogVersion& v : versions) {
+      const bool is_current = v.version == DINO8_VERSION;
+      if (is_current) ImGui::PushStyleColor(ImGuiCol_Text, ThemeColors::Accent());
+      const bool open = ImGui::TreeNodeEx(v.version.c_str(), ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed,
+                                          "%s%s", v.version.c_str(), is_current ? "  (this build)" : "");
+      if (is_current) ImGui::PopStyleColor();
+      if (open) {
+        for (const std::string& bullet : v.bullets) ImGui::BulletText("%s", bullet.c_str());
+        ImGui::TreePop();
+      }
+    }
+    ImGui::EndChild();
+  }
+  if (ImGui::Button("Close")) app.Panels().whats_new = false;
+  ImGui::End();
+}
+
+// AT-SPI2-queryable snapshot of CommandEngine::Aliases() (see
+// docs/ACCESSIBILITY.md): built straight from the alias map, independent of
+// whether the Options window's Aliases tab is actually open right now -
+// mirrors each alias with the full command name it expands to as its
+// Description, the same shape DocumentUserTextAccessibleTree already uses
+// for its own key/value rows. Never empty in a real build:
+// CommandEngine::InstallDefaultAliases() installs Rhino's own default alias
+// set at startup.
+dino8::platform::AccessibleNode CommandAliasesAccessibleTree(Application& app) {
+  std::vector<dino8::platform::CommandAliasSummary> summaries;
+  summaries.reserve(app.Engine().Aliases().size());
+  for (const auto& [alias, command] : app.Engine().Aliases()) summaries.push_back({alias, command});
+  return dino8::platform::BuildCommandAliasesNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of Application::user_shortcuts (see
+// docs/ACCESSIBILITY.md): built straight from the shortcut list, independent
+// of whether the Options window's Shortcuts tab is actually open right now -
+// mirrors each shortcut's human-readable key combo (built the same
+// "Ctrl+"/"Shift+"/"Alt+" prefix-and-KeyShortcutName way that tab's own row
+// formats it - see DrawOptionsWindow below) with the command it runs as its
+// Description. Starts empty on a fresh app: unlike Command Aliases, there is
+// no default-shortcuts installer.
+dino8::platform::AccessibleNode KeyboardShortcutsAccessibleTree(Application& app) {
+  std::vector<dino8::platform::KeyboardShortcutSummary> summaries;
+  summaries.reserve(app.user_shortcuts.size());
+  for (const KeyShortcut& s : app.user_shortcuts) {
+    const std::string combo = std::string(s.ctrl ? "Ctrl+" : "") + (s.shift ? "Shift+" : "") + (s.alt ? "Alt+" : "") + KeyShortcutName(s.key);
+    summaries.push_back({combo, s.command});
+  }
+  return dino8::platform::BuildKeyboardShortcutsNode(summaries);
+}
+
+namespace {
+// Dino 8's own fixed keyboard shortcuts (not user-customizable - those are
+// Options > Shortcuts, see KeyboardShortcutsAccessibleTree above), shown as
+// three BulletText rows in the Options window's built-in-shortcuts
+// reference tab (DrawOptionsWindow's options.tab_keyboard) below. Kept as
+// one data table feeding both that display and
+// BuiltinShortcutsAccessibleTree so the two can never drift out of sync.
+struct BuiltinShortcutEntry {
+  const char* combo;
+  const char* action;
+};
+constexpr BuiltinShortcutEntry kBuiltinShortcutRow1[] = {
+    {"F1", "Command list"}, {"F2", "History"},    {"F3", "Properties"},    {"F7", "Grid"},
+    {"F8", "Ortho"},        {"F9", "Grid snap"},  {"F10/F11", "Points on/off"},
+};
+constexpr BuiltinShortcutEntry kBuiltinShortcutRow2[] = {
+    {"Ctrl+N/O/S", "New/Open/Save"}, {"Ctrl+Z/Y", "Undo/Redo"}, {"Ctrl+A", "Select all"},
+    {"Ctrl+G", "Group"},             {"Ctrl+H", "Hide"},
+};
+constexpr BuiltinShortcutEntry kBuiltinShortcutRow3[] = {
+    {"Home", "Undo view"}, {"PgUp/PgDn", "zoom"}, {"Arrow keys", "orbit"},
+    {"Esc", "cancel / deselect"}, {"Enter", "repeat last"},
+};
+
+template <size_t N>
+std::string JoinBuiltinShortcutRow(const BuiltinShortcutEntry (&row)[N]) {
+  std::string out;
+  for (size_t i = 0; i < N; ++i) {
+    if (i) out += "   ";
+    out += row[i].combo;
+    out += ' ';
+    out += row[i].action;
+  }
+  return out;
+}
+
+template <size_t N>
+void AppendBuiltinShortcutRow(const BuiltinShortcutEntry (&row)[N],
+                               std::vector<dino8::platform::KeyboardShortcutSummary>& out) {
+  for (const BuiltinShortcutEntry& e : row) out.push_back({e.combo, e.action});
+}
+}  // namespace
+
+// AT-SPI2-queryable snapshot of the Options window's own built-in-shortcuts
+// reference tab (options.tab_keyboard, DrawOptionsWindow below): one entry
+// per fixed shortcut from kBuiltinShortcutRow1/2/3, the same table that
+// tab's three BulletText rows are generated from, so this can never drift
+// out of sync with what's actually displayed there.
+dino8::platform::AccessibleNode BuiltinShortcutsAccessibleTree(Application&) {
+  std::vector<dino8::platform::KeyboardShortcutSummary> summaries;
+  AppendBuiltinShortcutRow(kBuiltinShortcutRow1, summaries);
+  AppendBuiltinShortcutRow(kBuiltinShortcutRow2, summaries);
+  AppendBuiltinShortcutRow(kBuiltinShortcutRow3, summaries);
+  return dino8::platform::BuildBuiltinShortcutsNode(summaries);
+}
+
+void DrawOptionsWindow(Application& app) {
+  ImGui::SetNextWindowSize(ImVec2(620, 460), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.options", "Options").c_str(), &app.Panels().options)) { ImGui::End(); return; }
+  if (ImGui::BeginTabBar("opts")) {
+    if (ImGui::BeginTabItem(Tr("options.tab_general").c_str())) {
+      ImGui::TextWrapped("%s", Tr("options.general_intro").c_str());
+      if (ImGui::SliderFloat(Tr("options.ui_scale").c_str(), &app.ui_scale, 0.75f, 2.0f)) { ApplyDinoTheme(app.ui_scale, static_cast<ThemeMode>(app.theme_mode), app.accent_color); }
+      int theme = app.theme_mode;
+      const std::string theme_items = Tr("options.theme_dark") + '\0' + Tr("options.theme_light") + '\0' + Tr("options.theme_high_contrast") + '\0';
+      if (ImGui::Combo(Tr("options.theme").c_str(), &theme, theme_items.c_str())) { app.theme_mode = theme; ApplyDinoTheme(app.ui_scale, static_cast<ThemeMode>(app.theme_mode), app.accent_color); }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", Tr("options.theme_high_contrast_hint").c_str());
+      const bool hc = app.theme_mode == static_cast<int>(ThemeMode::HighContrast);
+      ImGui::BeginDisabled(hc);
+      if (ImGui::ColorEdit3(Tr("options.accent_colour").c_str(), app.accent_color, ImGuiColorEditFlags_NoInputs)) ApplyDinoTheme(app.ui_scale, static_cast<ThemeMode>(app.theme_mode), app.accent_color);
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Dino teal")) { app.accent_color[0] = 0.184f; app.accent_color[1] = 0.655f; app.accent_color[2] = 0.627f; ApplyDinoTheme(app.ui_scale, static_cast<ThemeMode>(app.theme_mode), app.accent_color); }
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Rhino blue")) { app.accent_color[0] = 0.30f; app.accent_color[1] = 0.62f; app.accent_color[2] = 0.95f; ApplyDinoTheme(app.ui_scale, static_cast<ThemeMode>(app.theme_mode), app.accent_color); }
+      ImGui::EndDisabled();
+      if (hc) { ImGui::SameLine(); ImGui::TextDisabled("%s", Tr("options.theme_fixed_in_hc").c_str()); }
+      { bool show_welcome = !app.welcome_dismissed; if (ImGui::Checkbox(Tr("options.show_welcome").c_str(), &show_welcome)) app.welcome_dismissed = !show_welcome; }
+      ImGui::Checkbox(Tr("options.gumball").c_str(), &app.gumball_enabled);
+      ImGui::Checkbox(Tr("options.show_toolbars").c_str(), &app.Panels().toolbars);
+      ImGui::SetNextItemWidth(160);
+      if (ImGui::BeginCombo(Tr("options.language").c_str(), dino8::i18n::CurrentLanguageName().c_str())) {
+        for (const auto& lang : dino8::i18n::AvailableLanguages()) {
+          if (ImGui::Selectable(lang.name.c_str(), lang.code == dino8::i18n::CurrentLanguage())) {
+            dino8::i18n::SetLanguage(lang.code);
+            app.language = lang.code;
+          }
+        }
+        ImGui::EndCombo();
+      }
+      ImGui::Separator();
+      ImGui::TextDisabled("Scripting");
+      {
+        static char startup[1024] = {};
+        static bool synced = false;
+        if (!synced) { std::snprintf(startup, sizeof(startup), "%s", app.startup_script.c_str()); synced = true; }
+        if (ImGui::InputText("Startup script (.lua)", startup, sizeof(startup))) app.startup_script = startup;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Browse...")) {
+          app.ShowFileDialog("Startup script", {".lua"}, false, [&app](const std::string& path) { app.startup_script = path; synced = false; });
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A Lua script run once when Dino 8 starts (RunScript). Leave empty for none.");
+        if (ImGui::SmallButton("Open Script Editor")) app.Panels().script_editor = true;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Scripting reference")) app.Panels().scripting_reference = true;
+      }
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem(Tr("options.tab_modeling_aids").c_str())) {
+      SnapSettings& s = app.Snaps();
+      ImGui::Checkbox("Grid snap", &s.grid_snap);
+      ImGui::Checkbox("Ortho", &s.ortho);
+      ImGui::Checkbox("Planar", &s.planar);
+      ImGui::Checkbox("SmartTrack", &s.smart_track);
+      ImGui::Separator();
+      ImGui::Text("Object snaps");
+      ImGui::Checkbox("End", &s.end); ImGui::SameLine(); ImGui::Checkbox("Near", &s.near_); ImGui::SameLine(); ImGui::Checkbox("Point", &s.point);
+      ImGui::Checkbox("Mid", &s.mid); ImGui::SameLine(); ImGui::Checkbox("Cen", &s.cen); ImGui::SameLine(); ImGui::Checkbox("Int", &s.int_);
+      ImGui::Checkbox("Perp", &s.perp); ImGui::SameLine(); ImGui::Checkbox("Tan", &s.tan); ImGui::SameLine(); ImGui::Checkbox("Quad", &s.quad);
+      ImGui::Checkbox("Vertex", &s.vertex); ImGui::SameLine(); ImGui::Checkbox("Knot", &s.knot); ImGui::SameLine(); ImGui::Checkbox("Project", &s.project);
+      ImGui::Checkbox("Disable all", &s.disable_all);
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem(Tr("options.tab_view").c_str())) {
+      DocumentSettings& d = app.Doc().Settings();
+      ImGui::Checkbox("Grid", &d.show_grid);
+      ImGui::Checkbox("Axes", &d.show_axes);
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem(Tr("options.tab_aliases").c_str())) {
+      static char alias[64], cmd[128];
+      ImGui::InputText("Alias", alias, sizeof(alias));
+      ImGui::InputText("Command", cmd, sizeof(cmd));
+      if (ImGui::Button("Add / Update") && alias[0] && cmd[0]) { app.Engine().Aliases()[ToLower(alias)] = cmd; alias[0] = cmd[0] = 0; }
+      ImGui::Separator();
+      for (auto it = app.Engine().Aliases().begin(); it != app.Engine().Aliases().end();) {
+        ImGui::PushID(it->first.c_str());
+        ImGui::Text("%-10s -> %s", it->first.c_str(), it->second.c_str());
+        ImGui::SameLine();
+        const bool del = ImGui::SmallButton("x");
+        ImGui::PopID();
+        if (del) it = app.Engine().Aliases().erase(it); else ++it;
+      }
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem(Tr("options.tab_shortcuts").c_str())) {
+      static char key_name[32] = "L", shortcut_cmd[128] = "";
+      static bool ctrl_mod = true, shift_mod = false, alt_mod = false;
+      static std::string warning, note;
+      ImGui::TextWrapped(
+          "Key name exactly as ImGui reports it: a letter/digit, F1-F24, Up/Down/Left/Right, Escape, Delete, "
+          "Tab, Space, Home, End, PageUp, PageDown, Insert, and similar. A shortcut on a built-in chord "
+          "(Ctrl+Z/C/V/X/S/O/N/A/G/H, F1-F11, Delete, Escape, Home, PageUp/PageDown, the arrow keys) replaces "
+          "that default action, same as any other Options > Shortcuts entry.");
+      ImGui::InputText("Key", key_name, sizeof(key_name));
+      ImGui::SameLine();
+      // "Click here, then press the key" capture flow: while capturing,
+      // every other frame HandleShortcuts (Application.cpp) sits out
+      // entirely (capturing_shortcut), so the very first non-modifier key
+      // this loop sees is unambiguously for the new binding, not also
+      // firing whatever that chord already does. Fills the same key_name/
+      // *_mod fields the typed-name path above already used, so Add/Update
+      // below (KeyShortcutFromName(key_name)) needs no separate code path.
+      if (app.capturing_shortcut) {
+        ImGui::TextColored(ImVec4(1, 0.8f, 0.2f, 1), "Press a key... (Esc to cancel)");
+        ImGuiIO& io = ImGui::GetIO();
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+          app.capturing_shortcut = false;
+        } else {
+          for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; ++k) {
+            const ImGuiKey key = static_cast<ImGuiKey>(k);
+            if (IsUnbindableCaptureKey(k)) continue;
+            if (!ImGui::IsKeyPressed(key, false)) continue;
+            const char* n = ImGui::GetKeyName(key);
+            if (!n || !*n) continue;
+            std::snprintf(key_name, sizeof(key_name), "%s", n);
+            ctrl_mod = io.KeyCtrl;
+            shift_mod = io.KeyShift;
+            alt_mod = io.KeyAlt;
+            app.capturing_shortcut = false;
+            break;
+          }
+        }
+      } else if (ImGui::Button("Press a key...")) {
+        app.capturing_shortcut = true;
+      }
+      ImGui::SameLine(); ImGui::Checkbox("Ctrl", &ctrl_mod);
+      ImGui::SameLine(); ImGui::Checkbox("Shift", &shift_mod);
+      ImGui::SameLine(); ImGui::Checkbox("Alt", &alt_mod);
+      ImGui::InputText("Command", shortcut_cmd, sizeof(shortcut_cmd));
+      if (ImGui::Button("Add / Update") && key_name[0] && shortcut_cmd[0]) {
+        const int key = KeyShortcutFromName(key_name);
+        if (key == 0) {
+          warning = std::string("Unrecognized key name: ") + key_name;
+          note.clear();
+        } else {
+          std::vector<KeyShortcut>& v = app.user_shortcuts;
+          auto it = std::find_if(v.begin(), v.end(), [&](const KeyShortcut& s) {
+            return s.key == key && s.ctrl == ctrl_mod && s.shift == shift_mod && s.alt == alt_mod;
+          });
+          if (it != v.end()) it->command = shortcut_cmd; else v.push_back({key, ctrl_mod, shift_mod, alt_mod, shortcut_cmd});
+          note = IsReservedShortcut(key, ctrl_mod, shift_mod, alt_mod)
+                     ? "This replaces that chord's built-in default action."
+                     : "";
+          shortcut_cmd[0] = 0;
+          warning.clear();
+        }
+      }
+      if (!warning.empty()) { ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "%s", warning.c_str()); }
+      else if (!note.empty()) { ImGui::TextDisabled("%s", note.c_str()); }
+      ImGui::Separator();
+      for (size_t i = 0; i < app.user_shortcuts.size();) {
+        KeyShortcut& s = app.user_shortcuts[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::Text("%s%s%s%-10s -> %s", s.ctrl ? "Ctrl+" : "", s.shift ? "Shift+" : "", s.alt ? "Alt+" : "",
+                    KeyShortcutName(s.key).c_str(), s.command.c_str());
+        ImGui::SameLine();
+        const bool del = ImGui::SmallButton("x");
+        ImGui::PopID();
+        if (del) app.user_shortcuts.erase(app.user_shortcuts.begin() + static_cast<long>(i)); else ++i;
+      }
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem(Tr("options.tab_toolbar").c_str())) {
+      int size_index = app.toolbar_icon_size == 40 ? 2 : app.toolbar_icon_size == 32 ? 1 : 0;
+      ImGui::SetNextItemWidth(120);
+      if (ImGui::Combo("Icon size", &size_index, "24 px\0" "32 px\0" "40 px\0")) app.toolbar_icon_size = size_index == 2 ? 40 : size_index == 1 ? 32 : 24;
+      ImGui::SameLine();
+      ImGui::Checkbox("Labels under icons", &app.toolbar_labels);
+      ImGui::SameLine();
+      ImGui::Checkbox("Left sidebar", &app.show_left_sidebar);
+      ImGui::SetNextItemWidth(160);
+      if (ImGui::BeginCombo("Active tab", ToolbarTabName(app.toolbar_tab))) {
+        for (int t = 0; t < ToolbarTabCount(); ++t) if (ImGui::Selectable(ToolbarTabName(t), t == app.toolbar_tab)) app.toolbar_tab = t;
+        ImGui::EndCombo();
+      }
+      ImGui::Separator();
+      ImGui::TextWrapped(
+          "Buttons on the Standard tab, in order. Drag an entry to reorder it, or use up/down. "
+          "Drag a command from the picker below (or from any other toolbar tab / the left sidebar) into the list to add it there; "
+          "dropping past the last entry appends it. Remove with the x. Ctrl+right-click a toolbar button to remove it there "
+          "(a plain right click runs the button's alternate command).");
+      std::vector<std::string>& tb = app.toolbar_commands;
+      if (tb.empty()) tb = DefaultToolbarCommands();
+      int erase_index = -1;
+      int drag_from = -1, drag_to = -1;
+      int insert_at = -1;
+      std::string insert_command;
+      const float icon = 18.0f;
+      ImGui::BeginChild("##tbcustomize_list", ImVec2(0, 170), ImGuiChildFlags_Borders);
+      for (size_t i = 0; i < tb.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        const bool is_sep = tb[i] == "|";
+        const ImVec2 row_top = ImGui::GetCursorScreenPos();
+        if (!is_sep) DrawIcon(ImGui::GetWindowDrawList(), tb[i].c_str(), row_top, icon, ImGui::GetColorU32(ImGuiCol_Text));
+        ImGui::Dummy(ImVec2(icon, icon));
+        ImGui::SameLine();
+        const std::string row_text = is_sep ? "-- separator --" : tb[i];
+        ImGui::Selectable(row_text.c_str(), false, ImGuiSelectableFlags_None, ImVec2(220.0f, icon));
+        // Drag source: reorder within this list.
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+          int idx = static_cast<int>(i);
+          ImGui::SetDragDropPayload(kToolbarReorderDragType, &idx, sizeof(int));
+          if (!is_sep) DrawIcon(ImGui::GetWindowDrawList(), tb[i].c_str(), ImGui::GetCursorScreenPos(), icon, ImGui::GetColorU32(ImGuiCol_Text));
+          ImGui::Dummy(ImVec2(icon, icon));
+          ImGui::SameLine();
+          ImGui::TextUnformatted(row_text.c_str());
+          ImGui::EndDragDropSource();
+        }
+        // Drop target: accepts a reorder (from this same list) or a command
+        // name dragged in from the icon-grid picker or another toolbar tab.
+        if (ImGui::BeginDragDropTarget()) {
+          if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kToolbarReorderDragType)) {
+            drag_from = *static_cast<const int*>(p->Data);
+            drag_to = static_cast<int>(i);
+          }
+          if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kToolbarCommandDragType)) {
+            insert_at = static_cast<int>(i);
+            insert_command = static_cast<const char*>(p->Data);
+          }
+          ImGui::EndDragDropTarget();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("up") && i > 0) std::swap(tb[i], tb[i - 1]);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("down") && i + 1 < tb.size()) std::swap(tb[i], tb[i + 1]);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) erase_index = static_cast<int>(i);
+        ImGui::PopID();
+      }
+      // Trailing drop zone: append instead of inserting before an entry.
+      {
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        ImGui::InvisibleButton("##tbcustomize_append", ImVec2(std::max(40.0f, avail.x), std::max(20.0f, avail.y)));
+        if (ImGui::BeginDragDropTarget()) {
+          if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kToolbarReorderDragType)) {
+            drag_from = *static_cast<const int*>(p->Data);
+            drag_to = static_cast<int>(tb.size());
+          }
+          if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kToolbarCommandDragType)) {
+            insert_at = static_cast<int>(tb.size());
+            insert_command = static_cast<const char*>(p->Data);
+          }
+          ImGui::EndDragDropTarget();
+        }
+        if (tb.empty()) { const ImVec2 p = ImGui::GetItemRectMin(); ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + 4, p.y + 2), ImGui::GetColorU32(ImGuiCol_TextDisabled), "Drag or click a command below to start."); }
+      }
+      ImGui::EndChild();
+      if (erase_index >= 0) tb.erase(tb.begin() + erase_index);
+      if (drag_from >= 0 && drag_to >= 0 && drag_from != drag_to && static_cast<size_t>(drag_from) < tb.size()) {
+        const std::string moved = tb[static_cast<size_t>(drag_from)];
+        tb.erase(tb.begin() + drag_from);
+        int at = drag_to;
+        if (drag_from < drag_to) at -= 1;
+        at = std::clamp(at, 0, static_cast<int>(tb.size()));
+        tb.insert(tb.begin() + at, moved);
+      } else if (insert_at >= 0 && !insert_command.empty()) {
+        if (const RegisteredCommand* rc = app.Engine().Find(insert_command)) {
+          const int at = std::clamp(insert_at, 0, static_cast<int>(tb.size()));
+          tb.insert(tb.begin() + at, rc->name);
+        }
+      }
+
+      ImGui::Separator();
+      ImGui::TextDisabled("Add a command (click, or drag into the list above)");
+      static char search[64] = "";
+      ImGui::SetNextItemWidth(240);
+      ImGui::InputTextWithHint("##tbsearch", "search commands by name...", search, sizeof(search));
+      const std::string needle = ToLower(search);
+      static const std::vector<std::string> kAllButtons = AllToolbarButtonCommands();
+      ImGui::BeginChild("##tbpicker", ImVec2(0, 200), ImGuiChildFlags_Borders);
+      const float cell = 60.0f;
+      const int cols = std::max(1, static_cast<int>(ImGui::GetContentRegionAvail().x / cell));
+      int col = 0;
+      for (const std::string& cmd : kAllButtons) {
+        const char* lbl = ToolbarButtonLabel(cmd);
+        const std::string label = lbl ? lbl : cmd;
+        if (!needle.empty()) {
+          std::string haystack = ToLower(cmd) + " " + ToLower(label);
+          if (haystack.find(needle) == std::string::npos) continue;
+        }
+        ImGui::PushID(cmd.c_str());
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const ImVec2 sz(cell - 6.0f, cell - 6.0f);
+        ImGui::InvisibleButton("##cell", sz, ImGuiButtonFlags_MouseButtonLeft);
+        const bool hovered = ImGui::IsItemHovered();
+        const bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (hovered) dl->AddRectFilled(p, ImVec2(p.x + sz.x, p.y + sz.y), ImGui::GetColorU32(ImGuiCol_ButtonHovered), 3.0f);
+        const float ic = 22.0f;
+        DrawIcon(dl, cmd.c_str(), ImVec2(p.x + (sz.x - ic) * 0.5f, p.y + 3.0f), ic, ImGui::GetColorU32(ImGuiCol_Text));
+        ImGui::PushFont(nullptr, 10.5f * ImGui::GetStyle().FontScaleMain);
+        const ImVec2 ts = ImGui::CalcTextSize(label.c_str());
+        const float tx = p.x + std::max(0.0f, (sz.x - ts.x) * 0.5f);
+        dl->PushClipRect(p, ImVec2(p.x + sz.x, p.y + sz.y), true);
+        dl->AddText(ImVec2(tx, p.y + ic + 6.0f), ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
+        dl->PopClipRect();
+        ImGui::PopFont();
+        if (clicked) AddToolbarCommand(app, cmd);
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+          ImGui::SetDragDropPayload(kToolbarCommandDragType, cmd.c_str(), cmd.size() + 1);
+          DrawIcon(ImGui::GetWindowDrawList(), cmd.c_str(), ImGui::GetCursorScreenPos(), ic, ImGui::GetColorU32(ImGuiCol_Text));
+          ImGui::Dummy(ImVec2(ic, ic));
+          ImGui::SameLine();
+          ImGui::TextUnformatted(label.c_str());
+          ImGui::EndDragDropSource();
+        }
+        if (hovered && !ImGui::GetIO().MouseDown[0]) ImGui::SetTooltip("%s\nClick or drag into the toolbar list above to add it.", cmd.c_str());
+        ImGui::PopID();
+        if (++col < cols) { ImGui::SameLine(); } else { col = 0; }
+      }
+      if (col != 0) ImGui::NewLine();
+      ImGui::EndChild();
+
+      ImGui::TextDisabled("Advanced: add any registered command by exact name (not every command has an icon)");
+      static char add[64] = "";
+      ImGui::SetNextItemWidth(180);
+      ImGui::InputTextWithHint("##addcmd", "command name", add, sizeof(add));
+      ImGui::SameLine();
+      if (ImGui::Button("Add button") && add[0]) {
+        if (!AddToolbarCommand(app, add)) app.Notify(std::string("Unknown command: ") + add);
+        add[0] = 0;
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Reset to default")) tb = DefaultToolbarCommands();
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem(Tr("options.tab_keyboard").c_str())) {
+      ImGui::BulletText("%s", JoinBuiltinShortcutRow(kBuiltinShortcutRow1).c_str());
+      ImGui::BulletText("%s", JoinBuiltinShortcutRow(kBuiltinShortcutRow2).c_str());
+      ImGui::BulletText("%s", JoinBuiltinShortcutRow(kBuiltinShortcutRow3).c_str());
+      ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
+  }
+  ImGui::End();
+}
+
+void DrawDocumentPropertiesWindow(Application& app) {
+  ImGui::SetNextWindowSize(ImVec2(520, 380), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.document_properties", "DocumentProperties").c_str(), &app.Panels().document_properties)) { ImGui::End(); return; }
+  DocumentSettings& s = app.Doc().Settings();
+  static const char* units[] = {"Millimeters", "Centimeters", "Meters", "Inches", "Feet"};
+  int cur = 0;
+  for (int i = 0; i < 5; ++i) if (s.unit_system == units[i]) cur = i;
+  if (ImGui::Combo("Units", &cur, units, 5)) { s.unit_system = units[cur]; app.Doc().Touch(); }
+  double tol = s.absolute_tolerance;
+  if (ImGui::InputDouble("Absolute tolerance", &tol, 0, 0, "%.5f")) { s.absolute_tolerance = std::max(1e-8, tol); app.Doc().Touch(); }
+  double ang = s.angle_tolerance_degrees;
+  if (ImGui::InputDouble("Angle tolerance (deg)", &ang, 0, 0, "%.3f")) { s.angle_tolerance_degrees = std::max(0.001, ang); app.Doc().Touch(); }
+  ImGui::Separator();
+  ImGui::Text("Grid");
+  double gs = s.grid_spacing;
+  if (ImGui::InputDouble("Spacing", &gs)) s.grid_spacing = std::max(0.001, gs);
+  ImGui::InputInt("Major every", &s.grid_major_every);
+  ImGui::InputInt("Extents", &s.grid_extents);
+  ImGui::Separator();
+  ImGui::Text("Metadata (saved in the .3dm)");
+  if (InputString("Title", s.title)) app.Doc().Touch();
+  if (InputString("Author", s.author)) app.Doc().Touch();
+  if (InputString("Comments", s.comments)) app.Doc().Touch();
+  ImGui::Separator();
+  ImGui::Text("Annotation styles");
+  {
+    Document& doc = app.Doc();
+    std::vector<AnnotationStyle>& styles = doc.AnnotationStyles();
+    if (ImGui::BeginCombo("Current style", s.annotation_style.c_str())) {
+      for (const AnnotationStyle& st : styles) if (ImGui::Selectable(st.name.c_str(), st.name == s.annotation_style)) { s.annotation_style = st.name; doc.Touch(); }
+      ImGui::EndCombo();
+    }
+    for (size_t i = 0; i < styles.size(); ++i) {
+      AnnotationStyle& st = styles[i];
+      ImGui::PushID(static_cast<int>(i));
+      if (ImGui::TreeNode(st.name.c_str())) {
+        double h = st.text_height, a = st.arrow_size;
+        if (ImGui::InputDouble("Text height (0 = auto)", &h)) { st.text_height = std::max(0.0, h); doc.Touch(); }
+        if (ImGui::InputDouble("Arrow size (0 = text height)", &a)) { st.arrow_size = std::max(0.0, a); doc.Touch(); }
+        if (InputString("Font", st.font)) doc.Touch();
+        ImGui::Separator();
+        ImGui::TextDisabled("Units / precision / tolerance");
+        int prec = st.precision;
+        if (ImGui::InputInt("Linear decimal places (-1 = auto)", &prec)) { st.precision = std::clamp(prec, -1, 15); doc.Touch(); }
+        int aprec = st.angular_precision;
+        if (ImGui::InputInt("Angular decimal places (-1 = auto)", &aprec)) { st.angular_precision = std::clamp(aprec, -1, 15); doc.Touch(); }
+        if (InputString("Unit suffix (e.g. mm)", st.unit_suffix)) doc.Touch();
+        static const char* kTolModes[] = {"(none)", "symmetric", "deviation", "limits"};
+        int tol_idx = st.tol_mode.empty() ? 0 : st.tol_mode == "symmetric" ? 1 : st.tol_mode == "deviation" ? 2 : st.tol_mode == "limits" ? 3 : 0;
+        if (ImGui::Combo("Default tolerance", &tol_idx, kTolModes, 4)) { st.tol_mode = tol_idx == 0 ? "" : kTolModes[tol_idx]; doc.Touch(); }
+        if (tol_idx != 0) {
+          if (InputString("Tolerance value", st.tol_value)) doc.Touch();
+          if (InputString("Tolerance + (blank = value)", st.tol_upper)) doc.Touch();
+          if (InputString("Tolerance - (blank = value)", st.tol_lower)) doc.Touch();
+        }
+        ImGui::Separator();
+        ImGui::TextDisabled("Extension lines / text placement (linear dimensions)");
+        double eo = st.ext_offset, ee = st.ext_extension;
+        if (ImGui::InputDouble("Extension line offset", &eo)) { st.ext_offset = std::max(0.0, eo); doc.Touch(); }
+        if (ImGui::InputDouble("Extension line overshoot", &ee)) { st.ext_extension = std::max(0.0, ee); doc.Touch(); }
+        static const char* kPlacements[] = {"Above", "Centered"};
+        int pl_idx = st.text_placement == "Centered" ? 1 : 0;
+        if (ImGui::Combo("Text placement", &pl_idx, kPlacements, 2)) { st.text_placement = kPlacements[pl_idx]; doc.Touch(); }
+        ImGui::Separator();
+        if (ImGui::SmallButton("Duplicate")) { AnnotationStyle copy = st; copy.name = st.name + " copy"; styles.push_back(copy); doc.Touch(); ImGui::TreePop(); ImGui::PopID(); break; }
+        if (styles.size() > 1 && st.name != s.annotation_style) { ImGui::SameLine(); if (ImGui::SmallButton("Delete")) { styles.erase(styles.begin() + static_cast<long>(i)); doc.Touch(); ImGui::TreePop(); ImGui::PopID(); break; } }
+        ImGui::TreePop();
+      }
+      ImGui::PopID();
+    }
+    static char new_style[64] = "";
+    ImGui::SetNextItemWidth(160);
+    ImGui::InputTextWithHint("##newstyle", "new style name", new_style, sizeof(new_style));
+    ImGui::SameLine();
+    if (ImGui::Button("Add style") && new_style[0] && !doc.FindAnnotationStyle(new_style)) { AnnotationStyle st; st.name = new_style; styles.push_back(st); doc.Touch(); new_style[0] = 0; }
+  }
+  ImGui::Separator();
+  ImGui::Text("Linetypes");
+  double lts = s.linetype_scale;
+  if (ImGui::InputDouble("Linetype scale", &lts)) { s.linetype_scale = std::max(1e-6, lts); app.Doc().Touch(); }
+  if (ImGui::Checkbox("Display linetypes", &s.linetype_display)) app.Doc().Touch();
+  if (ImGui::Button("Linetypes panel")) app.Panels().linetypes = true;
+  ImGui::Separator();
+  if (InputString("Dimension layer (empty = current)", s.dimension_layer)) app.Doc().Touch();
+  if (InputString("Center mark/line layer (empty = current)", s.center_layer)) app.Doc().Touch();
+  ImGui::Separator();
+  ImGui::Text("File: %s", app.Doc().Path().empty() ? "(unsaved)" : app.Doc().Path().c_str());
+  ImGui::Text("Objects: %zu   Layers: %zu   Revision: %llu", app.Doc().ObjectCount(), app.Doc().Layers().size(),
+              static_cast<unsigned long long>(app.Doc().Revision()));
+  ImGui::End();
+}
+
+// AT-SPI2-queryable snapshot of DocumentSettings' units, tolerances, grid
+// and saved metadata (see docs/ACCESSIBILITY.md): built straight from
+// Document state, independent of whether DrawDocumentPropertiesWindow
+// itself has ever been drawn or is open right now - mirrors the same facts
+// that window's own Units/tolerance/Grid/Metadata sections show. Its
+// Annotation Styles and Linetypes sub-sections already have their own
+// accessible trees (AnnotationStylesAccessibleTree/LinetypesAccessibleTree),
+// so are not repeated here.
+dino8::platform::AccessibleNode DocumentPropertiesAccessibleTree(Application& app) {
+  DocumentSettings& s = app.Doc().Settings();
+  std::vector<dino8::platform::PropertyEntry> entries;
+  entries.push_back({"Units", s.unit_system});
+  entries.push_back({"Absolute tolerance", FormatNumber(s.absolute_tolerance)});
+  entries.push_back({"Angle tolerance (deg)", FormatNumber(s.angle_tolerance_degrees)});
+  entries.push_back({"Grid spacing", FormatNumber(s.grid_spacing)});
+  entries.push_back({"Grid major every", std::to_string(s.grid_major_every)});
+  entries.push_back({"Grid extents", std::to_string(s.grid_extents)});
+  entries.push_back({"Title", s.title});
+  entries.push_back({"Author", s.author});
+  entries.push_back({"Comments", s.comments});
+  return dino8::platform::BuildDocumentPropertiesNode(entries);
+}
+
+// AT-SPI2-queryable snapshot of Document::AnnotationStyles() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawDocumentPropertiesWindow itself has ever been drawn or is open
+// right now - names which style is current (DocumentSettings::
+// annotation_style), the fact the on-screen "Current style" combo shows only
+// by which entry is selected, not by text, plus a Description giving text
+// height, arrow size and font, facts that only appear once a style's own
+// TreeNode row is expanded (0 is rendered as its documented "auto" meaning -
+// AnnotationStyle::text_height/arrow_size - rather than the bare number).
+dino8::platform::AccessibleNode AnnotationStylesAccessibleTree(Application& app) {
+  Document& doc = app.Doc();
+  std::vector<dino8::platform::AnnotationStyleSummary> summaries;
+  summaries.reserve(doc.AnnotationStyles().size());
+  for (const AnnotationStyle& st : doc.AnnotationStyles()) {
+    dino8::platform::AnnotationStyleSummary s;
+    s.name = st.name;
+    s.current = st.name == doc.Settings().annotation_style;
+    s.text_height_text = st.text_height > 0 ? FormatNumber(st.text_height) : "Auto (twice the grid spacing)";
+    s.arrow_size_text = st.arrow_size > 0 ? FormatNumber(st.arrow_size) : "Auto (text height)";
+    s.font_text = st.font.empty() ? "Default (first system sans-serif found)" : st.font;
+    summaries.push_back(std::move(s));
+  }
+  return dino8::platform::BuildAnnotationStylesNode(summaries);
+}
+
+void DrawLinetypesPanel(Application& app) {
+  Document& doc = app.Doc();
+  ImGui::SetNextWindowSize(ImVec2(420, 320), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.linetypes", "Linetypes").c_str(), &app.Panels().linetypes)) { ImGui::End(); return; }
+  DocumentSettings& s = doc.Settings();
+  double lts = s.linetype_scale;
+  ImGui::SetNextItemWidth(120);
+  if (ImGui::InputDouble("Scale", &lts)) { s.linetype_scale = std::max(1e-6, lts); doc.Touch(); }
+  ImGui::SameLine();
+  if (ImGui::Checkbox("Display", &s.linetype_display)) doc.Touch();
+  ImGui::Separator();
+  static int selected = -1;
+  if (ImGui::BeginTable("linetypes", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY, ImVec2(0, 160))) {
+    ImGui::TableSetupColumn("Name");
+    ImGui::TableSetupColumn("Pattern (dash, gap, ...)");
+    ImGui::TableHeadersRow();
+    for (size_t i = 0; i < doc.Linetypes().size(); ++i) {
+      const Linetype& lt = doc.Linetypes()[i];
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      if (ImGui::Selectable(lt.name.c_str(), selected == static_cast<int>(i), ImGuiSelectableFlags_SpanAllColumns)) selected = static_cast<int>(i);
+      ImGui::TableSetColumnIndex(1);
+      std::string p;
+      for (double d : lt.pattern) p += (p.empty() ? "" : ", ") + FormatNumber(d);
+      ImGui::TextUnformatted(p.empty() ? "continuous" : p.c_str());
+    }
+    ImGui::EndTable();
+  }
+  static char name[64] = "", pattern[128] = "5,2";
+  ImGui::SetNextItemWidth(120);
+  ImGui::InputTextWithHint("##ltname", "name", name, sizeof(name));
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(140);
+  ImGui::InputTextWithHint("##ltpattern", "5,2,1,2", pattern, sizeof(pattern));
+  ImGui::SameLine();
+  if (ImGui::Button("Add / update") && name[0]) app.Engine().Execute(std::string("SetCustomLinetype Name=") + name + " Pattern=" + pattern);
+  if (selected >= 0 && selected < static_cast<int>(doc.Linetypes().size())) {
+    const std::string lt = doc.Linetypes()[static_cast<size_t>(selected)].name;
+    if (ImGui::Button("Apply to selected objects")) app.Engine().Execute("SetLinetype Name=" + lt);
+    ImGui::SameLine();
+    if (ImGui::Button("Apply to current layer")) app.Engine().Execute("SetLayerLinetype Name=" + lt);
+    ImGui::SameLine();
+    if (ImGui::Button("Select curves")) app.Engine().Execute("SelLinetype Name=" + lt);
+  }
+  ImGui::End();
+}
+
+void DrawBoxEditPanel(Application& app) {
+  Document& doc = app.Doc();
+  if (!ImGui::Begin(PanelTitle("panel.box_edit", "BoxEdit").c_str(), &app.Panels().box_edit)) { ImGui::End(); return; }
+  std::vector<ObjectId> sel = doc.SelectedIds();
+  kernel::BoundingBox bb;
+  if (sel.empty() || !doc.BoundingBoxOf(sel, bb)) {
+    ImGui::TextDisabled("Select objects to edit their bounding box numerically.");
+    ImGui::End();
+    return;
+  }
+  const kernel::Point3d center((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (bb.min.z + bb.max.z) / 2);
+  const double size[3] = {bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z};
+  double pos[3] = {center.x, center.y, center.z};
+  double sz[3] = {size[0], size[1], size[2]};
+  bool changed_pos = ImGui::InputScalarN("Position (centre)", ImGuiDataType_Double, pos, 3, nullptr, nullptr, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+  bool changed_size = ImGui::InputScalarN("Size", ImGuiDataType_Double, sz, 3, nullptr, nullptr, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+  static bool uniform = true;
+  ImGui::Checkbox("Uniform scale", &uniform);
+  if (changed_pos || changed_size) {
+    doc.BeginChange("BoxEdit");
+    ON_Xform xf = ON_Xform::IdentityTransformation;
+    if (changed_size) {
+      double sx = size[0] > 1e-12 ? sz[0] / size[0] : 1, sy = size[1] > 1e-12 ? sz[1] / size[1] : 1, sz_ = size[2] > 1e-12 ? sz[2] / size[2] : 1;
+      if (uniform) {
+        double f = sx != 1 ? sx : (sy != 1 ? sy : sz_);
+        sx = sy = sz_ = f;
+      }
+      ON_Xform to_origin = ON_Xform::TranslationTransformation(ON_3dVector(-center.x, -center.y, -center.z));
+      ON_Xform scale = ON_Xform::DiagonalTransformation(sx, sy, sz_);
+      ON_Xform back = ON_Xform::TranslationTransformation(ON_3dVector(center.x, center.y, center.z));
+      xf = back * scale * to_origin;
+    }
+    if (changed_pos) xf = ON_Xform::TranslationTransformation(ON_3dVector(pos[0] - center.x, pos[1] - center.y, pos[2] - center.z)) * xf;
+    for (ObjectId id : sel) if (SceneObject* o = doc.Find(id)) o->Transform(xf);
+  }
+  ImGui::Separator();
+  ImGui::Text("Min %s", FormatPoint(bb.min).c_str());
+  ImGui::Text("Max %s", FormatPoint(bb.max).c_str());
+  ImGui::End();
+}
+
+// AT-SPI2-queryable snapshot of Document::UndoLabels() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawUndoMultipleWindow itself has ever been drawn or is open right
+// now - mirrors the same numbered "N. label" rows that window shows for the
+// Undo direction. Starts empty on a fresh document, the same way Named
+// Views/CPlanes and Audit Results start empty.
+dino8::platform::AccessibleNode UndoHistoryAccessibleTree(Application& app) {
+  return dino8::platform::BuildUndoHistoryNode(app.Doc().UndoLabels());
+}
+
+// The Redo-direction counterpart of UndoHistoryAccessibleTree, mirroring
+// Document::RedoLabels() the same way.
+dino8::platform::AccessibleNode RedoHistoryAccessibleTree(Application& app) {
+  return dino8::platform::BuildRedoHistoryNode(app.Doc().RedoLabels());
+}
+
+void DrawUndoMultipleWindow(Application& app, bool redo) {
+  bool& flag = redo ? app.Panels().redo_multiple : app.Panels().undo_multiple;
+  if (!ImGui::Begin(PanelTitle(redo ? "panel.redo_multiple" : "panel.undo_multiple", redo ? "RedoMultiple" : "UndoMultiple").c_str(), &flag, ImGuiWindowFlags_AlwaysAutoResize)) { ImGui::End(); return; }
+  std::vector<std::string> labels = redo ? app.Doc().RedoLabels() : app.Doc().UndoLabels();
+  if (labels.empty()) ImGui::TextDisabled("Nothing to %s.", redo ? "redo" : "undo");
+  for (size_t i = 0; i < labels.size(); ++i) {
+    ImGui::PushID(static_cast<int>(i));
+    if (ImGui::Selectable((std::to_string(i + 1) + ". " + labels[i]).c_str())) {
+      for (size_t k = 0; k <= i; ++k) { if (redo) app.Doc().Redo(); else app.Doc().Undo(); }
+      flag = false;
+    }
+    ImGui::PopID();
+  }
+  ImGui::End();
+}
+
+void DrawLayerStateManager(Application& app) {
+  Document& doc = app.Doc();
+  if (!ImGui::Begin(PanelTitle("panel.layer_state_manager", "LayerStateManager").c_str(), &app.Panels().layer_state_manager)) { ImGui::End(); return; }
+  // States live on the Document (LayerState / doc.LayerStates()), not a
+  // function-local static, so they are scoped per-document and persisted
+  // across Save/Open as "Dino8.LayerState.<name>" document user-strings
+  // (see io/File3dm.cpp), the same way AnnotationStyles are.
+  static char name[128] = "";
+  ImGui::InputTextWithHint("##ls", "state name", name, sizeof(name));
+  ImGui::SameLine();
+  if (ImGui::Button("Save state")) {
+    LayerState s;
+    s.name = std::strlen(name) ? name : "State " + std::to_string(doc.LayerStates().size() + 1);
+    for (const Layer& L : doc.Layers()) s.layers.push_back({L.name, {L.visible, L.locked}});
+    if (LayerState* existing = doc.FindLayerState(s.name)) *existing = s; else doc.LayerStates().push_back(s);
+    doc.Touch();
+    name[0] = 0;
+  }
+  ImGui::Separator();
+  std::vector<LayerState>& states = doc.LayerStates();
+  for (size_t i = 0; i < states.size(); ++i) {
+    ImGui::PushID(static_cast<int>(i));
+    if (ImGui::Selectable(states[i].name.c_str())) {
+      for (const auto& [lname, vis_lock] : states[i].layers) {
+        int idx = doc.FindLayer(lname);
+        if (idx >= 0) { doc.Layers()[static_cast<size_t>(idx)].visible = vis_lock.first; doc.Layers()[static_cast<size_t>(idx)].locked = vis_lock.second; }
+      }
+      doc.Touch();
+    }
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20);
+    if (ImGui::SmallButton("x")) { states.erase(states.begin() + static_cast<long>(i)); doc.Touch(); ImGui::PopID(); break; }
+    ImGui::PopID();
+  }
+  ImGui::End();
+}
+
+void DrawSelectionFilterPanel(Application& app) {
+  if (!ImGui::Begin(PanelTitle("panel.selection_filter", "SelectionFilter").c_str(), &app.Panels().selection_filter, ImGuiWindowFlags_AlwaysAutoResize)) { ImGui::End(); return; }
+  ImGui::TextDisabled("Select only these object types with clicks and windows:");
+  static bool filt[6] = {true, true, true, true, true, true};
+  const char* names[6] = {"Points", "Curves", "Surfaces", "Polysurfaces", "Meshes", "SubDs"};
+  for (int i = 0; i < 6; ++i) { ImGui::Checkbox(names[i], &filt[i]); if (i % 3 != 2) ImGui::SameLine(); }
+  if (ImGui::Button("All")) for (bool& b : filt) b = true;
+  ImGui::SameLine();
+  if (ImGui::Button("None")) for (bool& b : filt) b = false;
+  // Apply as a document-wide "selectable" flag by deselecting filtered kinds.
+  Document& doc = app.Doc();
+  for (SceneObject& o : doc.Objects()) {
+    if (o.selected && !filt[static_cast<int>(o.kind)]) o.selected = false;
+  }
+  ImGui::End();
+}
+
+namespace {
+// Grows `text` (an arbitrary std::string, passed as UserData) to fit
+// whatever ImGui wants to put in the buffer - the same resize-callback
+// protocol the Script Editor's own ScriptEditorTextCallback (further down
+// this file) uses for its own std::string buffer, duplicated locally here
+// rather than forward-declared so this function stays usable regardless of
+// where in the file the Script Editor section itself ends up.
+int GrowStringTextCallback(ImGuiInputTextCallbackData* data) {
+  auto* out = static_cast<std::string*>(data->UserData);
+  if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+    out->resize(static_cast<size_t>(data->BufTextLen));
+    data->Buf = out->data();
+  }
+  return 0;
+}
+}  // namespace
+
+void DrawMacroEditor(Application& app) {
+  ImGui::SetNextWindowSize(ImVec2(520, 360), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.macro_editor", "MacroEditor").c_str(), &app.Panels().macro_editor)) { ImGui::End(); return; }
+  std::string& text = app.State().macro_text;
+  ImGui::TextDisabled("One command per line. ! cancels the running command, _ forces English names, - suppresses dialogs.");
+  ImGui::InputTextMultiline("##macro", text.data(), text.capacity() + 1, ImVec2(-1, -ImGui::GetFrameHeightWithSpacing() * 1.5f),
+                            ImGuiInputTextFlags_CallbackResize, GrowStringTextCallback, &text);
+  if (ImGui::Button("Run")) {
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) if (!line.empty()) app.Engine().Execute(line);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Copy")) ImGui::SetClipboardText(text.c_str());
+  ImGui::SameLine();
+  // RecordMacro (cmd_commands.cpp/cmd_misc.cpp): every command line typed
+  // from here on is appended to `text` above automatically - a real action
+  // recorder, not just this static starter buffer. Goes through Execute,
+  // same as a typed "RecordMacro On/Off", so the command-line feedback
+  // line and this button's own label always agree on the current state.
+  const bool recording = app.State().macro_recording;
+  if (recording) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.15f, 0.15f, 1));
+  if (ImGui::Button(recording ? "Recording... (click to stop)" : "Record")) app.Engine().Execute(recording ? "RecordMacro Off" : "RecordMacro On");
+  if (recording) ImGui::PopStyleColor();
+  // Named macro library (MacroSave/MacroLoad/MacroDelete/RunSavedMacro,
+  // cmd_misc.cpp): lets this one shared buffer stand in for any number of
+  // saved macros, each selectable by name, rather than overwriting the
+  // only copy every time. Goes through Execute (quoted, since a saved
+  // name may contain spaces) the same way the Record button above does,
+  // so command-line feedback and this panel never disagree.
+  static char name_buf[128] = "";
+  ImGui::Separator();
+  ImGui::TextDisabled("Saved macros");
+  ImGui::InputText("##macro_name", name_buf, sizeof(name_buf));
+  ImGui::SameLine();
+  if (ImGui::Button("Save") && name_buf[0]) app.Engine().Execute("MacroSave \"" + std::string(name_buf) + "\"");
+  // Copied out up front: a Load/Run/Delete button clicked below calls
+  // Execute synchronously, which can erase from app.State().macros while
+  // this loop is still walking it - iterating a snapshot of the names
+  // instead of the live map keeps that safe.
+  std::vector<std::string> saved_names;
+  for (const auto& [saved_name, saved_text] : app.State().macros) saved_names.push_back(saved_name);
+  for (const std::string& saved_name : saved_names) {
+    ImGui::PushID(saved_name.c_str());
+    ImGui::BulletText("%s", saved_name.c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Load")) app.Engine().Execute("MacroLoad \"" + saved_name + "\"");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Run")) app.Engine().Execute("RunSavedMacro \"" + saved_name + "\"");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Delete")) app.Engine().Execute("MacroDelete \"" + saved_name + "\"");
+    ImGui::PopID();
+  }
+  ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
+// Script Editor (Lua): the RunScript / LoadScript / EditScript surface. A
+// multi-line editor, a persisted list of scripts in the config directory's
+// scripts/ folder, and an output pane fed by the shared LuaEngine's
+// print()/error output.
+// ---------------------------------------------------------------------------
+
+namespace {
+int ScriptEditorTextCallback(ImGuiInputTextCallbackData* data) {
+  auto* out = static_cast<std::string*>(data->UserData);
+  if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+    out->resize(static_cast<size_t>(data->BufTextLen));
+    data->Buf = out->data();
+  }
+  return 0;
+}
+
+void RefreshScriptList(Application& app) {
+  ScriptEditorState& s = app.ScriptEditor();
+  s.files.clear();
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator(app.ScriptsDirectory(), ec)) {
+    if (ec) break;
+    if (entry.is_regular_file() && entry.path().extension() == ".lua" && entry.path().filename() != "_last.lua") s.files.push_back(entry.path().filename().string());
+  }
+  std::sort(s.files.begin(), s.files.end());
+  s.files_dirty = false;
+}
+}  // namespace
+
+// The Run button's actual dispatch logic, factored out of DrawScriptEditor
+// so ScriptEditorRunCommand (cmd_misc.cpp's headless "run whatever the
+// Script Editor currently holds" command, used by RunScript-style callers
+// and by tests that need to exercise this exact routing rather than call
+// RunPythonScript/RunScript directly) goes through the identical code path
+// as an actual click, extension check included.
+void RunScriptEditor(Application& app) {
+  ScriptEditorState& s = app.ScriptEditor();
+  const std::string ext = ToLower(std::filesystem::path(s.file_name.empty() ? s.path : s.file_name).extension().string());
+  const bool is_python = (ext == ".py");
+  if (is_python) {
+    // Persist immediately so a crash mid-script doesn't lose the text.
+    { std::ofstream out(app.ScriptsDirectory() + "/_last.py", std::ios::binary); out << s.text; }
+    if (s.as_macro) {
+      std::istringstream in(s.text);
+      std::string line;
+      while (std::getline(in, line)) if (!line.empty() && line[0] != '#') app.Engine().Execute(line);
+    } else {
+      // Routed through -RunPythonScript, the same way the Lua branch below
+      // goes through -RunScript, so a dino8.GetPoint() call mid-script can
+      // actually suspend and pump for a viewport pick (PythonEngine now runs
+      // scripts on a worker thread for exactly this - see PythonEngine.h).
+      app.QueueScript(s.text, s.file_name.empty() ? "Script Editor" : s.file_name, false);
+      app.Engine().Execute("-RunPythonScript");
+    }
+  } else {
+    { std::ofstream out(app.ScriptsDirectory() + "/_last.lua", std::ios::binary); out << s.text; }
+    if (s.as_macro) {
+      std::istringstream in(s.text);
+      std::string line;
+      while (std::getline(in, line)) if (!line.empty() && line[0] != '#') app.Engine().Execute(line);
+    } else {
+      app.QueueScript(s.text, s.file_name.empty() ? "Script Editor" : s.file_name, false);
+      app.Engine().Execute("-RunScript");
+    }
+  }
+}
+
+bool OpenInScriptEditor(Application& app, const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return false;
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  ScriptEditorState& s = app.ScriptEditor();
+  s.text = ss.str();
+  s.path = path;
+  s.file_name = std::filesystem::path(path).filename().string();
+  s.loaded = true;
+  s.dirty = false;
+  app.Panels().script_editor = true;
+  return true;
+}
+
+void DrawScriptEditor(Application& app) {
+  ScriptEditorState& s = app.ScriptEditor();
+  if (!s.loaded) {
+    // First open this session: restore whatever was last edited.
+    const std::string last = app.ScriptsDirectory() + "/_last.lua";
+    std::ifstream in(last, std::ios::binary);
+    if (in) { std::ostringstream ss; ss << in.rdbuf(); s.text = ss.str(); }
+    else s.text = "-- Dino 8 Lua script. rs.* mirrors rhinoscriptsyntax; see Help > Scripting Reference.\nlocal id = rs.AddPoint(0, 0, 0)\nprint(\"created point \" .. tostring(id))\n";
+    s.loaded = true;
+  }
+  // The currently-loaded file's extension decides which engine the Run
+  // button below dispatches to: a .py file (loaded via EditPythonScript, or
+  // Open.../the scripts list) runs through the embedded PythonEngine, same
+  // as RunPythonScript would; everything else (including untitled/new
+  // buffers) keeps running as Lua through RunScript, unchanged.
+  const std::string loaded_ext = ToLower(std::filesystem::path(s.file_name.empty() ? s.path : s.file_name).extension().string());
+  const bool is_python = (loaded_ext == ".py");
+
+  ImGui::SetNextWindowSize(ImVec2(760, 520), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.script_editor", "ScriptEditor").c_str(), &app.Panels().script_editor)) { ImGui::End(); return; }
+
+  if (ImGui::Button("New")) { s.text.clear(); s.path.clear(); s.file_name.clear(); s.dirty = false; }
+  ImGui::SameLine();
+  if (ImGui::Button("Open...")) {
+    app.ShowFileDialog("Open script", {".lua", ".py"}, false, [&app](const std::string& path) { OpenInScriptEditor(app, path); });
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Save")) {
+    if (s.path.empty()) {
+      app.ShowFileDialog("Save script", {".lua"}, true, [&app](const std::string& path) {
+        ScriptEditorState& st = app.ScriptEditor();
+        std::ofstream out(path, std::ios::binary);
+        out << st.text;
+        st.path = path;
+        st.file_name = std::filesystem::path(path).filename().string();
+        st.dirty = false;
+        st.files_dirty = true;
+      });
+    } else {
+      std::ofstream out(s.path, std::ios::binary);
+      out << s.text;
+      s.dirty = false;
+      s.files_dirty = true;
+    }
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("%s%s", s.file_name.empty() ? "(untitled)" : s.file_name.c_str(), s.dirty ? " *" : "");
+
+  ImGui::Checkbox(is_python ? "Run as command macro (one command per line) instead of Python" : "Run as command macro (one command per line) instead of Lua", &s.as_macro);
+  ImGui::SameLine();
+  ImGui::TextDisabled("(?)");
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip(is_python
+        ? "Off: the text runs as Python through the embedded dino8 module, exactly like a .py file passed to RunPythonScript.\nOn: each line runs as a Dino 8 command, exactly like the Macro Editor."
+        : "Off: the text runs as Lua through rs.*, exactly like a .lua file passed to RunScript.\nOn: each line runs as a Dino 8 command, exactly like the Macro Editor.");
+  }
+
+  // Lua scripts can suspend mid-run (rs.GetPoint et al. yield the
+  // coroutine - see LuaEngine). Python scripts can now suspend on any of
+  // dino8.GetPoint/GetString/GetReal/GetInteger/GetObject/GetObjects too
+  // (PythonEngine runs the script on a worker thread and blocks it there -
+  // see PythonEngine.h), the same set LuaEngine's rs.Get* already covers.
+  const bool running = is_python ? app.Python().Running() : app.Lua().Running();
+  const bool suspended = is_python ? app.Python().Suspended() : app.Lua().Suspended();
+  ImGui::BeginDisabled(running && !suspended);
+  if (ImGui::Button((running ? "Continue" : "Run")) && !running) RunScriptEditor(app);
+  ImGui::EndDisabled();
+  if (running) { ImGui::SameLine(); ImGui::TextColored(ImVec4(ThemeColors::kWarn[0], ThemeColors::kWarn[1], ThemeColors::kWarn[2], 1), suspended ? "Waiting for input in a viewport / the command line..." : "Running..."); }
+
+  ImGui::Separator();
+  ImGui::Columns(2, "script_cols", true);
+  if (ImGui::GetColumnWidth(0) > 220) ImGui::SetColumnWidth(0, 180);
+
+  ImGui::BeginChild("script_files", ImVec2(0, -1));
+  ImGui::TextDisabled("Scripts (%s)", app.ScriptsDirectory().c_str());
+  if (s.files_dirty) RefreshScriptList(app);
+  for (const std::string& f : s.files) {
+    if (ImGui::Selectable(f.c_str(), s.file_name == f)) OpenInScriptEditor(app, app.ScriptsDirectory() + "/" + f);
+  }
+  if (s.files.empty()) ImGui::TextDisabled("(none yet - Save writes here)");
+  ImGui::EndChild();
+
+  ImGui::NextColumn();
+  ImGui::BeginChild("script_main", ImVec2(0, -1));
+  const float output_h = ImGui::GetTextLineHeightWithSpacing() * 7.0f;
+  if (ImGui::InputTextMultiline("##script_text", s.text.data(), s.text.capacity() + 1,
+                                ImVec2(-1, -output_h - ImGui::GetFrameHeightWithSpacing()),
+                                ImGuiInputTextFlags_CallbackResize | ImGuiInputTextFlags_AllowTabInput,
+                                ScriptEditorTextCallback, &s.text)) {
+    s.dirty = true;
+  }
+  ImGui::TextDisabled("Output");
+  ImGui::BeginChild("script_output", ImVec2(-1, output_h), true);
+  const std::vector<std::string>& last_output = is_python ? app.Python().LastOutput() : app.Lua().LastOutput();
+  for (const std::string& line : last_output) ImGui::TextWrapped("%s", line.c_str());
+  if (last_output.empty()) ImGui::TextDisabled("(nothing printed yet)");
+  ImGui::EndChild();
+  ImGui::EndChild();
+  ImGui::Columns(1);
+  ImGui::End();
+}
+
+void DrawScriptingReference(Application& app) {
+  ImGui::SetNextWindowSize(ImVec2(700, 560), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.scripting_reference", "ScriptingReference").c_str(), &app.Panels().scripting_reference)) { ImGui::End(); return; }
+  ImGui::TextWrapped("Every rs.* function Dino 8's embedded Lua 5.4 provides. RunScript/LoadScript run a .lua file; EditScript/ScriptEditor edit one; \"= expr\" on the command line runs a one-line Lua expression.");
+  static char filter[128] = {};
+  ImGui::InputTextWithHint("##rsfilter", "Filter (e.g. curve, layer, get)...", filter, sizeof(filter));
+  ImGui::Separator();
+  ImGui::BeginChild("rsdocs");
+  const std::string needle = ToLower(filter);
+  for (const RsFunctionDoc& d : LuaEngine::ApiDocs()) {
+    if (!needle.empty() && ToLower(d.name).find(needle) == std::string::npos && ToLower(d.doc).find(needle) == std::string::npos) continue;
+    ImGui::TextColored(ThemeColors::Accent(), "%s", d.signature);
+    ImGui::TextWrapped("  %s", d.doc);
+    ImGui::Spacing();
+  }
+  ImGui::EndChild();
+  ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
+// Clipping planes / layouts / named CPlanes (see cmd_viewtools.cpp)
+// ---------------------------------------------------------------------------
+
+void DrawClippingPlanesPanel(Application& app) {
+  Document& doc = app.Doc();
+  if (!ImGui::Begin(PanelTitle("panel.clipping_planes", "ClippingPlanes").c_str(), &app.Panels().clipping_planes)) { ImGui::End(); return; }
+  if (ImGui::Button("New (ClippingPlane)")) app.Engine().Execute("ClippingPlane");
+  ImGui::SameLine();
+  if (ImGui::Button("Sections")) app.Engine().Execute("ClippingSections");
+  ImGui::SameLine();
+  if (ImGui::Button("Clear sections")) app.Engine().Execute("ClearClippingSections");
+  ImGui::Separator();
+  if (doc.ClippingPlanes().empty()) ImGui::TextDisabled("No clipping planes. Run ClippingPlane and pick two corners.");
+  int remove = -1;
+  for (size_t i = 0; i < doc.ClippingPlanes().size(); ++i) {
+    ClippingPlane& cp = doc.ClippingPlanes()[i];
+    ImGui::PushID(static_cast<int>(i));
+    if (ImGui::Checkbox("##on", &cp.enabled)) doc.Touch();
+    ImGui::SameLine();
+    if (ImGui::Selectable(cp.name.c_str(), cp.selected, ImGuiSelectableFlags_AllowOverlap)) {
+      if (!ImGui::GetIO().KeyCtrl) for (ClippingPlane& o : doc.ClippingPlanes()) o.selected = false;
+      cp.selected = !cp.selected || !ImGui::GetIO().KeyCtrl;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("origin %s  normal %s\n%s", FormatPoint(cp.origin).c_str(), FormatPoint(kernel::Point3d(cp.Normal())).c_str(), cp.viewports.empty() ? "clips every viewport" : "clips selected viewports");
+    if (cp.selected) {
+      ImGui::Indent();
+      float o[3] = {static_cast<float>(cp.origin.x), static_cast<float>(cp.origin.y), static_cast<float>(cp.origin.z)};
+      if (ImGui::DragFloat3("Origin", o, 0.5f)) { cp.origin = kernel::Point3d(o[0], o[1], o[2]); doc.Touch(); }
+      float sz[2] = {static_cast<float>(cp.width), static_cast<float>(cp.height)};
+      if (ImGui::DragFloat2("Size", sz, 0.5f, 0.1f, 1e6f)) { cp.width = sz[0]; cp.height = sz[1]; doc.Touch(); }
+      if (ImGui::Button("Flip")) { cp.x_axis = -cp.x_axis; doc.Touch(); }
+      ImGui::SameLine();
+      if (ImGui::Button("Delete")) remove = static_cast<int>(i);
+      ImGui::TextDisabled("Clips:");
+      ImGui::SameLine();
+      bool all = cp.viewports.empty();
+      if (ImGui::Checkbox("All viewports", &all)) { cp.viewports.clear(); if (!all) for (auto& vp : app.Viewports()) if (vp->IsActive()) cp.viewports.push_back(vp->Name()); doc.Touch(); }
+      if (!all) {
+        for (auto& vp : app.Viewports()) {
+          bool on = cp.ClipsViewport(vp->Name());
+          if (ImGui::Checkbox(vp->Name().c_str(), &on)) {
+            if (on) cp.viewports.push_back(vp->Name());
+            else cp.viewports.erase(std::remove(cp.viewports.begin(), cp.viewports.end(), vp->Name()), cp.viewports.end());
+            doc.Touch();
+          }
+        }
+      }
+      ImGui::Unindent();
+    }
+    ImGui::PopID();
+  }
+  if (remove >= 0) {
+    doc.BeginChange("Delete clipping plane");
+    doc.ClippingPlanes().erase(doc.ClippingPlanes().begin() + remove);
+    doc.Touch();
+  }
+  ImGui::End();
+}
+
+void DrawLayoutsPanel(Application& app) {
+  Document& doc = app.Doc();
+  if (!ImGui::Begin(PanelTitle("panel.layouts", "Layouts").c_str(), &app.Panels().layouts)) { ImGui::End(); return; }
+  if (ImGui::Button("New layout")) app.Engine().Execute("Layout");
+  ImGui::SameLine();
+  if (ImGui::Button("Add detail")) app.Engine().Execute("Detail");
+  ImGui::SameLine();
+  if (ImGui::Button("Copy layout")) app.Engine().Execute("CopyLayout");
+  ImGui::Separator();
+  if (ImGui::Selectable("Model", app.ActiveLayoutIndex() < 0)) app.SetActiveLayout(-1);
+  int remove = -1;
+  for (size_t i = 0; i < doc.Layouts().size(); ++i) {
+    Layout& L = doc.Layouts()[i];
+    ImGui::PushID(static_cast<int>(i));
+    const bool current = static_cast<int>(i) == app.ActiveLayoutIndex();
+    if (ImGui::Selectable(L.name.c_str(), current)) app.SetActiveLayout(static_cast<int>(i));
+    if (current) {
+      ImGui::Indent();
+      if (InputString("Name", L.name)) doc.Touch();
+      float size[2] = {static_cast<float>(L.width_mm), static_cast<float>(L.height_mm)};
+      if (ImGui::DragFloat2("Page (mm)", size, 1.0f, 10.0f, 5000.0f)) { L.width_mm = size[0]; L.height_mm = size[1]; doc.Touch(); }
+      if (ImGui::Button("A4 landscape")) { L.width_mm = 297; L.height_mm = 210; doc.Touch(); }
+      ImGui::SameLine();
+      if (ImGui::Button("A3 landscape")) { L.width_mm = 420; L.height_mm = 297; doc.Touch(); }
+      ImGui::SameLine();
+      if (ImGui::Button("Letter")) { L.width_mm = 279.4; L.height_mm = 215.9; doc.Touch(); }
+      ImGui::SameLine();
+      if (ImGui::Button("Delete layout")) remove = static_cast<int>(i);
+      ImGui::TextDisabled("Details (%zu)", L.details.size());
+      for (size_t j = 0; j < L.details.size(); ++j) {
+        LayoutDetail& d = L.details[j];
+        ImGui::PushID(static_cast<int>(j));
+        const bool active = static_cast<int>(j) == app.ActiveDetailIndex();
+        if (ImGui::Selectable(d.name.c_str(), d.selected || active)) {
+          for (LayoutDetail& o : L.details) o.selected = false;
+          d.selected = true;
+          app.SetActiveDetail(active ? -1 : static_cast<int>(j));
+        }
+        if (d.selected || active) {
+          ImGui::Indent();
+          float rect[4] = {static_cast<float>(d.x), static_cast<float>(d.y), static_cast<float>(d.width), static_cast<float>(d.height)};
+          if (ImGui::DragFloat4("X Y W H", rect, 1.0f)) { d.x = rect[0]; d.y = rect[1]; d.width = std::max(1.0f, rect[2]); d.height = std::max(1.0f, rect[3]); doc.Touch(); }
+          float scale = static_cast<float>(d.scale);
+          if (ImGui::InputFloat("Scale (mm/unit, 0 = free)", &scale)) { d.scale = std::max(0.0f, scale); doc.Touch(); }
+          if (ImGui::Checkbox("Locked", &d.locked)) doc.Touch();
+          ImGui::SameLine();
+          ImGui::Text("%s, %s", d.display_mode.c_str(), d.camera.perspective ? "perspective" : "parallel");
+          if (ImGui::Button("Zoom extents")) { if (Viewport* vp = app.DetailViewport(static_cast<int>(j))) vp->ZoomExtents(doc, false); }
+          ImGui::SameLine();
+          if (ImGui::Button("Delete detail")) {
+            doc.BeginChange("Delete detail");
+            L.details.erase(L.details.begin() + static_cast<long>(j));
+            app.SetActiveDetail(-1);
+            app.SyncDetailViewports();
+            ImGui::Unindent();
+            ImGui::PopID();
+            break;
+          }
+          ImGui::Unindent();
+        }
+        ImGui::PopID();
+      }
+      ImGui::Unindent();
+    }
+    ImGui::PopID();
+  }
+  if (remove >= 0) {
+    doc.BeginChange("Delete layout");
+    doc.Layouts().erase(doc.Layouts().begin() + remove);
+    app.SetActiveLayout(-1);
+    doc.Touch();
+  }
+  ImGui::End();
+}
+
+void DrawNamedCPlanesPanel(Application& app) {
+  Document& doc = app.Doc();
+  if (!ImGui::Begin(PanelTitle("panel.named_cplanes", "NamedCPlanes").c_str(), &app.Panels().named_cplanes)) { ImGui::End(); return; }
+  static char name[128] = "";
+  ImGui::InputTextWithHint("##ncp", "cplane name", name, sizeof(name));
+  ImGui::SameLine();
+  if (ImGui::Button("Save current") && app.ActiveViewport()) {
+    const ConstructionPlane& cp = app.ActiveViewport()->CPlane();
+    NamedCPlane n;
+    n.name = std::strlen(name) ? name : "CPlane " + std::to_string(doc.NamedCPlanes().size() + 1);
+    n.origin = cp.origin; n.x_axis = cp.x_axis; n.y_axis = cp.y_axis;
+    if (NamedCPlane* existing = doc.FindNamedCPlane(n.name)) *existing = n; else doc.NamedCPlanes().push_back(n);
+    doc.Touch();
+    name[0] = 0;
+  }
+  ImGui::Separator();
+  if (doc.NamedCPlanes().empty()) ImGui::TextDisabled("No named CPlanes. Use NamedCPlane Save <name>.");
+  for (size_t i = 0; i < doc.NamedCPlanes().size(); ++i) {
+    const NamedCPlane& n = doc.NamedCPlanes()[i];
+    ImGui::PushID(static_cast<int>(i));
+    if (ImGui::Selectable(n.name.c_str())) {
+      if (Viewport* vp = app.ActiveViewport()) { vp->CPlane().origin = n.origin; vp->CPlane().x_axis = n.x_axis; vp->CPlane().y_axis = n.y_axis; }
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("origin %s\nx %s\ny %s", FormatPoint(n.origin).c_str(), FormatPoint(kernel::Point3d(n.x_axis)).c_str(), FormatPoint(kernel::Point3d(n.y_axis)).c_str());
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20);
+    if (ImGui::SmallButton("x")) { doc.NamedCPlanes().erase(doc.NamedCPlanes().begin() + static_cast<long>(i)); doc.Touch(); ImGui::PopID(); break; }
+    ImGui::PopID();
+  }
+  ImGui::End();
+}
+
+}  // namespace dino8::app

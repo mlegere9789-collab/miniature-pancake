@@ -1,0 +1,192 @@
+# Transform QC: exact coordinates after Move/Copy/Rotate/Scale*/Mirror/Array*/Orient*/
+# ProjectToCPlane/SetPt/Nudge, in the Top view and then in Front/Right (see smoke.sh).
+SetActiveViewport Top
+# --- Move a point, Copy it (Enter ends the copy loop)
+Point 0,0,0
+SelLast
+Move 0,0,0 5,0,0
+SelLast
+List
+Copy 5,0,0 15,0,0
+Enter
+@expect_objects 2
+SelLast
+List
+SelAll
+Delete
+# --- Move a box (BoundingBox prints the extents, then draws a box we delete)
+Box 0,0,0 10,10,0 10
+SelLast
+Move 0,0,0 5,5,5
+SelLast
+BoundingBox
+@expect_objects 2
+SelAll
+Delete
+# --- Rotate by a typed angle, by reference points, with Copy=Yes; Rotate3D uses the same code
+Point 10,0,0
+SelLast
+Rotate 0,0,0 90
+SelLast
+List
+Rotate 0,0,0 0,10,0 -10,0,0
+SelLast
+List
+Rotate Copy=Yes 0,0,0 90
+@expect_objects 2
+SelLast
+List
+SelAll
+Delete
+Point 10,0,0
+SelLast
+Rotate3D 0,0,0 0,0,1 45
+SelLast
+List
+Delete
+# --- Scale (uniform, by factor and by reference points), Scale1D, Scale2D, ScaleNU
+Point 10,0,0
+SelLast
+Scale 0,0,0 2
+SelLast
+List
+Scale 0,0,0 20,0,0 10,0,0
+SelLast
+List
+Delete
+Point 10,10,5
+SelLast
+Scale1D 0,0,0 2
+SelLast
+List
+Scale2D 0,0,0 2
+SelLast
+List
+ScaleNU 0,0,0 0.5 2 1.5
+SelLast
+List
+Scale Copy=Yes 0,0,0 3
+@expect_objects 2
+SelLast
+List
+SelAll
+Delete
+# --- Mirror: two-point plane (copy), XAxis / YAxis options, Copy=No
+Point 10,5,0
+SelLast
+Mirror 0,0,0 0,10,0
+@expect_objects 2
+SelLast
+List
+SelLast
+Mirror XAxis
+@expect_objects 3
+SelLast
+List
+SelLast
+Mirror Copy=No 0,0,0 10,10,0
+@expect_objects 3
+SelLast
+List
+SelAll
+Delete
+# --- Array (rectangular, spacing from a cell corner and typed), ArrayLinear, ArrayPolar
+Point 0,0,0
+SelLast
+Array 3 2 1 10,10,0
+@expect_objects 6
+SelLast
+List
+SelAll
+Delete
+Point 0,0,0
+SelLast
+ArrayLinear 2 0,0,0 7,0,0
+@expect_objects 2
+SelLast
+List
+SelAll
+Delete
+Point 10,0,0
+SelLast
+ArrayPolar 0,0,0 4 360
+@expect_objects 4
+SelLast
+List
+SelAll
+Delete
+Point 10,0,0
+SelLast
+ArrayPolar 0,0,0 3 180
+@expect_objects 3
+SelLast
+List
+SelAll
+Delete
+# --- Orient3Pt / Orient: rotate 90 degrees and move to 10,10,0
+Point 1,0,0
+SelLast
+Orient3Pt 0,0,0 1,0,0 0,1,0 10,10,0 10,11,0 9,10,0
+SelLast
+List
+Orient 0,0,0 1,0,0 10,10,0 10,11,0
+SelLast
+List
+Delete
+# --- ProjectToCPlane, SetPt, Nudge (one grid unit along CPlane X)
+Point 3,4,5
+SelLast
+ProjectToCPlane
+SelLast
+List
+Delete
+Point 3,4,5
+SelLast
+SetPt
+SelLast
+List
+Nudge
+SelLast
+List
+Delete
+# --- Front view: typed x,y are world X,Z; Rotate spins about the Front CPlane normal
+SetActiveViewport Front
+Point 0,0,0
+SelLast
+Move 0,0,0 0,5,0
+SelLast
+List
+Delete
+Point 10,0,0
+SelLast
+Rotate 0,0,0 90
+SelLast
+List
+Delete
+Point 3,4,5
+SelLast
+ProjectToCPlane
+SelLast
+List
+Delete
+Point 10,5,0
+SelLast
+Mirror Copy=No 0,0,0 0,10,0
+SelLast
+List
+Delete
+# --- Right view: typed x,y are world Y,Z
+SetActiveViewport Right
+Point 0,0,0
+SelLast
+Move 0,0,0 5,0,0
+SelLast
+List
+Delete
+Point 4,0,0
+SelLast
+Scale1D 0,0,0 3
+SelLast
+List
+Delete
+@expect_objects 0

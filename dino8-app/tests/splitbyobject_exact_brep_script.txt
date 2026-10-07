@@ -1,0 +1,79 @@
+# SplitByObject: a genuine B-rep solid-by-solid split via the exact kernel
+# engine (kernel::SplitBrepByManySolids, boolean_general.h/.cpp) rather
+# than the mesh/Manifold fallback - PARITY_MAP.md's own "kernel: Boolean
+# operations" category named this command specifically as still
+# "app-level mesh-boolean, not [the Keep/split options item's] B-rep
+# solid-by-solid split", even though the kernel code itself already
+# existed and was already tested standalone (see
+# TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume,
+# tests/test_basic.cpp) - this exercises the new app-level wiring end to
+# end, through the real command.
+#
+# Target (a Box) and cutter (a Sphere straddling one of the box's flat
+# faces) are both plain closed solid Breps, genuinely crossing each other
+# in a single simple crossing loop - BooleanCombineGeneral's own proven
+# scope (the same "box pierced by a cylinder"-shaped fixture this
+# codebase's own ImprintFaces/MakeHole kernel tests already use). A
+# real, shared-topology ON_Brep box-against-box corner overlap was tried
+# here first and found to throw "an edge is claimed by 3 or more fragment
+# loops" from BooleanCombineGeneral even on a diagonally-staggered (no
+# literal coincident face) offset - a genuine, narrower-than-advertised
+# limitation of the general engine against two mutually-orthogonal-planar
+# ON_BrepBox operands specifically (PARITY_MAP.md's own kernel-level
+# SplitBrepBySolid tests only ever exercise this engine against a
+# different, hand-rolled Brep::Box() test helper, not a real app-built
+# ON_BrepBox pair) - so this script deliberately exercises the
+# box-vs-curved-cutter case the engine does handle, the same shape the
+# pre-existing boolean_script.txt SplitByObject fixture (a box with a
+# sphere fully inside it) already confirms works end to end. Fresh
+# document, so ids are 1 (target Box) and 2 (cutter Sphere).
+SetActiveViewport Top
+Box 0,0,0 10,10,0 10
+Sphere 10,5,5 4
+SelNone
+SelID 1
+SplitByObject
+SelID 2
+Enter
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0
+
+# --- A single open-sheet cutter (round 41): SplitByObject's own exact path
+# above requires every cutter to be a closed-solid Brep (kernel::
+# SplitBrepByManySolids); PARITY_MAP.md's own "Keep/split options" bullet
+# named "an open surface cutter still solidifies and goes through the mesh
+# pipeline, unchanged" as the exact path's own remaining gap. Now a single
+# open sheet cutter routes through kernel::SplitBySheet instead (the same
+# kernel function/FirstSheetBrep helper SplitBySheetCommand already uses -
+# splitbysheet_trimsheet_script.txt), reached only when there is exactly
+# one cutter and it isn't itself a closed solid. Identical box/sheet shape
+# to that script's own first case (a box split at its genuine middle by an
+# oversized flat open Surface sheet), but the sheet is CONSUMED here, not
+# left untouched - SplitByObjectCommand's own established contract (every
+# cutter is consumed, same as the solid-by-solid case above and the mesh
+# pipeline below; SplitBySheetCommand's separate "sheet stays untouched"
+# contract does not apply to this command). Ids keep incrementing past
+# the first block's own 1/2 (both consumed by that block's own exact
+# path, which removes target AND cutter and adds 2 new pieces at ids
+# 3/4 - also deleted, same "never reused" convention
+# splitbysheet_trimsheet_script.txt's own comment already documents), so
+# this block's Box/Plane land at ids 5/6. Both the box (id 5) and the
+# sheet (id 6) are gone afterward, replaced by the box's own two real
+# B-rep pieces - 2 (pieces) only.
+SetActiveViewport Top
+Box 0,0,0 4,4,0 4
+Plane -1,-1,0 5,5,0
+SelNone
+SelID 6
+Move 0,0,0 0,0,2
+SelNone
+SelID 5
+SplitByObject
+SelID 6
+Enter
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0

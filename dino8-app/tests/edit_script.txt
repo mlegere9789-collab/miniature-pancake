@@ -1,0 +1,341 @@
+# Editing QC: Join/Explode/Rebuild/ChangeDegree/Offset/Extend/Flip/Dir/MakePeriodic/
+# Weight/InsertKnot/PointsOn/SetObjectName/Group/Hide/Lock/clipboard/Undo (see smoke.sh).
+SetActiveViewport Top
+# --- Join two lines that meet at 10,0,0 into one polycurve, then Explode it again
+Line 0,0,0 10,0,0
+Line 10,0,0 10,10,0
+SelAll
+Join
+@expect_objects 1
+SelAll
+List
+Explode
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0
+# --- Join three surfaces of an exploded box back into a polysurface
+Box 0,0,0 10,10,0 10
+SelAll
+Explode
+@expect_objects 6
+SelAll
+Join
+@expect_objects 1
+SelAll
+List
+Delete
+# --- Rebuild a circle with 12 points of degree 2 (the Degree option is typed before the count)
+Circle 0,0,0 10
+SelLast
+Rebuild Degree=2 12
+SelLast
+List
+Delete
+# --- Rebuild point-count clamp: a flat Surface rebuilt with an absurd
+# point count (5000000, a pasted/misclicked number rather than a
+# deliberately adversarial one) must still bake instantly with a sane,
+# clamped control-point grid (200 x 200), not try to allocate an n x n
+# grid straight from the typed number and hang/OOM the app.
+Plane 0,0,0 10,10,0
+SelLast
+Rebuild Degree=3 5000000
+SelLast
+List
+Delete
+# --- ChangeDegree raises a line to degree 3, Weight sets a control point's weight (making it rational), InsertKnot adds a knot at the picked point
+Line 0,0,0 10,0,0
+SelLast
+ChangeDegree
+3
+SelLast
+List
+SelLast
+Weight
+0,0,0
+2
+SelLast
+List
+Delete
+# --- ChangeDegree now also LOWERS degree (NurbsCurve::ReduceDegree, curve.cpp):
+# elevate a line to degree 3, then reduce it back to degree 1 - exact for a
+# straight line (a least-squares refit at degree 1 reproduces a line's own
+# shape exactly), so this must genuinely drop back to 2 control points, not
+# silently no-op the way ChangeDegree always used to on a lower target.
+Line 0,0,0 10,0,0
+SelLast
+ChangeDegree
+3
+SelLast
+List
+SelLast
+ChangeDegree
+1
+SelLast
+List
+Delete
+# --- ChangeDegree now also LOWERS degree for SURFACES
+# (NurbsSurface::ReduceDegree, surface_edit.cpp): a flat Plane elevated to
+# degree 3x3 then reduced back to 1x1 is exact (a flat, evenly-spaced grid
+# is genuinely bilinear), so both directions must genuinely drop back to
+# a 2x2 control net, not silently no-op the way ChangeDegree always used
+# to on a lower target for surfaces.
+Plane 0,0,0 10,10,0
+SelLast
+ChangeDegree
+3
+SelLast
+List
+SelLast
+ChangeDegree
+1
+SelLast
+List
+Delete
+Line 0,0,0 10,0,0
+SelLast
+InsertKnot
+5,0,0
+SelLast
+List
+Delete
+# --- Offset a line towards a side point and a circle inwards (concentric)
+Line 0,0,0 10,0,0
+SelLast
+Offset Distance=2 0,5,0
+@expect_objects 2
+SelLast
+List
+SelAll
+Delete
+Circle 50,0,0 5
+SelLast
+Offset Distance=2 50,0,0
+SelLast
+List
+SelLast
+Radius
+Enter
+SelLast
+BoundingBox
+SelAll
+Delete
+# --- Offset a non-planar (genuinely 3D) curve: no longer refused outright,
+# the real 3D-offset half of this gap (see PARITY_MAP.md's Curve operations
+# category, "Offset curve"). These 4 interpolation points are not coplanar
+# (the first 3 define Z=0; the 4th has Z=10), so the curve's own
+# fitted-plane overload correctly refuses it and Offset falls back to the
+# active CPlane's normal instead of refusing outright the way the old
+# hand-rolled Make() (which always swept along the CPlane normal, with no
+# planarity check either way, but also no fallback/refusal logic at all)
+# never even distinguished.
+InterpCrv 0,0,0 10,0,0 10,10,0 0,10,10
+Enter
+@expect_objects 1
+SelLast
+Offset Distance=1 0,20,0
+@expect_objects 2
+SelLast
+BoundingBox
+SelAll
+Delete
+Line 0,0,0 10,0,0
+SelLast
+Offset Distance=3 BothSides=Yes 0,5,0
+@expect_objects 3
+SelAll
+Delete
+# --- Extend grows both ends by 10%, Flip reverses (Dir reports start and tangent), MakePeriodic on a closed curve
+Line 0,0,0 10,0,0
+SelLast
+Extend
+Enter
+SelLast
+List
+Dir
+Flip
+SelLast
+Dir
+Delete
+# --- Dir's printed origin/direction is the exact pair ComputeDirArrow()
+# feeds the viewport's direction-arrow glyph (doc/SceneObject.h/.cpp); a
+# plain Flip must invert both a curve's and a surface's numbers exactly,
+# proving the glyph's own geometry (not just Dir's text) is real.
+Line 0,0,0 10,0,0
+SelLast
+Dir
+Flip
+SelLast
+Dir
+Delete
+Plane 0,0,0 10,10,0
+SelLast
+Dir
+Flip
+SelLast
+Dir
+Delete
+Circle 0,0,0 10
+SelLast
+MakePeriodic
+SelLast
+List
+Delete
+# --- SetObjectName + SelName, PointsOn / PointsOff / SolidPtOn
+Line 0,0,0 10,0,0
+Line 0,5,0 10,5,0
+Point 20,20,0
+SelAll
+SetObjectName
+MyName
+# Regression: SetObjectName used to number from 1, so the *first* selected
+# object got suffixed "MyName (1)" instead of keeping the bare name - off by
+# one from the documented/printed "(2), (3), ..." scheme. List (in creation
+# order: Line, Line, Point) must show the first object as bare 'MyName' and
+# the rest numbered starting at (2).
+List
+SelNone
+SelPt
+SelName
+@expect_selected 1
+SelNone
+SelCrv
+PointsOn
+PointsOff
+SelNone
+SelAll
+SolidPtOn
+PointsOff
+SelNone
+# --- Groups: Group, SelGroup, AddToGroup, RemoveFromGroup, Ungroup
+SelCrv
+Group
+SelNone
+SelGroup
+@expect_selected 2
+SelPt
+AddToGroup
+SelNone
+SelGroup
+@expect_selected 3
+SelNone
+SelPt
+RemoveFromGroup
+SelNone
+SelGroup
+@expect_selected 2
+Ungroup
+SelNone
+SelGroup
+@expect_selected 0
+# --- Hide / Show / ShowSelected / HideSwap / Isolate / Unisolate
+SelNone
+SelPt
+Hide
+SelAll
+@expect_selected 2
+SelNone
+SelHidden
+@expect_selected 1
+SelNone
+Show
+SelAll
+@expect_selected 3
+SelNone
+SelPt
+Hide
+ShowSelected
+@expect_selected 1
+SelNone
+SelPt
+Hide
+HideSwap
+SelAll
+@expect_selected 1
+SelNone
+HideSwap
+SelAll
+@expect_selected 2
+SelNone
+Show
+SelNone
+SelPt
+Isolate
+SelAll
+@expect_selected 1
+SelNone
+Unisolate
+SelAll
+@expect_selected 3
+SelNone
+# --- Lock / Unlock / UnlockSelected / LockSwap / SelLocked
+SelPt
+Lock
+SelAll
+@expect_selected 2
+SelNone
+SelLocked
+@expect_selected 1
+SelNone
+Unlock
+SelAll
+@expect_selected 3
+SelNone
+SelPt
+Lock
+SelNone
+UnlockSelected
+@expect_selected 1
+SelNone
+SelPt
+Lock
+LockSwap
+SelAll
+@expect_selected 1
+SelNone
+Unlock
+SelNone
+# --- Clipboard: CopyToClipboard + Paste adds a copy, Cut removes and Paste restores
+SelPt
+CopyToClipboard
+Paste
+@expect_objects 4
+SelNone
+SelPt
+@expect_selected 2
+Delete
+@expect_objects 2
+SelCrv
+Cut
+@expect_objects 0
+Paste
+@expect_objects 2
+# --- Undo / Redo / UndoMultiple / RedoMultiple / ClearUndo
+SelAll
+Delete
+@expect_objects 0
+Undo
+@expect_objects 2
+Redo
+@expect_objects 0
+Undo
+UndoMultiple
+RedoMultiple
+ClearUndo
+Undo
+@expect_objects 2
+# --- user text and document user text
+SelAll
+Hyperlink https://example.org/edit
+GetUserText
+SetUserText
+QC
+Passed
+GetUserText
+SetDocumentUserText Project QC
+GetDocumentUserText
+DocumentUserText
+BoxEdit
+Properties
+ObjectProperties
+@expect_objects 2

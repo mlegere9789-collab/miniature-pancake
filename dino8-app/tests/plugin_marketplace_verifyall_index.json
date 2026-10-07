@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "index_name": "Verify-All Test Index (batch sha256 integrity-check fixture)",
+  "plugins": [
+    {
+      "id": "hellodino",
+      "name": "HelloDino",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Same sample plug-in as plugin-index/index.json's hellodino entry, with no sha256 at all - Marketplace::VerifyAll must report it as NoHashToCheck once installed, not silently skip it or fail.",
+      "api_version": 2,
+      "bundled_path": "plugins/hello_dino"
+    },
+    {
+      "id": "meshtools",
+      "name": "MeshTools",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Same sample plug-in as plugin-index/index.json's meshtools entry, but with a sha256 that deliberately does not match the built library, so Marketplace::VerifyAll reports a mismatch for it once installed, alongside hellodino's NoHashToCheck result in the same batch.",
+      "api_version": 2,
+      "bundled_path": "plugins/mesh_tools",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "id": "curvetools",
+      "name": "CurveTools",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Never installed by the verify-all script - proves VerifyAll only reports on entries actually installed via the marketplace, leaving an uninstalled entry out of the batch entirely rather than reporting it as NotInstalled.",
+      "api_version": 2,
+      "bundled_path": "plugins/curve_tools"
+    }
+  ]
+}

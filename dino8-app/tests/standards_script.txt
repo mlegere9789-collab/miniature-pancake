@@ -1,0 +1,15 @@
+# CAD Standards Checker: Standards links a JSON standards file (written by
+# the harness to @TMP@/standards.json before this script runs - see
+# smoke.sh), CheckStandards audits the document against it. Checks: a clean
+# document reports 0 violations; an undefined layer, a defined layer whose
+# linetype drifts from the standard, and an annotation style not on the
+# allowed list are each reported, while compliant layers/styles are not.
+Standards @TMP@/standards.json
+CheckStandards
+NewLayer Dims
+NewLayer Notes
+NewLayer Extra
+Text Hello 0,0,0
+AnnotationStyles Name=Rogue Current=Yes
+Text World 10,0,0
+CheckStandards

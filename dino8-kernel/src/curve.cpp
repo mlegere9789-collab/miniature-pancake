@@ -1,0 +1,2556 @@
+#include "dino8/kernel/curve.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+#include <string>
+
+#include "dino8/kernel/tolerance.h"
+
+#include "dino8/kernel/detail/degree_elevate.h"
+#include "dino8/kernel/detail/polygon2d.h"
+
+namespace dino8::kernel {
+
+namespace {
+
+// Which of the two possible in-plane perpendicular directions `dir`
+// belongs to, relative to a geometrically-known "true outward" direction
+// at the same point - same reasoning as NurbsSurface::OffsetAnalytic()'s
+// own OffsetNormalSign() (surface.cpp), duplicated here rather than
+// shared since the two files have no common detail header for it.
+double OffsetSignAlong(const Vector3d& dir, const Vector3d& true_outward) {
+  return ON_DotProduct(dir, true_outward) >= 0.0 ? 1.0 : -1.0;
+}
+
+// Shared by both `OffsetInPlane` overloads' exact line case: a line
+// offsets exactly along `line_direction x normal` for ANY `normal` not
+// parallel to the line, whether that normal comes from this curve's own
+// `IsPlanar()` fit or a plane the caller supplied directly.
+Result OffsetLineAlongNormal(const Point3d& p0, const Point3d& p1, const Vector3d& normal,
+                              double distance, NurbsCurve& out) {
+  Vector3d dir = p1 - p0;
+  if (!dir.Unitize()) return Result::Failed;
+  Vector3d offset_dir = ON_CrossProduct(dir, normal);
+  if (!offset_dir.Unitize()) return Result::Failed;
+  out = NurbsCurve::FromControlPoints({p0 + distance * offset_dir, p1 + distance * offset_dir}, 1);
+  return Result::Ok;
+}
+
+// Shared by both `OffsetInPlane` overloads' general (non-exact) case:
+// sample `curve` uniformly, move each sample by `distance` along
+// `TangentAt(t) x normal`, guard against a curvature fold, then
+// tolerance-drive a `FitLeastSquares()` refit against the sampled locus.
+// `normal` is this curve's own fitted-plane zaxis for the single-plane
+// overload, or a caller-supplied plane's zaxis for the other - the loop
+// itself doesn't care which, since it never asks whether `curve` is
+// actually planar in `normal`'s plane at all.
+Result OffsetGeneralAlongNormal(const NurbsCurve& curve, const Vector3d& normal, double distance,
+                                 double tol, NurbsCurve& out) {
+  const Interval dom = curve.Domain();
+  const BoundingBox bbox = curve.GetTightBoundingBox();
+  const double diag = (bbox.max - bbox.min).Length();
+  const double chord_tol = dino8::kernel::tolerance::RelativeDistance(diag);
+  const int n = std::max(curve.SuggestedSamples(chord_tol), 4 * curve.ControlPointCount());
+  std::vector<Point3d> offset_points;
+  offset_points.reserve(static_cast<size_t>(n) + 1);
+  for (int i = 0; i <= n; ++i) {
+    const double t = dom.min + (dom.max - dom.min) * i / n;
+    Vector3d offset_dir = ON_CrossProduct(curve.TangentAt(t), normal);
+    if (!offset_dir.Unitize()) return Result::Failed;  // tangent parallel to normal here
+
+    const Vector3d kappa_vec = curve.CurvatureAt(t);
+    const double kappa = kappa_vec.Length();
+    if (kappa > dino8::kernel::tolerance::kZeroVector) {
+      Vector3d to_center = kappa_vec;
+      to_center.Unitize();
+      const double inward_component = distance * OffsetSignAlong(offset_dir, to_center);
+      if (inward_component >= 1.0 / kappa) return Result::Failed;  // folds through its own center of curvature
+    }
+
+    offset_points.push_back(curve.PointAt(t) + distance * offset_dir);
+  }
+
+  const int max_cv_count = static_cast<int>(offset_points.size());
+  int cv_count = std::min(curve.ControlPointCount(), max_cv_count);
+  NurbsCurve fitted;
+  for (;;) {
+    if (NurbsCurve::FitLeastSquares(offset_points, curve.Degree(), cv_count, fitted) != Result::Ok) {
+      return Result::Failed;
+    }
+    double worst = 0.0;
+    for (const Point3d& p : offset_points) {
+      worst = std::max(worst, fitted.ClosestPoint(p, 50).DistanceTo(p));
+    }
+    if (worst <= tol) {
+      out = fitted;
+      return Result::Ok;
+    }
+    if (cv_count >= max_cv_count) return Result::Failed;  // tolerance unreachable even at the maximum feasible count
+    cv_count = std::min(cv_count * 2, max_cv_count);
+  }
+}
+
+// Shared by both `OffsetInPlane` overloads' polyline case: a genuinely
+// piecewise-linear curve (detected via `ON_Curve::IsPolyline()`, which
+// recognizes one whether it happens to be stored as a degree-1 NURBS
+// curve or any other exactly-straight-segment representation) offsets
+// EXACTLY, corner by corner, instead of falling to
+// `OffsetGeneralAlongNormal()`'s sampled least-squares refit - which
+// smooths every kink into a blurred curve and, for a closed polygon, can
+// disagree with itself at the seam (PARITY_MAP.md's offsetshell
+// category, "Planar curve offset": "a kinked polyline goes through the
+// smooth refit, blurring corners and potentially splitting a closed
+// polygon's seam").
+//
+// Each edge gets its own offset line, `distance` away along
+// `edge_direction x normal` (unit, same convention as every other branch
+// in this file); a vertex shared by two edges lands at the EXACT
+// intersection of their two offset lines via the standard angle-bisector
+// miter point `v + (distance / (1 + dot(n0, n1))) * (n0 + n1)` - the
+// same closed-form `OffsetConvexPolyline()` (sweep.cpp) already uses for
+// its own convex-only solid-cap case, reused here algebraically
+// unchanged but WITHOUT that function's convexity restriction: the
+// formula itself needs no convexity, only that no corner is within
+// `1e-9` of a full 180-degree fold, where no finite miter exists at all
+// (`denom <= 1e-9` below). A concave corner offset inward past its own
+// local feature size can still self-intersect - the same
+// honestly-disclosed risk PARITY_MAP.md's own "Offset self-intersection
+// / invalid-loop removal" item already names for every exact offset in
+// this file, inherited here rather than hidden, not newly introduced.
+//
+// The exact per-vertex intersection above is only valid when every edge
+// is perpendicular to `normal` - i.e. the whole polyline is genuinely
+// coplanar in a plane normal to `normal` (n0/n1 are always confined to
+// that plane by construction, but a vertex where the INCOMING edge has a
+// component along `normal` would need its offset "line" reasoned about
+// in 3D, where this planar miter formula no longer lands exactly on
+// both offset edges). The single-plane `OffsetInPlane(double, ...)`
+// overload already guarantees this (`normal` IS this curve's own
+// `IsPlanar()` fit), so the check below is a no-op there; the
+// explicit-plane overload can hand this a genuinely 3D polyline, for
+// which this function returns `false` (not applicable) rather than a
+// silently wrong "exact" corner, letting the caller fall through to the
+// old sampled general path unchanged.
+//
+// Returns `false` if `curve` isn't a polyline, has fewer than 3 distinct
+// vertices (a single segment is already the exact Line case above), or
+// isn't coplanar in a plane normal to `normal` - the caller should fall
+// through to the old behavior in every such case. Returns `true` with
+// `result` set to `Result::Ok` (and `out` populated) or `Result::Failed`
+// (a zero-length edge, an edge parallel to `normal`, or a near-180-degree
+// fold) otherwise.
+// A single corner's own contribution to the assembled Round/Chamfer-style
+// offset curve below: `departs` is where the PRECEDING edge's own offset
+// line should end, `arrives` is where the FOLLOWING edge's own offset line
+// should start - equal to each other (the exact miter point) for a
+// `Sharp`-equivalent corner (concave/contracting, or a degenerate near-
+// zero turn), or the two distinct tangent points of a genuine fillet arc
+// or straight chamfer segment (`has_piece`, with `piece` the arc or
+// segment itself, built directly rather than via `FilletCornerArc()` since
+// this corner's own tangent points and radius are already known up front -
+// no tangent-length solve needed, unlike `FilletCornerArc()`'s own
+// two-legs-plus-unknown-corner case).
+struct RoundOffsetCorner {
+  Point3d departs;
+  Point3d arrives;
+  bool has_piece = false;
+  NurbsCurve piece;
+};
+
+// Builds one corner of the Round/Chamfer-style polyline offset at
+// `vertex`, whose incoming/outgoing edges have already-offset unit
+// directions `n0`/`n1` (same convention as the Sharp miter loop below), in
+// the plane with normal `normal`. `turn_n` - `dot(cross(n0, n1), normal)` -
+// is passed in rather than recomputed here since it is also independently
+// useful for a caller-side sanity check; its SIGN, together with
+// `distance`'s own sign, decides whether this corner is the "fill"
+// (convex, gap-opening) side of its own turn or the "cross" (concave,
+// contracting) side - a corner's own fixed geometry (`turn_n`'s sign)
+// means opposite things for an outward vs an inward offset, which is
+// exactly why `distance`'s sign has to enter this test too, not just the
+// turn's own handedness. Only a `Round`- or `Chamfer`-requested FILL
+// corner ever gets a piece; a cross corner is always the exact miter-line
+// intersection, identical to `Sharp`, since there is no gap there to cut
+// in the first place (cutting it would carve into the shape instead of
+// filling a point sticking out of it).
+//
+// A fill corner's own two tangent points, `T0 = vertex + distance * n0`
+// and `T1 = vertex + distance * n1`, are shared by both styles - both
+// already exactly `|distance|` from `vertex` by construction, unlike
+// `FilletCornerArc()`'s own two-legs-plus-unknown-corner case, which has
+// to solve for its tangent points from an independently-chosen radius
+// first. `Round` joins them with a circular arc centered on `vertex`
+// itself (only the sweep direction needs resolving, via the same "measure
+// the angle, flip if negative" trick `FilletCornerArc()` already uses,
+// curve.cpp above); `Chamfer` joins them with the single straight segment
+// between them directly - literally the arc's own chord, needing no angle
+// or sweep-direction computation at all, since a 2-point line is already
+// fully determined by its endpoints.
+//
+// Returns `Result::Failed` only for the same genuine degeneracy the
+// `Sharp` loop already refuses on a cross corner (a near-180-degree fold,
+// where the two offset lines have no finite intersection) - a fill corner
+// needs no such check: both `Round`'s arc and `Chamfer`'s segment are
+// built directly from `n0`/`n1` and never require their lines to actually
+// intersect, so even a turn close to a full 180 degrees (where `Sharp`'s
+// own miter would be refused) still gets a well-defined piece.
+Result BuildRoundOffsetCorner(const Point3d& vertex, const Vector3d& normal, const Vector3d& n0,
+                               const Vector3d& n1, double turn_n, double distance,
+                               CurveOffsetCornerStyle corner_style, RoundOffsetCorner& corner) {
+  const bool is_fill_corner = (corner_style == CurveOffsetCornerStyle::Round ||
+                                corner_style == CurveOffsetCornerStyle::Chamfer) &&
+                               ((turn_n > 1e-9 && distance > 0.0) || (turn_n < -1e-9 && distance < 0.0));
+  if (is_fill_corner) {
+    const Point3d T0 = vertex + distance * n0;
+    const Point3d T1 = vertex + distance * n1;
+    if (corner_style == CurveOffsetCornerStyle::Chamfer) {
+      NurbsCurve chamfer_segment = NurbsCurve::FromControlPoints({T0, T1}, 1);
+      corner.departs = T0;
+      corner.arrives = T1;
+      corner.has_piece = true;
+      corner.piece = chamfer_segment;
+      return Result::Ok;
+    }
+    Vector3d xaxis = T0 - vertex;
+    Vector3d zaxis = normal;
+    if (xaxis.Unitize()) {
+      Vector3d yaxis = ON_CrossProduct(zaxis, xaxis);
+      if (yaxis.Unitize()) {
+        const Vector3d to_T1 = T1 - vertex;
+        double phi = std::atan2(ON_DotProduct(to_T1, yaxis), ON_DotProduct(to_T1, xaxis));
+        if (phi < 0.0) {
+          zaxis = -zaxis;
+          yaxis = -yaxis;
+          phi = std::atan2(ON_DotProduct(to_T1, yaxis), ON_DotProduct(to_T1, xaxis));
+        }
+        if (phi >= 1e-9) {
+          const ON_Plane arc_plane(vertex, xaxis, yaxis);
+          const ON_Arc arc(arc_plane, std::fabs(distance), phi);
+          ON_NurbsCurve arc_nurbs;
+          if (arc.GetNurbForm(arc_nurbs) != 0) {
+            NurbsCurve arc_curve;
+            arc_curve.raw() = arc_nurbs;
+            corner.departs = T0;
+            corner.arrives = T1;
+            corner.has_piece = true;
+            corner.piece = arc_curve;
+            return Result::Ok;
+          }
+        }
+      }
+    }
+    // Degenerate arc frame (T0 effectively equals vertex, or T1 lands
+    // exactly opposite T0's own xaxis): fall through to the exact miter
+    // point below instead, the same as any non-fill corner.
+  }
+
+  const double denom = 1.0 + ON_DotProduct(n0, n1);
+  if (denom <= 1e-9) return Result::Failed;  // near-180-degree fold: no finite miter point exists
+  const Point3d miter = vertex + (distance / denom) * (n0 + n1);
+  corner.departs = miter;
+  corner.arrives = miter;
+  corner.has_piece = false;
+  return Result::Ok;
+}
+
+// True if the closed polygon `poly` - every vertex coplanar in a plane
+// normal to `normal`, the same guarantee TryOffsetPolylineAlongNormal()
+// below already establishes before calling this - has no two non-adjacent
+// edges properly crossing. Projects into an arbitrary orthonormal basis of
+// that plane (any one works: this tests topology only, not a metric
+// quantity that could depend on which basis was picked) and delegates to
+// detail::IsSimplePolygon(), the same proper-crossing test
+// boolean.cpp/surface.cpp's own concave-polygon code already relies on.
+bool IsOffsetPolygonSimple(const std::vector<Point3d>& poly, const Vector3d& normal) {
+  Vector3d basis_hint(0.0, 0.0, 1.0);
+  if (std::fabs(ON_DotProduct(normal, basis_hint)) > 0.9) basis_hint = Vector3d(1.0, 0.0, 0.0);
+  Vector3d xaxis = ON_CrossProduct(normal, basis_hint);
+  xaxis.Unitize();
+  const Vector3d yaxis = ON_CrossProduct(normal, xaxis);
+
+  std::vector<Point2d> poly2d(poly.size());
+  for (size_t i = 0; i < poly.size(); ++i) {
+    const Vector3d rel = poly[i] - poly[0];
+    poly2d[i] = Point2d(ON_DotProduct(rel, xaxis), ON_DotProduct(rel, yaxis));
+  }
+  return detail::IsSimplePolygon(poly2d);
+}
+
+bool TryOffsetPolylineAlongNormal(const NurbsCurve& curve, const Vector3d& normal, double distance,
+                                   double tol, CurveOffsetCornerStyle corner_style, NurbsCurve& out,
+                                   Result& result) {
+  ON_SimpleArray<ON_3dPoint> pline;
+  if (!curve.raw().IsPolyline(&pline)) return false;
+
+  const bool closed = curve.IsClosed();
+  const int total = pline.Count();
+  const int vcount = closed ? total - 1 : total;
+  if (vcount < 3) return false;
+
+  std::vector<Point3d> v(static_cast<size_t>(vcount));
+  for (int i = 0; i < vcount; ++i) v[static_cast<size_t>(i)] = pline[i];
+
+  for (int i = 1; i < vcount; ++i) {
+    if (std::fabs(ON_DotProduct(v[static_cast<size_t>(i)] - v[0], normal)) > tol) return false;
+  }
+
+  const int edge_count = closed ? vcount : vcount - 1;
+  std::vector<Vector3d> ndir(static_cast<size_t>(edge_count));
+  for (int i = 0; i < edge_count; ++i) {
+    Vector3d d = v[static_cast<size_t>((i + 1) % vcount)] - v[static_cast<size_t>(i)];
+    if (!d.Unitize()) {
+      result = Result::Failed;  // zero-length edge
+      return true;
+    }
+    Vector3d n = ON_CrossProduct(d, normal);
+    if (!n.Unitize()) {
+      result = Result::Failed;  // edge parallel to normal - no offset direction exists
+      return true;
+    }
+    ndir[static_cast<size_t>(i)] = n;
+  }
+
+  if (corner_style == CurveOffsetCornerStyle::Sharp) {
+    std::vector<Point3d> offset_v(static_cast<size_t>(vcount));
+    for (int i = 0; i < vcount; ++i) {
+      if (!closed && i == 0) {
+        offset_v[0] = v[0] + distance * ndir[0];
+        continue;
+      }
+      if (!closed && i == vcount - 1) {
+        offset_v[static_cast<size_t>(i)] =
+            v[static_cast<size_t>(i)] + distance * ndir[static_cast<size_t>(edge_count - 1)];
+        continue;
+      }
+      const Vector3d& n0 = ndir[static_cast<size_t>((i - 1 + edge_count) % edge_count)];
+      const Vector3d& n1 = ndir[static_cast<size_t>(i % edge_count)];
+      const double denom = 1.0 + ON_DotProduct(n0, n1);
+      if (denom <= 1e-9) {
+        result = Result::Failed;  // near-180-degree fold: no finite miter point exists
+        return true;
+      }
+      offset_v[static_cast<size_t>(i)] = v[static_cast<size_t>(i)] + (distance / denom) * (n0 + n1);
+    }
+
+    if (closed && !IsOffsetPolygonSimple(offset_v, normal)) {
+      // Detection-only invalid-loop guard: PARITY_MAP.md's own "Offset
+      // self-intersection / invalid-loop removal" item discloses that an
+      // inward offset of a concave polygon past its own local feature size
+      // can self-intersect with no repair - and, until now, no detection
+      // either for this exact (non-refit) polyline path, which silently
+      // returned the bowtied loop as Result::Ok. Refuse instead, the same
+      // honest "detect, don't repair" convention this file's other
+      // feasibility guards (the near-180-degree fold check just above,
+      // OffsetAnalytic's spindle guard, etc.) already follow.
+      result = Result::Failed;
+      return true;
+    }
+
+    if (closed) offset_v.push_back(offset_v.front());
+    out = NurbsCurve::FromControlPoints(offset_v, 1);
+    result = Result::Ok;
+    return true;
+  }
+
+  // --- Round/Chamfer: assemble one line per edge, joined through a
+  // genuine fillet arc or straight chamfer segment at every FILL corner
+  // (BuildRoundOffsetCorner() above) via NurbsCurve::Join() - the same
+  // position-only C0 line-piece-line splice FilletCorner() already uses
+  // for its own single corner, repeated here for however many corners this
+  // polyline has. A non-fill corner contributes no separate piece at all:
+  // its `departs`/`arrives` are the same exact miter point, so the two
+  // adjacent edge lines already meet there on their own.
+  std::vector<RoundOffsetCorner> corners(static_cast<size_t>(vcount));
+  std::vector<bool> corner_valid(static_cast<size_t>(vcount), false);
+  for (int i = 0; i < vcount; ++i) {
+    if (!closed && (i == 0 || i == vcount - 1)) continue;
+    const Vector3d& n0 = ndir[static_cast<size_t>((i - 1 + edge_count) % edge_count)];
+    const Vector3d& n1 = ndir[static_cast<size_t>(i % edge_count)];
+    const double turn_n = ON_DotProduct(ON_CrossProduct(n0, n1), normal);
+    if (BuildRoundOffsetCorner(v[static_cast<size_t>(i)], normal, n0, n1, turn_n, distance, corner_style,
+                               corners[static_cast<size_t>(i)]) != Result::Ok) {
+      result = Result::Failed;
+      return true;
+    }
+    corner_valid[static_cast<size_t>(i)] = true;
+  }
+
+  auto EdgeStart = [&](int edge_index) -> Point3d {
+    if (!closed && edge_index == 0) return v[0] + distance * ndir[0];
+    return corners[static_cast<size_t>(edge_index)].arrives;
+  };
+  auto EdgeEnd = [&](int edge_index) -> Point3d {
+    if (!closed && edge_index == edge_count - 1) {
+      return v[static_cast<size_t>(vcount - 1)] + distance * ndir[static_cast<size_t>(edge_count - 1)];
+    }
+    return corners[static_cast<size_t>((edge_index + 1) % vcount)].departs;
+  };
+
+  const double join_tol = std::max(std::fabs(distance), 1.0) * 1e-6;
+  NurbsCurve assembled = NurbsCurve::FromControlPoints({EdgeStart(0), EdgeEnd(0)}, 1);
+  for (int edge_index = 1; edge_index <= edge_count - 1; ++edge_index) {
+    const int vertex_index = edge_index;  // corner shared by edge (edge_index - 1) and edge_index
+    if (corner_valid[static_cast<size_t>(vertex_index)] && corners[static_cast<size_t>(vertex_index)].has_piece) {
+      if (assembled.Join(corners[static_cast<size_t>(vertex_index)].piece, join_tol) != Result::Ok) {
+        result = Result::Failed;
+        return true;
+      }
+    }
+    NurbsCurve edge_piece = NurbsCurve::FromControlPoints({EdgeStart(edge_index), EdgeEnd(edge_index)}, 1);
+    if (assembled.Join(edge_piece, join_tol) != Result::Ok) {
+      result = Result::Failed;
+      return true;
+    }
+  }
+  if (closed && corner_valid[0] && corners[0].has_piece) {
+    if (assembled.Join(corners[0].piece, join_tol) != Result::Ok) {
+      result = Result::Failed;
+      return true;
+    }
+  }
+
+  out = assembled;
+  result = Result::Ok;
+  return true;
+}
+
+void SubdivideForFlatness(const NurbsCurve& curve, double t0, double t1, double chord_tolerance,
+                           int depth, int max_depth, std::vector<double>& out) {
+  const Point3d p0 = curve.PointAt(t0);
+  const Point3d p1 = curve.PointAt(t1);
+  const double tm = 0.5 * (t0 + t1);
+  const Point3d pm = curve.PointAt(tm);
+  const Point3d chord_mid((p0.x + p1.x) * 0.5, (p0.y + p1.y) * 0.5, (p0.z + p1.z) * 0.5);
+  const double deviation = (pm - chord_mid).Length();
+  if (deviation > chord_tolerance && depth < max_depth) {
+    SubdivideForFlatness(curve, t0, tm, chord_tolerance, depth + 1, max_depth, out);
+    SubdivideForFlatness(curve, tm, t1, chord_tolerance, depth + 1, max_depth, out);
+  } else {
+    out.push_back(t1);
+  }
+}
+
+// Angle between the curve's own tangent direction at t0 and at t1, used by
+// SubdivideForAngle() below in place of SubdivideForFlatness()'s chord-
+// height test. A tangent that fails to unitize (a cusp, or any other point
+// where TangentAt() cannot determine a direction) reports the maximal
+// possible turning angle (pi) rather than being silently skipped or
+// treated as straight - the conservative choice, forcing refinement right
+// up to `max_depth` exactly where the curve is least well-behaved, instead
+// of risking an under-sampled cusp.
+double TangentTurningAngle(const NurbsCurve& curve, double t0, double t1) {
+  const Vector3d tan0 = curve.TangentAt(t0);
+  const Vector3d tan1 = curve.TangentAt(t1);
+  const double len0 = tan0.Length();
+  const double len1 = tan1.Length();
+  if (len0 <= 1e-12 || len1 <= 1e-12) {
+    return ON_PI;
+  }
+  const double cos_angle = std::clamp((tan0 * tan1) / (len0 * len1), -1.0, 1.0);
+  return std::acos(cos_angle);
+}
+
+void SubdivideForAngle(const NurbsCurve& curve, double t0, double t1, double angle_tolerance,
+                        int depth, int max_depth, std::vector<double>& out) {
+  // Estimates this whole interval's own total tangent turning as the SUM
+  // of its two half-interval turning angles (t0->tm and tm->t1), not the
+  // single t0->t1 turning angle directly - a closed curve's full domain is
+  // the degenerate case a naive endpoint-to-endpoint comparison would get
+  // wrong: a full loop's tangent at `Domain().Min()` and at
+  // `Domain().Max()` is the SAME direction (the curve returns to where it
+  // started), so a t0->t1-only test would read a turning angle of 0 -
+  // "perfectly flat" - for a curve that actually turned a full 2*pi, and
+  // stop before ever subdividing. Routing through the midpoint and summing
+  // the two legs sidesteps this exactly the way SubdivideForFlatness()'s
+  // own midpoint-deviation (rather than endpoint-distance) chord test
+  // does: for a full circle, the tangent at the midpoint points exactly
+  // opposite the tangent at either endpoint, so each leg alone already
+  // reports the maximal turning angle (pi) and their sum correctly
+  // reflects the interval's real 2*pi turn.
+  const double tm = 0.5 * (t0 + t1);
+  const double turning = TangentTurningAngle(curve, t0, tm) + TangentTurningAngle(curve, tm, t1);
+  if (turning > angle_tolerance && depth < max_depth) {
+    SubdivideForAngle(curve, t0, tm, angle_tolerance, depth + 1, max_depth, out);
+    SubdivideForAngle(curve, tm, t1, angle_tolerance, depth + 1, max_depth, out);
+  } else {
+    out.push_back(t1);
+  }
+}
+
+// Value of basis function N_i(t) for the clamped B-spline defined by
+// `knot` (ON's own compressed convention), `cv_count` control points and
+// `order` = degree + 1. Used to build the least-squares normal equations
+// in FitLeastSquares() below - real Cox-de Boor evaluation via
+// OpenNURBS' own ON_NurbsSpanIndex/ON_EvaluateNurbsBasis, not an
+// approximation of it.
+double BasisValue(const std::vector<double>& knot, int cv_count, int order, int i, double t) {
+  const int span = ON_NurbsSpanIndex(order, cv_count, knot.data(), t, 0, 0);
+  if (i < span || i > span + order - 1) return 0.0;
+  // ON_EvaluateNurbsBasis writes a full order-by-order triangular table
+  // (every degree up to `degree`, not just the final row) - its own doc
+  // comment spells out "If N were declared as double N[order][order]".
+  // Passing a buffer of only `order` doubles here (an earlier draft's
+  // bug, caught by the corruption it caused) overruns it; the degree-d
+  // values this function actually wants are the first `order` entries.
+  std::vector<double> B(static_cast<size_t>(order) * static_cast<size_t>(order));
+  ON_EvaluateNurbsBasis(order, knot.data() + span, t, B.data());
+  return B[static_cast<size_t>(i - span)];
+}
+
+// Solves the dense linear system A*X = B in place via Gaussian
+// elimination with partial pivoting. A is `size` x `size` (row-major),
+// B is `size` x `rhs_count` (row-major) and is overwritten with the
+// solution X. Returns false if A is (numerically) singular.
+bool SolveLinearSystem(std::vector<double>& a, std::vector<double>& b, int size, int rhs_count) {
+  for (int col = 0; col < size; ++col) {
+    int pivot_row = col;
+    double pivot_val = std::abs(a[static_cast<size_t>(col * size + col)]);
+    for (int row = col + 1; row < size; ++row) {
+      const double v = std::abs(a[static_cast<size_t>(row * size + col)]);
+      if (v > pivot_val) { pivot_val = v; pivot_row = row; }
+    }
+    if (pivot_val < 1e-14) return false;
+    if (pivot_row != col) {
+      for (int k = 0; k < size; ++k) std::swap(a[static_cast<size_t>(col * size + k)], a[static_cast<size_t>(pivot_row * size + k)]);
+      for (int k = 0; k < rhs_count; ++k) std::swap(b[static_cast<size_t>(col * rhs_count + k)], b[static_cast<size_t>(pivot_row * rhs_count + k)]);
+    }
+    const double diag = a[static_cast<size_t>(col * size + col)];
+    for (int row = 0; row < size; ++row) {
+      if (row == col) continue;
+      const double factor = a[static_cast<size_t>(row * size + col)] / diag;
+      if (factor == 0.0) continue;
+      for (int k = col; k < size; ++k) a[static_cast<size_t>(row * size + k)] -= factor * a[static_cast<size_t>(col * size + k)];
+      for (int k = 0; k < rhs_count; ++k) b[static_cast<size_t>(row * rhs_count + k)] -= factor * b[static_cast<size_t>(col * rhs_count + k)];
+    }
+  }
+  for (int row = 0; row < size; ++row) {
+    const double diag = a[static_cast<size_t>(row * size + row)];
+    for (int k = 0; k < rhs_count; ++k) b[static_cast<size_t>(row * rhs_count + k)] /= diag;
+  }
+  return true;
+}
+
+}  // namespace
+
+Result NurbsCurve::FitLeastSquares(const std::vector<Point3d>& points, int degree, int control_point_count,
+                                    NurbsCurve& out) {
+  const int m_plus_1 = static_cast<int>(points.size());
+  const int p = degree;
+  const int order = p + 1;
+  const int n_plus_1 = control_point_count;
+  const int n = n_plus_1 - 1;
+  const int m = m_plus_1 - 1;
+  if (m_plus_1 < 2 || p < 1 || n_plus_1 < order || n_plus_1 > m_plus_1) {
+    return Result::Failed;
+  }
+
+  // Chord-length parameterization, u_bar[0..m] in [0, 1].
+  std::vector<double> u_bar(static_cast<size_t>(m_plus_1));
+  {
+    double total = 0.0;
+    std::vector<double> seg(static_cast<size_t>(m_plus_1), 0.0);
+    for (int k = 1; k <= m; ++k) {
+      seg[static_cast<size_t>(k)] = (points[static_cast<size_t>(k)] - points[static_cast<size_t>(k - 1)]).Length();
+      total += seg[static_cast<size_t>(k)];
+    }
+    u_bar[0] = 0.0;
+    u_bar[static_cast<size_t>(m)] = 1.0;
+    if (total <= 0.0) {
+      for (int k = 1; k < m; ++k) u_bar[static_cast<size_t>(k)] = static_cast<double>(k) / m;
+    } else {
+      double acc = 0.0;
+      for (int k = 1; k < m; ++k) {
+        acc += seg[static_cast<size_t>(k)];
+        u_bar[static_cast<size_t>(k)] = acc / total;
+      }
+    }
+  }
+
+  // Knot vector via the standard approximation knot-averaging formula
+  // (Piegl & Tiller eq. 9.68/9.69): textbook (uncompressed) convention
+  // first, length n+p+2, then converted to ON's compressed storage.
+  std::vector<double> u_full(static_cast<size_t>(n + p + 2));
+  for (int i = 0; i <= p; ++i) u_full[static_cast<size_t>(i)] = 0.0;
+  for (int i = 0; i <= p; ++i) u_full[static_cast<size_t>(n + 1 + i)] = 1.0;
+  const int h = n - p;
+  if (h > 0) {
+    const double d = static_cast<double>(m_plus_1) / static_cast<double>(n - p + 1);
+    for (int j = 1; j <= h; ++j) {
+      const double jd = j * d;
+      int i = static_cast<int>(jd);
+      const double alpha = jd - i;
+      if (i < 1) i = 1;
+      if (i > m) i = m;
+      const double u_im1 = u_bar[static_cast<size_t>(i - 1)];
+      const double u_i = u_bar[static_cast<size_t>(i)];
+      u_full[static_cast<size_t>(p + j)] = (1.0 - alpha) * u_im1 + alpha * u_i;
+    }
+  }
+  // ON's compressed knot array drops the redundant first/last textbook
+  // entries: compressed[k] = u_full[k + 1], length n + p.
+  std::vector<double> knot(static_cast<size_t>(n + p));
+  for (int k = 0; k < n + p; ++k) knot[static_cast<size_t>(k)] = u_full[static_cast<size_t>(k + 1)];
+
+  const Point3d q0 = points.front();
+  const Point3d qm = points.back();
+
+  if (n == 1) {
+    // Only the two (fixed) endpoints - no interior unknowns to solve for.
+    NurbsCurve result;
+    result.curve_.Create(3, false, order, n_plus_1);
+    result.curve_.SetCV(0, q0);
+    result.curve_.SetCV(1, qm);
+    for (int k = 0; k < n + p; ++k) result.curve_.SetKnot(k, knot[static_cast<size_t>(k)]);
+    out = result;
+    return Result::Ok;
+  }
+
+  // Normal equations for the (n-1) interior control points P_1..P_{n-1}.
+  const int unknowns = n - 1;
+  std::vector<double> a(static_cast<size_t>(unknowns) * static_cast<size_t>(unknowns), 0.0);
+  std::vector<double> rhs(static_cast<size_t>(unknowns) * 3, 0.0);
+  for (int k = 1; k < m; ++k) {
+    const double t = u_bar[static_cast<size_t>(k)];
+    const double n0 = BasisValue(knot, n_plus_1, order, 0, t);
+    const double nn = BasisValue(knot, n_plus_1, order, n, t);
+    const Point3d rk((points[static_cast<size_t>(k)].x - n0 * q0.x - nn * qm.x),
+                      (points[static_cast<size_t>(k)].y - n0 * q0.y - nn * qm.y),
+                      (points[static_cast<size_t>(k)].z - n0 * q0.z - nn * qm.z));
+    std::vector<double> ni(static_cast<size_t>(unknowns));
+    for (int i = 1; i <= unknowns; ++i) ni[static_cast<size_t>(i - 1)] = BasisValue(knot, n_plus_1, order, i, t);
+    for (int i = 0; i < unknowns; ++i) {
+      if (ni[static_cast<size_t>(i)] == 0.0) continue;
+      rhs[static_cast<size_t>(i * 3 + 0)] += ni[static_cast<size_t>(i)] * rk.x;
+      rhs[static_cast<size_t>(i * 3 + 1)] += ni[static_cast<size_t>(i)] * rk.y;
+      rhs[static_cast<size_t>(i * 3 + 2)] += ni[static_cast<size_t>(i)] * rk.z;
+      for (int j = 0; j < unknowns; ++j) {
+        a[static_cast<size_t>(i * unknowns + j)] += ni[static_cast<size_t>(i)] * ni[static_cast<size_t>(j)];
+      }
+    }
+  }
+  if (!SolveLinearSystem(a, rhs, unknowns, 3)) {
+    return Result::Failed;
+  }
+
+  NurbsCurve result;
+  result.curve_.Create(3, false, order, n_plus_1);
+  result.curve_.SetCV(0, q0);
+  for (int i = 1; i < n; ++i) {
+    const Point3d p_i(rhs[static_cast<size_t>((i - 1) * 3 + 0)], rhs[static_cast<size_t>((i - 1) * 3 + 1)],
+                       rhs[static_cast<size_t>((i - 1) * 3 + 2)]);
+    result.curve_.SetCV(i, p_i);
+  }
+  result.curve_.SetCV(n, qm);
+  for (int k = 0; k < n + p; ++k) result.curve_.SetKnot(k, knot[static_cast<size_t>(k)]);
+  out = result;
+  return Result::Ok;
+}
+
+NurbsCurve NurbsCurve::FromControlPoints(const std::vector<Point3d>& control_points,
+                                          int degree) {
+  // ON_NurbsCurve::Create() refuses order < 2 or cv_count < order by
+  // returning false BEFORE it sets m_order/m_cv_count or allocates m_cv,
+  // and the SetCV()/MakeClampedUniformKnotVector() calls below then
+  // silently no-op against that never-allocated curve. Without this
+  // check the result was a completely empty curve that still looked
+  // usable - Degree() 0, ControlPointCount() 0, KnotCount() -2,
+  // Domain() == [ON_UNSET_VALUE, ON_UNSET_VALUE], PointAt() == (0, 0, 0)
+  // and Length() == 0 for every input (confirmed by a debug run, not
+  // assumed) - i.e. a silently wrong result rather than a failure, and
+  // reachable from any caller forwarding a user-supplied degree without
+  // first clamping it to the point count (the app's Python AddCurve does).
+  if (degree < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::FromControlPoints: degree must be at least 1");
+  }
+  const int order = degree + 1;
+  const int cv_count = static_cast<int>(control_points.size());
+  if (cv_count < order) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::FromControlPoints: a degree-" + std::to_string(degree) +
+        " curve needs at least " + std::to_string(order) + " control points, got " +
+        std::to_string(cv_count));
+  }
+  NurbsCurve result;
+  result.curve_.Create(/*dimension=*/3, /*is_rational=*/false, order, cv_count);
+
+  for (int i = 0; i < cv_count; ++i) {
+    result.curve_.SetCV(i, control_points[static_cast<size_t>(i)]);
+  }
+
+  // Clamped, uniform knot vector — matches the "straightforward
+  // construction" this chunk promises; a real curve-fit/knot-spacing
+  // strategy belongs to whichever later chunk actually needs it.
+  result.curve_.MakeClampedUniformKnotVector();
+
+  return result;
+}
+
+Result NurbsCurve::FilletCornerArc(Point3d p0, Point3d corner, Point3d p1, double radius, NurbsCurve& arc_out) {
+  if (!(radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::FilletCornerArc: radius must be positive");
+  }
+  Vector3d u = p0 - corner;
+  Vector3d v = p1 - corner;
+  const double len_u = u.Length();
+  const double len_v = v.Length();
+  if (!u.Unitize() || !v.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::FilletCornerArc: p0/p1 must be distinct from corner");
+  }
+  const double cos_theta = std::max(-1.0, std::min(1.0, ON_DotProduct(u, v)));
+  const double theta = std::acos(cos_theta);
+  if (theta < 1e-9 || theta > ON_PI - 1e-9) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::FilletCornerArc: p0, corner and p1 are collinear - no finite tangent circle "
+        "exists for a straight corner");
+  }
+  const double half = 0.5 * theta;
+  const double d = radius / std::tan(half);
+  if (d >= len_u || d >= len_v) {
+    return Result::Failed;
+  }
+  const Point3d T0 = corner + d * u;
+  const Point3d T1 = corner + d * v;
+
+  Vector3d bis = u + v;
+  if (!bis.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::FilletCornerArc: degenerate (180-degree) bisector");
+  }
+  const double L = radius / std::sin(half);
+  const Point3d C = corner + L * bis;
+
+  Vector3d xaxis = T0 - C;
+  if (!xaxis.Unitize()) {
+    throw std::runtime_error("dino8::kernel::NurbsCurve::FilletCornerArc: degenerate arc frame (please report this as a bug)");
+  }
+  Vector3d zaxis = ON_CrossProduct(u, v);
+  if (!zaxis.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::FilletCornerArc: p0, corner and p1 are collinear - no finite tangent circle "
+        "exists for a straight corner");
+  }
+  Vector3d yaxis = ON_CrossProduct(zaxis, xaxis);
+  yaxis.Unitize();
+  const Vector3d to_T1 = T1 - C;
+  double phi = std::atan2(ON_DotProduct(to_T1, yaxis), ON_DotProduct(to_T1, xaxis));
+  if (phi < 0.0) {
+    // The other of the two candidate normal directions sweeps the short
+    // way from T0 to T1 instead - flip zaxis/yaxis (xaxis is unaffected)
+    // and re-measure, rather than assuming a fixed cross-product winding
+    // holds for every corner orientation.
+    zaxis = -zaxis;
+    yaxis = -yaxis;
+    phi = std::atan2(ON_DotProduct(to_T1, yaxis), ON_DotProduct(to_T1, xaxis));
+  }
+  if (phi < 1e-9 || phi > ON_PI + 1e-9) {
+    throw std::runtime_error(
+        "dino8::kernel::NurbsCurve::FilletCornerArc: computed arc sweep out of the expected (0, pi) range (please "
+        "report this as a bug)");
+  }
+  // Checked invariant, not assumed: T1 really is at `radius` from C.
+  if (std::fabs(to_T1.Length() - radius) > std::max(radius, 1.0) * 1e-6) {
+    throw std::runtime_error(
+        "dino8::kernel::NurbsCurve::FilletCornerArc: reconstructed tangent point does not lie on the arc's own "
+        "circle (please report this as a bug)");
+  }
+
+  const ON_Plane arc_plane(C, xaxis, yaxis);
+  const ON_Arc arc(arc_plane, radius, phi);
+  ON_NurbsCurve arc_nurbs;
+  if (arc.GetNurbForm(arc_nurbs) == 0) {
+    return Result::Failed;
+  }
+  NurbsCurve arc_curve;
+  arc_curve.curve_ = arc_nurbs;
+  arc_out = arc_curve;
+  return Result::Ok;
+}
+
+Result NurbsCurve::FilletCorner(Point3d p0, Point3d corner, Point3d p1, double radius, NurbsCurve& out) {
+  NurbsCurve arc_curve;
+  const Result arc_result = FilletCornerArc(p0, corner, p1, radius, arc_curve);
+  if (arc_result != Result::Ok) {
+    return arc_result;
+  }
+  const Interval arc_dom = arc_curve.Domain();
+  const Point3d T0 = arc_curve.PointAt(arc_dom.min);
+  const Point3d T1 = arc_curve.PointAt(arc_dom.max);
+
+  NurbsCurve result = FromControlPoints({p0, T0}, 1);
+  const double tol = std::max(radius, 1.0) * 1e-6;
+  if (result.Join(arc_curve, tol) != Result::Ok) {
+    return Result::Failed;
+  }
+  NurbsCurve tail = FromControlPoints({T1, p1}, 1);
+  if (result.Join(tail, tol) != Result::Ok) {
+    return Result::Failed;
+  }
+  out = result;
+  return Result::Ok;
+}
+
+Result NurbsCurve::ChamferCorner(Point3d p0, Point3d corner, Point3d p1, double distance0, double distance1,
+                                 NurbsCurve& out) {
+  if (!(distance0 > 0.0) || !(distance1 > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::ChamferCorner: distances must be positive");
+  }
+  Vector3d u = p0 - corner;
+  Vector3d v = p1 - corner;
+  const double len_u = u.Length();
+  const double len_v = v.Length();
+  if (!u.Unitize() || !v.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::ChamferCorner: p0/p1 must be distinct from corner");
+  }
+  if (distance0 >= len_u || distance1 >= len_v) {
+    return Result::Failed;
+  }
+  const Point3d T0 = corner + distance0 * u;
+  const Point3d T1 = corner + distance1 * v;
+  out = FromControlPoints({p0, T0, T1, p1}, 1);
+  return Result::Ok;
+}
+
+namespace {
+
+// Reads position + derivatives up to order `continuity` (1..3) of `curve`
+// at parameter `t` via the generic `ON_Curve::Evaluate` (the same base
+// evaluation method `TangentAt`/`CurvatureAt` are themselves built on top
+// of, per `Ev1Der`/`Ev2Der`/`EvCurvature`), applying the t -> -t
+// reparametrization sign flip to every ODD-order derivative when
+// `reverse` is true - see `BlendCurves`' own doc comment for why that is
+// the correct identity (EVEN-order derivatives, including the 0th/
+// position, are unaffected). `out_derivs[k-1]` holds the (possibly sign-
+// flipped) k-th derivative for k in [1, continuity]. Returns false if
+// `Evaluate` itself fails.
+bool EvaluateBlendEnd(const ON_NurbsCurve& curve, double t, bool reverse, int continuity, Point3d& out_point,
+                       std::array<Vector3d, 3>& out_derivs) {
+  double v[4 * 3] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  if (!curve.Evaluate(t, continuity, 3, v)) return false;
+  out_point = Point3d(v[0], v[1], v[2]);
+  for (int k = 1; k <= continuity; ++k) {
+    Vector3d d(v[k * 3 + 0], v[k * 3 + 1], v[k * 3 + 2]);
+    if (reverse && (k % 2 == 1)) d = -d;
+    out_derivs[static_cast<size_t>(k - 1)] = d;
+  }
+  return true;
+}
+
+}  // namespace
+
+Result NurbsCurve::BlendCurves(const NurbsCurve& curve0, double t0, bool reverse0, const NurbsCurve& curve1,
+                                double t1, bool reverse1, int continuity, NurbsCurve& out) {
+  if (continuity < 1 || continuity > 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::BlendCurves: continuity must be 1 (G1), 2 (G2) or 3 (G3)");
+  }
+  const Interval dom0 = curve0.Domain();
+  const Interval dom1 = curve1.Domain();
+  if (t0 < dom0.min || t0 > dom0.max) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::BlendCurves: t0 is outside curve0's own Domain()");
+  }
+  if (t1 < dom1.min || t1 > dom1.max) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::BlendCurves: t1 is outside curve1's own Domain()");
+  }
+
+  Point3d P0, P1;
+  std::array<Vector3d, 3> D0{}, D1{};
+  if (!EvaluateBlendEnd(curve0.curve_, t0, reverse0, continuity, P0, D0) ||
+      !EvaluateBlendEnd(curve1.curve_, t1, reverse1, continuity, P1, D1)) {
+    return Result::Failed;
+  }
+
+  const double scale = std::max(1.0, P0.DistanceTo(Point3d(0, 0, 0)));
+  if (P0.DistanceTo(P1) <= 1e-9 * scale) {
+    return Result::Failed;
+  }
+
+  // Every step below is deliberately written using only Point-Point
+  // (-> Vector) subtraction, Vector*scalar, and Point+-Vector - the
+  // operators this codebase's own Point3d/Vector3d arithmetic already
+  // relies on everywhere else (e.g. FilletCornerArc's own `corner +
+  // d*u`) - rather than a direct `scalar*Point3d` combination, which
+  // this file does not otherwise use. Each formula below is the
+  // textbook forward/backward Bezier finite-difference identity
+  // (`BlendCurves`' own doc comment derives it), algebraically
+  // rearranged into that same "Point + Vector" shape:
+  //   2*P1 - P0        == P1 + (P1 - P0)
+  //   3*P2 - 3*P1 + P0  == P0 + 3*(P2 - P1)
+  // and the mirror-image rearrangement for the back (u=1) side.
+  const int d = 2 * continuity + 1;
+  const double inv_d1 = 1.0 / static_cast<double>(d);
+  const double inv_d2 = 1.0 / static_cast<double>(d * (d - 1));
+  const double inv_d3 = 1.0 / static_cast<double>(d * (d - 1) * (d - 2));
+  std::vector<Point3d> ctrl(static_cast<size_t>(d) + 1);
+  ctrl[0] = P0;
+  if (continuity >= 1) ctrl[1] = ctrl[0] + D0[0] * inv_d1;
+  if (continuity >= 2) {
+    ctrl[2] = ctrl[1] + (ctrl[1] - ctrl[0]) + D0[1] * inv_d2;
+  }
+  if (continuity >= 3) {
+    ctrl[3] = ctrl[0] + 3.0 * (ctrl[2] - ctrl[1]) + D0[2] * inv_d3;
+  }
+
+  ctrl[static_cast<size_t>(d)] = P1;
+  if (continuity >= 1) {
+    ctrl[static_cast<size_t>(d - 1)] = ctrl[static_cast<size_t>(d)] - D1[0] * inv_d1;
+  }
+  if (continuity >= 2) {
+    ctrl[static_cast<size_t>(d - 2)] = ctrl[static_cast<size_t>(d - 1)] -
+                                        (ctrl[static_cast<size_t>(d)] - ctrl[static_cast<size_t>(d - 1)]) +
+                                        D1[1] * inv_d2;
+  }
+  if (continuity >= 3) {
+    ctrl[static_cast<size_t>(d - 3)] =
+        ctrl[static_cast<size_t>(d)] -
+        3.0 * (ctrl[static_cast<size_t>(d - 1)] - ctrl[static_cast<size_t>(d - 2)]) - D1[2] * inv_d3;
+  }
+
+  out = FromControlPoints(ctrl, d);
+  return Result::Ok;
+}
+
+int NurbsCurve::Degree() const { return curve_.Degree(); }
+
+int NurbsCurve::ControlPointCount() const { return curve_.CVCount(); }
+
+bool NurbsCurve::IsRational() const { return curve_.IsRational(); }
+
+double NurbsCurve::WeightAt(int i) const { return curve_.Weight(i); }
+
+Result NurbsCurve::SetWeightAt(int i, double weight) {
+  if (i < 0 || i >= ControlPointCount()) {
+    return Result::Failed;
+  }
+  if (WeightAt(i) == weight) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return curve_.SetWeight(i, weight) ? Result::Ok : Result::Failed;
+}
+
+Point3d NurbsCurve::ControlPointAt(int i) const {
+  if (i < 0 || i >= ControlPointCount()) {
+    throw std::out_of_range(
+        "dino8::kernel::NurbsCurve::ControlPointAt: i out of range");
+  }
+  ON_3dPoint point;
+  curve_.GetCV(i, point);
+  return point;
+}
+
+Result NurbsCurve::SetControlPointAt(int i, Point3d point) {
+  if (i < 0 || i >= ControlPointCount()) {
+    throw std::out_of_range(
+        "dino8::kernel::NurbsCurve::SetControlPointAt: i out of range");
+  }
+  if (ControlPointAt(i) == point) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return curve_.SetCV(i, point) ? Result::Ok : Result::Failed;
+}
+
+int NurbsCurve::KnotCount() const { return curve_.KnotCount(); }
+
+double NurbsCurve::KnotAt(int i) const {
+  if (i < 0 || i >= KnotCount()) {
+    throw std::out_of_range("dino8::kernel::NurbsCurve::KnotAt: i out of range");
+  }
+  return curve_.Knot(i);
+}
+
+Result NurbsCurve::SetKnotAt(int i, double value) {
+  if (i < 0 || i >= KnotCount()) {
+    return Result::Failed;
+  }
+  if (curve_.Knot(i) == value) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return curve_.SetKnot(i, value) ? Result::Ok : Result::Failed;
+}
+
+Result NurbsCurve::InsertKnotAt(double knot_value, int multiplicity) {
+  const Interval domain = Domain();
+  if (knot_value <= domain.min || knot_value >= domain.max) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::InsertKnotAt: knot_value must be "
+        "strictly inside the curve's own domain");
+  }
+  if (multiplicity < 1 || multiplicity > Degree()) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::InsertKnotAt: multiplicity must be "
+        "between 1 and Degree() inclusive");
+  }
+  return curve_.InsertKnot(knot_value, multiplicity) ? Result::Ok : Result::Failed;
+}
+
+namespace {
+
+// Homogeneous-point arithmetic helpers: ON_4dPoint itself only has
+// copy-assignment, no +, -, or scalar *, which is why
+// NurbsSurface::RemoveKnotAt's own per-row helper (surface_edit.cpp)
+// defines the identical four functions rather than relying on operator
+// overloads that don't exist.
+ON_4dPoint Scale4(const ON_4dPoint& a, double s) { return ON_4dPoint(a.x * s, a.y * s, a.z * s, a.w * s); }
+ON_4dPoint Add4(const ON_4dPoint& a, const ON_4dPoint& b) {
+  return ON_4dPoint(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w);
+}
+ON_4dPoint Sub4(const ON_4dPoint& a, const ON_4dPoint& b) {
+  return ON_4dPoint(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w);
+}
+double Norm4(const ON_4dPoint& a) { return std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z + a.w * a.w); }
+
+// Removes one occurrence of the knot at textbook index `r` (existing
+// multiplicity `s`) from the single control-point row `pw`, in place -
+// Piegl & Tiller's Algorithm A5.8, the exact same construction
+// NurbsSurface::RemoveKnotAt's own `RemoveKnotOnceRow` (surface_edit.cpp)
+// already applies to each row/column of a surface, duplicated here
+// rather than shared across translation units so this file stays
+// self-contained the same way every other curve-editing routine in it
+// already is. Returns the Euclidean (homogeneous-space) distance between
+// the new and old control polygon at Boehm's own worst-case point - the
+// caller's deviation measurement, not yet converted to a Euclidean
+// bound (RemoveKnotAt() below does that conversion for the rational
+// case, same as the surface version).
+double RemoveKnotOnceRow(int p, const std::vector<double>& u_full, std::vector<ON_4dPoint>& pw, int r, int s) {
+  const int n = static_cast<int>(pw.size()) - 1;
+  const double u = u_full[static_cast<size_t>(r)];
+  const int ord = p + 1;
+  const int first = r - p;
+  const int last = r - s;
+  const int off = first - 1;
+  std::vector<ON_4dPoint> temp(static_cast<size_t>(2 * p + 2));
+  temp[0] = pw[static_cast<size_t>(off)];
+  temp[static_cast<size_t>(last + 1 - off)] = pw[static_cast<size_t>(last + 1)];
+  int i = first, j = last, ii = 1, jj = last - off;
+  while (j - i > 0) {
+    const double alfi = (u - u_full[static_cast<size_t>(i)]) / (u_full[static_cast<size_t>(i + ord)] - u_full[static_cast<size_t>(i)]);
+    const double alfj = (u - u_full[static_cast<size_t>(j)]) / (u_full[static_cast<size_t>(j + ord)] - u_full[static_cast<size_t>(j)]);
+    temp[static_cast<size_t>(ii)] = Scale4(Sub4(pw[static_cast<size_t>(i)], Scale4(temp[static_cast<size_t>(ii - 1)], 1.0 - alfi)), 1.0 / alfi);
+    temp[static_cast<size_t>(jj)] = Scale4(Sub4(pw[static_cast<size_t>(j)], Scale4(temp[static_cast<size_t>(jj + 1)], alfj)), 1.0 / (1.0 - alfj));
+    ++i; ++ii; --j; --jj;
+  }
+  double distance = 0.0;
+  if (j - i < 0) {
+    distance = Norm4(Sub4(temp[static_cast<size_t>(ii - 1)], temp[static_cast<size_t>(jj + 1)]));
+  } else {
+    const double alfi = (u - u_full[static_cast<size_t>(i)]) / (u_full[static_cast<size_t>(i + ord)] - u_full[static_cast<size_t>(i)]);
+    const ON_4dPoint interp = Add4(Scale4(temp[static_cast<size_t>(ii + 1)], alfi), Scale4(temp[static_cast<size_t>(ii - 1)], 1.0 - alfi));
+    distance = Norm4(Sub4(pw[static_cast<size_t>(i)], interp));
+  }
+  i = first; j = last;
+  while (j - i > 0) {
+    pw[static_cast<size_t>(i)] = temp[static_cast<size_t>(i - off)];
+    pw[static_cast<size_t>(j)] = temp[static_cast<size_t>(j - off)];
+    ++i; --j;
+  }
+  const int fout = (2 * r - s - p) / 2;
+  for (int k = fout + 1; k <= n; ++k) pw[static_cast<size_t>(k - 1)] = pw[static_cast<size_t>(k)];
+  pw.pop_back();
+  return distance;
+}
+
+}  // namespace
+
+Result NurbsCurve::RemoveKnotAt(int knot_index, double tolerance, double* out_max_deviation) {
+  const int knot_count = curve_.KnotCount();
+  if (knot_index < 0 || knot_index >= knot_count) {
+    throw std::out_of_range("dino8::kernel::NurbsCurve::RemoveKnotAt: knot_index out of range");
+  }
+  const double u = curve_.Knot(knot_index);
+  const Interval domain = Domain();
+  if (!(u > domain.min && u < domain.max)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::RemoveKnotAt: the knot must be "
+        "strictly inside the curve's own domain");
+  }
+  if (out_max_deviation) *out_max_deviation = std::numeric_limits<double>::infinity();
+  if (!curve_.IsClamped(2)) return Result::Failed;
+
+  const int p = curve_.Degree();
+  const int cv_count = curve_.CVCount();
+  const bool rational = curve_.IsRational();
+
+  // Textbook knot vector U[0..m]: ON's compressed Knot(k) is U[k + 1];
+  // the clamped ends supply the two dropped copies (same convention
+  // NurbsSurface::RemoveKnotAt already uses).
+  std::vector<double> u_full(static_cast<size_t>(knot_count + 2));
+  for (int k = 0; k < knot_count; ++k) u_full[static_cast<size_t>(k + 1)] = curve_.Knot(k);
+  u_full[0] = u_full[1];
+  u_full[static_cast<size_t>(knot_count + 1)] = u_full[static_cast<size_t>(knot_count)];
+  // Last textbook index of this knot value, and its multiplicity.
+  int r = knot_index + 1;
+  while (r + 1 <= knot_count && u_full[static_cast<size_t>(r + 1)] == u) ++r;
+  int s = 0;
+  for (int k = r; k >= 0 && u_full[static_cast<size_t>(k)] == u; --k) ++s;
+  if (s > p) return Result::Failed;  // multiplicity > degree is a C^-1 break, not a B-spline knot removal case
+
+  std::vector<ON_4dPoint> pw(static_cast<size_t>(cv_count));
+  for (int i = 0; i < cv_count; ++i) {
+    ON_4dPoint cv;
+    curve_.GetCV(i, cv);
+    if (!rational) cv.w = 1.0;
+    pw[static_cast<size_t>(i)] = cv;
+  }
+  const double max_distance = RemoveKnotOnceRow(p, u_full, pw, r, s);
+
+  // Euclidean deviation bound. Non-rational: the discrepancy itself.
+  // Rational: Piegl & Tiller eq. 5.30 relates a homogeneous-space
+  // tolerance TOL to a Euclidean one d via TOL = d * w_min / (1 +
+  // |P|_max), so d = distance * (1 + |P|_max) / w_min - the same
+  // conversion NurbsSurface::RemoveKnotAt already applies.
+  double bound = max_distance;
+  if (rational) {
+    double w_min = std::numeric_limits<double>::infinity();
+    double p_max = 0.0;
+    for (int i = 0; i < cv_count; ++i) {
+      const double w = curve_.Weight(i);
+      ON_3dPoint e;
+      curve_.GetCV(i, e);
+      w_min = std::min(w_min, w);
+      p_max = std::max(p_max, e.DistanceTo(ON_3dPoint::Origin));
+    }
+    if (!(w_min > 0.0)) return Result::Failed;
+    bound = max_distance * (1.0 + p_max) / w_min;
+  }
+  if (out_max_deviation) *out_max_deviation = bound;
+  if (!(bound <= tolerance)) return Result::Failed;
+
+  // Commit: rebuild the curve with one fewer control point and knot.
+  // Textbook knots U[r + 1..m] shift down by one; ON's compressed form
+  // drops U'[0] and U'[m - 1].
+  std::vector<double> new_full(u_full);
+  new_full.erase(new_full.begin() + r);
+  ON_NurbsCurve out;
+  const int new_count = cv_count - 1;
+  if (!out.Create(3, rational, p + 1, new_count)) return Result::Failed;
+  for (int k = 0; k < out.KnotCount(); ++k) out.SetKnot(k, new_full[static_cast<size_t>(k + 1)]);
+  for (int i = 0; i < new_count; ++i) {
+    const ON_4dPoint& cv = pw[static_cast<size_t>(i)];
+    if (rational) out.SetCV(i, cv);
+    else out.SetCV(i, ON_3dPoint(cv.x, cv.y, cv.z));
+  }
+  if (!out.IsValid()) return Result::Failed;
+  curve_ = out;
+  return Result::Ok;
+}
+
+Result NurbsCurve::MakeRational() {
+  if (curve_.IsRational()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return curve_.MakeRational() ? Result::Ok : Result::Failed;
+}
+
+Result NurbsCurve::MakeNonRational() {
+  if (!curve_.IsRational()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return curve_.MakeNonRational() ? Result::Ok : Result::Failed;
+}
+
+Result NurbsCurve::MakeNonRational(double tolerance, double* out_max_deviation) {
+  if (out_max_deviation) *out_max_deviation = 0.0;
+  if (!curve_.IsRational()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  const ON_NurbsCurve backup = curve_;
+  if (!curve_.MakeNonRational()) {
+    curve_ = backup;
+    return Result::Failed;
+  }
+  NurbsCurve before;
+  before.raw() = backup;
+  const Interval domain = Domain();
+  const int samples = std::max(200, 20 * backup.CVCount());
+  double max_deviation = 0.0;
+  for (int i = 0; i <= samples; ++i) {
+    const double t = domain.min + (domain.max - domain.min) * i / samples;
+    max_deviation = std::max(max_deviation, (PointAt(t) - before.PointAt(t)).Length());
+  }
+  if (out_max_deviation) *out_max_deviation = max_deviation;
+  if (max_deviation > tolerance) {
+    curve_ = backup;
+    return Result::Failed;
+  }
+  return Result::Ok;
+}
+
+Result NurbsCurve::ElevateDegree(int new_degree) {
+  if (new_degree <= Degree()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  // Deliberately NOT `ON_NurbsCurve::IncreaseDegree` - see
+  // detail/degree_elevate.h for the measured, shape-corrupting inaccuracy
+  // that routine has on non-uniform knot vectors.
+  ON_NurbsCurve elevated;
+  if (!detail::DegreeElevateNurbsCurve(curve_, new_degree, elevated)) {
+    return Result::Failed;
+  }
+  curve_ = elevated;
+  return Result::Ok;
+}
+
+namespace {
+
+// Textbook knot V_k (k >= 1) of `c`: ON's compressed Knot(k - 1) - the
+// same simple reindexing NurbsSurface::MatchEdge()'s own helper
+// (surface_edit.cpp) uses (no padding needed, unlike RemoveKnotAt's own
+// u_full above, since this only ever reads knots already inside the
+// compressed array).
+double TextbookCurveKnot(const ON_NurbsCurve& c, int k) { return c.Knot(k - 1); }
+
+ON_4dPoint HomogeneousCurveCV(const ON_NurbsCurve& c, int i) {
+  ON_4dPoint cv;
+  c.GetCV(i, cv);
+  if (!c.IsRational()) cv.w = 1.0;
+  return cv;
+}
+
+void SetHomogeneousCurveCV(ON_NurbsCurve& c, int i, const ON_4dPoint& cv) {
+  if (c.IsRational()) c.SetCV(i, cv);
+  else c.SetCV(i, ON_3dPoint(cv.x, cv.y, cv.z));
+}
+
+}  // namespace
+
+Result NurbsCurve::MatchEnd(bool at_min, const NurbsCurve& target, bool target_at_min, MatchContinuity continuity,
+                             MatchEndReport* report, double end_derivative_scale) {
+  const int rows_needed = continuity == MatchContinuity::Position ? 1 : continuity == MatchContinuity::Tangent ? 2 : 3;
+  if (target.curve_.Degree() < rows_needed - 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::MatchEnd: target's degree is too low for the requested continuity");
+  }
+  if (!curve_.IsClamped(2) || !target.curve_.IsClamped(2)) return Result::Failed;
+
+  // Everything below edits only this local copy `s` - `curve_` itself
+  // is never touched until the final, self-checked commit, so an early
+  // `Result::Failed` return always leaves the curve untouched without
+  // needing a separate backup/restore (unlike MatchEdge(), which edits
+  // `surface_` in place and must restore a backup on failure).
+  ON_NurbsCurve s = curve_;
+  ON_NurbsCurve t = target.curve_;
+
+  // Normalize both to "match at the min end" so one set of end-derivative
+  // formulas applies - Reverse() is shape-preserving.
+  if (!at_min && !s.Reverse()) return Result::Failed;
+  if (!target_at_min && !t.Reverse()) return Result::Failed;
+
+  // Enough control points in `s` to leave its OTHER end alone - the
+  // same two preconditions MatchEdge() enforces on its own surface's
+  // cross direction (degree first, since the end-derivative formulas
+  // below need it; then control point count).
+  if (s.Degree() < rows_needed - 1) {
+    ON_NurbsCurve elevated;
+    if (!detail::DegreeElevateNurbsCurve(s, rows_needed - 1, elevated)) return Result::Failed;
+    s = elevated;
+  }
+  if (s.CVCount() <= rows_needed) {
+    const ON_Interval dom = s.Domain();
+    if (!s.InsertKnot(dom.Mid(), 1)) return Result::Failed;
+  }
+  if (s.CVCount() <= rows_needed) return Result::Failed;
+
+  // Scale: this curve's own pre-edit end speed over the target's,
+  // measured by real derivative evaluation (correct on a rational curve
+  // too, unlike reconstructing a derivative by hand from raw control
+  // points) - the curve-end counterpart to MatchEdge()'s own
+  // MeanCrossSpeedAtMin(), with no averaging needed since there's no
+  // "cross direction" to sample over for a single end point.
+  double scale = end_derivative_scale;
+  if (!(scale > 0.0)) {
+    ON_3dPoint s_pt, t_pt;
+    ON_3dVector s_d1, t_d1;
+    s.Ev1Der(s.Domain().Min(), s_pt, s_d1);
+    t.Ev1Der(t.Domain().Min(), t_pt, t_d1);
+    const double s_speed = s_d1.Length(), t_speed = t_d1.Length();
+    scale = (s_speed > 0.0 && t_speed > 0.0) ? s_speed / t_speed : 1.0;
+  }
+
+  // Rows and end-derivative coefficients (textbook knots; both curves
+  // are clamped so V_1 is the domain start) - exactly MatchEdge()'s own
+  // per-row R0/R1/R2 recurrence (surface_edit.cpp), here evaluated once
+  // (a single control point, not a row indexed along a shared edge).
+  const int p = s.Degree(), q = t.Degree();
+  const ON_4dPoint t0 = HomogeneousCurveCV(t, 0);
+  ON_4dPoint r0 = t0, r1 = r0, r2 = r0;
+  if (rows_needed >= 2) {
+    const ON_4dPoint t1 = HomogeneousCurveCV(t, 1);
+    const double dt1 = TextbookCurveKnot(t, q + 1) - TextbookCurveKnot(t, 1);
+    const double ds1 = TextbookCurveKnot(s, p + 1) - TextbookCurveKnot(s, 1);
+    // A = q / dt1 * (T1 - T0); R1 = R0 + ds1 / p * (-scale * A).
+    const ON_4dPoint a = Scale4(Sub4(t1, t0), q / dt1);
+    r1 = Add4(r0, Scale4(a, -scale * ds1 / p));
+    if (rows_needed >= 3) {
+      const ON_4dPoint t2 = HomogeneousCurveCV(t, 2);
+      const double dt2 = TextbookCurveKnot(t, q + 2) - TextbookCurveKnot(t, 2);
+      const double ds2 = TextbookCurveKnot(s, p + 2) - TextbookCurveKnot(s, 2);
+      // B = q (q-1) / dt1 * [ (T2 - T1) / dt2 - (T1 - T0) / dt1 ];
+      // S_vv = p (p-1) / ds1 * [ (R2 - R1) / ds2 - (R1 - R0) / ds1 ] = scale^2 B.
+      const ON_4dPoint b = Scale4(Sub4(Scale4(Sub4(t2, t1), 1.0 / dt2), Scale4(Sub4(t1, t0), 1.0 / dt1)), q * (q - 1.0) / dt1);
+      const ON_4dPoint d1 = Scale4(Sub4(r1, r0), 1.0 / ds1);
+      const ON_4dPoint inner = Add4(Scale4(b, scale * scale * ds1 / (p * (p - 1.0))), d1);
+      r2 = Add4(r1, Scale4(inner, ds2));
+    }
+  }
+
+  if (t.IsRational() && !s.IsRational()) s.MakeRational();
+  if (s.IsRational()) {
+    if (!(r0.w > 0.0) || (rows_needed >= 2 && !(r1.w > 0.0)) || (rows_needed >= 3 && !(r2.w > 0.0))) {
+      return Result::Failed;
+    }
+  }
+  SetHomogeneousCurveCV(s, 0, r0);
+  if (rows_needed >= 2) SetHomogeneousCurveCV(s, 1, r1);
+  if (rows_needed >= 3) SetHomogeneousCurveCV(s, 2, r2);
+
+  // Self-check by evaluation at the end, then undo the normalizing
+  // reversal - the same discipline MatchEdge() already applies.
+  MatchEndReport local;
+  local.scale = scale;
+  double size = 0.0;
+  {
+    ON_BoundingBox bb, tb;
+    s.GetBoundingBox(bb, false);
+    t.GetBoundingBox(tb, false);
+    size = std::max({1.0, bb.Diagonal().Length(), tb.Diagonal().Length()});
+  }
+  ON_3dPoint s_pt, t_pt;
+  ON_3dVector s_d1, t_d1, s_d2, t_d2;
+  s.Ev2Der(s.Domain().Min(), s_pt, s_d1, s_d2);
+  t.Ev2Der(t.Domain().Min(), t_pt, t_d1, t_d2);
+  local.position_error = s_pt.DistanceTo(t_pt);
+  if (rows_needed >= 2) local.tangent_error = (s_d1 + scale * t_d1).Length();
+  if (rows_needed >= 3) local.curvature_error = (s_d2 - scale * scale * t_d2).Length();
+
+  if (!at_min && !s.Reverse()) return Result::Failed;
+  if (report) *report = local;
+  const double tol = 1e-9 * size;
+  if (!(local.position_error <= tol) || !(local.tangent_error <= tol * std::max(1.0, scale)) ||
+      !(local.curvature_error <= tol * std::max(1.0, scale * scale) * 10.0) || !s.IsValid()) {
+    return Result::Failed;
+  }
+  curve_ = s;
+  return Result::Ok;
+}
+
+Result NurbsCurve::ReduceDegree(int target_degree, double tolerance, double* out_max_deviation) {
+  if (target_degree < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::ReduceDegree: target_degree must be at least 1");
+  }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::ReduceDegree: tolerance must be positive");
+  }
+  if (out_max_deviation) *out_max_deviation = 0.0;
+  if (target_degree >= Degree()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+
+  const int original_cv_count = ControlPointCount();
+  const Interval domain = Domain();
+  const int sample_count = std::max(200, 20 * original_cv_count);
+  std::vector<Point3d> samples;
+  samples.reserve(static_cast<size_t>(sample_count) + 1);
+  for (int i = 0; i <= sample_count; ++i) {
+    samples.push_back(PointAt(domain.min + (domain.max - domain.min) * i / sample_count));
+  }
+
+  std::vector<int> candidate_counts;
+  for (int cv = target_degree + 1; cv < original_cv_count; cv *= 2) candidate_counts.push_back(cv);
+  if (candidate_counts.empty() || candidate_counts.back() != original_cv_count) {
+    candidate_counts.push_back(original_cv_count);
+  }
+
+  double last_worst = 0.0;
+  for (int cv_count : candidate_counts) {
+    NurbsCurve candidate;
+    if (NurbsCurve::FitLeastSquares(samples, target_degree, cv_count, candidate) != Result::Ok) {
+      continue;
+    }
+    double worst = 0.0;
+    for (const Point3d& p : samples) {
+      worst = std::max(worst, (p - candidate.ClosestPoint(p)).Length());
+    }
+    last_worst = worst;
+    if (worst <= tolerance) {
+      curve_ = candidate.raw();
+      if (out_max_deviation) *out_max_deviation = worst;
+      return Result::Ok;
+    }
+  }
+  if (out_max_deviation) *out_max_deviation = last_worst;
+  return Result::Failed;
+}
+
+EndContinuityReport NurbsCurve::AnalyzeEndContinuity(const NurbsCurve& other) const {
+  const Interval da = Domain(), db = other.Domain();
+  const double ends_a[2] = {da.min, da.max};
+  const double ends_b[2] = {db.min, db.max};
+  double best = std::numeric_limits<double>::max();
+  int ia = 0, ib = 0;
+  for (int i = 0; i < 2; ++i) {
+    for (int j = 0; j < 2; ++j) {
+      const double d = PointAt(ends_a[i]).DistanceTo(other.PointAt(ends_b[j]));
+      if (d < best) {
+        best = d;
+        ia = i;
+        ib = j;
+      }
+    }
+  }
+
+  EndContinuityReport report;
+  report.gap = best;
+
+  // Both tangents flipped (if needed) to point away from the shared
+  // joint - the same convention MatchEnd() already uses - before
+  // comparing them, so a perfect straight-through continuation reads
+  // as 0 degrees, not 180.
+  Vector3d ta = TangentAt(ends_a[ia]);
+  Vector3d tb = other.TangentAt(ends_b[ib]);
+  if (ia == 1) ta = -ta;
+  if (ib == 1) tb = -tb;
+  report.tangent_angle_degrees = ON_3dVector::Angle(ta, -tb) * 180.0 / ON_PI;
+
+  report.curvature_a = CurvatureAt(ends_a[ia]).Length();
+  report.curvature_b = other.CurvatureAt(ends_b[ib]).Length();
+  if (report.curvature_a < 1e-9 && report.curvature_b < 1e-9) {
+    report.curvature_relative_difference = 0.0;
+  } else {
+    report.curvature_relative_difference =
+        std::fabs(report.curvature_a - report.curvature_b) / std::max(1e-9, std::max(report.curvature_a, report.curvature_b));
+  }
+  return report;
+}
+
+namespace {
+// One min/max sweep of `curve` against `other`, at exactly `n` evenly
+// spaced parameters across `curve`'s own domain (0 and n both inclusive).
+void SampleDeviation(const NurbsCurve& curve, const NurbsCurve& other, int n, double& out_min, double& out_max) {
+  const Interval dom = curve.Domain();
+  out_min = std::numeric_limits<double>::max();
+  out_max = 0.0;
+  for (int i = 0; i <= n; ++i) {
+    const double t = dom.min + (dom.max - dom.min) * i / n;
+    const Point3d p = curve.PointAt(t);
+    const double d = other.ClosestPoint(p).DistanceTo(p);
+    out_min = std::min(out_min, d);
+    out_max = std::max(out_max, d);
+  }
+}
+}  // namespace
+
+Result NurbsCurve::DeviationTo(const NurbsCurve& other, double tolerance, double& out_min, double& out_max,
+                                 int* out_samples) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::DeviationTo: tolerance must be positive");
+  }
+  int n = std::max(SuggestedSamples(tolerance), 20);
+  SampleDeviation(*this, other, n, out_min, out_max);
+  for (int level = 0; level < 20; ++level) {
+    const int next_n = n * 2;
+    double next_min, next_max;
+    SampleDeviation(*this, other, next_n, next_min, next_max);
+    const bool converged = std::fabs(next_min - out_min) <= tolerance && std::fabs(next_max - out_max) <= tolerance;
+    n = next_n;
+    out_min = next_min;
+    out_max = next_max;
+    if (converged) {
+      if (out_samples) *out_samples = n;
+      return Result::Ok;
+    }
+  }
+  if (out_samples) *out_samples = n;
+  return Result::Failed;
+}
+
+namespace {
+// Standard closed-polygon shoelace/centroid/second-moment formulas (the
+// continuous Green's-theorem integrals' exact value on the piecewise-
+// linear approximation this function is handed), in LOCAL 2D (u, v)
+// plane coordinates. `uv` is implicitly closed (its last vertex connects
+// back to its first) - the caller never duplicates the first point as a
+// last one. Ixx/Iyy/Ixy come back about the ORIGIN of the (u, v) frame,
+// not yet shifted to the centroid - the caller's job, via the standard
+// parallel-axis theorem, once it knows the real centroid.
+void PolygonProperties(const std::vector<Point2d>& uv, double& area, double& cx, double& cy, double& ixx,
+                        double& iyy, double& ixy) {
+  area = 0.0;
+  double mx = 0.0, my = 0.0, sxx = 0.0, syy = 0.0, sxy = 0.0;
+  const size_t n = uv.size();
+  for (size_t i = 0; i < n; ++i) {
+    const Point2d& a = uv[i];
+    const Point2d& b = uv[(i + 1) % n];
+    const double cross = a.x * b.y - b.x * a.y;
+    area += cross;
+    mx += (a.x + b.x) * cross;
+    my += (a.y + b.y) * cross;
+    sxx += (a.y * a.y + a.y * b.y + b.y * b.y) * cross;
+    syy += (a.x * a.x + a.x * b.x + b.x * b.x) * cross;
+    sxy += (a.x * b.y + 2 * a.x * a.y + 2 * b.x * b.y + b.x * a.y) * cross;
+  }
+  area *= 0.5;
+  cx = area != 0.0 ? mx / (6.0 * area) : 0.0;
+  cy = area != 0.0 ? my / (6.0 * area) : 0.0;
+  ixx = sxx / 12.0;
+  iyy = syy / 12.0;
+  ixy = sxy / 24.0;
+}
+
+// One sample-and-measure pass at exactly `n` evenly spaced parameters.
+void SampleRegionProperties(const NurbsCurve& curve, const ON_Plane& plane, int n, double& area, double& cx,
+                             double& cy, double& ixx, double& iyy, double& ixy) {
+  const Interval dom = curve.Domain();
+  std::vector<Point2d> uv;
+  uv.reserve(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const double t = dom.min + (dom.max - dom.min) * i / n;
+    const Point3d p = curve.PointAt(t);
+    const Vector3d rel = p - plane.origin;
+    uv.emplace_back(ON_DotProduct(rel, plane.xaxis), ON_DotProduct(rel, plane.yaxis));
+  }
+  PolygonProperties(uv, area, cx, cy, ixx, iyy, ixy);
+}
+}  // namespace
+
+Result NurbsCurve::PlanarRegionProperties(RegionProperties& out, double tolerance) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::PlanarRegionProperties: tolerance must be positive");
+  }
+  if (!IsClosed()) return Result::Failed;
+  ON_Plane plane;
+  if (!curve_.IsPlanar(&plane, tolerance)) return Result::Failed;
+
+  int n = std::max(SuggestedSamples(tolerance), 20);
+  double area, cx, cy, ixx, iyy, ixy;
+  SampleRegionProperties(*this, plane, n, area, cx, cy, ixx, iyy, ixy);
+  for (int level = 0; level < 20; ++level) {
+    const int next_n = n * 2;
+    double next_area, next_cx, next_cy, next_ixx, next_iyy, next_ixy;
+    SampleRegionProperties(*this, plane, next_n, next_area, next_cx, next_cy, next_ixx, next_iyy, next_ixy);
+    const bool converged = std::fabs(next_area - area) <= tolerance && std::fabs(next_cx - cx) <= tolerance &&
+                            std::fabs(next_cy - cy) <= tolerance && std::fabs(next_ixx - ixx) <= tolerance &&
+                            std::fabs(next_iyy - iyy) <= tolerance && std::fabs(next_ixy - ixy) <= tolerance;
+    n = next_n;
+    area = next_area;
+    cx = next_cx;
+    cy = next_cy;
+    ixx = next_ixx;
+    iyy = next_iyy;
+    ixy = next_ixy;
+    if (converged) {
+      out.area = std::fabs(area);
+      out.centroid = plane.PointAt(cx, cy);
+      // Shift from about the (u, v) origin to about the real centroid -
+      // the standard parallel-axis theorem, with the SIGNED area (area
+      // can come out negative depending on the curve's own traversal
+      // direction, exactly like the signed cross-product terms above).
+      out.ixx = std::fabs(ixx - area * cy * cy);
+      out.iyy = std::fabs(iyy - area * cx * cx);
+      out.ixy = ixy - area * cx * cy;
+      return Result::Ok;
+    }
+  }
+  return Result::Failed;
+}
+
+namespace {
+// One coarse global search over `n` samples of `a`, each mapped to its
+// own closest point on `b`, followed by an alternating-projection local
+// polish from the best coarse candidate found.
+void RefineMinDistance(const NurbsCurve& a, const NurbsCurve& b, int n, double& best_dist, double& best_ta,
+                        double& best_tb) {
+  const Interval dom = a.Domain();
+  best_dist = std::numeric_limits<double>::max();
+  for (int i = 0; i <= n; ++i) {
+    const double ta = dom.min + (dom.max - dom.min) * i / n;
+    const Point3d pa = a.PointAt(ta);
+    const double tb = b.ClosestPointParameter(pa);
+    const double d = pa.DistanceTo(b.PointAt(tb));
+    if (d < best_dist) {
+      best_dist = d;
+      best_ta = ta;
+      best_tb = tb;
+    }
+  }
+  for (int iter = 0; iter < 30; ++iter) {
+    const double new_ta = a.ClosestPointParameter(b.PointAt(best_tb));
+    const double new_tb = b.ClosestPointParameter(a.PointAt(new_ta));
+    const double new_dist = a.PointAt(new_ta).DistanceTo(b.PointAt(new_tb));
+    if (new_dist >= best_dist - 1e-15) break;
+    best_dist = new_dist;
+    best_ta = new_ta;
+    best_tb = new_tb;
+  }
+}
+}  // namespace
+
+Result NurbsCurve::MinDistanceTo(const NurbsCurve& other, double tolerance, double& out_distance,
+                                   double* out_t_this, double* out_t_other) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::MinDistanceTo: tolerance must be positive");
+  }
+  int n = std::max(SuggestedSamples(tolerance), 20);
+  double dist, ta, tb;
+  RefineMinDistance(*this, other, n, dist, ta, tb);
+  for (int level = 0; level < 20; ++level) {
+    const int next_n = n * 2;
+    double next_dist, next_ta, next_tb;
+    RefineMinDistance(*this, other, next_n, next_dist, next_ta, next_tb);
+    const bool converged = std::fabs(next_dist - dist) <= tolerance;
+    n = next_n;
+    dist = next_dist;
+    ta = next_ta;
+    tb = next_tb;
+    if (converged) {
+      out_distance = dist;
+      if (out_t_this) *out_t_this = ta;
+      if (out_t_other) *out_t_other = tb;
+      return Result::Ok;
+    }
+  }
+  out_distance = dist;
+  if (out_t_this) *out_t_this = ta;
+  if (out_t_other) *out_t_other = tb;
+  return Result::Failed;
+}
+
+NurbsCurve::OrientedBox NurbsCurve::GetOrientedBoundingBox() const {
+  const int cv_count = ControlPointCount();
+  const int n = std::max(50, 4 * cv_count);
+
+  // Arc-length-even sampling (DivideByCount(), not a raw parameter-
+  // uniform loop): a curve made of segments with very different physical
+  // lengths but equal PARAMETER span (e.g. a non-square polyline
+  // rectangle) would otherwise over-sample its shorter segments relative
+  // to its longer ones, skewing the sampled covariance's principal axes
+  // measurably off the curve's own true geometric symmetry directions -
+  // confirmed directly by testing before this fix (a 20x10 rectangle's
+  // own axes came back rotated ~1.2 degrees off true X/Y, inflating the
+  // measured half-extents by 1-4%).
+  // DivideByCount() returns Domain().Min() AND Domain().Max() - for a
+  // CLOSED curve those map to the exact same point, so using every
+  // returned parameter would double-count that one seam point and skew
+  // the mean/covariance's own symmetry - confirmed directly by testing
+  // (a 20x10 rectangle's own sampled mean came back (9.8, 4.9), not its
+  // real (10, 5), before this fix). Dropping the final (duplicate)
+  // parameter for a closed curve restores the even, non-duplicated
+  // sampling an open curve already has.
+  std::vector<double> params = DivideByCount(n);
+  if (IsClosed() && params.size() > 1) params.pop_back();
+  Point3d mean(0, 0, 0);
+  std::vector<Point3d> samples(params.size());
+  for (size_t i = 0; i < params.size(); ++i) {
+    samples[i] = PointAt(params[i]);
+    mean = mean + Vector3d(samples[i]);
+  }
+  mean = Point3d(Vector3d(mean) / static_cast<double>(samples.size()));
+
+  double cxx = 0, cyy = 0, czz = 0, cxy = 0, cyz = 0, cxz = 0;
+  for (const Point3d& p : samples) {
+    const Vector3d d = p - mean;
+    cxx += d.x * d.x;
+    cyy += d.y * d.y;
+    czz += d.z * d.z;
+    cxy += d.x * d.y;
+    cyz += d.y * d.z;
+    cxz += d.x * d.z;
+  }
+
+  std::array<Vector3d, 3> axes;
+  double e[3];
+  Vector3d v[3];
+  if (ON_Sym3x3EigenSolver(cxx, cyy, czz, cxy, cyz, cxz, &e[0], v[0], &e[1], v[1], &e[2], v[2])) {
+    axes = {v[0], v[1], v[2]};
+    for (Vector3d& a : axes) a.Unitize();
+    // Make the frame right-handed - the cross product of the first two
+    // orthogonal eigenvectors is +/- the third and still an eigenvector
+    // of it, the same fix-up Mesh::GetOrientedBoundingBox() already
+    // applies.
+    axes[2] = ON_CrossProduct(axes[0], axes[1]);
+    axes[2].Unitize();
+  } else {
+    // A degenerate (e.g. near-singular, confirmed directly by testing a
+    // straight line's own exactly-rank-1 covariance) covariance matrix -
+    // any orthonormal basis is an equally valid PCA frame for a
+    // collapsed/degenerate variance direction, so this falls back to the
+    // world axes rather than failing outright; the control-point
+    // projection step below still gives a safe, correctly-sized box
+    // either way, regardless of which basis these axes end up being.
+    axes = {Vector3d(1, 0, 0), Vector3d(0, 1, 0), Vector3d(0, 0, 1)};
+  }
+
+  // Every CONTROL POINT's own projection onto each axis - NOT the
+  // sampled points above - so the box this returns provably contains
+  // the whole curve (the convex-hull property), never merely the
+  // sampled approximation of it.
+  double lo[3] = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
+                  std::numeric_limits<double>::max()};
+  double hi[3] = {-std::numeric_limits<double>::max(), -std::numeric_limits<double>::max(),
+                   -std::numeric_limits<double>::max()};
+  const Point3d origin = ControlPointAt(0);
+  for (int i = 0; i < cv_count; ++i) {
+    const Vector3d rel = ControlPointAt(i) - origin;
+    for (int k = 0; k < 3; ++k) {
+      const double proj = ON_DotProduct(rel, axes[static_cast<size_t>(k)]);
+      lo[k] = std::min(lo[k], proj);
+      hi[k] = std::max(hi[k], proj);
+    }
+  }
+
+  OrientedBox box;
+  box.axes = axes;
+  Point3d center = origin;
+  for (int k = 0; k < 3; ++k) {
+    box.half_extents[static_cast<size_t>(k)] = (hi[k] - lo[k]) / 2.0;
+    center = center + axes[static_cast<size_t>(k)] * ((hi[k] + lo[k]) / 2.0);
+  }
+  box.center = center;
+  return box;
+}
+
+Result NurbsCurve::Fair(double tolerance, int iterations, double factor, double* out_max_deviation) {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Fair: tolerance must be positive");
+  }
+  if (iterations < 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Fair: iterations must be at least 1");
+  }
+  if (!(factor > 0.0) || factor > 1.0) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Fair: factor must be in (0, 1]");
+  }
+  if (out_max_deviation) *out_max_deviation = 0.0;
+
+  const int n = ControlPointCount();
+  if (n < 3) {
+    return Result::NoOpAlreadySatisfied;
+  }
+
+  NurbsCurve candidate = *this;
+  std::vector<Point3d> current(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) current[static_cast<size_t>(i)] = candidate.ControlPointAt(i);
+
+  for (int iter = 0; iter < iterations; ++iter) {
+    std::vector<Point3d> next = current;
+    for (int i = 1; i < n - 1; ++i) {
+      const Point3d& prev = current[static_cast<size_t>(i - 1)];
+      const Point3d& here = current[static_cast<size_t>(i)];
+      const Point3d& after = current[static_cast<size_t>(i + 1)];
+      next[static_cast<size_t>(i)] =
+          Point3d((1.0 - factor) * here.x + factor * 0.5 * (prev.x + after.x),
+                  (1.0 - factor) * here.y + factor * 0.5 * (prev.y + after.y),
+                  (1.0 - factor) * here.z + factor * 0.5 * (prev.z + after.z));
+    }
+    current = std::move(next);
+  }
+  for (int i = 1; i < n - 1; ++i) candidate.SetControlPointAt(i, current[static_cast<size_t>(i)]);
+
+  const Interval domain = Domain();
+  const int sample_count = std::max(200, 20 * n);
+  double worst = 0.0;
+  for (int i = 0; i <= sample_count; ++i) {
+    const double t = domain.min + (domain.max - domain.min) * i / sample_count;
+    worst = std::max(worst, (PointAt(t) - candidate.PointAt(t)).Length());
+  }
+  if (out_max_deviation) *out_max_deviation = worst;
+  if (worst > tolerance) {
+    return Result::Failed;
+  }
+  curve_ = candidate.raw();
+  return Result::Ok;
+}
+
+Result NurbsCurve::Simplify(double tolerance) {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Simplify: tolerance must be positive");
+  }
+
+  if (IsLinear(tolerance) && ControlPointCount() > 2) {
+    const Interval dom = Domain();
+    const NurbsCurve line = FromControlPoints({PointAt(dom.min), PointAt(dom.max)}, 1);
+    curve_ = line.curve_;
+    return Result::Ok;
+  }
+
+  if (!IsRational()) {
+    ON_Arc arc;
+    if (curve_.IsArc(nullptr, &arc, tolerance)) {
+      ON_ArcCurve ac(arc);
+      ON_NurbsCurve nc;
+      if (ac.GetNurbForm(nc) > 0) {
+        curve_ = nc;
+        return Result::Ok;
+      }
+    }
+  }
+
+  bool changed = false;
+
+  // Remove every removable interior knot, re-scanning from scratch after
+  // each success since RemoveKnotAt() shifts every later index.
+  bool progress = true;
+  while (progress) {
+    progress = false;
+    const Interval dom = Domain();
+    for (int i = 0; i < KnotCount(); ++i) {
+      const double u = curve_.Knot(i);
+      if (!(u > dom.min && u < dom.max)) continue;
+      if (RemoveKnotAt(i, tolerance) == Result::Ok) {
+        changed = true;
+        progress = true;
+        break;
+      }
+    }
+  }
+
+  // Reduce degree as far as tolerance allows, trying the lowest degree
+  // first - the maximal simplification, not just the first one found.
+  for (int d = 1; d < Degree(); ++d) {
+    if (ReduceDegree(d, tolerance) == Result::Ok) {
+      changed = true;
+      break;
+    }
+  }
+
+  return changed ? Result::Ok : Result::NoOpAlreadySatisfied;
+}
+
+Interval NurbsCurve::Domain() const {
+  const ON_Interval domain = curve_.Domain();
+  return Interval{domain.Min(), domain.Max()};
+}
+
+Result NurbsCurve::SetDomain(double t0, double t1) {
+  if (!(t0 < t1)) return Result::Failed;
+  const Interval current = Domain();
+  if (current.min == t0 && current.max == t1) return Result::NoOpAlreadySatisfied;
+  return curve_.SetDomain(t0, t1) ? Result::Ok : Result::Failed;
+}
+
+Point3d NurbsCurve::PointAt(double t) const {
+  ON_3dPoint pt;
+  curve_.EvPoint(t, pt);
+  return pt;
+}
+
+Vector3d NurbsCurve::CurvatureAt(double t) const { return curve_.CurvatureAt(t); }
+
+int NurbsCurve::SuggestedSamples(double chord_tolerance, int curvature_samples) const {
+  if (chord_tolerance <= 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::SuggestedSamples: chord_tolerance must "
+        "be positive");
+  }
+
+  const ON_Interval domain = curve_.Domain();
+  double max_kappa = 0.0;
+  for (int i = 0; i <= curvature_samples; ++i) {
+    const double t = domain.ParameterAt(static_cast<double>(i) / curvature_samples);
+    max_kappa = std::max(max_kappa, CurvatureAt(t).Length());
+  }
+
+  if (max_kappa < 1e-12) {
+    return 1;  // negligible curvature everywhere - a straight line needs one segment
+  }
+
+  const double radius = 1.0 / max_kappa;
+  // Chord-height (sagitta) formula for a circular arc of radius R:
+  // sagitta = R * (1 - cos(half_angle)). Solve for the largest angular
+  // step whose sagitta stays within chord_tolerance.
+  const double clamped_ratio = std::min(1.0, chord_tolerance / radius);
+  const double max_angle_step = 2.0 * std::acos(1.0 - clamped_ratio);
+  // Total turning angle assuming the whole curve turns at the tightest
+  // radius found - the conservative approximation this method documents.
+  const double total_angle = Length() / radius;
+  return std::max(1, static_cast<int>(std::ceil(total_angle / max_angle_step)));
+}
+
+std::vector<double> NurbsCurve::SuggestedParameterValues(double chord_tolerance,
+                                                          int max_depth) const {
+  if (chord_tolerance <= 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::SuggestedParameterValues: chord_tolerance "
+        "must be positive");
+  }
+
+  const ON_Interval domain = curve_.Domain();
+  std::vector<double> out;
+  out.push_back(domain.Min());
+  SubdivideForFlatness(*this, domain.Min(), domain.Max(), chord_tolerance, 0, max_depth, out);
+  return out;
+}
+
+int NurbsCurve::SuggestedSamplesByAngle(double angle_tolerance, int curvature_samples) const {
+  if (!(angle_tolerance > 0.0) || angle_tolerance > ON_PI) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::SuggestedSamplesByAngle: angle_tolerance "
+        "must be in (0, pi]");
+  }
+
+  const ON_Interval domain = curve_.Domain();
+  double max_kappa = 0.0;
+  for (int i = 0; i <= curvature_samples; ++i) {
+    const double t = domain.ParameterAt(static_cast<double>(i) / curvature_samples);
+    max_kappa = std::max(max_kappa, CurvatureAt(t).Length());
+  }
+
+  if (max_kappa < 1e-12) {
+    return 1;  // negligible curvature everywhere - a straight line needs one segment
+  }
+
+  const double radius = 1.0 / max_kappa;
+  // Same conservative "whole curve turns at the tightest radius found"
+  // approximation SuggestedSamples() uses, but with `angle_tolerance`
+  // itself as the per-segment turning bound directly, instead of a bound
+  // back-solved from a linear chord_tolerance via the sagitta formula.
+  const double total_angle = Length() / radius;
+  return std::max(1, static_cast<int>(std::ceil(total_angle / angle_tolerance)));
+}
+
+std::vector<double> NurbsCurve::SuggestedParameterValuesByAngle(double angle_tolerance,
+                                                                 int max_depth) const {
+  if (!(angle_tolerance > 0.0) || angle_tolerance > ON_PI) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::SuggestedParameterValuesByAngle: "
+        "angle_tolerance must be in (0, pi]");
+  }
+
+  const ON_Interval domain = curve_.Domain();
+  std::vector<double> out;
+  out.push_back(domain.Min());
+  SubdivideForAngle(*this, domain.Min(), domain.Max(), angle_tolerance, 0, max_depth, out);
+  return out;
+}
+
+double NurbsCurve::ClosestPointParameter(Point3d point, int samples) const {
+  const ON_Interval domain = curve_.Domain();
+  const bool closed = curve_.IsClosed() != 0;
+  auto distance_squared = [&](double t) { return (PointAt(t) - point).LengthSquared(); };
+  // Maps a parameter that may have wandered outside `domain` back into it
+  // by wrapping around the seam, for a closed curve only - see the
+  // wrap-vs-clamp discussion below.
+  auto wrap = [&](double t) {
+    if (!closed) return t;
+    const double len = domain.Length();
+    if (len <= 0.0) return t;
+    double r = std::fmod(t - domain.Min(), len);
+    if (r < 0.0) r += len;
+    return domain.Min() + r;
+  };
+  auto distance_squared_wrapped = [&](double t) { return distance_squared(wrap(t)); };
+
+  double best_t = domain.Min();
+  double best_d2 = distance_squared(best_t);
+  for (int i = 1; i <= samples; ++i) {
+    const double t = domain.ParameterAt(static_cast<double>(i) / samples);
+    const double d2 = distance_squared(t);
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best_t = t;
+    }
+  }
+
+  const double step = domain.Length() / samples;
+  // For an open curve, the refinement window is clamped to the domain -
+  // the true closest point can never lie outside it. For a closed curve,
+  // clamping is wrong whenever the coarse sample above happens to land
+  // near `domain.Min()` or `domain.Max()`: the true nearest point may
+  // sit just past that boundary, on the far side of the same physical
+  // seam point, and clamping would wall the golden-section search off
+  // from ever reaching it. Letting the window extend past the domain and
+  // evaluating through `wrap()` lets the search cross the seam like any
+  // other point on the curve.
+  double lo = closed ? (best_t - step) : std::max(domain.Min(), best_t - step);
+  double hi = closed ? (best_t + step) : std::min(domain.Max(), best_t + step);
+
+  // Golden-section search assumes the distance function is unimodal on
+  // the window it polishes, and a window that straddles a C0 kink
+  // violates that: a closed-but-not-periodic curve's own seam
+  // (FromControlPoints() with matching first/last points is only C0
+  // there), or any interior knot of full multiplicity, puts two different
+  // polynomial pieces in one window, each with its own local minimum. A
+  // real, reproduced case (TestCurveClosestPointAcrossClampedSeamKink):
+  // with the true nearest point INSIDE the window on the far side of the
+  // seam, a single golden section over the whole window walked to the
+  // near side's own local minimum instead - 2.9x farther away - and a
+  // plain sub-sampling pass did not cure it (both basins' minima sat
+  // within one sub-step of the seam sample). The distance function can
+  // only kink at a knot, so the window is split at every knot inside it
+  // (wrapped copies too, for a closed curve, since the window may extend
+  // past the seam) and each piece is polished on its own; a sub-sampled
+  // scan of the window additionally localizes any smooth wiggle at the
+  // sample scale, and the answer is the best of every polished piece and
+  // every sample seen - so it is never worse than the coarse scan,
+  // instead of "whichever side the golden section happened to pick".
+  auto golden_section = [&](double a, double b) {
+    const double golden_ratio = (std::sqrt(5.0) - 1.0) / 2.0;
+    double c = b - golden_ratio * (b - a);
+    double d = a + golden_ratio * (b - a);
+    for (int iter = 0; iter < 100 && (b - a) > 1e-13; ++iter) {
+      if (distance_squared_wrapped(c) < distance_squared_wrapped(d)) {
+        b = d;
+      } else {
+        a = c;
+      }
+      c = b - golden_ratio * (b - a);
+      d = a + golden_ratio * (b - a);
+    }
+    return (a + b) / 2.0;
+  };
+  auto consider = [&](double t) {
+    const double d2 = distance_squared_wrapped(t);
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best_t = t;
+    }
+  };
+
+  constexpr int kSubSamples = 32;
+  for (int i = 0; i <= kSubSamples; ++i) {
+    consider(lo + (hi - lo) * static_cast<double>(i) / kSubSamples);
+  }
+  const double sub_step = (hi - lo) / kSubSamples;
+  const double sub_lo = closed ? (best_t - sub_step) : std::max(domain.Min(), best_t - sub_step);
+  const double sub_hi = closed ? (best_t + sub_step) : std::min(domain.Max(), best_t + sub_step);
+
+  std::vector<double> breaks = {lo, hi, sub_lo, sub_hi};
+  const double period = domain.Length();
+  for (int i = 0; i < curve_.KnotCount(); ++i) {
+    const double knot = curve_.Knot(i);
+    for (int shift = -1; shift <= 1; ++shift) {
+      if (shift != 0 && !closed) continue;
+      const double shifted = knot + shift * period;
+      if (shifted > lo && shifted < hi) breaks.push_back(shifted);
+    }
+  }
+  std::sort(breaks.begin(), breaks.end());
+  for (size_t i = 0; i + 1 < breaks.size(); ++i) {
+    if (breaks[i + 1] - breaks[i] > 1e-13) consider(golden_section(breaks[i], breaks[i + 1]));
+  }
+  return wrap(best_t);
+}
+
+Point3d NurbsCurve::ClosestPoint(Point3d point, int samples) const {
+  return PointAt(ClosestPointParameter(point, samples));
+}
+
+BoundingBox NurbsCurve::GetTightBoundingBox() const {
+  ON_BoundingBox box;
+  if (!curve_.GetTightBoundingBox(box)) {
+    throw std::runtime_error(
+        "dino8::kernel::NurbsCurve::GetTightBoundingBox: ON_Curve::"
+        "GetTightBoundingBox failed");
+  }
+  return BoundingBox{box.Min(), box.Max()};
+}
+
+BoundingBox NurbsCurve::GetTightBoundingBox(double tolerance) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::GetTightBoundingBox: tolerance must be positive");
+  }
+  const Interval dom = Domain();
+  std::vector<double> candidates = {dom.min, dom.max};
+
+  const int n = std::max(50, 8 * ControlPointCount());
+  for (int axis = 0; axis < 3; ++axis) {
+    auto deriv_component = [&](double t) {
+      Point3d pt;
+      Vector3d d1;
+      curve_.Ev1Der(t, pt, d1);
+      return axis == 0 ? d1.x : (axis == 1 ? d1.y : d1.z);
+    };
+    double prev_t = dom.min;
+    double prev_d = deriv_component(prev_t);
+    for (int i = 1; i <= n; ++i) {
+      const double t = dom.min + (dom.max - dom.min) * i / n;
+      const double d = deriv_component(t);
+      if ((prev_d <= 0.0 && d >= 0.0) || (prev_d >= 0.0 && d <= 0.0)) {
+        double lo = prev_t, hi = t, dlo = prev_d;
+        for (int iter = 0; iter < 60; ++iter) {
+          if (PointAt(lo).DistanceTo(PointAt(hi)) <= tolerance) break;
+          const double mid = (lo + hi) / 2.0;
+          const double dmid = deriv_component(mid);
+          if ((dlo <= 0.0 && dmid >= 0.0) || (dlo >= 0.0 && dmid <= 0.0)) {
+            hi = mid;
+          } else {
+            lo = mid;
+            dlo = dmid;
+          }
+        }
+        candidates.push_back((lo + hi) / 2.0);
+      }
+      prev_t = t;
+      prev_d = d;
+    }
+  }
+
+  Point3d lo(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
+  Point3d hi(-std::numeric_limits<double>::max(), -std::numeric_limits<double>::max(), -std::numeric_limits<double>::max());
+  for (double t : candidates) {
+    const Point3d p = PointAt(t);
+    lo.x = std::min(lo.x, p.x);
+    lo.y = std::min(lo.y, p.y);
+    lo.z = std::min(lo.z, p.z);
+    hi.x = std::max(hi.x, p.x);
+    hi.y = std::max(hi.y, p.y);
+    hi.z = std::max(hi.z, p.z);
+  }
+  return BoundingBox{lo, hi};
+}
+
+double NurbsCurve::Length(int samples) const {
+  const ON_Interval domain = curve_.Domain();
+  Point3d previous = PointAt(domain.ParameterAt(0.0));
+  double length = 0.0;
+  for (int i = 1; i <= samples; ++i) {
+    const Point3d current = PointAt(domain.ParameterAt(static_cast<double>(i) / samples));
+    length += (current - previous).Length();
+    previous = current;
+  }
+  return length;
+}
+
+namespace {
+
+// 5-point Gauss-Legendre nodes/weights on [-1, 1] (standard tabulated
+// values, exact for any polynomial speed up to degree 9).
+constexpr int kGaussPoints = 5;
+constexpr double kGaussNodes[kGaussPoints] = {-0.9061798459386640, -0.5384693101056831, 0.0,
+                                               0.5384693101056831, 0.9061798459386640};
+constexpr double kGaussWeights[kGaussPoints] = {0.2369268850561891, 0.4786286704993665, 0.5688888888888889,
+                                                 0.4786286704993665, 0.2369268850561891};
+
+double CurveSpeedAt(const ON_NurbsCurve& c, double t) {
+  ON_3dPoint point;
+  ON_3dVector first_derivative;
+  c.Ev1Der(t, point, first_derivative);
+  return first_derivative.Length();
+}
+
+double GaussSegmentLength(const ON_NurbsCurve& c, double a, double b) {
+  const double mid = 0.5 * (a + b), half = 0.5 * (b - a);
+  double sum = 0.0;
+  for (int i = 0; i < kGaussPoints; ++i) sum += kGaussWeights[i] * CurveSpeedAt(c, mid + half * kGaussNodes[i]);
+  return sum * half;
+}
+
+// Recursively bisects [a, b] (whose own Gauss estimate is `whole`) until
+// that estimate agrees with the sum of its two half-interval estimates
+// to within `tolerance`, halving the tolerance budget passed to each
+// half so the two leaves' worst-case errors still sum to at most the
+// `tolerance` this call started with - the standard adaptive-quadrature
+// error indicator, not a certified bound (see LengthToTolerance()'s own
+// doc comment in curve.h).
+double AdaptiveGaussLength(const ON_NurbsCurve& c, double a, double b, double whole, double tolerance, int depth,
+                            int& subintervals) {
+  const double mid = 0.5 * (a + b);
+  const double left = GaussSegmentLength(c, a, mid);
+  const double right = GaussSegmentLength(c, mid, b);
+  if (depth >= 20 || std::abs((left + right) - whole) <= tolerance) {
+    ++subintervals;
+    return left + right;
+  }
+  return AdaptiveGaussLength(c, a, mid, left, tolerance * 0.5, depth + 1, subintervals) +
+         AdaptiveGaussLength(c, mid, b, right, tolerance * 0.5, depth + 1, subintervals);
+}
+
+}  // namespace
+
+double NurbsCurve::LengthToTolerance(double tolerance, int* out_subintervals) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::LengthToTolerance: tolerance must be positive");
+  }
+  const ON_Interval domain = curve_.Domain();
+  int subintervals = 0;
+  const double whole = GaussSegmentLength(curve_, domain.Min(), domain.Max());
+  const double length = AdaptiveGaussLength(curve_, domain.Min(), domain.Max(), whole, tolerance, 0, subintervals);
+  if (out_subintervals) *out_subintervals = subintervals;
+  return length;
+}
+
+double NurbsCurve::ParameterAtArcLength(double target_length, int samples) const {
+  const ON_Interval domain = curve_.Domain();
+  if (target_length <= 0.0) {
+    return domain.Min();
+  }
+
+  double previous_length = 0.0;
+  Point3d previous_point = PointAt(domain.Min());
+  double previous_t = domain.Min();
+  for (int i = 1; i <= samples; ++i) {
+    const double t = domain.ParameterAt(static_cast<double>(i) / samples);
+    const Point3d point = PointAt(t);
+    const double segment_length = (point - previous_point).Length();
+    const double cumulative_length = previous_length + segment_length;
+    if (cumulative_length >= target_length) {
+      if (segment_length < 1e-15) {
+        return t;
+      }
+      // Clamped to [0, 1]: `cumulative_length` is the ROUNDED sum
+      // `previous_length + segment_length`, so `target_length -
+      // previous_length` can exceed `segment_length` by a rounding ulp of
+      // the (possibly huge) cumulative length. Unclamped, that put the
+      // result past `t` - for `target_length == Length(samples)` exactly,
+      // a few 1e-12 PAST `Domain().max` (reproduced on a curve whose first
+      // polyline segment dwarfs its last; see
+      // TestCurveParameterAtArcLengthStaysInsideDomain), breaking this
+      // method's own "clamps to Domain().Min()/Max()" promise.
+      const double fraction = std::min(1.0, std::max(0.0, (target_length - previous_length) / segment_length));
+      return previous_t + fraction * (t - previous_t);
+    }
+    previous_length = cumulative_length;
+    previous_point = point;
+    previous_t = t;
+  }
+  return domain.Max();
+}
+
+std::vector<double> NurbsCurve::DivideByCount(int count, int samples) const {
+  if (count <= 0) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::DivideByCount: count must be positive");
+  }
+
+  const ON_Interval domain = curve_.Domain();
+  const double total_length = Length(samples);
+  std::vector<double> values;
+  values.reserve(static_cast<size_t>(count) + 1);
+  values.push_back(domain.Min());
+  for (int i = 1; i < count; ++i) {
+    values.push_back(ParameterAtArcLength(total_length * static_cast<double>(i) / count, samples));
+  }
+  values.push_back(domain.Max());
+  return values;
+}
+
+std::vector<double> NurbsCurve::DivideByLength(double length, int samples) const {
+  if (!(length > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::DivideByLength: length must be positive");
+  }
+
+  const ON_Interval domain = curve_.Domain();
+  const double total_length = Length(samples);
+  std::vector<double> values;
+  values.push_back(domain.Min());
+  // Stop one boundary short of the curve's own end: a boundary landing
+  // within a rounding-scale sliver of total_length (an exact multiple of
+  // `length`, up to floating-point error) would otherwise duplicate the
+  // final domain.Max() pushed below.
+  for (int i = 1; length * i < total_length - total_length * 1e-9; ++i) {
+    values.push_back(ParameterAtArcLength(length * static_cast<double>(i), samples));
+  }
+  values.push_back(domain.Max());
+  return values;
+}
+
+Vector3d NurbsCurve::TangentAt(double t) const { return curve_.TangentAt(t); }
+
+bool NurbsCurve::IsClosed() const { return curve_.IsClosed(); }
+
+bool NurbsCurve::IsPeriodic() const { return curve_.IsPeriodic(); }
+
+bool NurbsCurve::IsPlanar(double tolerance) const { return curve_.IsPlanar(nullptr, tolerance); }
+
+bool NurbsCurve::IsLinear(double tolerance) const { return curve_.IsLinear(tolerance); }
+
+bool NurbsCurve::IsArc(double tolerance) const { return curve_.IsArc(nullptr, nullptr, tolerance); }
+
+bool NurbsCurve::IsCircle(double tolerance) const {
+  ON_Arc arc;
+  if (!curve_.IsArc(nullptr, &arc, tolerance)) {
+    return false;
+  }
+  return arc.IsCircle();
+}
+
+Result NurbsCurve::Reverse() { return curve_.Reverse() ? Result::Ok : Result::Failed; }
+
+Result NurbsCurve::Trim(double t0, double t1) {
+  if (t0 >= t1) {
+    return Result::Failed;
+  }
+  return curve_.Trim(ON_Interval(t0, t1)) ? Result::Ok : Result::Failed;
+}
+
+Result NurbsCurve::Extend(double t0, double t1) {
+  if (t0 >= t1) {
+    return Result::Failed;
+  }
+  if (curve_.IsClosed()) {
+    return Result::Failed;
+  }
+  const ON_Interval current = curve_.Domain();
+  if (t0 >= current.Min() && t1 <= current.Max()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return curve_.Extend(ON_Interval(t0, t1)) ? Result::Ok : Result::Failed;
+}
+
+Result NurbsCurve::Join(const NurbsCurve& other, double tolerance) {
+  if (curve_.CVCount() < 2 || other.curve_.CVCount() < 2) {
+    return Result::Failed;
+  }
+  if (curve_.IsClosed()) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::Join: this curve is closed - nothing can be "
+        "appended to a closed loop");
+  }
+  // ON_NurbsCurve::Append discards `other`'s first control point without
+  // ever checking it coincides with this curve's last one (see the
+  // header comment), so the meeting condition is enforced here.
+  const Point3d end = curve_.PointAtEnd();
+  const double gap_to_start = end.DistanceTo(other.curve_.PointAtStart());
+  const double gap_to_end = end.DistanceTo(other.curve_.PointAtEnd());
+  ON_NurbsCurve tail = other.curve_;
+  if (gap_to_start > tolerance) {
+    if (gap_to_end > tolerance) {
+      throw std::invalid_argument(
+          "dino8::kernel::NurbsCurve::Join: neither end of `other` meets this "
+          "curve's end within tolerance " +
+          std::to_string(tolerance) + " (gap to other's start " + std::to_string(gap_to_start) +
+          ", gap to other's end " + std::to_string(gap_to_end) + ")");
+    }
+    if (!tail.Reverse()) {
+      return Result::Failed;
+    }
+  }
+  return curve_.Append(tail) ? Result::Ok : Result::Failed;
+}
+
+Result NurbsCurve::MakePeriodicExact() {
+  if (curve_.IsPeriodic()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  if (!IsClosed()) {
+    return Result::Failed;
+  }
+  const int p = curve_.Degree();
+  if (p < 2) {
+    return Result::Failed;
+  }
+
+  // Work on a scratch copy so a failure partway through leaves curve_
+  // untouched.
+  ON_NurbsCurve c = curve_;
+  const int order = c.Order();
+
+  // Bezier-decompose: bring every interior knot up to full multiplicity
+  // p, via real (already-verified-exact) Boehm knot insertion. After
+  // this, every former breakpoint - including the two ends, which a
+  // clamped curve already stores at multiplicity p - has the same,
+  // uniform structure.
+  {
+    const int span_count = c.SpanCount();
+    std::vector<double> span_vector(static_cast<size_t>(span_count) + 1);
+    if (!c.GetSpanVector(span_vector.data())) {
+      return Result::Failed;
+    }
+    for (int i = 1; i < span_count; ++i) {
+      if (!c.InsertKnot(span_vector[static_cast<size_t>(i)], p)) {
+        return Result::Failed;
+      }
+    }
+  }
+
+  const int n = c.CVCount() - 1;  // last CV index; CV[0] == CV[n] (closed)
+  const int L = n;                // distinct CVs once the duplicate is dropped
+  const int old_knot_count = c.KnotCount();
+  std::vector<double> old_knots(static_cast<size_t>(old_knot_count));
+  for (int i = 0; i < old_knot_count; ++i) old_knots[static_cast<size_t>(i)] = c.Knot(i);
+  const double domain_min = old_knots[static_cast<size_t>(order - 2)];
+  const double domain_max = old_knots[static_cast<size_t>(c.CVCount() - 1)];
+  const double period = domain_max - domain_min;
+  if (!(period > 0.0)) {
+    return Result::Failed;
+  }
+
+  const int new_cv_count = L + p;
+  const int new_knot_count = new_cv_count + order - 2;  // = old_knot_count + (p - 1)
+  std::vector<double> new_knots(static_cast<size_t>(new_knot_count));
+  for (int i = 0; i < old_knot_count; ++i) new_knots[static_cast<size_t>(i)] = old_knots[static_cast<size_t>(i)];
+  // Extend past the old domain end by continuing the curve's own knot
+  // spacing one period later - the periodic wraparound's own knots, not
+  // a newly invented pattern. These land strictly outside [domain_min,
+  // domain_max], so they take no part in reproducing the curve there.
+  for (int j = 0; j < p - 1; ++j) {
+    new_knots[static_cast<size_t>(old_knot_count + j)] = old_knots[static_cast<size_t>(p + j)] + period;
+  }
+
+  // See MakePeriodicExact()'s own doc comment: the last `p` knots (the
+  // ex-clamped end's own full-multiplicity run, now landing at the new
+  // domain's own end) collapse to a single, genuinely zero-width span at
+  // the new domain boundary, which OpenNURBS' own rational evaluator
+  // does not handle there (confirmed: it returns Inf/garbage, not an
+  // approximate value). Spread that one run apart by a relative 1e-13 of
+  // the period - the domain's own end point (last entry) is untouched,
+  // so the reported domain does not move.
+  constexpr double kRelativeSeparation = 1e-13;
+  const double separation = kRelativeSeparation * period;
+  const int domain_max_index = new_cv_count - 1;
+  for (int k = 0; k < p - 1; ++k) {
+    const int idx = domain_max_index - 1 - k;
+    if (idx < 0) break;
+    new_knots[static_cast<size_t>(idx)] = domain_max - static_cast<double>(k + 1) * separation;
+  }
+
+  ON_NurbsCurve pc;
+  if (!pc.Create(3, c.IsRational(), order, new_cv_count)) {
+    return Result::Failed;
+  }
+  for (int i = 0; i < L; ++i) {
+    ON_4dPoint cv;
+    c.GetCV(i, cv);
+    pc.SetCV(i, cv);
+  }
+  for (int i = 0; i < p; ++i) {
+    ON_4dPoint cv;
+    c.GetCV(i, cv);
+    pc.SetCV(L + i, cv);
+  }
+  for (int i = 0; i < new_knot_count; ++i) pc.SetKnot(i, new_knots[static_cast<size_t>(i)]);
+
+  curve_ = pc;
+  return Result::Ok;
+}
+
+Result NurbsCurve::Split(double t, NurbsCurve& out_left, NurbsCurve& out_right) const {
+  ON_Curve* left_curve = nullptr;
+  ON_Curve* right_curve = nullptr;
+  const bool ok = curve_.Split(t, left_curve, right_curve);
+  if (!ok) {
+    delete left_curve;
+    delete right_curve;
+    return Result::Failed;
+  }
+
+  ON_NurbsCurve* left_nurbs = ON_NurbsCurve::Cast(left_curve);
+  ON_NurbsCurve* right_nurbs = ON_NurbsCurve::Cast(right_curve);
+  if (left_nurbs == nullptr || right_nurbs == nullptr) {
+    delete left_curve;
+    delete right_curve;
+    return Result::Failed;
+  }
+
+  out_left.curve_ = *left_nurbs;
+  out_right.curve_ = *right_nurbs;
+  delete left_curve;
+  delete right_curve;
+  return Result::Ok;
+}
+
+Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolerance,
+                                  CurveOffsetCornerStyle corner_style) const {
+  if (!ON_IsValid(distance)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::OffsetInPlane: distance must be finite");
+  }
+
+  const BoundingBox bbox = GetTightBoundingBox();
+  const double diag = (bbox.max - bbox.min).Length();
+  const double tol = tolerance > 0.0 ? tolerance : dino8::kernel::tolerance::DistanceForSize(diag);
+
+  ON_Plane plane;
+  if (!curve_.IsPlanar(&plane, tol)) {
+    return Result::Failed;
+  }
+
+  if (distance == 0.0) {
+    out.curve_ = curve_;
+    return Result::Ok;
+  }
+
+  const Interval dom = Domain();
+  const double t_mid = 0.5 * (dom.min + dom.max);
+
+  // --- Line ------------------------------------------------------------
+  if (curve_.IsLinear(tol)) {
+    return OffsetLineAlongNormal(curve_.PointAtStart(), curve_.PointAtEnd(), plane.zaxis, distance, out);
+  }
+
+  // --- Polyline (3+ segments): exact per-corner miter, not a blurred fit -
+  {
+    Result polyline_result;
+    NurbsCurve polyline_out;
+    if (TryOffsetPolylineAlongNormal(*this, plane.zaxis, distance, tol, corner_style, polyline_out,
+                                      polyline_result)) {
+      if (polyline_result == Result::Ok) out = polyline_out;
+      return polyline_result;
+    }
+  }
+
+  // --- Circular arc / full circle ---------------------------------------
+  {
+    ON_Arc arc;
+    if (curve_.IsArc(nullptr, &arc, tol)) {
+      const Vector3d tangent = TangentAt(t_mid);
+      Vector3d offset_dir = ON_CrossProduct(tangent, arc.plane.zaxis);
+      Vector3d radial = PointAt(t_mid) - arc.Center();
+      if (!offset_dir.Unitize() || !radial.Unitize()) return Result::Failed;
+      const double sign = OffsetSignAlong(offset_dir, radial);
+      const double new_radius = arc.radius + sign * distance;
+      if (!(new_radius > 0.0)) return Result::Failed;
+      const ON_Circle new_circle(arc.plane, new_radius);
+      const ON_Arc new_arc(new_circle, arc.DomainRadians());
+      ON_NurbsCurve nc;
+      if (new_arc.GetNurbForm(nc) == 0) return Result::Failed;
+      out.curve_ = nc;
+      return Result::Ok;
+    }
+  }
+
+  // --- General planar curve: approximate, curvature-checked ---------------
+  return OffsetGeneralAlongNormal(*this, plane.zaxis, distance, tol, out);
+}
+
+Result NurbsCurve::OffsetInPlane(const ON_Plane& plane, double distance, NurbsCurve& out, double tolerance,
+                                  CurveOffsetCornerStyle corner_style) const {
+  if (!ON_IsValid(distance)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::OffsetInPlane: distance must be finite");
+  }
+  if (!plane.IsValid()) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::OffsetInPlane: plane must be valid");
+  }
+
+  const BoundingBox bbox = GetTightBoundingBox();
+  const double diag = (bbox.max - bbox.min).Length();
+  const double tol = tolerance > 0.0 ? tolerance : dino8::kernel::tolerance::DistanceForSize(diag);
+
+  if (distance == 0.0) {
+    out.curve_ = curve_;
+    return Result::Ok;
+  }
+
+  // --- Line: still exact, for ANY plane not parallel to it -------------
+  if (curve_.IsLinear(tol)) {
+    return OffsetLineAlongNormal(curve_.PointAtStart(), curve_.PointAtEnd(), plane.zaxis, distance, out);
+  }
+
+  // --- Polyline (3+ segments), coplanar in `plane`: exact per-corner
+  // miter. Falls through (not `false`-returning) to the general sampled
+  // path below for a polyline that ISN'T coplanar in `plane` - see
+  // `TryOffsetPolylineAlongNormal()`'s own doc comment for why that case
+  // can't use the exact miter formula.
+  {
+    Result polyline_result;
+    NurbsCurve polyline_out;
+    if (TryOffsetPolylineAlongNormal(*this, plane.zaxis, distance, tol, corner_style, polyline_out,
+                                      polyline_result)) {
+      if (polyline_result == Result::Ok) out = polyline_out;
+      return polyline_result;
+    }
+  }
+
+  // --- Everything else, planar-in-its-own-plane or genuinely 3D --------
+  // No `IsPlanar()` precondition here - the whole point of this overload
+  // is offsetting along a caller-chosen plane's normal even when this
+  // curve doesn't lie in any single plane at all.
+  return OffsetGeneralAlongNormal(*this, plane.zaxis, distance, tol, out);
+}
+
+}  // namespace dino8::kernel

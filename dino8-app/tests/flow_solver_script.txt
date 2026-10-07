@@ -1,0 +1,9 @@
+# Dino Flow evolutionary solver QC: a Gene Pool wired through (x-3)^2 into an
+# Evolutionary Solver minimizing that fitness - a known optimum (x=3, fitness
+# 0) checked via GrasshopperPlayer's solver summary line and the baked
+# (best-x, best-fitness) point (see flow_solver_graph.dflow).
+Grasshopper
+GrasshopperPlayer @SOLVERFILE@ Bake=Yes
+@expect_objects 1
+SelAll
+List
