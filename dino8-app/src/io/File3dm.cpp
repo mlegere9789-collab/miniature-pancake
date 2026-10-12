@@ -1879,7 +1879,7 @@ ON_Hatch* BuildOnHatchForGroup(const Document& doc, ONX_Model& model, std::map<s
   return hatch;
 }
 
-bool Save3dm(const Document& doc, const std::string& path, std::string& error, bool include_reference_objects) {
+bool Save3dm(const Document& doc, const std::string& path, std::string& error, bool include_reference_objects, int version) {
   ONX_Model model;
   model.m_sStartSectionComments = "Dino 8 - free NURBS modeler";
   model.m_properties.m_Application.m_application_name = L"Dino 8";
@@ -2390,7 +2390,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
   }
 
   ON_TextLog log;
-  if (!model.Write(path.c_str(), 0, &log)) {
+  if (!model.Write(path.c_str(), version, &log)) {
     error = "OpenNURBS could not write " + path;
     return false;
   }
