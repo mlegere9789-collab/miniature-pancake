@@ -27,24 +27,24 @@ std::string LowerExt(const std::string& path) {
 const std::vector<std::string> kModelExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".dwg", ".igs", ".iges", ".stp", ".step", ".ifc", ".xyz", ".pts", ".las"};
 const std::vector<std::string> kExportExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".dwg", ".svg", ".pdf", ".igs", ".iges", ".stp", ".step", ".ifc", ".xyz", ".pts", ".las"};
 
-void SaveTo(CommandContext& ctx, const std::string& path, int archive_version = 0) {
+void SaveTo(CommandContext& ctx, const std::string& path, int dm_version = 0) {
   std::string err;
-  if (!ctx.App().SaveDocument(path, err, archive_version)) ctx.Warn(err);
+  if (!ctx.App().SaveDocument(path, err, dm_version)) ctx.Warn(err);
 }
 
-// Parses a .3dm "Version=" token into a raw OpenNURBS archive version
-// number - unlike AcadSchemes' own string version keys (used for DWG/DXF),
-// a .3dm version is a plain integer (2/3/4/5, or any multiple of 10 from
-// 50 up; see ON_BinaryArchive::Write3dmStartSection), so no scheme lookup
-// applies. Only rejects outright non-numeric input; the real range/
-// multiple-of-10 validation happens inside OpenNURBS itself when the file
-// is actually written, surfaced through Save3dm's own error message.
-bool ParseArchiveVersion(const std::string& token, int& out) {
-  if (token.empty() || !std::all_of(token.begin(), token.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+// Parses a SaveAs/Export "Version=" token as a .3dm archive version number
+// (see Save3dm's own doc comment, io/File3dm.h, for the full version/
+// Rhino-release table) - a plain non-negative integer, unlike the AcadSchemes
+// token the same option already carries for DWG/DXF. Returns false (and
+// warns through `label`) for anything else, the same "refuse rather than
+// silently ignore" shape NormalizeAcadScheme's own failure already has.
+bool ParseDm3dmVersion(CommandContext& ctx, const std::string& label, const std::string& text, int& out_version) {
+  if (text.empty() || !std::all_of(text.begin(), text.end(), [](unsigned char c) { return std::isdigit(c); })) {
+    ctx.Warn(label + ": Version=" + text + " is not a valid .3dm archive version number (expected e.g. 4, 5, 50, 60, 70, 80)");
     return false;
   }
-  out = std::stoi(token);
-  return out > 0;
+  out_version = std::atoi(text.c_str());
+  return true;
 }
 
 // Drains the pending-input tokens for Export/SaveAs, pulling out an
@@ -174,12 +174,9 @@ void RegisterFileCommands(CommandEngine& e) {
         std::string scheme_input;
         if (auto p = TakePathAndVersion(ctx, scheme_input)) {
           if (LowerExt(*p) == ".3dm") {
-            int archive_version = 0;
-            if (!scheme_input.empty() && !ParseArchiveVersion(scheme_input, archive_version)) {
-              ctx.Warn("SaveAs: unrecognized Version=" + scheme_input + " for .3dm (expected a plain archive version number, e.g. 5, 50, 60, 70)");
-              return;
-            }
-            SaveTo(ctx, *p, archive_version);
+            int dm_version = 0;
+            if (!scheme_input.empty() && !ParseDm3dmVersion(ctx, "SaveAs", scheme_input, dm_version)) return;
+            SaveTo(ctx, *p, dm_version);
             return;
           }
           std::string normalized;
@@ -193,8 +190,9 @@ void RegisterFileCommands(CommandEngine& e) {
         app.ShowFileDialog("Save model as", kExportExts, true, [&app](const std::string& path) { std::string err; if (!app.SaveDocument(path, err)) app.Notify(err); });
       }), CommandStatus::Implemented,
       "A Version=13/14/2000/2004/2010/2013/2018 token overrides the document's AcadSchemes default just for this "
-      "DWG/DXF save; a plain Version=2/3/4/5/50/60/70/... token targets that .3dm archive version instead (other "
-      "extensions ignore both); with no path token, opens the save-as dialog instead.");
+      "DWG/DXF save; for a .3dm path, Version=<archive number> (e.g. 4, 5, 50, 60, 70, 80) instead targets that exact "
+      ".3dm archive version so older Rhino releases can open it (see Save3dm's own doc comment, io/File3dm.h); any "
+      "other extension ignores it; with no path token, opens the save-as dialog instead.");
   Reg(e, "SaveSmall", Immediate([](CommandContext& ctx) { if (ctx.Doc().Path().empty()) ctx.Engine().Execute("SaveAs"); else SaveTo(ctx, ctx.Doc().Path()); }), CommandStatus::Implemented, "Dino 8 never stores render meshes, so every save is already small.");
   Reg(e, "IncrementalSave", Immediate([](CommandContext& ctx) {
         std::string p = ctx.Doc().Path();
@@ -218,14 +216,11 @@ void RegisterFileCommands(CommandEngine& e) {
         std::string scheme_input;
         if (auto p = TakePathAndVersion(ctx, scheme_input)) {
           if (LowerExt(*p) == ".3dm") {
-            int archive_version = 0;
-            if (!scheme_input.empty() && !ParseArchiveVersion(scheme_input, archive_version)) {
-              ctx.Warn("Export: unrecognized Version=" + scheme_input + " for .3dm (expected a plain archive version number, e.g. 5, 50, 60, 70)");
-              return;
-            }
+            int dm_version = 0;
+            if (!scheme_input.empty() && !ParseDm3dmVersion(ctx, "Export", scheme_input, dm_version)) return;
             std::string err;
-            if (!app.ExportSelected(*p, err, archive_version)) ctx.Warn(err);
-            else ctx.Print("Exported " + *p + (archive_version != 0 ? " (Version=" + scheme_input + ")" : ""));
+            bool ok = app.ExportSelected(*p, err, dm_version);
+            if (!ok) ctx.Warn(err); else ctx.Print("Exported " + *p + (dm_version == 0 ? "" : " (Version=" + std::to_string(dm_version) + ")"));
             return;
           }
           std::string normalized;
@@ -242,8 +237,9 @@ void RegisterFileCommands(CommandEngine& e) {
         app.ShowFileDialog("Export selected", kExportExts, true, [&app](const std::string& path) { std::string err; if (!app.ExportSelected(path, err)) app.Notify(err); else app.Notify("Exported " + path); });
       }), CommandStatus::Implemented,
       "A Version=13/14/2000/2004/2010/2013/2018 token overrides the document's AcadSchemes default just for this "
-      "DWG/DXF export; a plain Version=2/3/4/5/50/60/70/... token targets that .3dm archive version instead (other "
-      "extensions ignore both); with no path token, opens the export dialog instead.");
+      "DWG/DXF export; for a .3dm path, Version=<archive number> (e.g. 4, 5, 50, 60, 70, 80) instead targets that "
+      "exact .3dm archive version so older Rhino releases can open it; any other extension ignores it; with no "
+      "path token, opens the export dialog instead.");
   Reg(e, "ExportSelected", OnSelection("Select objects to export", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         Application& app = ctx.App();
         for (ObjectId id : ids) ctx.Doc().Select(id, true);

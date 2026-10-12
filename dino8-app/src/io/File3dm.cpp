@@ -1879,8 +1879,7 @@ ON_Hatch* BuildOnHatchForGroup(const Document& doc, ONX_Model& model, std::map<s
   return hatch;
 }
 
-bool Save3dm(const Document& doc, const std::string& path, std::string& error, bool include_reference_objects,
-             int archive_version) {
+bool Save3dm(const Document& doc, const std::string& path, std::string& error, bool include_reference_objects, int version) {
   ONX_Model model;
   model.m_sStartSectionComments = "Dino 8 - free NURBS modeler";
   model.m_properties.m_Application.m_application_name = L"Dino 8";
@@ -2390,19 +2389,18 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     }
   }
 
-  // ONX_Model::Write does NOT fail on an out-of-range `archive_version` -
-  // it silently resets it to 0 (current/newest) and merely logs a message,
+  // ONX_Model::Write does NOT fail on an out-of-range `version` - it
+  // silently resets it to 0 (current/newest) and merely logs a message,
   // so an invalid caller-supplied version would otherwise write a real
   // file at the WRONG (default) version with no error at all. Replicate
   // its own validity rule (opennurbs_extensions.cpp's ONX_Model::Write)
   // here so a bad version is reported as the failure it actually is.
-  if (archive_version != 0) {
+  if (version != 0) {
     const int current = ON_BinaryArchive::CurrentArchiveVersion();
-    const bool valid = archive_version >= 2 && archive_version <= current &&
-                        !(archive_version < 50 && archive_version > current / 10) &&
-                        !(archive_version >= 50 && archive_version % 10 != 0);
+    const bool valid = version >= 2 && version <= current && !(version < 50 && version > current / 10) &&
+                        !(version >= 50 && version % 10 != 0);
     if (!valid) {
-      error = "OpenNURBS could not write " + path + " at archive version " + std::to_string(archive_version) +
+      error = "OpenNURBS could not write " + path + " at archive version " + std::to_string(version) +
               " (not a valid .3dm archive version for this build; expected 2-" + std::to_string(current / 10) +
               ", or a multiple of 10 from 50 to " + std::to_string(current) + ")";
       return false;
@@ -2410,9 +2408,8 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
   }
 
   ON_TextLog log;
-  if (!model.Write(path.c_str(), archive_version, &log)) {
-    error = "OpenNURBS could not write " + path +
-            (archive_version != 0 ? " at archive version " + std::to_string(archive_version) : "");
+  if (!model.Write(path.c_str(), version, &log)) {
+    error = "OpenNURBS could not write " + path + (version != 0 ? " at archive version " + std::to_string(version) : "");
     return false;
   }
   (void)written;

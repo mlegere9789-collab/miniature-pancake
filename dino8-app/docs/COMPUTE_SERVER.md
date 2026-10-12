@@ -82,7 +82,14 @@ same as every other headless mode this app already has).
   this flag makes the server require authentication even if the file is
   currently empty, missing, or unreadable (fails *closed*, not open) -
   a mistyped path can never silently leave the compute server open the
-  way an empty `--serve-token` list would.
+  way an empty `--serve-token` list would. A token may be written as
+  `sha256:HEX` instead of plaintext - the file then never holds the real
+  bearer secret at all, only its SHA-256 digest; a caller still presents
+  the real plaintext token, which gets hashed and compared against the
+  stored digest. Real hashing: a leaked token *file* then leaks nothing a
+  caller could present as the token itself. (A plain `--serve-token`
+  flag can't meaningfully use this - its own value has to be real
+  plaintext in argv at startup regardless of how it's written.)
 - `--serve-token-file-ttl SECONDS`, with `--serve-token-file`, adds real
   automatic *expiry* - the one piece plain `--serve-token-file` still
   lacked (it can rotate or revoke a token live, but an untouched file's
@@ -215,6 +222,14 @@ $ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer newtoken' -
 ```
 
 ```
+$ echo -n 'hunter2' | sha256sum   # the file stores only this digest, never 'hunter2' itself
+f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7  -
+$ echo 'sha256:f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7' > tokens.txt
+$ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer hunter2' --data 'print(1)' http://127.0.0.1:8080/run
+200
+```
+
+```
 $ curl -s -H 'Accept: application/json' --data 'print("hi")' http://127.0.0.1:8080/run
 {"ok":true,"output":["hi"]}
 $ curl -s http://127.0.0.1:8080/objects
@@ -271,13 +286,17 @@ $ curl -s --data '{"type":"bogus"}' http://127.0.0.1:8080/objects
   repeated guesses) over a plaintext loopback-only socket - distinct
   callers can now each hold their own named token rather than sharing
   exactly one secret (see above), `--serve-token-file`'s entries can now
-  be rotated or revoked live with no restart (see above), and
+  be rotated or revoked live with no restart (see above),
   `--serve-token-file-ttl` adds real automatic expiry on top of that (see
-  above) - but there is still no hashing, and a plain `--serve-token`
-  flag (as opposed to a `--serve-token-file` entry) still has none of
-  this: fixed for the process's whole lifetime, no rotation, no
-  revocation, no expiry short of a restart with a different set of
-  flags. Good enough to stop an unrelated local process or script from
+  above), and a `--serve-token-file` entry can now be stored hashed
+  (`sha256:HEX`, see above) so the file itself never holds the real
+  secret - but a plain `--serve-token` flag (as opposed to a
+  `--serve-token-file` entry) still has none of this: fixed for the
+  process's whole lifetime, no rotation, no revocation, no expiry short
+  of a restart with a different set of flags, and no benefit from
+  hashing either (its own value has to be the real plaintext in argv at
+  startup regardless of how it's written). Good enough to stop an
+  unrelated local process or script from
   hitting an unprotected endpoint by accident, nowhere near
   OAuth/API-key-management. This binds
   `127.0.0.1` and is meant for local automation (a build script, a CI job,
