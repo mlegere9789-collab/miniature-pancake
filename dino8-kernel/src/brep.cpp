@@ -418,6 +418,103 @@ int Brep::LiveEdgeCount() const {
 
 namespace {
 
+// Shared body for FacePersistentId()/EdgePersistentId()/VertexPersistentId():
+// lazily assigns `table[index]` from `*next_id` if it is still 0 (never
+// asked for before), growing `table` first if `index` is past its own
+// current end - the same "resize on demand, default-valued gap" shape a
+// sparse per-element side table already needs regardless of which of the
+// three element kinds it is for.
+uint64_t GetOrAssignPersistentId(std::vector<uint64_t>& table, uint64_t& next_id, int index) {
+  if (static_cast<size_t>(index) >= table.size()) table.resize(static_cast<size_t>(index) + 1, 0);
+  if (table[static_cast<size_t>(index)] == 0) table[static_cast<size_t>(index)] = next_id++;
+  return table[static_cast<size_t>(index)];
+}
+
+// Shared body for FindFaceByPersistentId()/FindEdgeByPersistentId()/
+// FindVertexByPersistentId(): id 0 means "never assigned", so it can
+// never resolve to anything, by construction - every real id starts at 1.
+int FindByPersistentId(const std::vector<uint64_t>& table, uint64_t id) {
+  if (id == 0) return -1;
+  for (size_t i = 0; i < table.size(); ++i) {
+    if (table[i] == id) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+}  // namespace
+
+uint64_t Brep::FacePersistentId(int face_index) {
+  if (face_index < 0 || face_index >= brep_.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::FacePersistentId: face_index " + std::to_string(face_index) +
+                             " is out of range (this Brep has " + std::to_string(brep_.m_F.Count()) +
+                             " face slot(s))");
+  }
+  if (brep_.m_F[face_index].m_face_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::FacePersistentId: face_index " +
+                                 std::to_string(face_index) + " refers to a deleted face");
+  }
+  return GetOrAssignPersistentId(face_persistent_ids_, next_persistent_id_, face_index);
+}
+
+uint64_t Brep::EdgePersistentId(int edge_index) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::EdgePersistentId: edge_index " + std::to_string(edge_index) +
+                             " is out of range (this Brep has " + std::to_string(brep_.m_E.Count()) +
+                             " edge slot(s))");
+  }
+  if (brep_.m_E[edge_index].m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::EdgePersistentId: edge_index " +
+                                 std::to_string(edge_index) + " refers to a deleted edge");
+  }
+  return GetOrAssignPersistentId(edge_persistent_ids_, next_persistent_id_, edge_index);
+}
+
+uint64_t Brep::VertexPersistentId(int vertex_index) {
+  if (vertex_index < 0 || vertex_index >= brep_.m_V.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::VertexPersistentId: vertex_index " +
+                             std::to_string(vertex_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_V.Count()) + " vertex slot(s))");
+  }
+  if (brep_.m_V[vertex_index].m_vertex_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::VertexPersistentId: vertex_index " +
+                                 std::to_string(vertex_index) + " refers to a deleted vertex");
+  }
+  return GetOrAssignPersistentId(vertex_persistent_ids_, next_persistent_id_, vertex_index);
+}
+
+int Brep::FindFaceByPersistentId(uint64_t id) const { return FindByPersistentId(face_persistent_ids_, id); }
+int Brep::FindEdgeByPersistentId(uint64_t id) const { return FindByPersistentId(edge_persistent_ids_, id); }
+int Brep::FindVertexByPersistentId(uint64_t id) const { return FindByPersistentId(vertex_persistent_ids_, id); }
+
+void Brep::CompactPreservingPersistentIds() {
+  // Assign an id to every CURRENTLY LIVE element first (not just ones a
+  // caller already happened to query), walked in ascending raw-index
+  // order - the same order Compact() itself preserves among survivors,
+  // relied on below.
+  std::vector<uint64_t> live_face_ids, live_edge_ids, live_vertex_ids;
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    if (brep_.m_F[i].m_face_index >= 0) live_face_ids.push_back(FacePersistentId(i));
+  }
+  for (int i = 0; i < brep_.m_E.Count(); ++i) {
+    if (brep_.m_E[i].m_edge_index >= 0) live_edge_ids.push_back(EdgePersistentId(i));
+  }
+  for (int i = 0; i < brep_.m_V.Count(); ++i) {
+    if (brep_.m_V[i].m_vertex_index >= 0) live_vertex_ids.push_back(VertexPersistentId(i));
+  }
+
+  brep_.Compact();
+
+  // Compact() removes exactly the deleted slots and leaves every
+  // survivor in its own original relative order - so the k-th id
+  // collected above (0-indexed, in ascending OLD order) now belongs to
+  // the k-th face/edge/vertex in the freshly compacted table.
+  face_persistent_ids_ = std::move(live_face_ids);
+  edge_persistent_ids_ = std::move(live_edge_ids);
+  vertex_persistent_ids_ = std::move(live_vertex_ids);
+}
+
+namespace {
+
 // 5-point Gauss-Legendre quadrature on [-1, 1] - exact for any
 // polynomial up to degree 9 per span, comfortably covering every degree
 // this kernel's own Brep factories build (degree <= 3 skinned sections,
@@ -6557,6 +6654,151 @@ void Brep::ReplaceEdgeCurve(int edge_index, const NurbsCurve& new_curve, double 
   face_records_.clear();
 }
 
+void Brep::ResyncTrimToEdgeCurve(int edge_index, double tolerance) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::ResyncTrimToEdgeCurve: edge_index " + std::to_string(edge_index) +
+                             " is out of range (this Brep has " + std::to_string(brep_.m_E.Count()) +
+                             " edge slot(s))");
+  }
+  const ON_BrepEdge& edge = brep_.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::ResyncTrimToEdgeCurve: edge_index " +
+                                 std::to_string(edge_index) + " refers to a deleted edge");
+  }
+  ON_NurbsCurve nc;
+  if (edge.GetNurbForm(nc) <= 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::ResyncTrimToEdgeCurve: edge " +
+                                 std::to_string(edge_index) + "'s own curve has no NURBS form");
+  }
+  NurbsCurve wrapped;
+  wrapped.raw() = nc;
+  ReplaceEdgeCurve(edge_index, wrapped, tolerance);
+}
+
+Result Brep::ReplaceEdge(int edge_index, const NurbsCurve& new_curve, double tolerance) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::ReplaceEdge: edge_index " + std::to_string(edge_index) +
+                             " is out of range (this Brep has " + std::to_string(brep_.m_E.Count()) +
+                             " edge slot(s))");
+  }
+  const ON_BrepEdge& edge = brep_.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::ReplaceEdge: edge_index " + std::to_string(edge_index) +
+                                 " refers to a deleted edge");
+  }
+  const int v0 = edge.m_vi[0];
+  const int v1 = edge.m_vi[1];
+  if (v0 < 0 || v1 < 0 || v0 >= brep_.m_V.Count() || v1 >= brep_.m_V.Count() || v0 == v1) {
+    return Result::Failed;  // degenerate (self-looping) edge - out of scope
+  }
+
+  const ON_NurbsCurve& src = new_curve.raw();
+  const ON_3dPoint old_p0 = brep_.m_V[v0].point;
+  const ON_3dPoint old_p1 = brep_.m_V[v1].point;
+  const ON_3dPoint new_start = src.PointAtStart();
+  const ON_3dPoint new_end = src.PointAtEnd();
+  // Whichever orientation moves the two endpoints the LEAST total
+  // distance - the natural choice when neither endpoint necessarily
+  // starts out near either vertex (unlike ReplaceEdgeCurve()'s own
+  // same_dir/rev_dir test, which only has to pick between two
+  // near-exact matches).
+  const double cost_same = old_p0.DistanceTo(new_start) + old_p1.DistanceTo(new_end);
+  const double cost_rev = old_p0.DistanceTo(new_end) + old_p1.DistanceTo(new_start);
+  ON_NurbsCurve fitted = src;
+  if (cost_rev < cost_same) fitted.Reverse();
+  const ON_3dPoint target0 = fitted.PointAtStart();
+  const ON_3dPoint target1 = fitted.PointAtEnd();
+
+  const double tol = std::max(tolerance, 1e-9);
+
+  // Every mutation happens on a SCRATCH copy of this whole Brep, never
+  // brep_ itself directly - the same all-or-nothing discipline
+  // AddHoleLoops()/MergeCoplanarFaces()/AttachToEdge()'s own multi-trim
+  // caller (see each one's own doc comment) already use for a batch of
+  // steps where a later one failing after an earlier one already
+  // succeeded must not leave this Brep half-edited. This is a stronger
+  // guarantee than RemoveNakedMicroEdge()/RemoveSharedMicroEdge()'s own
+  // "a few neighbors nudged by a harmless micro-scale amount" tolerance
+  // for a partial failure: THIS method's own target points can be
+  // arbitrarily far from where a vertex started, so a genuinely partial
+  // commit here could leave a real, visible gap, not a sub-tolerance
+  // one - not an acceptable risk for a caller-facing topology edit.
+  Brep scratch;
+  scratch.raw() = brep_;
+
+  // Moves vertex `vi` to `target`, nudging every OTHER edge touching it
+  // (gathered and re-projected FRESH, each time this runs, directly from
+  // `scratch`'s own current state - so a further edge that touches BOTH
+  // of this edge's own vertices gets its first end moved when its
+  // OWN vertex's turn comes, then its second end moved when the OTHER
+  // vertex's turn comes, each against that edge's own by-then-already-
+  // updated curve; no separate "touches both endpoints" bowtie case to
+  // special-case or refuse, unlike RemoveSharedMicroEdge()'s own single-
+  // pass merge). Returns false for "can't" (a neighbor curve type
+  // refuses the nudge) without throwing; a genuine trim-fit failure from
+  // the delegated ReplaceEdgeCurve() call below throws, same as that
+  // method's own contract, caught once by this method's own caller.
+  auto move_vertex = [&](int vi, const ON_3dPoint& target) -> bool {
+    if (scratch.raw().m_V[vi].point.DistanceTo(target) <= tol) return true;  // this endpoint isn't moving
+    const ON_BrepVertex& v = scratch.raw().m_V[vi];
+    std::vector<int> neighbor_edges;
+    for (int k = 0; k < v.m_ei.Count(); ++k) {
+      const int ei = v.m_ei[k];
+      if (ei != edge_index) neighbor_edges.push_back(ei);
+    }
+    std::vector<NurbsCurve> nudged;
+    nudged.reserve(neighbor_edges.size());
+    for (const int ei : neighbor_edges) {
+      const ON_BrepEdge& e = scratch.raw().m_E[ei];
+      ON_Curve* dup = e.DuplicateCurve();
+      if (!dup) return false;
+      const bool at_end = (e.m_vi[1] == vi);
+      const bool moved = at_end ? dup->SetEndPoint(target) : dup->SetStartPoint(target);
+      if (!moved) {
+        delete dup;
+        return false;
+      }
+      ON_NurbsCurve nc;
+      const bool has_nurbs_form = dup->GetNurbForm(nc) > 0;
+      delete dup;
+      if (!has_nurbs_form) return false;
+      NurbsCurve wrapped;
+      wrapped.raw() = nc;
+      nudged.push_back(wrapped);
+    }
+    scratch.raw().m_V[vi].point = target;
+    for (size_t k = 0; k < neighbor_edges.size(); ++k) {
+      scratch.ReplaceEdgeCurve(neighbor_edges[k], nudged[k], tol);  // may throw - propagates out
+    }
+    return true;
+  };
+
+  try {
+    if (!move_vertex(v0, target0)) return Result::Failed;
+    if (!move_vertex(v1, target1)) return Result::Failed;
+    NurbsCurve wrapped_new;
+    wrapped_new.raw() = fitted;
+    scratch.ReplaceEdgeCurve(edge_index, wrapped_new, tol);
+  } catch (const std::exception&) {
+    return Result::Failed;  // scratch discarded here - brep_ untouched
+  }
+
+  brep_ = std::move(scratch.raw());
+  // scratch's own per-face side tables were never populated (a fresh
+  // Brep starts with none) and are discarded along with it; THIS
+  // object's own tables still describe the pre-edit boundary of every
+  // face this edit touched - cleared unconditionally, the same reason
+  // ReplaceEdgeCurve()/MergeCoplanarFaces() already do (see either
+  // one's own doc comment).
+  face_trim_loops_.clear();
+  face_exact_clip_.clear();
+  face_hole_loops_.clear();
+  face_arc_runs_.clear();
+  face_notch_rows_.clear();
+  face_records_.clear();
+  return Result::Ok;
+}
+
 Result Brep::RebuildEdgeCurve(int edge_index, double tolerance) {
   if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
     throw std::out_of_range("dino8::kernel::Brep::RebuildEdgeCurve: edge_index " +
@@ -7209,6 +7451,126 @@ int Brep::RemoveAllSharedMicroEdges(double tolerance) {
     if (!found) break;
   }
   return removed;
+}
+
+namespace {
+// Real max deviation between a candidate (u, v) fit curve and the
+// original trim's own sampled (u, v) points, measured in the surface's
+// own real 3D space - see Brep::RefitTrim()'s own doc comment (brep.h)
+// for why raw parameter-space distance isn't the honest check here.
+double RefitTrimMaxDeviation(const ON_Surface& srf, const NurbsCurve& fit, const std::vector<Point3d>& samples) {
+  double worst = 0;
+  for (const Point3d& s : samples) {
+    const Point3d fit_uv = fit.ClosestPoint(s);
+    const ON_3dPoint p_orig = srf.PointAt(s.x, s.y);
+    const ON_3dPoint p_fit = srf.PointAt(fit_uv.x, fit_uv.y);
+    const double d = p_orig.DistanceTo(p_fit);
+    if (d > worst) worst = d;
+  }
+  return worst;
+}
+}  // namespace
+
+Result Brep::RefitTrim(int trim_index, double tolerance) {
+  if (trim_index < 0 || trim_index >= brep_.m_T.Count()) {
+    throw std::invalid_argument("dino8::kernel::Brep::RefitTrim: trim_index " + std::to_string(trim_index) +
+                                 " is out of range (this Brep has " + std::to_string(brep_.m_T.Count()) +
+                                 " trim slot(s))");
+  }
+  if (!ON_IsValid(tolerance) || tolerance <= 0.0) {
+    throw std::invalid_argument("dino8::kernel::Brep::RefitTrim: tolerance must be positive and finite");
+  }
+  ON_BrepTrim& trim = brep_.m_T[trim_index];
+  if (trim.m_trim_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::RefitTrim: trim_index " + std::to_string(trim_index) +
+                                 " refers to a deleted trim");
+  }
+  const int face_index = trim.FaceIndexOf();
+  if (face_index < 0) return Result::Failed;
+  const ON_BrepFace& face = brep_.m_F[face_index];
+  const ON_Surface* srf = face.SurfaceOf();
+  if (!srf) return Result::Failed;
+
+  ON_NurbsCurve orig;
+  if (trim.GetNurbForm(orig) <= 0) return Result::Failed;
+  const int degree = std::max(orig.Degree(), 1);
+  const int original_cv_count = orig.CVCount();
+  if (original_cv_count <= degree + 1) return Result::Failed;  // already at the minimum possible
+
+  const ON_Interval du = srf->Domain(0), dv = srf->Domain(1);
+  const ON_Interval trim_domain = trim.Domain();
+  const int sample_count = std::max(200, original_cv_count * 4);
+  std::vector<Point3d> samples;
+  samples.reserve(static_cast<size_t>(sample_count) + 1);
+  for (int i = 0; i <= sample_count; ++i) {
+    const double t = trim_domain.ParameterAt(static_cast<double>(i) / sample_count);
+    const ON_3dPoint uv = trim.PointAt(t);
+    samples.push_back(Point3d(uv.x, uv.y, 0));
+  }
+
+  for (int cvc = degree + 1; cvc < original_cv_count; ++cvc) {
+    NurbsCurve fit;
+    if (NurbsCurve::FitLeastSquares(samples, degree, cvc, fit) != Result::Ok) continue;
+    if (RefitTrimMaxDeviation(*srf, fit, samples) > tolerance) continue;
+
+    bool clamped = false;
+    for (int i = 0; i < fit.ControlPointCount(); ++i) {
+      const Point3d cp = fit.ControlPointAt(i);
+      const double cu = std::clamp(cp.x, du.Min(), du.Max());
+      const double cv2 = std::clamp(cp.y, dv.Min(), dv.Max());
+      if (cu != cp.x || cv2 != cp.y) {
+        fit.SetControlPointAt(i, Point3d(cu, cv2, 0));
+        clamped = true;
+      }
+    }
+    if (clamped && RefitTrimMaxDeviation(*srf, fit, samples) > tolerance) continue;
+
+    ON_NurbsCurve* new2d = new ON_NurbsCurve(fit.raw());
+    new2d->ChangeDimension(2);
+    const int c2i = brep_.AddTrimCurve(new2d);
+    if (c2i < 0) {
+      delete new2d;
+      continue;
+    }
+    if (!trim.ChangeTrimCurve(c2i)) continue;
+
+    // Same unconditional side-table clear ReplaceEdgeCurve()'s own doc
+    // comment explains: this face's trim boundary just changed shape,
+    // and these caches still hold the OLD one at the same still-valid
+    // index.
+    face_trim_loops_.clear();
+    face_exact_clip_.clear();
+    face_hole_loops_.clear();
+    face_arc_runs_.clear();
+    face_notch_rows_.clear();
+    face_records_.clear();
+    return Result::Ok;
+  }
+  return Result::Failed;
+}
+
+void Brep::RefitEdgeTrims(int edge_index, double tolerance, int* out_refit_count, int* out_failed_count) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::invalid_argument("dino8::kernel::Brep::RefitEdgeTrims: edge_index " + std::to_string(edge_index) +
+                                 " is out of range (this Brep has " + std::to_string(brep_.m_E.Count()) +
+                                 " edge slot(s))");
+  }
+  ON_BrepEdge& edge = brep_.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::RefitEdgeTrims: edge_index " + std::to_string(edge_index) +
+                                 " refers to a deleted edge");
+  }
+  int refit = 0, failed = 0;
+  for (int k = 0; k < edge.m_ti.Count(); ++k) {
+    const int ti = edge.m_ti[k];
+    if (RefitTrim(ti, tolerance) == Result::Ok) {
+      ++refit;
+    } else {
+      ++failed;
+    }
+  }
+  if (out_refit_count) *out_refit_count = refit;
+  if (out_failed_count) *out_failed_count = failed;
 }
 
 Result Brep::MergeContiguousEdges(int edge_index_a, int edge_index_b, double angle_tolerance_radians) {
