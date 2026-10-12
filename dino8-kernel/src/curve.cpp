@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "dino8/kernel/surface_intersect.h"
 #include "dino8/kernel/tolerance.h"
 
 #include "dino8/kernel/detail/degree_elevate.h"
@@ -902,6 +903,69 @@ Result NurbsCurve::FilletCorner(Point3d p0, Point3d corner, Point3d p1, double r
   }
   out = result;
   return Result::Ok;
+}
+
+Result NurbsCurve::Helix(Point3d axis_start, Point3d axis_end, double radius1, double radius2, double turns,
+                          double tolerance, NurbsCurve& out, double* out_max_deviation) {
+  if (out_max_deviation) *out_max_deviation = 0.0;
+  Vector3d axis = axis_end - axis_start;
+  const double height = axis.Length();
+  if (!(height > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Helix: axis_start and axis_end must differ");
+  }
+  if (!(radius1 > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Helix: radius1 must be positive");
+  }
+  if (!(radius2 >= 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Helix: radius2 must not be negative");
+  }
+  if (!(turns > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Helix: turns must be positive");
+  }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Helix: tolerance must be positive");
+  }
+  axis.Unitize();
+  const ON_Plane plane(ON_3dPoint(axis_start.x, axis_start.y, axis_start.z), axis);
+
+  auto analytic = [&](double t) {
+    const double angle = 2.0 * ON_PI * turns * t;
+    const double radius = radius1 + (radius2 - radius1) * t;
+    const Point3d in_plane = plane.PointAt(radius * std::cos(angle), radius * std::sin(angle));
+    return in_plane + axis * (height * t);
+  };
+
+  const int min_count = std::max(8, static_cast<int>(std::ceil(turns * 8.0)));
+  const int max_count = std::max(min_count * 64, 4000);
+  double last_deviation = 0.0;
+  for (int n = min_count; n <= max_count; n *= 2) {
+    std::vector<ON_3dPoint> pts(static_cast<size_t>(n) + 1);
+    std::vector<double> params(static_cast<size_t>(n) + 1);
+    for (int i = 0; i <= n; ++i) {
+      const double t = static_cast<double>(i) / n;
+      const Point3d p = analytic(t);
+      pts[static_cast<size_t>(i)] = ON_3dPoint(p.x, p.y, p.z);
+      params[static_cast<size_t>(i)] = t;
+    }
+    NurbsCurve candidate;
+    candidate.raw() = InterpolateCubic(pts, params, /*closed=*/false, /*dim=*/3);
+    if (!candidate.raw().IsValid()) continue;
+
+    const int measure_n = n * 5;
+    double worst = 0.0;
+    for (int k = 0; k <= measure_n; ++k) {
+      const double t = static_cast<double>(k) / measure_n;
+      worst = std::max(worst, (analytic(t) - candidate.PointAt(t)).Length());
+    }
+    last_deviation = worst;
+    if (worst <= tolerance) {
+      out = candidate;
+      if (out_max_deviation) *out_max_deviation = worst;
+      return Result::Ok;
+    }
+  }
+  if (out_max_deviation) *out_max_deviation = last_deviation;
+  return Result::Failed;
 }
 
 Result NurbsCurve::ChamferCorner(Point3d p0, Point3d corner, Point3d p1, double distance0, double distance1,
