@@ -2798,16 +2798,18 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
 // way to tell a genuine unsupported-shape refusal from a subtly wrong
 // result. Refused with the same clear message boolean.cpp's own
 // RefuseCompoundOperand uses, rather than left an unhandled case.
-// **Updated**: `BooleanCombineGeneral` now only calls this for `Union`
-// (`SymmetricDifference` is refused unconditionally before either operand is
-// even inspected) - `Difference`/`Intersection` distribute over a compound
+// **Updated**: `BooleanCombineGeneral` now only calls this for
+// `SymmetricDifference` (refused unconditionally before either operand is
+// even inspected, since XOR genuinely needs a lump-merge step this engine
+// has no more of than boolean.cpp's own two B-rep engines do) -
+// `Difference`/`Intersection`/`Union` all distribute over a compound
 // operand's lumps exactly, the same exemption boolean.cpp's own
-// BooleanCombinePlanar/BooleanCombineMixed already have, since the ray-cast
-// classification this doc comment describes needs no lump-boundary
-// awareness for those two ops either; see BooleanCombineGeneral's own call
-// site for the full detail, including the real, disclosed limitation that
-// this engine (unlike boolean.cpp's own two) does NOT recompute the
-// result's true lump structure afterward.
+// BooleanCombinePlanar/BooleanCombineMixed already have for all three ops,
+// since the ray-cast classification this doc comment describes needs no
+// lump-boundary awareness for any of them; see BooleanCombineGeneral's own
+// call site for the full detail, including the real, disclosed limitation
+// that this engine (unlike boolean.cpp's own two) does NOT recompute the
+// result's true lump structure afterward for any of the three.
 void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
   if (operand.LumpFaceRanges().size() <= 1) return;
   throw BooleanOperationError(
@@ -2918,28 +2920,28 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
     throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "BooleanCombineGeneral",
                                  "dino8::kernel::BooleanCombineGeneral: tolerance must be positive");
   }
-  // Union still needs a lump-merge step this engine has no more of than
-  // boolean.cpp's own two B-rep engines do (compound lumps that touch or
-  // overlap have no single manifold shell for a per-face ray-cast to build)
-  // and stays refused. Difference/Intersection distribute over a compound
-  // operand's lumps exactly - the identical reasoning boolean.cpp's own
-  // BooleanCombinePlanar/BooleanCombineMixed already rely on for their own
-  // exemption applies here too: `process()` above classifies every fragment
-  // purely by a ClassifyPointVsBrep ray-cast against the OTHER operand's
-  // full face list (or, for the coincident-face override, by comparing two
-  // specific faces' own outward normals) - neither path has, or needs, any
-  // notion of which lump a face came from, so a multi-lump `a`/`b`
-  // classifies exactly as correctly as a single-lump one and the result's
-  // own SHAPE comes back correct - but, unlike boolean.cpp's own two B-rep
-  // engines, this function does NOT recompute the result's true lump
-  // structure afterward (see this function's own tail comment, right
-  // before its `kept`-list reassembly, for the real limitation found while
-  // trying to add that step). SymmetricDifference already returned above
-  // (after its own RefuseCompoundOperand check), so it never reaches here.
-  if (op == BooleanOp::Union) {
-    RefuseCompoundOperand(a, "BooleanCombineGeneral");
-    RefuseCompoundOperand(b, "BooleanCombineGeneral");
-  }
+  // **Union no longer refuses a compound operand here either** (closing the
+  // "Multi-body / multi-tool booleans" bullet's own previously-named
+  // "compound-operand support for Union... refused on all three engines"
+  // gap for the last of the three B-rep engines): `process()` below
+  // classifies every fragment purely by a ClassifyPointVsBrep ray-cast
+  // against the OTHER operand's full face list (or, for the
+  // coincident-face override, by comparing two specific faces' own outward
+  // normals) - neither path has, or needs, any notion of which lump a face
+  // came from, the identical reasoning Difference/Intersection's own
+  // pre-existing exemption below already relies on - so a multi-lump `a`/`b`
+  // classifies exactly as correctly as a single-lump one for Union too, and
+  // the result's own SHAPE comes back correct. Unlike boolean.cpp's own two
+  // B-rep engines, this function does NOT recompute the result's true lump
+  // structure afterward for ANY op (see this function's own tail comment,
+  // right before its `kept`-list reassembly, for the real, already-disclosed
+  // limitation found while trying to add that step for Difference/
+  // Intersection) - Union inherits that identical, already-accepted
+  // best-effort single-lump bookkeeping gap, not a new one. SymmetricDifference
+  // already returned above (after its own RefuseCompoundOperand check), so
+  // it never reaches here, and still refuses a compound operand - it alone
+  // among the three ops genuinely needs a lump-merge step this engine has
+  // no more of than boolean.cpp's own two B-rep engines do.
 
   const ON_Brep& ba = a.raw();
   const ON_Brep& bb = b.raw();
