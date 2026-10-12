@@ -48,14 +48,32 @@
 //                 open behavior. Repeatable: each occurrence registers one
 //                 more acceptable token, so distinct callers can each carry
 //                 their own (real per-caller credentials, not one shared
-//                 secret for everyone - still no rotation/expiry/revocation,
-//                 and still no TLS between the token and the wire). A
-//                 "NAME:" prefix on a token names its caller (e.g.
-//                 "--serve-token ci:abc123"), echoed back as "caller" in a
-//                 /run[/python] JSON response (Accept: application/json) so
-//                 a caller can confirm which credential authenticated it;
-//                 a bare TOKEN with no prefix works exactly as before
-//                 (anonymous, no "caller" field in the JSON response).
+//                 secret for everyone), still no TLS between the token and
+//                 the wire. A "NAME:" prefix on a token names its caller
+//                 (e.g. "--serve-token ci:abc123"), echoed back as "caller"
+//                 in a /run[/python] JSON response (Accept:
+//                 application/json) so a caller can confirm which
+//                 credential authenticated it; a bare TOKEN with no prefix
+//                 works exactly as before (anonymous, no "caller" field in
+//                 the JSON response). A token given this way is fixed for
+//                 the process's lifetime - rotating or revoking it needs a
+//                 restart (see --serve-token-file below for a live
+//                 alternative).
+//   --serve-token-file PATH   with --serve: an additional, *live* token
+//                 source alongside any --serve-token flags above - same
+//                 "[NAME:]TOKEN" syntax, one per line (blank lines and
+//                 lines starting with '#' ignored), but re-read from disk
+//                 on every incoming request instead of fixed at startup.
+//                 Editing the file - removing a line to revoke that token,
+//                 adding one to add a new one, replacing one to rotate it -
+//                 takes effect on the very next request, no restart
+//                 required: a real answer to the "no rotation, expiry, or
+//                 revocation beyond restarting the server" gap
+//                 --serve-token alone still has. Giving this flag makes
+//                 the server require authentication even if the file is
+//                 currently empty, missing, or unreadable (fails closed,
+//                 not open) - a path typo can never silently leave the
+//                 server open the way an empty --serve-token list would.
 //
 // Script lines starting with '@' are synthetic input for UI tests:
 //   @move X Y | @down [button] | @up [button] | @click X Y [button]
@@ -338,6 +356,32 @@ bool ConstantTimeEquals(const std::string& a, const std::string& b) {
   return diff == 0;
 }
 
+// Parses --serve-token-file's live token source: one "[NAME:]TOKEN" entry
+// per line (the identical syntax --serve-token already takes on the
+// command line), blank lines and lines starting with '#' skipped. Called
+// fresh from compute_handler on every single request rather than once at
+// startup - the whole point of this flag over --serve-token - so editing
+// the file (removing a line to revoke a token, adding one to add a new
+// one, replacing one to rotate it) takes effect on the very next request
+// with no server restart. A missing or unreadable file comes back empty
+// rather than throwing - compute_handler's own caller treats "given
+// --serve-token-file but currently no entries" as "deny everything," not
+// "fall back to open," so a bad path fails closed instead of accidentally
+// disabling auth.
+std::vector<std::pair<std::string, std::string>> ParseTokenFile(const std::string& path) {
+  std::vector<std::pair<std::string, std::string>> tokens;
+  std::ifstream in(path);
+  std::string line;
+  while (std::getline(in, line)) {
+    while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+    if (line.empty() || line[0] == '#') continue;
+    const size_t colon = line.find(':');
+    if (colon == std::string::npos) tokens.emplace_back("", line);
+    else tokens.emplace_back(line.substr(0, colon), line.substr(colon + 1));
+  }
+  return tokens;
+}
+
 // Reads one boolean-ish query parameter ("geometry=1" or "geometry=true")
 // out of a raw HTTP query string ("a=1&geometry=1&b=2") - not a general
 // query-string parser (no URL-decoding, no repeated-key handling), just
@@ -440,6 +484,10 @@ int main(int argc, char** argv) {
   // server stays fully open, exactly as when there was only ever one
   // optional shared token.
   std::vector<std::pair<std::string, std::string>> serve_tokens;
+  // Non-empty only when --serve-token-file was given; see ParseTokenFile
+  // below for how this gets re-read fresh on every request rather than
+  // once here at startup.
+  std::string serve_token_file;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--smoke") == 0 && i + 1 < argc) smoke_frames = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--stress") == 0 && i + 1 < argc) stress_count = std::atoi(argv[++i]);
@@ -455,6 +503,7 @@ int main(int argc, char** argv) {
       if (colon == std::string::npos) serve_tokens.emplace_back("", spec);
       else serve_tokens.emplace_back(spec.substr(0, colon), spec.substr(colon + 1));
     }
+    else if (std::strcmp(argv[i], "--serve-token-file") == 0 && i + 1 < argc) serve_token_file = argv[++i];
     else if (std::strcmp(argv[i], "--version") == 0) { std::printf("Dino 8 %s\n", DINO8_VERSION); return 0; }
     else if (argv[i][0] != '-') open_path = argv[i];
   }
@@ -692,7 +741,7 @@ int main(int argc, char** argv) {
     body += "}\n";
     return body;
   };
-  const dino8::app::ComputeHandler compute_handler = [&app, &serve_tokens, json_wrap_output](const dino8::app::HttpRequest& req) {
+  const dino8::app::ComputeHandler compute_handler = [&app, &serve_tokens, &serve_token_file, json_wrap_output](const dino8::app::HttpRequest& req) {
     dino8::app::HttpResponse resp;
     // TryParseHttpRequest hands back the request-line path verbatim,
     // query string and all ("/objects?geometry=1") - split it once here so
@@ -709,19 +758,32 @@ int main(int argc, char** argv) {
       resp.body = "Dino 8 compute service: /run and /run/python take POST, /objects takes GET or POST\n";
       return resp;
     }
-    // Checked against every registered --serve-token in order (constant-time
-    // per candidate, same as the single-token version always did) rather
-    // than, say, hashing the header into a lookup map - there are at most a
-    // handful of tokens for a local-automation tool like this, so a linear
-    // scan costs nothing a caller would notice and keeps every comparison
-    // genuinely constant-time against its own candidate, with no shared
-    // table lookup leaking anything about *which* candidate it resembles.
+    // Checked against every registered --serve-token, plus every entry
+    // --serve-token-file currently holds (re-read fresh right here, on
+    // this very request - see ParseTokenFile's own comment for why: that
+    // live re-read is what lets editing the file rotate/revoke a token
+    // without a restart, the gap --serve-token alone still has), in order
+    // (constant-time per candidate, same as the single-token version
+    // always did) rather than, say, hashing the header into a lookup map -
+    // there are at most a handful of tokens for a local-automation tool
+    // like this, so a linear scan costs nothing a caller would notice and
+    // keeps every comparison genuinely constant-time against its own
+    // candidate, with no shared table lookup leaking anything about
+    // *which* candidate it resembles. Giving --serve-token-file makes auth
+    // required even if the file is currently empty/missing/unreadable
+    // (ParseTokenFile then returns no entries) - fails closed rather than
+    // silently falling back to the fully-open behavior an empty
+    // serve_tokens alone would mean.
     std::string caller_name;  // stays "" for an unauthenticated server or an anonymous (no "NAME:") token
-    if (!serve_tokens.empty()) {
+    if (!serve_tokens.empty() || !serve_token_file.empty()) {
+      std::vector<std::pair<std::string, std::string>> candidates = serve_tokens;
+      if (!serve_token_file.empty()) {
+        for (auto& entry : ParseTokenFile(serve_token_file)) candidates.push_back(std::move(entry));
+      }
       const auto it = req.headers.find("authorization");
       bool matched = false;
       if (it != req.headers.end()) {
-        for (const auto& [name, token] : serve_tokens) {
+        for (const auto& [name, token] : candidates) {
           if (ConstantTimeEquals(it->second, "Bearer " + token)) { caller_name = name; matched = true; break; }
         }
       }

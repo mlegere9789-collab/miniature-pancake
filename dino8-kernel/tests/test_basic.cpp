@@ -31195,6 +31195,77 @@ void TestMeshComputeBoxMappingUVs() {
   Check(threw_nan, "ComputeBoxMappingUVs throws std::invalid_argument for a NaN scale");
 }
 
+// PARITY_MAP.md's own "Texture coordinate generation on tessellation"
+// bullet, the one remaining sub-gap its own fourth round explicitly left
+// untouched: "Box mapping's own 'hard seams at every axis boundary' are a
+// genuinely different mechanism (a per-vertex dominant-axis CHOICE
+// differing between faces, not a modular wraparound SplitUVSeam()
+// detects) that this round does not address." ComputeBoxMappingUVs()
+// picks its dominant axis from ComputeVertexNormals()'s own SMOOTHED
+// normal, so a vertex shared by faces on different box sides gets ONE
+// axis choice baked from an average normal that may not match what
+// either adjacent face's own TRUE flat normal would pick - a real
+// distortion, not just a cosmetic worry, demonstrated directly below. No
+// new kernel code: `Mesh::Faceted()` (this category's own earlier round)
+// already duplicates every face's own corners into private vertices, and
+// `TestMeshFacetedGivesFlatShading` already proves `ComputeVertexNormals()`
+// on a faceted mesh reduces to exactly that one owning face's own flat
+// normal at every corner - composing the two already-existing primitives
+// (`mesh.Faceted().ComputeBoxMappingUVs(scale)`) removes the averaging
+// contamination entirely, since no vertex is shared across two faces
+// with different dominant axes any more.
+void TestMeshComputeBoxMappingUVsFacetedResolvesSeam() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+
+  // The unit box's own vertex 6 = (1,1,1), shared by the top (+z), back
+  // (+y), and right (+x) faces at once - the most extreme case, where the
+  // smoothed normal (1,1,1)/sqrt(3) ties all three axes exactly equal.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const auto original_uvs = box.ComputeBoxMappingUVs(1.0);
+
+  // The implementation's own tie-break (checking the X branch first) picks
+  // X-dominant here: u = p.y = 1, v = p.z = 1.
+  Check(std::abs(original_uvs[6].x - 1.0) < 1e-9 && std::abs(original_uvs[6].y - 1.0) < 1e-9,
+        "sanity: the shared corner's own smoothed-normal tie-break lands on the X-dominant branch, giving (1, 1)");
+
+  // The TOP face (add_quad(4,5,6,7), index 1) and RIGHT face
+  // (add_quad(1,2,6,5), index 5) both independently want (1, 1) at this
+  // exact corner too (coincidence of this particular symmetric vertex,
+  // confirmed by hand: top's own Z-dominant formula gives (p.x, p.y) =
+  // (1, 1); right's own X-dominant formula gives (p.y, p.z) = (1, 1)) -
+  // so the shared vertex's own single UV happens to satisfy two of its
+  // three owning faces. The BACK face (add_quad(3,7,6,2), index 3) does
+  // NOT: its own Y-dominant formula wants (-p.x, p.z) = (-1, 1), the
+  // opposite sign of u from what the shared vertex actually stores - a
+  // real, hand-verified distortion the single shared UV cannot represent.
+  Check(std::abs(original_uvs[6].x - (-1.0)) > 0.5,
+        "the shared vertex's own UV genuinely does NOT match what the back face's own correct "
+        "(Y-dominant) formula would compute there - confirming this is a real distortion, not "
+        "merely a theoretical worry");
+
+  // Faceting first and THEN computing box-mapping UVs resolves this
+  // completely: each face's own private copy of that corner now carries
+  // exactly that face's own flat normal, so each one's own UV is correct.
+  const Mesh faceted = box.Faceted();
+  const auto faceted_uvs = faceted.ComputeBoxMappingUVs(1.0);
+
+  // Faceted()'s own index convention: face f's corner c lands at f*4 + c.
+  // Vertex 6 is corner index 2 within each of the top (face 1), back
+  // (face 3), and right (face 5) quads (add_quad(4,5,6,7)/(3,7,6,2)/(1,2,6,5)).
+  const Point2d top_copy = faceted_uvs[1 * 4 + 2];
+  const Point2d back_copy = faceted_uvs[3 * 4 + 2];
+  const Point2d right_copy = faceted_uvs[5 * 4 + 2];
+
+  Check(std::abs(top_copy.x - 1.0) < 1e-9 && std::abs(top_copy.y - 1.0) < 1e-9,
+        "after faceting, the top face's own private copy of the shared corner gets its own correct Z-dominant UV (1, 1)");
+  Check(std::abs(right_copy.x - 1.0) < 1e-9 && std::abs(right_copy.y - 1.0) < 1e-9,
+        "after faceting, the right face's own private copy gets its own correct X-dominant UV (1, 1)");
+  Check(std::abs(back_copy.x - (-1.0)) < 1e-9 && std::abs(back_copy.y - 1.0) < 1e-9,
+        "after faceting, the back face's own private copy gets its own correct Y-dominant UV (-1, 1) - "
+        "the exact value the shared (unfaceted) vertex could NOT represent, proving the seam distortion is genuinely resolved, not just hidden");
+}
+
 void TestMeshComputePlanarMappingUVs() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point2d;
@@ -76069,6 +76140,7 @@ int main() {
   TestMeshComputeFaceNormals();
   TestMeshFacetedGivesFlatShading();
   TestMeshComputeBoxMappingUVs();
+  TestMeshComputeBoxMappingUVsFacetedResolvesSeam();
   TestMeshComputePlanarMappingUVs();
   TestMeshComputeCylindricalMappingUVs();
   TestMeshComputeSphericalMappingUVs();
