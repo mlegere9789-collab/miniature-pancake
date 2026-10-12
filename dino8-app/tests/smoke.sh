@@ -7166,7 +7166,7 @@ PMX_INSTALL_SLICE="$(sed -n '/^history: Command: PluginMarketplaceInstall gadget
 pmxdeepcheck() { if echo "$PMX_INSTALL_SLICE" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMX" "$1"; fail=1; fi; }
 pmxdeepcheck "HelloDino sample plug-in loaded." "installing gadgettools resolved all the way down to widgettools (HelloDino) - the bottom of the chain"
 pmxdeepcheck "MeshTools sample plug-in loaded (TerrainMesh command" "installing gadgettools resolved through gizmotools (MeshTools), the middle of the chain"
-pmxdeepcheck "CurveTools sample plug-in loaded (Spiral command" "installing gadgettools loaded its own entry (CurveTools) after both dependencies"
+pmxdeepcheck "CurveTools sample plug-in loaded (SpiralPolyline command" "installing gadgettools loaded its own entry (CurveTools) after both dependencies"
 
 # Plug-in Marketplace: uninstall, including cascading removal of a
 # now-orphaned dependency (Marketplace::UninstallById/UninstallByIdChecked in
