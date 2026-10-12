@@ -35800,6 +35800,158 @@ void TestMeshSavePlyVertexColorsRoundTrips() {
   }
 }
 
+void TestMeshVertexAlphaRoundTrips() {
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Closes the "other PLY properties (alpha, ...) remain unread/unwritten"
+  // gap PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence
+  // names for the PLY bullet - before this, nothing in this kernel could
+  // set, read, or round-trip a per-vertex alpha value at all; every
+  // writer that touches per-vertex opacity (SaveOff()'s own COFF `a`
+  // column, and now SavePly()'s own optional `alpha` property) hardcoded
+  // 255 because "this kernel's Color has no alpha channel to source one
+  // from."
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+
+  {
+    Mesh no_colors = box;
+    const std::vector<unsigned char> alpha(static_cast<size_t>(no_colors.VertexCount()), 128);
+    Check(no_colors.SetVertexAlpha(alpha) == Result::Failed,
+          "SetVertexAlpha() fails on a mesh with no vertex colors set yet - alpha has nowhere to live "
+          "in m_C without them");
+    Check(!no_colors.HasVertexAlpha(), "the rejected call above left HasVertexAlpha() false");
+  }
+
+  std::vector<Color> colors;
+  std::vector<unsigned char> alpha;
+  for (int i = 0; i < box.VertexCount(); ++i) {
+    colors.push_back(Color{static_cast<unsigned char>((i * 37) % 256), static_cast<unsigned char>((i * 91) % 256),
+                            static_cast<unsigned char>((i * 173) % 256)});
+    alpha.push_back(static_cast<unsigned char>((i * 29 + 10) % 256));
+  }
+
+  Mesh with_colors = box;
+  Check(with_colors.SetVertexColors(colors) == Result::Ok, "fixture: SetVertexColors succeeds");
+
+  const std::vector<unsigned char> wrong_size_alpha(alpha.size() - 1, 200);
+  Check(with_colors.SetVertexAlpha(wrong_size_alpha) == Result::Failed,
+        "SetVertexAlpha() fails when the given alpha list doesn't have exactly VertexCount() many entries");
+  Check(!with_colors.HasVertexAlpha(), "the rejected mismatched-size call above left HasVertexAlpha() false");
+  for (int i = 0; i < with_colors.VertexCount(); ++i) {
+    Check(with_colors.VertexAlphaAt(i) == 255,
+          "VertexAlphaAt() still reports the default 255 (opaque) for a mesh with colors but no "
+          "alpha explicitly set yet");
+  }
+
+  Check(with_colors.SetVertexAlpha(alpha) == Result::Ok, "SetVertexAlpha() succeeds with a correctly-sized list");
+  Check(with_colors.HasVertexAlpha(), "HasVertexAlpha() is true once SetVertexAlpha() succeeded");
+  bool alpha_matches = true;
+  for (int i = 0; i < with_colors.VertexCount(); ++i) {
+    if (with_colors.VertexAlphaAt(i) != alpha[static_cast<size_t>(i)]) {
+      alpha_matches = false;
+      break;
+    }
+  }
+  Check(alpha_matches, "VertexAlphaAt() reports the exact alpha value SetVertexAlpha() was given, for "
+                       "every vertex, already converted back out of ON_Color's own inverted convention");
+
+  // .ply round trip: the header must declare a fourth 'alpha' property
+  // only once alpha was actually set, and the reloaded mesh must recover
+  // both the colors and the alpha exactly.
+  auto check_ply_round_trip = [&](bool binary, const std::string& path) {
+    Check(with_colors.SavePly(path, binary) == Result::Ok,
+          binary ? "SavePly(binary=true) succeeds on a mesh with vertex colors and alpha"
+                 : "SavePly succeeds on a mesh with vertex colors and alpha");
+
+    if (!binary) {
+      std::ifstream in(path);
+      std::string line;
+      bool saw_alpha_property = false;
+      while (std::getline(in, line)) {
+        if (line == "end_header") break;
+        if (line == "property uchar alpha") saw_alpha_property = true;
+      }
+      Check(saw_alpha_property,
+            "the header declares a genuine 'property uchar alpha' line once HasVertexAlpha() is true");
+    }
+
+    Mesh reloaded;
+    Check(Mesh::LoadPly(path, reloaded) == Result::Ok, "LoadPly succeeds on a .ply file with vertex alpha");
+    Check(reloaded.HasVertexAlpha(), "the reloaded mesh reports having vertex alpha");
+    bool reloaded_alpha_matches = true;
+    for (int i = 0; i < reloaded.VertexCount(); ++i) {
+      if (reloaded.VertexAlphaAt(i) != alpha[static_cast<size_t>(i)]) {
+        reloaded_alpha_matches = false;
+        break;
+      }
+    }
+    Check(reloaded_alpha_matches,
+          binary ? "every reloaded vertex's alpha exactly matches the original, byte-for-byte, through "
+                   "the binary .ply payload"
+                 : "every reloaded vertex's alpha exactly matches the original, byte-for-byte, through "
+                   "the ASCII .ply payload");
+    std::remove(path.c_str());
+  };
+  check_ply_round_trip(/*binary=*/false, "dino8_kernel_mesh_ply_alpha_ascii_test.ply");
+  check_ply_round_trip(/*binary=*/true, "dino8_kernel_mesh_ply_alpha_binary_test.ply");
+
+  // A mesh with colors but no alpha still writes the plain three-channel
+  // form unchanged - no behavior change for an existing caller.
+  {
+    Mesh colors_only = box;
+    Check(colors_only.SetVertexColors(colors) == Result::Ok, "fixture: SetVertexColors succeeds");
+    const std::string path = "dino8_kernel_mesh_ply_no_alpha_test.ply";
+    Check(colors_only.SavePly(path) == Result::Ok, "SavePly succeeds on a mesh with colors but no alpha");
+    std::ifstream in(path);
+    std::string line;
+    bool saw_alpha_property = false;
+    while (std::getline(in, line)) {
+      if (line == "end_header") break;
+      if (line == "property uchar alpha") saw_alpha_property = true;
+    }
+    Check(!saw_alpha_property,
+          "a mesh with HasVertexAlpha() == false writes no 'alpha' property line at all, unchanged "
+          "from before SetVertexAlpha() existed");
+    std::remove(path.c_str());
+  }
+
+  // .off/.coff round trip: SaveOff()'s own COFF `a` column now carries
+  // the real per-vertex alpha instead of the old hardcoded 255.
+  {
+    const std::string path = "dino8_kernel_mesh_coff_alpha_test.off";
+    Check(with_colors.SaveOff(path) == Result::Ok, "SaveOff succeeds on a mesh with vertex colors and alpha");
+    std::ifstream in(path);
+    std::string header_line;
+    std::getline(in, header_line);
+    std::getline(in, header_line);  // counts line
+    std::string first_vertex_line;
+    std::getline(in, first_vertex_line);
+    std::istringstream vline(first_vertex_line);
+    double x = 0, y = 0, z = 0;
+    int r = -1, g = -1, b = -1, a = -1;
+    vline >> x >> y >> z >> r >> g >> b >> a;
+    Check(a == static_cast<int>(alpha[0]),
+          "the first COFF vertex line's own alpha column is the real per-vertex value, not the old "
+          "hardcoded 255");
+    in.close();
+
+    Mesh reloaded;
+    Check(Mesh::LoadOff(path, reloaded) == Result::Ok, "LoadOff succeeds on SaveOff()'s own COFF output");
+    Check(reloaded.HasVertexAlpha(), "the reloaded COFF mesh reports having vertex alpha");
+    bool coff_alpha_matches = true;
+    for (int i = 0; i < reloaded.VertexCount(); ++i) {
+      if (reloaded.VertexAlphaAt(i) != alpha[static_cast<size_t>(i)]) {
+        coff_alpha_matches = false;
+        break;
+      }
+    }
+    Check(coff_alpha_matches, "every round-tripped COFF vertex's alpha matches the original exactly");
+    std::remove(path.c_str());
+  }
+}
+
 // Malformed/out-of-scope input is rejected outright, never silently
 // misread. Covers: an unrecognized `format` line (binary_little_endian
 // and binary_big_endian are both supported now - see
@@ -75917,6 +76069,7 @@ int main() {
   TestMeshSavePlyBinaryRoundTrips();
   TestMeshSavePlyBigEndianRoundTrips();
   TestMeshSavePlyVertexColorsRoundTrips();
+  TestMeshVertexAlphaRoundTrips();
   TestMeshLoadPlyRejectsMalformedFiles();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
