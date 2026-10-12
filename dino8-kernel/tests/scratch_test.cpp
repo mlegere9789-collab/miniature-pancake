@@ -1,78 +1,46 @@
-#include <cmath>
 #include <cstdio>
-#include <vector>
-#include "dino8/kernel/curve.h"
-#include "dino8/kernel/surface.h"
+#include "dino8/kernel/brep.h"
 #include "opennurbs.h"
 
 int main() {
   ON::Begin();
   using namespace dino8::kernel;
 
-  // NurbsSurface::ChangeSeam, exercised standalone: the full
-  // dino8_kernel_tests binary aborts earlier (in the pre-existing,
-  // disclosed BooleanCombineGeneral "3+ fragment loops" limitation,
-  // which several early TestBooleanCombineGeneral* fixtures happen to
-  // trip) before it ever reaches TestSurfaceChangeSeam, so this checks
-  // the same logic that test exercises, directly, in isolation.
-  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0);
-  const ON_Cylinder cylinder(circle, 5.0);
-  ON_NurbsSurface cylinder_surface;
-  std::printf("GetNurbForm: %d\n", cylinder.GetNurbForm(cylinder_surface) != 0);
-  NurbsSurface wall;
-  wall.raw() = cylinder_surface;
-  std::printf("IsClosed(0)=%d IsPeriodic(0)=%d IsClosed(1)=%d\n", wall.IsClosed(0), wall.IsPeriodic(0),
-              wall.IsClosed(1));
+  Brep box = Brep::BoxWelded(0, 0, 0, 1, 1, 1);
+  std::printf("edge count = %d\n", box.raw().m_E.Count());
 
-  // V (open) direction must refuse.
-  const Result v_result = wall.ChangeSeam(1, wall.Domain(1).min);
-  std::printf("ChangeSeam(1, Domain(1).min) == Failed: %d\n", v_result == Result::Failed);
-
-  const Interval u_dom = wall.Domain(0);
-  const Interval v_dom_before = wall.Domain(1);
-  const double seam_u = u_dom.min + 0.3 * (u_dom.max - u_dom.min);
-  const double v_mid = v_dom_before.min + 0.5 * (v_dom_before.max - v_dom_before.min);
-  const Point3d expected_start = wall.PointAt(seam_u, v_mid);
-
-  const Result r = wall.ChangeSeam(0, seam_u);
-  std::printf("ChangeSeam(0, seam_u) == Ok: %d\n", r == Result::Ok);
-  const Interval new_u_dom = wall.Domain(0);
-  std::printf("new Domain(0).min == seam_u: %d (%.12f vs %.12f)\n", new_u_dom.min == seam_u, new_u_dom.min, seam_u);
-  const Interval v_dom_after = wall.Domain(1);
-  std::printf("Domain(1) untouched: %d\n", v_dom_after.min == v_dom_before.min && v_dom_after.max == v_dom_before.max);
-  const double start_err = wall.PointAt(new_u_dom.min, v_mid).DistanceTo(expected_start);
-  std::printf("new start point matches old PointAt(seam_u, v_mid): err=%.3e\n", start_err);
-
-  double max_radial_err = 0.0;
-  for (int i = 0; i <= 8; ++i) {
-    const double v = wall.Domain(1).min + (i / 8.0) * (wall.Domain(1).max - wall.Domain(1).min);
-    for (int j = 0; j <= 8; ++j) {
-      const double u = new_u_dom.min + (j / 8.0) * (new_u_dom.max - new_u_dom.min);
-      const Point3d p = wall.PointAt(u, v);
-      const double radial = std::sqrt(p.x * p.x + p.y * p.y);
-      max_radial_err = std::max(max_radial_err, std::fabs(radial - 2.0));
-    }
-  }
-  std::printf("max |radial - 2.0| over 9x9 grid after ChangeSeam: %.3e\n", max_radial_err);
-
-  const Result out_of_range = wall.ChangeSeam(0, new_u_dom.max + 1.0);
-  std::printf("ChangeSeam(0, out-of-range) == Failed: %d\n", out_of_range == Result::Failed);
-
-  bool threw = false;
   try {
-    wall.ChangeSeam(2, 0.0);
-  } catch (const std::invalid_argument&) {
-    threw = true;
+    box.ResyncTrimToEdgeCurve(box.raw().m_E.Count() + 50, 0.01);
+    std::printf("ERROR: expected throw\n");
+  } catch (const std::out_of_range& e) {
+    std::printf("OK out_of_range: %s\n", e.what());
   }
-  std::printf("ChangeSeam(2, ...) threw invalid_argument: %d\n", threw);
 
-  // Flat (open-in-both-directions) surface: always refused.
-  std::vector<Point3d> grid;
-  for (int u = 0; u < 2; ++u)
-    for (int v = 0; v < 2; ++v) grid.emplace_back(u, v, 0);
-  NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
-  const Result flat_result = flat.ChangeSeam(0, flat.Domain(0).min);
-  std::printf("flat.ChangeSeam(0, ...) == Failed: %d\n", flat_result == Result::Failed);
+  box.raw().m_E[0].m_edge_index = -1;
+  try {
+    box.ResyncTrimToEdgeCurve(0, 0.01);
+    std::printf("ERROR: expected throw\n");
+  } catch (const std::invalid_argument& e) {
+    std::printf("OK invalid_argument: %s\n", e.what());
+  }
+
+  // Positive control for ReplaceEdge(): slide one endpoint of a fresh
+  // box's own edge to a different point ON THE SAME bordering faces.
+  Brep box2 = Brep::BoxWelded(0, 0, 0, 2, 2, 2);
+  const ON_BrepEdge& e0 = box2.raw().m_E[0];
+  const int v0 = e0.m_vi[0], v1 = e0.m_vi[1];
+  const Point3d p0 = box2.raw().m_V[v0].point;
+  const Point3d p1 = box2.raw().m_V[v1].point;
+  std::printf("v1 valence = %d\n", box2.raw().m_V[v1].m_ei.Count());
+
+  // A box corner has 3 mutually non-parallel bordering faces - any move
+  // off the exact original point should fail.
+  const Point3d p1_moved = p1 + ON_3dVector(0.3, 0, 0);
+  const NurbsCurve moved_curve = NurbsCurve::FromControlPoints({p0, p1_moved}, 1);
+  const Result r = box2.ReplaceEdge(0, moved_curve, 0.01);
+  std::printf("ReplaceEdge on box corner (expect Failed=1): %d\n", r == Result::Failed);
+  std::printf("v0 unchanged: %d, v1 unchanged: %d\n", box2.raw().m_V[v0].point.DistanceTo(p0) < 1e-9,
+              box2.raw().m_V[v1].point.DistanceTo(p1) < 1e-9);
 
   ON::End();
   return 0;
