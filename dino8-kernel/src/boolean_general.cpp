@@ -3005,6 +3005,36 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
     bool opposite_normal = false;
   };
   std::vector<std::vector<CoincidentInfo>> coincident_a(static_cast<size_t>(na)), coincident_b(static_cast<size_t>(nb));
+
+  // Round 45 addition: the whole-face override above only ever fires when
+  // an ENTIRE face is the coincident region (ff.frags.size() == 1, this
+  // face untouched by any other curve). The round 44 "Thirty-first note"
+  // left a genuinely DEEPER case open, confirmed there rather than merely
+  // named: a small whole face coincident with only PART of a bigger
+  // opposing face (e.g. a second box sitting flush on top of a bigger
+  // one) still correctly whole-matches on the SMALL side, but the BIG
+  // side's own face gets fragmented by that same curve into an outer ring
+  // plus an inner island exactly matching the small face's own footprint
+  // - that inner island's representative point sits exactly on the small
+  // face's own plane, the identical "ray-cast is numerically arbitrary"
+  // problem the whole-face override exists to avoid, one level deeper
+  // than that override reaches. Recorded here, on the BIGGER side only
+  // (the smaller side is already fully handled by `coincident_a`/
+  // `coincident_b` above): the exact sub-region (`region_bbox`) a later
+  // fragment of this face must match, verbatim, to be treated as that
+  // same physical coincident patch instead of ray-cast. Deliberately NOT
+  // populated when NEITHER side whole-matches (a genuine partial overlap
+  // smaller than both faces) - that is the separately-disclosed, still
+  // fully open "FLAT partially-overlapping case" the same note names,
+  // out of scope here.
+  struct CoincidentRegionInfo {
+    int other_face = -1;
+    bool opposite_normal = false;
+    ON_BoundingBox region_bbox;
+    double extent_tol = 0.0;
+  };
+  std::vector<std::vector<CoincidentRegionInfo>> partial_coincident_a(static_cast<size_t>(na)),
+      partial_coincident_b(static_cast<size_t>(nb));
   const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
 
   for (int i = 0; i < na; ++i) {
@@ -3088,6 +3118,16 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
             }
             if (whole_match_a) coincident_a[static_cast<size_t>(i)].push_back({j, parallel == -1});
             if (whole_match_b) coincident_b[static_cast<size_t>(j)].push_back({i, parallel == -1});
+            // Exactly one side whole-matches the region and the other
+            // doesn't: that other side is a BIGGER face with this region
+            // as a genuine sub-region (not the "neither matches" wide-open
+            // partial-overlap case, still out of scope) - record it so an
+            // inner-island fragment of that bigger face can be recognized
+            // below instead of ray-cast.
+            if (region_bbox.IsValid() && whole_match_b && !whole_match_a)
+              partial_coincident_a[static_cast<size_t>(i)].push_back({j, parallel == -1, region_bbox, extent_tol});
+            if (region_bbox.IsValid() && whole_match_a && !whole_match_b)
+              partial_coincident_b[static_cast<size_t>(j)].push_back({i, parallel == -1, region_bbox, extent_tol});
             if (debug && (whole_match_a || whole_match_b))
               std::fprintf(stderr, "coincident face pair: A[%d] <-> B[%d], opposite_normal=%d, whole_a=%d whole_b=%d\n", i, j,
                            parallel == -1, whole_match_a, whole_match_b);
@@ -3179,10 +3219,34 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
       const bool whole_face_untouched =
           !coincident_here.empty() && ff.frags.size() == 1 &&
           (a_side ? untouched_a[static_cast<size_t>(ff.face_index)] : untouched_b[static_cast<size_t>(ff.face_index)]);
+      // Round 45 addition (see `partial_coincident_a`/`partial_coincident_b`'s
+      // own doc comment above): a face that ISN'T itself the whole
+      // coincident region can still have exactly ONE of its own fragments
+      // BE one, when a smaller opposing face sits wholly within it - the
+      // "second box flush on a bigger box" case the round 44 Thirty-first
+      // note left open. Looked up once per face, matched per fragment by
+      // its own outer loop's 3D bounding box against the exact sub-region
+      // bbox recorded when this face's fragmenting curve was built.
+      const std::vector<CoincidentRegionInfo>& partial_coincident_here =
+          a_side ? partial_coincident_a[static_cast<size_t>(ff.face_index)] : partial_coincident_b[static_cast<size_t>(ff.face_index)];
+      auto match_partial_region = [&](const Fragment& frag) -> const CoincidentRegionInfo* {
+        if (partial_coincident_here.empty()) return nullptr;
+        ON_BoundingBox fb;
+        for (const UVPt& pt : frag.outer) fb.Set(pt.p, true);
+        if (!fb.IsValid()) return nullptr;
+        for (const CoincidentRegionInfo& info : partial_coincident_here) {
+          if (fb.m_min.DistanceTo(info.region_bbox.m_min) <= info.extent_tol &&
+              fb.m_max.DistanceTo(info.region_bbox.m_max) <= info.extent_tol) {
+            return &info;
+          }
+        }
+        return nullptr;
+      };
       for (Fragment& frag : ff.frags) {
         bool keep = false;
         bool flip = false;
-        if (whole_face_untouched) {
+        const CoincidentRegionInfo* partial_match = whole_face_untouched ? nullptr : match_partial_region(frag);
+        if (whole_face_untouched || partial_match) {
           // Coincident-face rule (see this file's own top-of-file doc
           // comment and `coincident_a`/`coincident_b`'s own doc comment
           // above): this fragment IS the entire physical face, and it has
@@ -3213,7 +3277,7 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
           //     keep exactly one copy for Union/Intersection (the a_side's,
           //     arbitrarily but consistently), cancel both for Difference
           //     (subtracting B removes the coincident material too).
-          const bool opposite = coincident_here.front().opposite_normal;
+          const bool opposite = whole_face_untouched ? coincident_here.front().opposite_normal : partial_match->opposite_normal;
           if (a_side) {
             switch (op) {
               case BooleanOp::Union:
@@ -3230,8 +3294,8 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
             keep = false;  // the other side's coincident copy is always redundant
           }
           if (debug)
-            std::fprintf(stderr, "  frag: COINCIDENT face override a_side=%d opposite=%d op=%d -> keep=%d\n", a_side,
-                         opposite, static_cast<int>(op), keep);
+            std::fprintf(stderr, "  frag: COINCIDENT face override (%s) a_side=%d opposite=%d op=%d -> keep=%d\n",
+                         whole_face_untouched ? "whole" : "partial-inner", a_side, opposite, static_cast<int>(op), keep);
         } else {
           Point2d uv;
           if (!RepresentativeUV(frag, uv)) {
