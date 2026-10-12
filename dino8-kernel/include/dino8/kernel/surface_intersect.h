@@ -262,9 +262,63 @@ struct RayBrepHit {
 // and a linear per-face scan with no spatial acceleration structure -
 // PARITY_MAP.md's own separate "Spatial acceleration structures for
 // geometric queries" bullet owns that distinct performance gap, not
-// named by this one.
+// named by this one. A real, confirmed finding from a standalone
+// `dino8_scratch_test` probe while building this, not assumed: trimming
+// here is only as real as `FaceContainsUV()`'s own genuine `ON_Brep`
+// loop/trim topology - a face built via `Brep::TrimmedPlanarFace()`
+// (that factory's own "bare surface" convention, no real loop at all,
+// trim tracked only in this kernel's separate internal side-table that
+// ONLY its own tessellation path (`ResolveFace()`) ever reads) is
+// silently treated as fully UNTRIMMED here, not partially trimmed - a
+// ray lands anywhere on the untrimmed surface. `Brep::
+// TrimmedPlanarFaceWelded()`, `Brep::Box()`, boolean-operation results,
+// and every other factory that builds genuine `ON_BrepLoop`/`ON_BrepTrim`
+// topology are unaffected and trim exactly as documented above.
 std::vector<RayBrepHit> FireRayAtBrep(const Point3d& origin, const Vector3d& direction, double max_distance,
                                        const ON_Brep& b, const IntersectOptions& opt);
+
+// One closest-point result, as returned by ClosestPointOnBrep() below.
+// `on_trim_boundary` is true exactly when the true unconstrained closest
+// point on that face's own surface fell outside its trim loop, so
+// `point`/`uv` are the boundary-constrained answer instead (see that
+// function's own doc comment for how that case is computed).
+struct BrepClosestPointResult {
+  int face_index = -1;
+  double distance = 0;
+  ON_2dPoint uv;
+  Point3d point;
+  bool on_trim_boundary = false;
+};
+
+// Closes PARITY_MAP.md's own disclosed "Closest point on trimmed B-rep"
+// gap: before this, `Mesh::ClosestPoint`/`NurbsSurface::ClosestPoint`
+// existed but were untrimmed-only - there was still no `Brep::ClosestPoint`
+// at all. For each face whose surface has a NURBS form, wraps it and asks
+// its own `ClosestPointParameter()` for the UNCONSTRAINED closest point
+// first; if that (u, v) genuinely falls inside the face's own trim loop
+// (`FaceContainsUV()`, the identical trim test `FireRayAtBrep()` above
+// already uses), that's this face's own answer - the common case, and
+// exact up to `ClosestPointParameter()`'s own documented grid-search
+// precision. If it falls OUTSIDE the trim, the true closest point on a
+// TRIMMED face lies on its own boundary, not at the unconstrained
+// minimum: this falls back to the same sampled-polyline boundary
+// `FaceContainsUV()`/`PointInPolygon()` already build via `LoopPolygon()`,
+// evaluated through the surface's own `PointAt()` into real 3D segments,
+// and finds the closest point on any of those segments (the identical
+// point-to-segment-with-clamped-t technique this file's own
+// `DistanceToBoundaryLoops()` already uses for a related, distance-only
+// query) - an honest polyline approximation of the true, generally
+// CURVED boundary, not a continuous-curve closest point, with `uv`
+// linearly interpolated across the same segment the 3D point is, so the
+// two can never disagree with each other. Returns the single best
+// (minimum-distance) result found across every face. Throws
+// std::invalid_argument if `b` has no faces, and std::runtime_error if
+// not one of them could be evaluated (every face has either no surface
+// or a surface with no NURBS form) - a face individually missing either
+// is otherwise silently skipped rather than aborting the whole query
+// over one bad face.
+BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b, int u_divisions = 20,
+                                           int v_divisions = 20, int trim_samples_per_edge = 24);
 
 // A curve/plane crossing - the curve-level counterpart to CurveSurfaceHit
 // above, but against a caller-supplied INFINITE ON_Plane rather than a
@@ -773,6 +827,59 @@ struct SurfaceTangentContact {
 };
 std::vector<SurfaceTangentContact> FindSurfaceTangentContacts(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt);
 
+// Narrows FindSurfaceTangentContacts()'s own still-open "or curve" half
+// directly above: two surfaces tangent along a whole shared curve (the
+// bullet's own named example - two cylinders of equal radius touching
+// along one ruling line - and, more generally, ANY pair whose tangent
+// touch is a connected 1-parameter family rather than an isolated point)
+// are now chained into an actual curve instead of being left as however
+// many unconnected points a coarse grid happens to converge to along it.
+// Built on the SAME grid/seed/Newton/tangent-plane machinery
+// FindSurfaceTangentContacts() already uses - every grid vertex of `a`'s
+// own regular sampling grid that seeds a genuine tangent contact (not just
+// a stationary point - the identical tangent-plane-coincidence gate that
+// function already applies) is kept as a GRAPH NODE at its own grid
+// position, instead of being flattened into one dedup'd list the way that
+// function's own point-level API does. Two contacts are linked when their
+// origin grid vertices are 4-adjacent (sharing a grid edge) - the same
+// "home position on the sampling grid" idea FindSurfaceSilhouetteCurves()
+// already uses to link its own scalar-field crossings into curves, applied
+// here to a vector-valued (4-equation) tangency test instead. Any of `a`'s
+// own closed directions (e.g. a cylinder's or sphere's angular coordinate)
+// has its grid's own duplicate seam column/row - index 0 and index G sample
+// the identical physical point - folded back onto one node and wrapped as
+// its own adjacency (the same seam-wrap idea SplitAtSeams()/LerpUV() already
+// use elsewhere in this file), so a tangent line running along a periodic
+// seam is not split into two disconnected copies of itself. A connected
+// component is only ever reported as a curve when its own links reduce
+// cleanly to a PATH (every node degree <= 2, at least 3 nodes, and a
+// genuinely nonzero arc length greater than `opt.tolerance * 8` - the same
+// dedup radius IntersectCurveSurface()/IntersectCurves() already use
+// elsewhere in this file, here guarding against the OPPOSITE failure mode:
+// several grid seeds near one truly ISOLATED tangent point (e.g. a sphere
+// resting on a plane) all converge to nearly the identical 3D point and
+// are grid-adjacent to each other too, which would otherwise be
+// misreported as a zero-length "curve") - exactly the same "skip rather
+// than guess" discipline FindSurfaceSilhouetteCurves() already applies to
+// its own 4-crossing "saddle" cells: a component with any node of degree
+// 3 or 4 (a branch or a filled blob, not a clean 1D locus) is left
+// unchained rather than resolved with an arbitrary pairing, and its own
+// points stay visible only through FindSurfaceTangentContacts() itself.
+// Each accepted path is walked from a degree-1 endpoint to its match (an
+// open chain) or, once every degree-1 endpoint is used up, from whatever
+// links remain (every node then degree 2 - a closed loop) and fit via the
+// same InterpolateCubic()/ChordParams() pair every other sampled curve in
+// this file already uses. Still honestly scoped exactly as
+// FindSurfaceTangentContacts() itself already is: a surface pair with more
+// than one genuinely separate tangent LOCUS (point or curve) is not
+// guaranteed to find every one of them, only the ones its coarse grid seed
+// happens to reach; and no `dino8-app` command calls this yet.
+struct SurfaceTangentCurve {
+  ON_NurbsCurve curve;
+  bool closed = false;
+};
+std::vector<SurfaceTangentCurve> FindSurfaceTangentCurves(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt);
+
 // A connected region of `a`'s own (u, v) domain, reported in that domain's
 // own axis-aligned bounding box, whose points all lie ON `b` within
 // tolerance - PARITY_MAP.md's own "SSX coincident / overlapping surface
@@ -1265,6 +1372,31 @@ struct SurfaceSilhouetteCurve {
   bool closed = false;
 };
 std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurves(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt);
+
+// The perspective sibling of FindSurfaceSilhouetteCurves() above - closes
+// the one named gap that function's own header doc comment calls out
+// directly ("there is no perspective sibling of this function yet"),
+// narrowing the "Silhouette / outline curves" bullet further. Identical
+// marching-squares chaining (same grid, same cell-edge-crossing links, same
+// degree-1-walk-to-degree-1 / remaining-closed-loop assembly, same
+// InterpolateCubic()/ChordParams() curve fit) - the only difference is the
+// crossings being chained come from FindSurfaceSilhouettePointsPerspective()'s
+// own per-sample `direction = point - eye` tangency test
+// (dot(RobustSurfaceNormal(s, u, v), point - eye) == 0) instead of
+// FindSurfaceSilhouetteCurves()'s single fixed `view_direction`. Shares the
+// file's one internal grid-edge tangency-crossing finder and chaining
+// assembly with both of its siblings - only the direction a sample tests
+// against differs. Still honestly scoped exactly as every other function in
+// this trio is: a grid sample landing at `eye` itself is "cannot verify",
+// not guessed; a "saddle" cell (all four boundary edges crossing) is skipped
+// rather than resolved with an arbitrary diagonal pairing; an isolated
+// degree-0 crossing is dropped here but still visible via
+// FindSurfaceSilhouettePointsPerspective() itself; and - the one gap this
+// bullet's own text keeps naming regardless of which function is asked - no
+// visibility/self-occlusion resolution (a chain on the surface's own far
+// side from the eye, or hidden behind a different object, is reported
+// exactly like a visible one).
+std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurvesPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt);
 
 // --- numerical helpers ------------------------------------------------------
 
