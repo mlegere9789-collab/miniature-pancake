@@ -170,6 +170,30 @@ ToSubD
 SelLast
 List
 @expect_objects 15
+# --- ToSubD exact path: SubD::FromBrep (dino8-kernel) builds the
+# Catmull-Clark cage directly from a Brep's own faces, with no
+# tessellation at all, whenever every face is already an untrimmed,
+# planar, axis-aligned-in-own-uv quad (the shape Box()'s own faces are
+# built from) - PARITY_MAP.md's "SubD from NURBS/B-rep conversion" item's
+# own disclosed "still unwired from any dino8-app command" gap.
+# BuildSubDVerifiedAgainstBrep's own tessellate-and-verify path above
+# (the Sphere fixture) is honestly scoped to a MEASURED, not-necessarily-
+# tight bound; for a Box specifically it was previously a genuine MISS
+# (0 of 1 verified, deviation ~0.8 - confirmed directly against the
+# pre-this-change binary, not assumed) because a planar face's own
+# triangulated-then-recombined cage is NOT the same shape FromBrep's
+# per-face-bilinear construction gives, and Catmull-Clark's limit surface
+# pulls an irregular-vertex-heavy triangulated cage measurably further
+# from the true flat faces than this measurement's own retry budget
+# could shrink. The exact path below must now report 0 deviation,
+# "verified", AND the clean natural 6-face cage (not a triangulated one).
+Box 250,0,0 260,10,10
+Enter
+SelLast
+ToSubD
+SelLast
+List
+@expect_objects 17
 # --- ToSubD limit-surface-fidelity check: BuildSubDVerifiedAgainstBrep
 # (cmd_solids.cpp) now measures the resulting SubD's own true
 # Catmull-Clark LIMIT surface against the original Brep, not just the
@@ -191,7 +215,7 @@ SelLast
 ToSubD
 SelLast
 List
-@expect_objects 18
+@expect_objects 20
 # --- SubDRevolve: the SubD menu (MenuBar.cpp) names this command, but
 # nothing registered it - a broken menu entry, not a feature. It now runs
 # the real Revolve command and converts the resulting surface to a SubD via
@@ -205,7 +229,7 @@ SubDRevolve
 420,10,0
 SelLast
 What
-@expect_objects 20
+@expect_objects 22
 # --- SubDMultiPipe: same broken-menu-entry story as SubDRevolve above, for
 # the other name MenuBar.cpp lists. Runs the real MultiPipe command (pipes
 # every selected curve, unioned into one mesh) and converts the result to a
@@ -219,7 +243,7 @@ SubDMultiPipe
 1
 SelLast
 What
-@expect_objects 23
+@expect_objects 25
 # --- Revolve Output=SubD: the plain Revolve command's own documented
 # "Output" option (data/commands.json already lists it; PARITY_MAP.md's own
 # "ExtrudeCrv / Revolve producing a SubD object directly" item) is now
@@ -236,4 +260,4 @@ Revolve Output=SubD
 520,10,0
 SelLast
 What
-@expect_objects 25
+@expect_objects 27
