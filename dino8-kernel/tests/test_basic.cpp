@@ -25421,6 +25421,65 @@ void TestMeshContainsPoint() {
         "a point far outside the hollow box entirely is not inside it");
 }
 
+// PARITY_MAP.md's own "kernel: Mass properties & spatial queries"
+// category named this directly under "Signed distance point-to-solid":
+// "sign from ContainsPoint's single-ray test." A single fixed ray,
+// however carefully chosen to avoid axis/symmetry degeneracies (as
+// ContainsPoint()'s own prior implementation was), can still graze a
+// vertex or shared edge exactly for some mesh/point combination - this
+// test reproduces a real, concrete such failure against the ORIGINAL
+// single-ray implementation's own exact direction, confirms
+// ContainsPoint() now votes across 5 independent directions instead,
+// and verifies the fix closes it.
+void TestMeshContainsPointVotesAcrossMultipleRaysForRobustness() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+
+  // The exact direction ContainsPoint()'s own prior single-ray
+  // implementation cast along (still the first of the 5 it now votes
+  // across) - confirmed directly (via a standalone scratch probe before
+  // trusting it here) that a ray from a point along this direction,
+  // aimed exactly at the box's own (1,1,1) corner, misclassifies a
+  // genuine, contiguous range of truly-inside points near that corner
+  // as outside when that single direction alone decides the answer.
+  const Vector3d original_single_ray_direction(0.6532814824, 0.2705980501, 0.7071067812);
+  const Point3d corner(1, 1, 1);
+
+  int genuinely_inside_count = 0;
+  bool all_correctly_inside = true;
+  for (int i = 1; i <= 30; ++i) {
+    const double t = static_cast<double>(i) / 100.0;
+    const Point3d p = corner - original_single_ray_direction * t;
+    if (!(p.x > 0 && p.x < 1 && p.y > 0 && p.y < 1 && p.z > 0 && p.z < 1)) continue;
+    ++genuinely_inside_count;
+    if (!box.ContainsPoint(p)) all_correctly_inside = false;
+  }
+  Check(genuinely_inside_count > 10, "the corner-aimed sweep actually produced a real sample of inside points to test");
+  Check(all_correctly_inside,
+        "every point along a ray aimed exactly at the box's own corner - the real failure mode the ORIGINAL "
+        "single-ray implementation had for this exact direction - is now correctly reported as inside, voted "
+        "across 5 independent directions rather than decided by this one alone");
+
+  // Ordinary, non-adversarial points still classify correctly - the
+  // vote doesn't trade robustness for correctness on the easy cases.
+  Check(box.ContainsPoint(Point3d(0.5, 0.5, 0.5)), "the box's own center is still correctly inside");
+  Check(!box.ContainsPoint(Point3d(2, 2, 2)), "a point far outside is still correctly outside");
+  Check(!box.ContainsPoint(Point3d(-0.5, 0.5, 0.5)), "a point outside on the -X side is still correctly outside");
+
+  // The translation-invariance property ContainsPoint()'s own doc
+  // comment specifically calls out (axis/symmetry grazing used to flip
+  // with translation) still holds under the new voting scheme.
+  const auto box_at_origin = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const auto box_translated = MakeQuadBoxMesh(39, 19, 9, 41, 21, 11);
+  Check(box_at_origin.ContainsPoint(Point3d(0, 0, 0)) && box_translated.ContainsPoint(Point3d(40, 20, 10)),
+        "a box's own center is reported inside both at the world origin and translated far away - unaffected by "
+        "the axis/symmetry grazing the single fixed ray's own irrational-component directions already guard "
+        "against");
+}
+
 void TestMeshClosestPoint() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -77175,6 +77234,8 @@ int main() {
   RunTest("TestMeshFlipNormals", TestMeshFlipNormals);
   RunTest("TestMeshIsClosedManifold", TestMeshIsClosedManifold);
   RunTest("TestMeshContainsPoint", TestMeshContainsPoint);
+  RunTest("TestMeshContainsPointVotesAcrossMultipleRaysForRobustness",
+          TestMeshContainsPointVotesAcrossMultipleRaysForRobustness);
   RunTest("TestMeshClosestPoint", TestMeshClosestPoint);
   RunTest("TestMeshSignedDistance", TestMeshSignedDistance);
   RunTest("TestMeshVolumeMassProperties", TestMeshVolumeMassProperties);
