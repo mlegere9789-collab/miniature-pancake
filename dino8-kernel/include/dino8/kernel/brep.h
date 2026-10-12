@@ -5032,13 +5032,18 @@ class Brep {
   // solver ReplaceEdgeCurve() and RemoveNakedMicroEdge() already trust)
   // to find the split parameter; the projected point (not the caller's
   // raw `point`) becomes the new vertex, so a `point` that is merely
-  // NEAR the curve still gives an exact new vertex ON it. Restricted to
-  // LINEAR edges (see the implementation's own comment for the two
-  // independent curved-edge fixtures this was tested against and found
-  // wrong on): both the 3D edge curve and the trim's own 2D curve are
-  // split EXACTLY via ON_Curve::Split() (a real curve-domain split,
-  // never a resampled refit) for a straight FromPlanarFaces() boundary,
-  // the one case this is proven correct on.
+  // NEAR the curve still gives an exact new vertex ON it. Works on any
+  // OPEN edge, straight or curved (2026-10-12: the prior "linear edges
+  // only" restriction was re-tested directly against the exact curved
+  // fixture that originally motivated it and found stale - see the
+  // implementation's own comment for the full re-verification detail);
+  // a CLOSED edge is still refused (see below), the one genuinely
+  // orthogonal limit linearity never actually excluded either. Both the
+  // 3D edge curve and the trim's own 2D curve are split EXACTLY via
+  // ON_Curve::Split() (a real curve-domain split, never a resampled
+  // refit) - proven correct on a straight FromPlanarFaces() boundary and,
+  // as of this pass, on a genuinely curved cylinder/plane shared edge and
+  // a curved naked rim too.
   //
   // Which 3D edge piece (old-start-to-new-vertex vs. new-vertex-to-old-
   // end) each new trim is built against is decided by DIRECT 3D
@@ -5063,14 +5068,10 @@ class Brep {
   // but that's not a bug" contract UnjoinEdge()/RemoveNakedMicroEdge()
   // already have - if `edge_index` refers to a non-manifold edge
   // (TrimCount() > 2; naked and plain-shared are the only two supported
-  // trim counts), if the edge is not LINEAR (see the
-  // implementation's own comment: tested directly against a clean,
-  // Check()-verified open curved fixture - a partial-angle cylindrical
-  // wedge's own un-capped rim - and found to silently produce real
-  // topology defects (genuine LoopGap/InvalidTrim issues Check() itself
-  // catches) despite this method's own internal checks reporting
-  // Result::Ok; scoped down to the one case proven correct rather than
-  // shipped broken), if `point` does not land within `tolerance` of the
+  // trim counts), if the edge IsClosed() (its own two endpoints are the
+  // same vertex - splitting that sensibly needs dedicated handling this
+  // method doesn't attempt, genuinely out of scope here rather than
+  // guessed at), if `point` does not land within `tolerance` of the
   // edge's own curve, or if the resulting split
   // parameter is not strictly interior (within `tolerance` of either
   // end - nothing meaningful to split). Throws std::out_of_range if
@@ -5093,25 +5094,29 @@ class Brep {
   // caller (see that method's own doc comment): closes PARITY_MAP.md's
   // "[missing] Tolerant sewing with edge splitting" gap by finding every
   // T-junction among this Brep's naked (1-trim) edges - a naked edge B
-  // whose endpoint lands strictly INSIDE another naked, LINEAR edge A's
-  // own span, not at either of A's ends (an ordinary endpoint match is
-  // already JoinNakedEdges()'s job, untouched here) - splitting the
-  // longer edge A there via SplitNakedEdgeAt(), and finally calling
+  // whose endpoint lands strictly INSIDE another naked edge A's own span,
+  // not at either of A's ends (an ordinary endpoint match is already
+  // JoinNakedEdges()'s job, untouched here) - splitting the longer edge A
+  // there via SplitNakedEdgeAt(), and finally calling
   // JoinNakedEdges(tolerance) once so every newly-matching endpoint pair
   // (the fresh split halves against B and its own true neighbours) is
   // actually sewn shut, not merely split.
   //
   // "Strictly inside A's span" is measured by projecting B's endpoint
-  // onto the segment between A's own two vertices (the closed-form
-  // point-to-segment distance detail::ClosestSegmentSegment() already
-  // provides elsewhere in this file, degenerate segment against a single
-  // point): within `tolerance` of the line AND at least `tolerance` away
-  // from either of A's own endpoints (otherwise it's an ordinary
-  // coincident-endpoint case, not a T-junction, and splitting there would
-  // just create a near-zero-length sliver edge SplitNakedEdgeAt() itself
-  // already refuses). Only LINEAR naked edges are ever split - the same
-  // restriction SplitNakedEdgeAt() places on itself - so a curved naked
-  // edge is left for a future, curve-aware pass rather than guessed at.
+  // onto A's own real curve (NurbsCurve::ClosestPointParameter(), the
+  // same multistart solver SplitNakedEdgeAt() itself already trusts -
+  // reduces to the identical point-to-segment projection the prior
+  // version used when A happens to be linear): within `tolerance` of
+  // that curve AND at least `tolerance` away (by real 3D distance, not a
+  // parameter-space comparison) from either of A's own endpoints
+  // (otherwise it's an ordinary coincident-endpoint case, not a
+  // T-junction, and splitting there would just create a near-zero-length
+  // sliver edge SplitNakedEdgeAt() itself already refuses). 2026-10-12:
+  // a genuinely CURVED A is now split here too, same as
+  // SplitNakedEdgeAt() itself - the "future, curve-aware pass" this
+  // comment used to defer. A CLOSED A is still skipped (SplitNakedEdgeAt()
+  // refuses one outright regardless, and "strictly inside A's span" has
+  // no ordinary meaning for a loop).
   //
   // Iterates (re-scanning after every successful split, since Compact()
   // inside SplitNakedEdgeAt() renumbers every edge/vertex index) until a
