@@ -74,6 +74,16 @@ same as every other headless mode this app already has).
   currently empty, missing, or unreadable (fails *closed*, not open) -
   a mistyped path can never silently leave the compute server open the
   way an empty `--serve-token` list would.
+- `--serve-token-file-ttl SECONDS`, with `--serve-token-file`, adds real
+  automatic *expiry* - the one piece plain `--serve-token-file` still
+  lacked (it can rotate or revoke a token live, but an untouched file's
+  own entries stayed valid forever). Once the file's own last-write time
+  is more than `SECONDS` old, its entries are treated as expired - the
+  identical fail-*closed* handling as a missing file, not a fallback to
+  open. Renewing access needs only a `touch` (or any rewrite, even with
+  unchanged content) of the file, not a restart. Omit the flag to keep
+  the previous behavior: entries stay valid for as long as the file
+  simply exists, however old.
 - `POST /run` runs the request body as a **Lua** script; `POST /run/python`
   runs it as a **Python** script against the embedded `dino8` module (only
   on a build with Python support - see `BATCH_SCRIPTING.md`/`PythonEngine.h`;
@@ -232,13 +242,16 @@ $ curl -s --data '{"type":"bogus"}' http://127.0.0.1:8080/objects
   unrelated local process can't learn one byte at a time by timing
   repeated guesses) over a plaintext loopback-only socket - distinct
   callers can now each hold their own named token rather than sharing
-  exactly one secret (see above), and `--serve-token-file`'s entries can
-  now be rotated or revoked live, with no restart (see above) - but there
-  is still no hashing and still no automatic *expiry*: a file-sourced
-  token stays valid until something (an operator, a script, a cron job)
-  edits it back out, there is no built-in TTL. Good enough to stop an
-  unrelated local process or script from hitting an unprotected endpoint
-  by accident, nowhere near OAuth/API-key-management. This binds
+  exactly one secret (see above), `--serve-token-file`'s entries can now
+  be rotated or revoked live with no restart (see above), and
+  `--serve-token-file-ttl` adds real automatic expiry on top of that (see
+  above) - but there is still no hashing, and a plain `--serve-token`
+  flag (as opposed to a `--serve-token-file` entry) still has none of
+  this: fixed for the process's whole lifetime, no rotation, no
+  revocation, no expiry short of a restart with a different set of
+  flags. Good enough to stop an unrelated local process or script from
+  hitting an unprotected endpoint by accident, nowhere near
+  OAuth/API-key-management. This binds
   `127.0.0.1` and is meant for local automation (a build script, a CI job,
   a teammate's script talking to a running Dino 8), not for exposing to a
   network you don't trust even with tokens set.

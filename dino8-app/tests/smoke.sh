@@ -7905,6 +7905,60 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     fi
   fi
 
+  # --serve-token-file-ttl: real automatic expiry, the one piece plain
+  # --serve-token-file still lacked (it can rotate/revoke live, but an
+  # unedited file's own tokens stayed valid forever). A 2s TTL, a fresh
+  # token file, and real sleeps (the same mtime-comparison-needs-a-real-
+  # elapsed-interval technique the DataLinkUpdate checks above already
+  # use) prove a token that authenticated moments ago stops working once
+  # the file goes stale, and starts working again the instant the file is
+  # rewritten (even with the IDENTICAL token text) - `touch`-to-renew,
+  # no restart.
+  TTL_LOG="$TMPW/serve_token_ttl.log"
+  TTL_PATH="$TMPW/serve_tokens_ttl.txt"
+  printf 'ttltoken\n' > "$TTL_PATH"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 30 "$BIN" --serve 0 --serve-token-file "$TTL_PATH" --serve-token-file-ttl 2 --serve-max-requests 3 > "$TTL_LOG" 2>&1 &
+  else
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token-file "$TTL_PATH" --serve-token-file-ttl 2 --serve-max-requests 3 > "$TTL_LOG" 2>&1 &
+  fi
+  TTL_PID=$!
+
+  TTL_PORT=""
+  for _ in $(seq 1 100); do
+    if grep -q "^serve: listening on port " "$TTL_LOG" 2>/dev/null; then
+      TTL_PORT="$(grep "^serve: listening on port " "$TTL_LOG" | head -1 | awk '{print $NF}')"
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ -z "$TTL_PORT" ]; then
+    cat "$TTL_LOG"; echo "FAIL: --serve-token-file-ttl server never printed its listening port within 10s"; fail=1
+    kill "$TTL_PID" 2>/dev/null || true
+    wait "$TTL_PID" 2>/dev/null || true
+  else
+    set +e
+    TTL_RESP_FRESH="$(curl -s --max-time 10 -H 'Authorization: Bearer ttltoken' -X POST --data 'print("fresh ok")' "http://127.0.0.1:$TTL_PORT/run")"
+    sleep 4
+    TTL_CODE_EXPIRED="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer ttltoken' -X POST --data 'print("should not run")' "http://127.0.0.1:$TTL_PORT/run")"
+    printf 'ttltoken\n' > "$TTL_PATH"
+    TTL_RESP_RENEWED="$(curl -s --max-time 10 -H 'Authorization: Bearer ttltoken' -X POST --data 'print("renewed ok")' "http://127.0.0.1:$TTL_PORT/run")"
+    set -e
+    echo "$TTL_RESP_FRESH" | grep -q "^fresh ok$" && echo "ok   --serve-token-file-ttl accepts a token right after the file was written (well inside the TTL)" || { echo "$TTL_RESP_FRESH"; echo "FAIL --serve-token-file-ttl rejected a fresh token"; fail=1; }
+    [ "$TTL_CODE_EXPIRED" = "401" ] && echo "ok   the identical token is rejected once the file's own age exceeds --serve-token-file-ttl, with no edit to the file at all - real automatic expiry" || { echo "FAIL --serve-token-file-ttl still accepted a token from a stale file (HTTP $TTL_CODE_EXPIRED, expected 401) - expiry did not take effect"; fail=1; }
+    echo "$TTL_RESP_RENEWED" | grep -q "^renewed ok$" && echo "ok   rewriting the file (even with the identical token text) renews it - access resumes immediately, no restart needed" || { echo "$TTL_RESP_RENEWED"; echo "FAIL --serve-token-file-ttl did not accept the token again after the file was rewritten"; fail=1; }
+
+    set +e; wait "$TTL_PID"; TTL_EC=$?; set -e
+    if [ "$TTL_EC" -eq 124 ]; then
+      cat "$TTL_LOG"; echo "FAIL: --serve-token-file-ttl process hung and was killed by the 30s timeout instead of exiting after --serve-max-requests"; fail=1
+    elif [ "$TTL_EC" -ne 0 ]; then
+      cat "$TTL_LOG"; echo "FAIL: --serve-token-file-ttl process exited $TTL_EC, expected 0"; fail=1
+    else
+      grep -q "^serve: done requests=3$" "$TTL_LOG" && echo "ok   --serve-token-file-ttl server exited cleanly on its own after 3 real HTTP requests" || { cat "$TTL_LOG"; echo "FAIL --serve-token-file-ttl done-summary line missing or wrong"; fail=1; }
+    fi
+  fi
+
   # A missing/unreadable token file must fail CLOSED (deny everything),
   # never silently fall back to the fully-open behavior an empty
   # serve_tokens alone would mean - a typo'd --serve-token-file path must
