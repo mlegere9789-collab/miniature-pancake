@@ -364,6 +364,36 @@ Mesh MinkowskiDifference(const Mesh& a, const Mesh& b);
 // solid to nothing.
 Mesh OffsetSolid(const Mesh& solid, double distance, int sphere_divisions = 24);
 
+// Closes the "general closed hollow shell... at B-rep level only via two
+// separate calls" gap PARITY_MAP's own "Closed hollow shell" bullet names
+// for this engine: `BooleanCombine(solid, OffsetSolid(solid, -thickness,
+// sphere_divisions), BooleanOp::Difference)` folded into one call, rather
+// than a caller composing OffsetSolid()'s own erosion and
+// BooleanCombine()'s own subtraction by hand.
+//
+// Unlike `Mesh::Shell(thickness)` (mesh.h) - which moves every vertex
+// along its own normal, so the inner wall inherits the exact same SHARP
+// corners as the outer wall - this erodes the inner wall with a ball
+// (`OffsetSolid()`'s own Minkowski construction). For a CONVEX solid the
+// two constructions agree (ball erosion of a convex body is itself exact
+// and sharp, per `OffsetSolid()`'s own doc comment above), but at a
+// CONCAVE (reflex) edge or corner, ball erosion rounds it - the same
+// morphological rounding `OffsetSolid(-t)` already produces there on its
+// own - while `Mesh::Shell()`'s per-vertex offset stays sharp. Neither
+// construction is "more correct" than the other; this is the one built
+// on ball erosion, for a caller that specifically wants that rounding
+// (or wants OffsetSolid()'s own Minkowski offset as the inner wall for
+// some other reason) without composing the two calls itself.
+//
+// Inherits `OffsetSolid()`'s own failure mode for the inner wall (throws
+// std::runtime_error if `thickness` erodes `solid` away to nothing) and
+// `BooleanCombine()`'s own failure mode for the final subtraction
+// (throws std::runtime_error if the underlying Manifold boolean fails).
+// Throws std::invalid_argument if `thickness` is not finite or not
+// strictly positive - a zero or negative thickness has no eroded inner
+// wall to subtract in the first place.
+Mesh ShellViaOffsetSolid(const Mesh& solid, double thickness, int sphere_divisions = 24);
+
 // Splits `mesh` into its disconnected pieces - one Mesh per connected
 // component - backed by Manifold's own `Manifold::Decompose`. The
 // counterpart to Mesh::MergeAndWeld() concatenating several meshes into
