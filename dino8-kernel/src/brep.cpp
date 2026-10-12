@@ -672,7 +672,7 @@ double Brep::Area() const {
   return total;
 }
 
-Brep::OrientedBox Brep::GetOrientedBoundingBox() const {
+Brep::OrientedBox Brep::GetOrientedBoundingBox(int u_divisions, int v_divisions) const {
   const int face_count = brep_.m_F.Count();
   if (face_count == 0) {
     throw std::runtime_error("dino8::kernel::Brep::GetOrientedBoundingBox: this Brep has no faces");
@@ -681,34 +681,47 @@ Brep::OrientedBox Brep::GetOrientedBoundingBox() const {
   // Pool every face's own densely-sampled grid points into ONE combined
   // mean/covariance (not decided per-face and merged), the same PCA
   // construction NurbsCurve::GetOrientedBoundingBox()/NurbsSurface::
-  // GetOrientedBoundingBox() already use, generalized across faces.
+  // GetOrientedBoundingBox() already use, generalized across faces. Each
+  // face's surface is read via the same two-tier "real ON_NurbsSurface,
+  // or GetNurbForm() if it isn't one" pattern ResolveFace() above already
+  // establishes, so a face backed by a non-NURBS ON_Surface is still
+  // covered rather than silently throwing.
   Point3d mean(0, 0, 0);
   std::vector<Point3d> samples;
-  std::vector<const ON_NurbsSurface*> surfaces(static_cast<size_t>(face_count), nullptr);
+  std::vector<ON_NurbsSurface> surfaces;
+  surfaces.reserve(static_cast<size_t>(face_count));
   for (int i = 0; i < face_count; ++i) {
     const ON_BrepFace& face = brep_.m_F[i];
-    const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
-    if (!s) {
-      throw std::runtime_error("dino8::kernel::Brep::GetOrientedBoundingBox: face " + std::to_string(i) +
-                                " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
+    const ON_Surface* raw_srf = face.SurfaceOf();
+    if (!raw_srf) continue;  // a deleted, uncompacted face
+    ON_NurbsSurface nurbs;
+    if (const auto* ns = ON_NurbsSurface::Cast(raw_srf)) {
+      nurbs = *ns;
+    } else if (raw_srf->GetNurbForm(nurbs) <= 0) {
+      continue;
     }
-    surfaces[static_cast<size_t>(i)] = s;
+    surfaces.push_back(std::move(nurbs));
+    const ON_NurbsSurface& s = surfaces.back();
 
-    const ON_Interval du = s->Domain(0), dv = s->Domain(1);
-    const int nu = std::max(20, 3 * s->CVCount(0));
-    const int nv = std::max(20, 3 * s->CVCount(1));
-    const bool closed_u = s->IsClosed(0) != 0, closed_v = s->IsClosed(1) != 0;
+    const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+    const int nu = u_divisions > 0 ? u_divisions : std::max(20, 3 * s.CVCount(0));
+    const int nv = v_divisions > 0 ? v_divisions : std::max(20, 3 * s.CVCount(1));
+    const bool closed_u = s.IsClosed(0) != 0, closed_v = s.IsClosed(1) != 0;
     const int samples_u = closed_u ? nu : nu + 1;
     const int samples_v = closed_v ? nv : nv + 1;
     for (int a = 0; a < samples_u; ++a) {
       const double u = du.Min() + (du.Max() - du.Min()) * a / nu;
       for (int b = 0; b < samples_v; ++b) {
         const double v = dv.Min() + (dv.Max() - dv.Min()) * b / nv;
-        const Point3d p = s->PointAt(u, v);
+        const Point3d p = s.PointAt(u, v);
         samples.push_back(p);
         mean = mean + Vector3d(p);
       }
     }
+  }
+  if (samples.empty()) {
+    throw std::runtime_error(
+        "dino8::kernel::Brep::GetOrientedBoundingBox: no face produced a usable surface");
   }
   mean = Point3d(Vector3d(mean) / static_cast<double>(samples.size()));
 
@@ -748,15 +761,11 @@ Brep::OrientedBox Brep::GetOrientedBoundingBox() const {
   double hi[3] = {-std::numeric_limits<double>::max(), -std::numeric_limits<double>::max(),
                    -std::numeric_limits<double>::max()};
   const Point3d origin = samples[0];
-  for (int i = 0; i < face_count; ++i) {
-    const ON_NurbsSurface* s = surfaces[static_cast<size_t>(i)];
-    for (int a = 0; a < s->CVCount(0); ++a) {
-      for (int b = 0; b < s->CVCount(1); ++b) {
+  for (const ON_NurbsSurface& s : surfaces) {
+    for (int a = 0; a < s.CVCount(0); ++a) {
+      for (int b = 0; b < s.CVCount(1); ++b) {
         ON_3dPoint cv;
-        if (!s->GetCV(a, b, cv)) {
-          throw std::runtime_error("dino8::kernel::Brep::GetOrientedBoundingBox: GetCV failed on face " +
-                                    std::to_string(i));
-        }
+        if (!s.GetCV(a, b, cv)) continue;  // already validated by construction above
         const Vector3d rel = Point3d(cv) - origin;
         for (int k = 0; k < 3; ++k) {
           const double proj = ON_DotProduct(rel, axes[static_cast<size_t>(k)]);

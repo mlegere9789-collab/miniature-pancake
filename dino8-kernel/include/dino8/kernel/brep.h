@@ -2728,8 +2728,17 @@ class Brep {
   // face-by-face and then merged, so a Brep whose individual faces have
   // no obvious symmetry of their own but whose COMBINED shape does - e.g.
   // a box built from 6 separate planar faces - still finds that combined
-  // symmetry). `half_extents`/`center` are the exact min/max projection
-  // of every face's own CONTROL POINTS (not the sampled points) onto each
+  // symmetry). Each face's surface is read via `ON_NurbsSurface::Cast()`
+  // first, falling back to `GetNurbForm()` only if that cast fails - the
+  // same two-tier pattern `ResolveFace()` (brep.cpp) already establishes
+  // for reading an arbitrary face's surface this way, so a face backed by
+  // a non-NURBS `ON_Surface` is still covered, not silently skipped.
+  // `u_divisions`/`v_divisions`, when positive, pin every face's own
+  // sampling grid to that fixed resolution; left at their default of -1,
+  // each face instead scales its own grid to its control net (the same
+  // `max(20, 3 * CVCount)` default `NurbsSurface::GetOrientedBoundingBox()`
+  // uses). `half_extents`/`center` are the exact min/max projection of
+  // every face's own CONTROL POINTS (not the sampled points) onto each
   // chosen axis, the same convex-hull safety argument the curve/surface
   // versions already rely on, pooled the same way. Falls back to the
   // world X/Y/Z axes on a genuinely degenerate pooled covariance, same as
@@ -2742,16 +2751,15 @@ class Brep {
   // excludes part of the solid), not always the tightest achievable
   // bound.
   //
-  // Throws std::runtime_error if this Brep has no faces, or if any
-  // face's surface is not backed by an ON_NurbsSurface (every face this
-  // kernel builds should be - the same precondition Volume()/Area()
-  // already enforce).
+  // Throws std::runtime_error if this Brep has no faces, or if no face
+  // produces a usable surface (including one backed neither by a real
+  // ON_NurbsSurface nor a convertible GetNurbForm()).
   struct OrientedBox {
     Point3d center;
     std::array<Vector3d, 3> axes;
     std::array<double, 3> half_extents{};
   };
-  OrientedBox GetOrientedBoundingBox() const;
+  OrientedBox GetOrientedBoundingBox(int u_divisions = -1, int v_divisions = -1) const;
 
   // Tessellates each face into a triangle mesh via NurbsSurface's grid
   // tessellator (see its comment for why this doesn't go through

@@ -483,28 +483,33 @@ class NurbsSurface {
   // `center`. The axes come from PCA on this surface's own DENSELY
   // SAMPLED points, the identical construction `NurbsCurve::
   // GetOrientedBoundingBox()` already uses, generalized from a 1D
-  // arc-length-even parameter sweep to a 2D grid: `max(20, 3 *
-  // CVCountU())` by `max(20, 3 * CVCountV())` evenly-spaced (u, v) pairs
-  // over `Domain(0) x Domain(1)`, dropping the final row/column in
-  // whichever direction `IsClosed(direction)` is true (the identical
-  // "don't double-count the shared seam point" fix the curve version
-  // already applies, generalized to two independent directions here).
-  // `half_extents`/`center` are the exact min/max projection of every one
-  // of this surface's own CONTROL POINTS (`ControlPointAt(i, j)` over the
-  // full `CVCountU() x CVCountV()` grid) onto each chosen axis - not the
-  // sampled points - so the result is PROVABLY SAFE regardless, the same
-  // convex-hull argument the curve version already relies on. On a
-  // genuinely degenerate (rank-deficient) sampled covariance (e.g. a
-  // flat planar surface, whose own samples all lie in one plane), this
-  // falls back to the world X/Y/Z axes, same as the curve version - the
-  // control-point projection step is what actually keeps the box safe
-  // either way, not the particular axis choice.
+  // arc-length-even parameter sweep to a 2D grid over `Domain(0) x
+  // Domain(1)`, dropping the final row/column in whichever direction
+  // `IsClosed(direction)` is true (the identical "don't double-count the
+  // shared seam point" fix the curve version already applies, generalized
+  // to two independent directions here). `u_divisions`/`v_divisions`,
+  // when positive, pin the grid to that fixed resolution (a caller-
+  // configurable sampling knob two independent sessions each added); left
+  // at their default of -1, this instead scales the grid to this
+  // surface's own control net - `max(20, 3 * CVCountU())` by `max(20, 3 *
+  // CVCountV())` - the denser default either session's own isolated
+  // implementation already used. `half_extents`/`center` are the exact
+  // min/max projection of every one of this surface's own CONTROL POINTS
+  // (`ControlPointAt(i, j)` over the full `CVCountU() x CVCountV()` grid)
+  // onto each chosen axis - not the sampled points - so the result is
+  // PROVABLY SAFE regardless of sampling density, the same convex-hull
+  // argument the curve version already relies on. On a genuinely
+  // degenerate (rank-deficient) sampled covariance (e.g. a flat planar
+  // surface, whose own samples all lie in one plane), this falls back to
+  // the world X/Y/Z axes, same as the curve version - the control-point
+  // projection step is what actually keeps the box safe either way, not
+  // the particular axis choice.
   struct OrientedBox {
     Point3d center;
     std::array<Vector3d, 3> axes;
     std::array<double, 3> half_extents{};
   };
-  OrientedBox GetOrientedBoundingBox() const;
+  OrientedBox GetOrientedBoundingBox(int u_divisions = -1, int v_divisions = -1) const;
 
   // Whether the surface is (a portion of) a sphere within `tolerance`.
   // Delegates to `ON_Surface::IsSphere` - `ON_NurbsSurface` doesn't

@@ -1762,6 +1762,68 @@ void TestSurfaceMinDistanceTo() {
   }
 }
 
+void TestSurfaceGetOrientedBoundingBox() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A flat, non-square 20x10 rectangle in world XY (degree 1x1, so its
+  // control net is exactly its own 4 corners) - the surface sibling of
+  // TestCurveGetOrientedBoundingBox's own non-square-rectangle fixture.
+  // One axis should match X with half-extent close to 10, one match Y
+  // with half-extent close to 5, and the third (Z) have half-extent
+  // exactly 0 (flat).
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 10, 0),
+      Point3d(20, 0, 0),
+      Point3d(20, 10, 0),
+  };
+  const NurbsSurface rect = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const NurbsSurface::OrientedBox box = rect.GetOrientedBoundingBox();
+
+  auto find_best = [&](Vector3d target) {
+    int best_k = -1;
+    double best_d = -1;
+    for (int k = 0; k < 3; ++k) {
+      const double d = std::abs(ON_DotProduct(box.axes[static_cast<size_t>(k)], target));
+      if (d > best_d) {
+        best_d = d;
+        best_k = k;
+      }
+    }
+    return best_k;
+  };
+  const int xi = find_best(Vector3d(1, 0, 0));
+  const int yi = find_best(Vector3d(0, 1, 0));
+  const int zi = find_best(Vector3d(0, 0, 1));
+  Check(xi != yi && yi != zi && xi != zi,
+        "NurbsSurface::GetOrientedBoundingBox: the rectangle's 3 axes genuinely match 3 distinct world directions");
+  Check(std::abs(box.half_extents[static_cast<size_t>(xi)] - 10.0) < 0.1,
+        "NurbsSurface::GetOrientedBoundingBox: the 20-wide rectangle's X-matching axis has half-extent close to 10");
+  Check(std::abs(box.half_extents[static_cast<size_t>(yi)] - 5.0) < 0.1,
+        "NurbsSurface::GetOrientedBoundingBox: the 10-tall rectangle's Y-matching axis has half-extent close to 5");
+  Check(box.half_extents[static_cast<size_t>(zi)] < 1e-6,
+        "NurbsSurface::GetOrientedBoundingBox: the flat rectangle's Z-matching axis has half-extent exactly 0");
+  Check(box.center.DistanceTo(Point3d(10, 5, 0)) < 1e-3,
+        "NurbsSurface::GetOrientedBoundingBox: the rectangle's own center is its real geometric center (10,5,0)");
+
+  // Safety invariant, independent of the measured closeness above: every
+  // control point must lie within the returned box along every axis
+  // (the convex-hull guarantee this method's own doc comment makes).
+  for (int i = 0; i < rect.CVCountU(); ++i) {
+    for (int j = 0; j < rect.CVCountV(); ++j) {
+      const Vector3d rel = rect.ControlPointAt(i, j) - box.center;
+      for (int k = 0; k < 3; ++k) {
+        const double proj = std::abs(ON_DotProduct(rel, box.axes[static_cast<size_t>(k)]));
+        Check(proj <= box.half_extents[static_cast<size_t>(k)] + 1e-9,
+              "NurbsSurface::GetOrientedBoundingBox: every control point genuinely lies within the "
+              "returned box along every axis");
+      }
+    }
+  }
+}
+
 void TestCurveGetOrientedBoundingBox() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -1837,60 +1899,6 @@ void TestCurveGetOrientedBoundingBox() {
         const double proj = std::abs(ON_DotProduct(rel, box.axes[static_cast<size_t>(k)]));
         Check(proj <= box.half_extents[static_cast<size_t>(k)] + 1e-9,
               "GetOrientedBoundingBox: every control point genuinely lies within the returned box along every axis");
-      }
-    }
-  }
-}
-
-void TestSurfaceGetOrientedBoundingBox() {
-  using dino8::kernel::NurbsSurface;
-  using dino8::kernel::Point3d;
-  using dino8::kernel::Vector3d;
-
-  // A flat 20 (X) x 10 (Y) bilinear rectangle in the world XY plane: one
-  // axis should match X with half-extent close to 10, one should match Y
-  // with half-extent close to 5, and the third (Z) should have half-extent
-  // exactly 0 (flat) - the surface-level counterpart of
-  // TestCurveGetOrientedBoundingBox's own non-square-rectangle case.
-  // FromControlGrid()'s own `idx = u * v_count + v` indexing: CV(0,0),
-  // CV(0,1), CV(1,0), CV(1,1) in that order.
-  const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 10, 0), Point3d(20, 0, 0), Point3d(20, 10, 0)};
-  const NurbsSurface rect = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
-  const NurbsSurface::OrientedBox box = rect.GetOrientedBoundingBox();
-
-  auto find_best = [&](Vector3d target) {
-    int best_k = -1;
-    double best_d = -1;
-    for (int k = 0; k < 3; ++k) {
-      const double d = std::abs(ON_DotProduct(box.axes[static_cast<size_t>(k)], target));
-      if (d > best_d) { best_d = d; best_k = k; }
-    }
-    return best_k;
-  };
-  const int xi = find_best(Vector3d(1, 0, 0));
-  const int yi = find_best(Vector3d(0, 1, 0));
-  const int zi = find_best(Vector3d(0, 0, 1));
-  Check(xi != yi && yi != zi && xi != zi,
-        "Surface GetOrientedBoundingBox: the flat rectangle's 3 axes genuinely match 3 distinct world directions");
-  Check(std::abs(box.half_extents[static_cast<size_t>(xi)] - 10.0) < 0.1,
-        "Surface GetOrientedBoundingBox: the 20-wide rectangle's X-matching axis has half-extent close to 10");
-  Check(std::abs(box.half_extents[static_cast<size_t>(yi)] - 5.0) < 0.1,
-        "Surface GetOrientedBoundingBox: the 10-tall rectangle's Y-matching axis has half-extent close to 5");
-  Check(box.half_extents[static_cast<size_t>(zi)] < 1e-6,
-        "Surface GetOrientedBoundingBox: the flat rectangle's Z-matching axis has half-extent exactly 0");
-  Check(box.center.DistanceTo(Point3d(10, 5, 0)) < 1e-3,
-        "Surface GetOrientedBoundingBox: the rectangle's own center is its real geometric center (10,5,0)");
-
-  // Safety invariant, independent of the measured closeness above: every
-  // control point must lie within the returned box along every axis (the
-  // convex-hull guarantee this method's own doc comment makes).
-  for (int i = 0; i < rect.CVCountU(); ++i) {
-    for (int j = 0; j < rect.CVCountV(); ++j) {
-      const Vector3d rel = rect.ControlPointAt(i, j) - box.center;
-      for (int k = 0; k < 3; ++k) {
-        const double proj = std::abs(ON_DotProduct(rel, box.axes[static_cast<size_t>(k)]));
-        Check(proj <= box.half_extents[static_cast<size_t>(k)] + 1e-9,
-              "Surface GetOrientedBoundingBox: every control point genuinely lies within the returned box along every axis");
       }
     }
   }
@@ -77018,9 +77026,8 @@ int main() {
   RunTest("TestCurveMinDistanceTo", TestCurveMinDistanceTo);
   RunTest("TestCurveMinDistanceToSurface", TestCurveMinDistanceToSurface);
   RunTest("TestSurfaceMinDistanceTo", TestSurfaceMinDistanceTo);
-  RunTest("TestCurveGetOrientedBoundingBox", TestCurveGetOrientedBoundingBox);
   RunTest("TestSurfaceGetOrientedBoundingBox", TestSurfaceGetOrientedBoundingBox);
-  RunTest("TestBrepGetOrientedBoundingBox", TestBrepGetOrientedBoundingBox);
+  RunTest("TestCurveGetOrientedBoundingBox", TestCurveGetOrientedBoundingBox);
   RunTest("TestCurveGetTightBoundingBoxOverload", TestCurveGetTightBoundingBoxOverload);
   RunTest("TestCurveKnotAt", TestCurveKnotAt);
   RunTest("TestCurveControlPointAt", TestCurveControlPointAt);
@@ -77269,6 +77276,7 @@ int main() {
   RunTest("TestBrepBoxWeldedHasGenuineTopology", TestBrepBoxWeldedHasGenuineTopology);
   RunTest("TestBrepLacksFullOpenNurbsTopologyButStillUsable", TestBrepLacksFullOpenNurbsTopologyButStillUsable);
   RunTest("TestBrepGetTightBoundingBox", TestBrepGetTightBoundingBox);
+  RunTest("TestBrepGetOrientedBoundingBox", TestBrepGetOrientedBoundingBox);
   RunTest("TestBrepGetTightBoundingBoxExactForTrimmedPlanarFaces", TestBrepGetTightBoundingBoxExactForTrimmedPlanarFaces);
   RunTest("TestBrepBooleanEndToEnd", TestBrepBooleanEndToEnd);
   RunTest("TestBrepSphereIsClosedAndWatertight", TestBrepSphereIsClosedAndWatertight);

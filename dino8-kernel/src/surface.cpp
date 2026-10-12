@@ -862,11 +862,11 @@ Result NurbsSurface::MakePeriodicExact(int direction) {
 
 bool NurbsSurface::IsPlanar(double tolerance) const { return surface_.IsPlanar(nullptr, tolerance); }
 
-NurbsSurface::OrientedBox NurbsSurface::GetOrientedBoundingBox() const {
+NurbsSurface::OrientedBox NurbsSurface::GetOrientedBoundingBox(int u_divisions, int v_divisions) const {
   const int cv_u = CVCountU();
   const int cv_v = CVCountV();
-  const int nu = std::max(20, 3 * cv_u);
-  const int nv = std::max(20, 3 * cv_v);
+  const int nu = u_divisions > 0 ? u_divisions : std::max(20, 3 * cv_u);
+  const int nv = v_divisions > 0 ? v_divisions : std::max(20, 3 * cv_v);
 
   // Even (u, v) grid sampling for the PCA covariance - dropping the final
   // row/column in whichever direction is closed, the same "don't
