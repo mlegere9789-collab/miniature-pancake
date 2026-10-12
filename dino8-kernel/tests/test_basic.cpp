@@ -1092,6 +1092,134 @@ void TestCurveChangeSeam() {
   }
 }
 
+void TestCurveReparameterizeRational() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  // A single-span (Bezier) non-rational cubic: the base case the whole
+  // one-parameter Mobius family (`v = u / (c - (c-1)*u)` over the
+  // normalized domain) reduces to directly.
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 2, 0), Point3d(3, 2, 0), Point3d(4, 0, 0)};
+    const NurbsCurve c = NurbsCurve::FromControlPoints(pts, 3);
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(2.5, out) == Result::Ok, "ReparameterizeRational returns Ok on a single-span cubic");
+    Check(out.IsRational(), "ReparameterizeRational forces the result rational for shape_factor != 1");
+    const double T0 = c.Domain().min, T1 = c.Domain().max;
+    const double cc = 2.5;
+    double max_err = 0.0;
+    for (int k = 0; k <= 20; ++k) {
+      const double u = static_cast<double>(k) / 20.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      max_err = std::max(max_err, c.PointAt(T0 + u * (T1 - T0)).DistanceTo(out.PointAt(T0 + v * (T1 - T0))));
+    }
+    Check(max_err < 1e-9,
+          "ReparameterizeRational exactly reproduces the original curve's shape at the mapped parameter "
+          "(single span)");
+  }
+
+  // A multi-span curve (several interior knots, fully clamped) - the
+  // genuinely harder case: every span after the first shares one
+  // control point (and its weight) with the previous span, which must
+  // be reconciled by a per-span uniform weight rescale (a pure weight
+  // rescale changes no geometry) or the reassembled curve would not
+  // even be continuous in its own weight channel.
+  {
+    std::vector<Point3d> pts;
+    for (int i = 0; i < 10; ++i) pts.push_back(Point3d(static_cast<double>(i), std::sin(static_cast<double>(i)), 0));
+    const NurbsCurve c = NurbsCurve::FromControlPoints(pts, 3);
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(3.0, out) == Result::Ok, "ReparameterizeRational returns Ok on a multi-span curve");
+    const double T0 = c.Domain().min, T1 = c.Domain().max;
+    const double cc = 3.0;
+    double max_err = 0.0;
+    for (int k = 0; k <= 80; ++k) {
+      const double u = static_cast<double>(k) / 80.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      max_err = std::max(max_err, c.PointAt(T0 + u * (T1 - T0)).DistanceTo(out.PointAt(T0 + v * (T1 - T0))));
+    }
+    Check(max_err < 1e-9,
+          "ReparameterizeRational exactly reproduces a multi-span curve's shape at every sampled parameter, "
+          "not just at the span boundaries - the shared-control-point continuity rescale is genuinely correct, "
+          "not merely plausible-looking");
+  }
+
+  // An already-rational curve (a semicircle, which OpenNURBS represents
+  // as 2 Bezier spans) - confirms this doesn't assume the input started
+  // non-rational, and that the result is still genuinely a circle (not
+  // just shape-preserving in some weaker, non-geometric sense).
+  {
+    const ON_Arc arc(ON_Circle(ON_Plane::World_xy, 5.0), ON_Interval(0.0, ON_PI));
+    ON_NurbsCurve nc;
+    Check(arc.GetNurbForm(nc) != 0, "ReparameterizeRational setup: ON_Arc::GetNurbForm succeeds");
+    NurbsCurve c;
+    c.raw() = nc;
+    Check(c.IsRational(), "ReparameterizeRational setup: the arc fixture is already rational");
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(4.0, out) == Result::Ok, "ReparameterizeRational returns Ok on a rational arc");
+    const double T0 = c.Domain().min, T1 = c.Domain().max;
+    const double cc = 4.0;
+    double max_err = 0.0, max_radial_err = 0.0;
+    for (int k = 0; k <= 80; ++k) {
+      const double u = static_cast<double>(k) / 80.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      const Point3d p_old = c.PointAt(T0 + u * (T1 - T0));
+      const Point3d p_new = out.PointAt(T0 + v * (T1 - T0));
+      max_err = std::max(max_err, p_old.DistanceTo(p_new));
+      max_radial_err = std::max(max_radial_err, std::abs(p_new.DistanceTo(Point3d(0, 0, 0)) - 5.0));
+    }
+    Check(max_err < 1e-9, "ReparameterizeRational exactly reproduces a rational arc's shape");
+    Check(max_radial_err < 1e-9, "...and every reparameterized point is still genuinely on the same radius-5 circle");
+  }
+
+  // shape_factor == 1.0 is a true no-op: Result::NoOpAlreadySatisfied,
+  // and a non-rational input stays non-rational (no forced conversion
+  // for the identity case).
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+    const NurbsCurve c = NurbsCurve::FromControlPoints(pts, 2);
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(1.0, out) == Result::NoOpAlreadySatisfied,
+          "ReparameterizeRational(1.0) reports NoOpAlreadySatisfied");
+    Check(!out.IsRational(), "...and leaves a non-rational input genuinely non-rational, no forced conversion");
+  }
+
+  // A genuinely periodic curve (full-multiplicity wraparound knots,
+  // the same MakePeriodicExact() construction ChangeSeam's own test
+  // above already relies on) is refused - the clamped per-span
+  // decomposition this method assumes does not hold for a periodic
+  // knot vector's own wraparound structure.
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0), Point3d(1, -1, 0),
+                                       Point3d(0, 0, 0)};
+    NurbsCurve c = NurbsCurve::FromControlPoints(pts, 3);
+    Check(c.IsClosed(), "ReparameterizeRational setup: the periodic fixture is genuinely closed");
+    Check(c.MakePeriodicExact() == Result::Ok, "ReparameterizeRational setup: MakePeriodicExact succeeds");
+    Check(c.IsPeriodic(), "ReparameterizeRational setup: the fixture is genuinely periodic");
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(2.0, out) == Result::Failed, "ReparameterizeRational refuses a periodic curve");
+  }
+
+  // Invalid shape_factor throws.
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+    const NurbsCurve c = NurbsCurve::FromControlPoints(pts, 2);
+    NurbsCurve out;
+    Check(Throws([&] { c.ReparameterizeRational(0.0, out); }), "ReparameterizeRational(0.0) throws");
+    Check(Throws([&] { c.ReparameterizeRational(-2.0, out); }), "ReparameterizeRational(negative) throws");
+    Check(Throws([&] { c.ReparameterizeRational(std::nan(""), out); }), "ReparameterizeRational(NaN) throws");
+  }
+}
+
 void TestCurveMatchEnd() {
   using dino8::kernel::MatchContinuity;
   using dino8::kernel::MatchEndReport;
@@ -60317,6 +60445,158 @@ void TestSurfaceChangeSeam() {
         "ChangeSeam refuses a parameter outside that direction's own Domain()");
 }
 
+void TestSurfaceReparameterizeRational() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  // Single-span in U: the tensor-product generalization of
+  // NurbsCurve::ReparameterizeRational() - every control point keeps
+  // its exact position, every row (fixed V) gets the identical
+  // weight-rescale-by-U-index the curve-only case already proves
+  // correct.
+  {
+    const std::vector<Point3d> grid = {
+        Point3d(0, 0, 0), Point3d(0, 5, 1), Point3d(2, 0, 2), Point3d(2, 5, 0), Point3d(5, 0, -1), Point3d(5, 5, 1),
+    };
+    const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 3, 2, 2, 1);
+    NurbsSurface out;
+    Check(s.ReparameterizeRational(0, 2.5, out) == Result::Ok,
+          "ReparameterizeRational returns Ok on a single-span-in-U surface");
+    Check(out.IsRational(), "ReparameterizeRational forces the result rational for shape_factor != 1");
+    const double T0 = s.Domain(0).min, T1 = s.Domain(0).max;
+    const double cc = 2.5;
+    double max_err = 0.0;
+    for (int ku = 0; ku <= 20; ++ku) {
+      const double u = static_cast<double>(ku) / 20.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      const double u_old = T0 + u * (T1 - T0), u_new = T0 + v * (T1 - T0);
+      for (int kv = 0; kv <= 10; ++kv) {
+        const double vv = s.Domain(1).min + (s.Domain(1).max - s.Domain(1).min) * kv / 10.0;
+        max_err = std::max(max_err, s.PointAt(u_old, vv).DistanceTo(out.PointAt(u_new, vv)));
+      }
+    }
+    Check(max_err < 1e-9, "ReparameterizeRational(direction=0) exactly reproduces the surface's shape everywhere");
+  }
+
+  // Multi-span in V (several interior knots in the OTHER direction from
+  // the one being reparameterized) - the surface-level counterpart to
+  // the curve test's own multi-span continuity check, and confirms U's
+  // own knot vector, degree, and control count are completely untouched.
+  {
+    std::vector<Point3d> grid;
+    for (int i = 0; i < 6; ++i)
+      for (int j = 0; j < 5; ++j)
+        grid.push_back(Point3d(static_cast<double>(i), static_cast<double>(j),
+                                std::sin(static_cast<double>(i)) * std::cos(static_cast<double>(j))));
+    const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 6, 5, 3, 3);
+    NurbsSurface out;
+    Check(s.ReparameterizeRational(1, 3.0, out) == Result::Ok,
+          "ReparameterizeRational returns Ok on a multi-span-in-V surface");
+    Check(out.CVCountU() == s.CVCountU() && out.KnotCount(0) == s.KnotCount(0),
+          "ReparameterizeRational(direction=1) leaves the U direction's own knot vector/CV count untouched");
+    const double T0 = s.Domain(1).min, T1 = s.Domain(1).max;
+    const double cc = 3.0;
+    double max_err = 0.0;
+    for (int kv = 0; kv <= 40; ++kv) {
+      const double u = static_cast<double>(kv) / 40.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      const double v_old = T0 + u * (T1 - T0), v_new = T0 + v * (T1 - T0);
+      for (int ku = 0; ku <= 10; ++ku) {
+        const double uu = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * ku / 10.0;
+        max_err = std::max(max_err, s.PointAt(uu, v_old).DistanceTo(out.PointAt(uu, v_new)));
+      }
+    }
+    Check(max_err < 1e-9,
+          "ReparameterizeRational(direction=1) exactly reproduces a multi-span surface's shape everywhere - "
+          "the shared-control-point continuity rescale generalizes correctly to every row of the other "
+          "direction, not just a single curve");
+  }
+
+  // An already-rational surface (a sphere, genuinely multi-span in U)
+  // stays a sphere - confirms the shape invariant geometrically, not
+  // just via PointAt() agreement.
+  {
+    ON_NurbsSurface ns;
+    Check(ON_Sphere(ON_3dPoint(0, 0, 0), 3.0).GetNurbForm(ns) != 0,
+          "ReparameterizeRational setup: ON_Sphere::GetNurbForm succeeds");
+    NurbsSurface s;
+    s.raw() = ns;
+    Check(s.IsRational(), "ReparameterizeRational setup: the sphere fixture is already rational");
+    NurbsSurface out;
+    Check(s.ReparameterizeRational(0, 4.0, out) == Result::Ok,
+          "ReparameterizeRational returns Ok on a rational sphere");
+    const double T0 = s.Domain(0).min, T1 = s.Domain(0).max;
+    const double cc = 4.0;
+    double max_err = 0.0, max_radial_err = 0.0;
+    for (int ku = 0; ku <= 40; ++ku) {
+      const double u = static_cast<double>(ku) / 40.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      const double u_old = T0 + u * (T1 - T0), u_new = T0 + v * (T1 - T0);
+      for (int kv = 0; kv <= 10; ++kv) {
+        const double vv = s.Domain(1).min + (s.Domain(1).max - s.Domain(1).min) * kv / 10.0;
+        const Point3d p_old = s.PointAt(u_old, vv), p_new = out.PointAt(u_new, vv);
+        max_err = std::max(max_err, p_old.DistanceTo(p_new));
+        max_radial_err = std::max(max_radial_err, std::abs(p_new.DistanceTo(Point3d(0, 0, 0)) - 3.0));
+      }
+    }
+    Check(max_err < 1e-9, "ReparameterizeRational exactly reproduces a rational sphere's shape");
+    Check(max_radial_err < 1e-9, "...and every reparameterized point is still genuinely on the same radius-3 sphere");
+  }
+
+  // shape_factor == 1.0 is a true no-op.
+  {
+    const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+    const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    NurbsSurface out;
+    Check(s.ReparameterizeRational(0, 1.0, out) == Result::NoOpAlreadySatisfied,
+          "ReparameterizeRational(1.0) reports NoOpAlreadySatisfied");
+    Check(!out.IsRational(), "...and leaves a non-rational input genuinely non-rational, no forced conversion");
+  }
+
+  // Invalid direction/shape_factor throws.
+  {
+    const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+    const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    NurbsSurface out;
+    Check(Throws([&] { s.ReparameterizeRational(2, 2.0, out); }), "ReparameterizeRational(direction=2) throws");
+    Check(Throws([&] { s.ReparameterizeRational(-1, 2.0, out); }), "ReparameterizeRational(direction=-1) throws");
+    Check(Throws([&] { s.ReparameterizeRational(0, 0.0, out); }), "ReparameterizeRational(shape_factor=0) throws");
+    Check(Throws([&] { s.ReparameterizeRational(0, -3.0, out); }),
+          "ReparameterizeRational(negative shape_factor) throws");
+  }
+
+  // A surface periodic in the target direction is refused, the same
+  // scope boundary the curve overload carries. ON_Cylinder::GetNurbForm
+  // itself comes back closed-but-clamped, not periodic (confirmed
+  // directly, not assumed - the same "closed does not imply periodic"
+  // nuance ChangeSeam's own tests already established for curves), so
+  // this forces genuine periodicity via this class's own
+  // MakePeriodicExact(direction) first.
+  {
+    ON_NurbsSurface cyl_ns;
+    const ON_Cylinder cyl(ON_Circle(ON_Plane::World_xy, 2.0), 5.0);
+    Check(cyl.GetNurbForm(cyl_ns) != 0, "ReparameterizeRational setup: ON_Cylinder::GetNurbForm succeeds");
+    NurbsSurface wall;
+    wall.raw() = cyl_ns;
+    Check(wall.IsClosed(0) && !wall.IsPeriodic(0),
+          "ReparameterizeRational setup: the cylinder wall fixture starts closed-but-not-periodic in U");
+    Check(wall.MakePeriodicExact(0) == Result::Ok, "ReparameterizeRational setup: MakePeriodicExact(0) succeeds");
+    Check(wall.IsPeriodic(0), "ReparameterizeRational setup: the fixture is now genuinely periodic in U");
+    NurbsSurface out;
+    Check(wall.ReparameterizeRational(0, 2.0, out) == Result::Failed,
+          "ReparameterizeRational refuses a direction the surface is periodic in");
+  }
+}
+
 void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Result;
@@ -77219,6 +77499,7 @@ int main() {
   RunTest("TestCurveRemoveKnotAt", TestCurveRemoveKnotAt);
   RunTest("TestCurveSetDomainReparameterizes", TestCurveSetDomainReparameterizes);
   RunTest("TestCurveChangeSeam", TestCurveChangeSeam);
+  RunTest("TestCurveReparameterizeRational", TestCurveReparameterizeRational);
   RunTest("TestCurveMatchEnd", TestCurveMatchEnd);
   RunTest("TestCurveAnalyzeEndContinuity", TestCurveAnalyzeEndContinuity);
   RunTest("TestCurveDeviationTo", TestCurveDeviationTo);
@@ -78108,6 +78389,7 @@ int main() {
 
   RunTest("TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape", TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape);
   RunTest("TestSurfaceChangeSeam", TestSurfaceChangeSeam);
+  RunTest("TestSurfaceReparameterizeRational", TestSurfaceReparameterizeRational);
   RunTest("TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise", TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise);
   RunTest("TestSurfaceReduceDegree", TestSurfaceReduceDegree);
   RunTest("TestSurfaceInterpolateThroughGrid", TestSurfaceInterpolateThroughGrid);
