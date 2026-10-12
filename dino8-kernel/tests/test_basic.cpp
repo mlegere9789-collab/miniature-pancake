@@ -4763,6 +4763,46 @@ void TestContainsPointExact() {
   Check(threw_empty, "ContainsPointExact throws std::invalid_argument for a Brep with no faces");
 }
 
+// PARITY_MAP's massprops category, "Signed distance point-to-solid" gap:
+// Mesh::SignedDistance() already does this for a tessellated mesh;
+// SignedDistanceToBrep() is the exact, trimmed-face Brep-level
+// counterpart, composing ClosestPointOnBrep() (magnitude) and
+// ContainsPointExact() (sign) the identical way Mesh::SignedDistance()
+// itself composes Mesh::ClosestPoint()/Mesh::ContainsPoint().
+void TestSignedDistanceToBrep() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SignedDistanceToBrep;
+
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 5);
+  Check(std::fabs(SignedDistanceToBrep(Point3d(0, 0, 0), sphere.raw()) - (-5.0)) < 1e-6,
+        "the sphere's own center is inside, at exactly -radius (the farthest interior point from "
+        "the surface, hand-derivable)");
+  Check(std::fabs(SignedDistanceToBrep(Point3d(0, 0, 3), sphere.raw()) - (-2.0)) < 1e-6,
+        "a point 3 units from center along z, inside the radius-5 sphere, is at exactly -2 (5 - 3)");
+  Check(std::fabs(SignedDistanceToBrep(Point3d(8, 0, 0), sphere.raw()) - 3.0) < 1e-6,
+        "a point 8 units from center along x, outside the radius-5 sphere, is at exactly +3 (8 - 5)");
+  Check(std::fabs(SignedDistanceToBrep(Point3d(5, 0, 0), sphere.raw())) < 1e-4,
+        "a point exactly on the sphere's own surface is at distance ~0, whichever side the ray-cast "
+        "classifier's own tolerance happens to land it on");
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  Check(std::fabs(SignedDistanceToBrep(Point3d(1, 1, 1), box.raw()) - (-1.0)) < 1e-6,
+        "the 2x2x2 box's own center is inside, at exactly -1 (the distance to any of its 6 "
+        "equidistant faces, hand-derivable)");
+  Check(std::fabs(SignedDistanceToBrep(Point3d(5, 1, 1), box.raw()) - 3.0) < 1e-6,
+        "a point 3 units clear of the box's own x=2 face, straight out along x, is at exactly +3");
+
+  bool threw_empty = false;
+  try {
+    ON_Brep empty;
+    SignedDistanceToBrep(Point3d(0, 0, 0), empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "SignedDistanceToBrep throws std::invalid_argument for a Brep with no faces");
+}
+
 // PARITY_MAP's intersections category, "Pullback of a 3D curve to surface
 // parameter space" bullet: PullbackCurveToSurface() is the general-purpose
 // kernel entry point (SSX's own pcurve_a/pcurve_b are a by-product of a
@@ -77532,6 +77572,7 @@ int main() {
   RunTest("TestFireRayAtBrep", TestFireRayAtBrep);
   RunTest("TestClosestPointOnBrep", TestClosestPointOnBrep);
   RunTest("TestContainsPointExact", TestContainsPointExact);
+  RunTest("TestSignedDistanceToBrep", TestSignedDistanceToBrep);
   RunTest("TestPullbackCurveToSurfaceCylinderRulingLine", TestPullbackCurveToSurfaceCylinderRulingLine);
   RunTest("TestPullbackCurveToSurfaceAcrossPeriodicSeam", TestPullbackCurveToSurfaceAcrossPeriodicSeam);
   RunTest("TestIntersectBrepByPlaneBoxSideWalls", TestIntersectBrepByPlaneBoxSideWalls);
