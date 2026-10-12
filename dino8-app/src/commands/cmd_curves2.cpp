@@ -47,6 +47,16 @@ ObjectId AddCurveLike(CommandContext& ctx, const kernel::NurbsCurve& c, const Sc
   return ctx.Doc().Add(std::move(n));
 }
 
+ObjectId AddSurfaceLike(CommandContext& ctx, const kernel::NurbsSurface& s, const SceneObject& like) {
+  SceneObject n = SceneObject::MakeSurface(s);
+  n.layer_index = like.layer_index;
+  n.color = like.color;
+  n.color_by_layer = like.color_by_layer;
+  n.name = like.name;
+  n.user_text = like.user_text;
+  return ctx.Doc().Add(std::move(n));
+}
+
 // Replaces the geometry of curve object `id` in place.
 bool ReplaceCurve(CommandContext& ctx, ObjectId id, const kernel::NurbsCurve& c) {
   SceneObject* o = ctx.Doc().Find(id);
@@ -2480,7 +2490,7 @@ void RegisterCurves2Commands(CommandEngine& e) {
         for (const CurveCopy& c : CopyCurves(ctx, ids)) { kernel::NurbsCurve k = c.curve; if (k.raw().MakeClampedUniformKnotVector(1.0)) { ReplaceCurve(ctx, c.id, k); ++n; } }
         ctx.Print("MakeUniform: " + std::to_string(n) + " curve(s) now have uniform knots");
       }));
-  Reg(e, "ConvertToBeziers", OnSelection("Select curves to split into Bezier spans", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  Reg(e, "ConvertToBeziers", OnSelection("Select curves or surfaces to split into Bezier spans", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("ConvertToBeziers");
         int made = 0;
         for (const CurveCopy& c : CopyCurves(ctx, ids)) {
@@ -2494,6 +2504,19 @@ void RegisterCurves2Commands(CommandEngine& e) {
             AddCurveLike(ctx, piece, c.attrs); ++made;
           }
           ctx.Doc().Remove(c.id);
+        }
+        // Surfaces: the exact Boehm-knot-insertion-plus-Trim decomposition
+        // (NurbsSurface::DecomposeToBeziers) was kernel-only until this
+        // command wired it in - there was previously no user-facing way to
+        // split a surface into Bezier patches at all.
+        for (ObjectId id : ids) {
+          const SceneObject* o = ctx.Doc().Find(id);
+          if (!o || o->kind != ObjectKind::Surface || !o->surface) continue;
+          SceneObject attrs = *o;
+          std::vector<kernel::NurbsSurface> patches;
+          if (o->surface->DecomposeToBeziers(patches) == kernel::Result::Failed) continue;
+          for (const kernel::NurbsSurface& p : patches) { AddSurfaceLike(ctx, p, attrs); ++made; }
+          ctx.Doc().Remove(id);
         }
         ctx.Print("ConvertToBeziers: " + std::to_string(made) + " Bezier span(s)");
       }));
