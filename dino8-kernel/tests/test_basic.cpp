@@ -6743,11 +6743,46 @@ void TestIntersectCylinderCylinderUnequalRadiusClosedForm() {
   const auto disjoint = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_disjoint, tol);
   Check(disjoint.empty && !disjoint.not_full_pierce, "a genuinely skew pair whose cylinders never touch at any angle reports a genuine miss, not a partial-pierce flag");
 
-  // Equal radii are refused outright - this closed form requires UNEQUAL
-  // radii; IntersectCylinderCylinderIntersecting() is the equal-radius case.
+  // Equal radii with INTERSECTING axes are refused outright -
+  // IntersectCylinderCylinderIntersecting() is that exact case's own owner
+  // (two touching, not disjoint, Steinmetz ellipses).
   const ON_Cylinder cyl_equal(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_small), R));
   Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_equal, tol).equal_radius,
-        "two equal-radius cylinders are refused outright, not misrouted into this function's own construction");
+        "two equal-radius, intersecting-axes cylinders are refused outright, not misrouted into this function's own full-pierce construction");
+
+  // Equal radii with genuinely SKEW axes are NOT refused - the only other
+  // combination this bullet's own cylinder/cylinder gap ever named, closed
+  // by this exact round: the per-theta quadratic above never depended on
+  // R != r, only the separate `d + r < R` full-pierce shortcut does, which
+  // correctly reduces to the impossible `d < 0` for r == R (two congruent
+  // cylinders can never fully pierce one another), so a skew equal-radius
+  // pair close enough to overlap reports a genuine PARTIAL-pierce loop
+  // (never full-pierce), and one far enough apart reports a genuine miss.
+  const ON_Cylinder cyl_equal_skew_overlap(ON_Circle(ON_Plane(Point3d(0, 1, 0), axis_small), R));
+  const auto equal_skew_overlap = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_equal_skew_overlap, tol);
+  Check(!equal_skew_overlap.empty && !equal_skew_overlap.equal_radius && equal_skew_overlap.not_full_pierce &&
+            !equal_skew_overlap.partial_loops.empty(),
+        "two equal-radius, genuinely skew cylinders close enough to overlap report a real partial-penetration loop, not a refusal");
+  if (!equal_skew_overlap.empty) {
+    bool all_on_both = true;
+    const ON_NurbsCurve& loop = equal_skew_overlap.partial_loops.front();
+    Check(loop.IsValid() && loop.IsClosed(), "the reported equal-radius skew loop has a valid, genuinely closed NURBS form");
+    const int n = 48;
+    for (int i = 0; i <= n; ++i) {
+      const double t = loop.Domain().ParameterAt(static_cast<double>(i) / n);
+      const Point3d p = loop.PointAt(t);
+      if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-2 ||
+          std::abs(dist_to_axis(p, Point3d(0, 1, 0), axis_small) - R) > 1e-2) {
+        all_on_both = false;
+        break;
+      }
+    }
+    Check(all_on_both, "every sampled point of the equal-radius skew loop sits at exactly radius R from BOTH axes simultaneously - the defining property, not a hardcoded expected curve");
+  }
+  const ON_Cylinder cyl_equal_skew_disjoint(ON_Circle(ON_Plane(Point3d(0, 10, 0), axis_small), R));
+  const auto equal_skew_disjoint = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_equal_skew_disjoint, tol);
+  Check(equal_skew_disjoint.empty && !equal_skew_disjoint.equal_radius && !equal_skew_disjoint.not_full_pierce,
+        "two equal-radius, genuinely skew cylinders too far apart to ever touch report a genuine miss, not a refusal");
 
   // (Anti)parallel axes are refused outright - IntersectCylinderCylinderParallel()'s own case.
   const ON_Cylinder cyl_parallel(ON_Circle(ON_Plane(Point3d(5, 0, 0), axis_large), r));

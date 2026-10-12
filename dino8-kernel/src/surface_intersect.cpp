@@ -3755,14 +3755,15 @@ CylinderCylinderUnequalIntersection IntersectCylinderCylinderUnequalRadius(const
   }
 
   const double radius_tol = std::max(tolerance, 1e-9 * std::max(a.circle.radius, b.circle.radius));  // same relative-tolerance idiom IntersectCylinderCylinderIntersecting/CylinderPairRadiusTolerance (boolean.cpp) already use
-  if (std::fabs(a.circle.radius - b.circle.radius) <= radius_tol) {
-    out.equal_radius = true;
-    return out;
-  }
+  const bool radii_equal = std::fabs(a.circle.radius - b.circle.radius) <= radius_tol;
 
   // Order by radius - large/small - independent of the caller's own a/b
-  // argument order.
-  const bool a_is_large = a.circle.radius > b.circle.radius;
+  // argument order. When radii_equal, this is an arbitrary but harmless
+  // tie-break (`a` becomes "large"): the quadratic derived below (see this
+  // function's own header doc comment) never actually depended on R != r -
+  // only the separate `d + r < R` full-pierce shortcut does, which is
+  // handled generically further down.
+  const bool a_is_large = radii_equal || (a.circle.radius > b.circle.radius);
   const Vector3d axis_large = a_is_large ? axis_a : axis_b;
   const Vector3d axis_small = a_is_large ? axis_b : axis_a;
   const double R = a_is_large ? a.circle.radius : b.circle.radius;
@@ -3783,7 +3784,28 @@ CylinderCylinderUnequalIntersection IntersectCylinderCylinderUnequalRadius(const
   const Point3d on_large = large_c + s * axis_large;
   const Point3d on_small = small_c + t * axis_small;
   const double d = on_large.DistanceTo(on_small);
-  const bool axes_intersect = !(d > tolerance);  // for genuinely intersecting axes, full pierce reduces to r < R, already guaranteed by construction (equal radii already refused above) - matching the private splitter's own dispatch shape exactly.
+  const bool axes_intersect = !(d > tolerance);  // for genuinely intersecting, unequal-radius axes, full pierce reduces to r < R, already guaranteed by construction - matching the private splitter's own dispatch shape exactly.
+
+  if (radii_equal && axes_intersect) {
+    // EQUAL radius + INTERSECTING axes is IntersectCylinderCylinderIntersecting()'s
+    // own Steinmetz case - two ellipses that genuinely TOUCH at the single
+    // axes-crossing point rather than tracing two disjoint loops (the
+    // r < R margin this function's own full-pierce case otherwise relies
+    // on to keep its two roots strictly apart collapses to r == R exactly
+    // there), a genuinely different curve shape this quadratic isn't built
+    // for. Refuse outright, same as before this round.
+    out.equal_radius = true;
+    return out;
+  }
+  // EQUAL radius + SKEW axes falls through to the identical machinery
+  // below, previously refused here too but with no other owner at all:
+  // the only R/r-dependent shortcut anywhere in this function is the
+  // derived `d + r < R` full-pierce condition, which correctly reduces to
+  // the impossible `d < 0` when r == R (two congruent cylinders can never
+  // fully pierce one another - neither one is "larger") - the general
+  // disc(theta) classification just below naturally never finds a
+  // full-pierce range for this case on its own, with no special case
+  // needed to rule it out explicitly.
 
   // An arbitrary orthonormal basis (e0, e1) perpendicular to the smaller
   // cylinder's own axis - theta sweeps its own circle once regardless of
