@@ -12595,6 +12595,97 @@ void TestSurfaceTessellateGridNonUniformCertifiedAdaptive() {
         "std::invalid_argument for a negative max_refinements");
 }
 
+// Closes PARITY_MAP.md's own "Explicit sampling control (u/v suggested
+// parameter values honouring curvature/singularities)" gap:
+// SuggestedParameterValues() was heuristic-only, trusting each sampled
+// isocurve's own chord-height subdivision estimate without ever
+// measuring it against the true surface - unlike the sibling mesh-
+// producing certified-adaptive functions, which already measure and
+// refine. This checks the new value-returning counterpart against the
+// same singular-pole sphere TestSurfaceTessellateGridNonUniformCertifiedAdaptive()
+// already shows needs real refinement at a tight tolerance, not a flat
+// surface where the first attempt would trivially succeed either way.
+void TestSurfaceSuggestedParameterValuesCertifiedAdaptive() {
+  using dino8::kernel::NurbsSurface;
+
+  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 1.0);
+  ON_NurbsSurface sphere_surface;
+  sphere.GetNurbForm(sphere_surface);
+  NurbsSurface s;
+  s.raw() = sphere_surface;
+
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  const double chord_tolerance = 0.01;
+  const auto result = s.SuggestedParameterValuesCertifiedAdaptive(chord_tolerance);
+  Check(result.u_values.size() >= 2 && result.v_values.size() >= 2,
+        "SuggestedParameterValuesCertifiedAdaptive returns real, usable u/v value lists");
+  Check(result.achieved_deviation >= 0.0 && result.achieved_deviation <= chord_tolerance,
+        "SuggestedParameterValuesCertifiedAdaptive's own achieved deviation is genuinely at or "
+        "under chord_tolerance on a surface with singular poles");
+
+  // Independent cross-check: building a mesh from the RETURNED value
+  // lists and re-measuring it directly must reproduce the same achieved
+  // deviation this call already reported - the certification is about
+  // the values themselves, not an internal-only computation the caller
+  // can't verify.
+  const auto reproduced_mesh = s.TessellateGridNonUniform(result.u_values, result.v_values);
+  const double reproduced_deviation = s.MeasureMeshTessellationDeviation(reproduced_mesh);
+  Check(std::abs(reproduced_deviation - result.achieved_deviation) < 1e-9,
+        "independently rebuilding a mesh from the returned u/v values and re-measuring it "
+        "reproduces the exact same achieved deviation this call already reported");
+
+  Check(Throws([&] { s.SuggestedParameterValuesCertifiedAdaptive(0.0); }),
+        "SuggestedParameterValuesCertifiedAdaptive throws std::invalid_argument for a "
+        "non-positive chord_tolerance");
+  Check(Throws([&] { s.SuggestedParameterValuesCertifiedAdaptive(chord_tolerance, -1); }),
+        "SuggestedParameterValuesCertifiedAdaptive throws std::invalid_argument for a "
+        "negative max_refinements");
+
+  // A target just below what THIS call already measured it achieved -
+  // not an astronomically tiny absolute number (which would make the
+  // underlying heuristic bisect without bound chasing it, even on
+  // attempt 0, before any refinement loop here even starts) - so
+  // max_refinements=0 (the unrefined first attempt alone) is
+  // deterministically insufficient, cheaply, regardless of this
+  // particular surface's own curvature characteristics.
+  auto ThrowsRuntime = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::runtime_error&) {
+      return true;
+    }
+  };
+
+  const double just_out_of_reach = result.achieved_deviation * 0.5;
+  Check(ThrowsRuntime([&] { s.SuggestedParameterValuesCertifiedAdaptive(just_out_of_reach, /*max_refinements=*/0); }),
+        "SuggestedParameterValuesCertifiedAdaptive throws std::runtime_error when "
+        "max_refinements is too small to certify the tolerance, rather than silently "
+        "returning an uncertified result");
+
+  // The identical target succeeds with a real (still small) refinement
+  // budget, and genuinely uses more breakpoints in at least one
+  // direction than the plain heuristic does at that same target -
+  // proving real refinement happened, not a trivial pass-through.
+  const auto refined = s.SuggestedParameterValuesCertifiedAdaptive(just_out_of_reach, /*max_refinements=*/5);
+  Check(refined.achieved_deviation >= 0.0 && refined.achieved_deviation <= just_out_of_reach,
+        "with a real refinement budget, the same just-out-of-reach target is genuinely certified");
+  const auto heuristic_u = s.SuggestedParameterValues(0, just_out_of_reach);
+  const auto heuristic_v = s.SuggestedParameterValues(1, just_out_of_reach);
+  Check(refined.u_values.size() > heuristic_u.size() || refined.v_values.size() > heuristic_v.size(),
+        "the certified result has strictly more breakpoints in at least one direction than the "
+        "uncertified heuristic at the identical chord_tolerance - genuine refinement happened, "
+        "not a trivial first-attempt pass-through");
+}
+
 void TestBrepTessellateAdaptive() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -25565,6 +25656,65 @@ void TestMeshContainsPoint() {
         "though it's well within the outer box's own bounding box");
   Check(!hollow.ContainsPoint(Point3d(10, 10, 10)),
         "a point far outside the hollow box entirely is not inside it");
+}
+
+// PARITY_MAP.md's own "kernel: Mass properties & spatial queries"
+// category named this directly under "Signed distance point-to-solid":
+// "sign from ContainsPoint's single-ray test." A single fixed ray,
+// however carefully chosen to avoid axis/symmetry degeneracies (as
+// ContainsPoint()'s own prior implementation was), can still graze a
+// vertex or shared edge exactly for some mesh/point combination - this
+// test reproduces a real, concrete such failure against the ORIGINAL
+// single-ray implementation's own exact direction, confirms
+// ContainsPoint() now votes across 5 independent directions instead,
+// and verifies the fix closes it.
+void TestMeshContainsPointVotesAcrossMultipleRaysForRobustness() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+
+  // The exact direction ContainsPoint()'s own prior single-ray
+  // implementation cast along (still the first of the 5 it now votes
+  // across) - confirmed directly (via a standalone scratch probe before
+  // trusting it here) that a ray from a point along this direction,
+  // aimed exactly at the box's own (1,1,1) corner, misclassifies a
+  // genuine, contiguous range of truly-inside points near that corner
+  // as outside when that single direction alone decides the answer.
+  const Vector3d original_single_ray_direction(0.6532814824, 0.2705980501, 0.7071067812);
+  const Point3d corner(1, 1, 1);
+
+  int genuinely_inside_count = 0;
+  bool all_correctly_inside = true;
+  for (int i = 1; i <= 30; ++i) {
+    const double t = static_cast<double>(i) / 100.0;
+    const Point3d p = corner - original_single_ray_direction * t;
+    if (!(p.x > 0 && p.x < 1 && p.y > 0 && p.y < 1 && p.z > 0 && p.z < 1)) continue;
+    ++genuinely_inside_count;
+    if (!box.ContainsPoint(p)) all_correctly_inside = false;
+  }
+  Check(genuinely_inside_count > 10, "the corner-aimed sweep actually produced a real sample of inside points to test");
+  Check(all_correctly_inside,
+        "every point along a ray aimed exactly at the box's own corner - the real failure mode the ORIGINAL "
+        "single-ray implementation had for this exact direction - is now correctly reported as inside, voted "
+        "across 5 independent directions rather than decided by this one alone");
+
+  // Ordinary, non-adversarial points still classify correctly - the
+  // vote doesn't trade robustness for correctness on the easy cases.
+  Check(box.ContainsPoint(Point3d(0.5, 0.5, 0.5)), "the box's own center is still correctly inside");
+  Check(!box.ContainsPoint(Point3d(2, 2, 2)), "a point far outside is still correctly outside");
+  Check(!box.ContainsPoint(Point3d(-0.5, 0.5, 0.5)), "a point outside on the -X side is still correctly outside");
+
+  // The translation-invariance property ContainsPoint()'s own doc
+  // comment specifically calls out (axis/symmetry grazing used to flip
+  // with translation) still holds under the new voting scheme.
+  const auto box_at_origin = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const auto box_translated = MakeQuadBoxMesh(39, 19, 9, 41, 21, 11);
+  Check(box_at_origin.ContainsPoint(Point3d(0, 0, 0)) && box_translated.ContainsPoint(Point3d(40, 20, 10)),
+        "a box's own center is reported inside both at the world origin and translated far away - unaffected by "
+        "the axis/symmetry grazing the single fixed ray's own irrational-component directions already guard "
+        "against");
 }
 
 void TestMeshClosestPoint() {
@@ -65873,6 +66023,45 @@ void TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads() {
         "no separate overlap/gap volume to account for)");
 }
 
+// AssembleSweptBody()'s own outward-orientation safety net (sweep.cpp,
+// right after every cap is added) used to tessellate a fixed 16x16 grid
+// to decide whether to flip the result - fine for an ordinary low-span
+// wall, but confirmed directly (dino8_scratch_test) to alias badly enough
+// on a many-turn ScrewThread() wall (hundreds of v-spans) that the
+// SAMPLED volume's sign came out wrong, so the "safe repair" flipped (or
+// failed to flip) the wrong way and baked a genuinely inside-out solid
+// in - `ON_Brep::IsValid()` stayed true throughout (an orientation
+// defect, not a topological one) while the exact `Brep::Volume()`
+// integral came back negative. Fixed by scaling the check's own
+// resolution with the wall's own `SpanCount()` in each direction (never
+// below the original 16, so every low-span caller of this same idiom -
+// Pipe/Revolve/Extrude/Loft/Sweep1/Sweep2/... - keeps the identical
+// 16x16 check and is unaffected).
+void TestScrewThreadManyTurnsHasCorrectExactVolumeSign() {
+  // Bolt-shank scale (dino8-app's own ArchComponents.cpp BuildBolt(), M8
+  // default length): 32 turns at stations_per_turn=16 -> 513 v-spans,
+  // the exact scale that exposed the bug via the 16x16 check above.
+  const double minor_r = 1.0, major_r = 1.24, pitch = 0.04, turns = 32.0;
+  const Brep thread = Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 1), minor_r, major_r, pitch, turns,
+                                        /*right_handed=*/true, /*stations_per_turn=*/16);
+  Check(thread.raw().IsValid(), "a many-turn ScrewThread is still a topologically valid B-rep (this is an "
+                                 "orientation defect, not a validity one)");
+  const double profile_area = 0.5 * pitch * (major_r - minor_r);
+  const double r_centroid = (2.0 * minor_r + major_r) / 3.0;
+  const double expect_volume = 2.0 * M_PI * turns * profile_area * r_centroid;  // Pappus, see the test above
+  Check(thread.Volume() > 0.0, "a many-turn ScrewThread's exact Volume() is positive (the bug this test guards "
+                                "against made it come back negative)");
+  Check(std::abs(thread.Volume() - expect_volume) / expect_volume < 0.01,
+        "a many-turn ScrewThread's exact Volume() matches the same Pappus closed form the low-turn-count test "
+        "above already establishes, to within exact-integration/discretization error");
+  // A left-handed thread of the same parameters must also come back
+  // positive - the bug was in the shared orientation check, not tied to
+  // one handedness.
+  const Brep thread_lh = Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 1), minor_r, major_r, pitch, turns,
+                                           /*right_handed=*/false, /*stations_per_turn=*/16);
+  Check(thread_lh.Volume() > 0.0, "a left-handed many-turn ScrewThread's exact Volume() is also positive");
+}
+
 void TestExtrudeTaperedCircularProfileIsExactConeFrustum() {
   // Shrinking: r0=2 -> r1=1 over height 3, tan(theta) = (r0 - r1) / h.
   const double r0 = 2.0, r1 = 1.0, h = 3.0;
@@ -77318,6 +77507,7 @@ int main() {
   RunTest("TestSurfaceMeasureMeshTessellationDeviation", TestSurfaceMeasureMeshTessellationDeviation);
   RunTest("TestSurfaceTessellateGridClippedExactCertifiedAdaptive", TestSurfaceTessellateGridClippedExactCertifiedAdaptive);
   RunTest("TestSurfaceTessellateGridNonUniformCertifiedAdaptive", TestSurfaceTessellateGridNonUniformCertifiedAdaptive);
+  RunTest("TestSurfaceSuggestedParameterValuesCertifiedAdaptive", TestSurfaceSuggestedParameterValuesCertifiedAdaptive);
   RunTest("TestBrepTessellateAdaptive", TestBrepTessellateAdaptive);
   RunTest("TestBrepTessellateAdaptiveByAngle", TestBrepTessellateAdaptiveByAngle);
   RunTest("TestBrepTessellateNonUniformAdaptive", TestBrepTessellateNonUniformAdaptive);
@@ -77423,6 +77613,8 @@ int main() {
   RunTest("TestMeshFlipNormals", TestMeshFlipNormals);
   RunTest("TestMeshIsClosedManifold", TestMeshIsClosedManifold);
   RunTest("TestMeshContainsPoint", TestMeshContainsPoint);
+  RunTest("TestMeshContainsPointVotesAcrossMultipleRaysForRobustness",
+          TestMeshContainsPointVotesAcrossMultipleRaysForRobustness);
   RunTest("TestMeshClosestPoint", TestMeshClosestPoint);
   RunTest("TestMeshSignedDistance", TestMeshSignedDistance);
   RunTest("TestMeshVolumeMassProperties", TestMeshVolumeMassProperties);
@@ -78296,6 +78488,7 @@ int main() {
   RunTest("sweep_tests::TestPipeThickWalledExactAnnularCylinderAndDegenerateCases", sweep_tests::TestPipeThickWalledExactAnnularCylinderAndDegenerateCases);
   RunTest("sweep_tests::TestScrewThreadExactHelicalSweepVolumeAndGeometry", sweep_tests::TestScrewThreadExactHelicalSweepVolumeAndGeometry);
   RunTest("sweep_tests::TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads", sweep_tests::TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads);
+  RunTest("sweep_tests::TestScrewThreadManyTurnsHasCorrectExactVolumeSign", sweep_tests::TestScrewThreadManyTurnsHasCorrectExactVolumeSign);
   RunTest("TestSurfaceExtendLinearIsExactlyStraightAndG1AtTheJoin", TestSurfaceExtendLinearIsExactlyStraightAndG1AtTheJoin);
   RunTest("TestSurfaceExtendLinearDiffersFromSmoothExtend", TestSurfaceExtendLinearDiffersFromSmoothExtend);
   RunTest("TestSurfaceExtendLinearBothEndsBothDirectionsAndRational", TestSurfaceExtendLinearBothEndsBothDirectionsAndRational);
