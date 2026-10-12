@@ -10470,7 +10470,12 @@ Result Brep::ExtendFaceInPlace(int face_index, int direction, double t0, double 
   if (t0 >= old_dir.Min() - tol && t1 <= old_dir.Max() + tol) return Result::NoOpAlreadySatisfied;
   const bool extend_min = t0 < old_dir.Min() - tol;
   const bool extend_max = t1 > old_dir.Max() + tol;
-  if (extend_min == extend_max) return Result::Failed;  // both or neither in one call - out of scope
+  // At least one of extend_min/extend_max is true here (the
+  // NoOpAlreadySatisfied check above already caught "neither"); both may
+  // be true at once - 2026-10-12: genuinely supported now, see this
+  // method's own header doc comment for why the underlying surface
+  // extension already handled this and only the topology rebuild below
+  // needed generalizing.
 
   // Classify the loop's own 4 trims against the surface's (u, v) domain
   // rectangle: a CAP trim is constant in `direction` (its 2D curve's two
@@ -10505,71 +10510,71 @@ Result Brep::ExtendFaceInPlace(int face_index, int direction, double t0, double 
   }
   if (cap_min_trim < 0 || cap_max_trim < 0 || rail_lo_trim < 0 || rail_hi_trim < 0) return Result::Failed;
 
-  const int cap_trim_to_extend = extend_min ? cap_min_trim : cap_max_trim;
-
+  // Every CAP trim at an end actually being extended must be naked; both
+  // RAIL trims are always rebuilt below (at least one of their own two
+  // endpoints always moves, whichever end(s) are being extended), so
+  // both must always be naked too.
   auto edge_is_naked = [&](int ti) {
     const ON_BrepTrim& t = b.m_T[ti];
     return t.m_ei >= 0 && t.m_ei < b.m_E.Count() && b.m_E[t.m_ei].TrimCount() == 1;
   };
-  if (!edge_is_naked(cap_trim_to_extend) || !edge_is_naked(rail_lo_trim) || !edge_is_naked(rail_hi_trim)) {
-    return Result::Failed;
-  }
+  if (!edge_is_naked(rail_lo_trim) || !edge_is_naked(rail_hi_trim)) return Result::Failed;
+  if (extend_min && !edge_is_naked(cap_min_trim)) return Result::Failed;
+  if (extend_max && !edge_is_naked(cap_max_trim)) return Result::Failed;
 
-  // Recover the 4 corner vertices by DIRECT topology lookup, not by
-  // assuming any particular winding: the cap trim being extended has 2
-  // vertices; whichever of those is ALSO on rail_lo's edge is the "near"
-  // corner at other == other.Min() (to be replaced); rail_lo's OTHER
-  // vertex is the "far" corner there (left untouched). Same for rail_hi.
-  const ON_BrepTrim& cap_trim_obj = b.m_T[cap_trim_to_extend];
-  const ON_BrepEdge& cap_edge_obj = b.m_E[cap_trim_obj.m_ei];
-  const int cap_vA = cap_edge_obj.m_vi[0], cap_vB = cap_edge_obj.m_vi[1];
+  // Recover the 4 corner vertices by DIRECT topology lookup, symmetric
+  // in min/max (not "the end being extended" vs "the other one" as a
+  // single-end-only version would need): the corner at (direction ==
+  // min, other == lo) is whichever vertex cap_min's own edge shares with
+  // rail_lo's own edge, and so on for the other 3 corners - this holds
+  // regardless of which end(s) are actually being extended.
+  const ON_BrepEdge& cap_min_edge_obj = b.m_E[b.m_T[cap_min_trim].m_ei];
+  const ON_BrepEdge& cap_max_edge_obj = b.m_E[b.m_T[cap_max_trim].m_ei];
   const ON_BrepEdge& rail_lo_edge_obj = b.m_E[b.m_T[rail_lo_trim].m_ei];
   const ON_BrepEdge& rail_hi_edge_obj = b.m_E[b.m_T[rail_hi_trim].m_ei];
-  auto edge_has_vertex = [](const ON_BrepEdge& e, int vi) { return e.m_vi[0] == vi || e.m_vi[1] == vi; };
-  auto other_vertex = [](const ON_BrepEdge& e, int vi) { return e.m_vi[0] == vi ? e.m_vi[1] : e.m_vi[0]; };
-
-  int old_near_lo_vi = -1, far_lo_vi = -1;
-  if (edge_has_vertex(rail_lo_edge_obj, cap_vA)) {
-    old_near_lo_vi = cap_vA;
-    far_lo_vi = other_vertex(rail_lo_edge_obj, cap_vA);
-  } else if (edge_has_vertex(rail_lo_edge_obj, cap_vB)) {
-    old_near_lo_vi = cap_vB;
-    far_lo_vi = other_vertex(rail_lo_edge_obj, cap_vB);
-  } else {
-    return Result::Failed;  // defensive - shouldn't happen for a valid loop
-  }
-  int old_near_hi_vi = -1, far_hi_vi = -1;
-  if (edge_has_vertex(rail_hi_edge_obj, cap_vA)) {
-    old_near_hi_vi = cap_vA;
-    far_hi_vi = other_vertex(rail_hi_edge_obj, cap_vA);
-  } else if (edge_has_vertex(rail_hi_edge_obj, cap_vB)) {
-    old_near_hi_vi = cap_vB;
-    far_hi_vi = other_vertex(rail_hi_edge_obj, cap_vB);
-  } else {
+  auto shared_vertex = [](const ON_BrepEdge& ea, const ON_BrepEdge& eb) {
+    if (ea.m_vi[0] == eb.m_vi[0] || ea.m_vi[0] == eb.m_vi[1]) return ea.m_vi[0];
+    if (ea.m_vi[1] == eb.m_vi[0] || ea.m_vi[1] == eb.m_vi[1]) return ea.m_vi[1];
+    return -1;
+  };
+  const int lo_min_vi = shared_vertex(cap_min_edge_obj, rail_lo_edge_obj);
+  const int hi_min_vi = shared_vertex(cap_min_edge_obj, rail_hi_edge_obj);
+  const int lo_max_vi = shared_vertex(cap_max_edge_obj, rail_lo_edge_obj);
+  const int hi_max_vi = shared_vertex(cap_max_edge_obj, rail_hi_edge_obj);
+  // The 4 corners must be genuinely distinct - or deleting one below
+  // would silently orphan some unrelated trim elsewhere in this Brep
+  // that happens to share the same vertex.
+  if (lo_min_vi < 0 || hi_min_vi < 0 || lo_max_vi < 0 || hi_max_vi < 0 || lo_min_vi == hi_min_vi ||
+      lo_min_vi == lo_max_vi || lo_min_vi == hi_max_vi || hi_min_vi == lo_max_vi || hi_min_vi == hi_max_vi ||
+      lo_max_vi == hi_max_vi) {
     return Result::Failed;
   }
-  if (old_near_lo_vi < 0 || old_near_hi_vi < 0 || old_near_lo_vi == old_near_hi_vi) return Result::Failed;
-  // The 4 corners must be genuinely distinct, and each near corner must
-  // belong to EXACTLY the cap edge and its own one rail edge - nothing
-  // else - or deleting it below would silently orphan some unrelated
-  // trim elsewhere in this Brep that happens to share the same vertex.
-  if (far_lo_vi < 0 || far_hi_vi < 0 || far_lo_vi == far_hi_vi || far_lo_vi == old_near_lo_vi ||
-      far_lo_vi == old_near_hi_vi || far_hi_vi == old_near_lo_vi || far_hi_vi == old_near_hi_vi) {
+  // Any corner that is actually about to be replaced (its own end is
+  // being extended) must belong to EXACTLY its own cap edge and its own
+  // one rail edge - nothing else - or deleting it below would silently
+  // orphan some unrelated trim elsewhere in this Brep that happens to
+  // share the same vertex. A corner at an end that stays fixed needs no
+  // such check: it is never deleted.
+  if (extend_min && (b.m_V[lo_min_vi].m_ei.Count() != 2 || b.m_V[hi_min_vi].m_ei.Count() != 2)) {
     return Result::Failed;
   }
-  if (b.m_V[old_near_lo_vi].m_ei.Count() != 2 || b.m_V[old_near_hi_vi].m_ei.Count() != 2) return Result::Failed;
+  if (extend_max && (b.m_V[lo_max_vi].m_ei.Count() != 2 || b.m_V[hi_max_vi].m_ei.Count() != 2)) {
+    return Result::Failed;
+  }
 
   // Extend a local SCRATCH copy of the surface first - this Brep is not
   // touched at all until every later step is already known to succeed
   // (IsoCurve() on a valid NURBS surface over its own real domain cannot
   // fail, so once this far, nothing below can discover a new problem).
+  // ExtendLinear()/Extend() already grow either end independently
+  // within one call (see this method's own header doc comment), so no
+  // change is needed here to support extend_min && extend_max together.
   NurbsSurface ks;
   ks.raw() = ns;
   const Result ext_result = linear ? ks.ExtendLinear(direction, t0, t1) : ks.Extend(direction, t0, t1);
   if (ext_result != Result::Ok) return Result::Failed;
   ON_NurbsSurface& ext = ks.raw();
   const ON_Interval final_dir = ext.Domain(direction);
-  const double new_cap_value = extend_min ? final_dir.Min() : final_dir.Max();
   const double other_min = old_other.Min(), other_max = old_other.Max();
 
   auto corner_point = [&](double dir_val, double other_val) {
@@ -10579,8 +10584,6 @@ Result Brep::ExtendFaceInPlace(int face_index, int direction, double t0, double 
     ext.EvPoint(u, v, p);
     return p;
   };
-  const ON_3dPoint p_new_lo = corner_point(new_cap_value, other_min);
-  const ON_3dPoint p_new_hi = corner_point(new_cap_value, other_max);
 
   // Everything below only ever touches this Brep (`b`) from here on.
   ON_NurbsSurface* new_srf = new ON_NurbsSurface(ext);
@@ -10596,23 +10599,37 @@ Result Brep::ExtendFaceInPlace(int face_index, int direction, double t0, double 
   // already does for m_si" fix.
   face.SetProxySurface(b.m_S[new_si]);
 
-  const int new_v_lo_i = b.NewVertex(p_new_lo, 0.0).m_vertex_index;
-  const int new_v_hi_i = b.NewVertex(p_new_hi, 0.0).m_vertex_index;
+  // Each corner's own FINAL vertex id: a fresh one at the new domain
+  // extreme for a corner whose own end is being extended, or its own
+  // original (unmoved) vertex, unchanged, for a corner whose end stays
+  // fixed.
+  int new_lo_min_vi = lo_min_vi, new_hi_min_vi = hi_min_vi;
+  if (extend_min) {
+    new_lo_min_vi = b.NewVertex(corner_point(final_dir.Min(), other_min), 0.0).m_vertex_index;
+    new_hi_min_vi = b.NewVertex(corner_point(final_dir.Min(), other_max), 0.0).m_vertex_index;
+  }
+  int new_lo_max_vi = lo_max_vi, new_hi_max_vi = hi_max_vi;
+  if (extend_max) {
+    new_lo_max_vi = b.NewVertex(corner_point(final_dir.Max(), other_min), 0.0).m_vertex_index;
+    new_hi_max_vi = b.NewVertex(corner_point(final_dir.Max(), other_max), 0.0).m_vertex_index;
+  }
 
   auto remap_vertex = [&](int vi) {
-    if (vi == old_near_lo_vi) return new_v_lo_i;
-    if (vi == old_near_hi_vi) return new_v_hi_i;
-    return vi;  // far_lo_vi / far_hi_vi - unchanged
+    if (vi == lo_min_vi) return new_lo_min_vi;
+    if (vi == hi_min_vi) return new_hi_min_vi;
+    if (vi == lo_max_vi) return new_lo_max_vi;
+    if (vi == hi_max_vi) return new_hi_max_vi;
+    return vi;  // defensive only - every trim endpoint is one of the 4
   };
-  const double far_cap_value = extend_min ? final_dir.Max() : final_dir.Min();
-  auto uv_for_vertex = [&](int vi) {
-    double dir_val, other_val;
-    if (vi == new_v_lo_i) { dir_val = new_cap_value; other_val = other_min; }
-    else if (vi == new_v_hi_i) { dir_val = new_cap_value; other_val = other_max; }
-    else if (vi == far_lo_vi) { dir_val = far_cap_value; other_val = other_min; }
-    else { dir_val = far_cap_value; other_val = other_max; }
-    return direction == 0 ? ON_2dPoint(dir_val, other_val) : ON_2dPoint(other_val, dir_val);
+  std::unordered_map<int, ON_2dPoint> uv_of;
+  auto set_uv = [&](int vi, double dir_val, double other_val) {
+    uv_of[vi] = direction == 0 ? ON_2dPoint(dir_val, other_val) : ON_2dPoint(other_val, dir_val);
   };
+  set_uv(new_lo_min_vi, final_dir.Min(), other_min);
+  set_uv(new_hi_min_vi, final_dir.Min(), other_max);
+  set_uv(new_lo_max_vi, final_dir.Max(), other_min);
+  set_uv(new_hi_max_vi, final_dir.Max(), other_max);
+  auto uv_for_vertex = [&](int vi) { return uv_of.at(vi); };
 
   // Builds one new trim (and its own new edge) from v_start to v_end,
   // reusing `edge3d` (freshly taken from the extended surface's own
@@ -10651,9 +10668,10 @@ Result Brep::ExtendFaceInPlace(int face_index, int direction, double t0, double 
 
   // Each replaced trim's own OLD effective start/end (the vertex pair in
   // the LOOP's own walking order, from m_bRev3d - never assumed to match
-  // the edge's own stored direction) is remapped vertex-by-vertex (far
-  // corners pass through unchanged; near corners become the new ones),
-  // so this works regardless of which way the loop happens to wind.
+  // the edge's own stored direction) is remapped vertex-by-vertex (a
+  // corner whose end stays fixed passes through unchanged; one whose
+  // end is extended becomes the new one), so this works regardless of
+  // which way the loop happens to wind.
   auto effective_endpoints = [&](int ti, int& v_start, int& v_end) {
     const ON_BrepTrim& t = b.m_T[ti];
     const ON_BrepEdge& e = b.m_E[t.m_ei];
@@ -10661,15 +10679,22 @@ Result Brep::ExtendFaceInPlace(int face_index, int direction, double t0, double 
     v_end = t.m_bRev3d ? e.m_vi[0] : e.m_vi[1];
   };
 
-  const int cap_old_ei = cap_trim_obj.m_ei;
+  const int cap_min_old_ei = b.m_T[cap_min_trim].m_ei;
+  const int cap_max_old_ei = b.m_T[cap_max_trim].m_ei;
   const int rail_lo_old_ei = b.m_T[rail_lo_trim].m_ei;
   const int rail_hi_old_ei = b.m_T[rail_hi_trim].m_ei;
 
-  {
+  if (extend_min) {
     int v_start = 0, v_end = 0;
-    effective_endpoints(cap_trim_to_extend, v_start, v_end);
-    ON_Curve* edge3d = ext.IsoCurve(other, new_cap_value);
-    commit_trim(cap_trim_to_extend, edge3d, remap_vertex(v_start), remap_vertex(v_end));
+    effective_endpoints(cap_min_trim, v_start, v_end);
+    ON_Curve* edge3d = ext.IsoCurve(other, final_dir.Min());
+    commit_trim(cap_min_trim, edge3d, remap_vertex(v_start), remap_vertex(v_end));
+  }
+  if (extend_max) {
+    int v_start = 0, v_end = 0;
+    effective_endpoints(cap_max_trim, v_start, v_end);
+    ON_Curve* edge3d = ext.IsoCurve(other, final_dir.Max());
+    commit_trim(cap_max_trim, edge3d, remap_vertex(v_start), remap_vertex(v_end));
   }
   {
     int v_start = 0, v_end = 0;
@@ -10684,16 +10709,27 @@ Result Brep::ExtendFaceInPlace(int face_index, int direction, double t0, double 
     commit_trim(rail_hi_trim, edge3d, remap_vertex(v_start), remap_vertex(v_end));
   }
 
-  // Delete the 3 old trims/edges and the 2 now-orphaned near vertices -
-  // the same explicit "remove the edge reference, cull the vertex if
-  // nothing else is left" discipline RemoveHoleLoop() already uses.
-  b.m_T[cap_trim_to_extend].m_trim_index = -1;
-  b.m_T[rail_lo_trim].m_trim_index = -1;
-  b.m_T[rail_hi_trim].m_trim_index = -1;
-  b.m_E[cap_old_ei].m_edge_index = -1;
-  b.m_E[rail_lo_old_ei].m_edge_index = -1;
-  b.m_E[rail_hi_old_ei].m_edge_index = -1;
-  const std::vector<int> deleted_edges = {cap_old_ei, rail_lo_old_ei, rail_hi_old_ei};
+  // Delete whichever old trims/edges were actually replaced (both rails
+  // always; each cap only when its own end was extended) and cull
+  // whichever old corner vertices no longer have any live incident edge
+  // left - the same explicit "remove the edge reference, cull the
+  // vertex if nothing else is left" discipline RemoveHoleLoop() already
+  // uses. A corner at an end that was NOT extended keeps its own cap
+  // edge alive (that cap trim/edge is untouched) and so only loses its
+  // own now-deleted rail edge's stale reference, surviving the cull
+  // below exactly as the single-end case's own "far" corners always did.
+  std::vector<int> deleted_tis = {rail_lo_trim, rail_hi_trim};
+  std::vector<int> deleted_edges = {rail_lo_old_ei, rail_hi_old_ei};
+  if (extend_min) {
+    deleted_tis.push_back(cap_min_trim);
+    deleted_edges.push_back(cap_min_old_ei);
+  }
+  if (extend_max) {
+    deleted_tis.push_back(cap_max_trim);
+    deleted_edges.push_back(cap_max_old_ei);
+  }
+  for (int ti : deleted_tis) b.m_T[ti].m_trim_index = -1;
+  for (int ei : deleted_edges) b.m_E[ei].m_edge_index = -1;
   auto cull_vertex = [&](int vi) {
     ON_BrepVertex& v = b.m_V[vi];
     for (int k = v.m_ei.Count() - 1; k >= 0; --k) {
@@ -10703,17 +10739,10 @@ Result Brep::ExtendFaceInPlace(int face_index, int direction, double t0, double 
     }
     if (v.m_ei.Count() == 0) v.m_vertex_index = -1;
   };
-  // The two NEAR corners lose both their own incident edges (the cap and
-  // their own one rail) and are fully culled; the two FAR corners keep
-  // every other edge they have (e.g. a still-live shared edge elsewhere,
-  // as in the "extends away from a neighbour" case this method exists
-  // for) and only need their own now-deleted rail edge's stale reference
-  // removed - left in place, SetVertexTolerances() below would walk
-  // straight into it.
-  cull_vertex(old_near_lo_vi);
-  cull_vertex(old_near_hi_vi);
-  cull_vertex(far_lo_vi);
-  cull_vertex(far_hi_vi);
+  cull_vertex(lo_min_vi);
+  cull_vertex(hi_min_vi);
+  cull_vertex(lo_max_vi);
+  cull_vertex(hi_max_vi);
 
   b.Compact();
   b.SetTolerancesBoxesAndFlags();
