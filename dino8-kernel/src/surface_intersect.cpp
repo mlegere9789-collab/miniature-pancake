@@ -3677,47 +3677,110 @@ PlaneConeIntersection IntersectPlaneCone(const ON_Plane& plane, const ON_Cone& c
     return out;
   }
 
-  if (Delta >= -kDiscriminantEps) {
-    out.unsupported = true;  // parabola (Delta ~ 0) or hyperbola (Delta > 0) - not built here
-    return out;
-  }
-
-  // Ellipse-type (Delta < 0, plane clear of the apex): the restricted
-  // conic's center solves the critical-point system 2A*s0+B*t0+D==0,
-  // B*s0+2C*t0+E==0 - see this function's own header doc comment.
+  // Off-apex: the restricted conic's own D, E, F (point = plane.origin +
+  // s*e1 + t*e2) - see this function's own header doc comment.
   const Vector3d v0 = plane.origin - apex;
   const double a0 = ON_DotProduct(v0, axis);
   const double b0 = ON_DotProduct(v0, v0), b1 = ON_DotProduct(v0, e1), b2 = ON_DotProduct(v0, e2);
   const double D = 2.0 * (a0 * a1 - k * b1), E = 2.0 * (a0 * a2 - k * b2), F = a0 * a0 - k * b0;
 
-  const double det = 4.0 * A * C - B * B;  // == -Delta > 0 here
-  const double s0 = (-D * 2.0 * C - B * (-E)) / det;
-  const double t0 = (2.0 * A * (-E) - B * (-D)) / det;
-  const double Fp = A * s0 * s0 + B * s0 * t0 + C * t0 * t0 + D * s0 + E * t0 + F;  // Q evaluated at the center
-
   // 2x2 symmetric eigen-decomposition of [[A, B/2], [B/2, C]] - the
-  // classical conic-rotation angle (cot(2*theta) == (A-C)/B).
+  // classical conic-rotation angle (cot(2*theta) == (A-C)/B). Valid for
+  // every off-apex case alike (ellipse, hyperbola, AND parabola: this
+  // diagonalizes the quadratic PART only, independent of D/E/F or Delta's
+  // own sign).
   const double theta = 0.5 * std::atan2(B, A - C);
   const double c1 = std::cos(theta), s1 = std::sin(theta);
   const double lam1 = A * c1 * c1 + B * c1 * s1 + C * s1 * s1;
   const double lam2 = A * s1 * s1 - B * c1 * s1 + C * c1 * c1;  // orthogonal direction (theta + pi/2)
-  const double sq1 = -Fp / lam1, sq2 = -Fp / lam2;
-  if (!(sq1 > 1e-18) || !(sq2 > 1e-18)) {
-    // Degenerates below usable precision (would need a genuinely malformed
-    // cone/plane pair given Delta < 0 and the apex already ruled clear by
-    // the branch above) - treated as a genuine miss rather than NaN.
+  const Vector3d dir1 = c1 * e1 + s1 * e2;    // unit (e1, e2 orthonormal)
+  const Vector3d dir2 = -s1 * e1 + c1 * e2;   // unit, _|_ dir1
+
+  if (Delta < -kDiscriminantEps || Delta > kDiscriminantEps) {
+    // Ellipse or hyperbola: det = 4*A*C - B^2 == -Delta != 0, so the conic
+    // has a genuine center - the critical-point system 2*A*s0+B*t0+D==0,
+    // B*s0+2*C*t0+E==0.
+    const double det = 4.0 * A * C - B * B;
+    const double s0 = (-D * 2.0 * C - B * (-E)) / det;
+    const double t0 = (2.0 * A * (-E) - B * (-D)) / det;
+    const double Fp = A * s0 * s0 + B * s0 * t0 + C * t0 * t0 + D * s0 + E * t0 + F;  // Q evaluated at the center
+    const Point3d center = plane.origin + s0 * e1 + t0 * e2;
+    const double sq1 = -Fp / lam1, sq2 = -Fp / lam2;
+
+    if (Delta < -kDiscriminantEps) {
+      // Ellipse-type: lam1, lam2 share a sign, so sq1, sq2 do too.
+      if (!(sq1 > 1e-18) || !(sq2 > 1e-18)) {
+        // Degenerates below usable precision (would need a genuinely
+        // malformed cone/plane pair given Delta < 0 and the apex already
+        // ruled clear above) - treated as a genuine miss rather than NaN.
+        return out;
+      }
+      out.empty = false;
+      out.ellipse = ON_Ellipse(ON_Plane(center, dir1, dir2), std::sqrt(sq1), std::sqrt(sq2));
+      if (out.ellipse.GetNurbForm(out.curve) == 0) {
+        out = PlaneConeIntersection{};  // only fails for a degenerate radius, already ruled out above, or an invalid plane, already ruled out by dir1/dir2's construction
+      }
+      return out;
+    }
+
+    // Hyperbola-type (Delta > eps): lam1, lam2 have opposite signs, so
+    // sq1, sq2 do too (generically) - the positive one is the transverse
+    // axis (where the two real branches lie), the negative one the
+    // conjugate. `Fp ~ 0` (both sq1, sq2 near zero at once) degenerates to
+    // the asymptote line pair through the center - a measure-zero
+    // sub-family, honestly unsupported rather than guessed at.
+    const bool dir1_is_transverse = sq1 > sq2;
+    const double sq_t = dir1_is_transverse ? sq1 : sq2;
+    const double sq_c = dir1_is_transverse ? sq2 : sq1;
+    if (!(sq_t > 1e-18) || !(-sq_c > 1e-18)) {
+      out.unsupported = true;
+      return out;
+    }
+    out.empty = false;
+    out.hyperbola = true;
+    out.hyperbola_center = center;
+    out.hyperbola_transverse_dir = dir1_is_transverse ? dir1 : dir2;
+    out.hyperbola_conjugate_dir = dir1_is_transverse ? dir2 : dir1;
+    out.hyperbola_a = std::sqrt(sq_t);
+    out.hyperbola_b = std::sqrt(-sq_c);
     return out;
   }
 
-  const Vector3d dir1 = c1 * e1 + s1 * e2;    // unit (e1, e2 orthonormal)
-  const Vector3d dir2 = -s1 * e1 + c1 * e2;   // unit, _|_ dir1
-  const Point3d center = plane.origin + s0 * e1 + t0 * e2;
-
-  out.empty = false;
-  out.ellipse = ON_Ellipse(ON_Plane(center, dir1, dir2), std::sqrt(sq1), std::sqrt(sq2));
-  if (out.ellipse.GetNurbForm(out.curve) == 0) {
-    out = PlaneConeIntersection{};  // only fails for a degenerate radius, already ruled out above, or an invalid plane, already ruled out by dir1/dir2's construction
+  // Parabola-type (|Delta| <= eps): the quadratic form's matrix is
+  // singular (det ~ 0, so lam1*lam2 ~ 0) - no well-defined center.
+  // Whichever of lam1/lam2 is (numerically) the zero eigenvalue is this
+  // parabola's own axis of symmetry; the other carries the single
+  // quadratic term. Substituting u (along axis_dir) and v (along
+  // quad_dir) into the conic, `quad_lam*v^2 + Dq*v + Da*u + F == 0`
+  // (axis_lam*u^2 dropped as ~0), and completing the square in v gives
+  // `quad_lam*v'^2 == -Da*(u - u0)` for the shifted `v' = v + Dq/
+  // (2*quad_lam)` - a parabola in standard form. Re-derived directly by
+  // substitution back into the original conic (not merely transcribed):
+  // matching the r^2/r^1/r^0 coefficients of the resulting parametrization
+  // against zero gives exactly `curvature = -quad_lam/Da`, `v_shift =
+  // Dq/(2*quad_lam)`, and `u0 = (Dq^2/(4*quad_lam) - F)/Da` below - see
+  // this function's own header doc comment for the closed-form result.
+  const bool dir1_is_axis = std::fabs(lam1) <= std::fabs(lam2);
+  const Vector3d axis_dir = dir1_is_axis ? dir1 : dir2;
+  const Vector3d quad_dir = dir1_is_axis ? dir2 : dir1;
+  const double quad_lam = dir1_is_axis ? lam2 : lam1;
+  // (D, E)'s own components along axis_dir/quad_dir in the (e1, e2) basis.
+  const double Da = dir1_is_axis ? (D * c1 + E * s1) : (-D * s1 + E * c1);
+  const double Dq = dir1_is_axis ? (-D * s1 + E * c1) : (D * c1 + E * s1);
+  if (!(std::fabs(Da) > 1e-12) || !(std::fabs(quad_lam) > 1e-18)) {
+    // Degenerates to a parallel-line pair (or no real locus at all) - a
+    // measure-zero sub-family, honestly unsupported rather than guessed at.
+    out.unsupported = true;
+    return out;
   }
+  const double v_shift = Dq / (2.0 * quad_lam);
+  const double u0 = (Dq * Dq / (4.0 * quad_lam) - F) / Da;
+  out.empty = false;
+  out.parabola = true;
+  out.parabola_vertex = plane.origin + u0 * axis_dir - v_shift * quad_dir;
+  out.parabola_axis_dir = axis_dir;
+  out.parabola_transverse_dir = quad_dir;
+  out.parabola_curvature = -quad_lam / Da;
   return out;
 }
 
