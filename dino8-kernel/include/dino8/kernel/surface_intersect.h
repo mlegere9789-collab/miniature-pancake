@@ -226,6 +226,57 @@ struct CurveBrepHit {
 // exist ... the app composes the B-rep loop itself (IntersectAny)."
 std::vector<CurveBrepHit> IntersectCurveBrep(const ON_Curve& c, const ON_Brep& b, const IntersectOptions& opt);
 
+// One ray/B-rep hit, as returned by FireRayAtBrep() below. `distance` is
+// the real distance from `origin` along `direction` (not a [0, 1]
+// curve-parameter fraction), set up so a caller never needs to know this
+// is built on a line curve internally.
+struct RayBrepHit {
+  int face_index = -1;
+  double distance = 0;
+  ON_2dPoint uv;
+  Point3d point;
+};
+
+// Closes PARITY_MAP.md's own disclosed "Ray firing against exact B-rep
+// faces" gap: `Mesh::FireRay` only ever fired against a mesh
+// APPROXIMATION, and `IntersectCurveSurface()` above, while exact, never
+// respected a face's own trim loops on its own. This models the ray as a
+// straight `ON_LineCurve` from `origin` to `origin + direction.Unitized()
+// * max_distance` - the same finite-segment-standing-in-for-a-ray
+// technique this kernel's own internal `ClassifyPointVsBrep()`
+// (boolean_general.cpp) already uses for point-in-solid testing, just
+// exposed here as a real, general-purpose, public ray-firing API instead
+// of staying buried inside one specific classification routine - with
+// its domain explicitly set to `[0, max_distance]` so a caller reads a
+// real distance directly, never a raw curve parameter, and composes
+// `IntersectCurveBrep()` above for the exact-and-trimmed intersection
+// itself, so a hit landing outside any face's own trim loops is already
+// dropped, not approximated. Returned sorted by `distance`, nearest
+// first - the natural order for a ray query (first hit, or "is anything
+// in front of me") - unlike `IntersectCurveBrep()`'s own face-order,
+// unsorted return. Throws std::invalid_argument if `direction` doesn't
+// unitize (zero or non-finite) or `max_distance` is not finite and
+// positive. Still honestly scoped: a straight, FINITE ray only (a
+// genuinely infinite ray would need `IntersectCurveSurface()`'s own
+// bounded-domain sampling to cover an unbounded span, which it can't),
+// and a linear per-face scan with no spatial acceleration structure -
+// PARITY_MAP.md's own separate "Spatial acceleration structures for
+// geometric queries" bullet owns that distinct performance gap, not
+// named by this one. A real, confirmed finding from a standalone
+// `dino8_scratch_test` probe while building this, not assumed: trimming
+// here is only as real as `FaceContainsUV()`'s own genuine `ON_Brep`
+// loop/trim topology - a face built via `Brep::TrimmedPlanarFace()`
+// (that factory's own "bare surface" convention, no real loop at all,
+// trim tracked only in this kernel's separate internal side-table that
+// ONLY its own tessellation path (`ResolveFace()`) ever reads) is
+// silently treated as fully UNTRIMMED here, not partially trimmed - a
+// ray lands anywhere on the untrimmed surface. `Brep::
+// TrimmedPlanarFaceWelded()`, `Brep::Box()`, boolean-operation results,
+// and every other factory that builds genuine `ON_BrepLoop`/`ON_BrepTrim`
+// topology are unaffected and trim exactly as documented above.
+std::vector<RayBrepHit> FireRayAtBrep(const Point3d& origin, const Vector3d& direction, double max_distance,
+                                       const ON_Brep& b, const IntersectOptions& opt);
+
 // A curve/plane crossing - the curve-level counterpart to CurveSurfaceHit
 // above, but against a caller-supplied INFINITE ON_Plane rather than a
 // bounded ON_Surface. PARITY_MAP.md's own "Curve/plane intersection" gap:
@@ -1278,6 +1329,31 @@ struct SurfaceSilhouetteCurve {
   bool closed = false;
 };
 std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurves(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt);
+
+// The perspective sibling of FindSurfaceSilhouetteCurves() above - closes
+// the one named gap that function's own header doc comment calls out
+// directly ("there is no perspective sibling of this function yet"),
+// narrowing the "Silhouette / outline curves" bullet further. Identical
+// marching-squares chaining (same grid, same cell-edge-crossing links, same
+// degree-1-walk-to-degree-1 / remaining-closed-loop assembly, same
+// InterpolateCubic()/ChordParams() curve fit) - the only difference is the
+// crossings being chained come from FindSurfaceSilhouettePointsPerspective()'s
+// own per-sample `direction = point - eye` tangency test
+// (dot(RobustSurfaceNormal(s, u, v), point - eye) == 0) instead of
+// FindSurfaceSilhouetteCurves()'s single fixed `view_direction`. Shares the
+// file's one internal grid-edge tangency-crossing finder and chaining
+// assembly with both of its siblings - only the direction a sample tests
+// against differs. Still honestly scoped exactly as every other function in
+// this trio is: a grid sample landing at `eye` itself is "cannot verify",
+// not guessed; a "saddle" cell (all four boundary edges crossing) is skipped
+// rather than resolved with an arbitrary diagonal pairing; an isolated
+// degree-0 crossing is dropped here but still visible via
+// FindSurfaceSilhouettePointsPerspective() itself; and - the one gap this
+// bullet's own text keeps naming regardless of which function is asked - no
+// visibility/self-occlusion resolution (a chain on the surface's own far
+// side from the eye, or hidden behind a different object, is reported
+// exactly like a visible one).
+std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurvesPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt);
 
 // --- numerical helpers ------------------------------------------------------
 
