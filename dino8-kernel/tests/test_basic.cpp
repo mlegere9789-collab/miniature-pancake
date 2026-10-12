@@ -9421,6 +9421,91 @@ void TestSurfaceSplit() {
         "than strictly inside it");
 }
 
+void TestSurfaceSplitAtCreases() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // A real "tent": degree-1 in U with 3 columns (u=0,1,2), degree-1 in V
+  // with 2 rows (v=0,1). Every v cross-section is the same piecewise-linear
+  // profile - up from (0,0) to the ridge (1,h), then back down to (2,0) -
+  // so the surface is literally two flat ruled quads meeting at a real
+  // geometric crease along the whole u=1 ridge line, not just a single
+  // point. `h` is sized so the kink angle (`2*atan(h)`, the angle between
+  // the ridge's two symmetric incoming tangents in the xz-plane) is a
+  // clean, hand-derivable value rather than an arbitrary slope.
+  auto build_tent = [](double h) {
+    const std::vector<Point3d> grid = {
+        Point3d(0, 0, 0), Point3d(0, 1, 0),  // u=0: v=0, v=1
+        Point3d(1, 0, h), Point3d(1, 1, h),  // u=1 (the ridge): v=0, v=1
+        Point3d(2, 0, 0), Point3d(2, 1, 0),  // u=2: v=0, v=1
+    };
+    return NurbsSurface::FromControlGrid(grid, 3, 2, 1, 1);
+  };
+
+  // A real, well-above-tolerance ridge: 2*atan(1) = 90 degrees, far past
+  // the default 5-degree `tolerance::kMergeEdgeAngle` threshold.
+  {
+    const NurbsSurface tent = build_tent(1.0);
+    const std::vector<NurbsSurface> pieces = tent.SplitAtCreases();
+    Check(pieces.size() == 2, "a genuine 90-degree ridge splits the tent into exactly 2 pieces");
+    if (pieces.size() == 2) {
+      // Order isn't contractually fixed; identify west/east by their own domain.
+      const NurbsSurface& a = pieces[0];
+      const NurbsSurface& b = pieces[1];
+      const bool a_is_west = a.raw().Domain(0).Max() <= b.raw().Domain(0).Min() + 1e-9;
+      const NurbsSurface& west = a_is_west ? a : b;
+      const NurbsSurface& east = a_is_west ? b : a;
+      Check(std::abs(west.raw().Domain(0).Min() - 0.0) < 1e-9 && std::abs(west.raw().Domain(0).Max() - 1.0) < 1e-9,
+            "the west piece's own domain(0) is exactly [0, 1]");
+      Check(std::abs(east.raw().Domain(0).Min() - 1.0) < 1e-9 && std::abs(east.raw().Domain(0).Max() - 2.0) < 1e-9,
+            "the east piece's own domain(0) is exactly [1, 2]");
+      Check(west.PointAt(west.raw().Domain(0).Min(), 0.0).DistanceTo(Point3d(0, 0, 0)) < 1e-9 &&
+                west.PointAt(west.raw().Domain(0).Max(), 0.0).DistanceTo(Point3d(1, 0, 1)) < 1e-9,
+            "the west piece reproduces the original left wing exactly (0,0,0) -> (1,0,1)");
+      Check(east.PointAt(east.raw().Domain(0).Min(), 0.0).DistanceTo(Point3d(1, 0, 1)) < 1e-9 &&
+                east.PointAt(east.raw().Domain(0).Max(), 0.0).DistanceTo(Point3d(2, 0, 0)) < 1e-9,
+            "the east piece reproduces the original right wing exactly (1,0,1) -> (2,0,0)");
+      Check(west.SplitAtCreases().size() == 1 && east.SplitAtCreases().size() == 1,
+            "neither piece has a further crease of its own - each is now genuinely one G1 region");
+    }
+  }
+
+  // A perfectly flat "tent" (h=0): the u=1 knot still has full
+  // multiplicity (the necessary condition), but there is no real tangent
+  // disagreement there at all - the negative control proving this checks
+  // actual geometry, not just knot structure.
+  {
+    const NurbsSurface flat = build_tent(0.0);
+    const std::vector<NurbsSurface> pieces = flat.SplitAtCreases();
+    Check(pieces.size() == 1,
+          "a full-multiplicity knot with NO real tangent disagreement is "
+          "correctly left unsplit");
+  }
+
+  // A kink genuinely BELOW the default tolerance (3 degrees < 5 degrees)
+  // stays unsplit at the default angle, but the SAME surface splits once
+  // a caller passes a tighter tolerance - proving the threshold is real
+  // and the override parameter is actually honored, not a fixed internal
+  // constant.
+  {
+    const double h_small = std::tan(1.5 * 3.14159265358979323846 / 180.0);  // 2*atan(h) = 3 degrees
+    const NurbsSurface subtle = build_tent(h_small);
+    Check(subtle.SplitAtCreases().size() == 1,
+          "a 3-degree ridge stays below the default 5-degree tolerance and is left unsplit");
+    Check(subtle.SplitAtCreases(1.0 * 3.14159265358979323846 / 180.0).size() == 2,
+          "the identical 3-degree ridge DOES split once a 1-degree tolerance is explicitly requested");
+  }
+
+  // The symmetric V-direction case: the same tent, transposed, proves
+  // "either direction" rather than U specifically.
+  {
+    NurbsSurface tent_v = build_tent(1.0);
+    tent_v.Transpose();
+    const std::vector<NurbsSurface> pieces = tent_v.SplitAtCreases();
+    Check(pieces.size() == 2, "a genuine ridge in V (after Transpose()) also splits into exactly 2 pieces");
+  }
+}
+
 void TestSurfaceExtend() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -73460,6 +73545,7 @@ int main() {
   TestSurfaceReverseAndTranspose();
   TestSurfaceTrim();
   TestSurfaceSplit();
+  TestSurfaceSplitAtCreases();
   TestSurfaceExtend();
   TestSurfaceDomain();
   TestSurfaceIsRational();
