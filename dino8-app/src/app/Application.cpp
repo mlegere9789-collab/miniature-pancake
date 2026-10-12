@@ -3,6 +3,7 @@
 #include "drafting/HatchLibrary.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -307,7 +308,7 @@ void Application::OpenPopupToolbar() {
 }
 
 bool Application::RenderView(Viewport* vp, int width, int height, int supersample, bool arctic, std::string& error,
-                             std::array<double, 4> blowup) {
+                             std::array<double, 4> blowup, bool hdr) {
   if (!vp) vp = ActiveViewport();
   if (!vp) { error = "No active viewport"; return false; }
   if (!renderer_ok_) { error = "Renderer not initialised"; return false; }
@@ -322,7 +323,8 @@ bool Application::RenderView(Viewport* vp, int width, int height, int supersampl
   ctx.curve_tolerance = std::min(curve_display_tolerance, 0.01);
   const auto t0 = std::chrono::steady_clock::now();
   std::vector<unsigned char> rgb;
-  if (!vp->RenderToImage(renderer_, ctx, width, height, supersample, arctic, rgb, error, blowup)) return false;
+  std::vector<float> hdr_rgb;
+  if (!vp->RenderToImage(renderer_, ctx, width, height, supersample, arctic, rgb, error, blowup, hdr ? &hdr_rgb : nullptr)) return false;
   // The display meshes were rebuilt at the finer tolerance; drop them so
   // the viewports come back at their own setting.
   for (SceneObject& o : doc_.Objects()) o.InvalidateDisplay();
@@ -331,6 +333,7 @@ bool Application::RenderView(Viewport* vp, int width, int height, int supersampl
   last_render_.width = width;
   last_render_.height = height;
   last_render_.rgb = std::move(rgb);
+  last_render_.hdr_rgb = std::move(hdr_rgb);
   last_render_.view_name = vp->Name();
   last_render_.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   last_render_.texture = renderer_.CreateTexture(width, height, last_render_.rgb.data(), 3);
@@ -340,6 +343,20 @@ bool Application::RenderView(Viewport* vp, int width, int height, int supersampl
 
 bool Application::SaveLastRender(const std::string& path, std::string& error) {
   if (!last_render_.Valid()) { error = "Nothing has been rendered yet (run Render first)"; return false; }
+  std::string ext = std::filesystem::path(path).extension().string();
+  for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (ext == ".hdr" || ext == ".exr") {
+    if (!last_render_.HasHdr()) {
+      error = "This render has no real HDR data to save (re-run Render with Hdr=Yes first)";
+      return false;
+    }
+    const bool ok = ext == ".hdr"
+        ? SaveImageHdr(path, last_render_.width, last_render_.height, last_render_.hdr_rgb, error)
+        : SaveImageExr(path, last_render_.width, last_render_.height, last_render_.hdr_rgb, error);
+    if (!ok) return false;
+    last_render_.last_saved_path = path;
+    return true;
+  }
   if (!SaveImageRGB(path, last_render_.width, last_render_.height, last_render_.rgb, error)) return false;
   last_render_.last_saved_path = path;
   return true;

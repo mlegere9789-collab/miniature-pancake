@@ -226,8 +226,16 @@ class Viewport {
   // (of the current full view) to fill the whole output with -- a true
   // optical zoom (RenderBlowup), not a post-hoc crop. Pass {-1,-1,1,1} (the
   // default) for the ordinary full view.
+  // `hdr_rgb_out`, when non-null, additionally runs a second real-HDR
+  // capture pass (RenderTarget's own `hdr` mode plus GlRenderer::
+  // SetHdrOutput(true) for this pass alone) and fills it with the scene's
+  // own linear-radiance values - unclamped, so a bright highlight/specular/
+  // emissive surface genuinely above 1.0 survives instead of saturating at
+  // 255 the way the ordinary `rgb` output above always has. Every existing
+  // caller (nullptr) is completely unaffected - this is strictly additive.
   bool RenderToImage(GlRenderer& renderer, const FrameContext& ctx, int w, int h, int supersample, bool arctic,
-                     std::vector<unsigned char>& rgb, std::string& error, std::array<double, 4> blowup = {-1, -1, 1, 1});
+                     std::vector<unsigned char>& rgb, std::string& error, std::array<double, 4> blowup = {-1, -1, 1, 1},
+                     std::vector<float>* hdr_rgb_out = nullptr);
 
   // Draws the ImGui window that shows this viewport and handles its input.
   // Returns the events that occurred. `want_point` / `want_objects` tell

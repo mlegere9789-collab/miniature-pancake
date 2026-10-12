@@ -82,6 +82,10 @@ uniform vec3 u_emission;
 uniform float u_reflectivity;
 uniform int u_use_texture;
 uniform sampler2D u_texture;
+// Set only by Viewport::RenderToImage's own dedicated HDR capture pass
+// (never by the live interactive viewport draw, which always leaves this
+// at its default 0) - see Shade()'s own use of it below.
+uniform int u_hdr_output;
 // Ground plane.
 const int MAX_BLOBS = 16;
 uniform int u_blob_count;
@@ -174,6 +178,11 @@ vec3 Shade(vec3 base, vec3 n, vec3 view_dir) {
     color = mix(color, env * mix(vec3(1.0), base, 0.5), u_reflectivity * fresnel);
   }
   color += u_emission;
+  // The HDR capture pass wants the real, unclamped linear value - a bright
+  // highlight/reflection genuinely exceeding 1.0, not folded back under it -
+  // so skip the soft-shoulder roll-off below entirely for it (see
+  // RenderTarget's own `hdr` mode and Viewport::RenderToImage).
+  if (u_hdr_output == 1) return color;
   // Soft shoulder above 0.8 so several lights add up without clipping to
   // flat white (linear below, exponential roll-off above).
   vec3 hi = step(vec3(0.8), color);
@@ -476,15 +485,17 @@ void RenderTarget::Destroy() {
   width_ = height_ = 0;
 }
 
-bool RenderTarget::Resize(int width, int height) {
+bool RenderTarget::Resize(int width, int height, bool hdr) {
   if (width <= 0 || height <= 0) return false;
-  if (width == width_ && height == height_ && fbo_) return true;
+  if (width == width_ && height == height_ && hdr == hdr_ && fbo_) return true;
   Destroy();
   width_ = width;
   height_ = height;
+  hdr_ = hdr;
   glGenTextures(1, &color_tex_);
   glBindTexture(GL_TEXTURE_2D, color_tex_);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+  if (hdr_) glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
+  else glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -520,6 +531,20 @@ void RenderTarget::ReadPixels(std::vector<unsigned char>& rgb) const {
   const size_t row = static_cast<size_t>(width_) * 3;
   for (int y = 0; y < height_; ++y) {
     std::memcpy(&rgb[static_cast<size_t>(y) * row], &bottom_up[static_cast<size_t>(height_ - 1 - y) * row], row);
+  }
+}
+
+void RenderTarget::ReadPixelsFloat(std::vector<float>& rgb) const {
+  rgb.assign(static_cast<size_t>(width_) * height_ * 3, 0.0f);
+  if (!fbo_) return;
+  std::vector<float> bottom_up(rgb.size());
+  Bind();
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glReadPixels(0, 0, width_, height_, GL_RGB, GL_FLOAT, bottom_up.data());
+  Unbind();
+  const size_t row = static_cast<size_t>(width_) * 3;
+  for (int y = 0; y < height_; ++y) {
+    std::memcpy(&rgb[static_cast<size_t>(y) * row], &bottom_up[static_cast<size_t>(height_ - 1 - y) * row], row * sizeof(float));
   }
 }
 
@@ -623,6 +648,7 @@ bool GlRenderer::Init(std::string& error) {
   mesh_u_ssao_map_ = glGetUniformLocation(mesh_program_, "u_ssao_map");
   mesh_u_ssao_valid_ = glGetUniformLocation(mesh_program_, "u_ssao_valid");
   mesh_u_viewport_size_ = glGetUniformLocation(mesh_program_, "u_viewport_size");
+  mesh_u_hdr_output_ = glGetUniformLocation(mesh_program_, "u_hdr_output");
   line_u_mvp_ = glGetUniformLocation(line_program_, "u_mvp");
   line_u_color_ = glGetUniformLocation(line_program_, "u_color");
   line_u_size_ = glGetUniformLocation(line_program_, "u_size");
@@ -832,6 +858,7 @@ void GlRenderer::DrawMesh(const std::vector<float>& data, const std::vector<floa
   glUniform1i(mesh_u_ortho_, ortho ? 1 : 0);
   if (mode == kRendered || mode == kGround) {
     UploadLights();
+    glUniform1i(mesh_u_hdr_output_, hdr_output_ ? 1 : 0);
     glUniform4f(mesh_u_specular_, material_.specular.r, material_.specular.g, material_.specular.b, material_.shininess);
     glUniform3f(mesh_u_emission_, material_.emission.r, material_.emission.g, material_.emission.b);
     glUniform1f(mesh_u_reflectivity_, material_.reflectivity);

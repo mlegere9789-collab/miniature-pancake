@@ -81,6 +81,11 @@ struct QualityArgs {
   int bounces = 8;
   bool denoise = true;
   double legacy_supersample = 0;  // Quality=<n>: the rasteriser's existing supersample factor
+  // Hdr=Yes (rasteriser quality only - see RenderFullFrame below): a
+  // per-call request, never persisted anywhere, exactly like every other
+  // field here - pass it again on the next Render/RenderPreview/etc. call
+  // that wants it too.
+  bool hdr = false;
 };
 
 QualityArgs ParseQualityArgs(const Args& a) {
@@ -93,6 +98,7 @@ QualityArgs ParseQualityArgs(const Args& a) {
   if (a.Has("Samples")) q.samples = std::max(1, static_cast<int>(a.Num("Samples", 64)));
   if (a.Has("Bounces")) q.bounces = std::max(1, static_cast<int>(a.Num("Bounces", 8)));
   q.denoise = a.Yes("Denoise", true);
+  q.hdr = a.Yes("Hdr", false);
   return q;
 }
 
@@ -109,7 +115,7 @@ bool RenderFullFrame(CommandContext& ctx, Viewport* vp, int w, int h, const Qual
   if (!vp) vp = ctx.ActiveViewport();
   if (!vp) { error = "No active viewport"; return false; }
   if (!q.raytraced) {
-    if (!app.RenderView(vp, w, h, static_cast<int>(q.legacy_supersample), arctic, error, blowup)) return false;
+    if (!app.RenderView(vp, w, h, static_cast<int>(q.legacy_supersample), arctic, error, blowup, q.hdr)) return false;
     seconds_out = app.LastRender().seconds;
     return true;
   }
@@ -298,10 +304,19 @@ void RegisterRaytraceCommands(CommandEngine& e) {
         int w = static_cast<int>(a.Num("Width", 0)), h = static_cast<int>(a.Num("Height", 0));
         if (a.rest.size() >= 2) { w = std::atoi(a.rest[0].c_str()); h = std::atoi(a.rest[1].c_str()); }
         const QualityArgs q = ParseQualityArgs(a);
+        // q.hdr (Hdr=Yes): the rasteriser path (q.raytraced == false,
+        // RenderFullFrame's own app.RenderView call) additionally captures
+        // the real, unclamped linear-radiance values for this one render -
+        // see Viewport::RenderToImage's own second HDR pass. Quality=
+        // Raytraced ignores it: PathTracer's own output is still a plain
+        // 8-bit buffer with no parallel HDR capture of its own yet, a
+        // separate, not-yet-attempted gap, so SaveLastRender honestly has
+        // nothing HDR to write for that path regardless of this flag.
         std::string err; double seconds = 0;
         if (!RenderFullFrame(ctx, nullptr, w, h, q, false, err, seconds)) { ctx.Warn(std::string("Render: ") + err); return; }
         PrintRenderResult(ctx, "Render", seconds, q);
-      }));
+      }), CommandStatus::Implemented,
+      "Width=/Height=/Quality=/Samples=/Bounces=/Denoise=, plus Hdr=Yes (rasteriser quality only) to also capture the rasteriser's own real, unclamped linear-radiance values for this render, so SaveRenderWindowAs can write a genuine .hdr/.exr of it afterward instead of only ever an 8-bit-clamped BMP/PPM/PNG; off by default.");
   auto preview = [](CommandContext& ctx, int fast_samples) {
     Args a = TakeArgs(ctx);
     QualityArgs q = ParseQualityArgs(a);
