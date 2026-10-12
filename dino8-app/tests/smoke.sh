@@ -427,7 +427,8 @@ if echo "$C2" | grep -q "Bounding box: (30, 0, 9) to (40, 0, 9)"; then
 else
   echo "ok   RemoveSymmetry genuinely broke the live link (copy did NOT follow the source's post-removal move)"
 fi
-c2check "^ok   expect_objects 201" "curve-tools script produced the expected object count"
+c2check "ConvertToBeziers: 4 Bezier span(s)" "ConvertToBeziers now decomposes a surface too (NurbsSurface::DecomposeToBeziers), not just curves - a degree-1 3x3-control-point Plane's 2x2 spans become exactly 4 Bezier patches"
+c2check "^ok   expect_objects 205" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/exchange_script.txt" > "$TMPW/exchange_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
