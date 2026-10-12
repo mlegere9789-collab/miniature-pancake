@@ -966,6 +966,106 @@ void TestCurveSetDomainReparameterizes() {
   Check(curve.SetDomain(9.0, 2.0) == Result::Failed, "SetDomain returns Failed when t0 > t1");
 }
 
+void TestCurveChangeSeam() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // An open curve: ChangeSeam always fails, regardless of t.
+  const std::vector<Point3d> open_pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+  NurbsCurve open_curve = NurbsCurve::FromControlPoints(open_pts, 2);
+  Check(open_curve.ChangeSeam(open_curve.Domain().min) == Result::Failed,
+        "ChangeSeam refuses an open curve");
+
+  // Closed-but-not-periodic curve (coincident endpoints, clamped knot
+  // vector) - the same fixture shape as TestCurveIsClosed's own
+  // closed_curve.
+  const std::vector<Point3d> closed_pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0),
+                                            Point3d(0, 0, 0)};
+  NurbsCurve closed = NurbsCurve::FromControlPoints(closed_pts, 2);
+  Check(closed.IsClosed() && !closed.IsPeriodic(), "ChangeSeam setup: the fixture is closed but not periodic");
+
+  const auto dom = closed.Domain();
+  const double seam_t = dom.min + 0.5 * (dom.max - dom.min);
+  const Point3d expected_start = closed.PointAt(seam_t);
+
+  // Sample the ORIGINAL shape densely, keyed by normalized position
+  // around the loop, before moving the seam - so afterward we can
+  // re-derive the same 3D points at the correspondingly shifted
+  // parameters and confirm the shape itself didn't move at all.
+  constexpr int kSamples = 40;
+  std::vector<Point3d> before;
+  for (int i = 0; i <= kSamples; ++i) {
+    const double frac = static_cast<double>(i) / kSamples;
+    before.push_back(closed.PointAt(dom.min + frac * (dom.max - dom.min)));
+  }
+
+  Check(closed.ChangeSeam(seam_t) == Result::Ok, "ChangeSeam returns Ok on a closed curve");
+  const auto new_dom = closed.Domain();
+  Check(new_dom.min == seam_t, "ChangeSeam moves Domain().min to exactly the requested parameter");
+  Check((closed.PointAt(new_dom.min) - expected_start).Length() < 1e-9,
+        "ChangeSeam: the new start point is exactly the old PointAt(seam_t)");
+
+  // Shape check: walking the new domain from its own min retraces the
+  // same loop, just starting halfway around (seam_t was already the old
+  // curve's own halfway point) - so the new curve's point at normalized
+  // fraction f must equal the OLD curve's point at normalized fraction
+  // (0.5 + f) mod 1, read back from the pre-move `before` samples.
+  double max_err = 0.0;
+  for (int i = 0; i <= kSamples; ++i) {
+    const double frac = static_cast<double>(i) / kSamples;
+    const Point3d p = closed.PointAt(new_dom.min + frac * (new_dom.max - new_dom.min));
+    const double old_frac = std::fmod(0.5 + frac, 1.0);
+    const size_t old_index = static_cast<size_t>(std::lround(old_frac * kSamples)) % kSamples;
+    max_err = std::max(max_err, (p - before[old_index]).Length());
+  }
+  Check(max_err < 1e-6, "ChangeSeam retraces the identical 3D shape, just starting from a different point");
+
+  // min_dist guard: re-requesting the current (already-moved) seam with
+  // a generous min_dist is a reported no-op, left completely untouched.
+  Check(closed.ChangeSeam(new_dom.min, 1.0) == Result::NoOpAlreadySatisfied,
+        "ChangeSeam(min_dist) reports NoOpAlreadySatisfied when the target is already within min_dist");
+  Check(closed.Domain().min == new_dom.min, "...and really did leave the curve's domain untouched");
+
+  // A genuinely periodic curve (a real circle, via this class's own
+  // MakePeriodicExact()). Its interior knots are Bezier-decomposed to
+  // full multiplicity (MakePeriodicExact()'s own documented
+  // construction), so ON_NurbsCurve::ChangeClosedCurveSeam's internal
+  // "all interior knots simple" precondition for its periodic-preserving
+  // path does NOT hold here - confirmed directly below, not assumed:
+  // it falls back to OpenNURBS' own general (split + re-append) path,
+  // which is still exactly shape-preserving but returns a CLAMPED
+  // result, so IsPeriodic() genuinely comes back false even though the
+  // curve going in was periodic. The shape invariant (every point still
+  // on the same circle) is what must survive regardless.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
+  ON_NurbsCurve circle_form;
+  Check(on_circle.GetNurbForm(circle_form) != 0, "ChangeSeam setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = circle_form;
+  Check(circle.MakePeriodicExact() == Result::Ok, "ChangeSeam setup: MakePeriodicExact succeeds on the circle");
+  Check(circle.IsPeriodic(), "ChangeSeam setup: the circle fixture is genuinely periodic");
+
+  const auto circle_dom = circle.Domain();
+  const double circle_seam_t = circle_dom.min + 0.25 * (circle_dom.max - circle_dom.min);
+  const Point3d circle_expected_start = circle.PointAt(circle_seam_t);
+  Check(circle.ChangeSeam(circle_seam_t) == Result::Ok, "ChangeSeam returns Ok on a periodic curve");
+  Check((circle.PointAt(circle.Domain().min) - circle_expected_start).Length() < 1e-9,
+        "ChangeSeam on a periodic curve: the new start point is exactly the old PointAt(seam_t)");
+  Check(circle.IsClosed(), "ChangeSeam on a periodic curve: the result is still genuinely closed");
+  // Radius is an invariant of this shape regardless of where it starts -
+  // confirms the move didn't distort the circle into something else,
+  // even though (per the doc comment above, and confirmed here) this
+  // specific fixture's own full-multiplicity knots make it come back
+  // non-periodic (clamped) rather than periodic.
+  for (int i = 0; i <= 8; ++i) {
+    const auto d = circle.Domain();
+    const double t = d.min + (i / 8.0) * (d.max - d.min);
+    Check(std::abs(circle.PointAt(t).DistanceTo(Point3d(0, 0, 0)) - 3.0) < 1e-6,
+          "ChangeSeam on a periodic curve leaves every point on the same radius-3 circle");
+  }
+}
+
 void TestCurveMatchEnd() {
   using dino8::kernel::MatchContinuity;
   using dino8::kernel::MatchEndReport;
@@ -2688,6 +2788,138 @@ void TestCurveFitLeastSquares() {
         "FitLeastSquares fails when control_point_count < degree + 1");
   Check(NurbsCurve::FitLeastSquares(pts, 3, 1000, dummy) == Result::Failed,
         "FitLeastSquares fails when control_point_count exceeds the number of data points");
+}
+
+// PARITY_MAP's geometry category, "Helix and spiral curves": before this,
+// the app's own HelixCommand built a curve through sampled points via
+// FromControlPoints() directly - treating samples as CONTROL points, not
+// interpolation points, with no measured error bound. NurbsCurve::Helix()
+// is the real kernel-native, tolerance-bounded replacement.
+void TestCurveHelix() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // A helix along +Z through the origin: 3 turns, radius 5, pitch 2 (2
+  // units of height per full turn). Helix() deliberately picks AN
+  // ARBITRARY orthonormal basis perpendicular to axis_dir (its own doc
+  // comment), so a test must not assume which world direction s=0
+  // starts at - instead check the basis-INDEPENDENT invariants a true
+  // helix must satisfy: constant radial distance from the axis line,
+  // and height exactly proportional to the true angle swept.
+  {
+    NurbsCurve helix;
+    double max_dev = -1.0;
+    const Result r =
+        NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 5.0, 2.0, 3.0, 1e-6, helix, &max_dev);
+    Check(r == Result::Ok, "Helix succeeds for a plain 3-turn, radius-5, pitch-2 helix along +Z");
+    Check(max_dev >= 0.0 && max_dev <= 1e-6, "the achieved deviation is reported and within the requested tolerance");
+
+    const Vector3d axis(0, 0, 1);
+    auto height_of = [&](const Point3d& p) { return ON_DotProduct(p - Point3d(0, 0, 0), axis); };
+    auto radial_of = [&](const Point3d& p) { return (p - Point3d(0, 0, 0) - axis * height_of(p)).Length(); };
+
+    const double s_domain = helix.Domain().max;
+    Check(std::abs(height_of(helix.PointAt(helix.Domain().min)) - 0.0) < 1e-6,
+          "at s=0 the helix's own height along the axis is exactly 0");
+    Check(std::abs(radial_of(helix.PointAt(helix.Domain().min)) - 5.0) < 1e-6,
+          "at s=0 the helix is at exactly the requested radius 5 from the axis");
+    Check(std::abs(height_of(helix.PointAt(s_domain)) - 6.0) < 1e-6,
+          "after exactly 3 full turns the helix's own height is exactly 6 - 3 turns * pitch 2");
+    Check(std::abs(radial_of(helix.PointAt(s_domain)) - 5.0) < 1e-6,
+          "after 3 full turns the helix is still at exactly radius 5 from the axis");
+    const double quarter = ON_PI / 2.0;
+    Check(std::abs(height_of(helix.PointAt(quarter)) - 0.5) < 1e-6,
+          "a quarter turn (the curve's own domain parameter equals true angle s directly) is at "
+          "exactly height 0.5 - 1/4 of one pitch");
+    Check(std::abs(radial_of(helix.PointAt(quarter)) - 5.0) < 1e-6,
+          "a quarter turn is still at exactly radius 5 from the axis");
+    // The real angle-tracking claim, basis-independent: the radial
+    // vector at the quarter-turn point is rotated exactly 90 degrees
+    // from the radial vector at s=0 (dot product of the two unit
+    // radial directions is 0), confirming the parameter genuinely
+    // tracks true swept angle, not just radius/height separately.
+    const Vector3d radial0 = helix.PointAt(helix.Domain().min) - Point3d(0, 0, 0) - axis * height_of(helix.PointAt(helix.Domain().min));
+    const Vector3d radial_quarter = helix.PointAt(quarter) - Point3d(0, 0, 0) - axis * height_of(helix.PointAt(quarter));
+    Check(std::abs(ON_DotProduct(radial0, radial_quarter)) < 1e-6,
+          "the radial direction at a quarter turn is exactly perpendicular to the radial direction "
+          "at s=0 - a genuine 90-degree rotation, not merely matching radius/height independently");
+  }
+
+  // A tighter tolerance must never report a WORSE (larger) achieved
+  // deviation than a looser one on the identical geometry - the same
+  // "more refinement never hurts" sanity any doubling-until-converged
+  // search in this kernel should satisfy.
+  {
+    double dev_loose = -1.0, dev_tight = -1.0;
+    NurbsCurve h1, h2;
+    Check(NurbsCurve::Helix(Point3d(1, 2, 3), Vector3d(1, 1, 1), 3.0, 1.5, 5.0, 1e-2, h1, &dev_loose) == Result::Ok,
+          "Helix succeeds at a loose tolerance on an off-origin, tilted-axis helix");
+    Check(NurbsCurve::Helix(Point3d(1, 2, 3), Vector3d(1, 1, 1), 3.0, 1.5, 5.0, 1e-8, h2, &dev_tight) == Result::Ok,
+          "Helix succeeds at a much tighter tolerance on the identical helix");
+    Check(dev_tight <= dev_loose + 1e-12,
+          "the tighter-tolerance call's own achieved deviation is no worse than the loose one's");
+    Check(dev_tight <= 1e-8 && dev_loose <= 1e-2, "both calls genuinely satisfy their own requested tolerance");
+  }
+
+  // A degenerate pitch (0) is a plain circle - the construction must
+  // still work and produce a closed, planar, constant-radius result.
+  {
+    NurbsCurve circle_helix;
+    double dev = -1.0;
+    Check(NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 4.0, 0.0, 2.0, 1e-6, circle_helix, &dev) ==
+              Result::Ok,
+          "Helix with pitch=0 (a degenerate flat circular path, 2 turns) still succeeds");
+    Check((circle_helix.PointAt(circle_helix.Domain().min) - circle_helix.PointAt(circle_helix.Domain().max))
+                  .Length() < 1e-6,
+          "a pitch-0 helix starts and ends at the exact same point after an integer number of turns");
+  }
+
+  // Negative-pitch (winds "downward") must also work, mirroring the
+  // positive case exactly with height negated.
+  {
+    NurbsCurve down;
+    double dev = -1.0;
+    Check(NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 2.0, -1.0, 1.0, 1e-6, down, &dev) == Result::Ok,
+          "a negative pitch (descending helix) succeeds");
+    const Vector3d axis(0, 0, 1);
+    const Point3d end = down.PointAt(down.Domain().max);
+    const double height = ON_DotProduct(end - Point3d(0, 0, 0), axis);
+    const double radial = (end - Point3d(0, 0, 0) - axis * height).Length();
+    Check(std::abs(height - (-1.0)) < 1e-6,
+          "one full turn of a radius-2, pitch=-1 helix ends at height -1 - height decreased by 1");
+    Check(std::abs(radial - 2.0) < 1e-6, "that same end point is still at exactly radius 2 from the axis");
+  }
+
+  // Argument validation: every one of radius/turns/tolerance must be
+  // positive and finite, pitch must be finite, axis_dir must be a real
+  // nonzero vector.
+  NurbsCurve dummy;
+  auto throws = [&](auto&& fn) {
+    try {
+      fn();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 0.0, 1.0, 1.0, 1e-6, dummy); }),
+        "Helix throws for a non-positive radius");
+  Check(throws([&] {
+          NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 1.0, std::numeric_limits<double>::quiet_NaN(),
+                             1e-6, dummy);
+        }),
+        "Helix throws for a NaN turns");
+  Check(throws([&] {
+          NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, std::numeric_limits<double>::infinity(), 1.0,
+                             1e-6, dummy);
+        }),
+        "Helix throws for a non-finite pitch");
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 1.0, 1.0, -1.0, dummy); }),
+        "Helix throws for a non-positive tolerance");
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 0), 1.0, 1.0, 1.0, 1e-6, dummy); }),
+        "Helix throws for a zero-length axis_dir");
 }
 
 // Simulates RefitTrim's own algorithm directly at the kernel level (fit at
@@ -5775,6 +6007,109 @@ void TestIntersectCylinderCylinderIntersectingClosedForm() {
   // Invalid input (zero-radius cylinder) is refused outright.
   const ON_Cylinder degenerate(ON_Circle(ON_Plane(q, axis_b), 0.0));
   Check(IntersectCylinderCylinderIntersecting(cyl_a, degenerate, tol).empty, "a zero-radius cylinder operand is refused as a genuine miss");
+}
+
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
+// "cylinder/cylinder" half's UNEQUAL-RADIUS, FULLY-PIERCING special case -
+// a third narrowing of that pair, alongside the parallel-axis and
+// equal-radius-intersecting-axis tests directly above.
+void TestIntersectCylinderCylinderUnequalRadiusClosedForm() {
+  using dino8::kernel::IntersectCylinderCylinderUnequalRadius;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Distance from a point to an infinite axis line (through `origin`,
+  // unit `axis`) - the defining per-cylinder membership test every curve
+  // point below is checked against, not a hardcoded expected curve.
+  auto dist_to_axis = [](const Point3d& p, const Point3d& origin, const Vector3d& axis) {
+    const Vector3d v = p - origin;
+    const double along = ON_DotProduct(v, axis);
+    const Vector3d radial = v - along * axis;
+    return radial.Length();
+  };
+
+  const double tol = 1e-6;
+  const double R = 3.0, r = 1.0;
+  const Vector3d axis_large(0, 0, 1);
+  const Vector3d axis_small(1, 0, 0);
+
+  // Intersecting axes (perpendicular, meeting exactly at the origin): the
+  // larger cylinder's own radius R along Z, the smaller's own radius r
+  // along X, both through the same point.
+  const ON_Cylinder cyl_large(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_large), R));
+  const ON_Cylinder cyl_small(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_small), r));
+  const auto crossing = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small, tol);
+  Check(!crossing.empty && !crossing.equal_radius && !crossing.parallel && !crossing.not_full_pierce,
+        "two unequal-radius cylinders with genuinely intersecting, perpendicular axes report two real closed curves");
+  if (!crossing.empty) {
+    for (const ON_NurbsCurve* curve : {&crossing.curve_a, &crossing.curve_b}) {
+      Check(curve->IsValid(), "each reported closed curve has a valid NURBS form");
+      bool all_on_both = true;
+      const int n = 32;
+      for (int i = 0; i <= n; ++i) {
+        const double t = curve->Domain().ParameterAt(static_cast<double>(i) / n);
+        const Point3d p = curve->PointAt(t);
+        if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-3 ||
+            std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_small) - r) > 1e-3) {
+          all_on_both = false;
+          break;
+        }
+      }
+      Check(all_on_both, "every sampled point of the curve sits at exactly radius R from the larger cylinder's axis AND exactly radius r from the smaller cylinder's axis simultaneously");
+    }
+    const Point3d mid_a = crossing.curve_a.PointAt(crossing.curve_a.Domain().ParameterAt(0.0));
+    const Point3d mid_b = crossing.curve_b.PointAt(crossing.curve_b.Domain().ParameterAt(0.0));
+    Check(mid_a.DistanceTo(mid_b) > 1e-3, "the two closed curves are genuinely distinct, not the same one reported twice");
+    Check(crossing.curve_a.IsClosed() && crossing.curve_b.IsClosed(), "both reported curves are genuinely closed loops, not open arcs");
+  }
+
+  // Also works with the caller's own argument order swapped (small, large)
+  // - the closed form must be argument-order independent.
+  const auto crossing_swapped = IntersectCylinderCylinderUnequalRadius(cyl_small, cyl_large, tol);
+  Check(!crossing_swapped.empty && !crossing_swapped.equal_radius && !crossing_swapped.parallel && !crossing_swapped.not_full_pierce,
+        "the same pair, passed in the opposite argument order, reports the same kind of result");
+
+  // A genuinely skew pair (axes non-parallel, closest-point distance
+  // d = 1 between them) whose smaller cylinder still fully pierces the
+  // larger one on every generator (d + r = 2 < R = 3).
+  const ON_Cylinder cyl_small_skew(ON_Circle(ON_Plane(Point3d(0, 1, 0), axis_small), r));
+  const auto skew_pierce = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_skew, tol);
+  Check(!skew_pierce.empty && !skew_pierce.not_full_pierce, "a genuinely skew pair whose smaller cylinder fully pierces the larger one reports a real result, not a refusal");
+  if (!skew_pierce.empty) {
+    bool all_on_both = true;
+    const int n = 32;
+    for (int i = 0; i <= n; ++i) {
+      const double t = skew_pierce.curve_a.Domain().ParameterAt(static_cast<double>(i) / n);
+      const Point3d p = skew_pierce.curve_a.PointAt(t);
+      if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-3 ||
+          std::abs(dist_to_axis(p, Point3d(0, 1, 0), axis_small) - r) > 1e-3) {
+        all_on_both = false;
+        break;
+      }
+    }
+    Check(all_on_both, "the skew-but-piercing case's own curve also sits at exactly radius R from the larger axis and radius r from the smaller (offset) axis simultaneously");
+  }
+
+  // A genuinely skew pair that does NOT fully pierce (d + r = 2.5 + 1 = 3.5
+  // >= R = 3, a partial/blind penetration) is refused outright.
+  const ON_Cylinder cyl_small_partial(ON_Circle(ON_Plane(Point3d(0, 2.5, 0), axis_small), r));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_partial, tol).not_full_pierce,
+        "a genuinely skew pair whose smaller cylinder does NOT fully pierce the larger one is refused outright, not guessed at");
+
+  // Equal radii are refused outright - this closed form requires UNEQUAL
+  // radii; IntersectCylinderCylinderIntersecting() is the equal-radius case.
+  const ON_Cylinder cyl_equal(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_small), R));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_equal, tol).equal_radius,
+        "two equal-radius cylinders are refused outright, not misrouted into this function's own construction");
+
+  // (Anti)parallel axes are refused outright - IntersectCylinderCylinderParallel()'s own case.
+  const ON_Cylinder cyl_parallel(ON_Circle(ON_Plane(Point3d(5, 0, 0), axis_large), r));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_parallel, tol).parallel,
+        "parallel axes are refused outright, not misrouted into a fabricated curve");
+
+  // Invalid input (zero-radius cylinder) is refused outright.
+  const ON_Cylinder degenerate(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_small), 0.0));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, degenerate, tol).empty, "a zero-radius cylinder operand is refused as a genuine miss");
 }
 
 // PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
@@ -34215,6 +34550,101 @@ void TestMeshLoadFbxRejectsMalformedFiles() {
   std::remove(unterminated_path.c_str());
 }
 
+void TestNurbsCurveSaveIgesRoundTrips() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence names
+  // IGES as app-only ("PLY has a kernel API; STEP/IGES/DXF/DWG ... remain
+  // app-only Document entry points" - DXF's own half of that gap already
+  // closed via SaveDxf()/LoadDxf() above). A real circle's own NURBS form -
+  // degree 2, periodic, genuinely non-unit rational weights - exercises
+  // every field SaveIges()/LoadIges() carry, not just a trivial polynomial
+  // line.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  Check(circle.raw().IsRational(), "setup: a circle's own NURBS form is genuinely rational");
+
+  const std::string path = "dino8_kernel_curve_iges_test.igs";
+  Check(circle.SaveIges(path) == Result::Ok, "NurbsCurve::SaveIges succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .igs file SaveIges wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  Check(file_text.find("S      1") != std::string::npos, "the file has a real Start section");
+  Check(file_text.find("126,") != std::string::npos, "the file's Parameter Data carries a real Type 126 entity");
+  Check(file_text.find("T      1") != std::string::npos, "the file has a real Terminate section");
+
+  NurbsCurve reloaded;
+  Check(NurbsCurve::LoadIges(path, reloaded) == Result::Ok, "NurbsCurve::LoadIges succeeds on SaveIges()'s own output");
+  Check(reloaded.raw().CVCount() == circle.raw().CVCount(), "the reloaded curve has the same control point count");
+  Check(reloaded.raw().Degree() == circle.raw().Degree(), "the reloaded curve has the same degree");
+  Check(reloaded.raw().IsRational(), "the reloaded curve is still genuinely rational");
+  bool cv_ok = true;
+  for (int i = 0; i < circle.raw().CVCount() && cv_ok; ++i) {
+    ON_4dPoint a, b;
+    circle.raw().GetCV(i, a);
+    reloaded.raw().GetCV(i, b);
+    if (std::abs(a.x / a.w - b.x / b.w) >= 1e-6 || std::abs(a.y / a.w - b.y / b.w) >= 1e-6 || std::abs(a.w - b.w) >= 1e-9) cv_ok = false;
+  }
+  Check(cv_ok, "every control point survived exactly (Euclidean position and real weight)");
+  Check(std::abs(reloaded.Length() - circle.Length()) < 1e-6,
+        "the reloaded curve's own length exactly matches the original circle's circumference");
+  std::remove(path.c_str());
+}
+
+void TestNurbsCurveLoadIgesRejectsMalformedFiles() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Result;
+
+  NurbsCurve out;
+  Check(NurbsCurve::LoadIges("dino8_kernel_curve_iges_does_not_exist.igs", out) == Result::Failed,
+        "LoadIges refuses a missing file");
+
+  const std::string garbage_path = "dino8_kernel_curve_iges_garbage.igs";
+  {
+    std::ofstream o(garbage_path);
+    o << "this is not an IGES file at all\n";
+  }
+  Check(NurbsCurve::LoadIges(garbage_path, out) == Result::Failed,
+        "LoadIges refuses a file with no Directory Entry section");
+  std::remove(garbage_path.c_str());
+
+  // A real SaveIges()-written file whose Directory Entry's own Type field
+  // (the first 8 columns of its first Directory Entry line) is corrupted
+  // to name a different entity (100, a circular arc) instead of 126 - this
+  // reader's own disclosed scope (the first Type 126 entity only) must
+  // decline it rather than misreading unrelated Parameter Data as a 126
+  // record.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
+  ON_NurbsCurve nurbs_form;
+  on_circle.GetNurbForm(nurbs_form);
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const std::string wrong_type_path = "dino8_kernel_curve_iges_wrong_type.igs";
+  Check(circle.SaveIges(wrong_type_path) == Result::Ok, "setup: SaveIges succeeds");
+  {
+    std::ifstream in(wrong_type_path);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    const size_t d1_end = text.find("D      1\n");
+    Check(d1_end != std::string::npos && d1_end >= 72, "setup: found the first Directory Entry line");
+    const size_t line_start = d1_end - 72;
+    Check(text.compare(line_start, 8, "     126") == 0, "setup: the first 8 columns are the entity Type field (126)");
+    text.replace(line_start, 8, "     100");
+    std::ofstream out_file(wrong_type_path, std::ios::trunc);
+    out_file << text;
+  }
+  Check(NurbsCurve::LoadIges(wrong_type_path, out) == Result::Failed,
+        "LoadIges refuses a file whose only entity's Directory Entry names Type 100, not 126");
+  std::remove(wrong_type_path.c_str());
+}
+
 void TestMeshSaveDxfRoundTrips() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
@@ -57839,6 +58269,72 @@ void TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape() {
   Check(threw, "SetDomain throws on a direction other than 0/1");
 }
 
+void TestSurfaceChangeSeam() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A flat bilinear surface, open in both directions - ChangeSeam always
+  // fails, same convention as the curve overload's open-curve case.
+  std::vector<Point3d> grid;
+  for (int u = 0; u < 2; ++u)
+    for (int v = 0; v < 2; ++v) grid.emplace_back(u, v, 0);
+  NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  Check(flat.ChangeSeam(0, flat.Domain(0).min) == Result::Failed,
+        "ChangeSeam refuses a surface that isn't closed in that direction");
+  bool threw = false;
+  try { flat.ChangeSeam(2, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ChangeSeam throws on a direction other than 0/1");
+
+  // A real cylinder wall via ON_Cylinder::GetNurbForm - same fixture
+  // shape as TestSurfaceIsClosed: closed (clamped, not periodic) in U,
+  // open in V.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0);
+  const ON_Cylinder cylinder(circle, 5.0);
+  ON_NurbsSurface cylinder_surface;
+  Check(cylinder.GetNurbForm(cylinder_surface) != 0, "ChangeSeam setup: ON_Cylinder::GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  Check(wall.IsClosed(0) && !wall.IsPeriodic(0),
+        "ChangeSeam setup: the wall fixture is closed-but-not-periodic in U, same as TestSurfaceIsClosed");
+
+  Check(wall.ChangeSeam(1, wall.Domain(1).min) == Result::Failed,
+        "ChangeSeam refuses the open (V) direction even though U is closed");
+
+  const auto u_dom = wall.Domain(0);
+  const auto v_dom_before = wall.Domain(1);
+  const double seam_u = u_dom.min + 0.3 * (u_dom.max - u_dom.min);
+  const double v_mid = v_dom_before.min + 0.5 * (v_dom_before.max - v_dom_before.min);
+  const Point3d expected_start = wall.PointAt(seam_u, v_mid);
+
+  Check(wall.ChangeSeam(0, seam_u) == Result::Ok, "ChangeSeam returns Ok in the closed (U) direction");
+  const auto new_u_dom = wall.Domain(0);
+  Check(new_u_dom.min == seam_u, "ChangeSeam moves Domain(0).min to exactly the requested parameter");
+  Check(wall.Domain(1).min == v_dom_before.min && wall.Domain(1).max == v_dom_before.max,
+        "ChangeSeam(0, ...) leaves the OTHER (V) direction's domain completely untouched");
+  Check((wall.PointAt(new_u_dom.min, v_mid) - expected_start).Length() < 1e-6,
+        "ChangeSeam: the new U-min point matches the old PointAt(seam_u, v_mid) exactly");
+
+  // Shape invariant: every point on the cylinder wall lies at radius 2
+  // from the z axis through the origin, regardless of (u, v) - true
+  // before AND after the seam move, confirming the move relocated the
+  // seam without distorting the wall into something else.
+  for (int i = 0; i <= 8; ++i) {
+    const double v = wall.Domain(1).min + (i / 8.0) * (wall.Domain(1).max - wall.Domain(1).min);
+    for (int j = 0; j <= 8; ++j) {
+      const double u = new_u_dom.min + (j / 8.0) * (new_u_dom.max - new_u_dom.min);
+      const Point3d p = wall.PointAt(u, v);
+      const double radial = std::sqrt(p.x * p.x + p.y * p.y);
+      Check(std::abs(radial - 2.0) < 1e-6, "ChangeSeam leaves every point on the same radius-2 cylindrical wall");
+    }
+  }
+
+  // A parameter outside Domain(0) is refused outright (no wraparound at
+  // the surface level, unlike the curve overload's own fmod handling).
+  Check(wall.ChangeSeam(0, new_u_dom.max + 1.0) == Result::Failed,
+        "ChangeSeam refuses a parameter outside that direction's own Domain()");
+}
+
 void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Result;
@@ -74455,6 +74951,7 @@ int main() {
   TestCurveInsertKnotAt();
   TestCurveRemoveKnotAt();
   TestCurveSetDomainReparameterizes();
+  TestCurveChangeSeam();
   TestCurveMatchEnd();
   TestCurveAnalyzeEndContinuity();
   TestCurveDeviationTo();
@@ -74482,6 +74979,7 @@ int main() {
   TestSurfaceMakePeriodicExact();
   TestCurveClosestPoint();
   TestCurveFitLeastSquares();
+  TestCurveHelix();
   TestCurveFitLeastSquaresConstrainedRefit();
   TestCurveCurvature();
   TestCurveSuggestedSamples();
@@ -74527,6 +75025,7 @@ int main() {
   TestIntersectPlaneCylinderClosedForm();
   TestIntersectCylinderCylinderParallelClosedForm();
   TestIntersectCylinderCylinderIntersectingClosedForm();
+  TestIntersectCylinderCylinderUnequalRadiusClosedForm();
   TestIntersectPlanePlaneClosedForm();
   TestIntersectPlaneConeClosedForm();
   TestIntersectPlaneTorusClosedForm();
@@ -74875,6 +75374,8 @@ int main() {
   TestMeshLoad3mfRejectsMalformedFiles();
   TestMeshSaveFbxRoundTrips();
   TestMeshLoadFbxRejectsMalformedFiles();
+  TestNurbsCurveSaveIgesRoundTrips();
+  TestNurbsCurveLoadIgesRejectsMalformedFiles();
   TestMeshSaveDxfRoundTrips();
   TestMeshLoadDxfRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
@@ -75313,6 +75814,7 @@ int main() {
   TestSurfaceRemoveKnotAtArgumentChecks();
 
   TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape();
+  TestSurfaceChangeSeam();
   TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise();
   TestSurfaceReduceDegree();
   TestSurfaceInterpolateThroughGrid();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <string>
 #include <vector>
 
 #include <opennurbs.h>
@@ -128,6 +129,43 @@ class NurbsCurve {
   // interpolation). `out` is left unchanged on failure.
   static Result FitLeastSquares(const std::vector<Point3d>& points, int degree,
                                  int control_point_count, NurbsCurve& out);
+
+  // Closes PARITY_MAP.md's own disclosed "Helix and spiral curves" gap:
+  // `dino8-app`'s own `HelixCommand` only ever called `FromControlPoints()`
+  // directly on sampled points - treating them as CONTROL points, not
+  // interpolation points, with no measured error bound at all, so the
+  // result neither passes through the intended helix nor carries any
+  // honesty tier on how far it strays. A true circular helix - the locus
+  // `origin + radius*cos(s)*xaxis + radius*sin(s)*yaxis + (pitch*s/(2*pi))
+  // *axis_dir` for `s` in `[0, 2*pi*turns]`, where `xaxis`/`yaxis` are any
+  // orthonormal basis of the plane perpendicular to `axis_dir` - is NOT
+  // exactly representable by any single rational NURBS curve: a NURBS
+  // circle's own rational parameter never advances at constant angular
+  // speed between knots, so a z-component held exactly proportional to
+  // true angle can't be a rational polynomial of that same parameter
+  // either - the identical reason `OffsetApproximate`/`Rebuild`/
+  // `MakeNonRational` etc. are all measured-tolerance approximations
+  // rather than exact constructions, not a gap unique to this one.
+  //
+  // This instead builds a genuine, MEASURED-tolerance-bounded cubic
+  // spline interpolant: starting from a sample count proportional to
+  // `turns`, it samples the true closed-form helix at evenly-spaced `s`
+  // (which — since a helix has CONSTANT speed in `s` — is also exact
+  // chord-length spacing, unlike most curves), fits an exact-through-
+  // those-points cubic interpolant via the same `InterpolateCubic()`
+  // global-interpolation technique every other sampled curve in this
+  // kernel already uses (surface_intersect.h), then independently
+  // measures the WORST deviation between that fitted curve and the TRUE
+  // helix at many non-sample intermediate parameters — doubling the
+  // sample count and refitting whenever that measured deviation still
+  // exceeds `tolerance`, up to a capped sample count. Returns
+  // Result::Failed (never a silently uncertified curve) if even the cap
+  // isn't enough; `out`/`out_max_deviation` are left unchanged on
+  // failure. Throws std::invalid_argument for a non-positive or
+  // non-finite `radius`/`turns`/`tolerance`, a non-finite `pitch`, or an
+  // `axis_dir` that is zero-length or non-finite.
+  static Result Helix(Point3d axis_origin, Vector3d axis_dir, double radius, double pitch, double turns,
+                       double tolerance, NurbsCurve& out, double* out_max_deviation = nullptr);
 
   // 2D/3D POLYLINE-CORNER FILLET (Rhino Fillet, AutoCAD FILLET between two
   // lines; app's own FilletChamferCommand, cmd_curveedit.cpp:510, does
@@ -1121,6 +1159,42 @@ class NurbsCurve {
   // Result::NoOpAlreadySatisfied if `[t0, t1]` already equals `Domain()`.
   Result SetDomain(double t0, double t1);
 
+  // If the curve `IsClosed()`, relocates the seam (the shared start/end
+  // point) to parameter `t`, with the curve's own 3D shape completely
+  // unchanged - only where along that fixed shape it starts/ends moves.
+  // `t` need not already lie inside `Domain()`: it is wrapped by the
+  // curve's own periodicity first (`fmod` against the domain width), the
+  // same tolerant handling `NurbsSurface::ChangeSeam(direction, t)` relies
+  // on via the identical OpenNURBS call. For a genuinely periodic curve
+  // (`IsPeriodic()`) whose interior knots are all SIMPLE (multiplicity
+  // 1), the existing periodic knot structure is reused directly with no
+  // extra knot inserted at the new seam - but verified directly, NOT
+  // assumed: a periodic curve whose interior knots carry higher
+  // multiplicity (e.g. this class's own `MakePeriodicExact()`, which
+  // Bezier-decomposes to full multiplicity `Degree()` at every former
+  // breakpoint) fails that internal simple-knot precondition and falls
+  // back to OpenNURBS' own general path instead (split at the seam,
+  // re-append the two halves in the other order, then re-clamp the
+  // domain) - shape-exact either way, but that fallback path returns a
+  // CLAMPED result: `IsPeriodic()` can come back false even though it
+  // was true beforehand. For a merely closed (clamped, non-periodic)
+  // curve to begin with, a knot is inserted at the seam if one isn't
+  // already there - the control point count can grow by one in that
+  // case, same as any other `InsertKnot`. `min_dist` (when > 0) is a
+  // no-op guard, exactly as `ON_Curve::ChangeClosedCurveSeam(t, min_dist)`
+  // defines it: skip the move (and report so) when the target point is
+  // already within `min_dist` of the current start point. Delegates to
+  // `ON_NurbsCurve::ChangeClosedCurveSeam`, the real (non-stub)
+  // implementation `ON_NurbsSurface::ChangeSurfaceSeam` and
+  // `ON_PolyCurve::ChangeClosedCurveSeam` themselves already depend on
+  // internally - not new math, exposing an already-trusted OpenNURBS
+  // primitive this kernel had no public wrapper for. Returns
+  // Result::Failed if the curve isn't closed, or if OpenNURBS' own call
+  // reports failure; Result::NoOpAlreadySatisfied if `min_dist > 0` and
+  // the target point was already within it of the current start (left
+  // completely untouched in that case, not even re-wrapped).
+  Result ChangeSeam(double t, double min_dist = 0.0);
+
   Point3d PointAt(double t) const;
 
   // Finds the parameter along the curve's own domain whose PointAt() is
@@ -1722,6 +1796,48 @@ class NurbsCurve {
   // points left to build a curve from.
   Result OffsetInSurface(const NurbsSurface& surface, double distance, NurbsCurve& out,
                           int sample_count = -1) const;
+
+  // Writes this curve as a single real IGES 5.3 ASCII entity (Start/Global/
+  // Directory-Entry/Parameter-Data/Terminate sections, 80-column fixed-width
+  // card images) - a minimal, single-curve file closing this kernel's own
+  // "App-independent (kernel library) STEP/IGES/PLY/DXF exchange API" gap's
+  // IGES half: `dino8-app/src/io/FileIgesStep.cpp`'s own `ExportIges`/
+  // `ImportIges` already do this at the app level (a `Document`-bound
+  // multi-object writer/reader with its own entity-type dispatch for lines/
+  // arcs/surfaces/trimmed B-reps/groups), but there was no kernel-level,
+  // Document-free way to write or read just one curve - the same "PLY has a
+  // kernel API; STEP/IGES/DXF/DWG remain app-only" gap DXF's own
+  // SaveDxf()/LoadDxf() pair above already closed for its own format.
+  // Always writes a single Type 126 (Rational B-Spline Curve) entity -
+  // IGES's one general-purpose curve entity, able to represent a line, arc,
+  // or free-form NURBS curve alike - rather than `ExportIges`'s own type-
+  // specific 100 (arc)/110 (line) optimization, a deliberate scope
+  // narrowing matching `LoadDxf()`'s own "3DFACE only, no other entity
+  // kind" disclosed limit. The written Parameter Data record carries this
+  // curve's own real degree, full (clamped) knot vector, weights (all 1.0
+  // for a non-rational curve - IGES still requires the array), and
+  // Euclidean (not homogeneous) control points - the exact same field
+  // values `FileIgesStep.cpp`'s own `WriteIges126`/`EuclideanCV`/
+  // `FullKnots` write, ported into this kernel rather than re-derived, so
+  // this is the same proven encoding that app-level writer already is.
+  Result SaveIges(const std::string& path) const;
+
+  // Reads the first Type 126 (Rational B-Spline Curve) entity from a plain
+  // IGES file previously written by SaveIges() (or any other real IGES
+  // writer whose first curve entity happens to be a 126 - a hand-written
+  // 126 Parameter Data record round-trips here exactly like the app-level
+  // ImportIges()'s own identical case 126 branch, since this is the same
+  // field layout, just without the Document-bound entity-type dispatch
+  // (100/102/110/112/126/...) that reader has for every OTHER entity kind -
+  // a file whose first curve is a line (110) or arc (100), not the general
+  // 126 form, is correctly refused rather than silently misread, the same
+  // "declared scope, not a guess" convention `LoadDxf()` already uses for
+  // its own narrower-than-`ImportDxf()` scope. Returns `Result::Failed` on
+  // a missing file, a file with no Directory Entry section, no Type 126
+  // entity, or a 126 entity whose own K (control point count minus one)
+  // or M (degree) implies more Parameter Data fields than the file
+  // actually has.
+  static Result LoadIges(const std::string& path, NurbsCurve& out);
 
   const ON_NurbsCurve& raw() const { return curve_; }
   ON_NurbsCurve& raw() { return curve_; }
