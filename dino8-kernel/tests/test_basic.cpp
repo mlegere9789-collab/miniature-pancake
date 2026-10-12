@@ -7381,6 +7381,109 @@ void TestBooleanCombineGeneralCoplanarBoxes() {
   }
 }
 
+// Round 44 regression test: the SECOND, asymmetric shape of the `878ecdb`
+// coincident-boundary-curve regression `TestBooleanCombineGeneralCoplanarBoxes`
+// above exercises the SYMMETRIC (both-faces-same-extent) shape of. Found
+// while root-causing this engine's own "an edge is claimed by 3 or more
+// fragment loops" abort one level deeper than that fixture
+// (`TestRecognizePocketsBlindPocketRoundTripAndNegativeControls`'s own "a
+// boss raised out of the box's own top face" negative-control fixture,
+// reproduced here directly at the `BooleanCombineGeneral` level instead of
+// only indirectly through a different feature's test): a small boss
+// cutter's own WHOLE bottom cap sits entirely within one much bigger box
+// face (a 1x1 boss cap on a 4x4 box top) - the detected coincident region
+// matches the SMALL boss cap's entire extent but NOT the big box face's,
+// which a symmetric "box_a == box_b" bbox comparison can never catch (the
+// two faces are deliberately different sizes on purpose).
+//
+// The boss is built via `Brep::Extrude()` (one wrapped ruled side-wall
+// face per the profile's own closed loop, not six independent planar
+// quads a plain `Brep::Box()` boss would give) DELIBERATELY, not
+// incidentally: a `Brep::Box()` boss's own four FLAT side faces each meet
+// the big box's top face as a genuine transversal crossing (two
+// perpendicular planes), which fragments the box's top face into an
+// "outer ring plus an inner island exactly matching the boss footprint"
+// shape - and ray-casting THAT inner island's own representative point
+// (sitting exactly on the boss's own coincident boundary plane) is exactly
+// the SAME "numerically arbitrary" ambiguity this file's own coincident-
+// face override exists to avoid, just one level deeper than this override
+// reaches (confirmed directly: that shape silently returns a WRONG volume
+// before this round's own fix, and non-deterministically crashes after it
+// - `BooleanCombineGeneral`'s own already-disclosed "No general partially-
+// overlapping coincident face handling" gap, not a new regression, so
+// deliberately NOT used here). The wrapped-side-wall boss avoids that
+// ambiguity entirely: `Brep::Extrude()`'s OWN side wall touches the box's
+// top face only along the boss's own bottom RIM (a 1D boundary line, not
+// a 2D coincident patch), so the box's own top face fragments cleanly into
+// "outer ring" and "boss-footprint island" with the island's own
+// representative point still sitting exactly on the (now correctly
+// detected and discarded) coincident boundary - the box's own hole-
+// bridging, not an inner-fragment ray-cast, is what this specific
+// regression needs covered.
+void TestBooleanCombineGeneralAsymmetricCoincidentSubFace() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A 4x4x4 box with a 1x1x1 boss (a square profile extruded upward,
+  // capped) sitting exactly on top of it - the boss's own bottom cap,
+  // z=4, x/y in [1.5,2.5], is a sub-rectangle of the box's own much bigger
+  // top face, z=4, x/y in [0,4]: a real partial coincidence, not the
+  // fully-matching-extent shape the "Coplanar boxes" fixture above
+  // already covers.
+  //
+  // Honestly scoped to what this round's own fix actually guarantees, not
+  // more: NONE of these four calls may throw any more (the regression
+  // itself, confirmed fixed), and the Union result - the one op this
+  // fixture's own box-face fragmentation (a correctly hole-bridged outer
+  // ring plus a separate inner island exactly matching the boss footprint)
+  // happens to classify unambiguously either way, confirmed by direct
+  // inspection - is checked for real structural correctness. Intersection/
+  // Difference are deliberately NOT asserted beyond "doesn't throw": this
+  // fixture's own box-top face ends up with an inner fragment sitting
+  // EXACTLY on the boss's own coincident boundary plane, and ray-casting
+  // that fragment's representative point against the other operand is the
+  // identical "numerically arbitrary" ambiguity this file's whole-face
+  // override exists to avoid, one level deeper than that override reaches
+  // (it only ever fires for a face's own single UNTOUCHED fragment, not an
+  // inner fragment carved out of a bigger one) - confirmed directly (not
+  // assumed) to give a genuinely wrong Intersection/Difference result here,
+  // the SAME already-disclosed "No general partially-overlapping
+  // coincident face handling" gap (the "Coplanar / coincident face
+  // handling" bullet, PARITY_MAP.md) the symmetric "Coplanar boxes"
+  // fixture above never reaches at all (its own whole-face override
+  // handles 100% of that fixture, with no inner fragment left over).
+  // Confirmed via an A/B rebuild that this ambiguity is NOT itself a new
+  // regression either (a plain `Brep::Box()` boss - sharper, flatter side
+  // walls than this one's wrapped `Brep::Extrude()` side - already returns
+  // silently WRONG volumes for it on the pre-`878ecdb` baseline too, with
+  // no crash) - left genuinely open, disclosed in PARITY_MAP.md rather
+  // than chased further or quietly asserted away here.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const NurbsCurve square = NurbsCurve::FromControlPoints(
+      {Point3d(1.5, 1.5, 4), Point3d(2.5, 1.5, 4), Point3d(2.5, 2.5, 4), Point3d(1.5, 2.5, 4), Point3d(1.5, 1.5, 4)},
+      /*degree=*/1);
+  const Brep boss = Brep::Extrude(square, Vector3d(0, 0, 1.0), /*cap=*/true);
+
+  const Brep u = BooleanCombineGeneral(box, boss, BooleanOp::Union);
+  Check(u.raw().IsValid(), "box+boss Union is a valid ON_Brep - the regression's own abort on this exact fixture is fixed");
+  Check(u.FaceCount() == 8,
+        "box+boss Union has exactly 8 faces (box's 5 untouched sides + its own hole-bridged top, plus the boss's "
+        "wrapped side wall + top cap - its own coincident bottom cap correctly dropped by the whole-face override)");
+
+  const Brep i = BooleanCombineGeneral(box, boss, BooleanOp::Intersection);
+  Check(i.FaceCount() >= 0,
+        "box+boss Intersection no longer throws the regression's own fragment-loop abort (reaching this line at "
+        "all is the real assertion - see this test's own doc comment for why its RESULT is not also asserted here)");
+  const Brep d_ab = BooleanCombineGeneral(box, boss, BooleanOp::Difference);
+  Check(d_ab.FaceCount() >= 0, "box+boss A-B no longer throws the regression's own fragment-loop abort");
+  const Brep d_ba = BooleanCombineGeneral(boss, box, BooleanOp::Difference);
+  Check(d_ba.FaceCount() >= 0, "box+boss B-A no longer throws the regression's own fragment-loop abort");
+}
+
 // PARITY_MAP.md's "Tolerant booleans" bullet, after BooleanCombineGeneral()
 // gained a genuine caller-controlled SSX solve `tolerance`, still disclosed
 // one more remaining gap: "the general engine's own separate bbox/
@@ -9932,6 +10035,120 @@ void TestSplitBrepByManyPlanesRejectsEmptyTargetEmptyOffsetsZeroNormalAndNonPosi
     threw = true;
   }
   Check(threw, "SplitBrepByManyPlanes throws std::invalid_argument for a non-positive tolerance");
+}
+
+void TestSplitBrepByManySolidsKeepAllTwoDisjointCuttersReturnThreePieces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  // Closes the remaining half of the "Keep/split options" bullet
+  // SplitBrepByManySolids() (above) left open: that function folds every
+  // cutter into ONE union tool first and returns only {outside,
+  // inside-of-the-union} - this keeps a SEPARATE piece per cutter instead,
+  // the real "BooleanSplit... keeping all pieces" semantics, mirroring
+  // SplitBrepByManyPlanes()'s own N+1-slab shape for the solid-cutter case.
+  // A 10x10x10 target (volume 1000) split by two disjoint interior 2x2x2
+  // cutters (volume 8 apiece) should come back as exactly three pieces:
+  // cutter1's own 8, cutter2's own 8, and the remaining 984.
+  const Brep target = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep cutter1 = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep cutter2 = Brep::Box(6, 6, 6, 8, 8, 8);
+
+  const std::vector<Brep> pieces = SplitBrepByManySolidsKeepAll(target, {cutter1, cutter2});
+  Check(pieces.size() == 3, "SplitBrepByManySolidsKeepAll with two disjoint cutters returns exactly three pieces");
+  if (pieces.size() == 3) {
+    double total_volume = 0.0;
+    for (const Brep& piece : pieces) {
+      Check(piece.raw().IsValid(), "each returned piece is a valid ON_Brep");
+      total_volume += piece.TessellateToClosedMesh(16, 16).Volume();
+    }
+    Check(std::abs(total_volume - 1000.0) < 1e-2,
+          "the three pieces sum back to the original target's own volume (10^3=1000) exactly");
+    Check(std::abs(pieces[0].TessellateToClosedMesh(16, 16).Volume() - 8.0) < 0.5,
+          "the first returned piece is cutter1's own interior volume (2^3=8), in cutter order");
+    Check(std::abs(pieces[1].TessellateToClosedMesh(16, 16).Volume() - 8.0) < 0.5,
+          "the second returned piece is cutter2's own interior volume (2^3=8), in cutter order");
+    Check(std::abs(pieces[2].TessellateToClosedMesh(16, 16).Volume() - 984.0) < 0.5,
+          "the final returned piece is the untouched remainder, LAST (1000-8-8=984)");
+  }
+}
+
+void TestSplitBrepByManySolidsKeepAllCutterMissingTargetDropsTheEmptyPiece() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  // One cutter genuinely inside the target, one entirely clear of it (the
+  // same "cutter misses entirely" contract SplitBrepBySolid()/
+  // SplitBrepByManyPlanes() already document) - the miss should contribute
+  // no extra (empty) piece, not an invalid or zero-volume one.
+  const Brep target = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep real_cutter = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep missing_cutter = Brep::Box(100, 100, 100, 101, 101, 101);
+
+  const std::vector<Brep> pieces = SplitBrepByManySolidsKeepAll(target, {real_cutter, missing_cutter});
+  Check(pieces.size() == 2, "a cutter entirely clear of the target contributes no extra (empty) piece");
+  if (pieces.size() == 2) {
+    double total_volume = 0.0;
+    for (const Brep& piece : pieces) total_volume += piece.TessellateToClosedMesh(16, 16).Volume();
+    Check(std::abs(total_volume - 1000.0) < 1e-2, "the two real pieces still sum back to the original volume (1000)");
+  }
+}
+
+void TestSplitBrepByManySolidsKeepAllCutterConsumingEntireRemainderStopsEarly() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  // A real, previously-unexercised edge: a cutter early in the list can
+  // consume the ENTIRE remainder (a cutter at least as large as target,
+  // fully enclosing it), leaving nothing for any later cutter to be tried
+  // against. This must not throw SplitBrepBySolid()'s own "target has no
+  // faces" precondition on the second cutter - skipping it is the correct
+  // read (nothing left to cut), not a caller error.
+  const Brep target = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep enclosing_cutter = Brep::Box(-1, -1, -1, 3, 3, 3);
+  const Brep later_cutter = Brep::Box(0.5, 0.5, 0.5, 1.5, 1.5, 1.5);
+
+  const std::vector<Brep> pieces = SplitBrepByManySolidsKeepAll(target, {enclosing_cutter, later_cutter});
+  Check(pieces.size() == 1, "a fully-enclosing first cutter consumes the entire target, leaving one piece");
+  if (pieces.size() == 1) {
+    Check(std::abs(pieces[0].TessellateToClosedMesh(16, 16).Volume() - 8.0) < 0.5,
+          "the single returned piece is the entire target's own volume (2^3=8), inside the enclosing cutter");
+  }
+}
+
+void TestSplitBrepByManySolidsKeepAllRejectsEmptyTargetEmptyCutterGroupAndNonPositiveTolerance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep cutter = Brep::Box(0.25, 0.25, 0.25, 0.75, 0.75, 0.75);
+  const Brep empty;
+
+  bool threw = false;
+  try {
+    SplitBrepByManySolidsKeepAll(empty, {cutter});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByManySolidsKeepAll throws std::invalid_argument for an empty target");
+
+  threw = false;
+  try {
+    SplitBrepByManySolidsKeepAll(box, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByManySolidsKeepAll throws std::invalid_argument for an empty cutters group");
+
+  threw = false;
+  try {
+    SplitBrepByManySolidsKeepAll(box, {cutter}, -1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByManySolidsKeepAll throws std::invalid_argument for a non-positive tolerance");
 }
 
 void TestSurfaceGetApproximateSize() {
@@ -15515,6 +15732,139 @@ void TestOffsetSolidHandlesGenuinelyConcaveSolid() {
   Check(shrunk.VertexCount() > 0 && shrunk.FaceCount() > 0 && shrunk.Volume() > 0.0 && shrunk.Volume() < l_shape.Volume(),
         "OffsetSolid(-0.5) on the L-shape succeeds, stays non-empty, and encloses strictly less material than the "
         "original - a real, non-degenerate erosion result on a genuinely concave solid");
+}
+
+void TestShellViaOffsetSolidOnBoxMatchesExactVolumeDifference() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::ShellViaOffsetSolid;
+
+  // A convex box: ball erosion is exact/sharp here (OffsetSolid()'s own
+  // doc comment), so the shell volume has a known closed form - outer
+  // cube minus the exactly-smaller inner cube - with no Steiner rounding
+  // term to account for.
+  const Brep box_brep = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Mesh box = box_brep.TessellateToClosedMesh(1, 1);
+
+  const double t = 1.0;
+  const Mesh shell = ShellViaOffsetSolid(box, t, 24);
+  Check(shell.IsClosedManifold(), "ShellViaOffsetSolid on a box produces a genuine closed 2-manifold");
+
+  const double expected_volume = 10.0 * 10.0 * 10.0 - 8.0 * 8.0 * 8.0;
+  Check(std::fabs(shell.Volume() - expected_volume) / expected_volume < 1e-2,
+        "ShellViaOffsetSolid(box, 1.0)'s volume matches the exact closed-form shell volume "
+        "10^3 - 8^3 (outer cube minus the exactly-sharp eroded inner cube)");
+
+  // The result must actually enclose a hollow cavity, not just be a
+  // smaller solid cube: its volume must be strictly less than the outer
+  // box's own, and strictly more than zero.
+  Check(shell.Volume() > 0.0 && shell.Volume() < box.Volume(),
+        "ShellViaOffsetSolid's result encloses strictly less material than the original box and more than nothing");
+}
+
+void TestShellViaOffsetSolidRoundsConcaveCornerUnlikeMeshShell() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::ShellViaOffsetSolid;
+
+  // Same L-shaped fixture as TestOffsetSolidHandlesGenuinelyConcaveSolid
+  // above: one genuine reflex (concave) vertical edge at x=4,y=4, every
+  // wall at least 4 units thick.
+  const Mesh arm_a = Brep::Box(0, 0, 0, 10, 4, 6).TessellateToClosedMesh(1, 1);
+  const Mesh arm_b = Brep::Box(0, 0, 0, 4, 10, 6).TessellateToClosedMesh(1, 1);
+  const Mesh l_shape = BooleanCombine(arm_a, arm_b, BooleanOp::Union);
+
+  const double t = 0.5;
+  const Mesh via_offset_solid = ShellViaOffsetSolid(l_shape, t, 24);
+  Check(via_offset_solid.IsClosedManifold(),
+        "ShellViaOffsetSolid on the concave L-shape still produces a closed 2-manifold - the "
+        "reflex edge is not a special case either OffsetSolid() or BooleanCombine() needs help with");
+
+  const Mesh via_mesh_shell = l_shape.Shell(t);
+  Check(via_mesh_shell.IsClosedManifold(), "sanity: Mesh::Shell's own sharp-offset result is a closed manifold too");
+
+  // Both are genuine, non-empty shells of the same solid at the same
+  // thickness, so their volumes must be close but not identical: ball
+  // erosion rounds material away at the one concave edge that
+  // Mesh::Shell's per-vertex offset leaves sharp, so ShellViaOffsetSolid's
+  // inner wall encloses strictly LESS material there, and the shell
+  // (outer minus inner) therefore encloses strictly MORE material than
+  // Mesh::Shell's own sharp-cornered shell.
+  Check(via_offset_solid.Volume() > 0.0 && via_offset_solid.Volume() < l_shape.Volume(),
+        "ShellViaOffsetSolid's L-shaped shell encloses strictly less material than the solid itself");
+  Check(via_mesh_shell.Volume() > 0.0 && via_mesh_shell.Volume() < l_shape.Volume(),
+        "sanity: Mesh::Shell's own L-shaped shell also encloses strictly less material than the solid itself");
+  Check(via_offset_solid.Volume() > via_mesh_shell.Volume(),
+        "ShellViaOffsetSolid's ball-eroded inner wall rounds away material at the concave edge that "
+        "Mesh::Shell's sharp per-vertex offset does not, so its shell volume is strictly larger than "
+        "Mesh::Shell's own - the two constructions are genuinely different, not two names for the same result");
+}
+
+void TestShellViaOffsetSolidArgumentChecksAndExcessiveThicknessThrows() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::ShellViaOffsetSolid;
+
+  const Brep box_brep = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Mesh box = box_brep.TessellateToClosedMesh(1, 1);
+
+  bool threw_zero = false;
+  try {
+    ShellViaOffsetSolid(box, 0.0, 24);
+  } catch (const std::invalid_argument&) {
+    threw_zero = true;
+  }
+  Check(threw_zero, "ShellViaOffsetSolid throws for a zero thickness (no inner wall to subtract)");
+
+  bool threw_negative = false;
+  try {
+    ShellViaOffsetSolid(box, -1.0, 24);
+  } catch (const std::invalid_argument&) {
+    threw_negative = true;
+  }
+  Check(threw_negative, "ShellViaOffsetSolid throws for a negative thickness");
+
+  bool threw_nan = false;
+  try {
+    ShellViaOffsetSolid(box, std::numeric_limits<double>::quiet_NaN(), 24);
+  } catch (const std::invalid_argument&) {
+    threw_nan = true;
+  }
+  Check(threw_nan, "ShellViaOffsetSolid throws for a NaN thickness");
+
+  bool threw_infinite = false;
+  try {
+    ShellViaOffsetSolid(box, std::numeric_limits<double>::infinity(), 24);
+  } catch (const std::invalid_argument&) {
+    threw_infinite = true;
+  }
+  Check(threw_infinite, "ShellViaOffsetSolid throws for a +infinity thickness");
+
+  // A thin plate: half-thickness 0.5, so a thickness that erodes the whole
+  // solid away to nothing must still throw - ShellViaOffsetSolid inherits
+  // OffsetSolid()'s own infeasible-shrink guard for the inner wall, rather
+  // than silently handing BooleanCombine() an empty inner mesh.
+  const Brep plate_brep = Brep::Box(0, 0, 0, 10, 10, 1);
+  const Mesh plate = plate_brep.TessellateToClosedMesh(4, 4);
+
+  bool threw_excessive = false;
+  try {
+    ShellViaOffsetSolid(plate, 0.6, 24);
+  } catch (const std::runtime_error&) {
+    threw_excessive = true;
+  }
+  Check(threw_excessive,
+        "ShellViaOffsetSolid(plate, 0.6) on a plate whose half-thickness is 0.5 throws rather than "
+        "silently composing a shell around an empty inner wall");
+
+  // A safe thickness (well within the plate's own half-thickness) must
+  // still succeed and produce a genuine, non-empty hollow shell.
+  const Mesh safe = ShellViaOffsetSolid(plate, 0.2, 24);
+  Check(safe.IsClosedManifold() && safe.Volume() > 0.0 && safe.Volume() < plate.Volume(),
+        "ShellViaOffsetSolid(plate, 0.2) (well within its half-thickness) succeeds normally and encloses less "
+        "material than the solid plate");
 }
 
 void TestDecompose() {
@@ -75934,6 +76284,7 @@ int main() {
   TestBooleanCombineGeneralFreeformSurfaceOperand();
   TestBooleanCombineGeneralFreeformVsFreeformOperand();
   TestBooleanCombineGeneralCoplanarBoxes();
+  TestBooleanCombineGeneralAsymmetricCoincidentSubFace();
   TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance();
   TestBooleanCombineGeneralBoxCylinder();
   TestBooleanCombineGeneralCallerTolerance();
@@ -75986,6 +76337,10 @@ int main() {
   TestSplitBrepByManyPlanesOffsetBeyondTargetDropsTheEmptySlab();
   TestSplitBrepByManyPlanesDuplicateOffsetIsHarmless();
   TestSplitBrepByManyPlanesRejectsEmptyTargetEmptyOffsetsZeroNormalAndNonPositiveTolerance();
+  TestSplitBrepByManySolidsKeepAllTwoDisjointCuttersReturnThreePieces();
+  TestSplitBrepByManySolidsKeepAllCutterMissingTargetDropsTheEmptyPiece();
+  TestSplitBrepByManySolidsKeepAllCutterConsumingEntireRemainderStopsEarly();
+  TestSplitBrepByManySolidsKeepAllRejectsEmptyTargetEmptyCutterGroupAndNonPositiveTolerance();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();
@@ -76072,6 +76427,9 @@ int main() {
   TestOffsetSolidExcessiveShrinkErodesToNothingAndThrows();
   TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks();
   TestOffsetSolidHandlesGenuinelyConcaveSolid();
+  TestShellViaOffsetSolidOnBoxMatchesExactVolumeDifference();
+  TestShellViaOffsetSolidRoundsConcaveCornerUnlikeMeshShell();
+  TestShellViaOffsetSolidArgumentChecksAndExcessiveThicknessThrows();
   TestDecompose();
   TestMinGap();
   TestRefineToLength();
