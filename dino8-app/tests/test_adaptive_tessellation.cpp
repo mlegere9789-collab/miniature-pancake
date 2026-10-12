@@ -1,11 +1,13 @@
 // Unit test for view-dependent adaptive tessellation's pure scaling
-// function (src/viewport/AdaptiveTessellation.cpp's LodScaleForPixelSize),
-// closing PARITY_MAP.md's "View-dependent adaptive tessellation" item:
-// real frustum culling already existed, but there was no LOD and no
-// re-tessellation on zoom. Viewport::DrawObjects multiplies the app's own
-// curve_tolerance/surface_tolerance Options by this factor before calling
-// SceneObject::EnsureAdaptiveDisplay, so a bigger factor here means a
-// coarser (larger-chord-height) mesh and a smaller factor means a finer
+// functions (src/viewport/AdaptiveTessellation.cpp's LodScaleForPixelSize/
+// FinestLodScale/DistanceLodFactor), closing PARITY_MAP.md's "View-dependent
+// adaptive tessellation" item: real frustum culling already existed, but
+// there was no LOD, no re-tessellation on zoom, and (DistanceLodFactor,
+// added after the other two) no per-object distance-based LOD on top of the
+// per-viewport zoom-level scale. Viewport::DrawObjects multiplies the app's
+// own curve_tolerance/surface_tolerance Options by these factors before
+// calling SceneObject::EnsureAdaptiveDisplay, so a bigger factor here means
+// a coarser (larger-chord-height) mesh and a smaller factor means a finer
 // one. Standalone like test_aci_palette.cpp - no GL/ImGui/document
 // dependency at all.
 #include <cmath>
@@ -14,6 +16,7 @@
 
 #include "viewport/AdaptiveTessellation.h"
 
+using dino8::app::DistanceLodFactor;
 using dino8::app::FinestLodScale;
 using dino8::app::LodScaleForPixelSize;
 
@@ -102,6 +105,64 @@ int main() {
   Check(FinestLodScale({0.0, 0.3, -5.0}) <= LodScaleForPixelSize(0.3),
         "degenerate entries never make the combined scale coarser than a real open viewport's own need");
   Check(FinestLodScale({0.0, -1.0}) == 1.0, "every entry degenerate falls back to no scaling, same as an empty list would");
+
+  // DistanceLodFactor: per-object distance-based LOD on top of the
+  // per-viewport zoom-level scale above, closing "View-dependent adaptive
+  // tessellation"'s own disclosed last gap ("still zoom-level LOD, not
+  // per-object distance-based LOD").
+  {
+    // An orthographic (parallel) projection has NO pixels-per-world-unit
+    // falloff with distance at all - every object, at any distance from
+    // the eye, must get exactly 1.0 (no correction), regardless of how
+    // far object_distance and target_distance are from each other.
+    Check(DistanceLodFactor(10.0, 50.0, /*is_perspective=*/false) == 1.0,
+          "orthographic: a close object gets no distance correction");
+    Check(DistanceLodFactor(500.0, 50.0, /*is_perspective=*/false) == 1.0,
+          "orthographic: a far object gets no distance correction either");
+    Check(DistanceLodFactor(50.0, 50.0, /*is_perspective=*/false) == 1.0,
+          "orthographic: an object right at the target still gets exactly 1.0");
+
+    // Perspective: an object right at the camera's own target distance
+    // must scale by exactly 1.0 - identical to today's single frame-wide
+    // scale, so an object that happens to sit at the target is unaffected
+    // by this feature existing.
+    Check(Near(DistanceLodFactor(50.0, 50.0, /*is_perspective=*/true), 1.0),
+          "perspective: an object at the target distance scales by exactly 1.0");
+
+    // Closer than the target: scales BELOW 1.0 (finer tessellation) - a
+    // close foreground object subtends more pixels per world unit than
+    // the frame-wide scale alone assumes.
+    Check(DistanceLodFactor(25.0, 50.0, true) < 1.0,
+          "perspective: an object closer than the target scales below 1.0 (finer)");
+    Check(DistanceLodFactor(15.0, 50.0, true) < DistanceLodFactor(25.0, 50.0, true),
+          "perspective: moving closer scales down further (monotonic)");
+
+    // Farther than the target: scales ABOVE 1.0 (coarser) - a distant
+    // background object subtends fewer pixels per world unit.
+    Check(DistanceLodFactor(100.0, 50.0, true) > 1.0,
+          "perspective: an object farther than the target scales above 1.0 (coarser)");
+    Check(DistanceLodFactor(150.0, 50.0, true) > DistanceLodFactor(100.0, 50.0, true),
+          "perspective: moving farther scales up further (monotonic)");
+
+    // Clamped to the identical [0.2, 6.0] band LodScaleForPixelSize already
+    // uses, for the identical reason - neither an object right at the eye
+    // nor one far past the horizon can run the triangle count away.
+    Check(DistanceLodFactor(0.0001, 50.0, true) >= 0.2 - 1e-9,
+          "perspective: an extremely close object is clamped to a floor scale (>= 0.2)");
+    Check(DistanceLodFactor(100000.0, 50.0, true) <= 6.0 + 1e-9,
+          "perspective: an extremely far object is clamped to a ceiling scale (<= 6.0)");
+    Check(std::fabs(DistanceLodFactor(0.0001, 50.0, true) - DistanceLodFactor(0.00001, 50.0, true)) < 1e-9,
+          "perspective: floor clamp holds across a further order of magnitude closer");
+    Check(std::fabs(DistanceLodFactor(100000.0, 50.0, true) - DistanceLodFactor(1000000.0, 50.0, true)) < 1e-9,
+          "perspective: ceiling clamp holds across a further order of magnitude farther");
+
+    // Degenerate inputs fall back to no scaling, same convention as every
+    // other function in this file.
+    Check(DistanceLodFactor(10.0, 0.0, true) == 1.0, "target_distance == 0.0 falls back to no scaling");
+    Check(DistanceLodFactor(10.0, -5.0, true) == 1.0, "a negative target_distance falls back to no scaling");
+    Check(DistanceLodFactor(-1.0, 50.0, true) == 1.0, "a negative object_distance falls back to no scaling");
+    Check(DistanceLodFactor(0.0, 50.0, true) < 1.0, "object_distance == 0.0 (right at the eye) is a real, finer scale, not degenerate");
+  }
 
   if (failures) std::printf("%d FAILED\n", failures);
   else std::printf("all passed\n");
