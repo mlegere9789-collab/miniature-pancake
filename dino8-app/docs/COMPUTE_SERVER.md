@@ -10,17 +10,26 @@ all.
 serviced at a time) and no REST resource model. `GET /objects` (below) is a
 real, if minimal, structured JSON listing of what's in the document, and
 `?geometry=1` adds each object's own geometry for the five kinds simple
-enough to serialize honestly right now (point, mesh, a NURBS curve's own
+enough to serialize exactly right now (point, mesh, a NURBS curve's own
 degree/control points/weights/knots, a single untrimmed NURBS surface's
 own degree/control grid/weights/knots in each of its two directions, and
 a point cloud's own positions plus its two genuinely optional per-point
-colors/normals channels); `POST /objects` is the other direction - send
-one of those same five shapes back in and it's added to the document - so
-geometry can now get *into* this server as structured data too, not just
-out. The two remaining kinds (polysurface, SubD) still only come back as
-whatever a script's own `print()`
-output happens to contain (plain text by default; `/run`/`/run/python`
-also answer with structured JSON instead of plain text when asked - see
+colors/normals channels), plus a real tessellated-mesh *approximation*
+for the two remaining kinds (polysurface, SubD) rather than `null` -
+genuine, inspectable geometry a client can render or measure, but not
+enough to reconstruct the exact original surface/control-cage from.
+`POST /objects` is the other direction - send one of the first five
+shapes back in and it's added to the document exactly, so geometry can
+get *into* this server as structured data too, not just out - and, since
+a SubD's own control cage at level 0 is literally a mesh, `POST /objects`
+also accepts one of those as a sixth, SubD-only type, even though `GET`
+can only ever hand a SubD's *tessellation* back out, never its real
+control cage. A genuine trimmed polysurface still can't be POSTed at all
+(building real multi-face B-rep topology, with its own trim-curve loops,
+from JSON remains unattempted). Anything not covered by either direction
+still only ever comes back as whatever a script's own `print()` output
+happens to contain (plain text by default; `/run`/`/run/python` also
+answer with structured JSON instead of plain text when asked - see
 below). Authentication is real but minimal - one or more bearer tokens,
 each optionally naming its own caller, not OAuth/API keys/real accounts.
 See "What this deliberately does not do" below for the honest scope.
@@ -74,6 +83,16 @@ same as every other headless mode this app already has).
   currently empty, missing, or unreadable (fails *closed*, not open) -
   a mistyped path can never silently leave the compute server open the
   way an empty `--serve-token` list would.
+- `--serve-token-file-ttl SECONDS`, with `--serve-token-file`, adds real
+  automatic *expiry* - the one piece plain `--serve-token-file` still
+  lacked (it can rotate or revoke a token live, but an untouched file's
+  own entries stayed valid forever). Once the file's own last-write time
+  is more than `SECONDS` old, its entries are treated as expired - the
+  identical fail-*closed* handling as a missing file, not a fallback to
+  open. Renewing access needs only a `touch` (or any rewrite, even with
+  unchanged content) of the file, not a restart. Omit the flag to keep
+  the previous behavior: entries stay valid for as long as the file
+  simply exists, however old.
 - `POST /run` runs the request body as a **Lua** script; `POST /run/python`
   runs it as a **Python** script against the embedded `dino8` module (only
   on a build with Python support - see `BATCH_SCRIPTING.md`/`PythonEngine.h`;
@@ -120,10 +139,18 @@ same as every other headless mode this app already has).
   NURBS definition OpenNURBS itself stores in both the curve and surface
   cases, enough to reconstruct the object exactly, not sampled points;
   `weights` is only present when `rational` is `true`. The two remaining
-  kinds (polysurface, SubD) still get `"geometry": null` - a Brep's
-  multiple trimmed faces (each with its own trimming curves) and a SubD's
-  control-cage topology are each a substantially larger undertaking than
-  any of the five shapes above, not attempted here.
+  kinds each now carry a real tessellated-mesh *approximation* instead of
+  `"geometry": null`: `{"tessellated": true, "mesh": {"vertices": [...],
+  "faces": [...]}}` (the identical mesh shape the plain `mesh` kind
+  above already uses) - a polysurface's via the live display cache's own
+  adaptive triangulation (the same mesh the viewport itself draws), a
+  SubD's via `ToApproximateMesh()` (the CURRENT subdivision level's flat
+  control net, never the true curved limit surface - a never-subdivided
+  SubD comes back as its own control cage). Genuine, inspectable
+  geometry a client can render or measure, but still honestly an
+  approximation: there is no `control_points`/`knots`-equivalent payload
+  to reconstruct a polysurface's real multiple trimmed faces (each with
+  its own trim-curve loops) or a SubD's real control-cage topology from.
 - `POST /objects` is the write side: send a JSON body shaped like one of
   the five `"geometry"` payloads above, tagged with a `"type"` field
   (`"point"`, `"mesh"`, `"curve"`, `"surface"` or `"point_cloud"`), and
@@ -142,11 +169,19 @@ same as every other headless mode this app already has).
   `"points"`; `"colors"`/`"normals"` are optional, but each must then
   carry exactly one entry per point (`PointCloud`'s own "all or nothing"
   convention - a partial array is rejected outright, not silently
-  truncated or padded). Still genuinely limited to the same five kinds
-  `GET`'s own `?geometry=1` already serializes - there is no way to POST a
-  polysurface or SubD in as structured data, and a caller still has to
-  build one of those by `print()`ing a script that constructs it the
-  normal way.
+  truncated or padded). A sixth, SubD-only type, `"subd"`, is also
+  accepted - the identical `{"vertices", "faces"}` shape `"mesh"` already
+  takes, handed to `SubD::FromControlMesh` instead of a plain `Mesh`: a
+  SubD control cage at level 0 IS exactly a mesh, so no new wire format
+  was needed, only a different kernel constructor for the same parsed
+  input. Always builds a smooth control cage (no way to request a crease
+  via this route); a shape `FromControlMesh` itself rejects (e.g. no
+  faces) comes back as the same `400` every other malformed body does.
+  There is still no way to POST a genuine trimmed polysurface in as
+  structured data (building real multi-face B-rep topology, with its own
+  trim-curve loops, from JSON remains the one shape this route can't
+  build from JSON at all) - a caller still has to build one by
+  `print()`ing a script that constructs it the normal way.
 
 ```
 $ curl -s -X POST --data 'import dino8
@@ -190,19 +225,22 @@ $ curl -s http://127.0.0.1:8080/objects
 $ curl -s --data 'rs.AddPoint(1,2,3)
 rs.AddLine({0,0,0},{10,0,0})' http://127.0.0.1:8080/run >/dev/null
 $ curl -s http://127.0.0.1:8080/objects?geometry=1
-[{"id":1,"type":"polysurface", ..., "geometry":null},
+[{"id":1,"type":"polysurface", ..., "geometry":{"tessellated":true,"mesh":{"vertices":[...],"faces":[...]}}},
  {"id":2,"type":"point", ..., "geometry":{"point":[1.000000,2.000000,3.000000]}},
  {"id":3,"type":"curve", ..., "geometry":{"degree":1,"rational":false,"control_points":[[0.000000,0.000000,0.000000],[10.000000,0.000000,0.000000]],"knots":[0.000000,1.000000]}}]
 ```
-(the box's `"geometry"` is `null` - polysurfaces aren't one of the five kinds `?geometry=1` serializes yet.)
+(the box's `"geometry"` carries a real tessellated mesh, not `null` - a
+genuine approximation, not the box's exact 6-flat-face B-rep definition.)
 
 ```
 $ curl -s --data '{"type":"mesh","vertices":[[0,0,0],[1,0,0],[0,1,0]],"faces":[[0,1,2]]}' http://127.0.0.1:8080/objects
 {"ok":true,"id":4}
 $ curl -s --data '{"type":"point_cloud","points":[[0,0,0],[1,1,1]],"colors":[[255,0,0],[0,0,255]]}' http://127.0.0.1:8080/objects
 {"ok":true,"id":5}
+$ curl -s --data '{"type":"subd","vertices":[[0,0,0],[1,0,0],[1,1,0],[0,1,0]],"faces":[[0,1,2,3]]}' http://127.0.0.1:8080/objects
+{"ok":true,"id":6}
 $ curl -s --data '{"type":"bogus"}' http://127.0.0.1:8080/objects
-{"ok":false,"error":"unknown or missing \"type\" (expected \"point\", \"mesh\", \"curve\", \"surface\" or \"point_cloud\")"}
+{"ok":false,"error":"unknown or missing \"type\" (expected \"point\", \"mesh\", \"curve\", \"surface\", \"point_cloud\" or \"subd\")"}
 ```
 (the mesh just POSTed shows up at id 4 in a follow-up `GET /objects?geometry=1`, with the exact vertices/faces sent.)
 
@@ -232,32 +270,41 @@ $ curl -s --data '{"type":"bogus"}' http://127.0.0.1:8080/objects
   unrelated local process can't learn one byte at a time by timing
   repeated guesses) over a plaintext loopback-only socket - distinct
   callers can now each hold their own named token rather than sharing
-  exactly one secret (see above), and `--serve-token-file`'s entries can
-  now be rotated or revoked live, with no restart (see above) - but there
-  is still no hashing and still no automatic *expiry*: a file-sourced
-  token stays valid until something (an operator, a script, a cron job)
-  edits it back out, there is no built-in TTL. Good enough to stop an
-  unrelated local process or script from hitting an unprotected endpoint
-  by accident, nowhere near OAuth/API-key-management. This binds
+  exactly one secret (see above), `--serve-token-file`'s entries can now
+  be rotated or revoked live with no restart (see above), and
+  `--serve-token-file-ttl` adds real automatic expiry on top of that (see
+  above) - but there is still no hashing, and a plain `--serve-token`
+  flag (as opposed to a `--serve-token-file` entry) still has none of
+  this: fixed for the process's whole lifetime, no rotation, no
+  revocation, no expiry short of a restart with a different set of
+  flags. Good enough to stop an unrelated local process or script from
+  hitting an unprotected endpoint by accident, nowhere near
+  OAuth/API-key-management. This binds
   `127.0.0.1` and is meant for local automation (a build script, a CI job,
   a teammate's script talking to a running Dino 8), not for exposing to a
   network you don't trust even with tokens set.
-- **No geometry (de)serialization format for polysurfaces or SubDs.** `GET
-  /objects?geometry=1`/`POST /objects` (above) now carry real data both
-  ways for points, meshes, curves, surfaces and point clouds (a curve's
-  own exact degree/control points/weights/knots, a single untrimmed
-  surface's own degree/control grid/weights/knots in each of its two
-  directions, and a point cloud's own positions plus its two optional
-  per-point colors/normals channels - not sampled points either way) -
-  genuine structured data, not printed text - but polysurfaces and SubDs
-  still come back `"geometry": null` from `GET` and can't be `POST`ed at
-  all: a Brep's multiple trimmed faces (each with its own trimming
-  curves) and a SubD's control-cage topology are each a substantially
-  larger design than any of the five shapes above, and neither exists
-  yet. Getting their actual shape data out, or building one from scratch,
-  still means having a script `print()`/construct whatever representation
-  you need (coordinates, a JSON string you build yourself with `dino8`'s/
-  `rs`'s existing query functions, ...).
+- **No EXACT geometry (de)serialization format for polysurfaces or SubDs,
+  and no way to POST a trimmed polysurface at all.** `GET
+  /objects?geometry=1`/`POST /objects` (above) carry real, exact data
+  both ways for points, meshes, curves, surfaces and point clouds (a
+  curve's own exact degree/control points/weights/knots, a single
+  untrimmed surface's own degree/control grid/weights/knots in each of
+  its two directions, and a point cloud's own positions plus its two
+  optional per-point colors/normals channels - not sampled points either
+  way) - genuine structured data, not printed text. `GET` now also hands
+  back a real tessellated-*mesh approximation* for a polysurface or SubD
+  (`"tessellated":true` alongside a nested `"mesh"`) rather than `null`,
+  and `POST` accepts that same mesh shape as a SubD's own control cage
+  (`"type":"subd"`) - but neither direction reaches the REAL definition
+  for either kind: a Brep's multiple trimmed faces (each with its own
+  trimming curves) still has no (de)serialization format at all, and a
+  SubD's control cage, while now POST-able, still can't be read back out
+  as the exact cage `GET` tessellated FROM - only as whatever mesh that
+  tessellation happens to produce. Getting a polysurface's exact shape
+  data out, or building one from scratch, still means having a script
+  `print()`/construct whatever representation you need (coordinates, a
+  JSON string you build yourself with `dino8`'s/`rs`'s existing query
+  functions, ...).
 
 Closing any of the above further is real, separate follow-up work, not
 something this server already does quietly.

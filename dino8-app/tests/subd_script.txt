@@ -192,3 +192,31 @@ ToSubD
 SelLast
 List
 @expect_objects 18
+# --- SubDRevolve: the SubD menu (MenuBar.cpp) names this command, but
+# nothing registered it - a broken menu entry, not a feature. It now runs
+# the real Revolve command and converts the resulting surface to a SubD via
+# the same SweepThenSubDCommand wrapper SubDSweep1/SubDSweep2 already use.
+SelAll
+Hide
+Circle 400,0,0 5
+SelCrv
+SubDRevolve
+420,-10,0
+420,10,0
+SelLast
+What
+@expect_objects 20
+# --- SubDMultiPipe: same broken-menu-entry story as SubDRevolve above, for
+# the other name MenuBar.cpp lists. Runs the real MultiPipe command (pipes
+# every selected curve, unioned into one mesh) and converts the result to a
+# SubD the same way.
+SelAll
+Hide
+Line 450,0,0 450,0,10
+Line 455,0,0 455,0,10
+SelCrv
+SubDMultiPipe
+1
+SelLast
+What
+@expect_objects 23

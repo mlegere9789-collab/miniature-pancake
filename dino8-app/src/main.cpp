@@ -74,6 +74,17 @@
 //                 currently empty, missing, or unreadable (fails closed,
 //                 not open) - a path typo can never silently leave the
 //                 server open the way an empty --serve-token list would.
+//   --serve-token-file-ttl SECONDS   with --serve-token-file: that file's
+//                 own entries additionally expire once the file's last-
+//                 write time is more than SECONDS old - real automatic
+//                 expiry, the one piece --serve-token-file alone still
+//                 lacked. An expired file is treated exactly like a
+//                 missing one (fails closed, deny every request - see
+//                 --serve-token-file above), not a fallback to the fully-
+//                 open behavior. Omit for the previous behavior: entries
+//                 stay valid for as long as the file simply exists, no
+//                 matter its age. Renewing access needs only a `touch`
+//                 (or any rewrite) of the file, not a server restart.
 //
 // Script lines starting with '@' are synthetic input for UI tests:
 //   @move X Y | @down [button] | @up [button] | @click X Y [button]
@@ -382,6 +393,31 @@ std::vector<std::pair<std::string, std::string>> ParseTokenFile(const std::strin
   return tokens;
 }
 
+// True if `path` both exists and was last written no more than `ttl`
+// seconds ago - --serve-token-file-ttl's own expiry check, called fresh
+// from compute_handler right alongside ParseTokenFile on every request.
+// A negative `ttl` (the flag omitted) always returns true: no expiry at
+// all, the previous --serve-token-file-alone behavior. Comparing via two
+// `file_time_type::clock::now()` calls rather than converting to
+// `system_clock` keeps both sides of the subtraction in the identical
+// clock, avoiding the cross-clock-conversion caveat `file_time_type`
+// carries in C++17 (see FileMtimeMillis's own comment in
+// cmd_drafting2.cpp for the same caveat solved the other way, where an
+// actual wall-clock timestamp - not just an elapsed duration - is
+// needed); here only an age is needed, so no conversion is required at
+// all. A file that can't be stat'd (missing, unreadable, ...) is treated
+// as expired, not fresh - consistent with ParseTokenFile's own "missing
+// file comes back with no entries" and compute_handler's own fail-closed
+// design for this flag.
+bool TokenFileFresh(const std::string& path, double ttl) {
+  if (ttl < 0) return true;
+  std::error_code ec;
+  const auto mtime = std::filesystem::last_write_time(path, ec);
+  if (ec) return false;
+  const auto age = std::filesystem::file_time_type::clock::now() - mtime;
+  return std::chrono::duration<double>(age).count() <= ttl;
+}
+
 // Reads one boolean-ish query parameter ("geometry=1" or "geometry=true")
 // out of a raw HTTP query string ("a=1&geometry=1&b=2") - not a general
 // query-string parser (no URL-decoding, no repeated-key handling), just
@@ -411,6 +447,45 @@ bool ComputeJsonPoint3d(const dino8::json::Value& v, dino8::kernel::Point3d& p) 
   for (size_t i = 0; i < 3; ++i) if (v[i].type != dino8::json::Value::Type::Number) return false;
   p = dino8::kernel::Point3d(v[0].number, v[1].number, v[2].number);
   return true;
+}
+
+// Parses a {"vertices": [[x,y,z], ...], "faces": [[i,i,i] or [i,i,i,i], ...]}
+// shape (0-based indices, triangles or quads) into `out` for POST
+// /objects below - shared by the "mesh" type and the "subd" type (the
+// latter hands the identical parsed mesh to SubD::FromControlMesh as its
+// control cage, rather than re-parsing the same vertex/face arrays a
+// second time). Leaves `out` empty and returns false on any malformed
+// input (empty arrays, a non-numeric coordinate, a face with other than
+// 3 or 4 vertices, or an out-of-range index) rather than building a
+// partial mesh.
+bool ComputeJsonParseMesh(const dino8::json::Value& verts_json, const dino8::json::Value& faces_json, dino8::kernel::Mesh& out) {
+  bool ok = verts_json.IsArray() && faces_json.IsArray() && verts_json.Size() > 0 && faces_json.Size() > 0;
+  std::vector<dino8::kernel::Point3d> verts;
+  if (ok) {
+    verts.reserve(verts_json.Size());
+    for (size_t i = 0; ok && i < verts_json.Size(); ++i) {
+      dino8::kernel::Point3d p;
+      if (ComputeJsonPoint3d(verts_json[i], p)) verts.push_back(p); else ok = false;
+    }
+  }
+  if (!ok) return false;
+  ON_Mesh& r = out.raw();
+  for (size_t i = 0; i < verts.size(); ++i) r.SetVertex(static_cast<int>(i), verts[i]);
+  for (size_t f = 0; ok && f < faces_json.Size(); ++f) {
+    const dino8::json::Value& face = faces_json[f];
+    if (!face.IsArray() || (face.Size() != 3 && face.Size() != 4)) { ok = false; break; }
+    int idx[4] = {0, 0, 0, 0};
+    for (size_t k = 0; k < face.Size(); ++k) {
+      const dino8::json::Value& vi = face[k];
+      const int v = static_cast<int>(vi.number);
+      if (vi.type != dino8::json::Value::Type::Number || v < 0 || v >= static_cast<int>(verts.size())) { ok = false; break; }
+      idx[k] = v;
+    }
+    if (!ok) break;
+    if (face.Size() == 3) r.SetTriangle(static_cast<int>(f), idx[0], idx[1], idx[2]);
+    else r.SetQuad(static_cast<int>(f), idx[0], idx[1], idx[2], idx[3]);
+  }
+  return ok;
 }
 
 // Minimal string escaping for the compute server's JSON responses (GET
@@ -537,6 +612,13 @@ int main(int argc, char** argv) {
   // below for how this gets re-read fresh on every request rather than
   // once here at startup.
   std::string serve_token_file;
+  // < 0 (the default, --serve-token-file-ttl omitted) means no expiry
+  // check at all - serve_token_file's entries are valid for as long as
+  // the file simply exists, exactly as --serve-token-file alone always
+  // behaved. >= 0 means those entries also expire once the file's own
+  // last-write time is more than this many seconds old (see
+  // compute_handler below).
+  double serve_token_file_ttl = -1.0;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--smoke") == 0 && i + 1 < argc) smoke_frames = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--stress") == 0 && i + 1 < argc) stress_count = std::atoi(argv[++i]);
@@ -553,6 +635,7 @@ int main(int argc, char** argv) {
       else serve_tokens.emplace_back(spec.substr(0, colon), spec.substr(colon + 1));
     }
     else if (std::strcmp(argv[i], "--serve-token-file") == 0 && i + 1 < argc) serve_token_file = argv[++i];
+    else if (std::strcmp(argv[i], "--serve-token-file-ttl") == 0 && i + 1 < argc) serve_token_file_ttl = std::atof(argv[++i]);
     else if (std::strcmp(argv[i], "--version") == 0) { std::printf("Dino 8 %s\n", DINO8_VERSION); return 0; }
     else if (argv[i][0] != '-') open_path = argv[i];
   }
@@ -790,7 +873,7 @@ int main(int argc, char** argv) {
     body += "}\n";
     return body;
   };
-  const dino8::app::ComputeHandler compute_handler = [&app, &serve_tokens, &serve_token_file, json_wrap_output](const dino8::app::HttpRequest& req) {
+  const dino8::app::ComputeHandler compute_handler = [&app, &serve_tokens, &serve_token_file, &serve_token_file_ttl, json_wrap_output](const dino8::app::HttpRequest& req) {
     dino8::app::HttpResponse resp;
     // TryParseHttpRequest hands back the request-line path verbatim,
     // query string and all ("/objects?geometry=1") - split it once here so
@@ -819,14 +902,15 @@ int main(int argc, char** argv) {
     // keeps every comparison genuinely constant-time against its own
     // candidate, with no shared table lookup leaking anything about
     // *which* candidate it resembles. Giving --serve-token-file makes auth
-    // required even if the file is currently empty/missing/unreadable
-    // (ParseTokenFile then returns no entries) - fails closed rather than
-    // silently falling back to the fully-open behavior an empty
-    // serve_tokens alone would mean.
+    // required even if the file is currently empty/missing/unreadable, or
+    // (with --serve-token-file-ttl set) too old (TokenFileFresh false,
+    // ParseTokenFile's own result then discarded entirely rather than
+    // read) - fails closed rather than silently falling back to the
+    // fully-open behavior an empty serve_tokens alone would mean.
     std::string caller_name;  // stays "" for an unauthenticated server or an anonymous (no "NAME:") token
     if (!serve_tokens.empty() || !serve_token_file.empty()) {
       std::vector<std::pair<std::string, std::string>> candidates = serve_tokens;
-      if (!serve_token_file.empty()) {
+      if (!serve_token_file.empty() && TokenFileFresh(serve_token_file, serve_token_file_ttl)) {
         for (auto& entry : ParseTokenFile(serve_token_file)) candidates.push_back(std::move(entry));
       }
       const auto it = req.headers.find("authorization");
@@ -859,15 +943,20 @@ int main(int argc, char** argv) {
     // "tessellated":true alongside it, built from the live display cache's
     // own adaptive triangulation (Brep) or ToApproximateMesh() (SubD) - see
     // each branch's own comment below. A Brep's own multiple trimmed faces
-    // (each with its own trimming curves) and a SubD's own control-cage
-    // topology remain unserialized - reconstructing the real (not merely
-    // tessellated) shape from JSON is still a substantially larger
-    // undertaking, the same scope line STEP AP242/IFC's own exporters below
-    // already draw for these two kinds elsewhere in this app.
-    // POST /objects (right below) closes the other half for the first five
-    // kinds - sending one of those same five shapes back in adds that exact
-    // geometry to the document, the first way to get geometry *into* this
-    // server as structured data rather than Lua/Python source.
+    // (each with its own trimming curves) remain entirely unserialized -
+    // reconstructing the real (not merely tessellated) topology from JSON
+    // is still a substantially larger undertaking, the same scope line
+    // STEP AP242/IFC's own exporters below already draw for it elsewhere
+    // in this app. POST /objects (right below) closes the other half for
+    // point/mesh/curve/surface/point_cloud - sending one of those same
+    // five shapes back in adds that exact geometry to the document, the
+    // first way to get geometry *into* this server as structured data
+    // rather than Lua/Python source - and, separately, also accepts a
+    // SubD's own control cage (a sixth, SubD-only type: unlike a
+    // polysurface's trimmed topology, a SubD control cage at level 0 is
+    // exactly a mesh, so this needed no new wire format, only handing
+    // the identical {"vertices","faces"} shape to SubD::FromControlMesh
+    // instead of SceneObject::MakeMesh).
     if (path == "/objects" && req.method == "GET") {
       const dino8::app::Document& doc = app.Doc();
       const bool want_geometry = ComputeQueryFlagSet(query, "geometry");
@@ -1081,7 +1170,7 @@ int main(int argc, char** argv) {
       const std::string type = root["type"].AsString();
       dino8::app::Document& doc = app.Doc();
       dino8::app::ObjectId new_id = dino8::app::kNoObject;
-      std::string error = "unknown or missing \"type\" (expected \"point\", \"mesh\", \"curve\", \"surface\" or \"point_cloud\")";
+      std::string error = "unknown or missing \"type\" (expected \"point\", \"mesh\", \"curve\", \"surface\", \"point_cloud\" or \"subd\")";
       if (type == "point") {
         dino8::kernel::Point3d p;
         if (ComputeJsonPoint3d(root["point"], p)) {
@@ -1091,43 +1180,41 @@ int main(int argc, char** argv) {
           error = "point: expected \"point\": [x, y, z]";
         }
       } else if (type == "mesh") {
-        const dino8::json::Value& verts_json = root["vertices"];
-        const dino8::json::Value& faces_json = root["faces"];
-        bool ok = verts_json.IsArray() && faces_json.IsArray() && verts_json.Size() > 0 && faces_json.Size() > 0;
-        std::vector<dino8::kernel::Point3d> verts;
-        if (ok) {
-          verts.reserve(verts_json.Size());
-          for (size_t i = 0; ok && i < verts_json.Size(); ++i) {
-            dino8::kernel::Point3d p;
-            if (ComputeJsonPoint3d(verts_json[i], p)) verts.push_back(p); else ok = false;
-          }
-        }
         dino8::kernel::Mesh m;
-        if (ok) {
-          ON_Mesh& r = m.raw();
-          for (size_t i = 0; i < verts.size(); ++i) r.SetVertex(static_cast<int>(i), verts[i]);
-          for (size_t f = 0; ok && f < faces_json.Size(); ++f) {
-            const dino8::json::Value& face = faces_json[f];
-            if (!face.IsArray() || (face.Size() != 3 && face.Size() != 4)) { ok = false; break; }
-            int idx[4] = {0, 0, 0, 0};
-            for (size_t k = 0; k < face.Size(); ++k) {
-              const dino8::json::Value& vi = face[k];
-              const int v = static_cast<int>(vi.number);
-              if (vi.type != dino8::json::Value::Type::Number || v < 0 || v >= static_cast<int>(verts.size())) { ok = false; break; }
-              idx[k] = v;
-            }
-            if (!ok) break;
-            if (face.Size() == 3) r.SetTriangle(static_cast<int>(f), idx[0], idx[1], idx[2]);
-            else r.SetQuad(static_cast<int>(f), idx[0], idx[1], idx[2], idx[3]);
-          }
-        }
-        if (ok) {
+        if (ComputeJsonParseMesh(root["vertices"], root["faces"], m)) {
           m.raw().ComputeFaceNormals();
           m.raw().ComputeVertexNormals();
           doc.BeginChange("compute: AddMesh");
           new_id = doc.Add(dino8::app::SceneObject::MakeMesh(m));
         } else {
           error = "mesh: expected non-empty \"vertices\" ([x,y,z] each) and \"faces\" (3 or 4 valid 0-based indices each)";
+        }
+      } else if (type == "subd") {
+        // The SubD's own control-cage half of the gap GET /objects?geometry=1
+        // already discloses as unattempted on the write side ("reconstructing
+        // a genuine ... SubD control cage from JSON remains ... the larger,
+        // unattempted undertaking") - genuinely closeable for SubD
+        // specifically (unlike a trimmed polysurface, which has no such
+        // shortcut): a SubD control cage at level 0 IS exactly a mesh - the
+        // same {"vertices", "faces"} shape "mesh" above already parses -
+        // handed straight to SubD::FromControlMesh, no new wire format
+        // invented. Smooth everywhere (the identical default FromControlMesh
+        // itself defaults to): no way to request a crease via this route,
+        // the same honestly-scoped-down shape "surface"'s own clamped-
+        // uniform-knot fallback already has for an unspecified structure.
+        dino8::kernel::Mesh control_mesh;
+        if (ComputeJsonParseMesh(root["vertices"], root["faces"], control_mesh)) {
+          try {
+            const dino8::kernel::SubD subd = dino8::kernel::SubD::FromControlMesh(control_mesh);
+            doc.BeginChange("compute: AddSubD");
+            new_id = doc.Add(dino8::app::SceneObject::MakeSubD(subd));
+          } catch (const std::exception&) {
+            // new_id stays kNoObject; falls through to the error below.
+          }
+        }
+        if (new_id == dino8::app::kNoObject) {
+          error = "subd: expected non-empty \"vertices\" ([x,y,z] each) and \"faces\" (3 or 4 valid 0-based "
+                  "indices each) forming a control cage SubD::FromControlMesh accepts";
         }
       } else if (type == "curve") {
         const dino8::json::Value& cvs_json = root["control_points"];
