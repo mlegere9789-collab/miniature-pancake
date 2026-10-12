@@ -1297,14 +1297,23 @@ PlaneTorusIntersection IntersectPlaneTorus(const ON_Plane& plane, const ON_Torus
 // merely a pole - `RobustSurfaceNormal`'s own nudge already handles an
 // ordinary pole) is skipped outright ("cannot verify", not guessed), and a
 // zero-length `view_direction` returns empty outright (there is no
-// direction to test tangency against). Still honestly scoped: orthographic
-// projection only (no perspective eye point - a ray from a finite viewpoint
-// needs a per-point VARYING direction, `point - eye`, not this function's
-// own single fixed `view_direction`); point detections only, as above; no
-// visibility/self-occlusion resolution (a point behind the surface's own
-// near side from the viewer, or hidden behind a different object entirely,
-// is reported exactly like a visible one); and no `dino8-app` command calls
-// it yet (the app's own `Silhouette` stays mesh-based, unchanged).
+// direction to test tangency against). Self-occlusion by the SAME surface
+// is now resolved too: every surviving crossing has a ray fired from it
+// TOWARD the viewer (`FilterSelfOccludedCrossings()`, surface_intersect.cpp)
+// against this same surface, via the file's own general
+// `IntersectCurveSurface()` - the exact machinery `FireRayAtBrep()` already
+// builds on for a B-rep, just against one untrimmed surface directly; any
+// hit strictly nearer the viewer means a nearer part of the SAME surface
+// blocks the line of sight there, and the crossing is dropped rather than
+// reported as visible (e.g. the far rim of a torus, hidden behind its own
+// near tube wall, from a view angle where the two genuinely overlap). Still
+// honestly scoped: orthographic projection only (no perspective eye point -
+// a ray from a finite viewpoint needs a per-point VARYING direction,
+// `point - eye`, not this function's own single fixed `view_direction`);
+// point detections only, as above; occlusion by a genuinely DIFFERENT
+// object is still not resolved - this function takes only one surface, with
+// no scene to test against; and no `dino8-app` command calls it yet (the
+// app's own `Silhouette` stays mesh-based, unchanged).
 struct SurfaceSilhouettePoint {
   ON_2dPoint uv;
   Point3d point;
@@ -1328,10 +1337,16 @@ std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePoints(const ON_Surface
 // that happens to land exactly at `eye` itself (direction length ~0, no
 // ray to test tangency against there) is treated as "cannot verify", the
 // same honest skip RobustSurfaceNormal()'s own pole degeneracy already
-// gets. Still honestly scoped exactly as FindSurfaceSilhouettePoints() is:
-// point detections only, no curve-chaining (see FindSurfaceSilhouetteCurves()
+// gets. Self-occlusion by the SAME surface is resolved exactly as
+// FindSurfaceSilhouettePoints() now does, via the same
+// `FilterSelfOccludedCrossings()` - here the ray toward the viewer runs
+// from each crossing to the exact finite `eye` (not a generous bound: a hit
+// past `eye` itself is not between the crossing and the viewer at all).
+// Still honestly scoped exactly as FindSurfaceSilhouettePoints() is: point
+// detections only, no curve-chaining (see FindSurfaceSilhouetteCurves()
 // below for that, which does not yet have a perspective sibling of its
-// own), and no visibility/self-occlusion resolution.
+// own), and occlusion by a genuinely DIFFERENT object is still not
+// resolved.
 std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePointsPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt);
 
 // Chains FindSurfaceSilhouettePoints()'s own isolated grid-edge crossings
@@ -1362,11 +1377,14 @@ std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePointsPerspective(const
 // `pulled_curve`, ContourAtPlane(), ...), not resampled. Still honestly
 // scoped: an isolated degree-0 crossing (dropped here) is still visible via
 // FindSurfaceSilhouettePoints() itself; saddle cells are skipped rather than
-// resolved; there is no perspective sibling of this function yet; and - the
-// one gap this bullet's own text keeps naming regardless of which of these
-// functions is asked - no visibility/self-occlusion resolution (a chain on
-// the surface's own far side from the viewer, or hidden behind a different
-// object, is reported exactly like a visible one).
+// resolved; there is no perspective sibling of this function yet; and
+// occlusion by a genuinely DIFFERENT object is still not resolved - this
+// function takes only one surface, with no scene to test against.
+// Self-occlusion by the SAME surface IS now resolved: the crossings this
+// chains are the exact ones FindSurfaceSilhouettePoints() already filters
+// through `FilterSelfOccludedCrossings()` before this function ever sees
+// them, so a chain that runs behind a nearer part of the SAME surface is
+// broken there rather than stitched straight through it.
 struct SurfaceSilhouetteCurve {
   ON_NurbsCurve curve;
   bool closed = false;
@@ -1391,11 +1409,13 @@ std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurves(const ON_Surface
 // not guessed; a "saddle" cell (all four boundary edges crossing) is skipped
 // rather than resolved with an arbitrary diagonal pairing; an isolated
 // degree-0 crossing is dropped here but still visible via
-// FindSurfaceSilhouettePointsPerspective() itself; and - the one gap this
-// bullet's own text keeps naming regardless of which function is asked - no
-// visibility/self-occlusion resolution (a chain on the surface's own far
-// side from the eye, or hidden behind a different object, is reported
-// exactly like a visible one).
+// FindSurfaceSilhouettePointsPerspective() itself; and occlusion by a
+// genuinely DIFFERENT object is still not resolved - this function takes
+// only one surface, with no scene to test against. Self-occlusion by the
+// SAME surface IS now resolved, the same way the orthographic sibling
+// above is: the crossings chained here are the exact ones
+// FindSurfaceSilhouettePointsPerspective() already filters through
+// `FilterSelfOccludedCrossings()` first.
 std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurvesPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt);
 
 // --- numerical helpers ------------------------------------------------------
