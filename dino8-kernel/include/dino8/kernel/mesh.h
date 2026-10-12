@@ -1973,6 +1973,17 @@ class Mesh {
   // already irregular (very unequal sizes, sliver-heavy) still produces
   // an irregular quad mesh, since nothing here retriangulates or moves a
   // single vertex first.
+  //
+  // Throws std::invalid_argument if `max_dihedral_deg` is not finite
+  // (NaN or +/-inf) - a NaN value used to silently become 0.0 (via an
+  // undocumented `std::max(0.0, max_dihedral_deg)` clamp, since any
+  // comparison with NaN is false), accepting only perfectly-flat merges
+  // without telling the caller anything was wrong. A genuinely negative
+  // value is still accepted and still clamped to 0.0 the same way - a
+  // deliberate, now-documented convenience (angles are never negative,
+  // so this just means "only perfectly flat pairs merge", a harmless
+  // degenerate case that may legitimately produce 0 merges) rather than
+  // an error, unlike the NaN case this rejects outright.
   int TrisToQuads(double max_dihedral_deg = 20.0);
 
   // Moves every vertex by `distance` along its own ComputeVertexNormals()

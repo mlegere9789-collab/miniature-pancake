@@ -21736,6 +21736,63 @@ void TestMeshTrisToQuadsGatesOnDihedralAngle() {
   }
 }
 
+// Closes a real, previously-unvalidated gap: max_dihedral_deg went
+// straight into `std::max(0.0, max_dihedral_deg)` with no check at all -
+// a NaN value silently became exactly 0.0 (any comparison with NaN is
+// false, so `0.0 < NaN` is false and std::max returns the first
+// argument), accepting only perfectly-flat merges without ever telling
+// the caller its own threshold was nonsense, rather than refusing
+// outright the way this class's own other tolerance/angle parameters do.
+void TestMeshTrisToQuadsThrowsOnNonFiniteDihedralDegAndClampsNegative() {
+  using dino8::kernel::Mesh;
+
+  auto make_flat_pair = []() {
+    Mesh m;
+    ON_Mesh& raw = m.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));   // 0 = a
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 1 = b
+    raw.m_V.Append(ON_3fPoint(0.5f, 1.0f, 0.0f));   // 2 = c
+    raw.m_V.Append(ON_3fPoint(0.5f, -1.0f, 0.0f));  // 3 = d, same plane as a/b/c: 0deg dihedral
+    ON_MeshFace fi;
+    fi.vi[0] = 0; fi.vi[1] = 1; fi.vi[2] = 2; fi.vi[3] = 2;
+    raw.m_F.Append(fi);
+    ON_MeshFace fj;
+    fj.vi[0] = 1; fj.vi[1] = 0; fj.vi[2] = 3; fj.vi[3] = 3;
+    raw.m_F.Append(fj);
+    return m;
+  };
+
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  Check(Throws([&] { make_flat_pair().TrisToQuads(nan); }),
+        "TrisToQuads throws for a NaN max_dihedral_deg");
+  Check(Throws([&] { make_flat_pair().TrisToQuads(inf); }),
+        "TrisToQuads throws for a +infinity max_dihedral_deg");
+  Check(Throws([&] { make_flat_pair().TrisToQuads(-inf); }),
+        "TrisToQuads throws for a -infinity max_dihedral_deg");
+
+  // Negative control: a genuinely negative (but finite) value is NOT an
+  // error - it's the same documented "clamps to 0.0" convenience the
+  // doc comment (mesh.h) now discloses explicitly - so a perfectly flat
+  // (0deg dihedral) pair still merges even at a negative threshold,
+  // exactly as it already does at a literal 0.0 threshold.
+  Mesh m = make_flat_pair();
+  Check(!Throws([&] { Mesh probe = m; probe.TrisToQuads(-10.0); }),
+        "TrisToQuads does not throw for a negative (but finite) max_dihedral_deg");
+  Check(m.TrisToQuads(-10.0) == 1,
+        "a negative max_dihedral_deg still clamps to 0.0, so a perfectly flat (0deg) pair still merges");
+}
+
 // Two coplanar (0deg dihedral) triangles sharing edge a-b whose apexes
 // c and d are BOTH still on opposite sides of ab (a valid, consistently-
 // wound manifold pair - required by TrisToQuads()'s own opposite-
@@ -74870,6 +74927,7 @@ int main() {
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
   TestMeshTrisToQuadsRecombinesTessellatedBoxFaces();
   TestMeshTrisToQuadsGatesOnDihedralAngle();
+  TestMeshTrisToQuadsThrowsOnNonFiniteDihedralDegAndClampsNegative();
   TestMeshTrisToQuadsRefusesNonConvexMerge();
   TestMeshTrisToQuadsMergesSeveralIndependentSquaresInOneCall();
   TestMeshTrisToQuadsRefusesCoincidentApexes();
