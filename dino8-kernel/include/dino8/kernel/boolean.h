@@ -44,8 +44,10 @@ namespace dino8::kernel {
 // naked-edge reporting, as remaining gaps this does not close.
 enum class BooleanFailureReason {
   // An operand is a Brep::Compound() of 2+ lumps, refused by an op with no
-  // lump-merge step of its own (Union/SymmetricDifference on all three
-  // engines - see RefuseCompoundOperand's own doc comment in boolean.cpp).
+  // lump-merge step of its own (SymmetricDifference on all three engines -
+  // Union was refused here too until a later pass proved it needs no such
+  // step after all; see RefuseCompoundOperand's own doc comment in
+  // boolean.cpp).
   CompoundOperand,
   // An operation this function has never implemented at all is requested -
   // BooleanCombineGeneral()/BooleanCombineGeneralNAry()'s own
@@ -520,12 +522,12 @@ Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b);
 // against an overlapping box) never produces one, since every individual
 // cutting plane involved only ever crosses that shape's boundary twice.
 //
-// `op == Difference` or `op == Intersection` also accepts a `a` and/or `b`
-// that is itself a `Brep::Compound()` of two or more lumps (e.g. a prior
-// SymmetricDifference result, or two disjoint solids joined into one
-// operand) - `op == Union`/`SymmetricDifference` still refuse one (see
-// boolean.cpp's own RefuseCompoundOperand doc comment for why only those
-// two need a lump-merge step this engine doesn't have). The split/classify/
+// `op == Difference`, `op == Intersection`, or `op == Union` all accept an
+// `a` and/or `b` that is itself a `Brep::Compound()` of two or more lumps
+// (e.g. a prior SymmetricDifference result, or two disjoint solids joined
+// into one operand) - only `op == SymmetricDifference` still refuses one
+// (see boolean.cpp's own RefuseCompoundOperand doc comment for why only
+// XOR needs a lump-merge step this engine doesn't have). The split/classify/
 // reassemble pipeline above needs no change to get this right: every face
 // is already split and ray-cast-classified against the OTHER operand's
 // full face list regardless of how many lumps it spans (ClassifyPointVsSolid
@@ -547,12 +549,13 @@ Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b);
 // branch for why two such lumps can never share one manifold shell to begin
 // with) and this op's own face selection carries that entire contact curve
 // through unmodified - not a new limitation, but the exact same one that
-// makes Union/SymmetricDifference refuse a compound operand outright, now
+// makes SymmetricDifference refuse a compound operand outright, now
 // reachable (as a controlled thrown exception, never a silently wrong
-// shape) through this op too. A compound operand whose lumps are genuinely
-// disjoint - no shared contact curve at all, the common case this pass
-// targets - reassembles cleanly; see boolean.cpp's own doc comment at this
-// function's tail for the full argument.
+// shape) through Union/Difference/Intersection too. A compound operand
+// whose lumps are genuinely disjoint - no shared contact curve at all, the
+// common case every one of these ops targets - reassembles cleanly; see
+// boolean.cpp's own doc comment at this function's tail for the full
+// argument.
 //
 // `tolerance`, if non-negative, is used as-is for every distance/coincidence
 // test this function makes (SplitAgainstAllPlanes' own split tolerance,
@@ -587,9 +590,12 @@ Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op, double tol
 // SymmetricDifference is refused for the same reason as the Mixed
 // engine's N-ary wrapper: BooleanCombinePlanar's own XOR result is a
 // Brep::Compound of two lumps, which cannot be fed into a further Union
-// fold. Each pairwise call inherits BooleanCombinePlanar's own
-// RefuseCompoundOperand precondition, so every operand in either group
-// must itself be a single-lump Brep.
+// fold. Since every pairwise call this makes is Union (each fold step) or
+// `op` itself (the final combine, which may be Difference/Intersection/
+// Union), and BooleanCombinePlanar now accepts a compound operand for all
+// three of those, a group element MAY itself be a genuine Brep::Compound -
+// each pairwise call inherits BooleanCombinePlanar's own (now Union-inclusive)
+// compound-operand support, not merely its SymmetricDifference-only refusal.
 //
 // `tolerance` is forwarded as-is to every pairwise BooleanCombinePlanar()
 // call this makes (each fold_union step and the final combine alike) - see
@@ -2576,15 +2582,16 @@ Brep DeleteFacesHealConvexPlanar(const Brep& solid, const std::vector<int>& face
 // carries over unchanged in spirit, generalized to also detect a graze on
 // a cylindrical face's own (angle, height) rectangle boundary.
 //
-// `op == Difference` or `op == Intersection` also accepts a `a` and/or `b`
-// that is itself a `Brep::Compound()` of two or more lumps - the same
-// exemption `BooleanCombinePlanar` already has, for the identical reason
-// (`op == Union`/`SymmetricDifference` still refuse one; see
-// RefuseCompoundOperand's own doc comment in boolean.cpp). This was left
-// open the first time `BooleanCombinePlanar` gained it, since this
-// function's own cylindrical end-cap synthesis (SynthesizeEndCaps) was not
-// yet proven safe against a multi-lump `other` - checked directly, not
-// merely assumed: every classification step this function makes (the
+// `op == Difference`, `op == Intersection`, or `op == Union` all accept an
+// `a` and/or `b` that is itself a `Brep::Compound()` of two or more lumps -
+// the same exemption `BooleanCombinePlanar` already has, for the identical
+// reason (only `op == SymmetricDifference` still refuses one; see
+// RefuseCompoundOperand's own doc comment in boolean.cpp). Difference/
+// Intersection were left open the first time `BooleanCombinePlanar` gained
+// it, since this function's own cylindrical end-cap synthesis
+// (SynthesizeEndCaps) was not yet proven safe against a multi-lump `other` -
+// checked directly, not merely assumed: every classification step this
+// function makes (the
 // planar ray-cast parity test, the cylindrical ray-vs-cylinder quadratic,
 // and SynthesizeEndCaps' own per-face probes, including its parallel-
 // cylinder crossing/lens-cap logic) already treats `other` as a flat face
@@ -2617,8 +2624,19 @@ Brep DeleteFacesHealConvexPlanar(const Brep& solid, const std::vector<int>& face
 // Same real, disclosed scope limit as the planar engine, independent of
 // the above: a compound operand whose own lumps genuinely touch along a
 // shared contact curve still throws the pre-existing "an edge is shared by
-// 3 or more faces" refusal, since nothing about Difference/Intersection
-// separates that contact curve on its own.
+// 3 or more faces" refusal, since nothing about Difference/Intersection/
+// Union separates that contact curve on its own.
+//
+// `op == Union` gained the identical compound-operand exemption in a later
+// pass (closing the "Multi-body / multi-tool booleans" bullet's own
+// previously-named "compound-operand support for Union... refused on all
+// three engines" gap for this engine): Union's own face selection
+// (from_a.out u from_b.out u from_a.on) is classified by the exact same
+// lump-blind pipeline described above, so it needed no further change of
+// its own to become safe, only the removal of its pre-emptive refusal -
+// the lump-recomputation tail already runs unconditionally for Union too
+// (again gated to the purely-planar case, identically to Difference/
+// Intersection).
 //
 // `tolerance`, if non-negative, is used as-is for every distance/coincidence
 // test this function makes (SplitAndBucketMixed's own split/classify
@@ -2668,23 +2686,21 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tole
 // to mean anything).
 //
 // Each individual pairwise call inherits BooleanCombineMixed's own
-// requirements and failure mode unchanged. Every fold-union step
+// requirements and failure mode unchanged. `BooleanCombineMixed` now
+// accepts a compound operand for Union too (not just Difference/
+// Intersection - see its own doc comment above), so every fold-union step
 // (`fold_union`'s own internal BooleanCombineMixed(..., Union) calls, for
-// any group with 2+ elements) still refuses a compound element, since
-// `op == Union` never gained the compound-operand exemption the other two
-// ops did (see BooleanCombineMixed's own doc comment above). A
-// SINGLE-element group is never folded at all (its one element is used
-// directly, with no BooleanCombineMixed call in between) - so a one-
-// element `first_group`/`second_group` that is itself compound reaches
-// the final combine step untouched, and for `op == Intersection`/
-// `Difference` that final BooleanCombineMixed(folded_first, folded_second,
-// op) call now inherits its own compound-operand exemption for those two
-// ops, accepting it. This function does NOT add support for a compound
-// operand ANYWHERE inside a multi-element group's own fold chain (still
-// refused there, `op` regardless) - that stays the real, still-disclosed
+// any group with 2+ elements) ALSO accepts a compound element now - a
+// group may itself contain a genuine multi-lump Brep (e.g. a prior
+// SymmetricDifference result), and it folds in exactly as a single-lump
+// one would, subject to the same "genuinely touching lumps still throw"
+// scope limit BooleanCombineMixed's own doc comment discloses. This
+// function does NOT add any NEW compound-operand support of its own beyond
+// what BooleanCombineMixed already provides per pairwise call - SymmetricDifference
+// is still refused outright above, and that stays the real, still-disclosed
 // gap this same PARITY_MAP.md bullet also names ("B-rep XOR returns a
-// two-lump Compound... compound operands are refused by the planar/mixed
-// engines").
+// two-lump Compound... compound operands are refused" for that one op, on
+// all three engines).
 //
 // `tolerance` is forwarded as-is to every pairwise BooleanCombineMixed()
 // call this makes (each fold_union step and the final combine alike) - see

@@ -1,0 +1,23 @@
+# Native .3dm pattern-fill HATCH export QC: Save3dm's new ON_Hatch writer
+# (BuildOnHatchForGroup, File3dm.cpp) above only ever covered the solid-fill
+# case; a pattern-fill hatch (Hatch Pattern=ANSI31, drafting::BuildPatternHatch's
+# own already-clipped line-curve group) still round-tripped out through
+# .3dm as its own N baked line-curve objects, never one real ON_Hatch - the
+# same "N already-clipped LINE entities, no record it was ever one fill" gap
+# the DXF pattern-HATCH writer closed for that format (WriteDxfHatchPattern).
+# Makes a real ANSI31 hatch, saves it, and reopens the saved file in a fresh
+# document: SelHatch must find the exact same number of real, Hatch=ANSI31-
+# tagged line objects the original Hatch command built, proving the new
+# writer and the existing pattern-name-only reader (Load3dm's own ON_Hatch
+# handling, via drafting::BuildPatternHatch) agree on the wire format, not
+# just approximate it.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+Rectangle 0,0,0 10,10,0
+SelLast
+Hatch Pattern=ANSI31
+SelNone
+SelHatch
+SaveAs @TMP@/hatch3dm_export_pattern.3dm
+New
+Open @TMP@/hatch3dm_export_pattern.3dm
+SelHatch
