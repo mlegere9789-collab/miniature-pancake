@@ -1762,6 +1762,68 @@ void TestSurfaceMinDistanceTo() {
   }
 }
 
+void TestSurfaceGetOrientedBoundingBox() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A flat, non-square 20x10 rectangle in world XY (degree 1x1, so its
+  // control net is exactly its own 4 corners) - the surface sibling of
+  // TestCurveGetOrientedBoundingBox's own non-square-rectangle fixture.
+  // One axis should match X with half-extent close to 10, one match Y
+  // with half-extent close to 5, and the third (Z) have half-extent
+  // exactly 0 (flat).
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 10, 0),
+      Point3d(20, 0, 0),
+      Point3d(20, 10, 0),
+  };
+  const NurbsSurface rect = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const NurbsSurface::OrientedBox box = rect.GetOrientedBoundingBox();
+
+  auto find_best = [&](Vector3d target) {
+    int best_k = -1;
+    double best_d = -1;
+    for (int k = 0; k < 3; ++k) {
+      const double d = std::abs(ON_DotProduct(box.axes[static_cast<size_t>(k)], target));
+      if (d > best_d) {
+        best_d = d;
+        best_k = k;
+      }
+    }
+    return best_k;
+  };
+  const int xi = find_best(Vector3d(1, 0, 0));
+  const int yi = find_best(Vector3d(0, 1, 0));
+  const int zi = find_best(Vector3d(0, 0, 1));
+  Check(xi != yi && yi != zi && xi != zi,
+        "NurbsSurface::GetOrientedBoundingBox: the rectangle's 3 axes genuinely match 3 distinct world directions");
+  Check(std::abs(box.half_extents[static_cast<size_t>(xi)] - 10.0) < 0.1,
+        "NurbsSurface::GetOrientedBoundingBox: the 20-wide rectangle's X-matching axis has half-extent close to 10");
+  Check(std::abs(box.half_extents[static_cast<size_t>(yi)] - 5.0) < 0.1,
+        "NurbsSurface::GetOrientedBoundingBox: the 10-tall rectangle's Y-matching axis has half-extent close to 5");
+  Check(box.half_extents[static_cast<size_t>(zi)] < 1e-6,
+        "NurbsSurface::GetOrientedBoundingBox: the flat rectangle's Z-matching axis has half-extent exactly 0");
+  Check(box.center.DistanceTo(Point3d(10, 5, 0)) < 1e-3,
+        "NurbsSurface::GetOrientedBoundingBox: the rectangle's own center is its real geometric center (10,5,0)");
+
+  // Safety invariant, independent of the measured closeness above: every
+  // control point must lie within the returned box along every axis
+  // (the convex-hull guarantee this method's own doc comment makes).
+  for (int i = 0; i < rect.CVCountU(); ++i) {
+    for (int j = 0; j < rect.CVCountV(); ++j) {
+      const Vector3d rel = rect.ControlPointAt(i, j) - box.center;
+      for (int k = 0; k < 3; ++k) {
+        const double proj = std::abs(ON_DotProduct(rel, box.axes[static_cast<size_t>(k)]));
+        Check(proj <= box.half_extents[static_cast<size_t>(k)] + 1e-9,
+              "NurbsSurface::GetOrientedBoundingBox: every control point genuinely lies within the "
+              "returned box along every axis");
+      }
+    }
+  }
+}
+
 void TestCurveGetOrientedBoundingBox() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -12533,6 +12595,97 @@ void TestSurfaceTessellateGridNonUniformCertifiedAdaptive() {
         "std::invalid_argument for a negative max_refinements");
 }
 
+// Closes PARITY_MAP.md's own "Explicit sampling control (u/v suggested
+// parameter values honouring curvature/singularities)" gap:
+// SuggestedParameterValues() was heuristic-only, trusting each sampled
+// isocurve's own chord-height subdivision estimate without ever
+// measuring it against the true surface - unlike the sibling mesh-
+// producing certified-adaptive functions, which already measure and
+// refine. This checks the new value-returning counterpart against the
+// same singular-pole sphere TestSurfaceTessellateGridNonUniformCertifiedAdaptive()
+// already shows needs real refinement at a tight tolerance, not a flat
+// surface where the first attempt would trivially succeed either way.
+void TestSurfaceSuggestedParameterValuesCertifiedAdaptive() {
+  using dino8::kernel::NurbsSurface;
+
+  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 1.0);
+  ON_NurbsSurface sphere_surface;
+  sphere.GetNurbForm(sphere_surface);
+  NurbsSurface s;
+  s.raw() = sphere_surface;
+
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  const double chord_tolerance = 0.01;
+  const auto result = s.SuggestedParameterValuesCertifiedAdaptive(chord_tolerance);
+  Check(result.u_values.size() >= 2 && result.v_values.size() >= 2,
+        "SuggestedParameterValuesCertifiedAdaptive returns real, usable u/v value lists");
+  Check(result.achieved_deviation >= 0.0 && result.achieved_deviation <= chord_tolerance,
+        "SuggestedParameterValuesCertifiedAdaptive's own achieved deviation is genuinely at or "
+        "under chord_tolerance on a surface with singular poles");
+
+  // Independent cross-check: building a mesh from the RETURNED value
+  // lists and re-measuring it directly must reproduce the same achieved
+  // deviation this call already reported - the certification is about
+  // the values themselves, not an internal-only computation the caller
+  // can't verify.
+  const auto reproduced_mesh = s.TessellateGridNonUniform(result.u_values, result.v_values);
+  const double reproduced_deviation = s.MeasureMeshTessellationDeviation(reproduced_mesh);
+  Check(std::abs(reproduced_deviation - result.achieved_deviation) < 1e-9,
+        "independently rebuilding a mesh from the returned u/v values and re-measuring it "
+        "reproduces the exact same achieved deviation this call already reported");
+
+  Check(Throws([&] { s.SuggestedParameterValuesCertifiedAdaptive(0.0); }),
+        "SuggestedParameterValuesCertifiedAdaptive throws std::invalid_argument for a "
+        "non-positive chord_tolerance");
+  Check(Throws([&] { s.SuggestedParameterValuesCertifiedAdaptive(chord_tolerance, -1); }),
+        "SuggestedParameterValuesCertifiedAdaptive throws std::invalid_argument for a "
+        "negative max_refinements");
+
+  // A target just below what THIS call already measured it achieved -
+  // not an astronomically tiny absolute number (which would make the
+  // underlying heuristic bisect without bound chasing it, even on
+  // attempt 0, before any refinement loop here even starts) - so
+  // max_refinements=0 (the unrefined first attempt alone) is
+  // deterministically insufficient, cheaply, regardless of this
+  // particular surface's own curvature characteristics.
+  auto ThrowsRuntime = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::runtime_error&) {
+      return true;
+    }
+  };
+
+  const double just_out_of_reach = result.achieved_deviation * 0.5;
+  Check(ThrowsRuntime([&] { s.SuggestedParameterValuesCertifiedAdaptive(just_out_of_reach, /*max_refinements=*/0); }),
+        "SuggestedParameterValuesCertifiedAdaptive throws std::runtime_error when "
+        "max_refinements is too small to certify the tolerance, rather than silently "
+        "returning an uncertified result");
+
+  // The identical target succeeds with a real (still small) refinement
+  // budget, and genuinely uses more breakpoints in at least one
+  // direction than the plain heuristic does at that same target -
+  // proving real refinement happened, not a trivial pass-through.
+  const auto refined = s.SuggestedParameterValuesCertifiedAdaptive(just_out_of_reach, /*max_refinements=*/5);
+  Check(refined.achieved_deviation >= 0.0 && refined.achieved_deviation <= just_out_of_reach,
+        "with a real refinement budget, the same just-out-of-reach target is genuinely certified");
+  const auto heuristic_u = s.SuggestedParameterValues(0, just_out_of_reach);
+  const auto heuristic_v = s.SuggestedParameterValues(1, just_out_of_reach);
+  Check(refined.u_values.size() > heuristic_u.size() || refined.v_values.size() > heuristic_v.size(),
+        "the certified result has strictly more breakpoints in at least one direction than the "
+        "uncertified heuristic at the identical chord_tolerance - genuine refinement happened, "
+        "not a trivial first-attempt pass-through");
+}
+
 void TestBrepTessellateAdaptive() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -16491,6 +16644,90 @@ void TestBrepGetTightBoundingBox() {
         "boundary/Greville isocurves, never the genuine 2D interior "
         "extremum, the same real public-build limitation "
         "TestCurveGetTightBoundingBox found for a curve");
+}
+
+void TestBrepGetOrientedBoundingBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Box(1,-2,0.5, 4,3,7.5): x-span 3 (half 1.5), y-span 5 (half 2.5),
+  // z-span 7 (half 3.5), real center (2.5, 0.5, 4.0) - every face flat and
+  // axis-aligned, so the PCA axes should land very close to world X/Y/Z
+  // (not necessarily bit-exact: 6 faces' own grid samples don't contribute
+  // perfectly equal weight per axis the way a single surface's samples
+  // do), with the control-point safety check below as the real
+  // independent guarantee, not just this measured closeness.
+  const Brep box = Brep::Box(1, -2, 0.5, 4, 3, 7.5);
+  const Brep::OrientedBox obb = box.GetOrientedBoundingBox();
+
+  auto find_best = [&](Vector3d target) {
+    int best_k = -1;
+    double best_d = -1;
+    for (int k = 0; k < 3; ++k) {
+      const double d = std::abs(ON_DotProduct(obb.axes[static_cast<size_t>(k)], target));
+      if (d > best_d) {
+        best_d = d;
+        best_k = k;
+      }
+    }
+    return best_k;
+  };
+  const int xi = find_best(Vector3d(1, 0, 0));
+  const int yi = find_best(Vector3d(0, 1, 0));
+  const int zi = find_best(Vector3d(0, 0, 1));
+  Check(xi != yi && yi != zi && xi != zi,
+        "Brep::GetOrientedBoundingBox: Box()'s 3 axes genuinely match 3 distinct world directions");
+  Check(std::abs(obb.half_extents[static_cast<size_t>(xi)] - 1.5) < 0.05,
+        "Brep::GetOrientedBoundingBox: Box()'s X-matching axis has half-extent close to 1.5");
+  Check(std::abs(obb.half_extents[static_cast<size_t>(yi)] - 2.5) < 0.05,
+        "Brep::GetOrientedBoundingBox: Box()'s Y-matching axis has half-extent close to 2.5");
+  Check(std::abs(obb.half_extents[static_cast<size_t>(zi)] - 3.5) < 0.05,
+        "Brep::GetOrientedBoundingBox: Box()'s Z-matching axis has half-extent close to 3.5");
+  Check(obb.center.DistanceTo(Point3d(2.5, 0.5, 4.0)) < 0.05,
+        "Brep::GetOrientedBoundingBox: Box()'s own center is close to its real geometric center (2.5, 0.5, 4.0)");
+
+  // Safety invariant, independent of the measured closeness above: every
+  // face's own real control point must lie within the returned box along
+  // every axis (the convex-hull guarantee this method's own doc comment
+  // makes), checked directly against the raw ON_Brep rather than assumed.
+  const ON_Brep& raw_box = box.raw();
+  for (int fi = 0; fi < raw_box.m_F.Count(); ++fi) {
+    const ON_Surface* srf = raw_box.m_F[fi].SurfaceOf();
+    Check(srf != nullptr, "Brep::GetOrientedBoundingBox: every Box() face has a real surface");
+    ON_NurbsSurface nurbs;
+    const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(srf);
+    if (ns) {
+      nurbs = *ns;
+    } else {
+      Check(srf->GetNurbForm(nurbs) > 0, "Brep::GetOrientedBoundingBox: every face converts to a real NURBS form");
+    }
+    for (int i = 0; i < nurbs.CVCount(0); ++i) {
+      for (int j = 0; j < nurbs.CVCount(1); ++j) {
+        ON_3dPoint cv;
+        nurbs.GetCV(i, j, cv);
+        const Vector3d rel = Point3d(cv) - obb.center;
+        for (int k = 0; k < 3; ++k) {
+          const double proj = std::abs(ON_DotProduct(rel, obb.axes[static_cast<size_t>(k)]));
+          Check(proj <= obb.half_extents[static_cast<size_t>(k)] + 1e-9,
+                "Brep::GetOrientedBoundingBox: every face's own control point genuinely lies within the "
+                "returned box along every axis");
+        }
+      }
+    }
+  }
+
+  // A Brep with no faces at all throws.
+  {
+    Brep empty;
+    bool threw = false;
+    try {
+      empty.GetOrientedBoundingBox();
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw, "Brep::GetOrientedBoundingBox: a Brep with no faces throws std::runtime_error");
+  }
 }
 
 // The real, previously-undocumented gap found and fixed alongside
@@ -25419,6 +25656,65 @@ void TestMeshContainsPoint() {
         "though it's well within the outer box's own bounding box");
   Check(!hollow.ContainsPoint(Point3d(10, 10, 10)),
         "a point far outside the hollow box entirely is not inside it");
+}
+
+// PARITY_MAP.md's own "kernel: Mass properties & spatial queries"
+// category named this directly under "Signed distance point-to-solid":
+// "sign from ContainsPoint's single-ray test." A single fixed ray,
+// however carefully chosen to avoid axis/symmetry degeneracies (as
+// ContainsPoint()'s own prior implementation was), can still graze a
+// vertex or shared edge exactly for some mesh/point combination - this
+// test reproduces a real, concrete such failure against the ORIGINAL
+// single-ray implementation's own exact direction, confirms
+// ContainsPoint() now votes across 5 independent directions instead,
+// and verifies the fix closes it.
+void TestMeshContainsPointVotesAcrossMultipleRaysForRobustness() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+
+  // The exact direction ContainsPoint()'s own prior single-ray
+  // implementation cast along (still the first of the 5 it now votes
+  // across) - confirmed directly (via a standalone scratch probe before
+  // trusting it here) that a ray from a point along this direction,
+  // aimed exactly at the box's own (1,1,1) corner, misclassifies a
+  // genuine, contiguous range of truly-inside points near that corner
+  // as outside when that single direction alone decides the answer.
+  const Vector3d original_single_ray_direction(0.6532814824, 0.2705980501, 0.7071067812);
+  const Point3d corner(1, 1, 1);
+
+  int genuinely_inside_count = 0;
+  bool all_correctly_inside = true;
+  for (int i = 1; i <= 30; ++i) {
+    const double t = static_cast<double>(i) / 100.0;
+    const Point3d p = corner - original_single_ray_direction * t;
+    if (!(p.x > 0 && p.x < 1 && p.y > 0 && p.y < 1 && p.z > 0 && p.z < 1)) continue;
+    ++genuinely_inside_count;
+    if (!box.ContainsPoint(p)) all_correctly_inside = false;
+  }
+  Check(genuinely_inside_count > 10, "the corner-aimed sweep actually produced a real sample of inside points to test");
+  Check(all_correctly_inside,
+        "every point along a ray aimed exactly at the box's own corner - the real failure mode the ORIGINAL "
+        "single-ray implementation had for this exact direction - is now correctly reported as inside, voted "
+        "across 5 independent directions rather than decided by this one alone");
+
+  // Ordinary, non-adversarial points still classify correctly - the
+  // vote doesn't trade robustness for correctness on the easy cases.
+  Check(box.ContainsPoint(Point3d(0.5, 0.5, 0.5)), "the box's own center is still correctly inside");
+  Check(!box.ContainsPoint(Point3d(2, 2, 2)), "a point far outside is still correctly outside");
+  Check(!box.ContainsPoint(Point3d(-0.5, 0.5, 0.5)), "a point outside on the -X side is still correctly outside");
+
+  // The translation-invariance property ContainsPoint()'s own doc
+  // comment specifically calls out (axis/symmetry grazing used to flip
+  // with translation) still holds under the new voting scheme.
+  const auto box_at_origin = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const auto box_translated = MakeQuadBoxMesh(39, 19, 9, 41, 21, 11);
+  Check(box_at_origin.ContainsPoint(Point3d(0, 0, 0)) && box_translated.ContainsPoint(Point3d(40, 20, 10)),
+        "a box's own center is reported inside both at the world origin and translated far away - unaffected by "
+        "the axis/symmetry grazing the single fixed ray's own irrational-component directions already guard "
+        "against");
 }
 
 void TestMeshClosestPoint() {
@@ -76987,6 +77283,7 @@ int main() {
   RunTest("TestCurveMinDistanceTo", TestCurveMinDistanceTo);
   RunTest("TestCurveMinDistanceToSurface", TestCurveMinDistanceToSurface);
   RunTest("TestSurfaceMinDistanceTo", TestSurfaceMinDistanceTo);
+  RunTest("TestSurfaceGetOrientedBoundingBox", TestSurfaceGetOrientedBoundingBox);
   RunTest("TestCurveGetOrientedBoundingBox", TestCurveGetOrientedBoundingBox);
   RunTest("TestCurveGetTightBoundingBoxOverload", TestCurveGetTightBoundingBoxOverload);
   RunTest("TestCurveKnotAt", TestCurveKnotAt);
@@ -77166,6 +77463,7 @@ int main() {
   RunTest("TestSurfaceMeasureMeshTessellationDeviation", TestSurfaceMeasureMeshTessellationDeviation);
   RunTest("TestSurfaceTessellateGridClippedExactCertifiedAdaptive", TestSurfaceTessellateGridClippedExactCertifiedAdaptive);
   RunTest("TestSurfaceTessellateGridNonUniformCertifiedAdaptive", TestSurfaceTessellateGridNonUniformCertifiedAdaptive);
+  RunTest("TestSurfaceSuggestedParameterValuesCertifiedAdaptive", TestSurfaceSuggestedParameterValuesCertifiedAdaptive);
   RunTest("TestBrepTessellateAdaptive", TestBrepTessellateAdaptive);
   RunTest("TestBrepTessellateAdaptiveByAngle", TestBrepTessellateAdaptiveByAngle);
   RunTest("TestBrepTessellateNonUniformAdaptive", TestBrepTessellateNonUniformAdaptive);
@@ -77236,6 +77534,7 @@ int main() {
   RunTest("TestBrepBoxWeldedHasGenuineTopology", TestBrepBoxWeldedHasGenuineTopology);
   RunTest("TestBrepLacksFullOpenNurbsTopologyButStillUsable", TestBrepLacksFullOpenNurbsTopologyButStillUsable);
   RunTest("TestBrepGetTightBoundingBox", TestBrepGetTightBoundingBox);
+  RunTest("TestBrepGetOrientedBoundingBox", TestBrepGetOrientedBoundingBox);
   RunTest("TestBrepGetTightBoundingBoxExactForTrimmedPlanarFaces", TestBrepGetTightBoundingBoxExactForTrimmedPlanarFaces);
   RunTest("TestBrepBooleanEndToEnd", TestBrepBooleanEndToEnd);
   RunTest("TestBrepSphereIsClosedAndWatertight", TestBrepSphereIsClosedAndWatertight);
@@ -77270,6 +77569,8 @@ int main() {
   RunTest("TestMeshFlipNormals", TestMeshFlipNormals);
   RunTest("TestMeshIsClosedManifold", TestMeshIsClosedManifold);
   RunTest("TestMeshContainsPoint", TestMeshContainsPoint);
+  RunTest("TestMeshContainsPointVotesAcrossMultipleRaysForRobustness",
+          TestMeshContainsPointVotesAcrossMultipleRaysForRobustness);
   RunTest("TestMeshClosestPoint", TestMeshClosestPoint);
   RunTest("TestMeshSignedDistance", TestMeshSignedDistance);
   RunTest("TestMeshVolumeMassProperties", TestMeshVolumeMassProperties);

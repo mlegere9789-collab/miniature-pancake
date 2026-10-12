@@ -64,11 +64,32 @@ class RebuildCommand : public Command {
         *o->curve = kernel::NurbsCurve::FromControlPoints(pts, deg);
         o->InvalidateDisplay();
       } else if (o->kind == ObjectKind::Surface) {
-        std::vector<Point3d> grid;
-        kernel::Interval du = o->surface->Domain(0), dv = o->surface->Domain(1);
-        for (int j = 0; j < n; ++j) for (int i = 0; i < n; ++i) grid.push_back(o->surface->PointAt(du.min + (du.max - du.min) * i / (n - 1.0), dv.min + (dv.max - dv.min) * j / (n - 1.0)));
-        *o->surface = kernel::NurbsSurface::FromControlGrid(grid, n, n, deg, deg);
-        o->InvalidateDisplay();
+        // Was: sample an n x n grid ON the surface and feed those points
+        // STRAIGHT IN as the new net's own control points
+        // (FromControlGrid) - control points of a degree > 1 B-spline
+        // don't generally lie on the surface itself, so that silently
+        // distorted the shape instead of refitting it. PARITY_MAP.md's
+        // "kernel: Surface operations" category named the real fix -
+        // `NurbsSurface::Rebuild()` (surface_edit.cpp), the genuine
+        // tensor-product least-squares refit (Piegl & Tiller A9.7) Rhino's
+        // own Rebuild/Parasolid's refit use - as existing, tested kernel
+        // code with zero callers anywhere in dino8-app ("Kernel Rebuild()
+        // unused by app"). `u_samples`/`v_samples` must exceed the
+        // requested net size or the fit is underdetermined (throws) - 64
+        // is Rebuild()'s own default, sized for this command's own capped
+        // n <= 200, hence the explicit `std::max(64, n * 2)` floor here.
+        kernel::NurbsSurface out;
+        const int samples = std::max(64, n * 2);
+        try {
+          if (o->surface->Rebuild(n, n, deg, deg, out, nullptr, samples, samples) == kernel::Result::Failed) {
+            ctx.Warn("Rebuild: normal equations were singular for this surface/net, left unchanged");
+          } else {
+            *o->surface = out;
+            o->InvalidateDisplay();
+          }
+        } catch (const std::invalid_argument& e) {
+          ctx.Warn(std::string("Rebuild: ") + e.what());
+        }
       }
     }
     Finish();

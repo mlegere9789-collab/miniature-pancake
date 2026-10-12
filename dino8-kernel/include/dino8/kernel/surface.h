@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <vector>
 
 #include <opennurbs.h>
@@ -41,6 +42,20 @@ struct SurfaceCurvature {
 struct SurfaceDivisions {
   int u;
   int v;
+};
+
+// A certified non-uniform u/v parameter-value pair, returned by
+// NurbsSurface::SuggestedParameterValuesCertifiedAdaptive(): `u_values`/
+// `v_values` are each a strictly-increasing list suitable for
+// TessellateGridNonUniform(), and `achieved_deviation` is the real,
+// measured chord deviation (never larger than the `chord_tolerance`
+// that call was given) the untrimmed grid they produce was independently
+// confirmed to achieve - not just the heuristic estimate
+// SuggestedParameterValues() alone trusts.
+struct SurfaceParameterValuesCertified {
+  std::vector<double> u_values;
+  std::vector<double> v_values;
+  double achieved_deviation;
 };
 
 // An approximate physical width/height of a surface's own domain,
@@ -792,6 +807,39 @@ class NurbsSurface {
   Result MinDistanceTo(const NurbsSurface& other, double tolerance, double& out_distance,
                         Point2d* out_uv_this = nullptr, Point2d* out_uv_other = nullptr) const;
 
+  // An oriented bounding box: closes the "surface" half of PARITY_MAP's
+  // "Oriented / CPlane-aligned / minimal-volume bounding box" gap (the
+  // curve half already closed via `NurbsCurve::GetOrientedBoundingBox()`,
+  // whose own identical technique this generalizes from a 1D arc-length
+  // sample to a 2D (u, v) grid sample). PCA via the same
+  // `ON_Sym3x3EigenSolver` `Mesh::GetOrientedBoundingBox()`/
+  // `NurbsCurve::GetOrientedBoundingBox()` already use, on the plain
+  // (unweighted) covariance of a `u_divisions` x `v_divisions` grid of
+  // `PointAt()` samples over the full domain - not a volume- or area-
+  // weighted covariance, the same "plain sample-point covariance" tier
+  // the curve overload already carries, since a general trimmed/curved
+  // surface has no simple closed-form area element to weight by.
+  // `half_extents`/`center` are the exact min/max projection of every one
+  // of this surface's own CONTROL POINTS (`ControlPointAt(i, j)` over the
+  // full `CVCountU()` x `CVCountV()` grid) onto each chosen axis - NOT the
+  // sampled points - so the result is PROVABLY SAFE regardless of
+  // sampling density: a B-spline surface lies within the convex hull of
+  // its own control net, the exact same guarantee the curve overload's
+  // own doc comment already relies on. On a genuinely degenerate
+  // covariance (e.g. a flat planar surface, whose samples all lie in one
+  // plane and so have a rank-2, not rank-3, covariance), falls back to
+  // the world X/Y/Z axes rather than failing outright - the control-point
+  // projection step keeps the box safe either way, same as the curve
+  // overload. Honest scope, also inherited unchanged: the standard PCA-
+  // aligned box, not a search for the globally minimum-volume box over
+  // every possible orientation.
+  struct OrientedBox {
+    Point3d center;
+    std::array<Vector3d, 3> axes;
+    std::array<double, 3> half_extents{};
+  };
+  OrientedBox GetOrientedBoundingBox(int u_divisions = 20, int v_divisions = 20) const;
+
   // Unit surface normal at parameter (u, v): `d/du x d/dv`, normalized.
   // Delegates to `ON_Surface::EvNormal` - verified as a real
   // implementation (computes the cross product of the two partial
@@ -895,6 +943,32 @@ class NurbsSurface {
   // in (0, pi].
   std::vector<double> SuggestedParameterValuesByAngle(int direction, double angle_tolerance,
                                                        int isocurve_samples = 5) const;
+
+  // Certified counterpart to SuggestedParameterValues(): closes this
+  // category's own disclosed "Explicit sampling control (u/v suggested
+  // parameter values honouring curvature/singularities)" gap -
+  // SuggestedParameterValues() is heuristic-only, trusting each sampled
+  // isocurve's own chord-height subdivision ESTIMATE as-is, never
+  // actually measuring it against the true surface. This refines that
+  // estimate the same way TessellateGridCertifiedAdaptive()/
+  // TessellateGridNonUniformCertifiedAdaptive() below already certify
+  // their own MESH output: build the untrimmed grid
+  // SuggestedParameterValues(0, effective_tolerance)/SuggestedParameterValues(
+  // 1, effective_tolerance) would produce, actually measure its real
+  // chord deviation via MeasureMeshTessellationDeviation() (through a
+  // throwaway TessellateGridNonUniform() call used only to measure, never
+  // returned to the caller), and halve `effective_tolerance` and retry
+  // whenever the measured deviation still exceeds `chord_tolerance` - up
+  // to `max_refinements` times. Unlike TessellateGridNonUniformCertifiedAdaptive(),
+  // which only ever hands the caller a finished mesh, this returns the
+  // certified u/v VALUE LISTS themselves - genuine explicit sampling
+  // control a caller can feed into its own tessellator, patch layout, or
+  // control-point placement, not just this kernel's own grid mesher.
+  // Throws std::invalid_argument if `chord_tolerance <= 0` or
+  // `max_refinements < 0`, and std::runtime_error if no refinement within
+  // `max_refinements` certifies the tolerance.
+  SurfaceParameterValuesCertified SuggestedParameterValuesCertifiedAdaptive(
+      double chord_tolerance, int max_refinements = 10, int isocurve_samples = 5) const;
 
   // Tessellates the surface into a triangle mesh by evaluating a
   // u_divisions x v_divisions grid of points across its parameter domain

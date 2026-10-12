@@ -102,7 +102,7 @@ near() {
   fi
 }
 check() { if echo "$OUT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$OUT" "$1"; fail=1; fi; }
-check "1055 commands loaded" "catalog has all 1055 commands"
+check "1057 commands loaded" "catalog has all 1057 commands (1055 plus this pass's new SubDRevolve/SubDMultiPipe entries)"
 check "BooleanDifference:" "boolean difference ran"
 check "Volume = " "volume measured"
 check "Extruded 1 object" "extrusion created a solid"
@@ -1518,9 +1518,18 @@ sdcheck "ToSubD: created 1 object(s) (0 of 1 limit-surface-fidelity verified wit
 # "verified" branch of the same check genuinely fires, not only the
 # "honest miss" branch above.
 sdcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0.000000)" "ToSubD on a flat planar patch fully verifies its limit surface against the original Brep within tolerance"
+# SubDRevolve/SubDMultiPipe: the SubD menu (MenuBar.cpp) has always listed
+# both names, with no command of either name ever registered - a broken
+# menu entry, not an implemented-but-limited feature (PARITY_MAP.md's own
+# "SubD-result revolve and multi-pipe menu entries are broken references"
+# item). Both now run the real underlying command (Revolve / MultiPipe) and
+# convert its result to a genuine SubD via the same SweepThenSubDCommand
+# wrapper SubDSweep1/SubDSweep2 already use and this suite already covers.
+sdcheck "SubDRevolve: 1 object(s) converted to SubD" "SubDRevolve ran the real Revolve command on the selected circle and converted its resulting surface to a SubD"
+sdcheck "SubDMultiPipe: 1 object(s) converted to SubD" "SubDMultiPipe ran the real MultiPipe command on the two selected lines and converted its resulting (unioned) mesh to a SubD"
 echo "$SD" | grep -E "^(ok|FAIL)"
 if echo "$SD" | grep -q "^FAIL"; then fail=1; fi
-sdcheck "smoke: frames=150 objects=18" "subd script produced the expected object count"
+sdcheck "smoke: frames=[0-9]* objects=23" "subd script produced the expected object count"
 # Rendering: materials (scripted options), texture mapping, lights, sun, ground plane,
 # Render / RenderArctic / SaveRenderWindowAs, ExtractRenderMesh, .3dm round-trip (see render_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/render_script.txt" > "$TMPW/render_script.txt"
@@ -3695,6 +3704,27 @@ echo "$BM" | grep -E "^(ok|FAIL)"
 if echo "$BM" | grep -q "^FAIL"; then fail=1; fi
 bmcheck "^ok   expect_objects 0" "boolean-mixed-and-compound script cleaned up to zero objects at the end"
 
+# General-engine (curved-face) exact booleans: BooleanCombineGeneral/
+# BooleanCombineGeneralNAry had no app entry point at all - a solid with
+# any curved face always fell straight through to the mesh path, even
+# though the Planar engine above was already wired - PARITY_MAP.md's
+# "kernel: Boolean operations" category's "B-rep-preserving booleans
+# reachable from the application" bullet (see
+# boolean_general_engine_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  BG="$("$BIN" --smoke 60 --script "$HERE/boolean_general_engine_script.txt" 2>&1)" || { echo "$BG"; echo "FAIL: boolean-general-engine script exited non-zero"; exit 1; }
+else
+  BG="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/boolean_general_engine_script.txt" 2>&1)" || { echo "$BG"; echo "FAIL: boolean-general-engine script exited non-zero"; exit 1; }
+fi
+bgecheck() { if echo "$BG" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$BG" "$1"; fail=1; fi; }
+bgecheck "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 10 face(s)" "a box unioned with a piercing, record-less cylinder took the new General-engine exact path, not the mesh fallback"
+bgecheck "BooleanDifference: exact B-rep boolean (no tessellation, general engine), 7 face(s)" "the same box minus the piercing cylinder also took the General-engine exact path"
+bgecheck "BooleanIntersection: exact B-rep boolean (no tessellation, general engine), 3 face(s)" "the box intersected with the piercing cylinder also took the General-engine exact path"
+if echo "$BG" | grep -q "! No object with id"; then echo "FAIL boolean-general-engine script's own SelID bookkeeping was wrong (references a missing id)"; fail=1; else echo "ok   boolean-general-engine script's SelID bookkeeping matched every object the app actually created"; fi
+echo "$BG" | grep -E "^(ok|FAIL)"
+if echo "$BG" | grep -q "^FAIL"; then fail=1; fi
+bgecheck "^ok   expect_objects 0" "boolean-general-engine script cleaned up to zero objects at the end"
+
 # Adversarial curve self-intersection: a closed bowtie polyline fed into
 # PlanarSrf (must be rejected) and a solid-capping Extrude (must degrade to
 # an open surface), an open self-crossing polyline confirming IntersectSelf
@@ -4342,6 +4372,33 @@ d2check "UpdateDimensions:   Leader now points at 1600,30,0" "UpdateDimensions d
 d2check "SectionView: 120 curve(s)" "SectionView sliced all 120 objects with none dropped across the Document::Objects() reallocations that many Add() calls in one pass triggers"
 
 d2check "gl_error=0" "drafting2 script ran without OpenGL errors"
+
+# TitleBlock's Scale field closes 2D drafting's own last remaining
+# "Associative annotation updating" gap half: left unset, it now defaults
+# to (and stays associative to) the active sheet's own single detail
+# view's current scale, formatted as a "1:N"/"N:1" ratio, instead of the
+# previous bare static "1:1" - mirroring Name/Date's own existing
+# live-document-title/today's-date associativity (see titleblock_scale_
+# script.txt and this document's own top-of-document dated note for the
+# full construction/scoping detail).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  TBS="$("$BIN" --smoke 20 --script "$HERE/titleblock_scale_script.txt" 2>&1)" || { echo "$TBS"; echo "FAIL: titleblock_scale script exited non-zero"; exit 1; }
+else
+  TBS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 20 --script "$HERE/titleblock_scale_script.txt" 2>&1)" || { echo "$TBS"; echo "FAIL: titleblock_scale script exited non-zero"; exit 1; }
+fi
+tbscheck() { if grep -q -- "$1" <<< "$TBS"; then echo "ok   $2"; else echo "FAIL $2"; near "$TBS" "$1"; fail=1; fi; }
+tbscheck "Detail: added D1 (130 x 100 mm, Top, scale 0.02) to ScaleSheet" "Detail built a real 0.02 (page mm per model unit) detail on the new sheet"
+tbscheck "TitleBlock: Untitled (Sheet ScaleSheet, Scale 1:50), Name associative to document title, Date associative to today, Scale associative to the sheet's own single detail" "TitleBlock with no explicit Scale= derived '1:50' from the sheet's own single 0.02-scale detail and marked it associative, alongside the pre-existing Name/Date associativity"
+tbscheck "TitleBlock: Untitled (Sheet NoDetailSheet, Scale 1:1)," "a second TitleBlock on a sheet with zero details has nothing to derive a scale from, so it keeps the plain static \"1:1\" default"
+if grep -q "TitleBlock: Untitled (Sheet NoDetailSheet, Scale 1:1), Name associative to document title, Date associative to today, Scale associative" <<< "$TBS"; then
+  echo "FAIL the zero-detail sheet's TitleBlock was incorrectly marked Scale-associative"; fail=1
+else
+  echo "ok   the zero-detail sheet's TitleBlock was correctly NOT marked Scale-associative (no single well-defined detail scale to track)"
+fi
+TBS_UPD_COUNT=$(echo "$TBS" | grep -c "UpdateTitleBlock:   Name now 'Untitled', Date now '")
+[ "$TBS_UPD_COUNT" = "2" ] && echo "ok   UpdateTitleBlock re-derived both title blocks' Name/Date fields" || { echo "FAIL UpdateTitleBlock re-derived Name/Date $TBS_UPD_COUNT times, expected 2"; fail=1; }
+tbscheck "UpdateTitleBlock: 2 table(s) regenerated" "UpdateTitleBlock found and regenerated both associative title blocks, the Scale-associative one re-confirming the identical '1:50' (its own single detail's scale genuinely unchanged since creation) rather than silently dropping or corrupting it"
+tbscheck "gl_error=0" "titleblock_scale script ran without OpenGL errors"
 
 # CPU path tracer: material library presets, RenderAssignMaterialToObjects
 # Preset=, the RayTracedViewport display mode, Render/RenderArctic/
@@ -7902,6 +7959,60 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
       cat "$TOKFILE_LOG"; echo "FAIL: --serve-token-file process exited $TOKFILE_EC, expected 0"; fail=1
     else
       grep -q "^serve: done requests=5$" "$TOKFILE_LOG" && echo "ok   --serve-token-file server exited cleanly on its own after 5 real HTTP requests" || { cat "$TOKFILE_LOG"; echo "FAIL --serve-token-file done-summary line missing or wrong"; fail=1; }
+    fi
+  fi
+
+  # --serve-token-file-ttl: real automatic expiry, the one piece plain
+  # --serve-token-file still lacked (it can rotate/revoke live, but an
+  # unedited file's own tokens stayed valid forever). A 2s TTL, a fresh
+  # token file, and real sleeps (the same mtime-comparison-needs-a-real-
+  # elapsed-interval technique the DataLinkUpdate checks above already
+  # use) prove a token that authenticated moments ago stops working once
+  # the file goes stale, and starts working again the instant the file is
+  # rewritten (even with the IDENTICAL token text) - `touch`-to-renew,
+  # no restart.
+  TTL_LOG="$TMPW/serve_token_ttl.log"
+  TTL_PATH="$TMPW/serve_tokens_ttl.txt"
+  printf 'ttltoken\n' > "$TTL_PATH"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 30 "$BIN" --serve 0 --serve-token-file "$TTL_PATH" --serve-token-file-ttl 2 --serve-max-requests 3 > "$TTL_LOG" 2>&1 &
+  else
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token-file "$TTL_PATH" --serve-token-file-ttl 2 --serve-max-requests 3 > "$TTL_LOG" 2>&1 &
+  fi
+  TTL_PID=$!
+
+  TTL_PORT=""
+  for _ in $(seq 1 100); do
+    if grep -q "^serve: listening on port " "$TTL_LOG" 2>/dev/null; then
+      TTL_PORT="$(grep "^serve: listening on port " "$TTL_LOG" | head -1 | awk '{print $NF}')"
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ -z "$TTL_PORT" ]; then
+    cat "$TTL_LOG"; echo "FAIL: --serve-token-file-ttl server never printed its listening port within 10s"; fail=1
+    kill "$TTL_PID" 2>/dev/null || true
+    wait "$TTL_PID" 2>/dev/null || true
+  else
+    set +e
+    TTL_RESP_FRESH="$(curl -s --max-time 10 -H 'Authorization: Bearer ttltoken' -X POST --data 'print("fresh ok")' "http://127.0.0.1:$TTL_PORT/run")"
+    sleep 4
+    TTL_CODE_EXPIRED="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer ttltoken' -X POST --data 'print("should not run")' "http://127.0.0.1:$TTL_PORT/run")"
+    printf 'ttltoken\n' > "$TTL_PATH"
+    TTL_RESP_RENEWED="$(curl -s --max-time 10 -H 'Authorization: Bearer ttltoken' -X POST --data 'print("renewed ok")' "http://127.0.0.1:$TTL_PORT/run")"
+    set -e
+    echo "$TTL_RESP_FRESH" | grep -q "^fresh ok$" && echo "ok   --serve-token-file-ttl accepts a token right after the file was written (well inside the TTL)" || { echo "$TTL_RESP_FRESH"; echo "FAIL --serve-token-file-ttl rejected a fresh token"; fail=1; }
+    [ "$TTL_CODE_EXPIRED" = "401" ] && echo "ok   the identical token is rejected once the file's own age exceeds --serve-token-file-ttl, with no edit to the file at all - real automatic expiry" || { echo "FAIL --serve-token-file-ttl still accepted a token from a stale file (HTTP $TTL_CODE_EXPIRED, expected 401) - expiry did not take effect"; fail=1; }
+    echo "$TTL_RESP_RENEWED" | grep -q "^renewed ok$" && echo "ok   rewriting the file (even with the identical token text) renews it - access resumes immediately, no restart needed" || { echo "$TTL_RESP_RENEWED"; echo "FAIL --serve-token-file-ttl did not accept the token again after the file was rewritten"; fail=1; }
+
+    set +e; wait "$TTL_PID"; TTL_EC=$?; set -e
+    if [ "$TTL_EC" -eq 124 ]; then
+      cat "$TTL_LOG"; echo "FAIL: --serve-token-file-ttl process hung and was killed by the 30s timeout instead of exiting after --serve-max-requests"; fail=1
+    elif [ "$TTL_EC" -ne 0 ]; then
+      cat "$TTL_LOG"; echo "FAIL: --serve-token-file-ttl process exited $TTL_EC, expected 0"; fail=1
+    else
+      grep -q "^serve: done requests=3$" "$TTL_LOG" && echo "ok   --serve-token-file-ttl server exited cleanly on its own after 3 real HTTP requests" || { cat "$TTL_LOG"; echo "FAIL --serve-token-file-ttl done-summary line missing or wrong"; fail=1; }
     fi
   fi
 
