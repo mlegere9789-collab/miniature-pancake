@@ -735,19 +735,21 @@ int main(int argc, char** argv) {
     // the id/type/name/layer/bounding-box of every object currently in the
     // running document, as JSON - rather than only the plain print() text
     // /run[/python] return. `?geometry=1` additionally carries each
-    // object's own geometry for four kinds: point (coordinates), mesh
-    // (vertices/faces), curve (degree/control points/weights/knots), and
-    // surface (the same shape as curve, in each of its two directions) -
-    // the exact NURBS definition in both the curve and surface cases,
-    // enough to reconstruct the object exactly, not just sampled points.
-    // Every other kind (polysurface, SubD, point cloud) still gets
-    // "geometry":null - a Brep's multiple trimmed faces (each with its own
-    // trimming curves) and a SubD's control-cage topology are a
-    // substantially larger undertaking than one untrimmed surface's single
-    // control grid, not attempted here. POST /objects (right below) closes
-    // the other half - sending one of these same four shapes back in adds
-    // that exact geometry to the document, the first way to get geometry
-    // *into* this server as structured data rather than Lua/Python source.
+    // object's own geometry for five kinds: point (coordinates), mesh
+    // (vertices/faces), curve (degree/control points/weights/knots),
+    // surface (the same shape as curve, in each of its two directions),
+    // and point cloud (a flat position array, plus optional per-point
+    // colors/normals when the cloud actually carries them) - the exact
+    // definition in the curve/surface/point-cloud cases, enough to
+    // reconstruct the object exactly, not just sampled points. The two
+    // remaining kinds (polysurface, SubD) still get "geometry":null - a
+    // Brep's multiple trimmed faces (each with its own trimming curves)
+    // and a SubD's control-cage topology are a substantially larger
+    // undertaking than any of the five shapes above, not attempted here.
+    // POST /objects (right below) closes the other half - sending one of
+    // these same five shapes back in adds that exact geometry to the
+    // document, the first way to get geometry *into* this server as
+    // structured data rather than Lua/Python source.
     if (path == "/objects" && req.method == "GET") {
       const dino8::app::Document& doc = app.Doc();
       const bool want_geometry = ComputeQueryFlagSet(query, "geometry");
@@ -870,6 +872,47 @@ int main(int argc, char** argv) {
               body += ",\"weights\":" + weights;
             }
             body += ",\"knots_u\":" + knot_array(0) + ",\"knots_v\":" + knot_array(1) + "}";
+          } else if (o.kind == dino8::app::ObjectKind::PointCloud && o.point_cloud) {
+            // The simplest of the shapes this route serializes: just a
+            // flat position array, plus the two genuinely optional
+            // per-point channels PointCloud itself carries ("all or
+            // nothing" per PointCloud::HasColors()/HasNormals() - see
+            // that class's own comment) when actually present. Unlike
+            // polysurface/SubD (still "geometry":null - a trimmed
+            // multi-face topology or control-cage is a substantially
+            // larger undertaking), a point cloud has no topology at all
+            // to lose, so this closes the item's own disclosed
+            // point-cloud gap outright.
+            const dino8::kernel::PointCloud& pc = *o.point_cloud;
+            std::string points = "[";
+            for (int i = 0; i < pc.PointCount(); ++i) {
+              if (i) points += ',';
+              const dino8::kernel::Point3d p = pc.PointAt(i);
+              points += "[" + std::to_string(p.x) + "," + std::to_string(p.y) + "," + std::to_string(p.z) + "]";
+            }
+            points += ']';
+            body += "{\"points\":" + points;
+            if (pc.HasColors()) {
+              std::string colors = "[";
+              for (int i = 0; i < pc.PointCount(); ++i) {
+                if (i) colors += ',';
+                const ON_Color c = pc.ColorAt(i);
+                colors += "[" + std::to_string(c.Red()) + "," + std::to_string(c.Green()) + "," + std::to_string(c.Blue()) + "]";
+              }
+              colors += ']';
+              body += ",\"colors\":" + colors;
+            }
+            if (pc.HasNormals()) {
+              std::string normals = "[";
+              for (int i = 0; i < pc.PointCount(); ++i) {
+                if (i) normals += ',';
+                const dino8::kernel::Vector3d n = pc.NormalAt(i);
+                normals += "[" + std::to_string(n.x) + "," + std::to_string(n.y) + "," + std::to_string(n.z) + "]";
+              }
+              normals += ']';
+              body += ",\"normals\":" + normals;
+            }
+            body += '}';
           } else {
             body += "null";
           }
@@ -904,7 +947,7 @@ int main(int argc, char** argv) {
       const std::string type = root["type"].AsString();
       dino8::app::Document& doc = app.Doc();
       dino8::app::ObjectId new_id = dino8::app::kNoObject;
-      std::string error = "unknown or missing \"type\" (expected \"point\", \"mesh\", \"curve\" or \"surface\")";
+      std::string error = "unknown or missing \"type\" (expected \"point\", \"mesh\", \"curve\", \"surface\" or \"point_cloud\")";
       if (type == "point") {
         dino8::kernel::Point3d p;
         if (ComputeJsonPoint3d(root["point"], p)) {
@@ -1050,6 +1093,54 @@ int main(int argc, char** argv) {
                   "\"v_count\">=degree_v+1, \"control_points\" (u_count*v_count [x,y,z] entries, flattened "
                   "u*v_count+v), an optional \"knots_u\"/\"knots_v\", and an optional \"weights\" with exactly "
                   "one entry per control point";
+        }
+      } else if (type == "point_cloud") {
+        // The other half of the point-cloud payload GET /objects?geometry=1
+        // (above) reads - the same "points" shape, plus the same two
+        // optional "all or nothing" channels PointCloud::SetColors()/
+        // SetNormals() themselves enforce (either exactly one entry per
+        // point, or none at all).
+        const dino8::json::Value& points_json = root["points"];
+        bool ok = points_json.IsArray() && points_json.Size() > 0;
+        dino8::kernel::PointCloud pc;
+        if (ok) {
+          for (size_t i = 0; ok && i < points_json.Size(); ++i) {
+            dino8::kernel::Point3d p;
+            if (ComputeJsonPoint3d(points_json[i], p)) pc.AppendPoint(p); else ok = false;
+          }
+        }
+        const dino8::json::Value& colors_json = root["colors"];
+        if (ok && colors_json.IsArray()) {
+          ok = static_cast<int>(colors_json.Size()) == pc.PointCount();
+          std::vector<ON_Color> colors;
+          colors.reserve(colors_json.Size());
+          for (size_t i = 0; ok && i < colors_json.Size(); ++i) {
+            dino8::kernel::Point3d c;
+            if (ComputeJsonPoint3d(colors_json[i], c)) colors.push_back(ON_Color(static_cast<int>(c.x), static_cast<int>(c.y), static_cast<int>(c.z)));
+            else ok = false;
+          }
+          if (ok) pc.SetColors(colors);
+        }
+        const dino8::json::Value& normals_json = root["normals"];
+        if (ok && normals_json.IsArray()) {
+          ok = static_cast<int>(normals_json.Size()) == pc.PointCount();
+          std::vector<dino8::kernel::Vector3d> normals;
+          normals.reserve(normals_json.Size());
+          for (size_t i = 0; ok && i < normals_json.Size(); ++i) {
+            dino8::kernel::Point3d n;
+            if (ComputeJsonPoint3d(normals_json[i], n)) normals.push_back(dino8::kernel::Vector3d(n.x, n.y, n.z));
+            else ok = false;
+          }
+          if (ok) pc.SetNormals(normals);
+        }
+        if (ok) {
+          doc.BeginChange("compute: AddPointCloud");
+          new_id = doc.Add(dino8::app::SceneObject::MakePointCloud(pc));
+        }
+        if (new_id == dino8::app::kNoObject) {
+          error = "point_cloud: expected non-empty \"points\" ([x,y,z] each), an optional \"colors\" "
+                  "([r,g,b] 0-255 each, exactly one per point) and an optional \"normals\" ([x,y,z] each, "
+                  "exactly one per point)";
         }
       }
       resp.content_type = "application/json";
