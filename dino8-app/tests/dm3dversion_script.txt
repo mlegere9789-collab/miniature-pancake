@@ -26,6 +26,8 @@ Box 0,0,0 10,10,0 10
 SelID 4
 Export Version=5 @TMP@/dm3dversion_export_v5.3dm
 SaveAs Version=notanumber @TMP@/dm3dversion_bad.3dm
+Box 0,0,0 10,10,0 10
+SaveAs Version=51 @TMP@/dm3dversion_v51_invalid.3dm
 SelAll
 Delete
 @expect_objects 0
