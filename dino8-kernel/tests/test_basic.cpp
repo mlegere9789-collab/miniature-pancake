@@ -26040,6 +26040,140 @@ void TestPointCloudSpatialQueries() {
   }
 }
 
+// PARITY_MAP.md's own "kernel: Mass properties & spatial queries" category
+// named this directly: "Point-cloud spatial queries... brute force"
+// (`KNearest`/`PointsWithinRadius`, "no kd-tree/R-tree, despite OpenNURBS
+// shipping a real ON_RTree this could have been layered on"). Both now
+// query a real `ON_RTree` spatial index (`PointCloud::SpatialIndex()`,
+// lazily built and cached) instead of scanning every point - this test
+// verifies the acceleration is genuinely load-bearing (exact results on a
+// cloud too large to have been hand-verified, matched against an
+// independent brute-force reference) and that the cache's own
+// invalidate-on-mutation and copy-sharing rules hold, not just that the
+// small hand-derived fixture above still passes.
+void TestPointCloudSpatialQueriesUseRTreeAcceleration() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::PointCloudNeighbor;
+
+  auto brute_knearest = [](const std::vector<Point3d>& pts, Point3d q, int k) {
+    std::vector<PointCloudNeighbor> all;
+    for (size_t i = 0; i < pts.size(); ++i) all.push_back({static_cast<int>(i), q.DistanceTo(pts[i])});
+    std::sort(all.begin(), all.end(), [](const PointCloudNeighbor& a, const PointCloudNeighbor& b) {
+      return a.distance != b.distance ? a.distance < b.distance : a.index < b.index;
+    });
+    all.resize(std::min(static_cast<size_t>(k), all.size()));
+    return all;
+  };
+  auto brute_within_radius = [](const std::vector<Point3d>& pts, Point3d q, double r) {
+    std::vector<PointCloudNeighbor> found;
+    for (size_t i = 0; i < pts.size(); ++i) {
+      const double d = q.DistanceTo(pts[i]);
+      if (d <= r) found.push_back({static_cast<int>(i), d});
+    }
+    std::sort(found.begin(), found.end(), [](const PointCloudNeighbor& a, const PointCloudNeighbor& b) {
+      return a.distance != b.distance ? a.distance < b.distance : a.index < b.index;
+    });
+    return found;
+  };
+
+  std::vector<Point3d> pts;
+  unsigned seed = 90125;
+  auto next_rand = [&seed]() {
+    seed = seed * 1103515245u + 12345u;
+    return static_cast<int>((seed >> 16) % 2000);
+  };
+  PointCloud cloud;
+  for (int i = 0; i < 300; ++i) {
+    const double x = next_rand() / 10.0 - 100.0, y = next_rand() / 10.0 - 100.0, z = next_rand() / 10.0 - 100.0;
+    pts.push_back(Point3d(x, y, z));
+    cloud.AppendPoint(Point3d(x, y, z));
+  }
+
+  bool knearest_matches_brute = true;
+  for (int trial = 0; trial < 60 && knearest_matches_brute; ++trial) {
+    const Point3d q(next_rand() / 10.0 - 100.0, next_rand() / 10.0 - 100.0, next_rand() / 10.0 - 100.0);
+    const int k = 1 + (next_rand() % 20);
+    const auto brute = brute_knearest(pts, q, k);
+    const auto real = cloud.KNearest(q, k);
+    if (brute.size() != real.size()) {
+      knearest_matches_brute = false;
+      break;
+    }
+    for (size_t i = 0; i < brute.size(); ++i) {
+      if (brute[i].index != real[i].index || std::abs(brute[i].distance - real[i].distance) > 1e-9) {
+        knearest_matches_brute = false;
+        break;
+      }
+    }
+  }
+  Check(knearest_matches_brute,
+        "KNearest's own R-tree-accelerated search matches an independent brute-force reference exactly, "
+        "over 60 random queries against a 300-point cloud, not just the small hand-derived fixture above");
+
+  bool within_radius_matches_brute = true;
+  for (int trial = 0; trial < 60 && within_radius_matches_brute; ++trial) {
+    const Point3d q(next_rand() / 10.0 - 100.0, next_rand() / 10.0 - 100.0, next_rand() / 10.0 - 100.0);
+    const double r = (next_rand() % 500) / 10.0;
+    const auto brute = brute_within_radius(pts, q, r);
+    const auto real = cloud.PointsWithinRadius(q, r);
+    if (brute.size() != real.size()) {
+      within_radius_matches_brute = false;
+      break;
+    }
+    for (size_t i = 0; i < brute.size(); ++i) {
+      if (brute[i].index != real[i].index || std::abs(brute[i].distance - real[i].distance) > 1e-9) {
+        within_radius_matches_brute = false;
+        break;
+      }
+    }
+  }
+  Check(within_radius_matches_brute,
+        "PointsWithinRadius's own R-tree-accelerated box-then-exact-filter search matches the same brute-force "
+        "reference exactly, over 60 random queries and radii");
+
+  // Mutation invalidates the cache: SetPointAt() must be reflected
+  // immediately, not answered from a stale tree.
+  {
+    const auto before = cloud.KNearest(Point3d(0, 0, 0), 1);
+    cloud.SetPointAt(before[0].index, Point3d(1e-5, 1e-5, 1e-5));
+    const auto after = cloud.KNearest(Point3d(0, 0, 0), 1);
+    Check(after[0].index == before[0].index && after[0].distance < 1e-3,
+          "SetPointAt() invalidates the cached spatial index: the moved point is immediately the (much closer) "
+          "nearest neighbor again, not the stale pre-move distance");
+  }
+
+  // Copy sharing: a copy's own cached tree is unaffected by the
+  // ORIGINAL's later mutation (each copy only invalidates its own
+  // pointer), but the original itself does see its own new point.
+  {
+    const PointCloud copy = cloud;
+    const auto copy_before = copy.KNearest(Point3d(50, 50, 50), 1);
+    const int original_count_before = cloud.PointCount();
+    cloud.AppendPoint(Point3d(50, 50, 50));
+    const auto copy_after = copy.KNearest(Point3d(50, 50, 50), 1);
+    Check(copy_after[0].index == copy_before[0].index,
+          "a copy's own cached spatial index is unaffected by the original cloud's later AppendPoint() - the two "
+          "share the tree only until one of them next mutates");
+    const auto original_after = cloud.KNearest(Point3d(50, 50, 50), 1);
+    Check(original_after[0].index == original_count_before,
+          "...while the original itself immediately sees its own newly appended point as the nearest neighbor");
+  }
+
+  // Transform() returns a copy whose own positions have moved - its own
+  // cache must not be the pre-transform tree.
+  {
+    ON_Xform shift;
+    shift.Translation(1000.0, 1000.0, 1000.0);
+    const PointCloud shifted = cloud.Transform(shift);
+    const auto near_old_origin = shifted.KNearest(Point3d(0, 0, 0), 1);
+    const auto near_new_location = shifted.KNearest(Point3d(1000, 1000, 1000), 1);
+    Check(near_new_location[0].distance < near_old_origin[0].distance,
+          "Transform()'s own returned copy queries against the SHIFTED positions, not a stale pre-transform tree: "
+          "the nearest point to the shifted cluster's own new location is closer than to its old one");
+  }
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category names
 // this gap directly under "Point-cloud contour/section as separate app
 // commands": "app-level band-sampling around a plane; the kernel
@@ -76733,6 +76867,7 @@ int main() {
   RunTest("TestMeshDistanceTo", TestMeshDistanceTo);
   RunTest("TestMeshClashWith", TestMeshClashWith);
   RunTest("TestPointCloudSpatialQueries", TestPointCloudSpatialQueries);
+  RunTest("TestPointCloudSpatialQueriesUseRTreeAcceleration", TestPointCloudSpatialQueriesUseRTreeAcceleration);
   RunTest("TestPointCloudPointsNearPlane", TestPointCloudPointsNearPlane);
   RunTest("TestPointCloudContourAtPlaneFitsRingThroughBand", TestPointCloudContourAtPlaneFitsRingThroughBand);
   RunTest("TestPointCloudXyzRoundTrips", TestPointCloudXyzRoundTrips);
