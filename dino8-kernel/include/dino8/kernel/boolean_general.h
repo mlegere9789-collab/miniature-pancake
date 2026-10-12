@@ -533,6 +533,59 @@ std::pair<Brep, Brep> SplitBrepBySolid(const Brep& target, const Brep& cutter, d
 std::pair<Brep, Brep> SplitBrepByManySolids(const Brep& target, const std::vector<Brep>& cutters,
                                              double tolerance = 0.001);
 
+// SplitBrepBySolid() above, generalized to KEEP EVERY PIECE a solid-by-solid
+// split produces - closes the remaining half of PARITY_MAP.md's own "Keep/
+// split options" bullet SplitBrepByManyPlanes() (below) already closed for
+// the PLANE case ("BooleanSplit solid-by-solid keeping all pieces") but
+// SplitBrepByManySolids() just above does not: that function folds every
+// cutter into ONE union solid first and returns only {outside,
+// inside-of-that-union} - exactly a compound-tool BooleanDifference/
+// BooleanIntersection, not Rhino's BooleanSplit ("keeping all pieces"),
+// which keeps one separate piece PER CUTTER plus the untouched remainder -
+// the same N+1-piece shape SplitBrepByManyPlanes() already established for
+// N parallel planes.
+//
+// Not a new algorithm: mirrors SplitBrepByManyPlanes()'s own "peel off one
+// finished piece per cutter, carry the remainder to the next" loop exactly,
+// one cutter at a time via SplitBrepBySolid() instead of SplitBrepByPlane() -
+// so this inherits SplitBrepBySolid()'s (and therefore
+// BooleanCombineGeneral()'s) own proven correctness and scope limits
+// wholesale, N times over, rather than re-deriving them.
+//
+// Returns the piece inside each cutter, IN THE SAME ORDER AS `cutters`,
+// followed by the final outside remainder LAST - omitting any piece that
+// comes back with zero faces (a cutter that misses the current remainder
+// entirely, or the remainder fully consumed before a later cutter is even
+// tried), the identical "can return fewer than cutters.size() + 1, never
+// more" contract SplitBrepByManyPlanes() already documents.
+//
+// Honestly scoped, not assumed general: this is the correct Rhino-matching
+// answer for MUTUALLY DISJOINT cutters (no two cutters overlap each other
+// inside `target`) - each one only ever removes material from the CURRENT
+// remainder, so a cutter processed later can never re-cut a piece an
+// earlier cutter already peeled off. Two cutters that themselves overlap
+// each other do not throw or corrupt anything, but their shared material is
+// attributed entirely to whichever cutter is processed FIRST (`cutters`'
+// own order), not split into its own separate cell the way a true
+// multi-tool combinatorial BooleanSplit would - out of scope for this pass,
+// the same kind of "no multi-tool-cell decomposition" limit this category's
+// own "Multi-body / multi-tool booleans" bullet already discloses elsewhere
+// in this file for compound operands generally.
+//
+// Throws std::invalid_argument if `target` has no faces
+// (BooleanFailureReason::EmptyOperand), if `cutters` is empty
+// (BooleanFailureReason::EmptyOperandGroup, mirroring
+// SplitBrepByManySolids()'s own empty-`cutters` refusal), if any individual
+// cutter has no faces (BooleanFailureReason::EmptyOperand, via
+// SplitBrepBySolid()'s own check on that call), or if `tolerance` is not
+// positive (BooleanFailureReason::InvalidTolerance). If any individual cut
+// along the way hits BooleanCombineGeneral()'s own inherited scope limits,
+// the exception propagates from that call and no pieces are returned - the
+// same "precondition checks up front, not a guarantee every intermediate
+// cut succeeds" contract SplitBrepByManyPlanes() already documents.
+std::vector<Brep> SplitBrepByManySolidsKeepAll(const Brep& target, const std::vector<Brep>& cutters,
+                                                double tolerance = 0.001);
+
 // The exact B-rep sibling of boolean.cpp's own mesh-level SplitByPlane() -
 // closes the specific gap PARITY_MAP.md's own "Keep/split options" bullet
 // names as still open even after SplitBrepBySolid()/SplitBrepByManySolids()
