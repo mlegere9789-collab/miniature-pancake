@@ -6810,11 +6810,46 @@ void TestIntersectCylinderCylinderUnequalRadiusClosedForm() {
   const auto disjoint = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_disjoint, tol);
   Check(disjoint.empty && !disjoint.not_full_pierce, "a genuinely skew pair whose cylinders never touch at any angle reports a genuine miss, not a partial-pierce flag");
 
-  // Equal radii are refused outright - this closed form requires UNEQUAL
-  // radii; IntersectCylinderCylinderIntersecting() is the equal-radius case.
+  // Equal radii with INTERSECTING axes are refused outright -
+  // IntersectCylinderCylinderIntersecting() is that exact case's own owner
+  // (two touching, not disjoint, Steinmetz ellipses).
   const ON_Cylinder cyl_equal(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_small), R));
   Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_equal, tol).equal_radius,
-        "two equal-radius cylinders are refused outright, not misrouted into this function's own construction");
+        "two equal-radius, intersecting-axes cylinders are refused outright, not misrouted into this function's own full-pierce construction");
+
+  // Equal radii with genuinely SKEW axes are NOT refused - the only other
+  // combination this bullet's own cylinder/cylinder gap ever named, closed
+  // by this exact round: the per-theta quadratic above never depended on
+  // R != r, only the separate `d + r < R` full-pierce shortcut does, which
+  // correctly reduces to the impossible `d < 0` for r == R (two congruent
+  // cylinders can never fully pierce one another), so a skew equal-radius
+  // pair close enough to overlap reports a genuine PARTIAL-pierce loop
+  // (never full-pierce), and one far enough apart reports a genuine miss.
+  const ON_Cylinder cyl_equal_skew_overlap(ON_Circle(ON_Plane(Point3d(0, 1, 0), axis_small), R));
+  const auto equal_skew_overlap = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_equal_skew_overlap, tol);
+  Check(!equal_skew_overlap.empty && !equal_skew_overlap.equal_radius && equal_skew_overlap.not_full_pierce &&
+            !equal_skew_overlap.partial_loops.empty(),
+        "two equal-radius, genuinely skew cylinders close enough to overlap report a real partial-penetration loop, not a refusal");
+  if (!equal_skew_overlap.empty) {
+    bool all_on_both = true;
+    const ON_NurbsCurve& loop = equal_skew_overlap.partial_loops.front();
+    Check(loop.IsValid() && loop.IsClosed(), "the reported equal-radius skew loop has a valid, genuinely closed NURBS form");
+    const int n = 48;
+    for (int i = 0; i <= n; ++i) {
+      const double t = loop.Domain().ParameterAt(static_cast<double>(i) / n);
+      const Point3d p = loop.PointAt(t);
+      if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-2 ||
+          std::abs(dist_to_axis(p, Point3d(0, 1, 0), axis_small) - R) > 1e-2) {
+        all_on_both = false;
+        break;
+      }
+    }
+    Check(all_on_both, "every sampled point of the equal-radius skew loop sits at exactly radius R from BOTH axes simultaneously - the defining property, not a hardcoded expected curve");
+  }
+  const ON_Cylinder cyl_equal_skew_disjoint(ON_Circle(ON_Plane(Point3d(0, 10, 0), axis_small), R));
+  const auto equal_skew_disjoint = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_equal_skew_disjoint, tol);
+  Check(equal_skew_disjoint.empty && !equal_skew_disjoint.equal_radius && !equal_skew_disjoint.not_full_pierce,
+        "two equal-radius, genuinely skew cylinders too far apart to ever touch report a genuine miss, not a refusal");
 
   // (Anti)parallel axes are refused outright - IntersectCylinderCylinderParallel()'s own case.
   const ON_Cylinder cyl_parallel(ON_Circle(ON_Plane(Point3d(5, 0, 0), axis_large), r));
@@ -26456,16 +26491,73 @@ void TestMeshContainsPoint() {
         "a point far outside the hollow box entirely is not inside it");
 }
 
-// PARITY_MAP.md's own "kernel: Mass properties & spatial queries"
-// category named this directly under "Signed distance point-to-solid":
-// "sign from ContainsPoint's single-ray test." A single fixed ray,
-// however carefully chosen to avoid axis/symmetry degeneracies (as
-// ContainsPoint()'s own prior implementation was), can still graze a
-// vertex or shared edge exactly for some mesh/point combination - this
-// test reproduces a real, concrete such failure against the ORIGINAL
-// single-ray implementation's own exact direction, confirms
-// ContainsPoint() now votes across 5 independent directions instead,
-// and verifies the fix closes it.
+void TestMeshContainsPointSurvivesSingleRayVertexGrazing() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // PARITY_MAP's own "Signed distance point-to-solid" bullet names
+  // ContainsPoint()'s prior reliance on a single fixed ray as its named
+  // gap. An octahedron (6 vertices, 8 triangles, every vertex shared by
+  // exactly 4 faces) is the simplest closed mesh where many triangles
+  // meet at one point - the classic ray-cast "grazes a shared vertex"
+  // scenario. `direction` below is this method's own original fixed
+  // direction (kept first in its own internal vote list for continuity);
+  // the query point is placed so THAT one specific direction's own ray
+  // passes exactly through vertex (1, 0, 0) as it travels forward.
+  Mesh oct;
+  ON_Mesh& raw = oct.raw();
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 0 +X
+  raw.m_V.Append(ON_3fPoint(-1, 0, 0));  // 1 -X
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));   // 2 +Y
+  raw.m_V.Append(ON_3fPoint(0, -1, 0));  // 3 -Y
+  raw.m_V.Append(ON_3fPoint(0, 0, 1));   // 4 +Z
+  raw.m_V.Append(ON_3fPoint(0, 0, -1));  // 5 -Z
+  auto add_tri = [&raw](int a, int b, int c) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = c;
+    f.vi[3] = c;
+    raw.m_F.Append(f);
+  };
+  add_tri(0, 2, 4);
+  add_tri(2, 1, 4);
+  add_tri(1, 3, 4);
+  add_tri(3, 0, 4);
+  add_tri(2, 0, 5);
+  add_tri(1, 2, 5);
+  add_tri(3, 1, 5);
+  add_tri(0, 3, 5);
+
+  // Confirmed directly (via a standalone dino8_scratch_test probe before
+  // trusting it here) that this exact query point genuinely trips the
+  // OLD single-ray implementation: re-deriving that implementation
+  // in isolation reports crossing_count odd (misclassifying this point as
+  // INSIDE), while the true answer is OUTSIDE (|x|+|y|+|z| = 2.2620 > 1,
+  // the exact octahedron containment condition) - confirmed independently
+  // of ContainsPoint() itself, not assumed from the fix alone.
+  const Vector3d direction(0.6532814824, 0.2705980501, 0.7071067812);
+  const Point3d p = Point3d(1, 0, 0) - direction * 2.0;
+  const double l1 = std::abs(p.x) + std::abs(p.y) + std::abs(p.z);
+  Check(l1 > 1.0, "setup: the query point's own L1 norm genuinely exceeds 1 - it is truly outside the octahedron");
+  Check(!oct.ContainsPoint(p),
+        "ContainsPoint correctly reports this point outside, surviving the single-direction vertex graze that "
+        "would have misclassified it as inside under the old single-ray implementation (confirmed via a "
+        "standalone probe before writing this check)");
+
+  // A genuinely interior point, far from any vertex-grazing direction,
+  // still reports inside - the fix doesn't just bias every answer toward
+  // "outside".
+  Check(oct.ContainsPoint(Point3d(0.1, 0.1, 0.1)), "a point well inside the octahedron is still reported inside");
+}
+
+// A sibling session's own independent fixture for the identical fix
+// (a real duplicate-work collision, not a double-counted gap - both
+// sessions closed the SAME bullet via the SAME technique, just with
+// different concrete reproductions): a box corner instead of an
+// octahedron vertex, and a whole swept RANGE of points along the
+// grazing ray rather than one single point.
 void TestMeshContainsPointVotesAcrossMultipleRaysForRobustness() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -78961,6 +79053,7 @@ int main() {
   RunTest("TestMeshFlipNormals", TestMeshFlipNormals);
   RunTest("TestMeshIsClosedManifold", TestMeshIsClosedManifold);
   RunTest("TestMeshContainsPoint", TestMeshContainsPoint);
+  RunTest("TestMeshContainsPointSurvivesSingleRayVertexGrazing", TestMeshContainsPointSurvivesSingleRayVertexGrazing);
   RunTest("TestMeshContainsPointVotesAcrossMultipleRaysForRobustness",
           TestMeshContainsPointVotesAcrossMultipleRaysForRobustness);
   RunTest("TestMeshClosestPoint", TestMeshClosestPoint);

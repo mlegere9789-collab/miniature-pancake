@@ -1187,12 +1187,19 @@ struct CylinderCylinderIntersectingIntersection {
 };
 CylinderCylinderIntersectingIntersection IntersectCylinderCylinderIntersecting(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance);
 
-// The closed-form cylinder/cylinder SSX for the UNEQUAL-RADIUS,
-// FULLY-PIERCING special case - a third narrowing of the "cylinder/
-// cylinder" half of PARITY_MAP.md's own "Analytic/analytic SSX closed
-// forms" bullet, alongside IntersectCylinderCylinderParallel()'s
-// parallel-axis case and IntersectCylinderCylinderIntersecting()'s
-// equal-radius case. This is a public re-derivation of the SAME closed
+// The closed-form cylinder/cylinder SSX for every case other than
+// (anti)parallel axes or equal-radius INTERSECTING axes (originally built,
+// and still named, for the UNEQUAL-RADIUS, fully-piercing special case - a
+// third narrowing of the "cylinder/cylinder" half of PARITY_MAP.md's own
+// "Analytic/analytic SSX closed forms" bullet, alongside
+// IntersectCylinderCylinderParallel()'s parallel-axis case and
+// IntersectCylinderCylinderIntersecting()'s equal-radius/intersecting-axis
+// case; later extended, unchanged, to also cover EQUAL-radius, genuinely
+// SKEW axes - the one remaining combination neither of those two sibling
+// functions owns, closing this bullet's last named gap other than torus's
+// permanently-out-of-reach general oblique section - see `equal_radius`
+// below for why no new case split was needed for that extension). This is
+// a public re-derivation of the SAME closed
 // form `BooleanCombineMixed`'s own private `ComputeUnequalCylinderCrossing`/
 // `UnequalCylinderCurvePoint` (boolean.cpp) already relies on for its own
 // wall-splitting: for a point at angle `theta` around the SMALLER
@@ -1271,17 +1278,30 @@ CylinderCylinderIntersectingIntersection IntersectCylinderCylinderIntersecting(c
 // and `FindSurfaceSilhouetteCurves()` already use for the identical reason
 // - a genuinely curved locus with no simple exact finite representation),
 // not itself exactly on the true curve there. `a`/`b` sharing (within
-// tolerance) the same radius are refused outright (`equal_radius == true`
-// - `IntersectCylinderCylinderIntersecting()`'s own case, not this one's,
-// since the `r^2` cancellation that construction depends on does not
-// apply here); (anti)parallel axes are likewise refused
-// (`parallel == true` - `IntersectCylinderCylinderParallel()`'s own case).
-// Deliberately operates on both cylinders' own INFINITE lateral surfaces,
-// the same unbounded scope every other closed form in this file already
-// takes.
+// tolerance) the same radius are refused outright ONLY when their axes
+// ALSO genuinely intersect (`equal_radius == true`) -
+// `IntersectCylinderCylinderIntersecting()`'s own Steinmetz case there:
+// two ellipses that genuinely TOUCH at the single axes-crossing point
+// (the `r < R` margin this function's own full-pierce construction
+// otherwise relies on to keep its two roots strictly apart collapses to
+// `r == R` exactly there), a different curve shape than this function
+// builds. EQUAL radius + genuinely SKEW axes is NOT refused - it has no
+// other owner, and this function's own per-theta quadratic (derived
+// above) never actually depended on `R != r`: the only R/r-dependent
+// shortcut anywhere in this derivation is the full-pierce condition
+// `d + r < R`, which correctly reduces to the impossible `d < 0` when
+// `r == R` (two congruent cylinders can never fully pierce one another -
+// neither one is "larger"), so the general disc(theta) classification
+// naturally finds either a genuine total miss or a genuine partial-pierce
+// loop for this case, never a (geometrically impossible) full pierce, with
+// no extra case needed to rule that out explicitly. (Anti)parallel axes
+// are likewise refused (`parallel == true` -
+// `IntersectCylinderCylinderParallel()`'s own case). Deliberately operates
+// on both cylinders' own INFINITE lateral surfaces, the same unbounded
+// scope every other closed form in this file already takes.
 struct CylinderCylinderUnequalIntersection {
   bool empty = true;
-  bool equal_radius = false;      // true: refused outright - `a`/`b` share (within tolerance) the same radius; `IntersectCylinderCylinderIntersecting()`'s own case, not this one's; every other field meaningless
+  bool equal_radius = false;      // true: refused outright - `a`/`b` share (within tolerance) the same radius AND their axes genuinely intersect; `IntersectCylinderCylinderIntersecting()`'s own Steinmetz case, not this one's; every other field meaningless. Equal radius with genuinely SKEW axes is NOT refused - see this struct's own header doc comment above.
   bool parallel = false;          // true: refused outright - the two axes are (anti)parallel within tolerance; `IntersectCylinderCylinderParallel()`'s own case
   bool not_full_pierce = false;   // true: a genuinely skew pair whose smaller cylinder does NOT fully pierce the larger one on every generator - no longer a bare refusal: when !empty, `partial_loops` carries the real, closed, pinched loop(s) this partial-penetration case traces out
   ON_NurbsCurve curve_a, curve_b;  // the two closed loops (root sign +, root sign -) for the FULL-pierce case - meaningful only when !empty && !equal_radius && !parallel && !not_full_pierce
