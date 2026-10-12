@@ -5856,10 +5856,56 @@ void TestIntersectPlaneConeClosedForm() {
 
   // A plane parallel to the axis (not through the apex): genuinely crosses
   // both nappes (any angle below the axis, including 0, is shallower than
-  // a positive half-angle) - a hyperbola, honestly unsupported rather than
-  // misreported as an ellipse.
+  // a positive half-angle) - a genuine hyperbola, verified against the
+  // cone's own defining relation directly on both branches, not a
+  // hardcoded expected curve.
   const ON_Plane hyperbola_plane(ON_3dPoint(2, 0, 0), ON_3dVector(1, 0, 0));
-  Check(IntersectPlaneCone(hyperbola_plane, cone, 1e-6).unsupported, "a plane parallel to the axis (a hyperbola section) is honestly reported unsupported, not guessed at");
+  const auto hyperbola_case = IntersectPlaneCone(hyperbola_plane, cone, 1e-6);
+  Check(!hyperbola_case.unsupported && !hyperbola_case.empty && !hyperbola_case.through_apex && hyperbola_case.hyperbola, "a plane parallel to the axis reports a genuine hyperbola, not unsupported/empty/through-apex/ellipse");
+  if (hyperbola_case.hyperbola) {
+    Check(hyperbola_case.hyperbola_a > 0 && hyperbola_case.hyperbola_b > 0, "both reported hyperbola semi-axes are genuinely positive");
+    bool all_on_cone_and_plane = true;
+    for (double r : {-1.5, -0.5, 0.0, 0.5, 1.5}) {
+      for (double sign : {1.0, -1.0}) {
+        const Point3d p = hyperbola_case.hyperbola_center
+            + sign * hyperbola_case.hyperbola_a * std::cosh(r) * hyperbola_case.hyperbola_transverse_dir
+            + hyperbola_case.hyperbola_b * std::sinh(r) * hyperbola_case.hyperbola_conjugate_dir;
+        const ON_3dVector v = p - cone.ApexPoint();
+        const double lhs = ON_DotProduct(v, cone.Axis());
+        const double rhs = std::cos(half_angle) * std::cos(half_angle) * ON_DotProduct(v, v);
+        if (std::abs(lhs * lhs - rhs) > 1e-4 || std::abs(hyperbola_plane.DistanceTo(p)) > 1e-6) { all_on_cone_and_plane = false; break; }
+      }
+      if (!all_on_cone_and_plane) break;
+    }
+    Check(all_on_cone_and_plane, "every sampled point of both hyperbola branches lies exactly on both the cone's own defining relation and the cutting plane");
+    const Point3d branch0_mid = hyperbola_case.hyperbola_center + hyperbola_case.hyperbola_a * hyperbola_case.hyperbola_transverse_dir;
+    const Point3d branch1_mid = hyperbola_case.hyperbola_center - hyperbola_case.hyperbola_a * hyperbola_case.hyperbola_transverse_dir;
+    Check(branch0_mid.DistanceTo(branch1_mid) > 1e-3, "the two hyperbola branches are genuinely distinct, not the same one reported twice");
+  }
+
+  // A plane parallel to exactly one generator line (theta_n == 90 -
+  // half_angle from the axis, the classical parabola-section condition,
+  // derived directly from this function's own A/B/C reduction: Delta ==
+  // 4*cos^2(alpha)*(sin^2(theta_n) - cos^2(alpha)) == 0 exactly there) and
+  // clear of the apex: a genuine parabola, verified the same way.
+  const double theta_n = M_PI / 2.0 - half_angle;
+  const ON_Plane parabola_plane(ON_3dPoint(0, 0, 2), ON_3dVector(std::sin(theta_n), 0, std::cos(theta_n)));
+  const auto parabola_case = IntersectPlaneCone(parabola_plane, cone, 1e-6);
+  Check(!parabola_case.unsupported && !parabola_case.empty && !parabola_case.through_apex && parabola_case.parabola, "a plane parallel to exactly one generator reports a genuine parabola, not unsupported/empty/through-apex/ellipse/hyperbola");
+  if (parabola_case.parabola) {
+    bool all_on_cone_and_plane = true;
+    for (double r : {-2.0, -1.0, 0.0, 1.0, 2.0}) {
+      const Point3d p = parabola_case.parabola_vertex + r * parabola_case.parabola_transverse_dir
+          + parabola_case.parabola_curvature * r * r * parabola_case.parabola_axis_dir;
+      const ON_3dVector v = p - cone.ApexPoint();
+      const double lhs = ON_DotProduct(v, cone.Axis());
+      const double rhs = std::cos(half_angle) * std::cos(half_angle) * ON_DotProduct(v, v);
+      if (std::abs(lhs * lhs - rhs) > 1e-4 || std::abs(parabola_plane.DistanceTo(p)) > 1e-6) { all_on_cone_and_plane = false; break; }
+    }
+    Check(all_on_cone_and_plane, "every sampled point of the reported parabola lies exactly on both the cone's own defining relation and the cutting plane");
+    const Point3d off_vertex = parabola_case.parabola_vertex + 1.0 * parabola_case.parabola_transverse_dir + parabola_case.parabola_curvature * parabola_case.parabola_axis_dir;
+    Check(off_vertex.DistanceTo(parabola_case.parabola_vertex) > 1e-3, "the parabola genuinely extends away from its own vertex, not a degenerate single point");
+  }
 
   // Invalid input is refused outright.
   const ON_Cone invalid_cone;
