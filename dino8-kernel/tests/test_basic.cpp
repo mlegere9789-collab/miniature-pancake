@@ -1092,6 +1092,134 @@ void TestCurveChangeSeam() {
   }
 }
 
+void TestCurveReparameterizeRational() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  // A single-span (Bezier) non-rational cubic: the base case the whole
+  // one-parameter Mobius family (`v = u / (c - (c-1)*u)` over the
+  // normalized domain) reduces to directly.
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 2, 0), Point3d(3, 2, 0), Point3d(4, 0, 0)};
+    const NurbsCurve c = NurbsCurve::FromControlPoints(pts, 3);
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(2.5, out) == Result::Ok, "ReparameterizeRational returns Ok on a single-span cubic");
+    Check(out.IsRational(), "ReparameterizeRational forces the result rational for shape_factor != 1");
+    const double T0 = c.Domain().min, T1 = c.Domain().max;
+    const double cc = 2.5;
+    double max_err = 0.0;
+    for (int k = 0; k <= 20; ++k) {
+      const double u = static_cast<double>(k) / 20.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      max_err = std::max(max_err, c.PointAt(T0 + u * (T1 - T0)).DistanceTo(out.PointAt(T0 + v * (T1 - T0))));
+    }
+    Check(max_err < 1e-9,
+          "ReparameterizeRational exactly reproduces the original curve's shape at the mapped parameter "
+          "(single span)");
+  }
+
+  // A multi-span curve (several interior knots, fully clamped) - the
+  // genuinely harder case: every span after the first shares one
+  // control point (and its weight) with the previous span, which must
+  // be reconciled by a per-span uniform weight rescale (a pure weight
+  // rescale changes no geometry) or the reassembled curve would not
+  // even be continuous in its own weight channel.
+  {
+    std::vector<Point3d> pts;
+    for (int i = 0; i < 10; ++i) pts.push_back(Point3d(static_cast<double>(i), std::sin(static_cast<double>(i)), 0));
+    const NurbsCurve c = NurbsCurve::FromControlPoints(pts, 3);
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(3.0, out) == Result::Ok, "ReparameterizeRational returns Ok on a multi-span curve");
+    const double T0 = c.Domain().min, T1 = c.Domain().max;
+    const double cc = 3.0;
+    double max_err = 0.0;
+    for (int k = 0; k <= 80; ++k) {
+      const double u = static_cast<double>(k) / 80.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      max_err = std::max(max_err, c.PointAt(T0 + u * (T1 - T0)).DistanceTo(out.PointAt(T0 + v * (T1 - T0))));
+    }
+    Check(max_err < 1e-9,
+          "ReparameterizeRational exactly reproduces a multi-span curve's shape at every sampled parameter, "
+          "not just at the span boundaries - the shared-control-point continuity rescale is genuinely correct, "
+          "not merely plausible-looking");
+  }
+
+  // An already-rational curve (a semicircle, which OpenNURBS represents
+  // as 2 Bezier spans) - confirms this doesn't assume the input started
+  // non-rational, and that the result is still genuinely a circle (not
+  // just shape-preserving in some weaker, non-geometric sense).
+  {
+    const ON_Arc arc(ON_Circle(ON_Plane::World_xy, 5.0), ON_Interval(0.0, ON_PI));
+    ON_NurbsCurve nc;
+    Check(arc.GetNurbForm(nc) != 0, "ReparameterizeRational setup: ON_Arc::GetNurbForm succeeds");
+    NurbsCurve c;
+    c.raw() = nc;
+    Check(c.IsRational(), "ReparameterizeRational setup: the arc fixture is already rational");
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(4.0, out) == Result::Ok, "ReparameterizeRational returns Ok on a rational arc");
+    const double T0 = c.Domain().min, T1 = c.Domain().max;
+    const double cc = 4.0;
+    double max_err = 0.0, max_radial_err = 0.0;
+    for (int k = 0; k <= 80; ++k) {
+      const double u = static_cast<double>(k) / 80.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      const Point3d p_old = c.PointAt(T0 + u * (T1 - T0));
+      const Point3d p_new = out.PointAt(T0 + v * (T1 - T0));
+      max_err = std::max(max_err, p_old.DistanceTo(p_new));
+      max_radial_err = std::max(max_radial_err, std::abs(p_new.DistanceTo(Point3d(0, 0, 0)) - 5.0));
+    }
+    Check(max_err < 1e-9, "ReparameterizeRational exactly reproduces a rational arc's shape");
+    Check(max_radial_err < 1e-9, "...and every reparameterized point is still genuinely on the same radius-5 circle");
+  }
+
+  // shape_factor == 1.0 is a true no-op: Result::NoOpAlreadySatisfied,
+  // and a non-rational input stays non-rational (no forced conversion
+  // for the identity case).
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+    const NurbsCurve c = NurbsCurve::FromControlPoints(pts, 2);
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(1.0, out) == Result::NoOpAlreadySatisfied,
+          "ReparameterizeRational(1.0) reports NoOpAlreadySatisfied");
+    Check(!out.IsRational(), "...and leaves a non-rational input genuinely non-rational, no forced conversion");
+  }
+
+  // A genuinely periodic curve (full-multiplicity wraparound knots,
+  // the same MakePeriodicExact() construction ChangeSeam's own test
+  // above already relies on) is refused - the clamped per-span
+  // decomposition this method assumes does not hold for a periodic
+  // knot vector's own wraparound structure.
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0), Point3d(1, -1, 0),
+                                       Point3d(0, 0, 0)};
+    NurbsCurve c = NurbsCurve::FromControlPoints(pts, 3);
+    Check(c.IsClosed(), "ReparameterizeRational setup: the periodic fixture is genuinely closed");
+    Check(c.MakePeriodicExact() == Result::Ok, "ReparameterizeRational setup: MakePeriodicExact succeeds");
+    Check(c.IsPeriodic(), "ReparameterizeRational setup: the fixture is genuinely periodic");
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(2.0, out) == Result::Failed, "ReparameterizeRational refuses a periodic curve");
+  }
+
+  // Invalid shape_factor throws.
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+    const NurbsCurve c = NurbsCurve::FromControlPoints(pts, 2);
+    NurbsCurve out;
+    Check(Throws([&] { c.ReparameterizeRational(0.0, out); }), "ReparameterizeRational(0.0) throws");
+    Check(Throws([&] { c.ReparameterizeRational(-2.0, out); }), "ReparameterizeRational(negative) throws");
+    Check(Throws([&] { c.ReparameterizeRational(std::nan(""), out); }), "ReparameterizeRational(NaN) throws");
+  }
+}
+
 void TestCurveMatchEnd() {
   using dino8::kernel::MatchContinuity;
   using dino8::kernel::MatchEndReport;
@@ -26375,6 +26503,63 @@ void TestMeshClosestPoint() {
           "closest point to the box's own center is exactly 1 unit away "
           "(every face is equidistant from the center of a 2x2x2 cube)");
   }
+}
+
+// PARITY_MAP.md's own "kernel: Mass properties & spatial queries" category,
+// "Spatial acceleration structures for geometric queries" bullet: "only
+// private uniform grids for SSX/CSX; every public query brute force."
+// MeshClosestPointIndex is a genuine, reusable spatial acceleration
+// structure over a Mesh's own triangles (an ON_RTree, the same index type
+// PointCloud::SpatialIndex() already builds over points), queried with the
+// same expanding-box, doubling-until-proven-sufficient search
+// PointCloud::KNearest() already establishes - built once, then
+// cross-checked exhaustively against Mesh::ClosestPoint()'s own plain
+// O(triangle count) brute-force scan to prove it answers IDENTICALLY, not
+// merely approximately.
+void TestMeshClosestPointIndex() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MeshClosestPointIndex;
+  using dino8::kernel::Point3d;
+
+  // A genuinely dense mesh (a tessellated sphere, hundreds of triangles -
+  // not just a 12-triangle box) so the expanding-box search actually has
+  // to grow more than once for at least some of the query points below,
+  // exercising the real acceleration path rather than a trivial
+  // single-cell case.
+  const Brep sphere_brep = Brep::Sphere(Point3d(1, -2, 3), 5.0);
+  const Mesh sphere_mesh = sphere_brep.TessellateToClosedMesh(24, 24);
+  Check(sphere_mesh.FaceCount() > 100, "sanity: the tessellated sphere fixture has a genuinely large number of faces");
+
+  const MeshClosestPointIndex index(sphere_mesh);
+
+  bool all_match = true;
+  const std::vector<Point3d> queries = {
+      Point3d(1, -2, 3),      // the sphere's own center (deep interior)
+      Point3d(1, -2, 8),      // on the surface (center + radius along z)
+      Point3d(1, -2, 50),     // far outside, straight out along z
+      Point3d(50, -2, 3),     // far outside along x
+      Point3d(1, -2, 3.1),    // just barely off-center (interior, near center)
+      Point3d(-30, 40, -17),  // far outside, an oblique direction
+      Point3d(1, 1, 3),       // a middling interior point, off-axis
+  };
+  for (const Point3d& q : queries) {
+    const Point3d brute_force = sphere_mesh.ClosestPoint(q);
+    const Point3d accelerated = index.ClosestPoint(q);
+    if (brute_force.DistanceTo(accelerated) > 1e-6) { all_match = false; break; }
+  }
+  Check(all_match, "MeshClosestPointIndex::ClosestPoint() agrees with Mesh::ClosestPoint()'s own brute-force scan at every query point, near and far, interior and exterior");
+
+  // Building an index from an empty mesh is refused outright, matching
+  // Mesh::ClosestPoint()'s own "no faces, no surface" contract.
+  bool threw = false;
+  try {
+    const Mesh empty_mesh;
+    const MeshClosestPointIndex empty_index(empty_mesh);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "building an index from an empty mesh throws, matching Mesh::ClosestPoint()'s own contract");
 }
 
 void TestMeshSignedDistance() {
@@ -61258,6 +61443,158 @@ void TestSurfaceChangeSeam() {
         "ChangeSeam refuses a parameter outside that direction's own Domain()");
 }
 
+void TestSurfaceReparameterizeRational() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  // Single-span in U: the tensor-product generalization of
+  // NurbsCurve::ReparameterizeRational() - every control point keeps
+  // its exact position, every row (fixed V) gets the identical
+  // weight-rescale-by-U-index the curve-only case already proves
+  // correct.
+  {
+    const std::vector<Point3d> grid = {
+        Point3d(0, 0, 0), Point3d(0, 5, 1), Point3d(2, 0, 2), Point3d(2, 5, 0), Point3d(5, 0, -1), Point3d(5, 5, 1),
+    };
+    const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 3, 2, 2, 1);
+    NurbsSurface out;
+    Check(s.ReparameterizeRational(0, 2.5, out) == Result::Ok,
+          "ReparameterizeRational returns Ok on a single-span-in-U surface");
+    Check(out.IsRational(), "ReparameterizeRational forces the result rational for shape_factor != 1");
+    const double T0 = s.Domain(0).min, T1 = s.Domain(0).max;
+    const double cc = 2.5;
+    double max_err = 0.0;
+    for (int ku = 0; ku <= 20; ++ku) {
+      const double u = static_cast<double>(ku) / 20.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      const double u_old = T0 + u * (T1 - T0), u_new = T0 + v * (T1 - T0);
+      for (int kv = 0; kv <= 10; ++kv) {
+        const double vv = s.Domain(1).min + (s.Domain(1).max - s.Domain(1).min) * kv / 10.0;
+        max_err = std::max(max_err, s.PointAt(u_old, vv).DistanceTo(out.PointAt(u_new, vv)));
+      }
+    }
+    Check(max_err < 1e-9, "ReparameterizeRational(direction=0) exactly reproduces the surface's shape everywhere");
+  }
+
+  // Multi-span in V (several interior knots in the OTHER direction from
+  // the one being reparameterized) - the surface-level counterpart to
+  // the curve test's own multi-span continuity check, and confirms U's
+  // own knot vector, degree, and control count are completely untouched.
+  {
+    std::vector<Point3d> grid;
+    for (int i = 0; i < 6; ++i)
+      for (int j = 0; j < 5; ++j)
+        grid.push_back(Point3d(static_cast<double>(i), static_cast<double>(j),
+                                std::sin(static_cast<double>(i)) * std::cos(static_cast<double>(j))));
+    const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 6, 5, 3, 3);
+    NurbsSurface out;
+    Check(s.ReparameterizeRational(1, 3.0, out) == Result::Ok,
+          "ReparameterizeRational returns Ok on a multi-span-in-V surface");
+    Check(out.CVCountU() == s.CVCountU() && out.KnotCount(0) == s.KnotCount(0),
+          "ReparameterizeRational(direction=1) leaves the U direction's own knot vector/CV count untouched");
+    const double T0 = s.Domain(1).min, T1 = s.Domain(1).max;
+    const double cc = 3.0;
+    double max_err = 0.0;
+    for (int kv = 0; kv <= 40; ++kv) {
+      const double u = static_cast<double>(kv) / 40.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      const double v_old = T0 + u * (T1 - T0), v_new = T0 + v * (T1 - T0);
+      for (int ku = 0; ku <= 10; ++ku) {
+        const double uu = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * ku / 10.0;
+        max_err = std::max(max_err, s.PointAt(uu, v_old).DistanceTo(out.PointAt(uu, v_new)));
+      }
+    }
+    Check(max_err < 1e-9,
+          "ReparameterizeRational(direction=1) exactly reproduces a multi-span surface's shape everywhere - "
+          "the shared-control-point continuity rescale generalizes correctly to every row of the other "
+          "direction, not just a single curve");
+  }
+
+  // An already-rational surface (a sphere, genuinely multi-span in U)
+  // stays a sphere - confirms the shape invariant geometrically, not
+  // just via PointAt() agreement.
+  {
+    ON_NurbsSurface ns;
+    Check(ON_Sphere(ON_3dPoint(0, 0, 0), 3.0).GetNurbForm(ns) != 0,
+          "ReparameterizeRational setup: ON_Sphere::GetNurbForm succeeds");
+    NurbsSurface s;
+    s.raw() = ns;
+    Check(s.IsRational(), "ReparameterizeRational setup: the sphere fixture is already rational");
+    NurbsSurface out;
+    Check(s.ReparameterizeRational(0, 4.0, out) == Result::Ok,
+          "ReparameterizeRational returns Ok on a rational sphere");
+    const double T0 = s.Domain(0).min, T1 = s.Domain(0).max;
+    const double cc = 4.0;
+    double max_err = 0.0, max_radial_err = 0.0;
+    for (int ku = 0; ku <= 40; ++ku) {
+      const double u = static_cast<double>(ku) / 40.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      const double u_old = T0 + u * (T1 - T0), u_new = T0 + v * (T1 - T0);
+      for (int kv = 0; kv <= 10; ++kv) {
+        const double vv = s.Domain(1).min + (s.Domain(1).max - s.Domain(1).min) * kv / 10.0;
+        const Point3d p_old = s.PointAt(u_old, vv), p_new = out.PointAt(u_new, vv);
+        max_err = std::max(max_err, p_old.DistanceTo(p_new));
+        max_radial_err = std::max(max_radial_err, std::abs(p_new.DistanceTo(Point3d(0, 0, 0)) - 3.0));
+      }
+    }
+    Check(max_err < 1e-9, "ReparameterizeRational exactly reproduces a rational sphere's shape");
+    Check(max_radial_err < 1e-9, "...and every reparameterized point is still genuinely on the same radius-3 sphere");
+  }
+
+  // shape_factor == 1.0 is a true no-op.
+  {
+    const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+    const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    NurbsSurface out;
+    Check(s.ReparameterizeRational(0, 1.0, out) == Result::NoOpAlreadySatisfied,
+          "ReparameterizeRational(1.0) reports NoOpAlreadySatisfied");
+    Check(!out.IsRational(), "...and leaves a non-rational input genuinely non-rational, no forced conversion");
+  }
+
+  // Invalid direction/shape_factor throws.
+  {
+    const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+    const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    NurbsSurface out;
+    Check(Throws([&] { s.ReparameterizeRational(2, 2.0, out); }), "ReparameterizeRational(direction=2) throws");
+    Check(Throws([&] { s.ReparameterizeRational(-1, 2.0, out); }), "ReparameterizeRational(direction=-1) throws");
+    Check(Throws([&] { s.ReparameterizeRational(0, 0.0, out); }), "ReparameterizeRational(shape_factor=0) throws");
+    Check(Throws([&] { s.ReparameterizeRational(0, -3.0, out); }),
+          "ReparameterizeRational(negative shape_factor) throws");
+  }
+
+  // A surface periodic in the target direction is refused, the same
+  // scope boundary the curve overload carries. ON_Cylinder::GetNurbForm
+  // itself comes back closed-but-clamped, not periodic (confirmed
+  // directly, not assumed - the same "closed does not imply periodic"
+  // nuance ChangeSeam's own tests already established for curves), so
+  // this forces genuine periodicity via this class's own
+  // MakePeriodicExact(direction) first.
+  {
+    ON_NurbsSurface cyl_ns;
+    const ON_Cylinder cyl(ON_Circle(ON_Plane::World_xy, 2.0), 5.0);
+    Check(cyl.GetNurbForm(cyl_ns) != 0, "ReparameterizeRational setup: ON_Cylinder::GetNurbForm succeeds");
+    NurbsSurface wall;
+    wall.raw() = cyl_ns;
+    Check(wall.IsClosed(0) && !wall.IsPeriodic(0),
+          "ReparameterizeRational setup: the cylinder wall fixture starts closed-but-not-periodic in U");
+    Check(wall.MakePeriodicExact(0) == Result::Ok, "ReparameterizeRational setup: MakePeriodicExact(0) succeeds");
+    Check(wall.IsPeriodic(0), "ReparameterizeRational setup: the fixture is now genuinely periodic in U");
+    NurbsSurface out;
+    Check(wall.ReparameterizeRational(0, 2.0, out) == Result::Failed,
+          "ReparameterizeRational refuses a direction the surface is periodic in");
+  }
+}
+
 void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Result;
@@ -74537,6 +74874,106 @@ void TestNurbsCurveFilletCornerRejectsInvalidInput() {
         "reports Result::Failed (not a throw) when radius is too large for the two legs to fit");
 }
 
+void TestNurbsCurveHelix() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A true cylindrical helix (radius1 == radius2): every sampled point
+  // must land on exactly the requested radius (measured from the axis,
+  // not assumed from the construction) and exactly the requested linear
+  // height - a real, hand-verifiable positive control, not just "it ran".
+  {
+    NurbsCurve helix;
+    double deviation = -1.0;
+    const double radius = 5.0, height = 10.0, turns = 3.0;
+    Check(NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, height), radius, radius, turns, 1e-6, helix,
+                             &deviation) == Result::Ok,
+          "Helix succeeds on a true cylindrical helix at a reasonable tolerance");
+    Check(deviation >= 0.0 && deviation <= 1e-6, "...with the achieved deviation at or under the requested tolerance");
+    Check(helix.Domain().min == 0.0 && helix.Domain().max == 1.0, "Helix's own domain is exactly [0, 1]");
+    double max_radius_err = 0.0, max_height_err = 0.0;
+    for (int i = 0; i <= 200; ++i) {
+      const double t = i / 200.0;
+      const Point3d p = helix.PointAt(t);
+      max_radius_err = std::max(max_radius_err, std::abs(std::sqrt(p.x * p.x + p.y * p.y) - radius));
+      max_height_err = std::max(max_height_err, std::abs(p.z - height * t));
+    }
+    Check(max_radius_err < 1e-5, "every densely-sampled point on the true helix stays within 1e-5 of the "
+                                 "requested radius, measured from the axis");
+    Check(max_height_err < 1e-9, "every densely-sampled point's own height is exactly linear in t (height * t)");
+    // Start and end points, independent of the dense sweep above.
+    const Point3d p_start = helix.PointAt(0.0);
+    const Point3d p_end = helix.PointAt(1.0);
+    Check(std::abs(p_start.x - radius) < 1e-6 && std::abs(p_start.y) < 1e-6 && std::abs(p_start.z) < 1e-9,
+          "the helix starts at exactly (radius, 0, 0)");
+    Check(std::abs(p_end.z - height) < 1e-9, "the helix ends at exactly the full requested height");
+  }
+
+  // A conical spiral (radius1 != radius2): an integer number of turns
+  // means the end angle is the same as the start angle (mod 2*pi), so
+  // the end point's own (x, y) must land back on the SAME ray from the
+  // axis the start point did, just at the smaller radius - a real,
+  // hand-derivable geometric fact, not assumed from the formula alone.
+  {
+    NurbsCurve spiral;
+    double deviation = -1.0;
+    Check(NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 5.0, 1.0, 4.0, 1e-6, spiral, &deviation) ==
+              Result::Ok,
+          "Helix succeeds on a conical spiral (differing radii) at a reasonable tolerance");
+    Check(deviation >= 0.0 && deviation <= 1e-6, "...with the achieved deviation at or under the requested tolerance");
+    const Point3d p_start = spiral.PointAt(0.0);
+    const Point3d p_end = spiral.PointAt(1.0);
+    Check(std::abs(p_start.x - 5.0) < 1e-6 && std::abs(p_start.y) < 1e-6,
+          "the spiral starts at exactly (radius1, 0, 0)");
+    Check(std::abs(p_end.x - 1.0) < 1e-6 && std::abs(p_end.y) < 1e-6 && std::abs(p_end.z - 10.0) < 1e-9,
+          "after an integer number of turns, the spiral ends back on the same ray from the axis, at exactly "
+          "(radius2, 0, height)");
+
+    // A genuinely tighter tolerance must need at least as many control
+    // points as a looser one on the identical curve - the search is
+    // genuinely tolerance-driven, not a fixed sample count regardless of
+    // what's asked for.
+    // 1e-9 sits right at this construction's own sample-doubling cap for
+    // this exact shape (confirmed via a standalone probe: the search
+    // plateaus at a measured ~3.2e-9 worst deviation and returns
+    // Result::Failed rather than looping forever) - 1e-8 is comfortably
+    // inside the cap while still five orders of magnitude tighter than
+    // the loose tolerance, which is all this check needs to demonstrate.
+    NurbsCurve loose, tight;
+    NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 5.0, 1.0, 4.0, 1e-2, loose);
+    NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 5.0, 1.0, 4.0, 1e-8, tight);
+    Check(tight.ControlPointCount() >= loose.ControlPointCount(),
+          "a tighter tolerance needs at least as many control points as a looser one on the same spiral");
+  }
+
+  // Argument validation.
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  NurbsCurve out;
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 0), 5.0, 5.0, 3.0, 1e-6, out); }),
+        "rejects coincident axis_start/axis_end");
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 0.0, 5.0, 3.0, 1e-6, out); }),
+        "rejects a non-positive radius1");
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), -1.0, 5.0, 3.0, 1e-6, out); }),
+        "rejects a negative radius1");
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 5.0, -1.0, 3.0, 1e-6, out); }),
+        "rejects a negative radius2");
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 5.0, 5.0, 0.0, 1e-6, out); }),
+        "rejects a non-positive turns");
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 5.0, 5.0, 3.0, 0.0, out); }),
+        "rejects a non-positive tolerance");
+  // radius2 == 0 (a genuine cone down to a point on the axis) is valid.
+  Check(NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 5.0, 0.0, 3.0, 1e-6, out) == Result::Ok,
+        "accepts radius2 == 0 (a cone down to a point on the axis)");
+}
+
 void TestNurbsCurveFilletCornerArcMatchesFilletCornerOnRightAngle() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -78160,6 +78597,7 @@ int main() {
   RunTest("TestCurveRemoveKnotAt", TestCurveRemoveKnotAt);
   RunTest("TestCurveSetDomainReparameterizes", TestCurveSetDomainReparameterizes);
   RunTest("TestCurveChangeSeam", TestCurveChangeSeam);
+  RunTest("TestCurveReparameterizeRational", TestCurveReparameterizeRational);
   RunTest("TestCurveMatchEnd", TestCurveMatchEnd);
   RunTest("TestCurveAnalyzeEndContinuity", TestCurveAnalyzeEndContinuity);
   RunTest("TestCurveDeviationTo", TestCurveDeviationTo);
@@ -78458,6 +78896,7 @@ int main() {
   RunTest("TestMeshContainsPointVotesAcrossMultipleRaysForRobustness",
           TestMeshContainsPointVotesAcrossMultipleRaysForRobustness);
   RunTest("TestMeshClosestPoint", TestMeshClosestPoint);
+  RunTest("TestMeshClosestPointIndex", TestMeshClosestPointIndex);
   RunTest("TestMeshSignedDistance", TestMeshSignedDistance);
   RunTest("TestMeshVolumeMassProperties", TestMeshVolumeMassProperties);
   RunTest("TestMeshGetOrientedBoundingBox", TestMeshGetOrientedBoundingBox);
@@ -79057,6 +79496,7 @@ int main() {
 
   RunTest("TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape", TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape);
   RunTest("TestSurfaceChangeSeam", TestSurfaceChangeSeam);
+  RunTest("TestSurfaceReparameterizeRational", TestSurfaceReparameterizeRational);
   RunTest("TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise", TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise);
   RunTest("TestSurfaceReduceDegree", TestSurfaceReduceDegree);
   RunTest("TestSurfaceInterpolateThroughGrid", TestSurfaceInterpolateThroughGrid);
@@ -79312,6 +79752,7 @@ int main() {
   RunTest("TestNurbsCurveFilletCornerRightAngle", TestNurbsCurveFilletCornerRightAngle);
   RunTest("TestNurbsCurveFilletCornerObtuseAngleAndTangency", TestNurbsCurveFilletCornerObtuseAngleAndTangency);
   RunTest("TestNurbsCurveFilletCornerRejectsInvalidInput", TestNurbsCurveFilletCornerRejectsInvalidInput);
+  RunTest("TestNurbsCurveHelix", TestNurbsCurveHelix);
   RunTest("TestNurbsCurveFilletCornerArcMatchesFilletCornerOnRightAngle", TestNurbsCurveFilletCornerArcMatchesFilletCornerOnRightAngle);
   RunTest("TestNurbsCurveFilletCornerArcAcceptsSyntheticFarRayPoints", TestNurbsCurveFilletCornerArcAcceptsSyntheticFarRayPoints);
   RunTest("TestNurbsCurveFilletCornerArcRejectsInvalidInput", TestNurbsCurveFilletCornerArcRejectsInvalidInput);

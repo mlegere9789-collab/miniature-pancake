@@ -545,6 +545,89 @@ double Mesh::SignedDistance(Point3d point) const {
   return ContainsPoint(point) ? -distance : distance;
 }
 
+MeshClosestPointIndex::MeshClosestPointIndex(const Mesh& mesh) : tree_(0) {
+  if (mesh.mesh_.m_F.Count() == 0) {
+    throw std::invalid_argument(
+        "dino8::kernel::MeshClosestPointIndex::MeshClosestPointIndex: mesh has no faces - there's no "
+        "surface to index");
+  }
+
+  auto add_triangle = [&](int i0, int i1, int i2) {
+    const Point3d a(mesh.mesh_.m_V[i0]), b(mesh.mesh_.m_V[i1]), c(mesh.mesh_.m_V[i2]);
+    const int id = static_cast<int>(triangles_.size());
+    triangles_.push_back({a, b, c});
+    double tri_min[3] = {std::min({a.x, b.x, c.x}), std::min({a.y, b.y, c.y}), std::min({a.z, b.z, c.z})};
+    double tri_max[3] = {std::max({a.x, b.x, c.x}), std::max({a.y, b.y, c.y}), std::max({a.z, b.z, c.z})};
+    tree_.Insert(tri_min, tri_max, id);
+    bbox_.Set(a, true);
+    bbox_.Set(b, true);
+    bbox_.Set(c, true);
+  };
+  for (int i = 0; i < mesh.mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh.mesh_.m_F[i];
+    add_triangle(f.vi[0], f.vi[1], f.vi[2]);
+    if (f.IsQuad()) add_triangle(f.vi[0], f.vi[2], f.vi[3]);
+  }
+}
+
+Point3d MeshClosestPointIndex::ClosestPoint(Point3d point) const {
+  const int n = static_cast<int>(triangles_.size());
+  const double diagonal = bbox_.IsValid() ? bbox_.Diagonal().Length() : 0.0;
+  double r = diagonal > 0.0 ? diagonal / std::cbrt(static_cast<double>(n)) : 1.0;
+  if (!(r > 0.0)) r = 1.0;
+
+  auto search = [&](double radius, Point3d& best_point, double& best_distance) {
+    const double box_min[3] = {point.x - radius, point.y - radius, point.z - radius};
+    const double box_max[3] = {point.x + radius, point.y + radius, point.z + radius};
+    ON_SimpleArray<int> ids;
+    tree_.Search(box_min, box_max, ids);
+    best_distance = std::numeric_limits<double>::infinity();
+    for (int j = 0; j < ids.Count(); ++j) {
+      const auto& t = triangles_[static_cast<size_t>(ids[j])];
+      const Point3d candidate = ClosestPointOnTriangle(point, t[0], t[1], t[2]);
+      const double d = candidate.DistanceTo(point);
+      if (d < best_distance) {
+        best_distance = d;
+        best_point = candidate;
+      }
+    }
+    return ids.Count();
+  };
+
+  // Whether the search box (half-width `radius`, centered on `point`)
+  // already contains the mesh's own whole bounding box - if so, nothing
+  // outside it exists at all, and the result is exact regardless of the
+  // `best_distance <= radius` proof below.
+  auto covers_everything = [&](double radius) {
+    return point.x - radius <= bbox_.m_min.x && point.x + radius >= bbox_.m_max.x &&
+           point.y - radius <= bbox_.m_min.y && point.y + radius >= bbox_.m_max.y &&
+           point.z - radius <= bbox_.m_min.z && point.z + radius >= bbox_.m_max.z;
+  };
+
+  Point3d best_point;
+  double best_distance;
+  for (int iter = 0; iter < 64; ++iter) {
+    const int count = search(r, best_point, best_distance);
+    if (count > 0 && (best_distance <= r || covers_everything(r))) return best_point;
+    if (count == 0 && covers_everything(r)) break;  // genuinely nothing found anywhere (unreachable for a real mesh, see the fallback below)
+    r *= 2.0;
+  }
+  // Unreachable in practice (64 doublings covers any finite mesh many
+  // times over, see PointCloud::KNearest()'s own identical fallback),
+  // kept only as an honest fallback rather than an infinite loop if it
+  // ever were reached.
+  best_distance = std::numeric_limits<double>::infinity();
+  for (const auto& t : triangles_) {
+    const Point3d candidate = ClosestPointOnTriangle(point, t[0], t[1], t[2]);
+    const double d = candidate.DistanceTo(point);
+    if (d < best_distance) {
+      best_distance = d;
+      best_point = candidate;
+    }
+  }
+  return best_point;
+}
+
 MassProperties Mesh::VolumeMassProperties() const {
   // Eberly, "Polyhedral Mass Properties (Revisited)": the ten volume
   // integrals of {1, x, y, z, x^2, y^2, z^2, xy, yz, zx} are each turned

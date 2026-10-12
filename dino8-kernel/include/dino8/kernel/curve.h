@@ -282,6 +282,64 @@ class NurbsCurve {
   // reaches past `p0` or `p1`.
   static Result FilletCornerArc(Point3d p0, Point3d corner, Point3d p1, double radius, NurbsCurve& arc_out);
 
+  // HELIX AND CONICAL SPIRAL (Rhino Helix/Spiral) - closes PARITY_MAP's own
+  // disclosed "no kernel helix" gap (kernel: Geometry representation's
+  // "Helix and spiral curves" bullet): the app's own `HelixCommand`
+  // (dino8-app/src/commands/cmd_create.cpp) builds the identical analytic
+  // curve - `radius(t) = radius1 + (radius2 - radius1) * t`, `angle(t) =
+  // 2*pi*turns*t`, height along the axis `= height * t`, for `t` in [0, 1]
+  // - but hands the raw SAMPLE POINTS straight to `FromControlPoints()`,
+  // which treats them AS the control polygon rather than passing through
+  // them: a B-spline generally does not interpolate its own control
+  // points, so the result is neither exact nor even a close approximation
+  // in general (the same "treat samples as control points" shortcut this
+  // file's own `NurbsSurface::FromControlGrid()` vs. `InterpolateThroughGrid()`
+  // distinction already names for surfaces). `radius1 == radius2` is a
+  // true cylindrical helix; `radius1 != radius2` is a conical spiral - the
+  // bullet's own "and spiral" half - covered by the identical construction,
+  // the same way the app's own `HelixCommand`/`SpiralCommand` already
+  // share one code path.
+  //
+  // A circular helix is NOT an exact rational-NURBS curve (unlike a
+  // circular ARC, whose angle sweeps linearly in a RATIONAL quadratic
+  // parameter - a helix additionally couples that same angle to a LINEAR
+  // height, and no single rational reparameterization satisfies both at
+  // once), so this is honestly a tolerance-bounded INTERPOLATING
+  // approximation, the same "no exact closed form, so measure and bound
+  // it instead" tier `NurbsSurface::OffsetApproximate`/`Rebuild()` already
+  // use elsewhere in this kernel - not the "neither interpolating nor
+  // exact" sampled-control-point shortcut named above. Starting from a
+  // small sample count and doubling it, each candidate is built via
+  // `InterpolateCubic()` (surface_intersect.h) at the UNIFORM analytic
+  // parameter `t` itself (not chord length) as the interpolation
+  // parameter - valid because this curve's own speed is close to uniform
+  // by construction (exactly uniform for a true helix; only mildly
+  // varying for a spiral whose two radii differ), and it makes the
+  // resulting curve's own `Domain()` exactly `[0, 1]` with no further
+  // `SetDomain()` step, so a measurement at parameter `t` compares
+  // directly against the analytic formula at that same `t` with no
+  // reparameterization mismatch to account for. The measured worst-case
+  // deviation is a dense INDEPENDENT re-sampling (5x the fit density,
+  // deliberately never landing exactly on a fit sample) comparing
+  // `PointAt(t)` against the analytic point at the same `t` - not the
+  // interpolation solve's own residual, which is exactly zero by
+  // construction at the fit samples and says nothing about the curve's
+  // real deviation in between. Returns `Result::Ok` with `out` set once
+  // that measured deviation is at or under `tolerance`, capped at a
+  // generous sample ceiling; `Result::Failed`, `out` left unchanged, if
+  // even the ceiling can't satisfy `tolerance` (an unreasonably tight
+  // request). `out_max_deviation`, if non-null, always receives the
+  // achieved (or, on failure, the best attempted) worst-case deviation -
+  // sampled, not formally certified, the same honesty this kernel's other
+  // tolerance-bounded approximations already disclose.
+  //
+  // VALIDATION: throws `std::invalid_argument` if `axis_start` and
+  // `axis_end` coincide (no axis direction), `radius1` is not positive,
+  // `radius2` is negative, `turns` is not positive, or `tolerance` is not
+  // positive.
+  static Result Helix(Point3d axis_start, Point3d axis_end, double radius1, double radius2, double turns,
+                       double tolerance, NurbsCurve& out, double* out_max_deviation = nullptr);
+
   // 2D/3D POLYLINE-CORNER CHAMFER (Rhino Chamfer, AutoCAD CHAMFER between
   // two lines) - the flat-cut sibling of `FilletCorner` above, the exact
   // 2D analogue of `ChamferConvexEdge`'s own two-independent-distance
@@ -1229,6 +1287,57 @@ class NurbsCurve {
   // the target point was already within it of the current start (left
   // completely untouched in that case, not even re-wrapped).
   Result ChangeSeam(double t, double min_dist = 0.0);
+
+  // Rational (Mobius) reparameterization: the real remaining gap this
+  // kernel's own "Reparameterization" item named (`kernel: Geometry
+  // representation`'s own PARITY_MAP.md bullet) after `SetDomain()` and
+  // `ChangeSeam()` above already closed every other named half of it -
+  // every one of `SetDomain`/`Reverse`/`ChangeSeam` only ever moves
+  // BREAKPOINTS or reorders control points; none of them can change how
+  // fast the parameter moves BETWEEN two fixed breakpoints on an
+  // otherwise-unchanged curve, which is what a genuine rational
+  // reparameterization does. Applies the standard one-parameter Mobius
+  // family (see e.g. Piegl & Tiller, "The NURBS Book", Sec. 7.5): over
+  // `Domain()` normalized to `[0, 1]` as `u`, the new parameter is
+  // `v = shape_factor*u / (1 + (shape_factor - 1)*u)` - a strictly
+  // increasing bijection of `[0, 1]` onto itself for any
+  // `shape_factor > 0` (fixing both endpoints: `v(0) = 0`, `v(1) = 1`),
+  // then mapped back onto this curve's own `Domain()`. The curve's own
+  // SHAPE is exactly preserved - every control point keeps its exact
+  // Cartesian position - only each control point's own WEIGHT changes
+  // (a non-rational curve becomes rational unless `shape_factor == 1`,
+  // the exact no-op case), redistributing how much of the curve's own
+  // length each equal step of the new parameter covers. For a curve
+  // with interior knots (more than one Bezier span), this is genuinely
+  // more than a per-span-independent reparameterization: within each
+  // span the same one-parameter family applies (restricting a Mobius
+  // map of `[0, 1]` to any sub-interval and renormalizing it back to
+  // `[0, 1]` stays in the identical one-parameter family, with its own
+  // derived `shape_factor` for that span - confirmed algebraically, not
+  // assumed), but two adjacent spans SHARE one control point and its
+  // one weight, so each span after the first is also rescaled by one
+  // more positive constant (a uniform weight rescale that changes no
+  // geometry, the same freedom any two adjacent rational Bezier
+  // segments already have) chosen so the shared control point's own
+  // weight, computed independently from either side, agrees exactly -
+  // without that correction, the two sides would generally disagree
+  // and the reassembled curve would not even be C0 continuous in its
+  // weight channel, let alone reproduce the original shape. `out` is
+  // built as a piecewise-Bezier NURBS curve (every interior knot at
+  // full multiplicity `Degree()`, the same representation
+  // `ON_NurbsCurve::MakePiecewiseBezier` produces and `ConvertToBeziers`
+  // already relies on) at the MAPPED breakpoint parameter values -
+  // honestly not the most compact possible knot vector, but exact.
+  // Throws std::invalid_argument for a non-finite or non-positive
+  // `shape_factor`. Returns Result::Failed for a periodic curve (the
+  // same scope boundary `RemoveKnotAt()` above already carries - a
+  // periodic knot vector's own wraparound multiplicity structure is not
+  // the clamped per-span decomposition this method assumes) or if
+  // `Domain()` is degenerate; Result::NoOpAlreadySatisfied for
+  // `shape_factor == 1.0` exactly (`out` is then a plain copy of this
+  // curve, no rational conversion forced on an already non-rational
+  // curve for a true no-op).
+  Result ReparameterizeRational(double shape_factor, NurbsCurve& out) const;
 
   Point3d PointAt(double t) const;
 
