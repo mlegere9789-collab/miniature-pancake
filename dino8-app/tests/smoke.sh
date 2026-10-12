@@ -6397,6 +6397,87 @@ else
   fail=1
 fi
 
+# Native .3dm solid-fill HATCH export: the test above only ever proves
+# Load3dm's own ON_Hatch *reading*; Save3dm itself had no ON_Hatch writer at
+# all until this change (see BuildOnHatchForGroup in File3dm.cpp) - a solid
+# hatch made in-app (Hatch Pattern=Solid) round-tripped out through .3dm as
+# a bare Brep plus Hatch=Solid user_text, never a real ON_Hatch a genuinely
+# independent Rhino/OpenNURBS-based reader would recognize as one hatch -
+# the same "Dino-written ... hatches ... still survive only as baked
+# geometry" gap Load3dm's own ON_Hatch-reading pass above discloses. Makes a
+# real solid hatch, saves it, and reopens the saved file in a fresh
+# document: SelHatch/Area must find the exact same hatch back, proving the
+# new writer and the existing reader agree on the wire format - and,
+# independent of Dino 8's own reader entirely, hatch3dm_write_check (the
+# write-side mirror of hatch3dm_fixture_gen above) parses the saved file
+# directly through OpenNURBS' own API and confirms it holds one real
+# ON_Hatch object referencing a real Solid-fill ON_HatchPattern table entry.
+sed "s|@TMP@|$TMPW|g" "$HERE/hatch3dm_export_solid_script.txt" > "$TMPW/hatch3dm_export_solid_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  H3S="$("$BIN" --smoke 30 --script "$TMPW/hatch3dm_export_solid_script.txt" 2>&1)" || { echo "$H3S"; echo "FAIL: .3dm solid HATCH export script exited non-zero"; exit 1; }
+else
+  H3S="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/hatch3dm_export_solid_script.txt" 2>&1)" || { echo "$H3S"; echo "FAIL: .3dm solid HATCH export script exited non-zero"; exit 1; }
+fi
+h3scheck() { if echo "$H3S" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$H3S" "$1"; fail=1; fi; }
+h3scheck "Saved $TMPW/hatch3dm_export_solid.3dm" "Save3dm wrote a file"
+h3scheck "Opened $TMPW/hatch3dm_export_solid.3dm (2 objects)" "the reopened file has the boundary rectangle plus the reconstructed hatch - the ON_Hatch round-tripped as a real hatch, not a bare Brep plus metadata"
+h3scheck "1 object(s) selected" "SelHatch found the round-tripped hatch"
+h3scheck "1 faces, 1 edges, open" "the round-tripped hatch is a single trimmed planar face"
+h3scheck "Area = 100 square" "the round-tripped hatch's area is exactly the 10x10 boundary"
+HWCBIN="$(dirname "$BIN")/hatch3dm_write_check"
+if [ -x "$HWCBIN" ]; then
+  HWC="$("$HWCBIN" "$TMPW/hatch3dm_export_solid.3dm" 2>&1)" || { echo "$HWC"; echo "FAIL: hatch3dm_write_check exited non-zero on the solid hatch file"; exit 1; }
+  hwccheck() { if echo "$HWC" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HWC" "$1"; fail=1; fi; }
+  hwccheck "1 real ON_Hatch object(s) found" "independent of Dino 8's own Load3dm, a plain OpenNURBS reader sees exactly one real ON_Hatch object in the saved file"
+  hwccheck "fill=Solid" "the saved hatch's pattern-table entry is really marked Solid fill, not just named 'Solid'"
+else
+  echo "FAIL hatch3dm_write_check was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the independent .3dm ON_Hatch write check"
+  fail=1
+fi
+
+# Native .3dm pattern-fill HATCH export: the solid case above only ever
+# covers Hatch=Solid; a pattern-fill hatch (Hatch Pattern=ANSI31,
+# drafting::BuildPatternHatch's own already-clipped line-curve group) still
+# round-tripped out through .3dm as its own N baked line-curve objects,
+# never one real ON_Hatch, until BuildOnHatchForGroup's own HatchBoundary-tag
+# lookup and ON_HatchPattern/ON_HatchLine construction (File3dm.cpp) closed
+# it - the same "N already-clipped lines, no record it was ever one fill"
+# gap the DXF/DWG pattern-HATCH writer already closed for those formats
+# (WriteDxfHatchPattern). Makes a real ANSI31 hatch, saves it, and reopens
+# the saved file in a fresh document: SelHatch must find the exact same
+# number of real, Hatch=ANSI31-tagged line objects the original Hatch
+# command built - and hatch3dm_write_check independently confirms the saved
+# file holds exactly one real ON_Hatch (not 81 bare line objects) whose
+# pattern table entry is really named ANSI31 with real HatchLine family data
+# (not just a name a third-party reader may or may not recognize).
+sed "s|@TMP@|$TMPW|g" "$HERE/hatch3dm_export_pattern_script.txt" > "$TMPW/hatch3dm_export_pattern_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  H3P="$("$BIN" --smoke 30 --script "$TMPW/hatch3dm_export_pattern_script.txt" 2>&1)" || { echo "$H3P"; echo "FAIL: .3dm pattern HATCH export script exited non-zero"; exit 1; }
+else
+  H3P="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/hatch3dm_export_pattern_script.txt" 2>&1)" || { echo "$H3P"; echo "FAIL: .3dm pattern HATCH export script exited non-zero"; exit 1; }
+fi
+h3pcheck() { if echo "$H3P" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$H3P" "$1"; fail=1; fi; }
+h3pcheck "Saved $TMPW/hatch3dm_export_pattern.3dm" "Save3dm wrote a file"
+BEFORE_SEL3D="$(echo "$H3P" | grep -o "[0-9]* object(s) selected" | head -1 || true)"
+AFTER_SEL3D="$(echo "$H3P" | grep -o "[0-9]* object(s) selected" | tail -1 || true)"
+if [ -n "$BEFORE_SEL3D" ] && [ "$BEFORE_SEL3D" = "$AFTER_SEL3D" ]; then
+  echo "ok   the round-tripped pattern hatch's line count matches exactly ($BEFORE_SEL3D)"
+else
+  echo "FAIL .3dm pattern hatch line count did not round-trip (before: '$BEFORE_SEL3D', after: '$AFTER_SEL3D')"
+  fail=1
+fi
+if [ -x "$HWCBIN" ]; then
+  HWCP="$("$HWCBIN" "$TMPW/hatch3dm_export_pattern.3dm" 2>&1)" || { echo "$HWCP"; echo "FAIL: hatch3dm_write_check exited non-zero on the pattern hatch file"; exit 1; }
+  hwcpcheck() { if echo "$HWCP" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HWCP" "$1"; fail=1; fi; }
+  hwcpcheck "1 real ON_Hatch object(s) found" "the saved pattern-fill hatch is one real ON_Hatch object, not N bare line objects"
+  hwcpcheck "fill=Lines" "the saved hatch's pattern-table entry is really marked Lines fill (a real pattern), not Solid"
+  hwcpcheck "pattern_name=ANSI31" "the saved hatch really references an ANSI31-named pattern-table entry"
+  echo "$HWCP" | grep -q "pattern_lines=[1-9]" && echo "ok   the saved ANSI31 pattern table entry carries real HatchLine family data (not an empty, name-only pattern)" || { echo "FAIL the saved pattern table entry has no real HatchLine data"; near "$HWCP" "pattern_lines="; fail=1; }
+else
+  echo "FAIL hatch3dm_write_check was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the independent .3dm pattern ON_Hatch write check"
+  fail=1
+fi
+
 # Native .3dm ON_InstanceRef import: previously Load3dm had no
 # ON_InstanceRef/ON_InstanceDefinition handling at all, and no
 # ON::idef_object check either, so a block instance authored by a real,
