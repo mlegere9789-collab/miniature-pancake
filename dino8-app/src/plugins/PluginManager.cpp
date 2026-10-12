@@ -1,11 +1,13 @@
 #include "plugins/PluginManager.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -57,6 +59,19 @@ const char* kLibExt = ".so";
 Application* g_app = nullptr;
 LoadedPlugin* g_loading = nullptr;  // the plug-in whose init() is currently running
 
+// Lower-cased names ever registered through the plug-in API (register_command below),
+// distinguishing "some plug-in already owns this name" (fine to hand to a fresh load of a
+// plug-in - including a second, independently marketplace-installed copy of the very same
+// one, which legitimately re-registers its own command under its own unchanged name) from "a
+// real, built-in app command already owns this name" (never fine to silently steal).
+std::unordered_set<std::string> g_plugin_owned_commands;
+
+std::string ToLowerAscii(const std::string& s) {
+  std::string out = s;
+  std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return out;
+}
+
 struct PluginCommandFn {
   Dino8CommandFn fn;
   void* user_data;
@@ -91,6 +106,28 @@ void ApiPrint(const char* text) {
 
 int ApiRegisterCommand(const char* name, const char* help, Dino8CommandFn fn, void* user_data) {
   if (!g_app || !name || !fn) return 1;
+  // Register() (CommandEngine.cpp) unconditionally overwrites whatever
+  // already sits under this name's lowercased key, with no collision
+  // check of its own - so without a guard here, a plug-in happening to
+  // pick the same command name as a real, already-working built-in
+  // would silently shadow it rather than failing loudly, leaving the
+  // real command permanently unreachable by name for the rest of the
+  // session. Guard ONLY against that case, not against a name some
+  // plug-in (possibly this very one, reloaded as a second,
+  // independently marketplace-installed copy - PluginMarketplaceInstall
+  // already relies on this) already owns: re-registering a
+  // plug-in-owned name is the existing, intentional reload/reinstall
+  // behavior, not a collision to refuse.
+  const std::string key = ToLowerAscii(name);
+  const app::RegisteredCommand* existing = g_app->Engine().Find(name);
+  if (existing && existing->factory && existing->status != app::CommandStatus::Planned &&
+      !g_plugin_owned_commands.count(key)) {
+    g_app->Engine().Print(std::string("Plug-in: refused to register '") + name +
+                           "' - a built-in command with that name already exists (" +
+                           app::CommandStatusName(existing->status) + ")");
+    return 1;
+  }
+  g_plugin_owned_commands.insert(key);
   PluginCommandFn spec{fn, user_data, name};
   app::CommandFactory factory = [spec]() -> std::unique_ptr<app::Command> { return std::make_unique<PluginCommand>(spec); };
   g_app->Engine().Register(name, factory, app::CommandStatus::Implemented, help ? help : "");

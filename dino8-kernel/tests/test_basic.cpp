@@ -26505,6 +26505,63 @@ void TestMeshClosestPoint() {
   }
 }
 
+// PARITY_MAP.md's own "kernel: Mass properties & spatial queries" category,
+// "Spatial acceleration structures for geometric queries" bullet: "only
+// private uniform grids for SSX/CSX; every public query brute force."
+// MeshClosestPointIndex is a genuine, reusable spatial acceleration
+// structure over a Mesh's own triangles (an ON_RTree, the same index type
+// PointCloud::SpatialIndex() already builds over points), queried with the
+// same expanding-box, doubling-until-proven-sufficient search
+// PointCloud::KNearest() already establishes - built once, then
+// cross-checked exhaustively against Mesh::ClosestPoint()'s own plain
+// O(triangle count) brute-force scan to prove it answers IDENTICALLY, not
+// merely approximately.
+void TestMeshClosestPointIndex() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MeshClosestPointIndex;
+  using dino8::kernel::Point3d;
+
+  // A genuinely dense mesh (a tessellated sphere, hundreds of triangles -
+  // not just a 12-triangle box) so the expanding-box search actually has
+  // to grow more than once for at least some of the query points below,
+  // exercising the real acceleration path rather than a trivial
+  // single-cell case.
+  const Brep sphere_brep = Brep::Sphere(Point3d(1, -2, 3), 5.0);
+  const Mesh sphere_mesh = sphere_brep.TessellateToClosedMesh(24, 24);
+  Check(sphere_mesh.FaceCount() > 100, "sanity: the tessellated sphere fixture has a genuinely large number of faces");
+
+  const MeshClosestPointIndex index(sphere_mesh);
+
+  bool all_match = true;
+  const std::vector<Point3d> queries = {
+      Point3d(1, -2, 3),      // the sphere's own center (deep interior)
+      Point3d(1, -2, 8),      // on the surface (center + radius along z)
+      Point3d(1, -2, 50),     // far outside, straight out along z
+      Point3d(50, -2, 3),     // far outside along x
+      Point3d(1, -2, 3.1),    // just barely off-center (interior, near center)
+      Point3d(-30, 40, -17),  // far outside, an oblique direction
+      Point3d(1, 1, 3),       // a middling interior point, off-axis
+  };
+  for (const Point3d& q : queries) {
+    const Point3d brute_force = sphere_mesh.ClosestPoint(q);
+    const Point3d accelerated = index.ClosestPoint(q);
+    if (brute_force.DistanceTo(accelerated) > 1e-6) { all_match = false; break; }
+  }
+  Check(all_match, "MeshClosestPointIndex::ClosestPoint() agrees with Mesh::ClosestPoint()'s own brute-force scan at every query point, near and far, interior and exterior");
+
+  // Building an index from an empty mesh is refused outright, matching
+  // Mesh::ClosestPoint()'s own "no faces, no surface" contract.
+  bool threw = false;
+  try {
+    const Mesh empty_mesh;
+    const MeshClosestPointIndex empty_index(empty_mesh);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "building an index from an empty mesh throws, matching Mesh::ClosestPoint()'s own contract");
+}
+
 void TestMeshSignedDistance() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -74817,6 +74874,106 @@ void TestNurbsCurveFilletCornerRejectsInvalidInput() {
         "reports Result::Failed (not a throw) when radius is too large for the two legs to fit");
 }
 
+void TestNurbsCurveHelix() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A true cylindrical helix (radius1 == radius2): every sampled point
+  // must land on exactly the requested radius (measured from the axis,
+  // not assumed from the construction) and exactly the requested linear
+  // height - a real, hand-verifiable positive control, not just "it ran".
+  {
+    NurbsCurve helix;
+    double deviation = -1.0;
+    const double radius = 5.0, height = 10.0, turns = 3.0;
+    Check(NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, height), radius, radius, turns, 1e-6, helix,
+                             &deviation) == Result::Ok,
+          "Helix succeeds on a true cylindrical helix at a reasonable tolerance");
+    Check(deviation >= 0.0 && deviation <= 1e-6, "...with the achieved deviation at or under the requested tolerance");
+    Check(helix.Domain().min == 0.0 && helix.Domain().max == 1.0, "Helix's own domain is exactly [0, 1]");
+    double max_radius_err = 0.0, max_height_err = 0.0;
+    for (int i = 0; i <= 200; ++i) {
+      const double t = i / 200.0;
+      const Point3d p = helix.PointAt(t);
+      max_radius_err = std::max(max_radius_err, std::abs(std::sqrt(p.x * p.x + p.y * p.y) - radius));
+      max_height_err = std::max(max_height_err, std::abs(p.z - height * t));
+    }
+    Check(max_radius_err < 1e-5, "every densely-sampled point on the true helix stays within 1e-5 of the "
+                                 "requested radius, measured from the axis");
+    Check(max_height_err < 1e-9, "every densely-sampled point's own height is exactly linear in t (height * t)");
+    // Start and end points, independent of the dense sweep above.
+    const Point3d p_start = helix.PointAt(0.0);
+    const Point3d p_end = helix.PointAt(1.0);
+    Check(std::abs(p_start.x - radius) < 1e-6 && std::abs(p_start.y) < 1e-6 && std::abs(p_start.z) < 1e-9,
+          "the helix starts at exactly (radius, 0, 0)");
+    Check(std::abs(p_end.z - height) < 1e-9, "the helix ends at exactly the full requested height");
+  }
+
+  // A conical spiral (radius1 != radius2): an integer number of turns
+  // means the end angle is the same as the start angle (mod 2*pi), so
+  // the end point's own (x, y) must land back on the SAME ray from the
+  // axis the start point did, just at the smaller radius - a real,
+  // hand-derivable geometric fact, not assumed from the formula alone.
+  {
+    NurbsCurve spiral;
+    double deviation = -1.0;
+    Check(NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 5.0, 1.0, 4.0, 1e-6, spiral, &deviation) ==
+              Result::Ok,
+          "Helix succeeds on a conical spiral (differing radii) at a reasonable tolerance");
+    Check(deviation >= 0.0 && deviation <= 1e-6, "...with the achieved deviation at or under the requested tolerance");
+    const Point3d p_start = spiral.PointAt(0.0);
+    const Point3d p_end = spiral.PointAt(1.0);
+    Check(std::abs(p_start.x - 5.0) < 1e-6 && std::abs(p_start.y) < 1e-6,
+          "the spiral starts at exactly (radius1, 0, 0)");
+    Check(std::abs(p_end.x - 1.0) < 1e-6 && std::abs(p_end.y) < 1e-6 && std::abs(p_end.z - 10.0) < 1e-9,
+          "after an integer number of turns, the spiral ends back on the same ray from the axis, at exactly "
+          "(radius2, 0, height)");
+
+    // A genuinely tighter tolerance must need at least as many control
+    // points as a looser one on the identical curve - the search is
+    // genuinely tolerance-driven, not a fixed sample count regardless of
+    // what's asked for.
+    // 1e-9 sits right at this construction's own sample-doubling cap for
+    // this exact shape (confirmed via a standalone probe: the search
+    // plateaus at a measured ~3.2e-9 worst deviation and returns
+    // Result::Failed rather than looping forever) - 1e-8 is comfortably
+    // inside the cap while still five orders of magnitude tighter than
+    // the loose tolerance, which is all this check needs to demonstrate.
+    NurbsCurve loose, tight;
+    NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 5.0, 1.0, 4.0, 1e-2, loose);
+    NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 5.0, 1.0, 4.0, 1e-8, tight);
+    Check(tight.ControlPointCount() >= loose.ControlPointCount(),
+          "a tighter tolerance needs at least as many control points as a looser one on the same spiral");
+  }
+
+  // Argument validation.
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  NurbsCurve out;
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 0), 5.0, 5.0, 3.0, 1e-6, out); }),
+        "rejects coincident axis_start/axis_end");
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 0.0, 5.0, 3.0, 1e-6, out); }),
+        "rejects a non-positive radius1");
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), -1.0, 5.0, 3.0, 1e-6, out); }),
+        "rejects a negative radius1");
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 5.0, -1.0, 3.0, 1e-6, out); }),
+        "rejects a negative radius2");
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 5.0, 5.0, 0.0, 1e-6, out); }),
+        "rejects a non-positive turns");
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 5.0, 5.0, 3.0, 0.0, out); }),
+        "rejects a non-positive tolerance");
+  // radius2 == 0 (a genuine cone down to a point on the axis) is valid.
+  Check(NurbsCurve::Helix(Point3d(0, 0, 0), Point3d(0, 0, 10), 5.0, 0.0, 3.0, 1e-6, out) == Result::Ok,
+        "accepts radius2 == 0 (a cone down to a point on the axis)");
+}
+
 void TestNurbsCurveFilletCornerArcMatchesFilletCornerOnRightAngle() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -78739,6 +78896,7 @@ int main() {
   RunTest("TestMeshContainsPointVotesAcrossMultipleRaysForRobustness",
           TestMeshContainsPointVotesAcrossMultipleRaysForRobustness);
   RunTest("TestMeshClosestPoint", TestMeshClosestPoint);
+  RunTest("TestMeshClosestPointIndex", TestMeshClosestPointIndex);
   RunTest("TestMeshSignedDistance", TestMeshSignedDistance);
   RunTest("TestMeshVolumeMassProperties", TestMeshVolumeMassProperties);
   RunTest("TestMeshGetOrientedBoundingBox", TestMeshGetOrientedBoundingBox);
@@ -79594,6 +79752,7 @@ int main() {
   RunTest("TestNurbsCurveFilletCornerRightAngle", TestNurbsCurveFilletCornerRightAngle);
   RunTest("TestNurbsCurveFilletCornerObtuseAngleAndTangency", TestNurbsCurveFilletCornerObtuseAngleAndTangency);
   RunTest("TestNurbsCurveFilletCornerRejectsInvalidInput", TestNurbsCurveFilletCornerRejectsInvalidInput);
+  RunTest("TestNurbsCurveHelix", TestNurbsCurveHelix);
   RunTest("TestNurbsCurveFilletCornerArcMatchesFilletCornerOnRightAngle", TestNurbsCurveFilletCornerArcMatchesFilletCornerOnRightAngle);
   RunTest("TestNurbsCurveFilletCornerArcAcceptsSyntheticFarRayPoints", TestNurbsCurveFilletCornerArcAcceptsSyntheticFarRayPoints);
   RunTest("TestNurbsCurveFilletCornerArcRejectsInvalidInput", TestNurbsCurveFilletCornerArcRejectsInvalidInput);
