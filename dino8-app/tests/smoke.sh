@@ -1568,9 +1568,26 @@ sdcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified wit
 # wrapper SubDSweep1/SubDSweep2 already use and this suite already covers.
 sdcheck "SubDRevolve: 1 object(s) converted to SubD" "SubDRevolve ran the real Revolve command on the selected circle and converted its resulting surface to a SubD"
 sdcheck "SubDMultiPipe: 1 object(s) converted to SubD" "SubDMultiPipe ran the real MultiPipe command on the two selected lines and converted its resulting (unioned) mesh to a SubD"
+# Revolve Output=SubD: the plain Revolve command's own documented "Output"
+# option, not the separate SubDRevolve command above - PARITY_MAP.md's own
+# "ExtrudeCrv / Revolve producing a SubD object directly" item, narrowed to
+# its Revolve half. Converts via the same ConvertObjectToSubD helper
+# SubDRevolve/SubDMultiPipe above were refactored to share (cmd_common.h).
+# The id of the resulting SubD is NOT 25 - @expect_objects below counts
+# live objects, but ConvertObjectToSubD deletes the transient Brep and adds
+# a new, higher-numbered object, so ids keep climbing past the live count
+# even as some are deleted along the way (same reason SubDRevolve/
+# SubDMultiPipe above land on ids 20/28, not the running live count either).
+# The bounding box is checked instead - exact, deterministic from the
+# Circle/axis above, and independent of any upstream id shift. On its own
+# this doesn't prove the object is a SubD rather than a leftover Brep, so
+# it's paired with the exact "Faces:.../Edges:.../Crease edges:" shape only
+# SceneObject::Describe()'s own ObjectKind::SubD branch ever prints.
+sdcheck "Faces: 10538" "Revolve Output=SubD's List shows a real SubD-shaped description (Faces/Vertices/Edges/Crease edges - a Brep's own Describe() branch prints only a bare Faces count), not a leftover Brep"
+sdcheck "Bounding box: (495, -5, -24.9925) to (544.997, 5, 24.9925)" "Revolve Output=SubD built its usual Brep of revolution (profile circle radius 5 at x=500, axis at x=520), then converted it in place to a genuine SubD with the same real extent"
 echo "$SD" | grep -E "^(ok|FAIL)"
 if echo "$SD" | grep -q "^FAIL"; then fail=1; fi
-sdcheck "smoke: frames=[0-9]* objects=23" "subd script produced the expected object count"
+sdcheck "smoke: frames=[0-9]* objects=25" "subd script produced the expected object count"
 # Rendering: materials (scripted options), texture mapping, lights, sun, ground plane,
 # Render / RenderArctic / SaveRenderWindowAs, ExtractRenderMesh, .3dm round-trip (see render_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/render_script.txt" > "$TMPW/render_script.txt"
@@ -2163,6 +2180,7 @@ flcheck "MatchSrf: 2 boundary control point.s. moved to position on the target c
 flcheck "MatchSrf: 2 boundary control point.s. moved to position on the target curve" "MatchSrf moved a plane's edge onto a target line"
 flcheck "MatchSrf: exact edge match (G1) to the target surface, max position error 0, max tangent error 0" "MatchSrf against a target *surface* edge now uses the kernel's exact NurbsSurface::MatchEdge() (self-checked by evaluation, both residuals genuinely ~0), not the app's older per-control-point loop that only assumed a shared parameterization"
 flcheck "degree 2 x 1, CVs 3 x 2" "the matched floor plane's real G1 bend toward the box's vertical front face: degree elevated 1->2 and one control point added in the edge-crossing direction to hold position+tangent rows, the other direction (degree 1, 2 CVs) untouched"
+flcheck "MatchSrf: exact edge match (G2) to the target surface, max position error 0, max tangent error 0, max curvature error 0" "MatchSrf's Continuity option now reaches Curvature (G2) too, not just Position/Tangency - NurbsSurface::MatchEdge()'s own Curvature path was already real and already tested at the kernel level, just unreachable from any app command"
 flcheck "SplitFace: face 0 split into 2 surfaces along the curve's crossing" "SplitFace found a real CSX crossing of a piercing polyline (a coplanar line can't cross a flat face twice)"
 flcheck "MergeFaces: 2 coplanar face.s. merged into 1" "MergeFaces recombined two joined coplanar planes"
 flcheck "Area = 100 square" "the merged 5x10 + 5x10 planes have area 100"
@@ -2240,7 +2258,7 @@ flcheck "10 faces, 21 edges, closed solid" "one spherical corner blend: 6 planar
 flcheck "Volume = 975.4 cubic" "matches the app's own tessellated reading of the exact closed form 1000 - 3*8*4*(1-pi/4) - 8*(1-pi/6) = 975.587 (see this section's own comment in fillet_script.txt for why the app's coarser spherical-patch tessellation reads 975.4, not 975.587, and why that gap is pre-existing and unrelated to this fix)"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
-flcheck "^ok   expect_objects 55" "fillet script produced the expected object count"
+flcheck "^ok   expect_objects 57" "fillet script produced the expected object count"
 
 # Adversarial fillets: tiny/at-the-limit/too-large radii relative to the
 # shortest adjacent edge, a huge-coordinate-scale box (now fixed for the
