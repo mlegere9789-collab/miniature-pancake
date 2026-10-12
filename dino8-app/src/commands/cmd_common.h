@@ -386,6 +386,15 @@ int InstantiateBlock(CommandContext& ctx, const std::string& name, Point3d at);
 // Returns the group id or -1.
 int TagExistingAsBlockInstance(CommandContext& ctx, const std::vector<ObjectId>& ids, const std::string& name, Point3d at);
 
+// Tessellates object `id` (a Surface/Brep/Mesh) into a genuine SubD control
+// net and replaces it in place: the new SubD is added, then `id` itself is
+// removed from the document - same construction SubDSweep1/SubDSweep2/
+// SubDRevolve/SubDMultiPipe already share (see SweepThenSubDCommand,
+// cmd_subd.cpp). Defined in cmd_subd.cpp. Returns the new SubD's ObjectId,
+// or kNoObject if `id` doesn't exist, is already a SubD, or tessellates to
+// zero faces (nothing is removed in that case).
+ObjectId ConvertObjectToSubD(CommandContext& ctx, ObjectId id);
+
 // Curve/curve intersection (points) or closed-solid/closed-solid intersection
 // (mesh boolean); defined in cmd_curveedit.cpp. cmd_fillet.cpp's Intersect
 // wrapper delegates to this when the selection has no surfaces/breps.
