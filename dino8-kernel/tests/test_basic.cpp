@@ -66024,6 +66024,103 @@ void TestFilletConcaveEdgeRejectsUnsupportedConfigurations() {
         "rejects a radius too large to fit");
 }
 
+// MaxFilletRadius - the closed-form "how large CAN this radius be" bound
+// FilletConvexEdge/FilletConcaveEdge's own "radius is too large to fit"
+// check computes internally, now exposed directly rather than only ever
+// discovered by trial and error against the exception message. Both
+// fixtures below are 90-degree corners with unit-length adjacent extents,
+// chosen because the exact value (not just the pass/fail boundary) is
+// hand-derivable: trim_back = radius / tan(theta/2) = radius at theta =
+// pi/2, so max_radius = min(extent_i, extent_j) * tan(pi/4) = 1 * 1 = 1,
+// to the same floating-point precision theta itself is computed at
+// (acos/tan of exact dot products, not a fit).
+void TestMaxFilletRadiusConvexUnitCubeMatchesExtent() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::MaxFilletRadius;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const auto limit = MaxFilletRadius(box, edge_p0, edge_p1);
+
+  Check(limit.convex, "the unit cube's top-front edge is detected convex");
+  Check(std::fabs(limit.dihedral_angle - ON_PI / 2.0) < 1e-12,
+        "the unit cube's own right-angle edge reports a dihedral angle of exactly pi/2");
+  Check(std::fabs(limit.max_radius - 1.0) < 1e-9,
+        "both adjacent unit-square faces have extent 1 from this edge, at theta=pi/2 "
+        "(tan(theta/2)=1), so max_radius is exactly 1");
+
+  // The bound is TIGHT, verified against the real throw/no-throw boundary
+  // of the actual constructive function, not just restated: a radius
+  // comfortably under it succeeds, one comfortably over it is rejected
+  // with the SAME "too large to fit" reason MaxFilletRadius computed.
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(!throws([&] { FilletConvexEdge(box, edge_p0, edge_p1, limit.max_radius * (1.0 - 1e-6)); }),
+        "a radius just under the reported max_radius genuinely builds");
+  Check(throws([&] { FilletConvexEdge(box, edge_p0, edge_p1, limit.max_radius * (1.0 + 1e-6)); }),
+        "a radius just over the reported max_radius genuinely fails");
+}
+
+void TestMaxFilletRadiusConcaveLShapedPrismMatchesExtent() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdge;
+  using dino8::kernel::MaxFilletRadius;
+  using dino8::kernel::Point3d;
+
+  const Brep prism = ConcaveLShapedPrism();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const auto limit = MaxFilletRadius(prism, edge_p0, edge_p1);
+
+  Check(!limit.convex, "the L-shaped prism's own reflex edge is detected concave");
+  Check(std::fabs(limit.dihedral_angle - ON_PI / 2.0) < 1e-12,
+        "the same 90-degree magnitude TestFilletConcaveEdgeAddsExactQuarterRoundVolume's own "
+        "trim_back == radius note already established");
+  Check(std::fabs(limit.max_radius - 1.0) < 1e-9,
+        "both adjacent unit-length walls have extent 1 from this edge, so max_radius is exactly 1 "
+        "here too - the same value as the convex fixture above, by the same formula");
+
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(!throws([&] { FilletConcaveEdge(prism, edge_p0, edge_p1, limit.max_radius * (1.0 - 1e-6)); }),
+        "a radius just under the reported max_radius genuinely builds");
+  Check(throws([&] { FilletConcaveEdge(prism, edge_p0, edge_p1, limit.max_radius * (1.0 + 1e-6)); }),
+        "a radius just over the reported max_radius genuinely fails");
+}
+
+void TestMaxFilletRadiusRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MaxFilletRadius;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(throws([&] { MaxFilletRadius(box, Point3d(5, 5, 5), Point3d(5, 5, 6)); }),
+        "rejects an edge that isn't a shared boundary edge of the solid at all");
+  Check(throws([&] { MaxFilletRadius(box, Point3d(0, 0, 1), Point3d(0, 0, 1)); }),
+        "rejects coincident edge endpoints");
+}
+
 // =====================================================================
 // FilletConcaveEdgeTapered - the concave mirror of FilletConvexEdgeTapered's
 // own two-radius overload (fillet.h's own doc comment spells out the
@@ -75516,6 +75613,9 @@ int main() {
   TestRemoveChamferRejectsUnsupportedConfigurations();
   TestFilletConcaveEdgeAddsExactQuarterRoundVolume();
   TestFilletConcaveEdgeRejectsUnsupportedConfigurations();
+  TestMaxFilletRadiusConvexUnitCubeMatchesExtent();
+  TestMaxFilletRadiusConcaveLShapedPrismMatchesExtent();
+  TestMaxFilletRadiusRejectsInvalidInput();
   TestFilletConcaveEdgeTaperedRailExactness();
   TestFilletConcaveEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
   TestFilletConcaveEdgeTaperedDispatchesToConstantRadiusAtZeroTaper();
