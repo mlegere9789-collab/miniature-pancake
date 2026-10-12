@@ -345,12 +345,24 @@ class HelixCommand : public Command {
     if (pts_.size() == 1) { WantPoint("End of axis"); return; }
     if (pts_.size() == 2) { WantPoint(spiral_ ? "First radius" : "Radius"); return; }
     if (spiral_ && pts_.size() == 3) { WantPoint("Second radius"); return; }
-    Build(ctx, pts_.size() == 4 ? (pts_[3] - pts_[1]).Length() : (pts_[2] - pts_[1]).Length() * (spiral_ ? 0.2 : 1.0));
+    // The FIRST radius (pts_[2]) is measured from the axis START (pts_[0]) -
+    // the base of the helix/spiral, where the circle this command actually
+    // draws is centered (both the exact kernel construction below and the
+    // old sampled fallback build their plane at pts_[0], never pts_[1]).
+    // The SECOND radius (pts_[3], spiral only) is measured from the axis
+    // END (pts_[1]) instead - the natural near reference for a point picked
+    // close to the narrow/top end of a cone. Mixing these up (an earlier
+    // version of this command measured BOTH from pts_[1]) is invisible with
+    // the old approximate, sampled-as-control-points construction, but
+    // produces a visibly, measurably wrong radius once the curve is built
+    // exactly - caught here by end-to-end verification against the real
+    // app, not assumed correct from the formula alone.
+    Build(ctx, pts_.size() == 4 ? (pts_[3] - pts_[1]).Length() : (pts_[2] - pts_[0]).Length() * (spiral_ ? 0.2 : 1.0));
   }
   void OnText(CommandContext& ctx, const std::string& t) override {
     char* e; double v = std::strtod(t.c_str(), &e);
     if (e && !*e && pts_.size() >= 2) {
-      if (pts_.size() == 2) { pts_.push_back(pts_[1] + Vector3d(v, 0, 0)); if (spiral_) { WantPoint("Second radius"); return; } Build(ctx, v); }
+      if (pts_.size() == 2) { pts_.push_back(pts_[0] + Vector3d(v, 0, 0)); if (spiral_) { WantPoint("Second radius"); return; } Build(ctx, v); }
       else Build(ctx, v);
     }
   }
@@ -358,11 +370,31 @@ class HelixCommand : public Command {
     ctx.ClearPreview();
     Vector3d axis = pts_[1] - pts_[0];
     const double h = axis.Length();
-    const double r1 = (pts_[2] - pts_[1]).Length();
+    const double r1 = (pts_[2] - pts_[0]).Length();
     if (h <= 0 || r1 <= 0) { ctx.Warn("Axis and radius must be non-zero"); Finish(); return; }
-    axis.Unitize();
     double turns = turns_;
     if (pitch_ > 0) turns = h / pitch_;
+
+    // Exact construction first: NurbsCurve::Helix() genuinely interpolates
+    // the real analytic helix/spiral (tolerance-bounded, since no exact
+    // rational form exists), unlike the old fallback below, which hands
+    // sampled points straight to FromControlPoints() - a B-spline does
+    // not pass through its own control points in general, so that was
+    // neither exact nor even reliably close. Falls through to the old
+    // approximation only if the kernel's own tolerance search can't meet
+    // the document's absolute tolerance (e.g. an unreasonable turns count).
+    kernel::NurbsCurve curve;
+    double deviation = -1.0;
+    if (kernel::NurbsCurve::Helix(pts_[0], pts_[1], r1, r2, turns, ctx.Settings().absolute_tolerance, curve,
+                                   &deviation) == kernel::Result::Ok) {
+      AddCurve(ctx, curve, spiral_ ? "Spiral" : "Helix");
+      ctx.Print((spiral_ ? std::string("Spiral") : std::string("Helix")) +
+                ": exact interpolation (deviation " + FormatNumber(deviation) + ")");
+      Finish();
+      return;
+    }
+
+    axis.Unitize();
     ON_Plane pl(pts_[0], axis);
     const int per = 24;
     const int n = std::max(8, static_cast<int>(turns * per));
@@ -380,7 +412,15 @@ class HelixCommand : public Command {
     if (pts_.empty()) return;
     ctx.ClearPreview();
     ctx.AddPreviewLine(pts_.back(), h);
-    if (pts_.size() >= 2) { ON_Plane pl = ActivePlane(ctx); pl.SetOrigin(pts_[1]); ctx.AddPreviewPolyline(CirclePoints(ON_Circle(ON_Plane(pts_[1], pts_[1] - pts_[0]), (h - pts_[1]).Length()))); }
+    if (pts_.size() >= 2) {
+      // Preview the circle around whichever endpoint the radius being
+      // picked right now is actually measured from (pts_[0] for the
+      // first/only radius, pts_[1] for the spiral's own second radius) -
+      // matching Build()'s own reference points exactly, see OnPoint()'s
+      // own comment for why.
+      const Point3d center = pts_.size() == 2 ? pts_[0] : pts_[1];
+      ctx.AddPreviewPolyline(CirclePoints(ON_Circle(ON_Plane(center, pts_[1] - pts_[0]), (h - center).Length())));
+    }
   }
   void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
   bool spiral_;

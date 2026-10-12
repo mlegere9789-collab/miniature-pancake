@@ -89,7 +89,15 @@ same as every other headless mode this app already has).
   stored digest. Real hashing: a leaked token *file* then leaks nothing a
   caller could present as the token itself. (A plain `--serve-token`
   flag can't meaningfully use this - its own value has to be real
-  plaintext in argv at startup regardless of how it's written.)
+  plaintext in argv at startup regardless of how it's written.) On a
+  POSIX platform (the only one `--serve` can even start on - see below),
+  the file's own entries are also refused - the identical fail-*closed*
+  handling as a stale or missing file - whenever its permission bits
+  grant read access to its group or to every other local user, the
+  identical "unprotected private key" check `ssh`/`ssh-keygen` already
+  apply to a private key. Checked fresh on every request, so tightening
+  or loosening the file's permissions while the server runs takes effect
+  immediately, no restart needed.
 - `--serve-token-file-ttl SECONDS`, with `--serve-token-file`, adds real
   automatic *expiry* - the one piece plain `--serve-token-file` still
   lacked (it can rotate or revoke a token live, but an untouched file's
@@ -288,9 +296,10 @@ $ curl -s --data '{"type":"bogus"}' http://127.0.0.1:8080/objects
   exactly one secret (see above), `--serve-token-file`'s entries can now
   be rotated or revoked live with no restart (see above),
   `--serve-token-file-ttl` adds real automatic expiry on top of that (see
-  above), and a `--serve-token-file` entry can now be stored hashed
+  above), a `--serve-token-file` entry can now be stored hashed
   (`sha256:HEX`, see above) so the file itself never holds the real
-  secret - but a plain `--serve-token` flag (as opposed to a
+  secret, and the file itself is now checked for loose permissions on a
+  POSIX platform (see above) - but a plain `--serve-token` flag (as opposed to a
   `--serve-token-file` entry) still has none of this: fixed for the
   process's whole lifetime, no rotation, no revocation, no expiry short
   of a restart with a different set of flags, and no benefit from
