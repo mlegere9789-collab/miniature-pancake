@@ -1,0 +1,44 @@
+# Automatic (per-frame, no explicit command) associative-annotation
+# recompute - closes PARITY_MAP.md's "Associative annotation updating"
+# bullet's own named gap ("no automatic recompute hooked into document
+# edits"). Application::Frame() now calls UpdateAssociativeAnnotations
+# (Application.cpp) every frame, gated on Document::Revision() changing
+# since the last check (a no-op on every idle frame): it quietly re-runs
+# the same rebuild UpdateDimensions/UpdateMeasureDims/UpdateFields/
+# UpdateTitleBlock/UpdatePanelSchedule/UpdateGdtSymbols/UpdateMultiLeaders
+# already run explicitly (DoUpdateDimensions etc., quiet=true - see
+# cmd_annotate.cpp), so a moved anchor's dependent dimension/field/etc.
+# picks up the change on the very next rendered frame, with no Update*
+# command typed - the actual gap this bullet named.
+#
+# Proof, using the same associative-DimLinear construction drafting2_
+# script.txt's own "MovingLine" test already uses: List (cmd_analyze.cpp)
+# prints an object's own real id ("Object <id> ..."). Recording the
+# dimension's own id right after it is built, stretching its real Line
+# anchor with Scale1D (doubling its length 20 -> 40, same as that other
+# test), then IMMEDIATELY re-recording the id again - with no
+# UpdateDimensions call anywhere in between - is a clean, purely
+# id-based proof that something rebuilt the dimension on its own:
+# Remove()/Add() always allocate a brand new, strictly increasing id
+# (Document::next_id_ only ever grows), so the same id surviving the
+# Scale1D unchanged would mean nothing auto-rebuilt it, while a
+# different (higher) id proves the per-frame hook already tore the old
+# dimension down and rebuilt it before this script ever asked for one.
+# A final, explicit UpdateDimensions - run only afterward, to confirm
+# correctness rather than to cause the rebuild - must still print the
+# correct 40-unit measurement: proof the automatic rebuild it is
+# re-confirming was actually right, not just that *something* changed.
+Line 0,0,0 20,0,0
+SelLast
+SetObjectName AutoUpdateLine
+DimLinear
+0,0,0
+20,0,0
+0,5,0
+SelLast
+List
+SelName AutoUpdateLine
+Scale1D 0,0,0 2
+SelLast
+List
+UpdateDimensions
