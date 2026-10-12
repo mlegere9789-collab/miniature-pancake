@@ -7651,8 +7651,10 @@ void TestBooleanCombineGeneralAsymmetricCoincidentSubFace() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
   using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
   using dino8::kernel::Vector3d;
 
   // A 4x4x4 box with a 1x1x1 boss (a square profile extruded upward,
@@ -7662,33 +7664,54 @@ void TestBooleanCombineGeneralAsymmetricCoincidentSubFace() {
   // fully-matching-extent shape the "Coplanar boxes" fixture above
   // already covers.
   //
-  // Honestly scoped to what this round's own fix actually guarantees, not
-  // more: NONE of these four calls may throw any more (the regression
-  // itself, confirmed fixed), and the Union result - the one op this
-  // fixture's own box-face fragmentation (a correctly hole-bridged outer
-  // ring plus a separate inner island exactly matching the boss footprint)
-  // happens to classify unambiguously either way, confirmed by direct
-  // inspection - is checked for real structural correctness. Intersection/
-  // Difference are deliberately NOT asserted beyond "doesn't throw": this
+  // Originally (round 44) honestly scoped to only what THAT round's own
+  // fix guaranteed: none of these four calls throws (the `878ecdb`
+  // regression itself), and the Union result - the one op this fixture's
+  // own box-face fragmentation (a correctly hole-bridged outer ring plus a
+  // separate inner island exactly matching the boss footprint) happened to
+  // classify unambiguously either way even by plain ray-casting - was
+  // checked for real structural correctness, while Intersection/Difference
+  // were deliberately left unasserted beyond "doesn't throw": this
   // fixture's own box-top face ends up with an inner fragment sitting
   // EXACTLY on the boss's own coincident boundary plane, and ray-casting
-  // that fragment's representative point against the other operand is the
+  // that fragment's representative point against the other operand was the
   // identical "numerically arbitrary" ambiguity this file's whole-face
-  // override exists to avoid, one level deeper than that override reaches
-  // (it only ever fires for a face's own single UNTOUCHED fragment, not an
-  // inner fragment carved out of a bigger one) - confirmed directly (not
-  // assumed) to give a genuinely wrong Intersection/Difference result here,
-  // the SAME already-disclosed "No general partially-overlapping
-  // coincident face handling" gap (the "Coplanar / coincident face
-  // handling" bullet, PARITY_MAP.md) the symmetric "Coplanar boxes"
-  // fixture above never reaches at all (its own whole-face override
-  // handles 100% of that fixture, with no inner fragment left over).
-  // Confirmed via an A/B rebuild that this ambiguity is NOT itself a new
-  // regression either (a plain `Brep::Box()` boss - sharper, flatter side
-  // walls than this one's wrapped `Brep::Extrude()` side - already returns
-  // silently WRONG volumes for it on the pre-`878ecdb` baseline too, with
-  // no crash) - left genuinely open, disclosed in PARITY_MAP.md rather
-  // than chased further or quietly asserted away here.
+  // override exists to avoid, one level deeper than that override reached
+  // at the time (it only ever fired for a face's own single UNTOUCHED
+  // fragment, not an inner fragment carved out of a bigger one) - confirmed
+  // directly (not assumed) to give a genuinely wrong Intersection/
+  // Difference result then.
+  //
+  // **Round 45: that one level deeper is now reached too.** The override
+  // is no longer keyed only on "this fragment IS the whole face" - a new,
+  // separate per-face bookkeeping (`partial_coincident_a`/
+  // `partial_coincident_b`, boolean_general.cpp) records, for the BIGGER
+  // side of an asymmetric coincident pair (exactly this fixture's own box
+  // top face vs. the boss's whole bottom cap), the exact sub-region bbox a
+  // later fragment must match to be that same physical coincident patch.
+  // The box's own inner-island fragment now matches it and is routed
+  // through the identical outward-normal-based rule the whole-face
+  // override already uses (opposite normals here: touching, not
+  // overlapping - the same geometric relationship as the symmetric
+  // "Coplanar boxes" fixture above, just confined to a SUB-region of a
+  // bigger face instead of the face's entire extent), instead of an
+  // ambiguous ray-cast. Verified directly (`DINO8_BOOL_DEBUG=1` tracing
+  // plus a standalone reproducer linked against `libdino8_kernel.a`, not
+  // inferred from this test alone) that Intersection now comes back as the
+  // genuine empty solid and both Differences now match the exact
+  // closed-form volumes a touching-only (zero volumetric overlap) pair
+  // must have - asserted below. Confirmed via an A/B rebuild that this
+  // ambiguity was NOT itself new in round 44 (a plain `Brep::Box()` boss -
+  // sharper, flatter side walls than this one's wrapped `Brep::Extrude()`
+  // side - still throws `BooleanCombineGeneral`'s own separate, deeper,
+  // genuinely NOT-fixed-here "an edge is claimed by 3 or more fragment
+  // loops" refusal even after this round's fix, confirmed directly, not
+  // merely assumed unchanged): that harder, four-independent-flat-side-wall
+  // shape is a DIFFERENT, still fully open limitation (this bullet's own
+  // disclosed "FLAT partially-overlapping case" plus additional edge-
+  // sharing structure this round does not attempt), left genuinely open,
+  // disclosed in PARITY_MAP.md rather than chased further or quietly
+  // asserted away here.
   const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
   const NurbsCurve square = NurbsCurve::FromControlPoints(
       {Point3d(1.5, 1.5, 4), Point3d(2.5, 1.5, 4), Point3d(2.5, 2.5, 4), Point3d(1.5, 2.5, 4), Point3d(1.5, 1.5, 4)},
@@ -7701,14 +7724,32 @@ void TestBooleanCombineGeneralAsymmetricCoincidentSubFace() {
         "box+boss Union has exactly 8 faces (box's 5 untouched sides + its own hole-bridged top, plus the boss's "
         "wrapped side wall + top cap - its own coincident bottom cap correctly dropped by the whole-face override)");
 
+  // Round 45: the box/boss pair shares zero volumetric overlap (the boss
+  // merely sits flush on the box's top, touching along a sub-region of
+  // that face) - the exact closed-form answer any touching-only pair must
+  // have is the empty intersection and each operand's own unchanged
+  // volume on Difference, now reached without the ambiguous ray-cast.
   const Brep i = BooleanCombineGeneral(box, boss, BooleanOp::Intersection);
-  Check(i.FaceCount() >= 0,
-        "box+boss Intersection no longer throws the regression's own fragment-loop abort (reaching this line at "
-        "all is the real assertion - see this test's own doc comment for why its RESULT is not also asserted here)");
+  Check(i.FaceCount() == 0,
+        "box+boss Intersection is the genuine empty solid (touching only, zero volumetric overlap) - the "
+        "partial-coincident-sub-region override (round 45) replaces the old ambiguous ray-cast that used to give "
+        "a wrong nonzero result here");
+
   const Brep d_ab = BooleanCombineGeneral(box, boss, BooleanOp::Difference);
-  Check(d_ab.FaceCount() >= 0, "box+boss A-B no longer throws the regression's own fragment-loop abort");
+  Check(d_ab.raw().IsValid(), "box - boss is a valid ON_Brep");
+  const Mesh mesh_ab = TessellateGeneralBooleanClosedMesh(d_ab, 8, 8);
+  Check(mesh_ab.IsClosedManifold(), "box - boss tessellates as a genuine closed manifold");
+  Check(std::abs(mesh_ab.Volume() - 64.0) < 1e-3,
+        "box - boss's exact volume is 64 (the box's own unchanged volume - the boss never overlaps it "
+        "volumetrically, only touches its top face)");
+
   const Brep d_ba = BooleanCombineGeneral(boss, box, BooleanOp::Difference);
-  Check(d_ba.FaceCount() >= 0, "box+boss B-A no longer throws the regression's own fragment-loop abort");
+  Check(d_ba.raw().IsValid(), "boss - box is a valid ON_Brep");
+  const Mesh mesh_ba = TessellateGeneralBooleanClosedMesh(d_ba, 8, 8);
+  Check(mesh_ba.IsClosedManifold(), "boss - box tessellates as a genuine closed manifold");
+  Check(std::abs(mesh_ba.Volume() - 1.0) < 1e-3,
+        "boss - box's exact volume is 1 (the boss's own unchanged volume - the box never overlaps it "
+        "volumetrically, only touches its bottom cap)");
 }
 
 // PARITY_MAP.md's "Tolerant booleans" bullet, after BooleanCombineGeneral()
@@ -26037,6 +26078,140 @@ void TestPointCloudSpatialQueries() {
     Check(threw_k0, "KNearest(k = 0) throws");
     Check(threw_kneg, "KNearest(k < 0) throws");
     Check(threw_radius, "PointsWithinRadius(negative radius) throws");
+  }
+}
+
+// PARITY_MAP.md's own "kernel: Mass properties & spatial queries" category
+// named this directly: "Point-cloud spatial queries... brute force"
+// (`KNearest`/`PointsWithinRadius`, "no kd-tree/R-tree, despite OpenNURBS
+// shipping a real ON_RTree this could have been layered on"). Both now
+// query a real `ON_RTree` spatial index (`PointCloud::SpatialIndex()`,
+// lazily built and cached) instead of scanning every point - this test
+// verifies the acceleration is genuinely load-bearing (exact results on a
+// cloud too large to have been hand-verified, matched against an
+// independent brute-force reference) and that the cache's own
+// invalidate-on-mutation and copy-sharing rules hold, not just that the
+// small hand-derived fixture above still passes.
+void TestPointCloudSpatialQueriesUseRTreeAcceleration() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::PointCloudNeighbor;
+
+  auto brute_knearest = [](const std::vector<Point3d>& pts, Point3d q, int k) {
+    std::vector<PointCloudNeighbor> all;
+    for (size_t i = 0; i < pts.size(); ++i) all.push_back({static_cast<int>(i), q.DistanceTo(pts[i])});
+    std::sort(all.begin(), all.end(), [](const PointCloudNeighbor& a, const PointCloudNeighbor& b) {
+      return a.distance != b.distance ? a.distance < b.distance : a.index < b.index;
+    });
+    all.resize(std::min(static_cast<size_t>(k), all.size()));
+    return all;
+  };
+  auto brute_within_radius = [](const std::vector<Point3d>& pts, Point3d q, double r) {
+    std::vector<PointCloudNeighbor> found;
+    for (size_t i = 0; i < pts.size(); ++i) {
+      const double d = q.DistanceTo(pts[i]);
+      if (d <= r) found.push_back({static_cast<int>(i), d});
+    }
+    std::sort(found.begin(), found.end(), [](const PointCloudNeighbor& a, const PointCloudNeighbor& b) {
+      return a.distance != b.distance ? a.distance < b.distance : a.index < b.index;
+    });
+    return found;
+  };
+
+  std::vector<Point3d> pts;
+  unsigned seed = 90125;
+  auto next_rand = [&seed]() {
+    seed = seed * 1103515245u + 12345u;
+    return static_cast<int>((seed >> 16) % 2000);
+  };
+  PointCloud cloud;
+  for (int i = 0; i < 300; ++i) {
+    const double x = next_rand() / 10.0 - 100.0, y = next_rand() / 10.0 - 100.0, z = next_rand() / 10.0 - 100.0;
+    pts.push_back(Point3d(x, y, z));
+    cloud.AppendPoint(Point3d(x, y, z));
+  }
+
+  bool knearest_matches_brute = true;
+  for (int trial = 0; trial < 60 && knearest_matches_brute; ++trial) {
+    const Point3d q(next_rand() / 10.0 - 100.0, next_rand() / 10.0 - 100.0, next_rand() / 10.0 - 100.0);
+    const int k = 1 + (next_rand() % 20);
+    const auto brute = brute_knearest(pts, q, k);
+    const auto real = cloud.KNearest(q, k);
+    if (brute.size() != real.size()) {
+      knearest_matches_brute = false;
+      break;
+    }
+    for (size_t i = 0; i < brute.size(); ++i) {
+      if (brute[i].index != real[i].index || std::abs(brute[i].distance - real[i].distance) > 1e-9) {
+        knearest_matches_brute = false;
+        break;
+      }
+    }
+  }
+  Check(knearest_matches_brute,
+        "KNearest's own R-tree-accelerated search matches an independent brute-force reference exactly, "
+        "over 60 random queries against a 300-point cloud, not just the small hand-derived fixture above");
+
+  bool within_radius_matches_brute = true;
+  for (int trial = 0; trial < 60 && within_radius_matches_brute; ++trial) {
+    const Point3d q(next_rand() / 10.0 - 100.0, next_rand() / 10.0 - 100.0, next_rand() / 10.0 - 100.0);
+    const double r = (next_rand() % 500) / 10.0;
+    const auto brute = brute_within_radius(pts, q, r);
+    const auto real = cloud.PointsWithinRadius(q, r);
+    if (brute.size() != real.size()) {
+      within_radius_matches_brute = false;
+      break;
+    }
+    for (size_t i = 0; i < brute.size(); ++i) {
+      if (brute[i].index != real[i].index || std::abs(brute[i].distance - real[i].distance) > 1e-9) {
+        within_radius_matches_brute = false;
+        break;
+      }
+    }
+  }
+  Check(within_radius_matches_brute,
+        "PointsWithinRadius's own R-tree-accelerated box-then-exact-filter search matches the same brute-force "
+        "reference exactly, over 60 random queries and radii");
+
+  // Mutation invalidates the cache: SetPointAt() must be reflected
+  // immediately, not answered from a stale tree.
+  {
+    const auto before = cloud.KNearest(Point3d(0, 0, 0), 1);
+    cloud.SetPointAt(before[0].index, Point3d(1e-5, 1e-5, 1e-5));
+    const auto after = cloud.KNearest(Point3d(0, 0, 0), 1);
+    Check(after[0].index == before[0].index && after[0].distance < 1e-3,
+          "SetPointAt() invalidates the cached spatial index: the moved point is immediately the (much closer) "
+          "nearest neighbor again, not the stale pre-move distance");
+  }
+
+  // Copy sharing: a copy's own cached tree is unaffected by the
+  // ORIGINAL's later mutation (each copy only invalidates its own
+  // pointer), but the original itself does see its own new point.
+  {
+    const PointCloud copy = cloud;
+    const auto copy_before = copy.KNearest(Point3d(50, 50, 50), 1);
+    const int original_count_before = cloud.PointCount();
+    cloud.AppendPoint(Point3d(50, 50, 50));
+    const auto copy_after = copy.KNearest(Point3d(50, 50, 50), 1);
+    Check(copy_after[0].index == copy_before[0].index,
+          "a copy's own cached spatial index is unaffected by the original cloud's later AppendPoint() - the two "
+          "share the tree only until one of them next mutates");
+    const auto original_after = cloud.KNearest(Point3d(50, 50, 50), 1);
+    Check(original_after[0].index == original_count_before,
+          "...while the original itself immediately sees its own newly appended point as the nearest neighbor");
+  }
+
+  // Transform() returns a copy whose own positions have moved - its own
+  // cache must not be the pre-transform tree.
+  {
+    ON_Xform shift;
+    shift.Translation(1000.0, 1000.0, 1000.0);
+    const PointCloud shifted = cloud.Transform(shift);
+    const auto near_old_origin = shifted.KNearest(Point3d(0, 0, 0), 1);
+    const auto near_new_location = shifted.KNearest(Point3d(1000, 1000, 1000), 1);
+    Check(near_new_location[0].distance < near_old_origin[0].distance,
+          "Transform()'s own returned copy queries against the SHIFTED positions, not a stale pre-transform tree: "
+          "the nearest point to the shifted cluster's own new location is closer than to its old one");
   }
 }
 
@@ -77108,6 +77283,7 @@ int main() {
   RunTest("TestMeshDistanceTo", TestMeshDistanceTo);
   RunTest("TestMeshClashWith", TestMeshClashWith);
   RunTest("TestPointCloudSpatialQueries", TestPointCloudSpatialQueries);
+  RunTest("TestPointCloudSpatialQueriesUseRTreeAcceleration", TestPointCloudSpatialQueriesUseRTreeAcceleration);
   RunTest("TestPointCloudPointsNearPlane", TestPointCloudPointsNearPlane);
   RunTest("TestPointCloudContourAtPlaneFitsRingThroughBand", TestPointCloudContourAtPlaneFitsRingThroughBand);
   RunTest("TestPointCloudXyzRoundTrips", TestPointCloudXyzRoundTrips);
