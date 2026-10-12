@@ -84,7 +84,17 @@
 //                 earlier wording disclosed - though a plain --serve-token
 //                 flag still can't benefit from it, since its own value
 //                 has to be the real plaintext in argv at startup either
-//                 way.
+//                 way. On a POSIX platform, the file's entries are also
+//                 refused (treated as absent, the same fail-closed
+//                 handling as a stale or missing file) whenever its own
+//                 permission bits grant read access to its group or to
+//                 everyone else - the identical "unprotected private key"
+//                 check ssh/ssh-keygen already apply, re-checked fresh on
+//                 every request so tightening or loosening the file's
+//                 permissions while the server runs takes effect
+//                 immediately, no restart. No such check on a platform
+//                 with no POSIX permission bits (and no such platform can
+//                 reach --serve at all - see net/ComputeServer.h).
 //   --serve-token-file-ttl SECONDS   with --serve-token-file: that file's
 //                 own entries additionally expire once the file's last-
 //                 write time is more than SECONDS old - real automatic
@@ -138,6 +148,10 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 #include "gl/gl_loader.h"
 #include <GLFW/glfw3.h>
@@ -448,6 +462,42 @@ bool TokenFileFresh(const std::string& path, double ttl) {
   if (ec) return false;
   const auto age = std::filesystem::file_time_type::clock::now() - mtime;
   return std::chrono::duration<double>(age).count() <= ttl;
+}
+
+// True if `path`'s own permission bits grant read access to its group or
+// to every other local user, not just its owner - the identical
+// "@@@@@@@@@ WARNING: UNPROTECTED PRIVATE KEY FILE! @@@@@@@@@" check
+// ssh/ssh-keygen already apply to a private key, applied here to
+// --serve-token-file for the identical reason: a bearer-token (or
+// sha256:HEX hash) file an operator intended to be private shouldn't
+// also be readable by every other local account merely by existing on
+// disk with loose permissions - distinct from, and in addition to, the
+// file simply not existing (TokenFileFresh's own concern) or having gone
+// stale (also TokenFileFresh). Checked fresh on every request, exactly
+// like TokenFileFresh, so tightening or loosening the file's own
+// permissions while the server keeps running takes effect on the very
+// next request with no restart - the identical live-reconsideration
+// design this whole flag already has, just for a third reason a file
+// might not be trustworthy right now (missing, stale, or insecurely
+// permissioned). Always true (no check at all, matching the
+// pre-existing behavior) on a platform with no POSIX permission bits to
+// check - meaningless there, and this whole flag's own underlying
+// `net/ComputeServer.h` already refuses to even start `--serve` on
+// Windows (no POSIX-socket implementation exists to fall back on), so
+// this check is moot on that platform regardless. A path that can't be
+// stat'd at all (missing, a dangling symlink, ...) is treated as having
+// no permission problem - TokenFileFresh/ParseTokenFile already fail
+// that case closed on their own, so this check only ever adds a NEW
+// reason to deny, never a reason to allow something those two wouldn't.
+bool TokenFilePermissionsOk(const std::string& path) {
+#ifndef _WIN32
+  struct stat st;
+  if (::stat(path.c_str(), &st) != 0) return true;
+  return (st.st_mode & (S_IRGRP | S_IROTH)) == 0;
+#else
+  (void)path;
+  return true;
+#endif
 }
 
 // Reads one boolean-ish query parameter ("geometry=1" or "geometry=true")
@@ -934,14 +984,17 @@ int main(int argc, char** argv) {
     // candidate, with no shared table lookup leaking anything about
     // *which* candidate it resembles. Giving --serve-token-file makes auth
     // required even if the file is currently empty/missing/unreadable, or
-    // (with --serve-token-file-ttl set) too old (TokenFileFresh false,
-    // ParseTokenFile's own result then discarded entirely rather than
-    // read) - fails closed rather than silently falling back to the
+    // (with --serve-token-file-ttl set) too old (TokenFileFresh false), or
+    // readable by anyone but its own owner (TokenFilePermissionsOk false -
+    // the identical "unprotected private key" check ssh/ssh-keygen already
+    // apply) - ParseTokenFile's own result then discarded entirely rather
+    // than read, failing closed rather than silently falling back to the
     // fully-open behavior an empty serve_tokens alone would mean.
     std::string caller_name;  // stays "" for an unauthenticated server or an anonymous (no "NAME:") token
     if (!serve_tokens.empty() || !serve_token_file.empty()) {
       std::vector<std::pair<std::string, std::string>> candidates = serve_tokens;
-      if (!serve_token_file.empty() && TokenFileFresh(serve_token_file, serve_token_file_ttl)) {
+      if (!serve_token_file.empty() && TokenFileFresh(serve_token_file, serve_token_file_ttl) &&
+          TokenFilePermissionsOk(serve_token_file)) {
         for (auto& entry : ParseTokenFile(serve_token_file)) candidates.push_back(std::move(entry));
       }
       const auto it = req.headers.find("authorization");
