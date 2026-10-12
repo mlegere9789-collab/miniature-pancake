@@ -83,6 +83,7 @@ void RegisterExchange2Commands(CommandEngine&);
 void RegisterConstraintCommands(CommandEngine&);  // cmd_constraints.cpp
 void ConstraintsFrame(Application&);              // cmd_constraints.cpp: auto re-solve + glyph overlay
 void RegisterArchCommands(CommandEngine&);        // cmd_arch.cpp
+void RegisterSheetMetalCommands(CommandEngine&);  // cmd_sheetmetal.cpp
 void RegisterElecCommands(CommandEngine&);        // cmd_elec.cpp
 void RegisterStandardsCommands(CommandEngine&);   // cmd_standards.cpp: Standards/CheckStandards
 void RegisterSessionCommands(CommandEngine&);  // Dig* digitizer, Worksession/LimitReferenceModel, Snapshots
@@ -400,6 +401,7 @@ void Application::RegisterCommands() {
   dino8::input::RegisterSpaceMouseCommands(*engine_);   // SpaceMouse, SpaceMouseOptions, 3DconnexionOptions
   dino8::app::RegisterConstraintCommands(*engine_);     // Constrain, ConstraintSolve, ConstraintDelete, ConstraintsShow
   dino8::app::RegisterArchCommands(*engine_);           // Wall, Door, Window, Slab, Roof, Stair, Column, Beam, ArchEdit, ArchSchedule
+  dino8::app::RegisterSheetMetalCommands(*engine_);     // SheetMetalBend
   dino8::app::RegisterElecCommands(*engine_);           // Resistor, Capacitor, Switch, Ground, Lamp, WireRun, ElecRebuild, ElecTag
   RegisterSessionCommands(*engine_);    // Dig* digitizer, Worksession/LimitReferenceModel, Snapshots
   RegisterCompareCommands(*engine_);    // DwgCompare/XrefCompare/CompareClear

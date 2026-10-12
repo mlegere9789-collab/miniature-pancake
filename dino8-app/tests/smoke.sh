@@ -4771,6 +4771,22 @@ mmcheck "^ok   expect_objects 18" "mech/MEP script produced the expected object 
 echo "$MM" | grep -E "^(ok|FAIL)" || true
 if echo "$MM" | grep -q "^FAIL"; then fail=1; fi
 
+# Sheet-metal feature command (Bend - cmd_sheetmetal.cpp, see
+# sheet_metal_script.txt's own doc comment for the exact bounding-box
+# derivation this checks against).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SM="$("$BIN" --smoke 50 --script "$HERE/sheet_metal_script.txt" 2>&1)" || { echo "$SM"; echo "FAIL: sheet-metal script exited non-zero"; exit 1; }
+else
+  SM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 50 --script "$HERE/sheet_metal_script.txt" 2>&1)" || { echo "$SM"; echo "FAIL: sheet-metal script exited non-zero"; exit 1; }
+fi
+smcheck() { if echo "$SM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SM" "$1"; fail=1; fi; }
+smcheck "SheetMetalBend #1 added." "SheetMetalBend command built a sheet-metal bend"
+smcheck "3 faces, 5 edges, closed solid" "SheetMetalBend's result is a genuine closed solid (wall + 2 flat end caps)"
+smcheck "Bounding box min -0.05,-0.05,0 max 0.005,0.005,0.1" "SheetMetalBend's bbox matches the hand-derived leg/arc/width geometry (see sheet_metal_script.txt)"
+smcheck "^ok   expect_objects 2" "sheet-metal script produced the expected object count (1 component + 1 BoundingBox visualization box)"
+echo "$SM" | grep -E "^(ok|FAIL)" || true
+if echo "$SM" | grep -q "^FAIL"; then fail=1; fi
+
 # Electrical schematic symbols: Resistor/Capacitor/Switch/Ground/Lamp/
 # WireRun, plus ElecTag and PanelSchedule (see elec_script.txt). Bounding
 # boxes and CV endpoints are checked against each symbol's own documented
