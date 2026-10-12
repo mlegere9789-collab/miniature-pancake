@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <vector>
 #include "i18n/I18n.h"
@@ -312,13 +313,8 @@ std::vector<std::string> AllToolbarButtonCommands() {
   return out;
 }
 
-bool AddToolbarCommand(Application& app, const std::string& name) {
-  const RegisteredCommand* rc = app.Engine().Find(name);
-  if (app.toolbar_commands.empty()) app.toolbar_commands = DefaultToolbarCommands();
-  if (rc) {
-    app.toolbar_commands.push_back(rc->name);
-    return true;
-  }
+std::optional<std::string> ResolveToolbarCommandName(Application& app, const std::string& name) {
+  if (const RegisteredCommand* rc = app.Engine().Find(name)) return rc->name;
   // Not a literal registered command - but a registered ALIAS (Alias,
   // cmd_misc.cpp) is just as runnable: DrawButtonRow's click handler
   // below already calls the generic Engine().Execute(command), which
@@ -333,8 +329,22 @@ bool AddToolbarCommand(Application& app, const std::string& name) {
   // degrade to the alias's own name, same as any other unrecognized
   // command string already does.
   const auto& aliases = app.Engine().Aliases();
-  if (aliases.find(ToLower(name)) == aliases.end()) return false;
-  app.toolbar_commands.push_back(ToLower(name));
+  const auto it = aliases.find(ToLower(name));
+  if (it == aliases.end()) return std::nullopt;
+  return it->first;
+}
+
+std::vector<std::string> AllToolbarAliasCommands(Application& app) {
+  std::vector<std::string> out;
+  for (const auto& entry : app.Engine().Aliases()) out.push_back(entry.first);
+  return out;
+}
+
+bool AddToolbarCommand(Application& app, const std::string& name) {
+  const std::optional<std::string> resolved = ResolveToolbarCommandName(app, name);
+  if (!resolved) return false;
+  if (app.toolbar_commands.empty()) app.toolbar_commands = DefaultToolbarCommands();
+  app.toolbar_commands.push_back(*resolved);
   return true;
 }
 

@@ -1,126 +1,77 @@
 #include <cmath>
 #include <cstdio>
-#include "dino8/kernel/mesh.h"
+#include "dino8/kernel/curve.h"
 #include "opennurbs.h"
-
-namespace {
-// Reproduces the OLD (pre-this-round) single-ray ContainsPoint exactly,
-// to compare against the new majority-voted one.
-bool OldContainsPoint(const dino8::kernel::Mesh& mesh, dino8::kernel::Point3d point) {
-  using namespace dino8::kernel;
-  const ON_Mesh& m = mesh.raw();
-  const Vector3d direction(0.6532814824, 0.2705980501, 0.7071067812);
-  int crossing_count = 0;
-  for (int i = 0; i < m.m_F.Count(); ++i) {
-    const ON_MeshFace& f = m.m_F[i];
-    auto test = [&](int i0, int i1, int i2) {
-      const Point3d a(m.m_V[i0]), b(m.m_V[i1]), c(m.m_V[i2]);
-      const Vector3d edge1 = b - a;
-      const Vector3d edge2 = c - a;
-      const Vector3d h = ON_CrossProduct(direction, edge2);
-      const double det = ON_DotProduct(edge1, h);
-      if (std::fabs(det) < 1e-12) return;
-      const double inv_det = 1.0 / det;
-      const Vector3d s = point - a;
-      const double u = inv_det * ON_DotProduct(s, h);
-      if (u < 0.0 || u > 1.0) return;
-      const Vector3d q = ON_CrossProduct(s, edge1);
-      const double v = inv_det * ON_DotProduct(direction, q);
-      if (v < 0.0 || u + v > 1.0) return;
-      const double t = inv_det * ON_DotProduct(edge2, q);
-      if (t > 1e-12) ++crossing_count;
-    };
-    test(f.vi[0], f.vi[1], f.vi[2]);
-    if (f.IsQuad()) test(f.vi[0], f.vi[2], f.vi[3]);
-  }
-  return (crossing_count % 2) == 1;
-}
-}  // namespace
 
 int main() {
   ON::Begin();
   using namespace dino8::kernel;
 
-  // An octahedron (6 vertices, 8 triangular faces, every vertex shared by
-  // exactly 4 triangles) - the simplest closed mesh where many triangles
-  // meet at one vertex, the classic ray-cast "grazes a shared vertex"
-  // scenario. Query point P is placed so the OLD single fixed direction's
-  // own ray passes EXACTLY through vertex (1,0,0) as it travels forward.
-  Mesh oct;
-  ON_Mesh& raw = oct.raw();
-  raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 0 +X
-  raw.m_V.Append(ON_3fPoint(-1, 0, 0));  // 1 -X
-  raw.m_V.Append(ON_3fPoint(0, 1, 0));   // 2 +Y
-  raw.m_V.Append(ON_3fPoint(0, -1, 0));  // 3 -Y
-  raw.m_V.Append(ON_3fPoint(0, 0, 1));   // 4 +Z
-  raw.m_V.Append(ON_3fPoint(0, 0, -1));  // 5 -Z
-  auto add_tri = [&raw](int a, int b, int c) {
-    ON_MeshFace f;
-    f.vi[0] = a;
-    f.vi[1] = b;
-    f.vi[2] = c;
-    f.vi[3] = c;
-    raw.m_F.Append(f);
-  };
-  // 8 faces, outward-facing winding.
-  add_tri(0, 2, 4);
-  add_tri(2, 1, 4);
-  add_tri(1, 3, 4);
-  add_tri(3, 0, 4);
-  add_tri(2, 0, 5);
-  add_tri(1, 2, 5);
-  add_tri(3, 1, 5);
-  add_tri(0, 3, 5);
+  // NurbsCurve::FindSelfIntersections(), exercised standalone against a
+  // hand-built figure-8 (bowtie) polyline curve with a KNOWN crossing
+  // point, before trusting the real registered test
+  // (TestCurveFindSelfIntersections).
 
-  const Vector3d direction(0.6532814824, 0.2705980501, 0.7071067812);
-  // Per-direction vote breakdown at the two confirmed-ambiguous k values.
+  // A simple bowtie: (0,0) -> (10,10) -> (10,0) -> (0,10) -> back to (0,0).
+  // Segment 1 ((0,0)-(10,10)) and segment 3 ((10,0)-(0,10)) cross at
+  // exactly (5,5) by symmetry - the one real self-intersection. Segment 2
+  // ((10,10)-(10,0)) and segment 4 ((0,10)-(0,0)) don't cross anything.
   {
-    static const double kPhi = 1.6180339887498948482;
-    static const double kPhi2 = kPhi * kPhi;
-    std::array<Vector3d, 5> dirs = {
-        Vector3d(0.6532814824, 0.2705980501, 0.7071067812), Vector3d(1.0, kPhi, kPhi2), Vector3d(kPhi, kPhi2, 1.0),
-        Vector3d(kPhi2, 1.0, kPhi),                          Vector3d(1.0, -kPhi, kPhi2),
+    const std::vector<Point3d> pts = {
+        Point3d(0, 0, 0), Point3d(10, 10, 0), Point3d(10, 0, 0), Point3d(0, 10, 0), Point3d(0, 0, 0),
     };
-    for (Vector3d& d : dirs) d = d / d.Length();
-    for (double k : {2.0, 3.0}) {
-      const Point3d p = Point3d(1, 0, 0) - direction * k;
-      std::printf("k=%.1f per-direction votes: ", k);
-      const ON_Mesh& m = oct.raw();
-      for (const Vector3d& d : dirs) {
-        int crossings = 0;
-        for (int i = 0; i < m.m_F.Count(); ++i) {
-          const ON_MeshFace& f = m.m_F[i];
-          const Point3d a(m.m_V[f.vi[0]]), b(m.m_V[f.vi[1]]), c(m.m_V[f.vi[2]]);
-          const Vector3d edge1 = b - a, edge2 = c - a;
-          const Vector3d h = ON_CrossProduct(d, edge2);
-          const double det = ON_DotProduct(edge1, h);
-          if (std::fabs(det) < 1e-12) continue;
-          const double inv_det = 1.0 / det;
-          const Vector3d s = p - a;
-          const double u = inv_det * ON_DotProduct(s, h);
-          if (u < 0.0 || u > 1.0) continue;
-          const Vector3d q = ON_CrossProduct(s, edge1);
-          const double v = inv_det * ON_DotProduct(d, q);
-          if (v < 0.0 || u + v > 1.0) continue;
-          const double t = inv_det * ON_DotProduct(edge2, q);
-          if (t > 1e-12) ++crossings;
-        }
-        std::printf("%d ", crossings % 2);
-      }
-      std::printf("\n");
+    NurbsCurve c = NurbsCurve::FromControlPoints(pts, 1);
+    const auto hits = c.FindSelfIntersections(1e-6);
+    std::printf("bowtie: %zu hit(s)\n", hits.size());
+    for (const auto& h : hits) {
+      const Point3d pa = c.PointAt(h.first);
+      const Point3d pb = c.PointAt(h.second);
+      std::printf("  t_a=%.6f pt_a=(%.6f,%.6f,%.6f)  t_b=%.6f pt_b=(%.6f,%.6f,%.6f)\n", h.first, pa.x, pa.y, pa.z,
+                  h.second, pb.x, pb.y, pb.z);
     }
   }
-  for (double k : {0.1, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0}) {
-    const Point3d vertex(1, 0, 0);
-    const Point3d p = vertex - direction * k;
-    const bool old_result = OldContainsPoint(oct, p);
-    const bool new_result = oct.ContainsPoint(p);
-    const double l1 = std::fabs(p.x) + std::fabs(p.y) + std::fabs(p.z);
-    const bool truly_inside = l1 < 1.0;  // exact octahedron containment: |x|+|y|+|z| < 1
-    std::printf("k=%.2f p=(%.4f,%.4f,%.4f) l1=%.4f truly_inside=%d old=%d new=%d\n", k, p.x, p.y, p.z, l1,
-                truly_inside, old_result, new_result);
+
+  // A plain square (no self-crossing) should report zero hits, including
+  // correctly EXCLUDING its own closing seam.
+  {
+    const std::vector<Point3d> pts = {
+        Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0), Point3d(0, 0, 0),
+    };
+    NurbsCurve c = NurbsCurve::FromControlPoints(pts, 1);
+    std::printf("IsClosed=%d\n", c.IsClosed() ? 1 : 0);
+    const auto hits = c.FindSelfIntersections(1e-6);
+    std::printf("square (closed, no real crossing): %zu hit(s) (expect 0)\n", hits.size());
   }
 
-  ON::End();
+  // Two genuinely distinct self-crossings (a "figure-8-of-8" zigzag) -
+  // confirms the dedup merge above collapses sampling artifacts without
+  // over-merging two real, separate crossings.
+  {
+    const std::vector<Point3d> pts = {
+        Point3d(0, 0, 0),   Point3d(10, 10, 0), Point3d(20, 0, 0), Point3d(30, 10, 0),
+        Point3d(10, 0, 0),  Point3d(0, 10, 0),
+    };
+    NurbsCurve c = NurbsCurve::FromControlPoints(pts, 1);
+    std::printf("IsClosed(zigzag)=%d\n", c.IsClosed() ? 1 : 0);
+    const auto hits = c.FindSelfIntersections(1e-6);
+    std::printf("zigzag (open, expect 2 distinct crossings): %zu hit(s)\n", hits.size());
+    for (const auto& h : hits) {
+      const Point3d pa = c.PointAt(h.first);
+      std::printf("  t_a=%.6f t_b=%.6f pt=(%.6f,%.6f,%.6f)\n", h.first, h.second, pa.x, pa.y, pa.z);
+    }
+  }
+
+  // A non-positive tolerance should throw.
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0)};
+    NurbsCurve c = NurbsCurve::FromControlPoints(pts, 1);
+    try {
+      c.FindSelfIntersections(0.0);
+      std::printf("ERROR: expected throw for tolerance=0\n");
+    } catch (const std::invalid_argument&) {
+      std::printf("OK: tolerance<=0 throws invalid_argument\n");
+    }
+  }
+
   return 0;
 }
