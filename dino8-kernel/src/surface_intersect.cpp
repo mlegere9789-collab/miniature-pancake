@@ -3917,6 +3917,60 @@ std::map<SilhouetteEdgeKey, GridSilhouetteCrossing> FindTangencyCrossingsOnGrid(
   return out;
 }
 
+// Shared by all four FindSurfaceSilhouette*() functions below: narrows
+// their own disclosed "no visibility/self-occlusion resolution" gap for
+// the case this single-surface API CAN actually answer - occlusion by the
+// SAME surface (a point on the surface's own far side from the viewer,
+// hidden behind a nearer part of the identical surface, e.g. the far rim
+// of a torus hidden behind its own near tube wall). Occlusion by a
+// genuinely DIFFERENT object is honestly left out of scope below - these
+// functions take only one surface, with no scene to test visibility
+// against.
+//
+// For every candidate crossing, fires a ray from the crossing point
+// TOWARD the viewer (`viewer_ray` supplies its unit direction and length -
+// a single fixed direction and a bounding-box-sized length for the
+// orthographic case, `normalize(eye - point)` and the exact distance to
+// `eye` for the perspective one) against the SAME surface, built exactly
+// the way `FireRayAtBrep()`'s own ray already is (an `ON_LineCurve` whose
+// domain is set to the ray's own length, so `t` IS the literal distance
+// along it), and tested with this file's own general
+// `IntersectCurveSurface()` - no new ray/surface primitive, reusing the
+// identical machinery `FireRayAtBrep()` already relies on for a B-rep, just
+// against one untrimmed surface directly. Any hit strictly between the
+// crossing point (past its own trivial `t=0` self-hit, using the same
+// `opt.tolerance * 4` radius this file's own crossing dedup already uses)
+// and the viewer (strictly short of a finite eye) means a nearer part of
+// the SAME surface blocks the line of sight there - the crossing is
+// dropped, not reported as though it were visible. A crossing `viewer_ray`
+// itself cannot test (e.g. a perspective eye landing exactly on the
+// crossing point) is kept rather than guessed at - the same "cannot
+// verify, don't guess" discipline `FindTangencyCrossingsOnGrid()` above
+// already applies to a degenerate grid edge.
+std::map<SilhouetteEdgeKey, GridSilhouetteCrossing> FilterSelfOccludedCrossings(
+    const ON_Surface& s, const std::map<SilhouetteEdgeKey, GridSilhouetteCrossing>& crossings,
+    const std::function<bool(const Point3d&, Vector3d&, double&)>& viewer_ray, const IntersectOptions& opt) {
+  if (crossings.empty()) return crossings;
+  const double near_eps = std::max(opt.tolerance * 4, 1e-9);
+  std::map<SilhouetteEdgeKey, GridSilhouetteCrossing> out;
+  for (const auto& [key, c] : crossings) {
+    Vector3d dir;
+    double max_dist = 0.0;
+    if (!viewer_ray(c.point, dir, max_dist) || !(max_dist > near_eps)) {
+      out[key] = c;  // cannot test this one: keep it rather than guess
+      continue;
+    }
+    ON_LineCurve ray(c.point, c.point + dir * max_dist);
+    ray.SetDomain(0.0, max_dist);
+    bool occluded = false;
+    for (const CurveSurfaceHit& h : IntersectCurveSurface(ray, s, opt)) {
+      if (h.t > near_eps && h.t < max_dist - near_eps) { occluded = true; break; }
+    }
+    if (!occluded) out[key] = c;
+  }
+  return out;
+}
+
 std::vector<SurfaceSilhouettePoint> FlattenSilhouetteCrossings(const std::map<SilhouetteEdgeKey, GridSilhouetteCrossing>& crossings, double dedup_radius) {
   std::vector<SurfaceSilhouettePoint> out;
   for (const auto& [key, c] : crossings) {
@@ -4026,29 +4080,75 @@ std::vector<SurfaceSilhouetteCurve> ChainSilhouetteCrossings(const SurfaceMesh& 
 
 }  // namespace
 
+namespace {
+
+// The "toward the viewer" ray `FilterSelfOccludedCrossings()` fires for the
+// orthographic case: a single fixed direction (the reverse of
+// `view_direction`, the same convention `FindSurfaceSilhouettePointsPerspective()`'s
+// own `eye` sits on - "viewed straight down +Z" in this file's own tests
+// means `view_direction = (0,0,1)` with the viewer up on the +Z side,
+// looking down) and a length generous enough to clear the whole surface
+// (twice its own bounding-box diagonal, the same kind of bound
+// `IntersectCurveBrep()` above already pads a box by for an unrelated
+// reach test) - a true orthographic viewer sits at infinity, but any
+// length past the surface's own far side is equivalent for a ray that
+// only needs to find hits ON that surface.
+std::function<bool(const Point3d&, Vector3d&, double&)> OrthographicViewerRay(const ON_Surface& s, const Vector3d& view_direction) {
+  Vector3d toward_viewer = -view_direction;
+  toward_viewer.Unitize();
+  const double max_dist = 2.0 * s.BoundingBox().Diagonal().Length() + 1.0;
+  return [toward_viewer, max_dist](const Point3d&, Vector3d& dir, double& dist) {
+    dir = toward_viewer;
+    dist = max_dist;
+    return true;
+  };
+}
+
+// The perspective sibling: the viewer sits at the exact finite `eye`, so
+// the ray toward it from each crossing point genuinely varies per point -
+// `normalize(eye - point)`, out to the exact distance to `eye` (not a
+// generous bound - a hit past `eye` itself is not between the crossing and
+// the viewer at all).
+std::function<bool(const Point3d&, Vector3d&, double&)> PerspectiveViewerRay(const Point3d& eye) {
+  return [eye](const Point3d& p, Vector3d& dir, double& dist) {
+    Vector3d to_eye = eye - p;
+    dist = to_eye.Length();
+    if (!(dist > 1e-9)) return false;  // eye coincides with the point itself: cannot test
+    dir = to_eye;
+    dir.Unitize();
+    return true;
+  };
+}
+
+}  // namespace
+
 std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePoints(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt) {
   if (view_direction.Length() < 1e-12) return {};  // no direction to test tangency against
   const SurfaceMesh grid = TessellateWithUV(s, opt);
-  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d&) { return view_direction; });
+  auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d&) { return view_direction; });
+  crossings = FilterSelfOccludedCrossings(s, crossings, OrthographicViewerRay(s, view_direction), opt);
   return FlattenSilhouetteCrossings(crossings, opt.tolerance * 4);
 }
 
 std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePointsPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt) {
   const SurfaceMesh grid = TessellateWithUV(s, opt);
-  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d& p) { return Vector3d(p - eye); });
+  auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d& p) { return Vector3d(p - eye); });
+  crossings = FilterSelfOccludedCrossings(s, crossings, PerspectiveViewerRay(eye), opt);
   return FlattenSilhouetteCrossings(crossings, opt.tolerance * 4);
 }
 
 std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurves(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt) {
   if (view_direction.Length() < 1e-12) return {};
   const SurfaceMesh grid = TessellateWithUV(s, opt);
-  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d&) { return view_direction; });
+  auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d&) { return view_direction; });
+  crossings = FilterSelfOccludedCrossings(s, crossings, OrthographicViewerRay(s, view_direction), opt);
   return ChainSilhouetteCrossings(grid, crossings);
 }
 
 std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurvesPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt) {
   const SurfaceMesh grid = TessellateWithUV(s, opt);
-  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d& p) { return Vector3d(p - eye); });
+  auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d& p) { return Vector3d(p - eye); });
+  crossings = FilterSelfOccludedCrossings(s, crossings, PerspectiveViewerRay(eye), opt);
   return ChainSilhouetteCrossings(grid, crossings);
 }
 

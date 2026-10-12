@@ -6224,6 +6224,124 @@ void TestFindSurfaceSilhouetteCurvesPerspectiveChainsPointsIntoCurves() {
   Check(FindSurfaceSilhouetteCurvesPerspective(ground, Point3d(0, 0, 20), opt).empty(), "a flat plane viewed from a finite eye along its own normal chains into zero curves");
 }
 
+// PARITY_MAP.md's own "Silhouette / outline curves" bullet: closes the "no
+// visibility/self-occlusion resolution" half of this bullet's own named gap
+// for occlusion by the SAME surface (the one case a single-surface API can
+// actually answer, as opposed to occlusion by a genuinely different
+// object, which stays honestly out of scope - see FindSurfaceSilhouettePoints()'s
+// own header doc comment).
+//
+// A torus (major radius R, minor radius r, axis Z, centered at the origin)
+// viewed straight down the X axis (view_direction = (-1,0,0), viewer on the
+// +X side looking toward -X) is a hand-derivable self-occlusion fixture:
+// parametrizing the torus the standard way, P(u,v) = ((R+r*cos(v))*cos(u),
+// (R+r*cos(v))*sin(u), r*sin(v)) with outward normal n(u,v) = (cos(v)*cos(u),
+// cos(v)*sin(u), sin(v)), dot(n, view_direction) = -cos(v)*cos(u) is zero
+// whenever cos(v) == 0 - i.e. along the FULL v=90deg ring (z == +r, radius R
+// from the axis) and the full v=270deg ring (z == -r) - independent of u,
+// so every point of each ring is a genuine silhouette crossing. For any
+// point on the v=90deg ring at angle u0, the implicit torus equation
+// (sqrt(x^2+y^2)-R)^2 + z^2 == r^2 at that SAME (y, z) == (R*sin(u0), r)
+// reduces to x^2 == R^2 - y0^2 == (R*cos(u0))^2, i.e. exactly the two roots
+// x == +-R*cos(u0) - so the point at u0 and the point at (180deg - u0) (same
+// y, opposite x) are the ONLY two torus points sharing that exact ray
+// parallel to X, and whichever has the LARGER x (closer to the viewer, on
+// the +X side) occludes the other. That means the entire x>0 half of each
+// ring (cos(u) > 0, i.e. u in (-90deg, 90deg)) is genuinely visible, and the
+// entire x<0 half (cos(u) < 0) is genuinely self-occluded by the near tube
+// wall - a real, hand-derivable "far rim hidden behind the near tube"
+// configuration, not an approximation.
+void TestFindSurfaceSilhouettePointsSelfOcclusionTorus() {
+  using dino8::kernel::FindSurfaceSilhouetteCurves;
+  using dino8::kernel::FindSurfaceSilhouetteCurvesPerspective;
+  using dino8::kernel::FindSurfaceSilhouettePoints;
+  using dino8::kernel::FindSurfaceSilhouettePointsPerspective;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  const double R = 5.0, r = 1.0;
+  const ON_Torus on_torus(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), R, r);
+  ON_NurbsSurface torus_surface;
+  Check(on_torus.GetNurbForm(torus_surface) == 2, "ON_Torus::GetNurbForm succeeds");
+
+  const IntersectOptions opt;
+  const auto hits = FindSurfaceSilhouettePoints(torus_surface, ON_3dVector(-1, 0, 0), opt);
+  Check(!hits.empty(), "a torus viewed straight down the X axis finds genuine silhouette points");
+
+  bool any_near_side = false, any_far_side = false;
+  for (const auto& h : hits) {
+    // Only the hand-derived rings (|z| close to r, radius close to R from
+    // the axis) carry the clean "mirror pair" property this test checks -
+    // other crossings this grid may also find (e.g. the cos(u)==0 branch,
+    // itself at x close to 0) are left alone.
+    const double axis_radius = std::hypot(h.point.x, h.point.y);
+    if (std::abs(std::abs(h.point.z) - r) > 0.08 * r || std::abs(axis_radius - R) > 0.08 * R) continue;
+    if (h.point.x > 0.3 * R) any_near_side = true;
+    if (h.point.x < -0.3 * R) any_far_side = true;
+  }
+  Check(any_near_side, "the near half of the hand-derivable ring (facing the viewer) is reported as visible");
+  Check(!any_far_side, "the far half of the SAME ring, genuinely hidden behind the near tube wall, is dropped as self-occluded rather than reported as visible");
+
+  // The curve-chaining sibling sees the exact same filtered crossings, so
+  // no chained curve point should land on the far (self-occluded) side
+  // either.
+  const auto curves = FindSurfaceSilhouetteCurves(torus_surface, ON_3dVector(-1, 0, 0), opt);
+  Check(!curves.empty(), "the torus still chains into at least one genuine silhouette curve after self-occlusion filtering");
+  bool any_curve_far_side = false;
+  for (const auto& sc : curves) {
+    const ON_Interval dom = sc.curve.Domain();
+    for (int k = 0; k <= 20; ++k) {
+      const ON_3dPoint p = sc.curve.PointAt(dom.ParameterAt(static_cast<double>(k) / 20.0));
+      const double axis_radius = std::hypot(p.x, p.y);
+      if (std::abs(std::abs(p.z) - r) > 0.1 * r || std::abs(axis_radius - R) > 0.1 * R) continue;
+      if (p.x < -0.3 * R) any_curve_far_side = true;
+    }
+  }
+  Check(!any_curve_far_side, "no chained silhouette curve sample lands on the self-occluded far side of the hand-derivable ring");
+
+  // The perspective siblings, viewed from a finite eye far out on the +X
+  // axis (D >> R + r, so the per-point ray to `eye` is nearly parallel to
+  // X everywhere near the torus - the same near-side/far-side pairing
+  // holds, just no longer exactly along a fixed direction).
+  const Point3d eye(30.0 * R, 0, 0);
+  const auto phits = FindSurfaceSilhouettePointsPerspective(torus_surface, eye, opt);
+  Check(!phits.empty(), "the torus still finds perspective silhouette points from a finite, distant eye");
+  bool p_any_near = false, p_any_far = false;
+  for (const auto& h : phits) {
+    if (h.point.x > 0.3 * R) p_any_near = true;
+    if (h.point.x < -0.3 * R) p_any_far = true;
+  }
+  Check(p_any_near, "perspective: the near side (facing the distant eye) is still reported as visible");
+  Check(!p_any_far, "perspective: the far side, self-occluded by the near tube wall, is dropped exactly as the orthographic case is");
+
+  const auto pcurves = FindSurfaceSilhouetteCurvesPerspective(torus_surface, eye, opt);
+  Check(!pcurves.empty(), "the torus still chains into at least one genuine perspective silhouette curve after self-occlusion filtering");
+  bool p_any_curve_far = false;
+  for (const auto& sc : pcurves) {
+    const ON_Interval dom = sc.curve.Domain();
+    for (int k = 0; k <= 20; ++k) {
+      const ON_3dPoint p = sc.curve.PointAt(dom.ParameterAt(static_cast<double>(k) / 20.0));
+      if (p.x < -0.3 * R) p_any_curve_far = true;
+    }
+  }
+  Check(!p_any_curve_far, "no chained perspective silhouette curve sample lands on the self-occluded far side either");
+
+  // A sphere is convex, so NOTHING on it is ever self-occluded by itself -
+  // the equator fixture TestFindSurfaceSilhouettePointsSphereEquator()
+  // already establishes stays entirely intact (a regression guard: this
+  // filter must not over-trigger on an ordinary convex surface).
+  const double radius = 3.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  const auto sphere_hits = FindSurfaceSilhouettePoints(sphere_surface, ON_3dVector(0, 0, 1), opt);
+  Check(!sphere_hits.empty(), "a convex sphere's equator silhouette survives self-occlusion filtering intact (nothing to occlude it with)");
+  for (const auto& h : sphere_hits) {
+    Check(std::abs(h.point.z) <= 1e-6 && std::abs(std::hypot(h.point.x, h.point.y) - radius) <= 1e-6,
+          "every surviving sphere silhouette point is still exactly on the equator - the self-occlusion filter did not spuriously drop a genuinely visible point");
+  }
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Projection of curves/points onto surfaces along a direction (Project)"
 // bullet: "app ProjectCommand samples the curve and ray-casts along the
@@ -74189,6 +74307,7 @@ int main() {
   TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon();
   TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves();
   TestFindSurfaceSilhouetteCurvesPerspectiveChainsPointsIntoCurves();
+  TestFindSurfaceSilhouettePointsSelfOcclusionTorus();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
