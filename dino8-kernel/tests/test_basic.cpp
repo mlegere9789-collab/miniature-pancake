@@ -4961,6 +4961,110 @@ void TestFindSurfaceTangentContactsSphereOnPlane() {
         "a sphere genuinely crossing the plane is not also reported as a tangent-only contact");
 }
 
+// PARITY_MAP.md's own "SSX tangent / grazing contact" bullet's own "or
+// curve" half, named directly in its own text ("two cylinders of equal
+// radius touching along one ruling line is not detected as a curve, only
+// as however many isolated points a coarse grid seed happens to converge
+// to along it"). FindSurfaceTangentCurves() closes it: chains
+// FindSurfaceTangentContacts()'s own grid-origin hits into an actual curve
+// whenever they reduce to a clean path/cycle on the sampling grid.
+void TestFindSurfaceTangentCurvesCylinderRulingLine() {
+  using dino8::kernel::FindSurfaceTangentContacts;
+  using dino8::kernel::FindSurfaceTangentCurves;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Distance from a point to an infinite axis line through (x, 0, *),
+  // parallel to Z - the exact membership test every sampled curve point
+  // below is checked against (not a hardcoded expected curve).
+  auto dist_to_axis = [](const Point3d& p, double axis_x) { return std::hypot(p.x - axis_x, p.y); };
+
+  auto cyl_surface_at = [](double x, double radius, double height) {
+    const ON_Cylinder cyl(ON_Circle(ON_Plane(ON_3dPoint(x, 0, 0), ON_3dVector(0, 0, 1)), radius), height);
+    ON_NurbsSurface srf;
+    Check(cyl.GetNurbForm(srf) != 0, "ON_Cylinder::GetNurbForm succeeds");
+    return srf;
+  };
+
+  // Externally tangent parallel cylinders (radius 2 at x = 0, radius 1 at
+  // x = 3 = r_a + r_b exactly, both spanning the identical height range
+  // [0, 4]): touch along the single hand-derivable ruling line x = 2,
+  // y = 0, for the whole shared height, the SAME closed-form tangency
+  // IntersectCylinderCylinderParallel()'s own "tangent" degeneracy already
+  // reports as a single ON_Line (see that function's own test) - this is
+  // the general grid-seeded path reaching the identical real geometry for
+  // an arbitrary surface pair, not a cylinder-specific shortcut.
+  const double ra = 2.0, rb = 1.0, height = 4.0;
+  const ON_NurbsSurface cyl_a = cyl_surface_at(0.0, ra, height);
+  const ON_NurbsSurface cyl_b = cyl_surface_at(3.0, rb, height);
+
+  // Sanity: FindSurfaceTangentContacts() itself finds several isolated
+  // points scattered along the line (the pre-existing, still-honest
+  // "however many isolated points a coarse grid seed happens to converge
+  // to" behavior) but, on its own, no connected curve.
+  const auto points_only = FindSurfaceTangentContacts(cyl_a, cyl_b, opt);
+  Check(points_only.size() >= 3, "the grid-seeded point finder alone already reports several points scattered along the ruling line");
+
+  const auto curves = FindSurfaceTangentCurves(cyl_a, cyl_b, opt);
+  Check(curves.size() == 1, "two externally tangent parallel cylinders chain into exactly one tangent curve");
+  if (curves.size() == 1) {
+    Check(!curves[0].closed, "a finite-height ruling line is an open chain, not a closed loop");
+    Check(curves[0].curve.IsValid(), "the chained curve is a genuine, valid NURBS curve");
+    const ON_Interval dom = curves[0].curve.Domain();
+    bool all_on_both_axes = true;
+    double z_min = std::numeric_limits<double>::max(), z_max = std::numeric_limits<double>::lowest();
+    for (int k = 0; k <= 20; ++k) {
+      const Point3d p = curves[0].curve.PointAt(dom.ParameterAt(static_cast<double>(k) / 20.0));
+      z_min = std::min(z_min, p.z);
+      z_max = std::max(z_max, p.z);
+      if (std::abs(dist_to_axis(p, 0.0) - ra) > 0.01 * ra || std::abs(dist_to_axis(p, 3.0) - rb) > 0.01 * ra) { all_on_both_axes = false; break; }
+      if (std::hypot(p.x - 2.0, p.y) > 0.01 * ra) { all_on_both_axes = false; break; }  // the hand-derivable (x, y) = (2, 0) ruling position
+    }
+    Check(all_on_both_axes, "every sampled point sits at exactly radius ra from A's axis AND exactly radius rb from B's axis simultaneously, at the hand-derivable (x, y) = (2, 0)");
+    Check(z_max - z_min > 0.5 * height, "the chained curve genuinely spans most of the shared height range, not a single collapsed point");
+  }
+
+  // Internally tangent parallel cylinders (radius 5 outer at x = 0, radius
+  // 2 inner at x = 3 = r_outer - r_inner exactly): touch along the
+  // hand-derivable ruling line x = 5, y = 0.
+  const ON_NurbsSurface cyl_outer = cyl_surface_at(0.0, 5.0, height);
+  const ON_NurbsSurface cyl_inner = cyl_surface_at(3.0, 2.0, height);
+  const auto internal_curves = FindSurfaceTangentCurves(cyl_outer, cyl_inner, opt);
+  Check(internal_curves.size() == 1, "an internally tangent (nested) cylinder pair also chains into exactly one tangent curve");
+  if (internal_curves.size() == 1) {
+    const ON_Interval dom = internal_curves[0].curve.Domain();
+    bool ok = true;
+    for (int k = 0; k <= 10; ++k) {
+      const Point3d p = internal_curves[0].curve.PointAt(dom.ParameterAt(static_cast<double>(k) / 10.0));
+      if (std::hypot(p.x - 5.0, p.y) > 0.05) { ok = false; break; }
+    }
+    Check(ok, "the internally-tangent ruling line sits at the hand-derivable (x, y) = (5, 0)");
+  }
+
+  // A single ISOLATED tangent point (the sphere-on-plane fixture
+  // TestFindSurfaceTangentContactsSphereOnPlane() already establishes) must
+  // NOT be fabricated into a curve - several nearby grid seeds converging
+  // to nearly the same point are grid-adjacent to each other too, which is
+  // exactly the degenerate case this function's own arc-length/degree
+  // guards exist to reject.
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-10, 10), true);
+  ground.SetExtents(1, ON_Interval(-10, 10), true);
+  const double sphere_radius = 2.0;
+  const ON_Sphere resting_sphere(ON_3dPoint(0, 0, sphere_radius), sphere_radius);
+  ON_NurbsSurface sphere_surface;
+  Check(resting_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  Check(FindSurfaceTangentCurves(sphere_surface, ground, opt).empty(), "a single isolated tangent point is correctly NOT fabricated into a curve");
+
+  // Two cylinders held well clear of each other: no contacts, no curves.
+  const ON_NurbsSurface cyl_far = cyl_surface_at(100.0, 1.0, height);
+  Check(FindSurfaceTangentCurves(cyl_a, cyl_far, opt).empty(), "two cylinders held well clear of each other chain into zero curves");
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
 // across periodic seams and at singular points (poles)" bullet: seam
 // handling is real (SplitAtSeams/SeamCrossing), but "poles have no
@@ -73520,6 +73624,7 @@ int main() {
   TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
   TestBrepCheckOptInReportsFaceSelfIntersections();
   TestFindSurfaceTangentContactsSphereOnPlane();
+  TestFindSurfaceTangentCurvesCylinderRulingLine();
   TestIntersectSurfacesHandlesSpherePoleCrossing();
   TestIntersectSurfacesOverlapDetectsCoincidentRegion();
   TestIntersectSurfacesOverlapBisectionTightensRegionBoundary();
