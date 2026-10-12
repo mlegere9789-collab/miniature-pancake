@@ -304,6 +304,14 @@ dmvcheck "Saved $TMPW/dm3dversion_default.3dm" "an unversioned SaveAs (.3dm) sti
 dmvcheck "Exported $TMPW/dm3dversion_export_v5.3dm (Version=5)" "Export Version=5 (.3dm) ran and echoed the version in its own print line"
 dmvcheck "SaveAs: Version=notanumber is not a valid \.3dm archive version number" "a non-numeric .3dm Version= is refused with a clear diagnostic, not silently ignored or misread as a DWG scheme"
 [ ! -e "$TMPW/dm3dversion_bad.3dm" ] && echo "ok   the refused SaveAs Version=notanumber wrote no file at all" || { echo "FAIL a refused .3dm Version= still wrote a file"; fail=1; }
+# Version=51 is numeric (passes ParseDm3dmVersion) but out of range (not
+# 2-8 or a multiple of 10 from 50-80 for this build) - ONX_Model::Write
+# does NOT fail on an out-of-range version, it silently resets to 0
+# (current/newest) and only logs, so Save3dm itself must replicate that
+# validity rule and refuse rather than silently write the wrong version.
+dmvcheck "! OpenNURBS could not write $TMPW/dm3dversion_v51_invalid.3dm at archive version 51" "SaveAs Version=51 (out of range, not silently substituted) is rejected by Save3dm's own validation, not OpenNURBS' silent fallback"
+V51_SIZE=0; [ -f "$TMPW/dm3dversion_v51_invalid.3dm" ] && V51_SIZE="$(wc -c < "$TMPW/dm3dversion_v51_invalid.3dm")"
+[ "$V51_SIZE" -lt 32 ] && echo "ok   SaveAs Version=51 left no complete .3dm file behind (no corrupt-but-present archive)" || { echo "FAIL SaveAs Version=51 left a $V51_SIZE-byte file despite being rejected"; fail=1; }
 [ "$(head -c 32 "$TMPW/dm3dversion_v4.3dm")" = "3D Geometry File Format        4" ] && echo "ok   SaveAs Version=4 wrote a real .3dm archive version-4 header" || { echo "FAIL SaveAs Version=4 did not write a version-4 .3dm header"; fail=1; }
 [ "$(head -c 32 "$TMPW/dm3dversion_v50.3dm")" = "3D Geometry File Format       50" ] && echo "ok   SaveAs Version=50 wrote a real .3dm archive version-50 header" || { echo "FAIL SaveAs Version=50 did not write a version-50 .3dm header"; fail=1; }
 [ "$(head -c 32 "$TMPW/dm3dversion_export_v5.3dm")" = "3D Geometry File Format       50" ] && echo "ok   Export Version=5 wrote the identical version-50 header OpenNURBS' own documented 5->50 compatibility mapping gives (ON_BinaryArchive::Write3dmStartSection: 5 <= version < 50 multiplies by 10)" || { echo "FAIL Export Version=5 did not write a version-50 .3dm header"; fail=1; }
@@ -422,6 +430,7 @@ c2check "ArrayCrv: 6 object(s) placed" "ArrayCrv placed copies along the circle"
 c2check "best-fit line through 4 points" "LineThroughPt fitted a line"
 c2check "best-fit plane through 4 points" "PlaneThroughPt fitted a plane"
 c2check "knot removed (deviation 0) (2 control points)" "RemoveKnot now calls the kernel's real RemoveKnotAt() (exact round-trip, reported deviation), not RemoveKnotApprox's blind resample"
+c2check "knot removed in the U direction (deviation 0) (3x4 control points)" "RemoveKnot now also reaches NurbsSurface::RemoveKnotAt() for a standalone Surface object, not curves only"
 c2check "MarkFoci: 1 point(s) added" "MarkFoci added the parabola's focus"
 c2check "0,5,0" "MarkFoci found the parabola focus (0,5,0) from curve geometry alone"
 c2check "MarkFoci: 2 point(s) added" "MarkFoci added both hyperbola foci"

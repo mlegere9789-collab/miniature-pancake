@@ -493,6 +493,34 @@ Enter
 SelLast
 List
 Delete
+# --- RemoveKnot on a Surface: NurbsSurface::RemoveKnotAt (kernel-only
+# until now - it's already real, tested kernel code) is wired into
+# KnotEditCommand's own RemoveKnot pick for the first time here -
+# PARITY_MAP.md's own "Kernel Surface Operations" category names this
+# exact gap ("RemoveKnotAt present; app's RemoveKnot handles curves
+# only"). A degree-1, 4x4-control-point Plane has its two interior knots
+# in each direction at u/v = 1/3, 2/3 of its [0, 1] domain (the original
+# 2x2 Plane's own ClampedUniformKnotVector domain, which Rebuild()
+# preserves); the Plane command's own (u, v) -> world mapping puts U
+# along world Y and V along world X for these corners (confirmed by
+# running this exact fixture against a real build, not assumed), so a
+# pick at world Y = 40/3 (an exact point on the U = 1/3 isocurve, at the
+# V = 0 edge where the nearest V knot is 40/3 away in X instead) is
+# unambiguously nearest that single U knot - FindNearestSurfaceKnot's
+# own direction-agnostic nearest-knot search (cmd_curves2.cpp) picks it
+# cleanly over every V candidate. The Plane's own 4 control points along
+# that U row are already exactly collinear (it's flat), so Boehm/Tiller
+# removal is exact: deviation 0, CVCountU 4 -> 3.
+Plane 1000,0,0 1040,40,0
+SelLast
+Rebuild Degree=1 4
+SelLast
+RemoveKnot
+1000,13.333333,0
+Enter
+SelLast
+List
+Delete
 # --- ConvertToBeziers on a surface: NurbsSurface::DecomposeToBeziers
 # (kernel-only until now) wired into the app for the first time -
 # PARITY_MAP.md's own "Convert to Beziers (surface)" gap, where the exact

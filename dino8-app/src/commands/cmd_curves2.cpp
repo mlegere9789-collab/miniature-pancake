@@ -550,7 +550,7 @@ class CatenaryCommand : public Command {
 // Sub-curve picking (two points on a curve)
 // ---------------------------------------------------------------------------
 
-std::optional<CurveCopy> NearestCurveTo(CommandContext& ctx, Point3d p, double* t_out) {
+std::optional<CurveCopy> NearestCurveTo(CommandContext& ctx, Point3d p, double* t_out, double* dist_out = nullptr) {
   const SceneObject* best = nullptr;
   double bd = std::numeric_limits<double>::max(), bt = 0;
   for (const SceneObject& o : ctx.Doc().Objects()) {
@@ -561,7 +561,68 @@ std::optional<CurveCopy> NearestCurveTo(CommandContext& ctx, Point3d p, double* 
   }
   if (!best) return std::nullopt;
   if (t_out) *t_out = bt;
+  if (dist_out) *dist_out = bd;
   return CopyCurveObj(ctx, best->id);
+}
+
+// Surface counterpart to NearestCurveTo, used only by RemoveKnot (the one
+// KnotEditCommand op PARITY_MAP.md's "kernel: Surface operations" category
+// names as app-surface-less: `NurbsSurface::RemoveKnotAt` already exists
+// and is already tested, but every caller in dino8-app handled curves
+// only). Searches every standalone Surface object's own interior knots in
+// BOTH directions and returns whichever single knot's own isocurve point
+// (the other parameter held at the pick's own closest-point value) lands
+// nearest `p` - the direction-agnostic analogue of "nearest knot to the
+// click" the curve path already uses, since a surface has no single
+// parameter axis to compare against a 3D pick directly.
+bool FindNearestSurfaceKnot(CommandContext& ctx, Point3d p, ObjectId* id_out, int* dir_out, int* knot_index_out,
+                             double* dist_out) {
+  const SceneObject* best = nullptr;
+  int best_dir = 0, best_idx = -1;
+  double bd = std::numeric_limits<double>::max();
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    if (o.kind != ObjectKind::Surface || !o.surface || !ctx.Doc().IsObjectVisible(o) || ctx.Doc().IsObjectLocked(o)) continue;
+    const ON_NurbsSurface& raw = o.surface->raw();
+    const kernel::Point2d uv = o.surface->ClosestPointParameter(p);
+    for (int dir = 0; dir < 2; ++dir) {
+      const int deg = raw.Degree(dir);
+      const int kc = raw.KnotCount(dir);
+      const double other = dir == 0 ? uv.y : uv.x;
+      for (int i = deg; i < kc - deg; ++i) {
+        const double val = raw.Knot(dir, i);
+        const Point3d pt = dir == 0 ? o.surface->PointAt(val, other) : o.surface->PointAt(other, val);
+        const double d = pt.DistanceTo(p);
+        if (d < bd) { bd = d; best = &o; best_dir = dir; best_idx = i; }
+      }
+    }
+  }
+  if (!best) return false;
+  *id_out = best->id;
+  *dir_out = best_dir;
+  *knot_index_out = best_idx;
+  *dist_out = bd;
+  return true;
+}
+
+// Removes the knot `FindNearestSurfaceKnot` picked out, via the kernel's
+// own Piegl & Tiller removal (the exact same real-deviation-reporting call
+// the curve path below uses, `RemoveKnotAt`'s surface overload) rather than
+// a blind resample - mirroring the curve case's own permissive (infinite)
+// tolerance so a found knot is always removed, not refused.
+void RemoveKnotOnSurface(CommandContext& ctx, ObjectId id, int direction, int knot_index) {
+  const SceneObject* o = ctx.Doc().Find(id);
+  if (!o || o->kind != ObjectKind::Surface || !o->surface) { ctx.Warn("Could not edit the surface there"); return; }
+  kernel::NurbsSurface k = *o->surface;
+  double deviation = 0.0;
+  if (k.RemoveKnotAt(direction, knot_index, std::numeric_limits<double>::infinity(), &deviation) != kernel::Result::Ok) {
+    ctx.Warn("Could not edit the surface there");
+    return;
+  }
+  ctx.Doc().BeginChange("KnotEdit");
+  ReplaceSurface(ctx, id, k);
+  ctx.Print("Surface " + std::to_string(id) + ": knot removed in the " + (direction == 0 ? std::string("U") : std::string("V")) +
+             " direction (deviation " + FormatNumber(deviation) + ") (" + std::to_string(k.raw().CVCount(0)) + "x" +
+             std::to_string(k.raw().CVCount(1)) + " control points)");
 }
 
 class SubCrvCommand : public Command {
@@ -700,11 +761,29 @@ class KnotEditCommand : public Command {
  public:
   enum class Op { InsertKnot, InsertKink, RemoveKnot, InsertCP, RemoveCP, InsertEditPoint };
   explicit KnotEditCommand(Op op) : op_(op) {}
-  void Begin(CommandContext&) override { WantPoint("Click on the curve where to edit (Enter when done)"); }
+  void Begin(CommandContext&) override {
+    WantPoint(op_ == Op::RemoveKnot ? "Click on the curve or surface where to edit (Enter when done)"
+                                     : "Click on the curve where to edit (Enter when done)");
+  }
   void OnEnter(CommandContext&) override { Finish(); }
   void OnPoint(CommandContext& ctx, Point3d p) override {
-    double t = 0;
-    std::optional<CurveCopy> c = NearestCurveTo(ctx, p, &t);
+    double t = 0, curve_dist = std::numeric_limits<double>::max();
+    std::optional<CurveCopy> c = NearestCurveTo(ctx, p, &t, &curve_dist);
+    // RemoveKnot is the one op PARITY_MAP.md's "Kernel Surface Operations"
+    // category names as surface-less in the app ("RemoveKnotAt present;
+    // app's RemoveKnot handles curves only") - every other op here stays
+    // curve-only. Pick whichever of the nearest curve/surface knot is
+    // actually closer to the click, so a surface in the same scene as a
+    // (possibly much farther) curve is still reachable.
+    if (op_ == Op::RemoveKnot) {
+      ObjectId surf_id = kNoObject;
+      int surf_dir = 0, surf_idx = -1;
+      double surf_dist = std::numeric_limits<double>::max();
+      if (FindNearestSurfaceKnot(ctx, p, &surf_id, &surf_dir, &surf_idx, &surf_dist) && (!c || surf_dist < curve_dist)) {
+        RemoveKnotOnSurface(ctx, surf_id, surf_dir, surf_idx);
+        return;
+      }
+    }
     if (!c) { ctx.Warn("No curve near that point"); return; }
     ON_NurbsCurve nc = c->curve.raw();
     bool ok = false;
