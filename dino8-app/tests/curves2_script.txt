@@ -226,6 +226,27 @@ Domain
 SelLast
 List
 SelNone
+# --- Domain and Reparameterize on a surface: NurbsSurface::SetDomain()
+# was kernel-only from either command's point of view until now - a
+# typed/hardcoded range now applies to both U and V (a Plane's own
+# default domain is already 0 to 1, so Domain sets it away to 0..5 first
+# to give Reparameterize's 0..1 something real to undo), each reported
+# back by a report-only Domain call.
+SelAll
+Hide
+Plane 0,0,0 10,10,0
+SelLast
+Domain
+"0 5"
+SelLast
+Domain
+Enter
+SelLast
+Reparameterize
+SelLast
+Domain
+Enter
+SelNone
 # --- ModifyRadius rebuilds a circle at a new radius in place
 SelAll
 Hide
@@ -485,5 +506,8 @@ List
 # use) - 197 -> 199. (This comment chain was already one step behind the
 # 201 below before this pass.) +4 for the ConvertToBeziers-on-a-surface
 # fixture just above (its own 4 Bezier patches, left in the document):
-# 201 -> 205.
-@expect_objects 205
+# 201 -> 205. +1 for the Domain/Reparameterize-on-a-surface fixture
+# further above (its one Plane, left in the document - Domain and
+# Reparameterize both replace in place, no count change of their own):
+# 205 -> 206.
+@expect_objects 206
