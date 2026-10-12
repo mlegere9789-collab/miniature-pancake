@@ -6,6 +6,7 @@
 
 #include "app/Application.h"
 #include "dino8/kernel/boolean.h"
+#include "dino8/kernel/brep.h"
 #include "doc/SceneObject.h"
 #include "util/json_mini.h"
 
@@ -81,15 +82,32 @@ const std::vector<MechSizeRow>& BoltSizes() {
   return kRows;
 }
 
-// Nut: d0 = thread diameter (unused by Build(), kept for the BOM label),
-// d1 = across-flats width (same circle approximation as Bolt's head),
-// d2 = nut height/thickness. Approximate ISO 4032 values.
+// Nut: d0 = thread diameter (BuildBolt()/BuildNut() now cut a real thread
+// at this diameter - see CoarseThreadPitch() below; previously unused,
+// kept only for the BOM label), d1 = across-flats width (same circle
+// approximation as Bolt's head), d2 = nut height/thickness. Approximate
+// ISO 4032 values.
 const std::vector<MechSizeRow>& NutSizes() {
   static const std::vector<MechSizeRow> kRows = {
       {"M6", 0.006, 0.010, 0.005, 0}, {"M8", 0.008, 0.013, 0.0065, 0},
       {"M10", 0.010, 0.017, 0.008, 0}, {"M12", 0.012, 0.019, 0.010, 0},
   };
   return kRows;
+}
+
+// Standard ISO 724 coarse-thread pitch for each Bolt/Nut nominal size
+// (BoltSizes()/NutSizes()'s own `name`) - the one dimension those two
+// tables don't otherwise carry, since both already key the thread's own
+// nominal/major diameter off `d0`. Metres. Returns 0 for a name neither
+// table uses, so a caller can fall back to a plain (unthreaded) shape
+// instead of handing `kernel::Brep::ScrewThread()` a zero pitch, which it
+// rejects outright.
+double CoarseThreadPitch(const std::string& name) {
+  if (name == "M6") return 0.0010;
+  if (name == "M8") return 0.00125;
+  if (name == "M10") return 0.0015;
+  if (name == "M12") return 0.00175;
+  return 0.0;
 }
 
 // Washer: d0 = inner (bore) diameter, d1 = outer diameter, d2 = thickness.
@@ -277,30 +295,111 @@ Vector3d AxisOf(const ArchComponent& c) {
   return d.Length() > 1e-9 ? UnitOf(d) : Vector3d(0, 0, 1);
 }
 
-// Bolt: a cylindrical shank (diameter = table's shank diameter, length =
-// c.height) plus a cylindrical head (diameter approximating the hex head's
-// across-flats circumscribing circle, height = table's head height) sitting
-// on top of it - see BoltSizes()'s own doc comment for why the head is
-// round rather than a true hex prism.
+// A real helical V-thread tool at `row`'s own nominal diameter (row.d0)
+// and ISO 724 coarse pitch (CoarseThreadPitch() above), built the same way
+// `kernel::Brep::ScrewThread()`'s own doc comment (brep.h) and kernel test
+// (TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads,
+// tests/test_basic.cpp) already establish: minor_radius/major_radius
+// bracket the thread's own root/crest at an approximate (not a precise
+// ISO 724 "basic profile") 0.6134*pitch thread depth, and the SAME
+// minor_radius/major_radius/pitch pair is used for both BuildBolt()'s
+// external thread and BuildNut()'s internal one below so the two mate
+// (an external crest at major_radius sits exactly where an internal
+// thread's own crest, at minor_radius, leaves room for it). `turns`
+// spans `length` plus `margin` on each end this call is asked to extend
+// by - `through` extends both ends (an internal tapped hole has two open
+// faces, same as `kernel::MakeHole()`'s own `through=true`); a bolt's own
+// external thread only extends its FAR end into the head it will be
+// unioned onto (`through=false`) - the near end is a free exposed tip,
+// not a touch against another solid, so it needs no clearance margin.
+// Returns an empty (0-face) mesh for a `row.name` CoarseThreadPitch()
+// doesn't recognize, so BuildBolt()/BuildNut() can cleanly fall back to
+// their old plain-cylinder shape instead of handing ScrewThread() a
+// rejected zero pitch.
+kernel::Mesh BuildThreadTool(const MechSizeRow& row, Point3d base, Vector3d axis, double length, bool through) {
+  const double pitch = CoarseThreadPitch(row.name);
+  if (pitch <= 0.0) return kernel::Mesh();
+  const double major_r = row.d0 / 2.0;
+  const double minor_r = major_r - 0.6134 * pitch;
+  const double margin = pitch;
+  const Point3d nominal_start = through ? base - axis * margin : base;
+  const double span = length + margin + (through ? margin : 0.0);
+  const double turns = span / pitch;
+  // ScrewThread()'s own triangular profile is centred on each station's
+  // own height (vertices at axial offsets -pitch/2 and +pitch/2 either
+  // side of it, per its own doc comment), so the swept body's actual
+  // near end sits HALF A PITCH before `axis_point` itself, not at
+  // `axis_point` - confirmed directly (tests/smoke.sh's own exact Bolt
+  // M10 bounding-box fixture, mech_mep_script.txt: a plain Difference
+  // tool never shows this, since subtracting a bit more never grows a
+  // solid's own silhouette, but BuildBolt()'s own Union did, extending
+  // the shank 0.00075m past its own near end at M10's 0.0015m pitch).
+  // Shifting the passed-in axis_point forward by that same half-pitch
+  // cancels it exactly, landing the tool's own real near end back on
+  // `nominal_start` - `turns` itself needs no adjustment, since the
+  // shift moves both ends by the identical amount.
+  const Point3d start = nominal_start + axis * (pitch / 2.0);
+  const kernel::Brep tool_brep = kernel::Brep::ScrewThread(start, axis, minor_r, major_r, pitch, turns,
+                                                            /*right_handed=*/true, /*stations_per_turn=*/16);
+  // Oversamples the wall's own v-span count (ScrewThread()'s doc comment:
+  // `ceil(turns * stations_per_turn) + 1` stations) by 2x when converting
+  // it to a mesh - confirmed directly (dino8_scratch_test, at bolt-shank
+  // turn counts well past the plain nut-bore scale
+  // TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads
+  // already covers) to give a genuine closed manifold with the correct
+  // sign and volume, once this round's own sweep.cpp fix to
+  // AssembleSweptBody()'s outward-orientation check is in place. Capped
+  // so an extreme user-entered bolt length degrades gracefully in
+  // fidelity rather than in build time.
+  const int stations = static_cast<int>(std::ceil(turns * 16.0)) + 1;
+  const int dv = std::clamp(stations * 2, 32, 4000);
+  return tool_brep.TessellateToClosedMesh(12, dv);
+}
+
+// Bolt: a cylindrical shank (root diameter = table's nominal diameter minus
+// the approximate thread depth, length = c.height) with a real helical
+// V-thread tool (BuildThreadTool() above) unioned onto it, plus a
+// cylindrical head (diameter approximating the hex head's across-flats
+// circumscribing circle, height = table's head height) sitting on top -
+// see BoltSizes()'s own doc comment for why the head is round rather than
+// a true hex prism. Falls back to the former plain (unthreaded) shank at
+// the table's own full nominal diameter for a size CoarseThreadPitch()
+// doesn't recognize.
 kernel::Mesh BuildBolt(const ArchComponent& c) {
   MechSizeRow row = MechSizeAt(ArchType::Bolt, c.size_index);
   Vector3d axis = AxisOf(c);
   double length = std::max(c.height, 1e-6);
-  kernel::Mesh shank = kernel::Mesh::Cylinder(c.p0, axis, row.d0 / 2.0, length);
+  const double pitch = CoarseThreadPitch(row.name);
+  kernel::Mesh shank;
+  if (pitch > 0.0) {
+    const double minor_r = row.d0 / 2.0 - 0.6134 * pitch;
+    kernel::Mesh plain_shaft = kernel::Mesh::Cylinder(c.p0, axis, minor_r, length);
+    kernel::Mesh thread_tool = BuildThreadTool(row, c.p0, axis, length, /*through=*/false);
+    shank = kernel::BooleanCombine(plain_shaft, thread_tool, kernel::BooleanOp::Union);
+  } else {
+    shank = kernel::Mesh::Cylinder(c.p0, axis, row.d0 / 2.0, length);
+  }
   Point3d head_base = c.p0 + axis * length;
   double head_diam = row.d1 / std::cos(kPi / 6.0);  // across-flats -> circumscribing circle
   kernel::Mesh head = kernel::Mesh::Cylinder(head_base, axis, head_diam / 2.0, row.d2);
   return kernel::BooleanCombine(shank, head, kernel::BooleanOp::Union);
 }
 
-// Nut: a single cylinder approximating the hex nut's across-flats
-// circumscribing circle (same round-head approximation as BuildBolt), with
-// no threaded bore (a solid approximation, not a functional threaded part).
+// Nut: a cylinder approximating the hex nut's across-flats circumscribing
+// circle (same round-head approximation as BuildBolt), with a real
+// helical V-thread bore (BuildThreadTool() above, `through=true`) cut
+// through it by a single Difference - closing this item's own
+// long-disclosed "no threaded bore" gap. Falls back to the former plain
+// (unbored) solid cylinder for a size CoarseThreadPitch() doesn't
+// recognize.
 kernel::Mesh BuildNut(const ArchComponent& c) {
   MechSizeRow row = MechSizeAt(ArchType::Nut, c.size_index);
   Vector3d axis = AxisOf(c);
   double diam = row.d1 / std::cos(kPi / 6.0);
-  return kernel::Mesh::Cylinder(c.p0, axis, diam / 2.0, row.d2);
+  kernel::Mesh body = kernel::Mesh::Cylinder(c.p0, axis, diam / 2.0, row.d2);
+  kernel::Mesh thread_tool = BuildThreadTool(row, c.p0, axis, row.d2, /*through=*/true);
+  if (thread_tool.raw().FaceCount() == 0) return body;
+  return kernel::BooleanCombine(body, thread_tool, kernel::BooleanOp::Difference);
 }
 
 // Washer: outer cylinder minus a concentric inner (bore) cylinder - a real
