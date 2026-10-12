@@ -555,6 +555,193 @@ void TestCurveLengthToTolerance() {
   Check(threw, "LengthToTolerance throws std::invalid_argument for a non-positive tolerance");
 }
 
+void TestCurveParameterAtArcLengthToTolerance() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Same 3-4-5 line as the untoleranced overload's own test: exact at any
+  // tolerance, since uniform speed makes the Newton search converge
+  // immediately. Half the arc length (2.5) lands exactly at t=0.5.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(3, 4, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  double achieved = -1.0;
+  const double t_half = line.ParameterAtArcLength(2.5, 1e-9, &achieved);
+  Check(std::abs(t_half - 0.5) < 1e-9, "half the line's arc length lands exactly at t=0.5 (tolerance overload)");
+  Check(std::abs(achieved - 2.5) < 1e-9, "...and out_achieved_length reports the real achieved arc length (2.5)");
+  const Point3d p_half = line.PointAt(t_half);
+  Check(std::abs(p_half.x - 1.5) < 1e-9 && std::abs(p_half.y - 2.0) < 1e-9,
+        "...which is exactly the line's own midpoint (1.5, 2, 0)");
+
+  Check(line.ParameterAtArcLength(0.0, 1e-9) == 0.0,
+        "an arc length of exactly 0 returns exactly the domain's own start");
+  Check(std::abs(line.ParameterAtArcLength(5.0, 1e-9) - 1.0) < 1e-9,
+        "an arc length of exactly the curve's own total length returns exactly the domain's own end");
+  Check(line.ParameterAtArcLength(-1.0, 1e-9) == 0.0,
+        "a negative arc length clamps to the domain's own start rather than extrapolating past it");
+  Check(std::abs(line.ParameterAtArcLength(100.0, 1e-9) - 1.0) < 1e-9,
+        "an arc length past the curve's own total length clamps to the domain's own end rather "
+        "than extrapolating past it");
+
+  // Genuine radius-5 circle: quarter-arc-length point must land exactly
+  // on the geometric quarter point, matching the untoleranced overload's
+  // own closed-form positive control, now via the adaptive-quadrature
+  // root-find instead of a fixed polyline.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const double circumference = circle.LengthToTolerance(1e-9);
+  Check(std::abs(circumference - 2.0 * ON_PI * radius) < 1e-6,
+        "setup: LengthToTolerance matches the circle's own closed-form circumference");
+  const Point3d p_quarter = circle.PointAt(circle.ParameterAtArcLength(circumference / 4.0, 1e-9));
+  Check(std::abs(p_quarter.x) < 1e-6 && std::abs(p_quarter.y - radius) < 1e-6,
+        "a quarter of the circle's own arc length lands exactly on its geometric quarter point "
+        "(0, radius, 0)");
+
+  // A wiggly cubic with no closed form: the real speed-based Newton root
+  // must independently reproduce the SAME point the adaptive quadrature
+  // itself integrates to - i.e. walking forward from Domain().Min() by
+  // the found parameter really does cover the requested arc length,
+  // cross-checked by a dense manual polyline sum over [Domain().Min(),
+  // found t] (NOT SetDomain() - that reparameterizes the whole curve
+  // over a new domain, an affine relabeling that keeps every point on
+  // the SAME full-length curve reachable, rather than trimming it down
+  // to a shorter one, so it cannot stand in for "the curve up to t").
+  std::vector<Point3d> wiggly_pts;
+  for (int i = 0; i < 6; ++i) wiggly_pts.push_back(Point3d(i, std::sin(1.7 * i), 0.3 * std::cos(0.9 * i)));
+  NurbsCurve wiggly = NurbsCurve::FromControlPoints(wiggly_pts, /*degree=*/3);
+  const double wiggly_total = wiggly.LengthToTolerance(1e-9);
+  double wiggly_achieved = -1.0;
+  const double wiggly_t = wiggly.ParameterAtArcLength(wiggly_total * 0.37, 1e-9, &wiggly_achieved);
+  Check(std::abs(wiggly_achieved - wiggly_total * 0.37) < 1e-6,
+        "the achieved arc length on a wiggly cubic matches the requested 37% of its total length");
+  double manual_length = 0.0;
+  Point3d manual_previous = wiggly.PointAt(wiggly.Domain().min);
+  constexpr int kManualSamples = 200000;
+  for (int i = 1; i <= kManualSamples; ++i) {
+    const double t = wiggly.Domain().min + (wiggly_t - wiggly.Domain().min) * i / kManualSamples;
+    const Point3d p = wiggly.PointAt(t);
+    manual_length += (p - manual_previous).Length();
+    manual_previous = p;
+  }
+  Check(std::abs(manual_length - wiggly_total * 0.37) < 1e-6,
+        "an independent, dense manual polyline sum from Domain().Min() to the found parameter "
+        "agrees with the requested arc length, confirming the Newton root is genuinely correct "
+        "and not just self-consistent with its own internal quadrature");
+
+  bool threw = false;
+  try {
+    wiggly.ParameterAtArcLength(1.0, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ParameterAtArcLength(tolerance) throws std::invalid_argument for a non-positive tolerance");
+}
+
+void TestCurveDivideByCountAndByLengthToTolerance() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Straight line: uniform speed makes tolerance-bounded division
+  // identical to dividing the raw parameter domain evenly, the same
+  // positive control the untoleranced overload's own test uses.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  const auto line_values = line.DivideByCount(4, 1e-9);
+  const std::vector<double> expected_line_values = {0.0, 0.25, 0.5, 0.75, 1.0};
+  Check(line_values.size() == expected_line_values.size(), "DivideByCount(count, tolerance) returns count+1 values");
+  bool line_values_match = line_values.size() == expected_line_values.size();
+  for (size_t i = 0; line_values_match && i < line_values.size(); ++i) {
+    if (std::abs(line_values[i] - expected_line_values[i]) > 1e-9) line_values_match = false;
+  }
+  Check(line_values_match,
+        "DivideByCount(count, tolerance) on a straight line exactly matches dividing its own "
+        "parameter domain evenly");
+
+  // Full circle: equal arc-length division must give genuinely equal
+  // consecutive-point chord lengths.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const auto circle_values = circle.DivideByCount(8, 1e-9);
+  Check(circle_values.size() == 9, "DivideByCount(8, tolerance) on the circle returns exactly 9 values");
+  bool all_chords_equal = true;
+  const double first_chord = (circle.PointAt(circle_values[1]) - circle.PointAt(circle_values[0])).Length();
+  for (size_t i = 1; i < circle_values.size(); ++i) {
+    const double chord = (circle.PointAt(circle_values[i]) - circle.PointAt(circle_values[i - 1])).Length();
+    if (std::abs(chord - first_chord) > 1e-6) {
+      all_chords_equal = false;
+      break;
+    }
+  }
+  Check(all_chords_equal,
+        "every consecutive pair of division points on the circle is exactly the same chord "
+        "length apart (DivideByCount(count, tolerance))");
+
+  bool threw = false;
+  try {
+    line.DivideByCount(0, 1e-9);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DivideByCount(count, tolerance) throws std::invalid_argument on a non-positive count");
+  threw = false;
+  try {
+    line.DivideByCount(4, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DivideByCount(count, tolerance) throws std::invalid_argument on a non-positive tolerance");
+
+  // DivideByLength(length, tolerance): same length-10 line, length-4
+  // sub-segments - lands at t=0.4 and t=0.8, then the leftover segment.
+  const auto short_values = line.DivideByLength(4.0, 1e-9);
+  const std::vector<double> expected_short_values = {0.0, 0.4, 0.8, 1.0};
+  Check(short_values.size() == expected_short_values.size(),
+        "DivideByLength(4, tolerance) on a length-10 line returns exactly 4 values");
+  bool short_values_match = short_values.size() == expected_short_values.size();
+  for (size_t i = 0; short_values_match && i < short_values.size(); ++i) {
+    if (std::abs(short_values[i] - expected_short_values[i]) > 1e-9) short_values_match = false;
+  }
+  Check(short_values_match, "DivideByLength(4, tolerance) on the length-10 line lands exactly at t=0.4 and t=0.8");
+
+  // DivideByLength(length, tolerance) and DivideByCount(count, tolerance)
+  // must agree on the same circle: two different ways of asking for the
+  // same 8 equal-arc-length divisions.
+  const double circumference = circle.LengthToTolerance(1e-9);
+  const auto by_length_values = circle.DivideByLength(circumference / 8.0, 1e-9);
+  Check(by_length_values.size() == circle_values.size(),
+        "DivideByLength(circumference / 8, tolerance) returns the same count of values as "
+        "DivideByCount(8, tolerance)");
+  bool agree = by_length_values.size() == circle_values.size();
+  for (size_t i = 0; agree && i < by_length_values.size(); ++i) {
+    if (std::abs(by_length_values[i] - circle_values[i]) > 1e-6) agree = false;
+  }
+  Check(agree,
+        "DivideByLength(circumference / 8, tolerance) and DivideByCount(8, tolerance) land at "
+        "the same parameter values on the same circle");
+
+  threw = false;
+  try {
+    line.DivideByLength(0.0, 1e-9);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DivideByLength(length, tolerance) throws std::invalid_argument on a non-positive length");
+  threw = false;
+  try {
+    line.DivideByLength(4.0, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DivideByLength(length, tolerance) throws std::invalid_argument on a non-positive tolerance");
+}
+
 void TestCurveInsertKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -72944,6 +73131,8 @@ int main() {
   TestCurveFromControlPointsRejectsDegenerateInput();
   TestCurveLength();
   TestCurveLengthToTolerance();
+  TestCurveParameterAtArcLengthToTolerance();
+  TestCurveDivideByCountAndByLengthToTolerance();
   TestCurveParameterAtArcLength();
   TestCurveDivideByCount();
   TestCurveDivideByLength();
