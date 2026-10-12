@@ -4763,6 +4763,46 @@ void TestContainsPointExact() {
   Check(threw_empty, "ContainsPointExact throws std::invalid_argument for a Brep with no faces");
 }
 
+// PARITY_MAP's massprops category, "Signed distance point-to-solid" gap:
+// Mesh::SignedDistance() already does this for a tessellated mesh;
+// SignedDistanceToBrep() is the exact, trimmed-face Brep-level
+// counterpart, composing ClosestPointOnBrep() (magnitude) and
+// ContainsPointExact() (sign) the identical way Mesh::SignedDistance()
+// itself composes Mesh::ClosestPoint()/Mesh::ContainsPoint().
+void TestSignedDistanceToBrep() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SignedDistanceToBrep;
+
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 5);
+  Check(std::fabs(SignedDistanceToBrep(Point3d(0, 0, 0), sphere.raw()) - (-5.0)) < 1e-6,
+        "the sphere's own center is inside, at exactly -radius (the farthest interior point from "
+        "the surface, hand-derivable)");
+  Check(std::fabs(SignedDistanceToBrep(Point3d(0, 0, 3), sphere.raw()) - (-2.0)) < 1e-6,
+        "a point 3 units from center along z, inside the radius-5 sphere, is at exactly -2 (5 - 3)");
+  Check(std::fabs(SignedDistanceToBrep(Point3d(8, 0, 0), sphere.raw()) - 3.0) < 1e-6,
+        "a point 8 units from center along x, outside the radius-5 sphere, is at exactly +3 (8 - 5)");
+  Check(std::fabs(SignedDistanceToBrep(Point3d(5, 0, 0), sphere.raw())) < 1e-4,
+        "a point exactly on the sphere's own surface is at distance ~0, whichever side the ray-cast "
+        "classifier's own tolerance happens to land it on");
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  Check(std::fabs(SignedDistanceToBrep(Point3d(1, 1, 1), box.raw()) - (-1.0)) < 1e-6,
+        "the 2x2x2 box's own center is inside, at exactly -1 (the distance to any of its 6 "
+        "equidistant faces, hand-derivable)");
+  Check(std::fabs(SignedDistanceToBrep(Point3d(5, 1, 1), box.raw()) - 3.0) < 1e-6,
+        "a point 3 units clear of the box's own x=2 face, straight out along x, is at exactly +3");
+
+  bool threw_empty = false;
+  try {
+    ON_Brep empty;
+    SignedDistanceToBrep(Point3d(0, 0, 0), empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "SignedDistanceToBrep throws std::invalid_argument for a Brep with no faces");
+}
+
 // PARITY_MAP's intersections category, "Pullback of a 3D curve to surface
 // parameter space" bullet: PullbackCurveToSurface() is the general-purpose
 // kernel entry point (SSX's own pcurve_a/pcurve_b are a by-product of a
@@ -45326,6 +45366,169 @@ void TestFromMixedFacesNotchedCylinderCoversNotchOutsideRailBand() {
   }
 }
 
+// Brep::Transform() (the new rigid-move/rotate counterpart to
+// Mesh::Transform()/SubD::Transform()) exercised against a genuinely
+// notched CylindricalFace record, reusing BuildOutOfBandNotchedCylinder
+// from the fixture above. Confirms a rigid move/rotate preserves the
+// record's own verbatim notch polyline bit-for-bit (mapped through the
+// same xform), not merely the plain scalar fields - exactly the fidelity
+// the previous dino8-app pattern (`brep->raw().Transform(xform)` in
+// SceneObject.cpp/FlowData.cpp, reaching behind this class's own back)
+// would silently lose, per MixedFaces()'s own doc comment: a notch
+// polyline is NEVER recoverable by the generic geometric-extraction
+// fallback ("empty regardless of whether the source face was notched"),
+// so if this test's own notch points come back from MixedFaces() intact
+// after the move, Transform() has genuinely carried the verbatim record
+// forward rather than letting it go stale.
+void TestBrepTransformPreservesNotchedCylindricalFaceRecordUnderRigidMove() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double r = 2.0, L = 3.0, tan_a = 0.5;
+  const Brep::CylindricalFace cf = BuildOutOfBandNotchedCylinder(r, L, tan_a, /*notch0=*/true, /*notch1=*/false);
+  const Brep built = Brep::FromMixedFaces({}, {cf});
+
+  // Sanity on the fixture itself: MixedFaces() recovers the verbatim
+  // notch before any transform even enters the picture.
+  const Brep::MixedFacesResult before = built.MixedFaces();
+  Check(before.cylindrical.size() == 1 &&
+            before.cylindrical[0].cap0_notch_points.size() == cf.cap0_notch_points.size(),
+        "before any transform, MixedFaces() returns the cylindrical face's own verbatim cap0 notch polyline");
+
+  Vector3d axis(0.2, 0.4, 0.3);
+  axis.Unitize();
+  ON_Xform rotate;
+  rotate.Rotation(0.9, axis, Point3d(1.0, -2.0, 0.5));
+  const ON_Xform xform = ON_Xform::TranslationTransformation(Vector3d(5.0, -7.0, 3.0)) * rotate;
+  Check(xform.IsRigid() == 1,
+        "the test's own combined rotation+translation is genuinely rigid (a sanity check on the fixture, not on "
+        "Brep::Transform() itself)");
+
+  const Brep moved = built.Transform(xform);
+  Check(moved.raw().IsValid(), "Brep::Transform() of a rigid move leaves the underlying ON_Brep genuinely valid");
+
+  const Brep::MixedFacesResult after = moved.MixedFaces();
+  Check(after.cylindrical.size() == 1, "MixedFaces() still finds exactly one cylindrical face after a rigid Transform()");
+  const Brep::CylindricalFace& got = after.cylindrical[0];
+
+  Check(std::fabs(got.radius - cf.radius) < 1e-9, "radius is exactly unchanged by a rigid Transform()");
+  Check(std::fabs(got.length - cf.length) < 1e-9, "length is exactly unchanged by a rigid Transform()");
+  Check(std::fabs(got.angle - cf.angle) < 1e-9, "angle is exactly unchanged by a rigid Transform()");
+  Check(got.frame.origin.DistanceTo(xform * cf.frame.origin) < 1e-6,
+        "the cylindrical face's own frame.origin is re-expressed through the exact same xform used to move the "
+        "Brep");
+
+  // The core fidelity claim: the notch polyline itself survives,
+  // point-for-point, mapped through the identical xform - not dropped to
+  // the generic fallback's own always-empty notch list.
+  Check(got.cap0_notch_points.size() == cf.cap0_notch_points.size(),
+        "the moved face's own cap0 notch polyline keeps exactly as many points as the original - it was carried "
+        "through the verbatim record, not dropped to the generic fallback's own always-empty notch list");
+  bool all_match = got.cap0_notch_points.size() == cf.cap0_notch_points.size();
+  for (size_t i = 0; all_match && i < got.cap0_notch_points.size(); ++i) {
+    if (got.cap0_notch_points[i].DistanceTo(xform * cf.cap0_notch_points[i]) > 1e-6) all_match = false;
+  }
+  Check(all_match,
+        "every one of the moved face's own cap0 notch points equals the ORIGINAL notch point mapped through the "
+        "identical xform used to move the Brep - exact fidelity, not a re-sampled approximation");
+}
+
+// The safety side of the same method: a NON-rigid transform (here, a
+// uniform scale by 2 - not an isometry, since it does not preserve
+// distances, so ON_Xform::IsRigid() reports 0, not +1) is outside
+// Transform()'s own "translate/rotate" scope. Confirms this degrades
+// SAFELY rather than either crashing (the private CylinderNotchRows/
+// FaceRecord side tables must stay sized to the live face count even
+// once reset - see Transform()'s own doc comment on why an outright
+// `.clear()` would leave FaceCoversWholeDomain() indexing past an empty
+// vector) or silently mis-scaling a notch polyline: the underlying
+// geometry is still correctly scaled (MixedFaces()'s OWN geometric
+// fallback re-derives the doubled radius straight from the real,
+// correctly-scaled surface), but the verbatim notch record is genuinely
+// gone, exactly as a stale, untouched record already silently would be.
+void TestBrepTransformDropsVerbatimRecordsUnderNonRigidScale() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const double r = 2.0, L = 3.0, tan_a = 0.5;
+  const Brep::CylindricalFace cf = BuildOutOfBandNotchedCylinder(r, L, tan_a, /*notch0=*/true, /*notch1=*/false);
+  const Brep built = Brep::FromMixedFaces({}, {cf});
+
+  const ON_Xform scale = ON_Xform::ScaleTransformation(Point3d(0, 0, 0), 2.0);
+  Check(scale.IsRigid() == 0, "a uniform scale by 2 is genuinely not rigid (sanity check on the fixture)");
+
+  const Brep scaled = built.Transform(scale);
+  Check(scaled.raw().IsValid(), "Brep::Transform() of a non-rigid scale still leaves the underlying ON_Brep valid");
+
+  const Brep::MixedFacesResult after = scaled.MixedFaces();
+  Check(after.cylindrical.size() == 1,
+        "MixedFaces() still finds exactly one cylindrical face after a non-rigid Transform()");
+  const Brep::CylindricalFace& got = after.cylindrical[0];
+  Check(std::fabs(got.radius - 2.0 * r) < 1e-6,
+        "the geometric fallback re-derives the doubled radius directly from the real, correctly-scaled surface, "
+        "even though the verbatim record itself was dropped");
+  Check(got.cap0_notch_points.empty(),
+        "the notch polyline is genuinely gone after a non-rigid transform - the verbatim record was dropped "
+        "rather than silently mis-scaled, the documented (lossy but safe) fallback, not a crash");
+}
+
+// The real regression this guards against lives in a DIFFERENT consumer
+// than MixedFaces() (which already bounds-checks every side-table access
+// - see brep.cpp's own `if (static_cast<size_t>(i) < face_records_.size())`
+// guard): Brep::FaceCoversWholeDomain() (brep.cpp, read by Volume()/
+// Area()) indexes face_trim_loops_/face_hole_loops_/face_arc_runs_/
+// face_notch_rows_ by face index with NO bounds check of its own,
+// relying on every one of these parallel tables staying sized to the
+// live face count - the same invariant every factory in this file keeps
+// via its own per-face `emplace_back()` call. Box() is exactly the case
+// that reaches this: its own faces have no ON_Brep loop at all (so
+// `FaceIsSurface()` is false - see FaceCoversWholeDomain()'s own doc
+// comment) and are genuinely untrimmed in this kernel's own "no loop"
+// convention - the fallback the first check in that function falls
+// through to for every one of Box()'s six faces. Before the fix, resetting
+// these tables with an outright `.clear()` left them at zero length, so
+// this exact fallback indexed straight past the end of an empty vector
+// for every face on a non-rigidly-transformed Box() - undefined behavior
+// this test would have no reliable way to catch after the fact, which is
+// exactly why the fix instead resets each table to one default ("no
+// record") entry per live face. Area() succeeding at all, with the
+// correctly-scaled closed-form answer - not merely not crashing - is the
+// falsifiable confirmation that the reset path keeps every table at the
+// right length, not just that it compiles.
+void TestBrepTransformOnBoxUnderNonRigidScaleKeepsSideTablesSafelyIndexable() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 3, 4);
+  const double original_area = 2.0 * (2.0 * 3.0 + 3.0 * 4.0 + 2.0 * 4.0);  // 2*(6+12+8) = 52
+  Check(std::fabs(box.Area() - original_area) < 1e-9, "sanity: the un-transformed box's own area matches the closed form");
+
+  const ON_Xform scale = ON_Xform::ScaleTransformation(Point3d(0, 0, 0), 2.0);
+  Check(scale.IsRigid() == 0, "a uniform scale by 2 is genuinely not rigid (sanity check on the fixture)");
+
+  const Brep scaled = box.Transform(scale);
+  // Box()'s own faces are built via the loopless `NewFace(int)` overload
+  // (no real topology at all - see Box()'s own doc comment), so
+  // raw().IsValid() is ALREADY false before any transform ("ON_Brep has
+  // no edges"), the same disclosed reason raw().IsSolid() is also false
+  // for a Box() - confirmed directly here rather than assumed, so this
+  // is a check that Transform() doesn't CHANGE that pre-existing state,
+  // not a (false) claim that a Box() is ever raw().IsValid() at all.
+  Check(scaled.raw().IsValid() == box.raw().IsValid(),
+        "Brep::Transform() of a Box() under a non-rigid scale doesn't change its raw().IsValid() state");
+
+  // Every dimension doubles, so area (length^2) scales by 2^2 = 4 - a
+  // clean, hand-derivable closed form, not a tolerance tuned to whatever
+  // the current output happens to be.
+  const double expected_area = original_area * 4.0;
+  const double got_area = scaled.Area();
+  Check(std::fabs(got_area - expected_area) < 1e-6,
+        "Area() on a non-rigidly-scaled Box() returns the correct closed-form area (not a crash, not a stale "
+        "pre-transform value) - FaceCoversWholeDomain()'s own per-face side-table indexing stayed in bounds for "
+        "every one of the box's six loopless faces");
+}
+
 // The same defect reached through the REAL producer: the oblique-drilled
 // box's own surviving cylindrical hole-wall fragment (both ends notched by
 // SplitCylindricalByObliquePlane) has the closed-form lateral area
@@ -53898,6 +54101,101 @@ void TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound() {
         "Difference against a compound whose own lumps genuinely touch along a contact curve still throws the "
         "pre-existing non-manifold reassembly refusal, not a silently wrong shape - a real, disclosed scope limit "
         "of this pass's new compound-operand support, not an outright compound refusal");
+}
+
+// PARITY_MAP.md's own "Non-manifold boolean results" bullet names this
+// specific gap by function: "the B-rep engines throw 'an edge is shared by
+// 3 or more faces' instead of building non-manifold output." This closes
+// it for Union/Intersection/Difference via BooleanCombinePlanar's new
+// `allow_non_manifold_result` parameter (boolean.h/boolean.cpp): two unit
+// cubes that touch ONLY along one shared edge - a=Box(0,0,0,1,1,1),
+// b=Box(1,1,0,2,2,1), touching along the vertical edge x=1,y=1,z in [0,1].
+// Neither operand is coincident with any face of the other anywhere, so
+// nothing about this fixture is a "coincident sub-face" case (this
+// category's other, separately-tracked bullet) - it is A's own edge
+// (where A's x=1 face meets A's y=1 face) and B's own edge (B's x=1 face
+// meeting B's y=1 face) landing at the IDENTICAL 3D location, which the
+// strict pipeline's ordinary Brep::FromPlanarFaces() reassembly welds into
+// one edge carrying all four trims and refuses outright - confirmed
+// directly via a standalone scratch-test probe linked against
+// libdino8_kernel.a before writing this, not assumed; the default
+// (allow_non_manifold_result == false) path below reproduces that exact
+// refusal unchanged, a real regression guard for the parameter's own
+// documented default. With the flag set, the identical computed face list
+// reassembles through Brep::FromMixedFacesNonManifold() instead, so all 12
+// of the two cubes' own original faces survive untouched (nothing here is
+// coincident, so nothing is cut or deduplicated either) with exactly one
+// non-manifold edge where they meet.
+void TestBooleanCombinePlanarUnionAllowsNonManifoldEdgeOnlyTouchingCubes() {
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const Brep a = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep b = Brep::Box(1, 1, 0, 2, 2, 1);
+
+  bool strict_threw = false;
+  std::string strict_message;
+  try {
+    BooleanCombinePlanar(a, b, BooleanOp::Union);
+  } catch (const std::exception& e) {
+    strict_threw = true;
+    strict_message = e.what();
+  }
+  Check(strict_threw && strict_message.find("edge is shared by 3 or more faces") != std::string::npos,
+        "the default (allow_non_manifold_result == false) path still refuses this edge-only-touching union "
+        "exactly as before this parameter existed");
+
+  const Brep result = BooleanCombinePlanar(a, b, BooleanOp::Union, -1.0, true);
+  Check(result.FaceCount() == 12,
+        "allow_non_manifold_result Union keeps all 12 of the two cubes' own original faces - nothing here is "
+        "coincident, so nothing is cut or deduplicated, only the one shared touching edge is welded together");
+  Check(result.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1,
+        "exactly one edge is genuinely non-manifold (the shared touching edge) - confirmed via a standalone "
+        "scratch-test probe, not assumed");
+
+  double area = 0.0;
+  for (const Mesh& face_mesh : result.Tessellate(2, 2)) area += face_mesh.Area();
+  Check(Within(area, 12.0, 1e-9),
+        "total tessellated area is exactly 6 (per cube) x 2 = 12 - every one of the 12 faces survived "
+        "untouched (measured per-face via Tessellate(), independent of Brep::Area()/Brep::Volume(), neither of "
+        "which is well-defined on a genuinely non-manifold result)");
+}
+
+// The SymmetricDifference half of the same `allow_non_manifold_result`
+// closure: a genuine SINGLE-SHELL XOR instead of the two-lump
+// Brep::Compound the plain BooleanCombinePlanar(a, b, SymmetricDifference)
+// call builds today - the "single-body XOR" PARITY_MAP.md's own
+// "Non-manifold boolean results" bullet names directly in its title
+// parenthetical. Same corner-overlap fixture
+// TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound above
+// already uses (a=Box(0,0,0,2,2,2), b=Box(1,1,1,3,3,3)), independently
+// re-measured here (not merely cited) at a two-lump, 48-face compound via
+// a standalone scratch-test probe before writing this test.
+void TestBooleanCombinePlanarSymmetricDifferenceAllowsSingleShellXor() {
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  const Brep compound_xor = BooleanCombinePlanar(a, b, BooleanOp::SymmetricDifference);
+  Check(compound_xor.LumpFaceRanges().size() == 2 && compound_xor.FaceCount() == 48,
+        "sanity: the known two-lump, 48-face compound XOR this category's own prior tests already establish");
+
+  const Brep single_shell = BooleanCombinePlanar(a, b, BooleanOp::SymmetricDifference, -1.0, true);
+  Check(single_shell.LumpFaceRanges().size() == 1,
+        "allow_non_manifold_result builds a genuine SINGLE shell, not a Brep::Compound of two lumps - the "
+        "'single-body XOR' this category's bullet names directly");
+  Check(single_shell.FaceCount() == 48,
+        "every one of the 48 faces from both Difference directions survives - none lost, none duplicated, only "
+        "welded together at the shared boundary instead of left as two separate lumps");
+  Check(single_shell.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 6,
+        "the shared boundary curve between the XOR's own four face groups (A's outside, B's outside, and both "
+        "flipped insides) comes back as real non-manifold edges instead of two separately-welded 2-trim edges - "
+        "confirmed via a standalone scratch-test probe, not assumed");
 }
 
 // Regression check: SymmetricDifference must still refuse a compound
@@ -77374,6 +77672,7 @@ int main() {
   RunTest("TestFireRayAtBrep", TestFireRayAtBrep);
   RunTest("TestClosestPointOnBrep", TestClosestPointOnBrep);
   RunTest("TestContainsPointExact", TestContainsPointExact);
+  RunTest("TestSignedDistanceToBrep", TestSignedDistanceToBrep);
   RunTest("TestPullbackCurveToSurfaceCylinderRulingLine", TestPullbackCurveToSurfaceCylinderRulingLine);
   RunTest("TestPullbackCurveToSurfaceAcrossPeriodicSeam", TestPullbackCurveToSurfaceAcrossPeriodicSeam);
   RunTest("TestIntersectBrepByPlaneBoxSideWalls", TestIntersectBrepByPlaneBoxSideWalls);
@@ -77991,6 +78290,9 @@ int main() {
   RunTest("TestBooleanCombineMixedObliqueReentrantHeightThrows", TestBooleanCombineMixedObliqueReentrantHeightThrows);
   RunTest("TestBooleanCombineMixedObliqueMultipleTiltAngles", TestBooleanCombineMixedObliqueMultipleTiltAngles);
   RunTest("TestFromMixedFacesNotchedCylinderCoversNotchOutsideRailBand", TestFromMixedFacesNotchedCylinderCoversNotchOutsideRailBand);
+  RunTest("TestBrepTransformPreservesNotchedCylindricalFaceRecordUnderRigidMove", TestBrepTransformPreservesNotchedCylindricalFaceRecordUnderRigidMove);
+  RunTest("TestBrepTransformDropsVerbatimRecordsUnderNonRigidScale", TestBrepTransformDropsVerbatimRecordsUnderNonRigidScale);
+  RunTest("TestBrepTransformOnBoxUnderNonRigidScaleKeepsSideTablesSafelyIndexable", TestBrepTransformOnBoxUnderNonRigidScaleKeepsSideTablesSafelyIndexable);
   RunTest("TestBooleanCombineMixedObliqueSurvivingWallAreaAndVolumeMatchClosedForm", TestBooleanCombineMixedObliqueSurvivingWallAreaAndVolumeMatchClosedForm);
   RunTest("TestTessellateConformingNotchedUncappedCylinderHonorsTrim", TestTessellateConformingNotchedUncappedCylinderHonorsTrim);
   RunTest("TestTessellateConformingObliqueDrilledBoxIsClosedManifold", TestTessellateConformingObliqueDrilledBoxIsClosedManifold);
@@ -78109,6 +78411,8 @@ int main() {
   RunTest("TestBooleanCombinePlanarIntersectionAcceptsCompoundOperand", TestBooleanCombinePlanarIntersectionAcceptsCompoundOperand);
   RunTest("TestBooleanCombinePlanarDifferenceAcceptsGapSeparatedXorCompound", TestBooleanCombinePlanarDifferenceAcceptsGapSeparatedXorCompound);
   RunTest("TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound", TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound);
+  RunTest("TestBooleanCombinePlanarUnionAllowsNonManifoldEdgeOnlyTouchingCubes", TestBooleanCombinePlanarUnionAllowsNonManifoldEdgeOnlyTouchingCubes);
+  RunTest("TestBooleanCombinePlanarSymmetricDifferenceAllowsSingleShellXor", TestBooleanCombinePlanarSymmetricDifferenceAllowsSingleShellXor);
   RunTest("TestBooleanCombinePlanarXorStillRefusesCompoundOperand", TestBooleanCombinePlanarXorStillRefusesCompoundOperand);
   RunTest("TestBooleanCombinePlanarUnionAcceptsCompoundOperand", TestBooleanCombinePlanarUnionAcceptsCompoundOperand);
   RunTest("TestBooleanCombinePlanarUnionAcceptsCompoundOperandBridgedIntoOneLump", TestBooleanCombinePlanarUnionAcceptsCompoundOperandBridgedIntoOneLump);

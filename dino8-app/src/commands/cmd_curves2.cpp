@@ -66,6 +66,15 @@ bool ReplaceCurve(CommandContext& ctx, ObjectId id, const kernel::NurbsCurve& c)
   return true;
 }
 
+// Replaces the geometry of surface object `id` in place.
+bool ReplaceSurface(CommandContext& ctx, ObjectId id, const kernel::NurbsSurface& s) {
+  SceneObject* o = ctx.Doc().Find(id);
+  if (!o || o->kind != ObjectKind::Surface) return false;
+  *o->surface = s;
+  o->InvalidateDisplay();
+  return true;
+}
+
 
 inline double At(const kernel::Interval& d, double u) { return d.min + (d.max - d.min) * u; }
 
@@ -590,20 +599,33 @@ class SubCrvCommand : public Command {
   double t0_ = 0;
 };
 
-// Reports each selected curve's parameter domain, and optionally sets a
-// new one (SetDomain reparameterizes in place - same shape, new t-range;
-// the actual command Rhino's own Domain provides, not just a read-out).
+// Reports each selected curve's or surface's parameter domain, and
+// optionally sets a new one (SetDomain reparameterizes in place - same
+// shape, new t-range; the actual command Rhino's own Domain provides, not
+// just a read-out). A surface's typed "min max" applies to both U and V -
+// the common case (e.g. reparameterizing to 0-1 everywhere); setting each
+// direction independently would need its own, separate command.
 class DomainCommand : public Command {
  public:
-  void Begin(CommandContext&) override { WantObjects("Select curves to view or set the domain"); }
+  void Begin(CommandContext&) override { WantObjects("Select curves or surfaces to view or set the domain"); }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
-    curves_ = CopyCurves(ctx, ids);
-    for (const CurveCopy& c : curves_) {
-      kernel::Interval d = c.curve.Domain();
-      ctx.Print("Curve " + std::to_string(c.id) + " domain: " + FormatNumber(d.min) + " to " + FormatNumber(d.max));
+    ids_.clear();
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      if (o->kind == ObjectKind::Curve && o->curve) {
+        kernel::Interval d = o->curve->Domain();
+        ctx.Print("Curve " + std::to_string(id) + " domain: " + FormatNumber(d.min) + " to " + FormatNumber(d.max));
+        ids_.push_back(id);
+      } else if (o->kind == ObjectKind::Surface && o->surface) {
+        kernel::Interval du = o->surface->Domain(0), dv = o->surface->Domain(1);
+        ctx.Print("Surface " + std::to_string(id) + " domain: U " + FormatNumber(du.min) + " to " + FormatNumber(du.max) +
+                   ", V " + FormatNumber(dv.min) + " to " + FormatNumber(dv.max));
+        ids_.push_back(id);
+      }
     }
-    if (curves_.empty()) { Finish(); return; }
-    WantText("New domain \"min max\" (Enter to leave unchanged)");
+    if (ids_.empty()) { Finish(); return; }
+    WantText("New domain \"min max\" (applied to both U and V for a surface; Enter to leave unchanged)");
   }
   void OnEnter(CommandContext&) override { Finish(); }
   void OnText(CommandContext& ctx, const std::string& t) override {
@@ -617,11 +639,26 @@ class DomainCommand : public Command {
     if (end1 == s.c_str() || end2 == end1 || !(b > a)) { ctx.Warn("Domain: type two numbers min max, with max > min"); return; }
     ctx.Doc().BeginChange("Domain");
     int n = 0;
-    for (const CurveCopy& c : curves_) { kernel::NurbsCurve k = c.curve; k.raw().SetDomain(a, b); ReplaceCurve(ctx, c.id, k); ++n; }
-    ctx.Print("Domain: " + std::to_string(n) + " curve(s) now have domain " + FormatNumber(a) + " to " + FormatNumber(b));
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      if (o->kind == ObjectKind::Curve && o->curve) {
+        kernel::NurbsCurve k = *o->curve; k.raw().SetDomain(a, b); ReplaceCurve(ctx, id, k); ++n;
+      } else if (o->kind == ObjectKind::Surface && o->surface) {
+        kernel::NurbsSurface k = *o->surface;
+        // Both calls always run (not short-circuited): each direction is
+        // independent, and NoOpAlreadySatisfied (the domain already being
+        // exactly a..b in that direction) is success, not failure - only
+        // Failed (a..b itself invalid) should skip the replace.
+        const kernel::Result ru = k.SetDomain(0, a, b);
+        const kernel::Result rv = k.SetDomain(1, a, b);
+        if (ru != kernel::Result::Failed && rv != kernel::Result::Failed) { ReplaceSurface(ctx, id, k); ++n; }
+      }
+    }
+    ctx.Print("Domain: " + std::to_string(n) + " object(s) now have domain " + FormatNumber(a) + " to " + FormatNumber(b));
     Finish();
   }
-  std::vector<CurveCopy> curves_;
+  std::vector<ObjectId> ids_;
 };
 
 class CrvSeamCommand : public Command {
@@ -2477,11 +2514,24 @@ void RegisterCurves2Commands(CommandEngine& e) {
       }));
   Reg(e, "CrvSeam", Make<CrvSeamCommand>());
   Reg(e, "Domain", Make<DomainCommand>());
-  Reg(e, "Reparameterize", OnSelection("Select curves to reparameterize to 0-1", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  Reg(e, "Reparameterize", OnSelection("Select curves or surfaces to reparameterize to 0-1", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Reparameterize");
         int n = 0;
         for (const CurveCopy& c : CopyCurves(ctx, ids)) { kernel::NurbsCurve k = c.curve; k.raw().SetDomain(0, 1); ReplaceCurve(ctx, c.id, k); ++n; }
-        ctx.Print("Reparameterize: " + std::to_string(n) + " curve(s) now have domain 0 to 1");
+        // Surfaces: NurbsSurface::SetDomain() was kernel-only from this
+        // command's point of view until now - Reparameterize only ever
+        // reached curves, even though it reparameterizes both U and V to
+        // 0-1 in exactly the same shape-preserving sense as a curve's.
+        for (ObjectId id : ids) {
+          const SceneObject* o = ctx.Doc().Find(id);
+          if (!o || o->kind != ObjectKind::Surface || !o->surface) continue;
+          kernel::NurbsSurface k = *o->surface;
+          // Both calls always run - see Domain's identical reasoning above.
+          const kernel::Result ru = k.SetDomain(0, 0, 1);
+          const kernel::Result rv = k.SetDomain(1, 0, 1);
+          if (ru != kernel::Result::Failed && rv != kernel::Result::Failed) { ReplaceSurface(ctx, id, k); ++n; }
+        }
+        ctx.Print("Reparameterize: " + std::to_string(n) + " object(s) now have domain 0 to 1");
       }));
   Reg(e, "MakeNonPeriodic", OnSelection("Select periodic curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("MakeNonPeriodic");

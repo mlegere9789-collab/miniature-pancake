@@ -2186,6 +2186,13 @@ BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b
   return best;
 }
 
+double SignedDistanceToBrep(const Point3d& point, const ON_Brep& b, const IntersectOptions& opt, int u_divisions,
+                             int v_divisions, int trim_samples_per_edge, double ray_length, double tol) {
+  const BrepClosestPointResult cp = ClosestPointOnBrep(point, b, u_divisions, v_divisions, trim_samples_per_edge);
+  const bool inside = ContainsPointExact(point, b, ray_length, opt, tol);
+  return inside ? -cp.distance : cp.distance;
+}
+
 // Curve/infinite-plane crossings: bisection-seeded, then Newton-refined on
 // the plane's own implicit signed-distance equation (a single scalar
 // residual, unlike IntersectCurveSurface()'s 3-unknown (t, u, v) system -

@@ -242,6 +242,27 @@ Domain
 SelLast
 List
 SelNone
+# --- Domain and Reparameterize on a surface: NurbsSurface::SetDomain()
+# was kernel-only from either command's point of view until now - a
+# typed/hardcoded range now applies to both U and V (a Plane's own
+# default domain is already 0 to 1, so Domain sets it away to 0..5 first
+# to give Reparameterize's 0..1 something real to undo), each reported
+# back by a report-only Domain call.
+SelAll
+Hide
+Plane 0,0,0 10,10,0
+SelLast
+Domain
+"0 5"
+SelLast
+Domain
+Enter
+SelLast
+Reparameterize
+SelLast
+Domain
+Enter
+SelNone
 # --- ModifyRadius rebuilds a circle at a new radius in place
 SelAll
 Hide
@@ -498,9 +519,15 @@ List
 # +2 for the Match Continuity=Curvature fixture's own two arcs (added
 # alongside the pre-existing Continuity=Tangent fixture above, same "left
 # visible, never deleted" convention that fixture's own two lines already
-# use) - 197 -> 199. +3 more (2 Arcs + 1 Blend curve) for the new
-# Continuity=G4 block above, the same shape as the Continuity=G3 block's
-# own contribution - 201 -> 204. +4 more for the ConvertToBeziers-on-a-
-# surface fixture just above (its own 4 Bezier patches, left in the
-# document), added by a separate concurrent session - 204 -> 208.
-@expect_objects 208
+# use) - 197 -> 199. Three independent deltas landed on top of that,
+# each from a different concurrent session, now combined rather than
+# picking just one side (this file's own established merge convention):
+# +1 for the Domain/Reparameterize-on-a-surface fixture further above
+# (its one Plane, left in the document - Domain and Reparameterize both
+# replace in place, no count change of their own) - 199 -> 200; +3 for
+# this Continuity=G4 block above (2 Arcs + 1 Blend curve, the same shape
+# the Continuity=G3 block's own contribution already takes) - 200 -> 203;
+# +4 for the ConvertToBeziers-on-a-surface fixture just above (its own 4
+# Bezier patches, left in the document) - 203 -> 207. Re-counted directly
+# against a real smoke.sh run, not assumed from the arithmetic alone.
+@expect_objects 207
