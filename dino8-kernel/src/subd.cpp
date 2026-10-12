@@ -346,6 +346,25 @@ SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_t
     throw std::invalid_argument(
         "dino8::kernel::SubD::Symmetrize: plane_normal must be nonzero");
   }
+  if (!ON_IsValid(plane_offset)) {
+    throw std::invalid_argument("dino8::kernel::SubD::Symmetrize: plane_offset must be finite");
+  }
+  // Unlike weld_tolerance (see below), point_tolerance has no "zero or
+  // negative means fall back to a default" convention - it alone decides
+  // which vertices are treated as lying ON the mirror plane (see the
+  // on_plane classification below), so a bad value here doesn't degrade
+  // to a sane default the way a bad weld_tolerance would: a NaN
+  // point_tolerance makes every `<= point_tolerance` comparison silently
+  // false (per IEEE 754, any comparison with NaN is false), and a
+  // negative one makes `abs(signed_distance) <= point_tolerance` false
+  // for every vertex including ones genuinely ON the plane - either way,
+  // NO vertex is ever welded as a seam, every boundary loop comes back
+  // duplicated-but-disconnected instead, silently wrong rather than
+  // refused.
+  if (!ON_IsValid(point_tolerance) || point_tolerance < 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::Symmetrize: point_tolerance must be finite and non-negative");
+  }
 
   // See this method's own doc comment (subd.h) for why these are two
   // separate roles: `point_tolerance` alone still decides on-plane
