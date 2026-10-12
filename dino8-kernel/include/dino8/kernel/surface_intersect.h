@@ -1162,6 +1162,70 @@ struct CylinderCylinderIntersectingIntersection {
 };
 CylinderCylinderIntersectingIntersection IntersectCylinderCylinderIntersecting(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance);
 
+// The closed-form cylinder/cylinder SSX for the UNEQUAL-RADIUS,
+// FULLY-PIERCING special case - a third narrowing of the "cylinder/
+// cylinder" half of PARITY_MAP.md's own "Analytic/analytic SSX closed
+// forms" bullet, alongside IntersectCylinderCylinderParallel()'s
+// parallel-axis case and IntersectCylinderCylinderIntersecting()'s
+// equal-radius case. This is a public re-derivation of the SAME closed
+// form `BooleanCombineMixed`'s own private `ComputeUnequalCylinderCrossing`/
+// `UnequalCylinderCurvePoint` (boolean.cpp) already relies on for its own
+// wall-splitting: for a point at angle `theta` around the SMALLER
+// cylinder's own generator circle (`e(theta) = small_radius*(cos(theta)*
+// e0 + sin(theta)*e1)` for any orthonormal `(e0, e1)` perpendicular to its
+// axis - the specific choice doesn't matter, `theta` just needs to sweep
+// the circle once), the LARGER cylinder's own defining relation
+// `|p - large.Center() - h*large.Axis()|_perp == large.radius` (distance
+// from the point to the large cylinder's own axis line, projected
+// perpendicular to that axis) reduces to an EXACT quadratic in the one
+// unknown `h` (the point's own height along the small cylinder's axis) -
+// no Newton polish, every point an exact root of that quadratic.
+//
+// Two such roots exist at every `theta` exactly when the smaller cylinder
+// fully pierces the larger one on every one of its own generators: for
+// intersecting axes (the two infinite axis lines' own closest-point
+// distance `d` within `tolerance`), this holds at ANY angle `alpha`
+// between the axes; for genuinely skew axes (`d > tolerance`), only when
+// `d + small_radius < large_radius` (the single closed-form, alpha-
+// independent full-pierce condition this function shares with the
+// private splitter's own `ComputeUnequalCylinderCrossing` - the
+// discriminant of the per-angle quadratic above is minimized over `theta`
+// exactly there). A skew pair that does NOT fully pierce (a partial,
+// blind penetration with no closed-loop answer) is refused outright
+// (`not_full_pierce == true`) rather than guessed at. Given that, the two
+// root signs each trace out a genuine closed space curve as `theta`
+// sweeps `[0, 2*pi)` - `curve_a` the `+` root, `curve_b` the `-` root, two
+// disjoint loops (never pinching together, unlike the equal-radius
+// Steinmetz case's own ellipse pair, since the full-pierce precondition
+// keeps the discriminant strictly positive everywhere).
+//
+// Unlike the equal-radius case's two PLANAR ELLIPSES (exact conics, with
+// their own exact NURBS form), this curve is not a conic at all - no
+// OpenNURBS type represents it exactly. Each SAMPLED point is still an
+// exact root of the quadratic above (no approximation, no Newton polish),
+// but the curve BETWEEN samples is a cubic interpolation through those
+// exact points (the same `InterpolateCubic()`/`ChordParams()` closed-curve
+// fit `PullbackCurveToSurface()`'s own `pulled_curve`, `ContourAtPlane()`,
+// and `FindSurfaceSilhouetteCurves()` already use for the identical reason
+// - a genuinely curved locus with no simple exact finite representation),
+// not itself exactly on the true curve there. `a`/`b` sharing (within
+// tolerance) the same radius are refused outright (`equal_radius == true`
+// - `IntersectCylinderCylinderIntersecting()`'s own case, not this one's,
+// since the `r^2` cancellation that construction depends on does not
+// apply here); (anti)parallel axes are likewise refused
+// (`parallel == true` - `IntersectCylinderCylinderParallel()`'s own case).
+// Deliberately operates on both cylinders' own INFINITE lateral surfaces,
+// the same unbounded scope every other closed form in this file already
+// takes.
+struct CylinderCylinderUnequalIntersection {
+  bool empty = true;
+  bool equal_radius = false;      // true: refused outright - `a`/`b` share (within tolerance) the same radius; `IntersectCylinderCylinderIntersecting()`'s own case, not this one's; every other field meaningless
+  bool parallel = false;          // true: refused outright - the two axes are (anti)parallel within tolerance; `IntersectCylinderCylinderParallel()`'s own case
+  bool not_full_pierce = false;   // true: refused outright - a genuinely skew pair whose smaller cylinder does not fully pierce the larger one on every generator (a partial/blind penetration with no closed-loop answer)
+  ON_NurbsCurve curve_a, curve_b;  // the two closed loops (root sign +, root sign -) - meaningful only when !empty && !equal_radius && !parallel && !not_full_pierce
+};
+CylinderCylinderUnequalIntersection IntersectCylinderCylinderUnequalRadius(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance);
+
 // The exact closed-form plane/plane SSX - closes the "plane/plane" half of
 // PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
 // easiest of its named pairs and, until now, still unaddressed as a public

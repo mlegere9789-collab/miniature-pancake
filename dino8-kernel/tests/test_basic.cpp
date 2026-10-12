@@ -5778,6 +5778,109 @@ void TestIntersectCylinderCylinderIntersectingClosedForm() {
 }
 
 // PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
+// "cylinder/cylinder" half's UNEQUAL-RADIUS, FULLY-PIERCING special case -
+// a third narrowing of that pair, alongside the parallel-axis and
+// equal-radius-intersecting-axis tests directly above.
+void TestIntersectCylinderCylinderUnequalRadiusClosedForm() {
+  using dino8::kernel::IntersectCylinderCylinderUnequalRadius;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Distance from a point to an infinite axis line (through `origin`,
+  // unit `axis`) - the defining per-cylinder membership test every curve
+  // point below is checked against, not a hardcoded expected curve.
+  auto dist_to_axis = [](const Point3d& p, const Point3d& origin, const Vector3d& axis) {
+    const Vector3d v = p - origin;
+    const double along = ON_DotProduct(v, axis);
+    const Vector3d radial = v - along * axis;
+    return radial.Length();
+  };
+
+  const double tol = 1e-6;
+  const double R = 3.0, r = 1.0;
+  const Vector3d axis_large(0, 0, 1);
+  const Vector3d axis_small(1, 0, 0);
+
+  // Intersecting axes (perpendicular, meeting exactly at the origin): the
+  // larger cylinder's own radius R along Z, the smaller's own radius r
+  // along X, both through the same point.
+  const ON_Cylinder cyl_large(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_large), R));
+  const ON_Cylinder cyl_small(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_small), r));
+  const auto crossing = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small, tol);
+  Check(!crossing.empty && !crossing.equal_radius && !crossing.parallel && !crossing.not_full_pierce,
+        "two unequal-radius cylinders with genuinely intersecting, perpendicular axes report two real closed curves");
+  if (!crossing.empty) {
+    for (const ON_NurbsCurve* curve : {&crossing.curve_a, &crossing.curve_b}) {
+      Check(curve->IsValid(), "each reported closed curve has a valid NURBS form");
+      bool all_on_both = true;
+      const int n = 32;
+      for (int i = 0; i <= n; ++i) {
+        const double t = curve->Domain().ParameterAt(static_cast<double>(i) / n);
+        const Point3d p = curve->PointAt(t);
+        if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-3 ||
+            std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_small) - r) > 1e-3) {
+          all_on_both = false;
+          break;
+        }
+      }
+      Check(all_on_both, "every sampled point of the curve sits at exactly radius R from the larger cylinder's axis AND exactly radius r from the smaller cylinder's axis simultaneously");
+    }
+    const Point3d mid_a = crossing.curve_a.PointAt(crossing.curve_a.Domain().ParameterAt(0.0));
+    const Point3d mid_b = crossing.curve_b.PointAt(crossing.curve_b.Domain().ParameterAt(0.0));
+    Check(mid_a.DistanceTo(mid_b) > 1e-3, "the two closed curves are genuinely distinct, not the same one reported twice");
+    Check(crossing.curve_a.IsClosed() && crossing.curve_b.IsClosed(), "both reported curves are genuinely closed loops, not open arcs");
+  }
+
+  // Also works with the caller's own argument order swapped (small, large)
+  // - the closed form must be argument-order independent.
+  const auto crossing_swapped = IntersectCylinderCylinderUnequalRadius(cyl_small, cyl_large, tol);
+  Check(!crossing_swapped.empty && !crossing_swapped.equal_radius && !crossing_swapped.parallel && !crossing_swapped.not_full_pierce,
+        "the same pair, passed in the opposite argument order, reports the same kind of result");
+
+  // A genuinely skew pair (axes non-parallel, closest-point distance
+  // d = 1 between them) whose smaller cylinder still fully pierces the
+  // larger one on every generator (d + r = 2 < R = 3).
+  const ON_Cylinder cyl_small_skew(ON_Circle(ON_Plane(Point3d(0, 1, 0), axis_small), r));
+  const auto skew_pierce = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_skew, tol);
+  Check(!skew_pierce.empty && !skew_pierce.not_full_pierce, "a genuinely skew pair whose smaller cylinder fully pierces the larger one reports a real result, not a refusal");
+  if (!skew_pierce.empty) {
+    bool all_on_both = true;
+    const int n = 32;
+    for (int i = 0; i <= n; ++i) {
+      const double t = skew_pierce.curve_a.Domain().ParameterAt(static_cast<double>(i) / n);
+      const Point3d p = skew_pierce.curve_a.PointAt(t);
+      if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-3 ||
+          std::abs(dist_to_axis(p, Point3d(0, 1, 0), axis_small) - r) > 1e-3) {
+        all_on_both = false;
+        break;
+      }
+    }
+    Check(all_on_both, "the skew-but-piercing case's own curve also sits at exactly radius R from the larger axis and radius r from the smaller (offset) axis simultaneously");
+  }
+
+  // A genuinely skew pair that does NOT fully pierce (d + r = 2.5 + 1 = 3.5
+  // >= R = 3, a partial/blind penetration) is refused outright.
+  const ON_Cylinder cyl_small_partial(ON_Circle(ON_Plane(Point3d(0, 2.5, 0), axis_small), r));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_partial, tol).not_full_pierce,
+        "a genuinely skew pair whose smaller cylinder does NOT fully pierce the larger one is refused outright, not guessed at");
+
+  // Equal radii are refused outright - this closed form requires UNEQUAL
+  // radii; IntersectCylinderCylinderIntersecting() is the equal-radius case.
+  const ON_Cylinder cyl_equal(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_small), R));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_equal, tol).equal_radius,
+        "two equal-radius cylinders are refused outright, not misrouted into this function's own construction");
+
+  // (Anti)parallel axes are refused outright - IntersectCylinderCylinderParallel()'s own case.
+  const ON_Cylinder cyl_parallel(ON_Circle(ON_Plane(Point3d(5, 0, 0), axis_large), r));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_parallel, tol).parallel,
+        "parallel axes are refused outright, not misrouted into a fabricated curve");
+
+  // Invalid input (zero-radius cylinder) is refused outright.
+  const ON_Cylinder degenerate(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_small), 0.0));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, degenerate, tol).empty, "a zero-radius cylinder operand is refused as a genuine miss");
+}
+
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
 // "plane/plane" half - the easiest of its named pairs, closed here with
 // the exact classical formula (no mesh seeding, no Newton polish).
 void TestIntersectPlanePlaneClosedForm() {
@@ -74243,6 +74346,7 @@ int main() {
   TestIntersectPlaneCylinderClosedForm();
   TestIntersectCylinderCylinderParallelClosedForm();
   TestIntersectCylinderCylinderIntersectingClosedForm();
+  TestIntersectCylinderCylinderUnequalRadiusClosedForm();
   TestIntersectPlanePlaneClosedForm();
   TestIntersectPlaneConeClosedForm();
   TestIntersectPlaneTorusClosedForm();
