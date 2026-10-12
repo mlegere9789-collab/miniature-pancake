@@ -6751,6 +6751,81 @@ this round's own scope, which touches only `BooleanCombinePlanar`'s own
 B-rep reassembly path, nowhere near that check's own `BooleanCombineMixed`
 Newton-refinement code).*
 
+*Thirty-fifth note on this category's score (round 47): extends round 46's
+`allow_non_manifold_result` closure from `BooleanCombinePlanar` to
+`BooleanCombineMixed` (boolean.h/boolean.cpp) - the cylinder-aware engine,
+not just the purely-planar one. Verified first that this was a clean fit
+before building it: `Brep::FromMixedFacesNonManifold()` already accepts
+the identical `(planar_faces, cylindrical_faces, conical_faces,
+spherical_faces)` signature `Brep::FromMixedFaces()` does, so it is a
+drop-in replacement for `BooleanCombineMixed`'s own final reassembly call,
+no new kernel primitive needed - the same "reuse an existing, already-
+tested general Brep primitive" shape round 46's own note used. The
+face-selection `switch` that used to sit inline inside
+`BooleanCombineMixed` (Union/Intersection/Difference, each collecting a
+`std::vector<MixedFace>` before reassembly) is factored out into a new
+file-local `MixedBooleanFaces()` helper, mirroring `PlanarBooleanFaces()`'s
+own existing role for the planar engine - needed so the new
+`SymmetricDifference` path below can call it twice (once per Difference
+direction) without a separate `Brep` reassembly forced in between, exactly
+the shape `BooleanCombinePlanar`'s own `allow_non_manifold_result`
+`SymmetricDifference` branch already established. No behavior change for
+the ordinary (false) path: confirmed by the full suite re-running at the
+identical pre-change check count before any new test was added.
+- **Union/Intersection/Difference:** when `allow_non_manifold_result` is
+  true, `MixedBooleanFaces()`'s own result reassembles through
+  `Brep::FromMixedFacesNonManifold()` instead of `Brep::FromMixedFaces()` -
+  otherwise identical. Verified
+  (`TestBooleanCombineMixedUnionAllowsNonManifoldEdgeOnlyTouchingCubes`,
+  tests/test_basic.cpp) on the identical edge-only-touching two-cube
+  fixture round 46's own planar-engine test uses (no `CylindricalFace`
+  involved, so the Mixed engine's own classification reduces to the exact
+  same planar-ray-cast-parity answer): the strict default path still
+  throws "an edge is shared by 3 or more faces" exactly as before (a real
+  regression-guard negative control); with the flag set, all 12 of the two
+  cubes' own original faces survive, `Check()` reports exactly one
+  `NonManifoldEdge`, and the per-face-tessellated total area is exactly 12
+  - bit-for-bit the same result the planar engine's own equivalent test
+  already establishes, confirming the Mixed engine's new path produces the
+  identical answer on geometry neither engine's own curved-face machinery
+  is exercised by.
+- **SymmetricDifference:** when `allow_non_manifold_result` is true, both
+  directions' face lists (`MixedBooleanFaces(a, b, Difference, tolerance)`
+  and `MixedBooleanFaces(b, a, Difference, tolerance)`) are concatenated
+  and passed through ONE `Brep::FromMixedFacesNonManifold()` call instead
+  of the existing `Brep::Compound({BooleanCombineMixed(a, b, Difference,
+  ...), BooleanCombineMixed(b, a, Difference, ...)})` path - closing the
+  "single-body XOR" case for this engine too. Verified
+  (`TestBooleanCombineMixedSymmetricDifferenceAllowsSingleShellXor`,
+  tests/test_basic.cpp) on the identical corner-overlap box fixture round
+  46's own planar-engine test uses (`Box(0,0,0,2,2,2)`/`Box(1,1,1,3,3,3)`):
+  the default path still returns the known two-lump, 48-face compound;
+  with the flag set, the result is a genuine single shell
+  (`LumpFaceRanges().size() == 1`), keeps all 48 faces, and `Check()`
+  reports 6 real `NonManifoldEdge`s along the shared boundary - again
+  bit-for-bit matching the planar engine's own equivalent result on this
+  purely-planar fixture.
+A real, disclosed scope limit carried over unchanged from round 46, not
+newly introduced: a compound `a`/`b` operand combined with
+`allow_non_manifold_result` remains untested for this engine too - the
+existing lump-recomputation tail (this category's own "Sixth note" above)
+is simply skipped whenever the flag is set, for the identical reason
+`BooleanCombinePlanar`'s own skip already discloses (no proven
+`SplitDisjointPieces()` behavior against an already-non-manifold `Brep`).
+This is genuinely narrower than the bullet's own full named scope, not a
+flip to `[present]`: `BooleanCombineGeneral` has no equivalent parameter
+yet (still throws unconditionally on this exact non-manifold shape), and
+the mesh-level `BooleanCombine`'s own XOR still keeps duplicated vertices,
+exactly as before. Does not change this category's own `9/15/1/25` (66.0%)
+split - narrows, does not flip, the same already-partial item round 46
+narrowed. Full `dino8_kernel_tests` suite rebuilt and run clean end to end,
+twice in a row on the identical commit after merging this round's own
+concurrent `git pull` (an unrelated `Brep` edge-rebuild/surface-intersect
+closure, no kernel-boolean-row effect): 10624 `ok:` lines, 0 `FAILED:`
+lines, `all checks passed`, exit 0 both times (up from this round's own
+pre-change baseline of 10616, +8 new checks - 4 per new test, the
+identical count each one's own planar-engine counterpart already has).*
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
@@ -10140,7 +10215,7 @@ top 40:
 - [kernel/booleans] Result validity — close more general-boolean cases (partial)
 - [kernel/booleans] Tolerant booleans (caller-specified tolerance) (partial)
 - [kernel/booleans] Keep/split options — `SplitBrepByManySolidsKeepAll` now keeps one piece per disjoint cutter plus the remainder (not just union-inside/outside); remaining effort is app wiring and overlapping-cutter decomposition (partial)
-- [kernel/booleans] Non-manifold boolean results — `BooleanCombinePlanar`'s new `allow_non_manifold_result` closes the edge/vertex-touching-union and single-body-XOR cases for this one engine (round 46); `BooleanCombineMixed`/`BooleanCombineGeneral` and the mesh engine's XOR are still untouched (partial)
+- [kernel/booleans] Non-manifold boolean results — `BooleanCombinePlanar`'s `allow_non_manifold_result` (round 46) and now `BooleanCombineMixed`'s own identical parameter (round 47) close the edge/vertex-touching-union and single-body-XOR cases for both B-rep engines that have real face-level reassembly; `BooleanCombineGeneral` and the mesh engine's XOR are still untouched (partial)
 - [kernel/booleans] 2D region / planar curve booleans — exact kernel version (partial)
 - [kernel/booleans] Boolean failure diagnostics — structured failure-report type (partial)
 - [kernel/booleans] Free-form (non-analytic) NURBS operands — add coverage/tests (partial)
@@ -10358,7 +10433,7 @@ top 40:
 - [app/app_ecosystem] Cloud model viewer / app builder (ShapeDiver equivalent) (missing; now partial - a real self-contained HTML/WebGL viewer export, `dino8-app/src/io/WebViewer.{h,cpp}` - see the category bullet above for detail)
 - [app/app_ecosystem] Real-time multi-user collaboration / co-editing (missing; now partial - same evidence as the app_ux item above)
 - [app/app_ux] Screen-reader support — the rest of the UI (3D viewport content, ~17 remaining panels/dialogs, narrowed from ~18 2026-10-12 by the new Command History mirror, plus four of the Options window's seven tabs) and Windows/macOS platform bridges, beyond the real AT-SPI2/Linux bridge that now covers the command line, menu bar, running command's options, Layers/Properties, viewport title bars, Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes, Environments, Audit Results, Undo/Redo History, Hatch Patterns, Plug-ins, the Command List, Command Aliases, Keyboard Shortcuts, Keyboard Shortcuts Reference, Document Properties, Textures, Display and Command History (missing; now partial — reclassified 2026-09-30, see the app_ux category bullet above)
-- [kernel/booleans] Non-manifold boolean results — full non-manifold construction, not just tolerating detection; `BooleanCombinePlanar` now does this for Union/Intersection/Difference/SymmetricDifference via `allow_non_manifold_result` (round 46), the other two B-rep engines and the mesh engine's XOR do not yet (partial)
+- [kernel/booleans] Non-manifold boolean results — full non-manifold construction, not just tolerating detection; `BooleanCombinePlanar` (round 46) and `BooleanCombineMixed` (round 47) now both do this for Union/Intersection/Difference/SymmetricDifference via `allow_non_manifold_result`; `BooleanCombineGeneral` and the mesh engine's XOR do not yet (partial)
 - [kernel/booleans] 2D region / planar curve booleans — exact kernel implementation, not mesh slabs (partial)
 - [kernel/blending] Constant-radius edge fillet on curved adjacent faces — lift the planar-faces restriction (partial)
 - [kernel/blending] Chamfer with two unequal distances/angle on curved faces (partial)

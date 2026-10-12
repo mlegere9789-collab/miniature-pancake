@@ -55501,6 +55501,86 @@ void TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBr
   Check(record_cyl.HasCylindricalFace(), "a FaceRecord-backed lone cylindrical wall is likewise detected");
 }
 
+// The Mixed-engine counterpart of
+// TestBooleanCombinePlanarUnionAllowsNonManifoldEdgeOnlyTouchingCubes:
+// BooleanCombineMixed's own new `allow_non_manifold_result` parameter
+// closes the identical "Non-manifold boolean results" gap for this engine
+// too, reassembling through Brep::FromMixedFacesNonManifold() instead of
+// Brep::FromMixedFaces(). Same pure-planar edge-only-touching fixture (no
+// CylindricalFace involved) - the Mixed engine's own classification
+// reduces to the identical planar-ray-cast-parity answer the Planar engine
+// already gives on operands with no curved face, so the SAME expected
+// result (12 faces, 1 non-manifold edge, area 12) applies here too.
+void TestBooleanCombineMixedUnionAllowsNonManifoldEdgeOnlyTouchingCubes() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const Brep a = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep b = Brep::Box(1, 1, 0, 2, 2, 1);
+
+  bool strict_threw = false;
+  std::string strict_message;
+  try {
+    BooleanCombineMixed(a, b, BooleanOp::Union);
+  } catch (const std::exception& e) {
+    strict_threw = true;
+    strict_message = e.what();
+  }
+  Check(strict_threw && strict_message.find("edge is shared by 3 or more faces") != std::string::npos,
+        "the default (allow_non_manifold_result == false) path still refuses this edge-only-touching union "
+        "exactly as before this parameter existed");
+
+  const Brep result = BooleanCombineMixed(a, b, BooleanOp::Union, -1.0, true);
+  Check(result.FaceCount() == 12,
+        "allow_non_manifold_result Union keeps all 12 of the two cubes' own original faces - nothing here is "
+        "coincident, so nothing is cut or deduplicated, only the one shared touching edge is welded together");
+  Check(result.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1,
+        "exactly one edge is genuinely non-manifold (the shared touching edge) - confirmed via a standalone "
+        "scratch-test probe, not assumed");
+
+  double area = 0.0;
+  for (const Mesh& face_mesh : result.Tessellate(2, 2)) area += face_mesh.Area();
+  Check(Within(area, 12.0, 1e-9),
+        "total tessellated area is exactly 6 (per cube) x 2 = 12 - every one of the 12 faces survived "
+        "untouched (measured per-face via Tessellate(), independent of Brep::Area()/Brep::Volume(), neither of "
+        "which is well-defined on a genuinely non-manifold result)");
+}
+
+// The Mixed-engine counterpart of
+// TestBooleanCombinePlanarSymmetricDifferenceAllowsSingleShellXor: a
+// genuine single-shell XOR via the identical MixedBooleanFaces()-based
+// construction the planar engine's own PlanarBooleanFaces() path already
+// uses. Same corner-overlap fixture
+// TestBooleanCombineMixedDifferenceThrowsOnTouchingLumpXorCompound below
+// already uses (a=Box(0,0,0,2,2,2), b=Box(1,1,1,3,3,3)).
+void TestBooleanCombineMixedSymmetricDifferenceAllowsSingleShellXor() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  const Brep compound_xor = BooleanCombineMixed(a, b, BooleanOp::SymmetricDifference);
+  Check(compound_xor.LumpFaceRanges().size() == 2 && compound_xor.FaceCount() == 48,
+        "sanity: the known two-lump, 48-face compound XOR this category's own prior tests already establish, "
+        "now also confirmed through the Mixed engine's own default path");
+
+  const Brep single_shell = BooleanCombineMixed(a, b, BooleanOp::SymmetricDifference, -1.0, true);
+  Check(single_shell.LumpFaceRanges().size() == 1,
+        "allow_non_manifold_result builds a genuine SINGLE shell, not a Brep::Compound of two lumps - the "
+        "'single-body XOR' this category's bullet names directly, now closed for this engine too");
+  Check(single_shell.FaceCount() == 48,
+        "every one of the 48 faces from both Difference directions survives - none lost, none duplicated, only "
+        "welded together at the shared boundary instead of left as two separate lumps");
+  Check(single_shell.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 6,
+        "the shared boundary curve between the XOR's own four face groups (A's outside, B's outside, and both "
+        "flipped insides) comes back as real non-manifold edges instead of two separately-welded 2-trim edges - "
+        "confirmed via a standalone scratch-test probe, not assumed");
+}
+
 // Regression check: Union and SymmetricDifference must still refuse a
 // compound operand exactly as before - this pass narrows the refusal, it
 // does not remove it.
@@ -78886,6 +78966,8 @@ int main() {
   RunTest("TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand", TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand);
   RunTest("TestBooleanCombineMixedIntersectionAcceptsCompoundOperand", TestBooleanCombineMixedIntersectionAcceptsCompoundOperand);
   RunTest("TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders", TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders);
+  RunTest("TestBooleanCombineMixedUnionAllowsNonManifoldEdgeOnlyTouchingCubes", TestBooleanCombineMixedUnionAllowsNonManifoldEdgeOnlyTouchingCubes);
+  RunTest("TestBooleanCombineMixedSymmetricDifferenceAllowsSingleShellXor", TestBooleanCombineMixedSymmetricDifferenceAllowsSingleShellXor);
   RunTest("TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius", TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius);
   RunTest("TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBrep", TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBrep);
   RunTest("TestBooleanCombineMixedXorStillRefusesCompoundOperand", TestBooleanCombineMixedXorStillRefusesCompoundOperand);
