@@ -1,0 +1,47 @@
+# BooleanCombineGeneral/BooleanCombineGeneralNAry app-wiring QC (see
+# smoke.sh): PARITY_MAP.md's "kernel: Boolean operations" category named
+# BooleanCombineMixed/BooleanCombineGeneral as having "no app entry point
+# at all" - only the Planar engine (TryExactBrepBoolean) was wired into
+# BooleanUnion/BooleanDifference/BooleanIntersection/Boolean2Objects, so a
+# solid with any curved face always fell straight through to the mesh
+# path. This exercises the new TryGeneralBrepBoolean path (cmd_boolean.cpp)
+# end to end through the real app: a box pierced by a record-less
+# cylinder is a case BooleanCombinePlanar always declines (a curved
+# face), so it now reaches BooleanCombineGeneralNAry instead. Ids are
+# assigned in creation order, 1-based, and are never reused even across
+# an in-script Delete - each boolean command's own result object consumes
+# one more id than its two operands, so the next block's own ids are
+# offset by 3, not 2 (see boolean_script.txt's own header comment for the
+# same convention).
+SetActiveViewport Top
+# --- BooleanUnion (single-stage): box (id 1) + piercing cylinder (id 2) -> 1 object (id 3)
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelAll
+BooleanUnion
+@expect_objects 1
+SelAll
+Delete
+# --- BooleanDifference (two-stage): box (id 4) minus piercing cylinder (id 5) -> 1 object (id 6)
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 4
+BooleanDifference
+SelID 5
+Enter
+@expect_objects 1
+SelAll
+Delete
+# --- BooleanIntersection (two-stage): box (id 7) and piercing cylinder (id 8) -> 1 object (id 9)
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 7
+BooleanIntersection
+SelID 8
+Enter
+@expect_objects 1
+SelAll
+Delete
+@expect_objects 0
