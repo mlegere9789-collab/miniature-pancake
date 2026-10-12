@@ -8009,6 +8009,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
   TOKFILE_LOG="$TMPW/serve_token_file.log"
   TOKFILE_PATH="$TMPW/serve_tokens.txt"
   printf 'filetoken1\n' > "$TOKFILE_PATH"
+  chmod 0600 "$TOKFILE_PATH"  # owner-only, same as any real deployment would need - see the permissions test below
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     timeout 30 "$BIN" --serve 0 --serve-token-file "$TOKFILE_PATH" --serve-max-requests 5 > "$TOKFILE_LOG" 2>&1 &
   else
@@ -8071,6 +8072,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
   TTL_LOG="$TMPW/serve_token_ttl.log"
   TTL_PATH="$TMPW/serve_tokens_ttl.txt"
   printf 'ttltoken\n' > "$TTL_PATH"
+  chmod 0600 "$TTL_PATH"  # owner-only, same as any real deployment would need - see the permissions test below
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     timeout 30 "$BIN" --serve 0 --serve-token-file "$TTL_PATH" --serve-token-file-ttl 2 --serve-max-requests 3 > "$TTL_LOG" 2>&1 &
   else
@@ -8125,6 +8127,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
   HASH_LOG="$TMPW/serve_token_hash.log"
   HASH_PATH="$TMPW/serve_tokens_hash.txt"
   printf 'sha256:79d8dad2f0a04420fd1e0b3c2090350a527c9e8b147bba7a06e8c38ed666a034\nci3:sha256:8800d70b1d06d18497e333a3942da0037e660a66250a081e570073ad533c5ddc\n' > "$HASH_PATH"
+  chmod 0600 "$HASH_PATH"  # owner-only, same as any real deployment would need - see the permissions test below
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     timeout 30 "$BIN" --serve 0 --serve-token-file "$HASH_PATH" --serve-max-requests 4 > "$HASH_LOG" 2>&1 &
   else
@@ -8164,6 +8167,60 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
       cat "$HASH_LOG"; echo "FAIL: --serve-token-file (hashed entries) process exited $HASH_EC, expected 0"; fail=1
     else
       grep -q "^serve: done requests=4$" "$HASH_LOG" && echo "ok   --serve-token-file (hashed entries) server exited cleanly on its own after 4 real HTTP requests" || { cat "$HASH_LOG"; echo "FAIL --serve-token-file (hashed entries) done-summary line missing or wrong"; fail=1; }
+    fi
+  fi
+
+  # --serve-token-file loose permissions: the file's own group/other-read
+  # bits are checked fresh on every request, the same live-reconsideration
+  # TTL/rotation/revocation already get - starts the file world-readable
+  # (0644), proves a real correct token is still rejected (the file is
+  # untrustworthy regardless of what it says), tightens it to 0600 WHILE
+  # the server keeps running and proves the identical token now succeeds
+  # with no restart, then loosens it right back to 0644 and proves access
+  # is revoked again just as live - not a one-time startup check.
+  PERM_LOG="$TMPW/serve_token_perm.log"
+  PERM_PATH="$TMPW/serve_tokens_perm.txt"
+  printf 'permtoken\n' > "$PERM_PATH"
+  chmod 0644 "$PERM_PATH"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 30 "$BIN" --serve 0 --serve-token-file "$PERM_PATH" --serve-max-requests 3 > "$PERM_LOG" 2>&1 &
+  else
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token-file "$PERM_PATH" --serve-max-requests 3 > "$PERM_LOG" 2>&1 &
+  fi
+  PERM_PID=$!
+
+  PERM_PORT=""
+  for _ in $(seq 1 100); do
+    if grep -q "^serve: listening on port " "$PERM_LOG" 2>/dev/null; then
+      PERM_PORT="$(grep "^serve: listening on port " "$PERM_LOG" | head -1 | awk '{print $NF}')"
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ -z "$PERM_PORT" ]; then
+    cat "$PERM_LOG"; echo "FAIL: --serve-token-file (permissions) server never printed its listening port within 10s"; fail=1
+    kill "$PERM_PID" 2>/dev/null || true
+    wait "$PERM_PID" 2>/dev/null || true
+  else
+    set +e
+    PERM_CODE_LOOSE="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer permtoken' -X POST --data 'print("should not run")' "http://127.0.0.1:$PERM_PORT/run")"
+    chmod 0600 "$PERM_PATH"
+    PERM_RESP_TIGHT="$(curl -s --max-time 10 -H 'Authorization: Bearer permtoken' -X POST --data 'print("tight perms ok")' "http://127.0.0.1:$PERM_PORT/run")"
+    chmod 0644 "$PERM_PATH"
+    PERM_CODE_LOOSE_AGAIN="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer permtoken' -X POST --data 'print("should not run either")' "http://127.0.0.1:$PERM_PORT/run")"
+    set -e
+    [ "$PERM_CODE_LOOSE" = "401" ] && echo "ok   --serve-token-file rejects a correct token when the file itself is world-readable (0644) - the token file's own permissions, not just what it contains, are checked" || { echo "FAIL --serve-token-file accepted a token from a world-readable (0644) file, expected 401 (HTTP $PERM_CODE_LOOSE)"; fail=1; }
+    echo "$PERM_RESP_TIGHT" | grep -q "^tight perms ok$" && echo "ok   chmod'ing the file to 0600 WHILE the server keeps running immediately allows the identical token - live, no restart needed, same as TTL/rotation above" || { echo "$PERM_RESP_TIGHT"; echo "FAIL --serve-token-file still rejected the token after tightening the file to 0600"; fail=1; }
+    [ "$PERM_CODE_LOOSE_AGAIN" = "401" ] && echo "ok   chmod'ing the file back to 0644 revokes access again on the very next request - a live recheck every time, not a one-shot startup gate" || { echo "FAIL --serve-token-file accepted a token again after loosening the file back to 0644, expected 401 (HTTP $PERM_CODE_LOOSE_AGAIN)"; fail=1; }
+
+    set +e; wait "$PERM_PID"; PERM_EC=$?; set -e
+    if [ "$PERM_EC" -eq 124 ]; then
+      cat "$PERM_LOG"; echo "FAIL: --serve-token-file (permissions) process hung and was killed by the 30s timeout instead of exiting after --serve-max-requests"; fail=1
+    elif [ "$PERM_EC" -ne 0 ]; then
+      cat "$PERM_LOG"; echo "FAIL: --serve-token-file (permissions) process exited $PERM_EC, expected 0"; fail=1
+    else
+      grep -q "^serve: done requests=3$" "$PERM_LOG" && echo "ok   --serve-token-file (permissions) server exited cleanly on its own after 3 real HTTP requests" || { cat "$PERM_LOG"; echo "FAIL --serve-token-file (permissions) done-summary line missing or wrong"; fail=1; }
     fi
   fi
 
