@@ -1,73 +1,73 @@
 #include <cstdio>
 #include <cmath>
 #include <vector>
-#include "dino8/kernel/surface_intersect.h"
-#include "dino8/kernel/brep.h"
+#include "dino8/kernel/curve.h"
 #include "opennurbs.h"
 
 int main() {
   ON::Begin();
   using namespace dino8::kernel;
 
-  // 1) Box: a grid of points, some inside, some outside - cross-check
-  // against the hand-known geometry (box occupies [0,2]^3).
-  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
-  const std::vector<Point3d> probes = {
-      Point3d(1, 1, 1),    // center, inside
-      Point3d(0.01, 0.01, 0.01),  // just inside a corner
-      Point3d(1.99, 1, 1), // just inside a face
-      Point3d(2.01, 1, 1), // just outside a face
-      Point3d(3, 3, 3),    // well outside, diagonal
-      Point3d(1, 1, -5),   // well outside, below
-      Point3d(1, 1, 5),    // well outside, above
-  };
-  for (const Point3d& p : probes) {
-    const bool inside = ContainsPointExact(p, box.raw());
-    std::printf("box query(%g,%g,%g): inside=%d\n", p.x, p.y, p.z, (int)inside);
-  }
-
-  // 2) Sphere, radius 5 centered at origin.
-  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 5);
-  const std::vector<Point3d> sphere_probes = {
-      Point3d(0, 0, 0),
-      Point3d(4.99, 0, 0),
-      Point3d(5.01, 0, 0),
-      Point3d(3, 3, 3),  // distance sqrt(27)=5.196, just outside
-      Point3d(2, 2, 2),  // distance sqrt(12)=3.46, inside
-      Point3d(0, 0, 100),
-  };
-  for (const Point3d& p : sphere_probes) {
-    const bool inside = ContainsPointExact(p, sphere.raw());
-    const double dist_from_center = p.DistanceTo(Point3d(0, 0, 0));
-    std::printf("sphere query(%g,%g,%g) dist=%g: inside=%d\n", p.x, p.y, p.z, dist_from_center, (int)inside);
-  }
-
-  // 3) The disclosed ON_Brep::BoundingBox() degenerate-y/z bug fixture,
-  // straight from IntersectBrepByPlane()'s own doc comment.
-  const Brep box3 = Brep::Box(0, 0, 0, 3, 3, 3);
+  // Independent check of NurbsCurve::Helix(): sample the fitted curve
+  // densely and hand-verify radial distance + height at many points,
+  // not just the handful test_basic.cpp checks.
   {
-    ON_BoundingBox buggy = box3.raw().BoundingBox();
-    std::printf("box3 buggy ON_Brep::BoundingBox(): min=(%g,%g,%g) max=(%g,%g,%g)\n", buggy.m_min.x, buggy.m_min.y,
-                buggy.m_min.z, buggy.m_max.x, buggy.m_max.y, buggy.m_max.z);
-  }
-  const std::vector<Point3d> box3_probes = {
-      Point3d(1.5, 1.5, 1.5),
-      Point3d(1.5, 1.5, 2.99),
-      Point3d(1.5, 1.5, 3.01),
-      Point3d(1.5, 1.5, 50),
-      Point3d(1.5, 50, 1.5),
-  };
-  for (const Point3d& p : box3_probes) {
-    const bool inside = ContainsPointExact(p, box3.raw());
-    std::printf("box3 query(%g,%g,%g): inside=%d\n", p.x, p.y, p.z, (int)inside);
+    NurbsCurve helix;
+    double max_dev = -1.0;
+    const Result r = NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 5.0, 2.0, 3.0, 1e-6, helix, &max_dev);
+    std::printf("Helix result=%d max_dev=%g domain=[%g,%g] cv_count=%d\n", (int)r, max_dev, helix.Domain().min,
+                helix.Domain().max, helix.ControlPointCount());
+
+    double worst_radial_err = 0, worst_height_err = 0;
+    const int N = 500;
+    for (int i = 0; i <= N; ++i) {
+      const double s = helix.Domain().min + (helix.Domain().max - helix.Domain().min) * i / N;
+      const Point3d p = helix.PointAt(s);
+      const double height = p.z;
+      const double radial = std::sqrt(p.x * p.x + p.y * p.y);
+      const double expected_height = 2.0 * s / (2.0 * ON_PI);
+      worst_radial_err = std::max(worst_radial_err, std::fabs(radial - 5.0));
+      worst_height_err = std::max(worst_height_err, std::fabs(height - expected_height));
+    }
+    std::printf("worst radial error over %d dense samples: %g\n", N, worst_radial_err);
+    std::printf("worst height error over %d dense samples: %g\n", N, worst_height_err);
   }
 
-  try {
-    ON_Brep empty;
-    ContainsPointExact(Point3d(0, 0, 0), empty);
-    std::printf("ERROR: expected throw for empty brep\n");
-  } catch (const std::invalid_argument& e) {
-    std::printf("OK threw for empty brep: %s\n", e.what());
+  // Off-origin, tilted-axis case, tight tolerance - confirm convergence
+  // and that deviation really is independently verifiable (project onto
+  // axis using Gram-Schmidt from scratch, not reusing kernel internals).
+  {
+    NurbsCurve helix;
+    double max_dev = -1.0;
+    const Vector3d axis_dir(1, 1, 1);
+    const Point3d origin(1, 2, 3);
+    const Result r = NurbsCurve::Helix(origin, axis_dir, 3.0, 1.5, 5.0, 1e-8, helix, &max_dev);
+    std::printf("\nTilted Helix result=%d max_dev=%g cv_count=%d\n", (int)r, max_dev, helix.ControlPointCount());
+
+    Vector3d axis = axis_dir;
+    axis.Unitize();
+    double worst_radial_err = 0;
+    const int N = 500;
+    for (int i = 0; i <= N; ++i) {
+      const double s = helix.Domain().min + (helix.Domain().max - helix.Domain().min) * i / N;
+      const Point3d p = helix.PointAt(s);
+      const Vector3d rel = p - origin;
+      const double height = ON_DotProduct(rel, axis);
+      const Vector3d radial_vec = rel - axis * height;
+      worst_radial_err = std::max(worst_radial_err, std::fabs(radial_vec.Length() - 3.0));
+    }
+    std::printf("worst radial error over %d dense samples (tilted): %g\n", N, worst_radial_err);
+  }
+
+  // Degenerate / invalid-input probes.
+  {
+    NurbsCurve dummy;
+    try {
+      NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 0), 1.0, 1.0, 1.0, 1e-6, dummy);
+      std::printf("ERROR: expected throw for zero axis_dir\n");
+    } catch (const std::invalid_argument& e) {
+      std::printf("OK threw for zero axis_dir: %s\n", e.what());
+    }
   }
 
   ON::End();
