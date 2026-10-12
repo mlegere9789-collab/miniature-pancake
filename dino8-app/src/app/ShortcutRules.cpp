@@ -39,4 +39,13 @@ bool IsUnbindableCaptureKey(int key_i) {
          (key >= ImGuiKey_MouseLeft && key <= ImGuiKey_MouseWheelY);
 }
 
+int ResolveCapturedKey(const std::function<bool(int)>& is_pressed) {
+  for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; ++k) {
+    if (IsUnbindableCaptureKey(k)) continue;
+    if (!is_pressed(k)) continue;
+    return k;
+  }
+  return static_cast<int>(ImGuiKey_None);
+}
+
 }  // namespace dino8::app
