@@ -275,6 +275,36 @@ dwicheck "80 object(s) selected" "SelHatch found all 80 reopened ANSI31 pattern-
 dwicheck "CV\[0\] 9.875,50,0" "the reopened hatch's first ANSI31 pattern line starts at the exact, confirmed-by-running boundary edge"
 dwicheck "CV\[1\] 0,60,0" "the reopened hatch's last ANSI31 pattern line ends at the exact, confirmed-by-running opposite edge"
 
+# .3dm archive version targeting: SaveAs/Export's own "Version=" token
+# previously only recognized a DWG/DXF AcadSchemes scheme name and, for any
+# other extension (.3dm included), refused and aborted the whole save the
+# moment it wasn't one - PARITY_MAP.md's "kernel: Kernel-level data
+# exchange" category's ".3dm archive version targeting" bullet (see
+# dm3dversion_script.txt). The real check is the "3D Geometry File Format"
+# header's own version field (a fixed 32-byte field, right-aligned, read
+# with `head -c 32`), not just a printed claim.
+sed "s|@TMP@|$TMPW|g" "$HERE/dm3dversion_script.txt" > "$TMPW/dm3dversion_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DMV="$("$BIN" --smoke 60 --script "$TMPW/dm3dversion_script.txt" 2>&1)" || { echo "$DMV"; echo "FAIL: dm3dversion script exited non-zero"; exit 1; }
+else
+  DMV="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/dm3dversion_script.txt" 2>&1)" || { echo "$DMV"; echo "FAIL: dm3dversion script exited non-zero"; exit 1; }
+fi
+dmvcheck() { if echo "$DMV" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DMV" "$1"; fail=1; fi; }
+dmvcheck "Saved $TMPW/dm3dversion_v4.3dm" "SaveAs Version=4 (.3dm) ran"
+dmvcheck "Saved $TMPW/dm3dversion_v50.3dm" "SaveAs Version=50 (.3dm) ran"
+dmvcheck "Saved $TMPW/dm3dversion_default.3dm" "an unversioned SaveAs (.3dm) still ran"
+dmvcheck "Exported $TMPW/dm3dversion_export_v5.3dm (Version=5)" "Export Version=5 (.3dm) ran and echoed the version in its own print line"
+dmvcheck "SaveAs: Version=notanumber is not a valid \.3dm archive version number" "a non-numeric .3dm Version= is refused with a clear diagnostic, not silently ignored or misread as a DWG scheme"
+[ ! -e "$TMPW/dm3dversion_bad.3dm" ] && echo "ok   the refused SaveAs Version=notanumber wrote no file at all" || { echo "FAIL a refused .3dm Version= still wrote a file"; fail=1; }
+[ "$(head -c 32 "$TMPW/dm3dversion_v4.3dm")" = "3D Geometry File Format        4" ] && echo "ok   SaveAs Version=4 wrote a real .3dm archive version-4 header" || { echo "FAIL SaveAs Version=4 did not write a version-4 .3dm header"; fail=1; }
+[ "$(head -c 32 "$TMPW/dm3dversion_v50.3dm")" = "3D Geometry File Format       50" ] && echo "ok   SaveAs Version=50 wrote a real .3dm archive version-50 header" || { echo "FAIL SaveAs Version=50 did not write a version-50 .3dm header"; fail=1; }
+[ "$(head -c 32 "$TMPW/dm3dversion_export_v5.3dm")" = "3D Geometry File Format       50" ] && echo "ok   Export Version=5 wrote the identical version-50 header OpenNURBS' own documented 5->50 compatibility mapping gives (ON_BinaryArchive::Write3dmStartSection: 5 <= version < 50 multiplies by 10)" || { echo "FAIL Export Version=5 did not write a version-50 .3dm header"; fail=1; }
+DEFAULT_3DM_VERSION="$(head -c 32 "$TMPW/dm3dversion_default.3dm" | tail -c 2)"
+[ "$DEFAULT_3DM_VERSION" != " 4" ] && [ "$DEFAULT_3DM_VERSION" != "50" ] && echo "ok   an unversioned SaveAs still writes the current/latest .3dm archive version (not stuck at some other fixed version)" || { echo "FAIL an unversioned SaveAs wrote an unexpected .3dm archive version ($DEFAULT_3DM_VERSION)"; fail=1; }
+echo "$DMV" | grep -E "^(ok|FAIL)"
+if echo "$DMV" | grep -q "^FAIL"; then fail=1; fi
+dmvcheck "^ok   expect_objects 0" "dm3dversion script cleaned up to zero objects at the end"
+
 # Interactive UI replay: typed command, viewport picks, click-select, Delete, Undo.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   UI="$("$BIN" --smoke 320 --script "$HERE/ui_script.txt" 2>&1)" || true
