@@ -2690,6 +2690,138 @@ void TestCurveFitLeastSquares() {
         "FitLeastSquares fails when control_point_count exceeds the number of data points");
 }
 
+// PARITY_MAP's geometry category, "Helix and spiral curves": before this,
+// the app's own HelixCommand built a curve through sampled points via
+// FromControlPoints() directly - treating samples as CONTROL points, not
+// interpolation points, with no measured error bound. NurbsCurve::Helix()
+// is the real kernel-native, tolerance-bounded replacement.
+void TestCurveHelix() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // A helix along +Z through the origin: 3 turns, radius 5, pitch 2 (2
+  // units of height per full turn). Helix() deliberately picks AN
+  // ARBITRARY orthonormal basis perpendicular to axis_dir (its own doc
+  // comment), so a test must not assume which world direction s=0
+  // starts at - instead check the basis-INDEPENDENT invariants a true
+  // helix must satisfy: constant radial distance from the axis line,
+  // and height exactly proportional to the true angle swept.
+  {
+    NurbsCurve helix;
+    double max_dev = -1.0;
+    const Result r =
+        NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 5.0, 2.0, 3.0, 1e-6, helix, &max_dev);
+    Check(r == Result::Ok, "Helix succeeds for a plain 3-turn, radius-5, pitch-2 helix along +Z");
+    Check(max_dev >= 0.0 && max_dev <= 1e-6, "the achieved deviation is reported and within the requested tolerance");
+
+    const Vector3d axis(0, 0, 1);
+    auto height_of = [&](const Point3d& p) { return ON_DotProduct(p - Point3d(0, 0, 0), axis); };
+    auto radial_of = [&](const Point3d& p) { return (p - Point3d(0, 0, 0) - axis * height_of(p)).Length(); };
+
+    const double s_domain = helix.Domain().max;
+    Check(std::abs(height_of(helix.PointAt(helix.Domain().min)) - 0.0) < 1e-6,
+          "at s=0 the helix's own height along the axis is exactly 0");
+    Check(std::abs(radial_of(helix.PointAt(helix.Domain().min)) - 5.0) < 1e-6,
+          "at s=0 the helix is at exactly the requested radius 5 from the axis");
+    Check(std::abs(height_of(helix.PointAt(s_domain)) - 6.0) < 1e-6,
+          "after exactly 3 full turns the helix's own height is exactly 6 - 3 turns * pitch 2");
+    Check(std::abs(radial_of(helix.PointAt(s_domain)) - 5.0) < 1e-6,
+          "after 3 full turns the helix is still at exactly radius 5 from the axis");
+    const double quarter = ON_PI / 2.0;
+    Check(std::abs(height_of(helix.PointAt(quarter)) - 0.5) < 1e-6,
+          "a quarter turn (the curve's own domain parameter equals true angle s directly) is at "
+          "exactly height 0.5 - 1/4 of one pitch");
+    Check(std::abs(radial_of(helix.PointAt(quarter)) - 5.0) < 1e-6,
+          "a quarter turn is still at exactly radius 5 from the axis");
+    // The real angle-tracking claim, basis-independent: the radial
+    // vector at the quarter-turn point is rotated exactly 90 degrees
+    // from the radial vector at s=0 (dot product of the two unit
+    // radial directions is 0), confirming the parameter genuinely
+    // tracks true swept angle, not just radius/height separately.
+    const Vector3d radial0 = helix.PointAt(helix.Domain().min) - Point3d(0, 0, 0) - axis * height_of(helix.PointAt(helix.Domain().min));
+    const Vector3d radial_quarter = helix.PointAt(quarter) - Point3d(0, 0, 0) - axis * height_of(helix.PointAt(quarter));
+    Check(std::abs(ON_DotProduct(radial0, radial_quarter)) < 1e-6,
+          "the radial direction at a quarter turn is exactly perpendicular to the radial direction "
+          "at s=0 - a genuine 90-degree rotation, not merely matching radius/height independently");
+  }
+
+  // A tighter tolerance must never report a WORSE (larger) achieved
+  // deviation than a looser one on the identical geometry - the same
+  // "more refinement never hurts" sanity any doubling-until-converged
+  // search in this kernel should satisfy.
+  {
+    double dev_loose = -1.0, dev_tight = -1.0;
+    NurbsCurve h1, h2;
+    Check(NurbsCurve::Helix(Point3d(1, 2, 3), Vector3d(1, 1, 1), 3.0, 1.5, 5.0, 1e-2, h1, &dev_loose) == Result::Ok,
+          "Helix succeeds at a loose tolerance on an off-origin, tilted-axis helix");
+    Check(NurbsCurve::Helix(Point3d(1, 2, 3), Vector3d(1, 1, 1), 3.0, 1.5, 5.0, 1e-8, h2, &dev_tight) == Result::Ok,
+          "Helix succeeds at a much tighter tolerance on the identical helix");
+    Check(dev_tight <= dev_loose + 1e-12,
+          "the tighter-tolerance call's own achieved deviation is no worse than the loose one's");
+    Check(dev_tight <= 1e-8 && dev_loose <= 1e-2, "both calls genuinely satisfy their own requested tolerance");
+  }
+
+  // A degenerate pitch (0) is a plain circle - the construction must
+  // still work and produce a closed, planar, constant-radius result.
+  {
+    NurbsCurve circle_helix;
+    double dev = -1.0;
+    Check(NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 4.0, 0.0, 2.0, 1e-6, circle_helix, &dev) ==
+              Result::Ok,
+          "Helix with pitch=0 (a degenerate flat circular path, 2 turns) still succeeds");
+    Check((circle_helix.PointAt(circle_helix.Domain().min) - circle_helix.PointAt(circle_helix.Domain().max))
+                  .Length() < 1e-6,
+          "a pitch-0 helix starts and ends at the exact same point after an integer number of turns");
+  }
+
+  // Negative-pitch (winds "downward") must also work, mirroring the
+  // positive case exactly with height negated.
+  {
+    NurbsCurve down;
+    double dev = -1.0;
+    Check(NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 2.0, -1.0, 1.0, 1e-6, down, &dev) == Result::Ok,
+          "a negative pitch (descending helix) succeeds");
+    const Vector3d axis(0, 0, 1);
+    const Point3d end = down.PointAt(down.Domain().max);
+    const double height = ON_DotProduct(end - Point3d(0, 0, 0), axis);
+    const double radial = (end - Point3d(0, 0, 0) - axis * height).Length();
+    Check(std::abs(height - (-1.0)) < 1e-6,
+          "one full turn of a radius-2, pitch=-1 helix ends at height -1 - height decreased by 1");
+    Check(std::abs(radial - 2.0) < 1e-6, "that same end point is still at exactly radius 2 from the axis");
+  }
+
+  // Argument validation: every one of radius/turns/tolerance must be
+  // positive and finite, pitch must be finite, axis_dir must be a real
+  // nonzero vector.
+  NurbsCurve dummy;
+  auto throws = [&](auto&& fn) {
+    try {
+      fn();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 0.0, 1.0, 1.0, 1e-6, dummy); }),
+        "Helix throws for a non-positive radius");
+  Check(throws([&] {
+          NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 1.0, std::numeric_limits<double>::quiet_NaN(),
+                             1e-6, dummy);
+        }),
+        "Helix throws for a NaN turns");
+  Check(throws([&] {
+          NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, std::numeric_limits<double>::infinity(), 1.0,
+                             1e-6, dummy);
+        }),
+        "Helix throws for a non-finite pitch");
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 1.0, 1.0, -1.0, dummy); }),
+        "Helix throws for a non-positive tolerance");
+  Check(throws([&] { NurbsCurve::Helix(Point3d(0, 0, 0), Vector3d(0, 0, 0), 1.0, 1.0, 1.0, 1e-6, dummy); }),
+        "Helix throws for a zero-length axis_dir");
+}
+
 // Simulates RefitTrim's own algorithm directly at the kernel level (fit at
 // increasing control-point counts, clamp into a target (u,v) domain
 // rectangle, re-verify the tolerance still holds after clamping) on a
@@ -74255,6 +74387,7 @@ int main() {
   TestSurfaceMakePeriodicExact();
   TestCurveClosestPoint();
   TestCurveFitLeastSquares();
+  TestCurveHelix();
   TestCurveFitLeastSquaresConstrainedRefit();
   TestCurveCurvature();
   TestCurveSuggestedSamples();

@@ -129,6 +129,43 @@ class NurbsCurve {
   static Result FitLeastSquares(const std::vector<Point3d>& points, int degree,
                                  int control_point_count, NurbsCurve& out);
 
+  // Closes PARITY_MAP.md's own disclosed "Helix and spiral curves" gap:
+  // `dino8-app`'s own `HelixCommand` only ever called `FromControlPoints()`
+  // directly on sampled points - treating them as CONTROL points, not
+  // interpolation points, with no measured error bound at all, so the
+  // result neither passes through the intended helix nor carries any
+  // honesty tier on how far it strays. A true circular helix - the locus
+  // `origin + radius*cos(s)*xaxis + radius*sin(s)*yaxis + (pitch*s/(2*pi))
+  // *axis_dir` for `s` in `[0, 2*pi*turns]`, where `xaxis`/`yaxis` are any
+  // orthonormal basis of the plane perpendicular to `axis_dir` - is NOT
+  // exactly representable by any single rational NURBS curve: a NURBS
+  // circle's own rational parameter never advances at constant angular
+  // speed between knots, so a z-component held exactly proportional to
+  // true angle can't be a rational polynomial of that same parameter
+  // either - the identical reason `OffsetApproximate`/`Rebuild`/
+  // `MakeNonRational` etc. are all measured-tolerance approximations
+  // rather than exact constructions, not a gap unique to this one.
+  //
+  // This instead builds a genuine, MEASURED-tolerance-bounded cubic
+  // spline interpolant: starting from a sample count proportional to
+  // `turns`, it samples the true closed-form helix at evenly-spaced `s`
+  // (which — since a helix has CONSTANT speed in `s` — is also exact
+  // chord-length spacing, unlike most curves), fits an exact-through-
+  // those-points cubic interpolant via the same `InterpolateCubic()`
+  // global-interpolation technique every other sampled curve in this
+  // kernel already uses (surface_intersect.h), then independently
+  // measures the WORST deviation between that fitted curve and the TRUE
+  // helix at many non-sample intermediate parameters — doubling the
+  // sample count and refitting whenever that measured deviation still
+  // exceeds `tolerance`, up to a capped sample count. Returns
+  // Result::Failed (never a silently uncertified curve) if even the cap
+  // isn't enough; `out`/`out_max_deviation` are left unchanged on
+  // failure. Throws std::invalid_argument for a non-positive or
+  // non-finite `radius`/`turns`/`tolerance`, a non-finite `pitch`, or an
+  // `axis_dir` that is zero-length or non-finite.
+  static Result Helix(Point3d axis_origin, Vector3d axis_dir, double radius, double pitch, double turns,
+                       double tolerance, NurbsCurve& out, double* out_max_deviation = nullptr);
+
   // 2D/3D POLYLINE-CORNER FILLET (Rhino Fillet, AutoCAD FILLET between two
   // lines; app's own FilletChamferCommand, cmd_curveedit.cpp:510, does
   // this with mesh-sampled corner geometry - this is the genuine kernel
