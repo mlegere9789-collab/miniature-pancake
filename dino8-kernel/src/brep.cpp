@@ -6557,21 +6557,21 @@ void Brep::ReplaceEdgeCurve(int edge_index, const NurbsCurve& new_curve, double 
   face_records_.clear();
 }
 
-void Brep::RefitTrim(int edge_index, double tolerance) {
+void Brep::ResyncTrimToEdgeCurve(int edge_index, double tolerance) {
   if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
-    throw std::out_of_range("dino8::kernel::Brep::RefitTrim: edge_index " + std::to_string(edge_index) +
+    throw std::out_of_range("dino8::kernel::Brep::ResyncTrimToEdgeCurve: edge_index " + std::to_string(edge_index) +
                              " is out of range (this Brep has " + std::to_string(brep_.m_E.Count()) +
                              " edge slot(s))");
   }
   const ON_BrepEdge& edge = brep_.m_E[edge_index];
   if (edge.m_edge_index < 0) {
-    throw std::invalid_argument("dino8::kernel::Brep::RefitTrim: edge_index " + std::to_string(edge_index) +
-                                 " refers to a deleted edge");
+    throw std::invalid_argument("dino8::kernel::Brep::ResyncTrimToEdgeCurve: edge_index " +
+                                 std::to_string(edge_index) + " refers to a deleted edge");
   }
   ON_NurbsCurve nc;
   if (edge.GetNurbForm(nc) <= 0) {
-    throw std::invalid_argument("dino8::kernel::Brep::RefitTrim: edge " + std::to_string(edge_index) +
-                                 "'s own curve has no NURBS form");
+    throw std::invalid_argument("dino8::kernel::Brep::ResyncTrimToEdgeCurve: edge " +
+                                 std::to_string(edge_index) + "'s own curve has no NURBS form");
   }
   NurbsCurve wrapped;
   wrapped.raw() = nc;
@@ -7354,6 +7354,126 @@ int Brep::RemoveAllSharedMicroEdges(double tolerance) {
     if (!found) break;
   }
   return removed;
+}
+
+namespace {
+// Real max deviation between a candidate (u, v) fit curve and the
+// original trim's own sampled (u, v) points, measured in the surface's
+// own real 3D space - see Brep::RefitTrim()'s own doc comment (brep.h)
+// for why raw parameter-space distance isn't the honest check here.
+double RefitTrimMaxDeviation(const ON_Surface& srf, const NurbsCurve& fit, const std::vector<Point3d>& samples) {
+  double worst = 0;
+  for (const Point3d& s : samples) {
+    const Point3d fit_uv = fit.ClosestPoint(s);
+    const ON_3dPoint p_orig = srf.PointAt(s.x, s.y);
+    const ON_3dPoint p_fit = srf.PointAt(fit_uv.x, fit_uv.y);
+    const double d = p_orig.DistanceTo(p_fit);
+    if (d > worst) worst = d;
+  }
+  return worst;
+}
+}  // namespace
+
+Result Brep::RefitTrim(int trim_index, double tolerance) {
+  if (trim_index < 0 || trim_index >= brep_.m_T.Count()) {
+    throw std::invalid_argument("dino8::kernel::Brep::RefitTrim: trim_index " + std::to_string(trim_index) +
+                                 " is out of range (this Brep has " + std::to_string(brep_.m_T.Count()) +
+                                 " trim slot(s))");
+  }
+  if (!ON_IsValid(tolerance) || tolerance <= 0.0) {
+    throw std::invalid_argument("dino8::kernel::Brep::RefitTrim: tolerance must be positive and finite");
+  }
+  ON_BrepTrim& trim = brep_.m_T[trim_index];
+  if (trim.m_trim_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::RefitTrim: trim_index " + std::to_string(trim_index) +
+                                 " refers to a deleted trim");
+  }
+  const int face_index = trim.FaceIndexOf();
+  if (face_index < 0) return Result::Failed;
+  const ON_BrepFace& face = brep_.m_F[face_index];
+  const ON_Surface* srf = face.SurfaceOf();
+  if (!srf) return Result::Failed;
+
+  ON_NurbsCurve orig;
+  if (trim.GetNurbForm(orig) <= 0) return Result::Failed;
+  const int degree = std::max(orig.Degree(), 1);
+  const int original_cv_count = orig.CVCount();
+  if (original_cv_count <= degree + 1) return Result::Failed;  // already at the minimum possible
+
+  const ON_Interval du = srf->Domain(0), dv = srf->Domain(1);
+  const ON_Interval trim_domain = trim.Domain();
+  const int sample_count = std::max(200, original_cv_count * 4);
+  std::vector<Point3d> samples;
+  samples.reserve(static_cast<size_t>(sample_count) + 1);
+  for (int i = 0; i <= sample_count; ++i) {
+    const double t = trim_domain.ParameterAt(static_cast<double>(i) / sample_count);
+    const ON_3dPoint uv = trim.PointAt(t);
+    samples.push_back(Point3d(uv.x, uv.y, 0));
+  }
+
+  for (int cvc = degree + 1; cvc < original_cv_count; ++cvc) {
+    NurbsCurve fit;
+    if (NurbsCurve::FitLeastSquares(samples, degree, cvc, fit) != Result::Ok) continue;
+    if (RefitTrimMaxDeviation(*srf, fit, samples) > tolerance) continue;
+
+    bool clamped = false;
+    for (int i = 0; i < fit.ControlPointCount(); ++i) {
+      const Point3d cp = fit.ControlPointAt(i);
+      const double cu = std::clamp(cp.x, du.Min(), du.Max());
+      const double cv2 = std::clamp(cp.y, dv.Min(), dv.Max());
+      if (cu != cp.x || cv2 != cp.y) {
+        fit.SetControlPointAt(i, Point3d(cu, cv2, 0));
+        clamped = true;
+      }
+    }
+    if (clamped && RefitTrimMaxDeviation(*srf, fit, samples) > tolerance) continue;
+
+    ON_NurbsCurve* new2d = new ON_NurbsCurve(fit.raw());
+    new2d->ChangeDimension(2);
+    const int c2i = brep_.AddTrimCurve(new2d);
+    if (c2i < 0) {
+      delete new2d;
+      continue;
+    }
+    if (!trim.ChangeTrimCurve(c2i)) continue;
+
+    // Same unconditional side-table clear ReplaceEdgeCurve()'s own doc
+    // comment explains: this face's trim boundary just changed shape,
+    // and these caches still hold the OLD one at the same still-valid
+    // index.
+    face_trim_loops_.clear();
+    face_exact_clip_.clear();
+    face_hole_loops_.clear();
+    face_arc_runs_.clear();
+    face_notch_rows_.clear();
+    face_records_.clear();
+    return Result::Ok;
+  }
+  return Result::Failed;
+}
+
+void Brep::RefitEdgeTrims(int edge_index, double tolerance, int* out_refit_count, int* out_failed_count) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::invalid_argument("dino8::kernel::Brep::RefitEdgeTrims: edge_index " + std::to_string(edge_index) +
+                                 " is out of range (this Brep has " + std::to_string(brep_.m_E.Count()) +
+                                 " edge slot(s))");
+  }
+  ON_BrepEdge& edge = brep_.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::RefitEdgeTrims: edge_index " + std::to_string(edge_index) +
+                                 " refers to a deleted edge");
+  }
+  int refit = 0, failed = 0;
+  for (int k = 0; k < edge.m_ti.Count(); ++k) {
+    const int ti = edge.m_ti[k];
+    if (RefitTrim(ti, tolerance) == Result::Ok) {
+      ++refit;
+    } else {
+      ++failed;
+    }
+  }
+  if (out_refit_count) *out_refit_count = refit;
+  if (out_failed_count) *out_failed_count = failed;
 }
 
 Result Brep::MergeContiguousEdges(int edge_index_a, int edge_index_b, double angle_tolerance_radians) {
