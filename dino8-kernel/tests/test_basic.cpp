@@ -12667,6 +12667,97 @@ void TestSurfaceTessellateGridNonUniformCertifiedAdaptive() {
         "std::invalid_argument for a negative max_refinements");
 }
 
+// Closes PARITY_MAP.md's own "Explicit sampling control (u/v suggested
+// parameter values honouring curvature/singularities)" gap:
+// SuggestedParameterValues() was heuristic-only, trusting each sampled
+// isocurve's own chord-height subdivision estimate without ever
+// measuring it against the true surface - unlike the sibling mesh-
+// producing certified-adaptive functions, which already measure and
+// refine. This checks the new value-returning counterpart against the
+// same singular-pole sphere TestSurfaceTessellateGridNonUniformCertifiedAdaptive()
+// already shows needs real refinement at a tight tolerance, not a flat
+// surface where the first attempt would trivially succeed either way.
+void TestSurfaceSuggestedParameterValuesCertifiedAdaptive() {
+  using dino8::kernel::NurbsSurface;
+
+  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 1.0);
+  ON_NurbsSurface sphere_surface;
+  sphere.GetNurbForm(sphere_surface);
+  NurbsSurface s;
+  s.raw() = sphere_surface;
+
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  const double chord_tolerance = 0.01;
+  const auto result = s.SuggestedParameterValuesCertifiedAdaptive(chord_tolerance);
+  Check(result.u_values.size() >= 2 && result.v_values.size() >= 2,
+        "SuggestedParameterValuesCertifiedAdaptive returns real, usable u/v value lists");
+  Check(result.achieved_deviation >= 0.0 && result.achieved_deviation <= chord_tolerance,
+        "SuggestedParameterValuesCertifiedAdaptive's own achieved deviation is genuinely at or "
+        "under chord_tolerance on a surface with singular poles");
+
+  // Independent cross-check: building a mesh from the RETURNED value
+  // lists and re-measuring it directly must reproduce the same achieved
+  // deviation this call already reported - the certification is about
+  // the values themselves, not an internal-only computation the caller
+  // can't verify.
+  const auto reproduced_mesh = s.TessellateGridNonUniform(result.u_values, result.v_values);
+  const double reproduced_deviation = s.MeasureMeshTessellationDeviation(reproduced_mesh);
+  Check(std::abs(reproduced_deviation - result.achieved_deviation) < 1e-9,
+        "independently rebuilding a mesh from the returned u/v values and re-measuring it "
+        "reproduces the exact same achieved deviation this call already reported");
+
+  Check(Throws([&] { s.SuggestedParameterValuesCertifiedAdaptive(0.0); }),
+        "SuggestedParameterValuesCertifiedAdaptive throws std::invalid_argument for a "
+        "non-positive chord_tolerance");
+  Check(Throws([&] { s.SuggestedParameterValuesCertifiedAdaptive(chord_tolerance, -1); }),
+        "SuggestedParameterValuesCertifiedAdaptive throws std::invalid_argument for a "
+        "negative max_refinements");
+
+  // A target just below what THIS call already measured it achieved -
+  // not an astronomically tiny absolute number (which would make the
+  // underlying heuristic bisect without bound chasing it, even on
+  // attempt 0, before any refinement loop here even starts) - so
+  // max_refinements=0 (the unrefined first attempt alone) is
+  // deterministically insufficient, cheaply, regardless of this
+  // particular surface's own curvature characteristics.
+  auto ThrowsRuntime = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::runtime_error&) {
+      return true;
+    }
+  };
+
+  const double just_out_of_reach = result.achieved_deviation * 0.5;
+  Check(ThrowsRuntime([&] { s.SuggestedParameterValuesCertifiedAdaptive(just_out_of_reach, /*max_refinements=*/0); }),
+        "SuggestedParameterValuesCertifiedAdaptive throws std::runtime_error when "
+        "max_refinements is too small to certify the tolerance, rather than silently "
+        "returning an uncertified result");
+
+  // The identical target succeeds with a real (still small) refinement
+  // budget, and genuinely uses more breakpoints in at least one
+  // direction than the plain heuristic does at that same target -
+  // proving real refinement happened, not a trivial pass-through.
+  const auto refined = s.SuggestedParameterValuesCertifiedAdaptive(just_out_of_reach, /*max_refinements=*/5);
+  Check(refined.achieved_deviation >= 0.0 && refined.achieved_deviation <= just_out_of_reach,
+        "with a real refinement budget, the same just-out-of-reach target is genuinely certified");
+  const auto heuristic_u = s.SuggestedParameterValues(0, just_out_of_reach);
+  const auto heuristic_v = s.SuggestedParameterValues(1, just_out_of_reach);
+  Check(refined.u_values.size() > heuristic_u.size() || refined.v_values.size() > heuristic_v.size(),
+        "the certified result has strictly more breakpoints in at least one direction than the "
+        "uncertified heuristic at the identical chord_tolerance - genuine refinement happened, "
+        "not a trivial first-attempt pass-through");
+}
+
 void TestBrepTessellateAdaptive() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -77206,6 +77297,7 @@ int main() {
   RunTest("TestSurfaceMeasureMeshTessellationDeviation", TestSurfaceMeasureMeshTessellationDeviation);
   RunTest("TestSurfaceTessellateGridClippedExactCertifiedAdaptive", TestSurfaceTessellateGridClippedExactCertifiedAdaptive);
   RunTest("TestSurfaceTessellateGridNonUniformCertifiedAdaptive", TestSurfaceTessellateGridNonUniformCertifiedAdaptive);
+  RunTest("TestSurfaceSuggestedParameterValuesCertifiedAdaptive", TestSurfaceSuggestedParameterValuesCertifiedAdaptive);
   RunTest("TestBrepTessellateAdaptive", TestBrepTessellateAdaptive);
   RunTest("TestBrepTessellateAdaptiveByAngle", TestBrepTessellateAdaptiveByAngle);
   RunTest("TestBrepTessellateNonUniformAdaptive", TestBrepTessellateNonUniformAdaptive);

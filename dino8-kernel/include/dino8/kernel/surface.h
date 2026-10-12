@@ -44,6 +44,20 @@ struct SurfaceDivisions {
   int v;
 };
 
+// A certified non-uniform u/v parameter-value pair, returned by
+// NurbsSurface::SuggestedParameterValuesCertifiedAdaptive(): `u_values`/
+// `v_values` are each a strictly-increasing list suitable for
+// TessellateGridNonUniform(), and `achieved_deviation` is the real,
+// measured chord deviation (never larger than the `chord_tolerance`
+// that call was given) the untrimmed grid they produce was independently
+// confirmed to achieve - not just the heuristic estimate
+// SuggestedParameterValues() alone trusts.
+struct SurfaceParameterValuesCertified {
+  std::vector<double> u_values;
+  std::vector<double> v_values;
+  double achieved_deviation;
+};
+
 // An approximate physical width/height of a surface's own domain,
 // returned by NurbsSurface::GetApproximateSize().
 struct SurfaceSize {
@@ -933,6 +947,32 @@ class NurbsSurface {
   // in (0, pi].
   std::vector<double> SuggestedParameterValuesByAngle(int direction, double angle_tolerance,
                                                        int isocurve_samples = 5) const;
+
+  // Certified counterpart to SuggestedParameterValues(): closes this
+  // category's own disclosed "Explicit sampling control (u/v suggested
+  // parameter values honouring curvature/singularities)" gap -
+  // SuggestedParameterValues() is heuristic-only, trusting each sampled
+  // isocurve's own chord-height subdivision ESTIMATE as-is, never
+  // actually measuring it against the true surface. This refines that
+  // estimate the same way TessellateGridCertifiedAdaptive()/
+  // TessellateGridNonUniformCertifiedAdaptive() below already certify
+  // their own MESH output: build the untrimmed grid
+  // SuggestedParameterValues(0, effective_tolerance)/SuggestedParameterValues(
+  // 1, effective_tolerance) would produce, actually measure its real
+  // chord deviation via MeasureMeshTessellationDeviation() (through a
+  // throwaway TessellateGridNonUniform() call used only to measure, never
+  // returned to the caller), and halve `effective_tolerance` and retry
+  // whenever the measured deviation still exceeds `chord_tolerance` - up
+  // to `max_refinements` times. Unlike TessellateGridNonUniformCertifiedAdaptive(),
+  // which only ever hands the caller a finished mesh, this returns the
+  // certified u/v VALUE LISTS themselves - genuine explicit sampling
+  // control a caller can feed into its own tessellator, patch layout, or
+  // control-point placement, not just this kernel's own grid mesher.
+  // Throws std::invalid_argument if `chord_tolerance <= 0` or
+  // `max_refinements < 0`, and std::runtime_error if no refinement within
+  // `max_refinements` certifies the tolerance.
+  SurfaceParameterValuesCertified SuggestedParameterValuesCertifiedAdaptive(
+      double chord_tolerance, int max_refinements = 10, int isocurve_samples = 5) const;
 
   // Tessellates the surface into a triangle mesh by evaluating a
   // u_divisions x v_divisions grid of points across its parameter domain
