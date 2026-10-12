@@ -6740,6 +6740,9 @@ int Mesh::UnifyNormals() {
 }
 
 int Mesh::TrisToQuads(double max_dihedral_deg) {
+  if (!ON_IsValid(max_dihedral_deg)) {
+    throw std::invalid_argument("dino8::kernel::Mesh::TrisToQuads: max_dihedral_deg must be finite");
+  }
   const int n = mesh_.m_F.Count();
   if (n < 2) return 0;
 
