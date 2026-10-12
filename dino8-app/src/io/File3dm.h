@@ -21,6 +21,8 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error);
 // that function's own doc comment in opennurbs_extensions.h for the full
 // version/Rhino-release table) to write a file older Rhino releases can
 // open, same as the kernel's own `Model::Save(path, version)` already does.
+// An out-of-range `version` is rejected with a named error rather than
+// silently substituted - see Save3dm's own definition for why that matters.
 bool Save3dm(const Document& doc, const std::string& path, std::string& error, bool include_reference_objects = true, int version = 0);
 bool ImportMeshFile(Document& doc, const std::string& path, std::string& error);
 bool ExportMeshFile(const Document& doc, const std::string& path, bool selected_only, std::string& error);
