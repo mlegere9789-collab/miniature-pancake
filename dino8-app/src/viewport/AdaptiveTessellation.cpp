@@ -24,6 +24,13 @@ double LodScaleForPixelSize(double pixel_size) {
   return std::clamp(pixel_size / kLodReferencePixelSize, kLodMinScale, kLodMaxScale);
 }
 
+double DistanceLodFactor(double object_distance, double target_distance, bool is_perspective) {
+  if (!is_perspective) return 1.0;  // true parallel projection: no distance falloff at all
+  if (!(target_distance > 0.0)) return 1.0;  // degenerate camera state: no scaling
+  if (!(object_distance >= 0.0)) return 1.0;  // should never happen, but be safe rather than wrong
+  return std::clamp(object_distance / target_distance, kLodMinScale, kLodMaxScale);
+}
+
 double FinestLodScale(const std::vector<double>& viewport_pixel_sizes) {
   double finest = 1.0;
   bool any = false;
