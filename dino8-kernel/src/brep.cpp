@@ -10368,19 +10368,34 @@ Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
   // for how the 2-trim case generalizes the original naked-only one.
   if (trim_count != 1 && trim_count != 2) return Result::Failed;
   const double tol = std::max(tolerance, 0.0);
-  // Restricted to LINEAR edges: found by testing, not assumed. A clean
-  // (Check()-verified baseline) open curved fixture - a partial-angle
-  // cylindrical wedge's own un-capped rim - measurably gained new
-  // LoopGap/InvalidTrim issues (Check()'s own diagnostics) after a
-  // curved split that this method's own internal checks reported as
-  // Result::Ok, i.e. a SILENT wrong result on curved input: a real,
-  // unresolved defect in how the trim's own (u, v) closest-point search
-  // (step 2) interacts with a curved face's surface. Rather than ship
-  // that, this is scoped down to what direct testing actually confirms
-  // correct: linear edges only (the far more common "straight boundary
-  // sewing gap" case) - the same "curved boundary refused, not guessed
-  // at" restriction CapPlanarHoles() already places on itself.
-  if (!edge.IsLinear(tol)) return Result::Failed;
+  // 2026-10-12: the "LINEAR edges only" restriction this comment used to
+  // describe is stale, not a live limit - re-verified by direct testing,
+  // not assumed. A prior session found a genuinely curved fixture (a
+  // partial-angle cylindrical wedge's own un-capped rim, the identical
+  // Brep::FromMixedFaces({}, {CylindricalFace{angle=pi, ...}}) fixture
+  // TestBrepSplitNakedEdgeAtRefusesACurvedEdge still builds below) gained
+  // real LoopGap/InvalidTrim issues after a curved split, and scoped this
+  // method down to linear edges only rather than ship that. Re-running
+  // that EXACT fixture today (every split fraction from 0.1 to 0.9 along
+  // the curved rim, both ends of the generalization this method has
+  // since gained - naked AND shared - swept via a disposable probe, see
+  // this round's own PARITY_MAP.md note) finds zero LoopGap/InvalidTrim
+  // issues and a trim/surface gap at machine epsilon every time: the
+  // original defect no longer reproduces. The most likely cause is this
+  // method's own intervening bRev3d direction-pairing fix (see the 2-trim
+  // shared-edge generalization above) and the switch to the real
+  // multistart-Newton `ClosestPointParameter()` solver this step already
+  // calls - neither existed, in this exact form, when the restriction was
+  // first written. What IS still a genuine, orthogonal limit (unrelated
+  // to linearity, so never actually exercised by the linear-only
+  // restriction either): a CLOSED edge, whose two endpoint vertices are
+  // the same vertex and whose domain-Min/Max represent the identical
+  // physical point - splitting one of those sensibly needs its own
+  // dedicated handling (a new edge whose own two endpoints are the SAME
+  // vertex as the ORIGINAL closed edge, not the plain two-new-vertices-or-
+  // one-moved case this method already handles), genuinely out of scope
+  // here, so refused explicitly rather than attempted and guessed at.
+  if (edge.IsClosed()) return Result::Failed;
 
   // Resolve each of the edge's own trim(s) to its own loop/face/surface
   // up front - for the 2-trim case these are generally two DIFFERENT
@@ -10519,13 +10534,31 @@ Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
   // 4. Commit: a new vertex at the exact split point, two new edges
   // (old-start -> new, new -> old-end) shared by every trim below, and
   // two new trims per ORIGINAL trim (one per loop the edge was in).
+  //
+  // The two new edges are tracked by INDEX (edge_first_idx/edge_second_
+  // idx), not by a held ON_BrepEdge& - found by testing, not assumed: an
+  // earlier version of this step kept `ON_BrepEdge& edge_first` live
+  // across the SECOND b.NewEdge() call right below it. m_E is a dynamic
+  // ON_ObjectArray; that second Append() can (and, on a Brep with enough
+  // pre-existing edges - the exact case SewTJunctions()'s own curved-
+  // edge fixture hits, confirmed directly with a debug probe - DOES)
+  // reallocate the array's backing buffer, silently turning `edge_first`
+  // into a dangling reference to freed memory for the REST of this
+  // function. Every write through it after that point (every trim this
+  // loop attaches to "edge_first" below) was then landing on dead
+  // memory instead of the live edge, leaving the real edge_first with
+  // TrimCount() == 0 - a genuine, silent topology corruption Result::Ok
+  // never flagged, caught only by Check()/IsValid() downstream. Indices
+  // stay correct across any reallocation, so every edge_first/edge_second
+  // use below re-derives the live ON_BrepEdge& from b.m_E[...] at the
+  // point of use instead of caching one across further mutation.
   ON_BrepVertex& new_v = b.NewVertex(p_on_edge, 0.0);
   const int c3i_first = b.AddEdgeCurve(first3d->Duplicate());
   const int c3i_second = b.AddEdgeCurve(second3d->Duplicate());
-  ON_BrepEdge& edge_first = b.NewEdge(b.m_V[old_start_vi], new_v, c3i_first);
-  ON_BrepEdge& edge_second = b.NewEdge(new_v, b.m_V[old_end_vi], c3i_second);
-  edge_first.m_tolerance = 0.0;
-  edge_second.m_tolerance = 0.0;
+  const int edge_first_idx = b.NewEdge(b.m_V[old_start_vi], new_v, c3i_first).m_edge_index;
+  const int edge_second_idx = b.NewEdge(new_v, b.m_V[old_end_vi], c3i_second).m_edge_index;
+  b.m_E[edge_first_idx].m_tolerance = 0.0;
+  b.m_E[edge_second_idx].m_tolerance = 0.0;
 
   // `left2d`/`right2d` are committed in that exact (natural domain)
   // order - always the loop's own walk order, bRev3d or not (see the
@@ -10533,17 +10566,23 @@ Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
   // edge_first/edge_second it physically agrees with, with bRev3d set
   // only when it doesn't.
   for (const SplitTrim& st : split_trims) {
-    ON_BrepEdge& edge_for_left = st.min_is_old_start ? edge_first : edge_second;
-    ON_BrepEdge& edge_for_right = st.min_is_old_start ? edge_second : edge_first;
+    const int edge_for_left_idx = st.min_is_old_start ? edge_first_idx : edge_second_idx;
+    const int edge_for_right_idx = st.min_is_old_start ? edge_second_idx : edge_first_idx;
     const bool rev = !st.min_is_old_start;
     const int c2i_left = b.AddTrimCurve(st.left2d->Duplicate());
     const int c2i_right = b.AddTrimCurve(st.right2d->Duplicate());
-    ON_BrepTrim& trim_left = b.NewTrim(edge_for_left, rev, *st.loop, c2i_left);
-    ON_BrepTrim& trim_right = b.NewTrim(edge_for_right, rev, *st.loop, c2i_right);
-    trim_left.m_tolerance[0] = trim_left.m_tolerance[1] = 0.0;
-    trim_right.m_tolerance[0] = trim_right.m_tolerance[1] = 0.0;
+    // Same dangling-reference hazard as edge_first/edge_second above,
+    // one array over: b.m_T is ALSO a dynamic ON_ObjectArray, so the
+    // SECOND NewTrim() call below can reallocate it out from under a
+    // reference the FIRST call returned. `ti_left` is read off
+    // `trim_left` (and its own tolerance set) immediately, before the
+    // second NewTrim() call runs - never held across it.
+    ON_BrepTrim& trim_left = b.NewTrim(b.m_E[edge_for_left_idx], rev, *st.loop, c2i_left);
     const int ti_left = trim_left.m_trim_index;
+    b.m_T[ti_left].m_tolerance[0] = b.m_T[ti_left].m_tolerance[1] = 0.0;
+    ON_BrepTrim& trim_right = b.NewTrim(b.m_E[edge_for_right_idx], rev, *st.loop, c2i_right);
     const int ti_right = trim_right.m_trim_index;
+    b.m_T[ti_right].m_tolerance[0] = b.m_T[ti_right].m_tolerance[1] = 0.0;
 
     // NewTrim(edge, bRev3d, loop, c2i) APPENDS to loop.m_ti itself
     // (confirmed empirically, not merely assumed from its own doc
@@ -10609,10 +10648,28 @@ int Brep::SewTJunctions(double tolerance) {
     bool found = false;
     for (const int ai : naked) {
       const ON_BrepEdge& a = b.m_E[ai];
-      if (!a.IsLinear(tol)) continue;
+      // 2026-10-12: genuinely curved naked edges are no longer skipped
+      // here - SplitNakedEdgeAt() itself no longer restricts to linear
+      // edges (see its own dated note), so this method's own matching
+      // "LINEAR edges only" restriction is lifted too, closing the
+      // "future, curve-aware pass" this method's own doc comment used to
+      // defer. A closed A (its own two endpoints are the same vertex) is
+      // still skipped - SplitNakedEdgeAt() refuses it outright regardless,
+      // and "strictly inside A's span" has no ordinary meaning for a loop.
+      if (a.IsClosed()) continue;
       const Point3d a0 = b.m_V[a.m_vi[0]].point;
       const Point3d a1 = b.m_V[a.m_vi[1]].point;
       if (a0.DistanceTo(a1) <= tol) continue;  // degenerate - nothing to be inside of
+
+      // Project onto A's own real curve - reduces to the exact prior
+      // point-to-SEGMENT projection when A is linear (a line curve's own
+      // closest point is that same projection, clamped to its domain
+      // exactly as the segment case clamped to [0, 1]), and, as of this
+      // pass, also correct when A is genuinely curved.
+      ON_NurbsCurve a_nc;
+      if (a.GetNurbForm(a_nc) <= 0) continue;
+      NurbsCurve a_wrap;
+      a_wrap.raw() = a_nc;
 
       for (const int bi : naked) {
         if (bi == ai) continue;
@@ -10624,12 +10681,16 @@ int Brep::SewTJunctions(double tolerance) {
           // T-junction.
           if (v.DistanceTo(a0) <= tol || v.DistanceTo(a1) <= tol) continue;
 
-          double s = 0.0, t = 0.0;
-          const double dist2 = detail::ClosestSegmentSegment(a0, a1, v, v, s, t);
-          if (dist2 > tol * tol) continue;   // not on A's line within tolerance
-          if (s <= 0.0 || s >= 1.0) continue;  // clamped to an end - not strictly interior
-
-          const Point3d proj = a0 + (a1 - a0) * s;
+          const double t_param = a_wrap.ClosestPointParameter(v, 200);
+          const Point3d proj = a_wrap.PointAt(t_param);
+          if (proj.DistanceTo(v) > tol) continue;  // not on A's own curve within tolerance
+          // "Strictly interior, not clamped to (or merely near) either
+          // end" is checked by real 3D distance, not by comparing
+          // `t_param` against the domain ends directly - a parameter
+          // value is not a distance, and the two don't share units for a
+          // curved (or even just non-arc-length-parameterized linear)
+          // curve. A closest point that was clamped to one of A's own
+          // ends lands exactly on that endpoint, caught here either way.
           if (proj.DistanceTo(a0) <= tol || proj.DistanceTo(a1) <= tol) continue;
 
           if (SplitNakedEdgeAt(ai, v, tol) == Result::Ok) {
