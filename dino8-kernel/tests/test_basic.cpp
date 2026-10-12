@@ -25830,6 +25830,56 @@ void TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldToleran
   Check(widened_doubled.FaceCount() == 4, "4 faces total either way: the original 2 plus their 2 mirrored copies");
 }
 
+// Closes a real, previously-unvalidated gap: unlike its sibling
+// plane_normal check just above, Symmetrize() never validated
+// point_tolerance or plane_offset at all, even though a bad
+// point_tolerance doesn't degrade to a safe default the way a bad
+// weld_tolerance does (see that parameter's own "zero or negative means
+// reuse point_tolerance" convention) - it alone decides which vertices
+// count as lying ON the mirror plane, so a NaN or negative value made
+// every on-plane comparison silently false instead of refusing: no
+// vertex would ever be welded as a seam, not even one genuinely on the
+// plane, and the caller would get a plausible-looking (if silently
+// wrong) result rather than an error.
+void TestSubDSymmetrizeThrowsOnBadToleranceOrOffset() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+  using dino8::kernel::Vector3d;
+
+  const Mesh box = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(box);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, -1e-9); }),
+        "Symmetrize throws for a negative point_tolerance");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, nan); }),
+        "Symmetrize throws for a NaN point_tolerance");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, inf); }),
+        "Symmetrize throws for an infinite point_tolerance");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), nan); }),
+        "Symmetrize throws for a NaN plane_offset");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), inf); }),
+        "Symmetrize throws for an infinite plane_offset");
+
+  // Negative controls: a point_tolerance of exactly 0 is a legitimate
+  // "only bit-identical positions count as on-plane" request, not an
+  // error, and the ordinary default-argument call is unaffected.
+  Check(!Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, 0.0); }),
+        "Symmetrize does not throw for a point_tolerance of exactly 0");
+  Check(!Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0); }),
+        "Symmetrize's own default point_tolerance (1e-9) still passes validation unaffected");
+}
+
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -73710,6 +73760,7 @@ int main() {
   TestSubDTransformMovesScalesAndStaysValidUnderMirror();
   TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces();
   TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance();
+  TestSubDSymmetrizeThrowsOnBadToleranceOrOffset();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetEdgeSharpnessSupportsPerEndVariableWeight();
   TestSubDEdgeSharpnessAtReadsBackWhatWasWritten();
