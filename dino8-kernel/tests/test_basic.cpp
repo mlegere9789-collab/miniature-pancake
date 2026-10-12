@@ -12286,6 +12286,81 @@ void TestSurfaceCurvature() {
         "the same curvature in every direction");
 }
 
+void TestSurfaceIsoCurve() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::NurbsCurve;
+
+  // Same cylinder wall as TestSurfaceSuggestedDivisions(): U is the
+  // circular direction (radius 1), V is the straight height direction.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  Check(cylinder.GetNurbForm(cylinder_surface) != 0, "ON_Cylinder::GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+
+  const auto u_domain = wall.Domain(0);
+  const auto v_domain = wall.Domain(1);
+
+  // A U-isocurve at a fixed V (the circular cross-section) must agree
+  // exactly, point for point, with the surface itself evaluated along
+  // that same fixed V - the isocurve is just a real slice of the same
+  // underlying control net, not a resampled approximation.
+  const double fixed_v = v_domain.min + 0.5 * (v_domain.max - v_domain.min);
+  const NurbsCurve u_iso = wall.IsoCurve(0, fixed_v);
+  const auto u_iso_domain = u_iso.Domain();
+  for (int i = 0; i <= 8; ++i) {
+    const double t = u_iso_domain.min + (u_iso_domain.max - u_iso_domain.min) * i / 8.0;
+    const double u = u_domain.min + (u_domain.max - u_domain.min) * i / 8.0;
+    const auto p_iso = u_iso.PointAt(t);
+    const auto p_srf = wall.PointAt(u, fixed_v);
+    Check(std::abs(p_iso.x - p_srf.x) < 1e-9 && std::abs(p_iso.y - p_srf.y) < 1e-9 &&
+              std::abs(p_iso.z - p_srf.z) < 1e-9,
+          "IsoCurve(0, fixed_v) agrees exactly with the surface's own PointAt "
+          "along the same fixed V");
+  }
+  // Also confirm it is really the unit circle at height fixed_v, not just
+  // self-consistent with PointAt.
+  const auto p0 = u_iso.PointAt(u_iso_domain.min);
+  Check(std::abs(std::sqrt(p0.x * p0.x + p0.y * p0.y) - 1.0) < 1e-9 &&
+            std::abs(p0.z - fixed_v) < 1e-9,
+        "IsoCurve(0, fixed_v) lies on the unit circle at height fixed_v");
+
+  // A V-isocurve at a fixed U (a vertical line on the cylinder wall) must
+  // likewise agree exactly with the surface evaluated along that fixed U.
+  const double fixed_u = u_domain.min + 0.25 * (u_domain.max - u_domain.min);
+  const NurbsCurve v_iso = wall.IsoCurve(1, fixed_u);
+  const auto v_iso_domain = v_iso.Domain();
+  for (int i = 0; i <= 8; ++i) {
+    const double t = v_iso_domain.min + (v_iso_domain.max - v_iso_domain.min) * i / 8.0;
+    const double v = v_domain.min + (v_domain.max - v_domain.min) * i / 8.0;
+    const auto p_iso = v_iso.PointAt(t);
+    const auto p_srf = wall.PointAt(fixed_u, v);
+    Check(std::abs(p_iso.x - p_srf.x) < 1e-9 && std::abs(p_iso.y - p_srf.y) < 1e-9 &&
+              std::abs(p_iso.z - p_srf.z) < 1e-9,
+          "IsoCurve(1, fixed_u) agrees exactly with the surface's own PointAt "
+          "along the same fixed U");
+  }
+
+  bool threw_direction = false;
+  try {
+    wall.IsoCurve(2, fixed_v);
+  } catch (const std::invalid_argument&) {
+    threw_direction = true;
+  }
+  Check(threw_direction, "IsoCurve throws std::invalid_argument on an invalid direction");
+
+  bool threw_domain = false;
+  try {
+    wall.IsoCurve(0, v_domain.max + 10.0);
+  } catch (const std::invalid_argument&) {
+    threw_domain = true;
+  }
+  Check(threw_domain,
+        "IsoCurve throws std::invalid_argument on a parameter outside the "
+        "other direction's domain");
+}
+
 void TestSurfaceSuggestedDivisions() {
   using dino8::kernel::NurbsSurface;
 
@@ -78937,6 +79012,7 @@ int main() {
   RunTest("TestSurfaceClosestPointGlobalReportsConvergenceFailure", TestSurfaceClosestPointGlobalReportsConvergenceFailure);
   RunTest("TestSurfaceClosestPointMultistartFindsGlobalMinimum", TestSurfaceClosestPointMultistartFindsGlobalMinimum);
   RunTest("TestSurfaceCurvature", TestSurfaceCurvature);
+  RunTest("TestSurfaceIsoCurve", TestSurfaceIsoCurve);
   RunTest("TestSurfaceSuggestedDivisions", TestSurfaceSuggestedDivisions);
   RunTest("TestSurfaceTessellateGridAdaptive", TestSurfaceTessellateGridAdaptive);
   RunTest("TestSurfaceTessellateGridClippedExactAdaptive", TestSurfaceTessellateGridClippedExactAdaptive);

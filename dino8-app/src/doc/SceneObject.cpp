@@ -409,63 +409,43 @@ void AppendCurvePolyline(const kernel::NurbsCurve& curve, double tolerance,
   }
 }
 
-void AppendSurfaceIsocurves(const kernel::NurbsSurface& s, std::vector<float>& out) {
+// Draws each isocurve as a real kernel NurbsSurface::IsoCurve() - a genuine
+// sliced NURBS curve, not a resampled approximation - then polylines it
+// through AppendCurvePolyline()'s own chord_tolerance-driven adaptive
+// sampling (the same curvature-aware density a standalone NurbsCurve
+// object already gets in wireframe display), instead of a fixed 24-segment
+// straight evaluation per isocurve regardless of how much the surface
+// actually curves there.
+void AppendSurfaceIsocurves(const kernel::NurbsSurface& s, double chord_tolerance, std::vector<float>& out) {
   const kernel::Interval du = s.Domain(0);
   const kernel::Interval dv = s.Domain(1);
   const int iso_u = std::max(2, s.CVCountU());
   const int iso_v = std::max(2, s.CVCountV());
-  const int samples = 24;
-  auto add_line = [&](kernel::Point3d a, kernel::Point3d b) {
-    out.push_back(static_cast<float>(a.x)); out.push_back(static_cast<float>(a.y)); out.push_back(static_cast<float>(a.z));
-    out.push_back(static_cast<float>(b.x)); out.push_back(static_cast<float>(b.y)); out.push_back(static_cast<float>(b.z));
-  };
+  kernel::BoundingBox unused_box;
+  bool unused_has_box = false;
   for (int i = 0; i < iso_u; ++i) {
     const double u = du.min + (du.max - du.min) * i / (iso_u - 1);
-    kernel::Point3d prev = s.PointAt(u, dv.min);
-    for (int k = 1; k <= samples; ++k) {
-      const double v = dv.min + (dv.max - dv.min) * k / samples;
-      const kernel::Point3d p = s.PointAt(u, v);
-      add_line(prev, p);
-      prev = p;
-    }
+    AppendCurvePolyline(s.IsoCurve(1, u), chord_tolerance, out, unused_box, unused_has_box);
   }
   for (int j = 0; j < iso_v; ++j) {
     const double v = dv.min + (dv.max - dv.min) * j / (iso_v - 1);
-    kernel::Point3d prev = s.PointAt(du.min, v);
-    for (int k = 1; k <= samples; ++k) {
-      const double u = du.min + (du.max - du.min) * k / samples;
-      const kernel::Point3d p = s.PointAt(u, v);
-      add_line(prev, p);
-      prev = p;
-    }
+    AppendCurvePolyline(s.IsoCurve(0, v), chord_tolerance, out, unused_box, unused_has_box);
   }
 }
 
-// The four boundary curves of an (untrimmed) surface.
-void AppendSurfaceBoundary(const kernel::NurbsSurface& s, std::vector<float>& out) {
+// The four boundary curves of an (untrimmed) surface - each one is itself
+// a real isocurve at a domain endpoint, sliced via the same
+// NurbsSurface::IsoCurve() the interior isocurves above use, and
+// polylined the same adaptive way.
+void AppendSurfaceBoundary(const kernel::NurbsSurface& s, double chord_tolerance, std::vector<float>& out) {
   const kernel::Interval du = s.Domain(0);
   const kernel::Interval dv = s.Domain(1);
-  const int samples = 32;
-  auto add_line = [&](kernel::Point3d a, kernel::Point3d b) {
-    out.push_back(static_cast<float>(a.x)); out.push_back(static_cast<float>(a.y)); out.push_back(static_cast<float>(a.z));
-    out.push_back(static_cast<float>(b.x)); out.push_back(static_cast<float>(b.y)); out.push_back(static_cast<float>(b.z));
-  };
-  for (int side = 0; side < 4; ++side) {
-    auto at = [&](double t) {
-      switch (side) {
-        case 0: return s.PointAt(du.min + (du.max - du.min) * t, dv.min);
-        case 1: return s.PointAt(du.min + (du.max - du.min) * t, dv.max);
-        case 2: return s.PointAt(du.min, dv.min + (dv.max - dv.min) * t);
-        default: return s.PointAt(du.max, dv.min + (dv.max - dv.min) * t);
-      }
-    };
-    kernel::Point3d prev = at(0);
-    for (int k = 1; k <= samples; ++k) {
-      const kernel::Point3d p = at(static_cast<double>(k) / samples);
-      add_line(prev, p);
-      prev = p;
-    }
-  }
+  kernel::BoundingBox unused_box;
+  bool unused_has_box = false;
+  AppendCurvePolyline(s.IsoCurve(0, dv.min), chord_tolerance, out, unused_box, unused_has_box);
+  AppendCurvePolyline(s.IsoCurve(0, dv.max), chord_tolerance, out, unused_box, unused_has_box);
+  AppendCurvePolyline(s.IsoCurve(1, du.min), chord_tolerance, out, unused_box, unused_has_box);
+  AppendCurvePolyline(s.IsoCurve(1, du.max), chord_tolerance, out, unused_box, unused_has_box);
 }
 
 // Mesh edges: every edge once into `edges`, edges used by a single face
@@ -494,8 +474,8 @@ void AppendMeshNakedEdges(const kernel::Mesh& mesh, std::vector<float>& edges, s
 
 // Appends the brep's edge polylines to `out` (wires) and, sorted by
 // topology, to `edges` (all) and `naked` (edges with a single trim).
-void AppendBrepEdges(const kernel::Brep& brep, std::vector<float>& out, std::vector<float>& edges,
-                     std::vector<float>& naked) {
+void AppendBrepEdges(const kernel::Brep& brep, double chord_tolerance, std::vector<float>& out,
+                     std::vector<float>& edges, std::vector<float>& naked) {
   const ON_Brep& raw = brep.raw();
   for (int i = 0; i < raw.m_E.Count(); ++i) {
     const ON_BrepEdge& e = raw.m_E[i];
@@ -552,7 +532,7 @@ void AppendBrepEdges(const kernel::Brep& brep, std::vector<float>& out, std::vec
       if (!ns) continue;
       kernel::NurbsSurface wrapper;
       wrapper.raw() = *ns;
-      AppendSurfaceIsocurves(wrapper, out);
+      AppendSurfaceIsocurves(wrapper, chord_tolerance, out);
     }
   }
 }
@@ -639,8 +619,8 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
       const int u = std::clamp(div.u, 4, 96);
       const int v = std::clamp(div.v, 4, 96);
       AppendSurfaceGrid(*surface, u, v, cache_.triangles, cache_.uvs, cache_.bbox, cache_.has_bbox);
-      AppendSurfaceIsocurves(*surface, cache_.lines);
-      AppendSurfaceBoundary(*surface, cache_.edges);
+      AppendSurfaceIsocurves(*surface, surface_tolerance, cache_.lines);
+      AppendSurfaceBoundary(*surface, surface_tolerance, cache_.edges);
       cache_.naked_edges = cache_.edges;  // an untrimmed surface's edges are all naked
       if (show_control_points) {
         for (int i = 0; i < surface->CVCountU(); ++i) {
@@ -676,7 +656,7 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
         cache_.triangle_face.resize(cache_.triangles.size() / 18, static_cast<int>(fi));
         (void)before;
       }
-      AppendBrepEdges(*brep, cache_.lines, cache_.edges, cache_.naked_edges);
+      AppendBrepEdges(*brep, surface_tolerance, cache_.lines, cache_.edges, cache_.naked_edges);
       if (show_control_points) {
         // SolidPtOn: the brep vertices are the grips.
         const ON_Brep& raw = brep->raw();
