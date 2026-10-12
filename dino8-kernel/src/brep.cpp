@@ -3348,6 +3348,110 @@ BoundingBox Brep::GetTightBoundingBox() const {
   return BoundingBox{box.Min(), box.Max()};
 }
 
+Brep::OrientedBox Brep::GetOrientedBoundingBox(int u_divisions, int v_divisions) const {
+  const int face_count = brep_.m_F.Count();
+
+  std::vector<Point3d> samples;
+  std::vector<Point3d> control_points;
+
+  for (int fi = 0; fi < face_count; ++fi) {
+    const ON_BrepFace& face = brep_.m_F[fi];
+    const ON_Surface* srf = face.SurfaceOf();
+    if (srf == nullptr) continue;  // a deleted, uncompacted face
+
+    // The same two-tier "real NURBS form, fast path or real conversion"
+    // pattern ResolveFace() above already establishes for reading an
+    // arbitrary face's surface this way.
+    ON_NurbsSurface nurbs_storage;
+    const ON_NurbsSurface* nurbs = ON_NurbsSurface::Cast(srf);
+    if (!nurbs) {
+      if (srf->GetNurbForm(nurbs_storage) <= 0) continue;
+      nurbs = &nurbs_storage;
+    }
+
+    const ON_Interval u_dom = nurbs->Domain(0);
+    const ON_Interval v_dom = nurbs->Domain(1);
+    for (int i = 0; i <= u_divisions; ++i) {
+      const double u = u_dom.Min() + (u_dom.Max() - u_dom.Min()) * i / u_divisions;
+      for (int j = 0; j <= v_divisions; ++j) {
+        const double v = v_dom.Min() + (v_dom.Max() - v_dom.Min()) * j / v_divisions;
+        ON_3dPoint p;
+        if (nurbs->EvPoint(u, v, p)) samples.push_back(p);
+      }
+    }
+
+    const int cv_u = nurbs->CVCount(0);
+    const int cv_v = nurbs->CVCount(1);
+    for (int i = 0; i < cv_u; ++i) {
+      for (int j = 0; j < cv_v; ++j) {
+        ON_3dPoint cv;
+        nurbs->GetCV(i, j, cv);
+        control_points.push_back(cv);
+      }
+    }
+  }
+
+  if (samples.empty() || control_points.empty()) {
+    throw std::runtime_error(
+        "dino8::kernel::Brep::GetOrientedBoundingBox: no face produced a usable surface");
+  }
+
+  Point3d mean(0, 0, 0);
+  for (const Point3d& p : samples) mean = mean + Vector3d(p);
+  mean = Point3d(Vector3d(mean) / static_cast<double>(samples.size()));
+
+  double cxx = 0, cyy = 0, czz = 0, cxy = 0, cyz = 0, cxz = 0;
+  for (const Point3d& p : samples) {
+    const Vector3d d = p - mean;
+    cxx += d.x * d.x;
+    cyy += d.y * d.y;
+    czz += d.z * d.z;
+    cxy += d.x * d.y;
+    cyz += d.y * d.z;
+    cxz += d.x * d.z;
+  }
+
+  std::array<Vector3d, 3> axes;
+  double e[3];
+  Vector3d v[3];
+  if (ON_Sym3x3EigenSolver(cxx, cyy, czz, cxy, cyz, cxz, &e[0], v[0], &e[1], v[1], &e[2], v[2])) {
+    axes = {v[0], v[1], v[2]};
+    for (Vector3d& a : axes) a.Unitize();
+    axes[2] = ON_CrossProduct(axes[0], axes[1]);
+    axes[2].Unitize();
+  } else {
+    axes = {Vector3d(1, 0, 0), Vector3d(0, 1, 0), Vector3d(0, 0, 1)};
+  }
+
+  // Every CONTROL POINT's own projection onto each axis - NOT the sampled
+  // points above - so the box this returns provably contains every face's
+  // own surface (the convex-hull property), never merely the sampled
+  // approximation of it.
+  double lo[3] = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
+                  std::numeric_limits<double>::max()};
+  double hi[3] = {-std::numeric_limits<double>::max(), -std::numeric_limits<double>::max(),
+                   -std::numeric_limits<double>::max()};
+  const Point3d origin = control_points.front();
+  for (const Point3d& cv : control_points) {
+    const Vector3d rel = cv - origin;
+    for (int k = 0; k < 3; ++k) {
+      const double proj = ON_DotProduct(rel, axes[static_cast<size_t>(k)]);
+      lo[k] = std::min(lo[k], proj);
+      hi[k] = std::max(hi[k], proj);
+    }
+  }
+
+  OrientedBox box;
+  box.axes = axes;
+  Point3d center = origin;
+  for (int k = 0; k < 3; ++k) {
+    box.half_extents[static_cast<size_t>(k)] = (hi[k] - lo[k]) / 2.0;
+    center = center + axes[static_cast<size_t>(k)] * ((hi[k] + lo[k]) / 2.0);
+  }
+  box.center = center;
+  return box;
+}
+
 std::vector<Mesh> Brep::TessellateAdaptive(double chord_tolerance) const {
   std::vector<Mesh> result;
   result.reserve(static_cast<size_t>(brep_.m_F.Count()));
