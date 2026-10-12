@@ -12,6 +12,7 @@
 
 #include "dino8/kernel/detail/degree_elevate.h"
 #include "dino8/kernel/detail/polygon2d.h"
+#include "dino8/kernel/surface_intersect.h"
 
 namespace dino8::kernel {
 
@@ -648,6 +649,76 @@ Result NurbsCurve::FitLeastSquares(const std::vector<Point3d>& points, int degre
   for (int k = 0; k < n + p; ++k) result.curve_.SetKnot(k, knot[static_cast<size_t>(k)]);
   out = result;
   return Result::Ok;
+}
+
+Result NurbsCurve::Helix(Point3d axis_origin, Vector3d axis_dir, double radius, double pitch, double turns,
+                          double tolerance, NurbsCurve& out, double* out_max_deviation) {
+  if (!ON_IsValid(radius) || radius <= 0.0) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Helix: radius must be positive and finite");
+  }
+  if (!ON_IsValid(turns) || turns <= 0.0) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Helix: turns must be positive and finite");
+  }
+  if (!ON_IsValid(pitch)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Helix: pitch must be finite");
+  }
+  if (!ON_IsValid(tolerance) || tolerance <= 0.0) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Helix: tolerance must be positive and finite");
+  }
+  Vector3d axis = axis_dir;
+  const double axis_len = axis.Length();
+  if (!ON_IsValid(axis_len) || axis_len <= 1e-12) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::Helix: axis_dir must be a nonzero, finite vector");
+  }
+  axis.Unitize();
+
+  // Any orthonormal basis of the plane perpendicular to `axis` works -
+  // the helix's own shape doesn't depend on which one is picked, only
+  // on which side s=0 starts (the same "any basis works" reasoning
+  // IsOffsetPolygonSimple() above already uses for an unrelated plane).
+  Vector3d basis_hint(0.0, 0.0, 1.0);
+  if (std::fabs(ON_DotProduct(axis, basis_hint)) > 0.9) basis_hint = Vector3d(1.0, 0.0, 0.0);
+  Vector3d xaxis = ON_CrossProduct(axis, basis_hint);
+  xaxis.Unitize();
+  const Vector3d yaxis = ON_CrossProduct(axis, xaxis);
+
+  const double s_max = 2.0 * ON_PI * turns;
+  auto helix_point = [&](double s) -> Point3d {
+    const double height = pitch * s / (2.0 * ON_PI);
+    return axis_origin + xaxis * (radius * std::cos(s)) + yaxis * (radius * std::sin(s)) + axis * height;
+  };
+
+  int samples = std::max(9, static_cast<int>(std::ceil(turns * 8.0)) + 1);
+  const int max_samples = 1 << 16;
+  for (;;) {
+    std::vector<ON_3dPoint> pts(static_cast<size_t>(samples));
+    std::vector<double> params(static_cast<size_t>(samples));
+    for (int i = 0; i < samples; ++i) {
+      const double s = s_max * i / (samples - 1);
+      params[static_cast<size_t>(i)] = s;
+      pts[static_cast<size_t>(i)] = helix_point(s);
+    }
+    const ON_NurbsCurve fit = InterpolateCubic(pts, params, /*closed=*/false, /*dim=*/3);
+    bool converged = false;
+    double max_dev = 0.0;
+    if (fit.IsValid()) {
+      NurbsCurve candidate;
+      candidate.curve_ = fit;
+      const int probes = samples * 4;
+      for (int k = 0; k <= probes; ++k) {
+        const double s = s_max * k / probes;
+        max_dev = std::max(max_dev, helix_point(s).DistanceTo(candidate.PointAt(s)));
+      }
+      if (max_dev <= tolerance) {
+        out = candidate;
+        if (out_max_deviation) *out_max_deviation = max_dev;
+        converged = true;
+      }
+    }
+    if (converged) return Result::Ok;
+    if (samples >= max_samples) return Result::Failed;
+    samples *= 2;
+  }
 }
 
 NurbsCurve NurbsCurve::FromControlPoints(const std::vector<Point3d>& control_points,
@@ -1894,6 +1965,15 @@ Result NurbsCurve::SetDomain(double t0, double t1) {
   const Interval current = Domain();
   if (current.min == t0 && current.max == t1) return Result::NoOpAlreadySatisfied;
   return curve_.SetDomain(t0, t1) ? Result::Ok : Result::Failed;
+}
+
+Result NurbsCurve::ChangeSeam(double t, double min_dist) {
+  if (!IsClosed()) return Result::Failed;
+  if (min_dist > 0.0) {
+    const double dist = PointAt(t).DistanceTo(PointAt(Domain().min));
+    if (dist < min_dist) return Result::NoOpAlreadySatisfied;
+  }
+  return curve_.ChangeClosedCurveSeam(t) ? Result::Ok : Result::Failed;
 }
 
 Point3d NurbsCurve::PointAt(double t) const {

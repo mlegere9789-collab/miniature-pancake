@@ -269,6 +269,38 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
 // filling a 90-degree notch.
 Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius);
 
+// The largest radius FilletConvexEdge/FilletConcaveEdge could build for
+// this exact edge before their own "radius is too large to fit" check
+// rejects it - the SAME closed-form bound those two functions already
+// compute internally (trim_back = radius / tan(theta/2) must not exceed
+// either adjacent face's own extent from the edge), exposed here so a
+// caller - or an app command catching that exception - can report the
+// real fittable radius instead of just failing. This does not roll the
+// fillet onto a neighbouring face when the request overflows (that
+// remains out of scope - see PARITY_MAP.md's "Fillet overflow / cliff-
+// edge / notch handling" entry); it only answers "what IS the largest
+// radius this edge's own two faces support", exactly.
+//
+// Convexity is detected internally (the same EdgeConvexity probe
+// FilletConcaveEdge's own validation uses - the dihedral angle magnitude
+// alone cannot tell a convex edge from its concave mirror, see that
+// function's own doc comment), since the sign of the trim-back direction
+// genuinely differs between the two cases: an ambiguous/degenerate result
+// from that probe defaults to convex, matching FilletConvexEdge's own
+// lack of a dedicated convexity check in that case.
+//
+// Throws std::invalid_argument for the same structural reasons
+// FilletConvexEdge/FilletConcaveEdge do (not a shared two-face boundary
+// edge, coincident endpoints, a degenerate near-flat or near-180-degree
+// dihedral) - every reason EXCEPT "radius too large to fit", since this
+// function computes that bound rather than checking against one.
+struct FilletRadiusLimit {
+  bool convex;           // true if edge_p0->edge_p1 was detected as a convex dihedral edge, false if concave
+  double dihedral_angle; // theta: the interior (convex) or empty-wedge (concave) angle the fillet fills, radians
+  double max_radius;     // the largest radius whose trim-back distance still fits BOTH adjacent faces
+};
+FilletRadiusLimit MaxFilletRadius(const Brep& solid, Point3d edge_p0, Point3d edge_p1);
+
 // LINEAR-TAPER generalization of FilletConvexEdge: rolls a ball of
 // radius r(t) = radius0 + m*t (t = arc length along the edge from
 // edge_p0, m = (radius1 - radius0) / |edge_p1 - edge_p0|) instead of a
