@@ -25698,6 +25698,65 @@ void TestMeshContainsPoint() {
         "a point far outside the hollow box entirely is not inside it");
 }
 
+// PARITY_MAP.md's own "kernel: Mass properties & spatial queries"
+// category named this directly under "Signed distance point-to-solid":
+// "sign from ContainsPoint's single-ray test." A single fixed ray,
+// however carefully chosen to avoid axis/symmetry degeneracies (as
+// ContainsPoint()'s own prior implementation was), can still graze a
+// vertex or shared edge exactly for some mesh/point combination - this
+// test reproduces a real, concrete such failure against the ORIGINAL
+// single-ray implementation's own exact direction, confirms
+// ContainsPoint() now votes across 5 independent directions instead,
+// and verifies the fix closes it.
+void TestMeshContainsPointVotesAcrossMultipleRaysForRobustness() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+
+  // The exact direction ContainsPoint()'s own prior single-ray
+  // implementation cast along (still the first of the 5 it now votes
+  // across) - confirmed directly (via a standalone scratch probe before
+  // trusting it here) that a ray from a point along this direction,
+  // aimed exactly at the box's own (1,1,1) corner, misclassifies a
+  // genuine, contiguous range of truly-inside points near that corner
+  // as outside when that single direction alone decides the answer.
+  const Vector3d original_single_ray_direction(0.6532814824, 0.2705980501, 0.7071067812);
+  const Point3d corner(1, 1, 1);
+
+  int genuinely_inside_count = 0;
+  bool all_correctly_inside = true;
+  for (int i = 1; i <= 30; ++i) {
+    const double t = static_cast<double>(i) / 100.0;
+    const Point3d p = corner - original_single_ray_direction * t;
+    if (!(p.x > 0 && p.x < 1 && p.y > 0 && p.y < 1 && p.z > 0 && p.z < 1)) continue;
+    ++genuinely_inside_count;
+    if (!box.ContainsPoint(p)) all_correctly_inside = false;
+  }
+  Check(genuinely_inside_count > 10, "the corner-aimed sweep actually produced a real sample of inside points to test");
+  Check(all_correctly_inside,
+        "every point along a ray aimed exactly at the box's own corner - the real failure mode the ORIGINAL "
+        "single-ray implementation had for this exact direction - is now correctly reported as inside, voted "
+        "across 5 independent directions rather than decided by this one alone");
+
+  // Ordinary, non-adversarial points still classify correctly - the
+  // vote doesn't trade robustness for correctness on the easy cases.
+  Check(box.ContainsPoint(Point3d(0.5, 0.5, 0.5)), "the box's own center is still correctly inside");
+  Check(!box.ContainsPoint(Point3d(2, 2, 2)), "a point far outside is still correctly outside");
+  Check(!box.ContainsPoint(Point3d(-0.5, 0.5, 0.5)), "a point outside on the -X side is still correctly outside");
+
+  // The translation-invariance property ContainsPoint()'s own doc
+  // comment specifically calls out (axis/symmetry grazing used to flip
+  // with translation) still holds under the new voting scheme.
+  const auto box_at_origin = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const auto box_translated = MakeQuadBoxMesh(39, 19, 9, 41, 21, 11);
+  Check(box_at_origin.ContainsPoint(Point3d(0, 0, 0)) && box_translated.ContainsPoint(Point3d(40, 20, 10)),
+        "a box's own center is reported inside both at the world origin and translated far away - unaffected by "
+        "the axis/symmetry grazing the single fixed ray's own irrational-component directions already guard "
+        "against");
+}
+
 void TestMeshClosestPoint() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -53881,6 +53940,101 @@ void TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound() {
         "of this pass's new compound-operand support, not an outright compound refusal");
 }
 
+// PARITY_MAP.md's own "Non-manifold boolean results" bullet names this
+// specific gap by function: "the B-rep engines throw 'an edge is shared by
+// 3 or more faces' instead of building non-manifold output." This closes
+// it for Union/Intersection/Difference via BooleanCombinePlanar's new
+// `allow_non_manifold_result` parameter (boolean.h/boolean.cpp): two unit
+// cubes that touch ONLY along one shared edge - a=Box(0,0,0,1,1,1),
+// b=Box(1,1,0,2,2,1), touching along the vertical edge x=1,y=1,z in [0,1].
+// Neither operand is coincident with any face of the other anywhere, so
+// nothing about this fixture is a "coincident sub-face" case (this
+// category's other, separately-tracked bullet) - it is A's own edge
+// (where A's x=1 face meets A's y=1 face) and B's own edge (B's x=1 face
+// meeting B's y=1 face) landing at the IDENTICAL 3D location, which the
+// strict pipeline's ordinary Brep::FromPlanarFaces() reassembly welds into
+// one edge carrying all four trims and refuses outright - confirmed
+// directly via a standalone scratch-test probe linked against
+// libdino8_kernel.a before writing this, not assumed; the default
+// (allow_non_manifold_result == false) path below reproduces that exact
+// refusal unchanged, a real regression guard for the parameter's own
+// documented default. With the flag set, the identical computed face list
+// reassembles through Brep::FromMixedFacesNonManifold() instead, so all 12
+// of the two cubes' own original faces survive untouched (nothing here is
+// coincident, so nothing is cut or deduplicated either) with exactly one
+// non-manifold edge where they meet.
+void TestBooleanCombinePlanarUnionAllowsNonManifoldEdgeOnlyTouchingCubes() {
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const Brep a = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep b = Brep::Box(1, 1, 0, 2, 2, 1);
+
+  bool strict_threw = false;
+  std::string strict_message;
+  try {
+    BooleanCombinePlanar(a, b, BooleanOp::Union);
+  } catch (const std::exception& e) {
+    strict_threw = true;
+    strict_message = e.what();
+  }
+  Check(strict_threw && strict_message.find("edge is shared by 3 or more faces") != std::string::npos,
+        "the default (allow_non_manifold_result == false) path still refuses this edge-only-touching union "
+        "exactly as before this parameter existed");
+
+  const Brep result = BooleanCombinePlanar(a, b, BooleanOp::Union, -1.0, true);
+  Check(result.FaceCount() == 12,
+        "allow_non_manifold_result Union keeps all 12 of the two cubes' own original faces - nothing here is "
+        "coincident, so nothing is cut or deduplicated, only the one shared touching edge is welded together");
+  Check(result.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1,
+        "exactly one edge is genuinely non-manifold (the shared touching edge) - confirmed via a standalone "
+        "scratch-test probe, not assumed");
+
+  double area = 0.0;
+  for (const Mesh& face_mesh : result.Tessellate(2, 2)) area += face_mesh.Area();
+  Check(Within(area, 12.0, 1e-9),
+        "total tessellated area is exactly 6 (per cube) x 2 = 12 - every one of the 12 faces survived "
+        "untouched (measured per-face via Tessellate(), independent of Brep::Area()/Brep::Volume(), neither of "
+        "which is well-defined on a genuinely non-manifold result)");
+}
+
+// The SymmetricDifference half of the same `allow_non_manifold_result`
+// closure: a genuine SINGLE-SHELL XOR instead of the two-lump
+// Brep::Compound the plain BooleanCombinePlanar(a, b, SymmetricDifference)
+// call builds today - the "single-body XOR" PARITY_MAP.md's own
+// "Non-manifold boolean results" bullet names directly in its title
+// parenthetical. Same corner-overlap fixture
+// TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound above
+// already uses (a=Box(0,0,0,2,2,2), b=Box(1,1,1,3,3,3)), independently
+// re-measured here (not merely cited) at a two-lump, 48-face compound via
+// a standalone scratch-test probe before writing this test.
+void TestBooleanCombinePlanarSymmetricDifferenceAllowsSingleShellXor() {
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  const Brep compound_xor = BooleanCombinePlanar(a, b, BooleanOp::SymmetricDifference);
+  Check(compound_xor.LumpFaceRanges().size() == 2 && compound_xor.FaceCount() == 48,
+        "sanity: the known two-lump, 48-face compound XOR this category's own prior tests already establish");
+
+  const Brep single_shell = BooleanCombinePlanar(a, b, BooleanOp::SymmetricDifference, -1.0, true);
+  Check(single_shell.LumpFaceRanges().size() == 1,
+        "allow_non_manifold_result builds a genuine SINGLE shell, not a Brep::Compound of two lumps - the "
+        "'single-body XOR' this category's bullet names directly");
+  Check(single_shell.FaceCount() == 48,
+        "every one of the 48 faces from both Difference directions survives - none lost, none duplicated, only "
+        "welded together at the shared boundary instead of left as two separate lumps");
+  Check(single_shell.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 6,
+        "the shared boundary curve between the XOR's own four face groups (A's outside, B's outside, and both "
+        "flipped insides) comes back as real non-manifold edges instead of two separately-welded 2-trim edges - "
+        "confirmed via a standalone scratch-test probe, not assumed");
+}
+
 // Regression check: SymmetricDifference must still refuse a compound
 // operand exactly as before (its own result is a Brep::Compound of two
 // lumps meeting along a genuine 4-face contact curve, which no single
@@ -66004,6 +66158,45 @@ void TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads() {
         "no separate overlap/gap volume to account for)");
 }
 
+// AssembleSweptBody()'s own outward-orientation safety net (sweep.cpp,
+// right after every cap is added) used to tessellate a fixed 16x16 grid
+// to decide whether to flip the result - fine for an ordinary low-span
+// wall, but confirmed directly (dino8_scratch_test) to alias badly enough
+// on a many-turn ScrewThread() wall (hundreds of v-spans) that the
+// SAMPLED volume's sign came out wrong, so the "safe repair" flipped (or
+// failed to flip) the wrong way and baked a genuinely inside-out solid
+// in - `ON_Brep::IsValid()` stayed true throughout (an orientation
+// defect, not a topological one) while the exact `Brep::Volume()`
+// integral came back negative. Fixed by scaling the check's own
+// resolution with the wall's own `SpanCount()` in each direction (never
+// below the original 16, so every low-span caller of this same idiom -
+// Pipe/Revolve/Extrude/Loft/Sweep1/Sweep2/... - keeps the identical
+// 16x16 check and is unaffected).
+void TestScrewThreadManyTurnsHasCorrectExactVolumeSign() {
+  // Bolt-shank scale (dino8-app's own ArchComponents.cpp BuildBolt(), M8
+  // default length): 32 turns at stations_per_turn=16 -> 513 v-spans,
+  // the exact scale that exposed the bug via the 16x16 check above.
+  const double minor_r = 1.0, major_r = 1.24, pitch = 0.04, turns = 32.0;
+  const Brep thread = Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 1), minor_r, major_r, pitch, turns,
+                                        /*right_handed=*/true, /*stations_per_turn=*/16);
+  Check(thread.raw().IsValid(), "a many-turn ScrewThread is still a topologically valid B-rep (this is an "
+                                 "orientation defect, not a validity one)");
+  const double profile_area = 0.5 * pitch * (major_r - minor_r);
+  const double r_centroid = (2.0 * minor_r + major_r) / 3.0;
+  const double expect_volume = 2.0 * M_PI * turns * profile_area * r_centroid;  // Pappus, see the test above
+  Check(thread.Volume() > 0.0, "a many-turn ScrewThread's exact Volume() is positive (the bug this test guards "
+                                "against made it come back negative)");
+  Check(std::abs(thread.Volume() - expect_volume) / expect_volume < 0.01,
+        "a many-turn ScrewThread's exact Volume() matches the same Pappus closed form the low-turn-count test "
+        "above already establishes, to within exact-integration/discretization error");
+  // A left-handed thread of the same parameters must also come back
+  // positive - the bug was in the shared orientation check, not tied to
+  // one handedness.
+  const Brep thread_lh = Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 1), minor_r, major_r, pitch, turns,
+                                           /*right_handed=*/false, /*stations_per_turn=*/16);
+  Check(thread_lh.Volume() > 0.0, "a left-handed many-turn ScrewThread's exact Volume() is also positive");
+}
+
 void TestExtrudeTaperedCircularProfileIsExactConeFrustum() {
   // Shrinking: r0=2 -> r1=1 over height 3, tan(theta) = (r0 - r1) / h.
   const double r0 = 2.0, r1 = 1.0, h = 3.0;
@@ -77456,6 +77649,8 @@ int main() {
   RunTest("TestMeshFlipNormals", TestMeshFlipNormals);
   RunTest("TestMeshIsClosedManifold", TestMeshIsClosedManifold);
   RunTest("TestMeshContainsPoint", TestMeshContainsPoint);
+  RunTest("TestMeshContainsPointVotesAcrossMultipleRaysForRobustness",
+          TestMeshContainsPointVotesAcrossMultipleRaysForRobustness);
   RunTest("TestMeshClosestPoint", TestMeshClosestPoint);
   RunTest("TestMeshSignedDistance", TestMeshSignedDistance);
   RunTest("TestMeshVolumeMassProperties", TestMeshVolumeMassProperties);
@@ -77950,6 +78145,8 @@ int main() {
   RunTest("TestBooleanCombinePlanarIntersectionAcceptsCompoundOperand", TestBooleanCombinePlanarIntersectionAcceptsCompoundOperand);
   RunTest("TestBooleanCombinePlanarDifferenceAcceptsGapSeparatedXorCompound", TestBooleanCombinePlanarDifferenceAcceptsGapSeparatedXorCompound);
   RunTest("TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound", TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound);
+  RunTest("TestBooleanCombinePlanarUnionAllowsNonManifoldEdgeOnlyTouchingCubes", TestBooleanCombinePlanarUnionAllowsNonManifoldEdgeOnlyTouchingCubes);
+  RunTest("TestBooleanCombinePlanarSymmetricDifferenceAllowsSingleShellXor", TestBooleanCombinePlanarSymmetricDifferenceAllowsSingleShellXor);
   RunTest("TestBooleanCombinePlanarXorStillRefusesCompoundOperand", TestBooleanCombinePlanarXorStillRefusesCompoundOperand);
   RunTest("TestBooleanCombinePlanarUnionAcceptsCompoundOperand", TestBooleanCombinePlanarUnionAcceptsCompoundOperand);
   RunTest("TestBooleanCombinePlanarUnionAcceptsCompoundOperandBridgedIntoOneLump", TestBooleanCombinePlanarUnionAcceptsCompoundOperandBridgedIntoOneLump);
@@ -78328,6 +78525,7 @@ int main() {
   RunTest("sweep_tests::TestPipeThickWalledExactAnnularCylinderAndDegenerateCases", sweep_tests::TestPipeThickWalledExactAnnularCylinderAndDegenerateCases);
   RunTest("sweep_tests::TestScrewThreadExactHelicalSweepVolumeAndGeometry", sweep_tests::TestScrewThreadExactHelicalSweepVolumeAndGeometry);
   RunTest("sweep_tests::TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads", sweep_tests::TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads);
+  RunTest("sweep_tests::TestScrewThreadManyTurnsHasCorrectExactVolumeSign", sweep_tests::TestScrewThreadManyTurnsHasCorrectExactVolumeSign);
   RunTest("TestSurfaceExtendLinearIsExactlyStraightAndG1AtTheJoin", TestSurfaceExtendLinearIsExactlyStraightAndG1AtTheJoin);
   RunTest("TestSurfaceExtendLinearDiffersFromSmoothExtend", TestSurfaceExtendLinearDiffersFromSmoothExtend);
   RunTest("TestSurfaceExtendLinearBothEndsBothDirectionsAndRational", TestSurfaceExtendLinearBothEndsBothDirectionsAndRational);
