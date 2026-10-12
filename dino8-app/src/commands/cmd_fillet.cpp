@@ -2631,6 +2631,48 @@ class FilletEdgeCommand : public Command {
           // box under a label that implies success.
           const double removed = std::fabs(obj_mesh->Volume() - combined.Volume());
           const double expected_removed = std::fabs(cutter.Volume());
+          // A second, independent degeneracy check, found by this exact
+          // adversarial case (a radius well beyond what a 2-unit-tall
+          // edge can resolve): the ratio check just above only catches
+          // "removed" and "expected_removed" degrading TOGETHER (the
+          // 1e6-scale quantization case its own comment documents) - it
+          // says nothing when `cutter` itself is already a degenerate
+          // sliver, which is exactly what happens here. The offset-
+          // surface intersection in BuildFillet can still return SOME
+          // spine for a geometrically infeasible radius (the offset
+          // surfaces cross well past where the real edge's own faces
+          // end), producing a cutter whose own volume is driven to
+          // numerical noise (confirmed directly: radius 5 on this
+          // fixture's 2-unit edge measured `cutter.Volume()` at ~3.6e-7,
+          // against a real quarter-circle cross-section's own nominal
+          // `(1 - pi/4) * radius^2 * spine_length` of ~53.6) - so the
+          // ratio check above (comparing two already-degenerate numbers)
+          // passed vacuously, and the mesh "fell back" to the unfilleted
+          // box relabeled as a success. `nominal_removed` is that same
+          // closed-form estimate, scale-correct for any legitimate
+          // radius (including a genuinely tiny one, like this file's own
+          // radius=0.02 case elsewhere, which this check does not
+          // affect: a real cutter there lands close to its own, much
+          // smaller, nominal value) - `expected_removed` landing more
+          // than 1000x below it, rather than merely below `removed`, is
+          // the real tell that the cutter itself never represented a
+          // physically meaningful fillet at this radius.
+          double spine_len = 0.0;
+          for (size_t i = 1; i < spine.size(); ++i) spine_len += spine[i].DistanceTo(spine[i - 1]);
+          // The smaller of the two cross-section dimensions, conservatively
+          // (an asymmetric Distance1/Distance2 chamfer/conic's own
+          // cross-section area scales with BOTH distances, not radius_
+          // alone - using the smaller one keeps this check from spuriously
+          // firing on a legitimate, very lopsided distance1/distance2
+          // pair, while still catching the case both distances collapsed
+          // the same way this adversarial fixture's symmetric radius did).
+          const double eff_r = std::min(radius_, distance2_.value_or(radius_));
+          const double nominal_removed = (1.0 - ON_PI / 4.0) * eff_r * eff_r * std::max(spine_len, 1e-9);
+          if (nominal_removed > 1e-9 && expected_removed < 1e-3 * nominal_removed) {
+            ctx.Warn(label + ": the offset surfaces do not meet (radius " + FormatNumber(radius_) +
+                      " is too large for this edge's own adjacent faces to resolve a real fillet - the mesh fallback's own cutter degenerated to near-zero volume instead of a genuine cut)");
+            return;
+          }
           if (expected_removed > 1e-9 && removed < 0.1 * expected_removed) {
             ctx.Warn(label + ": could not build a watertight result at this object's coordinate scale (both the exact B-rep trim and the mesh fallback came back with a gap - see adversarial_corpus_notes.md)");
             return;
