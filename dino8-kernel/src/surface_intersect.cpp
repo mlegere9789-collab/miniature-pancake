@@ -581,6 +581,71 @@ ON_NurbsCurve InterpolateCubic(const std::vector<ON_3dPoint>& in_pts, std::vecto
   return curve;
 }
 
+namespace {
+// One coarse global search over `n` samples of `curve`, each mapped to its
+// own closest point on `surface`, followed by an alternating-projection
+// local polish - the curve/surface sibling of `RefineMinDistance()`
+// (curve.cpp, curve/curve case).
+void RefineMinDistanceCurveSurface(const NurbsCurve& curve, const NurbsSurface& surface, int n, double& best_dist,
+                                    double& best_t, Point2d& best_uv) {
+  const Interval dom = curve.Domain();
+  best_dist = std::numeric_limits<double>::max();
+  for (int i = 0; i <= n; ++i) {
+    const double t = dom.min + (dom.max - dom.min) * i / n;
+    const Point3d p = curve.PointAt(t);
+    const Point2d uv = surface.ClosestPointParameter(p);
+    const double d = p.DistanceTo(surface.PointAt(uv.x, uv.y));
+    if (d < best_dist) {
+      best_dist = d;
+      best_t = t;
+      best_uv = uv;
+    }
+  }
+  for (int iter = 0; iter < 30; ++iter) {
+    const double new_t = curve.ClosestPointParameter(surface.PointAt(best_uv.x, best_uv.y));
+    const Point3d new_p = curve.PointAt(new_t);
+    const Point2d new_uv = surface.ClosestPointParameter(new_p);
+    const double new_dist = new_p.DistanceTo(surface.PointAt(new_uv.x, new_uv.y));
+    if (new_dist >= best_dist - 1e-15) break;
+    best_dist = new_dist;
+    best_t = new_t;
+    best_uv = new_uv;
+  }
+}
+}  // namespace
+
+Result NurbsCurve::MinDistanceTo(const NurbsSurface& surface, double tolerance, double& out_distance,
+                                  double* out_t, Point2d* out_uv) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::MinDistanceTo: tolerance must be positive");
+  }
+  int n = std::max(SuggestedSamples(tolerance), 20);
+  double dist, t;
+  Point2d uv;
+  RefineMinDistanceCurveSurface(*this, surface, n, dist, t, uv);
+  for (int level = 0; level < 20; ++level) {
+    const int next_n = n * 2;
+    double next_dist, next_t;
+    Point2d next_uv;
+    RefineMinDistanceCurveSurface(*this, surface, next_n, next_dist, next_t, next_uv);
+    const bool converged = std::fabs(next_dist - dist) <= tolerance;
+    n = next_n;
+    dist = next_dist;
+    t = next_t;
+    uv = next_uv;
+    if (converged) {
+      out_distance = dist;
+      if (out_t) *out_t = t;
+      if (out_uv) *out_uv = uv;
+      return Result::Ok;
+    }
+  }
+  out_distance = dist;
+  if (out_t) *out_t = t;
+  if (out_uv) *out_uv = uv;
+  return Result::Failed;
+}
+
 Result NurbsCurve::OffsetOnSurfaceNormal(const NurbsSurface& surface, double distance, NurbsCurve& out,
                                           int sample_count) const {
   if (!ON_IsValid(distance)) {
