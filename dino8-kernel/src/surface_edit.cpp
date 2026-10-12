@@ -450,6 +450,137 @@ Result NurbsSurface::ChangeSeam(int direction, double t) {
   return surface_.ChangeSurfaceSeam(direction, t) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsSurface::ReparameterizeRational(int direction, double shape_factor, NurbsSurface& out) const {
+  if (direction != 0 && direction != 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::ReparameterizeRational: direction must be 0 (U) or 1 (V)");
+  }
+  if (!ON_IsValid(shape_factor) || !(shape_factor > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::ReparameterizeRational: shape_factor must "
+        "be a finite, positive number");
+  }
+  if (shape_factor == 1.0) {
+    out = *this;
+    return Result::NoOpAlreadySatisfied;
+  }
+  if (surface_.IsPeriodic(direction)) return Result::Failed;
+
+  ON_NurbsSurface ns = surface_;
+  const int p = ns.Degree(direction);
+
+  // Decompose `direction` to full (degree p) multiplicity at every
+  // interior knot - the surface-level equivalent of
+  // ON_NurbsCurve::MakePiecewiseBezier(), which has no direct
+  // ON_NurbsSurface counterpart. Collect every distinct knot value and
+  // its own current multiplicity FIRST (inserting by VALUE, like
+  // InsertKnotAt() above already does, is safe regardless of visit
+  // order - each insertion only shifts the INDEX of later knots, never
+  // their value).
+  {
+    std::vector<double> distinct;
+    std::vector<int> mult;
+    const int kc = ns.KnotCount(direction);
+    int i = 0;
+    while (i < kc) {
+      const double v = ns.Knot(direction, i);
+      int m = 1;
+      while (i + m < kc && ns.Knot(direction, i + m) == v) ++m;
+      distinct.push_back(v);
+      mult.push_back(m);
+      i += m;
+    }
+    for (size_t k = 1; k + 1 < distinct.size(); ++k) {
+      // ON_NurbsSurface::InsertKnot()'s own `knot_multiplicity` is the
+      // TOTAL target multiplicity at that knot value, not how many MORE
+      // to add on top of what is already there (confirmed directly
+      // against OpenNURBS' own `ON_InsertKnot()` source, which computes
+      // the actual insert count as `knot_multiplicity - <existing
+      // multiplicity found at that value>` - passing `p - mult[k]`
+      // here, as if it meant "how many more", silently inserted far
+      // fewer knots than intended on a real multi-span surface,
+      // caught by a direct before/after knot-array dump, not assumed
+      // correct from the header's own ambiguous comment).
+      if (mult[static_cast<size_t>(k)] < p && !ns.InsertKnot(direction, distinct[k], p)) return Result::Failed;
+    }
+  }
+
+  const int spans = ns.SpanCount(direction);
+  const double T0 = ns.Domain(direction)[0];
+  const double T1 = ns.Domain(direction)[1];
+  if (spans < 1 || !(T1 > T0)) return Result::Failed;
+
+  const int cv_dir = ns.CVCount(direction);
+  const int cv_other = ns.CVCount(1 - direction);
+
+  // Pure multiplicative weight SCALE per index along `direction` (not
+  // an absolute weight, since a surface's existing weight varies with
+  // the OTHER direction too) - see this method's own doc comment
+  // (surface.h) for why the identical per-span derivation
+  // `NurbsCurve::ReparameterizeRational()` already uses applies
+  // uniformly across every row/column of the other direction.
+  std::vector<double> scale(static_cast<size_t>(cv_dir), 1.0);
+  std::vector<double> breakpoint(static_cast<size_t>(spans + 1));
+  breakpoint[0] = T0;
+
+  const double c = shape_factor;
+  for (int s = 0; s < spans; ++s) {
+    const double t0 = ns.Knot(direction, s * p);
+    const double t1 = ns.Knot(direction, (s + 1) * p);
+    const double u_a = (t0 - T0) / (T1 - T0);
+    const double u_b = (t1 - T0) / (T1 - T0);
+    const double v_a = u_a / (c - (c - 1.0) * u_a);
+    const double v_b = u_b / (c - (c - 1.0) * u_b);
+    if (!(v_b > v_a)) return Result::Failed;  // shouldn't happen for a valid span and c > 0
+    const double denom_a = 1.0 + (c - 1.0) * v_a;
+    const double dudv_at_va = c / (denom_a * denom_a);
+    const double c_local = dudv_at_va * (v_b - v_a) / (u_b - u_a);
+
+    const int cv_base = s * p;
+    std::vector<double> raw_power(static_cast<size_t>(p + 1));
+    double power = 1.0;
+    for (int j = 0; j <= p; ++j) {
+      raw_power[static_cast<size_t>(j)] = power;
+      power *= c_local;
+    }
+    // Every span after the first shares its own first control index
+    // with the previous span's own last one - its own SCALE (not any
+    // one row's weight, which differs per row) must agree from both
+    // sides, so rescale this whole span uniformly to match.
+    double r_s = 1.0;
+    if (s > 0) r_s = scale[static_cast<size_t>(cv_base)] / raw_power[0];
+    for (int j = 0; j <= p; ++j) {
+      scale[static_cast<size_t>(cv_base + j)] = raw_power[static_cast<size_t>(j)] * r_s;
+    }
+    breakpoint[static_cast<size_t>(s + 1)] = T0 + v_b * (T1 - T0);
+  }
+
+  if (!ns.IsRational()) {
+    if (!ns.MakeRational()) return Result::Failed;
+  }
+  for (int k = 0; k < cv_dir; ++k) {
+    const double sc = scale[static_cast<size_t>(k)];
+    for (int o = 0; o < cv_other; ++o) {
+      const int i = (direction == 0) ? k : o;
+      const int j = (direction == 0) ? o : k;
+      ON_3dPoint pt;
+      ns.GetCV(i, j, pt);
+      const double w = ns.Weight(i, j) * sc;
+      const ON_4dPoint hpt(pt.x * w, pt.y * w, pt.z * w, w);
+      if (!ns.SetCV(i, j, hpt)) return Result::Failed;
+    }
+  }
+  for (int b = 0; b <= spans; ++b) {
+    for (int k = 0; k < p; ++k) {
+      if (!ns.SetKnot(direction, b * p + k, breakpoint[static_cast<size_t>(b)])) return Result::Failed;
+    }
+  }
+
+  if (!ns.IsValid()) return Result::Failed;
+  out.raw() = ns;
+  return Result::Ok;
+}
+
 Result NurbsSurface::Rebuild(int u_count, int v_count, int u_degree, int v_degree, NurbsSurface& out,
                              double* out_max_deviation, int u_samples, int v_samples) const {
   if (u_degree < 1 || v_degree < 1) {
