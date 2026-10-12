@@ -1186,6 +1186,65 @@ unsigned char Mesh::VertexAlphaAt(int vertex_index) const {
   return static_cast<unsigned char>(255 - mesh_.m_C[vertex_index].Alpha());
 }
 
+Result Mesh::SetFaceGroupNames(const std::vector<std::string>& names) {
+  if (static_cast<int>(names.size()) != mesh_.m_F.Count()) {
+    return Result::Failed;
+  }
+  face_group_names_ = names;
+  return Result::Ok;
+}
+
+bool Mesh::HasFaceGroupNames() const {
+  return mesh_.m_F.Count() > 0 && static_cast<int>(face_group_names_.size()) == mesh_.m_F.Count();
+}
+
+std::string Mesh::FaceGroupNameAt(int face_index) const {
+  if (!HasFaceGroupNames() || face_index < 0 || face_index >= static_cast<int>(face_group_names_.size())) {
+    return std::string();
+  }
+  return face_group_names_[static_cast<size_t>(face_index)];
+}
+
+Result Mesh::SetFaceMaterialNames(const std::vector<std::string>& names) {
+  if (static_cast<int>(names.size()) != mesh_.m_F.Count()) {
+    return Result::Failed;
+  }
+  face_material_names_ = names;
+  return Result::Ok;
+}
+
+bool Mesh::HasFaceMaterialNames() const {
+  return mesh_.m_F.Count() > 0 && static_cast<int>(face_material_names_.size()) == mesh_.m_F.Count();
+}
+
+std::string Mesh::FaceMaterialNameAt(int face_index) const {
+  if (!HasFaceMaterialNames() || face_index < 0 ||
+      face_index >= static_cast<int>(face_material_names_.size())) {
+    return std::string();
+  }
+  return face_material_names_[static_cast<size_t>(face_index)];
+}
+
+Result Mesh::SetFaceMaterialColors(const std::vector<Color>& colors) {
+  if (static_cast<int>(colors.size()) != mesh_.m_F.Count()) {
+    return Result::Failed;
+  }
+  face_material_colors_ = colors;
+  return Result::Ok;
+}
+
+bool Mesh::HasFaceMaterialColors() const {
+  return mesh_.m_F.Count() > 0 && static_cast<int>(face_material_colors_.size()) == mesh_.m_F.Count();
+}
+
+Color Mesh::FaceMaterialColorAt(int face_index) const {
+  if (!HasFaceMaterialColors() || face_index < 0 ||
+      face_index >= static_cast<int>(face_material_colors_.size())) {
+    return Color();
+  }
+  return face_material_colors_[static_cast<size_t>(face_index)];
+}
+
 Mesh Mesh::FlipNormals() const {
   Mesh result = *this;
   ON_Mesh& out = result.mesh_;
@@ -1366,6 +1425,15 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
     int vt_index = -1;
   };
   std::vector<std::vector<Corner>> faces;
+  // One group/material name per entry in `faces` above, carrying
+  // whichever `g`/`o`/`usemtl` line most recently appeared before that
+  // face's own `f` line (empty if none yet) - see SetFaceGroupNames()'s/
+  // SetFaceMaterialNames()'s own doc comments.
+  std::vector<std::string> face_groups;
+  std::vector<std::string> face_materials;
+  std::string current_group;
+  std::string current_material;
+  std::string mtllib_filename;
 
   std::string line;
   while (std::getline(in, line)) {
@@ -1373,7 +1441,23 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
     std::string tag;
     stream >> tag;
 
-    if (tag == "v") {
+    if (tag == "g" || tag == "o") {
+      std::string name;
+      stream >> name;  // empty if the line is bare "g"/"o" with no name
+      current_group = name;
+    } else if (tag == "usemtl") {
+      std::string name;
+      stream >> name;
+      current_material = name;
+    } else if (tag == "mtllib") {
+      // Only the first mtllib line is honored - genuinely multi-file
+      // material libraries are a disclosed, further narrowing (the
+      // common single-library case every exporter this kernel has
+      // actually seen uses).
+      if (mtllib_filename.empty()) {
+        stream >> mtllib_filename;
+      }
+    } else if (tag == "v") {
       double x, y, z;
       if (!(stream >> x >> y >> z)) {
         return Result::Failed;
@@ -1423,10 +1507,12 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
         return Result::Failed;
       }
       faces.push_back(std::move(corners));
+      face_groups.push_back(current_group);
+      face_materials.push_back(current_material);
     }
-    // Every other tag (comments, vn, g/o, mtllib/usemtl, s, ...) is
-    // silently skipped - this kernel only round-trips geometry (and, now,
-    // per-vertex texture coordinates).
+    // Every other tag (comments, vn, s, ...) is silently skipped - this
+    // kernel only round-trips geometry, per-vertex texture coordinates,
+    // and (as of g/o/usemtl/mtllib above) per-face group/material info.
   }
 
   // UV coverage is "complete" only if every declared vertex is referenced
@@ -1459,7 +1545,22 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
   Mesh result;
   ON_Mesh& raw = result.mesh_;
 
-  auto append_face = [&raw](const std::vector<int>& indices) { AppendPolygonFace(raw, indices); };
+  // A fan-triangulated n-gon's `n-2` resulting ON_MeshFace entries (see
+  // AppendPolygonFace() above) all inherit their one source `f` line's
+  // own single group/material - tracked here by how many NEW faces each
+  // call actually appended, not assumed to be exactly one, so this stays
+  // correct for both the <=4-corner and fan-triangulated cases alike.
+  std::vector<std::string> output_face_groups;
+  std::vector<std::string> output_face_materials;
+  auto append_face = [&](const std::vector<int>& indices, size_t face_line_index) {
+    const int before = raw.m_F.Count();
+    AppendPolygonFace(raw, indices);
+    const int added = raw.m_F.Count() - before;
+    for (int i = 0; i < added; ++i) {
+      output_face_groups.push_back(face_groups[face_line_index]);
+      output_face_materials.push_back(face_materials[face_line_index]);
+    }
+  };
 
   if (!coverage_complete) {
     // No usable UV data (or an uncovered vertex breaks it for everyone) -
@@ -1468,13 +1569,14 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
     for (const ON_3fPoint& position : positions) {
       raw.m_V.Append(position);
     }
-    for (const std::vector<Corner>& corners : faces) {
+    for (size_t face_line_index = 0; face_line_index < faces.size(); ++face_line_index) {
+      const std::vector<Corner>& corners = faces[face_line_index];
       std::vector<int> indices;
       indices.reserve(corners.size());
       for (const Corner& corner : corners) {
         indices.push_back(corner.v_index);
       }
-      append_face(indices);
+      append_face(indices, face_line_index);
     }
   } else {
     // Every vertex has at least one distinct UV value. A vertex with
@@ -1495,7 +1597,8 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
         output_uvs.push_back(texture_coords[static_cast<size_t>(vt_index)]);
       }
     }
-    for (const std::vector<Corner>& corners : faces) {
+    for (size_t face_line_index = 0; face_line_index < faces.size(); ++face_line_index) {
+      const std::vector<Corner>& corners = faces[face_line_index];
       std::vector<int> indices;
       indices.reserve(corners.size());
       for (const Corner& corner : corners) {
@@ -1511,9 +1614,79 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
           indices.push_back(variants[static_cast<size_t>(it - seen.begin())]);
         }
       }
-      append_face(indices);
+      append_face(indices, face_line_index);
     }
     result.SetTextureCoordinates(output_uvs);
+  }
+
+  if (std::any_of(output_face_groups.begin(), output_face_groups.end(),
+                   [](const std::string& s) { return !s.empty(); })) {
+    result.SetFaceGroupNames(output_face_groups);
+  }
+  bool have_face_materials = std::any_of(output_face_materials.begin(), output_face_materials.end(),
+                                          [](const std::string& s) { return !s.empty(); });
+  if (have_face_materials) {
+    result.SetFaceMaterialNames(output_face_materials);
+
+    // Resolve the referenced .mtl file (relative to THIS .obj's own
+    // directory, not the process's current one) into a name -> diffuse
+    // color map, then look each face's own already-recorded material
+    // name up in it - see LoadObj()'s own doc comment for the full
+    // "not an error if this doesn't resolve" contract.
+    std::map<std::string, Color> material_colors;
+    if (!mtllib_filename.empty()) {
+      // `mtllib_filename` itself may already be an absolute path (a
+      // POSIX leading '/' or '\\', or a Windows drive letter like
+      // "C:") - joining the .obj's own directory onto an already-
+      // absolute name would double it up into something that resolves
+      // nowhere, so only join when it's genuinely relative.
+      const bool already_absolute =
+          !mtllib_filename.empty() &&
+          (mtllib_filename[0] == '/' || mtllib_filename[0] == '\\' ||
+           (mtllib_filename.size() > 1 && mtllib_filename[1] == ':'));
+      const size_t last_slash = path.find_last_of("/\\");
+      const std::string mtl_path = (already_absolute || last_slash == std::string::npos)
+                                        ? mtllib_filename
+                                        : path.substr(0, last_slash + 1) + mtllib_filename;
+      std::ifstream mtl_in(mtl_path);
+      std::string mtl_line;
+      std::string current_mtl_name;
+      while (std::getline(mtl_in, mtl_line)) {
+        std::istringstream mtl_stream(mtl_line);
+        std::string mtl_tag;
+        mtl_stream >> mtl_tag;
+        if (mtl_tag == "newmtl") {
+          mtl_stream >> current_mtl_name;
+        } else if (mtl_tag == "Kd" && !current_mtl_name.empty()) {
+          double kd_r = 0.0, kd_g = 0.0, kd_b = 0.0;
+          if (mtl_stream >> kd_r >> kd_g >> kd_b) {
+            auto to_byte = [](double v) -> unsigned char {
+              if (v < 0.0) return 0;
+              if (v > 1.0) return 255;
+              return static_cast<unsigned char>(v * 255.0 + 0.5);
+            };
+            material_colors[current_mtl_name] = Color{to_byte(kd_r), to_byte(kd_g), to_byte(kd_b)};
+          }
+        }
+      }
+    }
+    if (!material_colors.empty()) {
+      std::vector<Color> output_face_material_colors;
+      output_face_material_colors.reserve(output_face_materials.size());
+      bool any_resolved = false;
+      for (const std::string& name : output_face_materials) {
+        const auto it = material_colors.find(name);
+        if (it != material_colors.end()) {
+          output_face_material_colors.push_back(it->second);
+          any_resolved = true;
+        } else {
+          output_face_material_colors.push_back(Color());
+        }
+      }
+      if (any_resolved) {
+        result.SetFaceMaterialColors(output_face_material_colors);
+      }
+    }
   }
 
   out_mesh = std::move(result);
