@@ -430,7 +430,10 @@ c2check "degree 5, 6 control points, non-rational, open" "Blend's G2 output is t
 c2check "ArcBlend: two-arc tangent blend created (joint tangent match 1)" "ArcBlend found a genuine two-arc biarc, tangent-verified"
 c2check "Blend: G3 (G3) blend curve created" "Blend Continuity=G3 reaches kernel::NurbsCurve::BlendCurves()'s own continuity=3 path - the genuine new capability neither BlendCrv nor Blend could build at all before this wiring (both used to cap out at G2)"
 c2check "degree 7, 8 control points, non-rational, open" "Blend's G3 output is the expected degree-7 (2*3+1), 8-control-point septic Bezier-basis curve - one degree past the G2 quintic case just above, matching position/tangent/curvature AND third derivative at both ends"
-c2check "Domain: 1 curve(s) now have domain 0 to 5" "Domain actually set a new domain, not just reported it"
+c2check "Domain: 1 object(s) now have domain 0 to 5" "Domain actually set a new domain, not just reported it"
+c2check "Surface 177 domain: U 0 to 5, V 0 to 5" "Domain now reaches a surface too (NurbsSurface::SetDomain), not just curves, and the typed range applies to both U and V"
+c2check "Reparameterize: 1 object(s) now have domain 0 to 1" "Reparameterize now reaches a surface too, undoing the Domain fixture's own 0..5 move back to 0..1"
+c2check "Surface 177 domain: U 0 to 1, V 0 to 1" "the surface's domain genuinely moved back to 0..1, not just the printed count"
 c2check "ModifyRadius: 1 curve(s) now have radius 12" "ModifyRadius rebuilt the circle in place"
 # Message format changed: Match now calls the kernel's own
 # NurbsCurve::MatchEnd() (curve.cpp) instead of a hand-rolled CV move, and
@@ -458,7 +461,7 @@ else
   echo "ok   RemoveSymmetry genuinely broke the live link (copy did NOT follow the source's post-removal move)"
 fi
 c2check "ConvertToBeziers: 4 Bezier span(s)" "ConvertToBeziers now decomposes a surface too (NurbsSurface::DecomposeToBeziers), not just curves - a degree-1 3x3-control-point Plane's 2x2 spans become exactly 4 Bezier patches"
-c2check "^ok   expect_objects 205" "curve-tools script produced the expected object count"
+c2check "^ok   expect_objects 206" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/exchange_script.txt" > "$TMPW/exchange_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
