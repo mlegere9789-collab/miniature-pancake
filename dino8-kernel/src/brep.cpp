@@ -672,6 +672,112 @@ double Brep::Area() const {
   return total;
 }
 
+Brep::OrientedBox Brep::GetOrientedBoundingBox() const {
+  const int face_count = brep_.m_F.Count();
+  if (face_count == 0) {
+    throw std::runtime_error("dino8::kernel::Brep::GetOrientedBoundingBox: this Brep has no faces");
+  }
+
+  // Pool every face's own densely-sampled grid points into ONE combined
+  // mean/covariance (not decided per-face and merged), the same PCA
+  // construction NurbsCurve::GetOrientedBoundingBox()/NurbsSurface::
+  // GetOrientedBoundingBox() already use, generalized across faces.
+  Point3d mean(0, 0, 0);
+  std::vector<Point3d> samples;
+  std::vector<const ON_NurbsSurface*> surfaces(static_cast<size_t>(face_count), nullptr);
+  for (int i = 0; i < face_count; ++i) {
+    const ON_BrepFace& face = brep_.m_F[i];
+    const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
+    if (!s) {
+      throw std::runtime_error("dino8::kernel::Brep::GetOrientedBoundingBox: face " + std::to_string(i) +
+                                " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
+    }
+    surfaces[static_cast<size_t>(i)] = s;
+
+    const ON_Interval du = s->Domain(0), dv = s->Domain(1);
+    const int nu = std::max(20, 3 * s->CVCount(0));
+    const int nv = std::max(20, 3 * s->CVCount(1));
+    const bool closed_u = s->IsClosed(0) != 0, closed_v = s->IsClosed(1) != 0;
+    const int samples_u = closed_u ? nu : nu + 1;
+    const int samples_v = closed_v ? nv : nv + 1;
+    for (int a = 0; a < samples_u; ++a) {
+      const double u = du.Min() + (du.Max() - du.Min()) * a / nu;
+      for (int b = 0; b < samples_v; ++b) {
+        const double v = dv.Min() + (dv.Max() - dv.Min()) * b / nv;
+        const Point3d p = s->PointAt(u, v);
+        samples.push_back(p);
+        mean = mean + Vector3d(p);
+      }
+    }
+  }
+  mean = Point3d(Vector3d(mean) / static_cast<double>(samples.size()));
+
+  double cxx = 0, cyy = 0, czz = 0, cxy = 0, cyz = 0, cxz = 0;
+  for (const Point3d& p : samples) {
+    const Vector3d d = p - mean;
+    cxx += d.x * d.x;
+    cyy += d.y * d.y;
+    czz += d.z * d.z;
+    cxy += d.x * d.y;
+    cyz += d.y * d.z;
+    cxz += d.x * d.z;
+  }
+
+  std::array<Vector3d, 3> axes;
+  double e[3];
+  Vector3d v[3];
+  if (ON_Sym3x3EigenSolver(cxx, cyy, czz, cxy, cyz, cxz, &e[0], v[0], &e[1], v[1], &e[2], v[2])) {
+    axes = {v[0], v[1], v[2]};
+    for (Vector3d& a : axes) a.Unitize();
+    axes[2] = ON_CrossProduct(axes[0], axes[1]);
+    axes[2].Unitize();
+  } else {
+    // A genuinely degenerate pooled covariance - any orthonormal basis is
+    // an equally valid PCA frame for a collapsed variance direction; the
+    // control-point projection step below still gives a safe,
+    // correctly-sized box either way.
+    axes = {Vector3d(1, 0, 0), Vector3d(0, 1, 0), Vector3d(0, 0, 1)};
+  }
+
+  // Every face's own CONTROL POINTS - NOT the sampled points above - so
+  // the box this returns provably contains the whole Brep (the
+  // convex-hull property, per face), never merely the sampled
+  // approximation of it.
+  double lo[3] = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
+                  std::numeric_limits<double>::max()};
+  double hi[3] = {-std::numeric_limits<double>::max(), -std::numeric_limits<double>::max(),
+                   -std::numeric_limits<double>::max()};
+  const Point3d origin = samples[0];
+  for (int i = 0; i < face_count; ++i) {
+    const ON_NurbsSurface* s = surfaces[static_cast<size_t>(i)];
+    for (int a = 0; a < s->CVCount(0); ++a) {
+      for (int b = 0; b < s->CVCount(1); ++b) {
+        ON_3dPoint cv;
+        if (!s->GetCV(a, b, cv)) {
+          throw std::runtime_error("dino8::kernel::Brep::GetOrientedBoundingBox: GetCV failed on face " +
+                                    std::to_string(i));
+        }
+        const Vector3d rel = Point3d(cv) - origin;
+        for (int k = 0; k < 3; ++k) {
+          const double proj = ON_DotProduct(rel, axes[static_cast<size_t>(k)]);
+          lo[k] = std::min(lo[k], proj);
+          hi[k] = std::max(hi[k], proj);
+        }
+      }
+    }
+  }
+
+  OrientedBox box;
+  box.axes = axes;
+  Point3d center = origin;
+  for (int k = 0; k < 3; ++k) {
+    box.half_extents[static_cast<size_t>(k)] = (hi[k] - lo[k]) / 2.0;
+    center = center + axes[static_cast<size_t>(k)] * ((hi[k] + lo[k]) / 2.0);
+  }
+  box.center = center;
+  return box;
+}
+
 std::vector<int> Brep::EdgesOfVertex(int vertex_index) const {
   if (vertex_index < 0 || vertex_index >= brep_.m_V.Count()) {
     throw std::out_of_range("dino8::kernel::Brep::EdgesOfVertex: vertex_index " +

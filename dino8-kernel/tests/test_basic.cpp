@@ -1842,6 +1842,132 @@ void TestCurveGetOrientedBoundingBox() {
   }
 }
 
+void TestSurfaceGetOrientedBoundingBox() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A flat 20 (X) x 10 (Y) bilinear rectangle in the world XY plane: one
+  // axis should match X with half-extent close to 10, one should match Y
+  // with half-extent close to 5, and the third (Z) should have half-extent
+  // exactly 0 (flat) - the surface-level counterpart of
+  // TestCurveGetOrientedBoundingBox's own non-square-rectangle case.
+  // FromControlGrid()'s own `idx = u * v_count + v` indexing: CV(0,0),
+  // CV(0,1), CV(1,0), CV(1,1) in that order.
+  const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 10, 0), Point3d(20, 0, 0), Point3d(20, 10, 0)};
+  const NurbsSurface rect = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const NurbsSurface::OrientedBox box = rect.GetOrientedBoundingBox();
+
+  auto find_best = [&](Vector3d target) {
+    int best_k = -1;
+    double best_d = -1;
+    for (int k = 0; k < 3; ++k) {
+      const double d = std::abs(ON_DotProduct(box.axes[static_cast<size_t>(k)], target));
+      if (d > best_d) { best_d = d; best_k = k; }
+    }
+    return best_k;
+  };
+  const int xi = find_best(Vector3d(1, 0, 0));
+  const int yi = find_best(Vector3d(0, 1, 0));
+  const int zi = find_best(Vector3d(0, 0, 1));
+  Check(xi != yi && yi != zi && xi != zi,
+        "Surface GetOrientedBoundingBox: the flat rectangle's 3 axes genuinely match 3 distinct world directions");
+  Check(std::abs(box.half_extents[static_cast<size_t>(xi)] - 10.0) < 0.1,
+        "Surface GetOrientedBoundingBox: the 20-wide rectangle's X-matching axis has half-extent close to 10");
+  Check(std::abs(box.half_extents[static_cast<size_t>(yi)] - 5.0) < 0.1,
+        "Surface GetOrientedBoundingBox: the 10-tall rectangle's Y-matching axis has half-extent close to 5");
+  Check(box.half_extents[static_cast<size_t>(zi)] < 1e-6,
+        "Surface GetOrientedBoundingBox: the flat rectangle's Z-matching axis has half-extent exactly 0");
+  Check(box.center.DistanceTo(Point3d(10, 5, 0)) < 1e-3,
+        "Surface GetOrientedBoundingBox: the rectangle's own center is its real geometric center (10,5,0)");
+
+  // Safety invariant, independent of the measured closeness above: every
+  // control point must lie within the returned box along every axis (the
+  // convex-hull guarantee this method's own doc comment makes).
+  for (int i = 0; i < rect.CVCountU(); ++i) {
+    for (int j = 0; j < rect.CVCountV(); ++j) {
+      const Vector3d rel = rect.ControlPointAt(i, j) - box.center;
+      for (int k = 0; k < 3; ++k) {
+        const double proj = std::abs(ON_DotProduct(rel, box.axes[static_cast<size_t>(k)]));
+        Check(proj <= box.half_extents[static_cast<size_t>(k)] + 1e-9,
+              "Surface GetOrientedBoundingBox: every control point genuinely lies within the returned box along every axis");
+      }
+    }
+  }
+}
+
+void TestBrepGetOrientedBoundingBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A 4 (X) x 6 (Y) x 8 (Z) axis-aligned box, built from 6 separate planar
+  // faces (Box(), not FromPlanarFaces()) - no single face has an obvious
+  // symmetry of its own, but the COMBINED shape does: this exercises the
+  // "pool every face's own samples into ONE covariance" claim in this
+  // method's own doc comment, not just a single already-symmetric surface.
+  const Brep box = Brep::Box(0, 0, 0, 4, 6, 8);
+  const Brep::OrientedBox obox = box.GetOrientedBoundingBox();
+
+  auto find_best = [&](Vector3d target) {
+    int best_k = -1;
+    double best_d = -1;
+    for (int k = 0; k < 3; ++k) {
+      const double d = std::abs(ON_DotProduct(obox.axes[static_cast<size_t>(k)], target));
+      if (d > best_d) { best_d = d; best_k = k; }
+    }
+    return best_k;
+  };
+  const int xi = find_best(Vector3d(1, 0, 0));
+  const int yi = find_best(Vector3d(0, 1, 0));
+  const int zi = find_best(Vector3d(0, 0, 1));
+  Check(xi != yi && yi != zi && xi != zi, "Brep GetOrientedBoundingBox: the box's 3 axes genuinely match 3 distinct world directions");
+  Check(std::abs(obox.half_extents[static_cast<size_t>(xi)] - 2.0) < 0.05,
+        "Brep GetOrientedBoundingBox: the 4-wide box's X-matching axis has half-extent close to 2");
+  Check(std::abs(obox.half_extents[static_cast<size_t>(yi)] - 3.0) < 0.05,
+        "Brep GetOrientedBoundingBox: the 6-deep box's Y-matching axis has half-extent close to 3");
+  Check(std::abs(obox.half_extents[static_cast<size_t>(zi)] - 4.0) < 0.05,
+        "Brep GetOrientedBoundingBox: the 8-tall box's Z-matching axis has half-extent close to 4");
+  Check(obox.center.DistanceTo(Point3d(2, 3, 4)) < 0.05,
+        "Brep GetOrientedBoundingBox: the box's own center is its real geometric center (2,3,4)");
+
+  // Safety invariant: every control point of every face must lie within
+  // the returned box along every axis, the same convex-hull guarantee the
+  // curve/surface versions already carry, checked here directly against
+  // the raw ON_Brep rather than assumed.
+  const ON_Brep& raw = box.raw();
+  for (int fi = 0; fi < raw.m_F.Count(); ++fi) {
+    const ON_NurbsSurface* s = ON_NurbsSurface::Cast(raw.m_F[fi].SurfaceOf());
+    Check(s != nullptr, "Brep GetOrientedBoundingBox test: every Box() face is backed by an ON_NurbsSurface");
+    for (int a = 0; a < s->CVCount(0); ++a) {
+      for (int b = 0; b < s->CVCount(1); ++b) {
+        ON_3dPoint cv;
+        Check(s->GetCV(a, b, cv) != 0, "Brep GetOrientedBoundingBox test: GetCV succeeds on every Box() face control point");
+        const Vector3d rel = Point3d(cv) - obox.center;
+        for (int k = 0; k < 3; ++k) {
+          const double proj = std::abs(ON_DotProduct(rel, obox.axes[static_cast<size_t>(k)]));
+          Check(proj <= obox.half_extents[static_cast<size_t>(k)] + 1e-9,
+                "Brep GetOrientedBoundingBox: every face control point genuinely lies within the returned box along every axis");
+        }
+      }
+    }
+  }
+
+  // A Brep with no faces at all refuses outright rather than returning a
+  // meaningless default box - the same "no well-defined box for a
+  // genuinely empty input" contract GetTightBoundingBox()'s own "no face
+  // produced any usable box" case carries, made an explicit, immediate
+  // throw here instead of a fallback chain.
+  bool threw = false;
+  try {
+    Brep empty;
+    empty.GetOrientedBoundingBox();
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  Check(threw, "Brep GetOrientedBoundingBox throws on a Brep with no faces");
+}
+
 void TestCurveGetTightBoundingBoxOverload() {
   using dino8::kernel::BoundingBox;
   using dino8::kernel::NurbsCurve;
@@ -76578,6 +76704,8 @@ int main() {
   RunTest("TestCurveMinDistanceToSurface", TestCurveMinDistanceToSurface);
   RunTest("TestSurfaceMinDistanceTo", TestSurfaceMinDistanceTo);
   RunTest("TestCurveGetOrientedBoundingBox", TestCurveGetOrientedBoundingBox);
+  RunTest("TestSurfaceGetOrientedBoundingBox", TestSurfaceGetOrientedBoundingBox);
+  RunTest("TestBrepGetOrientedBoundingBox", TestBrepGetOrientedBoundingBox);
   RunTest("TestCurveGetTightBoundingBoxOverload", TestCurveGetTightBoundingBoxOverload);
   RunTest("TestCurveKnotAt", TestCurveKnotAt);
   RunTest("TestCurveControlPointAt", TestCurveControlPointAt);

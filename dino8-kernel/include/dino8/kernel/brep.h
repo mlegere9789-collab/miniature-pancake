@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -2713,6 +2714,44 @@ class Brep {
   // (including a genuinely empty Brep) AND OpenNURBS' own whole-Brep
   // fallback also fails.
   BoundingBox GetTightBoundingBox() const;
+
+  // An oriented bounding box - PARITY_MAP.md's "Mass properties & spatial
+  // queries" category, "Oriented / CPlane-aligned / minimal-volume
+  // bounding box"'s own remaining named gap ("surface/B-rep oriented
+  // bounding boxes remain unattempted"), the Brep-level counterpart of
+  // NurbsCurve::GetOrientedBoundingBox()/NurbsSurface::
+  // GetOrientedBoundingBox() (this category's own prior two rounds): a
+  // box exactly `2 * half_extents[k]` long along each `axes[k]` (unit,
+  // mutually orthogonal, right-handed), centered at `center`. The axes
+  // come from PCA over every face's own densely-sampled points, pooled
+  // across the whole Brep into one combined covariance (not decided
+  // face-by-face and then merged, so a Brep whose individual faces have
+  // no obvious symmetry of their own but whose COMBINED shape does - e.g.
+  // a box built from 6 separate planar faces - still finds that combined
+  // symmetry). `half_extents`/`center` are the exact min/max projection
+  // of every face's own CONTROL POINTS (not the sampled points) onto each
+  // chosen axis, the same convex-hull safety argument the curve/surface
+  // versions already rely on, pooled the same way. Falls back to the
+  // world X/Y/Z axes on a genuinely degenerate pooled covariance, same as
+  // the curve/surface versions. Honestly scoped the same way
+  // GetTightBoundingBox() already is: a trimmed face's own CONTROL
+  // POINTS can genuinely extend beyond its trim boundary (the same
+  // "surface genuinely extends beyond its own trim" real-world case
+  // GetTightBoundingBox()'s own doc comment discloses), so this can
+  // overshoot a heavily-trimmed Brep's true extent - always safe (never
+  // excludes part of the solid), not always the tightest achievable
+  // bound.
+  //
+  // Throws std::runtime_error if this Brep has no faces, or if any
+  // face's surface is not backed by an ON_NurbsSurface (every face this
+  // kernel builds should be - the same precondition Volume()/Area()
+  // already enforce).
+  struct OrientedBox {
+    Point3d center;
+    std::array<Vector3d, 3> axes;
+    std::array<double, 3> half_extents{};
+  };
+  OrientedBox GetOrientedBoundingBox() const;
 
   // Tessellates each face into a triangle mesh via NurbsSurface's grid
   // tessellator (see its comment for why this doesn't go through

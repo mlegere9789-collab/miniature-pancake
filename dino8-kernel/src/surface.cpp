@@ -862,6 +862,96 @@ Result NurbsSurface::MakePeriodicExact(int direction) {
 
 bool NurbsSurface::IsPlanar(double tolerance) const { return surface_.IsPlanar(nullptr, tolerance); }
 
+NurbsSurface::OrientedBox NurbsSurface::GetOrientedBoundingBox() const {
+  const int cv_u = CVCountU();
+  const int cv_v = CVCountV();
+  const int nu = std::max(20, 3 * cv_u);
+  const int nv = std::max(20, 3 * cv_v);
+
+  // Even (u, v) grid sampling for the PCA covariance - dropping the final
+  // row/column in whichever direction is closed, the same "don't
+  // double-count the shared seam" fix NurbsCurve::GetOrientedBoundingBox()
+  // already applies, generalized to two independent directions here.
+  const Interval du = Domain(0), dv = Domain(1);
+  const bool closed_u = IsClosed(0), closed_v = IsClosed(1);
+  const int samples_u = closed_u ? nu : nu + 1;
+  const int samples_v = closed_v ? nv : nv + 1;
+  std::vector<double> us(static_cast<size_t>(samples_u)), vs(static_cast<size_t>(samples_v));
+  for (int i = 0; i < samples_u; ++i) us[static_cast<size_t>(i)] = du.min + (du.max - du.min) * i / nu;
+  for (int j = 0; j < samples_v; ++j) vs[static_cast<size_t>(j)] = dv.min + (dv.max - dv.min) * j / nv;
+
+  Point3d mean(0, 0, 0);
+  std::vector<Point3d> samples;
+  samples.reserve(static_cast<size_t>(samples_u) * static_cast<size_t>(samples_v));
+  for (double u : us) {
+    for (double v : vs) {
+      const Point3d p = PointAt(u, v);
+      samples.push_back(p);
+      mean = mean + Vector3d(p);
+    }
+  }
+  mean = Point3d(Vector3d(mean) / static_cast<double>(samples.size()));
+
+  double cxx = 0, cyy = 0, czz = 0, cxy = 0, cyz = 0, cxz = 0;
+  for (const Point3d& p : samples) {
+    const Vector3d d = p - mean;
+    cxx += d.x * d.x;
+    cyy += d.y * d.y;
+    czz += d.z * d.z;
+    cxy += d.x * d.y;
+    cyz += d.y * d.z;
+    cxz += d.x * d.z;
+  }
+
+  std::array<Vector3d, 3> axes;
+  double e[3];
+  Vector3d v[3];
+  if (ON_Sym3x3EigenSolver(cxx, cyy, czz, cxy, cyz, cxz, &e[0], v[0], &e[1], v[1], &e[2], v[2])) {
+    axes = {v[0], v[1], v[2]};
+    for (Vector3d& a : axes) a.Unitize();
+    // Make the frame right-handed, the same fix-up NurbsCurve::
+    // GetOrientedBoundingBox()/Mesh::GetOrientedBoundingBox() already apply.
+    axes[2] = ON_CrossProduct(axes[0], axes[1]);
+    axes[2].Unitize();
+  } else {
+    // A genuinely degenerate (e.g. flat planar surface) sampled covariance -
+    // any orthonormal basis is an equally valid PCA frame for a collapsed
+    // variance direction; the control-point projection step below still
+    // gives a safe, correctly-sized box either way.
+    axes = {Vector3d(1, 0, 0), Vector3d(0, 1, 0), Vector3d(0, 0, 1)};
+  }
+
+  // Every CONTROL POINT's own projection onto each axis - NOT the sampled
+  // points above - so the box this returns provably contains the whole
+  // surface (the convex-hull property), never merely the sampled
+  // approximation of it.
+  double lo[3] = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
+                  std::numeric_limits<double>::max()};
+  double hi[3] = {-std::numeric_limits<double>::max(), -std::numeric_limits<double>::max(),
+                   -std::numeric_limits<double>::max()};
+  const Point3d origin = ControlPointAt(0, 0);
+  for (int i = 0; i < cv_u; ++i) {
+    for (int j = 0; j < cv_v; ++j) {
+      const Vector3d rel = ControlPointAt(i, j) - origin;
+      for (int k = 0; k < 3; ++k) {
+        const double proj = ON_DotProduct(rel, axes[static_cast<size_t>(k)]);
+        lo[k] = std::min(lo[k], proj);
+        hi[k] = std::max(hi[k], proj);
+      }
+    }
+  }
+
+  OrientedBox box;
+  box.axes = axes;
+  Point3d center = origin;
+  for (int k = 0; k < 3; ++k) {
+    box.half_extents[static_cast<size_t>(k)] = (hi[k] - lo[k]) / 2.0;
+    center = center + axes[static_cast<size_t>(k)] * ((hi[k] + lo[k]) / 2.0);
+  }
+  box.center = center;
+  return box;
+}
+
 bool NurbsSurface::IsSphere(double tolerance) const { return surface_.IsSphere(nullptr, tolerance); }
 
 bool NurbsSurface::IsCylinder(double tolerance) const {
