@@ -387,6 +387,15 @@ Mesh OffsetSolid(const Mesh& solid, double distance, int sphere_divisions) {
   return eroded;
 }
 
+Mesh ShellViaOffsetSolid(const Mesh& solid, double thickness, int sphere_divisions) {
+  if (!std::isfinite(thickness) || !(thickness > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ShellViaOffsetSolid: thickness must be finite and strictly positive");
+  }
+  const Mesh inner = OffsetSolid(solid, -thickness, sphere_divisions);
+  return BooleanCombine(solid, inner, BooleanOp::Difference);
+}
+
 std::vector<Mesh> Decompose(const Mesh& mesh) {
   const std::vector<manifold::Manifold> pieces = ToManifold(mesh).Decompose();
   std::vector<Mesh> result;
