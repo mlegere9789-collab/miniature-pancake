@@ -2997,6 +2997,177 @@ void TestCurveFitLeastSquaresConstrainedRefit() {
                          "control-point count").c_str());
 }
 
+// PARITY_MAP's healing category, "Gap closing by edge re-trim / trim
+// refit": before this, `dino8-app`'s own `RefitTrimCommand`
+// (cmd_srfedit.cpp) implemented the real algorithm the simulation above
+// proves correct, but entirely at the app level with no kernel API at
+// all. `Brep::RefitTrim()`/`RefitEdgeTrims()` are the real thing, tested
+// against a genuine trimmed B-rep face this time, not a standalone curve.
+struct WavyTrimFixture {
+  dino8::kernel::Brep brep;
+  int face_index = -1;
+  int wavy_edge_index = -1;
+  int right_edge_index = -1;
+};
+
+WavyTrimFixture BuildWavyTrimFixture() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  WavyTrimFixture fixture;
+  ON_Brep& b = fixture.brep.raw();
+
+  // A flat unit square face whose (u, v) domain maps directly onto
+  // world (x, y) (z=0) - so a deviation measured in real 3D equals the
+  // same deviation measured directly in (u, v), making this fixture's
+  // own math easy to verify independently, by hand.
+  const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const int surface_index = b.AddSurface(new ON_NurbsSurface(surface.raw()));
+  fixture.face_index = b.NewFace(surface_index).m_face_index;
+  const int loop_index = b.NewLoop(ON_BrepLoop::outer, b.m_F[fixture.face_index]).m_loop_index;
+
+  const int v00 = b.NewVertex(Point3d(0, 0, 0), 0.0).m_vertex_index;
+  const int v10 = b.NewVertex(Point3d(1, 0, 0), 0.0).m_vertex_index;
+  const int v11 = b.NewVertex(Point3d(1, 1, 0), 0.0).m_vertex_index;
+  const int v01 = b.NewVertex(Point3d(0, 1, 0), 0.0).m_vertex_index;
+
+  auto add_straight_side = [&](int va, int vb, Point2d uv_a, Point2d uv_b) {
+    const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+    const int edge_index = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+    b.m_E[edge_index].m_tolerance = 0.0;
+    const int c2i = b.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+    ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    return edge_index;
+  };
+
+  // Bottom side: a WAVY, many-control-point 2D curve from (0,0) to
+  // (1,0) - amplitude only 0.001, geometrically almost a straight line
+  // already, but with far more control points than that shape needs.
+  // This is the one trim RefitTrim() below should genuinely simplify.
+  {
+    std::vector<Point3d> ctrl;
+    const int N = 10;
+    for (int i = 0; i < N; ++i) {
+      const double u = static_cast<double>(i) / (N - 1);
+      const double v = (i == 0 || i == N - 1) ? 0.0 : 0.001 * std::sin(i * 2.5);
+      ctrl.push_back(Point3d(u, v, 0));
+    }
+    const NurbsCurve wavy = NurbsCurve::FromControlPoints(ctrl, /*degree=*/3);
+    ON_NurbsCurve raw2d = wavy.raw();
+    raw2d.ChangeDimension(2);
+    const int c3i = b.AddEdgeCurve(new ON_LineCurve(Point3d(0, 0, 0), Point3d(1, 0, 0)));
+    fixture.wavy_edge_index = b.NewEdge(b.m_V[v00], b.m_V[v10], c3i).m_edge_index;
+    b.m_E[fixture.wavy_edge_index].m_tolerance = 0.0;
+    const int c2i = b.AddTrimCurve(new ON_NurbsCurve(raw2d));
+    ON_BrepTrim& trim = b.NewTrim(b.m_E[fixture.wavy_edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  }
+  fixture.right_edge_index = add_straight_side(v10, v11, Point2d(1, 0), Point2d(1, 1));
+  add_straight_side(v11, v01, Point2d(1, 1), Point2d(0, 1));
+  add_straight_side(v01, v00, Point2d(0, 1), Point2d(0, 0));
+
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+  return fixture;
+}
+
+void TestBrepRefitTrim() {
+  using dino8::kernel::Result;
+
+  WavyTrimFixture fixture = BuildWavyTrimFixture();
+  ON_Brep& b = fixture.brep.raw();
+  const int wavy_trim_index = b.m_E[fixture.wavy_edge_index].m_ti[0];
+  const int right_trim_index = b.m_E[fixture.right_edge_index].m_ti[0];
+
+  int original_cv_count = -1;
+  {
+    ON_NurbsCurve nc;
+    b.m_T[wavy_trim_index].GetNurbForm(nc);
+    original_cv_count = nc.CVCount();
+  }
+  Check(original_cv_count == 10, "the wavy trim fixture genuinely starts with 10 control points");
+
+  const Result r = fixture.brep.RefitTrim(wavy_trim_index, 0.01);
+  Check(r == Result::Ok, "RefitTrim succeeds on the wavy trim within a loose-enough tolerance");
+
+  int refit_cv_count = -1;
+  {
+    ON_NurbsCurve nc;
+    b.m_T[wavy_trim_index].GetNurbForm(nc);
+    refit_cv_count = nc.CVCount();
+  }
+  Check(refit_cv_count > 0 && refit_cv_count < original_cv_count,
+        "the refit trim genuinely has fewer control points than the original 10");
+
+  // Independent re-verification, NOT reusing RefitTrim's own internal
+  // deviation check: the true original trim was a wave of amplitude at
+  // most 0.001 around v=0, so the refit result - whatever its new
+  // control points are - must still stay within 0.011 (tolerance plus
+  // the original wave's own amplitude) of the straight line v=0 at
+  // every sampled u, by hand-derivable geometry.
+  {
+    double worst = 0.0;
+    for (int i = 0; i <= 200; ++i) {
+      const double t = b.m_T[wavy_trim_index].Domain().ParameterAt(static_cast<double>(i) / 200);
+      const ON_3dPoint uv = b.m_T[wavy_trim_index].PointAt(t);
+      worst = std::max(worst, std::fabs(uv.y));
+    }
+    Check(worst < 0.011,
+          "the refit trim's own real shape, independently re-sampled, stays within a "
+          "hand-derivable bound of the straight line it approximates");
+  }
+
+  Check(fixture.brep.RefitTrim(right_trim_index, 0.01) == Result::Failed,
+        "RefitTrim correctly refuses an already-minimal (2 control point, degree 1) straight trim");
+
+  // Argument validation.
+  bool threw = false;
+  try {
+    fixture.brep.RefitTrim(9999, 0.01);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "RefitTrim throws std::invalid_argument for an out-of-range trim_index");
+
+  threw = false;
+  try {
+    fixture.brep.RefitTrim(right_trim_index, -1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "RefitTrim throws std::invalid_argument for a non-positive tolerance");
+
+  // RefitEdgeTrims: a fresh fixture (the one above already mutated its
+  // own wavy trim), mirroring RefitTrimCommand's own per-edge loop -
+  // here each edge carries exactly 1 trim (a naked boundary), still a
+  // real exercise of the same aggregate-count loop a 2-trim interior
+  // edge would also take.
+  WavyTrimFixture fixture2 = BuildWavyTrimFixture();
+  int refit_count = -1, failed_count = -1;
+  fixture2.brep.RefitEdgeTrims(fixture2.wavy_edge_index, 0.01, &refit_count, &failed_count);
+  Check(refit_count == 1 && failed_count == 0,
+        "RefitEdgeTrims on the wavy edge reports exactly 1 refit and 0 failed, matching its "
+        "own single trim");
+
+  refit_count = -1;
+  failed_count = -1;
+  fixture2.brep.RefitEdgeTrims(fixture2.right_edge_index, 0.01, &refit_count, &failed_count);
+  Check(refit_count == 0 && failed_count == 1,
+        "RefitEdgeTrims on the already-minimal straight edge reports 0 refit and 1 failed");
+
+  threw = false;
+  try {
+    fixture2.brep.RefitEdgeTrims(9999, 0.01);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "RefitEdgeTrims throws std::invalid_argument for an out-of-range edge_index");
+}
+
 void TestCurveCurvature() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -7210,6 +7381,109 @@ void TestBooleanCombineGeneralCoplanarBoxes() {
   }
 }
 
+// Round 44 regression test: the SECOND, asymmetric shape of the `878ecdb`
+// coincident-boundary-curve regression `TestBooleanCombineGeneralCoplanarBoxes`
+// above exercises the SYMMETRIC (both-faces-same-extent) shape of. Found
+// while root-causing this engine's own "an edge is claimed by 3 or more
+// fragment loops" abort one level deeper than that fixture
+// (`TestRecognizePocketsBlindPocketRoundTripAndNegativeControls`'s own "a
+// boss raised out of the box's own top face" negative-control fixture,
+// reproduced here directly at the `BooleanCombineGeneral` level instead of
+// only indirectly through a different feature's test): a small boss
+// cutter's own WHOLE bottom cap sits entirely within one much bigger box
+// face (a 1x1 boss cap on a 4x4 box top) - the detected coincident region
+// matches the SMALL boss cap's entire extent but NOT the big box face's,
+// which a symmetric "box_a == box_b" bbox comparison can never catch (the
+// two faces are deliberately different sizes on purpose).
+//
+// The boss is built via `Brep::Extrude()` (one wrapped ruled side-wall
+// face per the profile's own closed loop, not six independent planar
+// quads a plain `Brep::Box()` boss would give) DELIBERATELY, not
+// incidentally: a `Brep::Box()` boss's own four FLAT side faces each meet
+// the big box's top face as a genuine transversal crossing (two
+// perpendicular planes), which fragments the box's top face into an
+// "outer ring plus an inner island exactly matching the boss footprint"
+// shape - and ray-casting THAT inner island's own representative point
+// (sitting exactly on the boss's own coincident boundary plane) is exactly
+// the SAME "numerically arbitrary" ambiguity this file's own coincident-
+// face override exists to avoid, just one level deeper than this override
+// reaches (confirmed directly: that shape silently returns a WRONG volume
+// before this round's own fix, and non-deterministically crashes after it
+// - `BooleanCombineGeneral`'s own already-disclosed "No general partially-
+// overlapping coincident face handling" gap, not a new regression, so
+// deliberately NOT used here). The wrapped-side-wall boss avoids that
+// ambiguity entirely: `Brep::Extrude()`'s OWN side wall touches the box's
+// top face only along the boss's own bottom RIM (a 1D boundary line, not
+// a 2D coincident patch), so the box's own top face fragments cleanly into
+// "outer ring" and "boss-footprint island" with the island's own
+// representative point still sitting exactly on the (now correctly
+// detected and discarded) coincident boundary - the box's own hole-
+// bridging, not an inner-fragment ray-cast, is what this specific
+// regression needs covered.
+void TestBooleanCombineGeneralAsymmetricCoincidentSubFace() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A 4x4x4 box with a 1x1x1 boss (a square profile extruded upward,
+  // capped) sitting exactly on top of it - the boss's own bottom cap,
+  // z=4, x/y in [1.5,2.5], is a sub-rectangle of the box's own much bigger
+  // top face, z=4, x/y in [0,4]: a real partial coincidence, not the
+  // fully-matching-extent shape the "Coplanar boxes" fixture above
+  // already covers.
+  //
+  // Honestly scoped to what this round's own fix actually guarantees, not
+  // more: NONE of these four calls may throw any more (the regression
+  // itself, confirmed fixed), and the Union result - the one op this
+  // fixture's own box-face fragmentation (a correctly hole-bridged outer
+  // ring plus a separate inner island exactly matching the boss footprint)
+  // happens to classify unambiguously either way, confirmed by direct
+  // inspection - is checked for real structural correctness. Intersection/
+  // Difference are deliberately NOT asserted beyond "doesn't throw": this
+  // fixture's own box-top face ends up with an inner fragment sitting
+  // EXACTLY on the boss's own coincident boundary plane, and ray-casting
+  // that fragment's representative point against the other operand is the
+  // identical "numerically arbitrary" ambiguity this file's whole-face
+  // override exists to avoid, one level deeper than that override reaches
+  // (it only ever fires for a face's own single UNTOUCHED fragment, not an
+  // inner fragment carved out of a bigger one) - confirmed directly (not
+  // assumed) to give a genuinely wrong Intersection/Difference result here,
+  // the SAME already-disclosed "No general partially-overlapping
+  // coincident face handling" gap (the "Coplanar / coincident face
+  // handling" bullet, PARITY_MAP.md) the symmetric "Coplanar boxes"
+  // fixture above never reaches at all (its own whole-face override
+  // handles 100% of that fixture, with no inner fragment left over).
+  // Confirmed via an A/B rebuild that this ambiguity is NOT itself a new
+  // regression either (a plain `Brep::Box()` boss - sharper, flatter side
+  // walls than this one's wrapped `Brep::Extrude()` side - already returns
+  // silently WRONG volumes for it on the pre-`878ecdb` baseline too, with
+  // no crash) - left genuinely open, disclosed in PARITY_MAP.md rather
+  // than chased further or quietly asserted away here.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const NurbsCurve square = NurbsCurve::FromControlPoints(
+      {Point3d(1.5, 1.5, 4), Point3d(2.5, 1.5, 4), Point3d(2.5, 2.5, 4), Point3d(1.5, 2.5, 4), Point3d(1.5, 1.5, 4)},
+      /*degree=*/1);
+  const Brep boss = Brep::Extrude(square, Vector3d(0, 0, 1.0), /*cap=*/true);
+
+  const Brep u = BooleanCombineGeneral(box, boss, BooleanOp::Union);
+  Check(u.raw().IsValid(), "box+boss Union is a valid ON_Brep - the regression's own abort on this exact fixture is fixed");
+  Check(u.FaceCount() == 8,
+        "box+boss Union has exactly 8 faces (box's 5 untouched sides + its own hole-bridged top, plus the boss's "
+        "wrapped side wall + top cap - its own coincident bottom cap correctly dropped by the whole-face override)");
+
+  const Brep i = BooleanCombineGeneral(box, boss, BooleanOp::Intersection);
+  Check(i.FaceCount() >= 0,
+        "box+boss Intersection no longer throws the regression's own fragment-loop abort (reaching this line at "
+        "all is the real assertion - see this test's own doc comment for why its RESULT is not also asserted here)");
+  const Brep d_ab = BooleanCombineGeneral(box, boss, BooleanOp::Difference);
+  Check(d_ab.FaceCount() >= 0, "box+boss A-B no longer throws the regression's own fragment-loop abort");
+  const Brep d_ba = BooleanCombineGeneral(boss, box, BooleanOp::Difference);
+  Check(d_ba.FaceCount() >= 0, "box+boss B-A no longer throws the regression's own fragment-loop abort");
+}
+
 // PARITY_MAP.md's "Tolerant booleans" bullet, after BooleanCombineGeneral()
 // gained a genuine caller-controlled SSX solve `tolerance`, still disclosed
 // one more remaining gap: "the general engine's own separate bbox/
@@ -9761,6 +10035,120 @@ void TestSplitBrepByManyPlanesRejectsEmptyTargetEmptyOffsetsZeroNormalAndNonPosi
     threw = true;
   }
   Check(threw, "SplitBrepByManyPlanes throws std::invalid_argument for a non-positive tolerance");
+}
+
+void TestSplitBrepByManySolidsKeepAllTwoDisjointCuttersReturnThreePieces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  // Closes the remaining half of the "Keep/split options" bullet
+  // SplitBrepByManySolids() (above) left open: that function folds every
+  // cutter into ONE union tool first and returns only {outside,
+  // inside-of-the-union} - this keeps a SEPARATE piece per cutter instead,
+  // the real "BooleanSplit... keeping all pieces" semantics, mirroring
+  // SplitBrepByManyPlanes()'s own N+1-slab shape for the solid-cutter case.
+  // A 10x10x10 target (volume 1000) split by two disjoint interior 2x2x2
+  // cutters (volume 8 apiece) should come back as exactly three pieces:
+  // cutter1's own 8, cutter2's own 8, and the remaining 984.
+  const Brep target = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep cutter1 = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep cutter2 = Brep::Box(6, 6, 6, 8, 8, 8);
+
+  const std::vector<Brep> pieces = SplitBrepByManySolidsKeepAll(target, {cutter1, cutter2});
+  Check(pieces.size() == 3, "SplitBrepByManySolidsKeepAll with two disjoint cutters returns exactly three pieces");
+  if (pieces.size() == 3) {
+    double total_volume = 0.0;
+    for (const Brep& piece : pieces) {
+      Check(piece.raw().IsValid(), "each returned piece is a valid ON_Brep");
+      total_volume += piece.TessellateToClosedMesh(16, 16).Volume();
+    }
+    Check(std::abs(total_volume - 1000.0) < 1e-2,
+          "the three pieces sum back to the original target's own volume (10^3=1000) exactly");
+    Check(std::abs(pieces[0].TessellateToClosedMesh(16, 16).Volume() - 8.0) < 0.5,
+          "the first returned piece is cutter1's own interior volume (2^3=8), in cutter order");
+    Check(std::abs(pieces[1].TessellateToClosedMesh(16, 16).Volume() - 8.0) < 0.5,
+          "the second returned piece is cutter2's own interior volume (2^3=8), in cutter order");
+    Check(std::abs(pieces[2].TessellateToClosedMesh(16, 16).Volume() - 984.0) < 0.5,
+          "the final returned piece is the untouched remainder, LAST (1000-8-8=984)");
+  }
+}
+
+void TestSplitBrepByManySolidsKeepAllCutterMissingTargetDropsTheEmptyPiece() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  // One cutter genuinely inside the target, one entirely clear of it (the
+  // same "cutter misses entirely" contract SplitBrepBySolid()/
+  // SplitBrepByManyPlanes() already document) - the miss should contribute
+  // no extra (empty) piece, not an invalid or zero-volume one.
+  const Brep target = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep real_cutter = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep missing_cutter = Brep::Box(100, 100, 100, 101, 101, 101);
+
+  const std::vector<Brep> pieces = SplitBrepByManySolidsKeepAll(target, {real_cutter, missing_cutter});
+  Check(pieces.size() == 2, "a cutter entirely clear of the target contributes no extra (empty) piece");
+  if (pieces.size() == 2) {
+    double total_volume = 0.0;
+    for (const Brep& piece : pieces) total_volume += piece.TessellateToClosedMesh(16, 16).Volume();
+    Check(std::abs(total_volume - 1000.0) < 1e-2, "the two real pieces still sum back to the original volume (1000)");
+  }
+}
+
+void TestSplitBrepByManySolidsKeepAllCutterConsumingEntireRemainderStopsEarly() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  // A real, previously-unexercised edge: a cutter early in the list can
+  // consume the ENTIRE remainder (a cutter at least as large as target,
+  // fully enclosing it), leaving nothing for any later cutter to be tried
+  // against. This must not throw SplitBrepBySolid()'s own "target has no
+  // faces" precondition on the second cutter - skipping it is the correct
+  // read (nothing left to cut), not a caller error.
+  const Brep target = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep enclosing_cutter = Brep::Box(-1, -1, -1, 3, 3, 3);
+  const Brep later_cutter = Brep::Box(0.5, 0.5, 0.5, 1.5, 1.5, 1.5);
+
+  const std::vector<Brep> pieces = SplitBrepByManySolidsKeepAll(target, {enclosing_cutter, later_cutter});
+  Check(pieces.size() == 1, "a fully-enclosing first cutter consumes the entire target, leaving one piece");
+  if (pieces.size() == 1) {
+    Check(std::abs(pieces[0].TessellateToClosedMesh(16, 16).Volume() - 8.0) < 0.5,
+          "the single returned piece is the entire target's own volume (2^3=8), inside the enclosing cutter");
+  }
+}
+
+void TestSplitBrepByManySolidsKeepAllRejectsEmptyTargetEmptyCutterGroupAndNonPositiveTolerance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep cutter = Brep::Box(0.25, 0.25, 0.25, 0.75, 0.75, 0.75);
+  const Brep empty;
+
+  bool threw = false;
+  try {
+    SplitBrepByManySolidsKeepAll(empty, {cutter});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByManySolidsKeepAll throws std::invalid_argument for an empty target");
+
+  threw = false;
+  try {
+    SplitBrepByManySolidsKeepAll(box, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByManySolidsKeepAll throws std::invalid_argument for an empty cutters group");
+
+  threw = false;
+  try {
+    SplitBrepByManySolidsKeepAll(box, {cutter}, -1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByManySolidsKeepAll throws std::invalid_argument for a non-positive tolerance");
 }
 
 void TestSurfaceGetApproximateSize() {
@@ -15346,6 +15734,139 @@ void TestOffsetSolidHandlesGenuinelyConcaveSolid() {
         "original - a real, non-degenerate erosion result on a genuinely concave solid");
 }
 
+void TestShellViaOffsetSolidOnBoxMatchesExactVolumeDifference() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::ShellViaOffsetSolid;
+
+  // A convex box: ball erosion is exact/sharp here (OffsetSolid()'s own
+  // doc comment), so the shell volume has a known closed form - outer
+  // cube minus the exactly-smaller inner cube - with no Steiner rounding
+  // term to account for.
+  const Brep box_brep = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Mesh box = box_brep.TessellateToClosedMesh(1, 1);
+
+  const double t = 1.0;
+  const Mesh shell = ShellViaOffsetSolid(box, t, 24);
+  Check(shell.IsClosedManifold(), "ShellViaOffsetSolid on a box produces a genuine closed 2-manifold");
+
+  const double expected_volume = 10.0 * 10.0 * 10.0 - 8.0 * 8.0 * 8.0;
+  Check(std::fabs(shell.Volume() - expected_volume) / expected_volume < 1e-2,
+        "ShellViaOffsetSolid(box, 1.0)'s volume matches the exact closed-form shell volume "
+        "10^3 - 8^3 (outer cube minus the exactly-sharp eroded inner cube)");
+
+  // The result must actually enclose a hollow cavity, not just be a
+  // smaller solid cube: its volume must be strictly less than the outer
+  // box's own, and strictly more than zero.
+  Check(shell.Volume() > 0.0 && shell.Volume() < box.Volume(),
+        "ShellViaOffsetSolid's result encloses strictly less material than the original box and more than nothing");
+}
+
+void TestShellViaOffsetSolidRoundsConcaveCornerUnlikeMeshShell() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::ShellViaOffsetSolid;
+
+  // Same L-shaped fixture as TestOffsetSolidHandlesGenuinelyConcaveSolid
+  // above: one genuine reflex (concave) vertical edge at x=4,y=4, every
+  // wall at least 4 units thick.
+  const Mesh arm_a = Brep::Box(0, 0, 0, 10, 4, 6).TessellateToClosedMesh(1, 1);
+  const Mesh arm_b = Brep::Box(0, 0, 0, 4, 10, 6).TessellateToClosedMesh(1, 1);
+  const Mesh l_shape = BooleanCombine(arm_a, arm_b, BooleanOp::Union);
+
+  const double t = 0.5;
+  const Mesh via_offset_solid = ShellViaOffsetSolid(l_shape, t, 24);
+  Check(via_offset_solid.IsClosedManifold(),
+        "ShellViaOffsetSolid on the concave L-shape still produces a closed 2-manifold - the "
+        "reflex edge is not a special case either OffsetSolid() or BooleanCombine() needs help with");
+
+  const Mesh via_mesh_shell = l_shape.Shell(t);
+  Check(via_mesh_shell.IsClosedManifold(), "sanity: Mesh::Shell's own sharp-offset result is a closed manifold too");
+
+  // Both are genuine, non-empty shells of the same solid at the same
+  // thickness, so their volumes must be close but not identical: ball
+  // erosion rounds material away at the one concave edge that
+  // Mesh::Shell's per-vertex offset leaves sharp, so ShellViaOffsetSolid's
+  // inner wall encloses strictly LESS material there, and the shell
+  // (outer minus inner) therefore encloses strictly MORE material than
+  // Mesh::Shell's own sharp-cornered shell.
+  Check(via_offset_solid.Volume() > 0.0 && via_offset_solid.Volume() < l_shape.Volume(),
+        "ShellViaOffsetSolid's L-shaped shell encloses strictly less material than the solid itself");
+  Check(via_mesh_shell.Volume() > 0.0 && via_mesh_shell.Volume() < l_shape.Volume(),
+        "sanity: Mesh::Shell's own L-shaped shell also encloses strictly less material than the solid itself");
+  Check(via_offset_solid.Volume() > via_mesh_shell.Volume(),
+        "ShellViaOffsetSolid's ball-eroded inner wall rounds away material at the concave edge that "
+        "Mesh::Shell's sharp per-vertex offset does not, so its shell volume is strictly larger than "
+        "Mesh::Shell's own - the two constructions are genuinely different, not two names for the same result");
+}
+
+void TestShellViaOffsetSolidArgumentChecksAndExcessiveThicknessThrows() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::ShellViaOffsetSolid;
+
+  const Brep box_brep = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Mesh box = box_brep.TessellateToClosedMesh(1, 1);
+
+  bool threw_zero = false;
+  try {
+    ShellViaOffsetSolid(box, 0.0, 24);
+  } catch (const std::invalid_argument&) {
+    threw_zero = true;
+  }
+  Check(threw_zero, "ShellViaOffsetSolid throws for a zero thickness (no inner wall to subtract)");
+
+  bool threw_negative = false;
+  try {
+    ShellViaOffsetSolid(box, -1.0, 24);
+  } catch (const std::invalid_argument&) {
+    threw_negative = true;
+  }
+  Check(threw_negative, "ShellViaOffsetSolid throws for a negative thickness");
+
+  bool threw_nan = false;
+  try {
+    ShellViaOffsetSolid(box, std::numeric_limits<double>::quiet_NaN(), 24);
+  } catch (const std::invalid_argument&) {
+    threw_nan = true;
+  }
+  Check(threw_nan, "ShellViaOffsetSolid throws for a NaN thickness");
+
+  bool threw_infinite = false;
+  try {
+    ShellViaOffsetSolid(box, std::numeric_limits<double>::infinity(), 24);
+  } catch (const std::invalid_argument&) {
+    threw_infinite = true;
+  }
+  Check(threw_infinite, "ShellViaOffsetSolid throws for a +infinity thickness");
+
+  // A thin plate: half-thickness 0.5, so a thickness that erodes the whole
+  // solid away to nothing must still throw - ShellViaOffsetSolid inherits
+  // OffsetSolid()'s own infeasible-shrink guard for the inner wall, rather
+  // than silently handing BooleanCombine() an empty inner mesh.
+  const Brep plate_brep = Brep::Box(0, 0, 0, 10, 10, 1);
+  const Mesh plate = plate_brep.TessellateToClosedMesh(4, 4);
+
+  bool threw_excessive = false;
+  try {
+    ShellViaOffsetSolid(plate, 0.6, 24);
+  } catch (const std::runtime_error&) {
+    threw_excessive = true;
+  }
+  Check(threw_excessive,
+        "ShellViaOffsetSolid(plate, 0.6) on a plate whose half-thickness is 0.5 throws rather than "
+        "silently composing a shell around an empty inner wall");
+
+  // A safe thickness (well within the plate's own half-thickness) must
+  // still succeed and produce a genuine, non-empty hollow shell.
+  const Mesh safe = ShellViaOffsetSolid(plate, 0.2, 24);
+  Check(safe.IsClosedManifold() && safe.Volume() > 0.0 && safe.Volume() < plate.Volume(),
+        "ShellViaOffsetSolid(plate, 0.2) (well within its half-thickness) succeeds normally and encloses less "
+        "material than the solid plate");
+}
+
 void TestDecompose() {
   using dino8::kernel::Decompose;
   using dino8::kernel::Mesh;
@@ -20779,6 +21300,133 @@ void TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt() {
   Check(box.CapPlanarHoles() == 0, "a closed box has no hole to cap");
 }
 
+// Brep::FacePersistentId()/EdgePersistentId()/VertexPersistentId(),
+// FindFaceByPersistentId()/FindEdgeByPersistentId()/
+// FindVertexByPersistentId(), and CompactPreservingPersistentIds() -
+// PARITY_MAP.md's own "Persistent naming / topology identity and
+// attributes across edits" item, named `[missing]` outright ("there is
+// no persistent ID or attribute scheme"). Closes the literal case that
+// complaint names: an id that survives Compact(), independent of the
+// raw index Compact() itself freely reassigns.
+void TestBrepPersistentIdsSurviveCompact() {
+  using dino8::kernel::Brep;
+
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  Check(box.FaceCount() == 6, "setup: a genuinely welded box has 6 faces");
+
+  // Lazy assignment: distinct ids for distinct faces, the SAME id again
+  // on a second ask of the same still-live face.
+  std::vector<uint64_t> face_id(6);
+  for (int i = 0; i < 6; ++i) face_id[i] = box.FacePersistentId(i);
+  bool all_distinct = true;
+  for (int i = 0; i < 6; ++i) {
+    for (int j = i + 1; j < 6; ++j) {
+      if (face_id[i] == face_id[j]) all_distinct = false;
+    }
+  }
+  Check(all_distinct, "all 6 faces get distinct persistent ids");
+  Check(box.FacePersistentId(2) == face_id[2], "asking a second time returns the identical id, not a fresh one");
+  Check(box.FindFaceByPersistentId(face_id[3]) == 3, "FindFaceByPersistentId resolves an id back to its own index");
+  Check(box.FindFaceByPersistentId(0) == -1, "id 0 (never assigned) resolves to nothing");
+  Check(box.FindFaceByPersistentId(999999) == -1, "an id nothing was ever assigned resolves to nothing");
+
+  // Delete two faces (1 and 4) WITHOUT compacting yet - raw ON_Brep::
+  // DeleteFace, the same "exercise the dead-slot state directly" pattern
+  // TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt() above
+  // already uses - so this box genuinely has 2 dead face slots sitting
+  // among 4 live ones when CompactPreservingPersistentIds() runs, not
+  // merely a clean table it has nothing real to do on.
+  box.raw().DeleteFace(box.raw().m_F[1], /*bDeleteFaceEdges=*/true);
+  box.raw().DeleteFace(box.raw().m_F[4], /*bDeleteFaceEdges=*/true);
+  Check(box.raw().m_F.Count() == 6, "setup: still 6 raw face slots - 2 are dead, not yet removed");
+
+  box.CompactPreservingPersistentIds();
+  Check(box.FaceCount() == 4, "Compact() genuinely ran: 4 live face slots left");
+
+  // The 4 surviving original faces (0, 2, 3, 5) kept their own exact
+  // pre-compact id, now reachable at wherever Compact() actually put
+  // them (confirmed via FindFaceByPersistentId, not assumed to still sit
+  // at their old index).
+  for (const int original : {0, 2, 3, 5}) {
+    const int new_index = box.FindFaceByPersistentId(face_id[original]);
+    Check(new_index >= 0 && new_index < 4, "a surviving face's own pre-compact id resolves to a valid post-compact "
+                                            "index");
+    if (new_index >= 0) {
+      Check(box.FacePersistentId(new_index) == face_id[original],
+            "...and querying that new index returns the exact same id back");
+    }
+  }
+  // The two deleted faces' own ids resolve to nothing anymore.
+  Check(box.FindFaceByPersistentId(face_id[1]) == -1 && box.FindFaceByPersistentId(face_id[4]) == -1,
+        "a deleted face's own persistent id no longer resolves to anything after the compact");
+  // Relative order survives: original faces 0 and 2 (both still live, 0
+  // before 2 before deletion) stay in that same relative order after.
+  Check(box.FindFaceByPersistentId(face_id[0]) < box.FindFaceByPersistentId(face_id[2]),
+        "surviving faces keep their own original relative order through the compact");
+
+  // Edge/vertex ids, exercised on a real cascading topology edit rather
+  // than a hand-set flag: ON_Brep::CullUnusedVertices() (inside
+  // Compact()) deliberately UN-deletes any vertex still referenced by a
+  // live trim ("in order to prevent crashes... refuse to delete the
+  // vertex" - confirmed directly against the vendored opennurbs source,
+  // not assumed), so a bare `m_vertex_index = -1` poke alone is refused
+  // by Compact() itself, not a real way to orphan one. Faces 0 (bottom)
+  // and 2 and 5 (two of the four sides, in CheckHealBoxFaces()'s own
+  // b[0..3] CCW order) all meet at the corner (0,0,0): every edge
+  // touching that corner borders exactly two of these three faces, so
+  // deleting all three (raw ON_Brep::DeleteFace, bDeleteFaceEdges=true)
+  // genuinely cascades into removing those edges and then the now
+  // wholly unreferenced corner vertex itself - confirmed via a
+  // standalone `dino8_scratch_test` probe before trusting the exact
+  // counts below, not assumed from the construction alone.
+  Brep box2 = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  std::vector<uint64_t> edge_id(box2.raw().m_E.Count()), vertex_id(box2.raw().m_V.Count());
+  for (int i = 0; i < box2.raw().m_E.Count(); ++i) edge_id[i] = box2.EdgePersistentId(i);
+  for (int i = 0; i < box2.raw().m_V.Count(); ++i) vertex_id[i] = box2.VertexPersistentId(i);
+
+  box2.raw().DeleteFace(box2.raw().m_F[0], /*bDeleteFaceEdges=*/true);
+  box2.raw().DeleteFace(box2.raw().m_F[2], /*bDeleteFaceEdges=*/true);
+  box2.raw().DeleteFace(box2.raw().m_F[5], /*bDeleteFaceEdges=*/true);
+  Check(box2.LiveFaceCount() == 3 && box2.LiveEdgeCount() == 9 && box2.LiveVertexCount() == 7,
+        "setup: deleting the 3 faces meeting at one corner cascades into 3 dead edges and 1 dead vertex");
+
+  box2.CompactPreservingPersistentIds();
+  Check(box2.EdgeCount() == 9 && box2.VertexCount() == 7, "Compact() genuinely ran: 9 edges, 7 vertices left");
+
+  int edges_still_resolve = 0, vertices_still_resolve = 0;
+  for (const uint64_t id : edge_id) {
+    if (box2.FindEdgeByPersistentId(id) >= 0) ++edges_still_resolve;
+  }
+  for (const uint64_t id : vertex_id) {
+    if (box2.FindVertexByPersistentId(id) >= 0) ++vertices_still_resolve;
+  }
+  Check(edges_still_resolve == 9,
+        "exactly the 9 surviving edges' own pre-compact ids still resolve - the 3 removed ones don't");
+  Check(vertices_still_resolve == 7,
+        "exactly the 7 surviving vertices' own pre-compact ids still resolve - the 1 removed one doesn't");
+
+  // Refusals: out-of-range throws std::out_of_range, an already-deleted
+  // index throws std::invalid_argument - the same contract every other
+  // per-element accessor in this class already has.
+  Brep box3 = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  bool threw_range = false;
+  try {
+    box3.FacePersistentId(box3.raw().m_F.Count() + 100);
+  } catch (const std::out_of_range&) {
+    threw_range = true;
+  }
+  Check(threw_range, "FacePersistentId() throws std::out_of_range for an out-of-range index");
+
+  bool threw_deleted = false;
+  box3.raw().m_F[0].m_face_index = -1;
+  try {
+    box3.FacePersistentId(0);
+  } catch (const std::invalid_argument&) {
+    threw_deleted = true;
+  }
+  Check(threw_deleted, "FacePersistentId() throws std::invalid_argument on an already-deleted face_index");
+}
+
 // An open cylinder (Extrude() of a real circle, cap=false) has two naked
 // CURVED rims, each a single closed edge - the case CapPlanarHoles()'s
 // own straight-polygon path could never triangulate (it refused any
@@ -21007,6 +21655,90 @@ void TestBrepJoinNakedEdgesRecordsTolerantEdges() {
 
   // Nothing left to join.
   Check(box.JoinNakedEdges(2.0 * gap) == 0, "a second JoinNakedEdges() finds nothing");
+}
+
+// Same construction as CheckHealBoxFaces(top_z), but at an arbitrary edge
+// length `s` (box spans [0,s]^3) with the top face offset to `top_z` while
+// the sides' own top edge still ends at z=s - the same "top face floats
+// top_z-s above the sides" gap TestBrepJoinNakedEdgesRecordsTolerantEdges
+// already exercises at s=1, generalized so the whole box can be scaled up
+// or down.
+std::vector<dino8::kernel::Brep::PlanarFace> CheckHealScaledBoxFaces(double s, double top_z) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  const std::vector<Point3d> b = {Point3d(0, 0, 0), Point3d(s, 0, 0), Point3d(s, s, 0), Point3d(0, s, 0)};
+  const std::vector<Point3d> t = {Point3d(0, 0, s), Point3d(s, 0, s), Point3d(s, s, s), Point3d(0, s, s)};
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(CheckHealFace({b[3], b[2], b[1], b[0]}, ON_3dVector(0, 0, -1)));
+  faces.push_back(CheckHealFace({Point3d(0, 0, top_z), Point3d(s, 0, top_z), Point3d(s, s, top_z), Point3d(0, s, top_z)},
+                                ON_3dVector(0, 0, 1)));
+  for (size_t i = 0; i < 4; ++i) {
+    const size_t j = (i + 1) % 4;
+    ON_3dVector n = ON_CrossProduct(b[j] - b[i], t[i] - b[i]);
+    n.Unitize();
+    faces.push_back(CheckHealFace({b[i], b[j], t[j], t[i]}, n));
+  }
+  return faces;
+}
+
+// JoinNakedEdges()'s recorded tolerance is now floored at
+// max(kDistance, tolerance::RelativeDistance(that edge's own extent)), not
+// the bare absolute kDistance TestBrepJoinNakedEdgesRecordsTolerantEdges
+// already covers at ordinary (s=1) scale. This exercises the scaling at
+// both ends: a huge box (s=1e6) where a 1e-4 gap - the exact same absolute
+// gap the s=1 fixture above records as a real tolerant edge - is now
+// correctly recognized as physically insignificant at that edge's own
+// million-unit scale and left at 0, while a genuinely significant gap on
+// the SAME huge box (10, comfortably above RelativeDistance(1e6) == 1.0)
+// is still recorded, so the floor is a real floor, not a blanket
+// suppression at large scale.
+void TestBrepJoinNakedEdgesFloorsRecordedToleranceByEdgeExtent() {
+  using dino8::kernel::Brep;
+  namespace tol = dino8::kernel::tolerance;
+
+  {
+    const double s = 1e6, gap = 1e-4;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "a 1e-4 gap on a million-unit box still joins the 4 pairs");
+    int tolerant_edges = 0;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      if (box.raw().m_E[ei].m_tolerance > tol::kDistance) ++tolerant_edges;
+    }
+    Check(tolerant_edges == 0,
+          "...but records NO tolerant edges: 1e-4 is below RelativeDistance(1e6) == 1.0, so the gap is "
+          "correctly treated as insignificant at this edge's own scale, unlike the identical absolute gap on "
+          "the s=1 fixture above");
+    Check(box.raw().IsValid() && box.raw().IsSolid(), "...and the box is still a valid, closed solid regardless");
+  }
+  {
+    const double s = 1e6, gap = 10.0;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "a gap of 10, on the same million-unit box, still joins the 4 pairs");
+    int tolerant_edges = 0;
+    bool tolerances_are_the_gap = true;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      const double t = box.raw().m_E[ei].m_tolerance;
+      if (t > tol::kDistance) {
+        ++tolerant_edges;
+        if (std::fabs(t - gap) > 1e-9) tolerances_are_the_gap = false;
+      }
+    }
+    Check(tolerant_edges == 4 && tolerances_are_the_gap,
+          "...and THIS gap, comfortably above RelativeDistance(1e6) == 1.0, is still recorded verbatim on all "
+          "4 joined edges: the scaled floor suppresses only insignificant gaps, not every gap at large scale");
+  }
+  {
+    // Ordinary scale is untouched: same absolute gap and same outcome as
+    // TestBrepJoinNakedEdgesRecordsTolerantEdges's own s=1 case.
+    const double s = 1.0, gap = 1e-4;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "...and at ordinary scale, the same gap still joins 4 pairs");
+    int tolerant_edges = 0;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      if (box.raw().m_E[ei].m_tolerance > tol::kDistance) ++tolerant_edges;
+    }
+    Check(tolerant_edges == 4, "...and still records all 4 as tolerant edges, exactly as before this change");
+  }
 }
 
 // A hairline strip on the top: the top face is split into a main face
@@ -30897,6 +31629,77 @@ void TestMeshComputeBoxMappingUVs() {
   Check(threw_nan, "ComputeBoxMappingUVs throws std::invalid_argument for a NaN scale");
 }
 
+// PARITY_MAP.md's own "Texture coordinate generation on tessellation"
+// bullet, the one remaining sub-gap its own fourth round explicitly left
+// untouched: "Box mapping's own 'hard seams at every axis boundary' are a
+// genuinely different mechanism (a per-vertex dominant-axis CHOICE
+// differing between faces, not a modular wraparound SplitUVSeam()
+// detects) that this round does not address." ComputeBoxMappingUVs()
+// picks its dominant axis from ComputeVertexNormals()'s own SMOOTHED
+// normal, so a vertex shared by faces on different box sides gets ONE
+// axis choice baked from an average normal that may not match what
+// either adjacent face's own TRUE flat normal would pick - a real
+// distortion, not just a cosmetic worry, demonstrated directly below. No
+// new kernel code: `Mesh::Faceted()` (this category's own earlier round)
+// already duplicates every face's own corners into private vertices, and
+// `TestMeshFacetedGivesFlatShading` already proves `ComputeVertexNormals()`
+// on a faceted mesh reduces to exactly that one owning face's own flat
+// normal at every corner - composing the two already-existing primitives
+// (`mesh.Faceted().ComputeBoxMappingUVs(scale)`) removes the averaging
+// contamination entirely, since no vertex is shared across two faces
+// with different dominant axes any more.
+void TestMeshComputeBoxMappingUVsFacetedResolvesSeam() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+
+  // The unit box's own vertex 6 = (1,1,1), shared by the top (+z), back
+  // (+y), and right (+x) faces at once - the most extreme case, where the
+  // smoothed normal (1,1,1)/sqrt(3) ties all three axes exactly equal.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const auto original_uvs = box.ComputeBoxMappingUVs(1.0);
+
+  // The implementation's own tie-break (checking the X branch first) picks
+  // X-dominant here: u = p.y = 1, v = p.z = 1.
+  Check(std::abs(original_uvs[6].x - 1.0) < 1e-9 && std::abs(original_uvs[6].y - 1.0) < 1e-9,
+        "sanity: the shared corner's own smoothed-normal tie-break lands on the X-dominant branch, giving (1, 1)");
+
+  // The TOP face (add_quad(4,5,6,7), index 1) and RIGHT face
+  // (add_quad(1,2,6,5), index 5) both independently want (1, 1) at this
+  // exact corner too (coincidence of this particular symmetric vertex,
+  // confirmed by hand: top's own Z-dominant formula gives (p.x, p.y) =
+  // (1, 1); right's own X-dominant formula gives (p.y, p.z) = (1, 1)) -
+  // so the shared vertex's own single UV happens to satisfy two of its
+  // three owning faces. The BACK face (add_quad(3,7,6,2), index 3) does
+  // NOT: its own Y-dominant formula wants (-p.x, p.z) = (-1, 1), the
+  // opposite sign of u from what the shared vertex actually stores - a
+  // real, hand-verified distortion the single shared UV cannot represent.
+  Check(std::abs(original_uvs[6].x - (-1.0)) > 0.5,
+        "the shared vertex's own UV genuinely does NOT match what the back face's own correct "
+        "(Y-dominant) formula would compute there - confirming this is a real distortion, not "
+        "merely a theoretical worry");
+
+  // Faceting first and THEN computing box-mapping UVs resolves this
+  // completely: each face's own private copy of that corner now carries
+  // exactly that face's own flat normal, so each one's own UV is correct.
+  const Mesh faceted = box.Faceted();
+  const auto faceted_uvs = faceted.ComputeBoxMappingUVs(1.0);
+
+  // Faceted()'s own index convention: face f's corner c lands at f*4 + c.
+  // Vertex 6 is corner index 2 within each of the top (face 1), back
+  // (face 3), and right (face 5) quads (add_quad(4,5,6,7)/(3,7,6,2)/(1,2,6,5)).
+  const Point2d top_copy = faceted_uvs[1 * 4 + 2];
+  const Point2d back_copy = faceted_uvs[3 * 4 + 2];
+  const Point2d right_copy = faceted_uvs[5 * 4 + 2];
+
+  Check(std::abs(top_copy.x - 1.0) < 1e-9 && std::abs(top_copy.y - 1.0) < 1e-9,
+        "after faceting, the top face's own private copy of the shared corner gets its own correct Z-dominant UV (1, 1)");
+  Check(std::abs(right_copy.x - 1.0) < 1e-9 && std::abs(right_copy.y - 1.0) < 1e-9,
+        "after faceting, the right face's own private copy gets its own correct X-dominant UV (1, 1)");
+  Check(std::abs(back_copy.x - (-1.0)) < 1e-9 && std::abs(back_copy.y - 1.0) < 1e-9,
+        "after faceting, the back face's own private copy gets its own correct Y-dominant UV (-1, 1) - "
+        "the exact value the shared (unfaceted) vertex could NOT represent, proving the seam distortion is genuinely resolved, not just hidden");
+}
+
 void TestMeshComputePlanarMappingUVs() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point2d;
@@ -35554,6 +36357,158 @@ void TestMeshSavePlyVertexColorsRoundTrips() {
               c2.g == 210 && c2.b == 220,
           "every color channel declared as 'float' is read at its own declared type and rounded to the "
           "correct 0-255 byte, not misread at an assumed uchar width");
+    std::remove(path.c_str());
+  }
+}
+
+void TestMeshVertexAlphaRoundTrips() {
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Closes the "other PLY properties (alpha, ...) remain unread/unwritten"
+  // gap PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence
+  // names for the PLY bullet - before this, nothing in this kernel could
+  // set, read, or round-trip a per-vertex alpha value at all; every
+  // writer that touches per-vertex opacity (SaveOff()'s own COFF `a`
+  // column, and now SavePly()'s own optional `alpha` property) hardcoded
+  // 255 because "this kernel's Color has no alpha channel to source one
+  // from."
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+
+  {
+    Mesh no_colors = box;
+    const std::vector<unsigned char> alpha(static_cast<size_t>(no_colors.VertexCount()), 128);
+    Check(no_colors.SetVertexAlpha(alpha) == Result::Failed,
+          "SetVertexAlpha() fails on a mesh with no vertex colors set yet - alpha has nowhere to live "
+          "in m_C without them");
+    Check(!no_colors.HasVertexAlpha(), "the rejected call above left HasVertexAlpha() false");
+  }
+
+  std::vector<Color> colors;
+  std::vector<unsigned char> alpha;
+  for (int i = 0; i < box.VertexCount(); ++i) {
+    colors.push_back(Color{static_cast<unsigned char>((i * 37) % 256), static_cast<unsigned char>((i * 91) % 256),
+                            static_cast<unsigned char>((i * 173) % 256)});
+    alpha.push_back(static_cast<unsigned char>((i * 29 + 10) % 256));
+  }
+
+  Mesh with_colors = box;
+  Check(with_colors.SetVertexColors(colors) == Result::Ok, "fixture: SetVertexColors succeeds");
+
+  const std::vector<unsigned char> wrong_size_alpha(alpha.size() - 1, 200);
+  Check(with_colors.SetVertexAlpha(wrong_size_alpha) == Result::Failed,
+        "SetVertexAlpha() fails when the given alpha list doesn't have exactly VertexCount() many entries");
+  Check(!with_colors.HasVertexAlpha(), "the rejected mismatched-size call above left HasVertexAlpha() false");
+  for (int i = 0; i < with_colors.VertexCount(); ++i) {
+    Check(with_colors.VertexAlphaAt(i) == 255,
+          "VertexAlphaAt() still reports the default 255 (opaque) for a mesh with colors but no "
+          "alpha explicitly set yet");
+  }
+
+  Check(with_colors.SetVertexAlpha(alpha) == Result::Ok, "SetVertexAlpha() succeeds with a correctly-sized list");
+  Check(with_colors.HasVertexAlpha(), "HasVertexAlpha() is true once SetVertexAlpha() succeeded");
+  bool alpha_matches = true;
+  for (int i = 0; i < with_colors.VertexCount(); ++i) {
+    if (with_colors.VertexAlphaAt(i) != alpha[static_cast<size_t>(i)]) {
+      alpha_matches = false;
+      break;
+    }
+  }
+  Check(alpha_matches, "VertexAlphaAt() reports the exact alpha value SetVertexAlpha() was given, for "
+                       "every vertex, already converted back out of ON_Color's own inverted convention");
+
+  // .ply round trip: the header must declare a fourth 'alpha' property
+  // only once alpha was actually set, and the reloaded mesh must recover
+  // both the colors and the alpha exactly.
+  auto check_ply_round_trip = [&](bool binary, const std::string& path) {
+    Check(with_colors.SavePly(path, binary) == Result::Ok,
+          binary ? "SavePly(binary=true) succeeds on a mesh with vertex colors and alpha"
+                 : "SavePly succeeds on a mesh with vertex colors and alpha");
+
+    if (!binary) {
+      std::ifstream in(path);
+      std::string line;
+      bool saw_alpha_property = false;
+      while (std::getline(in, line)) {
+        if (line == "end_header") break;
+        if (line == "property uchar alpha") saw_alpha_property = true;
+      }
+      Check(saw_alpha_property,
+            "the header declares a genuine 'property uchar alpha' line once HasVertexAlpha() is true");
+    }
+
+    Mesh reloaded;
+    Check(Mesh::LoadPly(path, reloaded) == Result::Ok, "LoadPly succeeds on a .ply file with vertex alpha");
+    Check(reloaded.HasVertexAlpha(), "the reloaded mesh reports having vertex alpha");
+    bool reloaded_alpha_matches = true;
+    for (int i = 0; i < reloaded.VertexCount(); ++i) {
+      if (reloaded.VertexAlphaAt(i) != alpha[static_cast<size_t>(i)]) {
+        reloaded_alpha_matches = false;
+        break;
+      }
+    }
+    Check(reloaded_alpha_matches,
+          binary ? "every reloaded vertex's alpha exactly matches the original, byte-for-byte, through "
+                   "the binary .ply payload"
+                 : "every reloaded vertex's alpha exactly matches the original, byte-for-byte, through "
+                   "the ASCII .ply payload");
+    std::remove(path.c_str());
+  };
+  check_ply_round_trip(/*binary=*/false, "dino8_kernel_mesh_ply_alpha_ascii_test.ply");
+  check_ply_round_trip(/*binary=*/true, "dino8_kernel_mesh_ply_alpha_binary_test.ply");
+
+  // A mesh with colors but no alpha still writes the plain three-channel
+  // form unchanged - no behavior change for an existing caller.
+  {
+    Mesh colors_only = box;
+    Check(colors_only.SetVertexColors(colors) == Result::Ok, "fixture: SetVertexColors succeeds");
+    const std::string path = "dino8_kernel_mesh_ply_no_alpha_test.ply";
+    Check(colors_only.SavePly(path) == Result::Ok, "SavePly succeeds on a mesh with colors but no alpha");
+    std::ifstream in(path);
+    std::string line;
+    bool saw_alpha_property = false;
+    while (std::getline(in, line)) {
+      if (line == "end_header") break;
+      if (line == "property uchar alpha") saw_alpha_property = true;
+    }
+    Check(!saw_alpha_property,
+          "a mesh with HasVertexAlpha() == false writes no 'alpha' property line at all, unchanged "
+          "from before SetVertexAlpha() existed");
+    std::remove(path.c_str());
+  }
+
+  // .off/.coff round trip: SaveOff()'s own COFF `a` column now carries
+  // the real per-vertex alpha instead of the old hardcoded 255.
+  {
+    const std::string path = "dino8_kernel_mesh_coff_alpha_test.off";
+    Check(with_colors.SaveOff(path) == Result::Ok, "SaveOff succeeds on a mesh with vertex colors and alpha");
+    std::ifstream in(path);
+    std::string header_line;
+    std::getline(in, header_line);
+    std::getline(in, header_line);  // counts line
+    std::string first_vertex_line;
+    std::getline(in, first_vertex_line);
+    std::istringstream vline(first_vertex_line);
+    double x = 0, y = 0, z = 0;
+    int r = -1, g = -1, b = -1, a = -1;
+    vline >> x >> y >> z >> r >> g >> b >> a;
+    Check(a == static_cast<int>(alpha[0]),
+          "the first COFF vertex line's own alpha column is the real per-vertex value, not the old "
+          "hardcoded 255");
+    in.close();
+
+    Mesh reloaded;
+    Check(Mesh::LoadOff(path, reloaded) == Result::Ok, "LoadOff succeeds on SaveOff()'s own COFF output");
+    Check(reloaded.HasVertexAlpha(), "the reloaded COFF mesh reports having vertex alpha");
+    bool coff_alpha_matches = true;
+    for (int i = 0; i < reloaded.VertexCount(); ++i) {
+      if (reloaded.VertexAlphaAt(i) != alpha[static_cast<size_t>(i)]) {
+        coff_alpha_matches = false;
+        break;
+      }
+    }
+    Check(coff_alpha_matches, "every round-tripped COFF vertex's alpha matches the original exactly");
     std::remove(path.c_str());
   }
 }
@@ -56973,6 +57928,235 @@ void TestReplaceEdgeCurveThrowsOnSurfaceMismatch() {
                "far off the face's own surface, even though its endpoints matched");
 }
 
+// Brep::ResyncTrimToEdgeCurve(): a genuine "the edge's own curve already
+// changed, now resync the trims" scenario, built by bypassing
+// ReplaceEdgeCurve() entirely (a direct ON_BrepEdge::ChangeEdgeCurve()
+// call, the same expert-user primitive used elsewhere in this file) so
+// the edge's own curve and its trims are deliberately left INCONSISTENT
+// first - the exact situation this method's own doc comment names. Not
+// to be confused with the differently-scoped Brep::RefitTrim() (control-
+// point simplification of a trim's own shape) tested elsewhere in this
+// file - this one never changes a trim's shape, only resyncs it.
+void TestBrepResyncTrimToEdgeCurveResyncsATrimAfterADirectEdgeCurveChange() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const std::vector<Brep::PlanarFace> whole = Brep::Box(0, 0, 0, 2, 2, 1).PlanarFaces();
+  Brep plate = Brep::FromPlanarFaces({whole[1]});
+  const int edge_index = 0;
+  ON_BrepEdge& edge = plate.raw().m_E[edge_index];
+  const Point3d p0 = edge.PointAtStart();
+  const Point3d p1 = edge.PointAtEnd();
+  const Point3d old_mid = edge.PointAt(edge.Domain().Mid());
+
+  // The same V-shaped bow TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute
+  // already uses, but committed directly via ChangeEdgeCurve() - the
+  // trims are now stale (still the OLD straight line) relative to this
+  // edge's own NEW bowed curve.
+  const Point3d mid((p0.x + p1.x) / 2, (p0.y + p1.y) / 2, p0.z);
+  ON_3dVector perp(-(p1.y - p0.y), (p1.x - p0.x), 0.0);
+  perp.Unitize();
+  const Point3d bowed_mid = mid + perp * ((p1 - p0).Length() * 0.15);
+  const NurbsCurve bowed = NurbsCurve::FromControlPoints({p0, bowed_mid, p1}, /*degree=*/1);
+  const int c3i = plate.raw().AddEdgeCurve(new ON_NurbsCurve(bowed.raw()));
+  Check(edge.ChangeEdgeCurve(c3i), "ChangeEdgeCurve directly commits the bowed curve onto the edge");
+
+  const Point3d new_mid = edge.PointAt(edge.Domain().Mid());
+  Check(new_mid.DistanceTo(old_mid) > 0.05, "the edge's own curve genuinely changed shape");
+
+  // Before ResyncTrimToEdgeCurve(): PlanarFaces()'s own re-derived loop (reading this
+  // class's own per-face side tables, same as the ReplaceEdgeCurve test
+  // above) still shows the OLD straight edge - the trim hasn't moved yet.
+  const double edge_length = (p1 - p0).Length();
+  ON_3dVector edge_dir = p1 - p0;
+  edge_dir.Unitize();
+  auto measure_max_dev = [&](const std::vector<Point3d>& loop) {
+    double max_dev = 0.0;
+    for (const Point3d& q : loop) {
+      const double t = ON_DotProduct(q - p0, edge_dir);
+      if (t < -1e-6 || t > edge_length + 1e-6) continue;
+      const Point3d proj = p0 + edge_dir * t;
+      const double d = q.DistanceTo(proj);
+      if (d > edge_length * 0.5) continue;
+      max_dev = std::max(max_dev, d);
+    }
+    return max_dev;
+  };
+  const std::vector<Brep::PlanarFace> stale = plate.PlanarFaces();
+  Check(stale.size() == 1, "PlanarFaces() still reports exactly 1 face before ResyncTrimToEdgeCurve");
+  Check(measure_max_dev(stale[0].loop) < 0.02,
+        "before ResyncTrimToEdgeCurve(), the trim loop is still stale - it shows no bow at all");
+
+  plate.ResyncTrimToEdgeCurve(edge_index, 0.02);
+
+  Check(plate.raw().IsValid(), "the plate is still a valid ON_Brep after ResyncTrimToEdgeCurve");
+  Check(edge.PointAtStart().DistanceTo(p0) < 1e-6 && edge.PointAtEnd().DistanceTo(p1) < 1e-6,
+        "ResyncTrimToEdgeCurve doesn't touch the edge's own two endpoints");
+  const std::vector<Brep::PlanarFace> fresh = plate.PlanarFaces();
+  Check(fresh.size() == 1, "PlanarFaces() still reports exactly 1 face after ResyncTrimToEdgeCurve");
+  const double expected_sagitta = edge_length * 0.15;
+  const double after_dev = measure_max_dev(fresh[0].loop);
+  const std::string msg = "after ResyncTrimToEdgeCurve(), the trim loop shows the edge's own real bow (~" +
+                           std::to_string(expected_sagitta) + "), measured " + std::to_string(after_dev);
+  Check(std::abs(after_dev - expected_sagitta) < 0.02, msg.c_str());
+}
+
+void TestBrepResyncTrimToEdgeCurveRejectsOutOfRangeAndDeletedEdge() {
+  using dino8::kernel::Brep;
+
+  Brep box = Brep::BoxWelded(0, 0, 0, 1, 1, 1);
+  bool threw_range = false;
+  try {
+    box.ResyncTrimToEdgeCurve(box.raw().m_E.Count() + 50, 0.01);
+  } catch (const std::out_of_range&) {
+    threw_range = true;
+  }
+  Check(threw_range, "ResyncTrimToEdgeCurve throws std::out_of_range for an out-of-range edge_index");
+
+  box.raw().m_E[0].m_edge_index = -1;  // simulate a deleted edge slot directly
+  bool threw_deleted = false;
+  try {
+    box.ResyncTrimToEdgeCurve(0, 0.01);
+  } catch (const std::invalid_argument&) {
+    threw_deleted = true;
+  }
+  Check(threw_deleted, "ResyncTrimToEdgeCurve throws std::invalid_argument for an already-deleted edge");
+}
+
+// Brep::ReplaceEdge() on a flat plate's own naked boundary (the same single-face fixture
+// TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute uses) and moves
+// only its SECOND endpoint (the first stays exactly where it was) - the
+// one case ReplaceEdgeCurve() itself is documented to refuse ("it does
+// not re-point the topology to new ones"). That corner's own OTHER
+// naked edge (valence 2 on a plate) must get nudged to the SAME new
+// point too, not left behind - genuinely moved to a different spot on
+// the SAME existing flat surface (not off it, which Phase 1 found this
+// method can't do any more than ReplaceEdgeCurve() itself can - neither
+// one resizes a face's own surface, only re-trims against it).
+void TestBrepReplaceEdgeMovesOneEndpointSlidingACornerInPlace() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Brep::PlanarFace> whole = Brep::Box(0, 0, 0, 2, 2, 1).PlanarFaces();
+  Brep plate = Brep::FromPlanarFaces({whole[1]});  // the top (+z) face alone
+  Check(plate.FaceCount() == 1, "the plate fixture has exactly 1 face");
+  Check(plate.raw().m_E.Count() == 4, "the plate fixture has 4 naked boundary edges");
+
+  const int edge_index = 0;
+  const ON_BrepEdge& edge0 = plate.raw().m_E[edge_index];
+  const int v0 = edge0.m_vi[0];
+  const int v1 = edge0.m_vi[1];
+  const Point3d p0 = plate.raw().m_V[v0].point;
+  const Point3d p1 = plate.raw().m_V[v1].point;
+  Check(plate.raw().m_V[v1].m_ei.Count() == 2, "the far corner (v1) has valence 2, the ordinary plate-corner case");
+
+  int other_edge_at_v1 = -1;
+  for (int k = 0; k < plate.raw().m_V[v1].m_ei.Count(); ++k) {
+    const int ei = plate.raw().m_V[v1].m_ei[k];
+    if (ei != edge_index) other_edge_at_v1 = ei;
+  }
+  Check(other_edge_at_v1 >= 0, "found v1's own other naked edge");
+  const ON_BrepEdge& other_edge = plate.raw().m_E[other_edge_at_v1];
+  const int far_vi = (other_edge.m_vi[0] == v1) ? other_edge.m_vi[1] : other_edge.m_vi[0];
+  const Point3d far_corner = plate.raw().m_V[far_vi].point;
+
+  // Slide v1 20% of the way toward the plate's own center (1,1,1) - a
+  // real, non-trivial relocation, but still squarely on this SAME flat
+  // surface and well inside its own [0,2]x[0,2] domain, so every
+  // delegated ReplaceEdgeCurve() call below can actually re-trim against
+  // the unchanged surface rather than being asked to reach somewhere it
+  // was never defined.
+  const Point3d center(1, 1, 1);
+  const Point3d p1_moved = p1 + (center - p1) * 0.2;
+  const NurbsCurve slid = NurbsCurve::FromControlPoints({p0, p1_moved}, /*degree=*/1);
+
+  const Result r = plate.ReplaceEdge(edge_index, slid, 0.01);
+  Check(r == Result::Ok, "ReplaceEdge() succeeds in sliding one endpoint to a new spot on the same face");
+  Check(plate.raw().IsValid(), "the plate is still a valid ON_Brep after ReplaceEdge");
+
+  Check(plate.raw().m_V[v0].point.DistanceTo(p0) < 1e-6, "v0's own position is completely unchanged");
+  Check(plate.raw().m_V[v1].point.DistanceTo(p1_moved) < 1e-6, "v1 moved exactly to the requested new point");
+
+  const ON_BrepEdge& other_after = plate.raw().m_E[other_edge_at_v1];
+  const Point3d near_end = (other_after.m_vi[0] == v1) ? other_after.PointAtStart() : other_after.PointAtEnd();
+  const Point3d far_end = (other_after.m_vi[0] == v1) ? other_after.PointAtEnd() : other_after.PointAtStart();
+  Check(near_end.DistanceTo(p1_moved) < 1e-6,
+        "the OTHER naked edge at v1 was nudged to the SAME new point, not left behind");
+  Check(far_end.DistanceTo(far_corner) < 1e-6, "that same neighboring edge's own FAR corner is untouched");
+
+  // The remaining two corners (not v0, not v1) kept their own original
+  // positions - this edit stayed local to the one corner it targeted.
+  for (int vi = 0; vi < plate.raw().m_V.Count(); ++vi) {
+    if (vi == v0 || vi == v1 || vi == far_vi) continue;
+    const Point3d q = plate.raw().m_V[vi].point;
+    const bool at_a_box_corner = (std::abs(q.x) < 1e-6 || std::abs(q.x - 2) < 1e-6) &&
+                                  (std::abs(q.y) < 1e-6 || std::abs(q.y - 2) < 1e-6) && std::abs(q.z - 1) < 1e-6;
+    Check(at_a_box_corner, "every other corner of the plate still sits at one of the original 4 positions");
+  }
+
+  // Confirm the whole tessellation pipeline sees the moved corner too,
+  // the same real-regression check TestReplaceEdgeCurveRefitsANakedEdge
+  // ToABowedSubstitute already applies to a plain ReplaceEdgeCurve() -
+  // this class's own per-face side tables must not keep showing the
+  // pre-edit boundary.
+  const std::vector<Brep::PlanarFace> after = plate.PlanarFaces();
+  Check(after.size() == 1, "PlanarFaces() still reports exactly 1 face after ReplaceEdge");
+  bool found_moved_corner = false;
+  for (const Point3d& q : after[0].loop) {
+    if (q.DistanceTo(p1_moved) < 1e-6) found_moved_corner = true;
+  }
+  Check(found_moved_corner, "PlanarFaces()'s own re-derived loop actually passes through the moved corner");
+}
+
+// The negative control proving ReplaceEdge() checks a genuine fit, not
+// just endpoint bookkeeping: moving a genuine BOX CORNER (valence 3,
+// three mutually non-parallel bordering faces) anywhere off its own
+// exact original position can only ever fit AT MOST one of those three
+// faces' own fixed planes at a time - a real, inherent limitation this
+// method shares with ReplaceEdgeCurve() itself (neither one resizes a
+// face's own surface, only re-trims against it), not a bug. Refused via
+// Result::Failed, the same uniform contract every other "can't" case
+// here reports - and, the real point of this test, leaves the WHOLE
+// Brep, vertices included, completely untouched.
+void TestBrepReplaceEdgeFailsOnABoxCornerLeavesVerticesUntouched() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  Brep box = Brep::BoxWelded(0, 0, 0, 2, 2, 2);
+  const int edge_index = 0;
+  const ON_BrepEdge& edge0 = box.raw().m_E[edge_index];
+  const int v0 = edge0.m_vi[0];
+  const int v1 = edge0.m_vi[1];
+  const Point3d p0 = box.raw().m_V[v0].point;
+  const Point3d p1 = box.raw().m_V[v1].point;
+
+  std::vector<Point3d> all_before(static_cast<size_t>(box.raw().m_V.Count()));
+  for (int vi = 0; vi < box.raw().m_V.Count(); ++vi) all_before[static_cast<size_t>(vi)] = box.raw().m_V[vi].point;
+
+  // Moves v1 straight outward along the box's own diagonal through it -
+  // off every one of its three bordering faces at once.
+  ON_3dVector outward = p1 - Point3d(1, 1, 1);
+  outward.Unitize();
+  const Point3d p1_moved = p1 + outward * 1.5;
+  const NurbsCurve stretched = NurbsCurve::FromControlPoints({p0, p1_moved}, /*degree=*/1);
+
+  const Result r = box.ReplaceEdge(edge_index, stretched, 0.01);
+  Check(r == Result::Failed, "ReplaceEdge reports Result::Failed when the target point can't fit the "
+                             "corner's own bordering faces");
+
+  bool any_moved = false;
+  for (int vi = 0; vi < box.raw().m_V.Count(); ++vi) {
+    if (box.raw().m_V[vi].point.DistanceTo(all_before[static_cast<size_t>(vi)]) > 1e-9) any_moved = true;
+  }
+  Check(!any_moved, "every vertex of the box - not just v0/v1 - is exactly where it started after the refusal");
+  Check(box.raw().IsValid(), "the box is still a valid ON_Brep after the refused edit");
+}
+
 // Brep::UnjoinEdge() on the two-square fixture's own shared edge: before,
 // exactly 1 edge is shared (2-trim) and 6 are naked (1-trim); after, 0
 // are shared and 8 are naked - the same TrimCount()==1 test this
@@ -71213,6 +72397,154 @@ void TestCurveOffsetInPlaneChamferStyleClosedSquareMatchesClosedFormPerimeter() 
         "distance - a straight chord is always shorter than its own arc");
 }
 
+// `CurveOffsetCornerStyle::Smooth`: on the same genuinely convex corners
+// `TestCurveOffsetInPlaneRoundStyleFilletsConvexCorners()` already
+// exercises, Smooth must still pass through the same two tangent points
+// T0/T1 Round/Chamfer already use, but join them with a G2 (curvature-
+// continuous) blend rather than a circular arc - the real, falsifiable
+// difference: Round's own arc has curvature exactly `1/distance` right at
+// T0/T1 (checked directly below, not assumed), while Smooth's blend - built
+// from two zero-curvature straight lines - must measure curvature
+// (numerically) zero at those same two points instead.
+void TestCurveOffsetInPlaneSmoothStyleBlendsConvexCornersWithZeroCurvatureJunctions() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point3d> cps = {
+      Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  ON_Plane plane;
+  Check(poly.raw().IsPlanar(&plane, 1e-9), "OffsetInPlane Smooth setup: curve is planar");
+
+  NurbsCurve out_round, out_smooth;
+  Check(poly.OffsetInPlane(1.0, out_round, -1.0, CurveOffsetCornerStyle::Round) == Result::Ok,
+        "Round offset succeeds on this fixture (setup for the cross-check below)");
+  Check(poly.OffsetInPlane(1.0, out_smooth, -1.0, CurveOffsetCornerStyle::Smooth) == Result::Ok,
+        "Smooth offset succeeds on the same open polyline");
+
+  Check(!(out_smooth.Degree() == 1 && out_smooth.ControlPointCount() == 4),
+        "Smooth offset is NOT the same plain 4-CV polyline Sharp produces - the corners were genuinely blended");
+
+  for (int i = 1; i <= 2; ++i) {
+    Vector3d edge_in_dir = cps[static_cast<size_t>(i)] - cps[static_cast<size_t>(i - 1)];
+    Vector3d edge_out_dir = cps[static_cast<size_t>(i + 1)] - cps[static_cast<size_t>(i)];
+    edge_in_dir.Unitize();
+    edge_out_dir.Unitize();
+    Vector3d n0 = ON_CrossProduct(edge_in_dir, plane.zaxis);
+    Vector3d n1 = ON_CrossProduct(edge_out_dir, plane.zaxis);
+    n0.Unitize();
+    n1.Unitize();
+
+    const Point3d vertex = cps[static_cast<size_t>(i)];
+    const Point3d T0 = vertex + 1.0 * n0;
+    const Point3d T1 = vertex + 1.0 * n1;
+
+    Check(out_smooth.ClosestPoint(T0, 2000).DistanceTo(T0) < 1e-6,
+          "Smooth offset: the result passes through the SAME tangent point T0 Round/Chamfer already use");
+    Check(out_smooth.ClosestPoint(T1, 2000).DistanceTo(T1) < 1e-6,
+          "Smooth offset: the result passes through the SAME tangent point T1 Round/Chamfer already use");
+
+    Vector3d bisector = n0 + n1;
+    const double bisector_len = bisector.Length();
+    Check(bisector_len > 1e-9, "Smooth corner setup: the two offset directions are not opposite");
+    const Point3d round_bisector_point = vertex + (1.0 / bisector_len) * bisector;
+    Check(out_smooth.ClosestPoint(round_bisector_point, 2000).DistanceTo(round_bisector_point) > 0.01,
+          "Smooth offset: the result does NOT pass through Round's own circular-arc bisector point - a "
+          "genuinely different corner shape, not a relabeled copy of Round's own construction");
+
+    // The real, falsifiable distinguishing property: curvature at the
+    // shared tangent points. Round's arc has curvature exactly 1/distance
+    // (= 1.0 here) there; Smooth's blend, built from two zero-curvature
+    // lines matched to G2, must have curvature (numerically) zero there
+    // instead.
+    const double t0_round = out_round.ClosestPointParameter(T0, 2000);
+    const double t0_smooth = out_smooth.ClosestPointParameter(T0, 2000);
+    const double t1_round = out_round.ClosestPointParameter(T1, 2000);
+    const double t1_smooth = out_smooth.ClosestPointParameter(T1, 2000);
+    Check(std::abs(out_round.CurvatureAt(t0_round).Length() - 1.0) < 1e-3,
+          "Smooth corner setup: Round's own arc really does have curvature 1/distance = 1.0 at T0, confirmed "
+          "directly rather than assumed");
+    Check(std::abs(out_round.CurvatureAt(t1_round).Length() - 1.0) < 1e-3,
+          "Smooth corner setup: Round's own arc really does have curvature 1/distance = 1.0 at T1 too");
+    Check(out_smooth.CurvatureAt(t0_smooth).Length() < 1e-3,
+          "Smooth offset: curvature at T0 is (numerically) zero - the blend matches the incoming straight "
+          "edge's own zero curvature exactly, unlike Round's own discontinuous jump to 1.0 there");
+    Check(out_smooth.CurvatureAt(t1_smooth).Length() < 1e-3,
+          "Smooth offset: curvature at T1 is (numerically) zero too - the SAME zero-curvature match on the "
+          "outgoing straight edge's own side of the corner");
+  }
+}
+
+// Mirrors TestCurveOffsetInPlaneRoundStyleLeavesConcaveCornerAsExactMiter():
+// on the reflex (concave) vertex of the L-tromino fixture, Smooth must
+// leave the corner at the exact Sharp miter point too - there is no gap
+// on that side of the turn to fill with anything, blended or not - while
+// still blending its genuinely convex neighbors.
+void TestCurveOffsetInPlaneSmoothStyleLeavesConcaveCornerAsExactMiter() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0),  Point3d(10, 0, 0), Point3d(10, 4, 0),
+                                       Point3d(4, 4, 0),  Point3d(4, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out_sharp, out_smooth;
+  Check(poly.OffsetInPlane(1.0, out_sharp) == Result::Ok, "Sharp offset still succeeds on the reflex fixture");
+  Check(poly.OffsetInPlane(1.0, out_smooth, -1.0, CurveOffsetCornerStyle::Smooth) == Result::Ok,
+        "Smooth offset succeeds on the same reflex fixture");
+
+  const Point3d reflex_sharp_corner = out_sharp.ControlPointAt(3);
+  Check(out_smooth.ClosestPoint(reflex_sharp_corner, 2000).DistanceTo(reflex_sharp_corner) < 1e-6,
+        "Smooth offset: the reflex (concave) corner is untouched - the result still passes through exactly "
+        "Sharp's own miter point there");
+
+  for (int i : {2, 4}) {
+    const Point3d sharp_corner = out_sharp.ControlPointAt(i);
+    Check(out_smooth.ClosestPoint(sharp_corner, 2000).DistanceTo(sharp_corner) > 0.01,
+          "Smooth offset: a genuinely convex neighbor of the reflex vertex is NOT left at Sharp's own corner "
+          "point - it was blended");
+  }
+}
+
+// A CLOSED polygon exercises the wraparound seam corner too. Smooth's own
+// total length has no simple closed form (unlike Round's arc or Chamfer's
+// chord), but it is still RIGOROUSLY bounded below by Chamfer's own exact
+// chord length - any curve connecting the same two tangent points can
+// never be shorter than the straight line between them.
+void TestCurveOffsetInPlaneSmoothStyleClosedSquareStaysClosedAndLongerThanChamferChord() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out;
+  const double distance = 1.0;
+  Check(poly.OffsetInPlane(distance, out, -1.0, CurveOffsetCornerStyle::Smooth) == Result::Ok,
+        "Smooth offset succeeds on a closed square");
+  Check(out.IsClosed(), "Smooth offset on a closed square: the result is itself closed");
+  Check(out.PointAt(out.Domain().min).DistanceTo(out.PointAt(out.Domain().max)) < 1e-6,
+        "Smooth offset on a closed square: the wraparound seam corner closes the loop exactly");
+
+  const double chamfer_perimeter = 4.0 * 10.0 + 4.0 * distance * std::sqrt(2.0);
+  Check(out.Length(4000) > chamfer_perimeter - 1e-6,
+        "Smooth offset on a closed square: total length is strictly no shorter than Chamfer's own exact "
+        "straight-chord perimeter - any curve joining the same two tangent points can't be shorter than the "
+        "line between them");
+}
+
 // Reuses `TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter()`'s
 // own L-tromino fixture, but shrinking it INWARD (a negative distance,
 // confirmed by direct probe - not assumed - to genuinely cross two
@@ -75025,6 +76357,7 @@ int main() {
   TestCurveFitLeastSquares();
   TestCurveHelix();
   TestCurveFitLeastSquaresConstrainedRefit();
+  TestBrepRefitTrim();
   TestCurveCurvature();
   TestCurveSuggestedSamples();
   TestCurveSuggestedParameterValues();
@@ -75080,10 +76413,13 @@ int main() {
   TestFindSurfaceSilhouettePointsSelfOcclusionTorus();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
+  TestBrepPersistentIdsSurviveCompact();
+  TestBrepJoinNakedEdgesFloorsRecordedToleranceByEdgeExtent();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralFreeformSurfaceOperand();
   TestBooleanCombineGeneralFreeformVsFreeformOperand();
   TestBooleanCombineGeneralCoplanarBoxes();
+  TestBooleanCombineGeneralAsymmetricCoincidentSubFace();
   TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance();
   TestBooleanCombineGeneralBoxCylinder();
   TestBooleanCombineGeneralCallerTolerance();
@@ -75136,6 +76472,10 @@ int main() {
   TestSplitBrepByManyPlanesOffsetBeyondTargetDropsTheEmptySlab();
   TestSplitBrepByManyPlanesDuplicateOffsetIsHarmless();
   TestSplitBrepByManyPlanesRejectsEmptyTargetEmptyOffsetsZeroNormalAndNonPositiveTolerance();
+  TestSplitBrepByManySolidsKeepAllTwoDisjointCuttersReturnThreePieces();
+  TestSplitBrepByManySolidsKeepAllCutterMissingTargetDropsTheEmptyPiece();
+  TestSplitBrepByManySolidsKeepAllCutterConsumingEntireRemainderStopsEarly();
+  TestSplitBrepByManySolidsKeepAllRejectsEmptyTargetEmptyCutterGroupAndNonPositiveTolerance();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();
@@ -75222,6 +76562,9 @@ int main() {
   TestOffsetSolidExcessiveShrinkErodesToNothingAndThrows();
   TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks();
   TestOffsetSolidHandlesGenuinelyConcaveSolid();
+  TestShellViaOffsetSolidOnBoxMatchesExactVolumeDifference();
+  TestShellViaOffsetSolidRoundsConcaveCornerUnlikeMeshShell();
+  TestShellViaOffsetSolidArgumentChecksAndExcessiveThicknessThrows();
   TestDecompose();
   TestMinGap();
   TestRefineToLength();
@@ -75375,6 +76718,7 @@ int main() {
   TestMeshComputeFaceNormals();
   TestMeshFacetedGivesFlatShading();
   TestMeshComputeBoxMappingUVs();
+  TestMeshComputeBoxMappingUVsFacetedResolvesSeam();
   TestMeshComputePlanarMappingUVs();
   TestMeshComputeCylindricalMappingUVs();
   TestMeshComputeSphericalMappingUVs();
@@ -75431,6 +76775,7 @@ int main() {
   TestMeshSavePlyBinaryRoundTrips();
   TestMeshSavePlyBigEndianRoundTrips();
   TestMeshSavePlyVertexColorsRoundTrips();
+  TestMeshVertexAlphaRoundTrips();
   TestMeshLoadPlyRejectsMalformedFiles();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
@@ -75837,6 +77182,10 @@ int main() {
   TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute();
   TestReplaceEdgeCurveThrowsOnEndpointMismatch();
   TestReplaceEdgeCurveThrowsOnSurfaceMismatch();
+  TestBrepResyncTrimToEdgeCurveResyncsATrimAfterADirectEdgeCurveChange();
+  TestBrepResyncTrimToEdgeCurveRejectsOutOfRangeAndDeletedEdge();
+  TestBrepReplaceEdgeMovesOneEndpointSlidingACornerInPlace();
+  TestBrepReplaceEdgeFailsOnABoxCornerLeavesVerticesUntouched();
   TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies();
   TestUnjoinEdgeGeneralizesToThreeOrMoreTrims();
   TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate();
@@ -76104,6 +77453,9 @@ int main() {
   TestCurveOffsetInPlaneChamferStyleCutsConvexCorners();
   TestCurveOffsetInPlaneChamferStyleLeavesConcaveCornerAsExactMiter();
   TestCurveOffsetInPlaneChamferStyleClosedSquareMatchesClosedFormPerimeter();
+  TestCurveOffsetInPlaneSmoothStyleBlendsConvexCornersWithZeroCurvatureJunctions();
+  TestCurveOffsetInPlaneSmoothStyleLeavesConcaveCornerAsExactMiter();
+  TestCurveOffsetInPlaneSmoothStyleClosedSquareStaysClosedAndLongerThanChamferChord();
   TestCurveOffsetInPlaneClosedPolygonRefusesSelfIntersectingLoop();
   TestNurbsCurveFilletCornerRightAngle();
   TestNurbsCurveFilletCornerObtuseAngleAndTangency();
