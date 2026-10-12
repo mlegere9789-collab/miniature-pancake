@@ -982,14 +982,14 @@ void Application::LoadNamedSnapshotsSidecar(const std::string& path) {
   }
 }
 
-bool Application::SaveDocument(const std::string& path, std::string& error) {
+bool Application::SaveDocument(const std::string& path, std::string& error, int dm_version) {
   const std::string ext = ToLower(fs::path(path).extension().string());
   bool ok = false;
   if (ext == ".3dm" || ext.empty()) {
     std::string p = path;
     if (ext.empty()) p += ".3dm";
     doc_.FlushPendingHistory();  // finalize the last in-flight edit before it's captured/exported
-    ok = Save3dm(doc_, p, error, /*include_reference_objects=*/false);
+    ok = Save3dm(doc_, p, error, /*include_reference_objects=*/false, dm_version);
     if (ok) {
       doc_.SetPath(p);
       doc_.SetModified(false);
@@ -1080,7 +1080,7 @@ bool Application::ImportFile(const std::string& path, std::string& error) {
   return ok;
 }
 
-bool Application::ExportSelected(const std::string& path, std::string& error) {
+bool Application::ExportSelected(const std::string& path, std::string& error, int dm_version) {
   const std::string ext = ToLower(fs::path(path).extension().string());
   if (ext == ".3dm") {
     Document sub;
@@ -1088,7 +1088,7 @@ bool Application::ExportSelected(const std::string& path, std::string& error) {
       if (o.selected) sub.Add(o);
     }
     sub.Layers() = doc_.Layers();
-    return Save3dm(sub, path, error);
+    return Save3dm(sub, path, error, /*include_reference_objects=*/true, dm_version);
   }
   if (ext == ".dxf") return ExportDxf(doc_, path, true, error);
   if (ext == ".dwg") return ExportDwg(doc_, path, true, error);
