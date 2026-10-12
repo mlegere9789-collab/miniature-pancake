@@ -202,7 +202,8 @@ Result BuildRoundOffsetCorner(const Point3d& vertex, const Vector3d& normal, con
                                const Vector3d& n1, double turn_n, double distance,
                                CurveOffsetCornerStyle corner_style, RoundOffsetCorner& corner) {
   const bool is_fill_corner = (corner_style == CurveOffsetCornerStyle::Round ||
-                                corner_style == CurveOffsetCornerStyle::Chamfer) &&
+                                corner_style == CurveOffsetCornerStyle::Chamfer ||
+                                corner_style == CurveOffsetCornerStyle::Smooth) &&
                                ((turn_n > 1e-9 && distance > 0.0) || (turn_n < -1e-9 && distance < 0.0));
   if (is_fill_corner) {
     const Point3d T0 = vertex + distance * n0;
@@ -215,6 +216,44 @@ Result BuildRoundOffsetCorner(const Point3d& vertex, const Vector3d& normal, con
       corner.piece = chamfer_segment;
       return Result::Ok;
     }
+    if (corner_style == CurveOffsetCornerStyle::Smooth) {
+      // Both adjacent offset edges are straight lines (zero curvature
+      // everywhere), so a G2 (curvature-continuous) Hermite blend between
+      // them starts and ends at curvature zero too - unlike Round's own
+      // circular arc, whose junction with each straight edge is only
+      // tangent-continuous (G1): the curvature jumps discontinuously from
+      // 0 on the line to 1/|distance| right at T0/T1. `edir_prev`/
+      // `edir_next` - the two edges' own unit directions - are recovered
+      // from n0/n1 via `normal x (d x normal) == d` (d is already
+      // perpendicular to normal, the standard vector triple-product
+      // identity), rather than threading a second pair of parameters
+      // through every caller just for this one style.
+      const Vector3d edir_prev = ON_CrossProduct(normal, n0);
+      const Vector3d edir_next = ON_CrossProduct(normal, n1);
+      const double chord = T0.DistanceTo(T1);
+      if (chord > 1e-12) {
+        // Each temporary line's own raw (non-unit) derivative at the
+        // matched end is scaled to the chord length T0-T1 - the standard
+        // chord-length-scaled-tangent convention for a well-proportioned
+        // two-point Hermite curve (neither an overshooting loop nor a
+        // visually flat, barely-curved blend), not an arbitrary constant.
+        NurbsCurve line0 = NurbsCurve::FromControlPoints({T0 - chord * edir_prev, T0}, 1);
+        NurbsCurve line1 = NurbsCurve::FromControlPoints({T1, T1 + chord * edir_next}, 1);
+        NurbsCurve blend;
+        if (NurbsCurve::BlendCurves(line0, line0.Domain().max, false, line1, line1.Domain().min, false, 2,
+                                     blend) == Result::Ok) {
+          corner.departs = T0;
+          corner.arrives = T1;
+          corner.has_piece = true;
+          corner.piece = blend;
+          return Result::Ok;
+        }
+      }
+      // Degenerate (near-zero chord, or BlendCurves itself failed): fall
+      // through to the exact miter point below, the same fallback the
+      // Round branch's own degenerate-arc-frame case already uses.
+    }
+    if (corner_style == CurveOffsetCornerStyle::Round) {
     Vector3d xaxis = T0 - vertex;
     Vector3d zaxis = normal;
     if (xaxis.Unitize()) {
@@ -246,6 +285,7 @@ Result BuildRoundOffsetCorner(const Point3d& vertex, const Vector3d& normal, con
     // Degenerate arc frame (T0 effectively equals vertex, or T1 lands
     // exactly opposite T0's own xaxis): fall through to the exact miter
     // point below instead, the same as any non-fill corner.
+    }
   }
 
   const double denom = 1.0 + ON_DotProduct(n0, n1);

@@ -71630,6 +71630,154 @@ void TestCurveOffsetInPlaneChamferStyleClosedSquareMatchesClosedFormPerimeter() 
         "distance - a straight chord is always shorter than its own arc");
 }
 
+// `CurveOffsetCornerStyle::Smooth`: on the same genuinely convex corners
+// `TestCurveOffsetInPlaneRoundStyleFilletsConvexCorners()` already
+// exercises, Smooth must still pass through the same two tangent points
+// T0/T1 Round/Chamfer already use, but join them with a G2 (curvature-
+// continuous) blend rather than a circular arc - the real, falsifiable
+// difference: Round's own arc has curvature exactly `1/distance` right at
+// T0/T1 (checked directly below, not assumed), while Smooth's blend - built
+// from two zero-curvature straight lines - must measure curvature
+// (numerically) zero at those same two points instead.
+void TestCurveOffsetInPlaneSmoothStyleBlendsConvexCornersWithZeroCurvatureJunctions() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point3d> cps = {
+      Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  ON_Plane plane;
+  Check(poly.raw().IsPlanar(&plane, 1e-9), "OffsetInPlane Smooth setup: curve is planar");
+
+  NurbsCurve out_round, out_smooth;
+  Check(poly.OffsetInPlane(1.0, out_round, -1.0, CurveOffsetCornerStyle::Round) == Result::Ok,
+        "Round offset succeeds on this fixture (setup for the cross-check below)");
+  Check(poly.OffsetInPlane(1.0, out_smooth, -1.0, CurveOffsetCornerStyle::Smooth) == Result::Ok,
+        "Smooth offset succeeds on the same open polyline");
+
+  Check(!(out_smooth.Degree() == 1 && out_smooth.ControlPointCount() == 4),
+        "Smooth offset is NOT the same plain 4-CV polyline Sharp produces - the corners were genuinely blended");
+
+  for (int i = 1; i <= 2; ++i) {
+    Vector3d edge_in_dir = cps[static_cast<size_t>(i)] - cps[static_cast<size_t>(i - 1)];
+    Vector3d edge_out_dir = cps[static_cast<size_t>(i + 1)] - cps[static_cast<size_t>(i)];
+    edge_in_dir.Unitize();
+    edge_out_dir.Unitize();
+    Vector3d n0 = ON_CrossProduct(edge_in_dir, plane.zaxis);
+    Vector3d n1 = ON_CrossProduct(edge_out_dir, plane.zaxis);
+    n0.Unitize();
+    n1.Unitize();
+
+    const Point3d vertex = cps[static_cast<size_t>(i)];
+    const Point3d T0 = vertex + 1.0 * n0;
+    const Point3d T1 = vertex + 1.0 * n1;
+
+    Check(out_smooth.ClosestPoint(T0, 2000).DistanceTo(T0) < 1e-6,
+          "Smooth offset: the result passes through the SAME tangent point T0 Round/Chamfer already use");
+    Check(out_smooth.ClosestPoint(T1, 2000).DistanceTo(T1) < 1e-6,
+          "Smooth offset: the result passes through the SAME tangent point T1 Round/Chamfer already use");
+
+    Vector3d bisector = n0 + n1;
+    const double bisector_len = bisector.Length();
+    Check(bisector_len > 1e-9, "Smooth corner setup: the two offset directions are not opposite");
+    const Point3d round_bisector_point = vertex + (1.0 / bisector_len) * bisector;
+    Check(out_smooth.ClosestPoint(round_bisector_point, 2000).DistanceTo(round_bisector_point) > 0.01,
+          "Smooth offset: the result does NOT pass through Round's own circular-arc bisector point - a "
+          "genuinely different corner shape, not a relabeled copy of Round's own construction");
+
+    // The real, falsifiable distinguishing property: curvature at the
+    // shared tangent points. Round's arc has curvature exactly 1/distance
+    // (= 1.0 here) there; Smooth's blend, built from two zero-curvature
+    // lines matched to G2, must have curvature (numerically) zero there
+    // instead.
+    const double t0_round = out_round.ClosestPointParameter(T0, 2000);
+    const double t0_smooth = out_smooth.ClosestPointParameter(T0, 2000);
+    const double t1_round = out_round.ClosestPointParameter(T1, 2000);
+    const double t1_smooth = out_smooth.ClosestPointParameter(T1, 2000);
+    Check(std::abs(out_round.CurvatureAt(t0_round).Length() - 1.0) < 1e-3,
+          "Smooth corner setup: Round's own arc really does have curvature 1/distance = 1.0 at T0, confirmed "
+          "directly rather than assumed");
+    Check(std::abs(out_round.CurvatureAt(t1_round).Length() - 1.0) < 1e-3,
+          "Smooth corner setup: Round's own arc really does have curvature 1/distance = 1.0 at T1 too");
+    Check(out_smooth.CurvatureAt(t0_smooth).Length() < 1e-3,
+          "Smooth offset: curvature at T0 is (numerically) zero - the blend matches the incoming straight "
+          "edge's own zero curvature exactly, unlike Round's own discontinuous jump to 1.0 there");
+    Check(out_smooth.CurvatureAt(t1_smooth).Length() < 1e-3,
+          "Smooth offset: curvature at T1 is (numerically) zero too - the SAME zero-curvature match on the "
+          "outgoing straight edge's own side of the corner");
+  }
+}
+
+// Mirrors TestCurveOffsetInPlaneRoundStyleLeavesConcaveCornerAsExactMiter():
+// on the reflex (concave) vertex of the L-tromino fixture, Smooth must
+// leave the corner at the exact Sharp miter point too - there is no gap
+// on that side of the turn to fill with anything, blended or not - while
+// still blending its genuinely convex neighbors.
+void TestCurveOffsetInPlaneSmoothStyleLeavesConcaveCornerAsExactMiter() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0),  Point3d(10, 0, 0), Point3d(10, 4, 0),
+                                       Point3d(4, 4, 0),  Point3d(4, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out_sharp, out_smooth;
+  Check(poly.OffsetInPlane(1.0, out_sharp) == Result::Ok, "Sharp offset still succeeds on the reflex fixture");
+  Check(poly.OffsetInPlane(1.0, out_smooth, -1.0, CurveOffsetCornerStyle::Smooth) == Result::Ok,
+        "Smooth offset succeeds on the same reflex fixture");
+
+  const Point3d reflex_sharp_corner = out_sharp.ControlPointAt(3);
+  Check(out_smooth.ClosestPoint(reflex_sharp_corner, 2000).DistanceTo(reflex_sharp_corner) < 1e-6,
+        "Smooth offset: the reflex (concave) corner is untouched - the result still passes through exactly "
+        "Sharp's own miter point there");
+
+  for (int i : {2, 4}) {
+    const Point3d sharp_corner = out_sharp.ControlPointAt(i);
+    Check(out_smooth.ClosestPoint(sharp_corner, 2000).DistanceTo(sharp_corner) > 0.01,
+          "Smooth offset: a genuinely convex neighbor of the reflex vertex is NOT left at Sharp's own corner "
+          "point - it was blended");
+  }
+}
+
+// A CLOSED polygon exercises the wraparound seam corner too. Smooth's own
+// total length has no simple closed form (unlike Round's arc or Chamfer's
+// chord), but it is still RIGOROUSLY bounded below by Chamfer's own exact
+// chord length - any curve connecting the same two tangent points can
+// never be shorter than the straight line between them.
+void TestCurveOffsetInPlaneSmoothStyleClosedSquareStaysClosedAndLongerThanChamferChord() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out;
+  const double distance = 1.0;
+  Check(poly.OffsetInPlane(distance, out, -1.0, CurveOffsetCornerStyle::Smooth) == Result::Ok,
+        "Smooth offset succeeds on a closed square");
+  Check(out.IsClosed(), "Smooth offset on a closed square: the result is itself closed");
+  Check(out.PointAt(out.Domain().min).DistanceTo(out.PointAt(out.Domain().max)) < 1e-6,
+        "Smooth offset on a closed square: the wraparound seam corner closes the loop exactly");
+
+  const double chamfer_perimeter = 4.0 * 10.0 + 4.0 * distance * std::sqrt(2.0);
+  Check(out.Length(4000) > chamfer_perimeter - 1e-6,
+        "Smooth offset on a closed square: total length is strictly no shorter than Chamfer's own exact "
+        "straight-chord perimeter - any curve joining the same two tangent points can't be shorter than the "
+        "line between them");
+}
+
 // Reuses `TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter()`'s
 // own L-tromino fixture, but shrinking it INWARD (a negative distance,
 // confirmed by direct probe - not assumed - to genuinely cross two
@@ -76526,6 +76674,9 @@ int main() {
   TestCurveOffsetInPlaneChamferStyleCutsConvexCorners();
   TestCurveOffsetInPlaneChamferStyleLeavesConcaveCornerAsExactMiter();
   TestCurveOffsetInPlaneChamferStyleClosedSquareMatchesClosedFormPerimeter();
+  TestCurveOffsetInPlaneSmoothStyleBlendsConvexCornersWithZeroCurvatureJunctions();
+  TestCurveOffsetInPlaneSmoothStyleLeavesConcaveCornerAsExactMiter();
+  TestCurveOffsetInPlaneSmoothStyleClosedSquareStaysClosedAndLongerThanChamferChord();
   TestCurveOffsetInPlaneClosedPolygonRefusesSelfIntersectingLoop();
   TestNurbsCurveFilletCornerRightAngle();
   TestNurbsCurveFilletCornerObtuseAngleAndTangency();
