@@ -32914,6 +32914,146 @@ void TestMeshLoadObjFanTriangulatesNgonFaces() {
   std::remove(relative_path.c_str());
 }
 
+void TestMeshLoadObjGroupsAndMaterials() {
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Closes LoadObj()'s own disclosed "the `.mtl`/per-group/per-object
+  // gaps remain open" item - before this, every `g`/`o`/`usemtl`/
+  // `mtllib` line was silently skipped entirely.
+  const std::string mtl_path = "dino8_kernel_mesh_obj_test_materials.mtl";
+  {
+    std::ofstream mtl(mtl_path);
+    mtl << "newmtl Red\nKd 1.0 0.0 0.0\n";
+    mtl << "newmtl Blue\nKd 0.0 0.0 1.0\n";
+    mtl << "newmtl Green\nKd 0.0 1.0 0.0\n";
+  }
+
+  const std::string obj_path = "dino8_kernel_mesh_obj_test_groups_materials.obj";
+  {
+    std::ofstream out(obj_path);
+    // Quad A (no group/material yet - must read back as empty, not
+    // crash or inherit something from later in the file).
+    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
+    out << "f 1 2 3 4\n";
+    // Quad B, group "GroupA"/material "Red".
+    out << "v 2 0 0\nv 3 0 0\nv 3 1 0\nv 2 1 0\n";
+    out << "mtllib " << mtl_path << '\n';
+    out << "g GroupA\nusemtl Red\n";
+    out << "f 5 6 7 8\n";
+    // Quad C, group "GroupB"/material "Blue" - 'o' used instead of 'g',
+    // deliberately, to prove both keywords are treated the same way.
+    out << "v 4 0 0\nv 5 0 0\nv 5 1 0\nv 4 1 0\n";
+    out << "o GroupB\nusemtl Blue\n";
+    out << "f 9 10 11 12\n";
+    // A pentagon (fan-triangulates into 3 triangles) under group
+    // "GroupC"/material "Green" - every resulting triangle must inherit
+    // the SAME group/material as this one source line.
+    out << "v 6 0 0\nv 8 0 0\nv 9 1 0\nv 7 2 0\nv 5 1 0\n";
+    out << "g GroupC\nusemtl Green\n";
+    out << "f 13 14 15 16 17\n";
+    // Material name with no resolvable color (never defined in the
+    // .mtl file) - HasFaceMaterialNames() must still be true for this
+    // face, but its own color must not resolve.
+    out << "v 10 0 0\nv 11 0 0\nv 11 1 0\nv 10 1 0\n";
+    out << "usemtl Unknown\n";
+    out << "f 18 19 20 21\n";
+  }
+
+  Mesh mesh;
+  Check(Mesh::LoadObj(obj_path, mesh) == Result::Ok, "LoadObj succeeds on a file with g/o/usemtl/mtllib lines");
+  Check(mesh.FaceCount() == 7, "4 ordinary quads + a pentagon's 3 fan triangles = 7 faces total");
+  Check(mesh.HasFaceGroupNames(), "HasFaceGroupNames() is true once at least one g/o line appeared");
+  Check(mesh.HasFaceMaterialNames(), "HasFaceMaterialNames() is true once at least one usemtl line appeared");
+  Check(mesh.HasFaceMaterialColors(), "HasFaceMaterialColors() is true once at least one material actually resolved");
+
+  Check(mesh.FaceGroupNameAt(0).empty(), "quad A's face (before any g/o line) reports an empty group name");
+  Check(mesh.FaceMaterialNameAt(0).empty(), "quad A's face (before any usemtl line) reports an empty material name");
+
+  Check(mesh.FaceGroupNameAt(1) == "GroupA", "quad B's face reports the exact group name its 'g' line gave it");
+  Check(mesh.FaceMaterialNameAt(1) == "Red", "quad B's face reports the exact material name its 'usemtl' line gave it");
+  const Color red = mesh.FaceMaterialColorAt(1);
+  Check(red.r == 255 && red.g == 0 && red.b == 0,
+        "quad B's face resolves its material's real Kd diffuse color from the .mtl file");
+
+  Check(mesh.FaceGroupNameAt(2) == "GroupB",
+        "quad C's face reports the exact group name its 'o' line gave it - 'o' and 'g' are treated the same");
+  Check(mesh.FaceMaterialNameAt(2) == "Blue", "quad C's face reports the exact material name its 'usemtl' line gave it");
+  const Color blue = mesh.FaceMaterialColorAt(2);
+  Check(blue.r == 0 && blue.g == 0 && blue.b == 255, "quad C's face resolves its own real Kd diffuse color");
+
+  // Faces 3, 4, 5 are the pentagon's own 3 fan triangles (face 0, 1, 2
+  // were the three ordinary quads before it; face indices continue in
+  // file order).
+  bool all_pentagon_triangles_tagged = true;
+  for (int i = 3; i <= 5; ++i) {
+    if (mesh.FaceGroupNameAt(i) != "GroupC" || mesh.FaceMaterialNameAt(i) != "Green") {
+      all_pentagon_triangles_tagged = false;
+    }
+  }
+  Check(all_pentagon_triangles_tagged,
+        "every one of the pentagon's 3 fan-triangulated faces inherits the SAME group/material its "
+        "one source 'f' line had, not just the first");
+  const Color green = mesh.FaceMaterialColorAt(3);
+  Check(green.r == 0 && green.g == 255 && green.b == 0,
+        "a fan-triangulated face's own resolved material color matches its source line's material");
+
+  Check(mesh.FaceMaterialNameAt(6) == "Unknown",
+        "the last quad's face reports the material name its 'usemtl' line gave it, even though that "
+        "name is never defined in the .mtl file");
+  const Color unresolved = mesh.FaceMaterialColorAt(6);
+  Check(unresolved.r == 0 && unresolved.g == 0 && unresolved.b == 0,
+        "a material name with no matching 'newmtl'/'Kd' in the .mtl file reports a default-constructed "
+        "(black) color, not a crash or a stale value from a resolved face");
+
+  const int out_of_range_face = mesh.FaceCount() + 100;
+  Check(mesh.FaceGroupNameAt(out_of_range_face).empty() && mesh.FaceMaterialNameAt(out_of_range_face).empty(),
+        "FaceGroupNameAt()/FaceMaterialNameAt() on a face index this mesh doesn't have return an empty "
+        "string, same contract as every other *At() accessor's own out-of-range case");
+
+  std::remove(obj_path.c_str());
+  std::remove(mtl_path.c_str());
+
+  // A file with g/o/usemtl lines but NO mtllib (or a mtllib naming a
+  // file that doesn't exist) still succeeds, with names recorded but no
+  // colors resolved - mtllib resolution failing is not itself an error.
+  const std::string no_mtl_path = "dino8_kernel_mesh_obj_test_missing_mtllib.obj";
+  {
+    std::ofstream out(no_mtl_path);
+    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
+    out << "mtllib does_not_exist.mtl\n";
+    out << "g SomeGroup\nusemtl SomeMaterial\n";
+    out << "f 1 2 3 4\n";
+  }
+  Mesh no_mtl_mesh;
+  Check(Mesh::LoadObj(no_mtl_path, no_mtl_mesh) == Result::Ok,
+        "LoadObj succeeds even when the mtllib file it names doesn't exist");
+  Check(no_mtl_mesh.HasFaceGroupNames() && no_mtl_mesh.FaceGroupNameAt(0) == "SomeGroup",
+        "the group name is still recorded from the .obj file itself, independent of mtllib resolution");
+  Check(no_mtl_mesh.HasFaceMaterialNames() && no_mtl_mesh.FaceMaterialNameAt(0) == "SomeMaterial",
+        "the material name is still recorded independent of mtllib resolution");
+  Check(!no_mtl_mesh.HasFaceMaterialColors(),
+        "HasFaceMaterialColors() is false when the mtllib file itself can't be found at all");
+  std::remove(no_mtl_path.c_str());
+
+  // A plain file with no g/o/usemtl/mtllib lines at all reports neither
+  // group nor material info - no behavior change from before this
+  // feature existed.
+  const std::string plain_path = "dino8_kernel_mesh_obj_test_no_groups.obj";
+  {
+    std::ofstream out(plain_path);
+    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
+    out << "f 1 2 3 4\n";
+  }
+  Mesh plain_mesh;
+  Check(Mesh::LoadObj(plain_path, plain_mesh) == Result::Ok, "LoadObj succeeds on a plain file with no g/o/usemtl");
+  Check(!plain_mesh.HasFaceGroupNames(), "a file with no g/o line at all reports HasFaceGroupNames() == false");
+  Check(!plain_mesh.HasFaceMaterialNames(),
+        "a file with no usemtl line at all reports HasFaceMaterialNames() == false");
+  std::remove(plain_path.c_str());
+}
+
 void TestMeshSaveOffRoundTrips() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
@@ -57188,8 +57328,13 @@ void TestBrepExtendFaceInPlaceNakedSideGrowsExactRectangleAndLeavesSharedNeighbo
 // Refusal/scope-boundary contract: extending TOWARD the shared edge
 // (the neighbour would need to grow too) is refused rather than guessed
 // at; [t0, t1] already inside the current domain is a genuine no-op;
-// requesting both ends of `direction` extended in one call is out of
-// scope; and the usual thrown-exception cases for bad arguments.
+// requesting BOTH ends of `direction` extended in one call but one of
+// them is toward a shared edge is still refused (2026-10-12: extending
+// both ends is no longer categorically out of scope - see
+// TestBrepExtendFaceInPlaceBothEndsOfOneDirectionGrowsExactRectangle
+// below - so this case is refused for the SAME "cap trim there is not
+// naked" reason as the single-end case directly above, not a separate
+// blanket rule); and the usual thrown-exception cases for bad arguments.
 void TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs() {
   using dino8::kernel::Brep;
   using dino8::kernel::Result;
@@ -57211,8 +57356,14 @@ void TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs() {
   }
   {
     TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+    ON_Brep& b = fixture.brep.raw();
+    const int v_before = b.m_V.Count(), e_before = b.m_E.Count();
     const Result r = fixture.brep.ExtendFaceInPlace(fixture.face_a, 0, -1.0, 2.0, /*linear=*/true);
-    Check(r == Result::Failed, "extending BOTH ends of `direction` in one call is out of scope, refused");
+    Check(r == Result::Failed,
+          "extending BOTH ends of `direction` at once is refused here too - NOT because both-ends is itself out "
+          "of scope any more, but because the RIGHT end (u == 1) still faces the genuinely shared edge with "
+          "face_b, exactly as the single-end case above");
+    Check(b.m_V.Count() == v_before && b.m_E.Count() == e_before, "...and the Brep is left completely untouched");
   }
   {
     TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
@@ -57234,6 +57385,130 @@ void TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs() {
     }
     Check(threw, "an out-of-range face_index throws std::out_of_range");
   }
+}
+
+// A standalone, fully untrimmed planar quad face - all 4 boundary trims
+// naked (no neighbour at all) - the shape ExtendFaceInPlace()'s own
+// "both ends of `direction` in one call" case needs to exercise, since
+// BuildTwoAdjacentPlanarFaces() above deliberately keeps one side of
+// face_a genuinely shared (so its own tests can prove the far neighbour
+// stays untouched) and therefore can never offer two free ends on any
+// one direction at once.
+dino8::kernel::Brep BuildSingleUntrimmedPlanarFace(double x0, double x1, double y0, double y1) {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  dino8::kernel::Brep brep;
+  ON_Brep& b = brep.raw();
+  const std::vector<Point3d> grid = {
+      Point3d(x0, y0, 0), Point3d(x0, y1, 0),
+      Point3d(x1, y0, 0), Point3d(x1, y1, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  auto* surface_copy = new ON_NurbsSurface(surface.raw());
+  const int surface_index = b.AddSurface(surface_copy);
+  const int face_index = b.NewFace(surface_index).m_face_index;
+
+  auto uv = [&](double x, double y) { return Point2d((x - x0) / (x1 - x0), (y - y0) / (y1 - y0)); };
+  const int v00 = b.NewVertex(Point3d(x0, y0, 0), 0.0).m_vertex_index;
+  const int v01 = b.NewVertex(Point3d(x0, y1, 0), 0.0).m_vertex_index;
+  const int v10 = b.NewVertex(Point3d(x1, y0, 0), 0.0).m_vertex_index;
+  const int v11 = b.NewVertex(Point3d(x1, y1, 0), 0.0).m_vertex_index;
+
+  auto new_private_edge = [&](int va, int vb) {
+    const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+    const int ei = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+    b.m_E[ei].m_tolerance = 0.0;
+    return ei;
+  };
+  const int loop_index = b.NewLoop(ON_BrepLoop::outer, b.m_F[face_index]).m_loop_index;
+  auto add_trim = [&](int edge_index, const Point2d& uv0, const Point2d& uv1) {
+    const int c2i = b.AddTrimCurve(new ON_LineCurve(uv0, uv1));
+    ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], /*rev=*/false, b.m_L[loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  };
+  // v == 0 side (rail_lo), u == 1 side (cap_max), v == 1 side (rail_hi),
+  // u == 0 side (cap_min) - every one of the 4 trims below is its own
+  // brand-new, privately-owned edge, so all 4 are naked by construction.
+  add_trim(new_private_edge(v00, v10), uv(x0, y0), uv(x1, y0));
+  add_trim(new_private_edge(v10, v11), uv(x1, y0), uv(x1, y1));
+  add_trim(new_private_edge(v11, v01), uv(x1, y1), uv(x0, y1));
+  add_trim(new_private_edge(v01, v00), uv(x0, y1), uv(x0, y0));
+
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+  return brep;
+}
+
+// ExtendFaceInPlace()'s own new "both ends of `direction` in one call"
+// capability (2026-10-12): closes the "extending both ends of `direction`
+// in one call is a narrower follow-up, not attempted here" gap the
+// single-end version's own doc comment used to name - NurbsSurface::
+// Extend()/ExtendLinear() already grow either end independently within
+// one call (see ExtendLinear()'s own two conditional
+// ExtendOneEndLinear() calls), so only this method's own Brep-level
+// topology rebuild needed generalizing to replace all 4 corners/4 trims
+// instead of assuming one end always stays fixed.
+void TestBrepExtendFaceInPlaceBothEndsOfOneDirectionGrowsExactRectangle() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  Brep brep = BuildSingleUntrimmedPlanarFace(0.0, 4.0, 0.0, 4.0);
+  ON_Brep& b = brep.raw();
+  // Not checked IsValid() here (the same established precedent
+  // BuildTwoAdjacentPlanarFaces()'s own tests already document above):
+  // this fixture builds its own topology by hand and never calls
+  // SetTolerancesBoxesAndFlags()'s own vertex-tolerance follow-up the
+  // way a real kernel entry point does, a known, pre-existing, benign
+  // property of this exact hand-built fixture, not something this
+  // test's own target function introduces or must fix - confirmed
+  // genuinely benign below, where IsValid() IS checked (and passes)
+  // once ExtendFaceInPlace() itself has run and fixed it up.
+  const int v_count_before = b.m_V.Count();
+  const int e_count_before = b.m_E.Count();
+  const double area_before = brep.Tessellate(8, 8)[0].Area();
+  Check(std::fabs(area_before - 16.0) < 1e-4, "setup: the plain 4x4 quad tessellates to its own exact area, 16");
+
+  // u (direction 0) == x / 4, domain [0, 1] - extend BOTH ends in one
+  // call: u in [-0.5, 1.5], i.e. physical x in [-2, 6].
+  const Result r = brep.ExtendFaceInPlace(/*face_index=*/0, /*direction=*/0, -0.5, 1.5, /*linear=*/true);
+  Check(r == Result::Ok, "ExtendFaceInPlace succeeds extending BOTH ends of direction 0 in one call");
+  Check(b.IsValid(), "the Brep is still a valid ON_Brep after the dual-end extension");
+
+  Check(b.m_V.Count() == v_count_before && b.m_E.Count() == e_count_before,
+        "vertex and edge counts are UNCHANGED (all 4 corners/4 edges replaced, all 4 old corners/4 old edges "
+        "deleted - a wash), not grown by a detached new object");
+
+  // The extended rectangle is physical x in [-2, 6] (length 8), y in
+  // [0, 4] (length 4, untouched): 8 * 4 == 32, exactly 16 more than the
+  // original 4x4 == 16 - the closed-form area BOTH ends growing in one
+  // call implies, not merely "grew some" or only one end moving.
+  const double area_after = brep.Tessellate(8, 8)[0].Area();
+  Check(std::fabs(area_after - 32.0) < 1e-4,
+        "the face alone now tessellates to the exact closed-form both-ends-extended rectangle area, 32.0 "
+        "(16.0 original + 2*4 == 8.0 added on the low end + 2*4 == 8.0 added on the high end)");
+
+  // Direct corner-position proof, not just a matching area: all 4 new
+  // physical corners sit exactly on the new [-2, 6] x [0, 4] rectangle's
+  // own 4 corners - a wrong result that happened to total the same area
+  // (e.g. only one end actually moved, by twice as much) would fail
+  // this even though it passed the area check above.
+  bool has_corner_neg2_0 = false, has_corner_neg2_4 = false, has_corner_6_0 = false, has_corner_6_4 = false;
+  const ON_BrepFace& face = b.m_F[0];
+  const ON_BrepLoop& loop = b.m_L[face.m_li[0]];
+  for (int k = 0; k < loop.TrimCount(); ++k) {
+    const ON_BrepTrim* t = loop.Trim(k);
+    const ON_BrepVertex& v0 = b.m_V[b.m_E[t->m_ei].m_vi[0]];
+    const dino8::kernel::Point3d& p = v0.point;
+    if (p.DistanceTo(dino8::kernel::Point3d(-2, 0, 0)) < 1e-9) has_corner_neg2_0 = true;
+    if (p.DistanceTo(dino8::kernel::Point3d(-2, 4, 0)) < 1e-9) has_corner_neg2_4 = true;
+    if (p.DistanceTo(dino8::kernel::Point3d(6, 0, 0)) < 1e-9) has_corner_6_0 = true;
+    if (p.DistanceTo(dino8::kernel::Point3d(6, 4, 0)) < 1e-9) has_corner_6_4 = true;
+  }
+  Check(has_corner_neg2_0 && has_corner_neg2_4 && has_corner_6_0 && has_corner_6_4,
+        "all 4 new boundary corners sit at the exact [-2, 6] x [0, 4] rectangle's own 4 corners - both ends "
+        "genuinely moved to their own correct new position, not just one end or a wrong combination");
 }
 
 // MergeCoplanarFaces()'s own new "faces with holes" capability: the
@@ -76972,6 +77247,7 @@ int main() {
   RunTest("TestMeshLoadObjRejectsMalformedFiles", TestMeshLoadObjRejectsMalformedFiles);
   RunTest("TestMeshLoadObjResolvesRelativeIndices", TestMeshLoadObjResolvesRelativeIndices);
   RunTest("TestMeshLoadObjFanTriangulatesNgonFaces", TestMeshLoadObjFanTriangulatesNgonFaces);
+  RunTest("TestMeshLoadObjGroupsAndMaterials", TestMeshLoadObjGroupsAndMaterials);
   RunTest("TestMeshSaveOffRoundTrips", TestMeshSaveOffRoundTrips);
   RunTest("TestMeshLoadOffRejectsMalformedFiles", TestMeshLoadOffRejectsMalformedFiles);
   RunTest("TestMeshLoadOffRejectsImplausibleElementCounts", TestMeshLoadOffRejectsImplausibleElementCounts);
@@ -77409,6 +77685,7 @@ int main() {
 
   RunTest("TestBrepExtendFaceInPlaceNakedSideGrowsExactRectangleAndLeavesSharedNeighbourUntouched", TestBrepExtendFaceInPlaceNakedSideGrowsExactRectangleAndLeavesSharedNeighbourUntouched);
   RunTest("TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs", TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs);
+  RunTest("TestBrepExtendFaceInPlaceBothEndsOfOneDirectionGrowsExactRectangle", TestBrepExtendFaceInPlaceBothEndsOfOneDirectionGrowsExactRectangle);
 
   RunTest("TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne", TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne);
   RunTest("TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane", TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane);

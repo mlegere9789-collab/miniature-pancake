@@ -5061,29 +5061,35 @@ class Brep {
   // the surface's own (u, v) domain rectangle - i.e. face_index must be
   // untrimmed (its loop reproduces the surface's own natural boundary
   // exactly), the common case for a primitive or boolean-fragment face
-  // that was never itself re-trimmed. [t0, t1] must extend EXACTLY one
-  // end of `direction`'s current domain - the other end of `direction`,
-  // and the entirety of the other direction, stay fixed; extending both
-  // ends of `direction` in one call is a narrower follow-up, not
-  // attempted here. The CAP trim at the end actually being extended, and
+  // that was never itself re-trimmed. [t0, t1] may extend either ONE end
+  // of `direction`'s current domain or BOTH at once (2026-10-12: the
+  // "both ends in one call" restriction this doc comment used to state
+  // is closed - NurbsSurface::Extend()/ExtendLinear() already support a
+  // single call growing both ends, see ExtendLinear()'s own two
+  // conditional ExtendOneEndLinear() calls, so only this method's own
+  // Brep-level topology rebuild needed generalizing, not the underlying
+  // surface math) - either way, the entirety of the OTHER direction
+  // stays fixed. Every CAP trim at an end actually being extended, and
   // BOTH trims that run ALONG `direction` (the two "rails" connecting
-  // the two ends), must be naked (TrimCount() == 1): rebuilding any of
-  // those three edges' own 3D curve is only safe when no other trim -
-  // on any other face - also references it. The FAR cap (the end NOT
-  // being extended) is left completely untouched, vertices and edges
-  // alike, whether it is naked or genuinely shared with a neighbour -
-  // this is exactly how a face sharing one edge with a neighbour extends
-  // AWAY from that neighbour in place; extending TOWARD a shared edge
-  // instead (the neighbour would need to grow too, to stay watertight)
-  // is refused, since that cap or rail trim then isn't naked.
+  // the two ends - always rebuilt, since at least one of their two
+  // endpoints always moves), must be naked (TrimCount() == 1):
+  // rebuilding any of those edges' own 3D curve is only safe when no
+  // other trim - on any other face - also references it. A cap at an
+  // end NOT being extended is left completely untouched, vertices and
+  // edges alike, whether it is naked or genuinely shared with a
+  // neighbour - this is exactly how a face sharing one edge with a
+  // neighbour extends AWAY from that neighbour in place; extending
+  // TOWARD a shared edge instead (the neighbour would need to grow too,
+  // to stay watertight) is refused, since that cap or rail trim then
+  // isn't naked.
   //
-  // Each of the 3 replaced trims' own new 2D/3D curves comes directly
-  // from the extended surface's own IsoCurve() (never a resampled refit,
-  // the same exactness BuildTwoFaceCylinderFixture-style trim
-  // construction already relies on elsewhere in this codebase), oriented
-  // by DIRECT measurement against each corner's own known new position -
-  // never assumed from the old trim's own m_bRev3d or parameter
-  // direction, the same discipline SplitNakedEdgeAt() already uses.
+  // Each replaced trim's own new 2D/3D curves comes directly from the
+  // extended surface's own IsoCurve() (never a resampled refit, the same
+  // exactness BuildTwoFaceCylinderFixture-style trim construction
+  // already relies on elsewhere in this codebase), oriented by DIRECT
+  // measurement against each corner's own known new position - never
+  // assumed from the old trim's own m_bRev3d or parameter direction, the
+  // same discipline SplitNakedEdgeAt() already uses.
   //
   // Throws std::out_of_range if `face_index` is out of range, or
   // std::invalid_argument if it refers to an already-deleted face or if
