@@ -51,6 +51,32 @@ void Check(bool condition, const char* what) {
   }
 }
 
+// 2026-10-12 robustness fix: every Test...() call in main() below now goes
+// through this instead of being invoked directly. Before this, a single
+// test function throwing an uncaught exception (almost always one of the
+// several already-disclosed, order-dependent BooleanCombineGeneral
+// fragmentation limitations this file's own comments name throughout -
+// "edge claimed by 3+ fragment loops" chief among them) took the ENTIRE
+// ~12000-check binary down with it via std::terminate, silently losing
+// every later test's own result - confirmed directly: a full run before
+// this fix aborted partway through at an arbitrary, fixture-dependent
+// point, with everything after simply never executing. A test that throws
+// now reports as a single failed Check() (named after the test function
+// itself, with the exception's own message) and the suite continues to
+// the next one - the failure is surfaced, not swallowed, but it no longer
+// takes down tests that have nothing to do with it.
+void RunTest(const char* name, void (*fn)()) {
+  try {
+    fn();
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "FAILED: %s threw an uncaught exception instead of completing (%s)\n", name, e.what());
+    ++g_failures;
+  } catch (...) {
+    std::fprintf(stderr, "FAILED: %s threw an uncaught non-std::exception instead of completing\n", name);
+    ++g_failures;
+  }
+}
+
 void TestCurveDegreeElevation() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -1584,6 +1610,155 @@ void TestCurveMinDistanceTo() {
       threw = true;
     }
     Check(threw, "MinDistanceTo: a non-positive tolerance throws std::invalid_argument");
+  }
+}
+
+void TestCurveMinDistanceToSurface() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A flat plane (z = 0, spanning a wide enough x/y rectangle that the
+  // real perpendicular foot of the line below lands strictly inside it,
+  // not at an edge) and a line parallel to it, directly above: the true
+  // minimum distance is exactly the perpendicular separation - a hand-
+  // derivable exact answer, the curve/surface sibling of
+  // TestCurveMinDistanceTo's own parallel-lines fixture.
+  {
+    const std::vector<Point3d> plane_grid = {
+        Point3d(0, 0, 0),
+        Point3d(0, 10, 0),
+        Point3d(10, 0, 0),
+        Point3d(10, 10, 0),
+    };
+    const NurbsSurface plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+    const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(2, 2, 5), Point3d(8, 8, 5)}, 1);
+    double dist = -1;
+    Point2d uv(-1, -1);
+    double t = -1;
+    const Result r = line.MinDistanceTo(plane, 0.001, dist, &t, &uv);
+    Check(r == Result::Ok, "MinDistanceTo(surface): a line parallel to a plane converges");
+    Check(std::abs(dist - 5.0) < 1e-3, "MinDistanceTo(surface): a line held 5 above a plane reports exactly 5");
+    Check(std::abs(line.PointAt(t).DistanceTo(plane.PointAt(uv.x, uv.y)) - dist) < 1e-3,
+          "MinDistanceTo(surface): out_t/out_uv's own two points are genuinely dist apart, "
+          "consistent with the reported out_distance");
+  }
+
+  // A line that genuinely pierces the same plane, strictly inside its
+  // extent: the true minimum distance is exactly 0, at the real
+  // crossing point.
+  {
+    const std::vector<Point3d> plane_grid = {
+        Point3d(0, 0, 0),
+        Point3d(0, 10, 0),
+        Point3d(10, 0, 0),
+        Point3d(10, 10, 0),
+    };
+    const NurbsSurface plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+    const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(5, 5, -3), Point3d(5, 5, 3)}, 1);
+    double dist = -1;
+    const Result r = line.MinDistanceTo(plane, 0.001, dist);
+    Check(r == Result::Ok, "MinDistanceTo(surface): a line piercing a plane converges");
+    Check(dist < 1e-3, "MinDistanceTo(surface): a line piercing a plane reports a minimum distance of exactly 0");
+  }
+
+  // A non-positive tolerance throws.
+  {
+    const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    const std::vector<Point3d> plane_grid = {
+        Point3d(0, 0, 5),
+        Point3d(0, 10, 5),
+        Point3d(10, 0, 5),
+        Point3d(10, 10, 5),
+    };
+    const NurbsSurface plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+    double dist = 0;
+    bool threw = false;
+    try {
+      line.MinDistanceTo(plane, 0.0, dist);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "MinDistanceTo(surface): a non-positive tolerance throws std::invalid_argument");
+  }
+}
+
+void TestSurfaceMinDistanceTo() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Two parallel flat planes, both spanning the same wide x/y rectangle
+  // so the true closest pair lands strictly inside both, directly above
+  // one another: the true minimum distance is exactly their perpendicular
+  // separation - a hand-derivable exact answer.
+  {
+    const std::vector<Point3d> grid_a = {
+        Point3d(0, 0, 0),
+        Point3d(0, 10, 0),
+        Point3d(10, 0, 0),
+        Point3d(10, 10, 0),
+    };
+    const std::vector<Point3d> grid_b = {
+        Point3d(0, 0, 4),
+        Point3d(0, 10, 4),
+        Point3d(10, 0, 4),
+        Point3d(10, 10, 4),
+    };
+    const NurbsSurface a = NurbsSurface::FromControlGrid(grid_a, 2, 2, 1, 1);
+    const NurbsSurface b = NurbsSurface::FromControlGrid(grid_b, 2, 2, 1, 1);
+    double dist = -1;
+    Point2d uv_a(-1, -1), uv_b(-1, -1);
+    const Result r = a.MinDistanceTo(b, 0.001, dist, &uv_a, &uv_b);
+    Check(r == Result::Ok, "NurbsSurface::MinDistanceTo: two parallel planes converges");
+    Check(std::abs(dist - 4.0) < 1e-3, "NurbsSurface::MinDistanceTo: two planes 4 apart report exactly 4");
+    Check(std::abs(a.PointAt(uv_a.x, uv_a.y).DistanceTo(b.PointAt(uv_b.x, uv_b.y)) - dist) < 1e-3,
+          "NurbsSurface::MinDistanceTo: out_uv_this/out_uv_other's own two points are genuinely dist "
+          "apart, consistent with the reported out_distance");
+  }
+
+  // Two concentric spheres of different, known radii, centered at the
+  // same real (non-origin) point: every point on the inner one is
+  // exactly |r2 - r1| from the outer one - the surface/surface sibling of
+  // TestCurveMinDistanceTo's own concentric-circles fixture.
+  {
+    const Point3d center(1, -2, 0.5);
+    const double r1 = 3.0, r2 = 5.0;
+    const ON_Sphere s1(center, r1);
+    const ON_Sphere s2(center, r2);
+    ON_NurbsSurface ns1, ns2;
+    Check(s1.GetNurbForm(ns1) != 0 && s2.GetNurbForm(ns2) != 0,
+          "NurbsSurface::MinDistanceTo: both concentric-sphere fixtures build a real NURBS form");
+    NurbsSurface a, b;
+    a.raw() = ns1;
+    b.raw() = ns2;
+    double dist = -1;
+    const Result r = a.MinDistanceTo(b, 0.01, dist);
+    Check(r == Result::Ok, "NurbsSurface::MinDistanceTo: two concentric spheres converges");
+    Check(std::abs(dist - (r2 - r1)) < 1e-1,
+          "NurbsSurface::MinDistanceTo: two concentric spheres report |r2 - r1|");
+  }
+
+  // A non-positive tolerance throws.
+  {
+    const std::vector<Point3d> grid = {
+        Point3d(0, 0, 0),
+        Point3d(0, 10, 0),
+        Point3d(10, 0, 0),
+        Point3d(10, 10, 0),
+    };
+    const NurbsSurface a = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    double dist = 0;
+    bool threw = false;
+    try {
+      a.MinDistanceTo(a, 0.0, dist);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "NurbsSurface::MinDistanceTo: a non-positive tolerance throws std::invalid_argument");
   }
 }
 
@@ -7248,26 +7423,45 @@ void TestBooleanCombineGeneralFreeformVsFreeformOperand() {
   // A loose 0.05 tolerance (volumes here run 6-54): see the disclosed
   // finding just below for exactly why this is not tightened to the 0.01
   // the single-freeform fixture uses.
-  const Mesh mu = TessellateGeneralBooleanClosedMesh(u, 24, 24);
-  const Mesh mi = TessellateGeneralBooleanClosedMesh(i, 24, 24);
-  const Mesh md_ab = TessellateGeneralBooleanClosedMesh(d_ab, 24, 24);
-  const Mesh md_ba = TessellateGeneralBooleanClosedMesh(d_ba, 24, 24);
+  // 2026-10-12 robustness finding (not this test's own original claim):
+  // this exact fixture's tessellation is order-dependent - it completes
+  // cleanly when this test runs standalone (dino8_scratch_test), but can
+  // throw BooleanCombineGeneral's own disclosed "edge claimed by 3+
+  // fragment loops" exception when run as part of the full suite,
+  // aborting the entire binary (uncaught) before any later test gets a
+  // chance to run. The B-rep construction above (every IsValid() Check())
+  // is unaffected either way - only this tessellation-based volume-
+  // identity verification is at risk - so it's wrapped rather than left to
+  // take the whole suite down with it; a caught failure here is reported
+  // as a Check() finding, not silently swallowed.
+  try {
+    const Mesh mu = TessellateGeneralBooleanClosedMesh(u, 24, 24);
+    const Mesh mi = TessellateGeneralBooleanClosedMesh(i, 24, 24);
+    const Mesh md_ab = TessellateGeneralBooleanClosedMesh(d_ab, 24, 24);
+    const Mesh md_ba = TessellateGeneralBooleanClosedMesh(d_ba, 24, 24);
 
-  Check(std::abs((mu.Volume() + mi.Volume()) - (vol_a + vol_b)) < 0.05,
-        "Volume(Union) + Volume(Intersection) matches Volume(freeform_a) + Volume(freeform_b) - the "
-        "implementation-independent identity holding for two genuinely freeform operands");
-  Check(std::abs(md_ab.Volume() - (vol_a - mi.Volume())) < 0.05,
-        "freeform_a - freeform_b's volume matches Volume(freeform_a) - Volume(Intersection)");
-  Check(std::abs(md_ba.Volume() - (vol_b - mi.Volume())) < 0.05,
-        "freeform_b - freeform_a's volume matches Volume(freeform_b) - Volume(Intersection), the other "
-        "argument order of the same Difference identity");
+    Check(std::abs((mu.Volume() + mi.Volume()) - (vol_a + vol_b)) < 0.05,
+          "Volume(Union) + Volume(Intersection) matches Volume(freeform_a) + Volume(freeform_b) - the "
+          "implementation-independent identity holding for two genuinely freeform operands");
+    Check(std::abs(md_ab.Volume() - (vol_a - mi.Volume())) < 0.05,
+          "freeform_a - freeform_b's volume matches Volume(freeform_a) - Volume(Intersection)");
+    Check(std::abs(md_ba.Volume() - (vol_b - mi.Volume())) < 0.05,
+          "freeform_b - freeform_a's volume matches Volume(freeform_b) - Volume(Intersection), the other "
+          "argument order of the same Difference identity");
 
-  // A genuine overlap, not a degenerate touching-only or fully-disjoint
-  // fixture: the intersection has real nonzero volume, strictly smaller
-  // than either operand on its own.
-  Check(mi.Volume() > 0.1 && mi.Volume() < vol_a && mi.Volume() < vol_b,
-        "the two freeform blobs genuinely, partially overlap - nonzero intersection volume, strictly "
-        "smaller than either operand");
+    // A genuine overlap, not a degenerate touching-only or fully-disjoint
+    // fixture: the intersection has real nonzero volume, strictly smaller
+    // than either operand on its own. Depends on the same `mi` the
+    // identities above do, so it belongs in this same try block.
+    Check(mi.Volume() > 0.1 && mi.Volume() < vol_a && mi.Volume() < vol_b,
+          "the two freeform blobs genuinely, partially overlap - nonzero intersection volume, strictly "
+          "smaller than either operand");
+  } catch (const std::exception& e) {
+    Check(false, (std::string("tessellation-based volume identities hit the known order-dependent "
+                               "BooleanCombineGeneral tessellation fragility instead of completing (") +
+                  e.what() + ") - B-rep construction above is unaffected, only this mesh-level check")
+                     .c_str());
+  }
 
   // A real, previously-undocumented limitation found while building this
   // fixture, not assumed: `BooleanCombineGeneral()` itself produces a
@@ -7345,7 +7539,20 @@ void TestBooleanCombineGeneralCoplanarBoxes() {
   const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
   const Brep b = Brep::Box(2, 0, 0, 4, 2, 2);
 
-  {
+  // 2026-10-12 robustness finding: this fixture's own doc comment above
+  // claims the coincident_a/coincident_b whole-face-dedup rule fixes this
+  // exact case, but it no longer does (or never fully did for a box pair
+  // that ALSO shares 1D edges along all 4 sides of the coincident face,
+  // not just the face itself - confirmed directly, dino8_scratch_test
+  // plus DINO8_BOOL_DEBUG=1 tracing: the two true x=2 faces never reach
+  // the "coincident face pair" log line at all, leaving every one of
+  // their adjacent side-wall faces fed spurious closed SSX curves
+  // instead). Root-causing that belongs in boolean_general.cpp's own
+  // SSX/fragmentation machinery - a substantially larger, separate
+  // undertaking, the same kind of fix this file's own comments elsewhere
+  // already defer - so each call here is wrapped rather than left to
+  // abort the whole suite on what used to be an already-fixed case.
+  try {
     const Brep u = BooleanCombineGeneral(a, b, BooleanOp::Union);
     Check(u.raw().IsValid(), "coplanar box+box Union is a valid ON_Brep");
     const Mesh m = u.TessellateToClosedMesh(8, 8);
@@ -7354,14 +7561,24 @@ void TestBooleanCombineGeneralCoplanarBoxes() {
           "closed-form 16.0 (the two boxes merge into one 4x2x2 box, no "
           "shared face left in the boundary - both boxes' own 8 with zero "
           "overlap to subtract)");
+  } catch (const std::exception& e) {
+    Check(false, (std::string("coplanar box+box Union hit the known coincident-face regression instead of "
+                               "completing (") +
+                  e.what() + ")")
+                     .c_str());
   }
-  {
+  try {
     const Brep i = BooleanCombineGeneral(a, b, BooleanOp::Intersection);
     Check(i.FaceCount() == 0,
           "coplanar box+box Intersection is the empty solid (face contact "
           "only, zero volumetric overlap) - not the old lone open face");
+  } catch (const std::exception& e) {
+    Check(false, (std::string("coplanar box+box Intersection hit the known coincident-face regression instead "
+                               "of completing (") +
+                  e.what() + ")")
+                     .c_str());
   }
-  {
+  try {
     const Brep d = BooleanCombineGeneral(a, b, BooleanOp::Difference);
     Check(d.raw().IsValid(), "coplanar box+box A-B is a valid ON_Brep");
     const Mesh m = d.TessellateToClosedMesh(8, 8);
@@ -7369,8 +7586,13 @@ void TestBooleanCombineGeneralCoplanarBoxes() {
           "coplanar box+box A-B's tessellated volume matches the exact "
           "closed-form 8.0 (B doesn't overlap A at all, so A is returned "
           "unchanged, including its own copy of the shared face)");
+  } catch (const std::exception& e) {
+    Check(false, (std::string("coplanar box+box A-B hit the known coincident-face regression instead of "
+                               "completing (") +
+                  e.what() + ")")
+                     .c_str());
   }
-  {
+  try {
     const Brep d = BooleanCombineGeneral(b, a, BooleanOp::Difference);
     Check(d.raw().IsValid(), "coplanar box+box B-A is a valid ON_Brep");
     const Mesh m = d.TessellateToClosedMesh(8, 8);
@@ -7378,7 +7600,115 @@ void TestBooleanCombineGeneralCoplanarBoxes() {
           "coplanar box+box B-A's tessellated volume matches the exact "
           "closed-form 8.0 (A doesn't overlap B at all, so B is returned "
           "unchanged, including its own copy of the shared face)");
+  } catch (const std::exception& e) {
+    Check(false, (std::string("coplanar box+box B-A hit the known coincident-face regression instead of "
+                               "completing (") +
+                  e.what() + ")")
+                     .c_str());
   }
+}
+
+// Round 44 regression test: the SECOND, asymmetric shape of the `878ecdb`
+// coincident-boundary-curve regression `TestBooleanCombineGeneralCoplanarBoxes`
+// above exercises the SYMMETRIC (both-faces-same-extent) shape of. Found
+// while root-causing this engine's own "an edge is claimed by 3 or more
+// fragment loops" abort one level deeper than that fixture
+// (`TestRecognizePocketsBlindPocketRoundTripAndNegativeControls`'s own "a
+// boss raised out of the box's own top face" negative-control fixture,
+// reproduced here directly at the `BooleanCombineGeneral` level instead of
+// only indirectly through a different feature's test): a small boss
+// cutter's own WHOLE bottom cap sits entirely within one much bigger box
+// face (a 1x1 boss cap on a 4x4 box top) - the detected coincident region
+// matches the SMALL boss cap's entire extent but NOT the big box face's,
+// which a symmetric "box_a == box_b" bbox comparison can never catch (the
+// two faces are deliberately different sizes on purpose).
+//
+// The boss is built via `Brep::Extrude()` (one wrapped ruled side-wall
+// face per the profile's own closed loop, not six independent planar
+// quads a plain `Brep::Box()` boss would give) DELIBERATELY, not
+// incidentally: a `Brep::Box()` boss's own four FLAT side faces each meet
+// the big box's top face as a genuine transversal crossing (two
+// perpendicular planes), which fragments the box's top face into an
+// "outer ring plus an inner island exactly matching the boss footprint"
+// shape - and ray-casting THAT inner island's own representative point
+// (sitting exactly on the boss's own coincident boundary plane) is exactly
+// the SAME "numerically arbitrary" ambiguity this file's own coincident-
+// face override exists to avoid, just one level deeper than this override
+// reaches (confirmed directly: that shape silently returns a WRONG volume
+// before this round's own fix, and non-deterministically crashes after it
+// - `BooleanCombineGeneral`'s own already-disclosed "No general partially-
+// overlapping coincident face handling" gap, not a new regression, so
+// deliberately NOT used here). The wrapped-side-wall boss avoids that
+// ambiguity entirely: `Brep::Extrude()`'s OWN side wall touches the box's
+// top face only along the boss's own bottom RIM (a 1D boundary line, not
+// a 2D coincident patch), so the box's own top face fragments cleanly into
+// "outer ring" and "boss-footprint island" with the island's own
+// representative point still sitting exactly on the (now correctly
+// detected and discarded) coincident boundary - the box's own hole-
+// bridging, not an inner-fragment ray-cast, is what this specific
+// regression needs covered.
+void TestBooleanCombineGeneralAsymmetricCoincidentSubFace() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A 4x4x4 box with a 1x1x1 boss (a square profile extruded upward,
+  // capped) sitting exactly on top of it - the boss's own bottom cap,
+  // z=4, x/y in [1.5,2.5], is a sub-rectangle of the box's own much bigger
+  // top face, z=4, x/y in [0,4]: a real partial coincidence, not the
+  // fully-matching-extent shape the "Coplanar boxes" fixture above
+  // already covers.
+  //
+  // Honestly scoped to what this round's own fix actually guarantees, not
+  // more: NONE of these four calls may throw any more (the regression
+  // itself, confirmed fixed), and the Union result - the one op this
+  // fixture's own box-face fragmentation (a correctly hole-bridged outer
+  // ring plus a separate inner island exactly matching the boss footprint)
+  // happens to classify unambiguously either way, confirmed by direct
+  // inspection - is checked for real structural correctness. Intersection/
+  // Difference are deliberately NOT asserted beyond "doesn't throw": this
+  // fixture's own box-top face ends up with an inner fragment sitting
+  // EXACTLY on the boss's own coincident boundary plane, and ray-casting
+  // that fragment's representative point against the other operand is the
+  // identical "numerically arbitrary" ambiguity this file's whole-face
+  // override exists to avoid, one level deeper than that override reaches
+  // (it only ever fires for a face's own single UNTOUCHED fragment, not an
+  // inner fragment carved out of a bigger one) - confirmed directly (not
+  // assumed) to give a genuinely wrong Intersection/Difference result here,
+  // the SAME already-disclosed "No general partially-overlapping
+  // coincident face handling" gap (the "Coplanar / coincident face
+  // handling" bullet, PARITY_MAP.md) the symmetric "Coplanar boxes"
+  // fixture above never reaches at all (its own whole-face override
+  // handles 100% of that fixture, with no inner fragment left over).
+  // Confirmed via an A/B rebuild that this ambiguity is NOT itself a new
+  // regression either (a plain `Brep::Box()` boss - sharper, flatter side
+  // walls than this one's wrapped `Brep::Extrude()` side - already returns
+  // silently WRONG volumes for it on the pre-`878ecdb` baseline too, with
+  // no crash) - left genuinely open, disclosed in PARITY_MAP.md rather
+  // than chased further or quietly asserted away here.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const NurbsCurve square = NurbsCurve::FromControlPoints(
+      {Point3d(1.5, 1.5, 4), Point3d(2.5, 1.5, 4), Point3d(2.5, 2.5, 4), Point3d(1.5, 2.5, 4), Point3d(1.5, 1.5, 4)},
+      /*degree=*/1);
+  const Brep boss = Brep::Extrude(square, Vector3d(0, 0, 1.0), /*cap=*/true);
+
+  const Brep u = BooleanCombineGeneral(box, boss, BooleanOp::Union);
+  Check(u.raw().IsValid(), "box+boss Union is a valid ON_Brep - the regression's own abort on this exact fixture is fixed");
+  Check(u.FaceCount() == 8,
+        "box+boss Union has exactly 8 faces (box's 5 untouched sides + its own hole-bridged top, plus the boss's "
+        "wrapped side wall + top cap - its own coincident bottom cap correctly dropped by the whole-face override)");
+
+  const Brep i = BooleanCombineGeneral(box, boss, BooleanOp::Intersection);
+  Check(i.FaceCount() >= 0,
+        "box+boss Intersection no longer throws the regression's own fragment-loop abort (reaching this line at "
+        "all is the real assertion - see this test's own doc comment for why its RESULT is not also asserted here)");
+  const Brep d_ab = BooleanCombineGeneral(box, boss, BooleanOp::Difference);
+  Check(d_ab.FaceCount() >= 0, "box+boss A-B no longer throws the regression's own fragment-loop abort");
+  const Brep d_ba = BooleanCombineGeneral(boss, box, BooleanOp::Difference);
+  Check(d_ba.FaceCount() >= 0, "box+boss B-A no longer throws the regression's own fragment-loop abort");
 }
 
 // PARITY_MAP.md's "Tolerant booleans" bullet, after BooleanCombineGeneral()
@@ -7412,17 +7742,30 @@ void TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance() {
         "a 5e-6 gap is NOT recognized as coincident: both boxes keep their own near-duplicate boundary "
         "face, 6 + 6 = 12 faces, not merged - the exact pre-existing behavior, unchanged");
 
-  const Brep loose_tol = BooleanCombineGeneral(a, b, BooleanOp::Union, 0.02);
-  Check(loose_tol.FaceCount() == 10,
-        "a caller-widened tolerance (0.02, scaled epsilon 2e-5 > the 5e-6 gap) now DOES recognize the "
-        "pair as coincident and merges them into one clean 4x2x2 box (10 faces - the same count "
-        "TestBooleanCombineGeneralCoplanarBoxes' own exactly-touching fixture produces), proving the "
-        "epsilon genuinely scales with the caller's own tolerance instead of staying fixed at 1e-6");
+  // 2026-10-12 robustness finding: same known coincident-face regression
+  // TestBooleanCombineGeneralCoplanarBoxes above now discloses - the
+  // widened-epsilon case below is exactly the scenario that regression
+  // breaks (two faces that SHOULD be recognized as coincident once the
+  // epsilon widens enough, but the detection no longer reaches that
+  // branch), so wrapped the same way rather than left to abort the suite.
+  try {
+    const Brep loose_tol = BooleanCombineGeneral(a, b, BooleanOp::Union, 0.02);
+    Check(loose_tol.FaceCount() == 10,
+          "a caller-widened tolerance (0.02, scaled epsilon 2e-5 > the 5e-6 gap) now DOES recognize the "
+          "pair as coincident and merges them into one clean 4x2x2 box (10 faces - the same count "
+          "TestBooleanCombineGeneralCoplanarBoxes' own exactly-touching fixture produces), proving the "
+          "epsilon genuinely scales with the caller's own tolerance instead of staying fixed at 1e-6");
 
-  const Mesh m = loose_tol.TessellateToClosedMesh(8, 8);
-  Check(std::abs(m.Volume() - 16.0) < 1e-3,
-        "the merged result's tessellated volume matches the exact closed-form 16.0, the same way "
-        "the exactly-touching fixture's own Union does");
+    const Mesh m = loose_tol.TessellateToClosedMesh(8, 8);
+    Check(std::abs(m.Volume() - 16.0) < 1e-3,
+          "the merged result's tessellated volume matches the exact closed-form 16.0, the same way "
+          "the exactly-touching fixture's own Union does");
+  } catch (const std::exception& e) {
+    Check(false, (std::string("widened-tolerance coincident-face merge hit the known coincident-face "
+                               "regression instead of completing (") +
+                  e.what() + ")")
+                     .c_str());
+  }
 }
 
 // Closed finite cylinder, axis along +z from z0 to z1, built via the
@@ -9932,6 +10275,120 @@ void TestSplitBrepByManyPlanesRejectsEmptyTargetEmptyOffsetsZeroNormalAndNonPosi
     threw = true;
   }
   Check(threw, "SplitBrepByManyPlanes throws std::invalid_argument for a non-positive tolerance");
+}
+
+void TestSplitBrepByManySolidsKeepAllTwoDisjointCuttersReturnThreePieces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  // Closes the remaining half of the "Keep/split options" bullet
+  // SplitBrepByManySolids() (above) left open: that function folds every
+  // cutter into ONE union tool first and returns only {outside,
+  // inside-of-the-union} - this keeps a SEPARATE piece per cutter instead,
+  // the real "BooleanSplit... keeping all pieces" semantics, mirroring
+  // SplitBrepByManyPlanes()'s own N+1-slab shape for the solid-cutter case.
+  // A 10x10x10 target (volume 1000) split by two disjoint interior 2x2x2
+  // cutters (volume 8 apiece) should come back as exactly three pieces:
+  // cutter1's own 8, cutter2's own 8, and the remaining 984.
+  const Brep target = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep cutter1 = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep cutter2 = Brep::Box(6, 6, 6, 8, 8, 8);
+
+  const std::vector<Brep> pieces = SplitBrepByManySolidsKeepAll(target, {cutter1, cutter2});
+  Check(pieces.size() == 3, "SplitBrepByManySolidsKeepAll with two disjoint cutters returns exactly three pieces");
+  if (pieces.size() == 3) {
+    double total_volume = 0.0;
+    for (const Brep& piece : pieces) {
+      Check(piece.raw().IsValid(), "each returned piece is a valid ON_Brep");
+      total_volume += piece.TessellateToClosedMesh(16, 16).Volume();
+    }
+    Check(std::abs(total_volume - 1000.0) < 1e-2,
+          "the three pieces sum back to the original target's own volume (10^3=1000) exactly");
+    Check(std::abs(pieces[0].TessellateToClosedMesh(16, 16).Volume() - 8.0) < 0.5,
+          "the first returned piece is cutter1's own interior volume (2^3=8), in cutter order");
+    Check(std::abs(pieces[1].TessellateToClosedMesh(16, 16).Volume() - 8.0) < 0.5,
+          "the second returned piece is cutter2's own interior volume (2^3=8), in cutter order");
+    Check(std::abs(pieces[2].TessellateToClosedMesh(16, 16).Volume() - 984.0) < 0.5,
+          "the final returned piece is the untouched remainder, LAST (1000-8-8=984)");
+  }
+}
+
+void TestSplitBrepByManySolidsKeepAllCutterMissingTargetDropsTheEmptyPiece() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  // One cutter genuinely inside the target, one entirely clear of it (the
+  // same "cutter misses entirely" contract SplitBrepBySolid()/
+  // SplitBrepByManyPlanes() already document) - the miss should contribute
+  // no extra (empty) piece, not an invalid or zero-volume one.
+  const Brep target = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep real_cutter = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep missing_cutter = Brep::Box(100, 100, 100, 101, 101, 101);
+
+  const std::vector<Brep> pieces = SplitBrepByManySolidsKeepAll(target, {real_cutter, missing_cutter});
+  Check(pieces.size() == 2, "a cutter entirely clear of the target contributes no extra (empty) piece");
+  if (pieces.size() == 2) {
+    double total_volume = 0.0;
+    for (const Brep& piece : pieces) total_volume += piece.TessellateToClosedMesh(16, 16).Volume();
+    Check(std::abs(total_volume - 1000.0) < 1e-2, "the two real pieces still sum back to the original volume (1000)");
+  }
+}
+
+void TestSplitBrepByManySolidsKeepAllCutterConsumingEntireRemainderStopsEarly() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  // A real, previously-unexercised edge: a cutter early in the list can
+  // consume the ENTIRE remainder (a cutter at least as large as target,
+  // fully enclosing it), leaving nothing for any later cutter to be tried
+  // against. This must not throw SplitBrepBySolid()'s own "target has no
+  // faces" precondition on the second cutter - skipping it is the correct
+  // read (nothing left to cut), not a caller error.
+  const Brep target = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep enclosing_cutter = Brep::Box(-1, -1, -1, 3, 3, 3);
+  const Brep later_cutter = Brep::Box(0.5, 0.5, 0.5, 1.5, 1.5, 1.5);
+
+  const std::vector<Brep> pieces = SplitBrepByManySolidsKeepAll(target, {enclosing_cutter, later_cutter});
+  Check(pieces.size() == 1, "a fully-enclosing first cutter consumes the entire target, leaving one piece");
+  if (pieces.size() == 1) {
+    Check(std::abs(pieces[0].TessellateToClosedMesh(16, 16).Volume() - 8.0) < 0.5,
+          "the single returned piece is the entire target's own volume (2^3=8), inside the enclosing cutter");
+  }
+}
+
+void TestSplitBrepByManySolidsKeepAllRejectsEmptyTargetEmptyCutterGroupAndNonPositiveTolerance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep cutter = Brep::Box(0.25, 0.25, 0.25, 0.75, 0.75, 0.75);
+  const Brep empty;
+
+  bool threw = false;
+  try {
+    SplitBrepByManySolidsKeepAll(empty, {cutter});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByManySolidsKeepAll throws std::invalid_argument for an empty target");
+
+  threw = false;
+  try {
+    SplitBrepByManySolidsKeepAll(box, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByManySolidsKeepAll throws std::invalid_argument for an empty cutters group");
+
+  threw = false;
+  try {
+    SplitBrepByManySolidsKeepAll(box, {cutter}, -1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByManySolidsKeepAll throws std::invalid_argument for a non-positive tolerance");
 }
 
 void TestSurfaceGetApproximateSize() {
@@ -15517,6 +15974,139 @@ void TestOffsetSolidHandlesGenuinelyConcaveSolid() {
         "original - a real, non-degenerate erosion result on a genuinely concave solid");
 }
 
+void TestShellViaOffsetSolidOnBoxMatchesExactVolumeDifference() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::ShellViaOffsetSolid;
+
+  // A convex box: ball erosion is exact/sharp here (OffsetSolid()'s own
+  // doc comment), so the shell volume has a known closed form - outer
+  // cube minus the exactly-smaller inner cube - with no Steiner rounding
+  // term to account for.
+  const Brep box_brep = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Mesh box = box_brep.TessellateToClosedMesh(1, 1);
+
+  const double t = 1.0;
+  const Mesh shell = ShellViaOffsetSolid(box, t, 24);
+  Check(shell.IsClosedManifold(), "ShellViaOffsetSolid on a box produces a genuine closed 2-manifold");
+
+  const double expected_volume = 10.0 * 10.0 * 10.0 - 8.0 * 8.0 * 8.0;
+  Check(std::fabs(shell.Volume() - expected_volume) / expected_volume < 1e-2,
+        "ShellViaOffsetSolid(box, 1.0)'s volume matches the exact closed-form shell volume "
+        "10^3 - 8^3 (outer cube minus the exactly-sharp eroded inner cube)");
+
+  // The result must actually enclose a hollow cavity, not just be a
+  // smaller solid cube: its volume must be strictly less than the outer
+  // box's own, and strictly more than zero.
+  Check(shell.Volume() > 0.0 && shell.Volume() < box.Volume(),
+        "ShellViaOffsetSolid's result encloses strictly less material than the original box and more than nothing");
+}
+
+void TestShellViaOffsetSolidRoundsConcaveCornerUnlikeMeshShell() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::ShellViaOffsetSolid;
+
+  // Same L-shaped fixture as TestOffsetSolidHandlesGenuinelyConcaveSolid
+  // above: one genuine reflex (concave) vertical edge at x=4,y=4, every
+  // wall at least 4 units thick.
+  const Mesh arm_a = Brep::Box(0, 0, 0, 10, 4, 6).TessellateToClosedMesh(1, 1);
+  const Mesh arm_b = Brep::Box(0, 0, 0, 4, 10, 6).TessellateToClosedMesh(1, 1);
+  const Mesh l_shape = BooleanCombine(arm_a, arm_b, BooleanOp::Union);
+
+  const double t = 0.5;
+  const Mesh via_offset_solid = ShellViaOffsetSolid(l_shape, t, 24);
+  Check(via_offset_solid.IsClosedManifold(),
+        "ShellViaOffsetSolid on the concave L-shape still produces a closed 2-manifold - the "
+        "reflex edge is not a special case either OffsetSolid() or BooleanCombine() needs help with");
+
+  const Mesh via_mesh_shell = l_shape.Shell(t);
+  Check(via_mesh_shell.IsClosedManifold(), "sanity: Mesh::Shell's own sharp-offset result is a closed manifold too");
+
+  // Both are genuine, non-empty shells of the same solid at the same
+  // thickness, so their volumes must be close but not identical: ball
+  // erosion rounds material away at the one concave edge that
+  // Mesh::Shell's per-vertex offset leaves sharp, so ShellViaOffsetSolid's
+  // inner wall encloses strictly LESS material there, and the shell
+  // (outer minus inner) therefore encloses strictly MORE material than
+  // Mesh::Shell's own sharp-cornered shell.
+  Check(via_offset_solid.Volume() > 0.0 && via_offset_solid.Volume() < l_shape.Volume(),
+        "ShellViaOffsetSolid's L-shaped shell encloses strictly less material than the solid itself");
+  Check(via_mesh_shell.Volume() > 0.0 && via_mesh_shell.Volume() < l_shape.Volume(),
+        "sanity: Mesh::Shell's own L-shaped shell also encloses strictly less material than the solid itself");
+  Check(via_offset_solid.Volume() > via_mesh_shell.Volume(),
+        "ShellViaOffsetSolid's ball-eroded inner wall rounds away material at the concave edge that "
+        "Mesh::Shell's sharp per-vertex offset does not, so its shell volume is strictly larger than "
+        "Mesh::Shell's own - the two constructions are genuinely different, not two names for the same result");
+}
+
+void TestShellViaOffsetSolidArgumentChecksAndExcessiveThicknessThrows() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::ShellViaOffsetSolid;
+
+  const Brep box_brep = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Mesh box = box_brep.TessellateToClosedMesh(1, 1);
+
+  bool threw_zero = false;
+  try {
+    ShellViaOffsetSolid(box, 0.0, 24);
+  } catch (const std::invalid_argument&) {
+    threw_zero = true;
+  }
+  Check(threw_zero, "ShellViaOffsetSolid throws for a zero thickness (no inner wall to subtract)");
+
+  bool threw_negative = false;
+  try {
+    ShellViaOffsetSolid(box, -1.0, 24);
+  } catch (const std::invalid_argument&) {
+    threw_negative = true;
+  }
+  Check(threw_negative, "ShellViaOffsetSolid throws for a negative thickness");
+
+  bool threw_nan = false;
+  try {
+    ShellViaOffsetSolid(box, std::numeric_limits<double>::quiet_NaN(), 24);
+  } catch (const std::invalid_argument&) {
+    threw_nan = true;
+  }
+  Check(threw_nan, "ShellViaOffsetSolid throws for a NaN thickness");
+
+  bool threw_infinite = false;
+  try {
+    ShellViaOffsetSolid(box, std::numeric_limits<double>::infinity(), 24);
+  } catch (const std::invalid_argument&) {
+    threw_infinite = true;
+  }
+  Check(threw_infinite, "ShellViaOffsetSolid throws for a +infinity thickness");
+
+  // A thin plate: half-thickness 0.5, so a thickness that erodes the whole
+  // solid away to nothing must still throw - ShellViaOffsetSolid inherits
+  // OffsetSolid()'s own infeasible-shrink guard for the inner wall, rather
+  // than silently handing BooleanCombine() an empty inner mesh.
+  const Brep plate_brep = Brep::Box(0, 0, 0, 10, 10, 1);
+  const Mesh plate = plate_brep.TessellateToClosedMesh(4, 4);
+
+  bool threw_excessive = false;
+  try {
+    ShellViaOffsetSolid(plate, 0.6, 24);
+  } catch (const std::runtime_error&) {
+    threw_excessive = true;
+  }
+  Check(threw_excessive,
+        "ShellViaOffsetSolid(plate, 0.6) on a plate whose half-thickness is 0.5 throws rather than "
+        "silently composing a shell around an empty inner wall");
+
+  // A safe thickness (well within the plate's own half-thickness) must
+  // still succeed and produce a genuine, non-empty hollow shell.
+  const Mesh safe = ShellViaOffsetSolid(plate, 0.2, 24);
+  Check(safe.IsClosedManifold() && safe.Volume() > 0.0 && safe.Volume() < plate.Volume(),
+        "ShellViaOffsetSolid(plate, 0.2) (well within its half-thickness) succeeds normally and encloses less "
+        "material than the solid plate");
+}
+
 void TestDecompose() {
   using dino8::kernel::Decompose;
   using dino8::kernel::Mesh;
@@ -20950,6 +21540,133 @@ void TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt() {
   Check(box.CapPlanarHoles() == 0, "a closed box has no hole to cap");
 }
 
+// Brep::FacePersistentId()/EdgePersistentId()/VertexPersistentId(),
+// FindFaceByPersistentId()/FindEdgeByPersistentId()/
+// FindVertexByPersistentId(), and CompactPreservingPersistentIds() -
+// PARITY_MAP.md's own "Persistent naming / topology identity and
+// attributes across edits" item, named `[missing]` outright ("there is
+// no persistent ID or attribute scheme"). Closes the literal case that
+// complaint names: an id that survives Compact(), independent of the
+// raw index Compact() itself freely reassigns.
+void TestBrepPersistentIdsSurviveCompact() {
+  using dino8::kernel::Brep;
+
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  Check(box.FaceCount() == 6, "setup: a genuinely welded box has 6 faces");
+
+  // Lazy assignment: distinct ids for distinct faces, the SAME id again
+  // on a second ask of the same still-live face.
+  std::vector<uint64_t> face_id(6);
+  for (int i = 0; i < 6; ++i) face_id[i] = box.FacePersistentId(i);
+  bool all_distinct = true;
+  for (int i = 0; i < 6; ++i) {
+    for (int j = i + 1; j < 6; ++j) {
+      if (face_id[i] == face_id[j]) all_distinct = false;
+    }
+  }
+  Check(all_distinct, "all 6 faces get distinct persistent ids");
+  Check(box.FacePersistentId(2) == face_id[2], "asking a second time returns the identical id, not a fresh one");
+  Check(box.FindFaceByPersistentId(face_id[3]) == 3, "FindFaceByPersistentId resolves an id back to its own index");
+  Check(box.FindFaceByPersistentId(0) == -1, "id 0 (never assigned) resolves to nothing");
+  Check(box.FindFaceByPersistentId(999999) == -1, "an id nothing was ever assigned resolves to nothing");
+
+  // Delete two faces (1 and 4) WITHOUT compacting yet - raw ON_Brep::
+  // DeleteFace, the same "exercise the dead-slot state directly" pattern
+  // TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt() above
+  // already uses - so this box genuinely has 2 dead face slots sitting
+  // among 4 live ones when CompactPreservingPersistentIds() runs, not
+  // merely a clean table it has nothing real to do on.
+  box.raw().DeleteFace(box.raw().m_F[1], /*bDeleteFaceEdges=*/true);
+  box.raw().DeleteFace(box.raw().m_F[4], /*bDeleteFaceEdges=*/true);
+  Check(box.raw().m_F.Count() == 6, "setup: still 6 raw face slots - 2 are dead, not yet removed");
+
+  box.CompactPreservingPersistentIds();
+  Check(box.FaceCount() == 4, "Compact() genuinely ran: 4 live face slots left");
+
+  // The 4 surviving original faces (0, 2, 3, 5) kept their own exact
+  // pre-compact id, now reachable at wherever Compact() actually put
+  // them (confirmed via FindFaceByPersistentId, not assumed to still sit
+  // at their old index).
+  for (const int original : {0, 2, 3, 5}) {
+    const int new_index = box.FindFaceByPersistentId(face_id[original]);
+    Check(new_index >= 0 && new_index < 4, "a surviving face's own pre-compact id resolves to a valid post-compact "
+                                            "index");
+    if (new_index >= 0) {
+      Check(box.FacePersistentId(new_index) == face_id[original],
+            "...and querying that new index returns the exact same id back");
+    }
+  }
+  // The two deleted faces' own ids resolve to nothing anymore.
+  Check(box.FindFaceByPersistentId(face_id[1]) == -1 && box.FindFaceByPersistentId(face_id[4]) == -1,
+        "a deleted face's own persistent id no longer resolves to anything after the compact");
+  // Relative order survives: original faces 0 and 2 (both still live, 0
+  // before 2 before deletion) stay in that same relative order after.
+  Check(box.FindFaceByPersistentId(face_id[0]) < box.FindFaceByPersistentId(face_id[2]),
+        "surviving faces keep their own original relative order through the compact");
+
+  // Edge/vertex ids, exercised on a real cascading topology edit rather
+  // than a hand-set flag: ON_Brep::CullUnusedVertices() (inside
+  // Compact()) deliberately UN-deletes any vertex still referenced by a
+  // live trim ("in order to prevent crashes... refuse to delete the
+  // vertex" - confirmed directly against the vendored opennurbs source,
+  // not assumed), so a bare `m_vertex_index = -1` poke alone is refused
+  // by Compact() itself, not a real way to orphan one. Faces 0 (bottom)
+  // and 2 and 5 (two of the four sides, in CheckHealBoxFaces()'s own
+  // b[0..3] CCW order) all meet at the corner (0,0,0): every edge
+  // touching that corner borders exactly two of these three faces, so
+  // deleting all three (raw ON_Brep::DeleteFace, bDeleteFaceEdges=true)
+  // genuinely cascades into removing those edges and then the now
+  // wholly unreferenced corner vertex itself - confirmed via a
+  // standalone `dino8_scratch_test` probe before trusting the exact
+  // counts below, not assumed from the construction alone.
+  Brep box2 = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  std::vector<uint64_t> edge_id(box2.raw().m_E.Count()), vertex_id(box2.raw().m_V.Count());
+  for (int i = 0; i < box2.raw().m_E.Count(); ++i) edge_id[i] = box2.EdgePersistentId(i);
+  for (int i = 0; i < box2.raw().m_V.Count(); ++i) vertex_id[i] = box2.VertexPersistentId(i);
+
+  box2.raw().DeleteFace(box2.raw().m_F[0], /*bDeleteFaceEdges=*/true);
+  box2.raw().DeleteFace(box2.raw().m_F[2], /*bDeleteFaceEdges=*/true);
+  box2.raw().DeleteFace(box2.raw().m_F[5], /*bDeleteFaceEdges=*/true);
+  Check(box2.LiveFaceCount() == 3 && box2.LiveEdgeCount() == 9 && box2.LiveVertexCount() == 7,
+        "setup: deleting the 3 faces meeting at one corner cascades into 3 dead edges and 1 dead vertex");
+
+  box2.CompactPreservingPersistentIds();
+  Check(box2.EdgeCount() == 9 && box2.VertexCount() == 7, "Compact() genuinely ran: 9 edges, 7 vertices left");
+
+  int edges_still_resolve = 0, vertices_still_resolve = 0;
+  for (const uint64_t id : edge_id) {
+    if (box2.FindEdgeByPersistentId(id) >= 0) ++edges_still_resolve;
+  }
+  for (const uint64_t id : vertex_id) {
+    if (box2.FindVertexByPersistentId(id) >= 0) ++vertices_still_resolve;
+  }
+  Check(edges_still_resolve == 9,
+        "exactly the 9 surviving edges' own pre-compact ids still resolve - the 3 removed ones don't");
+  Check(vertices_still_resolve == 7,
+        "exactly the 7 surviving vertices' own pre-compact ids still resolve - the 1 removed one doesn't");
+
+  // Refusals: out-of-range throws std::out_of_range, an already-deleted
+  // index throws std::invalid_argument - the same contract every other
+  // per-element accessor in this class already has.
+  Brep box3 = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  bool threw_range = false;
+  try {
+    box3.FacePersistentId(box3.raw().m_F.Count() + 100);
+  } catch (const std::out_of_range&) {
+    threw_range = true;
+  }
+  Check(threw_range, "FacePersistentId() throws std::out_of_range for an out-of-range index");
+
+  bool threw_deleted = false;
+  box3.raw().m_F[0].m_face_index = -1;
+  try {
+    box3.FacePersistentId(0);
+  } catch (const std::invalid_argument&) {
+    threw_deleted = true;
+  }
+  Check(threw_deleted, "FacePersistentId() throws std::invalid_argument on an already-deleted face_index");
+}
+
 // An open cylinder (Extrude() of a real circle, cap=false) has two naked
 // CURVED rims, each a single closed edge - the case CapPlanarHoles()'s
 // own straight-polygon path could never triangulate (it refused any
@@ -21178,6 +21895,90 @@ void TestBrepJoinNakedEdgesRecordsTolerantEdges() {
 
   // Nothing left to join.
   Check(box.JoinNakedEdges(2.0 * gap) == 0, "a second JoinNakedEdges() finds nothing");
+}
+
+// Same construction as CheckHealBoxFaces(top_z), but at an arbitrary edge
+// length `s` (box spans [0,s]^3) with the top face offset to `top_z` while
+// the sides' own top edge still ends at z=s - the same "top face floats
+// top_z-s above the sides" gap TestBrepJoinNakedEdgesRecordsTolerantEdges
+// already exercises at s=1, generalized so the whole box can be scaled up
+// or down.
+std::vector<dino8::kernel::Brep::PlanarFace> CheckHealScaledBoxFaces(double s, double top_z) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  const std::vector<Point3d> b = {Point3d(0, 0, 0), Point3d(s, 0, 0), Point3d(s, s, 0), Point3d(0, s, 0)};
+  const std::vector<Point3d> t = {Point3d(0, 0, s), Point3d(s, 0, s), Point3d(s, s, s), Point3d(0, s, s)};
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(CheckHealFace({b[3], b[2], b[1], b[0]}, ON_3dVector(0, 0, -1)));
+  faces.push_back(CheckHealFace({Point3d(0, 0, top_z), Point3d(s, 0, top_z), Point3d(s, s, top_z), Point3d(0, s, top_z)},
+                                ON_3dVector(0, 0, 1)));
+  for (size_t i = 0; i < 4; ++i) {
+    const size_t j = (i + 1) % 4;
+    ON_3dVector n = ON_CrossProduct(b[j] - b[i], t[i] - b[i]);
+    n.Unitize();
+    faces.push_back(CheckHealFace({b[i], b[j], t[j], t[i]}, n));
+  }
+  return faces;
+}
+
+// JoinNakedEdges()'s recorded tolerance is now floored at
+// max(kDistance, tolerance::RelativeDistance(that edge's own extent)), not
+// the bare absolute kDistance TestBrepJoinNakedEdgesRecordsTolerantEdges
+// already covers at ordinary (s=1) scale. This exercises the scaling at
+// both ends: a huge box (s=1e6) where a 1e-4 gap - the exact same absolute
+// gap the s=1 fixture above records as a real tolerant edge - is now
+// correctly recognized as physically insignificant at that edge's own
+// million-unit scale and left at 0, while a genuinely significant gap on
+// the SAME huge box (10, comfortably above RelativeDistance(1e6) == 1.0)
+// is still recorded, so the floor is a real floor, not a blanket
+// suppression at large scale.
+void TestBrepJoinNakedEdgesFloorsRecordedToleranceByEdgeExtent() {
+  using dino8::kernel::Brep;
+  namespace tol = dino8::kernel::tolerance;
+
+  {
+    const double s = 1e6, gap = 1e-4;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "a 1e-4 gap on a million-unit box still joins the 4 pairs");
+    int tolerant_edges = 0;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      if (box.raw().m_E[ei].m_tolerance > tol::kDistance) ++tolerant_edges;
+    }
+    Check(tolerant_edges == 0,
+          "...but records NO tolerant edges: 1e-4 is below RelativeDistance(1e6) == 1.0, so the gap is "
+          "correctly treated as insignificant at this edge's own scale, unlike the identical absolute gap on "
+          "the s=1 fixture above");
+    Check(box.raw().IsValid() && box.raw().IsSolid(), "...and the box is still a valid, closed solid regardless");
+  }
+  {
+    const double s = 1e6, gap = 10.0;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "a gap of 10, on the same million-unit box, still joins the 4 pairs");
+    int tolerant_edges = 0;
+    bool tolerances_are_the_gap = true;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      const double t = box.raw().m_E[ei].m_tolerance;
+      if (t > tol::kDistance) {
+        ++tolerant_edges;
+        if (std::fabs(t - gap) > 1e-9) tolerances_are_the_gap = false;
+      }
+    }
+    Check(tolerant_edges == 4 && tolerances_are_the_gap,
+          "...and THIS gap, comfortably above RelativeDistance(1e6) == 1.0, is still recorded verbatim on all "
+          "4 joined edges: the scaled floor suppresses only insignificant gaps, not every gap at large scale");
+  }
+  {
+    // Ordinary scale is untouched: same absolute gap and same outcome as
+    // TestBrepJoinNakedEdgesRecordsTolerantEdges's own s=1 case.
+    const double s = 1.0, gap = 1e-4;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "...and at ordinary scale, the same gap still joins 4 pairs");
+    int tolerant_edges = 0;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      if (box.raw().m_E[ei].m_tolerance > tol::kDistance) ++tolerant_edges;
+    }
+    Check(tolerant_edges == 4, "...and still records all 4 as tolerant edges, exactly as before this change");
+  }
 }
 
 // A hairline strip on the top: the top face is split into a main face
@@ -31068,6 +31869,77 @@ void TestMeshComputeBoxMappingUVs() {
   Check(threw_nan, "ComputeBoxMappingUVs throws std::invalid_argument for a NaN scale");
 }
 
+// PARITY_MAP.md's own "Texture coordinate generation on tessellation"
+// bullet, the one remaining sub-gap its own fourth round explicitly left
+// untouched: "Box mapping's own 'hard seams at every axis boundary' are a
+// genuinely different mechanism (a per-vertex dominant-axis CHOICE
+// differing between faces, not a modular wraparound SplitUVSeam()
+// detects) that this round does not address." ComputeBoxMappingUVs()
+// picks its dominant axis from ComputeVertexNormals()'s own SMOOTHED
+// normal, so a vertex shared by faces on different box sides gets ONE
+// axis choice baked from an average normal that may not match what
+// either adjacent face's own TRUE flat normal would pick - a real
+// distortion, not just a cosmetic worry, demonstrated directly below. No
+// new kernel code: `Mesh::Faceted()` (this category's own earlier round)
+// already duplicates every face's own corners into private vertices, and
+// `TestMeshFacetedGivesFlatShading` already proves `ComputeVertexNormals()`
+// on a faceted mesh reduces to exactly that one owning face's own flat
+// normal at every corner - composing the two already-existing primitives
+// (`mesh.Faceted().ComputeBoxMappingUVs(scale)`) removes the averaging
+// contamination entirely, since no vertex is shared across two faces
+// with different dominant axes any more.
+void TestMeshComputeBoxMappingUVsFacetedResolvesSeam() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+
+  // The unit box's own vertex 6 = (1,1,1), shared by the top (+z), back
+  // (+y), and right (+x) faces at once - the most extreme case, where the
+  // smoothed normal (1,1,1)/sqrt(3) ties all three axes exactly equal.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const auto original_uvs = box.ComputeBoxMappingUVs(1.0);
+
+  // The implementation's own tie-break (checking the X branch first) picks
+  // X-dominant here: u = p.y = 1, v = p.z = 1.
+  Check(std::abs(original_uvs[6].x - 1.0) < 1e-9 && std::abs(original_uvs[6].y - 1.0) < 1e-9,
+        "sanity: the shared corner's own smoothed-normal tie-break lands on the X-dominant branch, giving (1, 1)");
+
+  // The TOP face (add_quad(4,5,6,7), index 1) and RIGHT face
+  // (add_quad(1,2,6,5), index 5) both independently want (1, 1) at this
+  // exact corner too (coincidence of this particular symmetric vertex,
+  // confirmed by hand: top's own Z-dominant formula gives (p.x, p.y) =
+  // (1, 1); right's own X-dominant formula gives (p.y, p.z) = (1, 1)) -
+  // so the shared vertex's own single UV happens to satisfy two of its
+  // three owning faces. The BACK face (add_quad(3,7,6,2), index 3) does
+  // NOT: its own Y-dominant formula wants (-p.x, p.z) = (-1, 1), the
+  // opposite sign of u from what the shared vertex actually stores - a
+  // real, hand-verified distortion the single shared UV cannot represent.
+  Check(std::abs(original_uvs[6].x - (-1.0)) > 0.5,
+        "the shared vertex's own UV genuinely does NOT match what the back face's own correct "
+        "(Y-dominant) formula would compute there - confirming this is a real distortion, not "
+        "merely a theoretical worry");
+
+  // Faceting first and THEN computing box-mapping UVs resolves this
+  // completely: each face's own private copy of that corner now carries
+  // exactly that face's own flat normal, so each one's own UV is correct.
+  const Mesh faceted = box.Faceted();
+  const auto faceted_uvs = faceted.ComputeBoxMappingUVs(1.0);
+
+  // Faceted()'s own index convention: face f's corner c lands at f*4 + c.
+  // Vertex 6 is corner index 2 within each of the top (face 1), back
+  // (face 3), and right (face 5) quads (add_quad(4,5,6,7)/(3,7,6,2)/(1,2,6,5)).
+  const Point2d top_copy = faceted_uvs[1 * 4 + 2];
+  const Point2d back_copy = faceted_uvs[3 * 4 + 2];
+  const Point2d right_copy = faceted_uvs[5 * 4 + 2];
+
+  Check(std::abs(top_copy.x - 1.0) < 1e-9 && std::abs(top_copy.y - 1.0) < 1e-9,
+        "after faceting, the top face's own private copy of the shared corner gets its own correct Z-dominant UV (1, 1)");
+  Check(std::abs(right_copy.x - 1.0) < 1e-9 && std::abs(right_copy.y - 1.0) < 1e-9,
+        "after faceting, the right face's own private copy gets its own correct X-dominant UV (1, 1)");
+  Check(std::abs(back_copy.x - (-1.0)) < 1e-9 && std::abs(back_copy.y - 1.0) < 1e-9,
+        "after faceting, the back face's own private copy gets its own correct Y-dominant UV (-1, 1) - "
+        "the exact value the shared (unfaceted) vertex could NOT represent, proving the seam distortion is genuinely resolved, not just hidden");
+}
+
 void TestMeshComputePlanarMappingUVs() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point2d;
@@ -35725,6 +36597,158 @@ void TestMeshSavePlyVertexColorsRoundTrips() {
               c2.g == 210 && c2.b == 220,
           "every color channel declared as 'float' is read at its own declared type and rounded to the "
           "correct 0-255 byte, not misread at an assumed uchar width");
+    std::remove(path.c_str());
+  }
+}
+
+void TestMeshVertexAlphaRoundTrips() {
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Closes the "other PLY properties (alpha, ...) remain unread/unwritten"
+  // gap PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence
+  // names for the PLY bullet - before this, nothing in this kernel could
+  // set, read, or round-trip a per-vertex alpha value at all; every
+  // writer that touches per-vertex opacity (SaveOff()'s own COFF `a`
+  // column, and now SavePly()'s own optional `alpha` property) hardcoded
+  // 255 because "this kernel's Color has no alpha channel to source one
+  // from."
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+
+  {
+    Mesh no_colors = box;
+    const std::vector<unsigned char> alpha(static_cast<size_t>(no_colors.VertexCount()), 128);
+    Check(no_colors.SetVertexAlpha(alpha) == Result::Failed,
+          "SetVertexAlpha() fails on a mesh with no vertex colors set yet - alpha has nowhere to live "
+          "in m_C without them");
+    Check(!no_colors.HasVertexAlpha(), "the rejected call above left HasVertexAlpha() false");
+  }
+
+  std::vector<Color> colors;
+  std::vector<unsigned char> alpha;
+  for (int i = 0; i < box.VertexCount(); ++i) {
+    colors.push_back(Color{static_cast<unsigned char>((i * 37) % 256), static_cast<unsigned char>((i * 91) % 256),
+                            static_cast<unsigned char>((i * 173) % 256)});
+    alpha.push_back(static_cast<unsigned char>((i * 29 + 10) % 256));
+  }
+
+  Mesh with_colors = box;
+  Check(with_colors.SetVertexColors(colors) == Result::Ok, "fixture: SetVertexColors succeeds");
+
+  const std::vector<unsigned char> wrong_size_alpha(alpha.size() - 1, 200);
+  Check(with_colors.SetVertexAlpha(wrong_size_alpha) == Result::Failed,
+        "SetVertexAlpha() fails when the given alpha list doesn't have exactly VertexCount() many entries");
+  Check(!with_colors.HasVertexAlpha(), "the rejected mismatched-size call above left HasVertexAlpha() false");
+  for (int i = 0; i < with_colors.VertexCount(); ++i) {
+    Check(with_colors.VertexAlphaAt(i) == 255,
+          "VertexAlphaAt() still reports the default 255 (opaque) for a mesh with colors but no "
+          "alpha explicitly set yet");
+  }
+
+  Check(with_colors.SetVertexAlpha(alpha) == Result::Ok, "SetVertexAlpha() succeeds with a correctly-sized list");
+  Check(with_colors.HasVertexAlpha(), "HasVertexAlpha() is true once SetVertexAlpha() succeeded");
+  bool alpha_matches = true;
+  for (int i = 0; i < with_colors.VertexCount(); ++i) {
+    if (with_colors.VertexAlphaAt(i) != alpha[static_cast<size_t>(i)]) {
+      alpha_matches = false;
+      break;
+    }
+  }
+  Check(alpha_matches, "VertexAlphaAt() reports the exact alpha value SetVertexAlpha() was given, for "
+                       "every vertex, already converted back out of ON_Color's own inverted convention");
+
+  // .ply round trip: the header must declare a fourth 'alpha' property
+  // only once alpha was actually set, and the reloaded mesh must recover
+  // both the colors and the alpha exactly.
+  auto check_ply_round_trip = [&](bool binary, const std::string& path) {
+    Check(with_colors.SavePly(path, binary) == Result::Ok,
+          binary ? "SavePly(binary=true) succeeds on a mesh with vertex colors and alpha"
+                 : "SavePly succeeds on a mesh with vertex colors and alpha");
+
+    if (!binary) {
+      std::ifstream in(path);
+      std::string line;
+      bool saw_alpha_property = false;
+      while (std::getline(in, line)) {
+        if (line == "end_header") break;
+        if (line == "property uchar alpha") saw_alpha_property = true;
+      }
+      Check(saw_alpha_property,
+            "the header declares a genuine 'property uchar alpha' line once HasVertexAlpha() is true");
+    }
+
+    Mesh reloaded;
+    Check(Mesh::LoadPly(path, reloaded) == Result::Ok, "LoadPly succeeds on a .ply file with vertex alpha");
+    Check(reloaded.HasVertexAlpha(), "the reloaded mesh reports having vertex alpha");
+    bool reloaded_alpha_matches = true;
+    for (int i = 0; i < reloaded.VertexCount(); ++i) {
+      if (reloaded.VertexAlphaAt(i) != alpha[static_cast<size_t>(i)]) {
+        reloaded_alpha_matches = false;
+        break;
+      }
+    }
+    Check(reloaded_alpha_matches,
+          binary ? "every reloaded vertex's alpha exactly matches the original, byte-for-byte, through "
+                   "the binary .ply payload"
+                 : "every reloaded vertex's alpha exactly matches the original, byte-for-byte, through "
+                   "the ASCII .ply payload");
+    std::remove(path.c_str());
+  };
+  check_ply_round_trip(/*binary=*/false, "dino8_kernel_mesh_ply_alpha_ascii_test.ply");
+  check_ply_round_trip(/*binary=*/true, "dino8_kernel_mesh_ply_alpha_binary_test.ply");
+
+  // A mesh with colors but no alpha still writes the plain three-channel
+  // form unchanged - no behavior change for an existing caller.
+  {
+    Mesh colors_only = box;
+    Check(colors_only.SetVertexColors(colors) == Result::Ok, "fixture: SetVertexColors succeeds");
+    const std::string path = "dino8_kernel_mesh_ply_no_alpha_test.ply";
+    Check(colors_only.SavePly(path) == Result::Ok, "SavePly succeeds on a mesh with colors but no alpha");
+    std::ifstream in(path);
+    std::string line;
+    bool saw_alpha_property = false;
+    while (std::getline(in, line)) {
+      if (line == "end_header") break;
+      if (line == "property uchar alpha") saw_alpha_property = true;
+    }
+    Check(!saw_alpha_property,
+          "a mesh with HasVertexAlpha() == false writes no 'alpha' property line at all, unchanged "
+          "from before SetVertexAlpha() existed");
+    std::remove(path.c_str());
+  }
+
+  // .off/.coff round trip: SaveOff()'s own COFF `a` column now carries
+  // the real per-vertex alpha instead of the old hardcoded 255.
+  {
+    const std::string path = "dino8_kernel_mesh_coff_alpha_test.off";
+    Check(with_colors.SaveOff(path) == Result::Ok, "SaveOff succeeds on a mesh with vertex colors and alpha");
+    std::ifstream in(path);
+    std::string header_line;
+    std::getline(in, header_line);
+    std::getline(in, header_line);  // counts line
+    std::string first_vertex_line;
+    std::getline(in, first_vertex_line);
+    std::istringstream vline(first_vertex_line);
+    double x = 0, y = 0, z = 0;
+    int r = -1, g = -1, b = -1, a = -1;
+    vline >> x >> y >> z >> r >> g >> b >> a;
+    Check(a == static_cast<int>(alpha[0]),
+          "the first COFF vertex line's own alpha column is the real per-vertex value, not the old "
+          "hardcoded 255");
+    in.close();
+
+    Mesh reloaded;
+    Check(Mesh::LoadOff(path, reloaded) == Result::Ok, "LoadOff succeeds on SaveOff()'s own COFF output");
+    Check(reloaded.HasVertexAlpha(), "the reloaded COFF mesh reports having vertex alpha");
+    bool coff_alpha_matches = true;
+    for (int i = 0; i < reloaded.VertexCount(); ++i) {
+      if (reloaded.VertexAlphaAt(i) != alpha[static_cast<size_t>(i)]) {
+        coff_alpha_matches = false;
+        break;
+      }
+    }
+    Check(coff_alpha_matches, "every round-tripped COFF vertex's alpha matches the original exactly");
     std::remove(path.c_str());
   }
 }
@@ -71478,6 +72502,154 @@ void TestCurveOffsetInPlaneChamferStyleClosedSquareMatchesClosedFormPerimeter() 
         "distance - a straight chord is always shorter than its own arc");
 }
 
+// `CurveOffsetCornerStyle::Smooth`: on the same genuinely convex corners
+// `TestCurveOffsetInPlaneRoundStyleFilletsConvexCorners()` already
+// exercises, Smooth must still pass through the same two tangent points
+// T0/T1 Round/Chamfer already use, but join them with a G2 (curvature-
+// continuous) blend rather than a circular arc - the real, falsifiable
+// difference: Round's own arc has curvature exactly `1/distance` right at
+// T0/T1 (checked directly below, not assumed), while Smooth's blend - built
+// from two zero-curvature straight lines - must measure curvature
+// (numerically) zero at those same two points instead.
+void TestCurveOffsetInPlaneSmoothStyleBlendsConvexCornersWithZeroCurvatureJunctions() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point3d> cps = {
+      Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  ON_Plane plane;
+  Check(poly.raw().IsPlanar(&plane, 1e-9), "OffsetInPlane Smooth setup: curve is planar");
+
+  NurbsCurve out_round, out_smooth;
+  Check(poly.OffsetInPlane(1.0, out_round, -1.0, CurveOffsetCornerStyle::Round) == Result::Ok,
+        "Round offset succeeds on this fixture (setup for the cross-check below)");
+  Check(poly.OffsetInPlane(1.0, out_smooth, -1.0, CurveOffsetCornerStyle::Smooth) == Result::Ok,
+        "Smooth offset succeeds on the same open polyline");
+
+  Check(!(out_smooth.Degree() == 1 && out_smooth.ControlPointCount() == 4),
+        "Smooth offset is NOT the same plain 4-CV polyline Sharp produces - the corners were genuinely blended");
+
+  for (int i = 1; i <= 2; ++i) {
+    Vector3d edge_in_dir = cps[static_cast<size_t>(i)] - cps[static_cast<size_t>(i - 1)];
+    Vector3d edge_out_dir = cps[static_cast<size_t>(i + 1)] - cps[static_cast<size_t>(i)];
+    edge_in_dir.Unitize();
+    edge_out_dir.Unitize();
+    Vector3d n0 = ON_CrossProduct(edge_in_dir, plane.zaxis);
+    Vector3d n1 = ON_CrossProduct(edge_out_dir, plane.zaxis);
+    n0.Unitize();
+    n1.Unitize();
+
+    const Point3d vertex = cps[static_cast<size_t>(i)];
+    const Point3d T0 = vertex + 1.0 * n0;
+    const Point3d T1 = vertex + 1.0 * n1;
+
+    Check(out_smooth.ClosestPoint(T0, 2000).DistanceTo(T0) < 1e-6,
+          "Smooth offset: the result passes through the SAME tangent point T0 Round/Chamfer already use");
+    Check(out_smooth.ClosestPoint(T1, 2000).DistanceTo(T1) < 1e-6,
+          "Smooth offset: the result passes through the SAME tangent point T1 Round/Chamfer already use");
+
+    Vector3d bisector = n0 + n1;
+    const double bisector_len = bisector.Length();
+    Check(bisector_len > 1e-9, "Smooth corner setup: the two offset directions are not opposite");
+    const Point3d round_bisector_point = vertex + (1.0 / bisector_len) * bisector;
+    Check(out_smooth.ClosestPoint(round_bisector_point, 2000).DistanceTo(round_bisector_point) > 0.01,
+          "Smooth offset: the result does NOT pass through Round's own circular-arc bisector point - a "
+          "genuinely different corner shape, not a relabeled copy of Round's own construction");
+
+    // The real, falsifiable distinguishing property: curvature at the
+    // shared tangent points. Round's arc has curvature exactly 1/distance
+    // (= 1.0 here) there; Smooth's blend, built from two zero-curvature
+    // lines matched to G2, must have curvature (numerically) zero there
+    // instead.
+    const double t0_round = out_round.ClosestPointParameter(T0, 2000);
+    const double t0_smooth = out_smooth.ClosestPointParameter(T0, 2000);
+    const double t1_round = out_round.ClosestPointParameter(T1, 2000);
+    const double t1_smooth = out_smooth.ClosestPointParameter(T1, 2000);
+    Check(std::abs(out_round.CurvatureAt(t0_round).Length() - 1.0) < 1e-3,
+          "Smooth corner setup: Round's own arc really does have curvature 1/distance = 1.0 at T0, confirmed "
+          "directly rather than assumed");
+    Check(std::abs(out_round.CurvatureAt(t1_round).Length() - 1.0) < 1e-3,
+          "Smooth corner setup: Round's own arc really does have curvature 1/distance = 1.0 at T1 too");
+    Check(out_smooth.CurvatureAt(t0_smooth).Length() < 1e-3,
+          "Smooth offset: curvature at T0 is (numerically) zero - the blend matches the incoming straight "
+          "edge's own zero curvature exactly, unlike Round's own discontinuous jump to 1.0 there");
+    Check(out_smooth.CurvatureAt(t1_smooth).Length() < 1e-3,
+          "Smooth offset: curvature at T1 is (numerically) zero too - the SAME zero-curvature match on the "
+          "outgoing straight edge's own side of the corner");
+  }
+}
+
+// Mirrors TestCurveOffsetInPlaneRoundStyleLeavesConcaveCornerAsExactMiter():
+// on the reflex (concave) vertex of the L-tromino fixture, Smooth must
+// leave the corner at the exact Sharp miter point too - there is no gap
+// on that side of the turn to fill with anything, blended or not - while
+// still blending its genuinely convex neighbors.
+void TestCurveOffsetInPlaneSmoothStyleLeavesConcaveCornerAsExactMiter() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0),  Point3d(10, 0, 0), Point3d(10, 4, 0),
+                                       Point3d(4, 4, 0),  Point3d(4, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out_sharp, out_smooth;
+  Check(poly.OffsetInPlane(1.0, out_sharp) == Result::Ok, "Sharp offset still succeeds on the reflex fixture");
+  Check(poly.OffsetInPlane(1.0, out_smooth, -1.0, CurveOffsetCornerStyle::Smooth) == Result::Ok,
+        "Smooth offset succeeds on the same reflex fixture");
+
+  const Point3d reflex_sharp_corner = out_sharp.ControlPointAt(3);
+  Check(out_smooth.ClosestPoint(reflex_sharp_corner, 2000).DistanceTo(reflex_sharp_corner) < 1e-6,
+        "Smooth offset: the reflex (concave) corner is untouched - the result still passes through exactly "
+        "Sharp's own miter point there");
+
+  for (int i : {2, 4}) {
+    const Point3d sharp_corner = out_sharp.ControlPointAt(i);
+    Check(out_smooth.ClosestPoint(sharp_corner, 2000).DistanceTo(sharp_corner) > 0.01,
+          "Smooth offset: a genuinely convex neighbor of the reflex vertex is NOT left at Sharp's own corner "
+          "point - it was blended");
+  }
+}
+
+// A CLOSED polygon exercises the wraparound seam corner too. Smooth's own
+// total length has no simple closed form (unlike Round's arc or Chamfer's
+// chord), but it is still RIGOROUSLY bounded below by Chamfer's own exact
+// chord length - any curve connecting the same two tangent points can
+// never be shorter than the straight line between them.
+void TestCurveOffsetInPlaneSmoothStyleClosedSquareStaysClosedAndLongerThanChamferChord() {
+  using dino8::kernel::CurveOffsetCornerStyle;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out;
+  const double distance = 1.0;
+  Check(poly.OffsetInPlane(distance, out, -1.0, CurveOffsetCornerStyle::Smooth) == Result::Ok,
+        "Smooth offset succeeds on a closed square");
+  Check(out.IsClosed(), "Smooth offset on a closed square: the result is itself closed");
+  Check(out.PointAt(out.Domain().min).DistanceTo(out.PointAt(out.Domain().max)) < 1e-6,
+        "Smooth offset on a closed square: the wraparound seam corner closes the loop exactly");
+
+  const double chamfer_perimeter = 4.0 * 10.0 + 4.0 * distance * std::sqrt(2.0);
+  Check(out.Length(4000) > chamfer_perimeter - 1e-6,
+        "Smooth offset on a closed square: total length is strictly no shorter than Chamfer's own exact "
+        "straight-chord perimeter - any curve joining the same two tangent points can't be shorter than the "
+        "line between them");
+}
+
 // Reuses `TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter()`'s
 // own L-tromino fixture, but shrinking it INWARD (a negative distance,
 // confirmed by direct probe - not assumed - to genuinely cross two
@@ -75242,1210 +76414,1228 @@ void TestLatticeInfillRejectsInvalidArguments() {
 }
 
 int main() {
-  ON::Begin();
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+  RunTest("ON::Begin", ON::Begin);
 
-  TestCurveDegreeElevation();
-  TestCurveFromControlPointsRejectsDegenerateInput();
-  TestCurveLength();
-  TestCurveLengthToTolerance();
-  TestCurveParameterAtArcLengthToTolerance();
-  TestCurveDivideByCountAndByLengthToTolerance();
-  TestCurveParameterAtArcLength();
-  TestCurveDivideByCount();
-  TestCurveDivideByLength();
-  TestCurveIsRational();
-  TestCurveSetWeightAt();
-  TestCurveMakeRationalAndNonRational();
-  TestCurveMakeNonRationalWithTolerance();
-  TestCurveInsertKnotAt();
-  TestCurveRemoveKnotAt();
-  TestCurveSetDomainReparameterizes();
-  TestCurveChangeSeam();
-  TestCurveMatchEnd();
-  TestCurveAnalyzeEndContinuity();
-  TestCurveDeviationTo();
-  TestCurveSimplify();
-  TestCurvePlanarRegionProperties();
-  TestCurveMinDistanceTo();
-  TestCurveGetOrientedBoundingBox();
-  TestCurveGetTightBoundingBoxOverload();
-  TestCurveKnotAt();
-  TestCurveControlPointAt();
-  TestCurveWeightAt();
-  TestCurveDomain();
-  TestCurveTangentAt();
-  TestCurveGetTightBoundingBox();
-  TestCurveIsClosed();
-  TestCurveIsPlanar();
-  TestCurveIsLinear();
-  TestCurveIsArcAndIsCircle();
-  TestCurveReverse();
-  TestCurveTrim();
-  TestCurveSplit();
-  TestCurveExtend();
-  TestCurveJoin();
-  TestCurveMakePeriodicExact();
-  TestSurfaceMakePeriodicExact();
-  TestCurveClosestPoint();
-  TestCurveFitLeastSquares();
-  TestCurveHelix();
-  TestCurveFitLeastSquaresConstrainedRefit();
-  TestBrepRefitTrim();
-  TestCurveCurvature();
-  TestCurveSuggestedSamples();
-  TestCurveSuggestedParameterValues();
-  TestCurveSuggestedSamplesByAngle();
-  TestCurveSuggestedParameterValuesByAngle();
-  TestSurfaceFromControlGridRejectsDegenerateInput();
-  TestSurfaceNormalAt();
-  TestSurfaceDegreeElevation();
-  TestSurfaceIsClosed();
-  TestSurfaceIsPlanar();
-  TestSurfaceIsSphere();
-  TestSurfaceIsCylinder();
-  TestSurfaceIsCone();
-  TestSurfaceIsTorus();
-  TestSurfaceIntersectSphereGreatCircle();
-  TestIntersectCurvesFindsCrossingsAndRejectsMisses();
-  TestIntersectCurvePlaneFindsCrossingsAndRejectsMisses();
-  TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves();
-  TestIntersectBrepsAndCurveBrep();
-  TestFireRayAtBrep();
-  TestClosestPointOnBrep();
-  TestContainsPointExact();
-  TestPullbackCurveToSurfaceCylinderRulingLine();
-  TestPullbackCurveToSurfaceAcrossPeriodicSeam();
-  TestIntersectBrepByPlaneBoxSideWalls();
-  TestContourBrepParallelSections();
-  TestSectionBrepByPlanesIndependentlyOrientedClipPlanes();
-  TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan();
-  TestIntersectCurveSurfaceOverlapBisectionTightensSpanBoundary();
-  TestIntersectCurveSurfaceOverlapRefinesBoundaryPastSamplingResolution();
-  TestIntersectCurveBrepOverlapScopesSpanToFaceTrim();
-  TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly();
-  TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
-  TestBrepCheckOptInReportsFaceSelfIntersections();
-  TestFindSurfaceTangentContactsSphereOnPlane();
-  TestFindSurfaceTangentCurvesCylinderRulingLine();
-  TestIntersectSurfacesHandlesSpherePoleCrossing();
-  TestIntersectSurfacesOverlapDetectsCoincidentRegion();
-  TestIntersectSurfacesOverlapBisectionTightensRegionBoundary();
-  TestIntersectSurfacesReturnsBoundaryCurveForCoincidentRegion();
-  TestIntersectPlaneSphereClosedForm();
-  TestIntersectPlaneCylinderClosedForm();
-  TestIntersectCylinderCylinderParallelClosedForm();
-  TestIntersectCylinderCylinderIntersectingClosedForm();
-  TestIntersectCylinderCylinderUnequalRadiusClosedForm();
-  TestIntersectPlanePlaneClosedForm();
-  TestIntersectPlaneConeClosedForm();
-  TestIntersectPlaneTorusClosedForm();
-  TestFindSurfaceSilhouettePointsSphereEquator();
-  TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon();
-  TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves();
-  TestFindSurfaceSilhouetteCurvesPerspectiveChainsPointsIntoCurves();
-  TestFindSurfaceSilhouettePointsSelfOcclusionTorus();
-  TestProjectCurveToSurfaceFlatPlaneStraightDown();
-  TestProjectCurveToSurfacePartialMiss();
-  TestBooleanCombineGeneralBoxBox();
-  TestBooleanCombineGeneralFreeformSurfaceOperand();
-  TestBooleanCombineGeneralFreeformVsFreeformOperand();
-  TestBooleanCombineGeneralCoplanarBoxes();
-  TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance();
-  TestBooleanCombineGeneralBoxCylinder();
-  TestBooleanCombineGeneralCallerTolerance();
-  TestBooleanCombineGeneralSphereBox();
-  TestBooleanCombineGeneralObliqueCylinder();
-  TestBooleanCombineGeneralBoxCone();
-  TestBooleanCombineGeneralSphereCylinderThroughCentre();
-  TestBooleanCombineGeneralUnequalRadiusPerpendicularCylinders();
-  TestImprintFacesBoxPiercedByCylinder();
-  TestImprintFacesOverlappingBoxes();
-  TestImprintFacesDisjointIsNoOp();
-  TestImprintFacesRejectsEmptyOperands();
-  TestImprintFacesCallerTolerance();
-  TestSplitFaceByCurveBoxTopFaceAsymmetricVSplit();
-  TestSplitFaceByCurveRejectsInteriorOnlyLoop();
-  TestSplitFaceByCurveRejectsInvalidInput();
-  TestImprintClosedCurveOnFaceBoxTopFaceSquareHole();
-  TestImprintClosedCurveOnFaceRejectsOpenChain();
-  TestImprintClosedCurveOnFaceRejectsInvalidInput();
-  TestSplitFaceByCurvesBoxTopFaceTwoParallelCutsProduceThreeStrips();
-  TestSplitFaceByCurvesRejectsCrossingCurves();
-  TestSplitFaceByCurvesRejectsInvalidInput();
-  TestImprintClosedCurvesOnFaceBoxTopFaceTwoHoles();
-  TestImprintClosedCurvesOnFaceRejectsInvalidInput();
-  TestMutualImprintFacesBoxPiercedByCylinder();
-  TestMutualImprintFacesRejectsEmptyOrNonPositiveTolerance();
-  TestSplitBySheetBoxCutInHalfByPlane();
-  TestSplitBySheetDisjointSheetKeepsWholeSolidOnOneSide();
-  TestSplitBySheetRejectsEmptyOperands();
-  TestSplitBySheetCallerTolerance();
-  TestTrimSheetBySolidKeepsOnlyInteriorPortion();
-  TestTrimSheetBySolidDisjointSheetKeepsWholeOrEmpty();
-  TestTrimSheetBySolidRejectsEmptyOperands();
-  TestTrimSheetBySolidCallerTolerance();
-  TestSplitBySheetCurvedSolidCylinderCutByFlatSheet();
-  TestTrimSheetBySolidCurvedSolidCylinder();
-  TestSplitBySheetGenuinelyCurvedSheetThroughBox();
-  TestTrimSheetBySolidGenuinelyCurvedSheetAgainstBox();
-  TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume();
-  TestSplitBrepBySolidDisjointCutterKeepsWholeTargetOutside();
-  TestSplitBrepBySolidCutterFullyContainsTarget();
-  TestSplitBrepBySolidRejectsEmptyOperandsAndNonPositiveTolerance();
-  TestSplitBrepByManySolidsTwoDisjointCuttersSumBackToOriginalVolume();
-  TestSplitBrepByManySolidsRejectsEmptyCutterGroup();
-  TestSplitBrepByPlaneMatchesMeshLevelSplitByPlane();
-  TestSplitBrepByPlaneTiltedNormalSumsBackToOriginalVolume();
-  TestSplitBrepByPlaneMissingTargetKeepsWholeTargetOnOneSide();
-  TestSplitBrepByPlaneRejectsEmptyTargetZeroNormalAndNonPositiveTolerance();
-  TestSplitBrepByManyPlanesSlicesABlockIntoThreeOrderedSlabs();
-  TestSplitBrepByManyPlanesOffsetBeyondTargetDropsTheEmptySlab();
-  TestSplitBrepByManyPlanesDuplicateOffsetIsHarmless();
-  TestSplitBrepByManyPlanesRejectsEmptyTargetEmptyOffsetsZeroNormalAndNonPositiveTolerance();
-  TestSurfaceGetApproximateSize();
-  TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
-  TestSurfaceTessellateGridRejectsTooFewTrimPoints();
-  TestSurfaceTessellateGridValidation();
-  TestSurfaceTessellateGridNonUniform();
-  TestSurfaceSuggestedParameterValuesAndTessellateGridNonUniformAdaptive();
-  TestSurfaceReverseAndTranspose();
-  TestSurfaceTrim();
-  TestSurfaceSplit();
-  TestSurfaceSplitAtCreases();
-  TestSurfaceExtend();
-  TestSurfaceDomain();
-  TestSurfaceIsRational();
-  TestSurfaceSetWeightAt();
-  TestSurfaceMakeRationalAndNonRational();
-  TestSurfaceMakeNonRationalWithTolerance();
-  TestSurfaceInsertKnotAt();
-  TestSurfaceKnotAt();
-  TestSurfaceControlPointAt();
-  TestSurfaceWeightAt();
-  TestSurfaceApproximateArea();
-  TestSurfaceCVCount();
-  TestSurfaceClosestPoint();
-  TestSurfaceClosestPointFinerGridNotWorseThanCoarser();
-  TestSurfaceClosestPointGlobalReportsConvergenceFailure();
-  TestSurfaceClosestPointMultistartFindsGlobalMinimum();
-  TestSurfaceCurvature();
-  TestSurfaceSuggestedDivisions();
-  TestSurfaceTessellateGridAdaptive();
-  TestSurfaceTessellateGridClippedExactAdaptive();
-  TestSurfaceSuggestedDivisionsByAngle();
-  TestSurfaceTessellateGridAdaptiveByAngle();
-  TestSurfaceMeasureGridTessellationDeviation();
-  TestSurfaceTessellateGridCertifiedAdaptive();
-  TestSurfaceMeasureMeshTessellationDeviation();
-  TestSurfaceTessellateGridClippedExactCertifiedAdaptive();
-  TestSurfaceTessellateGridNonUniformCertifiedAdaptive();
-  TestBrepTessellateAdaptive();
-  TestBrepTessellateAdaptiveByAngle();
-  TestBrepTessellateNonUniformAdaptive();
-  TestBrepTessellateCertifiedAdaptive();
-  TestFileRoundTrip();
-  TestModelAddMeshRoundTrips();
-  TestModelAddSubDRoundTrips();
-  TestModelAddPointCloudRoundTrips();
-  TestModelAddObjectNameRoundTrips();
-  TestModelAddLayerRoundTrips();
-  TestModelDefaultLayerSurvivesLaterAddLayerCall();
-  TestModelAddRenderColorRoundTrips();
-  TestModelAddUserStringsRoundTrips();
-  TestModelAddLinetypeRoundTrips();
-  TestModelAddGroupRoundTrips();
-  TestModelAddMaterialRoundTrips();
-  TestModelReadAccessorsRoundTrip();
-  TestModelMaterialAccessorsRoundTrip();
-  TestModelUnitSystemRoundTrips();
-  TestModelAddNamedViewRoundTrips();
-  TestModelAddLayoutRoundTrips();
-  TestModelAddDetailViewRoundTrips();
-  TestModelAddDetailViewCameraRoundTrips();
-  TestModelAddExtrusionRoundTrips();
-  TestModelMaterialExtendedFieldsRoundTrip();
-  TestModelMaterialTextureRoundTrips();
-  TestModelAddLightRoundTrips();
-  TestModelAddClippingPlaneRoundTrips();
-  TestModelAddInstanceReferenceRoundTrips();
-  TestModelAddHatchRoundTrips();
-  TestModelAddHatchPatternLinesRoundTrips();
-  TestModelAddHatchHolesRoundTrips();
-  TestModelAddHatchPatternDescriptionRoundTrips();
-  TestModelAddTextDotRoundTrips();
-  TestModelAddTextAnnotationRoundTrips();
-  TestModelAddLeaderRoundTrips();
-  TestModelAddDimensionLinearRoundTrips();
-  TestModelUnitConversionFactor();
-  TestModelConvertUnitsScalesGeometryAndUpdatesUnitSystem();
-  TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
-  TestSplitByPlane();
-  TestConvexHull();
-  TestSimplify();
-  TestMinkowskiSum();
-  TestOffsetSolidGrowMatchesSteinerFormula();
-  TestOffsetSolidShrinkStaysExactForConvexSolid();
-  TestOffsetSolidExcessiveShrinkErodesToNothingAndThrows();
-  TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks();
-  TestOffsetSolidHandlesGenuinelyConcaveSolid();
-  TestDecompose();
-  TestMinGap();
-  TestRefineToLength();
-  TestSmoothAndRefine();
-  TestCountDegenerateTriangles();
-  TestBrepTessellation();
-  TestBoxVolume();
-  TestBooleanUnion();
-  TestBooleanIntersection();
-  TestBooleanDifference();
-  TestBooleanSymmetricDifference();
-  TestComputeInterference();
-  TestComputeMultiWayInterference();
-  TestComputeAllInterference();
-  TestBrepBoxIsClosedAndWatertight();
-  TestBrepBoxWeldedHasGenuineTopology();
-  TestBrepLacksFullOpenNurbsTopologyButStillUsable();
-  TestBrepGetTightBoundingBox();
-  TestBrepGetTightBoundingBoxExactForTrimmedPlanarFaces();
-  TestBrepBooleanEndToEnd();
-  TestBrepSphereIsClosedAndWatertight();
-  TestBrepSphereBooleanEndToEnd();
-  TestBrepTorusIsClosedAndWatertight();
-  TestBrepVolumeAndAreaMatchClosedForms();
-  TestBrepTrimmedPlanarFaceRejectsTooFewPoints();
-  TestBrepTrimmedPlanarFace();
-  TestBrepTrimmedPlanarFaceWelded();
-  TestWeldAcrossIndependentlyParameterizedSurfaces();
-  TestExtrudeUntrimmedFaceIntoSolid();
-  TestExtrudeTrimmedFaceFeedsBoolean();
-  TestCylinderConeRejectTooFewCircleSegments();
-  TestCylinderVolumeAndBoolean();
-  TestConeVolumeAndBoolean();
-  TestRevolveProfileBiconeVolumeAndBoolean();
-  TestRevolveProfileRejectsTooFewSegments();
-  TestRevolveProfileRejectsTooShortProfile();
-  TestRevolveProfileFlatEndCaps();
-  TestMeshRevolveProfilePartialAngle();
-  TestMeshRevolveProfileStartAngle();
-  TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean();
-  TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts();
-  TestLoftClosedRingsConcaveEndCapsExactPrismVolume();
-  TestLoftPeriodicRingsClosesTorusLikeTubeExactly();
-  TestLoftPeriodicRingsRejectsTooFewRingsAndMismatchedCounts();
-  TestTorusRejectsTooFewSegments();
-  TestTorusVolumeAndBoolean();
-  TestMeshGetBoundingBox();
-  TestMeshGetCentroid();
-  TestMeshTransform();
-  TestMeshFlipNormals();
-  TestMeshIsClosedManifold();
-  TestMeshContainsPoint();
-  TestMeshClosestPoint();
-  TestMeshSignedDistance();
-  TestMeshVolumeMassProperties();
-  TestMeshGetOrientedBoundingBox();
-  TestMeshFireRay();
-  TestMeshDistanceTo();
-  TestMeshClashWith();
-  TestPointCloudSpatialQueries();
-  TestPointCloudPointsNearPlane();
-  TestPointCloudContourAtPlaneFitsRingThroughBand();
-  TestPointCloudXyzRoundTrips();
-  TestPointCloudLoadXyzRejectsMalformedInput();
-  TestPointCloudPtsRoundTrips();
-  TestPointCloudLoadPtsRejectsMalformedInput();
-  TestPointCloudPcdRoundTrips();
-  TestPointCloudLoadPcdRejectsMalformedInput();
-  TestPointCloudLasRoundTrips();
-  TestPointCloudLoadLasRejectsMalformedInput();
-  TestMeshAreaCountsBothQuadTriangles();
-  TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
-  TestSubDFromControlMeshRejectsEmptyMesh();
-  TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
-  TestSubDIsValid();
-  TestSubDMeshRoundTripIsExactAtLevelZero();
-  TestSubDFromNurbsSurfaceExactOnFlatGrid();
-  TestSubDFromNurbsSurfaceThrowsOnInvalidSurface();
-  TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth();
-  TestSubDTransformMovesScalesAndStaysValidUnderMirror();
-  TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces();
-  TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance();
-  TestSubDSymmetrizeThrowsOnBadToleranceOrOffset();
-  TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
-  TestSubDSetEdgeSharpnessSupportsPerEndVariableWeight();
-  TestSubDEdgeSharpnessAtReadsBackWhatWasWritten();
-  TestSubDSetCreaseTagsAndUntagsEdges();
-  TestSubDFlatQuadGridStaysFlatAndAreaExact();
-  TestSubDToNurbsPatchesExactOnRegularFlatGrid();
-  TestSubDToNurbsPatchesIrregularCornersMatchKnownLimitPoint();
-  TestSubDToNurbsPatchesIrregularCornerFallsBackOnSemiSharpEdge();
-  TestSubDLimitPointsExactCubeAndFlatGrid();
-  TestSubDOffsetCubeMovesEachCornerAlongItsOwnExactBodyDiagonalLimitNormal();
-  TestSubDOffsetZeroDistanceLeavesEveryPositionUnchanged();
-  TestSubDOffsetArgumentChecksRejectNonFiniteDistance();
-  TestSubDThickenFlatSheetMatchesExactPrismVolumeAndIsClosedManifold();
-  TestSubDThickenInheritsMeshThickenArgumentChecks();
-  TestSubDEvaluateFaceExactOnRegularFlatGrid();
-  TestSubDEvaluateFaceAdaptiveOnIrregularFace();
-  TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane();
-  TestSubDEvaluateFaceExtraordinaryCornerHandlesSemiSharpEdge();
-  TestSubDEvaluateFaceThrowsOnBadInput();
-  TestSubDToNurbsPatchesAdaptiveMatchesNonAdaptiveAtZeroLevels();
-  TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace();
-  TestSubDToNurbsPatchesAdaptiveRegularFaceUnaffected();
-  TestSubDToNurbsPatchesAdaptiveThrowsOnNegativeLevels();
-  TestSubDToNurbsPatchesThrowsOnNoQuadFaces();
-  TestSubDToNurbsPatchesAdaptiveThrowsOnNoQuadFaces();
-  TestSubDCheckCleanClosedBoxReportsNoDefects();
-  TestSubDCheckOpenGridReportsNakedEdgesOnly();
-  TestSubDCheckDisjointPiecesReportsMultipleBodies();
-  TestSubDCheckNonManifoldEdgeDetected();
-  TestSubDCheckBowtieVertexDetected();
-  TestSubDCheckDuplicateVerticesDetected();
-  TestSubDSplitDisjointPiecesSplitsIntoSeparateSubDs();
-  TestSubDSplitNonManifoldVertexSplitsBowtie();
-  TestSubDMergeDuplicateVerticesWeldsCoincidentPairs();
-  TestSubDInsertEdgeSplitsFaceIntoTwoAlongDiagonal();
-  TestSubDSpinEdgeRotatesSharedInteriorEdge();
-  TestSubDExtrudeFaceAddsProtrusionAlongNormal();
-  TestSubDExpandFacesSingleFaceMatchesExtrudeFace();
-  TestSubDExpandFacesMovesConnectedRegionAsOneBlockKeepingSharedEdgeInterior();
-  TestSubDExpandFacesRefusesWhenRegionNormalsCancel();
-  TestSubDWeldJoinsTwoDisjointQuadsAlongCoincidentSeam();
-  TestSubDWeldRefusesSameFaceCornersAndPreservesUnrelatedCrease();
-  TestSubDFromBrepBoxProducesWatertightManifoldCage();
-  TestSubDFromBrepRejectsBadDivisionsTrimmedAndCurvedFaces();
-  TestSubDTessellateRejectsInvalidInputs();
-  TestSubDTessellateCapsAtMaxResolutionForUnreachableTolerance();
-  TestSubDTessellateIsToleranceDrivenNotResolutionDriven();
-  TestSubDTessellateFinerGridForTighterTolerance();
-  TestSubDTessellateWeldsCubeFacesIntoClosedManifold();
-  TestSubDTessellateFlatRegularPatchIsExactAtCoarsestGrid();
-  TestSubDTessellateHarmonizesResolutionAcrossMismatchedFaces();
-  TestSubDBooleanUnionOfDisjointBoxesSumsVolumes();
-  TestSubDBooleanIntersectionOfOverlappingBoxesMatchesExactOverlap();
-  TestSubDBooleanDifferenceSubtractsOnlyTheOverlap();
-  TestSubDBooleanRejectsOpenNonManifoldOperand();
-  TestSubDBooleanToSubDReturnsEditableSubDMatchingBooleanVolume();
-  TestSubDBooleanToSubDIsGenuinelyFurtherSubdividable();
-  TestSubDBooleanToSubDPropagatesBooleanFailure();
-  TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads();
-  TestSubDFromMeshQuadRemeshedRecombinesTessellatedBoxIntoQuads();
-  TestSubDFromBrepTessellatedBoxRecombinesIntoSixQuads();
-  TestSubDFromBrepTessellatedApproximatesSphereFromInside();
-  TestSubDFromBrepTessellatedRejectsInvalidDivisions();
-  TestSubDFromMeshQuadRemeshedForwardsCreaseAtDoubleEdges();
-  TestSubDFromMeshQuadRemeshedRespectsMaxDihedralDegThreshold();
-  TestSubDBooleanToSubDMaxDihedralDegDefaultMatchesExplicitValue();
-  TestMeshComputeVertexNormals();
-  TestMeshComputeFaceNormals();
-  TestMeshFacetedGivesFlatShading();
-  TestMeshComputeBoxMappingUVs();
-  TestMeshComputePlanarMappingUVs();
-  TestMeshComputeCylindricalMappingUVs();
-  TestMeshComputeSphericalMappingUVs();
-  TestMeshSplitUVSeam();
-  TestMeshSaveObjRoundTrips();
-  TestMeshTextureCoordinates();
-  TestMeshLoadObjPreservesUvSeams();
-  TestMeshLoadObjRejectsMalformedFiles();
-  TestMeshLoadObjResolvesRelativeIndices();
-  TestMeshLoadObjFanTriangulatesNgonFaces();
-  TestMeshSaveOffRoundTrips();
-  TestMeshLoadOffRejectsMalformedFiles();
-  TestMeshLoadOffRejectsImplausibleElementCounts();
-  TestMeshLoadOffFanTriangulatesNgonFaces();
-  TestMeshSaveOffWritesAndReadsCoffColors();
-  TestMeshSaveAmfRoundTrips();
-  TestMeshLoadAmfRejectsMalformedFiles();
-  TestMeshSaveVrmlRoundTrips();
-  TestMeshLoadVrmlRejectsMalformedFiles();
-  TestMeshLoadVrmlFanTriangulatesNgonFaces();
-  TestMeshSaveVrmlWritesAndReadsColors();
-  TestMeshSaveColladaRoundTrips();
-  TestMeshLoadColladaRejectsMalformedFiles();
-  TestMeshLoadColladaFanTriangulatesNgonFaces();
-  TestMeshSaveX3dRoundTrips();
-  TestMeshLoadX3dRejectsMalformedFiles();
-  TestMeshLoadX3dFanTriangulatesNgonFaces();
-  TestMeshSaveX3dWritesAndReadsColors();
-  TestMeshSaveUsdaRoundTrips();
-  TestMeshLoadUsdaRejectsMalformedFiles();
-  TestMeshLoadUsdaFanTriangulatesNgonFaces();
-  TestMeshSaveGltfRoundTrips();
-  TestMeshLoadGltfRejectsMalformedFiles();
-  TestMeshSaveGlbRoundTrips();
-  TestMeshLoadGlbRejectsMalformedFiles();
-  TestMeshSaveIfcRoundTrips();
-  TestMeshLoadIfcRejectsMalformedFiles();
-  TestMeshSaveStepAp242RoundTrips();
-  TestMeshLoadStepAp242RejectsMalformedFiles();
-  TestMeshSave3mfRoundTrips();
-  TestMeshLoad3mfRejectsMalformedFiles();
-  TestMeshSaveFbxRoundTrips();
-  TestMeshLoadFbxRejectsMalformedFiles();
-  TestNurbsCurveSaveIgesRoundTrips();
-  TestNurbsCurveLoadIgesRejectsMalformedFiles();
-  TestMeshSaveDxfRoundTrips();
-  TestMeshLoadDxfRejectsMalformedFiles();
-  TestMeshSaveStlSplitsQuadsAndComputesNormals();
-  TestMeshLoadStlRoundTrips();
-  TestMeshLoadStlBinary();
-  TestMeshLoadStlBinaryRejectsNonFiniteVertices();
-  TestMeshSaveStlBinaryRoundTrips();
-  TestMeshSavePlyRoundTrips();
-  TestMeshSavePlyBinaryRoundTrips();
-  TestMeshSavePlyBigEndianRoundTrips();
-  TestMeshSavePlyVertexColorsRoundTrips();
-  TestMeshLoadPlyRejectsMalformedFiles();
-  TestExactClippingMatchesAreaButNotCellCounts();
-  TestExactClippingHandlesNonConvexTrim();
-  TestExactClippingHandlesTrimVertexOnGridLine();
-  TestExactClippingHandlesManyReflexVertexComb();
-  TestExactClippingRejectsSelfIntersectingTrim();
-  TestSurfaceTessellateGridRejectsTooFewHolePoints();
-  TestAnnulusFaceExtrudesToWatertightTube();
-  TestExtrudeRejectsAlreadyClosedCap();
-  TestExtrudeRejectsBowtieBoundary();
-  TestConeToApexSharesBoundaryValidation();
-  TestBooleanIntersectConvexPlanarExactBoxOverlap();
-  TestBooleanIntersectConvexPlanarRejectsNonConvex();
-  TestBooleanCombinePlanarNonConvexLShapeVsBox();
-  TestShellConvexPlanarCubeOpenTopExactVolume();
-  TestShellConvexPlanarRejectsTooLargeThickness();
-  TestShellConvexPlanarRejectsAdjacentOpenings();
-  TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula();
-  TestShellConvexPlanarPerFaceWallThicknessArgumentChecks();
-  TestShellClosedSphereMatchesExactShellVolume();
-  TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle();
-  TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces();
-  TestInsetPlanarFaceOnBoxTopFaceFlatMatchesUnchangedVolumeAndCorrectTopology();
-  TestInsetPlanarFaceOnBoxTopFaceWithDepthMatchesExactFrustumVolume();
-  TestInsetPlanarFaceArgumentChecks();
-  TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling();
-  TestOffsetSolidConvexPlanarUniformBoxMatchesExactVolume();
-  TestOffsetSolidConvexPlanarPerFaceBoxMatchesExactBoundingBox();
-  TestOffsetSolidConvexPlanarTetrahedronMatchesIndependentVertexRecomputation();
-  TestOffsetSolidConvexPlanarRejectsNonConvexLShape();
-  TestPushPullFaceOnBoxPushOutAddsWallsAndMatchesExactVolume();
-  TestPushPullFaceOnNonConvexLShapeGrowsByExactSlabVolume();
-  TestPushPullFacesSingleEntryMatchesPushPullFace();
-  TestPushPullFacesTwoIndependentPushPullMatchesEitherSequentialOrder();
-  TestPushPullFacesRefusesInvalidInput();
-  TestPushPullFaceObliqueNeighbourMatchesExactFrustumVolume();
-  TestPushPullFacesObliqueNeighbourMatchesPushPullFace();
-  TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume();
-  TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched();
-  TestDraftFacesConvexPlanarPerFaceAnglesMatchesEitherSequentialOrder();
-  TestReplaceFacePlaneConvexPlanarMatchesOffsetFaceForPureTranslate();
-  TestReplaceFacePlaneConvexPlanarTiltedRoofMatchesExactIntegralAndRetrimsWalls();
-  TestReplaceFacePlaneConvexPlanarRefusesInvalidInput();
-  TestFoldFaceConvexPlanarBoxFrontWallHingedAtBottomEdgeMatchesExactIntegral();
-  TestFoldFaceConvexPlanarRefusesInvalidInput();
-  TestFoldFacesConvexPlanarSingleEntryMatchesFoldFaceConvexPlanar();
-  TestFoldFacesConvexPlanarTwoIndependentFoldsMatchesSequentialSingleFolds();
-  TestFoldFacesConvexPlanarRefusesInvalidInput();
-  TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched();
-  TestMoveVertexConvexPlanarRefusesInvalidInput();
-  TestMoveVertexConvexPlanarPyramidBaseCornerSlidesWithinBasePlaneMatchesExactPyramidVolume();
-  TestMoveVertexConvexPlanarRefusesGenuinelyNonPlanarQuadMove();
-  TestMoveFaceConvexPlanarMatchesOffsetFaceForPureNormalTranslate();
-  TestMoveFaceConvexPlanarRotationMatchesExactAngleAndFixedOrigin();
-  TestMoveFaceConvexPlanarRefusesInvalidInput();
-  TestMoveEdgeConvexPlanarTetrahedronMatchesExactVolumeFromSignedTripleProduct();
-  TestMoveEdgeConvexPlanarRefusesInvalidInput();
-  TestMoveEdgeConvexPlanarBoxBottomFrontEdgeTiltMatchesExactIntegralVolume();
-  TestMoveVerticesConvexPlanarMovesAllFourTetrahedronVerticesMatchesExactVolumeFromSignedTripleProduct();
-  TestMoveVerticesConvexPlanarSucceedsWhereASequentialSingleMoveWouldRefuse();
-  TestMoveVerticesConvexPlanarRefusesInvalidInput();
-  TestMoveEdgesConvexPlanarMovesTwoAdjacentEdgesSharingAVertexMatchesExactVolume();
-  TestMoveEdgesConvexPlanarRefusesInvalidInput();
-  TestMoveVertexConvexPlanarQuadBaseCornerWithinPlaneMatchesExactVolume();
-  TestMoveVertexConvexPlanarRefusesNonPlanarQuadCornerMove();
-  TestMoveEdgeConvexPlanarQuadBaseEdgeWithinPlaneMatchesExactVolume();
-  TestReplaceFacePlanesConvexPlanarSucceedsWhereSequentialSingleReplaceWouldRefuse();
-  TestReplaceFacePlanesConvexPlanarRefusesInvalidInput();
-  TestMoveFacesConvexPlanarSucceedsWhereSequentialSingleMoveWouldRefuse();
-  TestMoveFacesConvexPlanarMatchesOffsetSolidForTwoIndependentNormalTranslates();
-  TestMoveFacesConvexPlanarRefusesInvalidInput();
-  TestDeleteFaceHealConvexPlanarChamferedCubeRecoversExactUnitCube();
-  TestDeleteFaceHealConvexPlanarRefusesInvalidInput();
-  TestDeleteFacesHealConvexPlanarTwoIndependentChamfersMatchesEitherSequentialOrder();
-  TestDeleteFacesHealConvexPlanarRefusesInvalidInput();
-  TestFilletConvexEdgeUnitCubeTopFrontCorner();
-  TestFilletConvexEdgeTaperedRailExactness();
-  TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
-  TestFilletConvexEdgeTaperedDispatchesToConstantRadiusAtZeroTaper();
-  TestFilletConvexEdgeTaperedClosesCornerNotch();
-  TestFilletConvexEdgeTaperedCornerNotchDefectVolumeIsSmall();
-  TestFilletConvexEdgeTaperedRejectsInvalidInput();
-  TestFilletConvexEdgeTaperedMultiStationRailExactness();
-  TestFilletConvexEdgeTaperedMultiStationInteriorJoinSharedPoints();
-  TestFilletConvexEdgeTaperedMultiStationClosedFormVolumeMatchesFrustumFormula();
-  TestFilletConvexEdgeTaperedMultiStationIsClosedManifoldAndSolid();
-  TestFilletConvexEdgeTaperedTwoStationDispatchIsBitIdenticalToTwoRadiusOverload();
-  TestFilletConvexEdgeTaperedMultiStationInteriorJoinToleranceDoesNotVanish();
-  TestFilletConvexEdgeTaperedMultiStationRejectsInvalidStations();
-  TestChamferConvexEdgeUnitCubeClosedFormVolumeAndTopology();
-  TestChamferConvexEdgeObliqueEndFaceIsExactAndClosed();
-  TestChamferConvexEdgeAngleMatchesTwoDistanceForm();
-  TestChamferConvexEdgeRejectsInvalidInput();
-  TestChamferConvexEdgeChainsAcrossACornerAndAlongParallelEdges();
-  TestFilletConvexEdgeConicWeightFormulaReducesToExactCircle();
-  TestFilletConvexEdgeConicFreeBoundaryTangencyRailExactnessAndClosedFormArea();
-  TestFilletConvexEdgeConicRejectsInvalidInput();
-  TestFilletConvexEdgeConicClosesCornerNotchOnUnitCube();
-  TestSphericalFaceOctantIsValidWithSingularPoleTrim();
-  TestMergeAndWeldMakesBrepSphereAClosedManifold();
-  TestFilletConvexEdgesRoundedBoxMatchesSteinerFormula();
-  TestFilletConvexEdgesHexagonalPrismMatchesSteinerFormula();
-  TestFilletConvexEdgesParallelPairDoubleNotchesEndFaces();
-  TestFilletConvexEdgesSingleCornerSphereWithNotchedFarEnds();
-  TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdge();
-  TestFilletConvexEdgesMergesTangentChainSplitEdge();
-  TestFilletConvexEdgesRejectsUnsupportedConfigurations();
-  TestFilletConvexEdgeObliqueEndFaceIsExactAndClosed();
-  TestFilletConvexEdgeObliqueEndMatchesPerpendicularAtZeroSlope();
-  TestFilletConvexEdgeObliqueEndClosedFormAtASecondSlope();
-  TestFilletConvexEdgeObliqueEndRejectsInvalidInput();
-  TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdgeOnObliqueEnd();
-  TestFilletConvexEdgesParallelPairWithObliqueEndsIsClosedAndMatchesClosedForm();
-  TestFilletConvexEdgesRejectsOversizedRadiusAtObliqueEnd();
-  TestRemoveBlendRoundTripsASingleFillet();
-  TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo();
-  TestRemoveBlendRejectsUnsupportedConfigurations();
-  TestRemoveBlendRoundTripsAnObliqueEndFillet();
-  TestRemoveBlendRoundTripsASphericalVertexCorner();
-  TestRemoveBlendOnSphericalCornerLeavesAnIndependentCornerIntact();
-  TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner();
-  TestRemoveBlendRoundTripsASphericalVertexCornerWithOneObliqueFarEnd();
-  TestRemoveBlendRoundTripsATaperedFillet();
-  TestRemoveChamferRoundTripsASingleChamfer();
-  TestRemoveChamferLeavesTheOtherChamferIntactAmongTwo();
-  TestRemoveChamferRoundTripsADistanceAngleChamfer();
-  TestRemoveChamferRejectsUnsupportedConfigurations();
-  TestFilletConcaveEdgeAddsExactQuarterRoundVolume();
-  TestFilletConcaveEdgeRejectsUnsupportedConfigurations();
-  TestMaxFilletRadiusConvexUnitCubeMatchesExtent();
-  TestMaxFilletRadiusConcaveLShapedPrismMatchesExtent();
-  TestMaxFilletRadiusRejectsInvalidInput();
-  TestFilletConcaveEdgeTaperedRailExactness();
-  TestFilletConcaveEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
-  TestFilletConcaveEdgeTaperedDispatchesToConstantRadiusAtZeroTaper();
-  TestFilletConcaveEdgeTaperedClosesCornerNotchAndIsSolid();
-  TestFilletConcaveEdgeTaperedRejectsInvalidInput();
-  TestFilletConcaveEdgeTaperedMultiStationClosedFormVolumeMatchesFrustumFormula();
-  TestFilletConcaveEdgeTaperedMultiStationIsClosedManifoldAndSolid();
-  TestFilletConcaveEdgeTaperedTwoStationDispatchIsBitIdenticalToTwoRadiusOverload();
-  TestFilletConcaveEdgeTaperedMultiStationRejectsInvalidStations();
-  TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed();
-  TestFilletConcaveEdgesSingleEdgeMatchesFilletConcaveEdgeOnObliqueEnd();
-  TestFilletConcaveEdgesRejectsOversizedRadiusAtObliqueEnd();
-  TestFilletConcaveEdgesAddsExactVolumeForTwoIndependentNotches();
-  TestFilletConcaveEdgesMergesTangentChainSplitEdge();
-  TestFilletConcaveEdgesRejectsUnsupportedConfigurations();
-  TestFilletConcaveEdgesTwoIndependentEdgesWithObliqueEndsMatchHandDerivedLength();
-  TestRemoveBlendLeavesTheOtherConcaveFilletIntactAmongTwo();
-  TestFilletConcaveEdgesTrihedralCornerAddsExactSphericalBlendVolume();
-  TestFilletConcaveEdgesRejectsMixedVertexConfigurations();
-  TestChamferConvexVertexRemovesExactTetrahedronVolumeOnBoxCorner();
-  TestChamferConvexVertexWorksOnObliqueCornerFilletConvexEdgesRejects();
-  TestChamferConcaveVertexAddsExactTetrahedronVolumeOnNotchedCubeCorner();
-  TestChamferVertexRejectsWrongConvexityAndOtherBadInputs();
-  TestChamferVertexAsymmetricPerEdgeDistancesMatchGeneralTripleProduct();
-  TestRemoveChamferVertexRoundTripsAConvexBoxCorner();
-  TestRemoveChamferVertexRoundTripsAsymmetricDistancesAndConcaveCorner();
-  TestRemoveChamferVertexRejectsNonChamferFacesAndOtherBadInputs();
-  TestRemoveBlendRoundTripsAConcaveFillet();
-  TestRemoveBlendRoundTripsAnObliqueEndConcaveFillet();
-  TestFilletConvexEdgeByDistanceFromEdgeMatchesEquivalentRadius();
-  TestFilletConvexEdgeByDistanceBetweenRailsMatchesEquivalentRadius();
-  TestFilletConcaveEdgeByDistanceFromEdgeAndByDistanceBetweenRailsMatchEquivalentRadius();
-  TestFilletEdgeByDistanceRailTypeFunctionsRejectInvalidInput();
-  TestFilletConvexEdgesByDistanceFromEdgeAndBetweenRailsMatchFilletConvexEdgesOnUniformDihedralEdges();
-  TestFilletConcaveEdgesByDistanceFromEdgeAndBetweenRailsMatchFilletConcaveEdgesOnTwoIndependentNotches();
-  TestFilletEdgesByDistanceRailTypeFunctionsRejectMismatchedDihedralAnglesAndInvalidInput();
-  TestChamferConcaveEdgeAddsExactRightTriangleVolume();
-  TestChamferConcaveEdgeAngleMatchesTwoDistanceForm();
-  TestChamferConcaveEdgeRejectsUnsupportedConfigurations();
-  TestFilletConcaveEdgeConicRejectsConvexEdgeAndInvalidInput();
-  TestFilletConcaveEdgeConicAddsClosedFormVolumeOnLShapedPrism();
-  TestFilletConvexEdgesConicBlendsTwoIndependentEdgesInOneCall();
-  TestFilletConvexEdgesConicRejectsSharedFacesAndInvalidInput();
-  TestFilletConcaveEdgesConicMatchesFilletConcaveEdgeConicOnSingleEdge();
-  TestRemoveChamferRoundTripsAConcaveChamfer();
-  TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
-  TestBrepAdjacencyQueries();
-  TestBrepLiveCountsExcludeUncompactedDeletedSlots();
-  TestBooleanCombinePlanarResultHasValidClosedTopology();
-  TestShellConvexPlanarResultHasValidTopology();
-  TestFilletConvexEdgeFreeBoundaryCapHasValidOpenTopology();
-  TestFromMixedFacesRejectsNonManifoldEdge();
-  TestFromMixedFacesNonManifoldBuildsThreePageFan();
-  TestFromMixedFacesNonManifoldBuildsFourPageFanAndMatchesStrictOnManifoldInput();
-  TestFromMixedFacesNonManifoldBuildsThreeWedgeFanOnACurvedMeridianArc();
-  TestBrepFromPlanarFacesRoundTripsRealTopologyThroughDotThreeDM();
-  TestFilletConvexEdgeRoundTripsCylindricalTopologyThroughDotThreeDM();
-  TestMixedFacesRoundTripsCylindricalFace();
-  TestMixedFacesRoundTripsConicalFace();
-  TestMixedFacesRoundTripsNotchedConicalFace();
-  TestMixedFacesUnnotchedConicalFaceBitIdentical();
-  TestClipPolygonByCircle3dPunchesExactHole();
-  TestClipPolygonByCircle3dRefusesCircleCoincidentWithBoundary();
-  TestClipPolygonByEllipse3dPunchesExactEllipticalHole();
-  TestClipPolygonByEllipse3dReportsLiteralRunsAndWindsCcw();
-  TestArcSchedule3dEvenlySpacedExactEndpoints();
-  TestAngleOffsetBetweenFramesSameHandedPair();
-  TestAngleOffsetBetweenFramesLeftHandedPair();
-  TestBooleanCombineMixedConformingSharedArcBoundaryIsBitIdentical();
-  TestBooleanCombineMixedDrilledBoxThroughHole();
-  TestBooleanCombineMixedDrilledBoxNearZeroRadius();
-  TestBooleanCombineMixedDrilledBoxCoincidentCapHeight();
-  TestBooleanCombineMixedDrilledBoxOffCenterHole();
-  TestBooleanCombineMixedObliqueDrilledBoxVolume();
-  TestBooleanCombineMixedObliqueDrilledBoxIsValidNonDegenerateSolid();
-  TestBooleanCombineMixedObliqueDrilledBoxBothEndsNotched();
-  TestBooleanCombineMixedObliqueSharedBoundaryIsBitIdentical();
-  TestBooleanCombineMixedZeroTiltMatchesExistingPerpendicularPath();
-  TestBooleanCombineMixedObliqueCrossingPolygonBoundaryThrows();
-  TestBooleanCombineMixedObliqueNearAxisParallelThrows();
-  TestBooleanCombineMixedObliqueReentrantHeightThrows();
-  TestBooleanCombineMixedObliqueMultipleTiltAngles();
-  TestFromMixedFacesNotchedCylinderCoversNotchOutsideRailBand();
-  TestBooleanCombineMixedObliqueSurvivingWallAreaAndVolumeMatchClosedForm();
-  TestTessellateConformingNotchedUncappedCylinderHonorsTrim();
-  TestTessellateConformingObliqueDrilledBoxIsClosedManifold();
-  TestTessellateConformingObliqueDrilledBoxEllipseSeamIsBitIdentical();
-  TestTessellateConformingObliqueDrilledBoxPiecesMeshFromLiteralLoop();
-  TestBooleanCombineMixedObliquePlanarPiecesWindCcwFromOutside();
-  TestTessellateConformingObliqueUnionBareCutIsClosedManifold();
-  TestTessellateConformingObliqueDrilledBoxTiltSweepIsClosedManifold();
-  TestTessellateConformingQuadQuadSeamPlainBoxIsClosedManifold();
-  TestTessellateConformingQuadQuadSeamDrilledBoxIsClosedManifold();
-  TestTessellateConformingQuadQuadSeamOffCenterHoleIsClosedManifold();
-  TestTessellateConformingSymmetricDivisionsUnaffectedByQuadQuadFix();
-  TestTessellateConformingOneSidedWedgeSymmetricDivisionsIsClosedManifold();
-  TestTessellateConformingOneSidedWedgeAsymmetricDivisionsIsClosedManifold();
-  TestTessellateConformingOneSidedWedgeFixInertOnPlainBox();
-  TestExactConvexHullBoxSixExactQuadFaces();
-  TestExactConvexHullOctahedronEightExactTriFaces();
-  TestExactConvexHullIgnoresInteriorPoints();
-  TestExactConvexHullTooFewPointsThrows();
-  TestExactConvexHullCoplanarPointsThrows();
-  TestExactConvexHullMatchesMeshConvexHullVolume();
-  TestExactConvexHullPipelineIntegration();
-  TestBoxAsymmetricDivisionsIsClosedManifold();
-  TestPlainQuadFactoriesAsymmetricDivisionsIsClosedManifold();
-  TestTessellateSymmetricDivisionsMatchesIndependentReconstruction();
-  TestTessellateObliqueHullQuadSeamRemainsPreExistingGap();
-  TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed();
-  TestBooleanCombineMixedUnionBossOverlappingBaseVolumeAndCapSeamIsClosed();
-  TestBooleanCombineMixedUnionBossNoContactBothEndsCapped();
-  TestBooleanCombineMixedUnionBossFullyEmbeddedAddsNoCap();
-  TestBooleanCombineMixedUnionBossWithoutCapIsProvablyOpen();
-  TestBooleanCombineMixedDifferenceUnaffectedByEndCapFix();
-  TestBooleanCombineMixedIntersectionFullyEmbeddedBothEndsCapped();
-  TestBooleanCombineMixedIntersectionFullyEmbeddedSecondGeometry();
-  TestBooleanCombineMixedIntersectionDisjointIsEmpty();
-  TestBooleanCombineMixedIntersectionWithoutFixIsProvablyOpen();
-  TestBooleanCombineMixedIntersectionMidLengthCrossingIsClosedManifold();
-  TestBooleanCombineMixedIntersectionMidLengthCrossingSecondGeometry();
-  TestBooleanCombineMixedIntersectionBothEndsMidLengthCrossing();
-  TestBooleanCombineMixedIntersectionInsideDiscRailIsBitIdentical();
-  TestBooleanCombineMixedDifferenceInsideDiscMachineryIsInert();
-  TestBooleanCombineMixedIntersectionUnaffectedExistingCalls();
-  TestBooleanCombineMixedParallelCylinderUnionAxiallyDisjointBothEndsCapped();
-  TestBooleanCombineMixedParallelCylinderUnionOneFullyNestedContributesNothing();
-  TestBooleanCombineMixedParallelCylinderPartialSweepCapClosesOtherwiseOpenWedge();
-  TestBooleanCombineMixedParallelCylinderCapTrimNeededThrows();
-  TestBooleanCombineMixedParallelCylinderCapTrimNeededIsTypedUnsupportedGeometry();
-  TestBooleanCombineMixedSteinmetzStillThrows();
-  TestBooleanCombineMixedGeneralSkewCylinderStillThrows();
-  TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary();
-  TestBooleanCombineMixedParallelCylinderIntersectionNestedFullDisc();
-  TestBooleanCombineMixedParallelCylinderIntersectionDisjointAxialRangesEmpty();
-  TestBooleanCombineMixedParallelCylinderIntersectionCrossingLensCaps();
-  TestBooleanCombineMixedParallelCylinderIntersectionLensCapRailIsBitIdentical();
-  TestBooleanCombineMixedParallelCylinderDifferenceNestedFullDisc();
-  TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly();
-  TestTessellateConformingFriendlessMiddleBandSyntheticWedgeIsClosedManifold();
-  TestTessellateConformingFriendlessMiddleBandSyntheticWedgeAsymmetricDivisionsIsClosedManifold();
-  TestBooleanCombineMixedParallelCylinderDifferenceCrossingIsClosedManifold();
-  TestBooleanCombineMixedParallelCylinderDifferenceCrossingAsymmetricDivisionsIsClosedManifold();
-  TestBooleanCombineMixedParallelCylinderDifferenceCrossingRowSchedulesDiffer();
-  TestTessellateConformingSharedNotchCylinderPairIsClosedManifold();
-  TestBooleanCombineMixedParallelCylinderIntersectionUnaffectsUnionAndNonParallelCases();
-  TestBooleanCombineMixedSteinmetzIntersectionPerpendicularVolumeAndTopology();
-  TestBooleanCombineMixedSteinmetzIntersectionGeneralAngleVolume();
-  TestBooleanCombineMixedSteinmetzArgumentOrderSymmetryAndSharedBoundaryIsBitIdentical();
-  TestBooleanCombineMixedSteinmetzEyeFragmentAloneBuildsAndIsOpen();
-  TestBooleanCombineMixedSteinmetzIntersectionConformingIsWatertight();
-  TestBooleanCombineMixedSteinmetzNegativeControls();
-  TestBooleanCombineMixedSteinmetzUnionAndDifferenceVolumes();
-  TestBooleanCombineMixedNonParallelCylinderNoInteractionCrossingBeyondFirstOperandsEnd();
-  TestBooleanCombineMixedNonParallelCylinderNoInteractionShortPegStopsShortOfCylinder();
-  TestBooleanCombineMixedNonParallelCylinderNoInteractionSkewAndUnequalRadii();
-  TestBooleanCombineMixedUnequalRadiusPerpendicularIntersectionVolumeAndTopology();
-  TestBooleanCombineMixedUnequalRadiusPerpendicularUnionAndDifferenceVolumes();
-  TestBooleanCombineMixedUnequalRadiusPerpendicularArgumentOrderAndSharedArcIsBitIdentical();
-  TestBooleanCombineMixedUnequalRadiusPerpendicularSecondRadiusRatio();
-  TestBooleanCombineMixedUnequalRadiusPerpendicularNegativeControls();
-  TestFromMixedFacesStraightChordAndCapArcBetweenSameVerticesAreDistinctEdges();
-  TestBooleanSymmetricDifferenceBrepBoxesIsTwoLumpCompound();
-  TestBooleanSymmetricDifferenceBrepSteinmetzAndDrilledBox();
-  TestBooleanCombineMixedChainedCallsHonorClosedOperands();
-  TestBooleanCombineMixedChainedCallsThroughNotchedResults();
-  TestMixedFacesReturnsVerbatimRecordsForBooleanResults();
-  TestBrepSplitDisjointPieces();
-  TestBooleanCombineMixedChainedNegativeControls();
-  TestBooleanCombineMixedUnsupportedGeometryRefusalsAreTyped();
-  TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion();
-  TestBooleanCombineMixedNAryUnionFoldOrderIndependence();
-  TestBooleanCombineMixedNAryUnionFoldOrderRobustToTouchingOnlyFirstPair();
-  TestBooleanCombineMixedNAryDifferenceSubtractsEveryToolInSecondGroup();
-  TestBooleanCombineMixedNAryIntersectionUnionsEachSideBeforeCombining();
-  TestBooleanCombineMixedNAryNegativeControls();
-  TestBooleanCombinePlanarNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion();
-  TestBooleanCombinePlanarNAryUnionFoldOrderIndependence();
-  TestBooleanCombinePlanarNAryUnionFoldOrderRobustToTouchingOnlyFirstPair();
-  TestBooleanCombinePlanarNAryDifferenceSubtractsEveryToolInSecondGroup();
-  TestBooleanCombinePlanarNAryIntersectionUnionsEachSideBeforeCombining();
-  TestBooleanCombinePlanarNAryNegativeControls();
-  TestPolygonBooleanPlanarUnionOfTwoOverlappingSquares();
-  TestPolygonBooleanPlanarIntersectionOfTwoOverlappingSquares();
-  TestPolygonBooleanPlanarDifferenceOfTwoOverlappingSquares();
-  TestPolygonBooleanPlanarNonConvexLShapeIntersection();
-  TestPolygonBooleanPlanarDisjointOperands();
-  TestPolygonBooleanPlanarDifferenceLeavesARingWithHoleLoop();
-  TestPolygonBooleanPlanarNegativeControls();
-  TestPolygonBooleanPlanarRefusesSelfIntersectingOperand();
-  TestPolygonBooleanPlanarNAryUnionThreeOverlappingSquaresMatchesInclusionExclusion();
-  TestPolygonBooleanPlanarNAryUnionFoldOrderIndependence();
-  TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairNowSucceeds();
-  TestPolygonBooleanPlanarNAryDifferenceMatchesHandChainedPairwise();
-  TestPolygonBooleanPlanarNAryIntersectionUnionsEachSideIndependently();
-  TestPolygonBooleanPlanarNAryNegativeControls();
-  TestBooleanCombinePlanarDifferenceAcceptsCompoundFirstOperand();
-  TestBooleanCombinePlanarDifferenceAcceptsCompoundSecondOperand();
-  TestBooleanCombinePlanarIntersectionAcceptsCompoundOperand();
-  TestBooleanCombinePlanarDifferenceAcceptsGapSeparatedXorCompound();
-  TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound();
-  TestBooleanCombinePlanarXorStillRefusesCompoundOperand();
-  TestBooleanCombinePlanarUnionAcceptsCompoundOperand();
-  TestBooleanCombinePlanarUnionAcceptsCompoundOperandBridgedIntoOneLump();
-  TestBooleanCombinePlanarUnionThrowsOnTouchingLumpXorCompound();
-  TestBooleanOperationErrorStructuredFields();
-  TestBooleanOperationErrorGeneralEngineFailureReasons();
-  TestBooleanOperationErrorNAryAndDefensiveDefaultFailureReasons();
-  TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand();
-  TestBooleanCombineMixedIntersectionAcceptsCompoundOperand();
-  TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders();
-  TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius();
-  TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBrep();
-  TestBooleanCombineMixedXorStillRefusesCompoundOperand();
-  TestBooleanCombineMixedUnionAcceptsCompoundOperand();
-  TestBooleanCombineMixedUnionThrowsOnTouchingLumpXorCompound();
-  TestBooleanCombineMixedDifferenceThrowsOnTouchingLumpXorCompound();
-  TestBooleanCombineMixedNArySingleElementCompoundGroupReachesFinalCombine();
-  TestBooleanCombineGeneralNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion();
-  TestBooleanCombineGeneralNAryDifferenceSubtractsEveryToolInSecondGroup();
-  TestBooleanCombineGeneralNAryCallerToleranceForwardedToEveryPairwiseCall();
-  TestBooleanCombineGeneralNAryNegativeControls();
-  TestBooleanCombineGeneralRefusesCompoundOperand();
-  TestBooleanCombineGeneralDifferenceAcceptsCompoundFirstOperand();
-  TestBooleanCombineGeneralIntersectionAcceptsCompoundOperand();
-  TestBooleanCombineGeneralUnionAcceptsCompoundOperand();
-  TestBooleanCombineGeneralUnionThrowsOnTouchingLumpXorCompound();
-  TestBooleanCombineGeneralDifferenceThrowsOnTouchingLumpXorCompound();
-  TestBooleanCombineGeneralNAryUnionStillThrowsOnTouchingLumpCompoundAtEveryPairwiseStep();
-  TestBooleanCombineGeneralSymmetricDifferenceBoxBox();
-  TestBooleanCombineGeneralSymmetricDifferenceFreeformSurfaceOperand();
-  TestBooleanCombineGeneralNAryStillRefusesSymmetricDifferenceForTheRightReason();
-  TestBooleanCombineGeneralDifferenceAcceptsRealSymmetricDifferenceCompoundOperand();
-  TestBooleanCombinePlanarCallerTolerance();
-  TestBooleanCombineMixedCallerTolerance();
-  TestBooleanCombinePlanarAndMixedRejectExplicitZeroTolerance();
-  TestBooleanCombinePlanarNAryCallerToleranceForwardedToEveryPairwiseCall();
-  TestBooleanCombineMixedNAryCallerToleranceForwardedToEveryPairwiseCall();
-  TestBooleanCombineMixedUnequalRadiusGeneralAngleIntersectionAndAllOps();
-  TestBooleanCombineMixedUnequalRadiusGeneralAngleArgumentOrderAndSharedArcIsBitIdentical();
-  TestBooleanCombineMixedUnequalRadiusGeneralAngleNegativeControls();
-  TestBooleanCombineMixedUnequalRadiusSkewFullPierceVolumeAndTopology();
-  TestBooleanCombineMixedUnequalRadiusSkewPartialPenetrationStillThrows();
-  TestBooleanCombineMixedUnequalRadiusObliqueSkewStillThrows();
-  TestFromMixedFacesSlopedNotchCapAndStraightChordStayDistinct();
-  TestFromMixedFacesFlatCornerGateIsInert();
-  TestBooleanCombineMixedNotchAwareSplitProducerBuildsSingleCrossingPlane();
-  TestBooleanCombineMixedNotchAwareComposedMultiPlaneCrossingBuilds();
-  TestBooleanCombineMixedNotchAwareBothEndsNotchedRefuses();
-  TestBooleanCombineMixedNotchAwareCap0CornerActiveMirrorBuilds();
-  TestBooleanCombineMixedOverlappingRangeFragmentsSameWallDedup();
-  TestBooleanCombineMixedThreeFragmentsSameWallDedup();
-  TestBooleanCombineMixedMidLengthSplitClearsStaleNotch();
-  TestBooleanCombineMixedInsideDiscProducerCoversSealedEndBoundary();
-  TestSplitMixedAgainstAllFacesPassThroughCarriesArcRuns();
+  RunTest("TestCurveDegreeElevation", TestCurveDegreeElevation);
+  RunTest("TestCurveFromControlPointsRejectsDegenerateInput", TestCurveFromControlPointsRejectsDegenerateInput);
+  RunTest("TestCurveLength", TestCurveLength);
+  RunTest("TestCurveLengthToTolerance", TestCurveLengthToTolerance);
+  RunTest("TestCurveParameterAtArcLengthToTolerance", TestCurveParameterAtArcLengthToTolerance);
+  RunTest("TestCurveDivideByCountAndByLengthToTolerance", TestCurveDivideByCountAndByLengthToTolerance);
+  RunTest("TestCurveParameterAtArcLength", TestCurveParameterAtArcLength);
+  RunTest("TestCurveDivideByCount", TestCurveDivideByCount);
+  RunTest("TestCurveDivideByLength", TestCurveDivideByLength);
+  RunTest("TestCurveIsRational", TestCurveIsRational);
+  RunTest("TestCurveSetWeightAt", TestCurveSetWeightAt);
+  RunTest("TestCurveMakeRationalAndNonRational", TestCurveMakeRationalAndNonRational);
+  RunTest("TestCurveMakeNonRationalWithTolerance", TestCurveMakeNonRationalWithTolerance);
+  RunTest("TestCurveInsertKnotAt", TestCurveInsertKnotAt);
+  RunTest("TestCurveRemoveKnotAt", TestCurveRemoveKnotAt);
+  RunTest("TestCurveSetDomainReparameterizes", TestCurveSetDomainReparameterizes);
+  RunTest("TestCurveChangeSeam", TestCurveChangeSeam);
+  RunTest("TestCurveMatchEnd", TestCurveMatchEnd);
+  RunTest("TestCurveAnalyzeEndContinuity", TestCurveAnalyzeEndContinuity);
+  RunTest("TestCurveDeviationTo", TestCurveDeviationTo);
+  RunTest("TestCurveSimplify", TestCurveSimplify);
+  RunTest("TestCurvePlanarRegionProperties", TestCurvePlanarRegionProperties);
+  RunTest("TestCurveMinDistanceTo", TestCurveMinDistanceTo);
+  RunTest("TestCurveMinDistanceToSurface", TestCurveMinDistanceToSurface);
+  RunTest("TestSurfaceMinDistanceTo", TestSurfaceMinDistanceTo);
+  RunTest("TestCurveGetOrientedBoundingBox", TestCurveGetOrientedBoundingBox);
+  RunTest("TestCurveGetTightBoundingBoxOverload", TestCurveGetTightBoundingBoxOverload);
+  RunTest("TestCurveKnotAt", TestCurveKnotAt);
+  RunTest("TestCurveControlPointAt", TestCurveControlPointAt);
+  RunTest("TestCurveWeightAt", TestCurveWeightAt);
+  RunTest("TestCurveDomain", TestCurveDomain);
+  RunTest("TestCurveTangentAt", TestCurveTangentAt);
+  RunTest("TestCurveGetTightBoundingBox", TestCurveGetTightBoundingBox);
+  RunTest("TestCurveIsClosed", TestCurveIsClosed);
+  RunTest("TestCurveIsPlanar", TestCurveIsPlanar);
+  RunTest("TestCurveIsLinear", TestCurveIsLinear);
+  RunTest("TestCurveIsArcAndIsCircle", TestCurveIsArcAndIsCircle);
+  RunTest("TestCurveReverse", TestCurveReverse);
+  RunTest("TestCurveTrim", TestCurveTrim);
+  RunTest("TestCurveSplit", TestCurveSplit);
+  RunTest("TestCurveExtend", TestCurveExtend);
+  RunTest("TestCurveJoin", TestCurveJoin);
+  RunTest("TestCurveMakePeriodicExact", TestCurveMakePeriodicExact);
+  RunTest("TestSurfaceMakePeriodicExact", TestSurfaceMakePeriodicExact);
+  RunTest("TestCurveClosestPoint", TestCurveClosestPoint);
+  RunTest("TestCurveFitLeastSquares", TestCurveFitLeastSquares);
+  RunTest("TestCurveHelix", TestCurveHelix);
+  RunTest("TestCurveFitLeastSquaresConstrainedRefit", TestCurveFitLeastSquaresConstrainedRefit);
+  RunTest("TestBrepRefitTrim", TestBrepRefitTrim);
+  RunTest("TestCurveCurvature", TestCurveCurvature);
+  RunTest("TestCurveSuggestedSamples", TestCurveSuggestedSamples);
+  RunTest("TestCurveSuggestedParameterValues", TestCurveSuggestedParameterValues);
+  RunTest("TestCurveSuggestedSamplesByAngle", TestCurveSuggestedSamplesByAngle);
+  RunTest("TestCurveSuggestedParameterValuesByAngle", TestCurveSuggestedParameterValuesByAngle);
+  RunTest("TestSurfaceFromControlGridRejectsDegenerateInput", TestSurfaceFromControlGridRejectsDegenerateInput);
+  RunTest("TestSurfaceNormalAt", TestSurfaceNormalAt);
+  RunTest("TestSurfaceDegreeElevation", TestSurfaceDegreeElevation);
+  RunTest("TestSurfaceIsClosed", TestSurfaceIsClosed);
+  RunTest("TestSurfaceIsPlanar", TestSurfaceIsPlanar);
+  RunTest("TestSurfaceIsSphere", TestSurfaceIsSphere);
+  RunTest("TestSurfaceIsCylinder", TestSurfaceIsCylinder);
+  RunTest("TestSurfaceIsCone", TestSurfaceIsCone);
+  RunTest("TestSurfaceIsTorus", TestSurfaceIsTorus);
+  RunTest("TestSurfaceIntersectSphereGreatCircle", TestSurfaceIntersectSphereGreatCircle);
+  RunTest("TestIntersectCurvesFindsCrossingsAndRejectsMisses", TestIntersectCurvesFindsCrossingsAndRejectsMisses);
+  RunTest("TestIntersectCurvePlaneFindsCrossingsAndRejectsMisses", TestIntersectCurvePlaneFindsCrossingsAndRejectsMisses);
+  RunTest("TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves", TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves);
+  RunTest("TestIntersectBrepsAndCurveBrep", TestIntersectBrepsAndCurveBrep);
+  RunTest("TestFireRayAtBrep", TestFireRayAtBrep);
+  RunTest("TestClosestPointOnBrep", TestClosestPointOnBrep);
+  RunTest("TestContainsPointExact", TestContainsPointExact);
+  RunTest("TestPullbackCurveToSurfaceCylinderRulingLine", TestPullbackCurveToSurfaceCylinderRulingLine);
+  RunTest("TestPullbackCurveToSurfaceAcrossPeriodicSeam", TestPullbackCurveToSurfaceAcrossPeriodicSeam);
+  RunTest("TestIntersectBrepByPlaneBoxSideWalls", TestIntersectBrepByPlaneBoxSideWalls);
+  RunTest("TestContourBrepParallelSections", TestContourBrepParallelSections);
+  RunTest("TestSectionBrepByPlanesIndependentlyOrientedClipPlanes", TestSectionBrepByPlanesIndependentlyOrientedClipPlanes);
+  RunTest("TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan", TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan);
+  RunTest("TestIntersectCurveSurfaceOverlapBisectionTightensSpanBoundary", TestIntersectCurveSurfaceOverlapBisectionTightensSpanBoundary);
+  RunTest("TestIntersectCurveSurfaceOverlapRefinesBoundaryPastSamplingResolution", TestIntersectCurveSurfaceOverlapRefinesBoundaryPastSamplingResolution);
+  RunTest("TestIntersectCurveBrepOverlapScopesSpanToFaceTrim", TestIntersectCurveBrepOverlapScopesSpanToFaceTrim);
+  RunTest("TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly", TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly);
+  RunTest("TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace", TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace);
+  RunTest("TestBrepCheckOptInReportsFaceSelfIntersections", TestBrepCheckOptInReportsFaceSelfIntersections);
+  RunTest("TestFindSurfaceTangentContactsSphereOnPlane", TestFindSurfaceTangentContactsSphereOnPlane);
+  RunTest("TestFindSurfaceTangentCurvesCylinderRulingLine", TestFindSurfaceTangentCurvesCylinderRulingLine);
+  RunTest("TestIntersectSurfacesHandlesSpherePoleCrossing", TestIntersectSurfacesHandlesSpherePoleCrossing);
+  RunTest("TestIntersectSurfacesOverlapDetectsCoincidentRegion", TestIntersectSurfacesOverlapDetectsCoincidentRegion);
+  RunTest("TestIntersectSurfacesOverlapBisectionTightensRegionBoundary", TestIntersectSurfacesOverlapBisectionTightensRegionBoundary);
+  RunTest("TestIntersectSurfacesReturnsBoundaryCurveForCoincidentRegion", TestIntersectSurfacesReturnsBoundaryCurveForCoincidentRegion);
+  RunTest("TestIntersectPlaneSphereClosedForm", TestIntersectPlaneSphereClosedForm);
+  RunTest("TestIntersectPlaneCylinderClosedForm", TestIntersectPlaneCylinderClosedForm);
+  RunTest("TestIntersectCylinderCylinderParallelClosedForm", TestIntersectCylinderCylinderParallelClosedForm);
+  RunTest("TestIntersectCylinderCylinderIntersectingClosedForm", TestIntersectCylinderCylinderIntersectingClosedForm);
+  RunTest("TestIntersectCylinderCylinderUnequalRadiusClosedForm", TestIntersectCylinderCylinderUnequalRadiusClosedForm);
+  RunTest("TestIntersectPlanePlaneClosedForm", TestIntersectPlanePlaneClosedForm);
+  RunTest("TestIntersectPlaneConeClosedForm", TestIntersectPlaneConeClosedForm);
+  RunTest("TestIntersectPlaneTorusClosedForm", TestIntersectPlaneTorusClosedForm);
+  RunTest("TestFindSurfaceSilhouettePointsSphereEquator", TestFindSurfaceSilhouettePointsSphereEquator);
+  RunTest("TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon", TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon);
+  RunTest("TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves", TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves);
+  RunTest("TestFindSurfaceSilhouetteCurvesPerspectiveChainsPointsIntoCurves", TestFindSurfaceSilhouetteCurvesPerspectiveChainsPointsIntoCurves);
+  RunTest("TestFindSurfaceSilhouettePointsSelfOcclusionTorus", TestFindSurfaceSilhouettePointsSelfOcclusionTorus);
+  RunTest("TestProjectCurveToSurfaceFlatPlaneStraightDown", TestProjectCurveToSurfaceFlatPlaneStraightDown);
+  RunTest("TestProjectCurveToSurfacePartialMiss", TestProjectCurveToSurfacePartialMiss);
+  RunTest("TestBrepPersistentIdsSurviveCompact", TestBrepPersistentIdsSurviveCompact);
+  RunTest("TestBrepJoinNakedEdgesFloorsRecordedToleranceByEdgeExtent", TestBrepJoinNakedEdgesFloorsRecordedToleranceByEdgeExtent);
+  RunTest("TestBooleanCombineGeneralBoxBox", TestBooleanCombineGeneralBoxBox);
+  RunTest("TestBooleanCombineGeneralFreeformSurfaceOperand", TestBooleanCombineGeneralFreeformSurfaceOperand);
+  RunTest("TestBooleanCombineGeneralFreeformVsFreeformOperand", TestBooleanCombineGeneralFreeformVsFreeformOperand);
+  RunTest("TestBooleanCombineGeneralCoplanarBoxes", TestBooleanCombineGeneralCoplanarBoxes);
+  RunTest("TestBooleanCombineGeneralAsymmetricCoincidentSubFace", TestBooleanCombineGeneralAsymmetricCoincidentSubFace);
+  RunTest("TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance", TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance);
+  RunTest("TestBooleanCombineGeneralBoxCylinder", TestBooleanCombineGeneralBoxCylinder);
+  RunTest("TestBooleanCombineGeneralCallerTolerance", TestBooleanCombineGeneralCallerTolerance);
+  RunTest("TestBooleanCombineGeneralSphereBox", TestBooleanCombineGeneralSphereBox);
+  RunTest("TestBooleanCombineGeneralObliqueCylinder", TestBooleanCombineGeneralObliqueCylinder);
+  RunTest("TestBooleanCombineGeneralBoxCone", TestBooleanCombineGeneralBoxCone);
+  RunTest("TestBooleanCombineGeneralSphereCylinderThroughCentre", TestBooleanCombineGeneralSphereCylinderThroughCentre);
+  RunTest("TestBooleanCombineGeneralUnequalRadiusPerpendicularCylinders", TestBooleanCombineGeneralUnequalRadiusPerpendicularCylinders);
+  RunTest("TestImprintFacesBoxPiercedByCylinder", TestImprintFacesBoxPiercedByCylinder);
+  RunTest("TestImprintFacesOverlappingBoxes", TestImprintFacesOverlappingBoxes);
+  RunTest("TestImprintFacesDisjointIsNoOp", TestImprintFacesDisjointIsNoOp);
+  RunTest("TestImprintFacesRejectsEmptyOperands", TestImprintFacesRejectsEmptyOperands);
+  RunTest("TestImprintFacesCallerTolerance", TestImprintFacesCallerTolerance);
+  RunTest("TestSplitFaceByCurveBoxTopFaceAsymmetricVSplit", TestSplitFaceByCurveBoxTopFaceAsymmetricVSplit);
+  RunTest("TestSplitFaceByCurveRejectsInteriorOnlyLoop", TestSplitFaceByCurveRejectsInteriorOnlyLoop);
+  RunTest("TestSplitFaceByCurveRejectsInvalidInput", TestSplitFaceByCurveRejectsInvalidInput);
+  RunTest("TestImprintClosedCurveOnFaceBoxTopFaceSquareHole", TestImprintClosedCurveOnFaceBoxTopFaceSquareHole);
+  RunTest("TestImprintClosedCurveOnFaceRejectsOpenChain", TestImprintClosedCurveOnFaceRejectsOpenChain);
+  RunTest("TestImprintClosedCurveOnFaceRejectsInvalidInput", TestImprintClosedCurveOnFaceRejectsInvalidInput);
+  RunTest("TestSplitFaceByCurvesBoxTopFaceTwoParallelCutsProduceThreeStrips", TestSplitFaceByCurvesBoxTopFaceTwoParallelCutsProduceThreeStrips);
+  RunTest("TestSplitFaceByCurvesRejectsCrossingCurves", TestSplitFaceByCurvesRejectsCrossingCurves);
+  RunTest("TestSplitFaceByCurvesRejectsInvalidInput", TestSplitFaceByCurvesRejectsInvalidInput);
+  RunTest("TestImprintClosedCurvesOnFaceBoxTopFaceTwoHoles", TestImprintClosedCurvesOnFaceBoxTopFaceTwoHoles);
+  RunTest("TestImprintClosedCurvesOnFaceRejectsInvalidInput", TestImprintClosedCurvesOnFaceRejectsInvalidInput);
+  RunTest("TestMutualImprintFacesBoxPiercedByCylinder", TestMutualImprintFacesBoxPiercedByCylinder);
+  RunTest("TestMutualImprintFacesRejectsEmptyOrNonPositiveTolerance", TestMutualImprintFacesRejectsEmptyOrNonPositiveTolerance);
+  RunTest("TestSplitBySheetBoxCutInHalfByPlane", TestSplitBySheetBoxCutInHalfByPlane);
+  RunTest("TestSplitBySheetDisjointSheetKeepsWholeSolidOnOneSide", TestSplitBySheetDisjointSheetKeepsWholeSolidOnOneSide);
+  RunTest("TestSplitBySheetRejectsEmptyOperands", TestSplitBySheetRejectsEmptyOperands);
+  RunTest("TestSplitBySheetCallerTolerance", TestSplitBySheetCallerTolerance);
+  RunTest("TestTrimSheetBySolidKeepsOnlyInteriorPortion", TestTrimSheetBySolidKeepsOnlyInteriorPortion);
+  RunTest("TestTrimSheetBySolidDisjointSheetKeepsWholeOrEmpty", TestTrimSheetBySolidDisjointSheetKeepsWholeOrEmpty);
+  RunTest("TestTrimSheetBySolidRejectsEmptyOperands", TestTrimSheetBySolidRejectsEmptyOperands);
+  RunTest("TestTrimSheetBySolidCallerTolerance", TestTrimSheetBySolidCallerTolerance);
+  RunTest("TestSplitBySheetCurvedSolidCylinderCutByFlatSheet", TestSplitBySheetCurvedSolidCylinderCutByFlatSheet);
+  RunTest("TestTrimSheetBySolidCurvedSolidCylinder", TestTrimSheetBySolidCurvedSolidCylinder);
+  RunTest("TestSplitBySheetGenuinelyCurvedSheetThroughBox", TestSplitBySheetGenuinelyCurvedSheetThroughBox);
+  RunTest("TestTrimSheetBySolidGenuinelyCurvedSheetAgainstBox", TestTrimSheetBySolidGenuinelyCurvedSheetAgainstBox);
+  RunTest("TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume", TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume);
+  RunTest("TestSplitBrepBySolidDisjointCutterKeepsWholeTargetOutside", TestSplitBrepBySolidDisjointCutterKeepsWholeTargetOutside);
+  RunTest("TestSplitBrepBySolidCutterFullyContainsTarget", TestSplitBrepBySolidCutterFullyContainsTarget);
+  RunTest("TestSplitBrepBySolidRejectsEmptyOperandsAndNonPositiveTolerance", TestSplitBrepBySolidRejectsEmptyOperandsAndNonPositiveTolerance);
+  RunTest("TestSplitBrepByManySolidsTwoDisjointCuttersSumBackToOriginalVolume", TestSplitBrepByManySolidsTwoDisjointCuttersSumBackToOriginalVolume);
+  RunTest("TestSplitBrepByManySolidsRejectsEmptyCutterGroup", TestSplitBrepByManySolidsRejectsEmptyCutterGroup);
+  RunTest("TestSplitBrepByPlaneMatchesMeshLevelSplitByPlane", TestSplitBrepByPlaneMatchesMeshLevelSplitByPlane);
+  RunTest("TestSplitBrepByPlaneTiltedNormalSumsBackToOriginalVolume", TestSplitBrepByPlaneTiltedNormalSumsBackToOriginalVolume);
+  RunTest("TestSplitBrepByPlaneMissingTargetKeepsWholeTargetOnOneSide", TestSplitBrepByPlaneMissingTargetKeepsWholeTargetOnOneSide);
+  RunTest("TestSplitBrepByPlaneRejectsEmptyTargetZeroNormalAndNonPositiveTolerance", TestSplitBrepByPlaneRejectsEmptyTargetZeroNormalAndNonPositiveTolerance);
+  RunTest("TestSplitBrepByManyPlanesSlicesABlockIntoThreeOrderedSlabs", TestSplitBrepByManyPlanesSlicesABlockIntoThreeOrderedSlabs);
+  RunTest("TestSplitBrepByManyPlanesOffsetBeyondTargetDropsTheEmptySlab", TestSplitBrepByManyPlanesOffsetBeyondTargetDropsTheEmptySlab);
+  RunTest("TestSplitBrepByManyPlanesDuplicateOffsetIsHarmless", TestSplitBrepByManyPlanesDuplicateOffsetIsHarmless);
+  RunTest("TestSplitBrepByManyPlanesRejectsEmptyTargetEmptyOffsetsZeroNormalAndNonPositiveTolerance", TestSplitBrepByManyPlanesRejectsEmptyTargetEmptyOffsetsZeroNormalAndNonPositiveTolerance);
+  RunTest("TestSplitBrepByManySolidsKeepAllTwoDisjointCuttersReturnThreePieces", TestSplitBrepByManySolidsKeepAllTwoDisjointCuttersReturnThreePieces);
+  RunTest("TestSplitBrepByManySolidsKeepAllCutterMissingTargetDropsTheEmptyPiece", TestSplitBrepByManySolidsKeepAllCutterMissingTargetDropsTheEmptyPiece);
+  RunTest("TestSplitBrepByManySolidsKeepAllCutterConsumingEntireRemainderStopsEarly", TestSplitBrepByManySolidsKeepAllCutterConsumingEntireRemainderStopsEarly);
+  RunTest("TestSplitBrepByManySolidsKeepAllRejectsEmptyTargetEmptyCutterGroupAndNonPositiveTolerance", TestSplitBrepByManySolidsKeepAllRejectsEmptyTargetEmptyCutterGroupAndNonPositiveTolerance);
+  RunTest("TestSurfaceGetApproximateSize", TestSurfaceGetApproximateSize);
+  RunTest("TestSurfaceTessellateGridClippedExactRejectsTooFewPoints", TestSurfaceTessellateGridClippedExactRejectsTooFewPoints);
+  RunTest("TestSurfaceTessellateGridRejectsTooFewTrimPoints", TestSurfaceTessellateGridRejectsTooFewTrimPoints);
+  RunTest("TestSurfaceTessellateGridValidation", TestSurfaceTessellateGridValidation);
+  RunTest("TestSurfaceTessellateGridNonUniform", TestSurfaceTessellateGridNonUniform);
+  RunTest("TestSurfaceSuggestedParameterValuesAndTessellateGridNonUniformAdaptive", TestSurfaceSuggestedParameterValuesAndTessellateGridNonUniformAdaptive);
+  RunTest("TestSurfaceReverseAndTranspose", TestSurfaceReverseAndTranspose);
+  RunTest("TestSurfaceTrim", TestSurfaceTrim);
+  RunTest("TestSurfaceSplit", TestSurfaceSplit);
+  RunTest("TestSurfaceSplitAtCreases", TestSurfaceSplitAtCreases);
+  RunTest("TestSurfaceExtend", TestSurfaceExtend);
+  RunTest("TestSurfaceDomain", TestSurfaceDomain);
+  RunTest("TestSurfaceIsRational", TestSurfaceIsRational);
+  RunTest("TestSurfaceSetWeightAt", TestSurfaceSetWeightAt);
+  RunTest("TestSurfaceMakeRationalAndNonRational", TestSurfaceMakeRationalAndNonRational);
+  RunTest("TestSurfaceMakeNonRationalWithTolerance", TestSurfaceMakeNonRationalWithTolerance);
+  RunTest("TestSurfaceInsertKnotAt", TestSurfaceInsertKnotAt);
+  RunTest("TestSurfaceKnotAt", TestSurfaceKnotAt);
+  RunTest("TestSurfaceControlPointAt", TestSurfaceControlPointAt);
+  RunTest("TestSurfaceWeightAt", TestSurfaceWeightAt);
+  RunTest("TestSurfaceApproximateArea", TestSurfaceApproximateArea);
+  RunTest("TestSurfaceCVCount", TestSurfaceCVCount);
+  RunTest("TestSurfaceClosestPoint", TestSurfaceClosestPoint);
+  RunTest("TestSurfaceClosestPointFinerGridNotWorseThanCoarser", TestSurfaceClosestPointFinerGridNotWorseThanCoarser);
+  RunTest("TestSurfaceClosestPointGlobalReportsConvergenceFailure", TestSurfaceClosestPointGlobalReportsConvergenceFailure);
+  RunTest("TestSurfaceClosestPointMultistartFindsGlobalMinimum", TestSurfaceClosestPointMultistartFindsGlobalMinimum);
+  RunTest("TestSurfaceCurvature", TestSurfaceCurvature);
+  RunTest("TestSurfaceSuggestedDivisions", TestSurfaceSuggestedDivisions);
+  RunTest("TestSurfaceTessellateGridAdaptive", TestSurfaceTessellateGridAdaptive);
+  RunTest("TestSurfaceTessellateGridClippedExactAdaptive", TestSurfaceTessellateGridClippedExactAdaptive);
+  RunTest("TestSurfaceSuggestedDivisionsByAngle", TestSurfaceSuggestedDivisionsByAngle);
+  RunTest("TestSurfaceTessellateGridAdaptiveByAngle", TestSurfaceTessellateGridAdaptiveByAngle);
+  RunTest("TestSurfaceMeasureGridTessellationDeviation", TestSurfaceMeasureGridTessellationDeviation);
+  RunTest("TestSurfaceTessellateGridCertifiedAdaptive", TestSurfaceTessellateGridCertifiedAdaptive);
+  RunTest("TestSurfaceMeasureMeshTessellationDeviation", TestSurfaceMeasureMeshTessellationDeviation);
+  RunTest("TestSurfaceTessellateGridClippedExactCertifiedAdaptive", TestSurfaceTessellateGridClippedExactCertifiedAdaptive);
+  RunTest("TestSurfaceTessellateGridNonUniformCertifiedAdaptive", TestSurfaceTessellateGridNonUniformCertifiedAdaptive);
+  RunTest("TestBrepTessellateAdaptive", TestBrepTessellateAdaptive);
+  RunTest("TestBrepTessellateAdaptiveByAngle", TestBrepTessellateAdaptiveByAngle);
+  RunTest("TestBrepTessellateNonUniformAdaptive", TestBrepTessellateNonUniformAdaptive);
+  RunTest("TestBrepTessellateCertifiedAdaptive", TestBrepTessellateCertifiedAdaptive);
+  RunTest("TestFileRoundTrip", TestFileRoundTrip);
+  RunTest("TestModelAddMeshRoundTrips", TestModelAddMeshRoundTrips);
+  RunTest("TestModelAddSubDRoundTrips", TestModelAddSubDRoundTrips);
+  RunTest("TestModelAddPointCloudRoundTrips", TestModelAddPointCloudRoundTrips);
+  RunTest("TestModelAddObjectNameRoundTrips", TestModelAddObjectNameRoundTrips);
+  RunTest("TestModelAddLayerRoundTrips", TestModelAddLayerRoundTrips);
+  RunTest("TestModelDefaultLayerSurvivesLaterAddLayerCall", TestModelDefaultLayerSurvivesLaterAddLayerCall);
+  RunTest("TestModelAddRenderColorRoundTrips", TestModelAddRenderColorRoundTrips);
+  RunTest("TestModelAddUserStringsRoundTrips", TestModelAddUserStringsRoundTrips);
+  RunTest("TestModelAddLinetypeRoundTrips", TestModelAddLinetypeRoundTrips);
+  RunTest("TestModelAddGroupRoundTrips", TestModelAddGroupRoundTrips);
+  RunTest("TestModelAddMaterialRoundTrips", TestModelAddMaterialRoundTrips);
+  RunTest("TestModelReadAccessorsRoundTrip", TestModelReadAccessorsRoundTrip);
+  RunTest("TestModelMaterialAccessorsRoundTrip", TestModelMaterialAccessorsRoundTrip);
+  RunTest("TestModelUnitSystemRoundTrips", TestModelUnitSystemRoundTrips);
+  RunTest("TestModelAddNamedViewRoundTrips", TestModelAddNamedViewRoundTrips);
+  RunTest("TestModelAddLayoutRoundTrips", TestModelAddLayoutRoundTrips);
+  RunTest("TestModelAddDetailViewRoundTrips", TestModelAddDetailViewRoundTrips);
+  RunTest("TestModelAddDetailViewCameraRoundTrips", TestModelAddDetailViewCameraRoundTrips);
+  RunTest("TestModelAddExtrusionRoundTrips", TestModelAddExtrusionRoundTrips);
+  RunTest("TestModelMaterialExtendedFieldsRoundTrip", TestModelMaterialExtendedFieldsRoundTrip);
+  RunTest("TestModelMaterialTextureRoundTrips", TestModelMaterialTextureRoundTrips);
+  RunTest("TestModelAddLightRoundTrips", TestModelAddLightRoundTrips);
+  RunTest("TestModelAddClippingPlaneRoundTrips", TestModelAddClippingPlaneRoundTrips);
+  RunTest("TestModelAddInstanceReferenceRoundTrips", TestModelAddInstanceReferenceRoundTrips);
+  RunTest("TestModelAddHatchRoundTrips", TestModelAddHatchRoundTrips);
+  RunTest("TestModelAddHatchPatternLinesRoundTrips", TestModelAddHatchPatternLinesRoundTrips);
+  RunTest("TestModelAddHatchHolesRoundTrips", TestModelAddHatchHolesRoundTrips);
+  RunTest("TestModelAddHatchPatternDescriptionRoundTrips", TestModelAddHatchPatternDescriptionRoundTrips);
+  RunTest("TestModelAddTextDotRoundTrips", TestModelAddTextDotRoundTrips);
+  RunTest("TestModelAddTextAnnotationRoundTrips", TestModelAddTextAnnotationRoundTrips);
+  RunTest("TestModelAddLeaderRoundTrips", TestModelAddLeaderRoundTrips);
+  RunTest("TestModelAddDimensionLinearRoundTrips", TestModelAddDimensionLinearRoundTrips);
+  RunTest("TestModelUnitConversionFactor", TestModelUnitConversionFactor);
+  RunTest("TestModelConvertUnitsScalesGeometryAndUpdatesUnitSystem", TestModelConvertUnitsScalesGeometryAndUpdatesUnitSystem);
+  RunTest("TestModelLoadRejectsMeshWithOutOfRangeFaceIndex", TestModelLoadRejectsMeshWithOutOfRangeFaceIndex);
+  RunTest("TestSplitByPlane", TestSplitByPlane);
+  RunTest("TestConvexHull", TestConvexHull);
+  RunTest("TestSimplify", TestSimplify);
+  RunTest("TestMinkowskiSum", TestMinkowskiSum);
+  RunTest("TestOffsetSolidGrowMatchesSteinerFormula", TestOffsetSolidGrowMatchesSteinerFormula);
+  RunTest("TestOffsetSolidShrinkStaysExactForConvexSolid", TestOffsetSolidShrinkStaysExactForConvexSolid);
+  RunTest("TestOffsetSolidExcessiveShrinkErodesToNothingAndThrows", TestOffsetSolidExcessiveShrinkErodesToNothingAndThrows);
+  RunTest("TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks", TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks);
+  RunTest("TestOffsetSolidHandlesGenuinelyConcaveSolid", TestOffsetSolidHandlesGenuinelyConcaveSolid);
+  RunTest("TestShellViaOffsetSolidOnBoxMatchesExactVolumeDifference", TestShellViaOffsetSolidOnBoxMatchesExactVolumeDifference);
+  RunTest("TestShellViaOffsetSolidRoundsConcaveCornerUnlikeMeshShell", TestShellViaOffsetSolidRoundsConcaveCornerUnlikeMeshShell);
+  RunTest("TestShellViaOffsetSolidArgumentChecksAndExcessiveThicknessThrows", TestShellViaOffsetSolidArgumentChecksAndExcessiveThicknessThrows);
+  RunTest("TestDecompose", TestDecompose);
+  RunTest("TestMinGap", TestMinGap);
+  RunTest("TestRefineToLength", TestRefineToLength);
+  RunTest("TestSmoothAndRefine", TestSmoothAndRefine);
+  RunTest("TestCountDegenerateTriangles", TestCountDegenerateTriangles);
+  RunTest("TestBrepTessellation", TestBrepTessellation);
+  RunTest("TestBoxVolume", TestBoxVolume);
+  RunTest("TestBooleanUnion", TestBooleanUnion);
+  RunTest("TestBooleanIntersection", TestBooleanIntersection);
+  RunTest("TestBooleanDifference", TestBooleanDifference);
+  RunTest("TestBooleanSymmetricDifference", TestBooleanSymmetricDifference);
+  RunTest("TestComputeInterference", TestComputeInterference);
+  RunTest("TestComputeMultiWayInterference", TestComputeMultiWayInterference);
+  RunTest("TestComputeAllInterference", TestComputeAllInterference);
+  RunTest("TestBrepBoxIsClosedAndWatertight", TestBrepBoxIsClosedAndWatertight);
+  RunTest("TestBrepBoxWeldedHasGenuineTopology", TestBrepBoxWeldedHasGenuineTopology);
+  RunTest("TestBrepLacksFullOpenNurbsTopologyButStillUsable", TestBrepLacksFullOpenNurbsTopologyButStillUsable);
+  RunTest("TestBrepGetTightBoundingBox", TestBrepGetTightBoundingBox);
+  RunTest("TestBrepGetTightBoundingBoxExactForTrimmedPlanarFaces", TestBrepGetTightBoundingBoxExactForTrimmedPlanarFaces);
+  RunTest("TestBrepBooleanEndToEnd", TestBrepBooleanEndToEnd);
+  RunTest("TestBrepSphereIsClosedAndWatertight", TestBrepSphereIsClosedAndWatertight);
+  RunTest("TestBrepSphereBooleanEndToEnd", TestBrepSphereBooleanEndToEnd);
+  RunTest("TestBrepTorusIsClosedAndWatertight", TestBrepTorusIsClosedAndWatertight);
+  RunTest("TestBrepVolumeAndAreaMatchClosedForms", TestBrepVolumeAndAreaMatchClosedForms);
+  RunTest("TestBrepTrimmedPlanarFaceRejectsTooFewPoints", TestBrepTrimmedPlanarFaceRejectsTooFewPoints);
+  RunTest("TestBrepTrimmedPlanarFace", TestBrepTrimmedPlanarFace);
+  RunTest("TestBrepTrimmedPlanarFaceWelded", TestBrepTrimmedPlanarFaceWelded);
+  RunTest("TestWeldAcrossIndependentlyParameterizedSurfaces", TestWeldAcrossIndependentlyParameterizedSurfaces);
+  RunTest("TestExtrudeUntrimmedFaceIntoSolid", TestExtrudeUntrimmedFaceIntoSolid);
+  RunTest("TestExtrudeTrimmedFaceFeedsBoolean", TestExtrudeTrimmedFaceFeedsBoolean);
+  RunTest("TestCylinderConeRejectTooFewCircleSegments", TestCylinderConeRejectTooFewCircleSegments);
+  RunTest("TestCylinderVolumeAndBoolean", TestCylinderVolumeAndBoolean);
+  RunTest("TestConeVolumeAndBoolean", TestConeVolumeAndBoolean);
+  RunTest("TestRevolveProfileBiconeVolumeAndBoolean", TestRevolveProfileBiconeVolumeAndBoolean);
+  RunTest("TestRevolveProfileRejectsTooFewSegments", TestRevolveProfileRejectsTooFewSegments);
+  RunTest("TestRevolveProfileRejectsTooShortProfile", TestRevolveProfileRejectsTooShortProfile);
+  RunTest("TestRevolveProfileFlatEndCaps", TestRevolveProfileFlatEndCaps);
+  RunTest("TestMeshRevolveProfilePartialAngle", TestMeshRevolveProfilePartialAngle);
+  RunTest("TestMeshRevolveProfileStartAngle", TestMeshRevolveProfileStartAngle);
+  RunTest("TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean", TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean);
+  RunTest("TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts", TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts);
+  RunTest("TestLoftClosedRingsConcaveEndCapsExactPrismVolume", TestLoftClosedRingsConcaveEndCapsExactPrismVolume);
+  RunTest("TestLoftPeriodicRingsClosesTorusLikeTubeExactly", TestLoftPeriodicRingsClosesTorusLikeTubeExactly);
+  RunTest("TestLoftPeriodicRingsRejectsTooFewRingsAndMismatchedCounts", TestLoftPeriodicRingsRejectsTooFewRingsAndMismatchedCounts);
+  RunTest("TestTorusRejectsTooFewSegments", TestTorusRejectsTooFewSegments);
+  RunTest("TestTorusVolumeAndBoolean", TestTorusVolumeAndBoolean);
+  RunTest("TestMeshGetBoundingBox", TestMeshGetBoundingBox);
+  RunTest("TestMeshGetCentroid", TestMeshGetCentroid);
+  RunTest("TestMeshTransform", TestMeshTransform);
+  RunTest("TestMeshFlipNormals", TestMeshFlipNormals);
+  RunTest("TestMeshIsClosedManifold", TestMeshIsClosedManifold);
+  RunTest("TestMeshContainsPoint", TestMeshContainsPoint);
+  RunTest("TestMeshClosestPoint", TestMeshClosestPoint);
+  RunTest("TestMeshSignedDistance", TestMeshSignedDistance);
+  RunTest("TestMeshVolumeMassProperties", TestMeshVolumeMassProperties);
+  RunTest("TestMeshGetOrientedBoundingBox", TestMeshGetOrientedBoundingBox);
+  RunTest("TestMeshFireRay", TestMeshFireRay);
+  RunTest("TestMeshDistanceTo", TestMeshDistanceTo);
+  RunTest("TestMeshClashWith", TestMeshClashWith);
+  RunTest("TestPointCloudSpatialQueries", TestPointCloudSpatialQueries);
+  RunTest("TestPointCloudPointsNearPlane", TestPointCloudPointsNearPlane);
+  RunTest("TestPointCloudContourAtPlaneFitsRingThroughBand", TestPointCloudContourAtPlaneFitsRingThroughBand);
+  RunTest("TestPointCloudXyzRoundTrips", TestPointCloudXyzRoundTrips);
+  RunTest("TestPointCloudLoadXyzRejectsMalformedInput", TestPointCloudLoadXyzRejectsMalformedInput);
+  RunTest("TestPointCloudPtsRoundTrips", TestPointCloudPtsRoundTrips);
+  RunTest("TestPointCloudLoadPtsRejectsMalformedInput", TestPointCloudLoadPtsRejectsMalformedInput);
+  RunTest("TestPointCloudPcdRoundTrips", TestPointCloudPcdRoundTrips);
+  RunTest("TestPointCloudLoadPcdRejectsMalformedInput", TestPointCloudLoadPcdRejectsMalformedInput);
+  RunTest("TestPointCloudLasRoundTrips", TestPointCloudLasRoundTrips);
+  RunTest("TestPointCloudLoadLasRejectsMalformedInput", TestPointCloudLoadLasRejectsMalformedInput);
+  RunTest("TestMeshAreaCountsBothQuadTriangles", TestMeshAreaCountsBothQuadTriangles);
+  RunTest("TestSubDFromBoxSubdividesToExactCatmullClarkCounts", TestSubDFromBoxSubdividesToExactCatmullClarkCounts);
+  RunTest("TestSubDFromControlMeshRejectsEmptyMesh", TestSubDFromControlMeshRejectsEmptyMesh);
+  RunTest("TestSubDCreaseAtDoubleEdgeKeepsFoldStraight", TestSubDCreaseAtDoubleEdgeKeepsFoldStraight);
+  RunTest("TestSubDIsValid", TestSubDIsValid);
+  RunTest("TestSubDMeshRoundTripIsExactAtLevelZero", TestSubDMeshRoundTripIsExactAtLevelZero);
+  RunTest("TestSubDFromNurbsSurfaceExactOnFlatGrid", TestSubDFromNurbsSurfaceExactOnFlatGrid);
+  RunTest("TestSubDFromNurbsSurfaceThrowsOnInvalidSurface", TestSubDFromNurbsSurfaceThrowsOnInvalidSurface);
+  RunTest("TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth", TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth);
+  RunTest("TestSubDTransformMovesScalesAndStaysValidUnderMirror", TestSubDTransformMovesScalesAndStaysValidUnderMirror);
+  RunTest("TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces", TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces);
+  RunTest("TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance", TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance);
+  RunTest("TestSubDSymmetrizeThrowsOnBadToleranceOrOffset", TestSubDSymmetrizeThrowsOnBadToleranceOrOffset);
+  RunTest("TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease", TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease);
+  RunTest("TestSubDSetEdgeSharpnessSupportsPerEndVariableWeight", TestSubDSetEdgeSharpnessSupportsPerEndVariableWeight);
+  RunTest("TestSubDEdgeSharpnessAtReadsBackWhatWasWritten", TestSubDEdgeSharpnessAtReadsBackWhatWasWritten);
+  RunTest("TestSubDSetCreaseTagsAndUntagsEdges", TestSubDSetCreaseTagsAndUntagsEdges);
+  RunTest("TestSubDFlatQuadGridStaysFlatAndAreaExact", TestSubDFlatQuadGridStaysFlatAndAreaExact);
+  RunTest("TestSubDToNurbsPatchesExactOnRegularFlatGrid", TestSubDToNurbsPatchesExactOnRegularFlatGrid);
+  RunTest("TestSubDToNurbsPatchesIrregularCornersMatchKnownLimitPoint", TestSubDToNurbsPatchesIrregularCornersMatchKnownLimitPoint);
+  RunTest("TestSubDToNurbsPatchesIrregularCornerFallsBackOnSemiSharpEdge", TestSubDToNurbsPatchesIrregularCornerFallsBackOnSemiSharpEdge);
+  RunTest("TestSubDLimitPointsExactCubeAndFlatGrid", TestSubDLimitPointsExactCubeAndFlatGrid);
+  RunTest("TestSubDOffsetCubeMovesEachCornerAlongItsOwnExactBodyDiagonalLimitNormal", TestSubDOffsetCubeMovesEachCornerAlongItsOwnExactBodyDiagonalLimitNormal);
+  RunTest("TestSubDOffsetZeroDistanceLeavesEveryPositionUnchanged", TestSubDOffsetZeroDistanceLeavesEveryPositionUnchanged);
+  RunTest("TestSubDOffsetArgumentChecksRejectNonFiniteDistance", TestSubDOffsetArgumentChecksRejectNonFiniteDistance);
+  RunTest("TestSubDThickenFlatSheetMatchesExactPrismVolumeAndIsClosedManifold", TestSubDThickenFlatSheetMatchesExactPrismVolumeAndIsClosedManifold);
+  RunTest("TestSubDThickenInheritsMeshThickenArgumentChecks", TestSubDThickenInheritsMeshThickenArgumentChecks);
+  RunTest("TestSubDEvaluateFaceExactOnRegularFlatGrid", TestSubDEvaluateFaceExactOnRegularFlatGrid);
+  RunTest("TestSubDEvaluateFaceAdaptiveOnIrregularFace", TestSubDEvaluateFaceAdaptiveOnIrregularFace);
+  RunTest("TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane", TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane);
+  RunTest("TestSubDEvaluateFaceExtraordinaryCornerHandlesSemiSharpEdge", TestSubDEvaluateFaceExtraordinaryCornerHandlesSemiSharpEdge);
+  RunTest("TestSubDEvaluateFaceThrowsOnBadInput", TestSubDEvaluateFaceThrowsOnBadInput);
+  RunTest("TestSubDToNurbsPatchesAdaptiveMatchesNonAdaptiveAtZeroLevels", TestSubDToNurbsPatchesAdaptiveMatchesNonAdaptiveAtZeroLevels);
+  RunTest("TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace", TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace);
+  RunTest("TestSubDToNurbsPatchesAdaptiveRegularFaceUnaffected", TestSubDToNurbsPatchesAdaptiveRegularFaceUnaffected);
+  RunTest("TestSubDToNurbsPatchesAdaptiveThrowsOnNegativeLevels", TestSubDToNurbsPatchesAdaptiveThrowsOnNegativeLevels);
+  RunTest("TestSubDToNurbsPatchesThrowsOnNoQuadFaces", TestSubDToNurbsPatchesThrowsOnNoQuadFaces);
+  RunTest("TestSubDToNurbsPatchesAdaptiveThrowsOnNoQuadFaces", TestSubDToNurbsPatchesAdaptiveThrowsOnNoQuadFaces);
+  RunTest("TestSubDCheckCleanClosedBoxReportsNoDefects", TestSubDCheckCleanClosedBoxReportsNoDefects);
+  RunTest("TestSubDCheckOpenGridReportsNakedEdgesOnly", TestSubDCheckOpenGridReportsNakedEdgesOnly);
+  RunTest("TestSubDCheckDisjointPiecesReportsMultipleBodies", TestSubDCheckDisjointPiecesReportsMultipleBodies);
+  RunTest("TestSubDCheckNonManifoldEdgeDetected", TestSubDCheckNonManifoldEdgeDetected);
+  RunTest("TestSubDCheckBowtieVertexDetected", TestSubDCheckBowtieVertexDetected);
+  RunTest("TestSubDCheckDuplicateVerticesDetected", TestSubDCheckDuplicateVerticesDetected);
+  RunTest("TestSubDSplitDisjointPiecesSplitsIntoSeparateSubDs", TestSubDSplitDisjointPiecesSplitsIntoSeparateSubDs);
+  RunTest("TestSubDSplitNonManifoldVertexSplitsBowtie", TestSubDSplitNonManifoldVertexSplitsBowtie);
+  RunTest("TestSubDMergeDuplicateVerticesWeldsCoincidentPairs", TestSubDMergeDuplicateVerticesWeldsCoincidentPairs);
+  RunTest("TestSubDInsertEdgeSplitsFaceIntoTwoAlongDiagonal", TestSubDInsertEdgeSplitsFaceIntoTwoAlongDiagonal);
+  RunTest("TestSubDSpinEdgeRotatesSharedInteriorEdge", TestSubDSpinEdgeRotatesSharedInteriorEdge);
+  RunTest("TestSubDExtrudeFaceAddsProtrusionAlongNormal", TestSubDExtrudeFaceAddsProtrusionAlongNormal);
+  RunTest("TestSubDExpandFacesSingleFaceMatchesExtrudeFace", TestSubDExpandFacesSingleFaceMatchesExtrudeFace);
+  RunTest("TestSubDExpandFacesMovesConnectedRegionAsOneBlockKeepingSharedEdgeInterior", TestSubDExpandFacesMovesConnectedRegionAsOneBlockKeepingSharedEdgeInterior);
+  RunTest("TestSubDExpandFacesRefusesWhenRegionNormalsCancel", TestSubDExpandFacesRefusesWhenRegionNormalsCancel);
+  RunTest("TestSubDWeldJoinsTwoDisjointQuadsAlongCoincidentSeam", TestSubDWeldJoinsTwoDisjointQuadsAlongCoincidentSeam);
+  RunTest("TestSubDWeldRefusesSameFaceCornersAndPreservesUnrelatedCrease", TestSubDWeldRefusesSameFaceCornersAndPreservesUnrelatedCrease);
+  RunTest("TestSubDFromBrepBoxProducesWatertightManifoldCage", TestSubDFromBrepBoxProducesWatertightManifoldCage);
+  RunTest("TestSubDFromBrepRejectsBadDivisionsTrimmedAndCurvedFaces", TestSubDFromBrepRejectsBadDivisionsTrimmedAndCurvedFaces);
+  RunTest("TestSubDTessellateRejectsInvalidInputs", TestSubDTessellateRejectsInvalidInputs);
+  RunTest("TestSubDTessellateCapsAtMaxResolutionForUnreachableTolerance", TestSubDTessellateCapsAtMaxResolutionForUnreachableTolerance);
+  RunTest("TestSubDTessellateIsToleranceDrivenNotResolutionDriven", TestSubDTessellateIsToleranceDrivenNotResolutionDriven);
+  RunTest("TestSubDTessellateFinerGridForTighterTolerance", TestSubDTessellateFinerGridForTighterTolerance);
+  RunTest("TestSubDTessellateWeldsCubeFacesIntoClosedManifold", TestSubDTessellateWeldsCubeFacesIntoClosedManifold);
+  RunTest("TestSubDTessellateFlatRegularPatchIsExactAtCoarsestGrid", TestSubDTessellateFlatRegularPatchIsExactAtCoarsestGrid);
+  RunTest("TestSubDTessellateHarmonizesResolutionAcrossMismatchedFaces", TestSubDTessellateHarmonizesResolutionAcrossMismatchedFaces);
+  RunTest("TestSubDBooleanUnionOfDisjointBoxesSumsVolumes", TestSubDBooleanUnionOfDisjointBoxesSumsVolumes);
+  RunTest("TestSubDBooleanIntersectionOfOverlappingBoxesMatchesExactOverlap", TestSubDBooleanIntersectionOfOverlappingBoxesMatchesExactOverlap);
+  RunTest("TestSubDBooleanDifferenceSubtractsOnlyTheOverlap", TestSubDBooleanDifferenceSubtractsOnlyTheOverlap);
+  RunTest("TestSubDBooleanRejectsOpenNonManifoldOperand", TestSubDBooleanRejectsOpenNonManifoldOperand);
+  RunTest("TestSubDBooleanToSubDReturnsEditableSubDMatchingBooleanVolume", TestSubDBooleanToSubDReturnsEditableSubDMatchingBooleanVolume);
+  RunTest("TestSubDBooleanToSubDIsGenuinelyFurtherSubdividable", TestSubDBooleanToSubDIsGenuinelyFurtherSubdividable);
+  RunTest("TestSubDBooleanToSubDPropagatesBooleanFailure", TestSubDBooleanToSubDPropagatesBooleanFailure);
+  RunTest("TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads", TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads);
+  RunTest("TestSubDFromMeshQuadRemeshedRecombinesTessellatedBoxIntoQuads", TestSubDFromMeshQuadRemeshedRecombinesTessellatedBoxIntoQuads);
+  RunTest("TestSubDFromBrepTessellatedBoxRecombinesIntoSixQuads", TestSubDFromBrepTessellatedBoxRecombinesIntoSixQuads);
+  RunTest("TestSubDFromBrepTessellatedApproximatesSphereFromInside", TestSubDFromBrepTessellatedApproximatesSphereFromInside);
+  RunTest("TestSubDFromBrepTessellatedRejectsInvalidDivisions", TestSubDFromBrepTessellatedRejectsInvalidDivisions);
+  RunTest("TestSubDFromMeshQuadRemeshedForwardsCreaseAtDoubleEdges", TestSubDFromMeshQuadRemeshedForwardsCreaseAtDoubleEdges);
+  RunTest("TestSubDFromMeshQuadRemeshedRespectsMaxDihedralDegThreshold", TestSubDFromMeshQuadRemeshedRespectsMaxDihedralDegThreshold);
+  RunTest("TestSubDBooleanToSubDMaxDihedralDegDefaultMatchesExplicitValue", TestSubDBooleanToSubDMaxDihedralDegDefaultMatchesExplicitValue);
+  RunTest("TestMeshComputeVertexNormals", TestMeshComputeVertexNormals);
+  RunTest("TestMeshComputeFaceNormals", TestMeshComputeFaceNormals);
+  RunTest("TestMeshFacetedGivesFlatShading", TestMeshFacetedGivesFlatShading);
+  RunTest("TestMeshComputeBoxMappingUVs", TestMeshComputeBoxMappingUVs);
+  RunTest("TestMeshComputeBoxMappingUVsFacetedResolvesSeam", TestMeshComputeBoxMappingUVsFacetedResolvesSeam);
+  RunTest("TestMeshComputePlanarMappingUVs", TestMeshComputePlanarMappingUVs);
+  RunTest("TestMeshComputeCylindricalMappingUVs", TestMeshComputeCylindricalMappingUVs);
+  RunTest("TestMeshComputeSphericalMappingUVs", TestMeshComputeSphericalMappingUVs);
+  RunTest("TestMeshSplitUVSeam", TestMeshSplitUVSeam);
+  RunTest("TestMeshSaveObjRoundTrips", TestMeshSaveObjRoundTrips);
+  RunTest("TestMeshTextureCoordinates", TestMeshTextureCoordinates);
+  RunTest("TestMeshLoadObjPreservesUvSeams", TestMeshLoadObjPreservesUvSeams);
+  RunTest("TestMeshLoadObjRejectsMalformedFiles", TestMeshLoadObjRejectsMalformedFiles);
+  RunTest("TestMeshLoadObjResolvesRelativeIndices", TestMeshLoadObjResolvesRelativeIndices);
+  RunTest("TestMeshLoadObjFanTriangulatesNgonFaces", TestMeshLoadObjFanTriangulatesNgonFaces);
+  RunTest("TestMeshSaveOffRoundTrips", TestMeshSaveOffRoundTrips);
+  RunTest("TestMeshLoadOffRejectsMalformedFiles", TestMeshLoadOffRejectsMalformedFiles);
+  RunTest("TestMeshLoadOffRejectsImplausibleElementCounts", TestMeshLoadOffRejectsImplausibleElementCounts);
+  RunTest("TestMeshLoadOffFanTriangulatesNgonFaces", TestMeshLoadOffFanTriangulatesNgonFaces);
+  RunTest("TestMeshSaveOffWritesAndReadsCoffColors", TestMeshSaveOffWritesAndReadsCoffColors);
+  RunTest("TestMeshSaveAmfRoundTrips", TestMeshSaveAmfRoundTrips);
+  RunTest("TestMeshLoadAmfRejectsMalformedFiles", TestMeshLoadAmfRejectsMalformedFiles);
+  RunTest("TestMeshSaveVrmlRoundTrips", TestMeshSaveVrmlRoundTrips);
+  RunTest("TestMeshLoadVrmlRejectsMalformedFiles", TestMeshLoadVrmlRejectsMalformedFiles);
+  RunTest("TestMeshLoadVrmlFanTriangulatesNgonFaces", TestMeshLoadVrmlFanTriangulatesNgonFaces);
+  RunTest("TestMeshSaveVrmlWritesAndReadsColors", TestMeshSaveVrmlWritesAndReadsColors);
+  RunTest("TestMeshSaveColladaRoundTrips", TestMeshSaveColladaRoundTrips);
+  RunTest("TestMeshLoadColladaRejectsMalformedFiles", TestMeshLoadColladaRejectsMalformedFiles);
+  RunTest("TestMeshLoadColladaFanTriangulatesNgonFaces", TestMeshLoadColladaFanTriangulatesNgonFaces);
+  RunTest("TestMeshSaveX3dRoundTrips", TestMeshSaveX3dRoundTrips);
+  RunTest("TestMeshLoadX3dRejectsMalformedFiles", TestMeshLoadX3dRejectsMalformedFiles);
+  RunTest("TestMeshLoadX3dFanTriangulatesNgonFaces", TestMeshLoadX3dFanTriangulatesNgonFaces);
+  RunTest("TestMeshSaveX3dWritesAndReadsColors", TestMeshSaveX3dWritesAndReadsColors);
+  RunTest("TestMeshSaveUsdaRoundTrips", TestMeshSaveUsdaRoundTrips);
+  RunTest("TestMeshLoadUsdaRejectsMalformedFiles", TestMeshLoadUsdaRejectsMalformedFiles);
+  RunTest("TestMeshLoadUsdaFanTriangulatesNgonFaces", TestMeshLoadUsdaFanTriangulatesNgonFaces);
+  RunTest("TestMeshSaveGltfRoundTrips", TestMeshSaveGltfRoundTrips);
+  RunTest("TestMeshLoadGltfRejectsMalformedFiles", TestMeshLoadGltfRejectsMalformedFiles);
+  RunTest("TestMeshSaveGlbRoundTrips", TestMeshSaveGlbRoundTrips);
+  RunTest("TestMeshLoadGlbRejectsMalformedFiles", TestMeshLoadGlbRejectsMalformedFiles);
+  RunTest("TestMeshSaveIfcRoundTrips", TestMeshSaveIfcRoundTrips);
+  RunTest("TestMeshLoadIfcRejectsMalformedFiles", TestMeshLoadIfcRejectsMalformedFiles);
+  RunTest("TestMeshSaveStepAp242RoundTrips", TestMeshSaveStepAp242RoundTrips);
+  RunTest("TestMeshLoadStepAp242RejectsMalformedFiles", TestMeshLoadStepAp242RejectsMalformedFiles);
+  RunTest("TestMeshSave3mfRoundTrips", TestMeshSave3mfRoundTrips);
+  RunTest("TestMeshLoad3mfRejectsMalformedFiles", TestMeshLoad3mfRejectsMalformedFiles);
+  RunTest("TestMeshSaveFbxRoundTrips", TestMeshSaveFbxRoundTrips);
+  RunTest("TestMeshLoadFbxRejectsMalformedFiles", TestMeshLoadFbxRejectsMalformedFiles);
+  RunTest("TestNurbsCurveSaveIgesRoundTrips", TestNurbsCurveSaveIgesRoundTrips);
+  RunTest("TestNurbsCurveLoadIgesRejectsMalformedFiles", TestNurbsCurveLoadIgesRejectsMalformedFiles);
+  RunTest("TestMeshSaveDxfRoundTrips", TestMeshSaveDxfRoundTrips);
+  RunTest("TestMeshLoadDxfRejectsMalformedFiles", TestMeshLoadDxfRejectsMalformedFiles);
+  RunTest("TestMeshSaveStlSplitsQuadsAndComputesNormals", TestMeshSaveStlSplitsQuadsAndComputesNormals);
+  RunTest("TestMeshLoadStlRoundTrips", TestMeshLoadStlRoundTrips);
+  RunTest("TestMeshLoadStlBinary", TestMeshLoadStlBinary);
+  RunTest("TestMeshLoadStlBinaryRejectsNonFiniteVertices", TestMeshLoadStlBinaryRejectsNonFiniteVertices);
+  RunTest("TestMeshSaveStlBinaryRoundTrips", TestMeshSaveStlBinaryRoundTrips);
+  RunTest("TestMeshSavePlyRoundTrips", TestMeshSavePlyRoundTrips);
+  RunTest("TestMeshSavePlyBinaryRoundTrips", TestMeshSavePlyBinaryRoundTrips);
+  RunTest("TestMeshSavePlyBigEndianRoundTrips", TestMeshSavePlyBigEndianRoundTrips);
+  RunTest("TestMeshSavePlyVertexColorsRoundTrips", TestMeshSavePlyVertexColorsRoundTrips);
+  RunTest("TestMeshVertexAlphaRoundTrips", TestMeshVertexAlphaRoundTrips);
+  RunTest("TestMeshLoadPlyRejectsMalformedFiles", TestMeshLoadPlyRejectsMalformedFiles);
+  RunTest("TestExactClippingMatchesAreaButNotCellCounts", TestExactClippingMatchesAreaButNotCellCounts);
+  RunTest("TestExactClippingHandlesNonConvexTrim", TestExactClippingHandlesNonConvexTrim);
+  RunTest("TestExactClippingHandlesTrimVertexOnGridLine", TestExactClippingHandlesTrimVertexOnGridLine);
+  RunTest("TestExactClippingHandlesManyReflexVertexComb", TestExactClippingHandlesManyReflexVertexComb);
+  RunTest("TestExactClippingRejectsSelfIntersectingTrim", TestExactClippingRejectsSelfIntersectingTrim);
+  RunTest("TestSurfaceTessellateGridRejectsTooFewHolePoints", TestSurfaceTessellateGridRejectsTooFewHolePoints);
+  RunTest("TestAnnulusFaceExtrudesToWatertightTube", TestAnnulusFaceExtrudesToWatertightTube);
+  RunTest("TestExtrudeRejectsAlreadyClosedCap", TestExtrudeRejectsAlreadyClosedCap);
+  RunTest("TestExtrudeRejectsBowtieBoundary", TestExtrudeRejectsBowtieBoundary);
+  RunTest("TestConeToApexSharesBoundaryValidation", TestConeToApexSharesBoundaryValidation);
+  RunTest("TestBooleanIntersectConvexPlanarExactBoxOverlap", TestBooleanIntersectConvexPlanarExactBoxOverlap);
+  RunTest("TestBooleanIntersectConvexPlanarRejectsNonConvex", TestBooleanIntersectConvexPlanarRejectsNonConvex);
+  RunTest("TestBooleanCombinePlanarNonConvexLShapeVsBox", TestBooleanCombinePlanarNonConvexLShapeVsBox);
+  RunTest("TestShellConvexPlanarCubeOpenTopExactVolume", TestShellConvexPlanarCubeOpenTopExactVolume);
+  RunTest("TestShellConvexPlanarRejectsTooLargeThickness", TestShellConvexPlanarRejectsTooLargeThickness);
+  RunTest("TestShellConvexPlanarRejectsAdjacentOpenings", TestShellConvexPlanarRejectsAdjacentOpenings);
+  RunTest("TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula", TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula);
+  RunTest("TestShellConvexPlanarPerFaceWallThicknessArgumentChecks", TestShellConvexPlanarPerFaceWallThicknessArgumentChecks);
+  RunTest("TestShellClosedSphereMatchesExactShellVolume", TestShellClosedSphereMatchesExactShellVolume);
+  RunTest("TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle", TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle);
+  RunTest("TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces", TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces);
+  RunTest("TestInsetPlanarFaceOnBoxTopFaceFlatMatchesUnchangedVolumeAndCorrectTopology", TestInsetPlanarFaceOnBoxTopFaceFlatMatchesUnchangedVolumeAndCorrectTopology);
+  RunTest("TestInsetPlanarFaceOnBoxTopFaceWithDepthMatchesExactFrustumVolume", TestInsetPlanarFaceOnBoxTopFaceWithDepthMatchesExactFrustumVolume);
+  RunTest("TestInsetPlanarFaceArgumentChecks", TestInsetPlanarFaceArgumentChecks);
+  RunTest("TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling", TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling);
+  RunTest("TestOffsetSolidConvexPlanarUniformBoxMatchesExactVolume", TestOffsetSolidConvexPlanarUniformBoxMatchesExactVolume);
+  RunTest("TestOffsetSolidConvexPlanarPerFaceBoxMatchesExactBoundingBox", TestOffsetSolidConvexPlanarPerFaceBoxMatchesExactBoundingBox);
+  RunTest("TestOffsetSolidConvexPlanarTetrahedronMatchesIndependentVertexRecomputation", TestOffsetSolidConvexPlanarTetrahedronMatchesIndependentVertexRecomputation);
+  RunTest("TestOffsetSolidConvexPlanarRejectsNonConvexLShape", TestOffsetSolidConvexPlanarRejectsNonConvexLShape);
+  RunTest("TestPushPullFaceOnBoxPushOutAddsWallsAndMatchesExactVolume", TestPushPullFaceOnBoxPushOutAddsWallsAndMatchesExactVolume);
+  RunTest("TestPushPullFaceOnNonConvexLShapeGrowsByExactSlabVolume", TestPushPullFaceOnNonConvexLShapeGrowsByExactSlabVolume);
+  RunTest("TestPushPullFacesSingleEntryMatchesPushPullFace", TestPushPullFacesSingleEntryMatchesPushPullFace);
+  RunTest("TestPushPullFacesTwoIndependentPushPullMatchesEitherSequentialOrder", TestPushPullFacesTwoIndependentPushPullMatchesEitherSequentialOrder);
+  RunTest("TestPushPullFacesRefusesInvalidInput", TestPushPullFacesRefusesInvalidInput);
+  RunTest("TestPushPullFaceObliqueNeighbourMatchesExactFrustumVolume", TestPushPullFaceObliqueNeighbourMatchesExactFrustumVolume);
+  RunTest("TestPushPullFacesObliqueNeighbourMatchesPushPullFace", TestPushPullFacesObliqueNeighbourMatchesPushPullFace);
+  RunTest("TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume", TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume);
+  RunTest("TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched", TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched);
+  RunTest("TestDraftFacesConvexPlanarPerFaceAnglesMatchesEitherSequentialOrder", TestDraftFacesConvexPlanarPerFaceAnglesMatchesEitherSequentialOrder);
+  RunTest("TestReplaceFacePlaneConvexPlanarMatchesOffsetFaceForPureTranslate", TestReplaceFacePlaneConvexPlanarMatchesOffsetFaceForPureTranslate);
+  RunTest("TestReplaceFacePlaneConvexPlanarTiltedRoofMatchesExactIntegralAndRetrimsWalls", TestReplaceFacePlaneConvexPlanarTiltedRoofMatchesExactIntegralAndRetrimsWalls);
+  RunTest("TestReplaceFacePlaneConvexPlanarRefusesInvalidInput", TestReplaceFacePlaneConvexPlanarRefusesInvalidInput);
+  RunTest("TestFoldFaceConvexPlanarBoxFrontWallHingedAtBottomEdgeMatchesExactIntegral", TestFoldFaceConvexPlanarBoxFrontWallHingedAtBottomEdgeMatchesExactIntegral);
+  RunTest("TestFoldFaceConvexPlanarRefusesInvalidInput", TestFoldFaceConvexPlanarRefusesInvalidInput);
+  RunTest("TestFoldFacesConvexPlanarSingleEntryMatchesFoldFaceConvexPlanar", TestFoldFacesConvexPlanarSingleEntryMatchesFoldFaceConvexPlanar);
+  RunTest("TestFoldFacesConvexPlanarTwoIndependentFoldsMatchesSequentialSingleFolds", TestFoldFacesConvexPlanarTwoIndependentFoldsMatchesSequentialSingleFolds);
+  RunTest("TestFoldFacesConvexPlanarRefusesInvalidInput", TestFoldFacesConvexPlanarRefusesInvalidInput);
+  RunTest("TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched", TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched);
+  RunTest("TestMoveVertexConvexPlanarRefusesInvalidInput", TestMoveVertexConvexPlanarRefusesInvalidInput);
+  RunTest("TestMoveVertexConvexPlanarPyramidBaseCornerSlidesWithinBasePlaneMatchesExactPyramidVolume", TestMoveVertexConvexPlanarPyramidBaseCornerSlidesWithinBasePlaneMatchesExactPyramidVolume);
+  RunTest("TestMoveVertexConvexPlanarRefusesGenuinelyNonPlanarQuadMove", TestMoveVertexConvexPlanarRefusesGenuinelyNonPlanarQuadMove);
+  RunTest("TestMoveFaceConvexPlanarMatchesOffsetFaceForPureNormalTranslate", TestMoveFaceConvexPlanarMatchesOffsetFaceForPureNormalTranslate);
+  RunTest("TestMoveFaceConvexPlanarRotationMatchesExactAngleAndFixedOrigin", TestMoveFaceConvexPlanarRotationMatchesExactAngleAndFixedOrigin);
+  RunTest("TestMoveFaceConvexPlanarRefusesInvalidInput", TestMoveFaceConvexPlanarRefusesInvalidInput);
+  RunTest("TestMoveEdgeConvexPlanarTetrahedronMatchesExactVolumeFromSignedTripleProduct", TestMoveEdgeConvexPlanarTetrahedronMatchesExactVolumeFromSignedTripleProduct);
+  RunTest("TestMoveEdgeConvexPlanarRefusesInvalidInput", TestMoveEdgeConvexPlanarRefusesInvalidInput);
+  RunTest("TestMoveEdgeConvexPlanarBoxBottomFrontEdgeTiltMatchesExactIntegralVolume", TestMoveEdgeConvexPlanarBoxBottomFrontEdgeTiltMatchesExactIntegralVolume);
+  RunTest("TestMoveVerticesConvexPlanarMovesAllFourTetrahedronVerticesMatchesExactVolumeFromSignedTripleProduct", TestMoveVerticesConvexPlanarMovesAllFourTetrahedronVerticesMatchesExactVolumeFromSignedTripleProduct);
+  RunTest("TestMoveVerticesConvexPlanarSucceedsWhereASequentialSingleMoveWouldRefuse", TestMoveVerticesConvexPlanarSucceedsWhereASequentialSingleMoveWouldRefuse);
+  RunTest("TestMoveVerticesConvexPlanarRefusesInvalidInput", TestMoveVerticesConvexPlanarRefusesInvalidInput);
+  RunTest("TestMoveEdgesConvexPlanarMovesTwoAdjacentEdgesSharingAVertexMatchesExactVolume", TestMoveEdgesConvexPlanarMovesTwoAdjacentEdgesSharingAVertexMatchesExactVolume);
+  RunTest("TestMoveEdgesConvexPlanarRefusesInvalidInput", TestMoveEdgesConvexPlanarRefusesInvalidInput);
+  RunTest("TestMoveVertexConvexPlanarQuadBaseCornerWithinPlaneMatchesExactVolume", TestMoveVertexConvexPlanarQuadBaseCornerWithinPlaneMatchesExactVolume);
+  RunTest("TestMoveVertexConvexPlanarRefusesNonPlanarQuadCornerMove", TestMoveVertexConvexPlanarRefusesNonPlanarQuadCornerMove);
+  RunTest("TestMoveEdgeConvexPlanarQuadBaseEdgeWithinPlaneMatchesExactVolume", TestMoveEdgeConvexPlanarQuadBaseEdgeWithinPlaneMatchesExactVolume);
+  RunTest("TestReplaceFacePlanesConvexPlanarSucceedsWhereSequentialSingleReplaceWouldRefuse", TestReplaceFacePlanesConvexPlanarSucceedsWhereSequentialSingleReplaceWouldRefuse);
+  RunTest("TestReplaceFacePlanesConvexPlanarRefusesInvalidInput", TestReplaceFacePlanesConvexPlanarRefusesInvalidInput);
+  RunTest("TestMoveFacesConvexPlanarSucceedsWhereSequentialSingleMoveWouldRefuse", TestMoveFacesConvexPlanarSucceedsWhereSequentialSingleMoveWouldRefuse);
+  RunTest("TestMoveFacesConvexPlanarMatchesOffsetSolidForTwoIndependentNormalTranslates", TestMoveFacesConvexPlanarMatchesOffsetSolidForTwoIndependentNormalTranslates);
+  RunTest("TestMoveFacesConvexPlanarRefusesInvalidInput", TestMoveFacesConvexPlanarRefusesInvalidInput);
+  RunTest("TestDeleteFaceHealConvexPlanarChamferedCubeRecoversExactUnitCube", TestDeleteFaceHealConvexPlanarChamferedCubeRecoversExactUnitCube);
+  RunTest("TestDeleteFaceHealConvexPlanarRefusesInvalidInput", TestDeleteFaceHealConvexPlanarRefusesInvalidInput);
+  RunTest("TestDeleteFacesHealConvexPlanarTwoIndependentChamfersMatchesEitherSequentialOrder", TestDeleteFacesHealConvexPlanarTwoIndependentChamfersMatchesEitherSequentialOrder);
+  RunTest("TestDeleteFacesHealConvexPlanarRefusesInvalidInput", TestDeleteFacesHealConvexPlanarRefusesInvalidInput);
+  RunTest("TestFilletConvexEdgeUnitCubeTopFrontCorner", TestFilletConvexEdgeUnitCubeTopFrontCorner);
+  RunTest("TestFilletConvexEdgeTaperedRailExactness", TestFilletConvexEdgeTaperedRailExactness);
+  RunTest("TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula", TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula);
+  RunTest("TestFilletConvexEdgeTaperedDispatchesToConstantRadiusAtZeroTaper", TestFilletConvexEdgeTaperedDispatchesToConstantRadiusAtZeroTaper);
+  RunTest("TestFilletConvexEdgeTaperedClosesCornerNotch", TestFilletConvexEdgeTaperedClosesCornerNotch);
+  RunTest("TestFilletConvexEdgeTaperedCornerNotchDefectVolumeIsSmall", TestFilletConvexEdgeTaperedCornerNotchDefectVolumeIsSmall);
+  RunTest("TestFilletConvexEdgeTaperedRejectsInvalidInput", TestFilletConvexEdgeTaperedRejectsInvalidInput);
+  RunTest("TestFilletConvexEdgeTaperedMultiStationRailExactness", TestFilletConvexEdgeTaperedMultiStationRailExactness);
+  RunTest("TestFilletConvexEdgeTaperedMultiStationInteriorJoinSharedPoints", TestFilletConvexEdgeTaperedMultiStationInteriorJoinSharedPoints);
+  RunTest("TestFilletConvexEdgeTaperedMultiStationClosedFormVolumeMatchesFrustumFormula", TestFilletConvexEdgeTaperedMultiStationClosedFormVolumeMatchesFrustumFormula);
+  RunTest("TestFilletConvexEdgeTaperedMultiStationIsClosedManifoldAndSolid", TestFilletConvexEdgeTaperedMultiStationIsClosedManifoldAndSolid);
+  RunTest("TestFilletConvexEdgeTaperedTwoStationDispatchIsBitIdenticalToTwoRadiusOverload", TestFilletConvexEdgeTaperedTwoStationDispatchIsBitIdenticalToTwoRadiusOverload);
+  RunTest("TestFilletConvexEdgeTaperedMultiStationInteriorJoinToleranceDoesNotVanish", TestFilletConvexEdgeTaperedMultiStationInteriorJoinToleranceDoesNotVanish);
+  RunTest("TestFilletConvexEdgeTaperedMultiStationRejectsInvalidStations", TestFilletConvexEdgeTaperedMultiStationRejectsInvalidStations);
+  RunTest("TestChamferConvexEdgeUnitCubeClosedFormVolumeAndTopology", TestChamferConvexEdgeUnitCubeClosedFormVolumeAndTopology);
+  RunTest("TestChamferConvexEdgeObliqueEndFaceIsExactAndClosed", TestChamferConvexEdgeObliqueEndFaceIsExactAndClosed);
+  RunTest("TestChamferConvexEdgeAngleMatchesTwoDistanceForm", TestChamferConvexEdgeAngleMatchesTwoDistanceForm);
+  RunTest("TestChamferConvexEdgeRejectsInvalidInput", TestChamferConvexEdgeRejectsInvalidInput);
+  RunTest("TestChamferConvexEdgeChainsAcrossACornerAndAlongParallelEdges", TestChamferConvexEdgeChainsAcrossACornerAndAlongParallelEdges);
+  RunTest("TestFilletConvexEdgeConicWeightFormulaReducesToExactCircle", TestFilletConvexEdgeConicWeightFormulaReducesToExactCircle);
+  RunTest("TestFilletConvexEdgeConicFreeBoundaryTangencyRailExactnessAndClosedFormArea", TestFilletConvexEdgeConicFreeBoundaryTangencyRailExactnessAndClosedFormArea);
+  RunTest("TestFilletConvexEdgeConicRejectsInvalidInput", TestFilletConvexEdgeConicRejectsInvalidInput);
+  RunTest("TestFilletConvexEdgeConicClosesCornerNotchOnUnitCube", TestFilletConvexEdgeConicClosesCornerNotchOnUnitCube);
+  RunTest("TestSphericalFaceOctantIsValidWithSingularPoleTrim", TestSphericalFaceOctantIsValidWithSingularPoleTrim);
+  RunTest("TestMergeAndWeldMakesBrepSphereAClosedManifold", TestMergeAndWeldMakesBrepSphereAClosedManifold);
+  RunTest("TestFilletConvexEdgesRoundedBoxMatchesSteinerFormula", TestFilletConvexEdgesRoundedBoxMatchesSteinerFormula);
+  RunTest("TestFilletConvexEdgesHexagonalPrismMatchesSteinerFormula", TestFilletConvexEdgesHexagonalPrismMatchesSteinerFormula);
+  RunTest("TestFilletConvexEdgesParallelPairDoubleNotchesEndFaces", TestFilletConvexEdgesParallelPairDoubleNotchesEndFaces);
+  RunTest("TestFilletConvexEdgesSingleCornerSphereWithNotchedFarEnds", TestFilletConvexEdgesSingleCornerSphereWithNotchedFarEnds);
+  RunTest("TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdge", TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdge);
+  RunTest("TestFilletConvexEdgesMergesTangentChainSplitEdge", TestFilletConvexEdgesMergesTangentChainSplitEdge);
+  RunTest("TestFilletConvexEdgesRejectsUnsupportedConfigurations", TestFilletConvexEdgesRejectsUnsupportedConfigurations);
+  RunTest("TestFilletConvexEdgeObliqueEndFaceIsExactAndClosed", TestFilletConvexEdgeObliqueEndFaceIsExactAndClosed);
+  RunTest("TestFilletConvexEdgeObliqueEndMatchesPerpendicularAtZeroSlope", TestFilletConvexEdgeObliqueEndMatchesPerpendicularAtZeroSlope);
+  RunTest("TestFilletConvexEdgeObliqueEndClosedFormAtASecondSlope", TestFilletConvexEdgeObliqueEndClosedFormAtASecondSlope);
+  RunTest("TestFilletConvexEdgeObliqueEndRejectsInvalidInput", TestFilletConvexEdgeObliqueEndRejectsInvalidInput);
+  RunTest("TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdgeOnObliqueEnd", TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdgeOnObliqueEnd);
+  RunTest("TestFilletConvexEdgesParallelPairWithObliqueEndsIsClosedAndMatchesClosedForm", TestFilletConvexEdgesParallelPairWithObliqueEndsIsClosedAndMatchesClosedForm);
+  RunTest("TestFilletConvexEdgesRejectsOversizedRadiusAtObliqueEnd", TestFilletConvexEdgesRejectsOversizedRadiusAtObliqueEnd);
+  RunTest("TestRemoveBlendRoundTripsASingleFillet", TestRemoveBlendRoundTripsASingleFillet);
+  RunTest("TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo", TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo);
+  RunTest("TestRemoveBlendRejectsUnsupportedConfigurations", TestRemoveBlendRejectsUnsupportedConfigurations);
+  RunTest("TestRemoveBlendRoundTripsAnObliqueEndFillet", TestRemoveBlendRoundTripsAnObliqueEndFillet);
+  RunTest("TestRemoveBlendRoundTripsASphericalVertexCorner", TestRemoveBlendRoundTripsASphericalVertexCorner);
+  RunTest("TestRemoveBlendOnSphericalCornerLeavesAnIndependentCornerIntact", TestRemoveBlendOnSphericalCornerLeavesAnIndependentCornerIntact);
+  RunTest("TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner", TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner);
+  RunTest("TestRemoveBlendRoundTripsASphericalVertexCornerWithOneObliqueFarEnd", TestRemoveBlendRoundTripsASphericalVertexCornerWithOneObliqueFarEnd);
+  RunTest("TestRemoveBlendRoundTripsATaperedFillet", TestRemoveBlendRoundTripsATaperedFillet);
+  RunTest("TestRemoveChamferRoundTripsASingleChamfer", TestRemoveChamferRoundTripsASingleChamfer);
+  RunTest("TestRemoveChamferLeavesTheOtherChamferIntactAmongTwo", TestRemoveChamferLeavesTheOtherChamferIntactAmongTwo);
+  RunTest("TestRemoveChamferRoundTripsADistanceAngleChamfer", TestRemoveChamferRoundTripsADistanceAngleChamfer);
+  RunTest("TestRemoveChamferRejectsUnsupportedConfigurations", TestRemoveChamferRejectsUnsupportedConfigurations);
+  RunTest("TestFilletConcaveEdgeAddsExactQuarterRoundVolume", TestFilletConcaveEdgeAddsExactQuarterRoundVolume);
+  RunTest("TestFilletConcaveEdgeRejectsUnsupportedConfigurations", TestFilletConcaveEdgeRejectsUnsupportedConfigurations);
+  RunTest("TestMaxFilletRadiusConvexUnitCubeMatchesExtent", TestMaxFilletRadiusConvexUnitCubeMatchesExtent);
+  RunTest("TestMaxFilletRadiusConcaveLShapedPrismMatchesExtent", TestMaxFilletRadiusConcaveLShapedPrismMatchesExtent);
+  RunTest("TestMaxFilletRadiusRejectsInvalidInput", TestMaxFilletRadiusRejectsInvalidInput);
+  RunTest("TestFilletConcaveEdgeTaperedRailExactness", TestFilletConcaveEdgeTaperedRailExactness);
+  RunTest("TestFilletConcaveEdgeTaperedClosedFormVolumeMatchesFrustumFormula", TestFilletConcaveEdgeTaperedClosedFormVolumeMatchesFrustumFormula);
+  RunTest("TestFilletConcaveEdgeTaperedDispatchesToConstantRadiusAtZeroTaper", TestFilletConcaveEdgeTaperedDispatchesToConstantRadiusAtZeroTaper);
+  RunTest("TestFilletConcaveEdgeTaperedClosesCornerNotchAndIsSolid", TestFilletConcaveEdgeTaperedClosesCornerNotchAndIsSolid);
+  RunTest("TestFilletConcaveEdgeTaperedRejectsInvalidInput", TestFilletConcaveEdgeTaperedRejectsInvalidInput);
+  RunTest("TestFilletConcaveEdgeTaperedMultiStationClosedFormVolumeMatchesFrustumFormula", TestFilletConcaveEdgeTaperedMultiStationClosedFormVolumeMatchesFrustumFormula);
+  RunTest("TestFilletConcaveEdgeTaperedMultiStationIsClosedManifoldAndSolid", TestFilletConcaveEdgeTaperedMultiStationIsClosedManifoldAndSolid);
+  RunTest("TestFilletConcaveEdgeTaperedTwoStationDispatchIsBitIdenticalToTwoRadiusOverload", TestFilletConcaveEdgeTaperedTwoStationDispatchIsBitIdenticalToTwoRadiusOverload);
+  RunTest("TestFilletConcaveEdgeTaperedMultiStationRejectsInvalidStations", TestFilletConcaveEdgeTaperedMultiStationRejectsInvalidStations);
+  RunTest("TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed", TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed);
+  RunTest("TestFilletConcaveEdgesSingleEdgeMatchesFilletConcaveEdgeOnObliqueEnd", TestFilletConcaveEdgesSingleEdgeMatchesFilletConcaveEdgeOnObliqueEnd);
+  RunTest("TestFilletConcaveEdgesRejectsOversizedRadiusAtObliqueEnd", TestFilletConcaveEdgesRejectsOversizedRadiusAtObliqueEnd);
+  RunTest("TestFilletConcaveEdgesAddsExactVolumeForTwoIndependentNotches", TestFilletConcaveEdgesAddsExactVolumeForTwoIndependentNotches);
+  RunTest("TestFilletConcaveEdgesMergesTangentChainSplitEdge", TestFilletConcaveEdgesMergesTangentChainSplitEdge);
+  RunTest("TestFilletConcaveEdgesRejectsUnsupportedConfigurations", TestFilletConcaveEdgesRejectsUnsupportedConfigurations);
+  RunTest("TestFilletConcaveEdgesTwoIndependentEdgesWithObliqueEndsMatchHandDerivedLength", TestFilletConcaveEdgesTwoIndependentEdgesWithObliqueEndsMatchHandDerivedLength);
+  RunTest("TestRemoveBlendLeavesTheOtherConcaveFilletIntactAmongTwo", TestRemoveBlendLeavesTheOtherConcaveFilletIntactAmongTwo);
+  RunTest("TestFilletConcaveEdgesTrihedralCornerAddsExactSphericalBlendVolume", TestFilletConcaveEdgesTrihedralCornerAddsExactSphericalBlendVolume);
+  RunTest("TestFilletConcaveEdgesRejectsMixedVertexConfigurations", TestFilletConcaveEdgesRejectsMixedVertexConfigurations);
+  RunTest("TestChamferConvexVertexRemovesExactTetrahedronVolumeOnBoxCorner", TestChamferConvexVertexRemovesExactTetrahedronVolumeOnBoxCorner);
+  RunTest("TestChamferConvexVertexWorksOnObliqueCornerFilletConvexEdgesRejects", TestChamferConvexVertexWorksOnObliqueCornerFilletConvexEdgesRejects);
+  RunTest("TestChamferConcaveVertexAddsExactTetrahedronVolumeOnNotchedCubeCorner", TestChamferConcaveVertexAddsExactTetrahedronVolumeOnNotchedCubeCorner);
+  RunTest("TestChamferVertexRejectsWrongConvexityAndOtherBadInputs", TestChamferVertexRejectsWrongConvexityAndOtherBadInputs);
+  RunTest("TestChamferVertexAsymmetricPerEdgeDistancesMatchGeneralTripleProduct", TestChamferVertexAsymmetricPerEdgeDistancesMatchGeneralTripleProduct);
+  RunTest("TestRemoveChamferVertexRoundTripsAConvexBoxCorner", TestRemoveChamferVertexRoundTripsAConvexBoxCorner);
+  RunTest("TestRemoveChamferVertexRoundTripsAsymmetricDistancesAndConcaveCorner", TestRemoveChamferVertexRoundTripsAsymmetricDistancesAndConcaveCorner);
+  RunTest("TestRemoveChamferVertexRejectsNonChamferFacesAndOtherBadInputs", TestRemoveChamferVertexRejectsNonChamferFacesAndOtherBadInputs);
+  RunTest("TestRemoveBlendRoundTripsAConcaveFillet", TestRemoveBlendRoundTripsAConcaveFillet);
+  RunTest("TestRemoveBlendRoundTripsAnObliqueEndConcaveFillet", TestRemoveBlendRoundTripsAnObliqueEndConcaveFillet);
+  RunTest("TestFilletConvexEdgeByDistanceFromEdgeMatchesEquivalentRadius", TestFilletConvexEdgeByDistanceFromEdgeMatchesEquivalentRadius);
+  RunTest("TestFilletConvexEdgeByDistanceBetweenRailsMatchesEquivalentRadius", TestFilletConvexEdgeByDistanceBetweenRailsMatchesEquivalentRadius);
+  RunTest("TestFilletConcaveEdgeByDistanceFromEdgeAndByDistanceBetweenRailsMatchEquivalentRadius", TestFilletConcaveEdgeByDistanceFromEdgeAndByDistanceBetweenRailsMatchEquivalentRadius);
+  RunTest("TestFilletEdgeByDistanceRailTypeFunctionsRejectInvalidInput", TestFilletEdgeByDistanceRailTypeFunctionsRejectInvalidInput);
+  RunTest("TestFilletConvexEdgesByDistanceFromEdgeAndBetweenRailsMatchFilletConvexEdgesOnUniformDihedralEdges", TestFilletConvexEdgesByDistanceFromEdgeAndBetweenRailsMatchFilletConvexEdgesOnUniformDihedralEdges);
+  RunTest("TestFilletConcaveEdgesByDistanceFromEdgeAndBetweenRailsMatchFilletConcaveEdgesOnTwoIndependentNotches", TestFilletConcaveEdgesByDistanceFromEdgeAndBetweenRailsMatchFilletConcaveEdgesOnTwoIndependentNotches);
+  RunTest("TestFilletEdgesByDistanceRailTypeFunctionsRejectMismatchedDihedralAnglesAndInvalidInput", TestFilletEdgesByDistanceRailTypeFunctionsRejectMismatchedDihedralAnglesAndInvalidInput);
+  RunTest("TestChamferConcaveEdgeAddsExactRightTriangleVolume", TestChamferConcaveEdgeAddsExactRightTriangleVolume);
+  RunTest("TestChamferConcaveEdgeAngleMatchesTwoDistanceForm", TestChamferConcaveEdgeAngleMatchesTwoDistanceForm);
+  RunTest("TestChamferConcaveEdgeRejectsUnsupportedConfigurations", TestChamferConcaveEdgeRejectsUnsupportedConfigurations);
+  RunTest("TestFilletConcaveEdgeConicRejectsConvexEdgeAndInvalidInput", TestFilletConcaveEdgeConicRejectsConvexEdgeAndInvalidInput);
+  RunTest("TestFilletConcaveEdgeConicAddsClosedFormVolumeOnLShapedPrism", TestFilletConcaveEdgeConicAddsClosedFormVolumeOnLShapedPrism);
+  RunTest("TestFilletConvexEdgesConicBlendsTwoIndependentEdgesInOneCall", TestFilletConvexEdgesConicBlendsTwoIndependentEdgesInOneCall);
+  RunTest("TestFilletConvexEdgesConicRejectsSharedFacesAndInvalidInput", TestFilletConvexEdgesConicRejectsSharedFacesAndInvalidInput);
+  RunTest("TestFilletConcaveEdgesConicMatchesFilletConcaveEdgeConicOnSingleEdge", TestFilletConcaveEdgesConicMatchesFilletConcaveEdgeConicOnSingleEdge);
+  RunTest("TestRemoveChamferRoundTripsAConcaveChamfer", TestRemoveChamferRoundTripsAConcaveChamfer);
+  RunTest("TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology", TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology);
+  RunTest("TestBrepAdjacencyQueries", TestBrepAdjacencyQueries);
+  RunTest("TestBrepLiveCountsExcludeUncompactedDeletedSlots", TestBrepLiveCountsExcludeUncompactedDeletedSlots);
+  RunTest("TestBooleanCombinePlanarResultHasValidClosedTopology", TestBooleanCombinePlanarResultHasValidClosedTopology);
+  RunTest("TestShellConvexPlanarResultHasValidTopology", TestShellConvexPlanarResultHasValidTopology);
+  RunTest("TestFilletConvexEdgeFreeBoundaryCapHasValidOpenTopology", TestFilletConvexEdgeFreeBoundaryCapHasValidOpenTopology);
+  RunTest("TestFromMixedFacesRejectsNonManifoldEdge", TestFromMixedFacesRejectsNonManifoldEdge);
+  RunTest("TestFromMixedFacesNonManifoldBuildsThreePageFan", TestFromMixedFacesNonManifoldBuildsThreePageFan);
+  RunTest("TestFromMixedFacesNonManifoldBuildsFourPageFanAndMatchesStrictOnManifoldInput", TestFromMixedFacesNonManifoldBuildsFourPageFanAndMatchesStrictOnManifoldInput);
+  RunTest("TestFromMixedFacesNonManifoldBuildsThreeWedgeFanOnACurvedMeridianArc", TestFromMixedFacesNonManifoldBuildsThreeWedgeFanOnACurvedMeridianArc);
+  RunTest("TestBrepFromPlanarFacesRoundTripsRealTopologyThroughDotThreeDM", TestBrepFromPlanarFacesRoundTripsRealTopologyThroughDotThreeDM);
+  RunTest("TestFilletConvexEdgeRoundTripsCylindricalTopologyThroughDotThreeDM", TestFilletConvexEdgeRoundTripsCylindricalTopologyThroughDotThreeDM);
+  RunTest("TestMixedFacesRoundTripsCylindricalFace", TestMixedFacesRoundTripsCylindricalFace);
+  RunTest("TestMixedFacesRoundTripsConicalFace", TestMixedFacesRoundTripsConicalFace);
+  RunTest("TestMixedFacesRoundTripsNotchedConicalFace", TestMixedFacesRoundTripsNotchedConicalFace);
+  RunTest("TestMixedFacesUnnotchedConicalFaceBitIdentical", TestMixedFacesUnnotchedConicalFaceBitIdentical);
+  RunTest("TestClipPolygonByCircle3dPunchesExactHole", TestClipPolygonByCircle3dPunchesExactHole);
+  RunTest("TestClipPolygonByCircle3dRefusesCircleCoincidentWithBoundary", TestClipPolygonByCircle3dRefusesCircleCoincidentWithBoundary);
+  RunTest("TestClipPolygonByEllipse3dPunchesExactEllipticalHole", TestClipPolygonByEllipse3dPunchesExactEllipticalHole);
+  RunTest("TestClipPolygonByEllipse3dReportsLiteralRunsAndWindsCcw", TestClipPolygonByEllipse3dReportsLiteralRunsAndWindsCcw);
+  RunTest("TestArcSchedule3dEvenlySpacedExactEndpoints", TestArcSchedule3dEvenlySpacedExactEndpoints);
+  RunTest("TestAngleOffsetBetweenFramesSameHandedPair", TestAngleOffsetBetweenFramesSameHandedPair);
+  RunTest("TestAngleOffsetBetweenFramesLeftHandedPair", TestAngleOffsetBetweenFramesLeftHandedPair);
+  RunTest("TestBooleanCombineMixedConformingSharedArcBoundaryIsBitIdentical", TestBooleanCombineMixedConformingSharedArcBoundaryIsBitIdentical);
+  RunTest("TestBooleanCombineMixedDrilledBoxThroughHole", TestBooleanCombineMixedDrilledBoxThroughHole);
+  RunTest("TestBooleanCombineMixedDrilledBoxNearZeroRadius", TestBooleanCombineMixedDrilledBoxNearZeroRadius);
+  RunTest("TestBooleanCombineMixedDrilledBoxCoincidentCapHeight", TestBooleanCombineMixedDrilledBoxCoincidentCapHeight);
+  RunTest("TestBooleanCombineMixedDrilledBoxOffCenterHole", TestBooleanCombineMixedDrilledBoxOffCenterHole);
+  RunTest("TestBooleanCombineMixedObliqueDrilledBoxVolume", TestBooleanCombineMixedObliqueDrilledBoxVolume);
+  RunTest("TestBooleanCombineMixedObliqueDrilledBoxIsValidNonDegenerateSolid", TestBooleanCombineMixedObliqueDrilledBoxIsValidNonDegenerateSolid);
+  RunTest("TestBooleanCombineMixedObliqueDrilledBoxBothEndsNotched", TestBooleanCombineMixedObliqueDrilledBoxBothEndsNotched);
+  RunTest("TestBooleanCombineMixedObliqueSharedBoundaryIsBitIdentical", TestBooleanCombineMixedObliqueSharedBoundaryIsBitIdentical);
+  RunTest("TestBooleanCombineMixedZeroTiltMatchesExistingPerpendicularPath", TestBooleanCombineMixedZeroTiltMatchesExistingPerpendicularPath);
+  RunTest("TestBooleanCombineMixedObliqueCrossingPolygonBoundaryThrows", TestBooleanCombineMixedObliqueCrossingPolygonBoundaryThrows);
+  RunTest("TestBooleanCombineMixedObliqueNearAxisParallelThrows", TestBooleanCombineMixedObliqueNearAxisParallelThrows);
+  RunTest("TestBooleanCombineMixedObliqueReentrantHeightThrows", TestBooleanCombineMixedObliqueReentrantHeightThrows);
+  RunTest("TestBooleanCombineMixedObliqueMultipleTiltAngles", TestBooleanCombineMixedObliqueMultipleTiltAngles);
+  RunTest("TestFromMixedFacesNotchedCylinderCoversNotchOutsideRailBand", TestFromMixedFacesNotchedCylinderCoversNotchOutsideRailBand);
+  RunTest("TestBooleanCombineMixedObliqueSurvivingWallAreaAndVolumeMatchClosedForm", TestBooleanCombineMixedObliqueSurvivingWallAreaAndVolumeMatchClosedForm);
+  RunTest("TestTessellateConformingNotchedUncappedCylinderHonorsTrim", TestTessellateConformingNotchedUncappedCylinderHonorsTrim);
+  RunTest("TestTessellateConformingObliqueDrilledBoxIsClosedManifold", TestTessellateConformingObliqueDrilledBoxIsClosedManifold);
+  RunTest("TestTessellateConformingObliqueDrilledBoxEllipseSeamIsBitIdentical", TestTessellateConformingObliqueDrilledBoxEllipseSeamIsBitIdentical);
+  RunTest("TestTessellateConformingObliqueDrilledBoxPiecesMeshFromLiteralLoop", TestTessellateConformingObliqueDrilledBoxPiecesMeshFromLiteralLoop);
+  RunTest("TestBooleanCombineMixedObliquePlanarPiecesWindCcwFromOutside", TestBooleanCombineMixedObliquePlanarPiecesWindCcwFromOutside);
+  RunTest("TestTessellateConformingObliqueUnionBareCutIsClosedManifold", TestTessellateConformingObliqueUnionBareCutIsClosedManifold);
+  RunTest("TestTessellateConformingObliqueDrilledBoxTiltSweepIsClosedManifold", TestTessellateConformingObliqueDrilledBoxTiltSweepIsClosedManifold);
+  RunTest("TestTessellateConformingQuadQuadSeamPlainBoxIsClosedManifold", TestTessellateConformingQuadQuadSeamPlainBoxIsClosedManifold);
+  RunTest("TestTessellateConformingQuadQuadSeamDrilledBoxIsClosedManifold", TestTessellateConformingQuadQuadSeamDrilledBoxIsClosedManifold);
+  RunTest("TestTessellateConformingQuadQuadSeamOffCenterHoleIsClosedManifold", TestTessellateConformingQuadQuadSeamOffCenterHoleIsClosedManifold);
+  RunTest("TestTessellateConformingSymmetricDivisionsUnaffectedByQuadQuadFix", TestTessellateConformingSymmetricDivisionsUnaffectedByQuadQuadFix);
+  RunTest("TestTessellateConformingOneSidedWedgeSymmetricDivisionsIsClosedManifold", TestTessellateConformingOneSidedWedgeSymmetricDivisionsIsClosedManifold);
+  RunTest("TestTessellateConformingOneSidedWedgeAsymmetricDivisionsIsClosedManifold", TestTessellateConformingOneSidedWedgeAsymmetricDivisionsIsClosedManifold);
+  RunTest("TestTessellateConformingOneSidedWedgeFixInertOnPlainBox", TestTessellateConformingOneSidedWedgeFixInertOnPlainBox);
+  RunTest("TestExactConvexHullBoxSixExactQuadFaces", TestExactConvexHullBoxSixExactQuadFaces);
+  RunTest("TestExactConvexHullOctahedronEightExactTriFaces", TestExactConvexHullOctahedronEightExactTriFaces);
+  RunTest("TestExactConvexHullIgnoresInteriorPoints", TestExactConvexHullIgnoresInteriorPoints);
+  RunTest("TestExactConvexHullTooFewPointsThrows", TestExactConvexHullTooFewPointsThrows);
+  RunTest("TestExactConvexHullCoplanarPointsThrows", TestExactConvexHullCoplanarPointsThrows);
+  RunTest("TestExactConvexHullMatchesMeshConvexHullVolume", TestExactConvexHullMatchesMeshConvexHullVolume);
+  RunTest("TestExactConvexHullPipelineIntegration", TestExactConvexHullPipelineIntegration);
+  RunTest("TestBoxAsymmetricDivisionsIsClosedManifold", TestBoxAsymmetricDivisionsIsClosedManifold);
+  RunTest("TestPlainQuadFactoriesAsymmetricDivisionsIsClosedManifold", TestPlainQuadFactoriesAsymmetricDivisionsIsClosedManifold);
+  RunTest("TestTessellateSymmetricDivisionsMatchesIndependentReconstruction", TestTessellateSymmetricDivisionsMatchesIndependentReconstruction);
+  RunTest("TestTessellateObliqueHullQuadSeamRemainsPreExistingGap", TestTessellateObliqueHullQuadSeamRemainsPreExistingGap);
+  RunTest("TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed", TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed);
+  RunTest("TestBooleanCombineMixedUnionBossOverlappingBaseVolumeAndCapSeamIsClosed", TestBooleanCombineMixedUnionBossOverlappingBaseVolumeAndCapSeamIsClosed);
+  RunTest("TestBooleanCombineMixedUnionBossNoContactBothEndsCapped", TestBooleanCombineMixedUnionBossNoContactBothEndsCapped);
+  RunTest("TestBooleanCombineMixedUnionBossFullyEmbeddedAddsNoCap", TestBooleanCombineMixedUnionBossFullyEmbeddedAddsNoCap);
+  RunTest("TestBooleanCombineMixedUnionBossWithoutCapIsProvablyOpen", TestBooleanCombineMixedUnionBossWithoutCapIsProvablyOpen);
+  RunTest("TestBooleanCombineMixedDifferenceUnaffectedByEndCapFix", TestBooleanCombineMixedDifferenceUnaffectedByEndCapFix);
+  RunTest("TestBooleanCombineMixedIntersectionFullyEmbeddedBothEndsCapped", TestBooleanCombineMixedIntersectionFullyEmbeddedBothEndsCapped);
+  RunTest("TestBooleanCombineMixedIntersectionFullyEmbeddedSecondGeometry", TestBooleanCombineMixedIntersectionFullyEmbeddedSecondGeometry);
+  RunTest("TestBooleanCombineMixedIntersectionDisjointIsEmpty", TestBooleanCombineMixedIntersectionDisjointIsEmpty);
+  RunTest("TestBooleanCombineMixedIntersectionWithoutFixIsProvablyOpen", TestBooleanCombineMixedIntersectionWithoutFixIsProvablyOpen);
+  RunTest("TestBooleanCombineMixedIntersectionMidLengthCrossingIsClosedManifold", TestBooleanCombineMixedIntersectionMidLengthCrossingIsClosedManifold);
+  RunTest("TestBooleanCombineMixedIntersectionMidLengthCrossingSecondGeometry", TestBooleanCombineMixedIntersectionMidLengthCrossingSecondGeometry);
+  RunTest("TestBooleanCombineMixedIntersectionBothEndsMidLengthCrossing", TestBooleanCombineMixedIntersectionBothEndsMidLengthCrossing);
+  RunTest("TestBooleanCombineMixedIntersectionInsideDiscRailIsBitIdentical", TestBooleanCombineMixedIntersectionInsideDiscRailIsBitIdentical);
+  RunTest("TestBooleanCombineMixedDifferenceInsideDiscMachineryIsInert", TestBooleanCombineMixedDifferenceInsideDiscMachineryIsInert);
+  RunTest("TestBooleanCombineMixedIntersectionUnaffectedExistingCalls", TestBooleanCombineMixedIntersectionUnaffectedExistingCalls);
+  RunTest("TestBooleanCombineMixedParallelCylinderUnionAxiallyDisjointBothEndsCapped", TestBooleanCombineMixedParallelCylinderUnionAxiallyDisjointBothEndsCapped);
+  RunTest("TestBooleanCombineMixedParallelCylinderUnionOneFullyNestedContributesNothing", TestBooleanCombineMixedParallelCylinderUnionOneFullyNestedContributesNothing);
+  RunTest("TestBooleanCombineMixedParallelCylinderPartialSweepCapClosesOtherwiseOpenWedge", TestBooleanCombineMixedParallelCylinderPartialSweepCapClosesOtherwiseOpenWedge);
+  RunTest("TestBooleanCombineMixedParallelCylinderCapTrimNeededThrows", TestBooleanCombineMixedParallelCylinderCapTrimNeededThrows);
+  RunTest("TestBooleanCombineMixedParallelCylinderCapTrimNeededIsTypedUnsupportedGeometry", TestBooleanCombineMixedParallelCylinderCapTrimNeededIsTypedUnsupportedGeometry);
+  RunTest("TestBooleanCombineMixedSteinmetzStillThrows", TestBooleanCombineMixedSteinmetzStillThrows);
+  RunTest("TestBooleanCombineMixedGeneralSkewCylinderStillThrows", TestBooleanCombineMixedGeneralSkewCylinderStillThrows);
+  RunTest("TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary", TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary);
+  RunTest("TestBooleanCombineMixedParallelCylinderIntersectionNestedFullDisc", TestBooleanCombineMixedParallelCylinderIntersectionNestedFullDisc);
+  RunTest("TestBooleanCombineMixedParallelCylinderIntersectionDisjointAxialRangesEmpty", TestBooleanCombineMixedParallelCylinderIntersectionDisjointAxialRangesEmpty);
+  RunTest("TestBooleanCombineMixedParallelCylinderIntersectionCrossingLensCaps", TestBooleanCombineMixedParallelCylinderIntersectionCrossingLensCaps);
+  RunTest("TestBooleanCombineMixedParallelCylinderIntersectionLensCapRailIsBitIdentical", TestBooleanCombineMixedParallelCylinderIntersectionLensCapRailIsBitIdentical);
+  RunTest("TestBooleanCombineMixedParallelCylinderDifferenceNestedFullDisc", TestBooleanCombineMixedParallelCylinderDifferenceNestedFullDisc);
+  RunTest("TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly", TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly);
+  RunTest("TestTessellateConformingFriendlessMiddleBandSyntheticWedgeIsClosedManifold", TestTessellateConformingFriendlessMiddleBandSyntheticWedgeIsClosedManifold);
+  RunTest("TestTessellateConformingFriendlessMiddleBandSyntheticWedgeAsymmetricDivisionsIsClosedManifold", TestTessellateConformingFriendlessMiddleBandSyntheticWedgeAsymmetricDivisionsIsClosedManifold);
+  RunTest("TestBooleanCombineMixedParallelCylinderDifferenceCrossingIsClosedManifold", TestBooleanCombineMixedParallelCylinderDifferenceCrossingIsClosedManifold);
+  RunTest("TestBooleanCombineMixedParallelCylinderDifferenceCrossingAsymmetricDivisionsIsClosedManifold", TestBooleanCombineMixedParallelCylinderDifferenceCrossingAsymmetricDivisionsIsClosedManifold);
+  RunTest("TestBooleanCombineMixedParallelCylinderDifferenceCrossingRowSchedulesDiffer", TestBooleanCombineMixedParallelCylinderDifferenceCrossingRowSchedulesDiffer);
+  RunTest("TestTessellateConformingSharedNotchCylinderPairIsClosedManifold", TestTessellateConformingSharedNotchCylinderPairIsClosedManifold);
+  RunTest("TestBooleanCombineMixedParallelCylinderIntersectionUnaffectsUnionAndNonParallelCases", TestBooleanCombineMixedParallelCylinderIntersectionUnaffectsUnionAndNonParallelCases);
+  RunTest("TestBooleanCombineMixedSteinmetzIntersectionPerpendicularVolumeAndTopology", TestBooleanCombineMixedSteinmetzIntersectionPerpendicularVolumeAndTopology);
+  RunTest("TestBooleanCombineMixedSteinmetzIntersectionGeneralAngleVolume", TestBooleanCombineMixedSteinmetzIntersectionGeneralAngleVolume);
+  RunTest("TestBooleanCombineMixedSteinmetzArgumentOrderSymmetryAndSharedBoundaryIsBitIdentical", TestBooleanCombineMixedSteinmetzArgumentOrderSymmetryAndSharedBoundaryIsBitIdentical);
+  RunTest("TestBooleanCombineMixedSteinmetzEyeFragmentAloneBuildsAndIsOpen", TestBooleanCombineMixedSteinmetzEyeFragmentAloneBuildsAndIsOpen);
+  RunTest("TestBooleanCombineMixedSteinmetzIntersectionConformingIsWatertight", TestBooleanCombineMixedSteinmetzIntersectionConformingIsWatertight);
+  RunTest("TestBooleanCombineMixedSteinmetzNegativeControls", TestBooleanCombineMixedSteinmetzNegativeControls);
+  RunTest("TestBooleanCombineMixedSteinmetzUnionAndDifferenceVolumes", TestBooleanCombineMixedSteinmetzUnionAndDifferenceVolumes);
+  RunTest("TestBooleanCombineMixedNonParallelCylinderNoInteractionCrossingBeyondFirstOperandsEnd", TestBooleanCombineMixedNonParallelCylinderNoInteractionCrossingBeyondFirstOperandsEnd);
+  RunTest("TestBooleanCombineMixedNonParallelCylinderNoInteractionShortPegStopsShortOfCylinder", TestBooleanCombineMixedNonParallelCylinderNoInteractionShortPegStopsShortOfCylinder);
+  RunTest("TestBooleanCombineMixedNonParallelCylinderNoInteractionSkewAndUnequalRadii", TestBooleanCombineMixedNonParallelCylinderNoInteractionSkewAndUnequalRadii);
+  RunTest("TestBooleanCombineMixedUnequalRadiusPerpendicularIntersectionVolumeAndTopology", TestBooleanCombineMixedUnequalRadiusPerpendicularIntersectionVolumeAndTopology);
+  RunTest("TestBooleanCombineMixedUnequalRadiusPerpendicularUnionAndDifferenceVolumes", TestBooleanCombineMixedUnequalRadiusPerpendicularUnionAndDifferenceVolumes);
+  RunTest("TestBooleanCombineMixedUnequalRadiusPerpendicularArgumentOrderAndSharedArcIsBitIdentical", TestBooleanCombineMixedUnequalRadiusPerpendicularArgumentOrderAndSharedArcIsBitIdentical);
+  RunTest("TestBooleanCombineMixedUnequalRadiusPerpendicularSecondRadiusRatio", TestBooleanCombineMixedUnequalRadiusPerpendicularSecondRadiusRatio);
+  RunTest("TestBooleanCombineMixedUnequalRadiusPerpendicularNegativeControls", TestBooleanCombineMixedUnequalRadiusPerpendicularNegativeControls);
+  RunTest("TestFromMixedFacesStraightChordAndCapArcBetweenSameVerticesAreDistinctEdges", TestFromMixedFacesStraightChordAndCapArcBetweenSameVerticesAreDistinctEdges);
+  RunTest("TestBooleanSymmetricDifferenceBrepBoxesIsTwoLumpCompound", TestBooleanSymmetricDifferenceBrepBoxesIsTwoLumpCompound);
+  RunTest("TestBooleanSymmetricDifferenceBrepSteinmetzAndDrilledBox", TestBooleanSymmetricDifferenceBrepSteinmetzAndDrilledBox);
+  RunTest("TestBooleanCombineMixedChainedCallsHonorClosedOperands", TestBooleanCombineMixedChainedCallsHonorClosedOperands);
+  RunTest("TestBooleanCombineMixedChainedCallsThroughNotchedResults", TestBooleanCombineMixedChainedCallsThroughNotchedResults);
+  RunTest("TestMixedFacesReturnsVerbatimRecordsForBooleanResults", TestMixedFacesReturnsVerbatimRecordsForBooleanResults);
+  RunTest("TestBrepSplitDisjointPieces", TestBrepSplitDisjointPieces);
+  RunTest("TestBooleanCombineMixedChainedNegativeControls", TestBooleanCombineMixedChainedNegativeControls);
+  RunTest("TestBooleanCombineMixedUnsupportedGeometryRefusalsAreTyped", TestBooleanCombineMixedUnsupportedGeometryRefusalsAreTyped);
+  RunTest("TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion", TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion);
+  RunTest("TestBooleanCombineMixedNAryUnionFoldOrderIndependence", TestBooleanCombineMixedNAryUnionFoldOrderIndependence);
+  RunTest("TestBooleanCombineMixedNAryUnionFoldOrderRobustToTouchingOnlyFirstPair", TestBooleanCombineMixedNAryUnionFoldOrderRobustToTouchingOnlyFirstPair);
+  RunTest("TestBooleanCombineMixedNAryDifferenceSubtractsEveryToolInSecondGroup", TestBooleanCombineMixedNAryDifferenceSubtractsEveryToolInSecondGroup);
+  RunTest("TestBooleanCombineMixedNAryIntersectionUnionsEachSideBeforeCombining", TestBooleanCombineMixedNAryIntersectionUnionsEachSideBeforeCombining);
+  RunTest("TestBooleanCombineMixedNAryNegativeControls", TestBooleanCombineMixedNAryNegativeControls);
+  RunTest("TestBooleanCombinePlanarNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion", TestBooleanCombinePlanarNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion);
+  RunTest("TestBooleanCombinePlanarNAryUnionFoldOrderIndependence", TestBooleanCombinePlanarNAryUnionFoldOrderIndependence);
+  RunTest("TestBooleanCombinePlanarNAryUnionFoldOrderRobustToTouchingOnlyFirstPair", TestBooleanCombinePlanarNAryUnionFoldOrderRobustToTouchingOnlyFirstPair);
+  RunTest("TestBooleanCombinePlanarNAryDifferenceSubtractsEveryToolInSecondGroup", TestBooleanCombinePlanarNAryDifferenceSubtractsEveryToolInSecondGroup);
+  RunTest("TestBooleanCombinePlanarNAryIntersectionUnionsEachSideBeforeCombining", TestBooleanCombinePlanarNAryIntersectionUnionsEachSideBeforeCombining);
+  RunTest("TestBooleanCombinePlanarNAryNegativeControls", TestBooleanCombinePlanarNAryNegativeControls);
+  RunTest("TestPolygonBooleanPlanarUnionOfTwoOverlappingSquares", TestPolygonBooleanPlanarUnionOfTwoOverlappingSquares);
+  RunTest("TestPolygonBooleanPlanarIntersectionOfTwoOverlappingSquares", TestPolygonBooleanPlanarIntersectionOfTwoOverlappingSquares);
+  RunTest("TestPolygonBooleanPlanarDifferenceOfTwoOverlappingSquares", TestPolygonBooleanPlanarDifferenceOfTwoOverlappingSquares);
+  RunTest("TestPolygonBooleanPlanarNonConvexLShapeIntersection", TestPolygonBooleanPlanarNonConvexLShapeIntersection);
+  RunTest("TestPolygonBooleanPlanarDisjointOperands", TestPolygonBooleanPlanarDisjointOperands);
+  RunTest("TestPolygonBooleanPlanarDifferenceLeavesARingWithHoleLoop", TestPolygonBooleanPlanarDifferenceLeavesARingWithHoleLoop);
+  RunTest("TestPolygonBooleanPlanarNegativeControls", TestPolygonBooleanPlanarNegativeControls);
+  RunTest("TestPolygonBooleanPlanarRefusesSelfIntersectingOperand", TestPolygonBooleanPlanarRefusesSelfIntersectingOperand);
+  RunTest("TestPolygonBooleanPlanarNAryUnionThreeOverlappingSquaresMatchesInclusionExclusion", TestPolygonBooleanPlanarNAryUnionThreeOverlappingSquaresMatchesInclusionExclusion);
+  RunTest("TestPolygonBooleanPlanarNAryUnionFoldOrderIndependence", TestPolygonBooleanPlanarNAryUnionFoldOrderIndependence);
+  RunTest("TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairNowSucceeds", TestPolygonBooleanPlanarNAryFoldOrderStartingFromATouchingOnlyPairNowSucceeds);
+  RunTest("TestPolygonBooleanPlanarNAryDifferenceMatchesHandChainedPairwise", TestPolygonBooleanPlanarNAryDifferenceMatchesHandChainedPairwise);
+  RunTest("TestPolygonBooleanPlanarNAryIntersectionUnionsEachSideIndependently", TestPolygonBooleanPlanarNAryIntersectionUnionsEachSideIndependently);
+  RunTest("TestPolygonBooleanPlanarNAryNegativeControls", TestPolygonBooleanPlanarNAryNegativeControls);
+  RunTest("TestBooleanCombinePlanarDifferenceAcceptsCompoundFirstOperand", TestBooleanCombinePlanarDifferenceAcceptsCompoundFirstOperand);
+  RunTest("TestBooleanCombinePlanarDifferenceAcceptsCompoundSecondOperand", TestBooleanCombinePlanarDifferenceAcceptsCompoundSecondOperand);
+  RunTest("TestBooleanCombinePlanarIntersectionAcceptsCompoundOperand", TestBooleanCombinePlanarIntersectionAcceptsCompoundOperand);
+  RunTest("TestBooleanCombinePlanarDifferenceAcceptsGapSeparatedXorCompound", TestBooleanCombinePlanarDifferenceAcceptsGapSeparatedXorCompound);
+  RunTest("TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound", TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound);
+  RunTest("TestBooleanCombinePlanarXorStillRefusesCompoundOperand", TestBooleanCombinePlanarXorStillRefusesCompoundOperand);
+  RunTest("TestBooleanCombinePlanarUnionAcceptsCompoundOperand", TestBooleanCombinePlanarUnionAcceptsCompoundOperand);
+  RunTest("TestBooleanCombinePlanarUnionAcceptsCompoundOperandBridgedIntoOneLump", TestBooleanCombinePlanarUnionAcceptsCompoundOperandBridgedIntoOneLump);
+  RunTest("TestBooleanCombinePlanarUnionThrowsOnTouchingLumpXorCompound", TestBooleanCombinePlanarUnionThrowsOnTouchingLumpXorCompound);
+  RunTest("TestBooleanOperationErrorStructuredFields", TestBooleanOperationErrorStructuredFields);
+  RunTest("TestBooleanOperationErrorGeneralEngineFailureReasons", TestBooleanOperationErrorGeneralEngineFailureReasons);
+  RunTest("TestBooleanOperationErrorNAryAndDefensiveDefaultFailureReasons", TestBooleanOperationErrorNAryAndDefensiveDefaultFailureReasons);
+  RunTest("TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand", TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand);
+  RunTest("TestBooleanCombineMixedIntersectionAcceptsCompoundOperand", TestBooleanCombineMixedIntersectionAcceptsCompoundOperand);
+  RunTest("TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders", TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders);
+  RunTest("TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius", TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius);
+  RunTest("TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBrep", TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBrep);
+  RunTest("TestBooleanCombineMixedXorStillRefusesCompoundOperand", TestBooleanCombineMixedXorStillRefusesCompoundOperand);
+  RunTest("TestBooleanCombineMixedUnionAcceptsCompoundOperand", TestBooleanCombineMixedUnionAcceptsCompoundOperand);
+  RunTest("TestBooleanCombineMixedUnionThrowsOnTouchingLumpXorCompound", TestBooleanCombineMixedUnionThrowsOnTouchingLumpXorCompound);
+  RunTest("TestBooleanCombineMixedDifferenceThrowsOnTouchingLumpXorCompound", TestBooleanCombineMixedDifferenceThrowsOnTouchingLumpXorCompound);
+  RunTest("TestBooleanCombineMixedNArySingleElementCompoundGroupReachesFinalCombine", TestBooleanCombineMixedNArySingleElementCompoundGroupReachesFinalCombine);
+  RunTest("TestBooleanCombineGeneralNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion", TestBooleanCombineGeneralNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion);
+  RunTest("TestBooleanCombineGeneralNAryDifferenceSubtractsEveryToolInSecondGroup", TestBooleanCombineGeneralNAryDifferenceSubtractsEveryToolInSecondGroup);
+  RunTest("TestBooleanCombineGeneralNAryCallerToleranceForwardedToEveryPairwiseCall", TestBooleanCombineGeneralNAryCallerToleranceForwardedToEveryPairwiseCall);
+  RunTest("TestBooleanCombineGeneralNAryNegativeControls", TestBooleanCombineGeneralNAryNegativeControls);
+  RunTest("TestBooleanCombineGeneralRefusesCompoundOperand", TestBooleanCombineGeneralRefusesCompoundOperand);
+  RunTest("TestBooleanCombineGeneralDifferenceAcceptsCompoundFirstOperand", TestBooleanCombineGeneralDifferenceAcceptsCompoundFirstOperand);
+  RunTest("TestBooleanCombineGeneralIntersectionAcceptsCompoundOperand", TestBooleanCombineGeneralIntersectionAcceptsCompoundOperand);
+  RunTest("TestBooleanCombineGeneralUnionAcceptsCompoundOperand", TestBooleanCombineGeneralUnionAcceptsCompoundOperand);
+  RunTest("TestBooleanCombineGeneralUnionThrowsOnTouchingLumpXorCompound", TestBooleanCombineGeneralUnionThrowsOnTouchingLumpXorCompound);
+  RunTest("TestBooleanCombineGeneralDifferenceThrowsOnTouchingLumpXorCompound", TestBooleanCombineGeneralDifferenceThrowsOnTouchingLumpXorCompound);
+  RunTest("TestBooleanCombineGeneralNAryUnionStillThrowsOnTouchingLumpCompoundAtEveryPairwiseStep", TestBooleanCombineGeneralNAryUnionStillThrowsOnTouchingLumpCompoundAtEveryPairwiseStep);
+  RunTest("TestBooleanCombineGeneralSymmetricDifferenceBoxBox", TestBooleanCombineGeneralSymmetricDifferenceBoxBox);
+  RunTest("TestBooleanCombineGeneralSymmetricDifferenceFreeformSurfaceOperand", TestBooleanCombineGeneralSymmetricDifferenceFreeformSurfaceOperand);
+  RunTest("TestBooleanCombineGeneralNAryStillRefusesSymmetricDifferenceForTheRightReason", TestBooleanCombineGeneralNAryStillRefusesSymmetricDifferenceForTheRightReason);
+  RunTest("TestBooleanCombineGeneralDifferenceAcceptsRealSymmetricDifferenceCompoundOperand", TestBooleanCombineGeneralDifferenceAcceptsRealSymmetricDifferenceCompoundOperand);
+  RunTest("TestBooleanCombinePlanarCallerTolerance", TestBooleanCombinePlanarCallerTolerance);
+  RunTest("TestBooleanCombineMixedCallerTolerance", TestBooleanCombineMixedCallerTolerance);
+  RunTest("TestBooleanCombinePlanarAndMixedRejectExplicitZeroTolerance", TestBooleanCombinePlanarAndMixedRejectExplicitZeroTolerance);
+  RunTest("TestBooleanCombinePlanarNAryCallerToleranceForwardedToEveryPairwiseCall", TestBooleanCombinePlanarNAryCallerToleranceForwardedToEveryPairwiseCall);
+  RunTest("TestBooleanCombineMixedNAryCallerToleranceForwardedToEveryPairwiseCall", TestBooleanCombineMixedNAryCallerToleranceForwardedToEveryPairwiseCall);
+  RunTest("TestBooleanCombineMixedUnequalRadiusGeneralAngleIntersectionAndAllOps", TestBooleanCombineMixedUnequalRadiusGeneralAngleIntersectionAndAllOps);
+  RunTest("TestBooleanCombineMixedUnequalRadiusGeneralAngleArgumentOrderAndSharedArcIsBitIdentical", TestBooleanCombineMixedUnequalRadiusGeneralAngleArgumentOrderAndSharedArcIsBitIdentical);
+  RunTest("TestBooleanCombineMixedUnequalRadiusGeneralAngleNegativeControls", TestBooleanCombineMixedUnequalRadiusGeneralAngleNegativeControls);
+  RunTest("TestBooleanCombineMixedUnequalRadiusSkewFullPierceVolumeAndTopology", TestBooleanCombineMixedUnequalRadiusSkewFullPierceVolumeAndTopology);
+  RunTest("TestBooleanCombineMixedUnequalRadiusSkewPartialPenetrationStillThrows", TestBooleanCombineMixedUnequalRadiusSkewPartialPenetrationStillThrows);
+  RunTest("TestBooleanCombineMixedUnequalRadiusObliqueSkewStillThrows", TestBooleanCombineMixedUnequalRadiusObliqueSkewStillThrows);
+  RunTest("TestFromMixedFacesSlopedNotchCapAndStraightChordStayDistinct", TestFromMixedFacesSlopedNotchCapAndStraightChordStayDistinct);
+  RunTest("TestFromMixedFacesFlatCornerGateIsInert", TestFromMixedFacesFlatCornerGateIsInert);
+  RunTest("TestBooleanCombineMixedNotchAwareSplitProducerBuildsSingleCrossingPlane", TestBooleanCombineMixedNotchAwareSplitProducerBuildsSingleCrossingPlane);
+  RunTest("TestBooleanCombineMixedNotchAwareComposedMultiPlaneCrossingBuilds", TestBooleanCombineMixedNotchAwareComposedMultiPlaneCrossingBuilds);
+  RunTest("TestBooleanCombineMixedNotchAwareBothEndsNotchedRefuses", TestBooleanCombineMixedNotchAwareBothEndsNotchedRefuses);
+  RunTest("TestBooleanCombineMixedNotchAwareCap0CornerActiveMirrorBuilds", TestBooleanCombineMixedNotchAwareCap0CornerActiveMirrorBuilds);
+  RunTest("TestBooleanCombineMixedOverlappingRangeFragmentsSameWallDedup", TestBooleanCombineMixedOverlappingRangeFragmentsSameWallDedup);
+  RunTest("TestBooleanCombineMixedThreeFragmentsSameWallDedup", TestBooleanCombineMixedThreeFragmentsSameWallDedup);
+  RunTest("TestBooleanCombineMixedMidLengthSplitClearsStaleNotch", TestBooleanCombineMixedMidLengthSplitClearsStaleNotch);
+  RunTest("TestBooleanCombineMixedInsideDiscProducerCoversSealedEndBoundary", TestBooleanCombineMixedInsideDiscProducerCoversSealedEndBoundary);
+  RunTest("TestSplitMixedAgainstAllFacesPassThroughCarriesArcRuns", TestSplitMixedAgainstAllFacesPassThroughCarriesArcRuns);
 
-  TestBrepExtendFaceInPlaceNakedSideGrowsExactRectangleAndLeavesSharedNeighbourUntouched();
-  TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs();
+  RunTest("TestBrepExtendFaceInPlaceNakedSideGrowsExactRectangleAndLeavesSharedNeighbourUntouched", TestBrepExtendFaceInPlaceNakedSideGrowsExactRectangleAndLeavesSharedNeighbourUntouched);
+  RunTest("TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs", TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs);
 
-  TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne();
-  TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane();
-  TestMergeCoplanarFacesPreservesExistingHoleOnMergedFace();
-  TestMergeCoplanarFacesRefusesPairWhoseHoleHasCurvedEdge();
-  TestMergeCoplanarFacesWeldsAdjacentSquaresSharingTwoCollinearTrims();
-  TestMergeSameSurfaceFacesWeldsTwoCylindricalPatchesIntoOne();
-  TestMergeSameSurfaceFacesLeavesDistinctCoplanarSurfacesUntouched();
-  TestMergeSameSurfaceFacesWeldsCongruentButSeparateCylinderSurfaces();
-  TestMergeSameSurfaceFacesLeavesGenuinelyDifferentCylindersUntouched();
-  TestMergeSameSurfaceFacesCarriesCurvedHoleOnCylinder();
-  TestMergeSameSurfaceFacesCarriesHolesFromBothFaces();
-  TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute();
-  TestReplaceEdgeCurveThrowsOnEndpointMismatch();
-  TestReplaceEdgeCurveThrowsOnSurfaceMismatch();
-  TestBrepResyncTrimToEdgeCurveResyncsATrimAfterADirectEdgeCurveChange();
-  TestBrepResyncTrimToEdgeCurveRejectsOutOfRangeAndDeletedEdge();
-  TestBrepReplaceEdgeMovesOneEndpointSlidingACornerInPlace();
-  TestBrepReplaceEdgeFailsOnABoxCornerLeavesVerticesUntouched();
-  TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies();
-  TestUnjoinEdgeGeneralizesToThreeOrMoreTrims();
-  TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate();
-  TestRemoveNakedMicroEdgeClosesSliverNextToASharedEdge();
-  TestRemoveNakedMicroEdgeClosesSliverWithAThirdFacePinchingAtEndpoint();
-  TestRemoveSharedMicroEdgeClosesIsolatedSeamBetweenTwoFaces();
-  TestRemoveSharedMicroEdgeRefusesNakedEdgeAndDegenerateLoop();
-  TestRemoveSharedMicroEdgeClosesSeamWithAThirdFacePinchingAtOneEndpoint();
-  TestRemoveAllNakedMicroEdgesStripsEveryIsolatedSliverInOneCall();
-  TestRemoveAllSharedMicroEdgesStripsEveryIsolatedSeamInOneCall();
-  TestMergeContiguousEdgesCombinesTwoCollinearNakedEdges();
-  TestMergeContiguousEdgesRefusesAKinkedCorner();
-  TestMergeContiguousEdgesThrowsOnInvalidIndicesRefusesWrongValence();
-  TestMergeAllContiguousEdgesCollapsesAChainOfCollinearEdges();
+  RunTest("TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne", TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne);
+  RunTest("TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane", TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane);
+  RunTest("TestMergeCoplanarFacesPreservesExistingHoleOnMergedFace", TestMergeCoplanarFacesPreservesExistingHoleOnMergedFace);
+  RunTest("TestMergeCoplanarFacesRefusesPairWhoseHoleHasCurvedEdge", TestMergeCoplanarFacesRefusesPairWhoseHoleHasCurvedEdge);
+  RunTest("TestMergeCoplanarFacesWeldsAdjacentSquaresSharingTwoCollinearTrims", TestMergeCoplanarFacesWeldsAdjacentSquaresSharingTwoCollinearTrims);
+  RunTest("TestMergeSameSurfaceFacesWeldsTwoCylindricalPatchesIntoOne", TestMergeSameSurfaceFacesWeldsTwoCylindricalPatchesIntoOne);
+  RunTest("TestMergeSameSurfaceFacesLeavesDistinctCoplanarSurfacesUntouched", TestMergeSameSurfaceFacesLeavesDistinctCoplanarSurfacesUntouched);
+  RunTest("TestMergeSameSurfaceFacesWeldsCongruentButSeparateCylinderSurfaces", TestMergeSameSurfaceFacesWeldsCongruentButSeparateCylinderSurfaces);
+  RunTest("TestMergeSameSurfaceFacesLeavesGenuinelyDifferentCylindersUntouched", TestMergeSameSurfaceFacesLeavesGenuinelyDifferentCylindersUntouched);
+  RunTest("TestMergeSameSurfaceFacesCarriesCurvedHoleOnCylinder", TestMergeSameSurfaceFacesCarriesCurvedHoleOnCylinder);
+  RunTest("TestMergeSameSurfaceFacesCarriesHolesFromBothFaces", TestMergeSameSurfaceFacesCarriesHolesFromBothFaces);
+  RunTest("TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute", TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute);
+  RunTest("TestReplaceEdgeCurveThrowsOnEndpointMismatch", TestReplaceEdgeCurveThrowsOnEndpointMismatch);
+  RunTest("TestReplaceEdgeCurveThrowsOnSurfaceMismatch", TestReplaceEdgeCurveThrowsOnSurfaceMismatch);
+  RunTest("TestBrepResyncTrimToEdgeCurveResyncsATrimAfterADirectEdgeCurveChange", TestBrepResyncTrimToEdgeCurveResyncsATrimAfterADirectEdgeCurveChange);
+  RunTest("TestBrepResyncTrimToEdgeCurveRejectsOutOfRangeAndDeletedEdge", TestBrepResyncTrimToEdgeCurveRejectsOutOfRangeAndDeletedEdge);
+  RunTest("TestBrepReplaceEdgeMovesOneEndpointSlidingACornerInPlace", TestBrepReplaceEdgeMovesOneEndpointSlidingACornerInPlace);
+  RunTest("TestBrepReplaceEdgeFailsOnABoxCornerLeavesVerticesUntouched", TestBrepReplaceEdgeFailsOnABoxCornerLeavesVerticesUntouched);
+  RunTest("TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies", TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies);
+  RunTest("TestUnjoinEdgeGeneralizesToThreeOrMoreTrims", TestUnjoinEdgeGeneralizesToThreeOrMoreTrims);
+  RunTest("TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate", TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate);
+  RunTest("TestRemoveNakedMicroEdgeClosesSliverNextToASharedEdge", TestRemoveNakedMicroEdgeClosesSliverNextToASharedEdge);
+  RunTest("TestRemoveNakedMicroEdgeClosesSliverWithAThirdFacePinchingAtEndpoint", TestRemoveNakedMicroEdgeClosesSliverWithAThirdFacePinchingAtEndpoint);
+  RunTest("TestRemoveSharedMicroEdgeClosesIsolatedSeamBetweenTwoFaces", TestRemoveSharedMicroEdgeClosesIsolatedSeamBetweenTwoFaces);
+  RunTest("TestRemoveSharedMicroEdgeRefusesNakedEdgeAndDegenerateLoop", TestRemoveSharedMicroEdgeRefusesNakedEdgeAndDegenerateLoop);
+  RunTest("TestRemoveSharedMicroEdgeClosesSeamWithAThirdFacePinchingAtOneEndpoint", TestRemoveSharedMicroEdgeClosesSeamWithAThirdFacePinchingAtOneEndpoint);
+  RunTest("TestRemoveAllNakedMicroEdgesStripsEveryIsolatedSliverInOneCall", TestRemoveAllNakedMicroEdgesStripsEveryIsolatedSliverInOneCall);
+  RunTest("TestRemoveAllSharedMicroEdgesStripsEveryIsolatedSeamInOneCall", TestRemoveAllSharedMicroEdgesStripsEveryIsolatedSeamInOneCall);
+  RunTest("TestMergeContiguousEdgesCombinesTwoCollinearNakedEdges", TestMergeContiguousEdgesCombinesTwoCollinearNakedEdges);
+  RunTest("TestMergeContiguousEdgesRefusesAKinkedCorner", TestMergeContiguousEdgesRefusesAKinkedCorner);
+  RunTest("TestMergeContiguousEdgesThrowsOnInvalidIndicesRefusesWrongValence", TestMergeContiguousEdgesThrowsOnInvalidIndicesRefusesWrongValence);
+  RunTest("TestMergeAllContiguousEdgesCollapsesAChainOfCollinearEdges", TestMergeAllContiguousEdgesCollapsesAChainOfCollinearEdges);
 
-  TestSurfaceRemoveKnotAtIsExactInverseOfInsertKnotAt();
-  TestSurfaceRemoveKnotAtRefusesNonRemovableKnotWithinTolerance();
-  TestSurfaceRemoveKnotAtRationalBoundHoldsOnASphereSeamKnot();
-  TestSurfaceRemoveKnotAtArgumentChecks();
+  RunTest("TestSurfaceRemoveKnotAtIsExactInverseOfInsertKnotAt", TestSurfaceRemoveKnotAtIsExactInverseOfInsertKnotAt);
+  RunTest("TestSurfaceRemoveKnotAtRefusesNonRemovableKnotWithinTolerance", TestSurfaceRemoveKnotAtRefusesNonRemovableKnotWithinTolerance);
+  RunTest("TestSurfaceRemoveKnotAtRationalBoundHoldsOnASphereSeamKnot", TestSurfaceRemoveKnotAtRationalBoundHoldsOnASphereSeamKnot);
+  RunTest("TestSurfaceRemoveKnotAtArgumentChecks", TestSurfaceRemoveKnotAtArgumentChecks);
 
-  TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape();
-  TestSurfaceChangeSeam();
-  TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise();
-  TestSurfaceReduceDegree();
-  TestSurfaceInterpolateThroughGrid();
-  TestSurfaceDecomposeToBeziersProducesExactSpanPatches();
+  RunTest("TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape", TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape);
+  RunTest("TestSurfaceChangeSeam", TestSurfaceChangeSeam);
+  RunTest("TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise", TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise);
+  RunTest("TestSurfaceReduceDegree", TestSurfaceReduceDegree);
+  RunTest("TestSurfaceInterpolateThroughGrid", TestSurfaceInterpolateThroughGrid);
+  RunTest("TestSurfaceDecomposeToBeziersProducesExactSpanPatches", TestSurfaceDecomposeToBeziersProducesExactSpanPatches);
 
-  TestSurfaceMatchEdgePositionTangentCurvature();
-  TestSurfaceMatchEdgeToRationalSphereAndRefusals();
-  TestTolerancePolicyValuesAreTheOnesInForce();
-  TestBrepCheckReportsCleanBoxAsClean();
-  TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces();
-  TestBrepCheckDetectsTrimEdgeGapAtAQuarterPointBulge();
-  TestBrepRemoveDegenerateOrSliverFacesDoesNotTouchValidSolids();
-  TestBrepCheckDetectsNonManifoldPinchVertex();
-  TestBrepSplitNonManifoldVertexHealsPinchPoint();
-  TestBrepCheckDetectsAndSplitNonManifoldEdgeHeals();
-  TestJoinNonManifoldEdgeConstructsNonManifoldEdge();
-  TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses();
-  TestBrepMakeEdgeFaceAndKillEdgeFaceAreExactInverses();
-  TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses();
-  TestBrepRemoveHoleLoopRestoresSolidFaceExactly();
-  TestBrepRemoveAllHoleLoopsRemovesEveryHoleInOneCall();
-  TestBrepRemoveAllHoleLoopsInBrepStripsHolesAcrossEveryFace();
-  TestBrepRebuildEdgeCurveRecoversExactPlaneIntersectionAfterPerturbation();
-  TestBrepRebuildEdgeCurveRefusesInvalidInput();
-  TestBrepRebuildEdgeCurveRecoversExactCylinderPlaneIntersectionAfterPerturbation();
-  TestBrepRemoveHoleLoopRefusesOuterLoopSharedEdgeAndInvalidInput();
-  TestBrepRemoveOuterTrimRestoresSurfaceNaturalBoundaryAndKeepsHoles();
-  TestBrepRemoveOuterTrimRefusesSingularTrimSharedEdgeAndInvalidInput();
-  TestBrepLoopAndTrimTopologyQueries();
-  TestBrepWireBody();
-  TestBrepAddWireCurves();
-  TestBrepExtrudeWireBody();
-  TestBrepOffsetWireBody();
-  TestBrepAddHoleLoop();
-  TestBrepAddHoleLoops();
-  TestBrepCheckAndUnifyNormalsOnFlippedFace();
-  TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
-  TestCapPlanarHolesCapsACurvedCircularRim();
-  TestCapPlanarHolesResolvesAMultiWayNonManifoldPinch();
-  TestCapPlanarHolesReportsWhyANonPlanarHoleIsSkipped();
-  TestBrepJoinNakedEdgesRecordsTolerantEdges();
-  TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip();
-  TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge();
-  TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly();
-  TestBrepSplitNakedEdgeAtRefusesACurvedEdge();
-  TestBrepSplitNakedEdgeAtRefusesInvalidInputs();
-  TestBrepSplitNakedEdgeAtSplitsSharedEdgeOnBothFaces();
-  TestBrepSewTJunctionsClosesActualTJunction();
-  TestBrepSewTJunctionsNoOpOnCleanBreps();
-  TestBrepDeleteFaceRemovesArbitraryFaceAndRefusesBadIndices();
-  TestBrepDeleteFaceHealFlagControlsJoinAndSewTJunctions();
-  TestBrepCheckDetects3dSelfIntersectingLoopBeyondThe2dTrimCheck();
-  TestMeshCheckAndFillSmallHolesRestoreDroppedFaces();
-  TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();
-  TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
-  TestMeshMergeDuplicateVerticesWeldsCoincidentPairs();
-  TestMeshCheckDetectsNonManifoldVertexAndDuplicateVertexList();
-  TestMeshSplitNonManifoldVertexSplitsBowtie();
-  TestMeshCheckDetectsDisjointPiecesBodyCount();
-  TestMeshSplitDisjointPiecesSplitsIntoSeparateMeshes();
-  TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
-  TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
-  TestMeshTrisToQuadsRecombinesTessellatedBoxFaces();
-  TestMeshTrisToQuadsGatesOnDihedralAngle();
-  TestMeshTrisToQuadsThrowsOnNonFiniteDihedralDegAndClampsNegative();
-  TestMeshTrisToQuadsRefusesNonConvexMerge();
-  TestMeshTrisToQuadsMergesSeveralIndependentSquaresInOneCall();
-  TestMeshTrisToQuadsRefusesCoincidentApexes();
-  TestMeshOffsetMovesVerticesAlongExactVertexNormal();
-  TestMeshOffsetDirectionalMovesEveryVertexByTheSameFixedVector();
-  TestMeshThickenBuildsExactUnitCubeFromFlatSquare();
-  TestMeshThickenRefusesBowtieBoundaryButAllowsDisconnectedSheet();
-  TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold();
-  TestMeshThickenRefusesSelfIntersectingFold();
-  TestMeshShellHollowsClosedBoxWithVolumeIdentityAndFlippedInnerWall();
-  TestMeshShellRefusesInvalidInput();
-  TestMeshShellWithRemovedFaceProducesClosedManifoldCupWithStitchedWall();
-  TestMeshShellWithRemovedFacesRefusesInvalidInput();
-  TestMeshShellPerFaceThicknessMatchesUniformOverloadAndHandDerivedAverages();
-  TestMeshShellPerFaceThicknessRefusesInvalidInput();
-  TestMeshShellFaceThicknessWithRemovedFaceMatchesUniformOverloadAndStitchesWall();
-  TestMeshShellFaceThicknessWithRemovedFacesRefusesInvalidInput();
-  TestMeshShellRemovedFacesRefusesBowtieOpeningBoundary();
-  TestMeshShellRemovedFacesHandlesDisconnectedRemainder();
-  TestMeshShellFaceThicknessWithRemovedFacesHandlesDisconnectedRemainder();
-  TestMeshInsetFaceUnitSquareMatchesExactConcentricSquare();
-  TestMeshInsetFaceTriangleMatchesIndependentPerpendicularDistance();
-  TestMeshInsetFaceRefusesInvalidInput();
-  TestMeshInsetFaceDepthLiftsInnerRingAlongNormal();
-  TestMeshCheckLocalizesNonManifoldEdges();
-  TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings();
+  RunTest("TestSurfaceMatchEdgePositionTangentCurvature", TestSurfaceMatchEdgePositionTangentCurvature);
+  RunTest("TestSurfaceMatchEdgeToRationalSphereAndRefusals", TestSurfaceMatchEdgeToRationalSphereAndRefusals);
+  RunTest("TestTolerancePolicyValuesAreTheOnesInForce", TestTolerancePolicyValuesAreTheOnesInForce);
+  RunTest("TestBrepCheckReportsCleanBoxAsClean", TestBrepCheckReportsCleanBoxAsClean);
+  RunTest("TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces", TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces);
+  RunTest("TestBrepCheckDetectsTrimEdgeGapAtAQuarterPointBulge", TestBrepCheckDetectsTrimEdgeGapAtAQuarterPointBulge);
+  RunTest("TestBrepRemoveDegenerateOrSliverFacesDoesNotTouchValidSolids", TestBrepRemoveDegenerateOrSliverFacesDoesNotTouchValidSolids);
+  RunTest("TestBrepCheckDetectsNonManifoldPinchVertex", TestBrepCheckDetectsNonManifoldPinchVertex);
+  RunTest("TestBrepSplitNonManifoldVertexHealsPinchPoint", TestBrepSplitNonManifoldVertexHealsPinchPoint);
+  RunTest("TestBrepCheckDetectsAndSplitNonManifoldEdgeHeals", TestBrepCheckDetectsAndSplitNonManifoldEdgeHeals);
+  RunTest("TestJoinNonManifoldEdgeConstructsNonManifoldEdge", TestJoinNonManifoldEdgeConstructsNonManifoldEdge);
+  RunTest("TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses", TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses);
+  RunTest("TestBrepMakeEdgeFaceAndKillEdgeFaceAreExactInverses", TestBrepMakeEdgeFaceAndKillEdgeFaceAreExactInverses);
+  RunTest("TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses", TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses);
+  RunTest("TestBrepRemoveHoleLoopRestoresSolidFaceExactly", TestBrepRemoveHoleLoopRestoresSolidFaceExactly);
+  RunTest("TestBrepRemoveAllHoleLoopsRemovesEveryHoleInOneCall", TestBrepRemoveAllHoleLoopsRemovesEveryHoleInOneCall);
+  RunTest("TestBrepRemoveAllHoleLoopsInBrepStripsHolesAcrossEveryFace", TestBrepRemoveAllHoleLoopsInBrepStripsHolesAcrossEveryFace);
+  RunTest("TestBrepRebuildEdgeCurveRecoversExactPlaneIntersectionAfterPerturbation", TestBrepRebuildEdgeCurveRecoversExactPlaneIntersectionAfterPerturbation);
+  RunTest("TestBrepRebuildEdgeCurveRefusesInvalidInput", TestBrepRebuildEdgeCurveRefusesInvalidInput);
+  RunTest("TestBrepRebuildEdgeCurveRecoversExactCylinderPlaneIntersectionAfterPerturbation", TestBrepRebuildEdgeCurveRecoversExactCylinderPlaneIntersectionAfterPerturbation);
+  RunTest("TestBrepRemoveHoleLoopRefusesOuterLoopSharedEdgeAndInvalidInput", TestBrepRemoveHoleLoopRefusesOuterLoopSharedEdgeAndInvalidInput);
+  RunTest("TestBrepRemoveOuterTrimRestoresSurfaceNaturalBoundaryAndKeepsHoles", TestBrepRemoveOuterTrimRestoresSurfaceNaturalBoundaryAndKeepsHoles);
+  RunTest("TestBrepRemoveOuterTrimRefusesSingularTrimSharedEdgeAndInvalidInput", TestBrepRemoveOuterTrimRefusesSingularTrimSharedEdgeAndInvalidInput);
+  RunTest("TestBrepLoopAndTrimTopologyQueries", TestBrepLoopAndTrimTopologyQueries);
+  RunTest("TestBrepWireBody", TestBrepWireBody);
+  RunTest("TestBrepAddWireCurves", TestBrepAddWireCurves);
+  RunTest("TestBrepExtrudeWireBody", TestBrepExtrudeWireBody);
+  RunTest("TestBrepOffsetWireBody", TestBrepOffsetWireBody);
+  RunTest("TestBrepAddHoleLoop", TestBrepAddHoleLoop);
+  RunTest("TestBrepAddHoleLoops", TestBrepAddHoleLoops);
+  RunTest("TestBrepCheckAndUnifyNormalsOnFlippedFace", TestBrepCheckAndUnifyNormalsOnFlippedFace);
+  RunTest("TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt", TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt);
+  RunTest("TestCapPlanarHolesCapsACurvedCircularRim", TestCapPlanarHolesCapsACurvedCircularRim);
+  RunTest("TestCapPlanarHolesResolvesAMultiWayNonManifoldPinch", TestCapPlanarHolesResolvesAMultiWayNonManifoldPinch);
+  RunTest("TestCapPlanarHolesReportsWhyANonPlanarHoleIsSkipped", TestCapPlanarHolesReportsWhyANonPlanarHoleIsSkipped);
+  RunTest("TestBrepJoinNakedEdgesRecordsTolerantEdges", TestBrepJoinNakedEdgesRecordsTolerantEdges);
+  RunTest("TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip", TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip);
+  RunTest("TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge", TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge);
+  RunTest("TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly", TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly);
+  RunTest("TestBrepSplitNakedEdgeAtRefusesACurvedEdge", TestBrepSplitNakedEdgeAtRefusesACurvedEdge);
+  RunTest("TestBrepSplitNakedEdgeAtRefusesInvalidInputs", TestBrepSplitNakedEdgeAtRefusesInvalidInputs);
+  RunTest("TestBrepSplitNakedEdgeAtSplitsSharedEdgeOnBothFaces", TestBrepSplitNakedEdgeAtSplitsSharedEdgeOnBothFaces);
+  RunTest("TestBrepSewTJunctionsClosesActualTJunction", TestBrepSewTJunctionsClosesActualTJunction);
+  RunTest("TestBrepSewTJunctionsNoOpOnCleanBreps", TestBrepSewTJunctionsNoOpOnCleanBreps);
+  RunTest("TestBrepDeleteFaceRemovesArbitraryFaceAndRefusesBadIndices", TestBrepDeleteFaceRemovesArbitraryFaceAndRefusesBadIndices);
+  RunTest("TestBrepDeleteFaceHealFlagControlsJoinAndSewTJunctions", TestBrepDeleteFaceHealFlagControlsJoinAndSewTJunctions);
+  RunTest("TestBrepCheckDetects3dSelfIntersectingLoopBeyondThe2dTrimCheck", TestBrepCheckDetects3dSelfIntersectingLoopBeyondThe2dTrimCheck);
+  RunTest("TestMeshCheckAndFillSmallHolesRestoreDroppedFaces", TestMeshCheckAndFillSmallHolesRestoreDroppedFaces);
+  RunTest("TestMeshUnifyNormalsFixesFlippedAndInvertedFaces", TestMeshUnifyNormalsFixesFlippedAndInvertedFaces);
+  RunTest("TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices", TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices);
+  RunTest("TestMeshMergeDuplicateVerticesWeldsCoincidentPairs", TestMeshMergeDuplicateVerticesWeldsCoincidentPairs);
+  RunTest("TestMeshCheckDetectsNonManifoldVertexAndDuplicateVertexList", TestMeshCheckDetectsNonManifoldVertexAndDuplicateVertexList);
+  RunTest("TestMeshSplitNonManifoldVertexSplitsBowtie", TestMeshSplitNonManifoldVertexSplitsBowtie);
+  RunTest("TestMeshCheckDetectsDisjointPiecesBodyCount", TestMeshCheckDetectsDisjointPiecesBodyCount);
+  RunTest("TestMeshSplitDisjointPiecesSplitsIntoSeparateMeshes", TestMeshSplitDisjointPiecesSplitsIntoSeparateMeshes);
+  RunTest("TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes", TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes);
+  RunTest("TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon", TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon);
+  RunTest("TestMeshTrisToQuadsRecombinesTessellatedBoxFaces", TestMeshTrisToQuadsRecombinesTessellatedBoxFaces);
+  RunTest("TestMeshTrisToQuadsGatesOnDihedralAngle", TestMeshTrisToQuadsGatesOnDihedralAngle);
+  RunTest("TestMeshTrisToQuadsThrowsOnNonFiniteDihedralDegAndClampsNegative", TestMeshTrisToQuadsThrowsOnNonFiniteDihedralDegAndClampsNegative);
+  RunTest("TestMeshTrisToQuadsRefusesNonConvexMerge", TestMeshTrisToQuadsRefusesNonConvexMerge);
+  RunTest("TestMeshTrisToQuadsMergesSeveralIndependentSquaresInOneCall", TestMeshTrisToQuadsMergesSeveralIndependentSquaresInOneCall);
+  RunTest("TestMeshTrisToQuadsRefusesCoincidentApexes", TestMeshTrisToQuadsRefusesCoincidentApexes);
+  RunTest("TestMeshOffsetMovesVerticesAlongExactVertexNormal", TestMeshOffsetMovesVerticesAlongExactVertexNormal);
+  RunTest("TestMeshOffsetDirectionalMovesEveryVertexByTheSameFixedVector", TestMeshOffsetDirectionalMovesEveryVertexByTheSameFixedVector);
+  RunTest("TestMeshThickenBuildsExactUnitCubeFromFlatSquare", TestMeshThickenBuildsExactUnitCubeFromFlatSquare);
+  RunTest("TestMeshThickenRefusesBowtieBoundaryButAllowsDisconnectedSheet", TestMeshThickenRefusesBowtieBoundaryButAllowsDisconnectedSheet);
+  RunTest("TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold", TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold);
+  RunTest("TestMeshThickenRefusesSelfIntersectingFold", TestMeshThickenRefusesSelfIntersectingFold);
+  RunTest("TestMeshShellHollowsClosedBoxWithVolumeIdentityAndFlippedInnerWall", TestMeshShellHollowsClosedBoxWithVolumeIdentityAndFlippedInnerWall);
+  RunTest("TestMeshShellRefusesInvalidInput", TestMeshShellRefusesInvalidInput);
+  RunTest("TestMeshShellWithRemovedFaceProducesClosedManifoldCupWithStitchedWall", TestMeshShellWithRemovedFaceProducesClosedManifoldCupWithStitchedWall);
+  RunTest("TestMeshShellWithRemovedFacesRefusesInvalidInput", TestMeshShellWithRemovedFacesRefusesInvalidInput);
+  RunTest("TestMeshShellPerFaceThicknessMatchesUniformOverloadAndHandDerivedAverages", TestMeshShellPerFaceThicknessMatchesUniformOverloadAndHandDerivedAverages);
+  RunTest("TestMeshShellPerFaceThicknessRefusesInvalidInput", TestMeshShellPerFaceThicknessRefusesInvalidInput);
+  RunTest("TestMeshShellFaceThicknessWithRemovedFaceMatchesUniformOverloadAndStitchesWall", TestMeshShellFaceThicknessWithRemovedFaceMatchesUniformOverloadAndStitchesWall);
+  RunTest("TestMeshShellFaceThicknessWithRemovedFacesRefusesInvalidInput", TestMeshShellFaceThicknessWithRemovedFacesRefusesInvalidInput);
+  RunTest("TestMeshShellRemovedFacesRefusesBowtieOpeningBoundary", TestMeshShellRemovedFacesRefusesBowtieOpeningBoundary);
+  RunTest("TestMeshShellRemovedFacesHandlesDisconnectedRemainder", TestMeshShellRemovedFacesHandlesDisconnectedRemainder);
+  RunTest("TestMeshShellFaceThicknessWithRemovedFacesHandlesDisconnectedRemainder", TestMeshShellFaceThicknessWithRemovedFacesHandlesDisconnectedRemainder);
+  RunTest("TestMeshInsetFaceUnitSquareMatchesExactConcentricSquare", TestMeshInsetFaceUnitSquareMatchesExactConcentricSquare);
+  RunTest("TestMeshInsetFaceTriangleMatchesIndependentPerpendicularDistance", TestMeshInsetFaceTriangleMatchesIndependentPerpendicularDistance);
+  RunTest("TestMeshInsetFaceRefusesInvalidInput", TestMeshInsetFaceRefusesInvalidInput);
+  RunTest("TestMeshInsetFaceDepthLiftsInnerRingAlongNormal", TestMeshInsetFaceDepthLiftsInnerRingAlongNormal);
+  RunTest("TestMeshCheckLocalizesNonManifoldEdges", TestMeshCheckLocalizesNonManifoldEdges);
+  RunTest("TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings", TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings);
 
-  sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();
-  sweep_tests::TestExtrudeRectangleIsExactCappedSolid();
-  sweep_tests::TestExtrudeAlongCurveStraightPathMatchesPlainExtrude();
-  sweep_tests::TestExtrudeAlongCurveWobblyPathMatchesCavalieriVolume();
-  sweep_tests::TestExtrudeAlongCurveWallMatchesSumOfCurvesExactly();
-  sweep_tests::TestExtrudeAlongCurveNegativeControls();
-  sweep_tests::TestExtrudeToPointPyramidVolumeExactOnNonConvexProfiles();
-  sweep_tests::TestExtrudeToPointConvexTriangleVolumeTwoIndependentWays();
-  sweep_tests::TestExtrudeToPointSupportsRationalProfileExactCircularCone();
-  sweep_tests::TestExtrudeToPointWallEmbedsEvenForNonStarShapedProfile();
-  sweep_tests::TestExtrudeToPointNegativeControls();
-  sweep_tests::TestExtrudeToPointOpenProfileFan();
-  sweep_tests::TestRevolveExactSolidsAndCaps();
-  sweep_tests::TestRevolveStartAngleShiftsSweepExactly();
-  sweep_tests::TestLoftInterpolatesSectionsExactly();
-  sweep_tests::TestBrepRibbonFromCurveStraightLineMatchesExactRectangle();
-  sweep_tests::TestBrepRibbonFromCurveClosedCurveStaysUncappedAnnularStrip();
-  sweep_tests::TestBrepRibbonFromCurveArgumentChecks();
-  sweep_tests::TestLoftTangentConstrainedEndsMatchExactly();
-  sweep_tests::TestSweep1AndPipe();
-  sweep_tests::TestPipeRoundCaps();
-  sweep_tests::TestPipeVariableRoundCaps();
-  sweep_tests::TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail();
-  sweep_tests::TestSweep1ScaleIsExactContinuouslyOnAStraightRailAndRejectsOnClosedRail();
-  sweep_tests::TestSweep1RoadlikeAlignmentMatchesExtrudeOnAStraightRailAndRejectsDegenerateUp();
-  sweep_tests::TestSweep1TwistScheduleMatchesPlainTwistAtEndpointsAndInsertsRealStations();
-  sweep_tests::TestSweep1ScaleScheduleMatchesPlainScaleAtEndpointsAndInsertsRealStations();
-  sweep_tests::TestMakeHoleBlindAndThrough();
-  sweep_tests::TestMakeHoleRejectsInvalidArguments();
-  sweep_tests::TestMakeCounterboreHoleBoxStepped();
-  sweep_tests::TestMakeCounterboreHoleRejectsInvalidArguments();
-  sweep_tests::TestRecognizeHolesBlindAndThroughRoundTrip();
-  sweep_tests::TestCopyHoleFeatureCopyMirrorAndRotatePlacements();
-  sweep_tests::TestCopyHoleFeatureRefusesDegenerateXform();
-  sweep_tests::TestRecognizeBossesBlindAndFreestandingRoundTrip();
-  sweep_tests::TestMakeCountersinkHoleBoxStandardAngle();
-  sweep_tests::TestMakeCountersinkHoleRejectsInvalidArguments();
-  sweep_tests::TestMakeHolesTwoThroughHolesMatchSumOfIndividualVolumes();
-  sweep_tests::TestMakeHolesRejectsInvalidArguments();
-  sweep_tests::TestMakeCounterboreHolesTwoHolesMatchSumOfIndividualVolumes();
-  sweep_tests::TestMakeCounterboreHolesRejectsInvalidArguments();
-  sweep_tests::TestMakeCountersinkHolesTwoHolesMatchSumOfIndividualVolumes();
-  sweep_tests::TestMakeCountersinkHolesRejectsInvalidArguments();
-  sweep_tests::TestEmbossProfileDebossThroughPocket();
-  sweep_tests::TestEmbossProfileDebossBlindPocket();
-  sweep_tests::TestEmbossProfileEmbossBoss();
-  sweep_tests::TestEmbossProfileRejectsInvalidArguments();
-  sweep_tests::TestRecognizePocketsBlindPocketRoundTripAndNegativeControls();
-  sweep_tests::TestEmbossProfileWithHolesDebossEngravesAnnulusLeavingCounterFlush();
-  sweep_tests::TestEmbossProfileWithHolesEmbossRaisesRingBossLeavingCounterFlush();
-  sweep_tests::TestEmbossProfileWithHolesRejectsInvalidArguments();
-  sweep_tests::TestExtrudeProfileWithHolesBuildsStandaloneRingSolid();
-  sweep_tests::TestExtrudeProfileWithHolesHandlesMultipleNonOverlappingHoles();
-  sweep_tests::TestExtrudeProfileWithHolesRejectsInvalidArguments();
-  sweep_tests::TestThickenFlatSheetProducesExactBoxVolume();
-  sweep_tests::TestThickenSymmetricPutsOriginalSurfaceOnMidplane();
-  sweep_tests::TestThickenCurvedSheetProducesGenuineClosedSolid();
-  sweep_tests::TestThickenTrimmedPlanarSheetMatchesExactTrimAreaTimesThickness();
-  sweep_tests::TestThickenTrimmedPlanarSheetSymmetricPutsOriginalOnMidplane();
-  sweep_tests::TestThickenRejectsInvalidArguments();
-  sweep_tests::TestExtrudeFaceStraightMatchesExactPrismVolume();
-  sweep_tests::TestExtrudeFaceObliqueDirectionMatchesCavalieriVolume();
-  sweep_tests::TestExtrudeFaceOnCurvedFreeformSurfaceExceedsThickenGuard();
-  sweep_tests::TestExtrudeFaceOnMultiFaceBodyExtractsOneFaceIntoANewIndependentSolid();
-  sweep_tests::TestExtrudeFaceUncappedGivesOpenTube();
-  sweep_tests::TestExtrudeFaceRejectsInvalidArguments();
-  sweep_tests::TestExtrudeFaceTrimmedPlanarFace();
-  sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
-  sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
-  sweep_tests::TestExtrudeTaperedConcavePolygonIsExactPrismatoid();
-  sweep_tests::TestExtrudeTaperedObliqueDirectionIsShearedFrustum();
-  sweep_tests::TestExtrudeToBoundaryTiltedPlaneMatchesExactAffineCapVolume();
-  sweep_tests::TestExtrudeToBoundaryMatchesPlainExtrudeForAFlatBoundary();
-  sweep_tests::TestExtrudeToBoundaryNegativeControls();
-  sweep_tests::TestExtrudeToBoundaryHandlesReversedWindingAndDirection();
-  sweep_tests::TestExtrudeToBoundaryNgonProfile();
+  RunTest("sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles", sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles);
+  RunTest("sweep_tests::TestExtrudeRectangleIsExactCappedSolid", sweep_tests::TestExtrudeRectangleIsExactCappedSolid);
+  RunTest("sweep_tests::TestExtrudeAlongCurveStraightPathMatchesPlainExtrude", sweep_tests::TestExtrudeAlongCurveStraightPathMatchesPlainExtrude);
+  RunTest("sweep_tests::TestExtrudeAlongCurveWobblyPathMatchesCavalieriVolume", sweep_tests::TestExtrudeAlongCurveWobblyPathMatchesCavalieriVolume);
+  RunTest("sweep_tests::TestExtrudeAlongCurveWallMatchesSumOfCurvesExactly", sweep_tests::TestExtrudeAlongCurveWallMatchesSumOfCurvesExactly);
+  RunTest("sweep_tests::TestExtrudeAlongCurveNegativeControls", sweep_tests::TestExtrudeAlongCurveNegativeControls);
+  RunTest("sweep_tests::TestExtrudeToPointPyramidVolumeExactOnNonConvexProfiles", sweep_tests::TestExtrudeToPointPyramidVolumeExactOnNonConvexProfiles);
+  RunTest("sweep_tests::TestExtrudeToPointConvexTriangleVolumeTwoIndependentWays", sweep_tests::TestExtrudeToPointConvexTriangleVolumeTwoIndependentWays);
+  RunTest("sweep_tests::TestExtrudeToPointSupportsRationalProfileExactCircularCone", sweep_tests::TestExtrudeToPointSupportsRationalProfileExactCircularCone);
+  RunTest("sweep_tests::TestExtrudeToPointWallEmbedsEvenForNonStarShapedProfile", sweep_tests::TestExtrudeToPointWallEmbedsEvenForNonStarShapedProfile);
+  RunTest("sweep_tests::TestExtrudeToPointNegativeControls", sweep_tests::TestExtrudeToPointNegativeControls);
+  RunTest("sweep_tests::TestExtrudeToPointOpenProfileFan", sweep_tests::TestExtrudeToPointOpenProfileFan);
+  RunTest("sweep_tests::TestRevolveExactSolidsAndCaps", sweep_tests::TestRevolveExactSolidsAndCaps);
+  RunTest("sweep_tests::TestRevolveStartAngleShiftsSweepExactly", sweep_tests::TestRevolveStartAngleShiftsSweepExactly);
+  RunTest("sweep_tests::TestLoftInterpolatesSectionsExactly", sweep_tests::TestLoftInterpolatesSectionsExactly);
+  RunTest("sweep_tests::TestBrepRibbonFromCurveStraightLineMatchesExactRectangle", sweep_tests::TestBrepRibbonFromCurveStraightLineMatchesExactRectangle);
+  RunTest("sweep_tests::TestBrepRibbonFromCurveClosedCurveStaysUncappedAnnularStrip", sweep_tests::TestBrepRibbonFromCurveClosedCurveStaysUncappedAnnularStrip);
+  RunTest("sweep_tests::TestBrepRibbonFromCurveArgumentChecks", sweep_tests::TestBrepRibbonFromCurveArgumentChecks);
+  RunTest("sweep_tests::TestLoftTangentConstrainedEndsMatchExactly", sweep_tests::TestLoftTangentConstrainedEndsMatchExactly);
+  RunTest("sweep_tests::TestSweep1AndPipe", sweep_tests::TestSweep1AndPipe);
+  RunTest("sweep_tests::TestPipeRoundCaps", sweep_tests::TestPipeRoundCaps);
+  RunTest("sweep_tests::TestPipeVariableRoundCaps", sweep_tests::TestPipeVariableRoundCaps);
+  RunTest("sweep_tests::TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail", sweep_tests::TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail);
+  RunTest("sweep_tests::TestSweep1ScaleIsExactContinuouslyOnAStraightRailAndRejectsOnClosedRail", sweep_tests::TestSweep1ScaleIsExactContinuouslyOnAStraightRailAndRejectsOnClosedRail);
+  RunTest("sweep_tests::TestSweep1RoadlikeAlignmentMatchesExtrudeOnAStraightRailAndRejectsDegenerateUp", sweep_tests::TestSweep1RoadlikeAlignmentMatchesExtrudeOnAStraightRailAndRejectsDegenerateUp);
+  RunTest("sweep_tests::TestSweep1TwistScheduleMatchesPlainTwistAtEndpointsAndInsertsRealStations", sweep_tests::TestSweep1TwistScheduleMatchesPlainTwistAtEndpointsAndInsertsRealStations);
+  RunTest("sweep_tests::TestSweep1ScaleScheduleMatchesPlainScaleAtEndpointsAndInsertsRealStations", sweep_tests::TestSweep1ScaleScheduleMatchesPlainScaleAtEndpointsAndInsertsRealStations);
+  RunTest("sweep_tests::TestMakeHoleBlindAndThrough", sweep_tests::TestMakeHoleBlindAndThrough);
+  RunTest("sweep_tests::TestMakeHoleRejectsInvalidArguments", sweep_tests::TestMakeHoleRejectsInvalidArguments);
+  RunTest("sweep_tests::TestMakeCounterboreHoleBoxStepped", sweep_tests::TestMakeCounterboreHoleBoxStepped);
+  RunTest("sweep_tests::TestMakeCounterboreHoleRejectsInvalidArguments", sweep_tests::TestMakeCounterboreHoleRejectsInvalidArguments);
+  RunTest("sweep_tests::TestRecognizeHolesBlindAndThroughRoundTrip", sweep_tests::TestRecognizeHolesBlindAndThroughRoundTrip);
+  RunTest("sweep_tests::TestCopyHoleFeatureCopyMirrorAndRotatePlacements", sweep_tests::TestCopyHoleFeatureCopyMirrorAndRotatePlacements);
+  RunTest("sweep_tests::TestCopyHoleFeatureRefusesDegenerateXform", sweep_tests::TestCopyHoleFeatureRefusesDegenerateXform);
+  RunTest("sweep_tests::TestRecognizeBossesBlindAndFreestandingRoundTrip", sweep_tests::TestRecognizeBossesBlindAndFreestandingRoundTrip);
+  RunTest("sweep_tests::TestMakeCountersinkHoleBoxStandardAngle", sweep_tests::TestMakeCountersinkHoleBoxStandardAngle);
+  RunTest("sweep_tests::TestMakeCountersinkHoleRejectsInvalidArguments", sweep_tests::TestMakeCountersinkHoleRejectsInvalidArguments);
+  RunTest("sweep_tests::TestMakeHolesTwoThroughHolesMatchSumOfIndividualVolumes", sweep_tests::TestMakeHolesTwoThroughHolesMatchSumOfIndividualVolumes);
+  RunTest("sweep_tests::TestMakeHolesRejectsInvalidArguments", sweep_tests::TestMakeHolesRejectsInvalidArguments);
+  RunTest("sweep_tests::TestMakeCounterboreHolesTwoHolesMatchSumOfIndividualVolumes", sweep_tests::TestMakeCounterboreHolesTwoHolesMatchSumOfIndividualVolumes);
+  RunTest("sweep_tests::TestMakeCounterboreHolesRejectsInvalidArguments", sweep_tests::TestMakeCounterboreHolesRejectsInvalidArguments);
+  RunTest("sweep_tests::TestMakeCountersinkHolesTwoHolesMatchSumOfIndividualVolumes", sweep_tests::TestMakeCountersinkHolesTwoHolesMatchSumOfIndividualVolumes);
+  RunTest("sweep_tests::TestMakeCountersinkHolesRejectsInvalidArguments", sweep_tests::TestMakeCountersinkHolesRejectsInvalidArguments);
+  RunTest("sweep_tests::TestEmbossProfileDebossThroughPocket", sweep_tests::TestEmbossProfileDebossThroughPocket);
+  RunTest("sweep_tests::TestEmbossProfileDebossBlindPocket", sweep_tests::TestEmbossProfileDebossBlindPocket);
+  RunTest("sweep_tests::TestEmbossProfileEmbossBoss", sweep_tests::TestEmbossProfileEmbossBoss);
+  RunTest("sweep_tests::TestEmbossProfileRejectsInvalidArguments", sweep_tests::TestEmbossProfileRejectsInvalidArguments);
+  RunTest("sweep_tests::TestRecognizePocketsBlindPocketRoundTripAndNegativeControls", sweep_tests::TestRecognizePocketsBlindPocketRoundTripAndNegativeControls);
+  RunTest("sweep_tests::TestEmbossProfileWithHolesDebossEngravesAnnulusLeavingCounterFlush", sweep_tests::TestEmbossProfileWithHolesDebossEngravesAnnulusLeavingCounterFlush);
+  RunTest("sweep_tests::TestEmbossProfileWithHolesEmbossRaisesRingBossLeavingCounterFlush", sweep_tests::TestEmbossProfileWithHolesEmbossRaisesRingBossLeavingCounterFlush);
+  RunTest("sweep_tests::TestEmbossProfileWithHolesRejectsInvalidArguments", sweep_tests::TestEmbossProfileWithHolesRejectsInvalidArguments);
+  RunTest("sweep_tests::TestExtrudeProfileWithHolesBuildsStandaloneRingSolid", sweep_tests::TestExtrudeProfileWithHolesBuildsStandaloneRingSolid);
+  RunTest("sweep_tests::TestExtrudeProfileWithHolesHandlesMultipleNonOverlappingHoles", sweep_tests::TestExtrudeProfileWithHolesHandlesMultipleNonOverlappingHoles);
+  RunTest("sweep_tests::TestExtrudeProfileWithHolesRejectsInvalidArguments", sweep_tests::TestExtrudeProfileWithHolesRejectsInvalidArguments);
+  RunTest("sweep_tests::TestThickenFlatSheetProducesExactBoxVolume", sweep_tests::TestThickenFlatSheetProducesExactBoxVolume);
+  RunTest("sweep_tests::TestThickenSymmetricPutsOriginalSurfaceOnMidplane", sweep_tests::TestThickenSymmetricPutsOriginalSurfaceOnMidplane);
+  RunTest("sweep_tests::TestThickenCurvedSheetProducesGenuineClosedSolid", sweep_tests::TestThickenCurvedSheetProducesGenuineClosedSolid);
+  RunTest("sweep_tests::TestThickenTrimmedPlanarSheetMatchesExactTrimAreaTimesThickness", sweep_tests::TestThickenTrimmedPlanarSheetMatchesExactTrimAreaTimesThickness);
+  RunTest("sweep_tests::TestThickenTrimmedPlanarSheetSymmetricPutsOriginalOnMidplane", sweep_tests::TestThickenTrimmedPlanarSheetSymmetricPutsOriginalOnMidplane);
+  RunTest("sweep_tests::TestThickenRejectsInvalidArguments", sweep_tests::TestThickenRejectsInvalidArguments);
+  RunTest("sweep_tests::TestExtrudeFaceStraightMatchesExactPrismVolume", sweep_tests::TestExtrudeFaceStraightMatchesExactPrismVolume);
+  RunTest("sweep_tests::TestExtrudeFaceObliqueDirectionMatchesCavalieriVolume", sweep_tests::TestExtrudeFaceObliqueDirectionMatchesCavalieriVolume);
+  RunTest("sweep_tests::TestExtrudeFaceOnCurvedFreeformSurfaceExceedsThickenGuard", sweep_tests::TestExtrudeFaceOnCurvedFreeformSurfaceExceedsThickenGuard);
+  RunTest("sweep_tests::TestExtrudeFaceOnMultiFaceBodyExtractsOneFaceIntoANewIndependentSolid", sweep_tests::TestExtrudeFaceOnMultiFaceBodyExtractsOneFaceIntoANewIndependentSolid);
+  RunTest("sweep_tests::TestExtrudeFaceUncappedGivesOpenTube", sweep_tests::TestExtrudeFaceUncappedGivesOpenTube);
+  RunTest("sweep_tests::TestExtrudeFaceRejectsInvalidArguments", sweep_tests::TestExtrudeFaceRejectsInvalidArguments);
+  RunTest("sweep_tests::TestExtrudeFaceTrimmedPlanarFace", sweep_tests::TestExtrudeFaceTrimmedPlanarFace);
+  RunTest("sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum", sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum);
+  RunTest("sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum", sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum);
+  RunTest("sweep_tests::TestExtrudeTaperedConcavePolygonIsExactPrismatoid", sweep_tests::TestExtrudeTaperedConcavePolygonIsExactPrismatoid);
+  RunTest("sweep_tests::TestExtrudeTaperedObliqueDirectionIsShearedFrustum", sweep_tests::TestExtrudeTaperedObliqueDirectionIsShearedFrustum);
+  RunTest("sweep_tests::TestExtrudeToBoundaryTiltedPlaneMatchesExactAffineCapVolume", sweep_tests::TestExtrudeToBoundaryTiltedPlaneMatchesExactAffineCapVolume);
+  RunTest("sweep_tests::TestExtrudeToBoundaryMatchesPlainExtrudeForAFlatBoundary", sweep_tests::TestExtrudeToBoundaryMatchesPlainExtrudeForAFlatBoundary);
+  RunTest("sweep_tests::TestExtrudeToBoundaryNegativeControls", sweep_tests::TestExtrudeToBoundaryNegativeControls);
+  RunTest("sweep_tests::TestExtrudeToBoundaryHandlesReversedWindingAndDirection", sweep_tests::TestExtrudeToBoundaryHandlesReversedWindingAndDirection);
+  RunTest("sweep_tests::TestExtrudeToBoundaryNgonProfile", sweep_tests::TestExtrudeToBoundaryNgonProfile);
 
-  TestSurfaceUnrollDevelopablePlaneIsExactIsometry();
-  TestSurfaceUnrollDevelopableCylinderPreservesHeightAndCircumferenceExactly();
-  TestSurfaceUnrollDevelopableConePreservesApexDistanceAndSectorAngleExactly();
-  TestSurfaceUnrollDevelopableRefusesNonDevelopableSurface();
-  TestSurfaceUnrollDevelopableArgumentChecks();
+  RunTest("TestSurfaceUnrollDevelopablePlaneIsExactIsometry", TestSurfaceUnrollDevelopablePlaneIsExactIsometry);
+  RunTest("TestSurfaceUnrollDevelopableCylinderPreservesHeightAndCircumferenceExactly", TestSurfaceUnrollDevelopableCylinderPreservesHeightAndCircumferenceExactly);
+  RunTest("TestSurfaceUnrollDevelopableConePreservesApexDistanceAndSectorAngleExactly", TestSurfaceUnrollDevelopableConePreservesApexDistanceAndSectorAngleExactly);
+  RunTest("TestSurfaceUnrollDevelopableRefusesNonDevelopableSurface", TestSurfaceUnrollDevelopableRefusesNonDevelopableSurface);
+  RunTest("TestSurfaceUnrollDevelopableArgumentChecks", TestSurfaceUnrollDevelopableArgumentChecks);
 
-  TestSurfaceCoonsPatchReproducesFourCurvedBoundariesExactly();
-  TestSurfaceCoonsPatchAutoOrientsReversedBoundaries();
-  TestSurfaceCoonsPatchAutoOrientsAllThreeNonReferenceCurves();
-  TestSurfaceCoonsPatchRefusesNonClosingBoundaries();
+  RunTest("TestSurfaceCoonsPatchReproducesFourCurvedBoundariesExactly", TestSurfaceCoonsPatchReproducesFourCurvedBoundariesExactly);
+  RunTest("TestSurfaceCoonsPatchAutoOrientsReversedBoundaries", TestSurfaceCoonsPatchAutoOrientsReversedBoundaries);
+  RunTest("TestSurfaceCoonsPatchAutoOrientsAllThreeNonReferenceCurves", TestSurfaceCoonsPatchAutoOrientsAllThreeNonReferenceCurves);
+  RunTest("TestSurfaceCoonsPatchRefusesNonClosingBoundaries", TestSurfaceCoonsPatchRefusesNonClosingBoundaries);
 
-  TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere();
-  TestSurfaceOffsetAnalyticSpherePreservesPartialPatchExtent();
-  TestSurfaceOffsetAnalyticCylinderIsExactCoaxialCylinder();
-  TestSurfaceOffsetAnalyticCylinderPreservesQuarterPatchExtent();
-  TestSurfaceOffsetAnalyticConePreservesHalfAngleAndShiftsApex();
-  TestSurfaceOffsetAnalyticConePreservesPartialPatchExtent();
-  TestSurfaceOffsetAnalyticTorusIsExactCoaxialTorusAndRejectsSpindle();
-  TestSurfaceOffsetAnalyticTorusPreservesPartialPatchExtent();
-  TestSurfaceOffsetAnalyticTorusOffOriginTiltedPreservesArbitraryPatchExtent();
-  TestSurfaceOffsetAnalyticTorusRefusesTransposedConvention();
-  TestSurfaceOffsetAnalyticPlanePreservesDomainAndTrimStructure();
-  TestSurfaceOffsetAnalyticRefusesFreeformSurface();
-  TestSurfaceOffsetAnalyticZeroDistanceIsNoOpCopy();
+  RunTest("TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere", TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere);
+  RunTest("TestSurfaceOffsetAnalyticSpherePreservesPartialPatchExtent", TestSurfaceOffsetAnalyticSpherePreservesPartialPatchExtent);
+  RunTest("TestSurfaceOffsetAnalyticCylinderIsExactCoaxialCylinder", TestSurfaceOffsetAnalyticCylinderIsExactCoaxialCylinder);
+  RunTest("TestSurfaceOffsetAnalyticCylinderPreservesQuarterPatchExtent", TestSurfaceOffsetAnalyticCylinderPreservesQuarterPatchExtent);
+  RunTest("TestSurfaceOffsetAnalyticConePreservesHalfAngleAndShiftsApex", TestSurfaceOffsetAnalyticConePreservesHalfAngleAndShiftsApex);
+  RunTest("TestSurfaceOffsetAnalyticConePreservesPartialPatchExtent", TestSurfaceOffsetAnalyticConePreservesPartialPatchExtent);
+  RunTest("TestSurfaceOffsetAnalyticTorusIsExactCoaxialTorusAndRejectsSpindle", TestSurfaceOffsetAnalyticTorusIsExactCoaxialTorusAndRejectsSpindle);
+  RunTest("TestSurfaceOffsetAnalyticTorusPreservesPartialPatchExtent", TestSurfaceOffsetAnalyticTorusPreservesPartialPatchExtent);
+  RunTest("TestSurfaceOffsetAnalyticTorusOffOriginTiltedPreservesArbitraryPatchExtent", TestSurfaceOffsetAnalyticTorusOffOriginTiltedPreservesArbitraryPatchExtent);
+  RunTest("TestSurfaceOffsetAnalyticTorusRefusesTransposedConvention", TestSurfaceOffsetAnalyticTorusRefusesTransposedConvention);
+  RunTest("TestSurfaceOffsetAnalyticPlanePreservesDomainAndTrimStructure", TestSurfaceOffsetAnalyticPlanePreservesDomainAndTrimStructure);
+  RunTest("TestSurfaceOffsetAnalyticRefusesFreeformSurface", TestSurfaceOffsetAnalyticRefusesFreeformSurface);
+  RunTest("TestSurfaceOffsetAnalyticZeroDistanceIsNoOpCopy", TestSurfaceOffsetAnalyticZeroDistanceIsNoOpCopy);
 
-  TestSurfaceOffsetApproximateIsExactOnAGenuinePlane();
-  TestSurfaceOffsetApproximateSphereErrorIsBoundedButGenuinelyNonzero();
-  TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance();
-  TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance();
+  RunTest("TestSurfaceOffsetApproximateIsExactOnAGenuinePlane", TestSurfaceOffsetApproximateIsExactOnAGenuinePlane);
+  RunTest("TestSurfaceOffsetApproximateSphereErrorIsBoundedButGenuinelyNonzero", TestSurfaceOffsetApproximateSphereErrorIsBoundedButGenuinelyNonzero);
+  RunTest("TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance", TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance);
+  RunTest("TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance", TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance);
 
-  TestSurfaceOffsetVariableIsExactOnAGenuinePlaneAndVariesLinearlyAlongU();
-  TestSurfaceOffsetVariableWithEqualEndsMatchesOffsetApproximateExactly();
-  TestSurfaceOffsetVariableFoldGuardUsesTheLocallyInterpolatedDistance();
-  TestSurfaceOffsetVariableArgumentChecksAndZeroDistance();
+  RunTest("TestSurfaceOffsetVariableIsExactOnAGenuinePlaneAndVariesLinearlyAlongU", TestSurfaceOffsetVariableIsExactOnAGenuinePlaneAndVariesLinearlyAlongU);
+  RunTest("TestSurfaceOffsetVariableWithEqualEndsMatchesOffsetApproximateExactly", TestSurfaceOffsetVariableWithEqualEndsMatchesOffsetApproximateExactly);
+  RunTest("TestSurfaceOffsetVariableFoldGuardUsesTheLocallyInterpolatedDistance", TestSurfaceOffsetVariableFoldGuardUsesTheLocallyInterpolatedDistance);
+  RunTest("TestSurfaceOffsetVariableArgumentChecksAndZeroDistance", TestSurfaceOffsetVariableArgumentChecksAndZeroDistance);
 
-  TestSurfaceOffsetRefitIsExactOnAGenuinePlane();
-  TestSurfaceOffsetRefitOnSphereBeatsOffsetApproximateAtATighterTolerance();
-  TestSurfaceOffsetRefitFoldGuardMatchesOffsetApproximate();
-  TestSurfaceOffsetRefitOnBulgedFreeformRefinesUntilWithinTolerance();
-  TestSurfaceOffsetRefitArgumentChecksAndZeroDistance();
+  RunTest("TestSurfaceOffsetRefitIsExactOnAGenuinePlane", TestSurfaceOffsetRefitIsExactOnAGenuinePlane);
+  RunTest("TestSurfaceOffsetRefitOnSphereBeatsOffsetApproximateAtATighterTolerance", TestSurfaceOffsetRefitOnSphereBeatsOffsetApproximateAtATighterTolerance);
+  RunTest("TestSurfaceOffsetRefitFoldGuardMatchesOffsetApproximate", TestSurfaceOffsetRefitFoldGuardMatchesOffsetApproximate);
+  RunTest("TestSurfaceOffsetRefitOnBulgedFreeformRefinesUntilWithinTolerance", TestSurfaceOffsetRefitOnBulgedFreeformRefinesUntilWithinTolerance);
+  RunTest("TestSurfaceOffsetRefitArgumentChecksAndZeroDistance", TestSurfaceOffsetRefitArgumentChecksAndZeroDistance);
 
-  TestCurveOffsetInPlaneLineIsExactParallelLine();
-  TestCurveOffsetInPlaneCircleIsExactConcentricCircle();
-  TestCurveOffsetInPlanePartialArcPreservesAngularSpan();
-  TestCurveOffsetInPlaneGeneralCurveApproximatesAndDetectsSelfIntersection();
-  TestCurveOffsetInPlaneGeneralCurveRefinesUntilWithinTolerance();
-  TestCurveOffsetInPlaneRefusesNonPlanarCurve();
-  TestCurveOffsetInPlaneWithExplicitPlaneSucceedsOnNonPlanarCurve();
-  TestCurveOffsetInPlaneWithExplicitPlaneLineIsExactForAnyNonParallelPlane();
-  TestCurveOffsetInPlaneWithExplicitPlaneRefusesWhenTangentParallelToNormal();
-  TestCurveOffsetInPlaneWithExplicitPlaneMatchesSinglePlaneOverloadWhenPlanesAgree();
-  TestCurveOffsetInPlaneWithExplicitPlaneThrowsOnInvalidArguments();
-  TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy();
+  RunTest("TestCurveOffsetInPlaneLineIsExactParallelLine", TestCurveOffsetInPlaneLineIsExactParallelLine);
+  RunTest("TestCurveOffsetInPlaneCircleIsExactConcentricCircle", TestCurveOffsetInPlaneCircleIsExactConcentricCircle);
+  RunTest("TestCurveOffsetInPlanePartialArcPreservesAngularSpan", TestCurveOffsetInPlanePartialArcPreservesAngularSpan);
+  RunTest("TestCurveOffsetInPlaneGeneralCurveApproximatesAndDetectsSelfIntersection", TestCurveOffsetInPlaneGeneralCurveApproximatesAndDetectsSelfIntersection);
+  RunTest("TestCurveOffsetInPlaneGeneralCurveRefinesUntilWithinTolerance", TestCurveOffsetInPlaneGeneralCurveRefinesUntilWithinTolerance);
+  RunTest("TestCurveOffsetInPlaneRefusesNonPlanarCurve", TestCurveOffsetInPlaneRefusesNonPlanarCurve);
+  RunTest("TestCurveOffsetInPlaneWithExplicitPlaneSucceedsOnNonPlanarCurve", TestCurveOffsetInPlaneWithExplicitPlaneSucceedsOnNonPlanarCurve);
+  RunTest("TestCurveOffsetInPlaneWithExplicitPlaneLineIsExactForAnyNonParallelPlane", TestCurveOffsetInPlaneWithExplicitPlaneLineIsExactForAnyNonParallelPlane);
+  RunTest("TestCurveOffsetInPlaneWithExplicitPlaneRefusesWhenTangentParallelToNormal", TestCurveOffsetInPlaneWithExplicitPlaneRefusesWhenTangentParallelToNormal);
+  RunTest("TestCurveOffsetInPlaneWithExplicitPlaneMatchesSinglePlaneOverloadWhenPlanesAgree", TestCurveOffsetInPlaneWithExplicitPlaneMatchesSinglePlaneOverloadWhenPlanesAgree);
+  RunTest("TestCurveOffsetInPlaneWithExplicitPlaneThrowsOnInvalidArguments", TestCurveOffsetInPlaneWithExplicitPlaneThrowsOnInvalidArguments);
+  RunTest("TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy", TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy);
 
-  TestCurveOffsetOnSurfaceNormalOpenCubicCurveIsExactOnAFlatPlane();
-  TestCurveOffsetOnSurfaceNormalOpenPolylineStaysAnExactPolyline();
-  TestCurveOffsetOnSurfaceNormalClosedCurveStaysClosed();
-  TestCurveOffsetOnSurfaceNormalArgumentChecks();
+  RunTest("TestCurveOffsetOnSurfaceNormalOpenCubicCurveIsExactOnAFlatPlane", TestCurveOffsetOnSurfaceNormalOpenCubicCurveIsExactOnAFlatPlane);
+  RunTest("TestCurveOffsetOnSurfaceNormalOpenPolylineStaysAnExactPolyline", TestCurveOffsetOnSurfaceNormalOpenPolylineStaysAnExactPolyline);
+  RunTest("TestCurveOffsetOnSurfaceNormalClosedCurveStaysClosed", TestCurveOffsetOnSurfaceNormalClosedCurveStaysClosed);
+  RunTest("TestCurveOffsetOnSurfaceNormalArgumentChecks", TestCurveOffsetOnSurfaceNormalArgumentChecks);
 
-  TestCurveOffsetInSurfaceOpenCubicCurveMatchesOffsetInPlaneOnFlatPlane();
-  TestCurveOffsetInSurfaceOpenPolylineEndpointsMoveByTheExactSidewaysDistance();
-  TestCurveOffsetInSurfaceClosedCircleStaysAConcentricCircleInThePlane();
-  TestCurveOffsetInSurfaceStaysOnACurvedSurfaceUnlikeOffsetOnSurfaceNormal();
-  TestCurveOffsetInSurfaceArgumentChecks();
+  RunTest("TestCurveOffsetInSurfaceOpenCubicCurveMatchesOffsetInPlaneOnFlatPlane", TestCurveOffsetInSurfaceOpenCubicCurveMatchesOffsetInPlaneOnFlatPlane);
+  RunTest("TestCurveOffsetInSurfaceOpenPolylineEndpointsMoveByTheExactSidewaysDistance", TestCurveOffsetInSurfaceOpenPolylineEndpointsMoveByTheExactSidewaysDistance);
+  RunTest("TestCurveOffsetInSurfaceClosedCircleStaysAConcentricCircleInThePlane", TestCurveOffsetInSurfaceClosedCircleStaysAConcentricCircleInThePlane);
+  RunTest("TestCurveOffsetInSurfaceStaysOnACurvedSurfaceUnlikeOffsetOnSurfaceNormal", TestCurveOffsetInSurfaceStaysOnACurvedSurfaceUnlikeOffsetOnSurfaceNormal);
+  RunTest("TestCurveOffsetInSurfaceArgumentChecks", TestCurveOffsetInSurfaceArgumentChecks);
 
-  TestCurveOffsetInPlaneOpenPolylineExactSharpCorners();
-  TestCurveOffsetInPlaneClosedPolygonMitersSeamCorner();
-  TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter();
-  TestCurveOffsetInPlanePolylineRefusesNearFullFold();
-  TestCurveOffsetInPlaneWithExplicitPlanePolylineMatchesSinglePlaneOverload();
-  TestCurveOffsetInPlaneRoundStyleFilletsConvexCorners();
-  TestCurveOffsetInPlaneRoundStyleLeavesConcaveCornerAsExactMiter();
-  TestCurveOffsetInPlaneRoundStyleClosedSquareMatchesClosedFormPerimeter();
-  TestCurveOffsetInPlaneChamferStyleCutsConvexCorners();
-  TestCurveOffsetInPlaneChamferStyleLeavesConcaveCornerAsExactMiter();
-  TestCurveOffsetInPlaneChamferStyleClosedSquareMatchesClosedFormPerimeter();
-  TestCurveOffsetInPlaneClosedPolygonRefusesSelfIntersectingLoop();
-  TestNurbsCurveFilletCornerRightAngle();
-  TestNurbsCurveFilletCornerObtuseAngleAndTangency();
-  TestNurbsCurveFilletCornerRejectsInvalidInput();
-  TestNurbsCurveFilletCornerArcMatchesFilletCornerOnRightAngle();
-  TestNurbsCurveFilletCornerArcAcceptsSyntheticFarRayPoints();
-  TestNurbsCurveFilletCornerArcRejectsInvalidInput();
-  TestNurbsCurveChamferCornerAsymmetricDistances();
-  TestNurbsCurveChamferCornerRejectsInvalidInput();
-  TestNurbsCurveBlendCurvesG1MatchesEndpointPositionsAndTangents();
-  TestNurbsCurveBlendCurvesG2MatchesCurvatureAtBothEnds();
-  TestNurbsCurveBlendCurvesG3MatchesThirdDerivativeAtBothEnds();
-  TestNurbsCurveBlendCurvesReverseFlagNegatesOddDerivatives();
-  TestNurbsCurveBlendCurvesRejectsInvalidInput();
-  TestNurbsSurfaceBlendSurfacesMatchesPositionAndCrossBoundaryDerivatives();
-  TestNurbsSurfaceBlendSurfacesRejectsInvalidInput();
-  TestCurveOffsetInPlaneWithExplicitPlaneNonCoplanarPolylineFallsBackToGeneralPath();
+  RunTest("TestCurveOffsetInPlaneOpenPolylineExactSharpCorners", TestCurveOffsetInPlaneOpenPolylineExactSharpCorners);
+  RunTest("TestCurveOffsetInPlaneClosedPolygonMitersSeamCorner", TestCurveOffsetInPlaneClosedPolygonMitersSeamCorner);
+  RunTest("TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter", TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter);
+  RunTest("TestCurveOffsetInPlanePolylineRefusesNearFullFold", TestCurveOffsetInPlanePolylineRefusesNearFullFold);
+  RunTest("TestCurveOffsetInPlaneWithExplicitPlanePolylineMatchesSinglePlaneOverload", TestCurveOffsetInPlaneWithExplicitPlanePolylineMatchesSinglePlaneOverload);
+  RunTest("TestCurveOffsetInPlaneRoundStyleFilletsConvexCorners", TestCurveOffsetInPlaneRoundStyleFilletsConvexCorners);
+  RunTest("TestCurveOffsetInPlaneRoundStyleLeavesConcaveCornerAsExactMiter", TestCurveOffsetInPlaneRoundStyleLeavesConcaveCornerAsExactMiter);
+  RunTest("TestCurveOffsetInPlaneRoundStyleClosedSquareMatchesClosedFormPerimeter", TestCurveOffsetInPlaneRoundStyleClosedSquareMatchesClosedFormPerimeter);
+  RunTest("TestCurveOffsetInPlaneChamferStyleCutsConvexCorners", TestCurveOffsetInPlaneChamferStyleCutsConvexCorners);
+  RunTest("TestCurveOffsetInPlaneChamferStyleLeavesConcaveCornerAsExactMiter", TestCurveOffsetInPlaneChamferStyleLeavesConcaveCornerAsExactMiter);
+  RunTest("TestCurveOffsetInPlaneChamferStyleClosedSquareMatchesClosedFormPerimeter", TestCurveOffsetInPlaneChamferStyleClosedSquareMatchesClosedFormPerimeter);
+  RunTest("TestCurveOffsetInPlaneSmoothStyleBlendsConvexCornersWithZeroCurvatureJunctions", TestCurveOffsetInPlaneSmoothStyleBlendsConvexCornersWithZeroCurvatureJunctions);
+  RunTest("TestCurveOffsetInPlaneSmoothStyleLeavesConcaveCornerAsExactMiter", TestCurveOffsetInPlaneSmoothStyleLeavesConcaveCornerAsExactMiter);
+  RunTest("TestCurveOffsetInPlaneSmoothStyleClosedSquareStaysClosedAndLongerThanChamferChord", TestCurveOffsetInPlaneSmoothStyleClosedSquareStaysClosedAndLongerThanChamferChord);
+  RunTest("TestCurveOffsetInPlaneClosedPolygonRefusesSelfIntersectingLoop", TestCurveOffsetInPlaneClosedPolygonRefusesSelfIntersectingLoop);
+  RunTest("TestNurbsCurveFilletCornerRightAngle", TestNurbsCurveFilletCornerRightAngle);
+  RunTest("TestNurbsCurveFilletCornerObtuseAngleAndTangency", TestNurbsCurveFilletCornerObtuseAngleAndTangency);
+  RunTest("TestNurbsCurveFilletCornerRejectsInvalidInput", TestNurbsCurveFilletCornerRejectsInvalidInput);
+  RunTest("TestNurbsCurveFilletCornerArcMatchesFilletCornerOnRightAngle", TestNurbsCurveFilletCornerArcMatchesFilletCornerOnRightAngle);
+  RunTest("TestNurbsCurveFilletCornerArcAcceptsSyntheticFarRayPoints", TestNurbsCurveFilletCornerArcAcceptsSyntheticFarRayPoints);
+  RunTest("TestNurbsCurveFilletCornerArcRejectsInvalidInput", TestNurbsCurveFilletCornerArcRejectsInvalidInput);
+  RunTest("TestNurbsCurveChamferCornerAsymmetricDistances", TestNurbsCurveChamferCornerAsymmetricDistances);
+  RunTest("TestNurbsCurveChamferCornerRejectsInvalidInput", TestNurbsCurveChamferCornerRejectsInvalidInput);
+  RunTest("TestNurbsCurveBlendCurvesG1MatchesEndpointPositionsAndTangents", TestNurbsCurveBlendCurvesG1MatchesEndpointPositionsAndTangents);
+  RunTest("TestNurbsCurveBlendCurvesG2MatchesCurvatureAtBothEnds", TestNurbsCurveBlendCurvesG2MatchesCurvatureAtBothEnds);
+  RunTest("TestNurbsCurveBlendCurvesG3MatchesThirdDerivativeAtBothEnds", TestNurbsCurveBlendCurvesG3MatchesThirdDerivativeAtBothEnds);
+  RunTest("TestNurbsCurveBlendCurvesReverseFlagNegatesOddDerivatives", TestNurbsCurveBlendCurvesReverseFlagNegatesOddDerivatives);
+  RunTest("TestNurbsCurveBlendCurvesRejectsInvalidInput", TestNurbsCurveBlendCurvesRejectsInvalidInput);
+  RunTest("TestNurbsSurfaceBlendSurfacesMatchesPositionAndCrossBoundaryDerivatives", TestNurbsSurfaceBlendSurfacesMatchesPositionAndCrossBoundaryDerivatives);
+  RunTest("TestNurbsSurfaceBlendSurfacesRejectsInvalidInput", TestNurbsSurfaceBlendSurfacesRejectsInvalidInput);
+  RunTest("TestCurveOffsetInPlaneWithExplicitPlaneNonCoplanarPolylineFallsBackToGeneralPath", TestCurveOffsetInPlaneWithExplicitPlaneNonCoplanarPolylineFallsBackToGeneralPath);
 
 
-  TestCurveElevateDegreePreservesShapeWithNonUniformKnots();
-  TestCurveReduceDegree();
-  TestCurveFair();
-  TestSurfaceElevateDegreePreservesShapeWithNonUniformKnots();
-  TestCurveClosestPointAcrossClampedSeamKink();
-  TestCurveParameterAtArcLengthStaysInsideDomain();
-  TestSurfaceCurvatureAtIsScaleInvariant();
-  TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth();
-  sweep_tests::TestPipeVariable();
-  sweep_tests::TestPipeThickWalledExactAnnularCylinderAndDegenerateCases();
-  sweep_tests::TestScrewThreadExactHelicalSweepVolumeAndGeometry();
-  sweep_tests::TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads();
-  TestSurfaceExtendLinearIsExactlyStraightAndG1AtTheJoin();
-  TestSurfaceExtendLinearDiffersFromSmoothExtend();
-  TestSurfaceExtendLinearBothEndsBothDirectionsAndRational();
-  TestSurfaceExtendLinearNoOpAndRefusalChecks();
+  RunTest("TestCurveElevateDegreePreservesShapeWithNonUniformKnots", TestCurveElevateDegreePreservesShapeWithNonUniformKnots);
+  RunTest("TestCurveReduceDegree", TestCurveReduceDegree);
+  RunTest("TestCurveFair", TestCurveFair);
+  RunTest("TestSurfaceElevateDegreePreservesShapeWithNonUniformKnots", TestSurfaceElevateDegreePreservesShapeWithNonUniformKnots);
+  RunTest("TestCurveClosestPointAcrossClampedSeamKink", TestCurveClosestPointAcrossClampedSeamKink);
+  RunTest("TestCurveParameterAtArcLengthStaysInsideDomain", TestCurveParameterAtArcLengthStaysInsideDomain);
+  RunTest("TestSurfaceCurvatureAtIsScaleInvariant", TestSurfaceCurvatureAtIsScaleInvariant);
+  RunTest("TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth", TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth);
+  RunTest("sweep_tests::TestPipeVariable", sweep_tests::TestPipeVariable);
+  RunTest("sweep_tests::TestPipeThickWalledExactAnnularCylinderAndDegenerateCases", sweep_tests::TestPipeThickWalledExactAnnularCylinderAndDegenerateCases);
+  RunTest("sweep_tests::TestScrewThreadExactHelicalSweepVolumeAndGeometry", sweep_tests::TestScrewThreadExactHelicalSweepVolumeAndGeometry);
+  RunTest("sweep_tests::TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads", sweep_tests::TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads);
+  RunTest("TestSurfaceExtendLinearIsExactlyStraightAndG1AtTheJoin", TestSurfaceExtendLinearIsExactlyStraightAndG1AtTheJoin);
+  RunTest("TestSurfaceExtendLinearDiffersFromSmoothExtend", TestSurfaceExtendLinearDiffersFromSmoothExtend);
+  RunTest("TestSurfaceExtendLinearBothEndsBothDirectionsAndRational", TestSurfaceExtendLinearBothEndsBothDirectionsAndRational);
+  RunTest("TestSurfaceExtendLinearNoOpAndRefusalChecks", TestSurfaceExtendLinearNoOpAndRefusalChecks);
 
-  sweep_tests::TestSweep2ExactFrustumAndDegenerateCases();
-  sweep_tests::TestRailRevolveRigidRotationReproducesEveryStationExactly();
-  sweep_tests::TestRailRevolveVaryingRadiusScalesExactlyAtTheTwoStations();
-  sweep_tests::TestRailRevolveBulgingRailProducesABracketedVaseVolume();
-  sweep_tests::TestRailRevolveOpenProfileBothEndsOnAxis();
-  sweep_tests::TestRailRevolveNegativeControls();
+  RunTest("sweep_tests::TestSweep2ExactFrustumAndDegenerateCases", sweep_tests::TestSweep2ExactFrustumAndDegenerateCases);
+  RunTest("sweep_tests::TestRailRevolveRigidRotationReproducesEveryStationExactly", sweep_tests::TestRailRevolveRigidRotationReproducesEveryStationExactly);
+  RunTest("sweep_tests::TestRailRevolveVaryingRadiusScalesExactlyAtTheTwoStations", sweep_tests::TestRailRevolveVaryingRadiusScalesExactlyAtTheTwoStations);
+  RunTest("sweep_tests::TestRailRevolveBulgingRailProducesABracketedVaseVolume", sweep_tests::TestRailRevolveBulgingRailProducesABracketedVaseVolume);
+  RunTest("sweep_tests::TestRailRevolveOpenProfileBothEndsOnAxis", sweep_tests::TestRailRevolveOpenProfileBothEndsOnAxis);
+  RunTest("sweep_tests::TestRailRevolveNegativeControls", sweep_tests::TestRailRevolveNegativeControls);
 
-  TestCounterboreHoleArgumentChecks();
-  TestCounterboreHoleAxisAlignedVolumeAndTopology();
-  TestCounterboreHoleBlindAxisAlignedVolume();
-  TestRecognizeCounterboreHolesRoundTrip();
-  TestRecognizeCountersinkHolesRoundTrip();
-  TestRecognizeSteppedBossesRoundTrip();
-  TestRecognizeSteppedHoleChainsRoundTrip();
-  TestRecognizeSteppedBossChainsRoundTrip();
-  TestRecognizeTaperedBossesRoundTrip();
-  TestRecognizeCountersinkChainsRoundTrip();
-  TestRecognizeTaperedBossChainsRoundTrip();
+  RunTest("TestCounterboreHoleArgumentChecks", TestCounterboreHoleArgumentChecks);
+  RunTest("TestCounterboreHoleAxisAlignedVolumeAndTopology", TestCounterboreHoleAxisAlignedVolumeAndTopology);
+  RunTest("TestCounterboreHoleBlindAxisAlignedVolume", TestCounterboreHoleBlindAxisAlignedVolume);
+  RunTest("TestRecognizeCounterboreHolesRoundTrip", TestRecognizeCounterboreHolesRoundTrip);
+  RunTest("TestRecognizeCountersinkHolesRoundTrip", TestRecognizeCountersinkHolesRoundTrip);
+  RunTest("TestRecognizeSteppedBossesRoundTrip", TestRecognizeSteppedBossesRoundTrip);
+  RunTest("TestRecognizeSteppedHoleChainsRoundTrip", TestRecognizeSteppedHoleChainsRoundTrip);
+  RunTest("TestRecognizeSteppedBossChainsRoundTrip", TestRecognizeSteppedBossChainsRoundTrip);
+  RunTest("TestRecognizeTaperedBossesRoundTrip", TestRecognizeTaperedBossesRoundTrip);
+  RunTest("TestRecognizeCountersinkChainsRoundTrip", TestRecognizeCountersinkChainsRoundTrip);
+  RunTest("TestRecognizeTaperedBossChainsRoundTrip", TestRecognizeTaperedBossChainsRoundTrip);
 
-  sweep_tests::TestMakeRevolvedCutTurnsDownRodToUniformSmallerRadius();
-  sweep_tests::TestMakeRevolvedCutRejectsInvalidArguments();
+  RunTest("sweep_tests::TestMakeRevolvedCutTurnsDownRodToUniformSmallerRadius", sweep_tests::TestMakeRevolvedCutTurnsDownRodToUniformSmallerRadius);
+  RunTest("sweep_tests::TestMakeRevolvedCutRejectsInvalidArguments", sweep_tests::TestMakeRevolvedCutRejectsInvalidArguments);
 
-  TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency();
-  TestBendAndBendAllowanceRejectInvalidArguments();
+  RunTest("TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency", TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency);
+  RunTest("TestBendAndBendAllowanceRejectInvalidArguments", TestBendAndBendAllowanceRejectInvalidArguments);
 
-  TestMultiBendReducesToBendForASingleBend();
-  TestMultiBendUChannelAndHatChannelMatchPappusClosedForm();
-  TestMultiBendRejectsInvalidArguments();
+  RunTest("TestMultiBendReducesToBendForASingleBend", TestMultiBendReducesToBendForASingleBend);
+  RunTest("TestMultiBendUChannelAndHatChannelMatchPappusClosedForm", TestMultiBendUChannelAndHatChannelMatchPappusClosedForm);
+  RunTest("TestMultiBendRejectsInvalidArguments", TestMultiBendRejectsInvalidArguments);
 
-  TestUnfoldBendAtHalfKFactorExactlyMatchesBendPappusVolume();
-  TestUnfoldMultiBendAtHalfKFactorExactlyMatchesMultiBendPappusVolume();
-  TestUnfoldBendAndUnfoldMultiBendRejectInvalidArguments();
+  RunTest("TestUnfoldBendAtHalfKFactorExactlyMatchesBendPappusVolume", TestUnfoldBendAtHalfKFactorExactlyMatchesBendPappusVolume);
+  RunTest("TestUnfoldMultiBendAtHalfKFactorExactlyMatchesMultiBendPappusVolume", TestUnfoldMultiBendAtHalfKFactorExactlyMatchesMultiBendPappusVolume);
+  RunTest("TestUnfoldBendAndUnfoldMultiBendRejectInvalidArguments", TestUnfoldBendAndUnfoldMultiBendRejectInvalidArguments);
 
-  TestLatticeInfillFillsBoxAndConformsToNonBoxSolids();
-  TestLatticeInfillRejectsInvalidArguments();
+  RunTest("TestLatticeInfillFillsBoxAndConformsToNonBoxSolids", TestLatticeInfillFillsBoxAndConformsToNonBoxSolids);
+  RunTest("TestLatticeInfillRejectsInvalidArguments", TestLatticeInfillRejectsInvalidArguments);
 
-  ON::End();
+  RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {
     std::fprintf(stderr, "%d check(s) failed\n", g_failures);

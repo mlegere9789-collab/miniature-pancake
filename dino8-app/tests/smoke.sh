@@ -427,7 +427,8 @@ if echo "$C2" | grep -q "Bounding box: (30, 0, 9) to (40, 0, 9)"; then
 else
   echo "ok   RemoveSymmetry genuinely broke the live link (copy did NOT follow the source's post-removal move)"
 fi
-c2check "^ok   expect_objects 201" "curve-tools script produced the expected object count"
+c2check "ConvertToBeziers: 4 Bezier span(s)" "ConvertToBeziers now decomposes a surface too (NurbsSurface::DecomposeToBeziers), not just curves - a degree-1 3x3-control-point Plane's 2x2 spans become exactly 4 Bezier patches"
+c2check "^ok   expect_objects 205" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/exchange_script.txt" > "$TMPW/exchange_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -1711,15 +1712,31 @@ print(f'.bmp: max byte value={bmp_max} (of 255)')
 assert bmp_max > 0, '.bmp is black'
 PY
 
-# Render Hdr=Yes with Quality=Raytraced correctly has nothing HDR to save
-# (PathTracer's own output has no parallel HDR capture yet - see the
-# PARITY_MAP.md bullet's own disclosed scope) - a real end-to-end check
-# that this combination fails honestly rather than silently misreporting
-# success or crashing.
+# Render Hdr=Yes with Quality=Raytraced: pixel-level proof (PARITY_MAP.md's
+# "Environments and image-based lighting" item - the last remaining half
+# of its long-disclosed render-to-file HDR gap) that PathTracer::Render's
+# own hdr_rgb_out genuinely carries real, unclamped linear-radiance values
+# too, not just the rasteriser quality - the same glossy-sphere-under-a-
+# point-light scene render_hdr_script.txt already uses, path-traced
+# instead (a stronger Intensity=100 than that one's Intensity=20: the
+# default bilateral denoise here, unlike the rasteriser's own roll-off,
+# averages a lone bright specular pixel with its much dimmer neighbours,
+# so a weaker light's own peak survives tonemapping but not denoising -
+# confirmed empirically, not guessed, against a real build). A second,
+# Hdr=Yes-less raytraced render re-checks the existing per-call-request
+# refusal still holds for this quality too (not loosened by this fix).
 cat > "$TMPW/render_hdr_raytrace_script.txt" <<EOS
 Sphere 0,0,0 5
+SelLast
+RenderAssignMaterialToObjects HdrRtTestMat Gloss=1 Reflectivity=0
+SelNone
+PointLight Intensity=100
+10,0,10
 RenderedViewport
-Render Width=24 Height=24 Quality=Raytraced Samples=4 Bounces=2 Hdr=Yes
+Render Width=24 Height=24 Quality=Raytraced Samples=16 Bounces=2 Hdr=Yes
+SaveRenderWindowAs $TMPW/renderhdr/raytrace_hdr.hdr
+SaveRenderWindowAs $TMPW/renderhdr/raytrace_hdr.exr
+Render Width=24 Height=24 Quality=Raytraced Samples=16 Bounces=2
 SaveRenderWindowAs $TMPW/renderhdr/raytrace_nohdr.hdr
 EOS
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -1727,11 +1744,91 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   RHDRRT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/render_hdr_raytrace_script.txt" 2>&1)" || { echo "$RHDRRT"; echo "FAIL: render_hdr raytrace script exited non-zero"; exit 1; }
 fi
-if echo "$RHDRRT" | grep -qF "! This render has no real HDR data to save"; then
-  echo "ok   Render Hdr=Yes Quality=Raytraced honestly has nothing HDR to save (PathTracer's own output has no parallel HDR capture of its own yet, a separate disclosed gap) rather than silently claiming success"
-else
-  echo "FAIL Render Hdr=Yes Quality=Raytraced"; near "$RHDRRT" "This render has no real HDR data to save"; fail=1
-fi
+rhdrrtcheck() { if echo "$RHDRRT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RHDRRT" "$1"; fail=1; fi; }
+rhdrrtcheck "Saved rendering $TMPW/renderhdr/raytrace_hdr.hdr (24 x 24)" "SaveRenderWindowAs wrote a real .hdr file from a Quality=Raytraced render"
+rhdrrtcheck "Saved rendering $TMPW/renderhdr/raytrace_hdr.exr (24 x 24)" "SaveRenderWindowAs wrote a real .exr file from a Quality=Raytraced render"
+rhdrrtcheck "! This render has no real HDR data to save" "a Quality=Raytraced render with no Hdr=Yes still correctly refuses an .hdr save afterward (the per-call-request refusal is not loosened by adding raytraced HDR capture)"
+python3 - "$TMPW/renderhdr/raytrace_hdr.hdr" "$TMPW/renderhdr/raytrace_hdr.exr" <<'PY' && echo "ok   Quality=Raytraced's own .hdr and .exr captures carry real, unclamped linear-radiance values above 1.0 too - PathTracer::Render's hdr_rgb_out, not just the rasteriser's own second HDR pass" || { echo "FAIL Render Hdr=Yes Quality=Raytraced pixel check"; fail=1; }
+import struct, sys
+
+def load_hdr_flat(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'#?', 'not a Radiance HDR'
+    pos = 0
+    def readline():
+        nonlocal pos
+        end = d.index(b'\n', pos)
+        line = d[pos:end]; pos = end + 1
+        return line
+    readline()
+    while readline() != b'':
+        pass
+    import re
+    m = re.match(rb'-Y (\d+) \+X (\d+)', readline())
+    h, w = int(m.group(1)), int(m.group(2))
+    mx = 0.0
+    above = 0
+    for _ in range(w * h):
+        r, g, b, e = d[pos], d[pos + 1], d[pos + 2], d[pos + 3]
+        pos += 4
+        if e == 0:
+            continue
+        f = 2.0 ** (e - 128 - 8)
+        v = max(r, g, b) * f
+        mx = max(mx, v)
+        if v > 1.0:
+            above += 1
+    return mx, above
+
+def read_le32(b, p): return struct.unpack_from('<i', b, p)[0]
+
+def load_exr_float(path):
+    d = open(path, 'rb').read()
+    assert d[0:4] == b'\x76\x2f\x31\x01', 'not an EXR'
+    pos = 8
+    channels = []
+    data_window = None
+    while True:
+        if d[pos] == 0:
+            pos += 1
+            break
+        name_end = d.index(b'\x00', pos); name = d[pos:name_end].decode(); pos = name_end + 1
+        type_end = d.index(b'\x00', pos); typ = d[pos:type_end].decode(); pos = type_end + 1
+        size = read_le32(d, pos); pos += 4
+        val_start = pos
+        if name == 'channels' and typ == 'chlist':
+            p = val_start
+            end = val_start + size
+            while p < end and d[p] != 0:
+                cend = d.index(b'\x00', p); cname = d[p:cend].decode(); p = cend + 1
+                p += 4 + 4 + 8
+                channels.append(cname)
+        elif name == 'dataWindow':
+            data_window = tuple(read_le32(d, val_start + 4 * i) for i in range(4))
+        pos = val_start + size
+    xmin, ymin, xmax, ymax = data_window
+    w, h = xmax - xmin + 1, ymax - ymin + 1
+    offsets = [struct.unpack_from('<q', d, pos + 8 * i)[0] for i in range(h)]
+    mx = 0.0
+    above = 0
+    for off in offsets:
+        p = off + 8
+        chan_ptrs = [p + ci * w * 4 for ci in range(len(channels))]
+        for x in range(w):
+            v = max(struct.unpack_from('<f', d, cp + x * 4)[0] for cp in chan_ptrs)
+            mx = max(mx, v)
+            if v > 1.0:
+                above += 1
+    return mx, above
+
+hdr_max, hdr_above = load_hdr_flat(sys.argv[1])
+exr_max, exr_above = load_exr_float(sys.argv[2])
+print(f'raytraced .hdr: max={hdr_max:.3f} pixels_above_1.0={hdr_above}')
+print(f'raytraced .exr: max={exr_max:.3f} pixels_above_1.0={exr_above}')
+assert hdr_above > 0, 'raytraced .hdr never exceeds 1.0 anywhere - PathTracer::Render hdr_rgb_out captured nothing genuinely unclamped'
+assert exr_above > 0, 'raytraced .exr never exceeds 1.0 anywhere - PathTracer::Render hdr_rgb_out captured nothing genuinely unclamped'
+assert abs(hdr_max - exr_max) < 0.5 * max(hdr_max, exr_max), f'raytraced .hdr and .exr disagree on the same render far more than RGBE quantization would explain: {hdr_max} vs {exr_max}'
+PY
 head -c 2 "$TMPW/arctic.ppm" | grep -q "P6" && echo "ok   arctic.ppm is a binary PPM" || { echo "FAIL arctic.ppm"; fail=1; }
 # ApplyOcsMapping: AutoCAD's real Arbitrary Axis Algorithm (see
 # render_script.txt's comment for how the tilted circle's exact normal
@@ -7735,6 +7832,99 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     else
       grep -q "^serve: done requests=4$" "$TOKEN_LOG" && echo "ok   --serve-token server exited cleanly on its own after 4 real HTTP requests" || { cat "$TOKEN_LOG"; echo "FAIL --serve-token done-summary line missing or wrong"; fail=1; }
     fi
+  fi
+
+  # --serve-token-file: a third, independent server instance whose tokens
+  # come from a file re-read on every request instead of fixed at startup -
+  # narrows PARITY_MAP.md's own disclosed "no rotation, expiry, or
+  # revocation beyond restarting the server" gap --serve-token alone still
+  # has. Starts with one bare token ("filetoken1") in the file, proves it
+  # authenticates like any --serve-token would, then overwrites the file
+  # mid-run (filetoken1 removed = revoked, filetoken2 + a named ci2:tokenY
+  # added = rotated in) and proves the very next requests see the change
+  # with no restart: the old token now rejected, the new ones accepted.
+  TOKFILE_LOG="$TMPW/serve_token_file.log"
+  TOKFILE_PATH="$TMPW/serve_tokens.txt"
+  printf 'filetoken1\n' > "$TOKFILE_PATH"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 30 "$BIN" --serve 0 --serve-token-file "$TOKFILE_PATH" --serve-max-requests 5 > "$TOKFILE_LOG" 2>&1 &
+  else
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token-file "$TOKFILE_PATH" --serve-max-requests 5 > "$TOKFILE_LOG" 2>&1 &
+  fi
+  TOKFILE_PID=$!
+
+  TOKFILE_PORT=""
+  for _ in $(seq 1 100); do
+    if grep -q "^serve: listening on port " "$TOKFILE_LOG" 2>/dev/null; then
+      TOKFILE_PORT="$(grep "^serve: listening on port " "$TOKFILE_LOG" | head -1 | awk '{print $NF}')"
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ -z "$TOKFILE_PORT" ]; then
+    cat "$TOKFILE_LOG"; echo "FAIL: --serve-token-file server never printed its listening port within 10s"; fail=1
+    kill "$TOKFILE_PID" 2>/dev/null || true
+    wait "$TOKFILE_PID" 2>/dev/null || true
+  else
+    echo "ok   --serve-token-file started a third compute server headless on its own bound port ($TOKFILE_PORT)"
+
+    set +e
+    FILE_CODE_NOAUTH="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'print("should not run")' "http://127.0.0.1:$TOKFILE_PORT/run")"
+    FILE_RESP_OK1="$(curl -s --max-time 10 -H 'Authorization: Bearer filetoken1' -X POST --data 'print("file token ok")' "http://127.0.0.1:$TOKFILE_PORT/run")"
+    # Rewrite the file while the server is still running, no restart:
+    # filetoken1 is gone (revoked), filetoken2/ci2:tokenY are new (rotated
+    # in) - both take effect on the next two requests below.
+    printf 'filetoken2\nci2:tokenY\n' > "$TOKFILE_PATH"
+    FILE_CODE_REVOKED="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer filetoken1' -X POST --data 'print("should not run")' "http://127.0.0.1:$TOKFILE_PORT/run")"
+    FILE_RESP_ROTATED="$(curl -s --max-time 10 -H 'Authorization: Bearer filetoken2' -X POST --data 'print("rotated token ok")' "http://127.0.0.1:$TOKFILE_PORT/run")"
+    FILE_RESP_NAMED="$(curl -s --max-time 10 -H 'Authorization: Bearer tokenY' -H 'Accept: application/json' -X POST --data 'print("named ok")' "http://127.0.0.1:$TOKFILE_PORT/run")"
+    set -e
+    [ "$FILE_CODE_NOAUTH" = "401" ] && echo "ok   --serve-token-file rejects a request with no Authorization header with 401, same as --serve-token" || { echo "FAIL --serve-token-file no-auth request returned HTTP $FILE_CODE_NOAUTH, expected 401"; fail=1; }
+    echo "$FILE_RESP_OK1" | grep -q "^file token ok$" && echo "ok   --serve-token-file accepts a token currently listed in the file and runs the script" || { echo "$FILE_RESP_OK1"; echo "FAIL --serve-token-file did not accept the file's own listed token"; fail=1; }
+    [ "$FILE_CODE_REVOKED" = "401" ] && echo "ok   rewriting the token file to drop a token revokes it on the very next request - no server restart needed" || { echo "FAIL --serve-token-file still accepted a token removed from the file (HTTP $FILE_CODE_REVOKED, expected 401) - revocation did not take effect live"; fail=1; }
+    echo "$FILE_RESP_ROTATED" | grep -q "^rotated token ok$" && echo "ok   a token added to the file after the server started authenticates immediately - live rotation, no restart needed" || { echo "$FILE_RESP_ROTATED"; echo "FAIL --serve-token-file did not accept a token added to the file after startup"; fail=1; }
+    [ "$FILE_RESP_NAMED" = '{"ok":true,"output":["named ok"],"caller":"ci2"}' ] && echo "ok   a named NAME:TOKEN entry in the token file authenticates and echoes its own caller name back, same as a named --serve-token" || { echo "$FILE_RESP_NAMED"; echo "FAIL --serve-token-file named-entry request did not return the expected caller-tagged JSON"; fail=1; }
+
+    set +e; wait "$TOKFILE_PID"; TOKFILE_EC=$?; set -e
+    if [ "$TOKFILE_EC" -eq 124 ]; then
+      cat "$TOKFILE_LOG"; echo "FAIL: --serve-token-file process hung and was killed by the 30s timeout instead of exiting after --serve-max-requests"; fail=1
+    elif [ "$TOKFILE_EC" -ne 0 ]; then
+      cat "$TOKFILE_LOG"; echo "FAIL: --serve-token-file process exited $TOKFILE_EC, expected 0"; fail=1
+    else
+      grep -q "^serve: done requests=5$" "$TOKFILE_LOG" && echo "ok   --serve-token-file server exited cleanly on its own after 5 real HTTP requests" || { cat "$TOKFILE_LOG"; echo "FAIL --serve-token-file done-summary line missing or wrong"; fail=1; }
+    fi
+  fi
+
+  # A missing/unreadable token file must fail CLOSED (deny everything),
+  # never silently fall back to the fully-open behavior an empty
+  # serve_tokens alone would mean - a typo'd --serve-token-file path must
+  # not accidentally leave the compute server open to the network.
+  MISSING_LOG="$TMPW/serve_token_file_missing.log"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 30 "$BIN" --serve 0 --serve-token-file "$TMPW/does_not_exist.txt" --serve-max-requests 1 > "$MISSING_LOG" 2>&1 &
+  else
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token-file "$TMPW/does_not_exist.txt" --serve-max-requests 1 > "$MISSING_LOG" 2>&1 &
+  fi
+  MISSING_PID=$!
+  MISSING_PORT=""
+  for _ in $(seq 1 100); do
+    if grep -q "^serve: listening on port " "$MISSING_LOG" 2>/dev/null; then
+      MISSING_PORT="$(grep "^serve: listening on port " "$MISSING_LOG" | head -1 | awk '{print $NF}')"
+      break
+    fi
+    sleep 0.1
+  done
+  if [ -z "$MISSING_PORT" ]; then
+    cat "$MISSING_LOG"; echo "FAIL: --serve-token-file (missing file) server never printed its listening port within 10s"; fail=1
+    kill "$MISSING_PID" 2>/dev/null || true
+    wait "$MISSING_PID" 2>/dev/null || true
+  else
+    set +e
+    MISSING_CODE="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'print("should not run")' "http://127.0.0.1:$MISSING_PORT/run")"
+    set -e
+    [ "$MISSING_CODE" = "401" ] && echo "ok   --serve-token-file pointed at a file that doesn't exist fails CLOSED (401), not open - a bad path can't accidentally disable auth" || { echo "FAIL --serve-token-file with a missing file returned HTTP $MISSING_CODE, expected 401 (fail closed)"; fail=1; }
+    set +e; wait "$MISSING_PID"; set -e
   fi
 fi
 

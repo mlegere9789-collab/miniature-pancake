@@ -34,7 +34,17 @@ class NurbsSurface;
 // point alone, same as `Sharp`: cutting a corner that never had a gap to
 // begin with is not standard behavior in any offset tool and isn't
 // invented here either.
-enum class CurveOffsetCornerStyle { Sharp, Round, Chamfer };
+//
+// `Smooth` fills a corner the same way (only on the gap-opening "fill"
+// side of a turn, exactly like `Round`/`Chamfer`) with a G2 (curvature-
+// continuous) blend between the two adjacent offset edges instead of a
+// circular arc or a flat cut - built via `BlendCurves()` (curve.h) from
+// each edge's own straight-line direction. Since a straight line has
+// zero curvature everywhere, the blend starts and ends at curvature
+// zero too, a real difference from `Round`'s own arc (whose junction
+// with each straight edge is only tangent-continuous: curvature jumps
+// from 0 on the line to `1/|distance|` right at the tangent point).
+enum class CurveOffsetCornerStyle { Sharp, Round, Chamfer, Smooth };
 
 // What NurbsCurve::MatchEnd() reports about the match it just made,
 // every number measured by evaluating both curves after the edit (not
@@ -514,6 +524,31 @@ class NurbsCurve {
   // positive.
   Result MinDistanceTo(const NurbsCurve& other, double tolerance, double& out_distance,
                         double* out_t_this = nullptr, double* out_t_other = nullptr) const;
+
+  // Exact curve-to-surface minimum distance: closes the other named half
+  // of the same "Entity-pair minimum distance for curves/surfaces" gap
+  // the curve/curve overload above closes ("surface/surface and
+  // curve/surface minimum distance remain unattempted"). Identical
+  // two-tier technique: a coarse global search sampling this curve,
+  // taking `surface.ClosestPointParameter()` at each sample to find the
+  // best starting pair, then a local alternating-projection polish (this
+  // curve's own `ClosestPointParameter()` toward the surface's current
+  // best point, the surface's own `ClosestPointParameter()` back toward
+  // this curve's new point, repeated until neither moves), run at
+  // doubling sample counts until two successive counts agree to within
+  // `tolerance` - the same disclosed "not a formally certified global
+  // minimum" tier the curve/curve overload already carries. `out_t`/
+  // `out_uv`, if non-null, receive the parameter on this curve and the
+  // (u, v) on `surface` where the minimum was found. Returns
+  // `Result::Failed` if convergence isn't reached within 20 doublings.
+  // Throws `std::invalid_argument` if `tolerance` isn't positive.
+  //
+  // Implemented in surface_intersect.cpp (not curve.cpp), alongside this
+  // class's other curve/surface cross-type methods
+  // (`OffsetOnSurfaceNormal` etc.), since it needs `NurbsSurface`'s own
+  // full definition.
+  Result MinDistanceTo(const NurbsSurface& surface, double tolerance, double& out_distance, double* out_t = nullptr,
+                        Point2d* out_uv = nullptr) const;
 
   // An oriented bounding box - PARITY_MAP.md's "Mass properties & spatial
   // queries" category, "Oriented / CPlane-aligned / minimal-volume

@@ -924,7 +924,14 @@ if(DINO8_BUILD_TESTS)
   # adaptive tessellation, driven directly rather than through a real
   # Viewport/GL context. Like dino8_test_block_flip, needs the real
   # SceneObject/BrepMesher/kernel code (no Document needed here).
-  add_executable(dino8_test_adaptive_display tests/test_adaptive_display.cpp src/doc/SceneObject.cpp src/geom/BrepMesher.cpp)
+  # Also links the real Camera.cpp (CameraState lives in doc/Document.h,
+  # same as dino8_test_ssao below) plus AdaptiveTessellation.cpp, so this
+  # target's own distance-based-LOD section can exercise the exact
+  # DistanceLodFactor + EnsureAdaptiveDisplay composition
+  # Viewport::DrawObjects uses, against a real Camera, not a reimplemented
+  # stand-in - still no GL/ImGui.
+  add_executable(dino8_test_adaptive_display tests/test_adaptive_display.cpp src/doc/SceneObject.cpp src/geom/BrepMesher.cpp
+                                              src/viewport/Camera.cpp src/viewport/AdaptiveTessellation.cpp)
   target_include_directories(dino8_test_adaptive_display PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_test_adaptive_display PRIVATE dino8_kernel)
   add_test(NAME dino8_adaptive_display COMMAND dino8_test_adaptive_display)
