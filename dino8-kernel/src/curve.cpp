@@ -2003,6 +2003,123 @@ Result NurbsCurve::ChangeSeam(double t, double min_dist) {
   return curve_.ChangeClosedCurveSeam(t) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsCurve::ReparameterizeRational(double shape_factor, NurbsCurve& out) const {
+  if (!ON_IsValid(shape_factor) || !(shape_factor > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::ReparameterizeRational: shape_factor must "
+        "be a finite, positive number");
+  }
+  if (shape_factor == 1.0) {
+    out = *this;
+    return Result::NoOpAlreadySatisfied;
+  }
+  if (curve_.IsPeriodic()) return Result::Failed;
+
+  ON_NurbsCurve nc = curve_;
+  if (!nc.MakePiecewiseBezier(true)) return Result::Failed;
+
+  const int p = nc.Degree();
+  const int spans = nc.SpanCount();
+  const double T0 = nc.Domain().m_t[0];
+  const double T1 = nc.Domain().m_t[1];
+  if (spans < 1 || !(T1 > T0)) return Result::Failed;
+
+  const int cv_count = nc.CVCount();
+  std::vector<double> orig_weight(static_cast<size_t>(cv_count));
+  for (int i = 0; i < cv_count; ++i) orig_weight[static_cast<size_t>(i)] = nc.Weight(i);
+
+  std::vector<double> new_weight(static_cast<size_t>(cv_count), 1.0);
+  std::vector<double> breakpoint(static_cast<size_t>(spans + 1));
+  breakpoint[0] = T0;
+
+  const double c = shape_factor;
+  for (int s = 0; s < spans; ++s) {
+    // After MakePiecewiseBezier(true), breakpoint b (0..spans) occupies
+    // knot indices [b*p, b*p+p-1] (p consecutive equal entries) - span
+    // s runs from breakpoint s to breakpoint s+1, i.e. index s*p to
+    // index (s+1)*p (confirmed directly against a real multi-span
+    // curve's own knot array, not assumed from the `ConvertToBeziers`
+    // app command's similar-looking but off-by-one-run `Degree()-1+s`/
+    // `Degree()+s` indexing, which only happens to read span 0
+    // correctly and silently returns a degenerate zero-width span for
+    // every later one on a curve with more than ~2 spans - a real,
+    // separate, pre-existing bug in that command, found while verifying
+    // this one, not touched here).
+    const double t0 = nc.Knot(s * p);
+    const double t1 = nc.Knot((s + 1) * p);
+    const double u_a = (t0 - T0) / (T1 - T0);
+    const double u_b = (t1 - T0) / (T1 - T0);
+    // Global relationship (derived from the Bernstein substitution below,
+    // applied to the whole curve): OLD_u = A_c(NEW_v), where
+    // A_c(z) = c*z/(1+(c-1)*z). Inverting for v given u:
+    //   v = u / (c - (c-1)*u)
+    const double v_a = u_a / (c - (c - 1.0) * u_a);
+    const double v_b = u_b / (c - (c - 1.0) * u_b);
+    if (!(v_b > v_a)) return Result::Failed;  // shouldn't happen for a valid span and c > 0
+    // This span's own local shape factor: since OLD_u = A_c(NEW_v)
+    // GLOBALLY, restricting to this span and renormalizing both ends to
+    // [0, 1] stays in the same one-parameter family (any orientation-
+    // preserving Mobius self-map of [0, 1] fixing both ends IS some
+    // A_kappa - confirmed algebraically, not assumed), with
+    // kappa_local = d(OLD_u)/d(NEW_v) at v_a, rescaled by the two
+    // domains' own widths.
+    const double denom_a = 1.0 + (c - 1.0) * v_a;
+    const double dudv_at_va = c / (denom_a * denom_a);
+    const double c_local = dudv_at_va * (v_b - v_a) / (u_b - u_a);
+
+    const int cv_base = s * p;
+    std::vector<double> raw(static_cast<size_t>(p + 1));
+    double power = 1.0;
+    for (int j = 0; j <= p; ++j) {
+      raw[static_cast<size_t>(j)] = orig_weight[static_cast<size_t>(cv_base + j)] * power;
+      power *= c_local;
+    }
+    // Every span after the first shares its own first control point
+    // (and weight) with the previous span's own last one - rescale this
+    // whole span uniformly (a pure weight rescale changes no geometry)
+    // so its own first raw weight matches what the previous span's own
+    // loop already wrote there.
+    double r_s = 1.0;
+    if (s > 0) {
+      const double prev_final = new_weight[static_cast<size_t>(cv_base)];
+      r_s = (raw[0] != 0.0) ? prev_final / raw[0] : 1.0;
+    }
+    for (int j = 0; j <= p; ++j) {
+      new_weight[static_cast<size_t>(cv_base + j)] = raw[static_cast<size_t>(j)] * r_s;
+    }
+    breakpoint[static_cast<size_t>(s + 1)] = T0 + v_b * (T1 - T0);
+  }
+
+  if (!nc.IsRational()) {
+    if (!nc.MakeRational()) return Result::Failed;
+  }
+  for (int i = 0; i < cv_count; ++i) {
+    // Neither "SetCV then SetWeight" nor the reverse keeps both the
+    // Euclidean position AND the target weight: SetCV(i, ON_3dPoint)
+    // resets the weight to 1.0 as a side effect, while SetWeight()
+    // only ever touches the raw `w` component and leaves the raw
+    // (x, y, z) alone, which moves the EUCLIDEAN point (= raw xyz / w)
+    // whenever w changes - confirmed directly against
+    // `NurbsCurve::SetWeightAt()`'s own doc comment above, not assumed.
+    // Setting the full homogeneous (x*w, y*w, z*w, w) coordinate in one
+    // call sidesteps the ordering trap entirely.
+    ON_3dPoint pt;
+    nc.GetCV(i, pt);
+    const double w = new_weight[static_cast<size_t>(i)];
+    const ON_4dPoint hpt(pt.x * w, pt.y * w, pt.z * w, w);
+    if (!nc.SetCV(i, hpt)) return Result::Failed;
+  }
+  for (int b = 0; b <= spans; ++b) {
+    for (int k = 0; k < p; ++k) {
+      if (!nc.SetKnot(b * p + k, breakpoint[static_cast<size_t>(b)])) return Result::Failed;
+    }
+  }
+
+  if (!nc.IsValid()) return Result::Failed;
+  out.raw() = nc;
+  return Result::Ok;
+}
+
 Point3d NurbsCurve::PointAt(double t) const {
   ON_3dPoint pt;
   curve_.EvPoint(t, pt);
