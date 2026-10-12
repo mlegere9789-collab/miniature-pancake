@@ -57095,8 +57095,13 @@ void TestBrepExtendFaceInPlaceNakedSideGrowsExactRectangleAndLeavesSharedNeighbo
 // Refusal/scope-boundary contract: extending TOWARD the shared edge
 // (the neighbour would need to grow too) is refused rather than guessed
 // at; [t0, t1] already inside the current domain is a genuine no-op;
-// requesting both ends of `direction` extended in one call is out of
-// scope; and the usual thrown-exception cases for bad arguments.
+// requesting BOTH ends of `direction` extended in one call but one of
+// them is toward a shared edge is still refused (2026-10-12: extending
+// both ends is no longer categorically out of scope - see
+// TestBrepExtendFaceInPlaceBothEndsOfOneDirectionGrowsExactRectangle
+// below - so this case is refused for the SAME "cap trim there is not
+// naked" reason as the single-end case directly above, not a separate
+// blanket rule); and the usual thrown-exception cases for bad arguments.
 void TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs() {
   using dino8::kernel::Brep;
   using dino8::kernel::Result;
@@ -57118,8 +57123,14 @@ void TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs() {
   }
   {
     TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+    ON_Brep& b = fixture.brep.raw();
+    const int v_before = b.m_V.Count(), e_before = b.m_E.Count();
     const Result r = fixture.brep.ExtendFaceInPlace(fixture.face_a, 0, -1.0, 2.0, /*linear=*/true);
-    Check(r == Result::Failed, "extending BOTH ends of `direction` in one call is out of scope, refused");
+    Check(r == Result::Failed,
+          "extending BOTH ends of `direction` at once is refused here too - NOT because both-ends is itself out "
+          "of scope any more, but because the RIGHT end (u == 1) still faces the genuinely shared edge with "
+          "face_b, exactly as the single-end case above");
+    Check(b.m_V.Count() == v_before && b.m_E.Count() == e_before, "...and the Brep is left completely untouched");
   }
   {
     TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
@@ -57141,6 +57152,130 @@ void TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs() {
     }
     Check(threw, "an out-of-range face_index throws std::out_of_range");
   }
+}
+
+// A standalone, fully untrimmed planar quad face - all 4 boundary trims
+// naked (no neighbour at all) - the shape ExtendFaceInPlace()'s own
+// "both ends of `direction` in one call" case needs to exercise, since
+// BuildTwoAdjacentPlanarFaces() above deliberately keeps one side of
+// face_a genuinely shared (so its own tests can prove the far neighbour
+// stays untouched) and therefore can never offer two free ends on any
+// one direction at once.
+dino8::kernel::Brep BuildSingleUntrimmedPlanarFace(double x0, double x1, double y0, double y1) {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  dino8::kernel::Brep brep;
+  ON_Brep& b = brep.raw();
+  const std::vector<Point3d> grid = {
+      Point3d(x0, y0, 0), Point3d(x0, y1, 0),
+      Point3d(x1, y0, 0), Point3d(x1, y1, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  auto* surface_copy = new ON_NurbsSurface(surface.raw());
+  const int surface_index = b.AddSurface(surface_copy);
+  const int face_index = b.NewFace(surface_index).m_face_index;
+
+  auto uv = [&](double x, double y) { return Point2d((x - x0) / (x1 - x0), (y - y0) / (y1 - y0)); };
+  const int v00 = b.NewVertex(Point3d(x0, y0, 0), 0.0).m_vertex_index;
+  const int v01 = b.NewVertex(Point3d(x0, y1, 0), 0.0).m_vertex_index;
+  const int v10 = b.NewVertex(Point3d(x1, y0, 0), 0.0).m_vertex_index;
+  const int v11 = b.NewVertex(Point3d(x1, y1, 0), 0.0).m_vertex_index;
+
+  auto new_private_edge = [&](int va, int vb) {
+    const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+    const int ei = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+    b.m_E[ei].m_tolerance = 0.0;
+    return ei;
+  };
+  const int loop_index = b.NewLoop(ON_BrepLoop::outer, b.m_F[face_index]).m_loop_index;
+  auto add_trim = [&](int edge_index, const Point2d& uv0, const Point2d& uv1) {
+    const int c2i = b.AddTrimCurve(new ON_LineCurve(uv0, uv1));
+    ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], /*rev=*/false, b.m_L[loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  };
+  // v == 0 side (rail_lo), u == 1 side (cap_max), v == 1 side (rail_hi),
+  // u == 0 side (cap_min) - every one of the 4 trims below is its own
+  // brand-new, privately-owned edge, so all 4 are naked by construction.
+  add_trim(new_private_edge(v00, v10), uv(x0, y0), uv(x1, y0));
+  add_trim(new_private_edge(v10, v11), uv(x1, y0), uv(x1, y1));
+  add_trim(new_private_edge(v11, v01), uv(x1, y1), uv(x0, y1));
+  add_trim(new_private_edge(v01, v00), uv(x0, y1), uv(x0, y0));
+
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+  return brep;
+}
+
+// ExtendFaceInPlace()'s own new "both ends of `direction` in one call"
+// capability (2026-10-12): closes the "extending both ends of `direction`
+// in one call is a narrower follow-up, not attempted here" gap the
+// single-end version's own doc comment used to name - NurbsSurface::
+// Extend()/ExtendLinear() already grow either end independently within
+// one call (see ExtendLinear()'s own two conditional
+// ExtendOneEndLinear() calls), so only this method's own Brep-level
+// topology rebuild needed generalizing to replace all 4 corners/4 trims
+// instead of assuming one end always stays fixed.
+void TestBrepExtendFaceInPlaceBothEndsOfOneDirectionGrowsExactRectangle() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  Brep brep = BuildSingleUntrimmedPlanarFace(0.0, 4.0, 0.0, 4.0);
+  ON_Brep& b = brep.raw();
+  // Not checked IsValid() here (the same established precedent
+  // BuildTwoAdjacentPlanarFaces()'s own tests already document above):
+  // this fixture builds its own topology by hand and never calls
+  // SetTolerancesBoxesAndFlags()'s own vertex-tolerance follow-up the
+  // way a real kernel entry point does, a known, pre-existing, benign
+  // property of this exact hand-built fixture, not something this
+  // test's own target function introduces or must fix - confirmed
+  // genuinely benign below, where IsValid() IS checked (and passes)
+  // once ExtendFaceInPlace() itself has run and fixed it up.
+  const int v_count_before = b.m_V.Count();
+  const int e_count_before = b.m_E.Count();
+  const double area_before = brep.Tessellate(8, 8)[0].Area();
+  Check(std::fabs(area_before - 16.0) < 1e-4, "setup: the plain 4x4 quad tessellates to its own exact area, 16");
+
+  // u (direction 0) == x / 4, domain [0, 1] - extend BOTH ends in one
+  // call: u in [-0.5, 1.5], i.e. physical x in [-2, 6].
+  const Result r = brep.ExtendFaceInPlace(/*face_index=*/0, /*direction=*/0, -0.5, 1.5, /*linear=*/true);
+  Check(r == Result::Ok, "ExtendFaceInPlace succeeds extending BOTH ends of direction 0 in one call");
+  Check(b.IsValid(), "the Brep is still a valid ON_Brep after the dual-end extension");
+
+  Check(b.m_V.Count() == v_count_before && b.m_E.Count() == e_count_before,
+        "vertex and edge counts are UNCHANGED (all 4 corners/4 edges replaced, all 4 old corners/4 old edges "
+        "deleted - a wash), not grown by a detached new object");
+
+  // The extended rectangle is physical x in [-2, 6] (length 8), y in
+  // [0, 4] (length 4, untouched): 8 * 4 == 32, exactly 16 more than the
+  // original 4x4 == 16 - the closed-form area BOTH ends growing in one
+  // call implies, not merely "grew some" or only one end moving.
+  const double area_after = brep.Tessellate(8, 8)[0].Area();
+  Check(std::fabs(area_after - 32.0) < 1e-4,
+        "the face alone now tessellates to the exact closed-form both-ends-extended rectangle area, 32.0 "
+        "(16.0 original + 2*4 == 8.0 added on the low end + 2*4 == 8.0 added on the high end)");
+
+  // Direct corner-position proof, not just a matching area: all 4 new
+  // physical corners sit exactly on the new [-2, 6] x [0, 4] rectangle's
+  // own 4 corners - a wrong result that happened to total the same area
+  // (e.g. only one end actually moved, by twice as much) would fail
+  // this even though it passed the area check above.
+  bool has_corner_neg2_0 = false, has_corner_neg2_4 = false, has_corner_6_0 = false, has_corner_6_4 = false;
+  const ON_BrepFace& face = b.m_F[0];
+  const ON_BrepLoop& loop = b.m_L[face.m_li[0]];
+  for (int k = 0; k < loop.TrimCount(); ++k) {
+    const ON_BrepTrim* t = loop.Trim(k);
+    const ON_BrepVertex& v0 = b.m_V[b.m_E[t->m_ei].m_vi[0]];
+    const dino8::kernel::Point3d& p = v0.point;
+    if (p.DistanceTo(dino8::kernel::Point3d(-2, 0, 0)) < 1e-9) has_corner_neg2_0 = true;
+    if (p.DistanceTo(dino8::kernel::Point3d(-2, 4, 0)) < 1e-9) has_corner_neg2_4 = true;
+    if (p.DistanceTo(dino8::kernel::Point3d(6, 0, 0)) < 1e-9) has_corner_6_0 = true;
+    if (p.DistanceTo(dino8::kernel::Point3d(6, 4, 0)) < 1e-9) has_corner_6_4 = true;
+  }
+  Check(has_corner_neg2_0 && has_corner_neg2_4 && has_corner_6_0 && has_corner_6_4,
+        "all 4 new boundary corners sit at the exact [-2, 6] x [0, 4] rectangle's own 4 corners - both ends "
+        "genuinely moved to their own correct new position, not just one end or a wrong combination");
 }
 
 // MergeCoplanarFaces()'s own new "faces with holes" capability: the
@@ -77315,6 +77450,7 @@ int main() {
 
   RunTest("TestBrepExtendFaceInPlaceNakedSideGrowsExactRectangleAndLeavesSharedNeighbourUntouched", TestBrepExtendFaceInPlaceNakedSideGrowsExactRectangleAndLeavesSharedNeighbourUntouched);
   RunTest("TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs", TestBrepExtendFaceInPlaceRefusesTowardSharedEdgeAndOutOfScopeInputs);
+  RunTest("TestBrepExtendFaceInPlaceBothEndsOfOneDirectionGrowsExactRectangle", TestBrepExtendFaceInPlaceBothEndsOfOneDirectionGrowsExactRectangle);
 
   RunTest("TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne", TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne);
   RunTest("TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane", TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane);
