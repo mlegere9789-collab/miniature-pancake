@@ -1121,6 +1121,42 @@ class NurbsCurve {
   // Result::NoOpAlreadySatisfied if `[t0, t1]` already equals `Domain()`.
   Result SetDomain(double t0, double t1);
 
+  // If the curve `IsClosed()`, relocates the seam (the shared start/end
+  // point) to parameter `t`, with the curve's own 3D shape completely
+  // unchanged - only where along that fixed shape it starts/ends moves.
+  // `t` need not already lie inside `Domain()`: it is wrapped by the
+  // curve's own periodicity first (`fmod` against the domain width), the
+  // same tolerant handling `NurbsSurface::ChangeSeam(direction, t)` relies
+  // on via the identical OpenNURBS call. For a genuinely periodic curve
+  // (`IsPeriodic()`) whose interior knots are all SIMPLE (multiplicity
+  // 1), the existing periodic knot structure is reused directly with no
+  // extra knot inserted at the new seam - but verified directly, NOT
+  // assumed: a periodic curve whose interior knots carry higher
+  // multiplicity (e.g. this class's own `MakePeriodicExact()`, which
+  // Bezier-decomposes to full multiplicity `Degree()` at every former
+  // breakpoint) fails that internal simple-knot precondition and falls
+  // back to OpenNURBS' own general path instead (split at the seam,
+  // re-append the two halves in the other order, then re-clamp the
+  // domain) - shape-exact either way, but that fallback path returns a
+  // CLAMPED result: `IsPeriodic()` can come back false even though it
+  // was true beforehand. For a merely closed (clamped, non-periodic)
+  // curve to begin with, a knot is inserted at the seam if one isn't
+  // already there - the control point count can grow by one in that
+  // case, same as any other `InsertKnot`. `min_dist` (when > 0) is a
+  // no-op guard, exactly as `ON_Curve::ChangeClosedCurveSeam(t, min_dist)`
+  // defines it: skip the move (and report so) when the target point is
+  // already within `min_dist` of the current start point. Delegates to
+  // `ON_NurbsCurve::ChangeClosedCurveSeam`, the real (non-stub)
+  // implementation `ON_NurbsSurface::ChangeSurfaceSeam` and
+  // `ON_PolyCurve::ChangeClosedCurveSeam` themselves already depend on
+  // internally - not new math, exposing an already-trusted OpenNURBS
+  // primitive this kernel had no public wrapper for. Returns
+  // Result::Failed if the curve isn't closed, or if OpenNURBS' own call
+  // reports failure; Result::NoOpAlreadySatisfied if `min_dist > 0` and
+  // the target point was already within it of the current start (left
+  // completely untouched in that case, not even re-wrapped).
+  Result ChangeSeam(double t, double min_dist = 0.0);
+
   Point3d PointAt(double t) const;
 
   // Finds the parameter along the curve's own domain whose PointAt() is

@@ -966,6 +966,106 @@ void TestCurveSetDomainReparameterizes() {
   Check(curve.SetDomain(9.0, 2.0) == Result::Failed, "SetDomain returns Failed when t0 > t1");
 }
 
+void TestCurveChangeSeam() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // An open curve: ChangeSeam always fails, regardless of t.
+  const std::vector<Point3d> open_pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+  NurbsCurve open_curve = NurbsCurve::FromControlPoints(open_pts, 2);
+  Check(open_curve.ChangeSeam(open_curve.Domain().min) == Result::Failed,
+        "ChangeSeam refuses an open curve");
+
+  // Closed-but-not-periodic curve (coincident endpoints, clamped knot
+  // vector) - the same fixture shape as TestCurveIsClosed's own
+  // closed_curve.
+  const std::vector<Point3d> closed_pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0),
+                                            Point3d(0, 0, 0)};
+  NurbsCurve closed = NurbsCurve::FromControlPoints(closed_pts, 2);
+  Check(closed.IsClosed() && !closed.IsPeriodic(), "ChangeSeam setup: the fixture is closed but not periodic");
+
+  const auto dom = closed.Domain();
+  const double seam_t = dom.min + 0.5 * (dom.max - dom.min);
+  const Point3d expected_start = closed.PointAt(seam_t);
+
+  // Sample the ORIGINAL shape densely, keyed by normalized position
+  // around the loop, before moving the seam - so afterward we can
+  // re-derive the same 3D points at the correspondingly shifted
+  // parameters and confirm the shape itself didn't move at all.
+  constexpr int kSamples = 40;
+  std::vector<Point3d> before;
+  for (int i = 0; i <= kSamples; ++i) {
+    const double frac = static_cast<double>(i) / kSamples;
+    before.push_back(closed.PointAt(dom.min + frac * (dom.max - dom.min)));
+  }
+
+  Check(closed.ChangeSeam(seam_t) == Result::Ok, "ChangeSeam returns Ok on a closed curve");
+  const auto new_dom = closed.Domain();
+  Check(new_dom.min == seam_t, "ChangeSeam moves Domain().min to exactly the requested parameter");
+  Check((closed.PointAt(new_dom.min) - expected_start).Length() < 1e-9,
+        "ChangeSeam: the new start point is exactly the old PointAt(seam_t)");
+
+  // Shape check: walking the new domain from its own min retraces the
+  // same loop, just starting halfway around (seam_t was already the old
+  // curve's own halfway point) - so the new curve's point at normalized
+  // fraction f must equal the OLD curve's point at normalized fraction
+  // (0.5 + f) mod 1, read back from the pre-move `before` samples.
+  double max_err = 0.0;
+  for (int i = 0; i <= kSamples; ++i) {
+    const double frac = static_cast<double>(i) / kSamples;
+    const Point3d p = closed.PointAt(new_dom.min + frac * (new_dom.max - new_dom.min));
+    const double old_frac = std::fmod(0.5 + frac, 1.0);
+    const size_t old_index = static_cast<size_t>(std::lround(old_frac * kSamples)) % kSamples;
+    max_err = std::max(max_err, (p - before[old_index]).Length());
+  }
+  Check(max_err < 1e-6, "ChangeSeam retraces the identical 3D shape, just starting from a different point");
+
+  // min_dist guard: re-requesting the current (already-moved) seam with
+  // a generous min_dist is a reported no-op, left completely untouched.
+  Check(closed.ChangeSeam(new_dom.min, 1.0) == Result::NoOpAlreadySatisfied,
+        "ChangeSeam(min_dist) reports NoOpAlreadySatisfied when the target is already within min_dist");
+  Check(closed.Domain().min == new_dom.min, "...and really did leave the curve's domain untouched");
+
+  // A genuinely periodic curve (a real circle, via this class's own
+  // MakePeriodicExact()). Its interior knots are Bezier-decomposed to
+  // full multiplicity (MakePeriodicExact()'s own documented
+  // construction), so ON_NurbsCurve::ChangeClosedCurveSeam's internal
+  // "all interior knots simple" precondition for its periodic-preserving
+  // path does NOT hold here - confirmed directly below, not assumed:
+  // it falls back to OpenNURBS' own general (split + re-append) path,
+  // which is still exactly shape-preserving but returns a CLAMPED
+  // result, so IsPeriodic() genuinely comes back false even though the
+  // curve going in was periodic. The shape invariant (every point still
+  // on the same circle) is what must survive regardless.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
+  ON_NurbsCurve circle_form;
+  Check(on_circle.GetNurbForm(circle_form) != 0, "ChangeSeam setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = circle_form;
+  Check(circle.MakePeriodicExact() == Result::Ok, "ChangeSeam setup: MakePeriodicExact succeeds on the circle");
+  Check(circle.IsPeriodic(), "ChangeSeam setup: the circle fixture is genuinely periodic");
+
+  const auto circle_dom = circle.Domain();
+  const double circle_seam_t = circle_dom.min + 0.25 * (circle_dom.max - circle_dom.min);
+  const Point3d circle_expected_start = circle.PointAt(circle_seam_t);
+  Check(circle.ChangeSeam(circle_seam_t) == Result::Ok, "ChangeSeam returns Ok on a periodic curve");
+  Check((circle.PointAt(circle.Domain().min) - circle_expected_start).Length() < 1e-9,
+        "ChangeSeam on a periodic curve: the new start point is exactly the old PointAt(seam_t)");
+  Check(circle.IsClosed(), "ChangeSeam on a periodic curve: the result is still genuinely closed");
+  // Radius is an invariant of this shape regardless of where it starts -
+  // confirms the move didn't distort the circle into something else,
+  // even though (per the doc comment above, and confirmed here) this
+  // specific fixture's own full-multiplicity knots make it come back
+  // non-periodic (clamped) rather than periodic.
+  for (int i = 0; i <= 8; ++i) {
+    const auto d = circle.Domain();
+    const double t = d.min + (i / 8.0) * (d.max - d.min);
+    Check(std::abs(circle.PointAt(t).DistanceTo(Point3d(0, 0, 0)) - 3.0) < 1e-6,
+          "ChangeSeam on a periodic curve leaves every point on the same radius-3 circle");
+  }
+}
+
 void TestCurveMatchEnd() {
   using dino8::kernel::MatchContinuity;
   using dino8::kernel::MatchEndReport;
@@ -57612,6 +57712,72 @@ void TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape() {
   Check(threw, "SetDomain throws on a direction other than 0/1");
 }
 
+void TestSurfaceChangeSeam() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A flat bilinear surface, open in both directions - ChangeSeam always
+  // fails, same convention as the curve overload's open-curve case.
+  std::vector<Point3d> grid;
+  for (int u = 0; u < 2; ++u)
+    for (int v = 0; v < 2; ++v) grid.emplace_back(u, v, 0);
+  NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  Check(flat.ChangeSeam(0, flat.Domain(0).min) == Result::Failed,
+        "ChangeSeam refuses a surface that isn't closed in that direction");
+  bool threw = false;
+  try { flat.ChangeSeam(2, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ChangeSeam throws on a direction other than 0/1");
+
+  // A real cylinder wall via ON_Cylinder::GetNurbForm - same fixture
+  // shape as TestSurfaceIsClosed: closed (clamped, not periodic) in U,
+  // open in V.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0);
+  const ON_Cylinder cylinder(circle, 5.0);
+  ON_NurbsSurface cylinder_surface;
+  Check(cylinder.GetNurbForm(cylinder_surface) != 0, "ChangeSeam setup: ON_Cylinder::GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  Check(wall.IsClosed(0) && !wall.IsPeriodic(0),
+        "ChangeSeam setup: the wall fixture is closed-but-not-periodic in U, same as TestSurfaceIsClosed");
+
+  Check(wall.ChangeSeam(1, wall.Domain(1).min) == Result::Failed,
+        "ChangeSeam refuses the open (V) direction even though U is closed");
+
+  const auto u_dom = wall.Domain(0);
+  const auto v_dom_before = wall.Domain(1);
+  const double seam_u = u_dom.min + 0.3 * (u_dom.max - u_dom.min);
+  const double v_mid = v_dom_before.min + 0.5 * (v_dom_before.max - v_dom_before.min);
+  const Point3d expected_start = wall.PointAt(seam_u, v_mid);
+
+  Check(wall.ChangeSeam(0, seam_u) == Result::Ok, "ChangeSeam returns Ok in the closed (U) direction");
+  const auto new_u_dom = wall.Domain(0);
+  Check(new_u_dom.min == seam_u, "ChangeSeam moves Domain(0).min to exactly the requested parameter");
+  Check(wall.Domain(1).min == v_dom_before.min && wall.Domain(1).max == v_dom_before.max,
+        "ChangeSeam(0, ...) leaves the OTHER (V) direction's domain completely untouched");
+  Check((wall.PointAt(new_u_dom.min, v_mid) - expected_start).Length() < 1e-6,
+        "ChangeSeam: the new U-min point matches the old PointAt(seam_u, v_mid) exactly");
+
+  // Shape invariant: every point on the cylinder wall lies at radius 2
+  // from the z axis through the origin, regardless of (u, v) - true
+  // before AND after the seam move, confirming the move relocated the
+  // seam without distorting the wall into something else.
+  for (int i = 0; i <= 8; ++i) {
+    const double v = wall.Domain(1).min + (i / 8.0) * (wall.Domain(1).max - wall.Domain(1).min);
+    for (int j = 0; j <= 8; ++j) {
+      const double u = new_u_dom.min + (j / 8.0) * (new_u_dom.max - new_u_dom.min);
+      const Point3d p = wall.PointAt(u, v);
+      const double radial = std::sqrt(p.x * p.x + p.y * p.y);
+      Check(std::abs(radial - 2.0) < 1e-6, "ChangeSeam leaves every point on the same radius-2 cylindrical wall");
+    }
+  }
+
+  // A parameter outside Domain(0) is refused outright (no wraparound at
+  // the surface level, unlike the curve overload's own fmod handling).
+  Check(wall.ChangeSeam(0, new_u_dom.max + 1.0) == Result::Failed,
+        "ChangeSeam refuses a parameter outside that direction's own Domain()");
+}
+
 void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Result;
@@ -74228,6 +74394,7 @@ int main() {
   TestCurveInsertKnotAt();
   TestCurveRemoveKnotAt();
   TestCurveSetDomainReparameterizes();
+  TestCurveChangeSeam();
   TestCurveMatchEnd();
   TestCurveAnalyzeEndContinuity();
   TestCurveDeviationTo();
@@ -75082,6 +75249,7 @@ int main() {
   TestSurfaceRemoveKnotAtArgumentChecks();
 
   TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape();
+  TestSurfaceChangeSeam();
   TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise();
   TestSurfaceReduceDegree();
   TestSurfaceInterpolateThroughGrid();

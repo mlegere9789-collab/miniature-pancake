@@ -1,74 +1,78 @@
-#include <cstdio>
 #include <cmath>
+#include <cstdio>
 #include <vector>
-#include "dino8/kernel/surface_intersect.h"
-#include "dino8/kernel/brep.h"
+#include "dino8/kernel/curve.h"
+#include "dino8/kernel/surface.h"
 #include "opennurbs.h"
 
 int main() {
   ON::Begin();
   using namespace dino8::kernel;
 
-  // 1) Box: a grid of points, some inside, some outside - cross-check
-  // against the hand-known geometry (box occupies [0,2]^3).
-  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
-  const std::vector<Point3d> probes = {
-      Point3d(1, 1, 1),    // center, inside
-      Point3d(0.01, 0.01, 0.01),  // just inside a corner
-      Point3d(1.99, 1, 1), // just inside a face
-      Point3d(2.01, 1, 1), // just outside a face
-      Point3d(3, 3, 3),    // well outside, diagonal
-      Point3d(1, 1, -5),   // well outside, below
-      Point3d(1, 1, 5),    // well outside, above
-  };
-  for (const Point3d& p : probes) {
-    const bool inside = ContainsPointExact(p, box.raw());
-    std::printf("box query(%g,%g,%g): inside=%d\n", p.x, p.y, p.z, (int)inside);
-  }
+  // NurbsSurface::ChangeSeam, exercised standalone: the full
+  // dino8_kernel_tests binary aborts earlier (in the pre-existing,
+  // disclosed BooleanCombineGeneral "3+ fragment loops" limitation,
+  // which several early TestBooleanCombineGeneral* fixtures happen to
+  // trip) before it ever reaches TestSurfaceChangeSeam, so this checks
+  // the same logic that test exercises, directly, in isolation.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0);
+  const ON_Cylinder cylinder(circle, 5.0);
+  ON_NurbsSurface cylinder_surface;
+  std::printf("GetNurbForm: %d\n", cylinder.GetNurbForm(cylinder_surface) != 0);
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  std::printf("IsClosed(0)=%d IsPeriodic(0)=%d IsClosed(1)=%d\n", wall.IsClosed(0), wall.IsPeriodic(0),
+              wall.IsClosed(1));
 
-  // 2) Sphere, radius 5 centered at origin.
-  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 5);
-  const std::vector<Point3d> sphere_probes = {
-      Point3d(0, 0, 0),
-      Point3d(4.99, 0, 0),
-      Point3d(5.01, 0, 0),
-      Point3d(3, 3, 3),  // distance sqrt(27)=5.196, just outside
-      Point3d(2, 2, 2),  // distance sqrt(12)=3.46, inside
-      Point3d(0, 0, 100),
-  };
-  for (const Point3d& p : sphere_probes) {
-    const bool inside = ContainsPointExact(p, sphere.raw());
-    const double dist_from_center = p.DistanceTo(Point3d(0, 0, 0));
-    std::printf("sphere query(%g,%g,%g) dist=%g: inside=%d\n", p.x, p.y, p.z, dist_from_center, (int)inside);
-  }
+  // V (open) direction must refuse.
+  const Result v_result = wall.ChangeSeam(1, wall.Domain(1).min);
+  std::printf("ChangeSeam(1, Domain(1).min) == Failed: %d\n", v_result == Result::Failed);
 
-  // 3) The disclosed ON_Brep::BoundingBox() degenerate-y/z bug fixture,
-  // straight from IntersectBrepByPlane()'s own doc comment.
-  const Brep box3 = Brep::Box(0, 0, 0, 3, 3, 3);
-  {
-    ON_BoundingBox buggy = box3.raw().BoundingBox();
-    std::printf("box3 buggy ON_Brep::BoundingBox(): min=(%g,%g,%g) max=(%g,%g,%g)\n", buggy.m_min.x, buggy.m_min.y,
-                buggy.m_min.z, buggy.m_max.x, buggy.m_max.y, buggy.m_max.z);
-  }
-  const std::vector<Point3d> box3_probes = {
-      Point3d(1.5, 1.5, 1.5),
-      Point3d(1.5, 1.5, 2.99),
-      Point3d(1.5, 1.5, 3.01),
-      Point3d(1.5, 1.5, 50),
-      Point3d(1.5, 50, 1.5),
-  };
-  for (const Point3d& p : box3_probes) {
-    const bool inside = ContainsPointExact(p, box3.raw());
-    std::printf("box3 query(%g,%g,%g): inside=%d\n", p.x, p.y, p.z, (int)inside);
-  }
+  const Interval u_dom = wall.Domain(0);
+  const Interval v_dom_before = wall.Domain(1);
+  const double seam_u = u_dom.min + 0.3 * (u_dom.max - u_dom.min);
+  const double v_mid = v_dom_before.min + 0.5 * (v_dom_before.max - v_dom_before.min);
+  const Point3d expected_start = wall.PointAt(seam_u, v_mid);
 
+  const Result r = wall.ChangeSeam(0, seam_u);
+  std::printf("ChangeSeam(0, seam_u) == Ok: %d\n", r == Result::Ok);
+  const Interval new_u_dom = wall.Domain(0);
+  std::printf("new Domain(0).min == seam_u: %d (%.12f vs %.12f)\n", new_u_dom.min == seam_u, new_u_dom.min, seam_u);
+  const Interval v_dom_after = wall.Domain(1);
+  std::printf("Domain(1) untouched: %d\n", v_dom_after.min == v_dom_before.min && v_dom_after.max == v_dom_before.max);
+  const double start_err = wall.PointAt(new_u_dom.min, v_mid).DistanceTo(expected_start);
+  std::printf("new start point matches old PointAt(seam_u, v_mid): err=%.3e\n", start_err);
+
+  double max_radial_err = 0.0;
+  for (int i = 0; i <= 8; ++i) {
+    const double v = wall.Domain(1).min + (i / 8.0) * (wall.Domain(1).max - wall.Domain(1).min);
+    for (int j = 0; j <= 8; ++j) {
+      const double u = new_u_dom.min + (j / 8.0) * (new_u_dom.max - new_u_dom.min);
+      const Point3d p = wall.PointAt(u, v);
+      const double radial = std::sqrt(p.x * p.x + p.y * p.y);
+      max_radial_err = std::max(max_radial_err, std::fabs(radial - 2.0));
+    }
+  }
+  std::printf("max |radial - 2.0| over 9x9 grid after ChangeSeam: %.3e\n", max_radial_err);
+
+  const Result out_of_range = wall.ChangeSeam(0, new_u_dom.max + 1.0);
+  std::printf("ChangeSeam(0, out-of-range) == Failed: %d\n", out_of_range == Result::Failed);
+
+  bool threw = false;
   try {
-    ON_Brep empty;
-    ContainsPointExact(Point3d(0, 0, 0), empty);
-    std::printf("ERROR: expected throw for empty brep\n");
-  } catch (const std::invalid_argument& e) {
-    std::printf("OK threw for empty brep: %s\n", e.what());
+    wall.ChangeSeam(2, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
   }
+  std::printf("ChangeSeam(2, ...) threw invalid_argument: %d\n", threw);
+
+  // Flat (open-in-both-directions) surface: always refused.
+  std::vector<Point3d> grid;
+  for (int u = 0; u < 2; ++u)
+    for (int v = 0; v < 2; ++v) grid.emplace_back(u, v, 0);
+  NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const Result flat_result = flat.ChangeSeam(0, flat.Domain(0).min);
+  std::printf("flat.ChangeSeam(0, ...) == Failed: %d\n", flat_result == Result::Failed);
 
   ON::End();
   return 0;

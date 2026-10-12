@@ -1832,6 +1832,15 @@ Result NurbsCurve::SetDomain(double t0, double t1) {
   return curve_.SetDomain(t0, t1) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsCurve::ChangeSeam(double t, double min_dist) {
+  if (!IsClosed()) return Result::Failed;
+  if (min_dist > 0.0) {
+    const double dist = PointAt(t).DistanceTo(PointAt(Domain().min));
+    if (dist < min_dist) return Result::NoOpAlreadySatisfied;
+  }
+  return curve_.ChangeClosedCurveSeam(t) ? Result::Ok : Result::Failed;
+}
+
 Point3d NurbsCurve::PointAt(double t) const {
   ON_3dPoint pt;
   curve_.EvPoint(t, pt);
