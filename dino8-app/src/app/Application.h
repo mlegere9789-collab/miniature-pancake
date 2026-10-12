@@ -397,9 +397,13 @@ class Application {
   // Document-level operations used by both menus and commands.
   bool NewDocument(bool confirm_discard);
   bool OpenDocument(const std::string& path, std::string& error);
-  bool SaveDocument(const std::string& path, std::string& error);
+  // `dm_version` (default 0, meaning "current/latest") is a target .3dm
+  // archive version for a `.3dm` path - see Save3dm's own doc comment
+  // (io/File3dm.h) for the full version/Rhino-release table; every other
+  // extension ignores it.
+  bool SaveDocument(const std::string& path, std::string& error, int dm_version = 0);
   bool ImportFile(const std::string& path, std::string& error);
-  bool ExportSelected(const std::string& path, std::string& error);
+  bool ExportSelected(const std::string& path, std::string& error, int dm_version = 0);
   // Named Snapshots persistence sidecar (see Document::CaptureSnapshotAsDocument's
   // comment for why the on-disk form lives here rather than in Document).
   void SaveNamedSnapshotsSidecar(const std::string& path);

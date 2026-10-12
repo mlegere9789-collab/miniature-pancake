@@ -1092,6 +1092,134 @@ void TestCurveChangeSeam() {
   }
 }
 
+void TestCurveReparameterizeRational() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  // A single-span (Bezier) non-rational cubic: the base case the whole
+  // one-parameter Mobius family (`v = u / (c - (c-1)*u)` over the
+  // normalized domain) reduces to directly.
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 2, 0), Point3d(3, 2, 0), Point3d(4, 0, 0)};
+    const NurbsCurve c = NurbsCurve::FromControlPoints(pts, 3);
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(2.5, out) == Result::Ok, "ReparameterizeRational returns Ok on a single-span cubic");
+    Check(out.IsRational(), "ReparameterizeRational forces the result rational for shape_factor != 1");
+    const double T0 = c.Domain().min, T1 = c.Domain().max;
+    const double cc = 2.5;
+    double max_err = 0.0;
+    for (int k = 0; k <= 20; ++k) {
+      const double u = static_cast<double>(k) / 20.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      max_err = std::max(max_err, c.PointAt(T0 + u * (T1 - T0)).DistanceTo(out.PointAt(T0 + v * (T1 - T0))));
+    }
+    Check(max_err < 1e-9,
+          "ReparameterizeRational exactly reproduces the original curve's shape at the mapped parameter "
+          "(single span)");
+  }
+
+  // A multi-span curve (several interior knots, fully clamped) - the
+  // genuinely harder case: every span after the first shares one
+  // control point (and its weight) with the previous span, which must
+  // be reconciled by a per-span uniform weight rescale (a pure weight
+  // rescale changes no geometry) or the reassembled curve would not
+  // even be continuous in its own weight channel.
+  {
+    std::vector<Point3d> pts;
+    for (int i = 0; i < 10; ++i) pts.push_back(Point3d(static_cast<double>(i), std::sin(static_cast<double>(i)), 0));
+    const NurbsCurve c = NurbsCurve::FromControlPoints(pts, 3);
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(3.0, out) == Result::Ok, "ReparameterizeRational returns Ok on a multi-span curve");
+    const double T0 = c.Domain().min, T1 = c.Domain().max;
+    const double cc = 3.0;
+    double max_err = 0.0;
+    for (int k = 0; k <= 80; ++k) {
+      const double u = static_cast<double>(k) / 80.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      max_err = std::max(max_err, c.PointAt(T0 + u * (T1 - T0)).DistanceTo(out.PointAt(T0 + v * (T1 - T0))));
+    }
+    Check(max_err < 1e-9,
+          "ReparameterizeRational exactly reproduces a multi-span curve's shape at every sampled parameter, "
+          "not just at the span boundaries - the shared-control-point continuity rescale is genuinely correct, "
+          "not merely plausible-looking");
+  }
+
+  // An already-rational curve (a semicircle, which OpenNURBS represents
+  // as 2 Bezier spans) - confirms this doesn't assume the input started
+  // non-rational, and that the result is still genuinely a circle (not
+  // just shape-preserving in some weaker, non-geometric sense).
+  {
+    const ON_Arc arc(ON_Circle(ON_Plane::World_xy, 5.0), ON_Interval(0.0, ON_PI));
+    ON_NurbsCurve nc;
+    Check(arc.GetNurbForm(nc) != 0, "ReparameterizeRational setup: ON_Arc::GetNurbForm succeeds");
+    NurbsCurve c;
+    c.raw() = nc;
+    Check(c.IsRational(), "ReparameterizeRational setup: the arc fixture is already rational");
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(4.0, out) == Result::Ok, "ReparameterizeRational returns Ok on a rational arc");
+    const double T0 = c.Domain().min, T1 = c.Domain().max;
+    const double cc = 4.0;
+    double max_err = 0.0, max_radial_err = 0.0;
+    for (int k = 0; k <= 80; ++k) {
+      const double u = static_cast<double>(k) / 80.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      const Point3d p_old = c.PointAt(T0 + u * (T1 - T0));
+      const Point3d p_new = out.PointAt(T0 + v * (T1 - T0));
+      max_err = std::max(max_err, p_old.DistanceTo(p_new));
+      max_radial_err = std::max(max_radial_err, std::abs(p_new.DistanceTo(Point3d(0, 0, 0)) - 5.0));
+    }
+    Check(max_err < 1e-9, "ReparameterizeRational exactly reproduces a rational arc's shape");
+    Check(max_radial_err < 1e-9, "...and every reparameterized point is still genuinely on the same radius-5 circle");
+  }
+
+  // shape_factor == 1.0 is a true no-op: Result::NoOpAlreadySatisfied,
+  // and a non-rational input stays non-rational (no forced conversion
+  // for the identity case).
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+    const NurbsCurve c = NurbsCurve::FromControlPoints(pts, 2);
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(1.0, out) == Result::NoOpAlreadySatisfied,
+          "ReparameterizeRational(1.0) reports NoOpAlreadySatisfied");
+    Check(!out.IsRational(), "...and leaves a non-rational input genuinely non-rational, no forced conversion");
+  }
+
+  // A genuinely periodic curve (full-multiplicity wraparound knots,
+  // the same MakePeriodicExact() construction ChangeSeam's own test
+  // above already relies on) is refused - the clamped per-span
+  // decomposition this method assumes does not hold for a periodic
+  // knot vector's own wraparound structure.
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0), Point3d(1, -1, 0),
+                                       Point3d(0, 0, 0)};
+    NurbsCurve c = NurbsCurve::FromControlPoints(pts, 3);
+    Check(c.IsClosed(), "ReparameterizeRational setup: the periodic fixture is genuinely closed");
+    Check(c.MakePeriodicExact() == Result::Ok, "ReparameterizeRational setup: MakePeriodicExact succeeds");
+    Check(c.IsPeriodic(), "ReparameterizeRational setup: the fixture is genuinely periodic");
+    NurbsCurve out;
+    Check(c.ReparameterizeRational(2.0, out) == Result::Failed, "ReparameterizeRational refuses a periodic curve");
+  }
+
+  // Invalid shape_factor throws.
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+    const NurbsCurve c = NurbsCurve::FromControlPoints(pts, 2);
+    NurbsCurve out;
+    Check(Throws([&] { c.ReparameterizeRational(0.0, out); }), "ReparameterizeRational(0.0) throws");
+    Check(Throws([&] { c.ReparameterizeRational(-2.0, out); }), "ReparameterizeRational(negative) throws");
+    Check(Throws([&] { c.ReparameterizeRational(std::nan(""), out); }), "ReparameterizeRational(NaN) throws");
+  }
+}
+
 void TestCurveMatchEnd() {
   using dino8::kernel::MatchContinuity;
   using dino8::kernel::MatchEndReport;
@@ -6578,10 +6706,42 @@ void TestIntersectCylinderCylinderUnequalRadiusClosedForm() {
   }
 
   // A genuinely skew pair that does NOT fully pierce (d + r = 2.5 + 1 = 3.5
-  // >= R = 3, a partial/blind penetration) is refused outright.
+  // >= R = 3) but still genuinely overlaps in part (d - r = 1.5 < R = 3):
+  // a real partial-penetration case, no longer a bare refusal. The small
+  // cylinder's surface point at angle theta (measuring from the closest
+  // side) sits at distance sqrt(h^2 + (2.5 + cos(theta))^2) from the large
+  // (Z) axis for free height h, which reaches exactly R = 3 for some real
+  // h iff |2.5 + cos(theta)| <= 3, i.e. cos(theta) <= 0.5 - true over a
+  // genuine, proper sub-range of theta (roughly 240 of the circle's own
+  // 360 degrees), not the whole circle and not none of it.
   const ON_Cylinder cyl_small_partial(ON_Circle(ON_Plane(Point3d(0, 2.5, 0), axis_small), r));
-  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_partial, tol).not_full_pierce,
-        "a genuinely skew pair whose smaller cylinder does NOT fully pierce the larger one is refused outright, not guessed at");
+  const auto partial = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_partial, tol);
+  Check(!partial.empty && partial.not_full_pierce && !partial.partial_loops.empty(),
+        "a genuinely skew pair whose smaller cylinder does NOT fully pierce the larger one reports a real partial-penetration result, not a bare refusal");
+  if (!partial.empty) {
+    Check(partial.partial_loops.size() == 1, "this fixture's own valid-theta set is a single contiguous arc (cos(theta) <= 0.5), so exactly one pinched loop is reported, not several");
+    bool all_on_both = true;
+    const ON_NurbsCurve& loop = partial.partial_loops.front();
+    Check(loop.IsValid() && loop.IsClosed(), "the reported partial loop has a valid, genuinely closed NURBS form");
+    const int n = 48;
+    for (int i = 0; i <= n; ++i) {
+      const double t = loop.Domain().ParameterAt(static_cast<double>(i) / n);
+      const Point3d p = loop.PointAt(t);
+      if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-2 ||
+          std::abs(dist_to_axis(p, Point3d(0, 2.5, 0), axis_small) - r) > 1e-2) {
+        all_on_both = false;
+        break;
+      }
+    }
+    Check(all_on_both, "every sampled point of the partial-pierce loop sits at exactly radius R from the larger cylinder's axis AND exactly radius r from the smaller (offset) axis simultaneously");
+  }
+
+  // A genuinely skew pair far enough apart that the smaller cylinder's
+  // surface never reaches the larger cylinder's radius at ANY angle
+  // (d - r = 9 > R = 3): a genuine total miss, not a refusal flag.
+  const ON_Cylinder cyl_small_disjoint(ON_Circle(ON_Plane(Point3d(0, 10, 0), axis_small), r));
+  const auto disjoint = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_disjoint, tol);
+  Check(disjoint.empty && !disjoint.not_full_pierce, "a genuinely skew pair whose cylinders never touch at any angle reports a genuine miss, not a partial-pierce flag");
 
   // Equal radii are refused outright - this closed form requires UNEQUAL
   // radii; IntersectCylinderCylinderIntersecting() is the equal-radius case.
@@ -55469,6 +55629,86 @@ void TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBr
   Check(record_cyl.HasCylindricalFace(), "a FaceRecord-backed lone cylindrical wall is likewise detected");
 }
 
+// The Mixed-engine counterpart of
+// TestBooleanCombinePlanarUnionAllowsNonManifoldEdgeOnlyTouchingCubes:
+// BooleanCombineMixed's own new `allow_non_manifold_result` parameter
+// closes the identical "Non-manifold boolean results" gap for this engine
+// too, reassembling through Brep::FromMixedFacesNonManifold() instead of
+// Brep::FromMixedFaces(). Same pure-planar edge-only-touching fixture (no
+// CylindricalFace involved) - the Mixed engine's own classification
+// reduces to the identical planar-ray-cast-parity answer the Planar engine
+// already gives on operands with no curved face, so the SAME expected
+// result (12 faces, 1 non-manifold edge, area 12) applies here too.
+void TestBooleanCombineMixedUnionAllowsNonManifoldEdgeOnlyTouchingCubes() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const Brep a = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep b = Brep::Box(1, 1, 0, 2, 2, 1);
+
+  bool strict_threw = false;
+  std::string strict_message;
+  try {
+    BooleanCombineMixed(a, b, BooleanOp::Union);
+  } catch (const std::exception& e) {
+    strict_threw = true;
+    strict_message = e.what();
+  }
+  Check(strict_threw && strict_message.find("edge is shared by 3 or more faces") != std::string::npos,
+        "the default (allow_non_manifold_result == false) path still refuses this edge-only-touching union "
+        "exactly as before this parameter existed");
+
+  const Brep result = BooleanCombineMixed(a, b, BooleanOp::Union, -1.0, true);
+  Check(result.FaceCount() == 12,
+        "allow_non_manifold_result Union keeps all 12 of the two cubes' own original faces - nothing here is "
+        "coincident, so nothing is cut or deduplicated, only the one shared touching edge is welded together");
+  Check(result.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1,
+        "exactly one edge is genuinely non-manifold (the shared touching edge) - confirmed via a standalone "
+        "scratch-test probe, not assumed");
+
+  double area = 0.0;
+  for (const Mesh& face_mesh : result.Tessellate(2, 2)) area += face_mesh.Area();
+  Check(Within(area, 12.0, 1e-9),
+        "total tessellated area is exactly 6 (per cube) x 2 = 12 - every one of the 12 faces survived "
+        "untouched (measured per-face via Tessellate(), independent of Brep::Area()/Brep::Volume(), neither of "
+        "which is well-defined on a genuinely non-manifold result)");
+}
+
+// The Mixed-engine counterpart of
+// TestBooleanCombinePlanarSymmetricDifferenceAllowsSingleShellXor: a
+// genuine single-shell XOR via the identical MixedBooleanFaces()-based
+// construction the planar engine's own PlanarBooleanFaces() path already
+// uses. Same corner-overlap fixture
+// TestBooleanCombineMixedDifferenceThrowsOnTouchingLumpXorCompound below
+// already uses (a=Box(0,0,0,2,2,2), b=Box(1,1,1,3,3,3)).
+void TestBooleanCombineMixedSymmetricDifferenceAllowsSingleShellXor() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  const Brep compound_xor = BooleanCombineMixed(a, b, BooleanOp::SymmetricDifference);
+  Check(compound_xor.LumpFaceRanges().size() == 2 && compound_xor.FaceCount() == 48,
+        "sanity: the known two-lump, 48-face compound XOR this category's own prior tests already establish, "
+        "now also confirmed through the Mixed engine's own default path");
+
+  const Brep single_shell = BooleanCombineMixed(a, b, BooleanOp::SymmetricDifference, -1.0, true);
+  Check(single_shell.LumpFaceRanges().size() == 1,
+        "allow_non_manifold_result builds a genuine SINGLE shell, not a Brep::Compound of two lumps - the "
+        "'single-body XOR' this category's bullet names directly, now closed for this engine too");
+  Check(single_shell.FaceCount() == 48,
+        "every one of the 48 faces from both Difference directions survives - none lost, none duplicated, only "
+        "welded together at the shared boundary instead of left as two separate lumps");
+  Check(single_shell.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 6,
+        "the shared boundary curve between the XOR's own four face groups (A's outside, B's outside, and both "
+        "flipped insides) comes back as real non-manifold edges instead of two separately-welded 2-trim edges - "
+        "confirmed via a standalone scratch-test probe, not assumed");
+}
+
 // Regression check: Union and SymmetricDifference must still refuse a
 // compound operand exactly as before - this pass narrows the refusal, it
 // does not remove it.
@@ -61144,6 +61384,158 @@ void TestSurfaceChangeSeam() {
   // the surface level, unlike the curve overload's own fmod handling).
   Check(wall.ChangeSeam(0, new_u_dom.max + 1.0) == Result::Failed,
         "ChangeSeam refuses a parameter outside that direction's own Domain()");
+}
+
+void TestSurfaceReparameterizeRational() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  // Single-span in U: the tensor-product generalization of
+  // NurbsCurve::ReparameterizeRational() - every control point keeps
+  // its exact position, every row (fixed V) gets the identical
+  // weight-rescale-by-U-index the curve-only case already proves
+  // correct.
+  {
+    const std::vector<Point3d> grid = {
+        Point3d(0, 0, 0), Point3d(0, 5, 1), Point3d(2, 0, 2), Point3d(2, 5, 0), Point3d(5, 0, -1), Point3d(5, 5, 1),
+    };
+    const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 3, 2, 2, 1);
+    NurbsSurface out;
+    Check(s.ReparameterizeRational(0, 2.5, out) == Result::Ok,
+          "ReparameterizeRational returns Ok on a single-span-in-U surface");
+    Check(out.IsRational(), "ReparameterizeRational forces the result rational for shape_factor != 1");
+    const double T0 = s.Domain(0).min, T1 = s.Domain(0).max;
+    const double cc = 2.5;
+    double max_err = 0.0;
+    for (int ku = 0; ku <= 20; ++ku) {
+      const double u = static_cast<double>(ku) / 20.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      const double u_old = T0 + u * (T1 - T0), u_new = T0 + v * (T1 - T0);
+      for (int kv = 0; kv <= 10; ++kv) {
+        const double vv = s.Domain(1).min + (s.Domain(1).max - s.Domain(1).min) * kv / 10.0;
+        max_err = std::max(max_err, s.PointAt(u_old, vv).DistanceTo(out.PointAt(u_new, vv)));
+      }
+    }
+    Check(max_err < 1e-9, "ReparameterizeRational(direction=0) exactly reproduces the surface's shape everywhere");
+  }
+
+  // Multi-span in V (several interior knots in the OTHER direction from
+  // the one being reparameterized) - the surface-level counterpart to
+  // the curve test's own multi-span continuity check, and confirms U's
+  // own knot vector, degree, and control count are completely untouched.
+  {
+    std::vector<Point3d> grid;
+    for (int i = 0; i < 6; ++i)
+      for (int j = 0; j < 5; ++j)
+        grid.push_back(Point3d(static_cast<double>(i), static_cast<double>(j),
+                                std::sin(static_cast<double>(i)) * std::cos(static_cast<double>(j))));
+    const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 6, 5, 3, 3);
+    NurbsSurface out;
+    Check(s.ReparameterizeRational(1, 3.0, out) == Result::Ok,
+          "ReparameterizeRational returns Ok on a multi-span-in-V surface");
+    Check(out.CVCountU() == s.CVCountU() && out.KnotCount(0) == s.KnotCount(0),
+          "ReparameterizeRational(direction=1) leaves the U direction's own knot vector/CV count untouched");
+    const double T0 = s.Domain(1).min, T1 = s.Domain(1).max;
+    const double cc = 3.0;
+    double max_err = 0.0;
+    for (int kv = 0; kv <= 40; ++kv) {
+      const double u = static_cast<double>(kv) / 40.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      const double v_old = T0 + u * (T1 - T0), v_new = T0 + v * (T1 - T0);
+      for (int ku = 0; ku <= 10; ++ku) {
+        const double uu = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * ku / 10.0;
+        max_err = std::max(max_err, s.PointAt(uu, v_old).DistanceTo(out.PointAt(uu, v_new)));
+      }
+    }
+    Check(max_err < 1e-9,
+          "ReparameterizeRational(direction=1) exactly reproduces a multi-span surface's shape everywhere - "
+          "the shared-control-point continuity rescale generalizes correctly to every row of the other "
+          "direction, not just a single curve");
+  }
+
+  // An already-rational surface (a sphere, genuinely multi-span in U)
+  // stays a sphere - confirms the shape invariant geometrically, not
+  // just via PointAt() agreement.
+  {
+    ON_NurbsSurface ns;
+    Check(ON_Sphere(ON_3dPoint(0, 0, 0), 3.0).GetNurbForm(ns) != 0,
+          "ReparameterizeRational setup: ON_Sphere::GetNurbForm succeeds");
+    NurbsSurface s;
+    s.raw() = ns;
+    Check(s.IsRational(), "ReparameterizeRational setup: the sphere fixture is already rational");
+    NurbsSurface out;
+    Check(s.ReparameterizeRational(0, 4.0, out) == Result::Ok,
+          "ReparameterizeRational returns Ok on a rational sphere");
+    const double T0 = s.Domain(0).min, T1 = s.Domain(0).max;
+    const double cc = 4.0;
+    double max_err = 0.0, max_radial_err = 0.0;
+    for (int ku = 0; ku <= 40; ++ku) {
+      const double u = static_cast<double>(ku) / 40.0;
+      const double v = u / (cc - (cc - 1.0) * u);
+      const double u_old = T0 + u * (T1 - T0), u_new = T0 + v * (T1 - T0);
+      for (int kv = 0; kv <= 10; ++kv) {
+        const double vv = s.Domain(1).min + (s.Domain(1).max - s.Domain(1).min) * kv / 10.0;
+        const Point3d p_old = s.PointAt(u_old, vv), p_new = out.PointAt(u_new, vv);
+        max_err = std::max(max_err, p_old.DistanceTo(p_new));
+        max_radial_err = std::max(max_radial_err, std::abs(p_new.DistanceTo(Point3d(0, 0, 0)) - 3.0));
+      }
+    }
+    Check(max_err < 1e-9, "ReparameterizeRational exactly reproduces a rational sphere's shape");
+    Check(max_radial_err < 1e-9, "...and every reparameterized point is still genuinely on the same radius-3 sphere");
+  }
+
+  // shape_factor == 1.0 is a true no-op.
+  {
+    const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+    const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    NurbsSurface out;
+    Check(s.ReparameterizeRational(0, 1.0, out) == Result::NoOpAlreadySatisfied,
+          "ReparameterizeRational(1.0) reports NoOpAlreadySatisfied");
+    Check(!out.IsRational(), "...and leaves a non-rational input genuinely non-rational, no forced conversion");
+  }
+
+  // Invalid direction/shape_factor throws.
+  {
+    const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+    const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    NurbsSurface out;
+    Check(Throws([&] { s.ReparameterizeRational(2, 2.0, out); }), "ReparameterizeRational(direction=2) throws");
+    Check(Throws([&] { s.ReparameterizeRational(-1, 2.0, out); }), "ReparameterizeRational(direction=-1) throws");
+    Check(Throws([&] { s.ReparameterizeRational(0, 0.0, out); }), "ReparameterizeRational(shape_factor=0) throws");
+    Check(Throws([&] { s.ReparameterizeRational(0, -3.0, out); }),
+          "ReparameterizeRational(negative shape_factor) throws");
+  }
+
+  // A surface periodic in the target direction is refused, the same
+  // scope boundary the curve overload carries. ON_Cylinder::GetNurbForm
+  // itself comes back closed-but-clamped, not periodic (confirmed
+  // directly, not assumed - the same "closed does not imply periodic"
+  // nuance ChangeSeam's own tests already established for curves), so
+  // this forces genuine periodicity via this class's own
+  // MakePeriodicExact(direction) first.
+  {
+    ON_NurbsSurface cyl_ns;
+    const ON_Cylinder cyl(ON_Circle(ON_Plane::World_xy, 2.0), 5.0);
+    Check(cyl.GetNurbForm(cyl_ns) != 0, "ReparameterizeRational setup: ON_Cylinder::GetNurbForm succeeds");
+    NurbsSurface wall;
+    wall.raw() = cyl_ns;
+    Check(wall.IsClosed(0) && !wall.IsPeriodic(0),
+          "ReparameterizeRational setup: the cylinder wall fixture starts closed-but-not-periodic in U");
+    Check(wall.MakePeriodicExact(0) == Result::Ok, "ReparameterizeRational setup: MakePeriodicExact(0) succeeds");
+    Check(wall.IsPeriodic(0), "ReparameterizeRational setup: the fixture is now genuinely periodic in U");
+    NurbsSurface out;
+    Check(wall.ReparameterizeRational(0, 2.0, out) == Result::Failed,
+          "ReparameterizeRational refuses a direction the surface is periodic in");
+  }
 }
 
 void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
@@ -78048,6 +78440,7 @@ int main() {
   RunTest("TestCurveRemoveKnotAt", TestCurveRemoveKnotAt);
   RunTest("TestCurveSetDomainReparameterizes", TestCurveSetDomainReparameterizes);
   RunTest("TestCurveChangeSeam", TestCurveChangeSeam);
+  RunTest("TestCurveReparameterizeRational", TestCurveReparameterizeRational);
   RunTest("TestCurveMatchEnd", TestCurveMatchEnd);
   RunTest("TestCurveAnalyzeEndContinuity", TestCurveAnalyzeEndContinuity);
   RunTest("TestCurveDeviationTo", TestCurveDeviationTo);
@@ -78854,6 +79247,8 @@ int main() {
   RunTest("TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand", TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand);
   RunTest("TestBooleanCombineMixedIntersectionAcceptsCompoundOperand", TestBooleanCombineMixedIntersectionAcceptsCompoundOperand);
   RunTest("TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders", TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders);
+  RunTest("TestBooleanCombineMixedUnionAllowsNonManifoldEdgeOnlyTouchingCubes", TestBooleanCombineMixedUnionAllowsNonManifoldEdgeOnlyTouchingCubes);
+  RunTest("TestBooleanCombineMixedSymmetricDifferenceAllowsSingleShellXor", TestBooleanCombineMixedSymmetricDifferenceAllowsSingleShellXor);
   RunTest("TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius", TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius);
   RunTest("TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBrep", TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBrep);
   RunTest("TestBooleanCombineMixedXorStillRefusesCompoundOperand", TestBooleanCombineMixedXorStillRefusesCompoundOperand);
@@ -78943,6 +79338,7 @@ int main() {
 
   RunTest("TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape", TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape);
   RunTest("TestSurfaceChangeSeam", TestSurfaceChangeSeam);
+  RunTest("TestSurfaceReparameterizeRational", TestSurfaceReparameterizeRational);
   RunTest("TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise", TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise);
   RunTest("TestSurfaceReduceDegree", TestSurfaceReduceDegree);
   RunTest("TestSurfaceInterpolateThroughGrid", TestSurfaceInterpolateThroughGrid);
