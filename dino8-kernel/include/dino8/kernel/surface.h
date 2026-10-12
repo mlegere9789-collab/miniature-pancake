@@ -1230,6 +1230,23 @@ class NurbsSurface {
   // std::invalid_argument if `direction` isn't 0/1.
   Result SetDomain(int direction, double t0, double t1);
 
+  // If the surface `IsClosed(direction)`, relocates that direction's seam
+  // to parameter `t`, with the 3D shape completely unchanged - only where
+  // the wraparound direction starts/ends along its own fixed loop moves.
+  // The surface-level counterpart to `NurbsCurve::ChangeSeam(t,
+  // min_dist)`; unlike that overload, there is no `min_dist` guard here
+  // (`ON_NurbsSurface::ChangeSurfaceSeam` itself doesn't offer one).
+  // Delegates to `ON_NurbsSurface::ChangeSurfaceSeam`, which internally
+  // extracts the closed direction as an `ON_NurbsCurve` (via `ToCurve`),
+  // reuses the exact same `ON_NurbsCurve::ChangeClosedCurveSeam`
+  // `NurbsCurve::ChangeSeam` wraps, then rebuilds the surface from that
+  // curve (`FromCurve`) - a real (non-stub), already-OpenNURBS-internal
+  // round trip, not new math. Returns Result::Failed if the surface
+  // isn't closed in `direction`, if `t` doesn't lie in `Domain(direction)`,
+  // or if OpenNURBS' own call reports failure. Throws
+  // std::invalid_argument if `direction` isn't 0/1.
+  Result ChangeSeam(int direction, double t);
+
   // Rebuilds (refits) this surface as a new non-rational NURBS surface
   // with exactly `u_count` x `v_count` control points of degree
   // `u_degree` x `v_degree` and clamped uniform knots over the *same*
