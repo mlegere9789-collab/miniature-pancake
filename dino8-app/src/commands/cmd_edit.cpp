@@ -1,6 +1,7 @@
 // Editing commands: Delete, Undo/Redo, Group, Hide/Show/Lock, Join,
 // Explode, Rebuild, Reverse, Offset...
 #include "commands/cmd_common.h"
+#include "dino8/kernel/curve.h"
 #include "io/File3dm.h"
 
 #include <filesystem>
@@ -151,11 +152,20 @@ class OffsetCommand : public Command {
     for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) ids_.push_back(id); }
     if (ids_.empty()) { ctx.Warn("Select curves"); Finish(); return; }
     WantPoint("Side to offset, or type a distance");
-    options = {{"Distance", FormatNumber(distance_), {}, true, false}, {"BothSides", "No", {"Yes", "No"}, false, true}};
+    options = {{"Distance", FormatNumber(distance_), {}, true, false},
+               {"BothSides", "No", {"Yes", "No"}, false, true},
+               {"Corner", "Sharp", {"Sharp", "Round", "Chamfer", "Smooth"}, false, false}};
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
     if (n == "Distance") { double d = std::atof(v.c_str()); if (d > 0) distance_ = d; options[0].value = FormatNumber(distance_); }
     if (n == "BothSides") { both_ = !both_; options[1].value = both_ ? "Yes" : "No"; }
+    if (n == "Corner") {
+      corner_style_ = v == "Round" ? kernel::CurveOffsetCornerStyle::Round
+                     : v == "Chamfer" ? kernel::CurveOffsetCornerStyle::Chamfer
+                     : v == "Smooth" ? kernel::CurveOffsetCornerStyle::Smooth
+                     : kernel::CurveOffsetCornerStyle::Sharp;
+      options[2].value = v;
+    }
   }
   void OnText(CommandContext& ctx, const std::string& t) override {
     char* e; double v = std::strtod(t.c_str(), &e);
@@ -192,11 +202,19 @@ class OffsetCommand : public Command {
   // path assumed the CPlane normal was a sensible sweep axis for every
   // curve, planar or not); now it gets the real kernel's tolerance-driven,
   // curvature-fold-guarded sampled refit along that CPlane normal instead.
+  //
+  // `corner_style_` (the "Corner" option) threads the kernel's own
+  // Sharp/Round/Chamfer/Smooth `CurveOffsetCornerStyle` through to both
+  // `OffsetInPlane()` overloads - this command was previously the one
+  // disclosed PARITY_MAP.md gap keeping that corner-style family at
+  // `[partial]` ("no app command calls OffsetInPlane with anything but
+  // the implicit Sharp default"), despite all four styles already being
+  // real, tested kernel code.
   void Make(CommandContext& ctx, const kernel::NurbsCurve& c, double d, int layer) {
     kernel::NurbsCurve out;
     const double tol = ctx.Settings().absolute_tolerance;
-    kernel::Result r = c.OffsetInPlane(d, out, tol);
-    if (r != kernel::Result::Ok) r = c.OffsetInPlane(ActivePlane(ctx), d, out, tol);
+    kernel::Result r = c.OffsetInPlane(d, out, tol, corner_style_);
+    if (r != kernel::Result::Ok) r = c.OffsetInPlane(ActivePlane(ctx), d, out, tol, corner_style_);
     if (r != kernel::Result::Ok) return;
     SceneObject n = SceneObject::MakeCurve(out);
     n.layer_index = layer;
@@ -218,6 +236,7 @@ class OffsetCommand : public Command {
   std::vector<ObjectId> ids_;
   double distance_ = 1.0;
   bool both_ = false;
+  kernel::CurveOffsetCornerStyle corner_style_ = kernel::CurveOffsetCornerStyle::Sharp;
 };
 
 // Prompts for a name and applies it to every selected object (a single
