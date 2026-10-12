@@ -207,8 +207,8 @@ class Mesh {
   // of the solid" query nothing here could answer before (every existing
   // query - Volume(), GetCentroid(), GetBoundingBox() - describes the
   // solid as a whole, not a specific point's relationship to it). Uses
-  // the standard ray-casting rule: casts a ray from `point` and counts how
-  // many of the mesh's triangles it crosses (a quad face's own two
+  // the standard ray-casting rule: casts a ray from `point` and counts
+  // how many of the mesh's triangles it crosses (a quad face's own two
   // triangles, same split Area()/Volume() already use, each counted
   // independently) - an odd count means `point` is inside. Only
   // meaningful for a closed, consistently-oriented mesh
@@ -219,27 +219,20 @@ class Mesh {
   // Closes PARITY_MAP's own "Signed distance point-to-solid" bullet,
   // whose named gap was exactly this function's own prior single-ray
   // fragility (SignedDistance()'s own sign comes straight from this
-  // function): 5 independent, deliberately non-axis-aligned generic
-  // directions (one of them this function's own original fixed
-  // direction, kept first for continuity; the other 4 golden-ratio-
-  // derived, the same "non-axis, non-rational-fraction" technique
-  // `BooleanCombineGeneral`'s own private `ClassifyPointVsBrep()`
-  // (boolean_general.cpp) already uses internally for the identical
-  // point-in-solid problem at the B-rep level, re-derived here rather
-  // than shared since that function is private to its own file and
-  // tests against a different, NURBS-SSX hit) are each ray-cast
-  // independently and MAJORITY-voted, rather than trusting any single
-  // one - a point exactly on the mesh's own axis or symmetry plane (the
-  // one case most likely to graze a vertex/edge along any ONE fixed
-  // direction, confirmed directly: a sphere at the world origin used to
-  // flip classification once merely translated away from it) would need
-  // to graze along a MAJORITY of 5 independent directions at once to
-  // still misclassify, astronomically less likely than a single-ray
-  // test's own one chance to graze. `point` exactly on the boundary
-  // remains an unhandled degenerate case in principle (the standard
-  // caveat any ray-cast test has, now only reachable if it survives a
-  // majority of independent directions), not fully eliminated, just
-  // sharply narrowed.
+  // function). Votes across 5 independent, well-separated irrational-
+  // component directions rather than casting one fixed ray - a single
+  // direction, however carefully chosen, can still graze a vertex or
+  // shared edge exactly for some mesh/point combination (confirmed
+  // directly: a point near a cube corner, with one real fixed direction
+  // aimed exactly at that corner, was misclassified as outside for a
+  // genuine, contiguous range of truly-inside points along that one ray -
+  // not a hypothetical concern). A strict majority (3 of 5, never a tie)
+  // is the answer; reproducing the same grazing failure on a MAJORITY of
+  // 5 independent directions for the same query is vanishingly unlikely
+  // for any real mesh, without this becoming a genuine spatial search.
+  // `point` exactly on the boundary remains an unhandled degenerate case
+  // (there is no single correct in/out answer for a point ON the
+  // surface).
   bool ContainsPoint(Point3d point) const;
 
   // The closest point on this mesh's surface to `point` (brute force over
