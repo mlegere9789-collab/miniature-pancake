@@ -5910,6 +5910,109 @@ void TestIntersectCylinderCylinderIntersectingClosedForm() {
 }
 
 // PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
+// "cylinder/cylinder" half's UNEQUAL-RADIUS, FULLY-PIERCING special case -
+// a third narrowing of that pair, alongside the parallel-axis and
+// equal-radius-intersecting-axis tests directly above.
+void TestIntersectCylinderCylinderUnequalRadiusClosedForm() {
+  using dino8::kernel::IntersectCylinderCylinderUnequalRadius;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Distance from a point to an infinite axis line (through `origin`,
+  // unit `axis`) - the defining per-cylinder membership test every curve
+  // point below is checked against, not a hardcoded expected curve.
+  auto dist_to_axis = [](const Point3d& p, const Point3d& origin, const Vector3d& axis) {
+    const Vector3d v = p - origin;
+    const double along = ON_DotProduct(v, axis);
+    const Vector3d radial = v - along * axis;
+    return radial.Length();
+  };
+
+  const double tol = 1e-6;
+  const double R = 3.0, r = 1.0;
+  const Vector3d axis_large(0, 0, 1);
+  const Vector3d axis_small(1, 0, 0);
+
+  // Intersecting axes (perpendicular, meeting exactly at the origin): the
+  // larger cylinder's own radius R along Z, the smaller's own radius r
+  // along X, both through the same point.
+  const ON_Cylinder cyl_large(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_large), R));
+  const ON_Cylinder cyl_small(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_small), r));
+  const auto crossing = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small, tol);
+  Check(!crossing.empty && !crossing.equal_radius && !crossing.parallel && !crossing.not_full_pierce,
+        "two unequal-radius cylinders with genuinely intersecting, perpendicular axes report two real closed curves");
+  if (!crossing.empty) {
+    for (const ON_NurbsCurve* curve : {&crossing.curve_a, &crossing.curve_b}) {
+      Check(curve->IsValid(), "each reported closed curve has a valid NURBS form");
+      bool all_on_both = true;
+      const int n = 32;
+      for (int i = 0; i <= n; ++i) {
+        const double t = curve->Domain().ParameterAt(static_cast<double>(i) / n);
+        const Point3d p = curve->PointAt(t);
+        if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-3 ||
+            std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_small) - r) > 1e-3) {
+          all_on_both = false;
+          break;
+        }
+      }
+      Check(all_on_both, "every sampled point of the curve sits at exactly radius R from the larger cylinder's axis AND exactly radius r from the smaller cylinder's axis simultaneously");
+    }
+    const Point3d mid_a = crossing.curve_a.PointAt(crossing.curve_a.Domain().ParameterAt(0.0));
+    const Point3d mid_b = crossing.curve_b.PointAt(crossing.curve_b.Domain().ParameterAt(0.0));
+    Check(mid_a.DistanceTo(mid_b) > 1e-3, "the two closed curves are genuinely distinct, not the same one reported twice");
+    Check(crossing.curve_a.IsClosed() && crossing.curve_b.IsClosed(), "both reported curves are genuinely closed loops, not open arcs");
+  }
+
+  // Also works with the caller's own argument order swapped (small, large)
+  // - the closed form must be argument-order independent.
+  const auto crossing_swapped = IntersectCylinderCylinderUnequalRadius(cyl_small, cyl_large, tol);
+  Check(!crossing_swapped.empty && !crossing_swapped.equal_radius && !crossing_swapped.parallel && !crossing_swapped.not_full_pierce,
+        "the same pair, passed in the opposite argument order, reports the same kind of result");
+
+  // A genuinely skew pair (axes non-parallel, closest-point distance
+  // d = 1 between them) whose smaller cylinder still fully pierces the
+  // larger one on every generator (d + r = 2 < R = 3).
+  const ON_Cylinder cyl_small_skew(ON_Circle(ON_Plane(Point3d(0, 1, 0), axis_small), r));
+  const auto skew_pierce = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_skew, tol);
+  Check(!skew_pierce.empty && !skew_pierce.not_full_pierce, "a genuinely skew pair whose smaller cylinder fully pierces the larger one reports a real result, not a refusal");
+  if (!skew_pierce.empty) {
+    bool all_on_both = true;
+    const int n = 32;
+    for (int i = 0; i <= n; ++i) {
+      const double t = skew_pierce.curve_a.Domain().ParameterAt(static_cast<double>(i) / n);
+      const Point3d p = skew_pierce.curve_a.PointAt(t);
+      if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-3 ||
+          std::abs(dist_to_axis(p, Point3d(0, 1, 0), axis_small) - r) > 1e-3) {
+        all_on_both = false;
+        break;
+      }
+    }
+    Check(all_on_both, "the skew-but-piercing case's own curve also sits at exactly radius R from the larger axis and radius r from the smaller (offset) axis simultaneously");
+  }
+
+  // A genuinely skew pair that does NOT fully pierce (d + r = 2.5 + 1 = 3.5
+  // >= R = 3, a partial/blind penetration) is refused outright.
+  const ON_Cylinder cyl_small_partial(ON_Circle(ON_Plane(Point3d(0, 2.5, 0), axis_small), r));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_partial, tol).not_full_pierce,
+        "a genuinely skew pair whose smaller cylinder does NOT fully pierce the larger one is refused outright, not guessed at");
+
+  // Equal radii are refused outright - this closed form requires UNEQUAL
+  // radii; IntersectCylinderCylinderIntersecting() is the equal-radius case.
+  const ON_Cylinder cyl_equal(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_small), R));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_equal, tol).equal_radius,
+        "two equal-radius cylinders are refused outright, not misrouted into this function's own construction");
+
+  // (Anti)parallel axes are refused outright - IntersectCylinderCylinderParallel()'s own case.
+  const ON_Cylinder cyl_parallel(ON_Circle(ON_Plane(Point3d(5, 0, 0), axis_large), r));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_parallel, tol).parallel,
+        "parallel axes are refused outright, not misrouted into a fabricated curve");
+
+  // Invalid input (zero-radius cylinder) is refused outright.
+  const ON_Cylinder degenerate(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_small), 0.0));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, degenerate, tol).empty, "a zero-radius cylinder operand is refused as a genuine miss");
+}
+
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
 // "plane/plane" half - the easiest of its named pairs, closed here with
 // the exact classical formula (no mesh seeding, no Newton polish).
 void TestIntersectPlanePlaneClosedForm() {
@@ -34345,6 +34448,101 @@ void TestMeshLoadFbxRejectsMalformedFiles() {
   std::remove(short_run_path.c_str());
   std::remove(oob_index_path.c_str());
   std::remove(unterminated_path.c_str());
+}
+
+void TestNurbsCurveSaveIgesRoundTrips() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence names
+  // IGES as app-only ("PLY has a kernel API; STEP/IGES/DXF/DWG ... remain
+  // app-only Document entry points" - DXF's own half of that gap already
+  // closed via SaveDxf()/LoadDxf() above). A real circle's own NURBS form -
+  // degree 2, periodic, genuinely non-unit rational weights - exercises
+  // every field SaveIges()/LoadIges() carry, not just a trivial polynomial
+  // line.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  Check(circle.raw().IsRational(), "setup: a circle's own NURBS form is genuinely rational");
+
+  const std::string path = "dino8_kernel_curve_iges_test.igs";
+  Check(circle.SaveIges(path) == Result::Ok, "NurbsCurve::SaveIges succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .igs file SaveIges wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  Check(file_text.find("S      1") != std::string::npos, "the file has a real Start section");
+  Check(file_text.find("126,") != std::string::npos, "the file's Parameter Data carries a real Type 126 entity");
+  Check(file_text.find("T      1") != std::string::npos, "the file has a real Terminate section");
+
+  NurbsCurve reloaded;
+  Check(NurbsCurve::LoadIges(path, reloaded) == Result::Ok, "NurbsCurve::LoadIges succeeds on SaveIges()'s own output");
+  Check(reloaded.raw().CVCount() == circle.raw().CVCount(), "the reloaded curve has the same control point count");
+  Check(reloaded.raw().Degree() == circle.raw().Degree(), "the reloaded curve has the same degree");
+  Check(reloaded.raw().IsRational(), "the reloaded curve is still genuinely rational");
+  bool cv_ok = true;
+  for (int i = 0; i < circle.raw().CVCount() && cv_ok; ++i) {
+    ON_4dPoint a, b;
+    circle.raw().GetCV(i, a);
+    reloaded.raw().GetCV(i, b);
+    if (std::abs(a.x / a.w - b.x / b.w) >= 1e-6 || std::abs(a.y / a.w - b.y / b.w) >= 1e-6 || std::abs(a.w - b.w) >= 1e-9) cv_ok = false;
+  }
+  Check(cv_ok, "every control point survived exactly (Euclidean position and real weight)");
+  Check(std::abs(reloaded.Length() - circle.Length()) < 1e-6,
+        "the reloaded curve's own length exactly matches the original circle's circumference");
+  std::remove(path.c_str());
+}
+
+void TestNurbsCurveLoadIgesRejectsMalformedFiles() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Result;
+
+  NurbsCurve out;
+  Check(NurbsCurve::LoadIges("dino8_kernel_curve_iges_does_not_exist.igs", out) == Result::Failed,
+        "LoadIges refuses a missing file");
+
+  const std::string garbage_path = "dino8_kernel_curve_iges_garbage.igs";
+  {
+    std::ofstream o(garbage_path);
+    o << "this is not an IGES file at all\n";
+  }
+  Check(NurbsCurve::LoadIges(garbage_path, out) == Result::Failed,
+        "LoadIges refuses a file with no Directory Entry section");
+  std::remove(garbage_path.c_str());
+
+  // A real SaveIges()-written file whose Directory Entry's own Type field
+  // (the first 8 columns of its first Directory Entry line) is corrupted
+  // to name a different entity (100, a circular arc) instead of 126 - this
+  // reader's own disclosed scope (the first Type 126 entity only) must
+  // decline it rather than misreading unrelated Parameter Data as a 126
+  // record.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
+  ON_NurbsCurve nurbs_form;
+  on_circle.GetNurbForm(nurbs_form);
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const std::string wrong_type_path = "dino8_kernel_curve_iges_wrong_type.igs";
+  Check(circle.SaveIges(wrong_type_path) == Result::Ok, "setup: SaveIges succeeds");
+  {
+    std::ifstream in(wrong_type_path);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    const size_t d1_end = text.find("D      1\n");
+    Check(d1_end != std::string::npos && d1_end >= 72, "setup: found the first Directory Entry line");
+    const size_t line_start = d1_end - 72;
+    Check(text.compare(line_start, 8, "     126") == 0, "setup: the first 8 columns are the entity Type field (126)");
+    text.replace(line_start, 8, "     100");
+    std::ofstream out_file(wrong_type_path, std::ios::trunc);
+    out_file << text;
+  }
+  Check(NurbsCurve::LoadIges(wrong_type_path, out) == Result::Failed,
+        "LoadIges refuses a file whose only entity's Directory Entry names Type 100, not 126");
+  std::remove(wrong_type_path.c_str());
 }
 
 void TestMeshSaveDxfRoundTrips() {
@@ -74433,6 +74631,7 @@ int main() {
   TestIntersectPlaneCylinderClosedForm();
   TestIntersectCylinderCylinderParallelClosedForm();
   TestIntersectCylinderCylinderIntersectingClosedForm();
+  TestIntersectCylinderCylinderUnequalRadiusClosedForm();
   TestIntersectPlanePlaneClosedForm();
   TestIntersectPlaneConeClosedForm();
   TestIntersectPlaneTorusClosedForm();
@@ -74781,6 +74980,8 @@ int main() {
   TestMeshLoad3mfRejectsMalformedFiles();
   TestMeshSaveFbxRoundTrips();
   TestMeshLoadFbxRejectsMalformedFiles();
+  TestNurbsCurveSaveIgesRoundTrips();
+  TestNurbsCurveLoadIgesRejectsMalformedFiles();
   TestMeshSaveDxfRoundTrips();
   TestMeshLoadDxfRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();

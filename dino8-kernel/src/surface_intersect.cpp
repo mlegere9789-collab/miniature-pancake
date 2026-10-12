@@ -3594,6 +3594,106 @@ CylinderCylinderIntersectingIntersection IntersectCylinderCylinderIntersecting(c
   return out;
 }
 
+CylinderCylinderUnequalIntersection IntersectCylinderCylinderUnequalRadius(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance) {
+  CylinderCylinderUnequalIntersection out;
+  if (!a.IsValid() || !b.IsValid() || !(a.circle.radius > 0) || !(b.circle.radius > 0) || !(tolerance >= 0)) return out;  // stays empty
+
+  constexpr double kAxisParallelTol = 1e-6;  // same scale IntersectCylinderCylinderParallel/IntersectCylinderCylinderIntersecting already use
+  const Vector3d axis_a = a.Axis(), axis_b = b.Axis();
+  if (ON_CrossProduct(axis_a, axis_b).Length() <= kAxisParallelTol) {
+    out.parallel = true;
+    return out;
+  }
+
+  const double radius_tol = std::max(tolerance, 1e-9 * std::max(a.circle.radius, b.circle.radius));  // same relative-tolerance idiom IntersectCylinderCylinderIntersecting/CylinderPairRadiusTolerance (boolean.cpp) already use
+  if (std::fabs(a.circle.radius - b.circle.radius) <= radius_tol) {
+    out.equal_radius = true;
+    return out;
+  }
+
+  // Order by radius - large/small - independent of the caller's own a/b
+  // argument order.
+  const bool a_is_large = a.circle.radius > b.circle.radius;
+  const Vector3d axis_large = a_is_large ? axis_a : axis_b;
+  const Vector3d axis_small = a_is_large ? axis_b : axis_a;
+  const double R = a_is_large ? a.circle.radius : b.circle.radius;
+  const double r = a_is_large ? b.circle.radius : a.circle.radius;
+  const Point3d large_c = a_is_large ? a.Center() : b.Center();
+  const Point3d small_c = a_is_large ? b.Center() : a.Center();
+
+  // Closest points of the two infinite axis lines - the identical standard
+  // closed form IntersectCylinderCylinderParallel()/IntersectCylinderCylinderIntersecting()
+  // already use.
+  const Vector3d w = large_c - small_c;
+  const double d_ab = ON_DotProduct(axis_large, axis_small);
+  const double d_aw = ON_DotProduct(axis_large, w);
+  const double d_bw = ON_DotProduct(axis_small, w);
+  const double denom = 1.0 - d_ab * d_ab;  // sin^2(alpha), bounded away from 0 by the parallel guard above
+  const double s = (d_ab * d_bw - d_aw) / denom;
+  const double t = (d_bw - d_ab * d_aw) / denom;
+  const Point3d on_large = large_c + s * axis_large;
+  const Point3d on_small = small_c + t * axis_small;
+  const double d = on_large.DistanceTo(on_small);
+  if (d > tolerance) {
+    // Genuinely skew axes: supported only when the smaller cylinder fully
+    // pierces the larger one on every generator - see this function's own
+    // header doc comment for the derivation. For genuinely intersecting
+    // axes (d <= tolerance), this condition reduces to r < R, already
+    // guaranteed by construction (equal radii already refused above), so
+    // no explicit check is needed there - matching the private splitter's
+    // own dispatch shape exactly.
+    if (!(d + r < R - tolerance)) {
+      out.not_full_pierce = true;
+      return out;
+    }
+  }
+
+  // An arbitrary orthonormal basis (e0, e1) perpendicular to the smaller
+  // cylinder's own axis - theta sweeps its own circle once regardless of
+  // which specific perpendicular pair is chosen, the same robust
+  // "cross with whichever world axis it's least aligned with" idiom
+  // IntersectCylinderCylinderParallel() already uses for an analogous
+  // purpose.
+  const Vector3d helper = std::fabs(axis_small.x) < 0.9 ? Vector3d(1, 0, 0) : Vector3d(0, 1, 0);
+  const Vector3d e0 = ON_CrossProduct(axis_small, helper).UnitVector();
+  const Vector3d e1 = ON_CrossProduct(axis_small, e0);
+
+  // The per-theta quadratic in h (the point's own height along the small
+  // cylinder's axis) - see this function's own header doc comment for the
+  // full derivation; a public re-derivation of the SAME closed form
+  // BooleanCombineMixed's own private UnequalCylinderCurvePoint
+  // (boolean.cpp) already uses.
+  auto project_perp_large_axis = [&](const Vector3d& v) { return v - ON_DotProduct(v, axis_large) * axis_large; };
+  const Vector3d mb = project_perp_large_axis(axis_small);
+  const double a2 = ON_DotProduct(mb, mb);
+  if (!(a2 > 1e-18)) return CylinderCylinderUnequalIntersection{};  // axes parallel beyond the cross-product guard's own precision - already ruled out above
+
+  constexpr int kSamples = 200;  // same per-loop density this file's other closed-curve fits (ContourAtPlane, FindSurfaceSilhouetteCurves) already use
+  std::vector<Point3d> pts_plus(kSamples), pts_minus(kSamples);
+  for (int i = 0; i < kSamples; ++i) {
+    const double theta = (2.0 * kPi * i) / kSamples;
+    const Vector3d e = r * (std::cos(theta) * e0 + std::sin(theta) * e1);
+    const Vector3d mde = project_perp_large_axis((small_c - large_c) + e);
+    const double a1 = 2.0 * ON_DotProduct(mb, mde);
+    const double a0 = ON_DotProduct(mde, mde) - R * R;
+    const double disc = a1 * a1 - 4.0 * a2 * a0;
+    if (!(disc > 0.0)) {
+      // Should not happen once the full-pierce precondition above holds -
+      // a numerical edge right at that boundary - treated as a genuine
+      // miss rather than a fabricated point.
+      return CylinderCylinderUnequalIntersection{};
+    }
+    const double sq = std::sqrt(disc);
+    pts_plus[static_cast<size_t>(i)] = small_c + ((-a1 + sq) / (2.0 * a2)) * axis_small + e;
+    pts_minus[static_cast<size_t>(i)] = small_c + ((-a1 - sq) / (2.0 * a2)) * axis_small + e;
+  }
+
+  out.empty = false;
+  out.curve_a = InterpolateCubic(pts_plus, ChordParams(pts_plus, true), true, 3);
+  out.curve_b = InterpolateCubic(pts_minus, ChordParams(pts_minus, true), true, 3);
+  return out;
+}
+
 PlanePlaneIntersection IntersectPlanePlane(const ON_Plane& a, const ON_Plane& b, double tolerance) {
   PlanePlaneIntersection out;
   if (!a.IsValid() || !b.IsValid() || !(tolerance >= 0)) return out;  // stays empty

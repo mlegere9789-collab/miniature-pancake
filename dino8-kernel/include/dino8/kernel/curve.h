@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <string>
 #include <vector>
 
 #include <opennurbs.h>
@@ -1759,6 +1760,48 @@ class NurbsCurve {
   // points left to build a curve from.
   Result OffsetInSurface(const NurbsSurface& surface, double distance, NurbsCurve& out,
                           int sample_count = -1) const;
+
+  // Writes this curve as a single real IGES 5.3 ASCII entity (Start/Global/
+  // Directory-Entry/Parameter-Data/Terminate sections, 80-column fixed-width
+  // card images) - a minimal, single-curve file closing this kernel's own
+  // "App-independent (kernel library) STEP/IGES/PLY/DXF exchange API" gap's
+  // IGES half: `dino8-app/src/io/FileIgesStep.cpp`'s own `ExportIges`/
+  // `ImportIges` already do this at the app level (a `Document`-bound
+  // multi-object writer/reader with its own entity-type dispatch for lines/
+  // arcs/surfaces/trimmed B-reps/groups), but there was no kernel-level,
+  // Document-free way to write or read just one curve - the same "PLY has a
+  // kernel API; STEP/IGES/DXF/DWG remain app-only" gap DXF's own
+  // SaveDxf()/LoadDxf() pair above already closed for its own format.
+  // Always writes a single Type 126 (Rational B-Spline Curve) entity -
+  // IGES's one general-purpose curve entity, able to represent a line, arc,
+  // or free-form NURBS curve alike - rather than `ExportIges`'s own type-
+  // specific 100 (arc)/110 (line) optimization, a deliberate scope
+  // narrowing matching `LoadDxf()`'s own "3DFACE only, no other entity
+  // kind" disclosed limit. The written Parameter Data record carries this
+  // curve's own real degree, full (clamped) knot vector, weights (all 1.0
+  // for a non-rational curve - IGES still requires the array), and
+  // Euclidean (not homogeneous) control points - the exact same field
+  // values `FileIgesStep.cpp`'s own `WriteIges126`/`EuclideanCV`/
+  // `FullKnots` write, ported into this kernel rather than re-derived, so
+  // this is the same proven encoding that app-level writer already is.
+  Result SaveIges(const std::string& path) const;
+
+  // Reads the first Type 126 (Rational B-Spline Curve) entity from a plain
+  // IGES file previously written by SaveIges() (or any other real IGES
+  // writer whose first curve entity happens to be a 126 - a hand-written
+  // 126 Parameter Data record round-trips here exactly like the app-level
+  // ImportIges()'s own identical case 126 branch, since this is the same
+  // field layout, just without the Document-bound entity-type dispatch
+  // (100/102/110/112/126/...) that reader has for every OTHER entity kind -
+  // a file whose first curve is a line (110) or arc (100), not the general
+  // 126 form, is correctly refused rather than silently misread, the same
+  // "declared scope, not a guess" convention `LoadDxf()` already uses for
+  // its own narrower-than-`ImportDxf()` scope. Returns `Result::Failed` on
+  // a missing file, a file with no Directory Entry section, no Type 126
+  // entity, or a 126 entity whose own K (control point count minus one)
+  // or M (degree) implies more Parameter Data fields than the file
+  // actually has.
+  static Result LoadIges(const std::string& path, NurbsCurve& out);
 
   const ON_NurbsCurve& raw() const { return curve_; }
   ON_NurbsCurve& raw() { return curve_; }
