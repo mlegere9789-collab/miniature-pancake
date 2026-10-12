@@ -6538,10 +6538,42 @@ void TestIntersectCylinderCylinderUnequalRadiusClosedForm() {
   }
 
   // A genuinely skew pair that does NOT fully pierce (d + r = 2.5 + 1 = 3.5
-  // >= R = 3, a partial/blind penetration) is refused outright.
+  // >= R = 3) but still genuinely overlaps in part (d - r = 1.5 < R = 3):
+  // a real partial-penetration case, no longer a bare refusal. The small
+  // cylinder's surface point at angle theta (measuring from the closest
+  // side) sits at distance sqrt(h^2 + (2.5 + cos(theta))^2) from the large
+  // (Z) axis for free height h, which reaches exactly R = 3 for some real
+  // h iff |2.5 + cos(theta)| <= 3, i.e. cos(theta) <= 0.5 - true over a
+  // genuine, proper sub-range of theta (roughly 240 of the circle's own
+  // 360 degrees), not the whole circle and not none of it.
   const ON_Cylinder cyl_small_partial(ON_Circle(ON_Plane(Point3d(0, 2.5, 0), axis_small), r));
-  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_partial, tol).not_full_pierce,
-        "a genuinely skew pair whose smaller cylinder does NOT fully pierce the larger one is refused outright, not guessed at");
+  const auto partial = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_partial, tol);
+  Check(!partial.empty && partial.not_full_pierce && !partial.partial_loops.empty(),
+        "a genuinely skew pair whose smaller cylinder does NOT fully pierce the larger one reports a real partial-penetration result, not a bare refusal");
+  if (!partial.empty) {
+    Check(partial.partial_loops.size() == 1, "this fixture's own valid-theta set is a single contiguous arc (cos(theta) <= 0.5), so exactly one pinched loop is reported, not several");
+    bool all_on_both = true;
+    const ON_NurbsCurve& loop = partial.partial_loops.front();
+    Check(loop.IsValid() && loop.IsClosed(), "the reported partial loop has a valid, genuinely closed NURBS form");
+    const int n = 48;
+    for (int i = 0; i <= n; ++i) {
+      const double t = loop.Domain().ParameterAt(static_cast<double>(i) / n);
+      const Point3d p = loop.PointAt(t);
+      if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-2 ||
+          std::abs(dist_to_axis(p, Point3d(0, 2.5, 0), axis_small) - r) > 1e-2) {
+        all_on_both = false;
+        break;
+      }
+    }
+    Check(all_on_both, "every sampled point of the partial-pierce loop sits at exactly radius R from the larger cylinder's axis AND exactly radius r from the smaller (offset) axis simultaneously");
+  }
+
+  // A genuinely skew pair far enough apart that the smaller cylinder's
+  // surface never reaches the larger cylinder's radius at ANY angle
+  // (d - r = 9 > R = 3): a genuine total miss, not a refusal flag.
+  const ON_Cylinder cyl_small_disjoint(ON_Circle(ON_Plane(Point3d(0, 10, 0), axis_small), r));
+  const auto disjoint = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_disjoint, tol);
+  Check(disjoint.empty && !disjoint.not_full_pierce, "a genuinely skew pair whose cylinders never touch at any angle reports a genuine miss, not a partial-pierce flag");
 
   // Equal radii are refused outright - this closed form requires UNEQUAL
   // radii; IntersectCylinderCylinderIntersecting() is the equal-radius case.

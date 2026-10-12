@@ -1,6 +1,7 @@
 #include "dino8/kernel/surface_intersect.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -3775,19 +3776,7 @@ CylinderCylinderUnequalIntersection IntersectCylinderCylinderUnequalRadius(const
   const Point3d on_large = large_c + s * axis_large;
   const Point3d on_small = small_c + t * axis_small;
   const double d = on_large.DistanceTo(on_small);
-  if (d > tolerance) {
-    // Genuinely skew axes: supported only when the smaller cylinder fully
-    // pierces the larger one on every generator - see this function's own
-    // header doc comment for the derivation. For genuinely intersecting
-    // axes (d <= tolerance), this condition reduces to r < R, already
-    // guaranteed by construction (equal radii already refused above), so
-    // no explicit check is needed there - matching the private splitter's
-    // own dispatch shape exactly.
-    if (!(d + r < R - tolerance)) {
-      out.not_full_pierce = true;
-      return out;
-    }
-  }
+  const bool axes_intersect = !(d > tolerance);  // for genuinely intersecting axes, full pierce reduces to r < R, already guaranteed by construction (equal radii already refused above) - matching the private splitter's own dispatch shape exactly.
 
   // An arbitrary orthonormal basis (e0, e1) perpendicular to the smaller
   // cylinder's own axis - theta sweeps its own circle once regardless of
@@ -3809,29 +3798,164 @@ CylinderCylinderUnequalIntersection IntersectCylinderCylinderUnequalRadius(const
   const double a2 = ON_DotProduct(mb, mb);
   if (!(a2 > 1e-18)) return CylinderCylinderUnequalIntersection{};  // axes parallel beyond the cross-product guard's own precision - already ruled out above
 
-  constexpr int kSamples = 200;  // same per-loop density this file's other closed-curve fits (ContourAtPlane, FindSurfaceSilhouetteCurves) already use
-  std::vector<Point3d> pts_plus(kSamples), pts_minus(kSamples);
-  for (int i = 0; i < kSamples; ++i) {
-    const double theta = (2.0 * kPi * i) / kSamples;
+  // disc(theta) - the SAME quadratic discriminant the sampling loop below
+  // evaluates per-sample, exposed here as a standalone function of theta so
+  // the partial-pierce path (below) can bracket and bisect its own zero
+  // crossings exactly, rather than only ever sampling it at a fixed grid.
+  auto disc_at = [&](double theta) {
     const Vector3d e = r * (std::cos(theta) * e0 + std::sin(theta) * e1);
     const Vector3d mde = project_perp_large_axis((small_c - large_c) + e);
     const double a1 = 2.0 * ON_DotProduct(mb, mde);
-    const double a0 = ON_DotProduct(mde, mde) - R * R;
-    const double disc = a1 * a1 - 4.0 * a2 * a0;
-    if (!(disc > 0.0)) {
-      // Should not happen once the full-pierce precondition above holds -
-      // a numerical edge right at that boundary - treated as a genuine
-      // miss rather than a fabricated point.
-      return CylinderCylinderUnequalIntersection{};
-    }
+    const double a0v = ON_DotProduct(mde, mde) - R * R;
+    return a1 * a1 - 4.0 * a2 * a0v;
+  };
+  // The two exact quadratic roots (height h along the small cylinder's own
+  // axis) at a given theta - meaningful only where disc_at(theta) >= 0;
+  // (h_plus, h_minus).
+  auto roots_at = [&](double theta) {
+    const Vector3d e = r * (std::cos(theta) * e0 + std::sin(theta) * e1);
+    const Vector3d mde = project_perp_large_axis((small_c - large_c) + e);
+    const double a1 = 2.0 * ON_DotProduct(mb, mde);
+    const double a0v = ON_DotProduct(mde, mde) - R * R;
+    const double disc = std::max(a1 * a1 - 4.0 * a2 * a0v, 0.0);
     const double sq = std::sqrt(disc);
-    pts_plus[static_cast<size_t>(i)] = small_c + ((-a1 + sq) / (2.0 * a2)) * axis_small + e;
-    pts_minus[static_cast<size_t>(i)] = small_c + ((-a1 - sq) / (2.0 * a2)) * axis_small + e;
+    return std::make_pair((-a1 + sq) / (2.0 * a2), (-a1 - sq) / (2.0 * a2));
+  };
+  auto point_at = [&](double theta, double h) {
+    const Vector3d e = r * (std::cos(theta) * e0 + std::sin(theta) * e1);
+    return small_c + h * axis_small + e;
+  };
+
+  constexpr int kSamples = 200;  // same per-loop density this file's other closed-curve fits (ContourAtPlane, FindSurfaceSilhouetteCurves) already use
+
+  if (axes_intersect) {
+    // Full pierce is guaranteed at every angle - the fast, direct path.
+    std::vector<Point3d> pts_plus(kSamples), pts_minus(kSamples);
+    for (int i = 0; i < kSamples; ++i) {
+      const double theta = (2.0 * kPi * i) / kSamples;
+      const auto hh = roots_at(theta);
+      pts_plus[static_cast<size_t>(i)] = point_at(theta, hh.first);
+      pts_minus[static_cast<size_t>(i)] = point_at(theta, hh.second);
+    }
+    out.empty = false;
+    out.curve_a = InterpolateCubic(pts_plus, ChordParams(pts_plus, true), true, 3);
+    out.curve_b = InterpolateCubic(pts_minus, ChordParams(pts_minus, true), true, 3);
+    return out;
+  }
+
+  // Genuinely skew axes: classify disc(theta) over the full circle first,
+  // rather than only checking the single alpha-independent full-pierce
+  // condition `d + r < R` this function used to gate on exclusively. That
+  // condition is sufficient for full pierce (disc(theta) > 0 everywhere)
+  // but its failure does NOT mean "no intersection" - it can equally mean
+  // a genuine PARTIAL pierce (disc(theta) >= 0 only over one or more
+  // proper sub-ranges of theta: the smaller cylinder's circumference dips
+  // into the larger one over part of its own turn and stays clear over the
+  // rest, tracing a real closed, pinched loop bounded by the two tangency
+  // angles where disc(theta) == 0) or a genuine total miss (disc(theta) < 0
+  // everywhere - the two cylinders never touch at all).
+  constexpr int kScan = 720;  // 0.5-degree resolution - fine enough to bracket every zero crossing of a function this smooth (a degree-2 trig polynomial, at most 4 real roots) without missing one in practice
+  std::array<double, kScan> scan;
+  double max_abs = 0.0;
+  for (int i = 0; i < kScan; ++i) {
+    scan[static_cast<size_t>(i)] = disc_at((2.0 * kPi * i) / kScan);
+    max_abs = std::max(max_abs, std::fabs(scan[static_cast<size_t>(i)]));
+  }
+  const double eps = std::max(1e-9 * max_abs, 1e-15);  // scale-relative sign-decision margin, not an absolute tolerance - disc(theta)'s own natural scale varies with R/r/d
+
+  bool any_pos = false, any_neg = false;
+  for (double v : scan) { if (v > eps) any_pos = true; if (v < -eps) any_neg = true; }
+
+  if (!any_pos) {
+    // disc(theta) <= 0 everywhere: the smaller cylinder's surface never
+    // reaches the larger cylinder's radius at any angle - a genuine total
+    // miss, not a refusal. Stays empty, matching this file's own
+    // "genuinely too far apart" idiom used elsewhere (e.g.
+    // IntersectCylinderCylinderParallel's own disjoint check).
+    return out;
+  }
+
+  if (!any_neg) {
+    // disc(theta) >= 0 everywhere after all (the `d + r < R` gate above is
+    // sufficient but not necessary - this can still happen just past its
+    // own boundary): full pierce, same construction as the axes_intersect
+    // fast path above.
+    std::vector<Point3d> pts_plus(kSamples), pts_minus(kSamples);
+    for (int i = 0; i < kSamples; ++i) {
+      const double theta = (2.0 * kPi * i) / kSamples;
+      const auto hh = roots_at(theta);
+      pts_plus[static_cast<size_t>(i)] = point_at(theta, hh.first);
+      pts_minus[static_cast<size_t>(i)] = point_at(theta, hh.second);
+    }
+    out.empty = false;
+    out.curve_a = InterpolateCubic(pts_plus, ChordParams(pts_plus, true), true, 3);
+    out.curve_b = InterpolateCubic(pts_minus, ChordParams(pts_minus, true), true, 3);
+    return out;
+  }
+
+  // Genuine partial pierce: both signs occur. Re-parametrize theta' =
+  // theta - theta0 around a scan sample already confirmed negative (one
+  // must exist, any_neg == true), so every positive arc sought below is
+  // safely interior to (0, 2*pi) in the shifted frame - no modular
+  // wraparound bookkeeping needed, since the shifted frame's own two ends
+  // (theta' == 0 and theta' == 2*pi, the same real theta by periodicity)
+  // are both confirmed negative.
+  int neg0 = 0;
+  double most_neg = 0.0;
+  for (int i = 0; i < kScan; ++i) {
+    if (scan[static_cast<size_t>(i)] < most_neg) { most_neg = scan[static_cast<size_t>(i)]; neg0 = i; }
+  }
+  const double theta0 = (2.0 * kPi * neg0) / kScan;
+  std::array<double, kScan + 1> shifted;
+  for (int i = 0; i <= kScan; ++i) shifted[static_cast<size_t>(i)] = disc_at(theta0 + (2.0 * kPi * i) / kScan);
+
+  auto bisect_root = [&](double tlo, double thi) {
+    double flo = disc_at(theta0 + tlo);
+    for (int iter = 0; iter < 80; ++iter) {
+      const double tm = 0.5 * (tlo + thi);
+      const double fm = disc_at(theta0 + tm);
+      if ((fm > 0.0) == (flo > 0.0)) { tlo = tm; flo = fm; } else { thi = tm; }
+    }
+    return 0.5 * (tlo + thi);
+  };
+
+  std::vector<double> roots;  // ascending theta' crossing points, in (0, 2*pi)
+  for (int i = 0; i < kScan; ++i) {
+    const bool pos_i = shifted[static_cast<size_t>(i)] > 0.0;
+    const bool pos_j = shifted[static_cast<size_t>(i + 1)] > 0.0;
+    if (pos_i != pos_j) {
+      roots.push_back(bisect_root((2.0 * kPi * i) / kScan, (2.0 * kPi * (i + 1)) / kScan));
+    }
+  }
+  if (roots.size() < 2 || roots.size() % 2 != 0) {
+    // A well-posed configuration with both signs present always crosses
+    // zero an even number of times (periodic, both ends negative) - a
+    // stray odd count would mean the scan grid missed a crossing entirely
+    // (two too close together). Rather than fabricate a loop from a
+    // mis-paired root list, disclose this as a genuine miss - the same
+    // honest "don't guess" shape this function already takes for every
+    // other input it declines to handle.
+    return out;
   }
 
   out.empty = false;
-  out.curve_a = InterpolateCubic(pts_plus, ChordParams(pts_plus, true), true, 3);
-  out.curve_b = InterpolateCubic(pts_minus, ChordParams(pts_minus, true), true, 3);
+  out.not_full_pierce = true;
+  constexpr int kArcSamples = 100;  // interior resolution along each pierce arc
+  for (size_t k = 0; k + 1 < roots.size(); k += 2) {
+    const double theta_start = theta0 + roots[k];
+    const double theta_end = theta0 + roots[k + 1];
+    std::vector<Point3d> loop_pts;
+    loop_pts.reserve(static_cast<size_t>(2 * kArcSamples - 2));
+    for (int i = 0; i < kArcSamples; ++i) {
+      const double theta = theta_start + (theta_end - theta_start) * i / (kArcSamples - 1);
+      loop_pts.push_back(point_at(theta, roots_at(theta).first));  // h+ branch, forward from the entry pinch to the exit pinch
+    }
+    for (int i = kArcSamples - 2; i >= 1; --i) {
+      const double theta = theta_start + (theta_end - theta_start) * i / (kArcSamples - 1);
+      loop_pts.push_back(point_at(theta, roots_at(theta).second));  // h- branch, backward from the exit pinch to the entry pinch (both pinches themselves already carried by the h+ pass above, where h+ == h-)
+    }
+    out.partial_loops.push_back(InterpolateCubic(loop_pts, ChordParams(loop_pts, true), true, 3));
+  }
   return out;
 }
 
