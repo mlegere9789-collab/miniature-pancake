@@ -1161,6 +1161,31 @@ Color Mesh::VertexColorAt(int vertex_index) const {
                static_cast<unsigned char>(c.Blue())};
 }
 
+Result Mesh::SetVertexAlpha(const std::vector<unsigned char>& alpha) {
+  if (!HasVertexColors() || static_cast<int>(alpha.size()) != mesh_.m_V.Count()) {
+    return Result::Failed;
+  }
+  for (int i = 0; i < mesh_.m_C.Count(); ++i) {
+    // ON_Color::SetAlpha()'s own convention (0 = opaque, 255 =
+    // transparent) is the reverse of `alpha`'s own - see SetVertexAlpha()'s
+    // own doc comment in mesh.h.
+    mesh_.m_C[i].SetAlpha(255 - static_cast<int>(alpha[static_cast<size_t>(i)]));
+  }
+  has_vertex_alpha_ = true;
+  return Result::Ok;
+}
+
+bool Mesh::HasVertexAlpha() const {
+  return has_vertex_alpha_ && HasVertexColors();
+}
+
+unsigned char Mesh::VertexAlphaAt(int vertex_index) const {
+  if (!HasVertexAlpha() || vertex_index < 0 || vertex_index >= mesh_.m_C.Count()) {
+    return 255;
+  }
+  return static_cast<unsigned char>(255 - mesh_.m_C[vertex_index].Alpha());
+}
+
 Mesh Mesh::FlipNormals() const {
   Mesh result = *this;
   ON_Mesh& out = result.mesh_;
@@ -1910,6 +1935,7 @@ Result Mesh::SavePly(const std::string& path, bool binary, bool big_endian) cons
   const std::vector<Vector3d> normals = ComputeVertexNormals();
   const bool has_uvs = HasTextureCoordinates();
   const bool has_colors = HasVertexColors();
+  const bool has_alpha = HasVertexAlpha();
 
   const std::string format = !binary ? "ascii" : (big_endian ? "binary_big_endian" : "binary_little_endian");
   out << "ply\n";
@@ -1930,6 +1956,9 @@ Result Mesh::SavePly(const std::string& path, bool binary, bool big_endian) cons
     out << "property uchar red\n";
     out << "property uchar green\n";
     out << "property uchar blue\n";
+    if (has_alpha) {
+      out << "property uchar alpha\n";
+    }
   }
   out << "element face " << mesh_.m_F.Count() << '\n';
   out << "property list uchar int vertex_indices\n";
@@ -1960,6 +1989,9 @@ Result Mesh::SavePly(const std::string& path, bool binary, bool big_endian) cons
         WriteBinaryScalar(out, static_cast<uint8_t>(c.r), big_endian);
         WriteBinaryScalar(out, static_cast<uint8_t>(c.g), big_endian);
         WriteBinaryScalar(out, static_cast<uint8_t>(c.b), big_endian);
+        if (has_alpha) {
+          WriteBinaryScalar(out, static_cast<uint8_t>(VertexAlphaAt(i)), big_endian);
+        }
       }
     } else {
       out << p.x << ' ' << p.y << ' ' << p.z << ' ' << n.x << ' ' << n.y << ' ' << n.z;
@@ -1970,6 +2002,9 @@ Result Mesh::SavePly(const std::string& path, bool binary, bool big_endian) cons
       if (has_colors) {
         const Color c = VertexColorAt(i);
         out << ' ' << static_cast<int>(c.r) << ' ' << static_cast<int>(c.g) << ' ' << static_cast<int>(c.b);
+        if (has_alpha) {
+          out << ' ' << static_cast<int>(VertexAlphaAt(i));
+        }
       }
       out << '\n';
     }
@@ -2038,12 +2073,14 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
   bool have_uvs = false;
   std::vector<Color> colors;
   bool have_colors = false;
+  std::vector<unsigned char> alphas;
+  bool have_alpha = false;
 
   for (const PlyElement& element : elements) {
     if (element.name == "vertex") {
       found_vertex = true;
       int idx_x = -1, idx_y = -1, idx_z = -1, idx_u = -1, idx_v = -1;
-      int idx_r = -1, idx_g = -1, idx_b = -1;
+      int idx_r = -1, idx_g = -1, idx_b = -1, idx_a = -1;
       for (size_t i = 0; i < element.properties.size(); ++i) {
         const PlyProperty& property = element.properties[i];
         if (property.is_list) {
@@ -2057,15 +2094,20 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
         else if (property.name == "red") idx_r = static_cast<int>(i);
         else if (property.name == "green") idx_g = static_cast<int>(i);
         else if (property.name == "blue") idx_b = static_cast<int>(i);
-        // nx/ny/nz and any other property (alpha, ...) are read as plain
-        // columns below but never looked up by name - discarded, same
-        // "always geometry-derived" convention as LoadObj()'s vn.
+        else if (property.name == "alpha") idx_a = static_cast<int>(i);
+        // nx/ny/nz and any other property are read as plain columns
+        // below but never looked up by name - discarded, same "always
+        // geometry-derived" convention as LoadObj()'s vn.
       }
       if (idx_x < 0 || idx_y < 0 || idx_z < 0) {
         return Result::Failed;
       }
       have_uvs = idx_u >= 0 && idx_v >= 0;
       have_colors = idx_r >= 0 && idx_g >= 0 && idx_b >= 0;
+      // alpha has nowhere to live without colors alongside it - see
+      // SetVertexAlpha()'s own doc comment - so an `alpha` property on a
+      // colorless vertex is left as an ordinary ignored extra property.
+      have_alpha = have_colors && idx_a >= 0;
 
       // Rounds a raw property value (whatever scalar type it was declared
       // as - `uchar` 0-255 the ordinary case, but a `float`/`double` file
@@ -2093,6 +2135,9 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
           colors.push_back(Color{to_byte(values[static_cast<size_t>(idx_r)]),
                                   to_byte(values[static_cast<size_t>(idx_g)]),
                                   to_byte(values[static_cast<size_t>(idx_b)])});
+          if (have_alpha) {
+            alphas.push_back(to_byte(values[static_cast<size_t>(idx_a)]));
+          }
         }
       }
     } else if (element.name == "face") {
@@ -2195,6 +2240,12 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
       return Result::Failed;  // can only happen if the header lied about the vertex count
     }
     result.SetVertexColors(colors);
+    if (have_alpha) {
+      if (static_cast<int>(alphas.size()) != raw.m_V.Count()) {
+        return Result::Failed;  // same "header lied about the vertex count" case as colors above
+      }
+      result.SetVertexAlpha(alphas);
+    }
   }
 
   out_mesh = std::move(result);
@@ -2270,8 +2321,8 @@ Result Mesh::SaveOff(const std::string& path) const {
     out << v.x << ' ' << v.y << ' ' << v.z;
     if (write_colors) {
       const Color c = VertexColorAt(i);
-      out << ' ' << static_cast<int>(c.r) << ' ' << static_cast<int>(c.g) << ' '
-          << static_cast<int>(c.b) << " 255";
+      out << ' ' << static_cast<int>(c.r) << ' ' << static_cast<int>(c.g) << ' ' << static_cast<int>(c.b)
+          << ' ' << static_cast<int>(VertexAlphaAt(i));
     }
     out << '\n';
   }
@@ -2324,7 +2375,11 @@ Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
   Mesh result;
   ON_Mesh& raw = result.mesh_;
   std::vector<Color> colors;
-  if (is_coff) colors.reserve(static_cast<size_t>(vertex_count));
+  std::vector<unsigned char> alphas;
+  if (is_coff) {
+    colors.reserve(static_cast<size_t>(vertex_count));
+    alphas.reserve(static_cast<size_t>(vertex_count));
+  }
 
   for (int i = 0; i < vertex_count; ++i) {
     double x, y, z;
@@ -2340,6 +2395,7 @@ Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
       if (!NextOffToken(in, token) || !ParseOffInt(token, a) || a < 0 || a > 255) return Result::Failed;
       colors.push_back(Color{static_cast<unsigned char>(r), static_cast<unsigned char>(g),
                               static_cast<unsigned char>(b)});
+      alphas.push_back(static_cast<unsigned char>(a));
     }
   }
 
@@ -2364,6 +2420,15 @@ Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
 
   if (is_coff && !colors.empty()) {
     result.SetVertexColors(colors);
+    // Unlike PLY (where `alpha` is a distinct, optional property - see
+    // LoadPly()'s own doc comment), COFF's fixed `r g b a` vertex-line
+    // shape has no way to represent "no alpha data" at all: every
+    // reloaded COFF vertex gets a real, explicit alpha value via
+    // SetVertexAlpha() here, 255 only when the file itself said 255 -
+    // not a signal that alpha was never meaningful, the way
+    // HasVertexAlpha() == false means for a mesh that never called
+    // SetVertexAlpha() in the first place.
+    result.SetVertexAlpha(alphas);
   }
   out_mesh = std::move(result);
   return Result::Ok;

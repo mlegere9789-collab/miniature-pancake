@@ -113,12 +113,13 @@ struct RenderImage {
   std::vector<unsigned char> rgb;  // top-down rows
   // Real, unclamped linear-radiance HDR capture of the same render (top-
   // down rows, 3 floats per pixel) - populated only when the most recent
-  // Render/RenderView call requested it (RenderSettings::hdr_output);
-  // empty otherwise. SaveLastRender writes this via SaveImageHdr/
-  // SaveImageExr when the requested path's own extension asks for it and
-  // this is non-empty, closing the rasterizer's own half of "Environments
-  // and image-based lighting"'s long-disclosed HDR gap (the CPU path
-  // tracer and GPU raytraced preview already had this - see that bullet).
+  // Render/RenderView (rasteriser quality) or cmd_raytrace.cpp's own
+  // RenderFullFrame (Quality=Raytraced, via PathTracer::Render's
+  // hdr_rgb_out) call requested it; empty otherwise. SaveLastRender writes
+  // this via SaveImageHdr/SaveImageExr when the requested path's own
+  // extension asks for it and this is non-empty - the same field closes
+  // both halves of "Environments and image-based lighting"'s long-
+  // disclosed render-to-file HDR gap now, not just the rasteriser's own.
   std::vector<float> hdr_rgb;
   unsigned texture = 0;            // GL texture for the panel (owned)
   std::string view_name;

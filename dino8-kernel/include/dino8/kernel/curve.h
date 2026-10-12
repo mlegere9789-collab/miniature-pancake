@@ -34,7 +34,17 @@ class NurbsSurface;
 // point alone, same as `Sharp`: cutting a corner that never had a gap to
 // begin with is not standard behavior in any offset tool and isn't
 // invented here either.
-enum class CurveOffsetCornerStyle { Sharp, Round, Chamfer };
+//
+// `Smooth` fills a corner the same way (only on the gap-opening "fill"
+// side of a turn, exactly like `Round`/`Chamfer`) with a G2 (curvature-
+// continuous) blend between the two adjacent offset edges instead of a
+// circular arc or a flat cut - built via `BlendCurves()` (curve.h) from
+// each edge's own straight-line direction. Since a straight line has
+// zero curvature everywhere, the blend starts and ends at curvature
+// zero too, a real difference from `Round`'s own arc (whose junction
+// with each straight edge is only tangent-continuous: curvature jumps
+// from 0 on the line to `1/|distance|` right at the tangent point).
+enum class CurveOffsetCornerStyle { Sharp, Round, Chamfer, Smooth };
 
 // What NurbsCurve::MatchEnd() reports about the match it just made,
 // every number measured by evaluating both curves after the edit (not
@@ -514,6 +524,31 @@ class NurbsCurve {
   // positive.
   Result MinDistanceTo(const NurbsCurve& other, double tolerance, double& out_distance,
                         double* out_t_this = nullptr, double* out_t_other = nullptr) const;
+
+  // Exact curve-to-surface minimum distance: closes the other named half
+  // of the same "Entity-pair minimum distance for curves/surfaces" gap
+  // the curve/curve overload above closes ("surface/surface and
+  // curve/surface minimum distance remain unattempted"). Identical
+  // two-tier technique: a coarse global search sampling this curve,
+  // taking `surface.ClosestPointParameter()` at each sample to find the
+  // best starting pair, then a local alternating-projection polish (this
+  // curve's own `ClosestPointParameter()` toward the surface's current
+  // best point, the surface's own `ClosestPointParameter()` back toward
+  // this curve's new point, repeated until neither moves), run at
+  // doubling sample counts until two successive counts agree to within
+  // `tolerance` - the same disclosed "not a formally certified global
+  // minimum" tier the curve/curve overload already carries. `out_t`/
+  // `out_uv`, if non-null, receive the parameter on this curve and the
+  // (u, v) on `surface` where the minimum was found. Returns
+  // `Result::Failed` if convergence isn't reached within 20 doublings.
+  // Throws `std::invalid_argument` if `tolerance` isn't positive.
+  //
+  // Implemented in surface_intersect.cpp (not curve.cpp), alongside this
+  // class's other curve/surface cross-type methods
+  // (`OffsetOnSurfaceNormal` etc.), since it needs `NurbsSurface`'s own
+  // full definition.
+  Result MinDistanceTo(const NurbsSurface& surface, double tolerance, double& out_distance, double* out_t = nullptr,
+                        Point2d* out_uv = nullptr) const;
 
   // An oriented bounding box - PARITY_MAP.md's "Mass properties & spatial
   // queries" category, "Oriented / CPlane-aligned / minimal-volume
@@ -1158,6 +1193,42 @@ class NurbsCurve {
   // t1` doesn't hold or OpenNURBS' own call fails, or
   // Result::NoOpAlreadySatisfied if `[t0, t1]` already equals `Domain()`.
   Result SetDomain(double t0, double t1);
+
+  // If the curve `IsClosed()`, relocates the seam (the shared start/end
+  // point) to parameter `t`, with the curve's own 3D shape completely
+  // unchanged - only where along that fixed shape it starts/ends moves.
+  // `t` need not already lie inside `Domain()`: it is wrapped by the
+  // curve's own periodicity first (`fmod` against the domain width), the
+  // same tolerant handling `NurbsSurface::ChangeSeam(direction, t)` relies
+  // on via the identical OpenNURBS call. For a genuinely periodic curve
+  // (`IsPeriodic()`) whose interior knots are all SIMPLE (multiplicity
+  // 1), the existing periodic knot structure is reused directly with no
+  // extra knot inserted at the new seam - but verified directly, NOT
+  // assumed: a periodic curve whose interior knots carry higher
+  // multiplicity (e.g. this class's own `MakePeriodicExact()`, which
+  // Bezier-decomposes to full multiplicity `Degree()` at every former
+  // breakpoint) fails that internal simple-knot precondition and falls
+  // back to OpenNURBS' own general path instead (split at the seam,
+  // re-append the two halves in the other order, then re-clamp the
+  // domain) - shape-exact either way, but that fallback path returns a
+  // CLAMPED result: `IsPeriodic()` can come back false even though it
+  // was true beforehand. For a merely closed (clamped, non-periodic)
+  // curve to begin with, a knot is inserted at the seam if one isn't
+  // already there - the control point count can grow by one in that
+  // case, same as any other `InsertKnot`. `min_dist` (when > 0) is a
+  // no-op guard, exactly as `ON_Curve::ChangeClosedCurveSeam(t, min_dist)`
+  // defines it: skip the move (and report so) when the target point is
+  // already within `min_dist` of the current start point. Delegates to
+  // `ON_NurbsCurve::ChangeClosedCurveSeam`, the real (non-stub)
+  // implementation `ON_NurbsSurface::ChangeSurfaceSeam` and
+  // `ON_PolyCurve::ChangeClosedCurveSeam` themselves already depend on
+  // internally - not new math, exposing an already-trusted OpenNURBS
+  // primitive this kernel had no public wrapper for. Returns
+  // Result::Failed if the curve isn't closed, or if OpenNURBS' own call
+  // reports failure; Result::NoOpAlreadySatisfied if `min_dist > 0` and
+  // the target point was already within it of the current start (left
+  // completely untouched in that case, not even re-wrapped).
+  Result ChangeSeam(double t, double min_dist = 0.0);
 
   Point3d PointAt(double t) const;
 

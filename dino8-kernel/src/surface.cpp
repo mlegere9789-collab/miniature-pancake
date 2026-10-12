@@ -1192,6 +1192,77 @@ Point3d NurbsSurface::ClosestPoint(Point3d point, int u_divisions, int v_divisio
   return PointAt(uv.x, uv.y);
 }
 
+namespace {
+// One coarse global search over an `n` x `n` grid of `a`, each grid point
+// mapped to its own closest point on `b`, followed by an alternating-
+// projection local polish from the best coarse candidate found - the 2D
+// surface/surface generalization of `NurbsCurve::MinDistanceTo`'s own
+// 1D `RefineMinDistance` helper (curve.cpp).
+void RefineMinDistanceSurfaces(const NurbsSurface& a, const NurbsSurface& b, int n, double& best_dist,
+                                Point2d& best_uv_a, Point2d& best_uv_b) {
+  const Interval u_dom = a.Domain(0);
+  const Interval v_dom = a.Domain(1);
+  best_dist = std::numeric_limits<double>::max();
+  for (int i = 0; i <= n; ++i) {
+    const double u = u_dom.min + (u_dom.max - u_dom.min) * i / n;
+    for (int j = 0; j <= n; ++j) {
+      const double v = v_dom.min + (v_dom.max - v_dom.min) * j / n;
+      const Point3d pa = a.PointAt(u, v);
+      const Point2d uv_b = b.ClosestPointParameter(pa);
+      const double d = pa.DistanceTo(b.PointAt(uv_b.x, uv_b.y));
+      if (d < best_dist) {
+        best_dist = d;
+        best_uv_a = Point2d(u, v);
+        best_uv_b = uv_b;
+      }
+    }
+  }
+  for (int iter = 0; iter < 30; ++iter) {
+    const Point3d pb = b.PointAt(best_uv_b.x, best_uv_b.y);
+    const Point2d new_uv_a = a.ClosestPointParameter(pb);
+    const Point3d pa = a.PointAt(new_uv_a.x, new_uv_a.y);
+    const Point2d new_uv_b = b.ClosestPointParameter(pa);
+    const double new_dist = pa.DistanceTo(b.PointAt(new_uv_b.x, new_uv_b.y));
+    if (new_dist >= best_dist - 1e-15) break;
+    best_dist = new_dist;
+    best_uv_a = new_uv_a;
+    best_uv_b = new_uv_b;
+  }
+}
+}  // namespace
+
+Result NurbsSurface::MinDistanceTo(const NurbsSurface& other, double tolerance, double& out_distance,
+                                    Point2d* out_uv_this, Point2d* out_uv_other) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::MinDistanceTo: tolerance must be positive");
+  }
+  int n = 10;
+  double dist;
+  Point2d uv_this, uv_other;
+  RefineMinDistanceSurfaces(*this, other, n, dist, uv_this, uv_other);
+  for (int level = 0; level < 8; ++level) {
+    const int next_n = n * 2;
+    double next_dist;
+    Point2d next_uv_this, next_uv_other;
+    RefineMinDistanceSurfaces(*this, other, next_n, next_dist, next_uv_this, next_uv_other);
+    const bool converged = std::fabs(next_dist - dist) <= tolerance;
+    n = next_n;
+    dist = next_dist;
+    uv_this = next_uv_this;
+    uv_other = next_uv_other;
+    if (converged) {
+      out_distance = dist;
+      if (out_uv_this) *out_uv_this = uv_this;
+      if (out_uv_other) *out_uv_other = uv_other;
+      return Result::Ok;
+    }
+  }
+  out_distance = dist;
+  if (out_uv_this) *out_uv_this = uv_this;
+  if (out_uv_other) *out_uv_other = uv_other;
+  return Result::Failed;
+}
+
 Vector3d NurbsSurface::NormalAt(double u, double v) const {
   ON_3dPoint point;
   ON_3dVector normal;

@@ -773,6 +773,39 @@ class NurbsSurface {
   // `Mesh::ClosestPoint()`.
   Point3d ClosestPoint(Point3d point, int u_divisions = 20, int v_divisions = 20) const;
 
+  // Minimum distance between this surface and `other`: closes the
+  // "surface/surface and curve/surface minimum distance remain
+  // unattempted" half of PARITY_MAP's "Entity-pair minimum distance for
+  // curves/surfaces" gap, the surface/surface case (see
+  // `NurbsCurve::MinDistanceTo(const NurbsSurface&, ...)` for the
+  // curve/surface sibling). Identical two-tier technique
+  // `NurbsCurve::MinDistanceTo(const NurbsCurve&, ...)` already
+  // established, generalized from a 1D parameter search to this class's
+  // own 2D one: a coarse `ClosestPointParameter()` global search (this
+  // surface's own `u_divisions` x `v_divisions` grid, each grid point
+  // mapped to its own closest point on `other`), then an alternating-
+  // projection local polish (this surface's own closest point to
+  // `other`'s current best point, then `other`'s own closest point to
+  // THIS surface's new best point, repeated until neither moves), run at
+  // doubling grid resolutions until two successive resolutions agree to
+  // within `tolerance` - the same "double until convergence" idiom
+  // `DeviationTo()`/`MinDistanceTo()` (curve/curve) already use, not a
+  // formally certified global minimum (a pathological pair of surfaces
+  // with multiple near-equal close approaches could in principle trap the
+  // polish step in the wrong local minimum), the identical disclosed tier
+  // the curve/curve sibling already carries.
+  //
+  // `out_uv_this`/`out_uv_other`, if given, receive the winning (u, v) on
+  // each surface; the actual closest points are `PointAt(*out_uv_this)`/
+  // `other.PointAt(*out_uv_other)`.
+  //
+  // Throws `std::invalid_argument` if `tolerance` isn't positive. Returns
+  // `Result::Failed` (never a crash) if the doubling search doesn't
+  // converge within its own internal iteration cap, the distance/uv
+  // outputs still set to the best candidate found.
+  Result MinDistanceTo(const NurbsSurface& other, double tolerance, double& out_distance,
+                        Point2d* out_uv_this = nullptr, Point2d* out_uv_other = nullptr) const;
+
   // Unit surface normal at parameter (u, v): `d/du x d/dv`, normalized.
   // Delegates to `ON_Surface::EvNormal` - verified as a real
   // implementation (computes the cross product of the two partial
@@ -1269,6 +1302,23 @@ class NurbsSurface {
   // Result::Failed if `t0 >= t1` or OpenNURBS' own call fails. Throws
   // std::invalid_argument if `direction` isn't 0/1.
   Result SetDomain(int direction, double t0, double t1);
+
+  // If the surface `IsClosed(direction)`, relocates that direction's seam
+  // to parameter `t`, with the 3D shape completely unchanged - only where
+  // the wraparound direction starts/ends along its own fixed loop moves.
+  // The surface-level counterpart to `NurbsCurve::ChangeSeam(t,
+  // min_dist)`; unlike that overload, there is no `min_dist` guard here
+  // (`ON_NurbsSurface::ChangeSurfaceSeam` itself doesn't offer one).
+  // Delegates to `ON_NurbsSurface::ChangeSurfaceSeam`, which internally
+  // extracts the closed direction as an `ON_NurbsCurve` (via `ToCurve`),
+  // reuses the exact same `ON_NurbsCurve::ChangeClosedCurveSeam`
+  // `NurbsCurve::ChangeSeam` wraps, then rebuilds the surface from that
+  // curve (`FromCurve`) - a real (non-stub), already-OpenNURBS-internal
+  // round trip, not new math. Returns Result::Failed if the surface
+  // isn't closed in `direction`, if `t` doesn't lie in `Domain(direction)`,
+  // or if OpenNURBS' own call reports failure. Throws
+  // std::invalid_argument if `direction` isn't 0/1.
+  Result ChangeSeam(int direction, double t);
 
   // Rebuilds (refits) this surface as a new non-rational NURBS surface
   // with exactly `u_count` x `v_count` control points of degree

@@ -440,6 +440,16 @@ Result NurbsSurface::SetDomain(int direction, double t0, double t1) {
   return surface_.SetDomain(direction, t0, t1) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsSurface::ChangeSeam(int direction, double t) {
+  if (direction != 0 && direction != 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::ChangeSeam: direction must be 0 (U) or 1 (V)");
+  }
+  if (!IsClosed(direction)) return Result::Failed;
+  const Interval dom = Domain(direction);
+  if (!(t >= dom.min && t <= dom.max)) return Result::Failed;
+  return surface_.ChangeSurfaceSeam(direction, t) ? Result::Ok : Result::Failed;
+}
+
 Result NurbsSurface::Rebuild(int u_count, int v_count, int u_degree, int v_degree, NurbsSurface& out,
                              double* out_max_deviation, int u_samples, int v_samples) const {
   if (u_degree < 1 || v_degree < 1) {
