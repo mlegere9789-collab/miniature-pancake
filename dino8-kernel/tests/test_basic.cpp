@@ -3744,7 +3744,18 @@ void TestFireRayAtBrep() {
   const NurbsSurface flat_plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
   const std::vector<Point2d> small_trim = {
       Point2d(0.25, 0.25), Point2d(0.75, 0.25), Point2d(0.75, 0.75), Point2d(0.25, 0.75)};
-  const Brep trimmed_top = Brep::TrimmedPlanarFace(flat_plane, small_trim, /*exact_clip=*/true);
+  // TrimmedPlanarFaceWelded(), not TrimmedPlanarFace(): the latter stores
+  // its own trim_loop_uv only in Brep's own tessellator-side bookkeeping
+  // (face_trim_loops_), never as a real ON_BrepLoop - so a face built that
+  // way has `f.m_li.Count() == 0`, and FaceContainsUV()'s own documented
+  // "untrimmed face" branch (surface_intersect.cpp) then answers true
+  // for every (u, v) in the full surface domain regardless of
+  // trim_loop_uv, exactly the way an honestly-untrimmed face should.
+  // TrimmedPlanarFaceWelded() instead builds a REAL ON_BrepLoop::outer via
+  // FromPlanarFaces() (see its own header doc comment in brep.h), the
+  // genuine topology FaceContainsUV()/IntersectCurveBrep()/FireRayAtBrep()
+  // actually need to tell a trimmed face apart from an untrimmed one.
+  const Brep trimmed_top = Brep::TrimmedPlanarFaceWelded(flat_plane, small_trim);
   // A ray through world (1, 1) - (u, v) = (0.5, 0.5), the trim's own
   // interior - must hit; one through world (0.2, 0.2) - (u, v) =
   // (0.1, 0.1), still on the face's full domain but well outside the
