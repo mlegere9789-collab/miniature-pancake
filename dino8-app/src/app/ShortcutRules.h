@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 // Pure keyboard-shortcut logic, deliberately free of ImGui/GLFW linkage (it
 // only needs ImGuiKey's *enum values*, from imgui.h, not the ImGui library
 // itself - see ShortcutRules.cpp) or any Application/Document dependency,
@@ -36,5 +38,25 @@ bool IsReservedShortcut(int key, bool ctrl, bool shift, bool alt);
 // app). `key` is an ImGuiKey value, passed as int for the same
 // no-imgui-library-link reason IsReservedShortcut takes one.
 bool IsUnbindableCaptureKey(int key);
+
+// The capture flow's own per-frame decision, extracted so it can be
+// independently verified without a live ImGui IO context (the Options >
+// Shortcuts "Press a key..." button's click-then-poll-then-fill sequence
+// had no test coverage at all beyond IsReservedShortcut/
+// IsUnbindableCaptureKey in isolation - see PARITY_MAP.md's "Command
+// aliases and shortcut customization" item, which this closes the one
+// remaining disclosed gap of). Scans ImGuiKey_NamedKey_BEGIN..END in
+// exactly that order - the same order ui/Panels.cpp's own loop already
+// used - and returns the first key for which `is_pressed(key)` is true
+// and IsUnbindableCaptureKey(key) is false, i.e. the first genuinely
+// bindable key this frame reports pressed; a caller-supplied `is_pressed`
+// stands in for `ImGui::IsKeyPressed(key, false)` so this stays link-free
+// of the real ImGui library the same way IsReservedShortcut already is.
+// Returns ImGuiKey_None (0) if nothing bindable matched. Deliberately does
+// not touch ctrl/shift/alt: ui/Panels.cpp's own capture flow reads those
+// straight from ImGuiIO at the same moment the key itself is found, not
+// from this function - this is only the "which key" half of that
+// decision.
+int ResolveCapturedKey(const std::function<bool(int)>& is_pressed);
 
 }  // namespace dino8::app
