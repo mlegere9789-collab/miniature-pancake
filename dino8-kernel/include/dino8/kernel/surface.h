@@ -5,6 +5,7 @@
 
 #include <opennurbs.h>
 
+#include "dino8/kernel/curve.h"
 #include "dino8/kernel/types.h"
 
 namespace dino8::kernel {
@@ -923,6 +924,22 @@ class NurbsSurface {
   // std::invalid_argument if `chord_tolerance <= 0`.
   std::vector<double> SuggestedParameterValues(int direction, double chord_tolerance,
                                                 int isocurve_samples = 5) const;
+
+  // Returns the real isocurve running in `direction` (0 = U, 1 = V) at the
+  // OTHER direction's fixed `parameter` value, as a genuine `NurbsCurve` -
+  // a public counterpart to the `ON_Surface::IsoCurve` slicing this class
+  // already does internally for SuggestedDivisions()/SuggestedParameterValues()
+  // (verified real there: `ON_NurbsSurface::IsoCurve` builds a true sliced
+  // `ON_NurbsCurve` from the control net, not a stub), now exposed so a
+  // caller can get an exact isocurve of its own - for wireframe/isocurve
+  // display, measurement, or further curve operations - instead of
+  // re-sampling `PointAt()` into an app-level fixed-size polyline
+  // approximation. `parameter` must lie within `Domain(1 - direction)`.
+  // Throws std::invalid_argument if `direction` is not 0 or 1, if
+  // `parameter` is outside the other direction's domain, or in the
+  // (shouldn't-happen-for-a-genuine-NURBS-surface) case the underlying
+  // isocurve cannot be cast to `ON_NurbsCurve`.
+  NurbsCurve IsoCurve(int direction, double parameter) const;
 
   // Angle-based counterpart to SuggestedDivisions(): the surface-level
   // sibling of `NurbsCurve::SuggestedSamplesByAngle()`, closing
