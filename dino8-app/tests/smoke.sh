@@ -283,6 +283,36 @@ dwicheck "CV\[1\] 210,0,0" "the first instance's own first line kept its exact e
 dwicheck "CV\[0\] 220,5,0" "the second instance's own first line landed at its exact real insertion-point offset"
 dwicheck "CV\[1\] 230,5,0" "the second instance's own first line kept its exact endpoint at that same offset"
 
+# .3dm archive version targeting: SaveAs/Export's own "Version=" token
+# previously only recognized a DWG/DXF AcadSchemes scheme name and, for any
+# other extension (.3dm included), refused and aborted the whole save the
+# moment it wasn't one - PARITY_MAP.md's "kernel: Kernel-level data
+# exchange" category's ".3dm archive version targeting" bullet (see
+# dm3dversion_script.txt). The real check is the "3D Geometry File Format"
+# header's own version field (a fixed 32-byte field, right-aligned, read
+# with `head -c 32`), not just a printed claim.
+sed "s|@TMP@|$TMPW|g" "$HERE/dm3dversion_script.txt" > "$TMPW/dm3dversion_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DMV="$("$BIN" --smoke 60 --script "$TMPW/dm3dversion_script.txt" 2>&1)" || { echo "$DMV"; echo "FAIL: dm3dversion script exited non-zero"; exit 1; }
+else
+  DMV="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/dm3dversion_script.txt" 2>&1)" || { echo "$DMV"; echo "FAIL: dm3dversion script exited non-zero"; exit 1; }
+fi
+dmvcheck() { if echo "$DMV" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DMV" "$1"; fail=1; fi; }
+dmvcheck "Saved $TMPW/dm3dversion_v4.3dm" "SaveAs Version=4 (.3dm) ran"
+dmvcheck "Saved $TMPW/dm3dversion_v50.3dm" "SaveAs Version=50 (.3dm) ran"
+dmvcheck "Saved $TMPW/dm3dversion_default.3dm" "an unversioned SaveAs (.3dm) still ran"
+dmvcheck "Exported $TMPW/dm3dversion_export_v5.3dm (Version=5)" "Export Version=5 (.3dm) ran and echoed the version in its own print line"
+dmvcheck "SaveAs: Version=notanumber is not a valid \.3dm archive version number" "a non-numeric .3dm Version= is refused with a clear diagnostic, not silently ignored or misread as a DWG scheme"
+[ ! -e "$TMPW/dm3dversion_bad.3dm" ] && echo "ok   the refused SaveAs Version=notanumber wrote no file at all" || { echo "FAIL a refused .3dm Version= still wrote a file"; fail=1; }
+[ "$(head -c 32 "$TMPW/dm3dversion_v4.3dm")" = "3D Geometry File Format        4" ] && echo "ok   SaveAs Version=4 wrote a real .3dm archive version-4 header" || { echo "FAIL SaveAs Version=4 did not write a version-4 .3dm header"; fail=1; }
+[ "$(head -c 32 "$TMPW/dm3dversion_v50.3dm")" = "3D Geometry File Format       50" ] && echo "ok   SaveAs Version=50 wrote a real .3dm archive version-50 header" || { echo "FAIL SaveAs Version=50 did not write a version-50 .3dm header"; fail=1; }
+[ "$(head -c 32 "$TMPW/dm3dversion_export_v5.3dm")" = "3D Geometry File Format       50" ] && echo "ok   Export Version=5 wrote the identical version-50 header OpenNURBS' own documented 5->50 compatibility mapping gives (ON_BinaryArchive::Write3dmStartSection: 5 <= version < 50 multiplies by 10)" || { echo "FAIL Export Version=5 did not write a version-50 .3dm header"; fail=1; }
+DEFAULT_3DM_VERSION="$(head -c 32 "$TMPW/dm3dversion_default.3dm" | tail -c 2)"
+[ "$DEFAULT_3DM_VERSION" != " 4" ] && [ "$DEFAULT_3DM_VERSION" != "50" ] && echo "ok   an unversioned SaveAs still writes the current/latest .3dm archive version (not stuck at some other fixed version)" || { echo "FAIL an unversioned SaveAs wrote an unexpected .3dm archive version ($DEFAULT_3DM_VERSION)"; fail=1; }
+echo "$DMV" | grep -E "^(ok|FAIL)"
+if echo "$DMV" | grep -q "^FAIL"; then fail=1; fi
+dmvcheck "^ok   expect_objects 0" "dm3dversion script cleaned up to zero objects at the end"
+
 # Interactive UI replay: typed command, viewport picks, click-select, Delete, Undo.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   UI="$("$BIN" --smoke 320 --script "$HERE/ui_script.txt" 2>&1)" || true
@@ -4789,6 +4819,22 @@ mmcheck "Volume = 0.001566 cubic" "Conduit diameter=0.02 volume matches pi*0.01^
 mmcheck "^ok   expect_objects 18" "mech/MEP script produced the expected object count (9 components + 9 BoundingBox visualization boxes, Duct/Pipe's rebuilt-by-SizeDuct/SizePipe mesh ids not colliding with earlier ones)"
 echo "$MM" | grep -E "^(ok|FAIL)" || true
 if echo "$MM" | grep -q "^FAIL"; then fail=1; fi
+
+# Sheet-metal feature command (Bend - cmd_sheetmetal.cpp, see
+# sheet_metal_script.txt's own doc comment for the exact bounding-box
+# derivation this checks against).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SM="$("$BIN" --smoke 50 --script "$HERE/sheet_metal_script.txt" 2>&1)" || { echo "$SM"; echo "FAIL: sheet-metal script exited non-zero"; exit 1; }
+else
+  SM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 50 --script "$HERE/sheet_metal_script.txt" 2>&1)" || { echo "$SM"; echo "FAIL: sheet-metal script exited non-zero"; exit 1; }
+fi
+smcheck() { if echo "$SM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SM" "$1"; fail=1; fi; }
+smcheck "SheetMetalBend #1 added." "SheetMetalBend command built a sheet-metal bend"
+smcheck "3 faces, 5 edges, closed solid" "SheetMetalBend's result is a genuine closed solid (wall + 2 flat end caps)"
+smcheck "Bounding box min -0.05,-0.05,0 max 0.005,0.005,0.1" "SheetMetalBend's bbox matches the hand-derived leg/arc/width geometry (see sheet_metal_script.txt)"
+smcheck "^ok   expect_objects 2" "sheet-metal script produced the expected object count (1 component + 1 BoundingBox visualization box)"
+echo "$SM" | grep -E "^(ok|FAIL)" || true
+if echo "$SM" | grep -q "^FAIL"; then fail=1; fi
 
 # Electrical schematic symbols: Resistor/Capacitor/Switch/Ground/Lamp/
 # WireRun, plus ElecTag and PanelSchedule (see elec_script.txt). Bounding
