@@ -66118,6 +66118,45 @@ void TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads() {
         "no separate overlap/gap volume to account for)");
 }
 
+// AssembleSweptBody()'s own outward-orientation safety net (sweep.cpp,
+// right after every cap is added) used to tessellate a fixed 16x16 grid
+// to decide whether to flip the result - fine for an ordinary low-span
+// wall, but confirmed directly (dino8_scratch_test) to alias badly enough
+// on a many-turn ScrewThread() wall (hundreds of v-spans) that the
+// SAMPLED volume's sign came out wrong, so the "safe repair" flipped (or
+// failed to flip) the wrong way and baked a genuinely inside-out solid
+// in - `ON_Brep::IsValid()` stayed true throughout (an orientation
+// defect, not a topological one) while the exact `Brep::Volume()`
+// integral came back negative. Fixed by scaling the check's own
+// resolution with the wall's own `SpanCount()` in each direction (never
+// below the original 16, so every low-span caller of this same idiom -
+// Pipe/Revolve/Extrude/Loft/Sweep1/Sweep2/... - keeps the identical
+// 16x16 check and is unaffected).
+void TestScrewThreadManyTurnsHasCorrectExactVolumeSign() {
+  // Bolt-shank scale (dino8-app's own ArchComponents.cpp BuildBolt(), M8
+  // default length): 32 turns at stations_per_turn=16 -> 513 v-spans,
+  // the exact scale that exposed the bug via the 16x16 check above.
+  const double minor_r = 1.0, major_r = 1.24, pitch = 0.04, turns = 32.0;
+  const Brep thread = Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 1), minor_r, major_r, pitch, turns,
+                                        /*right_handed=*/true, /*stations_per_turn=*/16);
+  Check(thread.raw().IsValid(), "a many-turn ScrewThread is still a topologically valid B-rep (this is an "
+                                 "orientation defect, not a validity one)");
+  const double profile_area = 0.5 * pitch * (major_r - minor_r);
+  const double r_centroid = (2.0 * minor_r + major_r) / 3.0;
+  const double expect_volume = 2.0 * M_PI * turns * profile_area * r_centroid;  // Pappus, see the test above
+  Check(thread.Volume() > 0.0, "a many-turn ScrewThread's exact Volume() is positive (the bug this test guards "
+                                "against made it come back negative)");
+  Check(std::abs(thread.Volume() - expect_volume) / expect_volume < 0.01,
+        "a many-turn ScrewThread's exact Volume() matches the same Pappus closed form the low-turn-count test "
+        "above already establishes, to within exact-integration/discretization error");
+  // A left-handed thread of the same parameters must also come back
+  // positive - the bug was in the shared orientation check, not tied to
+  // one handedness.
+  const Brep thread_lh = Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 1), minor_r, major_r, pitch, turns,
+                                           /*right_handed=*/false, /*stations_per_turn=*/16);
+  Check(thread_lh.Volume() > 0.0, "a left-handed many-turn ScrewThread's exact Volume() is also positive");
+}
+
 void TestExtrudeTaperedCircularProfileIsExactConeFrustum() {
   // Shrinking: r0=2 -> r1=1 over height 3, tan(theta) = (r0 - r1) / h.
   const double r0 = 2.0, r1 = 1.0, h = 3.0;
@@ -78445,6 +78484,7 @@ int main() {
   RunTest("sweep_tests::TestPipeThickWalledExactAnnularCylinderAndDegenerateCases", sweep_tests::TestPipeThickWalledExactAnnularCylinderAndDegenerateCases);
   RunTest("sweep_tests::TestScrewThreadExactHelicalSweepVolumeAndGeometry", sweep_tests::TestScrewThreadExactHelicalSweepVolumeAndGeometry);
   RunTest("sweep_tests::TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads", sweep_tests::TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads);
+  RunTest("sweep_tests::TestScrewThreadManyTurnsHasCorrectExactVolumeSign", sweep_tests::TestScrewThreadManyTurnsHasCorrectExactVolumeSign);
   RunTest("TestSurfaceExtendLinearIsExactlyStraightAndG1AtTheJoin", TestSurfaceExtendLinearIsExactlyStraightAndG1AtTheJoin);
   RunTest("TestSurfaceExtendLinearDiffersFromSmoothExtend", TestSurfaceExtendLinearDiffersFromSmoothExtend);
   RunTest("TestSurfaceExtendLinearBothEndsBothDirectionsAndRational", TestSurfaceExtendLinearBothEndsBothDirectionsAndRational);

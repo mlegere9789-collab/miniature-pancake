@@ -1318,18 +1318,22 @@ void DrawOptionsWindow(Application& app) {
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
           app.capturing_shortcut = false;
         } else {
-          for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; ++k) {
-            const ImGuiKey key = static_cast<ImGuiKey>(k);
-            if (IsUnbindableCaptureKey(k)) continue;
-            if (!ImGui::IsKeyPressed(key, false)) continue;
-            const char* n = ImGui::GetKeyName(key);
-            if (!n || !*n) continue;
-            std::snprintf(key_name, sizeof(key_name), "%s", n);
-            ctrl_mod = io.KeyCtrl;
-            shift_mod = io.KeyShift;
-            alt_mod = io.KeyAlt;
-            app.capturing_shortcut = false;
-            break;
+          // "Which key" is decided by ResolveCapturedKey (app/ShortcutRules.h)
+          // rather than a loop duplicated here, so that decision - previously
+          // untested beyond its own two helper predicates in isolation - runs
+          // through the one, independently unit-tested (tests/test_shortcuts.cpp)
+          // code path in both production and test.
+          const int key = ResolveCapturedKey(
+              [](int k) { return ImGui::IsKeyPressed(static_cast<ImGuiKey>(k), false); });
+          if (key != static_cast<int>(ImGuiKey_None)) {
+            const char* n = ImGui::GetKeyName(static_cast<ImGuiKey>(key));
+            if (n && *n) {
+              std::snprintf(key_name, sizeof(key_name), "%s", n);
+              ctrl_mod = io.KeyCtrl;
+              shift_mod = io.KeyShift;
+              alt_mod = io.KeyAlt;
+              app.capturing_shortcut = false;
+            }
           }
         }
       } else if (ImGui::Button("Press a key...")) {
