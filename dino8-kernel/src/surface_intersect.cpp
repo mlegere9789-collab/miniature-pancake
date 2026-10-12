@@ -3670,6 +3670,106 @@ CylinderCylinderIntersectingIntersection IntersectCylinderCylinderIntersecting(c
   return out;
 }
 
+CylinderCylinderUnequalIntersection IntersectCylinderCylinderUnequalRadius(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance) {
+  CylinderCylinderUnequalIntersection out;
+  if (!a.IsValid() || !b.IsValid() || !(a.circle.radius > 0) || !(b.circle.radius > 0) || !(tolerance >= 0)) return out;  // stays empty
+
+  constexpr double kAxisParallelTol = 1e-6;  // same scale IntersectCylinderCylinderParallel/IntersectCylinderCylinderIntersecting already use
+  const Vector3d axis_a = a.Axis(), axis_b = b.Axis();
+  if (ON_CrossProduct(axis_a, axis_b).Length() <= kAxisParallelTol) {
+    out.parallel = true;
+    return out;
+  }
+
+  const double radius_tol = std::max(tolerance, 1e-9 * std::max(a.circle.radius, b.circle.radius));  // same relative-tolerance idiom IntersectCylinderCylinderIntersecting/CylinderPairRadiusTolerance (boolean.cpp) already use
+  if (std::fabs(a.circle.radius - b.circle.radius) <= radius_tol) {
+    out.equal_radius = true;
+    return out;
+  }
+
+  // Order by radius - large/small - independent of the caller's own a/b
+  // argument order.
+  const bool a_is_large = a.circle.radius > b.circle.radius;
+  const Vector3d axis_large = a_is_large ? axis_a : axis_b;
+  const Vector3d axis_small = a_is_large ? axis_b : axis_a;
+  const double R = a_is_large ? a.circle.radius : b.circle.radius;
+  const double r = a_is_large ? b.circle.radius : a.circle.radius;
+  const Point3d large_c = a_is_large ? a.Center() : b.Center();
+  const Point3d small_c = a_is_large ? b.Center() : a.Center();
+
+  // Closest points of the two infinite axis lines - the identical standard
+  // closed form IntersectCylinderCylinderParallel()/IntersectCylinderCylinderIntersecting()
+  // already use.
+  const Vector3d w = large_c - small_c;
+  const double d_ab = ON_DotProduct(axis_large, axis_small);
+  const double d_aw = ON_DotProduct(axis_large, w);
+  const double d_bw = ON_DotProduct(axis_small, w);
+  const double denom = 1.0 - d_ab * d_ab;  // sin^2(alpha), bounded away from 0 by the parallel guard above
+  const double s = (d_ab * d_bw - d_aw) / denom;
+  const double t = (d_bw - d_ab * d_aw) / denom;
+  const Point3d on_large = large_c + s * axis_large;
+  const Point3d on_small = small_c + t * axis_small;
+  const double d = on_large.DistanceTo(on_small);
+  if (d > tolerance) {
+    // Genuinely skew axes: supported only when the smaller cylinder fully
+    // pierces the larger one on every generator - see this function's own
+    // header doc comment for the derivation. For genuinely intersecting
+    // axes (d <= tolerance), this condition reduces to r < R, already
+    // guaranteed by construction (equal radii already refused above), so
+    // no explicit check is needed there - matching the private splitter's
+    // own dispatch shape exactly.
+    if (!(d + r < R - tolerance)) {
+      out.not_full_pierce = true;
+      return out;
+    }
+  }
+
+  // An arbitrary orthonormal basis (e0, e1) perpendicular to the smaller
+  // cylinder's own axis - theta sweeps its own circle once regardless of
+  // which specific perpendicular pair is chosen, the same robust
+  // "cross with whichever world axis it's least aligned with" idiom
+  // IntersectCylinderCylinderParallel() already uses for an analogous
+  // purpose.
+  const Vector3d helper = std::fabs(axis_small.x) < 0.9 ? Vector3d(1, 0, 0) : Vector3d(0, 1, 0);
+  const Vector3d e0 = ON_CrossProduct(axis_small, helper).UnitVector();
+  const Vector3d e1 = ON_CrossProduct(axis_small, e0);
+
+  // The per-theta quadratic in h (the point's own height along the small
+  // cylinder's axis) - see this function's own header doc comment for the
+  // full derivation; a public re-derivation of the SAME closed form
+  // BooleanCombineMixed's own private UnequalCylinderCurvePoint
+  // (boolean.cpp) already uses.
+  auto project_perp_large_axis = [&](const Vector3d& v) { return v - ON_DotProduct(v, axis_large) * axis_large; };
+  const Vector3d mb = project_perp_large_axis(axis_small);
+  const double a2 = ON_DotProduct(mb, mb);
+  if (!(a2 > 1e-18)) return CylinderCylinderUnequalIntersection{};  // axes parallel beyond the cross-product guard's own precision - already ruled out above
+
+  constexpr int kSamples = 200;  // same per-loop density this file's other closed-curve fits (ContourAtPlane, FindSurfaceSilhouetteCurves) already use
+  std::vector<Point3d> pts_plus(kSamples), pts_minus(kSamples);
+  for (int i = 0; i < kSamples; ++i) {
+    const double theta = (2.0 * kPi * i) / kSamples;
+    const Vector3d e = r * (std::cos(theta) * e0 + std::sin(theta) * e1);
+    const Vector3d mde = project_perp_large_axis((small_c - large_c) + e);
+    const double a1 = 2.0 * ON_DotProduct(mb, mde);
+    const double a0 = ON_DotProduct(mde, mde) - R * R;
+    const double disc = a1 * a1 - 4.0 * a2 * a0;
+    if (!(disc > 0.0)) {
+      // Should not happen once the full-pierce precondition above holds -
+      // a numerical edge right at that boundary - treated as a genuine
+      // miss rather than a fabricated point.
+      return CylinderCylinderUnequalIntersection{};
+    }
+    const double sq = std::sqrt(disc);
+    pts_plus[static_cast<size_t>(i)] = small_c + ((-a1 + sq) / (2.0 * a2)) * axis_small + e;
+    pts_minus[static_cast<size_t>(i)] = small_c + ((-a1 - sq) / (2.0 * a2)) * axis_small + e;
+  }
+
+  out.empty = false;
+  out.curve_a = InterpolateCubic(pts_plus, ChordParams(pts_plus, true), true, 3);
+  out.curve_b = InterpolateCubic(pts_minus, ChordParams(pts_minus, true), true, 3);
+  return out;
+}
+
 PlanePlaneIntersection IntersectPlanePlane(const ON_Plane& a, const ON_Plane& b, double tolerance) {
   PlanePlaneIntersection out;
   if (!a.IsValid() || !b.IsValid() || !(tolerance >= 0)) return out;  // stays empty
@@ -3753,47 +3853,110 @@ PlaneConeIntersection IntersectPlaneCone(const ON_Plane& plane, const ON_Cone& c
     return out;
   }
 
-  if (Delta >= -kDiscriminantEps) {
-    out.unsupported = true;  // parabola (Delta ~ 0) or hyperbola (Delta > 0) - not built here
-    return out;
-  }
-
-  // Ellipse-type (Delta < 0, plane clear of the apex): the restricted
-  // conic's center solves the critical-point system 2A*s0+B*t0+D==0,
-  // B*s0+2C*t0+E==0 - see this function's own header doc comment.
+  // Off-apex: the restricted conic's own D, E, F (point = plane.origin +
+  // s*e1 + t*e2) - see this function's own header doc comment.
   const Vector3d v0 = plane.origin - apex;
   const double a0 = ON_DotProduct(v0, axis);
   const double b0 = ON_DotProduct(v0, v0), b1 = ON_DotProduct(v0, e1), b2 = ON_DotProduct(v0, e2);
   const double D = 2.0 * (a0 * a1 - k * b1), E = 2.0 * (a0 * a2 - k * b2), F = a0 * a0 - k * b0;
 
-  const double det = 4.0 * A * C - B * B;  // == -Delta > 0 here
-  const double s0 = (-D * 2.0 * C - B * (-E)) / det;
-  const double t0 = (2.0 * A * (-E) - B * (-D)) / det;
-  const double Fp = A * s0 * s0 + B * s0 * t0 + C * t0 * t0 + D * s0 + E * t0 + F;  // Q evaluated at the center
-
   // 2x2 symmetric eigen-decomposition of [[A, B/2], [B/2, C]] - the
-  // classical conic-rotation angle (cot(2*theta) == (A-C)/B).
+  // classical conic-rotation angle (cot(2*theta) == (A-C)/B). Valid for
+  // every off-apex case alike (ellipse, hyperbola, AND parabola: this
+  // diagonalizes the quadratic PART only, independent of D/E/F or Delta's
+  // own sign).
   const double theta = 0.5 * std::atan2(B, A - C);
   const double c1 = std::cos(theta), s1 = std::sin(theta);
   const double lam1 = A * c1 * c1 + B * c1 * s1 + C * s1 * s1;
   const double lam2 = A * s1 * s1 - B * c1 * s1 + C * c1 * c1;  // orthogonal direction (theta + pi/2)
-  const double sq1 = -Fp / lam1, sq2 = -Fp / lam2;
-  if (!(sq1 > 1e-18) || !(sq2 > 1e-18)) {
-    // Degenerates below usable precision (would need a genuinely malformed
-    // cone/plane pair given Delta < 0 and the apex already ruled clear by
-    // the branch above) - treated as a genuine miss rather than NaN.
+  const Vector3d dir1 = c1 * e1 + s1 * e2;    // unit (e1, e2 orthonormal)
+  const Vector3d dir2 = -s1 * e1 + c1 * e2;   // unit, _|_ dir1
+
+  if (Delta < -kDiscriminantEps || Delta > kDiscriminantEps) {
+    // Ellipse or hyperbola: det = 4*A*C - B^2 == -Delta != 0, so the conic
+    // has a genuine center - the critical-point system 2*A*s0+B*t0+D==0,
+    // B*s0+2*C*t0+E==0.
+    const double det = 4.0 * A * C - B * B;
+    const double s0 = (-D * 2.0 * C - B * (-E)) / det;
+    const double t0 = (2.0 * A * (-E) - B * (-D)) / det;
+    const double Fp = A * s0 * s0 + B * s0 * t0 + C * t0 * t0 + D * s0 + E * t0 + F;  // Q evaluated at the center
+    const Point3d center = plane.origin + s0 * e1 + t0 * e2;
+    const double sq1 = -Fp / lam1, sq2 = -Fp / lam2;
+
+    if (Delta < -kDiscriminantEps) {
+      // Ellipse-type: lam1, lam2 share a sign, so sq1, sq2 do too.
+      if (!(sq1 > 1e-18) || !(sq2 > 1e-18)) {
+        // Degenerates below usable precision (would need a genuinely
+        // malformed cone/plane pair given Delta < 0 and the apex already
+        // ruled clear above) - treated as a genuine miss rather than NaN.
+        return out;
+      }
+      out.empty = false;
+      out.ellipse = ON_Ellipse(ON_Plane(center, dir1, dir2), std::sqrt(sq1), std::sqrt(sq2));
+      if (out.ellipse.GetNurbForm(out.curve) == 0) {
+        out = PlaneConeIntersection{};  // only fails for a degenerate radius, already ruled out above, or an invalid plane, already ruled out by dir1/dir2's construction
+      }
+      return out;
+    }
+
+    // Hyperbola-type (Delta > eps): lam1, lam2 have opposite signs, so
+    // sq1, sq2 do too (generically) - the positive one is the transverse
+    // axis (where the two real branches lie), the negative one the
+    // conjugate. `Fp ~ 0` (both sq1, sq2 near zero at once) degenerates to
+    // the asymptote line pair through the center - a measure-zero
+    // sub-family, honestly unsupported rather than guessed at.
+    const bool dir1_is_transverse = sq1 > sq2;
+    const double sq_t = dir1_is_transverse ? sq1 : sq2;
+    const double sq_c = dir1_is_transverse ? sq2 : sq1;
+    if (!(sq_t > 1e-18) || !(-sq_c > 1e-18)) {
+      out.unsupported = true;
+      return out;
+    }
+    out.empty = false;
+    out.hyperbola = true;
+    out.hyperbola_center = center;
+    out.hyperbola_transverse_dir = dir1_is_transverse ? dir1 : dir2;
+    out.hyperbola_conjugate_dir = dir1_is_transverse ? dir2 : dir1;
+    out.hyperbola_a = std::sqrt(sq_t);
+    out.hyperbola_b = std::sqrt(-sq_c);
     return out;
   }
 
-  const Vector3d dir1 = c1 * e1 + s1 * e2;    // unit (e1, e2 orthonormal)
-  const Vector3d dir2 = -s1 * e1 + c1 * e2;   // unit, _|_ dir1
-  const Point3d center = plane.origin + s0 * e1 + t0 * e2;
-
-  out.empty = false;
-  out.ellipse = ON_Ellipse(ON_Plane(center, dir1, dir2), std::sqrt(sq1), std::sqrt(sq2));
-  if (out.ellipse.GetNurbForm(out.curve) == 0) {
-    out = PlaneConeIntersection{};  // only fails for a degenerate radius, already ruled out above, or an invalid plane, already ruled out by dir1/dir2's construction
+  // Parabola-type (|Delta| <= eps): the quadratic form's matrix is
+  // singular (det ~ 0, so lam1*lam2 ~ 0) - no well-defined center.
+  // Whichever of lam1/lam2 is (numerically) the zero eigenvalue is this
+  // parabola's own axis of symmetry; the other carries the single
+  // quadratic term. Substituting u (along axis_dir) and v (along
+  // quad_dir) into the conic, `quad_lam*v^2 + Dq*v + Da*u + F == 0`
+  // (axis_lam*u^2 dropped as ~0), and completing the square in v gives
+  // `quad_lam*v'^2 == -Da*(u - u0)` for the shifted `v' = v + Dq/
+  // (2*quad_lam)` - a parabola in standard form. Re-derived directly by
+  // substitution back into the original conic (not merely transcribed):
+  // matching the r^2/r^1/r^0 coefficients of the resulting parametrization
+  // against zero gives exactly `curvature = -quad_lam/Da`, `v_shift =
+  // Dq/(2*quad_lam)`, and `u0 = (Dq^2/(4*quad_lam) - F)/Da` below - see
+  // this function's own header doc comment for the closed-form result.
+  const bool dir1_is_axis = std::fabs(lam1) <= std::fabs(lam2);
+  const Vector3d axis_dir = dir1_is_axis ? dir1 : dir2;
+  const Vector3d quad_dir = dir1_is_axis ? dir2 : dir1;
+  const double quad_lam = dir1_is_axis ? lam2 : lam1;
+  // (D, E)'s own components along axis_dir/quad_dir in the (e1, e2) basis.
+  const double Da = dir1_is_axis ? (D * c1 + E * s1) : (-D * s1 + E * c1);
+  const double Dq = dir1_is_axis ? (-D * s1 + E * c1) : (D * c1 + E * s1);
+  if (!(std::fabs(Da) > 1e-12) || !(std::fabs(quad_lam) > 1e-18)) {
+    // Degenerates to a parallel-line pair (or no real locus at all) - a
+    // measure-zero sub-family, honestly unsupported rather than guessed at.
+    out.unsupported = true;
+    return out;
   }
+  const double v_shift = Dq / (2.0 * quad_lam);
+  const double u0 = (Dq * Dq / (4.0 * quad_lam) - F) / Da;
+  out.empty = false;
+  out.parabola = true;
+  out.parabola_vertex = plane.origin + u0 * axis_dir - v_shift * quad_dir;
+  out.parabola_axis_dir = axis_dir;
+  out.parabola_transverse_dir = quad_dir;
+  out.parabola_curvature = -quad_lam / Da;
   return out;
 }
 
@@ -3930,6 +4093,60 @@ std::map<SilhouetteEdgeKey, GridSilhouetteCrossing> FindTangencyCrossingsOnGrid(
   return out;
 }
 
+// Shared by all four FindSurfaceSilhouette*() functions below: narrows
+// their own disclosed "no visibility/self-occlusion resolution" gap for
+// the case this single-surface API CAN actually answer - occlusion by the
+// SAME surface (a point on the surface's own far side from the viewer,
+// hidden behind a nearer part of the identical surface, e.g. the far rim
+// of a torus hidden behind its own near tube wall). Occlusion by a
+// genuinely DIFFERENT object is honestly left out of scope below - these
+// functions take only one surface, with no scene to test visibility
+// against.
+//
+// For every candidate crossing, fires a ray from the crossing point
+// TOWARD the viewer (`viewer_ray` supplies its unit direction and length -
+// a single fixed direction and a bounding-box-sized length for the
+// orthographic case, `normalize(eye - point)` and the exact distance to
+// `eye` for the perspective one) against the SAME surface, built exactly
+// the way `FireRayAtBrep()`'s own ray already is (an `ON_LineCurve` whose
+// domain is set to the ray's own length, so `t` IS the literal distance
+// along it), and tested with this file's own general
+// `IntersectCurveSurface()` - no new ray/surface primitive, reusing the
+// identical machinery `FireRayAtBrep()` already relies on for a B-rep, just
+// against one untrimmed surface directly. Any hit strictly between the
+// crossing point (past its own trivial `t=0` self-hit, using the same
+// `opt.tolerance * 4` radius this file's own crossing dedup already uses)
+// and the viewer (strictly short of a finite eye) means a nearer part of
+// the SAME surface blocks the line of sight there - the crossing is
+// dropped, not reported as though it were visible. A crossing `viewer_ray`
+// itself cannot test (e.g. a perspective eye landing exactly on the
+// crossing point) is kept rather than guessed at - the same "cannot
+// verify, don't guess" discipline `FindTangencyCrossingsOnGrid()` above
+// already applies to a degenerate grid edge.
+std::map<SilhouetteEdgeKey, GridSilhouetteCrossing> FilterSelfOccludedCrossings(
+    const ON_Surface& s, const std::map<SilhouetteEdgeKey, GridSilhouetteCrossing>& crossings,
+    const std::function<bool(const Point3d&, Vector3d&, double&)>& viewer_ray, const IntersectOptions& opt) {
+  if (crossings.empty()) return crossings;
+  const double near_eps = std::max(opt.tolerance * 4, 1e-9);
+  std::map<SilhouetteEdgeKey, GridSilhouetteCrossing> out;
+  for (const auto& [key, c] : crossings) {
+    Vector3d dir;
+    double max_dist = 0.0;
+    if (!viewer_ray(c.point, dir, max_dist) || !(max_dist > near_eps)) {
+      out[key] = c;  // cannot test this one: keep it rather than guess
+      continue;
+    }
+    ON_LineCurve ray(c.point, c.point + dir * max_dist);
+    ray.SetDomain(0.0, max_dist);
+    bool occluded = false;
+    for (const CurveSurfaceHit& h : IntersectCurveSurface(ray, s, opt)) {
+      if (h.t > near_eps && h.t < max_dist - near_eps) { occluded = true; break; }
+    }
+    if (!occluded) out[key] = c;
+  }
+  return out;
+}
+
 std::vector<SurfaceSilhouettePoint> FlattenSilhouetteCrossings(const std::map<SilhouetteEdgeKey, GridSilhouetteCrossing>& crossings, double dedup_radius) {
   std::vector<SurfaceSilhouettePoint> out;
   for (const auto& [key, c] : crossings) {
@@ -4039,29 +4256,75 @@ std::vector<SurfaceSilhouetteCurve> ChainSilhouetteCrossings(const SurfaceMesh& 
 
 }  // namespace
 
+namespace {
+
+// The "toward the viewer" ray `FilterSelfOccludedCrossings()` fires for the
+// orthographic case: a single fixed direction (the reverse of
+// `view_direction`, the same convention `FindSurfaceSilhouettePointsPerspective()`'s
+// own `eye` sits on - "viewed straight down +Z" in this file's own tests
+// means `view_direction = (0,0,1)` with the viewer up on the +Z side,
+// looking down) and a length generous enough to clear the whole surface
+// (twice its own bounding-box diagonal, the same kind of bound
+// `IntersectCurveBrep()` above already pads a box by for an unrelated
+// reach test) - a true orthographic viewer sits at infinity, but any
+// length past the surface's own far side is equivalent for a ray that
+// only needs to find hits ON that surface.
+std::function<bool(const Point3d&, Vector3d&, double&)> OrthographicViewerRay(const ON_Surface& s, const Vector3d& view_direction) {
+  Vector3d toward_viewer = -view_direction;
+  toward_viewer.Unitize();
+  const double max_dist = 2.0 * s.BoundingBox().Diagonal().Length() + 1.0;
+  return [toward_viewer, max_dist](const Point3d&, Vector3d& dir, double& dist) {
+    dir = toward_viewer;
+    dist = max_dist;
+    return true;
+  };
+}
+
+// The perspective sibling: the viewer sits at the exact finite `eye`, so
+// the ray toward it from each crossing point genuinely varies per point -
+// `normalize(eye - point)`, out to the exact distance to `eye` (not a
+// generous bound - a hit past `eye` itself is not between the crossing and
+// the viewer at all).
+std::function<bool(const Point3d&, Vector3d&, double&)> PerspectiveViewerRay(const Point3d& eye) {
+  return [eye](const Point3d& p, Vector3d& dir, double& dist) {
+    Vector3d to_eye = eye - p;
+    dist = to_eye.Length();
+    if (!(dist > 1e-9)) return false;  // eye coincides with the point itself: cannot test
+    dir = to_eye;
+    dir.Unitize();
+    return true;
+  };
+}
+
+}  // namespace
+
 std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePoints(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt) {
   if (view_direction.Length() < 1e-12) return {};  // no direction to test tangency against
   const SurfaceMesh grid = TessellateWithUV(s, opt);
-  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d&) { return view_direction; });
+  auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d&) { return view_direction; });
+  crossings = FilterSelfOccludedCrossings(s, crossings, OrthographicViewerRay(s, view_direction), opt);
   return FlattenSilhouetteCrossings(crossings, opt.tolerance * 4);
 }
 
 std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePointsPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt) {
   const SurfaceMesh grid = TessellateWithUV(s, opt);
-  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d& p) { return Vector3d(p - eye); });
+  auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d& p) { return Vector3d(p - eye); });
+  crossings = FilterSelfOccludedCrossings(s, crossings, PerspectiveViewerRay(eye), opt);
   return FlattenSilhouetteCrossings(crossings, opt.tolerance * 4);
 }
 
 std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurves(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt) {
   if (view_direction.Length() < 1e-12) return {};
   const SurfaceMesh grid = TessellateWithUV(s, opt);
-  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d&) { return view_direction; });
+  auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d&) { return view_direction; });
+  crossings = FilterSelfOccludedCrossings(s, crossings, OrthographicViewerRay(s, view_direction), opt);
   return ChainSilhouetteCrossings(grid, crossings);
 }
 
 std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurvesPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt) {
   const SurfaceMesh grid = TessellateWithUV(s, opt);
-  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d& p) { return Vector3d(p - eye); });
+  auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d& p) { return Vector3d(p - eye); });
+  crossings = FilterSelfOccludedCrossings(s, crossings, PerspectiveViewerRay(eye), opt);
   return ChainSilhouetteCrossings(grid, crossings);
 }
 

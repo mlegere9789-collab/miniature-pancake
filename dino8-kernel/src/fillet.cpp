@@ -1290,6 +1290,149 @@ Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
   return Brep::FromMixedFaces(mixed_planar, {fillet_face});
 }
 
+FilletRadiusLimit MaxFilletRadius(const Brep& solid, Point3d edge_p0, Point3d edge_p1) {
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+
+  // --- locate the two faces sharing (edge_p0, edge_p1) - verbatim from
+  // FilletConvexEdge/FilletConcaveEdge's own step (1), with k_i also kept
+  // (FilletConcaveEdge's own addition) since the convexity probe below
+  // needs it.
+  int idx_i = -1, idx_j = -1;
+  size_t k_i = 0;
+  for (size_t f = 0; f < faces.size() && (idx_i < 0 || idx_j < 0); ++f) {
+    const std::vector<Point3d>& loop = faces[f].loop;
+    const size_t n = loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      const Point3d& a = loop[k];
+      const Point3d& b = loop[(k + 1) % n];
+      if (idx_i < 0 && PointsEqual(a, edge_p0, tol) && PointsEqual(b, edge_p1, tol)) {
+        idx_i = static_cast<int>(f);
+        k_i = k;
+      }
+      if (idx_j < 0 && PointsEqual(a, edge_p1, tol) && PointsEqual(b, edge_p0, tol)) {
+        idx_j = static_cast<int>(f);
+      }
+    }
+  }
+  if (idx_i < 0 || idx_j < 0 || idx_i == idx_j) {
+    throw std::invalid_argument(
+        "dino8::kernel::MaxFilletRadius: edge_p0->edge_p1 is not a shared "
+        "boundary edge of two distinct faces of `solid`, walked in opposite "
+        "directions on their own loops - see FilletConvexEdge's own doc "
+        "comment for the required topology");
+  }
+
+  Vector3d e = edge_p1 - edge_p0;
+  if (!e.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::MaxFilletRadius: edge_p0 and edge_p1 coincide");
+  }
+
+  // Convexity decides which of FilletConvexEdge's or FilletConcaveEdge's
+  // own sign convention for the trim-back direction applies below - the
+  // dihedral angle magnitude alone can't tell the two apart (see
+  // FilletConcaveEdge's own doc comment on exactly this). An
+  // ambiguous/degenerate probe defaults to convex, matching
+  // FilletConvexEdge's own lack of a dedicated convexity check in that
+  // case.
+  bool convex = true;
+  {
+    const ON_Plane& plane_j_pre = faces[static_cast<size_t>(idx_j)].plane;
+    const std::vector<Point3d>& loop_i = faces[static_cast<size_t>(idx_i)].loop;
+    const size_t k_i1 = (k_i + 1) % loop_i.size();
+    bool degenerate = false;
+    const bool is_convex = EdgeConvexity(loop_i, k_i, k_i1, plane_j_pre, tol, &degenerate);
+    convex = degenerate || is_convex;
+  }
+
+  // FilletConcaveEdge's own face-label swap: which face plays "i" (the
+  // cylinder frame's own angle-0 reference) is forced, not a free choice,
+  // for a concave edge - see that function's own doc comment for the
+  // algebraic identity this relies on. FilletConvexEdge never swaps.
+  if (!convex) {
+    const Vector3d n_i_pre = faces[static_cast<size_t>(idx_i)].plane.zaxis;
+    const Vector3d n_j_pre = faces[static_cast<size_t>(idx_j)].plane.zaxis;
+    if ((ON_CrossProduct(n_i_pre, n_j_pre) * e) < 0.0) {
+      std::swap(idx_i, idx_j);
+    }
+  }
+
+  const ON_Plane& plane_i = faces[static_cast<size_t>(idx_i)].plane;
+  const ON_Plane& plane_j = faces[static_cast<size_t>(idx_j)].plane;
+  const Vector3d n_i = plane_i.zaxis;
+  const Vector3d n_j = plane_j.zaxis;
+
+  const double dot_ij = std::max(-1.0, std::min(1.0, n_i * n_j));
+  const double sweep_angle = std::acos(dot_ij);
+  const double theta = ON_PI - sweep_angle;
+  if (!(theta > 0.0) || !(theta < ON_PI)) {
+    throw std::invalid_argument(
+        "dino8::kernel::MaxFilletRadius: degenerate edge (interior angle is <= 0 or >= pi)");
+  }
+
+  Vector3d bis = n_i + n_j;
+  if (!bis.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::MaxFilletRadius: the two adjacent faces' normals sum to "
+        "(near) zero - a degenerate (near-180-degree) dihedral");
+  }
+  const double cosb = bis * n_i;
+  if (cosb < 1e-9) {
+    throw std::invalid_argument("dino8::kernel::MaxFilletRadius: degenerate bisector geometry (cosb too small)");
+  }
+
+  // m_i/m_j's own sign-fix below only needs the DIRECTION of
+  // edge_p0/edge_p1 minus a probe contact point, which is a positive
+  // scalar multiple of radius either way (FilletConvexEdge/
+  // FilletConcaveEdge's own contact_i/contact_j, read at ANY radius > 0,
+  // differ from edge_p0/edge_p1 by `radius` times a fixed vector) - so a
+  // fixed probe radius of 1 is exact, not an approximation, for deciding
+  // that sign.
+  const double probe_radius = 1.0;
+  const double offset = probe_radius / cosb;
+  auto axis_point = [&](const Point3d& p) { return convex ? (p - bis * offset) : (p + bis * offset); };
+  auto contact_i = [&](const Point3d& p) {
+    return convex ? (axis_point(p) + n_i * probe_radius) : (axis_point(p) - n_i * probe_radius);
+  };
+  auto contact_j = [&](const Point3d& p) {
+    return convex ? (axis_point(p) + n_j * probe_radius) : (axis_point(p) - n_j * probe_radius);
+  };
+
+  Vector3d m_i = ON_CrossProduct(n_i, e);
+  if (!m_i.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::MaxFilletRadius: degenerate face/edge geometry (face i's normal is parallel to the edge)");
+  }
+  const Point3d contact_i0 = contact_i(edge_p0);
+  if (m_i * (edge_p0 - contact_i0) >= 0.0) m_i = -m_i;
+
+  Vector3d m_j = ON_CrossProduct(n_j, -e);
+  if (!m_j.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::MaxFilletRadius: degenerate face/edge geometry (face j's normal is parallel to the edge)");
+  }
+  const Point3d contact_j1 = contact_j(edge_p1);
+  if (m_j * (edge_p1 - contact_j1) >= 0.0) m_j = -m_j;
+
+  auto max_extent_from_edge = [](const std::vector<Point3d>& loop, const Vector3d& m, const Point3d& edge_ref) {
+    double best = 0.0;
+    for (const Point3d& v : loop) best = std::max(best, m * (v - edge_ref));
+    return best;
+  };
+  const double extent_i = max_extent_from_edge(faces[static_cast<size_t>(idx_i)].loop, m_i, edge_p0);
+  const double extent_j = max_extent_from_edge(faces[static_cast<size_t>(idx_j)].loop, m_j, edge_p1);
+
+  // trim_back = radius / tan(theta/2) must not exceed EITHER extent - the
+  // SAME check FilletConvexEdge/FilletConcaveEdge both make before
+  // throwing "radius is too large to fit" - so the largest radius that
+  // still passes it is min(extent_i, extent_j) * tan(theta/2).
+  FilletRadiusLimit result;
+  result.convex = convex;
+  result.dihedral_angle = theta;
+  result.max_radius = std::min(extent_i, extent_j) * std::tan(theta / 2.0);
+  return result;
+}
+
 namespace {
 
 // The two-radius overload's OWN former standalone implementation, moved

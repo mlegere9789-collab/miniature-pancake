@@ -443,3 +443,24 @@ List
 SelAll
 Delete
 @expect_objects 0
+# --- FilletEdge radius WAY beyond what either adjacent face supports (50,
+# on a 100x5x2 box's own vertical corner edge - kernel::MaxFilletRadius's
+# own closed-form bound for this edge is exactly 5, not just "somewhat
+# too large" the way the Radius=5 case above sits right at that boundary):
+# PARITY_MAP.md's own "Fillet overflow / cliff-edge / notch handling"
+# entry - both the exact kernel construction AND the approximate fallback
+# must fail (same as the Radius=5 case), but now the failure message must
+# also report the real largest radius this edge supports, not just a
+# generic diagnostic, closing the "the app reports the failure rather than
+# handling it" half of that entry.
+Box 1300420,0,0 1300520,5,0 2
+FilletEdge
+Radius=50
+1300520,5,1
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+@expect_objects 0
