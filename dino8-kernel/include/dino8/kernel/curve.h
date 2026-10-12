@@ -34,7 +34,17 @@ class NurbsSurface;
 // point alone, same as `Sharp`: cutting a corner that never had a gap to
 // begin with is not standard behavior in any offset tool and isn't
 // invented here either.
-enum class CurveOffsetCornerStyle { Sharp, Round, Chamfer };
+//
+// `Smooth` fills a corner the same way (only on the gap-opening "fill"
+// side of a turn, exactly like `Round`/`Chamfer`) with a G2 (curvature-
+// continuous) blend between the two adjacent offset edges instead of a
+// circular arc or a flat cut - built via `BlendCurves()` (curve.h) from
+// each edge's own straight-line direction. Since a straight line has
+// zero curvature everywhere, the blend starts and ends at curvature
+// zero too, a real difference from `Round`'s own arc (whose junction
+// with each straight edge is only tangent-continuous: curvature jumps
+// from 0 on the line to `1/|distance|` right at the tangent point).
+enum class CurveOffsetCornerStyle { Sharp, Round, Chamfer, Smooth };
 
 // What NurbsCurve::MatchEnd() reports about the match it just made,
 // every number measured by evaluating both curves after the edit (not

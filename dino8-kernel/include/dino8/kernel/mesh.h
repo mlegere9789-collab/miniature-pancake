@@ -572,6 +572,57 @@ class Mesh {
   // contract as TextureCoordinateAt().
   Color VertexColorAt(int vertex_index) const;
 
+  // Sets a per-vertex alpha/opacity byte (0 = fully transparent, 255 =
+  // fully opaque - the ordinary PLY/OFF file convention, see SavePly()/
+  // SaveOff() below) into the SAME `ON_Color` entries SetVertexColors()
+  // above already wrote, not a new parallel array: `ON_Color`
+  // (opennurbs_color.h) already reserves a 4th byte for exactly this
+  // that SetVertexColors() never touches (its own 3-argument
+  // `ON_Color(r, g, b)` constructor leaves it at ON_Color's own default).
+  // Closes the "this kernel's Color has no alpha channel to source one
+  // from" gap disclosed at every writer that otherwise hardcodes a
+  // file's own alpha byte to 255 (SaveOff()'s own COFF `r g b a` line,
+  // SavePly()'s own `alpha` property). Kept independent of the kernel's
+  // own 3-channel `Color` struct (types.h) rather than widening it -
+  // `Color` is used throughout this kernel (AddLayer()/AddMaterial()'s
+  // own render colors in file_io.cpp, etc.) for things with no per-
+  // vertex-opacity concept at all, so a fourth channel there would
+  // ripple through every one of those unrelated call sites for a
+  // feature only a per-vertex mesh color actually needs. Requires
+  // HasVertexColors() to already be true (SetVertexColors() must run
+  // first - alpha has nowhere to live in `m_C` otherwise); returns
+  // Result::Failed without modifying anything if not, or if `alpha`'s
+  // own size doesn't match VertexCount(), the same all-or-nothing
+  // contract SetVertexColors() itself has. `ON_Color::SetAlpha()`'s own
+  // documented convention is inverted from a file's usual byte (0 =
+  // opaque, 255 = transparent for ON_Color; the reverse for this
+  // parameter, VertexAlphaAt() below, and every file format's own `a`
+  // byte) - that inversion happens internally, so neither side of this
+  // class's own public surface has to think about ON_Color's own
+  // convention at all.
+  Result SetVertexAlpha(const std::vector<unsigned char>& alpha);
+
+  // Whether this mesh currently has an explicitly-set alpha for every
+  // vertex - true only if SetVertexAlpha() was called with exactly
+  // VertexCount() many entries AND HasVertexColors() is still true
+  // (alpha is stored piggybacked on the color array - see
+  // SetVertexAlpha()'s own doc comment - so it stops counting as
+  // present the moment the color count it depends on no longer matches,
+  // the same defensive re-check HasVertexColors() itself effectively
+  // gets from ON_Mesh's own `m_C.Count()` comparison).
+  bool HasVertexAlpha() const;
+
+  // The alpha value at `vertex_index`, previously set via
+  // SetVertexAlpha() - in the ordinary file convention (0 = transparent,
+  // 255 = opaque), already converted back out of ON_Color's own inverted
+  // one. Returns 255 (fully opaque, the same default every writer
+  // already hardcoded before this existed) if HasVertexAlpha() is false
+  // or `vertex_index` is out of range, rather than an unchecked
+  // `m_C[]` access - alpha has no analogous "ON_Mesh already round-trips
+  // raw indexing" precedent the way VertexColorAt()'s own contract
+  // leans on, so this checks explicitly instead.
+  unsigned char VertexAlphaAt(int vertex_index) const;
+
   // Returns a copy of this mesh with every face's winding reversed (each
   // face's own vertex loop reversed in place, not the vertex list
   // reordered) - flipping which side is "outward" without moving a single
@@ -768,9 +819,13 @@ class Mesh {
   // per vertex, not per face corner), and a `red`/`green`/`blue` uchar
   // triple per vertex when `HasVertexColors()` is true - the ordinary PLY
   // vertex-color convention most tools (MeshLab, CloudCompare, Blender's
-  // importer) read by exactly these property names; no alpha (PLY's own
-  // `alpha` is a separate, less universal convention, and this kernel's
-  // `Color` has no alpha channel to write - out of scope, disclosed).
+  // importer) read by exactly these property names - plus a fourth
+  // `alpha` uchar property when `HasVertexAlpha()` is ALSO true (never
+  // written without colors, since alpha has nowhere to live otherwise -
+  // see SetVertexAlpha()'s own doc comment); a mesh with colors but no
+  // explicitly-set alpha still writes the plain three-channel form
+  // unchanged, the same "no behavior change for an existing caller"
+  // default this kernel's other optional writer fields already follow.
   // The binary payload writes every vertex position/normal/UV property as
   // a genuine 4-byte IEEE-754 float, each color channel as its own 1-byte
   // uchar, and every face as a 1-byte unsigned corner count followed by
@@ -802,10 +857,15 @@ class Mesh {
   // same all-or-nothing rule, each channel read at its own declared type
   // - `uchar` as SavePly() itself writes, but also `float`/`double` etc.
   // from another tool - and clamped/rounded to the 0-255 byte `Color`
-  // holds; an `alpha` property, if present, is read as an ordinary
-  // ignored extra property, same as any other name this kernel doesn't
-  // recognize - out of scope, disclosed above at SavePly()); and a `face`
-  // element with exactly one list property
+  // holds); a FOURTH `alpha` property, if present ALONGSIDE all three
+  // color channels, is read the same way and stored via
+  // SetVertexAlpha() - closing the "read as an ordinary ignored extra
+  // property" gap this bullet used to disclose for exactly this
+  // property. An `alpha` property with no red/green/blue alongside it
+  // (alpha has nowhere to live without colors - see SetVertexAlpha()'s
+  // own doc comment) is still read as an ordinary ignored extra
+  // property, same as any other name this kernel doesn't recognize; and
+  // a `face` element with exactly one list property
   // (whatever its declared name - `vertex_indices`/`vertex_index` are
   // both common) giving each face's 0-based vertex indices, 3 or 4 per
   // face (this kernel's `ON_MeshFace` holds a triangle or quad only, same
@@ -852,8 +912,10 @@ class Mesh {
   // the `COFF` (color OFF) variant instead - header `COFF` and each
   // vertex line becomes `x y z r g b a` (Geomview's own per-vertex RGBA
   // convention), `r`/`g`/`b` taken straight from VertexColorAt() and `a`
-  // always written 255 (fully opaque - this kernel's Color has no alpha
-  // channel to source one from). Still only ever writes plain `OFF` or
+  // from VertexAlphaAt() - 255 (fully opaque) for a mesh with colors but
+  // no explicitly-set alpha, the same default every vertex already got
+  // before SetVertexAlpha() existed, or the real per-vertex value once
+  // set. Still only ever writes plain `OFF` or
   // `COFF` - never `NOFF`/`4OFF`/`STOFF` (per-vertex normal, homogeneous
   // coordinate, texture coordinate) - since this kernel's Mesh still has
   // no independently-stored per-vertex normal to put in an `NOFF` (same
@@ -900,9 +962,14 @@ class Mesh {
   // triangle or quad) - exact for a convex polygon, not guarded against a
   // concave one producing a triangle whose interior falls outside the
   // original face. A `COFF` file's own per-vertex alpha column is read
-  // (so a malformed one still fails the load) but then discarded - this
-  // kernel's Color has nowhere to put it, the same "read but unused"
-  // treatment the edge count above already gets. No independent
+  // (so a malformed one still fails the load) and stored via
+  // SetVertexAlpha() - closing the "discarded, this kernel's Color has
+  // nowhere to put it" gap this bullet used to disclose for exactly
+  // this column; unlike PLY's own distinct, optional `alpha` property,
+  // COFF's fixed `r g b a` shape has no way to represent "no alpha
+  // data" at all, so every reloaded COFF vertex gets a real, explicit
+  // alpha value this way (255 only when the file itself said so, not a
+  // signal that alpha was never meaningful). No independent
   // per-vertex normal/UV is read either way (neither plain `OFF` nor
   // `COFF` carries one). Returns Result::Failed if the file can't be
   // opened, doesn't start with the `OFF`/`COFF` keyword, the counts line
@@ -2565,6 +2632,15 @@ class Mesh {
       const ON_Mesh& cap, const char* caller);
 
   ON_Mesh mesh_;
+
+  // Whether SetVertexAlpha() was ever explicitly called and is still
+  // trusted (see HasVertexAlpha()'s own doc comment) - alpha lives in
+  // `mesh_.m_C`'s own per-entry byte, which has no out-of-band "not set"
+  // value of its own (unlike the count-based signal HasVertexColors()/
+  // HasTextureCoordinates() use), so this kernel needs an explicit flag
+  // instead. Default-constructs to false, matching every Mesh created
+  // before SetVertexAlpha() existed.
+  bool has_vertex_alpha_ = false;
 };
 
 }  // namespace dino8::kernel
