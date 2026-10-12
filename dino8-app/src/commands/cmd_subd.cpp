@@ -1660,6 +1660,10 @@ void RegisterSubDCommands(CommandEngine& e) {
       CommandStatus::Implemented, "Runs Sweep1 and converts the result to a SubD.");
   Reg(e, "SubDSweep2", [] { return std::unique_ptr<Command>(std::make_unique<SweepThenSubDCommand>("Sweep2", "SubDSweep2")); },
       CommandStatus::Implemented, "Runs Sweep2 and converts the result to a SubD.");
+  Reg(e, "SubDRevolve", [] { return std::unique_ptr<Command>(std::make_unique<SweepThenSubDCommand>("Revolve", "SubDRevolve")); },
+      CommandStatus::Implemented, "Runs Revolve and converts the result to a SubD.");
+  Reg(e, "SubDMultiPipe", [] { return std::unique_ptr<Command>(std::make_unique<SweepThenSubDCommand>("MultiPipe", "SubDMultiPipe")); },
+      CommandStatus::Implemented, "Runs MultiPipe and converts the result(s) to SubD.");
   Reg(e, "AutomaticSubDFromMesh", SubDTool("Select meshes to convert", "", 0, {}, {Numeric("Angle", 30), Toggle("DeleteInput", true)}, AutoSubDAction));
   // QuadRemesh / ShrinkWrap: superseded, dead code removed - the real
   // implementations are registered later by RegisterRemeshCommands
