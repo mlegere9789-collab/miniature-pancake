@@ -4245,6 +4245,21 @@ crcheck "Closest point 5,0,0 distance 5" "ClosestPt found the nearest point on t
 crcheck "degree 1 x 1, CVs 2 x 2" "Plane3Pt/SrfPt built flat 4-CV surfaces"
 crcheck "PointGrid: 3 x 4 grid of points" "PointGrid CountX=3 CountY=4 built a real, non-square grid, not the old hardcoded 5 x 5"
 crcheck "Divide: 1 curve(s) divided" "Divide (both NumberOfSegments and SegmentLength modes) printed a summary line"
+# Helix/Spiral now build via the kernel's own NurbsCurve::Helix() - a
+# genuine tolerance-bounded interpolation of the real analytic curve,
+# instead of the old FromControlPoints() shortcut that just handed raw
+# sample points to the control polygon (a B-spline does not interpolate
+# its own control points in general, so that was neither exact nor
+# reliably close). Also fixes a real, previously-invisible bug this
+# round's own end-to-end rebuild caught, not assumed from reading the
+# code: the FIRST radius point was measured from the axis END instead of
+# the axis START, where the circle is actually centered - harmless noise
+# under the old approximate construction, but a glaringly wrong radius
+# (CV[0] at distance ~20.6 instead of the requested 5) once the curve is
+# built exactly.
+crcheck "Helix: exact interpolation" "Helix now builds via the kernel's own tolerance-bounded NurbsCurve::Helix(), not the old sampled-as-control-points shortcut"
+crcheck "CV\[0\] 5,0,0" "Helix's own first control point lands exactly on the requested radius from the axis START, not the axis end (the bug this round's own end-to-end rebuild caught)"
+crcheck "Spiral: exact interpolation" "Spiral shares the identical exact construction (radius1 != radius2 is the conical-spiral case of the same curve)"
 # Sketch: real continuous mouse-drag capture (Want::Drag), driven here via
 # create_script.txt's scripted drag-sample sequences (see CommandEngine's
 # FeedText Want::Drag case / FeedDragPolyline - the real mouse path lives in
@@ -7505,7 +7520,7 @@ PMX_INSTALL_SLICE="$(sed -n '/^history: Command: PluginMarketplaceInstall gadget
 pmxdeepcheck() { if echo "$PMX_INSTALL_SLICE" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMX" "$1"; fail=1; fi; }
 pmxdeepcheck "HelloDino sample plug-in loaded." "installing gadgettools resolved all the way down to widgettools (HelloDino) - the bottom of the chain"
 pmxdeepcheck "MeshTools sample plug-in loaded (TerrainMesh command" "installing gadgettools resolved through gizmotools (MeshTools), the middle of the chain"
-pmxdeepcheck "CurveTools sample plug-in loaded (Spiral command" "installing gadgettools loaded its own entry (CurveTools) after both dependencies"
+pmxdeepcheck "CurveTools sample plug-in loaded (SpiralPolyline command" "installing gadgettools loaded its own entry (CurveTools) after both dependencies"
 
 # Plug-in Marketplace: uninstall, including cascading removal of a
 # now-orphaned dependency (Marketplace::UninstallById/UninstallByIdChecked in

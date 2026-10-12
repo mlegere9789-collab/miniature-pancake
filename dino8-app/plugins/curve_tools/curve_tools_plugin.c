@@ -1,9 +1,10 @@
 /* CurveTools: a Dino 8 sample plug-in demonstrating a real curve generator
  * through the C ABI.
  *
- *   - Command "Spiral turns radius pitch segments" builds a 3D helix as a
- *     polyline (via add_polyline()) - real, densely sampled curve
- *     geometry, not a placeholder.
+ *   - Command "SpiralPolyline turns radius pitch segments" builds a 3D
+ *     helix as a polyline (via add_polyline()) - real, densely sampled
+ *     curve geometry, not a placeholder. (Not named "Spiral": the real
+ *     app already ships its own exact-NURBS "Spiral" command.)
  *   - Dino Flow node "Helix Point" evaluates a point on the same helix at
  *     a parameter T in [0, 1], so a graph can build its own point list
  *     (e.g. wire a Range node's 0..1 output into T) and interpolate a
@@ -57,23 +58,23 @@ static int SpiralCommand(int argc, const char** argv, Dino8CommandContext* ctx) 
   const double pitch = ParseNumArg(argc, argv, 3, 2.0);
   const int segments = ParseIntArg(argc, argv, 4, 96);
   if (segments < 2 || segments > 5000) {
-    g_api->print("Spiral: segments must be between 2 and 5000");
+    g_api->print("SpiralPolyline: segments must be between 2 and 5000");
     return 1;
   }
 
   const int point_count = segments + 1;
   double* xyz = (double*)malloc((size_t)point_count * 3 * sizeof(double));
-  if (!xyz) { g_api->print("Spiral: out of memory"); return 1; }
+  if (!xyz) { g_api->print("SpiralPolyline: out of memory"); return 1; }
   for (int i = 0; i <= segments; ++i) {
     const double t = (double)i / (double)segments;
     HelixPoint(t, turns, radius, pitch, &xyz[i * 3]);
   }
   const unsigned long long id = g_api->add_polyline(xyz, point_count, 0);
   free(xyz);
-  if (id == 0) { g_api->print("Spiral: add_polyline failed"); return 1; }
+  if (id == 0) { g_api->print("SpiralPolyline: add_polyline failed"); return 1; }
 
   char line[256];
-  snprintf(line, sizeof line, "Spiral: built a %.3g-turn helix (radius %.3g, pitch %.3g, %d segments), object #%llu", turns,
+  snprintf(line, sizeof line, "SpiralPolyline: built a %.3g-turn helix (radius %.3g, pitch %.3g, %d segments), object #%llu", turns,
            radius, pitch, segments, id);
   g_api->print(line);
   return 0;
@@ -152,7 +153,14 @@ DINO8_PLUGIN_EXPORT int dino8_plugin_init(const Dino8PluginApi* api) {
   g_api = api;
   if (!api || api->api_version != DINO8_PLUGIN_API_VERSION) return 1;
 
-  api->register_command("Spiral", "Spiral turns radius pitch segments - builds a helix polyline.", SpiralCommand, NULL);
+  /* Named "SpiralPolyline", not "Spiral": the real app already ships its
+   * own "Spiral" command (cmd_create.cpp's HelixCommand, an exact NURBS
+   * construction, not a sampled polyline) - register_command() now
+   * refuses to let a plug-in silently shadow an already-working command
+   * under the same name, so a colliding name here would simply fail to
+   * register rather than winning the name back from the real one. */
+  api->register_command("SpiralPolyline", "SpiralPolyline turns radius pitch segments - builds a helix polyline.",
+                         SpiralCommand, NULL);
 
   Dino8FlowPort inputs[4];
   memset(inputs, 0, sizeof inputs);
@@ -191,7 +199,7 @@ DINO8_PLUGIN_EXPORT int dino8_plugin_init(const Dino8PluginApi* api) {
   api->register_flow_node("Plugin Curve Length", "Plug-ins", "Reports the arc length of any Curve value wired into it.",
                           len_inputs, 1, len_outputs, 1, PluginCurveLengthEval, NULL);
 
-  api->print("CurveTools sample plug-in loaded (Spiral command, Helix Point/Spiral Curve/Plugin Curve Length nodes).");
+  api->print("CurveTools sample plug-in loaded (SpiralPolyline command, Helix Point/Spiral Curve/Plugin Curve Length nodes).");
   return 0;
 }
 
