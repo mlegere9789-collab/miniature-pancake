@@ -6261,6 +6261,45 @@ void TestIntersectCylinderCylinderUnequalRadiusClosedForm() {
     Check(all_on_both, "the skew-but-piercing case's own curve also sits at exactly radius R from the larger axis and radius r from the smaller (offset) axis simultaneously");
   }
 
+  // A genuinely OBLIQUE skew pair (axes at 30 degrees, NOT a right angle,
+  // d = 1 between them): `BooleanCombineMixed`'s own private
+  // `ComputeUnequalCylinderCrossing` (boolean.cpp) explicitly refuses this
+  // exact configuration ("genuinely OBLIQUE skew pair... alpha != 90
+  // degrees AND d != 0... is out of scope"), but its own doc comment
+  // discloses WHY: that refusal is purely about `Brep::TessellateConforming()`'s
+  // strip mesher not yet triangulating the resulting WALL FRAGMENT into a
+  // closed manifold - "the B-rep it builds IS ON_Brep::IsValid(), so this
+  // is a strip-mesher limitation, not a representation or splitting one."
+  // The underlying per-theta quadratic itself is honestly derived there as
+  // alpha-INDEPENDENT (the full-pierce condition `d + r < R` is derived
+  // without reference to alpha at all), and this function builds no mesh
+  // fragment at all - just the curve - so it is not subject to that
+  // strip-mesher limitation and should genuinely cover this case too,
+  // verified directly here rather than assumed from the derivation alone.
+  const double oblique_alpha = 30.0 * M_PI / 180.0;
+  const Vector3d axis_small_oblique(std::sin(oblique_alpha), 0, std::cos(oblique_alpha));
+  const ON_Cylinder cyl_small_oblique_skew(ON_Circle(ON_Plane(Point3d(0, 1, 0), axis_small_oblique), r));
+  const auto oblique_skew_pierce = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_oblique_skew, tol);
+  Check(!oblique_skew_pierce.empty && !oblique_skew_pierce.not_full_pierce,
+        "a genuinely OBLIQUE (non-right-angle) skew pair whose smaller cylinder fully pierces the larger one reports a real result too - broader than the private splitter's own mesh-constrained scope");
+  if (!oblique_skew_pierce.empty) {
+    bool all_on_both = true;
+    const int n = 32;
+    for (int i = 0; i <= n; ++i) {
+      for (const ON_NurbsCurve* curve : {&oblique_skew_pierce.curve_a, &oblique_skew_pierce.curve_b}) {
+        const double t = curve->Domain().ParameterAt(static_cast<double>(i) / n);
+        const Point3d p = curve->PointAt(t);
+        if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-3 ||
+            std::abs(dist_to_axis(p, Point3d(0, 1, 0), axis_small_oblique) - r) > 1e-3) {
+          all_on_both = false;
+          break;
+        }
+      }
+      if (!all_on_both) break;
+    }
+    Check(all_on_both, "the oblique-skew-but-piercing case's own curves also sit at exactly radius R from the larger axis and radius r from the smaller (offset, tilted) axis simultaneously");
+  }
+
   // A genuinely skew pair that does NOT fully pierce (d + r = 2.5 + 1 = 3.5
   // >= R = 3, a partial/blind penetration) is refused outright.
   const ON_Cylinder cyl_small_partial(ON_Circle(ON_Plane(Point3d(0, 2.5, 0), axis_small), r));
