@@ -3370,6 +3370,84 @@ class Brep {
   void ReplaceEdgeCurve(int edge_index, const NurbsCurve& new_curve,
                         double tolerance = tolerance::kEdgeJoin);
 
+  // Closes PARITY_MAP.md's own disclosed "No `RefitTrim`" gap (the
+  // "Gap closing by edge re-trim / trim refit" bullet): re-derives every
+  // trim on `edge_index` against the edge's OWN CURRENT 3D curve,
+  // without a caller having to re-supply it - the case `ReplaceEdgeCurve()`
+  // above doesn't cover on its own, since it always requires a NEW
+  // curve argument even when nothing about the 3D curve itself changed
+  // (e.g. after some other operation moved a vertex and left this
+  // edge's trims stale relative to an edge curve that itself didn't
+  // move). A thin wrapper, not new logic: `edge.GetNurbForm()`
+  // extracts the edge's own curve, wraps it, and hands it straight to
+  // `ReplaceEdgeCurve()` - its own endpoints trivially match the edge's
+  // existing two vertices exactly (zero residual), so that method's own
+  // "do the endpoints land near the vertices" guard always passes here;
+  // every trim still gets freshly re-projected and validated exactly as
+  // `ReplaceEdgeCurve()` already does. Same throwing contract as
+  // `ReplaceEdgeCurve()` (this IS that method, just with its `new_curve`
+  // argument supplied automatically) - see that method's own doc
+  // comment for the exact exception cases.
+  void RefitTrim(int edge_index, double tolerance = tolerance::kEdgeJoin);
+
+  // Closes PARITY_MAP.md's own disclosed "No general `ReplaceEdge`" gap
+  // (the same bullet as `RefitTrim()` above): the general counterpart to
+  // `ReplaceEdgeCurve()` that DOES "re-point the topology to new
+  // [endpoints]" - the one thing that method's own doc comment
+  // explicitly says it does not do. `new_curve`'s own two endpoints may
+  // land anywhere, not just near `edge_index`'s existing two vertices;
+  // whichever orientation (matching `new_curve`'s start to vertex 0 or
+  // to vertex 1) gives the smaller total endpoint movement is the one
+  // used - the natural "don't flip the edge for no reason" choice when
+  // both endpoints are moving.
+  //
+  // For each of this edge's own two vertices that genuinely needs to
+  // move (farther than `tolerance` from its own matched target), every
+  // OTHER edge touching that same vertex has its own curve nudged to the
+  // new point - the identical "duplicate the curve, `SetStartPoint()`/
+  // `SetEndPoint()` the one end that touches this vertex" primitive
+  // `RemoveNakedMicroEdge()`/`RemoveSharedMicroEdge()` already use for
+  // their own "merge two vertices to their shared midpoint" case,
+  // generalized here from a fixed midpoint to an arbitrary target point
+  // per vertex, each nudge committed through `ReplaceEdgeCurve()`
+  // (re-trimming every face it borders, for free, the same way those two
+  // sibling methods already delegate to it) before the NEXT vertex's own
+  // neighbors are even gathered - so a further edge that happens to
+  // touch BOTH of this edge's own vertices (running parallel to it
+  // between the same two endpoints) is handled correctly rather than
+  // refused: its first end is nudged when its own vertex's turn comes,
+  // then its second end is nudged, against that already-updated curve,
+  // when the OTHER vertex's turn comes. Finally this edge's own curve is
+  // replaced the same way, once both its endpoints already rest at the
+  // vertices' new positions.
+  //
+  // Unlike `RemoveNakedMicroEdge()`/`RemoveSharedMicroEdge()` (whose own
+  // target is always a shared MIDPOINT, so a partial commit before a
+  // later step fails is harmlessly sub-tolerance), this method's own
+  // target points can be arbitrarily far from where a vertex started - a
+  // genuinely partial commit here could leave a real, visible gap, not a
+  // harmless one. So every step runs against a disposable SCRATCH copy
+  // of this whole Brep first (the same all-or-nothing discipline
+  // `AddHoleLoops()`/`MergeCoplanarFaces()` already use for their own
+  // multi-step batches - see either one's own doc comment): this Brep
+  // itself is committed to in one move only once every step has already
+  // succeeded on the copy, so a failure partway through - a degenerate
+  // edge whose own two vertices are already the same vertex, a neighbor
+  // curve some curve type refuses to nudge via `SetStartPoint()`/
+  // `SetEndPoint()`, or a delegated `ReplaceEdgeCurve()` call throwing on
+  // a genuine geometric non-fit (e.g. a target point that isn't
+  // actually reachable on one of the surfaces it borders - neither this
+  // method nor `ReplaceEdgeCurve()` itself ever resizes a face's own
+  // surface, only re-trims against it; see that method's own doc
+  // comment for its exact exception cases) - leaves this Brep completely
+  // untouched and reports `Result::Failed`, the same uniform "can't, but
+  // that's not a corrupted Brep" contract `RemoveNakedMicroEdge()`/
+  // `RemoveSharedMicroEdge()` already use, never a half-moved Brep and
+  // never an exception escaping this method itself (edge_index range/
+  // deletion checks aside - those remain genuine caller bugs, thrown
+  // immediately, before the scratch copy is even made).
+  Result ReplaceEdge(int edge_index, const NurbsCurve& new_curve, double tolerance = tolerance::kEdgeJoin);
+
   // Closes PARITY_MAP.md's own "Re-intersect adjacent faces / rebuild
   // edges after an edit" gap: the app's `RebuildEdgesReal` (cmd_fillet.
   // cpp) refits a 2-trim edge through the REAL surface-surface

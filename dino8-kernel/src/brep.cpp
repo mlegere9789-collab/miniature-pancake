@@ -6557,6 +6557,151 @@ void Brep::ReplaceEdgeCurve(int edge_index, const NurbsCurve& new_curve, double 
   face_records_.clear();
 }
 
+void Brep::RefitTrim(int edge_index, double tolerance) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::RefitTrim: edge_index " + std::to_string(edge_index) +
+                             " is out of range (this Brep has " + std::to_string(brep_.m_E.Count()) +
+                             " edge slot(s))");
+  }
+  const ON_BrepEdge& edge = brep_.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::RefitTrim: edge_index " + std::to_string(edge_index) +
+                                 " refers to a deleted edge");
+  }
+  ON_NurbsCurve nc;
+  if (edge.GetNurbForm(nc) <= 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::RefitTrim: edge " + std::to_string(edge_index) +
+                                 "'s own curve has no NURBS form");
+  }
+  NurbsCurve wrapped;
+  wrapped.raw() = nc;
+  ReplaceEdgeCurve(edge_index, wrapped, tolerance);
+}
+
+Result Brep::ReplaceEdge(int edge_index, const NurbsCurve& new_curve, double tolerance) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::ReplaceEdge: edge_index " + std::to_string(edge_index) +
+                             " is out of range (this Brep has " + std::to_string(brep_.m_E.Count()) +
+                             " edge slot(s))");
+  }
+  const ON_BrepEdge& edge = brep_.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::ReplaceEdge: edge_index " + std::to_string(edge_index) +
+                                 " refers to a deleted edge");
+  }
+  const int v0 = edge.m_vi[0];
+  const int v1 = edge.m_vi[1];
+  if (v0 < 0 || v1 < 0 || v0 >= brep_.m_V.Count() || v1 >= brep_.m_V.Count() || v0 == v1) {
+    return Result::Failed;  // degenerate (self-looping) edge - out of scope
+  }
+
+  const ON_NurbsCurve& src = new_curve.raw();
+  const ON_3dPoint old_p0 = brep_.m_V[v0].point;
+  const ON_3dPoint old_p1 = brep_.m_V[v1].point;
+  const ON_3dPoint new_start = src.PointAtStart();
+  const ON_3dPoint new_end = src.PointAtEnd();
+  // Whichever orientation moves the two endpoints the LEAST total
+  // distance - the natural choice when neither endpoint necessarily
+  // starts out near either vertex (unlike ReplaceEdgeCurve()'s own
+  // same_dir/rev_dir test, which only has to pick between two
+  // near-exact matches).
+  const double cost_same = old_p0.DistanceTo(new_start) + old_p1.DistanceTo(new_end);
+  const double cost_rev = old_p0.DistanceTo(new_end) + old_p1.DistanceTo(new_start);
+  ON_NurbsCurve fitted = src;
+  if (cost_rev < cost_same) fitted.Reverse();
+  const ON_3dPoint target0 = fitted.PointAtStart();
+  const ON_3dPoint target1 = fitted.PointAtEnd();
+
+  const double tol = std::max(tolerance, 1e-9);
+
+  // Every mutation happens on a SCRATCH copy of this whole Brep, never
+  // brep_ itself directly - the same all-or-nothing discipline
+  // AddHoleLoops()/MergeCoplanarFaces()/AttachToEdge()'s own multi-trim
+  // caller (see each one's own doc comment) already use for a batch of
+  // steps where a later one failing after an earlier one already
+  // succeeded must not leave this Brep half-edited. This is a stronger
+  // guarantee than RemoveNakedMicroEdge()/RemoveSharedMicroEdge()'s own
+  // "a few neighbors nudged by a harmless micro-scale amount" tolerance
+  // for a partial failure: THIS method's own target points can be
+  // arbitrarily far from where a vertex started, so a genuinely partial
+  // commit here could leave a real, visible gap, not a sub-tolerance
+  // one - not an acceptable risk for a caller-facing topology edit.
+  Brep scratch;
+  scratch.raw() = brep_;
+
+  // Moves vertex `vi` to `target`, nudging every OTHER edge touching it
+  // (gathered and re-projected FRESH, each time this runs, directly from
+  // `scratch`'s own current state - so a further edge that touches BOTH
+  // of this edge's own vertices gets its first end moved when its
+  // OWN vertex's turn comes, then its second end moved when the OTHER
+  // vertex's turn comes, each against that edge's own by-then-already-
+  // updated curve; no separate "touches both endpoints" bowtie case to
+  // special-case or refuse, unlike RemoveSharedMicroEdge()'s own single-
+  // pass merge). Returns false for "can't" (a neighbor curve type
+  // refuses the nudge) without throwing; a genuine trim-fit failure from
+  // the delegated ReplaceEdgeCurve() call below throws, same as that
+  // method's own contract, caught once by this method's own caller.
+  auto move_vertex = [&](int vi, const ON_3dPoint& target) -> bool {
+    if (scratch.raw().m_V[vi].point.DistanceTo(target) <= tol) return true;  // this endpoint isn't moving
+    const ON_BrepVertex& v = scratch.raw().m_V[vi];
+    std::vector<int> neighbor_edges;
+    for (int k = 0; k < v.m_ei.Count(); ++k) {
+      const int ei = v.m_ei[k];
+      if (ei != edge_index) neighbor_edges.push_back(ei);
+    }
+    std::vector<NurbsCurve> nudged;
+    nudged.reserve(neighbor_edges.size());
+    for (const int ei : neighbor_edges) {
+      const ON_BrepEdge& e = scratch.raw().m_E[ei];
+      ON_Curve* dup = e.DuplicateCurve();
+      if (!dup) return false;
+      const bool at_end = (e.m_vi[1] == vi);
+      const bool moved = at_end ? dup->SetEndPoint(target) : dup->SetStartPoint(target);
+      if (!moved) {
+        delete dup;
+        return false;
+      }
+      ON_NurbsCurve nc;
+      const bool has_nurbs_form = dup->GetNurbForm(nc) > 0;
+      delete dup;
+      if (!has_nurbs_form) return false;
+      NurbsCurve wrapped;
+      wrapped.raw() = nc;
+      nudged.push_back(wrapped);
+    }
+    scratch.raw().m_V[vi].point = target;
+    for (size_t k = 0; k < neighbor_edges.size(); ++k) {
+      scratch.ReplaceEdgeCurve(neighbor_edges[k], nudged[k], tol);  // may throw - propagates out
+    }
+    return true;
+  };
+
+  try {
+    if (!move_vertex(v0, target0)) return Result::Failed;
+    if (!move_vertex(v1, target1)) return Result::Failed;
+    NurbsCurve wrapped_new;
+    wrapped_new.raw() = fitted;
+    scratch.ReplaceEdgeCurve(edge_index, wrapped_new, tol);
+  } catch (const std::exception&) {
+    return Result::Failed;  // scratch discarded here - brep_ untouched
+  }
+
+  brep_ = std::move(scratch.raw());
+  // scratch's own per-face side tables were never populated (a fresh
+  // Brep starts with none) and are discarded along with it; THIS
+  // object's own tables still describe the pre-edit boundary of every
+  // face this edit touched - cleared unconditionally, the same reason
+  // ReplaceEdgeCurve()/MergeCoplanarFaces() already do (see either
+  // one's own doc comment).
+  face_trim_loops_.clear();
+  face_exact_clip_.clear();
+  face_hole_loops_.clear();
+  face_arc_runs_.clear();
+  face_notch_rows_.clear();
+  face_records_.clear();
+  return Result::Ok;
+}
+
 Result Brep::RebuildEdgeCurve(int edge_index, double tolerance) {
   if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
     throw std::out_of_range("dino8::kernel::Brep::RebuildEdgeCurve: edge_index " +
