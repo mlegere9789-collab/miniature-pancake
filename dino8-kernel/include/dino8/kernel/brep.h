@@ -4050,7 +4050,12 @@ class Brep {
   // tolerant-edge notion: the kernel knows, and Check() honours, how far
   // that edge's sides may legitimately disagree - instead of the join
   // silently pretending the gap was zero. A pair whose gap is at or below
-  // kDistance records 0 (the same exact claim FromPlanarFaces makes).
+  // max(kDistance, tolerance::RelativeDistance(that edge's own extent))
+  // records 0 (the same exact claim FromPlanarFaces makes for an exact
+  // edge) - the floor scales with the surviving edge's own size, the
+  // same per-feature scaling this file already uses elsewhere, so a
+  // gap that is numerically above kDistance but physically insignificant
+  // on a very large edge is not recorded as a spurious tolerant edge.
   // Then makes face orientations consistent across the newly shared
   // edges (UnifyNormals(), below), the same way Rhino's own Join does.
   // Returns the number of edge pairs joined. Clears this class's own

@@ -21440,6 +21440,90 @@ void TestBrepJoinNakedEdgesRecordsTolerantEdges() {
   Check(box.JoinNakedEdges(2.0 * gap) == 0, "a second JoinNakedEdges() finds nothing");
 }
 
+// Same construction as CheckHealBoxFaces(top_z), but at an arbitrary edge
+// length `s` (box spans [0,s]^3) with the top face offset to `top_z` while
+// the sides' own top edge still ends at z=s - the same "top face floats
+// top_z-s above the sides" gap TestBrepJoinNakedEdgesRecordsTolerantEdges
+// already exercises at s=1, generalized so the whole box can be scaled up
+// or down.
+std::vector<dino8::kernel::Brep::PlanarFace> CheckHealScaledBoxFaces(double s, double top_z) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  const std::vector<Point3d> b = {Point3d(0, 0, 0), Point3d(s, 0, 0), Point3d(s, s, 0), Point3d(0, s, 0)};
+  const std::vector<Point3d> t = {Point3d(0, 0, s), Point3d(s, 0, s), Point3d(s, s, s), Point3d(0, s, s)};
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(CheckHealFace({b[3], b[2], b[1], b[0]}, ON_3dVector(0, 0, -1)));
+  faces.push_back(CheckHealFace({Point3d(0, 0, top_z), Point3d(s, 0, top_z), Point3d(s, s, top_z), Point3d(0, s, top_z)},
+                                ON_3dVector(0, 0, 1)));
+  for (size_t i = 0; i < 4; ++i) {
+    const size_t j = (i + 1) % 4;
+    ON_3dVector n = ON_CrossProduct(b[j] - b[i], t[i] - b[i]);
+    n.Unitize();
+    faces.push_back(CheckHealFace({b[i], b[j], t[j], t[i]}, n));
+  }
+  return faces;
+}
+
+// JoinNakedEdges()'s recorded tolerance is now floored at
+// max(kDistance, tolerance::RelativeDistance(that edge's own extent)), not
+// the bare absolute kDistance TestBrepJoinNakedEdgesRecordsTolerantEdges
+// already covers at ordinary (s=1) scale. This exercises the scaling at
+// both ends: a huge box (s=1e6) where a 1e-4 gap - the exact same absolute
+// gap the s=1 fixture above records as a real tolerant edge - is now
+// correctly recognized as physically insignificant at that edge's own
+// million-unit scale and left at 0, while a genuinely significant gap on
+// the SAME huge box (10, comfortably above RelativeDistance(1e6) == 1.0)
+// is still recorded, so the floor is a real floor, not a blanket
+// suppression at large scale.
+void TestBrepJoinNakedEdgesFloorsRecordedToleranceByEdgeExtent() {
+  using dino8::kernel::Brep;
+  namespace tol = dino8::kernel::tolerance;
+
+  {
+    const double s = 1e6, gap = 1e-4;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "a 1e-4 gap on a million-unit box still joins the 4 pairs");
+    int tolerant_edges = 0;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      if (box.raw().m_E[ei].m_tolerance > tol::kDistance) ++tolerant_edges;
+    }
+    Check(tolerant_edges == 0,
+          "...but records NO tolerant edges: 1e-4 is below RelativeDistance(1e6) == 1.0, so the gap is "
+          "correctly treated as insignificant at this edge's own scale, unlike the identical absolute gap on "
+          "the s=1 fixture above");
+    Check(box.raw().IsValid() && box.raw().IsSolid(), "...and the box is still a valid, closed solid regardless");
+  }
+  {
+    const double s = 1e6, gap = 10.0;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "a gap of 10, on the same million-unit box, still joins the 4 pairs");
+    int tolerant_edges = 0;
+    bool tolerances_are_the_gap = true;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      const double t = box.raw().m_E[ei].m_tolerance;
+      if (t > tol::kDistance) {
+        ++tolerant_edges;
+        if (std::fabs(t - gap) > 1e-9) tolerances_are_the_gap = false;
+      }
+    }
+    Check(tolerant_edges == 4 && tolerances_are_the_gap,
+          "...and THIS gap, comfortably above RelativeDistance(1e6) == 1.0, is still recorded verbatim on all "
+          "4 joined edges: the scaled floor suppresses only insignificant gaps, not every gap at large scale");
+  }
+  {
+    // Ordinary scale is untouched: same absolute gap and same outcome as
+    // TestBrepJoinNakedEdgesRecordsTolerantEdges's own s=1 case.
+    const double s = 1.0, gap = 1e-4;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "...and at ordinary scale, the same gap still joins 4 pairs");
+    int tolerant_edges = 0;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      if (box.raw().m_E[ei].m_tolerance > tol::kDistance) ++tolerant_edges;
+    }
+    Check(tolerant_edges == 4, "...and still records all 4 as tolerant edges, exactly as before this change");
+  }
+}
+
 // A hairline strip on the top: the top face is split into a main face
 // and a `width`-wide strip along y=1. For width 1e-5 (above kDistance,
 // below kEdgeJoin) Check() reports the strip as a SliverFace with that
@@ -75978,6 +76062,7 @@ int main() {
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBrepPersistentIdsSurviveCompact();
+  TestBrepJoinNakedEdgesFloorsRecordedToleranceByEdgeExtent();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralFreeformSurfaceOperand();
   TestBooleanCombineGeneralFreeformVsFreeformOperand();
