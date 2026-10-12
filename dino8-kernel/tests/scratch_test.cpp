@@ -1,54 +1,73 @@
 #include <cstdio>
 #include <cmath>
 #include <vector>
-#include "dino8/kernel/surface.h"
+#include "dino8/kernel/surface_intersect.h"
+#include "dino8/kernel/brep.h"
 #include "opennurbs.h"
 
 int main() {
   ON::Begin();
   using namespace dino8::kernel;
 
-  auto build_tent = [](double h) {
-    const std::vector<Point3d> grid = {
-        Point3d(0, 0, 0), Point3d(0, 1, 0),
-        Point3d(1, 0, h), Point3d(1, 1, h),
-        Point3d(2, 0, 0), Point3d(2, 1, 0),
-    };
-    return NurbsSurface::FromControlGrid(grid, 3, 2, 1, 1);
+  // 1) Box: a grid of points, some inside, some outside - cross-check
+  // against the hand-known geometry (box occupies [0,2]^3).
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const std::vector<Point3d> probes = {
+      Point3d(1, 1, 1),    // center, inside
+      Point3d(0.01, 0.01, 0.01),  // just inside a corner
+      Point3d(1.99, 1, 1), // just inside a face
+      Point3d(2.01, 1, 1), // just outside a face
+      Point3d(3, 3, 3),    // well outside, diagonal
+      Point3d(1, 1, -5),   // well outside, below
+      Point3d(1, 1, 5),    // well outside, above
   };
-
-  {
-    const NurbsSurface tent = build_tent(1.0);
-    const auto pieces = tent.SplitAtCreases();
-    std::printf("90deg ridge: pieces=%zu\n", pieces.size());
-    for (const auto& p : pieces) {
-      const auto d0 = p.Domain(0);
-      std::printf("  piece domain(0)=[%g,%g] PointAt(min,0)=(%g,%g,%g) PointAt(max,0)=(%g,%g,%g)\n", d0.min, d0.max,
-                  p.PointAt(d0.min, 0).x, p.PointAt(d0.min, 0).y, p.PointAt(d0.min, 0).z, p.PointAt(d0.max, 0).x,
-                  p.PointAt(d0.max, 0).y, p.PointAt(d0.max, 0).z);
-    }
+  for (const Point3d& p : probes) {
+    const bool inside = ContainsPointExact(p, box.raw());
+    std::printf("box query(%g,%g,%g): inside=%d\n", p.x, p.y, p.z, (int)inside);
   }
 
-  {
-    const NurbsSurface flat = build_tent(0.0);
-    const auto pieces = flat.SplitAtCreases();
-    std::printf("flat (h=0): pieces=%zu\n", pieces.size());
+  // 2) Sphere, radius 5 centered at origin.
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 5);
+  const std::vector<Point3d> sphere_probes = {
+      Point3d(0, 0, 0),
+      Point3d(4.99, 0, 0),
+      Point3d(5.01, 0, 0),
+      Point3d(3, 3, 3),  // distance sqrt(27)=5.196, just outside
+      Point3d(2, 2, 2),  // distance sqrt(12)=3.46, inside
+      Point3d(0, 0, 100),
+  };
+  for (const Point3d& p : sphere_probes) {
+    const bool inside = ContainsPointExact(p, sphere.raw());
+    const double dist_from_center = p.DistanceTo(Point3d(0, 0, 0));
+    std::printf("sphere query(%g,%g,%g) dist=%g: inside=%d\n", p.x, p.y, p.z, dist_from_center, (int)inside);
   }
 
+  // 3) The disclosed ON_Brep::BoundingBox() degenerate-y/z bug fixture,
+  // straight from IntersectBrepByPlane()'s own doc comment.
+  const Brep box3 = Brep::Box(0, 0, 0, 3, 3, 3);
   {
-    const double h_small = std::tan(1.5 * 3.14159265358979323846 / 180.0);
-    const NurbsSurface subtle = build_tent(h_small);
-    const auto default_pieces = subtle.SplitAtCreases();
-    std::printf("3deg ridge, default tol: pieces=%zu\n", default_pieces.size());
-    const auto tight_pieces = subtle.SplitAtCreases(1.0 * 3.14159265358979323846 / 180.0);
-    std::printf("3deg ridge, 1deg tol: pieces=%zu\n", tight_pieces.size());
+    ON_BoundingBox buggy = box3.raw().BoundingBox();
+    std::printf("box3 buggy ON_Brep::BoundingBox(): min=(%g,%g,%g) max=(%g,%g,%g)\n", buggy.m_min.x, buggy.m_min.y,
+                buggy.m_min.z, buggy.m_max.x, buggy.m_max.y, buggy.m_max.z);
+  }
+  const std::vector<Point3d> box3_probes = {
+      Point3d(1.5, 1.5, 1.5),
+      Point3d(1.5, 1.5, 2.99),
+      Point3d(1.5, 1.5, 3.01),
+      Point3d(1.5, 1.5, 50),
+      Point3d(1.5, 50, 1.5),
+  };
+  for (const Point3d& p : box3_probes) {
+    const bool inside = ContainsPointExact(p, box3.raw());
+    std::printf("box3 query(%g,%g,%g): inside=%d\n", p.x, p.y, p.z, (int)inside);
   }
 
-  {
-    NurbsSurface tent_v = build_tent(1.0);
-    tent_v.Transpose();
-    const auto pieces = tent_v.SplitAtCreases();
-    std::printf("90deg ridge in V (after Transpose): pieces=%zu\n", pieces.size());
+  try {
+    ON_Brep empty;
+    ContainsPointExact(Point3d(0, 0, 0), empty);
+    std::printf("ERROR: expected throw for empty brep\n");
+  } catch (const std::invalid_argument& e) {
+    std::printf("OK threw for empty brep: %s\n", e.what());
   }
 
   ON::End();

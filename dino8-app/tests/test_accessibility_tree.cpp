@@ -122,6 +122,8 @@ using dino8::platform::HatchPatternSummary;
 using dino8::platform::PluginSummary;
 using dino8::platform::BuildCommandListNode;
 using dino8::platform::BuildCommandAliasesNode;
+using dino8::platform::BuildCommandHistoryNode;
+using dino8::platform::CommandHistoryEntrySummary;
 using dino8::platform::BuildKeyboardShortcutsNode;
 using dino8::platform::BuildBuiltinShortcutsNode;
 using dino8::platform::CommandListEntrySummary;
@@ -935,6 +937,36 @@ int main() {
     Check(empty_aliases.name == "Command Aliases", "still named \"Command Aliases\" with no aliases at all");
     Check(empty_aliases.description == "0 command aliases", "empty alias list still carries a 0-count Description");
     Check(empty_aliases.children.empty(), "no aliases -> no ListItem children, not a missing accessible");
+  }
+
+  // Command History: one ListItem per recorded command-line line, named
+  // after its own text with the leading "!" warning/cancellation marker
+  // already stripped, and a Description of "warning" for such a line (""
+  // for a plain one) - matching CommandEngine::History()'s own convention
+  // and DrawCommandHistoryPanel's own orange-vs-plain-text split.
+  {
+    std::vector<CommandHistoryEntrySummary> entries;
+    entries.push_back({"Line", false});
+    entries.push_back({" Trim is waiting for input rs.Command did not supply; cancelled", true});
+    const dino8::platform::AccessibleNode list = BuildCommandHistoryNode(entries);
+    Check(list.name == "Command History", "command history list is named \"Command History\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "command history list role is List");
+    Check(list.description == "2 recorded line(s)", "line count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per recorded line");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "history row role is ListItem");
+      Check(list.children[0].name == "Line", "first row is named after its own plain text");
+      Check(list.children[0].description.empty(), "a plain (non-warning) row carries an empty Description");
+      Check(list.children[1].name == " Trim is waiting for input rs.Command did not supply; cancelled",
+            "second row's name is its own text with the leading \"!\" marker already stripped by the caller");
+      Check(list.children[1].description == "warning", "a warning/cancellation row's Description is \"warning\"");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_history = BuildCommandHistoryNode({});
+    Check(empty_history.name == "Command History", "still named \"Command History\" with no lines recorded yet");
+    Check(empty_history.description == "0 recorded line(s)", "empty history still carries a 0-count Description");
+    Check(empty_history.children.empty(), "no recorded lines -> no ListItem children, not a missing accessible");
   }
 
   // Keyboard Shortcuts: one ListItem per customized shortcut, named after its

@@ -138,6 +138,13 @@ dino8::platform::AccessibleNode CommandListAccessibleTree(Application& app);
 // alias and the command it expands to, the same shape
 // DocumentUserTextAccessibleTree already uses for its own key/value rows.
 dino8::platform::AccessibleNode CommandAliasesAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of CommandEngine::History() - independent
+// of whether the Command History panel window is open, one ListItem per
+// recorded command-line line (its leading "!" warning/cancellation marker
+// stripped into the item's own Description), distinct from the existing
+// "Command Line" Log region's single concatenated text block of the same
+// lines - the first structured, per-line mirror of command history.
+dino8::platform::AccessibleNode CommandHistoryAccessibleTree(Application& app);
 // The AT-SPI2-queryable snapshot of Application::user_shortcuts -
 // independent of whether the Options window's Shortcuts tab is open,
 // mirroring each shortcut's human-readable key combo and the command it

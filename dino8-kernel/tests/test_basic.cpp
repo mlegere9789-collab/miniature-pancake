@@ -4070,6 +4070,59 @@ void TestClosestPointOnBrep() {
   Check(threw_empty, "ClosestPointOnBrep throws std::invalid_argument for a Brep with no faces");
 }
 
+// PARITY_MAP's massprops category, "Point classification vs exact B-rep":
+// ClassifyPointVsSolid/ClassifyPointVsMixedSolid (boolean.h) only ever
+// classify against this kernel's own internal, already-split face lists
+// built mid-boolean - never a general-purpose query against an arbitrary
+// ON_Brep a caller already has in hand. ContainsPointExact() is that real
+// public API, reusing (not duplicating) BooleanCombineGeneral's own
+// internal multi-direction ray-cast classifier.
+void TestContainsPointExact() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ContainsPointExact;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  Check(ContainsPointExact(Point3d(1, 1, 1), box.raw()), "a point at the center of a 2x2x2 box is inside");
+  Check(!ContainsPointExact(Point3d(5, 1, 1), box.raw()), "a point well clear of the box is outside");
+  Check(!ContainsPointExact(Point3d(1, 1, 10), box.raw()),
+        "a point far above the box along z is outside (the real ray-cast answer, not just the "
+        "nearest-axis guess)");
+  Check(ContainsPointExact(Point3d(0.01, 0.01, 0.01), box.raw()),
+        "a point just inside a corner of the box is still correctly classified inside");
+
+  // The exact same 3x3x3 Box() shape IntersectBrepByPlane()'s own doc
+  // comment (surface_intersect.cpp) discloses as triggering ON_Brep::
+  // BoundingBox()'s own degenerate-y/z bug - confirms ContainsPointExact's
+  // own default ray_length (computed from the real per-face bounding-box
+  // union, not that buggy whole-Brep method) is NOT undersized by it: a
+  // point offset along y/z, where the buggy bbox would report zero
+  // extent, must still classify correctly in both directions.
+  const Brep box3 = Brep::Box(0, 0, 0, 3, 3, 3);
+  Check(ContainsPointExact(Point3d(1.5, 1.5, 1.5), box3.raw()),
+        "the 3x3x3 Box() fixture's own center is inside, despite ON_Brep::BoundingBox()'s own "
+        "disclosed y/z-collapsing bug on this exact shape");
+  Check(!ContainsPointExact(Point3d(1.5, 1.5, 100), box3.raw()),
+        "a point far outside along z (the very axis the buggy bbox collapses) is still correctly "
+        "classified outside");
+
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 5);
+  Check(ContainsPointExact(Point3d(0, 0, 0), sphere.raw()), "the sphere's own center is inside");
+  Check(ContainsPointExact(Point3d(1, 1, 1), sphere.raw()),
+        "a point well within the sphere's own radius is inside");
+  Check(!ContainsPointExact(Point3d(10, 0, 0), sphere.raw()), "a point well outside the sphere's own radius is outside");
+  Check(!ContainsPointExact(Point3d(0, 0, 20), sphere.raw()), "a point far outside the sphere along z is outside");
+
+  bool threw_empty = false;
+  try {
+    ON_Brep empty;
+    ContainsPointExact(Point3d(0, 0, 0), empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "ContainsPointExact throws std::invalid_argument for a Brep with no faces");
+}
+
 // PARITY_MAP's intersections category, "Pullback of a 3D curve to surface
 // parameter space" bullet: PullbackCurveToSurface() is the general-purpose
 // kernel entry point (SSX's own pcurve_a/pcurve_b are a by-product of a
@@ -5856,10 +5909,56 @@ void TestIntersectPlaneConeClosedForm() {
 
   // A plane parallel to the axis (not through the apex): genuinely crosses
   // both nappes (any angle below the axis, including 0, is shallower than
-  // a positive half-angle) - a hyperbola, honestly unsupported rather than
-  // misreported as an ellipse.
+  // a positive half-angle) - a genuine hyperbola, verified against the
+  // cone's own defining relation directly on both branches, not a
+  // hardcoded expected curve.
   const ON_Plane hyperbola_plane(ON_3dPoint(2, 0, 0), ON_3dVector(1, 0, 0));
-  Check(IntersectPlaneCone(hyperbola_plane, cone, 1e-6).unsupported, "a plane parallel to the axis (a hyperbola section) is honestly reported unsupported, not guessed at");
+  const auto hyperbola_case = IntersectPlaneCone(hyperbola_plane, cone, 1e-6);
+  Check(!hyperbola_case.unsupported && !hyperbola_case.empty && !hyperbola_case.through_apex && hyperbola_case.hyperbola, "a plane parallel to the axis reports a genuine hyperbola, not unsupported/empty/through-apex/ellipse");
+  if (hyperbola_case.hyperbola) {
+    Check(hyperbola_case.hyperbola_a > 0 && hyperbola_case.hyperbola_b > 0, "both reported hyperbola semi-axes are genuinely positive");
+    bool all_on_cone_and_plane = true;
+    for (double r : {-1.5, -0.5, 0.0, 0.5, 1.5}) {
+      for (double sign : {1.0, -1.0}) {
+        const Point3d p = hyperbola_case.hyperbola_center
+            + sign * hyperbola_case.hyperbola_a * std::cosh(r) * hyperbola_case.hyperbola_transverse_dir
+            + hyperbola_case.hyperbola_b * std::sinh(r) * hyperbola_case.hyperbola_conjugate_dir;
+        const ON_3dVector v = p - cone.ApexPoint();
+        const double lhs = ON_DotProduct(v, cone.Axis());
+        const double rhs = std::cos(half_angle) * std::cos(half_angle) * ON_DotProduct(v, v);
+        if (std::abs(lhs * lhs - rhs) > 1e-4 || std::abs(hyperbola_plane.DistanceTo(p)) > 1e-6) { all_on_cone_and_plane = false; break; }
+      }
+      if (!all_on_cone_and_plane) break;
+    }
+    Check(all_on_cone_and_plane, "every sampled point of both hyperbola branches lies exactly on both the cone's own defining relation and the cutting plane");
+    const Point3d branch0_mid = hyperbola_case.hyperbola_center + hyperbola_case.hyperbola_a * hyperbola_case.hyperbola_transverse_dir;
+    const Point3d branch1_mid = hyperbola_case.hyperbola_center - hyperbola_case.hyperbola_a * hyperbola_case.hyperbola_transverse_dir;
+    Check(branch0_mid.DistanceTo(branch1_mid) > 1e-3, "the two hyperbola branches are genuinely distinct, not the same one reported twice");
+  }
+
+  // A plane parallel to exactly one generator line (theta_n == 90 -
+  // half_angle from the axis, the classical parabola-section condition,
+  // derived directly from this function's own A/B/C reduction: Delta ==
+  // 4*cos^2(alpha)*(sin^2(theta_n) - cos^2(alpha)) == 0 exactly there) and
+  // clear of the apex: a genuine parabola, verified the same way.
+  const double theta_n = M_PI / 2.0 - half_angle;
+  const ON_Plane parabola_plane(ON_3dPoint(0, 0, 2), ON_3dVector(std::sin(theta_n), 0, std::cos(theta_n)));
+  const auto parabola_case = IntersectPlaneCone(parabola_plane, cone, 1e-6);
+  Check(!parabola_case.unsupported && !parabola_case.empty && !parabola_case.through_apex && parabola_case.parabola, "a plane parallel to exactly one generator reports a genuine parabola, not unsupported/empty/through-apex/ellipse/hyperbola");
+  if (parabola_case.parabola) {
+    bool all_on_cone_and_plane = true;
+    for (double r : {-2.0, -1.0, 0.0, 1.0, 2.0}) {
+      const Point3d p = parabola_case.parabola_vertex + r * parabola_case.parabola_transverse_dir
+          + parabola_case.parabola_curvature * r * r * parabola_case.parabola_axis_dir;
+      const ON_3dVector v = p - cone.ApexPoint();
+      const double lhs = ON_DotProduct(v, cone.Axis());
+      const double rhs = std::cos(half_angle) * std::cos(half_angle) * ON_DotProduct(v, v);
+      if (std::abs(lhs * lhs - rhs) > 1e-4 || std::abs(parabola_plane.DistanceTo(p)) > 1e-6) { all_on_cone_and_plane = false; break; }
+    }
+    Check(all_on_cone_and_plane, "every sampled point of the reported parabola lies exactly on both the cone's own defining relation and the cutting plane");
+    const Point3d off_vertex = parabola_case.parabola_vertex + 1.0 * parabola_case.parabola_transverse_dir + parabola_case.parabola_curvature * parabola_case.parabola_axis_dir;
+    Check(off_vertex.DistanceTo(parabola_case.parabola_vertex) > 1e-3, "the parabola genuinely extends away from its own vertex, not a degenerate single point");
+  }
 
   // Invalid input is refused outright.
   const ON_Cone invalid_cone;
@@ -74100,6 +74199,7 @@ int main() {
   TestIntersectBrepsAndCurveBrep();
   TestFireRayAtBrep();
   TestClosestPointOnBrep();
+  TestContainsPointExact();
   TestPullbackCurveToSurfaceCylinderRulingLine();
   TestPullbackCurveToSurfaceAcrossPeriodicSeam();
   TestIntersectBrepByPlaneBoxSideWalls();

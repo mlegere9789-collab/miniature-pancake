@@ -111,11 +111,21 @@ struct ScriptEditorState {
 struct RenderImage {
   int width = 0, height = 0;
   std::vector<unsigned char> rgb;  // top-down rows
+  // Real, unclamped linear-radiance HDR capture of the same render (top-
+  // down rows, 3 floats per pixel) - populated only when the most recent
+  // Render/RenderView call requested it (RenderSettings::hdr_output);
+  // empty otherwise. SaveLastRender writes this via SaveImageHdr/
+  // SaveImageExr when the requested path's own extension asks for it and
+  // this is non-empty, closing the rasterizer's own half of "Environments
+  // and image-based lighting"'s long-disclosed HDR gap (the CPU path
+  // tracer and GPU raytraced preview already had this - see that bullet).
+  std::vector<float> hdr_rgb;
   unsigned texture = 0;            // GL texture for the panel (owned)
   std::string view_name;
   std::string last_saved_path;
   double seconds = 0;
   bool Valid() const { return width > 0 && height > 0 && rgb.size() == static_cast<size_t>(width) * height * 3; }
+  bool HasHdr() const { return hdr_rgb.size() == static_cast<size_t>(width) * height * 3; }
 };
 
 // A single user-assignable keyboard shortcut (Options > Shortcuts):
@@ -402,9 +412,13 @@ class Application {
   // the document's render quality; `arctic` renders white matte.
   // `blowup` is the [x0,y0,x1,y1] NDC sub-rectangle of the viewport's
   // current full view to fill the output with (RenderBlowup); the default
-  // {-1,-1,1,1} renders the ordinary full view.
+  // {-1,-1,1,1} renders the ordinary full view. `hdr` is a per-call
+  // request only (like width/height/supersample above, it never persists
+  // into the document) - true additionally runs Viewport::RenderToImage's
+  // own second HDR capture pass, so SaveLastRender can later write a real
+  // .hdr/.exr of this particular render.
   bool RenderView(Viewport* vp, int width, int height, int supersample, bool arctic, std::string& error,
-                  std::array<double, 4> blowup = {-1, -1, 1, 1});
+                  std::array<double, 4> blowup = {-1, -1, 1, 1}, bool hdr = false);
   RenderImage& LastRender() { return last_render_; }
   bool SaveLastRender(const std::string& path, std::string& error);
   void CloseRenderWindow();
