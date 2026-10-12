@@ -1,116 +1,100 @@
+#include <cmath>
 #include <cstdio>
-#include <fstream>
-#include <string>
-#include "dino8/kernel/mesh.h"
+#include "dino8/kernel/curve.h"
+#include "dino8/kernel/surface.h"
 #include "opennurbs.h"
 
-// Mesh::LoadObj()'s new g/o/usemtl/mtllib (per-face group/material name +
-// resolved .mtl diffuse color) support, exercised standalone: the full
-// dino8_kernel_tests binary aborts earlier (in the pre-existing, disclosed
-// BooleanCombineGeneral "3+ fragment loops" limitation some early boolean
-// fixtures trip) before it ever reaches TestMeshLoadObjGroupsAndMaterials,
-// so this checks the same logic that test exercises, directly, in isolation.
 int main() {
   ON::Begin();
   using namespace dino8::kernel;
 
-  const std::string mtl_path = "/tmp/scratch_materials.mtl";
+  // NurbsCurve::MinDistanceTo(NurbsSurface) and NurbsSurface::MinDistanceTo
+  // (NurbsSurface), exercised standalone: the full dino8_kernel_tests
+  // binary aborts earlier (in the pre-existing, disclosed
+  // BooleanCombineGeneral "3+ fragment loops" limitation, which several
+  // early TestBooleanCombineGeneral* fixtures happen to trip) before it
+  // ever reaches TestCurveMinDistanceToSurface/TestSurfaceMinDistanceTo,
+  // so this checks the same logic those tests exercise, directly, in
+  // isolation.
+
+  // --- NurbsCurve::MinDistanceTo(NurbsSurface) ---
   {
-    std::ofstream mtl(mtl_path);
-    mtl << "newmtl Red\nKd 1.0 0.0 0.0\n";
-    mtl << "newmtl Blue\nKd 0.0 0.0 1.0\n";
-    mtl << "newmtl Green\nKd 0.0 1.0 0.0\n";
+    const std::vector<Point3d> plane_grid = {
+        Point3d(0, 0, 0),
+        Point3d(0, 10, 0),
+        Point3d(10, 0, 0),
+        Point3d(10, 10, 0),
+    };
+    const NurbsSurface plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+    const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(2, 2, 5), Point3d(8, 8, 5)}, 1);
+    double dist = -1;
+    Point2d uv(-1, -1);
+    double t = -1;
+    const Result r = line.MinDistanceTo(plane, 0.001, dist, &t, &uv);
+    std::printf("curve/surface parallel: Ok=%d dist=%.6f (expect ~5)\n", r == Result::Ok, dist);
+    std::printf("  closest-pair consistency: err=%.3e (expect ~0, i.e. the two points really are `dist` apart)\n",
+                std::fabs(line.PointAt(t).DistanceTo(plane.PointAt(uv.x, uv.y)) - dist));
+
+    const NurbsCurve piercing = NurbsCurve::FromControlPoints({Point3d(5, 5, -3), Point3d(5, 5, 3)}, 1);
+    double dist2 = -1;
+    const Result r2 = piercing.MinDistanceTo(plane, 0.001, dist2);
+    std::printf("curve/surface piercing: Ok=%d dist=%.6f (expect ~0)\n", r2 == Result::Ok, dist2);
+
+    bool threw = false;
+    try {
+      line.MinDistanceTo(plane, 0.0, dist);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    std::printf("curve/surface non-positive tolerance throws: %d\n", threw);
   }
 
-  const std::string obj_path = "/tmp/scratch_groups_materials.obj";
+  // --- NurbsSurface::MinDistanceTo(NurbsSurface) ---
   {
-    std::ofstream out(obj_path);
-    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
-    out << "f 1 2 3 4\n";
-    out << "v 2 0 0\nv 3 0 0\nv 3 1 0\nv 2 1 0\n";
-    out << "mtllib " << mtl_path << '\n';
-    out << "g GroupA\nusemtl Red\n";
-    out << "f 5 6 7 8\n";
-    out << "v 4 0 0\nv 5 0 0\nv 5 1 0\nv 4 1 0\n";
-    out << "o GroupB\nusemtl Blue\n";
-    out << "f 9 10 11 12\n";
-    out << "v 6 0 0\nv 8 0 0\nv 9 1 0\nv 7 2 0\nv 5 1 0\n";
-    out << "g GroupC\nusemtl Green\n";
-    out << "f 13 14 15 16 17\n";
-    out << "v 10 0 0\nv 11 0 0\nv 11 1 0\nv 10 1 0\n";
-    out << "usemtl Unknown\n";
-    out << "f 18 19 20 21\n";
+    const std::vector<Point3d> grid_a = {
+        Point3d(0, 0, 0),
+        Point3d(0, 10, 0),
+        Point3d(10, 0, 0),
+        Point3d(10, 10, 0),
+    };
+    const std::vector<Point3d> grid_b = {
+        Point3d(0, 0, 4),
+        Point3d(0, 10, 4),
+        Point3d(10, 0, 4),
+        Point3d(10, 10, 4),
+    };
+    const NurbsSurface a = NurbsSurface::FromControlGrid(grid_a, 2, 2, 1, 1);
+    const NurbsSurface b = NurbsSurface::FromControlGrid(grid_b, 2, 2, 1, 1);
+    double dist = -1;
+    Point2d uv_a(-1, -1), uv_b(-1, -1);
+    const Result r = a.MinDistanceTo(b, 0.001, dist, &uv_a, &uv_b);
+    std::printf("surface/surface parallel planes: Ok=%d dist=%.6f (expect ~4)\n", r == Result::Ok, dist);
+    std::printf("  closest-pair consistency: err=%.3e (expect ~0, i.e. the two points really are `dist` apart)\n",
+                std::fabs(a.PointAt(uv_a.x, uv_a.y).DistanceTo(b.PointAt(uv_b.x, uv_b.y)) - dist));
+
+    const Point3d center(1, -2, 0.5);
+    const double r1 = 3.0, r2v = 5.0;
+    const ON_Sphere s1(center, r1);
+    const ON_Sphere s2(center, r2v);
+    ON_NurbsSurface ns1, ns2;
+    const bool nurb_ok = s1.GetNurbForm(ns1) != 0 && s2.GetNurbForm(ns2) != 0;
+    std::printf("sphere fixtures build real NURBS form: %d\n", nurb_ok);
+    NurbsSurface sa, sb;
+    sa.raw() = ns1;
+    sb.raw() = ns2;
+    double sdist = -1;
+    const Result sr = sa.MinDistanceTo(sb, 0.01, sdist);
+    std::printf("surface/surface concentric spheres: Ok=%d dist=%.6f (expect ~%.6f)\n", sr == Result::Ok, sdist,
+                r2v - r1);
+
+    bool threw2 = false;
+    try {
+      a.MinDistanceTo(a, 0.0, dist);
+    } catch (const std::invalid_argument&) {
+      threw2 = true;
+    }
+    std::printf("surface/surface non-positive tolerance throws: %d\n", threw2);
   }
-
-  Mesh mesh;
-  std::printf("LoadObj == Ok: %d\n", Mesh::LoadObj(obj_path, mesh) == Result::Ok);
-  std::printf("FaceCount == 7: %d (got %d)\n", mesh.FaceCount() == 7, mesh.FaceCount());
-  std::printf("HasFaceGroupNames: %d\n", mesh.HasFaceGroupNames());
-  std::printf("HasFaceMaterialNames: %d\n", mesh.HasFaceMaterialNames());
-  std::printf("HasFaceMaterialColors: %d\n", mesh.HasFaceMaterialColors());
-
-  std::printf("face0 group empty: %d\n", mesh.FaceGroupNameAt(0).empty());
-  std::printf("face0 material empty: %d\n", mesh.FaceMaterialNameAt(0).empty());
-
-  std::printf("face1 group == GroupA: %d\n", mesh.FaceGroupNameAt(1) == "GroupA");
-  std::printf("face1 material == Red: %d\n", mesh.FaceMaterialNameAt(1) == "Red");
-  const Color red = mesh.FaceMaterialColorAt(1);
-  std::printf("face1 color == red: %d (%d,%d,%d)\n", red.r == 255 && red.g == 0 && red.b == 0, red.r, red.g, red.b);
-
-  std::printf("face2 group == GroupB: %d\n", mesh.FaceGroupNameAt(2) == "GroupB");
-  std::printf("face2 material == Blue: %d\n", mesh.FaceMaterialNameAt(2) == "Blue");
-  const Color blue = mesh.FaceMaterialColorAt(2);
-  std::printf("face2 color == blue: %d (%d,%d,%d)\n", blue.r == 0 && blue.g == 0 && blue.b == 255, blue.r, blue.g,
-              blue.b);
-
-  bool all_pentagon_tagged = true;
-  for (int i = 3; i <= 5; ++i) {
-    if (mesh.FaceGroupNameAt(i) != "GroupC" || mesh.FaceMaterialNameAt(i) != "Green") all_pentagon_tagged = false;
-  }
-  std::printf("pentagon's 3 fan triangles all tagged GroupC/Green: %d\n", all_pentagon_tagged);
-  const Color green = mesh.FaceMaterialColorAt(3);
-  std::printf("pentagon triangle color == green: %d\n", green.r == 0 && green.g == 255 && green.b == 0);
-
-  std::printf("face6 material == Unknown: %d\n", mesh.FaceMaterialNameAt(6) == "Unknown");
-  const Color unresolved = mesh.FaceMaterialColorAt(6);
-  std::printf("face6 color == default black: %d\n", unresolved.r == 0 && unresolved.g == 0 && unresolved.b == 0);
-
-  const int oob = mesh.FaceCount() + 100;
-  std::printf("out-of-range group/material both empty: %d\n",
-              mesh.FaceGroupNameAt(oob).empty() && mesh.FaceMaterialNameAt(oob).empty());
-
-  std::remove(obj_path.c_str());
-  std::remove(mtl_path.c_str());
-
-  // Missing mtllib file.
-  const std::string no_mtl_path = "/tmp/scratch_missing_mtllib.obj";
-  {
-    std::ofstream out(no_mtl_path);
-    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
-    out << "mtllib does_not_exist.mtl\n";
-    out << "g SomeGroup\nusemtl SomeMaterial\n";
-    out << "f 1 2 3 4\n";
-  }
-  Mesh no_mtl_mesh;
-  std::printf("LoadObj with missing mtllib == Ok: %d\n", Mesh::LoadObj(no_mtl_path, no_mtl_mesh) == Result::Ok);
-  std::printf("group still recorded: %d\n", no_mtl_mesh.HasFaceGroupNames() && no_mtl_mesh.FaceGroupNameAt(0) == "SomeGroup");
-  std::printf("material name still recorded: %d\n",
-              no_mtl_mesh.HasFaceMaterialNames() && no_mtl_mesh.FaceMaterialNameAt(0) == "SomeMaterial");
-  std::printf("HasFaceMaterialColors false (mtllib not found): %d (want 0)\n", no_mtl_mesh.HasFaceMaterialColors());
-  std::remove(no_mtl_path.c_str());
-
-  // Plain file, no g/o/usemtl at all.
-  const std::string plain_path = "/tmp/scratch_no_groups.obj";
-  {
-    std::ofstream out(plain_path);
-    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
-    out << "f 1 2 3 4\n";
-  }
-  Mesh plain_mesh;
-  std::printf("LoadObj plain == Ok: %d\n", Mesh::LoadObj(plain_path, plain_mesh) == Result::Ok);
-  std::printf("plain HasFaceGroupNames false: %d (want 0)\n", plain_mesh.HasFaceGroupNames());
-  std::printf("plain HasFaceMaterialNames false: %d (want 0)\n", plain_mesh.HasFaceMaterialNames());
-  std::remove(plain_path.c_str());
 
   ON::End();
   return 0;
