@@ -1515,6 +1515,38 @@ std::vector<double> NurbsSurface::SuggestedParameterValues(int direction, double
   return best_values;
 }
 
+NurbsCurve NurbsSurface::IsoCurve(int direction, double parameter) const {
+  if (direction != 0 && direction != 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::IsoCurve: direction must be 0 or 1");
+  }
+
+  const ON_Interval other_domain = surface_.Domain(1 - direction);
+  if (!other_domain.Includes(parameter, false)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::IsoCurve: parameter is outside the "
+        "other direction's domain");
+  }
+
+  ON_Curve* iso = surface_.IsoCurve(direction, parameter);
+  if (iso == nullptr) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::IsoCurve: ON_Surface::IsoCurve "
+        "returned no curve for this direction/parameter");
+  }
+  ON_NurbsCurve* nurbs_iso = ON_NurbsCurve::Cast(iso);
+  if (nurbs_iso == nullptr) {
+    delete iso;
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::IsoCurve: the sliced isocurve could "
+        "not be represented as an ON_NurbsCurve");
+  }
+  NurbsCurve wrapped;
+  wrapped.raw() = *nurbs_iso;
+  delete iso;
+  return wrapped;
+}
+
 SurfaceDivisions NurbsSurface::SuggestedDivisionsByAngle(double angle_tolerance,
                                                           int isocurve_samples) const {
   if (!(angle_tolerance > 0.0) || angle_tolerance > ON_PI) {
