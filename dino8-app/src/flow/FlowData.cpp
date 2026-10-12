@@ -237,7 +237,7 @@ Value Value::Transformed(const ON_Xform& x) const {
     case Kind::Plane: { ON_Plane p = plane.ToON(); p.Transform(x); r.plane = Plane::FromON(p); r.point = r.plane.origin; break; }
     case Kind::Curve: if (curve) { kernel::NurbsCurve c = *curve; c.raw().Transform(x); r.curve = std::make_shared<kernel::NurbsCurve>(std::move(c)); } break;
     case Kind::Surface: if (surface) { kernel::NurbsSurface s = *surface; s.raw().Transform(x); r.surface = std::make_shared<kernel::NurbsSurface>(std::move(s)); } break;
-    case Kind::Brep: if (brep) { kernel::Brep b = *brep; b.raw().Transform(x); r.brep = std::make_shared<kernel::Brep>(std::move(b)); } break;
+    case Kind::Brep: if (brep) { r.brep = std::make_shared<kernel::Brep>(brep->Transform(x)); } break;
     case Kind::Mesh: if (mesh) { r.mesh = std::make_shared<kernel::Mesh>(mesh->Transform(x)); } break;
     default: break;
   }

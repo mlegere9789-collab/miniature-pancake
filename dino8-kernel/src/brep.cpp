@@ -515,6 +515,129 @@ void Brep::CompactPreservingPersistentIds() {
 
 namespace {
 
+// Re-expresses one ArcRun's own stored 3D geometry in the frame `xform`
+// moves it to - every point (`center`, `literal_points`) through
+// ON_Xform's ON_3dPoint overload, every direction (`plane_xaxis`,
+// `plane_yaxis`) through its ON_3dVector overload (which, unlike the
+// point overload, ignores the translation row, exactly as a direction
+// must). `begin`/`count`/`radius`/`angle_begin`/`angle_end` are either
+// index bookkeeping or distances/angles measured in the ALREADY-
+// transformed `plane_xaxis`/`plane_yaxis` basis, so they stay exactly as
+// recorded - see Brep::Transform()'s own doc comment for why this is
+// only called for a proper rigid (rotation + translation) `xform`.
+Brep::PlanarFace::ArcRun TransformArcRun(const ON_Xform& xform, const Brep::PlanarFace::ArcRun& run) {
+  Brep::PlanarFace::ArcRun out = run;
+  out.center = xform * run.center;
+  out.plane_xaxis = xform * run.plane_xaxis;
+  out.plane_yaxis = xform * run.plane_yaxis;
+  for (size_t i = 0; i < out.literal_points.size(); ++i) {
+    out.literal_points[i] = xform * run.literal_points[i];
+  }
+  return out;
+}
+
+Brep::PlanarFace TransformPlanarFaceRecord(const ON_Xform& xform, const Brep::PlanarFace& face) {
+  Brep::PlanarFace out = face;
+  out.plane.Transform(xform);
+  for (size_t i = 0; i < out.loop.size(); ++i) {
+    out.loop[i] = xform * face.loop[i];
+  }
+  for (size_t i = 0; i < out.arc_runs.size(); ++i) {
+    out.arc_runs[i] = TransformArcRun(xform, face.arc_runs[i]);
+  }
+  return out;
+}
+
+Brep::CylindricalFace TransformCylindricalFaceRecord(const ON_Xform& xform, const Brep::CylindricalFace& face) {
+  Brep::CylindricalFace out = face;
+  out.frame.Transform(xform);
+  for (size_t i = 0; i < out.cap0_notch_points.size(); ++i) {
+    out.cap0_notch_points[i] = xform * face.cap0_notch_points[i];
+  }
+  for (size_t i = 0; i < out.cap1_notch_points.size(); ++i) {
+    out.cap1_notch_points[i] = xform * face.cap1_notch_points[i];
+  }
+  return out;
+}
+
+Brep::SphericalFace TransformSphericalFaceRecord(const ON_Xform& xform, const Brep::SphericalFace& face) {
+  Brep::SphericalFace out = face;
+  out.frame.Transform(xform);
+  return out;
+}
+
+}  // namespace
+
+Brep Brep::Transform(const ON_Xform& xform) const {
+  Brep result = *this;
+  if (!result.brep_.Transform(xform)) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::Transform: ON_Brep::Transform failed (xform is not a valid transform)");
+  }
+
+  if (xform.IsRigid() == 1) {
+    // Proper rotation + translation: every side-table record is
+    // re-expressed in the new frame with full fidelity, exactly as if
+    // it had been built fresh in the moved position.
+    for (std::vector<PlanarFace::ArcRun>& runs : result.face_arc_runs_) {
+      for (PlanarFace::ArcRun& run : runs) run = TransformArcRun(xform, run);
+    }
+    for (CylinderNotchRows& rows : result.face_notch_rows_) {
+      if (!rows.present) continue;
+      // cap0_uv/cap1_uv are (u, v) parameter-space and v_end0/v_end1 are
+      // a parametric v value - neither lives in the 3D frame `xform`
+      // moves, so both are left exactly as recorded, same as every other
+      // side-table scalar (see this method's own doc comment).
+      for (Point3d& p : rows.cap0_points) p = xform * p;
+      for (Point3d& p : rows.cap1_points) p = xform * p;
+    }
+    for (FaceRecord& rec : result.face_records_) {
+      switch (rec.kind) {
+        case FaceRecord::kNone:
+          break;
+        case FaceRecord::kPlanar:
+          rec.planar = TransformPlanarFaceRecord(xform, rec.planar);
+          break;
+        case FaceRecord::kCylindrical:
+          rec.cyl = TransformCylindricalFaceRecord(xform, rec.cyl);
+          break;
+        case FaceRecord::kSpherical:
+          rec.sph = TransformSphericalFaceRecord(xform, rec.sph);
+          break;
+      }
+    }
+  } else {
+    // A reflection, or a transform with scale/shear: outside this
+    // method's own "rigid" (translate/rotate) scope. Rather than risk a
+    // mis-scaled radius or a mis-oriented notch polyline, drop every side
+    // table's own per-face RECORD outright, the same "fall back to
+    // generic re-derivation for every face" MixedFaces()/
+    // TessellateConforming() already apply to a too-short or absent
+    // entry - correctness is unaffected, only the verbatim-fidelity fast
+    // path is given up, exactly as an untouched-but-stale record already
+    // silently would be. Reset to one DEFAULT ("no record") entry per
+    // face rather than emptied outright: FaceCoversWholeDomain() (below)
+    // indexes face_trim_loops_/face_hole_loops_/face_arc_runs_/
+    // face_notch_rows_ by face index with no bounds check of its own
+    // (relying on every one of these parallel tables staying sized to
+    // the face count, the same invariant every factory in this file
+    // keeps via its own `emplace_back()` call per face) - an outright
+    // `.clear()` here would leave that call indexing past the end of an
+    // empty vector the moment any face failed FaceIsSurface(), which a
+    // reflected/scaled Brep's own un-rebuilt loops generally still do.
+    const size_t face_count = static_cast<size_t>(result.brep_.m_F.Count());
+    result.face_arc_runs_.assign(face_count, {});
+    result.face_notch_rows_.assign(face_count, CylinderNotchRows{});
+    result.face_records_.assign(face_count, FaceRecord{});
+  }
+
+  // lump_face_ranges_ and the three *_persistent_ids_ tables are index-
+  // or identity-based, not geometric - neither branch above touches them.
+  return result;
+}
+
+namespace {
+
 // 5-point Gauss-Legendre quadrature on [-1, 1] - exact for any
 // polynomial up to degree 9 per span, comfortably covering every degree
 // this kernel's own Brep factories build (degree <= 3 skinned sections,
