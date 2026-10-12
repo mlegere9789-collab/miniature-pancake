@@ -7651,8 +7651,10 @@ void TestBooleanCombineGeneralAsymmetricCoincidentSubFace() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
   using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
   using dino8::kernel::Vector3d;
 
   // A 4x4x4 box with a 1x1x1 boss (a square profile extruded upward,
@@ -7662,33 +7664,54 @@ void TestBooleanCombineGeneralAsymmetricCoincidentSubFace() {
   // fully-matching-extent shape the "Coplanar boxes" fixture above
   // already covers.
   //
-  // Honestly scoped to what this round's own fix actually guarantees, not
-  // more: NONE of these four calls may throw any more (the regression
-  // itself, confirmed fixed), and the Union result - the one op this
-  // fixture's own box-face fragmentation (a correctly hole-bridged outer
-  // ring plus a separate inner island exactly matching the boss footprint)
-  // happens to classify unambiguously either way, confirmed by direct
-  // inspection - is checked for real structural correctness. Intersection/
-  // Difference are deliberately NOT asserted beyond "doesn't throw": this
+  // Originally (round 44) honestly scoped to only what THAT round's own
+  // fix guaranteed: none of these four calls throws (the `878ecdb`
+  // regression itself), and the Union result - the one op this fixture's
+  // own box-face fragmentation (a correctly hole-bridged outer ring plus a
+  // separate inner island exactly matching the boss footprint) happened to
+  // classify unambiguously either way even by plain ray-casting - was
+  // checked for real structural correctness, while Intersection/Difference
+  // were deliberately left unasserted beyond "doesn't throw": this
   // fixture's own box-top face ends up with an inner fragment sitting
   // EXACTLY on the boss's own coincident boundary plane, and ray-casting
-  // that fragment's representative point against the other operand is the
+  // that fragment's representative point against the other operand was the
   // identical "numerically arbitrary" ambiguity this file's whole-face
-  // override exists to avoid, one level deeper than that override reaches
-  // (it only ever fires for a face's own single UNTOUCHED fragment, not an
-  // inner fragment carved out of a bigger one) - confirmed directly (not
-  // assumed) to give a genuinely wrong Intersection/Difference result here,
-  // the SAME already-disclosed "No general partially-overlapping
-  // coincident face handling" gap (the "Coplanar / coincident face
-  // handling" bullet, PARITY_MAP.md) the symmetric "Coplanar boxes"
-  // fixture above never reaches at all (its own whole-face override
-  // handles 100% of that fixture, with no inner fragment left over).
-  // Confirmed via an A/B rebuild that this ambiguity is NOT itself a new
-  // regression either (a plain `Brep::Box()` boss - sharper, flatter side
-  // walls than this one's wrapped `Brep::Extrude()` side - already returns
-  // silently WRONG volumes for it on the pre-`878ecdb` baseline too, with
-  // no crash) - left genuinely open, disclosed in PARITY_MAP.md rather
-  // than chased further or quietly asserted away here.
+  // override exists to avoid, one level deeper than that override reached
+  // at the time (it only ever fired for a face's own single UNTOUCHED
+  // fragment, not an inner fragment carved out of a bigger one) - confirmed
+  // directly (not assumed) to give a genuinely wrong Intersection/
+  // Difference result then.
+  //
+  // **Round 45: that one level deeper is now reached too.** The override
+  // is no longer keyed only on "this fragment IS the whole face" - a new,
+  // separate per-face bookkeeping (`partial_coincident_a`/
+  // `partial_coincident_b`, boolean_general.cpp) records, for the BIGGER
+  // side of an asymmetric coincident pair (exactly this fixture's own box
+  // top face vs. the boss's whole bottom cap), the exact sub-region bbox a
+  // later fragment must match to be that same physical coincident patch.
+  // The box's own inner-island fragment now matches it and is routed
+  // through the identical outward-normal-based rule the whole-face
+  // override already uses (opposite normals here: touching, not
+  // overlapping - the same geometric relationship as the symmetric
+  // "Coplanar boxes" fixture above, just confined to a SUB-region of a
+  // bigger face instead of the face's entire extent), instead of an
+  // ambiguous ray-cast. Verified directly (`DINO8_BOOL_DEBUG=1` tracing
+  // plus a standalone reproducer linked against `libdino8_kernel.a`, not
+  // inferred from this test alone) that Intersection now comes back as the
+  // genuine empty solid and both Differences now match the exact
+  // closed-form volumes a touching-only (zero volumetric overlap) pair
+  // must have - asserted below. Confirmed via an A/B rebuild that this
+  // ambiguity was NOT itself new in round 44 (a plain `Brep::Box()` boss -
+  // sharper, flatter side walls than this one's wrapped `Brep::Extrude()`
+  // side - still throws `BooleanCombineGeneral`'s own separate, deeper,
+  // genuinely NOT-fixed-here "an edge is claimed by 3 or more fragment
+  // loops" refusal even after this round's fix, confirmed directly, not
+  // merely assumed unchanged): that harder, four-independent-flat-side-wall
+  // shape is a DIFFERENT, still fully open limitation (this bullet's own
+  // disclosed "FLAT partially-overlapping case" plus additional edge-
+  // sharing structure this round does not attempt), left genuinely open,
+  // disclosed in PARITY_MAP.md rather than chased further or quietly
+  // asserted away here.
   const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
   const NurbsCurve square = NurbsCurve::FromControlPoints(
       {Point3d(1.5, 1.5, 4), Point3d(2.5, 1.5, 4), Point3d(2.5, 2.5, 4), Point3d(1.5, 2.5, 4), Point3d(1.5, 1.5, 4)},
@@ -7701,14 +7724,32 @@ void TestBooleanCombineGeneralAsymmetricCoincidentSubFace() {
         "box+boss Union has exactly 8 faces (box's 5 untouched sides + its own hole-bridged top, plus the boss's "
         "wrapped side wall + top cap - its own coincident bottom cap correctly dropped by the whole-face override)");
 
+  // Round 45: the box/boss pair shares zero volumetric overlap (the boss
+  // merely sits flush on the box's top, touching along a sub-region of
+  // that face) - the exact closed-form answer any touching-only pair must
+  // have is the empty intersection and each operand's own unchanged
+  // volume on Difference, now reached without the ambiguous ray-cast.
   const Brep i = BooleanCombineGeneral(box, boss, BooleanOp::Intersection);
-  Check(i.FaceCount() >= 0,
-        "box+boss Intersection no longer throws the regression's own fragment-loop abort (reaching this line at "
-        "all is the real assertion - see this test's own doc comment for why its RESULT is not also asserted here)");
+  Check(i.FaceCount() == 0,
+        "box+boss Intersection is the genuine empty solid (touching only, zero volumetric overlap) - the "
+        "partial-coincident-sub-region override (round 45) replaces the old ambiguous ray-cast that used to give "
+        "a wrong nonzero result here");
+
   const Brep d_ab = BooleanCombineGeneral(box, boss, BooleanOp::Difference);
-  Check(d_ab.FaceCount() >= 0, "box+boss A-B no longer throws the regression's own fragment-loop abort");
+  Check(d_ab.raw().IsValid(), "box - boss is a valid ON_Brep");
+  const Mesh mesh_ab = TessellateGeneralBooleanClosedMesh(d_ab, 8, 8);
+  Check(mesh_ab.IsClosedManifold(), "box - boss tessellates as a genuine closed manifold");
+  Check(std::abs(mesh_ab.Volume() - 64.0) < 1e-3,
+        "box - boss's exact volume is 64 (the box's own unchanged volume - the boss never overlaps it "
+        "volumetrically, only touches its top face)");
+
   const Brep d_ba = BooleanCombineGeneral(boss, box, BooleanOp::Difference);
-  Check(d_ba.FaceCount() >= 0, "box+boss B-A no longer throws the regression's own fragment-loop abort");
+  Check(d_ba.raw().IsValid(), "boss - box is a valid ON_Brep");
+  const Mesh mesh_ba = TessellateGeneralBooleanClosedMesh(d_ba, 8, 8);
+  Check(mesh_ba.IsClosedManifold(), "boss - box tessellates as a genuine closed manifold");
+  Check(std::abs(mesh_ba.Volume() - 1.0) < 1e-3,
+        "boss - box's exact volume is 1 (the boss's own unchanged volume - the box never overlaps it "
+        "volumetrically, only touches its bottom cap)");
 }
 
 // PARITY_MAP.md's "Tolerant booleans" bullet, after BooleanCombineGeneral()
