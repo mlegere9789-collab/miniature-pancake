@@ -1990,6 +1990,28 @@ std::vector<CurveBrepHit> IntersectCurveBrep(const ON_Curve& c, const ON_Brep& b
   return out;
 }
 
+std::vector<RayBrepHit> FireRayAtBrep(const Point3d& origin, const Vector3d& direction, double max_distance,
+                                       const ON_Brep& b, const IntersectOptions& opt) {
+  Vector3d unit_dir = direction;
+  if (!unit_dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::FireRayAtBrep: direction must be finite and non-zero");
+  }
+  if (!std::isfinite(max_distance) || !(max_distance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::FireRayAtBrep: max_distance must be finite and positive");
+  }
+
+  ON_LineCurve ray(origin, origin + unit_dir * max_distance);
+  ray.SetDomain(0.0, max_distance);
+
+  std::vector<RayBrepHit> out;
+  for (const CurveBrepHit& hit : IntersectCurveBrep(ray, b, opt)) {
+    out.push_back(RayBrepHit{hit.face_index, hit.hit.t, hit.hit.uv, hit.hit.point});
+  }
+  std::sort(out.begin(), out.end(),
+            [](const RayBrepHit& a, const RayBrepHit& b2) { return a.distance < b2.distance; });
+  return out;
+}
+
 // Curve/infinite-plane crossings: bisection-seeded, then Newton-refined on
 // the plane's own implicit signed-distance equation (a single scalar
 // residual, unlike IntersectCurveSurface()'s 3-unknown (t, u, v) system -

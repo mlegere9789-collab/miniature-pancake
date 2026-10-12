@@ -3868,6 +3868,117 @@ void TestIntersectBrepsAndCurveBrep() {
   Check(far_hits.empty(), "a curve nowhere near the B-rep produces no curve/B-rep hits");
 }
 
+// PARITY_MAP's massprops category, "Ray firing against exact B-rep faces"
+// bullet: FireRayAtBrep() is the real, trimmed, exact kernel entry point
+// (Mesh::FireRay only ever fires against a mesh approximation; the
+// untrimmed IntersectCurveSurface() above never applied a face's own trim
+// loops on its own).
+void TestFireRayAtBrep() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FireRayAtBrep;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RayBrepHit;
+  using dino8::kernel::Vector3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Same box_a fixture TestIntersectBrepsAndCurveBrep() above uses: a
+  // vertical ray straight up through x=1, y=1, starting below the box
+  // (z=-5) must hit exactly the bottom (z=0) and top (z=2) faces, sorted
+  // nearest-first by real distance (5, then 7) - not just unordered, and
+  // not a raw [0,1] curve-parameter fraction.
+  const Brep box_a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const std::vector<RayBrepHit> hits =
+      FireRayAtBrep(Point3d(1, 1, -5), Vector3d(0, 0, 1), 20.0, box_a.raw(), opt);
+  Check(hits.size() == 2, "a ray through a box hits exactly its two pierced (bottom/top) faces");
+  if (hits.size() == 2) {
+    Check(hits[0].point.DistanceTo(Point3d(1, 1, 0)) < 1e-4 && std::abs(hits[0].distance - 5.0) < 1e-4,
+          "the nearest hit is the bottom face, (1,1,0), at exactly distance 5 from the ray origin");
+    Check(hits[1].point.DistanceTo(Point3d(1, 1, 2)) < 1e-4 && std::abs(hits[1].distance - 7.0) < 1e-4,
+          "the farther hit is the top face, (1,1,2), at exactly distance 7 - the two hits come back "
+          "sorted nearest-first, not in arbitrary face order");
+  }
+
+  // A shorter max_distance that only reaches the first face must return
+  // just that one hit, not silently include the farther one anyway.
+  const std::vector<RayBrepHit> short_hits =
+      FireRayAtBrep(Point3d(1, 1, -5), Vector3d(0, 0, 1), 6.0, box_a.raw(), opt);
+  Check(short_hits.size() == 1 && short_hits[0].point.DistanceTo(Point3d(1, 1, 0)) < 1e-4,
+        "max_distance genuinely bounds the ray - a shorter ray reports only the bottom face, not the "
+        "top face it never reaches");
+
+  // A ray that misses the box's bounding box entirely.
+  const std::vector<RayBrepHit> miss_hits =
+      FireRayAtBrep(Point3d(100, 100, -5), Vector3d(0, 0, 1), 20.0, box_a.raw(), opt);
+  Check(miss_hits.empty(), "a ray nowhere near the B-rep produces no hits");
+
+  // The exact-AND-TRIMMED claim: a ray aimed at a point that lies on the
+  // UNTRIMMED surface but OUTSIDE a genuinely trimmed face's own trim
+  // loop must report no hit there - the real differentiator from the
+  // untrimmed IntersectCurveSurface(). A flat plane at z=2, built from a
+  // 2x2 control grid spanning world (0,0) to (2,2) over the bilinear
+  // surface's own clamped-uniform (u, v) domain [0, 1]^2 (so world
+  // position = 2 * (u, v) exactly), trimmed down to a small
+  // [0.25, 0.75]^2 square IN THAT (u, v) PARAMETER space - well inside
+  // its own [0, 1]^2 domain, not expressed in world units.
+  //
+  // Deliberately TrimmedPlanarFaceWelded(), not the plain
+  // TrimmedPlanarFace(): a real, confirmed finding from a standalone
+  // dino8_scratch_test probe while building this test, not assumed -
+  // TrimmedPlanarFace()'s own result has NO real ON_Brep trim topology
+  // at all (its own doc comment already discloses this: "bare surface",
+  // no loop), only this kernel's own separate internal side-table
+  // (`Brep::face_trim_loops_`) that ONLY this kernel's own tessellation
+  // path (ResolveFace(), used by TessellateCertifiedAdaptive() and
+  // friends) ever reads. FireRayAtBrep()/IntersectCurveBrep() instead go
+  // through FaceContainsUV(), which reads genuine ON_Brep loop/trim
+  // structure - so a ray fired at a TrimmedPlanarFace()-built face was
+  // directly confirmed (via that same probe) to hit EVERYWHERE on the
+  // untrimmed surface, silently ignoring the trim entirely, not merely
+  // less precise. TrimmedPlanarFaceWelded() builds the real
+  // ON_BrepLoop::outer this test's own trim check actually needs.
+  using dino8::kernel::NurbsSurface;
+  const std::vector<Point3d> plane_grid = {Point3d(0, 0, 2), Point3d(0, 2, 2), Point3d(2, 0, 2),
+                                            Point3d(2, 2, 2)};
+  const NurbsSurface flat_plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+  const std::vector<Point2d> small_trim = {
+      Point2d(0.25, 0.25), Point2d(0.75, 0.25), Point2d(0.75, 0.75), Point2d(0.25, 0.75)};
+  const Brep trimmed_top = Brep::TrimmedPlanarFaceWelded(flat_plane, small_trim);
+  // A ray through world (1, 1) - (u, v) = (0.5, 0.5), the trim's own
+  // interior - must hit; one through world (0.2, 0.2) - (u, v) =
+  // (0.1, 0.1), still on the face's full domain but well outside the
+  // small trim - must not.
+  const std::vector<RayBrepHit> inside_trim_hits =
+      FireRayAtBrep(Point3d(1.0, 1.0, 10), Vector3d(0, 0, -1), 20.0, trimmed_top.raw(), opt);
+  const std::vector<RayBrepHit> outside_trim_hits =
+      FireRayAtBrep(Point3d(0.2, 0.2, 10), Vector3d(0, 0, -1), 20.0, trimmed_top.raw(), opt);
+  Check(!inside_trim_hits.empty(), "a ray through a point genuinely inside a trimmed face's own trim "
+                                    "loop reports a real hit");
+  Check(outside_trim_hits.empty(), "a ray through a point on the SAME untrimmed surface but outside "
+                                    "the face's own trim loop reports no hit - the exact-AND-trimmed "
+                                    "behavior IntersectCurveSurface() alone can't provide");
+
+  bool threw_direction = false;
+  try {
+    FireRayAtBrep(Point3d(0, 0, 0), Vector3d(0, 0, 0), 20.0, box_a.raw(), opt);
+  } catch (const std::invalid_argument&) {
+    threw_direction = true;
+  }
+  Check(threw_direction, "FireRayAtBrep throws std::invalid_argument for a zero direction vector");
+
+  bool threw_distance = false;
+  try {
+    FireRayAtBrep(Point3d(0, 0, 0), Vector3d(0, 0, 1), 0.0, box_a.raw(), opt);
+  } catch (const std::invalid_argument&) {
+    threw_distance = true;
+  }
+  Check(threw_distance, "FireRayAtBrep throws std::invalid_argument for a non-positive max_distance");
+}
+
 // PARITY_MAP's intersections category, "Pullback of a 3D curve to surface
 // parameter space" bullet: PullbackCurveToSurface() is the general-purpose
 // kernel entry point (SSX's own pcurve_a/pcurve_b are a by-product of a
@@ -73190,6 +73301,7 @@ int main() {
   TestIntersectCurvePlaneFindsCrossingsAndRejectsMisses();
   TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves();
   TestIntersectBrepsAndCurveBrep();
+  TestFireRayAtBrep();
   TestPullbackCurveToSurfaceCylinderRulingLine();
   TestPullbackCurveToSurfaceAcrossPeriodicSeam();
   TestIntersectBrepByPlaneBoxSideWalls();
