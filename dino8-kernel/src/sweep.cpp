@@ -1311,9 +1311,27 @@ Brep Brep::AssembleSweptBody(ON_NurbsSurface* wall_raw, bool cap_v0, bool cap_v1
 
   // Outward cross-check for a closed body: the construction rules orient
   // it outward already; a negative tessellated volume here would mean a
-  // rule was wrong for this input, and flipping is the safe repair.
+  // rule was wrong for this input, and flipping is the safe repair. A
+  // fixed 16x16 check (every other caller of this idiom in this file
+  // still uses it) is adequate for an ordinary low-span wall, but a wall
+  // with many more spans than that in one direction - confirmed directly
+  // via ScrewThread() at bolt-shank turn counts (dino8_scratch_test: a
+  // 32-turn, stations_per_turn=16 wall has 513 v-spans) - aliases badly
+  // enough at 16x16 that the SIGN of the sampled volume can come out
+  // wrong, so this safety net flips (or fails to flip) the wrong way and
+  // bakes a genuinely inside-out solid in - confirmed by `brep.IsValid()`
+  // staying true throughout (this is an orientation defect, not a
+  // topological one) while the exact `Brep::Volume()` integral comes back
+  // negative. Scaling each direction's own check resolution with the
+  // wall's own `SpanCount()` there (never below 16, so every existing
+  // low-span caller - Pipe/Revolve/Extrude/Loft/Sweep1/Sweep2/... - keeps
+  // the identical 16x16 check and is unaffected) fixes this without
+  // touching the other, as-yet-unconfirmed, identical-idiom checks
+  // elsewhere in this file.
   if (brep.IsSolid()) {
-    const Mesh m = result.TessellateToClosedMesh(16, 16);
+    const int du_check = std::max(16, 2 * wall.SpanCount(0));
+    const int dv_check = std::max(16, 2 * wall.SpanCount(1));
+    const Mesh m = result.TessellateToClosedMesh(du_check, dv_check);
     if (m.Volume() < 0.0) brep.Flip();
   }
   return result;
