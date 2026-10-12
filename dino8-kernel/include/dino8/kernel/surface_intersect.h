@@ -262,7 +262,18 @@ struct RayBrepHit {
 // and a linear per-face scan with no spatial acceleration structure -
 // PARITY_MAP.md's own separate "Spatial acceleration structures for
 // geometric queries" bullet owns that distinct performance gap, not
-// named by this one.
+// named by this one. A real, confirmed finding from a standalone
+// `dino8_scratch_test` probe while building this, not assumed: trimming
+// here is only as real as `FaceContainsUV()`'s own genuine `ON_Brep`
+// loop/trim topology - a face built via `Brep::TrimmedPlanarFace()`
+// (that factory's own "bare surface" convention, no real loop at all,
+// trim tracked only in this kernel's separate internal side-table that
+// ONLY its own tessellation path (`ResolveFace()`) ever reads) is
+// silently treated as fully UNTRIMMED here, not partially trimmed - a
+// ray lands anywhere on the untrimmed surface. `Brep::
+// TrimmedPlanarFaceWelded()`, `Brep::Box()`, boolean-operation results,
+// and every other factory that builds genuine `ON_BrepLoop`/`ON_BrepTrim`
+// topology are unaffected and trim exactly as documented above.
 std::vector<RayBrepHit> FireRayAtBrep(const Point3d& origin, const Vector3d& direction, double max_distance,
                                        const ON_Brep& b, const IntersectOptions& opt);
 

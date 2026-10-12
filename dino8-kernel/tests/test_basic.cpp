@@ -3738,23 +3738,28 @@ void TestFireRayAtBrep() {
   // position = 2 * (u, v) exactly), trimmed down to a small
   // [0.25, 0.75]^2 square IN THAT (u, v) PARAMETER space - well inside
   // its own [0, 1]^2 domain, not expressed in world units.
+  //
+  // Deliberately TrimmedPlanarFaceWelded(), not the plain
+  // TrimmedPlanarFace(): a real, confirmed finding from a standalone
+  // dino8_scratch_test probe while building this test, not assumed -
+  // TrimmedPlanarFace()'s own result has NO real ON_Brep trim topology
+  // at all (its own doc comment already discloses this: "bare surface",
+  // no loop), only this kernel's own separate internal side-table
+  // (`Brep::face_trim_loops_`) that ONLY this kernel's own tessellation
+  // path (ResolveFace(), used by TessellateCertifiedAdaptive() and
+  // friends) ever reads. FireRayAtBrep()/IntersectCurveBrep() instead go
+  // through FaceContainsUV(), which reads genuine ON_Brep loop/trim
+  // structure - so a ray fired at a TrimmedPlanarFace()-built face was
+  // directly confirmed (via that same probe) to hit EVERYWHERE on the
+  // untrimmed surface, silently ignoring the trim entirely, not merely
+  // less precise. TrimmedPlanarFaceWelded() builds the real
+  // ON_BrepLoop::outer this test's own trim check actually needs.
   using dino8::kernel::NurbsSurface;
   const std::vector<Point3d> plane_grid = {Point3d(0, 0, 2), Point3d(0, 2, 2), Point3d(2, 0, 2),
                                             Point3d(2, 2, 2)};
   const NurbsSurface flat_plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
   const std::vector<Point2d> small_trim = {
       Point2d(0.25, 0.25), Point2d(0.75, 0.25), Point2d(0.75, 0.75), Point2d(0.25, 0.75)};
-  // TrimmedPlanarFaceWelded(), not TrimmedPlanarFace(): the latter stores
-  // its own trim_loop_uv only in Brep's own tessellator-side bookkeeping
-  // (face_trim_loops_), never as a real ON_BrepLoop - so a face built that
-  // way has `f.m_li.Count() == 0`, and FaceContainsUV()'s own documented
-  // "untrimmed face" branch (surface_intersect.cpp) then answers true
-  // for every (u, v) in the full surface domain regardless of
-  // trim_loop_uv, exactly the way an honestly-untrimmed face should.
-  // TrimmedPlanarFaceWelded() instead builds a REAL ON_BrepLoop::outer via
-  // FromPlanarFaces() (see its own header doc comment in brep.h), the
-  // genuine topology FaceContainsUV()/IntersectCurveBrep()/FireRayAtBrep()
-  // actually need to tell a trimmed face apart from an untrimmed one.
   const Brep trimmed_top = Brep::TrimmedPlanarFaceWelded(flat_plane, small_trim);
   // A ray through world (1, 1) - (u, v) = (0.5, 0.5), the trim's own
   // interior - must hit; one through world (0.2, 0.2) - (u, v) =
