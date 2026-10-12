@@ -22056,6 +22056,63 @@ void TestMeshTrisToQuadsGatesOnDihedralAngle() {
   }
 }
 
+// Closes a real, previously-unvalidated gap: max_dihedral_deg went
+// straight into `std::max(0.0, max_dihedral_deg)` with no check at all -
+// a NaN value silently became exactly 0.0 (any comparison with NaN is
+// false, so `0.0 < NaN` is false and std::max returns the first
+// argument), accepting only perfectly-flat merges without ever telling
+// the caller its own threshold was nonsense, rather than refusing
+// outright the way this class's own other tolerance/angle parameters do.
+void TestMeshTrisToQuadsThrowsOnNonFiniteDihedralDegAndClampsNegative() {
+  using dino8::kernel::Mesh;
+
+  auto make_flat_pair = []() {
+    Mesh m;
+    ON_Mesh& raw = m.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));   // 0 = a
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 1 = b
+    raw.m_V.Append(ON_3fPoint(0.5f, 1.0f, 0.0f));   // 2 = c
+    raw.m_V.Append(ON_3fPoint(0.5f, -1.0f, 0.0f));  // 3 = d, same plane as a/b/c: 0deg dihedral
+    ON_MeshFace fi;
+    fi.vi[0] = 0; fi.vi[1] = 1; fi.vi[2] = 2; fi.vi[3] = 2;
+    raw.m_F.Append(fi);
+    ON_MeshFace fj;
+    fj.vi[0] = 1; fj.vi[1] = 0; fj.vi[2] = 3; fj.vi[3] = 3;
+    raw.m_F.Append(fj);
+    return m;
+  };
+
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  Check(Throws([&] { make_flat_pair().TrisToQuads(nan); }),
+        "TrisToQuads throws for a NaN max_dihedral_deg");
+  Check(Throws([&] { make_flat_pair().TrisToQuads(inf); }),
+        "TrisToQuads throws for a +infinity max_dihedral_deg");
+  Check(Throws([&] { make_flat_pair().TrisToQuads(-inf); }),
+        "TrisToQuads throws for a -infinity max_dihedral_deg");
+
+  // Negative control: a genuinely negative (but finite) value is NOT an
+  // error - it's the same documented "clamps to 0.0" convenience the
+  // doc comment (mesh.h) now discloses explicitly - so a perfectly flat
+  // (0deg dihedral) pair still merges even at a negative threshold,
+  // exactly as it already does at a literal 0.0 threshold.
+  Mesh m = make_flat_pair();
+  Check(!Throws([&] { Mesh probe = m; probe.TrisToQuads(-10.0); }),
+        "TrisToQuads does not throw for a negative (but finite) max_dihedral_deg");
+  Check(m.TrisToQuads(-10.0) == 1,
+        "a negative max_dihedral_deg still clamps to 0.0, so a perfectly flat (0deg) pair still merges");
+}
+
 // Two coplanar (0deg dihedral) triangles sharing edge a-b whose apexes
 // c and d are BOTH still on opposite sides of ab (a valid, consistently-
 // wound manifold pair - required by TrisToQuads()'s own opposite-
@@ -34259,6 +34316,101 @@ void TestMeshLoadFbxRejectsMalformedFiles() {
   std::remove(short_run_path.c_str());
   std::remove(oob_index_path.c_str());
   std::remove(unterminated_path.c_str());
+}
+
+void TestNurbsCurveSaveIgesRoundTrips() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence names
+  // IGES as app-only ("PLY has a kernel API; STEP/IGES/DXF/DWG ... remain
+  // app-only Document entry points" - DXF's own half of that gap already
+  // closed via SaveDxf()/LoadDxf() above). A real circle's own NURBS form -
+  // degree 2, periodic, genuinely non-unit rational weights - exercises
+  // every field SaveIges()/LoadIges() carry, not just a trivial polynomial
+  // line.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  Check(circle.raw().IsRational(), "setup: a circle's own NURBS form is genuinely rational");
+
+  const std::string path = "dino8_kernel_curve_iges_test.igs";
+  Check(circle.SaveIges(path) == Result::Ok, "NurbsCurve::SaveIges succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .igs file SaveIges wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  Check(file_text.find("S      1") != std::string::npos, "the file has a real Start section");
+  Check(file_text.find("126,") != std::string::npos, "the file's Parameter Data carries a real Type 126 entity");
+  Check(file_text.find("T      1") != std::string::npos, "the file has a real Terminate section");
+
+  NurbsCurve reloaded;
+  Check(NurbsCurve::LoadIges(path, reloaded) == Result::Ok, "NurbsCurve::LoadIges succeeds on SaveIges()'s own output");
+  Check(reloaded.raw().CVCount() == circle.raw().CVCount(), "the reloaded curve has the same control point count");
+  Check(reloaded.raw().Degree() == circle.raw().Degree(), "the reloaded curve has the same degree");
+  Check(reloaded.raw().IsRational(), "the reloaded curve is still genuinely rational");
+  bool cv_ok = true;
+  for (int i = 0; i < circle.raw().CVCount() && cv_ok; ++i) {
+    ON_4dPoint a, b;
+    circle.raw().GetCV(i, a);
+    reloaded.raw().GetCV(i, b);
+    if (std::abs(a.x / a.w - b.x / b.w) >= 1e-6 || std::abs(a.y / a.w - b.y / b.w) >= 1e-6 || std::abs(a.w - b.w) >= 1e-9) cv_ok = false;
+  }
+  Check(cv_ok, "every control point survived exactly (Euclidean position and real weight)");
+  Check(std::abs(reloaded.Length() - circle.Length()) < 1e-6,
+        "the reloaded curve's own length exactly matches the original circle's circumference");
+  std::remove(path.c_str());
+}
+
+void TestNurbsCurveLoadIgesRejectsMalformedFiles() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Result;
+
+  NurbsCurve out;
+  Check(NurbsCurve::LoadIges("dino8_kernel_curve_iges_does_not_exist.igs", out) == Result::Failed,
+        "LoadIges refuses a missing file");
+
+  const std::string garbage_path = "dino8_kernel_curve_iges_garbage.igs";
+  {
+    std::ofstream o(garbage_path);
+    o << "this is not an IGES file at all\n";
+  }
+  Check(NurbsCurve::LoadIges(garbage_path, out) == Result::Failed,
+        "LoadIges refuses a file with no Directory Entry section");
+  std::remove(garbage_path.c_str());
+
+  // A real SaveIges()-written file whose Directory Entry's own Type field
+  // (the first 8 columns of its first Directory Entry line) is corrupted
+  // to name a different entity (100, a circular arc) instead of 126 - this
+  // reader's own disclosed scope (the first Type 126 entity only) must
+  // decline it rather than misreading unrelated Parameter Data as a 126
+  // record.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
+  ON_NurbsCurve nurbs_form;
+  on_circle.GetNurbForm(nurbs_form);
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const std::string wrong_type_path = "dino8_kernel_curve_iges_wrong_type.igs";
+  Check(circle.SaveIges(wrong_type_path) == Result::Ok, "setup: SaveIges succeeds");
+  {
+    std::ifstream in(wrong_type_path);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    const size_t d1_end = text.find("D      1\n");
+    Check(d1_end != std::string::npos && d1_end >= 72, "setup: found the first Directory Entry line");
+    const size_t line_start = d1_end - 72;
+    Check(text.compare(line_start, 8, "     126") == 0, "setup: the first 8 columns are the entity Type field (126)");
+    text.replace(line_start, 8, "     100");
+    std::ofstream out_file(wrong_type_path, std::ios::trunc);
+    out_file << text;
+  }
+  Check(NurbsCurve::LoadIges(wrong_type_path, out) == Result::Failed,
+        "LoadIges refuses a file whose only entity's Directory Entry names Type 100, not 126");
+  std::remove(wrong_type_path.c_str());
 }
 
 void TestMeshSaveDxfRoundTrips() {
@@ -74695,6 +74847,8 @@ int main() {
   TestMeshLoad3mfRejectsMalformedFiles();
   TestMeshSaveFbxRoundTrips();
   TestMeshLoadFbxRejectsMalformedFiles();
+  TestNurbsCurveSaveIgesRoundTrips();
+  TestNurbsCurveLoadIgesRejectsMalformedFiles();
   TestMeshSaveDxfRoundTrips();
   TestMeshLoadDxfRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
@@ -75193,6 +75347,7 @@ int main() {
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
   TestMeshTrisToQuadsRecombinesTessellatedBoxFaces();
   TestMeshTrisToQuadsGatesOnDihedralAngle();
+  TestMeshTrisToQuadsThrowsOnNonFiniteDihedralDegAndClampsNegative();
   TestMeshTrisToQuadsRefusesNonConvexMerge();
   TestMeshTrisToQuadsMergesSeveralIndependentSquaresInOneCall();
   TestMeshTrisToQuadsRefusesCoincidentApexes();
