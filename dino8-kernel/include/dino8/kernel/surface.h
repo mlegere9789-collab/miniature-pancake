@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <vector>
 
 #include <opennurbs.h>
@@ -791,6 +792,39 @@ class NurbsSurface {
   // outputs still set to the best candidate found.
   Result MinDistanceTo(const NurbsSurface& other, double tolerance, double& out_distance,
                         Point2d* out_uv_this = nullptr, Point2d* out_uv_other = nullptr) const;
+
+  // An oriented bounding box: closes the "surface" half of PARITY_MAP's
+  // "Oriented / CPlane-aligned / minimal-volume bounding box" gap (the
+  // curve half already closed via `NurbsCurve::GetOrientedBoundingBox()`,
+  // whose own identical technique this generalizes from a 1D arc-length
+  // sample to a 2D (u, v) grid sample). PCA via the same
+  // `ON_Sym3x3EigenSolver` `Mesh::GetOrientedBoundingBox()`/
+  // `NurbsCurve::GetOrientedBoundingBox()` already use, on the plain
+  // (unweighted) covariance of a `u_divisions` x `v_divisions` grid of
+  // `PointAt()` samples over the full domain - not a volume- or area-
+  // weighted covariance, the same "plain sample-point covariance" tier
+  // the curve overload already carries, since a general trimmed/curved
+  // surface has no simple closed-form area element to weight by.
+  // `half_extents`/`center` are the exact min/max projection of every one
+  // of this surface's own CONTROL POINTS (`ControlPointAt(i, j)` over the
+  // full `CVCountU()` x `CVCountV()` grid) onto each chosen axis - NOT the
+  // sampled points - so the result is PROVABLY SAFE regardless of
+  // sampling density: a B-spline surface lies within the convex hull of
+  // its own control net, the exact same guarantee the curve overload's
+  // own doc comment already relies on. On a genuinely degenerate
+  // covariance (e.g. a flat planar surface, whose samples all lie in one
+  // plane and so have a rank-2, not rank-3, covariance), falls back to
+  // the world X/Y/Z axes rather than failing outright - the control-point
+  // projection step keeps the box safe either way, same as the curve
+  // overload. Honest scope, also inherited unchanged: the standard PCA-
+  // aligned box, not a search for the globally minimum-volume box over
+  // every possible orientation.
+  struct OrientedBox {
+    Point3d center;
+    std::array<Vector3d, 3> axes;
+    std::array<double, 3> half_extents{};
+  };
+  OrientedBox GetOrientedBoundingBox(int u_divisions = 20, int v_divisions = 20) const;
 
   // Unit surface normal at parameter (u, v): `d/du x d/dv`, normalized.
   // Delegates to `ON_Surface::EvNormal` - verified as a real
