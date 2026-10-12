@@ -2012,6 +2012,77 @@ std::vector<RayBrepHit> FireRayAtBrep(const Point3d& origin, const Vector3d& dir
   return out;
 }
 
+BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b, int u_divisions,
+                                           int v_divisions, int trim_samples_per_edge) {
+  if (b.m_F.Count() == 0) {
+    throw std::invalid_argument("dino8::kernel::ClosestPointOnBrep: brep has no faces");
+  }
+
+  BrepClosestPointResult best;
+  bool have_best = false;
+  auto consider = [&](int face_index, double distance, const Point2d& uv, const Point3d& point,
+                       bool on_boundary) {
+    if (!have_best || distance < best.distance) {
+      best = BrepClosestPointResult{face_index, distance, uv, point, on_boundary};
+      have_best = true;
+    }
+  };
+
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    const ON_BrepFace& f = b.m_F[fi];
+    const ON_Surface* srf = f.SurfaceOf();
+    if (!srf) continue;
+    ON_NurbsSurface ns;
+    if (const auto* cast = ON_NurbsSurface::Cast(srf)) {
+      ns = *cast;
+    } else if (srf->GetNurbForm(ns) <= 0) {
+      continue;
+    }
+    NurbsSurface wrapper;
+    wrapper.raw() = ns;
+
+    const Point2d uv = wrapper.ClosestPointParameter(query, u_divisions, v_divisions);
+    if (FaceContainsUV(f, uv.x, uv.y)) {
+      const Point3d p = wrapper.PointAt(uv.x, uv.y);
+      consider(fi, p.DistanceTo(query), uv, p, false);
+      continue;  // the interior answer is always <= any boundary point for this face
+    }
+
+    // Outside the trim: the true closest point on this TRIMMED face lies
+    // on its own boundary. Approximates each loop as the same sampled
+    // polyline FaceContainsUV()/PointInPolygon() already build via
+    // LoopPolygon(), evaluated through this surface's own PointAt() into
+    // real 3D segments, and finds the closest point on any of them.
+    for (int li = 0; li < f.m_li.Count(); ++li) {
+      const std::vector<ON_2dPoint> poly = LoopPolygon(b, f.m_li[li], trim_samples_per_edge);
+      const size_t n = poly.size();
+      if (n < 2) continue;
+      for (size_t i = 0; i < n; ++i) {
+        const size_t j = (i + 1) % n;
+        const Point3d a3 = wrapper.PointAt(poly[i].x, poly[i].y);
+        const Point3d b3 = wrapper.PointAt(poly[j].x, poly[j].y);
+        const Vector3d seg = b3 - a3;
+        const double len2 = seg.LengthSquared();
+        double t = 0.0;
+        if (len2 > 1e-300) {
+          t = Clamp(ON_DotProduct(query - a3, seg) / len2, 0.0, 1.0);
+        }
+        const Point3d cand(a3.x + seg.x * t, a3.y + seg.y * t, a3.z + seg.z * t);
+        const Point2d uv_cand(poly[i].x + (poly[j].x - poly[i].x) * t,
+                               poly[i].y + (poly[j].y - poly[i].y) * t);
+        consider(fi, cand.DistanceTo(query), uv_cand, cand, true);
+      }
+    }
+  }
+
+  if (!have_best) {
+    throw std::runtime_error(
+        "dino8::kernel::ClosestPointOnBrep: no face could be evaluated (every face has either no "
+        "surface or a surface with no NURBS form)");
+  }
+  return best;
+}
+
 // Curve/infinite-plane crossings: bisection-seeded, then Newton-refined on
 // the plane's own implicit signed-distance equation (a single scalar
 // residual, unlike IntersectCurveSurface()'s 3-unknown (t, u, v) system -
