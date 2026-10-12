@@ -234,7 +234,7 @@ void SceneObject::Transform(const ON_Xform& xform) {
     case ObjectKind::Point: point = xform * point; break;
     case ObjectKind::Curve: curve->raw().Transform(xform); break;
     case ObjectKind::Surface: surface->raw().Transform(xform); break;
-    case ObjectKind::Brep: brep->raw().Transform(xform); break;
+    case ObjectKind::Brep: *brep = brep->Transform(xform); break;
     case ObjectKind::Mesh: *mesh = mesh->Transform(xform); break;
     case ObjectKind::SubD: subd->raw().Transform(xform); break;
     case ObjectKind::PointCloud: *point_cloud = point_cloud->Transform(xform); break;

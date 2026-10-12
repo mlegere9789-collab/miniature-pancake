@@ -1323,6 +1323,61 @@ class Brep {
   // still-partial siblings.
   void CompactPreservingPersistentIds();
 
+  // Returns a copy of this Brep moved/rotated by `xform`, the Brep
+  // counterpart of Mesh::Transform()/SubD::Transform() - before this
+  // method existed, dino8-app's own Move/Rotate/Mirror/FlowAlongSrf code
+  // had no choice but to call `raw().Transform(xform)` directly (see
+  // SceneObject.cpp/FlowData.cpp), which transforms the underlying
+  // ON_Brep geometry correctly but reaches behind this class's own back:
+  // face_arc_runs_/face_notch_rows_/face_records_ (the verbatim side
+  // tables MixedFaces()/TessellateConforming() read for a face's exact
+  // analytic frame, notch polyline, etc. - see MixedFaces()'s own doc
+  // comment, "a Brep whose raw() ON_Brep was transformed... behind this
+  // class's back... is stale and silently ignored") are left untouched
+  // and pointing at the PRE-transform geometry, so the very next
+  // MixedFaces()/TessellateConforming() call on that face silently falls
+  // back to the (safe, but lower-fidelity - no notch points, no exact
+  // literal boundary) generic re-extraction path instead, for the single
+  // most common operation on a solid.
+  //
+  // `xform.IsRigid()` (see opennurbs_xform.h) decides how the side tables
+  // are carried along:
+  //   - +1 (a proper rotation + translation, no reflection or scale -
+  //     exactly the "translate/rotate" this is scoped to): every face's
+  //     own record is re-expressed in the new frame, bit-for-bit as
+  //     faithful as before the move - an ON_Plane's own Transform()
+  //     handles `plane`/`frame`; every stored 3D point (loop vertices,
+  //     ArcRun::center/literal_points, cap0/cap1_notch_points) is mapped
+  //     through `xform` directly; every stored direction
+  //     (ArcRun::plane_xaxis/plane_yaxis) through `xform` the same way
+  //     (ON_Xform's own ON_3dVector overload ignores the translation
+  //     part, exactly as a direction must); every scalar distance/angle
+  //     (radius, length, angle_begin/angle_end, the *_notch_tolerance
+  //     fields, CylinderNotchRows::v_end0/v_end1, its (u, v) pairs) is
+  //     invariant under a pure rotation+translation and is left exactly
+  //     as recorded - so a notched fillet, a verbatim FromMixedFaces()
+  //     record, etc. all survive a Move/Rotate with zero loss.
+  //   - -1 or 0 (a reflection, or a transform with scale/shear - outside
+  //     this method's own "rigid" scope): rather than silently mis-scale
+  //     a radius or mis-orient a notch polyline, every side table is
+  //     cleared outright (face_arc_runs_/face_notch_rows_/face_records_),
+  //     exactly the same "clear unconditionally, fall back to generic
+  //     re-derivation for every face" convention RemoveSharedMicroEdge's
+  //     own doc comment already establishes for a different
+  //     face-index-invalidating operation - correctness is unaffected
+  //     (every consumer already treats a too-short/absent side-table
+  //     entry as "no record, derive generically"), only the fast,
+  //     verbatim-fidelity path is given up, same as it already silently
+  //     would be today.
+  //
+  // lump_face_ranges_ and the three *_persistent_ids_ tables are index-
+  // or identity-based, not geometric, so neither case touches them.
+  //
+  // Throws std::invalid_argument if `xform` is not a valid transform (the
+  // underlying `ON_Brep::Transform()` returns false) - the same failure
+  // convention SubD::Transform() already uses.
+  Brep Transform(const ON_Xform& xform) const;
+
   // Mass-properties volume via the divergence theorem - direct NURBS
   // integration, not a tessellation chord approximation: sum over every
   // face of INT INT (1/3) S(u,v) . (Su(u,v) x Sv(u,v)) du dv over that
@@ -4977,13 +5032,18 @@ class Brep {
   // solver ReplaceEdgeCurve() and RemoveNakedMicroEdge() already trust)
   // to find the split parameter; the projected point (not the caller's
   // raw `point`) becomes the new vertex, so a `point` that is merely
-  // NEAR the curve still gives an exact new vertex ON it. Restricted to
-  // LINEAR edges (see the implementation's own comment for the two
-  // independent curved-edge fixtures this was tested against and found
-  // wrong on): both the 3D edge curve and the trim's own 2D curve are
-  // split EXACTLY via ON_Curve::Split() (a real curve-domain split,
-  // never a resampled refit) for a straight FromPlanarFaces() boundary,
-  // the one case this is proven correct on.
+  // NEAR the curve still gives an exact new vertex ON it. Works on any
+  // OPEN edge, straight or curved (2026-10-12: the prior "linear edges
+  // only" restriction was re-tested directly against the exact curved
+  // fixture that originally motivated it and found stale - see the
+  // implementation's own comment for the full re-verification detail);
+  // a CLOSED edge is still refused (see below), the one genuinely
+  // orthogonal limit linearity never actually excluded either. Both the
+  // 3D edge curve and the trim's own 2D curve are split EXACTLY via
+  // ON_Curve::Split() (a real curve-domain split, never a resampled
+  // refit) - proven correct on a straight FromPlanarFaces() boundary and,
+  // as of this pass, on a genuinely curved cylinder/plane shared edge and
+  // a curved naked rim too.
   //
   // Which 3D edge piece (old-start-to-new-vertex vs. new-vertex-to-old-
   // end) each new trim is built against is decided by DIRECT 3D
@@ -5008,14 +5068,10 @@ class Brep {
   // but that's not a bug" contract UnjoinEdge()/RemoveNakedMicroEdge()
   // already have - if `edge_index` refers to a non-manifold edge
   // (TrimCount() > 2; naked and plain-shared are the only two supported
-  // trim counts), if the edge is not LINEAR (see the
-  // implementation's own comment: tested directly against a clean,
-  // Check()-verified open curved fixture - a partial-angle cylindrical
-  // wedge's own un-capped rim - and found to silently produce real
-  // topology defects (genuine LoopGap/InvalidTrim issues Check() itself
-  // catches) despite this method's own internal checks reporting
-  // Result::Ok; scoped down to the one case proven correct rather than
-  // shipped broken), if `point` does not land within `tolerance` of the
+  // trim counts), if the edge IsClosed() (its own two endpoints are the
+  // same vertex - splitting that sensibly needs dedicated handling this
+  // method doesn't attempt, genuinely out of scope here rather than
+  // guessed at), if `point` does not land within `tolerance` of the
   // edge's own curve, or if the resulting split
   // parameter is not strictly interior (within `tolerance` of either
   // end - nothing meaningful to split). Throws std::out_of_range if
@@ -5038,25 +5094,29 @@ class Brep {
   // caller (see that method's own doc comment): closes PARITY_MAP.md's
   // "[missing] Tolerant sewing with edge splitting" gap by finding every
   // T-junction among this Brep's naked (1-trim) edges - a naked edge B
-  // whose endpoint lands strictly INSIDE another naked, LINEAR edge A's
-  // own span, not at either of A's ends (an ordinary endpoint match is
-  // already JoinNakedEdges()'s job, untouched here) - splitting the
-  // longer edge A there via SplitNakedEdgeAt(), and finally calling
+  // whose endpoint lands strictly INSIDE another naked edge A's own span,
+  // not at either of A's ends (an ordinary endpoint match is already
+  // JoinNakedEdges()'s job, untouched here) - splitting the longer edge A
+  // there via SplitNakedEdgeAt(), and finally calling
   // JoinNakedEdges(tolerance) once so every newly-matching endpoint pair
   // (the fresh split halves against B and its own true neighbours) is
   // actually sewn shut, not merely split.
   //
   // "Strictly inside A's span" is measured by projecting B's endpoint
-  // onto the segment between A's own two vertices (the closed-form
-  // point-to-segment distance detail::ClosestSegmentSegment() already
-  // provides elsewhere in this file, degenerate segment against a single
-  // point): within `tolerance` of the line AND at least `tolerance` away
-  // from either of A's own endpoints (otherwise it's an ordinary
-  // coincident-endpoint case, not a T-junction, and splitting there would
-  // just create a near-zero-length sliver edge SplitNakedEdgeAt() itself
-  // already refuses). Only LINEAR naked edges are ever split - the same
-  // restriction SplitNakedEdgeAt() places on itself - so a curved naked
-  // edge is left for a future, curve-aware pass rather than guessed at.
+  // onto A's own real curve (NurbsCurve::ClosestPointParameter(), the
+  // same multistart solver SplitNakedEdgeAt() itself already trusts -
+  // reduces to the identical point-to-segment projection the prior
+  // version used when A happens to be linear): within `tolerance` of
+  // that curve AND at least `tolerance` away (by real 3D distance, not a
+  // parameter-space comparison) from either of A's own endpoints
+  // (otherwise it's an ordinary coincident-endpoint case, not a
+  // T-junction, and splitting there would just create a near-zero-length
+  // sliver edge SplitNakedEdgeAt() itself already refuses). 2026-10-12:
+  // a genuinely CURVED A is now split here too, same as
+  // SplitNakedEdgeAt() itself - the "future, curve-aware pass" this
+  // comment used to defer. A CLOSED A is still skipped (SplitNakedEdgeAt()
+  // refuses one outright regardless, and "strictly inside A's span" has
+  // no ordinary meaning for a loop).
   //
   // Iterates (re-scanning after every successful split, since Compact()
   // inside SplitNakedEdgeAt() renumbers every edge/vertex index) until a
