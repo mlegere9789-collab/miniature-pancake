@@ -1269,25 +1269,7 @@ class SweepThenSubDCommand : public Command {
     std::vector<ObjectId> created;
     for (const SceneObject& o : ctx.Doc().Objects()) if (o.id > max_id_) created.push_back(o.id);
     int done = 0;
-    for (ObjectId id : created) {
-      SceneObject* o = ctx.Doc().Find(id);
-      if (!o || o->kind == ObjectKind::SubD) continue;
-      std::optional<kernel::Mesh> m;
-      if (o->kind == ObjectKind::Surface && o->surface) {
-        const kernel::SurfaceDivisions div = o->surface->SuggestedDivisions(ctx.App().surface_display_tolerance * 8);
-        m = o->surface->TessellateGrid(std::clamp(div.u, 4, 24), std::clamp(div.v, 4, 24));
-      } else {
-        m = MeshOf(*o, ctx.App().surface_display_tolerance);
-      }
-      if (!m || m->FaceCount() == 0) continue;
-      Net n = NetFromMesh(m->raw());
-      WeldVertices(n, 1e-6);
-      n.Clean();
-      const SceneObject like = *o;
-      if (AddSubDLike(ctx, n, &like) == kNoObject) continue;
-      ctx.Doc().Remove(id);
-      ++done;
-    }
+    for (ObjectId id : created) if (ConvertObjectToSubD(ctx, id) != kNoObject) ++done;
     ctx.Print(label_ + ": " + std::to_string(done) + " object(s) converted to SubD");
   }
   std::string inner_name_, label_;
@@ -1537,6 +1519,27 @@ CommandFactory SelWhere(std::function<bool(const SceneObject&)> pred) {
 }
 
 }  // namespace
+
+ObjectId ConvertObjectToSubD(CommandContext& ctx, ObjectId id) {
+  SceneObject* o = ctx.Doc().Find(id);
+  if (!o || o->kind == ObjectKind::SubD) return kNoObject;
+  std::optional<kernel::Mesh> m;
+  if (o->kind == ObjectKind::Surface && o->surface) {
+    const kernel::SurfaceDivisions div = o->surface->SuggestedDivisions(ctx.App().surface_display_tolerance * 8);
+    m = o->surface->TessellateGrid(std::clamp(div.u, 4, 24), std::clamp(div.v, 4, 24));
+  } else {
+    m = MeshOf(*o, ctx.App().surface_display_tolerance);
+  }
+  if (!m || m->FaceCount() == 0) return kNoObject;
+  Net n = NetFromMesh(m->raw());
+  WeldVertices(n, 1e-6);
+  n.Clean();
+  const SceneObject like = *o;
+  const ObjectId new_id = AddSubDLike(ctx, n, &like);
+  if (new_id == kNoObject) return kNoObject;
+  ctx.Doc().Remove(id);
+  return new_id;
+}
 
 void RegisterSubDCommands(CommandEngine& e) {
   // ---- creases ---------------------------------------------------------------
