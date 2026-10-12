@@ -618,9 +618,9 @@ void RegisterArchCommands(CommandEngine& e) {
   Reg(e, "Column", Make<ColumnCommand>());
   Reg(e, "Beam", BeamFactory());
   Reg(e, "Bolt", Make<FastenerCommand>(ArchType::Bolt), CommandStatus::Implemented,
-      "Generated from a small starter table of ISO-metric-style sizes (M6/M8/M10/M12) - not a real fastener-standard database. The hex head is approximated as a circle circumscribing its across-flats width, not a true hex prism.");
+      "Generated from a small starter table of ISO-metric-style sizes (M6/M8/M10/M12) - not a real fastener-standard database. The hex head is approximated as a circle circumscribing its across-flats width, not a true hex prism. The shank now cuts a real ISO 724 coarse-pitch helical thread (CoarseThreadPitch(), ArchComponents.cpp) at an approximate thread depth.");
   Reg(e, "Nut", Make<FastenerCommand>(ArchType::Nut), CommandStatus::Implemented,
-      "Same starter size table and round-head approximation as Bolt; built solid, with no threaded bore.");
+      "Same starter size table and round-head approximation as Bolt; now cuts a real matching threaded bore (same ISO 724 pitch/radii as Bolt, so the two mate) instead of the old plain, unbored solid.");
   Reg(e, "Washer", Make<FastenerCommand>(ArchType::Washer), CommandStatus::Implemented,
       "Same starter size table as Bolt/Nut; a real hollow ring (outer cylinder minus bore), unlike Bolt/Nut's solid approximation.");
   Reg(e, "IBeam", Make<StructShapeCommand>(ArchType::IBeam), CommandStatus::Implemented,
