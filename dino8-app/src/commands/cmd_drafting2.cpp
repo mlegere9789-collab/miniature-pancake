@@ -1897,7 +1897,268 @@ class SectionViewCommand : public Command {
   double scale_ = 1;
 };
 
+// The four DoUpdateXxx functions below are shared by their explicit command
+// (quiet=false, same output/undo-entry behavior as always) and the
+// automatic per-frame associative-recompute hook (quiet=true: ctx.Print
+// output suppressed, no BeginChange of its own) - see DoUpdateDimensions'
+// comment in cmd_annotate.cpp for why the quiet path skips BeginChange.
+// Shared by all four DoUpdateXxx functions below: see DoUpdateDimensions'
+// comment in cmd_annotate.cpp for why the quiet (automatic) path only
+// rebuilds a group whose own resolved inputs actually changed since the
+// last quiet pass, never the explicit command - keyed by a STABLE
+// identity, never the group's own id (Document::CreateGroup allocates a
+// fresh one on every single rebuild, so a cache keyed by it would never
+// hit; confirmed directly as a real runaway before this used a stable
+// key instead).
+template <typename Map>
+bool FingerprintUnchanged(Map& cache, bool quiet, const std::string& key, const std::string& fp) {
+  if (!quiet) return false;
+  auto it = cache.find(key);
+  const bool same = it == cache.end() || it->second == fp;
+  cache[key] = fp;
+  return same;
+}
+
+void DoUpdateTitleBlock(CommandContext& ctx, bool quiet) {
+  auto Say = [&](const std::string& s) { if (!quiet) ctx.Print(s); };
+  static std::map<std::string, std::string> fp_cache;
+  std::vector<int> groups;
+  for (const SceneObject& o : ctx.Doc().Objects())
+    if (o.group_id >= 0 && o.user_text.count("Annotation") && o.user_text.at("Annotation") == "TitleBlock" &&
+        (o.user_text.count("TitleBlockAuto") || o.user_text.count("TitleBlockDateAuto") || o.user_text.count("TitleBlockScaleAuto")) &&
+        std::find(groups.begin(), groups.end(), o.group_id) == groups.end())
+      groups.push_back(o.group_id);
+  if (groups.empty()) { Say("UpdateTitleBlock: no associative title blocks in this document"); return; }
+  if (!quiet) ctx.Doc().BeginChange("UpdateTitleBlock");
+  const std::string title = ctx.Doc().Settings().title.empty() ? "Untitled" : ctx.Doc().Settings().title;
+  const std::string today = CurrentDateString();
+  int updated = 0;
+  for (int g : groups) {
+    TableSpec spec;
+    if (!LoadTableSpec(ctx.Doc(), g, spec)) continue;  // group has no TableData - nothing to rebuild from
+    if (spec.rows < 4 || spec.cols < 2 || static_cast<int>(spec.cells.size()) < 8) continue;
+    bool name_auto = false, date_auto = false, scale_auto = false;
+    for (const SceneObject& o : ctx.Doc().Objects()) {
+      if (o.group_id != g) continue;
+      if (o.user_text.count("TitleBlockAuto")) name_auto = true;
+      if (o.user_text.count("TitleBlockDateAuto")) date_auto = true;
+      if (o.user_text.count("TitleBlockScaleAuto")) scale_auto = true;
+    }
+    std::string changed;
+    if (name_auto) { spec.cells[1] = title; changed += "Name now '" + title + "'"; }
+    if (date_auto) { spec.cells[3] = today; changed += (changed.empty() ? "" : ", ") + ("Date now '" + today + "'"); }
+    if (scale_auto) {
+      // spec.cells[7] is this group's own Sheet value - the layout name it
+      // was placed on, the only record of which layout to re-check (a
+      // Layout has no id, just a name - see this command's registration
+      // note for why that also means Sheet itself can never be made
+      // associative this way).
+      std::string derived;
+      for (const Layout& L : ctx.Doc().Layouts())
+        if (L.name == spec.cells[7] && L.details.size() == 1) { derived = FormatDrawingScale(L.details[0].scale); break; }
+      if (!derived.empty() && derived != spec.cells[5]) {
+        spec.cells[5] = derived;
+        changed += (changed.empty() ? "" : ", ") + ("Scale now '" + derived + "'");
+      }
+    }
+    const std::string origin_key = std::to_string(spec.origin.x) + "," + std::to_string(spec.origin.y) + "," + std::to_string(spec.origin.z);
+    if (FingerprintUnchanged(fp_cache, quiet, "TB:" + origin_key, changed)) continue;
+    for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+    std::map<std::string, std::string> tags;
+    if (name_auto) tags["TitleBlockAuto"] = "1";
+    if (date_auto) tags["TitleBlockDateAuto"] = "1";
+    if (scale_auto) tags["TitleBlockScaleAuto"] = "1";
+    if (BuildTableGroup(ctx, spec, "TitleBlock", -1, tags) >= 0) {
+      ++updated;
+      Say("UpdateTitleBlock:   " + (changed.empty() ? std::string("unchanged") : changed));
+    }
+  }
+  Say("UpdateTitleBlock: " + std::to_string(updated) + " table(s) regenerated");
+}
+
+void DoUpdatePanelSchedule(CommandContext& ctx, bool quiet) {
+  auto Say = [&](const std::string& s) { if (!quiet) ctx.Print(s); };
+  static std::map<std::string, std::string> fp_cache;
+  std::vector<int> groups;
+  for (const SceneObject& o : ctx.Doc().Objects())
+    if (o.group_id >= 0 && o.user_text.count("Annotation") && o.user_text.at("Annotation") == "PanelSchedule" &&
+        (o.user_text.count("PanelAll") || o.user_text.count("PanelRefIds")) &&
+        std::find(groups.begin(), groups.end(), o.group_id) == groups.end())
+      groups.push_back(o.group_id);
+  if (groups.empty()) { Say("UpdatePanelSchedule: no associative panel schedules in this document"); return; }
+  if (!quiet) ctx.Doc().BeginChange("UpdatePanelSchedule");
+  int updated = 0;
+  for (int g : groups) {
+    TableSpec old;
+    if (!LoadTableSpec(ctx.Doc(), g, old)) continue;  // group has no TableData - nothing to rebuild from
+    std::string name = "Panel A", ref_ids_tag;
+    bool all = false;
+    for (const SceneObject& o : ctx.Doc().Objects()) {
+      if (o.group_id != g) continue;
+      if (auto it = o.user_text.find("PanelAll"); it != o.user_text.end() && it->second == "1") all = true;
+      if (auto it = o.user_text.find("PanelRefIds"); it != o.user_text.end()) ref_ids_tag = it->second;
+      break;
+    }
+    // Recover the panel name PanelScheduleCommand folded into the title
+    // ("<name> - Panel Schedule") rather than storing it as its own tag.
+    const std::string suffix = " - Panel Schedule";
+    if (old.title.size() > suffix.size() && old.title.compare(old.title.size() - suffix.size(), suffix.size(), suffix) == 0)
+      name = old.title.substr(0, old.title.size() - suffix.size());
+    const std::vector<int> component_ids = all ? std::vector<int>() : ParseElecIdsTag(ref_ids_tag);
+    std::vector<elec::ElecComponent> rows;
+    TableSpec spec = BuildPanelScheduleSpec(ctx, component_ids, all, name, &rows);
+    spec.origin = old.origin;
+    spec.plane = old.plane;
+    std::string fp = name;
+    for (const std::string& c : spec.cells) fp += "|" + c;
+    const std::string key = "PS:" + (all ? std::string("ALL") : ref_ids_tag) + "@" +
+                             std::to_string(old.origin.x) + "," + std::to_string(old.origin.y) + "," + std::to_string(old.origin.z);
+    if (FingerprintUnchanged(fp_cache, quiet, key, fp)) continue;
+    for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+    std::map<std::string, std::string> tags;
+    if (all) tags["PanelAll"] = "1"; else tags["PanelRefIds"] = ElecIdsTag(component_ids);
+    if (BuildTableGroup(ctx, spec, "PanelSchedule", -1, tags) >= 0) {
+      ++updated;
+      Say("UpdatePanelSchedule:   " + name + ": " + std::to_string(spec.rows - 1) + " circuit row(s)" +
+          (rows.empty() ? "" : " (" + PanelRowSummary(rows) + ")"));
+    }
+  }
+  Say("UpdatePanelSchedule: " + std::to_string(updated) + " table(s) regenerated");
+}
+
+void DoUpdateGdtSymbols(CommandContext& ctx, bool quiet) {
+  auto Say = [&](const std::string& s) { if (!quiet) ctx.Print(s); };
+  static std::map<std::string, std::string> fp_cache;
+  auto Pt = [](const Point3d& p) { std::ostringstream s; s << p.x << ',' << p.y << ',' << p.z; return s.str(); };
+  std::vector<int> groups;
+  std::map<int, std::string> kind_of;
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    if (o.group_id < 0 || !o.user_text.count("Annotation")) continue;
+    const std::string& kind = o.user_text.at("Annotation");
+    if (kind != "FeatureControlFrame" && kind != "DatumFeature" && kind != "SurfaceFinish" && kind != "WeldSymbol") continue;
+    if (kind_of.count(o.group_id)) continue;
+    kind_of[o.group_id] = kind;
+    groups.push_back(o.group_id);
+  }
+  if (groups.empty()) { Say("UpdateGdtSymbols: no GD&T symbols in this document"); return; }
+  if (!quiet) ctx.Doc().BeginChange("UpdateGdtSymbols");
+  int updated = 0, skipped = 0;
+  for (int g : groups) {
+    int layer = ctx.Doc().CurrentLayer();
+    // A group's own recorded DimRefObj1 (its anchor, if it has one at
+    // all) is a stable identity across repeated rebuilds the resolved
+    // anchor *position* below is not - the whole point of this lookup.
+    std::string existing_ref_tag;
+    for (const SceneObject& o : ctx.Doc().Objects()) {
+      if (o.group_id != g) continue;
+      layer = o.layer_index;
+      if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) existing_ref_tag = it->second;
+    }
+    const std::string kind = kind_of[g];
+    // The anchor ref tag is stable across rebuilds when present; a
+    // symbol with no anchor at all has nothing that ever moves it, so
+    // falling back to its own (equally stable, never-changing) stored
+    // point is just as safe a key - unlike the group's own id `g` below,
+    // which a rebuild always reassigns.
+    auto KeyFor = [&](const Point3d& fallback_point) {
+      return "Gdt:" + kind + ":" + (existing_ref_tag.empty() ? Pt(fallback_point) : existing_ref_tag);
+    };
+    int made = -1;
+    if (kind == "FeatureControlFrame") {
+      Point3d feature_pt, frame_loc;
+      GdtSymbol symbol = GdtSymbol::Flatness;
+      std::string tolerance, datums, modifier;
+      bool diameter = false;
+      if (!ResolveFeatureControlFrameSpec(ctx.Doc(), g, feature_pt, frame_loc, symbol, tolerance, datums, modifier, diameter)) { ++skipped; continue; }
+      ObjectId ref = kNoObject;
+      std::string which;
+      const bool has_ref = FindPointAnchor(ctx.Doc(), feature_pt, ref, which);
+      if (FingerprintUnchanged(fp_cache, quiet, KeyFor(frame_loc), Pt(feature_pt) + "|" + Pt(frame_loc) + "|" + tolerance + "|" + datums + "|" + modifier)) continue;
+      for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+      made = BuildFeatureControlFrameGroup(ctx, feature_pt, frame_loc, symbol, tolerance, datums, modifier, diameter, has_ref, ref, which, layer);
+    } else if (kind == "DatumFeature") {
+      Point3d origin;
+      std::string letter;
+      if (!ResolveDatumFeatureSpec(ctx.Doc(), g, origin, letter)) { ++skipped; continue; }
+      ObjectId ref = kNoObject;
+      std::string which;
+      const bool has_ref = FindPointAnchor(ctx.Doc(), origin, ref, which);
+      if (FingerprintUnchanged(fp_cache, quiet, KeyFor(origin), Pt(origin) + "|" + letter)) continue;
+      for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+      made = BuildDatumFeatureGroup(ctx, origin, letter, has_ref, ref, which, layer);
+    } else if (kind == "SurfaceFinish") {
+      Point3d origin;
+      std::string value;
+      if (!ResolveSurfaceFinishSpec(ctx.Doc(), g, origin, value)) { ++skipped; continue; }
+      ObjectId ref = kNoObject;
+      std::string which;
+      const bool has_ref = FindPointAnchor(ctx.Doc(), origin, ref, which);
+      if (FingerprintUnchanged(fp_cache, quiet, KeyFor(origin), Pt(origin) + "|" + value)) continue;
+      for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+      made = BuildSurfaceFinishGroup(ctx, origin, value, has_ref, ref, which, layer);
+    } else {  // WeldSymbol
+      Point3d arrow_pt, ref_pt;
+      std::string type, side;
+      if (!ResolveWeldSymbolSpec(ctx.Doc(), g, arrow_pt, ref_pt, type, side)) { ++skipped; continue; }
+      ObjectId ref = kNoObject;
+      std::string which;
+      const bool has_ref = FindPointAnchor(ctx.Doc(), arrow_pt, ref, which);
+      if (FingerprintUnchanged(fp_cache, quiet, KeyFor(ref_pt), Pt(arrow_pt) + "|" + Pt(ref_pt) + "|" + type + "|" + side)) continue;
+      for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+      made = BuildWeldSymbolGroup(ctx, arrow_pt, ref_pt, type, side, has_ref, ref, which, layer);
+    }
+    if (made >= 0) { ++updated; Say("UpdateGdtSymbols:   " + kind + " regenerated"); } else ++skipped;
+  }
+  Say("UpdateGdtSymbols: " + std::to_string(updated) + " symbol(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped (no resolvable spec)" : ""));
+}
+
+void DoUpdateMultiLeaders(CommandContext& ctx, bool quiet) {
+  auto Say = [&](const std::string& s) { if (!quiet) ctx.Print(s); };
+  static std::map<std::string, std::string> fp_cache;
+  std::vector<int> groups;
+  for (const SceneObject& o : ctx.Doc().Objects())
+    if (o.group_id >= 0 && o.user_text.count("Annotation") && o.user_text.at("Annotation") == "MultiLeader" &&
+        std::find(groups.begin(), groups.end(), o.group_id) == groups.end())
+      groups.push_back(o.group_id);
+  if (groups.empty()) { Say("UpdateMultiLeaders: no multi-leaders in this document"); return; }
+  if (!quiet) ctx.Doc().BeginChange("UpdateMultiLeaders");
+  int updated = 0, skipped = 0;
+  for (int g : groups) {
+    std::vector<Point3d> pts;
+    Point3d landing;
+    if (!ResolveMultiLeaderPoints(ctx.Doc(), g, pts, landing)) { ++skipped; continue; }
+    GlyphSpec old_glyph;
+    std::string text = "MultiLeader";
+    ON_Plane pl = ActivePlane(ctx);
+    double h = AnnotationTextHeight(ctx);
+    if (GroupGlyphSpec(ctx, g, old_glyph)) { text = old_glyph.text; h = old_glyph.height; pl = old_glyph.plane; }
+    int layer = ctx.Doc().CurrentLayer();
+    for (const SceneObject& o : ctx.Doc().Objects()) { if (o.group_id == g) { layer = o.layer_index; break; } }
+    std::string fp = text + "|" + std::to_string(h);
+    for (const Point3d& p : pts) fp += "|" + std::to_string(p.x) + "," + std::to_string(p.y) + "," + std::to_string(p.z);
+    // The landing point is kept fixed across every rebuild by design
+    // (BuildMultiLeaderGroup's own contract), so it is a stable key even
+    // though the group's own id `g` is not.
+    const std::string key = "ML:" + std::to_string(landing.x) + "," + std::to_string(landing.y) + "," + std::to_string(landing.z);
+    if (FingerprintUnchanged(fp_cache, quiet, key, fp)) continue;
+    for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+    if (BuildMultiLeaderGroup(ctx, pts, landing, pl, h, text, layer) >= 0) {
+      ++updated;
+      Say("UpdateMultiLeaders:   now " + std::to_string(pts.size()) + " arrow(s) at landing " + PointTag(landing));
+    } else ++skipped;
+  }
+  Say("UpdateMultiLeaders: " + std::to_string(updated) + " multi-leader(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped (no resolvable layout/points)" : ""));
+}
+
 }  // namespace
+
+// External linkage for Application.cpp's per-frame hook - see
+// cmd_annotate.cpp's UpdateAssociativeDimensionsQuiet for why no
+// BeginChange happens on this path.
+void UpdateAssociativeTitleBlockQuiet(CommandContext& ctx) { DoUpdateTitleBlock(ctx, /*quiet=*/true); }
+void UpdateAssociativePanelScheduleQuiet(CommandContext& ctx) { DoUpdatePanelSchedule(ctx, /*quiet=*/true); }
+void UpdateAssociativeGdtSymbolsQuiet(CommandContext& ctx) { DoUpdateGdtSymbols(ctx, /*quiet=*/true); }
+void UpdateAssociativeMultiLeadersQuiet(CommandContext& ctx) { DoUpdateMultiLeaders(ctx, /*quiet=*/true); }
 
 void RegisterDrafting2Commands(CommandEngine& e) {
   // Hatch itself draws from the real data/hatchpatterns.pat library (AutoCAD
@@ -1921,106 +2182,14 @@ void RegisterDrafting2Commands(CommandEngine& e) {
   // unique to these five, so they are marked Implemented rather than
   // singled out as Partial for sharing it.
   Reg(e, "TitleBlock", Make<TitleBlockCommand>(), CommandStatus::Implemented,
-      "Builds a simple Name/Date/Scale/Sheet field table, not an instance of a linked block definition - inserting one does not track edits to a shared title-block template, the same live-instancing gap as the Block command (cmd_drafting.cpp) has no fix for. Name defaults to (and, without an explicit Name=, stays associative to) the document's own Settings().title, set via the Document Properties panel; Date defaults to (and, without an explicit Date=, stays associative to) today's date; Scale defaults to (and, without an explicit Scale=, stays associative to) the active sheet's own single detail view's current scale, when that sheet has exactly one - UpdateTitleBlock re-pulls any of the three later, independently, if the title, the date, or that detail's scale has changed. An explicit Name=/Date=/Scale= freezes that one field, same as PanelSchedule's Circuits= freezing that table. Sheet still has no equivalent document-level source and stays a static baked field either way (it is merely which layout happened to be active when the title block was placed, not a property the table could re-derive - a layout has no id, only a name).");
-  Reg(e, "UpdateTitleBlock", Immediate([](CommandContext& ctx) {
-        std::vector<int> groups;
-        for (const SceneObject& o : ctx.Doc().Objects())
-          if (o.group_id >= 0 && o.user_text.count("Annotation") && o.user_text.at("Annotation") == "TitleBlock" &&
-              (o.user_text.count("TitleBlockAuto") || o.user_text.count("TitleBlockDateAuto") || o.user_text.count("TitleBlockScaleAuto")) &&
-              std::find(groups.begin(), groups.end(), o.group_id) == groups.end())
-            groups.push_back(o.group_id);
-        if (groups.empty()) { ctx.Print("UpdateTitleBlock: no associative title blocks in this document"); return; }
-        ctx.Doc().BeginChange("UpdateTitleBlock");
-        const std::string title = ctx.Doc().Settings().title.empty() ? "Untitled" : ctx.Doc().Settings().title;
-        const std::string today = CurrentDateString();
-        int updated = 0;
-        for (int g : groups) {
-          TableSpec spec;
-          if (!LoadTableSpec(ctx.Doc(), g, spec)) continue;  // group has no TableData - nothing to rebuild from
-          if (spec.rows < 4 || spec.cols < 2 || static_cast<int>(spec.cells.size()) < 8) continue;
-          bool name_auto = false, date_auto = false, scale_auto = false;
-          for (const SceneObject& o : ctx.Doc().Objects()) {
-            if (o.group_id != g) continue;
-            if (o.user_text.count("TitleBlockAuto")) name_auto = true;
-            if (o.user_text.count("TitleBlockDateAuto")) date_auto = true;
-            if (o.user_text.count("TitleBlockScaleAuto")) scale_auto = true;
-          }
-          std::string changed;
-          if (name_auto) { spec.cells[1] = title; changed += "Name now '" + title + "'"; }
-          if (date_auto) { spec.cells[3] = today; changed += (changed.empty() ? "" : ", ") + ("Date now '" + today + "'"); }
-          if (scale_auto) {
-            // spec.cells[7] is this group's own Sheet value - the layout
-            // name it was placed on, the only record of which layout to
-            // re-check (a Layout has no id, just a name - see this
-            // command's own registration note below for why that also
-            // means Sheet itself can never be made associative this way).
-            std::string derived;
-            for (const Layout& L : ctx.Doc().Layouts())
-              if (L.name == spec.cells[7] && L.details.size() == 1) { derived = FormatDrawingScale(L.details[0].scale); break; }
-            if (!derived.empty() && derived != spec.cells[5]) {
-              spec.cells[5] = derived;
-              changed += (changed.empty() ? "" : ", ") + ("Scale now '" + derived + "'");
-            }
-          }
-          for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-          std::map<std::string, std::string> tags;
-          if (name_auto) tags["TitleBlockAuto"] = "1";
-          if (date_auto) tags["TitleBlockDateAuto"] = "1";
-          if (scale_auto) tags["TitleBlockScaleAuto"] = "1";
-          if (BuildTableGroup(ctx, spec, "TitleBlock", -1, tags) >= 0) {
-            ++updated;
-            ctx.Print("UpdateTitleBlock:   " + (changed.empty() ? std::string("unchanged") : changed));
-          }
-        }
-        ctx.Print("UpdateTitleBlock: " + std::to_string(updated) + " table(s) regenerated");
-      }), CommandStatus::Implemented,
-      "Re-derives every associative TitleBlock's Name field from the document's current Settings().title (Document Properties), Date field from today's date, and/or Scale field from its own sheet's single detail view's current scale (see TitleBlockCommand's own registration note above for the single-detail scoping), replacing the old baked value(s) in place - the associative counterpart to TitleBlock's static bake, following the same explicit-recompute shape as UpdatePanelSchedule/UpdateBillOfMaterials above rather than an automatic hook on every document edit. All three fields are independent: a TitleBlock built with an explicit Name=/Date=/Scale= (no TitleBlockAuto/TitleBlockDateAuto/TitleBlockScaleAuto tag, respectively) leaves that one field untouched while the others, if still auto, keep updating - same as before this change for a TitleBlock with none of the three tags.");
+      "Builds a simple Name/Date/Scale/Sheet field table, not an instance of a linked block definition - inserting one does not track edits to a shared title-block template, the same live-instancing gap as the Block command (cmd_drafting.cpp) has no fix for. Name defaults to (and, without an explicit Name=, stays associative to) the document's own Settings().title, set via the Document Properties panel; Date defaults to (and, without an explicit Date=, stays associative to) today's date; Scale defaults to (and, without an explicit Scale=, stays associative to) the active sheet's own single detail view's current scale, when that sheet has exactly one - UpdateTitleBlock re-pulls any of the three later, independently, if the title, the date, or that detail's scale has changed, and the per-frame associative-annotation hook (Application.cpp) re-pulls them automatically on every document edit, same as the dimension/leader/GD&T/MultiLeader/PanelSchedule families above. An explicit Name=/Date=/Scale= freezes that one field, same as PanelSchedule's Circuits= freezing that table. Sheet still has no equivalent document-level source and stays a static baked field either way (it is merely which layout happened to be active when the title block was placed, not a property the table could re-derive - a layout has no id, only a name).");
+  Reg(e, "UpdateTitleBlock", Immediate([](CommandContext& ctx) { DoUpdateTitleBlock(ctx, /*quiet=*/false); }), CommandStatus::Implemented,
+      "Re-derives every associative TitleBlock's Name field from the document's current Settings().title (Document Properties), Date field from today's date, and/or Scale field from its own sheet's single detail view's current scale (see TitleBlockCommand's own registration note above for the single-detail scoping), replacing the old baked value(s) in place - the associative counterpart to TitleBlock's static bake, following the same explicit-recompute shape as UpdatePanelSchedule/UpdateBillOfMaterials above, and also run automatically every frame (quiet=true) by Application.cpp's UpdateAssociativeAnnotations hook so an explicit UpdateTitleBlock is no longer required after an edit. All three fields are independent: a TitleBlock built with an explicit Name=/Date=/Scale= (no TitleBlockAuto/TitleBlockDateAuto/TitleBlockScaleAuto tag, respectively) leaves that one field untouched while the others, if still auto, keep updating - same as before this change for a TitleBlock with none of the three tags.");
   Reg(e, "BillOfMaterials", Make<BillOfMaterialsCommand>(), CommandStatus::Implemented,
       "Associative: the table records which objects (or 'every visible object') it was built from and UpdateBillOfMaterials re-derives every row's count/layer/material/length-area-volume from their current state. Built from an explicit selection, it re-checks only those objects (a deleted one drops out; a new object never joins on its own) - only the Enter/'every visible object' mode picks up newcomers, since only it has a re-scan rule instead of a fixed id list.");
   Reg(e, "PanelSchedule", Make<PanelScheduleCommand>(), CommandStatus::Implemented,
       "A real data table (Circuit #/Description/Load VA rows) via the same Table/TableSpec/BuildTableGroup mechanism as RevisionTable/BillOfMaterials - NOT a panel-schedule engineering calculation (no breaker sizing, phase load-balancing, or NEC/IEC code-compliance check). Circuits=1,Lighting,500;2,Receptacles,900 still builds the table from that hand-typed text exactly as before, never associative (it isn't tied to any object); without Circuits=, it instead selects electrical components (Enter for every ElecCircuit-assigned one, cmd_elec.cpp) and is associative like BillOfMaterials - UpdatePanelSchedule re-derives its rows from those components' current circuit/load assignment.");
-  Reg(e, "UpdatePanelSchedule", Immediate([](CommandContext& ctx) {
-        std::vector<int> groups;
-        for (const SceneObject& o : ctx.Doc().Objects())
-          if (o.group_id >= 0 && o.user_text.count("Annotation") && o.user_text.at("Annotation") == "PanelSchedule" &&
-              (o.user_text.count("PanelAll") || o.user_text.count("PanelRefIds")) &&
-              std::find(groups.begin(), groups.end(), o.group_id) == groups.end())
-            groups.push_back(o.group_id);
-        if (groups.empty()) { ctx.Print("UpdatePanelSchedule: no associative panel schedules in this document"); return; }
-        ctx.Doc().BeginChange("UpdatePanelSchedule");
-        int updated = 0;
-        for (int g : groups) {
-          TableSpec old;
-          if (!LoadTableSpec(ctx.Doc(), g, old)) continue;  // group has no TableData - nothing to rebuild from
-          std::string name = "Panel A", ref_ids_tag;
-          bool all = false;
-          for (const SceneObject& o : ctx.Doc().Objects()) {
-            if (o.group_id != g) continue;
-            if (auto it = o.user_text.find("PanelAll"); it != o.user_text.end() && it->second == "1") all = true;
-            if (auto it = o.user_text.find("PanelRefIds"); it != o.user_text.end()) ref_ids_tag = it->second;
-            break;
-          }
-          // Recover the panel name PanelScheduleCommand folded into the title
-          // ("<name> - Panel Schedule") rather than storing it as its own tag.
-          const std::string suffix = " - Panel Schedule";
-          if (old.title.size() > suffix.size() && old.title.compare(old.title.size() - suffix.size(), suffix.size(), suffix) == 0)
-            name = old.title.substr(0, old.title.size() - suffix.size());
-          const std::vector<int> component_ids = all ? std::vector<int>() : ParseElecIdsTag(ref_ids_tag);
-          std::vector<elec::ElecComponent> rows;
-          TableSpec spec = BuildPanelScheduleSpec(ctx, component_ids, all, name, &rows);
-          spec.origin = old.origin;
-          spec.plane = old.plane;
-          for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-          std::map<std::string, std::string> tags;
-          if (all) tags["PanelAll"] = "1"; else tags["PanelRefIds"] = ElecIdsTag(component_ids);
-          if (BuildTableGroup(ctx, spec, "PanelSchedule", -1, tags) >= 0) {
-            ++updated;
-            ctx.Print("UpdatePanelSchedule:   " + name + ": " + std::to_string(spec.rows - 1) + " circuit row(s)" +
-                      (rows.empty() ? "" : " (" + PanelRowSummary(rows) + ")"));
-          }
-        }
-        ctx.Print("UpdatePanelSchedule: " + std::to_string(updated) + " table(s) regenerated");
-      }), CommandStatus::Implemented,
+  Reg(e, "UpdatePanelSchedule", Immediate([](CommandContext& ctx) { DoUpdatePanelSchedule(ctx, /*quiet=*/false); }), CommandStatus::Implemented,
       "Re-derives every associative PanelSchedule's rows (circuit/description/load) from the current circuit/load assignment (ElecCircuit, cmd_elec.cpp) of the electrical components it was built from - or, for the Enter/'every circuit-assigned component' mode, every currently-assigned component in the document - replacing the old baked rows in place, the same explicit-recompute shape as UpdateBillOfMaterials above. A PanelSchedule built from hand-typed Circuits= text carries neither PanelAll nor PanelRefIds and is left untouched, same as before this change.");
 
   Reg(e, "FeatureControlFrame", Make<FeatureControlFrameCommand>(), CommandStatus::Implemented,
@@ -2031,99 +2200,11 @@ void RegisterDrafting2Commands(CommandEngine& e) {
       "Associative when the surface point sits exactly on a real object, same rule as DatumFeature: UpdateGdtSymbols redraws the glyph from that object's current position.");
   Reg(e, "WeldSymbol", Make<WeldSymbolCommand>(), CommandStatus::Implemented,
       "Draws the reference line, arrow and a Type-selected glyph (Fillet triangle, square-Groove bars, or Spot circle); the rest of the AWS A2.4 symbol set (bevel/V/U-groove, plug, seam, back, surfacing, ...) is not drawn. Associative at the arrow point (on the joint) when it sits exactly on a real object, same rule as FeatureControlFrame: UpdateGdtSymbols redraws the reference line/arrow/glyph from that object's current position, keeping the glyph's own reference-line-end placement fixed.");
-  Reg(e, "UpdateGdtSymbols", Immediate([](CommandContext& ctx) {
-        std::vector<int> groups;
-        std::map<int, std::string> kind_of;
-        for (const SceneObject& o : ctx.Doc().Objects()) {
-          if (o.group_id < 0 || !o.user_text.count("Annotation")) continue;
-          const std::string& kind = o.user_text.at("Annotation");
-          if (kind != "FeatureControlFrame" && kind != "DatumFeature" && kind != "SurfaceFinish" && kind != "WeldSymbol") continue;
-          if (kind_of.count(o.group_id)) continue;
-          kind_of[o.group_id] = kind;
-          groups.push_back(o.group_id);
-        }
-        if (groups.empty()) { ctx.Print("UpdateGdtSymbols: no GD&T symbols in this document"); return; }
-        ctx.Doc().BeginChange("UpdateGdtSymbols");
-        int updated = 0, skipped = 0;
-        for (int g : groups) {
-          int layer = ctx.Doc().CurrentLayer();
-          for (const SceneObject& o : ctx.Doc().Objects()) { if (o.group_id == g) { layer = o.layer_index; break; } }
-          const std::string kind = kind_of[g];
-          int made = -1;
-          if (kind == "FeatureControlFrame") {
-            Point3d feature_pt, frame_loc;
-            GdtSymbol symbol = GdtSymbol::Flatness;
-            std::string tolerance, datums, modifier;
-            bool diameter = false;
-            if (!ResolveFeatureControlFrameSpec(ctx.Doc(), g, feature_pt, frame_loc, symbol, tolerance, datums, modifier, diameter)) { ++skipped; continue; }
-            ObjectId ref = kNoObject;
-            std::string which;
-            const bool has_ref = FindPointAnchor(ctx.Doc(), feature_pt, ref, which);
-            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-            made = BuildFeatureControlFrameGroup(ctx, feature_pt, frame_loc, symbol, tolerance, datums, modifier, diameter, has_ref, ref, which, layer);
-          } else if (kind == "DatumFeature") {
-            Point3d origin;
-            std::string letter;
-            if (!ResolveDatumFeatureSpec(ctx.Doc(), g, origin, letter)) { ++skipped; continue; }
-            ObjectId ref = kNoObject;
-            std::string which;
-            const bool has_ref = FindPointAnchor(ctx.Doc(), origin, ref, which);
-            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-            made = BuildDatumFeatureGroup(ctx, origin, letter, has_ref, ref, which, layer);
-          } else if (kind == "SurfaceFinish") {
-            Point3d origin;
-            std::string value;
-            if (!ResolveSurfaceFinishSpec(ctx.Doc(), g, origin, value)) { ++skipped; continue; }
-            ObjectId ref = kNoObject;
-            std::string which;
-            const bool has_ref = FindPointAnchor(ctx.Doc(), origin, ref, which);
-            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-            made = BuildSurfaceFinishGroup(ctx, origin, value, has_ref, ref, which, layer);
-          } else {  // WeldSymbol
-            Point3d arrow_pt, ref_pt;
-            std::string type, side;
-            if (!ResolveWeldSymbolSpec(ctx.Doc(), g, arrow_pt, ref_pt, type, side)) { ++skipped; continue; }
-            ObjectId ref = kNoObject;
-            std::string which;
-            const bool has_ref = FindPointAnchor(ctx.Doc(), arrow_pt, ref, which);
-            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-            made = BuildWeldSymbolGroup(ctx, arrow_pt, ref_pt, type, side, has_ref, ref, which, layer);
-          }
-          if (made >= 0) { ++updated; ctx.Print("UpdateGdtSymbols:   " + kind + " regenerated"); } else ++skipped;
-        }
-        ctx.Print("UpdateGdtSymbols: " + std::to_string(updated) + " symbol(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped (no resolvable spec)" : ""));
-      }), CommandStatus::Implemented,
+  Reg(e, "UpdateGdtSymbols", Immediate([](CommandContext& ctx) { DoUpdateGdtSymbols(ctx, /*quiet=*/false); }), CommandStatus::Implemented,
       "Re-evaluates every FeatureControlFrame/DatumFeature/SurfaceFinish/WeldSymbol's feature-point anchor and rebuilds it from the current position, replacing the old baked geometry in place - the associative counterpart to those four commands' static bake, following the same explicit-recompute shape as UpdateMultiLeaders/UpdateDimensions/UpdateSectionViews/UpdateBillOfMaterials rather than an automatic hook on every document edit.");
   Reg(e, "MultiLeader", Make<MultiLeaderCommand>(), CommandStatus::Implemented,
       "Draws several arrows converging on one landing with the shared text; the text is still baked glyph geometry, not something double-click-editable in place the way TextProperties edits a live text field, but each arrow whose point sits exactly on a real object (same FindPointAnchor coincidence rule as Leader - annotate_common.h) is associative: UpdateMultiLeaders re-evaluates that object's current position and redraws just that arrow, keeping the shared landing point and text fixed. An arrow point that isn't on any object stays a static baked arrow, same as before this change.");
-  Reg(e, "UpdateMultiLeaders", Immediate([](CommandContext& ctx) {
-        std::vector<int> groups;
-        for (const SceneObject& o : ctx.Doc().Objects())
-          if (o.group_id >= 0 && o.user_text.count("Annotation") && o.user_text.at("Annotation") == "MultiLeader" &&
-              std::find(groups.begin(), groups.end(), o.group_id) == groups.end())
-            groups.push_back(o.group_id);
-        if (groups.empty()) { ctx.Print("UpdateMultiLeaders: no multi-leaders in this document"); return; }
-        ctx.Doc().BeginChange("UpdateMultiLeaders");
-        int updated = 0, skipped = 0;
-        for (int g : groups) {
-          std::vector<Point3d> pts;
-          Point3d landing;
-          if (!ResolveMultiLeaderPoints(ctx.Doc(), g, pts, landing)) { ++skipped; continue; }
-          GlyphSpec old_glyph;
-          std::string text = "MultiLeader";
-          ON_Plane pl = ActivePlane(ctx);
-          double h = AnnotationTextHeight(ctx);
-          if (GroupGlyphSpec(ctx, g, old_glyph)) { text = old_glyph.text; h = old_glyph.height; pl = old_glyph.plane; }
-          int layer = ctx.Doc().CurrentLayer();
-          for (const SceneObject& o : ctx.Doc().Objects()) { if (o.group_id == g) { layer = o.layer_index; break; } }
-          for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-          if (BuildMultiLeaderGroup(ctx, pts, landing, pl, h, text, layer) >= 0) {
-            ++updated;
-            ctx.Print("UpdateMultiLeaders:   now " + std::to_string(pts.size()) + " arrow(s) at landing " + PointTag(landing));
-          } else ++skipped;
-        }
-        ctx.Print("UpdateMultiLeaders: " + std::to_string(updated) + " multi-leader(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped (no resolvable layout/points)" : ""));
-      }), CommandStatus::Implemented,
+  Reg(e, "UpdateMultiLeaders", Immediate([](CommandContext& ctx) { DoUpdateMultiLeaders(ctx, /*quiet=*/false); }), CommandStatus::Implemented,
       "Re-evaluates every MultiLeader's per-arrow anchors and rebuilds the arrows/landing/text from their current positions, replacing the old baked geometry in place - the associative counterpart to MultiLeader's static bake, following the same explicit-recompute shape as UpdateDimensions (cmd_annotate.cpp) and UpdateSectionViews/UpdateBillOfMaterials below rather than an automatic hook on every document edit.");
   Reg(e, "DimTolerance", Make<DimToleranceCommand>(), CommandStatus::Implemented,
       "Appends the tolerance to the dimension's baked text and rebuilds the glyph (idempotent - re-running replaces the suffix rather than compounding it). Like every Dim* command the geometry is a static bake, not a live object, so nothing here moves on its own. This window closes a related gap for a dimension that is otherwise associative (DimLinear/DimAligned/DimAngle/DimRadius/DimDiameter via UpdateDimensions, cmd_annotate.cpp; DimOrdinate/DimCreaseAngle/DimArea/DimCurveLength/DimVolume via UpdateMeasureDims, cmd_annotate2.cpp): the tolerance suffix used to be silently dropped whenever one of those commands rebuilt the dimension's text from a moved/edited anchor, since the rebuild always started from the fresh measurement alone. It now survives that rebuild - the pre-suffix base text this command tags (DimTolerance.Base) is diffed against the old text to recover the suffix and reapplied to the new measurement (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h) - so re-running Update after moving the geometry re-measures and keeps the tolerance, not just re-running DimTolerance itself.");

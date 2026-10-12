@@ -6623,6 +6623,33 @@ SOLID_DASH_COUNT="$(grep -c 'stroke-dasharray' "$TMPW/solid_scale1.svg" || true)
 [ "$SOLID_DASH_COUNT" = "1" ] && echo "ok   the Continuous-linetype line exported alongside it has no stray dasharray of its own" || { echo "FAIL solid_scale1.svg: expected exactly 1 stroke-dasharray (only the dashed line's), got $SOLID_DASH_COUNT"; fail=1; }
 grep -aq '\[\] 0 d' "$TMPW/solid_scale1.pdf" && echo "ok   ExportPdf resets to a plain solid \"[] 0 d\" before the Continuous-linetype line, not leaking the other line's dash pattern" || { echo "FAIL solid_scale1.pdf: no [] 0 d reset operator"; fail=1; }
 
+# Automatic associative-annotation recompute (PARITY_MAP.md "Associative
+# annotation updating" - see auto_annotation_update_script.txt's own
+# header comment for the full construction/reasoning): a dimension
+# associative to a real Line's endpoints must already carry a brand new
+# object id by the time this script's SECOND "List" runs, with no
+# UpdateDimensions call anywhere in between the Scale1D that stretched
+# the line and that second List - proof Application::Frame()'s new
+# per-frame hook, not this script, already tore the old dimension down
+# and rebuilt it. The explicit UpdateDimensions at the very end (run only
+# to confirm correctness, not to cause the rebuild) must still report the
+# correct stretched 40-unit measurement.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  AAU="$("$BIN" --smoke 30 --script "$HERE/auto_annotation_update_script.txt" 2>&1)" || { echo "$AAU"; echo "FAIL: auto-annotation-update script exited non-zero"; exit 1; }
+else
+  AAU="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$HERE/auto_annotation_update_script.txt" 2>&1)" || { echo "$AAU"; echo "FAIL: auto-annotation-update script exited non-zero"; exit 1; }
+fi
+printf '%s' "$AAU" > "$TMPW/auto_annotation_update_output.txt"
+python3 - "$TMPW/auto_annotation_update_output.txt" <<'PY' && echo "ok   the dimension already carried a brand new object id by the second List - proving Frame()'s new per-frame hook rebuilt it with no UpdateDimensions call in between" || { echo "FAIL the dimension's object id did not change between the two List calls (no automatic rebuild happened)"; fail=1; }
+import re, sys
+text = open(sys.argv[1]).read()
+ids = [int(m.group(1)) for m in re.finditer(r"^history: Object (\d+) ", text, re.MULTILINE)]
+assert len(ids) >= 2, f"expected at least 2 'Object <id>' List lines, got {ids}"
+before, after = ids[0], ids[1]
+assert after > before, f"expected the second List id ({after}) to be strictly greater than the first ({before}) - Add() always allocates higher ids, so an unchanged or lower id means no automatic rebuild happened"
+PY
+echo "$AAU" | grep -q "^history: UpdateDimensions:   DimLinear now measures 40$" && echo "ok   the automatically-rebuilt dimension's measurement is correct (40, the stretched length) - UpdateDimensions, run afterward only to confirm, agrees with what the per-frame hook already built" || { echo "FAIL auto-annotation-update: expected UpdateDimensions to confirm a 40-unit measurement"; fail=1; }
+
 # Undo id-reuse regression (see the last section of history_script.txt):
 # a Box drawn right after undoing a tracked Extrude used to be handed the
 # undone extrusion's own id (6), so its HistoryRecord/Provenance entries -
