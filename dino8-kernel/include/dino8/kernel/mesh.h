@@ -216,19 +216,23 @@ class Mesh {
   // the same reason: an open surface has no well-defined "inside" at
   // all.
   //
-  // Votes across 5 independent, well-separated irrational-component
-  // directions rather than casting one fixed ray - a single direction,
-  // however carefully chosen, can still graze a vertex or shared edge
-  // exactly for some mesh/point combination (confirmed directly: a point
-  // near a cube corner, with one real fixed direction aimed exactly at
-  // that corner, was misclassified as outside for a genuine, contiguous
-  // range of truly-inside points along that one ray - not a hypothetical
-  // concern). A strict majority (3 of 5, never a tie) is the answer;
-  // reproducing the same grazing failure on a MAJORITY of 5 independent
-  // directions for the same query is vanishingly unlikely for any real
-  // mesh, without this becoming a genuine spatial search. `point` exactly
-  // on the boundary remains an unhandled degenerate case (there is no
-  // single correct in/out answer for a point ON the surface).
+  // Closes PARITY_MAP's own "Signed distance point-to-solid" bullet,
+  // whose named gap was exactly this function's own prior single-ray
+  // fragility (SignedDistance()'s own sign comes straight from this
+  // function). Votes across 5 independent, well-separated irrational-
+  // component directions rather than casting one fixed ray - a single
+  // direction, however carefully chosen, can still graze a vertex or
+  // shared edge exactly for some mesh/point combination (confirmed
+  // directly: a point near a cube corner, with one real fixed direction
+  // aimed exactly at that corner, was misclassified as outside for a
+  // genuine, contiguous range of truly-inside points along that one ray -
+  // not a hypothetical concern). A strict majority (3 of 5, never a tie)
+  // is the answer; reproducing the same grazing failure on a MAJORITY of
+  // 5 independent directions for the same query is vanishingly unlikely
+  // for any real mesh, without this becoming a genuine spatial search.
+  // `point` exactly on the boundary remains an unhandled degenerate case
+  // (there is no single correct in/out answer for a point ON the
+  // surface).
   bool ContainsPoint(Point3d point) const;
 
   // The closest point on this mesh's surface to `point` (brute force over

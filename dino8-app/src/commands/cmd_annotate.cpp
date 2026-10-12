@@ -711,7 +711,238 @@ class LeaderCommand : public Command {
   std::vector<Point3d> pts_;
 };
 
+// Shared by the explicit "UpdateDimensions" command (quiet=false, same
+// output/undo-entry behavior as always) and the automatic per-frame
+// associative-recompute hook (quiet=false path's own ctx.Print output
+// suppressed; no BeginChange of its own, so its Remove()/Add() calls fold
+// into whatever edit is already pending - see UpdateAssociativeAnnotations,
+// Application.cpp - rather than creating a second, spurious undo entry for
+// every automatic rebuild).
+void DoUpdateDimensions(CommandContext& ctx, bool quiet) {
+  auto Say = [&](const std::string& s) { if (!quiet) ctx.Print(s); };
+  // The quiet (automatic) path only rebuilds a group whose OWN resolved
+  // anchor inputs actually changed since the last quiet pass - never the
+  // explicit command, which always fully rebuilds every group exactly as
+  // before. Without this, UpdateAssociativeAnnotations' document-wide
+  // trigger (Application.cpp - it fires on ANY object's move, not just
+  // this group's own anchors) would tear down and rebuild every
+  // associative dimension in the document on every unrelated edit
+  // anywhere else, constantly reassigning fresh ids to dimensions whose
+  // own anchors never moved - confirmed as a real, user-visible bug (a
+  // totally unrelated MultiLeader's own rebuilt copy was observed
+  // stealing "last added" from a freshly-tagged DimTolerance dimension
+  // several lines later in drafting2_script.txt, purely because both
+  // happened to live in the same document). `fp_cache` persists across
+  // frames (a function-local static, not reset per call) so "unchanged
+  // since last time this ran" is a real comparison, not a tautology.
+  //
+  // Keyed by a STABLE identity (the kind plus its referenced anchor
+  // object id(s)), never by the group's own id `g`: every rebuild below
+  // allocates a brand new group id (Document::CreateGroup never reuses
+  // one), so a cache keyed by `g` would miss on every single call -
+  // confirmed directly as the actual cause of a real runaway (every
+  // associative dimension in a test script was torn down and rebuilt on
+  // every single frame forever, each time under a fresh id, once this
+  // hook existed at all) before this was keyed on the anchor ids instead.
+  // The first time a given key is seen, there is no prior quiet-pass
+  // state to compare against - treated as "unchanged" (skip, just record
+  // the baseline) rather than "changed" (rebuild), since the explicit
+  // command that just created or last touched this group already built
+  // it correctly; the first *real* automatic rebuild happens once its
+  // anchor later moves and the fingerprint genuinely differs from that
+  // recorded baseline. Rebuilding on this first encounter too, confirmed
+  // directly, needlessly burns a redundant Remove()+Add() cycle on every
+  // single associative annotation right after it is created (ordinary
+  // document activity already re-triggers the whole hook on each one),
+  // measurably inflating object-id churn across a long script and, during
+  // development, compounding with `fp_cache`'s own group-id-free keys to
+  // let two unrelated groups' first-encounter rebuilds land back to back.
+  static std::map<std::string, std::string> fp_cache;
+  auto Unchanged = [&](const std::string& key, const std::string& fp) {
+    if (!quiet) return false;
+    auto it = fp_cache.find(key);
+    const bool same = it == fp_cache.end() || it->second == fp;
+    fp_cache[key] = fp;
+    return same;
+  };
+  auto Pt = [](const Point3d& p) { std::ostringstream s; s << p.x << ',' << p.y << ',' << p.z; return s.str(); };
+  // A real anchor id is stable across rebuilds (the whole point of keying
+  // on it); a dimension with no anchor at all - common for one imported
+  // from DXF/DWG, which doesn't tag DimRefObj1/2 the way a live-created
+  // one does - has nothing stable to key on there, so every such
+  // dimension of the same kind would otherwise collide on one identical
+  // "no ref" key and perpetually invalidate each other's cached baseline
+  // (confirmed directly: two DXF-imported, unanchored dimensions of the
+  // same kind rebuilt each other in an infinite loop, each one's rebuild
+  // changing the shared key's cached fingerprint out from under the
+  // other). Falling back to the dimension's own current (and, with no
+  // anchor, permanently unchanging) position is an equally stable,
+  // collision-free key for that case.
+  auto RefOrPoint = [&](bool has, ObjectId ref, const Point3d& p) { return has ? std::to_string(ref) : Pt(p); };
+  static const std::vector<std::string> kKinds = {"DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter", "Leader", "Centermark", "CenterLine"};
+  std::vector<int> groups;
+  std::map<int, std::string> kind_of;
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    auto it = o.user_text.find("Annotation");
+    if (it == o.user_text.end() || std::find(kKinds.begin(), kKinds.end(), it->second) == kKinds.end()) continue;
+    if (o.group_id >= 0 && !kind_of.count(o.group_id)) { kind_of[o.group_id] = it->second; groups.push_back(o.group_id); }
+  }
+  if (groups.empty()) { Say("UpdateDimensions: no associative dimensions in this document"); return; }
+  if (!quiet) ctx.Doc().BeginChange("UpdateDimensions");
+  int updated = 0, skipped = 0;
+  for (int g : groups) {
+    const std::string& kind = kind_of[g];
+    if (kind == "DimLinear" || kind == "DimAligned") {
+      LinearDimLayout L;
+      Point3d p0, p1;
+      if (!LoadLinearDimLayout(ctx.Doc(), g, L) || !ResolveLinearDimPoints(ctx.Doc(), g, p0, p1)) { ++skipped; continue; }
+      GlyphSpec old_glyph;
+      const double h = GroupGlyphSpec(ctx, g, old_glyph) ? old_glyph.height : AnnotationTextHeight(ctx);
+      ObjectId ref1 = kNoObject, ref2 = kNoObject;
+      std::string end1, end2;
+      bool has1 = false, has2 = false;
+      for (const SceneObject& o : ctx.Doc().Objects()) {
+        if (o.group_id != g) continue;
+        if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end1 = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point"; has1 = true; }
+        if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { ref2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end2 = o.user_text.count("DimRefEnd2") ? o.user_text.at("DimRefEnd2") : "point"; has2 = true; }
+      }
+      const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
+      const DimStyleParams dim_style = StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g));
+      if (Unchanged("Lin:" + RefOrPoint(has1, ref1, p0) + "," + RefOrPoint(has2, ref2, p1),
+                    Pt(p0) + "|" + Pt(p1) + "|" + std::to_string(h) + "|" + std::to_string(has1) + "," + end1 + "|" + std::to_string(has2) + "," + end2 + "|" + tol)) continue;
+      for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+      double len = 0;
+      const int new_g = BuildLinearDimensionGroup(ctx, p0, p1, L, h, has1, ref1, end1, has2, ref2, end2, &len, dim_style);
+      if (new_g >= 0) {
+        ReapplyToleranceSuffix(ctx, new_g, tol);
+        ++updated;
+        Say("UpdateDimensions:   " + std::string(L.aligned ? "DimAligned" : "DimLinear") + " now measures " + Fmt(len));
+      } else ++skipped;
+    } else if (kind == "DimAngle") {
+      ON_Plane pl;
+      Point3d v, p1, p2;
+      if (!LoadAngleDimPlane(ctx.Doc(), g, pl) || !ResolveAngleDimPoints(ctx.Doc(), g, v, p1, p2)) { ++skipped; continue; }
+      GlyphSpec old_glyph;
+      const double h = GroupGlyphSpec(ctx, g, old_glyph) ? old_glyph.height : AnnotationTextHeight(ctx);
+      ObjectId r0 = kNoObject, r1 = kNoObject, r2 = kNoObject;
+      std::string e0, e1, e2;
+      bool h0 = false, h1 = false, h2 = false;
+      for (const SceneObject& o : ctx.Doc().Objects()) {
+        if (o.group_id != g) continue;
+        if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { r0 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); e0 = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point"; h0 = true; }
+        if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { r1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); e1 = o.user_text.count("DimRefEnd2") ? o.user_text.at("DimRefEnd2") : "point"; h1 = true; }
+        if (auto it = o.user_text.find("DimRefObj3"); it != o.user_text.end()) { r2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); e2 = o.user_text.count("DimRefEnd3") ? o.user_text.at("DimRefEnd3") : "point"; h2 = true; }
+      }
+      const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
+      int angular_precision = -1;
+      {
+        const std::string style_name = GroupStyleName(ctx.Doc(), g);
+        if (const AnnotationStyle* st = ctx.Doc().FindAnnotationStyle(style_name)) angular_precision = st->angular_precision;
+      }
+      if (Unchanged("Ang:" + RefOrPoint(h0, r0, v) + "," + RefOrPoint(h1, r1, p1) + "," + RefOrPoint(h2, r2, p2),
+                    Pt(v) + "|" + Pt(p1) + "|" + Pt(p2) + "|" + std::to_string(h) + "|" + std::to_string(h0) + "," + e0 + "|" + std::to_string(h1) + "," + e1 + "|" + std::to_string(h2) + "," + e2 + "|" + tol)) continue;
+      for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+      double deg = 0;
+      const int new_g = BuildAngleDimensionGroup(ctx, v, p1, p2, pl, h, h0, r0, e0, h1, r1, e1, h2, r2, e2, &deg, angular_precision);
+      if (new_g >= 0) {
+        ReapplyToleranceSuffix(ctx, new_g, tol);
+        ++updated;
+        Say("UpdateDimensions:   DimAngle now measures " + Fmt(deg) + " deg");
+      } else ++skipped;
+    } else if (kind == "DimRadius" || kind == "DimDiameter") {
+      RadiusDimLayout L;
+      Point3d center; double radius = 0;
+      if (!LoadRadiusDimLayout(ctx.Doc(), g, L) || !ResolveRadiusDimGeom(ctx.Doc(), g, center, radius)) { ++skipped; continue; }
+      GlyphSpec old_glyph;
+      const double h = GroupGlyphSpec(ctx, g, old_glyph) ? old_glyph.height : AnnotationTextHeight(ctx);
+      ObjectId ref1 = kNoObject;
+      bool has1 = false;
+      for (const SceneObject& o : ctx.Doc().Objects()) {
+        if (o.group_id != g) continue;
+        if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has1 = true; }
+      }
+      const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
+      const DimStyleParams dim_style = StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g));
+      if (Unchanged("Rad:" + RefOrPoint(has1, ref1, center), Pt(center) + "|" + std::to_string(radius) + "|" + std::to_string(h) + "|" + tol)) continue;
+      for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+      double val = 0;
+      const int new_g = BuildRadiusDimensionGroup(ctx, center, radius, L, h, has1, ref1, &val, dim_style);
+      if (new_g >= 0) {
+        ReapplyToleranceSuffix(ctx, new_g, tol);
+        ++updated;
+        Say("UpdateDimensions:   " + kind + " now measures " + Fmt(val));
+      } else ++skipped;
+    } else if (kind == "Leader") {
+      ON_Plane pl;
+      std::vector<Vector3d> rest;
+      Point3d tip;
+      if (!LoadLeaderLayout(ctx.Doc(), g, pl, rest) || !ResolveLeaderTip(ctx.Doc(), g, tip)) { ++skipped; continue; }
+      GlyphSpec old_glyph;
+      std::string text = "Leader";
+      double h = AnnotationTextHeight(ctx);
+      if (GroupGlyphSpec(ctx, g, old_glyph)) { text = old_glyph.text; h = old_glyph.height; }
+      ObjectId ref1 = kNoObject;
+      std::string end1;
+      bool has1 = false;
+      for (const SceneObject& o : ctx.Doc().Objects()) {
+        if (o.group_id != g) continue;
+        if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end1 = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point"; has1 = true; }
+      }
+      if (Unchanged("Ldr:" + RefOrPoint(has1, ref1, tip), Pt(tip) + "|" + text + "|" + std::to_string(h) + "|" + std::to_string(has1) + "," + end1)) continue;
+      for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+      if (BuildLeaderGroup(ctx, tip, rest, pl, h, text, has1, ref1, end1) >= 0) {
+        ++updated;
+        Say("UpdateDimensions:   Leader now points at " + PointTag(tip));
+      } else ++skipped;
+    } else if (kind == "Centermark") {
+      Point3d center; ON_Plane pl; double size = 0;
+      if (!ResolveCentermarkGeom(ctx.Doc(), g, center, pl, size)) { ++skipped; continue; }
+      std::string mode = "Fixed";
+      bool has_ref = false;
+      ObjectId ref = kNoObject;
+      int layer = -1;
+      for (const SceneObject& o : ctx.Doc().Objects()) {
+        if (o.group_id != g) continue;
+        layer = o.layer_index;
+        if (auto it = o.user_text.find("CenterSizeMode"); it != o.user_text.end()) mode = it->second;
+        if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has_ref = true; }
+      }
+      if (Unchanged("Ctr:" + RefOrPoint(has_ref, ref, center), Pt(center) + "|" + std::to_string(size) + "|" + mode + "|" + std::to_string(has_ref) + "|" + std::to_string(layer))) continue;
+      for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+      if (BuildCentermarkGroup(ctx, center, pl, size, layer, has_ref, ref, mode) >= 0) {
+        ++updated;
+        Say("UpdateDimensions:   Centermark now at " + PointTag(center));
+      } else ++skipped;
+    } else if (kind == "CenterLine") {
+      Point3d m0, m1;
+      if (!ResolveCenterLinePoints(ctx.Doc(), g, m0, m1)) { ++skipped; continue; }
+      ObjectId ref1 = kNoObject, ref2 = kNoObject;
+      bool has1 = false, has2 = false;
+      int layer = -1;
+      for (const SceneObject& o : ctx.Doc().Objects()) {
+        if (o.group_id != g) continue;
+        layer = o.layer_index;
+        if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has1 = true; }
+        if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { ref2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has2 = true; }
+      }
+      if (Unchanged("CL:" + RefOrPoint(has1, ref1, m0) + "," + RefOrPoint(has2, ref2, m1), Pt(m0) + "|" + Pt(m1) + "|" + std::to_string(layer))) continue;
+      for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+      if (has1 && has2 && BuildCenterLineGroup(ctx, m0, m1, layer, ref1, ref2) >= 0) {
+        ++updated;
+        Say("UpdateDimensions:   CenterLine now spans " + PointTag(m0) + " to " + PointTag(m1));
+      } else ++skipped;
+    }
+  }
+  Say("UpdateDimensions: " + std::to_string(updated) + " dimension(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped (no resolvable layout/points)" : ""));
+}
+
 }  // namespace
+
+// External linkage so Application.cpp's per-frame associative-annotation
+// hook (UpdateAssociativeAnnotations) can call this anonymous-namespace
+// function quietly, without its own undo entry - see DoUpdateDimensions'
+// own comment above for why no BeginChange happens on this path.
+void UpdateAssociativeDimensionsQuiet(CommandContext& ctx) { DoUpdateDimensions(ctx, /*quiet=*/true); }
 
 void RegisterAnnotateCommands(CommandEngine& e) {
   // This build has no live-annotation ObjectKind at all (SceneObject::kind
@@ -749,155 +980,7 @@ void RegisterAnnotateCommands(CommandEngine& e) {
   Reg(e, "DimDiameter", Make<DimRadiusCommand>(true), CommandStatus::Implemented, radius_dim_note);
   Reg(e, "Leader", Make<LeaderCommand>(), CommandStatus::Implemented, leader_dim_note);
 
-  Reg(e, "UpdateDimensions", Immediate([](CommandContext& ctx) {
-        static const std::vector<std::string> kKinds = {"DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter", "Leader", "Centermark", "CenterLine"};
-        std::vector<int> groups;
-        std::map<int, std::string> kind_of;
-        for (const SceneObject& o : ctx.Doc().Objects()) {
-          auto it = o.user_text.find("Annotation");
-          if (it == o.user_text.end() || std::find(kKinds.begin(), kKinds.end(), it->second) == kKinds.end()) continue;
-          if (o.group_id >= 0 && !kind_of.count(o.group_id)) { kind_of[o.group_id] = it->second; groups.push_back(o.group_id); }
-        }
-        if (groups.empty()) { ctx.Print("UpdateDimensions: no associative dimensions in this document"); return; }
-        ctx.Doc().BeginChange("UpdateDimensions");
-        int updated = 0, skipped = 0;
-        for (int g : groups) {
-          const std::string& kind = kind_of[g];
-          if (kind == "DimLinear" || kind == "DimAligned") {
-            LinearDimLayout L;
-            Point3d p0, p1;
-            if (!LoadLinearDimLayout(ctx.Doc(), g, L) || !ResolveLinearDimPoints(ctx.Doc(), g, p0, p1)) { ++skipped; continue; }
-            GlyphSpec old_glyph;
-            const double h = GroupGlyphSpec(ctx, g, old_glyph) ? old_glyph.height : AnnotationTextHeight(ctx);
-            ObjectId ref1 = kNoObject, ref2 = kNoObject;
-            std::string end1, end2;
-            bool has1 = false, has2 = false;
-            for (const SceneObject& o : ctx.Doc().Objects()) {
-              if (o.group_id != g) continue;
-              if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end1 = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point"; has1 = true; }
-              if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { ref2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end2 = o.user_text.count("DimRefEnd2") ? o.user_text.at("DimRefEnd2") : "point"; has2 = true; }
-            }
-            const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
-            const DimStyleParams dim_style = StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g));
-            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-            double len = 0;
-            const int new_g = BuildLinearDimensionGroup(ctx, p0, p1, L, h, has1, ref1, end1, has2, ref2, end2, &len, dim_style);
-            if (new_g >= 0) {
-              ReapplyToleranceSuffix(ctx, new_g, tol);
-              ++updated;
-              ctx.Print("UpdateDimensions:   " + std::string(L.aligned ? "DimAligned" : "DimLinear") + " now measures " + Fmt(len));
-            } else ++skipped;
-          } else if (kind == "DimAngle") {
-            ON_Plane pl;
-            Point3d v, p1, p2;
-            if (!LoadAngleDimPlane(ctx.Doc(), g, pl) || !ResolveAngleDimPoints(ctx.Doc(), g, v, p1, p2)) { ++skipped; continue; }
-            GlyphSpec old_glyph;
-            const double h = GroupGlyphSpec(ctx, g, old_glyph) ? old_glyph.height : AnnotationTextHeight(ctx);
-            ObjectId r0 = kNoObject, r1 = kNoObject, r2 = kNoObject;
-            std::string e0, e1, e2;
-            bool h0 = false, h1 = false, h2 = false;
-            for (const SceneObject& o : ctx.Doc().Objects()) {
-              if (o.group_id != g) continue;
-              if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { r0 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); e0 = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point"; h0 = true; }
-              if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { r1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); e1 = o.user_text.count("DimRefEnd2") ? o.user_text.at("DimRefEnd2") : "point"; h1 = true; }
-              if (auto it = o.user_text.find("DimRefObj3"); it != o.user_text.end()) { r2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); e2 = o.user_text.count("DimRefEnd3") ? o.user_text.at("DimRefEnd3") : "point"; h2 = true; }
-            }
-            const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
-            int angular_precision = -1;
-            {
-              const std::string style_name = GroupStyleName(ctx.Doc(), g);
-              if (const AnnotationStyle* st = ctx.Doc().FindAnnotationStyle(style_name)) angular_precision = st->angular_precision;
-            }
-            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-            double deg = 0;
-            const int new_g = BuildAngleDimensionGroup(ctx, v, p1, p2, pl, h, h0, r0, e0, h1, r1, e1, h2, r2, e2, &deg, angular_precision);
-            if (new_g >= 0) {
-              ReapplyToleranceSuffix(ctx, new_g, tol);
-              ++updated;
-              ctx.Print("UpdateDimensions:   DimAngle now measures " + Fmt(deg) + " deg");
-            } else ++skipped;
-          } else if (kind == "DimRadius" || kind == "DimDiameter") {
-            RadiusDimLayout L;
-            Point3d center; double radius = 0;
-            if (!LoadRadiusDimLayout(ctx.Doc(), g, L) || !ResolveRadiusDimGeom(ctx.Doc(), g, center, radius)) { ++skipped; continue; }
-            GlyphSpec old_glyph;
-            const double h = GroupGlyphSpec(ctx, g, old_glyph) ? old_glyph.height : AnnotationTextHeight(ctx);
-            ObjectId ref1 = kNoObject;
-            bool has1 = false;
-            for (const SceneObject& o : ctx.Doc().Objects()) {
-              if (o.group_id != g) continue;
-              if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has1 = true; }
-            }
-            const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
-            const DimStyleParams dim_style = StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g));
-            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-            double val = 0;
-            const int new_g = BuildRadiusDimensionGroup(ctx, center, radius, L, h, has1, ref1, &val, dim_style);
-            if (new_g >= 0) {
-              ReapplyToleranceSuffix(ctx, new_g, tol);
-              ++updated;
-              ctx.Print("UpdateDimensions:   " + kind + " now measures " + Fmt(val));
-            } else ++skipped;
-          } else if (kind == "Leader") {
-            ON_Plane pl;
-            std::vector<Vector3d> rest;
-            Point3d tip;
-            if (!LoadLeaderLayout(ctx.Doc(), g, pl, rest) || !ResolveLeaderTip(ctx.Doc(), g, tip)) { ++skipped; continue; }
-            GlyphSpec old_glyph;
-            std::string text = "Leader";
-            double h = AnnotationTextHeight(ctx);
-            if (GroupGlyphSpec(ctx, g, old_glyph)) { text = old_glyph.text; h = old_glyph.height; }
-            ObjectId ref1 = kNoObject;
-            std::string end1;
-            bool has1 = false;
-            for (const SceneObject& o : ctx.Doc().Objects()) {
-              if (o.group_id != g) continue;
-              if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end1 = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point"; has1 = true; }
-            }
-            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-            if (BuildLeaderGroup(ctx, tip, rest, pl, h, text, has1, ref1, end1) >= 0) {
-              ++updated;
-              ctx.Print("UpdateDimensions:   Leader now points at " + PointTag(tip));
-            } else ++skipped;
-          } else if (kind == "Centermark") {
-            Point3d center; ON_Plane pl; double size = 0;
-            if (!ResolveCentermarkGeom(ctx.Doc(), g, center, pl, size)) { ++skipped; continue; }
-            std::string mode = "Fixed";
-            bool has_ref = false;
-            ObjectId ref = kNoObject;
-            int layer = -1;
-            for (const SceneObject& o : ctx.Doc().Objects()) {
-              if (o.group_id != g) continue;
-              layer = o.layer_index;
-              if (auto it = o.user_text.find("CenterSizeMode"); it != o.user_text.end()) mode = it->second;
-              if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has_ref = true; }
-            }
-            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-            if (BuildCentermarkGroup(ctx, center, pl, size, layer, has_ref, ref, mode) >= 0) {
-              ++updated;
-              ctx.Print("UpdateDimensions:   Centermark now at " + PointTag(center));
-            } else ++skipped;
-          } else if (kind == "CenterLine") {
-            Point3d m0, m1;
-            if (!ResolveCenterLinePoints(ctx.Doc(), g, m0, m1)) { ++skipped; continue; }
-            ObjectId ref1 = kNoObject, ref2 = kNoObject;
-            bool has1 = false, has2 = false;
-            int layer = -1;
-            for (const SceneObject& o : ctx.Doc().Objects()) {
-              if (o.group_id != g) continue;
-              layer = o.layer_index;
-              if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has1 = true; }
-              if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { ref2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has2 = true; }
-            }
-            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-            if (has1 && has2 && BuildCenterLineGroup(ctx, m0, m1, layer, ref1, ref2) >= 0) {
-              ++updated;
-              ctx.Print("UpdateDimensions:   CenterLine now spans " + PointTag(m0) + " to " + PointTag(m1));
-            } else ++skipped;
-          }
-        }
-        ctx.Print("UpdateDimensions: " + std::to_string(updated) + " dimension(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped (no resolvable layout/points)" : ""));
-      }), CommandStatus::Implemented,
+  Reg(e, "UpdateDimensions", Immediate([](CommandContext& ctx) { DoUpdateDimensions(ctx, /*quiet=*/false); }), CommandStatus::Implemented,
       "Re-evaluates every associative dimension's anchor(s) - DimLinear/DimAligned/DimRotated, DimAngle, DimRadius/DimDiameter, Leader, Centermark, CenterLine - and rebuilds its curve/arrow/text geometry from their current position, replacing the old baked geometry in place - the associative counterpart to those dimension types' static bake, following the same explicit-recompute shape as UpdateSectionViews (cmd_drafting2.cpp) rather than an automatic hook on every document edit. This window fixes a gap in that rebuild for DimLinear/DimAligned, DimAngle and DimRadius/DimDiameter: a DimTolerance suffix (cmd_drafting2.cpp) on one of these used to be silently dropped, since the rebuilt text was always the freshly recomputed measurement alone. It is now diffed against the DimTolerance.Base tag DimTolerance itself leaves and re-appended to whatever the new measurement is (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h) - a dimension carrying a tolerance keeps it through a move/edit, not just through the DimTolerance command's own idempotent re-run. Leader was never affected (its text is a static label copied verbatim, not recomputed), and Centermark/CenterLine have no text to lose. A later window wires DimLinear/DimAligned/DimAngle/DimRadius/DimDiameter's rebuild to the dimension's own recorded AnnotationStyle by name (StyleParamsByName, annotate_common.h): the style's precision/unit_suffix/ext_offset/ext_extension/text_placement are re-read live on every Update, not just baked in at creation, so editing a style's dimension properties and re-running UpdateDimensions reformats every dimension built with it.");
 }
 
