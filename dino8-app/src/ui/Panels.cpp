@@ -1111,6 +1111,27 @@ dino8::platform::AccessibleNode CommandAliasesAccessibleTree(Application& app) {
   return dino8::platform::BuildCommandAliasesNode(summaries);
 }
 
+// AT-SPI2-queryable snapshot of CommandEngine::History() (see
+// docs/ACCESSIBILITY.md): built straight from the command-history deque,
+// independent of whether the Command History panel window is actually open
+// right now - mirrors the same leading-"!" warning/cancellation split
+// DrawCommandHistoryPanel's own orange-vs-plain-text rendering already
+// makes per line (`l[0] == '!'`, the marker itself stripped - see that
+// function above), one ListItem per line so a screen reader can navigate
+// the log one recorded line at a time instead of only reading the "Command
+// Line" Log region's single concatenated text block (Accessibility.cpp's
+// BuildCommandLineText, which already exposes the same lines unstructured).
+// Starts empty on a fresh app: no command has run yet.
+dino8::platform::AccessibleNode CommandHistoryAccessibleTree(Application& app) {
+  std::vector<dino8::platform::CommandHistoryEntrySummary> summaries;
+  summaries.reserve(app.Engine().History().size());
+  for (const std::string& line : app.Engine().History()) {
+    const bool is_warning = !line.empty() && line[0] == '!';
+    summaries.push_back({is_warning ? line.substr(1) : line, is_warning});
+  }
+  return dino8::platform::BuildCommandHistoryNode(summaries);
+}
+
 // AT-SPI2-queryable snapshot of Application::user_shortcuts (see
 // docs/ACCESSIBILITY.md): built straight from the shortcut list, independent
 // of whether the Options window's Shortcuts tab is actually open right now -
