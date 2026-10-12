@@ -37,6 +37,7 @@ BoundingBox PointCloud::GetBoundingBox() const {
 PointCloud PointCloud::Transform(const ON_Xform& xform) const {
   PointCloud out = *this;
   out.cloud_.Transform(xform);
+  out.spatial_index_.reset();  // out.cloud_ was just mutated directly, bypassing SetPointAt()'s own reset
   return out;
 }
 
@@ -50,30 +51,92 @@ bool ByDistanceThenIndex(const PointCloudNeighbor& a, const PointCloudNeighbor& 
 }
 }  // namespace
 
+const ON_RTree& PointCloud::SpatialIndex() const {
+  if (!spatial_index_) {
+    auto tree = std::make_shared<ON_RTree>(static_cast<size_t>(cloud_.PointCount()));
+    for (int i = 0; i < cloud_.PointCount(); ++i) {
+      const ON_3dPoint& p = cloud_.m_P[i];
+      const double box[3] = {p.x, p.y, p.z};
+      tree->Insert(box, box, i);
+    }
+    spatial_index_ = std::move(tree);
+  }
+  return *spatial_index_;
+}
+
 std::vector<PointCloudNeighbor> PointCloud::KNearest(Point3d query, int k) const {
   if (k <= 0) throw std::invalid_argument("PointCloud::KNearest: k must be positive");
   const int n = cloud_.PointCount();
   if (n == 0) throw std::invalid_argument("PointCloud::KNearest: empty point cloud");
+  const int keep = std::min(k, n);
+  const ON_RTree& tree = SpatialIndex();
 
-  std::vector<PointCloudNeighbor> all;
-  all.reserve(static_cast<size_t>(n));
-  for (int i = 0; i < n; ++i) {
-    all.push_back(PointCloudNeighbor{i, query.DistanceTo(Point3d(cloud_.m_P[i]))});
+  // Initial half-width estimate from this cloud's own point density (a
+  // cube of this side length should contain, on average, a handful of
+  // points) - purely a performance starting point, never a correctness
+  // assumption: the loop below only ever trusts the box once it is
+  // PROVEN big enough (see the `candidates[keep - 1].distance <= r`
+  // check), so a bad estimate costs an extra doubling or two, not a
+  // wrong answer.
+  const ON_BoundingBox bbox = cloud_.m_P.BoundingBox();
+  const double diagonal = bbox.IsValid() ? bbox.Diagonal().Length() : 0.0;
+  double r = diagonal > 0.0 ? diagonal / std::cbrt(static_cast<double>(n)) : 1.0;
+  if (!(r > 0.0)) r = 1.0;
+
+  std::vector<PointCloudNeighbor> candidates;
+  for (int iter = 0; iter < 64; ++iter) {
+    const double box_min[3] = {query.x - r, query.y - r, query.z - r};
+    const double box_max[3] = {query.x + r, query.y + r, query.z + r};
+    ON_SimpleArray<int> ids;
+    tree.Search(box_min, box_max, ids);
+    if (ids.Count() >= keep) {
+      candidates.clear();
+      candidates.reserve(static_cast<size_t>(ids.Count()));
+      for (int j = 0; j < ids.Count(); ++j) {
+        candidates.push_back(PointCloudNeighbor{ids[j], query.DistanceTo(Point3d(cloud_.m_P[ids[j]]))});
+      }
+      std::partial_sort(candidates.begin(), candidates.begin() + keep, candidates.end(), ByDistanceThenIndex);
+      // Either the box is already proven big enough to guarantee no
+      // point outside it could beat the current k-th candidate, or it
+      // already covers the entire cloud (nothing outside it to miss
+      // regardless of radius) - either way, the result is exact, not a
+      // nearest-within-this-box approximation.
+      if (candidates[keep - 1].distance <= r || ids.Count() >= n) {
+        candidates.resize(static_cast<size_t>(keep));
+        return candidates;
+      }
+    }
+    r *= 2.0;
   }
-  const size_t keep = std::min(static_cast<size_t>(k), all.size());
-  std::partial_sort(all.begin(), all.begin() + static_cast<long>(keep), all.end(), ByDistanceThenIndex);
-  all.resize(keep);
-  return all;
+  // Unreachable in practice (64 doublings covers any finite cloud many
+  // times over), kept only as an honest fallback rather than an infinite
+  // loop if it ever were reached.
+  candidates.clear();
+  for (int i = 0; i < n; ++i) candidates.push_back(PointCloudNeighbor{i, query.DistanceTo(Point3d(cloud_.m_P[i]))});
+  std::partial_sort(candidates.begin(), candidates.begin() + keep, candidates.end(), ByDistanceThenIndex);
+  candidates.resize(static_cast<size_t>(keep));
+  return candidates;
 }
 
 std::vector<PointCloudNeighbor> PointCloud::PointsWithinRadius(Point3d query, double radius) const {
   if (radius < 0.0) throw std::invalid_argument("PointCloud::PointsWithinRadius: radius must be >= 0");
-  const int n = cloud_.PointCount();
+  const ON_RTree& tree = SpatialIndex();
 
+  const double box_min[3] = {query.x - radius, query.y - radius, query.z - radius};
+  const double box_max[3] = {query.x + radius, query.y + radius, query.z + radius};
+  ON_SimpleArray<int> ids;
+  tree.Search(box_min, box_max, ids);
+
+  // The box always contains the sphere of the same radius, so every
+  // true match survives into `ids` - but the box also admits points up
+  // to radius*sqrt(3) away (its own corners), so the exact Euclidean
+  // filter below is what actually enforces "within radius", not the box
+  // search itself.
   std::vector<PointCloudNeighbor> found;
-  for (int i = 0; i < n; ++i) {
-    const double d = query.DistanceTo(Point3d(cloud_.m_P[i]));
-    if (d <= radius) found.push_back(PointCloudNeighbor{i, d});
+  found.reserve(static_cast<size_t>(ids.Count()));
+  for (int j = 0; j < ids.Count(); ++j) {
+    const double d = query.DistanceTo(Point3d(cloud_.m_P[ids[j]]));
+    if (d <= radius) found.push_back(PointCloudNeighbor{ids[j], d});
   }
   std::sort(found.begin(), found.end(), ByDistanceThenIndex);
   return found;
