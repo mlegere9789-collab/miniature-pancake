@@ -1718,7 +1718,13 @@ void DoUpdateMeasureDims(CommandContext& ctx, bool quiet) {
       }
       const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
       const DimStyleParams style = StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g));
-      if (Unchanged("Ord:" + ref1_tag + "," + ref2_tag, Pt(base) + "|" + Pt(feature) + "|" + std::string(1, dir) + "|" + std::to_string(h) + "|" + std::to_string(has1) + "," + end1 + "|" + std::to_string(has2) + "," + end2 + "|" + tol)) continue;
+      // A ref tag is stable across rebuilds when present; with neither
+      // (a free-floating DimOrdinate, which has nothing that ever moves
+      // it), the base/feature points are an equally stable fallback - see
+      // cmd_annotate.cpp's RefOrPoint comment for why two such dimensions
+      // sharing one constant "no ref" key would otherwise perpetually
+      // invalidate each other's cached baseline.
+      if (Unchanged("Ord:" + (has1 ? ref1_tag : Pt(base)) + "," + (has2 ? ref2_tag : Pt(feature)), Pt(base) + "|" + Pt(feature) + "|" + std::string(1, dir) + "|" + std::to_string(h) + "|" + std::to_string(has1) + "," + end1 + "|" + std::to_string(has2) + "," + end2 + "|" + tol)) continue;
       for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
       double value = 0;
       const int new_g = BuildOrdinateDimGroup(ctx, base, feature, dir, pl, h, has1, r1, end1.empty() ? "point" : end1,

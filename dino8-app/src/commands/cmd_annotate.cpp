@@ -766,6 +766,19 @@ void DoUpdateDimensions(CommandContext& ctx, bool quiet) {
     return same;
   };
   auto Pt = [](const Point3d& p) { std::ostringstream s; s << p.x << ',' << p.y << ',' << p.z; return s.str(); };
+  // A real anchor id is stable across rebuilds (the whole point of keying
+  // on it); a dimension with no anchor at all - common for one imported
+  // from DXF/DWG, which doesn't tag DimRefObj1/2 the way a live-created
+  // one does - has nothing stable to key on there, so every such
+  // dimension of the same kind would otherwise collide on one identical
+  // "no ref" key and perpetually invalidate each other's cached baseline
+  // (confirmed directly: two DXF-imported, unanchored dimensions of the
+  // same kind rebuilt each other in an infinite loop, each one's rebuild
+  // changing the shared key's cached fingerprint out from under the
+  // other). Falling back to the dimension's own current (and, with no
+  // anchor, permanently unchanging) position is an equally stable,
+  // collision-free key for that case.
+  auto RefOrPoint = [&](bool has, ObjectId ref, const Point3d& p) { return has ? std::to_string(ref) : Pt(p); };
   static const std::vector<std::string> kKinds = {"DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter", "Leader", "Centermark", "CenterLine"};
   std::vector<int> groups;
   std::map<int, std::string> kind_of;
@@ -795,7 +808,7 @@ void DoUpdateDimensions(CommandContext& ctx, bool quiet) {
       }
       const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
       const DimStyleParams dim_style = StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g));
-      if (Unchanged("Lin:" + std::to_string(ref1) + "," + std::to_string(ref2),
+      if (Unchanged("Lin:" + RefOrPoint(has1, ref1, p0) + "," + RefOrPoint(has2, ref2, p1),
                     Pt(p0) + "|" + Pt(p1) + "|" + std::to_string(h) + "|" + std::to_string(has1) + "," + end1 + "|" + std::to_string(has2) + "," + end2 + "|" + tol)) continue;
       for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
       double len = 0;
@@ -826,7 +839,7 @@ void DoUpdateDimensions(CommandContext& ctx, bool quiet) {
         const std::string style_name = GroupStyleName(ctx.Doc(), g);
         if (const AnnotationStyle* st = ctx.Doc().FindAnnotationStyle(style_name)) angular_precision = st->angular_precision;
       }
-      if (Unchanged("Ang:" + std::to_string(r0) + "," + std::to_string(r1) + "," + std::to_string(r2),
+      if (Unchanged("Ang:" + RefOrPoint(h0, r0, v) + "," + RefOrPoint(h1, r1, p1) + "," + RefOrPoint(h2, r2, p2),
                     Pt(v) + "|" + Pt(p1) + "|" + Pt(p2) + "|" + std::to_string(h) + "|" + std::to_string(h0) + "," + e0 + "|" + std::to_string(h1) + "," + e1 + "|" + std::to_string(h2) + "," + e2 + "|" + tol)) continue;
       for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
       double deg = 0;
@@ -850,7 +863,7 @@ void DoUpdateDimensions(CommandContext& ctx, bool quiet) {
       }
       const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
       const DimStyleParams dim_style = StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g));
-      if (Unchanged("Rad:" + std::to_string(ref1), Pt(center) + "|" + std::to_string(radius) + "|" + std::to_string(h) + "|" + tol)) continue;
+      if (Unchanged("Rad:" + RefOrPoint(has1, ref1, center), Pt(center) + "|" + std::to_string(radius) + "|" + std::to_string(h) + "|" + tol)) continue;
       for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
       double val = 0;
       const int new_g = BuildRadiusDimensionGroup(ctx, center, radius, L, h, has1, ref1, &val, dim_style);
@@ -875,7 +888,7 @@ void DoUpdateDimensions(CommandContext& ctx, bool quiet) {
         if (o.group_id != g) continue;
         if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end1 = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point"; has1 = true; }
       }
-      if (Unchanged("Ldr:" + std::to_string(ref1), Pt(tip) + "|" + text + "|" + std::to_string(h) + "|" + std::to_string(has1) + "," + end1)) continue;
+      if (Unchanged("Ldr:" + RefOrPoint(has1, ref1, tip), Pt(tip) + "|" + text + "|" + std::to_string(h) + "|" + std::to_string(has1) + "," + end1)) continue;
       for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
       if (BuildLeaderGroup(ctx, tip, rest, pl, h, text, has1, ref1, end1) >= 0) {
         ++updated;
@@ -894,7 +907,7 @@ void DoUpdateDimensions(CommandContext& ctx, bool quiet) {
         if (auto it = o.user_text.find("CenterSizeMode"); it != o.user_text.end()) mode = it->second;
         if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has_ref = true; }
       }
-      if (Unchanged("Ctr:" + std::to_string(ref), Pt(center) + "|" + std::to_string(size) + "|" + mode + "|" + std::to_string(has_ref) + "|" + std::to_string(layer))) continue;
+      if (Unchanged("Ctr:" + RefOrPoint(has_ref, ref, center), Pt(center) + "|" + std::to_string(size) + "|" + mode + "|" + std::to_string(has_ref) + "|" + std::to_string(layer))) continue;
       for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
       if (BuildCentermarkGroup(ctx, center, pl, size, layer, has_ref, ref, mode) >= 0) {
         ++updated;
@@ -912,7 +925,7 @@ void DoUpdateDimensions(CommandContext& ctx, bool quiet) {
         if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has1 = true; }
         if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { ref2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has2 = true; }
       }
-      if (Unchanged("CL:" + std::to_string(ref1) + "," + std::to_string(ref2), Pt(m0) + "|" + Pt(m1) + "|" + std::to_string(layer))) continue;
+      if (Unchanged("CL:" + RefOrPoint(has1, ref1, m0) + "," + RefOrPoint(has2, ref2, m1), Pt(m0) + "|" + Pt(m1) + "|" + std::to_string(layer))) continue;
       for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
       if (has1 && has2 && BuildCenterLineGroup(ctx, m0, m1, layer, ref1, ref2) >= 0) {
         ++updated;
