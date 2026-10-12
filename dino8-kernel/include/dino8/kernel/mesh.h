@@ -623,6 +623,82 @@ class Mesh {
   // leans on, so this checks explicitly instead.
   unsigned char VertexAlphaAt(int vertex_index) const;
 
+  // Sets a per-FACE group name - closes the "per-group/per-object" half
+  // of `LoadObj()`'s own disclosed "the `.mtl`/per-group/per-object gaps
+  // remain open" gap. OBJ's own `g` (group) and `o` (object) keywords
+  // both just update the same "current group" state as the file is read
+  // (whichever line, of either keyword, appeared most recently before a
+  // given `f` line) - this kernel doesn't distinguish Wavefront's own
+  // two names for that one mechanism, matching the "a loose per-face
+  // label, not a first-class component with its own metadata" scope
+  // that mechanism actually has in the format itself (unlike, say,
+  // `AddGroup()`'s own real `ON_Group` component table in file_io.cpp).
+  // Returns Result::Failed without modifying anything if `names.size()`
+  // doesn't exactly equal `FaceCount()`, the same all-or-nothing rule
+  // `SetVertexColors()` already applies for its own per-vertex array.
+  Result SetFaceGroupNames(const std::vector<std::string>& names);
+
+  // True only if SetFaceGroupNames() was called with exactly FaceCount()
+  // many entries - mirrors HasVertexColors()'s own "count matches,
+  // anything else means ignore it" rule, just for faces instead of
+  // vertices.
+  bool HasFaceGroupNames() const;
+
+  // The group name at `face_index`, previously set via
+  // SetFaceGroupNames() - an empty string for a face whose own `f` line
+  // had no `g`/`o` line before it anywhere earlier in the file (OBJ has
+  // no "ungrouped" keyword of its own; an empty name is this kernel's
+  // own stand-in for that absence). Caller must check
+  // HasFaceGroupNames() first; an out-of-range index returns an empty
+  // string rather than an unchecked array access.
+  std::string FaceGroupNameAt(int face_index) const;
+
+  // Sets a per-FACE material NAME - the other remaining half of
+  // `LoadObj()`'s own disclosed gap, independent of whether that
+  // material's own properties were ever resolved (see
+  // SetFaceMaterialColors() below for the actual `.mtl`-parsing half).
+  // From OBJ's own `usemtl <name>` line, the same "whichever line
+  // appeared most recently before a given `f` line" convention
+  // SetFaceGroupNames() above uses for `g`/`o`. Returns Result::Failed
+  // without modifying anything if `names.size()` doesn't exactly equal
+  // `FaceCount()`, the same all-or-nothing rule as above.
+  Result SetFaceMaterialNames(const std::vector<std::string>& names);
+
+  // True only if SetFaceMaterialNames() was called with exactly
+  // FaceCount() many entries.
+  bool HasFaceMaterialNames() const;
+
+  // The material name at `face_index`, previously set via
+  // SetFaceMaterialNames() - an empty string for a face with no
+  // `usemtl` line before it anywhere earlier in the file. Caller must
+  // check HasFaceMaterialNames() first; an out-of-range index returns
+  // an empty string rather than an unchecked array access.
+  std::string FaceMaterialNameAt(int face_index) const;
+
+  // Sets a per-FACE resolved diffuse color - the actual `.mtl`-parsing
+  // half of `LoadObj()`'s own disclosed gap: a material's own `Kd`
+  // (diffuse) line, looked up by the name SetFaceMaterialNames() above
+  // already recorded, in the file the OBJ's own `mtllib` line named.
+  // Independent of SetFaceMaterialNames() - a face can have a material
+  // NAME (`usemtl` was seen) with no resolved COLOR (the `.mtl` file
+  // wasn't found, didn't define that name, or had no `Kd` line for it),
+  // the honest "name and properties are two different things, and only
+  // one might be known" situation `.mtl` resolution can genuinely leave
+  // a caller in. Returns Result::Failed without modifying anything if
+  // `colors.size()` doesn't exactly equal `FaceCount()`, the same
+  // all-or-nothing rule as above.
+  Result SetFaceMaterialColors(const std::vector<Color>& colors);
+
+  // True only if SetFaceMaterialColors() was called with exactly
+  // FaceCount() many entries.
+  bool HasFaceMaterialColors() const;
+
+  // The resolved diffuse color at `face_index`, previously set via
+  // SetFaceMaterialColors(). Caller must check HasFaceMaterialColors()
+  // first; an out-of-range index returns a default-constructed `Color`
+  // (black) rather than an unchecked array access.
+  Color FaceMaterialColorAt(int face_index) const;
+
   // Returns a copy of this mesh with every face's winding reversed (each
   // face's own vertex loop reversed in place, not the vertex list
   // reordered) - flipping which side is "outward" without moving a single
@@ -730,6 +806,36 @@ class Mesh {
   // valid .obj already satisfies), or a face has fewer than 3 indices -
   // `out_mesh` is left unspecified in that case, not partially filled and
   // silently trusted.
+  //
+  // Closes this bullet's own remaining "the `.mtl`/per-group/per-object
+  // gaps remain open" disclosure. Every `g`/`o` line updates a "current
+  // group" that every later `f` line (until the next `g`/`o`) is tagged
+  // with via SetFaceGroupNames() - `g` and `o` are not distinguished,
+  // per that method's own doc comment; a face read before any `g`/`o`
+  // line gets an empty group name. Every `usemtl <name>` line similarly
+  // tags later faces via SetFaceMaterialNames(). A FAN-TRIANGULATED
+  // n-gon's own `n-2` resulting `ON_MeshFace` entries (see above) all
+  // inherit the SAME single group/material their one source `f` line
+  // had - this kernel has no notion of a per-triangle-within-one-face
+  // group/material, the same granularity `SetTextureCoordinates()`'s
+  // own per-VERTEX (not per-corner) scope already has for UVs. If the
+  // file has an `mtllib <name>.mtl` line, that file is resolved relative
+  // to THIS .obj file's own directory (not the process's current
+  // directory) and parsed for `newmtl <name>` blocks with a `Kd r g b`
+  // (diffuse color, 0.0-1.0 per channel) line - each resolved color is
+  // looked up by the material name already recorded per face and stored
+  // via SetFaceMaterialColors(). A referenced `.mtl` file that doesn't
+  // exist, or that exists but never defines a `Kd` for some or all of
+  // the names actually used, is not itself an error - LoadObj() still
+  // succeeds, with HasFaceMaterialColors() simply false (or individual
+  // faces falling back to `FaceMaterialColorAt()`'s own default) for
+  // whatever didn't resolve; only the `.obj` file's own `v`/`vt`/`f`
+  // syntax errors fail the whole load, matching this method's own
+  // existing "tolerate what we don't use, reject what we can't parse"
+  // stance elsewhere. `Kd`'s own 0.0-1.0 floats are scaled to the 0-255
+  // byte `Color` holds, clamped rather than wrapping on an out-of-range
+  // value, the same convention LoadPly()'s own color-channel reader
+  // already uses.
   static Result LoadObj(const std::string& path, Mesh& out_mesh);
 
   // Writes this mesh as an ASCII Wavefront `.stl` file - the second
@@ -2641,6 +2747,19 @@ class Mesh {
   // instead. Default-constructs to false, matching every Mesh created
   // before SetVertexAlpha() existed.
   bool has_vertex_alpha_ = false;
+
+  // Per-face group/material name and resolved material diffuse color -
+  // see SetFaceGroupNames()/SetFaceMaterialNames()/SetFaceMaterialColors()
+  // above. Unlike vertex color/alpha, ON_Mesh itself has no per-face
+  // string or color array to piggyback on, so these are genuinely new
+  // storage on this wrapper, not an accessor over something OpenNURBS
+  // already carries. A count-based "present" signal (compare `.size()`
+  // against FaceCount(), the same convention every other optional
+  // per-element array in this class uses) works fine for all three - no
+  // separate explicit flag needed, unlike has_vertex_alpha_ above.
+  std::vector<std::string> face_group_names_;
+  std::vector<std::string> face_material_names_;
+  std::vector<Color> face_material_colors_;
 };
 
 }  // namespace dino8::kernel

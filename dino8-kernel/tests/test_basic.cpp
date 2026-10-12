@@ -32780,6 +32780,146 @@ void TestMeshLoadObjFanTriangulatesNgonFaces() {
   std::remove(relative_path.c_str());
 }
 
+void TestMeshLoadObjGroupsAndMaterials() {
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Closes LoadObj()'s own disclosed "the `.mtl`/per-group/per-object
+  // gaps remain open" item - before this, every `g`/`o`/`usemtl`/
+  // `mtllib` line was silently skipped entirely.
+  const std::string mtl_path = "dino8_kernel_mesh_obj_test_materials.mtl";
+  {
+    std::ofstream mtl(mtl_path);
+    mtl << "newmtl Red\nKd 1.0 0.0 0.0\n";
+    mtl << "newmtl Blue\nKd 0.0 0.0 1.0\n";
+    mtl << "newmtl Green\nKd 0.0 1.0 0.0\n";
+  }
+
+  const std::string obj_path = "dino8_kernel_mesh_obj_test_groups_materials.obj";
+  {
+    std::ofstream out(obj_path);
+    // Quad A (no group/material yet - must read back as empty, not
+    // crash or inherit something from later in the file).
+    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
+    out << "f 1 2 3 4\n";
+    // Quad B, group "GroupA"/material "Red".
+    out << "v 2 0 0\nv 3 0 0\nv 3 1 0\nv 2 1 0\n";
+    out << "mtllib " << mtl_path << '\n';
+    out << "g GroupA\nusemtl Red\n";
+    out << "f 5 6 7 8\n";
+    // Quad C, group "GroupB"/material "Blue" - 'o' used instead of 'g',
+    // deliberately, to prove both keywords are treated the same way.
+    out << "v 4 0 0\nv 5 0 0\nv 5 1 0\nv 4 1 0\n";
+    out << "o GroupB\nusemtl Blue\n";
+    out << "f 9 10 11 12\n";
+    // A pentagon (fan-triangulates into 3 triangles) under group
+    // "GroupC"/material "Green" - every resulting triangle must inherit
+    // the SAME group/material as this one source line.
+    out << "v 6 0 0\nv 8 0 0\nv 9 1 0\nv 7 2 0\nv 5 1 0\n";
+    out << "g GroupC\nusemtl Green\n";
+    out << "f 13 14 15 16 17\n";
+    // Material name with no resolvable color (never defined in the
+    // .mtl file) - HasFaceMaterialNames() must still be true for this
+    // face, but its own color must not resolve.
+    out << "v 10 0 0\nv 11 0 0\nv 11 1 0\nv 10 1 0\n";
+    out << "usemtl Unknown\n";
+    out << "f 18 19 20 21\n";
+  }
+
+  Mesh mesh;
+  Check(Mesh::LoadObj(obj_path, mesh) == Result::Ok, "LoadObj succeeds on a file with g/o/usemtl/mtllib lines");
+  Check(mesh.FaceCount() == 7, "4 ordinary quads + a pentagon's 3 fan triangles = 7 faces total");
+  Check(mesh.HasFaceGroupNames(), "HasFaceGroupNames() is true once at least one g/o line appeared");
+  Check(mesh.HasFaceMaterialNames(), "HasFaceMaterialNames() is true once at least one usemtl line appeared");
+  Check(mesh.HasFaceMaterialColors(), "HasFaceMaterialColors() is true once at least one material actually resolved");
+
+  Check(mesh.FaceGroupNameAt(0).empty(), "quad A's face (before any g/o line) reports an empty group name");
+  Check(mesh.FaceMaterialNameAt(0).empty(), "quad A's face (before any usemtl line) reports an empty material name");
+
+  Check(mesh.FaceGroupNameAt(1) == "GroupA", "quad B's face reports the exact group name its 'g' line gave it");
+  Check(mesh.FaceMaterialNameAt(1) == "Red", "quad B's face reports the exact material name its 'usemtl' line gave it");
+  const Color red = mesh.FaceMaterialColorAt(1);
+  Check(red.r == 255 && red.g == 0 && red.b == 0,
+        "quad B's face resolves its material's real Kd diffuse color from the .mtl file");
+
+  Check(mesh.FaceGroupNameAt(2) == "GroupB",
+        "quad C's face reports the exact group name its 'o' line gave it - 'o' and 'g' are treated the same");
+  Check(mesh.FaceMaterialNameAt(2) == "Blue", "quad C's face reports the exact material name its 'usemtl' line gave it");
+  const Color blue = mesh.FaceMaterialColorAt(2);
+  Check(blue.r == 0 && blue.g == 0 && blue.b == 255, "quad C's face resolves its own real Kd diffuse color");
+
+  // Faces 3, 4, 5 are the pentagon's own 3 fan triangles (face 0, 1, 2
+  // were the three ordinary quads before it; face indices continue in
+  // file order).
+  bool all_pentagon_triangles_tagged = true;
+  for (int i = 3; i <= 5; ++i) {
+    if (mesh.FaceGroupNameAt(i) != "GroupC" || mesh.FaceMaterialNameAt(i) != "Green") {
+      all_pentagon_triangles_tagged = false;
+    }
+  }
+  Check(all_pentagon_triangles_tagged,
+        "every one of the pentagon's 3 fan-triangulated faces inherits the SAME group/material its "
+        "one source 'f' line had, not just the first");
+  const Color green = mesh.FaceMaterialColorAt(3);
+  Check(green.r == 0 && green.g == 255 && green.b == 0,
+        "a fan-triangulated face's own resolved material color matches its source line's material");
+
+  Check(mesh.FaceMaterialNameAt(6) == "Unknown",
+        "the last quad's face reports the material name its 'usemtl' line gave it, even though that "
+        "name is never defined in the .mtl file");
+  const Color unresolved = mesh.FaceMaterialColorAt(6);
+  Check(unresolved.r == 0 && unresolved.g == 0 && unresolved.b == 0,
+        "a material name with no matching 'newmtl'/'Kd' in the .mtl file reports a default-constructed "
+        "(black) color, not a crash or a stale value from a resolved face");
+
+  const int out_of_range_face = mesh.FaceCount() + 100;
+  Check(mesh.FaceGroupNameAt(out_of_range_face).empty() && mesh.FaceMaterialNameAt(out_of_range_face).empty(),
+        "FaceGroupNameAt()/FaceMaterialNameAt() on a face index this mesh doesn't have return an empty "
+        "string, same contract as every other *At() accessor's own out-of-range case");
+
+  std::remove(obj_path.c_str());
+  std::remove(mtl_path.c_str());
+
+  // A file with g/o/usemtl lines but NO mtllib (or a mtllib naming a
+  // file that doesn't exist) still succeeds, with names recorded but no
+  // colors resolved - mtllib resolution failing is not itself an error.
+  const std::string no_mtl_path = "dino8_kernel_mesh_obj_test_missing_mtllib.obj";
+  {
+    std::ofstream out(no_mtl_path);
+    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
+    out << "mtllib does_not_exist.mtl\n";
+    out << "g SomeGroup\nusemtl SomeMaterial\n";
+    out << "f 1 2 3 4\n";
+  }
+  Mesh no_mtl_mesh;
+  Check(Mesh::LoadObj(no_mtl_path, no_mtl_mesh) == Result::Ok,
+        "LoadObj succeeds even when the mtllib file it names doesn't exist");
+  Check(no_mtl_mesh.HasFaceGroupNames() && no_mtl_mesh.FaceGroupNameAt(0) == "SomeGroup",
+        "the group name is still recorded from the .obj file itself, independent of mtllib resolution");
+  Check(no_mtl_mesh.HasFaceMaterialNames() && no_mtl_mesh.FaceMaterialNameAt(0) == "SomeMaterial",
+        "the material name is still recorded independent of mtllib resolution");
+  Check(!no_mtl_mesh.HasFaceMaterialColors(),
+        "HasFaceMaterialColors() is false when the mtllib file itself can't be found at all");
+  std::remove(no_mtl_path.c_str());
+
+  // A plain file with no g/o/usemtl/mtllib lines at all reports neither
+  // group nor material info - no behavior change from before this
+  // feature existed.
+  const std::string plain_path = "dino8_kernel_mesh_obj_test_no_groups.obj";
+  {
+    std::ofstream out(plain_path);
+    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
+    out << "f 1 2 3 4\n";
+  }
+  Mesh plain_mesh;
+  Check(Mesh::LoadObj(plain_path, plain_mesh) == Result::Ok, "LoadObj succeeds on a plain file with no g/o/usemtl");
+  Check(!plain_mesh.HasFaceGroupNames(), "a file with no g/o line at all reports HasFaceGroupNames() == false");
+  Check(!plain_mesh.HasFaceMaterialNames(),
+        "a file with no usemtl line at all reports HasFaceMaterialNames() == false");
+  std::remove(plain_path.c_str());
+}
+
 void TestMeshSaveOffRoundTrips() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
@@ -76972,6 +77112,7 @@ int main() {
   RunTest("TestMeshLoadObjRejectsMalformedFiles", TestMeshLoadObjRejectsMalformedFiles);
   RunTest("TestMeshLoadObjResolvesRelativeIndices", TestMeshLoadObjResolvesRelativeIndices);
   RunTest("TestMeshLoadObjFanTriangulatesNgonFaces", TestMeshLoadObjFanTriangulatesNgonFaces);
+  RunTest("TestMeshLoadObjGroupsAndMaterials", TestMeshLoadObjGroupsAndMaterials);
   RunTest("TestMeshSaveOffRoundTrips", TestMeshSaveOffRoundTrips);
   RunTest("TestMeshLoadOffRejectsMalformedFiles", TestMeshLoadOffRejectsMalformedFiles);
   RunTest("TestMeshLoadOffRejectsImplausibleElementCounts", TestMeshLoadOffRejectsImplausibleElementCounts);
