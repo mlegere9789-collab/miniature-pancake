@@ -145,6 +145,69 @@ Offset Distance=3 BothSides=Yes 0,5,0
 @expect_objects 3
 SelAll
 Delete
+# --- Offset's own Corner option (Sharp/Round/Chamfer/Smooth) threaded
+# through to NurbsCurve::OffsetInPlane()'s own corner_style parameter (see
+# PARITY_MAP.md's offsetshell category, "Curve offset corner handling at
+# kinks"): a closed 10-unit square, offset outward by 1, has a different
+# EXACT closed-form perimeter per style - Sharp's own miter corners add a
+# full extra distance*2 per side (4*(10+2)=48), Round's own quarter-circle
+# corners add one full circle of circumference 2*pi*distance instead
+# (4*10+2*pi=46.28...), Chamfer's own straight cut corners add 4 chords of
+# length distance*sqrt(2) instead (4*10+4*sqrt(2)=45.66...), and Smooth's
+# own G2 blend is distinct from all three (46.38...), strictly longer than
+# Chamfer's chord (no curve joining the same two tangent points can be
+# shorter than the straight line between them) - the same four closed
+# forms this category's own kernel-level tests already establish, now
+# driven through the real app command rather than called directly.
+Line 0,0,0 10,0,0
+Line 10,0,0 10,10,0
+Line 10,10,0 0,10,0
+Line 0,10,0 0,0,0
+SelAll
+Join
+@expect_objects 1
+SelLast
+Offset Distance=1 -5,5,0
+SelLast
+Length
+SelAll
+Delete
+Line 0,0,0 10,0,0
+Line 10,0,0 10,10,0
+Line 10,10,0 0,10,0
+Line 0,10,0 0,0,0
+SelAll
+Join
+SelLast
+Offset Distance=1 Corner=Round -5,5,0
+SelLast
+Length
+SelAll
+Delete
+Line 0,0,0 10,0,0
+Line 10,0,0 10,10,0
+Line 10,10,0 0,10,0
+Line 0,10,0 0,0,0
+SelAll
+Join
+SelLast
+Offset Distance=1 Corner=Chamfer -5,5,0
+SelLast
+Length
+SelAll
+Delete
+Line 0,0,0 10,0,0
+Line 10,0,0 10,10,0
+Line 10,10,0 0,10,0
+Line 0,10,0 0,0,0
+SelAll
+Join
+SelLast
+Offset Distance=1 Corner=Smooth -5,5,0
+SelLast
+Length
+SelAll
+Delete
 # --- Extend grows both ends by 10%, Flip reverses (Dir reports start and tangent), MakePeriodic on a closed curve
 Line 0,0,0 10,0,0
 SelLast
