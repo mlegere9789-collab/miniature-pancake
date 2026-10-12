@@ -1724,7 +1724,45 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
   // function continuing to report every coincident pair as indistinguishable
   // from a non-meet, the exact gap PARITY_MAP.md's own "SSX coincident /
   // overlapping surface regions" bullet named.
-  if (segs.empty()) return CoincidentOverlapBoundaryCurves(a, b, opt);
+  //
+  // A REAL false-positive this gate must rule out first, found while
+  // root-causing `BooleanCombineGeneral`'s own long-standing "an edge is
+  // claimed by 3 or more fragment loops" abort (kernel: Boolean operations,
+  // confirmed on its own simplest fixture - two boxes merely touching
+  // face-to-face): `segs.empty()` ALSO happens for two PERPENDICULAR planar
+  // faces that merely share a boundary EDGE (e.g. one box face's bottom
+  // edge and the adjacent box's side face) - the ordinary mesh-seeded
+  // crossing search finds no clean triangle/triangle crossing there either,
+  // the identical "touch, not a crossing" reason it finds none for a
+  // genuine coincident patch. Calling `CoincidentOverlapBoundaryCurves()`
+  // (via `IntersectSurfacesOverlap()`) on that pair is NOT merely "finds
+  // nothing, as expected" - `IntersectSurfacesOverlap()`'s own closest-point
+  // projection, fed a point from `a` near the shared edge, projects onto
+  // `b`'s finite rectangle CLAMPED to its own edge, which sits only
+  // `opt.mesh_tolerance`-ish away from the true closest point - so a whole
+  // thin RIBBON of `a` near the shared edge (nonzero area, not the single
+  // isolated cell/pole the existing guards already catch) gets reported as
+  // a spurious "coincident region", then fit into a bogus closed
+  // IntersectionCurve tracing that ribbon's own boundary - a real curve
+  // feeding the fragment-loop assembly below a false transversal crossing
+  // for two faces that do not actually cross or coincide over any area at
+  // all. `CoincidentOverlapBoundaryCurves()`'s own doc comment (and this
+  // function's, above) already discloses the coincident-region path as
+  // "reliable for FLAT/coplanar surfaces ... NOT for curved" - this is that
+  // same scope, read literally and enforced here: `a` and `b` must
+  // genuinely be COPLANAR with each other (not merely each individually
+  // flat) - both planar, parallel normals, and the same plane within
+  // `opt.tolerance` - before the coincident-region path is trusted at all.
+  // Two perpendicular (or any other non-coplanar) flat faces fall through
+  // to the ordinary empty result below, exactly as every caller already
+  // relied on before 878ecdb ever touched this function.
+  if (segs.empty()) {
+    ON_Plane pa, pb;
+    const bool coplanar = a.IsPlanar(&pa, opt.tolerance) && b.IsPlanar(&pb, opt.tolerance) &&
+                           pa.zaxis.IsParallelTo(pb.zaxis, 1e-6) != 0 &&
+                           std::fabs(pa.DistanceTo(pb.origin)) <= opt.tolerance;
+    return coplanar ? CoincidentOverlapBoundaryCurves(a, b, opt) : out;
+  }
   std::vector<SeedPolyline> chains = ChainSegments(segs, std::max(eps * 100, 1e-7 * diag));
   for (const SeedPolyline& pl : chains) {
     IntersectionCurve ic;
@@ -3360,6 +3398,44 @@ std::vector<SurfaceOverlapRegion> IntersectSurfacesOverlap(const ON_Surface& a, 
         }
       }
       if (cell_count < 2) continue;  // a single isolated on-surface cell is a transient touch, not an overlap (FindSurfaceTangentContacts()'s job instead)
+      // A run confined to a SINGLE grid column (imin == imax) or SINGLE grid
+      // row (jmin == jmax), however many cells long, is a one-dimensional
+      // BOUNDARY strip, not a genuine two-dimensional overlap AREA - found
+      // and root-caused (not assumed) while tracking down
+      // `BooleanCombineGeneral`'s own long-standing "an edge is claimed by 3
+      // or more fragment loops" abort on its simplest possible fixture (two
+      // boxes merely touching face-to-face, kernel: Boolean operations):
+      // every one of a box's OTHER side faces (not the one genuinely
+      // coincident pair) is coplanar with, and shares exactly one boundary
+      // EDGE with, the matching side face of the touching box - `a`'s own
+      // row/column running exactly along that shared edge sits at distance
+      // 0 from `b` (it IS `b`'s own edge too), while the very next row/
+      // column one grid step inward is already a whole mesh_tolerance-scale
+      // grid cell away - comfortably outside `opt.tolerance` - so the "on"
+      // set this loop walks is confined to that single edge-aligned column/
+      // row, 4-connected along its full length (`cell_count` large: every
+      // one of the other three guards above - the single-cell touch guard
+      // here, and the small-bbox-diagonal guard CoincidentOverlapBoundaryCurves()
+      // applies afterward - are blind to this shape, since it is neither an
+      // isolated single cell NOR small in its own long direction). The
+      // result, confirmed directly with `DINO8_BOOL_DEBUG=1`: two merely-
+      // ADJACENT (not actually overlapping) coplanar rectangles were
+      // reported as a genuine coincident region, which
+      // `CoincidentOverlapBoundaryCurves()` then dutifully fit into a real,
+      // closed `IntersectionCurve` tracing that sliver - a false transversal
+      // crossing fed into every caller (`BooleanCombineGeneral`,
+      // `ImprintFaces`, `SplitBySheet`, `TrimSheetBySolid`) for a face pair
+      // that neither crosses nor coincides over any actual area. A genuine
+      // 2D overlap area, by construction, spans strictly more than one grid
+      // column AND strictly more than one grid row (confirmed on every
+      // existing passing fixture: the two-boxes'-own single genuinely
+      // coincident face pair, and both `TestIntersectSurfacesReturnsBoundary
+      // CurveForCoincidentRegion` fixtures in tests/test_basic.cpp, all
+      // still report `imax > imin` and `jmax > jmin` with this guard in
+      // place) - a run that fails either inequality is rejected here as the
+      // boundary-only artifact it actually is, before it ever reaches the
+      // bisection/region-building code below.
+      if (imax == imin || jmax == jmin) continue;
       SurfaceOverlapRegion region;
       // Each extent is bisection-tightened along its own representative
       // transect when a genuine off-`b` neighbour exists to bisect toward

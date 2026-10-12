@@ -3016,7 +3016,54 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
       const ON_BrepFace& fa = ba.m_F[i];
       const ON_BrepFace& fb = bb.m_F[j];
       std::vector<IntersectionCurve> curves = IntersectFaces(&fa, *fa.SurfaceOf(), &fb, *fb.SurfaceOf(), opt);
-      if (curves.empty()) {
+      // Geometric coincidence check, run UNCONDITIONALLY rather than only
+      // when `curves.empty()` - the exact regression this engine's own
+      // `TestBooleanCombineGeneralCoplanarBoxes` fixture (two boxes merely
+      // touching face-to-face) hit after 878ecdb ("IntersectSurfaces now
+      // returns a boundary curve for coincident flat surfaces", filed
+      // under Intersections & projections). That commit taught
+      // IntersectSurfaces() (and therefore IntersectFaces(), which calls
+      // it) to report a coincident pair's own shared boundary as a single
+      // real, closed IntersectionCurve instead of the empty result this
+      // override used to depend on seeing - genuinely useful at the
+      // surface level (a real sub-region boundary), but when that boundary
+      // happens to equal one SIDE's own entire face extent, that "curve" is
+      // nothing but THAT face's own outline re-traced, not a real crossing
+      // for it to be fragmented against. Feeding it into that side's own
+      // `raw_a`/`raw_b` anyway fragmented an already-whole face into pieces
+      // along its own boundary - which (a) defeats `whole_face_untouched`
+      // further down (keyed off `ff.frags.size() == 1` and the face being
+      // untouched by any curve at all, neither of which holds once this
+      // artifact curve is present) and (b) corrupts the eventual loop
+      // assembly, since the artifact curve's own boundary-of-the-whole-face
+      // samples do not line up with any real trim/edge structure.
+      //
+      // The two sides are checked INDEPENDENTLY, not just "both match each
+      // other" - a SECOND, asymmetric shape of this same regression, found
+      // and reproduced in isolation (`TestRecognizePocketsBlindPocketRoundTripAndNegativeControls`'s
+      // own "a boss, the same square profile, raised out of the top face"
+      // fixture - a small 1x1 boss footprint sitting on a much bigger 4x4
+      // box face): here the detected region's own extent equals the SMALL
+      // boss cap's entire face, but NOT the big box face's (which still
+      // has plenty of face left outside the boss footprint and genuinely
+      // needs fragmenting - its own hole-bridging already worked correctly
+      // before this fix). A symmetric "box_a == box_b" test alone can never
+      // catch this - the two boxes are a different size on purpose - so
+      // each side's own match is tested against the detected region's own
+      // bbox (the union of every returned curve's own points - the
+      // bisection-tightened true extent IntersectSurfacesOverlap() itself
+      // already computed, strictly more trustworthy here than re-deriving
+      // it from `box_a`/`box_b` directly) rather than against the OTHER
+      // side's box. When `curves` came back empty (either a genuine
+      // non-meet, or a region `CoincidentOverlapBoundaryCurves()` itself
+      // declined to trust), there is no region bbox to measure, so this
+      // falls back to the original symmetric `box_a == box_b` comparison -
+      // the exact pre-878ecdb behavior for that case, unchanged. Confirmed
+      // root cause (not assumed) of this engine's own long-standing "an
+      // edge is claimed by 3 or more fragment loops" abort, in both shapes,
+      // with `DINO8_BOOL_DEBUG=1`.
+      bool whole_match_a = false, whole_match_b = false;
+      {
         ON_Plane pa, pb;
         const ON_Surface* sa = fa.SurfaceOf();
         const ON_Surface* sb = fb.SurfaceOf();
@@ -3026,11 +3073,24 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
             const ON_BoundingBox& box_a = boxes_a[static_cast<size_t>(i)];
             const ON_BoundingBox& box_b = boxes_b[static_cast<size_t>(j)];
             const double extent_tol = std::max(tol, 1e-6 * std::max(box_a.Diagonal().Length(), box_b.Diagonal().Length()));
-            if (box_a.m_min.DistanceTo(box_b.m_min) <= extent_tol && box_a.m_max.DistanceTo(box_b.m_max) <= extent_tol) {
-              coincident_a[static_cast<size_t>(i)].push_back({j, parallel == -1});
-              coincident_b[static_cast<size_t>(j)].push_back({i, parallel == -1});
-              if (debug) std::fprintf(stderr, "coincident face pair: A[%d] <-> B[%d], opposite_normal=%d\n", i, j, parallel == -1);
+            ON_BoundingBox region_bbox;
+            for (const IntersectionCurve& ic : curves)
+              for (const Point3d& p : ic.points) region_bbox.Set(p, true);
+            auto whole_match = [&](const ON_BoundingBox& box) {
+              return region_bbox.m_min.DistanceTo(box.m_min) <= extent_tol && region_bbox.m_max.DistanceTo(box.m_max) <= extent_tol;
+            };
+            if (region_bbox.IsValid()) {
+              whole_match_a = whole_match(box_a);
+              whole_match_b = whole_match(box_b);
+            } else {
+              whole_match_a = whole_match_b =
+                  box_a.m_min.DistanceTo(box_b.m_min) <= extent_tol && box_a.m_max.DistanceTo(box_b.m_max) <= extent_tol;
             }
+            if (whole_match_a) coincident_a[static_cast<size_t>(i)].push_back({j, parallel == -1});
+            if (whole_match_b) coincident_b[static_cast<size_t>(j)].push_back({i, parallel == -1});
+            if (debug && (whole_match_a || whole_match_b))
+              std::fprintf(stderr, "coincident face pair: A[%d] <-> B[%d], opposite_normal=%d, whole_a=%d whole_b=%d\n", i, j,
+                           parallel == -1, whole_match_a, whole_match_b);
           }
         }
       }
@@ -3064,8 +3124,12 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
           ca.push_back(ca.front());
           cb.push_back(cb.front());
         }
-        raw_a[static_cast<size_t>(i)].push_back(std::move(ca));
-        raw_b[static_cast<size_t>(j)].push_back(std::move(cb));
+        // Discarded independently per side (see the doc comment above) -
+        // a side whose own face is wholly the detected coincident region
+        // is handled entirely by the `whole_face_untouched` override
+        // below, not by fragmenting on this artifact curve.
+        if (!whole_match_a) raw_a[static_cast<size_t>(i)].push_back(std::move(ca));
+        if (!whole_match_b) raw_b[static_cast<size_t>(j)].push_back(std::move(cb));
       }
     }
   }

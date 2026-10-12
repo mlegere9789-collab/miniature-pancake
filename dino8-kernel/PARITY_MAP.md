@@ -4043,7 +4043,7 @@ bucket moved).*
 **kernel: Boolean operations** (booleans):
 - [partial] Analytic plane/cylinder and cylinder/cylinder B-rep booleans (drilled holes, bosses, oblique holes, parallel/Steinmetz/unequal-radius/skew cylinder pairs) — `BooleanCombineMixed` (boolean.cpp:5976) covers perpendicular/oblique plane-cylinder cuts, Steinmetz pairs, unequal radii at any angle including skew full-pierce, and chained results as operands. Out of scope and thrown: grazing angles, partial penetration, a partial-sweep oblique operand, a second cut interacting with an already-notched fragment, a ConicalFace operand. **Newly confirmed defect (unrelated data-exchange session, incidental full-suite run):** `TestBooleanCombineMixedUnequalRadiusPerpendicularNegativeControls`'s 60-degree pinch-point exactness check fails on current HEAD (`ctest`/`dino8_kernel_tests`, 4135 of 4136 total checks passing) — the intersection builds, is a closed manifold, and its volume matches the closed form (those neighboring checks pass), but its 4 vertices are not exactly the closed-form pinch points (+/- sqrt 3, +/- 1, z = x·cot 60°) to the asserted 1e-9 tolerance. Confirmed pre-existing via a clean rebuild and full rerun of this same test binary at HEAD (`f0ff809`, before any of this session's own changes) — identical single failure, so this is not a regression introduced by this session's own work, which touches only kernel-level data exchange. Not investigated further here (out of this session's scope); this item's own `partial` classification is unaffected (already partial for the disclosed out-of-scope cases above). **Update (a later pass, this category's own trailing "Seventh note" below):** a fresh full `dino8_kernel_tests` run at that pass's own HEAD (5544 checks) shows this specific check passing cleanly, with zero failures suite-wide - whether the prior failure was resolved by an intervening change or was itself intermittent (e.g. compiler/optimization-dependent Newton-refinement rounding) is not investigated here either, so this caveat about the headline not reflecting a fully green suite no longer applies as of that pass, but is left in place rather than deleted, per this document's own "narrowing, not erasing" convention for superseded evidence.
 - [partial] General NURBS-surface B-rep boolean (SSX-driven boundary evaluation on arbitrary ON_Surface faces) — `BooleanCombineGeneral` (boolean_general.cpp:2738) is scoped to at most one crossing component per face pair, genus-0 faces, no self-crossing chains. Corrected figure, live-measured this pass by actually building and running `dino8_general_boolean_sweep` against current HEAD: **54 of 76** sweep combinations tessellate watertight via `TessellateGeneralBooleanClosedMesh` (boolean_general.h:62-79's own cited "15 of 76" was a stale intermediate number from partway through the kernel's own embedded development log, superseded by the log's own later entries before the last measurement) — 18 genuine non-empty residual failures (cyl+cyl parallel/Steinmetz/skew, sphere+box, sphere+sphere, one sphere+cyl direction) plus 4 trivial 0-face empty results.
-- [partial] Coplanar / coincident face handling — the planar engine dedups identical planes; `BooleanCombineMixed` carries a coincident-face rule into each XOR lump; the general engine has its own coincident whole-face test (boolean_general.cpp:2899). No general partially-overlapping coincident curved-face handling.
+- [partial] Coplanar / coincident face handling — the planar engine dedups identical planes; `BooleanCombineMixed` carries a coincident-face rule into each XOR lump; the general engine has its own coincident whole-face test (boolean_general.cpp:2899). **Round 44: that whole-face test is now checked independently per side (not just symmetrically, "both operands' boxes match each other") and measured against the detected coincident region's own bbox rather than re-derived from scratch** — closing a real `878ecdb` regression (this category's own "Thirty-first note" above) where the override missed both an exactly-matching pair (`curves.empty()` no longer held once `IntersectSurfaces()` started returning a real boundary curve for it) and a genuinely asymmetric one (a small face wholly coincident with part of a much bigger one — the override now fires for the SMALL side even though the big side still correctly fragments). No general partially-overlapping coincident CURVED-face handling still — this round's own fix is for flat/planar coincidence only, the same scope `IntersectSurfaces()`'s own coincident-region path (surface_intersect.h) already discloses. **Also still open, confirmed (not merely named) this round: a FLAT partially-overlapping case too** — once a sub-region curve correctly fragments the BIGGER face (the override above only ever applies to a face's own single untouched fragment, not an inner one carved out of a bigger face), the resulting inner fragment's own ray-cast classification against the other operand is numerically arbitrary (its representative point sits exactly on the other operand's own coincident boundary plane) - confirmed to give `Union` the geometrically-correct answer by luck on one fixture but a genuinely wrong `Intersection`/`Difference` on the same fixture, and silently wrong volumes across the board on a flatter-sided variant, both pre-dating `878ecdb` (see the "Thirty-first note" below for the full A/B-confirmed detail).
 - [partial] Tangent / grazing contact handling — the mesh engine retries once with adaptive tolerance on failure (`AdaptiveManifoldTolerance`, boolean.cpp:149-170). The B-rep engines throw at grazing incidence rather than resolving it.
 - [partial] Multi-body / multi-tool booleans (N operands per side, multi-lump results and operands) — the app unions each side sequentially before combining (cmd_boolean.cpp:15-38). B-rep XOR returns a two-lump Compound; compound operands are refused by all three engines — the planar/mixed engines (boolean.cpp:911-918, call sites 931-932/6781-6782 — corrected 2026-09-28, was mis-cited boolean.cpp:815-822) and, **as of this pass**, the general engine too (boolean_general.cpp, right before `BooleanCombineGeneral`'s own definition — see this category's own trailing "Seventh note" below for the full detail; previously this engine silently processed a compound operand one face at a time with no lump-boundary awareness at all, an unhandled case rather than a clean refusal). **New this pass:** `dino8::kernel::BooleanCombineMixedNAry(first_group, second_group, op)` (boolean.h/.cpp) closes the "No kernel N-ary API" half of this bullet for the analytic engine — `first_group` (and, if non-empty, `second_group`) is each folded into one solid via repeated pairwise `BooleanCombineMixed(..., Union)` calls, then the two folded solids are combined via ONE further `BooleanCombineMixed(..., op)` call (`op` in {Union, Intersection, Difference}; an empty `second_group` returns the folded `first_group` directly for a plain multi-object Union). Verified (`TestBooleanCombineMixedNAry*`, tests/test_basic.cpp) that three overlapping boxes' N-ary Union matches an independent inclusion-exclusion volume, that the left-to-right fold order is not caller-visible (three different orderings of the same three boxes agree), that an N-ary Difference against a two-tool `second_group` matches two chained pairwise `BooleanCombineMixed` Difference calls exactly, that an N-ary Intersection unions each side independently before combining, and negative controls for an empty `first_group`, an empty `second_group` with a non-Union `op`, and `SymmetricDifference` (refused outright — its own pairwise result is a `Brep::Compound` that cannot be fed into a further Union fold). Still partial at the time: this was one new entry point on top of the existing pairwise engine, not a change to `BooleanCombineMixed` itself, so every operand in either group had to still be a single-lump Brep (`RefuseCompoundOperand` still applies at each pairwise step) — genuine multi-lump/Compound operand support (the bullet's other named gap) was untouched, `BooleanCombinePlanar`/`BooleanCombineGeneral` had no N-ary wrapper of their own yet, and no app command called it (cmd_boolean.cpp still hand-rolls its own sequential fold at the mesh-boolean level, unchanged). **New this pass: the other two B-rep engines now have the same N-ary wrapper.** `dino8::kernel::BooleanCombinePlanarNAry(first_group, second_group, op)` (boolean.h/.cpp) is the identical fold shape for the planar engine — same `RefuseCompoundOperand` precondition inherited at each pairwise step, same SymmetricDifference refusal (its own pairwise result is a two-lump `Brep::Compound`, exactly the reason the Mixed engine's wrapper refuses it too). `dino8::kernel::BooleanCombineGeneralNAry(first_group, second_group, op, tolerance = 0.001)` (boolean_general.h/.cpp) does the same for the SSX-driven general engine, forwarding `tolerance` to every pairwise `BooleanCombineGeneral` call it makes, and refuses SymmetricDifference because `BooleanCombineGeneral` itself does not implement that op at all. Verified (`TestBooleanCombinePlanarNAry*`/`TestBooleanCombineGeneralNAry*`, tests/test_basic.cpp) with the same coverage shape the Mixed wrapper's own tests already established: inclusion-exclusion-correct N-ary Union, fold-order independence (Planar), N-ary Difference against a two-tool `second_group` matching a hand-chained pairwise sequence exactly (Planar) / closely (General, within that engine's own tessellated-volume tolerance), N-ary Intersection unioning each side before combining (Planar), the General wrapper's `tolerance` genuinely reaching every internal pairwise call (not just the final combine), and the same negative controls (empty `first_group`, an empty `second_group` with a non-Union `op`, `SymmetricDifference` refused outright). **Incidental finding while building the General engine's own test fixture, not a defect in the new wrapper:** the axis-aligned "chain of three boxes overlapping by one unit along x" fixture the Mixed/Planar wrappers' own tests use shares a coplanar, partially-overlapping side face between adjacent operands (same y/z extent, only x differs) — reproduced standalone (a single plain `BooleanCombineGeneral(a, b, Union)` call, no N-ary code involved) to throw "an edge is claimed by 3 or more fragment loops", confirming this is `BooleanCombineGeneral`'s own pre-existing, already-disclosed "No general partially-overlapping coincident curved-face handling" scope limit (this bullet's own "Coplanar / coincident face handling" neighbor), not something this pass introduced; the General wrapper's own tests instead use a diagonally-staggered fixture (no two operands share a coplanar face) that stays in that engine's proven scope. Still partial: every operand in either group for all three engines must still be a single-lump Brep (Planar inherits `RefuseCompoundOperand`; General had no compound-operand guard of its own to inherit at the time of this note — a separate pre-existing gap this pass did not touch, since closed by a later pass, see this category's own trailing "Seventh note" below); no app command calls any of the three N-ary entry points yet (cmd_boolean.cpp still hand-rolls its own sequential fold at the mesh-boolean level); and the General engine's own scope limits (one crossing chain per face pair, genus-0 faces, no partially-overlapping coincident faces) apply to every pairwise fold step `BooleanCombineGeneralNAry` makes, unchanged. **New this pass: `BooleanCombinePlanar` itself (not just its N-ary wrapper) now accepts a genuine compound operand for `Difference`/`Intersection`** — the "genuine multi-lump/Compound operand support" half of this bullet, for this one engine: `RefuseCompoundOperand` is no longer called at all for those two ops, the existing split/classify/reassemble pipeline is proven (not just assumed) to already compute the right answer against a multi-lump operand, and the result's true lump structure is re-derived via `SplitDisjointPieces()` so `LumpFaceRanges()` never lies about it. `Union`/`SymmetricDifference` still refuse one, as does every op of `BooleanCombineMixed`/`BooleanCombineGeneral` — see this category's own trailing "Sixth note" below for the full verification detail and the real, disclosed scope limit found (a compound whose own lumps genuinely touch along a contact curve, e.g. a corner-overlap `SymmetricDifference` result, still throws the pre-existing non-manifold reassembly refusal). **New this pass: `Union` itself no longer refuses a compound operand, on ALL THREE engines** — closing the "compound-operand support for Union... refused on all three engines" half of this bullet's own longest-standing named gap (only `SymmetricDifference` still refuses one outright now, for the separate, structural "no lump-merge step" reason its own Compound()/`Append()`-based construction genuinely needs). `RefuseCompoundOperand` is simply no longer called for `op == Union` in `BooleanCombinePlanar`/`BooleanCombineMixed` (boolean.cpp) or `BooleanCombineGeneral` (boolean_general.cpp) — Union's own face selection (`A_out ∪ B_out ∪ A_on`) turned out to be the IDENTICAL split/classify/reassemble pipeline already proven safe for `Difference`/`Intersection`'s own compound-operand exemption above, so no new code was needed to make it correct, only the removal of a now-unnecessary pre-emptive guard. See this category's own trailing "Thirtieth note" below for the full verification detail, including the real, disclosed asymmetry found between Union and Difference for a genuinely touching-lump compound.
 - [partial] Result validity (closed manifold / ON_Brep IsValid / IsSolid) — the mesh contract is fuzz-checked (IsClosedManifold on every result). Planar results pass IsValid/IsSolid. General-engine results close in 54 of 76 cases (see the corrected figure above), not watertight otherwise.
@@ -6210,6 +6210,124 @@ are reverted before this pass's own commit; the binary that ships behaves
 exactly as before with respect to the pre-existing abort, narrowing nothing
 about it and fixing nothing about it, consistent with this category's own
 stated scope.*
+
+*Thirty-first note on this category's score (round 44): the `878ecdb`
+regression three prior rounds (the Twenty-eighth/-ninth/Thirtieth notes
+above) each re-confirmed but left for "whichever session root-causes it"
+is now ROOT-CAUSED AND FIXED, not just disclosed again. `878ecdb`
+("IntersectSurfaces now returns a boundary curve for coincident flat
+surfaces", filed under **kernel: Intersections & projections**'s own "SSX
+coincident / overlapping surface regions" bullet) taught
+`IntersectSurfaces()` to report a coincident pair's own shared boundary as
+a real, closed `IntersectionCurve` instead of silently staying empty - but
+`BooleanCombineGeneral()`'s own coincident-face override
+(boolean_general.cpp, the "the general engine has its own coincident
+whole-face test" clause the "Coplanar / coincident face handling" bullet
+below already names) was written assuming `curves.empty()` was still how a
+coincident pair always presented, which `878ecdb` broke. Two genuinely
+distinct bugs, both root-caused with `DINO8_BOOL_DEBUG=1` isolation and an
+A/B rebuild against the pre-`878ecdb` `surface_intersect.cpp` (confirming
+each fixture passes clean on that baseline, so both are real `878ecdb`
+regressions, not pre-existing defects `878ecdb` merely exposed):
+(1) **`TestBooleanCombineGeneralCoplanarBoxes`'s own fixture** (two boxes
+touching face-to-face along one entire shared plane): the override's own
+`curves.empty()` gate never fires once `878ecdb` makes `curves` non-empty
+for this exact pair, so the shared face gets fragmented along its own
+re-traced outline instead of staying the single untouched whole-face
+fragment the override exists to handle - fixed by checking BOTH sides'
+coincidence independently and UNCONDITIONALLY (not gated on
+`curves.empty()`), and discarding the artifact curve for whichever side
+(or both) is a genuine whole-face match, regardless of whether `curves`
+came back empty. (2) **A second, asymmetric shape**, found only once (1)
+was fixed and the suite ran further: `TestRecognizePocketsBlindPocketRoundTripAndNegativeControls`'s
+own "a boss raised out of the box's own top face" fixture (a small 1x1
+boss footprint sitting on a much bigger 4x4 box face) - here the
+coincident region matches the SMALL boss cap's entire extent but not the
+big box face's, which a symmetric `box_a == box_b` bbox comparison can
+never detect (the two boxes are deliberately different sizes). Fixed by
+measuring each side against the DETECTED REGION's own bbox (the union of
+the returned curve's own points, already bisection-tightened by
+`IntersectSurfacesOverlap()`) rather than against the OTHER side's box,
+independently per side - the box's own big face still fragments correctly
+(its hole-bridging already worked), while the boss's own wholly-coincident
+cap is now handled by the override instead of the artifact curve. A THIRD,
+unrelated defect surfaced while isolating (2): `IntersectSurfacesOverlap()`
+itself (not `878ecdb`'s own new code, but a pre-existing function `878ecdb`
+newly routed through the main `IntersectSurfaces()` path for the first
+time) reports a spurious multi-cell "coincident region" for two
+PERPENDICULAR planar faces that merely share one boundary EDGE (e.g. a
+box's bottom face against an adjacent box's side wall) - the closest-point
+projection right at the shared edge is genuinely 0, so a whole one-grid-
+cell-wide RIBBON along that edge reads as "on `b`" even though the two
+faces share no actual 2D area. Neither of `IntersectSurfacesOverlap()`'s
+own existing guards (the single-isolated-cell touch guard, the small-bbox-
+diagonal pole guard) catches a ribbon - long in one direction, one cell
+wide in the other - so a new guard was added: a connected "on" run confined
+to a single grid column OR row (`imax == imin` or `jmax == jmin`), however
+many cells long, is rejected as a one-dimensional boundary artifact, not a
+genuine two-dimensional overlap area. All three fixes verified directly:
+each failing fixture reproduced in isolation (a small standalone `.cpp`
+reproducer linked against `libdino8_kernel.a`, not inferred from the full
+suite alone) before and after, `DINO8_BOOL_DEBUG=1`/temporary instrumentation
+confirming the exact mechanism each time, and a full, clean, uninterrupted
+`dino8_kernel_tests` direct run afterward (10029 checks, 0 `FAILED:` lines,
+0 regressions) - the first time any of this category's own last four
+rounds has reached one. Does not change this
+category's own 9/15/1/25 (66.0%) split: every bullet's own existing
+classification already correctly accounted for the DISCLOSED scope limits
+this fix leaves genuinely open (curved-face coincidence, partially-
+overlapping coincident faces beyond the two shapes above, grazing contact)
+- this was a correctness BUG blocking test execution, not a scored
+capability gap, so no bucket moves. See the "Coplanar / coincident face
+handling" bullet below, narrowed (not flipped) to reflect the asymmetric
+case now being handled too. **Cross-reference for `kernel: Intersections &
+projections`:** the third defect above is a genuine, previously-unknown bug
+in `IntersectSurfacesOverlap()`, a function that category's own "SSX
+coincident / overlapping surface regions" bullet currently rates
+`[present]` - the false positive is now fixed and that bullet's own
+capability is strictly more correct, not weaker, so this round does not
+re-open or re-score it there, only notes the fix for whoever next rotates
+onto that category. **A genuinely DEEPER, still-open limitation found
+while building this round's own regression test, disclosed rather than
+silently worked around:** a box with a SECOND plain `Brep::Box()` sitting
+flush on top of it (as opposed to the fixed regression's own `Brep::Extrude()`-
+built boss, whose single wrapped side wall touches the big face only along
+a 1D rim) still either produces a silently WRONG volume or crashes -
+confirmed directly, via an A/B rebuild, that this is NOT a new regression
+either: the pre-`878ecdb` baseline already returns garbage for it
+(Union volume 43.67 instead of the true 65, a negative B-A volume) without
+crashing, so `878ecdb` merely changed "silently wrong" into "sometimes
+also throws" for this specific shape, rather than causing it. Root cause:
+a box's own four FLAT boss side faces each cross the big face as a genuine
+transversal intersection (two perpendicular planes), fragmenting the big
+face into an outer ring plus an inner island EXACTLY matching the boss's
+own footprint - and ray-casting that inner island's own representative
+point (sitting exactly on the boss's own coincident boundary plane) hits
+the identical "numerically arbitrary" ambiguity this file's whole-face
+override exists to avoid, one level deeper than that override reaches (it
+only ever fires for a face's own SINGLE untouched fragment, not an inner
+fragment carved out of a bigger one). This is squarely this category's own
+long-disclosed "No general partially-overlapping coincident face handling"
+gap (the "Coplanar / coincident face handling" bullet below), not a new
+one - left genuinely open, not chased further this round, and deliberately
+NOT the fixture this round's own new regression test uses (which uses the
+confirmed-fixed wrapped-side-wall shape instead, so as to test ONLY the
+bug this round actually fixed). **The same ambiguity, confirmed directly,
+also reaches the wrapped-side-wall shape itself, just never for `Union`**:
+that fixture's own box-top face still ends up with the identical inner
+island (its own hole-bridging is what this round's regression test
+actually exercises), and while that island's ray-cast happens to land on
+the geometrically-correct side for `Union` (confirmed, not assumed - the
+new regression test's own `FaceCount() == 8` check), the SAME
+representative point lands on the WRONG side for `Intersection`/
+`Difference` (confirmed by direct inspection: `Intersection` keeps the
+island as a spurious nonzero-area result instead of the true empty
+solid). This is why the new regression test deliberately asserts only
+"does not throw" for `Intersection`/`Difference` on this fixture, not
+their own volume or face count - asserting either would either fail
+honestly (correctly reporting the still-open ambiguity) or, worse, lock in
+today's "which way the coin landed" answer as if it were a guarantee.
+
 
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
