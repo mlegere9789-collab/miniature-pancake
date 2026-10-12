@@ -71,6 +71,42 @@ std::optional<kernel::Brep> TryExactBrepBoolean(CommandContext& ctx, const std::
   }
 }
 
+// Tries BooleanCombineGeneral/BooleanCombineGeneralNAry when the Planar
+// engine above declines - PARITY_MAP.md's own "kernel: Boolean operations"
+// category names "General NURBS-surface B-rep boolean" as having "no app
+// entry point at all" (unlike the Planar engine, which TryExactBrepBoolean
+// above already wires in). Reached only as a SECOND attempt, after
+// TryExactBrepBoolean's own Planar path declines (typically because some
+// operand has a curved face, or some other PlanarFaces()-only scope limit
+// Planar itself has) - Planar's all-flat-faces case is strictly cheaper and
+// already proven correct, so it stays first. Same IsSolid() eligibility and
+// the same silent "fall through on any precondition violation or thrown
+// exception" contract TryExactBrepBoolean already established.
+// SymmetricDifference has no General form at all - BooleanCombineGeneral
+// itself does not implement that op, so it is refused here outright rather
+// than attempted and caught.
+std::optional<kernel::Brep> TryGeneralBrepBoolean(CommandContext& ctx, const std::vector<ObjectId>& first_ids, const std::vector<ObjectId>& second_ids,
+                                                   kernel::BooleanOp op) {
+  if (op == kernel::BooleanOp::SymmetricDifference) return std::nullopt;
+  auto collect = [&](const std::vector<ObjectId>& ids, std::vector<kernel::Brep>& out) -> bool {
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->kind != ObjectKind::Brep || !o->brep || !o->brep->raw().IsSolid()) return false;
+      out.push_back(*o->brep);
+    }
+    return !out.empty();
+  };
+  std::vector<kernel::Brep> g1, g2;
+  if (!collect(first_ids, g1)) return std::nullopt;
+  if (!second_ids.empty() && !collect(second_ids, g2)) return std::nullopt;
+  try {
+    if (second_ids.empty()) return kernel::BooleanCombineGeneralNAry(g1, {}, kernel::BooleanOp::Union);
+    return kernel::BooleanCombineGeneralNAry(g1, g2, op);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 // Tries a genuine SubD-preserving boolean before RunBoolean's own mesh path,
 // the same priority TryExactBrepBoolean above has for Brep operands -
 // PARITY_MAP.md's own "Dino 8: SubD & mesh modeling toolset (app level)"
@@ -160,8 +196,10 @@ std::optional<kernel::SubD> TrySubDBoolean(CommandContext& ctx, const std::vecto
 // e.g. Difference(A,B) can be flipped to Difference(B,A) without the caller
 // re-collecting meshes. `try_exact_brep` (BooleanUnion/BooleanDifference/
 // BooleanIntersection/Boolean2Objects; never the Mesh* aliases, which
-// promise a mesh result) tries TryExactBrepBoolean above first, then
-// TrySubDBoolean, ahead of this function's own generic mesh path.
+// promise a mesh result) tries TryExactBrepBoolean (Planar engine) above
+// first, then TryGeneralBrepBoolean (General engine, for a curved face or
+// any other Planar-only scope limit), then TrySubDBoolean, ahead of this
+// function's own generic mesh path.
 void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::vector<ObjectId>& b, kernel::BooleanOp op,
                 bool two_sets, const std::string& label, bool swap_sides = false, bool try_exact_brep = false) {
   std::vector<ObjectId> all = a;
@@ -171,16 +209,24 @@ void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::
     const std::vector<ObjectId>& eb = swap_sides ? a : b;
     std::vector<ObjectId> first_ids = two_sets ? ea : all;
     std::vector<ObjectId> second_ids = two_sets ? eb : std::vector<ObjectId>{};
-    if (std::optional<kernel::Brep> result = TryExactBrepBoolean(ctx, first_ids, second_ids, op)) {
+    std::optional<kernel::Brep> exact_result = TryExactBrepBoolean(ctx, first_ids, second_ids, op);
+    bool via_general = false;
+    if (!exact_result) {
+      exact_result = TryGeneralBrepBoolean(ctx, first_ids, second_ids, op);
+      via_general = exact_result.has_value();
+    }
+    if (exact_result) {
+      kernel::Brep& result = *exact_result;
       ctx.Doc().BeginChange(label);
       int layer = 0;
       if (const SceneObject* o = ctx.Doc().Find(all.front())) layer = o->layer_index;
       for (ObjectId id : all) ctx.Doc().Remove(id);
-      if (result->raw().m_F.Count() > 0) {
-        SceneObject n = SceneObject::MakeBrep(*result);
+      if (result.raw().m_F.Count() > 0) {
+        SceneObject n = SceneObject::MakeBrep(result);
         n.layer_index = layer;
         ctx.Doc().Add(std::move(n));
-        ctx.Print(label + ": exact B-rep boolean (no tessellation), " + std::to_string(result->raw().m_F.Count()) + " face(s)");
+        ctx.Print(label + ": exact B-rep boolean (no tessellation" + std::string(via_general ? ", general engine" : "") + "), " +
+                   std::to_string(result.raw().m_F.Count()) + " face(s)");
       } else {
         ctx.Print(label + ": result is empty");
       }
