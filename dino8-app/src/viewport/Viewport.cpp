@@ -971,6 +971,35 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
   const double lod_factor = ctx.for_render ? 1.0 : ctx.lod_scale;
   const double adaptive_curve_tolerance = ctx.curve_tolerance * lod_factor;
   const double adaptive_surface_tolerance = ctx.surface_tolerance * lod_factor;
+  // Per-object DISTANCE-based LOD, on top of the per-viewport zoom-level
+  // scale just above (DistanceLodFactor, viewport/AdaptiveTessellation.h) -
+  // closes that feature's own disclosed "still zoom-level LOD, not
+  // per-object distance-based LOD" gap. adaptive_curve_tolerance/
+  // adaptive_surface_tolerance alone are accurate for an object sitting
+  // right at the camera's own orbit target (Camera::PixelSize's own
+  // reference point) but, in a perspective view, increasingly wrong the
+  // farther an object's own distance from the eye differs from that one
+  // target distance - a close foreground object actually needs finer
+  // tessellation than the frame-wide scale alone gives it, a distant
+  // background one coarser. Skipped for ctx.for_render, same reasoning
+  // and same guard as the zoom-level scale above. Every EnsureAdaptiveDisplay
+  // call site below goes through this one lambda instead of the two plain
+  // doubles directly, so every pass in this one frame still tessellates a
+  // given object at the identical resolution (the lambda is a pure
+  // function of the camera's current state plus the object's own, already-
+  // cheap-to-compute BoundingBox(), so calling it several times per object
+  // per frame is both correct and cheap - no caching needed here).
+  const double lod_target_distance = camera_.Distance();
+  const bool lod_is_perspective = camera_.State().perspective;
+  const Point3d lod_eye = camera_.State().eye;
+  auto adaptive_tolerances_for = [&](const SceneObject& o) -> std::pair<double, double> {
+    if (ctx.for_render) return {adaptive_curve_tolerance, adaptive_surface_tolerance};
+    const kernel::BoundingBox box = o.BoundingBox();
+    const Point3d centre((box.min.x + box.max.x) / 2, (box.min.y + box.max.y) / 2, (box.min.z + box.max.z) / 2);
+    const double object_distance = (centre - lod_eye).Length();
+    const double distance_factor = DistanceLodFactor(object_distance, lod_target_distance, lod_is_perspective);
+    return {adaptive_curve_tolerance * distance_factor, adaptive_surface_tolerance * distance_factor};
+  };
   // Rendered mode draws every opaque object first, then the transparent
   // ones back to front with depth writes off so glass composites properly.
   std::vector<std::pair<double, const SceneObject*>> transparent;
@@ -1111,7 +1140,10 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     for (std::size_t candidate_index : render_candidates) {
       const SceneObject& o = doc.Objects()[candidate_index];
       if (!shown(o)) continue;
-      o.EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
+      {
+        const auto [cv_tol, sf_tol] = adaptive_tolerances_for(o);
+        o.EnsureAdaptiveDisplay(cv_tol, sf_tol);
+      }
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
       depth_objects.push_back(&o);
@@ -1153,7 +1185,10 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       // the fill pass even in a shaded/rendered/etc. viewport, so the
       // object still shows only edges/curves below.
       if (o.force_wireframe) continue;
-      o.EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
+      {
+        const auto [cv_tol, sf_tol] = adaptive_tolerances_for(o);
+        o.EnsureAdaptiveDisplay(cv_tol, sf_tol);
+      }
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
       // Shaded/Ghosted/X-Ray fill with one light material like Rhino's
@@ -1256,7 +1291,10 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       // happens to be Wireframe or something else entirely).
       if ((!o.force_shaded && !o.force_ghosted && !o.force_xray && !o.force_monochrome && !o.force_pen && !o.force_arctic && !o.force_rendered) ||
           !shown(o)) continue;
-      o.EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
+      {
+        const auto [cv_tol, sf_tol] = adaptive_tolerances_for(o);
+        o.EnsureAdaptiveDisplay(cv_tol, sf_tol);
+      }
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
       if (o.force_rendered) {
@@ -1316,7 +1354,10 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     if (!doc.IsObjectVisible(o)) continue;
     if (o.kind == ObjectKind::Curve) o.SetDisplayDashes(doc.EffectiveDashes(o));
     if (!shown(o)) continue;
-    o.EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
+    {
+      const auto [cv_tol, sf_tol] = adaptive_tolerances_for(o);
+      o.EnsureAdaptiveDisplay(cv_tol, sf_tol);
+    }
     const DisplayCache& d = o.Display();
     const bool is_curve_like = o.kind == ObjectKind::Curve;
     Color line_color = doc.EffectiveColor(o);
@@ -1390,7 +1431,10 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     for (const SubObjectRef& r : ctx.sub_selection->Items()) {
       const SceneObject* o = doc.Find(r.id);
       if (!o || !shown(*o)) continue;
-      o->EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
+      {
+        const auto [cv_tol, sf_tol] = adaptive_tolerances_for(*o);
+        o->EnsureAdaptiveDisplay(cv_tol, sf_tol);
+      }
       const DisplayCache& d = o->Display();
       if (r.kind == SubObjectKind::Face && o->kind == ObjectKind::Surface) {
         tris.insert(tris.end(), d.triangles.begin(), d.triangles.end());
