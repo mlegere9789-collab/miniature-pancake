@@ -2992,10 +2992,13 @@ class FilletEdgeCommand : public Command {
 class MatchSrfCommand : public Command {
  public:
   void Begin(CommandContext&) override {
-    options = {{"Continuity", "Position", {"Position", "Tangency"}, false, false}};
+    options = {{"Continuity", "Position", {"Position", "Tangency", "Curvature"}, false, false}};
     WantPoint("Click the surface edge to move (near the edge to match)");
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Continuity") tangency_ = (v == "Tangency"); }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "Continuity") return;
+    continuity_level_ = (v == "Curvature") ? 2 : (v == "Tangency") ? 1 : 0;
+  }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     if (!first_) {
       auto pick = PickFace(ctx, p);
@@ -3076,13 +3079,33 @@ class MatchSrfCommand : public Command {
           const bool t_is_u_edge = (tm == teu0 || tm == teu1);
           const int target_fixed_dir = t_is_u_edge ? 0 : 1;
           const bool target_at_min = t_is_u_edge ? (tm == teu0) : (tm == tev0);
-          const kernel::MatchContinuity continuity = tangency_ ? kernel::MatchContinuity::Tangent : kernel::MatchContinuity::Position;
+          const kernel::MatchContinuity continuity = continuity_level_ == 2 ? kernel::MatchContinuity::Curvature
+                                                      : continuity_level_ == 1 ? kernel::MatchContinuity::Tangent
+                                                                                : kernel::MatchContinuity::Position;
           if (ks.MatchEdge(fixed_dir, at_min, kt, target_fixed_dir, target_at_min, continuity, &exact_report) == kernel::Result::Ok) {
             matched_exact = true;
             moved = n_cross;
           }
         }
       }
+    }
+    // Curvature (G2) has no approximate counterpart in the per-CV loop
+    // below - that loop only ever moves the boundary row (Position) and,
+    // for Tangency, one more row via a hand-derived step/perpendicular
+    // construction with no notion of a matched second derivative at all.
+    // Rather than silently downgrade a requested G2 match to G1/G0 (or
+    // fabricate a curvature match this loop was never built to compute),
+    // this fails closed with a clear diagnostic - the same "no approximate
+    // equivalent, fails closed" posture BlendSrf's own Continuity=G3
+    // already uses when its own exact construction can't apply, rather
+    // than silently doing something less than what was asked.
+    if (!matched_exact && continuity_level_ == 2) {
+      const std::string why = target_curve ? "a target curve has no curvature-match fallback"
+                                            : "the exact match failed (periodic edge, or the target's degree is too low to carry a curvature row)";
+      delete target_curve;
+      ctx.Warn("MatchSrf: Curvature continuity needs an exact edge match against a target SURFACE edge (kernel::NurbsSurface::MatchEdge) - " +
+               why + "; nothing was changed");
+      return;
     }
     if (!matched_exact) {
       for (int k = 0; k < n_cross; ++k) {
@@ -3097,7 +3120,7 @@ class MatchSrfCommand : public Command {
         else target = target_brep->m_F[target_face->face].SurfaceOf()->PointAt(gu, gv);  // best-effort shared parameterisation
         raw.SetCV(i, j, target);
         ++moved;
-        if (tangency_) {
+        if (continuity_level_ >= 1) {
           ON_3dPoint cv1;
           const int i1 = fixed_dir == 0 ? cv_index_row1 : k;
           const int j1 = fixed_dir == 0 ? k : cv_index_row1;
@@ -3125,16 +3148,20 @@ class MatchSrfCommand : public Command {
       orig->InvalidateDisplay();
     }
     if (matched_exact) {
-      ctx.Print("MatchSrf: exact edge match (" + std::string(tangency_ ? "G1" : "G0") + ") to the target surface, max position error " +
-                 FormatNumber(exact_report.max_position_error) + (tangency_ ? ", max tangent error " + FormatNumber(exact_report.max_tangent_error) : ""));
+      const char* label = continuity_level_ == 2 ? "G2" : continuity_level_ == 1 ? "G1" : "G0";
+      std::string msg = "MatchSrf: exact edge match (" + std::string(label) + ") to the target surface, max position error " +
+                         FormatNumber(exact_report.max_position_error);
+      if (continuity_level_ >= 1) msg += ", max tangent error " + FormatNumber(exact_report.max_tangent_error);
+      if (continuity_level_ == 2) msg += ", max curvature error " + FormatNumber(exact_report.max_curvature_error);
+      ctx.Print(msg);
     } else {
-      ctx.Print("MatchSrf: " + std::to_string(moved) + " boundary control point(s) moved to " + (tangency_ ? "position and tangent" : "position") + (target_curve ? " on the target curve" : " on the target surface"));
+      ctx.Print("MatchSrf: " + std::to_string(moved) + " boundary control point(s) moved to " + (continuity_level_ >= 1 ? "position and tangent" : "position") + (target_curve ? " on the target curve" : " on the target surface"));
     }
   }
 
  private:
   std::optional<FacePick> first_;
-  bool tangency_ = false;
+  int continuity_level_ = 0;  // 0 = Position (G0), 1 = Tangency (G1), 2 = Curvature (G2)
 };
 
 // ---------------------------------------------------------------------------
@@ -4559,7 +4586,7 @@ void RegisterFilletCommands(CommandEngine& e) {
   Reg(e, "VariableBlendSrf", Make<VariableBlendSrfCommand>(), CommandStatus::Implemented,
       "A genuine independent blend-tangent variant of BlendSrf (not the rolling-ball fillet VariableFilletSrf uses): the same BuildBlendSurfaceG1/G2 Hermite/quintic blend between two picked surface edges, with the blend's own cross-section width interpolated linearly along the rail from Width= to EndWidth=, the same piecewise-linear-along-the-rail technique FilletTwoSurfacesCommand uses for Radius=/EndRadius=. Continuity=Curvature gets the same real, numerically-verified G2 cross-boundary curvature match as BlendSrf (see tests/test_g2_blend.cpp and tests/test_variable_blend.cpp), independent of the width, which no fixed-cross-section rolling-ball fillet construction can do except at one coincidental radius.");
   Reg(e, "MatchSrf", Make<MatchSrfCommand>(), CommandStatus::Implemented,
-      "Moves the picked surface's boundary control row onto the target (Position); Tangency also aligns the next row's step to the target's tangent/normal.");
+      "Moves the picked surface's boundary control row onto the target (Position); Tangency also aligns the next row's step to the target's tangent/normal. Against a target surface edge, Position/Tangency/Curvature all try the exact kernel::NurbsSurface::MatchEdge() construction first (real NURBS algebra, not moved-and-hoped-for control points) - Curvature additionally matches the cross-boundary second derivative, real G2, not just G1 (see kernel::NurbsSurface::MatchEdge()'s own doc comment). Curvature has no approximate fallback against a target curve or when the exact match itself fails (a periodic edge, or a target whose degree is too low to carry a curvature row) - it fails closed with a diagnostic rather than silently downgrading to G1/G0.");
   Reg(e, "BlendSrf", Make<BlendSrfCommand>(), CommandStatus::Implemented,
       "Hermite blend between two picked surface edges. Continuity=Tangency is a degree-3x3 G1 blend. Continuity=Curvature is a degree-5x3 blend matching each surface's own exact directional second derivative at the boundary (Ev2Der), so its curvature vector matches exactly in the cross-boundary direction (see BlendEdge's own help and tests/test_g2_blend.cpp) - not a claim of full surface-wide G2.");
   Reg(e, "ConnectSrf", Make<ConnectSrfCommand>(), CommandStatus::Implemented,
