@@ -25567,6 +25567,67 @@ void TestMeshContainsPoint() {
         "a point far outside the hollow box entirely is not inside it");
 }
 
+void TestMeshContainsPointSurvivesSingleRayVertexGrazing() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // PARITY_MAP's own "Signed distance point-to-solid" bullet names
+  // ContainsPoint()'s prior reliance on a single fixed ray as its named
+  // gap. An octahedron (6 vertices, 8 triangles, every vertex shared by
+  // exactly 4 faces) is the simplest closed mesh where many triangles
+  // meet at one point - the classic ray-cast "grazes a shared vertex"
+  // scenario. `direction` below is this method's own original fixed
+  // direction (kept first in its own internal vote list for continuity);
+  // the query point is placed so THAT one specific direction's own ray
+  // passes exactly through vertex (1, 0, 0) as it travels forward.
+  Mesh oct;
+  ON_Mesh& raw = oct.raw();
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 0 +X
+  raw.m_V.Append(ON_3fPoint(-1, 0, 0));  // 1 -X
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));   // 2 +Y
+  raw.m_V.Append(ON_3fPoint(0, -1, 0));  // 3 -Y
+  raw.m_V.Append(ON_3fPoint(0, 0, 1));   // 4 +Z
+  raw.m_V.Append(ON_3fPoint(0, 0, -1));  // 5 -Z
+  auto add_tri = [&raw](int a, int b, int c) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = c;
+    f.vi[3] = c;
+    raw.m_F.Append(f);
+  };
+  add_tri(0, 2, 4);
+  add_tri(2, 1, 4);
+  add_tri(1, 3, 4);
+  add_tri(3, 0, 4);
+  add_tri(2, 0, 5);
+  add_tri(1, 2, 5);
+  add_tri(3, 1, 5);
+  add_tri(0, 3, 5);
+
+  // Confirmed directly (via a standalone dino8_scratch_test probe before
+  // trusting it here) that this exact query point genuinely trips the
+  // OLD single-ray implementation: re-deriving that implementation
+  // in isolation reports crossing_count odd (misclassifying this point as
+  // INSIDE), while the true answer is OUTSIDE (|x|+|y|+|z| = 2.2620 > 1,
+  // the exact octahedron containment condition) - confirmed independently
+  // of ContainsPoint() itself, not assumed from the fix alone.
+  const Vector3d direction(0.6532814824, 0.2705980501, 0.7071067812);
+  const Point3d p = Point3d(1, 0, 0) - direction * 2.0;
+  const double l1 = std::abs(p.x) + std::abs(p.y) + std::abs(p.z);
+  Check(l1 > 1.0, "setup: the query point's own L1 norm genuinely exceeds 1 - it is truly outside the octahedron");
+  Check(!oct.ContainsPoint(p),
+        "ContainsPoint correctly reports this point outside, surviving the single-direction vertex graze that "
+        "would have misclassified it as inside under the old single-ray implementation (confirmed via a "
+        "standalone probe before writing this check)");
+
+  // A genuinely interior point, far from any vertex-grazing direction,
+  // still reports inside - the fix doesn't just bias every answer toward
+  // "outside".
+  Check(oct.ContainsPoint(Point3d(0.1, 0.1, 0.1)), "a point well inside the octahedron is still reported inside");
+}
+
 void TestMeshClosestPoint() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -77323,6 +77384,7 @@ int main() {
   RunTest("TestMeshFlipNormals", TestMeshFlipNormals);
   RunTest("TestMeshIsClosedManifold", TestMeshIsClosedManifold);
   RunTest("TestMeshContainsPoint", TestMeshContainsPoint);
+  RunTest("TestMeshContainsPointSurvivesSingleRayVertexGrazing", TestMeshContainsPointSurvivesSingleRayVertexGrazing);
   RunTest("TestMeshClosestPoint", TestMeshClosestPoint);
   RunTest("TestMeshSignedDistance", TestMeshSignedDistance);
   RunTest("TestMeshVolumeMassProperties", TestMeshVolumeMassProperties);

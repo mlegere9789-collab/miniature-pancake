@@ -459,25 +459,57 @@ bool Mesh::ContainsPoint(Point3d point) const {
   // (observed: a sphere at the world origin reported its center as
   // contained, the identical sphere translated to (40,20,10) did not). A
   // direction with no axis-aligned or rational-fraction component doesn't
-  // line up with these seams, so it isn't sensitive to translation.
-  const Vector3d direction(0.6532814824, 0.2705980501, 0.7071067812);
-  int crossing_count = 0;
-
-  auto count_triangle = [&](int i0, int i1, int i2) {
-    if (RayIntersectsTriangle(point, direction, mesh_.m_V[i0], mesh_.m_V[i1], mesh_.m_V[i2])) {
-      ++crossing_count;
-    }
+  // line up with these seams, so it isn't sensitive to translation - the
+  // ORIGINAL fix for this, kept first in `directions` below for
+  // continuity with every caller this function already had.
+  //
+  // 5 independent generic directions, majority-voted rather than trusting
+  // just the one above - closes this class's own "single-ray test"
+  // fragility (see this method's own header doc comment, mesh.h, for the
+  // full rationale): the other 4 are golden-ratio-derived, the same
+  // "non-axis, non-rational-fraction" technique
+  // `BooleanCombineGeneral`'s own private `ClassifyPointVsBrep()`
+  // (boolean_general.cpp) already uses for the identical point-in-solid
+  // problem at the B-rep level.
+  static const double kPhi = 1.6180339887498948482;
+  static const double kPhi2 = kPhi * kPhi;
+  std::array<Vector3d, 5> directions = {
+      Vector3d(0.6532814824, 0.2705980501, 0.7071067812),
+      Vector3d(1.0, kPhi, kPhi2),
+      Vector3d(kPhi, kPhi2, 1.0),
+      Vector3d(kPhi2, 1.0, kPhi),
+      Vector3d(1.0, -kPhi, kPhi2),
   };
+  for (Vector3d& d : directions) {
+    const double len = d.Length();
+    if (len > 1e-12) d = d / len;
+  }
 
-  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
-    const ON_MeshFace& f = mesh_.m_F[i];
-    count_triangle(f.vi[0], f.vi[1], f.vi[2]);
-    if (f.IsQuad()) {
-      count_triangle(f.vi[0], f.vi[2], f.vi[3]);
+  int votes_in = 0, votes_out = 0;
+  for (const Vector3d& direction : directions) {
+    int crossing_count = 0;
+    auto count_triangle = [&](int i0, int i1, int i2) {
+      if (RayIntersectsTriangle(point, direction, mesh_.m_V[i0], mesh_.m_V[i1], mesh_.m_V[i2])) {
+        ++crossing_count;
+      }
+    };
+
+    for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+      const ON_MeshFace& f = mesh_.m_F[i];
+      count_triangle(f.vi[0], f.vi[1], f.vi[2]);
+      if (f.IsQuad()) {
+        count_triangle(f.vi[0], f.vi[2], f.vi[3]);
+      }
+    }
+
+    if ((crossing_count % 2) == 1) {
+      ++votes_in;
+    } else {
+      ++votes_out;
     }
   }
 
-  return (crossing_count % 2) == 1;
+  return votes_in > votes_out;
 }
 
 Point3d Mesh::ClosestPoint(Point3d point) const {
