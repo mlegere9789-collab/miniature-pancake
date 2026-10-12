@@ -3979,6 +3979,97 @@ void TestFireRayAtBrep() {
   Check(threw_distance, "FireRayAtBrep throws std::invalid_argument for a non-positive max_distance");
 }
 
+// PARITY_MAP's massprops category, "Closest point on trimmed B-rep" bullet:
+// ClosestPointOnBrep() is the real, trimmed, exact kernel entry point
+// (Mesh::ClosestPoint/NurbsSurface::ClosestPoint existed but were
+// untrimmed-only - there was still no Brep::ClosestPoint at all).
+void TestClosestPointOnBrep() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ClosestPointOnBrep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // A plain 2x2x2 box: a query straight above the top face must project
+  // onto it exactly (hand-derivable: (1,1,5) -> (1,1,2), distance 3).
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  {
+    const auto r = ClosestPointOnBrep(Point3d(1, 1, 5), box.raw());
+    Check(r.point.DistanceTo(Point3d(1, 1, 2)) < 1e-6 && std::abs(r.distance - 3.0) < 1e-6,
+          "ClosestPointOnBrep on a box projects a query straight above the top face onto exactly "
+          "(1,1,2) at distance 3");
+    Check(!r.on_trim_boundary,
+          "the box's own faces are untrimmed (full-domain), so the unconstrained interior answer "
+          "is used directly, not the boundary fallback");
+  }
+  // A query diagonally past a corner: the closest point on ANY face must
+  // be that exact corner, at the hand-derivable distance sqrt(3) (query
+  // (3,3,3), nearest corner (2,2,2)).
+  {
+    const auto r = ClosestPointOnBrep(Point3d(3, 3, 3), box.raw());
+    Check(r.point.DistanceTo(Point3d(2, 2, 2)) < 1e-6 && std::abs(r.distance - std::sqrt(3.0)) < 1e-6,
+          "ClosestPointOnBrep on a box finds the exact corner (2,2,2) at distance sqrt(3) for a "
+          "query diagonally past it");
+  }
+  // A query INSIDE the box, off-center: the closest point is on whichever
+  // face is nearest (here x=0, at the hand-derivable distance 0.3).
+  {
+    const auto r = ClosestPointOnBrep(Point3d(0.3, 1, 1), box.raw());
+    Check(r.point.DistanceTo(Point3d(0, 1, 1)) < 1e-6 && std::abs(r.distance - 0.3) < 1e-6,
+          "ClosestPointOnBrep on a box, queried from the inside, finds the nearest face at the "
+          "exact perpendicular distance 0.3");
+  }
+
+  // The exact-AND-TRIMMED claim: a flat plane at z=2 (world [0,2]^2),
+  // trimmed down to a small square - same genuine-topology
+  // TrimmedPlanarFaceWelded() fixture TestFireRayAtBrep() above uses, for
+  // the identical reason (TrimmedPlanarFace()'s own bare surface has no
+  // real ON_Brep trim topology for FaceContainsUV() to read).
+  const std::vector<Point3d> plane_grid = {Point3d(0, 0, 2), Point3d(0, 2, 2), Point3d(2, 0, 2),
+                                            Point3d(2, 2, 2)};
+  const NurbsSurface flat_plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+  const std::vector<Point2d> small_trim = {
+      Point2d(0.25, 0.25), Point2d(0.75, 0.25), Point2d(0.75, 0.75), Point2d(0.25, 0.75)};
+  const Brep trimmed_top = Brep::TrimmedPlanarFaceWelded(flat_plane, small_trim);
+  // Query directly above world (1, 1) - the trim's own interior - must
+  // use the unconstrained minimum directly, landing exactly on (1,1,2)
+  // at distance 3.
+  {
+    const auto r = ClosestPointOnBrep(Point3d(1, 1, 5), trimmed_top.raw());
+    Check(r.point.DistanceTo(Point3d(1, 1, 2)) < 1e-6 && std::abs(r.distance - 3.0) < 1e-6,
+          "a query directly above the trim's own interior uses the unconstrained minimum, landing "
+          "exactly on (1,1,2) at distance 3");
+    Check(!r.on_trim_boundary, "that query's own result is correctly reported as NOT a boundary fallback");
+  }
+  // Query directly above world (0.2, 0.2) - on the SAME untrimmed
+  // surface, but outside the small trim's own square - must be pushed
+  // onto the trim's own boundary (the near corner, world (0.5, 0.5, 2)),
+  // not the unconstrained minimum (which would be (0.2, 0.2, 2),
+  // distance 3 exactly - this query's own real answer must exceed that).
+  {
+    const auto r = ClosestPointOnBrep(Point3d(0.2, 0.2, 5), trimmed_top.raw());
+    Check(r.on_trim_boundary,
+          "a query outside the trimmed face's own trim loop is correctly reported as a boundary "
+          "fallback, not the unconstrained interior minimum");
+    Check(r.distance > 3.0 + 1e-9,
+          "the boundary-constrained distance is strictly greater than the unconstrained minimum's "
+          "own 3.0 - confirming the trim genuinely changed the answer, not just relabeled it");
+    Check(r.point.DistanceTo(Point3d(0.5, 0.5, 2)) < 1e-6,
+          "the boundary fallback lands exactly on the trim square's own near corner, (0.5, 0.5, 2) "
+          "in real 3D world coordinates - the exact-AND-trimmed behavior IntersectCurveSurface()/"
+          "NurbsSurface::ClosestPoint() alone can't provide");
+  }
+
+  bool threw_empty = false;
+  try {
+    ON_Brep empty;
+    ClosestPointOnBrep(Point3d(0, 0, 0), empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "ClosestPointOnBrep throws std::invalid_argument for a Brep with no faces");
+}
+
 // PARITY_MAP's intersections category, "Pullback of a 3D curve to surface
 // parameter space" bullet: PullbackCurveToSurface() is the general-purpose
 // kernel entry point (SSX's own pcurve_a/pcurve_b are a by-product of a
@@ -4868,6 +4959,110 @@ void TestFindSurfaceTangentContactsSphereOnPlane() {
   Check(!IntersectSurfaces(crossing_sphere_surface, ground, opt).empty(), "a sphere pushed into the plane produces a real SSX crossing curve");
   Check(FindSurfaceTangentContacts(crossing_sphere_surface, ground, opt).empty(),
         "a sphere genuinely crossing the plane is not also reported as a tangent-only contact");
+}
+
+// PARITY_MAP.md's own "SSX tangent / grazing contact" bullet's own "or
+// curve" half, named directly in its own text ("two cylinders of equal
+// radius touching along one ruling line is not detected as a curve, only
+// as however many isolated points a coarse grid seed happens to converge
+// to along it"). FindSurfaceTangentCurves() closes it: chains
+// FindSurfaceTangentContacts()'s own grid-origin hits into an actual curve
+// whenever they reduce to a clean path/cycle on the sampling grid.
+void TestFindSurfaceTangentCurvesCylinderRulingLine() {
+  using dino8::kernel::FindSurfaceTangentContacts;
+  using dino8::kernel::FindSurfaceTangentCurves;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Distance from a point to an infinite axis line through (x, 0, *),
+  // parallel to Z - the exact membership test every sampled curve point
+  // below is checked against (not a hardcoded expected curve).
+  auto dist_to_axis = [](const Point3d& p, double axis_x) { return std::hypot(p.x - axis_x, p.y); };
+
+  auto cyl_surface_at = [](double x, double radius, double height) {
+    const ON_Cylinder cyl(ON_Circle(ON_Plane(ON_3dPoint(x, 0, 0), ON_3dVector(0, 0, 1)), radius), height);
+    ON_NurbsSurface srf;
+    Check(cyl.GetNurbForm(srf) != 0, "ON_Cylinder::GetNurbForm succeeds");
+    return srf;
+  };
+
+  // Externally tangent parallel cylinders (radius 2 at x = 0, radius 1 at
+  // x = 3 = r_a + r_b exactly, both spanning the identical height range
+  // [0, 4]): touch along the single hand-derivable ruling line x = 2,
+  // y = 0, for the whole shared height, the SAME closed-form tangency
+  // IntersectCylinderCylinderParallel()'s own "tangent" degeneracy already
+  // reports as a single ON_Line (see that function's own test) - this is
+  // the general grid-seeded path reaching the identical real geometry for
+  // an arbitrary surface pair, not a cylinder-specific shortcut.
+  const double ra = 2.0, rb = 1.0, height = 4.0;
+  const ON_NurbsSurface cyl_a = cyl_surface_at(0.0, ra, height);
+  const ON_NurbsSurface cyl_b = cyl_surface_at(3.0, rb, height);
+
+  // Sanity: FindSurfaceTangentContacts() itself finds several isolated
+  // points scattered along the line (the pre-existing, still-honest
+  // "however many isolated points a coarse grid seed happens to converge
+  // to" behavior) but, on its own, no connected curve.
+  const auto points_only = FindSurfaceTangentContacts(cyl_a, cyl_b, opt);
+  Check(points_only.size() >= 3, "the grid-seeded point finder alone already reports several points scattered along the ruling line");
+
+  const auto curves = FindSurfaceTangentCurves(cyl_a, cyl_b, opt);
+  Check(curves.size() == 1, "two externally tangent parallel cylinders chain into exactly one tangent curve");
+  if (curves.size() == 1) {
+    Check(!curves[0].closed, "a finite-height ruling line is an open chain, not a closed loop");
+    Check(curves[0].curve.IsValid(), "the chained curve is a genuine, valid NURBS curve");
+    const ON_Interval dom = curves[0].curve.Domain();
+    bool all_on_both_axes = true;
+    double z_min = std::numeric_limits<double>::max(), z_max = std::numeric_limits<double>::lowest();
+    for (int k = 0; k <= 20; ++k) {
+      const Point3d p = curves[0].curve.PointAt(dom.ParameterAt(static_cast<double>(k) / 20.0));
+      z_min = std::min(z_min, p.z);
+      z_max = std::max(z_max, p.z);
+      if (std::abs(dist_to_axis(p, 0.0) - ra) > 0.01 * ra || std::abs(dist_to_axis(p, 3.0) - rb) > 0.01 * ra) { all_on_both_axes = false; break; }
+      if (std::hypot(p.x - 2.0, p.y) > 0.01 * ra) { all_on_both_axes = false; break; }  // the hand-derivable (x, y) = (2, 0) ruling position
+    }
+    Check(all_on_both_axes, "every sampled point sits at exactly radius ra from A's axis AND exactly radius rb from B's axis simultaneously, at the hand-derivable (x, y) = (2, 0)");
+    Check(z_max - z_min > 0.5 * height, "the chained curve genuinely spans most of the shared height range, not a single collapsed point");
+  }
+
+  // Internally tangent parallel cylinders (radius 5 outer at x = 0, radius
+  // 2 inner at x = 3 = r_outer - r_inner exactly): touch along the
+  // hand-derivable ruling line x = 5, y = 0.
+  const ON_NurbsSurface cyl_outer = cyl_surface_at(0.0, 5.0, height);
+  const ON_NurbsSurface cyl_inner = cyl_surface_at(3.0, 2.0, height);
+  const auto internal_curves = FindSurfaceTangentCurves(cyl_outer, cyl_inner, opt);
+  Check(internal_curves.size() == 1, "an internally tangent (nested) cylinder pair also chains into exactly one tangent curve");
+  if (internal_curves.size() == 1) {
+    const ON_Interval dom = internal_curves[0].curve.Domain();
+    bool ok = true;
+    for (int k = 0; k <= 10; ++k) {
+      const Point3d p = internal_curves[0].curve.PointAt(dom.ParameterAt(static_cast<double>(k) / 10.0));
+      if (std::hypot(p.x - 5.0, p.y) > 0.05) { ok = false; break; }
+    }
+    Check(ok, "the internally-tangent ruling line sits at the hand-derivable (x, y) = (5, 0)");
+  }
+
+  // A single ISOLATED tangent point (the sphere-on-plane fixture
+  // TestFindSurfaceTangentContactsSphereOnPlane() already establishes) must
+  // NOT be fabricated into a curve - several nearby grid seeds converging
+  // to nearly the same point are grid-adjacent to each other too, which is
+  // exactly the degenerate case this function's own arc-length/degree
+  // guards exist to reject.
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-10, 10), true);
+  ground.SetExtents(1, ON_Interval(-10, 10), true);
+  const double sphere_radius = 2.0;
+  const ON_Sphere resting_sphere(ON_3dPoint(0, 0, sphere_radius), sphere_radius);
+  ON_NurbsSurface sphere_surface;
+  Check(resting_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  Check(FindSurfaceTangentCurves(sphere_surface, ground, opt).empty(), "a single isolated tangent point is correctly NOT fabricated into a curve");
+
+  // Two cylinders held well clear of each other: no contacts, no curves.
+  const ON_NurbsSurface cyl_far = cyl_surface_at(100.0, 1.0, height);
+  Check(FindSurfaceTangentCurves(cyl_a, cyl_far, opt).empty(), "two cylinders held well clear of each other chain into zero curves");
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
@@ -25737,6 +25932,56 @@ void TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldToleran
         "original (still untouched - Symmetrize() never retroactively fixes the ORIGINAL half) + 4 "
         "newly-welded mirrored vertices, instead of 8");
   Check(widened_doubled.FaceCount() == 4, "4 faces total either way: the original 2 plus their 2 mirrored copies");
+}
+
+// Closes a real, previously-unvalidated gap: unlike its sibling
+// plane_normal check just above, Symmetrize() never validated
+// point_tolerance or plane_offset at all, even though a bad
+// point_tolerance doesn't degrade to a safe default the way a bad
+// weld_tolerance does (see that parameter's own "zero or negative means
+// reuse point_tolerance" convention) - it alone decides which vertices
+// count as lying ON the mirror plane, so a NaN or negative value made
+// every on-plane comparison silently false instead of refusing: no
+// vertex would ever be welded as a seam, not even one genuinely on the
+// plane, and the caller would get a plausible-looking (if silently
+// wrong) result rather than an error.
+void TestSubDSymmetrizeThrowsOnBadToleranceOrOffset() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+  using dino8::kernel::Vector3d;
+
+  const Mesh box = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(box);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, -1e-9); }),
+        "Symmetrize throws for a negative point_tolerance");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, nan); }),
+        "Symmetrize throws for a NaN point_tolerance");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, inf); }),
+        "Symmetrize throws for an infinite point_tolerance");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), nan); }),
+        "Symmetrize throws for a NaN plane_offset");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), inf); }),
+        "Symmetrize throws for an infinite plane_offset");
+
+  // Negative controls: a point_tolerance of exactly 0 is a legitimate
+  // "only bit-identical positions count as on-plane" request, not an
+  // error, and the ordinary default-argument call is unaffected.
+  Check(!Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, 0.0); }),
+        "Symmetrize does not throw for a point_tolerance of exactly 0");
+  Check(!Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0); }),
+        "Symmetrize's own default point_tolerance (1e-9) still passes validation unaffected");
 }
 
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
@@ -73365,6 +73610,7 @@ int main() {
   TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves();
   TestIntersectBrepsAndCurveBrep();
   TestFireRayAtBrep();
+  TestClosestPointOnBrep();
   TestPullbackCurveToSurfaceCylinderRulingLine();
   TestPullbackCurveToSurfaceAcrossPeriodicSeam();
   TestIntersectBrepByPlaneBoxSideWalls();
@@ -73378,6 +73624,7 @@ int main() {
   TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
   TestBrepCheckOptInReportsFaceSelfIntersections();
   TestFindSurfaceTangentContactsSphereOnPlane();
+  TestFindSurfaceTangentCurvesCylinderRulingLine();
   TestIntersectSurfacesHandlesSpherePoleCrossing();
   TestIntersectSurfacesOverlapDetectsCoincidentRegion();
   TestIntersectSurfacesOverlapBisectionTightensRegionBoundary();
@@ -73618,6 +73865,7 @@ int main() {
   TestSubDTransformMovesScalesAndStaysValidUnderMirror();
   TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces();
   TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance();
+  TestSubDSymmetrizeThrowsOnBadToleranceOrOffset();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetEdgeSharpnessSupportsPerEndVariableWeight();
   TestSubDEdgeSharpnessAtReadsBackWhatWasWritten();
