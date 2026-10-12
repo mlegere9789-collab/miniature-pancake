@@ -3704,6 +3704,27 @@ echo "$BM" | grep -E "^(ok|FAIL)"
 if echo "$BM" | grep -q "^FAIL"; then fail=1; fi
 bmcheck "^ok   expect_objects 0" "boolean-mixed-and-compound script cleaned up to zero objects at the end"
 
+# General-engine (curved-face) exact booleans: BooleanCombineGeneral/
+# BooleanCombineGeneralNAry had no app entry point at all - a solid with
+# any curved face always fell straight through to the mesh path, even
+# though the Planar engine above was already wired - PARITY_MAP.md's
+# "kernel: Boolean operations" category's "B-rep-preserving booleans
+# reachable from the application" bullet (see
+# boolean_general_engine_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  BG="$("$BIN" --smoke 60 --script "$HERE/boolean_general_engine_script.txt" 2>&1)" || { echo "$BG"; echo "FAIL: boolean-general-engine script exited non-zero"; exit 1; }
+else
+  BG="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/boolean_general_engine_script.txt" 2>&1)" || { echo "$BG"; echo "FAIL: boolean-general-engine script exited non-zero"; exit 1; }
+fi
+bgecheck() { if echo "$BG" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$BG" "$1"; fail=1; fi; }
+bgecheck "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 10 face(s)" "a box unioned with a piercing, record-less cylinder took the new General-engine exact path, not the mesh fallback"
+bgecheck "BooleanDifference: exact B-rep boolean (no tessellation, general engine), 7 face(s)" "the same box minus the piercing cylinder also took the General-engine exact path"
+bgecheck "BooleanIntersection: exact B-rep boolean (no tessellation, general engine), 3 face(s)" "the box intersected with the piercing cylinder also took the General-engine exact path"
+if echo "$BG" | grep -q "! No object with id"; then echo "FAIL boolean-general-engine script's own SelID bookkeeping was wrong (references a missing id)"; fail=1; else echo "ok   boolean-general-engine script's SelID bookkeeping matched every object the app actually created"; fi
+echo "$BG" | grep -E "^(ok|FAIL)"
+if echo "$BG" | grep -q "^FAIL"; then fail=1; fi
+bgecheck "^ok   expect_objects 0" "boolean-general-engine script cleaned up to zero objects at the end"
+
 # Adversarial curve self-intersection: a closed bowtie polyline fed into
 # PlanarSrf (must be rejected) and a solid-capping Extrude (must degrade to
 # an open surface), an open self-crossing polyline confirming IntersectSelf
