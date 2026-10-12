@@ -2712,7 +2712,29 @@ Brep DeleteFacesHealConvexPlanar(const Brep& solid, const std::vector<int>& face
 // matching every existing caller), the tolerance is derived automatically
 // exactly as before this parameter existed (RelativeTolMixed(), scaled off
 // the larger of the two operands' own extent, cylindrical radius included).
-Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tolerance = -1.0);
+//
+// `allow_non_manifold_result`, when true, closes the identical "Non-manifold
+// boolean results" gap BooleanCombinePlanar's own same-named parameter
+// above already closes for the planar engine, now for this engine too:
+// Union/Intersection/Difference reassemble through
+// Brep::FromMixedFacesNonManifold() instead of Brep::FromMixedFaces(), so
+// an edge/vertex-only-touching result (one that would otherwise throw "an
+// edge is shared by 3 or more faces") instead comes back as a real Brep
+// carrying a genuine N-trim non-manifold edge there, with any
+// CylindricalFace in the result carried through unchanged. SymmetricDifference
+// builds a genuine SINGLE-SHELL XOR the same way the planar engine's own
+// SymmetricDifference branch does: both Difference directions' face lists
+// are computed directly and concatenated into ONE
+// Brep::FromMixedFacesNonManifold() call instead of the default
+// Brep::Compound({Difference(a, b), Difference(b, a)}) path, closing the
+// "single-body XOR" case for this engine too. Default `false`, so every
+// existing caller's behavior is unchanged. A compound `a`/`b` operand
+// combined with this flag is untested and deliberately left alone, the
+// same disclosed scope limit BooleanCombinePlanar's own doc comment above
+// already names - the lump-recomputation tail at this function's own tail
+// is simply skipped whenever the flag is set.
+Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tolerance = -1.0,
+                          bool allow_non_manifold_result = false);
 
 // Combines an arbitrary number of operands into ONE result via repeated
 // BooleanCombineMixed() pairwise calls - closing this category's own

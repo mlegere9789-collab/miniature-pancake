@@ -6578,10 +6578,42 @@ void TestIntersectCylinderCylinderUnequalRadiusClosedForm() {
   }
 
   // A genuinely skew pair that does NOT fully pierce (d + r = 2.5 + 1 = 3.5
-  // >= R = 3, a partial/blind penetration) is refused outright.
+  // >= R = 3) but still genuinely overlaps in part (d - r = 1.5 < R = 3):
+  // a real partial-penetration case, no longer a bare refusal. The small
+  // cylinder's surface point at angle theta (measuring from the closest
+  // side) sits at distance sqrt(h^2 + (2.5 + cos(theta))^2) from the large
+  // (Z) axis for free height h, which reaches exactly R = 3 for some real
+  // h iff |2.5 + cos(theta)| <= 3, i.e. cos(theta) <= 0.5 - true over a
+  // genuine, proper sub-range of theta (roughly 240 of the circle's own
+  // 360 degrees), not the whole circle and not none of it.
   const ON_Cylinder cyl_small_partial(ON_Circle(ON_Plane(Point3d(0, 2.5, 0), axis_small), r));
-  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_partial, tol).not_full_pierce,
-        "a genuinely skew pair whose smaller cylinder does NOT fully pierce the larger one is refused outright, not guessed at");
+  const auto partial = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_partial, tol);
+  Check(!partial.empty && partial.not_full_pierce && !partial.partial_loops.empty(),
+        "a genuinely skew pair whose smaller cylinder does NOT fully pierce the larger one reports a real partial-penetration result, not a bare refusal");
+  if (!partial.empty) {
+    Check(partial.partial_loops.size() == 1, "this fixture's own valid-theta set is a single contiguous arc (cos(theta) <= 0.5), so exactly one pinched loop is reported, not several");
+    bool all_on_both = true;
+    const ON_NurbsCurve& loop = partial.partial_loops.front();
+    Check(loop.IsValid() && loop.IsClosed(), "the reported partial loop has a valid, genuinely closed NURBS form");
+    const int n = 48;
+    for (int i = 0; i <= n; ++i) {
+      const double t = loop.Domain().ParameterAt(static_cast<double>(i) / n);
+      const Point3d p = loop.PointAt(t);
+      if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-2 ||
+          std::abs(dist_to_axis(p, Point3d(0, 2.5, 0), axis_small) - r) > 1e-2) {
+        all_on_both = false;
+        break;
+      }
+    }
+    Check(all_on_both, "every sampled point of the partial-pierce loop sits at exactly radius R from the larger cylinder's axis AND exactly radius r from the smaller (offset) axis simultaneously");
+  }
+
+  // A genuinely skew pair far enough apart that the smaller cylinder's
+  // surface never reaches the larger cylinder's radius at ANY angle
+  // (d - r = 9 > R = 3): a genuine total miss, not a refusal flag.
+  const ON_Cylinder cyl_small_disjoint(ON_Circle(ON_Plane(Point3d(0, 10, 0), axis_small), r));
+  const auto disjoint = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_disjoint, tol);
+  Check(disjoint.empty && !disjoint.not_full_pierce, "a genuinely skew pair whose cylinders never touch at any angle reports a genuine miss, not a partial-pierce flag");
 
   // Equal radii are refused outright - this closed form requires UNEQUAL
   // radii; IntersectCylinderCylinderIntersecting() is the equal-radius case.
@@ -55469,6 +55501,86 @@ void TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBr
   Check(record_cyl.HasCylindricalFace(), "a FaceRecord-backed lone cylindrical wall is likewise detected");
 }
 
+// The Mixed-engine counterpart of
+// TestBooleanCombinePlanarUnionAllowsNonManifoldEdgeOnlyTouchingCubes:
+// BooleanCombineMixed's own new `allow_non_manifold_result` parameter
+// closes the identical "Non-manifold boolean results" gap for this engine
+// too, reassembling through Brep::FromMixedFacesNonManifold() instead of
+// Brep::FromMixedFaces(). Same pure-planar edge-only-touching fixture (no
+// CylindricalFace involved) - the Mixed engine's own classification
+// reduces to the identical planar-ray-cast-parity answer the Planar engine
+// already gives on operands with no curved face, so the SAME expected
+// result (12 faces, 1 non-manifold edge, area 12) applies here too.
+void TestBooleanCombineMixedUnionAllowsNonManifoldEdgeOnlyTouchingCubes() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const Brep a = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep b = Brep::Box(1, 1, 0, 2, 2, 1);
+
+  bool strict_threw = false;
+  std::string strict_message;
+  try {
+    BooleanCombineMixed(a, b, BooleanOp::Union);
+  } catch (const std::exception& e) {
+    strict_threw = true;
+    strict_message = e.what();
+  }
+  Check(strict_threw && strict_message.find("edge is shared by 3 or more faces") != std::string::npos,
+        "the default (allow_non_manifold_result == false) path still refuses this edge-only-touching union "
+        "exactly as before this parameter existed");
+
+  const Brep result = BooleanCombineMixed(a, b, BooleanOp::Union, -1.0, true);
+  Check(result.FaceCount() == 12,
+        "allow_non_manifold_result Union keeps all 12 of the two cubes' own original faces - nothing here is "
+        "coincident, so nothing is cut or deduplicated, only the one shared touching edge is welded together");
+  Check(result.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1,
+        "exactly one edge is genuinely non-manifold (the shared touching edge) - confirmed via a standalone "
+        "scratch-test probe, not assumed");
+
+  double area = 0.0;
+  for (const Mesh& face_mesh : result.Tessellate(2, 2)) area += face_mesh.Area();
+  Check(Within(area, 12.0, 1e-9),
+        "total tessellated area is exactly 6 (per cube) x 2 = 12 - every one of the 12 faces survived "
+        "untouched (measured per-face via Tessellate(), independent of Brep::Area()/Brep::Volume(), neither of "
+        "which is well-defined on a genuinely non-manifold result)");
+}
+
+// The Mixed-engine counterpart of
+// TestBooleanCombinePlanarSymmetricDifferenceAllowsSingleShellXor: a
+// genuine single-shell XOR via the identical MixedBooleanFaces()-based
+// construction the planar engine's own PlanarBooleanFaces() path already
+// uses. Same corner-overlap fixture
+// TestBooleanCombineMixedDifferenceThrowsOnTouchingLumpXorCompound below
+// already uses (a=Box(0,0,0,2,2,2), b=Box(1,1,1,3,3,3)).
+void TestBooleanCombineMixedSymmetricDifferenceAllowsSingleShellXor() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  const Brep compound_xor = BooleanCombineMixed(a, b, BooleanOp::SymmetricDifference);
+  Check(compound_xor.LumpFaceRanges().size() == 2 && compound_xor.FaceCount() == 48,
+        "sanity: the known two-lump, 48-face compound XOR this category's own prior tests already establish, "
+        "now also confirmed through the Mixed engine's own default path");
+
+  const Brep single_shell = BooleanCombineMixed(a, b, BooleanOp::SymmetricDifference, -1.0, true);
+  Check(single_shell.LumpFaceRanges().size() == 1,
+        "allow_non_manifold_result builds a genuine SINGLE shell, not a Brep::Compound of two lumps - the "
+        "'single-body XOR' this category's bullet names directly, now closed for this engine too");
+  Check(single_shell.FaceCount() == 48,
+        "every one of the 48 faces from both Difference directions survives - none lost, none duplicated, only "
+        "welded together at the shared boundary instead of left as two separate lumps");
+  Check(single_shell.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 6,
+        "the shared boundary curve between the XOR's own four face groups (A's outside, B's outside, and both "
+        "flipped insides) comes back as real non-manifold edges instead of two separately-welded 2-trim edges - "
+        "confirmed via a standalone scratch-test probe, not assumed");
+}
+
 // Regression check: Union and SymmetricDifference must still refuse a
 // compound operand exactly as before - this pass narrows the refusal, it
 // does not remove it.
@@ -78854,6 +78966,8 @@ int main() {
   RunTest("TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand", TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand);
   RunTest("TestBooleanCombineMixedIntersectionAcceptsCompoundOperand", TestBooleanCombineMixedIntersectionAcceptsCompoundOperand);
   RunTest("TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders", TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders);
+  RunTest("TestBooleanCombineMixedUnionAllowsNonManifoldEdgeOnlyTouchingCubes", TestBooleanCombineMixedUnionAllowsNonManifoldEdgeOnlyTouchingCubes);
+  RunTest("TestBooleanCombineMixedSymmetricDifferenceAllowsSingleShellXor", TestBooleanCombineMixedSymmetricDifferenceAllowsSingleShellXor);
   RunTest("TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius", TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius);
   RunTest("TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBrep", TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBrep);
   RunTest("TestBooleanCombineMixedXorStillRefusesCompoundOperand", TestBooleanCombineMixedXorStillRefusesCompoundOperand);
