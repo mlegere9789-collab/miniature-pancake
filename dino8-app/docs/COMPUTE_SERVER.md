@@ -60,7 +60,20 @@ same as every other headless mode this app already has).
   `"caller"` in a JSON response (`Accept: application/json` - see below) so
   a caller can confirm which of its own credentials authenticated the
   request. A bare `TOKEN` with no prefix works exactly as it always did
-  (anonymous - no `"caller"` field in the JSON response).
+  (anonymous - no `"caller"` field in the JSON response). A token given
+  this way is fixed for the process's whole lifetime; rotating or revoking
+  one needs a restart with a different set of `--serve-token` flags.
+- `--serve-token-file PATH` is a second, *live* token source alongside any
+  `--serve-token` flags above - the identical `[NAME:]TOKEN` syntax, one
+  per line (blank lines and `#`-comments ignored), but re-read from disk
+  on every single incoming request rather than fixed at startup. Editing
+  the file while the server keeps running - deleting a line to revoke
+  that token, adding one to introduce a new one, replacing one to rotate
+  it - takes effect on the very next request, no restart required. Giving
+  this flag makes the server require authentication even if the file is
+  currently empty, missing, or unreadable (fails *closed*, not open) -
+  a mistyped path can never silently leave the compute server open the
+  way an empty `--serve-token` list would.
 - `POST /run` runs the request body as a **Lua** script; `POST /run/python`
   runs it as a **Python** script against the embedded `dino8` module (only
   on a build with Python support - see `BATCH_SCRIPTING.md`/`PythonEngine.h`;
@@ -155,6 +168,18 @@ $ curl -s -H 'Accept: application/json' -H 'Authorization: Bearer abc123' --data
 (assumes `--serve-token ci:abc123` - a named token's caller comes back in the JSON response so it can confirm which credential authenticated it; a bare, unnamed token like `hunter2` above never adds a `"caller"` field.)
 
 ```
+$ echo 'hunter2' > tokens.txt
+$ Dino8 --serve 8080 --serve-token-file tokens.txt &
+$ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer hunter2' --data 'print(1)' http://127.0.0.1:8080/run
+200
+$ echo 'newtoken' > tokens.txt   # no restart - revokes hunter2, adds newtoken
+$ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer hunter2' --data 'print(1)' http://127.0.0.1:8080/run
+401
+$ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer newtoken' --data 'print(1)' http://127.0.0.1:8080/run
+200
+```
+
+```
 $ curl -s -H 'Accept: application/json' --data 'print("hi")' http://127.0.0.1:8080/run
 {"ok":true,"output":["hi"]}
 $ curl -s http://127.0.0.1:8080/objects
@@ -201,16 +226,19 @@ $ curl -s --data '{"type":"bogus"}' http://127.0.0.1:8080/objects
   being able to hang the server, but there is no queueing or parallel
   execution of multiple scripts.
 - **No TLS, and auth is a handful of plain-text secrets, not real accounts.**
-  Each `--serve-token` is a plain-text bearer token, checked with `main.cpp`'s
-  `ConstantTimeEquals` (a real constant-time comparison against every
-  registered candidate, so an unrelated local process can't learn one byte
-  at a time by timing repeated guesses) over a plaintext loopback-only
-  socket - distinct callers can now each hold their own named token rather
-  than sharing exactly one secret (see above), but there is still no
-  hashing, no rotation, no expiry, and no revocation short of restarting
-  the server with a different set of `--serve-token` flags. Good enough to
-  stop an unrelated local process or script from hitting an unprotected
-  endpoint by accident, nowhere near OAuth/API-key-management. This binds
+  Each `--serve-token`/`--serve-token-file` entry is a plain-text bearer
+  token, checked with `main.cpp`'s `ConstantTimeEquals` (a real
+  constant-time comparison against every registered candidate, so an
+  unrelated local process can't learn one byte at a time by timing
+  repeated guesses) over a plaintext loopback-only socket - distinct
+  callers can now each hold their own named token rather than sharing
+  exactly one secret (see above), and `--serve-token-file`'s entries can
+  now be rotated or revoked live, with no restart (see above) - but there
+  is still no hashing and still no automatic *expiry*: a file-sourced
+  token stays valid until something (an operator, a script, a cron job)
+  edits it back out, there is no built-in TTL. Good enough to stop an
+  unrelated local process or script from hitting an unprotected endpoint
+  by accident, nowhere near OAuth/API-key-management. This binds
   `127.0.0.1` and is meant for local automation (a build script, a CI job,
   a teammate's script talking to a running Dino 8), not for exposing to a
   network you don't trust even with tokens set.
