@@ -8024,6 +8024,60 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     fi
   fi
 
+  # --serve-token-file hashed entries ("sha256:HEX"): the file holds only
+  # a digest, never the real bearer secret, closing the "no hashing" gap
+  # named alongside rotation/revocation/expiry above. Real SHA-256 hex
+  # digests below (computed with `sha256sum`, not made up) for two real
+  # tokens - a bare one ("hashedtoken123") and a named one
+  # ("ci3:secretXYZ") - prove the server actually hashes the PRESENTED
+  # token and compares digests, rather than, say, accidentally comparing
+  # the presented plaintext against the stored hex string itself (which
+  # would make every request fail, never succeed).
+  HASH_LOG="$TMPW/serve_token_hash.log"
+  HASH_PATH="$TMPW/serve_tokens_hash.txt"
+  printf 'sha256:79d8dad2f0a04420fd1e0b3c2090350a527c9e8b147bba7a06e8c38ed666a034\nci3:sha256:8800d70b1d06d18497e333a3942da0037e660a66250a081e570073ad533c5ddc\n' > "$HASH_PATH"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 30 "$BIN" --serve 0 --serve-token-file "$HASH_PATH" --serve-max-requests 4 > "$HASH_LOG" 2>&1 &
+  else
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token-file "$HASH_PATH" --serve-max-requests 4 > "$HASH_LOG" 2>&1 &
+  fi
+  HASH_PID=$!
+
+  HASH_PORT=""
+  for _ in $(seq 1 100); do
+    if grep -q "^serve: listening on port " "$HASH_LOG" 2>/dev/null; then
+      HASH_PORT="$(grep "^serve: listening on port " "$HASH_LOG" | head -1 | awk '{print $NF}')"
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ -z "$HASH_PORT" ]; then
+    cat "$HASH_LOG"; echo "FAIL: --serve-token-file (hashed entries) server never printed its listening port within 10s"; fail=1
+    kill "$HASH_PID" 2>/dev/null || true
+    wait "$HASH_PID" 2>/dev/null || true
+  else
+    set +e
+    HASH_CODE_NOAUTH="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'print("should not run")' "http://127.0.0.1:$HASH_PORT/run")"
+    HASH_CODE_WRONG="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer notthetoken' -X POST --data 'print("should not run")' "http://127.0.0.1:$HASH_PORT/run")"
+    HASH_RESP_OK="$(curl -s --max-time 10 -H 'Authorization: Bearer hashedtoken123' -H 'Accept: application/json' -X POST --data 'print("hashed ok")' "http://127.0.0.1:$HASH_PORT/run")"
+    HASH_RESP_NAMED="$(curl -s --max-time 10 -H 'Authorization: Bearer secretXYZ' -H 'Accept: application/json' -X POST --data 'print("named hashed ok")' "http://127.0.0.1:$HASH_PORT/run")"
+    set -e
+    [ "$HASH_CODE_NOAUTH" = "401" ] && echo "ok   --serve-token-file with hashed entries still rejects a request with no Authorization header with 401" || { echo "FAIL --serve-token-file (hashed) no-auth request returned HTTP $HASH_CODE_NOAUTH, expected 401"; fail=1; }
+    [ "$HASH_CODE_WRONG" = "401" ] && echo "ok   --serve-token-file with hashed entries rejects a wrong token with 401 - it genuinely hashes the presented token and compares, not a lucky accident" || { echo "FAIL --serve-token-file (hashed) wrong-token request returned HTTP $HASH_CODE_WRONG, expected 401"; fail=1; }
+    [ "$HASH_RESP_OK" = '{"ok":true,"output":["hashed ok"]}' ] && echo "ok   presenting the real plaintext token authenticates against its file-stored sha256:HEX digest alone, with no spurious \"caller\":\"sha256\" field - the leading \"sha256:\" wasn't misparsed as a NAME: prefix, and the file itself never held the real secret" || { echo "$HASH_RESP_OK"; echo "FAIL --serve-token-file did not accept the real plaintext token for a bare hashed entry, or returned an unexpected caller field"; fail=1; }
+    [ "$HASH_RESP_NAMED" = '{"ok":true,"output":["named hashed ok"],"caller":"ci3"}' ] && echo "ok   a named NAME:sha256:HEX entry hashes and authenticates independently, still echoing its own caller name back in the JSON response" || { echo "$HASH_RESP_NAMED"; echo "FAIL --serve-token-file named-hashed-entry request did not return the expected caller-tagged JSON"; fail=1; }
+
+    set +e; wait "$HASH_PID"; HASH_EC=$?; set -e
+    if [ "$HASH_EC" -eq 124 ]; then
+      cat "$HASH_LOG"; echo "FAIL: --serve-token-file (hashed entries) process hung and was killed by the 30s timeout instead of exiting after --serve-max-requests"; fail=1
+    elif [ "$HASH_EC" -ne 0 ]; then
+      cat "$HASH_LOG"; echo "FAIL: --serve-token-file (hashed entries) process exited $HASH_EC, expected 0"; fail=1
+    else
+      grep -q "^serve: done requests=4$" "$HASH_LOG" && echo "ok   --serve-token-file (hashed entries) server exited cleanly on its own after 4 real HTTP requests" || { cat "$HASH_LOG"; echo "FAIL --serve-token-file (hashed entries) done-summary line missing or wrong"; fail=1; }
+    fi
+  fi
+
   # A missing/unreadable token file must fail CLOSED (deny everything),
   # never silently fall back to the fully-open behavior an empty
   # serve_tokens alone would mean - a typo'd --serve-token-file path must
