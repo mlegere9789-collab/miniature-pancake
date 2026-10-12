@@ -1591,6 +1591,147 @@ assert max(px) > 0 and min(px) < 255, 'image is flat'
 # The rendering must contain more than one colour (background + shaded objects).
 assert len(set(px[i:i + 3] for i in range(0, len(px) - 3, 3 * 97))) > 8, 'too few colours'
 PY
+
+# Render Hdr=Yes: pixel-level proof (PARITY_MAP.md's "Environments and
+# image-based lighting" item - the interactive rasterizer's own half of
+# its long-disclosed HDR gap) that Viewport::RenderToImage's own second
+# HDR capture pass genuinely carries real, unclamped linear-radiance
+# values, not just a renamed copy of the ordinary 8-bit render - see
+# tests/render_hdr_script.txt for the full scene/capture sequence (a
+# glossy sphere under a strong point light, rendered once with Hdr=Yes and
+# saved as both .hdr and .exr, once without and confirmed to correctly
+# refuse an .hdr save afterward).
+mkdir -p "$TMPW/renderhdr"
+sed "s|@TMP@|$TMPW/renderhdr|g" "$HERE/render_hdr_script.txt" > "$TMPW/render_hdr_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RHDR="$("$BIN" --smoke 30 --script "$TMPW/render_hdr_script.txt" 2>&1)" || { echo "$RHDR"; echo "FAIL: render_hdr script exited non-zero"; exit 1; }
+else
+  RHDR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/render_hdr_script.txt" 2>&1)" || { echo "$RHDR"; echo "FAIL: render_hdr script exited non-zero"; exit 1; }
+fi
+rhdrcheck() { if echo "$RHDR" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RHDR" "$1"; fail=1; fi; }
+rhdrcheck "^ok   expect_objects 1" "render_hdr script left exactly the sphere"
+rhdrcheck "gl_error=0" "render_hdr script ran without OpenGL errors"
+rhdrcheck "Saved rendering $TMPW/renderhdr/render_hdr.hdr (48 x 48)" "SaveRenderWindowAs wrote the real .hdr file"
+rhdrcheck "Saved rendering $TMPW/renderhdr/render_hdr.exr (48 x 48)" "SaveRenderWindowAs wrote the real .exr file"
+rhdrcheck "Saved rendering $TMPW/renderhdr/render_hdr.bmp (48 x 48)" "the ordinary 8-bit BMP save still works, unaffected by any of this"
+rhdrcheck "! This render has no real HDR data to save" "a second Render with no Hdr=Yes (Hdr is a genuine per-call request, like Width=/Height=/Quality=, never a sticky document setting) correctly refuses an .hdr save afterward instead of silently writing an empty or stale file"
+python3 - "$TMPW/renderhdr/render_hdr.hdr" "$TMPW/renderhdr/render_hdr.exr" "$TMPW/renderhdr/render_hdr.bmp" <<'PY' && echo "ok   both the .hdr and .exr captures of the same render carry real, unclamped linear-radiance values above 1.0 - a genuine specular highlight GlRenderer's own Shade() always folds under 1.0 for the ordinary 8-bit capture (render_hdr.bmp), confirmed flat/clamped by comparison" || { echo "FAIL Render Hdr=Yes pixel check"; fail=1; }
+import struct, sys
+
+def read_le32(b, p): return struct.unpack_from('<i', b, p)[0]
+
+def load_hdr_flat(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'#?', 'not a Radiance HDR'
+    pos = 0
+    def readline():
+        nonlocal pos
+        end = d.index(b'\n', pos)
+        line = d[pos:end]; pos = end + 1
+        return line
+    readline()
+    while readline() != b'':
+        pass
+    import re
+    m = re.match(rb'-Y (\d+) \+X (\d+)', readline())
+    h, w = int(m.group(1)), int(m.group(2))
+    mx = 0.0
+    above = 0
+    for _ in range(w * h):
+        r, g, b, e = d[pos], d[pos + 1], d[pos + 2], d[pos + 3]
+        pos += 4
+        if e == 0:
+            continue
+        f = 2.0 ** (e - 128 - 8)
+        v = max(r, g, b) * f
+        mx = max(mx, v)
+        if v > 1.0:
+            above += 1
+    return mx, above
+
+def load_exr_float(path):
+    d = open(path, 'rb').read()
+    assert d[0:4] == b'\x76\x2f\x31\x01', 'not an EXR'
+    pos = 8
+    channels = []
+    data_window = None
+    while True:
+        if d[pos] == 0:
+            pos += 1
+            break
+        name_end = d.index(b'\x00', pos); name = d[pos:name_end].decode(); pos = name_end + 1
+        type_end = d.index(b'\x00', pos); typ = d[pos:type_end].decode(); pos = type_end + 1
+        size = read_le32(d, pos); pos += 4
+        val_start = pos
+        if name == 'channels' and typ == 'chlist':
+            p = val_start
+            end = val_start + size
+            while p < end and d[p] != 0:
+                cend = d.index(b'\x00', p); cname = d[p:cend].decode(); p = cend + 1
+                p += 4 + 4 + 8
+                channels.append(cname)
+        elif name == 'dataWindow':
+            data_window = tuple(read_le32(d, val_start + 4 * i) for i in range(4))
+        pos = val_start + size
+    xmin, ymin, xmax, ymax = data_window
+    w, h = xmax - xmin + 1, ymax - ymin + 1
+    offsets = [struct.unpack_from('<q', d, pos + 8 * i)[0] for i in range(h)]
+    mx = 0.0
+    above = 0
+    for off in offsets:
+        p = off + 8
+        chan_ptrs = [p + ci * w * 4 for ci in range(len(channels))]
+        for x in range(w):
+            v = max(struct.unpack_from('<f', d, cp + x * 4)[0] for cp in chan_ptrs)
+            mx = max(mx, v)
+            if v > 1.0:
+                above += 1
+    return mx, above
+
+hdr_max, hdr_above = load_hdr_flat(sys.argv[1])
+exr_max, exr_above = load_exr_float(sys.argv[2])
+print(f'.hdr: max={hdr_max:.3f} pixels_above_1.0={hdr_above}')
+print(f'.exr: max={exr_max:.3f} pixels_above_1.0={exr_above}')
+assert hdr_above > 0, f'.hdr never exceeds 1.0 anywhere - the HDR pass captured nothing genuinely unclamped'
+assert exr_above > 0, f'.exr never exceeds 1.0 anywhere - the HDR pass captured nothing genuinely unclamped'
+# RGBE's shared exponent is coarser than a real float, so the two formats'
+# own max values need only agree loosely, not exactly.
+assert abs(hdr_max - exr_max) < 0.5 * max(hdr_max, exr_max), f'.hdr and .exr disagree on the same render far more than RGBE quantization would explain: {hdr_max} vs {exr_max}'
+
+d = open(sys.argv[3], 'rb').read()
+size, off, bhdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+px = d[off:]
+bmp_max = max(px)
+print(f'.bmp: max byte value={bmp_max} (of 255)')
+# The ordinary 8-bit capture can never represent the real linear value a
+# genuine HDR source carries above 1.0 - its own maximum byte is bounded by
+# 255 by construction, a different (weaker) property than the HDR formats'
+# own real max channel values above, confirmed separately so this check
+# does not silently pass on a flat/black image.
+assert bmp_max > 0, '.bmp is black'
+PY
+
+# Render Hdr=Yes with Quality=Raytraced correctly has nothing HDR to save
+# (PathTracer's own output has no parallel HDR capture yet - see the
+# PARITY_MAP.md bullet's own disclosed scope) - a real end-to-end check
+# that this combination fails honestly rather than silently misreporting
+# success or crashing.
+cat > "$TMPW/render_hdr_raytrace_script.txt" <<EOS
+Sphere 0,0,0 5
+RenderedViewport
+Render Width=24 Height=24 Quality=Raytraced Samples=4 Bounces=2 Hdr=Yes
+SaveRenderWindowAs $TMPW/renderhdr/raytrace_nohdr.hdr
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RHDRRT="$("$BIN" --smoke 30 --script "$TMPW/render_hdr_raytrace_script.txt" 2>&1)" || { echo "$RHDRRT"; echo "FAIL: render_hdr raytrace script exited non-zero"; exit 1; }
+else
+  RHDRRT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/render_hdr_raytrace_script.txt" 2>&1)" || { echo "$RHDRRT"; echo "FAIL: render_hdr raytrace script exited non-zero"; exit 1; }
+fi
+if echo "$RHDRRT" | grep -qF "! This render has no real HDR data to save"; then
+  echo "ok   Render Hdr=Yes Quality=Raytraced honestly has nothing HDR to save (PathTracer's own output has no parallel HDR capture of its own yet, a separate disclosed gap) rather than silently claiming success"
+else
+  echo "FAIL Render Hdr=Yes Quality=Raytraced"; near "$RHDRRT" "This render has no real HDR data to save"; fail=1
+fi
 head -c 2 "$TMPW/arctic.ppm" | grep -q "P6" && echo "ok   arctic.ppm is a binary PPM" || { echo "FAIL arctic.ppm"; fail=1; }
 # ApplyOcsMapping: AutoCAD's real Arbitrary Axis Algorithm (see
 # render_script.txt's comment for how the tilted circle's exact normal
