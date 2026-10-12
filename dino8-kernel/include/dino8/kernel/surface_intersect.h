@@ -1209,20 +1209,52 @@ PlanePlaneIntersection IntersectPlanePlane(const ON_Plane& a, const ON_Plane& b,
 // the classical "quadric meets a plane" reduction, with A/B/C depending
 // only on the direction cosines of plane.xaxis/plane.yaxis against the
 // cone's own axis (so the SAME A, B, C apply regardless of where the
-// plane's own origin sits). This function closes only the two cases that
-// follow directly from that reduction without needing a general conic-
-// family constructor of its own:
+// plane's own origin sits). This function closes every case that
+// construction can produce - the full conic classification, not just the
+// ellipse: a plane clear of the apex gives an ELLIPSE, HYPERBOLA, or
+// PARABOLA depending on the restricted conic's own discriminant
+// `Delta = B^2 - 4*A*C`, and a plane through the apex gives 0, 1, or 2
+// lines (the degenerate boundary every one of those three types collapses
+// to there).
 //
-//  - The plane does not pass through the apex (`plane.DistanceTo(apex)`
-//    outside `tolerance`), and the restricted conic's own discriminant
-//    `B^2 - 4*A*C` is negative - the plane is steeper than the cone's own
-//    generators relative to the axis, cutting only one nappe in a closed
-//    loop: a genuine ELLIPSE (a true circle in the special case the plane
-//    is exactly perpendicular to the axis - the same "one formula handles
-//    both" shape IntersectPlaneCylinder() already established), built
-//    directly from the conic matrix [[A, B/2], [B/2, C]]'s own 2x2 eigen-
-//    decomposition (a closed form for a 2x2 symmetric matrix - no general
-//    numerical eigensolver needed) rather than sampled or Newton-polished.
+//  - `Delta < 0` (steeper than the cone's own generators: cuts only one
+//    nappe in a closed loop): a genuine ELLIPSE - a true circle in the
+//    special case the plane is exactly perpendicular to the axis, the same
+//    "one formula handles both" shape IntersectPlaneCylinder() already
+//    established - built from the conic's own center (the critical-point
+//    system `2*A*s0 + B*t0 + D == 0`, `B*s0 + 2*C*t0 + E == 0`, solvable
+//    whenever `Delta != 0`) and the conic matrix [[A, B/2], [B/2, C]]'s own
+//    2x2 eigen-decomposition (both closed forms for a 2x2 symmetric system
+//    - no general numerical eigensolver, no sampling, no Newton polish).
+//  - `Delta > 0` (shallower than the generators: cuts BOTH nappes): a
+//    genuine HYPERBOLA - the SAME center/eigen-decomposition as the
+//    ellipse case (valid for any `Delta != 0`), but with the quadratic
+//    form's two eigenvalues now opposite in sign, so the conic's own
+//    `u^2/sq1 + v^2/sq2 == 1` reduction (sq1, sq2 the eigen-scaled values
+//    at the center) has one POSITIVE term (the transverse axis, where the
+//    two real branches lie, each `center +/- a*cosh(r)*transverse_dir +
+//    b*sinh(r)*conjugate_dir` for `r` ranging over all reals - the
+//    classical hyperbolic parametrization, `cosh^2 - sinh^2 == 1` making it
+//    exact) and one NEGATIVE term (`conjugate_dir`, length `b`). The
+//    measure-zero sub-case where the conic's own center happens to sit
+//    exactly ON the cone (the quadratic form evaluated at the center, this
+//    function's own `Fp`, within numerical precision of 0) degenerates to
+//    the two asymptote lines through that center instead of a genuine
+//    hyperbola - honestly `unsupported`, not guessed at.
+//  - `Delta == 0` (exactly parallel to one generator): a genuine PARABOLA.
+//    Here the quadratic form's matrix is singular (no well-defined center),
+//    but the SAME eigen-decomposition still diagonalizes it - one
+//    eigenvalue is (numerically) zero, and that eigenvector is the
+//    parabola's own axis of symmetry. Substituting into the conic and
+//    completing the square along the other (nonzero-eigenvalue) direction
+//    gives the closed form directly: `point(r) = vertex + r*transverse_dir
+//    + curvature*r^2*axis_dir` for `r` ranging over all reals - the
+//    classical "y = c*x^2 in its own local frame" parabola, derived (and
+//    independently re-verified by substitution back into the original
+//    conic) in this function's own .cpp. The measure-zero sub-case where
+//    the linear term along the zero-eigenvalue direction also vanishes
+//    (degenerating to a parallel-LINE pair, or no real locus at all) is
+//    likewise honestly `unsupported`.
 //  - The plane passes through the apex (within `tolerance`): every D/E/F
 //    term of the restricted conic vanishes identically (the apex itself,
 //    (0,0) in apex-centered local coordinates, is always a root), so the
@@ -1235,25 +1267,40 @@ PlanePlaneIntersection IntersectPlanePlane(const ON_Plane& a, const ON_Plane& b,
 //    plane.xaxis + sin(theta)*plane.yaxis` and solving `A*cos(theta)^2 +
 //    B*cos(theta)*sin(theta) + C*sin(theta)^2 == 0` via its own double-
 //    angle closed form - no case split on A or C individually being zero.
+//    This is the degenerate boundary every one of the three off-apex types
+//    above collapses to as the plane's own distance to the apex shrinks to
+//    0: an ellipse to a point (`line_count == 0`), a parabola to one line,
+//    a hyperbola to a line pair.
 //
-// Everything else - the plane does not reach the apex but is not steep
-// enough relative to the cone's own half-angle (cuts both nappes: a
-// hyperbola) or is exactly parallel to one generator (a parabola) - is
-// honestly reported as `unsupported == true` rather than guessed at or
-// silently misreported as an ellipse: a caller checks `unsupported` FIRST,
-// before `empty`/`through_apex`/anything else. Deliberately scoped to the
-// cone's INFINITE double nappe along its own axis line, the same unbounded
-// scope IntersectPlaneCylinder()/IntersectPlaneSphere() already take; a
-// finite `cone.height` is not trimmed to that range here, and this does
-// not replace IntersectSurfaces() for a plane/cone pair arriving as two
-// generic ON_Surface references with no cone-ness known to the caller.
+// `unsupported == true` (checked FIRST, before `empty`/`through_apex`/
+// anything else) now means ONLY the two measure-zero degenerate
+// sub-families named above, not "hyperbola or parabola" - every
+// mathematically real plane/cone section off the apex has a closed form
+// here. Deliberately scoped to the cone's INFINITE double nappe along its
+// own axis line, the same unbounded scope IntersectPlaneCylinder()/
+// IntersectPlaneSphere() already take; a finite `cone.height` is not
+// trimmed to that range here (nor, for the hyperbola/parabola branches,
+// is there a bounded NURBS form at all - both are genuinely unbounded
+// curves, represented as raw geometric parameters a caller evaluates
+// directly, the same convention `line_a`/`line_b` already use for this
+// struct's own unbounded through-apex case), and this does not replace
+// IntersectSurfaces() for a plane/cone pair arriving as two generic
+// ON_Surface references with no cone-ness known to the caller.
 struct PlaneConeIntersection {
-  bool unsupported = false;   // true: this pair's conic is a parabola or hyperbola, not built here - every other field is meaningless; checked FIRST
+  bool unsupported = false;   // true: a measure-zero degenerate sub-family (an asymptote-line-pair hyperbola, or a parallel-line/no-locus parabola) - not built here; every other field is meaningless; checked FIRST
   bool empty = true;          // true: a genuine miss (only reachable via a guarded-against numerical edge case; kept for symmetry with this file's other closed forms)
-  bool through_apex = false;  // true: the plane passes through the cone's own apex - line_count/line_a/line_b are meaningful, not ellipse/curve
+  bool through_apex = false;  // true: the plane passes through the cone's own apex - line_count/line_a/line_b are meaningful, not ellipse/hyperbola/parabola
   int line_count = 0;         // meaningful only when through_apex: 0 (apex point only), 1 (tangent, only line_a meaningful), or 2
   ON_Line line_a, line_b;     // meaningful only when through_apex; line_b meaningful only when line_count == 2
-  ON_Ellipse ellipse;         // meaningful only when !through_apex && !empty && !unsupported
+  bool hyperbola = false;     // true: a genuine hyperbola - hyperbola_* fields are meaningful, not ellipse/parabola
+  Point3d hyperbola_center;
+  Vector3d hyperbola_transverse_dir, hyperbola_conjugate_dir;  // both unit, mutually perpendicular
+  double hyperbola_a = 0, hyperbola_b = 0;  // branch 0: hyperbola_center + hyperbola_a*cosh(r)*hyperbola_transverse_dir + hyperbola_b*sinh(r)*hyperbola_conjugate_dir; branch 1: the same with hyperbola_a negated - r ranges over all reals, both branches unbounded
+  bool parabola = false;      // true: a genuine parabola - parabola_* fields are meaningful, not ellipse/hyperbola
+  Point3d parabola_vertex;
+  Vector3d parabola_axis_dir, parabola_transverse_dir;  // both unit, mutually perpendicular; axis_dir is the parabola's own axis of symmetry
+  double parabola_curvature = 0;  // point(r) = parabola_vertex + r*parabola_transverse_dir + parabola_curvature*r*r*parabola_axis_dir - r ranges over all reals, unbounded
+  ON_Ellipse ellipse;         // meaningful only when !through_apex && !empty && !unsupported && !hyperbola && !parabola
   ON_NurbsCurve curve;        // ellipse's own NURBS form - meaningful under the same condition as `ellipse`
 };
 PlaneConeIntersection IntersectPlaneCone(const ON_Plane& plane, const ON_Cone& cone, double tolerance);
