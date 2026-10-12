@@ -4373,6 +4373,33 @@ d2check "SectionView: 120 curve(s)" "SectionView sliced all 120 objects with non
 
 d2check "gl_error=0" "drafting2 script ran without OpenGL errors"
 
+# TitleBlock's Scale field closes 2D drafting's own last remaining
+# "Associative annotation updating" gap half: left unset, it now defaults
+# to (and stays associative to) the active sheet's own single detail
+# view's current scale, formatted as a "1:N"/"N:1" ratio, instead of the
+# previous bare static "1:1" - mirroring Name/Date's own existing
+# live-document-title/today's-date associativity (see titleblock_scale_
+# script.txt and this document's own top-of-document dated note for the
+# full construction/scoping detail).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  TBS="$("$BIN" --smoke 20 --script "$HERE/titleblock_scale_script.txt" 2>&1)" || { echo "$TBS"; echo "FAIL: titleblock_scale script exited non-zero"; exit 1; }
+else
+  TBS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 20 --script "$HERE/titleblock_scale_script.txt" 2>&1)" || { echo "$TBS"; echo "FAIL: titleblock_scale script exited non-zero"; exit 1; }
+fi
+tbscheck() { if grep -q -- "$1" <<< "$TBS"; then echo "ok   $2"; else echo "FAIL $2"; near "$TBS" "$1"; fail=1; fi; }
+tbscheck "Detail: added D1 (130 x 100 mm, Top, scale 0.02) to ScaleSheet" "Detail built a real 0.02 (page mm per model unit) detail on the new sheet"
+tbscheck "TitleBlock: Untitled (Sheet ScaleSheet, Scale 1:50), Name associative to document title, Date associative to today, Scale associative to the sheet's own single detail" "TitleBlock with no explicit Scale= derived '1:50' from the sheet's own single 0.02-scale detail and marked it associative, alongside the pre-existing Name/Date associativity"
+tbscheck "TitleBlock: Untitled (Sheet NoDetailSheet, Scale 1:1)," "a second TitleBlock on a sheet with zero details has nothing to derive a scale from, so it keeps the plain static \"1:1\" default"
+if grep -q "TitleBlock: Untitled (Sheet NoDetailSheet, Scale 1:1), Name associative to document title, Date associative to today, Scale associative" <<< "$TBS"; then
+  echo "FAIL the zero-detail sheet's TitleBlock was incorrectly marked Scale-associative"; fail=1
+else
+  echo "ok   the zero-detail sheet's TitleBlock was correctly NOT marked Scale-associative (no single well-defined detail scale to track)"
+fi
+TBS_UPD_COUNT=$(echo "$TBS" | grep -c "UpdateTitleBlock:   Name now 'Untitled', Date now '")
+[ "$TBS_UPD_COUNT" = "2" ] && echo "ok   UpdateTitleBlock re-derived both title blocks' Name/Date fields" || { echo "FAIL UpdateTitleBlock re-derived Name/Date $TBS_UPD_COUNT times, expected 2"; fail=1; }
+tbscheck "UpdateTitleBlock: 2 table(s) regenerated" "UpdateTitleBlock found and regenerated both associative title blocks, the Scale-associative one re-confirming the identical '1:50' (its own single detail's scale genuinely unchanged since creation) rather than silently dropping or corrupting it"
+tbscheck "gl_error=0" "titleblock_scale script ran without OpenGL errors"
+
 # CPU path tracer: material library presets, RenderAssignMaterialToObjects
 # Preset=, the RayTracedViewport display mode, Render/RenderArctic/
 # RenderPreview with Quality=Raytraced (see raytrace_script.txt).
