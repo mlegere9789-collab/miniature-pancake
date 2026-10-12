@@ -1,0 +1,31 @@
+# SaveAs/Export .3dm Version= QC (see smoke.sh): PARITY_MAP.md's
+# "kernel: Kernel-level data exchange" category named ".3dm archive version
+# targeting" as partial because the app's actual .3dm writer (Save3dm,
+# io/File3dm.cpp) bypassed the kernel's own Model::Save(path, version) and
+# hardcoded model.Write(path, 0, &log) - version 0 always means "current/
+# latest", with no way for a caller to target an older archive version so
+# an older Rhino release can open the file. The existing SaveAs/Export
+# "Version=" token already existed, but only for a DWG/DXF AcadSchemes
+# scheme name (13/14/2000/...) - for a .3dm path it fell through to
+# NormalizeAcadScheme, which refuses any value that isn't a valid DWG
+# scheme and ABORTS the save entirely, so "SaveAs file.3dm Version=5"
+# used to fail outright rather than just being ignored. SaveAs itself
+# ignores selection (it always saves the whole document), so no SelAll is
+# needed before it; Export is selection-based. See smoke.sh's own
+# dm3dcheck section for the real byte-level verification (the "3D Geometry
+# File Format" header's own version field) that each of these actually
+# differ, not just print a claim.
+SetActiveViewport Top
+Box 0,0,0 10,10,0 10
+SaveAs Version=4 @TMP@/dm3dversion_v4.3dm
+Box 0,0,0 10,10,0 10
+SaveAs Version=50 @TMP@/dm3dversion_v50.3dm
+Box 0,0,0 10,10,0 10
+SaveAs @TMP@/dm3dversion_default.3dm
+Box 0,0,0 10,10,0 10
+SelID 4
+Export Version=5 @TMP@/dm3dversion_export_v5.3dm
+SaveAs Version=notanumber @TMP@/dm3dversion_bad.3dm
+SelAll
+Delete
+@expect_objects 0

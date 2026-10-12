@@ -4835,6 +4835,46 @@ void TestContainsPointExact() {
   Check(threw_empty, "ContainsPointExact throws std::invalid_argument for a Brep with no faces");
 }
 
+// PARITY_MAP's massprops category, "Signed distance point-to-solid" gap:
+// Mesh::SignedDistance() already does this for a tessellated mesh;
+// SignedDistanceToBrep() is the exact, trimmed-face Brep-level
+// counterpart, composing ClosestPointOnBrep() (magnitude) and
+// ContainsPointExact() (sign) the identical way Mesh::SignedDistance()
+// itself composes Mesh::ClosestPoint()/Mesh::ContainsPoint().
+void TestSignedDistanceToBrep() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SignedDistanceToBrep;
+
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 5);
+  Check(std::fabs(SignedDistanceToBrep(Point3d(0, 0, 0), sphere.raw()) - (-5.0)) < 1e-6,
+        "the sphere's own center is inside, at exactly -radius (the farthest interior point from "
+        "the surface, hand-derivable)");
+  Check(std::fabs(SignedDistanceToBrep(Point3d(0, 0, 3), sphere.raw()) - (-2.0)) < 1e-6,
+        "a point 3 units from center along z, inside the radius-5 sphere, is at exactly -2 (5 - 3)");
+  Check(std::fabs(SignedDistanceToBrep(Point3d(8, 0, 0), sphere.raw()) - 3.0) < 1e-6,
+        "a point 8 units from center along x, outside the radius-5 sphere, is at exactly +3 (8 - 5)");
+  Check(std::fabs(SignedDistanceToBrep(Point3d(5, 0, 0), sphere.raw())) < 1e-4,
+        "a point exactly on the sphere's own surface is at distance ~0, whichever side the ray-cast "
+        "classifier's own tolerance happens to land it on");
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  Check(std::fabs(SignedDistanceToBrep(Point3d(1, 1, 1), box.raw()) - (-1.0)) < 1e-6,
+        "the 2x2x2 box's own center is inside, at exactly -1 (the distance to any of its 6 "
+        "equidistant faces, hand-derivable)");
+  Check(std::fabs(SignedDistanceToBrep(Point3d(5, 1, 1), box.raw()) - 3.0) < 1e-6,
+        "a point 3 units clear of the box's own x=2 face, straight out along x, is at exactly +3");
+
+  bool threw_empty = false;
+  try {
+    ON_Brep empty;
+    SignedDistanceToBrep(Point3d(0, 0, 0), empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "SignedDistanceToBrep throws std::invalid_argument for a Brep with no faces");
+}
+
 // PARITY_MAP's intersections category, "Pullback of a 3D curve to surface
 // parameter space" bullet: PullbackCurveToSurface() is the general-purpose
 // kernel entry point (SSX's own pcurve_a/pcurve_b are a by-product of a
@@ -6610,10 +6650,42 @@ void TestIntersectCylinderCylinderUnequalRadiusClosedForm() {
   }
 
   // A genuinely skew pair that does NOT fully pierce (d + r = 2.5 + 1 = 3.5
-  // >= R = 3, a partial/blind penetration) is refused outright.
+  // >= R = 3) but still genuinely overlaps in part (d - r = 1.5 < R = 3):
+  // a real partial-penetration case, no longer a bare refusal. The small
+  // cylinder's surface point at angle theta (measuring from the closest
+  // side) sits at distance sqrt(h^2 + (2.5 + cos(theta))^2) from the large
+  // (Z) axis for free height h, which reaches exactly R = 3 for some real
+  // h iff |2.5 + cos(theta)| <= 3, i.e. cos(theta) <= 0.5 - true over a
+  // genuine, proper sub-range of theta (roughly 240 of the circle's own
+  // 360 degrees), not the whole circle and not none of it.
   const ON_Cylinder cyl_small_partial(ON_Circle(ON_Plane(Point3d(0, 2.5, 0), axis_small), r));
-  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_partial, tol).not_full_pierce,
-        "a genuinely skew pair whose smaller cylinder does NOT fully pierce the larger one is refused outright, not guessed at");
+  const auto partial = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_partial, tol);
+  Check(!partial.empty && partial.not_full_pierce && !partial.partial_loops.empty(),
+        "a genuinely skew pair whose smaller cylinder does NOT fully pierce the larger one reports a real partial-penetration result, not a bare refusal");
+  if (!partial.empty) {
+    Check(partial.partial_loops.size() == 1, "this fixture's own valid-theta set is a single contiguous arc (cos(theta) <= 0.5), so exactly one pinched loop is reported, not several");
+    bool all_on_both = true;
+    const ON_NurbsCurve& loop = partial.partial_loops.front();
+    Check(loop.IsValid() && loop.IsClosed(), "the reported partial loop has a valid, genuinely closed NURBS form");
+    const int n = 48;
+    for (int i = 0; i <= n; ++i) {
+      const double t = loop.Domain().ParameterAt(static_cast<double>(i) / n);
+      const Point3d p = loop.PointAt(t);
+      if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-2 ||
+          std::abs(dist_to_axis(p, Point3d(0, 2.5, 0), axis_small) - r) > 1e-2) {
+        all_on_both = false;
+        break;
+      }
+    }
+    Check(all_on_both, "every sampled point of the partial-pierce loop sits at exactly radius R from the larger cylinder's axis AND exactly radius r from the smaller (offset) axis simultaneously");
+  }
+
+  // A genuinely skew pair far enough apart that the smaller cylinder's
+  // surface never reaches the larger cylinder's radius at ANY angle
+  // (d - r = 9 > R = 3): a genuine total miss, not a refusal flag.
+  const ON_Cylinder cyl_small_disjoint(ON_Circle(ON_Plane(Point3d(0, 10, 0), axis_small), r));
+  const auto disjoint = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_disjoint, tol);
+  Check(disjoint.empty && !disjoint.not_full_pierce, "a genuinely skew pair whose cylinders never touch at any angle reports a genuine miss, not a partial-pierce flag");
 
   // Equal radii are refused outright - this closed form requires UNEQUAL
   // radii; IntersectCylinderCylinderIntersecting() is the equal-radius case.
@@ -22413,16 +22485,26 @@ void TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly() {
         "Check() now reports 5 NakedEdge issues (one per boundary edge) - splitting doubled one issue into two, not lost or gained a defect");
 }
 
-// SplitNakedEdgeAt refuses a genuinely CURVED naked edge, rather than
-// risk the silently-wrong result direct testing found for that case
-// (see the implementation's own doc comment): a lone CylindricalFace
-// wedge (angle = pi, NO caps at all - a fixture independently verified
-// clean via Check() first, so nothing here can be blamed on a
-// pre-existing fixture defect) has its curved rim (the boundary edge
-// that is neither closed nor IsLinear()) left completely untouched by a
-// refused split - checked directly against the exact Brep state before
-// the call, not just "the edge count didn't change."
-void TestBrepSplitNakedEdgeAtRefusesACurvedEdge() {
+// SplitNakedEdgeAt() now genuinely splits a CURVED naked edge, not just a
+// straight one - 2026-10-12: the prior "linear edges only" restriction
+// this test used to prove (Result::Failed on a curved rim) was re-tested
+// directly against the EXACT fixture that originally motivated it (a lone
+// CylindricalFace wedge, angle=pi, no caps - a fixture independently
+// verified clean via Check() first, so nothing here can be blamed on a
+// pre-existing fixture defect) and found stale: swept across 7 different
+// split fractions (0.1 through 0.9) via a disposable probe, every one
+// returns Result::Ok with zero LoopGap/InvalidTrim issues and a trim-
+// curve/surface gap at machine epsilon - the original defect that
+// motivated the restriction no longer reproduces (most likely fixed as a
+// side effect of this method's own intervening bRev3d direction-pairing
+// fix and the switch to the real multistart-Newton closest-point solver,
+// neither of which existed, in this exact form, when the restriction was
+// first written). Updated in place to prove the NEW behaviour rather than
+// the lifted restriction, the same "prove what changed, not what was
+// removed" convention this file already follows elsewhere (see
+// TestRemoveNakedMicroEdgeClosesSliverNextToASharedEdge for the
+// precedent) - the fixture and curved-rim-finding logic are unchanged.
+void TestBrepSplitNakedEdgeAtSplitsCurvedNakedRim() {
   using dino8::kernel::Brep;
   using dino8::kernel::Point3d;
   using dino8::kernel::Result;
@@ -22440,27 +22522,120 @@ void TestBrepSplitNakedEdgeAtRefusesACurvedEdge() {
   const Brep::CheckReport clean = wedge.Check();
   Check(clean.IsClean() == false && clean.issues.size() == 4 && clean.Count(Brep::CheckIssue::Kind::NakedEdge) == 4,
         "Check() on the fresh wedge reports EXACTLY the 4 expected NakedEdge issues and nothing else - a clean "
-        "baseline, so nothing found after a refused split below can be blamed on a pre-existing fixture defect");
+        "baseline, so nothing found after the split below can be blamed on a pre-existing fixture defect");
 
   int curved_edge = -1;
   for (int i = 0; i < wedge.raw().m_E.Count(); ++i) {
     const ON_BrepEdge& e = wedge.raw().m_E[i];
     if (e.TrimCount() == 1 && !e.IsClosed() && !e.IsLinear(1e-6)) curved_edge = i;
   }
-  Check(curved_edge >= 0, "the wedge fixture has an open (not closed), non-linear naked rim edge to test the refusal on");
+  Check(curved_edge >= 0, "the wedge fixture has an open (not closed), non-linear naked rim edge to test the split on");
   const ON_BrepEdge& e = wedge.raw().m_E[curved_edge];
+  const Point3d p0 = e.PointAtStart();
+  const Point3d p1 = e.PointAtEnd();
   const Point3d split_point = e.PointAt(e.Domain().ParameterAt(0.4));
   const int vertex_count_before = wedge.raw().m_V.Count();
 
   const Result r = wedge.SplitNakedEdgeAt(curved_edge, split_point);
-  Check(r == Result::Failed, "SplitNakedEdgeAt refuses a curved edge (Result::Failed), never attempting the split");
-  Check(wedge.FaceCount() == 1 && wedge.raw().m_E.Count() == 4 && wedge.raw().m_V.Count() == vertex_count_before,
-        "...and the refusal leaves the wedge's own face/edge/vertex counts exactly as they were");
+  Check(r == Result::Ok, "SplitNakedEdgeAt() now genuinely splits a curved naked rim (Result::Ok, not Failed)");
+  Check(wedge.FaceCount() == 1 && wedge.raw().m_E.Count() == 5 && wedge.raw().m_V.Count() == vertex_count_before + 1,
+        "...the wedge keeps its one face, gains exactly one edge (4 -> 5, the rim split into two) and exactly "
+        "one new vertex (the split point) - never two new ones or a silently-reused old one");
   const Brep::CheckReport after = wedge.Check();
-  Check(after.issues.size() == clean.issues.size() && after.Count(Brep::CheckIssue::Kind::NakedEdge) == 4 &&
+  Check(after.issues.size() == 5 && after.Count(Brep::CheckIssue::Kind::NakedEdge) == 5 &&
             after.Count(Brep::CheckIssue::Kind::LoopGap) == 0 && after.Count(Brep::CheckIssue::Kind::InvalidTrim) == 0,
-        "...and Check() reports EXACTLY the same clean baseline afterward - no LoopGap or InvalidTrim defect was "
-        "introduced by the refused attempt (the specific failure mode direct testing found before this guard existed)");
+        "...Check() now reports 5 NakedEdge issues (one per boundary edge, the split doubled one into two) and "
+        "nothing else - no LoopGap or InvalidTrim defect, the specific failure mode the old restriction existed "
+        "to avoid, was introduced by the now-genuine curved split");
+
+  // Geometric proof, independent of Check(): the new vertex sits exactly
+  // on the ORIGINAL curve (not merely close), and the face's own single
+  // remaining outer loop, walked trim by trim through the wall surface,
+  // retraces a continuous path from p0 through the split point to p1 -
+  // the two new curved trims genuinely partition the original rim rather
+  // than merely satisfying Check()'s own topology-only diagnostics.
+  int new_vertex = -1;
+  for (int vi = 0; vi < wedge.raw().m_V.Count(); ++vi) {
+    const Point3d vp = wedge.raw().m_V[vi].point;
+    if (vp.DistanceTo(split_point) < 1e-9) new_vertex = vi;
+  }
+  Check(new_vertex >= 0, "a vertex sits exactly at the split point (within 1e-9), not merely near it");
+
+  const ON_BrepLoop* outer = wedge.raw().m_F[0].OuterLoop();
+  Check(outer != nullptr && outer->TrimCount() == 5, "the wedge's one face now has 5 trims in its outer loop");
+  double max_gap = 0.0;
+  int rim_pieces_found = 0;
+  const ON_Surface* wall_surf = wedge.raw().m_F[0].SurfaceOf();
+  for (int k = 0; k < outer->TrimCount(); ++k) {
+    const ON_BrepTrim* t = outer->Trim(k);
+    const ON_BrepEdge* te = t ? t->Edge() : nullptr;
+    const ON_Curve* tc = t ? t->TrimCurveOf() : nullptr;
+    if (!te || !tc) continue;
+    if (te->m_edge_index == curved_edge) continue;  // can't happen post-split, defensive only
+    const bool touches_split = te->m_vi[0] == new_vertex || te->m_vi[1] == new_vertex;
+    const bool touches_p0 = wedge.raw().m_V[te->m_vi[0]].point.DistanceTo(p0) < 1e-6 ||
+                             wedge.raw().m_V[te->m_vi[1]].point.DistanceTo(p0) < 1e-6;
+    const bool touches_p1 = wedge.raw().m_V[te->m_vi[0]].point.DistanceTo(p1) < 1e-6 ||
+                             wedge.raw().m_V[te->m_vi[1]].point.DistanceTo(p1) < 1e-6;
+    if (touches_split && (touches_p0 || touches_p1)) {
+      ++rim_pieces_found;
+      const ON_2dPoint uv0 = tc->PointAtStart();
+      const ON_2dPoint uv1 = tc->PointAtEnd();
+      max_gap = std::max({max_gap, wall_surf->PointAt(uv0.x, uv0.y).DistanceTo(
+                                        t->m_bRev3d ? te->PointAtEnd() : te->PointAtStart()),
+                           wall_surf->PointAt(uv1.x, uv1.y).DistanceTo(
+                               t->m_bRev3d ? te->PointAtStart() : te->PointAtEnd())});
+    }
+  }
+  Check(rim_pieces_found == 2, "exactly two trims of the final 5-trim loop are the split rim's own two new pieces "
+                               "(one running p0 -> split, the other split -> p1)");
+  Check(max_gap < 1e-6, "both new rim trims' own 2D curves evaluate, through the wall's real surface, to within "
+                        "1e-6 of their matching 3D edge endpoints - a genuine curve-following split, not a gap "
+                        "Check()'s own coarser diagnostics merely failed to flag");
+}
+
+// SplitNakedEdgeAt() still refuses a CLOSED edge outright (its own two
+// endpoints are the same vertex) - the one genuinely orthogonal
+// restriction linearity never actually excluded either (a closed curve
+// can't be IsLinear() in the first place), so lifting the linear-only
+// gate above newly exposes this as a case worth its own explicit guard
+// and test rather than an accidental side effect. Fixture: a full (2*pi)
+// CylindricalFace with no caps - its own top/bottom rims each come back
+// as ONE single closed, 1-trim edge (confirmed directly: m_vi[0] ==
+// m_vi[1]), unlike the open half-wedge fixture the test above uses.
+void TestBrepSplitNakedEdgeAtRefusesAClosedEdge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const ON_Plane frame = FrameFromAxisForGeneralBooleanTest(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  Brep::CylindricalFace cf;
+  cf.frame = frame;
+  cf.radius = 1.0;
+  cf.angle = 2.0 * ON_PI;  // a full cylinder - no caps
+  cf.length = 2.0;
+  Brep cyl = Brep::FromMixedFaces({}, {cf});
+  Check(cyl.FaceCount() == 1 && cyl.raw().m_E.Count() == 3,
+        "the uncapped full cylinder has 1 face and 3 edges (2 closed rims, 1 shared seam)");
+
+  int closed_edge = -1;
+  for (int i = 0; i < cyl.raw().m_E.Count(); ++i) {
+    const ON_BrepEdge& e = cyl.raw().m_E[i];
+    if (e.TrimCount() == 1 && e.IsClosed()) closed_edge = i;
+  }
+  Check(closed_edge >= 0 && cyl.raw().m_E[closed_edge].m_vi[0] == cyl.raw().m_E[closed_edge].m_vi[1],
+        "found a genuinely closed naked rim - both its own stored endpoint indices are the SAME vertex");
+
+  const ON_BrepEdge& ce = cyl.raw().m_E[closed_edge];
+  const Point3d split_point = ce.PointAt(ce.Domain().ParameterAt(0.3));
+  const int edge_count_before = cyl.raw().m_E.Count();
+  const int vertex_count_before = cyl.raw().m_V.Count();
+
+  const Result r = cyl.SplitNakedEdgeAt(closed_edge, split_point);
+  Check(r == Result::Failed, "SplitNakedEdgeAt() refuses a closed edge (Result::Failed), never attempting the split");
+  Check(cyl.raw().m_E.Count() == edge_count_before && cyl.raw().m_V.Count() == vertex_count_before,
+        "...and the refusal leaves the cylinder's own edge/vertex counts exactly as they were");
 }
 
 // SplitNakedEdgeAt's own refusals and thrown-exception contract: a point
@@ -22581,6 +22756,205 @@ void TestBrepSplitNakedEdgeAtSplitsSharedEdgeOnBothFaces() {
         "a point far from edge 0's own (now shorter, half-length) curve is still refused post-split");
 }
 
+// SplitNakedEdgeAt() on a genuinely CURVED shared (2-trim) edge - the
+// combination TestBrepSplitNakedEdgeAtSplitsCurvedNakedRim (curved,
+// 1-trim) and TestBrepSplitNakedEdgeAtSplitsSharedEdgeOnBothFaces
+// (straight, 2-trim) each exercise separately, but neither covers
+// together. Fixture: a cylindrical wall face and a planar pie-slice cap
+// face sharing a real ON_Arc edge (the identical hand-built construction
+// TestBrepRebuildEdgeCurveRecoversExactCylinderPlaneIntersectionAfterPerturbation
+// above uses, minus that test's own perturbation/rebuild - here the arc
+// is split, not rebuilt), so the two faces' trim curves sit on two
+// genuinely DIFFERENT surfaces (a ruled cylinder and a flat plane) with
+// no relationship between their own local (u, v) parameterizations -
+// exactly the case this method's own doc comment says needs independent
+// per-trim handling.
+void TestBrepSplitNakedEdgeAtSplitsSharedCurvedEdgeOnBothFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const double radius = 2.0, height = 3.0, sweep_angle = 1.3;
+  const double cut_v = 1.5;
+
+  ON_Arc arc(ON_3dPoint(0, 0, 0), radius, sweep_angle);
+  ON_NurbsCurve arc_curve;
+  Check(arc.GetNurbForm(arc_curve) != 0, "setup: ON_Arc::GetNurbForm succeeds");
+  ON_NurbsCurve arc_curve_top = arc_curve;
+  Check(arc_curve_top.Translate(ON_3dVector(0, 0, height)), "setup: the top arc copy translates");
+
+  auto* wall_srf = new ON_NurbsSurface();
+  Check(wall_srf->CreateRuledSurface(arc_curve, arc_curve_top) != 0,
+        "setup: CreateRuledSurface builds the wall from the two arc copies");
+
+  Brep brep;
+  ON_Brep& raw = brep.raw();
+  const int wall_si = raw.AddSurface(wall_srf);
+
+  const ON_Interval u_dom = wall_srf->Domain(0), v_dom = wall_srf->Domain(1);
+  const double u0 = u_dom.Min(), u1 = u_dom.Max();
+  const double v_lo = v_dom.Min() + v_dom.Length() * (cut_v / height);
+  const double v_hi = v_dom.Max();
+
+  const Point3d arc_start = wall_srf->PointAt(u0, v_lo);
+  const Point3d arc_end = wall_srf->PointAt(u1, v_lo);
+  const Point3d center(0, 0, cut_v);
+
+  const int v_start = raw.NewVertex(arc_start, 0.0).m_vertex_index;
+  const int v_end = raw.NewVertex(arc_end, 0.0).m_vertex_index;
+  const int v_center = raw.NewVertex(center, 0.0).m_vertex_index;
+
+  ON_Curve* shared_iso = wall_srf->IsoCurve(0, v_lo);
+  ON_NurbsCurve shared_nurbs;
+  Check(shared_iso->GetNurbForm(shared_nurbs) > 0, "setup: the shared arc has a real NURBS form");
+  const int shared_c3i = raw.AddEdgeCurve(shared_iso);
+  const int shared_edge = raw.NewEdge(raw.m_V[v_start], raw.m_V[v_end], shared_c3i).m_edge_index;
+  raw.m_E[shared_edge].m_tolerance = 0.0;
+
+  int wall_face = -1;
+  {
+    auto make_naked_edge = [&](int va, const Point3d& pa, int vb, const Point3d& pb) -> int {
+      const int c3i = raw.AddEdgeCurve(new ON_LineCurve(pa, pb));
+      const int ei = raw.NewEdge(raw.m_V[va], raw.m_V[vb], c3i).m_edge_index;
+      raw.m_E[ei].m_tolerance = 0.0;
+      return ei;
+    };
+    const Point3d top_start = wall_srf->PointAt(u0, v_hi);
+    const Point3d top_end = wall_srf->PointAt(u1, v_hi);
+    const int v_top_start = raw.NewVertex(top_start, 0.0).m_vertex_index;
+    const int v_top_end = raw.NewVertex(top_end, 0.0).m_vertex_index;
+    const int e_left = make_naked_edge(v_start, arc_start, v_top_start, top_start);
+    const int e_top = make_naked_edge(v_top_start, top_start, v_top_end, top_end);
+    const int e_right = make_naked_edge(v_end, arc_end, v_top_end, top_end);
+
+    wall_face = raw.NewFace(wall_si).m_face_index;
+    const int loop_index = raw.NewLoop(ON_BrepLoop::outer, raw.m_F[wall_face]).m_loop_index;
+    auto add_wall_trim = [&](int edge_index, bool rev, double ua, double va, double ub, double vb) {
+      auto* c2 = new ON_LineCurve(ON_2dPoint(ua, va), ON_2dPoint(ub, vb));
+      const int c2i = raw.AddTrimCurve(c2);
+      ON_BrepTrim& trim = raw.NewTrim(raw.m_E[edge_index], rev, raw.m_L[loop_index], c2i);
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    };
+    add_wall_trim(shared_edge, false, u0, v_lo, u1, v_lo);
+    add_wall_trim(e_right, false, u1, v_lo, u1, v_hi);
+    add_wall_trim(e_top, true, u1, v_hi, u0, v_hi);
+    add_wall_trim(e_left, true, u0, v_hi, u0, v_lo);
+  }
+
+  auto* cap_srf =
+      new ON_PlaneSurface(ON_Plane(ON_3dPoint(0, 0, cut_v), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)));
+  Check(cap_srf->SetExtents(0, ON_Interval(-0.5, radius + 0.5), true), "setup: the cap plane's own x extents/domain sync");
+  Check(cap_srf->SetExtents(1, ON_Interval(-0.5, radius + 0.5), true), "setup: the cap plane's own y extents/domain sync");
+  const int cap_si = raw.AddSurface(cap_srf);
+
+  ON_NurbsCurve shared_2d = shared_nurbs;
+  Check(shared_2d.ChangeDimension(2), "setup: the shared arc's own 2D form (z dropped) builds");
+
+  const int e_radial_end_to_center = raw.AddEdgeCurve(new ON_LineCurve(arc_end, center));
+  const int edge_end_center = raw.NewEdge(raw.m_V[v_end], raw.m_V[v_center], e_radial_end_to_center).m_edge_index;
+  raw.m_E[edge_end_center].m_tolerance = 0.0;
+  const int e_radial_center_to_start = raw.AddEdgeCurve(new ON_LineCurve(center, arc_start));
+  const int edge_center_start =
+      raw.NewEdge(raw.m_V[v_center], raw.m_V[v_start], e_radial_center_to_start).m_edge_index;
+  raw.m_E[edge_center_start].m_tolerance = 0.0;
+
+  int cap_face = -1;
+  {
+    cap_face = raw.NewFace(cap_si).m_face_index;
+    const int loop_index = raw.NewLoop(ON_BrepLoop::outer, raw.m_F[cap_face]).m_loop_index;
+    auto* shared_2d_fwd = new ON_NurbsCurve(shared_2d);
+    const int shared_c2i = raw.AddTrimCurve(shared_2d_fwd);
+    ON_BrepTrim& t_arc = raw.NewTrim(raw.m_E[shared_edge], /*bRev3d=*/false, raw.m_L[loop_index], shared_c2i);
+    t_arc.m_tolerance[0] = t_arc.m_tolerance[1] = 0.0;
+
+    auto* radial1_2d = new ON_LineCurve(ON_2dPoint(arc_end.x, arc_end.y), ON_2dPoint(0, 0));
+    const int c2i_1 = raw.AddTrimCurve(radial1_2d);
+    ON_BrepTrim& t1 = raw.NewTrim(raw.m_E[edge_end_center], false, raw.m_L[loop_index], c2i_1);
+    t1.m_tolerance[0] = t1.m_tolerance[1] = 0.0;
+
+    auto* radial2_2d = new ON_LineCurve(ON_2dPoint(0, 0), ON_2dPoint(arc_start.x, arc_start.y));
+    const int c2i_2 = raw.AddTrimCurve(radial2_2d);
+    ON_BrepTrim& t2 = raw.NewTrim(raw.m_E[edge_center_start], false, raw.m_L[loop_index], c2i_2);
+    t2.m_tolerance[0] = t2.m_tolerance[1] = 0.0;
+  }
+
+  raw.SetTrimIsoFlags();
+  raw.SetTolerancesBoxesAndFlags();
+  for (int i = 0; i < raw.m_E.Count(); ++i) {
+    ON_BrepEdge& e = raw.m_E[i];
+    if (e.m_edge_index >= 0 && !(e.m_tolerance >= 0.0)) e.m_tolerance = 0.0;
+  }
+  Check(raw.IsValid(), "setup: the hand-built cylinder/plane fixture is a valid ON_Brep");
+  Check(raw.m_E[shared_edge].TrimCount() == 2 && !raw.m_E[shared_edge].IsLinear(1e-6),
+        "setup: the shared arc genuinely borders two trims and is genuinely curved, not linear");
+
+  const int wall_trims_before = raw.m_F[wall_face].Loop(0)->TrimCount();
+  const int cap_trims_before = raw.m_F[cap_face].Loop(0)->TrimCount();
+  const Point3d mid = raw.m_E[shared_edge].PointAt(raw.m_E[shared_edge].Domain().Mid());
+  const Point3d p_start = raw.m_E[shared_edge].PointAtStart();
+  const Point3d p_end = raw.m_E[shared_edge].PointAtEnd();
+
+  const Result r = brep.SplitNakedEdgeAt(shared_edge, mid, 1e-6);
+  Check(r == Result::Ok, "SplitNakedEdgeAt() now genuinely splits a curved SHARED edge (Result::Ok)");
+  Check(raw.m_F[wall_face].Loop(0)->TrimCount() == wall_trims_before + 1 &&
+            raw.m_F[cap_face].Loop(0)->TrimCount() == cap_trims_before + 1,
+        "BOTH faces that share the arc (the cylinder wall AND the flat cap) gained exactly one more trim each, "
+        "not just the one whose own 2D trim curve happens to be an iso-line");
+  Check(raw.IsValid(), "the split Brep is still a genuinely valid ON_Brep");
+
+  // Independent geometric proof, per face, that each face's own new pair
+  // of trims genuinely follows the real 3D edge through THAT face's own
+  // surface - not merely a topologically-plausible trim count.
+  double max_gap = 0.0;
+  for (int fi : {wall_face, cap_face}) {
+    const ON_BrepLoop* lp = raw.m_F[fi].OuterLoop();
+    const ON_Surface* sf = raw.m_F[fi].SurfaceOf();
+    for (int k = 0; lp && k < lp->TrimCount(); ++k) {
+      const ON_BrepTrim* t = lp->Trim(k);
+      const ON_BrepEdge* te = t ? t->Edge() : nullptr;
+      const ON_Curve* tc = t ? t->TrimCurveOf() : nullptr;
+      if (!te || !tc) continue;
+      const ON_2dPoint uv0 = tc->PointAtStart();
+      const ON_2dPoint uv1 = tc->PointAtEnd();
+      const Point3d sp0 = sf->PointAt(uv0.x, uv0.y);
+      const Point3d sp1 = sf->PointAt(uv1.x, uv1.y);
+      const Point3d ep0 = t->m_bRev3d ? te->PointAtEnd() : te->PointAtStart();
+      const Point3d ep1 = t->m_bRev3d ? te->PointAtStart() : te->PointAtEnd();
+      max_gap = std::max({max_gap, sp0.DistanceTo(ep0), sp1.DistanceTo(ep1)});
+    }
+  }
+  Check(max_gap < 1e-6, "every trim of either face, evaluated through that face's own real surface, lands within "
+                        "1e-6 of its matching 3D edge endpoint - genuinely exact on both the ruled cylinder AND "
+                        "the flat plane, the two different surfaces/parameterizations this split must agree on");
+
+  int new_vertex = -1;
+  for (int vi = 0; vi < raw.m_V.Count(); ++vi) {
+    if (raw.m_V[vi].point.DistanceTo(mid) < 1e-9) new_vertex = vi;
+  }
+  Check(new_vertex >= 0, "a new vertex sits exactly at the arc's own midpoint (within 1e-9)");
+  int edges_at_new_vertex = 0;
+  for (int i = 0; i < raw.m_E.Count(); ++i) {
+    const ON_BrepEdge& e = raw.m_E[i];
+    if (e.m_edge_index < 0) continue;
+    if (e.m_vi[0] == new_vertex || e.m_vi[1] == new_vertex) ++edges_at_new_vertex;
+  }
+  Check(edges_at_new_vertex == 2, "exactly 2 edges meet at the new vertex - the arc's own two halves, and "
+                                  "nothing else was accidentally welded there");
+
+  // The original endpoints (p_start, p_end) are still exactly where the
+  // original arc had them - the split replaced the middle, not the ends.
+  bool found_start = false, found_end = false;
+  for (int i = 0; i < raw.m_E.Count(); ++i) {
+    const ON_BrepEdge& e = raw.m_E[i];
+    if (e.m_edge_index < 0) continue;
+    if (e.PointAtStart().DistanceTo(p_start) < 1e-9 || e.PointAtEnd().DistanceTo(p_start) < 1e-9) found_start = true;
+    if (e.PointAtStart().DistanceTo(p_end) < 1e-9 || e.PointAtEnd().DistanceTo(p_end) < 1e-9) found_end = true;
+  }
+  Check(found_start && found_end, "the original arc's own two endpoints are both still present on some edge - "
+                                   "the split subdivided the middle, never relocated or dropped either end");
+}
+
 // SewTJunctions() on the classic T-junction: a unit square A (x in
 // [0,1], y in [0,1]) sits beside two smaller squares B (x in [1,2], y in
 // [0,0.5]) and C (x in [1,2], y in [0.5,1]) - built as 3 SEPARATE
@@ -22680,6 +23054,235 @@ void TestBrepSewTJunctionsNoOpOnCleanBreps() {
   Check(plate.SewTJunctions() == 0, "a lone plate's 4 naked edges have no OTHER naked edge to T-junction against");
   Check(plate.raw().m_E.Count() == plate_edges_before && plate.raw().m_V.Count() == plate_verts_before,
         "...and is left completely untouched");
+}
+
+// SewTJunctions() now genuinely SPLITS a curved long edge A, not just a
+// straight one - 2026-10-12: the prior "only LINEAR naked edges are ever
+// split" restriction this method used to name is lifted (see its own
+// dated note), closing the "future, curve-aware pass" that restriction
+// used to defer. Fixture: a half-cylinder CylindricalFace wedge (angle=
+// pi, no caps - its own curved bottom rim is naked edge A) plus a
+// SEPARATE small triangular planar face B whose own apex sits exactly at
+// a point strictly interior to A's curved span (fraction 0.4 along it,
+// picked the same way the other curved SplitNakedEdgeAt tests above do)
+// - geometrically coincident with a point ON A, but topologically
+// unconnected (A has no vertex there) and NOT itself tracing A's own
+// curve (B's edges are straight, poking away from the cylinder). This
+// deliberately does NOT reach the "...and welds it shut" half this
+// method's own name promises - JoinNakedEdges() only merges a pair of
+// naked edges whose endpoints AND MIDPOINT all coincide (see its own doc
+// comment), and B's straight edges don't retrace A's curved one - the
+// SAME honest limit the straight case already has for an edge that
+// merely touches another at one point without retracing it; what this
+// test actually proves is that the SPLIT half of the pipeline now fires,
+// and fires CORRECTLY, on a curved A (TestBrepSplitNakedEdgeAtSplitsCurv
+// edNakedRim already proves SplitNakedEdgeAt() itself is exact there -
+// this proves SewTJunctions()'s own curved-aware detection logic finds
+// and drives that same call correctly, where it used to skip A outright).
+void TestBrepSewTJunctionsDetectsAndSplitsCurvedEdge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // Hand-built, not Brep::FromMixedFaces(): a ruled-surface cylindrical
+  // wall (the identical construction TestBrepSplitNakedEdgeAtSplitsCurve
+  // dNakedRim's own scenario-2-style scratch probe already verified
+  // clean in isolation) whose bottom rim is one naked curved edge A, plus
+  // a small triangular planar face B built directly into the SAME
+  // ON_Brep by hand - deliberately NOT via FromMixedFaces(), which (a
+  // genuinely separate, pre-existing defect found while building this
+  // test, disclosed in this round's own PARITY_MAP.md note rather than
+  // chased down here) corrupts a CylindricalFace-built face's own loop
+  // type/face association once ANY naked edge anywhere in the Brep is
+  // later split, regardless of curvature - reproduced directly with a
+  // STRAIGHT edge too, so it is unrelated to this round's own curved-
+  // edge work and out of this round's own scope to fix.
+  const double radius = 1.0, height = 2.0, sweep_angle = ON_PI;
+  ON_Arc arc(ON_3dPoint(0, 0, 0), radius, sweep_angle);
+  ON_NurbsCurve arc_curve;
+  Check(arc.GetNurbForm(arc_curve) != 0, "setup: ON_Arc::GetNurbForm succeeds");
+  ON_NurbsCurve arc_curve_top = arc_curve;
+  Check(arc_curve_top.Translate(ON_3dVector(0, 0, height)), "setup: the top arc copy translates");
+  auto* wall_srf = new ON_NurbsSurface();
+  Check(wall_srf->CreateRuledSurface(arc_curve, arc_curve_top) != 0, "setup: CreateRuledSurface builds the wall");
+
+  Brep fixture;
+  ON_Brep& raw = fixture.raw();
+  const int wall_si = raw.AddSurface(wall_srf);
+  const ON_Interval u_dom = wall_srf->Domain(0), v_dom = wall_srf->Domain(1);
+  const double u0 = u_dom.Min(), u1 = u_dom.Max(), v0 = v_dom.Min(), v1 = v_dom.Max();
+  const Point3d bot_start = wall_srf->PointAt(u0, v0);
+  const Point3d bot_end = wall_srf->PointAt(u1, v0);
+  const Point3d top_start = wall_srf->PointAt(u0, v1);
+  const Point3d top_end = wall_srf->PointAt(u1, v1);
+  const int v_bs = raw.NewVertex(bot_start, 0.0).m_vertex_index;
+  const int v_be = raw.NewVertex(bot_end, 0.0).m_vertex_index;
+  const int v_ts = raw.NewVertex(top_start, 0.0).m_vertex_index;
+  const int v_te = raw.NewVertex(top_end, 0.0).m_vertex_index;
+
+  ON_Curve* bot_iso = wall_srf->IsoCurve(0, v0);
+  const int bot_c3i = raw.AddEdgeCurve(bot_iso);
+  const int curved_edge = raw.NewEdge(raw.m_V[v_bs], raw.m_V[v_be], bot_c3i).m_edge_index;
+  raw.m_E[curved_edge].m_tolerance = 0.0;
+
+  auto mk_line_edge = [&](int va, const Point3d& pa, int vb, const Point3d& pb) {
+    const int c3i = raw.AddEdgeCurve(new ON_LineCurve(pa, pb));
+    const int ei = raw.NewEdge(raw.m_V[va], raw.m_V[vb], c3i).m_edge_index;
+    raw.m_E[ei].m_tolerance = 0.0;
+    return ei;
+  };
+  const int e_left = mk_line_edge(v_bs, bot_start, v_ts, top_start);
+  const int e_top = mk_line_edge(v_ts, top_start, v_te, top_end);
+  const int e_right = mk_line_edge(v_be, bot_end, v_te, top_end);
+
+  const int wall_face = raw.NewFace(wall_si).m_face_index;
+  const int wall_loop = raw.NewLoop(ON_BrepLoop::outer, raw.m_F[wall_face]).m_loop_index;
+  auto add_trim = [&](int ei, bool rev, double ua, double va, double ub, double vb) {
+    auto* c2 = new ON_LineCurve(ON_2dPoint(ua, va), ON_2dPoint(ub, vb));
+    const int c2i = raw.AddTrimCurve(c2);
+    ON_BrepTrim& trim = raw.NewTrim(raw.m_E[ei], rev, raw.m_L[wall_loop], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  };
+  add_trim(curved_edge, false, u0, v0, u1, v0);
+  add_trim(e_right, false, u1, v0, u1, v1);
+  add_trim(e_top, true, u1, v1, u0, v1);
+  add_trim(e_left, true, u0, v1, u0, v0);
+
+  raw.SetTrimIsoFlags();
+  raw.SetTolerancesBoxesAndFlags();
+  for (int i = 0; i < raw.m_E.Count(); ++i) {
+    if (raw.m_E[i].m_edge_index >= 0 && !(raw.m_E[i].m_tolerance >= 0.0)) raw.m_E[i].m_tolerance = 0.0;
+  }
+  Check(raw.IsValid(), "setup: the hand-built wall-only fixture is a valid ON_Brep before adding B");
+
+  const Point3d p = raw.m_E[curved_edge].PointAt(raw.m_E[curved_edge].Domain().ParameterAt(0.4));
+  Check(p.DistanceTo(bot_start) > 0.1 && p.DistanceTo(bot_end) > 0.1,
+        "setup: the chosen point is genuinely interior to A's span, well clear of either end");
+
+  // Face B: a small triangle whose apex is exactly `p`, poking straight
+  // out along +z (away from the curved wall), built entirely BY HAND
+  // into the SAME ON_Brep - its own two edges meeting at the apex are
+  // each naked and land exactly at `p`, same as k=0/k=1 in
+  // SewTJunctions()'s own inner loop.
+  // Signs chosen so the p -> p2 -> p3 -> p trim traversal below winds
+  // COUNTERCLOCKWISE in b_plane's own (u, v) parameter space (confirmed
+  // directly: b_plane's own derived xaxis/yaxis land on world (+z, +x)
+  // respectively for this particular normal, giving uv(p2) a NEGATIVE v
+  // and uv(p3) a POSITIVE one) - ON_Brep::SetTolerancesBoxesAndFlags()'s
+  // own loop-type recompute (its `bLazy` defaults to false, so it
+  // overwrites even the `ON_BrepLoop::outer` NewLoop() was given above)
+  // calls ComputeLoopType(), which reads the loop's OWN signed uv area
+  // and reclassifies a clockwise-wound loop as `inner` - with no
+  // enclosing outer loop for that `inner` loop to nest in, IsValid()
+  // then correctly refuses the face. The *other* sign choice (the one
+  // originally here - swapped) wound clockwise and was the actual,
+  // confirmed root cause of this test's own 3 failures - a fixture bug,
+  // not a SplitNakedEdgeAt()/SewTJunctions() defect.
+  const Point3d p2 = p + Point3d(-0.3, 0, 1.0);
+  const Point3d p3 = p + Point3d(0.3, 0, 1.0);
+  const int v_p = raw.NewVertex(p, 0.0).m_vertex_index;
+  const int v_p2 = raw.NewVertex(p2, 0.0).m_vertex_index;
+  const int v_p3 = raw.NewVertex(p3, 0.0).m_vertex_index;
+  const int e_p_p2 = mk_line_edge(v_p, p, v_p2, p2);
+  const int e_p2_p3 = mk_line_edge(v_p2, p2, v_p3, p3);
+  const int e_p3_p = mk_line_edge(v_p3, p3, v_p, p);
+
+  const ON_Plane b_plane(ON_3dPoint(p.x, p.y, p.z), ON_3dVector(0, 1, 0));
+  auto* b_srf = new ON_PlaneSurface(b_plane);
+  // SetExtents(dir, extents, /*bSyncDomain=*/true), not the bare
+  // SetDomain() this fixture originally used (a second, independent
+  // construction bug found and fixed alongside the winding one above):
+  // ON_PlaneSurface::Evaluate() remaps (u, v) from m_domain into
+  // m_extents before handing it to the underlying ON_Plane - SetDomain()
+  // alone changes ONLY m_domain, leaving the default m_extents at [0, 1],
+  // so the surface's own (u, v) silently stopped meaning the same thing
+  // as b_plane's own local coordinates (the ones uv_on_b() below actually
+  // computes via b_plane.ClosestPointTo()), landing every trim curve
+  // thousands of ULPs away from matching its own 3D edge (concretely:
+  // ~0.7 units off, confirmed directly - the IsValid() failure this
+  // caused, surfaced only after fixing the winding bug above, was the
+  // second real root cause of this test's own original 3 failures).
+  // SetExtents(..., true) keeps domain and extents identical, the same
+  // working pattern TestBrepSplitNakedEdgeAtSplitsSharedCurvedEdgeOnBoth
+  // Faces's own cap_srf above already uses.
+  b_srf->SetExtents(0, ON_Interval(-2.0, 2.0), true);
+  b_srf->SetExtents(1, ON_Interval(-2.0, 2.0), true);
+  const int b_si = raw.AddSurface(b_srf);
+  const int b_face = raw.NewFace(b_si).m_face_index;
+  const int b_loop = raw.NewLoop(ON_BrepLoop::outer, raw.m_F[b_face]).m_loop_index;
+  auto uv_on_b = [&](const Point3d& pt) {
+    double u = 0, v = 0;
+    b_plane.ClosestPointTo(ON_3dPoint(pt.x, pt.y, pt.z), &u, &v);
+    return ON_2dPoint(u, v);
+  };
+  auto add_b_trim = [&](int ei, bool rev, const Point3d& pa, const Point3d& pb) {
+    const ON_2dPoint uva = uv_on_b(pa), uvb = uv_on_b(pb);
+    auto* c2 = new ON_LineCurve(uva, uvb);
+    const int c2i = raw.AddTrimCurve(c2);
+    ON_BrepTrim& trim = raw.NewTrim(raw.m_E[ei], rev, raw.m_L[b_loop], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  };
+  add_b_trim(e_p_p2, false, p, p2);
+  add_b_trim(e_p2_p3, false, p2, p3);
+  add_b_trim(e_p3_p, false, p3, p);
+
+  raw.SetTrimIsoFlags();
+  raw.SetTolerancesBoxesAndFlags();
+  for (int i = 0; i < raw.m_E.Count(); ++i) {
+    if (raw.m_E[i].m_edge_index >= 0 && !(raw.m_E[i].m_tolerance >= 0.0)) raw.m_E[i].m_tolerance = 0.0;
+  }
+  Check(raw.IsValid(), "setup: the combined 2-face fixture (wall + hand-built triangle B) is a valid ON_Brep");
+  Check(fixture.FaceCount() == 2, "the combined fixture has exactly 2 faces - the wall and the triangle");
+
+  const int edges_before = raw.m_E.Count();
+  const int verts_before = raw.m_V.Count();
+  int naked_before = 0;
+  for (int i = 0; i < raw.m_E.Count(); ++i) {
+    if (raw.m_E[i].m_edge_index >= 0 && raw.m_E[i].TrimCount() == 1) ++naked_before;
+  }
+  Check(naked_before == edges_before, "setup: every edge of the freshly-combined fixture is still naked - "
+                                       "the wall and the triangle share no topology yet, only a coincident point");
+
+  const int splits = fixture.SewTJunctions();
+  Check(splits == 1, "exactly 1 T-junction split is found and performed - A's curved rim, against B's apex "
+                      "landing strictly inside its span");
+  Check(fixture.raw().IsValid(), "the fixture is still a valid ON_Brep after the split");
+  Check(fixture.raw().m_E.Count() == edges_before + 1,
+        "exactly 1 new edge overall: A's one curved rim became 2 naked halves, and - as expected above - no "
+        "join followed, since B's own straight edges don't retrace A's curved one end to end");
+  Check(fixture.raw().m_V.Count() == verts_before + 1,
+        "exactly 1 new vertex: the split's own new vertex at p, left un-welded (not merged) with B's own "
+        "pre-existing, geometrically coincident but topologically separate apex vertex there");
+
+  int naked_after = 0, curved_naked_after = 0;
+  for (int i = 0; i < fixture.raw().m_E.Count(); ++i) {
+    const ON_BrepEdge& e = fixture.raw().m_E[i];
+    if (e.m_edge_index < 0) continue;
+    Check(e.TrimCount() == 1, "every edge, old or new, is still naked - SewTJunctions() alone never shares one "
+                               "when JoinNakedEdges() finds nothing matching to weld it to");
+    ++naked_after;
+    if (!e.IsClosed() && !e.IsLinear(1e-6)) ++curved_naked_after;
+  }
+  Check(naked_after == edges_before + 1, "every edge (old and new) is naked, consistent with the net +1 above");
+  Check(curved_naked_after == 2, "A's own curved rim is now genuinely 2 curved naked halves, not 1 - confirming "
+                                  "the split itself actually ran on the curved edge rather than silently no-op'ing");
+
+  // Geometric proof the split itself landed exactly where expected (the
+  // same surface-projection gap check the dedicated SplitNakedEdgeAt
+  // tests above use), even though this test's own point is reached via
+  // SewTJunctions()'s own detection logic, not a direct call.
+  int vertices_at_p = 0;
+  for (int vi = 0; vi < fixture.raw().m_V.Count(); ++vi) {
+    if (fixture.raw().m_V[vi].point.DistanceTo(p) < 1e-9) ++vertices_at_p;
+  }
+  Check(vertices_at_p == 2, "exactly 2 vertices now sit at p - B's own original apex and A's new, unwelded "
+                            "split vertex, geometrically coincident but confirmed topologically distinct");
+
+  const Brep::CheckReport after = fixture.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::LoopGap) == 0 && after.Count(Brep::CheckIssue::Kind::InvalidTrim) == 0,
+        "driving the curved split through SewTJunctions() itself (not a direct SplitNakedEdgeAt() call) "
+        "introduces no LoopGap or InvalidTrim defect either");
 }
 
 // DeleteFace()/DeleteFaces() on an arbitrary, currently-valid face - the
@@ -77520,6 +78123,7 @@ int main() {
   RunTest("TestFireRayAtBrep", TestFireRayAtBrep);
   RunTest("TestClosestPointOnBrep", TestClosestPointOnBrep);
   RunTest("TestContainsPointExact", TestContainsPointExact);
+  RunTest("TestSignedDistanceToBrep", TestSignedDistanceToBrep);
   RunTest("TestPullbackCurveToSurfaceCylinderRulingLine", TestPullbackCurveToSurfaceCylinderRulingLine);
   RunTest("TestPullbackCurveToSurfaceAcrossPeriodicSeam", TestPullbackCurveToSurfaceAcrossPeriodicSeam);
   RunTest("TestIntersectBrepByPlaneBoxSideWalls", TestIntersectBrepByPlaneBoxSideWalls);
@@ -78403,11 +79007,14 @@ int main() {
   RunTest("TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip", TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip);
   RunTest("TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge", TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge);
   RunTest("TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly", TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly);
-  RunTest("TestBrepSplitNakedEdgeAtRefusesACurvedEdge", TestBrepSplitNakedEdgeAtRefusesACurvedEdge);
+  RunTest("TestBrepSplitNakedEdgeAtSplitsCurvedNakedRim", TestBrepSplitNakedEdgeAtSplitsCurvedNakedRim);
+  RunTest("TestBrepSplitNakedEdgeAtRefusesAClosedEdge", TestBrepSplitNakedEdgeAtRefusesAClosedEdge);
+  RunTest("TestBrepSplitNakedEdgeAtSplitsSharedCurvedEdgeOnBothFaces", TestBrepSplitNakedEdgeAtSplitsSharedCurvedEdgeOnBothFaces);
   RunTest("TestBrepSplitNakedEdgeAtRefusesInvalidInputs", TestBrepSplitNakedEdgeAtRefusesInvalidInputs);
   RunTest("TestBrepSplitNakedEdgeAtSplitsSharedEdgeOnBothFaces", TestBrepSplitNakedEdgeAtSplitsSharedEdgeOnBothFaces);
   RunTest("TestBrepSewTJunctionsClosesActualTJunction", TestBrepSewTJunctionsClosesActualTJunction);
   RunTest("TestBrepSewTJunctionsNoOpOnCleanBreps", TestBrepSewTJunctionsNoOpOnCleanBreps);
+  RunTest("TestBrepSewTJunctionsDetectsAndSplitsCurvedEdge", TestBrepSewTJunctionsDetectsAndSplitsCurvedEdge);
   RunTest("TestBrepDeleteFaceRemovesArbitraryFaceAndRefusesBadIndices", TestBrepDeleteFaceRemovesArbitraryFaceAndRefusesBadIndices);
   RunTest("TestBrepDeleteFaceHealFlagControlsJoinAndSewTJunctions", TestBrepDeleteFaceHealFlagControlsJoinAndSewTJunctions);
   RunTest("TestBrepCheckDetects3dSelfIntersectingLoopBeyondThe2dTrimCheck", TestBrepCheckDetects3dSelfIntersectingLoopBeyondThe2dTrimCheck);
