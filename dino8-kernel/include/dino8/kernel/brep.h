@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <utility>
 #include <vector>
 
@@ -1255,6 +1256,71 @@ class Brep {
   int LiveFaceCount() const;
   int LiveVertexCount() const;
   int LiveEdgeCount() const;
+
+  // Persistent topology identity - PARITY_MAP.md's own "Persistent naming
+  // / topology identity and attributes across edits" item, named
+  // `[missing]` outright ("sub-object references are raw m_E/m_F
+  // indices... every topology edit clears the side tables and renumbers
+  // via Compact. There is no persistent ID or attribute scheme"). This
+  // closes the literal case that complaint names: a real per-element ID,
+  // assigned once and independent of raw index, that survives a
+  // Compact() call instead of being silently invalidated by it the way a
+  // bare `m_F`/`m_V`/`m_E` index already is.
+  //
+  // FacePersistentId()/EdgePersistentId()/VertexPersistentId() return the
+  // element's own existing ID, LAZILY assigning a fresh one (this Brep's
+  // own monotonically increasing counter, started at 1 - 0 means "never
+  // assigned") the first time a given live element is asked for one, so
+  // nothing has to be threaded through every single topology-constructing
+  // call site for this to work: a caller opts in by asking for an ID at
+  // all, the same "narrow, additive, nothing existing has to change"
+  // shape BoxWelded()/TrimmedPlanarFaceWelded() already use for their own
+  // gap. Two calls on the same still-live element always return the same
+  // ID; a freshly created element (a new face/edge/vertex slot that has
+  // never been asked for one) gets a new one on first ask, not a stale
+  // leftover from whichever slot used to occupy that index. Throws
+  // std::out_of_range for an out-of-range index, or std::invalid_argument
+  // for an already-deleted one - the same contract every other per-
+  // element accessor in this class already has.
+  uint64_t FacePersistentId(int face_index);
+  uint64_t EdgePersistentId(int edge_index);
+  uint64_t VertexPersistentId(int vertex_index);
+
+  // The inverse: the CURRENT index of the live element carrying `id`, or
+  // -1 if `id` is 0, was never assigned, or no longer names a live
+  // element (its owner was deleted, possibly since compacted away) -
+  // never throws, since "does this id still resolve to anything" is an
+  // ordinary caller question, not a bug.
+  int FindFaceByPersistentId(uint64_t id) const;
+  int FindEdgeByPersistentId(uint64_t id) const;
+  int FindVertexByPersistentId(uint64_t id) const;
+
+  // The actual "survives Compact()" close: assigns a persistent id (via
+  // the same lazy FacePersistentId()/EdgePersistentId()/
+  // VertexPersistentId() above) to every CURRENTLY LIVE face/edge/vertex
+  // first, so nothing a caller never happened to query is silently
+  // dropped, then calls the ordinary raw().Compact() and re-derives each
+  // survivor's own id table at its NEW, post-compact index - relying on
+  // the one guarantee ON_Brep::Compact() genuinely makes (it removes
+  // exactly the deleted slots and leaves every survivor in its own
+  // original RELATIVE order, never reordering two live elements against
+  // each other), confirmed directly against a real deleted-middle-slot
+  // fixture rather than assumed from the name alone. Equivalent to
+  // raw().Compact() alone for every OTHER side effect (same renumbering,
+  // same return value semantics) - this only adds the id bookkeeping on
+  // top, it does not change what Compact() itself does.
+  //
+  // Deliberately a separate, additive entry point rather than a change
+  // to every existing Compact()-calling method in this class (DeleteFace,
+  // RemoveSharedMicroEdge, and the rest each already call `brep_.Compact()`
+  // directly as part of their own established contract): threading this
+  // through every one of them is a larger, separate change this pass
+  // does not attempt, so an id survives a call to THIS method, not yet
+  // every operation that happens to compact internally - the same
+  // "narrower than the full gap, honestly disclosed" scope limit
+  // BoxWelded()/TrimmedPlanarFaceWelded() already carry for their own
+  // still-partial siblings.
+  void CompactPreservingPersistentIds();
 
   // Mass-properties volume via the divergence theorem - direct NURBS
   // integration, not a tessellation chord approximation: sum over every
@@ -5195,6 +5261,16 @@ class Brep {
   // lump, in order. Empty for every other Brep (one lump) - see
   // LumpFaceRanges().
   std::vector<std::pair<int, int>> lump_face_ranges_;
+
+  // FacePersistentId()/EdgePersistentId()/VertexPersistentId()'s own
+  // backing store: table[index] is that element's assigned id, or 0 if
+  // never asked for one. Sized up to whichever index was last queried
+  // (not necessarily brep_.m_F/m_V/m_E's own current Count()) - an index
+  // past the end of one of these means "never asked", same as 0 would.
+  std::vector<uint64_t> face_persistent_ids_;
+  std::vector<uint64_t> edge_persistent_ids_;
+  std::vector<uint64_t> vertex_persistent_ids_;
+  uint64_t next_persistent_id_ = 1;
 };
 
 }  // namespace dino8::kernel
