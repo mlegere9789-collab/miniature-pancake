@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -2714,6 +2715,35 @@ class Brep {
   // fallback also fails.
   BoundingBox GetTightBoundingBox() const;
 
+  // An oriented bounding box: closes the "B-rep" half of PARITY_MAP's
+  // "Oriented / CPlane-aligned / minimal-volume bounding box" gap (the
+  // curve half closed via `NurbsCurve::GetOrientedBoundingBox()`, the
+  // surface half via the newer `NurbsSurface::GetOrientedBoundingBox()` -
+  // this is the whole-Brep aggregate over every face's own surface).
+  // Same technique as both: PCA (the shared `ON_Sym3x3EigenSolver`) on
+  // the plain covariance of every face's own `u_divisions` x
+  // `v_divisions` grid of sample points (each face's `SurfaceOf()`,
+  // converted to its real NURBS form via `ON_NurbsSurface::Cast()` first
+  // and `GetNurbForm()` only if that cast fails - the same two-tier
+  // pattern `ResolveFace()` (brep.cpp) already establishes for reading an
+  // arbitrary face's surface this way), giving the axes; `half_extents`/
+  // `center` are the exact min/max projection of every face's own real
+  // NURBS CONTROL POINT (not the sampled points) onto each axis, so the
+  // result is PROVABLY SAFE regardless of sampling density - the same
+  // convex-hull guarantee the curve/surface overloads already rely on,
+  // generalized from one control net to the union of every face's own.
+  // Falls back to the world X/Y/Z axes on a genuinely degenerate
+  // covariance (e.g. a single flat face), same as both narrower
+  // overloads. Throws std::runtime_error if no face produces any usable
+  // surface (including a genuinely empty Brep) - the same condition
+  // `GetTightBoundingBox()` above throws for, and for the same reason.
+  struct OrientedBox {
+    Point3d center;
+    std::array<Vector3d, 3> axes;
+    std::array<double, 3> half_extents{};
+  };
+  OrientedBox GetOrientedBoundingBox(int u_divisions = 20, int v_divisions = 20) const;
+
   // Tessellates each face into a triangle mesh via NurbsSurface's grid
   // tessellator (see its comment for why this doesn't go through
   // OpenNURBS' own CreateMesh). One Mesh per face, in face order.
@@ -5061,29 +5091,35 @@ class Brep {
   // the surface's own (u, v) domain rectangle - i.e. face_index must be
   // untrimmed (its loop reproduces the surface's own natural boundary
   // exactly), the common case for a primitive or boolean-fragment face
-  // that was never itself re-trimmed. [t0, t1] must extend EXACTLY one
-  // end of `direction`'s current domain - the other end of `direction`,
-  // and the entirety of the other direction, stay fixed; extending both
-  // ends of `direction` in one call is a narrower follow-up, not
-  // attempted here. The CAP trim at the end actually being extended, and
+  // that was never itself re-trimmed. [t0, t1] may extend either ONE end
+  // of `direction`'s current domain or BOTH at once (2026-10-12: the
+  // "both ends in one call" restriction this doc comment used to state
+  // is closed - NurbsSurface::Extend()/ExtendLinear() already support a
+  // single call growing both ends, see ExtendLinear()'s own two
+  // conditional ExtendOneEndLinear() calls, so only this method's own
+  // Brep-level topology rebuild needed generalizing, not the underlying
+  // surface math) - either way, the entirety of the OTHER direction
+  // stays fixed. Every CAP trim at an end actually being extended, and
   // BOTH trims that run ALONG `direction` (the two "rails" connecting
-  // the two ends), must be naked (TrimCount() == 1): rebuilding any of
-  // those three edges' own 3D curve is only safe when no other trim -
-  // on any other face - also references it. The FAR cap (the end NOT
-  // being extended) is left completely untouched, vertices and edges
-  // alike, whether it is naked or genuinely shared with a neighbour -
-  // this is exactly how a face sharing one edge with a neighbour extends
-  // AWAY from that neighbour in place; extending TOWARD a shared edge
-  // instead (the neighbour would need to grow too, to stay watertight)
-  // is refused, since that cap or rail trim then isn't naked.
+  // the two ends - always rebuilt, since at least one of their two
+  // endpoints always moves), must be naked (TrimCount() == 1):
+  // rebuilding any of those edges' own 3D curve is only safe when no
+  // other trim - on any other face - also references it. A cap at an
+  // end NOT being extended is left completely untouched, vertices and
+  // edges alike, whether it is naked or genuinely shared with a
+  // neighbour - this is exactly how a face sharing one edge with a
+  // neighbour extends AWAY from that neighbour in place; extending
+  // TOWARD a shared edge instead (the neighbour would need to grow too,
+  // to stay watertight) is refused, since that cap or rail trim then
+  // isn't naked.
   //
-  // Each of the 3 replaced trims' own new 2D/3D curves comes directly
-  // from the extended surface's own IsoCurve() (never a resampled refit,
-  // the same exactness BuildTwoFaceCylinderFixture-style trim
-  // construction already relies on elsewhere in this codebase), oriented
-  // by DIRECT measurement against each corner's own known new position -
-  // never assumed from the old trim's own m_bRev3d or parameter
-  // direction, the same discipline SplitNakedEdgeAt() already uses.
+  // Each replaced trim's own new 2D/3D curves comes directly from the
+  // extended surface's own IsoCurve() (never a resampled refit, the same
+  // exactness BuildTwoFaceCylinderFixture-style trim construction
+  // already relies on elsewhere in this codebase), oriented by DIRECT
+  // measurement against each corner's own known new position - never
+  // assumed from the old trim's own m_bRev3d or parameter direction, the
+  // same discipline SplitNakedEdgeAt() already uses.
   //
   // Throws std::out_of_range if `face_index` is out of range, or
   // std::invalid_argument if it refers to an already-deleted face or if
