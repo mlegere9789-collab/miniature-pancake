@@ -1439,16 +1439,32 @@ class Brep {
   // Exact surface area: the same divergence-theorem machinery Volume()
   // uses, minus the dot with S(u,v) - sum over every face of
   // INT INT |Su(u,v) x Sv(u,v)| du dv over that face's own parameter
-  // domain, same 5-point-per-span Gauss-Legendre quadrature and the same
-  // whole-domain-face requirement (naming which face fails it), but
-  // WITHOUT Volume()'s own closedness requirement - an open surface has a
-  // perfectly well-defined area even though it has no enclosed volume.
-  // Unlike Volume()'s integrand, |Su x Sv|'s square root is never
-  // exactly polynomial even for a non-rational face, so this always
-  // converges rather than landing exactly - verified at ~1e-9 relative
-  // against Sphere()'s and Box()'s own closed-form areas in
+  // domain, but WITHOUT Volume()'s own closedness requirement - an open
+  // surface has a perfectly well-defined area even though it has no
+  // enclosed volume. Unlike Volume()'s integrand, |Su x Sv|'s square root
+  // is never exactly polynomial even for a non-rational face, so this
+  // always converges rather than landing exactly - verified at ~1e-9
+  // relative against Sphere()'s and Box()'s own closed-form areas in
   // TestBrepVolumeAndAreaMatchClosedForms, a real measured bound, not a
   // loose one.
+  //
+  // Unlike Volume(), a face that does NOT cover its entire surface
+  // parameter domain is not automatically rejected: a face with genuine
+  // ON_Brep loop topology (face.m_li.Count() > 0 - what general-boolean
+  // results and TrimmedPlanarFaceWelded() both build) is integrated only
+  // over its true trim region - the one ON_BrepLoop::outer loop, minus
+  // every ON_BrepLoop::inner hole - via a 2D ear-clip triangulation of
+  // that region's own polylined boundary (TrimmedFaceUVPolygon(),
+  // brep.cpp) and an adaptively-refined 7-point triangle quadrature per
+  // resulting triangle (IntegrateTriangleAdaptive(), brep.cpp), the
+  // trimmed-domain counterpart of the whole-domain path's own 5-point-
+  // per-knot-span Gauss-Legendre quadrature. Still throws
+  // std::invalid_argument, naming which face, for the two cases this
+  // does not attempt: a face trimmed by this kernel's OWN separate
+  // pseudo-trim side tables instead (TrimmedPlanarFace()'s own bare-
+  // surface convention - face.m_li.Count() == 0 but FaceCoversWholeDomain
+  // is still false), and a face with zero or more than one disjoint
+  // ON_BrepLoop::outer boundary.
   double Area() const;
 
   // Topology & adjacency queries - the reusable equivalent of the ad-hoc

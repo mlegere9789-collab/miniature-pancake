@@ -17345,6 +17345,77 @@ void TestBrepVolumeAndAreaMatchClosedForms() {
   }
 }
 
+// Closes the "Surface / B-rep area" bullet's own named gap ("Brep::Area()
+// throws on any trimmed face and on general-boolean results") for a face
+// with GENUINE ON_Brep loop topology (face.m_li.Count() > 0), as opposed
+// to this kernel's own separate pseudo-trim side tables
+// (TrimmedPlanarFace()'s own bare-surface convention) - see
+// TrimmedFaceUVPolygon()/IntegrateTriangleAdaptive() in brep.cpp and
+// Brep::Area()'s own updated doc comment in brep.h.
+void TestBrepAreaHandlesGenuinelyTrimmedFaces() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  // A flat, genuinely-trimmed planar face (TrimmedPlanarFaceWelded() -
+  // same fixture TestBrepTrimmedPlanarFaceWelded() already uses, whose
+  // own exact physical area is already hand-derived and confirmed there:
+  // a 10x10 plane trimmed to the UV square [0.15, 0.85]^2, a 7x7
+  // physical square, area exactly 49.0).
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0), Point3d(0, 10, 0), Point3d(10, 0, 0), Point3d(10, 10, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const std::vector<Point2d> trim_loop = {
+      Point2d(0.15, 0.15), Point2d(0.85, 0.15), Point2d(0.85, 0.85), Point2d(0.15, 0.85),
+  };
+  const Brep face = Brep::TrimmedPlanarFaceWelded(surface, trim_loop);
+  Check(std::abs(face.Area() - 49.0) < 1e-6,
+        "Area() on a genuinely-trimmed (real ON_Brep loop topology) flat face matches its exact trim area "
+        "49.0 (7x7), no longer throwing");
+
+  // The same face with a real ON_BrepLoop::inner hole (a 2x2 physical
+  // square cut from its own interior, area 4.0) - exercises
+  // TrimmedFaceUVPolygon()'s own hole-bridging path, not just a single
+  // outer loop.
+  const std::vector<Point2d> hole_loop = {
+      Point2d(0.4, 0.4), Point2d(0.6, 0.4), Point2d(0.6, 0.6), Point2d(0.4, 0.6),
+  };
+  const Brep holed = Brep::TrimmedPlanarFaceWelded(surface, trim_loop, {hole_loop});
+  Check(std::abs(holed.Area() - 45.0) < 1e-6,
+        "Area() on the same face with one real hole matches 49.0 - 4.0 == 45.0 exactly - the hole's own "
+        "region is genuinely excluded, not just the outer loop's");
+
+  // A real, curved-capable production path: BooleanCombineGeneral()'s own
+  // general boundary-evaluation engine on two overlapping boxes (the same
+  // fixture TestBooleanCombineGeneralBoxBox() already proves `IsValid()`
+  // for) - several of its own faces become genuinely trimmed (an L-shaped
+  // remainder where the other box's own face cuts across it), real
+  // ON_Brep loop topology, not a side table. Cross-checked against an
+  // INDEPENDENT measurement of the same shape - TessellateGeneralBooleanClosedMesh()'s
+  // own closed mesh Area() - rather than any hand-derived number: every
+  // face here is planar, so a mesh tessellation's own triangle-area sum
+  // is already exact (the same "ear-clipped planar polygon tessellates to
+  // its own exact area, no quantization" fact TestBrepTrimmedPlanarFaceWelded()
+  // already establishes), making it a genuine ground truth to compare
+  // this still-new quadrature path against, not a synthetic fixture
+  // tuned to it.
+  const Brep box_a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep box_b = Brep::Box(1, 1, 1, 3, 3, 3);
+  for (const BooleanOp op : {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference}) {
+    const Brep result = BooleanCombineGeneral(box_a, box_b, op);
+    const double mesh_area = TessellateGeneralBooleanClosedMesh(result, 8, 8).Area();
+    const double brep_area = result.Area();
+    Check(std::abs(brep_area - mesh_area) / mesh_area < 1e-6,
+          "Area() on a real BooleanCombineGeneral() box+box result (genuinely-trimmed planar faces) matches "
+          "the independently-measured closed-mesh area within 1e-6 relative");
+  }
+}
+
 void TestBrepTrimmedPlanarFaceRejectsTooFewPoints() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -79013,6 +79084,7 @@ int main() {
   RunTest("TestBrepSphereBooleanEndToEnd", TestBrepSphereBooleanEndToEnd);
   RunTest("TestBrepTorusIsClosedAndWatertight", TestBrepTorusIsClosedAndWatertight);
   RunTest("TestBrepVolumeAndAreaMatchClosedForms", TestBrepVolumeAndAreaMatchClosedForms);
+  RunTest("TestBrepAreaHandlesGenuinelyTrimmedFaces", TestBrepAreaHandlesGenuinelyTrimmedFaces);
   RunTest("TestBrepTrimmedPlanarFaceRejectsTooFewPoints", TestBrepTrimmedPlanarFaceRejectsTooFewPoints);
   RunTest("TestBrepTrimmedPlanarFace", TestBrepTrimmedPlanarFace);
   RunTest("TestBrepTrimmedPlanarFaceWelded", TestBrepTrimmedPlanarFaceWelded);
