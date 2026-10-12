@@ -21,6 +21,37 @@ namespace dino8::app {
 // `pixel_size <= 0` (a degenerate camera state) returns 1.0 - no scaling.
 double LodScaleForPixelSize(double pixel_size);
 
+// Per-object DISTANCE-based LOD, on top of LodScaleForPixelSize's own
+// per-VIEWPORT zoom-level scale - closing the "still zoom-level LOD, not
+// per-object distance-based LOD" gap PARITY_MAP.md's "View-dependent
+// adaptive tessellation" item names as its own last remaining one.
+// LodScaleForPixelSize/FinestLodScale give every object in a frame the
+// SAME scale, from Camera::PixelSize's own "world units per pixel AT THE
+// CAMERA'S TARGET DISTANCE" approximation (Camera.cpp) - exact for an
+// object sitting right at the target, but for a PERSPECTIVE camera (true
+// for any other object, since perspective's own pixels-per-world-unit
+// falls off as 1/distance from the eye) increasingly wrong the farther an
+// object's own distance from the eye differs from the target's: a close
+// foreground object actually needs finer tessellation than the frame-wide
+// scale alone would give it, and a distant background one coarser.
+// `object_distance / target_distance` is exactly that correction (the
+// same linear falloff `Camera::PixelSize`'s own `2.0 * Distance() * ...`
+// formula already uses, just evaluated at this object's own distance
+// instead of the target's), clamped to the identical [kLodMinScale,
+// kLodMaxScale] band LodScaleForPixelSize already uses, for the identical
+// reason - an object right at the eye should get finer, not literally
+// zero-size, tessellation, and one far past the horizon should get
+// coarser, not an unbounded, wasted-vertex blowup.
+// `is_perspective = false` always returns 1.0, regardless of either
+// distance: a true parallel (orthographic) projection has NO
+// pixels-per-world-unit falloff with distance at all - every object, at
+// any distance from the eye, occupies the same screen size per world
+// unit - so applying this correction there would be modelling a falloff
+// that physically does not exist, not merely a simplification.
+// `target_distance <= 0` (a degenerate/just-constructed camera) also
+// returns 1.0, the same safe fallback every other function here uses.
+double DistanceLodFactor(double object_distance, double target_distance, bool is_perspective);
+
 // Combines every open modeling viewport's own LodScaleForPixelSize into the
 // one scale Application::MakeFrameContext hands to every viewport's
 // DrawObjects this frame (see Viewport::FrameContext::lod_scale). Every
