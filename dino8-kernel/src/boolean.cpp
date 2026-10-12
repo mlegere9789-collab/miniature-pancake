@@ -8265,52 +8265,17 @@ std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments
   return caps;
 }
 
-}  // namespace
-
-Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
-  // Same explicit-zero-tolerance refusal BooleanCombinePlanar's own
-  // identical check above makes, for the identical reason: 0.0 is neither
-  // negative (the "auto-derive" sentinel) nor positive, so without this
-  // guard it would silently demand exact bit-for-bit coincidence from
-  // every distance test below instead of being refused up front the way
-  // every other caller-tolerance precondition in this file already is.
-  if (tolerance >= 0.0 && !(tolerance > 0.0)) {
-    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "BooleanCombineMixed",
-                                 "dino8::kernel::BooleanCombineMixed: an explicit non-negative tolerance must be "
-                                 "positive (pass a negative value to request the auto-derived default)");
-  }
-
-  // SymmetricDifference still needs the lump-merge step neither pipeline
-  // here has (see RefuseCompoundOperand's own doc comment) and stays
-  // refused. **Union no longer refuses a compound operand** - the identical
-  // reasoning BooleanCombinePlanar's own Union branch above now relies on
-  // applies here too: `SplitAndBucketMixed`'s ray-cast/quadratic
-  // classification already treats `fa`/`fb` as a flat face list with no
-  // notion of which lump a face came from (the SAME reasoning Difference/
-  // Intersection's own pre-existing exemption below already uses), and the
-  // lump-recomputation tail at the end of this function already runs
-  // unconditionally for every op that reaches it, Union included, so
-  // nothing else needs to change to make this genuinely safe - only to stop
-  // pre-emptively refusing it. A compound operand whose own lumps genuinely
-  // touch is still caught by the same pre-existing non-manifold reassembly
-  // refusal, exactly as it already is for Difference/Intersection.
-  // Difference and Intersection do not need a guard either - see this
-  // function's own lump-recomputation step at the end for why the pipeline
-  // below needs no other change to already get this right, cylindrical
-  // fragments included.
-  if (op == BooleanOp::SymmetricDifference) {
-    RefuseCompoundOperand(a, "BooleanCombineMixed");
-    RefuseCompoundOperand(b, "BooleanCombineMixed");
-    // XOR = (A - B) u (B - A) as a Brep::Compound of two lumps - see
-    // BooleanCombinePlanar's own SymmetricDifference branch above for
-    // why one shell can never hold it (four faces meet along every
-    // intersection-curve edge) and boolean.h's own doc comment for the
-    // measured closed forms. Each lump is one verified Difference; no
-    // round trip through a prior result is involved at all.
-    return Brep::Compound({BooleanCombineMixed(a, b, BooleanOp::Difference, tolerance),
-                           BooleanCombineMixed(b, a, BooleanOp::Difference, tolerance)});
-  }
-
+// Factored out of BooleanCombineMixed (below) so its own
+// `allow_non_manifold_result` SymmetricDifference path (a single-shell XOR)
+// can call it twice - once per Difference direction - and concatenate the
+// two resulting face lists into ONE Brep::FromMixedFacesNonManifold() call,
+// the identical "compute the face list, don't reassemble it yet" shape
+// PlanarBooleanFaces() already established for the planar engine above.
+// Covers Union/Intersection/Difference only; SymmetricDifference has no
+// single-call face list of its own (see BooleanCombineMixed's own
+// SymmetricDifference branch) and is handled entirely by the public
+// function.
+std::vector<MixedFace> MixedBooleanFaces(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
   std::vector<MixedFace> fa = ToMixed(a.MixedFaces());
   std::vector<MixedFace> fb = ToMixed(b.MixedFaces());
   const double tol = tolerance >= 0.0 ? tolerance : std::max(RelativeTolMixed(fa), RelativeTolMixed(fb));
@@ -8418,18 +8383,112 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tole
       throw BooleanOperationError(BooleanFailureReason::UnsupportedOperation, "BooleanCombineMixed",
                                    "dino8::kernel::BooleanCombineMixed: unknown BooleanOp");
   }
+  return result;
+}
+
+// Splits a MixedFace list into the separate PlanarFace/CylindricalFace
+// lists Brep::FromMixedFaces()/FromMixedFacesNonManifold() each take -
+// shared by every exit path of BooleanCombineMixed below (plain reassembly
+// and the allow_non_manifold_result SymmetricDifference path both need it).
+void SplitMixedFaces(const std::vector<MixedFace>& result, std::vector<Brep::PlanarFace>* out_planar,
+                      std::vector<Brep::CylindricalFace>* out_cyl) {
+  out_planar->reserve(out_planar->size() + result.size());
+  for (const MixedFace& f : result) {
+    if (f.is_cyl) {
+      out_cyl->push_back(f.cyl);
+    } else {
+      out_planar->push_back(f.planar);
+    }
+  }
+}
+
+}  // namespace
+
+Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
+                          bool allow_non_manifold_result) {
+  // Same explicit-zero-tolerance refusal BooleanCombinePlanar's own
+  // identical check above makes, for the identical reason: 0.0 is neither
+  // negative (the "auto-derive" sentinel) nor positive, so without this
+  // guard it would silently demand exact bit-for-bit coincidence from
+  // every distance test below instead of being refused up front the way
+  // every other caller-tolerance precondition in this file already is.
+  if (tolerance >= 0.0 && !(tolerance > 0.0)) {
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "BooleanCombineMixed",
+                                 "dino8::kernel::BooleanCombineMixed: an explicit non-negative tolerance must be "
+                                 "positive (pass a negative value to request the auto-derived default)");
+  }
+
+  // SymmetricDifference still needs the lump-merge step neither pipeline
+  // here has (see RefuseCompoundOperand's own doc comment) and stays
+  // refused. **Union no longer refuses a compound operand** - the identical
+  // reasoning BooleanCombinePlanar's own Union branch above now relies on
+  // applies here too: `SplitAndBucketMixed`'s ray-cast/quadratic
+  // classification already treats `fa`/`fb` as a flat face list with no
+  // notion of which lump a face came from (the SAME reasoning Difference/
+  // Intersection's own pre-existing exemption below already uses), and the
+  // lump-recomputation tail at the end of this function already runs
+  // unconditionally for every op that reaches it, Union included, so
+  // nothing else needs to change to make this genuinely safe - only to stop
+  // pre-emptively refusing it. A compound operand whose own lumps genuinely
+  // touch is still caught by the same pre-existing non-manifold reassembly
+  // refusal, exactly as it already is for Difference/Intersection.
+  // Difference and Intersection do not need a guard either - see this
+  // function's own lump-recomputation step at the end for why the pipeline
+  // below needs no other change to already get this right, cylindrical
+  // fragments included.
+  if (op == BooleanOp::SymmetricDifference) {
+    RefuseCompoundOperand(a, "BooleanCombineMixed");
+    RefuseCompoundOperand(b, "BooleanCombineMixed");
+    // `allow_non_manifold_result`: a genuine SINGLE-SHELL XOR instead of
+    // the two-lump Compound below - the identical closure
+    // BooleanCombinePlanar's own SymmetricDifference branch above already
+    // made for that engine, reusing MixedBooleanFaces() (above) the same
+    // way that path reuses PlanarBooleanFaces(): both directions' face
+    // lists are computed directly (never separately reassembled into
+    // their own Brep first) and concatenated into ONE
+    // Brep::FromMixedFacesNonManifold() call, so the shared intersection
+    // curve - which the ordinary Compound-of-two-Differences path below
+    // welds into TWO separate 2-trim edges at the identical 3D location,
+    // one per lump - instead comes back as a single real 4-trim
+    // non-manifold edge (A's outside, B's outside, and both flipped
+    // insides, all meeting along that one curve). A CylindricalFace on
+    // either side carries through unchanged, same as the ordinary path.
+    if (allow_non_manifold_result) {
+      std::vector<MixedFace> result = MixedBooleanFaces(a, b, BooleanOp::Difference, tolerance);
+      const std::vector<MixedFace> result_ba = MixedBooleanFaces(b, a, BooleanOp::Difference, tolerance);
+      result.insert(result.end(), result_ba.begin(), result_ba.end());
+      std::vector<Brep::PlanarFace> out_planar;
+      std::vector<Brep::CylindricalFace> out_cyl;
+      SplitMixedFaces(result, &out_planar, &out_cyl);
+      return Brep::FromMixedFacesNonManifold(out_planar, out_cyl);
+    }
+    // XOR = (A - B) u (B - A) as a Brep::Compound of two lumps - see
+    // BooleanCombinePlanar's own SymmetricDifference branch above for
+    // why one shell can never hold it (four faces meet along every
+    // intersection-curve edge) and boolean.h's own doc comment for the
+    // measured closed forms. Each lump is one verified Difference; no
+    // round trip through a prior result is involved at all.
+    return Brep::Compound({BooleanCombineMixed(a, b, BooleanOp::Difference, tolerance),
+                           BooleanCombineMixed(b, a, BooleanOp::Difference, tolerance)});
+  }
+
+  const std::vector<MixedFace> result = MixedBooleanFaces(a, b, op, tolerance);
 
   std::vector<Brep::PlanarFace> out_planar;
   std::vector<Brep::CylindricalFace> out_cyl;
-  out_planar.reserve(result.size());
-  for (const MixedFace& f : result) {
-    if (f.is_cyl) {
-      out_cyl.push_back(f.cyl);
-    } else {
-      out_planar.push_back(f.planar);
-    }
-  }
-  Brep combined = Brep::FromMixedFaces(out_planar, out_cyl);
+  SplitMixedFaces(result, &out_planar, &out_cyl);
+  // `allow_non_manifold_result`: reassembles through
+  // Brep::FromMixedFacesNonManifold() instead of Brep::FromMixedFaces() -
+  // otherwise identical (same welding, same edge-identity keys) - so a
+  // result that would have thrown the "3 or more faces" refusal below
+  // (e.g. a Union of two solids that only TOUCH along part of a shared
+  // face, or along an edge/vertex) instead comes back as a real Brep
+  // carrying one first-class N-trim non-manifold edge there, the identical
+  // closure BooleanCombinePlanar's own doc comment in boolean.h already
+  // makes for the planar engine, now also reachable with a CylindricalFace
+  // present in the result.
+  Brep combined = allow_non_manifold_result ? Brep::FromMixedFacesNonManifold(out_planar, out_cyl)
+                                             : Brep::FromMixedFaces(out_planar, out_cyl);
 
   // Same lump-recomputation tail BooleanCombinePlanar's own Difference/
   // Intersection support already added (see that function's own doc
@@ -8470,8 +8529,12 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tole
   // report every other (non-compound-input) BooleanCombineMixed call
   // already has, rather than a confidently wrong over-fragmented one -
   // still correct geometry and volume, just not lump-aware bookkeeping,
-  // for that disclosed case.
-  if (out_cyl.empty() && (a.LumpFaceRanges().size() > 1 || b.LumpFaceRanges().size() > 1)) {
+  // for that disclosed case. Skipped entirely when
+  // `allow_non_manifold_result` is set, the same "untested against an
+  // already-non-manifold Brep" reasoning BooleanCombinePlanar's own
+  // identical skip above already uses.
+  if (!allow_non_manifold_result && out_cyl.empty() &&
+      (a.LumpFaceRanges().size() > 1 || b.LumpFaceRanges().size() > 1)) {
     std::vector<Brep> pieces = combined.SplitDisjointPieces();
     if (pieces.size() > 1) return Brep::Compound(pieces);
   }
