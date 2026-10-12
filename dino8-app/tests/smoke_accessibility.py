@@ -232,6 +232,26 @@ connection, the same way a screen reader would - to prove:
       Command Aliases - distinct from check 30's "Keyboard Shortcuts",
       which is the user's own customizable shortcuts and starts empty. No
       mutation check here: the table is fixed source, not user data.
+  35. A "Command History" accessible (role LIST) is discoverable and
+      starts non-empty - mirroring CommandEngine::History(), which
+      Application's own constructor Prints three startup lines to before
+      any user command ever runs (see Application.cpp), the same "never
+      empty" shape check 26/27/29/34 use above - with a row exactly named
+      "Type a command name, or press F1 for the command list." (the third
+      of those three fixed startup lines, deterministic regardless of how
+      many commands this script has already run by this point in the
+      sequence) and an empty Description (not a warning/cancellation
+      line). Distinct from the existing "Command Line" accessible's own
+      Text interface, which already exposes the same lines as one
+      concatenated block - this is the first STRUCTURED, per-line mirror,
+      letting a screen reader navigate one recorded line at a time. No
+      before/after mutation check here, unlike check 29's Command
+      Aliases: by this point several earlier checks have already run
+      real commands (Alias, Grid, ...), so the exact row count and
+      ordering past the fixed startup lines is no longer deterministic
+      without restructuring this script's own synchronization barriers -
+      checking for the known startup row's continued presence is what
+      stays safely assertable.
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -988,6 +1008,33 @@ def main():
                     fail(f'Keyboard Shortcuts Reference\'s "F1" row has Description {got!r} (expected "Command list")')
                 else:
                     ok('Keyboard Shortcuts Reference\'s "F1" row carries "Command list" as its Description')
+
+        command_history = find_child_by_name(app, "Command History", 10)
+        if command_history is None:
+            fail('"Command History" accessible not found among the application\'s children')
+        else:
+            ok('"Command History" accessible is discoverable via the real AT-SPI2 desktop')
+            # Never empty in a real build: Application's own constructor
+            # Prints three startup lines (see Application.cpp) before any
+            # user command ever runs.
+            if command_history.childCount < 1:
+                fail("Command History has no ListItem children (expected Application's own startup lines)")
+            else:
+                startup_row = None
+                for j in range(command_history.childCount):
+                    child = command_history.getChildAtIndex(j)
+                    if child is not None and child.name == "Type a command name, or press F1 for the command list.":
+                        startup_row = child
+                        break
+                if startup_row is None:
+                    fail('Command History has no row named "Type a command name, or press F1 for the command '
+                         'list." (expected Application\'s own third startup line)')
+                elif startup_row.description != "":
+                    fail(f"Command History's startup row has a non-empty Description (got "
+                         f"{startup_row.description!r}, expected a plain, non-warning line)")
+                else:
+                    ok(f"Command History lists {command_history.childCount} recorded line(s), including "
+                       f"Application's own startup banner line with an empty (non-warning) Description")
 
         viewports = find_child_by_name(app, "Viewports", 10)
         if viewports is None:

@@ -1457,4 +1457,122 @@ Result NurbsSurface::ExtendLinear(int direction, double t0, double t1) {
   return Result::Ok;
 }
 
+namespace {
+
+// One candidate "kinky" knot in `direction`: `t` is the knot value
+// itself, `span_before`/`span_after` are the distances to the nearest
+// OTHER knot (of any multiplicity) on each side - the widest a one-sided
+// sampling offset around `t` may be without straying out of the two
+// B-spline spans immediately adjacent to it.
+struct CreaseCandidate {
+  double t;
+  double span_before;
+  double span_after;
+};
+
+// Every interior knot in `direction` whose multiplicity equals this
+// surface's own degree there - the necessary (not sufficient) condition
+// for a "kinky" knot, since only at full multiplicity can a clamped
+// B-spline be merely C0, not C1 or higher, across an interior knot.
+// Mirrors RemoveKnotAt's own knot-vector reasoning above (exact `==`
+// comparison between consecutive `Knot()` values to find each run's own
+// multiplicity), just collecting every qualifying run instead of
+// checking one caller-given index.
+std::vector<CreaseCandidate> FullMultiplicityInteriorKnots(const ON_NurbsSurface& s, int direction) {
+  std::vector<CreaseCandidate> result;
+  const int degree = s.Degree(direction);
+  const int knot_count = s.KnotCount(direction);
+  const ON_Interval domain = s.Domain(direction);
+  double prev_value = domain.Min();
+  int i = 0;
+  while (i < knot_count) {
+    const double value = s.Knot(direction, i);
+    int j = i;
+    while (j < knot_count && s.Knot(direction, j) == value) ++j;
+    const double next_value = (j < knot_count) ? s.Knot(direction, j) : domain.Max();
+    if (j - i == degree && value > domain.Min() && value < domain.Max()) {
+      result.push_back(CreaseCandidate{value, value - prev_value, next_value - value});
+    }
+    prev_value = value;
+    i = j;
+  }
+  return result;
+}
+
+// Whether the surface's own one-sided tangent in `direction` genuinely
+// disagrees across the candidate crease parameter `t` by more than
+// `angle_tolerance_radians`, at one or more of several points sampled
+// along the OTHER direction - a real geometric kink, not just a knot
+// that happens to stay smooth. `eps` is the one-sided sampling offset;
+// the caller sizes it to stay within the two spans immediately adjacent
+// to `t` (see `CreaseCandidate` above), so the two evaluations below
+// land in two different Bezier pieces, not the same one.
+bool IsGenuineCrease(const ON_NurbsSurface& s, int direction, double t, double eps,
+                      double angle_tolerance_radians) {
+  const int other = 1 - direction;
+  const ON_Interval other_domain = s.Domain(other);
+  constexpr int kSamples = 7;
+  for (int k = 0; k < kSamples; ++k) {
+    // Interior-only cross samples: the two ends are where a singular or
+    // otherwise degenerate derivative is most likely, and are not what
+    // this is checking.
+    const double frac = static_cast<double>(k + 1) / static_cast<double>(kSamples + 1);
+    const double c = other_domain.ParameterAt(frac);
+    const double u_minus = direction == 0 ? t - eps : c;
+    const double v_minus = direction == 0 ? c : t - eps;
+    const double u_plus = direction == 0 ? t + eps : c;
+    const double v_plus = direction == 0 ? c : t + eps;
+
+    ON_3dPoint p_minus, p_plus;
+    ON_3dVector du_minus, dv_minus, du_plus, dv_plus;
+    if (!s.Ev1Der(u_minus, v_minus, p_minus, du_minus, dv_minus)) continue;
+    if (!s.Ev1Der(u_plus, v_plus, p_plus, du_plus, dv_plus)) continue;
+
+    ON_3dVector tangent_minus = direction == 0 ? du_minus : dv_minus;
+    ON_3dVector tangent_plus = direction == 0 ? du_plus : dv_plus;
+    const double len_minus = tangent_minus.Length();
+    const double len_plus = tangent_plus.Length();
+    if (len_minus <= tolerance::kZeroVector || len_plus <= tolerance::kZeroVector) continue;
+    tangent_minus /= len_minus;
+    tangent_plus /= len_plus;
+
+    const double dot = std::clamp(ON_DotProduct(tangent_minus, tangent_plus), -1.0, 1.0);
+    if (std::acos(dot) > angle_tolerance_radians) return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+std::vector<NurbsSurface> NurbsSurface::SplitAtCreases(double angle_tolerance_radians) const {
+  const double angle_tol = angle_tolerance_radians > 0.0 ? angle_tolerance_radians : tolerance::kMergeEdgeAngle;
+
+  std::vector<NurbsSurface> pieces;
+  std::vector<NurbsSurface> worklist{*this};
+  while (!worklist.empty()) {
+    NurbsSurface current = std::move(worklist.back());
+    worklist.pop_back();
+
+    bool split_done = false;
+    for (int direction = 0; direction < 2 && !split_done; ++direction) {
+      const std::vector<CreaseCandidate> candidates =
+          FullMultiplicityInteriorKnots(current.surface_, direction);
+      for (const CreaseCandidate& candidate : candidates) {
+        const double eps = 0.25 * std::min(candidate.span_before, candidate.span_after);
+        if (!(eps > 0.0)) continue;
+        if (!IsGenuineCrease(current.surface_, direction, candidate.t, eps, angle_tol)) continue;
+
+        NurbsSurface west_or_south, east_or_north;
+        if (current.Split(direction, candidate.t, west_or_south, east_or_north) != Result::Ok) continue;
+        worklist.push_back(std::move(west_or_south));
+        worklist.push_back(std::move(east_or_north));
+        split_done = true;
+        break;
+      }
+    }
+    if (!split_done) pieces.push_back(std::move(current));
+  }
+  return pieces;
+}
+
 }  // namespace dino8::kernel

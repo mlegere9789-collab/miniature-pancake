@@ -192,7 +192,7 @@ through each platform's native accessibility API - exactly the scope the
 ImGui maintainers have discussed for years without landing project-wide.
 That has not changed and is not what shipped here.
 
-### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, the Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes, Environments, Audit Results, Undo/Redo History, Hatch Patterns, Plug-ins, the Command List, Command Aliases, Keyboard Shortcuts, Keyboard Shortcuts Reference, Document Properties, Textures and Display (Linux)
+### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, the Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes, Environments, Audit Results, Undo/Redo History, Hatch Patterns, Plug-ins, the Command List, Command Aliases, Keyboard Shortcuts, Keyboard Shortcuts Reference, Document Properties, Textures, Display and Command History (Linux)
 
 The one place in Dino 8 blind command-line-driven use is already the
 primary interaction model - the command line itself
@@ -212,9 +212,10 @@ Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State
 Manager, Document User Text, Lights, Annotation Styles, Notes, Environments,
 Audit Results, Undo/Redo History, Hatch Patterns, Plug-ins, the Command
 List, Command Aliases, Keyboard Shortcuts, Keyboard Shortcuts Reference,
-Document Properties, Textures
-and Display, described
-below.
+Document Properties, Textures,
+Display and - as a structured, navigable list distinct from the command
+line's own single concatenated text block above - Command History,
+described below.
 
 **Command line**: exactly one accessible object, named "Command Line"
 (`ATSPI_ROLE_LOG` - "a text widget or container holding log content"),
@@ -801,6 +802,29 @@ value, or Control points on selected, so a screen-reader user can always
 read every one of these facts without sight, but changing those still means
 driving the panel's own widgets directly.
 
+**Command History**: a "Command History" accessible (`ATSPI_ROLE_LIST`)
+with one `ATSPI_ROLE_LIST_ITEM` per line `CommandEngine::History()` has
+recorded (oldest first), each named after the line's own text with its
+leading `"!"` warning/cancellation marker already stripped into the row's
+own Description (`"warning"` or empty) - the same orange-vs-plain-text
+split `DrawCommandHistoryPanel` itself renders per line. Built straight
+from the history deque (`ui::CommandHistoryAccessibleTree`,
+`src/ui/Panels.cpp`), independent of whether the Command History panel
+window is actually open on screen right now. Distinct from the "Command
+Line" `ATSPI_ROLE_LOG` region above, which already exposes these same
+lines as one concatenated block of plain text for the live prompt/input
+area: this is the first STRUCTURED, per-line mirror of command history,
+letting a screen reader navigate one recorded line at a time - find a
+specific past command, jump to the most recent warning - instead of only
+reading the whole log as a single run-on block of text. Never empty in a
+real build: `Application`'s own constructor prints three startup lines
+(including `"Type a command name, or press F1 for the command list."`)
+before any user command ever runs, the same "never empty" shape Command
+Aliases/Hatch Patterns/Plug-ins use above. No real command-line setter, by
+its own nature as a log: `DrawCommandHistoryPanel`'s own "Clear"/"Copy
+all" buttons are the only ways to act on it, same as Activity Log/Audit
+Results above.
+
 **Why these regions and not the rest of the UI**: the command line is the
 one region where "expose the text" is both sufficient (there is no
 meaningful spatial layout to convey - it *is* a stream of text) and
@@ -811,7 +835,7 @@ Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block
 Manager, Layer State Manager, Document User Text, Lights, Annotation Styles,
 Notes, Environments, Audit Results, Undo/Redo History, Hatch Patterns,
 Plug-ins, the Command List, Command Aliases, Keyboard Shortcuts, Document
-Properties, Textures and Display extend
+Properties, Textures, Display and Command History extend
 this to the
 next-most load-bearing UI surfaces - discovering what commands exist by
 name, inspecting/editing layer and object state, knowing where you're
@@ -833,9 +857,11 @@ name/status/description instead of needing to already know a name to type,
 knowing which aliases and keyboard shortcuts are currently
 configured, knowing Dino 8's own fixed built-in shortcuts without opening
 the Options window, knowing the document's units/tolerances/grid/saved metadata,
-knowing which materials carry a texture and whether the file was found, and
+knowing which materials carry a texture and whether the file was found,
 knowing the active viewport's display mode/projection/lens plus the
-document's grid/display-tolerance settings - without requiring
+document's grid/display-tolerance settings, and navigating the
+command-history log one recorded line at a time instead of only as a
+single run-on block of text - without requiring
 the full
 shadow-tree-for-every-widget effort described above.
 Command List is the one region above that retires an entire panel
@@ -844,12 +870,12 @@ panel a screen-reader user would otherwise still need sight for; Command
 Aliases, Keyboard Shortcuts and Keyboard Shortcuts Reference only cover
 three of the larger Options window's seven tabs (`DrawOptionsWindow`), not
 the whole thing - its General, Modeling Aids, View and Toolbar tabs remain
-unreached. Document Properties, Textures and Display
+unreached. Document Properties, Textures, Display and Command History
 are read-only mirrors alongside panels a screen-reader user still needs
 sight for to actually change most of what they show (see each section's own
 account of which facts do and don't have a command-line setter). Mirroring
 the 3D viewport and
-the rest of the UI (most of the Options window, and roughly 18 other
+the rest of the UI (most of the Options window, and roughly 17 other
 panels/dialogs) the same way
 would still need that effort; this does not extrapolate to "screen reader
 support" for those in the way a browser or native-toolkit app would provide
@@ -1225,5 +1251,5 @@ requirement and runs as part of the normal CTest suite everywhere.
 |---|---|
 | High-contrast theme | Shipped: Options > General > Theme > High Contrast |
 | Keyboard-only operability | Audited; one real bug found and fixed (toolbar/sidebar/tab-strip/bell/viewport-title buttons were `InvisibleButton` without `EnableNav`, so Tab skipped them); nav-focus tooltips added for icon-only buttons; free 3D viewport orbit and a few inherently-drag widgets remain mouse-only by design, same as in Rhino |
-| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes, Environments, Audit Results, Undo/Redo History, Hatch Patterns, Plug-ins, Command List, Command Aliases, Keyboard Shortcuts, Keyboard Shortcuts Reference, Document Properties, Textures, Display) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), its saved Named CPlanes (name per saved construction plane), its Linetypes (name and dash pattern per linetype), its Materials (name and diffuse colour per material), its Clipping Planes (name, on/off state and viewport scope per plane), its Layouts (name per layout, with the active one called out), its Block Manager (name plus object/instance counts per block definition), its Layer State Manager (name plus layer count per saved state), its Document User Text (key/value per document user-text entry), its Lights (name, type and on/off state per light), its Annotation Styles (name and current-style flag per style, plus text height/arrow size/font as Description), its Notes (the document's free-text Notes, as a single Text value), its render Environment settings (background/ground plane/sun and sky, as Label: value rows), the last Audit run's results (id/type per invalid object, with the failure reason as Description), its pending Undo/Redo history (numbered label per pending-or-undoable/redoable edit), the loaded Hatch Pattern library (name and description per pattern), its loaded plug-ins (name/version/status plus command and flow-node counts per plug-in), the full ~1055-command Rhino 8 reference catalog (name/status/description per command, plus an implemented/partial/planned breakdown), its saved command aliases (alias/command per row), its customized keyboard shortcuts (key combo/command per row), its own fixed built-in keyboard shortcuts reference (key combo/action per row), its Document Properties (units/tolerances/grid/metadata as Label: value rows), the materials that carry a Texture (name plus mapping mode and found/missing status), and the active viewport's Display settings (display mode/projection/lens plus grid/display-tolerance settings, as Label: value rows) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Document Properties/Textures/Display checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
-| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~18 remaining panels/dialogs on any OS, narrowed from ~21 now that Document Properties, Textures and Display are covered by their own mirrors above). The Options window is not one of those ~18 - it still has no bridge of its own - but three of its seven tabs (Aliases, Shortcuts, and the built-in-shortcuts reference tab) are now covered by the Command Aliases/Keyboard Shortcuts/Keyboard Shortcuts Reference mirrors above; its other four tabs (General, Modeling Aids, View, Toolbar) remain unreached. Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
+| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes, Environments, Audit Results, Undo/Redo History, Hatch Patterns, Plug-ins, Command List, Command Aliases, Keyboard Shortcuts, Keyboard Shortcuts Reference, Document Properties, Textures, Display, Command History) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), its saved Named CPlanes (name per saved construction plane), its Linetypes (name and dash pattern per linetype), its Materials (name and diffuse colour per material), its Clipping Planes (name, on/off state and viewport scope per plane), its Layouts (name per layout, with the active one called out), its Block Manager (name plus object/instance counts per block definition), its Layer State Manager (name plus layer count per saved state), its Document User Text (key/value per document user-text entry), its Lights (name, type and on/off state per light), its Annotation Styles (name and current-style flag per style, plus text height/arrow size/font as Description), its Notes (the document's free-text Notes, as a single Text value), its render Environment settings (background/ground plane/sun and sky, as Label: value rows), the last Audit run's results (id/type per invalid object, with the failure reason as Description), its pending Undo/Redo history (numbered label per pending-or-undoable/redoable edit), the loaded Hatch Pattern library (name and description per pattern), its loaded plug-ins (name/version/status plus command and flow-node counts per plug-in), the full ~1055-command Rhino 8 reference catalog (name/status/description per command, plus an implemented/partial/planned breakdown), its saved command aliases (alias/command per row), its customized keyboard shortcuts (key combo/command per row), its own fixed built-in keyboard shortcuts reference (key combo/action per row), its Document Properties (units/tolerances/grid/metadata as Label: value rows), the materials that carry a Texture (name plus mapping mode and found/missing status), the active viewport's Display settings (display mode/projection/lens plus grid/display-tolerance settings, as Label: value rows), and its Command History (one row per recorded command-line line, warning/cancellation lines flagged via Description, distinct from the command line's own single concatenated text block above) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Command History check. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
+| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~17 remaining panels/dialogs on any OS, narrowed from ~18 now that Command History is covered by its own mirror above). The Options window is not one of those ~17 - it still has no bridge of its own - but three of its seven tabs (Aliases, Shortcuts, and the built-in-shortcuts reference tab) are now covered by the Command Aliases/Keyboard Shortcuts/Keyboard Shortcuts Reference mirrors above; its other four tabs (General, Modeling Aids, View, Toolbar) remain unreached. Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
