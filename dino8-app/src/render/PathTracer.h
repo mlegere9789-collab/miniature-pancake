@@ -51,9 +51,17 @@ class PathTracer {
   // hardware_concurrency() worker threads over screen tiles. `progress`,
   // when set, is called after each completed sample pass with the sample
   // index (1-based); returning false cancels the render early (the
-  // partial accumulation is still tonemapped and returned).
+  // partial accumulation is still tonemapped and returned). `hdr_rgb_out`,
+  // when non-null, is additionally filled with the same image's real,
+  // unclamped linear radiance (width*height*3, top-down) - the exact
+  // per-pixel values `ToByte` tonemaps into the returned bytes above (post-
+  // denoise too, when `settings.denoise` is on, so the two outputs always
+  // agree pixel-for-pixel on what they represent) - closing this quality
+  // path's own half of "Environments and image-based lighting"'s HDR-
+  // capture gap (see RenderImage::hdr_rgb/HasHdr, Application.h).
   std::vector<unsigned char> Render(const PathTraceSettings& settings,
-                                    const std::function<bool(int)>& progress = nullptr) const;
+                                    const std::function<bool(int)>& progress = nullptr,
+                                    std::vector<float>* hdr_rgb_out = nullptr) const;
 
   // ---- progressive viewport mode (RayTracedViewport) --------------------
   // Clears the accumulation buffer; call after Prepare() or when the

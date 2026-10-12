@@ -593,7 +593,8 @@ Vector3d PathTracer::TracePath(Point3d origin, Vector3d dir, unsigned& rng, int 
 // ---------------------------------------------------------------------------
 
 std::vector<unsigned char> PathTracer::Render(const PathTraceSettings& settings,
-                                              const std::function<bool(int)>& progress) const {
+                                              const std::function<bool(int)>& progress,
+                                              std::vector<float>* hdr_rgb_out) const {
   const int w = std::max(settings.width, 1), h = std::max(settings.height, 1);
   std::vector<float> hdr(static_cast<size_t>(w) * h * 3, 0.f);
   std::vector<float> albedo_buf(static_cast<size_t>(w) * h * 3, 0.f);
@@ -645,13 +646,17 @@ std::vector<unsigned char> PathTracer::Render(const PathTraceSettings& settings,
   for (size_t i = 0; i < static_cast<size_t>(w) * h; ++i) {
     rgb[i * 3] = ToByte(hdr[i * 3]); rgb[i * 3 + 1] = ToByte(hdr[i * 3 + 1]); rgb[i * 3 + 2] = ToByte(hdr[i * 3 + 2]);
   }
-  if (!settings.denoise) return rgb;
+  if (!settings.denoise) {
+    if (hdr_rgb_out) *hdr_rgb_out = hdr;
+    return rgb;
+  }
 
   // Edge-aware bilateral denoise guided by the albedo/normal buffers: a 5x5
   // window weighted by colour, albedo and normal similarity plus a spatial
   // Gaussian, applied to the tonemapped image (simple and fast; a
   // wavelet/SVGF-grade denoiser is out of scope for a CPU offline pass).
   std::vector<unsigned char> out(rgb.size());
+  if (hdr_rgb_out) hdr_rgb_out->assign(rgb.size(), 0.0f);
   const int radius = 2;
   for (int y = 0; y < h; ++y) {
     for (int x = 0; x < w; ++x) {
@@ -677,7 +682,9 @@ std::vector<unsigned char> PathTracer::Render(const PathTraceSettings& settings,
         }
       }
       if (wsum < 1e-6f) wsum = 1.0f;
-      out[ci] = ToByte(acc[0] / wsum); out[ci + 1] = ToByte(acc[1] / wsum); out[ci + 2] = ToByte(acc[2] / wsum);
+      const float d0 = acc[0] / wsum, d1 = acc[1] / wsum, d2 = acc[2] / wsum;
+      out[ci] = ToByte(d0); out[ci + 1] = ToByte(d1); out[ci + 2] = ToByte(d2);
+      if (hdr_rgb_out) { (*hdr_rgb_out)[ci] = d0; (*hdr_rgb_out)[ci + 1] = d1; (*hdr_rgb_out)[ci + 2] = d2; }
     }
   }
   return out;
