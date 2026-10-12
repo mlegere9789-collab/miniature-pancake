@@ -7777,8 +7777,10 @@ void TestBooleanCombineGeneralAsymmetricCoincidentSubFace() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
   using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
   using dino8::kernel::Vector3d;
 
   // A 4x4x4 box with a 1x1x1 boss (a square profile extruded upward,
@@ -7788,33 +7790,54 @@ void TestBooleanCombineGeneralAsymmetricCoincidentSubFace() {
   // fully-matching-extent shape the "Coplanar boxes" fixture above
   // already covers.
   //
-  // Honestly scoped to what this round's own fix actually guarantees, not
-  // more: NONE of these four calls may throw any more (the regression
-  // itself, confirmed fixed), and the Union result - the one op this
-  // fixture's own box-face fragmentation (a correctly hole-bridged outer
-  // ring plus a separate inner island exactly matching the boss footprint)
-  // happens to classify unambiguously either way, confirmed by direct
-  // inspection - is checked for real structural correctness. Intersection/
-  // Difference are deliberately NOT asserted beyond "doesn't throw": this
+  // Originally (round 44) honestly scoped to only what THAT round's own
+  // fix guaranteed: none of these four calls throws (the `878ecdb`
+  // regression itself), and the Union result - the one op this fixture's
+  // own box-face fragmentation (a correctly hole-bridged outer ring plus a
+  // separate inner island exactly matching the boss footprint) happened to
+  // classify unambiguously either way even by plain ray-casting - was
+  // checked for real structural correctness, while Intersection/Difference
+  // were deliberately left unasserted beyond "doesn't throw": this
   // fixture's own box-top face ends up with an inner fragment sitting
   // EXACTLY on the boss's own coincident boundary plane, and ray-casting
-  // that fragment's representative point against the other operand is the
+  // that fragment's representative point against the other operand was the
   // identical "numerically arbitrary" ambiguity this file's whole-face
-  // override exists to avoid, one level deeper than that override reaches
-  // (it only ever fires for a face's own single UNTOUCHED fragment, not an
-  // inner fragment carved out of a bigger one) - confirmed directly (not
-  // assumed) to give a genuinely wrong Intersection/Difference result here,
-  // the SAME already-disclosed "No general partially-overlapping
-  // coincident face handling" gap (the "Coplanar / coincident face
-  // handling" bullet, PARITY_MAP.md) the symmetric "Coplanar boxes"
-  // fixture above never reaches at all (its own whole-face override
-  // handles 100% of that fixture, with no inner fragment left over).
-  // Confirmed via an A/B rebuild that this ambiguity is NOT itself a new
-  // regression either (a plain `Brep::Box()` boss - sharper, flatter side
-  // walls than this one's wrapped `Brep::Extrude()` side - already returns
-  // silently WRONG volumes for it on the pre-`878ecdb` baseline too, with
-  // no crash) - left genuinely open, disclosed in PARITY_MAP.md rather
-  // than chased further or quietly asserted away here.
+  // override exists to avoid, one level deeper than that override reached
+  // at the time (it only ever fired for a face's own single UNTOUCHED
+  // fragment, not an inner fragment carved out of a bigger one) - confirmed
+  // directly (not assumed) to give a genuinely wrong Intersection/
+  // Difference result then.
+  //
+  // **Round 45: that one level deeper is now reached too.** The override
+  // is no longer keyed only on "this fragment IS the whole face" - a new,
+  // separate per-face bookkeeping (`partial_coincident_a`/
+  // `partial_coincident_b`, boolean_general.cpp) records, for the BIGGER
+  // side of an asymmetric coincident pair (exactly this fixture's own box
+  // top face vs. the boss's whole bottom cap), the exact sub-region bbox a
+  // later fragment must match to be that same physical coincident patch.
+  // The box's own inner-island fragment now matches it and is routed
+  // through the identical outward-normal-based rule the whole-face
+  // override already uses (opposite normals here: touching, not
+  // overlapping - the same geometric relationship as the symmetric
+  // "Coplanar boxes" fixture above, just confined to a SUB-region of a
+  // bigger face instead of the face's entire extent), instead of an
+  // ambiguous ray-cast. Verified directly (`DINO8_BOOL_DEBUG=1` tracing
+  // plus a standalone reproducer linked against `libdino8_kernel.a`, not
+  // inferred from this test alone) that Intersection now comes back as the
+  // genuine empty solid and both Differences now match the exact
+  // closed-form volumes a touching-only (zero volumetric overlap) pair
+  // must have - asserted below. Confirmed via an A/B rebuild that this
+  // ambiguity was NOT itself new in round 44 (a plain `Brep::Box()` boss -
+  // sharper, flatter side walls than this one's wrapped `Brep::Extrude()`
+  // side - still throws `BooleanCombineGeneral`'s own separate, deeper,
+  // genuinely NOT-fixed-here "an edge is claimed by 3 or more fragment
+  // loops" refusal even after this round's fix, confirmed directly, not
+  // merely assumed unchanged): that harder, four-independent-flat-side-wall
+  // shape is a DIFFERENT, still fully open limitation (this bullet's own
+  // disclosed "FLAT partially-overlapping case" plus additional edge-
+  // sharing structure this round does not attempt), left genuinely open,
+  // disclosed in PARITY_MAP.md rather than chased further or quietly
+  // asserted away here.
   const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
   const NurbsCurve square = NurbsCurve::FromControlPoints(
       {Point3d(1.5, 1.5, 4), Point3d(2.5, 1.5, 4), Point3d(2.5, 2.5, 4), Point3d(1.5, 2.5, 4), Point3d(1.5, 1.5, 4)},
@@ -7827,14 +7850,32 @@ void TestBooleanCombineGeneralAsymmetricCoincidentSubFace() {
         "box+boss Union has exactly 8 faces (box's 5 untouched sides + its own hole-bridged top, plus the boss's "
         "wrapped side wall + top cap - its own coincident bottom cap correctly dropped by the whole-face override)");
 
+  // Round 45: the box/boss pair shares zero volumetric overlap (the boss
+  // merely sits flush on the box's top, touching along a sub-region of
+  // that face) - the exact closed-form answer any touching-only pair must
+  // have is the empty intersection and each operand's own unchanged
+  // volume on Difference, now reached without the ambiguous ray-cast.
   const Brep i = BooleanCombineGeneral(box, boss, BooleanOp::Intersection);
-  Check(i.FaceCount() >= 0,
-        "box+boss Intersection no longer throws the regression's own fragment-loop abort (reaching this line at "
-        "all is the real assertion - see this test's own doc comment for why its RESULT is not also asserted here)");
+  Check(i.FaceCount() == 0,
+        "box+boss Intersection is the genuine empty solid (touching only, zero volumetric overlap) - the "
+        "partial-coincident-sub-region override (round 45) replaces the old ambiguous ray-cast that used to give "
+        "a wrong nonzero result here");
+
   const Brep d_ab = BooleanCombineGeneral(box, boss, BooleanOp::Difference);
-  Check(d_ab.FaceCount() >= 0, "box+boss A-B no longer throws the regression's own fragment-loop abort");
+  Check(d_ab.raw().IsValid(), "box - boss is a valid ON_Brep");
+  const Mesh mesh_ab = TessellateGeneralBooleanClosedMesh(d_ab, 8, 8);
+  Check(mesh_ab.IsClosedManifold(), "box - boss tessellates as a genuine closed manifold");
+  Check(std::abs(mesh_ab.Volume() - 64.0) < 1e-3,
+        "box - boss's exact volume is 64 (the box's own unchanged volume - the boss never overlaps it "
+        "volumetrically, only touches its top face)");
+
   const Brep d_ba = BooleanCombineGeneral(boss, box, BooleanOp::Difference);
-  Check(d_ba.FaceCount() >= 0, "box+boss B-A no longer throws the regression's own fragment-loop abort");
+  Check(d_ba.raw().IsValid(), "boss - box is a valid ON_Brep");
+  const Mesh mesh_ba = TessellateGeneralBooleanClosedMesh(d_ba, 8, 8);
+  Check(mesh_ba.IsClosedManifold(), "boss - box tessellates as a genuine closed manifold");
+  Check(std::abs(mesh_ba.Volume() - 1.0) < 1e-3,
+        "boss - box's exact volume is 1 (the boss's own unchanged volume - the box never overlaps it "
+        "volumetrically, only touches its bottom cap)");
 }
 
 // PARITY_MAP.md's "Tolerant booleans" bullet, after BooleanCombineGeneral()
@@ -26166,6 +26207,140 @@ void TestPointCloudSpatialQueries() {
   }
 }
 
+// PARITY_MAP.md's own "kernel: Mass properties & spatial queries" category
+// named this directly: "Point-cloud spatial queries... brute force"
+// (`KNearest`/`PointsWithinRadius`, "no kd-tree/R-tree, despite OpenNURBS
+// shipping a real ON_RTree this could have been layered on"). Both now
+// query a real `ON_RTree` spatial index (`PointCloud::SpatialIndex()`,
+// lazily built and cached) instead of scanning every point - this test
+// verifies the acceleration is genuinely load-bearing (exact results on a
+// cloud too large to have been hand-verified, matched against an
+// independent brute-force reference) and that the cache's own
+// invalidate-on-mutation and copy-sharing rules hold, not just that the
+// small hand-derived fixture above still passes.
+void TestPointCloudSpatialQueriesUseRTreeAcceleration() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::PointCloudNeighbor;
+
+  auto brute_knearest = [](const std::vector<Point3d>& pts, Point3d q, int k) {
+    std::vector<PointCloudNeighbor> all;
+    for (size_t i = 0; i < pts.size(); ++i) all.push_back({static_cast<int>(i), q.DistanceTo(pts[i])});
+    std::sort(all.begin(), all.end(), [](const PointCloudNeighbor& a, const PointCloudNeighbor& b) {
+      return a.distance != b.distance ? a.distance < b.distance : a.index < b.index;
+    });
+    all.resize(std::min(static_cast<size_t>(k), all.size()));
+    return all;
+  };
+  auto brute_within_radius = [](const std::vector<Point3d>& pts, Point3d q, double r) {
+    std::vector<PointCloudNeighbor> found;
+    for (size_t i = 0; i < pts.size(); ++i) {
+      const double d = q.DistanceTo(pts[i]);
+      if (d <= r) found.push_back({static_cast<int>(i), d});
+    }
+    std::sort(found.begin(), found.end(), [](const PointCloudNeighbor& a, const PointCloudNeighbor& b) {
+      return a.distance != b.distance ? a.distance < b.distance : a.index < b.index;
+    });
+    return found;
+  };
+
+  std::vector<Point3d> pts;
+  unsigned seed = 90125;
+  auto next_rand = [&seed]() {
+    seed = seed * 1103515245u + 12345u;
+    return static_cast<int>((seed >> 16) % 2000);
+  };
+  PointCloud cloud;
+  for (int i = 0; i < 300; ++i) {
+    const double x = next_rand() / 10.0 - 100.0, y = next_rand() / 10.0 - 100.0, z = next_rand() / 10.0 - 100.0;
+    pts.push_back(Point3d(x, y, z));
+    cloud.AppendPoint(Point3d(x, y, z));
+  }
+
+  bool knearest_matches_brute = true;
+  for (int trial = 0; trial < 60 && knearest_matches_brute; ++trial) {
+    const Point3d q(next_rand() / 10.0 - 100.0, next_rand() / 10.0 - 100.0, next_rand() / 10.0 - 100.0);
+    const int k = 1 + (next_rand() % 20);
+    const auto brute = brute_knearest(pts, q, k);
+    const auto real = cloud.KNearest(q, k);
+    if (brute.size() != real.size()) {
+      knearest_matches_brute = false;
+      break;
+    }
+    for (size_t i = 0; i < brute.size(); ++i) {
+      if (brute[i].index != real[i].index || std::abs(brute[i].distance - real[i].distance) > 1e-9) {
+        knearest_matches_brute = false;
+        break;
+      }
+    }
+  }
+  Check(knearest_matches_brute,
+        "KNearest's own R-tree-accelerated search matches an independent brute-force reference exactly, "
+        "over 60 random queries against a 300-point cloud, not just the small hand-derived fixture above");
+
+  bool within_radius_matches_brute = true;
+  for (int trial = 0; trial < 60 && within_radius_matches_brute; ++trial) {
+    const Point3d q(next_rand() / 10.0 - 100.0, next_rand() / 10.0 - 100.0, next_rand() / 10.0 - 100.0);
+    const double r = (next_rand() % 500) / 10.0;
+    const auto brute = brute_within_radius(pts, q, r);
+    const auto real = cloud.PointsWithinRadius(q, r);
+    if (brute.size() != real.size()) {
+      within_radius_matches_brute = false;
+      break;
+    }
+    for (size_t i = 0; i < brute.size(); ++i) {
+      if (brute[i].index != real[i].index || std::abs(brute[i].distance - real[i].distance) > 1e-9) {
+        within_radius_matches_brute = false;
+        break;
+      }
+    }
+  }
+  Check(within_radius_matches_brute,
+        "PointsWithinRadius's own R-tree-accelerated box-then-exact-filter search matches the same brute-force "
+        "reference exactly, over 60 random queries and radii");
+
+  // Mutation invalidates the cache: SetPointAt() must be reflected
+  // immediately, not answered from a stale tree.
+  {
+    const auto before = cloud.KNearest(Point3d(0, 0, 0), 1);
+    cloud.SetPointAt(before[0].index, Point3d(1e-5, 1e-5, 1e-5));
+    const auto after = cloud.KNearest(Point3d(0, 0, 0), 1);
+    Check(after[0].index == before[0].index && after[0].distance < 1e-3,
+          "SetPointAt() invalidates the cached spatial index: the moved point is immediately the (much closer) "
+          "nearest neighbor again, not the stale pre-move distance");
+  }
+
+  // Copy sharing: a copy's own cached tree is unaffected by the
+  // ORIGINAL's later mutation (each copy only invalidates its own
+  // pointer), but the original itself does see its own new point.
+  {
+    const PointCloud copy = cloud;
+    const auto copy_before = copy.KNearest(Point3d(50, 50, 50), 1);
+    const int original_count_before = cloud.PointCount();
+    cloud.AppendPoint(Point3d(50, 50, 50));
+    const auto copy_after = copy.KNearest(Point3d(50, 50, 50), 1);
+    Check(copy_after[0].index == copy_before[0].index,
+          "a copy's own cached spatial index is unaffected by the original cloud's later AppendPoint() - the two "
+          "share the tree only until one of them next mutates");
+    const auto original_after = cloud.KNearest(Point3d(50, 50, 50), 1);
+    Check(original_after[0].index == original_count_before,
+          "...while the original itself immediately sees its own newly appended point as the nearest neighbor");
+  }
+
+  // Transform() returns a copy whose own positions have moved - its own
+  // cache must not be the pre-transform tree.
+  {
+    ON_Xform shift;
+    shift.Translation(1000.0, 1000.0, 1000.0);
+    const PointCloud shifted = cloud.Transform(shift);
+    const auto near_old_origin = shifted.KNearest(Point3d(0, 0, 0), 1);
+    const auto near_new_location = shifted.KNearest(Point3d(1000, 1000, 1000), 1);
+    Check(near_new_location[0].distance < near_old_origin[0].distance,
+          "Transform()'s own returned copy queries against the SHIFTED positions, not a stale pre-transform tree: "
+          "the nearest point to the shifted cluster's own new location is closer than to its old one");
+  }
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category names
 // this gap directly under "Point-cloud contour/section as separate app
 // commands": "app-level band-sampling around a plane; the kernel
@@ -32904,6 +33079,146 @@ void TestMeshLoadObjFanTriangulatesNgonFaces() {
         "'-5 -4 -3 -2 -1' resolved to the same 0-based corners as the "
         "equivalent absolute '1 2 3 4 5' would, before triangulating");
   std::remove(relative_path.c_str());
+}
+
+void TestMeshLoadObjGroupsAndMaterials() {
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Closes LoadObj()'s own disclosed "the `.mtl`/per-group/per-object
+  // gaps remain open" item - before this, every `g`/`o`/`usemtl`/
+  // `mtllib` line was silently skipped entirely.
+  const std::string mtl_path = "dino8_kernel_mesh_obj_test_materials.mtl";
+  {
+    std::ofstream mtl(mtl_path);
+    mtl << "newmtl Red\nKd 1.0 0.0 0.0\n";
+    mtl << "newmtl Blue\nKd 0.0 0.0 1.0\n";
+    mtl << "newmtl Green\nKd 0.0 1.0 0.0\n";
+  }
+
+  const std::string obj_path = "dino8_kernel_mesh_obj_test_groups_materials.obj";
+  {
+    std::ofstream out(obj_path);
+    // Quad A (no group/material yet - must read back as empty, not
+    // crash or inherit something from later in the file).
+    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
+    out << "f 1 2 3 4\n";
+    // Quad B, group "GroupA"/material "Red".
+    out << "v 2 0 0\nv 3 0 0\nv 3 1 0\nv 2 1 0\n";
+    out << "mtllib " << mtl_path << '\n';
+    out << "g GroupA\nusemtl Red\n";
+    out << "f 5 6 7 8\n";
+    // Quad C, group "GroupB"/material "Blue" - 'o' used instead of 'g',
+    // deliberately, to prove both keywords are treated the same way.
+    out << "v 4 0 0\nv 5 0 0\nv 5 1 0\nv 4 1 0\n";
+    out << "o GroupB\nusemtl Blue\n";
+    out << "f 9 10 11 12\n";
+    // A pentagon (fan-triangulates into 3 triangles) under group
+    // "GroupC"/material "Green" - every resulting triangle must inherit
+    // the SAME group/material as this one source line.
+    out << "v 6 0 0\nv 8 0 0\nv 9 1 0\nv 7 2 0\nv 5 1 0\n";
+    out << "g GroupC\nusemtl Green\n";
+    out << "f 13 14 15 16 17\n";
+    // Material name with no resolvable color (never defined in the
+    // .mtl file) - HasFaceMaterialNames() must still be true for this
+    // face, but its own color must not resolve.
+    out << "v 10 0 0\nv 11 0 0\nv 11 1 0\nv 10 1 0\n";
+    out << "usemtl Unknown\n";
+    out << "f 18 19 20 21\n";
+  }
+
+  Mesh mesh;
+  Check(Mesh::LoadObj(obj_path, mesh) == Result::Ok, "LoadObj succeeds on a file with g/o/usemtl/mtllib lines");
+  Check(mesh.FaceCount() == 7, "4 ordinary quads + a pentagon's 3 fan triangles = 7 faces total");
+  Check(mesh.HasFaceGroupNames(), "HasFaceGroupNames() is true once at least one g/o line appeared");
+  Check(mesh.HasFaceMaterialNames(), "HasFaceMaterialNames() is true once at least one usemtl line appeared");
+  Check(mesh.HasFaceMaterialColors(), "HasFaceMaterialColors() is true once at least one material actually resolved");
+
+  Check(mesh.FaceGroupNameAt(0).empty(), "quad A's face (before any g/o line) reports an empty group name");
+  Check(mesh.FaceMaterialNameAt(0).empty(), "quad A's face (before any usemtl line) reports an empty material name");
+
+  Check(mesh.FaceGroupNameAt(1) == "GroupA", "quad B's face reports the exact group name its 'g' line gave it");
+  Check(mesh.FaceMaterialNameAt(1) == "Red", "quad B's face reports the exact material name its 'usemtl' line gave it");
+  const Color red = mesh.FaceMaterialColorAt(1);
+  Check(red.r == 255 && red.g == 0 && red.b == 0,
+        "quad B's face resolves its material's real Kd diffuse color from the .mtl file");
+
+  Check(mesh.FaceGroupNameAt(2) == "GroupB",
+        "quad C's face reports the exact group name its 'o' line gave it - 'o' and 'g' are treated the same");
+  Check(mesh.FaceMaterialNameAt(2) == "Blue", "quad C's face reports the exact material name its 'usemtl' line gave it");
+  const Color blue = mesh.FaceMaterialColorAt(2);
+  Check(blue.r == 0 && blue.g == 0 && blue.b == 255, "quad C's face resolves its own real Kd diffuse color");
+
+  // Faces 3, 4, 5 are the pentagon's own 3 fan triangles (face 0, 1, 2
+  // were the three ordinary quads before it; face indices continue in
+  // file order).
+  bool all_pentagon_triangles_tagged = true;
+  for (int i = 3; i <= 5; ++i) {
+    if (mesh.FaceGroupNameAt(i) != "GroupC" || mesh.FaceMaterialNameAt(i) != "Green") {
+      all_pentagon_triangles_tagged = false;
+    }
+  }
+  Check(all_pentagon_triangles_tagged,
+        "every one of the pentagon's 3 fan-triangulated faces inherits the SAME group/material its "
+        "one source 'f' line had, not just the first");
+  const Color green = mesh.FaceMaterialColorAt(3);
+  Check(green.r == 0 && green.g == 255 && green.b == 0,
+        "a fan-triangulated face's own resolved material color matches its source line's material");
+
+  Check(mesh.FaceMaterialNameAt(6) == "Unknown",
+        "the last quad's face reports the material name its 'usemtl' line gave it, even though that "
+        "name is never defined in the .mtl file");
+  const Color unresolved = mesh.FaceMaterialColorAt(6);
+  Check(unresolved.r == 0 && unresolved.g == 0 && unresolved.b == 0,
+        "a material name with no matching 'newmtl'/'Kd' in the .mtl file reports a default-constructed "
+        "(black) color, not a crash or a stale value from a resolved face");
+
+  const int out_of_range_face = mesh.FaceCount() + 100;
+  Check(mesh.FaceGroupNameAt(out_of_range_face).empty() && mesh.FaceMaterialNameAt(out_of_range_face).empty(),
+        "FaceGroupNameAt()/FaceMaterialNameAt() on a face index this mesh doesn't have return an empty "
+        "string, same contract as every other *At() accessor's own out-of-range case");
+
+  std::remove(obj_path.c_str());
+  std::remove(mtl_path.c_str());
+
+  // A file with g/o/usemtl lines but NO mtllib (or a mtllib naming a
+  // file that doesn't exist) still succeeds, with names recorded but no
+  // colors resolved - mtllib resolution failing is not itself an error.
+  const std::string no_mtl_path = "dino8_kernel_mesh_obj_test_missing_mtllib.obj";
+  {
+    std::ofstream out(no_mtl_path);
+    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
+    out << "mtllib does_not_exist.mtl\n";
+    out << "g SomeGroup\nusemtl SomeMaterial\n";
+    out << "f 1 2 3 4\n";
+  }
+  Mesh no_mtl_mesh;
+  Check(Mesh::LoadObj(no_mtl_path, no_mtl_mesh) == Result::Ok,
+        "LoadObj succeeds even when the mtllib file it names doesn't exist");
+  Check(no_mtl_mesh.HasFaceGroupNames() && no_mtl_mesh.FaceGroupNameAt(0) == "SomeGroup",
+        "the group name is still recorded from the .obj file itself, independent of mtllib resolution");
+  Check(no_mtl_mesh.HasFaceMaterialNames() && no_mtl_mesh.FaceMaterialNameAt(0) == "SomeMaterial",
+        "the material name is still recorded independent of mtllib resolution");
+  Check(!no_mtl_mesh.HasFaceMaterialColors(),
+        "HasFaceMaterialColors() is false when the mtllib file itself can't be found at all");
+  std::remove(no_mtl_path.c_str());
+
+  // A plain file with no g/o/usemtl/mtllib lines at all reports neither
+  // group nor material info - no behavior change from before this
+  // feature existed.
+  const std::string plain_path = "dino8_kernel_mesh_obj_test_no_groups.obj";
+  {
+    std::ofstream out(plain_path);
+    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
+    out << "f 1 2 3 4\n";
+  }
+  Mesh plain_mesh;
+  Check(Mesh::LoadObj(plain_path, plain_mesh) == Result::Ok, "LoadObj succeeds on a plain file with no g/o/usemtl");
+  Check(!plain_mesh.HasFaceGroupNames(), "a file with no g/o line at all reports HasFaceGroupNames() == false");
+  Check(!plain_mesh.HasFaceMaterialNames(),
+        "a file with no usemtl line at all reports HasFaceMaterialNames() == false");
+  std::remove(plain_path.c_str());
 }
 
 void TestMeshSaveOffRoundTrips() {
@@ -76996,6 +77311,7 @@ int main() {
   RunTest("TestMeshDistanceTo", TestMeshDistanceTo);
   RunTest("TestMeshClashWith", TestMeshClashWith);
   RunTest("TestPointCloudSpatialQueries", TestPointCloudSpatialQueries);
+  RunTest("TestPointCloudSpatialQueriesUseRTreeAcceleration", TestPointCloudSpatialQueriesUseRTreeAcceleration);
   RunTest("TestPointCloudPointsNearPlane", TestPointCloudPointsNearPlane);
   RunTest("TestPointCloudContourAtPlaneFitsRingThroughBand", TestPointCloudContourAtPlaneFitsRingThroughBand);
   RunTest("TestPointCloudXyzRoundTrips", TestPointCloudXyzRoundTrips);
@@ -77100,6 +77416,7 @@ int main() {
   RunTest("TestMeshLoadObjRejectsMalformedFiles", TestMeshLoadObjRejectsMalformedFiles);
   RunTest("TestMeshLoadObjResolvesRelativeIndices", TestMeshLoadObjResolvesRelativeIndices);
   RunTest("TestMeshLoadObjFanTriangulatesNgonFaces", TestMeshLoadObjFanTriangulatesNgonFaces);
+  RunTest("TestMeshLoadObjGroupsAndMaterials", TestMeshLoadObjGroupsAndMaterials);
   RunTest("TestMeshSaveOffRoundTrips", TestMeshSaveOffRoundTrips);
   RunTest("TestMeshLoadOffRejectsMalformedFiles", TestMeshLoadOffRejectsMalformedFiles);
   RunTest("TestMeshLoadOffRejectsImplausibleElementCounts", TestMeshLoadOffRejectsImplausibleElementCounts);
