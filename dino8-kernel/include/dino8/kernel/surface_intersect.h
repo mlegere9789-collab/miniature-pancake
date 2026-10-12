@@ -277,6 +277,49 @@ struct RayBrepHit {
 std::vector<RayBrepHit> FireRayAtBrep(const Point3d& origin, const Vector3d& direction, double max_distance,
                                        const ON_Brep& b, const IntersectOptions& opt);
 
+// One closest-point result, as returned by ClosestPointOnBrep() below.
+// `on_trim_boundary` is true exactly when the true unconstrained closest
+// point on that face's own surface fell outside its trim loop, so
+// `point`/`uv` are the boundary-constrained answer instead (see that
+// function's own doc comment for how that case is computed).
+struct BrepClosestPointResult {
+  int face_index = -1;
+  double distance = 0;
+  ON_2dPoint uv;
+  Point3d point;
+  bool on_trim_boundary = false;
+};
+
+// Closes PARITY_MAP.md's own disclosed "Closest point on trimmed B-rep"
+// gap: before this, `Mesh::ClosestPoint`/`NurbsSurface::ClosestPoint`
+// existed but were untrimmed-only - there was still no `Brep::ClosestPoint`
+// at all. For each face whose surface has a NURBS form, wraps it and asks
+// its own `ClosestPointParameter()` for the UNCONSTRAINED closest point
+// first; if that (u, v) genuinely falls inside the face's own trim loop
+// (`FaceContainsUV()`, the identical trim test `FireRayAtBrep()` above
+// already uses), that's this face's own answer - the common case, and
+// exact up to `ClosestPointParameter()`'s own documented grid-search
+// precision. If it falls OUTSIDE the trim, the true closest point on a
+// TRIMMED face lies on its own boundary, not at the unconstrained
+// minimum: this falls back to the same sampled-polyline boundary
+// `FaceContainsUV()`/`PointInPolygon()` already build via `LoopPolygon()`,
+// evaluated through the surface's own `PointAt()` into real 3D segments,
+// and finds the closest point on any of those segments (the identical
+// point-to-segment-with-clamped-t technique this file's own
+// `DistanceToBoundaryLoops()` already uses for a related, distance-only
+// query) - an honest polyline approximation of the true, generally
+// CURVED boundary, not a continuous-curve closest point, with `uv`
+// linearly interpolated across the same segment the 3D point is, so the
+// two can never disagree with each other. Returns the single best
+// (minimum-distance) result found across every face. Throws
+// std::invalid_argument if `b` has no faces, and std::runtime_error if
+// not one of them could be evaluated (every face has either no surface
+// or a surface with no NURBS form) - a face individually missing either
+// is otherwise silently skipped rather than aborting the whole query
+// over one bad face.
+BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b, int u_divisions = 20,
+                                           int v_divisions = 20, int trim_samples_per_edge = 24);
+
 // A curve/plane crossing - the curve-level counterpart to CurveSurfaceHit
 // above, but against a caller-supplied INFINITE ON_Plane rather than a
 // bounded ON_Surface. PARITY_MAP.md's own "Curve/plane intersection" gap:
