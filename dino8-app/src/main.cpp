@@ -74,6 +74,17 @@
 //                 currently empty, missing, or unreadable (fails closed,
 //                 not open) - a path typo can never silently leave the
 //                 server open the way an empty --serve-token list would.
+//                 A TOKEN may be given as "sha256:HEX" instead of
+//                 plaintext - the file then never holds the real bearer
+//                 secret at all, only its SHA-256 digest (the dependency-
+//                 free util/Sha256.h the plug-in marketplace already
+//                 hashes a download against); a caller still presents the
+//                 real plaintext token, which gets hashed and compared.
+//                 Real hashing, the "no hashing" gap this flag's own
+//                 earlier wording disclosed - though a plain --serve-token
+//                 flag still can't benefit from it, since its own value
+//                 has to be the real plaintext in argv at startup either
+//                 way.
 //   --serve-token-file-ttl SECONDS   with --serve-token-file: that file's
 //                 own entries additionally expire once the file's last-
 //                 write time is more than SECONDS old - real automatic
@@ -144,6 +155,7 @@
 #include "plugins/PluginPanel.h"
 #include "ui/Panels.h"
 #include "ui/Theme.h"
+#include "util/Sha256.h"
 #include "util/ThreadPool.h"
 #include "util/json_mini.h"
 #include "viewport/Viewport.h"
@@ -367,18 +379,38 @@ bool ConstantTimeEquals(const std::string& a, const std::string& b) {
   return diff == 0;
 }
 
+// Splits a "[NAME:]TOKEN" spec into its name (empty if none) and token -
+// shared by --serve-token's own argv parsing and ParseTokenFile's per-line
+// parsing below. The "sha256:" prefix a TOKEN can itself carry (see
+// compute_handler's own matching loop) is checked FIRST, before ever
+// looking for the name-separating colon: without this, a bare (unnamed)
+// "sha256:abc123..." line would be misparsed as NAME "sha256" paired with
+// the truncated token "abc123..." - the same trap IsProceduralTexture's
+// own "proc:" prefix tag elsewhere in this codebase would fall into if it
+// ever allowed a second, unrelated prefix tag ahead of it. A REAL name
+// still splits correctly either way ("ci:sha256:abc123" -> name "ci",
+// token "sha256:abc123") since only a prefix at the very start of the
+// whole spec is special-cased.
+void SplitNameToken(const std::string& spec, std::string& name, std::string& token) {
+  if (spec.rfind("sha256:", 0) == 0) { name.clear(); token = spec; return; }
+  const size_t colon = spec.find(':');
+  if (colon == std::string::npos) { name.clear(); token = spec; }
+  else { name = spec.substr(0, colon); token = spec.substr(colon + 1); }
+}
+
 // Parses --serve-token-file's live token source: one "[NAME:]TOKEN" entry
 // per line (the identical syntax --serve-token already takes on the
-// command line), blank lines and lines starting with '#' skipped. Called
-// fresh from compute_handler on every single request rather than once at
-// startup - the whole point of this flag over --serve-token - so editing
-// the file (removing a line to revoke a token, adding one to add a new
-// one, replacing one to rotate it) takes effect on the very next request
-// with no server restart. A missing or unreadable file comes back empty
-// rather than throwing - compute_handler's own caller treats "given
-// --serve-token-file but currently no entries" as "deny everything," not
-// "fall back to open," so a bad path fails closed instead of accidentally
-// disabling auth.
+// command line, including a "sha256:HEX" token - see SplitNameToken and
+// compute_handler's own matching loop), blank lines and lines starting
+// with '#' skipped. Called fresh from compute_handler on every single
+// request rather than once at startup - the whole point of this flag over
+// --serve-token - so editing the file (removing a line to revoke a token,
+// adding one to add a new one, replacing one to rotate it) takes effect
+// on the very next request with no server restart. A missing or
+// unreadable file comes back empty rather than throwing -
+// compute_handler's own caller treats "given --serve-token-file but
+// currently no entries" as "deny everything," not "fall back to open,"
+// so a bad path fails closed instead of accidentally disabling auth.
 std::vector<std::pair<std::string, std::string>> ParseTokenFile(const std::string& path) {
   std::vector<std::pair<std::string, std::string>> tokens;
   std::ifstream in(path);
@@ -386,9 +418,9 @@ std::vector<std::pair<std::string, std::string>> ParseTokenFile(const std::strin
   while (std::getline(in, line)) {
     while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
     if (line.empty() || line[0] == '#') continue;
-    const size_t colon = line.find(':');
-    if (colon == std::string::npos) tokens.emplace_back("", line);
-    else tokens.emplace_back(line.substr(0, colon), line.substr(colon + 1));
+    std::string name, token;
+    SplitNameToken(line, name, token);
+    tokens.emplace_back(std::move(name), std::move(token));
   }
   return tokens;
 }
@@ -629,10 +661,9 @@ int main(int argc, char** argv) {
     else if (std::strcmp(argv[i], "--serve") == 0 && i + 1 < argc) serve_port = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--serve-max-requests") == 0 && i + 1 < argc) serve_max_requests = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--serve-token") == 0 && i + 1 < argc) {
-      const std::string spec = argv[++i];
-      const size_t colon = spec.find(':');
-      if (colon == std::string::npos) serve_tokens.emplace_back("", spec);
-      else serve_tokens.emplace_back(spec.substr(0, colon), spec.substr(colon + 1));
+      std::string name, token;
+      SplitNameToken(argv[++i], name, token);
+      serve_tokens.emplace_back(std::move(name), std::move(token));
     }
     else if (std::strcmp(argv[i], "--serve-token-file") == 0 && i + 1 < argc) serve_token_file = argv[++i];
     else if (std::strcmp(argv[i], "--serve-token-file-ttl") == 0 && i + 1 < argc) serve_token_file_ttl = std::atof(argv[++i]);
@@ -915,9 +946,28 @@ int main(int argc, char** argv) {
       }
       const auto it = req.headers.find("authorization");
       bool matched = false;
-      if (it != req.headers.end()) {
+      if (it != req.headers.end() && it->second.rfind("Bearer ", 0) == 0) {
+        const std::string presented = it->second.substr(7);
         for (const auto& [name, token] : candidates) {
-          if (ConstantTimeEquals(it->second, "Bearer " + token)) { caller_name = name; matched = true; break; }
+          // A "sha256:HEX" candidate (only meaningful from a
+          // --serve-token-file line - see ParseTokenFile's own comment)
+          // never stores the real bearer secret at all: the file holds
+          // only its SHA-256 digest, the identical dependency-free
+          // util/Sha256.h the plug-in marketplace already hashes a
+          // download against. A leaked token FILE then leaks nothing a
+          // caller could present as the token itself - genuine hashing,
+          // not the "no hashing" this bullet's own prior rounds disclosed
+          // as a remaining gap, distinct from --serve-token itself, which
+          // still has to hold a plaintext value in argv at startup either
+          // way. Hashing `presented` costs nothing an attacker could use
+          // to distinguish a near match from a far one (SHA-256 has no
+          // partial-preimage shortcut), so comparing the two fixed-length
+          // hex digests with the same ConstantTimeEquals stays exactly as
+          // safe as comparing a plaintext candidate directly.
+          const bool is_hash = token.rfind("sha256:", 0) == 0;
+          const bool ok = is_hash ? ConstantTimeEquals(dino8::util::Sha256Hex(presented), token.substr(7))
+                                   : ConstantTimeEquals(presented, token);
+          if (ok) { caller_name = name; matched = true; break; }
         }
       }
       if (!matched) {
