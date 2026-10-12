@@ -2,6 +2,7 @@
 #include <cmath>
 #include <vector>
 #include "dino8/kernel/surface.h"
+#include "dino8/kernel/surface_intersect.h"
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/mesh.h"
 #include "opennurbs.h"
@@ -10,71 +11,51 @@ int main() {
   ON::Begin();
   using namespace dino8::kernel;
 
-  Mesh m;
-  ON_Mesh& raw = m.raw();
-  const double col_u[4] = {0.1, 0.35, 0.6, 0.85};
-  for (int col = 0; col < 4; ++col) {
-    raw.m_V.Append(ON_3fPoint(static_cast<float>(col), 0, 0));
-    raw.m_V.Append(ON_3fPoint(static_cast<float>(col), 0, 1));
-  }
-  auto add_quad = [&raw](int a, int b, int c, int d) {
-    ON_MeshFace f;
-    f.vi[0] = a; f.vi[1] = b; f.vi[2] = c; f.vi[3] = d;
-    raw.m_F.Append(f);
-  };
-  add_quad(0, 2, 3, 1);
-  add_quad(2, 4, 5, 3);
-  add_quad(4, 6, 7, 5);
-  add_quad(6, 0, 1, 7);
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
 
-  std::vector<Point2d> uvs(8);
-  for (int col = 0; col < 4; ++col) {
-    uvs[static_cast<size_t>(2 * col)] = Point2d(col_u[col], 0.0);
-    uvs[static_cast<size_t>(2 * col + 1)] = Point2d(col_u[col], 1.0);
+  const Brep box_a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const auto hits = FireRayAtBrep(Point3d(1, 1, -5), Vector3d(0, 0, 1), 20.0, box_a.raw(), opt);
+  std::printf("hits=%zu\n", hits.size());
+  for (const auto& h : hits) {
+    std::printf("  face=%d dist=%g point=(%g,%g,%g)\n", h.face_index, h.distance, h.point.x, h.point.y,
+                h.point.z);
   }
 
-  const Mesh split = m.SplitUVSeam(uvs, 0.5);
-  std::printf("orig verts=%d faces=%d -> split verts=%d faces=%d\n", m.VertexCount(),
-              m.FaceCount(), split.VertexCount(), split.FaceCount());
-  std::printf("HasTextureCoordinates=%d\n", split.HasTextureCoordinates());
-  for (int i = 0; i < split.VertexCount(); ++i) {
-    const Point2d uv = split.TextureCoordinateAt(i);
-    std::printf("  vert %d: u=%g v=%g\n", i, uv.x, uv.y);
-  }
+  const auto short_hits = FireRayAtBrep(Point3d(1, 1, -5), Vector3d(0, 0, 1), 6.0, box_a.raw(), opt);
+  std::printf("short_hits=%zu\n", short_hits.size());
 
-  // No-seam sanity check
-  Mesh no_seam;
-  ON_Mesh& raw2 = no_seam.raw();
-  raw2.m_V.Append(ON_3fPoint(0, 0, 0));
-  raw2.m_V.Append(ON_3fPoint(1, 0, 0));
-  raw2.m_V.Append(ON_3fPoint(1, 1, 0));
-  raw2.m_V.Append(ON_3fPoint(0, 1, 0));
-  ON_MeshFace nf;
-  nf.vi[0] = 0; nf.vi[1] = 1; nf.vi[2] = 2; nf.vi[3] = 3;
-  raw2.m_F.Append(nf);
-  const std::vector<Point2d> no_seam_uvs = {Point2d(0.1, 0), Point2d(0.2, 0), Point2d(0.2, 1), Point2d(0.1, 1)};
-  const Mesh no_seam_split = no_seam.SplitUVSeam(no_seam_uvs);
-  std::printf("no_seam: orig verts=%d -> split verts=%d (expect equal)\n", no_seam.VertexCount(),
-              no_seam_split.VertexCount());
+  const auto miss_hits = FireRayAtBrep(Point3d(100, 100, -5), Vector3d(0, 0, 1), 20.0, box_a.raw(), opt);
+  std::printf("miss_hits=%zu\n", miss_hits.size());
 
-  // Invalid-argument checks
+  const std::vector<Point3d> plane_grid = {Point3d(0, 0, 2), Point3d(0, 2, 2), Point3d(2, 0, 2),
+                                            Point3d(2, 2, 2)};
+  const NurbsSurface flat_plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+  const auto dom_u = flat_plane.Domain(0);
+  const auto dom_v = flat_plane.Domain(1);
+  std::printf("flat_plane domain u=[%g,%g] v=[%g,%g]\n", dom_u.min, dom_u.max, dom_v.min, dom_v.max);
+  std::printf("flat_plane PointAt(0.5,0.5) = (%g,%g,%g)\n", flat_plane.PointAt(0.5, 0.5).x,
+              flat_plane.PointAt(0.5, 0.5).y, flat_plane.PointAt(0.5, 0.5).z);
+
+  const std::vector<Point2d> small_trim = {Point2d(0.25, 0.25), Point2d(0.75, 0.25), Point2d(0.75, 0.75),
+                                            Point2d(0.25, 0.75)};
+  const Brep trimmed_top = Brep::TrimmedPlanarFace(flat_plane, small_trim, true);
+  const auto inside_hits = FireRayAtBrep(Point3d(1.0, 1.0, 10), Vector3d(0, 0, -1), 20.0, trimmed_top.raw(), opt);
+  const auto outside_hits = FireRayAtBrep(Point3d(0.2, 0.2, 10), Vector3d(0, 0, -1), 20.0, trimmed_top.raw(), opt);
+  std::printf("inside_hits=%zu outside_hits=%zu\n", inside_hits.size(), outside_hits.size());
+
   try {
-    m.SplitUVSeam({Point2d(0, 0)});
-    std::printf("ERROR: expected throw for bad size, did not throw\n");
+    FireRayAtBrep(Point3d(0, 0, 0), Vector3d(0, 0, 0), 20.0, box_a.raw(), opt);
+    std::printf("ERROR: expected throw for zero direction\n");
   } catch (const std::invalid_argument& e) {
-    std::printf("OK threw for bad size: %s\n", e.what());
+    std::printf("OK threw for zero direction: %s\n", e.what());
   }
   try {
-    m.SplitUVSeam(uvs, 0.0);
-    std::printf("ERROR: expected throw for threshold=0, did not throw\n");
+    FireRayAtBrep(Point3d(0, 0, 0), Vector3d(0, 0, 1), 0.0, box_a.raw(), opt);
+    std::printf("ERROR: expected throw for zero max_distance\n");
   } catch (const std::invalid_argument& e) {
-    std::printf("OK threw for threshold=0: %s\n", e.what());
-  }
-  try {
-    m.SplitUVSeam(uvs, 1.0);
-    std::printf("ERROR: expected throw for threshold=1, did not throw\n");
-  } catch (const std::invalid_argument& e) {
-    std::printf("OK threw for threshold=1: %s\n", e.what());
+    std::printf("OK threw for zero max_distance: %s\n", e.what());
   }
 
   ON::End();

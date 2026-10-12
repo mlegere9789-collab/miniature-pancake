@@ -226,6 +226,46 @@ struct CurveBrepHit {
 // exist ... the app composes the B-rep loop itself (IntersectAny)."
 std::vector<CurveBrepHit> IntersectCurveBrep(const ON_Curve& c, const ON_Brep& b, const IntersectOptions& opt);
 
+// One ray/B-rep hit, as returned by FireRayAtBrep() below. `distance` is
+// the real distance from `origin` along `direction` (not a [0, 1]
+// curve-parameter fraction), set up so a caller never needs to know this
+// is built on a line curve internally.
+struct RayBrepHit {
+  int face_index = -1;
+  double distance = 0;
+  ON_2dPoint uv;
+  Point3d point;
+};
+
+// Closes PARITY_MAP.md's own disclosed "Ray firing against exact B-rep
+// faces" gap: `Mesh::FireRay` only ever fired against a mesh
+// APPROXIMATION, and `IntersectCurveSurface()` above, while exact, never
+// respected a face's own trim loops on its own. This models the ray as a
+// straight `ON_LineCurve` from `origin` to `origin + direction.Unitized()
+// * max_distance` - the same finite-segment-standing-in-for-a-ray
+// technique this kernel's own internal `ClassifyPointVsBrep()`
+// (boolean_general.cpp) already uses for point-in-solid testing, just
+// exposed here as a real, general-purpose, public ray-firing API instead
+// of staying buried inside one specific classification routine - with
+// its domain explicitly set to `[0, max_distance]` so a caller reads a
+// real distance directly, never a raw curve parameter, and composes
+// `IntersectCurveBrep()` above for the exact-and-trimmed intersection
+// itself, so a hit landing outside any face's own trim loops is already
+// dropped, not approximated. Returned sorted by `distance`, nearest
+// first - the natural order for a ray query (first hit, or "is anything
+// in front of me") - unlike `IntersectCurveBrep()`'s own face-order,
+// unsorted return. Throws std::invalid_argument if `direction` doesn't
+// unitize (zero or non-finite) or `max_distance` is not finite and
+// positive. Still honestly scoped: a straight, FINITE ray only (a
+// genuinely infinite ray would need `IntersectCurveSurface()`'s own
+// bounded-domain sampling to cover an unbounded span, which it can't),
+// and a linear per-face scan with no spatial acceleration structure -
+// PARITY_MAP.md's own separate "Spatial acceleration structures for
+// geometric queries" bullet owns that distinct performance gap, not
+// named by this one.
+std::vector<RayBrepHit> FireRayAtBrep(const Point3d& origin, const Vector3d& direction, double max_distance,
+                                       const ON_Brep& b, const IntersectOptions& opt);
+
 // A curve/plane crossing - the curve-level counterpart to CurveSurfaceHit
 // above, but against a caller-supplied INFINITE ON_Plane rather than a
 // bounded ON_Surface. PARITY_MAP.md's own "Curve/plane intersection" gap:
