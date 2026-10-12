@@ -357,6 +357,31 @@ BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b
 bool ContainsPointExact(const Point3d& point, const ON_Brep& brep, double ray_length = 0,
                          const IntersectOptions& opt = IntersectOptions(), double tol = 1e-6);
 
+// Closes PARITY_MAP.md's own disclosed "Signed distance point-to-solid"
+// gap: `Mesh::SignedDistance()` already answers this for a tessellated
+// mesh - negative if inside, positive if outside, as `+/-
+// (ClosestPoint(point) - mesh).Length()` with the sign from
+// `ContainsPoint()`'s own single-ray mesh test - but there was no
+// Brep-level counterpart at all. This is that counterpart, built the
+// identical way `Mesh::SignedDistance()` is (composing two already-exact
+// queries rather than duplicating either one's own logic): the distance
+// magnitude from `ClosestPointOnBrep()` above (the real, trimmed-face
+// closest point, not a tessellated approximation), the sign from
+// `ContainsPointExact()` above (its own multi-direction ray-cast
+// classifier, robust against the single grazing-ray ambiguity a mesh's
+// own simpler `ContainsPoint()` test can hit). `opt`/`ray_length`/`tol`
+// are forwarded to `ContainsPointExact()`; `u_divisions`/`v_divisions`/
+// `trim_samples_per_edge` to `ClosestPointOnBrep()` - this function adds
+// no search logic of its own. Only meaningful for a genuinely closed
+// (solid) Brep, the same "inside has to mean something" precondition
+// `ContainsPointExact()` itself already leaves to the caller, undetected
+// here for the identical reason. Throws exactly as `ClosestPointOnBrep()`
+// does: std::invalid_argument if `b` has no faces, std::runtime_error if
+// no face could be evaluated.
+double SignedDistanceToBrep(const Point3d& point, const ON_Brep& b, const IntersectOptions& opt = IntersectOptions(),
+                             int u_divisions = 20, int v_divisions = 20, int trim_samples_per_edge = 24,
+                             double ray_length = 0, double tol = 1e-6);
+
 // A curve/plane crossing - the curve-level counterpart to CurveSurfaceHit
 // above, but against a caller-supplied INFINITE ON_Plane rather than a
 // bounded ON_Surface. PARITY_MAP.md's own "Curve/plane intersection" gap:
