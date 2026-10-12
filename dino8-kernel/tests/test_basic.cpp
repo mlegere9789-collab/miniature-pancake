@@ -5569,6 +5569,69 @@ void TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves() {
   Check(FindSurfaceSilhouetteCurves(sphere_surface, ON_3dVector(0, 0, 0), opt).empty(), "a zero-length view direction returns empty outright");
 }
 
+// PARITY_MAP.md's own "Silhouette / outline curves" bullet: closes the one
+// named gap FindSurfaceSilhouetteCurves()'s own header doc comment calls
+// out directly ("there is no perspective sibling of this function yet") -
+// FindSurfaceSilhouetteCurvesPerspective() chains
+// FindSurfaceSilhouettePointsPerspective()'s own isolated grid-edge
+// crossings into actual curves, the same way the orthographic sibling
+// already does for FindSurfaceSilhouettePoints().
+void TestFindSurfaceSilhouetteCurvesPerspectiveChainsPointsIntoCurves() {
+  using dino8::kernel::FindSurfaceSilhouetteCurvesPerspective;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  // The same sphere/finite-eye horizon-circle fixture
+  // TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon() already
+  // establishes a hand-derivable ground truth for (z == -r^2/d, radius ==
+  // r*sqrt(d^2-r^2)/d).
+  const double r = 3.0, d = 10.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), r);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+
+  const Point3d eye(0, 0, -d);
+  const IntersectOptions opt;
+  const auto curves = FindSurfaceSilhouetteCurvesPerspective(sphere_surface, eye, opt);
+  Check(!curves.empty(), "viewing a sphere from a finite external eye point chains the horizon's own crossings into at least one genuine curve");
+
+  const double expected_z = -r * r / d;
+  const double expected_radius = r * std::sqrt(d * d - r * r) / d;
+  bool all_on_horizon = true;
+  int total_samples = 0;
+  for (const auto& sc : curves) {
+    Check(sc.curve.IsValid(), "each chained perspective curve is a genuine, valid NURBS curve, not an empty placeholder");
+    const ON_Interval dom = sc.curve.Domain();
+    for (int k = 0; k <= 20; ++k) {
+      const double t = dom.ParameterAt(static_cast<double>(k) / 20.0);
+      const ON_3dPoint p = sc.curve.PointAt(t);
+      ++total_samples;
+      // Same generous relative tolerance TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves()
+      // uses: a cubic spline through genuine on-horizon points can bow
+      // slightly off the horizon circle BETWEEN them.
+      if (std::abs(p.z - expected_z) > 0.05 * r || std::abs(std::hypot(p.x, p.y) - expected_radius) > 0.05 * r) { all_on_horizon = false; break; }
+    }
+    if (!all_on_horizon) break;
+  }
+  Check(all_on_horizon, "every sampled point of every chained perspective curve sits close to the hand-derivable horizon circle - a real fit through genuine on-horizon crossings, not an unrelated curve");
+  Check(total_samples > 0, "sanity: the horizon fixture actually produced samples to check");
+
+  // An eye held exactly at the sphere's own center: genuinely no tangency
+  // exists anywhere (the same fixture
+  // TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon() already uses
+  // for the point-only sibling), so there are no crossings to chain either.
+  Check(FindSurfaceSilhouetteCurvesPerspective(sphere_surface, Point3d(0, 0, 0), opt).empty(), "an eye at the sphere's own center chains into zero curves");
+
+  // A flat, generously-bounded plane viewed from a finite eye far along its
+  // own normal has no tangency crossings anywhere on the plane (every
+  // point's own ray back to the eye is parallel to the normal, never
+  // tangent to a flat surface), so no curve to chain.
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-10, 10), true);
+  ground.SetExtents(1, ON_Interval(-10, 10), true);
+  Check(FindSurfaceSilhouetteCurvesPerspective(ground, Point3d(0, 0, 20), opt).empty(), "a flat plane viewed from a finite eye along its own normal chains into zero curves");
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Projection of curves/points onto surfaces along a direction (Project)"
 // bullet: "app ProjectCommand samples the curve and ray-casts along the
@@ -73028,6 +73091,7 @@ int main() {
   TestFindSurfaceSilhouettePointsSphereEquator();
   TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon();
   TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves();
+  TestFindSurfaceSilhouetteCurvesPerspectiveChainsPointsIntoCurves();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();

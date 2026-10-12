@@ -1226,6 +1226,31 @@ struct SurfaceSilhouetteCurve {
 };
 std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurves(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt);
 
+// The perspective sibling of FindSurfaceSilhouetteCurves() above - closes
+// the one named gap that function's own header doc comment calls out
+// directly ("there is no perspective sibling of this function yet"),
+// narrowing the "Silhouette / outline curves" bullet further. Identical
+// marching-squares chaining (same grid, same cell-edge-crossing links, same
+// degree-1-walk-to-degree-1 / remaining-closed-loop assembly, same
+// InterpolateCubic()/ChordParams() curve fit) - the only difference is the
+// crossings being chained come from FindSurfaceSilhouettePointsPerspective()'s
+// own per-sample `direction = point - eye` tangency test
+// (dot(RobustSurfaceNormal(s, u, v), point - eye) == 0) instead of
+// FindSurfaceSilhouetteCurves()'s single fixed `view_direction`. Shares the
+// file's one internal grid-edge tangency-crossing finder and chaining
+// assembly with both of its siblings - only the direction a sample tests
+// against differs. Still honestly scoped exactly as every other function in
+// this trio is: a grid sample landing at `eye` itself is "cannot verify",
+// not guessed; a "saddle" cell (all four boundary edges crossing) is skipped
+// rather than resolved with an arbitrary diagonal pairing; an isolated
+// degree-0 crossing is dropped here but still visible via
+// FindSurfaceSilhouettePointsPerspective() itself; and - the one gap this
+// bullet's own text keeps naming regardless of which function is asked - no
+// visibility/self-occlusion resolution (a chain on the surface's own far
+// side from the eye, or hidden behind a different object, is reported
+// exactly like a visible one).
+std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurvesPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt);
+
 // --- numerical helpers ------------------------------------------------------
 
 // Damped Gauss-Newton on residual(x) (m equations, n unknowns) with box

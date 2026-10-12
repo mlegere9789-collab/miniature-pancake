@@ -3590,26 +3590,14 @@ std::vector<SurfaceSilhouettePoint> FlattenSilhouetteCrossings(const std::map<Si
   return out;
 }
 
-}  // namespace
-
-std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePoints(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt) {
-  if (view_direction.Length() < 1e-12) return {};  // no direction to test tangency against
-  const SurfaceMesh grid = TessellateWithUV(s, opt);
-  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d&) { return view_direction; });
-  return FlattenSilhouetteCrossings(crossings, opt.tolerance * 4);
-}
-
-std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePointsPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt) {
-  const SurfaceMesh grid = TessellateWithUV(s, opt);
-  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d& p) { return Vector3d(p - eye); });
-  return FlattenSilhouetteCrossings(crossings, opt.tolerance * 4);
-}
-
-std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurves(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt) {
+// Shared by FindSurfaceSilhouetteCurves()/FindSurfaceSilhouetteCurvesPerspective():
+// chains a pre-computed crossings map (from FindTangencyCrossingsOnGrid, any
+// direction_at) into curves via marching-squares - the direction test itself
+// has already happened by the time this runs, so the orthographic and
+// perspective cases share every line below unchanged.
+std::vector<SurfaceSilhouetteCurve> ChainSilhouetteCrossings(const SurfaceMesh& grid,
+                                                               const std::map<SilhouetteEdgeKey, GridSilhouetteCrossing>& crossings) {
   std::vector<SurfaceSilhouetteCurve> out;
-  if (view_direction.Length() < 1e-12) return out;
-  const SurfaceMesh grid = TessellateWithUV(s, opt);
-  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d&) { return view_direction; });
   if (crossings.empty()) return out;
 
   const int nu = grid.nu, nv = grid.nv;
@@ -3691,6 +3679,34 @@ std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurves(const ON_Surface
   }
 
   return out;
+}
+
+}  // namespace
+
+std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePoints(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt) {
+  if (view_direction.Length() < 1e-12) return {};  // no direction to test tangency against
+  const SurfaceMesh grid = TessellateWithUV(s, opt);
+  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d&) { return view_direction; });
+  return FlattenSilhouetteCrossings(crossings, opt.tolerance * 4);
+}
+
+std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePointsPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt) {
+  const SurfaceMesh grid = TessellateWithUV(s, opt);
+  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d& p) { return Vector3d(p - eye); });
+  return FlattenSilhouetteCrossings(crossings, opt.tolerance * 4);
+}
+
+std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurves(const ON_Surface& s, const Vector3d& view_direction, const IntersectOptions& opt) {
+  if (view_direction.Length() < 1e-12) return {};
+  const SurfaceMesh grid = TessellateWithUV(s, opt);
+  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d&) { return view_direction; });
+  return ChainSilhouetteCrossings(grid, crossings);
+}
+
+std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurvesPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt) {
+  const SurfaceMesh grid = TessellateWithUV(s, opt);
+  const auto crossings = FindTangencyCrossingsOnGrid(s, grid, [&](const Point3d& p) { return Vector3d(p - eye); });
+  return ChainSilhouetteCrossings(grid, crossings);
 }
 
 }  // namespace dino8::kernel
