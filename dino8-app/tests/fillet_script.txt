@@ -90,6 +90,32 @@ Continuity=Tangency
 345,0,1
 SelSrf
 List
+# --- MatchSrf: exact G2 (Curvature) match - NurbsSurface::MatchEdge()'s
+# own Curvature path (kernel-only until now; this command's own
+# Continuity option previously stopped at Tangency) was already real and
+# already tested at the kernel level, just unreachable from any app
+# command. Curvature needs rows_needed - 1 = 2, so the TARGET surface's
+# own degree must be at least 2 in the cross direction (MatchEdge()'s own
+# precondition) - the G1 fixture's own flat Box/Plane targets are both
+# degree 1 everywhere, so the target here is instead a genuinely curved
+# quarter-cylinder wall (an Arc, degree 2, extruded along Z): picking
+# near its own start-of-arc edge (constant arc-parameter, running along
+# Z) makes that degree-2 arc direction the one MatchEdge() reads rows
+# from, not the degree-1 extrusion direction.
+SelAll
+Hide
+Arc 440,0,0 445,0,0 440,5,0
+SelCrv
+ExtrudeCrv 12
+SelCrv
+Delete
+Plane 445,-5,0 455,5,0
+MatchSrf
+Continuity=Curvature
+446,0,0
+445,0,2
+SelSrf
+List
 # --- SplitFace: split a plane's surface where a real 3D curve pierces it twice
 # (a straight line can only cross a flat plane once, so the cutter is a
 # V-shaped polyline that dips below z=0 and back above it, at x=255 y=1
@@ -378,7 +404,7 @@ Enter
 SelAll
 Volume
 SelNone
-@expect_objects 60
+@expect_objects 62
 # --- FilletEdge Rho (exact conic fillet): kernel::FilletConvexEdgeConic
 # via the Rho option, on the same box-corner construction as the plain
 # FilletEdge/ChamferEdge cases above. At rho=0.5 the conic is the exact

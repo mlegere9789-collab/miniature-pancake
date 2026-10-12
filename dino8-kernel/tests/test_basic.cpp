@@ -2032,6 +2032,73 @@ void TestCurveGetOrientedBoundingBox() {
   }
 }
 
+void TestCurveFindSelfIntersections() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // A simple bowtie: (0,0) -> (10,10) -> (10,0) -> (0,10) -> back to (0,0).
+  // Segment 0 ((0,0)-(10,10)) and segment 2 ((10,0)-(0,10)) cross at
+  // exactly (5,5) by symmetry - the curve's one real self-intersection.
+  // Both crossing points land exactly on a sample boundary on both
+  // branches (confirmed via a standalone scratch probe before writing
+  // this test), which is exactly the case that used to report the
+  // identical true crossing 4 times over before this method's own
+  // dedup-merge step - so this fixture also doubles as that regression
+  // check.
+  {
+    const NurbsCurve bowtie = NurbsCurve::FromControlPoints(
+        {Point3d(0, 0, 0), Point3d(10, 10, 0), Point3d(10, 0, 0), Point3d(0, 10, 0), Point3d(0, 0, 0)}, 1);
+    const auto hits = bowtie.FindSelfIntersections(1e-6);
+    Check(hits.size() == 1, "FindSelfIntersections: a bowtie curve reports exactly its one real self-crossing, not 4 duplicate reports of it");
+    if (hits.size() == 1) {
+      const Point3d pa = bowtie.PointAt(hits[0].first);
+      const Point3d pb = bowtie.PointAt(hits[0].second);
+      Check(pa.DistanceTo(Point3d(5, 5, 0)) < 1e-6 && pb.DistanceTo(Point3d(5, 5, 0)) < 1e-6,
+            "FindSelfIntersections: the bowtie's one reported crossing lands exactly on the real hand-derivable (5,5)");
+    }
+  }
+
+  // A plain closed square has no real self-crossing - and, critically,
+  // must not report its own closing seam (start meeting end) as one.
+  {
+    const NurbsCurve square = NurbsCurve::FromControlPoints(
+        {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0), Point3d(0, 0, 0)}, 1);
+    Check(square.IsClosed(), "FindSelfIntersections: setup - the square fixture is genuinely closed");
+    Check(square.FindSelfIntersections(1e-6).empty(),
+          "FindSelfIntersections: a closed square reports zero self-crossings - its own closing seam is correctly excluded");
+  }
+
+  // A zigzag with TWO genuinely distinct, well-separated self-crossings -
+  // confirms the dedup-merge step collapses only same-crossing sampling
+  // duplicates, never two real, separate crossings into one.
+  {
+    const NurbsCurve zigzag = NurbsCurve::FromControlPoints(
+        {Point3d(0, 0, 0), Point3d(10, 10, 0), Point3d(20, 0, 0), Point3d(30, 10, 0), Point3d(10, 0, 0), Point3d(0, 10, 0)}, 1);
+    Check(!zigzag.IsClosed(), "FindSelfIntersections: setup - the zigzag fixture is genuinely open");
+    const auto hits = zigzag.FindSelfIntersections(1e-6);
+    Check(hits.size() == 2, "FindSelfIntersections: the zigzag reports exactly its two genuinely distinct self-crossings, neither merged into the other");
+    if (hits.size() == 2) {
+      const Point3d p0 = zigzag.PointAt(hits[0].first);
+      const Point3d p1 = zigzag.PointAt(hits[1].first);
+      Check((p0.DistanceTo(Point3d(5, 5, 0)) < 1e-6 && p1.DistanceTo(Point3d(16.666667, 3.333333, 0)) < 1e-4) ||
+                (p1.DistanceTo(Point3d(5, 5, 0)) < 1e-6 && p0.DistanceTo(Point3d(16.666667, 3.333333, 0)) < 1e-4),
+            "FindSelfIntersections: both of the zigzag's crossings land exactly on their real hand-derivable positions");
+    }
+  }
+
+  // A non-positive tolerance throws.
+  {
+    const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    bool threw = false;
+    try {
+      line.FindSelfIntersections(0.0);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "FindSelfIntersections: a non-positive tolerance throws std::invalid_argument");
+  }
+}
+
 void TestCurveGetTightBoundingBoxOverload() {
   using dino8::kernel::BoundingBox;
   using dino8::kernel::NurbsCurve;
@@ -78708,6 +78775,7 @@ int main() {
   RunTest("TestSurfaceMinDistanceTo", TestSurfaceMinDistanceTo);
   RunTest("TestSurfaceGetOrientedBoundingBox", TestSurfaceGetOrientedBoundingBox);
   RunTest("TestCurveGetOrientedBoundingBox", TestCurveGetOrientedBoundingBox);
+  RunTest("TestCurveFindSelfIntersections", TestCurveFindSelfIntersections);
   RunTest("TestCurveGetTightBoundingBoxOverload", TestCurveGetTightBoundingBoxOverload);
   RunTest("TestCurveKnotAt", TestCurveKnotAt);
   RunTest("TestCurveControlPointAt", TestCurveControlPointAt);

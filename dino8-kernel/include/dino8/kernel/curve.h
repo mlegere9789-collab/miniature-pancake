@@ -2,10 +2,12 @@
 
 #include <array>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <opennurbs.h>
 
+#include "dino8/kernel/tolerance.h"
 #include "dino8/kernel/types.h"
 
 namespace dino8::kernel {
@@ -655,6 +657,29 @@ class NurbsCurve {
     std::array<double, 3> half_extents{};
   };
   OrientedBox GetOrientedBoundingBox() const;
+
+  // Every pair of parameter values (t_a, t_b), t_a < t_b, where this curve
+  // crosses itself within `tolerance` - the real kernel-level counterpart
+  // `dino8-app`'s own `CurveSelfIntersects()` (cmd_common.h) never had: that
+  // helper only ever answered a yes/no question, entirely at the app level,
+  // for one caller-specific purpose (rejecting a bowtie curve before it
+  // reaches a command that builds a single-loop trim boundary). Uses the
+  // identical technique - a dense polyline sample (same `max(64, 12 *
+  // ControlPointCount())` density), tested pairwise via
+  // `ON_IntersectLineLine` - except each hit's segment-local `t` is mapped
+  // back onto this curve's own real parameter domain via linear
+  // interpolation within its sample interval, so a caller gets an actual
+  // (t_a, t_b) pair on the curve rather than a bare boolean. Like every
+  // other sampled-rather-than-closed-form query in this class
+  // (`MinDistanceTo`, `GetTightBoundingBox(tolerance)`), this is honestly
+  // not a certified detector: a crossing entirely between two adjacent
+  // samples could in principle be missed, the same disclosed tier
+  // `DeviationTo()` itself carries. For a CLOSED curve, the one segment
+  // pair spanning the closing seam (the curve's own start meeting its own
+  // end) is never reported - that join is the curve being closed, not it
+  // crossing itself. Throws `std::invalid_argument` for a non-positive
+  // `tolerance`.
+  std::vector<std::pair<double, double>> FindSelfIntersections(double tolerance = tolerance::kDistance) const;
 
   int Degree() const;
   int ControlPointCount() const;
