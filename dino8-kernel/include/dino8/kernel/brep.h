@@ -1322,6 +1322,61 @@ class Brep {
   // still-partial siblings.
   void CompactPreservingPersistentIds();
 
+  // Returns a copy of this Brep moved/rotated by `xform`, the Brep
+  // counterpart of Mesh::Transform()/SubD::Transform() - before this
+  // method existed, dino8-app's own Move/Rotate/Mirror/FlowAlongSrf code
+  // had no choice but to call `raw().Transform(xform)` directly (see
+  // SceneObject.cpp/FlowData.cpp), which transforms the underlying
+  // ON_Brep geometry correctly but reaches behind this class's own back:
+  // face_arc_runs_/face_notch_rows_/face_records_ (the verbatim side
+  // tables MixedFaces()/TessellateConforming() read for a face's exact
+  // analytic frame, notch polyline, etc. - see MixedFaces()'s own doc
+  // comment, "a Brep whose raw() ON_Brep was transformed... behind this
+  // class's back... is stale and silently ignored") are left untouched
+  // and pointing at the PRE-transform geometry, so the very next
+  // MixedFaces()/TessellateConforming() call on that face silently falls
+  // back to the (safe, but lower-fidelity - no notch points, no exact
+  // literal boundary) generic re-extraction path instead, for the single
+  // most common operation on a solid.
+  //
+  // `xform.IsRigid()` (see opennurbs_xform.h) decides how the side tables
+  // are carried along:
+  //   - +1 (a proper rotation + translation, no reflection or scale -
+  //     exactly the "translate/rotate" this is scoped to): every face's
+  //     own record is re-expressed in the new frame, bit-for-bit as
+  //     faithful as before the move - an ON_Plane's own Transform()
+  //     handles `plane`/`frame`; every stored 3D point (loop vertices,
+  //     ArcRun::center/literal_points, cap0/cap1_notch_points) is mapped
+  //     through `xform` directly; every stored direction
+  //     (ArcRun::plane_xaxis/plane_yaxis) through `xform` the same way
+  //     (ON_Xform's own ON_3dVector overload ignores the translation
+  //     part, exactly as a direction must); every scalar distance/angle
+  //     (radius, length, angle_begin/angle_end, the *_notch_tolerance
+  //     fields, CylinderNotchRows::v_end0/v_end1, its (u, v) pairs) is
+  //     invariant under a pure rotation+translation and is left exactly
+  //     as recorded - so a notched fillet, a verbatim FromMixedFaces()
+  //     record, etc. all survive a Move/Rotate with zero loss.
+  //   - -1 or 0 (a reflection, or a transform with scale/shear - outside
+  //     this method's own "rigid" scope): rather than silently mis-scale
+  //     a radius or mis-orient a notch polyline, every side table is
+  //     cleared outright (face_arc_runs_/face_notch_rows_/face_records_),
+  //     exactly the same "clear unconditionally, fall back to generic
+  //     re-derivation for every face" convention RemoveSharedMicroEdge's
+  //     own doc comment already establishes for a different
+  //     face-index-invalidating operation - correctness is unaffected
+  //     (every consumer already treats a too-short/absent side-table
+  //     entry as "no record, derive generically"), only the fast,
+  //     verbatim-fidelity path is given up, same as it already silently
+  //     would be today.
+  //
+  // lump_face_ranges_ and the three *_persistent_ids_ tables are index-
+  // or identity-based, not geometric, so neither case touches them.
+  //
+  // Throws std::invalid_argument if `xform` is not a valid transform (the
+  // underlying `ON_Brep::Transform()` returns false) - the same failure
+  // convention SubD::Transform() already uses.
+  Brep Transform(const ON_Xform& xform) const;
+
   // Mass-properties volume via the divergence theorem - direct NURBS
   // integration, not a tessellation chord approximation: sum over every
   // face of INT INT (1/3) S(u,v) . (Su(u,v) x Sv(u,v)) du dv over that
