@@ -3436,6 +3436,85 @@ class Brep {
   void ReplaceEdgeCurve(int edge_index, const NurbsCurve& new_curve,
                         double tolerance = tolerance::kEdgeJoin);
 
+  // A different, narrower resync than `Brep::RefitTrim()` below (that
+  // one simplifies a trim's own shape to fewer control points; this one
+  // never changes a trim's shape at all): re-derives every trim on
+  // `edge_index` against the edge's OWN CURRENT 3D curve, without a
+  // caller having to re-supply it - the case `ReplaceEdgeCurve()` above
+  // doesn't cover on its own, since it always requires a NEW curve
+  // argument even when nothing about the 3D curve itself changed (e.g.
+  // after some other operation moved a vertex and left this edge's
+  // trims stale relative to an edge curve that itself didn't move). A
+  // thin wrapper, not new logic: `edge.GetNurbForm()` extracts the
+  // edge's own curve, wraps it, and hands it straight to
+  // `ReplaceEdgeCurve()` - its own endpoints trivially match the edge's
+  // existing two vertices exactly (zero residual), so that method's own
+  // "do the endpoints land near the vertices" guard always passes here;
+  // every trim still gets freshly re-projected and validated exactly as
+  // `ReplaceEdgeCurve()` already does. Same throwing contract as
+  // `ReplaceEdgeCurve()` (this IS that method, just with its `new_curve`
+  // argument supplied automatically) - see that method's own doc
+  // comment for the exact exception cases.
+  void ResyncTrimToEdgeCurve(int edge_index, double tolerance = tolerance::kEdgeJoin);
+
+  // Closes PARITY_MAP.md's own disclosed "No general `ReplaceEdge`" gap
+  // (the same bullet as `ResyncTrimToEdgeCurve()` above): the general counterpart to
+  // `ReplaceEdgeCurve()` that DOES "re-point the topology to new
+  // [endpoints]" - the one thing that method's own doc comment
+  // explicitly says it does not do. `new_curve`'s own two endpoints may
+  // land anywhere, not just near `edge_index`'s existing two vertices;
+  // whichever orientation (matching `new_curve`'s start to vertex 0 or
+  // to vertex 1) gives the smaller total endpoint movement is the one
+  // used - the natural "don't flip the edge for no reason" choice when
+  // both endpoints are moving.
+  //
+  // For each of this edge's own two vertices that genuinely needs to
+  // move (farther than `tolerance` from its own matched target), every
+  // OTHER edge touching that same vertex has its own curve nudged to the
+  // new point - the identical "duplicate the curve, `SetStartPoint()`/
+  // `SetEndPoint()` the one end that touches this vertex" primitive
+  // `RemoveNakedMicroEdge()`/`RemoveSharedMicroEdge()` already use for
+  // their own "merge two vertices to their shared midpoint" case,
+  // generalized here from a fixed midpoint to an arbitrary target point
+  // per vertex, each nudge committed through `ReplaceEdgeCurve()`
+  // (re-trimming every face it borders, for free, the same way those two
+  // sibling methods already delegate to it) before the NEXT vertex's own
+  // neighbors are even gathered - so a further edge that happens to
+  // touch BOTH of this edge's own vertices (running parallel to it
+  // between the same two endpoints) is handled correctly rather than
+  // refused: its first end is nudged when its own vertex's turn comes,
+  // then its second end is nudged, against that already-updated curve,
+  // when the OTHER vertex's turn comes. Finally this edge's own curve is
+  // replaced the same way, once both its endpoints already rest at the
+  // vertices' new positions.
+  //
+  // Unlike `RemoveNakedMicroEdge()`/`RemoveSharedMicroEdge()` (whose own
+  // target is always a shared MIDPOINT, so a partial commit before a
+  // later step fails is harmlessly sub-tolerance), this method's own
+  // target points can be arbitrarily far from where a vertex started - a
+  // genuinely partial commit here could leave a real, visible gap, not a
+  // harmless one. So every step runs against a disposable SCRATCH copy
+  // of this whole Brep first (the same all-or-nothing discipline
+  // `AddHoleLoops()`/`MergeCoplanarFaces()` already use for their own
+  // multi-step batches - see either one's own doc comment): this Brep
+  // itself is committed to in one move only once every step has already
+  // succeeded on the copy, so a failure partway through - a degenerate
+  // edge whose own two vertices are already the same vertex, a neighbor
+  // curve some curve type refuses to nudge via `SetStartPoint()`/
+  // `SetEndPoint()`, or a delegated `ReplaceEdgeCurve()` call throwing on
+  // a genuine geometric non-fit (e.g. a target point that isn't
+  // actually reachable on one of the surfaces it borders - neither this
+  // method nor `ReplaceEdgeCurve()` itself ever resizes a face's own
+  // surface, only re-trims against it; see that method's own doc
+  // comment for its exact exception cases) - leaves this Brep completely
+  // untouched and reports `Result::Failed`, the same uniform "can't, but
+  // that's not a corrupted Brep" contract `RemoveNakedMicroEdge()`/
+  // `RemoveSharedMicroEdge()` already use, never a half-moved Brep and
+  // never an exception escaping this method itself (edge_index range/
+  // deletion checks aside - those remain genuine caller bugs, thrown
+  // immediately, before the scratch copy is even made).
+  Result ReplaceEdge(int edge_index, const NurbsCurve& new_curve, double tolerance = tolerance::kEdgeJoin);
+
   // Closes PARITY_MAP.md's own "Re-intersect adjacent faces / rebuild
   // edges after an edit" gap: the app's `RebuildEdgesReal` (cmd_fillet.
   // cpp) refits a 2-trim edge through the REAL surface-surface
@@ -3664,6 +3743,50 @@ class Brep {
   // same one-removal-per-pass/rescan-from-scratch discipline, same
   // iteration bound, same "0 if none qualify, never throws" contract.
   int RemoveAllSharedMicroEdges(double tolerance = tolerance::kEdgeJoin);
+
+  // Closes the "No RefitTrim" half of PARITY_MAP.md's own disclosed
+  // "Gap closing by edge re-trim / trim refit" gap (kernel: Healing,
+  // repair, validation, tolerant modeling): `dino8-app`'s own
+  // `RefitTrimCommand` (cmd_srfedit.cpp) already implements this exact
+  // algorithm, but entirely at the app level, reaching straight into
+  // `ON_Brep`/`ON_BrepTrim` with no kernel-level API at all - this
+  // exposes the identical, already-proven algorithm as a real, tested
+  // method on this class instead of leaving it stuck in the app.
+  //
+  // Refits `trim_index`'s own 2D (u, v) curve to STRICTLY FEWER control
+  // points via the already-tested `NurbsCurve::FitLeastSquares()`,
+  // trying the control point count upward from `degree + 1` until the
+  // fit's own worst deviation from the ORIGINAL trim's densely sampled
+  // points - measured in real 3D space via the face's own surface,
+  // never raw (u, v) parameter distance, which has no fixed
+  // relationship to real geometric size (e.g. a cylinder wall's own u
+  // parameter is an angle in radians) - is within `tolerance`. A
+  // degree-p B-spline curve always lies within the convex hull of its
+  // own control points, so every fitted control point is clamped into
+  // the face's own (u, v) domain rectangle - a real, mathematically
+  // guaranteed way to keep the whole curve inside the domain, not a
+  // clip-after-the-fact that could reopen a trim-vs-domain gap - and
+  // the deviation is re-verified after clamping, since clamping can
+  // itself push a fit back out of tolerance, trying more control
+  // points rather than accepting a silently worse result. Does not
+  // touch the trim's own 3D edge curve or either vertex at all - purely
+  // a parameter-space curve simplification. Returns Result::Failed
+  // (never a crash) if the trim is already at its own minimum possible
+  // control point count, if the trim has no NURBS form, or if no
+  // smaller fit within `tolerance` exists even after exhausting every
+  // intermediate count up to the original. Throws std::invalid_argument
+  // for an out-of-range/deleted `trim_index` or a non-positive/
+  // non-finite `tolerance`.
+  Result RefitTrim(int trim_index, double tolerance);
+
+  // Convenience mirroring `RefitTrimCommand`'s own per-pick loop
+  // exactly: applies `RefitTrim()` to every trim of `edge_index` (an
+  // edge carries up to 2 trims, one per adjacent face).
+  // `out_refit_count`/`out_failed_count`, if given, are each set to how
+  // many of that edge's own trims succeeded/failed - the same two
+  // counts the app command already reports to its own caller.
+  void RefitEdgeTrims(int edge_index, double tolerance, int* out_refit_count = nullptr,
+                       int* out_failed_count = nullptr);
 
   // Kernel wrapper for ON_Brep::CombineContiguousEdges - previously
   // reachable only from the app layer (cmd_fillet.cpp's MergeEdgeCommand,

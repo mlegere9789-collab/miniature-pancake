@@ -2997,6 +2997,177 @@ void TestCurveFitLeastSquaresConstrainedRefit() {
                          "control-point count").c_str());
 }
 
+// PARITY_MAP's healing category, "Gap closing by edge re-trim / trim
+// refit": before this, `dino8-app`'s own `RefitTrimCommand`
+// (cmd_srfedit.cpp) implemented the real algorithm the simulation above
+// proves correct, but entirely at the app level with no kernel API at
+// all. `Brep::RefitTrim()`/`RefitEdgeTrims()` are the real thing, tested
+// against a genuine trimmed B-rep face this time, not a standalone curve.
+struct WavyTrimFixture {
+  dino8::kernel::Brep brep;
+  int face_index = -1;
+  int wavy_edge_index = -1;
+  int right_edge_index = -1;
+};
+
+WavyTrimFixture BuildWavyTrimFixture() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  WavyTrimFixture fixture;
+  ON_Brep& b = fixture.brep.raw();
+
+  // A flat unit square face whose (u, v) domain maps directly onto
+  // world (x, y) (z=0) - so a deviation measured in real 3D equals the
+  // same deviation measured directly in (u, v), making this fixture's
+  // own math easy to verify independently, by hand.
+  const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const int surface_index = b.AddSurface(new ON_NurbsSurface(surface.raw()));
+  fixture.face_index = b.NewFace(surface_index).m_face_index;
+  const int loop_index = b.NewLoop(ON_BrepLoop::outer, b.m_F[fixture.face_index]).m_loop_index;
+
+  const int v00 = b.NewVertex(Point3d(0, 0, 0), 0.0).m_vertex_index;
+  const int v10 = b.NewVertex(Point3d(1, 0, 0), 0.0).m_vertex_index;
+  const int v11 = b.NewVertex(Point3d(1, 1, 0), 0.0).m_vertex_index;
+  const int v01 = b.NewVertex(Point3d(0, 1, 0), 0.0).m_vertex_index;
+
+  auto add_straight_side = [&](int va, int vb, Point2d uv_a, Point2d uv_b) {
+    const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+    const int edge_index = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+    b.m_E[edge_index].m_tolerance = 0.0;
+    const int c2i = b.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+    ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    return edge_index;
+  };
+
+  // Bottom side: a WAVY, many-control-point 2D curve from (0,0) to
+  // (1,0) - amplitude only 0.001, geometrically almost a straight line
+  // already, but with far more control points than that shape needs.
+  // This is the one trim RefitTrim() below should genuinely simplify.
+  {
+    std::vector<Point3d> ctrl;
+    const int N = 10;
+    for (int i = 0; i < N; ++i) {
+      const double u = static_cast<double>(i) / (N - 1);
+      const double v = (i == 0 || i == N - 1) ? 0.0 : 0.001 * std::sin(i * 2.5);
+      ctrl.push_back(Point3d(u, v, 0));
+    }
+    const NurbsCurve wavy = NurbsCurve::FromControlPoints(ctrl, /*degree=*/3);
+    ON_NurbsCurve raw2d = wavy.raw();
+    raw2d.ChangeDimension(2);
+    const int c3i = b.AddEdgeCurve(new ON_LineCurve(Point3d(0, 0, 0), Point3d(1, 0, 0)));
+    fixture.wavy_edge_index = b.NewEdge(b.m_V[v00], b.m_V[v10], c3i).m_edge_index;
+    b.m_E[fixture.wavy_edge_index].m_tolerance = 0.0;
+    const int c2i = b.AddTrimCurve(new ON_NurbsCurve(raw2d));
+    ON_BrepTrim& trim = b.NewTrim(b.m_E[fixture.wavy_edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  }
+  fixture.right_edge_index = add_straight_side(v10, v11, Point2d(1, 0), Point2d(1, 1));
+  add_straight_side(v11, v01, Point2d(1, 1), Point2d(0, 1));
+  add_straight_side(v01, v00, Point2d(0, 1), Point2d(0, 0));
+
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+  return fixture;
+}
+
+void TestBrepRefitTrim() {
+  using dino8::kernel::Result;
+
+  WavyTrimFixture fixture = BuildWavyTrimFixture();
+  ON_Brep& b = fixture.brep.raw();
+  const int wavy_trim_index = b.m_E[fixture.wavy_edge_index].m_ti[0];
+  const int right_trim_index = b.m_E[fixture.right_edge_index].m_ti[0];
+
+  int original_cv_count = -1;
+  {
+    ON_NurbsCurve nc;
+    b.m_T[wavy_trim_index].GetNurbForm(nc);
+    original_cv_count = nc.CVCount();
+  }
+  Check(original_cv_count == 10, "the wavy trim fixture genuinely starts with 10 control points");
+
+  const Result r = fixture.brep.RefitTrim(wavy_trim_index, 0.01);
+  Check(r == Result::Ok, "RefitTrim succeeds on the wavy trim within a loose-enough tolerance");
+
+  int refit_cv_count = -1;
+  {
+    ON_NurbsCurve nc;
+    b.m_T[wavy_trim_index].GetNurbForm(nc);
+    refit_cv_count = nc.CVCount();
+  }
+  Check(refit_cv_count > 0 && refit_cv_count < original_cv_count,
+        "the refit trim genuinely has fewer control points than the original 10");
+
+  // Independent re-verification, NOT reusing RefitTrim's own internal
+  // deviation check: the true original trim was a wave of amplitude at
+  // most 0.001 around v=0, so the refit result - whatever its new
+  // control points are - must still stay within 0.011 (tolerance plus
+  // the original wave's own amplitude) of the straight line v=0 at
+  // every sampled u, by hand-derivable geometry.
+  {
+    double worst = 0.0;
+    for (int i = 0; i <= 200; ++i) {
+      const double t = b.m_T[wavy_trim_index].Domain().ParameterAt(static_cast<double>(i) / 200);
+      const ON_3dPoint uv = b.m_T[wavy_trim_index].PointAt(t);
+      worst = std::max(worst, std::fabs(uv.y));
+    }
+    Check(worst < 0.011,
+          "the refit trim's own real shape, independently re-sampled, stays within a "
+          "hand-derivable bound of the straight line it approximates");
+  }
+
+  Check(fixture.brep.RefitTrim(right_trim_index, 0.01) == Result::Failed,
+        "RefitTrim correctly refuses an already-minimal (2 control point, degree 1) straight trim");
+
+  // Argument validation.
+  bool threw = false;
+  try {
+    fixture.brep.RefitTrim(9999, 0.01);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "RefitTrim throws std::invalid_argument for an out-of-range trim_index");
+
+  threw = false;
+  try {
+    fixture.brep.RefitTrim(right_trim_index, -1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "RefitTrim throws std::invalid_argument for a non-positive tolerance");
+
+  // RefitEdgeTrims: a fresh fixture (the one above already mutated its
+  // own wavy trim), mirroring RefitTrimCommand's own per-edge loop -
+  // here each edge carries exactly 1 trim (a naked boundary), still a
+  // real exercise of the same aggregate-count loop a 2-trim interior
+  // edge would also take.
+  WavyTrimFixture fixture2 = BuildWavyTrimFixture();
+  int refit_count = -1, failed_count = -1;
+  fixture2.brep.RefitEdgeTrims(fixture2.wavy_edge_index, 0.01, &refit_count, &failed_count);
+  Check(refit_count == 1 && failed_count == 0,
+        "RefitEdgeTrims on the wavy edge reports exactly 1 refit and 0 failed, matching its "
+        "own single trim");
+
+  refit_count = -1;
+  failed_count = -1;
+  fixture2.brep.RefitEdgeTrims(fixture2.right_edge_index, 0.01, &refit_count, &failed_count);
+  Check(refit_count == 0 && failed_count == 1,
+        "RefitEdgeTrims on the already-minimal straight edge reports 0 refit and 1 failed");
+
+  threw = false;
+  try {
+    fixture2.brep.RefitEdgeTrims(9999, 0.01);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "RefitEdgeTrims throws std::invalid_argument for an out-of-range edge_index");
+}
+
 void TestCurveCurvature() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -56965,6 +57136,235 @@ void TestReplaceEdgeCurveThrowsOnSurfaceMismatch() {
                "far off the face's own surface, even though its endpoints matched");
 }
 
+// Brep::ResyncTrimToEdgeCurve(): a genuine "the edge's own curve already
+// changed, now resync the trims" scenario, built by bypassing
+// ReplaceEdgeCurve() entirely (a direct ON_BrepEdge::ChangeEdgeCurve()
+// call, the same expert-user primitive used elsewhere in this file) so
+// the edge's own curve and its trims are deliberately left INCONSISTENT
+// first - the exact situation this method's own doc comment names. Not
+// to be confused with the differently-scoped Brep::RefitTrim() (control-
+// point simplification of a trim's own shape) tested elsewhere in this
+// file - this one never changes a trim's shape, only resyncs it.
+void TestBrepResyncTrimToEdgeCurveResyncsATrimAfterADirectEdgeCurveChange() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const std::vector<Brep::PlanarFace> whole = Brep::Box(0, 0, 0, 2, 2, 1).PlanarFaces();
+  Brep plate = Brep::FromPlanarFaces({whole[1]});
+  const int edge_index = 0;
+  ON_BrepEdge& edge = plate.raw().m_E[edge_index];
+  const Point3d p0 = edge.PointAtStart();
+  const Point3d p1 = edge.PointAtEnd();
+  const Point3d old_mid = edge.PointAt(edge.Domain().Mid());
+
+  // The same V-shaped bow TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute
+  // already uses, but committed directly via ChangeEdgeCurve() - the
+  // trims are now stale (still the OLD straight line) relative to this
+  // edge's own NEW bowed curve.
+  const Point3d mid((p0.x + p1.x) / 2, (p0.y + p1.y) / 2, p0.z);
+  ON_3dVector perp(-(p1.y - p0.y), (p1.x - p0.x), 0.0);
+  perp.Unitize();
+  const Point3d bowed_mid = mid + perp * ((p1 - p0).Length() * 0.15);
+  const NurbsCurve bowed = NurbsCurve::FromControlPoints({p0, bowed_mid, p1}, /*degree=*/1);
+  const int c3i = plate.raw().AddEdgeCurve(new ON_NurbsCurve(bowed.raw()));
+  Check(edge.ChangeEdgeCurve(c3i), "ChangeEdgeCurve directly commits the bowed curve onto the edge");
+
+  const Point3d new_mid = edge.PointAt(edge.Domain().Mid());
+  Check(new_mid.DistanceTo(old_mid) > 0.05, "the edge's own curve genuinely changed shape");
+
+  // Before ResyncTrimToEdgeCurve(): PlanarFaces()'s own re-derived loop (reading this
+  // class's own per-face side tables, same as the ReplaceEdgeCurve test
+  // above) still shows the OLD straight edge - the trim hasn't moved yet.
+  const double edge_length = (p1 - p0).Length();
+  ON_3dVector edge_dir = p1 - p0;
+  edge_dir.Unitize();
+  auto measure_max_dev = [&](const std::vector<Point3d>& loop) {
+    double max_dev = 0.0;
+    for (const Point3d& q : loop) {
+      const double t = ON_DotProduct(q - p0, edge_dir);
+      if (t < -1e-6 || t > edge_length + 1e-6) continue;
+      const Point3d proj = p0 + edge_dir * t;
+      const double d = q.DistanceTo(proj);
+      if (d > edge_length * 0.5) continue;
+      max_dev = std::max(max_dev, d);
+    }
+    return max_dev;
+  };
+  const std::vector<Brep::PlanarFace> stale = plate.PlanarFaces();
+  Check(stale.size() == 1, "PlanarFaces() still reports exactly 1 face before ResyncTrimToEdgeCurve");
+  Check(measure_max_dev(stale[0].loop) < 0.02,
+        "before ResyncTrimToEdgeCurve(), the trim loop is still stale - it shows no bow at all");
+
+  plate.ResyncTrimToEdgeCurve(edge_index, 0.02);
+
+  Check(plate.raw().IsValid(), "the plate is still a valid ON_Brep after ResyncTrimToEdgeCurve");
+  Check(edge.PointAtStart().DistanceTo(p0) < 1e-6 && edge.PointAtEnd().DistanceTo(p1) < 1e-6,
+        "ResyncTrimToEdgeCurve doesn't touch the edge's own two endpoints");
+  const std::vector<Brep::PlanarFace> fresh = plate.PlanarFaces();
+  Check(fresh.size() == 1, "PlanarFaces() still reports exactly 1 face after ResyncTrimToEdgeCurve");
+  const double expected_sagitta = edge_length * 0.15;
+  const double after_dev = measure_max_dev(fresh[0].loop);
+  const std::string msg = "after ResyncTrimToEdgeCurve(), the trim loop shows the edge's own real bow (~" +
+                           std::to_string(expected_sagitta) + "), measured " + std::to_string(after_dev);
+  Check(std::abs(after_dev - expected_sagitta) < 0.02, msg.c_str());
+}
+
+void TestBrepResyncTrimToEdgeCurveRejectsOutOfRangeAndDeletedEdge() {
+  using dino8::kernel::Brep;
+
+  Brep box = Brep::BoxWelded(0, 0, 0, 1, 1, 1);
+  bool threw_range = false;
+  try {
+    box.ResyncTrimToEdgeCurve(box.raw().m_E.Count() + 50, 0.01);
+  } catch (const std::out_of_range&) {
+    threw_range = true;
+  }
+  Check(threw_range, "ResyncTrimToEdgeCurve throws std::out_of_range for an out-of-range edge_index");
+
+  box.raw().m_E[0].m_edge_index = -1;  // simulate a deleted edge slot directly
+  bool threw_deleted = false;
+  try {
+    box.ResyncTrimToEdgeCurve(0, 0.01);
+  } catch (const std::invalid_argument&) {
+    threw_deleted = true;
+  }
+  Check(threw_deleted, "ResyncTrimToEdgeCurve throws std::invalid_argument for an already-deleted edge");
+}
+
+// Brep::ReplaceEdge() on a flat plate's own naked boundary (the same single-face fixture
+// TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute uses) and moves
+// only its SECOND endpoint (the first stays exactly where it was) - the
+// one case ReplaceEdgeCurve() itself is documented to refuse ("it does
+// not re-point the topology to new ones"). That corner's own OTHER
+// naked edge (valence 2 on a plate) must get nudged to the SAME new
+// point too, not left behind - genuinely moved to a different spot on
+// the SAME existing flat surface (not off it, which Phase 1 found this
+// method can't do any more than ReplaceEdgeCurve() itself can - neither
+// one resizes a face's own surface, only re-trims against it).
+void TestBrepReplaceEdgeMovesOneEndpointSlidingACornerInPlace() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Brep::PlanarFace> whole = Brep::Box(0, 0, 0, 2, 2, 1).PlanarFaces();
+  Brep plate = Brep::FromPlanarFaces({whole[1]});  // the top (+z) face alone
+  Check(plate.FaceCount() == 1, "the plate fixture has exactly 1 face");
+  Check(plate.raw().m_E.Count() == 4, "the plate fixture has 4 naked boundary edges");
+
+  const int edge_index = 0;
+  const ON_BrepEdge& edge0 = plate.raw().m_E[edge_index];
+  const int v0 = edge0.m_vi[0];
+  const int v1 = edge0.m_vi[1];
+  const Point3d p0 = plate.raw().m_V[v0].point;
+  const Point3d p1 = plate.raw().m_V[v1].point;
+  Check(plate.raw().m_V[v1].m_ei.Count() == 2, "the far corner (v1) has valence 2, the ordinary plate-corner case");
+
+  int other_edge_at_v1 = -1;
+  for (int k = 0; k < plate.raw().m_V[v1].m_ei.Count(); ++k) {
+    const int ei = plate.raw().m_V[v1].m_ei[k];
+    if (ei != edge_index) other_edge_at_v1 = ei;
+  }
+  Check(other_edge_at_v1 >= 0, "found v1's own other naked edge");
+  const ON_BrepEdge& other_edge = plate.raw().m_E[other_edge_at_v1];
+  const int far_vi = (other_edge.m_vi[0] == v1) ? other_edge.m_vi[1] : other_edge.m_vi[0];
+  const Point3d far_corner = plate.raw().m_V[far_vi].point;
+
+  // Slide v1 20% of the way toward the plate's own center (1,1,1) - a
+  // real, non-trivial relocation, but still squarely on this SAME flat
+  // surface and well inside its own [0,2]x[0,2] domain, so every
+  // delegated ReplaceEdgeCurve() call below can actually re-trim against
+  // the unchanged surface rather than being asked to reach somewhere it
+  // was never defined.
+  const Point3d center(1, 1, 1);
+  const Point3d p1_moved = p1 + (center - p1) * 0.2;
+  const NurbsCurve slid = NurbsCurve::FromControlPoints({p0, p1_moved}, /*degree=*/1);
+
+  const Result r = plate.ReplaceEdge(edge_index, slid, 0.01);
+  Check(r == Result::Ok, "ReplaceEdge() succeeds in sliding one endpoint to a new spot on the same face");
+  Check(plate.raw().IsValid(), "the plate is still a valid ON_Brep after ReplaceEdge");
+
+  Check(plate.raw().m_V[v0].point.DistanceTo(p0) < 1e-6, "v0's own position is completely unchanged");
+  Check(plate.raw().m_V[v1].point.DistanceTo(p1_moved) < 1e-6, "v1 moved exactly to the requested new point");
+
+  const ON_BrepEdge& other_after = plate.raw().m_E[other_edge_at_v1];
+  const Point3d near_end = (other_after.m_vi[0] == v1) ? other_after.PointAtStart() : other_after.PointAtEnd();
+  const Point3d far_end = (other_after.m_vi[0] == v1) ? other_after.PointAtEnd() : other_after.PointAtStart();
+  Check(near_end.DistanceTo(p1_moved) < 1e-6,
+        "the OTHER naked edge at v1 was nudged to the SAME new point, not left behind");
+  Check(far_end.DistanceTo(far_corner) < 1e-6, "that same neighboring edge's own FAR corner is untouched");
+
+  // The remaining two corners (not v0, not v1) kept their own original
+  // positions - this edit stayed local to the one corner it targeted.
+  for (int vi = 0; vi < plate.raw().m_V.Count(); ++vi) {
+    if (vi == v0 || vi == v1 || vi == far_vi) continue;
+    const Point3d q = plate.raw().m_V[vi].point;
+    const bool at_a_box_corner = (std::abs(q.x) < 1e-6 || std::abs(q.x - 2) < 1e-6) &&
+                                  (std::abs(q.y) < 1e-6 || std::abs(q.y - 2) < 1e-6) && std::abs(q.z - 1) < 1e-6;
+    Check(at_a_box_corner, "every other corner of the plate still sits at one of the original 4 positions");
+  }
+
+  // Confirm the whole tessellation pipeline sees the moved corner too,
+  // the same real-regression check TestReplaceEdgeCurveRefitsANakedEdge
+  // ToABowedSubstitute already applies to a plain ReplaceEdgeCurve() -
+  // this class's own per-face side tables must not keep showing the
+  // pre-edit boundary.
+  const std::vector<Brep::PlanarFace> after = plate.PlanarFaces();
+  Check(after.size() == 1, "PlanarFaces() still reports exactly 1 face after ReplaceEdge");
+  bool found_moved_corner = false;
+  for (const Point3d& q : after[0].loop) {
+    if (q.DistanceTo(p1_moved) < 1e-6) found_moved_corner = true;
+  }
+  Check(found_moved_corner, "PlanarFaces()'s own re-derived loop actually passes through the moved corner");
+}
+
+// The negative control proving ReplaceEdge() checks a genuine fit, not
+// just endpoint bookkeeping: moving a genuine BOX CORNER (valence 3,
+// three mutually non-parallel bordering faces) anywhere off its own
+// exact original position can only ever fit AT MOST one of those three
+// faces' own fixed planes at a time - a real, inherent limitation this
+// method shares with ReplaceEdgeCurve() itself (neither one resizes a
+// face's own surface, only re-trims against it), not a bug. Refused via
+// Result::Failed, the same uniform contract every other "can't" case
+// here reports - and, the real point of this test, leaves the WHOLE
+// Brep, vertices included, completely untouched.
+void TestBrepReplaceEdgeFailsOnABoxCornerLeavesVerticesUntouched() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  Brep box = Brep::BoxWelded(0, 0, 0, 2, 2, 2);
+  const int edge_index = 0;
+  const ON_BrepEdge& edge0 = box.raw().m_E[edge_index];
+  const int v0 = edge0.m_vi[0];
+  const int v1 = edge0.m_vi[1];
+  const Point3d p0 = box.raw().m_V[v0].point;
+  const Point3d p1 = box.raw().m_V[v1].point;
+
+  std::vector<Point3d> all_before(static_cast<size_t>(box.raw().m_V.Count()));
+  for (int vi = 0; vi < box.raw().m_V.Count(); ++vi) all_before[static_cast<size_t>(vi)] = box.raw().m_V[vi].point;
+
+  // Moves v1 straight outward along the box's own diagonal through it -
+  // off every one of its three bordering faces at once.
+  ON_3dVector outward = p1 - Point3d(1, 1, 1);
+  outward.Unitize();
+  const Point3d p1_moved = p1 + outward * 1.5;
+  const NurbsCurve stretched = NurbsCurve::FromControlPoints({p0, p1_moved}, /*degree=*/1);
+
+  const Result r = box.ReplaceEdge(edge_index, stretched, 0.01);
+  Check(r == Result::Failed, "ReplaceEdge reports Result::Failed when the target point can't fit the "
+                             "corner's own bordering faces");
+
+  bool any_moved = false;
+  for (int vi = 0; vi < box.raw().m_V.Count(); ++vi) {
+    if (box.raw().m_V[vi].point.DistanceTo(all_before[static_cast<size_t>(vi)]) > 1e-9) any_moved = true;
+  }
+  Check(!any_moved, "every vertex of the box - not just v0/v1 - is exactly where it started after the refusal");
+  Check(box.raw().IsValid(), "the box is still a valid ON_Brep after the refused edit");
+}
+
 // Brep::UnjoinEdge() on the two-square fixture's own shared edge: before,
 // exactly 1 edge is shared (2-trim) and 6 are naked (1-trim); after, 0
 // are shared and 8 are naked - the same TrimCount()==1 test this
@@ -75017,6 +75417,7 @@ int main() {
   TestCurveFitLeastSquares();
   TestCurveHelix();
   TestCurveFitLeastSquaresConstrainedRefit();
+  TestBrepRefitTrim();
   TestCurveCurvature();
   TestCurveSuggestedSamples();
   TestCurveSuggestedParameterValues();
@@ -75829,6 +76230,10 @@ int main() {
   TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute();
   TestReplaceEdgeCurveThrowsOnEndpointMismatch();
   TestReplaceEdgeCurveThrowsOnSurfaceMismatch();
+  TestBrepResyncTrimToEdgeCurveResyncsATrimAfterADirectEdgeCurveChange();
+  TestBrepResyncTrimToEdgeCurveRejectsOutOfRangeAndDeletedEdge();
+  TestBrepReplaceEdgeMovesOneEndpointSlidingACornerInPlace();
+  TestBrepReplaceEdgeFailsOnABoxCornerLeavesVerticesUntouched();
   TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies();
   TestUnjoinEdgeGeneralizesToThreeOrMoreTrims();
   TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate();
