@@ -2,6 +2,7 @@
 #include <cmath>
 #include <vector>
 #include "dino8/kernel/surface.h"
+#include "dino8/kernel/surface_intersect.h"
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/mesh.h"
 #include "opennurbs.h"
@@ -10,71 +11,84 @@ int main() {
   ON::Begin();
   using namespace dino8::kernel;
 
-  Mesh m;
-  ON_Mesh& raw = m.raw();
-  const double col_u[4] = {0.1, 0.35, 0.6, 0.85};
-  for (int col = 0; col < 4; ++col) {
-    raw.m_V.Append(ON_3fPoint(static_cast<float>(col), 0, 0));
-    raw.m_V.Append(ON_3fPoint(static_cast<float>(col), 0, 1));
+  // 1) Box: query point outside, near one face -> closest point should
+  // be the projection onto that face, distance = perpendicular offset.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  {
+    const auto r = ClosestPointOnBrep(Point3d(1, 1, 5), box.raw());
+    std::printf("[1] box query(1,1,5): face=%d dist=%g point=(%g,%g,%g) on_boundary=%d\n", r.face_index,
+                r.distance, r.point.x, r.point.y, r.point.z, (int)r.on_trim_boundary);
   }
-  auto add_quad = [&raw](int a, int b, int c, int d) {
-    ON_MeshFace f;
-    f.vi[0] = a; f.vi[1] = b; f.vi[2] = c; f.vi[3] = d;
-    raw.m_F.Append(f);
-  };
-  add_quad(0, 2, 3, 1);
-  add_quad(2, 4, 5, 3);
-  add_quad(4, 6, 7, 5);
-  add_quad(6, 0, 1, 7);
-
-  std::vector<Point2d> uvs(8);
-  for (int col = 0; col < 4; ++col) {
-    uvs[static_cast<size_t>(2 * col)] = Point2d(col_u[col], 0.0);
-    uvs[static_cast<size_t>(2 * col + 1)] = Point2d(col_u[col], 1.0);
+  // 2) Query point near a corner, outside the box diagonally - distance
+  // should be hand-derivable (corner is (2,2,2); query (3,3,3) -> dist
+  // sqrt(3)).
+  {
+    const auto r = ClosestPointOnBrep(Point3d(3, 3, 3), box.raw());
+    std::printf("[2] box query(3,3,3) corner: face=%d dist=%g (expect %g) point=(%g,%g,%g)\n",
+                r.face_index, r.distance, std::sqrt(3.0), r.point.x, r.point.y, r.point.z);
   }
-
-  const Mesh split = m.SplitUVSeam(uvs, 0.5);
-  std::printf("orig verts=%d faces=%d -> split verts=%d faces=%d\n", m.VertexCount(),
-              m.FaceCount(), split.VertexCount(), split.FaceCount());
-  std::printf("HasTextureCoordinates=%d\n", split.HasTextureCoordinates());
-  for (int i = 0; i < split.VertexCount(); ++i) {
-    const Point2d uv = split.TextureCoordinateAt(i);
-    std::printf("  vert %d: u=%g v=%g\n", i, uv.x, uv.y);
+  // 3) Query point inside the box: closest point should be on the
+  // nearest face, distance = perpendicular distance to that face.
+  {
+    const auto r = ClosestPointOnBrep(Point3d(0.3, 1, 1), box.raw());
+    std::printf("[3] box query(0.3,1,1) inside: face=%d dist=%g (expect 0.3) point=(%g,%g,%g)\n",
+                r.face_index, r.distance, r.point.x, r.point.y, r.point.z);
   }
 
-  // No-seam sanity check
-  Mesh no_seam;
-  ON_Mesh& raw2 = no_seam.raw();
-  raw2.m_V.Append(ON_3fPoint(0, 0, 0));
-  raw2.m_V.Append(ON_3fPoint(1, 0, 0));
-  raw2.m_V.Append(ON_3fPoint(1, 1, 0));
-  raw2.m_V.Append(ON_3fPoint(0, 1, 0));
-  ON_MeshFace nf;
-  nf.vi[0] = 0; nf.vi[1] = 1; nf.vi[2] = 2; nf.vi[3] = 3;
-  raw2.m_F.Append(nf);
-  const std::vector<Point2d> no_seam_uvs = {Point2d(0.1, 0), Point2d(0.2, 0), Point2d(0.2, 1), Point2d(0.1, 1)};
-  const Mesh no_seam_split = no_seam.SplitUVSeam(no_seam_uvs);
-  std::printf("no_seam: orig verts=%d -> split verts=%d (expect equal)\n", no_seam.VertexCount(),
-              no_seam_split.VertexCount());
+  // 4) Trimmed face (genuine topology via TrimmedPlanarFaceWelded): a
+  // flat plane at z=2 over world [0,2]^2, trimmed to a small square in
+  // (u,v) param space [0.25,0.75]^2 (world [0.5,1.5]^2). Query point
+  // directly "above" a spot OUTSIDE the trim but within the full
+  // surface's domain - closest point should land ON the trim boundary,
+  // not at the unconstrained minimum (which would be directly below the
+  // query, inside the full domain but outside the trim).
+  const std::vector<Point3d> plane_grid = {Point3d(0, 0, 2), Point3d(0, 2, 2), Point3d(2, 0, 2),
+                                            Point3d(2, 2, 2)};
+  const NurbsSurface flat_plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+  const std::vector<Point2d> small_trim = {Point2d(0.25, 0.25), Point2d(0.75, 0.25), Point2d(0.75, 0.75),
+                                            Point2d(0.25, 0.75)};
+  const Brep trimmed_top = Brep::TrimmedPlanarFaceWelded(flat_plane, small_trim);
+  {
+    const ON_BrepFace& f = trimmed_top.raw().m_F[0];
+    std::printf("face has %d loops\n", f.m_li.Count());
+    for (int li = 0; li < f.m_li.Count(); ++li) {
+      const ON_BrepLoop& loop = trimmed_top.raw().m_L[f.m_li[li]];
+      std::printf("  loop %d: type=%d, %d trims\n", li, (int)loop.m_type, loop.m_ti.Count());
+      for (int k = 0; k < loop.m_ti.Count(); ++k) {
+        const ON_BrepTrim& trim = trimmed_top.raw().m_T[loop.m_ti[k]];
+        const ON_Interval d = trim.Domain();
+        const ON_3dPoint p0 = trim.PointAt(d.Min());
+        const ON_3dPoint p1 = trim.PointAt(d.Max());
+        std::printf("    trim %d: iso=%d domain=[%g,%g] uv0=(%g,%g) uv1=(%g,%g)\n", k,
+                    (int)trim.m_iso, d.Min(), d.Max(), p0.x, p0.y, p1.x, p1.y);
+      }
+    }
+  }
+  {
+    // world (0.2, 0.2, 5) -> directly above param (0.1,0.1), outside trim.
+    const auto r = ClosestPointOnBrep(Point3d(0.2, 0.2, 5), trimmed_top.raw());
+    std::printf("[4] trimmed query(0.2,0.2,5) outside trim: dist=%g uv=(%g,%g) point=(%g,%g,%g) "
+                "on_boundary=%d\n",
+                r.distance, r.uv.x, r.uv.y, r.point.x, r.point.y, r.point.z, (int)r.on_trim_boundary);
+    // The unconstrained minimum would be (0.2,0.2,2), distance 3. If the
+    // boundary fallback worked, distance should be > 3 (forced away from
+    // directly-below) and uv should sit on the trim's own boundary
+    // (u or v very close to 0.25 or 0.75).
+  }
+  {
+    // world (1, 1, 5) -> directly above param (0.5, 0.5), INSIDE trim -
+    // unconstrained minimum should be used directly, distance exactly 3.
+    const auto r = ClosestPointOnBrep(Point3d(1, 1, 5), trimmed_top.raw());
+    std::printf("[5] trimmed query(1,1,5) inside trim: dist=%g (expect 3) uv=(%g,%g) on_boundary=%d\n",
+                r.distance, r.uv.x, r.uv.y, (int)r.on_trim_boundary);
+  }
 
-  // Invalid-argument checks
   try {
-    m.SplitUVSeam({Point2d(0, 0)});
-    std::printf("ERROR: expected throw for bad size, did not throw\n");
+    ON_Brep empty;
+    ClosestPointOnBrep(Point3d(0, 0, 0), empty);
+    std::printf("ERROR: expected throw for empty brep\n");
   } catch (const std::invalid_argument& e) {
-    std::printf("OK threw for bad size: %s\n", e.what());
-  }
-  try {
-    m.SplitUVSeam(uvs, 0.0);
-    std::printf("ERROR: expected throw for threshold=0, did not throw\n");
-  } catch (const std::invalid_argument& e) {
-    std::printf("OK threw for threshold=0: %s\n", e.what());
-  }
-  try {
-    m.SplitUVSeam(uvs, 1.0);
-    std::printf("ERROR: expected throw for threshold=1, did not throw\n");
-  } catch (const std::invalid_argument& e) {
-    std::printf("OK threw for threshold=1: %s\n", e.what());
+    std::printf("OK threw for empty brep: %s\n", e.what());
   }
 
   ON::End();

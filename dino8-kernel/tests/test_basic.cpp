@@ -555,6 +555,193 @@ void TestCurveLengthToTolerance() {
   Check(threw, "LengthToTolerance throws std::invalid_argument for a non-positive tolerance");
 }
 
+void TestCurveParameterAtArcLengthToTolerance() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Same 3-4-5 line as the untoleranced overload's own test: exact at any
+  // tolerance, since uniform speed makes the Newton search converge
+  // immediately. Half the arc length (2.5) lands exactly at t=0.5.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(3, 4, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  double achieved = -1.0;
+  const double t_half = line.ParameterAtArcLength(2.5, 1e-9, &achieved);
+  Check(std::abs(t_half - 0.5) < 1e-9, "half the line's arc length lands exactly at t=0.5 (tolerance overload)");
+  Check(std::abs(achieved - 2.5) < 1e-9, "...and out_achieved_length reports the real achieved arc length (2.5)");
+  const Point3d p_half = line.PointAt(t_half);
+  Check(std::abs(p_half.x - 1.5) < 1e-9 && std::abs(p_half.y - 2.0) < 1e-9,
+        "...which is exactly the line's own midpoint (1.5, 2, 0)");
+
+  Check(line.ParameterAtArcLength(0.0, 1e-9) == 0.0,
+        "an arc length of exactly 0 returns exactly the domain's own start");
+  Check(std::abs(line.ParameterAtArcLength(5.0, 1e-9) - 1.0) < 1e-9,
+        "an arc length of exactly the curve's own total length returns exactly the domain's own end");
+  Check(line.ParameterAtArcLength(-1.0, 1e-9) == 0.0,
+        "a negative arc length clamps to the domain's own start rather than extrapolating past it");
+  Check(std::abs(line.ParameterAtArcLength(100.0, 1e-9) - 1.0) < 1e-9,
+        "an arc length past the curve's own total length clamps to the domain's own end rather "
+        "than extrapolating past it");
+
+  // Genuine radius-5 circle: quarter-arc-length point must land exactly
+  // on the geometric quarter point, matching the untoleranced overload's
+  // own closed-form positive control, now via the adaptive-quadrature
+  // root-find instead of a fixed polyline.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const double circumference = circle.LengthToTolerance(1e-9);
+  Check(std::abs(circumference - 2.0 * ON_PI * radius) < 1e-6,
+        "setup: LengthToTolerance matches the circle's own closed-form circumference");
+  const Point3d p_quarter = circle.PointAt(circle.ParameterAtArcLength(circumference / 4.0, 1e-9));
+  Check(std::abs(p_quarter.x) < 1e-6 && std::abs(p_quarter.y - radius) < 1e-6,
+        "a quarter of the circle's own arc length lands exactly on its geometric quarter point "
+        "(0, radius, 0)");
+
+  // A wiggly cubic with no closed form: the real speed-based Newton root
+  // must independently reproduce the SAME point the adaptive quadrature
+  // itself integrates to - i.e. walking forward from Domain().Min() by
+  // the found parameter really does cover the requested arc length,
+  // cross-checked by a dense manual polyline sum over [Domain().Min(),
+  // found t] (NOT SetDomain() - that reparameterizes the whole curve
+  // over a new domain, an affine relabeling that keeps every point on
+  // the SAME full-length curve reachable, rather than trimming it down
+  // to a shorter one, so it cannot stand in for "the curve up to t").
+  std::vector<Point3d> wiggly_pts;
+  for (int i = 0; i < 6; ++i) wiggly_pts.push_back(Point3d(i, std::sin(1.7 * i), 0.3 * std::cos(0.9 * i)));
+  NurbsCurve wiggly = NurbsCurve::FromControlPoints(wiggly_pts, /*degree=*/3);
+  const double wiggly_total = wiggly.LengthToTolerance(1e-9);
+  double wiggly_achieved = -1.0;
+  const double wiggly_t = wiggly.ParameterAtArcLength(wiggly_total * 0.37, 1e-9, &wiggly_achieved);
+  Check(std::abs(wiggly_achieved - wiggly_total * 0.37) < 1e-6,
+        "the achieved arc length on a wiggly cubic matches the requested 37% of its total length");
+  double manual_length = 0.0;
+  Point3d manual_previous = wiggly.PointAt(wiggly.Domain().min);
+  constexpr int kManualSamples = 200000;
+  for (int i = 1; i <= kManualSamples; ++i) {
+    const double t = wiggly.Domain().min + (wiggly_t - wiggly.Domain().min) * i / kManualSamples;
+    const Point3d p = wiggly.PointAt(t);
+    manual_length += (p - manual_previous).Length();
+    manual_previous = p;
+  }
+  Check(std::abs(manual_length - wiggly_total * 0.37) < 1e-6,
+        "an independent, dense manual polyline sum from Domain().Min() to the found parameter "
+        "agrees with the requested arc length, confirming the Newton root is genuinely correct "
+        "and not just self-consistent with its own internal quadrature");
+
+  bool threw = false;
+  try {
+    wiggly.ParameterAtArcLength(1.0, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ParameterAtArcLength(tolerance) throws std::invalid_argument for a non-positive tolerance");
+}
+
+void TestCurveDivideByCountAndByLengthToTolerance() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Straight line: uniform speed makes tolerance-bounded division
+  // identical to dividing the raw parameter domain evenly, the same
+  // positive control the untoleranced overload's own test uses.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  const auto line_values = line.DivideByCount(4, 1e-9);
+  const std::vector<double> expected_line_values = {0.0, 0.25, 0.5, 0.75, 1.0};
+  Check(line_values.size() == expected_line_values.size(), "DivideByCount(count, tolerance) returns count+1 values");
+  bool line_values_match = line_values.size() == expected_line_values.size();
+  for (size_t i = 0; line_values_match && i < line_values.size(); ++i) {
+    if (std::abs(line_values[i] - expected_line_values[i]) > 1e-9) line_values_match = false;
+  }
+  Check(line_values_match,
+        "DivideByCount(count, tolerance) on a straight line exactly matches dividing its own "
+        "parameter domain evenly");
+
+  // Full circle: equal arc-length division must give genuinely equal
+  // consecutive-point chord lengths.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const auto circle_values = circle.DivideByCount(8, 1e-9);
+  Check(circle_values.size() == 9, "DivideByCount(8, tolerance) on the circle returns exactly 9 values");
+  bool all_chords_equal = true;
+  const double first_chord = (circle.PointAt(circle_values[1]) - circle.PointAt(circle_values[0])).Length();
+  for (size_t i = 1; i < circle_values.size(); ++i) {
+    const double chord = (circle.PointAt(circle_values[i]) - circle.PointAt(circle_values[i - 1])).Length();
+    if (std::abs(chord - first_chord) > 1e-6) {
+      all_chords_equal = false;
+      break;
+    }
+  }
+  Check(all_chords_equal,
+        "every consecutive pair of division points on the circle is exactly the same chord "
+        "length apart (DivideByCount(count, tolerance))");
+
+  bool threw = false;
+  try {
+    line.DivideByCount(0, 1e-9);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DivideByCount(count, tolerance) throws std::invalid_argument on a non-positive count");
+  threw = false;
+  try {
+    line.DivideByCount(4, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DivideByCount(count, tolerance) throws std::invalid_argument on a non-positive tolerance");
+
+  // DivideByLength(length, tolerance): same length-10 line, length-4
+  // sub-segments - lands at t=0.4 and t=0.8, then the leftover segment.
+  const auto short_values = line.DivideByLength(4.0, 1e-9);
+  const std::vector<double> expected_short_values = {0.0, 0.4, 0.8, 1.0};
+  Check(short_values.size() == expected_short_values.size(),
+        "DivideByLength(4, tolerance) on a length-10 line returns exactly 4 values");
+  bool short_values_match = short_values.size() == expected_short_values.size();
+  for (size_t i = 0; short_values_match && i < short_values.size(); ++i) {
+    if (std::abs(short_values[i] - expected_short_values[i]) > 1e-9) short_values_match = false;
+  }
+  Check(short_values_match, "DivideByLength(4, tolerance) on the length-10 line lands exactly at t=0.4 and t=0.8");
+
+  // DivideByLength(length, tolerance) and DivideByCount(count, tolerance)
+  // must agree on the same circle: two different ways of asking for the
+  // same 8 equal-arc-length divisions.
+  const double circumference = circle.LengthToTolerance(1e-9);
+  const auto by_length_values = circle.DivideByLength(circumference / 8.0, 1e-9);
+  Check(by_length_values.size() == circle_values.size(),
+        "DivideByLength(circumference / 8, tolerance) returns the same count of values as "
+        "DivideByCount(8, tolerance)");
+  bool agree = by_length_values.size() == circle_values.size();
+  for (size_t i = 0; agree && i < by_length_values.size(); ++i) {
+    if (std::abs(by_length_values[i] - circle_values[i]) > 1e-6) agree = false;
+  }
+  Check(agree,
+        "DivideByLength(circumference / 8, tolerance) and DivideByCount(8, tolerance) land at "
+        "the same parameter values on the same circle");
+
+  threw = false;
+  try {
+    line.DivideByLength(0.0, 1e-9);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DivideByLength(length, tolerance) throws std::invalid_argument on a non-positive length");
+  threw = false;
+  try {
+    line.DivideByLength(4.0, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DivideByLength(length, tolerance) throws std::invalid_argument on a non-positive tolerance");
+}
+
 void TestCurveInsertKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -3681,6 +3868,208 @@ void TestIntersectBrepsAndCurveBrep() {
   Check(far_hits.empty(), "a curve nowhere near the B-rep produces no curve/B-rep hits");
 }
 
+// PARITY_MAP's massprops category, "Ray firing against exact B-rep faces"
+// bullet: FireRayAtBrep() is the real, trimmed, exact kernel entry point
+// (Mesh::FireRay only ever fires against a mesh approximation; the
+// untrimmed IntersectCurveSurface() above never applied a face's own trim
+// loops on its own).
+void TestFireRayAtBrep() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FireRayAtBrep;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RayBrepHit;
+  using dino8::kernel::Vector3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Same box_a fixture TestIntersectBrepsAndCurveBrep() above uses: a
+  // vertical ray straight up through x=1, y=1, starting below the box
+  // (z=-5) must hit exactly the bottom (z=0) and top (z=2) faces, sorted
+  // nearest-first by real distance (5, then 7) - not just unordered, and
+  // not a raw [0,1] curve-parameter fraction.
+  const Brep box_a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const std::vector<RayBrepHit> hits =
+      FireRayAtBrep(Point3d(1, 1, -5), Vector3d(0, 0, 1), 20.0, box_a.raw(), opt);
+  Check(hits.size() == 2, "a ray through a box hits exactly its two pierced (bottom/top) faces");
+  if (hits.size() == 2) {
+    Check(hits[0].point.DistanceTo(Point3d(1, 1, 0)) < 1e-4 && std::abs(hits[0].distance - 5.0) < 1e-4,
+          "the nearest hit is the bottom face, (1,1,0), at exactly distance 5 from the ray origin");
+    Check(hits[1].point.DistanceTo(Point3d(1, 1, 2)) < 1e-4 && std::abs(hits[1].distance - 7.0) < 1e-4,
+          "the farther hit is the top face, (1,1,2), at exactly distance 7 - the two hits come back "
+          "sorted nearest-first, not in arbitrary face order");
+  }
+
+  // A shorter max_distance that only reaches the first face must return
+  // just that one hit, not silently include the farther one anyway.
+  const std::vector<RayBrepHit> short_hits =
+      FireRayAtBrep(Point3d(1, 1, -5), Vector3d(0, 0, 1), 6.0, box_a.raw(), opt);
+  Check(short_hits.size() == 1 && short_hits[0].point.DistanceTo(Point3d(1, 1, 0)) < 1e-4,
+        "max_distance genuinely bounds the ray - a shorter ray reports only the bottom face, not the "
+        "top face it never reaches");
+
+  // A ray that misses the box's bounding box entirely.
+  const std::vector<RayBrepHit> miss_hits =
+      FireRayAtBrep(Point3d(100, 100, -5), Vector3d(0, 0, 1), 20.0, box_a.raw(), opt);
+  Check(miss_hits.empty(), "a ray nowhere near the B-rep produces no hits");
+
+  // The exact-AND-TRIMMED claim: a ray aimed at a point that lies on the
+  // UNTRIMMED surface but OUTSIDE a genuinely trimmed face's own trim
+  // loop must report no hit there - the real differentiator from the
+  // untrimmed IntersectCurveSurface(). A flat plane at z=2, built from a
+  // 2x2 control grid spanning world (0,0) to (2,2) over the bilinear
+  // surface's own clamped-uniform (u, v) domain [0, 1]^2 (so world
+  // position = 2 * (u, v) exactly), trimmed down to a small
+  // [0.25, 0.75]^2 square IN THAT (u, v) PARAMETER space - well inside
+  // its own [0, 1]^2 domain, not expressed in world units.
+  //
+  // Deliberately TrimmedPlanarFaceWelded(), not the plain
+  // TrimmedPlanarFace(): a real, confirmed finding from a standalone
+  // dino8_scratch_test probe while building this test, not assumed -
+  // TrimmedPlanarFace()'s own result has NO real ON_Brep trim topology
+  // at all (its own doc comment already discloses this: "bare surface",
+  // no loop), only this kernel's own separate internal side-table
+  // (`Brep::face_trim_loops_`) that ONLY this kernel's own tessellation
+  // path (ResolveFace(), used by TessellateCertifiedAdaptive() and
+  // friends) ever reads. FireRayAtBrep()/IntersectCurveBrep() instead go
+  // through FaceContainsUV(), which reads genuine ON_Brep loop/trim
+  // structure - so a ray fired at a TrimmedPlanarFace()-built face was
+  // directly confirmed (via that same probe) to hit EVERYWHERE on the
+  // untrimmed surface, silently ignoring the trim entirely, not merely
+  // less precise. TrimmedPlanarFaceWelded() builds the real
+  // ON_BrepLoop::outer this test's own trim check actually needs.
+  using dino8::kernel::NurbsSurface;
+  const std::vector<Point3d> plane_grid = {Point3d(0, 0, 2), Point3d(0, 2, 2), Point3d(2, 0, 2),
+                                            Point3d(2, 2, 2)};
+  const NurbsSurface flat_plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+  const std::vector<Point2d> small_trim = {
+      Point2d(0.25, 0.25), Point2d(0.75, 0.25), Point2d(0.75, 0.75), Point2d(0.25, 0.75)};
+  const Brep trimmed_top = Brep::TrimmedPlanarFaceWelded(flat_plane, small_trim);
+  // A ray through world (1, 1) - (u, v) = (0.5, 0.5), the trim's own
+  // interior - must hit; one through world (0.2, 0.2) - (u, v) =
+  // (0.1, 0.1), still on the face's full domain but well outside the
+  // small trim - must not.
+  const std::vector<RayBrepHit> inside_trim_hits =
+      FireRayAtBrep(Point3d(1.0, 1.0, 10), Vector3d(0, 0, -1), 20.0, trimmed_top.raw(), opt);
+  const std::vector<RayBrepHit> outside_trim_hits =
+      FireRayAtBrep(Point3d(0.2, 0.2, 10), Vector3d(0, 0, -1), 20.0, trimmed_top.raw(), opt);
+  Check(!inside_trim_hits.empty(), "a ray through a point genuinely inside a trimmed face's own trim "
+                                    "loop reports a real hit");
+  Check(outside_trim_hits.empty(), "a ray through a point on the SAME untrimmed surface but outside "
+                                    "the face's own trim loop reports no hit - the exact-AND-trimmed "
+                                    "behavior IntersectCurveSurface() alone can't provide");
+
+  bool threw_direction = false;
+  try {
+    FireRayAtBrep(Point3d(0, 0, 0), Vector3d(0, 0, 0), 20.0, box_a.raw(), opt);
+  } catch (const std::invalid_argument&) {
+    threw_direction = true;
+  }
+  Check(threw_direction, "FireRayAtBrep throws std::invalid_argument for a zero direction vector");
+
+  bool threw_distance = false;
+  try {
+    FireRayAtBrep(Point3d(0, 0, 0), Vector3d(0, 0, 1), 0.0, box_a.raw(), opt);
+  } catch (const std::invalid_argument&) {
+    threw_distance = true;
+  }
+  Check(threw_distance, "FireRayAtBrep throws std::invalid_argument for a non-positive max_distance");
+}
+
+// PARITY_MAP's massprops category, "Closest point on trimmed B-rep" bullet:
+// ClosestPointOnBrep() is the real, trimmed, exact kernel entry point
+// (Mesh::ClosestPoint/NurbsSurface::ClosestPoint existed but were
+// untrimmed-only - there was still no Brep::ClosestPoint at all).
+void TestClosestPointOnBrep() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ClosestPointOnBrep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // A plain 2x2x2 box: a query straight above the top face must project
+  // onto it exactly (hand-derivable: (1,1,5) -> (1,1,2), distance 3).
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  {
+    const auto r = ClosestPointOnBrep(Point3d(1, 1, 5), box.raw());
+    Check(r.point.DistanceTo(Point3d(1, 1, 2)) < 1e-6 && std::abs(r.distance - 3.0) < 1e-6,
+          "ClosestPointOnBrep on a box projects a query straight above the top face onto exactly "
+          "(1,1,2) at distance 3");
+    Check(!r.on_trim_boundary,
+          "the box's own faces are untrimmed (full-domain), so the unconstrained interior answer "
+          "is used directly, not the boundary fallback");
+  }
+  // A query diagonally past a corner: the closest point on ANY face must
+  // be that exact corner, at the hand-derivable distance sqrt(3) (query
+  // (3,3,3), nearest corner (2,2,2)).
+  {
+    const auto r = ClosestPointOnBrep(Point3d(3, 3, 3), box.raw());
+    Check(r.point.DistanceTo(Point3d(2, 2, 2)) < 1e-6 && std::abs(r.distance - std::sqrt(3.0)) < 1e-6,
+          "ClosestPointOnBrep on a box finds the exact corner (2,2,2) at distance sqrt(3) for a "
+          "query diagonally past it");
+  }
+  // A query INSIDE the box, off-center: the closest point is on whichever
+  // face is nearest (here x=0, at the hand-derivable distance 0.3).
+  {
+    const auto r = ClosestPointOnBrep(Point3d(0.3, 1, 1), box.raw());
+    Check(r.point.DistanceTo(Point3d(0, 1, 1)) < 1e-6 && std::abs(r.distance - 0.3) < 1e-6,
+          "ClosestPointOnBrep on a box, queried from the inside, finds the nearest face at the "
+          "exact perpendicular distance 0.3");
+  }
+
+  // The exact-AND-TRIMMED claim: a flat plane at z=2 (world [0,2]^2),
+  // trimmed down to a small square - same genuine-topology
+  // TrimmedPlanarFaceWelded() fixture TestFireRayAtBrep() above uses, for
+  // the identical reason (TrimmedPlanarFace()'s own bare surface has no
+  // real ON_Brep trim topology for FaceContainsUV() to read).
+  const std::vector<Point3d> plane_grid = {Point3d(0, 0, 2), Point3d(0, 2, 2), Point3d(2, 0, 2),
+                                            Point3d(2, 2, 2)};
+  const NurbsSurface flat_plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+  const std::vector<Point2d> small_trim = {
+      Point2d(0.25, 0.25), Point2d(0.75, 0.25), Point2d(0.75, 0.75), Point2d(0.25, 0.75)};
+  const Brep trimmed_top = Brep::TrimmedPlanarFaceWelded(flat_plane, small_trim);
+  // Query directly above world (1, 1) - the trim's own interior - must
+  // use the unconstrained minimum directly, landing exactly on (1,1,2)
+  // at distance 3.
+  {
+    const auto r = ClosestPointOnBrep(Point3d(1, 1, 5), trimmed_top.raw());
+    Check(r.point.DistanceTo(Point3d(1, 1, 2)) < 1e-6 && std::abs(r.distance - 3.0) < 1e-6,
+          "a query directly above the trim's own interior uses the unconstrained minimum, landing "
+          "exactly on (1,1,2) at distance 3");
+    Check(!r.on_trim_boundary, "that query's own result is correctly reported as NOT a boundary fallback");
+  }
+  // Query directly above world (0.2, 0.2) - on the SAME untrimmed
+  // surface, but outside the small trim's own square - must be pushed
+  // onto the trim's own boundary (the near corner, world (0.5, 0.5, 2)),
+  // not the unconstrained minimum (which would be (0.2, 0.2, 2),
+  // distance 3 exactly - this query's own real answer must exceed that).
+  {
+    const auto r = ClosestPointOnBrep(Point3d(0.2, 0.2, 5), trimmed_top.raw());
+    Check(r.on_trim_boundary,
+          "a query outside the trimmed face's own trim loop is correctly reported as a boundary "
+          "fallback, not the unconstrained interior minimum");
+    Check(r.distance > 3.0 + 1e-9,
+          "the boundary-constrained distance is strictly greater than the unconstrained minimum's "
+          "own 3.0 - confirming the trim genuinely changed the answer, not just relabeled it");
+    Check(r.point.DistanceTo(Point3d(0.5, 0.5, 2)) < 1e-6,
+          "the boundary fallback lands exactly on the trim square's own near corner, (0.5, 0.5, 2) "
+          "in real 3D world coordinates - the exact-AND-trimmed behavior IntersectCurveSurface()/"
+          "NurbsSurface::ClosestPoint() alone can't provide");
+  }
+
+  bool threw_empty = false;
+  try {
+    ON_Brep empty;
+    ClosestPointOnBrep(Point3d(0, 0, 0), empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "ClosestPointOnBrep throws std::invalid_argument for a Brep with no faces");
+}
+
 // PARITY_MAP's intersections category, "Pullback of a 3D curve to surface
 // parameter space" bullet: PullbackCurveToSurface() is the general-purpose
 // kernel entry point (SSX's own pcurve_a/pcurve_b are a by-product of a
@@ -4570,6 +4959,110 @@ void TestFindSurfaceTangentContactsSphereOnPlane() {
   Check(!IntersectSurfaces(crossing_sphere_surface, ground, opt).empty(), "a sphere pushed into the plane produces a real SSX crossing curve");
   Check(FindSurfaceTangentContacts(crossing_sphere_surface, ground, opt).empty(),
         "a sphere genuinely crossing the plane is not also reported as a tangent-only contact");
+}
+
+// PARITY_MAP.md's own "SSX tangent / grazing contact" bullet's own "or
+// curve" half, named directly in its own text ("two cylinders of equal
+// radius touching along one ruling line is not detected as a curve, only
+// as however many isolated points a coarse grid seed happens to converge
+// to along it"). FindSurfaceTangentCurves() closes it: chains
+// FindSurfaceTangentContacts()'s own grid-origin hits into an actual curve
+// whenever they reduce to a clean path/cycle on the sampling grid.
+void TestFindSurfaceTangentCurvesCylinderRulingLine() {
+  using dino8::kernel::FindSurfaceTangentContacts;
+  using dino8::kernel::FindSurfaceTangentCurves;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Distance from a point to an infinite axis line through (x, 0, *),
+  // parallel to Z - the exact membership test every sampled curve point
+  // below is checked against (not a hardcoded expected curve).
+  auto dist_to_axis = [](const Point3d& p, double axis_x) { return std::hypot(p.x - axis_x, p.y); };
+
+  auto cyl_surface_at = [](double x, double radius, double height) {
+    const ON_Cylinder cyl(ON_Circle(ON_Plane(ON_3dPoint(x, 0, 0), ON_3dVector(0, 0, 1)), radius), height);
+    ON_NurbsSurface srf;
+    Check(cyl.GetNurbForm(srf) != 0, "ON_Cylinder::GetNurbForm succeeds");
+    return srf;
+  };
+
+  // Externally tangent parallel cylinders (radius 2 at x = 0, radius 1 at
+  // x = 3 = r_a + r_b exactly, both spanning the identical height range
+  // [0, 4]): touch along the single hand-derivable ruling line x = 2,
+  // y = 0, for the whole shared height, the SAME closed-form tangency
+  // IntersectCylinderCylinderParallel()'s own "tangent" degeneracy already
+  // reports as a single ON_Line (see that function's own test) - this is
+  // the general grid-seeded path reaching the identical real geometry for
+  // an arbitrary surface pair, not a cylinder-specific shortcut.
+  const double ra = 2.0, rb = 1.0, height = 4.0;
+  const ON_NurbsSurface cyl_a = cyl_surface_at(0.0, ra, height);
+  const ON_NurbsSurface cyl_b = cyl_surface_at(3.0, rb, height);
+
+  // Sanity: FindSurfaceTangentContacts() itself finds several isolated
+  // points scattered along the line (the pre-existing, still-honest
+  // "however many isolated points a coarse grid seed happens to converge
+  // to" behavior) but, on its own, no connected curve.
+  const auto points_only = FindSurfaceTangentContacts(cyl_a, cyl_b, opt);
+  Check(points_only.size() >= 3, "the grid-seeded point finder alone already reports several points scattered along the ruling line");
+
+  const auto curves = FindSurfaceTangentCurves(cyl_a, cyl_b, opt);
+  Check(curves.size() == 1, "two externally tangent parallel cylinders chain into exactly one tangent curve");
+  if (curves.size() == 1) {
+    Check(!curves[0].closed, "a finite-height ruling line is an open chain, not a closed loop");
+    Check(curves[0].curve.IsValid(), "the chained curve is a genuine, valid NURBS curve");
+    const ON_Interval dom = curves[0].curve.Domain();
+    bool all_on_both_axes = true;
+    double z_min = std::numeric_limits<double>::max(), z_max = std::numeric_limits<double>::lowest();
+    for (int k = 0; k <= 20; ++k) {
+      const Point3d p = curves[0].curve.PointAt(dom.ParameterAt(static_cast<double>(k) / 20.0));
+      z_min = std::min(z_min, p.z);
+      z_max = std::max(z_max, p.z);
+      if (std::abs(dist_to_axis(p, 0.0) - ra) > 0.01 * ra || std::abs(dist_to_axis(p, 3.0) - rb) > 0.01 * ra) { all_on_both_axes = false; break; }
+      if (std::hypot(p.x - 2.0, p.y) > 0.01 * ra) { all_on_both_axes = false; break; }  // the hand-derivable (x, y) = (2, 0) ruling position
+    }
+    Check(all_on_both_axes, "every sampled point sits at exactly radius ra from A's axis AND exactly radius rb from B's axis simultaneously, at the hand-derivable (x, y) = (2, 0)");
+    Check(z_max - z_min > 0.5 * height, "the chained curve genuinely spans most of the shared height range, not a single collapsed point");
+  }
+
+  // Internally tangent parallel cylinders (radius 5 outer at x = 0, radius
+  // 2 inner at x = 3 = r_outer - r_inner exactly): touch along the
+  // hand-derivable ruling line x = 5, y = 0.
+  const ON_NurbsSurface cyl_outer = cyl_surface_at(0.0, 5.0, height);
+  const ON_NurbsSurface cyl_inner = cyl_surface_at(3.0, 2.0, height);
+  const auto internal_curves = FindSurfaceTangentCurves(cyl_outer, cyl_inner, opt);
+  Check(internal_curves.size() == 1, "an internally tangent (nested) cylinder pair also chains into exactly one tangent curve");
+  if (internal_curves.size() == 1) {
+    const ON_Interval dom = internal_curves[0].curve.Domain();
+    bool ok = true;
+    for (int k = 0; k <= 10; ++k) {
+      const Point3d p = internal_curves[0].curve.PointAt(dom.ParameterAt(static_cast<double>(k) / 10.0));
+      if (std::hypot(p.x - 5.0, p.y) > 0.05) { ok = false; break; }
+    }
+    Check(ok, "the internally-tangent ruling line sits at the hand-derivable (x, y) = (5, 0)");
+  }
+
+  // A single ISOLATED tangent point (the sphere-on-plane fixture
+  // TestFindSurfaceTangentContactsSphereOnPlane() already establishes) must
+  // NOT be fabricated into a curve - several nearby grid seeds converging
+  // to nearly the same point are grid-adjacent to each other too, which is
+  // exactly the degenerate case this function's own arc-length/degree
+  // guards exist to reject.
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-10, 10), true);
+  ground.SetExtents(1, ON_Interval(-10, 10), true);
+  const double sphere_radius = 2.0;
+  const ON_Sphere resting_sphere(ON_3dPoint(0, 0, sphere_radius), sphere_radius);
+  ON_NurbsSurface sphere_surface;
+  Check(resting_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  Check(FindSurfaceTangentCurves(sphere_surface, ground, opt).empty(), "a single isolated tangent point is correctly NOT fabricated into a curve");
+
+  // Two cylinders held well clear of each other: no contacts, no curves.
+  const ON_NurbsSurface cyl_far = cyl_surface_at(100.0, 1.0, height);
+  Check(FindSurfaceTangentCurves(cyl_a, cyl_far, opt).empty(), "two cylinders held well clear of each other chain into zero curves");
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
@@ -5567,6 +6060,69 @@ void TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves() {
 
   // A zero-length view direction is refused outright.
   Check(FindSurfaceSilhouetteCurves(sphere_surface, ON_3dVector(0, 0, 0), opt).empty(), "a zero-length view direction returns empty outright");
+}
+
+// PARITY_MAP.md's own "Silhouette / outline curves" bullet: closes the one
+// named gap FindSurfaceSilhouetteCurves()'s own header doc comment calls
+// out directly ("there is no perspective sibling of this function yet") -
+// FindSurfaceSilhouetteCurvesPerspective() chains
+// FindSurfaceSilhouettePointsPerspective()'s own isolated grid-edge
+// crossings into actual curves, the same way the orthographic sibling
+// already does for FindSurfaceSilhouettePoints().
+void TestFindSurfaceSilhouetteCurvesPerspectiveChainsPointsIntoCurves() {
+  using dino8::kernel::FindSurfaceSilhouetteCurvesPerspective;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  // The same sphere/finite-eye horizon-circle fixture
+  // TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon() already
+  // establishes a hand-derivable ground truth for (z == -r^2/d, radius ==
+  // r*sqrt(d^2-r^2)/d).
+  const double r = 3.0, d = 10.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), r);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+
+  const Point3d eye(0, 0, -d);
+  const IntersectOptions opt;
+  const auto curves = FindSurfaceSilhouetteCurvesPerspective(sphere_surface, eye, opt);
+  Check(!curves.empty(), "viewing a sphere from a finite external eye point chains the horizon's own crossings into at least one genuine curve");
+
+  const double expected_z = -r * r / d;
+  const double expected_radius = r * std::sqrt(d * d - r * r) / d;
+  bool all_on_horizon = true;
+  int total_samples = 0;
+  for (const auto& sc : curves) {
+    Check(sc.curve.IsValid(), "each chained perspective curve is a genuine, valid NURBS curve, not an empty placeholder");
+    const ON_Interval dom = sc.curve.Domain();
+    for (int k = 0; k <= 20; ++k) {
+      const double t = dom.ParameterAt(static_cast<double>(k) / 20.0);
+      const ON_3dPoint p = sc.curve.PointAt(t);
+      ++total_samples;
+      // Same generous relative tolerance TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves()
+      // uses: a cubic spline through genuine on-horizon points can bow
+      // slightly off the horizon circle BETWEEN them.
+      if (std::abs(p.z - expected_z) > 0.05 * r || std::abs(std::hypot(p.x, p.y) - expected_radius) > 0.05 * r) { all_on_horizon = false; break; }
+    }
+    if (!all_on_horizon) break;
+  }
+  Check(all_on_horizon, "every sampled point of every chained perspective curve sits close to the hand-derivable horizon circle - a real fit through genuine on-horizon crossings, not an unrelated curve");
+  Check(total_samples > 0, "sanity: the horizon fixture actually produced samples to check");
+
+  // An eye held exactly at the sphere's own center: genuinely no tangency
+  // exists anywhere (the same fixture
+  // TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon() already uses
+  // for the point-only sibling), so there are no crossings to chain either.
+  Check(FindSurfaceSilhouetteCurvesPerspective(sphere_surface, Point3d(0, 0, 0), opt).empty(), "an eye at the sphere's own center chains into zero curves");
+
+  // A flat, generously-bounded plane viewed from a finite eye far along its
+  // own normal has no tangency crossings anywhere on the plane (every
+  // point's own ray back to the eye is parallel to the normal, never
+  // tangent to a flat surface), so no curve to chain.
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-10, 10), true);
+  ground.SetExtents(1, ON_Interval(-10, 10), true);
+  Check(FindSurfaceSilhouetteCurvesPerspective(ground, Point3d(0, 0, 20), opt).empty(), "a flat plane viewed from a finite eye along its own normal chains into zero curves");
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
@@ -25376,6 +25932,56 @@ void TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldToleran
         "original (still untouched - Symmetrize() never retroactively fixes the ORIGINAL half) + 4 "
         "newly-welded mirrored vertices, instead of 8");
   Check(widened_doubled.FaceCount() == 4, "4 faces total either way: the original 2 plus their 2 mirrored copies");
+}
+
+// Closes a real, previously-unvalidated gap: unlike its sibling
+// plane_normal check just above, Symmetrize() never validated
+// point_tolerance or plane_offset at all, even though a bad
+// point_tolerance doesn't degrade to a safe default the way a bad
+// weld_tolerance does (see that parameter's own "zero or negative means
+// reuse point_tolerance" convention) - it alone decides which vertices
+// count as lying ON the mirror plane, so a NaN or negative value made
+// every on-plane comparison silently false instead of refusing: no
+// vertex would ever be welded as a seam, not even one genuinely on the
+// plane, and the caller would get a plausible-looking (if silently
+// wrong) result rather than an error.
+void TestSubDSymmetrizeThrowsOnBadToleranceOrOffset() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+  using dino8::kernel::Vector3d;
+
+  const Mesh box = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(box);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, -1e-9); }),
+        "Symmetrize throws for a negative point_tolerance");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, nan); }),
+        "Symmetrize throws for a NaN point_tolerance");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, inf); }),
+        "Symmetrize throws for an infinite point_tolerance");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), nan); }),
+        "Symmetrize throws for a NaN plane_offset");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), inf); }),
+        "Symmetrize throws for an infinite plane_offset");
+
+  // Negative controls: a point_tolerance of exactly 0 is a legitimate
+  // "only bit-identical positions count as on-plane" request, not an
+  // error, and the ordinary default-argument call is unaffected.
+  Check(!Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, 0.0); }),
+        "Symmetrize does not throw for a point_tolerance of exactly 0");
+  Check(!Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0); }),
+        "Symmetrize's own default point_tolerance (1e-9) still passes validation unaffected");
 }
 
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
@@ -73251,6 +73857,8 @@ int main() {
   TestCurveFromControlPointsRejectsDegenerateInput();
   TestCurveLength();
   TestCurveLengthToTolerance();
+  TestCurveParameterAtArcLengthToTolerance();
+  TestCurveDivideByCountAndByLengthToTolerance();
   TestCurveParameterAtArcLength();
   TestCurveDivideByCount();
   TestCurveDivideByLength();
@@ -73308,6 +73916,8 @@ int main() {
   TestIntersectCurvePlaneFindsCrossingsAndRejectsMisses();
   TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves();
   TestIntersectBrepsAndCurveBrep();
+  TestFireRayAtBrep();
+  TestClosestPointOnBrep();
   TestPullbackCurveToSurfaceCylinderRulingLine();
   TestPullbackCurveToSurfaceAcrossPeriodicSeam();
   TestIntersectBrepByPlaneBoxSideWalls();
@@ -73321,6 +73931,7 @@ int main() {
   TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
   TestBrepCheckOptInReportsFaceSelfIntersections();
   TestFindSurfaceTangentContactsSphereOnPlane();
+  TestFindSurfaceTangentCurvesCylinderRulingLine();
   TestIntersectSurfacesHandlesSpherePoleCrossing();
   TestIntersectSurfacesOverlapDetectsCoincidentRegion();
   TestIntersectSurfacesOverlapBisectionTightensRegionBoundary();
@@ -73335,6 +73946,7 @@ int main() {
   TestFindSurfaceSilhouettePointsSphereEquator();
   TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon();
   TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves();
+  TestFindSurfaceSilhouetteCurvesPerspectiveChainsPointsIntoCurves();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
@@ -73560,6 +74172,7 @@ int main() {
   TestSubDTransformMovesScalesAndStaysValidUnderMirror();
   TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces();
   TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance();
+  TestSubDSymmetrizeThrowsOnBadToleranceOrOffset();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetEdgeSharpnessSupportsPerEndVariableWeight();
   TestSubDEdgeSharpnessAtReadsBackWhatWasWritten();

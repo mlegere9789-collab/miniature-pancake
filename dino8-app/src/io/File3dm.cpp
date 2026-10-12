@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 
 #include "commands/DimGeometry.h"
@@ -1774,6 +1775,110 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
   return true;
 }
 
+// Finds (or adds) a real ON_HatchPattern table entry named `name`, used by
+// Save3dm's own hatch writer below (BuildOnHatchForGroup) - mirrors
+// FileExchange.cpp's identical "Solid"/named-pattern distinction
+// (WriteDxfHatchSolid/WriteDxfHatchPattern). Caches each name's assigned
+// table index in `index_cache` so every hatch group sharing one pattern
+// reuses the same table entry instead of writing a duplicate - a real
+// Rhino/OpenNURBS-based reader then sees one pattern definition referenced
+// by every hatch using it, the same as a file Rhino itself would write.
+// `pattern`, when given, supplies the real HatchLine family data (the same
+// angle/x0/y0/dx/dy/dashes fields the DXF/DWG HATCH writer already reads off
+// drafting::HatchFamily - see WriteDxfHatchPattern) so the written
+// ON_HatchPattern renders the identical fill in a real third-party reader,
+// not just a name it may or may not recognize; nullptr means the reserved
+// solid fill (ON_HatchPattern::HatchFillType::Solid), matching
+// hatch3dm_fixture_gen's own "a real file's hatch always references an
+// actual table entry" rationale (ON_Hatch::Create refuses a negative
+// pattern_index, so even "Solid" needs one, not the built-in -1 constant).
+int FindOrAddHatchPatternIndex(ONX_Model& model, std::map<std::string, int>& index_cache, const std::string& name,
+                                const drafting::HatchPattern* pattern) {
+  auto it = index_cache.find(name);
+  if (it != index_cache.end()) return it->second;
+  ON_HatchPattern p;
+  p.SetName(ON_wString(name.c_str()));
+  if (pattern) {
+    p.SetFillType(ON_HatchPattern::HatchFillType::Lines);
+    for (const drafting::HatchFamily& fam : pattern->families) {
+      ON_SimpleArray<double> dashes;
+      for (double d : fam.dashes) dashes.Append(d);
+      p.AddHatchLine(ON_HatchLine(fam.angle * ON_PI / 180.0, ON_2dPoint(fam.x0, fam.y0), ON_2dVector(fam.dx, fam.dy), dashes));
+    }
+  } else {
+    p.SetFillType(ON_HatchPattern::HatchFillType::Solid);
+  }
+  const ON_ModelComponentReference ref = model.AddModelComponent(p, true);
+  const ON_HatchPattern* added = ON_HatchPattern::Cast(ref.ModelComponent());
+  const int idx = added ? added->Index() : -1;
+  index_cache[name] = idx;
+  return idx;
+}
+
+// Builds a real ON_Hatch for a Dino8 hatch group (Hatch=Solid on a trimmed
+// planar Brep, or Hatch=<pattern name> on a pattern-fill curve group - see
+// drafting/HatchBuild.h), so Save3dm can write one genuine hatch object
+// instead of the baked boundary Brep / clipped pattern-line curves it
+// otherwise falls through to - the write-side half of Load3dm's own
+// ON_Hatch handling above, closing the "Dino-written ... hatches ... still
+// survive only as baked geometry" gap that bullet discloses. Returns
+// nullptr (caller falls through to the pre-existing baked export,
+// unaffected) when the hatch's own boundary curve - found via its
+// "HatchBoundary" object-id tag, the same still-live reference
+// TryWriteDxfHatchPatternGroup (FileExchange.cpp) already uses for the
+// pattern case, and LibraryHatchCommand (cmd_drafting2.cpp) never deletes
+// for either case - is missing (e.g. a hatch rebuilt from an externally-
+// authored file with no live Dino8 boundary object of its own), isn't a
+// closed curve, or isn't planar, or the pattern name isn't in the library.
+ON_Hatch* BuildOnHatchForGroup(const Document& doc, ONX_Model& model, std::map<std::string, int>& pattern_index_cache,
+                                const SceneObject& o, const std::string& hatch_tag) {
+  auto bid_it = o.user_text.find("HatchBoundary");
+  if (bid_it == o.user_text.end()) return nullptr;
+  const ObjectId bid = static_cast<ObjectId>(std::strtoull(bid_it->second.c_str(), nullptr, 10));
+  const SceneObject* bnd = bid == kNoObject ? nullptr : doc.Find(bid);
+  if (!bnd || bnd->kind != ObjectKind::Curve || !bnd->curve || !bnd->curve->IsClosed()) return nullptr;
+  ON_Plane pl;
+  const double tol = doc.Settings().absolute_tolerance > 0 ? doc.Settings().absolute_tolerance : 0.001;
+  if (!bnd->curve->raw().IsPlanar(&pl, tol)) return nullptr;
+
+  int pattern_index;
+  double scale = 1.0, rotation_deg = 0.0;
+  if (hatch_tag == "Solid") {
+    pattern_index = FindOrAddHatchPatternIndex(model, pattern_index_cache, "Solid", nullptr);
+  } else {
+    const drafting::HatchPattern* pat = drafting::HatchLibrary::Instance().Find(hatch_tag);
+    if (!pat) return nullptr;
+    pattern_index = FindOrAddHatchPatternIndex(model, pattern_index_cache, hatch_tag, pat);
+    auto num = [&](const char* key, double fallback) {
+      auto it = o.user_text.find(key);
+      return it == o.user_text.end() ? fallback : std::atof(it->second.c_str());
+    };
+    scale = num("HatchSpacing", 1.0);
+    rotation_deg = num("HatchRotation", 0.0);
+  }
+  if (pattern_index < 0) return nullptr;
+
+  // The hatch's own loop curve must be expressed in the hatch plane's local
+  // (u,v,0) coordinates, not world xyz (ON_HatchLoop::SetCurve just drops
+  // the z coordinate - see opennurbs_hatch.cpp - it never projects) -
+  // Rotation(pl, ON_xy_plane) is exactly the inverse of the rigid transform
+  // ON_Hatch::LoopCurve3d itself uses (Rotation(ON_xy_plane, m_plane)) to go
+  // back from local to world, so this round-trips through Load3dm exactly.
+  ON_NurbsCurve local_curve = bnd->curve->raw();
+  ON_Xform world_to_local;
+  world_to_local.Rotation(pl, ON_xy_plane);
+  local_curve.Transform(world_to_local);
+
+  ON_SimpleArray<const ON_Curve*> loops;
+  loops.Append(&local_curve);
+  ON_Hatch* hatch = new ON_Hatch();
+  if (!hatch->Create(pl, loops, pattern_index, rotation_deg * ON_PI / 180.0, scale)) {
+    delete hatch;
+    return nullptr;
+  }
+  return hatch;
+}
+
 bool Save3dm(const Document& doc, const std::string& path, std::string& error, bool include_reference_objects) {
   ONX_Model model;
   model.m_sStartSectionComments = "Dino 8 - free NURBS modeler";
@@ -2001,6 +2106,19 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     ON_CreateUuid(uuid);
     object_uuids[o.id] = uuid;
   }
+  // Groups (SceneObject::group_id) whose Hatch=Solid/<pattern> group already
+  // wrote its one real ON_Hatch (BuildOnHatchForGroup below) - every other
+  // object belonging to that same group_id (a pattern hatch's own already-
+  // clipped line objects) is skipped rather than also writing its own baked
+  // geometry, the same "one real entity, not one per baked piece" dedup
+  // convention FileExchange.cpp's own DXF/DWG writer already uses for its
+  // own hatch/dimension/leader/block-instance entities. Only populated on
+  // success (BuildOnHatchForGroup returning non-null) - a group whose
+  // boundary couldn't be resolved is never added here, so every one of its
+  // members independently (and harmlessly) retries the same lookup and
+  // falls through to its own baked export, same as before this set existed.
+  std::set<int> hatch_groups_written;
+  std::map<std::string, int> hatch_pattern_index;
   for (const SceneObject& o : doc.Objects()) {
     if (!include_reference_objects && o.user_text.count("Dino8.Reference")) continue;
     ON_3dmObjectAttributes attr;
@@ -2050,6 +2168,28 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
       attr.SetUserString(L"Dino8.MappingScale", ON_wString(std::to_string(o.mapping_scale).c_str()));
     }
 
+    {
+      // A real hatch (Hatch=Solid on a trimmed Brep, or Hatch=<pattern> on a
+      // pattern-fill curve group - not Bitmap, which has no ON_HatchPattern
+      // fill-type equivalent) writes as one genuine ON_Hatch instead of its
+      // baked boundary/pattern-line geometry, so it survives a round trip
+      // through a real Rhino/OpenNURBS-based reader as one hatch, not loose
+      // geometry - see BuildOnHatchForGroup's own comment above.
+      auto hatch_tag = o.user_text.find("Hatch");
+      if (hatch_tag != o.user_text.end() && hatch_tag->second != "Bitmap") {
+        if (hatch_groups_written.count(o.group_id)) continue;  // this group's ON_Hatch already written
+        if (ON_Hatch* hatch = BuildOnHatchForGroup(doc, model, hatch_pattern_index, o, hatch_tag->second)) {
+          model.AddModelGeometryComponent(hatch, &attr);
+          hatch_groups_written.insert(o.group_id);
+          ++written;
+          continue;
+        }
+        // No live, planar boundary to recover - falls through to this
+        // object's own baked export below, same as before this branch
+        // existed (every other member of the same group independently, and
+        // harmlessly, retries the same lookup and loses the same way).
+      }
+    }
     ON_Geometry* g = nullptr;
     switch (o.kind) {
       case ObjectKind::Point: g = new ON_Point(o.point); break;
