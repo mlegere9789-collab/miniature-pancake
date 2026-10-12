@@ -3599,6 +3599,50 @@ class Brep {
   // iteration bound, same "0 if none qualify, never throws" contract.
   int RemoveAllSharedMicroEdges(double tolerance = tolerance::kEdgeJoin);
 
+  // Closes the "No RefitTrim" half of PARITY_MAP.md's own disclosed
+  // "Gap closing by edge re-trim / trim refit" gap (kernel: Healing,
+  // repair, validation, tolerant modeling): `dino8-app`'s own
+  // `RefitTrimCommand` (cmd_srfedit.cpp) already implements this exact
+  // algorithm, but entirely at the app level, reaching straight into
+  // `ON_Brep`/`ON_BrepTrim` with no kernel-level API at all - this
+  // exposes the identical, already-proven algorithm as a real, tested
+  // method on this class instead of leaving it stuck in the app.
+  //
+  // Refits `trim_index`'s own 2D (u, v) curve to STRICTLY FEWER control
+  // points via the already-tested `NurbsCurve::FitLeastSquares()`,
+  // trying the control point count upward from `degree + 1` until the
+  // fit's own worst deviation from the ORIGINAL trim's densely sampled
+  // points - measured in real 3D space via the face's own surface,
+  // never raw (u, v) parameter distance, which has no fixed
+  // relationship to real geometric size (e.g. a cylinder wall's own u
+  // parameter is an angle in radians) - is within `tolerance`. A
+  // degree-p B-spline curve always lies within the convex hull of its
+  // own control points, so every fitted control point is clamped into
+  // the face's own (u, v) domain rectangle - a real, mathematically
+  // guaranteed way to keep the whole curve inside the domain, not a
+  // clip-after-the-fact that could reopen a trim-vs-domain gap - and
+  // the deviation is re-verified after clamping, since clamping can
+  // itself push a fit back out of tolerance, trying more control
+  // points rather than accepting a silently worse result. Does not
+  // touch the trim's own 3D edge curve or either vertex at all - purely
+  // a parameter-space curve simplification. Returns Result::Failed
+  // (never a crash) if the trim is already at its own minimum possible
+  // control point count, if the trim has no NURBS form, or if no
+  // smaller fit within `tolerance` exists even after exhausting every
+  // intermediate count up to the original. Throws std::invalid_argument
+  // for an out-of-range/deleted `trim_index` or a non-positive/
+  // non-finite `tolerance`.
+  Result RefitTrim(int trim_index, double tolerance);
+
+  // Convenience mirroring `RefitTrimCommand`'s own per-pick loop
+  // exactly: applies `RefitTrim()` to every trim of `edge_index` (an
+  // edge carries up to 2 trims, one per adjacent face).
+  // `out_refit_count`/`out_failed_count`, if given, are each set to how
+  // many of that edge's own trims succeeded/failed - the same two
+  // counts the app command already reports to its own caller.
+  void RefitEdgeTrims(int edge_index, double tolerance, int* out_refit_count = nullptr,
+                       int* out_failed_count = nullptr);
+
   // Kernel wrapper for ON_Brep::CombineContiguousEdges - previously
   // reachable only from the app layer (cmd_fillet.cpp's MergeEdgeCommand,
   // which reaches straight into the raw ON_Brep) and absent from this

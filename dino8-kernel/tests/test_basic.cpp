@@ -2997,6 +2997,177 @@ void TestCurveFitLeastSquaresConstrainedRefit() {
                          "control-point count").c_str());
 }
 
+// PARITY_MAP's healing category, "Gap closing by edge re-trim / trim
+// refit": before this, `dino8-app`'s own `RefitTrimCommand`
+// (cmd_srfedit.cpp) implemented the real algorithm the simulation above
+// proves correct, but entirely at the app level with no kernel API at
+// all. `Brep::RefitTrim()`/`RefitEdgeTrims()` are the real thing, tested
+// against a genuine trimmed B-rep face this time, not a standalone curve.
+struct WavyTrimFixture {
+  dino8::kernel::Brep brep;
+  int face_index = -1;
+  int wavy_edge_index = -1;
+  int right_edge_index = -1;
+};
+
+WavyTrimFixture BuildWavyTrimFixture() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  WavyTrimFixture fixture;
+  ON_Brep& b = fixture.brep.raw();
+
+  // A flat unit square face whose (u, v) domain maps directly onto
+  // world (x, y) (z=0) - so a deviation measured in real 3D equals the
+  // same deviation measured directly in (u, v), making this fixture's
+  // own math easy to verify independently, by hand.
+  const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const int surface_index = b.AddSurface(new ON_NurbsSurface(surface.raw()));
+  fixture.face_index = b.NewFace(surface_index).m_face_index;
+  const int loop_index = b.NewLoop(ON_BrepLoop::outer, b.m_F[fixture.face_index]).m_loop_index;
+
+  const int v00 = b.NewVertex(Point3d(0, 0, 0), 0.0).m_vertex_index;
+  const int v10 = b.NewVertex(Point3d(1, 0, 0), 0.0).m_vertex_index;
+  const int v11 = b.NewVertex(Point3d(1, 1, 0), 0.0).m_vertex_index;
+  const int v01 = b.NewVertex(Point3d(0, 1, 0), 0.0).m_vertex_index;
+
+  auto add_straight_side = [&](int va, int vb, Point2d uv_a, Point2d uv_b) {
+    const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+    const int edge_index = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+    b.m_E[edge_index].m_tolerance = 0.0;
+    const int c2i = b.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+    ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    return edge_index;
+  };
+
+  // Bottom side: a WAVY, many-control-point 2D curve from (0,0) to
+  // (1,0) - amplitude only 0.001, geometrically almost a straight line
+  // already, but with far more control points than that shape needs.
+  // This is the one trim RefitTrim() below should genuinely simplify.
+  {
+    std::vector<Point3d> ctrl;
+    const int N = 10;
+    for (int i = 0; i < N; ++i) {
+      const double u = static_cast<double>(i) / (N - 1);
+      const double v = (i == 0 || i == N - 1) ? 0.0 : 0.001 * std::sin(i * 2.5);
+      ctrl.push_back(Point3d(u, v, 0));
+    }
+    const NurbsCurve wavy = NurbsCurve::FromControlPoints(ctrl, /*degree=*/3);
+    ON_NurbsCurve raw2d = wavy.raw();
+    raw2d.ChangeDimension(2);
+    const int c3i = b.AddEdgeCurve(new ON_LineCurve(Point3d(0, 0, 0), Point3d(1, 0, 0)));
+    fixture.wavy_edge_index = b.NewEdge(b.m_V[v00], b.m_V[v10], c3i).m_edge_index;
+    b.m_E[fixture.wavy_edge_index].m_tolerance = 0.0;
+    const int c2i = b.AddTrimCurve(new ON_NurbsCurve(raw2d));
+    ON_BrepTrim& trim = b.NewTrim(b.m_E[fixture.wavy_edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  }
+  fixture.right_edge_index = add_straight_side(v10, v11, Point2d(1, 0), Point2d(1, 1));
+  add_straight_side(v11, v01, Point2d(1, 1), Point2d(0, 1));
+  add_straight_side(v01, v00, Point2d(0, 1), Point2d(0, 0));
+
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+  return fixture;
+}
+
+void TestBrepRefitTrim() {
+  using dino8::kernel::Result;
+
+  WavyTrimFixture fixture = BuildWavyTrimFixture();
+  ON_Brep& b = fixture.brep.raw();
+  const int wavy_trim_index = b.m_E[fixture.wavy_edge_index].m_ti[0];
+  const int right_trim_index = b.m_E[fixture.right_edge_index].m_ti[0];
+
+  int original_cv_count = -1;
+  {
+    ON_NurbsCurve nc;
+    b.m_T[wavy_trim_index].GetNurbForm(nc);
+    original_cv_count = nc.CVCount();
+  }
+  Check(original_cv_count == 10, "the wavy trim fixture genuinely starts with 10 control points");
+
+  const Result r = fixture.brep.RefitTrim(wavy_trim_index, 0.01);
+  Check(r == Result::Ok, "RefitTrim succeeds on the wavy trim within a loose-enough tolerance");
+
+  int refit_cv_count = -1;
+  {
+    ON_NurbsCurve nc;
+    b.m_T[wavy_trim_index].GetNurbForm(nc);
+    refit_cv_count = nc.CVCount();
+  }
+  Check(refit_cv_count > 0 && refit_cv_count < original_cv_count,
+        "the refit trim genuinely has fewer control points than the original 10");
+
+  // Independent re-verification, NOT reusing RefitTrim's own internal
+  // deviation check: the true original trim was a wave of amplitude at
+  // most 0.001 around v=0, so the refit result - whatever its new
+  // control points are - must still stay within 0.011 (tolerance plus
+  // the original wave's own amplitude) of the straight line v=0 at
+  // every sampled u, by hand-derivable geometry.
+  {
+    double worst = 0.0;
+    for (int i = 0; i <= 200; ++i) {
+      const double t = b.m_T[wavy_trim_index].Domain().ParameterAt(static_cast<double>(i) / 200);
+      const ON_3dPoint uv = b.m_T[wavy_trim_index].PointAt(t);
+      worst = std::max(worst, std::fabs(uv.y));
+    }
+    Check(worst < 0.011,
+          "the refit trim's own real shape, independently re-sampled, stays within a "
+          "hand-derivable bound of the straight line it approximates");
+  }
+
+  Check(fixture.brep.RefitTrim(right_trim_index, 0.01) == Result::Failed,
+        "RefitTrim correctly refuses an already-minimal (2 control point, degree 1) straight trim");
+
+  // Argument validation.
+  bool threw = false;
+  try {
+    fixture.brep.RefitTrim(9999, 0.01);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "RefitTrim throws std::invalid_argument for an out-of-range trim_index");
+
+  threw = false;
+  try {
+    fixture.brep.RefitTrim(right_trim_index, -1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "RefitTrim throws std::invalid_argument for a non-positive tolerance");
+
+  // RefitEdgeTrims: a fresh fixture (the one above already mutated its
+  // own wavy trim), mirroring RefitTrimCommand's own per-edge loop -
+  // here each edge carries exactly 1 trim (a naked boundary), still a
+  // real exercise of the same aggregate-count loop a 2-trim interior
+  // edge would also take.
+  WavyTrimFixture fixture2 = BuildWavyTrimFixture();
+  int refit_count = -1, failed_count = -1;
+  fixture2.brep.RefitEdgeTrims(fixture2.wavy_edge_index, 0.01, &refit_count, &failed_count);
+  Check(refit_count == 1 && failed_count == 0,
+        "RefitEdgeTrims on the wavy edge reports exactly 1 refit and 0 failed, matching its "
+        "own single trim");
+
+  refit_count = -1;
+  failed_count = -1;
+  fixture2.brep.RefitEdgeTrims(fixture2.right_edge_index, 0.01, &refit_count, &failed_count);
+  Check(refit_count == 0 && failed_count == 1,
+        "RefitEdgeTrims on the already-minimal straight edge reports 0 refit and 1 failed");
+
+  threw = false;
+  try {
+    fixture2.brep.RefitEdgeTrims(9999, 0.01);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "RefitEdgeTrims throws std::invalid_argument for an out-of-range edge_index");
+}
+
 void TestCurveCurvature() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -75042,6 +75213,7 @@ int main() {
   TestCurveFitLeastSquares();
   TestCurveHelix();
   TestCurveFitLeastSquaresConstrainedRefit();
+  TestBrepRefitTrim();
   TestCurveCurvature();
   TestCurveSuggestedSamples();
   TestCurveSuggestedParameterValues();
