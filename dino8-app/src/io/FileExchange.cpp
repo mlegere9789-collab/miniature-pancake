@@ -230,9 +230,10 @@ class DxfWriter {
 
   void Point(int base, Point3d p) { G(base, p.x); G(base + 10, p.y); G(base + 20, p.z); }
 
-  void BeginEntity(const char* type, const std::string& layer, const Color* color) {
+  void BeginEntity(const char* type, const std::string& layer, const Color* color, const std::string* owner_handle = nullptr) {
     G(0, std::string(type));
     G(5, Handle());
+    if (owner_handle) G(330, *owner_handle);
     G(100, "AcDbEntity");
     G(8, layer);
     if (color) {
@@ -264,12 +265,12 @@ double DxfAngleDeg(Point3d center, Point3d p) {
 }
 
 void WriteDxfPolyline(DxfWriter& w, const std::vector<Point3d>& pts, bool closed, const std::string& layer,
-                      const Color* color) {
+                      const Color* color, const std::string* owner_handle = nullptr) {
   if (pts.size() < 2) return;
   bool planar = true;
   for (const Point3d& p : pts) if (std::fabs(p.z - pts.front().z) > 1e-9) { planar = false; break; }
   if (planar) {
-    w.BeginEntity("LWPOLYLINE", layer, color);
+    w.BeginEntity("LWPOLYLINE", layer, color, owner_handle);
     w.G(100, "AcDbPolyline");
     w.G(90, static_cast<int>(pts.size()));
     w.G(70, closed ? 1 : 0);
@@ -277,13 +278,13 @@ void WriteDxfPolyline(DxfWriter& w, const std::vector<Point3d>& pts, bool closed
     for (const Point3d& p : pts) { w.G(10, p.x); w.G(20, p.y); }
     return;
   }
-  w.BeginEntity("POLYLINE", layer, color);
+  w.BeginEntity("POLYLINE", layer, color, owner_handle);
   w.G(100, "AcDb3dPolyline");
   w.G(66, 1);
   w.G(10, 0.0); w.G(20, 0.0); w.G(30, 0.0);
   w.G(70, (closed ? 1 : 0) | 8);
   for (const Point3d& p : pts) {
-    w.BeginEntity("VERTEX", layer, nullptr);
+    w.BeginEntity("VERTEX", layer, nullptr, owner_handle);
     w.G(100, "AcDbVertex");
     w.G(100, "AcDb3dPolylineVertex");
     w.Point(10, p);
@@ -291,6 +292,7 @@ void WriteDxfPolyline(DxfWriter& w, const std::vector<Point3d>& pts, bool closed
   }
   w.G(0, "SEQEND");
   w.G(5, w.Handle());
+  if (owner_handle) w.G(330, *owner_handle);
   w.G(100, "AcDbEntity");
   w.G(8, layer);
 }
@@ -301,11 +303,12 @@ void WriteDxfPolyline(DxfWriter& w, const std::vector<Point3d>& pts, bool closed
 // approximation of it. DXF's knot vector has two more entries than
 // OpenNURBS' (it doesn't elide the duplicated first/last knot), matching
 // what DxfImporter::Spline()'s "knots.size() == want + 2" branch expects.
-void WriteDxfSpline(DxfWriter& w, const ON_NurbsCurve& nc, const std::string& layer, const Color* color) {
+void WriteDxfSpline(DxfWriter& w, const ON_NurbsCurve& nc, const std::string& layer, const Color* color,
+                     const std::string* owner_handle = nullptr) {
   const int order = nc.Order();
   const int cv_count = nc.CVCount();
   const bool rational = nc.IsRational();
-  w.BeginEntity("SPLINE", layer, color);
+  w.BeginEntity("SPLINE", layer, color, owner_handle);
   w.G(100, "AcDbSpline");
   int flags = 0;
   if (nc.IsClosed()) flags |= 1;
@@ -328,11 +331,12 @@ void WriteDxfSpline(DxfWriter& w, const ON_NurbsCurve& nc, const std::string& la
   }
 }
 
-void WriteDxfCurve(DxfWriter& w, const kernel::NurbsCurve& curve, const std::string& layer, const Color* color) {
+void WriteDxfCurve(DxfWriter& w, const kernel::NurbsCurve& curve, const std::string& layer, const Color* color,
+                    const std::string* owner_handle = nullptr) {
   const ON_NurbsCurve& nc = curve.raw();
   const double tol = 1e-6;
   if (nc.IsLinear(tol)) {
-    w.BeginEntity("LINE", layer, color);
+    w.BeginEntity("LINE", layer, color, owner_handle);
     w.G(100, "AcDbLine");
     w.Point(10, nc.PointAtStart());
     w.Point(11, nc.PointAtEnd());
@@ -344,7 +348,7 @@ void WriteDxfCurve(DxfWriter& w, const kernel::NurbsCurve& curve, const std::str
     if (std::fabs(std::fabs(nz) - 1.0) < 1e-6) {
       const Point3d c = arc.Center();
       if (arc.IsCircle()) {
-        w.BeginEntity("CIRCLE", layer, color);
+        w.BeginEntity("CIRCLE", layer, color, owner_handle);
         w.G(100, "AcDbCircle");
         w.Point(10, c);
         w.G(40, arc.radius);
@@ -354,7 +358,7 @@ void WriteDxfCurve(DxfWriter& w, const kernel::NurbsCurve& curve, const std::str
       // the arc's own plane points down.
       const Point3d a = nz > 0 ? arc.StartPoint() : arc.EndPoint();
       const Point3d b = nz > 0 ? arc.EndPoint() : arc.StartPoint();
-      w.BeginEntity("ARC", layer, color);
+      w.BeginEntity("ARC", layer, color, owner_handle);
       w.G(100, "AcDbCircle");
       w.Point(10, c);
       w.G(40, arc.radius);
@@ -369,7 +373,7 @@ void WriteDxfCurve(DxfWriter& w, const kernel::NurbsCurve& curve, const std::str
     for (int i = 0; i < nc.CVCount(); ++i) { ON_3dPoint p; nc.GetCV(i, p); pts.push_back(p); }
     bool closed = false;
     if (pts.size() >= 3 && pts.front().DistanceTo(pts.back()) <= tol) { closed = true; pts.pop_back(); }
-    WriteDxfPolyline(w, pts, closed, layer, color);
+    WriteDxfPolyline(w, pts, closed, layer, color, owner_handle);
     return;
   }
   // Any other freeform curve (including non-circular ellipses - OpenNURBS'
@@ -379,19 +383,20 @@ void WriteDxfCurve(DxfWriter& w, const kernel::NurbsCurve& curve, const std::str
   // flattening it to a polyline, so export-then-reimport round-trips the
   // real control points/knots/weights rather than a chord approximation.
   if (nc.IsValid() && nc.CVCount() >= 2) {
-    WriteDxfSpline(w, nc, layer, color);
+    WriteDxfSpline(w, nc, layer, color, owner_handle);
     return;
   }
   std::vector<Point3d> pts = SampleCurve(curve, 0.01);
   bool closed = false;
   if (pts.size() >= 3 && nc.IsClosed()) { closed = true; pts.pop_back(); }
-  WriteDxfPolyline(w, pts, closed, layer, color);
+  WriteDxfPolyline(w, pts, closed, layer, color, owner_handle);
 }
 
-void WriteDxfMesh(DxfWriter& w, const ON_Mesh& m, const std::string& layer, const Color* color) {
+void WriteDxfMesh(DxfWriter& w, const ON_Mesh& m, const std::string& layer, const Color* color,
+                   const std::string* owner_handle = nullptr) {
   for (int i = 0; i < m.FaceCount(); ++i) {
     const ON_MeshFace& f = m.m_F[i];
-    w.BeginEntity("3DFACE", layer, color);
+    w.BeginEntity("3DFACE", layer, color, owner_handle);
     w.G(100, "AcDbFace");
     w.Point(10, m.Vertex(f.vi[0]));
     w.Point(11, m.Vertex(f.vi[1]));
@@ -947,18 +952,19 @@ bool WriteDxfOrdinateDimension(DxfWriter& w, const DxfOrdinateDimLayout& L, cons
 // before this function existed, since WriteDxfBlockMember never runs for an
 // instance that didn't get folded into an INSERT - see the "is_block_member"
 // check in ExportDxf's main object loop).
-void WriteDxfBlockMember(DxfWriter& w, const SceneObject& o, const std::string& layer, const Color* color) {
+void WriteDxfBlockMember(DxfWriter& w, const SceneObject& o, const std::string& layer, const Color* color,
+                          const std::string& owner_handle) {
   switch (o.kind) {
     case ObjectKind::Point:
-      w.BeginEntity("POINT", layer, color);
+      w.BeginEntity("POINT", layer, color, &owner_handle);
       w.G(100, "AcDbPoint");
       w.Point(10, o.point);
       break;
     case ObjectKind::Curve:
-      if (o.curve) WriteDxfCurve(w, *o.curve, layer, color);
+      if (o.curve) WriteDxfCurve(w, *o.curve, layer, color, &owner_handle);
       break;
     case ObjectKind::Mesh:
-      if (o.mesh) WriteDxfMesh(w, o.mesh->raw(), layer, color);
+      if (o.mesh) WriteDxfMesh(w, o.mesh->raw(), layer, color, &owner_handle);
       break;
     default:
       break;
@@ -1072,7 +1078,19 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   w.G(9, "$HANDSEED"); w.G(5, "FFFF");
   w.G(0, "ENDSEC");
 
-  // TABLES (just LAYER; readers create the rest with defaults)
+  // TABLES (LAYER, plus BLOCK_RECORD when there's a named block to write -
+  // every other table still relies on "readers create the rest with
+  // defaults"). A BLOCK_RECORD entry is required for LibreDWG's own
+  // dxf_read_file (the intermediate-DXF step ExportDwg's own DWG path
+  // reads through) to resolve a BLOCKS-section BLOCK/ENDBLK/member entity's
+  // owner by handle (group 330, written below) into a real BLOCK_HEADER at
+  // R13+: without a pre-existing BLOCK_RECORD table entry to create that
+  // BLOCK_HEADER during the TABLES section, in_dxf.c's R13+ path (unlike
+  // its R11/R12-only "find or create by name" fallback) never resolves an
+  // owner handle at all, silently dropping the whole block structure on
+  // the DWG round trip - this app's own DXF reader never needed the table
+  // or the 330 tags (it finds blocks by the BLOCKS section's own structure
+  // instead), so neither one changes anything it reads.
   w.G(0, "SECTION"); w.G(2, "TABLES");
   w.G(0, "TABLE"); w.G(2, "LAYER"); w.G(5, "2"); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
   w.G(70, static_cast<int>(layer_names.size()));
@@ -1088,6 +1106,20 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
     w.G(6, "Continuous");
   }
   w.G(0, "ENDTAB");
+  std::map<std::string, std::string> block_record_handles;
+  if (!block_names_to_write.empty()) {
+    const std::string ctrl_handle = w.Handle();
+    w.G(0, "TABLE"); w.G(2, "BLOCK_RECORD"); w.G(5, ctrl_handle); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
+    w.G(70, static_cast<int>(block_names_to_write.size()));
+    for (const std::string& name : block_names_to_write) {
+      const std::string h = w.Handle();
+      block_record_handles[name] = h;
+      w.G(0, "BLOCK_RECORD"); w.G(5, h); w.G(330, ctrl_handle);
+      w.G(100, "AcDbSymbolTableRecord"); w.G(100, "AcDbBlockTableRecord");
+      w.G(2, name);
+    }
+    w.G(0, "ENDTAB");
+  }
   w.G(0, "ENDSEC");
 
   // BLOCKS: one BLOCK...ENDBLK per name in block_names_to_write, its
@@ -1095,13 +1127,16 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   // world coordinates the file's model space uses - base is just a
   // reference point within them, same convention ImportDxf's own Insert()
   // assumes for every other DXF-authored block it reads) written through
-  // WriteDxfBlockMember above.
+  // WriteDxfBlockMember above. Every entity here (BLOCK, each member,
+  // ENDBLK) carries a 330 owner tag back to its own BLOCK_RECORD handle
+  // from the TABLES section above - see that section's own comment for why.
   if (!block_names_to_write.empty()) {
     w.G(0, "SECTION"); w.G(2, "BLOCKS");
     for (const std::string& name : block_names_to_write) {
       const BlockDefinition* def = doc.FindBlock(name);
       if (!def) continue;
-      w.G(0, "BLOCK"); w.G(5, w.Handle()); w.G(8, "0");
+      const std::string& owner = block_record_handles.at(name);
+      w.G(0, "BLOCK"); w.G(5, w.Handle()); w.G(330, owner); w.G(8, "0");
       w.G(2, name);
       w.G(70, 0);
       w.Point(10, def->base);
@@ -1109,9 +1144,9 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
       for (const SceneObject& mo : def->objects) {
         const size_t li = static_cast<size_t>(std::clamp(mo.layer_index, 0, static_cast<int>(layer_names.size()) - 1));
         const Color* mcolor = mo.color_by_layer ? nullptr : &mo.color;
-        WriteDxfBlockMember(w, mo, layer_names[li], mcolor);
+        WriteDxfBlockMember(w, mo, layer_names[li], mcolor, owner);
       }
-      w.G(0, "ENDBLK"); w.G(5, w.Handle()); w.G(8, "0");
+      w.G(0, "ENDBLK"); w.G(5, w.Handle()); w.G(330, owner); w.G(8, "0");
     }
     w.G(0, "ENDSEC");
   }
