@@ -1354,6 +1354,31 @@ class NurbsSurface {
   // std::invalid_argument if `direction` isn't 0/1.
   Result ChangeSeam(int direction, double t);
 
+  // The surface-level counterpart to `NurbsCurve::ReparameterizeRational()`
+  // - see that method's own doc comment for the full mathematical
+  // detail (the one-parameter Mobius family, the per-span local shape
+  // factor, and the shared-control-point continuity correction between
+  // adjacent spans), all identical here. Applied only in `direction`
+  // (0 = U, 1 = V): every control point's own weight is rescaled by a
+  // factor that depends only on its own index along `direction`, so the
+  // SAME factor applies uniformly across every row/column of the other
+  // direction - the direct tensor-product generalization, not a
+  // separate derivation. The other direction's own knot vector, degree,
+  // and control-point count are completely untouched. Exact position
+  // preserved for every control point; only weights change (forcing the
+  // surface rational unless `shape_factor == 1.0`, the exact no-op
+  // case). `out` is built with `direction`'s own knot vector at full
+  // (`Degree(direction)`) multiplicity at every interior breakpoint -
+  // the surface-level equivalent of `ON_NurbsCurve::MakePiecewiseBezier()`,
+  // which has no direct `ON_NurbsSurface` counterpart, built here via
+  // repeated `InsertKnotAt()` instead. Throws std::invalid_argument for
+  // `direction` outside {0, 1} or a non-finite/non-positive
+  // `shape_factor`. Returns Result::Failed if the surface is periodic in
+  // `direction` (the same scope boundary the curve overload carries) or
+  // `Domain(direction)` is degenerate; Result::NoOpAlreadySatisfied for
+  // `shape_factor == 1.0` exactly.
+  Result ReparameterizeRational(int direction, double shape_factor, NurbsSurface& out) const;
+
   // Rebuilds (refits) this surface as a new non-rational NURBS surface
   // with exactly `u_count` x `v_count` control points of degree
   // `u_degree` x `v_degree` and clamped uniform knots over the *same*

@@ -1470,24 +1470,31 @@ void DrawOptionsWindow(Application& app) {
         at = std::clamp(at, 0, static_cast<int>(tb.size()));
         tb.insert(tb.begin() + at, moved);
       } else if (insert_at >= 0 && !insert_command.empty()) {
-        if (const RegisteredCommand* rc = app.Engine().Find(insert_command)) {
+        if (const std::optional<std::string> resolved = ResolveToolbarCommandName(app, insert_command)) {
           const int at = std::clamp(insert_at, 0, static_cast<int>(tb.size()));
-          tb.insert(tb.begin() + at, rc->name);
+          tb.insert(tb.begin() + at, *resolved);
         }
       }
 
       ImGui::Separator();
-      ImGui::TextDisabled("Add a command (click, or drag into the list above)");
+      ImGui::TextDisabled("Add a command (click, or drag into the list above) - aliases included");
       static char search[64] = "";
       ImGui::SetNextItemWidth(240);
       ImGui::InputTextWithHint("##tbsearch", "search commands by name...", search, sizeof(search));
       const std::string needle = ToLower(search);
       static const std::vector<std::string> kAllButtons = AllToolbarButtonCommands();
+      // Aliases (Alias, cmd_misc.cpp) can be added/removed/renamed at
+      // runtime, so unlike the fixed catalog above this list is rebuilt
+      // fresh every frame, not cached in a static - the picker must never
+      // show a since-deleted alias or omit one just added.
+      std::vector<std::string> all_commands = kAllButtons;
+      const std::vector<std::string> aliases = AllToolbarAliasCommands(app);
+      all_commands.insert(all_commands.end(), aliases.begin(), aliases.end());
       ImGui::BeginChild("##tbpicker", ImVec2(0, 200), ImGuiChildFlags_Borders);
       const float cell = 60.0f;
       const int cols = std::max(1, static_cast<int>(ImGui::GetContentRegionAvail().x / cell));
       int col = 0;
-      for (const std::string& cmd : kAllButtons) {
+      for (const std::string& cmd : all_commands) {
         const char* lbl = ToolbarButtonLabel(cmd);
         const std::string label = lbl ? lbl : cmd;
         if (!needle.empty()) {
@@ -1520,7 +1527,15 @@ void DrawOptionsWindow(Application& app) {
           ImGui::TextUnformatted(label.c_str());
           ImGui::EndDragDropSource();
         }
-        if (hovered && !ImGui::GetIO().MouseDown[0]) ImGui::SetTooltip("%s\nClick or drag into the toolbar list above to add it.", cmd.c_str());
+        if (hovered && !ImGui::GetIO().MouseDown[0]) {
+          const auto& engine_aliases = app.Engine().Aliases();
+          const auto alias_it = engine_aliases.find(cmd);
+          if (alias_it != engine_aliases.end()) {
+            ImGui::SetTooltip("%s (alias for \"%s\")\nClick or drag into the toolbar list above to add it.", cmd.c_str(), alias_it->second.c_str());
+          } else {
+            ImGui::SetTooltip("%s\nClick or drag into the toolbar list above to add it.", cmd.c_str());
+          }
+        }
         ImGui::PopID();
         if (++col < cols) { ImGui::SameLine(); } else { col = 0; }
       }

@@ -113,7 +113,10 @@ typedef struct Dino8PluginApi {
   /* Prints a line to the command history. */
   void (*print)(const char* text);
 
-  /* Registers a command line command. `help` may be NULL. */
+  /* Registers a command line command. `help` may be NULL. Returns 0 on
+   * success; non-zero (the command left unregistered) if `name` already
+   * names a real, working command - a built-in or another already-loaded
+   * plug-in's own - rather than silently shadowing it. */
   int (*register_command)(const char* name, const char* help, Dino8CommandFn fn, void* user_data);
 
   /* Runs a command line as if typed ("Box 0,0,0 10,10,0 5"). */
