@@ -50,14 +50,25 @@ namespace dino8::kernel {
 // disclosed scope limits (one crossing chain per face pair, genus-0
 // faces).
 //
-// `Union` and, as of this pass, `SymmetricDifference` both still refuse
-// either operand being a `Brep::Compound()` of two or more lumps (e.g. a
-// prior SymmetricDifference result) with std::invalid_argument - compound
-// lumps that touch or overlap have no single manifold shell for this
-// engine's per-face ray-cast classification to build, the same reason
-// boolean.cpp's own BooleanCombinePlanar/BooleanCombineMixed refuse one for
-// both of those ops too (see boolean_general.cpp's own RefuseCompoundOperand
-// doc comment). `SymmetricDifference` ITSELF is now implemented -
+// `SymmetricDifference` still refuses either operand being a
+// `Brep::Compound()` of two or more lumps (e.g. a prior SymmetricDifference
+// result) with a `BooleanOperationError` - compound lumps that touch or
+// overlap have no single manifold shell for this engine's per-face
+// ray-cast classification to build, the same reason boolean.cpp's own
+// BooleanCombinePlanar/BooleanCombineMixed refuse one for that op too (see
+// boolean_general.cpp's own RefuseCompoundOperand doc comment). `Union`
+// (like `Difference`/`Intersection` before it) now ACCEPTS a compound
+// operand instead - closing the "Multi-body / multi-tool booleans" bullet's
+// own previously-named "compound-operand support for Union... refused on
+// all three engines" gap for the last of the three B-rep engines: this
+// engine's own per-face ray-cast classification already has no notion of
+// which lump a face came from for any op, so Union's own result SHAPE
+// comes back correct for a multi-lump operand exactly as Difference/
+// Intersection's already did - but, like those two, this engine still does
+// NOT recompute the result's true lump structure afterward (it always
+// reports a single lump via `LumpFaceRanges()`, the same already-disclosed
+// bookkeeping gap, not a new one). `SymmetricDifference` ITSELF is now
+// implemented -
 // PARITY_MAP.md's own "Multi-body / multi-tool booleans" bullet previously
 // named this engine as the one B-rep engine with no SymmetricDifference
 // support at all - computed, once both operands are confirmed single-lump,
@@ -94,8 +105,8 @@ namespace dino8::kernel {
 // individually-closed mesh per lump should keep `diff_ab`/`diff_ba`
 // themselves (or call this function directly with `Difference` in each
 // argument order) rather than tessellating the combined return value as one
-// unit. `Difference`/`Intersection` accept a compound operand on either
-// side - they distribute over a compound operand's lumps exactly,
+// unit. `Difference`/`Intersection`/`Union` all accept a compound operand on
+// either side - they distribute over a compound operand's lumps exactly,
 // and this engine's classification (a ClassifyPointVsBrep ray-cast against
 // the OTHER operand's full face list, or the coincident-face override's own
 // per-face normal comparison) already has no notion of which lump a face
@@ -146,12 +157,16 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
 // further Union fold, the identical reason BooleanCombinePlanarNAry/
 // BooleanCombineMixedNAry already refuse it too.
 // `tolerance` is forwarded unchanged to every pairwise call this function
-// makes. Like BooleanCombineMixedNAry/BooleanCombinePlanarNAry, this
-// function refuses a compound (multi-lump) operand at every pairwise fold
-// step - BooleanCombineGeneral() itself now has its own file-local
-// RefuseCompoundOperand guard (boolean_general.cpp), closing the
-// "silently unguarded... by the general engine" gap the "Multi-body /
-// multi-tool booleans" bullet used to name.
+// makes. Every pairwise fold step this function makes is a
+// BooleanCombineGeneral(..., Union, tolerance) call (or, for the final
+// combine, whatever `op` is), and BooleanCombineGeneral() now accepts a
+// compound (multi-lump) operand for Union/Difference/Intersection alike
+// (see that function's own doc comment above) - so a group element MAY
+// itself be a genuine Brep::Compound, the same way BooleanCombinePlanarNAry/
+// BooleanCombineMixedNAry already allow. Only a SymmetricDifference
+// operand is still refused at every fold step, inherited from
+// BooleanCombineGeneral()'s own unconditional SymmetricDifference-operand
+// guard (boolean_general.cpp).
 Brep BooleanCombineGeneralNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
                                 BooleanOp op, double tolerance = 0.001);
 
