@@ -264,16 +264,24 @@ dwicheck "DimP0 = 0,0,0" "the round-tripped DWG dimension's first measured point
 dwicheck "DimP1 = 40,0,0" "the round-tripped DWG dimension's second measured point survived exactly"
 dwicheck "DimOffset = 10" "the round-tripped DWG dimension's own dimension-line offset survived exactly"
 # DWG pattern-fill HATCH: see dwg_script.txt's own matching comment for the
-# full "flows through for free, checked rather than assumed" rationale,
-# and for the sibling BLOCK/INSERT investigation this same pass ran
-# alongside it (genuinely fails on reopen - a real LibreDWG-level
-# named-block-handle-resolution gap, not a Dino8 bug - disclosed in
-# PARITY_MAP.md's own DWG bullet rather than silently left unmentioned).
+# full "flows through for free, checked rather than assumed" rationale.
 dwcheck "Exported $TMPW/dwg_hatch_roundtrip.dwg" "DWG export of a pattern-fill HATCH ran"
 dwicheck "DWG: 1 curve, 0 points, 1 hatch" "the reopened DWG's HATCH entity round-tripped as one real ANSI31 hatch plus its own boundary curve, not unrelated bare curves - the existing DXF pattern-fill HATCH writer's own support flows through to a real binary DWG for free"
 dwicheck "80 object(s) selected" "SelHatch found all 80 reopened ANSI31 pattern-line curves (the boundary curve itself is plain geometry, not part of the hatch's own group, same as every other hatch import in this app; 80 rather than the 81 the DXF-side test gets for the same 10-unit boundary width is this rectangle's own real, confirmed-by-running clip-edge-inclusion count at this Y offset, not a hand-derived guess)"
 dwicheck "CV\[0\] 9.875,50,0" "the reopened hatch's first ANSI31 pattern line starts at the exact, confirmed-by-running boundary edge"
 dwicheck "CV\[1\] 0,60,0" "the reopened hatch's last ANSI31 pattern line ends at the exact, confirmed-by-running opposite edge"
+# DWG BLOCK/INSERT: see dwg_script.txt's own matching comment for the real
+# root cause (LibreDWG's in_dxf.c resolves a BLOCKS-section entity's owner
+# strictly from its own DXF group 330 at R13+) and the fix (a BLOCK_RECORD
+# table entry plus 330 owner tags, ExportDxf/FileExchange.cpp). Checks the
+# reopened file's two flattened instances land back at their own real
+# world placement, not just a bare object count.
+dwcheck "Exported $TMPW/dwg_block_roundtrip.dwg" "DWG export of a Block/Insert ran"
+dwicheck "DWG: 4 curves, 0 points, 2 block instances flattened" "the reopened DWG's BLOCK_HEADER/INSERT structure round-tripped as two flattened block instances (2 member lines each), not the 0 objects a missing BLOCK_RECORD table entry used to leave behind"
+dwicheck "CV\[0\] 200,0,0" "the first instance's own first line kept its exact, unshifted placement (inserted at the block's own base point)"
+dwicheck "CV\[1\] 210,0,0" "the first instance's own first line kept its exact endpoint"
+dwicheck "CV\[0\] 220,5,0" "the second instance's own first line landed at its exact real insertion-point offset"
+dwicheck "CV\[1\] 230,5,0" "the second instance's own first line kept its exact endpoint at that same offset"
 
 # Interactive UI replay: typed command, viewport picks, click-select, Delete, Undo.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -8032,6 +8040,60 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
       cat "$TTL_LOG"; echo "FAIL: --serve-token-file-ttl process exited $TTL_EC, expected 0"; fail=1
     else
       grep -q "^serve: done requests=3$" "$TTL_LOG" && echo "ok   --serve-token-file-ttl server exited cleanly on its own after 3 real HTTP requests" || { cat "$TTL_LOG"; echo "FAIL --serve-token-file-ttl done-summary line missing or wrong"; fail=1; }
+    fi
+  fi
+
+  # --serve-token-file hashed entries ("sha256:HEX"): the file holds only
+  # a digest, never the real bearer secret, closing the "no hashing" gap
+  # named alongside rotation/revocation/expiry above. Real SHA-256 hex
+  # digests below (computed with `sha256sum`, not made up) for two real
+  # tokens - a bare one ("hashedtoken123") and a named one
+  # ("ci3:secretXYZ") - prove the server actually hashes the PRESENTED
+  # token and compares digests, rather than, say, accidentally comparing
+  # the presented plaintext against the stored hex string itself (which
+  # would make every request fail, never succeed).
+  HASH_LOG="$TMPW/serve_token_hash.log"
+  HASH_PATH="$TMPW/serve_tokens_hash.txt"
+  printf 'sha256:79d8dad2f0a04420fd1e0b3c2090350a527c9e8b147bba7a06e8c38ed666a034\nci3:sha256:8800d70b1d06d18497e333a3942da0037e660a66250a081e570073ad533c5ddc\n' > "$HASH_PATH"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 30 "$BIN" --serve 0 --serve-token-file "$HASH_PATH" --serve-max-requests 4 > "$HASH_LOG" 2>&1 &
+  else
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token-file "$HASH_PATH" --serve-max-requests 4 > "$HASH_LOG" 2>&1 &
+  fi
+  HASH_PID=$!
+
+  HASH_PORT=""
+  for _ in $(seq 1 100); do
+    if grep -q "^serve: listening on port " "$HASH_LOG" 2>/dev/null; then
+      HASH_PORT="$(grep "^serve: listening on port " "$HASH_LOG" | head -1 | awk '{print $NF}')"
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ -z "$HASH_PORT" ]; then
+    cat "$HASH_LOG"; echo "FAIL: --serve-token-file (hashed entries) server never printed its listening port within 10s"; fail=1
+    kill "$HASH_PID" 2>/dev/null || true
+    wait "$HASH_PID" 2>/dev/null || true
+  else
+    set +e
+    HASH_CODE_NOAUTH="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'print("should not run")' "http://127.0.0.1:$HASH_PORT/run")"
+    HASH_CODE_WRONG="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer notthetoken' -X POST --data 'print("should not run")' "http://127.0.0.1:$HASH_PORT/run")"
+    HASH_RESP_OK="$(curl -s --max-time 10 -H 'Authorization: Bearer hashedtoken123' -H 'Accept: application/json' -X POST --data 'print("hashed ok")' "http://127.0.0.1:$HASH_PORT/run")"
+    HASH_RESP_NAMED="$(curl -s --max-time 10 -H 'Authorization: Bearer secretXYZ' -H 'Accept: application/json' -X POST --data 'print("named hashed ok")' "http://127.0.0.1:$HASH_PORT/run")"
+    set -e
+    [ "$HASH_CODE_NOAUTH" = "401" ] && echo "ok   --serve-token-file with hashed entries still rejects a request with no Authorization header with 401" || { echo "FAIL --serve-token-file (hashed) no-auth request returned HTTP $HASH_CODE_NOAUTH, expected 401"; fail=1; }
+    [ "$HASH_CODE_WRONG" = "401" ] && echo "ok   --serve-token-file with hashed entries rejects a wrong token with 401 - it genuinely hashes the presented token and compares, not a lucky accident" || { echo "FAIL --serve-token-file (hashed) wrong-token request returned HTTP $HASH_CODE_WRONG, expected 401"; fail=1; }
+    [ "$HASH_RESP_OK" = '{"ok":true,"output":["hashed ok"]}' ] && echo "ok   presenting the real plaintext token authenticates against its file-stored sha256:HEX digest alone, with no spurious \"caller\":\"sha256\" field - the leading \"sha256:\" wasn't misparsed as a NAME: prefix, and the file itself never held the real secret" || { echo "$HASH_RESP_OK"; echo "FAIL --serve-token-file did not accept the real plaintext token for a bare hashed entry, or returned an unexpected caller field"; fail=1; }
+    [ "$HASH_RESP_NAMED" = '{"ok":true,"output":["named hashed ok"],"caller":"ci3"}' ] && echo "ok   a named NAME:sha256:HEX entry hashes and authenticates independently, still echoing its own caller name back in the JSON response" || { echo "$HASH_RESP_NAMED"; echo "FAIL --serve-token-file named-hashed-entry request did not return the expected caller-tagged JSON"; fail=1; }
+
+    set +e; wait "$HASH_PID"; HASH_EC=$?; set -e
+    if [ "$HASH_EC" -eq 124 ]; then
+      cat "$HASH_LOG"; echo "FAIL: --serve-token-file (hashed entries) process hung and was killed by the 30s timeout instead of exiting after --serve-max-requests"; fail=1
+    elif [ "$HASH_EC" -ne 0 ]; then
+      cat "$HASH_LOG"; echo "FAIL: --serve-token-file (hashed entries) process exited $HASH_EC, expected 0"; fail=1
+    else
+      grep -q "^serve: done requests=4$" "$HASH_LOG" && echo "ok   --serve-token-file (hashed entries) server exited cleanly on its own after 4 real HTTP requests" || { cat "$HASH_LOG"; echo "FAIL --serve-token-file (hashed entries) done-summary line missing or wrong"; fail=1; }
     fi
   fi
 
