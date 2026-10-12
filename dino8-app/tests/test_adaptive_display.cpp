@@ -16,7 +16,11 @@
 #include "doc/SceneObject.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/surface.h"
+#include "viewport/AdaptiveTessellation.h"
+#include "viewport/Camera.h"
 
+using dino8::app::Camera;
+using dino8::app::DistanceLodFactor;
 using dino8::app::SceneObject;
 using dino8::kernel::NurbsCurve;
 using dino8::kernel::NurbsSurface;
@@ -88,6 +92,73 @@ int main() {
     o.EnsureAdaptiveDisplay(0.02, 6.0);  // an extreme zoomed-out request - still pinned
     Check(Near(o.Display().built_surface_tolerance, 0.03),
           "a pinned object does not re-tessellate just because the (irrelevant) requested tolerance moved");
+  }
+
+  // --- Per-object distance-based LOD, composed with a real Camera. ---
+  // Viewport::DrawObjects' own adaptive_tolerances_for lambda does exactly
+  // this: a base tolerance times DistanceLodFactor(object_distance,
+  // camera.Distance(), camera.State().perspective), fed straight into
+  // EnsureAdaptiveDisplay - reproduced here against a real Camera (not a
+  // GL/ImGui one, just the pure navigation/state class) so this is a real
+  // integration check of the actual composition the viewport uses, not
+  // just DistanceLodFactor in isolation (test_adaptive_tessellation.cpp
+  // already covers that function on its own).
+  {
+    Camera camera;
+    camera.State().target = Point3d(0, 0, 0);
+    camera.State().eye = Point3d(0, -50, 0);  // target distance = 50
+    camera.State().perspective = true;
+    const double target_distance = camera.Distance();  // 50
+
+    auto make_surface = [] {
+      return SceneObject::MakeSurface(NurbsSurface::FromControlGrid(
+          {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(0, 10, 0), Point3d(10, 10, 0)}, 2, 2, 1, 1));
+    };
+    SceneObject near_object = make_surface();   // sits well in front of the target, toward the eye
+    SceneObject far_object = make_surface();    // sits well behind the target, away from the eye
+    const double base_tolerance = 0.05;
+
+    const double near_distance = (Point3d(0, -40, 0) - camera.State().eye).Length();  // 10: close to the eye
+    const double far_distance = (Point3d(0, 150, 0) - camera.State().eye).Length();    // 200: far past the target
+    const double near_factor = DistanceLodFactor(near_distance, target_distance, camera.State().perspective);
+    const double far_factor = DistanceLodFactor(far_distance, target_distance, camera.State().perspective);
+    Check(near_factor < 1.0, "a real Camera: an object nearer than the target gets a sub-1.0 distance factor");
+    Check(far_factor > 1.0, "a real Camera: an object farther than the target gets a super-1.0 distance factor");
+
+    near_object.EnsureAdaptiveDisplay(0.02, base_tolerance * near_factor);
+    far_object.EnsureAdaptiveDisplay(0.02, base_tolerance * far_factor);
+    Check(near_object.Display().built_surface_tolerance < base_tolerance,
+          "the near object actually builds at a FINER tolerance than the plain zoom-level value");
+    Check(far_object.Display().built_surface_tolerance > base_tolerance,
+          "the far object actually builds at a COARSER tolerance than the plain zoom-level value");
+    Check(near_object.Display().built_surface_tolerance < far_object.Display().built_surface_tolerance,
+          "the near and far objects genuinely end up with two different built tolerances, not one shared value");
+
+    // An object sitting exactly at the target distance is unaffected: it
+    // builds at precisely the plain zoom-level tolerance, same as before
+    // this feature existed.
+    SceneObject target_object = make_surface();
+    const double target_object_distance = (Point3d(0, 0, 0) - camera.State().eye).Length();  // 50, == target_distance
+    const double target_factor = DistanceLodFactor(target_object_distance, target_distance, camera.State().perspective);
+    target_object.EnsureAdaptiveDisplay(0.02, base_tolerance * target_factor);
+    Check(Near(target_object.Display().built_surface_tolerance, base_tolerance),
+          "an object right at the camera's own target distance builds at exactly the plain zoom-level tolerance");
+
+    // Orthographic: the SAME near/far objects must now build at the
+    // IDENTICAL tolerance as each other and as the plain base value - a
+    // true parallel projection has no distance falloff to correct for at
+    // all, so this feature must not invent one.
+    camera.State().perspective = false;
+    const double ortho_near_factor = DistanceLodFactor(near_distance, camera.Distance(), camera.State().perspective);
+    const double ortho_far_factor = DistanceLodFactor(far_distance, camera.Distance(), camera.State().perspective);
+    SceneObject ortho_near = make_surface();
+    SceneObject ortho_far = make_surface();
+    ortho_near.EnsureAdaptiveDisplay(0.02, base_tolerance * ortho_near_factor);
+    ortho_far.EnsureAdaptiveDisplay(0.02, base_tolerance * ortho_far_factor);
+    Check(Near(ortho_near.Display().built_surface_tolerance, base_tolerance),
+          "orthographic: the near object builds at the plain base tolerance, no distance correction");
+    Check(Near(ortho_far.Display().built_surface_tolerance, base_tolerance),
+          "orthographic: the far object builds at the plain base tolerance too - identical, not just close");
   }
 
   if (failures) std::printf("%d FAILED\n", failures);

@@ -429,7 +429,8 @@ if echo "$C2" | grep -q "Bounding box: (30, 0, 9) to (40, 0, 9)"; then
 else
   echo "ok   RemoveSymmetry genuinely broke the live link (copy did NOT follow the source's post-removal move)"
 fi
-c2check "^ok   expect_objects 204" "curve-tools script produced the expected object count"
+c2check "ConvertToBeziers: 4 Bezier span(s)" "ConvertToBeziers now decomposes a surface too (NurbsSurface::DecomposeToBeziers), not just curves - a degree-1 3x3-control-point Plane's 2x2 spans become exactly 4 Bezier patches"
+c2check "^ok   expect_objects 208" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/exchange_script.txt" > "$TMPW/exchange_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -1713,15 +1714,31 @@ print(f'.bmp: max byte value={bmp_max} (of 255)')
 assert bmp_max > 0, '.bmp is black'
 PY
 
-# Render Hdr=Yes with Quality=Raytraced correctly has nothing HDR to save
-# (PathTracer's own output has no parallel HDR capture yet - see the
-# PARITY_MAP.md bullet's own disclosed scope) - a real end-to-end check
-# that this combination fails honestly rather than silently misreporting
-# success or crashing.
+# Render Hdr=Yes with Quality=Raytraced: pixel-level proof (PARITY_MAP.md's
+# "Environments and image-based lighting" item - the last remaining half
+# of its long-disclosed render-to-file HDR gap) that PathTracer::Render's
+# own hdr_rgb_out genuinely carries real, unclamped linear-radiance values
+# too, not just the rasteriser quality - the same glossy-sphere-under-a-
+# point-light scene render_hdr_script.txt already uses, path-traced
+# instead (a stronger Intensity=100 than that one's Intensity=20: the
+# default bilateral denoise here, unlike the rasteriser's own roll-off,
+# averages a lone bright specular pixel with its much dimmer neighbours,
+# so a weaker light's own peak survives tonemapping but not denoising -
+# confirmed empirically, not guessed, against a real build). A second,
+# Hdr=Yes-less raytraced render re-checks the existing per-call-request
+# refusal still holds for this quality too (not loosened by this fix).
 cat > "$TMPW/render_hdr_raytrace_script.txt" <<EOS
 Sphere 0,0,0 5
+SelLast
+RenderAssignMaterialToObjects HdrRtTestMat Gloss=1 Reflectivity=0
+SelNone
+PointLight Intensity=100
+10,0,10
 RenderedViewport
-Render Width=24 Height=24 Quality=Raytraced Samples=4 Bounces=2 Hdr=Yes
+Render Width=24 Height=24 Quality=Raytraced Samples=16 Bounces=2 Hdr=Yes
+SaveRenderWindowAs $TMPW/renderhdr/raytrace_hdr.hdr
+SaveRenderWindowAs $TMPW/renderhdr/raytrace_hdr.exr
+Render Width=24 Height=24 Quality=Raytraced Samples=16 Bounces=2
 SaveRenderWindowAs $TMPW/renderhdr/raytrace_nohdr.hdr
 EOS
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -1729,11 +1746,91 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   RHDRRT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/render_hdr_raytrace_script.txt" 2>&1)" || { echo "$RHDRRT"; echo "FAIL: render_hdr raytrace script exited non-zero"; exit 1; }
 fi
-if echo "$RHDRRT" | grep -qF "! This render has no real HDR data to save"; then
-  echo "ok   Render Hdr=Yes Quality=Raytraced honestly has nothing HDR to save (PathTracer's own output has no parallel HDR capture of its own yet, a separate disclosed gap) rather than silently claiming success"
-else
-  echo "FAIL Render Hdr=Yes Quality=Raytraced"; near "$RHDRRT" "This render has no real HDR data to save"; fail=1
-fi
+rhdrrtcheck() { if echo "$RHDRRT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RHDRRT" "$1"; fail=1; fi; }
+rhdrrtcheck "Saved rendering $TMPW/renderhdr/raytrace_hdr.hdr (24 x 24)" "SaveRenderWindowAs wrote a real .hdr file from a Quality=Raytraced render"
+rhdrrtcheck "Saved rendering $TMPW/renderhdr/raytrace_hdr.exr (24 x 24)" "SaveRenderWindowAs wrote a real .exr file from a Quality=Raytraced render"
+rhdrrtcheck "! This render has no real HDR data to save" "a Quality=Raytraced render with no Hdr=Yes still correctly refuses an .hdr save afterward (the per-call-request refusal is not loosened by adding raytraced HDR capture)"
+python3 - "$TMPW/renderhdr/raytrace_hdr.hdr" "$TMPW/renderhdr/raytrace_hdr.exr" <<'PY' && echo "ok   Quality=Raytraced's own .hdr and .exr captures carry real, unclamped linear-radiance values above 1.0 too - PathTracer::Render's hdr_rgb_out, not just the rasteriser's own second HDR pass" || { echo "FAIL Render Hdr=Yes Quality=Raytraced pixel check"; fail=1; }
+import struct, sys
+
+def load_hdr_flat(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'#?', 'not a Radiance HDR'
+    pos = 0
+    def readline():
+        nonlocal pos
+        end = d.index(b'\n', pos)
+        line = d[pos:end]; pos = end + 1
+        return line
+    readline()
+    while readline() != b'':
+        pass
+    import re
+    m = re.match(rb'-Y (\d+) \+X (\d+)', readline())
+    h, w = int(m.group(1)), int(m.group(2))
+    mx = 0.0
+    above = 0
+    for _ in range(w * h):
+        r, g, b, e = d[pos], d[pos + 1], d[pos + 2], d[pos + 3]
+        pos += 4
+        if e == 0:
+            continue
+        f = 2.0 ** (e - 128 - 8)
+        v = max(r, g, b) * f
+        mx = max(mx, v)
+        if v > 1.0:
+            above += 1
+    return mx, above
+
+def read_le32(b, p): return struct.unpack_from('<i', b, p)[0]
+
+def load_exr_float(path):
+    d = open(path, 'rb').read()
+    assert d[0:4] == b'\x76\x2f\x31\x01', 'not an EXR'
+    pos = 8
+    channels = []
+    data_window = None
+    while True:
+        if d[pos] == 0:
+            pos += 1
+            break
+        name_end = d.index(b'\x00', pos); name = d[pos:name_end].decode(); pos = name_end + 1
+        type_end = d.index(b'\x00', pos); typ = d[pos:type_end].decode(); pos = type_end + 1
+        size = read_le32(d, pos); pos += 4
+        val_start = pos
+        if name == 'channels' and typ == 'chlist':
+            p = val_start
+            end = val_start + size
+            while p < end and d[p] != 0:
+                cend = d.index(b'\x00', p); cname = d[p:cend].decode(); p = cend + 1
+                p += 4 + 4 + 8
+                channels.append(cname)
+        elif name == 'dataWindow':
+            data_window = tuple(read_le32(d, val_start + 4 * i) for i in range(4))
+        pos = val_start + size
+    xmin, ymin, xmax, ymax = data_window
+    w, h = xmax - xmin + 1, ymax - ymin + 1
+    offsets = [struct.unpack_from('<q', d, pos + 8 * i)[0] for i in range(h)]
+    mx = 0.0
+    above = 0
+    for off in offsets:
+        p = off + 8
+        chan_ptrs = [p + ci * w * 4 for ci in range(len(channels))]
+        for x in range(w):
+            v = max(struct.unpack_from('<f', d, cp + x * 4)[0] for cp in chan_ptrs)
+            mx = max(mx, v)
+            if v > 1.0:
+                above += 1
+    return mx, above
+
+hdr_max, hdr_above = load_hdr_flat(sys.argv[1])
+exr_max, exr_above = load_exr_float(sys.argv[2])
+print(f'raytraced .hdr: max={hdr_max:.3f} pixels_above_1.0={hdr_above}')
+print(f'raytraced .exr: max={exr_max:.3f} pixels_above_1.0={exr_above}')
+assert hdr_above > 0, 'raytraced .hdr never exceeds 1.0 anywhere - PathTracer::Render hdr_rgb_out captured nothing genuinely unclamped'
+assert exr_above > 0, 'raytraced .exr never exceeds 1.0 anywhere - PathTracer::Render hdr_rgb_out captured nothing genuinely unclamped'
+assert abs(hdr_max - exr_max) < 0.5 * max(hdr_max, exr_max), f'raytraced .hdr and .exr disagree on the same render far more than RGBE quantization would explain: {hdr_max} vs {exr_max}'
+PY
 head -c 2 "$TMPW/arctic.ppm" | grep -q "P6" && echo "ok   arctic.ppm is a binary PPM" || { echo "FAIL arctic.ppm"; fail=1; }
 # ApplyOcsMapping: AutoCAD's real Arbitrary Axis Algorithm (see
 # render_script.txt's comment for how the tilted circle's exact normal
