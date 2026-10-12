@@ -282,16 +282,24 @@ dwicheck "DimP0 = 0,0,0" "the round-tripped DWG dimension's first measured point
 dwicheck "DimP1 = 40,0,0" "the round-tripped DWG dimension's second measured point survived exactly"
 dwicheck "DimOffset = 10" "the round-tripped DWG dimension's own dimension-line offset survived exactly"
 # DWG pattern-fill HATCH: see dwg_script.txt's own matching comment for the
-# full "flows through for free, checked rather than assumed" rationale,
-# and for the sibling BLOCK/INSERT investigation this same pass ran
-# alongside it (genuinely fails on reopen - a real LibreDWG-level
-# named-block-handle-resolution gap, not a Dino8 bug - disclosed in
-# PARITY_MAP.md's own DWG bullet rather than silently left unmentioned).
+# full "flows through for free, checked rather than assumed" rationale.
 dwcheck "Exported $TMPW/dwg_hatch_roundtrip.dwg" "DWG export of a pattern-fill HATCH ran"
 dwicheck "DWG: 1 curve, 0 points, 1 hatch" "the reopened DWG's HATCH entity round-tripped as one real ANSI31 hatch plus its own boundary curve, not unrelated bare curves - the existing DXF pattern-fill HATCH writer's own support flows through to a real binary DWG for free"
 dwicheck "80 object(s) selected" "SelHatch found all 80 reopened ANSI31 pattern-line curves (the boundary curve itself is plain geometry, not part of the hatch's own group, same as every other hatch import in this app; 80 rather than the 81 the DXF-side test gets for the same 10-unit boundary width is this rectangle's own real, confirmed-by-running clip-edge-inclusion count at this Y offset, not a hand-derived guess)"
 dwicheck "CV\[0\] 9.875,50,0" "the reopened hatch's first ANSI31 pattern line starts at the exact, confirmed-by-running boundary edge"
 dwicheck "CV\[1\] 0,60,0" "the reopened hatch's last ANSI31 pattern line ends at the exact, confirmed-by-running opposite edge"
+# DWG BLOCK/INSERT: see dwg_script.txt's own matching comment for the real
+# root cause (LibreDWG's in_dxf.c resolves a BLOCKS-section entity's owner
+# strictly from its own DXF group 330 at R13+) and the fix (a BLOCK_RECORD
+# table entry plus 330 owner tags, ExportDxf/FileExchange.cpp). Checks the
+# reopened file's two flattened instances land back at their own real
+# world placement, not just a bare object count.
+dwcheck "Exported $TMPW/dwg_block_roundtrip.dwg" "DWG export of a Block/Insert ran"
+dwicheck "DWG: 4 curves, 0 points, 2 block instances flattened" "the reopened DWG's BLOCK_HEADER/INSERT structure round-tripped as two flattened block instances (2 member lines each), not the 0 objects a missing BLOCK_RECORD table entry used to leave behind"
+dwicheck "CV\[0\] 200,0,0" "the first instance's own first line kept its exact, unshifted placement (inserted at the block's own base point)"
+dwicheck "CV\[1\] 210,0,0" "the first instance's own first line kept its exact endpoint"
+dwicheck "CV\[0\] 220,5,0" "the second instance's own first line landed at its exact real insertion-point offset"
+dwicheck "CV\[1\] 230,5,0" "the second instance's own first line kept its exact endpoint at that same offset"
 
 # Interactive UI replay: typed command, viewport picks, click-select, Delete, Undo.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
