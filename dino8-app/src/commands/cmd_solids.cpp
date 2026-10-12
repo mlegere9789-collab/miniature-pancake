@@ -620,7 +620,11 @@ class ExtrudeCommand : public Command {
   bool both_ = false, solid_ = true;
 };
 
-// Revolve selected curves around an axis defined by two points.
+// Revolve selected curves around an axis defined by two points. `Output`
+// (Surface/SubD, the command catalogue's own documented option - see
+// PARITY_MAP.md's "ExtrudeCrv / Revolve producing a SubD object directly")
+// defaults to Surface, matching every pre-existing script/test that invokes
+// Revolve without it.
 class RevolveCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select curves to revolve"); }
@@ -628,6 +632,10 @@ class RevolveCommand : public Command {
     for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) ids_.push_back(id); }
     if (ids_.empty()) { ctx.Warn("Select curves"); Finish(); return; }
     WantPoint("Start of revolve axis");
+    options = {{"Output", output_, {"Surface", "SubD"}, false, false}};
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Output") { output_ = v; options[0].value = output_; }
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ctx.SetLastPoint(p);
@@ -647,7 +655,21 @@ class RevolveCommand : public Command {
       rec.num = {{"ax", a_->x}, {"ay", a_->y}, {"az", a_->z}, {"bx", p.x}, {"by", p.y}, {"bz", p.z}};
       std::optional<SceneObject> built = RebuildRevolve(ctx, *o->curve, rec);
       if (!built) continue;
-      const ObjectId new_id = ctx.Doc().Add(std::move(*built));
+      ObjectId new_id = ctx.Doc().Add(std::move(*built));
+      if (output_ == "SubD") {
+        // Tessellates the just-built Brep of revolution into a genuine SubD
+        // control net - the same ConvertObjectToSubD construction
+        // SubDRevolve (cmd_subd.cpp) already uses and tests. History is
+        // deliberately not recorded for this branch: RebuildOneHistoryObject
+        // (cmd_history.cpp)'s own "Revolve" case always calls RebuildRevolve,
+        // which only ever returns a Brep - a later UpdateHistory would
+        // silently rebuild this object back into a Brep, losing its SubD-
+        // ness, the same honest scope limit SubDLoft's own Join option
+        // already discloses for History.
+        const ObjectId subd_id = ConvertObjectToSubD(ctx, new_id);
+        if (subd_id != kNoObject) new_id = subd_id;
+        continue;
+      }
       RecordHistoryIfEnabled(ctx, new_id, "Revolve", {id}, rec.num);
     }
     Finish();
@@ -656,6 +678,7 @@ class RevolveCommand : public Command {
   void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
   std::vector<ObjectId> ids_;
   std::optional<Point3d> a_;
+  std::string output_ = "Surface";
 };
 
 // Loft: surface through the selected curves (in selection order). `straight`

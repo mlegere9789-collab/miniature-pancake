@@ -220,3 +220,20 @@ SubDMultiPipe
 SelLast
 What
 @expect_objects 23
+# --- Revolve Output=SubD: the plain Revolve command's own documented
+# "Output" option (data/commands.json already lists it; PARITY_MAP.md's own
+# "ExtrudeCrv / Revolve producing a SubD object directly" item) is now
+# wired for real - distinct from the separate SubDRevolve command above
+# (both exist in real Rhino too: a dedicated SubD-menu command alongside an
+# Output option on the plain command). Converts the same way, via
+# ConvertObjectToSubD (cmd_common.h/cmd_subd.cpp).
+SelAll
+Hide
+Circle 500,0,0 5
+SelCrv
+Revolve Output=SubD
+520,-10,0
+520,10,0
+SelLast
+What
+@expect_objects 25
