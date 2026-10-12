@@ -320,6 +320,43 @@ struct BrepClosestPointResult {
 BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b, int u_divisions = 20,
                                            int v_divisions = 20, int trim_samples_per_edge = 24);
 
+// Closes PARITY_MAP.md's own disclosed "Point classification vs exact
+// B-rep" gap: `ClassifyPointVsSolid`/`ClassifyPointVsMixedSolid`
+// (boolean.h) classify a point against this kernel's own internal,
+// already-split `PlanarFace`/`MixedFace` lists built mid-boolean, never
+// against an arbitrary, already-built `ON_Brep` directly - they are not
+// a general-purpose query a caller could reach for on its own. This is
+// the real one: the exact (non-tessellated), Brep-level counterpart of
+// `Mesh::ContainsPoint()`'s own single-ray mesh test, reusing - not
+// duplicating - `BooleanCombineGeneral`'s own internal multi-direction
+// ray-cast point classifier (this file's neighbor family, `FireRayAtBrep`/
+// `ClosestPointOnBrep` above, already exposes that engine's other
+// internal ray/closest-point machinery the same way). Casts up to 8
+// generic (golden-ratio-derived, near-icosahedral) ray directions in
+// turn, each scanning every face of `brep` via the exact
+// `IntersectCurveSurface()`/`FaceContainsUV()` pipeline and parity-
+// counting genuine crossings; whenever a hit lands too close to a
+// face's own trim/domain boundary to parity-count reliably, that
+// direction is abandoned and the next one tried, so one grazing hit
+// can't silently flip the answer. Returns false (outside) only once
+// every direction has either come back clean or been exhausted.
+// `ray_length`, left at its default of 0, is computed automatically
+// from the real union of every face's own `SurfaceOf()->BoundingBox()`
+// (4x that union's diagonal plus 1, the same margin this engine's own
+// internal callers already use) - deliberately NOT `ON_Brep::
+// BoundingBox()` itself, which `IntersectBrepByPlane()`'s own doc
+// comment above already discloses as degenerate for this kernel's own
+// untrimmed `Box()`-style faces in this OpenNURBS version; pass a
+// positive value explicitly only to override the computed default.
+// Throws std::invalid_argument if `brep` has no faces. Honestly scoped
+// exactly as every other query in this family already is: a non-solid
+// (open) Brep has no well-defined inside, and the result is then not
+// geometrically meaningful - this function does not detect that case,
+// the same precondition `FireRayAtBrep`/`ClosestPointOnBrep` already
+// leave to the caller.
+bool ContainsPointExact(const Point3d& point, const ON_Brep& brep, double ray_length = 0,
+                         const IntersectOptions& opt = IntersectOptions(), double tol = 1e-6);
+
 // A curve/plane crossing - the curve-level counterpart to CurveSurfaceHit
 // above, but against a caller-supplied INFINITE ON_Plane rather than a
 // bounded ON_Surface. PARITY_MAP.md's own "Curve/plane intersection" gap:
