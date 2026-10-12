@@ -353,13 +353,12 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
 }
 
 bool Viewport::RenderToImage(GlRenderer& renderer, const FrameContext& base, int w, int h, int supersample,
-                             bool arctic, std::vector<unsigned char>& rgb, std::string& error, std::array<double, 4> blowup) {
+                             bool arctic, std::vector<unsigned char>& rgb, std::string& error, std::array<double, 4> blowup,
+                             std::vector<float>* hdr_rgb_out) {
   w = std::clamp(w, 1, 8192);
   h = std::clamp(h, 1, 8192);
   supersample = std::clamp(supersample, 1, 4);
   while (supersample > 1 && (w * supersample > 8192 || h * supersample > 8192)) --supersample;
-  RenderTarget rt;
-  if (!rt.Resize(w * supersample, h * supersample)) { error = "Could not create a render buffer of " + std::to_string(w) + " x " + std::to_string(h); return false; }
   FrameContext ctx = base;
   ctx.for_render = true;
   ctx.arctic = arctic;
@@ -367,36 +366,78 @@ bool Viewport::RenderToImage(GlRenderer& renderer, const FrameContext& base, int
   ctx.preview_points = nullptr;
   ctx.cursor_marker.reset();
   const double aspect = static_cast<double>(w) / h;
-  rt.Bind();
-  Color top, bottom;
-  BackgroundFor(DisplayMode::Rendered, ctx.doc, arctic, top, bottom);
-  renderer.SetMatrices(camera_.ViewMatrix(), camera_.BlowupProjectionMatrix(aspect, blowup[0], blowup[1], blowup[2], blowup[3]));
-  renderer.ClearGradient(top, bottom);
-  DrawBackgroundImage(renderer, ctx.doc, DisplayMode::Rendered, arctic, true, camera_, aspect);
-  UpdateEnvironmentMap(renderer, ctx.doc, DisplayMode::Rendered, arctic);
-  renderer.EnableDepthTest(true);
-  renderer.EnableBlend(true);
-  DrawScene(renderer, ctx, DisplayMode::Rendered, aspect);
-  renderer.EnableDepthTest(true);
-  std::vector<unsigned char> big;
-  rt.ReadPixels(big);
-  RenderTarget::Unbind();
-  // Box-filter the supersampled image down.
-  rgb.assign(static_cast<size_t>(w) * h * 3, 0);
-  const int W = w * supersample;
+  // Shared by both the ordinary and (if requested) HDR passes below: binds
+  // `target`, clears it and draws one full frame into whatever is
+  // currently bound - identical scene, identical camera, so the two passes
+  // can only ever differ in the render target's own pixel format and
+  // GlRenderer::SetHdrOutput's state, never in what gets drawn.
+  auto draw_one_pass = [&](RenderTarget& target) {
+    target.Bind();
+    Color top, bottom;
+    BackgroundFor(DisplayMode::Rendered, ctx.doc, arctic, top, bottom);
+    renderer.SetMatrices(camera_.ViewMatrix(), camera_.BlowupProjectionMatrix(aspect, blowup[0], blowup[1], blowup[2], blowup[3]));
+    renderer.ClearGradient(top, bottom);
+    DrawBackgroundImage(renderer, ctx.doc, DisplayMode::Rendered, arctic, true, camera_, aspect);
+    UpdateEnvironmentMap(renderer, ctx.doc, DisplayMode::Rendered, arctic);
+    renderer.EnableDepthTest(true);
+    renderer.EnableBlend(true);
+    DrawScene(renderer, ctx, DisplayMode::Rendered, aspect);
+    renderer.EnableDepthTest(true);
+  };
+  const int W = w * supersample, H = h * supersample;
   const int n = supersample * supersample;
-  for (int y = 0; y < h; ++y) {
-    for (int x = 0; x < w; ++x) {
-      int acc[3] = {0, 0, 0};
-      for (int sy = 0; sy < supersample; ++sy) {
-        for (int sx = 0; sx < supersample; ++sx) {
-          const unsigned char* p = &big[(static_cast<size_t>(y * supersample + sy) * W + static_cast<size_t>(x * supersample + sx)) * 3];
-          acc[0] += p[0]; acc[1] += p[1]; acc[2] += p[2];
+  {
+    RenderTarget rt;
+    if (!rt.Resize(W, H)) { error = "Could not create a render buffer of " + std::to_string(w) + " x " + std::to_string(h); return false; }
+    draw_one_pass(rt);
+    std::vector<unsigned char> big;
+    rt.ReadPixels(big);
+    RenderTarget::Unbind();
+    // Box-filter the supersampled image down.
+    rgb.assign(static_cast<size_t>(w) * h * 3, 0);
+    for (int y = 0; y < h; ++y) {
+      for (int x = 0; x < w; ++x) {
+        int acc[3] = {0, 0, 0};
+        for (int sy = 0; sy < supersample; ++sy) {
+          for (int sx = 0; sx < supersample; ++sx) {
+            const unsigned char* p = &big[(static_cast<size_t>(y * supersample + sy) * W + static_cast<size_t>(x * supersample + sx)) * 3];
+            acc[0] += p[0]; acc[1] += p[1]; acc[2] += p[2];
+          }
+        }
+        unsigned char* o = &rgb[(static_cast<size_t>(y) * w + x) * 3];
+        o[0] = static_cast<unsigned char>(acc[0] / n); o[1] = static_cast<unsigned char>(acc[1] / n); o[2] = static_cast<unsigned char>(acc[2] / n);
+      }
+    }
+  }
+  if (hdr_rgb_out) {
+    RenderTarget hdr_rt;
+    if (hdr_rt.Resize(W, H, /*hdr=*/true)) {
+      renderer.SetHdrOutput(true);
+      draw_one_pass(hdr_rt);
+      renderer.SetHdrOutput(false);
+      std::vector<float> big;
+      hdr_rt.ReadPixelsFloat(big);
+      RenderTarget::Unbind();
+      hdr_rgb_out->assign(static_cast<size_t>(w) * h * 3, 0.0f);
+      for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+          float acc[3] = {0, 0, 0};
+          for (int sy = 0; sy < supersample; ++sy) {
+            for (int sx = 0; sx < supersample; ++sx) {
+              const float* p = &big[(static_cast<size_t>(y * supersample + sy) * W + static_cast<size_t>(x * supersample + sx)) * 3];
+              acc[0] += p[0]; acc[1] += p[1]; acc[2] += p[2];
+            }
+          }
+          float* o = &(*hdr_rgb_out)[(static_cast<size_t>(y) * w + x) * 3];
+          o[0] = acc[0] / n; o[1] = acc[1] / n; o[2] = acc[2] / n;
         }
       }
-      unsigned char* o = &rgb[(static_cast<size_t>(y) * w + x) * 3];
-      o[0] = static_cast<unsigned char>(acc[0] / n); o[1] = static_cast<unsigned char>(acc[1] / n); o[2] = static_cast<unsigned char>(acc[2] / n);
     }
+    // A failed Resize (e.g. an unsupported GL_RGBA16F attachment on some
+    // driver) leaves hdr_rgb_out empty rather than failing the whole
+    // render - the ordinary 8-bit `rgb` output above is still valid either
+    // way, so the caller's own non-empty check is what decides whether an
+    // HDR file can be saved, not this function's own return value.
   }
   // Restore this viewport's own projection for anything drawn afterwards.
   renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(Aspect()));
