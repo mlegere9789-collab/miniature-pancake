@@ -6,10 +6,12 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 
 #include "commands/Command.h"
 #include "doc/SubObjectEdit.h"
@@ -74,6 +76,18 @@ void RegisterRaytraceCommands(CommandEngine&);
 void RegisterSolidToolsCommands(CommandEngine&);
 void UpdateCageCaptives(Document&);  // cmd_solidtools.cpp: re-deforms CageEdit captives when a cage moved
 void UpdateSymmetryLive(Document&);  // cmd_curves2.cpp: re-derives Symmetry's mirrored copies when their source moved
+// The quiet (ctx.Print-suppressed, no-BeginChange-of-its-own) half of every
+// associative-annotation "Update*" command - see UpdateAssociativeAnnotations
+// below, which drives all seven from one per-frame hook the same way
+// UpdateCageCaptives/UpdateSymmetryLive above already drive their own
+// live-update mechanisms, rather than requiring an explicit command run.
+void UpdateAssociativeDimensionsQuiet(CommandContext&);     // cmd_annotate.cpp
+void UpdateAssociativeMeasureDimsQuiet(CommandContext&);    // cmd_annotate2.cpp
+void UpdateAssociativeFieldsQuiet(CommandContext&);         // cmd_annotate2.cpp
+void UpdateAssociativeTitleBlockQuiet(CommandContext&);     // cmd_drafting2.cpp
+void UpdateAssociativePanelScheduleQuiet(CommandContext&);  // cmd_drafting2.cpp
+void UpdateAssociativeGdtSymbolsQuiet(CommandContext&);     // cmd_drafting2.cpp
+void UpdateAssociativeMultiLeadersQuiet(CommandContext&);   // cmd_drafting2.cpp
 void RegisterSelect2Commands(CommandEngine&);
 void RegisterStateCommands(CommandEngine&);
 void RegisterViewToolsCommands(CommandEngine&);
@@ -1121,10 +1135,105 @@ bool Application::ExportDrawing(const std::string& path, bool selected_only, dou
 // Frame
 // ---------------------------------------------------------------------------
 
+// A cheap, approximate "did anything move" signal: the sum of every live
+// object's own bounding box (SceneObject::BoundingBox() - the same
+// lazily-cached box EnsureDisplay()/rendering already computes for every
+// visible object each frame, so this adds no new per-object work beyond
+// what Draw() pays anyway: an object nothing touched this frame is a
+// single "not dirty" check, and an object a transform *did* touch gets
+// the same recompute Draw() would otherwise trigger moments later in this
+// same frame, not a second one). Document::Revision() alone cannot drive
+// this hook: it only ever moves on Add()/Remove() (Document::Touch()'s
+// only callers), while cmd_transform.cpp's ApplyXform - Move/Rotate/
+// Scale/Scale1D/Mirror/Array/... - mutates a SceneObject's own geometry
+// in place and never calls Touch(), so a moved anchor with no
+// accompanying add/remove would never re-trigger a Revision()-only gate
+// (confirmed directly: Revision() does not move across a Scale1D at all).
+// Summing every object's bbox min/max is a deliberately coarse substitute
+// for AutoResolveFrame's own per-object bbox cache (sketch/Constraints.cpp)
+// - cheaper to compute and reason about across seven different commands'
+// heterogeneous anchor shapes (points/planes/radii/directions/table
+// specs/...) than a bespoke per-group fingerprint for each one, at the
+// cost of (rare, accepted) false negatives: a transform that leaves every
+// touched object's AABB bit-for-bit unchanged, such as a rotation exactly
+// about its own bbox center, or an astronomically unlikely sum collision.
+double DocumentGeometrySignature(const Document& doc) {
+  double sum = 0.0;
+  for (const SceneObject& o : doc.Objects()) {
+    const kernel::BoundingBox bb = o.BoundingBox();
+    sum += bb.min.x + bb.min.y + bb.min.z + bb.max.x + bb.max.y + bb.max.z;
+  }
+  return sum;
+}
+
+// Drives every associative annotation/table/GD&T symbol's recompute
+// automatically on a document edit, instead of requiring an explicit
+// UpdateDimensions/UpdateMeasureDims/UpdateFields/UpdateTitleBlock/
+// UpdatePanelSchedule/UpdateGdtSymbols/UpdateMultiLeaders command run -
+// closing PARITY_MAP.md's "no automatic recompute hooked into document
+// edits" gap for "Associative annotation updating".
+//
+// Gated on both Document::Revision() (cheap, catches every Add()/Remove())
+// and DocumentGeometrySignature() (catches an in-place transform Revision()
+// alone would miss - see that function's own comment): idle frames, the
+// overwhelming majority, cost one integer comparison plus one pass of
+// already-cached bbox reads. Both `last_revision`/`last_signature` are
+// re-synced to the *post-update* values, not the ones that triggered the
+// pass, specifically because every one of the seven quiet calls below
+// mutates the document (Remove()+Add(), each bumping Revision() via
+// Touch()) - syncing to the pre-update values would make this hook's own
+// writes look like a fresh edit next frame and loop forever at full cost.
+// None of the seven calls below opens its own BeginChange (see
+// DoUpdateDimensions' comment, cmd_annotate.cpp): their Remove()/Add()
+// calls fold into whatever edit is already pending, so one Undo reverts
+// the user's edit and the dependent annotation rebuild together, not as
+// two separate steps.
+//
+// This document-wide gate only decides whether to run the seven calls at
+// all - it says nothing about *which* group within them actually needs
+// rebuilding, and any one of the seven's own candidate groups could be
+// completely unrelated to whatever just changed. Each DoUpdateXxx quietly
+// narrows that further with its own per-group fingerprint cache (see
+// DoUpdateDimensions' own comment on `fp_cache`): without it, moving any
+// one object anywhere in the document would tear down and rebuild every
+// *other* associative annotation too, constantly handing them fresh ids
+// for no reason - confirmed as a real bug during development (a moved
+// dimension's own rebuild stole "last added" from an unrelated,
+// unmodified MultiLeader elsewhere in the same document, because the
+// MultiLeader got needlessly rebuilt in between).
+void UpdateAssociativeAnnotations(Application& app) {
+  static std::uint64_t last_revision = ~0ull;
+  static double last_signature = std::numeric_limits<double>::quiet_NaN();
+  Document& doc = app.Doc();
+  // Never while a command is still mid-flight (CommandEngine::IsRunning):
+  // confirmed directly, running any of the seven calls below while e.g. a
+  // multi-point FeatureControlFrame/DimAngle/MultiLeader/DimLinear is
+  // between two of its own WantPoint stages derails that command (its
+  // associative-anchor detection silently stopped recording - see the
+  // git history for the exact repro). The user is never mid-keystroke
+  // between a command's own prompts for more than an instant, so waiting
+  // for the engine to go idle again costs at most the rest of that one
+  // command, not a user-visible delay.
+  if (app.Engine().IsRunning()) return;
+  const double signature = DocumentGeometrySignature(doc);
+  if (doc.Revision() == last_revision && signature == last_signature) return;
+  CommandContext ctx(app, doc, app.Engine());
+  UpdateAssociativeDimensionsQuiet(ctx);
+  UpdateAssociativeMeasureDimsQuiet(ctx);
+  UpdateAssociativeFieldsQuiet(ctx);
+  UpdateAssociativeTitleBlockQuiet(ctx);
+  UpdateAssociativePanelScheduleQuiet(ctx);
+  UpdateAssociativeGdtSymbolsQuiet(ctx);
+  UpdateAssociativeMultiLeadersQuiet(ctx);
+  last_revision = doc.Revision();
+  last_signature = DocumentGeometrySignature(doc);
+}
+
 void Application::Frame() {
   if (std::getenv("DINO8_UI_DEBUG") && (ImGui::GetFrameCount() == 5 || ImGui::GetFrameCount() == 90)) { const ImVec4& w = ImGui::GetStyle().Colors[ImGuiCol_WindowBg]; std::fprintf(stderr, "[theme] mode=%d WindowBg=%.2f %.2f %.2f a=%.2f\n", theme_mode, w.x, w.y, w.z, w.w); }
   UpdateCageCaptives(doc_);
   UpdateSymmetryLive(doc_);
+  UpdateAssociativeAnnotations(*this);
   if (const int refreshed = RefreshLiveWorksessions(doc_); refreshed > 0) {
     Notify(std::to_string(refreshed) + (refreshed == 1 ? " worksession reference model auto-reloaded from disk"
                                                          : " worksession reference models auto-reloaded from disk"));

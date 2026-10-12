@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <sstream>
@@ -1653,7 +1655,195 @@ class SelBlockInstanceNamedCommand : public Command {
   std::string name_;
 };
 
+// Shared by the explicit "UpdateMeasureDims" command (quiet=false) and the
+// automatic per-frame associative-recompute hook (quiet=true: ctx.Print
+// output suppressed, no BeginChange of its own - see DoUpdateDimensions'
+// comment in cmd_annotate.cpp for why).
+void DoUpdateMeasureDims(CommandContext& ctx, bool quiet) {
+  auto Say = [&](const std::string& s) { if (!quiet) ctx.Print(s); };
+  // See DoUpdateDimensions' comment in cmd_annotate.cpp: the quiet
+  // (automatic) path only rebuilds a group whose own resolved
+  // measurement/anchor actually changed since the last quiet pass, never
+  // the explicit command - keyed by a stable identity (kind + referenced
+  // anchor ids), never the group's own id `g` (a fresh one every rebuild).
+  static std::map<std::string, std::string> fp_cache;
+  auto Unchanged = [&](const std::string& key, const std::string& fp) {
+    if (!quiet) return false;
+    auto it = fp_cache.find(key);
+    const bool same = it == fp_cache.end() || it->second == fp;
+    fp_cache[key] = fp;
+    return same;
+  };
+  auto Pt = [](const Point3d& p) { std::ostringstream s; s << p.x << ',' << p.y << ',' << p.z; return s.str(); };
+  static const std::vector<std::string> kKinds = {"DimArea", "DimCurveLength", "DimVolume", "DimCreaseAngle", "DimOrdinate"};
+  std::vector<int> groups;
+  std::map<int, std::string> kind_of;
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    auto it = o.user_text.find("Annotation");
+    if (it == o.user_text.end() || std::find(kKinds.begin(), kKinds.end(), it->second) == kKinds.end()) continue;
+    // DimOrdinate always carries DimP0 (its base point, recorded even
+    // when unanchored - see BuildOrdinateDimGroup) rather than
+    // MeasureRefIds/DimRefObj1, so it needs its own admission check.
+    if (!o.user_text.count("MeasureRefIds") && !o.user_text.count("DimRefObj1") && !o.user_text.count("DimP0")) continue;
+    if (o.group_id >= 0 && !kind_of.count(o.group_id)) { kind_of[o.group_id] = it->second; groups.push_back(o.group_id); }
+  }
+  if (groups.empty()) { Say("UpdateMeasureDims: no associative measured dimensions in this document"); return; }
+  if (!quiet) ctx.Doc().BeginChange("UpdateMeasureDims");
+  int updated = 0, skipped = 0;
+  for (int g : groups) {
+    const std::string kind = kind_of[g];
+    std::string ref_ids_tag, at_tag, ref1_tag, ref2_tag;
+    for (const SceneObject& o : ctx.Doc().Objects()) {
+      if (o.group_id != g) continue;
+      if (auto it = o.user_text.find("MeasureRefIds"); it != o.user_text.end()) ref_ids_tag = it->second;
+      if (auto it = o.user_text.find("MeasureAt"); it != o.user_text.end()) at_tag = it->second;
+      if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) ref1_tag = it->second;
+      if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) ref2_tag = it->second;
+    }
+    if (kind == "DimOrdinate") {
+      ON_Plane pl;
+      char dir = 'X';
+      Point3d base, feature;
+      if (!LoadOrdinateDimLayout(ctx.Doc(), g, pl, dir) || !ResolveOrdinateDimPoints(ctx.Doc(), g, base, feature)) { ++skipped; continue; }
+      GlyphSpec old_glyph;
+      const double h = GroupGlyphSpec(ctx, g, old_glyph) ? old_glyph.height : AnnotationTextHeight(ctx);
+      const bool has1 = !ref1_tag.empty(), has2 = !ref2_tag.empty();
+      const ObjectId r1 = has1 ? static_cast<ObjectId>(std::strtoull(ref1_tag.c_str(), nullptr, 10)) : kNoObject;
+      const ObjectId r2 = has2 ? static_cast<ObjectId>(std::strtoull(ref2_tag.c_str(), nullptr, 10)) : kNoObject;
+      std::string end1, end2;
+      for (const SceneObject& o : ctx.Doc().Objects()) {
+        if (o.group_id != g) continue;
+        if (has1 && o.user_text.count("DimRefEnd1")) end1 = o.user_text.at("DimRefEnd1");
+        if (has2 && o.user_text.count("DimRefEnd2")) end2 = o.user_text.at("DimRefEnd2");
+      }
+      const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
+      const DimStyleParams style = StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g));
+      if (Unchanged("Ord:" + ref1_tag + "," + ref2_tag, Pt(base) + "|" + Pt(feature) + "|" + std::string(1, dir) + "|" + std::to_string(h) + "|" + std::to_string(has1) + "," + end1 + "|" + std::to_string(has2) + "," + end2 + "|" + tol)) continue;
+      for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+      double value = 0;
+      const int new_g = BuildOrdinateDimGroup(ctx, base, feature, dir, pl, h, has1, r1, end1.empty() ? "point" : end1,
+                                               has2, r2, end2.empty() ? "point" : end2, &value, style);
+      if (new_g >= 0) {
+        ReapplyToleranceSuffix(ctx, new_g, tol);
+        ++updated;
+        Say("UpdateMeasureDims:   DimOrdinate now " + std::string(1, dir) + " " + FormatMeasurement(value, style.precision, style.suffix));
+      } else ++skipped;
+      continue;
+    }
+    Point3d at;
+    if (!ParsePointTag(at_tag, at)) { ++skipped; continue; }
+    if (kind == "DimCreaseAngle") {
+      if (ref1_tag.empty() || ref2_tag.empty()) { ++skipped; continue; }
+      const ObjectId r1 = static_cast<ObjectId>(std::strtoull(ref1_tag.c_str(), nullptr, 10));
+      const ObjectId r2 = static_cast<ObjectId>(std::strtoull(ref2_tag.c_str(), nullptr, 10));
+      Vector3d d1, d2; bool n1 = false, n2 = false; Point3d c1, c2;
+      if (!ResolveDirectionAnchor(ctx.Doc(), r1, d1, n1, c1) || !ResolveDirectionAnchor(ctx.Doc(), r2, d2, n2, c2)) { ++skipped; continue; }
+      const double c = std::clamp(ON_DotProduct(d1, d2), -1.0, 1.0);
+      const double angle = std::acos(c) * 180.0 / ON_PI;
+      const bool normal = n1 || n2;
+      const Point3d anchor = (c1 + c2) / 2.0;
+      int angular_precision = -1;
+      {
+        const std::string style_name = GroupStyleName(ctx.Doc(), g);
+        if (const AnnotationStyle* st = ctx.Doc().FindAnnotationStyle(style_name)) angular_precision = st->angular_precision;
+      }
+      const std::string text = FormatMeasurement(angle, angular_precision, "deg") +
+                                (normal ? " (crease " + FormatMeasurement(180.0 - angle, angular_precision, "deg") + ")" : "");
+      GlyphSpec old_glyph;
+      const std::string tol = GroupGlyphSpec(ctx, g, old_glyph) ? GroupToleranceSuffix(ctx, g, old_glyph) : "";
+      if (Unchanged("Crease:" + ref1_tag + "," + ref2_tag, Pt(anchor) + "|" + Pt(at) + "|" + text + "|" + tol)) continue;
+      for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+      const int new_g = AddLeaderText(ctx, "DimCreaseAngle", anchor, at, text, {{"DimRefObj1", ref1_tag}, {"DimRefObj2", ref2_tag}, {"MeasureAt", at_tag}});
+      if (new_g >= 0) {
+        ReapplyToleranceSuffix(ctx, new_g, tol);
+        ++updated;
+        Say("UpdateMeasureDims:   DimCreaseAngle now " + text);
+      } else ++skipped;
+      continue;
+    }
+    const MeasureDimKind mk = kind == "DimArea" ? MeasureDimKind::Area : kind == "DimCurveLength" ? MeasureDimKind::Length : MeasureDimKind::Volume;
+    std::vector<ObjectId> ids;
+    for (ObjectId id : ParseObjIdsTag(ref_ids_tag)) if (ctx.Doc().Find(id)) ids.push_back(id);
+    double value = 0; Point3d anchor = at; bool any = false;
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      double v = 0; Point3d a;
+      if (!o || !MeasureOne(*o, mk, v, a)) continue;
+      value += v; anchor = a; any = true;
+    }
+    if (!any) { ++skipped; continue; }
+    const std::string text = MeasureDimText(mk, value, Units(ctx), StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g)).precision);
+    GlyphSpec old_glyph;
+    const std::string tol = GroupGlyphSpec(ctx, g, old_glyph) ? GroupToleranceSuffix(ctx, g, old_glyph) : "";
+    if (Unchanged(kind + ":" + ref_ids_tag, Pt(anchor) + "|" + Pt(at) + "|" + text + "|" + tol)) continue;
+    for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+    const int new_g = AddLeaderText(ctx, kind, anchor, at, text, {{"MeasureRefIds", ObjIdsTag(ids)}, {"MeasureAt", at_tag}});
+    if (new_g >= 0) {
+      ReapplyToleranceSuffix(ctx, new_g, tol);
+      ++updated;
+      Say("UpdateMeasureDims:   " + kind + " now " + text);
+    } else ++skipped;
+  }
+  Say("UpdateMeasureDims: " + std::to_string(updated) + " updated, " + std::to_string(skipped) + " skipped");
+}
+
+// Shared by "UpdateFields" (quiet=false) and the per-frame hook (quiet=true)
+// - same contract as DoUpdateMeasureDims above.
+void DoUpdateFields(CommandContext& ctx, bool quiet) {
+  auto Say = [&](const std::string& s) { if (!quiet) ctx.Print(s); };
+  // See DoUpdateDimensions' comment in cmd_annotate.cpp - keyed by kind +
+  // referenced ids (FieldRefIds), not the group's own id `g`. A Field with
+  // no refs at all (Filename/Date/CurrentLayer/ObjectCount) keys purely on
+  // its kind, so two indistinguishable fields of that same no-ref kind
+  // would share one cache entry; a rare, low-impact corner this accepts
+  // rather than tagging every Field with its own synthetic identity.
+  static std::map<std::string, std::string> fp_cache;
+  auto Unchanged = [&](const std::string& key, const std::string& fp) {
+    if (!quiet) return false;
+    auto it = fp_cache.find(key);
+    const bool same = it == fp_cache.end() || it->second == fp;
+    fp_cache[key] = fp;
+    return same;
+  };
+  std::vector<int> groups;
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    auto it = o.user_text.find("Annotation");
+    if (it == o.user_text.end() || it->second != "Field") continue;
+    if (o.group_id >= 0 && std::find(groups.begin(), groups.end(), o.group_id) == groups.end()) groups.push_back(o.group_id);
+  }
+  if (groups.empty()) { Say("UpdateFields: no field text in this document"); return; }
+  if (!quiet) ctx.Doc().BeginChange("UpdateFields");
+  int updated = 0, skipped = 0;
+  for (int g : groups) {
+    std::string kind, ref_tag;
+    for (const SceneObject& o : ctx.Doc().Objects()) {
+      if (o.group_id != g) continue;
+      if (auto it = o.user_text.find("FieldKind"); it != o.user_text.end()) kind = it->second;
+      if (auto it = o.user_text.find("FieldRefIds"); it != o.user_text.end()) ref_tag = it->second;
+    }
+    if (kind.empty()) { ++skipped; continue; }
+    const std::vector<ObjectId> ref_ids = ParseObjIdsTag(ref_tag);
+    std::string text;
+    if (!ResolveFieldValue(ctx, kind, ref_ids, text)) { ++skipped; continue; }
+    GlyphSpec spec;
+    const double h = GroupGlyphSpec(ctx, g, spec) ? spec.height : AnnotationTextHeight(ctx);
+    spec.text = text; spec.height = h;
+    if (Unchanged(kind + ":" + ref_tag, text + "|" + std::to_string(h))) continue;
+    if (RebuildGroupText(ctx, g, spec, {"FieldKind", "FieldRefIds"}) > 0) {
+      ++updated;
+      Say("UpdateFields:   " + kind + " now \"" + text + "\"");
+    } else ++skipped;
+  }
+  Say("UpdateFields: " + std::to_string(updated) + " field(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped" : ""));
+}
+
 }  // namespace
+
+// External linkage for Application.cpp's per-frame hook - see
+// cmd_annotate.cpp's UpdateAssociativeDimensionsQuiet for why no
+// BeginChange happens on this path.
+void UpdateAssociativeMeasureDimsQuiet(CommandContext& ctx) { DoUpdateMeasureDims(ctx, /*quiet=*/true); }
+void UpdateAssociativeFieldsQuiet(CommandContext& ctx) { DoUpdateFields(ctx, /*quiet=*/true); }
 
 void RegisterAnnotate2Commands(CommandEngine& e) {
   const char* curves = "Creates grouped curve geometry (text outlines from the system font) rather than a live annotation object, like every other annotation command in this app.";
@@ -1663,149 +1853,11 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
   Reg(e, "DimVolume", Make<MeasureDimCommand>(MeasureDimCommand::Kind::Volume), CommandStatus::Implemented, curves);
   Reg(e, "DimOrdinate", Make<DimOrdinateCommand>(), CommandStatus::Implemented, curves);
   Reg(e, "DimCreaseAngle", Make<DimCreaseAngleCommand>(), CommandStatus::Implemented, "Angle between two lines or the first planar faces of two objects; no face-level sub-object picking on polysurfaces (nothing in this app has that yet), so a polysurface always measures from its first planar face.");
-  Reg(e, "UpdateMeasureDims", Immediate([](CommandContext& ctx) {
-        static const std::vector<std::string> kKinds = {"DimArea", "DimCurveLength", "DimVolume", "DimCreaseAngle", "DimOrdinate"};
-        std::vector<int> groups;
-        std::map<int, std::string> kind_of;
-        for (const SceneObject& o : ctx.Doc().Objects()) {
-          auto it = o.user_text.find("Annotation");
-          if (it == o.user_text.end() || std::find(kKinds.begin(), kKinds.end(), it->second) == kKinds.end()) continue;
-          // DimOrdinate always carries DimP0 (its base point, recorded even
-          // when unanchored - see BuildOrdinateDimGroup) rather than
-          // MeasureRefIds/DimRefObj1, so it needs its own admission check.
-          if (!o.user_text.count("MeasureRefIds") && !o.user_text.count("DimRefObj1") && !o.user_text.count("DimP0")) continue;
-          if (o.group_id >= 0 && !kind_of.count(o.group_id)) { kind_of[o.group_id] = it->second; groups.push_back(o.group_id); }
-        }
-        if (groups.empty()) { ctx.Print("UpdateMeasureDims: no associative measured dimensions in this document"); return; }
-        ctx.Doc().BeginChange("UpdateMeasureDims");
-        int updated = 0, skipped = 0;
-        for (int g : groups) {
-          const std::string kind = kind_of[g];
-          std::string ref_ids_tag, at_tag, ref1_tag, ref2_tag;
-          for (const SceneObject& o : ctx.Doc().Objects()) {
-            if (o.group_id != g) continue;
-            if (auto it = o.user_text.find("MeasureRefIds"); it != o.user_text.end()) ref_ids_tag = it->second;
-            if (auto it = o.user_text.find("MeasureAt"); it != o.user_text.end()) at_tag = it->second;
-            if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) ref1_tag = it->second;
-            if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) ref2_tag = it->second;
-          }
-          if (kind == "DimOrdinate") {
-            ON_Plane pl;
-            char dir = 'X';
-            Point3d base, feature;
-            if (!LoadOrdinateDimLayout(ctx.Doc(), g, pl, dir) || !ResolveOrdinateDimPoints(ctx.Doc(), g, base, feature)) { ++skipped; continue; }
-            GlyphSpec old_glyph;
-            const double h = GroupGlyphSpec(ctx, g, old_glyph) ? old_glyph.height : AnnotationTextHeight(ctx);
-            const bool has1 = !ref1_tag.empty(), has2 = !ref2_tag.empty();
-            const ObjectId r1 = has1 ? static_cast<ObjectId>(std::strtoull(ref1_tag.c_str(), nullptr, 10)) : kNoObject;
-            const ObjectId r2 = has2 ? static_cast<ObjectId>(std::strtoull(ref2_tag.c_str(), nullptr, 10)) : kNoObject;
-            std::string end1, end2;
-            for (const SceneObject& o : ctx.Doc().Objects()) {
-              if (o.group_id != g) continue;
-              if (has1 && o.user_text.count("DimRefEnd1")) end1 = o.user_text.at("DimRefEnd1");
-              if (has2 && o.user_text.count("DimRefEnd2")) end2 = o.user_text.at("DimRefEnd2");
-            }
-            const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
-            const DimStyleParams style = StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g));
-            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-            double value = 0;
-            const int new_g = BuildOrdinateDimGroup(ctx, base, feature, dir, pl, h, has1, r1, end1.empty() ? "point" : end1,
-                                                     has2, r2, end2.empty() ? "point" : end2, &value, style);
-            if (new_g >= 0) {
-              ReapplyToleranceSuffix(ctx, new_g, tol);
-              ++updated;
-              ctx.Print("UpdateMeasureDims:   DimOrdinate now " + std::string(1, dir) + " " + FormatMeasurement(value, style.precision, style.suffix));
-            } else ++skipped;
-            continue;
-          }
-          Point3d at;
-          if (!ParsePointTag(at_tag, at)) { ++skipped; continue; }
-          if (kind == "DimCreaseAngle") {
-            if (ref1_tag.empty() || ref2_tag.empty()) { ++skipped; continue; }
-            const ObjectId r1 = static_cast<ObjectId>(std::strtoull(ref1_tag.c_str(), nullptr, 10));
-            const ObjectId r2 = static_cast<ObjectId>(std::strtoull(ref2_tag.c_str(), nullptr, 10));
-            Vector3d d1, d2; bool n1 = false, n2 = false; Point3d c1, c2;
-            if (!ResolveDirectionAnchor(ctx.Doc(), r1, d1, n1, c1) || !ResolveDirectionAnchor(ctx.Doc(), r2, d2, n2, c2)) { ++skipped; continue; }
-            const double c = std::clamp(ON_DotProduct(d1, d2), -1.0, 1.0);
-            const double angle = std::acos(c) * 180.0 / ON_PI;
-            const bool normal = n1 || n2;
-            const Point3d anchor = (c1 + c2) / 2.0;
-            int angular_precision = -1;
-            {
-              const std::string style_name = GroupStyleName(ctx.Doc(), g);
-              if (const AnnotationStyle* st = ctx.Doc().FindAnnotationStyle(style_name)) angular_precision = st->angular_precision;
-            }
-            const std::string text = FormatMeasurement(angle, angular_precision, "deg") +
-                                      (normal ? " (crease " + FormatMeasurement(180.0 - angle, angular_precision, "deg") + ")" : "");
-            GlyphSpec old_glyph;
-            const std::string tol = GroupGlyphSpec(ctx, g, old_glyph) ? GroupToleranceSuffix(ctx, g, old_glyph) : "";
-            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-            const int new_g = AddLeaderText(ctx, "DimCreaseAngle", anchor, at, text, {{"DimRefObj1", ref1_tag}, {"DimRefObj2", ref2_tag}, {"MeasureAt", at_tag}});
-            if (new_g >= 0) {
-              ReapplyToleranceSuffix(ctx, new_g, tol);
-              ++updated;
-              ctx.Print("UpdateMeasureDims:   DimCreaseAngle now " + text);
-            } else ++skipped;
-            continue;
-          }
-          const MeasureDimKind mk = kind == "DimArea" ? MeasureDimKind::Area : kind == "DimCurveLength" ? MeasureDimKind::Length : MeasureDimKind::Volume;
-          std::vector<ObjectId> ids;
-          for (ObjectId id : ParseObjIdsTag(ref_ids_tag)) if (ctx.Doc().Find(id)) ids.push_back(id);
-          double value = 0; Point3d anchor = at; bool any = false;
-          for (ObjectId id : ids) {
-            const SceneObject* o = ctx.Doc().Find(id);
-            double v = 0; Point3d a;
-            if (!o || !MeasureOne(*o, mk, v, a)) continue;
-            value += v; anchor = a; any = true;
-          }
-          if (!any) { ++skipped; continue; }
-          const std::string text = MeasureDimText(mk, value, Units(ctx), StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g)).precision);
-          GlyphSpec old_glyph;
-          const std::string tol = GroupGlyphSpec(ctx, g, old_glyph) ? GroupToleranceSuffix(ctx, g, old_glyph) : "";
-          for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-          const int new_g = AddLeaderText(ctx, kind, anchor, at, text, {{"MeasureRefIds", ObjIdsTag(ids)}, {"MeasureAt", at_tag}});
-          if (new_g >= 0) {
-            ReapplyToleranceSuffix(ctx, new_g, tol);
-            ++updated;
-            ctx.Print("UpdateMeasureDims:   " + kind + " now " + text);
-          } else ++skipped;
-        }
-        ctx.Print("UpdateMeasureDims: " + std::to_string(updated) + " updated, " + std::to_string(skipped) + " skipped");
-      }), CommandStatus::Implemented,
+  Reg(e, "UpdateMeasureDims", Immediate([](CommandContext& ctx) { DoUpdateMeasureDims(ctx, /*quiet=*/false); }), CommandStatus::Implemented,
       "Re-derives DimArea/DimCurveLength/DimVolume (summed from every recorded source object's current shape, MeasureRefIds), DimCreaseAngle (from its two recorded objects' current direction, DimRefObj1/DimRefObj2) and DimOrdinate (per point, FindPointAnchor on the base point and, separately, each feature point - DimOrdinateCommand/BuildOrdinateDimGroup) and rebuilds each leader/text in place - the same explicit-recompute shape as UpdateDimensions (cmd_annotate.cpp) and UpdateTitleBlock/UpdatePanelSchedule/UpdateBillOfMaterials (cmd_drafting2.cpp), not an automatic hook on every document edit. A dimension built before DimOrdinate's associativity was added (no MeasureRefIds/DimRefObj1/DimP0 tag), or one whose recorded object(s) no longer measure under their kind (deleted, or a shape edit made a DimArea curve non-closed etc.), is skipped and stays (or reverts to) a static baked measurement; the leader's landing point (MeasureAt) is kept fixed across an update, only the value and arrowhead position change. A DimOrdinate point that was never anchored still carries its built DimP0/DimP1 points, so it re-lays-out identically rather than being skipped. This window fixes the same DimTolerance-drop gap UpdateDimensions had: a tolerance suffix (cmd_drafting2.cpp DimTolerance) on any of these five kinds used to vanish on rebuild, since the rebuilt text was always the freshly recomputed measurement alone; it is now recovered from the DimTolerance.Base tag and re-appended to the new measurement (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h), same fix, same helpers, shared with UpdateDimensions.");
   Reg(e, "Field", Make<FieldCommand>(), CommandStatus::Implemented,
       "Field text: live text driven by a document/object property rather than a hand-typed string - Kind=Filename/FilePath/Date/CurrentLayer/ObjectCount need no selection; Kind=Length/Area/Volume select an object first (same MeasureOne math and prompts as DimArea/DimCurveLength/DimVolume above). Baked as glyph-outline curve geometry like every annotation in this app (not a live TextEntity - same caveat Text/TextObject's own note already gives), so it does not re-flow on its own; UpdateFields re-evaluates it on demand (see that command's own note) the same explicit-recompute way UpdateDimensions/UpdateMeasureDims/UpdateTitleBlock already work for every other associative annotation here.");
-  Reg(e, "UpdateFields", Immediate([](CommandContext& ctx) {
-        std::vector<int> groups;
-        for (const SceneObject& o : ctx.Doc().Objects()) {
-          auto it = o.user_text.find("Annotation");
-          if (it == o.user_text.end() || it->second != "Field") continue;
-          if (o.group_id >= 0 && std::find(groups.begin(), groups.end(), o.group_id) == groups.end()) groups.push_back(o.group_id);
-        }
-        if (groups.empty()) { ctx.Print("UpdateFields: no field text in this document"); return; }
-        ctx.Doc().BeginChange("UpdateFields");
-        int updated = 0, skipped = 0;
-        for (int g : groups) {
-          std::string kind, ref_tag;
-          for (const SceneObject& o : ctx.Doc().Objects()) {
-            if (o.group_id != g) continue;
-            if (auto it = o.user_text.find("FieldKind"); it != o.user_text.end()) kind = it->second;
-            if (auto it = o.user_text.find("FieldRefIds"); it != o.user_text.end()) ref_tag = it->second;
-          }
-          if (kind.empty()) { ++skipped; continue; }
-          const std::vector<ObjectId> ref_ids = ParseObjIdsTag(ref_tag);
-          std::string text;
-          if (!ResolveFieldValue(ctx, kind, ref_ids, text)) { ++skipped; continue; }
-          GlyphSpec spec;
-          const double h = GroupGlyphSpec(ctx, g, spec) ? spec.height : AnnotationTextHeight(ctx);
-          spec.text = text; spec.height = h;
-          if (RebuildGroupText(ctx, g, spec, {"FieldKind", "FieldRefIds"}) > 0) {
-            ++updated;
-            ctx.Print("UpdateFields:   " + kind + " now \"" + text + "\"");
-          } else ++skipped;
-        }
-        ctx.Print("UpdateFields: " + std::to_string(updated) + " field(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped" : ""));
-      }), CommandStatus::Implemented,
+  Reg(e, "UpdateFields", Immediate([](CommandContext& ctx) { DoUpdateFields(ctx, /*quiet=*/false); }), CommandStatus::Implemented,
       "Re-evaluates every Field's live value - Filename/FilePath (the document's own Save path), Date (today), CurrentLayer (the document's current layer name), ObjectCount (non-annotation object count), or Length/Area/Volume (summed from its recorded FieldRefIds via the same MeasureOne math DimArea/DimCurveLength/DimVolume use) - and rebuilds its glyph text in place, replacing the old baked text, the same explicit-recompute shape as UpdateDimensions/UpdateMeasureDims/UpdateTitleBlock rather than an automatic hook on every document edit. A field whose Length/Area/Volume source object(s) are all gone or no longer measurable under their kind is skipped and stays at its last baked text, the same dead-reference rule UpdateMeasureDims/BomRefIds use.");
   Reg(e, "DimRecenterText", OnSelection("Select dimensions to recenter text", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         const int n = EditGroups(ctx, ids, "DimRecenterText", [](GlyphSpec&) {});
