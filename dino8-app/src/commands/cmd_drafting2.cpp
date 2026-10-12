@@ -1033,6 +1033,19 @@ std::string CurrentDateString() {
   return buf;
 }
 
+// A LayoutDetail::scale (page mm per model unit, 0 = free zoom) as a human
+// drawing-scale ratio string ("1:50" for a 50x reduction, "2:1" for a 2x
+// enlargement) - the inverse direction of DetailCommand's own Scale=
+// option (cmd_viewtools.cpp), which takes that same raw mm-per-unit number
+// directly, never a ratio string. Returns "" for a non-positive (free-zoom)
+// scale, which has no sensible ratio to show - callers fall back to the
+// plain "1:1" static default in that case, same as before this existed.
+std::string FormatDrawingScale(double mm_per_model_unit) {
+  if (mm_per_model_unit <= 0) return "";
+  if (mm_per_model_unit >= 1.0) return FormatNumber(mm_per_model_unit) + ":1";
+  return "1:" + FormatNumber(1.0 / mm_per_model_unit);
+}
+
 // TitleBlockCommand: Name defaults to the document's own Settings().title
 // (set via the Document Properties panel, cmd_file.cpp's DocumentProperties)
 // - when the user leaves Name= unset, that default is the *live* document
@@ -1044,11 +1057,20 @@ std::string CurrentDateString() {
 // mode uses. Date works the same way now: left unset, it defaults to (and
 // stays associative to) today's date - tagged "TitleBlockDateAuto"="1",
 // independently of Name's own tag, so either field can be frozen with an
-// explicit Name=/Date= while the other stays live. Scale/Sheet still have no
-// equivalent live document-level source (Sheet's default is merely which
-// layout happened to be active when the title block was placed, not a
-// property of the table itself) so they stay static baked fields either way,
-// same as before this change.
+// explicit Name=/Date= while the other stays live. **Scale now has a real
+// live source too, the narrowest case this bullet's own prior note left
+// open**: when the active layout (the same one `sheet_` itself already
+// snapshots the name of) has exactly one detail with a real (non-free-zoom)
+// scale, Scale left unset defaults to (and, tagged "TitleBlockScaleAuto"="1",
+// stays associative to) that detail's own scale, formatted as a "1:N"/"N:1"
+// ratio (`FormatDrawingScale` above) - a layout with zero or more than one
+// detail has no single well-defined scale to track, so it keeps the old
+// static "1:1" default untagged, exactly as before this existed. Sheet
+// itself still has no equivalent live source (it is merely which layout
+// happened to be active when the title block was placed, not a property
+// the table itself could re-derive - a layout has no id, only a name, which
+// can be renamed or reused for something else entirely) so it stays a
+// static baked field either way.
 class TitleBlockCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
@@ -1057,8 +1079,14 @@ class TitleBlockCommand : public Command {
     name_ = OptionOr(opts, "name", ctx.Doc().Settings().title.empty() ? "Untitled" : ctx.Doc().Settings().title);
     date_auto_ = opts.count("date") == 0;
     date_ = OptionOr(opts, "date", date_auto_ ? CurrentDateString() : "");
+    scale_auto_ = opts.count("scale") == 0;
     scale_ = OptionOr(opts, "scale", "1:1");
     const Layout* L = ctx.App().ActiveLayout();
+    if (scale_auto_) {
+      const std::string derived = (L && L->details.size() == 1) ? FormatDrawingScale(L->details[0].scale) : "";
+      if (!derived.empty()) scale_ = derived;
+      else scale_auto_ = false;  // no single well-defined detail scale - stays the plain static "1:1" default
+    }
     sheet_ = OptionOr(opts, "sheet", L ? L->name : std::string("Model"));
     WantPoint("Title block location (top-left corner)");
   }
@@ -1074,14 +1102,17 @@ class TitleBlockCommand : public Command {
     std::map<std::string, std::string> tags;
     if (name_auto_) tags["TitleBlockAuto"] = "1";
     if (date_auto_) tags["TitleBlockDateAuto"] = "1";
+    if (scale_auto_) tags["TitleBlockScaleAuto"] = "1";
     BuildTableGroup(ctx, spec, "TitleBlock", -1, tags);
     std::string assoc;
     if (name_auto_) assoc += ", Name associative to document title";
     if (date_auto_) assoc += ", Date associative to today";
+    if (scale_auto_) assoc += ", Scale associative to the sheet's own single detail";
     ctx.Print("TitleBlock: " + name_ + " (Sheet " + sheet_ + ", Scale " + scale_ + ")" + assoc);
     Finish();
   }
   std::string name_, date_, scale_, sheet_;
+  bool scale_auto_ = false;
   bool name_auto_ = false, date_auto_ = false;
 };
 
@@ -1890,12 +1921,12 @@ void RegisterDrafting2Commands(CommandEngine& e) {
   // unique to these five, so they are marked Implemented rather than
   // singled out as Partial for sharing it.
   Reg(e, "TitleBlock", Make<TitleBlockCommand>(), CommandStatus::Implemented,
-      "Builds a simple Name/Date/Scale/Sheet field table, not an instance of a linked block definition - inserting one does not track edits to a shared title-block template, the same live-instancing gap as the Block command (cmd_drafting.cpp) has no fix for. Name defaults to (and, without an explicit Name=, stays associative to) the document's own Settings().title, set via the Document Properties panel; Date defaults to (and, without an explicit Date=, stays associative to) today's date - UpdateTitleBlock re-pulls either later, independently, if the title or the date has changed. An explicit Name=/Date= freezes that one field, same as PanelSchedule's Circuits= freezing that table. Scale/Sheet still have no equivalent document-level source and stay static baked fields either way.");
+      "Builds a simple Name/Date/Scale/Sheet field table, not an instance of a linked block definition - inserting one does not track edits to a shared title-block template, the same live-instancing gap as the Block command (cmd_drafting.cpp) has no fix for. Name defaults to (and, without an explicit Name=, stays associative to) the document's own Settings().title, set via the Document Properties panel; Date defaults to (and, without an explicit Date=, stays associative to) today's date; Scale defaults to (and, without an explicit Scale=, stays associative to) the active sheet's own single detail view's current scale, when that sheet has exactly one - UpdateTitleBlock re-pulls any of the three later, independently, if the title, the date, or that detail's scale has changed. An explicit Name=/Date=/Scale= freezes that one field, same as PanelSchedule's Circuits= freezing that table. Sheet still has no equivalent document-level source and stays a static baked field either way (it is merely which layout happened to be active when the title block was placed, not a property the table could re-derive - a layout has no id, only a name).");
   Reg(e, "UpdateTitleBlock", Immediate([](CommandContext& ctx) {
         std::vector<int> groups;
         for (const SceneObject& o : ctx.Doc().Objects())
           if (o.group_id >= 0 && o.user_text.count("Annotation") && o.user_text.at("Annotation") == "TitleBlock" &&
-              (o.user_text.count("TitleBlockAuto") || o.user_text.count("TitleBlockDateAuto")) &&
+              (o.user_text.count("TitleBlockAuto") || o.user_text.count("TitleBlockDateAuto") || o.user_text.count("TitleBlockScaleAuto")) &&
               std::find(groups.begin(), groups.end(), o.group_id) == groups.end())
             groups.push_back(o.group_id);
         if (groups.empty()) { ctx.Print("UpdateTitleBlock: no associative title blocks in this document"); return; }
@@ -1907,27 +1938,43 @@ void RegisterDrafting2Commands(CommandEngine& e) {
           TableSpec spec;
           if (!LoadTableSpec(ctx.Doc(), g, spec)) continue;  // group has no TableData - nothing to rebuild from
           if (spec.rows < 4 || spec.cols < 2 || static_cast<int>(spec.cells.size()) < 8) continue;
-          bool name_auto = false, date_auto = false;
+          bool name_auto = false, date_auto = false, scale_auto = false;
           for (const SceneObject& o : ctx.Doc().Objects()) {
             if (o.group_id != g) continue;
             if (o.user_text.count("TitleBlockAuto")) name_auto = true;
             if (o.user_text.count("TitleBlockDateAuto")) date_auto = true;
+            if (o.user_text.count("TitleBlockScaleAuto")) scale_auto = true;
           }
           std::string changed;
           if (name_auto) { spec.cells[1] = title; changed += "Name now '" + title + "'"; }
           if (date_auto) { spec.cells[3] = today; changed += (changed.empty() ? "" : ", ") + ("Date now '" + today + "'"); }
+          if (scale_auto) {
+            // spec.cells[7] is this group's own Sheet value - the layout
+            // name it was placed on, the only record of which layout to
+            // re-check (a Layout has no id, just a name - see this
+            // command's own registration note below for why that also
+            // means Sheet itself can never be made associative this way).
+            std::string derived;
+            for (const Layout& L : ctx.Doc().Layouts())
+              if (L.name == spec.cells[7] && L.details.size() == 1) { derived = FormatDrawingScale(L.details[0].scale); break; }
+            if (!derived.empty() && derived != spec.cells[5]) {
+              spec.cells[5] = derived;
+              changed += (changed.empty() ? "" : ", ") + ("Scale now '" + derived + "'");
+            }
+          }
           for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
           std::map<std::string, std::string> tags;
           if (name_auto) tags["TitleBlockAuto"] = "1";
           if (date_auto) tags["TitleBlockDateAuto"] = "1";
+          if (scale_auto) tags["TitleBlockScaleAuto"] = "1";
           if (BuildTableGroup(ctx, spec, "TitleBlock", -1, tags) >= 0) {
             ++updated;
-            ctx.Print("UpdateTitleBlock:   " + changed);
+            ctx.Print("UpdateTitleBlock:   " + (changed.empty() ? std::string("unchanged") : changed));
           }
         }
         ctx.Print("UpdateTitleBlock: " + std::to_string(updated) + " table(s) regenerated");
       }), CommandStatus::Implemented,
-      "Re-derives every associative TitleBlock's Name field from the document's current Settings().title (Document Properties) and/or Date field from today's date, replacing the old baked value(s) in place - the associative counterpart to TitleBlock's static bake, following the same explicit-recompute shape as UpdatePanelSchedule/UpdateBillOfMaterials above rather than an automatic hook on every document edit. Name and Date are independent: a TitleBlock built with an explicit Name= (no TitleBlockAuto tag) or Date= (no TitleBlockDateAuto tag) leaves that field untouched while the other, if still auto, keeps updating - same as before this change for a TitleBlock with neither tag.");
+      "Re-derives every associative TitleBlock's Name field from the document's current Settings().title (Document Properties), Date field from today's date, and/or Scale field from its own sheet's single detail view's current scale (see TitleBlockCommand's own registration note above for the single-detail scoping), replacing the old baked value(s) in place - the associative counterpart to TitleBlock's static bake, following the same explicit-recompute shape as UpdatePanelSchedule/UpdateBillOfMaterials above rather than an automatic hook on every document edit. All three fields are independent: a TitleBlock built with an explicit Name=/Date=/Scale= (no TitleBlockAuto/TitleBlockDateAuto/TitleBlockScaleAuto tag, respectively) leaves that one field untouched while the others, if still auto, keep updating - same as before this change for a TitleBlock with none of the three tags.");
   Reg(e, "BillOfMaterials", Make<BillOfMaterialsCommand>(), CommandStatus::Implemented,
       "Associative: the table records which objects (or 'every visible object') it was built from and UpdateBillOfMaterials re-derives every row's count/layer/material/length-area-volume from their current state. Built from an explicit selection, it re-checks only those objects (a deleted one drops out; a new object never joins on its own) - only the Enter/'every visible object' mode picks up newcomers, since only it has a re-scan rule instead of a fixed id list.");
   Reg(e, "PanelSchedule", Make<PanelScheduleCommand>(), CommandStatus::Implemented,

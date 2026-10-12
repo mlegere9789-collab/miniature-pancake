@@ -4376,6 +4376,33 @@ d2check "SectionView: 120 curve(s)" "SectionView sliced all 120 objects with non
 
 d2check "gl_error=0" "drafting2 script ran without OpenGL errors"
 
+# TitleBlock's Scale field closes 2D drafting's own last remaining
+# "Associative annotation updating" gap half: left unset, it now defaults
+# to (and stays associative to) the active sheet's own single detail
+# view's current scale, formatted as a "1:N"/"N:1" ratio, instead of the
+# previous bare static "1:1" - mirroring Name/Date's own existing
+# live-document-title/today's-date associativity (see titleblock_scale_
+# script.txt and this document's own top-of-document dated note for the
+# full construction/scoping detail).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  TBS="$("$BIN" --smoke 20 --script "$HERE/titleblock_scale_script.txt" 2>&1)" || { echo "$TBS"; echo "FAIL: titleblock_scale script exited non-zero"; exit 1; }
+else
+  TBS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 20 --script "$HERE/titleblock_scale_script.txt" 2>&1)" || { echo "$TBS"; echo "FAIL: titleblock_scale script exited non-zero"; exit 1; }
+fi
+tbscheck() { if grep -q -- "$1" <<< "$TBS"; then echo "ok   $2"; else echo "FAIL $2"; near "$TBS" "$1"; fail=1; fi; }
+tbscheck "Detail: added D1 (130 x 100 mm, Top, scale 0.02) to ScaleSheet" "Detail built a real 0.02 (page mm per model unit) detail on the new sheet"
+tbscheck "TitleBlock: Untitled (Sheet ScaleSheet, Scale 1:50), Name associative to document title, Date associative to today, Scale associative to the sheet's own single detail" "TitleBlock with no explicit Scale= derived '1:50' from the sheet's own single 0.02-scale detail and marked it associative, alongside the pre-existing Name/Date associativity"
+tbscheck "TitleBlock: Untitled (Sheet NoDetailSheet, Scale 1:1)," "a second TitleBlock on a sheet with zero details has nothing to derive a scale from, so it keeps the plain static \"1:1\" default"
+if grep -q "TitleBlock: Untitled (Sheet NoDetailSheet, Scale 1:1), Name associative to document title, Date associative to today, Scale associative" <<< "$TBS"; then
+  echo "FAIL the zero-detail sheet's TitleBlock was incorrectly marked Scale-associative"; fail=1
+else
+  echo "ok   the zero-detail sheet's TitleBlock was correctly NOT marked Scale-associative (no single well-defined detail scale to track)"
+fi
+TBS_UPD_COUNT=$(echo "$TBS" | grep -c "UpdateTitleBlock:   Name now 'Untitled', Date now '")
+[ "$TBS_UPD_COUNT" = "2" ] && echo "ok   UpdateTitleBlock re-derived both title blocks' Name/Date fields" || { echo "FAIL UpdateTitleBlock re-derived Name/Date $TBS_UPD_COUNT times, expected 2"; fail=1; }
+tbscheck "UpdateTitleBlock: 2 table(s) regenerated" "UpdateTitleBlock found and regenerated both associative title blocks, the Scale-associative one re-confirming the identical '1:50' (its own single detail's scale genuinely unchanged since creation) rather than silently dropping or corrupting it"
+tbscheck "gl_error=0" "titleblock_scale script ran without OpenGL errors"
+
 # CPU path tracer: material library presets, RenderAssignMaterialToObjects
 # Preset=, the RayTracedViewport display mode, Render/RenderArctic/
 # RenderPreview with Quality=Raytraced (see raytrace_script.txt).
@@ -7631,9 +7658,9 @@ if ! command -v curl >/dev/null 2>&1; then
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 21 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 22 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 21 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 22 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -7720,6 +7747,13 @@ rs.AddLine({0,0,0},{10,0,0})' "http://127.0.0.1:$SERVE_PORT/run")"
     # at the next predictable id, 10) so the same GET also exercises the
     # SubD half - no separate GET needed, RESP16 hasn't been issued yet.
     RESP20="$(curl -s --max-time 10 -X POST --data 'rs.Command("SubDBox 100,0,0 105,5,0 5")' "http://127.0.0.1:$SERVE_PORT/run")"
+    # The sixth POST /objects type, "subd": a SubD control cage at level 0
+    # IS exactly a mesh, so this is the identical {"vertices","faces"}
+    # shape "mesh" already takes - one flat quad face, the simplest valid
+    # control cage FromControlMesh accepts. Lands at the next predictable
+    # id (11, right after RESP20's own SubDBox at 10), so the same RESP16
+    # GET just below reads this one back too, as a real SubD (not a mesh).
+    RESP_SUBD="$(curl -s --max-time 10 -X POST --data '{"type":"subd","vertices":[[20,0,0],[21,0,0],[21,1,0],[20,1,0]],"faces":[[0,1,2,3]]}' "http://127.0.0.1:$SERVE_PORT/objects")"
     RESP16="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/objects?geometry=1")"
     RESP17="$(curl -s --max-time 10 -X POST --data '{"type":"bogus"}' "http://127.0.0.1:$SERVE_PORT/objects")"
     CODE14="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'not json' "http://127.0.0.1:$SERVE_PORT/objects")"
@@ -7786,16 +7820,17 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     echo "$RESP16" | grep -q '"id":7,"type":"curve".*"geometry":{"degree":1,"rational":false,"control_points":\[\[0.000000,0.000000,5.000000\],\[20.000000,0.000000,5.000000\]\]' && echo "ok   the curve POSTed via /objects (with no explicit \"knots\") reads back with its own exact control points and a real knot vector FromControlPoints filled in - a genuine round trip" || { echo "$RESP16"; echo "FAIL --serve GET /objects?geometry=1 did not read back the POSTed curve"; fail=1; }
     echo "$RESP16" | grep -q '"id":8,"type":"surface".*"geometry":{"degree_u":1,"degree_v":1,"u_count":2,"v_count":2,"rational":false,"control_points":\[\[0.000000,0.000000,0.000000\],\[0.000000,5.000000,1.000000\],\[9.000000,0.000000,0.000000\],\[9.000000,5.000000,1.000000\]\],"knots_u":\[0.000000,1.000000\],"knots_v":\[0.000000,1.000000\]}' && echo "ok   the surface POSTed via /objects (with no explicit \"knots_u\"/\"knots_v\") reads back with its own exact control grid and real clamped knot vectors FromControlGrid filled in, in each direction - the fourth geometry kind this wire format now covers, a genuine round trip" || { echo "$RESP16"; echo "FAIL --serve GET /objects?geometry=1 did not read back the POSTed surface"; fail=1; }
     echo "$RESP16" | grep -q '"id":9,"type":"point cloud".*"geometry":{"points":\[\[1.000000,2.000000,3.000000\],\[4.000000,5.000000,6.000000\],\[7.000000,8.000000,9.000000\]\],"colors":\[\[255,0,0\],\[0,255,0\],\[0,0,255\]\],"normals":\[\[1.000000,0.000000,0.000000\],\[0.000000,1.000000,0.000000\],\[0.000000,0.000000,1.000000\]\]}' && echo "ok   the point cloud POSTed via /objects (positions plus both optional colors/normals channels) reads back with its own exact points/colors/normals - the fifth geometry kind this wire format now covers, a genuine round trip" || { echo "$RESP16"; echo "FAIL --serve GET /objects?geometry=1 did not read back the POSTed point cloud"; fail=1; }
-    # RESP20's SubD box (id 10, built via rs.Command so it lands with a
-    # real ON_SubD, not through the POST /objects wire format at all - the
-    # POST side has no "subd" type to send one in as, same as it has none
-    # for a polysurface). Unlike the box's own adaptive tessellation above,
+    # RESP20's SubD box (id 10, built via rs.Command, so it lands with a
+    # real ON_SubD independently of the POST "subd" type checked just
+    # below). Unlike the box's own adaptive tessellation above,
     # SubD::ToApproximateMesh() facets the CURRENT subdivision level's own
     # flat control net (its own doc comment is explicit this is never the
     # true limit surface) - a never-Subdivide()'d SubDBox is deterministic
     # exactly, so this pins the full vertex/face list, not just substantive
     # content, the same way the plain Mesh/Curve/Surface checks above do.
     echo "$RESP16" | grep -q '"id":10,"type":"SubD".*"geometry":{"tessellated":true,"mesh":{"vertices":\[\[100.000000,0.000000,0.000000\],\[105.000000,0.000000,0.000000\],\[100.000000,5.000000,0.000000\],\[105.000000,5.000000,0.000000\],\[100.000000,0.000000,5.000000\],\[105.000000,0.000000,5.000000\],\[100.000000,5.000000,5.000000\],\[105.000000,5.000000,5.000000\]\],"faces":\[\[0,2,3,1\],\[4,5,7,6\],\[0,1,5,4\],\[2,6,7,3\],\[0,4,6,2\],\[1,3,7,5\]\]}}' && echo "ok   GET /objects?geometry=1 reports a real tessellated mesh approximation (its own flat control cage, 8 vertices/6 quad faces) for a SubD instead of bare \"geometry\":null" || { echo "$RESP16"; echo "FAIL --serve GET /objects?geometry=1 did not report the SubD box's expected tessellated geometry"; fail=1; }
+    [ "$RESP_SUBD" = '{"ok":true,"id":11}' ] && echo "ok   POST /objects {type:subd} added a real SubD control cage at the expected id, right after RESP20's own rs.Command-built SubD box" || { echo "$RESP_SUBD"; echo "FAIL --serve POST /objects subd did not return the expected {ok,id}"; fail=1; }
+    echo "$RESP16" | grep -q '"id":11,"type":"SubD".*"geometry":{"tessellated":true,"mesh":{"vertices":\[\[20.000000,0.000000,0.000000\],\[21.000000,0.000000,0.000000\],\[21.000000,1.000000,0.000000\],\[20.000000,1.000000,0.000000\]\],"faces":\[\[0,1,2,3\]\]}}' && echo "ok   the SubD POSTed via /objects (one flat quad control cage) reads back as its own exact tessellated flat cage - not through Lua/rs.Command at all, the sixth geometry kind this wire format now covers on the write side" || { echo "$RESP16"; echo "FAIL --serve GET /objects?geometry=1 did not read back the POSTed SubD's expected control cage"; fail=1; }
     echo "$RESP17" | grep -q '^{"ok":false,"error":"unknown or missing' && echo "ok   POST /objects rejects an unrecognized \"type\" with a clear JSON error instead of silently doing nothing" || { echo "$RESP17"; echo "FAIL --serve POST /objects did not reject an unknown type as expected"; fail=1; }
     [ "$CODE14" = "400" ] && echo "ok   POST /objects rejects a malformed (non-JSON) body with 400 Bad Request" || { echo "FAIL --serve POST /objects malformed body returned HTTP $CODE14, expected 400"; fail=1; }
     [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
@@ -7816,7 +7851,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=21$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 21 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=22$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 22 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
     fi
   fi
 

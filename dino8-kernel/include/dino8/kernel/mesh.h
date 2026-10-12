@@ -207,17 +207,28 @@ class Mesh {
   // of the solid" query nothing here could answer before (every existing
   // query - Volume(), GetCentroid(), GetBoundingBox() - describes the
   // solid as a whole, not a specific point's relationship to it). Uses
-  // the standard ray-casting rule: casts a ray from `point` in the fixed
-  // +X direction and counts how many of the mesh's triangles it crosses
-  // (a quad face's own two triangles, same split Area()/Volume() already
-  // use, each counted independently) - an odd count means `point` is
-  // inside. Only meaningful for a closed, consistently-oriented mesh
+  // the standard ray-casting rule: casts a ray from `point` and counts
+  // how many of the mesh's triangles it crosses (a quad face's own two
+  // triangles, same split Area()/Volume() already use, each counted
+  // independently) - an odd count means `point` is inside. Only
+  // meaningful for a closed, consistently-oriented mesh
   // (IsClosedManifold()), the same requirement Volume() already has, for
   // the same reason: an open surface has no well-defined "inside" at
-  // all. `point` exactly on the boundary, or a ray that happens to pass
-  // exactly through an edge or vertex, is an unhandled degenerate case
-  // (the standard caveat any single-direction ray-cast test has) - not
-  // hardened against here.
+  // all.
+  //
+  // Votes across 5 independent, well-separated irrational-component
+  // directions rather than casting one fixed ray - a single direction,
+  // however carefully chosen, can still graze a vertex or shared edge
+  // exactly for some mesh/point combination (confirmed directly: a point
+  // near a cube corner, with one real fixed direction aimed exactly at
+  // that corner, was misclassified as outside for a genuine, contiguous
+  // range of truly-inside points along that one ray - not a hypothetical
+  // concern). A strict majority (3 of 5, never a tie) is the answer;
+  // reproducing the same grazing failure on a MAJORITY of 5 independent
+  // directions for the same query is vanishingly unlikely for any real
+  // mesh, without this becoming a genuine spatial search. `point` exactly
+  // on the boundary remains an unhandled degenerate case (there is no
+  // single correct in/out answer for a point ON the surface).
   bool ContainsPoint(Point3d point) const;
 
   // The closest point on this mesh's surface to `point` (brute force over
