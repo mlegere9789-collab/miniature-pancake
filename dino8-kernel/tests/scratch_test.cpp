@@ -40,10 +40,23 @@ int main() {
 
   const std::vector<Point2d> small_trim = {Point2d(0.25, 0.25), Point2d(0.75, 0.25), Point2d(0.75, 0.75),
                                             Point2d(0.25, 0.75)};
-  const Brep trimmed_top = Brep::TrimmedPlanarFace(flat_plane, small_trim, true);
+  const Brep trimmed_top = Brep::TrimmedPlanarFaceWelded(flat_plane, small_trim);
+  std::printf("trimmed_top face domain: u=[%g,%g] v=[%g,%g]\n",
+              trimmed_top.raw().m_F[0].SurfaceOf()->Domain(0).Min(),
+              trimmed_top.raw().m_F[0].SurfaceOf()->Domain(0).Max(),
+              trimmed_top.raw().m_F[0].SurfaceOf()->Domain(1).Min(),
+              trimmed_top.raw().m_F[0].SurfaceOf()->Domain(1).Max());
   const auto inside_hits = FireRayAtBrep(Point3d(1.0, 1.0, 10), Vector3d(0, 0, -1), 20.0, trimmed_top.raw(), opt);
   const auto outside_hits = FireRayAtBrep(Point3d(0.2, 0.2, 10), Vector3d(0, 0, -1), 20.0, trimmed_top.raw(), opt);
   std::printf("inside_hits=%zu outside_hits=%zu\n", inside_hits.size(), outside_hits.size());
+  for (const auto& h : outside_hits) {
+    std::printf("  outside hit: uv=(%g,%g) point=(%g,%g,%g)\n", h.uv.x, h.uv.y, h.point.x, h.point.y, h.point.z);
+  }
+  // Also test a point clearly outside the FULL face bounding box, as a
+  // sanity check that FireRayAtBrep's own bbox pruning isn't the thing
+  // masking a real trim-test bug.
+  const auto far_outside_hits = FireRayAtBrep(Point3d(50, 50, 10), Vector3d(0, 0, -1), 20.0, trimmed_top.raw(), opt);
+  std::printf("far_outside_hits=%zu\n", far_outside_hits.size());
 
   try {
     FireRayAtBrep(Point3d(0, 0, 0), Vector3d(0, 0, 0), 20.0, box_a.raw(), opt);
