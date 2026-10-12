@@ -1527,9 +1527,26 @@ sdcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified wit
 # wrapper SubDSweep1/SubDSweep2 already use and this suite already covers.
 sdcheck "SubDRevolve: 1 object(s) converted to SubD" "SubDRevolve ran the real Revolve command on the selected circle and converted its resulting surface to a SubD"
 sdcheck "SubDMultiPipe: 1 object(s) converted to SubD" "SubDMultiPipe ran the real MultiPipe command on the two selected lines and converted its resulting (unioned) mesh to a SubD"
+# Revolve Output=SubD: the plain Revolve command's own documented "Output"
+# option, not the separate SubDRevolve command above - PARITY_MAP.md's own
+# "ExtrudeCrv / Revolve producing a SubD object directly" item, narrowed to
+# its Revolve half. Converts via the same ConvertObjectToSubD helper
+# SubDRevolve/SubDMultiPipe above were refactored to share (cmd_common.h).
+# The id of the resulting SubD is NOT 25 - @expect_objects below counts
+# live objects, but ConvertObjectToSubD deletes the transient Brep and adds
+# a new, higher-numbered object, so ids keep climbing past the live count
+# even as some are deleted along the way (same reason SubDRevolve/
+# SubDMultiPipe above land on ids 20/28, not the running live count either).
+# The bounding box is checked instead - exact, deterministic from the
+# Circle/axis above, and independent of any upstream id shift. On its own
+# this doesn't prove the object is a SubD rather than a leftover Brep, so
+# it's paired with the exact "Faces:.../Edges:.../Crease edges:" shape only
+# SceneObject::Describe()'s own ObjectKind::SubD branch ever prints.
+sdcheck "Faces: 10538" "Revolve Output=SubD's List shows a real SubD-shaped description (Faces/Vertices/Edges/Crease edges - a Brep's own Describe() branch prints only a bare Faces count), not a leftover Brep"
+sdcheck "Bounding box: (495, -5, -24.9925) to (544.997, 5, 24.9925)" "Revolve Output=SubD built its usual Brep of revolution (profile circle radius 5 at x=500, axis at x=520), then converted it in place to a genuine SubD with the same real extent"
 echo "$SD" | grep -E "^(ok|FAIL)"
 if echo "$SD" | grep -q "^FAIL"; then fail=1; fi
-sdcheck "smoke: frames=[0-9]* objects=23" "subd script produced the expected object count"
+sdcheck "smoke: frames=[0-9]* objects=25" "subd script produced the expected object count"
 # Rendering: materials (scripted options), texture mapping, lights, sun, ground plane,
 # Render / RenderArctic / SaveRenderWindowAs, ExtractRenderMesh, .3dm round-trip (see render_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/render_script.txt" > "$TMPW/render_script.txt"
