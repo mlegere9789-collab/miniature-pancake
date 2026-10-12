@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -45,10 +46,16 @@ struct PointCloudNeighbor {
 class PointCloud {
  public:
   int PointCount() const { return cloud_.PointCount(); }
-  void AppendPoint(const Point3d& p) { cloud_.AppendPoint(p); }
+  void AppendPoint(const Point3d& p) {
+    cloud_.AppendPoint(p);
+    spatial_index_.reset();
+  }
 
   Point3d PointAt(int i) const { return cloud_.m_P[i]; }
-  void SetPointAt(int i, const Point3d& p) { cloud_.m_P[i] = p; }
+  void SetPointAt(int i, const Point3d& p) {
+    cloud_.m_P[i] = p;
+    spatial_index_.reset();
+  }
 
   // True only when there is exactly one color per point (ON_PointCloud's
   // own "all or nothing" convention - a partially-set m_C is read back as
@@ -83,16 +90,21 @@ class PointCloud {
   // "select nearby points" tool, a local normal-estimation step, or a
   // nearest-sample lookup needs, which nothing here could answer before
   // (only a per-point-BY-INDEX PointAt() existed; nothing could ask
-  // "which points are near this one"). Exact Euclidean distance to every
-  // point in the cloud, brute force - no spatial acceleration structure
-  // (no kd-tree/R-tree, despite OpenNURBS shipping a real ON_RTree this
-  // could have been layered on), the same "exact answer over every
-  // candidate, no BVH" tradeoff Mesh::DistanceTo() documents for its own
-  // point-to-triangle search; honest about being O(PointCount()) per
-  // query rather than claiming a scalability this doesn't have. Ties
-  // (exactly equal distance) are broken by ascending index, so the
-  // result is fully deterministic and repeatable. If `k >= PointCount()`,
-  // every point is returned, sorted by distance - not an error, the same
+  // "which points are near this one"). Backed by a real spatial
+  // acceleration structure (`SpatialIndex()`, below - an `ON_RTree`
+  // lazily built over every point and cached until the next mutation),
+  // not a brute-force scan of every point: an expanding axis-aligned box
+  // around `query` is searched (doubling its half-width each round,
+  // starting from an estimate derived from this cloud's own point
+  // density) until it contains at least `k` candidates AND the box's own
+  // half-width is at least as large as the k-th candidate's own exact
+  // distance - the standard guarantee that no closer point could possibly
+  // lie outside the box, so the exact k nearest are the result, never an
+  // approximation. Still exact Euclidean distance, never heuristic -
+  // only the SEARCH is accelerated, not the measurement. Ties (exactly
+  // equal distance) are broken by ascending index, so the result is
+  // fully deterministic and repeatable. If `k >= PointCount()`, every
+  // point is returned, sorted by distance - not an error, the same
   // "clamp rather than reject" a request for more neighbors than exist
   // gets elsewhere. Throws std::invalid_argument if `k <= 0` or the cloud
   // has no points (there is no reasonable set of "nearest points" to a
@@ -102,16 +114,23 @@ class PointCloud {
 
   // Every point within `radius` of `query` (inclusive: distance <=
   // radius), sorted by ascending distance - the search a "select points
-  // near here" tool or a local-density/outlier check needs. Exact
-  // Euclidean distance to every point, brute force (same
-  // no-acceleration-structure tradeoff as KNearest() above, and the same
-  // ascending-index tie-break for determinism). An empty result is not an
-  // error - nothing lying within `radius` is a legitimate answer, not a
-  // failed query, so an empty cloud or a radius smaller than every
-  // distance both just return an empty vector. A negative `radius` IS
-  // rejected: throws std::invalid_argument (there is no such thing as a
-  // negative-radius neighborhood, so this can only be a caller bug, not
-  // a sparse region).
+  // near here" tool or a local-density/outlier check needs. Backed by
+  // the same `SpatialIndex()` R-tree KNearest() above uses: a single
+  // axis-aligned box of half-width `radius` around `query` prunes every
+  // point whose own bounding box can't possibly fall within `radius`
+  // (the box always contains the sphere, so no true match is ever
+  // missed), and the survivors are then filtered to the exact sphere by
+  // real Euclidean distance - so a sparse region's query touches only
+  // the points actually near it, not the whole cloud, while the
+  // reported distances remain exact, never approximated by the box
+  // itself. Same ascending-index tie-break for determinism as
+  // KNearest(). An empty result is not an error - nothing lying within
+  // `radius` is a legitimate answer, not a failed query, so an empty
+  // cloud or a radius smaller than every distance both just return an
+  // empty vector. A negative `radius` IS rejected: throws
+  // std::invalid_argument (there is no such thing as a negative-radius
+  // neighborhood, so this can only be a caller bug, not a sparse
+  // region).
   std::vector<PointCloudNeighbor> PointsWithinRadius(Point3d query, double radius) const;
 
   // Every point within `band` of an infinite `plane` (|signed distance| <=
@@ -363,9 +382,27 @@ class PointCloud {
   static Result LoadLas(const std::string& path, PointCloud& out_cloud);
 
   const ON_PointCloud& raw() const { return cloud_; }
+  // A caller that moves/adds points directly through this mutable escape
+  // hatch (rather than through SetPointAt()/AppendPoint() above, which
+  // both invalidate SpatialIndex()'s own cache) is responsible for not
+  // relying on a stale cached index afterward - the same "the side
+  // tables are only kept in lockstep by the methods that know to clear
+  // them" caveat Brep::raw() already carries for its own cached tables.
   ON_PointCloud& raw() { return cloud_; }
 
  private:
+  // Lazily built on first KNearest()/PointsWithinRadius() call, cached
+  // until AppendPoint()/SetPointAt()/Transform() next changes a point's
+  // position (see each one's own call site). A shared_ptr, not a plain
+  // member, so copying this PointCloud (Transform()'s own "returns a
+  // transformed copy" convention, or an ordinary value copy) shares the
+  // built tree with the copy until THAT copy's own mutator next resets
+  // its own pointer - cheap for the common "read-only copy" case, and
+  // never a correctness risk, since resetting one shared_ptr never
+  // touches the tree another copy's own pointer still points at.
+  const ON_RTree& SpatialIndex() const;
+  mutable std::shared_ptr<ON_RTree> spatial_index_;
+
   ON_PointCloud cloud_;
 };
 
