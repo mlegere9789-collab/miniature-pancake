@@ -189,7 +189,7 @@ class NurbsSurface {
   // At `rows` values of t in [0, 1], this samples each rail's own
   // position plus its host surface's CROSS-BOUNDARY partial derivatives
   // (purely in the fixed direction - Ds^i or Dt^i, never a mixed term)
-  // up to order `continuity` (1 = G1, 2 = G2, 3 = G3), each surface's own
+  // up to order `continuity` (1 = G1, 2 = G2, 3 = G3, 4 = G4), each surface's own
   // odd-order derivatives sign-flipped when its own fixed parameter sits
   // at Domain.Min() (increasing from there moves INTO the surface, the
   // opposite of the "outward, into the gap the blend crosses" direction
@@ -206,7 +206,7 @@ class NurbsSurface {
   // reproduced EXACTLY as the result's own isocurve at that row's station
   // parameter, not merely approximated.
   //
-  // Returns Result::Failed if continuity is outside {1, 2, 3}, rows < 2,
+  // Returns Result::Failed if continuity is outside {1, 2, 3, 4}, rows < 2,
   // dir0/dir1 are outside {0, 1}, either surface's derivatives fail to
   // evaluate, or any row's two rail points coincide (the same degenerate
   // case BlendCurves() rejects).

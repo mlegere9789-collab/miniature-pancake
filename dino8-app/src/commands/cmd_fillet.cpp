@@ -3217,15 +3217,18 @@ static bool BlendRailsNeedReversal(const ON_Curve& ea, const ON_Curve& eb) {
   return swapped < same;
 }
 
-// Continuity=Tangency/Curvature/G3 -> kernel::NurbsSurface::BlendSurfaces()'s
-// own continuity argument (1/2/3) - shared by BlendSrfCommand and
-// VariableBlendSrfCommand's identical Continuity option.
-static int ContinuityOptionToInt(const std::string& v) { return v == "G3" ? 3 : (v == "Curvature" ? 2 : 1); }
+// Continuity=Tangency/Curvature/G3/G4 -> kernel::NurbsSurface::
+// BlendSurfaces()'s own continuity argument (1/2/3/4) - shared by
+// BlendSrfCommand and VariableBlendSrfCommand's identical Continuity
+// option.
+static int ContinuityOptionToInt(const std::string& v) {
+  return v == "G4" ? 4 : (v == "G3" ? 3 : (v == "Curvature" ? 2 : 1));
+}
 
 class BlendSrfCommand : public Command {
  public:
   void Begin(CommandContext&) override {
-    options = {{"Continuity", "Tangency", {"Tangency", "Curvature", "G3"}, false, false}};
+    options = {{"Continuity", "Tangency", {"Tangency", "Curvature", "G3", "G4"}, false, false}};
     WantPoint("Click the first surface edge (near the edge to blend from)");
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Continuity") continuity_ = ContinuityOptionToInt(v); }
@@ -3275,11 +3278,11 @@ class BlendSrfCommand : public Command {
                                                            continuity_, max_gap, 8, 256, built, &achieved_gap);
     bool ok = exact_ok && std::isfinite(achieved_gap);
     bool used_exact = ok;
-    if (!ok && continuity_ != 3) {
+    if (!ok && continuity_ < 3) {
       // G1/G2 can still fall back to the app's own generic Hermite build
       // (e.g. the exact construction's own degenerate-rail rejection); a
-      // caller-requested G3 has no approximate equivalent to fall back to
-      // at all, so it is reported as a failure instead of silently
+      // caller-requested G3 or G4 has no approximate equivalent to fall
+      // back to at all, so it is reported as a failure instead of silently
       // dropping to a G1/G2 result the caller never asked for.
       auto uv_on = [&](const ON_NurbsSurface& s, const ON_Curve& c, double t01) {
         const ON_Interval d = c.Domain();
@@ -3302,7 +3305,7 @@ class BlendSrfCommand : public Command {
     SceneObject like = *oa;
     ObjectId nid = AddSurfaceFrom(ctx, built, like);
     ctx.Doc().Select(nid, true);
-    const char* cname = continuity_ == 3 ? "G3" : (continuity_ == 2 ? "Curvature" : "Tangency");
+    const char* cname = continuity_ == 4 ? "G4" : (continuity_ == 3 ? "G3" : (continuity_ == 2 ? "Curvature" : "Tangency"));
     ctx.Print(std::string("BlendSrf: blend surface added between object ") + std::to_string(fa.id) + " and " + std::to_string(fb.id) +
                " (Continuity=" + cname + (used_exact ? ", exact kernel blend" : "") + ")");
   }

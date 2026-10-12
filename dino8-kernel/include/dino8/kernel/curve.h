@@ -348,8 +348,9 @@ class NurbsCurve {
   // `continuity` = 1 gives a cubic (order 4 - the same "G1 tangent cubic"
   // this file's own doc comments elsewhere already attribute to
   // BlendCrv), 2 a quintic ("G2 curvature-continuous quintic", matching
-  // Blend), and 3 (the genuine new capability beyond what either app
-  // command builds) a septic.
+  // Blend), 3 a septic, and 4 (the genuine new capability beyond what any
+  // app command builds) a nonic (degree 9) matching position AND all four
+  // derivatives up to the fourth at both ends.
   //
   // `reverse0`/`reverse1` each pick which DIRECTION along that curve's
   // own parametrization the blend continues in, i.e. which of the two
@@ -366,12 +367,10 @@ class NurbsCurve {
   // relies on for a whole-curve reversal, applied here to one end's local
   // derivative data instead).
   //
-  // VALIDATION: `continuity` must be 1, 2 or 3 - only these three are
-  // implemented (a G4+ generalization is the identical construction at a
-  // higher degree, not attempted here since neither this kernel's own
-  // prior art nor the app commands this replaces go past G2 today, and
-  // PARITY_MAP.md's own gap is phrased as "G3+", not any specific higher
-  // bound). `t0` must lie within `curve0.Domain()`, `t1` within
+  // VALIDATION: `continuity` must be 1, 2, 3 or 4 (a G5+ generalization is
+  // the identical construction at a higher degree still, not attempted
+  // here - PARITY_MAP.md's own gap is phrased as "G3+", not any specific
+  // higher bound, and G4 is where this stops). `t0` must lie within `curve0.Domain()`, `t1` within
   // `curve1.Domain()`. Throws `std::invalid_argument` for either.
   // Returns `Result::Failed`, `out` left unchanged, if curve0's position
   // at `t0` coincides (within a relative tolerance of the two points'

@@ -72799,6 +72799,30 @@ void FiniteDiffPureSurfaceDerivs(const ON_Surface& s, int dir, double fixed_u, d
   d3 = (D * -1.0 + B * 2.0 - A * 2.0 + C) * (1.0 / (2.0 * h * h * h));
 }
 
+// G4 counterpart of FiniteDiffPureSurfaceDerivs above, adding the 4th
+// derivative via the standard 5-point centered stencil f'''' (0) =
+// (f(2h) - 4f(h) + 6f(0) - 4f(-h) + f(-2h)) / h^4 - re-expressed in the
+// SAME A/B/C/D-relative-to-f(0) form the other three orders already use
+// (verified directly: substituting f(+-h) = A/B + f(0), f(+-2h) = C/D +
+// f(0) collapses the f(0) coefficient to exactly 1-4+6-4+1 = 0, so it
+// cancels the same way the other three orders' own coefficients already
+// do) - a separate function, not a widened signature, to leave
+// FiniteDiffPureSurfaceDerivs' own existing call sites untouched.
+void FiniteDiffPureSurfaceDerivs4(const ON_Surface& s, int dir, double fixed_u, double fixed_v, double h,
+                                   dino8::kernel::Vector3d& d1, dino8::kernel::Vector3d& d2,
+                                   dino8::kernel::Vector3d& d3, dino8::kernel::Vector3d& d4) {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  FiniteDiffPureSurfaceDerivs(s, dir, fixed_u, fixed_v, h, d1, d2, d3);
+  auto at = [&](double delta) {
+    const ON_3dPoint p = dir == 0 ? s.PointAt(fixed_u + delta, fixed_v) : s.PointAt(fixed_u, fixed_v + delta);
+    return Point3d(p.x, p.y, p.z);
+  };
+  const Point3d p0 = at(0.0);
+  const Vector3d A = at(h) - p0, B = at(-h) - p0, C = at(2 * h) - p0, D = at(-2 * h) - p0;
+  d4 = (C + D - A * 4.0 - B * 4.0) * (1.0 / (h * h * h * h));
+}
+
 // A real cylinder wall (ON_Cylinder::GetNurbForm, the same proven
 // technique this file already uses elsewhere) - genuinely curved in the
 // circular (U) direction, so its cross-boundary derivatives are honestly
@@ -72936,6 +72960,69 @@ void TestNurbsCurveBlendCurvesG3MatchesThirdDerivativeAtBothEnds() {
         "the blend's own 3rd derivative at its end matches curve1's own 3rd derivative at t1 (G3)");
 }
 
+// Reads position + derivatives up to order 4, the G4 counterpart of
+// BlendTestEvaluate above (a separate function rather than widening that
+// one's own signature, to leave every existing G1/G2/G3 call site
+// untouched) - independent of BlendCurves' own internal EvaluateBlendEnd
+// helper, same as BlendTestEvaluate already is for orders 1-3.
+void BlendTestEvaluate4(const dino8::kernel::NurbsCurve& curve, double t, dino8::kernel::Point3d& point,
+                         dino8::kernel::Vector3d& d1, dino8::kernel::Vector3d& d2, dino8::kernel::Vector3d& d3,
+                         dino8::kernel::Vector3d& d4) {
+  double v[15] = {0};
+  Check(curve.raw().Evaluate(t, 4, 3, v), "BlendTestEvaluate4: underlying ON_Curve::Evaluate succeeded");
+  point = dino8::kernel::Point3d(v[0], v[1], v[2]);
+  d1 = dino8::kernel::Vector3d(v[3], v[4], v[5]);
+  d2 = dino8::kernel::Vector3d(v[6], v[7], v[8]);
+  d3 = dino8::kernel::Vector3d(v[9], v[10], v[11]);
+  d4 = dino8::kernel::Vector3d(v[12], v[13], v[14]);
+}
+
+void TestNurbsCurveBlendCurvesG4MatchesFourthDerivativeAtBothEnds() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const NurbsCurve c0 = BlendTestCircle(Point3d(0, 0, 0), 2.0);
+  const NurbsCurve c1 = BlendTestCircle(Point3d(10, 0, 0), 3.0);
+  const double t0 = c0.Domain().min, t1 = c1.Domain().min;
+
+  NurbsCurve out;
+  Check(NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 4, out) == Result::Ok,
+        "BlendCurves(continuity=4) succeeds on two independent circles");
+  Check(out.Degree() == 9, "continuity=4 gives a nonic (degree 9, order 10) Bezier-basis curve");
+  Check(out.ControlPointCount() == 10, "a nonic has exactly 10 control points");
+
+  Point3d p0, p1;
+  Vector3d d0_1, d0_2, d0_3, d0_4, d1_1, d1_2, d1_3, d1_4;
+  BlendTestEvaluate4(c0, t0, p0, d0_1, d0_2, d0_3, d0_4);
+  BlendTestEvaluate4(c1, t1, p1, d1_1, d1_2, d1_3, d1_4);
+
+  const dino8::kernel::Interval out_dom = out.Domain();
+  Point3d out_p0, out_p1;
+  Vector3d out_d0_1, out_d0_2, out_d0_3, out_d0_4, out_d1_1, out_d1_2, out_d1_3, out_d1_4;
+  BlendTestEvaluate4(out, out_dom.min, out_p0, out_d0_1, out_d0_2, out_d0_3, out_d0_4);
+  BlendTestEvaluate4(out, out_dom.max, out_p1, out_d1_1, out_d1_2, out_d1_3, out_d1_4);
+
+  Check(out_p0.DistanceTo(p0) < 1e-9 && out_p1.DistanceTo(p1) < 1e-9, "G4 blend matches both endpoint positions");
+  Check((out_d0_1 - d0_1).Length() < 1e-5 * std::max(1.0, d0_1.Length()) &&
+            (out_d1_1 - d1_1).Length() < 1e-5 * std::max(1.0, d1_1.Length()),
+        "G4 blend matches both endpoints' 1st derivative");
+  Check((out_d0_2 - d0_2).Length() < 1e-5 * std::max(1.0, d0_2.Length()) &&
+            (out_d1_2 - d1_2).Length() < 1e-5 * std::max(1.0, d1_2.Length()),
+        "G4 blend matches both endpoints' 2nd derivative");
+  Check((out_d0_3 - d0_3).Length() < 1e-4 * std::max(1.0, d0_3.Length()) &&
+            (out_d1_3 - d1_3).Length() < 1e-4 * std::max(1.0, d1_3.Length()),
+        "G4 blend matches both endpoints' 3rd derivative");
+  Check(d0_4.Length() > 1e-6 && d1_4.Length() > 1e-6,
+        "sanity: both fixtures' own 4th derivatives are genuinely nonzero");
+  Check((out_d0_4 - d0_4).Length() < 1e-3 * std::max(1.0, d0_4.Length()),
+        "the blend's own 4th derivative at its start matches curve0's own 4th derivative at t0 (G4, the new "
+        "capability this closes)");
+  Check((out_d1_4 - d1_4).Length() < 1e-3 * std::max(1.0, d1_4.Length()),
+        "the blend's own 4th derivative at its end matches curve1's own 4th derivative at t1 (G4)");
+}
+
 void TestNurbsCurveBlendCurvesReverseFlagNegatesOddDerivatives() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -72983,8 +73070,8 @@ void TestNurbsCurveBlendCurvesRejectsInvalidInput() {
 
   Check(throws([&] { NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 0, out); }),
         "BlendCurves rejects continuity == 0");
-  Check(throws([&] { NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 4, out); }),
-        "BlendCurves rejects continuity == 4 (only 1/2/3 are implemented)");
+  Check(throws([&] { NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 5, out); }),
+        "BlendCurves rejects continuity == 5 (only 1/2/3/4 are implemented)");
   Check(throws([&] { NurbsCurve::BlendCurves(c0, c0.Domain().max + 1.0, false, c1, t1, false, 1, out); }),
         "BlendCurves rejects t0 outside curve0's own Domain()");
   Check(throws([&] { NurbsCurve::BlendCurves(c0, t0, false, c1, c1.Domain().max + 1.0, false, 1, out); }),
@@ -73025,7 +73112,7 @@ void TestNurbsSurfaceBlendSurfacesMatchesPositionAndCrossBoundaryDerivatives() {
   const double u1 = u_dom1.Min();  // at_max1 = false below -> fixed at Domain(0).Min()
   const double h0 = u_dom0.Length() * 1e-3, h1 = u_dom1.Length() * 1e-3;
 
-  for (int continuity = 1; continuity <= 3; ++continuity) {
+  for (int continuity = 1; continuity <= 4; ++continuity) {
     const int rows = 6;
     NurbsSurface out;
     const std::string succeeds_msg =
@@ -73062,21 +73149,21 @@ void TestNurbsSurfaceBlendSurfacesMatchesPositionAndCrossBoundaryDerivatives() {
       Check(out_p0.DistanceTo(p0) < 1e-9, p0_msg.c_str());
       Check(out_p1.DistanceTo(p1) < 1e-9, p1_msg.c_str());
 
-      double der_out0[30] = {0}, der_out1[30] = {0};
+      double der_out0[45] = {0}, der_out1[45] = {0};
       Check(out.raw().Evaluate(out_u.Min(), out_v_k, continuity, 3, der_out0), "out.Evaluate at U=min succeeds");
       Check(out.raw().Evaluate(out_u.Max(), out_v_k, continuity, 3, der_out1), "out.Evaluate at U=max succeeds");
 
-      // FiniteDiffPureSurfaceDerivs() returns the RAW (unflipped) partials.
-      // BlendSurfaces() itself negates ODD orders when the fixed parameter
-      // sits at Domain.Min() (at_max0/at_max1 = false here, for both
-      // surfaces - see its own doc comment for why: increasing from Min
-      // moves INTO the surface, the opposite of "outward"), so the ground
-      // truth below must apply that SAME flip before comparing - this is
-      // re-stating BlendSurfaces()'s own documented sign convention, not
-      // re-deriving it.
-      Vector3d fd_d1_0, fd_d2_0, fd_d3_0, fd_d1_1, fd_d2_1, fd_d3_1;
-      FiniteDiffPureSurfaceDerivs(cyl0.raw(), /*dir=*/0, u0, v0, h0, fd_d1_0, fd_d2_0, fd_d3_0);
-      FiniteDiffPureSurfaceDerivs(cyl1.raw(), /*dir=*/0, u1, v1, h1, fd_d1_1, fd_d2_1, fd_d3_1);
+      // FiniteDiffPureSurfaceDerivs()/FiniteDiffPureSurfaceDerivs4() return
+      // the RAW (unflipped) partials. BlendSurfaces() itself negates ODD
+      // orders when the fixed parameter sits at Domain.Min() (at_max0/
+      // at_max1 = false here, for both surfaces - see its own doc comment
+      // for why: increasing from Min moves INTO the surface, the opposite
+      // of "outward"), so the ground truth below must apply that SAME flip
+      // before comparing - this is re-stating BlendSurfaces()'s own
+      // documented sign convention, not re-deriving it.
+      Vector3d fd_d1_0, fd_d2_0, fd_d3_0, fd_d4_0, fd_d1_1, fd_d2_1, fd_d3_1, fd_d4_1;
+      FiniteDiffPureSurfaceDerivs4(cyl0.raw(), /*dir=*/0, u0, v0, h0, fd_d1_0, fd_d2_0, fd_d3_0, fd_d4_0);
+      FiniteDiffPureSurfaceDerivs4(cyl1.raw(), /*dir=*/0, u1, v1, h1, fd_d1_1, fd_d2_1, fd_d3_1, fd_d4_1);
       fd_d1_0 = -fd_d1_0;
       fd_d3_0 = -fd_d3_0;
       fd_d1_1 = -fd_d1_1;
@@ -73118,6 +73205,19 @@ void TestNurbsSurfaceBlendSurfacesMatchesPositionAndCrossBoundaryDerivatives() {
         Check((out_d3_0 - fd_d3_0).Length() < 5e-2 * std::max(1.0, fd_d3_0.Length()), d3_0_msg.c_str());
         Check((out_d3_1 - fd_d3_1).Length() < 5e-2 * std::max(1.0, fd_d3_1.Length()), d3_1_msg.c_str());
       }
+      if (continuity >= 4) {
+        const Vector3d out_d4_0(der_out0[30], der_out0[31], der_out0[32]);
+        const Vector3d out_d4_1(der_out1[30], der_out1[31], der_out1[32]);
+        Check(fd_d4_0.Length() > 1e-6 && fd_d4_1.Length() > 1e-6,
+              "sanity: both cylinders' own circular-direction 4th derivative is genuinely nonzero");
+        const std::string d4_0_msg = row + "the blend's own U=min cross-boundary 4th derivative matches cylinder "
+                                            "0's own finite-difference ground truth (G4, the new capability this "
+                                            "closes)";
+        const std::string d4_1_msg = row + "the blend's own U=max cross-boundary 4th derivative matches cylinder "
+                                            "1's own finite-difference ground truth (G4)";
+        Check((out_d4_0 - fd_d4_0).Length() < 0.2 * std::max(1.0, fd_d4_0.Length()), d4_0_msg.c_str());
+        Check((out_d4_1 - fd_d4_1).Length() < 0.2 * std::max(1.0, fd_d4_1.Length()), d4_1_msg.c_str());
+      }
     }
   }
 }
@@ -73142,8 +73242,8 @@ void TestNurbsSurfaceBlendSurfacesRejectsInvalidInput() {
 
   Check(throws([&] { NurbsSurface::BlendSurfaces(cyl0, 1, false, cyl1, 1, false, false, 0, 6, out); }),
         "BlendSurfaces rejects continuity == 0");
-  Check(throws([&] { NurbsSurface::BlendSurfaces(cyl0, 1, false, cyl1, 1, false, false, 4, 6, out); }),
-        "BlendSurfaces rejects continuity == 4 (only 1/2/3 are implemented)");
+  Check(throws([&] { NurbsSurface::BlendSurfaces(cyl0, 1, false, cyl1, 1, false, false, 5, 6, out); }),
+        "BlendSurfaces rejects continuity == 5 (only 1/2/3/4 are implemented)");
   Check(throws([&] { NurbsSurface::BlendSurfaces(cyl0, 2, false, cyl1, 1, false, false, 1, 6, out); }),
         "BlendSurfaces rejects dir0 outside {0, 1}");
   Check(throws([&] { NurbsSurface::BlendSurfaces(cyl0, 1, false, cyl1, -1, false, false, 1, 6, out); }),
@@ -77332,6 +77432,7 @@ int main() {
   TestNurbsCurveBlendCurvesG1MatchesEndpointPositionsAndTangents();
   TestNurbsCurveBlendCurvesG2MatchesCurvatureAtBothEnds();
   TestNurbsCurveBlendCurvesG3MatchesThirdDerivativeAtBothEnds();
+  TestNurbsCurveBlendCurvesG4MatchesFourthDerivativeAtBothEnds();
   TestNurbsCurveBlendCurvesReverseFlagNegatesOddDerivatives();
   TestNurbsCurveBlendCurvesRejectsInvalidInput();
   TestNurbsSurfaceBlendSurfacesMatchesPositionAndCrossBoundaryDerivatives();

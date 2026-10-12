@@ -216,6 +216,22 @@ Continuity=G3
 SelLast
 List
 SelNone
+# --- Blend Continuity=G4: the same two-arc pair once more, now through
+# kernel::NurbsCurve::BlendCurves()'s own continuity=4 path - a degree-9
+# nonic Hermite blend matching position and all four derivatives up to
+# the fourth at both ends, one degree past the G3 case just above (the
+# genuine new capability this round's own kernel-side pass adds).
+SelAll
+Hide
+Arc 0,0,0 10,0,0 10,10,0
+Arc 30,10,0 30,20,0 20,20,0
+Blend
+Continuity=G4
+10,10,0
+30,20,0
+SelLast
+List
+SelNone
 # --- Domain: report, then actually set a new domain
 SelAll
 Hide
@@ -464,5 +480,7 @@ Delete
 # +2 for the Match Continuity=Curvature fixture's own two arcs (added
 # alongside the pre-existing Continuity=Tangent fixture above, same "left
 # visible, never deleted" convention that fixture's own two lines already
-# use) - 197 -> 199.
-@expect_objects 201
+# use) - 197 -> 199. +3 more (2 Arcs + 1 Blend curve) for the new
+# Continuity=G4 block above, the same shape as the Continuity=G3 block's
+# own contribution - 201 -> 204.
+@expect_objects 204

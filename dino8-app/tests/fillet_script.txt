@@ -338,6 +338,25 @@ Continuity=G3
 SelLast
 List
 SelNone
+SelAll
+Hide
+Box 750,0,0 760,10,0 10
+ExtractSrf
+760,5,5
+Enter
+SelNone
+Box 770,0,0 780,10,0 10
+ExtractSrf
+770,5,5
+Enter
+SelNone
+BlendSrf
+Continuity=G4
+760,5,10
+770,5,10
+SelLast
+List
+SelNone
 # --- FilletEdge on a solid cylinder's own flat-top rim (a full 360-degree
 # closed edge, one planar face + one cylindrical face) via the mesh
 # fallback: the exact B-rep trim only handles planar-planar adjacent
@@ -359,7 +378,7 @@ Enter
 SelAll
 Volume
 SelNone
-@expect_objects 55
+@expect_objects 60
 # --- FilletEdge Rho (exact conic fillet): kernel::FilletConvexEdgeConic
 # via the Rho option, on the same box-corner construction as the plain
 # FilletEdge/ChamferEdge cases above. At rho=0.5 the conic is the exact

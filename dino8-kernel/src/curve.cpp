@@ -928,7 +928,7 @@ Result NurbsCurve::ChamferCorner(Point3d p0, Point3d corner, Point3d p1, double 
 
 namespace {
 
-// Reads position + derivatives up to order `continuity` (1..3) of `curve`
+// Reads position + derivatives up to order `continuity` (1..4) of `curve`
 // at parameter `t` via the generic `ON_Curve::Evaluate` (the same base
 // evaluation method `TangentAt`/`CurvatureAt` are themselves built on top
 // of, per `Ev1Der`/`Ev2Der`/`EvCurvature`), applying the t -> -t
@@ -939,8 +939,8 @@ namespace {
 // flipped) k-th derivative for k in [1, continuity]. Returns false if
 // `Evaluate` itself fails.
 bool EvaluateBlendEnd(const ON_NurbsCurve& curve, double t, bool reverse, int continuity, Point3d& out_point,
-                       std::array<Vector3d, 3>& out_derivs) {
-  double v[4 * 3] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+                       std::array<Vector3d, 4>& out_derivs) {
+  double v[5 * 3] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   if (!curve.Evaluate(t, continuity, 3, v)) return false;
   out_point = Point3d(v[0], v[1], v[2]);
   for (int k = 1; k <= continuity; ++k) {
@@ -955,9 +955,9 @@ bool EvaluateBlendEnd(const ON_NurbsCurve& curve, double t, bool reverse, int co
 
 Result NurbsCurve::BlendCurves(const NurbsCurve& curve0, double t0, bool reverse0, const NurbsCurve& curve1,
                                 double t1, bool reverse1, int continuity, NurbsCurve& out) {
-  if (continuity < 1 || continuity > 3) {
+  if (continuity < 1 || continuity > 4) {
     throw std::invalid_argument(
-        "dino8::kernel::NurbsCurve::BlendCurves: continuity must be 1 (G1), 2 (G2) or 3 (G3)");
+        "dino8::kernel::NurbsCurve::BlendCurves: continuity must be 1 (G1), 2 (G2), 3 (G3) or 4 (G4)");
   }
   const Interval dom0 = curve0.Domain();
   const Interval dom1 = curve1.Domain();
@@ -969,7 +969,7 @@ Result NurbsCurve::BlendCurves(const NurbsCurve& curve0, double t0, bool reverse
   }
 
   Point3d P0, P1;
-  std::array<Vector3d, 3> D0{}, D1{};
+  std::array<Vector3d, 4> D0{}, D1{};
   if (!EvaluateBlendEnd(curve0.curve_, t0, reverse0, continuity, P0, D0) ||
       !EvaluateBlendEnd(curve1.curve_, t1, reverse1, continuity, P1, D1)) {
     return Result::Failed;
@@ -996,6 +996,7 @@ Result NurbsCurve::BlendCurves(const NurbsCurve& curve0, double t0, bool reverse
   const double inv_d1 = 1.0 / static_cast<double>(d);
   const double inv_d2 = 1.0 / static_cast<double>(d * (d - 1));
   const double inv_d3 = 1.0 / static_cast<double>(d * (d - 1) * (d - 2));
+  const double inv_d4 = 1.0 / static_cast<double>(d * (d - 1) * (d - 2) * (d - 3));
   std::vector<Point3d> ctrl(static_cast<size_t>(d) + 1);
   ctrl[0] = P0;
   if (continuity >= 1) ctrl[1] = ctrl[0] + D0[0] * inv_d1;
@@ -1004,6 +1005,15 @@ Result NurbsCurve::BlendCurves(const NurbsCurve& curve0, double t0, bool reverse
   }
   if (continuity >= 3) {
     ctrl[3] = ctrl[0] + 3.0 * (ctrl[2] - ctrl[1]) + D0[2] * inv_d3;
+  }
+  // G4 (continuity == 4): the identical forward Bezier finite-difference
+  // identity one order further, B^(4)(0) = d(d-1)(d-2)(d-3)*Delta^4 P0,
+  // re-derived directly (not pattern-matched) from Delta^4 P0 = P4 - 4P3 +
+  // 6P2 - 4P1 + P0 and rearranged into the same "Point + Vector" shape as
+  // the k<=3 cases above: P4 = P3 + 3*(P3-P2) - 3*(P2-P1) + (P1-P0) +
+  // D0[3]*inv_d4, confirmed by expanding back out to 4P3-6P2+4P1-P0.
+  if (continuity >= 4) {
+    ctrl[4] = ctrl[3] + 3.0 * (ctrl[3] - ctrl[2]) - 3.0 * (ctrl[2] - ctrl[1]) + (ctrl[1] - ctrl[0]) + D0[3] * inv_d4;
   }
 
   ctrl[static_cast<size_t>(d)] = P1;
@@ -1019,6 +1029,20 @@ Result NurbsCurve::BlendCurves(const NurbsCurve& curve0, double t0, bool reverse
     ctrl[static_cast<size_t>(d - 3)] =
         ctrl[static_cast<size_t>(d)] -
         3.0 * (ctrl[static_cast<size_t>(d - 1)] - ctrl[static_cast<size_t>(d - 2)]) - D1[2] * inv_d3;
+  }
+  // G4 backward mirror of the forward case above, re-derived from the
+  // backward-difference identity B^(4)(1) = d(d-1)(d-2)(d-3)*nabla^4 P_d,
+  // nabla^4 P_d = P_d - 4P_{d-1} + 6P_{d-2} - 4P_{d-3} + P_{d-4}, following
+  // the SAME alternating D1-term sign pattern the k=1 (-), k=2 (+), k=3 (-)
+  // cases above already establish (so k=4 is +, confirmed by expanding
+  // P_{d-3} + 3*(P_{d-3}-P_{d-2}) - 3*(P_{d-2}-P_{d-1}) + (P_{d-1}-P_d) back
+  // out to 4P_{d-3} - 6P_{d-2} + 4P_{d-1} - P_d).
+  if (continuity >= 4) {
+    ctrl[static_cast<size_t>(d - 4)] = ctrl[static_cast<size_t>(d - 3)] +
+                                        3.0 * (ctrl[static_cast<size_t>(d - 3)] - ctrl[static_cast<size_t>(d - 2)]) -
+                                        3.0 * (ctrl[static_cast<size_t>(d - 2)] - ctrl[static_cast<size_t>(d - 1)]) +
+                                        (ctrl[static_cast<size_t>(d - 1)] - ctrl[static_cast<size_t>(d)]) +
+                                        D1[3] * inv_d4;
   }
 
   out = FromControlPoints(ctrl, d);

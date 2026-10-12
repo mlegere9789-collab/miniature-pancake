@@ -1151,8 +1151,12 @@ class TweenCurvesCommand : public Command {
 // copy of these small, already-proven helpers" convention this codebase uses
 // elsewhere (e.g. BlendCurves()'s own HermiteBlendRow, duplicated verbatim in
 // sweep.cpp because curve.cpp's copy is anonymous-namespace-private).
-std::string ContinuityOptionName(int continuity) { return continuity == 3 ? "G3" : (continuity == 2 ? "Curvature" : "Tangency"); }
-int ContinuityOptionToInt(const std::string& v) { return v == "G3" ? 3 : (v == "Curvature" ? 2 : 1); }
+std::string ContinuityOptionName(int continuity) {
+  return continuity == 4 ? "G4" : (continuity == 3 ? "G3" : (continuity == 2 ? "Curvature" : "Tangency"));
+}
+int ContinuityOptionToInt(const std::string& v) {
+  return v == "G4" ? 4 : (v == "G3" ? 3 : (v == "Curvature" ? 2 : 1));
+}
 
 // Blend: pick near the ends of two curves; builds a Hermite blend between
 // them via the kernel's own exact NurbsCurve::BlendCurves() (curve.h) -
@@ -1162,13 +1166,14 @@ int ContinuityOptionToInt(const std::string& v) { return v == "G3" ? 3 : (v == "
 class BlendCrvCommand : public Command {
  public:
   // `continuity`: 1 (BlendCrv's own plain tangent G1 cubic), 2 (the "Blend"
-  // alias's curvature-continuous G2 quintic), or 3 (G3 septic, the genuine
-  // new capability BlendCurves() has that neither app command built before
-  // this wiring - exposed here via the new Continuity option, default per
-  // which registration/alias picked this command).
+  // alias's curvature-continuous G2 quintic), 3 (G3 septic), or 4 (G4
+  // nonic, matching position and all four derivatives up to the fourth at
+  // both ends - the genuine new capability BlendCurves() has that no app
+  // command built before this wiring - exposed here via the Continuity
+  // option, default per which registration/alias picked this command).
   explicit BlendCrvCommand(int continuity = 1) : continuity_(continuity) {}
   void Begin(CommandContext&) override {
-    options = {{"Continuity", ContinuityOptionName(continuity_), {"Tangency", "Curvature", "G3"}, false, false}};
+    options = {{"Continuity", ContinuityOptionName(continuity_), {"Tangency", "Curvature", "G3", "G4"}, false, false}};
     WantPoint("Select first curve near the end to blend from");
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Continuity") continuity_ = ContinuityOptionToInt(v); }

@@ -3073,10 +3073,13 @@ namespace {
 // comment, not guessed. `flip` negates ODD orders only (BlendSurfaces()'s
 // own doc comment derives why), mirroring EvaluateBlendEnd's `reverse`.
 bool EvaluateSurfaceBlendEnd(const ON_Surface& s, int rail_dir, double rail_t, double fixed_t, bool flip,
-                             int continuity, Point3d& out_point, std::array<Vector3d, 3>& out_derivs) {
+                             int continuity, Point3d& out_point, std::array<Vector3d, 4>& out_derivs) {
   const double u = rail_dir == 0 ? rail_t : fixed_t;
   const double v = rail_dir == 0 ? fixed_t : rail_t;
-  double der[3 * 10] = {0.0};
+  // Sized for continuity up to 4: ON_Surface::Evaluate's own triangular
+  // derivative layout needs dim * (num_der+1)*(num_der+2)/2 entries, i.e.
+  // 3 * 5*6/2 = 45 at num_der=4 (3*10=30 only covered continuity<=3).
+  double der[3 * 15] = {0.0};
   if (!s.Evaluate(u, v, continuity, 3, der)) return false;
   out_point = Point3d(der[0], der[1], der[2]);
   for (int k = 1; k <= continuity; ++k) {
@@ -3099,17 +3102,24 @@ bool EvaluateSurfaceBlendEnd(const ON_Surface& s, int rail_dir, double rail_t, d
 // follow for their own small object/face helpers). See BlendCurves()'s
 // own doc comment for the textbook forward/backward Bezier finite-
 // difference derivation this is lifted from verbatim.
-std::vector<Point3d> HermiteBlendRow(const Point3d& P0, const std::array<Vector3d, 3>& D0, const Point3d& P1,
-                                      const std::array<Vector3d, 3>& D1, int continuity) {
+std::vector<Point3d> HermiteBlendRow(const Point3d& P0, const std::array<Vector3d, 4>& D0, const Point3d& P1,
+                                      const std::array<Vector3d, 4>& D1, int continuity) {
   const int d = 2 * continuity + 1;
   const double inv_d1 = 1.0 / static_cast<double>(d);
   const double inv_d2 = 1.0 / static_cast<double>(d * (d - 1));
   const double inv_d3 = 1.0 / static_cast<double>(d * (d - 1) * (d - 2));
+  const double inv_d4 = 1.0 / static_cast<double>(d * (d - 1) * (d - 2) * (d - 3));
   std::vector<Point3d> ctrl(static_cast<size_t>(d) + 1);
   ctrl[0] = P0;
   if (continuity >= 1) ctrl[1] = ctrl[0] + D0[0] * inv_d1;
   if (continuity >= 2) ctrl[2] = ctrl[1] + (ctrl[1] - ctrl[0]) + D0[1] * inv_d2;
   if (continuity >= 3) ctrl[3] = ctrl[0] + 3.0 * (ctrl[2] - ctrl[1]) + D0[2] * inv_d3;
+  // G4: the same forward identity curve.cpp's BlendCurves() derives one
+  // order further, duplicated here per this function's own "each file
+  // keeps its own copy" convention (see this function's own doc comment).
+  if (continuity >= 4) {
+    ctrl[4] = ctrl[3] + 3.0 * (ctrl[3] - ctrl[2]) - 3.0 * (ctrl[2] - ctrl[1]) + (ctrl[1] - ctrl[0]) + D0[3] * inv_d4;
+  }
 
   ctrl[static_cast<size_t>(d)] = P1;
   if (continuity >= 1) ctrl[static_cast<size_t>(d - 1)] = ctrl[static_cast<size_t>(d)] - D1[0] * inv_d1;
@@ -3123,6 +3133,14 @@ std::vector<Point3d> HermiteBlendRow(const Point3d& P0, const std::array<Vector3
         ctrl[static_cast<size_t>(d)] - 3.0 * (ctrl[static_cast<size_t>(d - 1)] - ctrl[static_cast<size_t>(d - 2)]) -
         D1[2] * inv_d3;
   }
+  // G4 backward mirror, same alternating-sign pattern as curve.cpp's own.
+  if (continuity >= 4) {
+    ctrl[static_cast<size_t>(d - 4)] = ctrl[static_cast<size_t>(d - 3)] +
+                                        3.0 * (ctrl[static_cast<size_t>(d - 3)] - ctrl[static_cast<size_t>(d - 2)]) -
+                                        3.0 * (ctrl[static_cast<size_t>(d - 2)] - ctrl[static_cast<size_t>(d - 1)]) +
+                                        (ctrl[static_cast<size_t>(d - 1)] - ctrl[static_cast<size_t>(d)]) +
+                                        D1[3] * inv_d4;
+  }
   return ctrl;
 }
 
@@ -3131,8 +3149,9 @@ std::vector<Point3d> HermiteBlendRow(const Point3d& P0, const std::array<Vector3
 Result NurbsSurface::BlendSurfaces(const NurbsSurface& srf0, int dir0, bool at_max0, const NurbsSurface& srf1,
                                     int dir1, bool at_max1, bool reverse_rail1, int continuity, int rows,
                                     NurbsSurface& out) {
-  if (continuity < 1 || continuity > 3) {
-    throw std::invalid_argument("dino8::kernel::NurbsSurface::BlendSurfaces: continuity must be 1 (G1), 2 (G2) or 3 (G3)");
+  if (continuity < 1 || continuity > 4) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::BlendSurfaces: continuity must be 1 (G1), 2 (G2), 3 (G3) or 4 (G4)");
   }
   if (dir0 < 0 || dir0 > 1 || dir1 < 0 || dir1 > 1) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::BlendSurfaces: dir0/dir1 must be 0 or 1");
@@ -3160,7 +3179,7 @@ Result NurbsSurface::BlendSurfaces(const NurbsSurface& srf0, int dir0, bool at_m
     const double rail_t1 = rail_dom1.ParameterAt(t1);
 
     Point3d P0, P1;
-    std::array<Vector3d, 3> D0{}, D1{};
+    std::array<Vector3d, 4> D0{}, D1{};
     if (!EvaluateSurfaceBlendEnd(s0, dir0, rail_t0, fixed_t0, flip0, continuity, P0, D0) ||
         !EvaluateSurfaceBlendEnd(s1, dir1, rail_t1, fixed_t1, flip1, continuity, P1, D1)) {
       return Result::Failed;
