@@ -282,6 +282,64 @@ class NurbsCurve {
   // reaches past `p0` or `p1`.
   static Result FilletCornerArc(Point3d p0, Point3d corner, Point3d p1, double radius, NurbsCurve& arc_out);
 
+  // HELIX AND CONICAL SPIRAL (Rhino Helix/Spiral) - closes PARITY_MAP's own
+  // disclosed "no kernel helix" gap (kernel: Geometry representation's
+  // "Helix and spiral curves" bullet): the app's own `HelixCommand`
+  // (dino8-app/src/commands/cmd_create.cpp) builds the identical analytic
+  // curve - `radius(t) = radius1 + (radius2 - radius1) * t`, `angle(t) =
+  // 2*pi*turns*t`, height along the axis `= height * t`, for `t` in [0, 1]
+  // - but hands the raw SAMPLE POINTS straight to `FromControlPoints()`,
+  // which treats them AS the control polygon rather than passing through
+  // them: a B-spline generally does not interpolate its own control
+  // points, so the result is neither exact nor even a close approximation
+  // in general (the same "treat samples as control points" shortcut this
+  // file's own `NurbsSurface::FromControlGrid()` vs. `InterpolateThroughGrid()`
+  // distinction already names for surfaces). `radius1 == radius2` is a
+  // true cylindrical helix; `radius1 != radius2` is a conical spiral - the
+  // bullet's own "and spiral" half - covered by the identical construction,
+  // the same way the app's own `HelixCommand`/`SpiralCommand` already
+  // share one code path.
+  //
+  // A circular helix is NOT an exact rational-NURBS curve (unlike a
+  // circular ARC, whose angle sweeps linearly in a RATIONAL quadratic
+  // parameter - a helix additionally couples that same angle to a LINEAR
+  // height, and no single rational reparameterization satisfies both at
+  // once), so this is honestly a tolerance-bounded INTERPOLATING
+  // approximation, the same "no exact closed form, so measure and bound
+  // it instead" tier `NurbsSurface::OffsetApproximate`/`Rebuild()` already
+  // use elsewhere in this kernel - not the "neither interpolating nor
+  // exact" sampled-control-point shortcut named above. Starting from a
+  // small sample count and doubling it, each candidate is built via
+  // `InterpolateCubic()` (surface_intersect.h) at the UNIFORM analytic
+  // parameter `t` itself (not chord length) as the interpolation
+  // parameter - valid because this curve's own speed is close to uniform
+  // by construction (exactly uniform for a true helix; only mildly
+  // varying for a spiral whose two radii differ), and it makes the
+  // resulting curve's own `Domain()` exactly `[0, 1]` with no further
+  // `SetDomain()` step, so a measurement at parameter `t` compares
+  // directly against the analytic formula at that same `t` with no
+  // reparameterization mismatch to account for. The measured worst-case
+  // deviation is a dense INDEPENDENT re-sampling (5x the fit density,
+  // deliberately never landing exactly on a fit sample) comparing
+  // `PointAt(t)` against the analytic point at the same `t` - not the
+  // interpolation solve's own residual, which is exactly zero by
+  // construction at the fit samples and says nothing about the curve's
+  // real deviation in between. Returns `Result::Ok` with `out` set once
+  // that measured deviation is at or under `tolerance`, capped at a
+  // generous sample ceiling; `Result::Failed`, `out` left unchanged, if
+  // even the ceiling can't satisfy `tolerance` (an unreasonably tight
+  // request). `out_max_deviation`, if non-null, always receives the
+  // achieved (or, on failure, the best attempted) worst-case deviation -
+  // sampled, not formally certified, the same honesty this kernel's other
+  // tolerance-bounded approximations already disclose.
+  //
+  // VALIDATION: throws `std::invalid_argument` if `axis_start` and
+  // `axis_end` coincide (no axis direction), `radius1` is not positive,
+  // `radius2` is negative, `turns` is not positive, or `tolerance` is not
+  // positive.
+  static Result Helix(Point3d axis_start, Point3d axis_end, double radius1, double radius2, double turns,
+                       double tolerance, NurbsCurve& out, double* out_max_deviation = nullptr);
+
   // 2D/3D POLYLINE-CORNER CHAMFER (Rhino Chamfer, AutoCAD CHAMFER between
   // two lines) - the flat-cut sibling of `FilletCorner` above, the exact
   // 2D analogue of `ChamferConvexEdge`'s own two-independent-distance
