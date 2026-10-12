@@ -606,7 +606,41 @@ Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b);
 // separately-classified near-miss faces - this is the "caller-specified
 // tolerance" half of that bullet's item; the OTHER half it names
 // (automatic gap-healing with no caller tolerance at all) is untouched.
-Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op, double tolerance = -1.0);
+//
+// `allow_non_manifold_result`, when true, closes the specific gap
+// PARITY_MAP.md's own "Non-manifold boolean results" bullet names by
+// function: "the B-rep engines throw 'an edge is shared by 3 or more
+// faces' instead of building non-manifold output." Default false keeps
+// every existing caller's behavior byte-for-byte unchanged (the pipeline
+// above still reassembles through Brep::FromPlanarFaces(), which still
+// refuses that junction outright). When true:
+//   - Union/Intersection/Difference reassemble the identical computed face
+//     list through Brep::FromMixedFacesNonManifold() instead of
+//     Brep::FromPlanarFaces() - the two are otherwise identical (same
+//     welding, same edge-identity keys), so a result that would have been
+//     refused now comes back as a real first-class Brep with one N-trim
+//     non-manifold edge there (Check()'s own NonManifoldEdge, already
+//     healable via SplitNonManifoldEdge()/UnjoinEdge()) instead of throwing.
+//     A compound `a`/`b` operand's own lump-recomputation tail is skipped
+//     in this mode - not attempted, since SplitDisjointPieces() has no
+//     proven behavior against a Brep that is itself already non-manifold.
+//   - SymmetricDifference builds a genuine SINGLE-SHELL result instead of
+//     its own `Brep::Compound({Difference(a, b), Difference(b, a)})` path -
+//     the "single-body XOR" this bullet's own title parenthetical names
+//     directly. Both directions' face lists (Difference(a, b)'s and
+//     Difference(b, a)'s) are computed but never separately reassembled;
+//     concatenated and passed through ONE Brep::FromMixedFacesNonManifold()
+//     call instead, so the shared intersection curve - which Difference(a,b)
+//     and Difference(b,a) would otherwise each weld into their OWN 2-trim
+//     edge at the identical 3D location - comes back as the real 4-trim
+//     non-manifold edge an XOR boundary actually has (A's outside, B's
+//     outside, and both flipped insides, meeting along one curve). This
+//     still refuses a compound `a`/`b` operand outright (RefuseCompoundOperand
+//     below, unchanged) - combining that with a from-scratch non-manifold
+//     reassembly is untested, out of scope here. See boolean.cpp's own
+//     PlanarBooleanFaces() doc comment for the full construction.
+Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op, double tolerance = -1.0,
+                           bool allow_non_manifold_result = false);
 
 // N-ary counterpart of BooleanCombinePlanar, identical in shape and
 // contract to BooleanCombineMixedNAry below (see that function's own doc
