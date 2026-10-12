@@ -790,6 +790,15 @@ constexpr int kMaxFidelityCageFaces = 300000;
 std::optional<SubDFidelityResult> BuildSubDVerifiedAgainstBrep(const SceneObject& o, double tol) {
   std::optional<kernel::Mesh> reference = MeshOf(o, tol);
   if (!reference || reference->FaceCount() == 0) return std::nullopt;
+  // `reference` is built once above and never changes for the rest of this
+  // function, while the sampling loop below re-queries it up to
+  // kMaxFidelitySamples times per round across kMaxFidelityRounds rounds -
+  // exactly the "same mesh queried many times" workload
+  // kernel::MeshClosestPointIndex exists for (PARITY_MAP.md's own
+  // "Spatial acceleration structures for geometric queries" bullet
+  // disclosed no caller used it yet). Built once here instead of calling
+  // reference->ClosestPoint() directly in the loop.
+  const kernel::MeshClosestPointIndex reference_index(*reference);
   SubDFidelityResult best;
   bool have_best = false;
   double cage_tol = tol;
@@ -825,7 +834,7 @@ std::optional<SubDFidelityResult> BuildSubDVerifiedAgainstBrep(const SceneObject
       const int step = std::max(1, n / kMaxFidelitySamples);
       for (int i = 0; i < n; i += step) {
         const Point3d p = patches[static_cast<size_t>(i)].surface.PointAt(0.5, 0.5);
-        dev = std::max(dev, (reference->ClosestPoint(p) - p).Length());
+        dev = std::max(dev, (reference_index.ClosestPoint(p) - p).Length());
       }
     }
     best = SubDFidelityResult{sd, dev, dev <= tol, round + 1};
