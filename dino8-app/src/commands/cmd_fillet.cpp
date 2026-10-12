@@ -3065,10 +3065,13 @@ class FilletEdgeCommand : public Command {
 class MatchSrfCommand : public Command {
  public:
   void Begin(CommandContext&) override {
-    options = {{"Continuity", "Position", {"Position", "Tangency"}, false, false}};
+    options = {{"Continuity", "Position", {"Position", "Tangency", "Curvature"}, false, false}};
     WantPoint("Click the surface edge to move (near the edge to match)");
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Continuity") tangency_ = (v == "Tangency"); }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "Continuity") return;
+    continuity_ = v == "Curvature" ? kernel::MatchContinuity::Curvature : v == "Tangency" ? kernel::MatchContinuity::Tangent : kernel::MatchContinuity::Position;
+  }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     if (!first_) {
       auto pick = PickFace(ctx, p);
@@ -3149,8 +3152,7 @@ class MatchSrfCommand : public Command {
           const bool t_is_u_edge = (tm == teu0 || tm == teu1);
           const int target_fixed_dir = t_is_u_edge ? 0 : 1;
           const bool target_at_min = t_is_u_edge ? (tm == teu0) : (tm == tev0);
-          const kernel::MatchContinuity continuity = tangency_ ? kernel::MatchContinuity::Tangent : kernel::MatchContinuity::Position;
-          if (ks.MatchEdge(fixed_dir, at_min, kt, target_fixed_dir, target_at_min, continuity, &exact_report) == kernel::Result::Ok) {
+          if (ks.MatchEdge(fixed_dir, at_min, kt, target_fixed_dir, target_at_min, continuity_, &exact_report) == kernel::Result::Ok) {
             matched_exact = true;
             moved = n_cross;
           }
@@ -3170,7 +3172,11 @@ class MatchSrfCommand : public Command {
         else target = target_brep->m_F[target_face->face].SurfaceOf()->PointAt(gu, gv);  // best-effort shared parameterisation
         raw.SetCV(i, j, target);
         ++moved;
-        if (tangency_) {
+        // Curvature (G2) matching has no counterpart in this best-effort,
+        // no-target-surface-found fallback - only the exact MatchEdge()
+        // path above can do that - so a Curvature request still only
+        // approximates tangency here, the closest available continuity.
+        if (continuity_ != kernel::MatchContinuity::Position) {
           ON_3dPoint cv1;
           const int i1 = fixed_dir == 0 ? cv_index_row1 : k;
           const int j1 = fixed_dir == 0 ? k : cv_index_row1;
@@ -3197,17 +3203,21 @@ class MatchSrfCommand : public Command {
       }
       orig->InvalidateDisplay();
     }
+    const char* continuity_name = continuity_ == kernel::MatchContinuity::Curvature ? "G2" : continuity_ == kernel::MatchContinuity::Tangent ? "G1" : "G0";
     if (matched_exact) {
-      ctx.Print("MatchSrf: exact edge match (" + std::string(tangency_ ? "G1" : "G0") + ") to the target surface, max position error " +
-                 FormatNumber(exact_report.max_position_error) + (tangency_ ? ", max tangent error " + FormatNumber(exact_report.max_tangent_error) : ""));
+      std::string msg = "MatchSrf: exact edge match (" + std::string(continuity_name) + ") to the target surface, max position error " + FormatNumber(exact_report.max_position_error);
+      if (continuity_ != kernel::MatchContinuity::Position) msg += ", max tangent error " + FormatNumber(exact_report.max_tangent_error);
+      if (continuity_ == kernel::MatchContinuity::Curvature) msg += ", max curvature error " + FormatNumber(exact_report.max_curvature_error);
+      ctx.Print(msg);
     } else {
-      ctx.Print("MatchSrf: " + std::to_string(moved) + " boundary control point(s) moved to " + (tangency_ ? "position and tangent" : "position") + (target_curve ? " on the target curve" : " on the target surface"));
+      const char* moved_desc = continuity_ != kernel::MatchContinuity::Position ? "position and tangent" : "position";
+      ctx.Print("MatchSrf: " + std::to_string(moved) + " boundary control point(s) moved to " + moved_desc + (target_curve ? " on the target curve" : " on the target surface"));
     }
   }
 
  private:
   std::optional<FacePick> first_;
-  bool tangency_ = false;
+  kernel::MatchContinuity continuity_ = kernel::MatchContinuity::Position;
 };
 
 // ---------------------------------------------------------------------------

@@ -2180,6 +2180,7 @@ flcheck "MatchSrf: 2 boundary control point.s. moved to position on the target c
 flcheck "MatchSrf: 2 boundary control point.s. moved to position on the target curve" "MatchSrf moved a plane's edge onto a target line"
 flcheck "MatchSrf: exact edge match (G1) to the target surface, max position error 0, max tangent error 0" "MatchSrf against a target *surface* edge now uses the kernel's exact NurbsSurface::MatchEdge() (self-checked by evaluation, both residuals genuinely ~0), not the app's older per-control-point loop that only assumed a shared parameterization"
 flcheck "degree 2 x 1, CVs 3 x 2" "the matched floor plane's real G1 bend toward the box's vertical front face: degree elevated 1->2 and one control point added in the edge-crossing direction to hold position+tangent rows, the other direction (degree 1, 2 CVs) untouched"
+flcheck "MatchSrf: exact edge match (G2) to the target surface, max position error 0, max tangent error 0, max curvature error 0" "MatchSrf's Continuity option now reaches Curvature (G2) too, not just Position/Tangency - NurbsSurface::MatchEdge()'s own Curvature path was already real and already tested at the kernel level, just unreachable from any app command"
 flcheck "SplitFace: face 0 split into 2 surfaces along the curve's crossing" "SplitFace found a real CSX crossing of a piercing polyline (a coplanar line can't cross a flat face twice)"
 flcheck "MergeFaces: 2 coplanar face.s. merged into 1" "MergeFaces recombined two joined coplanar planes"
 flcheck "Area = 100 square" "the merged 5x10 + 5x10 planes have area 100"
@@ -2257,7 +2258,7 @@ flcheck "10 faces, 21 edges, closed solid" "one spherical corner blend: 6 planar
 flcheck "Volume = 975.4 cubic" "matches the app's own tessellated reading of the exact closed form 1000 - 3*8*4*(1-pi/4) - 8*(1-pi/6) = 975.587 (see this section's own comment in fillet_script.txt for why the app's coarser spherical-patch tessellation reads 975.4, not 975.587, and why that gap is pre-existing and unrelated to this fix)"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
-flcheck "^ok   expect_objects 55" "fillet script produced the expected object count"
+flcheck "^ok   expect_objects 57" "fillet script produced the expected object count"
 
 # Adversarial fillets: tiny/at-the-limit/too-large radii relative to the
 # shortest adjacent edge, a huge-coordinate-scale box (now fixed for the
@@ -6613,6 +6614,33 @@ grep -q 'stroke-dasharray' "$TMPW/solid_scale1.svg" && grep -q 'stroke-dasharray
 SOLID_DASH_COUNT="$(grep -c 'stroke-dasharray' "$TMPW/solid_scale1.svg" || true)"
 [ "$SOLID_DASH_COUNT" = "1" ] && echo "ok   the Continuous-linetype line exported alongside it has no stray dasharray of its own" || { echo "FAIL solid_scale1.svg: expected exactly 1 stroke-dasharray (only the dashed line's), got $SOLID_DASH_COUNT"; fail=1; }
 grep -aq '\[\] 0 d' "$TMPW/solid_scale1.pdf" && echo "ok   ExportPdf resets to a plain solid \"[] 0 d\" before the Continuous-linetype line, not leaking the other line's dash pattern" || { echo "FAIL solid_scale1.pdf: no [] 0 d reset operator"; fail=1; }
+
+# Automatic associative-annotation recompute (PARITY_MAP.md "Associative
+# annotation updating" - see auto_annotation_update_script.txt's own
+# header comment for the full construction/reasoning): a dimension
+# associative to a real Line's endpoints must already carry a brand new
+# object id by the time this script's SECOND "List" runs, with no
+# UpdateDimensions call anywhere in between the Scale1D that stretched
+# the line and that second List - proof Application::Frame()'s new
+# per-frame hook, not this script, already tore the old dimension down
+# and rebuilt it. The explicit UpdateDimensions at the very end (run only
+# to confirm correctness, not to cause the rebuild) must still report the
+# correct stretched 40-unit measurement.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  AAU="$("$BIN" --smoke 30 --script "$HERE/auto_annotation_update_script.txt" 2>&1)" || { echo "$AAU"; echo "FAIL: auto-annotation-update script exited non-zero"; exit 1; }
+else
+  AAU="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$HERE/auto_annotation_update_script.txt" 2>&1)" || { echo "$AAU"; echo "FAIL: auto-annotation-update script exited non-zero"; exit 1; }
+fi
+printf '%s' "$AAU" > "$TMPW/auto_annotation_update_output.txt"
+python3 - "$TMPW/auto_annotation_update_output.txt" <<'PY' && echo "ok   the dimension already carried a brand new object id by the second List - proving Frame()'s new per-frame hook rebuilt it with no UpdateDimensions call in between" || { echo "FAIL the dimension's object id did not change between the two List calls (no automatic rebuild happened)"; fail=1; }
+import re, sys
+text = open(sys.argv[1]).read()
+ids = [int(m.group(1)) for m in re.finditer(r"^history: Object (\d+) ", text, re.MULTILINE)]
+assert len(ids) >= 2, f"expected at least 2 'Object <id>' List lines, got {ids}"
+before, after = ids[0], ids[1]
+assert after > before, f"expected the second List id ({after}) to be strictly greater than the first ({before}) - Add() always allocates higher ids, so an unchanged or lower id means no automatic rebuild happened"
+PY
+echo "$AAU" | grep -q "^history: UpdateDimensions:   DimLinear now measures 40$" && echo "ok   the automatically-rebuilt dimension's measurement is correct (40, the stretched length) - UpdateDimensions, run afterward only to confirm, agrees with what the per-frame hook already built" || { echo "FAIL auto-annotation-update: expected UpdateDimensions to confirm a 40-unit measurement"; fail=1; }
 
 # Undo id-reuse regression (see the last section of history_script.txt):
 # a Box drawn right after undoing a tracked Extrude used to be handed the
