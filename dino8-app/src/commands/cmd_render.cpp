@@ -704,7 +704,7 @@ class RenderBlowupCommand : public Command {
 
 std::string WithImageExt(std::string p) {
   const std::string ext = Lower(std::filesystem::path(p).extension().string());
-  if (ext != ".bmp" && ext != ".ppm") p += ".bmp";
+  if (ext != ".bmp" && ext != ".ppm" && ext != ".hdr" && ext != ".exr") p += ".bmp";
   return p;
 }
 
@@ -1129,6 +1129,11 @@ void RegisterRenderCommands(CommandEngine& e) {
       }));
 
   // ---- render commands --------------------------------------------------
+  // This own registration is immediately replaced by RegisterRaytraceCommands'
+  // own later "Render" (see Application::RegisterCommands' own comment -
+  // "after: takes over Render/RenderPreview/etc. for Quality=Raytraced"),
+  // so Hdr= is parsed there instead, not here, to avoid dead/misleading
+  // logic under a name that never actually runs.
   Reg(e, "Render", Immediate([](CommandContext& ctx) {
         Args a = TakeArgs(ctx);
         int w = static_cast<int>(a.Num("Width", 0)), h = static_cast<int>(a.Num("Height", 0));
@@ -1157,8 +1162,9 @@ void RegisterRenderCommands(CommandEngine& e) {
         };
         if (auto p = ctx.Engine().TakePendingInput()) { save(*p); return; }
         if (!app.LastRender().Valid()) { ctx.Warn("Nothing has been rendered yet (run Render first)"); return; }
-        app.ShowFileDialog("Save rendering", {".bmp", ".ppm"}, true, [save](const std::string& path) { save(path); });
-      }));
+        app.ShowFileDialog("Save rendering", {".bmp", ".ppm", ".hdr", ".exr"}, true, [save](const std::string& path) { save(path); });
+      }), CommandStatus::Implemented,
+      "Saves the current Render Window image as .bmp/.ppm (always available) or, when the last Render ran with Hdr=Yes, a real .hdr/.exr carrying its own unclamped linear-radiance values.");
   Reg(e, "CopyRenderWindowToClipboard", Immediate([](CommandContext& ctx) {
         const RenderImage& img = ctx.App().LastRender();
         if (!img.Valid()) { ctx.Warn("Nothing has been rendered yet (run Render first)"); return; }

@@ -731,4 +731,33 @@ AccessibleNode BuildTexturesPanelNode(const std::vector<TextureSummary>& texture
 // panel-backed regions above don't depend on their own panel window.
 AccessibleNode BuildDisplayPanelNode(const std::vector<PropertyEntry>& entries);
 
+// One Command History row (CommandEngine::History(), a plain
+// std::deque<std::string> reduced to plain data the same way the summaries
+// above keep this module independent of commands/CommandEngine): one
+// recorded command-line line with its leading "!" warning/cancellation
+// marker (CommandEngine::Print's own convention - see
+// DrawCommandHistoryPanel) already stripped into `is_warning`, the same
+// split that panel's own orange-vs-plain-text rendering makes per line.
+struct CommandHistoryEntrySummary {
+  std::string text;
+  bool is_warning = false;
+};
+
+// Builds the "Command History" List accessible: one ListItem per recorded
+// command-line line, in the same order CommandEngine::History() holds them
+// (oldest first), named after the line's own text (warning marker already
+// stripped) with a Description of "warning" for a cancelled/error line, ""
+// otherwise - independent of whether the Command History panel window is
+// actually open right now, the same way the other panel-backed regions
+// above don't depend on their own panel window. Distinct from the existing
+// "Command Line" Log region (Accessibility.cpp's BuildCommandLineText),
+// which already exposes the same lines as one concatenated block of plain
+// text for the live prompt/input area - this is the first STRUCTURED,
+// per-line mirror of command history, letting a screen reader navigate one
+// recorded line at a time the same way it already can for Activity Log/
+// Command List/Command Aliases, rather than reading the whole log as a
+// single run-on block. Starts empty on a fresh app (no command run yet),
+// the same "starts empty" shape Named Views/Audit Results/Undo History use.
+AccessibleNode BuildCommandHistoryNode(const std::vector<CommandHistoryEntrySummary>& entries);
+
 }  // namespace dino8::platform

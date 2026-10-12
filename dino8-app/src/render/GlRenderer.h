@@ -19,8 +19,14 @@ namespace dino8::app {
 class RenderTarget {
  public:
   ~RenderTarget();
-  // (Re)creates the framebuffer if the size changed. Returns false on GL error.
-  bool Resize(int width, int height);
+  // (Re)creates the framebuffer if the size or hdr-ness changed. `hdr` picks
+  // a floating-point (GL_RGBA16F) colour attachment instead of the usual
+  // GL_RGBA8 one, so a fragment shader's own unclamped output (a value
+  // above 1.0, from a bright highlight/reflection) survives instead of
+  // saturating at 255 when written - see Viewport::RenderToImage's own HDR
+  // capture pass, the one caller that ever passes true. Returns false on
+  // GL error.
+  bool Resize(int width, int height, bool hdr = false);
   void Bind() const;
   static void Unbind();
   GLuint Texture() const { return color_tex_; }
@@ -28,11 +34,17 @@ class RenderTarget {
   int Height() const { return height_; }
   // Reads the colour buffer as RGB, top-down rows.
   void ReadPixels(std::vector<unsigned char>& rgb) const;
+  // Reads the colour buffer as linear-radiance RGB floats, top-down rows -
+  // only meaningful (and only called) on a target built with `hdr = true`
+  // above; reading a plain GL_RGBA8 target this way would just return its
+  // already-clamped-to-[0,1] bytes promoted to float, not real HDR data.
+  void ReadPixelsFloat(std::vector<float>& rgb) const;
 
  private:
   void Destroy();
   GLuint fbo_ = 0, color_tex_ = 0, depth_rb_ = 0;
   int width_ = 0, height_ = 0;
+  bool hdr_ = false;
 };
 
 // A light as the shader sees it (world space; the renderer moves it into
@@ -110,6 +122,15 @@ class GlRenderer {
   // (the default) keeps the procedural fallback, closing the "interactive
   // rasterizer viewport ... no reflection contribution" gap.
   void SetEnvironmentMap(GLuint tex) { env_map_tex_ = tex; }
+
+  // Viewport::RenderToImage's own dedicated HDR capture pass only: true
+  // makes Shade() (kMeshFS) return its real, unclamped linear colour
+  // instead of folding anything above 0.8 through its usual soft-shoulder
+  // roll-off - so a highlight/reflection genuinely above 1.0 survives into
+  // an `hdr`-mode RenderTarget instead of saturating the way it always has
+  // for the live interactive viewport, which never calls this (stays at
+  // the default false).
+  void SetHdrOutput(bool hdr) { hdr_output_ = hdr; }
 
   // Real-time shadow mapping for Rendered mode, closing "Real-time shadow
   // maps in the rasterized renderer" (only ground-plane ShadowBlob contact
@@ -242,8 +263,9 @@ class GlRenderer {
         mesh_u_reflectivity_ = -1, mesh_u_use_texture_ = -1, mesh_u_texture_ = -1, mesh_u_blob_count_ = -1,
         mesh_u_blobs_ = -1, mesh_u_blob_strength_ = -1, mesh_u_ground_ = -1, mesh_u_env_map_ = -1,
         mesh_u_env_map_valid_ = -1, mesh_u_light_vp_ = -1, mesh_u_shadow_map_ = -1, mesh_u_shadow_valid_mask_ = -1;
-  GLint mesh_u_ssao_map_ = -1, mesh_u_ssao_valid_ = -1, mesh_u_viewport_size_ = -1;
+  GLint mesh_u_ssao_map_ = -1, mesh_u_ssao_valid_ = -1, mesh_u_viewport_size_ = -1, mesh_u_hdr_output_ = -1;
   GLuint env_map_tex_ = 0;
+  bool hdr_output_ = false;
 
   // Shadow-pass state (see BeginShadowPass/EndShadowPass above). One
   // GL_TEXTURE_2D_ARRAY with kMaxGpuLights layers, one layer per light

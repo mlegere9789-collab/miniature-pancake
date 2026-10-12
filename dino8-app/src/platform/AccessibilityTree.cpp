@@ -593,4 +593,22 @@ AccessibleNode BuildDisplayPanelNode(const std::vector<PropertyEntry>& entries) 
   return BuildLabelValueListNode("Display", entries);
 }
 
+AccessibleNode BuildCommandHistoryNode(const std::vector<CommandHistoryEntrySummary>& entries) {
+  AccessibleNode list;
+  list.name = "Command History";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu recorded line(s)", entries.size());
+  list.description = count_buf;
+
+  for (const CommandHistoryEntrySummary& e : entries) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = e.text;
+    item.description = e.is_warning ? "warning" : "";
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
 }  // namespace dino8::platform

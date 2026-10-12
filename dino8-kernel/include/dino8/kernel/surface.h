@@ -622,6 +622,30 @@ class NurbsSurface {
   Result Split(int direction, double t, NurbsSurface& out_west_or_south,
                NurbsSurface& out_east_or_north) const;
 
+  // Splits this surface into one piece per genuinely G1-continuous
+  // region - closing PARITY_MAP's own disclosed "Kinky / creased surface
+  // splitting into G1 faces (SplitKinkyFaces, CreaseSplitting for NURBS)"
+  // gap. A candidate crease is an interior knot, in either direction,
+  // whose multiplicity equals this surface's own degree there (the only
+  // way a clamped B-spline can be merely C0, not C1+, across an interior
+  // knot); a candidate only actually counts as a real crease once the
+  // surface's own one-sided tangent in that direction, sampled at
+  // several points along the knot line, genuinely disagrees by more
+  // than `angle_tolerance_radians` at one or more of them - a real
+  // geometric kink, not a knot a caller inserted (e.g. via
+  // `InsertKnotAt()`) that happens to stay smooth anyway. Recursive:
+  // every half produced by a split (via `Split()` above) is itself
+  // re-checked, so a surface with several independent creases, in one
+  // direction or both, comes back as one piece per genuinely smooth
+  // region, not just a single cut. A surface with no real crease at all
+  // returns a single-element vector holding an unchanged copy of
+  // `*this`. `angle_tolerance_radians <= 0` defaults to
+  // `tolerance::kMergeEdgeAngle` (5 degrees) - the same "visible kink,
+  // not numerical slop" threshold `Brep::MergeContiguousEdges()` already
+  // uses for the inverse (curve-level) problem, not a `kAlignment`-scale
+  // exactness this coarser geometric test was never meant to meet.
+  std::vector<NurbsSurface> SplitAtCreases(double angle_tolerance_radians = 0.0) const;
+
   // Extends the surface in place in `direction` (0 = U, 1 = V) so that
   // direction's domain includes `[t0, t1]` - the surface-level
   // counterpart to `NurbsCurve::Extend()`, `Trim()`'s opposite. Only
