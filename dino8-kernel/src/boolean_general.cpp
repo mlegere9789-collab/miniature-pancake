@@ -6985,4 +6985,28 @@ Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions, int
   return merged;
 }
 
+// Public exposure of this engine's own internal point-classification
+// machinery - see surface_intersect.h's own doc comment on this
+// function for the full rationale and scope. `ClassifyPointVsBrep()`/
+// `Cls` above (this file's own anonymous namespace) already implement
+// the real, proven algorithm; this is a thin, allocation-free wrapper
+// that only (a) supplies a correct default `ray_length` when the
+// caller leaves it at 0, computed from the real per-face bounding-box
+// union rather than the disclosed-buggy `ON_Brep::BoundingBox()`
+// itself, and (b) converts the internal `Cls` enum to the plain `bool`
+// this public API returns.
+bool ContainsPointExact(const Point3d& point, const ON_Brep& brep, double ray_length, const IntersectOptions& opt,
+                         double tol) {
+  if (brep.m_F.Count() == 0) throw std::invalid_argument("ContainsPointExact: brep has no faces");
+  if (ray_length <= 0) {
+    ON_BoundingBox bbox;
+    for (int i = 0; i < brep.m_F.Count(); ++i) {
+      const ON_Surface* s = brep.m_F[i].SurfaceOf();
+      if (s) bbox.Union(s->BoundingBox());
+    }
+    ray_length = bbox.IsValid() ? 4.0 * (bbox.Diagonal().Length() + 1.0) : 1000.0;
+  }
+  return ClassifyPointVsBrep(point, brep, ray_length, opt, tol) == Cls::In;
+}
+
 }  // namespace dino8::kernel

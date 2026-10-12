@@ -4070,6 +4070,59 @@ void TestClosestPointOnBrep() {
   Check(threw_empty, "ClosestPointOnBrep throws std::invalid_argument for a Brep with no faces");
 }
 
+// PARITY_MAP's massprops category, "Point classification vs exact B-rep":
+// ClassifyPointVsSolid/ClassifyPointVsMixedSolid (boolean.h) only ever
+// classify against this kernel's own internal, already-split face lists
+// built mid-boolean - never a general-purpose query against an arbitrary
+// ON_Brep a caller already has in hand. ContainsPointExact() is that real
+// public API, reusing (not duplicating) BooleanCombineGeneral's own
+// internal multi-direction ray-cast classifier.
+void TestContainsPointExact() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ContainsPointExact;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  Check(ContainsPointExact(Point3d(1, 1, 1), box.raw()), "a point at the center of a 2x2x2 box is inside");
+  Check(!ContainsPointExact(Point3d(5, 1, 1), box.raw()), "a point well clear of the box is outside");
+  Check(!ContainsPointExact(Point3d(1, 1, 10), box.raw()),
+        "a point far above the box along z is outside (the real ray-cast answer, not just the "
+        "nearest-axis guess)");
+  Check(ContainsPointExact(Point3d(0.01, 0.01, 0.01), box.raw()),
+        "a point just inside a corner of the box is still correctly classified inside");
+
+  // The exact same 3x3x3 Box() shape IntersectBrepByPlane()'s own doc
+  // comment (surface_intersect.cpp) discloses as triggering ON_Brep::
+  // BoundingBox()'s own degenerate-y/z bug - confirms ContainsPointExact's
+  // own default ray_length (computed from the real per-face bounding-box
+  // union, not that buggy whole-Brep method) is NOT undersized by it: a
+  // point offset along y/z, where the buggy bbox would report zero
+  // extent, must still classify correctly in both directions.
+  const Brep box3 = Brep::Box(0, 0, 0, 3, 3, 3);
+  Check(ContainsPointExact(Point3d(1.5, 1.5, 1.5), box3.raw()),
+        "the 3x3x3 Box() fixture's own center is inside, despite ON_Brep::BoundingBox()'s own "
+        "disclosed y/z-collapsing bug on this exact shape");
+  Check(!ContainsPointExact(Point3d(1.5, 1.5, 100), box3.raw()),
+        "a point far outside along z (the very axis the buggy bbox collapses) is still correctly "
+        "classified outside");
+
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 5);
+  Check(ContainsPointExact(Point3d(0, 0, 0), sphere.raw()), "the sphere's own center is inside");
+  Check(ContainsPointExact(Point3d(1, 1, 1), sphere.raw()),
+        "a point well within the sphere's own radius is inside");
+  Check(!ContainsPointExact(Point3d(10, 0, 0), sphere.raw()), "a point well outside the sphere's own radius is outside");
+  Check(!ContainsPointExact(Point3d(0, 0, 20), sphere.raw()), "a point far outside the sphere along z is outside");
+
+  bool threw_empty = false;
+  try {
+    ON_Brep empty;
+    ContainsPointExact(Point3d(0, 0, 0), empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "ContainsPointExact throws std::invalid_argument for a Brep with no faces");
+}
+
 // PARITY_MAP's intersections category, "Pullback of a 3D curve to surface
 // parameter space" bullet: PullbackCurveToSurface() is the general-purpose
 // kernel entry point (SSX's own pcurve_a/pcurve_b are a by-product of a
@@ -5856,10 +5909,56 @@ void TestIntersectPlaneConeClosedForm() {
 
   // A plane parallel to the axis (not through the apex): genuinely crosses
   // both nappes (any angle below the axis, including 0, is shallower than
-  // a positive half-angle) - a hyperbola, honestly unsupported rather than
-  // misreported as an ellipse.
+  // a positive half-angle) - a genuine hyperbola, verified against the
+  // cone's own defining relation directly on both branches, not a
+  // hardcoded expected curve.
   const ON_Plane hyperbola_plane(ON_3dPoint(2, 0, 0), ON_3dVector(1, 0, 0));
-  Check(IntersectPlaneCone(hyperbola_plane, cone, 1e-6).unsupported, "a plane parallel to the axis (a hyperbola section) is honestly reported unsupported, not guessed at");
+  const auto hyperbola_case = IntersectPlaneCone(hyperbola_plane, cone, 1e-6);
+  Check(!hyperbola_case.unsupported && !hyperbola_case.empty && !hyperbola_case.through_apex && hyperbola_case.hyperbola, "a plane parallel to the axis reports a genuine hyperbola, not unsupported/empty/through-apex/ellipse");
+  if (hyperbola_case.hyperbola) {
+    Check(hyperbola_case.hyperbola_a > 0 && hyperbola_case.hyperbola_b > 0, "both reported hyperbola semi-axes are genuinely positive");
+    bool all_on_cone_and_plane = true;
+    for (double r : {-1.5, -0.5, 0.0, 0.5, 1.5}) {
+      for (double sign : {1.0, -1.0}) {
+        const Point3d p = hyperbola_case.hyperbola_center
+            + sign * hyperbola_case.hyperbola_a * std::cosh(r) * hyperbola_case.hyperbola_transverse_dir
+            + hyperbola_case.hyperbola_b * std::sinh(r) * hyperbola_case.hyperbola_conjugate_dir;
+        const ON_3dVector v = p - cone.ApexPoint();
+        const double lhs = ON_DotProduct(v, cone.Axis());
+        const double rhs = std::cos(half_angle) * std::cos(half_angle) * ON_DotProduct(v, v);
+        if (std::abs(lhs * lhs - rhs) > 1e-4 || std::abs(hyperbola_plane.DistanceTo(p)) > 1e-6) { all_on_cone_and_plane = false; break; }
+      }
+      if (!all_on_cone_and_plane) break;
+    }
+    Check(all_on_cone_and_plane, "every sampled point of both hyperbola branches lies exactly on both the cone's own defining relation and the cutting plane");
+    const Point3d branch0_mid = hyperbola_case.hyperbola_center + hyperbola_case.hyperbola_a * hyperbola_case.hyperbola_transverse_dir;
+    const Point3d branch1_mid = hyperbola_case.hyperbola_center - hyperbola_case.hyperbola_a * hyperbola_case.hyperbola_transverse_dir;
+    Check(branch0_mid.DistanceTo(branch1_mid) > 1e-3, "the two hyperbola branches are genuinely distinct, not the same one reported twice");
+  }
+
+  // A plane parallel to exactly one generator line (theta_n == 90 -
+  // half_angle from the axis, the classical parabola-section condition,
+  // derived directly from this function's own A/B/C reduction: Delta ==
+  // 4*cos^2(alpha)*(sin^2(theta_n) - cos^2(alpha)) == 0 exactly there) and
+  // clear of the apex: a genuine parabola, verified the same way.
+  const double theta_n = M_PI / 2.0 - half_angle;
+  const ON_Plane parabola_plane(ON_3dPoint(0, 0, 2), ON_3dVector(std::sin(theta_n), 0, std::cos(theta_n)));
+  const auto parabola_case = IntersectPlaneCone(parabola_plane, cone, 1e-6);
+  Check(!parabola_case.unsupported && !parabola_case.empty && !parabola_case.through_apex && parabola_case.parabola, "a plane parallel to exactly one generator reports a genuine parabola, not unsupported/empty/through-apex/ellipse/hyperbola");
+  if (parabola_case.parabola) {
+    bool all_on_cone_and_plane = true;
+    for (double r : {-2.0, -1.0, 0.0, 1.0, 2.0}) {
+      const Point3d p = parabola_case.parabola_vertex + r * parabola_case.parabola_transverse_dir
+          + parabola_case.parabola_curvature * r * r * parabola_case.parabola_axis_dir;
+      const ON_3dVector v = p - cone.ApexPoint();
+      const double lhs = ON_DotProduct(v, cone.Axis());
+      const double rhs = std::cos(half_angle) * std::cos(half_angle) * ON_DotProduct(v, v);
+      if (std::abs(lhs * lhs - rhs) > 1e-4 || std::abs(parabola_plane.DistanceTo(p)) > 1e-6) { all_on_cone_and_plane = false; break; }
+    }
+    Check(all_on_cone_and_plane, "every sampled point of the reported parabola lies exactly on both the cone's own defining relation and the cutting plane");
+    const Point3d off_vertex = parabola_case.parabola_vertex + 1.0 * parabola_case.parabola_transverse_dir + parabola_case.parabola_curvature * parabola_case.parabola_axis_dir;
+    Check(off_vertex.DistanceTo(parabola_case.parabola_vertex) > 1e-3, "the parabola genuinely extends away from its own vertex, not a degenerate single point");
+  }
 
   // Invalid input is refused outright.
   const ON_Cone invalid_cone;
@@ -6123,6 +6222,124 @@ void TestFindSurfaceSilhouetteCurvesPerspectiveChainsPointsIntoCurves() {
   ground.SetExtents(0, ON_Interval(-10, 10), true);
   ground.SetExtents(1, ON_Interval(-10, 10), true);
   Check(FindSurfaceSilhouetteCurvesPerspective(ground, Point3d(0, 0, 20), opt).empty(), "a flat plane viewed from a finite eye along its own normal chains into zero curves");
+}
+
+// PARITY_MAP.md's own "Silhouette / outline curves" bullet: closes the "no
+// visibility/self-occlusion resolution" half of this bullet's own named gap
+// for occlusion by the SAME surface (the one case a single-surface API can
+// actually answer, as opposed to occlusion by a genuinely different
+// object, which stays honestly out of scope - see FindSurfaceSilhouettePoints()'s
+// own header doc comment).
+//
+// A torus (major radius R, minor radius r, axis Z, centered at the origin)
+// viewed straight down the X axis (view_direction = (-1,0,0), viewer on the
+// +X side looking toward -X) is a hand-derivable self-occlusion fixture:
+// parametrizing the torus the standard way, P(u,v) = ((R+r*cos(v))*cos(u),
+// (R+r*cos(v))*sin(u), r*sin(v)) with outward normal n(u,v) = (cos(v)*cos(u),
+// cos(v)*sin(u), sin(v)), dot(n, view_direction) = -cos(v)*cos(u) is zero
+// whenever cos(v) == 0 - i.e. along the FULL v=90deg ring (z == +r, radius R
+// from the axis) and the full v=270deg ring (z == -r) - independent of u,
+// so every point of each ring is a genuine silhouette crossing. For any
+// point on the v=90deg ring at angle u0, the implicit torus equation
+// (sqrt(x^2+y^2)-R)^2 + z^2 == r^2 at that SAME (y, z) == (R*sin(u0), r)
+// reduces to x^2 == R^2 - y0^2 == (R*cos(u0))^2, i.e. exactly the two roots
+// x == +-R*cos(u0) - so the point at u0 and the point at (180deg - u0) (same
+// y, opposite x) are the ONLY two torus points sharing that exact ray
+// parallel to X, and whichever has the LARGER x (closer to the viewer, on
+// the +X side) occludes the other. That means the entire x>0 half of each
+// ring (cos(u) > 0, i.e. u in (-90deg, 90deg)) is genuinely visible, and the
+// entire x<0 half (cos(u) < 0) is genuinely self-occluded by the near tube
+// wall - a real, hand-derivable "far rim hidden behind the near tube"
+// configuration, not an approximation.
+void TestFindSurfaceSilhouettePointsSelfOcclusionTorus() {
+  using dino8::kernel::FindSurfaceSilhouetteCurves;
+  using dino8::kernel::FindSurfaceSilhouetteCurvesPerspective;
+  using dino8::kernel::FindSurfaceSilhouettePoints;
+  using dino8::kernel::FindSurfaceSilhouettePointsPerspective;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  const double R = 5.0, r = 1.0;
+  const ON_Torus on_torus(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), R, r);
+  ON_NurbsSurface torus_surface;
+  Check(on_torus.GetNurbForm(torus_surface) == 2, "ON_Torus::GetNurbForm succeeds");
+
+  const IntersectOptions opt;
+  const auto hits = FindSurfaceSilhouettePoints(torus_surface, ON_3dVector(-1, 0, 0), opt);
+  Check(!hits.empty(), "a torus viewed straight down the X axis finds genuine silhouette points");
+
+  bool any_near_side = false, any_far_side = false;
+  for (const auto& h : hits) {
+    // Only the hand-derived rings (|z| close to r, radius close to R from
+    // the axis) carry the clean "mirror pair" property this test checks -
+    // other crossings this grid may also find (e.g. the cos(u)==0 branch,
+    // itself at x close to 0) are left alone.
+    const double axis_radius = std::hypot(h.point.x, h.point.y);
+    if (std::abs(std::abs(h.point.z) - r) > 0.08 * r || std::abs(axis_radius - R) > 0.08 * R) continue;
+    if (h.point.x > 0.3 * R) any_near_side = true;
+    if (h.point.x < -0.3 * R) any_far_side = true;
+  }
+  Check(any_near_side, "the near half of the hand-derivable ring (facing the viewer) is reported as visible");
+  Check(!any_far_side, "the far half of the SAME ring, genuinely hidden behind the near tube wall, is dropped as self-occluded rather than reported as visible");
+
+  // The curve-chaining sibling sees the exact same filtered crossings, so
+  // no chained curve point should land on the far (self-occluded) side
+  // either.
+  const auto curves = FindSurfaceSilhouetteCurves(torus_surface, ON_3dVector(-1, 0, 0), opt);
+  Check(!curves.empty(), "the torus still chains into at least one genuine silhouette curve after self-occlusion filtering");
+  bool any_curve_far_side = false;
+  for (const auto& sc : curves) {
+    const ON_Interval dom = sc.curve.Domain();
+    for (int k = 0; k <= 20; ++k) {
+      const ON_3dPoint p = sc.curve.PointAt(dom.ParameterAt(static_cast<double>(k) / 20.0));
+      const double axis_radius = std::hypot(p.x, p.y);
+      if (std::abs(std::abs(p.z) - r) > 0.1 * r || std::abs(axis_radius - R) > 0.1 * R) continue;
+      if (p.x < -0.3 * R) any_curve_far_side = true;
+    }
+  }
+  Check(!any_curve_far_side, "no chained silhouette curve sample lands on the self-occluded far side of the hand-derivable ring");
+
+  // The perspective siblings, viewed from a finite eye far out on the +X
+  // axis (D >> R + r, so the per-point ray to `eye` is nearly parallel to
+  // X everywhere near the torus - the same near-side/far-side pairing
+  // holds, just no longer exactly along a fixed direction).
+  const Point3d eye(30.0 * R, 0, 0);
+  const auto phits = FindSurfaceSilhouettePointsPerspective(torus_surface, eye, opt);
+  Check(!phits.empty(), "the torus still finds perspective silhouette points from a finite, distant eye");
+  bool p_any_near = false, p_any_far = false;
+  for (const auto& h : phits) {
+    if (h.point.x > 0.3 * R) p_any_near = true;
+    if (h.point.x < -0.3 * R) p_any_far = true;
+  }
+  Check(p_any_near, "perspective: the near side (facing the distant eye) is still reported as visible");
+  Check(!p_any_far, "perspective: the far side, self-occluded by the near tube wall, is dropped exactly as the orthographic case is");
+
+  const auto pcurves = FindSurfaceSilhouetteCurvesPerspective(torus_surface, eye, opt);
+  Check(!pcurves.empty(), "the torus still chains into at least one genuine perspective silhouette curve after self-occlusion filtering");
+  bool p_any_curve_far = false;
+  for (const auto& sc : pcurves) {
+    const ON_Interval dom = sc.curve.Domain();
+    for (int k = 0; k <= 20; ++k) {
+      const ON_3dPoint p = sc.curve.PointAt(dom.ParameterAt(static_cast<double>(k) / 20.0));
+      if (p.x < -0.3 * R) p_any_curve_far = true;
+    }
+  }
+  Check(!p_any_curve_far, "no chained perspective silhouette curve sample lands on the self-occluded far side either");
+
+  // A sphere is convex, so NOTHING on it is ever self-occluded by itself -
+  // the equator fixture TestFindSurfaceSilhouettePointsSphereEquator()
+  // already establishes stays entirely intact (a regression guard: this
+  // filter must not over-trigger on an ordinary convex surface).
+  const double radius = 3.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  const auto sphere_hits = FindSurfaceSilhouettePoints(sphere_surface, ON_3dVector(0, 0, 1), opt);
+  Check(!sphere_hits.empty(), "a convex sphere's equator silhouette survives self-occlusion filtering intact (nothing to occlude it with)");
+  for (const auto& h : sphere_hits) {
+    Check(std::abs(h.point.z) <= 1e-6 && std::abs(std::hypot(h.point.x, h.point.y) - radius) <= 1e-6,
+          "every surviving sphere silhouette point is still exactly on the equator - the self-occlusion filter did not spuriously drop a genuinely visible point");
+  }
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
@@ -21734,6 +21951,63 @@ void TestMeshTrisToQuadsGatesOnDihedralAngle() {
     Check(m.TrisToQuads(100.0) == 1, "the same 90deg fold merges once the caller raises the threshold past 90deg");
     Check(m.FaceCount() == 1 && m.raw().m_F[0].IsQuad(), "...into one quad");
   }
+}
+
+// Closes a real, previously-unvalidated gap: max_dihedral_deg went
+// straight into `std::max(0.0, max_dihedral_deg)` with no check at all -
+// a NaN value silently became exactly 0.0 (any comparison with NaN is
+// false, so `0.0 < NaN` is false and std::max returns the first
+// argument), accepting only perfectly-flat merges without ever telling
+// the caller its own threshold was nonsense, rather than refusing
+// outright the way this class's own other tolerance/angle parameters do.
+void TestMeshTrisToQuadsThrowsOnNonFiniteDihedralDegAndClampsNegative() {
+  using dino8::kernel::Mesh;
+
+  auto make_flat_pair = []() {
+    Mesh m;
+    ON_Mesh& raw = m.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));   // 0 = a
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 1 = b
+    raw.m_V.Append(ON_3fPoint(0.5f, 1.0f, 0.0f));   // 2 = c
+    raw.m_V.Append(ON_3fPoint(0.5f, -1.0f, 0.0f));  // 3 = d, same plane as a/b/c: 0deg dihedral
+    ON_MeshFace fi;
+    fi.vi[0] = 0; fi.vi[1] = 1; fi.vi[2] = 2; fi.vi[3] = 2;
+    raw.m_F.Append(fi);
+    ON_MeshFace fj;
+    fj.vi[0] = 1; fj.vi[1] = 0; fj.vi[2] = 3; fj.vi[3] = 3;
+    raw.m_F.Append(fj);
+    return m;
+  };
+
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  Check(Throws([&] { make_flat_pair().TrisToQuads(nan); }),
+        "TrisToQuads throws for a NaN max_dihedral_deg");
+  Check(Throws([&] { make_flat_pair().TrisToQuads(inf); }),
+        "TrisToQuads throws for a +infinity max_dihedral_deg");
+  Check(Throws([&] { make_flat_pair().TrisToQuads(-inf); }),
+        "TrisToQuads throws for a -infinity max_dihedral_deg");
+
+  // Negative control: a genuinely negative (but finite) value is NOT an
+  // error - it's the same documented "clamps to 0.0" convenience the
+  // doc comment (mesh.h) now discloses explicitly - so a perfectly flat
+  // (0deg dihedral) pair still merges even at a negative threshold,
+  // exactly as it already does at a literal 0.0 threshold.
+  Mesh m = make_flat_pair();
+  Check(!Throws([&] { Mesh probe = m; probe.TrisToQuads(-10.0); }),
+        "TrisToQuads does not throw for a negative (but finite) max_dihedral_deg");
+  Check(m.TrisToQuads(-10.0) == 1,
+        "a negative max_dihedral_deg still clamps to 0.0, so a perfectly flat (0deg) pair still merges");
 }
 
 // Two coplanar (0deg dihedral) triangles sharing edge a-b whose apexes
@@ -74098,6 +74372,7 @@ int main() {
   TestIntersectBrepsAndCurveBrep();
   TestFireRayAtBrep();
   TestClosestPointOnBrep();
+  TestContainsPointExact();
   TestPullbackCurveToSurfaceCylinderRulingLine();
   TestPullbackCurveToSurfaceAcrossPeriodicSeam();
   TestIntersectBrepByPlaneBoxSideWalls();
@@ -74127,6 +74402,7 @@ int main() {
   TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon();
   TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves();
   TestFindSurfaceSilhouetteCurvesPerspectiveChainsPointsIntoCurves();
+  TestFindSurfaceSilhouettePointsSelfOcclusionTorus();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
@@ -74967,6 +75243,7 @@ int main() {
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
   TestMeshTrisToQuadsRecombinesTessellatedBoxFaces();
   TestMeshTrisToQuadsGatesOnDihedralAngle();
+  TestMeshTrisToQuadsThrowsOnNonFiniteDihedralDegAndClampsNegative();
   TestMeshTrisToQuadsRefusesNonConvexMerge();
   TestMeshTrisToQuadsMergesSeveralIndependentSquaresInOneCall();
   TestMeshTrisToQuadsRefusesCoincidentApexes();
