@@ -2737,6 +2737,7 @@ class Mesh {
  private:
   friend class Brep;
   friend class NurbsSurface;
+  friend class MeshClosestPointIndex;  // needs raw triangle data (mesh_.m_V/m_F) to build its own index - see that class's own doc comment above
 
   // Shared by ExtrudeCappedSolid() and ConeToApex(): extracts `cap`'s
   // boundary edges from triangle adjacency (an edge used by exactly one
@@ -2771,6 +2772,61 @@ class Mesh {
   std::vector<std::string> face_group_names_;
   std::vector<std::string> face_material_names_;
   std::vector<Color> face_material_colors_;
+};
+
+// A reusable spatial acceleration structure over a Mesh's own triangles -
+// PARITY_MAP.md's own "Spatial acceleration structures for geometric
+// queries" bullet: "only private uniform grids for SSX/CSX; every public
+// query brute force." `Mesh::ClosestPoint()` itself is exactly that: a
+// plain O(triangle count) scan over every triangle, every call. This is
+// left completely UNCHANGED (every existing caller's own behavior and
+// performance characteristics are untouched) - `MeshClosestPointIndex` is
+// instead a new, explicit, opt-in structure a caller builds ONCE
+// (O(triangle count), the same up-front cost `PointCloud::SpatialIndex()`
+// already pays for repeated point queries) and then queries many times in
+// expected sublinear time, the real value an acceleration structure gives
+// a workload that calls `ClosestPoint()` on the SAME mesh many times
+// (per-vertex offsetting, signed-distance sampling, ...).
+//
+// Built on an `ON_RTree` of each triangle's own bounding box - the
+// identical index structure `PointCloud::SpatialIndex()` already builds
+// over points, generalized from a point (zero-volume box) to a genuine
+// triangle box - and queried with the same expanding-box, doubling-until-
+// proven-sufficient search `PointCloud::KNearest()` already establishes:
+// search a box of half-width `r` around the query point, compute every
+// candidate triangle's own EXACT closest point via `ClosestPointOnTriangle`
+// (the identical per-triangle primitive `Mesh::ClosestPoint()` itself
+// uses - not an approximation traded for speed), and stop once the best
+// distance found is proven to be within `r` (nothing outside the box
+// could then possibly be closer) or the box already covers the mesh's own
+// whole bounding box (nothing exists outside it at all) - exactly
+// `PointCloud::KNearest()`'s own two stopping proofs, one dimension up.
+// The result is identical to `mesh.ClosestPoint(point)` at the time this
+// index was built, verified directly against it in testing.
+//
+// Becomes stale if the mesh is mutated after construction - rebuild a
+// fresh index, the same contract any index over mutable data has. This
+// deliberately does NOT try to auto-invalidate the way
+// `PointCloud::SpatialIndex()`'s own private, class-owned cache does
+// (reset from inside `PointCloud`'s own few mutators): `Mesh` has many
+// more existing mutating methods, and silently missing one would mean
+// silently serving a stale answer - a real correctness hazard worse than
+// just documenting the rebuild-after-mutation contract plainly, as here.
+class MeshClosestPointIndex {
+ public:
+  // Throws std::invalid_argument if `mesh` has no faces - no surface to
+  // index, matching `Mesh::ClosestPoint()`'s own contract up front rather
+  // than deferring the same throw to the first query.
+  explicit MeshClosestPointIndex(const Mesh& mesh);
+
+  // Identical to `Mesh::ClosestPoint(point)` on the mesh this index was
+  // built from (see this class's own doc comment above for why).
+  Point3d ClosestPoint(Point3d point) const;
+
+ private:
+  std::vector<std::array<Point3d, 3>> triangles_;
+  ON_RTree tree_;
+  ON_BoundingBox bbox_;
 };
 
 }  // namespace dino8::kernel
