@@ -320,6 +320,43 @@ struct BrepClosestPointResult {
 BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b, int u_divisions = 20,
                                            int v_divisions = 20, int trim_samples_per_edge = 24);
 
+// Closes PARITY_MAP.md's own disclosed "Point classification vs exact
+// B-rep" gap: `ClassifyPointVsSolid`/`ClassifyPointVsMixedSolid`
+// (boolean.h) classify a point against this kernel's own internal,
+// already-split `PlanarFace`/`MixedFace` lists built mid-boolean, never
+// against an arbitrary, already-built `ON_Brep` directly - they are not
+// a general-purpose query a caller could reach for on its own. This is
+// the real one: the exact (non-tessellated), Brep-level counterpart of
+// `Mesh::ContainsPoint()`'s own single-ray mesh test, reusing - not
+// duplicating - `BooleanCombineGeneral`'s own internal multi-direction
+// ray-cast point classifier (this file's neighbor family, `FireRayAtBrep`/
+// `ClosestPointOnBrep` above, already exposes that engine's other
+// internal ray/closest-point machinery the same way). Casts up to 8
+// generic (golden-ratio-derived, near-icosahedral) ray directions in
+// turn, each scanning every face of `brep` via the exact
+// `IntersectCurveSurface()`/`FaceContainsUV()` pipeline and parity-
+// counting genuine crossings; whenever a hit lands too close to a
+// face's own trim/domain boundary to parity-count reliably, that
+// direction is abandoned and the next one tried, so one grazing hit
+// can't silently flip the answer. Returns false (outside) only once
+// every direction has either come back clean or been exhausted.
+// `ray_length`, left at its default of 0, is computed automatically
+// from the real union of every face's own `SurfaceOf()->BoundingBox()`
+// (4x that union's diagonal plus 1, the same margin this engine's own
+// internal callers already use) - deliberately NOT `ON_Brep::
+// BoundingBox()` itself, which `IntersectBrepByPlane()`'s own doc
+// comment above already discloses as degenerate for this kernel's own
+// untrimmed `Box()`-style faces in this OpenNURBS version; pass a
+// positive value explicitly only to override the computed default.
+// Throws std::invalid_argument if `brep` has no faces. Honestly scoped
+// exactly as every other query in this family already is: a non-solid
+// (open) Brep has no well-defined inside, and the result is then not
+// geometrically meaningful - this function does not detect that case,
+// the same precondition `FireRayAtBrep`/`ClosestPointOnBrep` already
+// leave to the caller.
+bool ContainsPointExact(const Point3d& point, const ON_Brep& brep, double ray_length = 0,
+                         const IntersectOptions& opt = IntersectOptions(), double tol = 1e-6);
+
 // A curve/plane crossing - the curve-level counterpart to CurveSurfaceHit
 // above, but against a caller-supplied INFINITE ON_Plane rather than a
 // bounded ON_Surface. PARITY_MAP.md's own "Curve/plane intersection" gap:
@@ -1125,6 +1162,70 @@ struct CylinderCylinderIntersectingIntersection {
 };
 CylinderCylinderIntersectingIntersection IntersectCylinderCylinderIntersecting(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance);
 
+// The closed-form cylinder/cylinder SSX for the UNEQUAL-RADIUS,
+// FULLY-PIERCING special case - a third narrowing of the "cylinder/
+// cylinder" half of PARITY_MAP.md's own "Analytic/analytic SSX closed
+// forms" bullet, alongside IntersectCylinderCylinderParallel()'s
+// parallel-axis case and IntersectCylinderCylinderIntersecting()'s
+// equal-radius case. This is a public re-derivation of the SAME closed
+// form `BooleanCombineMixed`'s own private `ComputeUnequalCylinderCrossing`/
+// `UnequalCylinderCurvePoint` (boolean.cpp) already relies on for its own
+// wall-splitting: for a point at angle `theta` around the SMALLER
+// cylinder's own generator circle (`e(theta) = small_radius*(cos(theta)*
+// e0 + sin(theta)*e1)` for any orthonormal `(e0, e1)` perpendicular to its
+// axis - the specific choice doesn't matter, `theta` just needs to sweep
+// the circle once), the LARGER cylinder's own defining relation
+// `|p - large.Center() - h*large.Axis()|_perp == large.radius` (distance
+// from the point to the large cylinder's own axis line, projected
+// perpendicular to that axis) reduces to an EXACT quadratic in the one
+// unknown `h` (the point's own height along the small cylinder's axis) -
+// no Newton polish, every point an exact root of that quadratic.
+//
+// Two such roots exist at every `theta` exactly when the smaller cylinder
+// fully pierces the larger one on every one of its own generators: for
+// intersecting axes (the two infinite axis lines' own closest-point
+// distance `d` within `tolerance`), this holds at ANY angle `alpha`
+// between the axes; for genuinely skew axes (`d > tolerance`), only when
+// `d + small_radius < large_radius` (the single closed-form, alpha-
+// independent full-pierce condition this function shares with the
+// private splitter's own `ComputeUnequalCylinderCrossing` - the
+// discriminant of the per-angle quadratic above is minimized over `theta`
+// exactly there). A skew pair that does NOT fully pierce (a partial,
+// blind penetration with no closed-loop answer) is refused outright
+// (`not_full_pierce == true`) rather than guessed at. Given that, the two
+// root signs each trace out a genuine closed space curve as `theta`
+// sweeps `[0, 2*pi)` - `curve_a` the `+` root, `curve_b` the `-` root, two
+// disjoint loops (never pinching together, unlike the equal-radius
+// Steinmetz case's own ellipse pair, since the full-pierce precondition
+// keeps the discriminant strictly positive everywhere).
+//
+// Unlike the equal-radius case's two PLANAR ELLIPSES (exact conics, with
+// their own exact NURBS form), this curve is not a conic at all - no
+// OpenNURBS type represents it exactly. Each SAMPLED point is still an
+// exact root of the quadratic above (no approximation, no Newton polish),
+// but the curve BETWEEN samples is a cubic interpolation through those
+// exact points (the same `InterpolateCubic()`/`ChordParams()` closed-curve
+// fit `PullbackCurveToSurface()`'s own `pulled_curve`, `ContourAtPlane()`,
+// and `FindSurfaceSilhouetteCurves()` already use for the identical reason
+// - a genuinely curved locus with no simple exact finite representation),
+// not itself exactly on the true curve there. `a`/`b` sharing (within
+// tolerance) the same radius are refused outright (`equal_radius == true`
+// - `IntersectCylinderCylinderIntersecting()`'s own case, not this one's,
+// since the `r^2` cancellation that construction depends on does not
+// apply here); (anti)parallel axes are likewise refused
+// (`parallel == true` - `IntersectCylinderCylinderParallel()`'s own case).
+// Deliberately operates on both cylinders' own INFINITE lateral surfaces,
+// the same unbounded scope every other closed form in this file already
+// takes.
+struct CylinderCylinderUnequalIntersection {
+  bool empty = true;
+  bool equal_radius = false;      // true: refused outright - `a`/`b` share (within tolerance) the same radius; `IntersectCylinderCylinderIntersecting()`'s own case, not this one's; every other field meaningless
+  bool parallel = false;          // true: refused outright - the two axes are (anti)parallel within tolerance; `IntersectCylinderCylinderParallel()`'s own case
+  bool not_full_pierce = false;   // true: refused outright - a genuinely skew pair whose smaller cylinder does not fully pierce the larger one on every generator (a partial/blind penetration with no closed-loop answer)
+  ON_NurbsCurve curve_a, curve_b;  // the two closed loops (root sign +, root sign -) - meaningful only when !empty && !equal_radius && !parallel && !not_full_pierce
+};
+CylinderCylinderUnequalIntersection IntersectCylinderCylinderUnequalRadius(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance);
+
 // The exact closed-form plane/plane SSX - closes the "plane/plane" half of
 // PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
 // easiest of its named pairs and, until now, still unaddressed as a public
@@ -1344,14 +1445,23 @@ PlaneTorusIntersection IntersectPlaneTorus(const ON_Plane& plane, const ON_Torus
 // merely a pole - `RobustSurfaceNormal`'s own nudge already handles an
 // ordinary pole) is skipped outright ("cannot verify", not guessed), and a
 // zero-length `view_direction` returns empty outright (there is no
-// direction to test tangency against). Still honestly scoped: orthographic
-// projection only (no perspective eye point - a ray from a finite viewpoint
-// needs a per-point VARYING direction, `point - eye`, not this function's
-// own single fixed `view_direction`); point detections only, as above; no
-// visibility/self-occlusion resolution (a point behind the surface's own
-// near side from the viewer, or hidden behind a different object entirely,
-// is reported exactly like a visible one); and no `dino8-app` command calls
-// it yet (the app's own `Silhouette` stays mesh-based, unchanged).
+// direction to test tangency against). Self-occlusion by the SAME surface
+// is now resolved too: every surviving crossing has a ray fired from it
+// TOWARD the viewer (`FilterSelfOccludedCrossings()`, surface_intersect.cpp)
+// against this same surface, via the file's own general
+// `IntersectCurveSurface()` - the exact machinery `FireRayAtBrep()` already
+// builds on for a B-rep, just against one untrimmed surface directly; any
+// hit strictly nearer the viewer means a nearer part of the SAME surface
+// blocks the line of sight there, and the crossing is dropped rather than
+// reported as visible (e.g. the far rim of a torus, hidden behind its own
+// near tube wall, from a view angle where the two genuinely overlap). Still
+// honestly scoped: orthographic projection only (no perspective eye point -
+// a ray from a finite viewpoint needs a per-point VARYING direction,
+// `point - eye`, not this function's own single fixed `view_direction`);
+// point detections only, as above; occlusion by a genuinely DIFFERENT
+// object is still not resolved - this function takes only one surface, with
+// no scene to test against; and no `dino8-app` command calls it yet (the
+// app's own `Silhouette` stays mesh-based, unchanged).
 struct SurfaceSilhouettePoint {
   ON_2dPoint uv;
   Point3d point;
@@ -1375,10 +1485,16 @@ std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePoints(const ON_Surface
 // that happens to land exactly at `eye` itself (direction length ~0, no
 // ray to test tangency against there) is treated as "cannot verify", the
 // same honest skip RobustSurfaceNormal()'s own pole degeneracy already
-// gets. Still honestly scoped exactly as FindSurfaceSilhouettePoints() is:
-// point detections only, no curve-chaining (see FindSurfaceSilhouetteCurves()
+// gets. Self-occlusion by the SAME surface is resolved exactly as
+// FindSurfaceSilhouettePoints() now does, via the same
+// `FilterSelfOccludedCrossings()` - here the ray toward the viewer runs
+// from each crossing to the exact finite `eye` (not a generous bound: a hit
+// past `eye` itself is not between the crossing and the viewer at all).
+// Still honestly scoped exactly as FindSurfaceSilhouettePoints() is: point
+// detections only, no curve-chaining (see FindSurfaceSilhouetteCurves()
 // below for that, which does not yet have a perspective sibling of its
-// own), and no visibility/self-occlusion resolution.
+// own), and occlusion by a genuinely DIFFERENT object is still not
+// resolved.
 std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePointsPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt);
 
 // Chains FindSurfaceSilhouettePoints()'s own isolated grid-edge crossings
@@ -1409,11 +1525,14 @@ std::vector<SurfaceSilhouettePoint> FindSurfaceSilhouettePointsPerspective(const
 // `pulled_curve`, ContourAtPlane(), ...), not resampled. Still honestly
 // scoped: an isolated degree-0 crossing (dropped here) is still visible via
 // FindSurfaceSilhouettePoints() itself; saddle cells are skipped rather than
-// resolved; there is no perspective sibling of this function yet; and - the
-// one gap this bullet's own text keeps naming regardless of which of these
-// functions is asked - no visibility/self-occlusion resolution (a chain on
-// the surface's own far side from the viewer, or hidden behind a different
-// object, is reported exactly like a visible one).
+// resolved; there is no perspective sibling of this function yet; and
+// occlusion by a genuinely DIFFERENT object is still not resolved - this
+// function takes only one surface, with no scene to test against.
+// Self-occlusion by the SAME surface IS now resolved: the crossings this
+// chains are the exact ones FindSurfaceSilhouettePoints() already filters
+// through `FilterSelfOccludedCrossings()` before this function ever sees
+// them, so a chain that runs behind a nearer part of the SAME surface is
+// broken there rather than stitched straight through it.
 struct SurfaceSilhouetteCurve {
   ON_NurbsCurve curve;
   bool closed = false;
@@ -1438,11 +1557,13 @@ std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurves(const ON_Surface
 // not guessed; a "saddle" cell (all four boundary edges crossing) is skipped
 // rather than resolved with an arbitrary diagonal pairing; an isolated
 // degree-0 crossing is dropped here but still visible via
-// FindSurfaceSilhouettePointsPerspective() itself; and - the one gap this
-// bullet's own text keeps naming regardless of which function is asked - no
-// visibility/self-occlusion resolution (a chain on the surface's own far
-// side from the eye, or hidden behind a different object, is reported
-// exactly like a visible one).
+// FindSurfaceSilhouettePointsPerspective() itself; and occlusion by a
+// genuinely DIFFERENT object is still not resolved - this function takes
+// only one surface, with no scene to test against. Self-occlusion by the
+// SAME surface IS now resolved, the same way the orthographic sibling
+// above is: the crossings chained here are the exact ones
+// FindSurfaceSilhouettePointsPerspective() already filters through
+// `FilterSelfOccludedCrossings()` first.
 std::vector<SurfaceSilhouetteCurve> FindSurfaceSilhouetteCurvesPerspective(const ON_Surface& s, const Point3d& eye, const IntersectOptions& opt);
 
 // --- numerical helpers ------------------------------------------------------

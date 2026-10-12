@@ -4070,6 +4070,59 @@ void TestClosestPointOnBrep() {
   Check(threw_empty, "ClosestPointOnBrep throws std::invalid_argument for a Brep with no faces");
 }
 
+// PARITY_MAP's massprops category, "Point classification vs exact B-rep":
+// ClassifyPointVsSolid/ClassifyPointVsMixedSolid (boolean.h) only ever
+// classify against this kernel's own internal, already-split face lists
+// built mid-boolean - never a general-purpose query against an arbitrary
+// ON_Brep a caller already has in hand. ContainsPointExact() is that real
+// public API, reusing (not duplicating) BooleanCombineGeneral's own
+// internal multi-direction ray-cast classifier.
+void TestContainsPointExact() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ContainsPointExact;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  Check(ContainsPointExact(Point3d(1, 1, 1), box.raw()), "a point at the center of a 2x2x2 box is inside");
+  Check(!ContainsPointExact(Point3d(5, 1, 1), box.raw()), "a point well clear of the box is outside");
+  Check(!ContainsPointExact(Point3d(1, 1, 10), box.raw()),
+        "a point far above the box along z is outside (the real ray-cast answer, not just the "
+        "nearest-axis guess)");
+  Check(ContainsPointExact(Point3d(0.01, 0.01, 0.01), box.raw()),
+        "a point just inside a corner of the box is still correctly classified inside");
+
+  // The exact same 3x3x3 Box() shape IntersectBrepByPlane()'s own doc
+  // comment (surface_intersect.cpp) discloses as triggering ON_Brep::
+  // BoundingBox()'s own degenerate-y/z bug - confirms ContainsPointExact's
+  // own default ray_length (computed from the real per-face bounding-box
+  // union, not that buggy whole-Brep method) is NOT undersized by it: a
+  // point offset along y/z, where the buggy bbox would report zero
+  // extent, must still classify correctly in both directions.
+  const Brep box3 = Brep::Box(0, 0, 0, 3, 3, 3);
+  Check(ContainsPointExact(Point3d(1.5, 1.5, 1.5), box3.raw()),
+        "the 3x3x3 Box() fixture's own center is inside, despite ON_Brep::BoundingBox()'s own "
+        "disclosed y/z-collapsing bug on this exact shape");
+  Check(!ContainsPointExact(Point3d(1.5, 1.5, 100), box3.raw()),
+        "a point far outside along z (the very axis the buggy bbox collapses) is still correctly "
+        "classified outside");
+
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 5);
+  Check(ContainsPointExact(Point3d(0, 0, 0), sphere.raw()), "the sphere's own center is inside");
+  Check(ContainsPointExact(Point3d(1, 1, 1), sphere.raw()),
+        "a point well within the sphere's own radius is inside");
+  Check(!ContainsPointExact(Point3d(10, 0, 0), sphere.raw()), "a point well outside the sphere's own radius is outside");
+  Check(!ContainsPointExact(Point3d(0, 0, 20), sphere.raw()), "a point far outside the sphere along z is outside");
+
+  bool threw_empty = false;
+  try {
+    ON_Brep empty;
+    ContainsPointExact(Point3d(0, 0, 0), empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "ContainsPointExact throws std::invalid_argument for a Brep with no faces");
+}
+
 // PARITY_MAP's intersections category, "Pullback of a 3D curve to surface
 // parameter space" bullet: PullbackCurveToSurface() is the general-purpose
 // kernel entry point (SSX's own pcurve_a/pcurve_b are a by-product of a
@@ -5725,6 +5778,109 @@ void TestIntersectCylinderCylinderIntersectingClosedForm() {
 }
 
 // PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
+// "cylinder/cylinder" half's UNEQUAL-RADIUS, FULLY-PIERCING special case -
+// a third narrowing of that pair, alongside the parallel-axis and
+// equal-radius-intersecting-axis tests directly above.
+void TestIntersectCylinderCylinderUnequalRadiusClosedForm() {
+  using dino8::kernel::IntersectCylinderCylinderUnequalRadius;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Distance from a point to an infinite axis line (through `origin`,
+  // unit `axis`) - the defining per-cylinder membership test every curve
+  // point below is checked against, not a hardcoded expected curve.
+  auto dist_to_axis = [](const Point3d& p, const Point3d& origin, const Vector3d& axis) {
+    const Vector3d v = p - origin;
+    const double along = ON_DotProduct(v, axis);
+    const Vector3d radial = v - along * axis;
+    return radial.Length();
+  };
+
+  const double tol = 1e-6;
+  const double R = 3.0, r = 1.0;
+  const Vector3d axis_large(0, 0, 1);
+  const Vector3d axis_small(1, 0, 0);
+
+  // Intersecting axes (perpendicular, meeting exactly at the origin): the
+  // larger cylinder's own radius R along Z, the smaller's own radius r
+  // along X, both through the same point.
+  const ON_Cylinder cyl_large(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_large), R));
+  const ON_Cylinder cyl_small(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_small), r));
+  const auto crossing = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small, tol);
+  Check(!crossing.empty && !crossing.equal_radius && !crossing.parallel && !crossing.not_full_pierce,
+        "two unequal-radius cylinders with genuinely intersecting, perpendicular axes report two real closed curves");
+  if (!crossing.empty) {
+    for (const ON_NurbsCurve* curve : {&crossing.curve_a, &crossing.curve_b}) {
+      Check(curve->IsValid(), "each reported closed curve has a valid NURBS form");
+      bool all_on_both = true;
+      const int n = 32;
+      for (int i = 0; i <= n; ++i) {
+        const double t = curve->Domain().ParameterAt(static_cast<double>(i) / n);
+        const Point3d p = curve->PointAt(t);
+        if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-3 ||
+            std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_small) - r) > 1e-3) {
+          all_on_both = false;
+          break;
+        }
+      }
+      Check(all_on_both, "every sampled point of the curve sits at exactly radius R from the larger cylinder's axis AND exactly radius r from the smaller cylinder's axis simultaneously");
+    }
+    const Point3d mid_a = crossing.curve_a.PointAt(crossing.curve_a.Domain().ParameterAt(0.0));
+    const Point3d mid_b = crossing.curve_b.PointAt(crossing.curve_b.Domain().ParameterAt(0.0));
+    Check(mid_a.DistanceTo(mid_b) > 1e-3, "the two closed curves are genuinely distinct, not the same one reported twice");
+    Check(crossing.curve_a.IsClosed() && crossing.curve_b.IsClosed(), "both reported curves are genuinely closed loops, not open arcs");
+  }
+
+  // Also works with the caller's own argument order swapped (small, large)
+  // - the closed form must be argument-order independent.
+  const auto crossing_swapped = IntersectCylinderCylinderUnequalRadius(cyl_small, cyl_large, tol);
+  Check(!crossing_swapped.empty && !crossing_swapped.equal_radius && !crossing_swapped.parallel && !crossing_swapped.not_full_pierce,
+        "the same pair, passed in the opposite argument order, reports the same kind of result");
+
+  // A genuinely skew pair (axes non-parallel, closest-point distance
+  // d = 1 between them) whose smaller cylinder still fully pierces the
+  // larger one on every generator (d + r = 2 < R = 3).
+  const ON_Cylinder cyl_small_skew(ON_Circle(ON_Plane(Point3d(0, 1, 0), axis_small), r));
+  const auto skew_pierce = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_skew, tol);
+  Check(!skew_pierce.empty && !skew_pierce.not_full_pierce, "a genuinely skew pair whose smaller cylinder fully pierces the larger one reports a real result, not a refusal");
+  if (!skew_pierce.empty) {
+    bool all_on_both = true;
+    const int n = 32;
+    for (int i = 0; i <= n; ++i) {
+      const double t = skew_pierce.curve_a.Domain().ParameterAt(static_cast<double>(i) / n);
+      const Point3d p = skew_pierce.curve_a.PointAt(t);
+      if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-3 ||
+          std::abs(dist_to_axis(p, Point3d(0, 1, 0), axis_small) - r) > 1e-3) {
+        all_on_both = false;
+        break;
+      }
+    }
+    Check(all_on_both, "the skew-but-piercing case's own curve also sits at exactly radius R from the larger axis and radius r from the smaller (offset) axis simultaneously");
+  }
+
+  // A genuinely skew pair that does NOT fully pierce (d + r = 2.5 + 1 = 3.5
+  // >= R = 3, a partial/blind penetration) is refused outright.
+  const ON_Cylinder cyl_small_partial(ON_Circle(ON_Plane(Point3d(0, 2.5, 0), axis_small), r));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_partial, tol).not_full_pierce,
+        "a genuinely skew pair whose smaller cylinder does NOT fully pierce the larger one is refused outright, not guessed at");
+
+  // Equal radii are refused outright - this closed form requires UNEQUAL
+  // radii; IntersectCylinderCylinderIntersecting() is the equal-radius case.
+  const ON_Cylinder cyl_equal(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_small), R));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_equal, tol).equal_radius,
+        "two equal-radius cylinders are refused outright, not misrouted into this function's own construction");
+
+  // (Anti)parallel axes are refused outright - IntersectCylinderCylinderParallel()'s own case.
+  const ON_Cylinder cyl_parallel(ON_Circle(ON_Plane(Point3d(5, 0, 0), axis_large), r));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_parallel, tol).parallel,
+        "parallel axes are refused outright, not misrouted into a fabricated curve");
+
+  // Invalid input (zero-radius cylinder) is refused outright.
+  const ON_Cylinder degenerate(ON_Circle(ON_Plane(Point3d(0, 0, 0), axis_small), 0.0));
+  Check(IntersectCylinderCylinderUnequalRadius(cyl_large, degenerate, tol).empty, "a zero-radius cylinder operand is refused as a genuine miss");
+}
+
+// PARITY_MAP.md's own "Analytic/analytic SSX closed forms" bullet, the
 // "plane/plane" half - the easiest of its named pairs, closed here with
 // the exact classical formula (no mesh seeding, no Newton polish).
 void TestIntersectPlanePlaneClosedForm() {
@@ -6169,6 +6325,124 @@ void TestFindSurfaceSilhouetteCurvesPerspectiveChainsPointsIntoCurves() {
   ground.SetExtents(0, ON_Interval(-10, 10), true);
   ground.SetExtents(1, ON_Interval(-10, 10), true);
   Check(FindSurfaceSilhouetteCurvesPerspective(ground, Point3d(0, 0, 20), opt).empty(), "a flat plane viewed from a finite eye along its own normal chains into zero curves");
+}
+
+// PARITY_MAP.md's own "Silhouette / outline curves" bullet: closes the "no
+// visibility/self-occlusion resolution" half of this bullet's own named gap
+// for occlusion by the SAME surface (the one case a single-surface API can
+// actually answer, as opposed to occlusion by a genuinely different
+// object, which stays honestly out of scope - see FindSurfaceSilhouettePoints()'s
+// own header doc comment).
+//
+// A torus (major radius R, minor radius r, axis Z, centered at the origin)
+// viewed straight down the X axis (view_direction = (-1,0,0), viewer on the
+// +X side looking toward -X) is a hand-derivable self-occlusion fixture:
+// parametrizing the torus the standard way, P(u,v) = ((R+r*cos(v))*cos(u),
+// (R+r*cos(v))*sin(u), r*sin(v)) with outward normal n(u,v) = (cos(v)*cos(u),
+// cos(v)*sin(u), sin(v)), dot(n, view_direction) = -cos(v)*cos(u) is zero
+// whenever cos(v) == 0 - i.e. along the FULL v=90deg ring (z == +r, radius R
+// from the axis) and the full v=270deg ring (z == -r) - independent of u,
+// so every point of each ring is a genuine silhouette crossing. For any
+// point on the v=90deg ring at angle u0, the implicit torus equation
+// (sqrt(x^2+y^2)-R)^2 + z^2 == r^2 at that SAME (y, z) == (R*sin(u0), r)
+// reduces to x^2 == R^2 - y0^2 == (R*cos(u0))^2, i.e. exactly the two roots
+// x == +-R*cos(u0) - so the point at u0 and the point at (180deg - u0) (same
+// y, opposite x) are the ONLY two torus points sharing that exact ray
+// parallel to X, and whichever has the LARGER x (closer to the viewer, on
+// the +X side) occludes the other. That means the entire x>0 half of each
+// ring (cos(u) > 0, i.e. u in (-90deg, 90deg)) is genuinely visible, and the
+// entire x<0 half (cos(u) < 0) is genuinely self-occluded by the near tube
+// wall - a real, hand-derivable "far rim hidden behind the near tube"
+// configuration, not an approximation.
+void TestFindSurfaceSilhouettePointsSelfOcclusionTorus() {
+  using dino8::kernel::FindSurfaceSilhouetteCurves;
+  using dino8::kernel::FindSurfaceSilhouetteCurvesPerspective;
+  using dino8::kernel::FindSurfaceSilhouettePoints;
+  using dino8::kernel::FindSurfaceSilhouettePointsPerspective;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  const double R = 5.0, r = 1.0;
+  const ON_Torus on_torus(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), R, r);
+  ON_NurbsSurface torus_surface;
+  Check(on_torus.GetNurbForm(torus_surface) == 2, "ON_Torus::GetNurbForm succeeds");
+
+  const IntersectOptions opt;
+  const auto hits = FindSurfaceSilhouettePoints(torus_surface, ON_3dVector(-1, 0, 0), opt);
+  Check(!hits.empty(), "a torus viewed straight down the X axis finds genuine silhouette points");
+
+  bool any_near_side = false, any_far_side = false;
+  for (const auto& h : hits) {
+    // Only the hand-derived rings (|z| close to r, radius close to R from
+    // the axis) carry the clean "mirror pair" property this test checks -
+    // other crossings this grid may also find (e.g. the cos(u)==0 branch,
+    // itself at x close to 0) are left alone.
+    const double axis_radius = std::hypot(h.point.x, h.point.y);
+    if (std::abs(std::abs(h.point.z) - r) > 0.08 * r || std::abs(axis_radius - R) > 0.08 * R) continue;
+    if (h.point.x > 0.3 * R) any_near_side = true;
+    if (h.point.x < -0.3 * R) any_far_side = true;
+  }
+  Check(any_near_side, "the near half of the hand-derivable ring (facing the viewer) is reported as visible");
+  Check(!any_far_side, "the far half of the SAME ring, genuinely hidden behind the near tube wall, is dropped as self-occluded rather than reported as visible");
+
+  // The curve-chaining sibling sees the exact same filtered crossings, so
+  // no chained curve point should land on the far (self-occluded) side
+  // either.
+  const auto curves = FindSurfaceSilhouetteCurves(torus_surface, ON_3dVector(-1, 0, 0), opt);
+  Check(!curves.empty(), "the torus still chains into at least one genuine silhouette curve after self-occlusion filtering");
+  bool any_curve_far_side = false;
+  for (const auto& sc : curves) {
+    const ON_Interval dom = sc.curve.Domain();
+    for (int k = 0; k <= 20; ++k) {
+      const ON_3dPoint p = sc.curve.PointAt(dom.ParameterAt(static_cast<double>(k) / 20.0));
+      const double axis_radius = std::hypot(p.x, p.y);
+      if (std::abs(std::abs(p.z) - r) > 0.1 * r || std::abs(axis_radius - R) > 0.1 * R) continue;
+      if (p.x < -0.3 * R) any_curve_far_side = true;
+    }
+  }
+  Check(!any_curve_far_side, "no chained silhouette curve sample lands on the self-occluded far side of the hand-derivable ring");
+
+  // The perspective siblings, viewed from a finite eye far out on the +X
+  // axis (D >> R + r, so the per-point ray to `eye` is nearly parallel to
+  // X everywhere near the torus - the same near-side/far-side pairing
+  // holds, just no longer exactly along a fixed direction).
+  const Point3d eye(30.0 * R, 0, 0);
+  const auto phits = FindSurfaceSilhouettePointsPerspective(torus_surface, eye, opt);
+  Check(!phits.empty(), "the torus still finds perspective silhouette points from a finite, distant eye");
+  bool p_any_near = false, p_any_far = false;
+  for (const auto& h : phits) {
+    if (h.point.x > 0.3 * R) p_any_near = true;
+    if (h.point.x < -0.3 * R) p_any_far = true;
+  }
+  Check(p_any_near, "perspective: the near side (facing the distant eye) is still reported as visible");
+  Check(!p_any_far, "perspective: the far side, self-occluded by the near tube wall, is dropped exactly as the orthographic case is");
+
+  const auto pcurves = FindSurfaceSilhouetteCurvesPerspective(torus_surface, eye, opt);
+  Check(!pcurves.empty(), "the torus still chains into at least one genuine perspective silhouette curve after self-occlusion filtering");
+  bool p_any_curve_far = false;
+  for (const auto& sc : pcurves) {
+    const ON_Interval dom = sc.curve.Domain();
+    for (int k = 0; k <= 20; ++k) {
+      const ON_3dPoint p = sc.curve.PointAt(dom.ParameterAt(static_cast<double>(k) / 20.0));
+      if (p.x < -0.3 * R) p_any_curve_far = true;
+    }
+  }
+  Check(!p_any_curve_far, "no chained perspective silhouette curve sample lands on the self-occluded far side either");
+
+  // A sphere is convex, so NOTHING on it is ever self-occluded by itself -
+  // the equator fixture TestFindSurfaceSilhouettePointsSphereEquator()
+  // already establishes stays entirely intact (a regression guard: this
+  // filter must not over-trigger on an ordinary convex surface).
+  const double radius = 3.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  const auto sphere_hits = FindSurfaceSilhouettePoints(sphere_surface, ON_3dVector(0, 0, 1), opt);
+  Check(!sphere_hits.empty(), "a convex sphere's equator silhouette survives self-occlusion filtering intact (nothing to occlude it with)");
+  for (const auto& h : sphere_hits) {
+    Check(std::abs(h.point.z) <= 1e-6 && std::abs(std::hypot(h.point.x, h.point.y) - radius) <= 1e-6,
+          "every surviving sphere silhouette point is still exactly on the equator - the self-occlusion filter did not spuriously drop a genuinely visible point");
+  }
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
@@ -21782,6 +22056,63 @@ void TestMeshTrisToQuadsGatesOnDihedralAngle() {
   }
 }
 
+// Closes a real, previously-unvalidated gap: max_dihedral_deg went
+// straight into `std::max(0.0, max_dihedral_deg)` with no check at all -
+// a NaN value silently became exactly 0.0 (any comparison with NaN is
+// false, so `0.0 < NaN` is false and std::max returns the first
+// argument), accepting only perfectly-flat merges without ever telling
+// the caller its own threshold was nonsense, rather than refusing
+// outright the way this class's own other tolerance/angle parameters do.
+void TestMeshTrisToQuadsThrowsOnNonFiniteDihedralDegAndClampsNegative() {
+  using dino8::kernel::Mesh;
+
+  auto make_flat_pair = []() {
+    Mesh m;
+    ON_Mesh& raw = m.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));   // 0 = a
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 1 = b
+    raw.m_V.Append(ON_3fPoint(0.5f, 1.0f, 0.0f));   // 2 = c
+    raw.m_V.Append(ON_3fPoint(0.5f, -1.0f, 0.0f));  // 3 = d, same plane as a/b/c: 0deg dihedral
+    ON_MeshFace fi;
+    fi.vi[0] = 0; fi.vi[1] = 1; fi.vi[2] = 2; fi.vi[3] = 2;
+    raw.m_F.Append(fi);
+    ON_MeshFace fj;
+    fj.vi[0] = 1; fj.vi[1] = 0; fj.vi[2] = 3; fj.vi[3] = 3;
+    raw.m_F.Append(fj);
+    return m;
+  };
+
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  Check(Throws([&] { make_flat_pair().TrisToQuads(nan); }),
+        "TrisToQuads throws for a NaN max_dihedral_deg");
+  Check(Throws([&] { make_flat_pair().TrisToQuads(inf); }),
+        "TrisToQuads throws for a +infinity max_dihedral_deg");
+  Check(Throws([&] { make_flat_pair().TrisToQuads(-inf); }),
+        "TrisToQuads throws for a -infinity max_dihedral_deg");
+
+  // Negative control: a genuinely negative (but finite) value is NOT an
+  // error - it's the same documented "clamps to 0.0" convenience the
+  // doc comment (mesh.h) now discloses explicitly - so a perfectly flat
+  // (0deg dihedral) pair still merges even at a negative threshold,
+  // exactly as it already does at a literal 0.0 threshold.
+  Mesh m = make_flat_pair();
+  Check(!Throws([&] { Mesh probe = m; probe.TrisToQuads(-10.0); }),
+        "TrisToQuads does not throw for a negative (but finite) max_dihedral_deg");
+  Check(m.TrisToQuads(-10.0) == 1,
+        "a negative max_dihedral_deg still clamps to 0.0, so a perfectly flat (0deg) pair still merges");
+}
+
 // Two coplanar (0deg dihedral) triangles sharing edge a-b whose apexes
 // c and d are BOTH still on opposite sides of ab (a valid, consistently-
 // wound manifold pair - required by TrisToQuads()'s own opposite-
@@ -33985,6 +34316,101 @@ void TestMeshLoadFbxRejectsMalformedFiles() {
   std::remove(short_run_path.c_str());
   std::remove(oob_index_path.c_str());
   std::remove(unterminated_path.c_str());
+}
+
+void TestNurbsCurveSaveIgesRoundTrips() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence names
+  // IGES as app-only ("PLY has a kernel API; STEP/IGES/DXF/DWG ... remain
+  // app-only Document entry points" - DXF's own half of that gap already
+  // closed via SaveDxf()/LoadDxf() above). A real circle's own NURBS form -
+  // degree 2, periodic, genuinely non-unit rational weights - exercises
+  // every field SaveIges()/LoadIges() carry, not just a trivial polynomial
+  // line.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  Check(circle.raw().IsRational(), "setup: a circle's own NURBS form is genuinely rational");
+
+  const std::string path = "dino8_kernel_curve_iges_test.igs";
+  Check(circle.SaveIges(path) == Result::Ok, "NurbsCurve::SaveIges succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .igs file SaveIges wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  Check(file_text.find("S      1") != std::string::npos, "the file has a real Start section");
+  Check(file_text.find("126,") != std::string::npos, "the file's Parameter Data carries a real Type 126 entity");
+  Check(file_text.find("T      1") != std::string::npos, "the file has a real Terminate section");
+
+  NurbsCurve reloaded;
+  Check(NurbsCurve::LoadIges(path, reloaded) == Result::Ok, "NurbsCurve::LoadIges succeeds on SaveIges()'s own output");
+  Check(reloaded.raw().CVCount() == circle.raw().CVCount(), "the reloaded curve has the same control point count");
+  Check(reloaded.raw().Degree() == circle.raw().Degree(), "the reloaded curve has the same degree");
+  Check(reloaded.raw().IsRational(), "the reloaded curve is still genuinely rational");
+  bool cv_ok = true;
+  for (int i = 0; i < circle.raw().CVCount() && cv_ok; ++i) {
+    ON_4dPoint a, b;
+    circle.raw().GetCV(i, a);
+    reloaded.raw().GetCV(i, b);
+    if (std::abs(a.x / a.w - b.x / b.w) >= 1e-6 || std::abs(a.y / a.w - b.y / b.w) >= 1e-6 || std::abs(a.w - b.w) >= 1e-9) cv_ok = false;
+  }
+  Check(cv_ok, "every control point survived exactly (Euclidean position and real weight)");
+  Check(std::abs(reloaded.Length() - circle.Length()) < 1e-6,
+        "the reloaded curve's own length exactly matches the original circle's circumference");
+  std::remove(path.c_str());
+}
+
+void TestNurbsCurveLoadIgesRejectsMalformedFiles() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Result;
+
+  NurbsCurve out;
+  Check(NurbsCurve::LoadIges("dino8_kernel_curve_iges_does_not_exist.igs", out) == Result::Failed,
+        "LoadIges refuses a missing file");
+
+  const std::string garbage_path = "dino8_kernel_curve_iges_garbage.igs";
+  {
+    std::ofstream o(garbage_path);
+    o << "this is not an IGES file at all\n";
+  }
+  Check(NurbsCurve::LoadIges(garbage_path, out) == Result::Failed,
+        "LoadIges refuses a file with no Directory Entry section");
+  std::remove(garbage_path.c_str());
+
+  // A real SaveIges()-written file whose Directory Entry's own Type field
+  // (the first 8 columns of its first Directory Entry line) is corrupted
+  // to name a different entity (100, a circular arc) instead of 126 - this
+  // reader's own disclosed scope (the first Type 126 entity only) must
+  // decline it rather than misreading unrelated Parameter Data as a 126
+  // record.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
+  ON_NurbsCurve nurbs_form;
+  on_circle.GetNurbForm(nurbs_form);
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const std::string wrong_type_path = "dino8_kernel_curve_iges_wrong_type.igs";
+  Check(circle.SaveIges(wrong_type_path) == Result::Ok, "setup: SaveIges succeeds");
+  {
+    std::ifstream in(wrong_type_path);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    const size_t d1_end = text.find("D      1\n");
+    Check(d1_end != std::string::npos && d1_end >= 72, "setup: found the first Directory Entry line");
+    const size_t line_start = d1_end - 72;
+    Check(text.compare(line_start, 8, "     126") == 0, "setup: the first 8 columns are the entity Type field (126)");
+    text.replace(line_start, 8, "     100");
+    std::ofstream out_file(wrong_type_path, std::ios::trunc);
+    out_file << text;
+  }
+  Check(NurbsCurve::LoadIges(wrong_type_path, out) == Result::Failed,
+        "LoadIges refuses a file whose only entity's Directory Entry names Type 100, not 126");
+  std::remove(wrong_type_path.c_str());
 }
 
 void TestMeshSaveDxfRoundTrips() {
@@ -74143,6 +74569,7 @@ int main() {
   TestIntersectBrepsAndCurveBrep();
   TestFireRayAtBrep();
   TestClosestPointOnBrep();
+  TestContainsPointExact();
   TestPullbackCurveToSurfaceCylinderRulingLine();
   TestPullbackCurveToSurfaceAcrossPeriodicSeam();
   TestIntersectBrepByPlaneBoxSideWalls();
@@ -74165,6 +74592,7 @@ int main() {
   TestIntersectPlaneCylinderClosedForm();
   TestIntersectCylinderCylinderParallelClosedForm();
   TestIntersectCylinderCylinderIntersectingClosedForm();
+  TestIntersectCylinderCylinderUnequalRadiusClosedForm();
   TestIntersectPlanePlaneClosedForm();
   TestIntersectPlaneConeClosedForm();
   TestIntersectPlaneTorusClosedForm();
@@ -74172,6 +74600,7 @@ int main() {
   TestFindSurfaceSilhouettePointsPerspectiveSphereHorizon();
   TestFindSurfaceSilhouetteCurvesChainsPointsIntoCurves();
   TestFindSurfaceSilhouetteCurvesPerspectiveChainsPointsIntoCurves();
+  TestFindSurfaceSilhouettePointsSelfOcclusionTorus();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
@@ -74512,6 +74941,8 @@ int main() {
   TestMeshLoad3mfRejectsMalformedFiles();
   TestMeshSaveFbxRoundTrips();
   TestMeshLoadFbxRejectsMalformedFiles();
+  TestNurbsCurveSaveIgesRoundTrips();
+  TestNurbsCurveLoadIgesRejectsMalformedFiles();
   TestMeshSaveDxfRoundTrips();
   TestMeshLoadDxfRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
@@ -75010,6 +75441,7 @@ int main() {
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
   TestMeshTrisToQuadsRecombinesTessellatedBoxFaces();
   TestMeshTrisToQuadsGatesOnDihedralAngle();
+  TestMeshTrisToQuadsThrowsOnNonFiniteDihedralDegAndClampsNegative();
   TestMeshTrisToQuadsRefusesNonConvexMerge();
   TestMeshTrisToQuadsMergesSeveralIndependentSquaresInOneCall();
   TestMeshTrisToQuadsRefusesCoincidentApexes();
