@@ -7960,15 +7960,39 @@ bool TrimWalksMaterialLeft(const ON_Brep& b, const ON_BrepTrim& trim) {
 // Sets every live edge's and vertex's own recorded tolerance from the
 // gaps ACTUALLY present in the geometry (edge curve vs each trim's 3D
 // image; edge curve endpoints vs the vertex), whenever that gap exceeds
-// `floor` - the tolerant-edge bookkeeping JoinNakedEdges() relies on
+// a floor - the tolerant-edge bookkeeping JoinNakedEdges() relies on
 // (see brep.h). Must run AFTER SetTolerancesBoxesAndFlags()/
 // FixUnsetEdgeTolerances(), which would otherwise reset what this sets
-// (see FixUnsetEdgeTolerances' own comment). A gap at or below `floor`
+// (see FixUnsetEdgeTolerances' own comment). A gap at or below the floor
 // leaves the existing value alone (0.0 for an exact edge).
-void RecordMeasuredTolerances(ON_Brep& b, double floor) {
+//
+// The floor used per edge is `std::max(absolute_floor,
+// tolerance::RelativeDistance(edge_extent))`, where `edge_extent` is a
+// cheap diameter estimate of that one edge (its own chord, or for a
+// closed edge the chord through its own parameter-domain midpoint,
+// whichever is larger) - NOT the whole brep's extent, matching the
+// existing per-feature scaling convention this file already uses
+// elsewhere (radius_tol = RelativeDistance(radius), lin_tol =
+// RelativeDistance(edge_len), etc.), rather than introducing a second,
+// global-bounding-box-based notion of size. `absolute_floor` still
+// applies verbatim to a short edge, so nothing changes at ordinary
+// model scale; only an edge whose own extent is large enough that
+// `absolute_floor` would otherwise register a gap that is utterly
+// insignificant relative to that edge's own size (e.g. a 1e-4 gap on an
+// edge a million units long) is now correctly left at 0, instead of
+// recording a "tolerant edge" fact that is numerically real but
+// physically meaningless at that edge's own scale.
+void RecordMeasuredTolerances(ON_Brep& b, double absolute_floor) {
   for (int ei = 0; ei < b.m_E.Count(); ++ei) {
     ON_BrepEdge& e = b.m_E[ei];
     if (e.m_edge_index < 0) continue;
+    const ON_3dPoint edge_start = e.PointAtStart();
+    const ON_3dPoint edge_end = e.PointAtEnd();
+    const ON_3dPoint edge_mid = e.PointAt(e.Domain().Mid());
+    const double edge_extent =
+        std::max(edge_start.DistanceTo(edge_end),
+                  std::max(edge_start.DistanceTo(edge_mid), edge_mid.DistanceTo(edge_end)) * 2.0);
+    const double floor = std::max(absolute_floor, tolerance::RelativeDistance(edge_extent));
     double gap = 0.0;
     for (int k = 0; k < e.m_ti.Count(); ++k) {
       const int ti = e.m_ti[k];
@@ -7981,7 +8005,7 @@ void RecordMeasuredTolerances(ON_Brep& b, double floor) {
       const int vi = e.m_vi[k];
       if (vi < 0 || vi >= b.m_V.Count()) continue;
       ON_BrepVertex& v = b.m_V[vi];
-      const ON_3dPoint p = (k == 0) ? e.PointAtStart() : e.PointAtEnd();
+      const ON_3dPoint p = (k == 0) ? edge_start : edge_end;
       const double g = p.DistanceTo(v.point);
       if (g > floor && !(v.m_tolerance >= g)) v.m_tolerance = g;
     }

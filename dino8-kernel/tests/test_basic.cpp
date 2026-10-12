@@ -15517,6 +15517,139 @@ void TestOffsetSolidHandlesGenuinelyConcaveSolid() {
         "original - a real, non-degenerate erosion result on a genuinely concave solid");
 }
 
+void TestShellViaOffsetSolidOnBoxMatchesExactVolumeDifference() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::ShellViaOffsetSolid;
+
+  // A convex box: ball erosion is exact/sharp here (OffsetSolid()'s own
+  // doc comment), so the shell volume has a known closed form - outer
+  // cube minus the exactly-smaller inner cube - with no Steiner rounding
+  // term to account for.
+  const Brep box_brep = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Mesh box = box_brep.TessellateToClosedMesh(1, 1);
+
+  const double t = 1.0;
+  const Mesh shell = ShellViaOffsetSolid(box, t, 24);
+  Check(shell.IsClosedManifold(), "ShellViaOffsetSolid on a box produces a genuine closed 2-manifold");
+
+  const double expected_volume = 10.0 * 10.0 * 10.0 - 8.0 * 8.0 * 8.0;
+  Check(std::fabs(shell.Volume() - expected_volume) / expected_volume < 1e-2,
+        "ShellViaOffsetSolid(box, 1.0)'s volume matches the exact closed-form shell volume "
+        "10^3 - 8^3 (outer cube minus the exactly-sharp eroded inner cube)");
+
+  // The result must actually enclose a hollow cavity, not just be a
+  // smaller solid cube: its volume must be strictly less than the outer
+  // box's own, and strictly more than zero.
+  Check(shell.Volume() > 0.0 && shell.Volume() < box.Volume(),
+        "ShellViaOffsetSolid's result encloses strictly less material than the original box and more than nothing");
+}
+
+void TestShellViaOffsetSolidRoundsConcaveCornerUnlikeMeshShell() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::ShellViaOffsetSolid;
+
+  // Same L-shaped fixture as TestOffsetSolidHandlesGenuinelyConcaveSolid
+  // above: one genuine reflex (concave) vertical edge at x=4,y=4, every
+  // wall at least 4 units thick.
+  const Mesh arm_a = Brep::Box(0, 0, 0, 10, 4, 6).TessellateToClosedMesh(1, 1);
+  const Mesh arm_b = Brep::Box(0, 0, 0, 4, 10, 6).TessellateToClosedMesh(1, 1);
+  const Mesh l_shape = BooleanCombine(arm_a, arm_b, BooleanOp::Union);
+
+  const double t = 0.5;
+  const Mesh via_offset_solid = ShellViaOffsetSolid(l_shape, t, 24);
+  Check(via_offset_solid.IsClosedManifold(),
+        "ShellViaOffsetSolid on the concave L-shape still produces a closed 2-manifold - the "
+        "reflex edge is not a special case either OffsetSolid() or BooleanCombine() needs help with");
+
+  const Mesh via_mesh_shell = l_shape.Shell(t);
+  Check(via_mesh_shell.IsClosedManifold(), "sanity: Mesh::Shell's own sharp-offset result is a closed manifold too");
+
+  // Both are genuine, non-empty shells of the same solid at the same
+  // thickness, so their volumes must be close but not identical: ball
+  // erosion rounds material away at the one concave edge that
+  // Mesh::Shell's per-vertex offset leaves sharp, so ShellViaOffsetSolid's
+  // inner wall encloses strictly LESS material there, and the shell
+  // (outer minus inner) therefore encloses strictly MORE material than
+  // Mesh::Shell's own sharp-cornered shell.
+  Check(via_offset_solid.Volume() > 0.0 && via_offset_solid.Volume() < l_shape.Volume(),
+        "ShellViaOffsetSolid's L-shaped shell encloses strictly less material than the solid itself");
+  Check(via_mesh_shell.Volume() > 0.0 && via_mesh_shell.Volume() < l_shape.Volume(),
+        "sanity: Mesh::Shell's own L-shaped shell also encloses strictly less material than the solid itself");
+  Check(via_offset_solid.Volume() > via_mesh_shell.Volume(),
+        "ShellViaOffsetSolid's ball-eroded inner wall rounds away material at the concave edge that "
+        "Mesh::Shell's sharp per-vertex offset does not, so its shell volume is strictly larger than "
+        "Mesh::Shell's own - the two constructions are genuinely different, not two names for the same result");
+}
+
+void TestShellViaOffsetSolidArgumentChecksAndExcessiveThicknessThrows() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::ShellViaOffsetSolid;
+
+  const Brep box_brep = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Mesh box = box_brep.TessellateToClosedMesh(1, 1);
+
+  bool threw_zero = false;
+  try {
+    ShellViaOffsetSolid(box, 0.0, 24);
+  } catch (const std::invalid_argument&) {
+    threw_zero = true;
+  }
+  Check(threw_zero, "ShellViaOffsetSolid throws for a zero thickness (no inner wall to subtract)");
+
+  bool threw_negative = false;
+  try {
+    ShellViaOffsetSolid(box, -1.0, 24);
+  } catch (const std::invalid_argument&) {
+    threw_negative = true;
+  }
+  Check(threw_negative, "ShellViaOffsetSolid throws for a negative thickness");
+
+  bool threw_nan = false;
+  try {
+    ShellViaOffsetSolid(box, std::numeric_limits<double>::quiet_NaN(), 24);
+  } catch (const std::invalid_argument&) {
+    threw_nan = true;
+  }
+  Check(threw_nan, "ShellViaOffsetSolid throws for a NaN thickness");
+
+  bool threw_infinite = false;
+  try {
+    ShellViaOffsetSolid(box, std::numeric_limits<double>::infinity(), 24);
+  } catch (const std::invalid_argument&) {
+    threw_infinite = true;
+  }
+  Check(threw_infinite, "ShellViaOffsetSolid throws for a +infinity thickness");
+
+  // A thin plate: half-thickness 0.5, so a thickness that erodes the whole
+  // solid away to nothing must still throw - ShellViaOffsetSolid inherits
+  // OffsetSolid()'s own infeasible-shrink guard for the inner wall, rather
+  // than silently handing BooleanCombine() an empty inner mesh.
+  const Brep plate_brep = Brep::Box(0, 0, 0, 10, 10, 1);
+  const Mesh plate = plate_brep.TessellateToClosedMesh(4, 4);
+
+  bool threw_excessive = false;
+  try {
+    ShellViaOffsetSolid(plate, 0.6, 24);
+  } catch (const std::runtime_error&) {
+    threw_excessive = true;
+  }
+  Check(threw_excessive,
+        "ShellViaOffsetSolid(plate, 0.6) on a plate whose half-thickness is 0.5 throws rather than "
+        "silently composing a shell around an empty inner wall");
+
+  // A safe thickness (well within the plate's own half-thickness) must
+  // still succeed and produce a genuine, non-empty hollow shell.
+  const Mesh safe = ShellViaOffsetSolid(plate, 0.2, 24);
+  Check(safe.IsClosedManifold() && safe.Volume() > 0.0 && safe.Volume() < plate.Volume(),
+        "ShellViaOffsetSolid(plate, 0.2) (well within its half-thickness) succeeds normally and encloses less "
+        "material than the solid plate");
+}
+
 void TestDecompose() {
   using dino8::kernel::Decompose;
   using dino8::kernel::Mesh;
@@ -21305,6 +21438,90 @@ void TestBrepJoinNakedEdgesRecordsTolerantEdges() {
 
   // Nothing left to join.
   Check(box.JoinNakedEdges(2.0 * gap) == 0, "a second JoinNakedEdges() finds nothing");
+}
+
+// Same construction as CheckHealBoxFaces(top_z), but at an arbitrary edge
+// length `s` (box spans [0,s]^3) with the top face offset to `top_z` while
+// the sides' own top edge still ends at z=s - the same "top face floats
+// top_z-s above the sides" gap TestBrepJoinNakedEdgesRecordsTolerantEdges
+// already exercises at s=1, generalized so the whole box can be scaled up
+// or down.
+std::vector<dino8::kernel::Brep::PlanarFace> CheckHealScaledBoxFaces(double s, double top_z) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  const std::vector<Point3d> b = {Point3d(0, 0, 0), Point3d(s, 0, 0), Point3d(s, s, 0), Point3d(0, s, 0)};
+  const std::vector<Point3d> t = {Point3d(0, 0, s), Point3d(s, 0, s), Point3d(s, s, s), Point3d(0, s, s)};
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(CheckHealFace({b[3], b[2], b[1], b[0]}, ON_3dVector(0, 0, -1)));
+  faces.push_back(CheckHealFace({Point3d(0, 0, top_z), Point3d(s, 0, top_z), Point3d(s, s, top_z), Point3d(0, s, top_z)},
+                                ON_3dVector(0, 0, 1)));
+  for (size_t i = 0; i < 4; ++i) {
+    const size_t j = (i + 1) % 4;
+    ON_3dVector n = ON_CrossProduct(b[j] - b[i], t[i] - b[i]);
+    n.Unitize();
+    faces.push_back(CheckHealFace({b[i], b[j], t[j], t[i]}, n));
+  }
+  return faces;
+}
+
+// JoinNakedEdges()'s recorded tolerance is now floored at
+// max(kDistance, tolerance::RelativeDistance(that edge's own extent)), not
+// the bare absolute kDistance TestBrepJoinNakedEdgesRecordsTolerantEdges
+// already covers at ordinary (s=1) scale. This exercises the scaling at
+// both ends: a huge box (s=1e6) where a 1e-4 gap - the exact same absolute
+// gap the s=1 fixture above records as a real tolerant edge - is now
+// correctly recognized as physically insignificant at that edge's own
+// million-unit scale and left at 0, while a genuinely significant gap on
+// the SAME huge box (10, comfortably above RelativeDistance(1e6) == 1.0)
+// is still recorded, so the floor is a real floor, not a blanket
+// suppression at large scale.
+void TestBrepJoinNakedEdgesFloorsRecordedToleranceByEdgeExtent() {
+  using dino8::kernel::Brep;
+  namespace tol = dino8::kernel::tolerance;
+
+  {
+    const double s = 1e6, gap = 1e-4;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "a 1e-4 gap on a million-unit box still joins the 4 pairs");
+    int tolerant_edges = 0;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      if (box.raw().m_E[ei].m_tolerance > tol::kDistance) ++tolerant_edges;
+    }
+    Check(tolerant_edges == 0,
+          "...but records NO tolerant edges: 1e-4 is below RelativeDistance(1e6) == 1.0, so the gap is "
+          "correctly treated as insignificant at this edge's own scale, unlike the identical absolute gap on "
+          "the s=1 fixture above");
+    Check(box.raw().IsValid() && box.raw().IsSolid(), "...and the box is still a valid, closed solid regardless");
+  }
+  {
+    const double s = 1e6, gap = 10.0;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "a gap of 10, on the same million-unit box, still joins the 4 pairs");
+    int tolerant_edges = 0;
+    bool tolerances_are_the_gap = true;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      const double t = box.raw().m_E[ei].m_tolerance;
+      if (t > tol::kDistance) {
+        ++tolerant_edges;
+        if (std::fabs(t - gap) > 1e-9) tolerances_are_the_gap = false;
+      }
+    }
+    Check(tolerant_edges == 4 && tolerances_are_the_gap,
+          "...and THIS gap, comfortably above RelativeDistance(1e6) == 1.0, is still recorded verbatim on all "
+          "4 joined edges: the scaled floor suppresses only insignificant gaps, not every gap at large scale");
+  }
+  {
+    // Ordinary scale is untouched: same absolute gap and same outcome as
+    // TestBrepJoinNakedEdgesRecordsTolerantEdges's own s=1 case.
+    const double s = 1.0, gap = 1e-4;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "...and at ordinary scale, the same gap still joins 4 pairs");
+    int tolerant_edges = 0;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      if (box.raw().m_E[ei].m_tolerance > tol::kDistance) ++tolerant_edges;
+    }
+    Check(tolerant_edges == 4, "...and still records all 4 as tolerant edges, exactly as before this change");
+  }
 }
 
 // A hairline strip on the top: the top face is split into a main face
@@ -75985,6 +76202,7 @@ int main() {
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBrepPersistentIdsSurviveCompact();
+  TestBrepJoinNakedEdgesFloorsRecordedToleranceByEdgeExtent();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralFreeformSurfaceOperand();
   TestBooleanCombineGeneralFreeformVsFreeformOperand();
@@ -76127,6 +76345,9 @@ int main() {
   TestOffsetSolidExcessiveShrinkErodesToNothingAndThrows();
   TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks();
   TestOffsetSolidHandlesGenuinelyConcaveSolid();
+  TestShellViaOffsetSolidOnBoxMatchesExactVolumeDifference();
+  TestShellViaOffsetSolidRoundsConcaveCornerUnlikeMeshShell();
+  TestShellViaOffsetSolidArgumentChecksAndExcessiveThicknessThrows();
   TestDecompose();
   TestMinGap();
   TestRefineToLength();
