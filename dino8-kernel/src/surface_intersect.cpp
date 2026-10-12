@@ -2012,6 +2012,77 @@ std::vector<RayBrepHit> FireRayAtBrep(const Point3d& origin, const Vector3d& dir
   return out;
 }
 
+BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b, int u_divisions,
+                                           int v_divisions, int trim_samples_per_edge) {
+  if (b.m_F.Count() == 0) {
+    throw std::invalid_argument("dino8::kernel::ClosestPointOnBrep: brep has no faces");
+  }
+
+  BrepClosestPointResult best;
+  bool have_best = false;
+  auto consider = [&](int face_index, double distance, const Point2d& uv, const Point3d& point,
+                       bool on_boundary) {
+    if (!have_best || distance < best.distance) {
+      best = BrepClosestPointResult{face_index, distance, uv, point, on_boundary};
+      have_best = true;
+    }
+  };
+
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    const ON_BrepFace& f = b.m_F[fi];
+    const ON_Surface* srf = f.SurfaceOf();
+    if (!srf) continue;
+    ON_NurbsSurface ns;
+    if (const auto* cast = ON_NurbsSurface::Cast(srf)) {
+      ns = *cast;
+    } else if (srf->GetNurbForm(ns) <= 0) {
+      continue;
+    }
+    NurbsSurface wrapper;
+    wrapper.raw() = ns;
+
+    const Point2d uv = wrapper.ClosestPointParameter(query, u_divisions, v_divisions);
+    if (FaceContainsUV(f, uv.x, uv.y)) {
+      const Point3d p = wrapper.PointAt(uv.x, uv.y);
+      consider(fi, p.DistanceTo(query), uv, p, false);
+      continue;  // the interior answer is always <= any boundary point for this face
+    }
+
+    // Outside the trim: the true closest point on this TRIMMED face lies
+    // on its own boundary. Approximates each loop as the same sampled
+    // polyline FaceContainsUV()/PointInPolygon() already build via
+    // LoopPolygon(), evaluated through this surface's own PointAt() into
+    // real 3D segments, and finds the closest point on any of them.
+    for (int li = 0; li < f.m_li.Count(); ++li) {
+      const std::vector<ON_2dPoint> poly = LoopPolygon(b, f.m_li[li], trim_samples_per_edge);
+      const size_t n = poly.size();
+      if (n < 2) continue;
+      for (size_t i = 0; i < n; ++i) {
+        const size_t j = (i + 1) % n;
+        const Point3d a3 = wrapper.PointAt(poly[i].x, poly[i].y);
+        const Point3d b3 = wrapper.PointAt(poly[j].x, poly[j].y);
+        const Vector3d seg = b3 - a3;
+        const double len2 = seg.LengthSquared();
+        double t = 0.0;
+        if (len2 > 1e-300) {
+          t = Clamp(ON_DotProduct(query - a3, seg) / len2, 0.0, 1.0);
+        }
+        const Point3d cand(a3.x + seg.x * t, a3.y + seg.y * t, a3.z + seg.z * t);
+        const Point2d uv_cand(poly[i].x + (poly[j].x - poly[i].x) * t,
+                               poly[i].y + (poly[j].y - poly[i].y) * t);
+        consider(fi, cand.DistanceTo(query), uv_cand, cand, true);
+      }
+    }
+  }
+
+  if (!have_best) {
+    throw std::runtime_error(
+        "dino8::kernel::ClosestPointOnBrep: no face could be evaluated (every face has either no "
+        "surface or a surface with no NURBS form)");
+  }
+  return best;
+}
+
 // Curve/infinite-plane crossings: bisection-seeded, then Newton-refined on
 // the plane's own implicit signed-distance equation (a single scalar
 // residual, unlike IntersectCurveSurface()'s 3-unknown (t, u, v) system -
@@ -2983,6 +3054,193 @@ std::vector<SurfaceTangentContact> FindSurfaceTangentContacts(const ON_Surface& 
       if (e.point.DistanceTo(pa_pt) <= std::max(opt.tolerance * 4, 1e-9)) { dup = true; break; }
     if (dup) continue;
     out.push_back(SurfaceTangentContact{ON_2dPoint(ua, va), ON_2dPoint(ub, vb), pa_pt, gap});
+  }
+  return out;
+}
+
+std::vector<SurfaceTangentCurve> FindSurfaceTangentCurves(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
+  std::vector<SurfaceTangentCurve> out;
+  const ON_Interval dua = a.Domain(0), dva = a.Domain(1), dub = b.Domain(0), dvb = b.Domain(1);
+  if (!dua.IsIncreasing() || !dva.IsIncreasing() || !dub.IsIncreasing() || !dvb.IsIncreasing()) return out;
+
+  const ON_BoundingBox bba = a.BoundingBox(), bbb = b.BoundingBox();
+  const double scale = std::max({bba.IsValid() ? bba.Diagonal().Length() : 1.0, bbb.IsValid() ? bbb.Diagonal().Length() : 1.0, 1e-6});
+  // Same quick bounding-box reject FindSurfaceTangentContacts() uses.
+  if (bba.IsValid() && bbb.IsValid()) {
+    const ON_3dPoint amin = bba.Min(), amax = bba.Max(), bmin = bbb.Min(), bmax = bbb.Max();
+    double gap2 = 0;
+    for (int k = 0; k < 3; ++k) {
+      const double lo_gap = amin[k] > bmax[k] ? amin[k] - bmax[k] : 0;
+      const double hi_gap = bmin[k] > amax[k] ? bmin[k] - amax[k] : 0;
+      const double g = std::max(lo_gap, hi_gap);
+      gap2 += g * g;
+    }
+    if (std::sqrt(gap2) > std::max(opt.tolerance * 8, scale * 0.01)) return out;
+  }
+
+  const int G = 24;
+  const bool closed_u = a.IsClosed(0), closed_v = a.IsClosed(1);  // only `a`'s own closed directions drive node identity below, keyed on `a`'s own grid
+  std::vector<Point3d> pa(static_cast<size_t>(G + 1) * (G + 1)), pb(static_cast<size_t>(G + 1) * (G + 1));
+  std::vector<ON_2dPoint> uva(pa.size()), uvb(pb.size());
+  for (int i = 0; i <= G; ++i)
+    for (int j = 0; j <= G; ++j) {
+      const size_t idx = static_cast<size_t>(i) * (G + 1) + j;
+      const double u = dua.ParameterAt(static_cast<double>(i) / G), v = dva.ParameterAt(static_cast<double>(j) / G);
+      pa[idx] = a.PointAt(u, v);
+      uva[idx] = ON_2dPoint(u, v);
+      const double u2 = dub.ParameterAt(static_cast<double>(i) / G), v2 = dvb.ParameterAt(static_cast<double>(j) / G);
+      pb[idx] = b.PointAt(u2, v2);
+      uvb[idx] = ON_2dPoint(u2, v2);
+    }
+
+  // Identical per-seed seeding/refine/tangent-plane test FindSurfaceTangentContacts()
+  // itself uses - but every accepted contact is kept at its own ORIGIN grid
+  // node (i, j) in `a`'s own sampling grid, instead of being flattened into
+  // one globally-dedup'd list, so grid-adjacent origins can be chained into
+  // a curve below.
+  struct Node { Point3d point; };
+  std::map<std::pair<int, int>, Node> nodes;
+  for (int i = 0; i <= G; ++i) {
+    for (int j = 0; j <= G; ++j) {
+      const size_t ia = static_cast<size_t>(i) * (G + 1) + j;
+      double best = std::numeric_limits<double>::max();
+      size_t bestj = 0;
+      for (size_t ib = 0; ib < pb.size(); ++ib) {
+        const double d = pa[ia].DistanceTo(pb[ib]);
+        if (d < best) { best = d; bestj = ib; }
+      }
+      if (best >= scale * 0.15) continue;
+
+      double ua = uva[ia].x, va = uva[ia].y, ub = uvb[bestj].x, vb = uvb[bestj].y;
+      if (!RefineClosestApproach(a, b, ua, va, ub, vb, opt.tolerance)) continue;
+      const Point3d pa_pt = a.PointAt(ua, va), pb_pt = b.PointAt(ub, vb);
+      if (pa_pt.DistanceTo(pb_pt) > opt.tolerance) continue;  // stationary, but not an actual touch
+
+      const ON_3dVector na_raw = RobustSurfaceNormal(a, ua, va), nb_raw = RobustSurfaceNormal(b, ub, vb);
+      const double na_len = na_raw.Length(), nb_len = nb_raw.Length();
+      if (na_len < 1e-12 || nb_len < 1e-12) continue;  // cannot verify tangency here
+      ON_3dVector na = na_raw, nb = nb_raw;
+      na /= na_len;
+      nb /= nb_len;
+      if (ON_CrossProduct(na, nb).Length() > 1e-3) continue;  // a real crossing, not a tangent-only touch
+
+      // `a`'s own closed directions (e.g. a cylinder's or sphere's angular
+      // coordinate) sample the SAME physical seam column/row twice, at
+      // grid index 0 and again at index G - two index positions that are
+      // NOT adjacent in (i, j) space even though they are the identical
+      // point on the surface. Folding index G back onto index 0 for
+      // whichever direction is closed (the same seam-wrap idea
+      // SplitAtSeams()/LerpUV() already use elsewhere in this file) keeps
+      // one node per physical seam point instead of two disconnected
+      // copies of the same curve.
+      const int fi = (closed_u && i == G) ? 0 : i;
+      const int fj = (closed_v && j == G) ? 0 : j;
+      nodes[{fi, fj}] = Node{pa_pt};
+    }
+  }
+  if (nodes.size() < 3) return out;  // too few hits anywhere to possibly form a curve
+
+  // 4-adjacency graph over hit nodes sharing a grid edge - the same "home
+  // position on the grid" idea FindSurfaceSilhouetteCurves() already uses
+  // to link its own scalar-field crossings, applied here to this vector-
+  // valued tangency test's own hit nodes instead of edge crossings. A
+  // closed direction also wraps index 0 and index G - 1 together (the two
+  // folded grid's own physical neighbors across the seam), on top of the
+  // ordinary +-1 adjacency.
+  using Key = std::pair<int, int>;
+  std::map<Key, std::vector<Key>> adj;
+  for (const auto& [key, node] : nodes) {
+    (void)node;
+    std::vector<Key> neighbors = {{key.first + 1, key.second}, {key.first - 1, key.second}, {key.first, key.second + 1}, {key.first, key.second - 1}};
+    if (closed_u) {
+      if (key.first == 0) neighbors.push_back({G - 1, key.second});
+      if (key.first == G - 1) neighbors.push_back({0, key.second});
+    }
+    if (closed_v) {
+      if (key.second == 0) neighbors.push_back({key.first, G - 1});
+      if (key.second == G - 1) neighbors.push_back({key.first, 0});
+    }
+    for (const Key& nb : neighbors) if (nodes.count(nb)) adj[key].push_back(nb);
+  }
+
+  std::set<Key> visited_global;
+  for (const auto& [start_key, start_node] : nodes) {
+    (void)start_node;
+    if (visited_global.count(start_key)) continue;
+
+    // Flood-fill the connected component this node belongs to.
+    std::vector<Key> component;
+    std::vector<Key> stack = {start_key};
+    std::set<Key> in_component = {start_key};
+    while (!stack.empty()) {
+      const Key cur = stack.back();
+      stack.pop_back();
+      component.push_back(cur);
+      for (const Key& nb : adj[cur]) {
+        if (in_component.insert(nb).second) stack.push_back(nb);
+      }
+    }
+    for (const Key& k : component) visited_global.insert(k);
+    if (component.size() < 3) continue;  // a pair or a lone node: not enough to call a curve
+
+    // Only a component whose own links reduce cleanly to a PATH or a
+    // CYCLE (every node degree <= 2) is chained - the same "skip rather
+    // than guess" discipline FindSurfaceSilhouetteCurves() already applies
+    // to its own 4-crossing saddle cells. A degree-3+ node means several
+    // grid seeds near one spot converged into a genuine 2D blob (not a 1D
+    // locus), or two distinct loci happen to touch on the grid - neither
+    // is safely chained with an arbitrary pairing.
+    bool path_like = true;
+    std::vector<Key> endpoints;
+    for (const Key& k : component) {
+      const size_t deg = adj[k].size();
+      if (deg > 2) { path_like = false; break; }
+      if (deg == 1) endpoints.push_back(k);
+    }
+    if (!path_like) continue;
+    const bool closed = endpoints.empty();  // every node degree 2: a cycle, not an open chain
+    if (!closed && endpoints.size() != 2) continue;  // structurally impossible for a simple path/cycle, but guarded rather than assumed
+
+    // Walk the path (or cycle) in order, starting from a degree-1 endpoint
+    // (open chain) or an arbitrary node (cycle - either walk direction
+    // gives the same loop).
+    std::vector<Key> order;
+    Key sentinel{std::numeric_limits<int>::min(), std::numeric_limits<int>::min()};
+    Key prev = sentinel;
+    Key cur = closed ? component.front() : endpoints.front();
+    for (size_t guard = 0; guard <= component.size(); ++guard) {
+      order.push_back(cur);
+      Key next = sentinel;
+      for (const Key& nb : adj[cur]) if (nb != prev) { next = nb; break; }
+      if (next == sentinel) break;              // reached the far endpoint of an open chain
+      if (closed && next == order.front()) break;  // completed the loop - don't repeat the start point
+      prev = cur;
+      cur = next;
+    }
+
+    std::vector<Point3d> pts;
+    pts.reserve(order.size());
+    for (const Key& k : order) pts.push_back(nodes.at(k).point);
+
+    // Guard against the degenerate case this component's own degree test
+    // cannot catch by itself: several grid seeds near one truly ISOLATED
+    // tangent point can converge to nearly the identical 3D point while
+    // still forming a clean grid-adjacent path (e.g. a thin, accidental
+    // strip of close seeds), which a bare degree check alone would
+    // mistake for a genuine curve. A real tangent LOCUS has a nonzero arc
+    // length; this one's own total length, including the closing segment
+    // for a loop, is checked against the same dedup radius
+    // IntersectCurveSurface()/IntersectCurves() already use elsewhere in
+    // this file for an analogous "is this actually distinct" question.
+    double arc_len = 0;
+    for (size_t k = 1; k < pts.size(); ++k) arc_len += pts[k - 1].DistanceTo(pts[k]);
+    if (closed && pts.size() >= 2) arc_len += pts.back().DistanceTo(pts.front());
+    if (arc_len <= std::max(opt.tolerance * 8, 1e-9)) continue;
+
+    SurfaceTangentCurve sc;
+    sc.closed = closed;
+    sc.curve = InterpolateCubic(pts, ChordParams(pts, closed), closed, 3);
+    if (sc.curve.IsValid()) out.push_back(sc);
   }
   return out;
 }
