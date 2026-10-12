@@ -1057,19 +1057,35 @@ Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op, double tol
                                  "positive (pass a negative value to request the auto-derived default)");
   }
 
-  // Union and SymmetricDifference still need the lump-merge step neither
-  // pipeline below has (see RefuseCompoundOperand's own doc comment) and
-  // stay refused. Difference and Intersection do NOT need one - they
+  // SymmetricDifference still needs a lump-merge step neither pipeline
+  // below has (see RefuseCompoundOperand's own doc comment) and stays
+  // refused - its own result is a Brep::Compound of two lumps that meet
+  // along a genuine 4-face contact curve, which no single FromPlanarFaces()
+  // shell can hold. **Union no longer refuses a compound operand** (closing
+  // the "Multi-body / multi-tool booleans" bullet's own previously-named
+  // "compound-operand support for Union... refused on all three engines"
+  // gap for this engine): Union's own face selection below (from_a.out u
+  // from_b.out u from_a.on) is the IDENTICAL split/classify/reassemble
+  // pipeline Difference/Intersection already proved safe for a compound
+  // operand - `SplitAndBucket`'s ray-cast-parity classification treats
+  // `fa`/`fb` as a flat face list with no notion of which lump a face came
+  // from (the same reasoning already justifying Difference/Intersection's
+  // own exemption above), and the lump-recomputation tail at the bottom of
+  // this function already runs unconditionally for every op that reaches
+  // it, Union included - so no further change is needed to make it genuinely
+  // safe, only to stop pre-emptively refusing it. Difference and
+  // Intersection do NOT need a guard either, for the identical reason - they
   // distribute over a compound operand's lumps exactly, so a Compound() is
-  // now accepted for those two ops; see the lump-recomputation step at the
+  // accepted for those two ops too; see the lump-recomputation step at the
   // bottom of this function for why the algorithm below needs no other
-  // change to already get this right.
-  if (op == BooleanOp::Union || op == BooleanOp::SymmetricDifference) {
+  // change to already get this right. A compound operand whose own lumps
+  // genuinely TOUCH along a shared contact curve still throws the
+  // pre-existing "an edge is shared by 3 or more faces" non-manifold
+  // reassembly refusal for Union, exactly as it already does for
+  // Difference/Intersection - a real, disclosed scope limit, not a new one.
+  if (op == BooleanOp::SymmetricDifference) {
     RefuseCompoundOperand(a, "BooleanCombinePlanar");
     RefuseCompoundOperand(b, "BooleanCombinePlanar");
-  }
-
-  if (op == BooleanOp::SymmetricDifference) {
     // XOR = (A - B) u (B - A), as a Brep::Compound of the two lumps: the
     // two differences touch along the intersection curve of the two
     // boundaries, where the XOR boundary has FOUR incident faces (A's
@@ -8201,18 +8217,27 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tole
                                  "positive (pass a negative value to request the auto-derived default)");
   }
 
-  // Union and SymmetricDifference still need the lump-merge step neither
-  // pipeline here has (see RefuseCompoundOperand's own doc comment) and
-  // stay refused. Difference and Intersection do not - see this function's
-  // own lump-recomputation step at the end for why the pipeline below
-  // needs no other change to already get this right, cylindrical fragments
-  // included.
-  if (op == BooleanOp::Union || op == BooleanOp::SymmetricDifference) {
+  // SymmetricDifference still needs the lump-merge step neither pipeline
+  // here has (see RefuseCompoundOperand's own doc comment) and stays
+  // refused. **Union no longer refuses a compound operand** - the identical
+  // reasoning BooleanCombinePlanar's own Union branch above now relies on
+  // applies here too: `SplitAndBucketMixed`'s ray-cast/quadratic
+  // classification already treats `fa`/`fb` as a flat face list with no
+  // notion of which lump a face came from (the SAME reasoning Difference/
+  // Intersection's own pre-existing exemption below already uses), and the
+  // lump-recomputation tail at the end of this function already runs
+  // unconditionally for every op that reaches it, Union included, so
+  // nothing else needs to change to make this genuinely safe - only to stop
+  // pre-emptively refusing it. A compound operand whose own lumps genuinely
+  // touch is still caught by the same pre-existing non-manifold reassembly
+  // refusal, exactly as it already is for Difference/Intersection.
+  // Difference and Intersection do not need a guard either - see this
+  // function's own lump-recomputation step at the end for why the pipeline
+  // below needs no other change to already get this right, cylindrical
+  // fragments included.
+  if (op == BooleanOp::SymmetricDifference) {
     RefuseCompoundOperand(a, "BooleanCombineMixed");
     RefuseCompoundOperand(b, "BooleanCombineMixed");
-  }
-
-  if (op == BooleanOp::SymmetricDifference) {
     // XOR = (A - B) u (B - A) as a Brep::Compound of two lumps - see
     // BooleanCombinePlanar's own SymmetricDifference branch above for
     // why one shell can never hold it (four faces meet along every
