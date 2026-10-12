@@ -738,3 +738,57 @@ Enter
 SelAll
 List
 Volume
+# --- MatchSrf: exact G2 (Curvature) match of a flat panel onto a genuinely
+# curved quarter-cylinder panel's own straight edge - kernel::NurbsSurface::
+# MatchEdge()'s own Curvature level, reaching the app for the first time
+# (previously wired for Position/Tangency only; PARITY_MAP.md's own
+# "Kernel MatchEdge() G0/G1/G2" surfaceops gap named exactly this wiring
+# gap - G2 "still unreachable from any command"). The flat panel genuinely
+# bends to match the quarter-cylinder's own nonzero curvature at the
+# shared edge (not a trivial zero-curvature case two planar faces would
+# be) - degree-elevated from 1 to 3 in the cross direction to carry the
+# extra row MatchEdge()'s own curvature construction needs (the same
+# "degree-elevate, add a row" mechanism Tangency's own degree-2 case
+# already uses, one row further).
+Arc 2500,0,0 2505,0,0 2500,5,0
+SelCrv
+ExtrudeCrv 12
+SelCrv
+Hide
+Plane3Pt 2505,0,0 2510,0,0 2510,0,12
+MatchSrf
+Continuity=Curvature
+2508,0,6
+2505,0.3,6
+SelLast
+List
+# --- MatchSrf: Curvature against a target whose own degree is too low to
+# carry a curvature row (two flat, planar faces - the same structural
+# refusal kernel::NurbsSurface::MatchEdge() documents: "the requested
+# continuity exceeds the target's cross degree") fails closed with a
+# diagnostic instead of silently downgrading to G1/G0 or fabricating a
+# curvature match the per-control-point fallback was never built to
+# compute.
+SelAll
+Hide
+Box 2600,0,0 2610,10,0 10
+Plane 2600,-10,0 2610,0,0
+MatchSrf
+Continuity=Curvature
+2605,-0.5,0
+2605,0,1
+SelSrf
+List
+# --- MatchSrf: Curvature against a target CURVE (no curvature-match
+# fallback exists for a curve target at all - MatchEdge() only ever
+# matches two SURFACE edges) fails closed the same way.
+SelAll
+Hide
+Plane 2700,0,0 2710,10,0
+Line 2710,0,5 2710,10,5
+MatchSrf
+Continuity=Curvature
+2710,5,0
+2710,5,5
+SelSrf
+List

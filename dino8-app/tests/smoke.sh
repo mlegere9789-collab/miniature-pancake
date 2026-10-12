@@ -1570,6 +1570,21 @@ sdcheck "ToSubD: created 1 object(s) (0 of 1 limit-surface-fidelity verified wit
 # "verified" branch of the same check genuinely fires, not only the
 # "honest miss" branch above.
 sdcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0.000000)" "ToSubD on a flat planar patch fully verifies its limit surface against the original Brep within tolerance"
+# ToSubD exact path: SubD::FromBrep (dino8-kernel) now runs first for a
+# Brep whose every face is already an untrimmed, planar, axis-aligned-
+# in-own-uv quad (PlanarSrf's trimmed rectangle above, and the Sphere's
+# curved faces, both correctly fall through to the tessellate-and-verify
+# path unchanged - confirmed by the two checks just above still matching
+# byte for byte). Confirmed directly against the pre-this-change binary
+# that a Box was previously a genuine MISS here too (0 of 1 verified,
+# deviation ~0.8, a 24-face triangulated-then-recombined cage) - the
+# same honest-miss failure mode the Sphere check above discloses, not
+# merely a missing optimization. The exact path must now report full
+# verification at exactly 0 deviation, with the natural, clean 6-face
+# control cage a Box's own 6 flat faces should give, not a triangulated
+# approximation of it.
+sdcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0.000000)" "ToSubD on a Box fully verifies at 0 deviation (confirmed directly against the pre-this-change binary that this used to be a genuine 0-of-1 miss at ~0.8 deviation instead)"
+sdcheck "6 faces, 12 edges, 8 vertices, 0 creases" "ToSubD on a Box takes the exact SubD::FromBrep path: the natural 6-face cube cage, not a triangulated-then-recombined approximation of it (unique among this script's own SubD List outputs - the Sphere gives 11310/16965/5657, the PlanarSrf rectangle gives 6/13/8/8)"
 # SubDRevolve/SubDMultiPipe: the SubD menu (MenuBar.cpp) has always listed
 # both names, with no command of either name ever registered - a broken
 # menu entry, not an implemented-but-limited feature (PARITY_MAP.md's own
@@ -1598,7 +1613,7 @@ sdcheck "Faces: 10538" "Revolve Output=SubD's List shows a real SubD-shaped desc
 sdcheck "Bounding box: (495, -5, -24.9925) to (544.997, 5, 24.9925)" "Revolve Output=SubD built its usual Brep of revolution (profile circle radius 5 at x=500, axis at x=520), then converted it in place to a genuine SubD with the same real extent"
 echo "$SD" | grep -E "^(ok|FAIL)"
 if echo "$SD" | grep -q "^FAIL"; then fail=1; fi
-sdcheck "smoke: frames=[0-9]* objects=25" "subd script produced the expected object count"
+sdcheck "smoke: frames=[0-9]* objects=27" "subd script produced the expected object count"
 # Rendering: materials (scripted options), texture mapping, lights, sun, ground plane,
 # Render / RenderArctic / SaveRenderWindowAs, ExtractRenderMesh, .3dm round-trip (see render_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/render_script.txt" > "$TMPW/render_script.txt"
@@ -2191,7 +2206,14 @@ flcheck "MatchSrf: 2 boundary control point.s. moved to position on the target c
 flcheck "MatchSrf: 2 boundary control point.s. moved to position on the target curve" "MatchSrf moved a plane's edge onto a target line"
 flcheck "MatchSrf: exact edge match (G1) to the target surface, max position error 0, max tangent error 0" "MatchSrf against a target *surface* edge now uses the kernel's exact NurbsSurface::MatchEdge() (self-checked by evaluation, both residuals genuinely ~0), not the app's older per-control-point loop that only assumed a shared parameterization"
 flcheck "degree 2 x 1, CVs 3 x 2" "the matched floor plane's real G1 bend toward the box's vertical front face: degree elevated 1->2 and one control point added in the edge-crossing direction to hold position+tangent rows, the other direction (degree 1, 2 CVs) untouched"
-flcheck "MatchSrf: exact edge match (G2) to the target surface, max position error 0, max tangent error 0, max curvature error 0" "MatchSrf's Continuity option now reaches Curvature (G2) too, not just Position/Tangency - NurbsSurface::MatchEdge()'s own Curvature path was already real and already tested at the kernel level, just unreachable from any app command"
+# MatchSrf Curvature (G2): closes PARITY_MAP.md's surfaceops "Kernel
+# MatchEdge() - wire G2 into MatchSrf" gap - previously only Position/
+# Tangency reached kernel::NurbsSurface::MatchEdge(); Curvature was wired
+# but unreachable from any app command.
+flcheck "MatchSrf: exact edge match (G2) to the target surface, max position error 0, max tangent error 0, max curvature error 0" "MatchSrf's new Curvature option reaches kernel::NurbsSurface::MatchEdge()'s own G2 level for the first time, matched against a genuinely curved quarter-cylinder panel (not a trivial zero-curvature planar target) with every residual self-checked at ~0"
+flcheck "degree 1 x 3, CVs 2 x 4" "the matched flat panel's real G2 bend toward the quarter-cylinder's own curvature: degree elevated 1->3 and two control points added in the edge-crossing direction to hold position+tangent+curvature rows, the other direction (degree 1, 2 CVs) untouched"
+flcheck "MatchSrf: Curvature continuity needs an exact edge match against a target SURFACE edge (kernel::NurbsSurface::MatchEdge) - the exact match failed (periodic edge, or the target's degree is too low to carry a curvature row); nothing was changed" "MatchSrf's Curvature option fails closed, not silently downgraded to G1/G0, against a target whose own degree structurally can't carry a curvature row (two flat planar faces)"
+flcheck "MatchSrf: Curvature continuity needs an exact edge match against a target SURFACE edge (kernel::NurbsSurface::MatchEdge) - a target curve has no curvature-match fallback; nothing was changed" "MatchSrf's Curvature option fails closed against a target CURVE too - MatchEdge() only ever matches two surface edges, and the per-control-point fallback has no curvature construction at all"
 flcheck "SplitFace: face 0 split into 2 surfaces along the curve's crossing" "SplitFace found a real CSX crossing of a piercing polyline (a coplanar line can't cross a flat face twice)"
 flcheck "MergeFaces: 2 coplanar face.s. merged into 1" "MergeFaces recombined two joined coplanar planes"
 flcheck "Area = 100 square" "the merged 5x10 + 5x10 planes have area 100"
