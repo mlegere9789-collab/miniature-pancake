@@ -1,95 +1,77 @@
 #include <cmath>
 #include <cstdio>
-#include "dino8/kernel/brep.h"
-#include "dino8/kernel/surface.h"
+#include "dino8/kernel/curve.h"
 #include "opennurbs.h"
 
 int main() {
   ON::Begin();
   using namespace dino8::kernel;
 
-  // NurbsSurface::GetOrientedBoundingBox() and Brep::GetOrientedBoundingBox(),
-  // exercised standalone as a cross-check before trusting the real
-  // registered tests (TestSurfaceGetOrientedBoundingBox,
-  // TestBrepGetOrientedBoundingBox).
+  // NurbsCurve::FindSelfIntersections(), exercised standalone against a
+  // hand-built figure-8 (bowtie) polyline curve with a KNOWN crossing
+  // point, before trusting the real registered test
+  // (TestCurveFindSelfIntersections).
 
-  // --- NurbsSurface::GetOrientedBoundingBox() ---
+  // A simple bowtie: (0,0) -> (10,10) -> (10,0) -> (0,10) -> back to (0,0).
+  // Segment 1 ((0,0)-(10,10)) and segment 3 ((10,0)-(0,10)) cross at
+  // exactly (5,5) by symmetry - the one real self-intersection. Segment 2
+  // ((10,10)-(10,0)) and segment 4 ((0,10)-(0,0)) don't cross anything.
   {
-    const std::vector<Point3d> grid = {
-        Point3d(0, 0, 0),
-        Point3d(0, 10, 0),
-        Point3d(20, 0, 0),
-        Point3d(20, 10, 0),
+    const std::vector<Point3d> pts = {
+        Point3d(0, 0, 0), Point3d(10, 10, 0), Point3d(10, 0, 0), Point3d(0, 10, 0), Point3d(0, 0, 0),
     };
-    const NurbsSurface rect = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
-    const NurbsSurface::OrientedBox box = rect.GetOrientedBoundingBox();
-    std::printf("surface OBB center = (%.6f, %.6f, %.6f) (expect ~(10,5,0))\n", box.center.x, box.center.y,
-                box.center.z);
-    for (int k = 0; k < 3; ++k) {
-      std::printf("  axis %d = (%.6f, %.6f, %.6f) half_extent=%.6f\n", k, box.axes[static_cast<size_t>(k)].x,
-                  box.axes[static_cast<size_t>(k)].y, box.axes[static_cast<size_t>(k)].z,
-                  box.half_extents[static_cast<size_t>(k)]);
+    NurbsCurve c = NurbsCurve::FromControlPoints(pts, 1);
+    const auto hits = c.FindSelfIntersections(1e-6);
+    std::printf("bowtie: %zu hit(s)\n", hits.size());
+    for (const auto& h : hits) {
+      const Point3d pa = c.PointAt(h.first);
+      const Point3d pb = c.PointAt(h.second);
+      std::printf("  t_a=%.6f pt_a=(%.6f,%.6f,%.6f)  t_b=%.6f pt_b=(%.6f,%.6f,%.6f)\n", h.first, pa.x, pa.y, pa.z,
+                  h.second, pb.x, pb.y, pb.z);
     }
-    // Safety check: every control point within the box along every axis.
-    double max_overshoot = 0.0;
-    for (int i = 0; i < rect.CVCountU(); ++i) {
-      for (int j = 0; j < rect.CVCountV(); ++j) {
-        const Vector3d rel = rect.ControlPointAt(i, j) - box.center;
-        for (int k = 0; k < 3; ++k) {
-          const double proj = std::fabs(ON_DotProduct(rel, box.axes[static_cast<size_t>(k)]));
-          max_overshoot = std::max(max_overshoot, proj - box.half_extents[static_cast<size_t>(k)]);
-        }
-      }
-    }
-    std::printf("surface OBB max control-point overshoot = %.3e (expect <= ~0)\n", max_overshoot);
   }
 
-  // --- Brep::GetOrientedBoundingBox() ---
+  // A plain square (no self-crossing) should report zero hits, including
+  // correctly EXCLUDING its own closing seam.
   {
-    const Brep box = Brep::Box(1, -2, 0.5, 4, 3, 7.5);
-    const Brep::OrientedBox obb = box.GetOrientedBoundingBox();
-    std::printf("brep OBB center = (%.6f, %.6f, %.6f) (expect ~(2.5, 0.5, 4.0))\n", obb.center.x, obb.center.y,
-                obb.center.z);
-    for (int k = 0; k < 3; ++k) {
-      std::printf("  axis %d = (%.6f, %.6f, %.6f) half_extent=%.6f\n", k, obb.axes[static_cast<size_t>(k)].x,
-                  obb.axes[static_cast<size_t>(k)].y, obb.axes[static_cast<size_t>(k)].z,
-                  obb.half_extents[static_cast<size_t>(k)]);
-    }
-    double max_overshoot = 0.0;
-    const ON_Brep& raw_box = box.raw();
-    for (int fi = 0; fi < raw_box.m_F.Count(); ++fi) {
-      const ON_Surface* srf = raw_box.m_F[fi].SurfaceOf();
-      ON_NurbsSurface nurbs;
-      const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(srf);
-      if (ns) {
-        nurbs = *ns;
-      } else {
-        srf->GetNurbForm(nurbs);
-      }
-      for (int i = 0; i < nurbs.CVCount(0); ++i) {
-        for (int j = 0; j < nurbs.CVCount(1); ++j) {
-          ON_3dPoint cv;
-          nurbs.GetCV(i, j, cv);
-          const Vector3d rel = Point3d(cv) - obb.center;
-          for (int k = 0; k < 3; ++k) {
-            const double proj = std::fabs(ON_DotProduct(rel, obb.axes[static_cast<size_t>(k)]));
-            max_overshoot = std::max(max_overshoot, proj - obb.half_extents[static_cast<size_t>(k)]);
-          }
-        }
-      }
-    }
-    std::printf("brep OBB max control-point overshoot = %.3e (expect <= ~0)\n", max_overshoot);
-
-    Brep empty;
-    bool threw = false;
-    try {
-      empty.GetOrientedBoundingBox();
-    } catch (const std::runtime_error&) {
-      threw = true;
-    }
-    std::printf("brep OBB empty-brep throws runtime_error: %d\n", threw);
+    const std::vector<Point3d> pts = {
+        Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0), Point3d(0, 0, 0),
+    };
+    NurbsCurve c = NurbsCurve::FromControlPoints(pts, 1);
+    std::printf("IsClosed=%d\n", c.IsClosed() ? 1 : 0);
+    const auto hits = c.FindSelfIntersections(1e-6);
+    std::printf("square (closed, no real crossing): %zu hit(s) (expect 0)\n", hits.size());
   }
 
-  ON::End();
+  // Two genuinely distinct self-crossings (a "figure-8-of-8" zigzag) -
+  // confirms the dedup merge above collapses sampling artifacts without
+  // over-merging two real, separate crossings.
+  {
+    const std::vector<Point3d> pts = {
+        Point3d(0, 0, 0),   Point3d(10, 10, 0), Point3d(20, 0, 0), Point3d(30, 10, 0),
+        Point3d(10, 0, 0),  Point3d(0, 10, 0),
+    };
+    NurbsCurve c = NurbsCurve::FromControlPoints(pts, 1);
+    std::printf("IsClosed(zigzag)=%d\n", c.IsClosed() ? 1 : 0);
+    const auto hits = c.FindSelfIntersections(1e-6);
+    std::printf("zigzag (open, expect 2 distinct crossings): %zu hit(s)\n", hits.size());
+    for (const auto& h : hits) {
+      const Point3d pa = c.PointAt(h.first);
+      std::printf("  t_a=%.6f t_b=%.6f pt=(%.6f,%.6f,%.6f)\n", h.first, h.second, pa.x, pa.y, pa.z);
+    }
+  }
+
+  // A non-positive tolerance should throw.
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0)};
+    NurbsCurve c = NurbsCurve::FromControlPoints(pts, 1);
+    try {
+      c.FindSelfIntersections(0.0);
+      std::printf("ERROR: expected throw for tolerance=0\n");
+    } catch (const std::invalid_argument&) {
+      std::printf("OK: tolerance<=0 throws invalid_argument\n");
+    }
+  }
+
   return 0;
 }

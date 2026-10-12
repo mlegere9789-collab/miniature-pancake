@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -293,6 +294,18 @@ std::vector<std::string> AllToolbarButtonCommands();
 // scriptable "ToolbarAddCommand" command (cmd_state.cpp) go through, so the
 // picker's effect can be exercised headlessly without a mouse.
 bool AddToolbarCommand(Application& app, const std::string& name);
+// The canonical name to store in app.toolbar_commands for `name`: the
+// registered command's own catalog name, or the lowercased alias name if
+// `name` isn't a literal command but is a registered alias (Alias,
+// cmd_misc.cpp) - std::nullopt if neither. AddToolbarCommand's own append
+// and the Options > Toolbar picker's drag-and-drop insert-at-position path
+// both resolve a dropped/typed name through this one function, so an alias
+// is accepted identically either way.
+std::optional<std::string> ResolveToolbarCommandName(Application& app, const std::string& name);
+// Every currently-registered alias's own lowercased name, sorted - the live
+// (not static) half of what the Options > Toolbar icon-grid picker lists
+// and makes draggable, alongside AllToolbarButtonCommands()'s fixed catalog.
+std::vector<std::string> AllToolbarAliasCommands(Application& app);
 
 // Small shared widgets.
 bool ColorEdit(const char* label, struct Color& color);
