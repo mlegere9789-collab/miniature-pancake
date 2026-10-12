@@ -9275,6 +9275,120 @@ void TestSplitBrepByManyPlanesRejectsEmptyTargetEmptyOffsetsZeroNormalAndNonPosi
   Check(threw, "SplitBrepByManyPlanes throws std::invalid_argument for a non-positive tolerance");
 }
 
+void TestSplitBrepByManySolidsKeepAllTwoDisjointCuttersReturnThreePieces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  // Closes the remaining half of the "Keep/split options" bullet
+  // SplitBrepByManySolids() (above) left open: that function folds every
+  // cutter into ONE union tool first and returns only {outside,
+  // inside-of-the-union} - this keeps a SEPARATE piece per cutter instead,
+  // the real "BooleanSplit... keeping all pieces" semantics, mirroring
+  // SplitBrepByManyPlanes()'s own N+1-slab shape for the solid-cutter case.
+  // A 10x10x10 target (volume 1000) split by two disjoint interior 2x2x2
+  // cutters (volume 8 apiece) should come back as exactly three pieces:
+  // cutter1's own 8, cutter2's own 8, and the remaining 984.
+  const Brep target = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep cutter1 = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep cutter2 = Brep::Box(6, 6, 6, 8, 8, 8);
+
+  const std::vector<Brep> pieces = SplitBrepByManySolidsKeepAll(target, {cutter1, cutter2});
+  Check(pieces.size() == 3, "SplitBrepByManySolidsKeepAll with two disjoint cutters returns exactly three pieces");
+  if (pieces.size() == 3) {
+    double total_volume = 0.0;
+    for (const Brep& piece : pieces) {
+      Check(piece.raw().IsValid(), "each returned piece is a valid ON_Brep");
+      total_volume += piece.TessellateToClosedMesh(16, 16).Volume();
+    }
+    Check(std::abs(total_volume - 1000.0) < 1e-2,
+          "the three pieces sum back to the original target's own volume (10^3=1000) exactly");
+    Check(std::abs(pieces[0].TessellateToClosedMesh(16, 16).Volume() - 8.0) < 0.5,
+          "the first returned piece is cutter1's own interior volume (2^3=8), in cutter order");
+    Check(std::abs(pieces[1].TessellateToClosedMesh(16, 16).Volume() - 8.0) < 0.5,
+          "the second returned piece is cutter2's own interior volume (2^3=8), in cutter order");
+    Check(std::abs(pieces[2].TessellateToClosedMesh(16, 16).Volume() - 984.0) < 0.5,
+          "the final returned piece is the untouched remainder, LAST (1000-8-8=984)");
+  }
+}
+
+void TestSplitBrepByManySolidsKeepAllCutterMissingTargetDropsTheEmptyPiece() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  // One cutter genuinely inside the target, one entirely clear of it (the
+  // same "cutter misses entirely" contract SplitBrepBySolid()/
+  // SplitBrepByManyPlanes() already document) - the miss should contribute
+  // no extra (empty) piece, not an invalid or zero-volume one.
+  const Brep target = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep real_cutter = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep missing_cutter = Brep::Box(100, 100, 100, 101, 101, 101);
+
+  const std::vector<Brep> pieces = SplitBrepByManySolidsKeepAll(target, {real_cutter, missing_cutter});
+  Check(pieces.size() == 2, "a cutter entirely clear of the target contributes no extra (empty) piece");
+  if (pieces.size() == 2) {
+    double total_volume = 0.0;
+    for (const Brep& piece : pieces) total_volume += piece.TessellateToClosedMesh(16, 16).Volume();
+    Check(std::abs(total_volume - 1000.0) < 1e-2, "the two real pieces still sum back to the original volume (1000)");
+  }
+}
+
+void TestSplitBrepByManySolidsKeepAllCutterConsumingEntireRemainderStopsEarly() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  // A real, previously-unexercised edge: a cutter early in the list can
+  // consume the ENTIRE remainder (a cutter at least as large as target,
+  // fully enclosing it), leaving nothing for any later cutter to be tried
+  // against. This must not throw SplitBrepBySolid()'s own "target has no
+  // faces" precondition on the second cutter - skipping it is the correct
+  // read (nothing left to cut), not a caller error.
+  const Brep target = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep enclosing_cutter = Brep::Box(-1, -1, -1, 3, 3, 3);
+  const Brep later_cutter = Brep::Box(0.5, 0.5, 0.5, 1.5, 1.5, 1.5);
+
+  const std::vector<Brep> pieces = SplitBrepByManySolidsKeepAll(target, {enclosing_cutter, later_cutter});
+  Check(pieces.size() == 1, "a fully-enclosing first cutter consumes the entire target, leaving one piece");
+  if (pieces.size() == 1) {
+    Check(std::abs(pieces[0].TessellateToClosedMesh(16, 16).Volume() - 8.0) < 0.5,
+          "the single returned piece is the entire target's own volume (2^3=8), inside the enclosing cutter");
+  }
+}
+
+void TestSplitBrepByManySolidsKeepAllRejectsEmptyTargetEmptyCutterGroupAndNonPositiveTolerance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBrepByManySolidsKeepAll;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep cutter = Brep::Box(0.25, 0.25, 0.25, 0.75, 0.75, 0.75);
+  const Brep empty;
+
+  bool threw = false;
+  try {
+    SplitBrepByManySolidsKeepAll(empty, {cutter});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByManySolidsKeepAll throws std::invalid_argument for an empty target");
+
+  threw = false;
+  try {
+    SplitBrepByManySolidsKeepAll(box, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByManySolidsKeepAll throws std::invalid_argument for an empty cutters group");
+
+  threw = false;
+  try {
+    SplitBrepByManySolidsKeepAll(box, {cutter}, -1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByManySolidsKeepAll throws std::invalid_argument for a non-positive tolerance");
+}
+
 void TestSurfaceGetApproximateSize() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -74194,6 +74308,10 @@ int main() {
   TestSplitBrepByManyPlanesOffsetBeyondTargetDropsTheEmptySlab();
   TestSplitBrepByManyPlanesDuplicateOffsetIsHarmless();
   TestSplitBrepByManyPlanesRejectsEmptyTargetEmptyOffsetsZeroNormalAndNonPositiveTolerance();
+  TestSplitBrepByManySolidsKeepAllTwoDisjointCuttersReturnThreePieces();
+  TestSplitBrepByManySolidsKeepAllCutterMissingTargetDropsTheEmptyPiece();
+  TestSplitBrepByManySolidsKeepAllCutterConsumingEntireRemainderStopsEarly();
+  TestSplitBrepByManySolidsKeepAllRejectsEmptyTargetEmptyCutterGroupAndNonPositiveTolerance();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();

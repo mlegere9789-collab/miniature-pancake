@@ -4640,6 +4640,39 @@ std::pair<Brep, Brep> SplitBrepByManySolids(const Brep& target, const std::vecto
   return SplitBrepBySolid(target, folded_cutter, tolerance);
 }
 
+std::vector<Brep> SplitBrepByManySolidsKeepAll(const Brep& target, const std::vector<Brep>& cutters,
+                                                double tolerance) {
+  if (target.raw().m_F.Count() == 0) {
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "SplitBrepByManySolidsKeepAll",
+                                 "dino8::kernel::SplitBrepByManySolidsKeepAll: target has no faces");
+  }
+  if (cutters.empty()) {
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperandGroup, "SplitBrepByManySolidsKeepAll",
+                                 "dino8::kernel::SplitBrepByManySolidsKeepAll: cutters is empty");
+  }
+  if (!(tolerance > 0.0)) {
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "SplitBrepByManySolidsKeepAll",
+                                 "dino8::kernel::SplitBrepByManySolidsKeepAll: tolerance must be positive");
+  }
+
+  std::vector<Brep> pieces;
+  Brep remainder = target;
+  for (const Brep& cutter : cutters) {
+    // The remainder can genuinely run out before every cutter is tried (a
+    // disjoint cutter sequence that already covers all of `target`, or one
+    // big enough cutter early on) - SplitBrepBySolid() itself would refuse
+    // an empty `target` as a precondition violation, which is the wrong
+    // read here (not a caller error, just nothing left to cut), so later
+    // cutters are simply skipped rather than attempted against nothing.
+    if (remainder.raw().m_F.Count() == 0) break;
+    auto [outside, inside] = SplitBrepBySolid(remainder, cutter, tolerance);
+    if (inside.raw().m_F.Count() > 0) pieces.push_back(std::move(inside));
+    remainder = std::move(outside);
+  }
+  if (remainder.raw().m_F.Count() > 0) pieces.push_back(std::move(remainder));
+  return pieces;
+}
+
 std::pair<Brep, Brep> SplitBrepByPlane(const Brep& target, Vector3d plane_normal, double plane_offset,
                                         double tolerance) {
   if (target.raw().m_F.Count() == 0) {
