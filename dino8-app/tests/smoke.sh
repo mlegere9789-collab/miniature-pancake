@@ -46,6 +46,10 @@ SelCrv
 ExtrudeCrv 12
 SelAll
 Save $TMPW/test.3dm
+SaveAs Version=50 $TMPW/test_v50.3dm
+SaveAs Version=51 $TMPW/test_v51_invalid.3dm
+SaveAs Version=notanumber $TMPW/test_vbad.3dm
+Export Version=50 $TMPW/test_export_v50.3dm
 New
 Open $TMPW/test.3dm
 SelAll
@@ -107,6 +111,20 @@ check "BooleanDifference:" "boolean difference ran"
 check "Volume = " "volume measured"
 check "Extruded 1 object" "extrusion created a solid"
 check "Saved " "save wrote a .3dm"
+# .3dm archive version targeting: SaveAs/Export's existing "Version=" token
+# (previously DWG/DXF-only via AcadSchemes) now also targets a plain
+# OpenNURBS .3dm archive version number - real bytes checked below, not
+# just that the command accepted the token.
+check "Saved $TMPW/test_v50.3dm" "SaveAs Version=50 (.3dm) ran"
+check "! SaveAs: unrecognized Version=notanumber for .3dm" "SaveAs rejects a non-numeric .3dm Version= token up front"
+check "Exported $TMPW/test_export_v50.3dm (Version=50)" "Export Version=50 (.3dm) ran and echoed the version"
+[ "$(head -c 32 "$TMPW/test_v50.3dm" | tail -c 2)" = "50" ] && echo "ok   SaveAs Version=50 wrote a real .3dm archive-version-50 header" || { echo "FAIL SaveAs Version=50 did not write a version-50 .3dm header"; fail=1; }
+[ "$(head -c 32 "$TMPW/test_export_v50.3dm" | tail -c 2)" = "50" ] && echo "ok   Export Version=50 wrote a real .3dm archive-version-50 header" || { echo "FAIL Export Version=50 did not write a version-50 .3dm header"; fail=1; }
+DEFAULT_3DM_VER="$(head -c 32 "$TMPW/test.3dm" | tail -c 2)"
+[ "$DEFAULT_3DM_VER" != "50" ] && [ -n "$DEFAULT_3DM_VER" ] && echo "ok   an unversioned Save still writes this build's own newest (non-50) .3dm archive version, so Version=50 above genuinely changed the written bytes" || { echo "FAIL could not confirm the default .3dm archive version differs from the Version=50 override"; fail=1; }
+check "! OpenNURBS could not write $TMPW/test_v51_invalid.3dm at archive version 51" "SaveAs Version=51 (not a valid .3dm archive version - not 2-5 or a multiple of 10 from 50 up) was rejected by OpenNURBS itself, not silently accepted"
+V51_SIZE=0; [ -f "$TMPW/test_v51_invalid.3dm" ] && V51_SIZE="$(wc -c < "$TMPW/test_v51_invalid.3dm")"
+[ "$V51_SIZE" -lt 32 ] && echo "ok   SaveAs Version=51 left no complete .3dm file behind (no corrupt-but-present archive)" || { echo "FAIL SaveAs Version=51 left a $V51_SIZE-byte file despite being rejected"; fail=1; }
 check "Opened " "open re-read the .3dm"
 check "Exported " "OBJ export wrote a file"
 check "length = 14.14" "line length measured"

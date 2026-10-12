@@ -397,9 +397,13 @@ class Application {
   // Document-level operations used by both menus and commands.
   bool NewDocument(bool confirm_discard);
   bool OpenDocument(const std::string& path, std::string& error);
-  bool SaveDocument(const std::string& path, std::string& error);
+  // `archive_version`, when the path is a .3dm, overrides the OpenNURBS
+  // archive version written (0 = newest this build knows how to write,
+  // every call site before this parameter existed); ignored for every
+  // other extension.
+  bool SaveDocument(const std::string& path, std::string& error, int archive_version = 0);
   bool ImportFile(const std::string& path, std::string& error);
-  bool ExportSelected(const std::string& path, std::string& error);
+  bool ExportSelected(const std::string& path, std::string& error, int archive_version = 0);
   // Named Snapshots persistence sidecar (see Document::CaptureSnapshotAsDocument's
   // comment for why the on-disk form lives here rather than in Document).
   void SaveNamedSnapshotsSidecar(const std::string& path);
