@@ -357,6 +357,31 @@ BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b
 bool ContainsPointExact(const Point3d& point, const ON_Brep& brep, double ray_length = 0,
                          const IntersectOptions& opt = IntersectOptions(), double tol = 1e-6);
 
+// Closes PARITY_MAP.md's own disclosed "Signed distance point-to-solid"
+// gap: `Mesh::SignedDistance()` already answers this for a tessellated
+// mesh - negative if inside, positive if outside, as `+/-
+// (ClosestPoint(point) - mesh).Length()` with the sign from
+// `ContainsPoint()`'s own single-ray mesh test - but there was no
+// Brep-level counterpart at all. This is that counterpart, built the
+// identical way `Mesh::SignedDistance()` is (composing two already-exact
+// queries rather than duplicating either one's own logic): the distance
+// magnitude from `ClosestPointOnBrep()` above (the real, trimmed-face
+// closest point, not a tessellated approximation), the sign from
+// `ContainsPointExact()` above (its own multi-direction ray-cast
+// classifier, robust against the single grazing-ray ambiguity a mesh's
+// own simpler `ContainsPoint()` test can hit). `opt`/`ray_length`/`tol`
+// are forwarded to `ContainsPointExact()`; `u_divisions`/`v_divisions`/
+// `trim_samples_per_edge` to `ClosestPointOnBrep()` - this function adds
+// no search logic of its own. Only meaningful for a genuinely closed
+// (solid) Brep, the same "inside has to mean something" precondition
+// `ContainsPointExact()` itself already leaves to the caller, undetected
+// here for the identical reason. Throws exactly as `ClosestPointOnBrep()`
+// does: std::invalid_argument if `b` has no faces, std::runtime_error if
+// no face could be evaluated.
+double SignedDistanceToBrep(const Point3d& point, const ON_Brep& b, const IntersectOptions& opt = IntersectOptions(),
+                             int u_divisions = 20, int v_divisions = 20, int trim_samples_per_edge = 24,
+                             double ray_length = 0, double tol = 1e-6);
+
 // A curve/plane crossing - the curve-level counterpart to CurveSurfaceHit
 // above, but against a caller-supplied INFINITE ON_Plane rather than a
 // bounded ON_Surface. PARITY_MAP.md's own "Curve/plane intersection" gap:
@@ -1200,15 +1225,41 @@ CylinderCylinderIntersectingIntersection IntersectCylinderCylinderIntersecting(c
 // pair (alpha != 90 degrees, d != 0) that still satisfies the full-pierce
 // condition above is fully supported here, verified directly (not merely
 // assumed from the derivation) by `TestIntersectCylinderCylinderUnequalRadiusClosedForm`'s
-// own oblique-skew fixture. A skew pair that does NOT fully pierce (a
-// partial, blind penetration with no closed-loop answer regardless of
-// angle) is refused outright (`not_full_pierce == true`) rather than
-// guessed at. Given that, the two
+// own oblique-skew fixture. Given full pierce, the two
 // root signs each trace out a genuine closed space curve as `theta`
 // sweeps `[0, 2*pi)` - `curve_a` the `+` root, `curve_b` the `-` root, two
 // disjoint loops (never pinching together, unlike the equal-radius
 // Steinmetz case's own ellipse pair, since the full-pierce precondition
 // keeps the discriminant strictly positive everywhere).
+//
+// A genuinely skew pair that does NOT satisfy the `d + r < R` condition is
+// no longer refused outright - that condition is sufficient for full
+// pierce but not necessary for some real intersection to exist. This
+// function instead classifies the per-theta discriminant above
+// (`disc(theta)`, a degree-2 trigonometric polynomial in theta) over the
+// WHOLE circle, not just the fixed `kSamples` grid the full-pierce path
+// samples at, into one of three outcomes: positive everywhere (full
+// pierce after all - the `d + r < R` gate is sufficient but not strictly
+// necessary, so this can still happen just past its own boundary; same
+// two-loop construction as above); negative everywhere (a genuine TOTAL
+// MISS - the smaller cylinder's surface never reaches the larger
+// cylinder's radius at any angle; `empty` stays true, the same "stays
+// empty" idiom this file's other disjoint checks already use, not a
+// refusal flag); or positive only over one or more PROPER SUB-RANGES of
+// theta (`not_full_pierce == true`, `partial_loops` populated with one
+// real, closed, PINCHED loop per such sub-range - the smaller cylinder's
+// own circumference dips into the larger one over part of its own turn
+// and clears it over the rest, the two ends of each loop meeting at a
+// single point where the per-theta quadratic's own two roots merge,
+// `disc(theta) == 0` exactly - a genuine, physically real
+// partial-penetration intersection curve, a classical "pipe punches only
+// partway into the side of a bigger pipe" branch connection, not a
+// refusal). Each sub-range's own two boundary angles are found by
+// bisecting `disc(theta)` to double precision from a coarse (0.5-degree)
+// bracketing scan, not merely read off that scan's own grid resolution;
+// each loop's own two branches (entering/exiting the larger cylinder) are
+// built from the same exact per-sample quadratic roots the full-pierce
+// curves already use, cubic-interpolated between samples the same way.
 //
 // Unlike the equal-radius case's two PLANAR ELLIPSES (exact conics, with
 // their own exact NURBS form), this curve is not a conic at all - no
@@ -1232,8 +1283,9 @@ struct CylinderCylinderUnequalIntersection {
   bool empty = true;
   bool equal_radius = false;      // true: refused outright - `a`/`b` share (within tolerance) the same radius; `IntersectCylinderCylinderIntersecting()`'s own case, not this one's; every other field meaningless
   bool parallel = false;          // true: refused outright - the two axes are (anti)parallel within tolerance; `IntersectCylinderCylinderParallel()`'s own case
-  bool not_full_pierce = false;   // true: refused outright - a genuinely skew pair whose smaller cylinder does not fully pierce the larger one on every generator (a partial/blind penetration with no closed-loop answer)
-  ON_NurbsCurve curve_a, curve_b;  // the two closed loops (root sign +, root sign -) - meaningful only when !empty && !equal_radius && !parallel && !not_full_pierce
+  bool not_full_pierce = false;   // true: a genuinely skew pair whose smaller cylinder does NOT fully pierce the larger one on every generator - no longer a bare refusal: when !empty, `partial_loops` carries the real, closed, pinched loop(s) this partial-penetration case traces out
+  ON_NurbsCurve curve_a, curve_b;  // the two closed loops (root sign +, root sign -) for the FULL-pierce case - meaningful only when !empty && !equal_radius && !parallel && !not_full_pierce
+  std::vector<ON_NurbsCurve> partial_loops;  // one genuine closed, pinched loop per contiguous theta sub-range where the smaller cylinder's own generator reaches the larger cylinder's surface - meaningful only when !empty && !equal_radius && !parallel && not_full_pierce; empty (size 0) only if a well-posed partial classification's own root-bracketing scan failed to pair up cleanly, in which case this function discloses that as a genuine miss (`empty == true`) instead
 };
 CylinderCylinderUnequalIntersection IntersectCylinderCylinderUnequalRadius(const ON_Cylinder& a, const ON_Cylinder& b, double tolerance);
 
