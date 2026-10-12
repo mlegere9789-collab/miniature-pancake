@@ -1230,6 +1230,57 @@ class NurbsCurve {
   // completely untouched in that case, not even re-wrapped).
   Result ChangeSeam(double t, double min_dist = 0.0);
 
+  // Rational (Mobius) reparameterization: the real remaining gap this
+  // kernel's own "Reparameterization" item named (`kernel: Geometry
+  // representation`'s own PARITY_MAP.md bullet) after `SetDomain()` and
+  // `ChangeSeam()` above already closed every other named half of it -
+  // every one of `SetDomain`/`Reverse`/`ChangeSeam` only ever moves
+  // BREAKPOINTS or reorders control points; none of them can change how
+  // fast the parameter moves BETWEEN two fixed breakpoints on an
+  // otherwise-unchanged curve, which is what a genuine rational
+  // reparameterization does. Applies the standard one-parameter Mobius
+  // family (see e.g. Piegl & Tiller, "The NURBS Book", Sec. 7.5): over
+  // `Domain()` normalized to `[0, 1]` as `u`, the new parameter is
+  // `v = shape_factor*u / (1 + (shape_factor - 1)*u)` - a strictly
+  // increasing bijection of `[0, 1]` onto itself for any
+  // `shape_factor > 0` (fixing both endpoints: `v(0) = 0`, `v(1) = 1`),
+  // then mapped back onto this curve's own `Domain()`. The curve's own
+  // SHAPE is exactly preserved - every control point keeps its exact
+  // Cartesian position - only each control point's own WEIGHT changes
+  // (a non-rational curve becomes rational unless `shape_factor == 1`,
+  // the exact no-op case), redistributing how much of the curve's own
+  // length each equal step of the new parameter covers. For a curve
+  // with interior knots (more than one Bezier span), this is genuinely
+  // more than a per-span-independent reparameterization: within each
+  // span the same one-parameter family applies (restricting a Mobius
+  // map of `[0, 1]` to any sub-interval and renormalizing it back to
+  // `[0, 1]` stays in the identical one-parameter family, with its own
+  // derived `shape_factor` for that span - confirmed algebraically, not
+  // assumed), but two adjacent spans SHARE one control point and its
+  // one weight, so each span after the first is also rescaled by one
+  // more positive constant (a uniform weight rescale that changes no
+  // geometry, the same freedom any two adjacent rational Bezier
+  // segments already have) chosen so the shared control point's own
+  // weight, computed independently from either side, agrees exactly -
+  // without that correction, the two sides would generally disagree
+  // and the reassembled curve would not even be C0 continuous in its
+  // weight channel, let alone reproduce the original shape. `out` is
+  // built as a piecewise-Bezier NURBS curve (every interior knot at
+  // full multiplicity `Degree()`, the same representation
+  // `ON_NurbsCurve::MakePiecewiseBezier` produces and `ConvertToBeziers`
+  // already relies on) at the MAPPED breakpoint parameter values -
+  // honestly not the most compact possible knot vector, but exact.
+  // Throws std::invalid_argument for a non-finite or non-positive
+  // `shape_factor`. Returns Result::Failed for a periodic curve (the
+  // same scope boundary `RemoveKnotAt()` above already carries - a
+  // periodic knot vector's own wraparound multiplicity structure is not
+  // the clamped per-span decomposition this method assumes) or if
+  // `Domain()` is degenerate; Result::NoOpAlreadySatisfied for
+  // `shape_factor == 1.0` exactly (`out` is then a plain copy of this
+  // curve, no rational conversion forced on an already non-rational
+  // curve for a true no-op).
+  Result ReparameterizeRational(double shape_factor, NurbsCurve& out) const;
+
   Point3d PointAt(double t) const;
 
   // Finds the parameter along the curve's own domain whose PointAt() is
