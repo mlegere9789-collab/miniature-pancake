@@ -411,9 +411,9 @@ c2check "degree 7, 8 control points, non-rational, open" "Blend's G3 output is t
 c2check "Blend: G4 (G4) blend curve created" "Blend Continuity=G4 reaches kernel::NurbsCurve::BlendCurves()'s own continuity=4 path - the genuine new capability this round's own kernel-side pass adds, one degree past G3"
 c2check "degree 9, 10 control points, non-rational, open" "Blend's G4 output is the expected degree-9 (2*4+1), 10-control-point nonic Bezier-basis curve - one degree past the G3 septic case just above, matching position and all four derivatives up to the fourth at both ends"
 c2check "Domain: 1 object(s) now have domain 0 to 5" "Domain actually set a new domain, not just reported it"
-c2check "Surface 177 domain: U 0 to 5, V 0 to 5" "Domain now reaches a surface too (NurbsSurface::SetDomain), not just curves, and the typed range applies to both U and V"
+c2check "Surface 180 domain: U 0 to 5, V 0 to 5" "Domain now reaches a surface too (NurbsSurface::SetDomain), not just curves, and the typed range applies to both U and V"
 c2check "Reparameterize: 1 object(s) now have domain 0 to 1" "Reparameterize now reaches a surface too, undoing the Domain fixture's own 0..5 move back to 0..1"
-c2check "Surface 177 domain: U 0 to 1, V 0 to 1" "the surface's domain genuinely moved back to 0..1, not just the printed count"
+c2check "Surface 180 domain: U 0 to 1, V 0 to 1" "the surface's domain genuinely moved back to 0..1, not just the printed count"
 c2check "ModifyRadius: 1 curve(s) now have radius 12" "ModifyRadius rebuilt the circle in place"
 # Message format changed: Match now calls the kernel's own
 # NurbsCurve::MatchEnd() (curve.cpp) instead of a hand-rolled CV move, and
