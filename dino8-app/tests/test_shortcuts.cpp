@@ -11,13 +11,16 @@
 // modified cases are genuinely distinct, not a function that just always
 // returns the same thing.
 #include <cstdio>
+#include <functional>
 #include <utility>
+#include <vector>
 
 #include "app/ShortcutRules.h"
 #include "imgui.h"
 
 using dino8::app::IsReservedShortcut;
 using dino8::app::IsUnbindableCaptureKey;
+using dino8::app::ResolveCapturedKey;
 
 namespace {
 int failures = 0;
@@ -105,6 +108,39 @@ int main() {
     std::snprintf(label, sizeof(label), "ordinary key %s IS bindable-as-key", name);
     Check(!IsUnbindableCaptureKey(static_cast<int>(k)), label);
   }
+
+  // ResolveCapturedKey: the Options > Shortcuts "Press a key..." capture
+  // flow's own per-frame "which key" decision (ui/Panels.cpp), extracted
+  // into app/ShortcutRules.{h,cpp} precisely so this - previously
+  // untested beyond its own two helper predicates checked in isolation -
+  // can be driven end to end here with a fake `is_pressed` standing in
+  // for a live ImGuiIO, closing the gap PARITY_MAP.md's "Command aliases
+  // and shortcut customization" item's own capture-button note names.
+  auto PressedOf = [](std::vector<ImGuiKey> keys) {
+    return [keys = std::move(keys)](int k) {
+      for (ImGuiKey key : keys) if (static_cast<int>(key) == k) return true;
+      return false;
+    };
+  };
+  Check(ResolveCapturedKey(PressedOf({})) == static_cast<int>(ImGuiKey_None),
+        "ResolveCapturedKey: nothing pressed returns None");
+  Check(ResolveCapturedKey(PressedOf({ImGuiKey_L})) == static_cast<int>(ImGuiKey_L),
+        "ResolveCapturedKey: an ordinary pressed key is returned");
+  Check(ResolveCapturedKey(PressedOf({ImGuiKey_LeftCtrl})) == static_cast<int>(ImGuiKey_None),
+        "ResolveCapturedKey: a lone modifier key is skipped, not returned as the bound key");
+  Check(ResolveCapturedKey(PressedOf({ImGuiKey_MouseLeft})) == static_cast<int>(ImGuiKey_None),
+        "ResolveCapturedKey: a mouse-button alias is skipped too (the button click itself)");
+  Check(ResolveCapturedKey(PressedOf({ImGuiKey_LeftCtrl, ImGuiKey_L})) == static_cast<int>(ImGuiKey_L),
+        "ResolveCapturedKey: Ctrl+L reports L as the key (Ctrl is read from ImGuiIO separately, not from this scan)");
+  // A and Z are both ordinary, both "pressed" here - A must win, since it
+  // sits earlier in ImGuiKey_NamedKey_BEGIN..END's own order, the exact
+  // same scan order ui/Panels.cpp's old inline loop already used, now
+  // just performed inside ResolveCapturedKey instead.
+  Check(ResolveCapturedKey(PressedOf({ImGuiKey_Z, ImGuiKey_A})) == static_cast<int>(ImGuiKey_A),
+        "ResolveCapturedKey: of two simultaneously-pressed keys, the earlier one in enum order wins");
+  Check(ResolveCapturedKey(PressedOf({ImGuiKey_RightSuper, ImGuiKey_ReservedForModShift, ImGuiKey_MouseWheelY, ImGuiKey_F5})) ==
+            static_cast<int>(ImGuiKey_F5),
+        "ResolveCapturedKey: every unbindable kind (modifier, mod-storage alias, mouse) is skipped in favor of a real key");
 
   if (failures) std::printf("%d FAILED\n", failures);
   else std::printf("all passed\n");
