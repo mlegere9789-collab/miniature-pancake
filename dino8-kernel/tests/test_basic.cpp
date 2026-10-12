@@ -53604,6 +53604,101 @@ void TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound() {
         "of this pass's new compound-operand support, not an outright compound refusal");
 }
 
+// PARITY_MAP.md's own "Non-manifold boolean results" bullet names this
+// specific gap by function: "the B-rep engines throw 'an edge is shared by
+// 3 or more faces' instead of building non-manifold output." This closes
+// it for Union/Intersection/Difference via BooleanCombinePlanar's new
+// `allow_non_manifold_result` parameter (boolean.h/boolean.cpp): two unit
+// cubes that touch ONLY along one shared edge - a=Box(0,0,0,1,1,1),
+// b=Box(1,1,0,2,2,1), touching along the vertical edge x=1,y=1,z in [0,1].
+// Neither operand is coincident with any face of the other anywhere, so
+// nothing about this fixture is a "coincident sub-face" case (this
+// category's other, separately-tracked bullet) - it is A's own edge
+// (where A's x=1 face meets A's y=1 face) and B's own edge (B's x=1 face
+// meeting B's y=1 face) landing at the IDENTICAL 3D location, which the
+// strict pipeline's ordinary Brep::FromPlanarFaces() reassembly welds into
+// one edge carrying all four trims and refuses outright - confirmed
+// directly via a standalone scratch-test probe linked against
+// libdino8_kernel.a before writing this, not assumed; the default
+// (allow_non_manifold_result == false) path below reproduces that exact
+// refusal unchanged, a real regression guard for the parameter's own
+// documented default. With the flag set, the identical computed face list
+// reassembles through Brep::FromMixedFacesNonManifold() instead, so all 12
+// of the two cubes' own original faces survive untouched (nothing here is
+// coincident, so nothing is cut or deduplicated either) with exactly one
+// non-manifold edge where they meet.
+void TestBooleanCombinePlanarUnionAllowsNonManifoldEdgeOnlyTouchingCubes() {
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const Brep a = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep b = Brep::Box(1, 1, 0, 2, 2, 1);
+
+  bool strict_threw = false;
+  std::string strict_message;
+  try {
+    BooleanCombinePlanar(a, b, BooleanOp::Union);
+  } catch (const std::exception& e) {
+    strict_threw = true;
+    strict_message = e.what();
+  }
+  Check(strict_threw && strict_message.find("edge is shared by 3 or more faces") != std::string::npos,
+        "the default (allow_non_manifold_result == false) path still refuses this edge-only-touching union "
+        "exactly as before this parameter existed");
+
+  const Brep result = BooleanCombinePlanar(a, b, BooleanOp::Union, -1.0, true);
+  Check(result.FaceCount() == 12,
+        "allow_non_manifold_result Union keeps all 12 of the two cubes' own original faces - nothing here is "
+        "coincident, so nothing is cut or deduplicated, only the one shared touching edge is welded together");
+  Check(result.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1,
+        "exactly one edge is genuinely non-manifold (the shared touching edge) - confirmed via a standalone "
+        "scratch-test probe, not assumed");
+
+  double area = 0.0;
+  for (const Mesh& face_mesh : result.Tessellate(2, 2)) area += face_mesh.Area();
+  Check(Within(area, 12.0, 1e-9),
+        "total tessellated area is exactly 6 (per cube) x 2 = 12 - every one of the 12 faces survived "
+        "untouched (measured per-face via Tessellate(), independent of Brep::Area()/Brep::Volume(), neither of "
+        "which is well-defined on a genuinely non-manifold result)");
+}
+
+// The SymmetricDifference half of the same `allow_non_manifold_result`
+// closure: a genuine SINGLE-SHELL XOR instead of the two-lump
+// Brep::Compound the plain BooleanCombinePlanar(a, b, SymmetricDifference)
+// call builds today - the "single-body XOR" PARITY_MAP.md's own
+// "Non-manifold boolean results" bullet names directly in its title
+// parenthetical. Same corner-overlap fixture
+// TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound above
+// already uses (a=Box(0,0,0,2,2,2), b=Box(1,1,1,3,3,3)), independently
+// re-measured here (not merely cited) at a two-lump, 48-face compound via
+// a standalone scratch-test probe before writing this test.
+void TestBooleanCombinePlanarSymmetricDifferenceAllowsSingleShellXor() {
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  const Brep compound_xor = BooleanCombinePlanar(a, b, BooleanOp::SymmetricDifference);
+  Check(compound_xor.LumpFaceRanges().size() == 2 && compound_xor.FaceCount() == 48,
+        "sanity: the known two-lump, 48-face compound XOR this category's own prior tests already establish");
+
+  const Brep single_shell = BooleanCombinePlanar(a, b, BooleanOp::SymmetricDifference, -1.0, true);
+  Check(single_shell.LumpFaceRanges().size() == 1,
+        "allow_non_manifold_result builds a genuine SINGLE shell, not a Brep::Compound of two lumps - the "
+        "'single-body XOR' this category's bullet names directly");
+  Check(single_shell.FaceCount() == 48,
+        "every one of the 48 faces from both Difference directions survives - none lost, none duplicated, only "
+        "welded together at the shared boundary instead of left as two separate lumps");
+  Check(single_shell.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 6,
+        "the shared boundary curve between the XOR's own four face groups (A's outside, B's outside, and both "
+        "flipped insides) comes back as real non-manifold edges instead of two separately-welded 2-trim edges - "
+        "confirmed via a standalone scratch-test probe, not assumed");
+}
+
 // Regression check: SymmetricDifference must still refuse a compound
 // operand exactly as before (its own result is a Brep::Compound of two
 // lumps meeting along a genuine 4-face contact curve, which no single
@@ -77669,6 +77764,8 @@ int main() {
   RunTest("TestBooleanCombinePlanarIntersectionAcceptsCompoundOperand", TestBooleanCombinePlanarIntersectionAcceptsCompoundOperand);
   RunTest("TestBooleanCombinePlanarDifferenceAcceptsGapSeparatedXorCompound", TestBooleanCombinePlanarDifferenceAcceptsGapSeparatedXorCompound);
   RunTest("TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound", TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound);
+  RunTest("TestBooleanCombinePlanarUnionAllowsNonManifoldEdgeOnlyTouchingCubes", TestBooleanCombinePlanarUnionAllowsNonManifoldEdgeOnlyTouchingCubes);
+  RunTest("TestBooleanCombinePlanarSymmetricDifferenceAllowsSingleShellXor", TestBooleanCombinePlanarSymmetricDifferenceAllowsSingleShellXor);
   RunTest("TestBooleanCombinePlanarXorStillRefusesCompoundOperand", TestBooleanCombinePlanarXorStillRefusesCompoundOperand);
   RunTest("TestBooleanCombinePlanarUnionAcceptsCompoundOperand", TestBooleanCombinePlanarUnionAcceptsCompoundOperand);
   RunTest("TestBooleanCombinePlanarUnionAcceptsCompoundOperandBridgedIntoOneLump", TestBooleanCombinePlanarUnionAcceptsCompoundOperandBridgedIntoOneLump);
