@@ -739,8 +739,8 @@ double TriangleQuad7(const Point2d& a, const Point2d& b, const Point2d& c, Integ
   return area * sum;
 }
 
-constexpr double kTrimmedAreaRelTol = 1e-9;
-constexpr int kTrimmedAreaMaxDepth = 10;
+constexpr double kTrimmedFaceIntegralRelTol = 1e-9;
+constexpr int kTrimmedFaceIntegralMaxDepth = 10;
 
 // Adaptive refinement of TriangleQuad7() over (a, b, c): compares the
 // single-triangle quadrature against the sum of the same rule applied to
@@ -989,11 +989,6 @@ double Brep::Volume() const {
   }
   double total = 0.0;
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
-    if (!FaceCoversWholeDomain(i)) {
-      throw std::invalid_argument("dino8::kernel::Brep::Volume: face " + std::to_string(i) +
-                                   " is trimmed - exact integration over its true trim region is a "
-                                   "materially different problem this does not attempt");
-    }
     const ON_BrepFace& face = brep_.m_F[i];
     const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
     if (!s) {
@@ -1001,16 +996,55 @@ double Brep::Volume() const {
                                 " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
     }
     const double sign = face.m_bRev ? -1.0 : 1.0;
-    total += sign * IntegrateOverNurbsSurface(*s, [&](double u, double v) {
-               ON_3dPoint p;
-               ON_3dVector su, sv;
-               if (!s->Ev1Der(u, v, p, su, sv)) {
-                 throw std::runtime_error("dino8::kernel::Brep::Volume: Ev1Der failed on face " +
-                                           std::to_string(i));
-               }
-               const ON_3dVector n = ON_CrossProduct(su, sv);
-               return (p.x * n.x + p.y * n.y + p.z * n.z) / 3.0;
-             });
+    const auto integrand = [&](double u, double v) {
+      ON_3dPoint p;
+      ON_3dVector su, sv;
+      if (!s->Ev1Der(u, v, p, su, sv)) {
+        throw std::runtime_error("dino8::kernel::Brep::Volume: Ev1Der failed on face " + std::to_string(i));
+      }
+      const ON_3dVector n = ON_CrossProduct(su, sv);
+      return (p.x * n.x + p.y * n.y + p.z * n.z) / 3.0;
+    };
+    if (FaceCoversWholeDomain(i)) {
+      total += sign * IntegrateOverNurbsSurface(*s, integrand);
+      continue;
+    }
+    // Trimmed face: the same genuine-topology-only extension
+    // Brep::Area() already makes (see its own doc comment in brep.h) -
+    // reused here via the identical TrimmedFaceUVPolygon()/
+    // IntegrateTriangleAdaptive() machinery, just with the divergence-
+    // theorem volume integrand above in place of Area()'s |Su x Sv|. The
+    // pseudo-trim side tables remain unattempted, same disclosed scope
+    // limit.
+    if (face.m_li.Count() == 0) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::Volume: face " + std::to_string(i) +
+          " is trimmed by this kernel's own pseudo-trim side tables (TrimmedPlanarFace()'s own bare-surface "
+          "convention), not real ON_Brep loop topology - exact integration over that convention's own trim "
+          "region is a materially different problem this does not attempt");
+    }
+    const std::vector<Point2d> polygon = TrimmedFaceUVPolygon(brep_, face);
+    if (polygon.size() < 3) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::Volume: face " + std::to_string(i) +
+          " has no single well-formed ON_BrepLoop::outer loop (zero, or more than one, disjoint outer "
+          "boundary) - this does not attempt that case");
+    }
+    const std::vector<std::array<int, 3>> tris = dino8::kernel::detail::EarClipTriangulate(polygon);
+    std::vector<double> coarse(tris.size());
+    double coarse_total = 0.0;
+    for (size_t t = 0; t < tris.size(); ++t) {
+      coarse[t] = TriangleQuad7(polygon[static_cast<size_t>(tris[t][0])], polygon[static_cast<size_t>(tris[t][1])],
+                                 polygon[static_cast<size_t>(tris[t][2])], integrand);
+      coarse_total += std::fabs(coarse[t]);
+    }
+    const double tol_total = std::max(1e-12, kTrimmedFaceIntegralRelTol * coarse_total);
+    for (size_t t = 0; t < tris.size(); ++t) {
+      const double share = coarse_total > 0.0 ? std::fabs(coarse[t]) / coarse_total : 1.0 / static_cast<double>(tris.size());
+      total += sign * IntegrateTriangleAdaptive(polygon[static_cast<size_t>(tris[t][0])], polygon[static_cast<size_t>(tris[t][1])],
+                                                 polygon[static_cast<size_t>(tris[t][2])], integrand, tol_total * share,
+                                                 kTrimmedFaceIntegralMaxDepth);
+    }
   }
   return total;
 }
@@ -1069,12 +1103,12 @@ double Brep::Area() const {
                                  polygon[static_cast<size_t>(tris[t][2])], integrand);
       coarse_total += std::fabs(coarse[t]);
     }
-    const double tol_total = std::max(1e-12, kTrimmedAreaRelTol * coarse_total);
+    const double tol_total = std::max(1e-12, kTrimmedFaceIntegralRelTol * coarse_total);
     for (size_t t = 0; t < tris.size(); ++t) {
       const double share = coarse_total > 0.0 ? std::fabs(coarse[t]) / coarse_total : 1.0 / static_cast<double>(tris.size());
       total += IntegrateTriangleAdaptive(polygon[static_cast<size_t>(tris[t][0])], polygon[static_cast<size_t>(tris[t][1])],
                                           polygon[static_cast<size_t>(tris[t][2])], integrand, tol_total * share,
-                                          kTrimmedAreaMaxDepth);
+                                          kTrimmedFaceIntegralMaxDepth);
     }
   }
   return total;

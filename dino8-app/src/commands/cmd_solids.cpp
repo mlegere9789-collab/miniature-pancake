@@ -874,12 +874,38 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
     if (!o) continue;
     SceneObject n;
     if (to_subd && o->kind == ObjectKind::Brep) {
-      std::optional<SubDFidelityResult> fr = BuildSubDVerifiedAgainstBrep(*o, tol);
-      if (!fr) continue;
-      ++fidelity_checked;
-      if (fr->verified) ++fidelity_verified;
-      fidelity_worst = std::max(fidelity_worst, fr->achieved_deviation);
-      n = SceneObject::MakeSubD(fr->subd);
+      // Exact path first: SubD::FromBrep (dino8-kernel/include/dino8/
+      // kernel/subd.h) builds the Catmull-Clark cage directly from the
+      // Brep's own faces with no tessellation tolerance involved at all -
+      // exact rather than merely verified-within-tolerance - but only for
+      // a Brep whose every face is already that one exact shape
+      // (untrimmed, planar, axis-aligned-in-own-uv, 4 corners - the same
+      // shape Box()'s own faces are built from); it throws naming the
+      // offending face for anything else (a curved face, a trim, a
+      // non-quad face), so this falls through to the existing
+      // tessellate-and-verify path below for every other Brep rather than
+      // needing a separate command. `divisions = 1` gives one SubD face
+      // per original Brep face - the natural, most editable cage for the
+      // shape this accepts, matching how a plain box's own faces already
+      // read.
+      std::optional<kernel::SubD> exact;
+      try {
+        exact = kernel::SubD::FromBrep(*o->brep, 1);
+      } catch (const std::exception&) {
+        exact = std::nullopt;
+      }
+      if (exact) {
+        n = SceneObject::MakeSubD(*exact);
+        ++fidelity_checked;
+        ++fidelity_verified;
+      } else {
+        std::optional<SubDFidelityResult> fr = BuildSubDVerifiedAgainstBrep(*o, tol);
+        if (!fr) continue;
+        ++fidelity_checked;
+        if (fr->verified) ++fidelity_verified;
+        fidelity_worst = std::max(fidelity_worst, fr->achieved_deviation);
+        n = SceneObject::MakeSubD(fr->subd);
+      }
     } else {
       std::optional<kernel::Mesh> m = MeshOf(*o, tol);
       if (!m || m->FaceCount() == 0) continue;

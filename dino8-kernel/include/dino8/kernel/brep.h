@@ -1414,26 +1414,20 @@ class Brep {
   // of them despite being genuinely closed solids. Throws
   // std::invalid_argument if that check fails.
   //
-  // Also requires every face to cover its ENTIRE underlying surface
-  // parameter domain - real ON_Brep topology's own way of saying that
-  // (`raw().FaceIsSurface(face_index)`) OR this kernel's own "no loop at
-  // all" convention for an untrimmed face (`NewFace(int)`'s own plain
-  // overload, which Box()/Sphere()/Torus() use, never builds a loop, so
-  // FaceIsSurface() alone would wrongly call every one of them trimmed -
-  // see FaceCoversWholeDomain()'s own comment in brep.cpp), as long as
-  // none of this kernel's own pseudo-trim side tables (the ones
-  // TrimmedPlanarFace()'s own doc comment describes - face_trim_loops_/
-  // face_hole_loops_/face_arc_runs_/face_notch_rows_, invisible to
-  // FaceIsSurface() itself since they're consumed only by Tessellate())
-  // are populated for it - a trimmed face's true integration region is
-  // its trim loop, not its full surface rectangle, a materially
-  // different (harder) problem this does not attempt. Throws
-  // std::invalid_argument naming which face, rather than silently
-  // integrating the wrong region - every primitive/sweep factory here
-  // whose faces are each untrimmed (Box(), Sphere(), Torus(), a capped
-  // Extrude()/Revolve()/Loft()/Sweep1()/Sweep2()/Pipe()/PipeVariable())
-  // satisfies this; a general-boolean or TrimmedPlanarFace() result does
-  // not.
+  // A face that does NOT cover its entire surface parameter domain is
+  // not automatically rejected, the same extension Area() already makes
+  // (see its own doc comment for the full detail): a face with genuine
+  // ON_Brep loop topology (face.m_li.Count() > 0 - what general-boolean
+  // results build) is integrated only over its true trim region via the
+  // identical TrimmedFaceUVPolygon()/IntegrateTriangleAdaptive() machinery,
+  // just with this function's own divergence-theorem volume integrand in
+  // place of Area()'s |Su x Sv|. Still throws std::invalid_argument,
+  // naming which face, for a face trimmed by this kernel's OWN separate
+  // pseudo-trim side tables instead (TrimmedPlanarFace()'s own bare-
+  // surface convention - face.m_li.Count() == 0 but FaceCoversWholeDomain
+  // is still false), and for a face with zero or more than one disjoint
+  // ON_BrepLoop::outer boundary - the same two disclosed scope limits
+  // Area() still has.
   double Volume() const;
 
   // Exact surface area: the same divergence-theorem machinery Volume()

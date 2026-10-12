@@ -1568,6 +1568,21 @@ sdcheck "ToSubD: created 1 object(s) (0 of 1 limit-surface-fidelity verified wit
 # "verified" branch of the same check genuinely fires, not only the
 # "honest miss" branch above.
 sdcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0.000000)" "ToSubD on a flat planar patch fully verifies its limit surface against the original Brep within tolerance"
+# ToSubD exact path: SubD::FromBrep (dino8-kernel) now runs first for a
+# Brep whose every face is already an untrimmed, planar, axis-aligned-
+# in-own-uv quad (PlanarSrf's trimmed rectangle above, and the Sphere's
+# curved faces, both correctly fall through to the tessellate-and-verify
+# path unchanged - confirmed by the two checks just above still matching
+# byte for byte). Confirmed directly against the pre-this-change binary
+# that a Box was previously a genuine MISS here too (0 of 1 verified,
+# deviation ~0.8, a 24-face triangulated-then-recombined cage) - the
+# same honest-miss failure mode the Sphere check above discloses, not
+# merely a missing optimization. The exact path must now report full
+# verification at exactly 0 deviation, with the natural, clean 6-face
+# control cage a Box's own 6 flat faces should give, not a triangulated
+# approximation of it.
+sdcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0.000000)" "ToSubD on a Box fully verifies at 0 deviation (confirmed directly against the pre-this-change binary that this used to be a genuine 0-of-1 miss at ~0.8 deviation instead)"
+sdcheck "6 faces, 12 edges, 8 vertices, 0 creases" "ToSubD on a Box takes the exact SubD::FromBrep path: the natural 6-face cube cage, not a triangulated-then-recombined approximation of it (unique among this script's own SubD List outputs - the Sphere gives 11310/16965/5657, the PlanarSrf rectangle gives 6/13/8/8)"
 # SubDRevolve/SubDMultiPipe: the SubD menu (MenuBar.cpp) has always listed
 # both names, with no command of either name ever registered - a broken
 # menu entry, not an implemented-but-limited feature (PARITY_MAP.md's own
@@ -1596,7 +1611,7 @@ sdcheck "Faces: 10538" "Revolve Output=SubD's List shows a real SubD-shaped desc
 sdcheck "Bounding box: (495, -5, -24.9925) to (544.997, 5, 24.9925)" "Revolve Output=SubD built its usual Brep of revolution (profile circle radius 5 at x=500, axis at x=520), then converted it in place to a genuine SubD with the same real extent"
 echo "$SD" | grep -E "^(ok|FAIL)"
 if echo "$SD" | grep -q "^FAIL"; then fail=1; fi
-sdcheck "smoke: frames=[0-9]* objects=25" "subd script produced the expected object count"
+sdcheck "smoke: frames=[0-9]* objects=27" "subd script produced the expected object count"
 # Rendering: materials (scripted options), texture mapping, lights, sun, ground plane,
 # Render / RenderArctic / SaveRenderWindowAs, ExtractRenderMesh, .3dm round-trip (see render_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/render_script.txt" > "$TMPW/render_script.txt"

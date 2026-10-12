@@ -17416,6 +17416,71 @@ void TestBrepAreaHandlesGenuinelyTrimmedFaces() {
   }
 }
 
+// Mirrors TestBrepAreaHandlesGenuinelyTrimmedFaces() above for Volume():
+// the same genuine-topology extension (TrimmedFaceUVPolygon()/
+// IntegrateTriangleAdaptive(), just with Volume()'s own divergence-
+// theorem integrand) closes this bullet's own "throws on any trimmed
+// face" gap for Volume() too, not only Area(). Volume() also keeps its
+// own separate closedness precondition (TessellateToClosedMesh(8,
+// 8).IsClosedManifold()) - unaffected by this change, still disclosed
+// as a materially different, already-known limitation for several
+// BooleanCombineGeneral() results (confirmed directly via a standalone
+// `dino8_scratch_test` probe before writing this test: of the three
+// box+box ops, only Intersection's own result happens to pass that
+// precondition - Union and Difference still throw on it, the same as
+// before this change, not a regression this round introduces or fixes).
+void TestBrepVolumeHandlesGenuinelyTrimmedFaces() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep box_a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep box_b = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  // Intersection of [0,2]^3 and [1,3]^3 is exactly the unit cube [1,2]^3,
+  // volume 1.0 - a real production BooleanCombineGeneral() result (every
+  // one of its faces is a genuinely-trimmed L-shaped or rectangular
+  // remainder, real ON_Brep loop topology) that ALSO happens to satisfy
+  // Volume()'s own closedness precondition, confirmed directly via the
+  // same probe above. 1e-6, not machine precision: the divergence-
+  // theorem sum here is several faces' worth of individually large,
+  // opposite-signed contributions nearly canceling down to a small net
+  // result (confirmed directly via a standalone `dino8_scratch_test`
+  // probe: the raw result measured ~1e-8 off exact 1.0) - the same
+  // "converges rapidly rather than landing exactly" tier Volume()'s own
+  // whole-domain path already discloses for a rational face, not a new
+  // weaker guarantee introduced by this trimmed-face path specifically.
+  const Brep intersection = BooleanCombineGeneral(box_a, box_b, BooleanOp::Intersection);
+  Check(std::abs(intersection.Volume() - 1.0) < 1e-6,
+        "Volume() on a real BooleanCombineGeneral() box+box Intersection result (genuinely-trimmed planar "
+        "faces, real ON_Brep loop topology) matches the closed-form unit-cube volume 1.0 within 1e-6, no "
+        "longer throwing on the trimmed-face restriction");
+
+  // Union and Difference still throw - but on the SAME pre-existing,
+  // already-disclosed closedness precondition this change doesn't touch
+  // (TessellateToClosedMesh(8, 8).IsClosedManifold() is false for both,
+  // confirmed via the probe), not the trimmed-face restriction this
+  // change removes. A real regression guard: if this change somehow
+  // broke the closedness check itself, these would start throwing a
+  // DIFFERENT message, or stop throwing at all with a wrong answer.
+  auto throws_invalid_argument_matching = [](const std::function<void()>& f, const std::string& needle) {
+    try {
+      f();
+    } catch (const std::invalid_argument& e) {
+      return std::string(e.what()).find(needle) != std::string::npos;
+    }
+    return false;
+  };
+  const Brep uni = BooleanCombineGeneral(box_a, box_b, BooleanOp::Union);
+  const Brep diff = BooleanCombineGeneral(box_a, box_b, BooleanOp::Difference);
+  Check(throws_invalid_argument_matching([&] { uni.Volume(); }, "not a closed, watertight solid"),
+        "Volume() on the Union result still throws on the pre-existing closedness precondition, not the "
+        "trimmed-face restriction this change removes");
+  Check(throws_invalid_argument_matching([&] { diff.Volume(); }, "not a closed, watertight solid"),
+        "Volume() on the Difference result still throws on the pre-existing closedness precondition, not "
+        "the trimmed-face restriction this change removes");
+}
+
 void TestBrepTrimmedPlanarFaceRejectsTooFewPoints() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -79085,6 +79150,7 @@ int main() {
   RunTest("TestBrepTorusIsClosedAndWatertight", TestBrepTorusIsClosedAndWatertight);
   RunTest("TestBrepVolumeAndAreaMatchClosedForms", TestBrepVolumeAndAreaMatchClosedForms);
   RunTest("TestBrepAreaHandlesGenuinelyTrimmedFaces", TestBrepAreaHandlesGenuinelyTrimmedFaces);
+  RunTest("TestBrepVolumeHandlesGenuinelyTrimmedFaces", TestBrepVolumeHandlesGenuinelyTrimmedFaces);
   RunTest("TestBrepTrimmedPlanarFaceRejectsTooFewPoints", TestBrepTrimmedPlanarFaceRejectsTooFewPoints);
   RunTest("TestBrepTrimmedPlanarFace", TestBrepTrimmedPlanarFace);
   RunTest("TestBrepTrimmedPlanarFaceWelded", TestBrepTrimmedPlanarFaceWelded);
