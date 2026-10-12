@@ -1578,6 +1578,37 @@ std::vector<double> NurbsSurface::SuggestedParameterValuesByAngle(int direction,
   return best_values;
 }
 
+SurfaceParameterValuesCertified NurbsSurface::SuggestedParameterValuesCertifiedAdaptive(
+    double chord_tolerance, int max_refinements, int isocurve_samples) const {
+  if (!(chord_tolerance > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::SuggestedParameterValuesCertifiedAdaptive: "
+        "chord_tolerance must be positive");
+  }
+  if (max_refinements < 0) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::SuggestedParameterValuesCertifiedAdaptive: "
+        "max_refinements must be non-negative");
+  }
+
+  double effective_tolerance = chord_tolerance;
+  for (int attempt = 0; attempt <= max_refinements; ++attempt) {
+    std::vector<double> u_values = SuggestedParameterValues(0, effective_tolerance, isocurve_samples);
+    std::vector<double> v_values = SuggestedParameterValues(1, effective_tolerance, isocurve_samples);
+    const Mesh trial = TessellateGridNonUniform(u_values, v_values);
+    const double deviation = MeasureMeshTessellationDeviation(trial);
+    if (deviation <= chord_tolerance) {
+      return SurfaceParameterValuesCertified{std::move(u_values), std::move(v_values), deviation};
+    }
+    effective_tolerance *= 0.5;
+  }
+
+  throw std::runtime_error(
+      "dino8::kernel::NurbsSurface::SuggestedParameterValuesCertifiedAdaptive: could not "
+      "certify chord_tolerance within max_refinements refinements of SuggestedParameterValues()'s "
+      "own starting resolution");
+}
+
 namespace {
 
 // Shared body of TessellateGrid()/TessellateGridNonUniform(): builds a

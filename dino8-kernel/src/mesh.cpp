@@ -448,36 +448,64 @@ BoundingBox Mesh::GetBoundingBox() const {
   return BoundingBox{box_min, box_max};
 }
 
-bool Mesh::ContainsPoint(Point3d point) const {
-  // A ray along a world axis reliably grazes vertices of any axis-aligned,
-  // axis-symmetric or UV-parametrized mesh (spheres, cylinders, revolves,
-  // boxes...) whenever the query point sits on that mesh's own axis or
-  // symmetry plane - which is exactly where callers most often test (e.g.
-  // "is this the sphere's own center inside it", from SelVolumeObject).
-  // Those grazing hits are numerically unstable: floating-point noise from
-  // translating the same mesh away from the origin flips the parity count
-  // (observed: a sphere at the world origin reported its center as
-  // contained, the identical sphere translated to (40,20,10) did not). A
-  // direction with no axis-aligned or rational-fraction component doesn't
-  // line up with these seams, so it isn't sensitive to translation.
-  const Vector3d direction(0.6532814824, 0.2705980501, 0.7071067812);
-  int crossing_count = 0;
+namespace {
+// A ray along a world axis reliably grazes vertices of any axis-aligned,
+// axis-symmetric or UV-parametrized mesh (spheres, cylinders, revolves,
+// boxes...) whenever the query point sits on that mesh's own axis or
+// symmetry plane - which is exactly where callers most often test (e.g.
+// "is this the sphere's own center inside it", from SelVolumeObject).
+// Those grazing hits are numerically unstable: floating-point noise from
+// translating the same mesh away from the origin flips the parity count
+// (observed: a sphere at the world origin reported its center as
+// contained, the identical sphere translated to (40,20,10) did not). Each
+// of these 5 directions has no axis-aligned or rational-fraction
+// component, so none of them individually lines up with those seams -
+// but any ONE fixed direction can still graze a vertex or shared edge of
+// a GENERAL (non-symmetric) mesh exactly, by construction or by sheer
+// coincidence of where the query point happens to sit (confirmed
+// directly: a point near a cube's own corner, with the single original
+// direction aimed exactly at that corner, was misclassified as outside
+// for a real, contiguous range of genuinely-inside points along that
+// ray). Five independent, well-separated directions make the chance
+// that MOST of them simultaneously graze a degenerate feature of any
+// one mesh vanishingly small without this becoming a real spatial
+// search; `ContainsPointAlong()` below still does only one pass per
+// direction, same as before.
+constexpr int kContainsPointDirectionCount = 5;
+const Vector3d kContainsPointDirections[kContainsPointDirectionCount] = {
+    Vector3d(0.6532814824, 0.2705980501, 0.7071067812),
+    Vector3d(0.1467219732, 0.8419038238, 0.5187654321),
+    Vector3d(0.9123456789, 0.1298765432, 0.3891234567),
+    Vector3d(0.3456789012, 0.5678901234, 0.7468013579),
+    Vector3d(0.7890123456, 0.6012345678, 0.1301234567),
+};
 
+bool ContainsPointAlong(const ON_Mesh& mesh, Point3d point, const Vector3d& direction) {
+  int crossing_count = 0;
   auto count_triangle = [&](int i0, int i1, int i2) {
-    if (RayIntersectsTriangle(point, direction, mesh_.m_V[i0], mesh_.m_V[i1], mesh_.m_V[i2])) {
+    if (RayIntersectsTriangle(point, direction, mesh.m_V[i0], mesh.m_V[i1], mesh.m_V[i2])) {
       ++crossing_count;
     }
   };
-
-  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
-    const ON_MeshFace& f = mesh_.m_F[i];
+  for (int i = 0; i < mesh.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh.m_F[i];
     count_triangle(f.vi[0], f.vi[1], f.vi[2]);
     if (f.IsQuad()) {
       count_triangle(f.vi[0], f.vi[2], f.vi[3]);
     }
   }
-
   return (crossing_count % 2) == 1;
+}
+}  // namespace
+
+bool Mesh::ContainsPoint(Point3d point) const {
+  int votes_in = 0;
+  for (const Vector3d& direction : kContainsPointDirections) {
+    if (ContainsPointAlong(mesh_, point, direction)) ++votes_in;
+  }
+  // Strict majority of 5 - a tie is impossible with an odd count, so
+  // this is never an arbitrary tie-break.
+  return votes_in * 2 > kContainsPointDirectionCount;
 }
 
 Point3d Mesh::ClosestPoint(Point3d point) const {
