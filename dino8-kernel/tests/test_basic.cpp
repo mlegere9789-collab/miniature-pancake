@@ -26505,6 +26505,63 @@ void TestMeshClosestPoint() {
   }
 }
 
+// PARITY_MAP.md's own "kernel: Mass properties & spatial queries" category,
+// "Spatial acceleration structures for geometric queries" bullet: "only
+// private uniform grids for SSX/CSX; every public query brute force."
+// MeshClosestPointIndex is a genuine, reusable spatial acceleration
+// structure over a Mesh's own triangles (an ON_RTree, the same index type
+// PointCloud::SpatialIndex() already builds over points), queried with the
+// same expanding-box, doubling-until-proven-sufficient search
+// PointCloud::KNearest() already establishes - built once, then
+// cross-checked exhaustively against Mesh::ClosestPoint()'s own plain
+// O(triangle count) brute-force scan to prove it answers IDENTICALLY, not
+// merely approximately.
+void TestMeshClosestPointIndex() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MeshClosestPointIndex;
+  using dino8::kernel::Point3d;
+
+  // A genuinely dense mesh (a tessellated sphere, hundreds of triangles -
+  // not just a 12-triangle box) so the expanding-box search actually has
+  // to grow more than once for at least some of the query points below,
+  // exercising the real acceleration path rather than a trivial
+  // single-cell case.
+  const Brep sphere_brep = Brep::Sphere(Point3d(1, -2, 3), 5.0);
+  const Mesh sphere_mesh = sphere_brep.TessellateToClosedMesh(24, 24);
+  Check(sphere_mesh.FaceCount() > 100, "sanity: the tessellated sphere fixture has a genuinely large number of faces");
+
+  const MeshClosestPointIndex index(sphere_mesh);
+
+  bool all_match = true;
+  const std::vector<Point3d> queries = {
+      Point3d(1, -2, 3),      // the sphere's own center (deep interior)
+      Point3d(1, -2, 8),      // on the surface (center + radius along z)
+      Point3d(1, -2, 50),     // far outside, straight out along z
+      Point3d(50, -2, 3),     // far outside along x
+      Point3d(1, -2, 3.1),    // just barely off-center (interior, near center)
+      Point3d(-30, 40, -17),  // far outside, an oblique direction
+      Point3d(1, 1, 3),       // a middling interior point, off-axis
+  };
+  for (const Point3d& q : queries) {
+    const Point3d brute_force = sphere_mesh.ClosestPoint(q);
+    const Point3d accelerated = index.ClosestPoint(q);
+    if (brute_force.DistanceTo(accelerated) > 1e-6) { all_match = false; break; }
+  }
+  Check(all_match, "MeshClosestPointIndex::ClosestPoint() agrees with Mesh::ClosestPoint()'s own brute-force scan at every query point, near and far, interior and exterior");
+
+  // Building an index from an empty mesh is refused outright, matching
+  // Mesh::ClosestPoint()'s own "no faces, no surface" contract.
+  bool threw = false;
+  try {
+    const Mesh empty_mesh;
+    const MeshClosestPointIndex empty_index(empty_mesh);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "building an index from an empty mesh throws, matching Mesh::ClosestPoint()'s own contract");
+}
+
 void TestMeshSignedDistance() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -78739,6 +78796,7 @@ int main() {
   RunTest("TestMeshContainsPointVotesAcrossMultipleRaysForRobustness",
           TestMeshContainsPointVotesAcrossMultipleRaysForRobustness);
   RunTest("TestMeshClosestPoint", TestMeshClosestPoint);
+  RunTest("TestMeshClosestPointIndex", TestMeshClosestPointIndex);
   RunTest("TestMeshSignedDistance", TestMeshSignedDistance);
   RunTest("TestMeshVolumeMassProperties", TestMeshVolumeMassProperties);
   RunTest("TestMeshGetOrientedBoundingBox", TestMeshGetOrientedBoundingBox);
