@@ -1260,6 +1260,31 @@ class NurbsCurve {
   // assumed.
   double ParameterAtArcLength(double target_length, int samples = 1000) const;
 
+  // Tolerance-bounded overload of `ParameterAtArcLength()` above, closing
+  // PARITY_MAP's own disclosed "`ParameterAtArcLength`... still
+  // interpolate[s] on the old uniform polyline" gap (kernel: Geometry
+  // representation's "Numeric curve queries" bullet) - the arc-length
+  // counterpart to `LengthToTolerance()`'s own replacement of `Length()`'s
+  // fixed polyline chord sum. Finds `t` via Newton's method on `f(t) =
+  // ArcLength(Domain().Min(), t) - target_length`, using the curve's own
+  // real speed `|C'(t)|` (`ON_Curve::Ev1Der`, the same derivative
+  // `LengthToTolerance()` already uses) as `f'(t)`, with each arc length
+  // evaluation itself computed by the identical adaptive 5-point
+  // Gauss-Legendre quadrature `LengthToTolerance()` uses - not a fixed
+  // sample count - and a bisection bracket (monotonic, since arc length
+  // never decreases) as a fallback wherever the speed is too small to
+  // trust or a Newton step would overshoot it. `target_length` is clamped
+  // to `[0, LengthToTolerance(tolerance)]` the same way the untoleranced
+  // overload clamps to `[0, Length(samples)]`. `out_achieved_length`, if
+  // non-null, receives the actual arc length from `Domain().Min()` to the
+  // returned `t`, measured the same adaptive way - a cheap way for a
+  // caller to see how close the root-find actually landed. Like
+  // `LengthToTolerance()` itself, this is a numerically-robust iterative
+  // result, not a formally certified bound (the same honesty tier `Rebuild()`'s
+  // own deviation bound already uses). Throws `std::invalid_argument` if
+  // `tolerance` isn't positive.
+  double ParameterAtArcLength(double target_length, double tolerance, double* out_achieved_length = nullptr) const;
+
   // Divides the curve into `count` sub-segments of exactly equal arc
   // length, returning the `count + 1` parameter values at the
   // boundaries between them (starting at `Domain().Min()`, ending at
@@ -1276,6 +1301,16 @@ class NurbsCurve {
   // via equal consecutive-point chord lengths, not assumed from the
   // formula). Throws std::invalid_argument if `count <= 0`.
   std::vector<double> DivideByCount(int count, int samples = 1000) const;
+
+  // Tolerance-bounded overload of `DivideByCount()` above - built the
+  // same way the untoleranced overload is, but on top of
+  // `LengthToTolerance(tolerance)` and the tolerance-bounded
+  // `ParameterAtArcLength(target_length, tolerance)` instead of a fixed
+  // polyline sample count, closing the "`DivideByCount`... still
+  // interpolate[s] on the old uniform polyline" half of PARITY_MAP's own
+  // disclosed "Numeric curve queries" gap. Throws `std::invalid_argument`
+  // if `count <= 0` or `tolerance` isn't positive.
+  std::vector<double> DivideByCount(int count, double tolerance) const;
 
   // The "by fixed length" half of this kernel's "Divide curve by N/fixed
   // length" gap - `DivideByCount()` above only ever covers "by N" (a
@@ -1301,6 +1336,13 @@ class NurbsCurve {
   // Domain().Max()}`, the single-segment case). Throws
   // std::invalid_argument if `length` isn't positive.
   std::vector<double> DivideByLength(double length, int samples = 1000) const;
+
+  // Tolerance-bounded overload of `DivideByLength()` above - the same
+  // `LengthToTolerance(tolerance)`/tolerance-bounded `ParameterAtArcLength()`
+  // substitution `DivideByCount(count, tolerance)` makes, closing the
+  // other half of the same disclosed gap. Throws `std::invalid_argument`
+  // if `length` isn't positive or `tolerance` isn't positive.
+  std::vector<double> DivideByLength(double length, double tolerance) const;
 
   // Unit tangent direction at parameter `t` - the direction of travel
   // along the curve, not a raw (unnormalized) derivative. Delegates to
