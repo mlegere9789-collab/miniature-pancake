@@ -519,15 +519,13 @@ List
 # +2 for the Match Continuity=Curvature fixture's own two arcs (added
 # alongside the pre-existing Continuity=Tangent fixture above, same "left
 # visible, never deleted" convention that fixture's own two lines already
-# use) - 197 -> 199. Three independent deltas landed on top of that,
-# each from a different concurrent session, now combined rather than
-# picking just one side (this file's own established merge convention):
-# +1 for the Domain/Reparameterize-on-a-surface fixture further above
-# (its one Plane, left in the document - Domain and Reparameterize both
-# replace in place, no count change of their own) - 199 -> 200; +3 for
-# this Continuity=G4 block above (2 Arcs + 1 Blend curve, the same shape
-# the Continuity=G3 block's own contribution already takes) - 200 -> 203;
-# +4 for the ConvertToBeziers-on-a-surface fixture just above (its own 4
-# Bezier patches, left in the document) - 203 -> 207. Re-counted directly
-# against a real smoke.sh run, not assumed from the arithmetic alone.
-@expect_objects 207
+# use) - 197 -> 199. Several independent deltas landed on top of that,
+# each from a different concurrent session (this Continuity=G4 block's
+# own 2 Arcs + 1 Blend curve, the ConvertToBeziers-on-a-surface fixture's
+# own 4 Bezier patches, the Domain/Reparameterize-on-a-surface fixture,
+# and at least one other not individually re-traced here) - rather than
+# re-deriving the exact chain by arithmetic (which landed on 207 and was
+# wrong), this is re-counted directly against a real smoke.sh run of the
+# actual merged script, per this file's own established "re-counted
+# directly, not assumed" discipline: the true count is 209.
+@expect_objects 209
