@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -2768,6 +2769,35 @@ class Brep {
   // (including a genuinely empty Brep) AND OpenNURBS' own whole-Brep
   // fallback also fails.
   BoundingBox GetTightBoundingBox() const;
+
+  // An oriented bounding box: closes the "B-rep" half of PARITY_MAP's
+  // "Oriented / CPlane-aligned / minimal-volume bounding box" gap (the
+  // curve half closed via `NurbsCurve::GetOrientedBoundingBox()`, the
+  // surface half via the newer `NurbsSurface::GetOrientedBoundingBox()` -
+  // this is the whole-Brep aggregate over every face's own surface).
+  // Same technique as both: PCA (the shared `ON_Sym3x3EigenSolver`) on
+  // the plain covariance of every face's own `u_divisions` x
+  // `v_divisions` grid of sample points (each face's `SurfaceOf()`,
+  // converted to its real NURBS form via `ON_NurbsSurface::Cast()` first
+  // and `GetNurbForm()` only if that cast fails - the same two-tier
+  // pattern `ResolveFace()` (brep.cpp) already establishes for reading an
+  // arbitrary face's surface this way), giving the axes; `half_extents`/
+  // `center` are the exact min/max projection of every face's own real
+  // NURBS CONTROL POINT (not the sampled points) onto each axis, so the
+  // result is PROVABLY SAFE regardless of sampling density - the same
+  // convex-hull guarantee the curve/surface overloads already rely on,
+  // generalized from one control net to the union of every face's own.
+  // Falls back to the world X/Y/Z axes on a genuinely degenerate
+  // covariance (e.g. a single flat face), same as both narrower
+  // overloads. Throws std::runtime_error if no face produces any usable
+  // surface (including a genuinely empty Brep) - the same condition
+  // `GetTightBoundingBox()` above throws for, and for the same reason.
+  struct OrientedBox {
+    Point3d center;
+    std::array<Vector3d, 3> axes;
+    std::array<double, 3> half_extents{};
+  };
+  OrientedBox GetOrientedBoundingBox(int u_divisions = 20, int v_divisions = 20) const;
 
   // Tessellates each face into a triangle mesh via NurbsSurface's grid
   // tessellator (see its comment for why this doesn't go through

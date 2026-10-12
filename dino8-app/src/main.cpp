@@ -74,6 +74,17 @@
 //                 currently empty, missing, or unreadable (fails closed,
 //                 not open) - a path typo can never silently leave the
 //                 server open the way an empty --serve-token list would.
+//   --serve-token-file-ttl SECONDS   with --serve-token-file: that file's
+//                 own entries additionally expire once the file's last-
+//                 write time is more than SECONDS old - real automatic
+//                 expiry, the one piece --serve-token-file alone still
+//                 lacked. An expired file is treated exactly like a
+//                 missing one (fails closed, deny every request - see
+//                 --serve-token-file above), not a fallback to the fully-
+//                 open behavior. Omit for the previous behavior: entries
+//                 stay valid for as long as the file simply exists, no
+//                 matter its age. Renewing access needs only a `touch`
+//                 (or any rewrite) of the file, not a server restart.
 //
 // Script lines starting with '@' are synthetic input for UI tests:
 //   @move X Y | @down [button] | @up [button] | @click X Y [button]
@@ -382,6 +393,31 @@ std::vector<std::pair<std::string, std::string>> ParseTokenFile(const std::strin
   return tokens;
 }
 
+// True if `path` both exists and was last written no more than `ttl`
+// seconds ago - --serve-token-file-ttl's own expiry check, called fresh
+// from compute_handler right alongside ParseTokenFile on every request.
+// A negative `ttl` (the flag omitted) always returns true: no expiry at
+// all, the previous --serve-token-file-alone behavior. Comparing via two
+// `file_time_type::clock::now()` calls rather than converting to
+// `system_clock` keeps both sides of the subtraction in the identical
+// clock, avoiding the cross-clock-conversion caveat `file_time_type`
+// carries in C++17 (see FileMtimeMillis's own comment in
+// cmd_drafting2.cpp for the same caveat solved the other way, where an
+// actual wall-clock timestamp - not just an elapsed duration - is
+// needed); here only an age is needed, so no conversion is required at
+// all. A file that can't be stat'd (missing, unreadable, ...) is treated
+// as expired, not fresh - consistent with ParseTokenFile's own "missing
+// file comes back with no entries" and compute_handler's own fail-closed
+// design for this flag.
+bool TokenFileFresh(const std::string& path, double ttl) {
+  if (ttl < 0) return true;
+  std::error_code ec;
+  const auto mtime = std::filesystem::last_write_time(path, ec);
+  if (ec) return false;
+  const auto age = std::filesystem::file_time_type::clock::now() - mtime;
+  return std::chrono::duration<double>(age).count() <= ttl;
+}
+
 // Reads one boolean-ish query parameter ("geometry=1" or "geometry=true")
 // out of a raw HTTP query string ("a=1&geometry=1&b=2") - not a general
 // query-string parser (no URL-decoding, no repeated-key handling), just
@@ -437,6 +473,55 @@ std::string ComputeJsonEscape(const std::string& s) {
   return out;
 }
 
+// The vertices/faces JSON shape GET /objects?geometry=1 writes for
+// ObjectKind::Mesh - factored out here so the new Brep/SubD cases below can
+// write the exact same wire shape for their own tessellated approximation,
+// rather than inventing a second geometry format POST /objects would also
+// have to learn.
+std::string ComputeJsonMeshGeometry(const ON_Mesh& m) {
+  std::string verts = "[";
+  for (int i = 0; i < m.VertexCount(); ++i) {
+    if (i) verts += ',';
+    const ON_3dPoint v = m.Vertex(i);
+    verts += "[" + std::to_string(v.x) + "," + std::to_string(v.y) + "," + std::to_string(v.z) + "]";
+  }
+  verts += ']';
+  std::string faces = "[";
+  for (int i = 0; i < m.FaceCount(); ++i) {
+    if (i) faces += ',';
+    const ON_MeshFace& f = m.m_F[i];
+    faces += "[" + std::to_string(f.vi[0]) + "," + std::to_string(f.vi[1]) + "," + std::to_string(f.vi[2]);
+    if (f.IsQuad()) faces += "," + std::to_string(f.vi[3]);
+    faces += ']';
+  }
+  faces += ']';
+  return "{\"vertices\":" + verts + ",\"faces\":" + faces + "}";
+}
+
+// Builds a plain triangle-soup ON_Mesh from a SceneObject's own display
+// cache (EnsureDisplay's `triangles`, x,y,z,nx,ny,nz per vertex, 3 vertices
+// per triangle - see SceneObject.h's own DisplayCache comment), the same
+// extraction `io/FileIgesStep.cpp`'s file-local `TessellateForIfc` already
+// does for a Brep (that function is anonymous-namespace-scoped to that
+// file, so it isn't reusable from here directly; this mirrors it rather
+// than exposing it, since the two call sites want a differently-shaped
+// result - a kernel::Mesh there, a plain ON_Mesh here, immediately turned
+// into this route's own JSON shape).
+ON_Mesh ComputeTessellateBrep(const dino8::app::SceneObject& o, double tol) {
+  o.EnsureDisplay(tol, 0.05);
+  const std::vector<float>& t = o.Display().triangles;
+  ON_Mesh m;
+  for (size_t k2 = 0; k2 + 17 < t.size(); k2 += 18) {
+    const int base = m.VertexCount();
+    for (int k = 0; k < 3; ++k) m.m_V.Append(ON_3fPoint(t[k2 + k * 6], t[k2 + k * 6 + 1], t[k2 + k * 6 + 2]));
+    ON_MeshFace f;
+    f.vi[0] = base; f.vi[1] = base + 1; f.vi[2] = base + 2; f.vi[3] = base + 2;
+    m.m_F.Append(f);
+  }
+  m.CombineIdenticalVertices(true, true);
+  return m;
+}
+
 }  // namespace
 
 #if defined(_MSC_VER)
@@ -488,6 +573,13 @@ int main(int argc, char** argv) {
   // below for how this gets re-read fresh on every request rather than
   // once here at startup.
   std::string serve_token_file;
+  // < 0 (the default, --serve-token-file-ttl omitted) means no expiry
+  // check at all - serve_token_file's entries are valid for as long as
+  // the file simply exists, exactly as --serve-token-file alone always
+  // behaved. >= 0 means those entries also expire once the file's own
+  // last-write time is more than this many seconds old (see
+  // compute_handler below).
+  double serve_token_file_ttl = -1.0;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--smoke") == 0 && i + 1 < argc) smoke_frames = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--stress") == 0 && i + 1 < argc) stress_count = std::atoi(argv[++i]);
@@ -504,6 +596,7 @@ int main(int argc, char** argv) {
       else serve_tokens.emplace_back(spec.substr(0, colon), spec.substr(colon + 1));
     }
     else if (std::strcmp(argv[i], "--serve-token-file") == 0 && i + 1 < argc) serve_token_file = argv[++i];
+    else if (std::strcmp(argv[i], "--serve-token-file-ttl") == 0 && i + 1 < argc) serve_token_file_ttl = std::atof(argv[++i]);
     else if (std::strcmp(argv[i], "--version") == 0) { std::printf("Dino 8 %s\n", DINO8_VERSION); return 0; }
     else if (argv[i][0] != '-') open_path = argv[i];
   }
@@ -741,7 +834,7 @@ int main(int argc, char** argv) {
     body += "}\n";
     return body;
   };
-  const dino8::app::ComputeHandler compute_handler = [&app, &serve_tokens, &serve_token_file, json_wrap_output](const dino8::app::HttpRequest& req) {
+  const dino8::app::ComputeHandler compute_handler = [&app, &serve_tokens, &serve_token_file, &serve_token_file_ttl, json_wrap_output](const dino8::app::HttpRequest& req) {
     dino8::app::HttpResponse resp;
     // TryParseHttpRequest hands back the request-line path verbatim,
     // query string and all ("/objects?geometry=1") - split it once here so
@@ -770,14 +863,15 @@ int main(int argc, char** argv) {
     // keeps every comparison genuinely constant-time against its own
     // candidate, with no shared table lookup leaking anything about
     // *which* candidate it resembles. Giving --serve-token-file makes auth
-    // required even if the file is currently empty/missing/unreadable
-    // (ParseTokenFile then returns no entries) - fails closed rather than
-    // silently falling back to the fully-open behavior an empty
-    // serve_tokens alone would mean.
+    // required even if the file is currently empty/missing/unreadable, or
+    // (with --serve-token-file-ttl set) too old (TokenFileFresh false,
+    // ParseTokenFile's own result then discarded entirely rather than
+    // read) - fails closed rather than silently falling back to the
+    // fully-open behavior an empty serve_tokens alone would mean.
     std::string caller_name;  // stays "" for an unauthenticated server or an anonymous (no "NAME:") token
     if (!serve_tokens.empty() || !serve_token_file.empty()) {
       std::vector<std::pair<std::string, std::string>> candidates = serve_tokens;
-      if (!serve_token_file.empty()) {
+      if (!serve_token_file.empty() && TokenFileFresh(serve_token_file, serve_token_file_ttl)) {
         for (auto& entry : ParseTokenFile(serve_token_file)) candidates.push_back(std::move(entry));
       }
       const auto it = req.headers.find("authorization");
@@ -797,21 +891,28 @@ int main(int argc, char** argv) {
     // the id/type/name/layer/bounding-box of every object currently in the
     // running document, as JSON - rather than only the plain print() text
     // /run[/python] return. `?geometry=1` additionally carries each
-    // object's own geometry for five kinds: point (coordinates), mesh
-    // (vertices/faces), curve (degree/control points/weights/knots),
+    // object's own geometry for five kinds exactly: point (coordinates),
+    // mesh (vertices/faces), curve (degree/control points/weights/knots),
     // surface (the same shape as curve, in each of its two directions),
     // and point cloud (a flat position array, plus optional per-point
     // colors/normals when the cloud actually carries them) - the exact
     // definition in the curve/surface/point-cloud cases, enough to
     // reconstruct the object exactly, not just sampled points. The two
-    // remaining kinds (polysurface, SubD) still get "geometry":null - a
-    // Brep's multiple trimmed faces (each with its own trimming curves)
-    // and a SubD's control-cage topology are a substantially larger
-    // undertaking than any of the five shapes above, not attempted here.
-    // POST /objects (right below) closes the other half - sending one of
-    // these same five shapes back in adds that exact geometry to the
-    // document, the first way to get geometry *into* this server as
-    // structured data rather than Lua/Python source.
+    // remaining kinds (polysurface, SubD) now carry a real tessellated
+    // approximation instead of "geometry":null - the same mesh shape as
+    // ObjectKind::Mesh above, under a nested "mesh" key with
+    // "tessellated":true alongside it, built from the live display cache's
+    // own adaptive triangulation (Brep) or ToApproximateMesh() (SubD) - see
+    // each branch's own comment below. A Brep's own multiple trimmed faces
+    // (each with its own trimming curves) and a SubD's own control-cage
+    // topology remain unserialized - reconstructing the real (not merely
+    // tessellated) shape from JSON is still a substantially larger
+    // undertaking, the same scope line STEP AP242/IFC's own exporters below
+    // already draw for these two kinds elsewhere in this app.
+    // POST /objects (right below) closes the other half for the first five
+    // kinds - sending one of those same five shapes back in adds that exact
+    // geometry to the document, the first way to get geometry *into* this
+    // server as structured data rather than Lua/Python source.
     if (path == "/objects" && req.method == "GET") {
       const dino8::app::Document& doc = app.Doc();
       const bool want_geometry = ComputeQueryFlagSet(query, "geometry");
@@ -837,24 +938,7 @@ int main(int argc, char** argv) {
           if (o.kind == dino8::app::ObjectKind::Point) {
             body += "{\"point\":[" + std::to_string(o.point.x) + "," + std::to_string(o.point.y) + "," + std::to_string(o.point.z) + "]}";
           } else if (o.kind == dino8::app::ObjectKind::Mesh && o.mesh) {
-            const ON_Mesh& m = o.mesh->raw();
-            std::string verts = "[";
-            for (int i = 0; i < m.VertexCount(); ++i) {
-              if (i) verts += ',';
-              const ON_3dPoint v = m.Vertex(i);
-              verts += "[" + std::to_string(v.x) + "," + std::to_string(v.y) + "," + std::to_string(v.z) + "]";
-            }
-            verts += ']';
-            std::string faces = "[";
-            for (int i = 0; i < m.FaceCount(); ++i) {
-              if (i) faces += ',';
-              const ON_MeshFace& f = m.m_F[i];
-              faces += "[" + std::to_string(f.vi[0]) + "," + std::to_string(f.vi[1]) + "," + std::to_string(f.vi[2]);
-              if (f.IsQuad()) faces += "," + std::to_string(f.vi[3]);
-              faces += ']';
-            }
-            faces += ']';
-            body += "{\"vertices\":" + verts + ",\"faces\":" + faces + "}";
+            body += ComputeJsonMeshGeometry(o.mesh->raw());
           } else if (o.kind == dino8::app::ObjectKind::Curve && o.curve) {
             // A NURBS curve's degree/control points/weights/knots are
             // exactly the information OpenNURBS itself stores - enough to
@@ -975,6 +1059,39 @@ int main(int argc, char** argv) {
               body += ",\"normals\":" + normals;
             }
             body += '}';
+          } else if (o.kind == dino8::app::ObjectKind::Brep && o.brep) {
+            // Polysurface: the trimmed multi-face topology (each face's own
+            // trim-curve loops) genuinely is a substantially larger
+            // undertaking than any of the exact shapes above, as this
+            // route's own top-of-function comment already discloses - still
+            // out of scope. What closes here instead is the same scope
+            // STEP AP242/IFC's own exporters already settled for a Brep: a
+            // real triangle-mesh tessellation of the exact shape, reusing
+            // the live display cache's own existing adaptive triangulation
+            // (EnsureDisplay, the same one the viewport itself draws) rather
+            // than a second, separate meshing pass - genuine, inspectable
+            // geometry a client can render or measure, not a placeholder,
+            // with "tessellated":true disclosing plainly that it is an
+            // approximation of the real trimmed surface, not the surface
+            // itself (no "control_points"/"knots" to reconstruct it from,
+            // unlike the Curve/Surface cases above).
+            const double tol = doc.Settings().absolute_tolerance > 0 ? doc.Settings().absolute_tolerance : 0.001;
+            const ON_Mesh m = ComputeTessellateBrep(o, tol);
+            body += "{\"tessellated\":true,\"mesh\":" + ComputeJsonMeshGeometry(m) + "}";
+          } else if (o.kind == dino8::app::ObjectKind::SubD && o.subd) {
+            // SubD: same tessellated-approximation scope as Brep just above,
+            // via the kernel's own ToApproximateMesh() - the identical call
+            // `io/FileIgesStep.cpp`'s IFC/STEP-AP242 exporters already use
+            // for a SubD. That facets the CURRENT subdivision level's own
+            // flat control net (ToApproximateMesh()'s own doc comment is
+            // explicit that this is never the true curved limit surface),
+            // so a freshly-built, never-Subdivide()'d SubD comes back as
+            // its own control cage, not the smoothed shape a render or a
+            // tighter tessellation would show - the same honestly-disclosed
+            // scope every other consumer of this exact call already has,
+            // not a new limitation invented for this route.
+            const dino8::kernel::Mesh m = o.subd->ToApproximateMesh();
+            body += "{\"tessellated\":true,\"mesh\":" + ComputeJsonMeshGeometry(m.raw()) + "}";
           } else {
             body += "null";
           }
