@@ -1587,6 +1587,155 @@ void TestCurveMinDistanceTo() {
   }
 }
 
+void TestCurveMinDistanceToSurface() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A flat plane (z = 0, spanning a wide enough x/y rectangle that the
+  // real perpendicular foot of the line below lands strictly inside it,
+  // not at an edge) and a line parallel to it, directly above: the true
+  // minimum distance is exactly the perpendicular separation - a hand-
+  // derivable exact answer, the curve/surface sibling of
+  // TestCurveMinDistanceTo's own parallel-lines fixture.
+  {
+    const std::vector<Point3d> plane_grid = {
+        Point3d(0, 0, 0),
+        Point3d(0, 10, 0),
+        Point3d(10, 0, 0),
+        Point3d(10, 10, 0),
+    };
+    const NurbsSurface plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+    const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(2, 2, 5), Point3d(8, 8, 5)}, 1);
+    double dist = -1;
+    Point2d uv(-1, -1);
+    double t = -1;
+    const Result r = line.MinDistanceTo(plane, 0.001, dist, &t, &uv);
+    Check(r == Result::Ok, "MinDistanceTo(surface): a line parallel to a plane converges");
+    Check(std::abs(dist - 5.0) < 1e-3, "MinDistanceTo(surface): a line held 5 above a plane reports exactly 5");
+    Check(std::abs(line.PointAt(t).DistanceTo(plane.PointAt(uv.x, uv.y)) - dist) < 1e-3,
+          "MinDistanceTo(surface): out_t/out_uv's own two points are genuinely dist apart, "
+          "consistent with the reported out_distance");
+  }
+
+  // A line that genuinely pierces the same plane, strictly inside its
+  // extent: the true minimum distance is exactly 0, at the real
+  // crossing point.
+  {
+    const std::vector<Point3d> plane_grid = {
+        Point3d(0, 0, 0),
+        Point3d(0, 10, 0),
+        Point3d(10, 0, 0),
+        Point3d(10, 10, 0),
+    };
+    const NurbsSurface plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+    const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(5, 5, -3), Point3d(5, 5, 3)}, 1);
+    double dist = -1;
+    const Result r = line.MinDistanceTo(plane, 0.001, dist);
+    Check(r == Result::Ok, "MinDistanceTo(surface): a line piercing a plane converges");
+    Check(dist < 1e-3, "MinDistanceTo(surface): a line piercing a plane reports a minimum distance of exactly 0");
+  }
+
+  // A non-positive tolerance throws.
+  {
+    const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+    const std::vector<Point3d> plane_grid = {
+        Point3d(0, 0, 5),
+        Point3d(0, 10, 5),
+        Point3d(10, 0, 5),
+        Point3d(10, 10, 5),
+    };
+    const NurbsSurface plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+    double dist = 0;
+    bool threw = false;
+    try {
+      line.MinDistanceTo(plane, 0.0, dist);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "MinDistanceTo(surface): a non-positive tolerance throws std::invalid_argument");
+  }
+}
+
+void TestSurfaceMinDistanceTo() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Two parallel flat planes, both spanning the same wide x/y rectangle
+  // so the true closest pair lands strictly inside both, directly above
+  // one another: the true minimum distance is exactly their perpendicular
+  // separation - a hand-derivable exact answer.
+  {
+    const std::vector<Point3d> grid_a = {
+        Point3d(0, 0, 0),
+        Point3d(0, 10, 0),
+        Point3d(10, 0, 0),
+        Point3d(10, 10, 0),
+    };
+    const std::vector<Point3d> grid_b = {
+        Point3d(0, 0, 4),
+        Point3d(0, 10, 4),
+        Point3d(10, 0, 4),
+        Point3d(10, 10, 4),
+    };
+    const NurbsSurface a = NurbsSurface::FromControlGrid(grid_a, 2, 2, 1, 1);
+    const NurbsSurface b = NurbsSurface::FromControlGrid(grid_b, 2, 2, 1, 1);
+    double dist = -1;
+    Point2d uv_a(-1, -1), uv_b(-1, -1);
+    const Result r = a.MinDistanceTo(b, 0.001, dist, &uv_a, &uv_b);
+    Check(r == Result::Ok, "NurbsSurface::MinDistanceTo: two parallel planes converges");
+    Check(std::abs(dist - 4.0) < 1e-3, "NurbsSurface::MinDistanceTo: two planes 4 apart report exactly 4");
+    Check(std::abs(a.PointAt(uv_a.x, uv_a.y).DistanceTo(b.PointAt(uv_b.x, uv_b.y)) - dist) < 1e-3,
+          "NurbsSurface::MinDistanceTo: out_uv_this/out_uv_other's own two points are genuinely dist "
+          "apart, consistent with the reported out_distance");
+  }
+
+  // Two concentric spheres of different, known radii, centered at the
+  // same real (non-origin) point: every point on the inner one is
+  // exactly |r2 - r1| from the outer one - the surface/surface sibling of
+  // TestCurveMinDistanceTo's own concentric-circles fixture.
+  {
+    const Point3d center(1, -2, 0.5);
+    const double r1 = 3.0, r2 = 5.0;
+    const ON_Sphere s1(center, r1);
+    const ON_Sphere s2(center, r2);
+    ON_NurbsSurface ns1, ns2;
+    Check(s1.GetNurbForm(ns1) != 0 && s2.GetNurbForm(ns2) != 0,
+          "NurbsSurface::MinDistanceTo: both concentric-sphere fixtures build a real NURBS form");
+    NurbsSurface a, b;
+    a.raw() = ns1;
+    b.raw() = ns2;
+    double dist = -1;
+    const Result r = a.MinDistanceTo(b, 0.01, dist);
+    Check(r == Result::Ok, "NurbsSurface::MinDistanceTo: two concentric spheres converges");
+    Check(std::abs(dist - (r2 - r1)) < 1e-1,
+          "NurbsSurface::MinDistanceTo: two concentric spheres report |r2 - r1|");
+  }
+
+  // A non-positive tolerance throws.
+  {
+    const std::vector<Point3d> grid = {
+        Point3d(0, 0, 0),
+        Point3d(0, 10, 0),
+        Point3d(10, 0, 0),
+        Point3d(10, 10, 0),
+    };
+    const NurbsSurface a = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    double dist = 0;
+    bool threw = false;
+    try {
+      a.MinDistanceTo(a, 0.0, dist);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "NurbsSurface::MinDistanceTo: a non-positive tolerance throws std::invalid_argument");
+  }
+}
+
 void TestCurveGetOrientedBoundingBox() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -76199,6 +76348,8 @@ int main() {
   TestCurveSimplify();
   TestCurvePlanarRegionProperties();
   TestCurveMinDistanceTo();
+  TestCurveMinDistanceToSurface();
+  TestSurfaceMinDistanceTo();
   TestCurveGetOrientedBoundingBox();
   TestCurveGetTightBoundingBoxOverload();
   TestCurveKnotAt();
