@@ -20950,6 +20950,133 @@ void TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt() {
   Check(box.CapPlanarHoles() == 0, "a closed box has no hole to cap");
 }
 
+// Brep::FacePersistentId()/EdgePersistentId()/VertexPersistentId(),
+// FindFaceByPersistentId()/FindEdgeByPersistentId()/
+// FindVertexByPersistentId(), and CompactPreservingPersistentIds() -
+// PARITY_MAP.md's own "Persistent naming / topology identity and
+// attributes across edits" item, named `[missing]` outright ("there is
+// no persistent ID or attribute scheme"). Closes the literal case that
+// complaint names: an id that survives Compact(), independent of the
+// raw index Compact() itself freely reassigns.
+void TestBrepPersistentIdsSurviveCompact() {
+  using dino8::kernel::Brep;
+
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  Check(box.FaceCount() == 6, "setup: a genuinely welded box has 6 faces");
+
+  // Lazy assignment: distinct ids for distinct faces, the SAME id again
+  // on a second ask of the same still-live face.
+  std::vector<uint64_t> face_id(6);
+  for (int i = 0; i < 6; ++i) face_id[i] = box.FacePersistentId(i);
+  bool all_distinct = true;
+  for (int i = 0; i < 6; ++i) {
+    for (int j = i + 1; j < 6; ++j) {
+      if (face_id[i] == face_id[j]) all_distinct = false;
+    }
+  }
+  Check(all_distinct, "all 6 faces get distinct persistent ids");
+  Check(box.FacePersistentId(2) == face_id[2], "asking a second time returns the identical id, not a fresh one");
+  Check(box.FindFaceByPersistentId(face_id[3]) == 3, "FindFaceByPersistentId resolves an id back to its own index");
+  Check(box.FindFaceByPersistentId(0) == -1, "id 0 (never assigned) resolves to nothing");
+  Check(box.FindFaceByPersistentId(999999) == -1, "an id nothing was ever assigned resolves to nothing");
+
+  // Delete two faces (1 and 4) WITHOUT compacting yet - raw ON_Brep::
+  // DeleteFace, the same "exercise the dead-slot state directly" pattern
+  // TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt() above
+  // already uses - so this box genuinely has 2 dead face slots sitting
+  // among 4 live ones when CompactPreservingPersistentIds() runs, not
+  // merely a clean table it has nothing real to do on.
+  box.raw().DeleteFace(box.raw().m_F[1], /*bDeleteFaceEdges=*/true);
+  box.raw().DeleteFace(box.raw().m_F[4], /*bDeleteFaceEdges=*/true);
+  Check(box.raw().m_F.Count() == 6, "setup: still 6 raw face slots - 2 are dead, not yet removed");
+
+  box.CompactPreservingPersistentIds();
+  Check(box.FaceCount() == 4, "Compact() genuinely ran: 4 live face slots left");
+
+  // The 4 surviving original faces (0, 2, 3, 5) kept their own exact
+  // pre-compact id, now reachable at wherever Compact() actually put
+  // them (confirmed via FindFaceByPersistentId, not assumed to still sit
+  // at their old index).
+  for (const int original : {0, 2, 3, 5}) {
+    const int new_index = box.FindFaceByPersistentId(face_id[original]);
+    Check(new_index >= 0 && new_index < 4, "a surviving face's own pre-compact id resolves to a valid post-compact "
+                                            "index");
+    if (new_index >= 0) {
+      Check(box.FacePersistentId(new_index) == face_id[original],
+            "...and querying that new index returns the exact same id back");
+    }
+  }
+  // The two deleted faces' own ids resolve to nothing anymore.
+  Check(box.FindFaceByPersistentId(face_id[1]) == -1 && box.FindFaceByPersistentId(face_id[4]) == -1,
+        "a deleted face's own persistent id no longer resolves to anything after the compact");
+  // Relative order survives: original faces 0 and 2 (both still live, 0
+  // before 2 before deletion) stay in that same relative order after.
+  Check(box.FindFaceByPersistentId(face_id[0]) < box.FindFaceByPersistentId(face_id[2]),
+        "surviving faces keep their own original relative order through the compact");
+
+  // Edge/vertex ids, exercised on a real cascading topology edit rather
+  // than a hand-set flag: ON_Brep::CullUnusedVertices() (inside
+  // Compact()) deliberately UN-deletes any vertex still referenced by a
+  // live trim ("in order to prevent crashes... refuse to delete the
+  // vertex" - confirmed directly against the vendored opennurbs source,
+  // not assumed), so a bare `m_vertex_index = -1` poke alone is refused
+  // by Compact() itself, not a real way to orphan one. Faces 0 (bottom)
+  // and 2 and 5 (two of the four sides, in CheckHealBoxFaces()'s own
+  // b[0..3] CCW order) all meet at the corner (0,0,0): every edge
+  // touching that corner borders exactly two of these three faces, so
+  // deleting all three (raw ON_Brep::DeleteFace, bDeleteFaceEdges=true)
+  // genuinely cascades into removing those edges and then the now
+  // wholly unreferenced corner vertex itself - confirmed via a
+  // standalone `dino8_scratch_test` probe before trusting the exact
+  // counts below, not assumed from the construction alone.
+  Brep box2 = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  std::vector<uint64_t> edge_id(box2.raw().m_E.Count()), vertex_id(box2.raw().m_V.Count());
+  for (int i = 0; i < box2.raw().m_E.Count(); ++i) edge_id[i] = box2.EdgePersistentId(i);
+  for (int i = 0; i < box2.raw().m_V.Count(); ++i) vertex_id[i] = box2.VertexPersistentId(i);
+
+  box2.raw().DeleteFace(box2.raw().m_F[0], /*bDeleteFaceEdges=*/true);
+  box2.raw().DeleteFace(box2.raw().m_F[2], /*bDeleteFaceEdges=*/true);
+  box2.raw().DeleteFace(box2.raw().m_F[5], /*bDeleteFaceEdges=*/true);
+  Check(box2.LiveFaceCount() == 3 && box2.LiveEdgeCount() == 9 && box2.LiveVertexCount() == 7,
+        "setup: deleting the 3 faces meeting at one corner cascades into 3 dead edges and 1 dead vertex");
+
+  box2.CompactPreservingPersistentIds();
+  Check(box2.EdgeCount() == 9 && box2.VertexCount() == 7, "Compact() genuinely ran: 9 edges, 7 vertices left");
+
+  int edges_still_resolve = 0, vertices_still_resolve = 0;
+  for (const uint64_t id : edge_id) {
+    if (box2.FindEdgeByPersistentId(id) >= 0) ++edges_still_resolve;
+  }
+  for (const uint64_t id : vertex_id) {
+    if (box2.FindVertexByPersistentId(id) >= 0) ++vertices_still_resolve;
+  }
+  Check(edges_still_resolve == 9,
+        "exactly the 9 surviving edges' own pre-compact ids still resolve - the 3 removed ones don't");
+  Check(vertices_still_resolve == 7,
+        "exactly the 7 surviving vertices' own pre-compact ids still resolve - the 1 removed one doesn't");
+
+  // Refusals: out-of-range throws std::out_of_range, an already-deleted
+  // index throws std::invalid_argument - the same contract every other
+  // per-element accessor in this class already has.
+  Brep box3 = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  bool threw_range = false;
+  try {
+    box3.FacePersistentId(box3.raw().m_F.Count() + 100);
+  } catch (const std::out_of_range&) {
+    threw_range = true;
+  }
+  Check(threw_range, "FacePersistentId() throws std::out_of_range for an out-of-range index");
+
+  bool threw_deleted = false;
+  box3.raw().m_F[0].m_face_index = -1;
+  try {
+    box3.FacePersistentId(0);
+  } catch (const std::invalid_argument&) {
+    threw_deleted = true;
+  }
+  Check(threw_deleted, "FacePersistentId() throws std::invalid_argument on an already-deleted face_index");
+}
+
 // An open cylinder (Extrude() of a real circle, cap=false) has two naked
 // CURVED rims, each a single closed edge - the case CapPlanarHoles()'s
 // own straight-polygon path could never triangulate (it refused any
@@ -21178,6 +21305,90 @@ void TestBrepJoinNakedEdgesRecordsTolerantEdges() {
 
   // Nothing left to join.
   Check(box.JoinNakedEdges(2.0 * gap) == 0, "a second JoinNakedEdges() finds nothing");
+}
+
+// Same construction as CheckHealBoxFaces(top_z), but at an arbitrary edge
+// length `s` (box spans [0,s]^3) with the top face offset to `top_z` while
+// the sides' own top edge still ends at z=s - the same "top face floats
+// top_z-s above the sides" gap TestBrepJoinNakedEdgesRecordsTolerantEdges
+// already exercises at s=1, generalized so the whole box can be scaled up
+// or down.
+std::vector<dino8::kernel::Brep::PlanarFace> CheckHealScaledBoxFaces(double s, double top_z) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  const std::vector<Point3d> b = {Point3d(0, 0, 0), Point3d(s, 0, 0), Point3d(s, s, 0), Point3d(0, s, 0)};
+  const std::vector<Point3d> t = {Point3d(0, 0, s), Point3d(s, 0, s), Point3d(s, s, s), Point3d(0, s, s)};
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(CheckHealFace({b[3], b[2], b[1], b[0]}, ON_3dVector(0, 0, -1)));
+  faces.push_back(CheckHealFace({Point3d(0, 0, top_z), Point3d(s, 0, top_z), Point3d(s, s, top_z), Point3d(0, s, top_z)},
+                                ON_3dVector(0, 0, 1)));
+  for (size_t i = 0; i < 4; ++i) {
+    const size_t j = (i + 1) % 4;
+    ON_3dVector n = ON_CrossProduct(b[j] - b[i], t[i] - b[i]);
+    n.Unitize();
+    faces.push_back(CheckHealFace({b[i], b[j], t[j], t[i]}, n));
+  }
+  return faces;
+}
+
+// JoinNakedEdges()'s recorded tolerance is now floored at
+// max(kDistance, tolerance::RelativeDistance(that edge's own extent)), not
+// the bare absolute kDistance TestBrepJoinNakedEdgesRecordsTolerantEdges
+// already covers at ordinary (s=1) scale. This exercises the scaling at
+// both ends: a huge box (s=1e6) where a 1e-4 gap - the exact same absolute
+// gap the s=1 fixture above records as a real tolerant edge - is now
+// correctly recognized as physically insignificant at that edge's own
+// million-unit scale and left at 0, while a genuinely significant gap on
+// the SAME huge box (10, comfortably above RelativeDistance(1e6) == 1.0)
+// is still recorded, so the floor is a real floor, not a blanket
+// suppression at large scale.
+void TestBrepJoinNakedEdgesFloorsRecordedToleranceByEdgeExtent() {
+  using dino8::kernel::Brep;
+  namespace tol = dino8::kernel::tolerance;
+
+  {
+    const double s = 1e6, gap = 1e-4;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "a 1e-4 gap on a million-unit box still joins the 4 pairs");
+    int tolerant_edges = 0;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      if (box.raw().m_E[ei].m_tolerance > tol::kDistance) ++tolerant_edges;
+    }
+    Check(tolerant_edges == 0,
+          "...but records NO tolerant edges: 1e-4 is below RelativeDistance(1e6) == 1.0, so the gap is "
+          "correctly treated as insignificant at this edge's own scale, unlike the identical absolute gap on "
+          "the s=1 fixture above");
+    Check(box.raw().IsValid() && box.raw().IsSolid(), "...and the box is still a valid, closed solid regardless");
+  }
+  {
+    const double s = 1e6, gap = 10.0;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "a gap of 10, on the same million-unit box, still joins the 4 pairs");
+    int tolerant_edges = 0;
+    bool tolerances_are_the_gap = true;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      const double t = box.raw().m_E[ei].m_tolerance;
+      if (t > tol::kDistance) {
+        ++tolerant_edges;
+        if (std::fabs(t - gap) > 1e-9) tolerances_are_the_gap = false;
+      }
+    }
+    Check(tolerant_edges == 4 && tolerances_are_the_gap,
+          "...and THIS gap, comfortably above RelativeDistance(1e6) == 1.0, is still recorded verbatim on all "
+          "4 joined edges: the scaled floor suppresses only insignificant gaps, not every gap at large scale");
+  }
+  {
+    // Ordinary scale is untouched: same absolute gap and same outcome as
+    // TestBrepJoinNakedEdgesRecordsTolerantEdges's own s=1 case.
+    const double s = 1.0, gap = 1e-4;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(s, s + gap));
+    Check(box.JoinNakedEdges(2.0 * gap) == 4, "...and at ordinary scale, the same gap still joins 4 pairs");
+    int tolerant_edges = 0;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      if (box.raw().m_E[ei].m_tolerance > tol::kDistance) ++tolerant_edges;
+    }
+    Check(tolerant_edges == 4, "...and still records all 4 as tolerant edges, exactly as before this change");
+  }
 }
 
 // A hairline strip on the top: the top face is split into a main face
@@ -31066,6 +31277,77 @@ void TestMeshComputeBoxMappingUVs() {
     threw_nan = true;
   }
   Check(threw_nan, "ComputeBoxMappingUVs throws std::invalid_argument for a NaN scale");
+}
+
+// PARITY_MAP.md's own "Texture coordinate generation on tessellation"
+// bullet, the one remaining sub-gap its own fourth round explicitly left
+// untouched: "Box mapping's own 'hard seams at every axis boundary' are a
+// genuinely different mechanism (a per-vertex dominant-axis CHOICE
+// differing between faces, not a modular wraparound SplitUVSeam()
+// detects) that this round does not address." ComputeBoxMappingUVs()
+// picks its dominant axis from ComputeVertexNormals()'s own SMOOTHED
+// normal, so a vertex shared by faces on different box sides gets ONE
+// axis choice baked from an average normal that may not match what
+// either adjacent face's own TRUE flat normal would pick - a real
+// distortion, not just a cosmetic worry, demonstrated directly below. No
+// new kernel code: `Mesh::Faceted()` (this category's own earlier round)
+// already duplicates every face's own corners into private vertices, and
+// `TestMeshFacetedGivesFlatShading` already proves `ComputeVertexNormals()`
+// on a faceted mesh reduces to exactly that one owning face's own flat
+// normal at every corner - composing the two already-existing primitives
+// (`mesh.Faceted().ComputeBoxMappingUVs(scale)`) removes the averaging
+// contamination entirely, since no vertex is shared across two faces
+// with different dominant axes any more.
+void TestMeshComputeBoxMappingUVsFacetedResolvesSeam() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+
+  // The unit box's own vertex 6 = (1,1,1), shared by the top (+z), back
+  // (+y), and right (+x) faces at once - the most extreme case, where the
+  // smoothed normal (1,1,1)/sqrt(3) ties all three axes exactly equal.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const auto original_uvs = box.ComputeBoxMappingUVs(1.0);
+
+  // The implementation's own tie-break (checking the X branch first) picks
+  // X-dominant here: u = p.y = 1, v = p.z = 1.
+  Check(std::abs(original_uvs[6].x - 1.0) < 1e-9 && std::abs(original_uvs[6].y - 1.0) < 1e-9,
+        "sanity: the shared corner's own smoothed-normal tie-break lands on the X-dominant branch, giving (1, 1)");
+
+  // The TOP face (add_quad(4,5,6,7), index 1) and RIGHT face
+  // (add_quad(1,2,6,5), index 5) both independently want (1, 1) at this
+  // exact corner too (coincidence of this particular symmetric vertex,
+  // confirmed by hand: top's own Z-dominant formula gives (p.x, p.y) =
+  // (1, 1); right's own X-dominant formula gives (p.y, p.z) = (1, 1)) -
+  // so the shared vertex's own single UV happens to satisfy two of its
+  // three owning faces. The BACK face (add_quad(3,7,6,2), index 3) does
+  // NOT: its own Y-dominant formula wants (-p.x, p.z) = (-1, 1), the
+  // opposite sign of u from what the shared vertex actually stores - a
+  // real, hand-verified distortion the single shared UV cannot represent.
+  Check(std::abs(original_uvs[6].x - (-1.0)) > 0.5,
+        "the shared vertex's own UV genuinely does NOT match what the back face's own correct "
+        "(Y-dominant) formula would compute there - confirming this is a real distortion, not "
+        "merely a theoretical worry");
+
+  // Faceting first and THEN computing box-mapping UVs resolves this
+  // completely: each face's own private copy of that corner now carries
+  // exactly that face's own flat normal, so each one's own UV is correct.
+  const Mesh faceted = box.Faceted();
+  const auto faceted_uvs = faceted.ComputeBoxMappingUVs(1.0);
+
+  // Faceted()'s own index convention: face f's corner c lands at f*4 + c.
+  // Vertex 6 is corner index 2 within each of the top (face 1), back
+  // (face 3), and right (face 5) quads (add_quad(4,5,6,7)/(3,7,6,2)/(1,2,6,5)).
+  const Point2d top_copy = faceted_uvs[1 * 4 + 2];
+  const Point2d back_copy = faceted_uvs[3 * 4 + 2];
+  const Point2d right_copy = faceted_uvs[5 * 4 + 2];
+
+  Check(std::abs(top_copy.x - 1.0) < 1e-9 && std::abs(top_copy.y - 1.0) < 1e-9,
+        "after faceting, the top face's own private copy of the shared corner gets its own correct Z-dominant UV (1, 1)");
+  Check(std::abs(right_copy.x - 1.0) < 1e-9 && std::abs(right_copy.y - 1.0) < 1e-9,
+        "after faceting, the right face's own private copy gets its own correct X-dominant UV (1, 1)");
+  Check(std::abs(back_copy.x - (-1.0)) < 1e-9 && std::abs(back_copy.y - 1.0) < 1e-9,
+        "after faceting, the back face's own private copy gets its own correct Y-dominant UV (-1, 1) - "
+        "the exact value the shared (unfaceted) vertex could NOT represent, proving the seam distortion is genuinely resolved, not just hidden");
 }
 
 void TestMeshComputePlanarMappingUVs() {
@@ -75646,6 +75928,8 @@ int main() {
   TestFindSurfaceSilhouettePointsSelfOcclusionTorus();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
+  TestBrepPersistentIdsSurviveCompact();
+  TestBrepJoinNakedEdgesFloorsRecordedToleranceByEdgeExtent();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralFreeformSurfaceOperand();
   TestBooleanCombineGeneralFreeformVsFreeformOperand();
@@ -75941,6 +76225,7 @@ int main() {
   TestMeshComputeFaceNormals();
   TestMeshFacetedGivesFlatShading();
   TestMeshComputeBoxMappingUVs();
+  TestMeshComputeBoxMappingUVsFacetedResolvesSeam();
   TestMeshComputePlanarMappingUVs();
   TestMeshComputeCylindricalMappingUVs();
   TestMeshComputeSphericalMappingUVs();

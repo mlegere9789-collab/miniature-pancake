@@ -7717,6 +7717,99 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
       grep -q "^serve: done requests=4$" "$TOKEN_LOG" && echo "ok   --serve-token server exited cleanly on its own after 4 real HTTP requests" || { cat "$TOKEN_LOG"; echo "FAIL --serve-token done-summary line missing or wrong"; fail=1; }
     fi
   fi
+
+  # --serve-token-file: a third, independent server instance whose tokens
+  # come from a file re-read on every request instead of fixed at startup -
+  # narrows PARITY_MAP.md's own disclosed "no rotation, expiry, or
+  # revocation beyond restarting the server" gap --serve-token alone still
+  # has. Starts with one bare token ("filetoken1") in the file, proves it
+  # authenticates like any --serve-token would, then overwrites the file
+  # mid-run (filetoken1 removed = revoked, filetoken2 + a named ci2:tokenY
+  # added = rotated in) and proves the very next requests see the change
+  # with no restart: the old token now rejected, the new ones accepted.
+  TOKFILE_LOG="$TMPW/serve_token_file.log"
+  TOKFILE_PATH="$TMPW/serve_tokens.txt"
+  printf 'filetoken1\n' > "$TOKFILE_PATH"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 30 "$BIN" --serve 0 --serve-token-file "$TOKFILE_PATH" --serve-max-requests 5 > "$TOKFILE_LOG" 2>&1 &
+  else
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token-file "$TOKFILE_PATH" --serve-max-requests 5 > "$TOKFILE_LOG" 2>&1 &
+  fi
+  TOKFILE_PID=$!
+
+  TOKFILE_PORT=""
+  for _ in $(seq 1 100); do
+    if grep -q "^serve: listening on port " "$TOKFILE_LOG" 2>/dev/null; then
+      TOKFILE_PORT="$(grep "^serve: listening on port " "$TOKFILE_LOG" | head -1 | awk '{print $NF}')"
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ -z "$TOKFILE_PORT" ]; then
+    cat "$TOKFILE_LOG"; echo "FAIL: --serve-token-file server never printed its listening port within 10s"; fail=1
+    kill "$TOKFILE_PID" 2>/dev/null || true
+    wait "$TOKFILE_PID" 2>/dev/null || true
+  else
+    echo "ok   --serve-token-file started a third compute server headless on its own bound port ($TOKFILE_PORT)"
+
+    set +e
+    FILE_CODE_NOAUTH="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'print("should not run")' "http://127.0.0.1:$TOKFILE_PORT/run")"
+    FILE_RESP_OK1="$(curl -s --max-time 10 -H 'Authorization: Bearer filetoken1' -X POST --data 'print("file token ok")' "http://127.0.0.1:$TOKFILE_PORT/run")"
+    # Rewrite the file while the server is still running, no restart:
+    # filetoken1 is gone (revoked), filetoken2/ci2:tokenY are new (rotated
+    # in) - both take effect on the next two requests below.
+    printf 'filetoken2\nci2:tokenY\n' > "$TOKFILE_PATH"
+    FILE_CODE_REVOKED="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer filetoken1' -X POST --data 'print("should not run")' "http://127.0.0.1:$TOKFILE_PORT/run")"
+    FILE_RESP_ROTATED="$(curl -s --max-time 10 -H 'Authorization: Bearer filetoken2' -X POST --data 'print("rotated token ok")' "http://127.0.0.1:$TOKFILE_PORT/run")"
+    FILE_RESP_NAMED="$(curl -s --max-time 10 -H 'Authorization: Bearer tokenY' -H 'Accept: application/json' -X POST --data 'print("named ok")' "http://127.0.0.1:$TOKFILE_PORT/run")"
+    set -e
+    [ "$FILE_CODE_NOAUTH" = "401" ] && echo "ok   --serve-token-file rejects a request with no Authorization header with 401, same as --serve-token" || { echo "FAIL --serve-token-file no-auth request returned HTTP $FILE_CODE_NOAUTH, expected 401"; fail=1; }
+    echo "$FILE_RESP_OK1" | grep -q "^file token ok$" && echo "ok   --serve-token-file accepts a token currently listed in the file and runs the script" || { echo "$FILE_RESP_OK1"; echo "FAIL --serve-token-file did not accept the file's own listed token"; fail=1; }
+    [ "$FILE_CODE_REVOKED" = "401" ] && echo "ok   rewriting the token file to drop a token revokes it on the very next request - no server restart needed" || { echo "FAIL --serve-token-file still accepted a token removed from the file (HTTP $FILE_CODE_REVOKED, expected 401) - revocation did not take effect live"; fail=1; }
+    echo "$FILE_RESP_ROTATED" | grep -q "^rotated token ok$" && echo "ok   a token added to the file after the server started authenticates immediately - live rotation, no restart needed" || { echo "$FILE_RESP_ROTATED"; echo "FAIL --serve-token-file did not accept a token added to the file after startup"; fail=1; }
+    [ "$FILE_RESP_NAMED" = '{"ok":true,"output":["named ok"],"caller":"ci2"}' ] && echo "ok   a named NAME:TOKEN entry in the token file authenticates and echoes its own caller name back, same as a named --serve-token" || { echo "$FILE_RESP_NAMED"; echo "FAIL --serve-token-file named-entry request did not return the expected caller-tagged JSON"; fail=1; }
+
+    set +e; wait "$TOKFILE_PID"; TOKFILE_EC=$?; set -e
+    if [ "$TOKFILE_EC" -eq 124 ]; then
+      cat "$TOKFILE_LOG"; echo "FAIL: --serve-token-file process hung and was killed by the 30s timeout instead of exiting after --serve-max-requests"; fail=1
+    elif [ "$TOKFILE_EC" -ne 0 ]; then
+      cat "$TOKFILE_LOG"; echo "FAIL: --serve-token-file process exited $TOKFILE_EC, expected 0"; fail=1
+    else
+      grep -q "^serve: done requests=5$" "$TOKFILE_LOG" && echo "ok   --serve-token-file server exited cleanly on its own after 5 real HTTP requests" || { cat "$TOKFILE_LOG"; echo "FAIL --serve-token-file done-summary line missing or wrong"; fail=1; }
+    fi
+  fi
+
+  # A missing/unreadable token file must fail CLOSED (deny everything),
+  # never silently fall back to the fully-open behavior an empty
+  # serve_tokens alone would mean - a typo'd --serve-token-file path must
+  # not accidentally leave the compute server open to the network.
+  MISSING_LOG="$TMPW/serve_token_file_missing.log"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 30 "$BIN" --serve 0 --serve-token-file "$TMPW/does_not_exist.txt" --serve-max-requests 1 > "$MISSING_LOG" 2>&1 &
+  else
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token-file "$TMPW/does_not_exist.txt" --serve-max-requests 1 > "$MISSING_LOG" 2>&1 &
+  fi
+  MISSING_PID=$!
+  MISSING_PORT=""
+  for _ in $(seq 1 100); do
+    if grep -q "^serve: listening on port " "$MISSING_LOG" 2>/dev/null; then
+      MISSING_PORT="$(grep "^serve: listening on port " "$MISSING_LOG" | head -1 | awk '{print $NF}')"
+      break
+    fi
+    sleep 0.1
+  done
+  if [ -z "$MISSING_PORT" ]; then
+    cat "$MISSING_LOG"; echo "FAIL: --serve-token-file (missing file) server never printed its listening port within 10s"; fail=1
+    kill "$MISSING_PID" 2>/dev/null || true
+    wait "$MISSING_PID" 2>/dev/null || true
+  else
+    set +e
+    MISSING_CODE="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'print("should not run")' "http://127.0.0.1:$MISSING_PORT/run")"
+    set -e
+    [ "$MISSING_CODE" = "401" ] && echo "ok   --serve-token-file pointed at a file that doesn't exist fails CLOSED (401), not open - a bad path can't accidentally disable auth" || { echo "FAIL --serve-token-file with a missing file returned HTTP $MISSING_CODE, expected 401 (fail closed)"; fail=1; }
+    set +e; wait "$MISSING_PID"; set -e
+  fi
 fi
 
 exit $fail

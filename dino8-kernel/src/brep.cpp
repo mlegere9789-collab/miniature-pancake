@@ -418,6 +418,103 @@ int Brep::LiveEdgeCount() const {
 
 namespace {
 
+// Shared body for FacePersistentId()/EdgePersistentId()/VertexPersistentId():
+// lazily assigns `table[index]` from `*next_id` if it is still 0 (never
+// asked for before), growing `table` first if `index` is past its own
+// current end - the same "resize on demand, default-valued gap" shape a
+// sparse per-element side table already needs regardless of which of the
+// three element kinds it is for.
+uint64_t GetOrAssignPersistentId(std::vector<uint64_t>& table, uint64_t& next_id, int index) {
+  if (static_cast<size_t>(index) >= table.size()) table.resize(static_cast<size_t>(index) + 1, 0);
+  if (table[static_cast<size_t>(index)] == 0) table[static_cast<size_t>(index)] = next_id++;
+  return table[static_cast<size_t>(index)];
+}
+
+// Shared body for FindFaceByPersistentId()/FindEdgeByPersistentId()/
+// FindVertexByPersistentId(): id 0 means "never assigned", so it can
+// never resolve to anything, by construction - every real id starts at 1.
+int FindByPersistentId(const std::vector<uint64_t>& table, uint64_t id) {
+  if (id == 0) return -1;
+  for (size_t i = 0; i < table.size(); ++i) {
+    if (table[i] == id) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+}  // namespace
+
+uint64_t Brep::FacePersistentId(int face_index) {
+  if (face_index < 0 || face_index >= brep_.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::FacePersistentId: face_index " + std::to_string(face_index) +
+                             " is out of range (this Brep has " + std::to_string(brep_.m_F.Count()) +
+                             " face slot(s))");
+  }
+  if (brep_.m_F[face_index].m_face_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::FacePersistentId: face_index " +
+                                 std::to_string(face_index) + " refers to a deleted face");
+  }
+  return GetOrAssignPersistentId(face_persistent_ids_, next_persistent_id_, face_index);
+}
+
+uint64_t Brep::EdgePersistentId(int edge_index) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::EdgePersistentId: edge_index " + std::to_string(edge_index) +
+                             " is out of range (this Brep has " + std::to_string(brep_.m_E.Count()) +
+                             " edge slot(s))");
+  }
+  if (brep_.m_E[edge_index].m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::EdgePersistentId: edge_index " +
+                                 std::to_string(edge_index) + " refers to a deleted edge");
+  }
+  return GetOrAssignPersistentId(edge_persistent_ids_, next_persistent_id_, edge_index);
+}
+
+uint64_t Brep::VertexPersistentId(int vertex_index) {
+  if (vertex_index < 0 || vertex_index >= brep_.m_V.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::VertexPersistentId: vertex_index " +
+                             std::to_string(vertex_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_V.Count()) + " vertex slot(s))");
+  }
+  if (brep_.m_V[vertex_index].m_vertex_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::VertexPersistentId: vertex_index " +
+                                 std::to_string(vertex_index) + " refers to a deleted vertex");
+  }
+  return GetOrAssignPersistentId(vertex_persistent_ids_, next_persistent_id_, vertex_index);
+}
+
+int Brep::FindFaceByPersistentId(uint64_t id) const { return FindByPersistentId(face_persistent_ids_, id); }
+int Brep::FindEdgeByPersistentId(uint64_t id) const { return FindByPersistentId(edge_persistent_ids_, id); }
+int Brep::FindVertexByPersistentId(uint64_t id) const { return FindByPersistentId(vertex_persistent_ids_, id); }
+
+void Brep::CompactPreservingPersistentIds() {
+  // Assign an id to every CURRENTLY LIVE element first (not just ones a
+  // caller already happened to query), walked in ascending raw-index
+  // order - the same order Compact() itself preserves among survivors,
+  // relied on below.
+  std::vector<uint64_t> live_face_ids, live_edge_ids, live_vertex_ids;
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    if (brep_.m_F[i].m_face_index >= 0) live_face_ids.push_back(FacePersistentId(i));
+  }
+  for (int i = 0; i < brep_.m_E.Count(); ++i) {
+    if (brep_.m_E[i].m_edge_index >= 0) live_edge_ids.push_back(EdgePersistentId(i));
+  }
+  for (int i = 0; i < brep_.m_V.Count(); ++i) {
+    if (brep_.m_V[i].m_vertex_index >= 0) live_vertex_ids.push_back(VertexPersistentId(i));
+  }
+
+  brep_.Compact();
+
+  // Compact() removes exactly the deleted slots and leaves every
+  // survivor in its own original relative order - so the k-th id
+  // collected above (0-indexed, in ascending OLD order) now belongs to
+  // the k-th face/edge/vertex in the freshly compacted table.
+  face_persistent_ids_ = std::move(live_face_ids);
+  edge_persistent_ids_ = std::move(live_edge_ids);
+  vertex_persistent_ids_ = std::move(live_vertex_ids);
+}
+
+namespace {
+
 // 5-point Gauss-Legendre quadrature on [-1, 1] - exact for any
 // polynomial up to degree 9 per span, comfortably covering every degree
 // this kernel's own Brep factories build (degree <= 3 skinned sections,
@@ -7863,15 +7960,39 @@ bool TrimWalksMaterialLeft(const ON_Brep& b, const ON_BrepTrim& trim) {
 // Sets every live edge's and vertex's own recorded tolerance from the
 // gaps ACTUALLY present in the geometry (edge curve vs each trim's 3D
 // image; edge curve endpoints vs the vertex), whenever that gap exceeds
-// `floor` - the tolerant-edge bookkeeping JoinNakedEdges() relies on
+// a floor - the tolerant-edge bookkeeping JoinNakedEdges() relies on
 // (see brep.h). Must run AFTER SetTolerancesBoxesAndFlags()/
 // FixUnsetEdgeTolerances(), which would otherwise reset what this sets
-// (see FixUnsetEdgeTolerances' own comment). A gap at or below `floor`
+// (see FixUnsetEdgeTolerances' own comment). A gap at or below the floor
 // leaves the existing value alone (0.0 for an exact edge).
-void RecordMeasuredTolerances(ON_Brep& b, double floor) {
+//
+// The floor used per edge is `std::max(absolute_floor,
+// tolerance::RelativeDistance(edge_extent))`, where `edge_extent` is a
+// cheap diameter estimate of that one edge (its own chord, or for a
+// closed edge the chord through its own parameter-domain midpoint,
+// whichever is larger) - NOT the whole brep's extent, matching the
+// existing per-feature scaling convention this file already uses
+// elsewhere (radius_tol = RelativeDistance(radius), lin_tol =
+// RelativeDistance(edge_len), etc.), rather than introducing a second,
+// global-bounding-box-based notion of size. `absolute_floor` still
+// applies verbatim to a short edge, so nothing changes at ordinary
+// model scale; only an edge whose own extent is large enough that
+// `absolute_floor` would otherwise register a gap that is utterly
+// insignificant relative to that edge's own size (e.g. a 1e-4 gap on an
+// edge a million units long) is now correctly left at 0, instead of
+// recording a "tolerant edge" fact that is numerically real but
+// physically meaningless at that edge's own scale.
+void RecordMeasuredTolerances(ON_Brep& b, double absolute_floor) {
   for (int ei = 0; ei < b.m_E.Count(); ++ei) {
     ON_BrepEdge& e = b.m_E[ei];
     if (e.m_edge_index < 0) continue;
+    const ON_3dPoint edge_start = e.PointAtStart();
+    const ON_3dPoint edge_end = e.PointAtEnd();
+    const ON_3dPoint edge_mid = e.PointAt(e.Domain().Mid());
+    const double edge_extent =
+        std::max(edge_start.DistanceTo(edge_end),
+                  std::max(edge_start.DistanceTo(edge_mid), edge_mid.DistanceTo(edge_end)) * 2.0);
+    const double floor = std::max(absolute_floor, tolerance::RelativeDistance(edge_extent));
     double gap = 0.0;
     for (int k = 0; k < e.m_ti.Count(); ++k) {
       const int ti = e.m_ti[k];
@@ -7884,7 +8005,7 @@ void RecordMeasuredTolerances(ON_Brep& b, double floor) {
       const int vi = e.m_vi[k];
       if (vi < 0 || vi >= b.m_V.Count()) continue;
       ON_BrepVertex& v = b.m_V[vi];
-      const ON_3dPoint p = (k == 0) ? e.PointAtStart() : e.PointAtEnd();
+      const ON_3dPoint p = (k == 0) ? edge_start : edge_end;
       const double g = p.DistanceTo(v.point);
       if (g > floor && !(v.m_tolerance >= g)) v.m_tolerance = g;
     }
