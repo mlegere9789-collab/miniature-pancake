@@ -304,6 +304,14 @@ dmvcheck "Saved $TMPW/dm3dversion_default.3dm" "an unversioned SaveAs (.3dm) sti
 dmvcheck "Exported $TMPW/dm3dversion_export_v5.3dm (Version=5)" "Export Version=5 (.3dm) ran and echoed the version in its own print line"
 dmvcheck "SaveAs: Version=notanumber is not a valid \.3dm archive version number" "a non-numeric .3dm Version= is refused with a clear diagnostic, not silently ignored or misread as a DWG scheme"
 [ ! -e "$TMPW/dm3dversion_bad.3dm" ] && echo "ok   the refused SaveAs Version=notanumber wrote no file at all" || { echo "FAIL a refused .3dm Version= still wrote a file"; fail=1; }
+# Version=51 is numeric (passes ParseDm3dmVersion) but out of range (not
+# 2-8 or a multiple of 10 from 50-80 for this build) - ONX_Model::Write
+# does NOT fail on an out-of-range version, it silently resets to 0
+# (current/newest) and only logs, so Save3dm itself must replicate that
+# validity rule and refuse rather than silently write the wrong version.
+dmvcheck "! OpenNURBS could not write $TMPW/dm3dversion_v51_invalid.3dm at archive version 51" "SaveAs Version=51 (out of range, not silently substituted) is rejected by Save3dm's own validation, not OpenNURBS' silent fallback"
+V51_SIZE=0; [ -f "$TMPW/dm3dversion_v51_invalid.3dm" ] && V51_SIZE="$(wc -c < "$TMPW/dm3dversion_v51_invalid.3dm")"
+[ "$V51_SIZE" -lt 32 ] && echo "ok   SaveAs Version=51 left no complete .3dm file behind (no corrupt-but-present archive)" || { echo "FAIL SaveAs Version=51 left a $V51_SIZE-byte file despite being rejected"; fail=1; }
 [ "$(head -c 32 "$TMPW/dm3dversion_v4.3dm")" = "3D Geometry File Format        4" ] && echo "ok   SaveAs Version=4 wrote a real .3dm archive version-4 header" || { echo "FAIL SaveAs Version=4 did not write a version-4 .3dm header"; fail=1; }
 [ "$(head -c 32 "$TMPW/dm3dversion_v50.3dm")" = "3D Geometry File Format       50" ] && echo "ok   SaveAs Version=50 wrote a real .3dm archive version-50 header" || { echo "FAIL SaveAs Version=50 did not write a version-50 .3dm header"; fail=1; }
 [ "$(head -c 32 "$TMPW/dm3dversion_export_v5.3dm")" = "3D Geometry File Format       50" ] && echo "ok   Export Version=5 wrote the identical version-50 header OpenNURBS' own documented 5->50 compatibility mapping gives (ON_BinaryArchive::Write3dmStartSection: 5 <= version < 50 multiplies by 10)" || { echo "FAIL Export Version=5 did not write a version-50 .3dm header"; fail=1; }
@@ -422,6 +430,7 @@ c2check "ArrayCrv: 6 object(s) placed" "ArrayCrv placed copies along the circle"
 c2check "best-fit line through 4 points" "LineThroughPt fitted a line"
 c2check "best-fit plane through 4 points" "PlaneThroughPt fitted a plane"
 c2check "knot removed (deviation 0) (2 control points)" "RemoveKnot now calls the kernel's real RemoveKnotAt() (exact round-trip, reported deviation), not RemoveKnotApprox's blind resample"
+c2check "knot removed in the U direction (deviation 0) (3x4 control points)" "RemoveKnot now also reaches NurbsSurface::RemoveKnotAt() for a standalone Surface object, not curves only"
 c2check "MarkFoci: 1 point(s) added" "MarkFoci added the parabola's focus"
 c2check "0,5,0" "MarkFoci found the parabola focus (0,5,0) from curve geometry alone"
 c2check "MarkFoci: 2 point(s) added" "MarkFoci added both hyperbola foci"
@@ -2180,7 +2189,14 @@ flcheck "MatchSrf: 2 boundary control point.s. moved to position on the target c
 flcheck "MatchSrf: 2 boundary control point.s. moved to position on the target curve" "MatchSrf moved a plane's edge onto a target line"
 flcheck "MatchSrf: exact edge match (G1) to the target surface, max position error 0, max tangent error 0" "MatchSrf against a target *surface* edge now uses the kernel's exact NurbsSurface::MatchEdge() (self-checked by evaluation, both residuals genuinely ~0), not the app's older per-control-point loop that only assumed a shared parameterization"
 flcheck "degree 2 x 1, CVs 3 x 2" "the matched floor plane's real G1 bend toward the box's vertical front face: degree elevated 1->2 and one control point added in the edge-crossing direction to hold position+tangent rows, the other direction (degree 1, 2 CVs) untouched"
-flcheck "MatchSrf: exact edge match (G2) to the target surface, max position error 0, max tangent error 0, max curvature error 0" "MatchSrf's Continuity option now reaches Curvature (G2) too, not just Position/Tangency - NurbsSurface::MatchEdge()'s own Curvature path was already real and already tested at the kernel level, just unreachable from any app command"
+# MatchSrf Curvature (G2): closes PARITY_MAP.md's surfaceops "Kernel
+# MatchEdge() - wire G2 into MatchSrf" gap - previously only Position/
+# Tangency reached kernel::NurbsSurface::MatchEdge(); Curvature was wired
+# but unreachable from any app command.
+flcheck "MatchSrf: exact edge match (G2) to the target surface, max position error 0, max tangent error 0, max curvature error 0" "MatchSrf's new Curvature option reaches kernel::NurbsSurface::MatchEdge()'s own G2 level for the first time, matched against a genuinely curved quarter-cylinder panel (not a trivial zero-curvature planar target) with every residual self-checked at ~0"
+flcheck "degree 1 x 3, CVs 2 x 4" "the matched flat panel's real G2 bend toward the quarter-cylinder's own curvature: degree elevated 1->3 and two control points added in the edge-crossing direction to hold position+tangent+curvature rows, the other direction (degree 1, 2 CVs) untouched"
+flcheck "MatchSrf: Curvature continuity needs an exact edge match against a target SURFACE edge (kernel::NurbsSurface::MatchEdge) - the exact match failed (periodic edge, or the target's degree is too low to carry a curvature row); nothing was changed" "MatchSrf's Curvature option fails closed, not silently downgraded to G1/G0, against a target whose own degree structurally can't carry a curvature row (two flat planar faces)"
+flcheck "MatchSrf: Curvature continuity needs an exact edge match against a target SURFACE edge (kernel::NurbsSurface::MatchEdge) - a target curve has no curvature-match fallback; nothing was changed" "MatchSrf's Curvature option fails closed against a target CURVE too - MatchEdge() only ever matches two surface edges, and the per-control-point fallback has no curvature construction at all"
 flcheck "SplitFace: face 0 split into 2 surfaces along the curve's crossing" "SplitFace found a real CSX crossing of a piercing polyline (a coplanar line can't cross a flat face twice)"
 flcheck "MergeFaces: 2 coplanar face.s. merged into 1" "MergeFaces recombined two joined coplanar planes"
 flcheck "Area = 100 square" "the merged 5x10 + 5x10 planes have area 100"

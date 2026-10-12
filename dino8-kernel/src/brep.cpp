@@ -696,6 +696,252 @@ double IntegrateOverNurbsSurface(const ON_NurbsSurface& s, Integrand&& integrand
   return total;
 }
 
+// Degree-5, 7-point symmetric Gauss quadrature on a triangle (Hammer-
+// Marlowe-Stroud / Dunavant 1985 - standard published barycentric
+// coordinates/weights, not re-derived here), with weights summing to 1
+// so that for any triangle (a, b, c), INT INT f dA ==
+// TriangleArea(a, b, c) * sum_i weight_i * f(point_i). This is the
+// triangle-domain counterpart of kMassPropsGaussNodes/Weights above,
+// needed because a trimmed face's own integration domain (see
+// TrimmedFaceUVPolygon() below) is a triangulated polygon, not a single
+// rectangular parameter domain.
+struct TriQuadPoint {
+  double wa, wb, wc;  // barycentric weight on vertices a, b, c
+  double weight;      // quadrature weight, already includes the 1/TriangleArea normalization
+};
+constexpr int kTriQuadPoints = 7;
+constexpr TriQuadPoint kTriQuad[kTriQuadPoints] = {
+    {1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0.225},
+    {0.1012865073234563, 0.1012865073234563, 0.7974269853530873, 0.1259391805447931},
+    {0.1012865073234563, 0.7974269853530873, 0.1012865073234563, 0.1259391805447931},
+    {0.7974269853530873, 0.1012865073234563, 0.1012865073234563, 0.1259391805447931},
+    {0.4701420641051151, 0.4701420641051151, 0.0597158717897698, 0.1323941527885062},
+    {0.4701420641051151, 0.0597158717897698, 0.4701420641051151, 0.1323941527885062},
+    {0.0597158717897698, 0.4701420641051151, 0.4701420641051151, 0.1323941527885062},
+};
+
+// Sums `integrand(u, v)` over the single triangle (a, b, c) via the
+// 7-point rule above. Returns 0 for a zero/negative-area (degenerate)
+// triangle rather than dividing by it - EarClipTriangulate() can hand
+// back a near-zero-area sliver for a genuinely collinear input vertex
+// (see its own doc comment on that case).
+template <typename Integrand>
+double TriangleQuad7(const Point2d& a, const Point2d& b, const Point2d& c, Integrand&& integrand) {
+  const double area = 0.5 * std::fabs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y));
+  if (!(area > 0.0)) return 0.0;
+  double sum = 0.0;
+  for (int i = 0; i < kTriQuadPoints; ++i) {
+    const TriQuadPoint& q = kTriQuad[i];
+    const double u = q.wa * a.x + q.wb * b.x + q.wc * c.x;
+    const double v = q.wa * a.y + q.wb * b.y + q.wc * c.y;
+    sum += q.weight * integrand(u, v);
+  }
+  return area * sum;
+}
+
+constexpr double kTrimmedAreaRelTol = 1e-9;
+constexpr int kTrimmedAreaMaxDepth = 10;
+
+// Adaptive refinement of TriangleQuad7() over (a, b, c): compares the
+// single-triangle quadrature against the sum of the same rule applied to
+// the 4 congruent sub-triangles a standard midpoint split produces: if
+// they agree within `abs_tol`, the finer (more accurate) value is
+// accepted outright; otherwise each of the 4 children is refined
+// independently, with the remaining tolerance budget split evenly among
+// them (so a deeply-refined region doesn't silently steal tolerance
+// budget from one still coarse elsewhere). This is what actually makes
+// trimmed-face integration "tolerance-controlled" in the same sense
+// Brep::Area()'s own existing whole-domain path already is - a single
+// quadrature pass over the ear-clipped triangles would under-integrate
+// whenever a triangle happens to straddle more curvature (or more than
+// one of the underlying NURBS surface's own knot spans) than the 7-point
+// rule alone resolves.
+template <typename Integrand>
+double IntegrateTriangleAdaptive(const Point2d& a, const Point2d& b, const Point2d& c, Integrand&& integrand,
+                                  double abs_tol, int depth) {
+  const double coarse = TriangleQuad7(a, b, c, integrand);
+  if (depth <= 0) return coarse;
+  const Point2d ab(0.5 * (a.x + b.x), 0.5 * (a.y + b.y));
+  const Point2d bc(0.5 * (b.x + c.x), 0.5 * (b.y + c.y));
+  const Point2d ca(0.5 * (c.x + a.x), 0.5 * (c.y + a.y));
+  const double refined = TriangleQuad7(a, ab, ca, integrand) + TriangleQuad7(ab, b, bc, integrand) +
+                          TriangleQuad7(ca, bc, c, integrand) + TriangleQuad7(ab, bc, ca, integrand);
+  if (std::fabs(refined - coarse) <= abs_tol) return refined;
+  const double child_tol = 0.25 * abs_tol;
+  return IntegrateTriangleAdaptive(a, ab, ca, integrand, child_tol, depth - 1) +
+         IntegrateTriangleAdaptive(ab, b, bc, integrand, child_tol, depth - 1) +
+         IntegrateTriangleAdaptive(ca, bc, c, integrand, child_tol, depth - 1) +
+         IntegrateTriangleAdaptive(ab, bc, ca, integrand, child_tol, depth - 1);
+}
+
+// Builds a single simple UV polygon approximating a genuinely-trimmed
+// face's own true integration domain (real ON_Brep loop topology -
+// face.m_li.Count() > 0, the shared-edge/loop convention general-
+// boolean results and TrimmedPlanarFaceWelded() both build, as opposed
+// to this kernel's own separate pseudo-trim side tables - see
+// Brep::Area()'s own caller-side doc comment for that distinction): the
+// one ON_BrepLoop::outer loop, with every ON_BrepLoop::inner (hole) loop
+// bridged into it via a zero-width slit to the outer boundary's own
+// nearest vertex, exactly so EarClipTriangulate() (which only accepts a
+// SIMPLE polygon, no holes) can triangulate the whole trimmed region in
+// one pass. Deliberately simpler than boolean_general.cpp's own
+// BridgeHolesIntoOuter(): that one produces a real NEW ON_Brep trim loop
+// and so has to avoid a zero-area notch landing somewhere that corrupts
+// downstream topology; here the bridged polygon is consumed immediately,
+// read-only, for quadrature - a zero-area slit costs nothing (the same
+// reasoning EarClipTriangulate()'s own doc comment already gives for a
+// degenerate final triangle). Each hole's own attachment point is still
+// chosen against the ORIGINAL (pristine) outer loop, not a previously-
+// bridged one, so two separate holes can never entangle with each
+// other's own bridge - the same reasoning BridgeHolesIntoOuter()'s own
+// doc comment gives for its own identical choice.
+//
+// Returns an empty vector (the caller's signal to fall back to its own
+// disclosed "can't handle this" error) if the face has zero, or more
+// than one, ON_BrepLoop::outer loop - a face with disjoint outer
+// boundaries is a real but rare case this does not attempt.
+std::vector<Point2d> TrimmedFaceUVPolygon(const ON_Brep& b, const ON_BrepFace& face) {
+  std::vector<Point2d> outer;
+  int outer_count = 0;
+  std::vector<std::vector<Point2d>> holes;
+  for (int k = 0; k < face.m_li.Count(); ++k) {
+    const int li = face.m_li[k];
+    if (li < 0 || li >= b.m_L.Count()) continue;
+    const ON_BrepLoop& loop = b.m_L[li];
+    std::vector<ON_2dPoint> poly = LoopPolygon(b, li, 24);
+    if (poly.size() < 3) continue;
+    if (loop.m_type == ON_BrepLoop::outer) {
+      outer = poly;
+      ++outer_count;
+    } else if (loop.m_type == ON_BrepLoop::inner) {
+      holes.push_back(std::move(poly));
+    }
+  }
+  if (outer_count != 1 || outer.size() < 3) return {};
+  if (holes.empty()) return outer;
+
+  // The bridging technique below only produces a correct "outer minus
+  // hole" region if the hole ring is walked with the OPPOSITE rotational
+  // sense from outer - the standard polygon-with-holes convention
+  // EarClipTriangulate() itself also relies on (it normalizes its own
+  // single-polygon input the same way, via this same SignedArea() check,
+  // rather than trusting whatever order a caller's own points happen to
+  // be in). LoopPolygon() just walks each loop's own stored trim curves
+  // in their own parameter order, so this is checked and corrected here
+  // rather than assumed from ON_Brep's usual outer-CCW/inner-CW
+  // convention - correct either way, regardless of which stored order
+  // actually comes back.
+  const double outer_signed_area = dino8::kernel::detail::SignedArea(outer);
+  for (std::vector<Point2d>& hole : holes) {
+    if (hole.size() < 3) continue;
+    const double hole_signed_area = dino8::kernel::detail::SignedArea(hole);
+    if ((hole_signed_area > 0.0) == (outer_signed_area > 0.0)) {
+      std::reverse(hole.begin(), hole.end());
+    }
+  }
+
+  struct HoleAttachment {
+    size_t outer_index;
+    std::vector<Point2d> insert;
+  };
+
+  // Each hole's own attachment vertex (hole[best_hole]) and the outer's
+  // (outer[best_outer]) necessarily appear TWICE in the merged polygon
+  // built below - once on the way "in" (the entry bridge edge) and once
+  // on the way back "out" (the return bridge edge, after walking the
+  // whole hole boundary) - the standard keyhole/slit technique for
+  // reducing a polygon-with-a-hole to one simple polygon. Using the
+  // exact SAME coordinate for both occurrences of each (an exactly
+  // zero-width slit) is a degenerate case EarClipTriangulate()'s own
+  // ear-detection silently chokes on (confirmed directly via a
+  // standalone `dino8_scratch_test` probe before writing this fix, not
+  // assumed: the un-perturbed version measured exactly area 0.0 for a
+  // holed fixture whose un-holed sibling already measured exactly
+  // right) - a candidate ear touching the exact duplicate point measures
+  // as a zero-area/collinear "contains" hit no matter which ear is
+  // tried, so no ear is ever found and triangulation stops immediately.
+  //
+  // Fixed by offsetting BOTH return points by the IDENTICAL small
+  // perpendicular vector (`sign` picks which of the two perpendicular
+  // directions): the return edge becomes a pure translation of the entry
+  // edge, hence exactly parallel to it - two parallel, distinct lines
+  // can never cross each other, by construction. An independent nudge
+  // per point (each along its own neighboring edge, the first fix
+  // attempted here) does NOT have this guarantee and was confirmed
+  // (same probe) to leave the return edge crossing the entry edge for
+  // this exact fixture - genuinely self-intersecting, not merely an
+  // EarClipTriangulate() limitation.
+  //
+  // Which of the two perpendicular directions keeps the bridge inside
+  // the actual "outer minus hole" material (so the tiny connector edges
+  // next to the bridge don't cross back over something else) depends on
+  // the local shape at the two attachment points, not just the overall
+  // outer/hole winding - so both are tried and the one that leaves the
+  // WHOLE merged polygon simple (IsSimplePolygon(), the same check
+  // EarClipTriangulate()'s own single-polygon contract needs) is kept,
+  // rather than assuming one fixed rotational sense always works.
+  auto build_merged = [&](double sign) {
+    std::vector<HoleAttachment> attachments;
+    for (const std::vector<Point2d>& hole : holes) {
+      if (hole.size() < 3) continue;
+      size_t best_outer = 0, best_hole = 0;
+      double best_d2 = std::numeric_limits<double>::infinity();
+      for (size_t oi = 0; oi < outer.size(); ++oi) {
+        for (size_t hi = 0; hi < hole.size(); ++hi) {
+          const double dx = outer[oi].x - hole[hi].x, dy = outer[oi].y - hole[hi].y;
+          const double d2 = dx * dx + dy * dy;
+          if (d2 < best_d2) {
+            best_d2 = d2;
+            best_outer = oi;
+            best_hole = hi;
+          }
+        }
+      }
+      constexpr double kBridgeNotchFraction = 1e-7;
+      const Point2d& entry_a = outer[best_outer];
+      const Point2d& entry_h = hole[best_hole];
+      const double bridge_dx = entry_h.x - entry_a.x, bridge_dy = entry_h.y - entry_a.y;
+      const double bridge_len = std::hypot(bridge_dx, bridge_dy);
+      const double offset = sign * (bridge_len > 1e-300 ? bridge_len : 1.0) * kBridgeNotchFraction;
+      const double perp_x = (bridge_len > 1e-300) ? (bridge_dy / bridge_len) * offset : offset;
+      const double perp_y = (bridge_len > 1e-300) ? (-bridge_dx / bridge_len) * offset : 0.0;
+      const Point2d hole_return(entry_h.x + perp_x, entry_h.y + perp_y);
+      const Point2d outer_return(entry_a.x + perp_x, entry_a.y + perp_y);
+      std::vector<Point2d> insert;
+      insert.reserve(hole.size() + 2);
+      for (size_t k = 0; k < hole.size(); ++k) insert.push_back(hole[(best_hole + k) % hole.size()]);
+      insert.push_back(hole_return);
+      insert.push_back(outer_return);
+      attachments.push_back({best_outer, std::move(insert)});
+    }
+    std::vector<Point2d> merged;
+    merged.reserve(outer.size() * 2);
+    for (size_t i = 0; i < outer.size(); ++i) {
+      merged.push_back(outer[i]);
+      for (const HoleAttachment& att : attachments) {
+        if (att.outer_index == i) {
+          for (const Point2d& p : att.insert) merged.push_back(p);
+        }
+      }
+    }
+    return merged;
+  };
+
+  std::vector<Point2d> merged = build_merged(1.0);
+  if (!dino8::kernel::detail::IsSimplePolygon(merged)) {
+    std::vector<Point2d> flipped = build_merged(-1.0);
+    if (dino8::kernel::detail::IsSimplePolygon(flipped)) merged = std::move(flipped);
+    // Neither sign is simple: an honestly rare, pathological fixture (two
+    // holes so close together, or so close to the outer boundary, that
+    // even a negligible bridge offset can't avoid a crossing). Falls
+    // through with the sign=+1 polygon anyway - EarClipTriangulate()
+    // degrades gracefully (fewer or zero ears found, see its own doc
+    // comment), not a crash, and this is still strictly better than the
+    // unconditional throw this replaced.
+  }
+  return merged;
+}
+
 }  // namespace
 
 // True iff face `i` covers its ENTIRE underlying surface parameter
@@ -772,25 +1018,64 @@ double Brep::Volume() const {
 double Brep::Area() const {
   double total = 0.0;
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
-    if (!FaceCoversWholeDomain(i)) {
-      throw std::invalid_argument("dino8::kernel::Brep::Area: face " + std::to_string(i) +
-                                   " is trimmed - exact integration over its true trim region is a "
-                                   "materially different problem this does not attempt");
-    }
     const ON_BrepFace& face = brep_.m_F[i];
     const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
     if (!s) {
       throw std::runtime_error("dino8::kernel::Brep::Area: face " + std::to_string(i) +
                                 " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
     }
-    total += IntegrateOverNurbsSurface(*s, [&](double u, double v) {
+    const auto integrand = [&](double u, double v) {
       ON_3dPoint p;
       ON_3dVector su, sv;
       if (!s->Ev1Der(u, v, p, su, sv)) {
         throw std::runtime_error("dino8::kernel::Brep::Area: Ev1Der failed on face " + std::to_string(i));
       }
       return ON_CrossProduct(su, sv).Length();
-    });
+    };
+    if (FaceCoversWholeDomain(i)) {
+      total += IntegrateOverNurbsSurface(*s, integrand);
+      continue;
+    }
+    // Trimmed face: still exact (within the quadrature's own tolerance
+    // budget) for GENUINE ON_Brep loop topology (face.m_li.Count() > 0 -
+    // what general-boolean results and TrimmedPlanarFaceWelded() both
+    // build), via TrimmedFaceUVPolygon()'s own triangulated trim-loop
+    // domain and IntegrateTriangleAdaptive(). This kernel's own separate
+    // pseudo-trim side tables (face_trim_loops_/face_hole_loops_/
+    // face_arc_runs_/face_notch_rows_ - TrimmedPlanarFace()'s own bare-
+    // surface convention, invisible to face.m_li entirely) are a
+    // materially different, narrower mechanism this still does not
+    // attempt - disclosed explicitly below rather than silently
+    // integrating the wrong region.
+    if (face.m_li.Count() == 0) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::Area: face " + std::to_string(i) +
+          " is trimmed by this kernel's own pseudo-trim side tables (TrimmedPlanarFace()'s own bare-surface "
+          "convention), not real ON_Brep loop topology - exact integration over that convention's own trim "
+          "region is a materially different problem this does not attempt");
+    }
+    const std::vector<Point2d> polygon = TrimmedFaceUVPolygon(brep_, face);
+    if (polygon.size() < 3) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::Area: face " + std::to_string(i) +
+          " has no single well-formed ON_BrepLoop::outer loop (zero, or more than one, disjoint outer "
+          "boundary) - this does not attempt that case");
+    }
+    const std::vector<std::array<int, 3>> tris = dino8::kernel::detail::EarClipTriangulate(polygon);
+    std::vector<double> coarse(tris.size());
+    double coarse_total = 0.0;
+    for (size_t t = 0; t < tris.size(); ++t) {
+      coarse[t] = TriangleQuad7(polygon[static_cast<size_t>(tris[t][0])], polygon[static_cast<size_t>(tris[t][1])],
+                                 polygon[static_cast<size_t>(tris[t][2])], integrand);
+      coarse_total += std::fabs(coarse[t]);
+    }
+    const double tol_total = std::max(1e-12, kTrimmedAreaRelTol * coarse_total);
+    for (size_t t = 0; t < tris.size(); ++t) {
+      const double share = coarse_total > 0.0 ? std::fabs(coarse[t]) / coarse_total : 1.0 / static_cast<double>(tris.size());
+      total += IntegrateTriangleAdaptive(polygon[static_cast<size_t>(tris[t][0])], polygon[static_cast<size_t>(tris[t][1])],
+                                          polygon[static_cast<size_t>(tris[t][2])], integrand, tol_total * share,
+                                          kTrimmedAreaMaxDepth);
+    }
   }
   return total;
 }
