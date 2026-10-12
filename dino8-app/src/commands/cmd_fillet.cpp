@@ -2409,7 +2409,38 @@ class FilletEdgeCommand : public Command {
         v_params = fb.v_params;
       }
     }
-    if (!ok) { ctx.Warn(label + ": " + err); return; }
+    if (!ok) {
+      // PARITY_MAP.md's own "Fillet overflow / cliff-edge / notch
+      // handling" entry: every exact kernel construction already computes
+      // its own "radius too large to fit" bound internally (fillet.cpp's
+      // trim_back > extent_i/extent_j check) but used to just throw a
+      // generic rejection rather than surfacing it - this still doesn't
+      // roll the fillet onto a neighbouring face (genuinely out of scope,
+      // see that entry), but a constant-radius Mode::Fillet failure can at
+      // least now report the REAL largest radius this edge's own two
+      // faces support, via kernel::MaxFilletRadius, instead of leaving the
+      // user to guess by trial and error. Guarded to the plain
+      // constant-radius case (radii_.empty()) since MaxFilletRadius's own
+      // trim_back = radius/tan(theta/2) bound assumes one shared radius,
+      // not a variable taper; Mode::Chamfer and Mode::Blend have no
+      // equivalent helper yet, so they fall through unchanged.
+      if (mode_ == Mode::Fillet && radii_.empty()) {
+        try {
+          kernel::Brep kb;
+          kb.raw() = *b;
+          const kernel::FilletRadiusLimit limit = kernel::MaxFilletRadius(kb, edge.PointAtStart(), edge.PointAtEnd());
+          if (limit.max_radius > 0.0 && radius_ > limit.max_radius) {
+            err += " (the largest radius this edge's own two faces support is " + FormatNumber(limit.max_radius) + ")";
+          }
+        } catch (const std::exception&) {
+          // MaxFilletRadius rejects for a structural reason unrelated to
+          // "too large" (e.g. a curved adjacent face already rejected the
+          // exact path for a different reason) - leave `err` as it was.
+        }
+      }
+      ctx.Warn(label + ": " + err);
+      return;
+    }
     ctx.Doc().BeginChange(label);
     if (preview_) {
       kernel::NurbsSurface ks;

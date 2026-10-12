@@ -966,6 +966,106 @@ void TestCurveSetDomainReparameterizes() {
   Check(curve.SetDomain(9.0, 2.0) == Result::Failed, "SetDomain returns Failed when t0 > t1");
 }
 
+void TestCurveChangeSeam() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // An open curve: ChangeSeam always fails, regardless of t.
+  const std::vector<Point3d> open_pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+  NurbsCurve open_curve = NurbsCurve::FromControlPoints(open_pts, 2);
+  Check(open_curve.ChangeSeam(open_curve.Domain().min) == Result::Failed,
+        "ChangeSeam refuses an open curve");
+
+  // Closed-but-not-periodic curve (coincident endpoints, clamped knot
+  // vector) - the same fixture shape as TestCurveIsClosed's own
+  // closed_curve.
+  const std::vector<Point3d> closed_pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0),
+                                            Point3d(0, 0, 0)};
+  NurbsCurve closed = NurbsCurve::FromControlPoints(closed_pts, 2);
+  Check(closed.IsClosed() && !closed.IsPeriodic(), "ChangeSeam setup: the fixture is closed but not periodic");
+
+  const auto dom = closed.Domain();
+  const double seam_t = dom.min + 0.5 * (dom.max - dom.min);
+  const Point3d expected_start = closed.PointAt(seam_t);
+
+  // Sample the ORIGINAL shape densely, keyed by normalized position
+  // around the loop, before moving the seam - so afterward we can
+  // re-derive the same 3D points at the correspondingly shifted
+  // parameters and confirm the shape itself didn't move at all.
+  constexpr int kSamples = 40;
+  std::vector<Point3d> before;
+  for (int i = 0; i <= kSamples; ++i) {
+    const double frac = static_cast<double>(i) / kSamples;
+    before.push_back(closed.PointAt(dom.min + frac * (dom.max - dom.min)));
+  }
+
+  Check(closed.ChangeSeam(seam_t) == Result::Ok, "ChangeSeam returns Ok on a closed curve");
+  const auto new_dom = closed.Domain();
+  Check(new_dom.min == seam_t, "ChangeSeam moves Domain().min to exactly the requested parameter");
+  Check((closed.PointAt(new_dom.min) - expected_start).Length() < 1e-9,
+        "ChangeSeam: the new start point is exactly the old PointAt(seam_t)");
+
+  // Shape check: walking the new domain from its own min retraces the
+  // same loop, just starting halfway around (seam_t was already the old
+  // curve's own halfway point) - so the new curve's point at normalized
+  // fraction f must equal the OLD curve's point at normalized fraction
+  // (0.5 + f) mod 1, read back from the pre-move `before` samples.
+  double max_err = 0.0;
+  for (int i = 0; i <= kSamples; ++i) {
+    const double frac = static_cast<double>(i) / kSamples;
+    const Point3d p = closed.PointAt(new_dom.min + frac * (new_dom.max - new_dom.min));
+    const double old_frac = std::fmod(0.5 + frac, 1.0);
+    const size_t old_index = static_cast<size_t>(std::lround(old_frac * kSamples)) % kSamples;
+    max_err = std::max(max_err, (p - before[old_index]).Length());
+  }
+  Check(max_err < 1e-6, "ChangeSeam retraces the identical 3D shape, just starting from a different point");
+
+  // min_dist guard: re-requesting the current (already-moved) seam with
+  // a generous min_dist is a reported no-op, left completely untouched.
+  Check(closed.ChangeSeam(new_dom.min, 1.0) == Result::NoOpAlreadySatisfied,
+        "ChangeSeam(min_dist) reports NoOpAlreadySatisfied when the target is already within min_dist");
+  Check(closed.Domain().min == new_dom.min, "...and really did leave the curve's domain untouched");
+
+  // A genuinely periodic curve (a real circle, via this class's own
+  // MakePeriodicExact()). Its interior knots are Bezier-decomposed to
+  // full multiplicity (MakePeriodicExact()'s own documented
+  // construction), so ON_NurbsCurve::ChangeClosedCurveSeam's internal
+  // "all interior knots simple" precondition for its periodic-preserving
+  // path does NOT hold here - confirmed directly below, not assumed:
+  // it falls back to OpenNURBS' own general (split + re-append) path,
+  // which is still exactly shape-preserving but returns a CLAMPED
+  // result, so IsPeriodic() genuinely comes back false even though the
+  // curve going in was periodic. The shape invariant (every point still
+  // on the same circle) is what must survive regardless.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
+  ON_NurbsCurve circle_form;
+  Check(on_circle.GetNurbForm(circle_form) != 0, "ChangeSeam setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = circle_form;
+  Check(circle.MakePeriodicExact() == Result::Ok, "ChangeSeam setup: MakePeriodicExact succeeds on the circle");
+  Check(circle.IsPeriodic(), "ChangeSeam setup: the circle fixture is genuinely periodic");
+
+  const auto circle_dom = circle.Domain();
+  const double circle_seam_t = circle_dom.min + 0.25 * (circle_dom.max - circle_dom.min);
+  const Point3d circle_expected_start = circle.PointAt(circle_seam_t);
+  Check(circle.ChangeSeam(circle_seam_t) == Result::Ok, "ChangeSeam returns Ok on a periodic curve");
+  Check((circle.PointAt(circle.Domain().min) - circle_expected_start).Length() < 1e-9,
+        "ChangeSeam on a periodic curve: the new start point is exactly the old PointAt(seam_t)");
+  Check(circle.IsClosed(), "ChangeSeam on a periodic curve: the result is still genuinely closed");
+  // Radius is an invariant of this shape regardless of where it starts -
+  // confirms the move didn't distort the circle into something else,
+  // even though (per the doc comment above, and confirmed here) this
+  // specific fixture's own full-multiplicity knots make it come back
+  // non-periodic (clamped) rather than periodic.
+  for (int i = 0; i <= 8; ++i) {
+    const auto d = circle.Domain();
+    const double t = d.min + (i / 8.0) * (d.max - d.min);
+    Check(std::abs(circle.PointAt(t).DistanceTo(Point3d(0, 0, 0)) - 3.0) < 1e-6,
+          "ChangeSeam on a periodic curve leaves every point on the same radius-3 circle");
+  }
+}
+
 void TestCurveMatchEnd() {
   using dino8::kernel::MatchContinuity;
   using dino8::kernel::MatchEndReport;
@@ -2895,6 +2995,177 @@ void TestCurveFitLeastSquaresConstrainedRefit() {
                          " control points cannot stay both within tolerance and within that "
                          "domain at once) - proven, not assumed, by exhausting every candidate "
                          "control-point count").c_str());
+}
+
+// PARITY_MAP's healing category, "Gap closing by edge re-trim / trim
+// refit": before this, `dino8-app`'s own `RefitTrimCommand`
+// (cmd_srfedit.cpp) implemented the real algorithm the simulation above
+// proves correct, but entirely at the app level with no kernel API at
+// all. `Brep::RefitTrim()`/`RefitEdgeTrims()` are the real thing, tested
+// against a genuine trimmed B-rep face this time, not a standalone curve.
+struct WavyTrimFixture {
+  dino8::kernel::Brep brep;
+  int face_index = -1;
+  int wavy_edge_index = -1;
+  int right_edge_index = -1;
+};
+
+WavyTrimFixture BuildWavyTrimFixture() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  WavyTrimFixture fixture;
+  ON_Brep& b = fixture.brep.raw();
+
+  // A flat unit square face whose (u, v) domain maps directly onto
+  // world (x, y) (z=0) - so a deviation measured in real 3D equals the
+  // same deviation measured directly in (u, v), making this fixture's
+  // own math easy to verify independently, by hand.
+  const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const int surface_index = b.AddSurface(new ON_NurbsSurface(surface.raw()));
+  fixture.face_index = b.NewFace(surface_index).m_face_index;
+  const int loop_index = b.NewLoop(ON_BrepLoop::outer, b.m_F[fixture.face_index]).m_loop_index;
+
+  const int v00 = b.NewVertex(Point3d(0, 0, 0), 0.0).m_vertex_index;
+  const int v10 = b.NewVertex(Point3d(1, 0, 0), 0.0).m_vertex_index;
+  const int v11 = b.NewVertex(Point3d(1, 1, 0), 0.0).m_vertex_index;
+  const int v01 = b.NewVertex(Point3d(0, 1, 0), 0.0).m_vertex_index;
+
+  auto add_straight_side = [&](int va, int vb, Point2d uv_a, Point2d uv_b) {
+    const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+    const int edge_index = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+    b.m_E[edge_index].m_tolerance = 0.0;
+    const int c2i = b.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+    ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    return edge_index;
+  };
+
+  // Bottom side: a WAVY, many-control-point 2D curve from (0,0) to
+  // (1,0) - amplitude only 0.001, geometrically almost a straight line
+  // already, but with far more control points than that shape needs.
+  // This is the one trim RefitTrim() below should genuinely simplify.
+  {
+    std::vector<Point3d> ctrl;
+    const int N = 10;
+    for (int i = 0; i < N; ++i) {
+      const double u = static_cast<double>(i) / (N - 1);
+      const double v = (i == 0 || i == N - 1) ? 0.0 : 0.001 * std::sin(i * 2.5);
+      ctrl.push_back(Point3d(u, v, 0));
+    }
+    const NurbsCurve wavy = NurbsCurve::FromControlPoints(ctrl, /*degree=*/3);
+    ON_NurbsCurve raw2d = wavy.raw();
+    raw2d.ChangeDimension(2);
+    const int c3i = b.AddEdgeCurve(new ON_LineCurve(Point3d(0, 0, 0), Point3d(1, 0, 0)));
+    fixture.wavy_edge_index = b.NewEdge(b.m_V[v00], b.m_V[v10], c3i).m_edge_index;
+    b.m_E[fixture.wavy_edge_index].m_tolerance = 0.0;
+    const int c2i = b.AddTrimCurve(new ON_NurbsCurve(raw2d));
+    ON_BrepTrim& trim = b.NewTrim(b.m_E[fixture.wavy_edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  }
+  fixture.right_edge_index = add_straight_side(v10, v11, Point2d(1, 0), Point2d(1, 1));
+  add_straight_side(v11, v01, Point2d(1, 1), Point2d(0, 1));
+  add_straight_side(v01, v00, Point2d(0, 1), Point2d(0, 0));
+
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+  return fixture;
+}
+
+void TestBrepRefitTrim() {
+  using dino8::kernel::Result;
+
+  WavyTrimFixture fixture = BuildWavyTrimFixture();
+  ON_Brep& b = fixture.brep.raw();
+  const int wavy_trim_index = b.m_E[fixture.wavy_edge_index].m_ti[0];
+  const int right_trim_index = b.m_E[fixture.right_edge_index].m_ti[0];
+
+  int original_cv_count = -1;
+  {
+    ON_NurbsCurve nc;
+    b.m_T[wavy_trim_index].GetNurbForm(nc);
+    original_cv_count = nc.CVCount();
+  }
+  Check(original_cv_count == 10, "the wavy trim fixture genuinely starts with 10 control points");
+
+  const Result r = fixture.brep.RefitTrim(wavy_trim_index, 0.01);
+  Check(r == Result::Ok, "RefitTrim succeeds on the wavy trim within a loose-enough tolerance");
+
+  int refit_cv_count = -1;
+  {
+    ON_NurbsCurve nc;
+    b.m_T[wavy_trim_index].GetNurbForm(nc);
+    refit_cv_count = nc.CVCount();
+  }
+  Check(refit_cv_count > 0 && refit_cv_count < original_cv_count,
+        "the refit trim genuinely has fewer control points than the original 10");
+
+  // Independent re-verification, NOT reusing RefitTrim's own internal
+  // deviation check: the true original trim was a wave of amplitude at
+  // most 0.001 around v=0, so the refit result - whatever its new
+  // control points are - must still stay within 0.011 (tolerance plus
+  // the original wave's own amplitude) of the straight line v=0 at
+  // every sampled u, by hand-derivable geometry.
+  {
+    double worst = 0.0;
+    for (int i = 0; i <= 200; ++i) {
+      const double t = b.m_T[wavy_trim_index].Domain().ParameterAt(static_cast<double>(i) / 200);
+      const ON_3dPoint uv = b.m_T[wavy_trim_index].PointAt(t);
+      worst = std::max(worst, std::fabs(uv.y));
+    }
+    Check(worst < 0.011,
+          "the refit trim's own real shape, independently re-sampled, stays within a "
+          "hand-derivable bound of the straight line it approximates");
+  }
+
+  Check(fixture.brep.RefitTrim(right_trim_index, 0.01) == Result::Failed,
+        "RefitTrim correctly refuses an already-minimal (2 control point, degree 1) straight trim");
+
+  // Argument validation.
+  bool threw = false;
+  try {
+    fixture.brep.RefitTrim(9999, 0.01);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "RefitTrim throws std::invalid_argument for an out-of-range trim_index");
+
+  threw = false;
+  try {
+    fixture.brep.RefitTrim(right_trim_index, -1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "RefitTrim throws std::invalid_argument for a non-positive tolerance");
+
+  // RefitEdgeTrims: a fresh fixture (the one above already mutated its
+  // own wavy trim), mirroring RefitTrimCommand's own per-edge loop -
+  // here each edge carries exactly 1 trim (a naked boundary), still a
+  // real exercise of the same aggregate-count loop a 2-trim interior
+  // edge would also take.
+  WavyTrimFixture fixture2 = BuildWavyTrimFixture();
+  int refit_count = -1, failed_count = -1;
+  fixture2.brep.RefitEdgeTrims(fixture2.wavy_edge_index, 0.01, &refit_count, &failed_count);
+  Check(refit_count == 1 && failed_count == 0,
+        "RefitEdgeTrims on the wavy edge reports exactly 1 refit and 0 failed, matching its "
+        "own single trim");
+
+  refit_count = -1;
+  failed_count = -1;
+  fixture2.brep.RefitEdgeTrims(fixture2.right_edge_index, 0.01, &refit_count, &failed_count);
+  Check(refit_count == 0 && failed_count == 1,
+        "RefitEdgeTrims on the already-minimal straight edge reports 0 refit and 1 failed");
+
+  threw = false;
+  try {
+    fixture2.brep.RefitEdgeTrims(9999, 0.01);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "RefitEdgeTrims throws std::invalid_argument for an out-of-range edge_index");
 }
 
 void TestCurveCurvature() {
@@ -5988,6 +6259,45 @@ void TestIntersectCylinderCylinderUnequalRadiusClosedForm() {
       }
     }
     Check(all_on_both, "the skew-but-piercing case's own curve also sits at exactly radius R from the larger axis and radius r from the smaller (offset) axis simultaneously");
+  }
+
+  // A genuinely OBLIQUE skew pair (axes at 30 degrees, NOT a right angle,
+  // d = 1 between them): `BooleanCombineMixed`'s own private
+  // `ComputeUnequalCylinderCrossing` (boolean.cpp) explicitly refuses this
+  // exact configuration ("genuinely OBLIQUE skew pair... alpha != 90
+  // degrees AND d != 0... is out of scope"), but its own doc comment
+  // discloses WHY: that refusal is purely about `Brep::TessellateConforming()`'s
+  // strip mesher not yet triangulating the resulting WALL FRAGMENT into a
+  // closed manifold - "the B-rep it builds IS ON_Brep::IsValid(), so this
+  // is a strip-mesher limitation, not a representation or splitting one."
+  // The underlying per-theta quadratic itself is honestly derived there as
+  // alpha-INDEPENDENT (the full-pierce condition `d + r < R` is derived
+  // without reference to alpha at all), and this function builds no mesh
+  // fragment at all - just the curve - so it is not subject to that
+  // strip-mesher limitation and should genuinely cover this case too,
+  // verified directly here rather than assumed from the derivation alone.
+  const double oblique_alpha = 30.0 * M_PI / 180.0;
+  const Vector3d axis_small_oblique(std::sin(oblique_alpha), 0, std::cos(oblique_alpha));
+  const ON_Cylinder cyl_small_oblique_skew(ON_Circle(ON_Plane(Point3d(0, 1, 0), axis_small_oblique), r));
+  const auto oblique_skew_pierce = IntersectCylinderCylinderUnequalRadius(cyl_large, cyl_small_oblique_skew, tol);
+  Check(!oblique_skew_pierce.empty && !oblique_skew_pierce.not_full_pierce,
+        "a genuinely OBLIQUE (non-right-angle) skew pair whose smaller cylinder fully pierces the larger one reports a real result too - broader than the private splitter's own mesh-constrained scope");
+  if (!oblique_skew_pierce.empty) {
+    bool all_on_both = true;
+    const int n = 32;
+    for (int i = 0; i <= n; ++i) {
+      for (const ON_NurbsCurve* curve : {&oblique_skew_pierce.curve_a, &oblique_skew_pierce.curve_b}) {
+        const double t = curve->Domain().ParameterAt(static_cast<double>(i) / n);
+        const Point3d p = curve->PointAt(t);
+        if (std::abs(dist_to_axis(p, Point3d(0, 0, 0), axis_large) - R) > 1e-3 ||
+            std::abs(dist_to_axis(p, Point3d(0, 1, 0), axis_small_oblique) - r) > 1e-3) {
+          all_on_both = false;
+          break;
+        }
+      }
+      if (!all_on_both) break;
+    }
+    Check(all_on_both, "the oblique-skew-but-piercing case's own curves also sit at exactly radius R from the larger axis and radius r from the smaller (offset, tilted) axis simultaneously");
   }
 
   // A genuinely skew pair that does NOT fully pierce (d + r = 2.5 + 1 = 3.5
@@ -57942,6 +58252,72 @@ void TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape() {
   Check(threw, "SetDomain throws on a direction other than 0/1");
 }
 
+void TestSurfaceChangeSeam() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A flat bilinear surface, open in both directions - ChangeSeam always
+  // fails, same convention as the curve overload's open-curve case.
+  std::vector<Point3d> grid;
+  for (int u = 0; u < 2; ++u)
+    for (int v = 0; v < 2; ++v) grid.emplace_back(u, v, 0);
+  NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  Check(flat.ChangeSeam(0, flat.Domain(0).min) == Result::Failed,
+        "ChangeSeam refuses a surface that isn't closed in that direction");
+  bool threw = false;
+  try { flat.ChangeSeam(2, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ChangeSeam throws on a direction other than 0/1");
+
+  // A real cylinder wall via ON_Cylinder::GetNurbForm - same fixture
+  // shape as TestSurfaceIsClosed: closed (clamped, not periodic) in U,
+  // open in V.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0);
+  const ON_Cylinder cylinder(circle, 5.0);
+  ON_NurbsSurface cylinder_surface;
+  Check(cylinder.GetNurbForm(cylinder_surface) != 0, "ChangeSeam setup: ON_Cylinder::GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  Check(wall.IsClosed(0) && !wall.IsPeriodic(0),
+        "ChangeSeam setup: the wall fixture is closed-but-not-periodic in U, same as TestSurfaceIsClosed");
+
+  Check(wall.ChangeSeam(1, wall.Domain(1).min) == Result::Failed,
+        "ChangeSeam refuses the open (V) direction even though U is closed");
+
+  const auto u_dom = wall.Domain(0);
+  const auto v_dom_before = wall.Domain(1);
+  const double seam_u = u_dom.min + 0.3 * (u_dom.max - u_dom.min);
+  const double v_mid = v_dom_before.min + 0.5 * (v_dom_before.max - v_dom_before.min);
+  const Point3d expected_start = wall.PointAt(seam_u, v_mid);
+
+  Check(wall.ChangeSeam(0, seam_u) == Result::Ok, "ChangeSeam returns Ok in the closed (U) direction");
+  const auto new_u_dom = wall.Domain(0);
+  Check(new_u_dom.min == seam_u, "ChangeSeam moves Domain(0).min to exactly the requested parameter");
+  Check(wall.Domain(1).min == v_dom_before.min && wall.Domain(1).max == v_dom_before.max,
+        "ChangeSeam(0, ...) leaves the OTHER (V) direction's domain completely untouched");
+  Check((wall.PointAt(new_u_dom.min, v_mid) - expected_start).Length() < 1e-6,
+        "ChangeSeam: the new U-min point matches the old PointAt(seam_u, v_mid) exactly");
+
+  // Shape invariant: every point on the cylinder wall lies at radius 2
+  // from the z axis through the origin, regardless of (u, v) - true
+  // before AND after the seam move, confirming the move relocated the
+  // seam without distorting the wall into something else.
+  for (int i = 0; i <= 8; ++i) {
+    const double v = wall.Domain(1).min + (i / 8.0) * (wall.Domain(1).max - wall.Domain(1).min);
+    for (int j = 0; j <= 8; ++j) {
+      const double u = new_u_dom.min + (j / 8.0) * (new_u_dom.max - new_u_dom.min);
+      const Point3d p = wall.PointAt(u, v);
+      const double radial = std::sqrt(p.x * p.x + p.y * p.y);
+      Check(std::abs(radial - 2.0) < 1e-6, "ChangeSeam leaves every point on the same radius-2 cylindrical wall");
+    }
+  }
+
+  // A parameter outside Domain(0) is refused outright (no wraparound at
+  // the surface level, unlike the curve overload's own fmod handling).
+  Check(wall.ChangeSeam(0, new_u_dom.max + 1.0) == Result::Failed,
+        "ChangeSeam refuses a parameter outside that direction's own Domain()");
+}
+
 void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Result;
@@ -65629,6 +66005,103 @@ void TestFilletConcaveEdgeRejectsUnsupportedConfigurations() {
   // the edge.
   Check(throws([&] { FilletConcaveEdge(ConcaveLShapedPrism(), Point3d(1, 1, 0), Point3d(1, 1, 1), 2.0); }),
         "rejects a radius too large to fit");
+}
+
+// MaxFilletRadius - the closed-form "how large CAN this radius be" bound
+// FilletConvexEdge/FilletConcaveEdge's own "radius is too large to fit"
+// check computes internally, now exposed directly rather than only ever
+// discovered by trial and error against the exception message. Both
+// fixtures below are 90-degree corners with unit-length adjacent extents,
+// chosen because the exact value (not just the pass/fail boundary) is
+// hand-derivable: trim_back = radius / tan(theta/2) = radius at theta =
+// pi/2, so max_radius = min(extent_i, extent_j) * tan(pi/4) = 1 * 1 = 1,
+// to the same floating-point precision theta itself is computed at
+// (acos/tan of exact dot products, not a fit).
+void TestMaxFilletRadiusConvexUnitCubeMatchesExtent() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::MaxFilletRadius;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const auto limit = MaxFilletRadius(box, edge_p0, edge_p1);
+
+  Check(limit.convex, "the unit cube's top-front edge is detected convex");
+  Check(std::fabs(limit.dihedral_angle - ON_PI / 2.0) < 1e-12,
+        "the unit cube's own right-angle edge reports a dihedral angle of exactly pi/2");
+  Check(std::fabs(limit.max_radius - 1.0) < 1e-9,
+        "both adjacent unit-square faces have extent 1 from this edge, at theta=pi/2 "
+        "(tan(theta/2)=1), so max_radius is exactly 1");
+
+  // The bound is TIGHT, verified against the real throw/no-throw boundary
+  // of the actual constructive function, not just restated: a radius
+  // comfortably under it succeeds, one comfortably over it is rejected
+  // with the SAME "too large to fit" reason MaxFilletRadius computed.
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(!throws([&] { FilletConvexEdge(box, edge_p0, edge_p1, limit.max_radius * (1.0 - 1e-6)); }),
+        "a radius just under the reported max_radius genuinely builds");
+  Check(throws([&] { FilletConvexEdge(box, edge_p0, edge_p1, limit.max_radius * (1.0 + 1e-6)); }),
+        "a radius just over the reported max_radius genuinely fails");
+}
+
+void TestMaxFilletRadiusConcaveLShapedPrismMatchesExtent() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdge;
+  using dino8::kernel::MaxFilletRadius;
+  using dino8::kernel::Point3d;
+
+  const Brep prism = ConcaveLShapedPrism();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const auto limit = MaxFilletRadius(prism, edge_p0, edge_p1);
+
+  Check(!limit.convex, "the L-shaped prism's own reflex edge is detected concave");
+  Check(std::fabs(limit.dihedral_angle - ON_PI / 2.0) < 1e-12,
+        "the same 90-degree magnitude TestFilletConcaveEdgeAddsExactQuarterRoundVolume's own "
+        "trim_back == radius note already established");
+  Check(std::fabs(limit.max_radius - 1.0) < 1e-9,
+        "both adjacent unit-length walls have extent 1 from this edge, so max_radius is exactly 1 "
+        "here too - the same value as the convex fixture above, by the same formula");
+
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(!throws([&] { FilletConcaveEdge(prism, edge_p0, edge_p1, limit.max_radius * (1.0 - 1e-6)); }),
+        "a radius just under the reported max_radius genuinely builds");
+  Check(throws([&] { FilletConcaveEdge(prism, edge_p0, edge_p1, limit.max_radius * (1.0 + 1e-6)); }),
+        "a radius just over the reported max_radius genuinely fails");
+}
+
+void TestMaxFilletRadiusRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MaxFilletRadius;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(throws([&] { MaxFilletRadius(box, Point3d(5, 5, 5), Point3d(5, 5, 6)); }),
+        "rejects an edge that isn't a shared boundary edge of the solid at all");
+  Check(throws([&] { MaxFilletRadius(box, Point3d(0, 0, 1), Point3d(0, 0, 1)); }),
+        "rejects coincident edge endpoints");
 }
 
 // =====================================================================
@@ -74558,6 +75031,7 @@ int main() {
   TestCurveInsertKnotAt();
   TestCurveRemoveKnotAt();
   TestCurveSetDomainReparameterizes();
+  TestCurveChangeSeam();
   TestCurveMatchEnd();
   TestCurveAnalyzeEndContinuity();
   TestCurveDeviationTo();
@@ -74587,6 +75061,7 @@ int main() {
   TestCurveFitLeastSquares();
   TestCurveHelix();
   TestCurveFitLeastSquaresConstrainedRefit();
+  TestBrepRefitTrim();
   TestCurveCurvature();
   TestCurveSuggestedSamples();
   TestCurveSuggestedParameterValues();
@@ -75122,6 +75597,9 @@ int main() {
   TestRemoveChamferRejectsUnsupportedConfigurations();
   TestFilletConcaveEdgeAddsExactQuarterRoundVolume();
   TestFilletConcaveEdgeRejectsUnsupportedConfigurations();
+  TestMaxFilletRadiusConvexUnitCubeMatchesExtent();
+  TestMaxFilletRadiusConcaveLShapedPrismMatchesExtent();
+  TestMaxFilletRadiusRejectsInvalidInput();
   TestFilletConcaveEdgeTaperedRailExactness();
   TestFilletConcaveEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
   TestFilletConcaveEdgeTaperedDispatchesToConstantRadiusAtZeroTaper();
@@ -75416,6 +75894,7 @@ int main() {
   TestSurfaceRemoveKnotAtArgumentChecks();
 
   TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape();
+  TestSurfaceChangeSeam();
   TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise();
   TestSurfaceReduceDegree();
   TestSurfaceInterpolateThroughGrid();

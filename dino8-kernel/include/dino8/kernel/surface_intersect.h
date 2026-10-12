@@ -1190,9 +1190,20 @@ CylinderCylinderIntersectingIntersection IntersectCylinderCylinderIntersecting(c
 // independent full-pierce condition this function shares with the
 // private splitter's own `ComputeUnequalCylinderCrossing` - the
 // discriminant of the per-angle quadratic above is minimized over `theta`
-// exactly there). A skew pair that does NOT fully pierce (a partial,
-// blind penetration with no closed-loop answer) is refused outright
-// (`not_full_pierce == true`) rather than guessed at. Given that, the two
+// exactly there). Note this is genuinely BROADER than that private
+// splitter's own additional "the axes must also meet at a right angle"
+// restriction for its own skew case: that extra restriction (see its own
+// doc comment in boolean.cpp) is disclosed there as a `Brep::
+// TessellateConforming()` strip-mesher limitation on the WALL FRAGMENT the
+// splitter goes on to build, not a limit on the curve itself - this
+// function builds no mesh fragment at all, so a genuinely OBLIQUE skew
+// pair (alpha != 90 degrees, d != 0) that still satisfies the full-pierce
+// condition above is fully supported here, verified directly (not merely
+// assumed from the derivation) by `TestIntersectCylinderCylinderUnequalRadiusClosedForm`'s
+// own oblique-skew fixture. A skew pair that does NOT fully pierce (a
+// partial, blind penetration with no closed-loop answer regardless of
+// angle) is refused outright (`not_full_pierce == true`) rather than
+// guessed at. Given that, the two
 // root signs each trace out a genuine closed space curve as `theta`
 // sweeps `[0, 2*pi)` - `curve_a` the `+` root, `curve_b` the `-` root, two
 // disjoint loops (never pinching together, unlike the equal-radius
