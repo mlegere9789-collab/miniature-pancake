@@ -3979,6 +3979,97 @@ void TestFireRayAtBrep() {
   Check(threw_distance, "FireRayAtBrep throws std::invalid_argument for a non-positive max_distance");
 }
 
+// PARITY_MAP's massprops category, "Closest point on trimmed B-rep" bullet:
+// ClosestPointOnBrep() is the real, trimmed, exact kernel entry point
+// (Mesh::ClosestPoint/NurbsSurface::ClosestPoint existed but were
+// untrimmed-only - there was still no Brep::ClosestPoint at all).
+void TestClosestPointOnBrep() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ClosestPointOnBrep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // A plain 2x2x2 box: a query straight above the top face must project
+  // onto it exactly (hand-derivable: (1,1,5) -> (1,1,2), distance 3).
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  {
+    const auto r = ClosestPointOnBrep(Point3d(1, 1, 5), box.raw());
+    Check(r.point.DistanceTo(Point3d(1, 1, 2)) < 1e-6 && std::abs(r.distance - 3.0) < 1e-6,
+          "ClosestPointOnBrep on a box projects a query straight above the top face onto exactly "
+          "(1,1,2) at distance 3");
+    Check(!r.on_trim_boundary,
+          "the box's own faces are untrimmed (full-domain), so the unconstrained interior answer "
+          "is used directly, not the boundary fallback");
+  }
+  // A query diagonally past a corner: the closest point on ANY face must
+  // be that exact corner, at the hand-derivable distance sqrt(3) (query
+  // (3,3,3), nearest corner (2,2,2)).
+  {
+    const auto r = ClosestPointOnBrep(Point3d(3, 3, 3), box.raw());
+    Check(r.point.DistanceTo(Point3d(2, 2, 2)) < 1e-6 && std::abs(r.distance - std::sqrt(3.0)) < 1e-6,
+          "ClosestPointOnBrep on a box finds the exact corner (2,2,2) at distance sqrt(3) for a "
+          "query diagonally past it");
+  }
+  // A query INSIDE the box, off-center: the closest point is on whichever
+  // face is nearest (here x=0, at the hand-derivable distance 0.3).
+  {
+    const auto r = ClosestPointOnBrep(Point3d(0.3, 1, 1), box.raw());
+    Check(r.point.DistanceTo(Point3d(0, 1, 1)) < 1e-6 && std::abs(r.distance - 0.3) < 1e-6,
+          "ClosestPointOnBrep on a box, queried from the inside, finds the nearest face at the "
+          "exact perpendicular distance 0.3");
+  }
+
+  // The exact-AND-TRIMMED claim: a flat plane at z=2 (world [0,2]^2),
+  // trimmed down to a small square - same genuine-topology
+  // TrimmedPlanarFaceWelded() fixture TestFireRayAtBrep() above uses, for
+  // the identical reason (TrimmedPlanarFace()'s own bare surface has no
+  // real ON_Brep trim topology for FaceContainsUV() to read).
+  const std::vector<Point3d> plane_grid = {Point3d(0, 0, 2), Point3d(0, 2, 2), Point3d(2, 0, 2),
+                                            Point3d(2, 2, 2)};
+  const NurbsSurface flat_plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+  const std::vector<Point2d> small_trim = {
+      Point2d(0.25, 0.25), Point2d(0.75, 0.25), Point2d(0.75, 0.75), Point2d(0.25, 0.75)};
+  const Brep trimmed_top = Brep::TrimmedPlanarFaceWelded(flat_plane, small_trim);
+  // Query directly above world (1, 1) - the trim's own interior - must
+  // use the unconstrained minimum directly, landing exactly on (1,1,2)
+  // at distance 3.
+  {
+    const auto r = ClosestPointOnBrep(Point3d(1, 1, 5), trimmed_top.raw());
+    Check(r.point.DistanceTo(Point3d(1, 1, 2)) < 1e-6 && std::abs(r.distance - 3.0) < 1e-6,
+          "a query directly above the trim's own interior uses the unconstrained minimum, landing "
+          "exactly on (1,1,2) at distance 3");
+    Check(!r.on_trim_boundary, "that query's own result is correctly reported as NOT a boundary fallback");
+  }
+  // Query directly above world (0.2, 0.2) - on the SAME untrimmed
+  // surface, but outside the small trim's own square - must be pushed
+  // onto the trim's own boundary (the near corner, world (0.5, 0.5, 2)),
+  // not the unconstrained minimum (which would be (0.2, 0.2, 2),
+  // distance 3 exactly - this query's own real answer must exceed that).
+  {
+    const auto r = ClosestPointOnBrep(Point3d(0.2, 0.2, 5), trimmed_top.raw());
+    Check(r.on_trim_boundary,
+          "a query outside the trimmed face's own trim loop is correctly reported as a boundary "
+          "fallback, not the unconstrained interior minimum");
+    Check(r.distance > 3.0 + 1e-9,
+          "the boundary-constrained distance is strictly greater than the unconstrained minimum's "
+          "own 3.0 - confirming the trim genuinely changed the answer, not just relabeled it");
+    Check(r.point.DistanceTo(Point3d(0.5, 0.5, 2)) < 1e-6,
+          "the boundary fallback lands exactly on the trim square's own near corner, (0.5, 0.5, 2) "
+          "in real 3D world coordinates - the exact-AND-trimmed behavior IntersectCurveSurface()/"
+          "NurbsSurface::ClosestPoint() alone can't provide");
+  }
+
+  bool threw_empty = false;
+  try {
+    ON_Brep empty;
+    ClosestPointOnBrep(Point3d(0, 0, 0), empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "ClosestPointOnBrep throws std::invalid_argument for a Brep with no faces");
+}
+
 // PARITY_MAP's intersections category, "Pullback of a 3D curve to surface
 // parameter space" bullet: PullbackCurveToSurface() is the general-purpose
 // kernel entry point (SSX's own pcurve_a/pcurve_b are a by-product of a
@@ -25841,6 +25932,56 @@ void TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldToleran
         "original (still untouched - Symmetrize() never retroactively fixes the ORIGINAL half) + 4 "
         "newly-welded mirrored vertices, instead of 8");
   Check(widened_doubled.FaceCount() == 4, "4 faces total either way: the original 2 plus their 2 mirrored copies");
+}
+
+// Closes a real, previously-unvalidated gap: unlike its sibling
+// plane_normal check just above, Symmetrize() never validated
+// point_tolerance or plane_offset at all, even though a bad
+// point_tolerance doesn't degrade to a safe default the way a bad
+// weld_tolerance does (see that parameter's own "zero or negative means
+// reuse point_tolerance" convention) - it alone decides which vertices
+// count as lying ON the mirror plane, so a NaN or negative value made
+// every on-plane comparison silently false instead of refusing: no
+// vertex would ever be welded as a seam, not even one genuinely on the
+// plane, and the caller would get a plausible-looking (if silently
+// wrong) result rather than an error.
+void TestSubDSymmetrizeThrowsOnBadToleranceOrOffset() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+  using dino8::kernel::Vector3d;
+
+  const Mesh box = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(box);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, -1e-9); }),
+        "Symmetrize throws for a negative point_tolerance");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, nan); }),
+        "Symmetrize throws for a NaN point_tolerance");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, inf); }),
+        "Symmetrize throws for an infinite point_tolerance");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), nan); }),
+        "Symmetrize throws for a NaN plane_offset");
+  Check(Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), inf); }),
+        "Symmetrize throws for an infinite plane_offset");
+
+  // Negative controls: a point_tolerance of exactly 0 is a legitimate
+  // "only bit-identical positions count as on-plane" request, not an
+  // error, and the ordinary default-argument call is unaffected.
+  Check(!Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0, 0.0); }),
+        "Symmetrize does not throw for a point_tolerance of exactly 0");
+  Check(!Throws([&] { subd.Symmetrize(Vector3d(1, 0, 0), 0.0); }),
+        "Symmetrize's own default point_tolerance (1e-9) still passes validation unaffected");
 }
 
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
@@ -73469,6 +73610,7 @@ int main() {
   TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves();
   TestIntersectBrepsAndCurveBrep();
   TestFireRayAtBrep();
+  TestClosestPointOnBrep();
   TestPullbackCurveToSurfaceCylinderRulingLine();
   TestPullbackCurveToSurfaceAcrossPeriodicSeam();
   TestIntersectBrepByPlaneBoxSideWalls();
@@ -73723,6 +73865,7 @@ int main() {
   TestSubDTransformMovesScalesAndStaysValidUnderMirror();
   TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces();
   TestSubDSymmetrizeWeldsNearDuplicateOffPlaneVerticesWithExplicitWeldTolerance();
+  TestSubDSymmetrizeThrowsOnBadToleranceOrOffset();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetEdgeSharpnessSupportsPerEndVariableWeight();
   TestSubDEdgeSharpnessAtReadsBackWhatWasWritten();

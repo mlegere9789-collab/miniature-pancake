@@ -586,7 +586,12 @@ class SubD {
   //
   // Throws std::invalid_argument if `plane_normal` is zero (or too
   // close to it to unitize), the same failure convention `Transform()`
-  // above uses for a degenerate input.
+  // above uses for a degenerate input; if `plane_offset` is not finite;
+  // or if `point_tolerance` is negative or not finite (NaN or +/-inf) -
+  // unlike `weld_tolerance`, a bad `point_tolerance` has no "falls back
+  // to a default" meaning, since it alone decides which vertices count
+  // as lying ON the mirror plane, so a NaN or negative value would
+  // otherwise silently weld NO seam at all rather than fail loudly.
   SubD Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance = 1e-9,
                    double weld_tolerance = 0.0) const;
 

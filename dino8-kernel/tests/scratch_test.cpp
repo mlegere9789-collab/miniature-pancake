@@ -49,6 +49,22 @@ int main() {
                                             Point2d(0.25, 0.75)};
   const Brep trimmed_top = Brep::TrimmedPlanarFaceWelded(flat_plane, small_trim);
   {
+    const ON_BrepFace& f = trimmed_top.raw().m_F[0];
+    std::printf("face has %d loops\n", f.m_li.Count());
+    for (int li = 0; li < f.m_li.Count(); ++li) {
+      const ON_BrepLoop& loop = trimmed_top.raw().m_L[f.m_li[li]];
+      std::printf("  loop %d: type=%d, %d trims\n", li, (int)loop.m_type, loop.m_ti.Count());
+      for (int k = 0; k < loop.m_ti.Count(); ++k) {
+        const ON_BrepTrim& trim = trimmed_top.raw().m_T[loop.m_ti[k]];
+        const ON_Interval d = trim.Domain();
+        const ON_3dPoint p0 = trim.PointAt(d.Min());
+        const ON_3dPoint p1 = trim.PointAt(d.Max());
+        std::printf("    trim %d: iso=%d domain=[%g,%g] uv0=(%g,%g) uv1=(%g,%g)\n", k,
+                    (int)trim.m_iso, d.Min(), d.Max(), p0.x, p0.y, p1.x, p1.y);
+      }
+    }
+  }
+  {
     // world (0.2, 0.2, 5) -> directly above param (0.1,0.1), outside trim.
     const auto r = ClosestPointOnBrep(Point3d(0.2, 0.2, 5), trimmed_top.raw());
     std::printf("[4] trimmed query(0.2,0.2,5) outside trim: dist=%g uv=(%g,%g) point=(%g,%g,%g) "
