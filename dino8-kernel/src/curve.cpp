@@ -2210,6 +2210,58 @@ double NurbsCurve::ParameterAtArcLength(double target_length, int samples) const
   return domain.Max();
 }
 
+namespace {
+
+// Adaptive-Gauss arc length over an arbitrary sub-range [a, b] of the
+// curve's own domain (not necessarily the whole thing) - the same
+// `GaussSegmentLength`/`AdaptiveGaussLength` pair `LengthToTolerance()`
+// already uses over the full domain, factored out so `ParameterAtArcLength`'s
+// own tolerance-bounded overload below can call it repeatedly during its
+// Newton search without duplicating the recursion.
+double AdaptiveArcLength(const ON_NurbsCurve& c, double a, double b, double tolerance) {
+  int subintervals = 0;
+  const double whole = GaussSegmentLength(c, a, b);
+  return AdaptiveGaussLength(c, a, b, whole, tolerance, 0, subintervals);
+}
+
+}  // namespace
+
+double NurbsCurve::ParameterAtArcLength(double target_length, double tolerance, double* out_achieved_length) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::ParameterAtArcLength: tolerance must be positive");
+  }
+  if (out_achieved_length) *out_achieved_length = 0.0;
+  const ON_Interval domain = curve_.Domain();
+  const double total = LengthToTolerance(tolerance);
+  if (target_length <= 0.0 || total <= 0.0) {
+    return domain.Min();
+  }
+  const double clamped = std::min(target_length, total);
+
+  // Newton's method on f(t) = ArcLength(domain.Min(), t) - clamped, using
+  // the curve's own real speed |C'(t)| (`CurveSpeedAt`) as f'(t) - the
+  // standard arc-length-reparametrization root-find - with a bisection
+  // fallback/bracket (`lo`, `hi`) for robustness wherever the speed is
+  // too small to trust (a near-stationary point) or a Newton step would
+  // overshoot outside the bracket a monotonic arc length guarantees.
+  double lo = domain.Min(), hi = domain.Max();
+  double t = domain.Min() + (domain.Max() - domain.Min()) * (clamped / total);
+  double achieved = 0.0;
+  for (int iter = 0; iter < 60; ++iter) {
+    achieved = AdaptiveArcLength(curve_, domain.Min(), t, tolerance);
+    const double f = achieved - clamped;
+    if (std::abs(f) <= tolerance) break;
+    if (f > 0.0) hi = t; else lo = t;
+    const double speed = CurveSpeedAt(curve_, t);
+    double next_t = (speed > 1e-12) ? (t - f / speed) : (0.5 * (lo + hi));
+    if (!(next_t > lo && next_t < hi)) next_t = 0.5 * (lo + hi);
+    t = next_t;
+  }
+  if (out_achieved_length) *out_achieved_length = achieved;
+  return t;
+}
+
 std::vector<double> NurbsCurve::DivideByCount(int count, int samples) const {
   if (count <= 0) {
     throw std::invalid_argument("dino8::kernel::NurbsCurve::DivideByCount: count must be positive");
@@ -2242,6 +2294,45 @@ std::vector<double> NurbsCurve::DivideByLength(double length, int samples) const
   // final domain.Max() pushed below.
   for (int i = 1; length * i < total_length - total_length * 1e-9; ++i) {
     values.push_back(ParameterAtArcLength(length * static_cast<double>(i), samples));
+  }
+  values.push_back(domain.Max());
+  return values;
+}
+
+std::vector<double> NurbsCurve::DivideByCount(int count, double tolerance) const {
+  if (count <= 0) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::DivideByCount: count must be positive");
+  }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::DivideByCount: tolerance must be positive");
+  }
+
+  const ON_Interval domain = curve_.Domain();
+  const double total_length = LengthToTolerance(tolerance);
+  std::vector<double> values;
+  values.reserve(static_cast<size_t>(count) + 1);
+  values.push_back(domain.Min());
+  for (int i = 1; i < count; ++i) {
+    values.push_back(ParameterAtArcLength(total_length * static_cast<double>(i) / count, tolerance));
+  }
+  values.push_back(domain.Max());
+  return values;
+}
+
+std::vector<double> NurbsCurve::DivideByLength(double length, double tolerance) const {
+  if (!(length > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::DivideByLength: length must be positive");
+  }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::DivideByLength: tolerance must be positive");
+  }
+
+  const ON_Interval domain = curve_.Domain();
+  const double total_length = LengthToTolerance(tolerance);
+  std::vector<double> values;
+  values.push_back(domain.Min());
+  for (int i = 1; length * i < total_length - total_length * 1e-9; ++i) {
+    values.push_back(ParameterAtArcLength(length * static_cast<double>(i), tolerance));
   }
   values.push_back(domain.Max());
   return values;
