@@ -5083,9 +5083,11 @@ python3 -c "import sys; v=float('$LATTICE_VOL'); sys.exit(0 if 0 < v < 64 else 1
   || { echo "FAIL LatticeInfill volume ($LATTICE_VOL) is not a plausible sparse-infill fraction of 64"; fail=1; }
 rmcheck 'mesh "LatticeInfill"' "the new lattice object is named and typed correctly"
 rmcheck "  Closed: yes" "the new lattice object is a genuine closed manifold, not just a plausible-looking open mesh"
+rmcheck "Thicken: object 12 thickened by 0.1" "Thicken command ran on a Surface-kind Plane object"
+rmcheck "Bounding box: (340, 0, -0.1) to (350, 10, 0)" "Thicken's result has the exact expected bbox - the real regression test for this pass's own Brep::FromSurface()/Thicken() loop-building fix (both used to leave every face with zero ON_BrepLoop topology, confirmed to collapse this exact bbox to a single point before the fix)"
 echo "$RM" | grep -E "^(ok|FAIL)"
 if echo "$RM" | grep -q "^FAIL"; then fail=1; fi
-rmcheck "smoke: frames=1[0-9][0-9] objects=9" "remesh script produced the expected object count"
+rmcheck "smoke: frames=1[0-9][0-9] objects=10" "remesh script produced the expected object count"
 
 # Remaining-command QC: curve conversion, tween/extruded/developable surfaces,
 # thickness/continuity analysis, mesh clean-up incl. connected-face isolation

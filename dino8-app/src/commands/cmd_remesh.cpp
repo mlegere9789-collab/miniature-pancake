@@ -388,6 +388,65 @@ void LatticeInfillAction(CommandContext& ctx, const std::vector<ObjectId>& ids, 
   if (done == 0) ctx.Warn("LatticeInfill: no eligible closed-manifold solid in the selection");
 }
 
+// Unlike cmd_fillet.cpp/cmd_srfedit.cpp's own identical BrepOfObject()
+// helpers (plain ON_Brep::Create(), with no per-face side-table bookkeeping
+// at all), Thicken() below inspects the sheet's own private per-face trim/
+// hole side tables directly to tell a trimmed sheet from an untrimmed one -
+// which only Brep's own public factories (FromSurface() for the untrimmed
+// case) keep correctly in sync; a bare raw()-assigned Brep's side tables
+// are left empty/mismatched instead, confirmed directly to misbuild a
+// degenerate (single-point bounding box, zero volume) result rather than
+// a real thickened solid. So this goes through Brep::FromSurface() for a
+// Surface-kind object and takes an already-Brep one as-is, never through
+// a manual ON_Brep wrap.
+std::optional<kernel::Brep> SheetBrepOfObject(const SceneObject& o) {
+  if (o.kind == ObjectKind::Brep && o.brep) return *o.brep;
+  if (o.kind == ObjectKind::Surface && o.surface) return kernel::Brep::FromSurface(*o.surface);
+  return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
+// Thicken (parity-map "kernel: Feature operations" - "Thicken a sheet
+// body into a solid" - previously no dino8-app command wired
+// dino8::kernel::Brep::Thicken() (brep.h/sweep.cpp) in at all). Unlike
+// LatticeInfillAction just above, this replaces the selected sheet IN
+// PLACE (ReduceMeshAction's own convention) rather than adding a new
+// object: the result is the SAME sheet, now solid, matching real Rhino's
+// own Thicken command (the flat surface becomes the solid; it doesn't
+// stay around separately). Needs the object's own exact Brep, not a
+// tessellated approximation of it (MeshOf() would throw away the NURBS
+// surface Thicken() itself offsets), so this goes through
+// SheetBrepOfObject() above rather than MeshOf() the way every other
+// action in this file does - accepting a bare Surface-kind object (most
+// freshly-built planar sheets in this app, e.g. `Plane`/`Srf`) as well as
+// an already-Brep one, and promoting the object to Brep-kind on
+// write-back either way.
+// ---------------------------------------------------------------------------
+void ThickenAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
+  const double thickness = in.OptNum("Thickness", 0.1);
+  const bool symmetric = in.Yes("Symmetric", false);
+  ctx.Doc().BeginChange("Thicken");
+  int done = 0;
+  for (ObjectId id : ids) {
+    SceneObject* o = ctx.Doc().Find(id);
+    if (!o) continue;
+    std::optional<kernel::Brep> sheet = SheetBrepOfObject(*o);
+    if (!sheet) continue;
+    try {
+      kernel::Brep solid = kernel::Brep::Thicken(*sheet, thickness, symmetric);
+      o->kind = ObjectKind::Brep;
+      if (!o->brep) o->brep = std::make_unique<kernel::Brep>();
+      *o->brep = solid;
+      o->surface.reset();
+      o->InvalidateDisplay();
+      ++done;
+      ctx.Print("Thicken: object " + std::to_string(id) + " thickened by " + FormatNumber(thickness) +
+                (symmetric ? " (symmetric)" : ""));
+    } catch (const std::exception& ex) { ctx.Warn(ex.what()); }
+  }
+  if (done == 0) ctx.Warn("Thicken: no eligible single-face sheet in the selection");
+}
+
 // ---------------------------------------------------------------------------
 // Heightfield from an image (Image= option) or the existing sine-wave grid.
 // ---------------------------------------------------------------------------
@@ -532,6 +591,8 @@ void RegisterRemeshCommands(CommandEngine& e) {
   Reg(e, "LatticeInfill",
       RemeshTool("Select solid(s) for lattice infill", {Numeric("CellSize", 1.0), Numeric("StrutRadius", 0.1), Numeric("CircleSegments", 12)},
                  LatticeInfillAction));
+  Reg(e, "Thicken",
+      RemeshTool("Select single-face sheet(s) to thicken", {Numeric("Thickness", 0.1), Toggle("Symmetric", false)}, ThickenAction));
   Reg(e, "Heightfield",
       RemeshPointsTool({"First corner", "Other corner"},
                         {Numeric("Resolution", 60), Numeric("Amplitude", 5), Numeric("Waves", 2), OptionSpec{"Image", "", {}, false, false}},

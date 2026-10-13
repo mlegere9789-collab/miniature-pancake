@@ -77,3 +77,25 @@ SelNone
 SelID 11
 What
 @expect_objects 9
+# --- Thicken replaces a flat 10x10 planar sheet (id 12, a Surface-kind
+# object - the "Plane" command's own output, not an already-Brep one) IN
+# PLACE with a real solid at the default Thickness=0.1, Symmetric=No - the
+# exact bbox this produces (z in [-0.1, 0]: Thicken()'s own "lo stays at
+# the original surface, hi offsets along -normal" convention for this
+# particular flat sheet's own NormalAt() direction) is the real
+# regression test for the genuine fix this pass made to both
+# Brep::FromSurface() and Thicken() itself: each used to build its own
+# face(s) with ZERO ON_BrepLoop topology at all (confirmed directly via
+# dino8_scratch_test before this fixture existed), which this app's own
+# generic BrepMesher.cpp read as a boundary-less, unrenderable face -
+# before the fix, What's own bounding box here collapsed to a single
+# point and Volume read 0 with no warning at all, not just a wrong
+# number. No object is added or removed - same count as above.
+Plane 340,0,0 350,10,0
+SelNone
+SelID 12
+Thicken
+SelNone
+SelID 12
+What
+@expect_objects 10

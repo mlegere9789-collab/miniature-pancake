@@ -67642,6 +67642,40 @@ void TestThickenFlatSheetProducesExactBoxVolume() {
         "z=2 - not split across both sides");
 }
 
+// A real, previously-confirmed defect, not merely a style nit: Brep::
+// FromSurface()'s own bare AddSurface()+NewFace(int) idiom (and
+// Thicken()'s own add_cap()/add_wall() lambdas, sweep.cpp, built the
+// identical way) left every face with ZERO ON_BrepLoop/ON_BrepTrim
+// topology - this kernel's own specialized consumers (TessellateToClosedMesh()/
+// Volume()/GetTightBoundingBox(), all exercised just above and still
+// passing throughout) never needed real loops, reading `face_trim_loops_`
+// instead, so the gap went unnoticed until dino8-app's own generic,
+// standard-OpenNURBS-topology BrepMesher.cpp was handed a Thicken() result
+// directly (a NEW app command, cmd_remesh.cpp) and rendered it as a
+// completely empty, zero-triangle mesh - confirmed directly via a real
+// smoke-tested app run before writing this test, not merely suspected.
+// Fixed by adding the missing `ON_Brep::NewOuterLoop()` call both places.
+void TestFromSurfaceAndThickenBuildRealOuterLoopsNotJustBareFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+
+  const std::vector<Point3d> grid = {P(0, 0, 0), P(0, 10, 0), P(10, 0, 0), P(10, 10, 0)};
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const Brep sheet = Brep::FromSurface(flat);
+  Check(sheet.raw().m_F[0].m_li.Count() > 0,
+        "Brep::FromSurface()'s own single face has a real outer loop, not zero loops");
+  Check(sheet.raw().IsValid(), "Brep::FromSurface()'s own result is now a genuinely IsValid() ON_Brep");
+
+  const Brep solid = Brep::Thicken(sheet, 0.1);
+  Check(solid.FaceCount() == 6, "sanity: still the expected 2 caps + 4 side walls");
+  bool every_face_has_a_loop = true;
+  for (int fi = 0; fi < solid.raw().m_F.Count(); ++fi) {
+    if (solid.raw().m_F[fi].m_li.Count() == 0) every_face_has_a_loop = false;
+  }
+  Check(every_face_has_a_loop,
+        "every one of Thicken()'s own 6 faces (both caps, all 4 side walls) has a real outer loop, not zero loops");
+}
+
 void TestThickenSymmetricPutsOriginalSurfaceOnMidplane() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -80896,6 +80930,7 @@ int main() {
   RunTest("sweep_tests::TestExtrudeProfileWithHolesHandlesMultipleNonOverlappingHoles", sweep_tests::TestExtrudeProfileWithHolesHandlesMultipleNonOverlappingHoles);
   RunTest("sweep_tests::TestExtrudeProfileWithHolesRejectsInvalidArguments", sweep_tests::TestExtrudeProfileWithHolesRejectsInvalidArguments);
   RunTest("sweep_tests::TestThickenFlatSheetProducesExactBoxVolume", sweep_tests::TestThickenFlatSheetProducesExactBoxVolume);
+  RunTest("sweep_tests::TestFromSurfaceAndThickenBuildRealOuterLoopsNotJustBareFaces", sweep_tests::TestFromSurfaceAndThickenBuildRealOuterLoopsNotJustBareFaces);
   RunTest("sweep_tests::TestThickenSymmetricPutsOriginalSurfaceOnMidplane", sweep_tests::TestThickenSymmetricPutsOriginalSurfaceOnMidplane);
   RunTest("sweep_tests::TestThickenCurvedSheetProducesGenuineClosedSolid", sweep_tests::TestThickenCurvedSheetProducesGenuineClosedSolid);
   RunTest("sweep_tests::TestThickenTrimmedPlanarSheetMatchesExactTrimAreaTimesThickness", sweep_tests::TestThickenTrimmedPlanarSheetMatchesExactTrimAreaTimesThickness);
