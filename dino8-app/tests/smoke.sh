@@ -6377,6 +6377,29 @@ hcheck "Bounding box min 20,0,20 max 30,0,25" "UpdateHistory genuinely re-derive
 hcheck "History recording: on. 1 object(s) with live construction history:" "the live report lists exactly one tracked object"
 hcheck "object 4: Extrude <- 3" "the report names the real dependent/source pair (surface 4 built from curve 3)"
 
+# ExtrudeCrvToPoint Solid=Yes: RebuildExtrudeToPoint (cmd_solids.cpp) now
+# wires a closed, planar, non-self-intersecting profile into
+# kernel::Brep::ExtrudeToPoint for a genuine capped B-rep cone instead of
+# the old centroid-collapsed ruled surface - see
+# extrude_to_point_solid_script.txt's own header comment for exactly what
+# this checks, including the pre-existing (not newly broken) app-level
+# Volume gap on this topology.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  E2P="$("$BIN" --smoke 60 --script "$HERE/extrude_to_point_solid_script.txt" 2>&1)" || { echo "$E2P"; echo "FAIL: extrude-to-point-solid script exited non-zero"; exit 1; }
+else
+  E2P="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/extrude_to_point_solid_script.txt" 2>&1)" || { echo "$E2P"; echo "FAIL: extrude-to-point-solid script exited non-zero"; exit 1; }
+fi
+echo "$E2P" | grep -E "^(ok|FAIL)"
+if echo "$E2P" | grep -q "^FAIL"; then fail=1; fi
+echo "$E2P" | grep -q "^smoke:" || { echo "$E2P"; echo "FAIL: extrude-to-point-solid script produced no smoke line"; fail=1; }
+e2pcheck() { if echo "$E2P" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$E2P" "$1"; fail=1; fi; }
+e2pcheck "Object 2 (polysurface) layer Default" "Solid=Yes on a closed planar rectangle builds a real polysurface, not a degenerate surface"
+e2pcheck "2 faces, 3 edges, closed solid" "the built cone is a genuine closed solid (IsSolid), not just visually cone-shaped"
+e2pcheck "Object 2: valid" "Check reports the new solid cone as valid"
+e2pcheck "Object 4 (surface) layer Default" "Solid=No on the identical curve/apex still falls back to the pre-existing ruled surface, unchanged"
+e2pcheck "Object 6 (surface) layer Default" "a non-star-shaped (C-shaped) profile falls back to the ruled surface instead of throwing or crashing when ExtrudeToPoint refuses its flat cap"
+e2pcheck "Object 8 (surface) layer Default" "an open curve is unaffected - still the pre-existing ruled surface, since this pass only wires the closed-profile capped-cone case"
+
 # History extended to a sixth command, Pipe (PipeCommand, cmd_surface.cpp;
 # RebuildPipe, history_rebuild.h) - see history_pipe_script.txt's own
 # header comment for exactly what this checks. Same real-bounding-box-move
