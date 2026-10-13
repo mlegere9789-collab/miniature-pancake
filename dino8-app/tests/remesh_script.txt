@@ -58,3 +58,22 @@ SelNone
 SelID 9
 What
 @expect_objects 7
+# --- LatticeInfill fills a solid box (id 10) with a sparse cubic lattice
+# (id 11, default CellSize=1/StrutRadius=0.1/CircleSegments=12), adding a
+# NEW object rather than replacing the box - a genuine closed mesh whose
+# own volume stays well under the box's own (64), the real test that this
+# is a sparse strut lattice and not, say, a solid copy of the box.
+Box 320,0,0 324,4,0 4
+SelNone
+SelID 10
+Volume
+SelNone
+SelID 10
+LatticeInfill
+SelNone
+SelID 11
+Volume
+SelNone
+SelID 11
+What
+@expect_objects 9

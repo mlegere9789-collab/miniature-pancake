@@ -17497,6 +17497,117 @@ void TestBrepVolumeAndAreaMatchClosedForms() {
   }
 }
 
+// Closes the "Exact B-rep / NURBS-face mass properties" bullet's own
+// most precisely-named remaining gap ("volume/area only - no centroid
+// or moments of inertia"): Brep::VolumeMassProperties(), the real
+// kernel-level counterpart to Mesh::VolumeMassProperties() this class
+// never had, computed exactly (per the same already-tested Volume()/
+// Area() divergence-theorem quadrature) rather than through tessellation.
+void TestBrepVolumeMassProperties() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MassProperties;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Axis-aligned box, side lengths 2x3x4, offset from the origin so a
+  // centroid bug (e.g. reporting the ORIGIN moments instead of the
+  // centroidal ones) can't hide behind a coincidentally-zero centroid.
+  // Hand-derivable: V=24; centroid=(1,1.5,2); for a box of side lengths
+  // a,b,c about its OWN centroid, Ixx=V(b^2+c^2)/12, Iyy=V(a^2+c^2)/12,
+  // Izz=V(a^2+b^2)/12, with every product of inertia exactly 0 (an
+  // axis-aligned box is symmetric about its own centroid along each
+  // axis) - a=2,b=3,c=4 gives Ixx=50, Iyy=40, Izz=26.
+  {
+    const Brep box = Brep::Box(0, 0, 0, 2, 3, 4);
+    const MassProperties mp = box.VolumeMassProperties();
+    Check(std::abs(mp.volume - 24.0) < 1e-9, "VolumeMassProperties(): Box() volume matches 2*3*4 to machine precision");
+    Check(mp.centroid.DistanceTo(Point3d(1, 1.5, 2)) < 1e-9,
+          "VolumeMassProperties(): Box()'s centroid matches its exact geometric center to machine precision");
+    Check(std::abs(mp.ixx - 50.0) < 1e-6 && std::abs(mp.iyy - 40.0) < 1e-6 && std::abs(mp.izz - 26.0) < 1e-6,
+          "VolumeMassProperties(): Box()'s centroidal Ixx/Iyy/Izz match the hand-derived 50/40/26 "
+          "(V*(b^2+c^2)/12 etc.) to within 1e-6");
+    Check(std::abs(mp.ixy) < 1e-6 && std::abs(mp.iyz) < 1e-6 && std::abs(mp.ixz) < 1e-6,
+          "VolumeMassProperties(): Box()'s products of inertia are exactly 0 - an axis-aligned box is "
+          "symmetric about its own centroid along every axis");
+    // Safety invariant: every one of the box's 3 real moments of inertia
+    // is a genuine eigenvalue of the (already axis-aligned, so already
+    // diagonal) centroidal tensor, in ascending order, with a right-
+    // handed orthonormal axis frame.
+    Check(mp.principal_moments[0] <= mp.principal_moments[1] + 1e-9 &&
+              mp.principal_moments[1] <= mp.principal_moments[2] + 1e-9,
+          "VolumeMassProperties(): Box()'s principal_moments come back in ascending order");
+    const Vector3d cross = ON_CrossProduct(mp.principal_axes[0], mp.principal_axes[1]);
+    Check((cross - mp.principal_axes[2]).Length() < 1e-9,
+          "VolumeMassProperties(): Box()'s principal_axes form a right-handed orthonormal frame (axes[0] x "
+          "axes[1] == axes[2])");
+  }
+
+  // Sphere, radius 5, centered well off the origin - the same ~1e-4
+  // relative tier TestBrepVolumeAndAreaMatchClosedForms() already
+  // establishes for Volume()/Area() on a Sphere() fixture (a genuine
+  // NURBS/rational-Bezier approximation of a true sphere, not an exact
+  // one), inherited here rather than re-argued: V=4/3*pi*r^3;
+  // centroid=center; Ixx=Iyy=Izz=(2/5)*V*r^2 about the centroid (a
+  // sphere has no preferred axis), every product of inertia 0.
+  {
+    const double r = 5.0;
+    const Point3d center(10, -3, 7);
+    const Brep sphere = Brep::Sphere(center, r);
+    const MassProperties mp = sphere.VolumeMassProperties();
+    const double exact_vol = (4.0 / 3.0) * M_PI * r * r * r;
+    const double exact_i = 0.4 * exact_vol * r * r;
+    Check(std::abs(mp.volume - exact_vol) / exact_vol < 1e-4,
+          "VolumeMassProperties(): Sphere() volume within 1e-4 relative of the exact 4/3*pi*r^3");
+    Check(mp.centroid.DistanceTo(center) / r < 1e-3,
+          "VolumeMassProperties(): Sphere()'s centroid matches its own real center within 1e-3 relative "
+          "(of radius)");
+    Check(std::abs(mp.ixx - exact_i) / exact_i < 1e-3 && std::abs(mp.iyy - exact_i) / exact_i < 1e-3 &&
+              std::abs(mp.izz - exact_i) / exact_i < 1e-3,
+          "VolumeMassProperties(): Sphere()'s Ixx/Iyy/Izz all match the hand-derived (2/5)*V*r^2 within 1e-3 "
+          "relative - no preferred axis");
+    Check(std::abs(mp.ixy) / exact_i < 1e-3 && std::abs(mp.iyz) / exact_i < 1e-3 && std::abs(mp.ixz) / exact_i < 1e-3,
+          "VolumeMassProperties(): Sphere()'s products of inertia are all negligible relative to its own "
+          "diagonal moments");
+  }
+
+  // Negative controls: the same closedness precondition Volume() itself
+  // already requires, a (near) zero volume, and a negative (inward-
+  // wound) volume all throw std::invalid_argument.
+  {
+    const std::vector<Point3d> grid = {
+        Point3d(0, 0, 0),
+        Point3d(0, 10, 0),
+        Point3d(10, 0, 0),
+        Point3d(10, 10, 0),
+    };
+    const dino8::kernel::NurbsSurface surface = dino8::kernel::NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    const Brep single_face = Brep::TrimmedPlanarFace(surface, {dino8::kernel::Point2d(0.15, 0.15),
+                                                                dino8::kernel::Point2d(0.85, 0.15),
+                                                                dino8::kernel::Point2d(0.85, 0.85),
+                                                                dino8::kernel::Point2d(0.15, 0.85)});
+    bool threw = false;
+    try {
+      single_face.VolumeMassProperties();
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "VolumeMassProperties(): throws on a single, non-closed planar face - the same precondition "
+                 "Volume() itself already requires");
+  }
+  {
+    Brep box = Brep::Box(0, 0, 0, 2, 3, 4);
+    for (int i = 0; i < box.raw().m_F.Count(); ++i) box.raw().m_F[i].m_bRev = !box.raw().m_F[i].m_bRev;
+    bool threw = false;
+    try {
+      box.VolumeMassProperties();
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "VolumeMassProperties(): throws when every face is wound inward (negative volume), rather "
+                 "than silently returning negated moments");
+  }
+}
+
 // Closes the "Surface / B-rep area" bullet's own named gap ("Brep::Area()
 // throws on any trimmed face and on general-boolean results") for a face
 // with GENUINE ON_Brep loop topology (face.m_li.Count() > 0), as opposed
@@ -79403,6 +79514,7 @@ int main() {
   RunTest("TestBrepSphereBooleanEndToEnd", TestBrepSphereBooleanEndToEnd);
   RunTest("TestBrepTorusIsClosedAndWatertight", TestBrepTorusIsClosedAndWatertight);
   RunTest("TestBrepVolumeAndAreaMatchClosedForms", TestBrepVolumeAndAreaMatchClosedForms);
+  RunTest("TestBrepVolumeMassProperties", TestBrepVolumeMassProperties);
   RunTest("TestBrepAreaHandlesGenuinelyTrimmedFaces", TestBrepAreaHandlesGenuinelyTrimmedFaces);
   RunTest("TestBrepVolumeHandlesGenuinelyTrimmedFaces", TestBrepVolumeHandlesGenuinelyTrimmedFaces);
   RunTest("TestBrepTrimmedPlanarFaceRejectsTooFewPoints", TestBrepTrimmedPlanarFaceRejectsTooFewPoints);

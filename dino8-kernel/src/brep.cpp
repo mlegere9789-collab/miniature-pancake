@@ -1114,6 +1114,178 @@ double Brep::Area() const {
   return total;
 }
 
+namespace {
+
+// Sums `moment_integrand(p, n)` over every face of `self`, via the exact
+// same per-face control flow `Volume()`/`Area()` each already establish
+// above (whole-domain faces through `IntegrateOverNurbsSurface()`,
+// genuinely trimmed faces through `TrimmedFaceUVPolygon()` +
+// `EarClipTriangulate()` + adaptive-triangle quadrature, the same
+// pseudo-trim/no-single-outer-loop refusals) - `p` is the surface point,
+// `n` the UN-normalized `Su x Sv` normal, so `n` already carries the
+// `dA` Jacobian the way `Volume()`'s own inline integrand relies on
+// (`n dA = (Su x Sv) du dv`); `moment_integrand` never needs to see `u`/
+// `v` directly. `VolumeMassProperties()` below calls this once per each
+// of the ten divergence-theorem integrals Eberly's polyhedral method
+// needs ({1, x, y, z, x^2, y^2, z^2, xy, yz, zx}), each with its own `F`
+// whose divergence is that integrand - ten separate per-face passes
+// rather than one pass accumulating ten running sums at once, a
+// deliberate simplicity-over-speed choice for what is a one-shot query,
+// not a hot loop, and one that lets this reuse `IntegrateOverNurbsSurface`/
+// `IntegrateTriangleAdaptive` completely unchanged (both are scalar-
+// integrand-only).
+template <typename MomentIntegrand>
+double BrepDivergenceSum(const Brep& self, MomentIntegrand&& moment_integrand) {
+  const ON_Brep& brep = self.raw();
+  double total = 0.0;
+  for (int i = 0; i < brep.m_F.Count(); ++i) {
+    const ON_BrepFace& face = brep.m_F[i];
+    const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
+    if (!s) {
+      throw std::runtime_error("dino8::kernel::Brep::VolumeMassProperties: face " + std::to_string(i) +
+                                " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
+    }
+    const double sign = face.m_bRev ? -1.0 : 1.0;
+    const auto integrand = [&](double u, double v) {
+      ON_3dPoint p;
+      ON_3dVector su, sv;
+      if (!s->Ev1Der(u, v, p, su, sv)) {
+        throw std::runtime_error("dino8::kernel::Brep::VolumeMassProperties: Ev1Der failed on face " +
+                                  std::to_string(i));
+      }
+      const ON_3dVector n = ON_CrossProduct(su, sv);
+      return moment_integrand(p, n);
+    };
+    if (self.FaceCoversWholeDomain(i)) {
+      total += sign * IntegrateOverNurbsSurface(*s, integrand);
+      continue;
+    }
+    if (face.m_li.Count() == 0) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::VolumeMassProperties: face " + std::to_string(i) +
+          " is trimmed by this kernel's own pseudo-trim side tables (TrimmedPlanarFace()'s own bare-surface "
+          "convention), not real ON_Brep loop topology - exact integration over that convention's own trim "
+          "region is a materially different problem this does not attempt");
+    }
+    const std::vector<Point2d> polygon = TrimmedFaceUVPolygon(brep, face);
+    if (polygon.size() < 3) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::VolumeMassProperties: face " + std::to_string(i) +
+          " has no single well-formed ON_BrepLoop::outer loop (zero, or more than one, disjoint outer "
+          "boundary) - this does not attempt that case");
+    }
+    const std::vector<std::array<int, 3>> tris = dino8::kernel::detail::EarClipTriangulate(polygon);
+    std::vector<double> coarse(tris.size());
+    double coarse_total = 0.0;
+    for (size_t t = 0; t < tris.size(); ++t) {
+      coarse[t] = TriangleQuad7(polygon[static_cast<size_t>(tris[t][0])], polygon[static_cast<size_t>(tris[t][1])],
+                                 polygon[static_cast<size_t>(tris[t][2])], integrand);
+      coarse_total += std::fabs(coarse[t]);
+    }
+    const double tol_total = std::max(1e-12, kTrimmedFaceIntegralRelTol * coarse_total);
+    for (size_t t = 0; t < tris.size(); ++t) {
+      const double share = coarse_total > 0.0 ? std::fabs(coarse[t]) / coarse_total : 1.0 / static_cast<double>(tris.size());
+      total += sign * IntegrateTriangleAdaptive(polygon[static_cast<size_t>(tris[t][0])], polygon[static_cast<size_t>(tris[t][1])],
+                                                 polygon[static_cast<size_t>(tris[t][2])], integrand, tol_total * share,
+                                                 kTrimmedFaceIntegralMaxDepth);
+    }
+  }
+  return total;
+}
+
+}  // namespace
+
+MassProperties Brep::VolumeMassProperties() const {
+  // Same precondition Volume() itself already requires - see its own
+  // doc comment above for exactly why raw().IsSolid() is the wrong
+  // check here.
+  if (!TessellateToClosedMesh(8, 8).IsClosedManifold()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::VolumeMassProperties: this Brep is not a closed, watertight solid "
+        "(TessellateToClosedMesh(8, 8).IsClosedManifold() is false) - there is no well-defined "
+        "enclosed volume otherwise");
+  }
+
+  const double volume = BrepDivergenceSum(
+      *this, [](const ON_3dPoint& p, const ON_3dVector& n) { return (p.x * n.x + p.y * n.y + p.z * n.z) / 3.0; });
+  if (std::abs(volume) <= tolerance::kZero) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::VolumeMassProperties: this Brep's volume is (near) zero - not a "
+        "non-degenerate solid whose centroid/moments are defined");
+  }
+  if (volume < 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::VolumeMassProperties: this Brep's volume is negative - its faces are "
+        "consistently wound INWARD; unlike Mesh::VolumeMassProperties()/FlipNormals(), there is no "
+        "single fix to apply here, since m_bRev is per-face topology data this method does not own "
+        "the layout of");
+  }
+
+  // First moments (Mx, My, Mz = volume * centroid component), via
+  // F = (x^2/2, 0, 0) etc., div F = x/y/z respectively.
+  const double mx = BrepDivergenceSum(*this, [](const ON_3dPoint& p, const ON_3dVector& n) { return 0.5 * p.x * p.x * n.x; });
+  const double my = BrepDivergenceSum(*this, [](const ON_3dPoint& p, const ON_3dVector& n) { return 0.5 * p.y * p.y * n.y; });
+  const double mz = BrepDivergenceSum(*this, [](const ON_3dPoint& p, const ON_3dVector& n) { return 0.5 * p.z * p.z * n.z; });
+
+  MassProperties mp;
+  mp.volume = volume;
+  mp.centroid = Point3d(mx / volume, my / volume, mz / volume);
+  const double cx = mp.centroid.x, cy = mp.centroid.y, cz = mp.centroid.z;
+
+  // Second moments about the origin: integral of x^2/y^2/z^2 via
+  // F = (x^3/3, 0, 0) etc. (div F = x^2/y^2/z^2), and the three cross
+  // terms integral of xy/yz/zx via F = (x^2*y/2, 0, 0) etc. (div F =
+  // x*y, and symmetrically for the other two) - the identical
+  // decomposition Mesh::VolumeMassProperties() reduces to closed-form
+  // per-triangle polynomials for {x^2, y^2, z^2, xy, yz, zx}, computed
+  // here as real surface integrals instead.
+  const double ix2 = BrepDivergenceSum(*this, [](const ON_3dPoint& p, const ON_3dVector& n) { return (p.x * p.x * p.x / 3.0) * n.x; });
+  const double iy2 = BrepDivergenceSum(*this, [](const ON_3dPoint& p, const ON_3dVector& n) { return (p.y * p.y * p.y / 3.0) * n.y; });
+  const double iz2 = BrepDivergenceSum(*this, [](const ON_3dPoint& p, const ON_3dVector& n) { return (p.z * p.z * p.z / 3.0) * n.z; });
+  const double ixy = BrepDivergenceSum(*this, [](const ON_3dPoint& p, const ON_3dVector& n) { return 0.5 * p.x * p.x * p.y * n.x; });
+  const double iyz = BrepDivergenceSum(*this, [](const ON_3dPoint& p, const ON_3dVector& n) { return 0.5 * p.y * p.y * p.z * n.y; });
+  const double izx = BrepDivergenceSum(*this, [](const ON_3dPoint& p, const ON_3dVector& n) { return 0.5 * p.z * p.z * p.x * n.z; });
+
+  mp.ixx_origin = iy2 + iz2;
+  mp.iyy_origin = iz2 + ix2;
+  mp.izz_origin = ix2 + iy2;
+  mp.ixy_origin = ixy;
+  mp.iyz_origin = iyz;
+  mp.ixz_origin = izx;
+
+  // Parallel-axis theorem, origin -> centroid - identical to
+  // Mesh::VolumeMassProperties()'s own formulas.
+  mp.ixx = mp.ixx_origin - mp.volume * (cy * cy + cz * cz);
+  mp.iyy = mp.iyy_origin - mp.volume * (cz * cz + cx * cx);
+  mp.izz = mp.izz_origin - mp.volume * (cx * cx + cy * cy);
+  mp.ixy = mp.ixy_origin - mp.volume * cx * cy;
+  mp.iyz = mp.iyz_origin - mp.volume * cy * cz;
+  mp.ixz = mp.ixz_origin - mp.volume * cz * cx;
+
+  double e[3];
+  Vector3d v[3];
+  if (!ON_Sym3x3EigenSolver(mp.ixx, mp.iyy, mp.izz, -mp.ixy, -mp.iyz, -mp.ixz, &e[0], v[0], &e[1], v[1], &e[2],
+                            v[2])) {
+    throw std::runtime_error(
+        "dino8::kernel::Brep::VolumeMassProperties: ON_Sym3x3EigenSolver reported failure on the centroidal "
+        "inertia tensor");
+  }
+  std::array<int, 3> order = {0, 1, 2};
+  std::sort(order.begin(), order.end(), [&](int a, int b) { return e[a] < e[b]; });
+  for (int k = 0; k < 3; ++k) {
+    mp.principal_moments[static_cast<size_t>(k)] = e[order[static_cast<size_t>(k)]];
+    Vector3d axis = v[order[static_cast<size_t>(k)]];
+    axis.Unitize();
+    mp.principal_axes[static_cast<size_t>(k)] = axis;
+  }
+  mp.principal_axes[2] = ON_CrossProduct(mp.principal_axes[0], mp.principal_axes[1]);
+  mp.principal_axes[2].Unitize();
+  for (size_t k = 0; k < 3; ++k) {
+    mp.radii_of_gyration[k] = std::sqrt(std::max(mp.principal_moments[k], 0.0) / mp.volume);
+  }
+  return mp;
+}
+
 Brep::OrientedBox Brep::GetOrientedBoundingBox(int u_divisions, int v_divisions) const {
   const int face_count = brep_.m_F.Count();
   if (face_count == 0) {
