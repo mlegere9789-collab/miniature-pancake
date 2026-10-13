@@ -54059,6 +54059,118 @@ void TestBrepSplitDisjointPieces() {
         "pieces[1] is itself a genuinely valid, closed, oriented, solid Brep");
 }
 
+// The gap TestBrepSplitDisjointPieces() above documents as a throw
+// (Box()'s 6 faces have no real loop/trim/edge topology, so
+// LabelConnectedComponents() cannot tell they're all one body) is now
+// closed for the one case Compound() actually has real information
+// about: a Brep assembled FROM Compound(), where each original lump's
+// own [begin, end) face range is recorded in lump_face_ranges_
+// independently of per-face topology. This confirms SplitDisjointPieces()
+// uses that bookkeeping instead of throwing - and that it still throws
+// for a lone, non-Compound Brep (already covered above).
+void TestBrepSplitDisjointPiecesCompoundLumpFallback() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  auto exact_bbox_from_loops = [](const Brep& b) {
+    Point3d lo(0, 0, 0), hi(0, 0, 0);
+    bool first = true;
+    for (const Brep::PlanarFace& f : b.PlanarFaces()) {
+      for (const Point3d& p : f.loop) {
+        if (first) {
+          lo = hi = p;
+          first = false;
+          continue;
+        }
+        lo.x = std::min(lo.x, p.x);
+        lo.y = std::min(lo.y, p.y);
+        lo.z = std::min(lo.z, p.z);
+        hi.x = std::max(hi.x, p.x);
+        hi.y = std::max(hi.y, p.y);
+        hi.z = std::max(hi.z, p.z);
+      }
+    }
+    return std::make_pair(lo, hi);
+  };
+  auto close = [](Point3d a, Point3d b) { return a.DistanceTo(b) < 1e-9; };
+
+  // Two plain Box()es - NEITHER has real loop/trim/edge topology on its
+  // own - compounded together. Before this fix this threw exactly like a
+  // lone Box() does; now LumpFaceRanges() (set by Compound()) gives
+  // SplitDisjointPieces() the two lumps directly.
+  {
+    const Brep box_a = Brep::Box(0, 0, 0, 1, 1, 1);
+    const Brep box_b = Brep::Box(10, 10, 10, 11, 12, 13);
+    const Brep compound = Brep::Compound({box_a, box_b});
+    Check(compound.LumpFaceRanges() == std::vector<std::pair<int, int>>{{0, 6}, {6, 12}},
+          "Compound() of two Box()es records two lumps even though neither has real topology");
+
+    const std::vector<Brep> pieces = compound.SplitDisjointPieces();
+    Check(pieces.size() == 2, "SplitDisjointPieces() now recovers both lumps from Compound()'s own bookkeeping "
+                              "instead of throwing");
+    Check(pieces[0].FaceCount() == 6 && pieces[1].FaceCount() == 6, "each recovered piece has its own box's 6 faces");
+    const auto bbox0 = exact_bbox_from_loops(pieces[0]);
+    Check(close(bbox0.first, Point3d(0, 0, 0)) && close(bbox0.second, Point3d(1, 1, 1)),
+          "pieces[0] is exactly box A - lump order, not a geometric guess");
+    const auto bbox1 = exact_bbox_from_loops(pieces[1]);
+    Check(close(bbox1.first, Point3d(10, 10, 10)) && close(bbox1.second, Point3d(11, 12, 13)),
+          "pieces[1] is exactly box B");
+    // Confirmed directly, not assumed: a lump recovered this way is a
+    // DuplicateFaces() copy of faces that had no real loop/trim/edge
+    // topology to begin with (a plain Box()'s own "minimal
+    // NewFace(surface_index)-only path" - see brep.h's class-level doc
+    // comment), so it inherits exactly the same limitation a bare Box()
+    // already has (also confirmed directly, same convention this file's
+    // own `ExtrudeToBoundary()`-via-`FromUntrimmedQuadFaces()` tests
+    // document): raw().IsSolid() is false, not true - this fallback
+    // recovers the right FACES, not topology Box() itself never had.
+    Check(!pieces[0].raw().IsSolid(), "a lump recovered this way keeps exactly Box()'s own honest "
+                                      "not-a-real-closed-solid limitation - this fallback recovers the right "
+                                      "faces, not topology that was never there");
+  }
+
+  // A lone Box() (one lump, no Compound() bookkeeping) must still throw -
+  // the fallback above must never fire for a Brep LumpFaceRanges() can't
+  // really answer for.
+  {
+    bool threw = false;
+    try {
+      Brep::Box(0, 0, 0, 1, 1, 1).SplitDisjointPieces();
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "a lone Box() (not a Compound() of more than one lump) still throws rather than guessing");
+  }
+
+  // A mixed compound: one lump is a plain Box() (no real topology), the
+  // other is itself a genuinely two-body Brep built via FromPlanarFaces()
+  // (real topology throughout, but secretly two disjoint pieces -
+  // Compound() never checks that). The fallback must recurse into that
+  // second lump rather than returning it whole, for 3 total pieces, not 2.
+  {
+    const Brep box_a = Brep::Box(0, 0, 0, 1, 1, 1);
+    const std::vector<Brep::PlanarFace> faces_b = Brep::Box(10, 10, 10, 11, 12, 13).PlanarFaces();
+    const std::vector<Brep::PlanarFace> faces_c = Brep::Box(20, 20, 20, 21, 22, 23).PlanarFaces();
+    std::vector<Brep::PlanarFace> combined_bc = faces_b;
+    combined_bc.insert(combined_bc.end(), faces_c.begin(), faces_c.end());
+    const Brep two_body_lump = Brep::FromPlanarFaces(combined_bc);
+    Check(two_body_lump.FaceCount() == 12, "the second lump genuinely holds two disjoint boxes' worth of faces");
+
+    const Brep compound = Brep::Compound({box_a, two_body_lump});
+    Check(compound.LumpFaceRanges() == std::vector<std::pair<int, int>>{{0, 6}, {6, 18}},
+          "Compound() still only records its own two top-level lumps - it has no idea the second one is secretly "
+          "two bodies");
+
+    const std::vector<Brep> pieces = compound.SplitDisjointPieces();
+    Check(pieces.size() == 3,
+          "the topology-less lump is taken whole (1 piece) and the real-topology lump is recursed into its own "
+          "2 genuinely disjoint pieces, for 3 total - not 2");
+    Check(pieces[0].FaceCount() == 6, "piece 0 is the plain Box() lump, taken whole");
+    Check(pieces[1].FaceCount() == 6 && pieces[2].FaceCount() == 6,
+          "pieces 1 and 2 are the two boxes recovered from inside the second lump");
+  }
+}
+
 // The scope limits that are meant to stay honest throws, and the new
 // refusals: SymmetricDifference of the parallel-crossing pair still hits
 // B - A's cap-trim refusal; Difference(Steinmetz Union, b) still hits the
@@ -79935,6 +80047,7 @@ int main() {
   RunTest("TestBooleanCombineMixedChainedCallsThroughNotchedResults", TestBooleanCombineMixedChainedCallsThroughNotchedResults);
   RunTest("TestMixedFacesReturnsVerbatimRecordsForBooleanResults", TestMixedFacesReturnsVerbatimRecordsForBooleanResults);
   RunTest("TestBrepSplitDisjointPieces", TestBrepSplitDisjointPieces);
+  RunTest("TestBrepSplitDisjointPiecesCompoundLumpFallback", TestBrepSplitDisjointPiecesCompoundLumpFallback);
   RunTest("TestBooleanCombineMixedChainedNegativeControls", TestBooleanCombineMixedChainedNegativeControls);
   RunTest("TestBooleanCombineMixedUnsupportedGeometryRefusalsAreTyped", TestBooleanCombineMixedUnsupportedGeometryRefusalsAreTyped);
   RunTest("TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion", TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion);
