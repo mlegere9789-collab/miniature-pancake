@@ -1358,7 +1358,7 @@ secheck "ExtractWireframe: 6 curve(s)" "ExtractWireframe extracted the cylinder 
 secheck "Bounding box min 200,0,0 max 220,10,0" "ExtendSrf grew the plane by 10"
 secheck "UnrollSrf: face 0 unrolled exactly (a real plane/cylinder/cone - zero distortion), area 314.2" "UnrollSrf now uses the kernel's exact NurbsSurface::UnrollDevelopable() on a real cylinder wall (radius 5, height 10: true area 2*pi*5*10 = 314.16, exact - not the old heuristic's own approximate 313)"
 secheck "Silhouette: [0-9]* curve(s)" "Silhouette produced outline curves"
-secheck "RailRevolve: surface created" "RailRevolve built a surface"
+secheck "RailRevolve: genuine B-rep solid/shell built" "RailRevolve built a surface"
 secheck "Ribbon: 1 ribbon surface(s), width 5" "Ribbon built a ribbon surface"
 secheck "SrfControlPtGrid: surface from 2 x 2 points" "SrfControlPtGrid built a surface from points"
 secheck "UntrimBorder: face 0's outer trim removed (holes kept)" "UntrimBorder removed only the outer trim"
@@ -7053,6 +7053,64 @@ else
   fail=1
 fi
 
+# Native .3dm Leader export: Save3dm had no ON_Leader writer at all before
+# this change (see BuildOnLeaderForGroup in File3dm.cpp) - a Leader
+# annotation made in-app round-tripped out through .3dm as its own baked
+# polyline/arrowhead/glyph-text curves plus LeaderTip/LeaderRest/Text/...
+# user_text metadata, never a real ON_Leader object a genuinely
+# independent Rhino/OpenNURBS-based reader would recognize as one leader -
+# the Leader half of this bullet's own disclosed "Dim*/Leader/Text... still
+# written exactly as before" gap (Hatch and Text already closed the same
+# way, above). Makes a real 3-point Leader with a "Hi" label, saves it, and
+# reopens the saved file in a fresh document: SelLeader/List must find the
+# exact same 5 member curves back (2 shape + 3 "Hi" glyph curves, the same
+# count the live Leader command itself builds - proving the real ON_Leader's
+# own internally-carried label did not ALSO leak out as separate baked
+# glyph curves, a real bug caught and fixed while building this) - and,
+# independent of Dino 8's own reader entirely, leader3dm_write_check parses
+# the saved file directly through OpenNURBS' own API and confirms it holds
+# exactly one real ON_Leader object with the exact label and points.
+# Deliberately run as TWO separate process launches, not one combined
+# script - see leader3dm_export_script.txt's own header comment: a live
+# Leader object already present when Open runs in the SAME process hits a
+# real, pre-existing, unrelated bug in UpdateAssociativeAnnotations' own
+# cross-call static anchor cache (Application.cpp), inflating the reopened
+# selection count. leader3dm_write_check (below) and a fresh-process-only
+# reopen both independently confirm the saved file content itself is always
+# exactly correct, so this split (matching dwg_script.txt/
+# dwg_reopen_script.txt's own same-process-reuse workaround) sidesteps that
+# unrelated bug rather than papering over it.
+sed "s|@TMP@|$TMPW|g" "$HERE/leader3dm_export_script.txt" > "$TMPW/leader3dm_export_script.txt"
+sed "s|@TMP@|$TMPW|g" "$HERE/leader3dm_reopen_script.txt" > "$TMPW/leader3dm_reopen_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  L3E="$("$BIN" --smoke 30 --script "$TMPW/leader3dm_export_script.txt" 2>&1)" || { echo "$L3E"; echo "FAIL: .3dm Leader export script exited non-zero"; exit 1; }
+  L3I="$("$BIN" --smoke 30 --script "$TMPW/leader3dm_reopen_script.txt" 2>&1)" || { echo "$L3I"; echo "FAIL: .3dm Leader reopen script exited non-zero"; exit 1; }
+else
+  L3E="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/leader3dm_export_script.txt" 2>&1)" || { echo "$L3E"; echo "FAIL: .3dm Leader export script exited non-zero"; exit 1; }
+  L3I="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/leader3dm_reopen_script.txt" 2>&1)" || { echo "$L3I"; echo "FAIL: .3dm Leader reopen script exited non-zero"; exit 1; }
+fi
+l3echeck() { if echo "$L3E" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$L3E" "$1"; fail=1; fi; }
+l3icheck() { if echo "$L3I" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$L3I" "$1"; fail=1; fi; }
+l3echeck "Saved $TMPW/leader3dm_export.3dm" "Save3dm wrote a file"
+l3icheck "Opened $TMPW/leader3dm_export.3dm (5 objects)" "the reopened file has the exact same 5 member curves (2 shape + 3 'Hi' glyph curves) the original Leader command built - not 8 (which would mean the real ON_Leader's own label leaked out as separate baked glyph curves too)"
+l3icheck "5 object(s) selected" "SelLeader found the round-tripped leader's own 5 member curves"
+l3icheck "CV[0] 0,0,0" "the round-tripped leader's own shape polyline starts at the exact arrowhead point"
+l3icheck "CV[1] 5,10,0" "the round-tripped leader's own shape polyline passes through its exact bend point"
+l3icheck "CV[2] 20,10,0" "the round-tripped leader's own shape polyline ends at its exact tail point"
+LWCBIN="$(dirname "$BIN")/leader3dm_write_check"
+if [ -x "$LWCBIN" ]; then
+  LWC="$("$LWCBIN" "$TMPW/leader3dm_export.3dm" 2>&1)" || { echo "$LWC"; echo "FAIL: leader3dm_write_check exited non-zero on the leader file"; exit 1; }
+  lwccheck() { if echo "$LWC" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$LWC" "$1"; fail=1; fi; }
+  lwccheck "1 real ON_Leader object(s) found" "independent of Dino 8's own Load3dm, a plain OpenNURBS reader sees exactly one real ON_Leader object in the saved file, not 5 bare baked curves"
+  lwccheck "text=Hi" "the saved leader's own label string survived exactly"
+  lwccheck "pt[0]=(0,0,0)" "the saved leader's own arrowhead point survived exactly"
+  lwccheck "pt[1]=(5,10,0)" "the saved leader's own bend point survived exactly"
+  lwccheck "pt[2]=(20,10,0)" "the saved leader's own tail point survived exactly"
+else
+  echo "FAIL leader3dm_write_check was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the independent .3dm ON_Leader write check"
+  fail=1
+fi
+
 # Native .3dm ON_InstanceRef import: previously Load3dm had no
 # ON_InstanceRef/ON_InstanceDefinition handling at all, and no
 # ON::idef_object check either, so a block instance authored by a real,
@@ -7948,9 +8006,9 @@ if ! command -v curl >/dev/null 2>&1; then
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 22 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 24 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 22 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 24 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -8076,6 +8134,14 @@ dino8.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run/python")"
     RESP8="$(curl -s --max-time 10 -X POST --data 'import dino8
 dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     CODE5="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'x' "http://127.0.0.1:$SERVE_PORT/run/nosuchroute")"
+    # GET /plugins: narrows PARITY_MAP.md's own disclosed "Plugin
+    # marketplace / discovery mechanism" gap - this same compute server can
+    # now serve the bundled plugin index as real JSON over real HTTP,
+    # giving PluginMarketplaceIndex's own existing arbitrary-http(s)-URL
+    # path a genuine server to point at instead of only ever a file
+    # someone else hosted by hand.
+    RESP21="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/plugins")"
+    CODE6="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'x' "http://127.0.0.1:$SERVE_PORT/plugins")"
     set -e
     echo "$RESP1" | grep -q "^objects: 1$" && echo "ok   POST /run built a box over HTTP and read back its printed object count" || { echo "$RESP1"; echo "FAIL --serve POST /run did not report objects: 1"; fail=1; }
     [ "$RESP9" = '{"ok":true,"output":["hi"]}' ] && echo "ok   POST /run with Accept: application/json returns a real structured {ok,output} response instead of plain print() text" || { echo "$RESP9"; echo "FAIL --serve POST /run Accept: application/json did not return the expected JSON body"; fail=1; }
@@ -8134,6 +8200,8 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
       echo "$RESP8" | grep -q "compute error: script requires interactive input" && echo "ok   a POST /run/python script calling the new dino8.GetInteger() is rejected instead of hanging the connection, same as GetPoint/GetString" || { echo "$RESP8"; echo "FAIL --serve POST /run/python dino8.GetInteger() was not rejected as expected"; fail=1; }
     fi
     [ "$CODE5" = "404" ] && echo "ok   a POST to an unrecognized path is rejected with 404 Not Found" || { echo "FAIL --serve POST to an unknown path returned HTTP $CODE5, expected 404"; fail=1; }
+    echo "$RESP21" | grep -q '"index_name": "Dino 8 Reference Plugin Index"' && echo "$RESP21" | grep -q '"id": "hellodino"' && echo "ok   GET /plugins serves the real bundled plugin index as JSON over HTTP" || { echo "$RESP21"; echo "FAIL --serve GET /plugins did not serve the expected bundled index"; fail=1; }
+    [ "$CODE6" = "405" ] && echo "ok   a POST to /plugins is rejected with 405 Method Not Allowed (GET only)" || { echo "FAIL --serve POST /plugins returned HTTP $CODE6, expected 405"; fail=1; }
 
     set +e; wait "$SERVE_PID"; SERVE_EC=$?; set -e
     if [ "$SERVE_EC" -eq 124 ]; then
@@ -8141,7 +8209,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=22$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 22 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=24$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 24 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
     fi
   fi
 

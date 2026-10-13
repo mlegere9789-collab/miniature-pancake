@@ -965,10 +965,12 @@ int main(int argc, char** argv) {
     const std::string query = qpos == std::string::npos ? std::string() : req.path.substr(qpos + 1);
     const bool is_run = path == "/run" || path == "/run/python";
     const bool is_objects = path == "/objects";
+    const bool is_plugins = path == "/plugins";
     if ((is_run && req.method != "POST") ||
-        (is_objects && req.method != "GET" && req.method != "POST")) {
+        (is_objects && req.method != "GET" && req.method != "POST") ||
+        (is_plugins && req.method != "GET")) {
       resp.status = 405;
-      resp.body = "Dino 8 compute service: /run and /run/python take POST, /objects takes GET or POST\n";
+      resp.body = "Dino 8 compute service: /run and /run/python take POST, /objects takes GET or POST, /plugins takes GET\n";
       return resp;
     }
     // Checked against every registered --serve-token, plus every entry
@@ -1517,8 +1519,43 @@ int main(int argc, char** argv) {
       resp.status = (ok && !suspended) ? 200 : 500;
       return resp;
     }
+    // GET /plugins: narrows PARITY_MAP.md's own disclosed "Plugin
+    // marketplace / discovery mechanism" gap - "there is still no server
+    // anywhere a user's build queries for a live, updatable catalogue" -
+    // by making this same compute server (already real, already --serve-
+    // able) able to serve one: the bundled first-party index
+    // (plugins/MarketplaceIndex.h's own `Application::
+    // DefaultMarketplaceIndexPath()`, the identical file
+    // `PluginMarketplaceIndex` with no argument already browses locally)
+    // verbatim, as real JSON over real HTTP. A second machine's own
+    // `PluginMarketplaceIndex http://host:port/plugins` - the existing
+    // arbitrary-http(s)-URL path `plugins/MarketplaceIndex.cpp`'s
+    // `FetchUrlToTempFile` already supports - now has a genuine server to
+    // point at instead of only ever a file someone else hosted by hand.
+    // Deliberately narrow, not the full gap: this still serves only the
+    // one bundled index, not a curated, auto-discovered third-party
+    // registry (that half stays disclosed, not attempted here).
+    if (path == "/plugins") {
+      const std::string index_path = app.DefaultMarketplaceIndexPath();
+      if (index_path.empty()) {
+        resp.status = 404;
+        resp.body = "Dino 8 compute service: no bundled plugin index found on this build\n";
+        return resp;
+      }
+      std::ifstream f(index_path, std::ios::binary);
+      if (!f) {
+        resp.status = 500;
+        resp.body = "Dino 8 compute service: could not read the bundled plugin index\n";
+        return resp;
+      }
+      std::ostringstream body;
+      body << f.rdbuf();
+      resp.content_type = "application/json";
+      resp.body = body.str();
+      return resp;
+    }
     resp.status = 404;
-    resp.body = "Dino 8 compute service: unknown path (supported: POST /run, POST /run/python, GET /objects)\n";
+    resp.body = "Dino 8 compute service: unknown path (supported: POST /run, POST /run/python, GET /objects, GET /plugins)\n";
     return resp;
   };
 

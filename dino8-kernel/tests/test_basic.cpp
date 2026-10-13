@@ -5122,6 +5122,120 @@ void TestBrepClosestPointIndexFireRay() {
                             "matching FireRayAtBrep()'s own contract");
 }
 
+// BrepClosestPointIndex::ContainsPoint()/SignedDistance() - the two
+// remaining B-rep-level query functions this bullet's own history named
+// (`ContainsPointExact()`, `SignedDistanceToBrep()`) still had no
+// accelerated alternative, unlike ClosestPoint()/FireRay() above.
+void TestBrepClosestPointIndexContainsPointAndSignedDistance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepClosestPointIndex;
+  using dino8::kernel::ContainsPointExact;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SignedDistanceToBrep;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Same fixture TestContainsPointExact()/TestSignedDistanceToBrep()
+  // already use, so every brute-force comparison below is against an
+  // independently-trusted answer, not a synthetic re-derivation.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const BrepClosestPointIndex box_index(box.raw());
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 5.0);
+  const BrepClosestPointIndex sphere_index(sphere.raw());
+
+  const Point3d box_points[] = {
+      Point3d(1, 1, 1),     // center: inside
+      Point3d(5, 1, 1),     // well clear: outside
+      Point3d(1, 1, 10),    // far along z: outside
+      Point3d(0.01, 0.01, 0.01),  // just inside a corner: inside
+  };
+  bool contains_matches = true;
+  bool signed_distance_matches = true;
+  for (const Point3d& p : box_points) {
+    const bool brute_in = ContainsPointExact(p, box.raw());
+    const bool accel_in = box_index.ContainsPoint(p, /*ray_length=*/0.0, opt);
+    if (brute_in != accel_in) contains_matches = false;
+    const double brute_sd = SignedDistanceToBrep(p, box.raw(), opt);
+    const double accel_sd = box_index.SignedDistance(p, /*ray_length=*/0.0, opt);
+    if (std::abs(brute_sd - accel_sd) > 1e-6) signed_distance_matches = false;
+  }
+  const Point3d sphere_points[] = {
+      Point3d(0, 0, 0),   // center: inside
+      Point3d(1, 1, 1),   // well within radius: inside
+      Point3d(10, 0, 0),  // well outside: outside
+      Point3d(0, 0, 20),  // far outside along z: outside
+  };
+  for (const Point3d& p : sphere_points) {
+    const bool brute_in = ContainsPointExact(p, sphere.raw());
+    const bool accel_in = sphere_index.ContainsPoint(p, /*ray_length=*/0.0, opt);
+    if (brute_in != accel_in) contains_matches = false;
+    const double brute_sd = SignedDistanceToBrep(p, sphere.raw(), opt);
+    const double accel_sd = sphere_index.SignedDistance(p, /*ray_length=*/0.0, opt);
+    if (std::abs(brute_sd - accel_sd) > 1e-6) signed_distance_matches = false;
+  }
+  Check(contains_matches,
+        "BrepClosestPointIndex::ContainsPoint() agrees with ContainsPointExact()'s own brute-force "
+        "answer on every box and sphere query point, inside and outside");
+  Check(signed_distance_matches,
+        "BrepClosestPointIndex::SignedDistance() agrees with SignedDistanceToBrep()'s own brute-force "
+        "answer (within 1e-6) on every box and sphere query point");
+
+  // A real positive control for each boolean outcome, so "both sides
+  // agree" isn't vacuously true from every point landing on one side.
+  Check(box_index.ContainsPoint(Point3d(1, 1, 1), 0.0, opt), "the box's own center is genuinely classified inside");
+  Check(!box_index.ContainsPoint(Point3d(5, 1, 1), 0.0, opt), "a point well clear of the box is genuinely classified outside");
+  Check(box_index.SignedDistance(Point3d(1, 1, 1), 0.0, opt) < 0.0,
+        "the box's own interior center has a genuinely negative signed distance");
+  Check(box_index.SignedDistance(Point3d(5, 1, 1), 0.0, opt) > 0.0,
+        "a point outside the box has a genuinely positive signed distance");
+}
+
+// BrepClosestPointIndex::SignedDistance() - narrows (not yet closes -
+// ContainsPointExact() itself still has no accelerated alternative;
+// FireRayAtBrep() does now, via the sibling BrepClosestPointIndex::FireRay()
+// just above, a materially different query this one doesn't touch)
+// PARITY_MAP.md's "Spatial acceleration structures for geometric queries"
+// bullet further: SignedDistanceToBrep() composes ClosestPointOnBrep()
+// (brute-force) with ContainsPointExact() for the sign; this method is the
+// same composition but through this index's own already-accelerated
+// ClosestPoint() for the magnitude half.
+void TestBrepClosestPointIndexSignedDistance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepClosestPointIndex;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SignedDistanceToBrep;
+
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 5);
+  const BrepClosestPointIndex sphere_index(sphere.raw());
+  const std::vector<Point3d> sphere_queries = {
+      Point3d(0, 0, 0),  // center, deep interior
+      Point3d(0, 0, 3),  // interior, off-center
+      Point3d(8, 0, 0),  // exterior
+      Point3d(5, 0, 0),  // on the surface
+  };
+  bool sphere_match = true;
+  for (const Point3d& q : sphere_queries) {
+    const double brute_force = SignedDistanceToBrep(q, sphere.raw());
+    const double accelerated = sphere_index.SignedDistance(q);
+    if (std::fabs(brute_force - accelerated) > 1e-6) { sphere_match = false; break; }
+  }
+  Check(sphere_match,
+        "BrepClosestPointIndex::SignedDistance() agrees with SignedDistanceToBrep()'s own brute-force "
+        "answer at every query point, interior, exterior, and on the surface, on a sphere");
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const BrepClosestPointIndex box_index(box.raw());
+  Check(std::fabs(box_index.SignedDistance(Point3d(1, 1, 1)) - (-1.0)) < 1e-6,
+        "BrepClosestPointIndex::SignedDistance() reports the box's own exact center at -1, matching "
+        "SignedDistanceToBrep()'s own hand-derivable answer for the identical query");
+  Check(std::fabs(box_index.SignedDistance(Point3d(5, 1, 1)) - 3.0) < 1e-6,
+        "BrepClosestPointIndex::SignedDistance() reports a point 3 units clear of the box's own x=2 "
+        "face at exactly +3");
+}
+
 // PARITY_MAP's massprops category, "Point classification vs exact B-rep":
 // ClassifyPointVsSolid/ClassifyPointVsMixedSolid (boolean.h) only ever
 // classify against this kernel's own internal, already-split face lists
@@ -27421,6 +27535,55 @@ void TestMeshSignedDistance() {
         "just inside the +Z face (z=1.9 of 2.0) is still negative");
   Check(box.SignedDistance(Point3d(1, 1, 2.1)) > 0.0,
         "just outside the +Z face (z=2.1 of 2.0) is positive");
+}
+
+// MeshClosestPointIndex::SignedDistance() - the same acceleration
+// structure's own third query, narrowing (not yet closing -
+// Mesh::DistanceTo() and every B-rep/Brep-level query remain
+// brute-force or only half-accelerated, see
+// BrepClosestPointIndex::SignedDistance() above) PARITY_MAP.md's
+// "Spatial acceleration structures for geometric queries" bullet
+// further: unlike the Brep-level sibling, BOTH halves of this
+// composition (ClosestPoint() and the inside/outside ray-cast vote)
+// are already accelerated via this index's own tree.
+void TestMeshClosestPointIndexSignedDistance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MeshClosestPointIndex;
+  using dino8::kernel::Point3d;
+
+  // The same genuinely dense tessellated-sphere fixture
+  // TestMeshClosestPointIndex()/TestMeshClosestPointIndexFireRay() above
+  // already use.
+  const Brep sphere_brep = Brep::Sphere(Point3d(1, -2, 3), 5.0);
+  const Mesh sphere_mesh = sphere_brep.TessellateToClosedMesh(24, 24);
+  const MeshClosestPointIndex index(sphere_mesh);
+
+  bool all_match = true;
+  const std::vector<Point3d> queries = {
+      Point3d(1, -2, 3),      // the sphere's own center (deep interior)
+      Point3d(1, -2, 7),      // interior, off-center, near the surface
+      Point3d(1, -2, 50),     // far outside, straight out along z
+      Point3d(50, -2, 3),     // far outside along x
+      Point3d(1, 1, 3),       // a middling interior point, off-axis
+  };
+  for (const Point3d& q : queries) {
+    const double brute_force = sphere_mesh.SignedDistance(q);
+    const double accelerated = index.SignedDistance(q);
+    if (std::abs(brute_force - accelerated) > 1e-6) { all_match = false; break; }
+  }
+  Check(all_match,
+        "MeshClosestPointIndex::SignedDistance() agrees with Mesh::SignedDistance()'s own fully "
+        "brute-force answer at every query point, near and far, interior and exterior");
+
+  // A hand-derivable exact magnitude and sign, not just agreement with
+  // the brute-force sibling: the fixture's own radius-5 sphere centered
+  // at (1, -2, 3), queried 2 units inside the surface along z.
+  Check(std::abs(index.SignedDistance(Point3d(1, -2, 8)) - 0.0) < 1e-3,
+        "a point exactly on the sphere's own (tessellated) surface has signed distance ~0");
+  Check(std::abs(index.SignedDistance(Point3d(1, -2, 6)) - (-2.0)) < 1e-2,
+        "a point 2 units inside the radius-5 sphere's surface along z is at approximately -2, "
+        "matching the hand-derivable exact answer within the tessellation's own approximation error");
 }
 
 void TestMeshVolumeMassProperties() {
@@ -70388,6 +70551,105 @@ void TestRemoveBlendRoundTripsASphericalVertexCornerWithOneObliqueFarEnd() {
         "the corner sphere's own surface point is gone from the restored solid");
 }
 
+// Closes the ONE documented scope limit RemoveBlend's own doc comment
+// names, and TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner
+// above confirms RemoveBlend's own single-corner path still, correctly,
+// refuses: "a corner whose own cylinder is ALSO set back by a second
+// spherical vertex-blend corner" - the shared edge between two filleted
+// trihedral vertices, e.g. every edge of a fully-rounded box.
+void TestRemoveAllSphericalVertexBlendsRestoresFullyRoundedBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  // The SAME fully-rounded-box fixture TestFilletConvexEdgesRoundedBoxMatchesSteinerFormula
+  // and TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner
+  // both already use - every one of the 12 cylinders' own far end sits at
+  // a SECOND spherical corner, exactly the case RemoveBlend's own
+  // single-corner-by-point-pick path refuses (see that negative-control
+  // test just above) and this function exists to handle in one call.
+  const double r = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep rounded = FilletConvexEdges(box, AllUnitBoxEdges(), r);
+  const Brep::MixedFacesResult mf_before = rounded.MixedFaces();
+  Check(mf_before.spherical.size() == 8 && mf_before.cylindrical.size() == 12,
+        "sanity: the fully-rounded box has 8 spherical corners and 12 cylinders");
+
+  const Brep restored = dino8::kernel::RemoveAllSphericalVertexBlends(rounded);
+  Check(restored.FaceCount() == 6 && restored.raw().m_E.Count() == 12 && restored.raw().m_V.Count() == 8,
+        "RemoveAllSphericalVertexBlends restores the exact face/edge/vertex counts of the pre-fillet box (6 "
+        "faces, 12 edges, 8 vertices) in ONE call - removing all 8 spheres and all 12 cylinders at once, exactly "
+        "the fixture RemoveBlend's own single-corner path refuses outright");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            restored.raw().IsSolid(),
+        "the fully-restored solid is a valid, closed, oriented, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9,
+        "the fully-restored solid's volume matches the original unit box exactly");
+  for (const Point3d& v : {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0), Point3d(0, 0, 1),
+                           Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)}) {
+    Check(ChamferTestBrepHasVertexNear(restored, v, 1e-9),
+          "the restored box has every one of its original 8 sharp corner vertices back, including all 8 corners "
+          "that used to be spherical vertex-blends sharing cylinders pairwise with their neighbours");
+  }
+  const Brep::MixedFacesResult mf_after = restored.MixedFaces();
+  Check(mf_after.spherical.empty() && mf_after.cylindrical.empty() && mf_after.planar.size() == 6,
+        "no spherical or cylindrical fillet face remains afterward - every one of the 8 corners and 12 edge "
+        "fillets was genuinely removed, not just topologically hidden");
+}
+
+// A solid with only ONE spherical corner (so every one of its cylinders'
+// own far end is a PLAIN box vertex, never a second corner) is not a
+// separate code path inside RemoveAllSphericalVertexBlends - it should
+// reduce to EXACTLY the same reconstruction RemoveBlend's own
+// single-corner path already gives it
+// (TestRemoveBlendRoundTripsASphericalVertexCorner's own identical
+// fixture), proving this is a strict generalization of that formula, not
+// a second, parallel implementation of it.
+void TestRemoveAllSphericalVertexBlendsMatchesSingleCornerCase() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  const double r = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep c = FilletConvexEdges(
+      box, {{Point3d(0, 0, 0), Point3d(1, 0, 0)}, {Point3d(0, 0, 0), Point3d(0, 1, 0)}, {Point3d(0, 0, 0), Point3d(0, 0, 1)}},
+      r);
+  const Brep::MixedFacesResult mf = c.MixedFaces();
+  Check(mf.spherical.size() == 1 && mf.cylindrical.size() == 3, "sanity: one rounded corner has one sphere and 3 cylinders");
+
+  const Brep restored = dino8::kernel::RemoveAllSphericalVertexBlends(c);
+  Check(restored.FaceCount() == 6 && restored.raw().m_E.Count() == 12 && restored.raw().m_V.Count() == 8,
+        "RemoveAllSphericalVertexBlends on a single rounded corner restores the exact pre-fillet box topology - "
+        "the same count RemoveBlend's own single-corner path gives it");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            restored.raw().IsSolid(),
+        "the restored solid is a valid, closed, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9,
+        "the restored solid's volume matches the original unit box exactly, the same closed form "
+        "TestRemoveBlendRoundTripsASphericalVertexCorner already checks for RemoveBlend's own single-corner path");
+  for (const Point3d& v : {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0), Point3d(0, 0, 1),
+                           Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)}) {
+    Check(ChamferTestBrepHasVertexNear(restored, v, 1e-9), "every original sharp corner vertex is back");
+  }
+}
+
+void TestRemoveAllSphericalVertexBlendsRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+
+  bool threw = false;
+  try {
+    dino8::kernel::RemoveAllSphericalVertexBlends(Brep::Box(0, 0, 0, 1, 1, 1));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "RemoveAllSphericalVertexBlends refuses a solid with no spherical vertex-blend corner at all");
+}
+
 void TestRemoveBlendRoundTripsATaperedFillet() {
   using dino8::kernel::Brep;
   using dino8::kernel::FilletConvexEdgeTapered;
@@ -80196,6 +80458,8 @@ int main() {
   RunTest("TestClosestPointOnBrep", TestClosestPointOnBrep);
   RunTest("TestBrepClosestPointIndex", TestBrepClosestPointIndex);
   RunTest("TestBrepClosestPointIndexFireRay", TestBrepClosestPointIndexFireRay);
+  RunTest("TestBrepClosestPointIndexContainsPointAndSignedDistance", TestBrepClosestPointIndexContainsPointAndSignedDistance);
+  RunTest("TestBrepClosestPointIndexSignedDistance", TestBrepClosestPointIndexSignedDistance);
   RunTest("TestContainsPointExact", TestContainsPointExact);
   RunTest("TestSignedDistanceToBrep", TestSignedDistanceToBrep);
   RunTest("TestPullbackCurveToSurfaceCylinderRulingLine", TestPullbackCurveToSurfaceCylinderRulingLine);
@@ -80448,6 +80712,7 @@ int main() {
   RunTest("TestMeshClosestPoint", TestMeshClosestPoint);
   RunTest("TestMeshClosestPointIndex", TestMeshClosestPointIndex);
   RunTest("TestMeshClosestPointIndexFireRay", TestMeshClosestPointIndexFireRay);
+  RunTest("TestMeshClosestPointIndexSignedDistance", TestMeshClosestPointIndexSignedDistance);
   RunTest("TestMeshSignedDistance", TestMeshSignedDistance);
   RunTest("TestMeshVolumeMassProperties", TestMeshVolumeMassProperties);
   RunTest("TestMeshGetOrientedBoundingBox", TestMeshGetOrientedBoundingBox);
@@ -80732,6 +80997,9 @@ int main() {
   RunTest("TestRemoveBlendOnSphericalCornerLeavesAnIndependentCornerIntact", TestRemoveBlendOnSphericalCornerLeavesAnIndependentCornerIntact);
   RunTest("TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner", TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner);
   RunTest("TestRemoveBlendRoundTripsASphericalVertexCornerWithOneObliqueFarEnd", TestRemoveBlendRoundTripsASphericalVertexCornerWithOneObliqueFarEnd);
+  RunTest("TestRemoveAllSphericalVertexBlendsRestoresFullyRoundedBox", TestRemoveAllSphericalVertexBlendsRestoresFullyRoundedBox);
+  RunTest("TestRemoveAllSphericalVertexBlendsMatchesSingleCornerCase", TestRemoveAllSphericalVertexBlendsMatchesSingleCornerCase);
+  RunTest("TestRemoveAllSphericalVertexBlendsRejectsInvalidInput", TestRemoveAllSphericalVertexBlendsRejectsInvalidInput);
   RunTest("TestRemoveBlendRoundTripsATaperedFillet", TestRemoveBlendRoundTripsATaperedFillet);
   RunTest("TestRemoveChamferRoundTripsASingleChamfer", TestRemoveChamferRoundTripsASingleChamfer);
   RunTest("TestRemoveChamferLeavesTheOtherChamferIntactAmongTwo", TestRemoveChamferLeavesTheOtherChamferIntactAmongTwo);

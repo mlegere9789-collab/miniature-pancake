@@ -1234,6 +1234,16 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(text3dm_write_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(text3dm_write_check PRIVATE dino8_kernel)
 
+  # Real-ON_Leader .3dm write checker (see tests/leader3dm_write_check.cpp
+  # and smoke.sh's Save3dm ON_Leader-export section): reads a file Dino 8
+  # itself wrote and reports whether it contains a real ON_Leader object,
+  # independent of Dino 8's own Load3dm reader (which would also accept
+  # this bullet's pre-existing baked polyline/arrowhead/glyph-curve
+  # fallback and never notice the difference).
+  add_executable(leader3dm_write_check tests/leader3dm_write_check.cpp)
+  target_include_directories(leader3dm_write_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(leader3dm_write_check PRIVATE dino8_kernel)
+
   # Real-ON_InstanceRef .3dm fixture generator (see
   # tests/instanceref3dm_fixture_gen.cpp and smoke.sh's Load3dm
   # ON_InstanceRef-import section): Dino 8's own blocks never round-trip

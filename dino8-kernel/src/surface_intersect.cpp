@@ -2362,6 +2362,60 @@ std::vector<RayBrepHit> BrepClosestPointIndex::FireRay(const Point3d& origin, co
   return out;
 }
 
+namespace {
+
+// Five generic, well-separated unit directions - the IDENTICAL
+// "multi-direction majority vote" robustness technique
+// Mesh::ContainsPoint() itself already established (see its own doc
+// comment, mesh.cpp, for the full rationale) for the same underlying
+// hazard one level up: any ONE fixed ray direction can graze a vertex,
+// edge, or trim boundary of a GENERAL B-rep by sheer coincidence of
+// where the query point happens to sit, miscounting that direction's
+// own crossing parity - five independent directions make it
+// vanishingly unlikely that a STRICT MAJORITY of them simultaneously
+// graze the same degenerate feature. A separate array, not a shared
+// one with Mesh::ContainsPoint()'s own (file-local, not exported) -
+// the exact values don't need to match, only the property that none of
+// the five has an axis-aligned or simple-rational-fraction component.
+constexpr int kBrepContainsPointDirectionCount = 5;
+const Vector3d kBrepContainsPointDirections[kBrepContainsPointDirectionCount] = {
+    Vector3d(0.5915063510, 0.3551073821, 0.7252419887),
+    Vector3d(0.2103457812, 0.8734021456, 0.4389012345),
+    Vector3d(0.8821456732, 0.1956712348, 0.4302178965),
+    Vector3d(0.4012378956, 0.6123498712, 0.6834217089),
+    Vector3d(0.7456123890, 0.5567891234, 0.3698712456),
+};
+
+}  // namespace
+
+bool BrepClosestPointIndex::ContainsPoint(const Point3d& point, double ray_length, const IntersectOptions& opt) const {
+  if (!(ray_length > 0.0)) {
+    // The identical formula ContainsPointExact() itself uses, just
+    // computed from this index's own already-built bbox_ instead of
+    // re-scanning every face's own surface bounding box again.
+    ray_length = bbox_.IsValid() ? 4.0 * (bbox_.Diagonal().Length() + 1.0) : 1000.0;
+  }
+  int votes_in = 0;
+  for (const Vector3d& direction : kBrepContainsPointDirections) {
+    const std::vector<RayBrepHit> hits = FireRay(point, direction, ray_length, opt);
+    if ((hits.size() % 2) == 1) ++votes_in;
+  }
+  // Strict majority of 5 - a tie is impossible with an odd count, so
+  // this is never an arbitrary tie-break.
+  return votes_in * 2 > kBrepContainsPointDirectionCount;
+}
+
+// Fully accelerated: both ClosestPoint() (magnitude) and ContainsPoint()
+// (sign) above already query this same index's own RTree, unlike an
+// earlier concurrent draft of this same method that composed
+// ClosestPoint() with the brute-force ContainsPointExact() for only a
+// half-accelerated result.
+double BrepClosestPointIndex::SignedDistance(const Point3d& point, double ray_length, const IntersectOptions& opt) const {
+  const BrepClosestPointResult cp = ClosestPoint(point);
+  const bool inside = ContainsPoint(point, ray_length, opt);
+  return inside ? -cp.distance : cp.distance;
+}
+
 double SignedDistanceToBrep(const Point3d& point, const ON_Brep& b, const IntersectOptions& opt, int u_divisions,
                              int v_divisions, int trim_samples_per_edge, double ray_length, double tol) {
   const BrepClosestPointResult cp = ClosestPointOnBrep(point, b, u_divisions, v_divisions, trim_samples_per_edge);

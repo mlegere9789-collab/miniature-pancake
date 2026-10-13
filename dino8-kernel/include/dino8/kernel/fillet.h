@@ -1765,15 +1765,68 @@ Brep ChamferConcaveVertex(const Brep& solid, Point3d vertex,
 // never produced by FilletConvexEdge/FilletConcaveEdge, both of which
 // reject any oblique-end combination leaving a non-positive length) is
 // still rejected outright, and a corner whose own cylinder is ALSO set
-// back by a second spherical vertex-blend corner remains out of scope -
-// throwing std::invalid_argument for either of those harder cases rather
-// than silently restoring the wrong shape.
+// back by a second spherical vertex-blend corner remains out of scope for
+// THIS single-corner-by-point-pick entry point - throwing
+// std::invalid_argument for either of those harder cases rather than
+// silently restoring the wrong shape. **See `RemoveAllSphericalVertexBlends`
+// below for the whole-solid sibling that DOES handle a cylinder shared by
+// two spherical corners** (e.g. every edge of a fully-rounded box) - this
+// function's own per-cylinder far-end formula still can't, by itself,
+// since it has no way to know the far end is really another corner's own
+// vertex rather than a plain edge end.
 // Removing one segment of an N-station tapered profile restores only that
 // segment's own straight span, leaving any adjacent segments' own cones in
 // place with a short straight edge spliced between them - well-defined, if
 // partial, behavior, not a bug; removing every segment of a profile in
 // turn fully restores the original straight edge.
 Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet);
+
+// The whole-solid sibling of RemoveBlend's own single-corner-by-point-pick
+// path above (the same "single edit" / "RemoveAll" pairing
+// RemoveHoleLoop/RemoveAllHoleLoops and RemoveNakedMicroEdge/
+// RemoveAllNakedMicroEdges already give their own siblings elsewhere in
+// this kernel): closes the ONE documented scope limit RemoveBlend's own
+// doc comment above names - "a corner whose own cylinder is ALSO set back
+// by a second spherical vertex-blend corner remains out of scope" - for
+// example every edge of a FilletConvexEdges-rounded box, where EVERY
+// cylinder's far end sits at a second corner's own sphere, never a plain
+// edge end.
+//
+// Every spherical vertex-blend corner in `solid` is matched to its own 3
+// cylindrical faces exactly the way RemoveBlend's own
+// RemoveSphericalVertexBlend helper already does for one caller-picked
+// corner, and EVERY corner's own sharp vertex is reconstructed first, via
+// the identical exact 3-plane intersection (the touching faces' own
+// unclipped planes) - a closed form that never depended on any other
+// corner's radius, setback, or even existence to begin with, since a
+// fillet only ever re-trims a planar face's own boundary loop, never moves
+// its supporting plane. Only once every corner's own vertex is known does
+// this resolve each matched cylinder's two endpoints independently: an end
+// that sits at some corner's own sphere center becomes that corner's own
+// reconstructed vertex directly (no anchor/bisector-offset formula
+// involved there at all - there is no "plain far end" to approximate when
+// the far end IS another corner), while a genuinely plain end (the only
+// kind RemoveSphericalVertexBlend's own per-corner formula could ever
+// assume) still uses that identical anchor+offset/notch reconstruction,
+// unchanged. A cylinder shared between two corners therefore gets BOTH its
+// endpoints replaced by the two corners' own vertices directly, with no
+// formula bridging them at all - the two ends are simply spliced onto
+// whichever vertex they each belong to.
+//
+// A solid with only ONE spherical corner (so every cylinder's far end is
+// plain) is not a separate case: it reduces to exactly the same
+// reconstruction RemoveBlend's own single-corner path already gives it -
+// this is a strict generalization of that formula, not a parallel
+// implementation of it. Refuses (std::invalid_argument) rather than
+// guessing if ANY spherical face in `solid` is not a genuine
+// FilletConvexEdges-built trihedral corner (not exactly 3 matching
+// cylinders, a notched sphere-adjacent end, fewer than 3 distinct touching
+// planar faces, or a degenerate/coplanar corner) - this function removes
+// EVERY spherical corner `solid` has or none at all, never a partial
+// subset. The same oblique-end-notch handling RemoveBlend's own doc
+// comment above describes for a single cylinder's far end applies
+// unchanged here to any cylinder end that is genuinely plain.
+Brep RemoveAllSphericalVertexBlends(const Brep& solid);
 
 
 // BLEND REMOVAL for a CHAMFER: the inverse of ChamferConvexEdge, restoring
