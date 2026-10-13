@@ -5075,9 +5075,17 @@ python3 -c "import sys; v=float('$SW_VOL'); sys.exit(0 if v < 3500 else 1)" \
 rmcheck "QuadRemesh: [0-9]* quad(s)" "QuadRemesh ran"
 rmcheck "QuadRemesh: 1 object(s) remeshed" "QuadRemesh remeshed the surface"
 rmcheck "ReduceMesh: object 9: 528 -> 264 faces" "ReduceMesh halved the mesh sphere's faces (528, not 576: Mesh::MergeAndWeld now drops the 24+24 degenerate polar faces a 24x12 MeshSphere's own tessellation produces, a real fix from a parallel session's Brep::Sphere/IsClosedManifold work, not a regression this session introduced)"
+rmcheck "Volume = 64 cubic" "the LatticeInfill fixture's own 4x4x4 box has the expected volume before infilling"
+rmcheck "LatticeInfill: object 10 -> new object 11" "LatticeInfill added a new lattice object alongside the box, not in place of it"
+LATTICE_VOL="$(echo "$RM" | sed -n 's/.*Volume = \([0-9.eE+]*\) cubic.*/\1/p' | tail -1)"
+python3 -c "import sys; v=float('$LATTICE_VOL'); sys.exit(0 if 0 < v < 64 else 1)" \
+  && echo "ok   LatticeInfill volume ($LATTICE_VOL) is a genuine sparse infill - positive but well under the box's own 64" \
+  || { echo "FAIL LatticeInfill volume ($LATTICE_VOL) is not a plausible sparse-infill fraction of 64"; fail=1; }
+rmcheck 'mesh "LatticeInfill"' "the new lattice object is named and typed correctly"
+rmcheck "  Closed: yes" "the new lattice object is a genuine closed manifold, not just a plausible-looking open mesh"
 echo "$RM" | grep -E "^(ok|FAIL)"
 if echo "$RM" | grep -q "^FAIL"; then fail=1; fi
-rmcheck "smoke: frames=1[0-9][0-9] objects=7" "remesh script produced the expected object count"
+rmcheck "smoke: frames=1[0-9][0-9] objects=9" "remesh script produced the expected object count"
 
 # Remaining-command QC: curve conversion, tween/extruded/developable surfaces,
 # thickness/continuity analysis, mesh clean-up incl. connected-face isolation

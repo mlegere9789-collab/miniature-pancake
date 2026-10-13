@@ -1461,6 +1461,36 @@ class Brep {
   // ON_BrepLoop::outer boundary.
   double Area() const;
 
+  // Exact volume, centroid, and inertia tensor (second moments) of this
+  // closed solid at unit density - the real remaining half of "mass
+  // properties" `Volume()`/`Area()` alone never answered (volume/area
+  // only, no centroid or moments). Same `MassProperties` return type
+  // `Mesh::VolumeMassProperties()` already establishes (types.h), same
+  // field conventions (products-of-inertia tensor, origin AND centroidal
+  // moments, principal-axis eigen-decomposition, radii of gyration) -
+  // but computed exactly, over this class's own real NURBS faces via the
+  // divergence theorem (Eberly, "Polyhedral Mass Properties (Revisited)"
+  // - the same ten volume integrals of {1, x, y, z, x^2, y^2, z^2, xy,
+  // yz, zx} Mesh::VolumeMassProperties() reduces to closed-form per-
+  // triangle polynomials), not by tessellating first: each integral is a
+  // real surface integral over every face, using the identical already-
+  // proven per-face machinery `Volume()`/`Area()` both already establish
+  // (whole-domain faces via Gauss-Legendre quadrature, genuinely trimmed
+  // faces via `EarClipTriangulate()`/adaptive-triangle quadrature) - see
+  // `BrepDivergenceSum()` in brep.cpp for the one shared helper all ten
+  // integrals (plus `Volume()` itself) run through conceptually, each
+  // with only its own integrand differing. Throws `std::invalid_argument`
+  // for the same non-closed-solid precondition `Volume()` itself already
+  // throws for (`TessellateToClosedMesh(8, 8).IsClosedManifold()` false),
+  // for a (near) zero volume (no well-defined centroid/moments), and for
+  // a negative volume (every face wound consistently INWARD - unlike
+  // `Mesh::VolumeMassProperties()`, there is no single `FlipNormals()`-
+  // style fix to apply here, since `m_bRev` is per-face topology data
+  // this method does not own the layout of). Still honestly the same
+  // tier `Volume()`/`Area()` already are: fixed quadrature order, no
+  // caller-adjustable tolerance.
+  MassProperties VolumeMassProperties() const;
+
   // Topology & adjacency queries - the reusable equivalent of the ad-hoc
   // brep_.m_V/m_E/m_F/m_T walks scattered through this file (e.g.
   // MergeCoplanarFaces' own loop_a.Trim(k)->Edge()->m_ti walk). All three
