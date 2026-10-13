@@ -1,0 +1,22 @@
+# Native .3dm Text export QC: Save3dm had no ON_Text writer at all before
+# this change (see BuildOnTextForGroup in File3dm.cpp) - a Text annotation
+# made in-app round-tripped out through .3dm as its own N baked glyph
+# curves plus Text/TextHeight/TextOrigin/... user_text metadata, never a
+# real ON_Text object a genuinely independent Rhino/OpenNURBS-based reader
+# would recognize as one text object - the "Dim*/Leader/Text... still
+# written exactly as before" half of this bullet's own disclosed gap, for
+# the Text case specifically (Hatch already closed the same way). Makes a
+# real "Hi" text annotation, saves it, and reopens the saved file in a
+# fresh document: SelText must find the exact same 3 glyph curves back
+# (the same H/i-stem/i-dot decomposition text3dm_fixture_gen's own fixture
+# already proves for this string), proving the new writer and the
+# existing ON_Text reader (added for externally-authored files - see
+# text3dm_fixture_gen.cpp) agree on the wire format.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+Text Hi 0,0,0
+SelAll
+SaveAs @TMP@/text3dm_export.3dm
+New
+Open @TMP@/text3dm_export.3dm
+SelText
+List
