@@ -320,6 +320,65 @@ struct BrepClosestPointResult {
 BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b, int u_divisions = 20,
                                            int v_divisions = 20, int trim_samples_per_edge = 24);
 
+// A reusable spatial acceleration structure over an ON_Brep's own faces -
+// PARITY_MAP.md's own "Spatial acceleration structures for geometric
+// queries" bullet's own remaining named gap ("B-rep queries stay brute-
+// force") after `dino8::kernel::MeshClosestPointIndex` (mesh.h) closed the
+// mesh half of it the same way. `ClosestPointOnBrep()` itself is exactly
+// that: a plain O(face count) scan over every face, every call. This is
+// left completely UNCHANGED (every existing caller's own behavior is
+// untouched) - `BrepClosestPointIndex` is instead a new, explicit, opt-in
+// structure a caller builds ONCE (O(face count), the same up-front cost
+// `MeshClosestPointIndex`/`PointCloud::SpatialIndex()` already pay) and
+// then queries many times in expected sublinear time, the real value an
+// acceleration structure gives a workload that calls
+// `ClosestPointOnBrep()` on the SAME Brep many times.
+//
+// Built on an `ON_RTree` of each face's own UNTRIMMED surface bounding
+// box - a safe, cheap over-approximation of the true trimmed face (a trim
+// only ever REMOVES area, never adds it, so the untrimmed box always
+// contains every point the trimmed face could answer with) - and queried
+// with the identical expanding-box, doubling-until-proven-sufficient
+// search `MeshClosestPointIndex::ClosestPoint()` already establishes:
+// only the faces the search box actually touches are evaluated, through
+// the exact same per-face logic `ClosestPointOnBrep()` itself uses
+// (factored out, not reimplemented, into the file-local
+// `ClosestPointOnBrepFace()` helper both now share), so a candidate
+// face's own answer is bit-identical to what the brute-force scan would
+// have found for it.
+//
+// Stores its own full copy of the Brep (the same "self-contained, no
+// reference back to the caller's own object" choice `MeshClosestPointIndex`
+// already makes for its triangle data) rather than a pointer, so the
+// index stays valid for its own lifetime regardless of what happens to
+// the `ON_Brep` it was built from.
+class BrepClosestPointIndex {
+ public:
+  // Throws std::invalid_argument if `b` has no faces, matching
+  // `ClosestPointOnBrep()`'s own contract up front rather than deferring
+  // the same throw to the first query. `u_divisions`/`v_divisions`/
+  // `trim_samples_per_edge` are fixed once here, not re-specified per
+  // query, the same tradeoff `ClosestPointOnBrep()`'s own default
+  // arguments already make for a single call.
+  explicit BrepClosestPointIndex(const ON_Brep& b, int u_divisions = 20, int v_divisions = 20,
+                                  int trim_samples_per_edge = 24);
+
+  // Identical to `ClosestPointOnBrep(point, b, u_divisions, v_divisions,
+  // trim_samples_per_edge)` on the Brep this index was built from (see
+  // this class's own doc comment above for why) - throws
+  // std::runtime_error under the identical "no face could be evaluated"
+  // circumstance that function already throws under.
+  BrepClosestPointResult ClosestPoint(const Point3d& point) const;
+
+ private:
+  ON_Brep brep_;
+  ON_RTree tree_;
+  ON_BoundingBox bbox_;
+  int u_divisions_;
+  int v_divisions_;
+  int trim_samples_per_edge_;
+};
+
 // Closes PARITY_MAP.md's own disclosed "Point classification vs exact
 // B-rep" gap: `ClassifyPointVsSolid`/`ClassifyPointVsMixedSolid`
 // (boolean.h) classify a point against this kernel's own internal,

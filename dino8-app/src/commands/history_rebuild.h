@@ -42,7 +42,12 @@ void RecordHistoryIfEnabled(CommandContext& ctx, ObjectId new_id, const std::str
 std::optional<SceneObject> RebuildExtrude(CommandContext& ctx, const kernel::NurbsCurve& curve,
                                            const HistoryRecord& rec);
 
-// ExtrudeCrvToPoint. Reads num: ax,ay,az (the fixed apex point).
+// ExtrudeCrvToPoint. Reads num: ax,ay,az (the fixed apex point), solid
+// (1/0, Solid=Yes/No). A closed, planar, non-self-intersecting profile
+// with solid=1 builds a genuine capped B-rep cone via
+// kernel::Brep::ExtrudeToPoint; anything else (including a profile
+// ExtrudeToPoint itself refuses to cap) falls back to the old
+// centroid-collapsed ruled surface.
 std::optional<SceneObject> RebuildExtrudeToPoint(CommandContext& ctx, const kernel::NurbsCurve& curve,
                                                   const HistoryRecord& rec);
 

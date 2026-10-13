@@ -1491,6 +1491,36 @@ class Brep {
   // caller-adjustable tolerance.
   MassProperties VolumeMassProperties() const;
 
+  // The real remaining half of this category's own named gap neither
+  // Volume() nor VolumeMassProperties() above closes: "fixed quadrature
+  // order with no caller-adjustable tolerance." Returns the SAME volume
+  // Volume() does, but genuinely refined to a caller-supplied `tolerance`
+  // rather than Volume()'s own fixed 5x5-point-per-knot-span quadrature:
+  // starting from that identical resolution, each whole-domain face's
+  // own quadrature is doubled (every existing knot span split into
+  // progressively finer subdivisions, each still a real 5x5 Gauss-
+  // Legendre pass - genuine refinement, not a larger fixed order) and
+  // compared against the previous estimate, the same doubling-and-
+  // comparing idiom `NurbsSurface::TessellateGridCertifiedAdaptive()`
+  // already established for mesh resolution, applied here to
+  // quadrature resolution instead. A genuinely trimmed face's own
+  // integration is unaffected - it already refines internally via
+  // `IntegrateTriangleAdaptive()` at an always-tight fixed relative
+  // tolerance, in practice at least as fine as most calls to this
+  // method will ask for. `out_achieved_deviation`, if non-null,
+  // receives the actual difference between the last two successive
+  // estimates - a real, measured bound (not a formally certified one,
+  // the same honesty tier every other "CertifiedAdaptive" method in
+  // this kernel already uses), always <= `tolerance` on success.
+  // Inherits Volume()'s own closedness precondition and the identical
+  // trimmed-face scope limits (pseudo-trim side tables, multiple/zero
+  // outer loops). Throws `std::invalid_argument` for a non-finite or
+  // non-positive `tolerance`, or a negative `max_refinements`; throws
+  // `std::runtime_error` if `max_refinements` doublings still don't
+  // bring two successive estimates within `tolerance` of each other.
+  double VolumeCertifiedAdaptive(double tolerance, int max_refinements = 8,
+                                  double* out_achieved_deviation = nullptr) const;
+
   // Topology & adjacency queries - the reusable equivalent of the ad-hoc
   // brep_.m_V/m_E/m_F/m_T walks scattered through this file (e.g.
   // MergeCoplanarFaces' own loop_a.Trim(k)->Edge()->m_ti walk). All three

@@ -4977,6 +4977,83 @@ void TestClosestPointOnBrep() {
   Check(threw_empty, "ClosestPointOnBrep throws std::invalid_argument for a Brep with no faces");
 }
 
+// BrepClosestPointIndex narrows "Spatial acceleration structures for
+// geometric queries" (kernel: Mass properties & spatial queries) the same
+// way MeshClosestPointIndex already did for Mesh::ClosestPoint: cross-
+// validate the RTree-accelerated answer against ClosestPointOnBrep()'s own
+// brute-force scan, on both an untrimmed multi-face Brep and a genuinely
+// trimmed single-face one, so the fast path can't silently diverge from
+// the already-verified exact one.
+void TestBrepClosestPointIndex() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepClosestPointIndex;
+  using dino8::kernel::ClosestPointOnBrep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // A plain 2x2x2 box: 6 faces, so the RTree genuinely has more than one
+  // candidate to choose among, not a trivial single-cell case.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const BrepClosestPointIndex box_index(box.raw());
+
+  bool all_match = true;
+  const std::vector<Point3d> queries = {
+      Point3d(1, 1, 5),      // straight above the top face
+      Point3d(3, 3, 3),      // diagonally past a corner
+      Point3d(0.3, 1, 1),    // inside, off-center
+      Point3d(1, 1, 1),      // the box's own exact center
+      Point3d(-10, -10, -10),  // far outside, opposite corner's direction
+      Point3d(1, 1, -8),     // far outside, straight below
+  };
+  for (const Point3d& q : queries) {
+    const auto brute_force = ClosestPointOnBrep(q, box.raw());
+    const auto accelerated = box_index.ClosestPoint(q);
+    if (accelerated.face_index != brute_force.face_index ||
+        accelerated.point.DistanceTo(brute_force.point) > 1e-6 ||
+        std::abs(accelerated.distance - brute_force.distance) > 1e-6) {
+      all_match = false;
+      break;
+    }
+  }
+  Check(all_match,
+        "BrepClosestPointIndex::ClosestPoint() agrees with ClosestPointOnBrep()'s own brute-force "
+        "scan - same face, point, and distance - at every query point, near and far, interior and "
+        "exterior, on a multi-face box");
+
+  // The same trimmed-face fixture TestClosestPointOnBrep() above uses:
+  // a flat plane at z=2, trimmed down to a small square. The accelerated
+  // path must reproduce the exact boundary-fallback behavior, not just
+  // the unconstrained minimum - a bbox-only RTree candidate filter could
+  // easily miss this if the trim weren't re-checked per candidate.
+  const std::vector<Point3d> plane_grid = {Point3d(0, 0, 2), Point3d(0, 2, 2), Point3d(2, 0, 2),
+                                            Point3d(2, 2, 2)};
+  const NurbsSurface flat_plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+  const std::vector<Point2d> small_trim = {
+      Point2d(0.25, 0.25), Point2d(0.75, 0.25), Point2d(0.75, 0.75), Point2d(0.25, 0.75)};
+  const Brep trimmed_top = Brep::TrimmedPlanarFaceWelded(flat_plane, small_trim);
+  const BrepClosestPointIndex trimmed_index(trimmed_top.raw());
+  {
+    const auto r = trimmed_index.ClosestPoint(Point3d(0.2, 0.2, 5));
+    Check(r.on_trim_boundary,
+          "BrepClosestPointIndex reproduces the exact trim-boundary fallback for a query outside "
+          "the trimmed face's own trim loop, not just the unconstrained interior minimum");
+    Check(r.point.DistanceTo(Point3d(0.5, 0.5, 2)) < 1e-6,
+          "BrepClosestPointIndex's boundary fallback lands on the exact same point "
+          "ClosestPointOnBrep() itself finds, (0.5, 0.5, 2)");
+  }
+
+  bool threw_empty = false;
+  try {
+    ON_Brep empty;
+    const BrepClosestPointIndex empty_index(empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "building a BrepClosestPointIndex from a Brep with no faces throws, matching "
+                      "ClosestPointOnBrep()'s own contract");
+}
+
 // PARITY_MAP's massprops category, "Point classification vs exact B-rep":
 // ClassifyPointVsSolid/ClassifyPointVsMixedSolid (boolean.h) only ever
 // classify against this kernel's own internal, already-split face lists
@@ -17528,6 +17605,121 @@ void TestBrepVolumeMassProperties() {
     }
     Check(threw, "VolumeMassProperties(): throws when every face is wound inward (negative volume), rather "
                  "than silently returning negated moments");
+  }
+}
+
+void TestBrepVolumeCertifiedAdaptive() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  // A box has flat faces, so the divergence-theorem integrand is an
+  // exact polynomial over each face's own parameter domain: a single
+  // 5x5 Gauss-Legendre pass (subdivisions=1) is already exact,
+  // regardless of how many further doublings are tried. Confirms
+  // subdivisions=1 reproduces Volume() itself bit-for-bit, not just
+  // approximately - the SAME formula applied to the SAME spans, not a
+  // coincidentally-close different computation.
+  {
+    const Brep box = Brep::Box(0, 0, 0, 2, 3, 4);
+    const double v_exact = box.Volume();
+    double achieved = -1.0;
+    const double v_adaptive = box.VolumeCertifiedAdaptive(1e-6, 8, &achieved);
+    Check(v_adaptive == v_exact, "VolumeCertifiedAdaptive() on a box matches Volume() bit-for-bit "
+                                 "(subdivisions=1 is numerically identical to Volume()'s own quadrature)");
+    Check(achieved == 0.0, "VolumeCertifiedAdaptive()'s own achieved_deviation is exactly 0 on a box - the "
+                           "first attempt (subdivisions=2) already agrees exactly with subdivisions=1");
+  }
+
+  // A sphere is genuinely curved: Volume()'s own fixed 5x5-per-span
+  // quadrature has a real, non-zero residual (independently confirmed
+  // via a standalone dino8_scratch_test probe before writing this: ~1.2e-4
+  // absolute on a radius-2.5 sphere). Requesting a tolerance TIGHTER
+  // than that residual forces genuine refinement - the real, load-
+  // bearing claim this method makes that Volume() itself cannot: the
+  // SAME probe confirmed the returned value's own error against the
+  // exact closed-form volume drops by over 1000x once refined, not
+  // just reported as "close enough" without actually improving.
+  {
+    const double r = 2.5;
+    const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), r);
+    const double exact_v = (4.0 / 3.0) * ON_PI * r * r * r;
+    const double v_fixed = sphere.Volume();
+    const double fixed_err = std::abs(v_fixed - exact_v);
+    Check(fixed_err > 1e-6, "sanity: Volume()'s own fixed-quadrature error on a sphere is NOT already "
+                            "negligible - otherwise the refinement below would be untested");
+
+    double achieved = -1.0;
+    const double tight_tolerance = 1e-8;
+    const double v_adaptive = sphere.VolumeCertifiedAdaptive(tight_tolerance, 12, &achieved);
+    Check(achieved >= 0.0 && achieved <= tight_tolerance,
+          "VolumeCertifiedAdaptive()'s own achieved_deviation is genuinely at or under the requested "
+          "tolerance - a MEASURED guarantee (two successive estimates' own real difference), not an "
+          "unverified heuristic claim");
+    const double adaptive_err = std::abs(v_adaptive - exact_v);
+    Check(adaptive_err < fixed_err / 100.0,
+          "VolumeCertifiedAdaptive() at a tight tolerance genuinely refines past Volume()'s own fixed "
+          "resolution - its real error against the exact closed-form sphere volume is over 100x smaller, "
+          "not merely reported as converged without actually improving");
+  }
+
+  // max_refinements exhaustion: an unreasonably tight tolerance with a
+  // tiny refinement budget must refuse rather than silently return an
+  // uncertified answer.
+  {
+    const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 2.5);
+    bool threw = false;
+    try {
+      sphere.VolumeCertifiedAdaptive(1e-15, 1);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw, "VolumeCertifiedAdaptive() throws std::runtime_error rather than returning an uncertified "
+                 "result when max_refinements is exhausted before reaching an unreasonably tight tolerance");
+  }
+
+  // Shares Volume()'s own closedness precondition.
+  {
+    using dino8::kernel::NurbsSurface;
+    const std::vector<Point3d> flat_grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+    const Brep open_plate = Brep::FromSurface(NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1));
+    bool threw = false;
+    try {
+      open_plate.VolumeCertifiedAdaptive(1e-6);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "VolumeCertifiedAdaptive() throws std::invalid_argument on an open (non-watertight) Brep, "
+                 "the same closedness precondition Volume() itself already enforces");
+  }
+
+  // Invalid argument checks.
+  {
+    const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+    bool threw_zero = false, threw_negative = false, threw_nan = false, threw_bad_refinements = false;
+    try {
+      box.VolumeCertifiedAdaptive(0.0);
+    } catch (const std::invalid_argument&) {
+      threw_zero = true;
+    }
+    try {
+      box.VolumeCertifiedAdaptive(-1.0);
+    } catch (const std::invalid_argument&) {
+      threw_negative = true;
+    }
+    try {
+      box.VolumeCertifiedAdaptive(std::nan(""));
+    } catch (const std::invalid_argument&) {
+      threw_nan = true;
+    }
+    try {
+      box.VolumeCertifiedAdaptive(1e-6, -1);
+    } catch (const std::invalid_argument&) {
+      threw_bad_refinements = true;
+    }
+    Check(threw_zero && threw_negative && threw_nan,
+          "VolumeCertifiedAdaptive() throws std::invalid_argument for a non-positive or NaN tolerance");
+    Check(threw_bad_refinements, "VolumeCertifiedAdaptive() throws std::invalid_argument for a negative "
+                                 "max_refinements");
   }
 }
 
@@ -39541,20 +39733,60 @@ void TestShellConvexPlanarRejectsTooLargeThickness() {
         "instead of emitting a degenerate/garbage shell");
 }
 
-void TestShellConvexPlanarRejectsAdjacentOpenings() {
+void TestShellConvexPlanarSupportsAdjacentOpenings() {
+  // Updated in place from the old "...RejectsAdjacentOpenings" - this
+  // restriction was lifted (see ShellConvexPlanar's own doc comment):
+  // two removed faces sharing an edge no longer need a non-planar,
+  // multi-facet rim at all, since neither removed face's own plane is
+  // ever offset, so the shared edge simply contributes no rim quad from
+  // either side, and the combined opening continues uninterrupted
+  // across it.
   using dino8::kernel::Brep;
   using dino8::kernel::ShellConvexPlanar;
 
-  const Brep cube = Brep::Box(0, 0, 0, 10, 10, 10);
-  bool threw = false;
-  try {
-    ShellConvexPlanar(cube, {1, 2}, 1.0);
-  } catch (const std::invalid_argument&) {
-    threw = true;
-  }
-  Check(threw,
-        "ShellConvexPlanar refuses two mutually adjacent removed faces (needs a "
-        "non-planar multi-facet rim, out of scope here)");
+  const double s = 10.0, t = 1.0;
+  const Brep cube = Brep::Box(0, 0, 0, s, s, s);
+
+  // Faces 1 (top, +z) and 2 (front, -y) are mutually adjacent (they
+  // share the physical edge from (0,0,s) to (s,0,s) - see
+  // Brep::Box()'s own face-order comment). Opening both at once used to
+  // throw outright; it must now succeed.
+  const Brep shell = ShellConvexPlanar(cube, {1, 2}, t);
+
+  // Cavity bounds: the two REMOVED faces (top, front) contribute their
+  // own ORIGINAL, unmoved plane as the cavity's bound in that direction
+  // (z <= s, y >= 0 - no shrink, since an open face is never offset);
+  // the four KEPT faces (bottom z=0, back y=s, left x=0, right x=s)
+  // each shrink the cavity inward by t exactly as the single-opening
+  // formula already does. So the cavity is the exact box
+  //   x in [t, s-t], y in [0, s-t], z in [t, s]
+  // and the shell volume is the cube's own volume minus that cavity.
+  const double cavity_volume = (s - 2 * t) * (s - t) * (s - t);
+  const double expected_volume = s * s * s - cavity_volume;
+  Check(std::fabs(expected_volume - 352.0) < 1e-12,
+        "the hand-derived two-adjacent-openings cavity formula itself evaluates to 352 for s=10, t=1");
+
+  const double shell_volume = PlanarBrepVolumeExact(shell);
+  Check(std::fabs(shell_volume - expected_volume) < 1e-9,
+        "ShellConvexPlanar's exact volume with two mutually adjacent removed faces "
+        "matches the closed-form combined-opening cavity formula");
+
+  // 4 kept faces x 2 (exterior + interior) = 8, plus one rim quad per
+  // removed-face loop edge EXCLUDING the one edge the two removed faces
+  // share with each other (which contributes no quad at all) - each
+  // removed face's own 4-edge loop has exactly 1 such shared edge, so
+  // 3 rim quads from each side = 6, for 8 + 6 = 14 total.
+  Check(shell.FaceCount() == 14,
+        "a two-mutually-adjacent-openings shell has 14 faces: 4 kept faces x 2 plus "
+        "3+3 rim quads (the shared edge between the two openings contributes none)");
+
+  const auto mesh = shell.TessellateToClosedMesh(1, 1);
+  Check(mesh.IsClosedManifold(),
+        "the two-adjacent-openings shell's tessellation still welds into one closed, "
+        "watertight manifold - no gap or doubled face at the shared opening edge");
+  Check(std::fabs(mesh.Volume() - expected_volume) < 1e-3,
+        "the two-adjacent-openings shell's tessellated-mesh volume also matches the "
+        "closed-form cavity volume");
 }
 
 void TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula() {
@@ -57103,6 +57335,82 @@ void TestBooleanCombineGeneralDifferenceAcceptsRealSymmetricDifferenceCompoundOp
   Check(std::abs(mesh.Volume() - 16.0) < 1e-3,
         "volume is unchanged at 16.0 (XOR = 8 + 8, disjoint a/b) - the disjoint cutter never reaches either "
         "lump of the real XOR compound");
+}
+
+// The General-engine counterpart of
+// TestBooleanCombinePlanarUnionAllowsNonManifoldEdgeOnlyTouchingCubes /
+// TestBooleanCombineMixedUnionAllowsNonManifoldEdgeOnlyTouchingCubes: the
+// third and last B-rep engine to get `allow_non_manifold_result`. Same
+// edge-only-touching two-cube fixture (neither cube's faces overlap the
+// other in area at all - they share exactly one 1D edge, so this engine's
+// own SSX-driven classification never fragments any face; all 12 original
+// faces flow into the reassembly tail untouched). Confirmed first via a
+// standalone scratch-test probe, not assumed, that this fixture actually
+// reaches BooleanCombineGeneral's own "3 or more fragment loops" refusal
+// (boolean_general.cpp's BuildLoop) rather than some earlier, differently-
+// worded throw: four faces (two from each cube - each cube's own two faces
+// meeting at the shared edge) all claim the identical welded 3D edge, one
+// more than the ordinary 2-trim case this engine's reassembly otherwise
+// only ever builds.
+void TestBooleanCombineGeneralUnionAllowsNonManifoldEdgeOnlyTouchingCubes() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const Brep a = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep b = Brep::Box(1, 1, 0, 2, 2, 1);
+
+  bool strict_threw = false;
+  std::string strict_message;
+  try {
+    BooleanCombineGeneral(a, b, BooleanOp::Union, 0.001);
+  } catch (const std::exception& e) {
+    strict_threw = true;
+    strict_message = e.what();
+  }
+  Check(strict_threw && strict_message.find("3 or more fragment loops") != std::string::npos,
+        "the default (allow_non_manifold_result == false) path still refuses this edge-only-touching union "
+        "exactly as before this parameter existed");
+
+  const Brep result = BooleanCombineGeneral(a, b, BooleanOp::Union, 0.001, true);
+  Check(result.FaceCount() == 12,
+        "allow_non_manifold_result Union keeps all 12 of the two cubes' own original faces - nothing here is "
+        "coincident or crossing, so nothing is cut or deduplicated, only the one shared touching edge is welded "
+        "together");
+
+  double area = 0.0;
+  for (const Mesh& face_mesh : result.Tessellate(2, 2)) area += face_mesh.Area();
+  Check(Within(area, 12.0, 1e-9),
+        "total tessellated area is exactly 6 (per cube) x 2 = 12 - every one of the 12 faces survived "
+        "untouched (measured per-face via Tessellate(), independent of Brep::Area()/Brep::Volume(), neither of "
+        "which is well-defined on a genuinely non-manifold result)");
+
+  // Unlike BooleanCombinePlanar/BooleanCombineMixed's identical fixture
+  // (which reassemble the touching edge as exactly ONE non-manifold edge,
+  // since a box face there is a plain 4-corner quad), this engine's own
+  // FaceBoundaryLoop() represents even a flat, untouched box face's
+  // boundary as dense per-trim samples (boolean_general.cpp:748) and
+  // ReconcileFragmentBoundaries() only ever reconciles an anchor pair
+  // shared by EXACTLY two runs (its own doc comment) - a genuinely
+  // non-manifold junction shared by four faces is outside that "exactly
+  // two" case, so the touching edge's own interior sample points are
+  // NOT forced to coincide across all four faces, splitting what is
+  // physically one edge into several independently-welded non-manifold
+  // edges instead of one. This is a real, measured difference in HOW the
+  // non-manifold junction is represented between engines (confirmed via a
+  // standalone scratch-test probe: 24 edges here, stable across repeated
+  // runs), not a sign the geometry itself is wrong - the exact FaceCount
+  // and area checks above already confirm the shape is right. Pinned as a
+  // concrete regression guard rather than merely ">= 1", since a silent
+  // future change collapsing this back to 0 (a thrown-away non-manifold
+  // edge, i.e. this engine quietly welding across the junction instead of
+  // keeping it open) is exactly the kind of regression a loose bound would
+  // miss.
+  Check(result.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 24,
+        "the shared touching edge comes back as real non-manifold edge topology (24 of them, this engine's "
+        "own dense per-trim sampling of an otherwise-single physical edge - measured via a standalone "
+        "scratch-test probe, not hand-derived) instead of throwing");
 }
 
 // BooleanCombineGeneral's own output is never itself a Brep::Compound() by
@@ -79334,6 +79642,7 @@ int main() {
   RunTest("TestIntersectBrepsAndCurveBrep", TestIntersectBrepsAndCurveBrep);
   RunTest("TestFireRayAtBrep", TestFireRayAtBrep);
   RunTest("TestClosestPointOnBrep", TestClosestPointOnBrep);
+  RunTest("TestBrepClosestPointIndex", TestBrepClosestPointIndex);
   RunTest("TestContainsPointExact", TestContainsPointExact);
   RunTest("TestSignedDistanceToBrep", TestSignedDistanceToBrep);
   RunTest("TestPullbackCurveToSurfaceCylinderRulingLine", TestPullbackCurveToSurfaceCylinderRulingLine);
@@ -79549,6 +79858,7 @@ int main() {
   RunTest("TestBrepTorusIsClosedAndWatertight", TestBrepTorusIsClosedAndWatertight);
   RunTest("TestBrepVolumeAndAreaMatchClosedForms", TestBrepVolumeAndAreaMatchClosedForms);
   RunTest("TestBrepVolumeMassProperties", TestBrepVolumeMassProperties);
+  RunTest("TestBrepVolumeCertifiedAdaptive", TestBrepVolumeCertifiedAdaptive);
   RunTest("TestBrepAreaHandlesGenuinelyTrimmedFaces", TestBrepAreaHandlesGenuinelyTrimmedFaces);
   RunTest("TestBrepVolumeHandlesGenuinelyTrimmedFaces", TestBrepVolumeHandlesGenuinelyTrimmedFaces);
   RunTest("TestBrepTrimmedPlanarFaceRejectsTooFewPoints", TestBrepTrimmedPlanarFaceRejectsTooFewPoints);
@@ -79760,7 +80070,7 @@ int main() {
   RunTest("TestBooleanCombinePlanarNonConvexLShapeVsBox", TestBooleanCombinePlanarNonConvexLShapeVsBox);
   RunTest("TestShellConvexPlanarCubeOpenTopExactVolume", TestShellConvexPlanarCubeOpenTopExactVolume);
   RunTest("TestShellConvexPlanarRejectsTooLargeThickness", TestShellConvexPlanarRejectsTooLargeThickness);
-  RunTest("TestShellConvexPlanarRejectsAdjacentOpenings", TestShellConvexPlanarRejectsAdjacentOpenings);
+  RunTest("TestShellConvexPlanarSupportsAdjacentOpenings", TestShellConvexPlanarSupportsAdjacentOpenings);
   RunTest("TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula", TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula);
   RunTest("TestShellConvexPlanarPerFaceWallThicknessArgumentChecks", TestShellConvexPlanarPerFaceWallThicknessArgumentChecks);
   RunTest("TestShellClosedSphereMatchesExactShellVolume", TestShellClosedSphereMatchesExactShellVolume);
@@ -80117,6 +80427,7 @@ int main() {
   RunTest("TestBooleanCombineGeneralSymmetricDifferenceFreeformSurfaceOperand", TestBooleanCombineGeneralSymmetricDifferenceFreeformSurfaceOperand);
   RunTest("TestBooleanCombineGeneralNAryStillRefusesSymmetricDifferenceForTheRightReason", TestBooleanCombineGeneralNAryStillRefusesSymmetricDifferenceForTheRightReason);
   RunTest("TestBooleanCombineGeneralDifferenceAcceptsRealSymmetricDifferenceCompoundOperand", TestBooleanCombineGeneralDifferenceAcceptsRealSymmetricDifferenceCompoundOperand);
+  RunTest("TestBooleanCombineGeneralUnionAllowsNonManifoldEdgeOnlyTouchingCubes", TestBooleanCombineGeneralUnionAllowsNonManifoldEdgeOnlyTouchingCubes);
   RunTest("TestBooleanCombinePlanarCallerTolerance", TestBooleanCombinePlanarCallerTolerance);
   RunTest("TestBooleanCombineMixedCallerTolerance", TestBooleanCombineMixedCallerTolerance);
   RunTest("TestBooleanCombinePlanarAndMixedRejectExplicitZeroTolerance", TestBooleanCombinePlanarAndMixedRejectExplicitZeroTolerance);
