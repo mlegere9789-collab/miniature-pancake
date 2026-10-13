@@ -6412,6 +6412,28 @@ e2pcheck "Object 4 (surface) layer Default" "Solid=No on the identical curve/ape
 e2pcheck "Object 6 (surface) layer Default" "a non-star-shaped (C-shaped) profile falls back to the ruled surface instead of throwing or crashing when ExtrudeToPoint refuses its flat cap"
 e2pcheck "Object 8 (surface) layer Default" "an open curve is unaffected - still the pre-existing ruled surface, since this pass only wires the closed-profile capped-cone case"
 
+# RailRevolve: RailRevolveCommand (cmd_srfedit.cpp) now wires a profile
+# planar through the picked axis into kernel::Brep::RailRevolve for a
+# genuine B-rep instead of the old approximate curve-through-points fit -
+# see railrevolve_solid_script.txt's own header comment for exactly what
+# this checks.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RRV="$("$BIN" --smoke 60 --script "$HERE/railrevolve_solid_script.txt" 2>&1)" || { echo "$RRV"; echo "FAIL: railrevolve-solid script exited non-zero"; exit 1; }
+else
+  RRV="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/railrevolve_solid_script.txt" 2>&1)" || { echo "$RRV"; echo "FAIL: railrevolve-solid script exited non-zero"; exit 1; }
+fi
+echo "$RRV" | grep -E "^(ok|FAIL)"
+if echo "$RRV" | grep -q "^FAIL"; then fail=1; fi
+echo "$RRV" | grep -q "^smoke:" || { echo "$RRV"; echo "FAIL: railrevolve-solid script produced no smoke line"; fail=1; }
+rrvcheck() { if echo "$RRV" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RRV" "$1"; fail=1; fi; }
+rrvcheck "RailRevolve: genuine B-rep solid/shell built (profile planar through the picked axis)" "a profile planar through the picked axis hits the new kernel::Brep::RailRevolve path"
+rrvcheck "Object 3 (polysurface) layer Default" "the result is a real polysurface, not a degenerate approximate surface"
+rrvcheck "1 faces, 2 edges, closed solid" "a closed off-axis profile with a constant-radius rail builds a genuine closed solid (doubly-periodic single face, torus topology)"
+rrvcheck "Object 3: valid" "Check reports the new solid as valid"
+rrvcheck "Volume = 224.7 cubic Millimeters" "Volume measures the new solid directly - no apex/seam mesh-closure gap on this topology, unlike ExtrudeCrvToPoint's own cone"
+rrvcheck "RailRevolve: surface created (profile scaled radially to follow the rail)" "an axis outside the profile's own plane falls back to the pre-existing approximate surface, unchanged"
+rrvcheck "Object 6 (surface) layer Default" "the fallback result is still the pre-existing approximate surface kind, not a Brep"
+
 # History extended to a sixth command, Pipe (PipeCommand, cmd_surface.cpp;
 # RebuildPipe, history_rebuild.h) - see history_pipe_script.txt's own
 # header comment for exactly what this checks. Same real-bounding-box-move
