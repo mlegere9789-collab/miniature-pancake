@@ -16,6 +16,7 @@
 #include <sstream>
 
 #include "app/Settings.h"
+#include "dino8/kernel/features.h"
 #include "dino8/kernel/subd.h"
 #include "geom/Remesh.h"
 #include "render/ImageIO.h"
@@ -352,6 +353,42 @@ void ReduceMeshAction(CommandContext& ctx, const std::vector<ObjectId>& ids, con
 }
 
 // ---------------------------------------------------------------------------
+// LatticeInfill (parity-map "kernel: Feature operations" - "Lattice/
+// cellular infill" - previously no dino8-app command wired
+// dino8::kernel::LatticeInfill() (features.h/.cpp) in at all, despite it
+// already being a real, tested kernel primitive). Each selected solid is
+// replaced in the document by its own cubic-lattice-infilled mesh - a NEW
+// object added alongside the original rather than overwriting it in
+// place (unlike ReduceMeshAction's own simplify-in-place convention just
+// above): a lattice infill is a materially different shape from its
+// source, not a refinement of it, so keeping both lets a caller compare
+// or discard either independently, the same "add a new object" default
+// ShrinkWrapAction already uses for its own shape-changing result.
+// ---------------------------------------------------------------------------
+void LatticeInfillAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
+  const double cell_size = in.OptNum("CellSize", 1.0);
+  const double strut_radius = in.OptNum("StrutRadius", 0.1);
+  const int circle_segments = std::max(3, static_cast<int>(in.OptNum("CircleSegments", 12)));
+  ctx.Doc().BeginChange("LatticeInfill");
+  int done = 0;
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o) continue;
+    std::optional<kernel::Mesh> m = MeshOf(*o, ctx.App().surface_display_tolerance);
+    if (!m || !m->IsClosedManifold()) continue;
+    try {
+      kernel::Mesh lattice = kernel::LatticeInfill(*m, cell_size, strut_radius, circle_segments);
+      SceneObject s = SceneObject::MakeMesh(lattice);
+      s.name = "LatticeInfill";
+      ObjectId new_id = ctx.Doc().Add(std::move(s));
+      ++done;
+      ctx.Print("LatticeInfill: object " + std::to_string(id) + " -> new object " + std::to_string(new_id));
+    } catch (const std::exception& ex) { ctx.Warn(ex.what()); }
+  }
+  if (done == 0) ctx.Warn("LatticeInfill: no eligible closed-manifold solid in the selection");
+}
+
+// ---------------------------------------------------------------------------
 // Heightfield from an image (Image= option) or the existing sine-wave grid.
 // ---------------------------------------------------------------------------
 void HeightfieldAction(CommandContext& ctx, const std::vector<ObjectId>&, const Input& in) {
@@ -492,6 +529,9 @@ void RegisterRemeshCommands(CommandEngine& e) {
   Reg(e, "ReduceMesh",
       RemeshTool("Select meshes to reduce", {Numeric("ReductionPercent", 50), Numeric("TargetFaceCount", 0), Toggle("PreserveBoundary", true)},
                  ReduceMeshAction));
+  Reg(e, "LatticeInfill",
+      RemeshTool("Select solid(s) for lattice infill", {Numeric("CellSize", 1.0), Numeric("StrutRadius", 0.1), Numeric("CircleSegments", 12)},
+                 LatticeInfillAction));
   Reg(e, "Heightfield",
       RemeshPointsTool({"First corner", "Other corner"},
                         {Numeric("Resolution", 60), Numeric("Amplitude", 5), Numeric("Waves", 2), OptionSpec{"Image", "", {}, false, false}},
