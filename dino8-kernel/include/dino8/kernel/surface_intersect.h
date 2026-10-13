@@ -410,16 +410,22 @@ class BrepClosestPointIndex {
   // formula `ContainsPointExact()` itself uses, just computed from this
   // index's own already-built `bbox_` instead of re-scanning every
   // face's own surface bounding box again.
-  bool ContainsPoint(const Point3d& point, double ray_length, const IntersectOptions& opt) const;
+  bool ContainsPoint(const Point3d& point, double ray_length = 0, const IntersectOptions& opt = IntersectOptions()) const;
 
   // The signed-distance sibling to `ClosestPoint()`/`ContainsPoint()`
   // above - the accelerated alternative `SignedDistanceToBrep()` itself
   // had none of. A thin composition, exactly mirroring
   // `SignedDistanceToBrep()`'s own body: the magnitude from
-  // `ClosestPoint()` above, the sign from `ContainsPoint()` above, both
-  // already accelerated on this same index - no new search logic here
-  // at all.
-  double SignedDistance(const Point3d& point, double ray_length, const IntersectOptions& opt) const;
+  // `ClosestPoint()` above, the sign from `ContainsPoint()` above, BOTH
+  // already accelerated on this same index - so, unlike an earlier
+  // concurrent draft of this same method that composed `ClosestPoint()`
+  // with the brute-force `ContainsPointExact()` for only a half-
+  // accelerated result, this fully accelerates the composition, no new
+  // search logic of its own at all. `tol` is not a parameter here (no
+  // accelerated primitive this method composes takes one) - `ray_length`
+  // and `opt` are simply forwarded to `ContainsPoint()` above exactly as
+  // `SignedDistanceToBrep()` itself forwards them to `ContainsPointExact()`.
+  double SignedDistance(const Point3d& point, double ray_length = 0, const IntersectOptions& opt = IntersectOptions()) const;
 
  private:
   ON_Brep brep_;

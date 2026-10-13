@@ -2405,6 +2405,11 @@ bool BrepClosestPointIndex::ContainsPoint(const Point3d& point, double ray_lengt
   return votes_in * 2 > kBrepContainsPointDirectionCount;
 }
 
+// Fully accelerated: both ClosestPoint() (magnitude) and ContainsPoint()
+// (sign) above already query this same index's own RTree, unlike an
+// earlier concurrent draft of this same method that composed
+// ClosestPoint() with the brute-force ContainsPointExact() for only a
+// half-accelerated result.
 double BrepClosestPointIndex::SignedDistance(const Point3d& point, double ray_length, const IntersectOptions& opt) const {
   const BrepClosestPointResult cp = ClosestPoint(point);
   const bool inside = ContainsPoint(point, ray_length, opt);
