@@ -2116,6 +2116,71 @@ std::vector<RayBrepHit> FireRayAtBrep(const Point3d& origin, const Vector3d& dir
   return out;
 }
 
+// The single-face body `ClosestPointOnBrep()` and `BrepClosestPointIndex`
+// both need - factored out so the accelerated index runs the exact same
+// logic on its own candidate faces, not a reimplementation of it. Returns
+// nullopt for the identical "skip this face" case the original inline
+// loop already had (no surface, or a surface with no NURBS form).
+std::optional<BrepClosestPointResult> ClosestPointOnBrepFace(const Point3d& query, const ON_Brep& b, int fi,
+                                                               int u_divisions, int v_divisions,
+                                                               int trim_samples_per_edge) {
+  const ON_BrepFace& f = b.m_F[fi];
+  const ON_Surface* srf = f.SurfaceOf();
+  if (!srf) return std::nullopt;
+  ON_NurbsSurface ns;
+  if (const auto* cast = ON_NurbsSurface::Cast(srf)) {
+    ns = *cast;
+  } else if (srf->GetNurbForm(ns) <= 0) {
+    return std::nullopt;
+  }
+  NurbsSurface wrapper;
+  wrapper.raw() = ns;
+
+  BrepClosestPointResult best;
+  bool have_best = false;
+  auto consider = [&](double distance, const Point2d& uv, const Point3d& point, bool on_boundary) {
+    if (!have_best || distance < best.distance) {
+      best = BrepClosestPointResult{fi, distance, uv, point, on_boundary};
+      have_best = true;
+    }
+  };
+
+  const Point2d uv = wrapper.ClosestPointParameter(query, u_divisions, v_divisions);
+  if (FaceContainsUV(f, uv.x, uv.y)) {
+    const Point3d p = wrapper.PointAt(uv.x, uv.y);
+    consider(p.DistanceTo(query), uv, p, false);
+    return best;  // the interior answer is always <= any boundary point for this face
+  }
+
+  // Outside the trim: the true closest point on this TRIMMED face lies
+  // on its own boundary. Approximates each loop as the same sampled
+  // polyline FaceContainsUV()/PointInPolygon() already build via
+  // LoopPolygon(), evaluated through this surface's own PointAt() into
+  // real 3D segments, and finds the closest point on any of them.
+  for (int li = 0; li < f.m_li.Count(); ++li) {
+    const std::vector<ON_2dPoint> poly = LoopPolygon(b, f.m_li[li], trim_samples_per_edge);
+    const size_t n = poly.size();
+    if (n < 2) continue;
+    for (size_t i = 0; i < n; ++i) {
+      const size_t j = (i + 1) % n;
+      const Point3d a3 = wrapper.PointAt(poly[i].x, poly[i].y);
+      const Point3d b3 = wrapper.PointAt(poly[j].x, poly[j].y);
+      const Vector3d seg = b3 - a3;
+      const double len2 = seg.LengthSquared();
+      double t = 0.0;
+      if (len2 > 1e-300) {
+        t = Clamp(ON_DotProduct(query - a3, seg) / len2, 0.0, 1.0);
+      }
+      const Point3d cand(a3.x + seg.x * t, a3.y + seg.y * t, a3.z + seg.z * t);
+      const Point2d uv_cand(poly[i].x + (poly[j].x - poly[i].x) * t,
+                             poly[i].y + (poly[j].y - poly[i].y) * t);
+      consider(cand.DistanceTo(query), uv_cand, cand, true);
+    }
+  }
+  if (!have_best) return std::nullopt;  // every loop degenerate (< 2 points) - nothing on this face to report
+  return best;
+}
+
 BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b, int u_divisions,
                                            int v_divisions, int trim_samples_per_edge) {
   if (b.m_F.Count() == 0) {
@@ -2124,58 +2189,12 @@ BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b
 
   BrepClosestPointResult best;
   bool have_best = false;
-  auto consider = [&](int face_index, double distance, const Point2d& uv, const Point3d& point,
-                       bool on_boundary) {
-    if (!have_best || distance < best.distance) {
-      best = BrepClosestPointResult{face_index, distance, uv, point, on_boundary};
-      have_best = true;
-    }
-  };
-
   for (int fi = 0; fi < b.m_F.Count(); ++fi) {
-    const ON_BrepFace& f = b.m_F[fi];
-    const ON_Surface* srf = f.SurfaceOf();
-    if (!srf) continue;
-    ON_NurbsSurface ns;
-    if (const auto* cast = ON_NurbsSurface::Cast(srf)) {
-      ns = *cast;
-    } else if (srf->GetNurbForm(ns) <= 0) {
-      continue;
-    }
-    NurbsSurface wrapper;
-    wrapper.raw() = ns;
-
-    const Point2d uv = wrapper.ClosestPointParameter(query, u_divisions, v_divisions);
-    if (FaceContainsUV(f, uv.x, uv.y)) {
-      const Point3d p = wrapper.PointAt(uv.x, uv.y);
-      consider(fi, p.DistanceTo(query), uv, p, false);
-      continue;  // the interior answer is always <= any boundary point for this face
-    }
-
-    // Outside the trim: the true closest point on this TRIMMED face lies
-    // on its own boundary. Approximates each loop as the same sampled
-    // polyline FaceContainsUV()/PointInPolygon() already build via
-    // LoopPolygon(), evaluated through this surface's own PointAt() into
-    // real 3D segments, and finds the closest point on any of them.
-    for (int li = 0; li < f.m_li.Count(); ++li) {
-      const std::vector<ON_2dPoint> poly = LoopPolygon(b, f.m_li[li], trim_samples_per_edge);
-      const size_t n = poly.size();
-      if (n < 2) continue;
-      for (size_t i = 0; i < n; ++i) {
-        const size_t j = (i + 1) % n;
-        const Point3d a3 = wrapper.PointAt(poly[i].x, poly[i].y);
-        const Point3d b3 = wrapper.PointAt(poly[j].x, poly[j].y);
-        const Vector3d seg = b3 - a3;
-        const double len2 = seg.LengthSquared();
-        double t = 0.0;
-        if (len2 > 1e-300) {
-          t = Clamp(ON_DotProduct(query - a3, seg) / len2, 0.0, 1.0);
-        }
-        const Point3d cand(a3.x + seg.x * t, a3.y + seg.y * t, a3.z + seg.z * t);
-        const Point2d uv_cand(poly[i].x + (poly[j].x - poly[i].x) * t,
-                               poly[i].y + (poly[j].y - poly[i].y) * t);
-        consider(fi, cand.DistanceTo(query), uv_cand, cand, true);
-      }
+    std::optional<BrepClosestPointResult> r =
+        ClosestPointOnBrepFace(query, b, fi, u_divisions, v_divisions, trim_samples_per_edge);
+    if (r && (!have_best || r->distance < best.distance)) {
+      best = *r;
+      have_best = true;
     }
   }
 
@@ -2183,6 +2202,89 @@ BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b
     throw std::runtime_error(
         "dino8::kernel::ClosestPointOnBrep: no face could be evaluated (every face has either no "
         "surface or a surface with no NURBS form)");
+  }
+  return best;
+}
+
+BrepClosestPointIndex::BrepClosestPointIndex(const ON_Brep& b, int u_divisions, int v_divisions,
+                                              int trim_samples_per_edge)
+    : brep_(b), tree_(0), u_divisions_(u_divisions), v_divisions_(v_divisions),
+      trim_samples_per_edge_(trim_samples_per_edge) {
+  if (brep_.m_F.Count() == 0) {
+    throw std::invalid_argument(
+        "dino8::kernel::BrepClosestPointIndex::BrepClosestPointIndex: brep has no faces - there's no "
+        "surface to index");
+  }
+  for (int fi = 0; fi < brep_.m_F.Count(); ++fi) {
+    const ON_Surface* srf = brep_.m_F[fi].SurfaceOf();
+    if (!srf) continue;
+    ON_BoundingBox face_bbox;
+    if (!srf->GetBoundingBox(face_bbox)) continue;
+    const double box_min[3] = {face_bbox.m_min.x, face_bbox.m_min.y, face_bbox.m_min.z};
+    const double box_max[3] = {face_bbox.m_max.x, face_bbox.m_max.y, face_bbox.m_max.z};
+    tree_.Insert(box_min, box_max, fi);
+    bbox_.Union(face_bbox);
+  }
+}
+
+BrepClosestPointResult BrepClosestPointIndex::ClosestPoint(const Point3d& point) const {
+  const int n = brep_.m_F.Count();
+  const double diagonal = bbox_.IsValid() ? bbox_.Diagonal().Length() : 0.0;
+  double r = diagonal > 0.0 ? diagonal / std::cbrt(static_cast<double>(n)) : 1.0;
+  if (!(r > 0.0)) r = 1.0;
+
+  auto search = [&](double radius, BrepClosestPointResult& out) {
+    const double box_min[3] = {point.x - radius, point.y - radius, point.z - radius};
+    const double box_max[3] = {point.x + radius, point.y + radius, point.z + radius};
+    ON_SimpleArray<int> ids;
+    tree_.Search(box_min, box_max, ids);
+    bool have = false;
+    for (int j = 0; j < ids.Count(); ++j) {
+      std::optional<BrepClosestPointResult> r =
+          ClosestPointOnBrepFace(point, brep_, ids[j], u_divisions_, v_divisions_, trim_samples_per_edge_);
+      if (r && (!have || r->distance < out.distance)) {
+        out = *r;
+        have = true;
+      }
+    }
+    return have;
+  };
+
+  // Whether the search box (half-width `radius`, centered on `point`)
+  // already contains the index's own whole bounding box - if so, nothing
+  // outside it exists at all, and the result is exact regardless of the
+  // `out.distance <= radius` proof below.
+  auto covers_everything = [&](double radius) {
+    return point.x - radius <= bbox_.m_min.x && point.x + radius >= bbox_.m_max.x &&
+           point.y - radius <= bbox_.m_min.y && point.y + radius >= bbox_.m_max.y &&
+           point.z - radius <= bbox_.m_min.z && point.z + radius >= bbox_.m_max.z;
+  };
+
+  BrepClosestPointResult best;
+  bool found = false;
+  for (int iter = 0; iter < 64; ++iter) {
+    found = search(r, best);
+    if (found && (best.distance <= r || covers_everything(r))) return best;
+    if (!found && covers_everything(r)) break;  // genuinely nothing found anywhere (unreachable for a real brep, see the fallback below)
+    r *= 2.0;
+  }
+  // Unreachable in practice (64 doublings covers any finite brep many
+  // times over, see MeshClosestPointIndex::ClosestPoint()'s own identical
+  // fallback), kept only as an honest fallback rather than an infinite
+  // loop if it ever were reached.
+  found = false;
+  for (int fi = 0; fi < n; ++fi) {
+    std::optional<BrepClosestPointResult> r =
+        ClosestPointOnBrepFace(point, brep_, fi, u_divisions_, v_divisions_, trim_samples_per_edge_);
+    if (r && (!found || r->distance < best.distance)) {
+      best = *r;
+      found = true;
+    }
+  }
+  if (!found) {
+    throw std::runtime_error(
+        "dino8::kernel::BrepClosestPointIndex::ClosestPoint: no face could be evaluated (every face has "
+        "either no surface or a surface with no NURBS form)");
   }
   return best;
 }
