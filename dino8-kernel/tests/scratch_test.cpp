@@ -1,5 +1,6 @@
-#include <cmath>
 #include <cstdio>
+#include "dino8/kernel/boolean.h"
+#include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/brep.h"
 #include "opennurbs.h"
 
@@ -7,52 +8,51 @@ int main() {
   ON::Begin();
   using namespace dino8::kernel;
 
-  // Brep::VolumeMassProperties(), exercised standalone against hand-
-  // derivable analytic fixtures before trusting the real registered
-  // test (TestBrepVolumeMassProperties).
+  // Probe: does BooleanCombineGeneral's own "3+ fragment loops" throw
+  // actually fire on the identical edge-only-touching two-cube fixture
+  // BooleanCombinePlanar/BooleanCombineMixed's own allow_non_manifold_result
+  // tests use, before writing a real registered test around it.
+  const Brep a = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep b = Brep::Box(1, 1, 0, 2, 2, 1);
 
-  // --- Axis-aligned box 2x3x4, offset from the origin ---
-  // V = 24; centroid = (1, 1.5, 2); for a box with side lengths a,b,c
-  // about its OWN centroid: Ixx=V(b^2+c^2)/12, Iyy=V(a^2+c^2)/12,
-  // Izz=V(a^2+b^2)/12, all products of inertia 0 (axis-aligned symmetry).
-  // a=2,b=3,c=4 => Ixx=24*25/12=50, Iyy=24*20/12=40, Izz=24*13/12=26.
-  {
-    const Brep box = Brep::Box(0, 0, 0, 2, 3, 4);
-    const MassProperties mp = box.VolumeMassProperties();
-    std::printf("box: volume=%.6f (expect 24)\n", mp.volume);
-    std::printf("box: centroid=(%.6f,%.6f,%.6f) (expect (1,1.5,2))\n", mp.centroid.x, mp.centroid.y, mp.centroid.z);
-    std::printf("box: ixx=%.6f iyy=%.6f izz=%.6f (expect 50,40,26)\n", mp.ixx, mp.iyy, mp.izz);
-    std::printf("box: ixy=%.6f iyz=%.6f ixz=%.6f (expect 0,0,0)\n", mp.ixy, mp.iyz, mp.ixz);
-    std::printf("box: principal_moments=(%.6f,%.6f,%.6f)\n", mp.principal_moments[0], mp.principal_moments[1],
-                mp.principal_moments[2]);
+  try {
+    const Brep r = BooleanCombineGeneral(a, b, BooleanOp::Union, 0.001, false);
+    std::printf("default path did NOT throw; FaceCount=%d NonManifoldEdges=%d\n", r.FaceCount(),
+                r.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge));
+  } catch (const std::exception& e) {
+    std::printf("default path threw: %s\n", e.what());
   }
 
-  // --- Sphere, radius 5, centered off-origin ---
-  // V = 4/3 pi r^3; centroid = center; Ixx=Iyy=Izz=(2/5) V r^2 about the
-  // centroid (any central axis - a sphere has no preferred axis), all
-  // products of inertia 0.
-  {
-    const double r = 5.0;
-    const Point3d center(10, -3, 7);
-    const Brep sphere = Brep::Sphere(center, r);
-    const MassProperties mp = sphere.VolumeMassProperties();
-    const double v_expected = (4.0 / 3.0) * M_PI * r * r * r;
-    const double i_expected = 0.4 * v_expected * r * r;
-    std::printf("sphere: volume=%.6f (expect %.6f)\n", mp.volume, v_expected);
-    std::printf("sphere: centroid=(%.6f,%.6f,%.6f) (expect (10,-3,7))\n", mp.centroid.x, mp.centroid.y, mp.centroid.z);
-    std::printf("sphere: ixx=%.6f iyy=%.6f izz=%.6f (expect all %.6f)\n", mp.ixx, mp.iyy, mp.izz, i_expected);
-    std::printf("sphere: ixy=%.6f iyz=%.6f ixz=%.6f (expect 0,0,0)\n", mp.ixy, mp.iyz, mp.ixz);
+  try {
+    const Brep r = BooleanCombineGeneral(a, b, BooleanOp::Union, 0.001, true);
+    std::printf("allow_non_manifold path: FaceCount=%d NonManifoldEdges=%d\n", r.FaceCount(),
+                r.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge));
+    double area = 0.0;
+    for (const Mesh& m : r.Tessellate(2, 2)) area += m.Area();
+    std::printf("total tessellated area = %.9f (expect 12)\n", area);
+  } catch (const std::exception& e) {
+    std::printf("allow_non_manifold path threw: %s\n", e.what());
   }
 
-  // --- Negative volume (every face flipped inward) throws ---
+  // Also probe the SymmetricDifference corner-overlap fixture used by the
+  // Planar/Mixed tests, to see what this engine does for it (two-shell
+  // Append either way, per the header's own disclosed scope).
   {
-    Brep box = Brep::Box(0, 0, 0, 2, 3, 4);
-    for (int i = 0; i < box.raw().m_F.Count(); ++i) box.raw().m_F[i].m_bRev = !box.raw().m_F[i].m_bRev;
+    const Brep a2 = Brep::Box(0, 0, 0, 2, 2, 2);
+    const Brep b2 = Brep::Box(1, 1, 1, 3, 3, 3);
     try {
-      const MassProperties mp = box.VolumeMassProperties();
-      std::printf("ERROR: expected throw for inward-flipped box, got volume=%.6f\n", mp.volume);
-    } catch (const std::invalid_argument& e) {
-      std::printf("OK: inward-flipped box throws invalid_argument: %s\n", e.what());
+      const Brep r = BooleanCombineGeneral(a2, b2, BooleanOp::SymmetricDifference, 0.001, false);
+      std::printf("XOR default: FaceCount=%d LumpRanges=%zu NonManifoldEdges=%d\n", r.FaceCount(),
+                  r.LumpFaceRanges().size(), r.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge));
+    } catch (const std::exception& e) {
+      std::printf("XOR default threw: %s\n", e.what());
+    }
+    try {
+      const Brep r = BooleanCombineGeneral(a2, b2, BooleanOp::SymmetricDifference, 0.001, true);
+      std::printf("XOR allow_non_manifold: FaceCount=%d LumpRanges=%zu NonManifoldEdges=%d\n", r.FaceCount(),
+                  r.LumpFaceRanges().size(), r.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge));
+    } catch (const std::exception& e) {
+      std::printf("XOR allow_non_manifold threw: %s\n", e.what());
     }
   }
 

@@ -2247,7 +2247,8 @@ void CollapseDuplicateVids(std::vector<UVPt>& loop, VertexWelder& welder, const 
 }
 
 void BuildLoop(ON_Brep& brep, ON_BrepFace& face, ON_BrepLoop::TYPE type, const std::vector<UVPt>& loop_pts,
-               VertexWelder& welder, std::unordered_map<uint64_t, int>& edge_of_pair) {
+               VertexWelder& welder, std::unordered_map<uint64_t, int>& edge_of_pair,
+               bool allow_non_manifold_result = false) {
   const size_t n = loop_pts.size();
   if (n < 3) return;
   ON_BrepLoop& loop = brep.NewLoop(type, face);
@@ -2301,12 +2302,21 @@ void BuildLoop(ON_Brep& brep, ON_BrepFace& face, ON_BrepLoop::TYPE type, const s
       edge_of_pair.emplace(key, edge_index);
     } else {
       edge_index = it->second;
-      if (brep.m_E[edge_index].m_ti.Count() >= 2) {
+      if (brep.m_E[edge_index].m_ti.Count() >= 2 && !allow_non_manifold_result) {
         throw std::runtime_error(
             "dino8::kernel::BooleanCombineGeneral: an edge is claimed by 3 or "
             "more fragment loops (non-manifold result) - out of scope; see "
             "boolean_general.h's own disclosed limitations");
       }
+      // allow_non_manifold_result == true: fall through and add this third
+      // (or later) trim to the SAME edge anyway - ON_BrepEdge::m_ti is a
+      // plain growable array with no built-in count limit, so a genuinely
+      // non-manifold edge (3+ incident faces, e.g. two solids touching only
+      // along one shared edge or face) is just as representable as the
+      // ordinary 2-trim case; only this proactive refusal, not the ON_Brep
+      // data structure itself, ever stood in the way. See boolean.h's own
+      // BooleanCombinePlanar/BooleanCombineMixed doc comment for the
+      // identical convention this mirrors on the other two B-rep engines.
     }
     ON_BrepEdge& edge = brep.m_E[edge_index];
     const bool bRev3d = (edge.m_vi[0] != vid_from);
@@ -2825,7 +2835,8 @@ void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
 
 }  // namespace
 
-Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
+Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
+                            bool allow_non_manifold_result) {
   if (op == BooleanOp::SymmetricDifference) {
     // Still needs the same lump-merge step Union itself has no more of
     // than boolean.cpp's own two B-rep engines do (see the RefuseCompoundOperand
@@ -2907,8 +2918,21 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
     // (see the test above) - since this engine's own result genuinely has
     // real ON_BrepVertex/Edge/Trim/Loop topology to analyze, unlike a bare
     // `Brep::Box()`.
-    const Brep diff_ab = BooleanCombineGeneral(a, b, BooleanOp::Difference, tolerance);
-    const Brep diff_ba = BooleanCombineGeneral(b, a, BooleanOp::Difference, tolerance);
+    // `allow_non_manifold_result` is forwarded to both directions so a
+    // touching/coincident Difference that would otherwise throw can still
+    // build - but the result below still Appends them as two independent
+    // shells, exactly as the `false` path already does: concatenating two
+    // ALREADY non-manifold-tolerant Breps is no different from
+    // concatenating two ordinary ones (Append() never welds), so this does
+    // NOT give SymmetricDifference boolean.cpp's own "single-shell XOR"
+    // behavior - that would need both directions' own pre-reassembly face
+    // lists merged through one shared VertexWelder/edge_of_pair pass, which
+    // this engine's op-classification is too deeply entangled with `op`
+    // itself to safely split out here. Disclosed scope limit, not an
+    // oversight - see boolean_general.h's own doc comment on this
+    // parameter and PARITY_MAP.md's "Non-manifold boolean results" bullet.
+    const Brep diff_ab = BooleanCombineGeneral(a, b, BooleanOp::Difference, tolerance, allow_non_manifold_result);
+    const Brep diff_ba = BooleanCombineGeneral(b, a, BooleanOp::Difference, tolerance, allow_non_manifold_result);
     Brep result;
     result.raw().Append(diff_ab.raw());
     result.raw().Append(diff_ba.raw());
@@ -3427,9 +3451,9 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
     const int surface_index = brep.AddSurface(kf.surface);
     ON_BrepFace& face = brep.NewFace(surface_index);
     face.m_bRev = kf.rev;
-    BuildLoop(brep, face, ON_BrepLoop::outer, kf.outer, welder, edge_of_pair);
+    BuildLoop(brep, face, ON_BrepLoop::outer, kf.outer, welder, edge_of_pair, allow_non_manifold_result);
     for (const std::vector<UVPt>& h : kf.holes) {
-      if (h.size() >= 3) BuildLoop(brep, face, ON_BrepLoop::inner, h, welder, edge_of_pair);
+      if (h.size() >= 3) BuildLoop(brep, face, ON_BrepLoop::inner, h, welder, edge_of_pair, allow_non_manifold_result);
     }
   }
 
