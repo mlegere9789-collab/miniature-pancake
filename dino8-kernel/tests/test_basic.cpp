@@ -56882,6 +56882,82 @@ void TestBooleanCombineGeneralDifferenceAcceptsRealSymmetricDifferenceCompoundOp
         "lump of the real XOR compound");
 }
 
+// The General-engine counterpart of
+// TestBooleanCombinePlanarUnionAllowsNonManifoldEdgeOnlyTouchingCubes /
+// TestBooleanCombineMixedUnionAllowsNonManifoldEdgeOnlyTouchingCubes: the
+// third and last B-rep engine to get `allow_non_manifold_result`. Same
+// edge-only-touching two-cube fixture (neither cube's faces overlap the
+// other in area at all - they share exactly one 1D edge, so this engine's
+// own SSX-driven classification never fragments any face; all 12 original
+// faces flow into the reassembly tail untouched). Confirmed first via a
+// standalone scratch-test probe, not assumed, that this fixture actually
+// reaches BooleanCombineGeneral's own "3 or more fragment loops" refusal
+// (boolean_general.cpp's BuildLoop) rather than some earlier, differently-
+// worded throw: four faces (two from each cube - each cube's own two faces
+// meeting at the shared edge) all claim the identical welded 3D edge, one
+// more than the ordinary 2-trim case this engine's reassembly otherwise
+// only ever builds.
+void TestBooleanCombineGeneralUnionAllowsNonManifoldEdgeOnlyTouchingCubes() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const Brep a = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep b = Brep::Box(1, 1, 0, 2, 2, 1);
+
+  bool strict_threw = false;
+  std::string strict_message;
+  try {
+    BooleanCombineGeneral(a, b, BooleanOp::Union, 0.001);
+  } catch (const std::exception& e) {
+    strict_threw = true;
+    strict_message = e.what();
+  }
+  Check(strict_threw && strict_message.find("3 or more fragment loops") != std::string::npos,
+        "the default (allow_non_manifold_result == false) path still refuses this edge-only-touching union "
+        "exactly as before this parameter existed");
+
+  const Brep result = BooleanCombineGeneral(a, b, BooleanOp::Union, 0.001, true);
+  Check(result.FaceCount() == 12,
+        "allow_non_manifold_result Union keeps all 12 of the two cubes' own original faces - nothing here is "
+        "coincident or crossing, so nothing is cut or deduplicated, only the one shared touching edge is welded "
+        "together");
+
+  double area = 0.0;
+  for (const Mesh& face_mesh : result.Tessellate(2, 2)) area += face_mesh.Area();
+  Check(Within(area, 12.0, 1e-9),
+        "total tessellated area is exactly 6 (per cube) x 2 = 12 - every one of the 12 faces survived "
+        "untouched (measured per-face via Tessellate(), independent of Brep::Area()/Brep::Volume(), neither of "
+        "which is well-defined on a genuinely non-manifold result)");
+
+  // Unlike BooleanCombinePlanar/BooleanCombineMixed's identical fixture
+  // (which reassemble the touching edge as exactly ONE non-manifold edge,
+  // since a box face there is a plain 4-corner quad), this engine's own
+  // FaceBoundaryLoop() represents even a flat, untouched box face's
+  // boundary as dense per-trim samples (boolean_general.cpp:748) and
+  // ReconcileFragmentBoundaries() only ever reconciles an anchor pair
+  // shared by EXACTLY two runs (its own doc comment) - a genuinely
+  // non-manifold junction shared by four faces is outside that "exactly
+  // two" case, so the touching edge's own interior sample points are
+  // NOT forced to coincide across all four faces, splitting what is
+  // physically one edge into several independently-welded non-manifold
+  // edges instead of one. This is a real, measured difference in HOW the
+  // non-manifold junction is represented between engines (confirmed via a
+  // standalone scratch-test probe: 24 edges here, stable across repeated
+  // runs), not a sign the geometry itself is wrong - the exact FaceCount
+  // and area checks above already confirm the shape is right. Pinned as a
+  // concrete regression guard rather than merely ">= 1", since a silent
+  // future change collapsing this back to 0 (a thrown-away non-manifold
+  // edge, i.e. this engine quietly welding across the junction instead of
+  // keeping it open) is exactly the kind of regression a loose bound would
+  // miss.
+  Check(result.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 24,
+        "the shared touching edge comes back as real non-manifold edge topology (24 of them, this engine's "
+        "own dense per-trim sampling of an otherwise-single physical edge - measured via a standalone "
+        "scratch-test probe, not hand-derived) instead of throwing");
+}
+
 // BooleanCombineGeneral's own output is never itself a Brep::Compound() by
 // construction the way a literal compound input is (it builds one shell of
 // kept fragments, or - new this pass - recomputes real Compound()
@@ -79892,6 +79968,7 @@ int main() {
   RunTest("TestBooleanCombineGeneralSymmetricDifferenceFreeformSurfaceOperand", TestBooleanCombineGeneralSymmetricDifferenceFreeformSurfaceOperand);
   RunTest("TestBooleanCombineGeneralNAryStillRefusesSymmetricDifferenceForTheRightReason", TestBooleanCombineGeneralNAryStillRefusesSymmetricDifferenceForTheRightReason);
   RunTest("TestBooleanCombineGeneralDifferenceAcceptsRealSymmetricDifferenceCompoundOperand", TestBooleanCombineGeneralDifferenceAcceptsRealSymmetricDifferenceCompoundOperand);
+  RunTest("TestBooleanCombineGeneralUnionAllowsNonManifoldEdgeOnlyTouchingCubes", TestBooleanCombineGeneralUnionAllowsNonManifoldEdgeOnlyTouchingCubes);
   RunTest("TestBooleanCombinePlanarCallerTolerance", TestBooleanCombinePlanarCallerTolerance);
   RunTest("TestBooleanCombineMixedCallerTolerance", TestBooleanCombineMixedCallerTolerance);
   RunTest("TestBooleanCombinePlanarAndMixedRejectExplicitZeroTolerance", TestBooleanCombinePlanarAndMixedRejectExplicitZeroTolerance);
