@@ -370,6 +370,26 @@ class BrepClosestPointIndex {
   // circumstance that function already throws under.
   BrepClosestPointResult ClosestPoint(const Point3d& point) const;
 
+  // The ray-firing sibling to `ClosestPoint()` above, the same role
+  // `MeshClosestPointIndex::FireRay()` plays for `Mesh::FireRay()` -
+  // `FireRayAtBrep()` itself had no accelerated alternative at all.
+  // Matches `FireRayAtBrep()`'s own contract exactly (a finite segment
+  // from `origin` out to `max_distance`, exact-and-trimmed hits sorted
+  // nearest-first) - this index's own already-built `ON_RTree` (over
+  // each face's untrimmed bounding box, the same safe over-approximation
+  // `ClosestPoint()` already relies on) is queried with a TIGHT box
+  // around the ray's own clipped segment (the standard slab method
+  // against this index's own whole bounding box first, the identical
+  // technique `MeshClosestPointIndex::FireRay()` already establishes one
+  // level down) rather than every face's own bbox in turn the way
+  // `IntersectCurveBrep()`'s own plain per-face loop does - a ray that
+  // misses this index's own bounding box entirely costs zero face tests.
+  // Throws std::invalid_argument under the identical conditions
+  // `FireRayAtBrep()` itself already throws under (a zero/non-finite
+  // `direction`, or a non-finite/non-positive `max_distance`).
+  std::vector<RayBrepHit> FireRay(const Point3d& origin, const Vector3d& direction, double max_distance,
+                                   const IntersectOptions& opt) const;
+
  private:
   ON_Brep brep_;
   ON_RTree tree_;
