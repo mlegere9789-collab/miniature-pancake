@@ -2788,8 +2788,35 @@ class MeshClosestPointIndex {
   // built from (see this class's own doc comment above for why).
   Point3d ClosestPoint(Point3d point) const;
 
+  // Identical to `Mesh::FireRay(origin, direction)` on the mesh this
+  // index was built from, same sorted-nearest-first `RayHit` list,
+  // same single-hit-per-quad-face contract - but accelerated via this
+  // index's own `tree_`, rather than FireRay()'s own plain per-triangle
+  // scan. The forward ray is first clipped to this mesh's own whole
+  // bounding box via the standard slab method (no real intersection is
+  // possible outside it, by construction) - a ray that misses the
+  // bounding box entirely returns immediately with zero triangle
+  // tests - then the RTree is queried with a TIGHT box around just
+  // that clipped segment (not the mesh's own full extent), so a ray
+  // that only grazes a small part of a large mesh tests only the
+  // triangles actually near its own path, the real acceleration this
+  // gives over a brute-force scan. Every surviving candidate is still
+  // tested with the exact `LineTriangleParameter` primitive
+  // `Mesh::FireRay()` itself uses - not an approximation traded for
+  // speed, same as `ClosestPoint()` above. Throws
+  // std::invalid_argument for a zero/non-finite direction, matching
+  // `Mesh::FireRay()`'s own contract.
+  std::vector<RayHit> FireRay(Point3d origin, Vector3d direction) const;
+
  private:
   std::vector<std::array<Point3d, 3>> triangles_;
+  // Parallel to `triangles_`: which ORIGINAL mesh face (`Mesh::FireRay()`'s
+  // own `RayHit::face_index` convention) each entry came from - a quad
+  // face contributes two triangles here sharing the identical index,
+  // exactly as `Mesh::FireRay()` itself reports a quad's own crossing
+  // once, under its single original face index, never as two separate
+  // sub-triangle hits.
+  std::vector<int> triangle_face_indices_;
   ON_RTree tree_;
   ON_BoundingBox bbox_;
 };
