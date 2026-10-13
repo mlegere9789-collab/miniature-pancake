@@ -3555,7 +3555,19 @@ if echo "$NA" | grep -q "^FAIL"; then fail=1; fi
 echo "$NA" | grep -q "^smoke:" || { echo "$NA"; echo "FAIL: nurbs algo script produced no smoke line"; fail=1; }
 nacheck() { if echo "$NA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$NA" "$1"; fail=1; fi; }
 nacheck "ExtractPipedCurve: extracted 1 rail curve(s)" "ExtractPipedCurve pulled the rail curve back out of the Pipe surface, even after the original curve was deleted"
-nacheck "MakePeriodic: 1 curve(s) made periodic (Smooth=No)" "MakePeriodic Smooth=No ran the real exact-shape-preserving re-knot"
+nacheck "MakePeriodic: 1 object(s) made periodic (Smooth=No)" "MakePeriodic Smooth=No ran the real exact-shape-preserving re-knot"
+# MakePeriodic on a Surface: NurbsSurface::MakePeriodicExact (kernel-only
+# until now) wired in for the first time - PARITY_MAP.md's own "Make
+# periodic (surface)" gap. A Sweep1 surface along a closed (circle)
+# profile is closed-but-not-yet-periodic in U (degree 2, CVs 9x2, the
+# same clamped-duplicate-seam-CV convention a closed curve's own clamped
+# form uses) and never-closeable in V (the straight rail's own open
+# direction, degree 1) - MakePeriodicExact(0) must genuinely re-knot U
+# to periodic (CVs 9x2 -> 10x2) and report success even though V's own
+# Failed (it was never a periodicity candidate to begin with) does not
+# count against it.
+nacheck "MakePeriodic: 1 object(s) made periodic (Smooth=Yes)" "MakePeriodic on a Surface succeeds even though only its U direction is closed - a genuinely open V direction's own Failed doesn't count against it"
+nacheck "CVs 10 x 2" "MakePeriodic genuinely re-knotted the swept surface's U direction to periodic (9 control points -> 10, not a no-op)"
 nacheck "RefitTrim: 2 trim curve(s) could not be refit to strictly fewer control points" "RefitTrim ran its real constrained least-squares fit end to end and correctly, honestly refused a genuinely infeasible case (a cylinder cap's domain leaves no margin for the fitted control polygon's own real overshoot) rather than violating the tolerance or the surface domain"
 
 # Layers: NewLayer/SetLayer/ChangeLayer/ChangeToCurrentLayer/MatchLayer/SetLayerToObject/
@@ -5063,9 +5075,17 @@ python3 -c "import sys; v=float('$SW_VOL'); sys.exit(0 if v < 3500 else 1)" \
 rmcheck "QuadRemesh: [0-9]* quad(s)" "QuadRemesh ran"
 rmcheck "QuadRemesh: 1 object(s) remeshed" "QuadRemesh remeshed the surface"
 rmcheck "ReduceMesh: object 9: 528 -> 264 faces" "ReduceMesh halved the mesh sphere's faces (528, not 576: Mesh::MergeAndWeld now drops the 24+24 degenerate polar faces a 24x12 MeshSphere's own tessellation produces, a real fix from a parallel session's Brep::Sphere/IsClosedManifold work, not a regression this session introduced)"
+rmcheck "Volume = 64 cubic" "the LatticeInfill fixture's own 4x4x4 box has the expected volume before infilling"
+rmcheck "LatticeInfill: object 10 -> new object 11" "LatticeInfill added a new lattice object alongside the box, not in place of it"
+LATTICE_VOL="$(echo "$RM" | sed -n 's/.*Volume = \([0-9.eE+]*\) cubic.*/\1/p' | tail -1)"
+python3 -c "import sys; v=float('$LATTICE_VOL'); sys.exit(0 if 0 < v < 64 else 1)" \
+  && echo "ok   LatticeInfill volume ($LATTICE_VOL) is a genuine sparse infill - positive but well under the box's own 64" \
+  || { echo "FAIL LatticeInfill volume ($LATTICE_VOL) is not a plausible sparse-infill fraction of 64"; fail=1; }
+rmcheck 'mesh "LatticeInfill"' "the new lattice object is named and typed correctly"
+rmcheck "  Closed: yes" "the new lattice object is a genuine closed manifold, not just a plausible-looking open mesh"
 echo "$RM" | grep -E "^(ok|FAIL)"
 if echo "$RM" | grep -q "^FAIL"; then fail=1; fi
-rmcheck "smoke: frames=1[0-9][0-9] objects=7" "remesh script produced the expected object count"
+rmcheck "smoke: frames=1[0-9][0-9] objects=9" "remesh script produced the expected object count"
 
 # Remaining-command QC: curve conversion, tween/extruded/developable surfaces,
 # thickness/continuity analysis, mesh clean-up incl. connected-face isolation

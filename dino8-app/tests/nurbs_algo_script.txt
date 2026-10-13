@@ -55,3 +55,32 @@ SelLast
 List
 Delete
 @expect_objects 0
+
+# --- MakePeriodic on a Surface: NurbsSurface::MakePeriodicExact
+# (kernel-only until now) wired into MakePeriodic for the first time -
+# PARITY_MAP.md's own "Make periodic (surface)" gap ("app's command still
+# curves-only"). Sweep1 on a closed (circle) profile along a straight rail
+# builds a genuinely closed-but-NOT-yet-periodic surface (the same
+# "clamped, duplicate-seam-CV" convention a closed curve's own clamped
+# NURBS form uses, confirmed directly against a real run: CVs 9x2, not
+# already periodic) - MakePeriodicExact(0) must genuinely re-knot it
+# (CVs 9x2 -> 10x2, the periodic degree-2 form's own real CV count), not
+# just no-op. There is no periodic-uniform REFIT for a surface the way
+# CreatePeriodicUniformNurbs gives a curve, so Smooth=Yes/No both resolve
+# to this same real re-knot for a Surface selection (the command's own
+# help text discloses this).
+Line 110,0,0 110,0,10
+Circle 110,0,0 2
+SelID 6
+Sweep1
+SelID 7
+Enter
+SelLast
+List
+MakePeriodic
+Enter
+SelLast
+List
+SelAll
+Delete
+@expect_objects 0
