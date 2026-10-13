@@ -315,6 +315,14 @@ std::string NumberTagLocal(double v) {
   return buf;
 }
 
+// Parse counterpart for PointTagLocal above (Save3dm's own Text writer,
+// below) - the exact same tolerant plain sscanf annotate_common.h's own
+// ParsePointTag already uses to read this format back, so a group this
+// app itself wrote (always well-formed) always parses.
+bool ParsePointTagLocal(const std::string& s, double& x, double& y, double& z) {
+  return std::sscanf(s.c_str(), "%lf,%lf,%lf", &x, &y, &z) == 3;
+}
+
 // Same curve+label+tag-group assembly as io/FileExchange.cpp's own (file-
 // local, anonymous-namespace) AddDimensionGroupToDoc, for the exact same
 // reason PointTagLocal/NumberTagLocal above duplicate annotate_common.h's
@@ -1879,6 +1887,78 @@ ON_Hatch* BuildOnHatchForGroup(const Document& doc, ONX_Model& model, std::map<s
   return hatch;
 }
 
+// Finds (or creates) a real ON_DimStyle table entry carrying exactly
+// `height` as its own TextHeight - the same "cache by the value every
+// group sharing it needs" convention FindOrAddHatchPatternIndex above
+// uses for a pattern name, just keyed by the formatted height string
+// instead (NumberTagLocal's own format, so two groups at the identical
+// requested height always share one table entry rather than writing a
+// duplicate). Returns ON_nil_uuid on failure (an unexpected AddModelComponent
+// rejection - BuildOnTextForGroup below treats that as "no real text this
+// pass," same as every other defensive fallback in this file).
+ON_UUID FindOrAddTextDimStyleId(ONX_Model& model, std::map<std::string, ON_UUID>& cache, double height) {
+  const std::string key = NumberTagLocal(height);
+  auto it = cache.find(key);
+  if (it != cache.end()) return it->second;
+  ON_DimStyle ds;
+  ds.SetName(ON_wString(("Dino8Text" + key).c_str()));
+  ds.SetTextHeight(height);
+  const ON_ModelComponentReference ref = model.AddModelComponent(ds, true);
+  const ON_DimStyle* added = ON_DimStyle::Cast(ref.ModelComponent());
+  const ON_UUID id = added ? added->Id() : ON_nil_uuid;
+  cache[key] = id;
+  return id;
+}
+
+// Builds a real ON_Text for a Dino8 "Text" annotation group, so Save3dm can
+// write one genuine text object instead of the baked glyph curves it
+// otherwise falls through to - the write-side half of Load3dm's own
+// ON_Annotation/AnnotationType::Text branch above (which reads an
+// externally-authored ON_Text back into this exact tag set - Text/
+// TextHeight/TextOrigin/TextX/TextY - so this is its direct inverse,
+// closing the "Dim*/Leader/Text... still written exactly as before" half
+// of this bullet's own disclosed gap for the Text case specifically, the
+// same way BuildOnHatchForGroup already closed it for Hatch). `o` must be
+// the group's own first glyph (Glyph=1, the same marker TagGlyph/
+// AddGlyphCurves already stamp on it) - the caller skips every later
+// glyph in the same group once this succeeds. Returns nullptr (falls
+// through to the pre-existing per-glyph baked export, unaffected) on any
+// missing/malformed tag - none of this app's own Text groups have one,
+// but the defensive fallback costs nothing and matches every other
+// builder in this file.
+ON_Text* BuildOnTextForGroup(ONX_Model& model, std::map<std::string, ON_UUID>& dimstyle_cache, const SceneObject& o) {
+  auto text_it = o.user_text.find("Text");
+  auto height_it = o.user_text.find("TextHeight");
+  auto origin_it = o.user_text.find("TextOrigin");
+  auto x_it = o.user_text.find("TextX");
+  auto y_it = o.user_text.find("TextY");
+  if (text_it == o.user_text.end() || height_it == o.user_text.end() || origin_it == o.user_text.end() ||
+      x_it == o.user_text.end() || y_it == o.user_text.end())
+    return nullptr;
+  double ox, oy, oz, xx, xy, xz, yx, yy, yz;
+  if (!ParsePointTagLocal(origin_it->second, ox, oy, oz) || !ParsePointTagLocal(x_it->second, xx, xy, xz) ||
+      !ParsePointTagLocal(y_it->second, yx, yy, yz))
+    return nullptr;
+  const double height = std::atof(height_it->second.c_str());
+  if (height <= 0) return nullptr;
+  const ON_Plane plane(ON_3dPoint(ox, oy, oz), ON_3dVector(xx, xy, xz), ON_3dVector(yx, yy, yz));
+
+  const ON_UUID dimstyle_id = FindOrAddTextDimStyleId(model, dimstyle_cache, height);
+  if (ON_UuidIsNil(dimstyle_id)) return nullptr;
+  const ON_ModelComponentReference dimstyle_ref = model.ComponentFromId(ON_ModelComponent::Type::DimStyle, dimstyle_id);
+  const ON_DimStyle* dimstyle = ON_DimStyle::Cast(dimstyle_ref.ModelComponent());
+  if (!dimstyle) return nullptr;
+
+  ON_Text* txt = new ON_Text();
+  const ON_wString wtext(text_it->second.c_str());
+  if (!txt->Create(wtext, dimstyle, plane)) {
+    delete txt;
+    return nullptr;
+  }
+  txt->SetDimensionStyleId(dimstyle_id);
+  return txt;
+}
+
 bool Save3dm(const Document& doc, const std::string& path, std::string& error, bool include_reference_objects, int version) {
   ONX_Model model;
   model.m_sStartSectionComments = "Dino 8 - free NURBS modeler";
@@ -2119,6 +2199,13 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
   // falls through to its own baked export, same as before this set existed.
   std::set<int> hatch_groups_written;
   std::map<std::string, int> hatch_pattern_index;
+  // Same dedup convention as hatch_groups_written just above, for a Dino8
+  // "Text" annotation's own glyph-curve group (BuildOnTextForGroup below) -
+  // only the first glyph object of a given group_id to reach this loop
+  // actually builds the real ON_Text; every later glyph in that same group
+  // is skipped rather than also writing its own baked curve.
+  std::set<int> text_groups_written;
+  std::map<std::string, ON_UUID> text_dimstyle_cache;
   for (const SceneObject& o : doc.Objects()) {
     if (!include_reference_objects && o.user_text.count("Dino8.Reference")) continue;
     ON_3dmObjectAttributes attr;
@@ -2188,6 +2275,32 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
         // object's own baked export below, same as before this branch
         // existed (every other member of the same group independently, and
         // harmlessly, retries the same lookup and loses the same way).
+      }
+    }
+    {
+      // A real "Text" annotation (the plain Text command's own Curves-
+      // output case - see TextCommand/AddGlyphCurves in cmd_annotate.cpp)
+      // writes as one genuine ON_Text instead of its baked glyph curves,
+      // so it survives a round trip through a real Rhino/OpenNURBS-based
+      // reader as one text object, not loose geometry, and is read back by
+      // the exact same Load3dm branch an externally-authored one already
+      // is (see that branch's own comment above) - see BuildOnTextForGroup's
+      // own comment above. Scoped to Glyph=1 exactly like the reader's own
+      // writer-recognizable tag set - a Surfaces/Solids-output Text (no
+      // Glyph/TextHeight/TextOrigin tags at all, see TextCommand's own
+      // AddTextCurves) never matches and falls straight through unaffected.
+      auto ann_tag = o.user_text.find("Annotation");
+      if (ann_tag != o.user_text.end() && ann_tag->second == "Text" && o.user_text.count("Glyph")) {
+        if (text_groups_written.count(o.group_id)) continue;  // this group's ON_Text already written
+        if (ON_Text* txt = BuildOnTextForGroup(model, text_dimstyle_cache, o)) {
+          model.AddModelGeometryComponent(txt, &attr);
+          text_groups_written.insert(o.group_id);
+          ++written;
+          continue;
+        }
+        // A malformed/missing tag (shouldn't happen for a group this app
+        // itself created) falls through to this glyph's own baked curve
+        // export below, same tolerance as the hatch branch above.
       }
     }
     ON_Geometry* g = nullptr;
