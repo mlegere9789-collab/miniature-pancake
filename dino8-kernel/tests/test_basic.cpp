@@ -27223,6 +27223,101 @@ void TestMeshClosestPointIndex() {
   Check(threw, "building an index from an empty mesh throws, matching Mesh::ClosestPoint()'s own contract");
 }
 
+// MeshClosestPointIndex::FireRay() - the same acceleration structure's
+// own second query, narrowing (not yet closing - Mesh::ClosestPoint()
+// itself, DistanceTo(), and every B-rep/Brep-level query remain
+// brute-force) PARITY_MAP.md's "Spatial acceleration structures for
+// geometric queries" bullet further: `FireRay()` was still a plain
+// per-triangle scan with no accelerated alternative at all, unlike
+// ClosestPoint() above.
+void TestMeshClosestPointIndexFireRay() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MeshClosestPointIndex;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RayHit;
+  using dino8::kernel::Vector3d;
+
+  // The same genuinely dense tessellated-sphere fixture
+  // TestMeshClosestPointIndex() above already uses.
+  const Brep sphere_brep = Brep::Sphere(Point3d(1, -2, 3), 5.0);
+  const Mesh sphere_mesh = sphere_brep.TessellateToClosedMesh(24, 24);
+  const MeshClosestPointIndex index(sphere_mesh);
+
+  // Neither FireRay() promises a canonical secondary order among
+  // several hits that tie at the EXACT same `t` - genuinely common for
+  // a ray through a tessellated sphere's own pole, where many triangles
+  // converge on the identical vertex, all reporting an identical hit.
+  // `std::sort`'s own tie-breaking order depends on each list's own
+  // PRE-sort order (which differs here: Mesh::FireRay()'s own plain
+  // per-face loop vs. this index's own RTree traversal order) - so
+  // comparing position-by-position without first re-sorting both lists
+  // by an identical secondary key (face_index) would flag a genuine,
+  // harmless reordering as a mismatch (confirmed directly via a
+  // standalone `dino8_scratch_test` probe before writing this fix: the
+  // two lists held the exact identical 48 (t, face_index) pairs, just
+  // in a different relative order among the pole's own many t-ties).
+  auto canonical = [](std::vector<RayHit> hits) {
+    std::sort(hits.begin(), hits.end(), [](const RayHit& x, const RayHit& y) {
+      if (x.t != y.t) return x.t < y.t;
+      return x.face_index < y.face_index;
+    });
+    return hits;
+  };
+  auto same_hits = [&](const std::vector<RayHit>& raw_a, const std::vector<RayHit>& raw_b) {
+    const std::vector<RayHit> a = canonical(raw_a);
+    const std::vector<RayHit> b = canonical(raw_b);
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+      if (std::abs(a[i].t - b[i].t) > 1e-6) return false;
+      if (a[i].point.DistanceTo(b[i].point) > 1e-6) return false;
+      if (a[i].face_index != b[i].face_index) return false;
+      if (a[i].entering != b[i].entering) return false;
+    }
+    return true;
+  };
+
+  bool all_match = true;
+  // A straight-through ray (origin to opposite side: 2 hits), a ray
+  // that misses the sphere entirely but NOT its own bounding box along
+  // every axis (exercises the real tight-segment-box prune, not just
+  // the whole-bbox reject below), a ray that misses the bounding box
+  // outright (the cheap zero-triangle-test reject), a ray starting
+  // deep inside (one forward hit, the entry point behind it correctly
+  // excluded by t > 0), and an oblique ray through an off-center chord.
+  const struct { Point3d origin; Vector3d direction; } rays[] = {
+      {Point3d(1, -2, -20), Vector3d(0, 0, 1)},
+      {Point3d(1, 20, -20), Vector3d(0, 0, 1)},
+      {Point3d(100, 100, 100), Vector3d(1, 0, 0)},
+      {Point3d(1, -2, 3), Vector3d(0, 1, 0)},
+      {Point3d(-20, -2, 3), Vector3d(1, 1, 0.3)},
+  };
+  for (const auto& r : rays) {
+    const std::vector<RayHit> brute_force = sphere_mesh.FireRay(r.origin, r.direction);
+    const std::vector<RayHit> accelerated = index.FireRay(r.origin, r.direction);
+    if (!same_hits(brute_force, accelerated)) { all_match = false; break; }
+  }
+  Check(all_match,
+        "MeshClosestPointIndex::FireRay() agrees with Mesh::FireRay()'s own brute-force scan exactly (same "
+        "hit count, t, point, face_index, entering) across a through-shot, two bounding-box-miss cases, a "
+        "ray starting inside, and an oblique chord");
+
+  // A genuinely non-trivial positive control: at least one of the rays
+  // above must land a real, nonempty hit set, so "both sides agree" isn't
+  // vacuously true from every ray missing outright.
+  Check(!index.FireRay(rays[0].origin, rays[0].direction).empty(),
+        "the straight-through ray fixture genuinely hits the sphere (a real positive control, not every "
+        "ray above missing)");
+
+  bool threw = false;
+  try {
+    index.FireRay(Point3d(0, 0, 0), Vector3d(0, 0, 0));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FireRay() throws on a zero-vector direction, matching Mesh::FireRay()'s own contract");
+}
+
 void TestMeshSignedDistance() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -37785,6 +37880,158 @@ void TestNurbsCurveLoadIgesRejectsMalformedFiles() {
   Check(NurbsCurve::LoadIges(wrong_type_path, out) == Result::Failed,
         "LoadIges refuses a file whose only entity's Directory Entry names Type 100, not 126");
   std::remove(wrong_type_path.c_str());
+}
+
+// The direct STEP sibling of TestNurbsCurveSaveIgesRoundTrips above - see
+// NurbsCurve::SaveStep()'s own doc comment for why this closes the STEP
+// half of the same "kernel-level, Document-free exchange API" gap.
+void TestNurbsCurveSaveStepRoundTrips() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Result;
+
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  Check(circle.raw().IsRational(), "setup: a circle's own NURBS form is genuinely rational");
+
+  const std::string path = "dino8_kernel_curve_step_test.stp";
+  Check(circle.SaveStep(path) == Result::Ok, "NurbsCurve::SaveStep succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .stp file SaveStep wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  Check(file_text.find("ISO-10303-21;") != std::string::npos, "the file has a real ISO-10303-21 header");
+  Check(file_text.find("B_SPLINE_CURVE_WITH_KNOTS(") != std::string::npos,
+        "the file's DATA section carries a real B_SPLINE_CURVE_WITH_KNOTS entity");
+  Check(file_text.find("RATIONAL_B_SPLINE_CURVE(") != std::string::npos,
+        "a genuinely rational curve is wrapped in the complex RATIONAL_B_SPLINE_CURVE form, not written as a plain "
+        "(unweighted) B-spline");
+
+  NurbsCurve reloaded;
+  Check(NurbsCurve::LoadStep(path, reloaded) == Result::Ok, "NurbsCurve::LoadStep succeeds on SaveStep()'s own output");
+  Check(reloaded.raw().CVCount() == circle.raw().CVCount(), "the reloaded curve has the same control point count");
+  Check(reloaded.raw().Degree() == circle.raw().Degree(), "the reloaded curve has the same degree");
+  Check(reloaded.raw().IsRational(), "the reloaded curve is still genuinely rational");
+  bool cv_ok = true;
+  for (int i = 0; i < circle.raw().CVCount() && cv_ok; ++i) {
+    ON_4dPoint a, b;
+    circle.raw().GetCV(i, a);
+    reloaded.raw().GetCV(i, b);
+    if (std::abs(a.x / a.w - b.x / b.w) >= 1e-6 || std::abs(a.y / a.w - b.y / b.w) >= 1e-6 || std::abs(a.w - b.w) >= 1e-9) cv_ok = false;
+  }
+  Check(cv_ok, "every control point survived exactly (Euclidean position and real weight)");
+  Check(std::abs(reloaded.Length() - circle.Length()) < 1e-6,
+        "the reloaded curve's own length exactly matches the original circle's circumference");
+  std::remove(path.c_str());
+
+  // A non-rational curve (a plain cubic, not a circle) round-trips too,
+  // and - distinctly from the rational case above - is written as a PLAIN
+  // B_SPLINE_CURVE_WITH_KNOTS entity, never wrapped in the complex
+  // RATIONAL_B_SPLINE_CURVE form (STEP's own convention: an unweighted
+  // B-spline carries no weight array at all, unlike IGES's Type 126, which
+  // always writes one).
+  ON_NurbsCurve cubic_form(3, false, 4, 4);
+  cubic_form.SetKnot(0, 0.0); cubic_form.SetKnot(1, 0.0); cubic_form.SetKnot(2, 0.0);
+  cubic_form.SetKnot(3, 1.0); cubic_form.SetKnot(4, 1.0); cubic_form.SetKnot(5, 1.0);
+  cubic_form.SetCV(0, ON_3dPoint(0, 0, 0));
+  cubic_form.SetCV(1, ON_3dPoint(1, 2, 0));
+  cubic_form.SetCV(2, ON_3dPoint(2, -1, 0));
+  cubic_form.SetCV(3, ON_3dPoint(3, 0, 0));
+  NurbsCurve cubic;
+  cubic.raw() = cubic_form;
+  Check(!cubic.raw().IsRational(), "setup: the cubic fixture is genuinely non-rational");
+  const std::string cubic_path = "dino8_kernel_curve_step_cubic_test.stp";
+  Check(cubic.SaveStep(cubic_path) == Result::Ok, "SaveStep succeeds on a non-rational curve");
+  {
+    std::ifstream cin(cubic_path);
+    const std::string cubic_text((std::istreambuf_iterator<char>(cin)), std::istreambuf_iterator<char>());
+    Check(cubic_text.find("RATIONAL_B_SPLINE_CURVE(") == std::string::npos,
+          "a non-rational curve is written as a plain B_SPLINE_CURVE_WITH_KNOTS, with no RATIONAL_B_SPLINE_CURVE "
+          "wrapper at all");
+  }
+  NurbsCurve cubic_reloaded;
+  Check(NurbsCurve::LoadStep(cubic_path, cubic_reloaded) == Result::Ok, "LoadStep succeeds on the non-rational fixture");
+  Check(!cubic_reloaded.raw().IsRational(), "the reloaded non-rational curve is still genuinely non-rational");
+  Check(cubic_reloaded.raw().CVCount() == 4 && cubic_reloaded.raw().Degree() == 3,
+        "the reloaded non-rational curve keeps its exact control point count and degree");
+  bool cubic_cv_ok = true;
+  for (int i = 0; i < 4 && cubic_cv_ok; ++i) {
+    ON_4dPoint ha, hb;
+    cubic.raw().GetCV(i, ha);
+    cubic_reloaded.raw().GetCV(i, hb);
+    if ((ON_3dPoint(ha.x, ha.y, ha.z) - ON_3dPoint(hb.x, hb.y, hb.z)).Length() >= 1e-6) cubic_cv_ok = false;
+  }
+  Check(cubic_cv_ok, "every non-rational control point survived exactly");
+  std::remove(cubic_path.c_str());
+}
+
+void TestNurbsCurveLoadStepRejectsMalformedFiles() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Result;
+
+  NurbsCurve out;
+  Check(NurbsCurve::LoadStep("dino8_kernel_curve_step_does_not_exist.stp", out) == Result::Failed,
+        "LoadStep refuses a missing file");
+
+  const std::string garbage_path = "dino8_kernel_curve_step_garbage.stp";
+  {
+    std::ofstream o(garbage_path);
+    o << "this is not a STEP file at all\n";
+  }
+  Check(NurbsCurve::LoadStep(garbage_path, out) == Result::Failed, "LoadStep refuses a file with no ISO-10303-21 header");
+  std::remove(garbage_path.c_str());
+
+  const std::string no_data_path = "dino8_kernel_curve_step_no_data.stp";
+  {
+    std::ofstream o(no_data_path);
+    o << "ISO-10303-21;\nHEADER;\nENDSEC;\nEND-ISO-10303-21;\n";
+  }
+  Check(NurbsCurve::LoadStep(no_data_path, out) == Result::Failed, "LoadStep refuses a real header with no DATA section");
+  std::remove(no_data_path.c_str());
+
+  // A real DATA section with real entities, but no B_SPLINE_CURVE_WITH_KNOTS
+  // among them - this reader's own disclosed scope (that one entity kind
+  // only) must decline rather than misreading something else as a curve.
+  const std::string no_curve_path = "dino8_kernel_curve_step_no_curve.stp";
+  {
+    std::ofstream o(no_curve_path);
+    o << "ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\n#1=CARTESIAN_POINT('',(0.,0.,0.));\nENDSEC;\nEND-ISO-10303-21;\n";
+  }
+  Check(NurbsCurve::LoadStep(no_curve_path, out) == Result::Failed,
+        "LoadStep refuses a real DATA section with no B_SPLINE_CURVE_WITH_KNOTS entity");
+  std::remove(no_curve_path.c_str());
+
+  // A real SaveStep()-written file whose own knot-multiplicity list is
+  // corrupted to an absurd value - must be refused outright (an unbounded
+  // allocation), not attempted.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
+  ON_NurbsCurve nurbs_form;
+  on_circle.GetNurbForm(nurbs_form);
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const std::string bad_mult_path = "dino8_kernel_curve_step_bad_mult.stp";
+  Check(circle.SaveStep(bad_mult_path) == Result::Ok, "setup: SaveStep succeeds");
+  {
+    std::ifstream in(bad_mult_path);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    const size_t pos = text.find(".UNSPECIFIED.,.F.,.F.,.F.,(");
+    Check(pos != std::string::npos, "setup: found the multiplicity list's own opening paren");
+    const size_t mult_start = pos + std::string(".UNSPECIFIED.,.F.,.F.,.F.,(").size();
+    const size_t mult_end = text.find(')', mult_start);
+    Check(mult_end != std::string::npos, "setup: found the multiplicity list's own closing paren");
+    text.replace(mult_start, mult_end - mult_start, "2000000000");
+    std::ofstream out_file(bad_mult_path, std::ios::trunc);
+    out_file << text;
+  }
+  Check(NurbsCurve::LoadStep(bad_mult_path, out) == Result::Failed,
+        "LoadStep refuses a multiplicity list corrupted to an absurdly large value, rather than attempting an "
+        "unbounded allocation");
+  std::remove(bad_mult_path.c_str());
 }
 
 void TestMeshSaveDxfRoundTrips() {
@@ -79894,6 +80141,7 @@ int main() {
           TestMeshContainsPointVotesAcrossMultipleRaysForRobustness);
   RunTest("TestMeshClosestPoint", TestMeshClosestPoint);
   RunTest("TestMeshClosestPointIndex", TestMeshClosestPointIndex);
+  RunTest("TestMeshClosestPointIndexFireRay", TestMeshClosestPointIndexFireRay);
   RunTest("TestMeshSignedDistance", TestMeshSignedDistance);
   RunTest("TestMeshVolumeMassProperties", TestMeshVolumeMassProperties);
   RunTest("TestMeshGetOrientedBoundingBox", TestMeshGetOrientedBoundingBox);
@@ -80042,6 +80290,8 @@ int main() {
   RunTest("TestMeshLoadFbxRejectsMalformedFiles", TestMeshLoadFbxRejectsMalformedFiles);
   RunTest("TestNurbsCurveSaveIgesRoundTrips", TestNurbsCurveSaveIgesRoundTrips);
   RunTest("TestNurbsCurveLoadIgesRejectsMalformedFiles", TestNurbsCurveLoadIgesRejectsMalformedFiles);
+  RunTest("TestNurbsCurveSaveStepRoundTrips", TestNurbsCurveSaveStepRoundTrips);
+  RunTest("TestNurbsCurveLoadStepRejectsMalformedFiles", TestNurbsCurveLoadStepRejectsMalformedFiles);
   RunTest("TestMeshSaveDxfRoundTrips", TestMeshSaveDxfRoundTrips);
   RunTest("TestMeshLoadDxfRejectsMalformedFiles", TestMeshLoadDxfRejectsMalformedFiles);
   RunTest("TestMeshSaveStlSplitsQuadsAndComputesNormals", TestMeshSaveStlSplitsQuadsAndComputesNormals);

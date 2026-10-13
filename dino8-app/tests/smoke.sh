@@ -1307,7 +1307,19 @@ sfcheck "Shell: thickness 1, 1 face(s) at their own thickness, closed, volume 20
 sfcheck "Area = 2680 square" "Shell (per-face) area matches outer 1600 + inner 1080 (two disjoint nested boxes, no boolean rework needed)"
 sfcheck "Bounding box min 340,0,0 max 360,20,10" "Shell (per-face) left the outer wall's own bounding box untouched"
 sfcheck "Volume = 2056 cubic" "Shell (per-face) volume is exactly 4000 - 18*18*6 (inner box shrunk to height 6 by the top face's own thickness 3, not the default 1) - 648 less material removed than the same box's uniform thickness-1 shell above (1408), i.e. 1408 + 18*18*2 = 2056"
-sfcheck "smoke: frames=200 objects=47" "surface script produced the expected object count"
+# OffsetSrf on a polysurface (Solid=No): the kernel's exact
+# OffsetSolidConvexPlanar now takes this case directly for a convex,
+# all-planar-faced solid - a real polysurface result, not a tessellated
+# mesh, closing PARITY_MAP.md's own "OffsetSrf on polysurfaces gives
+# meshes" gap for this common case. OffsetSrf keeps the original box as
+# its own separate object (same as it already does for a plain
+# Surface), so List on the new result alone (SelLast) is what proves
+# the kind, not SelPolysrf (which would also catch the untouched
+# original box).
+sfcheck "6 faces, 12 edges, closed solid" "OffsetSrf on a polysurface (Solid=No) produced a real polysurface - the kernel's exact OffsetSolidConvexPlanar, not the mesh-offset fallback"
+sfcheck "Volume = 5808 cubic" "OffsetSrf on a polysurface (Solid=No) grew a 20x20x10 box by 1 on every face via the kernel's exact OffsetSolidConvexPlanar, giving the exact closed-form volume of a 22x22x12 box"
+sfcheck "Bounding box min 439,-1,-1 max 461,21,11" "OffsetSrf on a polysurface moved every one of the box's own 6 planar faces outward by exactly 1, not an approximate vertex-normal mesh offset"
+sfcheck "smoke: frames=200 objects=50" "surface script produced the expected object count"
 # Solids: Ellipsoid/SubDEllipsoid (real axis picking), Pyramid (NumSides=),
 # Loft (Normal vs Style=Straight), Cap (multiple separate openings) (see solids_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -6474,6 +6486,26 @@ hpacheck "object 2: Patch <- 1" "History tracks a Patch result (object 2) built 
 hpacheck "Bounding box min -5,-5,0 max 5,5,0" "the freshly-patched circle's exact bounding box, before the source curve moves"
 hpacheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one Patch History was tracking"
 hpacheck "Bounding box min -5,-5,5 max 5,5,5" "UpdateHistory genuinely re-derived the patched face's geometry from the source circle's new z=5 position - not the z=0 flat face baked at creation time"
+
+# History extended to a tenth command, NetworkSrf's 2-curve ruled-surface
+# case (the free NetworkSrf function, cmd_surface.cpp; RebuildNetworkSrf2,
+# history_rebuild.h) - see history_networksrf_script.txt's own header
+# comment for exactly what this checks. Same real-bounding-box-move money
+# check as Pipe/Sweep1/Sweep2/Patch above (a flat ruled surface between
+# two ground-plane lines, max z 0 -> 5 once the first line moves).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  HNS="$("$BIN" --smoke 100 --script "$HERE/history_networksrf_script.txt" 2>&1)" || { echo "$HNS"; echo "FAIL: history-networksrf script exited non-zero"; exit 1; }
+else
+  HNS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/history_networksrf_script.txt" 2>&1)" || { echo "$HNS"; echo "FAIL: history-networksrf script exited non-zero"; exit 1; }
+fi
+echo "$HNS" | grep -E "^(ok|FAIL)"
+if echo "$HNS" | grep -q "^FAIL"; then fail=1; fi
+echo "$HNS" | grep -q "^smoke:" || { echo "$HNS"; echo "FAIL: history-networksrf script produced no smoke line"; fail=1; }
+hnscheck() { if echo "$HNS" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HNS" "$1"; fail=1; fi; }
+hnscheck "object 3: NetworkSrf2 <- 1,2" "History tracks a NetworkSrf2 result (object 3) built from its two source lines (objects 1,2)"
+hnscheck "Bounding box min 0,0,0 max 10,10,0" "the freshly-ruled surface's exact bounding box, before either source line moves"
+hnscheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one NetworkSrf2 History was tracking"
+hnscheck "Bounding box min 0,0,0 max 10,10,5" "UpdateHistory genuinely re-derived the ruled surface's geometry from source line 1's new z=5 position - not the flat z=0 surface baked at creation time"
 
 # RecordMacro: a real action recorder for the Macro Editor's buffer (see
 # record_macro_script.txt's own header comment for exactly what this
