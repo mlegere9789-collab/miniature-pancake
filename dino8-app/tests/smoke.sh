@@ -1358,7 +1358,7 @@ secheck "ExtractWireframe: 6 curve(s)" "ExtractWireframe extracted the cylinder 
 secheck "Bounding box min 200,0,0 max 220,10,0" "ExtendSrf grew the plane by 10"
 secheck "UnrollSrf: face 0 unrolled exactly (a real plane/cylinder/cone - zero distortion), area 314.2" "UnrollSrf now uses the kernel's exact NurbsSurface::UnrollDevelopable() on a real cylinder wall (radius 5, height 10: true area 2*pi*5*10 = 314.16, exact - not the old heuristic's own approximate 313)"
 secheck "Silhouette: [0-9]* curve(s)" "Silhouette produced outline curves"
-secheck "RailRevolve: genuine B-rep solid/shell built" "RailRevolve built a surface"
+secheck "RailRevolve: genuine B-rep solid/shell built (profile planar through the picked axis)" "RailRevolve built a real B-rep solid/shell, not just an approximate surface - this fixture's own circle profile and axis genuinely satisfy kernel::Brep::RailRevolve()'s own planar-through-axis case, a staleness correction: this test's own expectation was never updated for that round's new 'exact first, fail open' path (railrevolve_solid_script.txt's own rrvcheck tests the surface-fallback case on a genuinely different, non-coplanar fixture instead)"
 secheck "Ribbon: 1 ribbon surface(s), width 5" "Ribbon built a ribbon surface"
 secheck "SrfControlPtGrid: surface from 2 x 2 points" "SrfControlPtGrid built a surface from points"
 secheck "UntrimBorder: face 0's outer trim removed (holes kept)" "UntrimBorder removed only the outer trim"

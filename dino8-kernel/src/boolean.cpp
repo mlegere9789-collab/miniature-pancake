@@ -313,6 +313,90 @@ std::pair<Mesh, Mesh> SplitByPlane(const Mesh& mesh, Vector3d plane_normal, doub
   return {FromManifold(halves.first), FromManifold(halves.second)};
 }
 
+namespace {
+// An arbitrarily-oriented box with REAL per-facet planar topology, spanning
+// `origin + [-half_u, half_u]*u + [-half_v, half_v]*v + [0, extent_n]*n`
+// for a right-handed orthonormal (u, v, n) frame - Brep::BoxWelded()'s own
+// exact corner/winding construction (6 explicit PlanarFace quads through
+// FromPlanarFaces()), generalized from the world axes to an arbitrary
+// frame. Deliberately NOT Brep::Extrude(): its own wall is ONE general
+// swept NURBS surface for the whole profile loop, not one planar face per
+// side - exactly the "genuinely free-form face" MixedFaces() correctly
+// refuses to classify (confirmed directly: a first draft of SplitByPlane()
+// below built its tool this way and a real test run threw exactly that
+// refusal, not assumed safe from reading the code alone). A boolean-engine
+// tool needs every face genuinely single-typed, which only an explicit
+// per-facet construction like this one (or BoxWelded()'s own) gives.
+Brep FrameBox(Point3d origin, Vector3d u, Vector3d v, Vector3d n, double half_u, double half_v, double extent_n) {
+  const std::vector<Point3d> b = {origin - u * half_u - v * half_v, origin + u * half_u - v * half_v,
+                                   origin + u * half_u + v * half_v, origin - u * half_u + v * half_v};
+  std::vector<Point3d> t;
+  t.reserve(4);
+  for (const Point3d& p : b) t.push_back(p + n * extent_n);
+  auto make_face = [](std::vector<Point3d> loop, ON_3dVector normal) {
+    Brep::PlanarFace f;
+    f.loop = std::move(loop);
+    f.plane = ON_Plane(f.loop[0], normal);
+    return f;
+  };
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(make_face({b[3], b[2], b[1], b[0]}, -n));  // bottom, at the origin end
+  faces.push_back(make_face({t[0], t[1], t[2], t[3]}, n));   // top, extent_n away
+  for (size_t i = 0; i < 4; ++i) {                           // sides, in b's own CCW order
+    const size_t j = (i + 1) % 4;
+    ON_3dVector fn = ON_CrossProduct(b[j] - b[i], t[i] - b[i]);
+    fn.Unitize();
+    faces.push_back(make_face({b[i], b[j], t[j], t[i]}, fn));
+  }
+  return Brep::FromPlanarFaces(faces);
+}
+}  // namespace
+
+std::pair<Brep, Brep> SplitByPlane(const Brep& brep, Vector3d plane_normal, double plane_offset, double tolerance) {
+  if (plane_normal.Length() <= 0.0) {
+    throw std::invalid_argument("dino8::kernel::SplitByPlane: plane_normal must be nonzero");
+  }
+  if (brep.FaceCount() == 0) {
+    throw std::invalid_argument("dino8::kernel::SplitByPlane: brep has no faces to split");
+  }
+  Vector3d n = plane_normal;
+  n.Unitize();
+  const Point3d origin_on_plane = ON_3dPoint::Origin + n * plane_offset;
+
+  // A box large enough to engulf `brep` entirely on either side of the cut
+  // plane: the farthest the brep's own control-point bounding box reaches
+  // from a point already ON the plane, doubled and padded, is always
+  // enough no matter where along the plane that farthest corner sits.
+  const ON_BoundingBox bbox = brep.raw().BoundingBox();
+  double max_dist = 0.0;
+  for (int xi = 0; xi < 2; ++xi) {
+    for (int yi = 0; yi < 2; ++yi) {
+      for (int zi = 0; zi < 2; ++zi) {
+        max_dist = std::max(max_dist, origin_on_plane.DistanceTo(bbox.Corner(xi, yi, zi)));
+      }
+    }
+  }
+  const double half_extent = max_dist * 2.0 + 10.0;
+
+  // ON_Plane's own (origin, normal) constructor picks a consistent, real,
+  // right-handed orthonormal in-plane (xaxis, yaxis) basis - exactly the
+  // two directions FrameBox() needs alongside `n` itself.
+  const ON_Plane cut_plane(origin_on_plane, n);
+  // Starts exactly AT the cut plane (extent_n measured from `origin`, not
+  // centered on it) and extends outward along +n only, so this is a
+  // half-space tool, not a slab - the same "extrude from the cutter's own
+  // position, not shifted back first" discipline dino8-app's own
+  // SolidifyOpenCutter() doc comment already establishes for the identical
+  // reason (a centered slab would swallow `brep` whole instead of
+  // splitting it).
+  const Brep plus_side_tool =
+      FrameBox(origin_on_plane, cut_plane.xaxis, cut_plane.yaxis, n, half_extent, half_extent, half_extent);
+
+  Brep side_along_normal = BooleanCombineMixed(brep, plus_side_tool, BooleanOp::Intersection, tolerance);
+  Brep opposite_side = BooleanCombineMixed(brep, plus_side_tool, BooleanOp::Difference, tolerance);
+  return {std::move(side_along_normal), std::move(opposite_side)};
+}
+
 Mesh ConvexHull(const std::vector<Point3d>& points) {
   if (points.size() < 4) {
     throw std::invalid_argument(
