@@ -2327,11 +2327,30 @@ class StepModel {
       return out.IsValid();
     }
     if (const StepPart* p = e->Find("B_SPLINE_CURVE_WITH_KNOTS")) {
-      if (p->args.size() < 8) return false;
+      if (p->args.size() < 9) return false;
       const int degree = std::atoi(Trim(p->args[1]).c_str());
       const std::vector<int> cv_refs = StepRefList(p->args[2]);
-      const std::vector<int> mult = StepIntList(p->args[6]);
-      const std::vector<double> uknots = StepRealList(p->args[7]);
+      // Field layout (flattened, 0-indexed): name[0], degree[1],
+      // control_points_list[2], curve_form[3], closed_curve[4],
+      // self_intersect[5], knot_multiplicities[6], knots[7], knot_spec[8] -
+      // a genuine, previously-undisclosed off-by-one: THREE fields
+      // (curve_form plus the two logicals) separate control_points_list
+      // from knot_multiplicities, not two, confirmed directly by splitting
+      // WriteStepCurve()'s own emitted args string on top-level commas and
+      // counting (the dino8-kernel port of this exact encoding,
+      // NurbsCurve::LoadStep, caught this the same way: its own circle
+      // round-trip test failed outright against this identical indexing
+      // before the fix). Before this, args[6]/args[7] read the THIRD
+      // ".UNSPECIFIED./.F./.F." logical/enum field as the multiplicity
+      // list (StepIntList("...F...") silently parses to a single 0) and
+      // the real multiplicity list as the knot list - MakeNurbsCurve()
+      // then always rejected the mismatched knot-vector length, so any
+      // genuine (non-line/circle/ellipse) free-form NURBS curve written by
+      // ExportStep came back as "no usable geometry" on ImportStep, not a
+      // crash or a silently-wrong shape, but a reader-side import failure
+      // for the single most general case this entity exists to carry.
+      const std::vector<int> mult = StepIntList(p->args[7]);
+      const std::vector<double> uknots = StepRealList(p->args[8]);
       std::vector<double> full;
       for (size_t i = 0; i < uknots.size() && i < mult.size(); ++i) {
         // Reject a corrupt/hostile file's multiplicity instead of an

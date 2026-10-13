@@ -2007,6 +2007,54 @@ class NurbsCurve {
   // actually has.
   static Result LoadIges(const std::string& path, NurbsCurve& out);
 
+  // Writes this curve as a single real ISO-10303-21 (STEP) physical file -
+  // a minimal, single-curve, Document-free file closing the STEP half of
+  // this kernel's own "App-independent (kernel library) STEP/IGES/PLY/DXF
+  // exchange API" gap (PARITY_MAP.md, kernel: Kernel-level data exchange)
+  // the same way SaveIges()/LoadIges() above already closed the IGES half:
+  // `dino8-app/src/io/FileIgesStep.cpp`'s own `ExportStep`/`ImportStep`
+  // already do this at the app level (a `Document`-bound multi-object
+  // writer/reader with LINE/CIRCLE/ELLIPSE/B_SPLINE_CURVE_WITH_KNOTS/...
+  // dispatch, plus surfaces/B-reps/assemblies), but there was no kernel-
+  // level, Document-free way to write or read just one curve.
+  //
+  // Always writes a `B_SPLINE_CURVE_WITH_KNOTS` entity (wrapped in the
+  // complex `RATIONAL_B_SPLINE_CURVE` form when this curve is genuinely
+  // rational) rather than `ExportStep`'s own LINE/CIRCLE type-specific
+  // optimization for those special cases - the identical scope narrowing
+  // `SaveIges()`'s own doc comment above already makes for IGES Type 126,
+  // since a NURBS curve is this format's one general-purpose
+  // representation too. The written entity carries this curve's own real
+  // degree, (knot, multiplicity) pairs compressed from the full clamped
+  // knot vector exactly as STEP's own schema requires, weights (only
+  // emitted via the `RATIONAL_B_SPLINE_CURVE` wrapper when rational - a
+  // non-rational curve's `B_SPLINE_CURVE_WITH_KNOTS` carries none, STEP's
+  // own convention, unlike IGES which always writes a weight array), and
+  // Euclidean control points - the exact same field values
+  // `FileIgesStep.cpp`'s own `WriteStepCurve`/`EuclideanCV`/`FullKnots`
+  // write for the free-form case, ported into this kernel rather than
+  // re-derived, so this is the same proven encoding that app-level writer
+  // already is.
+  Result SaveStep(const std::string& path) const;
+
+  // Reads the first `B_SPLINE_CURVE_WITH_KNOTS` entity (optionally wrapped
+  // in a complex `RATIONAL_B_SPLINE_CURVE` entity) from a plain
+  // ISO-10303-21 file previously written by SaveStep() (or any other real
+  // STEP writer whose first curve entity happens to be this kind) - the
+  // same field layout `ImportStep()`'s own matching case already reads at
+  // the app level, just without the Document-bound entity-type dispatch
+  // (LINE/CIRCLE/ELLIPSE/B_SPLINE_CURVE_WITH_KNOTS/TRIMMED_CURVE/...) that
+  // reader has for every OTHER entity kind - a file whose first curve is a
+  // LINE or CIRCLE, not the general B-spline form, is correctly refused
+  // rather than silently misread, the same "declared scope, not a guess"
+  // convention `LoadIges()` already uses for its own narrower-than-
+  // `ImportStep()` scope. Returns `Result::Failed` on a missing file, a
+  // file with no real ISO-10303-21 header or DATA section, no
+  // `B_SPLINE_CURVE_WITH_KNOTS` entity among its records, or one whose own
+  // knot-multiplicity list implies an untrustworthy (capped at 100000)
+  // expansion.
+  static Result LoadStep(const std::string& path, NurbsCurve& out);
+
   const ON_NurbsCurve& raw() const { return curve_; }
   ON_NurbsCurve& raw() { return curve_; }
 
