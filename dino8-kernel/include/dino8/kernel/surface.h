@@ -1400,6 +1400,33 @@ class NurbsSurface {
   // `shape_factor == 1.0` exactly.
   Result ReparameterizeRational(int direction, double shape_factor, NurbsSurface& out) const;
 
+  // Re-knots `direction` (0 = U, 1 = V) to a clamped, uniformly-spaced
+  // knot vector while holding every control point exactly fixed and the
+  // parameter domain exactly unchanged - Rhino's `MakeUniform` /
+  // Parasolid's knot normalization. Degree, control-point count, and
+  // `Domain(direction)` are all preserved; only the relative SPACING
+  // between interior knots changes (via
+  // `ON_NurbsSurface::MakeClampedUniformKnotVector`, then an affine
+  // `SetDomain()` rescale back onto this surface's own original domain -
+  // that underlying OpenNURBS call always produces knots starting at 0
+  // with unit spacing, which this method never leaves exposed to a
+  // caller). Re-knotting with the control net held fixed is NOT
+  // shape-preserving in general (the basis functions evaluated at any
+  // given normalized parameter change whenever the source wasn't already
+  // uniformly spaced), so this never ships that shift unmeasured: it
+  // builds the candidate on a copy, measures the real max 3D deviation
+  // from `*this` via `MaxSampledDeviationFrom()` (a sampled lower bound,
+  // stated as such), and only commits the candidate if that bound is <=
+  // `tolerance` - otherwise `*this` is left completely untouched and
+  // Result::Failed is returned. `out_max_deviation`, if non-null, always
+  // receives the measured bound, including on failure (so a caller can
+  // report how far off making it uniform would have been). Returns
+  // Result::NoOpAlreadySatisfied, without measuring anything, if
+  // `direction`'s knot vector is already both clamped and uniform (e.g.
+  // any single-span surface always is). Throws std::invalid_argument if
+  // `direction` isn't 0/1 or `tolerance` isn't finite and positive.
+  Result MakeUniform(int direction, double tolerance, double* out_max_deviation = nullptr);
+
   // Rebuilds (refits) this surface as a new non-rational NURBS surface
   // with exactly `u_count` x `v_count` control points of degree
   // `u_degree` x `v_degree` and clamped uniform knots over the *same*
