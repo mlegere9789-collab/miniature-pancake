@@ -1,0 +1,71 @@
+# ExtrudeCrvToPoint Solid=Yes: RebuildExtrudeToPoint (cmd_solids.cpp) now
+# wires a closed, planar, non-self-intersecting profile straight into
+# kernel::Brep::ExtrudeToPoint, building a genuine capped B-rep cone
+# (List reports it as a closed-solid polysurface, Check reports it valid)
+# instead of the old centroid-collapsed ON_NurbsSurface::CreateRuledSurface
+# degenerate-apex surface, which was never a solid - or even a valid closed
+# shape - at all. Anything ExtrudeToPoint itself refuses (a non-star-shaped
+# base that can't take a flat cap) is caught and falls back to that exact
+# same ruled surface, so no pre-existing result changes.
+#
+# Note: the app's own Volume/VolumeCentroid commands (MeshBrepClosed,
+# BrepMesher.cpp) still report this cone as not-closed/zero-volume - a
+# separate, pre-existing app-level mesh-closure gap for a singular-apex/
+# closed-seam face shared by other already-built capped solids with a pole
+# (confirmed here: a plain Revolve() cylinder-wall solid hits the identical
+# "Volume = 0" in this same app build), not something this script's change
+# introduces or claims to fix.
+
+# --- Solid=Yes (the default) on a closed planar rectangle: a real capped
+# solid cone, not a degenerate surface.
+Polyline 0,0,0 10,0,0 10,8,0 0,8,0 0,0,0
+Enter
+SelLast
+ExtrudeCrvToPoint
+5,4,9
+SelLast
+List
+SelLast
+Check
+@expect_objects 2
+SelAll
+Delete
+
+# --- Solid=No on the same curve/apex: unchanged, still the old ruled
+# surface.
+Polyline 0,0,0 10,0,0 10,8,0 0,8,0 0,0,0
+Enter
+SelLast
+ExtrudeCrvToPoint Solid=No
+5,4,9
+SelLast
+List
+@expect_objects 2
+SelAll
+Delete
+
+# --- Solid=Yes on a genuinely non-star-shaped (C-shaped) closed planar
+# profile: the cone wall itself would embed fine, but PlanCap()'s flat base
+# cap still throws for a non-star-shaped region, so ExtrudeToPoint refuses
+# the cap and this falls back to the ruled surface - not an error reaching
+# the user, not a crash.
+Polyline 0,0,0 10,0,0 10,4,0 3,4,0 3,6,0 10,6,0 10,10,0 0,10,0 0,0,0
+Enter
+SelLast
+ExtrudeCrvToPoint
+5,5,9
+SelLast
+List
+@expect_objects 2
+SelAll
+Delete
+
+# --- Solid=Yes on an OPEN curve: unaffected, still the old ruled surface -
+# this pass only wires the closed-profile capped-cone case.
+Line 0,0,0 10,0,0
+SelLast
+ExtrudeCrvToPoint
+5,0,9
+SelLast
+List
+@expect_objects 2

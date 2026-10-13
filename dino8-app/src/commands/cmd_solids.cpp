@@ -60,10 +60,29 @@ std::optional<SceneObject> RebuildExtrude(CommandContext& ctx, const kernel::Nur
 }
 
 // ExtrudeCrvToPoint's construction - shared the same way as RebuildExtrude
-// above.
-std::optional<SceneObject> RebuildExtrudeToPoint(CommandContext&, const kernel::NurbsCurve& kc, const HistoryRecord& rec) {
+// above. A closed, planar, non-self-intersecting profile with Solid=Yes
+// now cones to a genuine capped B-rep solid via kernel::Brep::ExtrudeToPoint
+// (brep.h's own header comment on that function has the star-shaped-cap
+// exactness argument) instead of always falling back to the old
+// centroid-collapsed ruled-surface approximation, which never produced a
+// real solid (or even a valid cap) at all. `ExtrudeToPoint` throws
+// std::invalid_argument when the apex lies in the profile's own plane or
+// (non-star-shaped base) the flat cap can't close - either way this falls
+// back to the exact same ruled surface the command has always built, so no
+// existing result regresses.
+std::optional<SceneObject> RebuildExtrudeToPoint(CommandContext& ctx, const kernel::NurbsCurve& kc, const HistoryRecord& rec) {
   auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
   const Point3d apex(num("ax"), num("ay"), num("az"));
+  const bool solid = num("solid") != 0.0;
+  const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-9);
+  if (solid && kc.IsClosed() && kc.IsPlanar(tol) && !CurveSelfIntersects(kc, tol)) {
+    try {
+      return SceneObject::MakeBrep(kernel::Brep::ExtrudeToPoint(kc, apex, true));
+    } catch (const std::invalid_argument&) {
+      // Apex coplanar with the profile, or a non-star-shaped base can't
+      // take a flat cap - fall through to the ruled surface below.
+    }
+  }
   ON_NurbsCurve a = kc.raw();
   ON_NurbsCurve b = a;
   for (int i = 0; i < b.CVCount(); ++i) b.SetCV(i, apex);
@@ -589,7 +608,7 @@ class ExtrudeCommand : public Command {
       if (!o || o->kind != ObjectKind::Curve) continue;
       HistoryRecord rec;
       rec.command = "ExtrudeCrvToPoint";
-      rec.num = {{"ax", apex.x}, {"ay", apex.y}, {"az", apex.z}};
+      rec.num = {{"ax", apex.x}, {"ay", apex.y}, {"az", apex.z}, {"solid", solid_ ? 1.0 : 0.0}};
       std::optional<SceneObject> built = RebuildExtrudeToPoint(ctx, *o->curve, rec);
       if (!built) continue;
       const ObjectId new_id = ctx.Doc().Add(std::move(*built));
