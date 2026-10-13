@@ -826,10 +826,15 @@ std::vector<Point3d> ClipConvexPolygon(const std::vector<Point3d>& poly, const O
 // side s, say), this throws std::invalid_argument rather than emitting a
 // partially-correct shell. Likewise throws if a removed face's rim edge
 // count doesn't match its own outer loop's (the same t-too-large
-// degeneracy, on the rim instead of an inner face) or if two entries of
-// `removed_faces` are mutually adjacent (share an edge) - an opening
-// spanning more than one original face needs a non-planar, multi-facet
-// rim, genuinely out of scope here, not silently approximated.
+// degeneracy, on the rim instead of an inner face).
+//
+// Two entries of `removed_faces` MAY be mutually adjacent (share an
+// edge): since neither removed face's own plane is ever offset, that
+// shared edge needs no rim quad from either side - the combined opening
+// simply continues uninterrupted across it, with no extra geometry (and
+// no non-planar rim) required. Only the edges where a removed face
+// borders a KEPT one still get a flat lip in the removed face's own
+// plane, exactly as the single-face case already has.
 Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces, double t);
 
 // Per-face wall-thickness override of ShellConvexPlanar() above (Parasolid

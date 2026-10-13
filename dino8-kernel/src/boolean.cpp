@@ -1712,33 +1712,6 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
     }
   }
 
-  // Scope limit: two removed faces sharing an edge would need a
-  // non-planar, multi-facet rim to close the combined opening - genuinely
-  // out of scope here (see this function's own doc comment), so refuse
-  // rather than emit a wrong single-plane rim for either one.
-  auto shares_edge = [tol](const std::vector<Point3d>& a, const std::vector<Point3d>& b) {
-    for (size_t i = 0; i < a.size(); ++i) {
-      const Point3d& a0 = a[i];
-      const Point3d& a1 = a[(i + 1) % a.size()];
-      for (size_t j = 0; j < b.size(); ++j) {
-        if (a0.DistanceTo(b[(j + 1) % b.size()]) <= tol && a1.DistanceTo(b[j]) <= tol) return true;
-      }
-    }
-    return false;
-  };
-  for (size_t i = 0; i < removed_faces.size(); ++i) {
-    for (size_t j = i + 1; j < removed_faces.size(); ++j) {
-      if (shares_edge(faces[static_cast<size_t>(removed_faces[i])].loop,
-                       faces[static_cast<size_t>(removed_faces[j])].loop)) {
-        throw std::invalid_argument(
-            "dino8::kernel::ShellConvexPlanar: two entries of removed_faces "
-            "are mutually adjacent - an opening spanning more than one "
-            "original face needs a non-planar, multi-facet rim, out of "
-            "scope here (see this function's own doc comment)");
-      }
-    }
-  }
-
   // (1) Constraint planes: kept -> that face's own plane offset inward by
   // ITS OWN wall_thickness[i] (translated by -wall_thickness[i]*n_i);
   // removed -> unchanged (a removed face contributes an opening, so
@@ -1895,6 +1868,15 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 
     for (size_t k = 0; k < m; ++k) {
       const int owner = adj[k];
+      // Two removed faces sharing this edge: the combined opening
+      // continues uninterrupted across it - neither side's plane is ever
+      // offset, so `rim_j` is never actually clipped along this edge (it
+      // lies exactly on `pi[owner]` == owner's own unmoved plane already),
+      // meaning the "rim" here would be degenerate (outer and inner edge
+      // coincide) and `owner`'s own loop independently produces the exact
+      // same degenerate quad from its own side - so this edge contributes
+      // no quad at all rather than a doubled, zero-area one.
+      if (is_removed[static_cast<size_t>(owner)]) continue;
       const int rm = rim_edge_for_face[static_cast<size_t>(owner)];
       if (rm < 0) {
         throw std::invalid_argument(
