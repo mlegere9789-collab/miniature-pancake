@@ -624,20 +624,40 @@ class Sweep2Command : public Command {
 // NetworkSrf: 2 curves -> exact ruled surface; 3/4 curves -> Coons patch.
 // ---------------------------------------------------------------------------
 
+// RebuildNetworkSrf2 (shared with UpdateHistory, cmd_history.cpp) is
+// defined below, after this anonymous namespace closes - same placement
+// as RebuildPipe/RebuildPatch/RebuildSweep1/RebuildSweep2, which need
+// external linkage to match history_rebuild.h's own declaration (already
+// visible here via that header's #include at the top of this file, so the
+// call below resolves against it without needing a local redeclaration).
+
 void NetworkSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
-  std::vector<kernel::NurbsCurve> curves = CurvesOf(ctx, ids);
+  // Ids kept in lockstep with CurvesOf's own curve-only filter (not just
+  // ids itself) so the 2-curve case's recorded history sources line up
+  // with curves[0]/curves[1] exactly, even if a non-curve object was also
+  // selected - the same reason Sweep1Command/Sweep2Command/PipeCommand
+  // above track ids alongside their own curve copies rather than the raw
+  // selection list.
+  std::vector<kernel::NurbsCurve> curves;
+  std::vector<ObjectId> curve_ids;
+  for (ObjectId id : ids) {
+    if (std::optional<kernel::NurbsCurve> c = CurveOf(ctx, id)) { curves.push_back(*c); curve_ids.push_back(id); }
+  }
   if (curves.size() < 2) { ctx.Warn("Select 2, 3 or 4 curves"); return; }
-  if (curves.size() > 4) { ctx.Warn("NetworkSrf handles up to 4 boundary curves here; using the first 4"); curves.resize(4); }
+  if (curves.size() > 4) { ctx.Warn("NetworkSrf handles up to 4 boundary curves here; using the first 4"); curves.resize(4); curve_ids.resize(4); }
   if (curves.size() == 2) {
-    kernel::NurbsCurve a = curves[0], b = curves[1];
-    const Point3d a0 = a.PointAt(a.Domain().min), b0 = b.PointAt(b.Domain().min), b1 = b.PointAt(b.Domain().max);
-    if (a0.DistanceTo(b1) < a0.DistanceTo(b0)) b.Reverse();
-    ON_NurbsSurface ns;
-    if (!ns.CreateRuledSurface(a.raw(), b.raw())) { ctx.Warn("NetworkSrf: ruled surface failed"); return; }
-    kernel::NurbsSurface k;
-    k.raw() = ns;
+    std::optional<SceneObject> fresh = RebuildNetworkSrf2(ctx, curves[0], curves[1], HistoryRecord{});
+    if (!fresh) { ctx.Warn("NetworkSrf: ruled surface failed"); return; }
     ctx.Doc().BeginChange("NetworkSrf");
-    ctx.Doc().Add(SceneObject::MakeSurface(k));
+    const ObjectId new_id = ctx.Doc().Add(std::move(*fresh));
+    // History (UpdateHistory, cmd_history.cpp's RebuildNetworkSrf2
+    // dispatch): deterministic from these two source curves alone, the
+    // same "simple, unambiguous rebuild" shape Pipe/Sweep1/Sweep2/Patch
+    // above already qualify for - which of the two needs reversing to
+    // match head-to-tail is re-derived fresh from the sources' *current*
+    // geometry on rebuild, not itself recorded, the same way Pipe's own
+    // `wrap` is read fresh rather than frozen at creation time.
+    RecordHistoryIfEnabled(ctx, new_id, "NetworkSrf2", {curve_ids[0], curve_ids[1]}, {});
     ctx.Print("NetworkSrf: ruled surface between 2 curves");
     return;
   }
@@ -1579,6 +1599,26 @@ class ProjectCommand : public Command {
 };
 
 }  // namespace
+
+// Shared by NetworkSrf's own 2-curve case above and UpdateHistory
+// (cmd_history.cpp) - same "single source of truth" shape as RebuildPipe/
+// RebuildPatch below. `b` is reversed when its tail, not its head, is
+// nearer `a`'s own start - re-derived fresh from the two curves' *current*
+// geometry every call, never itself a recorded parameter, the same way
+// RebuildPipe below reads a rail's closed/open `wrap` fresh rather than
+// freezing it at creation time. Returns nullopt only if OpenNURBS' own
+// `CreateRuledSurface` refuses the (degenerate) inputs.
+std::optional<SceneObject> RebuildNetworkSrf2(CommandContext&, const kernel::NurbsCurve& a_in,
+                                               const kernel::NurbsCurve& b_in, const HistoryRecord&) {
+  kernel::NurbsCurve a = a_in, b = b_in;
+  const Point3d a0 = a.PointAt(a.Domain().min), b0 = b.PointAt(b.Domain().min), b1 = b.PointAt(b.Domain().max);
+  if (a0.DistanceTo(b1) < a0.DistanceTo(b0)) b.Reverse();
+  ON_NurbsSurface ns;
+  if (!ns.CreateRuledSurface(a.raw(), b.raw())) return std::nullopt;
+  kernel::NurbsSurface k;
+  k.raw() = ns;
+  return SceneObject::MakeSurface(k);
+}
 
 // Shared by PipeCommand::OnNumber above and UpdateHistory (cmd_history.cpp)
 // - same "single source of truth" shape as RebuildExtrude/RebuildRevolve/

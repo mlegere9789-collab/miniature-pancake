@@ -552,10 +552,11 @@ MeshClosestPointIndex::MeshClosestPointIndex(const Mesh& mesh) : tree_(0) {
         "surface to index");
   }
 
-  auto add_triangle = [&](int i0, int i1, int i2) {
+  auto add_triangle = [&](int i0, int i1, int i2, int face_index) {
     const Point3d a(mesh.mesh_.m_V[i0]), b(mesh.mesh_.m_V[i1]), c(mesh.mesh_.m_V[i2]);
     const int id = static_cast<int>(triangles_.size());
     triangles_.push_back({a, b, c});
+    triangle_face_indices_.push_back(face_index);
     double tri_min[3] = {std::min({a.x, b.x, c.x}), std::min({a.y, b.y, c.y}), std::min({a.z, b.z, c.z})};
     double tri_max[3] = {std::max({a.x, b.x, c.x}), std::max({a.y, b.y, c.y}), std::max({a.z, b.z, c.z})};
     tree_.Insert(tri_min, tri_max, id);
@@ -565,8 +566,8 @@ MeshClosestPointIndex::MeshClosestPointIndex(const Mesh& mesh) : tree_(0) {
   };
   for (int i = 0; i < mesh.mesh_.m_F.Count(); ++i) {
     const ON_MeshFace& f = mesh.mesh_.m_F[i];
-    add_triangle(f.vi[0], f.vi[1], f.vi[2]);
-    if (f.IsQuad()) add_triangle(f.vi[0], f.vi[2], f.vi[3]);
+    add_triangle(f.vi[0], f.vi[1], f.vi[2], i);
+    if (f.IsQuad()) add_triangle(f.vi[0], f.vi[2], f.vi[3], i);
   }
 }
 
@@ -626,6 +627,86 @@ Point3d MeshClosestPointIndex::ClosestPoint(Point3d point) const {
     }
   }
   return best_point;
+}
+
+std::vector<RayHit> MeshClosestPointIndex::FireRay(Point3d origin, Vector3d direction) const {
+  if (direction.LengthSquared() <= 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::MeshClosestPointIndex::FireRay: direction is the zero vector - a ray needs "
+        "a direction");
+  }
+  std::vector<RayHit> hits;
+  if (!bbox_.IsValid()) return hits;  // unreachable - the constructor already requires at least one face
+
+  // Standard slab method: clip the FORWARD ray (t >= 0, matching
+  // Mesh::FireRay()'s own contract) to this index's own whole bounding
+  // box. No real triangle intersection is possible outside it, by
+  // construction, so a ray that misses the box entirely (tmin > tmax
+  // below) returns immediately - zero triangle tests, not even one.
+  double tmin = 0.0;
+  double tmax = std::numeric_limits<double>::infinity();
+  const double o[3] = {origin.x, origin.y, origin.z};
+  const double d[3] = {direction.x, direction.y, direction.z};
+  const double bmin[3] = {bbox_.m_min.x, bbox_.m_min.y, bbox_.m_min.z};
+  const double bmax[3] = {bbox_.m_max.x, bbox_.m_max.y, bbox_.m_max.z};
+  for (int axis = 0; axis < 3; ++axis) {
+    if (std::fabs(d[axis]) < 1e-300) {
+      if (o[axis] < bmin[axis] || o[axis] > bmax[axis]) return hits;  // parallel to this slab and outside it
+      continue;
+    }
+    double t1 = (bmin[axis] - o[axis]) / d[axis];
+    double t2 = (bmax[axis] - o[axis]) / d[axis];
+    if (t1 > t2) std::swap(t1, t2);
+    tmin = std::max(tmin, t1);
+    tmax = std::min(tmax, t2);
+    if (tmin > tmax) return hits;  // the ray misses the bounding box entirely
+  }
+
+  // A TIGHT box around just the clipped segment [tmin, tmax] - not this
+  // index's own full extent - is what actually narrows the RTree query
+  // to the triangles near the ray's own path, the real acceleration
+  // this gives a ray that only grazes a small part of a large mesh.
+  const Point3d p0 = origin + direction * tmin;
+  const Point3d p1 = origin + direction * tmax;
+  const double box_min[3] = {std::min(p0.x, p1.x), std::min(p0.y, p1.y), std::min(p0.z, p1.z)};
+  const double box_max[3] = {std::max(p0.x, p1.x), std::max(p0.y, p1.y), std::max(p0.z, p1.z)};
+  ON_SimpleArray<int> ids;
+  tree_.Search(box_min, box_max, ids);
+
+  constexpr double kEpsilon = 1e-12;
+  for (int j = 0; j < ids.Count(); ++j) {
+    const auto& t = triangles_[static_cast<size_t>(ids[j])];
+    double tt = 0, u = 0, v = 0;
+    // The same hair of barycentric slack Mesh::FireRay() itself uses -
+    // see its own doc comment for why.
+    if (!LineTriangleParameter(origin, direction, t[0], t[1], t[2], tt, u, v, /*slack=*/1e-9) || tt <= kEpsilon) {
+      continue;
+    }
+    RayHit h;
+    h.t = tt;
+    h.point = origin + direction * tt;
+    h.face_index = triangle_face_indices_[static_cast<size_t>(ids[j])];
+    h.entering = ON_DotProduct(direction, ON_CrossProduct(t[1] - t[0], t[2] - t[0])) < 0.0;
+    hits.push_back(h);
+  }
+  std::sort(hits.begin(), hits.end(), [](const RayHit& x, const RayHit& y) { return x.t < y.t; });
+
+  // A quad face contributes two sub-triangles sharing one face_index
+  // (see triangle_face_indices_'s own doc comment) - a ray can only
+  // genuinely cross a planar quad once, so both reporting a hit means
+  // the crossing landed exactly on their shared diagonal; keep only the
+  // nearest (first, after the sort above) one per face_index, the same
+  // "report a quad's own crossing once" contract Mesh::FireRay() itself
+  // already guarantees by only testing its second triangle when its
+  // first one misses.
+  std::vector<RayHit> deduped;
+  deduped.reserve(hits.size());
+  for (const RayHit& h : hits) {
+    const bool seen = std::any_of(deduped.begin(), deduped.end(),
+                                   [&](const RayHit& existing) { return existing.face_index == h.face_index; });
+    if (!seen) deduped.push_back(h);
+  }
+  return deduped;
 }
 
 MassProperties Mesh::VolumeMassProperties() const {

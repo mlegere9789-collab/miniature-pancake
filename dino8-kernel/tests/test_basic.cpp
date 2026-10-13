@@ -27223,6 +27223,101 @@ void TestMeshClosestPointIndex() {
   Check(threw, "building an index from an empty mesh throws, matching Mesh::ClosestPoint()'s own contract");
 }
 
+// MeshClosestPointIndex::FireRay() - the same acceleration structure's
+// own second query, narrowing (not yet closing - Mesh::ClosestPoint()
+// itself, DistanceTo(), and every B-rep/Brep-level query remain
+// brute-force) PARITY_MAP.md's "Spatial acceleration structures for
+// geometric queries" bullet further: `FireRay()` was still a plain
+// per-triangle scan with no accelerated alternative at all, unlike
+// ClosestPoint() above.
+void TestMeshClosestPointIndexFireRay() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MeshClosestPointIndex;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RayHit;
+  using dino8::kernel::Vector3d;
+
+  // The same genuinely dense tessellated-sphere fixture
+  // TestMeshClosestPointIndex() above already uses.
+  const Brep sphere_brep = Brep::Sphere(Point3d(1, -2, 3), 5.0);
+  const Mesh sphere_mesh = sphere_brep.TessellateToClosedMesh(24, 24);
+  const MeshClosestPointIndex index(sphere_mesh);
+
+  // Neither FireRay() promises a canonical secondary order among
+  // several hits that tie at the EXACT same `t` - genuinely common for
+  // a ray through a tessellated sphere's own pole, where many triangles
+  // converge on the identical vertex, all reporting an identical hit.
+  // `std::sort`'s own tie-breaking order depends on each list's own
+  // PRE-sort order (which differs here: Mesh::FireRay()'s own plain
+  // per-face loop vs. this index's own RTree traversal order) - so
+  // comparing position-by-position without first re-sorting both lists
+  // by an identical secondary key (face_index) would flag a genuine,
+  // harmless reordering as a mismatch (confirmed directly via a
+  // standalone `dino8_scratch_test` probe before writing this fix: the
+  // two lists held the exact identical 48 (t, face_index) pairs, just
+  // in a different relative order among the pole's own many t-ties).
+  auto canonical = [](std::vector<RayHit> hits) {
+    std::sort(hits.begin(), hits.end(), [](const RayHit& x, const RayHit& y) {
+      if (x.t != y.t) return x.t < y.t;
+      return x.face_index < y.face_index;
+    });
+    return hits;
+  };
+  auto same_hits = [&](const std::vector<RayHit>& raw_a, const std::vector<RayHit>& raw_b) {
+    const std::vector<RayHit> a = canonical(raw_a);
+    const std::vector<RayHit> b = canonical(raw_b);
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+      if (std::abs(a[i].t - b[i].t) > 1e-6) return false;
+      if (a[i].point.DistanceTo(b[i].point) > 1e-6) return false;
+      if (a[i].face_index != b[i].face_index) return false;
+      if (a[i].entering != b[i].entering) return false;
+    }
+    return true;
+  };
+
+  bool all_match = true;
+  // A straight-through ray (origin to opposite side: 2 hits), a ray
+  // that misses the sphere entirely but NOT its own bounding box along
+  // every axis (exercises the real tight-segment-box prune, not just
+  // the whole-bbox reject below), a ray that misses the bounding box
+  // outright (the cheap zero-triangle-test reject), a ray starting
+  // deep inside (one forward hit, the entry point behind it correctly
+  // excluded by t > 0), and an oblique ray through an off-center chord.
+  const struct { Point3d origin; Vector3d direction; } rays[] = {
+      {Point3d(1, -2, -20), Vector3d(0, 0, 1)},
+      {Point3d(1, 20, -20), Vector3d(0, 0, 1)},
+      {Point3d(100, 100, 100), Vector3d(1, 0, 0)},
+      {Point3d(1, -2, 3), Vector3d(0, 1, 0)},
+      {Point3d(-20, -2, 3), Vector3d(1, 1, 0.3)},
+  };
+  for (const auto& r : rays) {
+    const std::vector<RayHit> brute_force = sphere_mesh.FireRay(r.origin, r.direction);
+    const std::vector<RayHit> accelerated = index.FireRay(r.origin, r.direction);
+    if (!same_hits(brute_force, accelerated)) { all_match = false; break; }
+  }
+  Check(all_match,
+        "MeshClosestPointIndex::FireRay() agrees with Mesh::FireRay()'s own brute-force scan exactly (same "
+        "hit count, t, point, face_index, entering) across a through-shot, two bounding-box-miss cases, a "
+        "ray starting inside, and an oblique chord");
+
+  // A genuinely non-trivial positive control: at least one of the rays
+  // above must land a real, nonempty hit set, so "both sides agree" isn't
+  // vacuously true from every ray missing outright.
+  Check(!index.FireRay(rays[0].origin, rays[0].direction).empty(),
+        "the straight-through ray fixture genuinely hits the sphere (a real positive control, not every "
+        "ray above missing)");
+
+  bool threw = false;
+  try {
+    index.FireRay(Point3d(0, 0, 0), Vector3d(0, 0, 0));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FireRay() throws on a zero-vector direction, matching Mesh::FireRay()'s own contract");
+}
+
 void TestMeshSignedDistance() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -80046,6 +80141,7 @@ int main() {
           TestMeshContainsPointVotesAcrossMultipleRaysForRobustness);
   RunTest("TestMeshClosestPoint", TestMeshClosestPoint);
   RunTest("TestMeshClosestPointIndex", TestMeshClosestPointIndex);
+  RunTest("TestMeshClosestPointIndexFireRay", TestMeshClosestPointIndexFireRay);
   RunTest("TestMeshSignedDistance", TestMeshSignedDistance);
   RunTest("TestMeshVolumeMassProperties", TestMeshVolumeMassProperties);
   RunTest("TestMeshGetOrientedBoundingBox", TestMeshGetOrientedBoundingBox);
