@@ -169,6 +169,35 @@ int main() {
     Check(!ExportWebViewer(doc, "unused.html", false, error), "a hidden object is excluded, leaving nothing to export");
   }
 
+  // ---- An object name containing a literal "</script>" cannot break out
+  // of the generated page's own inline <script> block ---------------------
+  // An object's name is attacker-controlled whenever it comes from an
+  // imported file (File3dm.cpp's ON_3dmObjectAttributes::Name(),
+  // FileIgesStep.cpp's own entity label, etc.), and the whole point of
+  // ExportWebViewer is to hand its output to someone else to open. The
+  // HTML tokenizer looks for the raw byte sequence "</script" anywhere in
+  // the markup, with no notion of the surrounding JS string/quote
+  // context - a name of exactly that shape used to close the page's own
+  // script block early and get the rest of the name parsed as a brand new
+  // <script> element (confirmed directly before this fix: the unescaped
+  // output held 3 literal "</script>" occurrences - the real page's own,
+  // plus the injected tag's open and close - instead of 1).
+  {
+    Document doc;
+    const dino8::app::ObjectId id = doc.Add(SceneObject::MakeBrep(MakeBoxBrep(0, 0, 0, 1, 1, 1)));
+    doc.Find(id)->name = "</script><script>window.__pwned=true;</script>";
+    std::string error;
+    const std::string path = "test_web_viewer_script_name.html";
+    Check(ExportWebViewer(doc, path, false, error), "ExportWebViewer succeeds for a name containing \"</script>\"");
+    const std::string html = ReadWholeFile(path);
+    Check(CountOccurrences(html, "</script>") == 1,
+          "the output contains exactly one literal \"</script>\" (the page's own) - the hostile name's own copies "
+          "are escaped, not real closing tags");
+    Check(html.find("window.__pwned") != std::string::npos,
+          "sanity: the hostile name's own text still reaches the output (as inert string data), not silently dropped");
+    std::remove(path.c_str());
+  }
+
   // ---- Leaves a real fixture on disk for the separate, real-browser check
   // (tests/web_viewer_browser_check.py) to open - not cleaned up here, same
   // "leave the fixture for the next tool in the chain" shape

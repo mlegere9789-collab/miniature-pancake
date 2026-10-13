@@ -5054,6 +5054,74 @@ void TestBrepClosestPointIndex() {
                       "ClosestPointOnBrep()'s own contract");
 }
 
+// BrepClosestPointIndex::FireRay() - the ray-firing sibling to
+// ClosestPoint() above, the real B-rep-level accelerated alternative
+// FireRayAtBrep() itself never had (mirroring
+// MeshClosestPointIndex::FireRay()'s own equivalent role for
+// Mesh::FireRay()).
+void TestBrepClosestPointIndexFireRay() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepClosestPointIndex;
+  using dino8::kernel::FireRayAtBrep;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RayBrepHit;
+  using dino8::kernel::Vector3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const BrepClosestPointIndex index(box.raw());
+
+  auto agrees_with_brute_force = [&](const Point3d& origin, const Vector3d& dir, double max_distance) {
+    const std::vector<RayBrepHit> brute = FireRayAtBrep(origin, dir, max_distance, box.raw(), opt);
+    const std::vector<RayBrepHit> accel = index.FireRay(origin, dir, max_distance, opt);
+    if (brute.size() != accel.size()) return false;
+    for (size_t i = 0; i < brute.size(); ++i) {
+      if (brute[i].face_index != accel[i].face_index) return false;
+      if (std::abs(brute[i].distance - accel[i].distance) > 1e-9) return false;
+      if (brute[i].point.DistanceTo(accel[i].point) > 1e-9) return false;
+    }
+    return true;
+  };
+
+  Check(agrees_with_brute_force(Point3d(1, 1, -5), Vector3d(0, 0, 1), 20.0),
+        "BrepClosestPointIndex::FireRay() agrees exactly with FireRayAtBrep()'s own brute-force answer "
+        "on a through-shot (both pierced faces, same distance/point, nearest-first)");
+  Check(agrees_with_brute_force(Point3d(1, 1, -5), Vector3d(0, 0, 1), 6.0),
+        "BrepClosestPointIndex::FireRay() agrees with the brute-force answer when a shorter "
+        "max_distance only reaches the first face");
+  Check(agrees_with_brute_force(Point3d(10, 10, 10), Vector3d(0, 0, 1), 5.0),
+        "BrepClosestPointIndex::FireRay() agrees with the brute-force answer (zero hits) for a ray "
+        "that misses the box's own bounding box entirely");
+  Check(agrees_with_brute_force(Point3d(1, 1, 1), Vector3d(1, 0.3, 0.2), 10.0),
+        "BrepClosestPointIndex::FireRay() agrees with the brute-force answer for an oblique ray "
+        "starting from deep inside the box");
+  Check(agrees_with_brute_force(Point3d(-10, 1, 1), Vector3d(1, 0, 0), 100.0),
+        "BrepClosestPointIndex::FireRay() agrees with the brute-force answer for a long ray starting "
+        "far outside the box");
+
+  bool threw_zero_dir = false;
+  try {
+    index.FireRay(Point3d(0, 0, 0), Vector3d(0, 0, 0), 10.0, opt);
+  } catch (const std::invalid_argument&) {
+    threw_zero_dir = true;
+  }
+  Check(threw_zero_dir, "BrepClosestPointIndex::FireRay() throws on a zero-vector direction, matching "
+                        "FireRayAtBrep()'s own contract");
+
+  bool threw_bad_distance = false;
+  try {
+    index.FireRay(Point3d(0, 0, 0), Vector3d(0, 0, 1), -1.0, opt);
+  } catch (const std::invalid_argument&) {
+    threw_bad_distance = true;
+  }
+  Check(threw_bad_distance, "BrepClosestPointIndex::FireRay() throws on a non-positive max_distance, "
+                            "matching FireRayAtBrep()'s own contract");
+}
+
 // PARITY_MAP's massprops category, "Point classification vs exact B-rep":
 // ClassifyPointVsSolid/ClassifyPointVsMixedSolid (boolean.h) only ever
 // classify against this kernel's own internal, already-split face lists
@@ -79984,6 +80052,7 @@ int main() {
   RunTest("TestFireRayAtBrep", TestFireRayAtBrep);
   RunTest("TestClosestPointOnBrep", TestClosestPointOnBrep);
   RunTest("TestBrepClosestPointIndex", TestBrepClosestPointIndex);
+  RunTest("TestBrepClosestPointIndexFireRay", TestBrepClosestPointIndexFireRay);
   RunTest("TestContainsPointExact", TestContainsPointExact);
   RunTest("TestSignedDistanceToBrep", TestSignedDistanceToBrep);
   RunTest("TestPullbackCurveToSurfaceCylinderRulingLine", TestPullbackCurveToSurfaceCylinderRulingLine);
