@@ -1959,6 +1959,86 @@ ON_Text* BuildOnTextForGroup(ONX_Model& model, std::map<std::string, ON_UUID>& d
   return txt;
 }
 
+// Builds a real ON_Leader for a Dino8 "Leader" annotation group, so Save3dm
+// can write one genuine leader object instead of the baked polyline/
+// arrowhead/glyph-text curves it otherwise falls through to - the write-
+// side inverse of Load3dm's own ON_Leader branch above (which reads an
+// externally-authored ON_Leader back into this exact tag set - LeaderTip/
+// LeaderRest/DimPlaneOrigin/DimPlaneX/DimPlaneY on the leader's own shape
+// curve, Text/TextHeight on its separate label glyph curves - so this is
+// its direct inverse), closing the Leader half of this bullet's own
+// disclosed "Dim*/Leader/Text... still written exactly as before" write-
+// side gap (Hatch and Text already closed the same way above). `o` must be
+// the group's own shape curve (tagged Annotation=Leader and carrying
+// LeaderTip - the one BuildLeaderGeometry/WriteDxfLeader's own identical
+// DxfLeaderLayoutOf lookup already uses to tell it apart from the same
+// group's own glyph-text curves, which carry Text/Glyph instead and never
+// match here) - the caller skips every other member of the same group_id
+// once this succeeds. The label text is read from the first glyph curve
+// found in the same group (Annotation=Leader, Glyph=1); a leader with no
+// text (BuildLeaderGeometry never added one) writes with an empty string,
+// which ON_Leader::Create accepts same as a real arrowhead-only leader.
+// Returns nullptr (falls through to the pre-existing baked export,
+// unaffected) on any missing/malformed tag - none of this app's own Leader
+// groups have one, but the defensive fallback costs nothing and matches
+// every other builder in this file.
+ON_Leader* BuildOnLeaderForGroup(const Document& doc, ONX_Model& model, std::map<std::string, ON_UUID>& dimstyle_cache,
+                                  const SceneObject& o) {
+  auto org_it = o.user_text.find("DimPlaneOrigin");
+  auto ax_it = o.user_text.find("DimPlaneX");
+  auto ay_it = o.user_text.find("DimPlaneY");
+  auto tip_it = o.user_text.find("LeaderTip");
+  if (org_it == o.user_text.end() || ax_it == o.user_text.end() || ay_it == o.user_text.end() ||
+      tip_it == o.user_text.end())
+    return nullptr;
+  double ox, oy, oz, xx, xy, xz, yx, yy, yz, tx, ty, tz;
+  if (!ParsePointTagLocal(org_it->second, ox, oy, oz) || !ParsePointTagLocal(ax_it->second, xx, xy, xz) ||
+      !ParsePointTagLocal(ay_it->second, yx, yy, yz) || !ParsePointTagLocal(tip_it->second, tx, ty, tz))
+    return nullptr;
+  const ON_Plane plane(ON_3dPoint(ox, oy, oz), ON_3dVector(xx, xy, xz), ON_3dVector(yx, yy, yz));
+
+  std::vector<ON_3dPoint> pts;
+  pts.push_back(ON_3dPoint(tx, ty, tz));
+  if (auto rest_it = o.user_text.find("LeaderRest"); rest_it != o.user_text.end()) {
+    std::stringstream ss(rest_it->second);
+    std::string tok;
+    while (std::getline(ss, tok, ';')) {
+      double dx, dy, dz;
+      if (!tok.empty() && ParsePointTagLocal(tok, dx, dy, dz)) pts.push_back(ON_3dPoint(tx + dx, ty + dy, tz + dz));
+    }
+  }
+  if (pts.size() < 2) return nullptr;
+
+  std::string label_text;
+  double height = 1.0;
+  for (const SceneObject& m : doc.Objects()) {
+    if (m.group_id != o.group_id) continue;
+    auto ann_it = m.user_text.find("Annotation");
+    if (ann_it == m.user_text.end() || ann_it->second != "Leader" || !m.user_text.count("Glyph")) continue;
+    auto text_it = m.user_text.find("Text");
+    auto height_it = m.user_text.find("TextHeight");
+    if (text_it != m.user_text.end()) label_text = text_it->second;
+    if (height_it != m.user_text.end()) height = std::atof(height_it->second.c_str());
+    break;
+  }
+  if (height <= 0) height = 1.0;
+
+  const ON_UUID dimstyle_id = FindOrAddTextDimStyleId(model, dimstyle_cache, height);
+  if (ON_UuidIsNil(dimstyle_id)) return nullptr;
+  const ON_ModelComponentReference dimstyle_ref = model.ComponentFromId(ON_ModelComponent::Type::DimStyle, dimstyle_id);
+  const ON_DimStyle* dimstyle = ON_DimStyle::Cast(dimstyle_ref.ModelComponent());
+  if (!dimstyle) return nullptr;
+
+  ON_Leader* leader = new ON_Leader();
+  const ON_wString wtext(label_text.c_str());
+  if (!leader->Create(wtext, dimstyle, static_cast<int>(pts.size()), pts.data(), plane, false, 0.0)) {
+    delete leader;
+    return nullptr;
+  }
+  leader->SetDimensionStyleId(dimstyle_id);
+  return leader;
+}
+
 bool Save3dm(const Document& doc, const std::string& path, std::string& error, bool include_reference_objects, int version) {
   ONX_Model model;
   model.m_sStartSectionComments = "Dino 8 - free NURBS modeler";
@@ -2206,6 +2286,12 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
   // is skipped rather than also writing its own baked curve.
   std::set<int> text_groups_written;
   std::map<std::string, ON_UUID> text_dimstyle_cache;
+  // Same dedup convention as text_groups_written just above, for a Dino8
+  // "Leader" annotation group's own shape curve (BuildOnLeaderForGroup
+  // below) - shares text_dimstyle_cache's own per-height ON_DimStyle cache
+  // rather than keeping a second one, since both builders key it the exact
+  // same way (NumberTagLocal(height)).
+  std::set<int> leader_groups_written;
   for (const SceneObject& o : doc.Objects()) {
     if (!include_reference_objects && o.user_text.count("Dino8.Reference")) continue;
     ON_3dmObjectAttributes attr;
@@ -2301,6 +2387,44 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
         // A malformed/missing tag (shouldn't happen for a group this app
         // itself created) falls through to this glyph's own baked curve
         // export below, same tolerance as the hatch branch above.
+      }
+    }
+    {
+      // A real "Leader" annotation writes as one genuine ON_Leader instead
+      // of its baked polyline/arrowhead/glyph-text curves, so it survives
+      // a round trip through a real Rhino/OpenNURBS-based reader as one
+      // leader object, not loose geometry, and is read back by the exact
+      // same Load3dm branch an externally-authored one already is (see
+      // that branch's own comment above) - see BuildOnLeaderForGroup's own
+      // comment above. A Leader group has two kinds of member (unlike
+      // Hatch/Text, where the matched object IS the whole thing): the
+      // shape curve(s) (`LeaderTip` present - the same distinction
+      // FileExchange.cpp's own DxfLeaderLayoutOf lookup already relies on,
+      // the one actually passed to BuildOnLeaderForGroup) and the label's
+      // own glyph-text curves (no `LeaderTip`, since AddAnnotationGroup
+      // never applies the shape-only extra_tags to them) - once the real
+      // ON_Leader already carries that label text internally, those glyph
+      // curves must NOT also fall through to their own baked export below
+      // (every member of this `Annotation` gate, not just the shape curve
+      // that built it, is covered here for exactly that reason).
+      auto ann_tag = o.user_text.find("Annotation");
+      if (ann_tag != o.user_text.end() && ann_tag->second == "Leader") {
+        if (leader_groups_written.count(o.group_id)) continue;  // this group's ON_Leader already written (shape or glyph member)
+        if (o.user_text.count("LeaderTip")) {
+          if (ON_Leader* leader = BuildOnLeaderForGroup(doc, model, text_dimstyle_cache, o)) {
+            model.AddModelGeometryComponent(leader, &attr);
+            leader_groups_written.insert(o.group_id);
+            ++written;
+            continue;
+          }
+          // A malformed/missing tag (shouldn't happen for a group this app
+          // itself created) falls through to this shape curve's own baked
+          // export below, same tolerance as the hatch/text branches above.
+        }
+        // A glyph-text member reached before its own group's shape curve
+        // managed to build a real ON_Leader (e.g. that curve's own tags
+        // were malformed) falls through to its own ordinary baked export
+        // too, same as before this branch existed.
       }
     }
     ON_Geometry* g = nullptr;
