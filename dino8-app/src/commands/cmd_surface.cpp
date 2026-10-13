@@ -892,7 +892,26 @@ class OffsetSrfCommand : public Command {
       const int layer = o->layer_index;
       SceneObject n;
       if (o->kind == ObjectKind::Surface && o->surface) {
-        const kernel::NurbsSurface off = OffsetNurbs(*o->surface, d);
+        // Prefer the kernel's own tolerance-driven OffsetRefit() (samples
+        // the true offset locus and least-squares refits to within
+        // ctx.Settings().absolute_tolerance) over this file's own
+        // first-order Greville-normal OffsetNurbs() approximation above -
+        // closes PARITY_MAP.md's own "Offset surfaces" bullet's disclosed
+        // "no app command calls [OffsetRefit]" gap. Falls back to the old
+        // approximation, with a disclosed warning, exactly when
+        // OffsetRefit() itself refuses (the fold-through-curvature guard,
+        // or a freeform surface whose true offset needs more control
+        // points than the fit's own sample-grid ceiling can resolve) -
+        // never silently worse, never silently unconverged.
+        kernel::NurbsSurface refit;
+        const bool refit_ok = o->surface->OffsetRefit(d, refit, ctx.Settings().absolute_tolerance) == kernel::Result::Ok;
+        if (!refit_ok) {
+          ctx.Warn("OffsetSrf: object " + std::to_string(id) + " could not be refit to tolerance " +
+                    FormatNumber(ctx.Settings().absolute_tolerance) +
+                    " (fold-through-curvature guard, or this surface's own offset needs more control points than "
+                    "the fit's own ceiling) - using the first-order Greville-normal approximation instead");
+        }
+        const kernel::NurbsSurface off = refit_ok ? refit : OffsetNurbs(*o->surface, d);
         if (solid_) {
           const int nu = std::max(8, 2 * o->surface->CVCountU()), nv = std::max(8, 2 * o->surface->CVCountV());
           n = SceneObject::MakeMesh(ShellBetween(MeshFromRows(SurfaceRows(*o->surface, nu, nv), false, false), MeshFromRows(SurfaceRows(off, nu, nv), false, false)));
