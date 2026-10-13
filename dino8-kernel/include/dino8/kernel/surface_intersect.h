@@ -390,6 +390,31 @@ class BrepClosestPointIndex {
   std::vector<RayBrepHit> FireRay(const Point3d& origin, const Vector3d& direction, double max_distance,
                                    const IntersectOptions& opt) const;
 
+  // Identical to `SignedDistanceToBrep(point, <the Brep this index was
+  // built from>, opt, ...)` below (negative if inside, positive if
+  // outside) - but with the distance-magnitude half of that composition
+  // now accelerated through this class's own `ClosestPoint()` above,
+  // rather than `SignedDistanceToBrep()`'s own plain `ClosestPointOnBrep()`
+  // brute-force scan. The sign still comes from `ContainsPointExact()`
+  // on this index's own stored `brep_` copy - that query has no spatial
+  // index of its own yet (a materially different, separately-disclosed
+  // remaining gap in the same "Spatial acceleration structures for
+  // geometric queries" bullet this class itself exists to narrow, not
+  // one this method claims to close) - so only HALF of this composition
+  // is accelerated by this method, same honest partial-progress stance
+  // `MeshClosestPointIndex::ClosestPoint()`/`FireRay()` above already
+  // took one query at a time rather than claiming the whole family done
+  // in one pass. `ray_length`/`opt`/`tol` are forwarded to
+  // `ContainsPointExact()` exactly as `SignedDistanceToBrep()` itself
+  // forwards them; `u_divisions`/`v_divisions`/`trim_samples_per_edge`
+  // are this index's own already-fixed construction-time values, not
+  // re-specified per query, the identical tradeoff this class's own
+  // `ClosestPoint()` already makes. Throws under the identical
+  // "no face could be evaluated" circumstance `ClosestPoint()` itself
+  // throws under.
+  double SignedDistance(const Point3d& point, double ray_length = 0, const IntersectOptions& opt = IntersectOptions(),
+                         double tol = 1e-6) const;
+
  private:
   ON_Brep brep_;
   ON_RTree tree_;

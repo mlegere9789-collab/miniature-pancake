@@ -5122,6 +5122,49 @@ void TestBrepClosestPointIndexFireRay() {
                             "matching FireRayAtBrep()'s own contract");
 }
 
+// BrepClosestPointIndex::SignedDistance() - narrows (not yet closes -
+// ContainsPointExact() itself still has no accelerated alternative;
+// FireRayAtBrep() does now, via the sibling BrepClosestPointIndex::FireRay()
+// just above, a materially different query this one doesn't touch)
+// PARITY_MAP.md's "Spatial acceleration structures for geometric queries"
+// bullet further: SignedDistanceToBrep() composes ClosestPointOnBrep()
+// (brute-force) with ContainsPointExact() for the sign; this method is the
+// same composition but through this index's own already-accelerated
+// ClosestPoint() for the magnitude half.
+void TestBrepClosestPointIndexSignedDistance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepClosestPointIndex;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SignedDistanceToBrep;
+
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 5);
+  const BrepClosestPointIndex sphere_index(sphere.raw());
+  const std::vector<Point3d> sphere_queries = {
+      Point3d(0, 0, 0),  // center, deep interior
+      Point3d(0, 0, 3),  // interior, off-center
+      Point3d(8, 0, 0),  // exterior
+      Point3d(5, 0, 0),  // on the surface
+  };
+  bool sphere_match = true;
+  for (const Point3d& q : sphere_queries) {
+    const double brute_force = SignedDistanceToBrep(q, sphere.raw());
+    const double accelerated = sphere_index.SignedDistance(q);
+    if (std::fabs(brute_force - accelerated) > 1e-6) { sphere_match = false; break; }
+  }
+  Check(sphere_match,
+        "BrepClosestPointIndex::SignedDistance() agrees with SignedDistanceToBrep()'s own brute-force "
+        "answer at every query point, interior, exterior, and on the surface, on a sphere");
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const BrepClosestPointIndex box_index(box.raw());
+  Check(std::fabs(box_index.SignedDistance(Point3d(1, 1, 1)) - (-1.0)) < 1e-6,
+        "BrepClosestPointIndex::SignedDistance() reports the box's own exact center at -1, matching "
+        "SignedDistanceToBrep()'s own hand-derivable answer for the identical query");
+  Check(std::fabs(box_index.SignedDistance(Point3d(5, 1, 1)) - 3.0) < 1e-6,
+        "BrepClosestPointIndex::SignedDistance() reports a point 3 units clear of the box's own x=2 "
+        "face at exactly +3");
+}
+
 // PARITY_MAP's massprops category, "Point classification vs exact B-rep":
 // ClassifyPointVsSolid/ClassifyPointVsMixedSolid (boolean.h) only ever
 // classify against this kernel's own internal, already-split face lists
@@ -27421,6 +27464,55 @@ void TestMeshSignedDistance() {
         "just inside the +Z face (z=1.9 of 2.0) is still negative");
   Check(box.SignedDistance(Point3d(1, 1, 2.1)) > 0.0,
         "just outside the +Z face (z=2.1 of 2.0) is positive");
+}
+
+// MeshClosestPointIndex::SignedDistance() - the same acceleration
+// structure's own third query, narrowing (not yet closing -
+// Mesh::DistanceTo() and every B-rep/Brep-level query remain
+// brute-force or only half-accelerated, see
+// BrepClosestPointIndex::SignedDistance() above) PARITY_MAP.md's
+// "Spatial acceleration structures for geometric queries" bullet
+// further: unlike the Brep-level sibling, BOTH halves of this
+// composition (ClosestPoint() and the inside/outside ray-cast vote)
+// are already accelerated via this index's own tree.
+void TestMeshClosestPointIndexSignedDistance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MeshClosestPointIndex;
+  using dino8::kernel::Point3d;
+
+  // The same genuinely dense tessellated-sphere fixture
+  // TestMeshClosestPointIndex()/TestMeshClosestPointIndexFireRay() above
+  // already use.
+  const Brep sphere_brep = Brep::Sphere(Point3d(1, -2, 3), 5.0);
+  const Mesh sphere_mesh = sphere_brep.TessellateToClosedMesh(24, 24);
+  const MeshClosestPointIndex index(sphere_mesh);
+
+  bool all_match = true;
+  const std::vector<Point3d> queries = {
+      Point3d(1, -2, 3),      // the sphere's own center (deep interior)
+      Point3d(1, -2, 7),      // interior, off-center, near the surface
+      Point3d(1, -2, 50),     // far outside, straight out along z
+      Point3d(50, -2, 3),     // far outside along x
+      Point3d(1, 1, 3),       // a middling interior point, off-axis
+  };
+  for (const Point3d& q : queries) {
+    const double brute_force = sphere_mesh.SignedDistance(q);
+    const double accelerated = index.SignedDistance(q);
+    if (std::abs(brute_force - accelerated) > 1e-6) { all_match = false; break; }
+  }
+  Check(all_match,
+        "MeshClosestPointIndex::SignedDistance() agrees with Mesh::SignedDistance()'s own fully "
+        "brute-force answer at every query point, near and far, interior and exterior");
+
+  // A hand-derivable exact magnitude and sign, not just agreement with
+  // the brute-force sibling: the fixture's own radius-5 sphere centered
+  // at (1, -2, 3), queried 2 units inside the surface along z.
+  Check(std::abs(index.SignedDistance(Point3d(1, -2, 8)) - 0.0) < 1e-3,
+        "a point exactly on the sphere's own (tessellated) surface has signed distance ~0");
+  Check(std::abs(index.SignedDistance(Point3d(1, -2, 6)) - (-2.0)) < 1e-2,
+        "a point 2 units inside the radius-5 sphere's surface along z is at approximately -2, "
+        "matching the hand-derivable exact answer within the tessellation's own approximation error");
 }
 
 void TestMeshVolumeMassProperties() {
@@ -80053,6 +80145,7 @@ int main() {
   RunTest("TestClosestPointOnBrep", TestClosestPointOnBrep);
   RunTest("TestBrepClosestPointIndex", TestBrepClosestPointIndex);
   RunTest("TestBrepClosestPointIndexFireRay", TestBrepClosestPointIndexFireRay);
+  RunTest("TestBrepClosestPointIndexSignedDistance", TestBrepClosestPointIndexSignedDistance);
   RunTest("TestContainsPointExact", TestContainsPointExact);
   RunTest("TestSignedDistanceToBrep", TestSignedDistanceToBrep);
   RunTest("TestPullbackCurveToSurfaceCylinderRulingLine", TestPullbackCurveToSurfaceCylinderRulingLine);
@@ -80305,6 +80398,7 @@ int main() {
   RunTest("TestMeshClosestPoint", TestMeshClosestPoint);
   RunTest("TestMeshClosestPointIndex", TestMeshClosestPointIndex);
   RunTest("TestMeshClosestPointIndexFireRay", TestMeshClosestPointIndexFireRay);
+  RunTest("TestMeshClosestPointIndexSignedDistance", TestMeshClosestPointIndexSignedDistance);
   RunTest("TestMeshSignedDistance", TestMeshSignedDistance);
   RunTest("TestMeshVolumeMassProperties", TestMeshVolumeMassProperties);
   RunTest("TestMeshGetOrientedBoundingBox", TestMeshGetOrientedBoundingBox);
