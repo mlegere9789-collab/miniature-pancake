@@ -84,3 +84,30 @@ List
 SelAll
 Delete
 @expect_objects 0
+
+# --- RebuildUV: the real command data/commands.json itself documents -
+# "Reconstructs selected surfaces to degree 3, with a specified control
+# point number, in EITHER the u or v direction" - previously registered
+# as a bare alias of MakeUniformUV (PARITY_MAP.md's own disclosed
+# "Rebuild/Refit" gap: "a separate, untouched gap"), not its own command
+# at all. A degree-1, 2x2-control-point Plane rebuilt in U to 8 points
+# must land at degree 3 x 1, CVs 8 x 2 - V's own point count/degree
+# completely untouched - then rebuilt again in V to 12 points must land
+# at degree 3 x 3, CVs 8 x 12 - U's own just-rebuilt 8 points now
+# untouched in turn, proving each call only ever touches the ONE
+# direction it was asked for, not both.
+Plane 200,0,0 210,10,0
+SelLast
+RebuildUV
+Direction=U
+8
+SelLast
+List
+RebuildUV
+Direction=V
+12
+SelLast
+List
+SelAll
+Delete
+@expect_objects 0

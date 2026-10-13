@@ -1282,6 +1282,69 @@ void MakeUniformUV(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   ctx.Print("MakeUniformUV: " + std::to_string(n) + " surface(s), max shape deviation " + FormatNumber(max_dev));
 }
 
+// RebuildUV: the real command `data/commands.json` itself documents -
+// "Reconstructs selected surfaces to degree 3, with a specified control
+// point number, in EITHER the u or v direction" - a genuinely different
+// operation from both `Rebuild` (rebuilds BOTH directions together) and
+// `MakeUniformUV` above (re-knots only, no refit of the control-point
+// count at all). PARITY_MAP.md's own "Rebuild/Refit" bullet named this
+// as "still a separate, untouched gap": `RebuildUV` was registered as a
+// bare alias of `MakeUniformUV`, not its own command. Reuses the kernel's
+// own `NurbsSurface::Rebuild()` - the identical tensor-product
+// least-squares refit `RebuildCommand` (cmd_edit.cpp) already calls for
+// the both-directions case - holding the UNCHOSEN direction's own current
+// point count and degree fixed while only the chosen direction refits to
+// the typed count at degree 3, matching the real command's own documented
+// scope (one direction at a time, not both).
+class RebuildUVCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select surfaces to rebuild in U or V"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    WantNumber("Point count", 10);
+    options = {{"Direction", dir_u_ ? "U" : "V", {"U", "V"}, false, false}};
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Direction") { dir_u_ = (v == "U"); options[0].value = dir_u_ ? "U" : "V"; }
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    // Degree 3 needs at least 4 control points in the chosen direction
+    // (the same `control counts must exceed their degree` precondition
+    // `NurbsSurface::Rebuild()` itself throws on); capped at 200 for the
+    // identical reason `RebuildCommand`'s own matching cap is - an O(n^2)
+    // control-point grid from an uncapped typed number can exhaust memory.
+    const int n = std::clamp(static_cast<int>(v), 4, 200);
+    ctx.Doc().BeginChange("RebuildUV");
+    int done = 0;
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->kind != ObjectKind::Surface) continue;
+      const int u_count = dir_u_ ? n : o->surface->CVCountU();
+      const int v_count = dir_u_ ? o->surface->CVCountV() : n;
+      const int u_deg = dir_u_ ? 3 : o->surface->DegreeU();
+      const int v_deg = dir_u_ ? o->surface->DegreeV() : 3;
+      const int samples = std::max(64, n * 2);
+      kernel::NurbsSurface out;
+      try {
+        if (o->surface->Rebuild(u_count, v_count, u_deg, v_deg, out, nullptr, samples, samples) == kernel::Result::Failed) {
+          ctx.Warn("RebuildUV: normal equations were singular for this surface/net, left unchanged");
+        } else {
+          *o->surface = out;
+          o->InvalidateDisplay();
+          ++done;
+        }
+      } catch (const std::invalid_argument& e) {
+        ctx.Warn(std::string("RebuildUV: ") + e.what());
+      }
+    }
+    ctx.Print("RebuildUV: " + std::to_string(done) + " surface(s) rebuilt to " + std::to_string(n) +
+               " point(s) in " + (dir_u_ ? std::string("U") : std::string("V")));
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+  bool dir_u_ = true;
+};
+
 void SrfFromPointGrid(CommandContext& ctx, const std::vector<ObjectId>& ids, int u_count, bool interpolate) {
   std::vector<Point3d> pts;
   for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->kind == ObjectKind::Point) pts.push_back(o->point);
@@ -3194,7 +3257,8 @@ void RegisterSrfEditCommands(CommandEngine& e) {
   Reg(e, "Ribbon", Make<RibbonCommand>());
   Reg(e, "Silhouette", OnSelection("Select objects for silhouette curves", Silhouette));
   Reg(e, "MakeUniformUV", OnSelection("Select surfaces", MakeUniformUV));
-  Reg(e, "RebuildUV", OnSelection("Select surfaces", MakeUniformUV));
+  Reg(e, "RebuildUV", Make<RebuildUVCommand>(), CommandStatus::Implemented,
+      "Reconstructs the selected surfaces to degree 3 at a typed control-point count, in ONE direction only (Direction=U or V) - the other direction's own point count and degree are left exactly as they were.");
   Reg(e, "SrfPtGrid", Make<SrfGridCommand>(true));
   Reg(e, "SrfControlPtGrid", Make<SrfGridCommand>(false));
   Reg(e, "3DFace", Make<PointsCommand>(std::vector<std::string>{"First corner", "Second corner", "Third corner", "Fourth corner"},
