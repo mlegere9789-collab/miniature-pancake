@@ -900,6 +900,33 @@ class OffsetSrfCommand : public Command {
           n = SceneObject::MakeSurface(off);
         }
       } else {
+        // A polysurface, Solid=No: try the kernel's own exact
+        // OffsetSolidConvexPlanar first - the same real B-rep result
+        // (every face's own plane moved by `d`, re-clipped against its
+        // neighbours, no tessellation) ShellConvexPlanar already gives
+        // Shell's identical "exact first, fail open" case above, for a
+        // solid whose faces are all planar and whose shape is convex -
+        // the one case this had zero callers for anywhere in this app
+        // before this (see PARITY_MAP.md's own account of the gap).
+        // Fails open (std::invalid_argument: a curved face, non-convex
+        // shape, or `d` too large for some face's own offset feasibility)
+        // straight through to the mesh path below. Solid=Yes isn't
+        // attempted here - that case walls the original and offset
+        // surfaces together into a hollow shell, a different
+        // construction from this plain grow/shrink - so it keeps using
+        // the mesh path unchanged either way.
+        if (!solid_ && o->kind == ObjectKind::Brep && o->brep && o->brep->raw().IsSolid()) {
+          try {
+            n = SceneObject::MakeBrep(kernel::OffsetSolidConvexPlanar(*o->brep, d));
+            n.layer_index = layer;
+            ctx.Doc().Add(std::move(n));
+            ++made;
+            continue;
+          } catch (const std::exception&) {
+            // Not eligible (curved face, non-convex, or d too large) -
+            // fall through to the mesh path below unchanged.
+          }
+        }
         std::optional<kernel::Mesh> m = MeshOf(*o, 0.01);
         if (!m || m->FaceCount() == 0) { ctx.Warn("Object " + std::to_string(id) + " could not be meshed; skipped"); continue; }
         kernel::Mesh base = *m;

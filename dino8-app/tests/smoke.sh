@@ -1307,7 +1307,19 @@ sfcheck "Shell: thickness 1, 1 face(s) at their own thickness, closed, volume 20
 sfcheck "Area = 2680 square" "Shell (per-face) area matches outer 1600 + inner 1080 (two disjoint nested boxes, no boolean rework needed)"
 sfcheck "Bounding box min 340,0,0 max 360,20,10" "Shell (per-face) left the outer wall's own bounding box untouched"
 sfcheck "Volume = 2056 cubic" "Shell (per-face) volume is exactly 4000 - 18*18*6 (inner box shrunk to height 6 by the top face's own thickness 3, not the default 1) - 648 less material removed than the same box's uniform thickness-1 shell above (1408), i.e. 1408 + 18*18*2 = 2056"
-sfcheck "smoke: frames=200 objects=47" "surface script produced the expected object count"
+# OffsetSrf on a polysurface (Solid=No): the kernel's exact
+# OffsetSolidConvexPlanar now takes this case directly for a convex,
+# all-planar-faced solid - a real polysurface result, not a tessellated
+# mesh, closing PARITY_MAP.md's own "OffsetSrf on polysurfaces gives
+# meshes" gap for this common case. OffsetSrf keeps the original box as
+# its own separate object (same as it already does for a plain
+# Surface), so List on the new result alone (SelLast) is what proves
+# the kind, not SelPolysrf (which would also catch the untouched
+# original box).
+sfcheck "6 faces, 12 edges, closed solid" "OffsetSrf on a polysurface (Solid=No) produced a real polysurface - the kernel's exact OffsetSolidConvexPlanar, not the mesh-offset fallback"
+sfcheck "Volume = 5808 cubic" "OffsetSrf on a polysurface (Solid=No) grew a 20x20x10 box by 1 on every face via the kernel's exact OffsetSolidConvexPlanar, giving the exact closed-form volume of a 22x22x12 box"
+sfcheck "Bounding box min 439,-1,-1 max 461,21,11" "OffsetSrf on a polysurface moved every one of the box's own 6 planar faces outward by exactly 1, not an approximate vertex-normal mesh offset"
+sfcheck "smoke: frames=200 objects=50" "surface script produced the expected object count"
 # Solids: Ellipsoid/SubDEllipsoid (real axis picking), Pyramid (NumSides=),
 # Loft (Normal vs Style=Straight), Cap (multiple separate openings) (see solids_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
