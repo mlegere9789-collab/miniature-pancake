@@ -17531,6 +17531,121 @@ void TestBrepVolumeMassProperties() {
   }
 }
 
+void TestBrepVolumeCertifiedAdaptive() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  // A box has flat faces, so the divergence-theorem integrand is an
+  // exact polynomial over each face's own parameter domain: a single
+  // 5x5 Gauss-Legendre pass (subdivisions=1) is already exact,
+  // regardless of how many further doublings are tried. Confirms
+  // subdivisions=1 reproduces Volume() itself bit-for-bit, not just
+  // approximately - the SAME formula applied to the SAME spans, not a
+  // coincidentally-close different computation.
+  {
+    const Brep box = Brep::Box(0, 0, 0, 2, 3, 4);
+    const double v_exact = box.Volume();
+    double achieved = -1.0;
+    const double v_adaptive = box.VolumeCertifiedAdaptive(1e-6, 8, &achieved);
+    Check(v_adaptive == v_exact, "VolumeCertifiedAdaptive() on a box matches Volume() bit-for-bit "
+                                 "(subdivisions=1 is numerically identical to Volume()'s own quadrature)");
+    Check(achieved == 0.0, "VolumeCertifiedAdaptive()'s own achieved_deviation is exactly 0 on a box - the "
+                           "first attempt (subdivisions=2) already agrees exactly with subdivisions=1");
+  }
+
+  // A sphere is genuinely curved: Volume()'s own fixed 5x5-per-span
+  // quadrature has a real, non-zero residual (independently confirmed
+  // via a standalone dino8_scratch_test probe before writing this: ~1.2e-4
+  // absolute on a radius-2.5 sphere). Requesting a tolerance TIGHTER
+  // than that residual forces genuine refinement - the real, load-
+  // bearing claim this method makes that Volume() itself cannot: the
+  // SAME probe confirmed the returned value's own error against the
+  // exact closed-form volume drops by over 1000x once refined, not
+  // just reported as "close enough" without actually improving.
+  {
+    const double r = 2.5;
+    const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), r);
+    const double exact_v = (4.0 / 3.0) * ON_PI * r * r * r;
+    const double v_fixed = sphere.Volume();
+    const double fixed_err = std::abs(v_fixed - exact_v);
+    Check(fixed_err > 1e-6, "sanity: Volume()'s own fixed-quadrature error on a sphere is NOT already "
+                            "negligible - otherwise the refinement below would be untested");
+
+    double achieved = -1.0;
+    const double tight_tolerance = 1e-8;
+    const double v_adaptive = sphere.VolumeCertifiedAdaptive(tight_tolerance, 12, &achieved);
+    Check(achieved >= 0.0 && achieved <= tight_tolerance,
+          "VolumeCertifiedAdaptive()'s own achieved_deviation is genuinely at or under the requested "
+          "tolerance - a MEASURED guarantee (two successive estimates' own real difference), not an "
+          "unverified heuristic claim");
+    const double adaptive_err = std::abs(v_adaptive - exact_v);
+    Check(adaptive_err < fixed_err / 100.0,
+          "VolumeCertifiedAdaptive() at a tight tolerance genuinely refines past Volume()'s own fixed "
+          "resolution - its real error against the exact closed-form sphere volume is over 100x smaller, "
+          "not merely reported as converged without actually improving");
+  }
+
+  // max_refinements exhaustion: an unreasonably tight tolerance with a
+  // tiny refinement budget must refuse rather than silently return an
+  // uncertified answer.
+  {
+    const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 2.5);
+    bool threw = false;
+    try {
+      sphere.VolumeCertifiedAdaptive(1e-15, 1);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw, "VolumeCertifiedAdaptive() throws std::runtime_error rather than returning an uncertified "
+                 "result when max_refinements is exhausted before reaching an unreasonably tight tolerance");
+  }
+
+  // Shares Volume()'s own closedness precondition.
+  {
+    using dino8::kernel::NurbsSurface;
+    const std::vector<Point3d> flat_grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+    const Brep open_plate = Brep::FromSurface(NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1));
+    bool threw = false;
+    try {
+      open_plate.VolumeCertifiedAdaptive(1e-6);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "VolumeCertifiedAdaptive() throws std::invalid_argument on an open (non-watertight) Brep, "
+                 "the same closedness precondition Volume() itself already enforces");
+  }
+
+  // Invalid argument checks.
+  {
+    const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+    bool threw_zero = false, threw_negative = false, threw_nan = false, threw_bad_refinements = false;
+    try {
+      box.VolumeCertifiedAdaptive(0.0);
+    } catch (const std::invalid_argument&) {
+      threw_zero = true;
+    }
+    try {
+      box.VolumeCertifiedAdaptive(-1.0);
+    } catch (const std::invalid_argument&) {
+      threw_negative = true;
+    }
+    try {
+      box.VolumeCertifiedAdaptive(std::nan(""));
+    } catch (const std::invalid_argument&) {
+      threw_nan = true;
+    }
+    try {
+      box.VolumeCertifiedAdaptive(1e-6, -1);
+    } catch (const std::invalid_argument&) {
+      threw_bad_refinements = true;
+    }
+    Check(threw_zero && threw_negative && threw_nan,
+          "VolumeCertifiedAdaptive() throws std::invalid_argument for a non-positive or NaN tolerance");
+    Check(threw_bad_refinements, "VolumeCertifiedAdaptive() throws std::invalid_argument for a negative "
+                                 "max_refinements");
+  }
+}
+
 // Closes the "Surface / B-rep area" bullet's own named gap ("Brep::Area()
 // throws on any trimmed face and on general-boolean results") for a face
 // with GENUINE ON_Brep loop topology (face.m_li.Count() > 0), as opposed
@@ -79477,6 +79592,7 @@ int main() {
   RunTest("TestBrepTorusIsClosedAndWatertight", TestBrepTorusIsClosedAndWatertight);
   RunTest("TestBrepVolumeAndAreaMatchClosedForms", TestBrepVolumeAndAreaMatchClosedForms);
   RunTest("TestBrepVolumeMassProperties", TestBrepVolumeMassProperties);
+  RunTest("TestBrepVolumeCertifiedAdaptive", TestBrepVolumeCertifiedAdaptive);
   RunTest("TestBrepAreaHandlesGenuinelyTrimmedFaces", TestBrepAreaHandlesGenuinelyTrimmedFaces);
   RunTest("TestBrepVolumeHandlesGenuinelyTrimmedFaces", TestBrepVolumeHandlesGenuinelyTrimmedFaces);
   RunTest("TestBrepTrimmedPlanarFaceRejectsTooFewPoints", TestBrepTrimmedPlanarFaceRejectsTooFewPoints);
