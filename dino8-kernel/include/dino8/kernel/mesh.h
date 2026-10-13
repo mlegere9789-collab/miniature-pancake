@@ -2293,10 +2293,14 @@ class Mesh {
   // several faces) or come from more than one disjoint group (several
   // separate openings, each stitched with its own ring of side walls,
   // via however many naked-edge loops the post-removal outer layer
-  // actually has) - neither is refused the way `ShellConvexPlanar`'s own
-  // Brep-level convex-planar construction must refuse adjacent removed
-  // faces; there is no equivalent topological hazard at the mesh level,
-  // where a face is just a row in a flat list. The opening's own resulting
+  // actually has) - neither is refused here, nor (as of a later pass)
+  // by `ShellConvexPlanar`'s own Brep-level convex-planar construction
+  // any more either: that sibling used to refuse mutually-adjacent
+  // removed faces outright (the combined opening there needed no new
+  // rim geometry at all, since neither removed face's own plane is ever
+  // offset - see its own doc comment), so this is no longer a
+  // mesh-vs-Brep behavioral asymmetry, just two independently-arrived-at
+  // constructions that both happen to support it. The opening's own resulting
   // naked-edge rim IS checked for a different hazard, though: a
   // self-touching ("bowtie") boundary, where some vertex sits on more than
   // 2 of the opening's own naked edges - the side-wall stitching below has

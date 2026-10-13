@@ -4977,6 +4977,83 @@ void TestClosestPointOnBrep() {
   Check(threw_empty, "ClosestPointOnBrep throws std::invalid_argument for a Brep with no faces");
 }
 
+// BrepClosestPointIndex narrows "Spatial acceleration structures for
+// geometric queries" (kernel: Mass properties & spatial queries) the same
+// way MeshClosestPointIndex already did for Mesh::ClosestPoint: cross-
+// validate the RTree-accelerated answer against ClosestPointOnBrep()'s own
+// brute-force scan, on both an untrimmed multi-face Brep and a genuinely
+// trimmed single-face one, so the fast path can't silently diverge from
+// the already-verified exact one.
+void TestBrepClosestPointIndex() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepClosestPointIndex;
+  using dino8::kernel::ClosestPointOnBrep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // A plain 2x2x2 box: 6 faces, so the RTree genuinely has more than one
+  // candidate to choose among, not a trivial single-cell case.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const BrepClosestPointIndex box_index(box.raw());
+
+  bool all_match = true;
+  const std::vector<Point3d> queries = {
+      Point3d(1, 1, 5),      // straight above the top face
+      Point3d(3, 3, 3),      // diagonally past a corner
+      Point3d(0.3, 1, 1),    // inside, off-center
+      Point3d(1, 1, 1),      // the box's own exact center
+      Point3d(-10, -10, -10),  // far outside, opposite corner's direction
+      Point3d(1, 1, -8),     // far outside, straight below
+  };
+  for (const Point3d& q : queries) {
+    const auto brute_force = ClosestPointOnBrep(q, box.raw());
+    const auto accelerated = box_index.ClosestPoint(q);
+    if (accelerated.face_index != brute_force.face_index ||
+        accelerated.point.DistanceTo(brute_force.point) > 1e-6 ||
+        std::abs(accelerated.distance - brute_force.distance) > 1e-6) {
+      all_match = false;
+      break;
+    }
+  }
+  Check(all_match,
+        "BrepClosestPointIndex::ClosestPoint() agrees with ClosestPointOnBrep()'s own brute-force "
+        "scan - same face, point, and distance - at every query point, near and far, interior and "
+        "exterior, on a multi-face box");
+
+  // The same trimmed-face fixture TestClosestPointOnBrep() above uses:
+  // a flat plane at z=2, trimmed down to a small square. The accelerated
+  // path must reproduce the exact boundary-fallback behavior, not just
+  // the unconstrained minimum - a bbox-only RTree candidate filter could
+  // easily miss this if the trim weren't re-checked per candidate.
+  const std::vector<Point3d> plane_grid = {Point3d(0, 0, 2), Point3d(0, 2, 2), Point3d(2, 0, 2),
+                                            Point3d(2, 2, 2)};
+  const NurbsSurface flat_plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+  const std::vector<Point2d> small_trim = {
+      Point2d(0.25, 0.25), Point2d(0.75, 0.25), Point2d(0.75, 0.75), Point2d(0.25, 0.75)};
+  const Brep trimmed_top = Brep::TrimmedPlanarFaceWelded(flat_plane, small_trim);
+  const BrepClosestPointIndex trimmed_index(trimmed_top.raw());
+  {
+    const auto r = trimmed_index.ClosestPoint(Point3d(0.2, 0.2, 5));
+    Check(r.on_trim_boundary,
+          "BrepClosestPointIndex reproduces the exact trim-boundary fallback for a query outside "
+          "the trimmed face's own trim loop, not just the unconstrained interior minimum");
+    Check(r.point.DistanceTo(Point3d(0.5, 0.5, 2)) < 1e-6,
+          "BrepClosestPointIndex's boundary fallback lands on the exact same point "
+          "ClosestPointOnBrep() itself finds, (0.5, 0.5, 2)");
+  }
+
+  bool threw_empty = false;
+  try {
+    ON_Brep empty;
+    const BrepClosestPointIndex empty_index(empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "building a BrepClosestPointIndex from a Brep with no faces throws, matching "
+                      "ClosestPointOnBrep()'s own contract");
+}
+
 // PARITY_MAP's massprops category, "Point classification vs exact B-rep":
 // ClassifyPointVsSolid/ClassifyPointVsMixedSolid (boolean.h) only ever
 // classify against this kernel's own internal, already-split face lists
@@ -39751,20 +39828,60 @@ void TestShellConvexPlanarRejectsTooLargeThickness() {
         "instead of emitting a degenerate/garbage shell");
 }
 
-void TestShellConvexPlanarRejectsAdjacentOpenings() {
+void TestShellConvexPlanarSupportsAdjacentOpenings() {
+  // Updated in place from the old "...RejectsAdjacentOpenings" - this
+  // restriction was lifted (see ShellConvexPlanar's own doc comment):
+  // two removed faces sharing an edge no longer need a non-planar,
+  // multi-facet rim at all, since neither removed face's own plane is
+  // ever offset, so the shared edge simply contributes no rim quad from
+  // either side, and the combined opening continues uninterrupted
+  // across it.
   using dino8::kernel::Brep;
   using dino8::kernel::ShellConvexPlanar;
 
-  const Brep cube = Brep::Box(0, 0, 0, 10, 10, 10);
-  bool threw = false;
-  try {
-    ShellConvexPlanar(cube, {1, 2}, 1.0);
-  } catch (const std::invalid_argument&) {
-    threw = true;
-  }
-  Check(threw,
-        "ShellConvexPlanar refuses two mutually adjacent removed faces (needs a "
-        "non-planar multi-facet rim, out of scope here)");
+  const double s = 10.0, t = 1.0;
+  const Brep cube = Brep::Box(0, 0, 0, s, s, s);
+
+  // Faces 1 (top, +z) and 2 (front, -y) are mutually adjacent (they
+  // share the physical edge from (0,0,s) to (s,0,s) - see
+  // Brep::Box()'s own face-order comment). Opening both at once used to
+  // throw outright; it must now succeed.
+  const Brep shell = ShellConvexPlanar(cube, {1, 2}, t);
+
+  // Cavity bounds: the two REMOVED faces (top, front) contribute their
+  // own ORIGINAL, unmoved plane as the cavity's bound in that direction
+  // (z <= s, y >= 0 - no shrink, since an open face is never offset);
+  // the four KEPT faces (bottom z=0, back y=s, left x=0, right x=s)
+  // each shrink the cavity inward by t exactly as the single-opening
+  // formula already does. So the cavity is the exact box
+  //   x in [t, s-t], y in [0, s-t], z in [t, s]
+  // and the shell volume is the cube's own volume minus that cavity.
+  const double cavity_volume = (s - 2 * t) * (s - t) * (s - t);
+  const double expected_volume = s * s * s - cavity_volume;
+  Check(std::fabs(expected_volume - 352.0) < 1e-12,
+        "the hand-derived two-adjacent-openings cavity formula itself evaluates to 352 for s=10, t=1");
+
+  const double shell_volume = PlanarBrepVolumeExact(shell);
+  Check(std::fabs(shell_volume - expected_volume) < 1e-9,
+        "ShellConvexPlanar's exact volume with two mutually adjacent removed faces "
+        "matches the closed-form combined-opening cavity formula");
+
+  // 4 kept faces x 2 (exterior + interior) = 8, plus one rim quad per
+  // removed-face loop edge EXCLUDING the one edge the two removed faces
+  // share with each other (which contributes no quad at all) - each
+  // removed face's own 4-edge loop has exactly 1 such shared edge, so
+  // 3 rim quads from each side = 6, for 8 + 6 = 14 total.
+  Check(shell.FaceCount() == 14,
+        "a two-mutually-adjacent-openings shell has 14 faces: 4 kept faces x 2 plus "
+        "3+3 rim quads (the shared edge between the two openings contributes none)");
+
+  const auto mesh = shell.TessellateToClosedMesh(1, 1);
+  Check(mesh.IsClosedManifold(),
+        "the two-adjacent-openings shell's tessellation still welds into one closed, "
+        "watertight manifold - no gap or doubled face at the shared opening edge");
+  Check(std::fabs(mesh.Volume() - expected_volume) < 1e-3,
+        "the two-adjacent-openings shell's tessellated-mesh volume also matches the "
+        "closed-form cavity volume");
 }
 
 void TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula() {
@@ -79432,6 +79549,7 @@ int main() {
   RunTest("TestIntersectBrepsAndCurveBrep", TestIntersectBrepsAndCurveBrep);
   RunTest("TestFireRayAtBrep", TestFireRayAtBrep);
   RunTest("TestClosestPointOnBrep", TestClosestPointOnBrep);
+  RunTest("TestBrepClosestPointIndex", TestBrepClosestPointIndex);
   RunTest("TestContainsPointExact", TestContainsPointExact);
   RunTest("TestSignedDistanceToBrep", TestSignedDistanceToBrep);
   RunTest("TestPullbackCurveToSurfaceCylinderRulingLine", TestPullbackCurveToSurfaceCylinderRulingLine);
@@ -79860,7 +79978,7 @@ int main() {
   RunTest("TestBooleanCombinePlanarNonConvexLShapeVsBox", TestBooleanCombinePlanarNonConvexLShapeVsBox);
   RunTest("TestShellConvexPlanarCubeOpenTopExactVolume", TestShellConvexPlanarCubeOpenTopExactVolume);
   RunTest("TestShellConvexPlanarRejectsTooLargeThickness", TestShellConvexPlanarRejectsTooLargeThickness);
-  RunTest("TestShellConvexPlanarRejectsAdjacentOpenings", TestShellConvexPlanarRejectsAdjacentOpenings);
+  RunTest("TestShellConvexPlanarSupportsAdjacentOpenings", TestShellConvexPlanarSupportsAdjacentOpenings);
   RunTest("TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula", TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula);
   RunTest("TestShellConvexPlanarPerFaceWallThicknessArgumentChecks", TestShellConvexPlanarPerFaceWallThicknessArgumentChecks);
   RunTest("TestShellClosedSphereMatchesExactShellVolume", TestShellClosedSphereMatchesExactShellVolume);

@@ -6377,6 +6377,29 @@ hcheck "Bounding box min 20,0,20 max 30,0,25" "UpdateHistory genuinely re-derive
 hcheck "History recording: on. 1 object(s) with live construction history:" "the live report lists exactly one tracked object"
 hcheck "object 4: Extrude <- 3" "the report names the real dependent/source pair (surface 4 built from curve 3)"
 
+# ExtrudeCrvToPoint Solid=Yes: RebuildExtrudeToPoint (cmd_solids.cpp) now
+# wires a closed, planar, non-self-intersecting profile into
+# kernel::Brep::ExtrudeToPoint for a genuine capped B-rep cone instead of
+# the old centroid-collapsed ruled surface - see
+# extrude_to_point_solid_script.txt's own header comment for exactly what
+# this checks, including the pre-existing (not newly broken) app-level
+# Volume gap on this topology.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  E2P="$("$BIN" --smoke 60 --script "$HERE/extrude_to_point_solid_script.txt" 2>&1)" || { echo "$E2P"; echo "FAIL: extrude-to-point-solid script exited non-zero"; exit 1; }
+else
+  E2P="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/extrude_to_point_solid_script.txt" 2>&1)" || { echo "$E2P"; echo "FAIL: extrude-to-point-solid script exited non-zero"; exit 1; }
+fi
+echo "$E2P" | grep -E "^(ok|FAIL)"
+if echo "$E2P" | grep -q "^FAIL"; then fail=1; fi
+echo "$E2P" | grep -q "^smoke:" || { echo "$E2P"; echo "FAIL: extrude-to-point-solid script produced no smoke line"; fail=1; }
+e2pcheck() { if echo "$E2P" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$E2P" "$1"; fail=1; fi; }
+e2pcheck "Object 2 (polysurface) layer Default" "Solid=Yes on a closed planar rectangle builds a real polysurface, not a degenerate surface"
+e2pcheck "2 faces, 3 edges, closed solid" "the built cone is a genuine closed solid (IsSolid), not just visually cone-shaped"
+e2pcheck "Object 2: valid" "Check reports the new solid cone as valid"
+e2pcheck "Object 4 (surface) layer Default" "Solid=No on the identical curve/apex still falls back to the pre-existing ruled surface, unchanged"
+e2pcheck "Object 6 (surface) layer Default" "a non-star-shaped (C-shaped) profile falls back to the ruled surface instead of throwing or crashing when ExtrudeToPoint refuses its flat cap"
+e2pcheck "Object 8 (surface) layer Default" "an open curve is unaffected - still the pre-existing ruled surface, since this pass only wires the closed-profile capped-cone case"
+
 # History extended to a sixth command, Pipe (PipeCommand, cmd_surface.cpp;
 # RebuildPipe, history_rebuild.h) - see history_pipe_script.txt's own
 # header comment for exactly what this checks. Same real-bounding-box-move
@@ -6933,6 +6956,46 @@ if [ -x "$HWCBIN" ]; then
   echo "$HWCP" | grep -q "pattern_lines=[1-9]" && echo "ok   the saved ANSI31 pattern table entry carries real HatchLine family data (not an empty, name-only pattern)" || { echo "FAIL the saved pattern table entry has no real HatchLine data"; near "$HWCP" "pattern_lines="; fail=1; }
 else
   echo "FAIL hatch3dm_write_check was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the independent .3dm pattern ON_Hatch write check"
+  fail=1
+fi
+
+# Native .3dm Text export: Save3dm had no ON_Text writer at all before this
+# change (see BuildOnTextForGroup in File3dm.cpp) - a Text annotation made
+# in-app round-tripped out through .3dm as its own N baked glyph curves
+# plus Text/TextHeight/TextOrigin/... user_text metadata, never a real
+# ON_Text object a genuinely independent Rhino/OpenNURBS-based reader
+# would recognize as one text object - the Text half of this bullet's own
+# disclosed "Dim*/Leader/Text... still written exactly as before" gap
+# (Hatch already closed the same way, above). Makes a real "Hi" text
+# annotation, saves it, and reopens the saved file in a fresh document:
+# SelText/List must find the exact same 3 glyph curves back, proving the
+# new writer and the existing ON_Text reader (added for externally-
+# authored files - see text3dm_fixture_gen.cpp, below) agree on the wire
+# format - and, independent of Dino 8's own reader entirely,
+# text3dm_write_check (the write-side mirror of text3dm_fixture_gen) parses
+# the saved file directly through OpenNURBS' own API and confirms it holds
+# one real ON_Text object with the exact string/height/plane, not bare
+# glyph curves.
+sed "s|@TMP@|$TMPW|g" "$HERE/text3dm_export_script.txt" > "$TMPW/text3dm_export_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  T3E="$("$BIN" --smoke 30 --script "$TMPW/text3dm_export_script.txt" 2>&1)" || { echo "$T3E"; echo "FAIL: .3dm Text export script exited non-zero"; exit 1; }
+else
+  T3E="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/text3dm_export_script.txt" 2>&1)" || { echo "$T3E"; echo "FAIL: .3dm Text export script exited non-zero"; exit 1; }
+fi
+t3echeck() { if echo "$T3E" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$T3E" "$1"; fail=1; fi; }
+t3echeck "Saved $TMPW/text3dm_export.3dm" "Save3dm wrote a file"
+t3echeck "Opened $TMPW/text3dm_export.3dm (3 objects)" "the reopened file has the exact same 3 glyph curves (H, i-stem, i-dot) the original Text command built - the ON_Text round-tripped as a real text object, not bare geometry"
+t3echeck "3 object(s) selected" "SelText found the round-tripped text's own 3 glyph curves"
+TWCBIN="$(dirname "$BIN")/text3dm_write_check"
+if [ -x "$TWCBIN" ]; then
+  TWC="$("$TWCBIN" "$TMPW/text3dm_export.3dm" 2>&1)" || { echo "$TWC"; echo "FAIL: text3dm_write_check exited non-zero on the text file"; exit 1; }
+  twccheck() { if echo "$TWC" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$TWC" "$1"; fail=1; fi; }
+  twccheck "1 real ON_Text object(s) found" "independent of Dino 8's own Load3dm, a plain OpenNURBS reader sees exactly one real ON_Text object in the saved file, not 3 bare glyph curves"
+  twccheck "text=Hi" "the saved text object's own string content survived exactly"
+  twccheck "height=2" "the saved text object's own real DimStyle table entry carries the exact requested text height (this document's own default annotation text height)"
+  twccheck "origin=(0,0,0)" "the saved text object's own plane origin survived exactly"
+else
+  echo "FAIL text3dm_write_check was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the independent .3dm ON_Text write check"
   fail=1
 fi
 
