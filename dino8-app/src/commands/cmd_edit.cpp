@@ -365,7 +365,7 @@ class ExtendCommand : public Command {
 // exact and structural).
 class MakePeriodicCommand : public Command {
  public:
-  void Begin(CommandContext&) override { WantObjects("Select curves"); }
+  void Begin(CommandContext&) override { WantObjects("Select curves or surfaces"); }
   void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
     ids_ = ids;
     options = {{"Smooth", smooth_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
@@ -384,7 +384,34 @@ class MakePeriodicCommand : public Command {
     int made = 0, failed = 0;
     for (ObjectId id : ids_) {
       SceneObject* o = ctx.Doc().Find(id);
-      if (!o || o->kind != ObjectKind::Curve) continue;
+      if (!o) continue;
+      if (o->kind == ObjectKind::Surface) {
+        // No kernel equivalent of CreatePeriodicUniformNurbs's own
+        // periodic-uniform REFIT exists for a surface (NurbsSurface has
+        // no one-shot "rebuild as periodic-uniform" constructor the way
+        // ON_NurbsCurve does), so Smooth=Yes/No both resolve to the same
+        // real, exact, already-tested re-knot - NurbsSurface::
+        // MakePeriodicExact (surface_edit.cpp), tried independently in
+        // each direction (a surface can be closed/periodic in U, V,
+        // both, or neither - unlike Reparameterize/Domain's SetDomain(),
+        // which always applies to both directions, a direction that was
+        // never closed to begin with - e.g. a swept rail's own open V -
+        // genuinely can't become periodic, and that Failed is not this
+        // object's own failure to report). Counts as made periodic if
+        // EITHER direction actually ends up periodic (Ok or the
+        // already-periodic NoOpAlreadySatisfied, matching
+        // Reparameterize/Domain's own convention for a no-op); only
+        // reports failure when BOTH directions genuinely refuse (the
+        // object is closed in neither, or both are degree < 2) - a
+        // mutation that already landed on one direction is real,
+        // reportable progress even if the other direction can't follow.
+        const kernel::Result ru = o->surface->MakePeriodicExact(0);
+        const kernel::Result rv = o->surface->MakePeriodicExact(1);
+        if (ru != kernel::Result::Failed || rv != kernel::Result::Failed) { o->InvalidateDisplay(); ++made; }
+        else ++failed;
+        continue;
+      }
+      if (o->kind != ObjectKind::Curve) continue;
       if (smooth_) {
         ON_NurbsCurve& c = o->curve->raw();
         if (c.IsPeriodic()) { ++made; continue; }
@@ -403,7 +430,7 @@ class MakePeriodicCommand : public Command {
         else ++failed;
       }
     }
-    ctx.Print("MakePeriodic: " + std::to_string(made) + " curve(s) made periodic (Smooth=" + (smooth_ ? "Yes" : "No") + ")" +
+    ctx.Print("MakePeriodic: " + std::to_string(made) + " object(s) made periodic (Smooth=" + (smooth_ ? "Yes" : "No") + ")" +
                (failed ? ", " + std::to_string(failed) + " skipped (not closed, or degree < 2)" : ""));
     Finish();
   }
@@ -745,7 +772,7 @@ void RegisterEditCommands(CommandEngine& e) {
   Reg(e, "Extend", Make<ExtendCommand>(), CommandStatus::Implemented,
       "Extends the end of each curve nearer the picked point until its tangent line reaches that point (Enter extends both ends by a fixed 10% of the domain instead).");
   Reg(e, "MakePeriodic", Make<MakePeriodicCommand>(), CommandStatus::Implemented,
-      "Smooth=Yes is a periodic-uniform curve refit through the same control points (the seam relaxes smooth, shape changes slightly). Smooth=No is the real exact-shape-preserving re-knot (kernel::NurbsCurve::MakePeriodicExact - Bezier-decompose then wrap the control polygon/knot vector by the curve's own degree): the periodic result reproduces the original curve's PointAt(t) to within 1e-9 at every parameter in the original domain, not merely a smoothed-out lookalike.");
+      "On a curve: Smooth=Yes is a periodic-uniform refit through the same control points (the seam relaxes smooth, shape changes slightly); Smooth=No is the real exact-shape-preserving re-knot (kernel::NurbsCurve::MakePeriodicExact - Bezier-decompose then wrap the control polygon/knot vector by the curve's own degree), reproducing the original curve's PointAt(t) to within 1e-9 at every parameter in the original domain, not merely a smoothed-out lookalike. On a surface: both Smooth settings resolve to the same real, exact re-knot (kernel::NurbsSurface::MakePeriodicExact), tried independently in each closed direction - there is no periodic-uniform refit for a surface the way there is for a curve.");
   Reg(e, "Weight", Make<WeightCommand>(), CommandStatus::Implemented,
       "Picks the nearest control point to a clicked point and sets its weight (making the curve/surface rational if needed); Enter instead makes every selected object rational at weight 1.");
   Reg(e, "PointsOn", OnSelection("Select objects to turn on control points", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->show_control_points = true; o->InvalidateDisplay(); } ctx.Print("Control points on for " + std::to_string(ids.size()) + " object(s)"); }));
