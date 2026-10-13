@@ -5122,6 +5122,49 @@ void TestBrepClosestPointIndexFireRay() {
                             "matching FireRayAtBrep()'s own contract");
 }
 
+// BrepClosestPointIndex::SignedDistance() - narrows (not yet closes -
+// ContainsPointExact() itself still has no accelerated alternative;
+// FireRayAtBrep() does now, via the sibling BrepClosestPointIndex::FireRay()
+// just above, a materially different query this one doesn't touch)
+// PARITY_MAP.md's "Spatial acceleration structures for geometric queries"
+// bullet further: SignedDistanceToBrep() composes ClosestPointOnBrep()
+// (brute-force) with ContainsPointExact() for the sign; this method is the
+// same composition but through this index's own already-accelerated
+// ClosestPoint() for the magnitude half.
+void TestBrepClosestPointIndexSignedDistance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepClosestPointIndex;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SignedDistanceToBrep;
+
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 5);
+  const BrepClosestPointIndex sphere_index(sphere.raw());
+  const std::vector<Point3d> sphere_queries = {
+      Point3d(0, 0, 0),  // center, deep interior
+      Point3d(0, 0, 3),  // interior, off-center
+      Point3d(8, 0, 0),  // exterior
+      Point3d(5, 0, 0),  // on the surface
+  };
+  bool sphere_match = true;
+  for (const Point3d& q : sphere_queries) {
+    const double brute_force = SignedDistanceToBrep(q, sphere.raw());
+    const double accelerated = sphere_index.SignedDistance(q);
+    if (std::fabs(brute_force - accelerated) > 1e-6) { sphere_match = false; break; }
+  }
+  Check(sphere_match,
+        "BrepClosestPointIndex::SignedDistance() agrees with SignedDistanceToBrep()'s own brute-force "
+        "answer at every query point, interior, exterior, and on the surface, on a sphere");
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const BrepClosestPointIndex box_index(box.raw());
+  Check(std::fabs(box_index.SignedDistance(Point3d(1, 1, 1)) - (-1.0)) < 1e-6,
+        "BrepClosestPointIndex::SignedDistance() reports the box's own exact center at -1, matching "
+        "SignedDistanceToBrep()'s own hand-derivable answer for the identical query");
+  Check(std::fabs(box_index.SignedDistance(Point3d(5, 1, 1)) - 3.0) < 1e-6,
+        "BrepClosestPointIndex::SignedDistance() reports a point 3 units clear of the box's own x=2 "
+        "face at exactly +3");
+}
+
 // PARITY_MAP's massprops category, "Point classification vs exact B-rep":
 // ClassifyPointVsSolid/ClassifyPointVsMixedSolid (boolean.h) only ever
 // classify against this kernel's own internal, already-split face lists
@@ -27421,6 +27464,55 @@ void TestMeshSignedDistance() {
         "just inside the +Z face (z=1.9 of 2.0) is still negative");
   Check(box.SignedDistance(Point3d(1, 1, 2.1)) > 0.0,
         "just outside the +Z face (z=2.1 of 2.0) is positive");
+}
+
+// MeshClosestPointIndex::SignedDistance() - the same acceleration
+// structure's own third query, narrowing (not yet closing -
+// Mesh::DistanceTo() and every B-rep/Brep-level query remain
+// brute-force or only half-accelerated, see
+// BrepClosestPointIndex::SignedDistance() above) PARITY_MAP.md's
+// "Spatial acceleration structures for geometric queries" bullet
+// further: unlike the Brep-level sibling, BOTH halves of this
+// composition (ClosestPoint() and the inside/outside ray-cast vote)
+// are already accelerated via this index's own tree.
+void TestMeshClosestPointIndexSignedDistance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MeshClosestPointIndex;
+  using dino8::kernel::Point3d;
+
+  // The same genuinely dense tessellated-sphere fixture
+  // TestMeshClosestPointIndex()/TestMeshClosestPointIndexFireRay() above
+  // already use.
+  const Brep sphere_brep = Brep::Sphere(Point3d(1, -2, 3), 5.0);
+  const Mesh sphere_mesh = sphere_brep.TessellateToClosedMesh(24, 24);
+  const MeshClosestPointIndex index(sphere_mesh);
+
+  bool all_match = true;
+  const std::vector<Point3d> queries = {
+      Point3d(1, -2, 3),      // the sphere's own center (deep interior)
+      Point3d(1, -2, 7),      // interior, off-center, near the surface
+      Point3d(1, -2, 50),     // far outside, straight out along z
+      Point3d(50, -2, 3),     // far outside along x
+      Point3d(1, 1, 3),       // a middling interior point, off-axis
+  };
+  for (const Point3d& q : queries) {
+    const double brute_force = sphere_mesh.SignedDistance(q);
+    const double accelerated = index.SignedDistance(q);
+    if (std::abs(brute_force - accelerated) > 1e-6) { all_match = false; break; }
+  }
+  Check(all_match,
+        "MeshClosestPointIndex::SignedDistance() agrees with Mesh::SignedDistance()'s own fully "
+        "brute-force answer at every query point, near and far, interior and exterior");
+
+  // A hand-derivable exact magnitude and sign, not just agreement with
+  // the brute-force sibling: the fixture's own radius-5 sphere centered
+  // at (1, -2, 3), queried 2 units inside the surface along z.
+  Check(std::abs(index.SignedDistance(Point3d(1, -2, 8)) - 0.0) < 1e-3,
+        "a point exactly on the sphere's own (tessellated) surface has signed distance ~0");
+  Check(std::abs(index.SignedDistance(Point3d(1, -2, 6)) - (-2.0)) < 1e-2,
+        "a point 2 units inside the radius-5 sphere's surface along z is at approximately -2, "
+        "matching the hand-derivable exact answer within the tessellation's own approximation error");
 }
 
 void TestMeshVolumeMassProperties() {
@@ -62799,6 +62891,100 @@ void TestSurfaceReparameterizeRational() {
   }
 }
 
+void TestSurfaceMakeUniform() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  // A single-span (degree 1x1, 2x2 control) surface's own knot vector is
+  // always already clamped and uniform (two distinct values, each at
+  // full multiplicity) - a true NoOp, measuring nothing, same convention
+  // ReparameterizeRational(shape_factor=1.0) already uses for its own
+  // no-op case.
+  {
+    const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+    NurbsSurface s = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    double dev = -1.0;
+    Check(s.MakeUniform(0, 1e-9, &dev) == Result::NoOpAlreadySatisfied,
+          "MakeUniform is a NoOp on an already clamped-uniform single-span surface");
+    Check(dev == 0.0, "...and reports exactly 0 deviation without measuring anything");
+  }
+
+  // A genuine sphere (rational, degree 2x2, real non-uniform multi-span
+  // knots in U) - re-knotting to uniform with the control net held fixed
+  // measurably moves the surface (confirmed nonzero below), so a tight
+  // tolerance must refuse while leaving the surface completely
+  // untouched, and a loose tolerance must commit while preserving the
+  // domain, degree, and control count exactly.
+  {
+    ON_NurbsSurface ns;
+    Check(ON_Sphere(ON_3dPoint(0, 0, 0), 5.0).GetNurbForm(ns) != 0, "MakeUniform setup: ON_Sphere::GetNurbForm succeeds");
+    NurbsSurface sphere;
+    sphere.raw() = ns;
+    const int order = sphere.raw().Order(0), cvc = sphere.raw().CVCount(0);
+    Check(!ON_IsKnotVectorUniform(order, cvc, sphere.raw().Knot(0)),
+          "MakeUniform setup: the sphere's own U knot vector starts genuinely non-uniform");
+
+    // Tight tolerance: refuses, surface untouched, real nonzero deviation reported.
+    {
+      NurbsSurface probe = sphere;
+      double dev = -1.0;
+      Check(probe.MakeUniform(0, 1e-9, &dev) == Result::Failed,
+            "MakeUniform refuses a tight tolerance on a genuinely non-uniform sphere");
+      Check(dev > 0.1, "...reporting a real, non-trivial measured deviation (not a near-zero rounding artifact)");
+      Check(probe.CVCountU() == sphere.CVCountU() && probe.KnotCount(0) == sphere.KnotCount(0),
+            "...and leaves the surface completely untouched on refusal");
+      double cv_err = 0.0;
+      for (int i = 0; i < probe.CVCountU(); ++i)
+        for (int j = 0; j < probe.CVCountV(); ++j)
+          cv_err = std::max(cv_err, probe.ControlPointAt(i, j).DistanceTo(sphere.ControlPointAt(i, j)));
+      Check(cv_err < 1e-12, "...control points are bit-for-bit unchanged after a refused MakeUniform");
+    }
+
+    // Loose tolerance: commits, domain/degree/CV-count preserved, result
+    // is genuinely clamped+uniform now, and re-running is a true NoOp.
+    {
+      NurbsSurface committed = sphere;
+      double dev = -1.0;
+      Check(committed.MakeUniform(0, 1e6, &dev) == Result::Ok,
+            "MakeUniform commits under a loose tolerance");
+      Check(dev > 0.1, "...reporting the identical real deviation the tight-tolerance refusal above measured");
+      Check(committed.Domain(0).min == sphere.Domain(0).min && committed.Domain(0).max == sphere.Domain(0).max,
+            "...preserves the original U domain exactly");
+      Check(committed.DegreeU() == sphere.DegreeU() && committed.CVCountU() == sphere.CVCountU(),
+            "...preserves degree and control-point count in U exactly");
+      const int o2 = committed.raw().Order(0), c2 = committed.raw().CVCount(0);
+      Check(ON_IsKnotVectorClamped(o2, c2, committed.raw().Knot(0)) &&
+                ON_IsKnotVectorUniform(o2, c2, committed.raw().Knot(0)),
+            "...and the U knot vector is now genuinely clamped and uniformly spaced");
+
+      double dev2 = -1.0;
+      Check(committed.MakeUniform(0, 1e-9, &dev2) == Result::NoOpAlreadySatisfied,
+            "Re-running MakeUniform on the now-uniform result is a true NoOp");
+      Check(dev2 == 0.0, "...reporting exactly 0 deviation, not a near-zero measured residual");
+    }
+  }
+
+  // Invalid direction/tolerance throws, exactly as ReparameterizeRational's own sibling test checks.
+  {
+    const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+    NurbsSurface s = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    Check(Throws([&] { s.MakeUniform(2, 1.0, nullptr); }), "MakeUniform(direction=2) throws");
+    Check(Throws([&] { s.MakeUniform(-1, 1.0, nullptr); }), "MakeUniform(direction=-1) throws");
+    Check(Throws([&] { s.MakeUniform(0, 0.0, nullptr); }), "MakeUniform(tolerance=0) throws");
+    Check(Throws([&] { s.MakeUniform(0, -1.0, nullptr); }), "MakeUniform(negative tolerance) throws");
+    Check(Throws([&] { s.MakeUniform(0, std::nan(""), nullptr); }), "MakeUniform(NaN tolerance) throws");
+  }
+}
+
 void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Result;
@@ -70149,6 +70335,105 @@ void TestRemoveBlendRoundTripsASphericalVertexCornerWithOneObliqueFarEnd() {
   }
   Check(!ChamferTestBrepHasVertexNear(restored, on_sphere, 1e-9),
         "the corner sphere's own surface point is gone from the restored solid");
+}
+
+// Closes the ONE documented scope limit RemoveBlend's own doc comment
+// names, and TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner
+// above confirms RemoveBlend's own single-corner path still, correctly,
+// refuses: "a corner whose own cylinder is ALSO set back by a second
+// spherical vertex-blend corner" - the shared edge between two filleted
+// trihedral vertices, e.g. every edge of a fully-rounded box.
+void TestRemoveAllSphericalVertexBlendsRestoresFullyRoundedBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  // The SAME fully-rounded-box fixture TestFilletConvexEdgesRoundedBoxMatchesSteinerFormula
+  // and TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner
+  // both already use - every one of the 12 cylinders' own far end sits at
+  // a SECOND spherical corner, exactly the case RemoveBlend's own
+  // single-corner-by-point-pick path refuses (see that negative-control
+  // test just above) and this function exists to handle in one call.
+  const double r = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep rounded = FilletConvexEdges(box, AllUnitBoxEdges(), r);
+  const Brep::MixedFacesResult mf_before = rounded.MixedFaces();
+  Check(mf_before.spherical.size() == 8 && mf_before.cylindrical.size() == 12,
+        "sanity: the fully-rounded box has 8 spherical corners and 12 cylinders");
+
+  const Brep restored = dino8::kernel::RemoveAllSphericalVertexBlends(rounded);
+  Check(restored.FaceCount() == 6 && restored.raw().m_E.Count() == 12 && restored.raw().m_V.Count() == 8,
+        "RemoveAllSphericalVertexBlends restores the exact face/edge/vertex counts of the pre-fillet box (6 "
+        "faces, 12 edges, 8 vertices) in ONE call - removing all 8 spheres and all 12 cylinders at once, exactly "
+        "the fixture RemoveBlend's own single-corner path refuses outright");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            restored.raw().IsSolid(),
+        "the fully-restored solid is a valid, closed, oriented, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9,
+        "the fully-restored solid's volume matches the original unit box exactly");
+  for (const Point3d& v : {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0), Point3d(0, 0, 1),
+                           Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)}) {
+    Check(ChamferTestBrepHasVertexNear(restored, v, 1e-9),
+          "the restored box has every one of its original 8 sharp corner vertices back, including all 8 corners "
+          "that used to be spherical vertex-blends sharing cylinders pairwise with their neighbours");
+  }
+  const Brep::MixedFacesResult mf_after = restored.MixedFaces();
+  Check(mf_after.spherical.empty() && mf_after.cylindrical.empty() && mf_after.planar.size() == 6,
+        "no spherical or cylindrical fillet face remains afterward - every one of the 8 corners and 12 edge "
+        "fillets was genuinely removed, not just topologically hidden");
+}
+
+// A solid with only ONE spherical corner (so every one of its cylinders'
+// own far end is a PLAIN box vertex, never a second corner) is not a
+// separate code path inside RemoveAllSphericalVertexBlends - it should
+// reduce to EXACTLY the same reconstruction RemoveBlend's own
+// single-corner path already gives it
+// (TestRemoveBlendRoundTripsASphericalVertexCorner's own identical
+// fixture), proving this is a strict generalization of that formula, not
+// a second, parallel implementation of it.
+void TestRemoveAllSphericalVertexBlendsMatchesSingleCornerCase() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  const double r = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep c = FilletConvexEdges(
+      box, {{Point3d(0, 0, 0), Point3d(1, 0, 0)}, {Point3d(0, 0, 0), Point3d(0, 1, 0)}, {Point3d(0, 0, 0), Point3d(0, 0, 1)}},
+      r);
+  const Brep::MixedFacesResult mf = c.MixedFaces();
+  Check(mf.spherical.size() == 1 && mf.cylindrical.size() == 3, "sanity: one rounded corner has one sphere and 3 cylinders");
+
+  const Brep restored = dino8::kernel::RemoveAllSphericalVertexBlends(c);
+  Check(restored.FaceCount() == 6 && restored.raw().m_E.Count() == 12 && restored.raw().m_V.Count() == 8,
+        "RemoveAllSphericalVertexBlends on a single rounded corner restores the exact pre-fillet box topology - "
+        "the same count RemoveBlend's own single-corner path gives it");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            restored.raw().IsSolid(),
+        "the restored solid is a valid, closed, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9,
+        "the restored solid's volume matches the original unit box exactly, the same closed form "
+        "TestRemoveBlendRoundTripsASphericalVertexCorner already checks for RemoveBlend's own single-corner path");
+  for (const Point3d& v : {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0), Point3d(0, 0, 1),
+                           Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)}) {
+    Check(ChamferTestBrepHasVertexNear(restored, v, 1e-9), "every original sharp corner vertex is back");
+  }
+}
+
+void TestRemoveAllSphericalVertexBlendsRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+
+  bool threw = false;
+  try {
+    dino8::kernel::RemoveAllSphericalVertexBlends(Brep::Box(0, 0, 0, 1, 1, 1));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "RemoveAllSphericalVertexBlends refuses a solid with no spherical vertex-blend corner at all");
 }
 
 void TestRemoveBlendRoundTripsATaperedFillet() {
@@ -79959,6 +80244,7 @@ int main() {
   RunTest("TestClosestPointOnBrep", TestClosestPointOnBrep);
   RunTest("TestBrepClosestPointIndex", TestBrepClosestPointIndex);
   RunTest("TestBrepClosestPointIndexFireRay", TestBrepClosestPointIndexFireRay);
+  RunTest("TestBrepClosestPointIndexSignedDistance", TestBrepClosestPointIndexSignedDistance);
   RunTest("TestContainsPointExact", TestContainsPointExact);
   RunTest("TestSignedDistanceToBrep", TestSignedDistanceToBrep);
   RunTest("TestPullbackCurveToSurfaceCylinderRulingLine", TestPullbackCurveToSurfaceCylinderRulingLine);
@@ -80211,6 +80497,7 @@ int main() {
   RunTest("TestMeshClosestPoint", TestMeshClosestPoint);
   RunTest("TestMeshClosestPointIndex", TestMeshClosestPointIndex);
   RunTest("TestMeshClosestPointIndexFireRay", TestMeshClosestPointIndexFireRay);
+  RunTest("TestMeshClosestPointIndexSignedDistance", TestMeshClosestPointIndexSignedDistance);
   RunTest("TestMeshSignedDistance", TestMeshSignedDistance);
   RunTest("TestMeshVolumeMassProperties", TestMeshVolumeMassProperties);
   RunTest("TestMeshGetOrientedBoundingBox", TestMeshGetOrientedBoundingBox);
@@ -80495,6 +80782,9 @@ int main() {
   RunTest("TestRemoveBlendOnSphericalCornerLeavesAnIndependentCornerIntact", TestRemoveBlendOnSphericalCornerLeavesAnIndependentCornerIntact);
   RunTest("TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner", TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner);
   RunTest("TestRemoveBlendRoundTripsASphericalVertexCornerWithOneObliqueFarEnd", TestRemoveBlendRoundTripsASphericalVertexCornerWithOneObliqueFarEnd);
+  RunTest("TestRemoveAllSphericalVertexBlendsRestoresFullyRoundedBox", TestRemoveAllSphericalVertexBlendsRestoresFullyRoundedBox);
+  RunTest("TestRemoveAllSphericalVertexBlendsMatchesSingleCornerCase", TestRemoveAllSphericalVertexBlendsMatchesSingleCornerCase);
+  RunTest("TestRemoveAllSphericalVertexBlendsRejectsInvalidInput", TestRemoveAllSphericalVertexBlendsRejectsInvalidInput);
   RunTest("TestRemoveBlendRoundTripsATaperedFillet", TestRemoveBlendRoundTripsATaperedFillet);
   RunTest("TestRemoveChamferRoundTripsASingleChamfer", TestRemoveChamferRoundTripsASingleChamfer);
   RunTest("TestRemoveChamferLeavesTheOtherChamferIntactAmongTwo", TestRemoveChamferLeavesTheOtherChamferIntactAmongTwo);
@@ -80815,6 +81105,7 @@ int main() {
   RunTest("TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape", TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape);
   RunTest("TestSurfaceChangeSeam", TestSurfaceChangeSeam);
   RunTest("TestSurfaceReparameterizeRational", TestSurfaceReparameterizeRational);
+  RunTest("TestSurfaceMakeUniform", TestSurfaceMakeUniform);
   RunTest("TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise", TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise);
   RunTest("TestSurfaceReduceDegree", TestSurfaceReduceDegree);
   RunTest("TestSurfaceInterpolateThroughGrid", TestSurfaceInterpolateThroughGrid);

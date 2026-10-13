@@ -1256,15 +1256,30 @@ void Silhouette(CommandContext& ctx, const std::vector<ObjectId>& ids) {
 void MakeUniformUV(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   ctx.Doc().BeginChange("MakeUniformUV");
   int n = 0;
+  double max_dev = 0.0;
   for (ObjectId id : ids) {
     SceneObject* o = ctx.Doc().Find(id);
     if (!o || o->kind != ObjectKind::Surface || !o->surface) continue;
-    o->surface->raw().MakeClampedUniformKnotVector(0, 1.0);
-    o->surface->raw().MakeClampedUniformKnotVector(1, 1.0);
+    // kernel::NurbsSurface::MakeUniform (both directions independently, the
+    // same "each direction runs unconditionally, NoOp isn't a failure"
+    // convention the Domain command above already uses) replaces the old
+    // direct ON_NurbsSurface::MakeClampedUniformKnotVector() call: the
+    // kernel method preserves the domain exactly (that raw ON call alone
+    // does not - it always re-knots to start at 0 with unit spacing) and
+    // actually measures the real shape deviation re-knotting with a fixed
+    // control net introduces, rather than leaving it unmeasured and
+    // unreported. A permissive/infinite tolerance always commits here,
+    // matching how KnotEditCommand's RemoveKnot op is wired onto
+    // RemoveKnotAt - this command still always applies, just now reports
+    // the honest cost of doing so.
+    double du = 0.0, dv = 0.0;
+    o->surface->MakeUniform(0, std::numeric_limits<double>::infinity(), &du);
+    o->surface->MakeUniform(1, std::numeric_limits<double>::infinity(), &dv);
+    max_dev = std::max({max_dev, du, dv});
     o->InvalidateDisplay();
     ++n;
   }
-  ctx.Print("MakeUniformUV: " + std::to_string(n) + " surface(s)");
+  ctx.Print("MakeUniformUV: " + std::to_string(n) + " surface(s), max shape deviation " + FormatNumber(max_dev));
 }
 
 void SrfFromPointGrid(CommandContext& ctx, const std::vector<ObjectId>& ids, int u_count, bool interpolate) {
