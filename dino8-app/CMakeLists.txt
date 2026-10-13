@@ -1223,6 +1223,17 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(hatch3dm_write_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(hatch3dm_write_check PRIVATE dino8_kernel)
 
+  # Real-ON_Text .3dm write checker (see tests/text3dm_write_check.cpp and
+  # smoke.sh's Save3dm ON_Text-export section): the write-side mirror of
+  # text3dm_fixture_gen below - reads a file Dino 8 itself wrote and
+  # reports whether it contains a real ON_Text object, independent of
+  # Dino 8's own Load3dm reader (which would also accept this bullet's
+  # pre-existing baked glyph-curve-plus-user_text fallback and never notice
+  # the difference).
+  add_executable(text3dm_write_check tests/text3dm_write_check.cpp)
+  target_include_directories(text3dm_write_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(text3dm_write_check PRIVATE dino8_kernel)
+
   # Real-ON_InstanceRef .3dm fixture generator (see
   # tests/instanceref3dm_fixture_gen.cpp and smoke.sh's Load3dm
   # ON_InstanceRef-import section): Dino 8's own blocks never round-trip
