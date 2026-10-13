@@ -1307,7 +1307,19 @@ sfcheck "Shell: thickness 1, 1 face(s) at their own thickness, closed, volume 20
 sfcheck "Area = 2680 square" "Shell (per-face) area matches outer 1600 + inner 1080 (two disjoint nested boxes, no boolean rework needed)"
 sfcheck "Bounding box min 340,0,0 max 360,20,10" "Shell (per-face) left the outer wall's own bounding box untouched"
 sfcheck "Volume = 2056 cubic" "Shell (per-face) volume is exactly 4000 - 18*18*6 (inner box shrunk to height 6 by the top face's own thickness 3, not the default 1) - 648 less material removed than the same box's uniform thickness-1 shell above (1408), i.e. 1408 + 18*18*2 = 2056"
-sfcheck "smoke: frames=200 objects=47" "surface script produced the expected object count"
+# OffsetSrf on a polysurface (Solid=No): the kernel's exact
+# OffsetSolidConvexPlanar now takes this case directly for a convex,
+# all-planar-faced solid - a real polysurface result, not a tessellated
+# mesh, closing PARITY_MAP.md's own "OffsetSrf on polysurfaces gives
+# meshes" gap for this common case. OffsetSrf keeps the original box as
+# its own separate object (same as it already does for a plain
+# Surface), so List on the new result alone (SelLast) is what proves
+# the kind, not SelPolysrf (which would also catch the untouched
+# original box).
+sfcheck "6 faces, 12 edges, closed solid" "OffsetSrf on a polysurface (Solid=No) produced a real polysurface - the kernel's exact OffsetSolidConvexPlanar, not the mesh-offset fallback"
+sfcheck "Volume = 5808 cubic" "OffsetSrf on a polysurface (Solid=No) grew a 20x20x10 box by 1 on every face via the kernel's exact OffsetSolidConvexPlanar, giving the exact closed-form volume of a 22x22x12 box"
+sfcheck "Bounding box min 439,-1,-1 max 461,21,11" "OffsetSrf on a polysurface moved every one of the box's own 6 planar faces outward by exactly 1, not an approximate vertex-normal mesh offset"
+sfcheck "smoke: frames=200 objects=50" "surface script produced the expected object count"
 # Solids: Ellipsoid/SubDEllipsoid (real axis picking), Pyramid (NumSides=),
 # Loft (Normal vs Style=Straight), Cap (multiple separate openings) (see solids_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -6399,6 +6411,28 @@ e2pcheck "Object 2: valid" "Check reports the new solid cone as valid"
 e2pcheck "Object 4 (surface) layer Default" "Solid=No on the identical curve/apex still falls back to the pre-existing ruled surface, unchanged"
 e2pcheck "Object 6 (surface) layer Default" "a non-star-shaped (C-shaped) profile falls back to the ruled surface instead of throwing or crashing when ExtrudeToPoint refuses its flat cap"
 e2pcheck "Object 8 (surface) layer Default" "an open curve is unaffected - still the pre-existing ruled surface, since this pass only wires the closed-profile capped-cone case"
+
+# RailRevolve: RailRevolveCommand (cmd_srfedit.cpp) now wires a profile
+# planar through the picked axis into kernel::Brep::RailRevolve for a
+# genuine B-rep instead of the old approximate curve-through-points fit -
+# see railrevolve_solid_script.txt's own header comment for exactly what
+# this checks.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RRV="$("$BIN" --smoke 60 --script "$HERE/railrevolve_solid_script.txt" 2>&1)" || { echo "$RRV"; echo "FAIL: railrevolve-solid script exited non-zero"; exit 1; }
+else
+  RRV="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/railrevolve_solid_script.txt" 2>&1)" || { echo "$RRV"; echo "FAIL: railrevolve-solid script exited non-zero"; exit 1; }
+fi
+echo "$RRV" | grep -E "^(ok|FAIL)"
+if echo "$RRV" | grep -q "^FAIL"; then fail=1; fi
+echo "$RRV" | grep -q "^smoke:" || { echo "$RRV"; echo "FAIL: railrevolve-solid script produced no smoke line"; fail=1; }
+rrvcheck() { if echo "$RRV" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RRV" "$1"; fail=1; fi; }
+rrvcheck "RailRevolve: genuine B-rep solid/shell built (profile planar through the picked axis)" "a profile planar through the picked axis hits the new kernel::Brep::RailRevolve path"
+rrvcheck "Object 3 (polysurface) layer Default" "the result is a real polysurface, not a degenerate approximate surface"
+rrvcheck "1 faces, 2 edges, closed solid" "a closed off-axis profile with a constant-radius rail builds a genuine closed solid (doubly-periodic single face, torus topology)"
+rrvcheck "Object 3: valid" "Check reports the new solid as valid"
+rrvcheck "Volume = 224.7 cubic Millimeters" "Volume measures the new solid directly - no apex/seam mesh-closure gap on this topology, unlike ExtrudeCrvToPoint's own cone"
+rrvcheck "RailRevolve: surface created (profile scaled radially to follow the rail)" "an axis outside the profile's own plane falls back to the pre-existing approximate surface, unchanged"
+rrvcheck "Object 6 (surface) layer Default" "the fallback result is still the pre-existing approximate surface kind, not a Brep"
 
 # History extended to a sixth command, Pipe (PipeCommand, cmd_surface.cpp;
 # RebuildPipe, history_rebuild.h) - see history_pipe_script.txt's own

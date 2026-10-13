@@ -5054,6 +5054,74 @@ void TestBrepClosestPointIndex() {
                       "ClosestPointOnBrep()'s own contract");
 }
 
+// BrepClosestPointIndex::FireRay() - the ray-firing sibling to
+// ClosestPoint() above, the real B-rep-level accelerated alternative
+// FireRayAtBrep() itself never had (mirroring
+// MeshClosestPointIndex::FireRay()'s own equivalent role for
+// Mesh::FireRay()).
+void TestBrepClosestPointIndexFireRay() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepClosestPointIndex;
+  using dino8::kernel::FireRayAtBrep;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RayBrepHit;
+  using dino8::kernel::Vector3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const BrepClosestPointIndex index(box.raw());
+
+  auto agrees_with_brute_force = [&](const Point3d& origin, const Vector3d& dir, double max_distance) {
+    const std::vector<RayBrepHit> brute = FireRayAtBrep(origin, dir, max_distance, box.raw(), opt);
+    const std::vector<RayBrepHit> accel = index.FireRay(origin, dir, max_distance, opt);
+    if (brute.size() != accel.size()) return false;
+    for (size_t i = 0; i < brute.size(); ++i) {
+      if (brute[i].face_index != accel[i].face_index) return false;
+      if (std::abs(brute[i].distance - accel[i].distance) > 1e-9) return false;
+      if (brute[i].point.DistanceTo(accel[i].point) > 1e-9) return false;
+    }
+    return true;
+  };
+
+  Check(agrees_with_brute_force(Point3d(1, 1, -5), Vector3d(0, 0, 1), 20.0),
+        "BrepClosestPointIndex::FireRay() agrees exactly with FireRayAtBrep()'s own brute-force answer "
+        "on a through-shot (both pierced faces, same distance/point, nearest-first)");
+  Check(agrees_with_brute_force(Point3d(1, 1, -5), Vector3d(0, 0, 1), 6.0),
+        "BrepClosestPointIndex::FireRay() agrees with the brute-force answer when a shorter "
+        "max_distance only reaches the first face");
+  Check(agrees_with_brute_force(Point3d(10, 10, 10), Vector3d(0, 0, 1), 5.0),
+        "BrepClosestPointIndex::FireRay() agrees with the brute-force answer (zero hits) for a ray "
+        "that misses the box's own bounding box entirely");
+  Check(agrees_with_brute_force(Point3d(1, 1, 1), Vector3d(1, 0.3, 0.2), 10.0),
+        "BrepClosestPointIndex::FireRay() agrees with the brute-force answer for an oblique ray "
+        "starting from deep inside the box");
+  Check(agrees_with_brute_force(Point3d(-10, 1, 1), Vector3d(1, 0, 0), 100.0),
+        "BrepClosestPointIndex::FireRay() agrees with the brute-force answer for a long ray starting "
+        "far outside the box");
+
+  bool threw_zero_dir = false;
+  try {
+    index.FireRay(Point3d(0, 0, 0), Vector3d(0, 0, 0), 10.0, opt);
+  } catch (const std::invalid_argument&) {
+    threw_zero_dir = true;
+  }
+  Check(threw_zero_dir, "BrepClosestPointIndex::FireRay() throws on a zero-vector direction, matching "
+                        "FireRayAtBrep()'s own contract");
+
+  bool threw_bad_distance = false;
+  try {
+    index.FireRay(Point3d(0, 0, 0), Vector3d(0, 0, 1), -1.0, opt);
+  } catch (const std::invalid_argument&) {
+    threw_bad_distance = true;
+  }
+  Check(threw_bad_distance, "BrepClosestPointIndex::FireRay() throws on a non-positive max_distance, "
+                            "matching FireRayAtBrep()'s own contract");
+}
+
 // PARITY_MAP's massprops category, "Point classification vs exact B-rep":
 // ClassifyPointVsSolid/ClassifyPointVsMixedSolid (boolean.h) only ever
 // classify against this kernel's own internal, already-split face lists
@@ -62731,6 +62799,100 @@ void TestSurfaceReparameterizeRational() {
   }
 }
 
+void TestSurfaceMakeUniform() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  // A single-span (degree 1x1, 2x2 control) surface's own knot vector is
+  // always already clamped and uniform (two distinct values, each at
+  // full multiplicity) - a true NoOp, measuring nothing, same convention
+  // ReparameterizeRational(shape_factor=1.0) already uses for its own
+  // no-op case.
+  {
+    const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+    NurbsSurface s = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    double dev = -1.0;
+    Check(s.MakeUniform(0, 1e-9, &dev) == Result::NoOpAlreadySatisfied,
+          "MakeUniform is a NoOp on an already clamped-uniform single-span surface");
+    Check(dev == 0.0, "...and reports exactly 0 deviation without measuring anything");
+  }
+
+  // A genuine sphere (rational, degree 2x2, real non-uniform multi-span
+  // knots in U) - re-knotting to uniform with the control net held fixed
+  // measurably moves the surface (confirmed nonzero below), so a tight
+  // tolerance must refuse while leaving the surface completely
+  // untouched, and a loose tolerance must commit while preserving the
+  // domain, degree, and control count exactly.
+  {
+    ON_NurbsSurface ns;
+    Check(ON_Sphere(ON_3dPoint(0, 0, 0), 5.0).GetNurbForm(ns) != 0, "MakeUniform setup: ON_Sphere::GetNurbForm succeeds");
+    NurbsSurface sphere;
+    sphere.raw() = ns;
+    const int order = sphere.raw().Order(0), cvc = sphere.raw().CVCount(0);
+    Check(!ON_IsKnotVectorUniform(order, cvc, sphere.raw().Knot(0)),
+          "MakeUniform setup: the sphere's own U knot vector starts genuinely non-uniform");
+
+    // Tight tolerance: refuses, surface untouched, real nonzero deviation reported.
+    {
+      NurbsSurface probe = sphere;
+      double dev = -1.0;
+      Check(probe.MakeUniform(0, 1e-9, &dev) == Result::Failed,
+            "MakeUniform refuses a tight tolerance on a genuinely non-uniform sphere");
+      Check(dev > 0.1, "...reporting a real, non-trivial measured deviation (not a near-zero rounding artifact)");
+      Check(probe.CVCountU() == sphere.CVCountU() && probe.KnotCount(0) == sphere.KnotCount(0),
+            "...and leaves the surface completely untouched on refusal");
+      double cv_err = 0.0;
+      for (int i = 0; i < probe.CVCountU(); ++i)
+        for (int j = 0; j < probe.CVCountV(); ++j)
+          cv_err = std::max(cv_err, probe.ControlPointAt(i, j).DistanceTo(sphere.ControlPointAt(i, j)));
+      Check(cv_err < 1e-12, "...control points are bit-for-bit unchanged after a refused MakeUniform");
+    }
+
+    // Loose tolerance: commits, domain/degree/CV-count preserved, result
+    // is genuinely clamped+uniform now, and re-running is a true NoOp.
+    {
+      NurbsSurface committed = sphere;
+      double dev = -1.0;
+      Check(committed.MakeUniform(0, 1e6, &dev) == Result::Ok,
+            "MakeUniform commits under a loose tolerance");
+      Check(dev > 0.1, "...reporting the identical real deviation the tight-tolerance refusal above measured");
+      Check(committed.Domain(0).min == sphere.Domain(0).min && committed.Domain(0).max == sphere.Domain(0).max,
+            "...preserves the original U domain exactly");
+      Check(committed.DegreeU() == sphere.DegreeU() && committed.CVCountU() == sphere.CVCountU(),
+            "...preserves degree and control-point count in U exactly");
+      const int o2 = committed.raw().Order(0), c2 = committed.raw().CVCount(0);
+      Check(ON_IsKnotVectorClamped(o2, c2, committed.raw().Knot(0)) &&
+                ON_IsKnotVectorUniform(o2, c2, committed.raw().Knot(0)),
+            "...and the U knot vector is now genuinely clamped and uniformly spaced");
+
+      double dev2 = -1.0;
+      Check(committed.MakeUniform(0, 1e-9, &dev2) == Result::NoOpAlreadySatisfied,
+            "Re-running MakeUniform on the now-uniform result is a true NoOp");
+      Check(dev2 == 0.0, "...reporting exactly 0 deviation, not a near-zero measured residual");
+    }
+  }
+
+  // Invalid direction/tolerance throws, exactly as ReparameterizeRational's own sibling test checks.
+  {
+    const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+    NurbsSurface s = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    Check(Throws([&] { s.MakeUniform(2, 1.0, nullptr); }), "MakeUniform(direction=2) throws");
+    Check(Throws([&] { s.MakeUniform(-1, 1.0, nullptr); }), "MakeUniform(direction=-1) throws");
+    Check(Throws([&] { s.MakeUniform(0, 0.0, nullptr); }), "MakeUniform(tolerance=0) throws");
+    Check(Throws([&] { s.MakeUniform(0, -1.0, nullptr); }), "MakeUniform(negative tolerance) throws");
+    Check(Throws([&] { s.MakeUniform(0, std::nan(""), nullptr); }), "MakeUniform(NaN tolerance) throws");
+  }
+}
+
 void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Result;
@@ -79989,6 +80151,7 @@ int main() {
   RunTest("TestFireRayAtBrep", TestFireRayAtBrep);
   RunTest("TestClosestPointOnBrep", TestClosestPointOnBrep);
   RunTest("TestBrepClosestPointIndex", TestBrepClosestPointIndex);
+  RunTest("TestBrepClosestPointIndexFireRay", TestBrepClosestPointIndexFireRay);
   RunTest("TestContainsPointExact", TestContainsPointExact);
   RunTest("TestSignedDistanceToBrep", TestSignedDistanceToBrep);
   RunTest("TestPullbackCurveToSurfaceCylinderRulingLine", TestPullbackCurveToSurfaceCylinderRulingLine);
@@ -80848,6 +81011,7 @@ int main() {
   RunTest("TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape", TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape);
   RunTest("TestSurfaceChangeSeam", TestSurfaceChangeSeam);
   RunTest("TestSurfaceReparameterizeRational", TestSurfaceReparameterizeRational);
+  RunTest("TestSurfaceMakeUniform", TestSurfaceMakeUniform);
   RunTest("TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise", TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise);
   RunTest("TestSurfaceReduceDegree", TestSurfaceReduceDegree);
   RunTest("TestSurfaceInterpolateThroughGrid", TestSurfaceInterpolateThroughGrid);
