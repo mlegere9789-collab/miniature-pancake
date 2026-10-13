@@ -4977,6 +4977,83 @@ void TestClosestPointOnBrep() {
   Check(threw_empty, "ClosestPointOnBrep throws std::invalid_argument for a Brep with no faces");
 }
 
+// BrepClosestPointIndex narrows "Spatial acceleration structures for
+// geometric queries" (kernel: Mass properties & spatial queries) the same
+// way MeshClosestPointIndex already did for Mesh::ClosestPoint: cross-
+// validate the RTree-accelerated answer against ClosestPointOnBrep()'s own
+// brute-force scan, on both an untrimmed multi-face Brep and a genuinely
+// trimmed single-face one, so the fast path can't silently diverge from
+// the already-verified exact one.
+void TestBrepClosestPointIndex() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepClosestPointIndex;
+  using dino8::kernel::ClosestPointOnBrep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // A plain 2x2x2 box: 6 faces, so the RTree genuinely has more than one
+  // candidate to choose among, not a trivial single-cell case.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const BrepClosestPointIndex box_index(box.raw());
+
+  bool all_match = true;
+  const std::vector<Point3d> queries = {
+      Point3d(1, 1, 5),      // straight above the top face
+      Point3d(3, 3, 3),      // diagonally past a corner
+      Point3d(0.3, 1, 1),    // inside, off-center
+      Point3d(1, 1, 1),      // the box's own exact center
+      Point3d(-10, -10, -10),  // far outside, opposite corner's direction
+      Point3d(1, 1, -8),     // far outside, straight below
+  };
+  for (const Point3d& q : queries) {
+    const auto brute_force = ClosestPointOnBrep(q, box.raw());
+    const auto accelerated = box_index.ClosestPoint(q);
+    if (accelerated.face_index != brute_force.face_index ||
+        accelerated.point.DistanceTo(brute_force.point) > 1e-6 ||
+        std::abs(accelerated.distance - brute_force.distance) > 1e-6) {
+      all_match = false;
+      break;
+    }
+  }
+  Check(all_match,
+        "BrepClosestPointIndex::ClosestPoint() agrees with ClosestPointOnBrep()'s own brute-force "
+        "scan - same face, point, and distance - at every query point, near and far, interior and "
+        "exterior, on a multi-face box");
+
+  // The same trimmed-face fixture TestClosestPointOnBrep() above uses:
+  // a flat plane at z=2, trimmed down to a small square. The accelerated
+  // path must reproduce the exact boundary-fallback behavior, not just
+  // the unconstrained minimum - a bbox-only RTree candidate filter could
+  // easily miss this if the trim weren't re-checked per candidate.
+  const std::vector<Point3d> plane_grid = {Point3d(0, 0, 2), Point3d(0, 2, 2), Point3d(2, 0, 2),
+                                            Point3d(2, 2, 2)};
+  const NurbsSurface flat_plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+  const std::vector<Point2d> small_trim = {
+      Point2d(0.25, 0.25), Point2d(0.75, 0.25), Point2d(0.75, 0.75), Point2d(0.25, 0.75)};
+  const Brep trimmed_top = Brep::TrimmedPlanarFaceWelded(flat_plane, small_trim);
+  const BrepClosestPointIndex trimmed_index(trimmed_top.raw());
+  {
+    const auto r = trimmed_index.ClosestPoint(Point3d(0.2, 0.2, 5));
+    Check(r.on_trim_boundary,
+          "BrepClosestPointIndex reproduces the exact trim-boundary fallback for a query outside "
+          "the trimmed face's own trim loop, not just the unconstrained interior minimum");
+    Check(r.point.DistanceTo(Point3d(0.5, 0.5, 2)) < 1e-6,
+          "BrepClosestPointIndex's boundary fallback lands on the exact same point "
+          "ClosestPointOnBrep() itself finds, (0.5, 0.5, 2)");
+  }
+
+  bool threw_empty = false;
+  try {
+    ON_Brep empty;
+    const BrepClosestPointIndex empty_index(empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "building a BrepClosestPointIndex from a Brep with no faces throws, matching "
+                      "ClosestPointOnBrep()'s own contract");
+}
+
 // PARITY_MAP's massprops category, "Point classification vs exact B-rep":
 // ClassifyPointVsSolid/ClassifyPointVsMixedSolid (boolean.h) only ever
 // classify against this kernel's own internal, already-split face lists
@@ -79111,6 +79188,7 @@ int main() {
   RunTest("TestIntersectBrepsAndCurveBrep", TestIntersectBrepsAndCurveBrep);
   RunTest("TestFireRayAtBrep", TestFireRayAtBrep);
   RunTest("TestClosestPointOnBrep", TestClosestPointOnBrep);
+  RunTest("TestBrepClosestPointIndex", TestBrepClosestPointIndex);
   RunTest("TestContainsPointExact", TestContainsPointExact);
   RunTest("TestSignedDistanceToBrep", TestSignedDistanceToBrep);
   RunTest("TestPullbackCurveToSurfaceCylinderRulingLine", TestPullbackCurveToSurfaceCylinderRulingLine);
