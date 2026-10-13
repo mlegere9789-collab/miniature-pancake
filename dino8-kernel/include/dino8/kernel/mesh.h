@@ -12,49 +12,10 @@
 
 namespace dino8::kernel {
 
-// Exact volume mass properties of a closed solid at unit density, from
-// Mesh::VolumeMassProperties(). Every second moment below uses the
-// "products of inertia" convention: `ixx = integral of (y^2 + z^2) dV`,
-// `ixy = integral of (x * y) dV` (NOT its negative), so the inertia
-// tensor is assembled as
-//
-//   I = [[ ixx, -ixy, -ixz ],
-//        [ -ixy, iyy, -iyz ],
-//        [ -ixz, -iyz, izz ]]
-//
-// - the convention Rhino's own MassProperties reports and every
-// engineering reference tabulates. Multiply every moment by the actual
-// density to get real mass moments (volume by density gives mass).
-struct MassProperties {
-  double volume = 0;
-  Point3d centroid;
-
-  // Second moments about the WORLD ORIGIN.
-  double ixx_origin = 0, iyy_origin = 0, izz_origin = 0;
-  double ixy_origin = 0, iyz_origin = 0, ixz_origin = 0;
-
-  // Second moments about the CENTROID (parallel-axis theorem applied to
-  // the origin moments above).
-  double ixx = 0, iyy = 0, izz = 0;
-  double ixy = 0, iyz = 0, ixz = 0;
-
-  // Eigen-decomposition of the centroidal tensor: `principal_moments`
-  // in ascending order, `principal_axes[k]` the unit axis of
-  // `principal_moments[k]`. The three axes form a right-handed
-  // orthonormal frame (the third is the cross product of the first two,
-  // which is still an eigenvector). An eigenvector's sign is arbitrary
-  // (it's an axis, not a direction), and for a repeated eigenvalue
-  // (a body with an axis of rotational symmetry, e.g. a cylinder or
-  // torus) any orthonormal pair in that eigenspace is equally valid -
-  // callers must not assume a specific pair comes back in that case.
-  std::array<double, 3> principal_moments{};
-  std::array<Vector3d, 3> principal_axes{};
-
-  // `sqrt(principal_moments[k] / volume)` - the distance from the
-  // principal axis at which the whole volume, concentrated, would have
-  // the same moment.
-  std::array<double, 3> radii_of_gyration{};
-};
+// MassProperties, VolumeMassProperties()'s own return type, now lives in
+// types.h (brep.h needs it too, for Brep::VolumeMassProperties() - and
+// brep.h can't include this header, since this header already includes
+// brep.h). Still reachable here unqualified via that include below.
 
 // An oriented bounding box, from Mesh::GetOrientedBoundingBox(): a box
 // exactly `2 * half_extents[k]` long along each `axes[k]` (unit,
