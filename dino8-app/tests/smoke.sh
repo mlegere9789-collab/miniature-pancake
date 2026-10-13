@@ -6959,6 +6959,46 @@ else
   fail=1
 fi
 
+# Native .3dm Text export: Save3dm had no ON_Text writer at all before this
+# change (see BuildOnTextForGroup in File3dm.cpp) - a Text annotation made
+# in-app round-tripped out through .3dm as its own N baked glyph curves
+# plus Text/TextHeight/TextOrigin/... user_text metadata, never a real
+# ON_Text object a genuinely independent Rhino/OpenNURBS-based reader
+# would recognize as one text object - the Text half of this bullet's own
+# disclosed "Dim*/Leader/Text... still written exactly as before" gap
+# (Hatch already closed the same way, above). Makes a real "Hi" text
+# annotation, saves it, and reopens the saved file in a fresh document:
+# SelText/List must find the exact same 3 glyph curves back, proving the
+# new writer and the existing ON_Text reader (added for externally-
+# authored files - see text3dm_fixture_gen.cpp, below) agree on the wire
+# format - and, independent of Dino 8's own reader entirely,
+# text3dm_write_check (the write-side mirror of text3dm_fixture_gen) parses
+# the saved file directly through OpenNURBS' own API and confirms it holds
+# one real ON_Text object with the exact string/height/plane, not bare
+# glyph curves.
+sed "s|@TMP@|$TMPW|g" "$HERE/text3dm_export_script.txt" > "$TMPW/text3dm_export_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  T3E="$("$BIN" --smoke 30 --script "$TMPW/text3dm_export_script.txt" 2>&1)" || { echo "$T3E"; echo "FAIL: .3dm Text export script exited non-zero"; exit 1; }
+else
+  T3E="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/text3dm_export_script.txt" 2>&1)" || { echo "$T3E"; echo "FAIL: .3dm Text export script exited non-zero"; exit 1; }
+fi
+t3echeck() { if echo "$T3E" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$T3E" "$1"; fail=1; fi; }
+t3echeck "Saved $TMPW/text3dm_export.3dm" "Save3dm wrote a file"
+t3echeck "Opened $TMPW/text3dm_export.3dm (3 objects)" "the reopened file has the exact same 3 glyph curves (H, i-stem, i-dot) the original Text command built - the ON_Text round-tripped as a real text object, not bare geometry"
+t3echeck "3 object(s) selected" "SelText found the round-tripped text's own 3 glyph curves"
+TWCBIN="$(dirname "$BIN")/text3dm_write_check"
+if [ -x "$TWCBIN" ]; then
+  TWC="$("$TWCBIN" "$TMPW/text3dm_export.3dm" 2>&1)" || { echo "$TWC"; echo "FAIL: text3dm_write_check exited non-zero on the text file"; exit 1; }
+  twccheck() { if echo "$TWC" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$TWC" "$1"; fail=1; fi; }
+  twccheck "1 real ON_Text object(s) found" "independent of Dino 8's own Load3dm, a plain OpenNURBS reader sees exactly one real ON_Text object in the saved file, not 3 bare glyph curves"
+  twccheck "text=Hi" "the saved text object's own string content survived exactly"
+  twccheck "height=2" "the saved text object's own real DimStyle table entry carries the exact requested text height (this document's own default annotation text height)"
+  twccheck "origin=(0,0,0)" "the saved text object's own plane origin survived exactly"
+else
+  echo "FAIL text3dm_write_check was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the independent .3dm ON_Text write check"
+  fail=1
+fi
+
 # Native .3dm ON_InstanceRef import: previously Load3dm had no
 # ON_InstanceRef/ON_InstanceDefinition handling at all, and no
 # ON::idef_object check either, so a block instance authored by a real,
