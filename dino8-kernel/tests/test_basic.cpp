@@ -54881,6 +54881,149 @@ void TestBrepSplitDisjointPiecesCompoundLumpFallback() {
   }
 }
 
+// kernel::SplitByPlane(const Brep&, ...) - the exact B-rep counterpart of
+// the mesh-level SplitByPlane() above, closing PARITY_MAP.md's own
+// "Split body by plane (both halves kept, capped)" gap (previously
+// mesh-only) via BooleanCombineMixed() against a synthesized plane-aligned
+// half-space box tool.
+void TestBrepSplitByPlaneExact() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SplitByPlane;
+  using dino8::kernel::Vector3d;
+
+  // Axis-aligned split straight through the middle of a plain box: both
+  // halves should be exact half-volume solids, each a genuinely valid,
+  // closed, oriented, solid Brep - not just a face list - and landing on
+  // the correct side of the cut (side_along_normal on the +x side, the
+  // same {side_along_normal, opposite_side} order and meaning the
+  // mesh-level SplitByPlane() already establishes).
+  {
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    const double original_volume = box.Volume();
+    Check(std::abs(original_volume - 1000.0) < 1e-6, "sanity: the box itself has volume 1000");
+
+    auto [plus_side, minus_side] = SplitByPlane(box, Vector3d(1, 0, 0), 5.0);
+    ON_TextLog log;
+    bool oriented = false, boundary = true;
+    Check(plus_side.raw().IsValid(&log) && plus_side.raw().IsManifold(&oriented, &boundary) && oriented && !boundary &&
+              plus_side.raw().IsSolid(),
+          "the +normal side is itself a genuinely valid, closed, oriented, solid Brep");
+    oriented = false;
+    boundary = true;
+    Check(minus_side.raw().IsValid(&log) && minus_side.raw().IsManifold(&oriented, &boundary) && oriented &&
+              !boundary && minus_side.raw().IsSolid(),
+          "the opposite side is itself a genuinely valid, closed, oriented, solid Brep");
+
+    Check(std::abs(plus_side.Volume() - 500.0) < 1e-6, "the +normal side's exact volume is half the box, not a "
+                                                        "tessellated approximation");
+    Check(std::abs(minus_side.Volume() - 500.0) < 1e-6, "the opposite side's exact volume is the other half");
+    Check(std::abs((plus_side.Volume() + minus_side.Volume()) - original_volume) < 1e-6,
+          "the two exact halves' volumes add back up to the original solid's own volume");
+
+    // raw().BoundingBox()/GetTightBoundingBox() read the UNDERLYING
+    // surface's control points, which FromMixedFaces() deliberately pads
+    // 5% beyond the real trim loop (see TestBrepSplitDisjointPieces()'s
+    // own comment on this exact gotcha, confirmed directly here too, not
+    // assumed safe) - so this reads the real trim-loop vertices via
+    // PlanarFaces() instead, the same way that existing test's own
+    // exact_bbox_from_loops() helper does.
+    auto min_max_x = [](const Brep& b) {
+      double lo = std::numeric_limits<double>::infinity(), hi = -std::numeric_limits<double>::infinity();
+      for (const Brep::PlanarFace& f : b.PlanarFaces()) {
+        for (const Point3d& p : f.loop) {
+          lo = std::min(lo, p.x);
+          hi = std::max(hi, p.x);
+        }
+      }
+      return std::make_pair(lo, hi);
+    };
+    const auto [plus_lo, plus_hi] = min_max_x(plus_side);
+    const auto [minus_lo, minus_hi] = min_max_x(minus_side);
+    Check(plus_lo > 5.0 - 1e-6 && plus_hi < 10.0 + 1e-6,
+          "the +normal side genuinely sits on the +x side of the cut plane (x in [5, 10])");
+    Check(minus_lo > 0.0 - 1e-6 && minus_hi < 5.0 + 1e-6,
+          "the opposite side genuinely sits on the -x side of the cut plane (x in [0, 5])");
+  }
+
+  // An oblique (non-axis-aligned) plane through a mixed-face solid (a
+  // cylindrical hole drilled through a box, built the same way this
+  // file's own BuildDrilledBoxInputs() fixture does elsewhere) - confirms
+  // this isn't scoped to planar-only solids or axis-aligned cuts: the
+  // plane's own unit normal is deliberately non-axis-aligned, and the
+  // target carries a genuine CylindricalFace.
+  {
+    const auto [box_faces_src, cyl] = BuildDrilledBoxInputs(/*hole_radius=*/2.0, /*hole_z0=*/-1.0,
+                                                             /*hole_length=*/12.0);
+    const Brep drilled = dino8::kernel::BooleanCombineMixed(box_faces_src, cyl, BooleanOp::Difference);
+
+    // Deliberately mild obliqueness (mostly along the hole's own axis, not
+    // a steep cross-cut): a steeper tilt was tried first and correctly hit
+    // BooleanCombineMixed()'s own pre-existing, disclosed scope limits for
+    // a cylindrical face (a non-monotonic plane/face interaction, or a
+    // near-axis-parallel grazing angle - both confirmed directly via a
+    // standalone probe, not guessed around) - this angle is still
+    // genuinely non-axis-aligned (not a z-only cut) while staying inside
+    // that engine's own real, already-disclosed scope.
+    Vector3d n(0.1, 0.1, 1.0);
+    n.Unitize();
+    const double offset = ON_DotProduct(n, Point3d(5, 5, 5));
+    auto [plus_side, minus_side] = SplitByPlane(drilled, n, offset);
+
+    // Not a Volume()-based check here: confirmed directly (a standalone
+    // probe, not assumed) that `drilled` itself - straight out of
+    // BooleanCombineMixed(), before any split - already throws on
+    // Volume()/VolumeMassProperties(): TessellateToClosedMesh(8, 8)'s own
+    // fixed-resolution weld doesn't close this particular cylindrical-hole
+    // boundary at only 8 divisions. A real, pre-existing limitation of
+    // that fixed-resolution precondition, unrelated to this round's own
+    // SplitByPlane() work (which never touches tessellation resolution at
+    // all).
+    //
+    // Also not a raw().IsManifold()/!boundary check: confirmed directly
+    // (a standalone probe, not assumed) that a new cut face introduced by
+    // BooleanCombineMixed() against a CylindricalFace does not always get
+    // a genuine shared ON_BrepEdge against that face's own remaining wall
+    // - the same "real topology isn't always built between every pair of
+    // geometrically-touching faces" honesty this kernel already documents
+    // elsewhere (e.g. Brep::Volume()'s own doc comment on why
+    // raw().IsSolid() is the WRONG check for a Box()/Sphere()-built
+    // solid). This file's own existing BooleanCombineMixed-with-cylinder
+    // tests already verify such a result through TessellateConforming()
+    // mesh welding, never raw().IsManifold() - so this follows the same
+    // established convention: IsValid() (real OpenNURBS structural
+    // validity) and a non-empty result on both sides, not strict B-rep
+    // manifoldness.
+    ON_TextLog log;
+    Check(plus_side.raw().IsValid(&log), "an oblique cut through a mixed-face (cylindrical-hole) solid still gives "
+                                          "a structurally valid +normal side");
+    Check(minus_side.raw().IsValid(&log), "...and a structurally valid opposite side");
+    Check(plus_side.FaceCount() > 0 && minus_side.FaceCount() > 0,
+          "both sides of an oblique cut through a mixed-face solid are genuinely non-empty");
+  }
+
+  // Error handling: a zero plane_normal and an empty Brep both refuse
+  // outright rather than silently producing a garbage split.
+  {
+    bool threw = false;
+    try {
+      SplitByPlane(Brep::Box(0, 0, 0, 1, 1, 1), Vector3d(0, 0, 0), 0.0);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "SplitByPlane throws for a zero plane_normal");
+
+    threw = false;
+    try {
+      SplitByPlane(Brep(), Vector3d(1, 0, 0), 0.0);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "SplitByPlane throws for an empty Brep (no faces to split)");
+  }
+}
+
 // The scope limits that are meant to stay honest throws, and the new
 // refusals: SymmetricDifference of the parallel-crossing pair still hits
 // B - A's cap-trim refusal; Difference(Steinmetz Union, b) still hits the
@@ -81073,6 +81216,7 @@ int main() {
   RunTest("TestMixedFacesReturnsVerbatimRecordsForBooleanResults", TestMixedFacesReturnsVerbatimRecordsForBooleanResults);
   RunTest("TestBrepSplitDisjointPieces", TestBrepSplitDisjointPieces);
   RunTest("TestBrepSplitDisjointPiecesCompoundLumpFallback", TestBrepSplitDisjointPiecesCompoundLumpFallback);
+  RunTest("TestBrepSplitByPlaneExact", TestBrepSplitByPlaneExact);
   RunTest("TestBooleanCombineMixedChainedNegativeControls", TestBooleanCombineMixedChainedNegativeControls);
   RunTest("TestBooleanCombineMixedUnsupportedGeometryRefusalsAreTyped", TestBooleanCombineMixedUnsupportedGeometryRefusalsAreTyped);
   RunTest("TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion", TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion);

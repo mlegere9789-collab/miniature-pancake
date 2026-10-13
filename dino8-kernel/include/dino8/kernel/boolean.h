@@ -254,6 +254,33 @@ AllInterferenceResult ComputeAllInterference(const std::vector<Mesh>& bodies,
 // requirement/failure mode as BooleanCombine().
 std::pair<Mesh, Mesh> SplitByPlane(const Mesh& mesh, Vector3d plane_normal, double plane_offset);
 
+// The exact B-rep counterpart of the mesh-level SplitByPlane() above -
+// closes PARITY_MAP.md's "Split body by plane (both halves kept, capped)"
+// kernel gap, previously mesh-only. Splits `brep` along the identical plane
+// `{p : dot(p, plane_normal) == plane_offset}` into two independently
+// valid, closed, EXACT (not tessellated) Brep solids, each auto-capped by
+// the boolean engine itself at the real cut plane - `{side_along_normal,
+// opposite_side}`, same naming and order as the mesh-level function.
+// Built on BooleanCombineMixed(), not a new geometric algorithm: a plane-
+// aligned box, large enough to engulf `brep` entirely on one side (6
+// explicit planar quads, each an exact facet - not Extrude(), whose own
+// wall is ONE general swept surface per profile loop, which MixedFaces()
+// cannot classify as planar), is Intersected/Differenced against `brep` -
+// the same "half-space tool body" technique `dino8-app`'s own
+// WireCut/SplitPlane commands already use for a general (possibly curved)
+// cutter, specialized here to an exact flat plane so the tool itself needs
+// no curved-geometry approximation.
+// Inherits BooleanCombineMixed()'s own scope (planar + cylindrical +
+// conical + spherical faces; `tolerance`, if non-negative, is passed
+// through as-is, same meaning as there). `plane_normal` need not be unit
+// length (normalized internally, exactly like the mesh-level function),
+// but `plane_offset` is measured in the same units as `plane_normal`'s own
+// original magnitude - pass a unit vector unless that's been accounted
+// for. Throws std::invalid_argument for a zero `plane_normal` or an empty
+// `brep` (no faces to split).
+std::pair<Brep, Brep> SplitByPlane(const Brep& brep, Vector3d plane_normal, double plane_offset,
+                                    double tolerance = -1.0);
+
 // The convex hull of `points`, as a closed watertight solid - backed by
 // Manifold's own `Manifold::Hull(const std::vector<vec3>&)`, a genuine
 // computational-geometry algorithm (quickhull-family), not something
