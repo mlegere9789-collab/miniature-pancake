@@ -5122,6 +5122,77 @@ void TestBrepClosestPointIndexFireRay() {
                             "matching FireRayAtBrep()'s own contract");
 }
 
+// BrepClosestPointIndex::ContainsPoint()/SignedDistance() - the two
+// remaining B-rep-level query functions this bullet's own history named
+// (`ContainsPointExact()`, `SignedDistanceToBrep()`) still had no
+// accelerated alternative, unlike ClosestPoint()/FireRay() above.
+void TestBrepClosestPointIndexContainsPointAndSignedDistance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepClosestPointIndex;
+  using dino8::kernel::ContainsPointExact;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SignedDistanceToBrep;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Same fixture TestContainsPointExact()/TestSignedDistanceToBrep()
+  // already use, so every brute-force comparison below is against an
+  // independently-trusted answer, not a synthetic re-derivation.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const BrepClosestPointIndex box_index(box.raw());
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 5.0);
+  const BrepClosestPointIndex sphere_index(sphere.raw());
+
+  const Point3d box_points[] = {
+      Point3d(1, 1, 1),     // center: inside
+      Point3d(5, 1, 1),     // well clear: outside
+      Point3d(1, 1, 10),    // far along z: outside
+      Point3d(0.01, 0.01, 0.01),  // just inside a corner: inside
+  };
+  bool contains_matches = true;
+  bool signed_distance_matches = true;
+  for (const Point3d& p : box_points) {
+    const bool brute_in = ContainsPointExact(p, box.raw());
+    const bool accel_in = box_index.ContainsPoint(p, /*ray_length=*/0.0, opt);
+    if (brute_in != accel_in) contains_matches = false;
+    const double brute_sd = SignedDistanceToBrep(p, box.raw(), opt);
+    const double accel_sd = box_index.SignedDistance(p, /*ray_length=*/0.0, opt);
+    if (std::abs(brute_sd - accel_sd) > 1e-6) signed_distance_matches = false;
+  }
+  const Point3d sphere_points[] = {
+      Point3d(0, 0, 0),   // center: inside
+      Point3d(1, 1, 1),   // well within radius: inside
+      Point3d(10, 0, 0),  // well outside: outside
+      Point3d(0, 0, 20),  // far outside along z: outside
+  };
+  for (const Point3d& p : sphere_points) {
+    const bool brute_in = ContainsPointExact(p, sphere.raw());
+    const bool accel_in = sphere_index.ContainsPoint(p, /*ray_length=*/0.0, opt);
+    if (brute_in != accel_in) contains_matches = false;
+    const double brute_sd = SignedDistanceToBrep(p, sphere.raw(), opt);
+    const double accel_sd = sphere_index.SignedDistance(p, /*ray_length=*/0.0, opt);
+    if (std::abs(brute_sd - accel_sd) > 1e-6) signed_distance_matches = false;
+  }
+  Check(contains_matches,
+        "BrepClosestPointIndex::ContainsPoint() agrees with ContainsPointExact()'s own brute-force "
+        "answer on every box and sphere query point, inside and outside");
+  Check(signed_distance_matches,
+        "BrepClosestPointIndex::SignedDistance() agrees with SignedDistanceToBrep()'s own brute-force "
+        "answer (within 1e-6) on every box and sphere query point");
+
+  // A real positive control for each boolean outcome, so "both sides
+  // agree" isn't vacuously true from every point landing on one side.
+  Check(box_index.ContainsPoint(Point3d(1, 1, 1), 0.0, opt), "the box's own center is genuinely classified inside");
+  Check(!box_index.ContainsPoint(Point3d(5, 1, 1), 0.0, opt), "a point well clear of the box is genuinely classified outside");
+  Check(box_index.SignedDistance(Point3d(1, 1, 1), 0.0, opt) < 0.0,
+        "the box's own interior center has a genuinely negative signed distance");
+  Check(box_index.SignedDistance(Point3d(5, 1, 1), 0.0, opt) > 0.0,
+        "a point outside the box has a genuinely positive signed distance");
+}
+
 // BrepClosestPointIndex::SignedDistance() - narrows (not yet closes -
 // ContainsPointExact() itself still has no accelerated alternative;
 // FireRayAtBrep() does now, via the sibling BrepClosestPointIndex::FireRay()
@@ -80278,6 +80349,7 @@ int main() {
   RunTest("TestClosestPointOnBrep", TestClosestPointOnBrep);
   RunTest("TestBrepClosestPointIndex", TestBrepClosestPointIndex);
   RunTest("TestBrepClosestPointIndexFireRay", TestBrepClosestPointIndexFireRay);
+  RunTest("TestBrepClosestPointIndexContainsPointAndSignedDistance", TestBrepClosestPointIndexContainsPointAndSignedDistance);
   RunTest("TestBrepClosestPointIndexSignedDistance", TestBrepClosestPointIndexSignedDistance);
   RunTest("TestContainsPointExact", TestContainsPointExact);
   RunTest("TestSignedDistanceToBrep", TestSignedDistanceToBrep);
