@@ -696,6 +696,67 @@ double IntegrateOverNurbsSurface(const ON_NurbsSurface& s, Integrand&& integrand
   return total;
 }
 
+// Same 5x5 Gauss-Legendre rule as IntegrateOverNurbsSurface()'s own
+// per-span inner loop, factored out so it can be applied to an
+// arbitrary (ua, ub) x (va, vb) sub-rectangle of a span instead of only
+// the whole span - the building block IntegrateOverNurbsSurfaceAtResolution()
+// below needs to refine resolution without re-deriving the quadrature
+// itself.
+template <typename Integrand>
+double GaussQuadRect(double ua, double ub, double va, double vb, Integrand&& integrand) {
+  const double u_mid = 0.5 * (ua + ub), u_half = 0.5 * (ub - ua);
+  const double v_mid = 0.5 * (va + vb), v_half = 0.5 * (vb - va);
+  double total = 0.0;
+  for (int i = 0; i < kMassPropsGaussPoints; ++i) {
+    const double u = u_mid + u_half * kMassPropsGaussNodes[i];
+    for (int j = 0; j < kMassPropsGaussPoints; ++j) {
+      const double v = v_mid + v_half * kMassPropsGaussNodes[j];
+      total += kMassPropsGaussWeights[i] * kMassPropsGaussWeights[j] * u_half * v_half * integrand(u, v);
+    }
+  }
+  return total;
+}
+
+// The actual "caller-adjustable tolerance" lever this category's own
+// PARITY_MAP.md bullet names as the one remaining gap neither Volume()/
+// Area() nor the new VolumeMassProperties() above closes: splits each
+// of `s`'s own existing knot spans into `subdivisions` x `subdivisions`
+// equal sub-rectangles and applies GaussQuadRect() to each one, instead
+// of the single 5x5 pass IntegrateOverNurbsSurface() always takes over
+// the whole span regardless of how much the surface curves within it.
+// `subdivisions == 1` reduces to exactly IntegrateOverNurbsSurface()'s
+// own per-span loop body (same formula, same spans, same single
+// 5x5 pass) - confirmed directly, not assumed, by
+// TestBrepVolumeCertifiedAdaptive's own "subdivisions=1 matches Volume()
+// exactly" check. Doubling `subdivisions` and comparing two successive
+// results is exactly the "refine and compare" doubling idiom
+// NurbsSurface::TessellateGridCertifiedAdaptive() already established
+// for mesh resolution, applied here to quadrature resolution instead.
+template <typename Integrand>
+double IntegrateOverNurbsSurfaceAtResolution(const ON_NurbsSurface& s, Integrand&& integrand, int subdivisions) {
+  const std::vector<double> u_breaks = MassPropsSpanBreakpoints(s, 0);
+  const std::vector<double> v_breaks = MassPropsSpanBreakpoints(s, 1);
+  double total = 0.0;
+  for (size_t su = 0; su + 1 < u_breaks.size(); ++su) {
+    const double ua = u_breaks[su], ub = u_breaks[su + 1];
+    if (!(ub > ua)) continue;
+    const double u_step = (ub - ua) / subdivisions;
+    for (int a = 0; a < subdivisions; ++a) {
+      const double sua = ua + a * u_step, sub = ua + (a + 1) * u_step;
+      for (size_t sv = 0; sv + 1 < v_breaks.size(); ++sv) {
+        const double va = v_breaks[sv], vb = v_breaks[sv + 1];
+        if (!(vb > va)) continue;
+        const double v_step = (vb - va) / subdivisions;
+        for (int b = 0; b < subdivisions; ++b) {
+          const double sva = va + b * v_step, svb = va + (b + 1) * v_step;
+          total += GaussQuadRect(sua, sub, sva, svb, integrand);
+        }
+      }
+    }
+  }
+  return total;
+}
+
 // Degree-5, 7-point symmetric Gauss quadrature on a triangle (Hammer-
 // Marlowe-Stroud / Dunavant 1985 - standard published barycentric
 // coordinates/weights, not re-derived here), with weights summing to 1
@@ -1135,7 +1196,7 @@ namespace {
 // `IntegrateTriangleAdaptive` completely unchanged (both are scalar-
 // integrand-only).
 template <typename MomentIntegrand>
-double BrepDivergenceSum(const Brep& self, MomentIntegrand&& moment_integrand) {
+double BrepDivergenceSum(const Brep& self, MomentIntegrand&& moment_integrand, int whole_domain_subdivisions = 1) {
   const ON_Brep& brep = self.raw();
   double total = 0.0;
   for (int i = 0; i < brep.m_F.Count(); ++i) {
@@ -1157,7 +1218,11 @@ double BrepDivergenceSum(const Brep& self, MomentIntegrand&& moment_integrand) {
       return moment_integrand(p, n);
     };
     if (self.FaceCoversWholeDomain(i)) {
-      total += sign * IntegrateOverNurbsSurface(*s, integrand);
+      // `whole_domain_subdivisions == 1` (every existing caller except
+      // VolumeCertifiedAdaptive() below) is numerically identical to
+      // IntegrateOverNurbsSurface() itself - see
+      // IntegrateOverNurbsSurfaceAtResolution()'s own doc comment above.
+      total += sign * IntegrateOverNurbsSurfaceAtResolution(*s, integrand, whole_domain_subdivisions);
       continue;
     }
     if (face.m_li.Count() == 0) {
@@ -1284,6 +1349,51 @@ MassProperties Brep::VolumeMassProperties() const {
     mp.radii_of_gyration[k] = std::sqrt(std::max(mp.principal_moments[k], 0.0) / mp.volume);
   }
   return mp;
+}
+
+double Brep::VolumeCertifiedAdaptive(double tolerance, int max_refinements, double* out_achieved_deviation) const {
+  if (!ON_IsValid(tolerance) || !(tolerance > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::VolumeCertifiedAdaptive: tolerance must be a finite, positive number");
+  }
+  if (max_refinements < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::VolumeCertifiedAdaptive: max_refinements must be non-negative");
+  }
+  if (!TessellateToClosedMesh(8, 8).IsClosedManifold()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::VolumeCertifiedAdaptive: this Brep is not a closed, watertight solid "
+        "(TessellateToClosedMesh(8, 8).IsClosedManifold() is false) - there is no well-defined "
+        "enclosed volume otherwise");
+  }
+
+  const auto volume_integrand = [](const ON_3dPoint& p, const ON_3dVector& n) {
+    return (p.x * n.x + p.y * n.y + p.z * n.z) / 3.0;
+  };
+
+  // subdivisions=1 reproduces Volume()'s own fixed-resolution result
+  // exactly (see IntegrateOverNurbsSurfaceAtResolution()'s own doc
+  // comment); each subsequent attempt doubles it and compares against
+  // the previous estimate, the same doubling-and-comparing idiom
+  // NurbsSurface::TessellateGridCertifiedAdaptive() already established
+  // for mesh resolution - genuine refinement, not a fixed single pass,
+  // the real remaining half of this category's own "tolerance-controlled
+  // integration" bullet text neither Volume() nor VolumeMassProperties()
+  // above actually deliver on.
+  double coarse = BrepDivergenceSum(*this, volume_integrand, 1);
+  int subdivisions = 1;
+  for (int attempt = 0; attempt <= max_refinements; ++attempt) {
+    subdivisions *= 2;
+    const double refined = BrepDivergenceSum(*this, volume_integrand, subdivisions);
+    const double deviation = std::fabs(refined - coarse);
+    if (deviation <= tolerance) {
+      if (out_achieved_deviation) *out_achieved_deviation = deviation;
+      return refined;
+    }
+    coarse = refined;
+  }
+  throw std::runtime_error(
+      "dino8::kernel::Brep::VolumeCertifiedAdaptive: could not certify tolerance within max_refinements "
+      "doublings of the whole-domain quadrature resolution");
 }
 
 Brep::OrientedBox Brep::GetOrientedBoundingBox(int u_divisions, int v_divisions) const {
