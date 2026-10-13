@@ -709,6 +709,18 @@ std::vector<RayHit> MeshClosestPointIndex::FireRay(Point3d origin, Vector3d dire
   return deduped;
 }
 
+double MeshClosestPointIndex::SignedDistance(Point3d point) const {
+  const double distance = (ClosestPoint(point) - point).Length();
+  int votes_in = 0;
+  for (const Vector3d& direction : kContainsPointDirections) {
+    if ((FireRay(point, direction).size() % 2) == 1) ++votes_in;
+  }
+  // Strict majority of 5, the identical tie-proof rule Mesh::ContainsPoint()
+  // itself uses (kContainsPointDirectionCount is odd).
+  const bool inside = votes_in * 2 > kContainsPointDirectionCount;
+  return inside ? -distance : distance;
+}
+
 MassProperties Mesh::VolumeMassProperties() const {
   // Eberly, "Polyhedral Mass Properties (Revisited)": the ten volume
   // integrals of {1, x, y, z, x^2, y^2, z^2, xy, yz, zx} are each turned

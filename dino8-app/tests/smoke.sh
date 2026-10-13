@@ -8006,9 +8006,9 @@ if ! command -v curl >/dev/null 2>&1; then
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 22 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 24 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 22 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 24 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -8134,6 +8134,14 @@ dino8.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run/python")"
     RESP8="$(curl -s --max-time 10 -X POST --data 'import dino8
 dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     CODE5="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'x' "http://127.0.0.1:$SERVE_PORT/run/nosuchroute")"
+    # GET /plugins: narrows PARITY_MAP.md's own disclosed "Plugin
+    # marketplace / discovery mechanism" gap - this same compute server can
+    # now serve the bundled plugin index as real JSON over real HTTP,
+    # giving PluginMarketplaceIndex's own existing arbitrary-http(s)-URL
+    # path a genuine server to point at instead of only ever a file
+    # someone else hosted by hand.
+    RESP21="$(curl -s --max-time 10 "http://127.0.0.1:$SERVE_PORT/plugins")"
+    CODE6="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'x' "http://127.0.0.1:$SERVE_PORT/plugins")"
     set -e
     echo "$RESP1" | grep -q "^objects: 1$" && echo "ok   POST /run built a box over HTTP and read back its printed object count" || { echo "$RESP1"; echo "FAIL --serve POST /run did not report objects: 1"; fail=1; }
     [ "$RESP9" = '{"ok":true,"output":["hi"]}' ] && echo "ok   POST /run with Accept: application/json returns a real structured {ok,output} response instead of plain print() text" || { echo "$RESP9"; echo "FAIL --serve POST /run Accept: application/json did not return the expected JSON body"; fail=1; }
@@ -8192,6 +8200,8 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
       echo "$RESP8" | grep -q "compute error: script requires interactive input" && echo "ok   a POST /run/python script calling the new dino8.GetInteger() is rejected instead of hanging the connection, same as GetPoint/GetString" || { echo "$RESP8"; echo "FAIL --serve POST /run/python dino8.GetInteger() was not rejected as expected"; fail=1; }
     fi
     [ "$CODE5" = "404" ] && echo "ok   a POST to an unrecognized path is rejected with 404 Not Found" || { echo "FAIL --serve POST to an unknown path returned HTTP $CODE5, expected 404"; fail=1; }
+    echo "$RESP21" | grep -q '"index_name": "Dino 8 Reference Plugin Index"' && echo "$RESP21" | grep -q '"id": "hellodino"' && echo "ok   GET /plugins serves the real bundled plugin index as JSON over HTTP" || { echo "$RESP21"; echo "FAIL --serve GET /plugins did not serve the expected bundled index"; fail=1; }
+    [ "$CODE6" = "405" ] && echo "ok   a POST to /plugins is rejected with 405 Method Not Allowed (GET only)" || { echo "FAIL --serve POST /plugins returned HTTP $CODE6, expected 405"; fail=1; }
 
     set +e; wait "$SERVE_PID"; SERVE_EC=$?; set -e
     if [ "$SERVE_EC" -eq 124 ]; then
@@ -8199,7 +8209,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=22$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 22 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=24$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 24 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
     fi
   fi
 
