@@ -2289,6 +2289,86 @@ BrepClosestPointResult BrepClosestPointIndex::ClosestPoint(const Point3d& point)
   return best;
 }
 
+std::vector<RayBrepHit> BrepClosestPointIndex::FireRay(const Point3d& origin, const Vector3d& direction,
+                                                         double max_distance, const IntersectOptions& opt) const {
+  Vector3d unit_dir = direction;
+  if (!unit_dir.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::BrepClosestPointIndex::FireRay: direction must be finite and non-zero");
+  }
+  if (!std::isfinite(max_distance) || !(max_distance > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::BrepClosestPointIndex::FireRay: max_distance must be finite and positive");
+  }
+
+  std::vector<RayBrepHit> out;
+  if (!bbox_.IsValid()) return out;  // unreachable - the constructor already requires at least one usable face
+
+  // Standard slab method, clipped to [0, max_distance] (FireRayAtBrep()'s
+  // own contract: a finite segment, not an unbounded ray) and to this
+  // index's own whole bounding box - the identical technique
+  // MeshClosestPointIndex::FireRay() already establishes one level down.
+  // A ray missing the box entirely (tmin > tmax below) returns
+  // immediately, zero face tests.
+  double tmin = 0.0;
+  double tmax = max_distance;
+  const double o[3] = {origin.x, origin.y, origin.z};
+  const double d[3] = {unit_dir.x, unit_dir.y, unit_dir.z};
+  const double bmin[3] = {bbox_.m_min.x, bbox_.m_min.y, bbox_.m_min.z};
+  const double bmax[3] = {bbox_.m_max.x, bbox_.m_max.y, bbox_.m_max.z};
+  for (int axis = 0; axis < 3; ++axis) {
+    if (std::fabs(d[axis]) < 1e-300) {
+      if (o[axis] < bmin[axis] || o[axis] > bmax[axis]) return out;  // parallel to this slab and outside it
+      continue;
+    }
+    double t1 = (bmin[axis] - o[axis]) / d[axis];
+    double t2 = (bmax[axis] - o[axis]) / d[axis];
+    if (t1 > t2) std::swap(t1, t2);
+    tmin = std::max(tmin, t1);
+    tmax = std::min(tmax, t2);
+    if (tmin > tmax) return out;  // the ray misses the bounding box entirely
+  }
+
+  // A TIGHT box around just the clipped segment [tmin, tmax] - not this
+  // index's own full extent - narrows the RTree query to the faces near
+  // the ray's own path, the real acceleration this gives over
+  // IntersectCurveBrep()'s own plain per-face loop. Padded by the same
+  // tolerance-derived amount that loop's own cb/fb disjoint test already
+  // pads the FACE side by, since this index's own tree was built from
+  // each face's UNPADDED bbox (BrepClosestPointIndex's own constructor
+  // above) - padding the query box here instead gives the identical
+  // total slack, just moved to the other side of the same comparison.
+  const double pad = std::max(opt.mesh_tolerance, opt.tolerance * 4);
+  const Point3d p0 = origin + unit_dir * tmin;
+  const Point3d p1 = origin + unit_dir * tmax;
+  const double box_min[3] = {std::min(p0.x, p1.x) - pad, std::min(p0.y, p1.y) - pad, std::min(p0.z, p1.z) - pad};
+  const double box_max[3] = {std::max(p0.x, p1.x) + pad, std::max(p0.y, p1.y) + pad, std::max(p0.z, p1.z) + pad};
+  ON_SimpleArray<int> ids;
+  tree_.Search(box_min, box_max, ids);
+
+  ON_LineCurve ray(origin, origin + unit_dir * max_distance);
+  ray.SetDomain(0.0, max_distance);
+  for (int j = 0; j < ids.Count(); ++j) {
+    const int fi = ids[j];
+    const ON_BrepFace& f = brep_.m_F[fi];
+    const ON_Surface* s = f.SurfaceOf();
+    if (!s) continue;
+    for (const CurveSurfaceHit& h : IntersectCurveSurface(ray, *s, opt)) {
+      if (!FaceContainsUV(f, h.uv.x, h.uv.y)) continue;
+      out.push_back(RayBrepHit{fi, h.t, h.uv, h.point});
+    }
+  }
+  std::sort(out.begin(), out.end(), [](const RayBrepHit& a, const RayBrepHit& b2) { return a.distance < b2.distance; });
+  return out;
+}
+
+double BrepClosestPointIndex::SignedDistance(const Point3d& point, double ray_length, const IntersectOptions& opt,
+                                              double tol) const {
+  const BrepClosestPointResult cp = ClosestPoint(point);
+  const bool inside = ContainsPointExact(point, brep_, ray_length, opt, tol);
+  return inside ? -cp.distance : cp.distance;
+}
+
 double SignedDistanceToBrep(const Point3d& point, const ON_Brep& b, const IntersectOptions& opt, int u_divisions,
                              int v_divisions, int trim_samples_per_edge, double ray_length, double tol) {
   const BrepClosestPointResult cp = ClosestPointOnBrep(point, b, u_divisions, v_divisions, trim_samples_per_edge);

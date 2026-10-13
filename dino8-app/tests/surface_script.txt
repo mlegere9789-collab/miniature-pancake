@@ -250,3 +250,27 @@ SelClosedMesh
 Area
 BoundingBox
 Volume
+# --- OffsetSrf on a polysurface, Solid=No: the kernel's own exact
+# OffsetSolidConvexPlanar now takes this case directly - same "exact
+# first, fail open" shape the Shell tests above already prove for
+# ShellConvexPlanar, just for the plain grow/shrink case OffsetSrf had
+# never tried on a Brep before this (PARITY_MAP.md's own account of the
+# gap: "OffsetSrf on polysurfaces gives meshes"). A 20x20x10 box grown by
+# 1 on every face is a convex box of planar faces only, so this takes the
+# exact Brep path: OffsetSrf keeps the original box as its own separate
+# object (same as it already does for a plain Surface), so List (on
+# SelLast alone, the new offset result only) proves the kind directly -
+# "polysurface...6 faces, 12 edges, closed solid" - and Volume/
+# BoundingBox (still on that same SelLast selection) give the exact
+# closed-form numbers for a 22x22x12 box, not a tessellated
+# approximation.
+SelAll
+Hide
+Box 440,0,0 460,20,0 10
+SelLast
+OffsetSrf
+1
+SelLast
+List
+Volume
+BoundingBox

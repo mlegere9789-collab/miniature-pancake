@@ -1042,6 +1042,35 @@ class RailRevolveCommand : public Command {
     if (!a_) { a_ = p; ctx.SetLastPoint(p); WantPoint("End of revolve axis"); return; }
     Vector3d axis = p - *a_;
     if (!axis.Unitize()) return;
+    // A profile genuinely planar through the picked axis (the common case
+    // - Front/Right-drawn profile, axis picked in the same plane) builds a
+    // real B-rep via the kernel's own RailRevolve (brep.h) instead of this
+    // command's long-standing approximate curve-through-points fit below:
+    // exact station scaling plus a real NURBS skin, a genuine solid/open
+    // shell rather than just a surface. A full revolve (angle = 2*pi, this
+    // command's own implicit assumption - there is no partial-angle option
+    // here) matches what the app has always built. Anything the kernel
+    // itself refuses (profile not planar through the axis, a closed
+    // profile touching it, an open profile touching it away from its own
+    // endpoints, or the rail's own distance from the axis at station 0
+    // being zero) is caught and falls through to the exact same
+    // approximate construction this command has always used, so no
+    // existing result changes. Built BEFORE any BeginChange/Add - on
+    // refusal, nothing has touched the document yet, so the fallback below
+    // runs exactly as it always has, not after a wasted empty undo entry.
+    std::optional<kernel::Brep> exact;
+    try {
+      exact = kernel::Brep::RailRevolve(*profile_, *a_, axis, *rail_);
+    } catch (const std::invalid_argument&) {
+      // Not applicable to this profile/axis/rail - fall back below.
+    }
+    if (exact) {
+      ctx.Doc().BeginChange("RailRevolve");
+      ctx.Doc().Add(SceneObject::MakeBrep(*exact));
+      ctx.Print("RailRevolve: genuine B-rep solid/shell built (profile planar through the picked axis)");
+      Finish();
+      return;
+    }
     // Profile in a local frame: radial distance and height along the axis.
     const int np = 24, nr = 48;
     // Reference radius: the profile's largest distance from the axis; the rail scales it.
@@ -1227,15 +1256,30 @@ void Silhouette(CommandContext& ctx, const std::vector<ObjectId>& ids) {
 void MakeUniformUV(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   ctx.Doc().BeginChange("MakeUniformUV");
   int n = 0;
+  double max_dev = 0.0;
   for (ObjectId id : ids) {
     SceneObject* o = ctx.Doc().Find(id);
     if (!o || o->kind != ObjectKind::Surface || !o->surface) continue;
-    o->surface->raw().MakeClampedUniformKnotVector(0, 1.0);
-    o->surface->raw().MakeClampedUniformKnotVector(1, 1.0);
+    // kernel::NurbsSurface::MakeUniform (both directions independently, the
+    // same "each direction runs unconditionally, NoOp isn't a failure"
+    // convention the Domain command above already uses) replaces the old
+    // direct ON_NurbsSurface::MakeClampedUniformKnotVector() call: the
+    // kernel method preserves the domain exactly (that raw ON call alone
+    // does not - it always re-knots to start at 0 with unit spacing) and
+    // actually measures the real shape deviation re-knotting with a fixed
+    // control net introduces, rather than leaving it unmeasured and
+    // unreported. A permissive/infinite tolerance always commits here,
+    // matching how KnotEditCommand's RemoveKnot op is wired onto
+    // RemoveKnotAt - this command still always applies, just now reports
+    // the honest cost of doing so.
+    double du = 0.0, dv = 0.0;
+    o->surface->MakeUniform(0, std::numeric_limits<double>::infinity(), &du);
+    o->surface->MakeUniform(1, std::numeric_limits<double>::infinity(), &dv);
+    max_dev = std::max({max_dev, du, dv});
     o->InvalidateDisplay();
     ++n;
   }
-  ctx.Print("MakeUniformUV: " + std::to_string(n) + " surface(s)");
+  ctx.Print("MakeUniformUV: " + std::to_string(n) + " surface(s), max shape deviation " + FormatNumber(max_dev));
 }
 
 void SrfFromPointGrid(CommandContext& ctx, const std::vector<ObjectId>& ids, int u_count, bool interpolate) {

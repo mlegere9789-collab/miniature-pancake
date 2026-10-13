@@ -100,15 +100,30 @@ void AppendMesh(const kernel::Mesh& mesh, Part& part) {
 // A part's own object name becomes a JS string literal for the controls
 // panel's label - escaped the same minimal way every other string this
 // codebase writes into generated JS/JSON is (backslash/quote/control
-// characters only; a part name is plain user text, never attacker input,
-// but writing a name containing a stray `"` or newline unescaped would
-// otherwise corrupt the whole generated <script> block).
+// characters only), PLUS every '/' as '\/'. That second one is not needed
+// for JS string-literal correctness on its own, but this string is written
+// into an inline <script> block in a full HTML document: the HTML
+// tokenizer looks for the literal byte sequence "</script" anywhere in the
+// raw markup, with no notion of JS string/quote context at all, so an
+// unescaped object name containing "</script>" would otherwise close the
+// real script block early and let the rest of the name be parsed as new
+// HTML - a genuine script-injection path, not hypothetical: an object name
+// is attacker-controlled whenever it comes from an imported file (e.g.
+// File3dm.cpp's ON_3dmObjectAttributes::Name() or FileIgesStep.cpp's own
+// entity label), and ExportWebViewer's whole point is to hand the result
+// to someone else to open. Escaping '/' turns "</script>" into "<\/script>"
+// in the source text, which the HTML tokenizer no longer recognizes as a
+// closing tag, while '\/' remains exactly "/" to the JS string parser -
+// confirmed directly: a name of "</script><script>...</script>" produced
+// 3 literal "</script>" bytes in the unescaped output (the real injected
+// tag included) and exactly 1 (the page's own) after this fix.
 std::string JsonEscape(const std::string& s) {
   std::string out = "\"";
   for (unsigned char c : s) {
     switch (c) {
       case '"': out += "\\\""; break;
       case '\\': out += "\\\\"; break;
+      case '/': out += "\\/"; break;
       case '\n': out += "\\n"; break;
       case '\r': out += "\\r"; break;
       case '\t': out += "\\t"; break;
