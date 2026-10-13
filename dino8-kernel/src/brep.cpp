@@ -152,7 +152,20 @@ Brep Brep::FromSurface(const NurbsSurface& surface) {
   const int surface_index = brep.AddSurface(surface_copy);
 
   ON_BrepFace& face = brep.NewFace(surface_index);
-  (void)face;
+  // `NewFace(int)` alone leaves the face with ZERO loops (confirmed
+  // directly, a real, previously-undisclosed gap - see Brep::Thicken()'s
+  // own `add_cap`/`add_wall` doc comment, sweep.cpp, for the full finding
+  // and its own identical fix): this kernel's own specialized consumers
+  // (TessellateToClosedMesh()/Volume()) never need real loops, reading
+  // `face_trim_loops_` below instead, but any standard-OpenNURBS-topology
+  // consumer sees a face with no boundary at all. NewOuterLoop() builds
+  // the face's own natural full-domain rectangular loop - safe and
+  // purely additive for a single open, non-singular surface exactly like
+  // this one, the same real primitive Brep::RemoveOuterTrim() already
+  // uses (this file, below) for an analogous rebuild.
+  if (brep.NewOuterLoop(face.m_face_index) == nullptr) {
+    throw std::runtime_error("dino8::kernel::Brep::FromSurface: ON_Brep::NewOuterLoop failed unexpectedly");
+  }
   result.face_trim_loops_.emplace_back();  // untrimmed
   result.face_exact_clip_.push_back(false);
   result.face_hole_loops_.emplace_back();

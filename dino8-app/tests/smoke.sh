@@ -1358,7 +1358,7 @@ secheck "ExtractWireframe: 6 curve(s)" "ExtractWireframe extracted the cylinder 
 secheck "Bounding box min 200,0,0 max 220,10,0" "ExtendSrf grew the plane by 10"
 secheck "UnrollSrf: face 0 unrolled exactly (a real plane/cylinder/cone - zero distortion), area 314.2" "UnrollSrf now uses the kernel's exact NurbsSurface::UnrollDevelopable() on a real cylinder wall (radius 5, height 10: true area 2*pi*5*10 = 314.16, exact - not the old heuristic's own approximate 313)"
 secheck "Silhouette: [0-9]* curve(s)" "Silhouette produced outline curves"
-secheck "RailRevolve: genuine B-rep solid/shell built" "RailRevolve built a surface"
+secheck "RailRevolve: genuine B-rep solid/shell built (profile planar through the picked axis)" "RailRevolve built a real B-rep solid/shell, not just an approximate surface - this fixture's own circle profile and axis genuinely satisfy kernel::Brep::RailRevolve()'s own planar-through-axis case, a staleness correction: this test's own expectation was never updated for that round's new 'exact first, fail open' path (railrevolve_solid_script.txt's own rrvcheck tests the surface-fallback case on a genuinely different, non-coplanar fixture instead)"
 secheck "Ribbon: 1 ribbon surface(s), width 5" "Ribbon built a ribbon surface"
 secheck "SrfControlPtGrid: surface from 2 x 2 points" "SrfControlPtGrid built a surface from points"
 secheck "UntrimBorder: face 0's outer trim removed (holes kept)" "UntrimBorder removed only the outer trim"
@@ -3581,6 +3581,14 @@ nacheck "MakePeriodic: 1 object(s) made periodic (Smooth=No)" "MakePeriodic Smoo
 nacheck "MakePeriodic: 1 object(s) made periodic (Smooth=Yes)" "MakePeriodic on a Surface succeeds even though only its U direction is closed - a genuinely open V direction's own Failed doesn't count against it"
 nacheck "CVs 10 x 2" "MakePeriodic genuinely re-knotted the swept surface's U direction to periodic (9 control points -> 10, not a no-op)"
 nacheck "RefitTrim: 2 trim curve(s) could not be refit to strictly fewer control points" "RefitTrim ran its real constrained least-squares fit end to end and correctly, honestly refused a genuinely infeasible case (a cylinder cap's domain leaves no margin for the fitted control polygon's own real overshoot) rather than violating the tolerance or the surface domain"
+# RebuildUV: previously a bare alias of MakeUniformUV; now its own command
+# (PARITY_MAP.md's own disclosed "Rebuild/Refit" gap) that genuinely
+# touches only the ONE direction (U or V) it was asked for, per
+# data/commands.json's own documented real semantics.
+nacheck "RebuildUV: 1 surface(s) rebuilt to 8 point(s) in U" "RebuildUV rebuilt a degree-1 2x2 Plane in U only, to 8 points"
+nacheck "degree 3 x 1, CVs 8 x 2" "RebuildUV Direction=U left V's own point count/degree (1, 2) completely untouched while rebuilding U to degree 3, 8 CVs"
+nacheck "RebuildUV: 1 surface(s) rebuilt to 12 point(s) in V" "RebuildUV rebuilt the same surface in V only, to 12 points"
+nacheck "degree 3 x 3, CVs 8 x 12" "RebuildUV Direction=V left U's own just-rebuilt 8 points/degree 3 untouched in turn, proving each call only ever touches the ONE direction it was asked for"
 
 # Layers: NewLayer/SetLayer/ChangeLayer/ChangeToCurrentLayer/MatchLayer/SetLayerToObject/
 # OneLayerOn/OneLayerOff/AllLayersOn/LayerOn/LayerOff/LayerLock/LayerUnlock/Purge (see layer_script.txt).
@@ -5095,9 +5103,11 @@ python3 -c "import sys; v=float('$LATTICE_VOL'); sys.exit(0 if 0 < v < 64 else 1
   || { echo "FAIL LatticeInfill volume ($LATTICE_VOL) is not a plausible sparse-infill fraction of 64"; fail=1; }
 rmcheck 'mesh "LatticeInfill"' "the new lattice object is named and typed correctly"
 rmcheck "  Closed: yes" "the new lattice object is a genuine closed manifold, not just a plausible-looking open mesh"
+rmcheck "Thicken: object 12 thickened by 0.1" "Thicken command ran on a Surface-kind Plane object"
+rmcheck "Bounding box: (340, 0, -0.1) to (350, 10, 0)" "Thicken's result has the exact expected bbox - the real regression test for this pass's own Brep::FromSurface()/Thicken() loop-building fix (both used to leave every face with zero ON_BrepLoop topology, confirmed to collapse this exact bbox to a single point before the fix)"
 echo "$RM" | grep -E "^(ok|FAIL)"
 if echo "$RM" | grep -q "^FAIL"; then fail=1; fi
-rmcheck "smoke: frames=1[0-9][0-9] objects=9" "remesh script produced the expected object count"
+rmcheck "smoke: frames=1[0-9][0-9] objects=10" "remesh script produced the expected object count"
 
 # Remaining-command QC: curve conversion, tween/extruded/developable surfaces,
 # thickness/continuity analysis, mesh clean-up incl. connected-face isolation

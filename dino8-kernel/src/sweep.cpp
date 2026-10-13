@@ -2318,6 +2318,24 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
     const int si = brep.AddSurface(copy);
     ON_BrepFace& f = brep.NewFace(si);
     f.m_bRev = brev;
+    // `NewFace(int)` alone leaves the face with ZERO loops (the bare
+    // AddSurface+NewFace(int) idiom this function uses throughout builds
+    // no ON_BrepLoop/ON_BrepTrim at all - confirmed directly, a real,
+    // previously-undisclosed gap: this kernel's own TessellateToClosedMesh()/
+    // Volume() never need real loops, reading face_trim_loops_/
+    // AppendUntrimmedFaceSideTables() below instead, but any OTHER
+    // standard-OpenNURBS-topology consumer (dino8-app's own BrepMesher.cpp,
+    // confirmed via dino8_scratch_test/a direct app smoke test: a
+    // genuinely closed, positive-volume Thicken() result rendered as an
+    // empty 0-triangle mesh, bounding box collapsed to a point) sees a
+    // face with no boundary at all and simply skips it) - NewOuterLoop()
+    // builds the face's own natural full-domain rectangular loop, the
+    // same real OpenNURBS primitive Brep::RemoveOuterTrim() already uses
+    // (brep.cpp) for an open, non-singular, non-periodic rectangular
+    // surface exactly like this one.
+    if (brep.NewOuterLoop(f.m_face_index) == nullptr) {
+      Internal(caller, "ON_Brep::NewOuterLoop failed unexpectedly for a cap face");
+    }
   };
   add_cap(lo_raw, /*brev=*/true);
   add_cap(hi_raw, /*brev=*/false);
@@ -2344,7 +2362,13 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
     }
     std::unique_ptr<ON_NurbsSurface> wall = RuledBetween(*c_lo, *c_hi, 0.0, 1.0, caller);
     const int si = brep.AddSurface(wall.release());
-    brep.NewFace(si);
+    ON_BrepFace& f = brep.NewFace(si);
+    // Same missing-loop gap add_cap() above discloses and fixes, for the
+    // identical reason - RuledBetween()'s own wall is just as open,
+    // non-singular and non-periodic as either cap.
+    if (brep.NewOuterLoop(f.m_face_index) == nullptr) {
+      Internal(caller, "ON_Brep::NewOuterLoop failed unexpectedly for a side wall face");
+    }
   };
   add_wall(0, dv.Min(), /*reverse_iso=*/false);  // v = v_min, walked +u
   add_wall(1, du.Max(), /*reverse_iso=*/false);  // u = u_max, walked +v
