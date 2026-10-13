@@ -3581,6 +3581,14 @@ nacheck "MakePeriodic: 1 object(s) made periodic (Smooth=No)" "MakePeriodic Smoo
 nacheck "MakePeriodic: 1 object(s) made periodic (Smooth=Yes)" "MakePeriodic on a Surface succeeds even though only its U direction is closed - a genuinely open V direction's own Failed doesn't count against it"
 nacheck "CVs 10 x 2" "MakePeriodic genuinely re-knotted the swept surface's U direction to periodic (9 control points -> 10, not a no-op)"
 nacheck "RefitTrim: 2 trim curve(s) could not be refit to strictly fewer control points" "RefitTrim ran its real constrained least-squares fit end to end and correctly, honestly refused a genuinely infeasible case (a cylinder cap's domain leaves no margin for the fitted control polygon's own real overshoot) rather than violating the tolerance or the surface domain"
+# RebuildUV: previously a bare alias of MakeUniformUV; now its own command
+# (PARITY_MAP.md's own disclosed "Rebuild/Refit" gap) that genuinely
+# touches only the ONE direction (U or V) it was asked for, per
+# data/commands.json's own documented real semantics.
+nacheck "RebuildUV: 1 surface(s) rebuilt to 8 point(s) in U" "RebuildUV rebuilt a degree-1 2x2 Plane in U only, to 8 points"
+nacheck "degree 3 x 1, CVs 8 x 2" "RebuildUV Direction=U left V's own point count/degree (1, 2) completely untouched while rebuilding U to degree 3, 8 CVs"
+nacheck "RebuildUV: 1 surface(s) rebuilt to 12 point(s) in V" "RebuildUV rebuilt the same surface in V only, to 12 points"
+nacheck "degree 3 x 3, CVs 8 x 12" "RebuildUV Direction=V left U's own just-rebuilt 8 points/degree 3 untouched in turn, proving each call only ever touches the ONE direction it was asked for"
 
 # Layers: NewLayer/SetLayer/ChangeLayer/ChangeToCurrentLayer/MatchLayer/SetLayerToObject/
 # OneLayerOn/OneLayerOff/AllLayersOn/LayerOn/LayerOff/LayerLock/LayerUnlock/Purge (see layer_script.txt).
