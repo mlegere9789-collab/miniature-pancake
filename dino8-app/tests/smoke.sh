@@ -3555,7 +3555,19 @@ if echo "$NA" | grep -q "^FAIL"; then fail=1; fi
 echo "$NA" | grep -q "^smoke:" || { echo "$NA"; echo "FAIL: nurbs algo script produced no smoke line"; fail=1; }
 nacheck() { if echo "$NA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$NA" "$1"; fail=1; fi; }
 nacheck "ExtractPipedCurve: extracted 1 rail curve(s)" "ExtractPipedCurve pulled the rail curve back out of the Pipe surface, even after the original curve was deleted"
-nacheck "MakePeriodic: 1 curve(s) made periodic (Smooth=No)" "MakePeriodic Smooth=No ran the real exact-shape-preserving re-knot"
+nacheck "MakePeriodic: 1 object(s) made periodic (Smooth=No)" "MakePeriodic Smooth=No ran the real exact-shape-preserving re-knot"
+# MakePeriodic on a Surface: NurbsSurface::MakePeriodicExact (kernel-only
+# until now) wired in for the first time - PARITY_MAP.md's own "Make
+# periodic (surface)" gap. A Sweep1 surface along a closed (circle)
+# profile is closed-but-not-yet-periodic in U (degree 2, CVs 9x2, the
+# same clamped-duplicate-seam-CV convention a closed curve's own clamped
+# form uses) and never-closeable in V (the straight rail's own open
+# direction, degree 1) - MakePeriodicExact(0) must genuinely re-knot U
+# to periodic (CVs 9x2 -> 10x2) and report success even though V's own
+# Failed (it was never a periodicity candidate to begin with) does not
+# count against it.
+nacheck "MakePeriodic: 1 object(s) made periodic (Smooth=Yes)" "MakePeriodic on a Surface succeeds even though only its U direction is closed - a genuinely open V direction's own Failed doesn't count against it"
+nacheck "CVs 10 x 2" "MakePeriodic genuinely re-knotted the swept surface's U direction to periodic (9 control points -> 10, not a no-op)"
 nacheck "RefitTrim: 2 trim curve(s) could not be refit to strictly fewer control points" "RefitTrim ran its real constrained least-squares fit end to end and correctly, honestly refused a genuinely infeasible case (a cylinder cap's domain leaves no margin for the fitted control polygon's own real overshoot) rather than violating the tolerance or the surface domain"
 
 # Layers: NewLayer/SetLayer/ChangeLayer/ChangeToCurrentLayer/MatchLayer/SetLayerToObject/
