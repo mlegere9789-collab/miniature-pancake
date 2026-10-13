@@ -5449,6 +5449,12 @@ class Brep {
                                  const std::vector<CylindricalFace>& cylindrical_faces,
                                  const std::vector<ConicalFace>& conical_faces,
                                  const std::vector<SphericalFace>& spherical_faces, bool allow_non_manifold_edges);
+  // Shared body of SplitDisjointPieces()'s two piece-building paths (the
+  // LabelConnectedComponents() loop and the Compound()-lump fallback):
+  // ON_Brep::DuplicateFaces() on `source`'s given faces, plus this class's
+  // own per-face side tables carried over through DuplicateFaces()'s own
+  // m_face_user.i original-index guarantee.
+  static Brep BuildPieceFromFaceIndices(const Brep& source, const std::vector<int>& face_indices);
   // Clears every per-face side table (face_trim_loops_ and its siblings
   // below) - what every topology-surgery method here must do first; see
   // MergeCoplanarFaces' own comment for why.

@@ -139,7 +139,43 @@ namespace dino8::kernel {
 // every pairwise step BooleanCombineGeneralNAry makes - sees an ordinary
 // single-lump-reporting Brep on the way back in, unaffected by whether the
 // call that produced it took a compound operand.
-Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance = 0.001);
+// `allow_non_manifold_result`, when true, closes this engine's own share of
+// PARITY_MAP.md's "Non-manifold boolean results" bullet - boolean.cpp's
+// BooleanCombinePlanar (round 46) and BooleanCombineMixed (round 47)
+// already got the identical parameter; this is the third and last B-rep
+// engine. Default `false` keeps every existing caller's behavior
+// byte-for-byte unchanged: the reassembly tail below still throws "an edge
+// is claimed by 3 or more fragment loops" the moment a third ON_BrepTrim
+// would land on one ON_BrepEdge (boolean_general.cpp's own `BuildLoop()`).
+// When true, that proactive refusal is skipped and the trim is added to the
+// SAME edge anyway - `ON_BrepEdge::m_ti` is a plain growable array with no
+// inherent 2-trim limit, so a genuinely non-manifold edge (two solids
+// touching only along one shared edge, or an entire shared face, with no
+// volumetric overlap) comes back as a real first-class `Brep` with an
+// N-trim edge there (`Check()`'s own `NonManifoldEdge`) instead of
+// throwing. Applies to `Union`/`Intersection`/`Difference` directly (the
+// one shared reassembly tail every non-XOR call reaches) and is forwarded
+// to BOTH recursive `Difference` calls `SymmetricDifference` makes - but,
+// unlike the other two engines, this does NOT give `SymmetricDifference`
+// itself a single-shell result: `diff_ab`/`diff_ba` are still merged via
+// `ON_Brep::Append()` (see this header's own doc comment above for why -
+// `Compound()` refuses this engine's raw()-built Breps outright), which
+// never welds the two shells' boundaries together regardless of this flag.
+// A genuine single-shell XOR would need both directions' own pre-
+// reassembly fragment lists concatenated and reassembled through ONE
+// shared `VertexWelder`/`edge_of_pair` pass, the way `boolean.cpp`'s
+// `MixedBooleanFaces()`/`PlanarBooleanFaces()` helpers let the other two
+// engines do it (round 47's own "Thirty-fifth note" in PARITY_MAP.md) -
+// not attempted here: unlike those two engines' comparatively simple
+// per-face classification, this engine's fragment/classification logic is
+// deeply entangled with `op` throughout (coincident-face overrides,
+// partial-coincidence region tracking, chain-splicing) across several
+// hundred lines, with no existing seam to split "classify" from
+// "reassemble" without risking the correctness this file's many other
+// disclosed fixes already depend on. A real, disclosed scope limit, not an
+// oversight - see PARITY_MAP.md's "Non-manifold boolean results" bullet.
+Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance = 0.001,
+                            bool allow_non_manifold_result = false);
 
 // N-ary counterpart of BooleanCombineGeneral - third and last of this
 // category's three B-rep boolean engines to get one (see
