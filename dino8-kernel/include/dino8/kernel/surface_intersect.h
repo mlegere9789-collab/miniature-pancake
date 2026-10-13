@@ -390,6 +390,37 @@ class BrepClosestPointIndex {
   std::vector<RayBrepHit> FireRay(const Point3d& origin, const Vector3d& direction, double max_distance,
                                    const IntersectOptions& opt) const;
 
+  // The point-classification sibling to `FireRay()` above - the
+  // accelerated alternative `ContainsPointExact()` itself had none of,
+  // unlike `ClosestPoint()`/`FireRay()` on this same index.
+  // `ContainsPointExact()`'s own underlying `ClassifyPointVsBrep()`
+  // tries several generic ray directions but (confirmed directly by
+  // reading its source, not assumed) its own retry-on-ambiguous-hit
+  // branch never actually triggers in the current code, so it always
+  // decides from a single ray - this is a genuine robustness
+  // improvement over that, not just an accelerated copy of it: five
+  // independent, well-separated directions (the identical "any ONE
+  // fixed direction can graze a degenerate feature by sheer
+  // coincidence of where the query point sits" hazard, and the
+  // identical fix, `Mesh::ContainsPoint()`'s own round-34 bug fix
+  // already established, see mesh.cpp) are each fired through
+  // `FireRay()` above, and a STRICT MAJORITY (3 of 5, never an
+  // arbitrary tie) decides in vs. out. `ray_length <= 0` defaults to
+  // `4 * (this index's own bounding-box diagonal + 1)`, the identical
+  // formula `ContainsPointExact()` itself uses, just computed from this
+  // index's own already-built `bbox_` instead of re-scanning every
+  // face's own surface bounding box again.
+  bool ContainsPoint(const Point3d& point, double ray_length, const IntersectOptions& opt) const;
+
+  // The signed-distance sibling to `ClosestPoint()`/`ContainsPoint()`
+  // above - the accelerated alternative `SignedDistanceToBrep()` itself
+  // had none of. A thin composition, exactly mirroring
+  // `SignedDistanceToBrep()`'s own body: the magnitude from
+  // `ClosestPoint()` above, the sign from `ContainsPoint()` above, both
+  // already accelerated on this same index - no new search logic here
+  // at all.
+  double SignedDistance(const Point3d& point, double ray_length, const IntersectOptions& opt) const;
+
  private:
   ON_Brep brep_;
   ON_RTree tree_;
