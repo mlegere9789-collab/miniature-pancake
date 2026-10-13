@@ -39885,20 +39885,60 @@ void TestShellConvexPlanarRejectsTooLargeThickness() {
         "instead of emitting a degenerate/garbage shell");
 }
 
-void TestShellConvexPlanarRejectsAdjacentOpenings() {
+void TestShellConvexPlanarSupportsAdjacentOpenings() {
+  // Updated in place from the old "...RejectsAdjacentOpenings" - this
+  // restriction was lifted (see ShellConvexPlanar's own doc comment):
+  // two removed faces sharing an edge no longer need a non-planar,
+  // multi-facet rim at all, since neither removed face's own plane is
+  // ever offset, so the shared edge simply contributes no rim quad from
+  // either side, and the combined opening continues uninterrupted
+  // across it.
   using dino8::kernel::Brep;
   using dino8::kernel::ShellConvexPlanar;
 
-  const Brep cube = Brep::Box(0, 0, 0, 10, 10, 10);
-  bool threw = false;
-  try {
-    ShellConvexPlanar(cube, {1, 2}, 1.0);
-  } catch (const std::invalid_argument&) {
-    threw = true;
-  }
-  Check(threw,
-        "ShellConvexPlanar refuses two mutually adjacent removed faces (needs a "
-        "non-planar multi-facet rim, out of scope here)");
+  const double s = 10.0, t = 1.0;
+  const Brep cube = Brep::Box(0, 0, 0, s, s, s);
+
+  // Faces 1 (top, +z) and 2 (front, -y) are mutually adjacent (they
+  // share the physical edge from (0,0,s) to (s,0,s) - see
+  // Brep::Box()'s own face-order comment). Opening both at once used to
+  // throw outright; it must now succeed.
+  const Brep shell = ShellConvexPlanar(cube, {1, 2}, t);
+
+  // Cavity bounds: the two REMOVED faces (top, front) contribute their
+  // own ORIGINAL, unmoved plane as the cavity's bound in that direction
+  // (z <= s, y >= 0 - no shrink, since an open face is never offset);
+  // the four KEPT faces (bottom z=0, back y=s, left x=0, right x=s)
+  // each shrink the cavity inward by t exactly as the single-opening
+  // formula already does. So the cavity is the exact box
+  //   x in [t, s-t], y in [0, s-t], z in [t, s]
+  // and the shell volume is the cube's own volume minus that cavity.
+  const double cavity_volume = (s - 2 * t) * (s - t) * (s - t);
+  const double expected_volume = s * s * s - cavity_volume;
+  Check(std::fabs(expected_volume - 352.0) < 1e-12,
+        "the hand-derived two-adjacent-openings cavity formula itself evaluates to 352 for s=10, t=1");
+
+  const double shell_volume = PlanarBrepVolumeExact(shell);
+  Check(std::fabs(shell_volume - expected_volume) < 1e-9,
+        "ShellConvexPlanar's exact volume with two mutually adjacent removed faces "
+        "matches the closed-form combined-opening cavity formula");
+
+  // 4 kept faces x 2 (exterior + interior) = 8, plus one rim quad per
+  // removed-face loop edge EXCLUDING the one edge the two removed faces
+  // share with each other (which contributes no quad at all) - each
+  // removed face's own 4-edge loop has exactly 1 such shared edge, so
+  // 3 rim quads from each side = 6, for 8 + 6 = 14 total.
+  Check(shell.FaceCount() == 14,
+        "a two-mutually-adjacent-openings shell has 14 faces: 4 kept faces x 2 plus "
+        "3+3 rim quads (the shared edge between the two openings contributes none)");
+
+  const auto mesh = shell.TessellateToClosedMesh(1, 1);
+  Check(mesh.IsClosedManifold(),
+        "the two-adjacent-openings shell's tessellation still welds into one closed, "
+        "watertight manifold - no gap or doubled face at the shared opening edge");
+  Check(std::fabs(mesh.Volume() - expected_volume) < 1e-3,
+        "the two-adjacent-openings shell's tessellated-mesh volume also matches the "
+        "closed-form cavity volume");
 }
 
 void TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula() {
@@ -79996,7 +80036,7 @@ int main() {
   RunTest("TestBooleanCombinePlanarNonConvexLShapeVsBox", TestBooleanCombinePlanarNonConvexLShapeVsBox);
   RunTest("TestShellConvexPlanarCubeOpenTopExactVolume", TestShellConvexPlanarCubeOpenTopExactVolume);
   RunTest("TestShellConvexPlanarRejectsTooLargeThickness", TestShellConvexPlanarRejectsTooLargeThickness);
-  RunTest("TestShellConvexPlanarRejectsAdjacentOpenings", TestShellConvexPlanarRejectsAdjacentOpenings);
+  RunTest("TestShellConvexPlanarSupportsAdjacentOpenings", TestShellConvexPlanarSupportsAdjacentOpenings);
   RunTest("TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula", TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula);
   RunTest("TestShellConvexPlanarPerFaceWallThicknessArgumentChecks", TestShellConvexPlanarPerFaceWallThicknessArgumentChecks);
   RunTest("TestShellClosedSphereMatchesExactShellVolume", TestShellClosedSphereMatchesExactShellVolume);
