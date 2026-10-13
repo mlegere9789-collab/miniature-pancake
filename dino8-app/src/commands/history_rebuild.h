@@ -99,4 +99,15 @@ std::optional<SceneObject> RebuildSweep2(CommandContext& ctx, const kernel::Nurb
 // list (just this one curve) cannot honestly explain.
 std::optional<SceneObject> RebuildPatch(CommandContext& ctx, const kernel::NurbsCurve& curve, const HistoryRecord& rec);
 
+// NetworkSrf (the free NetworkSrf function, cmd_surface.cpp), 2-curve case
+// only - ON_NurbsSurface::CreateRuledSurface between the two boundary
+// curves. Reads no num parameters: which curve needs reversing to run
+// head-to-tail with the other is re-derived fresh from both curves' own
+// current geometry on every call (live or rebuilt), never itself
+// recorded - the same "derive fresh, don't freeze" shape RebuildPipe
+// already uses for a rail's closed/open `wrap`. Returns nullopt only if
+// OpenNURBS' own CreateRuledSurface refuses the (degenerate) inputs.
+std::optional<SceneObject> RebuildNetworkSrf2(CommandContext& ctx, const kernel::NurbsCurve& a,
+                                               const kernel::NurbsCurve& b, const HistoryRecord& rec);
+
 }  // namespace dino8::app

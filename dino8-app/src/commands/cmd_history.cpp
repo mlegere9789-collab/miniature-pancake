@@ -129,6 +129,16 @@ bool RebuildOneHistoryObject(CommandContext& ctx, SceneObject& target, const His
     const SceneObject* src = ctx.Doc().Find(rec.sources[0]);
     if (!src || src->kind != ObjectKind::Curve) return false;
     fresh = RebuildPatch(ctx, *src->curve, rec);
+  } else if (rec.command == "NetworkSrf2") {
+    // Sources recorded as {a, b} (NetworkSrf's own 2-curve ruled-surface
+    // case only - its 3/4-curve Coons-patch case is the approximate,
+    // sample-then-refit construction and is deliberately not recorded).
+    if (rec.sources.size() != 2) return false;
+    const SceneObject* a_src = ctx.Doc().Find(rec.sources[0]);
+    const SceneObject* b_src = ctx.Doc().Find(rec.sources[1]);
+    if (!a_src || a_src->kind != ObjectKind::Curve) return false;
+    if (!b_src || b_src->kind != ObjectKind::Curve) return false;
+    fresh = RebuildNetworkSrf2(ctx, *a_src->curve, *b_src->curve, rec);
   } else {
     return false;  // unknown/future command name in an old side-table entry
   }
