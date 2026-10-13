@@ -94,10 +94,33 @@ std::optional<SceneObject> RebuildExtrudeToPoint(CommandContext& ctx, const kern
 }
 
 // Revolve's construction - shared the same way as RebuildExtrude above.
+// Reads num: angle/start_angle (radians; angle missing means the
+// pre-existing full 2*pi default, not 0 - RevolveCommand always records
+// both explicitly, so this only matters for a HistoryRecord saved before
+// this pair of options existed). A genuinely partial angle and/or nonzero
+// start_angle routes through kernel::Brep::Revolve (brep.h), which has
+// supported both since before the app exposed either; a plain full
+// 0..2*pi revolve (angle default, start_angle 0 - the overwhelmingly
+// common case and the only one this command has ever built) is left on
+// the exact same pre-existing ON_BrepRevSurface construction, untouched.
 std::optional<SceneObject> RebuildRevolve(CommandContext&, const kernel::NurbsCurve& kc, const HistoryRecord& rec) {
   auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
   const Point3d a(num("ax"), num("ay"), num("az")), b(num("bx"), num("by"), num("bz"));
   if ((b - a).Length() <= 0) return std::nullopt;
+  const double angle = rec.num.count("angle") ? num("angle") : 2.0 * ON_PI;
+  const double start_angle = num("start_angle");
+  if (std::fabs(angle - 2.0 * ON_PI) > 1e-12 || start_angle != 0.0) {
+    Vector3d axis = b - a;
+    if (!axis.Unitize()) return std::nullopt;
+    try {
+      return SceneObject::MakeBrep(kernel::Brep::Revolve(kc, a, axis, angle, /*cap=*/true, start_angle));
+    } catch (const std::invalid_argument&) {
+      // The kernel refuses this combination (e.g. a closed profile
+      // touching the axis along more than one sub-arc) - fail honestly
+      // rather than silently substituting an unrequested full revolve.
+      return std::nullopt;
+    }
+  }
   ON_RevSurface* rs = ON_RevSurface::New();
   rs->m_curve = new ON_NurbsCurve(kc.raw());
   rs->m_axis = ON_Line(a, b);
@@ -651,10 +674,21 @@ class RevolveCommand : public Command {
     for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) ids_.push_back(id); }
     if (ids_.empty()) { ctx.Warn("Select curves"); Finish(); return; }
     WantPoint("Start of revolve axis");
-    options = {{"Output", output_, {"Surface", "SubD"}, false, false}};
+    options = {{"Output", output_, {"Surface", "SubD"}, false, false},
+               {"Angle", FormatNumber(angle_deg_), {}, true, false},
+               {"StartAngle", FormatNumber(start_angle_deg_), {}, true, false}};
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
     if (n == "Output") { output_ = v; options[0].value = output_; }
+    else if (n == "Angle") {
+      char* e; double d = std::strtod(v.c_str(), &e);
+      if (e && !*e && d > 0 && d <= 360) { angle_deg_ = d; options[1].value = FormatNumber(d); }
+      else ctx.Warn("Angle must be between 0 (exclusive) and 360 degrees");
+    } else if (n == "StartAngle") {
+      char* e; double d = std::strtod(v.c_str(), &e);
+      if (e && !*e) { start_angle_deg_ = d; options[2].value = FormatNumber(d); }
+      else ctx.Warn("Start angle must be a number");
+    }
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ctx.SetLastPoint(p);
@@ -668,10 +702,16 @@ class RevolveCommand : public Command {
       // (cmd_history.cpp) can re-run the exact same revolve against this
       // curve's current geometry later - see history_rebuild.h. The axis
       // (`a_`, `p`) is recorded as-picked and does NOT move on rebuild,
-      // same as Rhino's own Revolve history.
+      // same as Rhino's own Revolve history. `angle`/`start_angle` are
+      // recorded in degrees-to-radians so a partial-angle revolve (Angle
+      // and/or StartAngle, both default to a plain full 0..360 revolve)
+      // rebuilds through the same kernel::Brep::Revolve path RebuildRevolve
+      // itself picks for a non-default combination - see that function's
+      // own comment.
       HistoryRecord rec;
       rec.command = "Revolve";
-      rec.num = {{"ax", a_->x}, {"ay", a_->y}, {"az", a_->z}, {"bx", p.x}, {"by", p.y}, {"bz", p.z}};
+      rec.num = {{"ax", a_->x}, {"ay", a_->y}, {"az", a_->z}, {"bx", p.x}, {"by", p.y}, {"bz", p.z},
+                 {"angle", angle_deg_ * ON_PI / 180.0}, {"start_angle", start_angle_deg_ * ON_PI / 180.0}};
       std::optional<SceneObject> built = RebuildRevolve(ctx, *o->curve, rec);
       if (!built) continue;
       ObjectId new_id = ctx.Doc().Add(std::move(*built));
@@ -698,6 +738,7 @@ class RevolveCommand : public Command {
   std::vector<ObjectId> ids_;
   std::optional<Point3d> a_;
   std::string output_ = "Surface";
+  double angle_deg_ = 360.0, start_angle_deg_ = 0.0;
 };
 
 // Loft: surface through the selected curves (in selection order). `straight`

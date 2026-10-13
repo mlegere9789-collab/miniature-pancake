@@ -6434,6 +6434,25 @@ rrvcheck "Volume = 224.7 cubic Millimeters" "Volume measures the new solid direc
 rrvcheck "RailRevolve: surface created (profile scaled radially to follow the rail)" "an axis outside the profile's own plane falls back to the pre-existing approximate surface, unchanged"
 rrvcheck "Object 6 (surface) layer Default" "the fallback result is still the pre-existing approximate surface kind, not a Brep"
 
+# Revolve Angle/StartAngle: RevolveCommand (cmd_solids.cpp) now exposes
+# both options (previously unavailable anywhere in the app) and routes a
+# genuinely non-default combination through kernel::Brep::Revolve - see
+# revolve_angle_script.txt's own header comment for exactly what this
+# checks, including the pre-existing partial-angle-cap Volume gap it
+# shares with ExtrudeCrvToPoint's own cone.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RAS="$("$BIN" --smoke 60 --script "$HERE/revolve_angle_script.txt" 2>&1)" || { echo "$RAS"; echo "FAIL: revolve-angle script exited non-zero"; exit 1; }
+else
+  RAS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/revolve_angle_script.txt" 2>&1)" || { echo "$RAS"; echo "FAIL: revolve-angle script exited non-zero"; exit 1; }
+fi
+echo "$RAS" | grep -E "^(ok|FAIL)"
+if echo "$RAS" | grep -q "^FAIL"; then fail=1; fi
+echo "$RAS" | grep -q "^smoke:" || { echo "$RAS"; echo "FAIL: revolve-angle script produced no smoke line"; fail=1; }
+rascheck() { if echo "$RAS" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RAS" "$1"; fail=1; fi; }
+rascheck "3 faces, 5 edges, closed solid" "Angle=90 on a closed off-axis profile builds a real capped solid via kernel::Brep::Revolve (wall + 2 pie-slice caps)"
+rascheck "Object 4: valid" "Check reports the partial-angle solid as valid"
+rascheck "Volume = 149.2 cubic Millimeters" "StartAngle=45 at full angle (torus topology, no cap-adjacent mesh gap) measures correctly"
+
 # History extended to a sixth command, Pipe (PipeCommand, cmd_surface.cpp;
 # RebuildPipe, history_rebuild.h) - see history_pipe_script.txt's own
 # header comment for exactly what this checks. Same real-bounding-box-move

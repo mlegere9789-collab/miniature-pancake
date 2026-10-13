@@ -52,7 +52,10 @@ std::optional<SceneObject> RebuildExtrudeToPoint(CommandContext& ctx, const kern
                                                   const HistoryRecord& rec);
 
 // Revolve. Reads num: ax,ay,az / bx,by,bz (the two axis points; the axis
-// itself, picked independently of the curve, does not move on rebuild).
+// itself, picked independently of the curve, does not move on rebuild),
+// angle/start_angle (radians; a non-default combination routes through
+// kernel::Brep::Revolve instead of the pre-existing full-revolve-only
+// construction - see RebuildRevolve's own comment, cmd_solids.cpp).
 std::optional<SceneObject> RebuildRevolve(CommandContext& ctx, const kernel::NurbsCurve& curve,
                                            const HistoryRecord& rec);
 
