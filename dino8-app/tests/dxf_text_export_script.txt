@@ -1,0 +1,21 @@
+# DXF TEXT export QC: ExportDxf had no TEXT writer function at all before
+# this change (see WriteDxfTextIfPlanarXY in FileExchange.cpp) - a Dino8
+# "Text" annotation (one glyph-outline curve per letter, all sharing the
+# same Text/TextHeight/TextOrigin/TextX/TextY/TextAlign tags - see
+# commands/annotate_common.h) used to round-trip out as bare glyph curves,
+# losing the fact it was ever a single text object. Makes a real Text
+# annotation, exports it, and reopens the exported file in a fresh
+# document: the reimported curves must carry the exact same Annotation/
+# Text user-text tags DxfImporter::Text() already writes for a hand-written
+# TEXT fixture elsewhere in this suite (SelText/FindText don't apply here -
+# both require a named Document::Group DxfImporter::Text() never creates,
+# the same reader-side limitation a DWG/DXF MTEXT import already has),
+# proving the new writer and the existing reader agree on the wire format.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+Text Hi 0,0,0
+SelAll
+Export @TMP@/dxf_text_export.dxf
+New
+Open @TMP@/dxf_text_export.dxf
+SelAll
+What

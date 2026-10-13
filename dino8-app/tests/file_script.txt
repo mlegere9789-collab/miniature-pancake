@@ -1,0 +1,76 @@
+# File QC: New/Open/Revert/Save/SaveAs/SaveSmall/IncrementalSave/SaveAsTemplate/
+# Import/Export/ExportSelected/ExportWithOrigin/Notes/DocumentProperties/Units/
+# Audit3dmFile (see smoke.sh). @TMP@ is replaced by smoke.sh with a scratch directory.
+SetActiveViewport Top
+# --- Save / New / Open round trip. The List right before Save and right
+# after Open prints each object's exact geometric fingerprint (degree/CV
+# count for curves, face/edge count for breps, face/edge/vertex/crease
+# count for SubDs) - smoke.sh asserts each fingerprint line appears exactly
+# twice (once per List), catching a silent CV/face/topology drop that
+# @expect_objects's count-only check can't see.
+Box 0,0,0 10,10,0 10
+Sphere 30,0,0 5
+SubDBox 60,0,0 70,10,0 10
+SelAll
+@expect_selected 3
+List
+Save @TMP@/file1.3dm
+@expect_objects 3
+New
+@expect_objects 0
+Open @TMP@/file1.3dm
+@expect_objects 3
+SelAll
+List
+# --- Revert: undo an in-memory change back to what's on disk
+SelAll
+Delete
+@expect_objects 0
+Revert
+@expect_objects 3
+# --- SaveAs to a second path, then Open it back
+SaveAs @TMP@/file2.3dm
+New
+Open @TMP@/file2.3dm
+@expect_objects 3
+# --- SaveSmall (current path already set) and IncrementalSave (writes _1, _2 ...)
+SaveSmall
+IncrementalSave
+IncrementalSave
+# --- SaveAsTemplate opens a dialog (headless: no path arg support, just verify it does not hang)
+SaveAsTemplate
+Line 0,0,0 1,0,0
+SelLast
+Delete
+@expect_objects 3
+# --- Import brings another file's objects into the current document
+Import @TMP@/file1.3dm
+@expect_objects 6
+SelAll
+Delete
+@expect_objects 0
+Open @TMP@/file2.3dm
+@expect_objects 3
+# --- Export (typed path writes the file); ExportSelected has no typed-path
+# form in this build (it always opens the save dialog, which is a no-op
+# headless) - just exercise it without hanging. ExportWithOrigin is modal
+# (it asks for a re-basing point after the selection), so the point must be
+# fed on the same line right where the prompt comes up - a typed path after
+# it exercises the export, a bare point (no path) exercises the no-op dialog
+# fallback without hanging.
+SelAll
+Export @TMP@/export1.obj
+SelAll
+ExportSelected
+SelAll
+ExportWithOrigin 5,5,0 @TMP@/exportorigin.obj
+SelAll
+ExportWithOrigin 1,1,0
+# --- document panels and audit (headless: dialogs only, verify no hang)
+Notes
+DocumentProperties
+Units
+Audit3dmFile
+SelAll
+@expect_selected 3
+@expect_objects 3

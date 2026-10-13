@@ -1,0 +1,10 @@
+# DataLink / DataLinkUpdate: stage 3 (see smoke.sh) - the table (not the CSV
+# file) is the only side that changed since stage 2's sync (TableEdit ran
+# there, nothing touched the file), so DataLinkUpdate with no Direction=
+# should auto-push the table's new cells out to the CSV file this time -
+# the reverse direction from stage 2.
+Open @TMP@/datalink.3dm
+SelAll
+DataLinkUpdate
+SelAll
+Save @TMP@/datalink.3dm

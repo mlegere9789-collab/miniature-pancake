@@ -1,0 +1,15 @@
+# Dino Flow Evolutionary Solver Population clamp QC: same graph as
+# flow_solver_script.txt/flow_solver_graph.dflow, but the Population input is
+# a literal 2000000000 straight from the .dflow's JSON (see
+# flow_solver_dos_graph.dflow) - exactly the kind of untrusted-file value
+# RunSolverNode's gene_count clamp comment warns about, just on Population
+# instead of gene_count. Before the fix, `std::vector<Individual>
+# pop(population)` allocated straight from that number, forcing a
+# multi-GB/crashing allocation just from opening this file. After the fix,
+# Population is clamped the same way gene_count already was, so this solves
+# and bakes normally in bounded time instead of crashing or hanging.
+Grasshopper
+GrasshopperPlayer @SOLVERDOSFILE@ Bake=Yes
+@expect_objects 1
+SelAll
+List

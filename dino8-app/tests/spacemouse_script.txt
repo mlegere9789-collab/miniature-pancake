@@ -1,0 +1,31 @@
+# SpaceMouse / 3Dconnexion QC (input/SpaceMouse.h): the Protocol=File replay
+# path drives a real background thread (see SpaceMouseDevice::RunFile) that
+# smoke.sh writes to @TMP@/spacemouse_deltas.txt before running this script,
+# so @wait gives it real wall-clock time to push samples that Application::
+# Frame() then drains and applies - this proves the whole pipeline end to
+# end, not just that the commands parse.
+# The deltas file's first sample is an all-zero one with a button flag
+# (BUTTON 1 on a "0 0 0 0 0 0" line) - proves ApplySample fires a button
+# even at rest, which it used to drop entirely (see the fix's comment in
+# SpaceMouse.cpp: buttons used to be gated behind the same "any motion?"
+# check that skips a stationary sample's camera/object update).
+# --- Connect and confirm the File protocol reaches "connected".
+SpaceMouseProtocol File @TMP@/spacemouse_deltas.txt
+@wait 80
+SpaceMouse
+SpaceMouseOptions
+# --- Camera mode: repeated tx samples pan the active viewport.
+SpaceMouseMode Camera
+SpaceMouseProtocol File @TMP@/spacemouse_deltas.txt
+@wait 60
+Camera
+Enter
+# --- Object mode: the same samples move the selected object instead of the camera.
+Box 0,0,0 10,10,0 10
+SelLast
+SpaceMouseMode Object
+SpaceMouseProtocol File @TMP@/spacemouse_deltas.txt
+@wait 60
+BoundingBox
+SpaceMouseMode Camera
+SpaceMouseProtocol Auto

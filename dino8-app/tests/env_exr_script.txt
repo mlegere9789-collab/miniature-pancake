@@ -1,0 +1,24 @@
+# Background::Image .exr QC (PARITY_MAP.md's "Environments and image-based
+# lighting" item - the ".exr is still entirely unsupported" half this pass
+# closes): the same Rendered-mode environment-image backdrop path
+# env_bg_script.txt already exercises for a plain .ppm texture, pointed at
+# a real HDR-range (above 1.0, genuinely unclamped) .exr file instead -
+# proving LoadImageFile's new EXR dispatch (render/ImageIO.cpp's
+# LoadImageExr) feeds the exact same GlRenderer::TextureFor/
+# DrawEnvironmentBackground path a .ppm/.hdr source already does, not a
+# separate, untested code path. An orthographic Top view (one constant
+# equirectangular sample direction for the whole frame, same as
+# env_bg_script.txt's own Back/Left/Front) should fill the whole backdrop
+# with the .exr file's own bright colour once tone-mapped to 8-bit for
+# display - smoke.sh checks it reads as a real sampled colour, distinctly
+# different from both the plain grey pre-image state and the procedural
+# sky this capture reverts to afterward.
+# @TMP@ is replaced by smoke.sh with a scratch directory, which also writes
+# @TMP@/env_bright.exr: an 8x8 solid-colour HDR texture well above [0,1].
+RenderedViewport
+Top
+Environments Background=Sky
+ViewCaptureToFile @TMP@/env_exr_off.bmp
+Environments Background=Image Image=@TMP@/env_bright.exr
+ViewCaptureToFile @TMP@/env_exr_on.bmp
+@expect_objects 0

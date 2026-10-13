@@ -1,0 +1,3 @@
+PluginMarketplaceCheckUpdates
+PluginMarketplaceIndex @DINO8ROOT@/tests/plugin_marketplace_update_index.json
+PluginMarketplaceCheckUpdates

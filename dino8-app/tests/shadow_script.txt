@@ -1,0 +1,29 @@
+# Real-time shadow maps QC (per-light shadow atlas): a flat floor slab, one
+# box floating above its centre, and two DirectionalLights travelling in
+# different horizontal directions as they shine down. GlRenderer now gives
+# every enabled light its own real shadow-map layer (GlRenderer::
+# BeginShadowPass(light_index, ...)), not just a single documented
+# shadow-caster, so both lights' own shadows should land on the floor at
+# once, in two different places. This script only builds the scene and
+# captures a screenshot; smoke.sh does the actual pixel-level verification.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+Box -50,-50,-2 50,50,-2 2
+SelLast
+SetRenderColor 130,130,130
+Box -5,-5,5 5,5,5 10
+SelLast
+SetRenderColor 40,140,40
+# Light 1 travels down and toward -X as it enters the scene, so it casts
+# the floating box's shadow onto the floor on the -X side. Intensity is
+# deliberately low (two near-vertical lights at the default 1.0 would wash
+# the whole frame out past this renderer's own tonemap knee).
+DirectionalLight 0,0,30 -15,0,0 Intensity=0.4
+# Light 2 travels down and toward -Y, casting the floating box's shadow
+# onto the floor on the -Y side - a different place from Light 1's shadow.
+DirectionalLight 0,0,30 0,-15,0 Intensity=0.4
+GroundPlane Off
+RenderedViewport
+Top
+ZoomExtentsAll
+ViewCaptureToFile @TMP@/shadow_both.bmp
+@expect_objects 2
