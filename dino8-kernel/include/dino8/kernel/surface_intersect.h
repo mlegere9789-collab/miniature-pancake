@@ -390,30 +390,42 @@ class BrepClosestPointIndex {
   std::vector<RayBrepHit> FireRay(const Point3d& origin, const Vector3d& direction, double max_distance,
                                    const IntersectOptions& opt) const;
 
-  // Identical to `SignedDistanceToBrep(point, <the Brep this index was
-  // built from>, opt, ...)` below (negative if inside, positive if
-  // outside) - but with the distance-magnitude half of that composition
-  // now accelerated through this class's own `ClosestPoint()` above,
-  // rather than `SignedDistanceToBrep()`'s own plain `ClosestPointOnBrep()`
-  // brute-force scan. The sign still comes from `ContainsPointExact()`
-  // on this index's own stored `brep_` copy - that query has no spatial
-  // index of its own yet (a materially different, separately-disclosed
-  // remaining gap in the same "Spatial acceleration structures for
-  // geometric queries" bullet this class itself exists to narrow, not
-  // one this method claims to close) - so only HALF of this composition
-  // is accelerated by this method, same honest partial-progress stance
-  // `MeshClosestPointIndex::ClosestPoint()`/`FireRay()` above already
-  // took one query at a time rather than claiming the whole family done
-  // in one pass. `ray_length`/`opt`/`tol` are forwarded to
-  // `ContainsPointExact()` exactly as `SignedDistanceToBrep()` itself
-  // forwards them; `u_divisions`/`v_divisions`/`trim_samples_per_edge`
-  // are this index's own already-fixed construction-time values, not
-  // re-specified per query, the identical tradeoff this class's own
-  // `ClosestPoint()` already makes. Throws under the identical
-  // "no face could be evaluated" circumstance `ClosestPoint()` itself
-  // throws under.
-  double SignedDistance(const Point3d& point, double ray_length = 0, const IntersectOptions& opt = IntersectOptions(),
-                         double tol = 1e-6) const;
+  // The point-classification sibling to `FireRay()` above - the
+  // accelerated alternative `ContainsPointExact()` itself had none of,
+  // unlike `ClosestPoint()`/`FireRay()` on this same index.
+  // `ContainsPointExact()`'s own underlying `ClassifyPointVsBrep()`
+  // tries several generic ray directions but (confirmed directly by
+  // reading its source, not assumed) its own retry-on-ambiguous-hit
+  // branch never actually triggers in the current code, so it always
+  // decides from a single ray - this is a genuine robustness
+  // improvement over that, not just an accelerated copy of it: five
+  // independent, well-separated directions (the identical "any ONE
+  // fixed direction can graze a degenerate feature by sheer
+  // coincidence of where the query point sits" hazard, and the
+  // identical fix, `Mesh::ContainsPoint()`'s own round-34 bug fix
+  // already established, see mesh.cpp) are each fired through
+  // `FireRay()` above, and a STRICT MAJORITY (3 of 5, never an
+  // arbitrary tie) decides in vs. out. `ray_length <= 0` defaults to
+  // `4 * (this index's own bounding-box diagonal + 1)`, the identical
+  // formula `ContainsPointExact()` itself uses, just computed from this
+  // index's own already-built `bbox_` instead of re-scanning every
+  // face's own surface bounding box again.
+  bool ContainsPoint(const Point3d& point, double ray_length = 0, const IntersectOptions& opt = IntersectOptions()) const;
+
+  // The signed-distance sibling to `ClosestPoint()`/`ContainsPoint()`
+  // above - the accelerated alternative `SignedDistanceToBrep()` itself
+  // had none of. A thin composition, exactly mirroring
+  // `SignedDistanceToBrep()`'s own body: the magnitude from
+  // `ClosestPoint()` above, the sign from `ContainsPoint()` above, BOTH
+  // already accelerated on this same index - so, unlike an earlier
+  // concurrent draft of this same method that composed `ClosestPoint()`
+  // with the brute-force `ContainsPointExact()` for only a half-
+  // accelerated result, this fully accelerates the composition, no new
+  // search logic of its own at all. `tol` is not a parameter here (no
+  // accelerated primitive this method composes takes one) - `ray_length`
+  // and `opt` are simply forwarded to `ContainsPoint()` above exactly as
+  // `SignedDistanceToBrep()` itself forwards them to `ContainsPointExact()`.
+  double SignedDistance(const Point3d& point, double ray_length = 0, const IntersectOptions& opt = IntersectOptions()) const;
 
  private:
   ON_Brep brep_;
