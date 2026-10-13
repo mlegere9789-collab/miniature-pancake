@@ -2812,6 +2812,29 @@ class MeshClosestPointIndex {
   // `Mesh::FireRay()`'s own contract.
   std::vector<RayHit> FireRay(Point3d origin, Vector3d direction) const;
 
+  // Identical to `Mesh::SignedDistance(point)` on the mesh this index
+  // was built from (negative if inside, positive if outside, magnitude
+  // `(ClosestPoint(point) - point).Length()`) - but with BOTH halves of
+  // that composition now accelerated via this index's own `tree_`,
+  // rather than `Mesh::SignedDistance()`'s own fully brute-force pair:
+  // the distance magnitude through this class's own `ClosestPoint()`
+  // above (already accelerated), and the inside/outside sign through
+  // this class's own `FireRay()` above (also already accelerated) cast
+  // along the SAME 5 fixed, well-separated directions and majority-vote
+  // rule `Mesh::ContainsPoint()` itself uses internally, rather than
+  // `Mesh::ContainsPoint()`'s own separate brute-force per-triangle
+  // ray/triangle scan. `FireRay()`'s own quad-face deduplication (one
+  // logical crossing per original quad, not two) is a strictly more
+  // correct parity count than `Mesh::ContainsPoint()`'s own undeduped
+  // one for the ordinary case (a ray crossing only one of a quad's two
+  // triangles, the overwhelming majority), and differs from it only in
+  // the degenerate edge case of a ray landing exactly on a quad's own
+  // diagonal - no new ambiguity beyond what 5 independent directions
+  // already exist to wash out. Throws std::invalid_argument under the
+  // identical "mesh has no faces" circumstance the constructor already
+  // guards against (unreachable once constructed) - no other new throw.
+  double SignedDistance(Point3d point) const;
+
  private:
   std::vector<std::array<Point3d, 3>> triangles_;
   // Parallel to `triangles_`: which ORIGINAL mesh face (`Mesh::FireRay()`'s

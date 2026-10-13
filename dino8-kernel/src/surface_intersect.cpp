@@ -2362,6 +2362,13 @@ std::vector<RayBrepHit> BrepClosestPointIndex::FireRay(const Point3d& origin, co
   return out;
 }
 
+double BrepClosestPointIndex::SignedDistance(const Point3d& point, double ray_length, const IntersectOptions& opt,
+                                              double tol) const {
+  const BrepClosestPointResult cp = ClosestPoint(point);
+  const bool inside = ContainsPointExact(point, brep_, ray_length, opt, tol);
+  return inside ? -cp.distance : cp.distance;
+}
+
 double SignedDistanceToBrep(const Point3d& point, const ON_Brep& b, const IntersectOptions& opt, int u_divisions,
                              int v_divisions, int trim_samples_per_edge, double ray_length, double tol) {
   const BrepClosestPointResult cp = ClosestPointOnBrep(point, b, u_divisions, v_divisions, trim_samples_per_edge);
