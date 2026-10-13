@@ -581,6 +581,35 @@ Result NurbsSurface::ReparameterizeRational(int direction, double shape_factor, 
   return Result::Ok;
 }
 
+Result NurbsSurface::MakeUniform(int direction, double tolerance, double* out_max_deviation) {
+  if (direction != 0 && direction != 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::MakeUniform: direction must be 0 (U) or 1 (V)");
+  }
+  if (!ON_IsValid(tolerance) || !(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::MakeUniform: tolerance must be a finite, positive number");
+  }
+
+  const int order = surface_.Order(direction);
+  const int cv_count = surface_.CVCount(direction);
+  if (ON_IsKnotVectorClamped(order, cv_count, surface_.Knot(direction)) &&
+      ON_IsKnotVectorUniform(order, cv_count, surface_.Knot(direction))) {
+    if (out_max_deviation) *out_max_deviation = 0.0;
+    return Result::NoOpAlreadySatisfied;
+  }
+
+  NurbsSurface candidate = *this;
+  if (!candidate.raw().MakeClampedUniformKnotVector(direction, 1.0)) return Result::Failed;
+  const Interval dom = Domain(direction);
+  if (candidate.SetDomain(direction, dom.min, dom.max) == Result::Failed) return Result::Failed;
+
+  const double deviation = MaxSampledDeviationFrom(candidate);
+  if (out_max_deviation) *out_max_deviation = deviation;
+  if (deviation > tolerance) return Result::Failed;
+
+  *this = candidate;
+  return Result::Ok;
+}
+
 Result NurbsSurface::Rebuild(int u_count, int v_count, int u_degree, int v_degree, NurbsSurface& out,
                              double* out_max_deviation, int u_samples, int v_samples) const {
   if (u_degree < 1 || v_degree < 1) {
