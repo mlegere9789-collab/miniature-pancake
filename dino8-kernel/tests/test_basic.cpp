@@ -8982,13 +8982,17 @@ void TestBooleanCombineGeneralObliqueFlatSidedBossCoincidence() {
 // per DINO8_PLAYBOOK.md's own definition of done - a verification, not a
 // bug fix.
 //
-// Honest disclosed limit found WHILE verifying this (not assumed): once
-// TWO bosses are both present on the SAME face (so that face now has two
-// independent holes), subtracting either boss back out of the combined
-// result throws this engine's own "3 or more fragment loops" refusal -
-// a genuinely different, deeper limitation (a face with more than one
-// hole being itself re-fragmented) that this fix does not reach, so it is
-// NOT asserted here.
+// A limitation was disclosed here WHILE verifying this (not assumed):
+// once TWO bosses are both present on the SAME face (so that face now has
+// two independent holes), subtracting either boss back out of the
+// combined result threw this engine's own "3 or more fragment loops"
+// refusal. Root-caused and fixed in a later session (boolean_general.cpp,
+// see UnbridgeKeyholes()'s own doc comment) - confirmed to be genuinely
+// broader than "two holes" (a standalone single-boss union-then-subtract-
+// the-SAME-boss-back-out repro reproduced the identical crash) - see
+// TestBooleanCombineGeneralMultiBossSubtractOneBackOut below, which now
+// exercises exactly the subtraction this comment used to disclose as out
+// of reach.
 void TestBooleanCombineGeneralMultiBossFlatSidedCoincidence() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
@@ -9013,6 +9017,95 @@ void TestBooleanCombineGeneralMultiBossFlatSidedCoincidence() {
   Check(std::abs(m.Volume() - (box_vol + 2 * boss_vol)) < 1e-3,
         "(box+boss1)+boss2 Union's exact volume is box_vol + 2 (two separate 1x1x1 bosses, each touching only, "
         "zero volumetric overlap with the box or with each other)");
+}
+
+// Simplest possible instance of the deeper bug the previous test's own
+// comment used to disclose (now fixed, see boolean_general.cpp's own
+// UnbridgeKeyholes() doc comment): a SINGLE boss unioned flush onto a
+// bigger face, then subtracted back out, should recover the original box
+// exactly. Confirmed directly (DINO8_BOOL_DEBUG=1) this threw the exact
+// same "an edge is claimed by 3 or more fragment loops" refusal before
+// the fix - root cause: FaceBoundaryLoop()'s own sample of the box's top
+// face, already keyholed by the first Union (BridgeHolesIntoOuter()'s own
+// doc comment), fed a self-touching loop straight into SplitFaceLoop()
+// for the second (Difference) op, which has no notion that two of that
+// loop's own points are secretly "the same corridor, walked in and back
+// out" - confirmed to be a strictly simpler case of the same bug the
+// two-boss test above already named, not something that needs two holes
+// at all.
+void TestBooleanCombineGeneralBossUnionThenSubtractBackOut() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const Brep box = Brep::Box(0, 0, 0, 8, 8, 4);
+  const Brep boss = Brep::Box(1, 1, 4, 2, 2, 5);
+  const double box_vol = 8.0 * 8.0 * 4.0;
+
+  const Brep combined = BooleanCombineGeneral(box, boss, BooleanOp::Union);
+  Check(combined.raw().IsValid(), "box+boss Union is a valid ON_Brep");
+
+  const Brep back = BooleanCombineGeneral(combined, boss, BooleanOp::Difference);
+  Check(back.raw().IsValid(),
+        "(box+boss)-boss no longer throws 'an edge is claimed by 3 or more fragment loops' (the exact crash this "
+        "engine's own disclosed single-boss limitation named) and is a valid ON_Brep");
+  Check(back.FaceCount() == 6, "(box+boss)-boss recovers the plain box's own exact face count (6) - no leftover "
+                                "sliver/disk face from the hole the boss's own footprint once imprinted");
+  const Mesh m = TessellateGeneralBooleanClosedMesh(back, 16, 16);
+  Check(m.IsClosedManifold(), "(box+boss)-boss tessellates as a genuine closed manifold - not just IsValid()");
+  Check(std::abs(m.Volume() - box_vol) < 1e-3,
+        "(box+boss)-boss's exact volume is the box's own unchanged volume (256) - the hole is genuinely filled "
+        "back in, not left as a disconnected patch");
+}
+
+// The actual two-independent-holes case TestBooleanCombineGeneralMultiBossFlatSidedCoincidence's
+// own comment disclosed as out of reach, now fixed (boolean_general.cpp's
+// own UnbridgeKeyholes()): two separate bosses unioned onto the SAME
+// bigger face (so that face has two independent holes), then subtracting
+// EITHER boss back out, checked both ways - not just "doesn't throw", the
+// real resulting volume and manifold-ness.
+void TestBooleanCombineGeneralMultiBossSubtractOneBackOut() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const Brep box = Brep::Box(0, 0, 0, 8, 8, 4);
+  const Brep boss1 = Brep::Box(1, 1, 4, 2, 2, 5);
+  const Brep boss2 = Brep::Box(5, 5, 4, 6, 6, 5);
+  const double box_vol = 8.0 * 8.0 * 4.0;
+  const double boss_vol = 1.0;
+
+  const Brep combined = BooleanCombineGeneral(box, boss1, BooleanOp::Union);
+  const Brep both = BooleanCombineGeneral(combined, boss2, BooleanOp::Union);
+  Check(both.raw().IsValid(), "(box+boss1)+boss2 Union is a valid ON_Brep");
+
+  // Subtract boss1 back out: boss2's own hole must survive untouched.
+  {
+    const Brep result = BooleanCombineGeneral(both, boss1, BooleanOp::Difference);
+    Check(result.raw().IsValid(),
+          "((box+boss1)+boss2)-boss1 no longer throws 'an edge is claimed by 3 or more fragment loops' on a face "
+          "with TWO independent holes and is a valid ON_Brep");
+    const Mesh m = TessellateGeneralBooleanClosedMesh(result, 16, 16);
+    Check(m.IsClosedManifold(), "((box+boss1)+boss2)-boss1 tessellates as a genuine closed manifold");
+    Check(std::abs(m.Volume() - (box_vol + boss_vol)) < 1e-3,
+          "((box+boss1)+boss2)-boss1's exact volume is box_vol + 1 (boss1's own hole genuinely filled back in, "
+          "boss2 - the OTHER, untouched boss - still standing)");
+  }
+
+  // Subtract boss2 back out instead: boss1's own hole must survive untouched.
+  {
+    const Brep result = BooleanCombineGeneral(both, boss2, BooleanOp::Difference);
+    Check(result.raw().IsValid(), "((box+boss1)+boss2)-boss2 is a valid ON_Brep");
+    const Mesh m = TessellateGeneralBooleanClosedMesh(result, 16, 16);
+    Check(m.IsClosedManifold(), "((box+boss1)+boss2)-boss2 tessellates as a genuine closed manifold");
+    Check(std::abs(m.Volume() - (box_vol + boss_vol)) < 1e-3,
+          "((box+boss1)+boss2)-boss2's exact volume is box_vol + 1 (boss2's own hole genuinely filled back in, "
+          "boss1 - the OTHER, untouched boss - still standing)");
+  }
 }
 
 void TestBooleanCombineGeneralCallerTolerance() {
@@ -80882,6 +80975,8 @@ int main() {
   RunTest("TestBooleanCombineGeneralCircularFootprintBossCoincidence", TestBooleanCombineGeneralCircularFootprintBossCoincidence);
   RunTest("TestBooleanCombineGeneralObliqueFlatSidedBossCoincidence", TestBooleanCombineGeneralObliqueFlatSidedBossCoincidence);
   RunTest("TestBooleanCombineGeneralMultiBossFlatSidedCoincidence", TestBooleanCombineGeneralMultiBossFlatSidedCoincidence);
+  RunTest("TestBooleanCombineGeneralBossUnionThenSubtractBackOut", TestBooleanCombineGeneralBossUnionThenSubtractBackOut);
+  RunTest("TestBooleanCombineGeneralMultiBossSubtractOneBackOut", TestBooleanCombineGeneralMultiBossSubtractOneBackOut);
   RunTest("TestBooleanCombineGeneralCallerTolerance", TestBooleanCombineGeneralCallerTolerance);
   RunTest("TestBooleanCombineGeneralSphereBox", TestBooleanCombineGeneralSphereBox);
   RunTest("TestBooleanCombineGeneralObliqueCylinder", TestBooleanCombineGeneralObliqueCylinder);
