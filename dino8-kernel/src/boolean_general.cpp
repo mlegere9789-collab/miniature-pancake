@@ -2070,6 +2070,196 @@ bool BridgeHolesIntoOuter(std::vector<UVPt>& outer, std::vector<std::vector<UVPt
   return true;
 }
 
+// --- reverse BridgeHolesIntoOuter(): recover (outer, holes) from a loop
+// FaceBoundaryLoop() sampled off a face whose trim was already keyholed by
+// an EARLIER boolean op's own call to BridgeHolesIntoOuter() above -------
+//
+// CONFIRMED (not assumed) root cause of a genuinely different, deeper gap
+// than the curved-footprint/oblique coincident-face fix this same file's
+// own top comment already describes: once a boss has been unioned flush
+// onto a bigger face (so that bigger face's own trim is a single
+// ON_BrepLoop::outer threading a zero-width "keyhole" corridor in to the
+// boss's own hole and back out, per BridgeHolesIntoOuter()'s own doc
+// comment just above - this is deliberate, not a bug, so that
+// ResolveFace()'s exact-clip tessellation routing never has to special-
+// case a real ON_BrepLoop::inner at all), re-entering that SAME face as an
+// OPERAND of a LATER boolean op (e.g. subtracting that exact boss back
+// out) re-fragments it starting from `FaceBoundaryLoop()`'s own sample of
+// that one self-touching loop. `SplitFaceLoop()`/`BuildLoop()` below have
+// no notion that two of this loop's OWN points are secretly "the same
+// corridor, walked in and back out" - each of the corridor's own two
+// welded vertex pairs (one bracketing the whole corridor, one bracketing
+// just the hole's own walk - see BridgeHolesIntoOuter()'s own `cand.insert`
+// layout: [A near o_i, B near h_j, ...hole interior..., C near h_j, D near
+// o_i], where A/D and B/C each weld to the SAME vertex, confirmed directly
+// with DINO8_BOOL_DEBUG=1's own `ReconcileFragmentBoundaries` "anchor
+// pair ... 3 run(s)" trace, two of those three runs both from this one
+// kept face's own single loop) ends up claimed a legitimate 2 times by
+// this ONE face's own loop alone before the new op's own genuinely
+// different adjacent face ever adds its own third, tripping
+// BuildLoop()'s own "edge is claimed by 3 or more fragment loops" refusal
+// - a FACE WITH A SINGLE PRE-EXISTING HOLE already reproduces this (not
+// only the two-independent-holes case this file's own disclosure named),
+// confirmed directly by a standalone single-boss union-then-subtract
+// repro before this fix.
+//
+// FIX: undo the keyhole bridge BEFORE `FragmentFaces()` ever hands this
+// loop to `SplitFaceLoop()`. Per BridgeHolesIntoOuter()'s own
+// `cand.insert` layout - [A near o_i, B near h_j, ...hole interior..., C
+// near h_j, D near o_i] - a genuine corridor is a PAIRED reversal: its own
+// first point (A) and last (D) sit within `tol` of the SAME replaced
+// outer vertex, while its second (B) and second-to-last (C) sit within
+// `tol` of the SAME replaced hole vertex, simultaneously. `tol` is NOT
+// `kWeldTol`: confirmed directly (DINO8_BOOL_DEBUG=1, an 8x8x4 box
+// fixture) the bridge's own real gap (~8.3e-5, BridgeHolesIntoOuter()'s
+// own `kEdgeFraction` times one real edge's length) is routinely bigger
+// than `kWeldTol` (1e-6) - these two points were never meant to weld, by
+// that function's own design (see its own doc comment on why: a
+// genuinely zero-width spike there broke convexity detection downstream).
+// Scaled instead to this loop's own bounding diagonal, so it neither
+// misses the gap on a much bigger model nor false-positives on a far
+// more finely-sampled one. Finds the SMALLEST such paired span first (so
+// a corridor's own hole-bracketing pair is never mistaken for some
+// OTHER, unrelated hole's own outer-bracketing pair at a similar
+// distance, and independent holes - each its own non-overlapping
+// corridor per BridgeHolesIntoOuter()'s own `reserved` guard - are found
+// one at a time regardless of order); the run strictly between A and D
+// becomes one extracted hole chain (kept in the SAME "closing point
+// repeated" convention this file's own closed intersection chains
+// already use - see SplitFaceLoop()'s own `closed_chains` handling just
+// above), spliced out of `loop` in its place, leaving just A standing in
+// for the whole corridor. Repeated until no further paired span remains.
+// A loop with no keyhole at all (every ordinary fresh face this engine
+// ever builds) finds no such pair and returns empty, unchanged - a pure
+// no-op there, never a regression risk for the ordinary case.
+// `targets`, when non-null, restricts extraction to ONLY a corridor whose
+// own resulting hole's 3D bounding box lands within `target_tol` of one of
+// these - every OTHER corridor in `loop`, matching the paired-reversal
+// test or not, is left completely untouched (never removed, never
+// re-bridged). Used by FragmentFaces() below to touch only the ONE
+// pre-existing hole (if any) this op's own fresh closed chains are about
+// to duplicate, leaving every unrelated pre-existing hole (the
+// multi-boss case: a DIFFERENT boss's own hole, nothing to do with this
+// op) in its exact original, opaque, already-working representation -
+// confirmed directly (DINO8_BOOL_DEBUG=1) that extracting EVERY hole
+// unconditionally and re-bridging the unrelated ones back in a SECOND
+// time, this function's own first draft, corrupts
+// `TessellateGridClippedExact()`'s own exact-clip path on exactly this
+// fixture (`TestBooleanCombineGeneralMultiBossFlatSidedCoincidence`'s own
+// two-boss-union, subtract-one-back-out extension) into a degenerate
+// trim polygon, even though the ON_Brep itself stayed IsValid(). Passing
+// `targets == nullptr` (the boundary_a/boundary_b coincidence pre-check's
+// own use, below) keeps the original "extract every corridor found"
+// behavior, since that use is read-only (never rebuilds `loop` into
+// anything downstream) and unaffected by this fixture's own gap.
+std::vector<Chain> UnbridgeKeyholes(std::vector<UVPt>& loop, const std::vector<ON_BoundingBox>* targets = nullptr,
+                                     double target_tol = 0.0) {
+  std::vector<Chain> holes;
+  if (loop.size() < 5) return holes;  // smallest possible corridor: A,B,1 hole pt,C,D
+  // BridgeHolesIntoOuter()'s own bridge points sit `kEdgeFraction` (1e-3)
+  // of one real edge's length away from the outer/hole vertex they
+  // replace - genuinely non-zero by that function's own design (so the
+  // notch has real corners - see its own doc comment), so a detector keyed
+  // to `kWeldTol` (1e-6) misses it entirely on anything but a tiny model
+  // (confirmed directly: a 8x8x4 box fixture's own gap measured ~8.3e-5,
+  // already bigger than kWeldTol by ~80x). A fixed absolute tolerance
+  // would either miss this on a much bigger model or false-positive on a
+  // much more finely-sampled one, so this is scaled to the loop's own
+  // real size instead: generous enough to span any reasonable model's own
+  // kEdgeFraction gap, tight enough that two genuinely distinct sample
+  // points - always many times farther apart than this at any sampling
+  // density this engine actually uses - are never confused for one.
+  ON_BoundingBox bbox;
+  for (const UVPt& p : loop) bbox.Set(p.p, true);
+  const double tol = std::max(1e-9, 1e-4 * bbox.Diagonal().Length());
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    const size_t n = loop.size();
+    if (n < 5) break;
+    // A genuine keyhole corridor is a PAIRED reversal, not just any two
+    // close points: the insert's own first point (A, near the replaced
+    // outer vertex) and last point (D, near the same vertex from the
+    // other side) bracket the ENTIRE corridor, while its second point (B,
+    // near the replaced hole vertex) and second-to-last (C, near that
+    // same hole vertex) bracket just the hole's own walk - i.e. loop[p1]
+    // ~ loop[p2] AND loop[p1+1] ~ loop[p2-1] simultaneously. Requiring
+    // both pairs - not just the outer one - is what tells a real
+    // corridor apart from two merely-nearby, structurally unrelated
+    // points elsewhere on the loop.
+    // A real hole chain here always comes from this engine's own dense
+    // (samples_per_edge-based) boundary sampling - dozens of points at an
+    // absolute minimum for any genuine footprint. Confirmed directly
+    // (DINO8_BOOL_DEBUG=1, the two-independent-bosses repro, a face
+    // already carrying two PRIOR corridors by the time a third op walks
+    // it) that without this floor, the paired-reversal test above can
+    // still accept a spurious few-point match it has no business
+    // accepting - a degenerate, visibly collinear false positive (3
+    // points spanning a sliver nowhere near any real boss footprint) that
+    // corrupted this exact fixture before this guard was added. `tol`
+    // alone can't exclude it (a genuinely tiny but real hole is out of
+    // scope for this engine anyway, and this engine's own smallest real
+    // footprints already dwarf this floor by 10x or more).
+    constexpr size_t kMinHoleInteriorPoints = 8;
+    size_t best_p1 = 0, best_p2 = 0;
+    size_t best_span = std::numeric_limits<size_t>::max();
+    for (size_t p1 = 0; p1 < n; ++p1) {
+      for (size_t p2 = p1 + 3; p2 < n; ++p2) {
+        if (p2 - p1 - 1 < kMinHoleInteriorPoints) continue;
+        if (loop[p1].p.DistanceTo(loop[p2].p) > tol) continue;
+        if (loop[p1 + 1].p.DistanceTo(loop[p2 - 1].p) > tol) continue;
+        if (targets) {
+          ON_BoundingBox cand_box;
+          for (size_t k = p1 + 1; k < p2; ++k) cand_box.Set(loop[k].p, true);
+          bool matches_target = false;
+          for (const ON_BoundingBox& t : *targets) {
+            if (cand_box.m_min.DistanceTo(t.m_min) <= target_tol && cand_box.m_max.DistanceTo(t.m_max) <= target_tol) {
+              matches_target = true;
+              break;
+            }
+          }
+          if (!matches_target) continue;
+        }
+        const size_t span = p2 - p1;
+        if (span < best_span) {
+          best_span = span;
+          best_p1 = p1;
+          best_p2 = p2;
+        }
+      }
+    }
+    if (best_span == std::numeric_limits<size_t>::max()) break;
+    // The hole chain is the corridor's own interior (B..C); the outer
+    // bracket (A, D - both within `tol` of the single real outer vertex
+    // BridgeHolesIntoOuter() replaced) collapses back to just A, erasing
+    // D and everything between - geometrically negligible, the same
+    // order as the bridge's own kEdgeFraction offset it undoes.
+    Chain hole(loop.begin() + static_cast<long>(best_p1) + 1, loop.begin() + static_cast<long>(best_p2));
+    // Snap the hole's own closing point to its own first point's exact 3D
+    // position, matching the "front == back exactly" convention every
+    // other closed chain in this file already uses (BridgeHolesIntoOuter
+    // itself, re-bridging this exact hole back in in a LATER op, only
+    // pops a closing point within 1e-9 - B and C sit `tol`, not 1e-9,
+    // apart).
+    if (hole.size() >= 2) hole.back().p = hole.front().p;
+    holes.push_back(std::move(hole));
+    loop.erase(loop.begin() + static_cast<long>(best_p1) + 1, loop.begin() + static_cast<long>(best_p2) + 1);
+    changed = true;
+  }
+  if (std::getenv("DINO8_BOOL_DEBUG") && !holes.empty()) {
+    std::fprintf(stderr, "  UnbridgeKeyholes: extracted %zu pre-existing hole(s) (sizes:", holes.size());
+    for (const Chain& h : holes) std::fprintf(stderr, " %zu", h.size());
+    std::fprintf(stderr, ") leaving outer=%zu\n", loop.size());
+    for (size_t hi = 0; hi < holes.size(); ++hi) {
+      ON_BoundingBox hb;
+      for (const UVPt& p : holes[hi]) hb.Set(p.p, true);
+      std::fprintf(stderr, "    hole[%zu] bbox=(%.4f,%.4f,%.4f)-(%.4f,%.4f,%.4f)\n", hi, hb.m_min.x, hb.m_min.y,
+                   hb.m_min.z, hb.m_max.x, hb.m_max.y, hb.m_max.z);
+    }
+  }
+  return holes;
+}
+
 // --- classification: ray-cast a 3D point against a whole Brep's own
 // faces using the general CSX (IntersectCurveSurface), generalizing
 // boolean.cpp's own ClassifyPointVsSolid beyond hand-solved formulas. ---
@@ -2736,10 +2926,11 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
   for (int i = 0; i < n; ++i) {
     std::vector<UVPt> boundary = FaceBoundaryLoop(brep, i);
     if (boundary.size() < 3) continue;
+    std::vector<Chain> closed_chains;
     const std::vector<Chain> stitched = StitchChains(std::move(raw[static_cast<size_t>(i)]), stitch_tol);
     const ON_Surface* face_surface = brep.m_F[i].SurfaceOf();
     const bool untrimmed = brep.m_F[i].m_li.Count() == 0;
-    std::vector<Chain> closed_chains, open_chains;
+    std::vector<Chain> open_chains;
     for (const Chain& c : stitched) {
       // A chain running along an untrimmed face's own seam/pole side is
       // cut there first (see CutChainAtDomainBoundary's own doc comment),
@@ -2766,6 +2957,45 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
       } else {
         open_chains.push_back(c);
       }
+    }
+    // This op's own FRESH closed chains (just collected above) can
+    // duplicate a hole BridgeHolesIntoOuter() already folded into this
+    // face's own trim on a PRIOR op - e.g. subtracting a boss back out of
+    // the exact bigger face it once imprinted re-discovers that one
+    // hole's own footprint as a genuine new SSX/imprint curve too
+    // (geometrically the SAME region, independently re-derived). Left
+    // alone, `boundary` would still carry that hole as a self-touching
+    // keyhole corridor AND `closed_chains` would carry it again as an
+    // explicit new hole - holing out the same region twice, confirmed
+    // directly (DINO8_BOOL_DEBUG=1) to corrupt `BuildLoop()`'s own shared
+    // edge identity into a spurious "3 or more fragment loops" refusal.
+    // Un-bridge ONLY the one matching corridor (if any) - `targets`
+    // restricts `UnbridgeKeyholes()` to extracting EXACTLY a hole whose
+    // own bbox matches one of this op's own fresh closed chains, leaving
+    // every OTHER pre-existing hole (the multi-boss case: a DIFFERENT
+    // boss's own hole, nothing to do with this op at all) completely
+    // untouched in `boundary` - never removed, so never needing to be put
+    // back either. Confirmed directly or the UNCONDITIONAL
+    // "un-bridge every hole, then re-bridge back whichever ones don't
+    // match" this fix's own first draft tried fails two different ways:
+    // extracting every hole eagerly occasionally mis-paired a spurious
+    // few-point false corridor on a face already carrying two PRIOR
+    // corridors, and even once that was fixed, re-bridging an unrelated
+    // hole a SECOND time (once by the op that first created it, again
+    // here) corrupted `TessellateGridClippedExact()`'s own exact-clip
+    // path on the exact two-boss-union-then-subtract-one-back-out
+    // fixture into a degenerate trim polygon, even though the ON_Brep
+    // itself stayed IsValid() throughout. Touching only the one hole this
+    // op actually needs to resolve avoids both failure modes at once.
+    if (!closed_chains.empty()) {
+      std::vector<ON_BoundingBox> targets;
+      targets.reserve(closed_chains.size());
+      for (const Chain& fresh : closed_chains) {
+        ON_BoundingBox fresh_box;
+        for (const UVPt& p : fresh) fresh_box.Set(p.p, true);
+        targets.push_back(fresh_box);
+      }
+      UnbridgeKeyholes(boundary, &targets, stitch_tol);  // matched hole(s) discarded: the fresh chain already covers them
     }
     if (debug) {
       std::fprintf(stderr, "  FragmentFaces face idx=%d boundary=%zu stitched=%zu closed=%zu open=%zu\n", i,
@@ -3013,8 +3243,27 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
   // boss whose own footprint is a circle or a rotated rectangle, not an
   // axis-aligned one).
   std::vector<std::vector<UVPt>> boundary_a(static_cast<size_t>(na)), boundary_b(static_cast<size_t>(nb));
-  for (int i = 0; i < na; ++i) boundary_a[static_cast<size_t>(i)] = FaceBoundaryLoop(ba, i);
-  for (int j = 0; j < nb; ++j) boundary_b[static_cast<size_t>(j)] = FaceBoundaryLoop(bb, j);
+  for (int i = 0; i < na; ++i) {
+    boundary_a[static_cast<size_t>(i)] = FaceBoundaryLoop(ba, i);
+    // Strip any keyhole(s) BridgeHolesIntoOuter() folded into this face's
+    // own trim on a PRIOR boolean op before the exact-polygon
+    // whole/partial-match test below ever sees it: a self-touching loop
+    // breaks that test's own asymmetric `b_in_a != a_in_b` containment
+    // check (see UnbridgeKeyholes()'s own doc comment) - confirmed
+    // directly (DINO8_BOOL_DEBUG=1) this is exactly why subtracting a
+    // boss back out of a face it's already imprinted a hole into fails to
+    // recognize the SAME coincidence the original union itself found
+    // cleanly. Only the cleaned outer is needed here (the exact-polygon
+    // test only ever asks "does the OUTER boundary contain the other
+    // face", never about holes), so the extracted hole chains themselves
+    // are discarded - a no-op for every ordinary, never-before-bridged
+    // face.
+    UnbridgeKeyholes(boundary_a[static_cast<size_t>(i)]);
+  }
+  for (int j = 0; j < nb; ++j) {
+    boundary_b[static_cast<size_t>(j)] = FaceBoundaryLoop(bb, j);
+    UnbridgeKeyholes(boundary_b[static_cast<size_t>(j)]);
+  }
 
   // Coincident-face bookkeeping (see this file's own top-of-file doc
   // comment, "coplanar shared face" fix): a face of A and a face of B that
@@ -3347,6 +3596,50 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
     }
   }
 
+  // A face that achieves `whole_match_a`/`whole_match_b` against ANY
+  // opposing face (`coincident_a[i]`/`coincident_b[j]` non-empty - its
+  // ENTIRE extent is some opposing face's own coincident region, whether
+  // that opposing face is itself a whole match too, e.g. subtracting a
+  // boss back out of a body that already contains that exact boss as a
+  // previously-unioned sub-feature so its own top/side faces are
+  // bit-for-bit the same faces already present in the OTHER operand, or
+  // just a small whole face flush on a bigger one, e.g. the bottom face
+  // of that same boss against the box's own bigger top face) can still
+  // pick up spurious entries in `raw_a[i]`/`raw_b[j]` from a DIFFERENT,
+  // non-matching opposing face: confirmed directly with DINO8_BOOL_DEBUG=1
+  // (a standalone single-boss union-then-subtract-the-same-boss-back-out
+  // repro - a strictly SIMPLER fixture than the two-independent-holes
+  // case this file's own top comment names, which ALSO throws this same
+  // "edge is claimed by 3 or more fragment loops" refusal) that a face's
+  // own real edges can produce a short, genuine `IntersectFaces()` curve
+  // against an unrelated opposing face that merely happens to share that
+  // SAME edge locus - not because the two solids genuinely interact
+  // there, but because one operand's sub-solid is an exact geometric
+  // duplicate of part of the other's, so a face's own true neighbor
+  // WITHIN its own operand is also, degenerately, met by the OTHER
+  // operand's unrelated face along that identical edge. Fed into
+  // `FragmentFaces()` as if it were a genuine new cut, this slices a tiny
+  // sliver off the face whose own new edges then collide with the face's
+  // pre-existing real ones, tripping the refusal two spurious sliver
+  // edges later. A face whose ENTIRE extent is already some opposing
+  // face's own coincident region has no genuine "leftover" area for any
+  // OTHER curve to meaningfully cut - a further curve elsewhere on that
+  // same face is necessarily either this same spurious edge-locus
+  // artifact or a genuinely contradictory second "whole" region, neither
+  // of which this engine's own whole-face override (below) is designed
+  // to fragment against - so clearing every other entry here (before
+  // `untouched_a`/`untouched_b` are captured just below, so this face
+  // takes the SAME already-proven whole-face coincidence override path
+  // the clean single-match case already uses, not a new code path) is
+  // provably safe for exactly this reason, and a strict no-op for every
+  // face that never achieves a whole match at all (the ordinary case).
+  for (int i = 0; i < na; ++i) {
+    if (!coincident_a[static_cast<size_t>(i)].empty()) raw_a[static_cast<size_t>(i)].clear();
+  }
+  for (int j = 0; j < nb; ++j) {
+    if (!coincident_b[static_cast<size_t>(j)].empty()) raw_b[static_cast<size_t>(j)].clear();
+  }
+
   // Two different SSX curves (this face against two different opposing
   // faces) that meet at the same true 3D corner are each independently
   // Newton-refined to `opt.tolerance`, so their shared endpoint generally
@@ -3415,9 +3708,80 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
         }
         return nullptr;
       };
-      for (Fragment& frag : ff.frags) {
+      // Identify every "merge this hole away" fragment (see the doc
+      // comment on the build pass below for what/why) and WHICH sibling
+      // hole it matches - WITHOUT mutating any `.holes` yet. Classifying
+      // every fragment first, using each one's own ORIGINAL, untouched
+      // `.holes`/`.outer`, matters even for the owner itself:
+      // `RepresentativeUV()` picks the owner's own representative point
+      // as its outer polygon's centroid MINUS every hole - with the hole
+      // already removed, that centroid can land exactly where the
+      // removed sub-region itself sat (confirmed directly,
+      // DINO8_BOOL_DEBUG=1: a boss centered on its own bigger face is the
+      // exact fixture that exposed this - the owner's own centroid IS the
+      // boss's own center), misclassifying the owner's own ray-cast as
+      // "inside the opposing solid" and silently dropping the ENTIRE
+      // owner face. Removing the matched hole only happens below, after
+      // every fragment of this face (owner included) has already been
+      // classified against its own correct, hole-aware representative
+      // point.
+      std::vector<bool> merge_away(ff.frags.size(), false);
+      std::vector<size_t> merge_owner(ff.frags.size(), 0);
+      std::vector<size_t> merge_hole_index(ff.frags.size(), 0);
+      for (size_t frag_idx = 0; frag_idx < ff.frags.size(); ++frag_idx) {
+        const CoincidentRegionInfo* partial_match = whole_face_untouched ? nullptr : match_partial_region(ff.frags[frag_idx]);
+        if (!(partial_match && a_side && op == BooleanOp::Difference && partial_match->opposite_normal)) continue;
+        for (size_t sib_idx = 0; sib_idx < ff.frags.size() && !merge_away[frag_idx]; ++sib_idx) {
+          if (sib_idx == frag_idx) continue;
+          const std::vector<Chain>& sib_holes = ff.frags[sib_idx].holes;
+          for (size_t hi = 0; hi < sib_holes.size(); ++hi) {
+            ON_BoundingBox hb;
+            for (const UVPt& pt : sib_holes[hi]) hb.Set(pt.p, true);
+            if (hb.m_min.DistanceTo(partial_match->region_bbox.m_min) <= partial_match->extent_tol &&
+                hb.m_max.DistanceTo(partial_match->region_bbox.m_max) <= partial_match->extent_tol) {
+              merge_away[frag_idx] = true;
+              merge_owner[frag_idx] = sib_idx;
+              merge_hole_index[frag_idx] = hi;
+              break;
+            }
+          }
+        }
+        // Not found (shouldn't happen given `partial_match`'s own bbox
+        // was recorded from exactly this region, but never assumed
+        // silently): `merge_away[frag_idx]` stays false, so this
+        // fragment falls through to the ordinary override below exactly
+        // as before this fix, rather than being dropped with nothing to
+        // show for it.
+        if (debug)
+          std::fprintf(stderr, "  frag: partial-inner hole will be MERGED AWAY (a_side=%d op=%d) found_sibling=%d\n",
+                       a_side, static_cast<int>(op), merge_away[frag_idx] ? 1 : 0);
+      }
+      // Per-owner lookup of which of ITS OWN `.holes` indices a
+      // `merge_away` fragment above claimed - built once, used only at
+      // `KeptFace` build time below (never mutating `ff.frags[*].holes`
+      // itself, so every fragment's own classification just below keeps
+      // seeing its ORIGINAL, correct holes regardless of iteration order -
+      // see the doc comment above for why that matters).
+      std::vector<std::vector<size_t>> excluded_hole_indices(ff.frags.size());
+      for (size_t frag_idx = 0; frag_idx < ff.frags.size(); ++frag_idx) {
+        if (merge_away[frag_idx]) excluded_hole_indices[merge_owner[frag_idx]].push_back(merge_hole_index[frag_idx]);
+      }
+      for (size_t frag_idx = 0; frag_idx < ff.frags.size(); ++frag_idx) {
+        if (merge_away[frag_idx]) continue;  // never kept standalone - its own sibling's hole is removed just below
+        Fragment& frag = ff.frags[frag_idx];
         bool keep = false;
         bool flip = false;
+        // Difference, a_side, opposite-normal, PARTIAL-inner (not the
+        // whole-face case just below): a fragment identified above as
+        // `merge_away` - the exact imprint of the opposing solid's own
+        // coincident sub-region, e.g. subtracting a boss back out of the
+        // exact bigger face it once imprinted a hole into - is never
+        // reached here at all (the `continue` just above this loop), so
+        // a fragment reaching this point with `partial_match` set is
+        // genuinely the "second box flush on a bigger box" case above's
+        // own condition does NOT match (not a_side, or not Difference, or
+        // same-normal), left to the ordinary whole/partial override below
+        // exactly as before this fix.
         const CoincidentRegionInfo* partial_match = whole_face_untouched ? nullptr : match_partial_region(frag);
         if (whole_face_untouched || partial_match) {
           // Coincident-face rule (see this file's own top-of-file doc
@@ -3502,7 +3866,20 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
         kf.surface = ff.surface->DuplicateSurface();
         kf.rev = flip ? !ff.base_rev : ff.base_rev;
         kf.outer = frag.outer;
-        kf.holes = frag.holes;
+        // Copy every hole EXCEPT the one(s) a sibling `merge_away`
+        // fragment already claimed above (see its own doc comment) - this
+        // fragment's own classification just above still used the FULL,
+        // original `frag.holes` (correctly), only the BUILT face loses
+        // the merged region, recovering it as plain, hole-free material.
+        const std::vector<size_t>& excluded = excluded_hole_indices[frag_idx];
+        if (excluded.empty()) {
+          kf.holes = frag.holes;
+        } else {
+          kf.holes.reserve(frag.holes.size());
+          for (size_t hi = 0; hi < frag.holes.size(); ++hi) {
+            if (std::find(excluded.begin(), excluded.end(), hi) == excluded.end()) kf.holes.push_back(frag.holes[hi]);
+          }
+        }
         // Try to fold every hole into kf.outer as a keyhole notch (see
         // BridgeHolesIntoOuter's own doc comment) so the assembled face
         // reaches brep.cpp's exact-clip tessellation path instead of the

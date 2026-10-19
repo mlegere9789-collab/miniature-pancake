@@ -1,78 +1,67 @@
 #include <cstdio>
-#include "dino8/kernel/boolean.h"
+#include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/brep.h"
 #include "opennurbs.h"
 
-// Standalone probes for kernel::SplitByPlane(const Brep&, ...) before
-// trusting the real registered test (TestBrepSplitByPlaneExact):
-//
-// 1. A first draft built its half-space tool via Brep::Extrude() of a
-//    rectangular profile - this crashed BooleanCombineMixed() with
-//    "face 0 is neither planar, cylindrical, nor conical", because
-//    Extrude()'s own wall is ONE general swept NURBS surface for the
-//    whole profile loop, not one planar quad per side. Switched to an
-//    explicit 6-PlanarFace box (FrameBox(), generalizing
-//    Brep::BoxWelded()'s own axis-aligned construction to an arbitrary
-//    frame) - confirmed below to produce a genuinely valid, correctly-
-//    volumed split.
-//
-// 2. Confirmed `BuildDrilledBoxInputs()`-style fixtures (a cylindrical
-//    hole drilled through a box via BooleanCombineMixed) already throw on
-//    Brep::Volume()/VolumeMassProperties() BEFORE any split at all -
-//    TessellateToClosedMesh(8, 8)'s own fixed resolution doesn't weld
-//    closed for this hole geometry. Pre-existing, unrelated to
-//    SplitByPlane(); the real test avoids asserting on Volume() for that
-//    fixture because of this.
-//
-// 3. A steep oblique plane normal ((1,1,0.3) or (1,0,0.3) through the
-//    drilled box's own hole) correctly hits BooleanCombineMixed()'s own
-//    pre-existing, DISCLOSED cylindrical-face scope limits (a
-//    non-monotonic plane/face interaction, or a near-axis-parallel
-//    grazing angle for a horizontal-diagonal normal) - not a bug in
-//    SplitByPlane() itself. A milder oblique normal, (0.1, 0.1, 1) - still
-//    genuinely non-axis-aligned - stays inside that engine's own real
-//    scope and is what the real test uses.
-//
-// 4. Even at that milder angle, the result's raw().IsManifold() reports a
-//    boundary (no !boundary) - confirmed this is NOT specific to
-//    SplitByPlane()'s own half-space tool: a new cut face introduced by
-//    BooleanCombineMixed() against a CylindricalFace does not always get
-//    a genuine shared ON_BrepEdge against that face's own remaining wall,
-//    the same "real topology isn't always built between every pair of
-//    geometrically-touching faces" limitation Brep::Volume()'s own doc
-//    comment already discloses for Box()/Sphere(). The real test checks
-//    IsValid() and a non-empty result, matching how this file's own other
-//    BooleanCombineMixed-with-cylinder tests already verify correctness
-//    (TessellateConforming() mesh welding), never raw().IsManifold().
 int main() {
   ON::Begin();
   using namespace dino8::kernel;
 
-  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
-  auto [plus_side, minus_side] = SplitByPlane(box, Vector3d(1, 0, 0), 5.0);
-  std::printf("axis-aligned split: plus_side volume=%f minus_side volume=%f (expect 500/500)\n", plus_side.Volume(),
-              minus_side.Volume());
+  // Regression repro: plain two-operand Difference, boss centered on a
+  // bigger face, NO prior union at all.
+  {
+    const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+    const Brep boss = Brep::Box(1.5, 1.5, 4, 2.5, 2.5, 5);
+    const Brep d_ab = BooleanCombineGeneral(box, boss, BooleanOp::Difference);
+    const Mesh mesh_ab = TessellateGeneralBooleanClosedMesh(d_ab, 8, 8);
+    std::printf("plain box-boss: faces=%d valid=%d closed_manifold=%d volume=%f (expect 64)\n", d_ab.FaceCount(),
+                d_ab.raw().IsValid(), mesh_ab.IsClosedManifold(), mesh_ab.Volume());
+    const Brep d_ba = BooleanCombineGeneral(boss, box, BooleanOp::Difference);
+    const Mesh mesh_ba = TessellateGeneralBooleanClosedMesh(d_ba, 8, 8);
+    std::printf("plain boss-box: faces=%d valid=%d closed_manifold=%d volume=%f (expect 1)\n", d_ba.FaceCount(),
+                d_ba.raw().IsValid(), mesh_ba.IsClosedManifold(), mesh_ba.Volume());
+  }
 
-  Brep::CylindricalFace hole;
-  hole.frame.origin = Point3d(5, 5, -1.0);
-  hole.frame.xaxis = Vector3d(1, 0, 0);
-  hole.frame.yaxis = Vector3d(0, 1, 0);
-  hole.frame.zaxis = Vector3d(0, 0, 1);
-  hole.frame.UpdateEquation();
-  hole.radius = 2.0;
-  hole.angle = 2.0 * ON_PI;
-  hole.length = 12.0;
-  const Brep cyl = Brep::FromMixedFaces({}, {hole});
-  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  // Single-boss union-then-subtract-back-out.
+  {
+    const Brep box = Brep::Box(0, 0, 0, 8, 8, 4);
+    const Brep boss = Brep::Box(1, 1, 4, 2, 2, 5);
+    const Brep combined = BooleanCombineGeneral(box, boss, BooleanOp::Union);
+    const Brep back = BooleanCombineGeneral(combined, boss, BooleanOp::Difference);
+    const Mesh m = TessellateGeneralBooleanClosedMesh(back, 16, 16);
+    std::printf("single-boss subtract-back-out: faces=%d valid=%d closed_manifold=%d volume=%f (expect 256)\n",
+                back.FaceCount(), back.raw().IsValid(), m.IsClosedManifold(), m.Volume());
+  }
 
-  Vector3d n(0.1, 0.1, 1.0);
-  n.Unitize();
-  const double offset = ON_DotProduct(n, Point3d(5, 5, 5));
-  auto [plus_side2, minus_side2] = SplitByPlane(drilled, n, offset);
-  ON_TextLog log;
-  std::printf("oblique split through a cylindrical-hole solid: plus faces=%d (valid=%d) minus faces=%d (valid=%d)\n",
-              plus_side2.FaceCount(), plus_side2.raw().IsValid(&log), minus_side2.FaceCount(),
-              minus_side2.raw().IsValid(&log));
+  // The actual reported bug: two independent bosses, subtract either back out.
+  {
+    const Brep box = Brep::Box(0, 0, 0, 8, 8, 4);
+    const Brep boss_a = Brep::Box(1, 1, 4, 2, 2, 5);
+    const Brep boss_b = Brep::Box(5, 5, 4, 6, 6, 5);
+    const Brep combined = BooleanCombineGeneral(box, boss_a, BooleanOp::Union);
+    const Brep both = BooleanCombineGeneral(combined, boss_b, BooleanOp::Union);
+    std::printf("both faces=%d valid=%d\n", both.FaceCount(), both.raw().IsValid());
+    for (const char* name : {"boss_a", "boss_b"}) {
+      const Brep& tool = (std::string(name) == "boss_a") ? boss_a : boss_b;
+      const Brep result = BooleanCombineGeneral(both, tool, BooleanOp::Difference);
+      const Mesh m = TessellateGeneralBooleanClosedMesh(result, 16, 16);
+      std::printf("subtract %s: faces=%d valid=%d closed_manifold=%d volume=%f (expect 257)\n", name,
+                  result.FaceCount(), result.raw().IsValid(), m.IsClosedManifold(), m.Volume());
+    }
+  }
+
+  // Multi-boss UNION only (the already-existing, previously-passing test
+  // this session must not regress).
+  {
+    const Brep box = Brep::Box(0, 0, 0, 8, 8, 4);
+    const Brep boss1 = Brep::Box(1, 1, 4, 2, 2, 5);
+    const Brep boss2 = Brep::Box(5, 5, 4, 6, 6, 5);
+    const Brep combined = BooleanCombineGeneral(box, boss1, BooleanOp::Union);
+    const Brep both = BooleanCombineGeneral(combined, boss2, BooleanOp::Union);
+    const Mesh m = TessellateGeneralBooleanClosedMesh(both, 16, 16);
+    std::printf("multi-boss union only: faces=%d valid=%d closed_manifold=%d volume=%f (expect 258)\n",
+                both.FaceCount(), both.raw().IsValid(), m.IsClosedManifold(), m.Volume());
+  }
 
   ON::End();
   return 0;
