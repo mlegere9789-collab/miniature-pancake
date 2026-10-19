@@ -71272,6 +71272,113 @@ void TestMaxFilletRadiusRejectsInvalidInput() {
         "rejects coincident edge endpoints");
 }
 
+// MaxChamferDistance - the Chamfer sibling of MaxFilletRadius above, closing
+// PARITY_MAP.md's own disclosed "Mode::Chamfer has no equivalent helper yet"
+// gap under "Fillet overflow / cliff-edge / notch handling".
+void TestMaxChamferDistanceConvexUnitCubeMatchesExtentAndIsTight() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexEdge;
+  using dino8::kernel::MaxChamferDistance;
+  using dino8::kernel::Point3d;
+
+  // Same edge TestChamferConvexEdgeUnitCubeClosedFormVolumeAndTopology uses:
+  // face i (top, z=1) and face j (front, y=0), both with extent 1 from this
+  // edge on a unit cube.
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const auto limit = MaxChamferDistance(box, edge_p0, edge_p1);
+
+  Check(std::fabs(limit.max_distance_i - 1.0) < 1e-9,
+        "face i's (top) own extent from this edge is exactly 1 on a unit cube");
+  Check(std::fabs(limit.max_distance_j - 1.0) < 1e-9,
+        "face j's (front) own extent from this edge is exactly 1 on a unit cube too");
+
+  // The bound is TIGHT, verified against the real throw/no-throw boundary of
+  // ChamferConvexEdge itself, not just restated - the same discipline
+  // TestMaxFilletRadiusConvexUnitCubeMatchesExtent already established for
+  // MaxFilletRadius. Both distances are varied together so neither one
+  // alone is the binding constraint.
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(!throws([&] {
+          ChamferConvexEdge(box, edge_p0, edge_p1, limit.max_distance_i * (1.0 - 1e-6),
+                             limit.max_distance_j * (1.0 - 1e-6));
+        }),
+        "distances just under the reported bounds genuinely build");
+  Check(throws([&] {
+          ChamferConvexEdge(box, edge_p0, edge_p1, limit.max_distance_i * (1.0 + 1e-6), limit.max_distance_j * 0.5);
+        }),
+        "a distance_i just over its own reported bound genuinely fails, even with distance_j well within its own");
+  Check(throws([&] {
+          ChamferConvexEdge(box, edge_p0, edge_p1, limit.max_distance_i * 0.5, limit.max_distance_j * (1.0 + 1e-6));
+        }),
+        "a distance_j just over its own reported bound genuinely fails, even with distance_i well within its own - "
+        "the two bounds are independent, unlike MaxFilletRadius' single shared radius");
+}
+
+void TestMaxChamferDistanceConcaveLShapedPrismMatchesExtentAndIsTight() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConcaveEdge;
+  using dino8::kernel::MaxChamferDistance;
+  using dino8::kernel::Point3d;
+
+  // Same fixture/edge TestChamferConcaveEdgeAddsExactRightTriangleVolume and
+  // TestMaxFilletRadiusConcaveLShapedPrismMatchesExtent both use.
+  const Brep prism = ConcaveLShapedPrism();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const auto limit = MaxChamferDistance(prism, edge_p0, edge_p1);
+
+  Check(std::fabs(limit.max_distance_i - 1.0) < 1e-9,
+        "face i's own extent from the L-shaped prism's reflex edge is exactly 1, the same value "
+        "MaxFilletRadius' own concave fixture test already established for this edge");
+  Check(std::fabs(limit.max_distance_j - 1.0) < 1e-9, "face j's own extent from this edge is exactly 1 too");
+
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(!throws([&] {
+          ChamferConcaveEdge(prism, edge_p0, edge_p1, limit.max_distance_i * (1.0 - 1e-6),
+                              limit.max_distance_j * (1.0 - 1e-6));
+        }),
+        "distances just under the reported bounds genuinely build on the concave edge too - "
+        "MaxChamferDistance needs no separate convex/concave case, unlike MaxFilletRadius");
+  Check(throws([&] {
+          ChamferConcaveEdge(prism, edge_p0, edge_p1, limit.max_distance_i * (1.0 + 1e-6), limit.max_distance_j * 0.5);
+        }),
+        "a distance_i just over its own reported bound genuinely fails on the concave edge too");
+}
+
+void TestMaxChamferDistanceRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MaxChamferDistance;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(throws([&] { MaxChamferDistance(box, Point3d(5, 5, 5), Point3d(5, 5, 6)); }),
+        "rejects an edge that isn't a shared boundary edge of the solid at all");
+  Check(throws([&] { MaxChamferDistance(box, Point3d(0, 0, 1), Point3d(0, 0, 1)); }),
+        "rejects coincident edge endpoints");
+}
+
 // =====================================================================
 // FilletConcaveEdgeTapered - the concave mirror of FilletConvexEdgeTapered's
 // own two-radius overload (fillet.h's own doc comment spells out the
@@ -73366,6 +73473,189 @@ void TestChamferConcaveEdgeRejectsUnsupportedConfigurations() {
 
   // A distance too large to fit within either adjacent face's own extent.
   Check(throws([&] { ChamferConcaveEdge(prism, edge_p0, edge_p1, 5.0, 0.1); }), "rejects a distance too large to fit");
+}
+
+// ---------------------------------------------------------------------------
+// ChamferConvexEdges/ChamferConcaveEdges (fillet.h) - the multi-edge
+// generalization of ChamferConvexEdge/ChamferConcaveEdge, closing
+// PARITY_MAP.md's own disclosed "no multi-edge chamfer batch exists at
+// all" gap (unlike FilletConvexEdges/FilletConvexEdgesConic on the
+// fillet side).
+
+void TestChamferConvexEdgesMatchesTwoSequentialCallsOnIndependentParallelEdges() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexEdge;
+  using dino8::kernel::ChamferConvexEdges;
+  using dino8::kernel::Point3d;
+
+  const double di = 0.3, dj = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+
+  // The box's two parallel top edges (front y=0, back y=1) - the same
+  // vertex-disjoint fixture TestFilletConvexEdgesByDistanceFromEdge.../
+  // (a) above already uses for the equivalent fillet case.
+  const std::vector<std::pair<Point3d, Point3d>> edges = {{Point3d(0, 0, 1), Point3d(1, 0, 1)},
+                                                            {Point3d(1, 1, 1), Point3d(0, 1, 1)}};
+  const Brep batch = ChamferConvexEdges(box, edges, di, dj);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(batch.raw().IsValid(&log) && batch.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            batch.raw().IsSolid(),
+        "batch-chamfering two independent box edges in one call gives a valid, closed, manifold solid");
+
+  // Ground truth: two SEQUENTIAL single-edge ChamferConvexEdge calls on
+  // the same two edges - the batch result must match this bit-for-bit
+  // (same face/edge/vertex counts, same volume), not merely be "a valid
+  // solid of roughly the right size".
+  const Brep seq1 = ChamferConvexEdge(box, Point3d(0, 0, 1), Point3d(1, 0, 1), di, dj);
+  const Brep seq2 = ChamferConvexEdge(seq1, Point3d(1, 1, 1), Point3d(0, 1, 1), di, dj);
+  Check(batch.FaceCount() == seq2.FaceCount() && batch.raw().m_E.Count() == seq2.raw().m_E.Count() &&
+            batch.raw().m_V.Count() == seq2.raw().m_V.Count(),
+        "one ChamferConvexEdges call on both edges has identical topology to two sequential ChamferConvexEdge "
+        "calls on the same edges");
+  const double vol_batch = batch.TessellateToClosedMeshAdaptive(1e-9).Volume();
+  const double vol_seq = seq2.TessellateToClosedMeshAdaptive(1e-9).Volume();
+  Check(std::fabs(vol_batch - vol_seq) < 1e-9,
+        "and identical tessellated volume to the two sequential single-edge calls");
+
+  // Closed form: two disjoint right-triangle prisms removed, independent
+  // of each other (no shared geometry to interact through).
+  const double expected = 1.0 - 2.0 * (0.5 * di * dj);
+  // 1e-6, not 1e-9: matching the tolerance
+  // TestChamferConvexEdgeChainsAcrossACornerAndAlongParallelEdges' own (a)
+  // already uses for this identical fixture/edges/di/dj - tessellating a
+  // planar-faced polyhedron is exact in principle, but the adaptive
+  // tessellator's own numerics carry roundoff at roughly this scale (the
+  // bit-for-bit match against vol_seq just above already establishes
+  // correctness far more tightly than this absolute closed-form check
+  // can).
+  Check(std::fabs(vol_batch - expected) < 1e-6, "the batch result's volume matches the closed form 1 - di*dj exactly");
+}
+
+void TestChamferConcaveEdgesAddsExactVolumeForTwoIndependentNotches() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConcaveEdge;
+  using dino8::kernel::ChamferConcaveEdges;
+  using dino8::kernel::Point3d;
+
+  // TwoConcaveNotchPrism's own two independent 90-degree reflex edges,
+  // each of unit length - the same fixture
+  // TestFilletConcaveEdgesAddsExactVolumeForTwoIndependentNotches above
+  // already establishes both are genuine 90-degree concave dihedrals.
+  const Brep prism = TwoConcaveNotchPrism();
+  const double base_volume = prism.TessellateToClosedMesh(4, 4).Volume();
+  Check(std::fabs(base_volume - 16.0) < 1e-6, "sanity: the two-notch prism's own footprint area is exactly 16");
+
+  const Point3d e1p0(1, 1, 0), e1p1(1, 1, 1);
+  const Point3d e2p0(5, 2, 0), e2p1(5, 2, 1);
+  const double di = 0.15, dj = 0.1;
+  const Brep batch = ChamferConcaveEdges(prism, {{e1p0, e1p1}, {e2p0, e2p1}}, di, dj);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(batch.raw().IsValid(&log) && batch.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            batch.raw().IsSolid(),
+        "batch-chamfering two independent concave edges in one call gives a valid, closed, manifold solid");
+
+  // Ground truth: two sequential single-edge ChamferConcaveEdge calls.
+  const Brep seq1 = ChamferConcaveEdge(prism, e1p0, e1p1, di, dj);
+  const Brep seq2 = ChamferConcaveEdge(seq1, e2p0, e2p1, di, dj);
+  Check(batch.FaceCount() == seq2.FaceCount() && batch.raw().m_E.Count() == seq2.raw().m_E.Count() &&
+            batch.raw().m_V.Count() == seq2.raw().m_V.Count(),
+        "one ChamferConcaveEdges call on both notches has identical topology to two sequential ChamferConcaveEdge "
+        "calls on the same edges");
+
+  // Closed form: filling each unit-length, 90-degree notch with a flat
+  // bevel ADDS di*dj/2 (ChamferConcaveEdge's own closed form), and the two
+  // notches are far apart on this fixture with no shared geometry to
+  // interact through, so the batch simply adds both.
+  const double expected = base_volume + 2.0 * (0.5 * di * dj);
+  const double measured = batch.TessellateToClosedMeshAdaptive(1e-6).Volume();
+  Check(std::fabs(measured - expected) < 1e-6, "the batch result ADDS exactly di*dj (both notches' own closed form summed)");
+}
+
+void TestChamferConvexEdgesRejectsSharedVertexAndInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConcaveEdges;
+  using dino8::kernel::ChamferConvexEdges;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep prism = TwoConcaveNotchPrism();
+
+  Check(throws([&] { ChamferConvexEdges(box, {}, 0.2, 0.1); }), "rejects an empty edge list");
+  Check(throws([&] { ChamferConvexEdges(box, {{Point3d(0, 0, 1), Point3d(1, 0, 1)}}, 0.0, 0.1); }),
+        "rejects distance_i == 0");
+  Check(throws([&] { ChamferConvexEdges(box, {{Point3d(0, 0, 1), Point3d(1, 0, 1)}}, 0.2, -0.1); }),
+        "rejects a negative distance_j");
+
+  // The real, disclosed v1 scope limit: two supplied edges sharing a
+  // vertex (here, a real m==2 corner - the top-front and top-right edges
+  // of the box, meeting at (1, 0, 1)) must be refused, not silently
+  // misbuilt.
+  const std::vector<std::pair<Point3d, Point3d>> sharing_a_vertex = {{Point3d(0, 0, 1), Point3d(1, 0, 1)},
+                                                                       {Point3d(1, 0, 1), Point3d(1, 1, 1)}};
+  Check(throws([&] { ChamferConvexEdges(box, sharing_a_vertex, 0.2, 0.1); }),
+        "rejects two supplied edges that share a vertex");
+
+  // Two edges that merely share an adjacent FACE (not a vertex) are fine -
+  // already exercised end-to-end by
+  // TestChamferConvexEdgesMatchesTwoSequentialCallsOnIndependentParallelEdges
+  // above; a duplicate pair of coincident edges, on the other hand, is a
+  // (degenerate) shared-vertex case at BOTH endpoints and must still be
+  // rejected the same way.
+  const std::vector<std::pair<Point3d, Point3d>> duplicated = {{Point3d(0, 0, 1), Point3d(1, 0, 1)},
+                                                                 {Point3d(0, 0, 1), Point3d(1, 0, 1)}};
+  Check(throws([&] { ChamferConvexEdges(box, duplicated, 0.2, 0.1); }), "rejects the same edge listed twice");
+
+  // Convexity mismatch: feeding a genuinely CONVEX edge to
+  // ChamferConcaveEdges must be refused, the same discipline
+  // ChamferConcaveEdge's own single-edge wrapper already enforces (its own
+  // RequireConcaveEdge check, applied here per edge).
+  Check(throws([&] { ChamferConcaveEdges(box, {{Point3d(0, 0, 1), Point3d(1, 0, 1)}}, 0.2, 0.1); }),
+        "ChamferConcaveEdges rejects a genuinely convex edge");
+
+  // UNLIKE that direction, ChamferConvexEdges itself has no convexity
+  // check to fail in the other direction - exactly as the single-edge
+  // ChamferConvexEdge's own doc comment establishes ("ChamferConvexEdge's
+  // own rail construction ALREADY works correctly for a concave edge,
+  // completely unchanged"): the extent-based m_i/m_j sign-fix this batch
+  // function reuses verbatim is not convex-specific, so feeding it a
+  // genuinely concave edge builds correctly, bit-for-bit matching
+  // ChamferConcaveEdges' own result on the identical single-edge input -
+  // confirmed directly here rather than assumed from the single-edge
+  // analogy alone.
+  {
+    const Brep via_convex_name = ChamferConvexEdges(prism, {{Point3d(1, 1, 0), Point3d(1, 1, 1)}}, 0.2, 0.1);
+    const Brep via_concave_name = ChamferConcaveEdges(prism, {{Point3d(1, 1, 0), Point3d(1, 1, 1)}}, 0.2, 0.1);
+    Check(via_convex_name.FaceCount() == via_concave_name.FaceCount() &&
+              via_convex_name.raw().m_E.Count() == via_concave_name.raw().m_E.Count() &&
+              via_convex_name.raw().m_V.Count() == via_concave_name.raw().m_V.Count(),
+          "ChamferConvexEdges on a genuinely concave edge builds and matches ChamferConcaveEdges' own result on "
+          "the same edge, topology-wise");
+    Check(std::fabs(via_convex_name.TessellateToClosedMeshAdaptive(1e-6).Volume() -
+                     via_concave_name.TessellateToClosedMeshAdaptive(1e-6).Volume()) < 1e-6,
+          "and volume-wise");
+  }
+
+  // A distance too large to fit is still refused downstream, by the exact
+  // same per-edge extent check the single-edge ChamferConvexEdge already
+  // makes - not a separate check this batch wrapper needs to reimplement.
+  Check(throws([&] { ChamferConvexEdges(box, {{Point3d(0, 0, 1), Point3d(1, 0, 1)}}, 5.0, 0.1); }),
+        "propagates the underlying distance-too-large-to-fit rejection");
+
+  // Not a shared boundary edge at all.
+  Check(throws([&] { ChamferConvexEdges(box, {{Point3d(0, 0, 1), Point3d(1, 1, 1)}}, 0.2, 0.1); }),
+        "rejects a diagonal that is not a shared boundary edge");
 }
 
 void TestFilletConcaveEdgeConicRejectsConvexEdgeAndInvalidInput() {
@@ -81160,6 +81450,11 @@ int main() {
   RunTest("TestMaxFilletRadiusConvexUnitCubeMatchesExtent", TestMaxFilletRadiusConvexUnitCubeMatchesExtent);
   RunTest("TestMaxFilletRadiusConcaveLShapedPrismMatchesExtent", TestMaxFilletRadiusConcaveLShapedPrismMatchesExtent);
   RunTest("TestMaxFilletRadiusRejectsInvalidInput", TestMaxFilletRadiusRejectsInvalidInput);
+  RunTest("TestMaxChamferDistanceConvexUnitCubeMatchesExtentAndIsTight",
+          TestMaxChamferDistanceConvexUnitCubeMatchesExtentAndIsTight);
+  RunTest("TestMaxChamferDistanceConcaveLShapedPrismMatchesExtentAndIsTight",
+          TestMaxChamferDistanceConcaveLShapedPrismMatchesExtentAndIsTight);
+  RunTest("TestMaxChamferDistanceRejectsInvalidInput", TestMaxChamferDistanceRejectsInvalidInput);
   RunTest("TestFilletConcaveEdgeTaperedRailExactness", TestFilletConcaveEdgeTaperedRailExactness);
   RunTest("TestFilletConcaveEdgeTaperedClosedFormVolumeMatchesFrustumFormula", TestFilletConcaveEdgeTaperedClosedFormVolumeMatchesFrustumFormula);
   RunTest("TestFilletConcaveEdgeTaperedDispatchesToConstantRadiusAtZeroTaper", TestFilletConcaveEdgeTaperedDispatchesToConstantRadiusAtZeroTaper);
@@ -81199,6 +81494,12 @@ int main() {
   RunTest("TestChamferConcaveEdgeAddsExactRightTriangleVolume", TestChamferConcaveEdgeAddsExactRightTriangleVolume);
   RunTest("TestChamferConcaveEdgeAngleMatchesTwoDistanceForm", TestChamferConcaveEdgeAngleMatchesTwoDistanceForm);
   RunTest("TestChamferConcaveEdgeRejectsUnsupportedConfigurations", TestChamferConcaveEdgeRejectsUnsupportedConfigurations);
+  RunTest("TestChamferConvexEdgesMatchesTwoSequentialCallsOnIndependentParallelEdges",
+          TestChamferConvexEdgesMatchesTwoSequentialCallsOnIndependentParallelEdges);
+  RunTest("TestChamferConcaveEdgesAddsExactVolumeForTwoIndependentNotches",
+          TestChamferConcaveEdgesAddsExactVolumeForTwoIndependentNotches);
+  RunTest("TestChamferConvexEdgesRejectsSharedVertexAndInvalidInput",
+          TestChamferConvexEdgesRejectsSharedVertexAndInvalidInput);
   RunTest("TestFilletConcaveEdgeConicRejectsConvexEdgeAndInvalidInput", TestFilletConcaveEdgeConicRejectsConvexEdgeAndInvalidInput);
   RunTest("TestFilletConcaveEdgeConicAddsClosedFormVolumeOnLShapedPrism", TestFilletConcaveEdgeConicAddsClosedFormVolumeOnLShapedPrism);
   RunTest("TestFilletConvexEdgesConicBlendsTwoIndependentEdgesInOneCall", TestFilletConvexEdgesConicBlendsTwoIndependentEdgesInOneCall);

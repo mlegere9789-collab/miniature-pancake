@@ -901,6 +901,114 @@ Brep ChamferConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, dou
 Brep ChamferConcaveEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
                              double angle_from_i);
 
+// The largest distance_i/distance_j ChamferConvexEdge/ChamferConcaveEdge
+// could each independently build for this exact edge before their own "a
+// chamfer distance is too large to fit" check rejects it - the SAME
+// closed-form bound those functions already compute internally (each
+// distance must not exceed its own face's own extent from the edge,
+// along the into-material perpendicular direction m_i/m_j), exposed here
+// so a caller - or an app command catching that exception - can report
+// the real fittable distance instead of just failing. This is the
+// disclosed "Mode::Chamfer has no equivalent helper yet" half of
+// PARITY_MAP.md's own "Fillet overflow / cliff-edge / notch handling"
+// entry, which MaxFilletRadius above already closed for the constant-
+// radius fillet case; a chamfer's own trim-back is a straight-line
+// inscribed tangent length, not a circular one, so the two distances are
+// NOT coupled through a shared dihedral-angle trig term the way a
+// fillet's single `radius` is - each face's own bound is independent of
+// the other's, which is why this reports TWO distances rather than one.
+//
+// Unlike MaxFilletRadius, no convex/concave distinction is needed here at
+// all: ChamferConvexEdge's own m_i/m_j sign-fix is already extent-based
+// (picks whichever of the two in-plane, perpendicular-to-the-edge
+// directions actually has positive extent within that face's own real
+// polygon), not built from a convex-specific contact-point formula, so it
+// is already correct for a concave edge with no change (see
+// ChamferConvexEdge's own doc comment) - and so is this helper, for the
+// identical reason, on either a convex or a concave edge.
+//
+// This does not roll the chamfer onto a neighbouring face when the
+// request overflows (that remains out of scope, same as MaxFilletRadius);
+// it only answers "what IS the largest distance each of this edge's two
+// faces supports", exactly. It also does not account for a separate,
+// later failure mode - a chamfer whose end meets a third face can still
+// throw "the chamfer overruns the third face" even below this bound, if
+// that third face's own edge is short enough - exactly as MaxFilletRadius
+// already discloses for the equivalent corner-notch failure mode on a
+// fillet.
+//
+// Throws std::invalid_argument for the same structural reasons
+// ChamferConvexEdge does (not a shared two-face boundary edge, coincident
+// endpoints, a face normal parallel to the edge) - every reason EXCEPT "a
+// chamfer distance is too large to fit", since this function computes
+// that bound rather than checking against one.
+struct ChamferDistanceLimit {
+  double max_distance_i;  // the largest distance_i face i's own extent from the edge supports
+  double max_distance_j;  // the largest distance_j face j's own extent from the edge supports
+};
+ChamferDistanceLimit MaxChamferDistance(const Brep& solid, Point3d edge_p0, Point3d edge_p1);
+
+// MULTI-EDGE generalization of ChamferConvexEdge, closing a real gap this
+// file itself otherwise had: unlike the fillet side (FilletConvexEdges,
+// FilletConvexEdgesConic), no multi-edge chamfer batch existed anywhere
+// in this kernel before this function - confirmed directly by grep, not
+// assumed. Chamfers several INDEPENDENT straight convex edges of the same
+// solid with ONE
+// shared (distance_i, distance_j) pair in a single call, each edge
+// re-using ChamferConvexEdge's own per-edge construction verbatim (rail/
+// extent/end-condition math - see that function's own doc comment for
+// every derivation this reuses), just applied once per edge in a loop
+// instead of once.
+//
+// SCOPE (v1, stated plainly rather than silently narrowed - the same
+// "matching how FilletConvexEdges itself started before FilletConvexEdges
+// gained its own m==3 vertex-blend corner" increment this file's own
+// history already shows): every edge's own two endpoints must be used by
+// EXACTLY one of the supplied edges - no two edges in the SAME call may
+// share a vertex. Two edges MAY share an adjacent FACE (e.g. two
+// parallel, non-touching edges of the same box face - re-trimmed by two
+// independent half-space clips in sequence, exactly as two sequential
+// single-edge ChamferConvexEdge calls on the same solid already would),
+// just not an ENDPOINT. A shared vertex - whether a real m==2 corner (two
+// chamfers meeting with a third, un-chamfered edge) or a genuine m==3
+// trihedral corner (already covered by ChamferConvexVertex's own
+// per-edge-distance overload, a separate, already-existing entry point)
+// - throws std::invalid_argument naming the conflict, rather than
+// silently misbuilding a corner or guessing which of those two cases was
+// meant; batch several vertex-disjoint edges here, and chamfer a shared
+// corner separately via ChamferConvexEdge/ChamferConvexVertex.
+//
+// Every edge must independently satisfy everything ChamferConvexEdge's
+// own single-edge construction requires (a genuine shared boundary edge
+// of two distinct planar faces, non-degenerate dihedral angle, distances
+// that fit both adjacent faces' own extent, and - at either endpoint - a
+// free boundary, a trihedral corner with a third face perpendicular OR
+// oblique to the edge, exactly as that function's own end-condition
+// handles) - a failure on any ONE edge throws naming that edge's own
+// supplied points, leaving every other already-processed edge in this
+// same call's own working result discarded (no partial Brep is ever
+// returned).
+//
+// Throws for the same structural reasons ChamferConvexEdge does, applied
+// per edge, plus the SCOPE's own shared-vertex rejection above and an
+// empty `edges`.
+Brep ChamferConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double distance_i,
+                         double distance_j);
+
+// CONCAVE mirror of ChamferConvexEdges - exactly the same "thin,
+// VALIDATING wrapper" relationship ChamferConcaveEdge already has to
+// ChamferConvexEdge (see that function's own doc comment for why no
+// separate construction is needed: the rail construction's own m_i/m_j
+// sign-fix is extent-based, not convex-specific, so it is already correct
+// for a concave edge with no change). Every supplied edge is required to
+// be genuinely concave before the whole call dispatches to
+// ChamferConvexEdges' own construction verbatim; a failure INSIDE that
+// shared construction is reported under ChamferConvexEdges' own name, the
+// same disclosed convention ChamferConcaveEdge's own doc comment states
+// for the single-edge case.
+Brep ChamferConcaveEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double distance_i,
+                          double distance_j);
+
 
 // CONIC ("rho") CROSS-SECTION blend of a straight, convex edge shared by
 // two PLANAR faces of `solid`: Parasolid's "conic blend"/Rhino's rho

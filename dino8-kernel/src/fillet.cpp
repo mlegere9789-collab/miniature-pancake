@@ -3062,6 +3062,259 @@ Brep ChamferConcaveEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1
   return ChamferConcaveEdge(solid, edge_p0, edge_p1, distance_i, distance_j);
 }
 
+ChamferDistanceLimit MaxChamferDistance(const Brep& solid, Point3d edge_p0, Point3d edge_p1) {
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+
+  int idx_i = -1, idx_j = -1;
+  FindEdgeFaces(faces, edge_p0, edge_p1, tol, "MaxChamferDistance", idx_i, idx_j);
+  const Brep::PlanarFace& face_i = faces[static_cast<size_t>(idx_i)];
+  const Brep::PlanarFace& face_j = faces[static_cast<size_t>(idx_j)];
+
+  Vector3d e = edge_p1 - edge_p0;
+  if (!e.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::MaxChamferDistance: edge_p0 and edge_p1 coincide");
+  }
+
+  // Verbatim from ChamferConvexEdge's own step choosing m_i/m_j (the
+  // into-material, in-plane, perpendicular-to-the-edge directions) and
+  // computing each face's own extent along it from the edge - the SAME
+  // extent-based sign pick that already makes ChamferConvexEdge itself
+  // correct for a concave edge with NO change (see that function's own
+  // doc comment, "ChamferConvexEdge's own rail construction ALREADY works
+  // correctly for a concave edge"), so this helper needs no separate
+  // convex/concave case either, unlike MaxFilletRadius.
+  auto extent_along = [](const std::vector<Point3d>& loop, const Vector3d& m, const Point3d& ref) {
+    double best = -std::numeric_limits<double>::infinity();
+    for (const Point3d& v : loop) best = std::max(best, m * (v - ref));
+    return best;
+  };
+  Vector3d m_i = ON_CrossProduct(face_i.plane.zaxis, e);
+  Vector3d m_j = ON_CrossProduct(face_j.plane.zaxis, -e);
+  if (!m_i.Unitize() || !m_j.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::MaxChamferDistance: degenerate face/edge geometry (a face normal is "
+        "parallel to the edge)");
+  }
+  if (extent_along(face_i.loop, m_i, edge_p0) <= tol) m_i = -m_i;
+  if (extent_along(face_j.loop, m_j, edge_p0) <= tol) m_j = -m_j;
+
+  ChamferDistanceLimit result;
+  result.max_distance_i = extent_along(face_i.loop, m_i, edge_p0);
+  result.max_distance_j = extent_along(face_j.loop, m_j, edge_p0);
+  return result;
+}
+
+// MULTI-EDGE generalization of ChamferConvexEdge - fillet.h's own doc
+// comment spells out the v1 scope this closes vs. leaves open. Each
+// edge's own per-edge geometry (m_i/m_j/theta/extents/rails) is
+// ChamferConvexEdge's own, verbatim, just computed once per edge in a
+// loop instead of once; `work`, the evolving face list, is shared across
+// every edge in the call (not reset per edge) so two edges that happen to
+// share an ADJACENT FACE but not a vertex (e.g. two parallel, non-
+// touching edges of the same box face) see each other's own re-trim, the
+// same way two sequential single-edge ChamferConvexEdge calls on the same
+// solid already would.
+Brep ChamferConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double distance_i,
+                         double distance_j) {
+  if (!(distance_i > 0.0) || !(distance_j > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferConvexEdges: distance_i and distance_j must both be strictly positive");
+  }
+  if (edges.empty()) {
+    throw std::invalid_argument("dino8::kernel::ChamferConvexEdges: at least one edge is required");
+  }
+
+  std::vector<Brep::PlanarFace> work = solid.PlanarFaces();
+  const double tol = RelativeTol(work);
+
+  // SCOPE (v1, disclosed - see fillet.h's own doc comment): every edge's
+  // own two endpoints must be used by exactly that ONE edge in this call -
+  // no two of the supplied edges may share a vertex. A shared vertex is a
+  // genuine corner-fusion problem (m==1 end-notch vs. m==3 trihedral
+  // vertex-blend classification, the machinery FilletConvexEdges' own
+  // doc comment describes at length) this first increment does not
+  // attempt; throws naming the conflict rather than silently misbuilding
+  // a corner two independent single-edge calls would already fail at
+  // differently (ChamferEndAtVertex's own "two different third faces meet
+  // the edge at the same endpoint" check, triggered for the wrong reason).
+  std::vector<Point3d> endpoints;
+  endpoints.reserve(edges.size() * 2);
+  for (const std::pair<Point3d, Point3d>& ed : edges) {
+    const Point3d pts[2] = {ed.first, ed.second};
+    for (const Point3d& p : pts) {
+      for (const Point3d& q : endpoints) {
+        if (PointsEqual(p, q, tol)) {
+          throw std::invalid_argument(
+              "dino8::kernel::ChamferConvexEdges: two of the supplied edges share a vertex - batching edges "
+              "that meet at a corner is out of scope for this function (see fillet.h's own doc comment); "
+              "chamfer them individually via ChamferConvexEdge instead, or see ChamferConvexVertex for an "
+              "already-supported trihedral corner");
+        }
+      }
+      endpoints.push_back(p);
+    }
+  }
+
+  auto dedupe_consecutive = [tol](std::vector<Point3d>& loop) {
+    std::vector<Point3d> out;
+    out.reserve(loop.size());
+    for (const Point3d& p : loop) {
+      if (!out.empty() && out.back().DistanceTo(p) <= tol) continue;
+      out.push_back(p);
+    }
+    while (out.size() > 1 && out.front().DistanceTo(out.back()) <= tol) out.pop_back();
+    loop = std::move(out);
+  };
+  auto extent_along = [](const std::vector<Point3d>& loop, const Vector3d& m, const Point3d& ref) {
+    double best = -std::numeric_limits<double>::infinity();
+    for (const Point3d& v : loop) best = std::max(best, m * (v - ref));
+    return best;
+  };
+
+  std::vector<Brep::PlanarFace> chamfer_quads;
+  chamfer_quads.reserve(edges.size());
+
+  for (const std::pair<Point3d, Point3d>& ed : edges) {
+    const Point3d& edge_p0 = ed.first;
+    const Point3d& edge_p1 = ed.second;
+
+    int idx_i = -1, idx_j = -1;
+    FindEdgeFaces(work, edge_p0, edge_p1, tol, "ChamferConvexEdges", idx_i, idx_j);
+    const ON_Plane plane_i = work[static_cast<size_t>(idx_i)].plane;
+    const ON_Plane plane_j = work[static_cast<size_t>(idx_j)].plane;
+    const Vector3d n_i = plane_i.zaxis;
+    const Vector3d n_j = plane_j.zaxis;
+
+    Vector3d e = edge_p1 - edge_p0;
+    if (!e.Unitize()) {
+      throw std::invalid_argument("dino8::kernel::ChamferConvexEdges: an edge's two endpoints coincide");
+    }
+
+    const double dot_ij = std::max(-1.0, std::min(1.0, n_i * n_j));
+    const double theta = ON_PI - std::acos(dot_ij);
+    if (!(theta > 1e-9) || !(theta < ON_PI - 1e-9)) {
+      throw std::invalid_argument(
+          "dino8::kernel::ChamferConvexEdges: an edge is not a convex dihedral edge (interior angle theta is <= "
+          "0 or >= pi) - concave/degenerate edges are out of scope, see FilletConvexEdge's own doc comment");
+    }
+
+    Vector3d m_i = ON_CrossProduct(n_i, e);
+    Vector3d m_j = ON_CrossProduct(n_j, -e);
+    if (!m_i.Unitize() || !m_j.Unitize()) {
+      throw std::invalid_argument(
+          "dino8::kernel::ChamferConvexEdges: degenerate face/edge geometry (a face normal is parallel to the "
+          "edge)");
+    }
+    const std::vector<Point3d>& loop_i0 = work[static_cast<size_t>(idx_i)].loop;
+    const std::vector<Point3d>& loop_j0 = work[static_cast<size_t>(idx_j)].loop;
+    if (extent_along(loop_i0, m_i, edge_p0) <= tol) m_i = -m_i;
+    if (extent_along(loop_j0, m_j, edge_p0) <= tol) m_j = -m_j;
+    const double extent_i = extent_along(loop_i0, m_i, edge_p0);
+    const double extent_j = extent_along(loop_j0, m_j, edge_p0);
+    if (!(distance_i < extent_i - tol) || !(distance_j < extent_j - tol)) {
+      throw std::invalid_argument(
+          "dino8::kernel::ChamferConvexEdges: a chamfer distance is too large to fit on one of the supplied "
+          "edges - it reaches or exceeds that face's own extent from the edge");
+    }
+
+    const Point3d R_i0 = edge_p0 + distance_i * m_i;
+    const Point3d R_j0 = edge_p0 + distance_j * m_j;
+    const Point3d R_i1 = edge_p1 + distance_i * m_i;
+    const Point3d R_j1 = edge_p1 + distance_j * m_j;
+
+    Brep::PlanarFace retrimmed_i = work[static_cast<size_t>(idx_i)];
+    retrimmed_i.loop = detail::ClipByHalfspace3d(retrimmed_i.loop, ON_Plane(R_i0, -m_i), tol);
+    dedupe_consecutive(retrimmed_i.loop);
+    Brep::PlanarFace retrimmed_j = work[static_cast<size_t>(idx_j)];
+    retrimmed_j.loop = detail::ClipByHalfspace3d(retrimmed_j.loop, ON_Plane(R_j0, -m_j), tol);
+    dedupe_consecutive(retrimmed_j.loop);
+    if (retrimmed_i.loop.size() < 3 || retrimmed_j.loop.size() < 3) {
+      throw std::invalid_argument(
+          "dino8::kernel::ChamferConvexEdges: re-trimming an adjacent face left fewer than 3 vertices on one of "
+          "the supplied edges - distances too large for this solid's geometry");
+    }
+
+    // Every OTHER face (not this edge's own i/j), mutable so
+    // ChamferEndAtVertex can splice a genuine third-face corner notch
+    // into it at either endpoint - written straight back into `work`
+    // below so a LATER edge in this same call sees the up-to-date
+    // topology (two edges may legitimately share a face, just not a
+    // vertex - see SCOPE above).
+    std::vector<size_t> other_idx;
+    std::vector<Brep::PlanarFace> others;
+    other_idx.reserve(work.size() - 2);
+    others.reserve(work.size() - 2);
+    for (size_t f = 0; f < work.size(); ++f) {
+      if (static_cast<int>(f) == idx_i || static_cast<int>(f) == idx_j) continue;
+      other_idx.push_back(f);
+      others.push_back(work[f]);
+    }
+
+    Point3d Q_i0, Q_j0, Q_i1, Q_j1;
+    ChamferEndAtVertex(others, edge_p0, e, plane_i, plane_j, R_i0, R_j0, tol, Q_i0, Q_j0);
+    ChamferEndAtVertex(others, edge_p1, e, plane_i, plane_j, R_i1, R_j1, tol, Q_i1, Q_j1);
+
+    for (size_t k = 0; k < other_idx.size(); ++k) work[other_idx[k]] = std::move(others[k]);
+    work[static_cast<size_t>(idx_i)] = std::move(retrimmed_i);
+    work[static_cast<size_t>(idx_j)] = std::move(retrimmed_j);
+
+    Brep::PlanarFace chamfer;
+    std::vector<Point3d> quad = {Q_i0, Q_i1, Q_j1, Q_j0};
+    Vector3d newell(0, 0, 0);
+    for (size_t k = 0; k < quad.size(); ++k) {
+      const Point3d& a = quad[k];
+      const Point3d& b = quad[(k + 1) % quad.size()];
+      newell.x += (a.y - b.y) * (a.z + b.z);
+      newell.y += (a.z - b.z) * (a.x + b.x);
+      newell.z += (a.x - b.x) * (a.y + b.y);
+    }
+    if (newell * (n_i + n_j) < 0.0) std::reverse(quad.begin(), quad.end());
+    Vector3d n_c = ON_CrossProduct(quad[1] - quad[0], quad[2] - quad[0]);
+    if (!n_c.Unitize() || n_c * (n_i + n_j) <= 0.0) {
+      throw std::runtime_error(
+          "dino8::kernel::ChamferConvexEdges: degenerate chamfer quad - please report this as a bug");
+    }
+    chamfer.plane = ON_Plane(quad[0], n_c);
+    chamfer.loop = std::move(quad);
+    chamfer_quads.push_back(std::move(chamfer));
+  }
+
+  std::vector<Brep::PlanarFace> all = std::move(work);
+  for (Brep::PlanarFace& q : chamfer_quads) all.push_back(std::move(q));
+  return Brep::FromMixedFaces(all, {});
+}
+
+// CONCAVE mirror of ChamferConvexEdges - see ChamferConcaveEdge's own doc
+// comment for why no separate construction is needed: ChamferConvexEdges'
+// own m_i/m_j sign-fix is already extent-based, not built from a convex-
+// specific contact-point formula, so it is already correct for a concave
+// edge with no change. This is therefore a thin, VALIDATING wrapper: every
+// supplied edge is required to be genuinely concave (the same
+// RequireConcaveEdge check ChamferConcaveEdge itself uses, applied per
+// edge against the ORIGINAL, pre-batch face set - a property of the edge
+// that does not change as other, vertex-disjoint edges in this same call
+// are chamfered elsewhere on the solid), THEN the whole call dispatches
+// to ChamferConvexEdges' own construction verbatim - the same "two names,
+// one shared construction" shape ChamferConcaveEdge already uses for its
+// own dispatch, including reporting a failure INSIDE that shared
+// construction under ChamferConvexEdges' own name, not this function's.
+Brep ChamferConcaveEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double distance_i,
+                          double distance_j) {
+  if (!(distance_i > 0.0) || !(distance_j > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferConcaveEdges: distance_i and distance_j must both be strictly positive");
+  }
+  if (edges.empty()) {
+    throw std::invalid_argument("dino8::kernel::ChamferConcaveEdges: at least one edge is required");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  for (const std::pair<Point3d, Point3d>& ed : edges) {
+    RequireConcaveEdge(faces, ed.first, ed.second, tol, "ChamferConcaveEdges");
+  }
+  return ChamferConvexEdges(solid, edges, distance_i, distance_j);
+}
 
 // ---------------------------------------------------------------------------
 // Exact conic ("rho") cross-section blend (see fillet.h's own
