@@ -1,0 +1,21 @@
+# PrintDisplay QC: the preview must show each object's real print colour
+# (Document::EffectiveColor - the exact colour ExportPdf/ExportSvg's
+# CollectPaths, FileExchange.cpp, put on the page), not the near-black-on-
+# dark-background legibility lift Viewport.cpp otherwise applies for on-
+# screen readability (see cmd_viewtools.cpp's PrintDisplay). This script
+# only builds the scene and captures the two screenshots; smoke.sh does the
+# actual pixel-level verification.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+SetTheme Dark
+Wireframe
+Line 0,0,0 40,25,0
+SelLast
+SetRenderColor 5,5,5
+SelNone
+Plan
+PrintDisplay State=Off
+ViewCaptureToFile @TMP@/pd_off.bmp
+PrintDisplay State=On
+ViewCaptureToFile @TMP@/pd_on.bmp
+PrintDisplay State=Off
+@expect_objects 1

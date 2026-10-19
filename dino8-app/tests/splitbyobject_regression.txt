@@ -1,0 +1,25 @@
+# SplitByObject regression: a cutting object that never touches its
+# target must not be consumed, and the target must not be needlessly
+# re-meshed. SplitByObject used to treat "Intersection empty OR Difference
+# empty" as a successful split, but a cutter that simply misses its target
+# entirely also has Intersection empty while Difference comes back as the
+# whole, untouched target (subtracting nothing changes nothing) - so it
+# read as "1 solid(s) split into 1 piece(s)", silently destroying the
+# selected cutting object and replacing the analytic target with a
+# re-meshed copy of itself for zero real effect. A real split now requires
+# BOTH halves to be non-empty. Fresh document, so ids are 1 (Box) and 2
+# (Sphere, far away and never touching the box).
+SetActiveViewport Top
+Box 0,0,0 10,10,0 10
+Sphere 1000,1000,1000 3
+SelNone
+SelID 1
+SplitByObject
+SelID 2
+Enter
+# Both objects must still be present, unmodified - nothing was split, so
+# nothing (not even the cutter) should have been touched.
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0

@@ -1,0 +1,345 @@
+# Annotation, linetype, hatch and block tools QC (see smoke.sh).
+# --- DimArea on a circle, DimCurveLength on a line
+Circle 0,0,0 10
+SelLast
+DimArea
+20,20,0
+SelNone
+Line 0,-30,0 40,-30,0
+SelLast
+DimCurveLength
+20,-40,0
+SelNone
+# --- SelDim must find DimArea/DimCurveLength too (its label list had gone
+# stale and silently excluded them, plus DimVolume/DimOrdinate/
+# DimCreaseAngle - see cmd_select2.cpp).
+SelDim
+SelNone
+# --- SelAnnotationStyle/SelFontUse: same stale-list bug, fixed by matching
+# the generic "Annotation" tag instead of a hardcoded per-kind list.
+SelAnnotationStyle
+SelNone
+# --- Centermark, RevCloud (rectangle 30 x 20 with 4-unit arcs)
+Circle 60,0,0 5
+SelLast
+Centermark
+SelNone
+# --- SelDimCentermark used to wrongly claim centermarks can never exist
+# (NoSuchObjects) even though Centermark, right above, is a real command.
+SelDimCentermark
+SelNone
+# --- SelDimOrdinate: same wrong-NoSuchObjects bug as SelDimCentermark,
+# even though DimOrdinate (below) is a real, working command.
+DimOrdinate
+200,0,0
+250,20,0
+Enter
+SelNone
+SelDimOrdinate
+SelNone
+# --- SelPicture: Picture (a real command) never tagged its own object,
+# so SelPicture could never find it; now tagged and selectable.
+Picture @DINO8ROOT@/resources/dino8.png
+300,0,0
+310,10,0
+SelNone
+SelPicture
+SelNone
+RevCloud Rectangle=Yes ArcLength=4 100,0,0 130,20,0
+SelNone
+# --- Text, then edit it through TextProperties and find it again
+Text Hello 0,50,0
+SelText
+TextProperties Text=World Height=5
+SelNone
+FindText Text=World
+SelNone
+# --- Dot -> ConvertDots
+Dot Note 0,-100,0
+ConvertDots
+SelNone
+# --- Hatch, then HatchScale rebuilds it from its boundary
+Rectangle 0,-80,0 40,-60,0
+SelLast
+Hatch
+SelNone
+SelHatch
+HatchScale Factor=2
+SelNone
+# --- Linetypes: custom pattern, assign, extract the dashes, persist in 3dm
+SetCustomLinetype Name=Foo Pattern=5,5
+Line 0,80,0 100,80,0
+SelLast
+SetLinetype Name=Foo
+ExtractLineTypeSegments
+SelNone
+SetLayerLinetype Name=Dashed
+Linetypes
+Save @TMP@/annotate2.3dm
+New
+Open @TMP@/annotate2.3dm
+SelLinetype Name=Foo
+SelNone
+# --- Blocks: define A and B, insert A, replace every A by B
+Box 200,0,0 210,10,0 10
+SelLast
+Block 200,0,0 A
+Sphere 250,0,0 5
+SelLast
+Block 250,0,0 B
+Insert A 300,0,0
+Enter
+SelBlockInstanceNamed Name=A
+ReplaceBlock Name=B
+SelNone
+SelBlockInstanceNamed Name=B
+CreateUniqueBlock Name=C
+SelNone
+# --- BlockEdit: redefining a block updates every instance of it (real
+# linked instancing, not independent copies) - see cmd_drafting.cpp/Block.
+Box 400,0,0 410,10,0 10
+SelLast
+Block 400,0,0 D
+Insert D 460,0,0
+Enter
+SelBlockInstanceNamed Name=D
+BlockEdit
+SelLast
+Move 0,0,0 0,0,50
+BlockEdit
+SelNone
+RescueBlockOrphans
+# --- SelMirroredBlocks: Mirror tags block-instance member objects Mirrored
+# (see cmd_transform.cpp/MirrorCommand::Apply), so a real mirror-copy of a
+# block instance can be re-selected afterwards.
+Box 500,0,0 510,10,0 10
+SelLast
+Block 500,0,0 MB
+Insert MB 560,0,0
+Enter
+SelBlockInstanceNamed Name=MB
+Mirror Copy=Yes
+560,0,0
+560,10,0
+SelNone
+SelMirroredBlocks
+SelNone
+# --- Centermark/CenterLine associativity: a Centermark on a circle, and a
+# CenterLine between two parallel lines, both move with the geometry they
+# reference when UpdateDimensions re-evaluates them - not a static copy
+# drawn once. Circle center starts at (700,0,0) r=8; Centermark there, then
+# the circle is moved by (20,15,0) to (720,15,0) - Move's own object prompt
+# picks up the circle's still-live pre-selection from SelLast/Centermark
+# above, not the just-created centermark - and UpdateDimensions must print
+# the mark's new position, not the original.
+Circle 700,0,0 8
+SelLast
+Centermark
+Move 700,0,0 720,15,0
+UpdateDimensions
+SelNone
+# Two parallel vertical lines 20 units apart (x=800 and x=820, y 0..10);
+# CenterLine's midline runs x=810, y 0..10. A dedicated NewLayer (made
+# current, so both new lines land on it and nothing else does) plus
+# SelLayer selects exactly these two lines for CenterLine's 2-object pick -
+# corrected 2026-09-30, was a hardcoded SelID pair that had drifted stale:
+# a *wrong-but-real* id is accepted by SelID without complaint (unlike a
+# truly invalid one, which at least warns), so a stale pair fails quietly
+# with the wrong midline instead of an obvious error, and when both ids
+# happen to resolve to nothing at all (as this one had) CenterLine's own
+# WantObjects(2) never gets satisfied and it sits waiting for more picks,
+# silently swallowing every subsequent script line as an object pick/point
+# instead of a command - no-op'ing everything below it, including this
+# file's own later checks. A per-block layer sidesteps id-counting
+# entirely.
+NewLayer CenterLineTest
+Line 800,0,0 800,10,0
+SelLast
+SetObjectName CenterLine1
+Line 820,0,0 820,10,0
+SelNone
+SelLayer
+CenterLine
+SelNone
+# Moving the first line to x=780 shifts the midline from x=810 to x=800,
+# which UpdateDimensions must pick up - proving CenterLine tracks the live
+# geometry, not a static copy drawn once.
+SelName CenterLine1
+Move 800,0,0 780,0,0
+UpdateDimensions
+SelNone
+# --- Associative DimVolume: a closed Box solid measured, then Scale1D
+# stretches it along its x-extent (900-910 -> 900-920) doubling its volume
+# from 1000 to 2000; UpdateMeasureDims must re-measure the box's current
+# volume instead of the value baked at creation time (MeasureRefIds - see
+# cmd_annotate2.cpp). A DimTolerance suffix added before the stretch must
+# also survive UpdateMeasureDims's rebuild instead of being silently
+# dropped (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h) -
+# same fix, same helpers, as UpdateDimensions's own DimTolerance test
+# (drafting2_script.txt).
+Box 900,0,0 910,10,0 10
+SelLast
+SetObjectName VolBox
+DimVolume
+920,20,0
+SelLast
+DimTolerance Type=Symmetric Value=0.05
+SelName VolBox
+Scale1D 900,0,0 2
+UpdateMeasureDims
+SelLast
+GetUserText
+SelNone
+# --- Associative DimCreaseAngle: two real Line objects measured directly
+# (whole-object reference, not coincident-point matching - same shape as
+# DimRadius/CenterLine). Same dedicated-layer + SelLayer technique as the
+# CenterLine fix above selects exactly these two lines for DimCreaseAngle's
+# 2-object pick, instead of a hardcoded SelID pair that can silently drift
+# onto some other, unrelated real object (see that block's comment for why
+# this bit both blocks during this window's own development). Rotating the
+# second line 45 degrees about their shared corner (1000,0,0) changes the
+# angle between them from 90 to 45 degrees; UpdateMeasureDims must redraw
+# it as 45, not the original 90.
+NewLayer CreaseAngleTest
+Line 1000,0,0 1000,10,0
+Line 1000,0,0 1010,0,0
+SelLast
+SetObjectName CreaseLine2
+SelNone
+SelLayer
+DimCreaseAngle
+1010,10,0
+SelName CreaseLine2
+Rotate 1000,0,0 45
+# --- Associative DimOrdinate: base point and feature point each coincide
+# with a real Point object (FindPointAnchor, same coincidence rule as
+# DimLinear - see BuildOrdinateDimGroup, cmd_annotate2.cpp). Moving the
+# feature point's Point object from x=1150 to x=1220 changes the X ordinate
+# from 50 (1150-1100) to 120 (1220-1100); the shared UpdateMeasureDims call
+# below must redraw it as 120, not the 50 baked at creation time - same
+# "edit the referenced object, not the dimension" contract as DimVolume/
+# DimCreaseAngle above.
+Point 1100,0,0
+SelLast
+SetObjectName OrdBase
+SelNone
+Point 1150,0,0
+SelLast
+SetObjectName OrdFeature
+SelNone
+DimOrdinate
+1100,0,0
+1150,0,0
+Enter
+SelName OrdFeature
+Move 1150,0,0 1220,0,0
+UpdateMeasureDims
+SelNone
+# --- Field text: live text driven by a document/object property (Kind=
+# Filename/FilePath/Date/CurrentLayer/ObjectCount/Length/Area/Volume - see
+# cmd_annotate2.cpp's FieldCommand/ResolveFieldValue). This script Saved
+# then Opened @TMP@/annotate2.3dm above, so Filename is deterministically
+# "annotate2.3dm"; the DimCreaseAngle section further up (`NewLayer
+# CreaseAngleTest`) leaves the current layer at "CreaseAngleTest", not
+# "Default", for the rest of the script - CurrentLayer is deterministically
+# that instead.
+Field Kind=Filename
+2000,0,0
+Field Kind=CurrentLayer
+2000,-10,0
+UpdateFields
+# --- Field Kind=Length, associative to a real curve (MeasureOne, the same
+# math DimCurveLength above uses, via FieldRefIds): UpdateFields must
+# redraw it after the curve is stretched (Scale1D doubling it from 100 to
+# 200 along X from its own start point), not keep the 100 baked at Field's
+# own creation time - the actual proof this is a live recompute, not a
+# static bake with a property-sounding name.
+Line 2000,-30,0 2100,-30,0
+SelLast
+SetObjectName FieldLine
+Field Kind=Length
+2000,-40,0
+SelNone
+SelName FieldLine
+Scale1D 2000,-30,0 2
+UpdateFields
+SelNone
+# --- Dimension styles: real units/precision, a unit suffix and a default
+# tolerance, wired into the actual dimension-building code (DimStyleParams,
+# DimGeometry.h/annotate_common.h) - not stored-and-ignored fields.
+# DimStyle1's Precision=2/Suffix=mm/TolMode=symmetric bakes "100.00 mm" plus
+# a "+/-0.05" tolerance suffix for a dimension measuring exactly 100 units,
+# not the old unstyled "100". SelLast/GetUserText reads the baked "Text"
+# user-text tag back from just the new dimension's own glyph (SelLast, not
+# SelDim - selecting every dimension built earlier in this already-long
+# script and dumping all of their user text made $A2 large enough to hit a
+# real, separate smoke.sh bug: `echo "$A2" | grep -q` under this script's
+# own `set -o pipefail` can report a spurious failure for a match that
+# occurs early in a large piped string, since grep -q's early exit once it
+# finds that match can SIGPIPE the still-writing `echo` before it finishes,
+# and pipefail then surfaces that SIGPIPE as the whole check's exit status -
+# so every later a2check call in the script read as a false FAIL. Fixed
+# here by keeping the selection - and so GetUserText's output - small,
+# rather than touching the shared a2check/near helpers every other script
+# section's checks also rely on).
+AnnotationStyles Name=DimStyle1 Precision=2 Suffix=mm TolMode=symmetric TolValue=0.05 Current=Yes
+Dim
+3000,0,0
+3100,0,0
+3050,20,0
+SelLast
+GetUserText
+SelNone
+# UpdateDimensions must re-read DimStyle1's CURRENT precision (now 4, not
+# the 2 it was built with) from the dimension's own recorded style name, so
+# editing a style and re-running Update reformats every dimension built
+# with it - a live style, not a value frozen at creation time.
+AnnotationStyles Name=DimStyle1 Precision=4
+UpdateDimensions
+SelLast
+GetUserText
+SelNone
+AnnotationStyles Name=Default Current=Yes
+# --- Measured-dimension precision now wired to a style's own Precision/
+# AngularPrecision, the same way DimStyle1 above already proved for
+# DimLinear/DimAngle: DimArea/DimCurveLength/DimVolume/DimOrdinate/
+# DimCreaseAngle all format their value through FormatMeasurement instead
+# of a bare FormatNumber now (cmd_annotate2.cpp's MeasureDimText/
+# BuildOrdinateDimGroup/DimCreaseAngleCommand::OnPoint). MeasStyle's
+# Precision=2/AngularPrecision=2 bakes "100.00"/"25.00"/"90.00 deg" for an
+# exactly-100-unit area/length/volume, an exactly-25-unit ordinate and an
+# exactly-90-degree crease - not the old unstyled "100"/"25"/"90 deg" -
+# and editing the style afterward (Precision=4/AngularPrecision=4) plus a
+# further UpdateMeasureDims reformats every one of the five kinds live,
+# through each dimension's own recorded style name, same as DimStyle1.
+AnnotationStyles Name=MeasStyle Precision=2 AngularPrecision=2 Current=Yes
+Rectangle 5000,0,0 5010,10,0
+SelLast
+DimArea
+5005,20,0
+SelNone
+Line 5000,-30,0 5100,-30,0
+SelLast
+DimCurveLength
+5050,-40,0
+SelNone
+Box 5000,100,0 5010,110,0 1
+SelLast
+DimVolume
+5020,120,0
+SelNone
+DimOrdinate
+5000,200,0
+5025,220,0
+Enter
+SelNone
+NewLayer MeasCreaseTest
+Line 5000,300,0 5000,310,0
+Line 5000,300,0 5010,300,0
+SelLayer
+DimCreaseAngle
+5010,310,0
+SelNone
+AnnotationStyles Name=MeasStyle Precision=4 AngularPrecision=4
+UpdateMeasureDims
+AnnotationStyles Name=Default Current=Yes

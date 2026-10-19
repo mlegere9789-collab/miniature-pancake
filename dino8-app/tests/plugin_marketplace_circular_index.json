@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "index_name": "Circular Dependency Test Index (plugin dependency resolution fixture)",
+  "plugins": [
+    {
+      "id": "loopa",
+      "name": "LoopA",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "First link of a 3-entry dependency cycle (loopa -> loopb -> loopc -> loopa). Installing this must fail cleanly - and install nothing - because the dependency graph cycles back to loopa before InstallEntry is ever reached.",
+      "api_version": 2,
+      "bundled_path": "plugins/hello_dino",
+      "dependencies": ["loopb"]
+    },
+    {
+      "id": "loopb",
+      "name": "LoopB",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Depends on loopc, which depends back on loopa - so the cycle isn't just a direct mutual pair.",
+      "api_version": 2,
+      "bundled_path": "plugins/mesh_tools",
+      "dependencies": ["loopc"]
+    },
+    {
+      "id": "loopc",
+      "name": "LoopC",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Depends on loopa, closing the cycle.",
+      "api_version": 2,
+      "bundled_path": "plugins/curve_tools",
+      "dependencies": ["loopa"]
+    }
+  ]
+}

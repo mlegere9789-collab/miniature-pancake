@@ -1,0 +1,42 @@
+# NestedClippingDrawing regression: real recursive re-clipping (a section
+# of a section), checked against the actual computed geometry -- not just
+# that the command ran without error.
+#
+# Cube X:[-5,5] Y:[-5,5] Z:[0,10] (Box's base ignores the typed corners'
+# elevation and sits on the active CPlane, so the World-CPlane cube runs
+# Z:[0,10], not centred -- accounted for below).
+#
+# PlaneX (CPlane Right, so its own axes are world Y/Z; normal world X) at
+# x=0 cuts the cube into the flat ClippingDrawing curve x=0, y in [-5,5],
+# z in [0,10]: a 10 x 10 rectangle. Hand-computed bounding box:
+#   min 0,-5,0  max 0,5,10
+#
+# NestedClippingDrawing then re-clips THAT rectangle (not the original
+# cube -- AddNestedClippingDrawingCurves rebuilds it as a trimmed planar
+# face on PlaneX's own plane and slices *that* face, not the scene) by
+# PlaneY (CPlane Front, normal world Y) at y=0. The intersection of the
+# planes x=0 and y=0 is the line x=0,y=0; since y=0 sits inside the
+# rectangle's y in [-5,5] range for its whole z in [0,10] extent, the
+# nested drawing is the full vertical segment x=0,y=0,z in [0,10]. Hand-
+# computed bounding box:
+#   min 0,0,0  max 0,0,10
+# Typed point coordinates are CPlane-relative (u,v,w on the active CPlane,
+# converted to world via ToWorld), not raw world x,y,z -- so both
+# ClippingPlane corners below are typed identically ("-20,-20,0 20,20,0",
+# a CPlane-local square with no normal-offset) even though they land on
+# two different world planes (PlaneX at world x=0, PlaneY at world y=0).
+Box -5,-5,-5 5,5,-5 10
+CPlane Right
+ClippingPlane Name=PlaneX -20,-20,0 20,20,0
+CPlane Front
+ClippingPlane Name=PlaneY -20,-20,0 20,20,0
+CPlane World
+ClippingDrawings PlaneX
+SelLast
+List
+BoundingBox
+NestedClippingDrawing Base=PlaneX Nest=PlaneY
+SelLast
+List
+BoundingBox
+@expect_objects 3

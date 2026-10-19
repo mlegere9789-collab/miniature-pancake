@@ -1,0 +1,263 @@
+# SubD editing QC: creases, control-net editing, repair, conversions.
+# Sub-objects are picked by points: edge midpoints and face centroids of the
+# control net. Object counts are checked with @expect_objects.
+# --- A SubD box, two bottom edges creased (picked by their midpoints)
+SubDBox 0,0,0 10,10,0 10
+SelLast
+Crease
+5,0,0
+5,10,0
+Enter
+SelLast
+What
+@expect_objects 1
+# --- Extrude the top face (picked by its centroid) by 3, then inset it by 1
+SelLast
+ExtrudeSubD
+5,5,10
+Enter
+3
+SelLast
+Inset
+5,5,13
+Enter
+1
+@expect_objects 1
+# --- Bridge the right face of the first box with the left face of a second box
+SubDBox 20,0,0 30,10,0 10
+SelAll
+Bridge
+10,5,5
+20,5,5
+@expect_objects 1
+SelLast
+What
+# --- OffsetSubD Solid=Yes builds an inner shell; RepairSubD reports a closed result
+SelLast
+OffsetSubD
+Solid=Yes
+1
+SelLast
+RepairSubD
+@expect_objects 1
+# --- InsertEdge (an edge loop around the box), a crease loop around the top, DivideAlongCreases, Fill
+SubDBox 50,0,0 60,10,0 10
+SelLast
+InsertEdge
+55,0,0
+Enter
+SelLast
+Crease
+52.5,0,10
+57.5,0,10
+52.5,10,10
+57.5,10,10
+50,5,10
+60,5,10
+Enter
+SelLast
+DivideAlongCreases
+@expect_objects 3
+SelLast
+Fill
+Enter
+SelLast
+What
+# --- Mesh -> SubD with creases at the sharp edges
+MeshBox 70,0,0 80,10,0 10
+SelLast
+AutomaticSubDFromMesh
+@expect_objects 4
+# --- SubD truncated cone, selection / display helpers, convex hull of everything
+SubDTruncatedCone 90,0,0 5 2.5 10
+SelClosedSubD
+SubDDisplayToggle
+SelAll
+ShrinkWrap
+@expect_objects 6
+SelLast
+Volume
+# --- SubDSpinEdge, InsertPoint, Slide and SubDExpandEdges on their own box
+# (SpinEdge and InsertPoint run first, on edges/faces the later picks don't touch,
+# so each command sees the plain-quad topology its pick point assumes)
+SubDBox 100,0,0 110,10,0 10
+SelLast
+SubDSpinEdge
+Direction=CCW
+105,0,10
+Enter
+SelLast
+InsertPoint
+110,10,5
+Enter
+SelLast
+Slide
+100,0,0
+105,0,0
+SelLast
+SubDExpandEdges
+110,5,0
+Enter
+1
+SelLast
+What
+@expect_objects 7
+# --- PackSubDFaces (a real UV-atlas layout - per-face planar unwrap + shelf
+# bin-packing, see cmd_subd.cpp), SubDFaceEdgeVertexToggle (cycles the real
+# app-wide sub-object pick filter shared with SelectionFilter*), AddGuide/
+# RemoveGuide (document-stored two-point guide lines; no scene objects).
+SelLast
+PackSubDFaces
+SubDFaceEdgeVertexToggle
+SubDFaceEdgeVertexToggle
+SubDFaceEdgeVertexToggle
+SubDFaceEdgeVertexToggle
+AddGuide
+0,0,0
+50,0,0
+AddGuide
+0,50,0
+50,50,0
+RemoveGuide
+25,0,0
+RemoveGuide
+Enter
+@expect_objects 7
+# --- PackSubDFaces on two fresh, regular SubDs (a plain box and a sphere)
+# for a predictable coverage number - smoke.sh checks the printed UV
+# bounds, overlap count and coverage percentage against real thresholds,
+# not just that the command didn't crash.
+SubDBox 120,0,0 130,10,0 10
+SelLast
+PackSubDFaces
+SubDSphere 145,5,5 5
+SelLast
+PackSubDFaces
+@expect_objects 9
+# --- ToNURBS: real Catmull-Clark limit-surface-to-bicubic-NURBS-patch
+# conversion (kernel::SubD::ToNurbsPatches, see its doc comment) - not the
+# old flat-facetted dense-mesh-to-Brep approximation. SubDPlane's control
+# net is a triangulated grid (TessellateGrid splits each cell into 2
+# triangles), which real Catmull-Clark refinement turns into an
+# almost-entirely-regular quad net after a couple of rounds - a real
+# nonzero count of mathematically EXACT bicubic patches should come out of
+# it; SubDBox's 8 corners are the only extraordinary vertices (valence 3,
+# a cube corner), so it exercises the honestly-approximated irregular-patch
+# path for just those, exact everywhere else. List then reports each
+# resulting Brep's real face count (many small bicubic patches, not 6/16
+# flat facets).
+SubDPlane 160,0,0 168,8,0
+SelLast
+ToNURBS
+SelLast
+List
+SubDBox 160,20,0 168,28,0 4
+SelLast
+ToNURBS
+SelLast
+List
+# --- ToSubD: a Brep -> SubD conversion now tessellates at the document's
+# real modeling tolerance (ctx.Settings().absolute_tolerance, default
+# 0.001) instead of the display-quality surface_display_tolerance (default
+# 0.05) it used before - a much finer, tolerance-bound control cage, not
+# "whatever happens to look right on screen". List's face count below is
+# smoke.sh's real check that the tight tolerance is actually driving the
+# tessellation, not just "didn't crash" - see cmd_solids.cpp's
+# MeshFromSelection.
+Sphere 200,0,0 5
+SelLast
+ToSubD
+SelLast
+List
+@expect_objects 15
+# --- ToSubD exact path: SubD::FromBrep (dino8-kernel) builds the
+# Catmull-Clark cage directly from a Brep's own faces, with no
+# tessellation at all, whenever every face is already an untrimmed,
+# planar, axis-aligned-in-own-uv quad (the shape Box()'s own faces are
+# built from) - PARITY_MAP.md's "SubD from NURBS/B-rep conversion" item's
+# own disclosed "still unwired from any dino8-app command" gap.
+# BuildSubDVerifiedAgainstBrep's own tessellate-and-verify path above
+# (the Sphere fixture) is honestly scoped to a MEASURED, not-necessarily-
+# tight bound; for a Box specifically it was previously a genuine MISS
+# (0 of 1 verified, deviation ~0.8 - confirmed directly against the
+# pre-this-change binary, not assumed) because a planar face's own
+# triangulated-then-recombined cage is NOT the same shape FromBrep's
+# per-face-bilinear construction gives, and Catmull-Clark's limit surface
+# pulls an irregular-vertex-heavy triangulated cage measurably further
+# from the true flat faces than this measurement's own retry budget
+# could shrink. The exact path below must now report 0 deviation,
+# "verified", AND the clean natural 6-face cage (not a triangulated one).
+Box 250,0,0 260,10,10
+Enter
+SelLast
+ToSubD
+SelLast
+List
+@expect_objects 17
+# --- ToSubD limit-surface-fidelity check: BuildSubDVerifiedAgainstBrep
+# (cmd_solids.cpp) now measures the resulting SubD's own true
+# Catmull-Clark LIMIT surface against the original Brep, not just the
+# control cage's own tessellation tolerance. The sphere above is a real,
+# honestly-disclosed MISS (its triangulated cage is almost entirely
+# extraordinary vertices, and already sits at this mesher's own per-edge
+# subdivision cap, so retightening can't shrink it further - see
+# smoke.sh's own check of the exact reported deviation). A flat planar
+# patch is the opposite, provable case: every control point already lies
+# in one plane, so Catmull-Clark's own limit-point formula (an affine
+# combination of coplanar points) can introduce no deviation at all,
+# regardless of valence - this must fully verify on the very first
+# round, proving the "verified" branch genuinely fires, not just the
+# "honest miss" branch above.
+Rectangle 300,0,0 320,10,0
+SelLast
+PlanarSrf
+SelLast
+ToSubD
+SelLast
+List
+@expect_objects 20
+# --- SubDRevolve: the SubD menu (MenuBar.cpp) names this command, but
+# nothing registered it - a broken menu entry, not a feature. It now runs
+# the real Revolve command and converts the resulting surface to a SubD via
+# the same SweepThenSubDCommand wrapper SubDSweep1/SubDSweep2 already use.
+SelAll
+Hide
+Circle 400,0,0 5
+SelCrv
+SubDRevolve
+420,-10,0
+420,10,0
+SelLast
+What
+@expect_objects 22
+# --- SubDMultiPipe: same broken-menu-entry story as SubDRevolve above, for
+# the other name MenuBar.cpp lists. Runs the real MultiPipe command (pipes
+# every selected curve, unioned into one mesh) and converts the result to a
+# SubD the same way.
+SelAll
+Hide
+Line 450,0,0 450,0,10
+Line 455,0,0 455,0,10
+SelCrv
+SubDMultiPipe
+1
+SelLast
+What
+@expect_objects 25
+# --- Revolve Output=SubD: the plain Revolve command's own documented
+# "Output" option (data/commands.json already lists it; PARITY_MAP.md's own
+# "ExtrudeCrv / Revolve producing a SubD object directly" item) is now
+# wired for real - distinct from the separate SubDRevolve command above
+# (both exist in real Rhino too: a dedicated SubD-menu command alongside an
+# Output option on the plain command). Converts the same way, via
+# ConvertObjectToSubD (cmd_common.h/cmd_subd.cpp).
+SelAll
+Hide
+Circle 500,0,0 5
+SelCrv
+Revolve Output=SubD
+520,-10,0
+520,10,0
+SelLast
+What
+@expect_objects 27

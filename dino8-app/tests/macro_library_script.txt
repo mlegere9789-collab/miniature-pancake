@@ -1,0 +1,72 @@
+# Named macro library (MacroSave/MacroLoad/MacroDelete/RunSavedMacro,
+# cmd_misc.cpp) - PARITY_MAP.md's "VBA-style macro recorder and editor"
+# item. Before this, the Macro Editor had exactly one shared buffer
+# (AppState::macro_text): saving a second macro meant overwriting the
+# only copy. This proves AppState::macros is a real, independent-of-the-
+# buffer store, not just a second name for the same thing:
+#  - MacroSave takes a SNAPSHOT of the buffer - a later change to the live
+#    buffer must NOT also change what was saved.
+#  - RunSavedMacro replays a saved macro's lines directly (real geometry
+#    appears, not just a printed confirmation).
+#  - MacroLoad restores a saved macro back into the live buffer, verified
+#    by dumping the buffer afterward (RecordMacro with no argument, which
+#    already prints it line by line) rather than trusting Load's own
+#    "Loaded" confirmation alone.
+#  - MacroDelete removes it, and Load/Delete/Run on an unknown name all
+#    warn rather than silently doing nothing or crashing.
+#
+# Deliberately NOT assumed: a known starting macro_text. smoke.sh shares
+# one XDG_CONFIG_HOME across every script in the whole run (see its own
+# top-of-file comment), and record_macro_script.txt - which runs earlier
+# in that same run - leaves real, persisted content (Settings.cpp) in the
+# buffer this script inherits. RecordMacro only ever APPENDS, so this
+# script's own Line/Box lines always land as the LAST two lines of
+# whatever the buffer already held, and the checks below only ever rely
+# on that - never on the buffer's total length or the document's total
+# object count after a replay, both of which depend on however much
+# earlier, unrelated content happened to leak in. (This document's own
+# Document object COUNT, unlike macro_text, never persists across a
+# fresh --script process - only the two `@expect_objects` checks below,
+# both counting objects THIS script alone just typed, rely on that.)
+
+RecordMacro On
+Line 0,0,0 10,0,0
+Box 20,0,0 25,5,5 5
+RecordMacro Off
+MacroSave "saved macro"
+@expect_objects 2
+
+# Runs the saved macro directly (not loaded into, or run from, the live
+# buffer). Real geometry proof, immune to however many other lines the
+# shared buffer happened to carry already: Box is always the LAST of the
+# two lines this script itself appended (RecordMacro only ever appends),
+# so it is always the last line replayed, and SelLast + BoundingBox reads
+# its own, real, freshly-created geometry back - not a stale object left
+# over from the Line+Box typed directly above.
+RunSavedMacro "saved macro"
+SelNone
+SelLast
+BoundingBox
+
+# Change the LIVE buffer after saving - if MacroSave had only kept a
+# reference instead of a real copy, the save would drift here too.
+RecordMacro On
+Circle 50,0,0 5
+RecordMacro Off
+
+# MacroLoad overwrites the live buffer with the saved snapshot; dumping
+# the buffer (RecordMacro, no argument) proves it is back to the
+# original Line/Box text with no trace of the Circle line just typed
+# above - true regardless of whatever else the buffer carried before
+# this script's own Line/Box/Circle lines were appended to it.
+MacroLoad "saved macro"
+RecordMacro
+
+# Unknown-name handling: delete it, delete it again, then try to run/load
+# the now-gone name - all three must warn, and the warned-path source
+# (cmd_misc.cpp) returns before touching the document or the live buffer,
+# so none of this needs its own object-count check to be a real test.
+MacroDelete "saved macro"
+MacroDelete "saved macro"
+RunSavedMacro "saved macro"
+MacroLoad "saved macro"

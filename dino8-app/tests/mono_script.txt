@@ -1,0 +1,31 @@
+# SetObjectDisplayMode Monochrome QC: two distinctly-coloured boxes in a
+# Shaded (not Monochrome) Top view. Box A (screen-left, red) is left alone
+# throughout; Box B (screen-right, blue) gets the Monochrome override
+# toggled on then off - a real per-object fill-colour override, not just
+# accepted-and-ignored text (see Viewport.cpp's force_monochrome handling
+# and SetObjectDisplayModeCommand), honoured even though the viewport
+# itself is never switched to Monochrome. SelNone before every capture so
+# the selection-colour tint (Mix(c, kSelectionColor, ...)) never muddies
+# the sample. This script only builds the scene and captures screenshots;
+# smoke.sh does the actual pixel-level verification.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+Box -20,-5,0 -10,5,0 5
+SelLast
+SetRenderColor 230,30,30
+Box 10,-5,0 20,5,0 5
+SelLast
+SetRenderColor 30,30,230
+SelNone
+ShadedViewport
+Top
+ZoomExtentsAll
+ViewCaptureToFile @TMP@/mono_off.bmp
+SelID 2
+SetObjectDisplayMode Monochrome
+SelNone
+ViewCaptureToFile @TMP@/mono_on.bmp
+SelID 2
+SetObjectDisplayMode UseViewport
+SelNone
+ViewCaptureToFile @TMP@/mono_off2.bmp
+@expect_objects 2

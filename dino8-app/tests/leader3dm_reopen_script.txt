@@ -1,0 +1,14 @@
+# Companion to leader3dm_export_script.txt, run as a SEPARATE process
+# launch right after it in smoke.sh - see leader3dm_export_script.txt's
+# own header comment for why (a live Leader object already present when
+# Open runs in the same process hits a real, pre-existing, unrelated bug
+# in UpdateAssociativeAnnotations' own cross-call static anchor cache in
+# Application.cpp; this process never creates a Leader before opening the
+# saved file, so that stale-cache interaction never triggers here).
+#
+# smoke.sh substitutes @TMP@ with the same scratch directory
+# leader3dm_export_script.txt used, so this opens the exact file that
+# script exported.
+Open @TMP@/leader3dm_export.3dm
+SelLeader
+List

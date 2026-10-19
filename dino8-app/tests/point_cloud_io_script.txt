@@ -1,0 +1,51 @@
+# Point-cloud exchange at the app level (io/FileExchange.cpp's
+# ExportXyz/ImportXyz/ExportPts/ImportPts/ExportLas/ImportLas, wired into
+# Import/Export/SaveDocument in app/Application.cpp and cmd_file.cpp) and
+# digital signing of an exported file (io/DigitalSignature.h's DigitalSign/
+# VerifySignature commands) - see smoke.sh. @TMP@ is replaced by smoke.sh
+# with a scratch directory.
+SetActiveViewport Top
+Point 0,0,0
+Point 1,0,0
+Point 2,1,0
+SelAll
+@expect_selected 3
+PointCloud
+SelAll
+List
+Export @TMP@/cloud.xyz
+Export @TMP@/cloud.pts
+Export @TMP@/cloud.las
+# --- Each format round-trips back to a single real PointCloud object with
+# the same point count, into a fresh document (so the check can't be
+# satisfied by objects left over from the export above).
+New
+Import @TMP@/cloud.xyz
+SelAll
+List
+@expect_objects 1
+New
+Import @TMP@/cloud.pts
+SelAll
+List
+@expect_objects 1
+New
+Import @TMP@/cloud.las
+SelAll
+List
+@expect_objects 1
+# --- Digital signing: DigitalSign writes cloud.xyz.sig from this machine's
+# own (test-isolated, see smoke.sh's XDG_CONFIG_HOME) signing key;
+# VerifySignature must accept it while the file is unchanged...
+DigitalSign @TMP@/cloud.xyz
+VerifySignature @TMP@/cloud.xyz
+# ...and reject it once the file's content changes after signing - adding a
+# 4th point to the cloud and re-exporting overwrites cloud.xyz with
+# genuinely different bytes than what was signed, with no separate process
+# launch or out-of-band file edit needed.
+Point 9,9,9
+SelAll
+PointCloud
+SelAll
+Export @TMP@/cloud.xyz
+VerifySignature @TMP@/cloud.xyz

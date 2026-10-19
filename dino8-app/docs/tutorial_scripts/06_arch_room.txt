@@ -1,0 +1,20 @@
+# Tutorial 6: Block out a room with the architecture commands - verifies
+# the exact command sequence quoted in docs/site/tutorials.html
+# "Block out a room" tutorial.
+SetActiveViewport Top
+# a 5m wall, 2.4m tall, 0.2m thick
+Wall 0,0,0 5,0,0 2.4 0.2
+@expect_objects 1
+# cut a door into it
+SelLast
+Door 2.5,0,0 0.9 2.1
+@expect_objects 1
+# cut a window into the same wall
+SelLast
+Window 4,0,0 1.2 1.2 0.9
+@expect_objects 1
+# a floor slab under the wall
+ArchSlab 0,-3,0 5,0,0 0.2
+@expect_objects 2
+SelAll
+List

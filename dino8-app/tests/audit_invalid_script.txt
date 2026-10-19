@@ -1,0 +1,25 @@
+# Audit QC: a genuinely invalid object (IsValid() == false), not just a
+# self-intersecting-but-valid bowtie curve (see curve_adversarial_script.txt
+# for that different failure mode), must be reported by Audit/Check/
+# SelBadObjects. MakeInvalidCurve (cmd_analyze.cpp) builds one deterministic
+# invalid NURBS curve for exactly this purpose - see smoke.sh for the exact
+# assertions made on Audit's summary line and printed reason.
+SetActiveViewport Top
+
+# A normal, valid curve first, to make sure it is never flagged.
+Line 0,0,0 10,0,0
+SelLast
+Check
+
+# The deliberately invalid curve.
+MakeInvalidCurve
+SelLast
+Check
+Audit
+SelBadObjects
+@expect_selected 1
+
+SelAll
+Delete
+@expect_objects 0
+Audit

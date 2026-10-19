@@ -1,0 +1,5 @@
+PluginMarketplaceReviews hellodino
+PluginMarketplaceRate hellodino 5 Works great Reviewer=Alice
+PluginMarketplaceRate hellodino 3 A bit slow on big meshes
+PluginMarketplaceRate hellodino 12
+PluginMarketplaceReviews hellodino

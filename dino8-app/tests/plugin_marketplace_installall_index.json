@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "index_name": "Install-All Test Index (batch install fixture)",
+  "plugins": [
+    {
+      "id": "alpha",
+      "name": "AlphaSuite",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Named differently from any sample plug-in already auto-loaded from next to the executable, so it starts out genuinely not installed - PluginMarketplaceInstallAll must find and install it. library_filename gives it a destination no other tests/*.json fixture writes to, so a before/after load count against it is unambiguous regardless of what earlier smoke.sh sections left installed elsewhere.",
+      "api_version": 2,
+      "bundled_path": "plugins/hello_dino",
+      "library_filename": "installall_alpha.so"
+    },
+    {
+      "id": "beta",
+      "name": "BetaSuite",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "A second, independent entry InstallAll must also install in the same batch as alpha - see alpha's own comment about library_filename.",
+      "api_version": 2,
+      "bundled_path": "plugins/curve_tools",
+      "library_filename": "installall_beta.so"
+    },
+    {
+      "id": "futuregamma",
+      "name": "FutureGamma",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Declares a min_app_version far ahead of any real Dino 8 release, so InstallAll must report this one as a failure without stopping alpha/beta from installing.",
+      "api_version": 1,
+      "min_app_version": "99.0.0",
+      "bundled_path": "plugins/mesh_tools"
+    }
+  ]
+}
