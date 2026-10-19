@@ -86,6 +86,50 @@ Report every round:
 
 ---
 
+## 8. Continuous operation, without rebuilding the horde
+
+"Full throttle 24/7" and "right-sized, budget-aware dispatch" (§4) aren't in conflict if throttle means *always have the next ready, verified-scoped unit of work queued, up to the real concurrency/budget ceiling* — not *always have dozens of standing sessions re-triggered on a timer regardless of state*. Concretely:
+
+- A small, fixed pool of concurrent task slots (not 38), sized to genuinely independent work currently available, not to the category count.
+- The moment a slot's task clears the §5 gate or reports a real blocker, the next-highest-leverage ready item (weight ÷ remaining-items, same ranking the old doc used) is queued into that slot immediately — continuous per slot, not a global hourly tick.
+- A quiet slot is liveness-checked (§4) before it's assumed safe to refill, and no slot is refilled past the §12 budget ceiling.
+
+## 9. Active oversight: catching stalls and wrong-direction work in real time
+
+The horde had no answer for this at all — nothing watched the watchers for five days. The protocol below is not theoretical; it's what caught two real regressions during this playbook's own first pilot, in real time, instead of after the fact:
+
+- Every active slot gets a periodic status check asking five concrete things: has it reproduced/confirmed the actual problem, does it know the root cause, what specific step is it blocked on right now, where did the time/tokens actually go, and a revised estimate.
+- Compare the answer's *specifics* against elapsed time and tool-call count. A vague answer, or one that doesn't match the resource burn, is the real stall signal — not silence.
+- A reported wait is only legitimate if it names a concrete thing with a plausible duration (a build, a test run). "Waiting," unqualified, is the exact failure mode that let the horde run dead for five days.
+- If elapsed resource use meaningfully outpaces the session's own last estimate, check again rather than wait silently — but only on a real delta, not on every tick; needless pings are their own waste.
+- A session that can't name what it's doing, or whose numbers don't add up, gets interrupted and either redirected in plainer terms or replaced — never left running on faith.
+
+## 10. Multi-point QC — not just a gate at the end
+
+§5's gate (test + independent adversarial pass + CI) is the final checkpoint, not the only one. Every dispatch also requires:
+
+- Reproduce the actual problem before touching code — a confirmed failure, not an assumption from a historical description.
+- Re-run the FULL suite after every candidate fix, not just the part that looks related — this is what caught both of the pilot's own regressions, each in a different, unrelated test.
+- Adversarial self-review of the diff itself — explicitly try to find the way the fix is wrong before reporting it right.
+- Prefer the narrower fix whenever both pass — editing shared code everything else depends on is a standing red flag even when tests currently pass.
+- Disclose scope honestly — what wasn't verified (e.g., an app-side build skipped for time) is stated as plainly as what was.
+
+## 11. The hook — verified, not assumed
+
+Checked directly, not recalled from memory: working tree clean, zero commits ahead of `origin/claude/pdf-audit-i2bvwm`, no untracked files — every condition `stop-hook-git-check.sh` checks is satisfied, so it does not fire. It only ever fired from a mismatched branch-name/content situation that no longer exists now that real work lands on the real branch. As long as every dispatch pushes what it commits before ending its turn (already required by §4), this does not recur — no separate mechanism needed.
+
+## 12. The honest pace math — why "complete this week" isn't a promise this playbook can make
+
+As of this fix, 187 kernel items and 37 app items are still `[partial]` or `[missing]` — 224 total, across 25 categories. The one unit of fully-verified work completed under this exact process (the Boolean fragment-loop fix) cost roughly 650k tokens and ~100 minutes — and it was a single cross-cutting blocker, not necessarily representative of every remaining item's difficulty in either direction. Even allowing that many remaining items are smaller, finishing the remaining gap at this verification standard is realistically a multi-million-token undertaking, not something that fits inside one week's usage regardless of how well the process runs. Rigor and remaining scope are the two real inputs to cost; this playbook fixes the process, it can't shrink the scope or make verified completion free.
+
+What this playbook commits to instead:
+
+- Highest-leverage items first (weight ÷ remaining-items), so whatever budget is spent buys the most real completion per token.
+- Cost-per-verified-item reported every round, visible in real time, so spend can be stopped at any point on current information, not after the fact.
+- No dispatch past whatever budget is explicitly set beforehand — "until this week's usage is gone" is not treated as "spend all of it."
+
+Fast, cheap, and rigorous were never simultaneously available for a project this size. This playbook can deliver any two on request; it will not pretend to deliver all three for the full remaining scope in a week.
+
 ## Appendix A: Current status snapshot (as of commit `ab20e4ce`)
 
 **Kernel — headline 78.1% (total weight 17.75, 17 categories)**
