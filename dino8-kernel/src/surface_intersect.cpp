@@ -1605,6 +1605,81 @@ bool TrimCrossing(const IntersectionCurve& c, size_t in_idx, size_t out_idx, con
   return found;
 }
 
+// Closest-point query used ONLY by CoincidentOverlapBoundaryCurves() below,
+// deliberately NOT folded into the shared SurfaceClosestPoint()/
+// SurfaceClosestPointGlobal() every other caller in this file also relies
+// on - an earlier version of this fix did exactly that (added the identical
+// boundary-acceptance test directly inside SurfaceClosestPoint() itself)
+// and was reverted after a direct A/B rebuild-and-rerun of the full
+// dino8_kernel_tests suite caught it regressing a second, unrelated,
+// previously-passing fixture (TestBooleanCombineGeneralAsymmetricCoincidentSubFace,
+// a DIFFERENT boss shape that does not exercise the crash this function
+// fixes at all) - some other caller's own geometry depends on today's
+// strict (interior-stationarity-only) contract in a way not fully
+// characterized here, so SurfaceClosestPoint()'s own shared contract is
+// left untouched; only this dedicated helper, used by the one function
+// 878ecdb introduced, gets the relaxed test.
+//
+// CONFIRMED ROOT CAUSE of BooleanCombineGeneral's long-standing "an edge is
+// claimed by 3 or more fragment loops" test-suite-abort (kernel: Boolean
+// operations - e.g. a small box-shaped boss sitting flush on a bigger box's
+// face, where the boss's own right edge IS the queried surface's own right
+// domain edge): SurfaceClosestPoint()'s Newton solve requires the FULL,
+// unconstrained gradient of squared-distance to vanish to report success -
+// correct for an interior closest point, but never satisfiable for a point
+// whose true closest point is constrained to the surface's own boundary
+// (the unconstrained minimum lies outside the domain, so the gradient
+// component normal to the clamped edge keeps pointing outward instead of
+// vanishing, no matter how many iterations run). NewtonSolve's own
+// per-step clamp still drives `x` to exactly the right boundary-clamped
+// position (confirmed directly, DINO8_BOOL_DEBUG tracing on the box-boss
+// fixture: `x` converges to the surface's own true edge, bit-for-bit) -
+// only the convergence TEST was wrong for it, reporting a perfectly good
+// answer as a failure, which CoincidentOverlapBoundaryCurves()'s own sample
+// loop (below) then silently dropped - shrinking the detected coincident
+// region's own measured extent by a whole sample step (confirmed directly:
+// ~0.02 units on the box-boss fixture above, nowhere near floating-point
+// noise), which fails BooleanCombineGeneral's own whole-face coincidence
+// match test and cascades into the fragment-loop refusal.
+//
+// Fixed with a proper box-constrained (KKT) acceptance test, not a widened
+// tolerance: a parameter NewtonSolve left sitting exactly at its own
+// domain bound is accepted as converged in that direction without
+// requiring its own gradient component to vanish (it is allowed to point
+// outward - that is what "the constraint is active" means); only a FREE
+// (non-clamped) parameter must still satisfy the ordinary interior
+// stationarity test. A PERIODIC direction's own domain "edge" (IsClosed())
+// is excluded from this - it is not a true boundary at all, but an
+// arbitrary seam the parametrization cuts at, and Newton getting stuck
+// there is a genuine non-convergence (the true closest point may need to
+// wrap around, which the clamp can never do), confirmed directly by a
+// first version of this fix (applied without this exclusion) regressing
+// TestPullbackCurveToSurfaceAcrossPeriodicSeam.
+bool ClosestPointAllowingDomainBoundary(const ON_Surface& s, Point3d p, double& u, double& v) {
+  if (SurfaceClosestPoint(s, p, u, v)) return true;
+  if (SurfaceClosestPointGlobal(s, p, u, v)) return true;
+  // Both the warm-seeded and the globally-reseeded Newton solve reported
+  // non-convergence; `u`, `v` still hold SurfaceClosestPointGlobal()'s own
+  // best Newton-polished attempt (it always writes through, win or lose -
+  // see its own `return SurfaceClosestPoint(...)` tail call). Check
+  // directly whether that is nonetheless a genuine box-constrained optimum.
+  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+  const bool periodic0 = s.IsClosed(0) != 0, periodic1 = s.IsClosed(1) != 0;
+  const double eps0 = 1e-12 * std::max(du.Length(), 1.0), eps1 = 1e-12 * std::max(dv.Length(), 1.0);
+  const bool clamped0 = !periodic0 && (u <= du.Min() + eps0 || u >= du.Max() - eps0);
+  const bool clamped1 = !periodic1 && (v <= dv.Min() + eps1 || v >= dv.Max() - eps1);
+  if (!clamped0 && !clamped1) return false;
+  ON_3dPoint P;
+  ON_3dVector dU, dV;
+  s.Ev1Der(u, v, P, dU, dV);
+  const Vector3d d = P - p;
+  const double scale = SurfaceScale(s) + p.DistanceTo(Point3d::Origin);
+  const double comp_tol = std::sqrt(0.5) * 1e-11 * scale * scale;  // same per-component budget SurfaceClosestPoint's own norm<=tol test implies
+  const bool ok0 = clamped0 || std::fabs(ON_DotProduct(dU, d)) <= comp_tol;
+  const bool ok1 = clamped1 || std::fabs(ON_DotProduct(dV, d)) <= comp_tol;
+  return ok0 && ok1;
+}
+
 // Boundary curve(s) of the coincident/overlap region(s) between `a` and `b` -
 // PARITY_MAP.md's own "SSX coincident / overlapping surface regions" bullet
 // named this directly as the one remaining gap IntersectSurfacesOverlap()
@@ -1699,7 +1774,12 @@ std::vector<IntersectionCurve> CoincidentOverlapBoundaryCurves(const ON_Surface&
     const int total = static_cast<int>(Clamp(std::ceil(sum_len / std::max(opt.mesh_tolerance, 1e-6)), 16.0, 192.0));
 
     std::vector<ON_2dPoint> uv;
+    // The flattened index of each edge's OWN first sample - this rectangle's
+    // own 4 true corners in `a`'s domain (see ClosestPointAllowingDomainBoundary()'s
+    // own call site below for why only these 4 indices matter).
+    std::array<size_t, 4> corner_index{};
     for (int e = 0; e < 4; ++e) {
+      corner_index[static_cast<size_t>(e)] = uv.size();
       const int n_e = std::max(3, static_cast<int>(std::round(total * elens[e] / sum_len)));
       for (int i = 0; i < n_e; ++i) {  // the edge's own last sample is the next edge's first - every edge stops one short, the closed loop supplies the wrap
         const double t = static_cast<double>(i) / n_e;
@@ -1722,6 +1802,44 @@ std::vector<IntersectionCurve> CoincidentOverlapBoundaryCurves(const ON_Surface&
         const bool gok = SurfaceClosestPointGlobal(b, p, gu, gv);
         const double gerr = gok ? b.PointAt(gu, gv).DistanceTo(p) : std::numeric_limits<double>::max();
         if (gok && gerr < err) { bu = gu; bv = gv; err = gerr; ok = true; }
+      }
+      // Last resort, only reached when every ordinary attempt above still
+      // reports failure, and ONLY at one of this rectangle's own 4 true
+      // corners (`corner_index`) - this sample's own true closest point on
+      // `b` may sit exactly on `b`'s own (non-periodic) domain boundary -
+      // see ClosestPointAllowingDomainBoundary()'s own doc comment just
+      // above this function for the full root-cause story (confirmed root
+      // cause of this engine's own "3 or more fragment loops" abort).
+      // Deliberately NOT applied to every interior edge sample that also
+      // fails the same way: `region_bbox` (boolean_general.cpp's own
+      // whole/partial coincident-face match, the actual consumer this fix
+      // serves) is built from this curve's own 3D points, and a bounding
+      // box's own extremes are exactly this rectangle's 4 corners - an
+      // interior edge sample contributes nothing to it a rescued corner
+      // doesn't already give. Confirmed by a direct regression this
+      // broader version caused and this narrower one does not (full-suite
+      // rebuild-and-rerun, not assumed):
+      // TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance's
+      // own widened-tolerance case has two faces that only ever share a 1D
+      // edge (not a real coincident area) rescued past
+      // IntersectSurfacesOverlap()'s own single-row/column guard by the
+      // widened tolerance alone (a separate, pre-existing limitation of
+      // that caller-tolerance mechanism, not something this function
+      // introduces) - every sample along THAT spurious region's own
+      // boundary-aligned edge also reports non-convergence here, and
+      // rescuing every one of them (not just its corners) was enough extra,
+      // otherwise-discarded curve data to let `ic.points.size() >= 4`
+      // survive into a real (but spurious) IntersectionCurve where it
+      // previously didn't. Restricting the rescue to corners only keeps
+      // this fix's own region_bbox benefit while leaving that separate,
+      // pre-existing edge-adjacency false positive exactly as
+      // likely/unlikely to surface as it already was.
+      if (!ok && (i == corner_index[0] || i == corner_index[1] || i == corner_index[2] || i == corner_index[3])) {
+        double ru = bu, rv = bv;
+        if (ClosestPointAllowingDomainBoundary(b, p, ru, rv)) {
+          const double rerr = b.PointAt(ru, rv).DistanceTo(p);
+          bu = ru; bv = rv; err = rerr; ok = true;
+        }
       }
       if (!ok) continue;
       seed_u = bu; seed_v = bv;
@@ -3751,6 +3869,66 @@ std::vector<SurfaceOverlapRegion> IntersectSurfacesOverlap(const ON_Surface& a, 
       region.u1 = imax < n ? BisectU(imax, imax + 1, j_at_imax) : dua.ParameterAt(1.0);
       region.v0 = jmin > 0 ? BisectV(jmin, jmin - 1, i_at_jmin) : dva.ParameterAt(0.0);
       region.v1 = jmax < n ? BisectV(jmax, jmax + 1, i_at_jmax) : dva.ParameterAt(1.0);
+      // A second, narrower-but-related artifact the single-row/column guard
+      // above does not catch: two merely-ADJACENT (not actually coincident)
+      // faces, queried with a caller-WIDENED `opt.tolerance`, can have a
+      // thin band near their shared edge where every point of `a` sits
+      // within that widened tolerance of `b`'s own clamped-to-boundary
+      // closest point - wide enough (in GRID CELLS) to clear the
+      // imax>imin && jmax>jmin check above, while still being, in actual
+      // 3D terms, only as wide as the tolerance that found it, not a real
+      // patch. Confirmed root cause (not assumed) of a genuine regression
+      // found while fixing `BooleanCombineGeneral`'s own separate "3 or
+      // more fragment loops" abort elsewhere (CoincidentOverlapBoundaryCurves(),
+      // below - that fix made this engine's own closest-point sampling
+      // more complete, not less correct, but completing THIS artifact's
+      // own boundary-aligned edge samples too is what let it survive into
+      // a real `IntersectionCurve` for the first time - full-suite
+      // rebuild-and-rerun caught `TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance`'s
+      // own widened-tolerance case regressing, not assumed safe). A
+      // genuine coincident AREA's own narrower axis should be large
+      // relative to the solve tolerance that found it; 8x is a generous
+      // margin above the "band width is roughly the tolerance itself"
+      // artifact scale, confirmed to still accept every genuinely
+      // coincident fixture this file's own tests exercise (every one
+      // several orders of magnitude wider than any `opt.tolerance` this
+      // suite ever passes).
+      // Measured via 3 points per axis (each end plus the middle), the
+      // GREATEST pairwise distance among them - not just the two ends -
+      // for a reason confirmed by two SEPARATE real regressions while
+      // building this guard, not assumed safe from one fix alone:
+      //   1. A capping surface built over an arbitrary closed profile
+      //      (e.g. Brep::Extrude()'s own `cap=true` fan construction) can
+      //      have a genuine POLE at one end of a transect (the fan's own
+      //      center), or an ANGULAR direction that is fully PERIODIC over
+      //      exactly this region's own full span (`u0`/`u1` sitting at the
+      //      domain's own two ends, which a periodic direction's own seam
+      //      makes the SAME physical point) - either way, the two
+      //      ENDPOINTS alone can coincide (distance 0) even though the
+      //      region is genuinely wide (confirmed directly,
+      //      TestBooleanCombineGeneralAsymmetricCoincidentSubFace's own
+      //      Brep::Extrude()-capped boss: `u0`/`u1` measure exactly 0.0
+      //      apart at EVERY `v`, not just one row, because this cap's own
+      //      u direction is periodic over this region's full span - while
+      //      the region is genuinely the boss's entire 1-unit cap).
+      //   2. Measuring from the middle coordinate ALONE (an earlier version
+      //      of this fix) does not fix every such case either, since the
+      //      middle can itself coincide with an end for the same periodic
+      //      reason depending on where the seam falls - only comparing ALL
+      //      THREE points pairwise and keeping the largest distance is
+      //      robust to either individual pair coinciding.
+      // The region's own middle coordinate is never itself a domain edge,
+      // so for a region that spans more than one grid cell in a direction
+      // (already guaranteed by the `imax == imin || jmax == jmin` guard
+      // above) at least one of the three pairwise distances reads this
+      // axis's real width whenever the region genuinely has one.
+      const double v_mid = 0.5 * (region.v0 + region.v1), u_mid = 0.5 * (region.u0 + region.u1);
+      auto span3 = [](const Point3d& p0, const Point3d& pm, const Point3d& p1) {
+        return std::max(p0.DistanceTo(pm), std::max(pm.DistanceTo(p1), p0.DistanceTo(p1)));
+      };
+      const double u_extent = span3(a.PointAt(region.u0, v_mid), a.PointAt(u_mid, v_mid), a.PointAt(region.u1, v_mid));
+      const double v_extent = span3(a.PointAt(u_mid, region.v0), a.PointAt(u_mid, v_mid), a.PointAt(u_mid, region.v1));
+      if (std::min(u_extent, v_extent) <= 8.0 * opt.tolerance) continue;
       region.entire_surface = whole_surface_coincides;
       out.push_back(region);
     }

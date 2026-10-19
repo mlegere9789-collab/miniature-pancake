@@ -8447,6 +8447,121 @@ void TestBooleanCombineGeneralAsymmetricCoincidentSubFace() {
         "volumetrically, only touches its bottom cap)");
 }
 
+// Regression test for the kernel test-suite-aborting "fragment-loop" crash
+// (PARITY_MAP.md's long-standing "an edge is claimed by 3 or more fragment
+// loops" abort, root cause commit 878ecdb; see DINO8_PLAYBOOK.md). Every
+// OTHER fixture in this file that approaches this crash (the two tests just
+// above, TestBooleanCombineGeneralCoplanarBoxes/AsymmetricCoincidentSubFace)
+// deliberately uses a WRAPPED side wall (Brep::Extrude()) for the boss, or
+// wraps the call in its own try/catch, specifically BECAUSE a plain
+// Brep::Box() boss - four independent FLAT side walls, each crossing the
+// bigger face as its own separate transversal intersection, rather than one
+// wrapped wall touching only along a 1D rim - was confirmed (round 44/45,
+// PARITY_MAP.md's "Coplanar / coincident face handling" bullet, "a plain
+// Brep::Box() boss ... still throws the engine's own separate '3 or more
+// fragment loops' refusal regardless of op") to still throw after every
+// prior round's own fix. This test deliberately uses exactly that
+// previously-crashing shape, unwrapped, instead of working around it again.
+//
+// ROOT CAUSE (confirmed directly, DINO8_BOOL_DEBUG=1 tracing plus a
+// standalone instrumented repro, not assumed): 878ecdb taught
+// IntersectSurfaces() to return a real boundary curve for a coincident
+// region (CoincidentOverlapBoundaryCurves(), surface_intersect.cpp) instead
+// of silently reporting nothing. BooleanCombineGeneral's own whole/partial
+// coincident-face override (boolean_general.cpp) uses that curve's own
+// sampled points to decide whether a face is wholly the coincident region
+// (and so should be dropped/handled by rule, not fragmented and ray-cast).
+// For this exact fixture, that sampled curve was missing its own far corner
+// entirely: CoincidentOverlapBoundaryCurves() walks the detected region's
+// rectangle and projects each sample onto the OTHER face via
+// SurfaceClosestPoint()/SurfaceClosestPointGlobal() (surface_intersect.cpp)
+// - and the boss's own right edge, which this rectangle's right edge sits
+// exactly ON, is `b`'s own domain boundary. SurfaceClosestPoint()'s Newton
+// solve requires the FULL, unconstrained squared-distance gradient to
+// vanish to report success - a test an honest boundary-CLAMPED closest
+// point (the true minimum lies outside the domain) can never pass, no
+// matter how many iterations run, even though the solver's own per-step
+// clamp already drove it to the exactly correct (u, v). Confirmed directly:
+// before the fix, EVERY sample along that whole edge reported ok=false and
+// was silently dropped, shrinking the detected region's own measured
+// bounding box by a full edge width (here, ~0.02 units - nowhere near
+// floating-point noise) - which failed the whole-face match test it should
+// have passed, leaving the boss's own bottom face needlessly fragmented
+// into an outer ring plus an inner island that both then needed an
+// ordinary ray-cast classification of a point sitting exactly ON the other
+// solid's own boundary plane (numerically arbitrary by construction, the
+// same ambiguity the whole-face override exists to avoid) - which produced
+// the THIRD independent fragment loop claiming the box's own hole boundary
+// edge (confirmed via the same tracing: three separate loops, not two,
+// landed on the identical anchor-pair run before the fix).
+//
+// THE FIX: a new, narrowly-scoped ClosestPointAllowingDomainBoundary()
+// helper (surface_intersect.cpp, defined and used only by
+// CoincidentOverlapBoundaryCurves() - see its own doc comment for the full
+// derivation) accepts a Newton solve that left a parameter sitting exactly
+// at its own NON-PERIODIC domain bound as a genuine box-constrained (KKT)
+// optimum, without requiring that parameter's own gradient component to
+// vanish - not a try/catch, not a skipped case, not a loosened epsilon
+// anywhere in boolean_general.cpp itself, and not a change to the shared
+// SurfaceClosestPoint()/SurfaceClosestPointGlobal() every OTHER caller in
+// this file still relies on unchanged (a first version of this fix edited
+// those shared functions directly and was reverted after a full-suite
+// rebuild-and-rerun caught it regressing two unrelated, previously-passing
+// fixtures - TestPullbackCurveToSurfaceAcrossPeriodicSeam, and
+// TestBooleanCombineGeneralAsymmetricCoincidentSubFace just above this
+// test - neither of which this narrower version touches).
+//
+// RESULT: not merely "doesn't crash" - every op below is verified against
+// the exact closed-form answer a fully correct engine must have for a
+// solid touching another only along part of one face (zero volumetric
+// overlap): Union's volume is the plain sum, Intersection is the genuine
+// empty solid, and each Difference returns its own operand's unchanged
+// volume. This closes the previously-fully-open "FLAT partially-
+// overlapping case" PARITY_MAP.md's "Coplanar / coincident face handling"
+// bullet named, for this canonical fixture - not a claim that every
+// possible flat-sided coincident configuration (multiple bosses, oblique
+// footprints, etc.) is now proven; those remain unexercised.
+void TestBooleanCombineGeneralFlatSidedBossCrashRegression() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep boss = Brep::Box(1.5, 1.5, 4, 2.5, 2.5, 5);  // flat-sided, NOT Brep::Extrude() - the previously-crashing shape
+
+  const Brep u = BooleanCombineGeneral(box, boss, BooleanOp::Union);
+  Check(u.raw().IsValid(), "box+flat-sided-boss Union no longer throws 'an edge is claimed by 3 or more fragment "
+                           "loops' (the crash this test regresses) and is a valid ON_Brep");
+  const Mesh mesh_u = TessellateGeneralBooleanClosedMesh(u, 8, 8);
+  Check(mesh_u.IsClosedManifold(), "box+flat-sided-boss Union tessellates as a genuine closed manifold");
+  Check(std::abs(mesh_u.Volume() - 65.0) < 1e-3,
+        "box+flat-sided-boss Union's exact volume is 65 (the box's own 64 plus the boss's own 1 - zero "
+        "volumetric overlap to subtract, the boss merely touching the box's top face)");
+
+  const Brep i = BooleanCombineGeneral(box, boss, BooleanOp::Intersection);
+  Check(i.FaceCount() == 0,
+        "box+flat-sided-boss Intersection is the genuine empty solid (touching only, zero volumetric overlap) - "
+        "not a spurious nonzero result from the ray-cast ambiguity this fix closes");
+
+  const Brep d_ab = BooleanCombineGeneral(box, boss, BooleanOp::Difference);
+  Check(d_ab.raw().IsValid(), "box - flat-sided-boss no longer throws and is a valid ON_Brep");
+  const Mesh mesh_ab = TessellateGeneralBooleanClosedMesh(d_ab, 8, 8);
+  Check(mesh_ab.IsClosedManifold(), "box - flat-sided-boss tessellates as a genuine closed manifold");
+  Check(std::abs(mesh_ab.Volume() - 64.0) < 1e-3,
+        "box - flat-sided-boss's exact volume is 64 (the box's own unchanged volume - the boss never overlaps "
+        "it volumetrically, only touches its top face)");
+
+  const Brep d_ba = BooleanCombineGeneral(boss, box, BooleanOp::Difference);
+  Check(d_ba.raw().IsValid(), "flat-sided-boss - box no longer throws and is a valid ON_Brep");
+  const Mesh mesh_ba = TessellateGeneralBooleanClosedMesh(d_ba, 8, 8);
+  Check(mesh_ba.IsClosedManifold(), "flat-sided-boss - box tessellates as a genuine closed manifold");
+  Check(std::abs(mesh_ba.Volume() - 1.0) < 1e-3,
+        "flat-sided-boss - box's exact volume is 1 (the boss's own unchanged volume - the box never overlaps "
+        "it volumetrically, only touches its bottom cap)");
+}
+
 // PARITY_MAP.md's "Tolerant booleans" bullet, after BooleanCombineGeneral()
 // gained a genuine caller-controlled SSX solve `tolerance`, still disclosed
 // one more remaining gap: "the general engine's own separate bbox/
@@ -80536,6 +80651,7 @@ int main() {
   RunTest("TestBooleanCombineGeneralFreeformVsFreeformOperand", TestBooleanCombineGeneralFreeformVsFreeformOperand);
   RunTest("TestBooleanCombineGeneralCoplanarBoxes", TestBooleanCombineGeneralCoplanarBoxes);
   RunTest("TestBooleanCombineGeneralAsymmetricCoincidentSubFace", TestBooleanCombineGeneralAsymmetricCoincidentSubFace);
+  RunTest("TestBooleanCombineGeneralFlatSidedBossCrashRegression", TestBooleanCombineGeneralFlatSidedBossCrashRegression);
   RunTest("TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance", TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance);
   RunTest("TestBooleanCombineGeneralBoxCylinder", TestBooleanCombineGeneralBoxCylinder);
   RunTest("TestBooleanCombineGeneralCallerTolerance", TestBooleanCombineGeneralCallerTolerance);
