@@ -3005,6 +3005,17 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
   for (int i = 0; i < na; ++i) boxes_a[static_cast<size_t>(i)] = ba.m_F[i].SurfaceOf()->BoundingBox();
   for (int j = 0; j < nb; ++j) boxes_b[static_cast<size_t>(j)] = bb.m_F[j].SurfaceOf()->BoundingBox();
 
+  // Each face's own real trim-boundary loop (3D point + its own (u, v)),
+  // precomputed once here - used below by the exact-polygon coincident-
+  // region test (the "curved-footprint / oblique flat-sided coincidence"
+  // fix: see that test's own doc comment for why the pre-existing
+  // bbox-based whole/partial-match test alone is not sufficient for a
+  // boss whose own footprint is a circle or a rotated rectangle, not an
+  // axis-aligned one).
+  std::vector<std::vector<UVPt>> boundary_a(static_cast<size_t>(na)), boundary_b(static_cast<size_t>(nb));
+  for (int i = 0; i < na; ++i) boundary_a[static_cast<size_t>(i)] = FaceBoundaryLoop(ba, i);
+  for (int j = 0; j < nb; ++j) boundary_b[static_cast<size_t>(j)] = FaceBoundaryLoop(bb, j);
+
   // Coincident-face bookkeeping (see this file's own top-of-file doc
   // comment, "coplanar shared face" fix): a face of A and a face of B that
   // lie on the EXACT same plane with the EXACT same finite extent (both
@@ -3127,34 +3138,172 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
             const ON_BoundingBox& box_a = boxes_a[static_cast<size_t>(i)];
             const ON_BoundingBox& box_b = boxes_b[static_cast<size_t>(j)];
             const double extent_tol = std::max(tol, 1e-6 * std::max(box_a.Diagonal().Length(), box_b.Diagonal().Length()));
-            ON_BoundingBox region_bbox;
-            for (const IntersectionCurve& ic : curves)
-              for (const Point3d& p : ic.points) region_bbox.Set(p, true);
-            auto whole_match = [&](const ON_BoundingBox& box) {
-              return region_bbox.m_min.DistanceTo(box.m_min) <= extent_tol && region_bbox.m_max.DistanceTo(box.m_max) <= extent_tol;
-            };
-            if (region_bbox.IsValid()) {
-              whole_match_a = whole_match(box_a);
-              whole_match_b = whole_match(box_b);
-            } else {
-              whole_match_a = whole_match_b =
-                  box_a.m_min.DistanceTo(box_b.m_min) <= extent_tol && box_a.m_max.DistanceTo(box_b.m_max) <= extent_tol;
+
+            // --- Exact polygon-containment test (curved-footprint /
+            // oblique flat-sided coincidence fix) -------------------------
+            // The bbox-based whole/partial-match test below this block
+            // compares each side's own 3D AXIS-ALIGNED bounding box
+            // against the detected region's own bbox - correct only when
+            // the coincident footprint itself IS axis-aligned (an
+            // unrotated box boss). Confirmed by direct repro (see
+            // PARITY_MAP_CURRENT.md's Boolean note) that this silently
+            // gives WRONG volumes for a curved-footprint (e.g. a
+            // cylindrical boss's circular cap) or oblique (rotated)
+            // flat-sided boss - the AABB of a circle or a rotated square
+            // circumscribes a region bigger than the boss's own true
+            // footprint, and CoincidentOverlapBoundaryCurves() (the
+            // source of `curves` below) only ever reports that
+            // circumscribing axis-aligned rectangle in the walked face's
+            // own domain, never the true (curved or rotated) outline -
+            // its own doc comment already discloses this ("not an exact
+            // boundary polygon ... a genuinely concave or multi-lobe
+            // coincident patch is still only ever reported as its
+            // enclosing rectangle").
+            //
+            // Fixed here with an EXACT test instead: does one face's own
+            // REAL trim-boundary loop (`boundary_a`/`boundary_b`, exact
+            // for any shape - straight-sided, circular, rotated, whatever
+            // it actually is) lie ENTIRELY inside the other's, checked by
+            // projecting both loops into a shared 2D frame (`pa`) and
+            // testing every vertex with the same PointInPolygon() this
+            // file already uses for fragment classification elsewhere.
+            // When exactly one side's loop is fully contained in the
+            // other's (a clean, unambiguous asymmetric verdict - the
+            // genuinely-partial-on-both-sides case, where NEITHER fully
+            // contains the other, is still out of scope and left to the
+            // bbox path below, unchanged), the smaller face's own exact
+            // boundary loop becomes the imprint curve used to fragment
+            // the bigger face - not a re-derived approximation - each
+            // point reprojected onto the bigger face via
+            // ClosestPointAllowingDomainBoundary() (393e32fc's own fix,
+            // reused verbatim: a boss flush against a bigger face has no
+            // interior slack on its OWN side either, the identical
+            // "closest point sits exactly on a domain boundary" situation
+            // that fix was built for). Nothing is committed unless every
+            // one of the smaller loop's own points reprojects
+            // successfully - a failure here falls through to the
+            // existing bbox path completely unaffected, never a
+            // half-applied override.
+            bool exact_handled = false;
+            IntersectionCurve exact_ic;
+            ON_BoundingBox exact_region_bbox;
+            bool exact_whole_a = false, exact_whole_b = false;
+            // Guard found and confirmed by a full-suite rebuild-and-rerun
+            // regressing a previously-passing fixture
+            // (TestBooleanCombineGeneralAsymmetricCoincidentSubFace, a
+            // WRAPPED Brep::Extrude() boss, not a plain Brep::Box() one):
+            // a face built from a FAN cap (AddFanCap()/FanSurface(),
+            // sweep.cpp - used by Extrude/Revolve/Pipe's own flat end
+            // caps) is geometrically planar but its OWN trim loop is NOT
+            // a simple boundary polygon - one whole side is SINGULAR
+            // (collapsed to the fan's own interior apex point), and the
+            // two sides adjacent to it are RADIAL chords cutting from
+            // that interior apex out to the real boundary, not part of
+            // the physical outline at all. FaceBoundaryLoop() faithfully
+            // reports all of that (correct for its OTHER callers, which
+            // already know to handle a singular side specially - see
+            // CollapseDuplicateVids() above), but feeding it uncritically
+            // into this exact-polygon path builds a self-touching
+            // "keyhole" imprint curve instead of the true outline,
+            // corrupting the bigger face's own fragmentation. A face with
+            // any singular side (ON_Surface::IsSingular()) therefore
+            // never takes this path - it falls through to the pre-
+            // existing bbox path below exactly as before, unaffected.
+            const bool sa_singular = sa->IsSingular(0) || sa->IsSingular(1) || sa->IsSingular(2) || sa->IsSingular(3);
+            const bool sb_singular = sb->IsSingular(0) || sb->IsSingular(1) || sb->IsSingular(2) || sb->IsSingular(3);
+            {
+              const std::vector<UVPt>& loop_a = boundary_a[static_cast<size_t>(i)];
+              const std::vector<UVPt>& loop_b = boundary_b[static_cast<size_t>(j)];
+              if (!sa_singular && !sb_singular && loop_a.size() >= 3 && loop_b.size() >= 3) {
+                auto project = [&](const std::vector<UVPt>& loop) {
+                  std::vector<ON_2dPoint> out;
+                  out.reserve(loop.size());
+                  for (const UVPt& pt : loop) {
+                    double pu = 0, pv = 0;
+                    pa.ClosestPointTo(pt.p, &pu, &pv);
+                    out.emplace_back(pu, pv);
+                  }
+                  return out;
+                };
+                const std::vector<ON_2dPoint> poly_a2d = project(loop_a);
+                const std::vector<ON_2dPoint> poly_b2d = project(loop_b);
+                auto fully_inside = [&](const std::vector<ON_2dPoint>& inner, const std::vector<ON_2dPoint>& outer) {
+                  for (const ON_2dPoint& p : inner)
+                    if (!PointInPolygon(outer, p)) return false;
+                  return true;
+                };
+                const bool b_in_a = fully_inside(poly_b2d, poly_a2d);
+                const bool a_in_b = fully_inside(poly_a2d, poly_b2d);
+                if (b_in_a != a_in_b) {  // clean, unambiguous asymmetric verdict only
+                  exact_whole_a = a_in_b;
+                  exact_whole_b = b_in_a;
+                  const std::vector<UVPt>& smaller_loop = exact_whole_b ? loop_b : loop_a;
+                  const ON_Surface* bigger_surface = exact_whole_b ? sa : sb;
+                  exact_ic.closed = true;
+                  bool ok_all = true;
+                  for (const UVPt& pt : smaller_loop) {
+                    double bu = 0, bv = 0;
+                    if (!ClosestPointAllowingDomainBoundary(*bigger_surface, pt.p, bu, bv)) { ok_all = false; break; }
+                    exact_ic.points.push_back(pt.p);
+                    if (exact_whole_b) {
+                      exact_ic.uv_a.emplace_back(bu, bv);
+                      exact_ic.uv_b.push_back(pt.uv);
+                    } else {
+                      exact_ic.uv_a.push_back(pt.uv);
+                      exact_ic.uv_b.emplace_back(bu, bv);
+                    }
+                    exact_region_bbox.Set(pt.p, true);
+                  }
+                  exact_handled = ok_all && exact_region_bbox.IsValid() && exact_ic.points.size() >= 3;
+                }
+              }
             }
-            if (whole_match_a) coincident_a[static_cast<size_t>(i)].push_back({j, parallel == -1});
-            if (whole_match_b) coincident_b[static_cast<size_t>(j)].push_back({i, parallel == -1});
-            // Exactly one side whole-matches the region and the other
-            // doesn't: that other side is a BIGGER face with this region
-            // as a genuine sub-region (not the "neither matches" wide-open
-            // partial-overlap case, still out of scope) - record it so an
-            // inner-island fragment of that bigger face can be recognized
-            // below instead of ray-cast.
-            if (region_bbox.IsValid() && whole_match_b && !whole_match_a)
-              partial_coincident_a[static_cast<size_t>(i)].push_back({j, parallel == -1, region_bbox, extent_tol});
-            if (region_bbox.IsValid() && whole_match_a && !whole_match_b)
-              partial_coincident_b[static_cast<size_t>(j)].push_back({i, parallel == -1, region_bbox, extent_tol});
-            if (debug && (whole_match_a || whole_match_b))
-              std::fprintf(stderr, "coincident face pair: A[%d] <-> B[%d], opposite_normal=%d, whole_a=%d whole_b=%d\n", i, j,
-                           parallel == -1, whole_match_a, whole_match_b);
+
+            if (exact_handled) {
+              whole_match_a = exact_whole_a;
+              whole_match_b = exact_whole_b;
+              if (whole_match_a) coincident_a[static_cast<size_t>(i)].push_back({j, parallel == -1});
+              if (whole_match_b) coincident_b[static_cast<size_t>(j)].push_back({i, parallel == -1});
+              if (whole_match_b && !whole_match_a)
+                partial_coincident_a[static_cast<size_t>(i)].push_back({j, parallel == -1, exact_region_bbox, extent_tol});
+              if (whole_match_a && !whole_match_b)
+                partial_coincident_b[static_cast<size_t>(j)].push_back({i, parallel == -1, exact_region_bbox, extent_tol});
+              curves.clear();
+              curves.push_back(std::move(exact_ic));
+              if (debug)
+                std::fprintf(stderr,
+                              "coincident face pair (EXACT polygon match): A[%d] <-> B[%d], opposite_normal=%d, whole_a=%d whole_b=%d\n",
+                              i, j, parallel == -1, whole_match_a, whole_match_b);
+            } else {
+              ON_BoundingBox region_bbox;
+              for (const IntersectionCurve& ic : curves)
+                for (const Point3d& p : ic.points) region_bbox.Set(p, true);
+              auto whole_match = [&](const ON_BoundingBox& box) {
+                return region_bbox.m_min.DistanceTo(box.m_min) <= extent_tol && region_bbox.m_max.DistanceTo(box.m_max) <= extent_tol;
+              };
+              if (region_bbox.IsValid()) {
+                whole_match_a = whole_match(box_a);
+                whole_match_b = whole_match(box_b);
+              } else {
+                whole_match_a = whole_match_b =
+                    box_a.m_min.DistanceTo(box_b.m_min) <= extent_tol && box_a.m_max.DistanceTo(box_b.m_max) <= extent_tol;
+              }
+              if (whole_match_a) coincident_a[static_cast<size_t>(i)].push_back({j, parallel == -1});
+              if (whole_match_b) coincident_b[static_cast<size_t>(j)].push_back({i, parallel == -1});
+              // Exactly one side whole-matches the region and the other
+              // doesn't: that other side is a BIGGER face with this region
+              // as a genuine sub-region (not the "neither matches" wide-open
+              // partial-overlap case, still out of scope) - record it so an
+              // inner-island fragment of that bigger face can be recognized
+              // below instead of ray-cast.
+              if (region_bbox.IsValid() && whole_match_b && !whole_match_a)
+                partial_coincident_a[static_cast<size_t>(i)].push_back({j, parallel == -1, region_bbox, extent_tol});
+              if (region_bbox.IsValid() && whole_match_a && !whole_match_b)
+                partial_coincident_b[static_cast<size_t>(j)].push_back({i, parallel == -1, region_bbox, extent_tol});
+              if (debug && (whole_match_a || whole_match_b))
+                std::fprintf(stderr, "coincident face pair: A[%d] <-> B[%d], opposite_normal=%d, whole_a=%d whole_b=%d\n", i, j,
+                             parallel == -1, whole_match_a, whole_match_b);
+            }
           }
         }
       }

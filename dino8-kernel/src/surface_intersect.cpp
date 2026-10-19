@@ -1605,6 +1605,21 @@ bool TrimCrossing(const IntersectionCurve& c, size_t in_idx, size_t out_idx, con
   return found;
 }
 
+}  // namespace
+
+// Given EXTERNAL linkage (moved out of the anonymous namespace above, see
+// surface_intersect.h's own declaration) so BooleanCombineGeneral's own
+// exact-polygon coincident-region detection (boolean_general.cpp) can
+// reuse this exact helper for reprojecting a coincident face's own real
+// boundary loop onto the other operand's surface, instead of
+// re-implementing an equivalent boundary-aware closest-point query there -
+// see that file's own doc comment (the "curved-footprint / oblique
+// flat-sided coincidence" fix) for why the plain SurfaceClosestPoint()/
+// SurfaceClosestPointGlobal() pair alone is not sufficient there either,
+// for the identical reason it wasn't sufficient here. Purely a linkage
+// change: this function's own behavior, and every call site already in
+// this file, are completely unchanged.
+//
 // Closest-point query used ONLY by CoincidentOverlapBoundaryCurves() below,
 // deliberately NOT folded into the shared SurfaceClosestPoint()/
 // SurfaceClosestPointGlobal() every other caller in this file also relies
@@ -1679,6 +1694,8 @@ bool ClosestPointAllowingDomainBoundary(const ON_Surface& s, Point3d p, double& 
   const bool ok1 = clamped1 || std::fabs(ON_DotProduct(dV, d)) <= comp_tol;
   return ok0 && ok1;
 }
+
+namespace {
 
 // Boundary curve(s) of the coincident/overlap region(s) between `a` and `b` -
 // PARITY_MAP.md's own "SSX coincident / overlapping surface regions" bullet

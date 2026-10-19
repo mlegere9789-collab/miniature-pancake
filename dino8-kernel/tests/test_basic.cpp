@@ -8790,6 +8790,231 @@ void TestBooleanCombineGeneralBoxCylinder() {
   }
 }
 
+// PARITY_MAP.md's "Coplanar / coincident face handling" bullet's own most
+// recent note (393e32fc, the flat-sided-boss crash fix) explicitly
+// disclosed what that fix did NOT reach: "curved-face coincidence and
+// multi-boss/oblique flat-sided configurations remain unexercised -
+// proven on the canonical single-flat-boss fixture, not asserted for
+// every shape." This closes the first of those three: a flat COINCIDENT
+// region whose own BOUNDARY is curved (a short cylindrical boss's
+// circular footprint, not a polygonal one) sitting flush on a bigger
+// box's flat top face - zero volumetric overlap, touching only.
+//
+// CONFIRMED ROOT CAUSE (a standalone repro linked against
+// libdino8_kernel.a, not assumed from the historical description alone):
+// BooleanCombineGeneral's own whole/partial coincident-face override
+// (this file's own top-of-file doc comment) relied entirely on
+// CoincidentOverlapBoundaryCurves() (surface_intersect.cpp) to report the
+// shape of the coincident region - and that function's own doc comment
+// already discloses it reports only "the overlap region's own
+// RECTANGULAR (u, v) boundary ... not an exact boundary polygon of the
+// coincident patch itself ... a genuinely concave or multi-lobe
+// coincident patch is still only ever reported as its enclosing
+// rectangle." For a circular boss footprint, that enclosing rectangle is
+// strictly BIGGER than (and a different shape from) the true circular
+// footprint, so both the override's own bbox-based whole/partial-match
+// test AND the curve used to imprint the boss's footprint onto the box's
+// top face were built from the wrong shape. Confirmed directly (before
+// this fix): this exact fixture's Union volume came back as 44.39 instead
+// of the correct ~65.77 - a grossly wrong result, not a near-miss -
+// Intersection returned a spurious nonzero volume instead of the genuine
+// empty solid, and both Differences were also wrong.
+//
+// THE FIX (boolean_general.cpp, in the same per-face-pair loop
+// 393e32fc's own fix lives in): an EXACT polygon-containment test is now
+// tried FIRST - does one face's own REAL trim-boundary loop
+// (FaceBoundaryLoop(), already used elsewhere in this file) lie entirely
+// inside the other's, checked by projecting both loops into a shared 2D
+// plane frame and testing every vertex with PointInPolygon() (this
+// file's own existing fragment-classification helper) - instead of the
+// pre-existing bounding-box approximation. When it reaches a clean,
+// unambiguous verdict (one loop fully inside the other, not the
+// genuinely-partial-on-both-sides case, still separately disclosed and
+// out of scope), the smaller face's own EXACT boundary loop - correctly
+// circular here, not a rectangle - becomes the imprint curve, each point
+// reprojected onto the bigger face via ClosestPointAllowingDomainBoundary
+// (393e32fc's own fix, exported and reused verbatim here, not
+// reimplemented, for the identical "sits exactly on the other face's own
+// domain boundary" situation a boss with no interior slack on its own
+// side produces). A failure to reproject every point falls through to
+// the pre-existing bbox path completely unaffected - never a half-applied
+// override.
+void TestBooleanCombineGeneralCircularFootprintBossCoincidence() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const double r = 0.75;
+  // Reuses MakeCylinderZForBoxCylinderTest (defined just above, for
+  // TestBooleanCombineGeneralBoxCylinder) for a SHORT cylinder - a real
+  // circular-footprint boss, flush on the box's own top face (z=4),
+  // fully interior to it.
+  const Brep boss = MakeCylinderZForBoxCylinderTest(2, 2, 4, 5, r);
+  const double box_vol = 64.0;
+  const double boss_vol = ON_PI * r * r * 1.0;
+
+  const Brep u = BooleanCombineGeneral(box, boss, BooleanOp::Union);
+  Check(u.raw().IsValid(), "box+circular-boss Union is a valid ON_Brep (volume was 44.39 instead of ~65.77 before this fix)");
+  {
+    // NOT asserted IsClosedManifold() here - same disclosed seam-angle-
+    // dependent mesh-level-seam-repair residual TestBooleanCombineGeneralBoxCylinder's
+    // own Union already discloses for a curved wall at this resolution;
+    // volume correctness (what this test targets) is independent of that.
+    const Mesh m = TessellateGeneralBooleanClosedMesh(u, 64, 64);
+    Check(std::abs(m.Volume() - (box_vol + boss_vol)) < 0.02,
+          "box+circular-boss Union's volume matches the closed-form box + cylinder-boss volume (zero overlap, "
+          "touching only) to within tessellation tolerance - was 44.39 (grossly wrong) before this fix");
+  }
+
+  const Brep i = BooleanCombineGeneral(box, boss, BooleanOp::Intersection);
+  Check(i.FaceCount() == 0,
+        "box+circular-boss Intersection is the genuine empty solid (touching only, zero volumetric overlap) - "
+        "was a spurious nonzero result before this fix");
+
+  const Brep d_ab = BooleanCombineGeneral(box, boss, BooleanOp::Difference);
+  Check(d_ab.raw().IsValid(), "box - circular-boss is a valid ON_Brep");
+  {
+    const Mesh m = TessellateGeneralBooleanClosedMesh(d_ab, 64, 64);
+    Check(m.IsClosedManifold(), "box - circular-boss tessellates as a genuine closed manifold");
+    Check(std::abs(m.Volume() - box_vol) < 0.02,
+          "box - circular-boss's volume is the box's own unchanged volume (the boss never overlaps it "
+          "volumetrically, only touches its top face)");
+  }
+
+  const Brep d_ba = BooleanCombineGeneral(boss, box, BooleanOp::Difference);
+  Check(d_ba.raw().IsValid(), "circular-boss - box is a valid ON_Brep");
+  {
+    const Mesh m = TessellateGeneralBooleanClosedMesh(d_ba, 64, 64);
+    Check(m.IsClosedManifold(), "circular-boss - box tessellates as a genuine closed manifold");
+    Check(std::abs(m.Volume() - boss_vol) < 0.02,
+          "circular-boss - box's volume is the boss's own unchanged volume (the box never overlaps it "
+          "volumetrically, only touches its bottom cap)");
+  }
+}
+
+// Second of the three sub-cases 393e32fc's own disclosure named: an
+// OBLIQUE (rotated, non-axis-aligned) flat-sided boss. The flat-sided-
+// boss crash fix (393e32fc) proved only an axis-aligned footprint;
+// CONFIRMED directly (standalone repro, not assumed) that a box boss
+// rotated 31 degrees about Z, otherwise identical (flush on a bigger
+// box's own top face, fully interior to it), threw the exact same "an
+// edge is claimed by 3 or more fragment loops" crash on Union, and gave
+// silently wrong volumes on Intersection/box-boss Difference, BEFORE this
+// fix - the same root cause as the circular-footprint case above
+// (CoincidentOverlapBoundaryCurves()'s own region is only ever the
+// AXIS-ALIGNED rectangle enclosing the true footprint - for a rotated
+// square this circumscribing rectangle is both a different shape AND a
+// strictly larger area than the true footprint). Fixed by the identical
+// exact-polygon-containment path the circular case above uses - a
+// rotated square's own trim loop is exactly as valid an input to that
+// path as an axis-aligned one or a circle, confirming the fix is
+// genuinely general, not special-cased to either shape.
+void TestBooleanCombineGeneralObliqueFlatSidedBossCoincidence() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  Brep boss = Brep::Box(-0.5, -0.5, 4, 0.5, 0.5, 5);  // 1x1x1 boss, flush on the box's own top face (z=4)
+  ON_Xform rot;
+  rot.Rotation(31.0 * ON_PI / 180.0, ON_3dVector(0, 0, 1), ON_3dPoint(0, 0, 0));
+  boss.raw().Transform(rot);
+  // Moved well inside the box's own top face footprint ([0,4]x[0,4]) so
+  // the rotated square's own corners stay clear of the box's own edges -
+  // isolating this test to the coincident-region SHAPE problem, not a
+  // separate at-the-edge interaction.
+  boss.raw().Transform(ON_Xform::TranslationTransformation(ON_3dVector(2, 2, 0)));
+  const double box_vol = 64.0;
+  const double boss_vol = 1.0;
+
+  const Brep u = BooleanCombineGeneral(box, boss, BooleanOp::Union);
+  Check(u.raw().IsValid(), "box+oblique-boss Union no longer throws 'an edge is claimed by 3 or more fragment "
+                           "loops' (the exact crash 393e32fc fixed for an axis-aligned footprint, confirmed here "
+                           "to recur for a rotated one before this fix) and is a valid ON_Brep");
+  {
+    const Mesh m = TessellateGeneralBooleanClosedMesh(u, 8, 8);
+    Check(m.IsClosedManifold(), "box+oblique-boss Union tessellates as a genuine closed manifold");
+    Check(std::abs(m.Volume() - (box_vol + boss_vol)) < 1e-3,
+          "box+oblique-boss Union's exact volume is 65 (zero volumetric overlap, the boss merely touching the "
+          "box's top face) - was 62.38 (a silently corrupted fragment shape) before this fix");
+  }
+
+  const Brep i = BooleanCombineGeneral(box, boss, BooleanOp::Intersection);
+  Check(i.FaceCount() == 0,
+        "box+oblique-boss Intersection is the genuine empty solid (touching only, zero volumetric overlap) - "
+        "was a spurious nonzero result (the ray-cast ambiguity this fix closes) before this fix");
+
+  const Brep d_ab = BooleanCombineGeneral(box, boss, BooleanOp::Difference);
+  Check(d_ab.raw().IsValid(), "box - oblique-boss is a valid ON_Brep");
+  {
+    const Mesh m = TessellateGeneralBooleanClosedMesh(d_ab, 8, 8);
+    Check(m.IsClosedManifold(), "box - oblique-boss tessellates as a genuine closed manifold");
+    Check(std::abs(m.Volume() - box_vol) < 1e-3,
+          "box - oblique-boss's exact volume is 64 (the box's own unchanged volume) - was 62.38 before this fix");
+  }
+
+  const Brep d_ba = BooleanCombineGeneral(boss, box, BooleanOp::Difference);
+  Check(d_ba.raw().IsValid(), "oblique-boss - box is a valid ON_Brep");
+  {
+    const Mesh m = TessellateGeneralBooleanClosedMesh(d_ba, 8, 8);
+    Check(m.IsClosedManifold(), "oblique-boss - box tessellates as a genuine closed manifold");
+    Check(std::abs(m.Volume() - boss_vol) < 1e-3, "oblique-boss - box's exact volume is 1 (the boss's own unchanged volume)");
+  }
+}
+
+// Third of the three sub-cases 393e32fc's own disclosure named:
+// "multi-boss ... configurations remain unexercised". CONFIRMED
+// (standalone repro, not assumed) that TWO SEPARATE flat-sided box bosses
+// on the SAME bigger face already worked correctly even before this
+// session's own fix above - unlike the circular-footprint/oblique cases,
+// this sub-case needed no code change: each boss's own coincident-region
+// bookkeeping (`partial_coincident_a`/`partial_coincident_b`,
+// boolean_general.cpp) is a per-face VECTOR of entries, already designed
+// to hold more than one independent coincident patch per face, and a
+// second boss's own fragmenting curve doesn't interact with the first
+// one's already-fixed corner-rescue at all. Added here as a permanent
+// regression test so this sub-case moves from "unexercised" to "proven",
+// per DINO8_PLAYBOOK.md's own definition of done - a verification, not a
+// bug fix.
+//
+// Honest disclosed limit found WHILE verifying this (not assumed): once
+// TWO bosses are both present on the SAME face (so that face now has two
+// independent holes), subtracting either boss back out of the combined
+// result throws this engine's own "3 or more fragment loops" refusal -
+// a genuinely different, deeper limitation (a face with more than one
+// hole being itself re-fragmented) that this fix does not reach, so it is
+// NOT asserted here.
+void TestBooleanCombineGeneralMultiBossFlatSidedCoincidence() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const Brep box = Brep::Box(0, 0, 0, 8, 8, 4);
+  const Brep boss1 = Brep::Box(1, 1, 4, 2, 2, 5);
+  const Brep boss2 = Brep::Box(5, 5, 4, 6, 6, 5);
+  const double box_vol = 8.0 * 8.0 * 4.0;
+  const double boss_vol = 1.0;
+
+  const Brep combined = BooleanCombineGeneral(box, boss1, BooleanOp::Union);
+  Check(combined.raw().IsValid(), "box+boss1 Union is a valid ON_Brep");
+
+  const Brep both = BooleanCombineGeneral(combined, boss2, BooleanOp::Union);
+  Check(both.raw().IsValid(), "(box+boss1)+boss2 Union is a valid ON_Brep - a second, independent boss on the "
+                              "same bigger face does not reopen the fragment-loop crash");
+  const Mesh m = TessellateGeneralBooleanClosedMesh(both, 16, 16);
+  Check(m.IsClosedManifold(), "(box+boss1)+boss2 Union tessellates as a genuine closed manifold");
+  Check(std::abs(m.Volume() - (box_vol + 2 * boss_vol)) < 1e-3,
+        "(box+boss1)+boss2 Union's exact volume is box_vol + 2 (two separate 1x1x1 bosses, each touching only, "
+        "zero volumetric overlap with the box or with each other)");
+}
+
 void TestBooleanCombineGeneralCallerTolerance() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
@@ -80654,6 +80879,9 @@ int main() {
   RunTest("TestBooleanCombineGeneralFlatSidedBossCrashRegression", TestBooleanCombineGeneralFlatSidedBossCrashRegression);
   RunTest("TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance", TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance);
   RunTest("TestBooleanCombineGeneralBoxCylinder", TestBooleanCombineGeneralBoxCylinder);
+  RunTest("TestBooleanCombineGeneralCircularFootprintBossCoincidence", TestBooleanCombineGeneralCircularFootprintBossCoincidence);
+  RunTest("TestBooleanCombineGeneralObliqueFlatSidedBossCoincidence", TestBooleanCombineGeneralObliqueFlatSidedBossCoincidence);
+  RunTest("TestBooleanCombineGeneralMultiBossFlatSidedCoincidence", TestBooleanCombineGeneralMultiBossFlatSidedCoincidence);
   RunTest("TestBooleanCombineGeneralCallerTolerance", TestBooleanCombineGeneralCallerTolerance);
   RunTest("TestBooleanCombineGeneralSphereBox", TestBooleanCombineGeneralSphereBox);
   RunTest("TestBooleanCombineGeneralObliqueCylinder", TestBooleanCombineGeneralObliqueCylinder);

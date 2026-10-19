@@ -1786,6 +1786,19 @@ bool RefineSurfaceSurfacePoint(const ON_Surface& a, const ON_Surface& b, double&
 bool SurfaceClosestPoint(const ON_Surface& s, Point3d p, double& u, double& v, int max_iter = 40);
 bool SurfaceClosestPointGlobal(const ON_Surface& s, Point3d p, double& u, double& v, int grid = 24);
 
+// Box-constrained (KKT) closest-point query: accepts a Newton solve that
+// left a parameter sitting exactly at its own non-periodic domain bound as
+// a genuine converged answer, without requiring that parameter's own
+// gradient component to vanish (see surface_intersect.cpp's own doc
+// comment for the full derivation - this is the fix for
+// BooleanCombineGeneral's long-standing "an edge is claimed by 3 or more
+// fragment loops" crash on a coincident face whose own corner sits exactly
+// on the OTHER face's domain boundary). Exported (moved out of this file's
+// own anonymous namespace) so BooleanCombineGeneral's exact-polygon
+// coincident-region detection (boolean_general.cpp) can reuse it directly
+// instead of re-deriving an equivalent helper.
+bool ClosestPointAllowingDomainBoundary(const ON_Surface& s, Point3d p, double& u, double& v);
+
 // Closest parameter on a curve (Newton from a seed; `global` scans samples first).
 double CurveClosestParam(const ON_Curve& c, Point3d p, double seed, int max_iter = 40);
 double CurveClosestParamGlobal(const ON_Curve& c, Point3d p, int samples = 256);
