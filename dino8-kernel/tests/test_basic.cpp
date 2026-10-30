@@ -84651,6 +84651,149 @@ void TestBooleanCombineGeneralSphereCentredOnBoxEdgeAlongSeamMeridian() {
   }
 }
 
+// PARITY_MAP's localops "Offset face" bullet disclosed "throws if any
+// face would vanish". A NON-moved face vanishing is the ordinary
+// direct-edit case of a small neighbour (a chamfer on an edge of the
+// moved face) being swallowed once the moved plane passes its far edge:
+// its half-space becomes redundant and the exact result is simply the
+// polytope without it. Fixture: the box [0,2]^3 with its top/+x edge
+// chamfered by the plane x+z=3.5 (7 faces, exact volume 8 - 0.25 = 7.75).
+// Moving the top (z=2) down by 0.6 puts it at z=1.4, where the chamfer
+// plane would meet it at x=2.1 > 2 - outside the box - so the chamfer
+// face vanishes and the exact result is the plain box 2x2x1.4 = 5.6.
+void TestOffsetFaceRetiresNeighbourFaceSwallowedByMovedPlane() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetFace;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  auto P = [](double x, double y, double z) { return Point3d(x, y, z); };
+  // Outward-facing PlanarFace from a loop already wound CCW as seen from
+  // outside: the plane normal is the loop's own Newell normal.
+  auto F = [](std::vector<Point3d> loop) {
+    Brep::PlanarFace f;
+    Vector3d n(0.0, 0.0, 0.0);
+    for (size_t i = 0; i < loop.size(); ++i) {
+      const Point3d& a = loop[i];
+      const Point3d& b = loop[(i + 1) % loop.size()];
+      n.x += (a.y - b.y) * (a.z + b.z);
+      n.y += (a.z - b.z) * (a.x + b.x);
+      n.z += (a.x - b.x) * (a.y + b.y);
+    }
+    n.Unitize();
+    f.plane = ON_Plane(loop[0], n);
+    f.loop = std::move(loop);
+    return f;
+  };
+  const std::vector<Brep::PlanarFace> faces = {
+      F({P(0, 0, 0), P(0, 2, 0), P(2, 2, 0), P(2, 0, 0)}),                      // bottom (-z)
+      F({P(0, 0, 2), P(1.5, 0, 2), P(1.5, 2, 2), P(0, 2, 2)}),                  // top (+z)
+      F({P(2, 0, 0), P(2, 2, 0), P(2, 2, 1.5), P(2, 0, 1.5)}),                  // +x
+      F({P(0, 0, 0), P(0, 0, 2), P(0, 2, 2), P(0, 2, 0)}),                      // -x
+      F({P(0, 0, 0), P(2, 0, 0), P(2, 0, 1.5), P(1.5, 0, 2), P(0, 0, 2)}),      // -y
+      F({P(0, 2, 0), P(0, 2, 2), P(1.5, 2, 2), P(2, 2, 1.5), P(2, 2, 0)}),      // +y
+      F({P(1.5, 0, 2), P(2, 0, 1.5), P(2, 2, 1.5), P(1.5, 2, 2)}),              // chamfer x+z=3.5
+  };
+  const Brep solid = Brep::FromPlanarFaces(faces);
+  Check(solid.FaceCount() == 7, "fixture: the chamfered box has 7 faces");
+  Check(std::fabs(PlanarBrepVolumeExact(solid) - 7.75) < 1e-12, "fixture: exact volume 8 - 0.25 = 7.75");
+
+  int top = -1, chamfer = -1;
+  const std::vector<Brep::PlanarFace> pf = solid.PlanarFaces();
+  for (size_t i = 0; i < pf.size(); ++i) {
+    if (std::fabs(pf[i].plane.zaxis.z - 1.0) < 1e-9) top = static_cast<int>(i);
+    if (pf[i].plane.zaxis.x > 0.5 && std::fabs(pf[i].plane.zaxis.x - pf[i].plane.zaxis.z) < 1e-9) {
+      chamfer = static_cast<int>(i);
+    }
+  }
+  Check(top >= 0 && chamfer >= 0, "fixture: found the top (+z) and chamfer ((1,0,1)/sqrt2) faces in PlanarFaces()");
+
+  // Control: a shallower move keeps the chamfer (it only shrinks). Top at
+  // z=1.7 meets the chamfer plane at x=1.8: a 0.2x0.2 right-triangle
+  // cross-section over y in [0,2] is removed from 2x2x1.7.
+  const Brep shallow = OffsetFace(solid, top, -0.3);
+  Check(shallow.FaceCount() == 7, "OffsetFace(top, -0.3): the chamfer face shrinks but survives (still 7 faces)");
+  Check(std::fabs(PlanarBrepVolumeExact(shallow) - (2.0 * 2.0 * 1.7 - 0.5 * 0.2 * 0.2 * 2.0)) < 1e-12,
+        "OffsetFace(top, -0.3): exact volume 6.8 - 0.04 = 6.76");
+
+  // The disclosed gap: the moved top passes the chamfer's far edge
+  // (z=1.5 at x=2), so the chamfer face vanishes - previously a throw.
+  const Brep deep = OffsetFace(solid, top, -0.6);
+  Check(deep.FaceCount() == 6, "OffsetFace(top, -0.6) retires the swallowed chamfer face: 6 faces, not 7");
+  Check(deep.raw().IsValid() && deep.raw().IsSolid(),
+        "OffsetFace(top, -0.6): the 6-face result is a valid, genuinely closed ON_Brep solid");
+  Check(std::fabs(PlanarBrepVolumeExact(deep) - 5.6) < 1e-12, "OffsetFace(top, -0.6): exact volume of the plain 2x2x1.4 box, 5.6");
+  Check(deep.raw().m_E.Count() == 12 && deep.raw().m_V.Count() == 8,
+        "OffsetFace(top, -0.6): plain box topology, 12 edges and 8 vertices (no stale chamfer edge/vertex left behind)");
+  {
+    ON_BoundingBox bb;
+    for (const Brep::PlanarFace& f : deep.PlanarFaces())
+      for (const Point3d& p : f.loop) bb.Set(p, true);
+    Check(bb.m_min.DistanceTo(P(0, 0, 0)) < 1e-12 && bb.m_max.DistanceTo(P(2, 2, 1.4)) < 1e-12,
+          "OffsetFace(top, -0.6): result is exactly [0,2]x[0,2]x[0,1.4]");
+    bool no_chamfer_plane = true;
+    for (const Brep::PlanarFace& f : deep.PlanarFaces()) {
+      if (f.plane.zaxis.x > 0.5 && f.plane.zaxis.z > 0.5) no_chamfer_plane = false;
+    }
+    Check(no_chamfer_plane, "OffsetFace(top, -0.6): no face on the chamfer plane remains (dropped, not left as a degenerate sliver)");
+  }
+
+  // The exactly-tangent case: top at z=1.5 is where the chamfer plane
+  // passes through the box's own +x/top edge - the chamfer face collapses
+  // to that one edge (zero area) and is likewise retired; the neighbours'
+  // clip against the now-tangent plane must not leave a doubled vertex.
+  const Brep tangent = OffsetFace(solid, top, -0.5);
+  Check(tangent.FaceCount() == 6, "OffsetFace(top, -0.5), chamfer plane exactly tangent along an edge: 6 faces, not 7");
+  Check(tangent.raw().IsValid() && tangent.raw().IsSolid(),
+        "OffsetFace(top, -0.5): the tangent-case result is a valid, genuinely closed ON_Brep solid");
+  Check(std::fabs(PlanarBrepVolumeExact(tangent) - 6.0) < 1e-12, "OffsetFace(top, -0.5): exact volume 2x2x1.5 = 6");
+  Check(tangent.raw().m_E.Count() == 12 && tangent.raw().m_V.Count() == 8,
+        "OffsetFace(top, -0.5): plain box topology, 12 edges and 8 vertices (tangent clip left no doubled vertex)");
+
+  // Growing instead: the chamfer face itself grows with the top. Top at
+  // z=3 meets the chamfer plane at x=0.5: a 1.5x1.5 right-triangle
+  // cross-section is removed from 2x2x3.
+  const Brep grown = OffsetFace(solid, top, 1.0);
+  Check(grown.FaceCount() == 7, "OffsetFace(top, +1.0): the chamfer face grows with the top (still 7 faces)");
+  Check(std::fabs(PlanarBrepVolumeExact(grown) - (12.0 - 0.5 * 1.5 * 1.5 * 2.0)) < 1e-12,
+        "OffsetFace(top, +1.0): exact volume 12 - 2.25 = 9.75");
+
+  // Negative: the MOVED face vanishing is still refused. Pulling the
+  // chamfer outward by 0.5 puts its plane at x+z = 3.5 + 0.5*sqrt2 > 4,
+  // beyond the box's own +x/top edge - the edited face no longer bounds
+  // anything, and the result must not silently become a plain box.
+  bool threw = false;
+  try {
+    OffsetFace(solid, chamfer, 0.5);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetFace refuses to move the chamfer face outward past the edge it chamfers (the MOVED face itself would vanish)");
+  threw = false;
+  try {
+    OffsetFace(solid, top, -3.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetFace refuses to move the top below the bottom (the MOVED face itself would vanish)");
+  // Negative control: the boundary of the moved-face refusal. Pulling
+  // the chamfer out by exactly 0.5/sqrt2 is the tangent case for the
+  // MOVED face (its plane passes through the +x/top edge): also refused.
+  threw = false;
+  try {
+    OffsetFace(solid, chamfer, 0.5 / std::sqrt(2.0));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetFace refuses the moved chamfer face at exact tangency too (zero-area moved face)");
+  // ...while just short of it the chamfer survives as a thin sliver,
+  // exactly: plane x+z = 3.5 + 0.4 = 3.9 removes a 0.1x0.1 triangle.
+  const Brep sliver = OffsetFace(solid, chamfer, 0.4 / std::sqrt(2.0));
+  Check(sliver.FaceCount() == 7, "OffsetFace(chamfer, +0.4/sqrt2): the moved chamfer face survives (7 faces)");
+  Check(std::fabs(PlanarBrepVolumeExact(sliver) - (8.0 - 0.5 * 0.1 * 0.1 * 2.0)) < 1e-12,
+        "OffsetFace(chamfer, +0.4/sqrt2): exact volume 8 - 0.01 = 7.99");
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -85970,6 +86113,7 @@ int main() {
   RunTest("TestSubDFromUniformBicubicSurfaceReproducesSurfaceExactly", TestSubDFromUniformBicubicSurfaceReproducesSurfaceExactly);
   RunTest("TestSubDFromUniformBicubicSurfaceRejectsUnsupportedInput", TestSubDFromUniformBicubicSurfaceRejectsUnsupportedInput);
   RunTest("TestBooleanCombineGeneralSphereCentredOnBoxEdgeAlongSeamMeridian", TestBooleanCombineGeneralSphereCentredOnBoxEdgeAlongSeamMeridian);
+  RunTest("TestOffsetFaceRetiresNeighbourFaceSwallowedByMovedPlane", TestOffsetFaceRetiresNeighbourFaceSwallowedByMovedPlane);
 
   RunTest("ON::End", ON::End);
 

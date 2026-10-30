@@ -957,12 +957,21 @@ Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_m
 // ShellConvexPlanar()/BooleanIntersectConvexPlanar() (a non-convex solid
 // would clip pieces of itself away against its own planes). Throws
 // std::invalid_argument if `face_index` is out of range for
-// `solid.PlanarFaces()`, or if any face's own new boundary collapses to
-// fewer than 3 vertices or ~0 area - `distance` large enough that a face
-// vanishes entirely (the topology itself would need to change - a
-// different face count or adjacency, not just moved boundaries) is
-// genuinely out of scope here, not silently approximated by dropping
-// that face or guessing a replacement.
+// `solid.PlanarFaces()`, or if `face_index`'s OWN new boundary collapses
+// to fewer than 3 vertices or ~0 area (`distance` so large that the moved
+// plane no longer bounds the solid at all - e.g. a chamfer face pulled
+// outward past the edge it chamfers - leaves no face for the edit to
+// describe, and is refused rather than silently returning a solid
+// without it).
+//
+// Any OTHER face whose new boundary collapses the same way is dropped
+// from the result, exactly: it is a half-space the moved plane has made
+// redundant (a chamfer on an edge of the moved face, swallowed once that
+// face moves below the chamfer's far edge, is the canonical case), and
+// the surviving faces' own clipped polygons already ARE the full boundary
+// of the new polytope - so the result's face count may be LOWER than the
+// input's (never higher: moving one plane of a convex polytope can
+// retire faces, not create them). Before this, that case threw too.
 Brep OffsetFace(const Brep& solid, int face_index, double distance);
 
 // PARITY_MAP.md's offsetshell "Inset" item's own disclosed "no SubD or
