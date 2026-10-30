@@ -5900,6 +5900,206 @@ std::vector<Mesh> Brep::Tessellate(int u_divisions, int v_divisions) const {
   return result;
 }
 
+// T-junction cracks between two faces that share a TOPOLOGICAL edge but
+// not a tessellation lattice. Each face is meshed independently on its own
+// (u, v) lattice, so the boundary vertices a face puts on a shared edge are
+// wherever ITS grid lines cross that edge. Two faces conform along an edge
+// only if their lattices agree there - true by coincidence for a plain
+// Box() (every side spans the same extent along every shared edge, with
+// the same division count) but NOT for a valid, closed, consistently
+// oriented solid whose planar faces are split differently from their
+// neighbours (e.g. a box whose top is two coplanar faces: each half has a
+// lattice over ITS OWN padded bounding box, so its grid lines cross the
+// rim at different places than the side wall's do). The welded mesh then
+// has hairline cracks - one side of an edge carries vertices the other
+// side lacks - and is not a closed manifold at any resolution above 1, so
+// Volume() throws on a perfectly valid solid.
+//
+// StitchTJunctionCracks() repairs exactly that, on the welded mesh: every
+// naked edge (a, b) gets every OTHER naked vertex that lies strictly
+// inside it (within `tol` of the segment) inserted by fanning the one
+// triangle that owns the edge through the sorted hits. The hit vertices
+// are the mesh's own existing vertices (never new points), so both sides
+// of the crack end up carrying the union of the two vertex sets by index,
+// and the triangle split changes no geometry: area and volume are exactly
+// preserved. A triangle with several naked edges is handled over repeated
+// passes. Returns the number of triangles split (0 = nothing to do).
+namespace {
+
+int StitchTJunctionCracks(Mesh& mesh, double tol) {
+  ON_Mesh& raw = mesh.raw();
+  const int nv = raw.m_V.Count();
+  if (nv < 3 || raw.m_F.Count() == 0) return 0;
+  std::vector<Point3d> pos(static_cast<size_t>(nv));
+  double extent = 0.0;
+  for (int i = 0; i < nv; ++i) {
+    const ON_3fPoint& p = raw.m_V[i];
+    pos[static_cast<size_t>(i)] = Point3d(p.x, p.y, p.z);
+    extent = std::max({extent, std::fabs(static_cast<double>(p.x)), std::fabs(static_cast<double>(p.y)),
+                       std::fabs(static_cast<double>(p.z))});
+  }
+  // Vertices are stored as float: a point exactly on a segment can be off
+  // it by a few float ulps of the coordinate magnitude.
+  const double perp_tol = tol + 4.0 * static_cast<double>(std::numeric_limits<float>::epsilon()) * extent;
+
+  std::vector<std::array<int, 3>> tris;
+  tris.reserve(static_cast<size_t>(raw.m_F.Count()));
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    const ON_MeshFace& f = raw.m_F[i];
+    tris.push_back({f.vi[0], f.vi[1], f.vi[2]});
+    if (f.IsQuad()) tris.push_back({f.vi[0], f.vi[2], f.vi[3]});
+  }
+
+  int split_total = 0;
+  for (int pass = 0; pass < 16; ++pass) {
+    std::map<std::pair<int, int>, int> uses;  // undirected edge -> use count
+    for (const std::array<int, 3>& t : tris) {
+      for (int k = 0; k < 3; ++k) {
+        const int a = t[static_cast<size_t>(k)], b = t[static_cast<size_t>((k + 1) % 3)];
+        ++uses[{std::min(a, b), std::max(a, b)}];
+      }
+    }
+    struct Naked {
+      int a, b;
+      size_t tri;
+    };
+    std::vector<Naked> naked;
+    std::set<int> naked_verts;
+    for (size_t ti = 0; ti < tris.size(); ++ti) {
+      for (int k = 0; k < 3; ++k) {
+        const int a = tris[ti][static_cast<size_t>(k)], b = tris[ti][static_cast<size_t>((k + 1) % 3)];
+        if (uses[{std::min(a, b), std::max(a, b)}] == 1) {
+          naked.push_back({a, b, ti});
+          naked_verts.insert(a);
+          naked_verts.insert(b);
+        }
+      }
+    }
+    if (naked.empty()) break;
+    // Naked vertices sorted by x, so each edge only scans its own x-range.
+    std::vector<int> by_x(naked_verts.begin(), naked_verts.end());
+    std::sort(by_x.begin(), by_x.end(),
+              [&](int p, int q) { return pos[static_cast<size_t>(p)].x < pos[static_cast<size_t>(q)].x; });
+
+    std::vector<bool> replaced(tris.size(), false);
+    std::vector<std::array<int, 3>> additions;
+    int split_this_pass = 0;
+    for (const Naked& e : naked) {
+      if (replaced[e.tri]) continue;  // retried next pass
+      const Point3d& a = pos[static_cast<size_t>(e.a)];
+      const Point3d& b = pos[static_cast<size_t>(e.b)];
+      const double abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+      const double len2 = abx * abx + aby * aby + abz * abz;
+      const double len = std::sqrt(len2);
+      if (len <= perp_tol) continue;
+      const double x_lo = std::min(a.x, b.x) - perp_tol, x_hi = std::max(a.x, b.x) + perp_tol;
+      auto first = std::lower_bound(by_x.begin(), by_x.end(), x_lo,
+                                    [&](int v, double x) { return pos[static_cast<size_t>(v)].x < x; });
+      std::vector<std::pair<double, int>> hits;  // (t along a->b, vertex)
+      for (auto it = first; it != by_x.end() && pos[static_cast<size_t>(*it)].x <= x_hi; ++it) {
+        const int v = *it;
+        if (v == e.a || v == e.b) continue;
+        const Point3d& p = pos[static_cast<size_t>(v)];
+        const double t = ((p.x - a.x) * abx + (p.y - a.y) * aby + (p.z - a.z) * abz) / len2;
+        if (t * len <= perp_tol || (1.0 - t) * len <= perp_tol) continue;  // at an end: a weld matter, not a T
+        const double dx = p.x - (a.x + abx * t), dy = p.y - (a.y + aby * t), dz = p.z - (a.z + abz * t);
+        if (dx * dx + dy * dy + dz * dz > perp_tol * perp_tol) continue;
+        hits.emplace_back(t, v);
+      }
+      if (hits.empty()) continue;
+      std::sort(hits.begin(), hits.end());
+      int apex = -1;
+      for (int k = 0; k < 3; ++k) {
+        const int v = tris[e.tri][static_cast<size_t>(k)];
+        if (v != e.a && v != e.b) apex = v;
+      }
+      if (apex < 0) continue;
+      std::vector<int> chain = {e.a};
+      for (const auto& h : hits) {
+        // Two hits closer than the tolerance are one point seen twice.
+        const Point3d& last = pos[static_cast<size_t>(chain.back())];
+        const Point3d& p = pos[static_cast<size_t>(h.second)];
+        const double dx = p.x - last.x, dy = p.y - last.y, dz = p.z - last.z;
+        if (dx * dx + dy * dy + dz * dz <= perp_tol * perp_tol) continue;
+        chain.push_back(h.second);
+      }
+      chain.push_back(e.b);
+      if (chain.size() <= 2) continue;
+      for (size_t k = 0; k + 1 < chain.size(); ++k) additions.push_back({chain[k], chain[k + 1], apex});
+      replaced[e.tri] = true;
+      ++split_this_pass;
+    }
+    if (split_this_pass == 0) break;
+    std::vector<std::array<int, 3>> next;
+    next.reserve(tris.size() + additions.size());
+    for (size_t ti = 0; ti < tris.size(); ++ti) {
+      if (!replaced[ti]) next.push_back(tris[ti]);
+    }
+    for (const std::array<int, 3>& t : additions) next.push_back(t);
+    tris = std::move(next);
+    split_total += split_this_pass;
+  }
+  if (split_total == 0) return 0;
+
+  ON_SimpleArray<ON_MeshFace> faces;
+  for (const std::array<int, 3>& t : tris) {
+    ON_MeshFace f;
+    f.vi[0] = t[0];
+    f.vi[1] = t[1];
+    f.vi[2] = t[2];
+    f.vi[3] = t[2];
+    faces.Append(f);
+  }
+  raw.m_F = faces;
+  raw.m_S.Destroy();
+  raw.m_N.Destroy();
+  raw.m_FN.Destroy();
+  return split_total;
+}
+
+// True when the shell has real edge topology and every live edge has exactly
+// two trims: no topological hole and no non-manifold edge, so any gap its
+// tessellation shows is a tessellation artefact (a lattice mismatch along a
+// shared edge) rather than the part being open. A Brep with NO edge records
+// at all (Box(), Sphere(), FromSurface(): see this class's comment on which
+// factories build none) says nothing about closure and is left alone.
+bool HasClosedEdgeTopology(const ON_Brep& brep) {
+  int live = 0;
+  for (int ei = 0; ei < brep.m_E.Count(); ++ei) {
+    const ON_BrepEdge& e = brep.m_E[ei];
+    if (e.m_edge_index < 0) continue;
+    if (e.m_ti.Count() != 2) return false;
+    ++live;
+  }
+  return live > 0;
+}
+
+// `welded` (a MergeAndWeld of a Brep's per-face tessellation), or - only if
+// it is open although the Brep's edge topology is closed AND stitching its
+// T-junction cracks makes it a closed manifold - that stitched mesh. A mesh
+// that is already closed is returned untouched, and a stitch that does not
+// fully close it is discarded, so no result that worked before can change.
+Mesh StitchedIfThatClosesIt(const ON_Brep& brep, Mesh welded) {
+  if (welded.IsClosedManifold() || !HasClosedEdgeTopology(brep)) return welded;
+  {
+    Mesh stitched = welded;
+    if (StitchTJunctionCracks(stitched, tolerance::kWeld) > 0 && stitched.IsClosedManifold()) return stitched;
+  }
+  // Second chance: a concave planar face whose trim vertex sits exactly on
+  // one of its own lattice lines has that vertex nudged ~1e-6 of a cell off
+  // the line (TessellateGridClippedExact), which can land it one weld-grid
+  // cell away from its neighbour's copy of the same corner: MergeAndWeld's
+  // grid snap leaves the pair unwelded. A true-distance weld of the naked
+  // vertices (restricted to the open boundary) first, then the T-junctions.
+  Mesh stitched = welded;
+  stitched.CloseNakedEdges(2.0 * tolerance::kWeld);
+  StitchTJunctionCracks(stitched, 2.0 * tolerance::kWeld);
+  if (stitched.IsClosedManifold()) return stitched;
+  return welded;
+}
+
+}  // namespace
+
 // Tessellate() followed by Mesh::MergeAndWeld() - the combination that
 // actually produces a single closed, boolean-ready mesh from a closed
 // Brep like Box(). Tessellate() alone leaves each face's tessellation as
@@ -5909,8 +6109,12 @@ std::vector<Mesh> Brep::Tessellate(int u_divisions, int v_divisions) const {
 // doc comment): the literal shared boundary points that fix forces are
 // exactly what lets this weld succeed at ANY divisions pair, not just a
 // symmetric one.
+//
+// If that welded mesh is open although the Brep's edge topology is closed,
+// its T-junction cracks are stitched (see StitchedIfThatClosesIt above) and the
+// stitched mesh is returned only when it is then a closed manifold.
 Mesh Brep::TessellateToClosedMesh(int u_divisions, int v_divisions) const {
-  return Mesh::MergeAndWeld(Tessellate(u_divisions, v_divisions));
+  return StitchedIfThatClosesIt(brep_, Mesh::MergeAndWeld(Tessellate(u_divisions, v_divisions)));
 }
 
 std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, int boundary_samples) const {
@@ -6652,7 +6856,7 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
 }
 
 Mesh Brep::TessellateToClosedMeshConforming(int u_divisions, int v_divisions, int boundary_samples) const {
-  return Mesh::MergeAndWeld(TessellateConforming(u_divisions, v_divisions, boundary_samples));
+  return StitchedIfThatClosesIt(brep_, Mesh::MergeAndWeld(TessellateConforming(u_divisions, v_divisions, boundary_samples)));
 }
 
 // ---------------------------------------------------------------------------
