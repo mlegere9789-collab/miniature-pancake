@@ -5583,6 +5583,16 @@ class Brep {
   // takes ownership of `wall`, adds it and the requested caps as real
   // ON_Brep topology, appends the side tables and applies the closed-
   // body outward cross-check described in those factories' doc comment.
+  // Made public (was private) for the sheet-metal factories (Bend()/
+  // MultiBend(), sheet_metal.h/.cpp), which build their own exact swept
+  // wall surface outside this class and need the identical cap/side-
+  // table/orientation assembly every factory in src/sweep.cpp gets - the
+  // same reason FaceCoversWholeDomain() and RoundCapSpec above are
+  // public. `wall` must be a valid ON_NurbsSurface closed in u when
+  // `cap_v0`/`cap_v1` are requested on it (see the cap rules in
+  // src/sweep.cpp); each requested cap's end section must be planar and
+  // star-shaped (std::invalid_argument otherwise, as for Extrude()).
+ public:
   // `cap_v0_outward_hint`/`cap_v1_outward_hint`, when non-null, replace
   // the DEFAULT outward-hint direction this method would otherwise
   // compute itself from the wall's own analytic `Ev1Der` derivative at
@@ -5607,6 +5617,8 @@ class Brep {
                                 const char* caller, const Vector3d* cap_v0_outward_hint = nullptr,
                                 const Vector3d* cap_v1_outward_hint = nullptr,
                                 const RoundCapSpec* round_v0 = nullptr, const RoundCapSpec* round_v1 = nullptr);
+
+ private:
   // Revolve()'s own assembly step for the one case AssembleSweptBody()
   // cannot cap - a PARTIAL-angle revolve of an OPEN profile with an
   // endpoint off the axis (src/sweep.cpp): takes ownership of `wall` (the

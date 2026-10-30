@@ -47,15 +47,22 @@ double BendAllowance(double thickness, double inside_radius, double bend_angle_d
 // rectangular legs of length `leg1_length`/`leg2_length`, width `width`,
 // and uniform `thickness`, joined by a genuine curved bend region of
 // `inside_radius`/`bend_angle_degrees` - not a sharp crease. Built
-// directly (not by deforming an existing flat body): a single closed 2D
-// profile - an outer boundary at `inside_radius + thickness` and an inner
-// boundary at `inside_radius`, each one leg-arc-leg (two straight
-// segments tangent to a shared-center circular arc, the same tangent-
-// line-to-arc shape NurbsCurve::FilletCornerArc() (curve.cpp) builds from
-// a corner point, here built directly from the known leg lengths and arc
-// angle instead), joined end-to-end via NurbsCurve::Join() into one
-// closed loop - extruded by `width` via ONE Brep::Extrude() call
-// (brep.h).
+// directly (not by deforming an existing flat body) as ONE exact swept
+// solid: the sheet's own `width` x `thickness` rectangular cross-section
+// carried along the bend path, whose two offset copies - an outer path
+// at `inside_radius + thickness` and an inner path at `inside_radius`,
+// each one leg-arc-leg (two straight segments tangent to a shared-center
+// circular arc, the same tangent-line-to-arc shape
+// NurbsCurve::FilletCornerArc() (curve.cpp) builds from a corner point,
+// here built directly from the known leg lengths and arc angle instead),
+// joined end-to-end via NurbsCurve::Join() - become the two ruled rows
+// of a single tensor-product wall surface (exact: parallel legs,
+// concentric arcs, no interpolation), closed by Brep::AssembleSweptBody()
+// (brep.h) with a flat rectangular cap over each free (cut) end - 3
+// faces, the same wall-plus-two-caps topology Brep::Extrude() gives a
+// closed profile. (An earlier version extruded the bent PROFILE - the
+// closed outer-plus-inner loop - along `width` instead; see the
+// paragraph on bend angle below for why that was replaced.)
 //
 // `leg1_length`/`leg2_length` are measured from each leg's own far (cut)
 // end to the NEUTRAL axis's own tangent point (the standard sheet-metal
@@ -76,23 +83,25 @@ double BendAllowance(double thickness, double inside_radius, double bend_angle_d
 // BendAllowance() above uses for its own, different purpose (see that
 // function's own doc comment).
 //
-// `bend_angle_degrees` is restricted to (0, 180) so the profile stays a
-// simple L-bracket-like star-shaped region for typical dimensions
-// (Brep::Extrude()'s own capping requirement) - but that requirement can
-// still be exceeded well before 180 degrees for some combinations of
-// inside_radius/thickness/bend_angle_degrees (confirmed directly,
-// dino8_scratch_test: a relatively THICK annular sector's own star-shaped
-// kernel shrinks with angle faster than a thin one's does, so a large
-// thickness/inside_radius ratio can throw at a moderate angle where a
-// thinner one wouldn't), independent of leg length. Picking dimensions
-// that stay comfortably inside that boundary is this function's own
-// caller's responsibility, the same as any other Extrude()-based feature
-// op in this kernel.
+// `bend_angle_degrees` is restricted to (0, 180), the same range
+// BendAllowance() above accepts (a press brake's own bend angle: the two
+// legs' directions differ by less than a half turn). Every angle in that
+// range builds, at every leg length / thickness / inside_radius: the
+// only end sections this construction ever caps are the two rectangles
+// at the cut ends, which are convex, so Brep::AssembleSweptBody()'s
+// star-shaped fan-cap requirement is always met. That is exactly why
+// the section is swept along the path rather than the bent profile
+// being extruded along the width, as this function originally did: the
+// bent profile stops being star-shaped as soon as one leg is long
+// enough to hide behind the other leg's own inner corner, and a plain
+// 90-degree bend of a thin sheet (legs 1, thickness 0.05, inside radius
+// 0.5) - or anything steeper - was refused with Brep::Extrude()'s own
+// "not star-shaped" error (confirmed directly on the old construction;
+// TestBendAndMultiBendRightAngleThinSheetsAreExactSolids,
+// tests/test_basic.cpp, pins the fixed cases to the Pappus closed form).
 //
 // Throws std::invalid_argument for a non-positive leg1_length/leg2_length/
-// width/thickness/inside_radius, or a bend_angle_degrees not in (0, 180) -
-// plus whatever Brep::Extrude() itself throws if the resulting cross-
-// section isn't star-shaped after all.
+// width/thickness/inside_radius, or a bend_angle_degrees not in (0, 180).
 Brep Bend(double leg1_length, double leg2_length, double width, double thickness, double inside_radius,
           double bend_angle_degrees);
 
@@ -124,23 +133,27 @@ Brep Bend(double leg1_length, double leg2_length, double width, double thickness
 // exactly continues from the previous leg's end (each later arc's own
 // center is wherever that arc's own `inside_radii[i]` places it, not a
 // shared fixed center the way Bend()'s own single arc has one) - then
-// assembles one closed 2D profile (outer boundary, then inner boundary
-// reversed, exactly like Bend()'s own profile, just with N legs/arcs each
-// instead of 2/1) and extrudes it by `width` via ONE Brep::Extrude() call.
+// sweeps the `width` x `thickness` rectangular section along the two
+// offset paths (inner and outer, each N+1 legs and N arcs joined
+// end-to-end, exactly like Bend()'s own two paths with N legs/arcs each
+// instead of 2/1) into one exact swept solid: a single wall surface plus
+// a flat rectangular cap over each free (cut) end, 3 faces. Because
+// those two caps are convex rectangles whatever the chain does, a
+// right-angle U-channel or hat-channel builds exactly like a gentle one
+// (the original closed-bent-profile extrusion refused any chain whose
+// profile was not star-shaped - a cumulative turn of only a few degrees
+// at ordinary leg lengths; see Bend()'s own doc comment above).
 // Reduces EXACTLY to Bend(leg_lengths[0], leg_lengths[1], width,
 // thickness, inside_radii[0], bend_angles_degrees[0]) for a single bend
-// (N == 1) - the identical profile, not just a similar one - cross-checked
+// (N == 1) - the identical paths, not just a similar shape - cross-checked
 // directly (TestMultiBendReducesToBendForASingleBend, tests/test_basic.cpp).
 //
 // Throws std::invalid_argument if `leg_lengths` has fewer than 2 entries
 // (at least one bend is required - a flat, unbent sheet is out of this
 // function's own scope), if `bend_angles_degrees`/`inside_radii` don't
 // each have exactly `leg_lengths.size() - 1` entries, for any non-positive
-// leg length/width/thickness/inside_radius, for any
-// `bend_angles_degrees` entry not in (0, 180) - plus whatever
-// Brep::Extrude() itself throws if the assembled chain's own profile isn't
-// star-shaped (correspondingly easier to exceed with more/sharper bends
-// than Bend()'s own single-bend case).
+// leg length/width/thickness/inside_radius, or for any
+// `bend_angles_degrees` entry not in (0, 180).
 Brep MultiBend(const std::vector<double>& leg_lengths, const std::vector<double>& bend_angles_degrees,
                const std::vector<double>& inside_radii, double width, double thickness);
 
@@ -159,8 +172,9 @@ Brep MultiBend(const std::vector<double>& leg_lengths, const std::vector<double>
 // `thickness` thick, `width` wide, and `leg1_length + leg2_length +
 // BendAllowance(thickness, inside_radius, bend_angle_degrees, k_factor)`
 // long (`BendAllowance()`'s own doc comment above derives that length) -
-// built the same way Bend() itself is, via Brep::Extrude() of a
-// rectangular profile, NOT Brep::BoxWelded(): a FromPlanarFaces()-built
+// built via Brep::Extrude() of a rectangular profile (the same
+// Brep::AssembleSweptBody()-capped sweep Bend() itself goes through),
+// NOT Brep::BoxWelded(): a FromPlanarFaces()-built
 // BoxWelded() genuinely welds its own topology but trims each face with a
 // real ON_BrepLoop, so Brep::FaceCoversWholeDomain() (brep.cpp) correctly
 // reports it as trimmed and Brep::Volume()'s own exact per-face
