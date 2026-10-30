@@ -227,6 +227,57 @@ class NurbsSurface {
   static Result CoonsPatchTriangular(const NurbsCurve& a, const NurbsCurve& b, const NurbsCurve& c, NurbsSurface& out,
                                       double tolerance = 1e-6, double* out_corner_gap = nullptr);
 
+  // What `FitPatch()` measured on its own result and where its surface sits.
+  struct PatchFitReport {
+    int u_count = 0, v_count = 0;       // control net of the returned surface
+    int data_points = 0;                // boundary + interior points fitted
+    double tolerance = 0.0;             // the tolerance asked for
+    bool met_tolerance = false;         // max_deviation <= tolerance
+    double max_deviation = 0.0;         // worst |height of the surface - height of the data| over every data point
+    double rms_deviation = 0.0;
+    double max_boundary_deviation = 0.0;  // the same, over the boundary points only (0 if there are none)
+    double flat_deviation = 0.0;        // worst distance of the data from their best-fit PLANE: what a plane patch misses by
+    // The surface is a graph over the best-fit plane, parameterized by plane
+    // coordinates: surface(u, v) = plane_origin + u * plane_x + v * plane_y +
+    // h(u, v) * plane_z, so (u, v) of a data point is its offset from
+    // plane_origin along plane_x / plane_y (what a trim curve needs).
+    Point3d plane_origin;
+    Vector3d plane_x, plane_y, plane_z;
+  };
+
+  // Patch: a bicubic (lower where the data are few) least-squares NURBS
+  // surface through scattered points and boundary samples - the surface
+  // counterpart of `NurbsCurve::FitLeastSquares()`, Rhino's Patch for data
+  // that are not planar. The data (`boundary_points`, weighted 4x, then
+  // `interior_points`, weighted 1x) are projected onto their principal-
+  // component plane (smallest-variance axis = plane normal); the surface is
+  // a height field h(u, v) over that plane's (x, y) bounding box with a
+  // clamped uniform tensor-product B-spline net whose control points sit at
+  // the Greville abscissae (so x(u) = u and y(v) = v exactly), the heights
+  // solved from the normal equations of
+  //     sum w_k (h(x_k, y_k) - h_k)^2  +  lambda * (squared second and mixed
+  //     differences of the control heights)
+  // with lambda = 1e-9 of the mean data weight: a stiffness term that only
+  // decides the shape where the data leave it free (inside a ring of
+  // boundary points, say - a minimal-bending membrane) and is below
+  // round-off elsewhere. The net grows 2x2, 3x3, ... up to `max_count` per
+  // side (more along the longer side of the bounding box; never more control
+  // points than data points) and the first net whose worst data deviation is
+  // <= `tolerance` is returned; if none is, the net with the SMALLEST worst
+  // deviation is returned and `report->met_tolerance` is false - the surface
+  // is then the best this routine found, not one within tolerance, and the
+  // caller must say so. All deviations are VERTICAL (along the plane normal)
+  // at the data points, an upper bound of the true point-to-surface distance
+  // there, and say NOTHING about the surface between data points (the
+  // tests measure that against a closed form). It cannot fit data that fold
+  // over the plane (two data points with the same (x, y) and different
+  // heights simply average). Returns Result::Failed for fewer than 3 data
+  // points, data that are (nearly) collinear, or a singular solve. Throws
+  // std::invalid_argument for a non-finite coordinate, tolerance <= 0 or
+  // max_count outside [2, 32].
+  static Result FitPatch(const std::vector<Point3d>& boundary_points, const std::vector<Point3d>& interior_points,
+                         double tolerance, NurbsSurface& out, PatchFitReport* report = nullptr, int max_count = 16);
+
   // Surface-to-surface continuity blend - the genuine kernel-library
   // counterpart to NurbsCurve::BlendCurves() (curve.h), closing this
   // PARITY_MAP.md gap's own "No G3/G4, no kernel API" half the same way

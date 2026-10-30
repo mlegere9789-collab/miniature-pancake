@@ -1793,6 +1793,321 @@ Result NurbsSurface::CoonsPatchTriangular(const NurbsCurve& a, const NurbsCurve&
   return Result::Ok;
 }
 
+namespace {
+
+namespace patch_fit_detail {
+
+struct Plane3 {
+  ON_3dPoint o;
+  ON_3dVector x, y, z;
+};
+
+// Symmetric 3x3 eigen-decomposition by cyclic Jacobi rotations. Columns of
+// `vec` are the eigenvectors, `val` ascending.
+inline void Eigen3(double a[3][3], double val[3], double vec[3][3]) {
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) vec[i][j] = i == j ? 1.0 : 0.0;
+  for (int sweep = 0; sweep < 60; ++sweep) {
+    const double off = std::fabs(a[0][1]) + std::fabs(a[0][2]) + std::fabs(a[1][2]);
+    if (off < 1e-300) break;
+    for (int p = 0; p < 2; ++p) {
+      for (int q = p + 1; q < 3; ++q) {
+        if (std::fabs(a[p][q]) < 1e-300) continue;
+        const double theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
+        const double t = (theta >= 0 ? 1.0 : -1.0) / (std::fabs(theta) + std::sqrt(theta * theta + 1.0));
+        const double c = 1.0 / std::sqrt(t * t + 1.0), s = t * c;
+        for (int k = 0; k < 3; ++k) {
+          const double akp = a[k][p], akq = a[k][q];
+          a[k][p] = c * akp - s * akq;
+          a[k][q] = s * akp + c * akq;
+        }
+        for (int k = 0; k < 3; ++k) {
+          const double apk = a[p][k], aqk = a[q][k];
+          a[p][k] = c * apk - s * aqk;
+          a[q][k] = s * apk + c * aqk;
+        }
+        for (int k = 0; k < 3; ++k) {
+          const double vkp = vec[k][p], vkq = vec[k][q];
+          vec[k][p] = c * vkp - s * vkq;
+          vec[k][q] = s * vkp + c * vkq;
+        }
+      }
+    }
+  }
+  int idx[3] = {0, 1, 2};
+  std::sort(idx, idx + 3, [&](int i, int j) { return a[i][i] < a[j][j]; });
+  double v2[3][3];
+  for (int c = 0; c < 3; ++c) {
+    val[c] = a[idx[c]][idx[c]];
+    for (int r = 0; r < 3; ++r) v2[r][c] = vec[r][idx[c]];
+  }
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 3; ++c) vec[r][c] = v2[r][c];
+}
+
+// Standard (n + p + 1)-long clamped uniform knot vector on [a, b].
+inline std::vector<double> PatchFitKnots(int n, int p, double a, double b) {
+  std::vector<double> t(static_cast<size_t>(n + p + 1));
+  const int interior = n - p - 1;
+  for (int i = 0; i <= p; ++i) {
+    t[static_cast<size_t>(i)] = a;
+    t[static_cast<size_t>(n + i)] = b;
+  }
+  for (int i = 1; i <= interior; ++i) t[static_cast<size_t>(p + i)] = a + (b - a) * i / (interior + 1);
+  return t;
+}
+
+// All n basis values at x (Cox-de Boor), plus the first nonzero index.
+inline void BasisValues(const std::vector<double>& t, int n, int p, double x, double* out, int* first) {
+  int span = p;
+  while (span < n - 1 && x >= t[static_cast<size_t>(span + 1)]) ++span;
+  double left[16], right[16], N[16];
+  N[0] = 1.0;
+  for (int j = 1; j <= p; ++j) {
+    left[j] = x - t[static_cast<size_t>(span + 1 - j)];
+    right[j] = t[static_cast<size_t>(span + j)] - x;
+    double saved = 0.0;
+    for (int r = 0; r < j; ++r) {
+      const double denom = right[r + 1] + left[j - r];
+      const double temp = denom != 0.0 ? N[r] / denom : 0.0;
+      N[r] = saved + right[r + 1] * temp;
+      saved = left[j - r] * temp;
+    }
+    N[j] = saved;
+  }
+  for (int j = 0; j <= p; ++j) out[j] = N[j];
+  *first = span - p;
+}
+
+// In-place Cholesky solve of the SPD system A x = b (A is n x n row-major);
+// false if a pivot is not positive.
+inline bool CholeskySolve(std::vector<double>& A, std::vector<double>& b, int n) {
+  for (int j = 0; j < n; ++j) {
+    double d = A[static_cast<size_t>(j) * n + j];
+    for (int k = 0; k < j; ++k) d -= A[static_cast<size_t>(j) * n + k] * A[static_cast<size_t>(j) * n + k];
+    if (!(d > 0.0)) return false;
+    d = std::sqrt(d);
+    A[static_cast<size_t>(j) * n + j] = d;
+    for (int i = j + 1; i < n; ++i) {
+      double s = A[static_cast<size_t>(i) * n + j];
+      for (int k = 0; k < j; ++k) s -= A[static_cast<size_t>(i) * n + k] * A[static_cast<size_t>(j) * n + k];
+      A[static_cast<size_t>(i) * n + j] = s / d;
+    }
+  }
+  for (int i = 0; i < n; ++i) {
+    double s = b[static_cast<size_t>(i)];
+    for (int k = 0; k < i; ++k) s -= A[static_cast<size_t>(i) * n + k] * b[static_cast<size_t>(k)];
+    b[static_cast<size_t>(i)] = s / A[static_cast<size_t>(i) * n + i];
+  }
+  for (int i = n - 1; i >= 0; --i) {
+    double s = b[static_cast<size_t>(i)];
+    for (int k = i + 1; k < n; ++k) s -= A[static_cast<size_t>(k) * n + i] * b[static_cast<size_t>(k)];
+    b[static_cast<size_t>(i)] = s / A[static_cast<size_t>(i) * n + i];
+  }
+  return true;
+}
+
+struct Datum {
+  double x, y, h, w;
+  bool boundary;
+};
+
+struct FitResult {
+  bool ok = false;
+  int nu = 0, nv = 0;
+  std::vector<double> c;  // control heights, c[i * nv + j]
+  double max_dev = 0.0, rms_dev = 0.0, max_boundary_dev = 0.0;
+};
+
+// Least-squares height fit h(x, y) with a (nu x nv) cubic net over [x0,x1] x [y0,y1].
+inline FitResult FitHeights(const std::vector<Datum>& data, double x0, double x1, double y0, double y1, int nu, int nv, double lambda) {
+  FitResult r;
+  r.nu = nu;
+  r.nv = nv;
+  const int pu = std::min(3, nu - 1), pv = std::min(3, nv - 1);
+  const std::vector<double> tu = PatchFitKnots(nu, pu, x0, x1), tv = PatchFitKnots(nv, pv, y0, y1);
+  const int N = nu * nv;
+  std::vector<double> A(static_cast<size_t>(N) * N, 0.0), b(static_cast<size_t>(N), 0.0);
+  double wsum = 0.0;
+  double bu[16], bv[16];
+  for (const Datum& d : data) {
+    int fu = 0, fv = 0;
+    BasisValues(tu, nu, pu, d.x, bu, &fu);
+    BasisValues(tv, nv, pv, d.y, bv, &fv);
+    wsum += d.w;
+    for (int a = 0; a <= pu; ++a) {
+      for (int c = 0; c <= pv; ++c) {
+        const int row = (fu + a) * nv + (fv + c);
+        const double ba = bu[a] * bv[c];
+        b[static_cast<size_t>(row)] += d.w * ba * d.h;
+        for (int a2 = 0; a2 <= pu; ++a2) {
+          for (int c2 = 0; c2 <= pv; ++c2) {
+            A[static_cast<size_t>(row) * N + (fu + a2) * nv + (fv + c2)] += d.w * ba * bu[a2] * bv[c2];
+          }
+        }
+      }
+    }
+  }
+  // Stiffness regularizer: squared second differences of the control heights
+  // along both directions plus the mixed (twist) difference - it only decides
+  // the surface where the data leave it free.
+  const double lam = lambda * wsum / std::max(1, N);
+  auto add_stencil = [&](const int idx[4], const double coef[4], int count) {
+    for (int a = 0; a < count; ++a)
+      for (int c = 0; c < count; ++c) A[static_cast<size_t>(idx[a]) * N + idx[c]] += lam * coef[a] * coef[c];
+  };
+  for (int i = 0; i < nu; ++i) {
+    for (int j = 0; j < nv; ++j) {
+      if (i + 2 < nu) {
+        const int idx[4] = {i * nv + j, (i + 1) * nv + j, (i + 2) * nv + j, 0};
+        const double co[4] = {1, -2, 1, 0};
+        add_stencil(idx, co, 3);
+      }
+      if (j + 2 < nv) {
+        const int idx[4] = {i * nv + j, i * nv + j + 1, i * nv + j + 2, 0};
+        const double co[4] = {1, -2, 1, 0};
+        add_stencil(idx, co, 3);
+      }
+      if (i + 1 < nu && j + 1 < nv) {
+        const int idx[4] = {i * nv + j, (i + 1) * nv + j, i * nv + j + 1, (i + 1) * nv + j + 1};
+        const double co[4] = {1, -1, -1, 1};
+        add_stencil(idx, co, 4);
+      }
+    }
+  }
+  for (int i = 0; i < N; ++i) A[static_cast<size_t>(i) * N + i] += 1e-12 * (wsum / std::max(1, N)) + 1e-300;
+  std::vector<double> sol = b;
+  if (!CholeskySolve(A, sol, N)) return r;
+  r.c = sol;
+  double sq = 0.0;
+  for (const Datum& d : data) {
+    int fu = 0, fv = 0;
+    BasisValues(tu, nu, pu, d.x, bu, &fu);
+    BasisValues(tv, nv, pv, d.y, bv, &fv);
+    double h = 0.0;
+    for (int a = 0; a <= pu; ++a)
+      for (int c = 0; c <= pv; ++c) h += bu[a] * bv[c] * sol[static_cast<size_t>((fu + a) * nv + (fv + c))];
+    const double e = std::fabs(h - d.h);
+    r.max_dev = std::max(r.max_dev, e);
+    if (d.boundary) r.max_boundary_dev = std::max(r.max_boundary_dev, e);
+    sq += e * e;
+  }
+  r.rms_dev = std::sqrt(sq / data.size());
+  r.ok = true;
+  return r;
+}
+
+}  // namespace patch_fit_detail
+
+}  // namespace
+
+Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points, const std::vector<Point3d>& interior_points,
+                              double tolerance, NurbsSurface& out, PatchFitReport* report, int max_count) {
+  using namespace patch_fit_detail;
+  if (!(tolerance > 0.0) || !std::isfinite(tolerance)) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::FitPatch: tolerance must be positive and finite");
+  }
+  if (max_count < 2 || max_count > 32) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::FitPatch: max_count must be in [2, 32]");
+  }
+  std::vector<Point3d> all = boundary_points;
+  all.insert(all.end(), interior_points.begin(), interior_points.end());
+  for (const Point3d& p : all) {
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+      throw std::invalid_argument("dino8::kernel::NurbsSurface::FitPatch: a data point has a non-finite coordinate");
+    }
+  }
+  if (all.size() < 3) return Result::Failed;
+
+  // Principal-component plane: normal = smallest-variance axis, x = largest.
+  ON_3dVector centroid_sum(0, 0, 0);
+  for (const Point3d& p : all) centroid_sum += ON_3dVector(p);
+  const ON_3dPoint centre(centroid_sum.x / all.size(), centroid_sum.y / all.size(), centroid_sum.z / all.size());
+  double cov[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+  for (const Point3d& p : all) {
+    const double d[3] = {p.x - centre.x, p.y - centre.y, p.z - centre.z};
+    for (int i = 0; i < 3; ++i)
+      for (int j = 0; j < 3; ++j) cov[i][j] += d[i] * d[j];
+  }
+  double val[3], vec[3][3];
+  Eigen3(cov, val, vec);
+  if (!(val[1] > 1e-12 * val[2])) return Result::Failed;  // collinear: no plane, no surface
+  ON_3dVector zaxis(vec[0][0], vec[1][0], vec[2][0]), xaxis(vec[0][2], vec[1][2], vec[2][2]);
+  if (!zaxis.Unitize() || !xaxis.Unitize()) return Result::Failed;
+  ON_3dVector yaxis = ON_CrossProduct(zaxis, xaxis);
+  if (!yaxis.Unitize()) return Result::Failed;
+
+  std::vector<Datum> data;
+  data.reserve(all.size());
+  double x0 = std::numeric_limits<double>::max(), x1 = -x0, y0 = x0, y1 = -x0, flat = 0.0;
+  const auto push = [&](const Point3d& p, double weight, bool boundary) {
+    const ON_3dVector d = p - centre;
+    const Datum k{ON_DotProduct(d, xaxis), ON_DotProduct(d, yaxis), ON_DotProduct(d, zaxis), weight, boundary};
+    x0 = std::min(x0, k.x);
+    x1 = std::max(x1, k.x);
+    y0 = std::min(y0, k.y);
+    y1 = std::max(y1, k.y);
+    flat = std::max(flat, std::fabs(k.h));
+    data.push_back(k);
+  };
+  for (const Point3d& p : boundary_points) push(p, 4.0, true);
+  for (const Point3d& p : interior_points) push(p, 1.0, false);
+  if (!(x1 - x0 > 1e-12) || !(y1 - y0 > 1e-12)) return Result::Failed;
+
+  FitResult best;
+  const double aspect = (y1 - y0) / (x1 - x0);
+  for (int n = 2; n <= max_count; ++n) {
+    int nu = n, nv = n;
+    if (aspect >= 1.0) nv = std::min(max_count, std::max(2, static_cast<int>(std::lround(n * aspect))));
+    else nu = std::min(max_count, std::max(2, static_cast<int>(std::lround(n / aspect))));
+    if (static_cast<size_t>(nu) * static_cast<size_t>(nv) > data.size()) break;  // never underdetermined
+    FitResult r = FitHeights(data, x0, x1, y0, y1, nu, nv, 1e-9);
+    if (!r.ok) continue;
+    if (!best.ok || r.max_dev < best.max_dev) best = r;
+    if (r.max_dev <= tolerance) break;
+  }
+  if (!best.ok) return Result::Failed;
+
+  const int pu = std::min(3, best.nu - 1), pv = std::min(3, best.nv - 1);
+  const std::vector<double> tu = PatchFitKnots(best.nu, pu, x0, x1), tv = PatchFitKnots(best.nv, pv, y0, y1);
+  ON_NurbsSurface surface;
+  if (!surface.Create(3, false, pu + 1, pv + 1, best.nu, best.nv)) return Result::Failed;
+  // ON keeps the standard knot vector without its first and last entries.
+  for (int k = 0; k < surface.KnotCount(0); ++k) surface.SetKnot(0, k, tu[static_cast<size_t>(k) + 1]);
+  for (int k = 0; k < surface.KnotCount(1); ++k) surface.SetKnot(1, k, tv[static_cast<size_t>(k) + 1]);
+  for (int i = 0; i < best.nu; ++i) {
+    double gx = 0.0;
+    for (int k = 1; k <= pu; ++k) gx += tu[static_cast<size_t>(i + k)];
+    gx /= pu;
+    for (int j = 0; j < best.nv; ++j) {
+      double gy = 0.0;
+      for (int k = 1; k <= pv; ++k) gy += tv[static_cast<size_t>(j + k)];
+      gy /= pv;
+      surface.SetCV(i, j, centre + xaxis * gx + yaxis * gy + zaxis * best.c[static_cast<size_t>(i * best.nv + j)]);
+    }
+  }
+  if (!surface.IsValid()) return Result::Failed;
+
+  out.raw() = surface;
+  if (report) {
+    *report = PatchFitReport{};
+    report->u_count = best.nu;
+    report->v_count = best.nv;
+    report->data_points = static_cast<int>(data.size());
+    report->tolerance = tolerance;
+    report->met_tolerance = best.max_dev <= tolerance;
+    report->max_deviation = best.max_dev;
+    report->rms_deviation = best.rms_dev;
+    report->max_boundary_deviation = best.max_boundary_dev;
+    report->flat_deviation = flat;
+    report->plane_origin = centre;
+    report->plane_x = xaxis;
+    report->plane_y = yaxis;
+    report->plane_z = zaxis;
+  }
+  return Result::Ok;
+}
+
 Result NurbsSurface::ExtendLinear(int direction, double t0, double t1) {
   if (direction != 0 && direction != 1) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::ExtendLinear: direction must be 0 (U) or 1 (V)");

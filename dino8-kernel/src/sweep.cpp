@@ -3980,6 +3980,311 @@ Brep Brep::Sweep2(const NurbsCurve& section_in, const NurbsCurve& rail1_in, cons
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
 }
 
+Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const NurbsCurve& rail1_in,
+                          const NurbsCurve& rail2_in, int stations, Sweep2SectionsReport* report) {
+  const char* caller = "Sweep2Sections";
+  if (stations < 2) Fail(caller, "stations must be at least 2");
+  if (sections_in.size() < 2) Fail(caller, "at least 2 sections are required (one section is Sweep2())");
+  ON_NurbsCurve rail1 = rail1_in.raw();
+  ON_NurbsCurve rail2 = rail2_in.raw();
+  if (!rail1.IsValid()) Fail(caller, "rail1 is not a valid NURBS curve");
+  if (!rail2.IsValid()) Fail(caller, "rail2 is not a valid NURBS curve");
+  if (rail1.IsClosed() && rail2.IsClosed()) {
+    Fail(caller, "two closed rails are not supported with several sections (use Sweep2() with one section)");
+  }
+  // Same direction convention as Sweep2().
+  if (rail1.PointAtStart().DistanceTo(rail2.PointAtEnd()) < rail1.PointAtStart().DistanceTo(rail2.PointAtStart())) {
+    ReverseKeepDomain(rail2);
+  }
+
+  std::vector<ON_NurbsCurve> sections;
+  sections.reserve(sections_in.size());
+  for (const NurbsCurve& s : sections_in) {
+    sections.push_back(s.raw());
+    if (!sections.back().IsValid()) Fail(caller, "a section is not a valid NURBS curve");
+    ClampIfPeriodic(sections.back());
+  }
+
+  const NurbsCurve k_rail1 = [&] { NurbsCurve k; k.raw() = rail1; return k; }();
+  const NurbsCurve k_rail2 = [&] { NurbsCurve k; k.raw() = rail2; return k; }();
+  auto closest_on = [&](const NurbsCurve& k, const ON_3dPoint& p) { return k.ClosestPointParameter(Point3d(p.x, p.y, p.z), 400); };
+  // Parameter at which rail `r` crosses `plane` (the crossing nearest `t0`;
+  // `t0` itself if the rail never crosses it): a 256-interval sign scan, each
+  // bracket bisected to round-off.
+  auto plane_crossing = [&](const ON_NurbsCurve& r, const ON_Plane& plane, double t0) {
+    const double lo_d = r.Domain().Min(), hi_d = r.Domain().Max();
+    const auto f = [&](double t) { return ON_DotProduct(r.PointAt(t) - plane.origin, plane.zaxis); };
+    double best = t0, best_gap = std::numeric_limits<double>::infinity();
+    double prev_t = lo_d, prev_f = f(lo_d);
+    for (int i = 1; i <= 256; ++i) {
+      const double t = lo_d + (hi_d - lo_d) * i / 256.0, ft = f(t);
+      if (prev_f == 0.0 || prev_f * ft < 0.0 || ft == 0.0) {
+        double lo = prev_t, hi = t, flo = prev_f;
+        for (int it = 0; it < 80; ++it) {
+          const double mid = 0.5 * (lo + hi), fm = f(mid);
+          if (flo * fm <= 0.0) hi = mid; else { lo = mid; flo = fm; }
+        }
+        const double root = 0.5 * (lo + hi);
+        if (std::fabs(root - t0) < best_gap) { best_gap = std::fabs(root - t0); best = root; }
+      }
+      prev_t = t;
+      prev_f = ft;
+    }
+    return best;
+  };
+  // Anchor of every section: the rail1 parameter t1 and rail2 parameter t2 of
+  // the station its own frame is decoded at. An open section is turned so it
+  // starts on the rail1 side, then anchored at the closest rail1 point to its
+  // start and the closest rail2 point to its end (a section drawn between the
+  // rails touches both there); a closed section is anchored at the closest
+  // point of each rail to its control-point centroid.
+  const double scale = 1.0 + CurveScale(rail1) + CurveScale(rail2);
+  struct Anchor {
+    double t1 = 0.0, t2 = 0.0;
+    size_t section = 0;
+  };
+  std::vector<Anchor> anchors(sections.size());
+  double section_rail_gap = 0.0;
+  bool all_open = true;
+  for (size_t i = 0; i < sections.size(); ++i) {
+    ON_NurbsCurve& s = sections[i];
+    ON_3dPoint p_for_1, p_for_2;
+    ON_Plane closed_plane;
+    bool closed_planar = false;
+    if (s.IsClosed()) {
+      all_open = false;
+      ON_3dPoint centroid(0, 0, 0);
+      for (int c = 0; c < s.CVCount(); ++c) centroid += ON_3dVector(EuclideanCV(s, c));
+      centroid = ON_3dPoint(centroid.x / s.CVCount(), centroid.y / s.CVCount(), centroid.z / s.CVCount());
+      p_for_1 = p_for_2 = centroid;
+      closed_planar = s.IsPlanar(&closed_plane, 1e-8 * CurveScale(s));
+    } else {
+      const double ts = closest_on(k_rail1, s.PointAtStart()), te = closest_on(k_rail1, s.PointAtEnd());
+      if (rail1.PointAt(te).DistanceTo(s.PointAtEnd()) < rail1.PointAt(ts).DistanceTo(s.PointAtStart())) {
+        ReverseKeepDomain(s);
+      }
+      p_for_1 = s.PointAtStart();
+      p_for_2 = s.PointAtEnd();
+    }
+    Anchor a;
+    a.section = i;
+    a.t1 = closest_on(k_rail1, p_for_1);
+    a.t2 = closest_on(k_rail2, p_for_2);
+    // A closed PLANAR section is anchored where each rail crosses its plane
+    // (the nearest crossing to the centroid's closest point) - for a section
+    // not square to slanted rails the centroid's closest point sits at a
+    // different station than the section itself.
+    if (closed_planar) {
+      a.t1 = plane_crossing(rail1, closed_plane, a.t1);
+      a.t2 = plane_crossing(rail2, closed_plane, a.t2);
+    }
+    if (!s.IsClosed()) {
+      section_rail_gap = std::max({section_rail_gap, rail1.PointAt(a.t1).DistanceTo(p_for_1), rail2.PointAt(a.t2).DistanceTo(p_for_2)});
+    }
+    anchors[i] = a;
+  }
+  std::sort(anchors.begin(), anchors.end(), [](const Anchor& a, const Anchor& b) { return a.t1 < b.t1; });
+
+  // Rail arc lengths (a rail's length up to a parameter, and a parameter at a
+  // fraction of the length of a sub-range).
+  // (a 512-chord polyline table of the sub-range: station SPACING only, so a
+  // relative error of ~1e-6 here moves a station along the rail, never off it)
+  auto arc_table = [&](const ON_NurbsCurve& r, double a, double b) {
+    std::vector<double> cum(513, 0.0);
+    ON_3dPoint prev = r.PointAt(a);
+    for (int q = 1; q <= 512; ++q) {
+      const ON_3dPoint cur = r.PointAt(a + (b - a) * q / 512.0);
+      cum[static_cast<size_t>(q)] = cum[static_cast<size_t>(q - 1)] + prev.DistanceTo(cur);
+      prev = cur;
+    }
+    return cum;
+  };
+  auto arc_len = [&](const ON_NurbsCurve& r, double a, double b) { return b > a ? arc_table(r, a, b).back() : 0.0; };
+  auto param_at_fraction = [&](const ON_NurbsCurve& r, double a, double b, double f) {
+    const std::vector<double> cum = arc_table(r, a, b);
+    const double target = f * cum.back();
+    size_t q = static_cast<size_t>(std::upper_bound(cum.begin(), cum.end(), target) - cum.begin());
+    if (q == 0) q = 1;
+    if (q > 512) q = 512;
+    const double span = cum[q] - cum[q - 1];
+    const double frac = span > 0.0 ? (target - cum[q - 1]) / span : 0.0;
+    return a + (b - a) * (static_cast<double>(q - 1) + frac) / 512.0;
+  };
+  const double d1_min = rail1.Domain().Min(), d1_max = rail1.Domain().Max();
+  const double d2_min = rail2.Domain().Min(), d2_max = rail2.Domain().Max();
+  const double len1_total = arc_len(rail1, d1_min, d1_max), len2_total = arc_len(rail2, d2_min, d2_max);
+  if (!(len1_total > 1e-9 * scale) || !(len2_total > 1e-9 * scale)) Fail(caller, "a rail has zero length");
+  const double eps1 = 1e-9 * (d1_max - d1_min), eps2 = 1e-9 * (d2_max - d2_min);
+
+  // Breakpoints: both rails' parameters at the domain start, every anchor and
+  // the domain end. Anchors must advance on BOTH rails (the sections are
+  // ordered along the sweep, and cannot cross or share a station).
+  std::vector<double> bp1{d1_min}, bp2{d2_min};
+  std::vector<int> anchor_at{-1};  // anchor index (into `anchors`) living at each breakpoint
+  for (size_t i = 0; i < anchors.size(); ++i) {
+    const double t1 = anchors[i].t1, t2 = anchors[i].t2;
+    const bool same1 = t1 - bp1.back() <= eps1, same2 = t2 - bp2.back() <= eps2;
+    if (same1 != same2 || t2 < bp2.back() - eps2) {
+      Fail(caller, "the sections are not ordered consistently along the two rails (their anchors cross)");
+    }
+    if (same1 && same2) {
+      if (anchor_at.back() != -1) Fail(caller, "two sections sit at the same station of the rails");
+      anchor_at.back() = static_cast<int>(i);
+      continue;
+    }
+    bp1.push_back(t1);
+    bp2.push_back(t2);
+    anchor_at.push_back(static_cast<int>(i));
+  }
+  if (d1_max - bp1.back() > eps1 || d2_max - bp2.back() > eps2) {
+    if ((d1_max - bp1.back() > eps1) != (d2_max - bp2.back() > eps2)) {
+      Fail(caller, "the last section is at the end of one rail but not the other");
+    }
+    bp1.push_back(d1_max);
+    bp2.push_back(d2_max);
+    anchor_at.push_back(-1);
+  }
+  const size_t nbp = bp1.size();
+  if (nbp < 2) Fail(caller, "the rails are degenerate");
+
+  // Segment lengths along rail1 (used for the station budget and the blend's
+  // abscissa), then the station list: segment s gets round(stations-1) times
+  // its share of rail1's length subdivisions, never fewer than 4, each station
+  // at the same arc-length FRACTION of the segment on both rails (the pairing
+  // Sweep2() uses over the whole rails). Breakpoints are placed exactly.
+  std::vector<double> x_at_bp(nbp, 0.0);  // rail1 arc length at each breakpoint
+  for (size_t b = 1; b < nbp; ++b) x_at_bp[b] = x_at_bp[b - 1] + arc_len(rail1, bp1[b - 1], bp1[b]);
+  std::vector<double> p1, p2, xs;  // station parameters on each rail and the rail1 abscissa
+  std::vector<int> station_of_bp(nbp, 0);
+  p1.push_back(bp1[0]);
+  p2.push_back(bp2[0]);
+  xs.push_back(0.0);
+  for (size_t b = 1; b < nbp; ++b) {
+    const double seg = x_at_bp[b] - x_at_bp[b - 1];
+    const int sub = std::max(4, static_cast<int>(std::lround((stations - 1) * seg / x_at_bp.back())));
+    for (int q = 1; q < sub; ++q) {
+      const double f = static_cast<double>(q) / sub;
+      p1.push_back(param_at_fraction(rail1, bp1[b - 1], bp1[b], f));
+      p2.push_back(param_at_fraction(rail2, bp2[b - 1], bp2[b], f));
+      xs.push_back(x_at_bp[b - 1] + f * seg);
+    }
+    p1.push_back(bp1[b]);
+    p2.push_back(bp2[b]);
+    xs.push_back(x_at_bp[b]);
+    station_of_bp[b] = static_cast<int>(p1.size()) - 1;
+  }
+  const int m = static_cast<int>(p1.size());
+  const std::vector<TwoRailFrame> frames = TwoRailFrames(rail1, rail2, p1, p2, caller);
+
+  // Common control structure, then every section decoded ONCE into its own
+  // anchor station's frame: the local coordinates of a control point are its
+  // offsets along (x, y, z) from that frame's origin, divided by its width
+  // (the same single uniform scale Sweep2() uses), and its weight.
+  std::vector<ON_NurbsCurve> compat;
+  compat.reserve(anchors.size());
+  for (const Anchor& a : anchors) compat.push_back(sections[a.section]);
+  MakeCompatible(compat, caller);
+  const int n = compat.front().CVCount();
+  const size_t na = anchors.size();
+  std::vector<std::vector<ON_3dVector>> local(na, std::vector<ON_3dVector>(static_cast<size_t>(n)));
+  std::vector<std::vector<double>> weight(na, std::vector<double>(static_cast<size_t>(n), 1.0));
+  std::vector<int> anchor_station(na, 0);
+  std::vector<double> anchor_x(na, 0.0);
+  for (size_t b = 0; b < nbp; ++b) {
+    if (anchor_at[b] >= 0) {
+      anchor_station[static_cast<size_t>(anchor_at[b])] = station_of_bp[b];
+      anchor_x[static_cast<size_t>(anchor_at[b])] = x_at_bp[b];
+    }
+  }
+  for (size_t i = 0; i < na; ++i) {
+    const TwoRailFrame& f = frames[static_cast<size_t>(anchor_station[i])];
+    for (int c = 0; c < n; ++c) {
+      const ON_3dVector d = EuclideanCV(compat[i], c) - f.origin;
+      local[i][static_cast<size_t>(c)] =
+          ON_3dVector(ON_DotProduct(d, f.x), ON_DotProduct(d, f.y), ON_DotProduct(d, f.z)) / f.width;
+      weight[i][static_cast<size_t>(c)] = compat[i].Weight(c);
+    }
+  }
+  // Catmull-Rom tangent of every local coordinate at every anchor, against the
+  // rail1 arc-length abscissa (one-sided chord slope at the two ends; for two
+  // sections that is the chord, i.e. a linear blend).
+  std::vector<std::vector<ON_3dVector>> slope(na, std::vector<ON_3dVector>(static_cast<size_t>(n)));
+  for (size_t i = 0; i < na; ++i) {
+    const size_t lo = i == 0 ? 0 : i - 1, hi = i + 1 == na ? na - 1 : i + 1;
+    const double dx = anchor_x[hi] - anchor_x[lo];
+    for (int c = 0; c < n; ++c) {
+      slope[i][static_cast<size_t>(c)] = (local[hi][static_cast<size_t>(c)] - local[lo][static_cast<size_t>(c)]) / dx;
+    }
+  }
+
+  // One copy of the section per station: local coordinates blended between the
+  // two neighbouring anchors (cubic Hermite, constant beyond the first and last
+  // anchor), weights blended linearly, then placed into that station's frame.
+  std::vector<ON_NurbsCurve> copies;
+  copies.reserve(static_cast<size_t>(m));
+  size_t seg = 0;
+  for (int k = 0; k < m; ++k) {
+    while (seg + 1 < na && anchor_station[seg + 1] <= k) ++seg;
+    const TwoRailFrame& f = frames[static_cast<size_t>(k)];
+    ON_NurbsCurve ck = compat.front();
+    const bool before_first = k <= anchor_station[0];
+    const bool after_last = k >= anchor_station[na - 1];
+    for (int c = 0; c < n; ++c) {
+      ON_3dVector l;
+      double w;
+      if (before_first || after_last) {
+        const size_t e = before_first ? 0 : na - 1;
+        l = local[e][static_cast<size_t>(c)];
+        w = weight[e][static_cast<size_t>(c)];
+      } else {
+        const double x0 = anchor_x[seg], x1 = anchor_x[seg + 1], h = x1 - x0;
+        const double s = (xs[static_cast<size_t>(k)] - x0) / h;
+        const double s2 = s * s, s3 = s2 * s;
+        l = local[seg][static_cast<size_t>(c)] * (2 * s3 - 3 * s2 + 1) + slope[seg][static_cast<size_t>(c)] * (h * (s3 - 2 * s2 + s)) +
+            local[seg + 1][static_cast<size_t>(c)] * (-2 * s3 + 3 * s2) + slope[seg + 1][static_cast<size_t>(c)] * (h * (s3 - s2));
+        w = weight[seg][static_cast<size_t>(c)] * (1.0 - s) + weight[seg + 1][static_cast<size_t>(c)] * s;
+      }
+      const ON_3dPoint p = f.origin + (f.x * l.x + f.y * l.y + f.z * l.z) * f.width;
+      ck.SetCV(c, ON_4dPoint(p.x * w, p.y * w, p.z * w, w));
+    }
+    copies.push_back(std::move(ck));
+  }
+  MakeCompatible(copies, caller);  // no-op (same control structure at every station)
+  double period = 1.0;
+  const std::vector<double> params_v = SkinParameters(copies, false, &period, caller);
+  std::unique_ptr<ON_NurbsSurface> wall = SkinSections(copies, std::min(3, m - 1), false, params_v, period, caller);
+
+  if (report) {
+    *report = Sweep2SectionsReport{};
+    report->sections = static_cast<int>(na);
+    report->stations = m;
+    report->section_rail_gap = section_rail_gap;
+    report->rails_on_boundary = all_open;
+    // Every section is reproduced at its own station: compare the wall's
+    // isocurve there (same u parameterization as the compatible section, both
+    // on [0, 1]) with that section.
+    const ON_Interval du = wall->Domain(0);
+    for (size_t i = 0; i < na; ++i) {
+      const double v = params_v[static_cast<size_t>(anchor_station[i])];
+      for (int q = 0; q <= 64; ++q) {
+        const double u = du.ParameterAt(q / 64.0);
+        const double t = compat[i].Domain().ParameterAt(q / 64.0);
+        report->max_section_deviation = std::max(report->max_section_deviation, wall->PointAt(u, v).DistanceTo(compat[i].PointAt(t)));
+      }
+    }
+    if (all_open) {
+      const ON_Interval dv = wall->Domain(1);
+      for (int q = 0; q <= 400; ++q) {
+        const double v = dv.ParameterAt(q / 400.0);
+        const ON_3dPoint a = wall->PointAt(du.Min(), v), b = wall->PointAt(du.Max(), v);
+        report->max_rail1_deviation = std::max(report->max_rail1_deviation, a.DistanceTo(rail1.PointAt(closest_on(k_rail1, a))));
+        report->max_rail2_deviation = std::max(report->max_rail2_deviation, b.DistanceTo(rail2.PointAt(closest_on(k_rail2, b))));
+      }
+    }
+  }
+  return AssembleSweptBody(wall.release(), false, false, false, false, caller);
+}
+
 Brep Brep::Pipe(const NurbsCurve& rail, double radius, bool cap, int stations, bool round_caps) {
   const char* caller = "Pipe";
   if (!(radius > 0.0)) Fail(caller, "radius must be positive");
