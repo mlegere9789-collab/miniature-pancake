@@ -255,6 +255,19 @@ ChamferSrf
 Radius=1
 1300090,0,20
 1300095,0,10
+# --- Display regression (Windows CI used to die here with an uncaught C++
+# exception, MSVC 0xE06D7363, on the very first frame after ChamferSrf):
+# the freshly built 2 x 25 ruled chamfer surface is the one object still
+# selected, and drawing a NURBS surface samples isocurves at equal steps
+# across its domain. The step formula d.min + len*i/n can land ONE ULP past
+# d.max for particular (platform-libm-dependent) domain lengths, and
+# NurbsSurface::IsoCurve() throws std::invalid_argument for that. Setting the
+# V length to 24.9513866589378 (a value where len*24/24 overshoots by an
+# ulp - deterministic on every platform) reproduces the overshoot here, so
+# SceneObject.cpp's DomainParameter() endpoint pinning is pinned by a test
+# that fails on Linux too if it regresses (no "display tessellation" line).
+Domain
+0,24.9513866589378
 SelAll
 List
 @expect_objects 2

@@ -327,6 +327,21 @@ void AppendMeshTriangles(const kernel::Mesh& mesh, std::vector<float>& out,
   }
 }
 
+// The i-th of n equal steps across [d.min, d.max], guaranteed to land inside
+// the domain. `d.min + (d.max - d.min) * i / n` can overshoot d.max by one
+// ulp at i == n (the product/quotient rounds up, or d.min + length rounds
+// above d.max) -- and NurbsSurface::IsoCurve() throws std::invalid_argument
+// for a parameter even 1 ulp outside the domain. Whether that happens depends
+// on the exact last bits of the domain, which come out of platform libm
+// results (a chamfer's chord-length parameterization), so the same script
+// drew fine on Linux and escaped as an uncaught C++ exception (MSVC
+// 0xE06D7363) on Windows. Pin the endpoints exactly and clamp the rest.
+double DomainParameter(const kernel::Interval& d, int i, int n) {
+  if (n <= 0 || i <= 0) return d.min;
+  if (i >= n) return d.max;
+  return std::clamp(d.min + (d.max - d.min) * i / n, d.min, d.max);
+}
+
 // Tessellates a NURBS surface on a u x v grid, emitting normalised
 // parameter-space texture coordinates alongside the triangles.
 void AppendSurfaceGrid(const kernel::NurbsSurface& srf, int nu, int nv, std::vector<float>& out,
@@ -337,7 +352,7 @@ void AppendSurfaceGrid(const kernel::NurbsSurface& srf, int nu, int nv, std::vec
   std::vector<kernel::Vector3d> nrm(static_cast<size_t>(cols) * rows);
   for (int i = 0; i < cols; ++i) {
     for (int j = 0; j < rows; ++j) {
-      const double u = du.min + (du.max - du.min) * i / nu, v = dv.min + (dv.max - dv.min) * j / nv;
+      const double u = DomainParameter(du, i, nu), v = DomainParameter(dv, j, nv);
       pts[static_cast<size_t>(i) * rows + j] = srf.PointAt(u, v);
       kernel::Vector3d n(0, 0, 0);
       // A grid sample can land exactly on a singular point (parallel or
@@ -424,11 +439,11 @@ void AppendSurfaceIsocurves(const kernel::NurbsSurface& s, double chord_toleranc
   kernel::BoundingBox unused_box;
   bool unused_has_box = false;
   for (int i = 0; i < iso_u; ++i) {
-    const double u = du.min + (du.max - du.min) * i / (iso_u - 1);
+    const double u = DomainParameter(du, i, iso_u - 1);
     AppendCurvePolyline(s.IsoCurve(1, u), chord_tolerance, out, unused_box, unused_has_box);
   }
   for (int j = 0; j < iso_v; ++j) {
-    const double v = dv.min + (dv.max - dv.min) * j / (iso_v - 1);
+    const double v = DomainParameter(dv, j, iso_v - 1);
     AppendCurvePolyline(s.IsoCurve(0, v), chord_tolerance, out, unused_box, unused_has_box);
   }
 }
@@ -573,6 +588,16 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
   cache_.mapped_type = TextureMapping::Default;
   cache_.mapped_scale = 0.f;
   cache_.has_bbox = false;
+  // Tessellation runs from the per-frame draw path (and from BoundingBox(),
+  // which the LOD/cull/pick code calls for every object), outside any
+  // command's DINO8_GUARD: a kernel function that throws on one degenerate
+  // object (NurbsSurface::IsoCurve/SuggestedDivisions/NormalAt, a trimmed
+  // brep's edge sampling, ...) used to escape through Application::Frame()
+  // and terminate the whole process (MSVC: code 0xE06D7363 in CI). Contain
+  // it here: that one object simply displays nothing, and the cache is
+  // marked clean so the failure isn't retried (and re-reported) every
+  // frame.
+  try {
   switch (kind) {
     case ObjectKind::Point:
       cache_.points = {static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z)};
@@ -715,6 +740,21 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
       }
       break;
     }
+  }
+  } catch (const std::exception& ex) {
+    std::fprintf(stderr, "dino8: display tessellation of object %llu (%s) failed, object not drawn: %s\n",
+                 static_cast<unsigned long long>(id), ObjectKindName(kind), ex.what());
+    std::fflush(stderr);
+    cache_.triangles.clear();
+    cache_.lines.clear();
+    cache_.points.clear();
+    cache_.control_polygon.clear();
+    cache_.control_points.clear();
+    cache_.triangle_face.clear();
+    cache_.edges.clear();
+    cache_.naked_edges.clear();
+    cache_.uvs.clear();
+    cache_.has_bbox = false;
   }
   cache_.dirty = false;
   cache_.built_curve_tolerance = curve_tolerance;
