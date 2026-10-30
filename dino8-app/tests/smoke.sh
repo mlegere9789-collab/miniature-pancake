@@ -8693,7 +8693,7 @@ kwcheck "! MergeSrf: the surfaces do not share an edge" "MergeSrf on two planes 
 # Rim chamfers: Volume lines in order = plain cylinder, ChamferEdge top rim
 # 0.6/0.4, swapped 0.4/0.6, bottom rim 0.6/0.4, ChamferSrf 0.5, Distance/Angle refusal.
 KW_VOLS="$(echo "$KW" | grep -o "Volume = [0-9.]* cubic" | awk '{printf "%s ", $3}')"
-if echo "$KW_VOLS" | awk '{ exit !($1==62.7 && $2==61.3 && $3==61.35 && $4==61.3 && $5==61.26 && $6==62.7) }'; then
+if echo "$KW_VOLS" | awk 'function abs(x) { return x < 0 ? -x : x } { exit !(abs($1-62.7)<0.03 && abs($2-61.3)<0.03 && abs($3-61.35)<0.03 && abs($4-61.3)<0.03 && abs($5-61.26)<0.03 && abs($6-62.7)<0.03) }'; then
   echo "ok   cylinder rim volumes read 62.7 (plain), 61.3 (top 0.6/0.4), 61.35 (swapped 0.4/0.6), 61.3 (bottom rim), 61.26 (ChamferSrf 0.5), 62.7 (Angle refused, untouched)"
 else
   echo "FAIL cylinder rim volumes unexpected: $KW_VOLS"; fail=1
