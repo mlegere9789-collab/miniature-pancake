@@ -84651,6 +84651,196 @@ void TestBooleanCombineGeneralSphereCentredOnBoxEdgeAlongSeamMeridian() {
   }
 }
 
+// IntersectSurfaces()' closed-chain curve fit (the 3D curve and both pcurves
+// of a closed intersection loop, as handed out) is a genuinely periodic
+// cubic: C2 across its own start/end seam to rounding level. Before this fix
+// the closed case went through InterpolateCubic(closed = true)'s 3-point
+// wrap: on a cylinder cut by a tilted plane (one closed 67-sample loop,
+// every sample on both surfaces to 1e-15) the two ends mismatched by 5.8e-3
+// in tangent and 3.7e-2 in curvature; the sphere/plane circles below by
+// 6e-6..2.9e-4 and 2.6e-3..6e-3. The refined SAMPLES are untouched (the
+// refinement seeds keep the 3-wrap fit, see FinishCurve's fit()), so every
+// Boolean result is bit-identical before and after - the closed-form volume
+// checks below pin that down for every op direction. Still open, measured
+// and deliberately NOT asserted here: on that same ellipse the samples next
+// to the chain's own wrap are clustered (chords 3e-3 next to 1.8e-1) and the
+// fit through them bulges 2.8e-2 off the wall there (periodic or not) - a
+// refinement-seeding property, see FinishCurve's fit() for why it stays.
+void TestIntersectSurfacesClosedChainFitIsPeriodicC2AtSeam() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChordParams;
+  using dino8::kernel::InterpolateCubic;
+  using dino8::kernel::InterpolateCubicPeriodic;
+  using dino8::kernel::IntersectionCurve;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::IntersectSurfaces;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const IntersectOptions opt;
+  auto rel = [](const ON_3dVector& a, const ON_3dVector& b) { return (a - b).Length() / std::max(a.Length(), 1e-300); };
+  // Relative mismatch of the first/second derivative between a curve's two ends.
+  struct Seam { double gap, d1, d2; };
+  auto seam = [](const ON_NurbsCurve& c, const decltype(rel)& r) {
+    ON_3dPoint p0, p1;
+    ON_3dVector d10, d20, d11, d21;
+    c.Ev2Der(c.Domain().Min(), p0, d10, d20);
+    c.Ev2Der(c.Domain().Max(), p1, d11, d21);
+    return Seam{p0.DistanceTo(p1), r(d10, d11), r(d20, d21)};
+  };
+  // Largest |distance from `axis` through `centre` - r| over 4000 curve samples.
+  auto max_radial_err = [](const ON_NurbsCurve& c, const ON_3dPoint& centre, const ON_3dVector& axis, double r) {
+    double worst = 0;
+    const ON_Interval dom = c.Domain();
+    for (int i = 0; i <= 4000; ++i) {
+      const ON_3dVector v = c.PointAt(dom.ParameterAt(i / 4000.0)) - centre;
+      worst = std::max(worst, std::fabs((v - axis * ON_DotProduct(v, axis)).Length() - r));
+    }
+    return worst;
+  };
+  auto max_interp_err = [](const IntersectionCurve& ic) {
+    double worst = 0;
+    for (size_t i = 0; i < ic.points.size(); ++i) worst = std::max(worst, ic.curve.PointAt(ic.params[i]).DistanceTo(ic.points[i]));
+    return worst;
+  };
+  auto check_c2 = [&](const char* tag, const IntersectionCurve& ic, double d2_tol) {
+    const Seam s3 = seam(ic.curve, rel), sa = seam(ic.pcurve_a, rel), sb = seam(ic.pcurve_b, rel);
+    Check(ic.closed, (std::string(tag) + ": one closed chain").c_str());
+    Check(s3.gap < 1e-9, (std::string(tag) + ": 3D curve's two ends coincide").c_str());
+    Check(s3.d1 < 1e-9, (std::string(tag) + ": 3D curve is C1 across its seam (relative tangent mismatch < 1e-9)").c_str());
+    Check(s3.d2 < d2_tol, (std::string(tag) + ": 3D curve is C2 across its seam (relative curvature mismatch)").c_str());
+    Check(sa.gap < 1e-9 && sa.d1 < 1e-9 && sa.d2 < d2_tol, (std::string(tag) + ": pcurve on A is C2 across its seam").c_str());
+    Check(sb.gap < 1e-9 && sb.d1 < 1e-9 && sb.d2 < d2_tol, (std::string(tag) + ": pcurve on B is C2 across its seam").c_str());
+    Check(max_interp_err(ic) < 1e-9, (std::string(tag) + ": the periodic fit still interpolates every refined sample exactly").c_str());
+  };
+
+  const ON_Cylinder cylinder(ON_Circle(ON_Plane(ON_3dPoint(0, 0, -2), ON_3dVector(0, 0, 1)), 1.0), 4.0);
+  ON_NurbsSurface wall;
+  Check(cylinder.GetNurbForm(wall) != 0, "ON_Cylinder::GetNurbForm builds the r=1 wall");
+  auto plane_surface = [](const ON_3dPoint& origin, ON_3dVector normal, double half_extent) {
+    normal.Unitize();
+    ON_PlaneSurface ps(ON_Plane(origin, normal));
+    ps.SetExtents(0, ON_Interval(-half_extent, half_extent), true);
+    ps.SetExtents(1, ON_Interval(-half_extent, half_extent), true);
+    return ps;
+  };
+
+  // 1. Cylinder x tilted plane: one closed ellipse (crosses the wall's own
+  //    u seam once, so it stays a single closed chain). Closed forms: every
+  //    curve point is at distance 1 from the axis and on the plane.
+  {
+    const ON_3dVector n = ON_3dVector(0.3, 0.1, 1.0) / ON_3dVector(0.3, 0.1, 1.0).Length();
+    const ON_PlaneSurface tilted = plane_surface(ON_3dPoint(0, 0, 0.2), n, 3.0);
+    const std::vector<IntersectionCurve> curves = IntersectSurfaces(wall, tilted, opt);
+    Check(curves.size() == 1, "cylinder x tilted plane: exactly one intersection curve");
+    if (curves.size() == 1) {
+      const IntersectionCurve& ic = curves[0];
+      check_c2("cylinder x tilted plane ellipse", ic, 1e-6);
+      // Closed form on the SAMPLES (the fit interpolates them exactly, above):
+      // every refined sample is on the r=1 wall and on the plane to the SSX
+      // tolerance (1e-3; measured 3e-16 and 1.9e-4).
+      double worst_sample_r = 0, worst_sample_plane = 0;
+      for (const auto& q : ic.points) {
+        worst_sample_r = std::max(worst_sample_r, std::fabs(std::hypot(q.x, q.y) - 1.0));
+        worst_sample_plane = std::max(worst_sample_plane, std::fabs(ON_DotProduct(ON_3dPoint(q) - ON_3dPoint(0, 0, 0.2), n)));
+      }
+      Check(worst_sample_r < 1e-3 && worst_sample_plane < 1e-3,
+            "cylinder x tilted plane ellipse: every refined sample lies on the r=1 wall and on the plane within the SSX tolerance");
+    }
+  }
+
+  // 2. Sphere x plane x = -1.5 (a circle of radius sqrt(4 - 2.25) about the
+  //    x axis, away from the sphere's u = 0 seam), in both operand orders.
+  {
+    const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 2.0);
+    const ON_Surface& ss = *sphere.raw().m_S[0];
+    const ON_PlaneSurface cut = plane_surface(ON_3dPoint(-1.5, 0, 0), ON_3dVector(1, 0, 0), 3.0);
+    const double rc = std::sqrt(4.0 - 2.25);
+    const std::vector<IntersectionCurve> sp = IntersectSurfaces(ss, cut, opt), ps = IntersectSurfaces(cut, ss, opt);
+    Check(sp.size() == 1 && ps.size() == 1, "sphere x plane(x=-1.5): exactly one intersection curve in either operand order");
+    if (sp.size() == 1) {
+      check_c2("sphere x plane(x=-1.5) circle (sphere first)", sp[0], 1e-6);
+      Check(max_radial_err(sp[0].curve, ON_3dPoint(-1.5, 0, 0), ON_3dVector(1, 0, 0), rc) < 5e-3,
+            "sphere x plane(x=-1.5) circle (sphere first): fitted curve within 5e-3 of the closed-form circle radius sqrt(1.75)");
+    }
+    if (ps.size() == 1) {
+      check_c2("plane(x=-1.5) x sphere circle (plane first)", ps[0], 1e-6);
+      Check(max_radial_err(ps[0].curve, ON_3dPoint(-1.5, 0, 0), ON_3dVector(1, 0, 0), rc) < 5e-3,
+            "plane(x=-1.5) x sphere circle (plane first): fitted curve within 5e-3 of the closed-form circle radius sqrt(1.75)");
+    }
+  }
+
+  // 3. The mechanism, on closed-form data: 24 equally spaced unit-circle
+  //    points. The periodic interpolant is C2 at its seam to rounding; the
+  //    legacy 3-wrap InterpolateCubic(closed = true) on the identical data
+  //    is not (its header documents ~1e-4 on 24 points).
+  {
+    std::vector<ON_3dPoint> circle;
+    for (int i = 0; i < 24; ++i) circle.emplace_back(std::cos(2 * ON_PI * i / 24), std::sin(2 * ON_PI * i / 24), 0);
+    const std::vector<double> params = ChordParams(circle, true);
+    const Seam periodic = seam(InterpolateCubicPeriodic(circle, params, 3), rel);
+    const Seam legacy = seam(InterpolateCubic(circle, params, true, 3), rel);
+    Check(periodic.gap < 1e-12 && periodic.d1 < 1e-10 && periodic.d2 < 1e-8,
+          "24-point unit circle: InterpolateCubicPeriodic is C2 at its seam to rounding level");
+    Check(legacy.d1 > 1e-6 || legacy.d2 > 1e-4,
+          "24-point unit circle: the legacy 3-wrap InterpolateCubic(closed) still has a measurable seam mismatch on the same data");
+  }
+
+  // 4. Boolean results whose intersection loop is a closed chain crossing
+  //    the sphere's seam once: sphere r=2 centred on a box face. Every op
+  //    direction against the exact closed form (hemisphere = (2/3) pi r^3).
+  {
+    const double r = 2.0, sphere_vol = 4.0 / 3.0 * ON_PI * r * r * r, half = sphere_vol / 2, box_vol = 10 * 10 * 5;
+    const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), r);
+    const Brep box = Brep::Box(-5, -5, -5, 5, 5, 0);
+    struct Case { const char* label; Brep result; double expect; } cases[4] = {
+        {"Union", BooleanCombineGeneral(sphere, box, BooleanOp::Union), box_vol + half},
+        {"Intersection", BooleanCombineGeneral(sphere, box, BooleanOp::Intersection), half},
+        {"sphere-box Difference", BooleanCombineGeneral(sphere, box, BooleanOp::Difference), half},
+        {"box-sphere Difference", BooleanCombineGeneral(box, sphere, BooleanOp::Difference), box_vol - half},
+    };
+    for (const Case& c : cases) {
+      const std::string what = std::string("sphere-on-box-face ") + c.label;
+      Check(c.result.raw().IsValid(), (what + " is a valid ON_Brep").c_str());
+      const Mesh m = TessellateGeneralBooleanClosedMesh(c.result, 32, 64);
+      Check(m.IsClosedManifold(), (what + " tessellates to a closed manifold").c_str());
+      Check(std::fabs(m.Volume() - c.expect) < 0.2,
+            (what + ": volume matches the exact closed form (hemisphere = (2/3) pi r^3) within tessellation tolerance").c_str());
+    }
+  }
+
+  // 5. Negative control: an OPEN chain is not made periodic. The tilted
+  //    plane restricted to x <= 0 cuts only half the ellipse (the half away
+  //    from the wall's u = 0 seam at x = 1, so it stays one open arc): the
+  //    chain is open, its two ends are far apart, and the clamped fit still
+  //    passes through every sample exactly.
+  {
+    const ON_3dVector n = ON_3dVector(0.3, 0.1, 1.0) / ON_3dVector(0.3, 0.1, 1.0).Length();
+    // Same plane as case 1 (0.3 x + 0.1 y + (z - 0.2) = 0), origin moved to
+    // x = -1.5 so the +-1.5 u extent covers exactly x in [-3, 0].
+    ON_PlaneSurface half_plane(ON_Plane(ON_3dPoint(-1.5, 0, 0.2 + 0.3 * 1.5), n));
+    half_plane.SetExtents(0, ON_Interval(-1.5, 1.5), true);
+    half_plane.SetExtents(1, ON_Interval(-3, 3), true);
+    const std::vector<IntersectionCurve> curves = IntersectSurfaces(wall, half_plane, opt);
+    Check(curves.size() == 1, "half-plane x cylinder (negative control): exactly one intersection curve");
+    if (curves.size() == 1) {
+      const IntersectionCurve& ic = curves[0];
+      Check(!ic.closed, "half-plane x cylinder (negative control): the chain is open, not closed");
+      // The two ends sit where the patch boundary x = 0 cuts the ellipse,
+      // (0, +-1, 0.2 -+ 0.1): a chord of exactly 2, located by the seed
+      // tessellation (opt.mesh_tolerance = 0.02) rather than Newton-refined.
+      Check(std::fabs(ic.curve.PointAtStart().DistanceTo(ic.curve.PointAtEnd()) - 2.0) < opt.mesh_tolerance,
+            "half-plane x cylinder (negative control): the open arc's two ends are the closed-form chord (0, +-1, ...) 2 apart");
+      Check(max_interp_err(ic) < 1e-9, "half-plane x cylinder (negative control): the clamped open fit interpolates every sample exactly");
+      Check(max_radial_err(ic.curve, ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1), 1.0) < 2e-4,
+            "half-plane x cylinder (negative control): the open arc stays within 2e-4 of the r=1 wall");
+    }
+  }
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -85970,6 +86160,8 @@ int main() {
   RunTest("TestSubDFromUniformBicubicSurfaceReproducesSurfaceExactly", TestSubDFromUniformBicubicSurfaceReproducesSurfaceExactly);
   RunTest("TestSubDFromUniformBicubicSurfaceRejectsUnsupportedInput", TestSubDFromUniformBicubicSurfaceRejectsUnsupportedInput);
   RunTest("TestBooleanCombineGeneralSphereCentredOnBoxEdgeAlongSeamMeridian", TestBooleanCombineGeneralSphereCentredOnBoxEdgeAlongSeamMeridian);
+
+  RunTest("TestIntersectSurfacesClosedChainFitIsPeriodicC2AtSeam", TestIntersectSurfacesClosedChainFitIsPeriodicC2AtSeam);
 
   RunTest("ON::End", ON::End);
 
