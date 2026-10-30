@@ -19169,13 +19169,34 @@ void TestMeshRevolveProfilePartialAngle() {
   Check(throws_invalid_argument(
             [&] { Mesh::RevolveProfile(spindle, Point3d(0, 0, 0), Vector3d(0, 0, 1), 48, 3.0 * M_PI); }),
         "angle > 2*pi throws");
-  // An off-axis endpoint can only be capped at a FULL angle (a flat disc
-  // cap); Brep::Revolve()'s own refusal for the partial-angle case
-  // propagates through unchanged.
+  // An off-axis endpoint at a PARTIAL angle used to be Brep::Revolve()'s
+  // own refusal, propagated through unchanged; it is now a genuine wedge
+  // (AssembleRevolvedWedge, sweep.cpp - see
+  // TestRevolvePartialAngleCapsOffAxisOpenProfile), so the delegate path
+  // tessellates it like any other partial revolve: a half cone-frustum
+  // wedge, V = (1/2) (pi h / 3) (r1^2 + r1 r2 + r2^2). The delegate
+  // tessellates at `revolve_segments` = 48 angular divisions, so what it
+  // returns is exactly the 48-CHORD polygonal frustum wedge: every ring
+  // is an inscribed 48-chord sector polygon of area (48/2) r^2 sin(pi/48)
+  // instead of (pi/2) r^2 and the wall quads between two rings are planar
+  // trapezoids, so V_mesh = V * 48 sin(pi/48) / pi - a closed form, not a
+  // loose "within x%" bound. The only slack is TessellateToClosedMesh's
+  // own MergeAndWeld, which snaps every vertex to a tolerance::kWeld grid
+  // (llround(coordinate / kWeld), kWeld = 1e-6): each vertex moves by up
+  // to ~kWeld, so the volume moves by up to ~(surface area ~ 35) * kWeld
+  // ~ 3.5e-5 absolute here - measured 5e-5 absolute (4.7e-6 relative)
+  // against the closed form, so the bound below is that mechanism's,
+  // with headroom, and still 50x tighter than this test's older 1e-3
+  // checks.
   const std::vector<Point2d> off_axis_profile = {Point2d(1, 0), Point2d(2, 3)};
-  Check(throws_invalid_argument(
-            [&] { Mesh::RevolveProfile(off_axis_profile, Point3d(0, 0, 0), Vector3d(0, 0, 1), 48, M_PI); }),
-        "a partial angle with an off-axis profile endpoint throws (propagated from Brep::Revolve())");
+  const Mesh half_frustum = Mesh::RevolveProfile(off_axis_profile, Point3d(0, 0, 0), Vector3d(0, 0, 1), 48, M_PI);
+  Check(half_frustum.IsClosedManifold(),
+        "a partial angle with an off-axis profile endpoint now delegates to Brep::Revolve()'s wedge and closes");
+  const double half_frustum_exact = 0.5 * M_PI * 3.0 / 3.0 * (1.0 + 2.0 + 4.0);
+  const double chord_factor = 48.0 * std::sin(M_PI / 48.0) / M_PI;
+  Check(std::abs(half_frustum.Volume() - chord_factor * half_frustum_exact) <= 2e-5 * half_frustum_exact,
+        "...with the 48-chord polygonal half cone-frustum wedge's closed-form volume V 48 sin(pi/48)/pi (within "
+        "the weld-grid snap's own 2e-5)");
 }
 
 // `start_angle`: mirrors Brep::Revolve()'s own parameter of the same
@@ -67624,10 +67645,13 @@ void TestRevolveExactSolidsAndCaps() {
   const NurbsCurve off_plane = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 1, 3), P(0, 0, 3)});
   Check(Throws([&] { Brep::Revolve(off_plane, origin, z); }), "a profile not in a plane through the axis throws");
   Check(Throws([&] { Brep::Revolve(ell, origin, z, 0.0); }), "zero angle throws");
-  Check(Throws([&] { Brep::Revolve(Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 0, 3)}), origin, z, M_PI / 2); }),
-        "a partial revolve with an off-axis endpoint refuses to cap");
+  // A partial revolve with an off-axis endpoint used to refuse to cap; it
+  // is now a genuine wedge solid (AssembleRevolvedWedge) - see
+  // TestRevolvePartialAngleCapsOffAxisOpenProfile for its closed forms.
+  Check(Brep::Revolve(Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 0, 3)}), origin, z, M_PI / 2).raw().IsSolid(),
+        "a partial revolve with an off-axis endpoint now caps into a solid");
   Check(Brep::Revolve(Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 0, 3)}), origin, z, M_PI / 2, /*cap=*/false).FaceCount() == 1,
-        "...but builds the open surface with cap=false");
+        "...and still builds just the open surface with cap=false");
 }
 
 // `start_angle`: revolve begins that many radians around the axis from
@@ -83844,6 +83868,179 @@ void TestSurfaceJoinRejectsUnsharedEdgesAndClosedSurfaces() {
         "Join() throws std::invalid_argument for a surface closed across its shared edge, leaving it untouched");
 }
 
+// Brep::Revolve at a PARTIAL angle with cap=true on an OPEN profile that
+// has an endpoint OFF the axis - the one combination AssembleSweptBody()
+// could never cap (it used to throw). AssembleRevolvedWedge (sweep.cpp)
+// now closes it with two planar side caps (the exact region between the
+// profile and the axis, ruled from the axis segment) plus a flat pie
+// sector over each off-axis endpoint's arc, every edge literally shared.
+// Verified against closed-form volumes/areas (Pappus), real ON_Brep
+// topology counts, planarity/placement of every cap, tessellation
+// closure at asymmetric division pairs, start_angle, and the two
+// documented refusals.
+void TestRevolvePartialAngleCapsOffAxisOpenProfile() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  using sweep_tests::Arc;
+  using sweep_tests::CheckClosedMeshVolume;
+  using sweep_tests::CheckSolidTopology;
+  using sweep_tests::FaceSurface;
+  using sweep_tests::P;
+  using sweep_tests::Polyline;
+  using sweep_tests::Throws;
+  const Point3d origin(0, 0, 0);
+  const Vector3d z(0, 0, 1);
+  const double quarter = M_PI / 2.0;
+
+  // Largest |f(p)| over a grid of samples on face `face`'s own surface.
+  auto worst_on_face = [](const Brep& b, int face, const std::function<double(const Point3d&)>& f) {
+    const ON_Surface* s = b.raw().m_F[face].SurfaceOf();
+    const ON_Interval du = s->Domain(0), dv = s->Domain(1);
+    double worst = 0.0;
+    for (int i = 0; i <= 8; ++i) {
+      for (int j = 0; j <= 8; ++j) {
+        const ON_3dPoint p = s->PointAt(du.ParameterAt(i / 8.0), dv.ParameterAt(j / 8.0));
+        worst = std::max(worst, std::fabs(f(Point3d(p.x, p.y, p.z))));
+      }
+    }
+    return worst;
+  };
+
+  // 1. A vertical segment r = 2, h = 3 (both ends off the axis), quarter
+  // turn: a quarter-cylinder wedge. V = (angle/2) r^2 h, A = angle r h
+  // (wall) + 2 r h (two rectangular side caps) + angle r^2 (two sectors).
+  {
+    const NurbsCurve seg = Polyline({P(2, 0, 0), P(2, 0, 3)});
+    const Brep wedge = Brep::Revolve(seg, origin, z, quarter);
+    const double exact_volume = 0.5 * quarter * 4.0 * 3.0;
+    const double exact_area = quarter * 2.0 * 3.0 + 2.0 * 2.0 * 3.0 + quarter * 4.0;
+    CheckSolidTopology(wedge, 5, "quarter-cylinder wedge: wall + 2 side caps + 2 sectors");
+    Check(wedge.raw().m_E.Count() == 9 && wedge.raw().m_V.Count() == 6,
+          "wedge topology: 4 wall edges + axis segment + 4 radial segments; 4 wall corners + 2 axis feet");
+    CheckClosedMeshVolume(wedge, 12, 32, exact_volume, 0.003, "quarter-cylinder wedge");
+    Check(std::fabs(wedge.Volume() - exact_volume) <= 1e-6 * exact_volume,
+          "quarter-cylinder wedge: analytic Brep::Volume() matches (angle/2) r^2 h");
+    Check(std::fabs(wedge.Area() - exact_area) <= 1e-6 * exact_area,
+          "quarter-cylinder wedge: analytic Brep::Area() matches wall + 2 rectangles + 2 sectors");
+    Check(FaceSurface(wedge, 0).IsCylinder(1e-9), "the wall is still the exact rational cylinder");
+    bool caps_planar = true;
+    for (int f = 1; f < 5; ++f) caps_planar = caps_planar && FaceSurface(wedge, f).IsPlanar(1e-9);
+    Check(caps_planar, "both side caps and both sectors are planar faces");
+    // Face order is wall, side cap at the sweep start (the y = 0 half-
+    // plane), side cap at its end (x = 0 after a quarter turn), then the
+    // sectors at the two endpoint heights z = 3 and z = 0 (in profile
+    // order, which Revolve() may have reversed for outward orientation).
+    const double side_caps_in_their_half_planes =
+        std::max(worst_on_face(wedge, 1, [](const Point3d& p) { return p.y; }),
+                 worst_on_face(wedge, 2, [](const Point3d& p) { return p.x; }));
+    Check(side_caps_in_their_half_planes <= 1e-12, "the side caps lie exactly in the start and end half-planes");
+    const double z3 = worst_on_face(wedge, 3, [](const Point3d& p) { return p.z; });
+    const double z4 = worst_on_face(wedge, 4, [](const Point3d& p) { return p.z; });
+    const double sectors_at_the_endpoint_heights =
+        std::min(std::max(worst_on_face(wedge, 3, [](const Point3d& p) { return p.z - 3.0; }), z4),
+                 std::max(z3, worst_on_face(wedge, 4, [](const Point3d& p) { return p.z - 3.0; })));
+    Check(sectors_at_the_endpoint_heights <= 1e-12, "the two sectors lie exactly in the planes z = 0 and z = 3");
+    // Every sample of a sector is within the profile radius of the axis
+    // and inside the swept angle (a sector, not a full disc).
+    double sector_overshoot = 0.0;
+    for (int f = 3; f < 5; ++f) {
+      sector_overshoot = std::max(sector_overshoot, worst_on_face(wedge, f, [](const Point3d& p) {
+                                    const double r = std::hypot(p.x, p.y);
+                                    return std::max({r - 2.0, -p.x, -p.y, 0.0});
+                                  }));
+    }
+    Check(sector_overshoot <= 1e-12, "each sector stays within radius 2 and the first quadrant");
+    // start_angle: the same wedge rigidly rotated - same volume, and the
+    // start side cap now lies in the half-plane at that angle.
+    const double start = 0.7;
+    const Brep shifted = Brep::Revolve(seg, origin, z, quarter, /*cap=*/true, start);
+    CheckSolidTopology(shifted, 5, "start_angle-shifted wedge");
+    Check(std::fabs(shifted.Volume() - exact_volume) <= 1e-6 * exact_volume,
+          "start_angle leaves the wedge's analytic volume unchanged");
+    Check(worst_on_face(shifted, 1, [&](const Point3d& p) { return -std::sin(start) * p.x + std::cos(start) * p.y; }) <=
+              1e-9,
+          "start_angle moves the start side cap into the half-plane at that angle");
+  }
+
+  // 2. A slanted segment (2, 0) -> (1, 3) through 200 degrees: a sector
+  // of a cone frustum, V = angle h / 6 (r1^2 + r1 r2 + r2^2).
+  {
+    const double angle = 200.0 * M_PI / 180.0;
+    const Brep frustum = Brep::Revolve(Polyline({P(2, 0, 0), P(1, 0, 3)}), origin, z, angle);
+    const double exact_volume = angle * 3.0 / 6.0 * (4.0 + 2.0 + 1.0);
+    CheckSolidTopology(frustum, 5, "200-degree cone-frustum wedge");
+    Check(FaceSurface(frustum, 0).IsCone(1e-9), "the frustum wedge's wall is still the exact cone");
+    CheckClosedMeshVolume(frustum, 8, 64, exact_volume, 0.003, "200-degree cone-frustum wedge");
+    Check(std::fabs(frustum.Volume() - exact_volume) <= 1e-6 * exact_volume,
+          "200-degree cone-frustum wedge: analytic Brep::Volume() matches the frustum closed form");
+  }
+
+  // 3. The cup profile (one end ON the axis, one off): the wall's on-axis
+  // side is singular, so there is only one sector. V = (angle/2) r^2 h.
+  {
+    const Brep cup = Brep::Revolve(Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 0, 3)}), origin, z, quarter);
+    const double exact_volume = 0.5 * quarter * 4.0 * 3.0;
+    CheckSolidTopology(cup, 4, "quarter cup wedge: wall + 2 side caps + 1 sector");
+    Check(cup.raw().m_E.Count() == 6 && cup.raw().m_V.Count() == 4,
+          "cup wedge topology: 3 wall edges + axis segment + 2 radial segments; pole, 2 rim corners, 1 axis foot");
+    CheckClosedMeshVolume(cup, 12, 32, exact_volume, 0.003, "quarter cup wedge");
+    Check(std::fabs(cup.Volume() - exact_volume) <= 1e-6 * exact_volume,
+          "quarter cup wedge: analytic Brep::Volume() matches (angle/2) r^2 h");
+  }
+
+  // 4. A RATIONAL profile: a semicircular arc bulging outward from (3, 0)
+  // to (3, 3) (center (3, 1.5), radius 1.5), both ends off the axis. The
+  // region between it and the axis is the 3 x 3 rectangle plus a half
+  // disc, so by Pappus V = angle * INT rho dA = angle * (13.5 + 1.5 pi
+  // r^2 + 2 r^3 / 3) with r = 1.5.
+  {
+    const NurbsCurve bulge = Arc(P(3, 0, 1.5), Vector3d(1, 0, 0), z, 1.5, -M_PI / 2, M_PI / 2);
+    const Brep vase = Brep::Revolve(bulge, origin, z, quarter);
+    const double exact_volume = quarter * (13.5 + 1.5 * M_PI * 2.25 + 2.0 * 3.375 / 3.0);
+    CheckSolidTopology(vase, 5, "quarter wedge of a bulging rational profile");
+    CheckClosedMeshVolume(vase, 16, 32, exact_volume, 0.005, "quarter wedge of a bulging rational profile");
+    Check(std::fabs(vase.Volume() - exact_volume) <= 1e-5 * exact_volume,
+          "bulging rational profile: analytic Brep::Volume() matches the Pappus closed form");
+  }
+
+  // 5. Refusals. Both endpoints off the axis at the same height leave no
+  // axis segment to rule the side caps from; a profile doubling back over
+  // its own radial end segment is not sweepable by straight rulings from
+  // the axis. Both still build the bare wall with cap=false.
+  {
+    const NurbsCurve hump = Arc(P(2, 0, 0), Vector3d(-1, 0, 0), z, 1.0, 0.0, M_PI);  // (1,0,0) up to (3,0,0)
+    Check(Throws([&] { Brep::Revolve(hump, origin, z, quarter); }),
+          "two off-axis endpoints at the same height throw at a partial angle");
+    Check(Brep::Revolve(hump, origin, z, quarter, /*cap=*/false).FaceCount() == 1,
+          "...but still build the bare wall with cap=false");
+    const NurbsCurve doubling_back = Polyline({P(2, 0, 1), P(1, 0, 0), P(3, 0, 3)});
+    Check(Throws([&] { Brep::Revolve(doubling_back, origin, z, quarter); }),
+          "a profile crossing its own radial end segment throws (its side cap cannot be ruled from the axis)");
+    Check(Brep::Revolve(doubling_back, origin, z, quarter, /*cap=*/false).FaceCount() == 1,
+          "...but still builds the bare wall with cap=false");
+    // An angle inside Revolve()'s partial range but within its on-axis
+    // tolerance of a full turn (2 pi - 1e-11 at r = 2: the swept arc's
+    // two ends are 2e-11 apart, under tol ~ 5e-9) has arc edges whose
+    // ends coincide, so no edge direction can be read off their vertices
+    // (AddFaceSharingEdges): it must refuse by name, not guess a trim
+    // direction and hand back a mis-wired shell.
+    const NurbsCurve seg = Polyline({P(2, 0, 0), P(2, 0, 3)});
+    std::string why;
+    try {
+      Brep::Revolve(seg, origin, z, 2.0 * M_PI - 1e-11);
+    } catch (const std::invalid_argument& e) {
+      why = e.what();
+    }
+    Check(why.find("two ends coincide within tolerance") != std::string::npos,
+          "an angle within the on-axis tolerance of a full turn (but not full) throws std::invalid_argument naming "
+          "the coincident edge ends, instead of guessing an edge direction");
+    Check(Brep::Revolve(seg, origin, z, 2.0 * M_PI).raw().IsSolid(),
+          "...while the genuinely full angle still builds the disc-capped cylinder");
+  }
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -85157,6 +85354,8 @@ int main() {
 
   RunTest("TestSurfaceJoinSplicesSharedEdgeExactly", TestSurfaceJoinSplicesSharedEdgeExactly);
   RunTest("TestSurfaceJoinRejectsUnsharedEdgesAndClosedSurfaces", TestSurfaceJoinRejectsUnsharedEdgesAndClosedSurfaces);
+
+  RunTest("TestRevolvePartialAngleCapsOffAxisOpenProfile", TestRevolvePartialAngleCapsOffAxisOpenProfile);
 
   RunTest("ON::End", ON::End);
 

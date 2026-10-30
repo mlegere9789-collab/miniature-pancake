@@ -2778,7 +2778,287 @@ ON_NurbsCurve SplitTouchingAxisArc(const ON_NurbsCurve& profile, ON_3dPoint axis
   return *away;
 }
 
+// ---------------------------------------------------------------------------
+// Partial-angle revolve of an open profile with an off-axis endpoint
+// (Brep::AssembleRevolvedWedge below).
+// ---------------------------------------------------------------------------
+
+// The two 3D corners a side's trim runs between, in ON_Brep::NewFace()'s
+// own side order and direction: 0 south (v = v0, +u), 1 east (u = u1,
+// +v), 2 north (v = v1, -u), 3 west (u = u0, -v).
+void SideCorners(const ON_NurbsSurface& s, int side, ON_3dPoint& from, ON_3dPoint& to) {
+  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+  const ON_3dPoint sw = s.PointAt(du.Min(), dv.Min()), se = s.PointAt(du.Max(), dv.Min());
+  const ON_3dPoint ne = s.PointAt(du.Max(), dv.Max()), nw = s.PointAt(du.Min(), dv.Max());
+  switch (side) {
+    case 0:
+      from = sw;
+      to = se;
+      break;
+    case 1:
+      from = se;
+      to = ne;
+      break;
+    case 2:
+      from = ne;
+      to = nw;
+      break;
+    default:
+      from = nw;
+      to = sw;
+      break;
+  }
+}
+
+// Adds `surface` to `brep` as a new untrimmed face whose side i is the
+// existing edge `shared[i]` (or a fresh edge for -1; a singular side must
+// be -1, NewFace() builds its singular trim itself). Whether each shared
+// edge runs with or against that side's trim is decided by matching the
+// edge's own two vertices against the side's corners (within `tol`), so
+// callers hand over edge indices alone and never restate ON_Brep's
+// side/reversal convention. On return `shared` holds every side's edge
+// index, fresh ones included.
+void AddFaceSharingEdges(ON_Brep& brep, std::unique_ptr<ON_NurbsSurface> surface, int shared[4], double tol,
+                         const char* caller) {
+  int vid[4] = {-1, -1, -1, -1};
+  int eid[4] = {-1, -1, -1, -1};
+  bool rev[4] = {false, false, false, false};
+  for (int i = 0; i < 4; ++i) {
+    if (shared[i] < 0) continue;
+    ON_3dPoint from, to;
+    SideCorners(*surface, i, from, to);
+    const ON_BrepEdge& e = brep.m_E[shared[i]];
+    const ON_3dPoint e0 = brep.m_V[e.m_vi[0]].point, e1 = brep.m_V[e.m_vi[1]].point;
+    const bool forward = e0.DistanceTo(from) <= tol && e1.DistanceTo(to) <= tol;
+    const bool backward = e1.DistanceTo(from) <= tol && e0.DistanceTo(to) <= tol;
+    if (forward && backward) {
+      // Both of the edge's ends sit at both corners: the edge is shorter
+      // than `tol` (a swept arc at an angle within tol of a full turn
+      // but outside Revolve()'s own `full` epsilon, say), so its
+      // direction along this side cannot be read off its vertices and
+      // guessing would bake a wrong trim direction into the shell.
+      Fail(caller, "a wedge edge's two ends coincide within tolerance (a swept arc or radial segment shorter than the "
+                   "on-axis tolerance) - the caps would be degenerate");
+    }
+    if (forward) {
+      rev[i] = false;
+    } else if (backward) {
+      rev[i] = true;
+    } else {
+      Internal(caller, "a shared edge's vertices do not sit at the face side it was assigned to");
+    }
+    eid[i] = shared[i];
+  }
+  if (!brep.NewFace(surface.release(), vid, eid, rev)) Internal(caller, "ON_Brep::NewFace refused a wedge face");
+  for (int i = 0; i < 4; ++i) shared[i] = eid[i];
+}
+
+// The planar side cap of a partial revolve: the region between `profile`
+// (one of the wall's own two v-boundary iso-curves, so the cap's row and
+// the wall's edge share CVs bit-for-bit) and the axis, as the ruled
+// surface S(u, v) = (1 - v) A(u) + v profile(u) between the axis segment
+// A - from the profile's start foot `f0` to its end foot `f1`, carrying
+// the profile's own knots and weights with its CVs spread along the
+// segment at the profile's own (normalized) Greville abscissae - and the
+// profile itself. Equal weights per column make every ruling a straight
+// line, so the u = u0 / u = u1 sides are exactly the two straight radial
+// segments - or collapse to a point, a singular side, at an endpoint
+// already on the axis (`start_on_axis`/`end_on_axis`): that column of
+// the axis row is then the profile's own homogeneous CV, bit-identical,
+// which is what IsSingular() needs. `profile_south` swaps the two rows -
+// the same planar region with the opposite normal, which is how the
+// caller picks the outward one.
+std::unique_ptr<ON_NurbsSurface> AxisRuledSurface(const ON_NurbsCurve& profile, ON_3dPoint f0, ON_3dPoint f1,
+                                                  bool start_on_axis, bool end_on_axis, bool profile_south,
+                                                  const char* caller) {
+  const int n = profile.CVCount();
+  const ON_Interval dom = profile.Domain();
+  ON_NurbsCurve axis = profile;  // same order, knots, weights and CV count
+  for (int i = 0; i < n; ++i) {
+    if ((i == 0 && start_on_axis) || (i == n - 1 && end_on_axis)) continue;  // already the profile's own CV
+    const double g = i == 0 ? 0.0 : i == n - 1 ? 1.0 : dom.NormalizedParameterAt(profile.GrevilleAbcissa(i));
+    const ON_3dPoint a = f0 + (f1 - f0) * g;
+    const double w = HomogeneousCV(profile, i).w;
+    if (axis.IsRational()) {
+      axis.SetCV(i, ON_4dPoint(a.x * w, a.y * w, a.z * w, w));
+    } else {
+      axis.SetCV(i, a);
+    }
+  }
+  return profile_south ? RuledBetween(profile, axis, 0.0, 1.0, caller) : RuledBetween(axis, profile, 0.0, 1.0, caller);
+}
+
+// The sign of (S_u x S_v) . `normal` over the interior of the planar
+// surface `s`, or 0 when it vanishes or changes sign anywhere - for a
+// ruled planar face that is exactly the test that every ruling sweeps the
+// region the same way, i.e. that the map (u, v) -> S(u, v) is an
+// embedding of the rectangle (nowhere-folding, plus the boundary being
+// simple, which a fold-free ruling of a straight segment onto a one-sided
+// curve guarantees) rather than a sheet folded over itself. Samples
+// strictly inside the domain, away from any singular side.
+int RulingSign(const ON_NurbsSurface& s, ON_3dVector normal, double scale, const char* caller) {
+  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+  const int nu = std::max(64, 16 * s.SpanCount(0));
+  const int nv = 8;
+  const double eps = 1e-12 * scale * scale;
+  int sign = 0;
+  for (int i = 0; i < nu; ++i) {
+    for (int j = 0; j < nv; ++j) {
+      ON_3dPoint p;
+      ON_3dVector su, sv;
+      if (!s.Ev1Der(du.ParameterAt((i + 0.5) / nu), dv.ParameterAt((j + 0.5) / nv), p, su, sv)) {
+        Internal(caller, "Ev1Der failed on a wedge side cap");
+      }
+      const double jac = ON_DotProduct(ON_CrossProduct(su, sv), normal);
+      if (std::fabs(jac) <= eps) return 0;
+      const int here = jac > 0.0 ? 1 : -1;
+      if (sign == 0) sign = here;
+      if (here != sign) return 0;
+    }
+  }
+  return sign;
+}
+
 }  // namespace
+
+// Closes a partial-angle revolve of an open profile with an off-axis
+// endpoint (see brep.h): the wall first, then the two planar side caps,
+// then the pie sector over each off-axis endpoint's arc, each later face
+// wired onto the edges the earlier ones already own. Orientation is fixed
+// per face from the wall's own geometry rather than guessed: a side cap's
+// outward normal is -S_v at the sweep start and +S_v at its end (the
+// sweep leaves the start half-plane along +S_v and arrives at the end
+// one along it), and a sector's is +axis at the profile's START and -axis
+// at its END - Revolve() has already reversed the profile so that the
+// region (profile, closed by its radial end segments and the axis
+// segment) is CLOCKWISE in the (rho, z) half-plane, which puts the
+// interior on the right of the outward radial segment at the start
+// (below it, outward = +axis) and on the right of the inward one at the
+// end (above it, outward = -axis).
+Brep Brep::AssembleRevolvedWedge(ON_NurbsSurface* wall_raw, Point3d axis_point, Vector3d axis_direction,
+                                 bool start_on_axis, bool end_on_axis, double tol, const char* caller) {
+  std::unique_ptr<ON_NurbsSurface> wall_in(wall_raw);
+  Brep result;
+  ON_Brep& brep = result.raw();
+  const ON_NurbsSurface wall = *wall_in;  // keep an evaluable copy; the brep owns the original
+  const ON_Interval du = wall.Domain(0), dv = wall.Domain(1);
+  const ON_3dVector T = axis_direction;
+  double scale = 1.0;
+  {
+    ON_BoundingBox bb;
+    wall.GetBoundingBox(bb);
+    scale += bb.Diagonal().Length();
+  }
+  auto foot_of = [&](ON_3dPoint p) { return ON_3dPoint(axis_point + T * ON_DotProduct(p - axis_point, T)); };
+
+  int wall_e[4] = {-1, -1, -1, -1};
+  AddFaceSharingEdges(brep, std::move(wall_in), wall_e, tol, caller);
+  int faces = 1;
+
+  // The sweep direction at each end: the wall's own S_v, read where the
+  // profile is farthest from the axis so it cannot be the zero vector of
+  // an on-axis point.
+  auto sweep_direction = [&](double v) {
+    ON_3dVector best(0, 0, 0);
+    for (int i = 0; i <= 8; ++i) {
+      ON_3dPoint p;
+      ON_3dVector su, sv;
+      if (!wall.Ev1Der(du.ParameterAt(i / 8.0), v, p, su, sv)) Internal(caller, "Ev1Der failed on the wall");
+      if (sv.Length() > best.Length()) best = sv;
+    }
+    if (!best.Unitize()) Internal(caller, "the revolved wall does not move at all along its angle direction");
+    return best;
+  };
+
+  // One side cap: returns its axis-segment edge; `radial_start`/`radial_end`
+  // receive its two radial edges (-1 at an on-axis endpoint, where that
+  // side is singular).
+  auto add_side_cap = [&](double v, ON_3dVector outward, int profile_edge, int axis_edge, int& radial_start,
+                          int& radial_end) {
+    std::unique_ptr<ON_NurbsCurve> profile(IsoCurveOf(wall, 0, v, caller));
+    const int n = profile->CVCount();
+    const ON_3dPoint p0 = EuclideanCV(*profile, 0), p1 = EuclideanCV(*profile, n - 1);
+    const ON_3dPoint f0 = start_on_axis ? p0 : foot_of(p0), f1 = end_on_axis ? p1 : foot_of(p1);
+    if (f0.DistanceTo(f1) <= tol) {
+      Fail(caller, "the profile's two endpoints are at the same axial height - the axis segment between their feet "
+                   "is a single point, so the side caps would be degenerate");
+    }
+    std::unique_ptr<ON_NurbsSurface> cap =
+        AxisRuledSurface(*profile, f0, f1, start_on_axis, end_on_axis, /*profile_south=*/false, caller);
+    const int sign = RulingSign(*cap, outward, scale, caller);
+    if (sign == 0) {
+      Fail(caller,
+           "the region between the profile and the axis cannot be swept by straight rulings from the axis segment "
+           "(the profile doubles back over its own radial end segments) - a partial revolve of this open profile "
+           "cannot be capped");
+    }
+    const bool profile_south = sign < 0;
+    if (profile_south) {
+      cap = AxisRuledSurface(*profile, f0, f1, start_on_axis, end_on_axis, /*profile_south=*/true, caller);
+    }
+    int shared[4] = {-1, -1, -1, -1};
+    shared[profile_south ? 0 : 2] = profile_edge;
+    shared[profile_south ? 2 : 0] = axis_edge;
+    AddFaceSharingEdges(brep, std::move(cap), shared, tol, caller);
+    ++faces;
+    radial_start = shared[3];
+    radial_end = shared[1];
+    return shared[profile_south ? 2 : 0];
+  };
+  int radial_start0 = -1, radial_end0 = -1, radial_start1 = -1, radial_end1 = -1;
+  const int axis_edge = add_side_cap(dv.Min(), -sweep_direction(dv.Min()), wall_e[0], -1, radial_start0, radial_end0);
+  add_side_cap(dv.Max(), sweep_direction(dv.Max()), wall_e[2], axis_edge, radial_start1, radial_end1);
+
+  // One pie sector: the transposed fan AssembleSweptBody()'s own disc
+  // caps already use (the arc along v, matching the wall's v there), so
+  // its south/north sides are the two straight radial segments.
+  auto add_sector = [&](double u, ON_3dVector outward, int arc_edge, int radial0, int radial1) {
+    ON_NurbsCurve arc = *std::unique_ptr<ON_NurbsCurve>(IsoCurveOf(wall, 1, u, caller));
+    const ON_3dPoint foot = foot_of(arc.PointAtStart());
+    auto build = [&]() {
+      std::unique_ptr<ON_NurbsSurface> fan = FanSurface(arc, foot, caller);
+      if (!fan->Transpose()) Internal(caller, "Transpose failed on a sector cap");
+      return fan;
+    };
+    std::unique_ptr<ON_NurbsSurface> fan = build();
+    {
+      ON_3dPoint p;
+      ON_3dVector su, sv;
+      if (!fan->Ev1Der(0.5, fan->Domain(1).Mid(), p, su, sv)) Internal(caller, "Ev1Der failed on a sector cap");
+      if (ON_DotProduct(ON_CrossProduct(su, sv), outward) < 0.0) {
+        ReverseKeepDomain(arc);
+        fan = build();
+      }
+    }
+    // Which radial is the south side depends on the arc's (possibly
+    // reversed) direction: pick by its corner, AddFaceSharingEdges()
+    // re-verifies both ends.
+    ON_3dPoint from, to;
+    SideCorners(*fan, 0, from, to);
+    const ON_BrepEdge& r0 = brep.m_E[radial0];
+    const bool south_is_radial0 =
+        brep.m_V[r0.m_vi[0]].point.DistanceTo(to) <= tol || brep.m_V[r0.m_vi[1]].point.DistanceTo(to) <= tol;
+    int shared[4] = {south_is_radial0 ? radial0 : radial1, arc_edge, south_is_radial0 ? radial1 : radial0, -1};
+    AddFaceSharingEdges(brep, std::move(fan), shared, tol, caller);
+    ++faces;
+  };
+  if (!start_on_axis) add_sector(du.Min(), T, wall_e[3], radial_start0, radial_start1);
+  if (!end_on_axis) add_sector(du.Max(), -T, wall_e[1], radial_end0, radial_end1);
+
+  brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+  result.AppendUntrimmedFaceSideTables(faces);
+
+  // The same outward cross-check AssembleSweptBody() applies, at one
+  // square division count (the construction rules above orient every
+  // face outward already; a negative volume would mean one was wrong for
+  // this input, and flipping is the safe repair).
+  if (brep.IsSolid()) {
+    const int divisions = std::max(16, 2 * std::max(wall.SpanCount(0), wall.SpanCount(1)));
+    const Mesh m = result.TessellateToClosedMesh(divisions, divisions);
+    if (m.Volume() < 0.0) brep.Flip();
+  }
+  return result;
+}
 
 Brep Brep::Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction, double angle, bool cap,
                    double start_angle) {
@@ -2910,7 +3190,13 @@ Brep Brep::Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_
     } else if (s_on && e_on) {
       cap_v0 = cap_v1 = !full;
     } else {
-      if (!full) Fail(caller, "a partial revolve of an open profile with an endpoint off the axis cannot be capped here");
+      if (!full) {
+        // An off-axis endpoint at a partial angle: the side caps are the
+        // region between the profile and the axis, plus a pie sector over
+        // each off-axis end's arc - a different construction from the
+        // single-fan caps below (see AssembleRevolvedWedge's own comment).
+        return AssembleRevolvedWedge(wall.release(), axis_point, T, s_on, e_on, tol, caller);
+      }
       cap_u0 = !s_on;
       cap_u1 = !e_on;
       if (cap_u0 && cap_u1) {
