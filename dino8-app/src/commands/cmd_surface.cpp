@@ -698,6 +698,18 @@ void NetworkSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
       return;
     }
   }
+  // Exactly 3 curves: the kernel's exact NurbsSurface::CoonsPatchTriangular()
+  // (the 4-curve patch with its fourth edge collapsed to a point) - same
+  // exact-or-fall-through contract as the 4-curve case above.
+  if (loop.size() == 3) {
+    kernel::NurbsSurface exact;
+    if (kernel::NurbsSurface::CoonsPatchTriangular(loop[0], loop[1], loop[2], exact) == kernel::Result::Ok) {
+      ctx.Doc().BeginChange("NetworkSrf");
+      ctx.Doc().Add(SceneObject::MakeSurface(exact));
+      ctx.Print("NetworkSrf: exact 3-sided Coons patch through 3 curves (all 3 boundaries reproduced exactly)");
+      return;
+    }
+  }
   const int n = kProfileSamples + 8;
   const Row bottom = SampleCurve(loop[0], n, false), right = SampleCurve(loop[1], n, false);
   Row top = SampleCurve(loop[2], n, false);

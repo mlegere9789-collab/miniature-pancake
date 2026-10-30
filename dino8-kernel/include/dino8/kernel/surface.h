@@ -182,6 +182,33 @@ class NurbsSurface {
                             const NurbsCurve& right, NurbsSurface& out, double tolerance = 1e-6,
                             double* out_corner_gap = nullptr);
 
+  // Exact 3-sided Coons patch through a closed loop of 3 boundary curves
+  // (Rhino's EdgeSrf / NetworkSrf with exactly 3 curves) - the 3-curve
+  // twin of `CoonsPatch()` above, built the standard way: `CoonsPatch()`
+  // with its fourth ("left", u = min) edge collapsed to the single point
+  // P00 = the start of `a` (a degree-1, 2-CV zero-length curve), so the
+  // patch's u = min isocurve is that one point and the other three
+  // boundary isocurves reproduce `a`, `b` and `c` exactly (same self-check
+  // as `CoonsPatch()` - residual at floating-point rounding level, never a
+  // fitting error). For straight-edged input the result is the
+  // collapsed-bilinear triangle map S(u, v) = (1-u)*A + u*(1-v)*B + u*v*C
+  // (A = start of `a`, B = its end, C = the loop's third corner),
+  // verified closed-form in the tests.
+  //
+  // `a` fixes the reference orientation (its start becomes the collapsed
+  // corner A, its end B); `b` and `c` may be handed in either order and
+  // either direction: which of the two meets `a`'s end is resolved by
+  // trying both orders, and each one's stored direction by `CoonsPatch()`'s
+  // own corner-gap orientation search, keeping whichever closes the loop.
+  // Returns Result::Failed (with `out_corner_gap`, if non-null, the best
+  // gap found over both orders) if neither order closes the 3 curves into
+  // a loop within `tolerance`, or on any failure `CoonsPatch()` itself
+  // reports (non-unifiable curves, non-positive blended weight,
+  // self-check residual) - never ships a patch that doesn't meet its own
+  // boundary curves.
+  static Result CoonsPatchTriangular(const NurbsCurve& a, const NurbsCurve& b, const NurbsCurve& c, NurbsSurface& out,
+                                      double tolerance = 1e-6, double* out_corner_gap = nullptr);
+
   // Surface-to-surface continuity blend - the genuine kernel-library
   // counterpart to NurbsCurve::BlendCurves() (curve.h), closing this
   // PARITY_MAP.md gap's own "No G3/G4, no kernel API" half the same way
