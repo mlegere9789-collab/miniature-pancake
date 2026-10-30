@@ -67,6 +67,12 @@ void Check(bool condition, const char* what) {
 // the next one - the failure is surfaced, not swallowed, but it no longer
 // takes down tests that have nothing to do with it.
 void RunTest(const char* name, void (*fn)()) {
+  // Dev convenience: DINO8_TEST_FILTER=<substring> runs only the tests
+  // whose function name contains it (ON::Begin/End always run). Unset (the
+  // normal full run) runs everything.
+  if (const char* filter = std::getenv("DINO8_TEST_FILTER")) {
+    if (*filter && std::strstr(name, filter) == nullptr && std::strncmp(name, "ON::", 4) != 0) return;
+  }
   try {
     fn();
   } catch (const std::exception& e) {
@@ -86974,6 +86980,509 @@ void TestMeshSpatialQueriesAreAcceleratedAndBitIdentical() {
   }
 }
 
+// Mesh::DistanceTo(const Mesh&): the R-tree search must equal the original
+// box-rejected triangle-pair loop (kept reachable behind
+// detail::SetMeshSpatialAccelerationEnabled(false)) EXACTLY - distance, both
+// closest points, both face indices, including which pair wins a tie - on
+// triangle and quad meshes, touching/overlapping/identical meshes, and be
+// far faster on a large pair.
+void TestMeshDistanceToIsAcceleratedAndBitIdentical() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MeshDistance;
+  using dino8::kernel::Point3d;
+  namespace kd = dino8::kernel::detail;
+
+  struct AccelRestorer {
+    ~AccelRestorer() { kd::SetMeshSpatialAccelerationEnabled(true); }
+  } restore_accel;
+
+  auto sphere = [](double cx, double cy, double cz, double r, int n) {
+    return Brep::Sphere(Point3d(cx, cy, cz), r).TessellateToClosedMesh(n, n);
+  };
+  auto same = [](const MeshDistance& x, const MeshDistance& y) {
+    return x.distance == y.distance && x.point_on_this == y.point_on_this && x.point_on_other == y.point_on_other &&
+           x.face_on_this == y.face_on_this && x.face_on_other == y.face_on_other;
+  };
+  auto jittered = [](Mesh m, uint64_t seed, double amplitude) {
+    uint64_t state = seed;
+    auto rnd = [&state]() {
+      state = state * 6364136223846793005ull + 1442695040888963407ull;
+      return static_cast<double>(state >> 11) / 9007199254740992.0 - 0.5;
+    };
+    ON_Mesh& raw = m.raw();
+    for (int i = 0; i < raw.m_V.Count(); ++i) {
+      raw.m_V[i].x += static_cast<float>(amplitude * rnd());
+      raw.m_V[i].y += static_cast<float>(amplitude * rnd());
+      raw.m_V[i].z += static_cast<float>(amplitude * rnd());
+    }
+    return m;
+  };
+
+  struct Case {
+    std::string name;
+    Mesh a, b;
+    int expect_zero;  // 1: distance must be exactly 0; 0: must be > 0; -1: not asserted
+  };
+  std::vector<Case> cases;
+  cases.push_back({"separated spheres", sphere(0, 0, 0, 5, 10), sphere(14, 0, 0, 5, 7), 0});
+  cases.push_back({"near spheres, different resolutions", sphere(0, 0, 0, 5, 9), sphere(9.3, 0.7, -0.4, 3, 13), 0});
+  cases.push_back({"crossing spheres", sphere(0, 0, 0, 5, 8), sphere(5, 0, 0, 3, 8), 1});
+  cases.push_back({"identical spheres (every face pair tied at 0)", sphere(0, 0, 0, 5, 6), sphere(0, 0, 0, 5, 6), 1});
+  cases.push_back({"quad boxes overlapping", MakeQuadBoxMesh(0, 0, 0, 2, 2, 2), MakeQuadBoxMesh(1, 1, 1, 3, 3, 3), 1});
+  cases.push_back({"quad boxes sharing a face (touching)", MakeQuadBoxMesh(0, 0, 0, 2, 2, 2), MakeQuadBoxMesh(2, 0, 0, 4, 2, 2), 1});
+  cases.push_back({"quad boxes sharing only a corner", MakeQuadBoxMesh(0, 0, 0, 2, 2, 2), MakeQuadBoxMesh(2, 2, 2, 4, 4, 4), 1});
+  cases.push_back({"quad boxes separated (diagonal gap)", MakeQuadBoxMesh(0, 0, 0, 2, 2, 2), MakeQuadBoxMesh(5, 6, 7, 8, 9, 10), 0});
+  cases.push_back({"identical quad boxes", MakeQuadBoxMesh(0, 0, 0, 2, 3, 4), MakeQuadBoxMesh(0, 0, 0, 2, 3, 4), 1});
+  cases.push_back({"quad box vs sphere, far apart", MakeQuadBoxMesh(0, 0, 0, 2, 2, 2), sphere(40, 5, -3, 4, 9), 0});
+  cases.push_back({"quad box fully inside a sphere (surfaces never meet)", MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1), sphere(0, 0, 0, 5, 9), 0});
+  cases.push_back({"touching spheres", sphere(0, 0, 0, 5, 12), sphere(10, 0, 0, 5, 12), -1});
+  cases.push_back({"two tiny single-triangle meshes", MakeTriangleMesh(Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(0, 1, 0)),
+                   MakeTriangleMesh(Point3d(0.2, 0.2, 3), Point3d(1, 1, 3), Point3d(0, 1, 4)), 0});
+  cases.push_back({"jittered spheres (no symmetric ties), near", jittered(sphere(0, 0, 0, 5, 14), 11, 0.3),
+                   jittered(sphere(9.4, 1.0, 0.5, 4, 11), 29, 0.3), 0});
+  cases.push_back({"jittered quad box vs jittered sphere", jittered(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2), 5, 0.2),
+                   jittered(sphere(6, 1, 1, 2, 10), 7, 0.2), 0});
+
+  for (Case& c : cases) {
+    bool identical = true;
+    bool zero_ok = true;
+    for (int direction = 0; direction < 2; ++direction) {
+      const Mesh& x = direction == 0 ? c.a : c.b;
+      const Mesh& y = direction == 0 ? c.b : c.a;
+      kd::SetMeshSpatialAccelerationEnabled(true);
+      const MeshDistance fast = x.DistanceTo(y);
+      kd::SetMeshSpatialAccelerationEnabled(false);
+      const MeshDistance slow = x.DistanceTo(y);
+      kd::SetMeshSpatialAccelerationEnabled(true);
+      identical = identical && same(fast, slow);
+      zero_ok = zero_ok && (c.expect_zero < 0 || (fast.distance == 0.0) == (c.expect_zero == 1));
+    }
+    Check(identical, ("Mesh::DistanceTo accelerated == brute-force pair loop exactly (distance, both points, both faces), both directions: " + c.name).c_str());
+    Check(zero_ok, ("Mesh::DistanceTo positive control (" + std::string(c.expect_zero < 0 ? "not asserted" : c.expect_zero ? "exactly 0" : "strictly positive") + "): " + c.name).c_str());
+  }
+
+  {
+    const Mesh empty;
+    const Mesh s = sphere(0, 0, 0, 5, 6);
+    int threw = 0;
+    for (int accel = 0; accel < 2; ++accel) {
+      kd::SetMeshSpatialAccelerationEnabled(accel == 1);
+      try { (void)empty.DistanceTo(s); } catch (const std::invalid_argument&) { ++threw; }
+      try { (void)s.DistanceTo(empty); } catch (const std::invalid_argument&) { ++threw; }
+    }
+    kd::SetMeshSpatialAccelerationEnabled(true);
+    Check(threw == 4, "Mesh::DistanceTo throws invalid_argument for a mesh with no faces, either operand, accelerated and brute-force");
+  }
+
+  {
+    // A large pair (9660 triangles each, ~93M triangle pairs for the scan).
+    const Mesh a = sphere(0, 0, 0, 5, 70);
+    const Mesh b = sphere(14, 1, 0, 5, 70);
+    using Clock = std::chrono::steady_clock;
+    auto seconds_since = [](Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); };
+    kd::SetMeshSpatialAccelerationEnabled(true);
+    double fast_s = 1e30;
+    MeshDistance fast;
+    for (int rep = 0; rep < 3; ++rep) {
+      const auto t = Clock::now();
+      fast = a.DistanceTo(b);
+      fast_s = std::min(fast_s, seconds_since(t));
+    }
+    kd::SetMeshSpatialAccelerationEnabled(false);
+    const auto t = Clock::now();
+    const MeshDistance slow = a.DistanceTo(b);
+    const double slow_s = seconds_since(t);
+    kd::SetMeshSpatialAccelerationEnabled(true);
+    std::printf("  [Mesh::DistanceTo timing, %d x %d faces] accelerated %.4f s vs brute-force %.4f s (%.0fx)\n", a.FaceCount(), b.FaceCount(),
+                fast_s, slow_s, slow_s / std::max(fast_s, 1e-9));
+    Check(a.FaceCount() >= 9000 && b.FaceCount() >= 9000, "large DistanceTo fixture really is thousands of faces per mesh");
+    Check(same(fast, slow), "large pair: accelerated DistanceTo is bit-identical to the brute-force pair loop");
+    Check(fast.distance > 4.0 - 1e-9 && fast.distance < 4.1, "large pair: the distance is the analytic gap (sqrt(197) - 10 = 4.036) up to facet sagitta");
+    Check(slow_s > 5.0 * fast_s, "large pair: the accelerated DistanceTo is at least 5x faster than the brute-force pair loop");
+  }
+}
+
+// ClosestPointOnBrep / ContainsPointExact / SignedDistanceToBrep (the
+// free-standing, one-shot queries) build a per-call face-box index for a brep
+// of kMinBrepFacesForSpatialIndex or more faces; the original per-face scan
+// stays reachable behind detail::SetBrepSpatialAccelerationEnabled(false) and
+// is the oracle here. Also covers BrepClosestPointIndex against the same
+// oracle and the explicit-index ContainsPointExactIndexed().
+void TestBrepFreeQueriesAreAcceleratedAndBitIdentical() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepClosestPointIndex;
+  using dino8::kernel::BrepClosestPointResult;
+  using dino8::kernel::ClosestPointOnBrep;
+  using dino8::kernel::ContainsPointExact;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SignedDistanceToBrep;
+  namespace kd = dino8::kernel::detail;
+
+  struct AccelRestorer {
+    ~AccelRestorer() { kd::SetBrepSpatialAccelerationEnabled(true); }
+  } restore_accel;
+
+  // k x k flat quads on each side of the cube [0,s]^3 (6 k^2 faces).
+  auto tiled_cube = [](int k, double s) {
+    std::vector<std::vector<Point3d>> quads;
+    auto at = [&](int axis, double side, double u, double v) {
+      double c[3];
+      c[axis] = side;
+      c[(axis + 1) % 3] = u;
+      c[(axis + 2) % 3] = v;
+      return Point3d(c[0], c[1], c[2]);
+    };
+    for (int axis = 0; axis < 3; ++axis)
+      for (int side = 0; side < 2; ++side)
+        for (int i = 0; i < k; ++i)
+          for (int j = 0; j < k; ++j) {
+            const double u0 = s * i / k, u1 = s * (i + 1) / k, v0 = s * j / k, v1 = s * (j + 1) / k, sd = side ? s : 0.0;
+            quads.push_back({at(axis, sd, u0, v0), at(axis, sd, u1, v0), at(axis, sd, u1, v1), at(axis, sd, u0, v1)});
+          }
+    return Brep::FromUntrimmedQuadFaces(quads);
+  };
+  // A staircase of three overlapping boxes unioned by the general boolean:
+  // 18 real TRIMMED planar faces (exercises the trim-boundary fallback).
+  Brep staircase = Brep::Box(0, 0, 0, 2, 2, 2);
+  for (int i = 1; i < 3; ++i) {
+    staircase = BooleanCombineGeneral(staircase, Brep::Box(i * 1.5, i * 1.5, i * 1.5, i * 1.5 + 2, i * 1.5 + 2, i * 1.5 + 2), BooleanOp::Union);
+  }
+
+  const Brep cube = tiled_cube(4, 4.0);
+  Check(cube.raw().m_F.Count() == 96, "tiled cube fixture has 96 faces");
+  Check(staircase.raw().m_F.Count() >= kd::kMinBrepFacesForSpatialIndex, "staircase fixture is above the per-call index threshold");
+
+  uint64_t rng_state = 0x1234567890ABCDEFull;
+  auto rnd_in = [&rng_state](double lo, double hi) {
+    rng_state = rng_state * 6364136223846793005ull + 1442695040888963407ull;
+    return lo + (hi - lo) * (static_cast<double>(rng_state >> 11) / 9007199254740992.0);
+  };
+  auto make_points = [&](double lo, double hi, std::vector<Point3d> special) {
+    std::vector<Point3d> pts = std::move(special);
+    for (int i = 0; i < 24; ++i) pts.push_back(Point3d(rnd_in(lo, hi), rnd_in(lo, hi), rnd_in(lo, hi)));
+    return pts;
+  };
+  const std::vector<Point3d> cube_points = make_points(-2, 6, {Point3d(2, 2, 2), Point3d(0, 0, 0), Point3d(4, 4, 4), Point3d(1.3, 2.1, 0), Point3d(2, 2, 4.0000001), Point3d(100, 100, 100), Point3d(-3, 2, 2), Point3d(2.5, 0, 0)});
+  const std::vector<Point3d> stair_points = make_points(-1, 7, {Point3d(1, 1, 1), Point3d(3, 3, 3), Point3d(0, 0, 0), Point3d(5, 5, 5), Point3d(2, 2, 2), Point3d(10, -4, 3)});
+
+  auto same_result = [](const BrepClosestPointResult& x, const BrepClosestPointResult& y) {
+    return x.face_index == y.face_index && x.distance == y.distance && x.uv.x == y.uv.x && x.uv.y == y.uv.y && x.point == y.point &&
+           x.on_trim_boundary == y.on_trim_boundary;
+  };
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  struct Fixture {
+    const char* name;
+    const Brep* brep;
+    const std::vector<Point3d>* points;
+  };
+  for (const Fixture& fx : {Fixture{"tiled cube (96 untrimmed faces)", &cube, &cube_points}, Fixture{"boolean staircase (trimmed faces)", &staircase, &stair_points}}) {
+    const ON_Brep& b = fx.brep->raw();
+    const BrepClosestPointIndex index(b);
+    kd::BrepFaceBoxIndex prebuilt(b);
+    bool closest_same = true, index_same = true, contains_same = true, indexed_contains_same = true, signed_same = true, any_boundary = false;
+    int inside_count = 0, outside_count = 0;
+    for (const Point3d& p : *fx.points) {
+      kd::SetBrepSpatialAccelerationEnabled(true);
+      const long builds_before = kd::BrepFaceBoxIndexBuildCount();
+      const BrepClosestPointResult fast = ClosestPointOnBrep(p, b);
+      const bool fast_in = ContainsPointExact(p, b, 0, opt);
+      const double fast_sd = SignedDistanceToBrep(p, b, opt);
+      if (kd::BrepFaceBoxIndexBuildCount() - builds_before != 4) closest_same = false;  // ClosestPointOnBrep, ContainsPointExact and both halves of SignedDistanceToBrep each went through a per-call index
+      const BrepClosestPointResult from_index = index.ClosestPoint(p);
+      const bool indexed_in = kd::ContainsPointExactIndexed(p, b, prebuilt, 0, opt, 1e-6);
+      kd::SetBrepSpatialAccelerationEnabled(false);
+      const long builds_scan = kd::BrepFaceBoxIndexBuildCount();
+      const BrepClosestPointResult slow = ClosestPointOnBrep(p, b);
+      const bool slow_in = ContainsPointExact(p, b, 0, opt);
+      const double slow_sd = SignedDistanceToBrep(p, b, opt);
+      if (kd::BrepFaceBoxIndexBuildCount() != builds_scan) closest_same = false;  // the scan path builds no index at all
+      kd::SetBrepSpatialAccelerationEnabled(true);
+      closest_same = closest_same && same_result(fast, slow);
+      index_same = index_same && same_result(from_index, slow);
+      contains_same = contains_same && fast_in == slow_in;
+      indexed_contains_same = indexed_contains_same && indexed_in == slow_in;
+      signed_same = signed_same && fast_sd == slow_sd;
+      any_boundary = any_boundary || slow.on_trim_boundary;
+      (slow_in ? inside_count : outside_count)++;
+    }
+    const std::string name = fx.name;
+    Check(closest_same, ("ClosestPointOnBrep (per-call index) == per-face scan exactly (face, distance, uv, point, boundary flag), and it really built an index: " + name).c_str());
+    Check(index_same, ("BrepClosestPointIndex::ClosestPoint == per-face scan exactly: " + name).c_str());
+    Check(contains_same, ("ContainsPointExact (per-call index) == per-face scan: " + name).c_str());
+    Check(indexed_contains_same, ("ContainsPointExactIndexed (caller-held index) == per-face scan: " + name).c_str());
+    Check(signed_same, ("SignedDistanceToBrep (both halves accelerated) == per-face scan bit for bit: " + name).c_str());
+    Check(inside_count > 0 && outside_count > 0, ("positive control: the sample has points classified inside AND outside: " + name).c_str());
+    if (fx.brep == &staircase) {
+      Check(any_boundary, "positive control: some staircase query lands on a trimmed face's boundary fallback (not only interiors)");
+    }
+  }
+
+  {
+    // FireRayAtBrep / IntersectCurveBrep for a straight segment: the slab-culled
+    // per-call index path must return the identical hit list (faces, distances,
+    // uv, points, order) as the plain per-face loop.
+    using dino8::kernel::CurveBrepHit;
+    using dino8::kernel::FireRayAtBrep;
+    using dino8::kernel::IntersectCurveBrep;
+    using dino8::kernel::NurbsCurve;
+    using dino8::kernel::RayBrepHit;
+    using dino8::kernel::Vector3d;
+    auto same_ray = [](const std::vector<RayBrepHit>& x, const std::vector<RayBrepHit>& y) {
+      if (x.size() != y.size()) return false;
+      for (size_t i = 0; i < x.size(); ++i) {
+        if (x[i].face_index != y[i].face_index || x[i].distance != y[i].distance || x[i].uv.x != y[i].uv.x || x[i].uv.y != y[i].uv.y ||
+            !(x[i].point == y[i].point)) {
+          return false;
+        }
+      }
+      return true;
+    };
+    bool rays_same = true, builds_ok = true;
+    size_t total_hits = 0;
+    const Brep* const ray_breps[] = {&cube, &staircase};
+    for (const Brep* brep : ray_breps) {
+      const ON_Brep& b = brep->raw();
+      for (int i = 0; i < 12; ++i) {
+        const Point3d origin(rnd_in(-1, 5), rnd_in(-1, 5), rnd_in(-1, 5));
+        const Vector3d dir(rnd_in(-1, 1), rnd_in(-1, 1), rnd_in(-1, 1));
+        kd::SetBrepSpatialAccelerationEnabled(true);
+        const long before = kd::BrepFaceBoxIndexBuildCount();
+        const std::vector<RayBrepHit> fast = FireRayAtBrep(origin, dir, 20.0, b, opt);
+        if (kd::BrepFaceBoxIndexBuildCount() - before != 1) builds_ok = false;
+        kd::SetBrepSpatialAccelerationEnabled(false);
+        const std::vector<RayBrepHit> slow = FireRayAtBrep(origin, dir, 20.0, b, opt);
+        kd::SetBrepSpatialAccelerationEnabled(true);
+        rays_same = rays_same && same_ray(fast, slow);
+        total_hits += slow.size();
+      }
+    }
+    Check(rays_same, "FireRayAtBrep through the slab-culled per-call index == the plain per-face loop (every hit field and order) on 24 random rays");
+    Check(builds_ok, "FireRayAtBrep on a 16+ face brep really builds exactly one per-call index");
+    Check(total_hits >= 10, "positive control: the sampled rays really hit the breps");
+
+    // A non-line curve keeps the plain loop and builds no index.
+    const NurbsCurve diag = NurbsCurve::FromControlPoints({Point3d(-1, -1, -1), Point3d(5, 5, 5)}, 1);
+    const long before = kd::BrepFaceBoxIndexBuildCount();
+    const std::vector<CurveBrepHit> via_nurbs = IntersectCurveBrep(diag.raw(), staircase.raw(), opt);
+    Check(kd::BrepFaceBoxIndexBuildCount() == before && !via_nurbs.empty(), "IntersectCurveBrep with a NURBS (non-line) curve builds no index and still finds hits");
+  }
+
+  {
+    // Below the threshold no index is built (the scan is the right tool).
+    const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+    const long before = kd::BrepFaceBoxIndexBuildCount();
+    (void)ClosestPointOnBrep(Point3d(1, 1, 5), box.raw());
+    (void)ContainsPointExact(Point3d(1, 1, 1), box.raw(), 0, opt);
+    Check(kd::BrepFaceBoxIndexBuildCount() == before, "a 6-face brep builds no per-call index (below kMinBrepFacesForSpatialIndex)");
+  }
+
+  {
+    const ON_Brep empty;
+    int threw = 0;
+    for (int accel = 0; accel < 2; ++accel) {
+      kd::SetBrepSpatialAccelerationEnabled(accel == 1);
+      try { (void)ClosestPointOnBrep(Point3d(0, 0, 0), empty); } catch (const std::invalid_argument&) { ++threw; }
+      try { (void)ContainsPointExact(Point3d(0, 0, 0), empty, 0, opt); } catch (const std::invalid_argument&) { ++threw; }
+      try { (void)SignedDistanceToBrep(Point3d(0, 0, 0), empty, opt); } catch (const std::invalid_argument&) { ++threw; }
+    }
+    kd::SetBrepSpatialAccelerationEnabled(true);
+    Check(threw == 6, "empty brep: ClosestPointOnBrep/ContainsPointExact/SignedDistanceToBrep all throw invalid_argument, accelerated and scan");
+  }
+
+  {
+    // Speed: a 1176-face brep, query points near the surface (the usual
+    // case; a point deep inside needs a wider search). Ratios are
+    // conservative against the measured speedups.
+    const Brep big = tiled_cube(14, 4.0);
+    const ON_Brep& b = big.raw();
+    using Clock = std::chrono::steady_clock;
+    auto seconds_since = [](Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); };
+    const Point3d queries[] = {Point3d(0.7, 1.9, 4.4), Point3d(4.3, 2.2, 1.3), Point3d(2.2, 3.8, 1.7), Point3d(-0.4, 3.3, 0.4)};
+    kd::SetBrepSpatialAccelerationEnabled(true);
+    auto t = Clock::now();
+    std::vector<BrepClosestPointResult> fast;
+    std::vector<char> fast_in;
+    for (const Point3d& q : queries) fast.push_back(ClosestPointOnBrep(q, b));
+    const double fast_closest_s = seconds_since(t);
+    t = Clock::now();
+    for (const Point3d& q : queries) fast_in.push_back(ContainsPointExact(q, b, 0, opt) ? 1 : 0);
+    const double fast_contains_s = seconds_since(t);
+    kd::SetBrepSpatialAccelerationEnabled(false);
+    t = Clock::now();
+    bool closest_ok = true;
+    for (size_t i = 0; i < fast.size(); ++i) closest_ok = closest_ok && same_result(fast[i], ClosestPointOnBrep(queries[i], b));
+    const double slow_closest_s = seconds_since(t);
+    t = Clock::now();
+    bool contains_ok = true;
+    for (size_t i = 0; i < fast_in.size(); ++i) contains_ok = contains_ok && ((ContainsPointExact(queries[i], b, 0, opt) ? 1 : 0) == fast_in[i]);
+    const double slow_contains_s = seconds_since(t);
+    kd::SetBrepSpatialAccelerationEnabled(true);
+    std::printf("  [Brep query timing, %d faces, %zu queries] ClosestPointOnBrep %.3f s vs scan %.3f s (%.1fx), ContainsPointExact %.4f s vs scan %.4f s (%.1fx)\n",
+                b.m_F.Count(), fast.size(), fast_closest_s, slow_closest_s, slow_closest_s / std::max(fast_closest_s, 1e-9), fast_contains_s,
+                slow_contains_s, slow_contains_s / std::max(fast_contains_s, 1e-9));
+    Check(closest_ok && contains_ok, "1176-face brep: accelerated ClosestPointOnBrep and ContainsPointExact equal the scan on every sampled query");
+    Check(slow_closest_s > 2.0 * fast_closest_s, "1176-face brep: per-call ClosestPointOnBrep is at least 2x faster than the per-face scan");
+    Check(slow_contains_s > 4.0 * fast_contains_s, "1176-face brep: per-call ContainsPointExact is at least 4x faster than the per-face scan");
+  }
+}
+
+// The kernel's own repeated point-vs-brep classification (boolean fragment
+// classification, SplitBySheet, TrimSheetBySolid) classifies many points
+// against the SAME brep; it now shares one face-box index per operand. Every
+// result must be exactly what the original per-face scan gave.
+void TestBooleanClassificationUsesOneSharedFaceIndexAndIsIdentical() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBySheet;
+  using dino8::kernel::TrimSheetBySolid;
+  namespace kd = dino8::kernel::detail;
+
+  struct AccelRestorer {
+    ~AccelRestorer() { kd::SetBrepSpatialAccelerationEnabled(true); }
+  } restore_accel;
+
+  Brep staircase = Brep::Box(0, 0, 0, 2, 2, 2);
+  for (int i = 1; i < 3; ++i) {
+    staircase = BooleanCombineGeneral(staircase, Brep::Box(i * 1.5, i * 1.5, i * 1.5, i * 1.5 + 2, i * 1.5 + 2, i * 1.5 + 2), BooleanOp::Union);
+  }
+  const Brep slab = Brep::Box(1, 1, 1, 9, 3, 3);
+  const Brep sheet = MakePlanarSheetZ(-1, -1, 7, 7, 2.5);
+
+  struct Outcome {
+    int faces_a = 0, faces_b = 0;
+    double measure_a = 0, measure_b = 0;
+    long builds = 0;
+  };
+  auto run_boolean = [&](BooleanOp op, bool accel) {
+    kd::SetBrepSpatialAccelerationEnabled(accel);
+    const long before = kd::BrepFaceBoxIndexBuildCount();
+    const Brep r = BooleanCombineGeneral(staircase, slab, op);
+    Outcome o;
+    o.faces_a = r.FaceCount();
+    o.measure_a = r.TessellateToClosedMesh(8, 8).Volume();
+    o.builds = kd::BrepFaceBoxIndexBuildCount() - before;
+    kd::SetBrepSpatialAccelerationEnabled(true);
+    return o;
+  };
+  const char* op_names[] = {"Union", "Intersection", "Difference"};
+  const BooleanOp ops[] = {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference};
+  for (int k = 0; k < 3; ++k) {
+    const Outcome fast = run_boolean(ops[k], true);
+    const Outcome slow = run_boolean(ops[k], false);
+    Check(fast.faces_a == slow.faces_a && fast.measure_a == slow.measure_a,
+          (std::string("BooleanCombineGeneral(18-face staircase, slab, ") + op_names[k] + "): result identical (face count, volume bit for bit) with and without the shared index").c_str());
+    Check(fast.builds >= 1 && slow.builds == 0,
+          (std::string("BooleanCombineGeneral ") + op_names[k] + ": the shared face index is really built (once per large operand) when enabled, never when disabled").c_str());
+  }
+
+  {
+    kd::SetBrepSpatialAccelerationEnabled(true);
+    const long before = kd::BrepFaceBoxIndexBuildCount();
+    const auto [pos_fast, neg_fast] = SplitBySheet(staircase, sheet);
+    const Brep in_fast = TrimSheetBySolid(sheet, staircase, true);
+    const Brep out_fast = TrimSheetBySolid(sheet, staircase, false);
+    const long builds = kd::BrepFaceBoxIndexBuildCount() - before;
+    kd::SetBrepSpatialAccelerationEnabled(false);
+    const auto [pos_slow, neg_slow] = SplitBySheet(staircase, sheet);
+    const Brep in_slow = TrimSheetBySolid(sheet, staircase, true);
+    const Brep out_slow = TrimSheetBySolid(sheet, staircase, false);
+    kd::SetBrepSpatialAccelerationEnabled(true);
+    Check(builds == 3, "SplitBySheet and both TrimSheetBySolid calls each build exactly one shared face index for the 18-face solid");
+    Check(pos_fast.FaceCount() == pos_slow.FaceCount() && neg_fast.FaceCount() == neg_slow.FaceCount() &&
+              pos_fast.TessellateToClosedMesh(8, 8).Volume() == pos_slow.TessellateToClosedMesh(8, 8).Volume() &&
+              neg_fast.TessellateToClosedMesh(8, 8).Volume() == neg_slow.TessellateToClosedMesh(8, 8).Volume(),
+          "SplitBySheet on the 18-face staircase: both halves identical (face count, volume bit for bit) with and without the shared index");
+    Check(in_fast.FaceCount() == in_slow.FaceCount() && out_fast.FaceCount() == out_slow.FaceCount() &&
+              in_fast.TessellateToClosedMesh(8, 8).Area() == in_slow.TessellateToClosedMesh(8, 8).Area() &&
+              out_fast.TessellateToClosedMesh(8, 8).Area() == out_slow.TessellateToClosedMesh(8, 8).Area(),
+          "TrimSheetBySolid on the 18-face staircase: inside and outside parts identical (face count, area bit for bit)");
+    Check(std::abs(pos_fast.TessellateToClosedMesh(8, 8).Volume() + neg_fast.TessellateToClosedMesh(8, 8).Volume() - 23.75) < 1e-3,
+          "positive control: the two halves' volumes sum to the staircase's analytic volume 23.75");
+  }
+}
+
+// The assembly-level interference queries test body i against later bodies;
+// the body-box broad phase now goes through an R-tree for 16+ bodies and must
+// return exactly the same pairs, in the same order, with the same overlap
+// solids as the plain linear loop (kept behind the oracle switch).
+void TestInterferenceBroadPhaseUsesBodyIndexAndIsIdentical() {
+  using dino8::kernel::AllInterferenceResult;
+  using dino8::kernel::ComputeAllInterference;
+  using dino8::kernel::ComputeInterference;
+  using dino8::kernel::ComputeMultiWayInterference;
+  using dino8::kernel::InterferenceResult;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MultiInterferenceResult;
+  namespace kd = dino8::kernel::detail;
+
+  struct AccelRestorer {
+    ~AccelRestorer() { kd::SetBrepSpatialAccelerationEnabled(true); }
+  } restore_accel;
+
+  // 24 bodies: a chain of 2-wide boxes stepped 1.5 apart (neighbours overlap,
+  // next-neighbours do not at clearance 0), a far-away group of three boxes
+  // that overlap each other mutually, and an isolated body.
+  std::vector<Mesh> bodies;
+  for (int i = 0; i < 18; ++i) bodies.push_back(MakeQuadBoxMesh(i * 1.5, 0, 0, i * 1.5 + 2, 2, 2));
+  bodies.push_back(MakeQuadBoxMesh(0, 20, 0, 3, 23, 3));
+  bodies.push_back(MakeQuadBoxMesh(2, 21, 1, 5, 24, 4));
+  bodies.push_back(MakeQuadBoxMesh(1, 22, 2, 4, 25, 5));
+  bodies.push_back(MakeQuadBoxMesh(100, 100, 100, 101, 101, 101));
+  bodies.push_back(MakeQuadBoxMesh(0, 40, 0, 1, 41, 1));
+  bodies.push_back(MakeQuadBoxMesh(1.5, 40, 0, 2.5, 41, 1));  // touches the previous one's neighbourhood only at clearance > 0.5
+  Check(bodies.size() == 24, "interference fixture has 24 bodies (above the broad-phase tree threshold)");
+
+  auto same_mesh = [](const Mesh& a, const Mesh& b) {
+    return a.FaceCount() == b.FaceCount() && a.raw().m_V.Count() == b.raw().m_V.Count() && a.Volume() == b.Volume();
+  };
+  auto same_pairs = [&](const std::vector<InterferenceResult>& x, const std::vector<InterferenceResult>& y) {
+    if (x.size() != y.size()) return false;
+    for (size_t i = 0; i < x.size(); ++i) {
+      if (x[i].a_index != y[i].a_index || x[i].b_index != y[i].b_index || !same_mesh(x[i].solid, y[i].solid)) return false;
+    }
+    return true;
+  };
+  auto same_multi = [&](const std::vector<MultiInterferenceResult>& x, const std::vector<MultiInterferenceResult>& y) {
+    if (x.size() != y.size()) return false;
+    for (size_t i = 0; i < x.size(); ++i) {
+      if (x[i].indices != y[i].indices || !same_mesh(x[i].solid, y[i].solid)) return false;
+    }
+    return true;
+  };
+
+  for (const double clearance : {0.0, 1.0}) {
+    kd::SetBrepSpatialAccelerationEnabled(true);
+    const long q0 = kd::BodyBroadPhaseTreeQueryCount();
+    const std::vector<InterferenceResult> pair_fast = ComputeInterference(bodies, clearance);
+    const std::vector<MultiInterferenceResult> multi_fast = ComputeMultiWayInterference(bodies, clearance);
+    const AllInterferenceResult all_fast = ComputeAllInterference(bodies, clearance);
+    const long queries = kd::BodyBroadPhaseTreeQueryCount() - q0;
+    kd::SetBrepSpatialAccelerationEnabled(false);
+    const long q1 = kd::BodyBroadPhaseTreeQueryCount();
+    const std::vector<InterferenceResult> pair_slow = ComputeInterference(bodies, clearance);
+    const std::vector<MultiInterferenceResult> multi_slow = ComputeMultiWayInterference(bodies, clearance);
+    const AllInterferenceResult all_slow = ComputeAllInterference(bodies, clearance);
+    const long queries_off = kd::BodyBroadPhaseTreeQueryCount() - q1;
+    kd::SetBrepSpatialAccelerationEnabled(true);
+    const std::string tag = clearance == 0.0 ? " (clearance 0)" : " (clearance 1)";
+    Check(same_pairs(pair_fast, pair_slow), ("ComputeInterference: R-tree broad phase == linear loop (pairs, order, overlap solids)" + tag).c_str());
+    Check(same_multi(multi_fast, multi_slow), ("ComputeMultiWayInterference: R-tree broad phase == linear loop" + tag).c_str());
+    Check(same_pairs(all_fast.pairwise, all_slow.pairwise) && same_multi(all_fast.multi_way, all_slow.multi_way),
+          ("ComputeAllInterference: R-tree broad phase == linear loop" + tag).c_str());
+    Check(queries > 0 && queries_off == 0, ("the body R-tree really answers the broad phase when enabled and never when disabled" + tag).c_str());
+    Check(!pair_slow.empty() && !multi_slow.empty(), ("positive control: the fixture really has pairwise and multi-way overlaps" + tag).c_str());
+  }
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -88309,6 +88818,10 @@ int main() {
   RunTest("TestSurfaceMatchEdgeToCurveExactRowsPrescribedAndPreserved", TestSurfaceMatchEdgeToCurveExactRowsPrescribedAndPreserved);
 
   RunTest("TestMeshSpatialQueriesAreAcceleratedAndBitIdentical", TestMeshSpatialQueriesAreAcceleratedAndBitIdentical);
+  RunTest("TestMeshDistanceToIsAcceleratedAndBitIdentical", TestMeshDistanceToIsAcceleratedAndBitIdentical);
+  RunTest("TestBrepFreeQueriesAreAcceleratedAndBitIdentical", TestBrepFreeQueriesAreAcceleratedAndBitIdentical);
+  RunTest("TestBooleanClassificationUsesOneSharedFaceIndexAndIsIdentical", TestBooleanClassificationUsesOneSharedFaceIndexAndIsIdentical);
+  RunTest("TestInterferenceBroadPhaseUsesBodyIndexAndIsIdentical", TestInterferenceBroadPhaseUsesBodyIndexAndIsIdentical);
 
   RunTest("ON::End", ON::End);
 
