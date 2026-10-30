@@ -13,6 +13,10 @@
 //   - RevolvedSurface(): Piegl & Tiller A8.1, exact rational revolution.
 //   - FanCap machinery: kernel-point search for a closed planar boundary
 //     and the degree-(p, 1) fan surface to that point.
+//   - AddPlanarTrimmedCap(): Loft()'s end caps - ONE planar trimmed face
+//     per end (plane patch + the section as its outer trim, mated to the
+//     wall's boundary edge) instead of a fan; the fan is then only the
+//     kernel's own on-the-fly analysis surface (detail::PlanarCapFanSurface).
 //   - AssembleSweptBody(): real ON_Brep topology via ON_Brep::NewFace's
 //     vid/eid/bRev3d overload - the wall first, then each cap sharing the
 //     wall's own boundary edge literally, plus the two revolve caps'
@@ -34,6 +38,7 @@
 #include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
+#include "dino8/kernel/detail/cap_fan.h"
 #include "dino8/kernel/detail/segment3d.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/surface.h"
@@ -1049,6 +1054,160 @@ CapEdges AddFanCap(ON_Brep& brep, ON_NurbsCurve boundary, int shared_edge, bool 
   return out;
 }
 
+// One PLANAR TRIMMED cap added to `brep`: a single planar face whose
+// surface is a bilinear patch in the section plane's own (x, y) frame
+// (u = x, v = y, big enough to contain the section with a margin) and
+// whose one outer loop is one trim running along `shared_edge` - the wall's
+// own closed boundary edge. The same "plane surface + the section curve as
+// its outer trim" representation Brep::TrimmedPatchFace() builds for a
+// bare face, but here the trim is MATED to the wall's existing edge, so the
+// pair closes into a real shared-topology solid.
+//
+// Why this instead of AddFanCap()'s fan for a lofted solid: a fan is a
+// surface COLLAPSED to a point (its whole apex side is one singular trim),
+// and a face-by-face (u, v) mesher that triangulates that degenerate
+// parameter rectangle - dino8-app's BrepMesher, which is what the app's
+// MeshOf()/display/analysis/booleans go through - fails to close it for
+// some polygonal sections (a square's 9 CDT constraints fail: wall and cap
+// then no longer share a watertight boundary, the mesh reads open, Volume
+// 0). A planar trimmed face has no singular side at all: it meshes like
+// every ordinary trimmed face.
+//
+// `boundary` is the wall's own iso curve at that end (its parameter
+// direction); the face's outward normal is the plane normal signed to agree
+// with `outward_hint`, and the loop is oriented counterclockwise about it.
+// The trim's 3D-reversal flag against the shared edge follows from whether
+// the loop runs with or against `boundary` and whether the edge runs with
+// it (`edge_forward`). The edge's tolerance is raised to the measured
+// trim-image-to-edge deviation.
+void AddPlanarTrimmedCap(ON_Brep& brep, const ON_NurbsCurve& boundary, int shared_edge, bool edge_forward,
+                         ON_3dVector outward_hint, const char* caller) {
+  ON_Plane plane;
+  const double scale = CurveScale(boundary);
+  if (!boundary.IsPlanar(&plane, 1e-8 * scale)) {
+    Fail(caller, "cap requested but the end section is not planar - cannot cap a non-planar end");
+  }
+  ON_3dVector n = plane.zaxis;
+  const double agree = ON_DotProduct(n, outward_hint);
+  if (std::fabs(agree) <= 1e-9 * outward_hint.Length()) {
+    Fail(caller, "the cap plane is parallel to the sweep direction at that end - cannot cap it");
+  }
+  if (agree < 0.0) n = -n;
+  // The frame's x axis: the world axis most nearly IN the plane, projected
+  // into it, so the patch for a section in an axis-aligned plane is the
+  // world-aligned bounding rectangle of the section - which keeps the
+  // B-rep's own bounding box (ON derives a trimmed face's box from its
+  // surface patch) exactly the section's rather than a rotated parallelogram's.
+  ON_3dVector xaxis;
+  {
+    const ON_3dVector axes[3] = {ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0), ON_3dVector(0, 0, 1)};
+    int best = 0;
+    for (int k = 1; k < 3; ++k) {
+      if (std::fabs(ON_DotProduct(axes[k], n)) < std::fabs(ON_DotProduct(axes[best], n)) - 1e-12) best = k;
+    }
+    xaxis = axes[best] - ON_DotProduct(axes[best], n) * n;
+    if (!xaxis.Unitize()) xaxis = plane.xaxis;
+  }
+  ON_3dVector yaxis = ON_CrossProduct(n, xaxis);  // xaxis x yaxis = n: the surface's own u x v is the outward normal
+  yaxis.Unitize();
+  const ON_3dPoint origin = plane.origin;
+
+  // The section in the plane's own (x, y) coordinates: same knots and
+  // weights, every control point mapped by the plane's affine projection -
+  // exact for a planar curve (affine maps preserve NURBS form).
+  const bool rational = boundary.IsRational();
+  ON_NurbsCurve c2(2, rational, boundary.Order(), boundary.CVCount());
+  for (int k = 0; k < boundary.KnotCount(); ++k) c2.SetKnot(k, boundary.Knot(k));
+  double x0 = 0.0, x1 = 0.0, y0 = 0.0, y1 = 0.0;
+  for (int i = 0; i < boundary.CVCount(); ++i) {
+    const ON_3dVector d = EuclideanCV(boundary, i) - origin;
+    const double x = ON_DotProduct(d, xaxis), y = ON_DotProduct(d, yaxis);
+    if (i == 0) {
+      x0 = x1 = x;
+      y0 = y1 = y;
+    }
+    x0 = std::min(x0, x);
+    x1 = std::max(x1, x);
+    y0 = std::min(y0, y);
+    y1 = std::max(y1, y);
+    if (rational) {
+      const double w = boundary.Weight(i);
+      c2.SetCV(i, ON_4dPoint(x * w, y * w, 0.0, w));
+    } else {
+      c2.SetCV(i, ON_3dPoint(x, y, 0.0));
+    }
+  }
+  // The loop must be counterclockwise in (u, v) (outer loop, face normal =
+  // u x v). The wall's sections run counterclockwise about the SWEEP
+  // direction, so at the start cap (normal opposite the sweep) the loop
+  // has to run against `boundary` and at the end cap with it - decided
+  // from the signed area rather than assumed.
+  bool loop_with_boundary = true;
+  {
+    const ON_Interval dom = c2.Domain();
+    std::vector<ON_2dPoint> poly;
+    const int m = std::max(256, 32 * boundary.SpanCount());
+    for (int i = 0; i < m; ++i) {
+      const ON_3dPoint p = c2.PointAt(dom.ParameterAt(static_cast<double>(i) / m));
+      poly.emplace_back(p.x, p.y);
+    }
+    if (SignedArea2d(poly) < 0.0) {
+      c2.Reverse();
+      loop_with_boundary = false;
+    }
+  }
+
+  // The patch is exactly the section's control-point bounding rectangle in
+  // this frame (zero margin): the B-rep's bounding box is then the
+  // section's own, not inflated. The trim touching the domain edge at its
+  // extreme points is ordinary (it is one trim of one non-iso curve, so the
+  // face is still a trimmed face, never a "whole surface" one). A fully
+  // flat section (zero extent in x or y) is refused by the area check.
+  if (!(x1 - x0 > 0.0) || !(y1 - y0 > 0.0)) Fail(caller, "cap requested but the end section encloses no area");
+  auto* srf = new ON_NurbsSurface(3, false, 2, 2, 2, 2);
+  srf->SetKnot(0, 0, x0);
+  srf->SetKnot(0, 1, x1);
+  srf->SetKnot(1, 0, y0);
+  srf->SetKnot(1, 1, y1);
+  const double us[2] = {x0, x1}, vs[2] = {y0, y1};
+  for (int i = 0; i < 2; ++i) {
+    for (int j = 0; j < 2; ++j) srf->SetCV(i, j, origin + us[i] * xaxis + vs[j] * yaxis);
+  }
+
+  // How far the surface's image of the 2D trim strays from the shared
+  // edge's own 3D curve: the section is planar only to 1e-8 of its scale,
+  // so this is the honest edge tolerance, not an assumed zero.
+  double deviation = 0.0;
+  {
+    const ON_Curve* edge_curve = brep.m_E[shared_edge].EdgeCurveOf();
+    if (edge_curve == nullptr) Internal(caller, "the shared wall edge has no 3D curve");
+    const ON_Interval ed = edge_curve->Domain();
+    const ON_Interval td = c2.Domain();
+    // c2 runs with `boundary` iff loop_with_boundary; the edge runs with
+    // `boundary` iff edge_forward; pair the samples by 3D position.
+    const bool trim_runs_with_edge = (loop_with_boundary == edge_forward);
+    for (int k = 0; k <= 400; ++k) {
+      const double f = static_cast<double>(k) / 400.0;
+      const ON_3dPoint uv = c2.PointAt(td.ParameterAt(f));
+      const ON_3dPoint e = edge_curve->PointAt(ed.ParameterAt(trim_runs_with_edge ? f : 1.0 - f));
+      deviation = std::max(deviation, srf->PointAt(uv.x, uv.y).DistanceTo(e));
+    }
+  }
+
+  const int si = brep.AddSurface(srf);
+  const int c2i = brep.AddTrimCurve(new ON_NurbsCurve(c2));
+  ON_BrepFace& face = brep.NewFace(si);
+  ON_BrepLoop& loop = brep.NewLoop(ON_BrepLoop::outer, face);
+  const bool trim_rev3d = (loop_with_boundary != edge_forward);
+  ON_BrepTrim& trim = brep.NewTrim(brep.m_E[shared_edge], trim_rev3d, loop, c2i);
+  trim.m_type = ON_BrepTrim::mated;
+  trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  if (brep.LoopDirection(loop) < 0) Internal(caller, "the planar cap's outer loop came out clockwise");
+  brep.SetTrimIsoFlags(face);
+  ON_BrepEdge& edge = brep.m_E[shared_edge];
+  if (!(edge.m_tolerance >= 0.0) || edge.m_tolerance < deviation) edge.m_tolerance = deviation;
+}
+
 // A hemispherical dome cap added to `brep`, sharing `shared_edge` -
 // exactly the same "apex-like row at v = 0 (south, singular), boundary
 // row at v = 1 (north, = `boundary` itself)" surface layout
@@ -1164,6 +1323,26 @@ void AddDomeCap(ON_Brep& brep, ON_NurbsCurve boundary, int shared_edge, bool edg
 
 }  // namespace
 
+namespace detail {
+
+// See detail/cap_fan.h. The fan AddFanCap() would have built for this
+// boundary and outward direction, without touching any B-rep.
+std::unique_ptr<ON_NurbsSurface> PlanarCapFanSurface(const ON_NurbsCurve& boundary_in,
+                                                     const ON_3dVector& outward_normal) {
+  try {
+    ON_NurbsCurve boundary = boundary_in;
+    if (!boundary.IsValid() || !boundary.IsClosed()) return nullptr;
+    const CapPlan plan = PlanCap(boundary, /*chord_closed=*/false, "PlanarCapFanSurface");
+    const ON_3dVector native = plan.signed_area > 0.0 ? -plan.plane.zaxis : plan.plane.zaxis;
+    if (ON_DotProduct(native, outward_normal) < 0.0) ReverseKeepDomain(boundary);
+    return FanSurface(boundary, plan.apex, "PlanarCapFanSurface");
+  } catch (const std::exception&) {
+    return nullptr;
+  }
+}
+
+}  // namespace detail
+
 // See this method's own brep.h doc comment: a standalone one-face shell
 // capping a single closed planar curve exactly, via the same star-shaped
 // fan-apex search and fan surface (PlanCap()/FanSurface() just above)
@@ -1201,7 +1380,7 @@ Brep Brep::CapClosedCurvedLoop(const ON_NurbsCurve& boundary_in) {
 Brep Brep::AssembleSweptBody(ON_NurbsSurface* wall_raw, bool cap_v0, bool cap_v1, bool cap_u0, bool cap_u1,
                              const char* caller, const Vector3d* cap_v0_outward_hint,
                              const Vector3d* cap_v1_outward_hint, const RoundCapSpec* round_v0,
-                             const RoundCapSpec* round_v1) {
+                             const RoundCapSpec* round_v1, bool planar_trimmed_caps) {
   std::unique_ptr<ON_NurbsSurface> wall_in(wall_raw);
   Brep result;
   ON_Brep& brep = result.raw();
@@ -1259,8 +1438,12 @@ Brep Brep::AssembleSweptBody(ON_NurbsSurface* wall_raw, bool cap_v0, bool cap_v1
       if (round_v0) {
         AddDomeCap(brep, *b0, eid[0], /*edge_forward=*/true, hint, *round_v0, caller);
       } else {
-        first = AddFanCap(brep, *b0, eid[0], /*edge_forward=*/true, hint, plan0, nullptr, /*transpose=*/false, caller);
-        have_first = true;
+        if (planar_trimmed_caps && !chord) {
+          AddPlanarTrimmedCap(brep, *b0, eid[0], /*edge_forward=*/true, hint, caller);
+        } else {
+          first = AddFanCap(brep, *b0, eid[0], /*edge_forward=*/true, hint, plan0, nullptr, /*transpose=*/false, caller);
+          have_first = true;
+        }
       }
       ++faces;
     }
@@ -1277,8 +1460,12 @@ Brep Brep::AssembleSweptBody(ON_NurbsSurface* wall_raw, bool cap_v0, bool cap_v1
       if (round_v1) {
         AddDomeCap(brep, *b1, eid[2], /*edge_forward=*/false, hint, *round_v1, caller);
       } else {
-        AddFanCap(brep, *b1, eid[2], /*edge_forward=*/false, hint, plan1, (chord && have_first) ? &first : nullptr,
-                  /*transpose=*/false, caller);
+        if (planar_trimmed_caps && !chord) {
+          AddPlanarTrimmedCap(brep, *b1, eid[2], /*edge_forward=*/false, hint, caller);
+        } else {
+          AddFanCap(brep, *b1, eid[2], /*edge_forward=*/false, hint, plan1, (chord && have_first) ? &first : nullptr,
+                    /*transpose=*/false, caller);
+        }
       }
       ++faces;
     }
@@ -1806,6 +1993,17 @@ Brep Brep::ExtrudeFace(const Brep& body, int face_index, Vector3d direction, boo
          "scoped version does not attempt");
   }
 
+  if (!trimmed && !body.FaceCoversWholeDomain(face_index)) {
+    // A face trimmed by genuine ON_Brep loop topology only (no pseudo-trim
+    // side-table polygon): a capped Loft()'s planar trimmed cap is one - its
+    // plane patch is bigger than the cap itself, so "extrude the surface's
+    // 4 domain isocurves" below would silently build a box on the PADDED
+    // patch, not on the cap. Refused rather than misbuilt.
+    Fail(caller,
+         "the face is trimmed by real ON_Brep loop topology that this extrusion cannot read (only the pseudo-trim "
+         "side tables are honored) - e.g. a capped Loft()'s planar trimmed end cap; extruding its surface's domain "
+         "rectangle would not be the face");
+  }
   if (trimmed) {
     // A trimmed face's real boundary is not its surface's 4 domain
     // isocurves, so the untrimmed path's "4 RuledBetween() walls between
@@ -3490,7 +3688,10 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
       wall = SkinSections(sections, q, closed, params, period, caller);
     }
   }
-  return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
+  // Closed planar sections are capped with ONE planar trimmed face per end
+  // (see AddPlanarTrimmedCap()), not a fan.
+  return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller, nullptr, nullptr, nullptr,
+                           nullptr, /*planar_trimmed_caps=*/true);
 }
 
 Result Brep::RibbonFromCurve(const NurbsCurve& curve, const ON_Plane& plane, double width, Brep& out,

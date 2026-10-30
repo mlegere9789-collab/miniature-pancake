@@ -892,7 +892,19 @@ class Brep {
   // must all be closed or all open, consistently oriented and seam-
   // aligned (this does not re-orient or re-seam them; a capped loft of
   // closed planar sections is reversed as a whole if needed so it faces
-  // outward). Throws std::invalid_argument for fewer than 2 sections,
+  // outward). Each end cap of a capped loft is ONE planar trimmed face:
+  // a plane patch in the section plane's own frame whose single outer
+  // loop is the section curve, mated to the wall's own closed boundary
+  // edge (edge tolerance = the measured trim-to-edge deviation) - NOT a
+  // fan collapsed to a point, which the app's face-by-face mesher
+  // (BrepMesher, behind MeshOf) left OPEN for a square, rectangle or
+  // hexagon section (Volume 0, treated as non-solid by booleans). The
+  // kernel's own uniform-lattice tessellators and exact integrators still
+  // derive the old star-shaped fan from the cap's boundary edge on the
+  // fly (SweepCapAnalysisFan()), so a section that is not star-shaped is
+  // refused with `cap` exactly as before, and a non-planar end section
+  // cannot be capped at all (no cap of either kind is ever built for it).
+  // Throws std::invalid_argument for fewer than 2 sections,
   // fewer than degree + 1 sections for a closed loft, or mixed open/
   // closed sections.
   //
@@ -5667,6 +5679,23 @@ class Brep {
   // this class's own private side tables, which only this method can see).
   bool FaceCoversWholeDomain(int face_index) const;
 
+  // True (and `fan` filled in) iff face `face_index` is a sweep-class
+  // PLANAR TRIMMED CAP - what Loft() builds at each end of a closed-section
+  // loft: one planar face (a plane patch in the section plane's own frame)
+  // whose single outer loop is one trim mated to the wall's closed boundary
+  // edge, with no pseudo-trim side-table entry. `fan` is then the kernel's
+  // own ANALYSIS surface for it: the star-shaped fan to that boundary
+  // (exactly what the older fan caps were) with the face's own u x v
+  // normal. The uniform-lattice tessellators (Tessellate()/
+  // TessellateToClosedMesh()/...) and the exact integrators (Volume()/
+  // Area()/VolumeMassProperties()) use it in place of the plane patch,
+  // because a face whose (u, v) domain IS the cap shares the wall's
+  // boundary lattice at ANY division pair, which a curve-trimmed plane
+  // patch cannot; it is derived on every call from the cap's own boundary
+  // edge (never stored), so it cannot go stale. Not a sweep cap (or a
+  // region that is not star-shaped, so no fan exists): false.
+  bool SweepCapAnalysisFan(int face_index, ON_NurbsSurface& fan) const;
+
   // AssembleSweptBody()'s own round-cap parameter (src/sweep.cpp): the
   // exact circle center/radius and outward pole direction of a
   // hemispherical dome cap, already known by the caller (Pipe(), which
@@ -5769,10 +5798,16 @@ class Brep {
   // non-chord (section not touching the axis) end; every other caller
   // passes neither and keeps the existing flat-fan-or-nothing behavior
   // exactly.
+  // `planar_trimmed_caps` (Loft() only; every other caller keeps the fan):
+  // build each closed-section end cap as ONE planar trimmed face mated to
+  // the wall's boundary edge instead of a fan - see Loft()'s doc comment
+  // and AddPlanarTrimmedCap() in sweep.cpp. Ignored for an open (chord)
+  // section, a round cap and the u-side disc caps.
   static Brep AssembleSweptBody(ON_NurbsSurface* wall, bool cap_v0, bool cap_v1, bool cap_u0, bool cap_u1,
                                 const char* caller, const Vector3d* cap_v0_outward_hint = nullptr,
                                 const Vector3d* cap_v1_outward_hint = nullptr,
-                                const RoundCapSpec* round_v0 = nullptr, const RoundCapSpec* round_v1 = nullptr);
+                                const RoundCapSpec* round_v0 = nullptr, const RoundCapSpec* round_v1 = nullptr,
+                                bool planar_trimmed_caps = false);
 
  private:
   // Revolve()'s own assembly step for the one case AssembleSweptBody()

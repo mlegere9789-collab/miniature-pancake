@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "dino8/kernel/detail/arc_schedule3d.h"
+#include "dino8/kernel/detail/cap_fan.h"
 #include "dino8/kernel/detail/ellipse_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/detail/segment3d.h"
@@ -99,6 +100,40 @@ bool LoopIsFullDomain(const std::vector<Point2d>& poly, const ON_NurbsSurface& s
          std::fabs(vmin - dv.Min()) < 1e-9 && std::fabs(vmax - dv.Max()) < 1e-9;
 }
 
+// True (and `fan` filled in) iff face `face_index` is a sweep-class PLANAR
+// TRIMMED CAP: a planar face whose one outer loop is a single trim along a
+// single closed planar edge (what sweep.cpp's AddPlanarTrimmedCap() builds
+// for a Loft()'s end caps). `fan` is then the kernel's own analysis fan to
+// that boundary (detail/cap_fan.h) with the face's own u x v normal - what
+// the uniform-lattice tessellators and the exact integrators use in place
+// of the (trimmed, bigger-than-the-cap) plane patch. Pure geometry/
+// topology detection: callers add their own "no side-table trim" check.
+bool FindSweepCapFan(const ON_Brep& brep, int face_index, ON_NurbsSurface& fan) {
+  const ON_BrepFace& face = brep.m_F[face_index];
+  if (face.m_li.Count() != 1) return false;
+  const int li = face.m_li[0];
+  if (li < 0 || li >= brep.m_L.Count()) return false;
+  const ON_BrepLoop& loop = brep.m_L[li];
+  if (loop.m_type != ON_BrepLoop::outer || loop.m_ti.Count() != 1) return false;
+  const int ti = loop.m_ti[0];
+  if (ti < 0 || ti >= brep.m_T.Count()) return false;
+  const int ei = brep.m_T[ti].m_ei;
+  if (ei < 0 || ei >= brep.m_E.Count()) return false;
+  const ON_Curve* edge_curve = brep.m_E[ei].EdgeCurveOf();
+  const ON_Surface* surface = face.SurfaceOf();
+  if (edge_curve == nullptr || surface == nullptr || !edge_curve->IsClosed()) return false;
+  if (brep.FaceIsSurface(face_index)) return false;  // a loop that IS the whole domain is not a trimmed cap
+  if (!surface->IsPlanar(nullptr, tolerance::kDistance)) return false;
+  ON_NurbsCurve boundary;
+  if (edge_curve->GetNurbForm(boundary) <= 0) return false;
+  const ON_3dVector normal =
+      surface->NormalAt(surface->Domain(0).ParameterAt(0.5), surface->Domain(1).ParameterAt(0.5));
+  std::unique_ptr<ON_NurbsSurface> built = dino8::kernel::detail::PlanarCapFanSurface(boundary, normal);
+  if (!built) return false;
+  fan = *built;
+  return true;
+}
+
 bool ResolveFace(const ON_Brep& brep, int face_index,
                  const std::vector<std::vector<Point2d>>& side_trims,
                  const std::vector<bool>& side_exact,
@@ -118,6 +153,12 @@ bool ResolveFace(const ON_Brep& brep, int face_index,
     out.outer = side_trims[fi];
     out.exact_clip = fi < side_exact.size() ? side_exact[fi] : false;
     if (fi < side_holes.size()) out.holes = side_holes[fi];
+    // A sweep cap (one planar trimmed face, no side-table trim) is meshed
+    // through its analysis fan - see FindSweepCapFan().
+    if (out.outer.empty() && out.holes.empty()) {
+      ON_NurbsSurface fan;
+      if (FindSweepCapFan(brep, face_index, fan)) out.surface = fan;
+    }
     return true;
   }
   // Otherwise derive trims from the brep's own loops.
@@ -1207,6 +1248,16 @@ bool Brep::FaceCoversWholeDomain(int i) const {
          !face_notch_rows_[static_cast<size_t>(i)].present;
 }
 
+bool Brep::SweepCapAnalysisFan(int i, ON_NurbsSurface& fan) const {
+  const size_t k = static_cast<size_t>(i);
+  if (k >= face_trim_loops_.size() || !face_trim_loops_[k].empty() || k >= face_hole_loops_.size() ||
+      !face_hole_loops_[k].empty() || (k < face_arc_runs_.size() && !face_arc_runs_[k].empty()) ||
+      (k < face_notch_rows_.size() && face_notch_rows_[k].present)) {
+    return false;  // trimmed by the pseudo-trim side tables (or tables not in lockstep): not a sweep cap
+  }
+  return FindSweepCapFan(brep_, i, fan);
+}
+
 double Brep::Volume() const {
   // raw().IsSolid() is the WRONG check here: it requires genuine shared
   // ON_Brep edge/vertex topology between faces, which several of this
@@ -1236,6 +1287,11 @@ double Brep::Volume() const {
       throw std::runtime_error("dino8::kernel::Brep::Volume: face " + std::to_string(i) +
                                 " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
     }
+    // A sweep cap (one planar trimmed face) is integrated exactly over its
+    // analysis fan, whose whole domain IS the cap - see SweepCapAnalysisFan().
+    ON_NurbsSurface cap_fan;
+    const bool is_cap = SweepCapAnalysisFan(i, cap_fan);
+    if (is_cap) s = &cap_fan;
     const double sign = face.m_bRev ? -1.0 : 1.0;
     const auto integrand = [&](double u, double v) {
       ON_3dPoint p;
@@ -1246,7 +1302,7 @@ double Brep::Volume() const {
       const ON_3dVector n = ON_CrossProduct(su, sv);
       return (p.x * n.x + p.y * n.y + p.z * n.z) / 3.0;
     };
-    if (FaceCoversWholeDomain(i)) {
+    if (is_cap || FaceCoversWholeDomain(i)) {
       total += sign * IntegrateOverNurbsSurface(*s, integrand);
       continue;
     }
@@ -1299,6 +1355,9 @@ double Brep::Area() const {
       throw std::runtime_error("dino8::kernel::Brep::Area: face " + std::to_string(i) +
                                 " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
     }
+    ON_NurbsSurface cap_fan;  // see SweepCapAnalysisFan()
+    const bool is_cap = SweepCapAnalysisFan(i, cap_fan);
+    if (is_cap) s = &cap_fan;
     const auto integrand = [&](double u, double v) {
       ON_3dPoint p;
       ON_3dVector su, sv;
@@ -1307,7 +1366,7 @@ double Brep::Area() const {
       }
       return ON_CrossProduct(su, sv).Length();
     };
-    if (FaceCoversWholeDomain(i)) {
+    if (is_cap || FaceCoversWholeDomain(i)) {
       total += IntegrateOverNurbsSurface(*s, integrand);
       continue;
     }
@@ -1386,6 +1445,9 @@ double BrepDivergenceSum(const Brep& self, MomentIntegrand&& moment_integrand, i
       throw std::runtime_error("dino8::kernel::Brep::VolumeMassProperties: face " + std::to_string(i) +
                                 " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
     }
+    ON_NurbsSurface cap_fan;  // see Brep::SweepCapAnalysisFan()
+    const bool is_cap = self.SweepCapAnalysisFan(i, cap_fan);
+    if (is_cap) s = &cap_fan;
     const double sign = face.m_bRev ? -1.0 : 1.0;
     const auto integrand = [&](double u, double v) {
       ON_3dPoint p;
@@ -1397,7 +1459,7 @@ double BrepDivergenceSum(const Brep& self, MomentIntegrand&& moment_integrand, i
       const ON_3dVector n = ON_CrossProduct(su, sv);
       return moment_integrand(p, n);
     };
-    if (self.FaceCoversWholeDomain(i)) {
+    if (is_cap || self.FaceCoversWholeDomain(i)) {
       // `whole_domain_subdivisions == 1` (every existing caller except
       // VolumeCertifiedAdaptive() below) is numerically identical to
       // IntegrateOverNurbsSurface() itself - see
