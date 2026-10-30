@@ -9230,6 +9230,34 @@ Brep::CheckReport Brep::Check(double tolerance, double sliver_width,
   report.is_closed = live_faces > 0 && report.Count(CheckKind::NakedEdge) == 0 &&
                      report.Count(CheckKind::NonManifoldEdge) == 0;
   report.is_oriented = report.Count(CheckKind::InconsistentFaceOrientation) == 0;
+
+  // Inside-out closed shell: see CheckIssue::Kind::InsideOutShell. Gated on
+  // is_closed && is_oriented (the same precondition UnifyNormals()'s
+  // outward step uses) so the one coarse tessellation below is only paid
+  // for a Brep every cheaper check above already accepted, and so a shell
+  // with a naked edge or a conflicting face is never mis-reported as
+  // merely "inverted".
+  if (report.is_closed && report.is_oriented) {
+    try {
+      // Deliberately NOT gated on the mesh being a closed manifold: the
+      // topology above already established a closed shell, and the
+      // divergence-theorem sum is insensitive to the hairline T-junction
+      // cracks TessellateToClosedMesh() leaves on a planar face split
+      // differently from its neighbour (a clean, valid box whose top is
+      // two coplanar faces tessellates "open" yet has the exact volume).
+      const Mesh coarse = TessellateToClosedMesh(4, 4);
+      const double volume = coarse.Volume();
+      const ON_BoundingBox box = b.BoundingBox();
+      const double diag = box.IsValid() ? box.Diagonal().Length() : 0.0;
+      // Relative floor: a flat / zero-volume shell is not "inverted".
+      if (volume < -1e-9 * std::max(diag * diag * diag, 1.0e-12)) {
+        add(CheckKind::InsideOutShell, -1, -1, box.IsValid() ? box.Center() : ON_3dPoint(0, 0, 0), volume);
+      }
+    } catch (const std::exception&) {
+      // Not tessellatable at this resolution: orientation undecidable, so
+      // report nothing rather than guess (Check() never throws).
+    }
+  }
   return report;
 }
 
