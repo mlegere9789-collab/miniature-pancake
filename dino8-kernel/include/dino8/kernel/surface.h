@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <string>
 #include <vector>
 
 #include <opennurbs.h>
@@ -98,6 +99,23 @@ struct MatchEdgeReport {
 // an app command) that wants to report which case applied, or confirm
 // it wasn't a coincidental match.
 enum class DevelopableKind { Plane, Cylinder, Cone };
+
+// What `NurbsSurface::Join()` did to bring the two operands to a common
+// form before splicing them, and how well the merged surface reproduces
+// both (the overload that takes one fills it in). `steps` is empty when the
+// two control nets could be spliced exactly as they stood; otherwise each
+// entry is one plain-language, shape-preserving step ("raised the second
+// surface's degree along the shared edge 2 -> 3", "inserted 2 knot(s)
+// along the shared edge into the first surface", ...). `failure_reason`
+// is set whenever Join() returns Result::Failed (and is empty after Ok).
+// `max_deviation` is the largest distance between the merged surface and
+// either operand over a 9 x 9 parameter grid on each, measured on every
+// successful join - the merged surface is never trusted unmeasured.
+struct SurfaceJoinReport {
+  std::vector<std::string> steps;
+  std::string failure_reason;
+  double max_deviation = 0.0;
+};
 
 // Wraps ON_NurbsSurface. Same rationale as NurbsCurve: expose raw()
 // rather than mirror the whole OpenNURBS surface API.
@@ -771,6 +789,28 @@ class NurbsSurface {
   // unchanged. `tolerance` defaults to the same 1e-6
   // `NurbsCurve::Join()` and `Mesh::MergeAndWeld()` use.
   Result Join(const NurbsSurface& other, double tolerance = 1e-6);
+
+  // Same join, plus a `report` of the compatible-form steps it took, the
+  // measured reproduction error of the result, and - when it returns
+  // Result::Failed - a plain-language reason (see `SurfaceJoinReport`).
+  // `Join(other, tolerance)` above is exactly this with the report
+  // discarded; the result is bit-identical either way.
+  //
+  // Beyond the steps described above, this makes one more exact
+  // adjustment: when the two boundary control polygons agree in position
+  // but the second surface's weights are a constant multiple of the
+  // first's along the edge (the same rational curve in a different
+  // homogeneous scale - e.g. the same arc written with weights 1 versus
+  // 2), the second surface's whole homogeneous net is scaled by that
+  // factor. A uniform scale of every homogeneous control point leaves a
+  // rational surface unchanged, so this is shape-preserving. After the
+  // splice the result is measured against both operands (9 x 9 samples
+  // each); a result that strays by more than twice `tolerance` is
+  // rejected with a reason rather than returned. On Result::Failed the
+  // reason states whether the shared boundary CURVES truly disagree
+  // (measured gap) or merely cannot be given identical control polygons
+  // (a differently-parameterized edge: not exactly splicable).
+  Result Join(const NurbsSurface& other, SurfaceJoinReport& report, double tolerance = 1e-6);
 
   // Splits this surface into one piece per genuinely G1-continuous
   // region - closing PARITY_MAP's own disclosed "Kinky / creased surface

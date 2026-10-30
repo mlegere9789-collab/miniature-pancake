@@ -1,4 +1,6 @@
-# Kernel-primitive app wirings: MergeSrf -> kernel::NurbsSurface::Join,
+# Kernel-primitive app wirings: MergeSrf -> kernel::NurbsSurface::Join (which
+# first brings a mismatched pair to a compatible form - degree, knots, direction,
+# weights - so only boundaries that really do not coincide reach the refit),
 # ChamferEdge/ChamferSrf on a cylinder rim -> kernel::ChamferCylinderRim,
 # curve MakeUniform -> kernel::NurbsCurve::MakeUniform. Every section deletes
 # its own objects, so each @expect_objects check below is per-section.
@@ -65,6 +67,216 @@ Plane 50,0,0 60,10,0
 SelSrf
 MergeSrf
 @expect_objects 2
+SelAll
+Delete
+# --- MergeSrf, degree mismatch: a bicubic patch (4 x 4 net) and a biquadratic patch
+# (3 x 3 net) sharing the edge x = 3. The cubic's edge row is the quadratic's
+# (3,0,0) (3,3,3) (3,9,0) degree-elevated by hand: (3,0,0) (3,2,2) (3,5,2) (3,9,0),
+# the same curve in a different control polygon. The kernel raises the quadratic
+# to degree 3 in both directions and splices: 4 + 4 - 1 = 7 rows by 4 columns.
+Point 0,0,0
+Point 1,0,1
+Point 2,0,0
+Point 3,0,0
+Point 0,2,1
+Point 1,2,3
+Point 2,2,2
+Point 3,2,2
+Point 0,5,2
+Point 1,5,1
+Point 2,5,3
+Point 3,5,2
+Point 0,9,0
+Point 1,9,0
+Point 2,9,1
+Point 3,9,0
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+Point 3,0,0
+Point 5,0,1
+Point 7,0,2
+Point 3,3,3
+Point 5,3,2
+Point 7,3,0
+Point 3,9,0
+Point 5,9,1
+Point 7,9,3
+SelPt
+SrfControlPtGrid
+3
+SelNone
+SelPt
+Delete
+SelSrf
+MergeSrf
+SelNone
+@expect_objects 1
+SelAll
+Delete
+# --- MergeSrf, different knot spacing along the shared edge: two bicubic patches
+# (SrfControlPtGrid, 4 x 5 and 4 x 6 nets) whose shared edge is ONE cubic Bezier curve
+# written with an interior knot at 1/2 on the first patch (5 control points) and at
+# 1/3 and 2/3 on the second (6 control points). The edge control points are the
+# exact Boehm knot-insertion results (to 6 digits), so the two boundary polygons are
+# different but the curves are the same; the kernel inserts the union {1/3, 1/2, 2/3}
+# into both and splices: 4 + 4 - 1 = 7 rows across, 7 columns along the edge.
+Point 0,0,-0.5
+Point 1,0,-1
+Point 2,0,-1.5
+Point 3,0,0
+Point 0,1.5,0.1
+Point 1,1.5,0.1
+Point 2,1.5,0.1
+Point 3,1.5,3
+Point 0,6,0.7
+Point 1,6,1.2
+Point 2,6,1.7
+Point 3,6,1.5
+Point 0,10.5,-0.2
+Point 1,10.5,-0.7
+Point 2,10.5,-1.2
+Point 3,10.5,0
+Point 0,12,0.4
+Point 1,12,0.4
+Point 2,12,0.4
+Point 3,12,3
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+Point 3,0,0
+Point 4,0,-0.4
+Point 5,0,-0.8
+Point 6,0,-1.2
+Point 3,1,2
+Point 4,1,0.5
+Point 5,1,0.9
+Point 6,1,1.3
+Point 3,3.666667,2.666667
+Point 4,3.666667,-0.2
+Point 5,3.666667,-0.6
+Point 6,3.666667,-1
+Point 3,8.333333,0.333333
+Point 4,8.333333,0.7
+Point 5,8.333333,1.1
+Point 6,8.333333,1.5
+Point 3,11,1
+Point 4,11,0
+Point 5,11,-0.4
+Point 6,11,-0.8
+Point 3,12,3
+Point 4,12,0.9
+Point 5,12,1.3
+Point 6,12,1.7
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+SelSrf
+MergeSrf
+SelNone
+@expect_objects 1
+SelAll
+Delete
+# --- MergeSrf, shared edge traversed in opposite directions: two bicubic patches
+# (4 x 4 nets) meeting along y = 3, the first one Flip'd (Flip reverses a surface's U,
+# which here runs ALONG the shared edge), so the two walk the edge the other way.
+# The kernel turns the second back (and swaps its U/V, the edge being a V side):
+# 4 columns along the edge, 4 + 4 - 1 = 7 rows across.
+Point 0,3,0
+Point 1,3,2
+Point 2,3,1
+Point 3,3,3
+Point 0,4,0.5
+Point 1,4,1.5
+Point 2,4,0.5
+Point 3,4,2.5
+Point 0,5,0
+Point 1,5,1
+Point 2,5,0
+Point 3,5,2
+Point 0,6,1.5
+Point 1,6,2.5
+Point 2,6,1.5
+Point 3,6,3.5
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+SelSrf
+Flip
+SelNone
+Point 0,0,-0.5
+Point 1,0,-1.5
+Point 2,0,0.5
+Point 3,0,-0.5
+Point 0,1,0
+Point 1,1,-0.75
+Point 2,1,1.5
+Point 3,1,0.75
+Point 0,2,0.5
+Point 1,2,-0.5
+Point 2,2,1.5
+Point 3,2,0.5
+Point 0,3,0
+Point 1,3,2
+Point 2,3,1
+Point 3,3,3
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+SelSrf
+MergeSrf
+SelNone
+@expect_objects 1
+SelAll
+Delete
+# --- MergeSrf, the sample-and-refit fallback is kept ONLY for a pair the exact merge
+# cannot take. A unit square (2 x 2 net) and a neighbour (2 x 3 net, degree 1 x 2)
+# whose shared edge x = 1 is the same segment traced quadratically (middle control
+# point at y = 0.4, so its parameter-1/2 point sits at y = 0.45, not 0.5): the two
+# parameterizations of the edge are 0.05 apart, which the app's own (100x looser)
+# edge match accepts but no exact splice can bridge. The kernel refuses, MergeSrf
+# falls back to the refit and SAYS why.
+Point 0,0,0
+Point 1,0,0
+Point 0,1,0
+Point 1,1,0
+SelPt
+SrfControlPtGrid
+2
+SelNone
+SelPt
+Delete
+Point 1,0,0
+Point 2,0,0
+Point 1,0.4,0
+Point 2,0.4,0
+Point 1,1,0
+Point 2,1,0
+SelPt
+SrfControlPtGrid
+2
+SelNone
+SelPt
+Delete
+SelSrf
+MergeSrf
+SelNone
+@expect_objects 1
 SelAll
 Delete
 # --- ChamferEdge on a cylinder's rim: R=2 L=5, Distance1 (wall) 0.6 and
