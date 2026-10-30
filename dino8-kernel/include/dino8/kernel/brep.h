@@ -4047,6 +4047,66 @@ class Brep {
   void RefitEdgeTrims(int edge_index, double tolerance, int* out_refit_count = nullptr,
                        int* out_failed_count = nullptr);
 
+  // Canonical simplification of a PLANAR face (the plane half of
+  // PARITY_MAP.md's own "Analytic-form recognition / canonical
+  // simplification of faces" bullet under kernel: Healing, repair,
+  // validation, tolerant modeling - whose named gap was "nothing
+  // replaces a recognized NURBS face with a canonical analytic one"):
+  // replaces `face_index`'s own surface - any NURBS surface that
+  // `ON_NurbsSurface::IsPlanar(tolerance)` accepts, e.g. a STEP-imported
+  // degree-3 B-spline plane, a degree-elevated/knot-inserted plane, or a
+  // plane with an in-plane warped (non-affine) parametrization - with
+  // the canonical plane: a non-rational degree (1, 1), 2x2 control
+  // point surface whose (u, v) are METRIC coordinates in the plane
+  // (P(u, v) = origin + u*xaxis + v*yaxis exactly, with the same normal
+  // orientation as the old surface at its domain centre, so the face's
+  // own m_bRev stays meaningful and its Volume() sign is unchanged).
+  //
+  // Every trim's 2D curve is REBUILT from its edge's own 3D curve, not
+  // reused: the old 2D trim is only correct for the old parametrization.
+  // Because the new surface is an affine map of the plane, the pullback
+  // is exact closed-form NURBS algebra - the edge's own knot vector and
+  // weights, with each control point (Euclidean, so rational arcs and
+  // circles come through exactly: an affine map commutes with rational
+  // B-spline evaluation) mapped to its plane coordinates - never a
+  // sampled refit. Reversed when the trim runs against its edge
+  // (m_bRev3d), so every loop keeps its winding. Each edge control point
+  // must lie within `tolerance` of the plane (the convex-hull property
+  // then guarantees the whole edge does), or nothing is changed. The new
+  // surface's domain is the trims' own plane-coordinate bounding
+  // rectangle padded by 5% on each side - the same margin
+  // FromPlanarFaces() itself leaves so a trim never sits exactly on the
+  // surface's domain edge (see FromMixedFacesImpl()'s own comment).
+  //
+  // Two-phase like ReplaceEdgeCurve(): every validation runs before any
+  // mutation, so a refusal leaves the Brep untouched. The surface is
+  // replaced in place (same m_si) when this face is its only user, else
+  // a new surface is added; the per-face side tables are cleared the
+  // same way RefitTrim() does, since this face's trim curves changed.
+  //
+  // Returns Result::Ok on a replacement; Result::NoOpAlreadySatisfied
+  // when the face's surface is already canonical (non-rational degree
+  // (1, 1), 2x2 control points - a planar bilinear patch is affine
+  // already, so there is nothing to simplify); Result::Failed (never a
+  // crash, never a partial edit) when the surface is not planar within
+  // `tolerance`, is not an ON_NurbsSurface, when the face has no real
+  // ON_Brep loops (this kernel's surface-only factories, whose pseudo-
+  // trim side tables this does not attempt), when any trim is singular
+  // (no edge: a planar surface with a collapsed row of control points,
+  // whose seam trim would have no 3D curve to pull back) or its edge
+  // has no NURBS form, when an edge control point strays from the plane
+  // by more than `tolerance`, or when the face's plane extent is
+  // degenerate (narrower than `tolerance` in either direction). Throws
+  // std::out_of_range for an out-of-range `face_index`, and
+  // std::invalid_argument for a deleted face or a non-positive/
+  // non-finite `tolerance`.
+  Result SimplifyPlanarFace(int face_index, double tolerance = tolerance::kDistance);
+
+  // Applies SimplifyPlanarFace() to every live face; returns how many
+  // faces were actually replaced (Result::Ok), so re-running it on an
+  // already-canonical Brep reports 0. Never throws for a refusal.
+  int SimplifyPlanarFaces(double tolerance = tolerance::kDistance);
+
   // Kernel wrapper for ON_Brep::CombineContiguousEdges - previously
   // reachable only from the app layer (cmd_fillet.cpp's MergeEdgeCommand,
   // which reaches straight into the raw ON_Brep) and absent from this
