@@ -3047,7 +3047,34 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
     // this branch in practice - see the doc comment above `is_cap` on why a
     // closed cap edge is never genuinely shared with `has_notch_interior ==
     // false` semantics changing between the two uses).
-    const bool bRev3d = edge_freshly_created ? (is_cap && iso_reversed) : (edge.m_vi[0] != vid_from);
+    bool bRev3d = edge_freshly_created ? (is_cap && iso_reversed) : (edge.m_vi[0] != vid_from);
+    if (!edge_freshly_created && is_cap && !has_notch_interior && edge.m_vi[0] == edge.m_vi[1] &&
+        topo.curved_surface != nullptr) {
+      // The one case the vertex comparison above is blind to, now actually
+      // reached: a CLOSED cap circle (vid_from == vid_to) shared by two
+      // curved faces - ChamferCylinderRim's full-sweep ConicalFace bevel
+      // reusing the shortened wall's own full-circle rim edge (fillet.cpp).
+      // The two faces' own u-directions need not agree in 3D (the cone's
+      // frame.zaxis is -axis for a top rim, so its u runs the other way
+      // round the axis than the wall's), and `edge.m_vi[0] != vid_from` is
+      // identically false for a self-loop, so decide the direction from the
+      // geometry itself: this segment's own quarter-way point along its
+      // walk sits on the edge curve's own quarter point when the walk
+      // follows the curve, and on its three-quarter point when it opposes
+      // it (a quarter turn apart on a circle, never ambiguous). Confirmed
+      // directly: without this, the bottom-rim chamfer's cone trim reads
+      // bRev3d=false while it actually walks against the shared circle,
+      // and Brep::Check() reports InconsistentFaceOrientation on the cone
+      // (dino8-kernel's own regression test); every other reuse (a
+      // non-closed edge) keeps the vertex comparison exactly as before.
+      const double q = seg.par_from + 0.25 * (seg.par_to - seg.par_from);
+      const Point3d quarter = seg.iso_dir == 0 ? topo.curved_surface->PointAt(q, seg.iso_const)
+                                               : topo.curved_surface->PointAt(seg.iso_const, q);
+      const ON_Interval dom = edge.Domain();
+      const Point3d along = edge.PointAt(dom.ParameterAt(0.25));
+      const Point3d against = edge.PointAt(dom.ParameterAt(0.75));
+      bRev3d = quarter.DistanceTo(against) < quarter.DistanceTo(along);
+    }
 
     ON_Curve* c2 = nullptr;
     if (has_notch_interior) {

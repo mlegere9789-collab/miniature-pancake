@@ -84217,6 +84217,265 @@ void TestRevolvePartialAngleCapsOffAxisOpenProfile() {
   }
 }
 
+// ChamferCylinderRim (fillet.h): the first kernel chamfer whose two
+// adjacent faces are not both planar - a full cylinder's own rim edge
+// (wall + flat disc cap) beveled by an exact Brep::ConicalFace frustum.
+// Verified against closed forms, not against itself:
+//   - the removed material is the revolved right triangle,
+//     V = (2*pi*dw/dc) * (R^3/3 - (R-dc)*R^2/2 + (R-dc)^3/6);
+//   - the bevel's lateral area is the frustum's pi*(2R-dc)*sqrt(dw^2+dc^2);
+//   - the apex sits dw*(R-dc)/dc beyond the cap plane (similar triangles).
+// The Area() identity is exact to quadrature (every face is integrated
+// over its own trim region; the disc polygon's own area is read off the
+// INPUT's Area() and scaled by the homothety ratio squared, so no polygon
+// closed form has to be assumed). The volume is measured on the
+// non-uniform adaptive mesh - the kernel's own convention for curved-face
+// solids (see TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula)
+// - against the divergence-theorem closed form of what that mesh actually
+// bounds: with the base disc in the z=0 plane its polygon costs nothing
+// (P.n == 0 there), and the far polygon cap of radius r at height z costs
+// z*(pi r^2 - A_n(r))/3 against the exact disc, A_n(r) = (n/2) r^2
+// sin(2 pi / n), the only representation term in the prediction. The same
+// solid WITHOUT the chamfer misses that prediction by the whole removed
+// volume (0.7 for a 2x5 cylinder), 3 orders of magnitude outside the
+// tolerance, so the check genuinely discriminates the chamfer's own size.
+void TestChamferCylinderRimExactConeAndClosedForms() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexEdge;
+  using dino8::kernel::ChamferCylinderRim;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double R = 2.0, L = 5.0;
+  const int n = 1000;  // disc polygon resolution (both the fixture's and, by homothety, the result's)
+  const ON_Plane frame = FrameFromAxisForGeneralBooleanTest(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  Brep::CylindricalFace cf;
+  cf.frame = frame;
+  cf.radius = R;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = L;
+  const Brep cyl = Brep::FromMixedFaces(
+      {DiskCapForGeneralBooleanTest(frame, 0.0, R, true, n), DiskCapForGeneralBooleanTest(frame, L, R, false, n)}, {cf});
+  const Point3d top_rim(R * std::cos(1.1), R * std::sin(1.1), L);
+  const Point3d bottom_rim(R * std::cos(-2.3), R * std::sin(-2.3), 0.0);
+
+  // BEFORE this pass: the planar-only chamfer cannot touch a rim at all.
+  bool planar_only_refuses = false;
+  try {
+    ChamferConvexEdge(cyl, Point3d(R, 0, L), Point3d(0, R, L), 0.6, 0.4);
+  } catch (const std::invalid_argument&) {
+    planar_only_refuses = true;
+  }
+  Check(planar_only_refuses, "ChamferConvexEdge still refuses a cylinder's rim (PlanarFaces() rejects the curved wall)");
+
+  auto poly_area = [n](double r) { return (n / 2.0) * r * r * std::sin(2.0 * ON_PI / n); };
+  auto removed_volume = [&](double dw, double dc) {
+    return (2.0 * ON_PI * dw / dc) * (R * R * R / 3.0 - (R - dc) * R * R / 2.0 + std::pow(R - dc, 3) / 6.0);
+  };
+  const Brep::CheckReport before = cyl.Check();
+  const double area_before = cyl.Area();
+  const double cap_area = (area_before - 2.0 * ON_PI * R * L) / 2.0;  // the fixture's own polygon disc, as Area() measures it
+  const double volume_before = cyl.TessellateToClosedMeshNonUniformAdaptive(1e-8).Volume();
+  Check(std::fabs(volume_before - (ON_PI * R * R * L - L * (ON_PI * R * R - poly_area(R)) / 3.0)) < 5e-7 * ON_PI * R * R * L,
+        "fixture: the adaptive mesh volume of the disc-capped cylinder matches the closed form with the far cap's "
+        "polygon term (a calibration of the volume check used below)");
+
+  struct Case {
+    const char* name;
+    Point3d rim;
+    double dw, dc;
+    bool top;
+  };
+  const Case cases[] = {{"top rim, dw=0.6 dc=0.4", top_rim, 0.6, 0.4, true},
+                        {"bottom rim, dw=0.5 dc=0.7 (unequal, mirrored end)", bottom_rim, 0.5, 0.7, false}};
+  for (const Case& c : cases) {
+    const std::string tag = std::string("[") + c.name + "] ";
+    const Brep res = ChamferCylinderRim(cyl, c.rim, c.dw, c.dc);
+    const Brep::CheckReport after = res.Check();
+    Check(res.FaceCount() == 4 && after.is_oriented && after.issues.size() == before.issues.size(),
+          (tag + "4 faces (wall, bevel, 2 caps), consistently oriented, and no issue beyond the fixture's own disc seams").c_str());
+
+    const Brep::MixedFacesResult mf = res.MixedFaces();
+    Check(mf.conical.size() == 1 && mf.cylindrical.size() == 1 && mf.planar.size() == 2,
+          (tag + "MixedFaces() reads back exactly one ConicalFace bevel, one wall and two caps").c_str());
+    if (mf.conical.size() != 1 || mf.cylindrical.size() != 1) continue;
+    const Brep::ConicalFace& cone = mf.conical[0];
+    const Brep::CylindricalFace& wall = mf.cylindrical[0];
+    const Point3d rim_c(0, 0, c.top ? L : 0.0);
+    const Vector3d out(0, 0, c.top ? 1.0 : -1.0);
+    Check(std::fabs(cone.radius0 - (R - c.dc)) < 1e-12 && std::fabs(cone.radius1 - R) < 1e-12 &&
+              std::fabs(cone.length - c.dw) < 1e-12 && std::fabs(cone.angle - 2.0 * ON_PI) < 1e-12 && cone.outward,
+          (tag + "the bevel is a full-sweep outward frustum from radius R-dc in the cap plane to R, dw along the wall").c_str());
+    const Point3d apex = rim_c + out * (c.dw * (R - c.dc) / c.dc);
+    Check(cone.frame.origin.DistanceTo(apex) < 1e-12 && std::fabs(cone.frame.zaxis * out + 1.0) < 1e-12,
+          (tag + "its apex is on the axis dw*(R-dc)/dc beyond the cap plane and its radius grows away from the cap").c_str());
+    const double wall_origin_z = c.top ? 0.0 : c.dw;
+    Check(std::fabs(wall.length - (L - c.dw)) < 1e-12 && std::fabs(wall.frame.origin.z - wall_origin_z) < 1e-12 &&
+              std::fabs(wall.radius - R) < 1e-12,
+          (tag + "the wall is the same cylinder shortened by exactly dw at the rim end").c_str());
+    double max_cap_err = 0.0, max_other_err = 0.0;
+    for (const Brep::PlanarFace& f : mf.planar) {
+      const bool is_cap = std::fabs(f.plane.origin.z - rim_c.z) < 1e-9;
+      for (const Point3d& p : f.loop) {
+        const double r = std::hypot(p.x, p.y);
+        if (is_cap) max_cap_err = std::max(max_cap_err, std::fabs(r - (R - c.dc)));
+        else max_other_err = std::max(max_other_err, std::fabs(r - R));
+      }
+    }
+    Check(max_cap_err < 1e-12 && max_other_err < 1e-12,
+          (tag + "the chamfered cap's polygon sits exactly on the radius R-dc circle and the other cap is untouched").c_str());
+
+    const double k = (R - c.dc) / R;
+    const double area_pred = 2.0 * ON_PI * R * (L - c.dw) + cap_area * (1.0 + k * k) +
+                             ON_PI * (2.0 * R - c.dc) * std::sqrt(c.dw * c.dw + c.dc * c.dc);
+    const double area_after = res.Area();
+    // 2e-7 relative is Area()'s own trimmed-face adaptive quadrature on the
+    // rational cone (kTrimmedFaceIntegralRelTol = 1e-9 per face, compounded
+    // over 4 faces and the integrator's own loop sampling): the residual
+    // measured directly is 7e-9 .. 5e-8 across six (dw, dc, end) cases and
+    // identical for a top rim and its mirrored bottom rim, while the cone's
+    // own radii/apex are checked exact to 1e-12 above.
+    Check(std::fabs(area_after - area_pred) < 2e-7 * area_pred,
+          (tag + "Area() matches the closed form: wall band 2*pi*R*(L-dw) + caps scaled by k^2 + frustum lateral area "
+                 "pi*(2R-dc)*sqrt(dw^2+dc^2), to 2e-7 (Area()'s own quadrature; measured residual 7e-9..5e-8)").c_str());
+
+    const double exact_after = ON_PI * R * R * L - removed_volume(c.dw, c.dc);
+    const double far_cap_term = c.top ? L * (ON_PI * (R - c.dc) * (R - c.dc) - poly_area(R - c.dc)) / 3.0
+                                      : L * (ON_PI * R * R - poly_area(R)) / 3.0;
+    const double volume_after = res.TessellateToClosedMeshNonUniformAdaptive(1e-8).Volume();
+    Check(std::fabs(volume_after - (exact_after - far_cap_term)) < 5e-7 * exact_after,
+          (tag + "the adaptive mesh volume matches pi*R^2*L minus the revolved-triangle closed form (with the far "
+                 "cap's own polygon term), to 5e-7 relative").c_str());
+    Check(std::fabs((volume_before - volume_after) - removed_volume(c.dw, c.dc)) < 2e-4 * removed_volume(c.dw, c.dc),
+          (tag + "...and the volume actually removed matches the revolved right-triangle closed form").c_str());
+  }
+
+  // The boolean pipeline's own disc representation (4 centre-anchored
+  // quadrant wedges with ArcRun records, as SynthesizeEndCaps builds them)
+  // is accepted and scaled wedge-by-wedge, arc radii included.
+  {
+    auto wedge_cap = [&](bool at_v0) {
+      const double height = at_v0 ? 0.0 : L;
+      const Point3d centre(0, 0, height);
+      const bool same_handed = !at_v0;
+      ON_Plane plane;
+      plane.origin = centre;
+      plane.xaxis = frame.xaxis;
+      plane.yaxis = same_handed ? frame.yaxis : -frame.yaxis;
+      plane.zaxis = same_handed ? frame.zaxis : -frame.zaxis;
+      plane.UpdateEquation();
+      const int per_quadrant = 50;
+      std::vector<Brep::PlanarFace> pieces;
+      for (int q = 0; q < 4; ++q) {
+        const double tb = 2.0 * ON_PI * q / 4.0, te = 2.0 * ON_PI * (q + 1) / 4.0;
+        Brep::PlanarFace pf;
+        pf.plane = plane;
+        pf.loop.push_back(centre);
+        for (int s = 0; s <= per_quadrant; ++s) {
+          const double theta = tb + (te - tb) * s / per_quadrant;
+          const double phys = same_handed ? theta : (2.0 * ON_PI - theta);
+          pf.loop.push_back(centre + R * (std::cos(phys) * frame.xaxis + std::sin(phys) * frame.yaxis));
+        }
+        Brep::PlanarFace::ArcRun run;
+        run.begin = 1;
+        run.count = per_quadrant + 1;
+        run.center = centre;
+        run.radius = R;
+        run.angle_begin = tb;
+        run.angle_end = te;
+        run.plane_xaxis = plane.xaxis;
+        run.plane_yaxis = plane.yaxis;
+        pf.arc_runs.push_back(run);
+        pieces.push_back(std::move(pf));
+      }
+      return pieces;
+    };
+    std::vector<Brep::PlanarFace> caps = wedge_cap(true);
+    for (const Brep::PlanarFace& p : wedge_cap(false)) caps.push_back(p);
+    const Brep wedged = Brep::FromMixedFaces(caps, {cf});
+    const double dw = 0.6, dc = 0.4;
+    const Brep res = ChamferCylinderRim(wedged, top_rim, dw, dc);
+    const Brep::MixedFacesResult mf = res.MixedFaces();
+    int cap_faces = 0;
+    double max_err = 0.0;
+    for (const Brep::PlanarFace& f : mf.planar) {
+      if (std::fabs(f.plane.origin.z - L) > 1e-9) continue;
+      ++cap_faces;
+      for (const Point3d& p : f.loop) {
+        const double r = std::hypot(p.x, p.y);
+        if (r > 1e-9) max_err = std::max(max_err, std::fabs(r - (R - dc)));
+      }
+      for (const Brep::PlanarFace::ArcRun& run : f.arc_runs) max_err = std::max(max_err, std::fabs(run.radius - (R - dc)));
+    }
+    Check(cap_faces == 4 && max_err < 1e-12 && res.Check().is_oriented,
+          "[4-wedge cap] all four quadrant wedges survive, scaled to radius R-dc (loop points and ArcRun radii alike), "
+          "and the result is consistently oriented");
+    const double wedge_cap_area = (wedged.Area() - 2.0 * ON_PI * R * L) / 2.0;
+    const double k = (R - dc) / R;
+    const double area_pred = 2.0 * ON_PI * R * (L - dw) + wedge_cap_area * (1.0 + k * k) +
+                             ON_PI * (2.0 * R - dc) * std::sqrt(dw * dw + dc * dc);
+    Check(std::fabs(res.Area() - area_pred) < 2e-7 * area_pred,
+          "[4-wedge cap] Area() matches the same closed form (frustum lateral area included) to 2e-7");
+  }
+
+  // Refusals: every one a std::invalid_argument, none a silently wrong solid.
+  auto refuses = [](auto&& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(refuses([&] { ChamferCylinderRim(cyl, Point3d(R, 0, L / 2), 0.6, 0.4); }),
+        "a point on the wall but on neither rim circle is refused");
+  Check(refuses([&] { ChamferCylinderRim(cyl, top_rim, 0.6, R); }),
+        "distance_cap == R (a cone to a point, not a chamfer) is refused");
+  Check(refuses([&] { ChamferCylinderRim(cyl, top_rim, L, 0.4); }),
+        "distance_wall == L (the bevel would consume the whole wall) is refused");
+  Check(refuses([&] { ChamferCylinderRim(cyl, top_rim, 0.0, 0.4); }), "a zero distance is refused");
+  Check(refuses([&] { ChamferCylinderRim(Brep::Box(0, 0, 0, 1, 1, 1), Point3d(1, 0, 1), 0.1, 0.1); }),
+        "a planar-only solid (no cylindrical face) is refused, pointing at ChamferConvexEdge");
+  Brep::CylindricalFace hole = cf;
+  hole.outward = false;
+  Check(refuses([&] { ChamferCylinderRim(Brep::FromMixedFaces({}, {hole}), top_rim, 0.6, 0.4); }),
+        "an inward-facing (hole) wall's rim - a countersink - is refused as out of scope");
+  Check(refuses([&] { ChamferCylinderRim(Brep::FromMixedFaces({}, {cf}), top_rim, 0.6, 0.4); }),
+        "a bare tube with no cap in the rim plane is refused");
+  Brep::PlanarFace square;
+  square.plane = ON_Plane(ON_3dPoint(0, 0, L), ON_3dVector(0, 0, 1));
+  for (int i = 0; i < 4; ++i) {
+    const double ang = ON_PI / 4 + i * ON_PI / 2;
+    square.loop.emplace_back(3.0 * std::cos(ang), 3.0 * std::sin(ang), L);
+  }
+  Check(refuses([&] {
+          ChamferCylinderRim(Brep::FromMixedFaces({square, DiskCapForGeneralBooleanTest(frame, 0.0, R, true, n)}, {cf}),
+                             top_rim, 0.6, 0.4);
+        }),
+        "a planar face in the rim plane that is not the rim's own disc (a square cap) is refused");
+  {
+    std::vector<Brep::PlanarFace> half;  // only two of the top disc's four quadrants
+    auto top_wedges = [&]() {
+      std::vector<Brep::PlanarFace> all;
+      Brep::PlanarFace pf;
+      pf.plane = ON_Plane(ON_3dPoint(0, 0, L), ON_3dVector(0, 0, 1));
+      pf.loop.emplace_back(0, 0, L);
+      for (int s = 0; s <= 100; ++s) {
+        const double theta = ON_PI * s / 100.0;
+        pf.loop.emplace_back(R * std::cos(theta), R * std::sin(theta), L);
+      }
+      all.push_back(pf);
+      return all;
+    }();
+    half = top_wedges;
+    half.push_back(DiskCapForGeneralBooleanTest(frame, 0.0, R, true, n));
+    Check(refuses([&] { ChamferCylinderRim(Brep::FromMixedFaces(half, {cf}), top_rim, 0.6, 0.4); }),
+          "a half-disc cap (the rim plane's faces cover only pi of the rim) is refused");
+  }
+}
+
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -85533,6 +85792,8 @@ int main() {
 
   RunTest("TestCurveMakeUniform", TestCurveMakeUniform);
   RunTest("TestRevolvePartialAngleCapsOffAxisOpenProfile", TestRevolvePartialAngleCapsOffAxisOpenProfile);
+
+  RunTest("TestChamferCylinderRimExactConeAndClosedForms", TestChamferCylinderRimExactConeAndClosedForms);
 
   RunTest("ON::End", ON::End);
 
