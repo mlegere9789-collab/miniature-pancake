@@ -129,7 +129,12 @@ Delete
 # must fail with a clear diagnostic instead of silently building a
 # SYMMETRIC approximate chamfer that quietly ignores Distance2 - exactly
 # the misleading-success bug this Distance2/Angle wiring must not
-# reintroduce. The cylinder itself must survive untouched.
+# reintroduce. A cylinder's full rim is now the one curved case with an
+# exact two-distance construction (kernel::ChamferCylinderRim, wired in via
+# TryExactChamfer), so Distance2 is honoured there (wall 1 / cap 2); the
+# Distance/Angle mode has no cone construction and keeps the diagnostic
+# (see tests/kernel_wiring_script.txt). Either way exactly one object
+# remains.
 Cylinder 1300040,0,0 5 20
 ChamferEdge
 Radius=1
@@ -245,14 +250,19 @@ Delete
 # cap and its cylindrical side wall, picked as two faces of the SAME
 # object, unlike FilletSrf's independently-extracted-surfaces case above):
 # kernel::ChamferConvexEdge/ChamferConcaveEdge need the WHOLE solid
-# planar-faced (Brep::PlanarFaces()'s own scope, the identical requirement
-# ChamferEdge's own Distance2 exact path already has), and a cylindrical
-# face fails that outright - so this must fall through to the approximate
-# RuledBetween path below exactly as before this wiring existed, not
-# crash, hang, or silently misbuild.
+# planar-faced (Brep::PlanarFaces()'s own scope), and a cylindrical face
+# fails that outright. A plain ChamferSrf here now reaches
+# kernel::ChamferCylinderRim's exact cone instead (tests/
+# kernel_wiring_script.txt covers that path); this fixture keeps Trim=No so
+# it still exercises the approximate RuledBetween path below exactly as
+# before that wiring existed (Trim=No asks for an untrimmed separate surface,
+# which the whole-solid-replacing exact path cannot give) - and keeps
+# producing the freshly built 2 x 25 ruled surface the display regression
+# right after it depends on. Must not crash, hang, or silently misbuild.
 Cylinder 1300090,0,0 5 20
 ChamferSrf
 Radius=1
+Trim=No
 1300090,0,20
 1300095,0,10
 # --- Display regression (Windows CI used to die here with an uncaught C++

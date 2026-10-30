@@ -666,6 +666,71 @@ class SubCrvCommand : public Command {
 // just a read-out). A surface's typed "min max" applies to both U and V -
 // the common case (e.g. reparameterizing to 0-1 everywhere); setting each
 // direction independently would need its own, separate command.
+// MakeUniform (curves): re-knots each curve to a clamped, uniformly spaced
+// knot vector with its control points held fixed and its parameter domain
+// preserved, through kernel::NurbsCurve::MakeUniform. That re-knot is not
+// shape-preserving in general, so the kernel measures the real deviation
+// (exact for degree 1, a sampled lower bound above) and only commits when it
+// is within Tolerance (default: the document's absolute tolerance). A curve
+// that would move further is left untouched and the measured deviation is
+// reported, so the user can raise Tolerance deliberately instead of the old
+// MakeClampedUniformKnotVector(1.0) call shipping an unmeasured shape change
+// and silently re-domaining the curve to [0, span count].
+class MakeUniformCrvCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    tol_ = std::max(ctx.Settings().absolute_tolerance, 1e-12);
+    WantObjects("Select curves to make uniform");
+  }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    options = {{"Tolerance", FormatNumber(tol_), {}, true, false}};
+    WantNumber("Largest shape change allowed (Enter to accept " + FormatNumber(tol_) + ")", tol_);
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "Tolerance") return;
+    const double t = std::atof(v.c_str());
+    if (t > 0) { tol_ = t; options[0].value = FormatNumber(tol_); }
+    WantNumber("Largest shape change allowed (Enter to accept " + FormatNumber(tol_) + ")", tol_);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (!(v > 0)) { ctx.Warn("MakeUniform: Tolerance must be positive"); return; }
+    tol_ = v;
+    Run(ctx);
+  }
+  void OnEnter(CommandContext& ctx) override { Run(ctx); }
+
+ private:
+  void Run(CommandContext& ctx) {
+    ctx.Doc().BeginChange("MakeUniform");
+    int changed = 0, already = 0, refused = 0;
+    double worst = 0;
+    for (const CurveCopy& c : CopyCurves(ctx, ids_)) {
+      kernel::NurbsCurve k = c.curve;
+      double dev = 0;
+      const kernel::Result r = k.MakeUniform(tol_, &dev);
+      if (r == kernel::Result::Ok) {
+        ReplaceCurve(ctx, c.id, k);
+        ++changed;
+        worst = std::max(worst, dev);
+      } else if (r == kernel::Result::NoOpAlreadySatisfied) {
+        ++already;
+      } else {
+        ++refused;
+        ctx.Warn("MakeUniform: curve " + std::to_string(c.id) + " left unchanged - uniform knots would move it by up to " +
+                 FormatNumber(dev) + ", more than Tolerance " + FormatNumber(tol_) + " (raise Tolerance to accept the shape change)");
+      }
+    }
+    ctx.Print("MakeUniform: " + std::to_string(changed) + " curve(s) now have uniform knots" +
+              (changed > 0 ? " (largest measured shape change " + FormatNumber(worst) + ", domain preserved)" : "") +
+              (already > 0 ? "; " + std::to_string(already) + " already uniform" : "") +
+              (refused > 0 ? "; " + std::to_string(refused) + " left unchanged (shape change above Tolerance)" : ""));
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+  double tol_ = 1e-3;
+};
+
 class DomainCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select curves or surfaces to view or set the domain"); }
@@ -2618,12 +2683,7 @@ void RegisterCurves2Commands(CommandEngine& e) {
         for (const CurveCopy& c : CopyCurves(ctx, ids)) { kernel::NurbsCurve k = c.curve; if (k.raw().IsPeriodic() && k.raw().ClampEnd(2)) { ReplaceCurve(ctx, c.id, k); ++n; } }
         ctx.Print("MakeNonPeriodic: " + std::to_string(n) + " curve(s) clamped");
       }));
-  Reg(e, "MakeUniform", OnSelection("Select curves to make uniform", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ctx.Doc().BeginChange("MakeUniform");
-        int n = 0;
-        for (const CurveCopy& c : CopyCurves(ctx, ids)) { kernel::NurbsCurve k = c.curve; if (k.raw().MakeClampedUniformKnotVector(1.0)) { ReplaceCurve(ctx, c.id, k); ++n; } }
-        ctx.Print("MakeUniform: " + std::to_string(n) + " curve(s) now have uniform knots");
-      }));
+  Reg(e, "MakeUniform", Make<MakeUniformCrvCommand>());
   Reg(e, "ConvertToBeziers", OnSelection("Select curves or surfaces to split into Bezier spans", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("ConvertToBeziers");
         int made = 0;

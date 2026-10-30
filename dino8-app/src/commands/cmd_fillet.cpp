@@ -130,6 +130,49 @@ bool FindSharedEdgeEndpoints(const ON_Brep& b, int fi, int fj, Point3d& p0, Poin
   return false;
 }
 
+// Exact conical chamfer on a FULL capped cylinder's rim: wraps
+// kernel::ChamferCylinderRim (fillet.h), the only exact chamfer whose two
+// faces are not both planar. `point_on_rim` is any point on the rim circle
+// (an edge endpoint will do); `distance_wall` is measured along the wall,
+// `distance_cap` across the cap. Returns false (leaving `out` untouched,
+// reason in `err`) when the kernel refuses - not a full cylinder's rim, a
+// concave/countersink rim, a distance that consumes the whole wall or cap -
+// so the caller can fall back to its older approximate path unchanged.
+//
+// The kernel reads a disc cap as a dense polygon and hands the polygon back
+// (128 edges here), which no longer shares an edge with the neighbouring
+// curved face's exact cap circle: the raw result is a 261-edge OPEN brep
+// whose Volume/booleans/Cap all fail. Both polygon caps are therefore
+// dropped and re-capped from the circles the curved faces already carry
+// (Brep::DeleteFace + CapPlanarHoles' closed-curved-loop cap), which gives
+// back a true closed 4-face/7-edge solid with exact circular caps. If that
+// re-closing does not produce a valid solid the result is refused, so a
+// chamfer never turns a closed cylinder into an open shell.
+bool TryCylinderRimChamfer(const ON_Brep& solid, Point3d point_on_rim, double distance_wall, double distance_cap, ON_Brep& out,
+                            std::string& err) {
+  try {
+    kernel::Brep kb;
+    kb.raw() = solid;
+    kernel::Brep res = kernel::ChamferCylinderRim(kb, point_on_rim, distance_wall, distance_cap);
+    std::vector<int> polygon_caps;
+    for (int fi = 0; fi < res.raw().m_F.Count(); ++fi) {
+      ON_Plane plane;
+      const ON_Surface* srf = res.raw().m_F[fi].SurfaceOf();
+      const ON_BrepLoop* outer = res.raw().m_F[fi].OuterLoop();
+      if (srf && outer && srf->IsPlanar(&plane, 1e-9) && outer->TrimCount() > 8) polygon_caps.push_back(fi);
+    }
+    if (polygon_caps.size() != 2) { err = "ChamferCylinderRim result does not have the two expected disc caps"; return false; }
+    for (int k = static_cast<int>(polygon_caps.size()) - 1; k >= 0; --k) res.DeleteFace(polygon_caps[k]);
+    res.CapPlanarHoles(1e-6);
+    if (!res.raw().IsSolid() || !res.raw().IsValid()) { err = "the chamfered cylinder could not be re-closed with exact disc caps"; return false; }
+    out = res.raw();
+    return true;
+  } catch (const std::exception& ex) {
+    err = ex.what();
+    return false;
+  }
+}
+
 struct EdgePick { ObjectId id = kNoObject; int edge = -1; double dist = 0; };
 
 std::optional<EdgePick> PickEdge(CommandContext& ctx, Point3d p) {
@@ -1174,6 +1217,15 @@ class FilletTwoSurfacesCommand : public Command {
             got = true;
           } catch (const std::exception&) {}
         }
+        // A cylinder's rim (flat cap + curved wall, one closed shared edge):
+        // not planar-faced, so both planar constructions above refuse -
+        // kernel::ChamferCylinderRim builds the exact conical bevel instead.
+        // ChamferSrf has a single distance, so wall and cap setbacks are equal.
+        bool rim = false;
+        if (!got) {
+          std::string rim_err;
+          rim = got = TryCylinderRimChamfer(*solid, p0, radius_, radius_, exact, rim_err);
+        }
         if (got) {
           ctx.Doc().BeginChange("ChamferSrf");
           if (SceneObject* orig = ctx.Doc().Find(fa.id)) {
@@ -1185,7 +1237,7 @@ class FilletTwoSurfacesCommand : public Command {
           }
           ctx.Doc().Select(fa.id, true);
           ctx.Print("ChamferSrf: faces " + std::to_string(fa.face) + " and " + std::to_string(fb.face) + " of object " + std::to_string(fa.id) +
-                     " replaced with an exact chamfer (distance " + FormatNumber(radius_) + ")");
+                     " replaced with an exact chamfer (distance " + FormatNumber(radius_) + (rim ? "; exact cone on the cylinder rim" : "") + ")");
           return;
         }
       }
@@ -2051,7 +2103,8 @@ class FilletEdgeCommand : public Command {
       const bool angled = angle_deg_.has_value();
       ON_Brep exact;
       std::string detail;
-      if (TryExactChamfer(*b, edge.PointAtStart(), edge.PointAtEnd(), exact, detail)) {
+      bool rim_chamfer = false;
+      if (TryExactChamfer(*b, edge.PointAtStart(), edge.PointAtEnd(), exact, detail, &rim_chamfer)) {
         ctx.Doc().BeginChange(label);
         if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
           orig->kind = ObjectKind::Brep;
@@ -2061,7 +2114,8 @@ class FilletEdgeCommand : public Command {
           orig->InvalidateDisplay();
         }
         ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
-                   " replaced with an exact chamfer (" + ChamferDistanceDescription() + ")");
+                   " replaced with an exact chamfer (" + ChamferDistanceDescription() +
+                   (rim_chamfer ? "; exact cone on the cylinder rim, distance1 along the wall and distance2 across the cap" : "") + ")");
         return;
       }
       if (asymmetric || angled) {
@@ -2840,7 +2894,7 @@ class FilletEdgeCommand : public Command {
   // with both underlying exception messages joined into `detail` so a
   // caller that needs to report a real failure (as opposed to silently
   // falling back) has something concrete to show, not just "didn't work".
-  bool TryExactChamfer(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail) const {
+  bool TryExactChamfer(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail, bool* rim_chamfer = nullptr) const {
     kernel::Brep kb;
     kb.raw() = solid;
     const double d_i = radius_;
@@ -2863,7 +2917,16 @@ class FilletEdgeCommand : public Command {
     };
     if (attempt(true, convex_err)) return true;
     if (attempt(false, concave_err)) return true;
-    detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err;
+    // Third attempt: the edge is a full capped cylinder's rim (neither planar
+    // construction can touch a curved wall). Distance1 is the setback along
+    // the wall, Distance2 (default: equal) across the cap; the Distance/Angle
+    // mode has no cone construction, so it is not tried.
+    std::string rim_err = "Distance/Angle mode has no cylinder-rim construction";
+    if (!use_angle && TryCylinderRimChamfer(solid, p0, d_i, d_j, out, rim_err)) {
+      if (rim_chamfer) *rim_chamfer = true;
+      return true;
+    }
+    detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err + "; cylinder-rim attempt: " + rim_err;
     return false;
   }
 
