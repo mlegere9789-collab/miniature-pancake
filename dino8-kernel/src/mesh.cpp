@@ -993,10 +993,93 @@ MeshDistance Mesh::DistanceTo(const Mesh& other) const {
     return g2;
   };
 
+  // Spatial acceleration (formerly a brute-force triangle-pair loop with
+  // only a per-pair box reject): an `ON_RTree` over `other`'s triangle
+  // boxes, so each triangle of `this` is tested only against the few
+  // `other` triangles whose box lies within the best distance found so
+  // far of its own - O(n log m) typical, not O(n * m). The RESULT is
+  // unchanged, bit for bit, including which face pair wins a tie: a
+  // `b` can only improve on a recorded best distance `D` if its true
+  // distance is < D, which requires its box to come within D of `a`'s
+  // box (the box gap is a lower bound on the triangle distance), so
+  // searching `a`'s box grown by D can never miss an improving `b`; and
+  // within one `a` the lowest-index `b` wins an exact tie, matching the
+  // first-wins order the old nested loop had.
+  ON_RTree tree(0);
+  for (size_t j = 0; j < tb.size(); ++j) {
+    const double lo[3] = {tb[j].lo.x, tb[j].lo.y, tb[j].lo.z};
+    const double hi[3] = {tb[j].hi.x, tb[j].hi.y, tb[j].hi.z};
+    tree.Insert(lo, hi, static_cast<int>(j));
+  }
+
+  // Candidate `other` triangles whose box lies within `grow` of `a`'s.
+  auto candidates = [&](const Tri& a, double grow, ON_SimpleArray<int>& ids) {
+    const double lo[3] = {a.lo.x - grow, a.lo.y - grow, a.lo.z - grow};
+    const double hi[3] = {a.hi.x + grow, a.hi.y + grow, a.hi.z + grow};
+    ids.SetCount(0);
+    tree.Search(lo, hi, ids);
+  };
+
+  // An upper bound on the answer (the distance of one real triangle pair
+  // near the seed triangle) - used ONLY to bound the search radius before
+  // any best has been recorded, never recorded as the answer itself, so
+  // the first-in-order tie-break above is unaffected. The seed is the
+  // triangle of `this` nearest `other`'s overall bounding box, so the
+  // bound is tight for the usual separated/near-contact case. Grows the
+  // search box by doubling until it finds at least one candidate (a box
+  // that large covers `other` entirely, so one is guaranteed).
+  double seed_bound = std::numeric_limits<double>::infinity();
+  {
+    ON_BoundingBox other_box;
+    for (const Tri& b : tb) {
+      other_box.Set(ON_3dPoint(b.lo.x, b.lo.y, b.lo.z), true);
+      other_box.Set(ON_3dPoint(b.hi.x, b.hi.y, b.hi.z), true);
+    }
+    size_t seed = 0;
+    double seed_gap = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < ta.size(); ++i) {
+      const Point3d c((ta[i].lo.x + ta[i].hi.x) * 0.5, (ta[i].lo.y + ta[i].hi.y) * 0.5, (ta[i].lo.z + ta[i].hi.z) * 0.5);
+      const double dx = std::max(std::max(other_box.m_min.x - c.x, c.x - other_box.m_max.x), 0.0);
+      const double dy = std::max(std::max(other_box.m_min.y - c.y, c.y - other_box.m_max.y), 0.0);
+      const double dz = std::max(std::max(other_box.m_min.z - c.z, c.z - other_box.m_max.z), 0.0);
+      const double g = dx * dx + dy * dy + dz * dz;
+      if (g < seed_gap) {
+        seed_gap = g;
+        seed = i;
+      }
+    }
+    const double diagonal = other_box.Diagonal().Length();
+    double grow = diagonal > 0.0 ? diagonal / std::cbrt(static_cast<double>(tb.size())) : 1.0;
+    if (!(grow > 0.0)) grow = 1.0;
+    ON_SimpleArray<int> ids;
+    for (int iter = 0; iter < 64; ++iter) {
+      candidates(ta[seed], grow, ids);
+      if (ids.Count() > 0) break;
+      grow *= 2.0;
+    }
+    if (ids.Count() == 0) {
+      // Unreachable for a finite mesh (64 doublings); honest fallback.
+      for (size_t j = 0; j < tb.size(); ++j) ids.Append(static_cast<int>(j));
+    }
+    for (int k = 0; k < ids.Count(); ++k) {
+      Point3d on_a, on_b;
+      seed_bound = std::min(seed_bound, TriangleTriangleDistance(ta[seed].p, tb[static_cast<size_t>(ids[k])].p, on_a, on_b));
+    }
+  }
+
   MeshDistance best;
   best.distance = std::numeric_limits<double>::infinity();
+  ON_SimpleArray<int> ids;
   for (const Tri& a : ta) {
-    for (const Tri& b : tb) {
+    // Until a best is recorded, the (inclusive) seed bound is the radius;
+    // afterwards the recorded best is (nothing farther can improve it).
+    const double radius = std::min(best.distance, seed_bound);
+    candidates(a, radius * (1.0 + 1e-9), ids);
+    // Lowest `other` index first, so an exact tie within this `a` resolves
+    // to the same `b` the old in-order loop would have kept.
+    ids.QuickSort(ON_CompareIncreasing<int>);
+    for (int k = 0; k < ids.Count(); ++k) {
+      const Tri& b = tb[static_cast<size_t>(ids[k])];
       if (box_gap_squared(a, b) >= best.distance * best.distance) {
         continue;
       }
