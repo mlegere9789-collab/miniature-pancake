@@ -83844,6 +83844,303 @@ void TestSurfaceJoinRejectsUnsharedEdgesAndClosedSurfaces() {
         "Join() throws std::invalid_argument for a surface closed across its shared edge, leaving it untouched");
 }
 
+// Shared fixture for the two FromUniformBicubicSurface tests below: a
+// genuinely curved 10x10 clamped-uniform bicubic (7x7 knot spans, domain
+// [0,7]x[0,7]); 10 control points per direction is the smallest count
+// for which an interior span exists whose 4x4 neighbourhood never touches
+// the clamped end rows, so the test can't pass by coincidence on a
+// surface that is "all ends".
+dino8::kernel::NurbsSurface CurvedUniformBicubicFixture(int n) {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  std::vector<Point3d> grid;
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < n; ++j) {
+      const double x = i, y = j;
+      grid.emplace_back(x, y, 0.6 * std::sin(0.9 * x) * std::cos(0.7 * y) + 0.05 * x * y);
+    }
+  }
+  return NurbsSurface::FromControlGrid(grid, n, n, 3, 3);
+}
+
+void TestSubDFromUniformBicubicSurfaceReproducesSurfaceExactly() {
+  using dino8::kernel::Interval;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDLimitPoint;
+  using dino8::kernel::SubDSurfacePoint;
+
+  const int n = 10;
+  const int spans = n - 3;
+  const NurbsSurface srf = CurvedUniformBicubicFixture(n);
+  const SubD subd = SubD::FromUniformBicubicSurface(srf);
+
+  // Closed-form topology of an n x n open quad grid.
+  Check(subd.VertexCount() == n * n && subd.FaceCount() == (n - 1) * (n - 1) &&
+            subd.EdgeCount() == 2 * n * (n - 1),
+        "FromUniformBicubicSurface: cage has exactly n*n vertices, (n-1)^2 faces and 2n(n-1) edges");
+
+  // Closed-form unclamping of a clamped uniform cubic (derived by hand,
+  // independent of the ConvertSpanToBezier route the kernel takes): the
+  // first span's Bezier points are B0 = Q0, B1 = Q1, B2 = (Q1+Q2)/2, so
+  // the unclamped uniform control points are P0 = 6B0 - 7B1 + 2B2 =
+  // 6Q0 - 6Q1 + Q2, P1 = 2B1 - B2 = (3Q1 - Q2)/2, P2 = 2B2 - B1 = Q2 (unchanged),
+  // mirrored at the far end; applied in u then in v (tensor product).
+  std::vector<std::vector<Point3d>> expected(static_cast<size_t>(n), std::vector<Point3d>(static_cast<size_t>(n)));
+  for (int i = 0; i < n; ++i)
+    for (int j = 0; j < n; ++j) expected[static_cast<size_t>(i)][static_cast<size_t>(j)] = srf.ControlPointAt(i, j);
+  const auto unclamp_line = [n](const std::vector<Point3d>& q) {
+    std::vector<Point3d> p = q;
+    const auto comb = [](double a, const Point3d& A, double b, const Point3d& B, double c, const Point3d& C) {
+      return Point3d(a * A.x + b * B.x + c * C.x, a * A.y + b * B.y + c * C.y, a * A.z + b * B.z + c * C.z);
+    };
+    p[0] = comb(6.0, q[0], -6.0, q[1], 1.0, q[2]);
+    p[1] = comb(1.5, q[1], -0.5, q[2], 0.0, q[2]);
+    p[static_cast<size_t>(n - 1)] = comb(6.0, q[static_cast<size_t>(n - 1)], -6.0, q[static_cast<size_t>(n - 2)], 1.0,
+                                         q[static_cast<size_t>(n - 3)]);
+    p[static_cast<size_t>(n - 2)] = comb(1.5, q[static_cast<size_t>(n - 2)], -0.5, q[static_cast<size_t>(n - 3)], 0.0,
+                                         q[static_cast<size_t>(n - 3)]);
+    return p;
+  };
+  for (int j = 0; j < n; ++j) {
+    std::vector<Point3d> column(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) column[static_cast<size_t>(i)] = expected[static_cast<size_t>(i)][static_cast<size_t>(j)];
+    column = unclamp_line(column);
+    for (int i = 0; i < n; ++i) expected[static_cast<size_t>(i)][static_cast<size_t>(j)] = column[static_cast<size_t>(i)];
+  }
+  for (int i = 0; i < n; ++i) expected[static_cast<size_t>(i)] = unclamp_line(expected[static_cast<size_t>(i)]);
+
+  // Locate every cage vertex in the expected net (exact doubles, so a
+  // tight tolerance) and demand a bijection.
+  const auto locate = [&](const ON_3dPoint& p, int& i_out, int& j_out) {
+    for (int i = 0; i < n; ++i)
+      for (int j = 0; j < n; ++j) {
+        const Point3d& e = expected[static_cast<size_t>(i)][static_cast<size_t>(j)];
+        if (ON_3dPoint(e.x, e.y, e.z).DistanceTo(p) < 1e-9) { i_out = i; j_out = j; return true; }
+      }
+    return false;
+  };
+  std::vector<int> hits(static_cast<size_t>(n * n), 0);
+  bool every_vertex_located = true;
+  int changed_from_raw_cv = 0;
+  {
+    ON_SubDVertexIterator vit = subd.raw().VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      int i = -1, j = -1;
+      if (!locate(v->ControlNetPoint(), i, j)) { every_vertex_located = false; continue; }
+      ++hits[static_cast<size_t>(i * n + j)];
+      const Point3d q = srf.ControlPointAt(i, j);
+      if (ON_3dPoint(q.x, q.y, q.z).DistanceTo(v->ControlNetPoint()) > 1e-9) ++changed_from_raw_cv;
+    }
+  }
+  bool bijection = every_vertex_located;
+  for (int h : hits) bijection = bijection && h == 1;
+  Check(bijection, "FromUniformBicubicSurface: the cage is exactly the hand-derived unclamped control net "
+                   "(P0 = 6Q0 - 6Q1 + Q2, P1 = (3Q1 - Q2)/2 at each end of every row and column, all else unchanged)");
+  // Only the first/last two rows and columns move: n*n - (n-4)^2 = 64 of 100.
+  Check(changed_from_raw_cv == n * n - (n - 4) * (n - 4),
+        "FromUniformBicubicSurface: exactly the n*n-(n-4)^2 end control points differ from the raw clamped CVs, "
+        "so the cage is a genuine re-expression, not the raw control net");
+
+  // Face layout as documented: face k of the iterator is cage face
+  // (k / (n-1), k % (n-1)) with vertices (i,j),(i+1,j),(i+1,j+1),(i,j+1).
+  bool layout_ok = true;
+  std::vector<unsigned int> face_id_of(static_cast<size_t>((n - 1) * (n - 1)), 0);
+  {
+    int k = 0;
+    ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace(), ++k) {
+      const int ei = k / (n - 1), ej = k % (n - 1);
+      const int want[4][2] = {{ei, ej}, {ei + 1, ej}, {ei + 1, ej + 1}, {ei, ej + 1}};
+      bool ok = f->EdgeCount() == 4;
+      for (unsigned int c = 0; ok && c < 4; ++c) {
+        int i = -1, j = -1;
+        ok = f->Vertex(c) != nullptr && locate(f->Vertex(c)->ControlNetPoint(), i, j) && i == want[c][0] &&
+             j == want[c][1];
+      }
+      if (!ok) layout_ok = false;
+      if (k < (n - 1) * (n - 1)) face_id_of[static_cast<size_t>(k)] = f->FaceId();
+    }
+    if (k != (n - 1) * (n - 1)) layout_ok = false;
+  }
+  Check(layout_ok, "FromUniformBicubicSurface: face k of raw().FaceIterator() is cage face (k/(n-1), k%(n-1)) with "
+                   "vertices (i,j),(i+1,j),(i+1,j+1),(i,j+1), as the doc comment states");
+
+  // The exactness claim itself: every interior face's limit patch is the
+  // surface's knot span (i-1, j-1), position AND unit normal, at 25
+  // samples per span including the corners, with EvaluateFace reporting
+  // exact=true (regular face) everywhere.
+  const Interval du = srf.Domain(0), dv = srf.Domain(1);
+  const double hu = (du.max - du.min) / spans, hv = (dv.max - dv.min) / spans;
+  const double samples[] = {0.0, 0.25, 0.5, 0.75, 1.0};
+  double worst_pos = 0.0, worst_nrm = 0.0;
+  bool all_exact = true;
+  int interior_faces = 0;
+  for (int i = 1; i <= n - 3; ++i) {
+    for (int j = 1; j <= n - 3; ++j) {
+      ++interior_faces;
+      const unsigned int face = face_id_of[static_cast<size_t>(i * (n - 1) + j)];
+      for (double u : samples) {
+        for (double v : samples) {
+          const SubDSurfacePoint pt = subd.EvaluateFace(face, u, v);
+          if (!pt.exact) all_exact = false;
+          const double su = du.min + (i - 1 + u) * hu, sv = dv.min + (j - 1 + v) * hv;
+          worst_pos = std::max(worst_pos, pt.position.DistanceTo(srf.PointAt(su, sv)));
+          worst_nrm = std::max(worst_nrm, (pt.normal - srf.NormalAt(su, sv)).Length());
+        }
+      }
+    }
+  }
+  Check(interior_faces == spans * spans && worst_pos <= 1e-9,
+        "FromUniformBicubicSurface: EvaluateFace on each of the 49 interior faces equals NurbsSurface::PointAt on "
+        "the corresponding knot span at 25 samples per span (max deviation <= 1e-9 on a curved surface)");
+  Check(worst_nrm <= 1e-9, "FromUniformBicubicSurface: the limit-surface unit normal matches NurbsSurface::NormalAt "
+                           "to 1e-9 at every one of those samples");
+  Check(all_exact, "FromUniformBicubicSurface: every interior face evaluates with exact=true (regular Catmull-Clark "
+                   "patch, no adaptive fallback)");
+
+  // Vertex-level cross-check through OpenNURBS' own eigenbasis limit
+  // evaluator: interior cage vertex (i, j) converges to the surface at
+  // knot (i-1, j-1).
+  double worst_limit = 0.0;
+  int interior_vertices = 0;
+  for (const SubDLimitPoint& lp : subd.LimitPoints()) {
+    int i = -1, j = -1;
+    if (!locate(ON_3dPoint(lp.control_point.x, lp.control_point.y, lp.control_point.z), i, j)) {
+      worst_limit = 1.0;
+      continue;
+    }
+    if (i < 1 || i > n - 2 || j < 1 || j > n - 2) continue;
+    ++interior_vertices;
+    worst_limit = std::max(worst_limit, lp.limit_point.DistanceTo(srf.PointAt(du.min + (i - 1) * hu, dv.min + (j - 1) * hv)));
+  }
+  Check(interior_vertices == (n - 2) * (n - 2) && worst_limit <= 1e-9,
+        "FromUniformBicubicSurface: LimitPoints() of all 64 interior cage vertices land on the surface at the knots");
+
+  // Contrast with the sampled path this method exists to be exact where
+  // it is not: FromNurbsSurface with one cell per span, same surface, is
+  // off by a macroscopic amount (measured 0.639 on this fixture).
+  {
+    const SubD sampled = SubD::FromNurbsSurface(srf, spans, spans);
+    double worst_sampled = 0.0;
+    ON_SubDFaceIterator fit = sampled.raw().FaceIterator();
+    int k = 0;
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace(), ++k) {
+      const int si = k / spans, sj = k % spans;
+      // Its cage vertex (si, sj) is the sample at knot (si, sj) (float-rounded).
+      const Point3d sample = srf.PointAt(du.min + si * hu, dv.min + sj * hv);
+      if (ON_3dPoint(ON_3fPoint(sample.x, sample.y, sample.z)).DistanceTo(f->Vertex(0)->ControlNetPoint()) > 1e-5) {
+        worst_sampled = -1.0;  // layout assumption broken; fail loudly below
+        break;
+      }
+      for (double u : samples)
+        for (double v : samples) {
+          const SubDSurfacePoint pt = sampled.EvaluateFace(f->FaceId(), u, v);
+          worst_sampled = std::max(worst_sampled, pt.position.DistanceTo(srf.PointAt(du.min + (si + u) * hu, dv.min + (sj + v) * hv)));
+        }
+    }
+    Check(worst_sampled > 0.1,
+          "FromUniformBicubicSurface contrast: FromNurbsSurface(srf, 7, 7) on the same surface deviates by more than "
+          "0.1 somewhere (measured 0.639), so the exact path is a genuine change, not a coincidental match");
+  }
+
+  // An already-unclamped uniform surface (same CVs, knots -2,-1,0,1,...;
+  // not periodic since the CVs don't wrap) needs no unclamping at all:
+  // the cage must be its raw control net and the identity must still hold.
+  {
+    NurbsSurface open = srf;
+    Check(open.raw().MakePeriodicUniformKnotVector(0, 1.0) && open.raw().MakePeriodicUniformKnotVector(1, 1.0) &&
+              !open.IsPeriodic(0) && !open.IsPeriodic(1) && open.raw().IsValid(),
+          "FromUniformBicubicSurface setup: unclamped uniform knots with non-wrapping CVs is a valid, non-periodic surface");
+    const SubD s2 = SubD::FromUniformBicubicSurface(open);
+    const Interval du2 = open.Domain(0), dv2 = open.Domain(1);
+    const double hu2 = (du2.max - du2.min) / spans, hv2 = (dv2.max - dv2.min) / spans;
+    bool cage_is_raw = s2.VertexCount() == n * n;
+    ON_SubDVertexIterator vit = s2.raw().VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr && cage_is_raw; v = vit.NextVertex()) {
+      bool found = false;
+      for (int i = 0; i < n && !found; ++i)
+        for (int j = 0; j < n && !found; ++j) {
+          const Point3d q = open.ControlPointAt(i, j);
+          found = ON_3dPoint(q.x, q.y, q.z).DistanceTo(v->ControlNetPoint()) < 1e-12;
+        }
+      cage_is_raw = found;
+    }
+    Check(cage_is_raw, "FromUniformBicubicSurface: an already-unclamped uniform surface's cage is its raw control net "
+                       "(the unclamping map is the identity there)");
+    double worst2 = 0.0;
+    int k = 0;
+    ON_SubDFaceIterator fit = s2.raw().FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace(), ++k) {
+      const int i = k / (n - 1), j = k % (n - 1);
+      if (i < 1 || i > n - 3 || j < 1 || j > n - 3) continue;
+      for (double u : samples)
+        for (double v : samples) {
+          const SubDSurfacePoint pt = s2.EvaluateFace(f->FaceId(), u, v);
+          worst2 = std::max(worst2, pt.position.DistanceTo(open.PointAt(du2.min + (i - 1 + u) * hu2, dv2.min + (j - 1 + v) * hv2)));
+        }
+    }
+    Check(worst2 <= 1e-9, "FromUniformBicubicSurface: ...and its interior faces still reproduce that surface's spans to 1e-9");
+  }
+}
+
+void TestSubDFromUniformBicubicSurfaceRejectsUnsupportedInput() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const int n = 10;
+  const NurbsSurface srf = CurvedUniformBicubicFixture(n);
+  const auto throws_with = [](const NurbsSurface& s, const char* needle) {
+    try {
+      SubD::FromUniformBicubicSurface(s);
+    } catch (const std::invalid_argument& e) {
+      return std::string(e.what()).find(needle) != std::string::npos;
+    }
+    return false;
+  };
+
+  std::vector<Point3d> grid;
+  for (int i = 0; i < n; ++i)
+    for (int j = 0; j < n; ++j) grid.push_back(srf.ControlPointAt(i, j));
+  Check(throws_with(NurbsSurface::FromControlGrid(grid, n, n, 2, 2), "bicubic") &&
+            throws_with(NurbsSurface::FromControlGrid(grid, n, n, 3, 2), "bicubic"),
+        "FromUniformBicubicSurface throws std::invalid_argument for a degree (2,2) and a degree (3,2) surface");
+
+  NurbsSurface rational = srf;
+  Check(rational.raw().MakeRational() && rational.raw().SetWeight(4, 4, 2.0) && throws_with(rational, "rational"),
+        "FromUniformBicubicSurface throws std::invalid_argument for a rational surface (one weight != 1)");
+
+  NurbsSurface non_uniform = srf;
+  non_uniform.InsertKnotAt(0, 0.5);
+  Check(non_uniform.KnotCount(0) == srf.KnotCount(0) + 1 && throws_with(non_uniform, "not uniform"),
+        "FromUniformBicubicSurface throws std::invalid_argument once a knot inserted at 0.5 breaks uniform spacing");
+
+  NurbsSurface periodic = srf;
+  Check(periodic.raw().MakePeriodicUniformKnotVector(0, 1.0), "FromUniformBicubicSurface setup: periodic u knots");
+  for (int k = 0; k < 3; ++k)
+    for (int j = 0; j < n; ++j) {
+      ON_3dPoint p;
+      periodic.raw().GetCV(k, j, p);
+      periodic.raw().SetCV(n - 3 + k, j, p);
+    }
+  Check(periodic.IsPeriodic(0) && throws_with(periodic, "periodic"),
+        "FromUniformBicubicSurface throws std::invalid_argument for a surface periodic in u (wrapped CVs)");
+
+  Check(throws_with(NurbsSurface(), "IsValid"),
+        "FromUniformBicubicSurface throws std::invalid_argument for a default-constructed surface");
+
+  // Negative control: the untouched fixture is accepted.
+  bool accepted = true;
+  try {
+    SubD::FromUniformBicubicSurface(srf);
+  } catch (const std::exception&) {
+    accepted = false;
+  }
+  Check(accepted, "FromUniformBicubicSurface accepts the untouched clamped-uniform bicubic fixture (negative control)");
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -85157,6 +85454,9 @@ int main() {
 
   RunTest("TestSurfaceJoinSplicesSharedEdgeExactly", TestSurfaceJoinSplicesSharedEdgeExactly);
   RunTest("TestSurfaceJoinRejectsUnsharedEdgesAndClosedSurfaces", TestSurfaceJoinRejectsUnsharedEdgesAndClosedSurfaces);
+
+  RunTest("TestSubDFromUniformBicubicSurfaceReproducesSurfaceExactly", TestSubDFromUniformBicubicSurfaceReproducesSurfaceExactly);
+  RunTest("TestSubDFromUniformBicubicSurfaceRejectsUnsupportedInput", TestSubDFromUniformBicubicSurfaceRejectsUnsupportedInput);
 
   RunTest("ON::End", ON::End);
 
