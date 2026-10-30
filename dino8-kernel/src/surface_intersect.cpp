@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -2273,6 +2274,50 @@ std::vector<CurveBrepHit> IntersectCurveBrep(const ON_Curve& c, const ON_Brep& b
   const ON_BoundingBox cb = c.BoundingBox();
   const double pad = std::max(opt.mesh_tolerance, opt.tolerance * 4);
   const int nb = b.m_F.Count();
+
+  // A straight segment (what every ray query - FireRayAtBrep(),
+  // BrepClosestPointIndex::FireRay(), the point classifiers - fires) against
+  // a brep of several faces: a per-call face-box index lets only the faces
+  // the SEGMENT can reach go on to the expensive curve/surface intersector,
+  // instead of every face whose box overlaps the segment's own axis-aligned
+  // box (for a long oblique ray, nearly all of them). Skipping is exact: a
+  // reported hit has |curve point - surface point| <= opt.tolerance (the
+  // Newton polish accepts nothing looser) and the surface point lies in the
+  // face's box, so a face whose box - grown by 2 * opt.tolerance - the
+  // segment cannot reach yields no hit. The surviving faces are visited in
+  // ascending order through the unchanged per-face body below, so the hit
+  // list (order and all) equals the plain loop's. A curve that is not a line
+  // keeps the plain loop; so does a small brep, and any brep with the
+  // detail::SetBrepSpatialAccelerationEnabled(false) oracle switch.
+  if (nb >= detail::kMinBrepFacesForSpatialIndex && detail::BrepSpatialAccelerationEnabled() &&
+      ON_LineCurve::Cast(&c) != nullptr) {
+    const Point3d a = c.PointAtStart();
+    const Point3d z = c.PointAtEnd();
+    const detail::BrepFaceBoxIndex index(b);
+    ON_BoundingBox query = cb;
+    if (query.IsValid()) {
+      query.m_min -= ON_3dVector(pad, pad, pad);
+      query.m_max += ON_3dVector(pad, pad, pad);
+    }
+    std::vector<int> candidates;
+    index.Candidates(query, candidates);
+    for (const int j : candidates) {
+      if (!index.SegmentMayTouch(j, a, z, 2.0 * opt.tolerance)) continue;
+      const ON_BrepFace& f = b.m_F[j];
+      const ON_Surface* s = f.SurfaceOf();
+      if (!s) continue;
+      ON_BoundingBox fb = s->BoundingBox();
+      fb.m_min -= ON_3dVector(pad, pad, pad);
+      fb.m_max += ON_3dVector(pad, pad, pad);
+      if (cb.IsValid() && fb.IsValid() && cb.IsDisjoint(fb)) continue;
+      for (const CurveSurfaceHit& h : IntersectCurveSurface(c, *s, opt)) {
+        if (!FaceContainsUV(f, h.uv.x, h.uv.y)) continue;
+        out.push_back(CurveBrepHit{j, h});
+      }
+    }
+    return out;
+  }
+
   for (int j = 0; j < nb; ++j) {
     const ON_BrepFace& f = b.m_F[j];
     const ON_Surface* s = f.SurfaceOf();
@@ -2375,10 +2420,197 @@ std::optional<BrepClosestPointResult> ClosestPointOnBrepFace(const Point3d& quer
   return best;
 }
 
+namespace detail {
+namespace {
+std::atomic<bool> g_brep_spatial_acceleration_enabled{true};
+}  // namespace
+
+void SetBrepSpatialAccelerationEnabled(bool enabled) { g_brep_spatial_acceleration_enabled.store(enabled); }
+bool BrepSpatialAccelerationEnabled() { return g_brep_spatial_acceleration_enabled.load(); }
+
+namespace {
+std::atomic<long> g_brep_face_box_index_builds{0};
+}  // namespace
+long BrepFaceBoxIndexBuildCount() { return g_brep_face_box_index_builds.load(); }
+
+BrepFaceBoxIndex::BrepFaceBoxIndex(const ON_Brep& b) : tree_(0) {
+  g_brep_face_box_index_builds.fetch_add(1);
+  double scale = 0.0;
+  std::vector<ON_BoundingBox> boxes(static_cast<size_t>(b.m_F.Count()));
+  std::vector<char> indexed(static_cast<size_t>(b.m_F.Count()), 0);
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    const ON_Surface* srf = b.m_F[fi].SurfaceOf();
+    if (!srf) continue;  // no surface: every scan skips this face too
+    const ON_BoundingBox fb = srf->BoundingBox();
+    const bool finite = fb.IsValid() && std::isfinite(fb.m_min.x) && std::isfinite(fb.m_min.y) &&
+                        std::isfinite(fb.m_min.z) && std::isfinite(fb.m_max.x) && std::isfinite(fb.m_max.y) &&
+                        std::isfinite(fb.m_max.z);
+    if (!finite) {
+      unindexed_.push_back(fi);
+      continue;
+    }
+    boxes[static_cast<size_t>(fi)] = fb;
+    indexed[static_cast<size_t>(fi)] = 1;
+    for (int k = 0; k < 3; ++k) scale = std::max({scale, std::fabs(fb.m_min[k]), std::fabs(fb.m_max[k])});
+  }
+  slop_ = 1e-9 * (1.0 + scale);
+  boxes_ = boxes;
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    if (!indexed[static_cast<size_t>(fi)]) continue;
+    const ON_BoundingBox& fb = boxes[static_cast<size_t>(fi)];
+    const double box_min[3] = {fb.m_min.x, fb.m_min.y, fb.m_min.z};
+    const double box_max[3] = {fb.m_max.x, fb.m_max.y, fb.m_max.z};
+    tree_.Insert(box_min, box_max, fi);
+    bbox_.Union(fb);
+  }
+}
+
+bool BrepFaceBoxIndex::SegmentMayTouch(int fi, const Point3d& a, const Point3d& b, double pad) const {
+  if (fi < 0 || fi >= static_cast<int>(boxes_.size())) return true;
+  const ON_BoundingBox& box = boxes_[static_cast<size_t>(fi)];
+  if (!box.IsValid()) return true;  // unindexable: never reject
+  const double lo[3] = {box.m_min.x - pad - slop_, box.m_min.y - pad - slop_, box.m_min.z - pad - slop_};
+  const double hi[3] = {box.m_max.x + pad + slop_, box.m_max.y + pad + slop_, box.m_max.z + pad + slop_};
+  const double o[3] = {a.x, a.y, a.z};
+  const double d[3] = {b.x - a.x, b.y - a.y, b.z - a.z};
+  if (!std::isfinite(o[0] + o[1] + o[2] + d[0] + d[1] + d[2] + pad)) return true;
+  double t0 = 0.0, t1 = 1.0;
+  for (int k = 0; k < 3; ++k) {
+    if (d[k] == 0.0) {
+      if (o[k] < lo[k] || o[k] > hi[k]) return false;
+      continue;
+    }
+    double u0 = (lo[k] - o[k]) / d[k];
+    double u1 = (hi[k] - o[k]) / d[k];
+    if (u0 > u1) std::swap(u0, u1);
+    // A hair of slack on the parameter range keeps rounding in the divide
+    // from ever rejecting a segment that grazes the grown box.
+    t0 = std::max(t0, u0 - 1e-12);
+    t1 = std::min(t1, u1 + 1e-12);
+    if (t0 > t1) return false;
+  }
+  return true;
+}
+
+void BrepFaceBoxIndex::Candidates(const ON_BoundingBox& query, std::vector<int>& ids) const {
+  ids.clear();
+  ON_SimpleArray<int> found;
+  if (query.IsValid() && std::isfinite(query.m_min.x + query.m_min.y + query.m_min.z + query.m_max.x +
+                                       query.m_max.y + query.m_max.z)) {
+    const double lo[3] = {query.m_min.x - slop_, query.m_min.y - slop_, query.m_min.z - slop_};
+    const double hi[3] = {query.m_max.x + slop_, query.m_max.y + slop_, query.m_max.z + slop_};
+    tree_.Search(lo, hi, found);
+  } else {
+    // A degenerate/non-finite query: every comparison against it is
+    // ill-defined, so hand back every indexed face and let the caller's
+    // own exact predicate (the one a plain scan applies) decide.
+    const double lo[3] = {-1e300, -1e300, -1e300};
+    const double hi[3] = {1e300, 1e300, 1e300};
+    tree_.Search(lo, hi, found);
+  }
+  for (int j = 0; j < found.Count(); ++j) ids.push_back(found[j]);
+  ids.insert(ids.end(), unindexed_.begin(), unindexed_.end());
+  std::sort(ids.begin(), ids.end());
+}
+}  // namespace detail
+
+namespace {
+// The expanding-box, doubling-until-proven-sufficient closest-point search
+// shared by BrepClosestPointIndex::ClosestPoint() and the per-call
+// accelerated ClosestPointOnBrep(). Evaluates the candidate faces in
+// ASCENDING face order through the very same ClosestPointOnBrepFace() the
+// plain scan uses, keeping the first face on an exact distance tie - so
+// the answer (face, distance, uv, point, boundary flag) equals the scan's
+// bit for bit: every face the search box does not touch lies strictly
+// farther than the search radius from `point`, which is >= the recorded
+// best, so it can neither win nor tie.
+BrepClosestPointResult AcceleratedBrepClosestPoint(const char* who, const ON_Brep& brep,
+                                                    const detail::BrepFaceBoxIndex& faces, const Point3d& point,
+                                                    int u_divisions, int v_divisions, int trim_samples_per_edge) {
+  const int n = brep.m_F.Count();
+  const ON_BoundingBox& bbox = faces.Bounds();
+  const double diagonal = bbox.IsValid() ? bbox.Diagonal().Length() : 0.0;
+  double r = diagonal > 0.0 ? diagonal / std::cbrt(static_cast<double>(n)) : 1.0;
+  if (!(r > 0.0)) r = 1.0;
+
+  std::vector<int> ids;
+  auto search = [&](double radius, BrepClosestPointResult& out) {
+    ON_BoundingBox cube;
+    cube.m_min = ON_3dPoint(point.x - radius, point.y - radius, point.z - radius);
+    cube.m_max = ON_3dPoint(point.x + radius, point.y + radius, point.z + radius);
+    faces.Candidates(cube, ids);
+    bool have = false;
+    for (const int fi : ids) {
+      std::optional<BrepClosestPointResult> res =
+          ClosestPointOnBrepFace(point, brep, fi, u_divisions, v_divisions, trim_samples_per_edge);
+      if (res && (!have || res->distance < out.distance)) {
+        out = *res;
+        have = true;
+      }
+    }
+    return have;
+  };
+
+  // Whether the search box (half-width `radius`, centered on `point`)
+  // already contains the index's own whole bounding box - if so, nothing
+  // outside it exists at all, and the result is exact regardless of the
+  // `out.distance <= radius` proof below.
+  auto covers_everything = [&](double radius) {
+    return point.x - radius <= bbox.m_min.x && point.x + radius >= bbox.m_max.x &&
+           point.y - radius <= bbox.m_min.y && point.y + radius >= bbox.m_max.y &&
+           point.z - radius <= bbox.m_min.z && point.z + radius >= bbox.m_max.z;
+  };
+
+  BrepClosestPointResult best;
+  bool found = false;
+  if (bbox.IsValid() && std::isfinite(point.x + point.y + point.z)) {
+    for (int iter = 0; iter < 64; ++iter) {
+      found = search(r, best);
+      if (found && (best.distance <= r || covers_everything(r))) return best;
+      if (!found && covers_everything(r)) break;  // genuinely nothing found anywhere (see the fallback below)
+      r *= 2.0;
+    }
+  }
+  // Unreachable in practice for a finite brep and query (64 doublings
+  // covers any finite brep many times over); also the path for a brep with
+  // no indexable face or a non-finite query. An honest plain scan rather
+  // than an infinite loop or a wrong answer.
+  found = false;
+  for (int fi = 0; fi < n; ++fi) {
+    std::optional<BrepClosestPointResult> res =
+        ClosestPointOnBrepFace(point, brep, fi, u_divisions, v_divisions, trim_samples_per_edge);
+    if (res && (!found || res->distance < best.distance)) {
+      best = *res;
+      found = true;
+    }
+  }
+  if (!found) {
+    throw std::runtime_error(std::string(who) +
+                             ": no face could be evaluated (every face has either no surface or a surface with "
+                             "no NURBS form)");
+  }
+  return best;
+}
+}  // namespace
+
 BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b, int u_divisions,
                                            int v_divisions, int trim_samples_per_edge) {
   if (b.m_F.Count() == 0) {
     throw std::invalid_argument("dino8::kernel::ClosestPointOnBrep: brep has no faces");
+  }
+
+  // A brep of several faces: a per-call box index over the faces' (cheap)
+  // surface bounding boxes, so only the faces near `query` pay for the
+  // expensive per-face evaluation (a NURBS copy plus a u x v grid search
+  // each). The index costs one bounding box per face - far less than one
+  // face evaluation - so it pays for itself immediately; the answer is
+  // identical to the scan below (see AcceleratedBrepClosestPoint()). The
+  // scan stays as the small-brep path and as the oracle behind
+  // detail::SetBrepSpatialAccelerationEnabled(false).
+  if (b.m_F.Count() >= detail::kMinBrepFacesForSpatialIndex && detail::BrepSpatialAccelerationEnabled()) {
+    const detail::BrepFaceBoxIndex faces(b);
+    return AcceleratedBrepClosestPoint("dino8::kernel::ClosestPointOnBrep", b, faces, query, u_divisions,
+                                       v_divisions, trim_samples_per_edge);
   }
 
   BrepClosestPointResult best;
@@ -2402,85 +2634,18 @@ BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b
 
 BrepClosestPointIndex::BrepClosestPointIndex(const ON_Brep& b, int u_divisions, int v_divisions,
                                               int trim_samples_per_edge)
-    : brep_(b), tree_(0), u_divisions_(u_divisions), v_divisions_(v_divisions),
+    : brep_(b), faces_(brep_), u_divisions_(u_divisions), v_divisions_(v_divisions),
       trim_samples_per_edge_(trim_samples_per_edge) {
   if (brep_.m_F.Count() == 0) {
     throw std::invalid_argument(
         "dino8::kernel::BrepClosestPointIndex::BrepClosestPointIndex: brep has no faces - there's no "
         "surface to index");
   }
-  for (int fi = 0; fi < brep_.m_F.Count(); ++fi) {
-    const ON_Surface* srf = brep_.m_F[fi].SurfaceOf();
-    if (!srf) continue;
-    ON_BoundingBox face_bbox;
-    if (!srf->GetBoundingBox(face_bbox)) continue;
-    const double box_min[3] = {face_bbox.m_min.x, face_bbox.m_min.y, face_bbox.m_min.z};
-    const double box_max[3] = {face_bbox.m_max.x, face_bbox.m_max.y, face_bbox.m_max.z};
-    tree_.Insert(box_min, box_max, fi);
-    bbox_.Union(face_bbox);
-  }
 }
 
 BrepClosestPointResult BrepClosestPointIndex::ClosestPoint(const Point3d& point) const {
-  const int n = brep_.m_F.Count();
-  const double diagonal = bbox_.IsValid() ? bbox_.Diagonal().Length() : 0.0;
-  double r = diagonal > 0.0 ? diagonal / std::cbrt(static_cast<double>(n)) : 1.0;
-  if (!(r > 0.0)) r = 1.0;
-
-  auto search = [&](double radius, BrepClosestPointResult& out) {
-    const double box_min[3] = {point.x - radius, point.y - radius, point.z - radius};
-    const double box_max[3] = {point.x + radius, point.y + radius, point.z + radius};
-    ON_SimpleArray<int> ids;
-    tree_.Search(box_min, box_max, ids);
-    bool have = false;
-    for (int j = 0; j < ids.Count(); ++j) {
-      std::optional<BrepClosestPointResult> r =
-          ClosestPointOnBrepFace(point, brep_, ids[j], u_divisions_, v_divisions_, trim_samples_per_edge_);
-      if (r && (!have || r->distance < out.distance)) {
-        out = *r;
-        have = true;
-      }
-    }
-    return have;
-  };
-
-  // Whether the search box (half-width `radius`, centered on `point`)
-  // already contains the index's own whole bounding box - if so, nothing
-  // outside it exists at all, and the result is exact regardless of the
-  // `out.distance <= radius` proof below.
-  auto covers_everything = [&](double radius) {
-    return point.x - radius <= bbox_.m_min.x && point.x + radius >= bbox_.m_max.x &&
-           point.y - radius <= bbox_.m_min.y && point.y + radius >= bbox_.m_max.y &&
-           point.z - radius <= bbox_.m_min.z && point.z + radius >= bbox_.m_max.z;
-  };
-
-  BrepClosestPointResult best;
-  bool found = false;
-  for (int iter = 0; iter < 64; ++iter) {
-    found = search(r, best);
-    if (found && (best.distance <= r || covers_everything(r))) return best;
-    if (!found && covers_everything(r)) break;  // genuinely nothing found anywhere (unreachable for a real brep, see the fallback below)
-    r *= 2.0;
-  }
-  // Unreachable in practice (64 doublings covers any finite brep many
-  // times over, see MeshClosestPointIndex::ClosestPoint()'s own identical
-  // fallback), kept only as an honest fallback rather than an infinite
-  // loop if it ever were reached.
-  found = false;
-  for (int fi = 0; fi < n; ++fi) {
-    std::optional<BrepClosestPointResult> r =
-        ClosestPointOnBrepFace(point, brep_, fi, u_divisions_, v_divisions_, trim_samples_per_edge_);
-    if (r && (!found || r->distance < best.distance)) {
-      best = *r;
-      found = true;
-    }
-  }
-  if (!found) {
-    throw std::runtime_error(
-        "dino8::kernel::BrepClosestPointIndex::ClosestPoint: no face could be evaluated (every face has "
-        "either no surface or a surface with no NURBS form)");
-  }
-  return best;
+  return AcceleratedBrepClosestPoint("dino8::kernel::BrepClosestPointIndex::ClosestPoint", brep_, faces_, point,
+                                     u_divisions_, v_divisions_, trim_samples_per_edge_);
 }
 
 std::vector<RayBrepHit> BrepClosestPointIndex::FireRay(const Point3d& origin, const Vector3d& direction,
@@ -2496,7 +2661,7 @@ std::vector<RayBrepHit> BrepClosestPointIndex::FireRay(const Point3d& origin, co
   }
 
   std::vector<RayBrepHit> out;
-  if (!bbox_.IsValid()) return out;  // unreachable - the constructor already requires at least one usable face
+  if (!faces_.Bounds().IsValid()) return out;  // unreachable - the constructor already requires at least one usable face
 
   // Standard slab method, clipped to [0, max_distance] (FireRayAtBrep()'s
   // own contract: a finite segment, not an unbounded ray) and to this
@@ -2508,8 +2673,8 @@ std::vector<RayBrepHit> BrepClosestPointIndex::FireRay(const Point3d& origin, co
   double tmax = max_distance;
   const double o[3] = {origin.x, origin.y, origin.z};
   const double d[3] = {unit_dir.x, unit_dir.y, unit_dir.z};
-  const double bmin[3] = {bbox_.m_min.x, bbox_.m_min.y, bbox_.m_min.z};
-  const double bmax[3] = {bbox_.m_max.x, bbox_.m_max.y, bbox_.m_max.z};
+  const double bmin[3] = {faces_.Bounds().m_min.x, faces_.Bounds().m_min.y, faces_.Bounds().m_min.z};
+  const double bmax[3] = {faces_.Bounds().m_max.x, faces_.Bounds().m_max.y, faces_.Bounds().m_max.z};
   for (int axis = 0; axis < 3; ++axis) {
     if (std::fabs(d[axis]) < 1e-300) {
       if (o[axis] < bmin[axis] || o[axis] > bmax[axis]) return out;  // parallel to this slab and outside it
@@ -2535,15 +2700,17 @@ std::vector<RayBrepHit> BrepClosestPointIndex::FireRay(const Point3d& origin, co
   const double pad = std::max(opt.mesh_tolerance, opt.tolerance * 4);
   const Point3d p0 = origin + unit_dir * tmin;
   const Point3d p1 = origin + unit_dir * tmax;
-  const double box_min[3] = {std::min(p0.x, p1.x) - pad, std::min(p0.y, p1.y) - pad, std::min(p0.z, p1.z) - pad};
-  const double box_max[3] = {std::max(p0.x, p1.x) + pad, std::max(p0.y, p1.y) + pad, std::max(p0.z, p1.z) + pad};
-  ON_SimpleArray<int> ids;
-  tree_.Search(box_min, box_max, ids);
+  ON_BoundingBox ray_box;
+  ray_box.m_min = ON_3dPoint(std::min(p0.x, p1.x) - pad, std::min(p0.y, p1.y) - pad, std::min(p0.z, p1.z) - pad);
+  ray_box.m_max = ON_3dPoint(std::max(p0.x, p1.x) + pad, std::max(p0.y, p1.y) + pad, std::max(p0.z, p1.z) + pad);
+  // Ascending face order (the order IntersectCurveBrep()'s plain loop
+  // emits hits in), plus any face whose box could not be computed.
+  std::vector<int> ids;
+  faces_.Candidates(ray_box, ids);
 
   ON_LineCurve ray(origin, origin + unit_dir * max_distance);
   ray.SetDomain(0.0, max_distance);
-  for (int j = 0; j < ids.Count(); ++j) {
-    const int fi = ids[j];
+  for (const int fi : ids) {
     const ON_BrepFace& f = brep_.m_F[fi];
     const ON_Surface* s = f.SurfaceOf();
     if (!s) continue;
@@ -2585,9 +2752,9 @@ const Vector3d kBrepContainsPointDirections[kBrepContainsPointDirectionCount] = 
 bool BrepClosestPointIndex::ContainsPoint(const Point3d& point, double ray_length, const IntersectOptions& opt) const {
   if (!(ray_length > 0.0)) {
     // The identical formula ContainsPointExact() itself uses, just
-    // computed from this index's own already-built bbox_ instead of
+    // computed from this index's own already-built bounds instead of
     // re-scanning every face's own surface bounding box again.
-    ray_length = bbox_.IsValid() ? 4.0 * (bbox_.Diagonal().Length() + 1.0) : 1000.0;
+    ray_length = faces_.Bounds().IsValid() ? 4.0 * (faces_.Bounds().Diagonal().Length() + 1.0) : 1000.0;
   }
   int votes_in = 0;
   for (const Vector3d& direction : kBrepContainsPointDirections) {

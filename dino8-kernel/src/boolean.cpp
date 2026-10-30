@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <exception>
 #include <limits>
@@ -18,6 +19,7 @@
 #include "dino8/kernel/detail/ellipse_clip3d.h"
 #include "dino8/kernel/detail/halfspace_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
+#include "dino8/kernel/surface_intersect.h"
 
 namespace dino8::kernel {
 
@@ -176,11 +178,86 @@ Mesh BooleanCombine(const Mesh& a, const Mesh& b, BooleanOp op) {
 
 namespace {
 
+std::atomic<long> g_body_broad_phase_tree_queries{0};
+
 bool BoundingBoxesTouch(const BoundingBox& a, const BoundingBox& b, double clearance) {
   return a.min.x - clearance <= b.max.x && b.min.x - clearance <= a.max.x &&
          a.min.y - clearance <= b.max.y && b.min.y - clearance <= a.max.y &&
          a.min.z - clearance <= b.max.z && b.min.z - clearance <= a.max.z;
 }
+
+// Broad phase over a set of body boxes (the assembly-level interference
+// queries test body i against bodies j > i, and a growing overlap against
+// bodies k > its last member): an `ON_RTree` over the boxes returns, in
+// ascending order, exactly the bodies the plain linear loop's
+// BoundingBoxesTouch() test would have kept - the tree only narrows the
+// candidates (a box grown by `clearance` plus a rounding slop is a superset
+// of the exactly-touching ones) and BoundingBoxesTouch() itself, unchanged,
+// makes the final call, so the surviving list and its order are identical.
+// A box that is not finite/ordered cannot live in the tree and is always a
+// candidate. Below 16 bodies, or with detail::SetBrepSpatialAccelerationEnabled
+// (false) (the oracle switch), it is the plain linear loop.
+class BodyBoxIndex {
+ public:
+  explicit BodyBoxIndex(const std::vector<BoundingBox>& boxes) : boxes_(boxes), tree_(0) {
+    use_tree_ = boxes.size() >= 16 && detail::BrepSpatialAccelerationEnabled();
+    if (!use_tree_) return;
+    double scale = 0.0;
+    for (size_t i = 0; i < boxes.size(); ++i) {
+      const BoundingBox& b = boxes[i];
+      const double v[6] = {b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z};
+      bool ok = b.min.x <= b.max.x && b.min.y <= b.max.y && b.min.z <= b.max.z;
+      for (double c : v) ok = ok && std::isfinite(c);
+      if (!ok) {
+        odd_.push_back(i);
+        continue;
+      }
+      for (double c : v) scale = std::max(scale, std::fabs(c));
+      const double lo[3] = {b.min.x, b.min.y, b.min.z};
+      const double hi[3] = {b.max.x, b.max.y, b.max.z};
+      tree_.Insert(lo, hi, static_cast<int>(i));
+    }
+    slop_ = 1e-9 * (1.0 + scale);
+  }
+
+  // Ascending indices k >= `first` with BoundingBoxesTouch(box, boxes[k], clearance).
+  void Touching(const BoundingBox& box, size_t first, double clearance, std::vector<size_t>& out) const {
+    out.clear();
+    const double v[6] = {box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z};
+    bool ok = use_tree_ && std::isfinite(clearance);
+    for (double c : v) ok = ok && std::isfinite(c);
+    if (!ok) {
+      for (size_t k = first; k < boxes_.size(); ++k) {
+        if (BoundingBoxesTouch(box, boxes_[k], clearance)) out.push_back(k);
+      }
+      return;
+    }
+    g_body_broad_phase_tree_queries.fetch_add(1);
+    const double grow = std::max(clearance, 0.0) + slop_;
+    const double lo[3] = {box.min.x - grow, box.min.y - grow, box.min.z - grow};
+    const double hi[3] = {box.max.x + grow, box.max.y + grow, box.max.z + grow};
+    ON_SimpleArray<int> found;
+    tree_.Search(lo, hi, found);
+    std::vector<size_t> candidates;
+    for (int j = 0; j < found.Count(); ++j) {
+      if (static_cast<size_t>(found[j]) >= first) candidates.push_back(static_cast<size_t>(found[j]));
+    }
+    for (size_t k : odd_) {
+      if (k >= first) candidates.push_back(k);
+    }
+    std::sort(candidates.begin(), candidates.end());
+    for (size_t k : candidates) {
+      if (BoundingBoxesTouch(box, boxes_[k], clearance)) out.push_back(k);
+    }
+  }
+
+ private:
+  const std::vector<BoundingBox>& boxes_;
+  ON_RTree tree_;
+  std::vector<size_t> odd_;
+  double slop_ = 0.0;
+  bool use_tree_ = false;
+};
 
 // One candidate mutual overlap being extended, level by level, from an
 // initial pairwise overlap: `indices` names which input bodies share
@@ -203,9 +280,11 @@ std::vector<MultiOverlapCandidate> ComputePairwiseOverlaps(const std::vector<Mes
                                                              const std::vector<BoundingBox>& boxes,
                                                              double clearance) {
   std::vector<MultiOverlapCandidate> frontier;
+  const BodyBoxIndex body_index(boxes);
+  std::vector<size_t> partners;
   for (size_t i = 0; i < bodies.size(); ++i) {
-    for (size_t j = i + 1; j < bodies.size(); ++j) {
-      if (!BoundingBoxesTouch(boxes[i], boxes[j], clearance)) continue;
+    body_index.Touching(boxes[i], i + 1, clearance, partners);
+    for (const size_t j : partners) {
       Mesh overlap = BooleanCombine(bodies[i], bodies[j], BooleanOp::Intersection);
       if (overlap.FaceCount() == 0) continue;
       BoundingBox box = overlap.GetBoundingBox();
@@ -224,6 +303,8 @@ std::vector<MultiInterferenceResult> ExpandMultiWayOverlaps(std::vector<MultiOve
                                                              const std::vector<BoundingBox>& boxes,
                                                              double clearance) {
   std::vector<MultiInterferenceResult> results;
+  const BodyBoxIndex body_index(boxes);
+  std::vector<size_t> partners;
   while (!frontier.empty()) {
     std::vector<MultiOverlapCandidate> next_frontier;
     for (const MultiOverlapCandidate& candidate : frontier) {
@@ -231,8 +312,8 @@ std::vector<MultiInterferenceResult> ExpandMultiWayOverlaps(std::vector<MultiOve
       // this candidate - each growing combination is enumerated exactly
       // once (in increasing order), never once per permutation of the
       // same set of bodies.
-      for (size_t k = candidate.indices.back() + 1; k < bodies.size(); ++k) {
-        if (!BoundingBoxesTouch(candidate.box, boxes[k], clearance)) continue;
+      body_index.Touching(candidate.box, candidate.indices.back() + 1, clearance, partners);
+      for (const size_t k : partners) {
         Mesh overlap = BooleanCombine(candidate.solid, bodies[k], BooleanOp::Intersection);
         if (overlap.FaceCount() == 0) continue;
 
@@ -249,6 +330,10 @@ std::vector<MultiInterferenceResult> ExpandMultiWayOverlaps(std::vector<MultiOve
 }
 
 }  // namespace
+
+namespace detail {
+long BodyBroadPhaseTreeQueryCount() { return g_body_broad_phase_tree_queries.load(); }
+}  // namespace detail
 
 std::vector<InterferenceResult> ComputeInterference(const std::vector<Mesh>& bodies,
                                                       double clearance) {

@@ -1179,12 +1179,16 @@ void ThicknessAnalysisOn(CommandContext& ctx) {
     const std::vector<float>& tris = first.Display().triangles;
     // Sample every vertex: reuse the colouring's ray cast by evaluating a few rays here.
     const size_t n = tris.size() / 6;
-    for (size_t i = 0; i < n; i += std::max<size_t>(1, n / 400)) {
+    // Tessellated ONCE for all ~400 samples (it used to be re-tessellated per
+    // sample): every sample marches the same mesh's distance field, and a
+    // kernel::Mesh answers SignedDistance() through a spatial index it builds
+    // on the first query and keeps for the Mesh object's lifetime - so one
+    // Mesh shared by every sample pays the index build once instead of 400x.
+    std::optional<kernel::Mesh> m = MeshOf(first, 0.05);
+    for (size_t i = 0; m && i < n; i += std::max<size_t>(1, n / 400)) {
       Vector3d nv(tris[i * 6 + 3], tris[i * 6 + 4], tris[i * 6 + 5]);
       if (!nv.Unitize()) continue;
       const Point3d p(tris[i * 6], tris[i * 6 + 1], tris[i * 6 + 2]);
-      std::optional<kernel::Mesh> m = MeshOf(first, 0.05);
-      if (!m) break;
       // March along -normal to the far side using the mesh distance field.
       double t = 1e-3, best = -1;
       for (int step = 0; step < 400 && t < s.thickness_max * 4; ++step) {

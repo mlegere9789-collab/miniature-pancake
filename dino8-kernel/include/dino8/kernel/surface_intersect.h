@@ -317,22 +317,119 @@ struct BrepClosestPointResult {
 // or a surface with no NURBS form) - a face individually missing either
 // is otherwise silently skipped rather than aborting the whole query
 // over one bad face.
+//
+// Spatially accelerated for a brep of `detail::kMinBrepFacesForSpatialIndex`
+// (16) or more faces: a per-call `detail::BrepFaceBoxIndex` over the faces'
+// surface bounding boxes means only the faces near `query` pay for the
+// (expensive: a NURBS copy plus a u x v grid search) per-face evaluation.
+// The index costs one box per face, far less than one face evaluation, so
+// it pays for itself on the first call. The RESULT is identical to the
+// plain per-face scan bit for bit - same face, distance, uv, point and
+// boundary flag, including which face wins an exact distance tie (the
+// lowest index, as in the scan): candidates are evaluated in ascending
+// face order through the very same per-face routine, and every face the
+// search box misses lies strictly farther than the recorded best. A
+// smaller brep keeps the plain scan, which is also reachable on any brep
+// via `detail::SetBrepSpatialAccelerationEnabled(false)` as the oracle.
 BrepClosestPointResult ClosestPointOnBrep(const Point3d& query, const ON_Brep& b, int u_divisions = 20,
                                            int v_divisions = 20, int trim_samples_per_edge = 24);
+
+namespace detail {
+// Test-only switch (the Brep sibling of detail::SetMeshSpatialAccelerationEnabled
+// in mesh.h): when disabled, `ClosestPointOnBrep()` (and so
+// `SignedDistanceToBrep()`'s distance half) takes its original plain
+// per-face scan instead of the per-call `BrepFaceBoxIndex` search, and the
+// kernel's internal repeated point-vs-brep classification (boolean
+// fragment classification, sheet splitting) takes its original per-face
+// scan instead of a once-per-boolean `BrepFaceBoxIndex`. The accelerated
+// and scan paths return bit-identical results; this exists so the test
+// suite can use the production scan itself as the oracle. Process-global,
+// thread-safe, defaults to enabled.
+void SetBrepSpatialAccelerationEnabled(bool enabled);
+bool BrepSpatialAccelerationEnabled();
+
+// Number of `BrepFaceBoxIndex` objects constructed so far in this process
+// (observability for tests: proves a query really went through an index).
+long BrepFaceBoxIndexBuildCount();
+
+// Number of broad-phase queries ComputeInterference()/
+// ComputeMultiWayInterference()/ComputeAllInterference() (boolean.h) have
+// answered from their body-box R-tree so far (observability for tests; the
+// switch above also turns that tree off - they then use the linear loop).
+long BodyBroadPhaseTreeQueryCount();
+
+// Below this many faces a per-call index build does not pay for itself
+// (the scan is already only a handful of face evaluations).
+constexpr int kMinBrepFacesForSpatialIndex = 16;
+
+// An `ON_RTree` over every face's UNTRIMMED surface bounding box - the
+// shared building block `ClosestPointOnBrep()`, `BrepClosestPointIndex`
+// and the kernel's internal point-vs-brep classifier all use. It stores no
+// reference to the brep (the caller keeps the brep alive and unchanged for
+// as long as it queries the index). A face whose box cannot be computed
+// (non-finite or invalid) is not in the tree but is returned by EVERY
+// `Candidates()` call, so a query through the index can never miss a face
+// the plain scan would have examined; a face with no surface at all is
+// skipped, exactly as every scan in this file skips it.
+class BrepFaceBoxIndex {
+ public:
+  explicit BrepFaceBoxIndex(const ON_Brep& b);
+  BrepFaceBoxIndex(const BrepFaceBoxIndex&) = delete;
+  BrepFaceBoxIndex& operator=(const BrepFaceBoxIndex&) = delete;
+
+  // Ascending face indices of every face whose box overlaps `query` grown
+  // by a rounding-level slop (a SUPERSET of the exactly overlapping
+  // faces - the caller applies its own exact predicate to the candidates),
+  // plus every unindexable face.
+  void Candidates(const ON_BoundingBox& query, std::vector<int>& ids) const;
+
+  // False only if the segment `a`-`b` provably stays farther than `pad`
+  // (per axis) from face `fi`'s box - a standard slab test against the
+  // stored box grown by `pad`. True for an unindexable face and for any
+  // non-finite input, so it can only ever REJECT a face the segment truly
+  // cannot reach. This is far tighter than the segment's own axis-aligned
+  // box (which, for the long rays a classifier fires, covers the whole
+  // brep).
+  bool SegmentMayTouch(int fi, const Point3d& a, const Point3d& b, double pad) const;
+
+  // Union of the indexed faces' boxes (invalid if none).
+  const ON_BoundingBox& Bounds() const { return bbox_; }
+  const ON_RTree& Tree() const { return tree_; }
+
+ private:
+  ON_RTree tree_;
+  ON_BoundingBox bbox_;
+  std::vector<int> unindexed_;
+  std::vector<ON_BoundingBox> boxes_;  // per face; invalid for an unindexed/surface-less face
+  double slop_ = 0.0;
+};
+
+// `ContainsPointExact()` for a caller that tests MANY points against the
+// SAME brep: identical semantics (same classifier, same default
+// `ray_length`, same answer), but through a caller-held `index` (built from
+// `brep`, which must be left unchanged) instead of one rebuilt per call -
+// the per-direction face loop hands the intersector only the faces whose
+// box the ray segment can reach. (`ContainsPointExact()` itself builds such
+// an index per call for a brep of `kMinBrepFacesForSpatialIndex` or more
+// faces; this entry point is for amortizing that build.)
+bool ContainsPointExactIndexed(const Point3d& point, const ON_Brep& brep, const BrepFaceBoxIndex& index,
+                               double ray_length, const IntersectOptions& opt, double tol);
+}  // namespace detail
 
 // A reusable spatial acceleration structure over an ON_Brep's own faces -
 // PARITY_MAP.md's own "Spatial acceleration structures for geometric
 // queries" bullet's own remaining named gap ("B-rep queries stay brute-
 // force") after `dino8::kernel::MeshClosestPointIndex` (mesh.h) closed the
-// mesh half of it the same way. `ClosestPointOnBrep()` itself is exactly
-// that: a plain O(face count) scan over every face, every call. This is
-// left completely UNCHANGED (every existing caller's own behavior is
-// untouched) - `BrepClosestPointIndex` is instead a new, explicit, opt-in
+// mesh half of it the same way. `BrepClosestPointIndex` is the explicit
 // structure a caller builds ONCE (O(face count), the same up-front cost
 // `MeshClosestPointIndex`/`PointCloud::SpatialIndex()` already pay) and
-// then queries many times in expected sublinear time, the real value an
+// then queries many times in expected sublinear time - the value an
 // acceleration structure gives a workload that calls
-// `ClosestPointOnBrep()` on the SAME Brep many times.
+// `ClosestPointOnBrep()` on the SAME Brep many times. (The one-shot free
+// functions `ClosestPointOnBrep()`/`ContainsPointExact()`/
+// `SignedDistanceToBrep()` now build the same kind of index per call for a
+// brep of 16 or more faces, see their own doc comments; this class keeps
+// it across calls and owns a copy of the brep.)
 //
 // Built on an `ON_RTree` of each face's own UNTRIMMED surface bounding
 // box - a safe, cheap over-approximation of the true trimmed face (a trim
@@ -429,8 +526,7 @@ class BrepClosestPointIndex {
 
  private:
   ON_Brep brep_;
-  ON_RTree tree_;
-  ON_BoundingBox bbox_;
+  detail::BrepFaceBoxIndex faces_;
   int u_divisions_;
   int v_divisions_;
   int trim_samples_per_edge_;
@@ -470,6 +566,21 @@ class BrepClosestPointIndex {
 // geometrically meaningful - this function does not detect that case,
 // the same precondition `FireRayAtBrep`/`ClosestPointOnBrep` already
 // leave to the caller.
+//
+// Spatially accelerated for a brep of `detail::kMinBrepFacesForSpatialIndex`
+// (16) or more faces: a per-call `detail::BrepFaceBoxIndex` stores each
+// face's surface box once and, for each classification ray, hands the
+// expensive curve/surface intersector only the faces whose box the ray
+// SEGMENT can reach (a slab test against the box grown by 2 * (opt.tolerance
+// + tol)) rather than every face whose box overlaps the ray's own
+// axis-aligned box - which, for the long rays used here, is nearly every
+// face. Skipping a face is exact, not heuristic: a crossing the
+// intersector reports has |ray point - surface point| <= opt.tolerance (its
+// Newton polish accepts nothing looser) and the surface point lies in the
+// face's box, so a face the segment cannot reach in that grown box
+// contributes no counted crossing. The answer is identical to the plain
+// per-face loop, which smaller breps keep and which stays reachable on any
+// brep via `detail::SetBrepSpatialAccelerationEnabled(false)` as the oracle.
 bool ContainsPointExact(const Point3d& point, const ON_Brep& brep, double ray_length = 0,
                          const IntersectOptions& opt = IntersectOptions(), double tol = 1e-6);
 
@@ -488,7 +599,9 @@ bool ContainsPointExact(const Point3d& point, const ON_Brep& brep, double ray_le
 // own simpler `ContainsPoint()` test can hit). `opt`/`ray_length`/`tol`
 // are forwarded to `ContainsPointExact()`; `u_divisions`/`v_divisions`/
 // `trim_samples_per_edge` to `ClosestPointOnBrep()` - this function adds
-// no search logic of its own. Only meaningful for a genuinely closed
+// no search logic of its own - so both halves are accelerated exactly as
+// those two functions are (identical result, per-call index for a brep of
+// 16 or more faces). Only meaningful for a genuinely closed
 // (solid) Brep, the same "inside has to mean something" precondition
 // `ContainsPointExact()` itself already leaves to the caller, undetected
 // here for the identical reason. Throws exactly as `ClosestPointOnBrep()`

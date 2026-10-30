@@ -664,6 +664,7 @@
 #include <exception>
 #include <limits>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -2280,24 +2281,44 @@ std::vector<Vector3d> GenericRayDirections() {
 
 enum class Cls { In, Out };
 
+// A once-per-boolean face-box index for the brep that a boolean engine
+// classifies MANY fragment points against (see ClassifyPointVsBrep()'s
+// `index` parameter). nullptr - the plain per-face scan - for a brep too
+// small for an index to pay or while the Brep spatial acceleration switch
+// is off (the scan is the oracle the indexed path is tested against).
+std::unique_ptr<detail::BrepFaceBoxIndex> MakeClassifyIndex(const ON_Brep& b) {
+  if (b.m_F.Count() < detail::kMinBrepFacesForSpatialIndex || !detail::BrepSpatialAccelerationEnabled()) {
+    return nullptr;
+  }
+  return std::make_unique<detail::BrepFaceBoxIndex>(b);
+}
+
+// `index`, if given, MUST have been built from `other` (and `other` left
+// unchanged since). With it, the per-face loop below visits only the
+// faces whose untrimmed box can overlap the ray's box (a superset from the
+// tree, ascending face order, plus any face the index could not box),
+// then applies the IDENTICAL exact `fb.IsDisjoint(ray_box)` predicate the
+// plain scan applies to every face - so the same faces reach the
+// intersector in the same order, and the answer is unchanged.
 Cls ClassifyPointVsBrep(const Point3d& p, const ON_Brep& other, double ray_length, const IntersectOptions& opt,
-                         double tol) {
+                         double tol, const detail::BrepFaceBoxIndex* index = nullptr) {
   const std::vector<Vector3d> dirs = GenericRayDirections();
+  std::vector<int> candidates;
   for (const Vector3d& d : dirs) {
     bool clean = true;
     int crossings = 0;
     ON_LineCurve ray(p, p + d * ray_length);
-    for (int fi = 0; fi < other.m_F.Count() && clean; ++fi) {
+    ON_BoundingBox ray_box;
+    ray_box.Set(p, false);
+    ray_box.Set(p + d * ray_length, true);
+    auto process_face = [&](int fi) {
       const ON_BrepFace& face = other.m_F[fi];
       const ON_Surface* s = face.SurfaceOf();
-      if (!s) continue;
+      if (!s) return;
       ON_BoundingBox fb = s->BoundingBox();
       fb.m_min -= ON_3dVector(tol, tol, tol);
       fb.m_max += ON_3dVector(tol, tol, tol);
-      ON_BoundingBox ray_box;
-      ray_box.Set(p, false);
-      ray_box.Set(p + d * ray_length, true);
-      if (fb.IsDisjoint(ray_box)) continue;
+      if (fb.IsDisjoint(ray_box)) return;
       std::vector<CurveSurfaceHit> hits = IntersectCurveSurface(ray, *s, opt);
       for (const CurveSurfaceHit& h : hits) {
         if (h.t <= tol) continue;  // at/behind the ray origin
@@ -2316,6 +2337,27 @@ Cls ClassifyPointVsBrep(const Point3d& p, const ON_Brep& other, double ray_lengt
         }
         ++crossings;
       }
+    };
+    if (index) {
+      // The tree's box overlap is against UNPADDED face boxes, so grow the
+      // query by the scan's own `tol` pad (the index adds its rounding slop).
+      ON_BoundingBox query = ray_box;
+      query.m_min -= ON_3dVector(tol, tol, tol);
+      query.m_max += ON_3dVector(tol, tol, tol);
+      index->Candidates(query, candidates);
+      // A hit IntersectCurveSurface() reports has |ray point - surface
+      // point| <= opt.tolerance (its Newton polish accepts nothing looser),
+      // and the surface point lies in the face's box, so a face whose box
+      // (grown by 2 * (opt.tolerance + tol)) the ray SEGMENT cannot reach
+      // contributes no counted crossing: skipping it changes nothing.
+      const Point3d ray_end = p + d * ray_length;
+      const double reach = 2.0 * (opt.tolerance + tol);
+      for (size_t k = 0; k < candidates.size() && clean; ++k) {
+        if (!index->SegmentMayTouch(candidates[k], p, ray_end, reach)) continue;
+        process_face(candidates[k]);
+      }
+    } else {
+      for (int fi = 0; fi < other.m_F.Count() && clean; ++fi) process_face(fi);
     }
     if (clean) return (crossings % 2 == 1) ? Cls::In : Cls::Out;
   }
@@ -3716,7 +3758,8 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
 
   // Classify + keep, per operation.
   std::vector<KeptFace> kept;
-  auto process = [&](std::vector<FaceFrags>& frags, const ON_Brep& other, bool a_side) {
+  auto process = [&](std::vector<FaceFrags>& frags, const ON_Brep& other, bool a_side,
+                     const detail::BrepFaceBoxIndex* other_index) {
     for (FaceFrags& ff : frags) {
       if (debug) std::fprintf(stderr, "face(%s) idx=%d frags=%zu\n", a_side ? "A" : "B", ff.face_index, ff.frags.size());
       const std::vector<CoincidentInfo>& coincident_here =
@@ -3888,7 +3931,7 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
             continue;
           }
           const Point3d p3 = ff.surface->PointAt(uv.x, uv.y);
-          const Cls cls = ClassifyPointVsBrep(p3, other, ray_length, opt, tol);
+          const Cls cls = ClassifyPointVsBrep(p3, other, ray_length, opt, tol, other_index);
           if (debug) std::fprintf(stderr, "  frag: outer=%zu holes=%zu uv=(%f,%f) p3=(%f,%f,%f) cls=%s\n", frag.outer.size(), frag.holes.size(), uv.x, uv.y, p3.x, p3.y, p3.z, cls == Cls::In ? "In" : "Out");
           switch (op) {
             case BooleanOp::Union:
@@ -3942,8 +3985,12 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
       }
     }
   };
-  process(frags_a, bb, true);
-  process(frags_b, ba, false);
+  // One face-box index per operand, built once and shared by every
+  // fragment's classification ray (nullptr = plain scan for a small brep).
+  const auto index_bb = MakeClassifyIndex(bb);
+  const auto index_ba = MakeClassifyIndex(ba);
+  process(frags_a, bb, true, index_bb.get());
+  process(frags_b, ba, false, index_ba.get());
 
   // Every FaceFrags::surface was only ever a read-only source for
   // KeptFace::surface's own DuplicateSurface() copies above - free them
@@ -5068,12 +5115,13 @@ std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet, double 
 
   // `sheet`'s fragments: keep only the ones inside `solid`, as a capping
   // face for BOTH output pieces (opposite orientation each).
+  const auto bs_index = MakeClassifyIndex(bs);  // once, shared by every fragment's ray
   for (FaceFrags& ff : frags_h) {
     for (Fragment& frag : ff.frags) {
       Point2d uv;
       if (!RepresentativeUV(frag, uv)) continue;
       const Point3d p3 = ff.surface->PointAt(uv.x, uv.y);
-      if (ClassifyPointVsBrep(p3, bs, ray_length, opt, tol) != Cls::In) continue;
+      if (ClassifyPointVsBrep(p3, bs, ray_length, opt, tol, bs_index.get()) != Cls::In) continue;
 
       KeptFace kf_pos;
       kf_pos.surface = ff.surface->DuplicateSurface();
@@ -5206,12 +5254,13 @@ Brep TrimSheetBySolid(const Brep& sheet, const Brep& solid, bool keep_inside, do
   // `solid`. Unlike SplitBySheet(), no cap faces are added and `solid` is
   // never touched - this trims `sheet`'s own surface, nothing else.
   std::vector<KeptFace> kept;
+  const auto bs_index = MakeClassifyIndex(bs);  // once, shared by every fragment's ray
   for (FaceFrags& ff : frags_h) {
     for (Fragment& frag : ff.frags) {
       Point2d uv;
       if (!RepresentativeUV(frag, uv)) continue;
       const Point3d p3 = ff.surface->PointAt(uv.x, uv.y);
-      const bool is_in = ClassifyPointVsBrep(p3, bs, ray_length, opt, tol) == Cls::In;
+      const bool is_in = ClassifyPointVsBrep(p3, bs, ray_length, opt, tol, bs_index.get()) == Cls::In;
       if (is_in != keep_inside) continue;
 
       KeptFace kf;
@@ -7757,6 +7806,18 @@ Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions, int
 bool ContainsPointExact(const Point3d& point, const ON_Brep& brep, double ray_length, const IntersectOptions& opt,
                          double tol) {
   if (brep.m_F.Count() == 0) throw std::invalid_argument("ContainsPointExact: brep has no faces");
+  // A brep of several faces: a per-call box index (one cheap surface box
+  // per face - what the plain loop below recomputes for every ray anyway)
+  // lets the classifier hand only the faces the ray segment can actually
+  // reach to the expensive curve/surface intersector instead of every face
+  // whose AABB overlaps the ray's (very long, so brep-covering) AABB. The
+  // answer is identical (see ClassifyPointVsBrep()); the plain loop stays
+  // as the small-brep path and as the oracle behind
+  // detail::SetBrepSpatialAccelerationEnabled(false).
+  if (brep.m_F.Count() >= detail::kMinBrepFacesForSpatialIndex && detail::BrepSpatialAccelerationEnabled()) {
+    const detail::BrepFaceBoxIndex index(brep);
+    return detail::ContainsPointExactIndexed(point, brep, index, ray_length, opt, tol);
+  }
   if (ray_length <= 0) {
     ON_BoundingBox bbox;
     for (int i = 0; i < brep.m_F.Count(); ++i) {
@@ -7767,5 +7828,19 @@ bool ContainsPointExact(const Point3d& point, const ON_Brep& brep, double ray_le
   }
   return ClassifyPointVsBrep(point, brep, ray_length, opt, tol) == Cls::In;
 }
+
+namespace detail {
+bool ContainsPointExactIndexed(const Point3d& point, const ON_Brep& brep, const BrepFaceBoxIndex& index,
+                               double ray_length, const IntersectOptions& opt, double tol) {
+  if (brep.m_F.Count() == 0) throw std::invalid_argument("ContainsPointExact: brep has no faces");
+  if (ray_length <= 0) {
+    // The same union of every face's surface box ContainsPointExact()
+    // computes, already held by the index.
+    const ON_BoundingBox& bbox = index.Bounds();
+    ray_length = bbox.IsValid() ? 4.0 * (bbox.Diagonal().Length() + 1.0) : 1000.0;
+  }
+  return ClassifyPointVsBrep(point, brep, ray_length, opt, tol, &index) == Cls::In;
+}
+}  // namespace detail
 
 }  // namespace dino8::kernel

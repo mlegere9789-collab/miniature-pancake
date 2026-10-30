@@ -1130,6 +1130,36 @@ MeshDistance Mesh::DistanceTo(const Mesh& other) const {
     return g2;
   };
 
+  // The reference form (detail::SetMeshSpatialAccelerationEnabled(false)):
+  // the original plain triangle-pair scan, box-gap-rejected pair by pair,
+  // kept reachable as the oracle the accelerated path below is tested
+  // against bit for bit (distance, both closest points, both face indices,
+  // incl. which pair wins an exact tie: the first in (this, other) order).
+  if (!detail::MeshSpatialAccelerationEnabled()) {
+    MeshDistance reference;
+    reference.distance = std::numeric_limits<double>::infinity();
+    for (const Tri& a : ta) {
+      for (const Tri& b : tb) {
+        if (box_gap_squared(a, b) >= reference.distance * reference.distance) {
+          continue;
+        }
+        Point3d on_a, on_b;
+        const double d = TriangleTriangleDistance(a.p, b.p, on_a, on_b);
+        if (d < reference.distance) {
+          reference.distance = d;
+          reference.point_on_this = on_a;
+          reference.point_on_other = on_b;
+          reference.face_on_this = a.face;
+          reference.face_on_other = b.face;
+          if (d == 0.0) {
+            return reference;
+          }
+        }
+      }
+    }
+    return reference;
+  }
+
   // Spatial acceleration (formerly a brute-force triangle-pair loop with
   // only a per-pair box reject): an `ON_RTree` over `other`'s triangle
   // boxes, so each triangle of `this` is tested only against the few

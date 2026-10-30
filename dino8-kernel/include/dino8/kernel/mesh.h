@@ -74,7 +74,9 @@ class MeshClosestPointIndex;
 namespace detail {
 // Test-only switch: when disabled, Mesh::ClosestPoint()/FireRay()/
 // ContainsPoint()/SignedDistance() take their original brute-force
-// per-triangle scan instead of the lazily built spatial index. The two
+// per-triangle scan instead of the lazily built spatial index, and
+// Mesh::DistanceTo(const Mesh&) takes its original box-rejected
+// triangle-pair loop instead of the R-tree search. The two
 // paths return bit-identical results; this exists so the test suite can
 // use the production brute-force code itself as the oracle for the
 // accelerated path. Process-global, thread-safe, defaults to enabled.
