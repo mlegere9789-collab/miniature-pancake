@@ -85053,6 +85053,261 @@ void TestChamferCylinderRimExactConeAndClosedForms() {
 }
 
 
+// The four adaptive closed-mesh tessellators, one table of (name, call) so
+// the two tests below exercise every one of them the same way.
+struct AdaptiveClosedMeshTessellator {
+  const char* name;
+  dino8::kernel::Mesh (*call)(const dino8::kernel::Brep&, double tolerance);
+};
+const std::vector<AdaptiveClosedMeshTessellator>& AdaptiveClosedMeshTessellators() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  static const std::vector<AdaptiveClosedMeshTessellator> table = {
+      {"TessellateToClosedMeshAdaptive", [](const Brep& b, double t) { return b.TessellateToClosedMeshAdaptive(t); }},
+      {"TessellateToClosedMeshNonUniformAdaptive",
+       [](const Brep& b, double t) { return b.TessellateToClosedMeshNonUniformAdaptive(t); }},
+      {"TessellateToClosedMeshCertifiedAdaptive",
+       [](const Brep& b, double t) { return b.TessellateToClosedMeshCertifiedAdaptive(t); }},
+      {"TessellateToClosedMeshAdaptiveByAngle",
+       [](const Brep& b, double t) { return b.TessellateToClosedMeshAdaptiveByAngle(t); }},
+  };
+  return table;
+}
+
+// Follow-up to TestBrepTessellateSplitPlanarFaceClosesAcrossSharedEdges,
+// which left the four adaptive closed-mesh tessellators untested: the same
+// split-top box fixtures through every one of them. Measured before the
+// adaptive paths were routed through StitchedIfThatClosesIt (brep.cpp): all
+// five fixtures were ALREADY closed on every adaptive path at every
+// tolerance - a planar face's adaptive lattice is 1 x 1 (a flat facet has
+// no chord deviation to subdivide for), so the only vertices a split top
+// puts on a shared edge are the loop's own corners, which the side walls
+// carry too; V = 10 for the 7-face unit box. So this test pins that the
+// routing changes nothing here (an already-closed weld comes back as the
+// bare weld, vertex for vertex), that the volumes are the closed form
+// exactly, and that the topologically OPEN variant stays open on every
+// adaptive path - the stitch is gated on the Brep's edge topology, same as
+// the fixed-resolution path.
+void TestBrepAdaptiveClosedMeshesSplitPlanarFacesStayClosedAndExact() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using Poly = std::vector<std::pair<double, double>>;
+
+  struct Fixture {
+    const char* name;
+    std::vector<Poly> top;
+    double ox, oy, oz, sx, sy, sz;
+  };
+  const std::vector<Fixture> fixtures = {
+      {"top split in two at x=0.5 (unit box)", {{{0, 0}, {.5, 0}, {.5, 1}, {0, 1}}, {{.5, 0}, {1, 0}, {1, 1}, {.5, 1}}}, 0, 0, 0, 1, 1, 1},
+      {"top split in two at x=0.3 (offset 4x3x2 box)",
+       {{{0, 0}, {.3, 0}, {.3, 1}, {0, 1}}, {{.3, 0}, {1, 0}, {1, 1}, {.3, 1}}}, 10, -5, 7, 4, 3, 2},
+      {"top split in three strips, the middle one mid-face",
+       {{{0, 0}, {1, 0}, {1, .4}, {0, .4}}, {{0, .4}, {1, .4}, {1, .6}, {0, .6}}, {{0, .6}, {1, .6}, {1, 1}, {0, 1}}}, 0, 0, 0, 1, 1, 1},
+      {"top split by a slanted line (offset 4x3x2 box)",
+       {{{0, 0}, {1, 0}, {1, .7}, {0, .4}}, {{0, .4}, {1, .7}, {1, 1}, {0, 1}}}, 10, -5, 7, 4, 3, 2},
+      {"top = a rectangle plus a concave L (vertex on a lattice line at res 2)",
+       {{{0, .5}, {.4, .5}, {.4, 1}, {0, 1}}, {{0, 0}, {1, 0}, {1, 1}, {.4, 1}, {.4, .5}, {0, .5}}}, 0, 0, 0, 1, 1, 1},
+  };
+  const double tolerances[] = {0.1, 0.01, 0.001};
+
+  for (const Fixture& fx : fixtures) {
+    const double exact = fx.sx * fx.sy * fx.sz;
+    const Brep solid = Brep::FromPlanarFaces(SplitTopBoxFaces(fx.top, true, fx.ox, fx.oy, fx.oz, fx.sx, fx.sy, fx.sz));
+    bool all_closed = true, all_exact = true;
+    for (const AdaptiveClosedMeshTessellator& t : AdaptiveClosedMeshTessellators()) {
+      for (const double tol : tolerances) {
+        const Mesh m = t.call(solid, tol);
+        if (!m.IsClosedManifold()) {
+          all_closed = false;
+          std::fprintf(stderr, "  [%s] %s(%g) is open: %d naked edges\n", fx.name, t.name, tol, m.Check().naked_edges);
+          continue;
+        }
+        if (std::fabs(m.Volume() - exact) > 1e-9 * exact) {
+          all_exact = false;
+          std::fprintf(stderr, "  [%s] %s(%g) volume %.12f != %.12f\n", fx.name, t.name, tol, m.Volume(), exact);
+        }
+      }
+    }
+    Check(all_closed, "every adaptive closed-mesh tessellator (chord/non-uniform/certified/by-angle) is a closed manifold at 0.1, 0.01 and 0.001 on this split-top box");
+    Check(all_exact, "...and each one's volume is the closed-form sx*sy*sz to 1e-9 (planar facets on exact corners)");
+    double volume = -1.0;
+    bool threw = false;
+    try {
+      volume = solid.Volume();
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    Check(!threw && std::fabs(volume - exact) <= 1e-9 * exact, "...and Brep::Volume() does not throw: exactly sx*sy*sz");
+  }
+
+  // Already-closed results are untouched: an unsplit FromPlanarFaces box
+  // comes back vertex-for-vertex and triangle-for-triangle what the bare
+  // per-face tessellation + MergeAndWeld() composition gives, on every
+  // adaptive path (the certified one included: its geometry-preserving
+  // stitch has nothing to do either).
+  {
+    const Brep box = Brep::FromPlanarFaces(SplitTopBoxFaces({{{0, 0}, {1, 0}, {1, 1}, {0, 1}}}, true, 0, 0, 0, 2, 3, 4));
+    const std::vector<Mesh> bare = {Mesh::MergeAndWeld(box.TessellateAdaptive(0.01)),
+                                    Mesh::MergeAndWeld(box.TessellateNonUniformAdaptive(0.01)),
+                                    Mesh::MergeAndWeld(box.TessellateCertifiedAdaptive(0.01)),
+                                    Mesh::MergeAndWeld(box.TessellateAdaptiveByAngle(0.01))};
+    const auto& table = AdaptiveClosedMeshTessellators();
+    for (size_t k = 0; k < table.size(); ++k) {
+      const Mesh via_api = table[k].call(box, 0.01);
+      Check(bare[k].IsClosedManifold() && via_api.raw().m_V.Count() == bare[k].raw().m_V.Count() &&
+                via_api.raw().m_F.Count() == bare[k].raw().m_F.Count() && std::fabs(via_api.Volume() - 24.0) < 1e-9,
+            "an unsplit FromPlanarFaces box is already closed on this adaptive path and the closed-mesh API returns exactly the bare weld (nothing stitched, nothing re-meshed)");
+    }
+  }
+
+  // The topologically open variant (side walls without the top's split
+  // vertex: 6 naked B-rep edges) stays open on every adaptive path, and
+  // Brep::Volume() still refuses it.
+  {
+    const Brep open = Brep::FromPlanarFaces(
+        SplitTopBoxFaces({{{0, 0}, {.5, 0}, {.5, 1}, {0, 1}}, {{.5, 0}, {1, 0}, {1, 1}, {.5, 1}}}, false, 0, 0, 0, 1, 1, 1));
+    bool all_open = !open.raw().IsSolid() && open.Check().Count(Brep::CheckIssue::Kind::NakedEdge) == 6;
+    for (const AdaptiveClosedMeshTessellator& t : AdaptiveClosedMeshTessellators()) {
+      for (const double tol : {0.1, 0.01}) {
+        const Mesh m = t.call(open, tol);
+        if (m.IsClosedManifold() || m.Check().naked_edges != 6) all_open = false;
+      }
+    }
+    Check(all_open, "the unmatched-side variant (6 naked B-rep edges) tessellates open with exactly 6 naked mesh edges on every adaptive path at 0.1 and 0.01 - a real hole is never papered over");
+    bool threw = false;
+    try {
+      (void)open.Volume();
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "...and Volume() still refuses it");
+  }
+}
+
+// The largest sagitta of any mesh edge lying on the hole wall of a box
+// drilled along z through (5, 5): an edge whose two endpoints both sit at
+// `radius` from the axis chords the circle, and its midpoint falls short
+// of the wall by radius - |midpoint - axis|. That is exactly the facet's
+// deviation from the true cylinder (the facets are ruled along the axis),
+// so it is the quantity every chord/angle bound below is stated in.
+double MaxHoleWallSagitta(const dino8::kernel::Mesh& mesh, double radius) {
+  const ON_Mesh& raw = mesh.raw();
+  auto axis_distance = [](const ON_3fPoint& p) {
+    return std::sqrt((p.x - 5.0) * (p.x - 5.0) + (p.y - 5.0) * (p.y - 5.0));
+  };
+  double worst = 0.0;
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    const ON_MeshFace& f = raw.m_F[i];
+    for (int k = 0; k < 3; ++k) {
+      const ON_3fPoint& a = raw.m_V[f.vi[k]];
+      const ON_3fPoint& b = raw.m_V[f.vi[(k + 1) % 3]];
+      if (std::fabs(axis_distance(a) - radius) > 1e-4 || std::fabs(axis_distance(b) - radius) > 1e-4) continue;
+      const ON_3fPoint mid(0.5f * (a.x + b.x), 0.5f * (a.y + b.y), 0.5f * (a.z + b.z));
+      worst = std::max(worst, radius - axis_distance(mid));
+    }
+  }
+  return worst;
+}
+
+// The curved-seam half of the same follow-up: a BooleanCombineMixed box
+// minus a through cylinder (the drilled-box fixture of
+// TestBooleanCombineMixedDrilledBoxThroughHole). Measured at head before
+// this fix, every adaptive closed-mesh tessellator was open here at every
+// tolerance (e.g. TessellateToClosedMeshAdaptive(0.01): 464 vertices, 488
+// faces, 488 naked edges) and Brep::Volume() threw on this closed solid.
+// Root cause, in two parts: (1) the result's edge table has 439 live edges
+// of which 426 carry ONE trim (each wedge cap's arc polyline segment is its
+// own edge, the wall's own trim is a (u, v) rectangle), so the T-junction
+// stitch - gated on every edge having two trims - never runs; (2) it could
+// not have helped anyway: the caps' arc vertices and the wall's grid
+// columns all lie ON the circle at DIFFERENT angles, so each sits a sagitta
+// off the other side's chord, never within the weld tolerance of a naked
+// edge it could split. Only meshing both sides from the literal same arc
+// points closes it - TessellateConforming()'s mechanism - so the adaptive
+// paths now fall back to that at their own per-face resolution (see
+// ConformingClosedMeshAtAdaptiveDivisions, brep.cpp). The bounds asserted:
+//   - the hole wall's facet deviation (MaxHoleWallSagitta) is <= the chord
+//     tolerance for the three chord-based paths (the certified one
+//     measures it; the two heuristic ones inherit SuggestedDivisions()'s
+//     own circle estimate, which the per-run ceil() only ever refines) and
+//     <= r (1 - cos(angle/2)) for the angle-based one;
+//   - the mesh is the box minus an INSCRIBED prism (every wall vertex is on
+//     the circle), so 0 <= V_mesh - (1000 - 40 pi) <= (hole wall area) x
+//     deviation = 2 pi r h x bound - a polygon inscribed in a circle of
+//     radius r loses at most perimeter x sagitta of area, times the height.
+void TestBrepAdaptiveClosedMeshesCloseBoxMinusCylinder() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double r = 2.0, h = 10.0;
+  const auto [box, cyl] = BuildDrilledBoxInputs(/*hole_radius=*/r, /*hole_z0=*/-1.0, /*hole_length=*/12.0);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  const double exact = 1000.0 - ON_PI * r * r * h;
+  const double wall_area = 2.0 * ON_PI * r * h;
+
+  // The fixture's own facts the fix rests on (see this test's comment).
+  int single_trim_edges = 0, live_edges = 0;
+  for (int ei = 0; ei < drilled.raw().m_E.Count(); ++ei) {
+    const ON_BrepEdge& e = drilled.raw().m_E[ei];
+    if (e.m_edge_index < 0) continue;
+    ++live_edges;
+    if (e.m_ti.Count() == 1) ++single_trim_edges;
+  }
+  Check(drilled.FaceCount() == 13 && !drilled.raw().IsSolid() && live_edges == 439 && single_trim_edges == 426,
+        "box-minus-cylinder fixture: 13 faces, 439 live edges of which 426 carry a single trim (the caps' arc polylines) - the T-junction stitch's edge-topology gate is false here by construction");
+  Check(!Mesh::MergeAndWeld(drilled.TessellateAdaptive(0.01)).IsClosedManifold() &&
+            !Mesh::MergeAndWeld(drilled.TessellateCertifiedAdaptive(0.01)).IsClosedManifold() &&
+            !Mesh::MergeAndWeld(drilled.TessellateAdaptiveByAngle(0.1)).IsClosedManifold(),
+        "...and the bare per-face adaptive tessellations welded are open (the falsifier: the closed-mesh API below is doing real work, not reporting a weld that was already closed)");
+
+  // Chord-based paths.
+  for (const double tol : {0.1, 0.01, 0.001}) {
+    for (size_t k = 0; k < 3; ++k) {
+      const AdaptiveClosedMeshTessellator& t = AdaptiveClosedMeshTessellators()[k];
+      const Mesh m = t.call(drilled, tol);
+      const double err = m.Volume() - exact;
+      const double sagitta = MaxHoleWallSagitta(m, r);
+      char what[320];
+      std::snprintf(what, sizeof what,
+                    "%s(%g) on box-minus-cylinder: closed manifold, hole-wall sagitta %.3e <= %g, volume 1000-40pi %+.3e within [0, 2 pi r h x %g = %.3e]",
+                    t.name, tol, sagitta, tol, err, tol, wall_area * tol);
+      Check(m.IsClosedManifold() && sagitta <= tol && err >= 0.0 && err <= wall_area * tol, what);
+    }
+  }
+  // The angle-based path: a facet turning <= angle rad has sagitta <= r (1 - cos(angle / 2)).
+  for (const double angle : {0.5, 0.1, 0.02}) {
+    const AdaptiveClosedMeshTessellator& t = AdaptiveClosedMeshTessellators()[3];
+    const Mesh m = t.call(drilled, angle);
+    const double bound = r * (1.0 - std::cos(0.5 * angle));
+    const double err = m.Volume() - exact;
+    const double sagitta = MaxHoleWallSagitta(m, r);
+    char what[320];
+    std::snprintf(what, sizeof what,
+                  "%s(%g) on box-minus-cylinder: closed manifold, hole-wall sagitta %.3e <= r(1-cos(a/2)) = %.3e, volume 1000-40pi %+.3e within [0, %.3e]",
+                  t.name, angle, sagitta, bound, err, wall_area * bound);
+    Check(m.IsClosedManifold() && sagitta <= bound && err >= 0.0 && err <= wall_area * bound, what);
+  }
+
+  // Brep::Volume(): its watertightness precondition now accepts the
+  // conforming closure, and the exact per-face integral over the result's
+  // own real loop topology is the closed form up to the caps' own trim
+  // polylines (the arc is a ~107-gon per circle: an inscribed polygon's
+  // area deficit, pi r^2 (1 - (N / 2 pi) sin(2 pi / N)) ~ 2.3e-3, enters
+  // only through the top cap's z = 10 term of the divergence sum, /3).
+  double volume = -1.0;
+  bool threw = false;
+  try {
+    volume = drilled.Volume();
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  Check(!threw && std::fabs(volume - exact) < 0.02,
+        "Brep::Volume() no longer throws on box-minus-cylinder and is 1000-40pi within 0.02 (the caps' own ~107-gon trim polylines; was: threw 'not a closed, watertight solid')");
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -86366,6 +86621,9 @@ int main() {
 
   RunTest("TestSurfaceJoinSplicesSharedEdgeExactly", TestSurfaceJoinSplicesSharedEdgeExactly);
   RunTest("TestSurfaceJoinRejectsUnsharedEdgesAndClosedSurfaces", TestSurfaceJoinRejectsUnsharedEdgesAndClosedSurfaces);
+  RunTest("TestBrepAdaptiveClosedMeshesSplitPlanarFacesStayClosedAndExact",
+          TestBrepAdaptiveClosedMeshesSplitPlanarFacesStayClosedAndExact);
+  RunTest("TestBrepAdaptiveClosedMeshesCloseBoxMinusCylinder", TestBrepAdaptiveClosedMeshesCloseBoxMinusCylinder);
 
   RunTest("TestCurveMakeUniform", TestCurveMakeUniform);
   RunTest("TestRevolvePartialAngleCapsOffAxisOpenProfile", TestRevolvePartialAngleCapsOffAxisOpenProfile);

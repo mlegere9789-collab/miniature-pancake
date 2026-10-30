@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -1468,8 +1469,13 @@ class Brep {
   // kernel's own factories never build - Box()/Sphere()/Torus() each add
   // their faces via the plain single-surface NewFace(int) overload (see
   // their own doc comments), so raw().IsSolid() is false for every one
-  // of them despite being genuinely closed solids. Throws
-  // std::invalid_argument if that check fails.
+  // of them despite being genuinely closed solids. A Brep that carries
+  // conforming seam data (a BooleanCombineMixed result, whose wedge-cap
+  // arcs and cylinder walls close only through TessellateConforming()'s
+  // literal shared boundary) passes when
+  // `TessellateToClosedMeshConforming(8, 8).IsClosedManifold()` instead -
+  // see IsWatertightForIntegration() in brep.cpp. Throws
+  // std::invalid_argument if both checks fail.
   //
   // A face that does NOT cover its entire surface parameter domain is
   // not automatically rejected, the same extension Area() already makes
@@ -2974,7 +2980,23 @@ class Brep {
   std::vector<Mesh> TessellateAdaptive(double chord_tolerance) const;
 
   // TessellateAdaptive() followed by Mesh::MergeAndWeld() - the
-  // adaptive counterpart to TessellateToClosedMesh().
+  // adaptive counterpart to TessellateToClosedMesh(), and closed the same
+  // two ways that method and TessellateToClosedMeshConforming() are: an
+  // open weld of a Brep whose edge topology is closed has its T-junction
+  // cracks stitched (existing vertices only - see StitchedIfThatClosesIt
+  // in brep.cpp), and a weld that stays open because the Brep carries
+  // curved seams only a conforming tessellation can close (a
+  // BooleanCombineMixed result: wedge-cap arcs vs cylinder walls) is
+  // re-meshed through TessellateConforming()'s machinery at THIS call's
+  // own adaptive per-face resolution (see
+  // ConformingClosedMeshAtAdaptiveDivisions in brep.cpp). An already-
+  // closed weld, and any Brep without such seam data, is returned exactly
+  // as the bare weld. The same holds for the three siblings below, with
+  // the certified one accepting the conforming re-mesh only once every
+  // curved face measures within `chord_tolerance` and stitching without
+  // any vertex weld, so its certified bound stays true up to float
+  // rounding (see TestBrepAdaptiveClosedMeshesCloseBoxMinusCylinder,
+  // tests/test_basic.cpp).
   Mesh TessellateToClosedMeshAdaptive(double chord_tolerance) const;
 
   // TessellateAdaptive(), but using NurbsSurface::
@@ -5620,6 +5642,28 @@ class Brep {
   // axis cannot be swept by straight rulings from the axis segment.
   static Brep AssembleRevolvedWedge(ON_NurbsSurface* wall, Point3d axis_point, Vector3d axis_direction,
                                     bool start_on_axis, bool end_on_axis, double tol, const char* caller);
+  // TessellateConforming()'s body, with an optional per-face division
+  // pair for every NON-planar face (parallel to brep_.m_F; an entry with
+  // u < 1 or v < 1 keeps the uniform pair) - see its own doc comment in
+  // brep.cpp. A null `curved_divisions` is exactly TessellateConforming().
+  std::vector<Mesh> TessellateConformingImpl(int u_divisions, int v_divisions, int boundary_samples,
+                                             const std::vector<SurfaceDivisions>* curved_divisions) const;
+  // True when any face carries a PlanarFace::ArcRun or a cylinder cap-
+  // notch row (face_arc_runs_/face_notch_rows_ below): the seam data only
+  // TessellateConforming() consumes, i.e. this is a BooleanCombineMixed-
+  // class result whose curved shared seams close only conformingly.
+  bool HasConformingSeamData() const;
+  // The adaptive closed-mesh tessellators' shared conforming fallback -
+  // see its own doc comment in brep.cpp. `suggest` maps a face's surface
+  // to that face's adaptive division pair; `certify_chord_tolerance` > 0
+  // makes the fallback measure every curved face and refine up to
+  // `max_refinements` times before accepting.
+  Mesh ConformingClosedMeshAtAdaptiveDivisions(Mesh welded,
+                                               const std::function<SurfaceDivisions(const NurbsSurface&)>& suggest,
+                                               double certify_chord_tolerance, int max_refinements) const;
+  // Volume()/VolumeMassProperties()/VolumeCertifiedAdaptive()'s shared
+  // precondition - see its own doc comment in brep.cpp.
+  bool IsWatertightForIntegration() const;
   // Parallel to brep_.m_F: face_trim_loops_[i] is empty for an untrimmed
   // face, or the trim polygon for a face built by TrimmedPlanarFace().
   // Every face-adding factory must keep this in lockstep with brep_.m_F.

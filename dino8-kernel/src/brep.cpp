@@ -1221,10 +1221,11 @@ double Brep::Volume() const {
   // check mesh and inspect it" approach AssembleSweptBody()'s own
   // orientation cross-check in sweep.cpp already uses), so that's the
   // precondition used instead.
-  if (!TessellateToClosedMesh(8, 8).IsClosedManifold()) {
+  if (!IsWatertightForIntegration()) {
     throw std::invalid_argument(
         "dino8::kernel::Brep::Volume: this Brep is not a closed, watertight solid "
-        "(TessellateToClosedMesh(8, 8).IsClosedManifold() is false) - there is no well-defined "
+        "(neither TessellateToClosedMesh(8, 8) nor, for a Brep carrying conforming seam data, "
+        "TessellateToClosedMeshConforming(8, 8) is a closed manifold) - there is no well-defined "
         "enclosed volume otherwise");
   }
   double total = 0.0;
@@ -1439,14 +1440,30 @@ double BrepDivergenceSum(const Brep& self, MomentIntegrand&& moment_integrand, i
 
 }  // namespace
 
+// Volume()/VolumeMassProperties()/VolumeCertifiedAdaptive()'s shared
+// "the faces close up into one watertight surface" precondition: the
+// fixed-resolution weld-then-check as before, or - for a Brep that carries
+// conforming seam data (a BooleanCombineMixed-class result whose wedge-cap
+// arcs and cylinder walls only ever close through TessellateConforming()'s
+// literal shared boundary, see ConformingClosedMeshAtAdaptiveDivisions) -
+// the conforming weld at the same resolution. A box with a through-hole
+// used to throw here on a perfectly closed solid although its exact
+// integral below is well-defined (every face has real loop topology);
+// a genuinely open shell still fails both checks.
+bool Brep::IsWatertightForIntegration() const {
+  if (TessellateToClosedMesh(8, 8).IsClosedManifold()) return true;
+  return HasConformingSeamData() && TessellateToClosedMeshConforming(8, 8).IsClosedManifold();
+}
+
 MassProperties Brep::VolumeMassProperties() const {
   // Same precondition Volume() itself already requires - see its own
   // doc comment above for exactly why raw().IsSolid() is the wrong
   // check here.
-  if (!TessellateToClosedMesh(8, 8).IsClosedManifold()) {
+  if (!IsWatertightForIntegration()) {
     throw std::invalid_argument(
         "dino8::kernel::Brep::VolumeMassProperties: this Brep is not a closed, watertight solid "
-        "(TessellateToClosedMesh(8, 8).IsClosedManifold() is false) - there is no well-defined "
+        "(neither TessellateToClosedMesh(8, 8) nor, for a Brep carrying conforming seam data, "
+        "TessellateToClosedMeshConforming(8, 8) is a closed manifold) - there is no well-defined "
         "enclosed volume otherwise");
   }
 
@@ -1538,10 +1555,11 @@ double Brep::VolumeCertifiedAdaptive(double tolerance, int max_refinements, doub
   if (max_refinements < 0) {
     throw std::invalid_argument("dino8::kernel::Brep::VolumeCertifiedAdaptive: max_refinements must be non-negative");
   }
-  if (!TessellateToClosedMesh(8, 8).IsClosedManifold()) {
+  if (!IsWatertightForIntegration()) {
     throw std::invalid_argument(
         "dino8::kernel::Brep::VolumeCertifiedAdaptive: this Brep is not a closed, watertight solid "
-        "(TessellateToClosedMesh(8, 8).IsClosedManifold() is false) - there is no well-defined "
+        "(neither TessellateToClosedMesh(8, 8) nor, for a Brep carrying conforming seam data, "
+        "TessellateToClosedMeshConforming(8, 8) is a closed manifold) - there is no well-defined "
         "enclosed volume otherwise");
   }
 
@@ -4507,9 +4525,9 @@ std::vector<Mesh> Brep::TessellateAdaptive(double chord_tolerance) const {
   return result;
 }
 
-Mesh Brep::TessellateToClosedMeshAdaptive(double chord_tolerance) const {
-  return Mesh::MergeAndWeld(TessellateAdaptive(chord_tolerance));
-}
+// TessellateToClosedMeshAdaptive() and its three siblings are defined after
+// TessellateToClosedMeshConforming() below: they share that method's
+// StitchedIfThatClosesIt() and the adaptive conforming fallback.
 
 std::vector<Mesh> Brep::TessellateNonUniformAdaptive(double chord_tolerance) const {
   std::vector<Mesh> result;
@@ -4530,10 +4548,6 @@ std::vector<Mesh> Brep::TessellateNonUniformAdaptive(double chord_tolerance) con
     if (brep_.m_F[i].m_bRev) result.back() = result.back().FlipNormals();
   }
   return result;
-}
-
-Mesh Brep::TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) const {
-  return Mesh::MergeAndWeld(TessellateNonUniformAdaptive(chord_tolerance));
 }
 
 std::vector<Mesh> Brep::TessellateCertifiedAdaptive(double chord_tolerance, int max_refinements,
@@ -4564,11 +4578,6 @@ std::vector<Mesh> Brep::TessellateCertifiedAdaptive(double chord_tolerance, int 
   return result;
 }
 
-Mesh Brep::TessellateToClosedMeshCertifiedAdaptive(double chord_tolerance,
-                                                    int max_refinements) const {
-  return Mesh::MergeAndWeld(TessellateCertifiedAdaptive(chord_tolerance, max_refinements));
-}
-
 std::vector<Mesh> Brep::TessellateAdaptiveByAngle(double angle_tolerance) const {
   std::vector<Mesh> result;
   result.reserve(static_cast<size_t>(brep_.m_F.Count()));
@@ -4588,10 +4597,6 @@ std::vector<Mesh> Brep::TessellateAdaptiveByAngle(double angle_tolerance) const 
     if (brep_.m_F[i].m_bRev) result.back() = result.back().FlipNormals();
   }
   return result;
-}
-
-Mesh Brep::TessellateToClosedMeshAdaptiveByAngle(double angle_tolerance) const {
-  return Mesh::MergeAndWeld(TessellateAdaptiveByAngle(angle_tolerance));
 }
 
 namespace {
@@ -6176,41 +6181,104 @@ int StitchTJunctionCracks(Mesh& mesh, double tol) {
     if (f.IsQuad()) tris.push_back({f.vi[0], f.vi[2], f.vi[3]});
   }
 
+  // Naked-vertex lookup is a uniform 3D grid (cell = the median naked-edge
+  // length, never below 8 perp_tol), each naked edge sampled along its own
+  // length at cell spacing and the 27-cell neighbourhood of every sample
+  // read: any vertex within perp_tol (< cell / 8) of the segment lies within
+  // cell / 2 + perp_tol < cell of a sample point, so in that sample's cell or
+  // an adjacent one. A 1D sort on x was quadratic the moment a seam put many
+  // naked vertices at ONE x (the adaptive closed-mesh paths now stitch too,
+  // and a tapered fillet wall meshes as a 190k-vertex strip with three
+  // distinct x values: 95k naked edges each scanning 95k vertices).
+  struct CellKey {
+    std::int64_t x, y, z;
+    bool operator==(const CellKey& o) const { return x == o.x && y == o.y && z == o.z; }
+  };
+  struct CellHash {
+    size_t operator()(const CellKey& k) const {
+      const std::uint64_t h = static_cast<std::uint64_t>(k.x) * 0x9E3779B97F4A7C15ull ^
+                              static_cast<std::uint64_t>(k.y) * 0xC2B2AE3D27D4EB4Full ^
+                              static_cast<std::uint64_t>(k.z) * 0x165667B19E3779F9ull;
+      return static_cast<size_t>(h ^ (h >> 29));
+    }
+  };
+
   int split_total = 0;
   for (int pass = 0; pass < 16; ++pass) {
-    std::map<std::pair<int, int>, int> uses;  // undirected edge -> use count
-    for (const std::array<int, 3>& t : tris) {
+    // Every (undirected edge, owning triangle), sorted so a naked edge is a
+    // run of length one.
+    struct EdgeUse {
+      int a, b;
+      size_t tri;
+    };
+    std::vector<EdgeUse> uses;
+    uses.reserve(3 * tris.size());
+    for (size_t ti = 0; ti < tris.size(); ++ti) {
       for (int k = 0; k < 3; ++k) {
-        const int a = t[static_cast<size_t>(k)], b = t[static_cast<size_t>((k + 1) % 3)];
-        ++uses[{std::min(a, b), std::max(a, b)}];
+        const int a = tris[ti][static_cast<size_t>(k)], b = tris[ti][static_cast<size_t>((k + 1) % 3)];
+        uses.push_back({std::min(a, b), std::max(a, b), ti});
       }
     }
+    std::sort(uses.begin(), uses.end(),
+              [](const EdgeUse& p, const EdgeUse& q) { return p.a != q.a ? p.a < q.a : p.b < q.b; });
+    std::vector<unsigned char> naked_mask(tris.size(), 0);  // bit k: the triangle's k-th edge is naked
+    for (size_t i = 0; i < uses.size();) {
+      size_t j = i + 1;
+      while (j < uses.size() && uses[j].a == uses[i].a && uses[j].b == uses[i].b) ++j;
+      if (j == i + 1) {
+        const std::array<int, 3>& t = tris[uses[i].tri];
+        for (int k = 0; k < 3; ++k) {
+          const int a = t[static_cast<size_t>(k)], b = t[static_cast<size_t>((k + 1) % 3)];
+          if (std::min(a, b) == uses[i].a && std::max(a, b) == uses[i].b) naked_mask[uses[i].tri] |= static_cast<unsigned char>(1u << k);
+        }
+      }
+      i = j;
+    }
+    // Naked edges in triangle order, oriented as their own triangle has them.
     struct Naked {
       int a, b;
       size_t tri;
     };
     std::vector<Naked> naked;
-    std::set<int> naked_verts;
+    std::vector<int> naked_verts;
     for (size_t ti = 0; ti < tris.size(); ++ti) {
+      if (naked_mask[ti] == 0) continue;
       for (int k = 0; k < 3; ++k) {
-        const int a = tris[ti][static_cast<size_t>(k)], b = tris[ti][static_cast<size_t>((k + 1) % 3)];
-        if (uses[{std::min(a, b), std::max(a, b)}] == 1) {
+        if ((naked_mask[ti] >> k) & 1u) {
+          const int a = tris[ti][static_cast<size_t>(k)], b = tris[ti][static_cast<size_t>((k + 1) % 3)];
           naked.push_back({a, b, ti});
-          naked_verts.insert(a);
-          naked_verts.insert(b);
+          naked_verts.push_back(a);
+          naked_verts.push_back(b);
         }
       }
     }
     if (naked.empty()) break;
-    // Naked vertices sorted by x, so each edge only scans its own x-range.
-    std::vector<int> by_x(naked_verts.begin(), naked_verts.end());
-    std::sort(by_x.begin(), by_x.end(),
-              [&](int p, int q) { return pos[static_cast<size_t>(p)].x < pos[static_cast<size_t>(q)].x; });
+    std::sort(naked_verts.begin(), naked_verts.end());
+    naked_verts.erase(std::unique(naked_verts.begin(), naked_verts.end()), naked_verts.end());
+
+    // Cell size: the median naked-edge length (bimodal sets - a few long
+    // planar-face edges, many short curved-face ones - land on the short
+    // mode, which is what keeps a cell's population O(1)).
+    std::vector<double> lengths;
+    lengths.reserve(naked.size());
+    for (const Naked& e : naked) lengths.push_back(pos[static_cast<size_t>(e.a)].DistanceTo(pos[static_cast<size_t>(e.b)]));
+    std::nth_element(lengths.begin(), lengths.begin() + static_cast<std::ptrdiff_t>(lengths.size() / 2), lengths.end());
+    const double cell = std::max(lengths[lengths.size() / 2], 8.0 * perp_tol);
+    if (!(cell > 0.0)) break;  // every naked edge degenerate and no tolerance at all: nothing to split
+    const auto key_of = [cell](const Point3d& p) {
+      return CellKey{static_cast<std::int64_t>(std::floor(p.x / cell)), static_cast<std::int64_t>(std::floor(p.y / cell)),
+                     static_cast<std::int64_t>(std::floor(p.z / cell))};
+    };
+    std::unordered_map<CellKey, std::vector<int>, CellHash> grid;
+    grid.reserve(naked_verts.size());
+    for (const int v : naked_verts) grid[key_of(pos[static_cast<size_t>(v)])].push_back(v);
+    std::vector<int> seen(static_cast<size_t>(nv), -1);  // vertex -> index of the naked edge that last tested it
 
     std::vector<bool> replaced(tris.size(), false);
     std::vector<std::array<int, 3>> additions;
     int split_this_pass = 0;
-    for (const Naked& e : naked) {
+    for (size_t ei = 0; ei < naked.size(); ++ei) {
+      const Naked& e = naked[ei];
       if (replaced[e.tri]) continue;  // retried next pass
       const Point3d& a = pos[static_cast<size_t>(e.a)];
       const Point3d& b = pos[static_cast<size_t>(e.b)];
@@ -6218,19 +6286,29 @@ int StitchTJunctionCracks(Mesh& mesh, double tol) {
       const double len2 = abx * abx + aby * aby + abz * abz;
       const double len = std::sqrt(len2);
       if (len <= perp_tol) continue;
-      const double x_lo = std::min(a.x, b.x) - perp_tol, x_hi = std::max(a.x, b.x) + perp_tol;
-      auto first = std::lower_bound(by_x.begin(), by_x.end(), x_lo,
-                                    [&](int v, double x) { return pos[static_cast<size_t>(v)].x < x; });
       std::vector<std::pair<double, int>> hits;  // (t along a->b, vertex)
-      for (auto it = first; it != by_x.end() && pos[static_cast<size_t>(*it)].x <= x_hi; ++it) {
-        const int v = *it;
-        if (v == e.a || v == e.b) continue;
-        const Point3d& p = pos[static_cast<size_t>(v)];
-        const double t = ((p.x - a.x) * abx + (p.y - a.y) * aby + (p.z - a.z) * abz) / len2;
-        if (t * len <= perp_tol || (1.0 - t) * len <= perp_tol) continue;  // at an end: a weld matter, not a T
-        const double dx = p.x - (a.x + abx * t), dy = p.y - (a.y + aby * t), dz = p.z - (a.z + abz * t);
-        if (dx * dx + dy * dy + dz * dz > perp_tol * perp_tol) continue;
-        hits.emplace_back(t, v);
+      const int samples = std::max(1, static_cast<int>(std::ceil(len / cell)));
+      for (int s = 0; s <= samples; ++s) {
+        const double f = static_cast<double>(s) / static_cast<double>(samples);
+        const CellKey c = key_of(Point3d(a.x + abx * f, a.y + aby * f, a.z + abz * f));
+        for (std::int64_t dx = -1; dx <= 1; ++dx) {
+          for (std::int64_t dy = -1; dy <= 1; ++dy) {
+            for (std::int64_t dz = -1; dz <= 1; ++dz) {
+              const auto it = grid.find(CellKey{c.x + dx, c.y + dy, c.z + dz});
+              if (it == grid.end()) continue;
+              for (const int v : it->second) {
+                if (v == e.a || v == e.b || seen[static_cast<size_t>(v)] == static_cast<int>(ei)) continue;
+                seen[static_cast<size_t>(v)] = static_cast<int>(ei);
+                const Point3d& p = pos[static_cast<size_t>(v)];
+                const double t = ((p.x - a.x) * abx + (p.y - a.y) * aby + (p.z - a.z) * abz) / len2;
+                if (t * len <= perp_tol || (1.0 - t) * len <= perp_tol) continue;  // at an end: a weld matter, not a T
+                const double ex = p.x - (a.x + abx * t), ey = p.y - (a.y + aby * t), ez = p.z - (a.z + abz * t);
+                if (ex * ex + ey * ey + ez * ez > perp_tol * perp_tol) continue;
+                hits.emplace_back(t, v);
+              }
+            }
+          }
+        }
       }
       if (hits.empty()) continue;
       std::sort(hits.begin(), hits.end());
@@ -6305,12 +6383,27 @@ bool HasClosedEdgeTopology(const ON_Brep& brep) {
 // T-junction cracks makes it a closed manifold - that stitched mesh. A mesh
 // that is already closed is returned untouched, and a stitch that does not
 // fully close it is discarded, so no result that worked before can change.
-Mesh StitchedIfThatClosesIt(const ON_Brep& brep, Mesh welded) {
+//
+// `geometry_preserving` is the variant the CERTIFIED adaptive path needs
+// (TessellateToClosedMeshCertifiedAdaptive): a stitch creates no new
+// points, but a split triangle (a, h, apex) does differ from the original
+// (a, b, apex) by however far the hit vertex h sits off the segment a-b -
+// up to the stitch tolerance - so a kWeld-tolerance stitch could in
+// principle move a facet by up to kWeld (1e-6) beyond its certified chord
+// deviation, and the second-chance CloseNakedEdges() weld below moves
+// vertices by up to 2 kWeld outright. With `geometry_preserving` the hit
+// tolerance is 0 (StitchTJunctionCracks still allows its own
+// 4 * float-epsilon * extent, the float rounding the stored vertices
+// already carry, see its perp_tol) and the second chance is skipped, so a
+// certified bound stays true up to that float rounding and nothing else.
+Mesh StitchedIfThatClosesIt(const ON_Brep& brep, Mesh welded, bool geometry_preserving = false) {
   if (welded.IsClosedManifold() || !HasClosedEdgeTopology(brep)) return welded;
   {
     Mesh stitched = welded;
-    if (StitchTJunctionCracks(stitched, tolerance::kWeld) > 0 && stitched.IsClosedManifold()) return stitched;
+    const double stitch_tol = geometry_preserving ? 0.0 : tolerance::kWeld;
+    if (StitchTJunctionCracks(stitched, stitch_tol) > 0 && stitched.IsClosedManifold()) return stitched;
   }
+  if (geometry_preserving) return welded;
   // Second chance: a concave planar face whose trim vertex sits exactly on
   // one of its own lattice lines has that vertex nudged ~1e-6 of a cell off
   // the line (TessellateGridClippedExact), which can land it one weld-grid
@@ -6344,6 +6437,31 @@ Mesh Brep::TessellateToClosedMesh(int u_divisions, int v_divisions) const {
 }
 
 std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, int boundary_samples) const {
+  return TessellateConformingImpl(u_divisions, v_divisions, boundary_samples, nullptr);
+}
+
+// TessellateConforming()'s body. `curved_divisions`, when non-null, is
+// parallel to brep_.m_F and gives a NON-PLANAR face its own (u, v) division
+// pair in place of the uniform `u_divisions`/`v_divisions` (an entry with
+// u < 1 or v < 1 means "no override"); it exists for the adaptive closed-
+// mesh tessellators' conforming fallback (see
+// ConformingClosedMeshAtAdaptiveDivisions below), where every curved face
+// has its own curvature-derived count. Only the places that mesh a curved
+// face read it: a matched CylindricalFace's own grid (BuildConformingCylinderMesh /
+// the per-row strip mesher), a friendless band's canonical breakpoint
+// count, the untrimmed/clipped fallbacks at the end of the dispatch loop,
+// and - the one place it changes a SHARED boundary - each wedge ArcRun's
+// sample count, which becomes ceil(cylinder u override * run span /
+// cylinder sweep) so the cap arc is sampled at the SAME angular density the
+// adjoining wall's own override asks for (a quarter-circle run of a wall
+// suggesting 32 columns gets 8 samples, not `boundary_samples`). Planar
+// faces always keep the uniform pair: the straight-edge pass and
+// ComputePlainQuadSeamForces() both derive their shared point counts from
+// it, and a single pair for every planar face is what keeps those two
+// passes' "one count per edge" reasoning intact. A null `curved_divisions`
+// is bit-for-bit the pre-existing TessellateConforming().
+std::vector<Mesh> Brep::TessellateConformingImpl(int u_divisions, int v_divisions, int boundary_samples,
+                                                 const std::vector<SurfaceDivisions>* curved_divisions) const {
   if (u_divisions < 1 || v_divisions < 1) {
     throw std::invalid_argument(
         "dino8::kernel::Brep::TessellateConforming: u_divisions and v_divisions must be at least 1");
@@ -6360,6 +6478,15 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
     resolved[static_cast<size_t>(i)] =
         ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fgs[static_cast<size_t>(i)]);
   }
+  // Face i's own division pair: its curved override if it has one, else the
+  // uniform pair (see this method's own doc comment).
+  const auto divisions_of = [&](int i) {
+    if (curved_divisions != nullptr && static_cast<size_t>(i) < curved_divisions->size()) {
+      const SurfaceDivisions& d = (*curved_divisions)[static_cast<size_t>(i)];
+      if (d.u >= 1 && d.v >= 1) return d;
+    }
+    return SurfaceDivisions{u_divisions, v_divisions};
+  };
 
   // Every face that resolves to a CylindricalFace, recovered exactly as
   // MixedFaces() already does (same ExtractCylindricalFace() helper) -
@@ -6525,13 +6652,25 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
       const double height = matched_height;
       const bool at_v0 = matched_at_v0;
 
+      // This run's own sample count: `boundary_samples`, or - when the
+      // matched wall carries a curved override - that override's u count
+      // scaled to the run's share of the wall's sweep (see this method's
+      // own doc comment), never fewer than 1.
+      int run_samples = boundary_samples;
+      if (curved_divisions != nullptr) {
+        const SurfaceDivisions wall = divisions_of(matched->face_index);
+        const double sweep = matched->cf.angle > 0.0 ? matched->cf.angle : 2.0 * ON_PI;
+        const double span = std::fabs(run.angle_end - run.angle_begin);
+        run_samples = std::max(1, static_cast<int>(std::ceil(static_cast<double>(wall.u) * span / sweep - 1e-9)));
+      }
+
       const std::vector<Point3d> shared_points = detail::ArcSchedule3d(
-          run.center, run.radius, run.plane_xaxis, run.plane_yaxis, run.angle_begin, run.angle_end, boundary_samples);
+          run.center, run.radius, run.plane_xaxis, run.plane_yaxis, run.angle_begin, run.angle_end, run_samples);
 
       const ON_Circle ref_circle(matched->cf.frame, matched->cf.radius);
       std::vector<double> raw_u(shared_points.size());
-      for (int s = 0; s <= boundary_samples; ++s) {
-        const double t = static_cast<double>(s) / static_cast<double>(boundary_samples);
+      for (int s = 0; s <= run_samples; ++s) {
+        const double t = static_cast<double>(s) / static_cast<double>(run_samples);
         const double theta = run.angle_begin + (run.angle_end - run.angle_begin) * t;
         double cyl_theta = detail::ConvertAngleBetweenFrames(theta, wedge_plane, matched->cf.frame);
         // ON_Circle::GetNurbFormParameterFromRadian only accepts an angle
@@ -6902,6 +7041,10 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
     const auto plain_it = plain_forces.find(i);
 
     const auto self_cyl_it = cyl_by_face.find(i);
+    // This face's own division pair (a curved override, or the uniform
+    // pair - see this method's own doc comment). Every curved-face branch
+    // below reads it; the planar branches keep u_divisions/v_divisions.
+    const SurfaceDivisions face_div = divisions_of(i);
 
     // Per-row strip routing (see this method's own doc comment, the
     // "SIXTH gap" entry, and BuildConformingCylinderStripMesh's own): a
@@ -6968,13 +7111,13 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
       const double v_end1 = notch_rows != nullptr ? notch_rows->v_end1 : v_max;
       const RowChain bottom = (notch_rows != nullptr && !notch_rows->cap0_points.empty())
                                   ? BuildNotchRowChain(notch_rows->cap0_points, notch_rows->cap0_uv)
-                                  : BuildFlatRowChain(u_min, u_max, v_end0, u_tol, u_divisions, matches, /*at_v0=*/true);
+                                  : BuildFlatRowChain(u_min, u_max, v_end0, u_tol, face_div.u, matches, /*at_v0=*/true);
       const RowChain top = (notch_rows != nullptr && !notch_rows->cap1_points.empty())
                                ? BuildNotchRowChain(notch_rows->cap1_points, notch_rows->cap1_uv)
-                               : BuildFlatRowChain(u_min, u_max, v_end1, u_tol, u_divisions, matches, /*at_v0=*/false);
-      result.push_back(BuildConformingCylinderStripMesh(wrapper, bottom, top, v_divisions, u_tol, v_tol));
+                               : BuildFlatRowChain(u_min, u_max, v_end1, u_tol, face_div.u, matches, /*at_v0=*/false);
+      result.push_back(BuildConformingCylinderStripMesh(wrapper, bottom, top, face_div.v, u_tol, v_tol));
     } else if (cyl_it != cyl_matches.end()) {
-      result.push_back(BuildConformingCylinderMesh(wrapper, fg.outer, u_divisions, v_divisions, cyl_it->second));
+      result.push_back(BuildConformingCylinderMesh(wrapper, fg.outer, face_div.u, face_div.v, cyl_it->second));
     } else if (self_cyl_it != cyl_by_face.end() && fg.holes.empty() && IsRectangularTrimUv(fg.outer)) {
       // A CylindricalFace fragment with NO ArcRun match on either end at
       // all (see boolean.h's own disclosure) - a "friendless" middle
@@ -7013,10 +7156,11 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
         }
       }
       if (fallback.empty()) {
-        fallback = CanonicalCylinderUBreakpoints(*self_cyl_it->second, boundary_samples);
+        fallback = CanonicalCylinderUBreakpoints(*self_cyl_it->second,
+                                                 curved_divisions != nullptr ? face_div.u : boundary_samples);
       }
       result.push_back(
-          BuildConformingCylinderMesh(wrapper, fg.outer, u_divisions, v_divisions, {}, fallback));
+          BuildConformingCylinderMesh(wrapper, fg.outer, face_div.u, face_div.v, {}, fallback));
     } else if (wedge_it != wedge_subs.end()) {
       result.push_back(BuildConformingWedgeMesh(wrapper, fg.outer, wedge_it->second));
     } else if (plain_it != plain_forces.end()) {
@@ -7065,16 +7209,16 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
                                                         forces[3], forces[1]));
       }
     } else if (fg.outer.empty()) {
-      result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions));
+      result.push_back(wrapper.TessellateGrid(face_div.u, face_div.v));
     } else if (fg.exact_clip) {
-      result.push_back(wrapper.TessellateGridClippedExact(u_divisions, v_divisions, fg.outer));
+      result.push_back(wrapper.TessellateGridClippedExact(face_div.u, face_div.v, fg.outer));
       if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
         std::fprintf(stderr, "  Tessellate: face_index=%d exact_clip outer.size()=%zu m_bRev=%d area=%.6f\n", i,
                      fg.outer.size(), (int)brep_.m_F[i].m_bRev, result.back().Area());
       }
     } else {
       const std::vector<std::vector<Point2d>>* holes = fg.holes.empty() ? nullptr : &fg.holes;
-      result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions, &fg.outer, holes));
+      result.push_back(wrapper.TessellateGrid(face_div.u, face_div.v, &fg.outer, holes));
     }
     if (brep_.m_F[i].m_bRev) result.back() = result.back().FlipNormals();
   }
@@ -7083,6 +7227,151 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
 
 Mesh Brep::TessellateToClosedMeshConforming(int u_divisions, int v_divisions, int boundary_samples) const {
   return StitchedIfThatClosesIt(brep_, Mesh::MergeAndWeld(TessellateConforming(u_divisions, v_divisions, boundary_samples)));
+}
+
+bool Brep::HasConformingSeamData() const {
+  for (const std::vector<PlanarFace::ArcRun>& runs : face_arc_runs_) {
+    if (!runs.empty()) return true;
+  }
+  for (const CylinderNotchRows& rows : face_notch_rows_) {
+    if (rows.present) return true;
+  }
+  return false;
+}
+
+// The adaptive closed-mesh tessellators' shared second step. `welded` is
+// the per-face adaptive tessellation welded and (where the edge topology
+// says the shell is closed) T-junction-stitched; it is returned untouched
+// when it is already a closed manifold, and also when this Brep carries no
+// conforming seam data - so every adaptive result that was closed before
+// is bit-for-bit what it was, and a Brep no factory marked up (Box(),
+// Sphere(), a fillet, a sweep) never takes the path below.
+//
+// Otherwise this is a BooleanCombineMixed-class result whose curved seams
+// the stitch structurally cannot close: a wedge cap's own trim loop
+// samples the hole circle at one set of angles while the wall's own grid
+// samples it at another, every one of those vertices lies ON the circle
+// and therefore a sagitta off the other side's chord - far more than kWeld
+// at any resolution - and the Brep's edge table carries one trim per arc
+// polyline segment (never two), so HasClosedEdgeTopology() is false and
+// no vertex is ever within reach of a naked edge it could split. The only
+// thing that closes such a seam is both sides meshing the LITERAL same
+// boundary points, which is exactly what TessellateConforming() does; the
+// fallback re-meshes the whole Brep through TessellateConformingImpl() at
+// the adaptive resolution: every curved face at `suggest(surface)` (its own
+// curvature-derived pair, which also sets the shared cap-arc density - see
+// TessellateConformingImpl()'s own doc comment), every planar face at the
+// largest pair `suggest` returns for any planar face (1 x 1 for every
+// genuinely planar NURBS patch this kernel builds: a flat facet has no chord
+// deviation to subdivide for).
+//
+// With `certify_chord_tolerance` > 0 (the certified path) the fallback is
+// accepted only once every non-planar face's own conforming mesh measures
+// at or below that bound via NurbsSurface::MeasureMeshTessellationDeviation()
+// - the same measurement the per-face certified tessellators certify by -
+// doubling the pair of every face that fails and retrying up to
+// `max_refinements` times. A planar face is not measured: every vertex a
+// conforming planar mesh carries (the cap's own in-plane trim vertices, the
+// shared arc-schedule points, which ArcSchedule3d() builds in the cap's own
+// plane, and the bilinear plain-quad points) lies in the face's plane, so
+// its facets deviate from it by exactly zero. The welded result is then
+// closed geometry-preservingly (see StitchedIfThatClosesIt) so the bound
+// stays true up to float rounding. If the conforming mesh is not a closed
+// manifold, or cannot be certified within `max_refinements`, `welded` is
+// returned - the exact (open) result the caller produced before this
+// fallback existed.
+Mesh Brep::ConformingClosedMeshAtAdaptiveDivisions(Mesh welded,
+                                                   const std::function<SurfaceDivisions(const NurbsSurface&)>& suggest,
+                                                   double certify_chord_tolerance, int max_refinements) const {
+  if (welded.IsClosedManifold() || !HasConformingSeamData()) return welded;
+  const int n = brep_.m_F.Count();
+  std::vector<SurfaceDivisions> curved(static_cast<size_t>(n), SurfaceDivisions{0, 0});
+  std::vector<NurbsSurface> curved_surface(static_cast<size_t>(n));
+  std::vector<int> resolved_faces;  // face index of each mesh TessellateConformingImpl returns, in order
+  SurfaceDivisions planar{1, 1};
+  for (int i = 0; i < n; ++i) {
+    FaceGeometry fg;
+    if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
+    resolved_faces.push_back(i);
+    NurbsSurface wrapper;
+    wrapper.raw() = fg.surface;
+    SurfaceDivisions d = suggest(wrapper);
+    d.u = std::max(1, d.u);
+    d.v = std::max(1, d.v);
+    if (wrapper.IsPlanar()) {
+      planar.u = std::max(planar.u, d.u);
+      planar.v = std::max(planar.v, d.v);
+    } else {
+      curved[static_cast<size_t>(i)] = d;
+      curved_surface[static_cast<size_t>(i)] = wrapper;
+    }
+  }
+  const bool certify = certify_chord_tolerance > 0.0;
+  for (int attempt = 0; attempt <= (certify ? std::max(max_refinements, 0) : 0); ++attempt) {
+    const std::vector<Mesh> faces =
+        TessellateConformingImpl(planar.u, planar.v, std::max(planar.u, planar.v), &curved);
+    if (faces.size() != resolved_faces.size()) return welded;
+    if (certify) {
+      bool all_certified = true;
+      for (size_t k = 0; k < faces.size(); ++k) {
+        const size_t fi = static_cast<size_t>(resolved_faces[k]);
+        if (curved[fi].u < 1) continue;  // planar: zero deviation by construction, see above
+        if (curved_surface[fi].MeasureMeshTessellationDeviation(faces[k]) > certify_chord_tolerance) {
+          all_certified = false;
+          curved[fi].u *= 2;
+          curved[fi].v *= 2;
+        }
+      }
+      if (!all_certified) continue;
+    }
+    Mesh conforming = StitchedIfThatClosesIt(brep_, Mesh::MergeAndWeld(faces), /*geometry_preserving=*/certify);
+    if (conforming.IsClosedManifold()) return conforming;
+    return welded;
+  }
+  return welded;
+}
+
+// Each adaptive closed-mesh tessellator is the per-face adaptive
+// tessellation, welded, then (1) T-junction-stitched exactly as
+// TessellateToClosedMesh() is (see StitchedIfThatClosesIt: a planar face
+// meshed on a coarser lattice than a curved neighbour sharing a straight
+// edge is the same crack the fixed-resolution path had), then (2) for a
+// Brep whose curved shared seams no stitch can close, re-meshed
+// conformingly at the adaptive resolution (see
+// ConformingClosedMeshAtAdaptiveDivisions above). Both steps leave an
+// already-closed weld untouched.
+Mesh Brep::TessellateToClosedMeshAdaptive(double chord_tolerance) const {
+  return ConformingClosedMeshAtAdaptiveDivisions(
+      StitchedIfThatClosesIt(brep_, Mesh::MergeAndWeld(TessellateAdaptive(chord_tolerance))),
+      [chord_tolerance](const NurbsSurface& s) { return s.SuggestedDivisions(chord_tolerance); }, 0.0, 0);
+}
+
+Mesh Brep::TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) const {
+  // The conforming fallback's grids are uniform per face; a face's count in
+  // each direction is the number of intervals its own non-uniform
+  // SuggestedParameterValues() schedule has, so the fallback is never
+  // coarser than the non-uniform mesh it replaces.
+  return ConformingClosedMeshAtAdaptiveDivisions(
+      StitchedIfThatClosesIt(brep_, Mesh::MergeAndWeld(TessellateNonUniformAdaptive(chord_tolerance))),
+      [chord_tolerance](const NurbsSurface& s) {
+        return SurfaceDivisions{static_cast<int>(s.SuggestedParameterValues(0, chord_tolerance).size()) - 1,
+                                static_cast<int>(s.SuggestedParameterValues(1, chord_tolerance).size()) - 1};
+      },
+      0.0, 0);
+}
+
+Mesh Brep::TessellateToClosedMeshCertifiedAdaptive(double chord_tolerance, int max_refinements) const {
+  return ConformingClosedMeshAtAdaptiveDivisions(
+      StitchedIfThatClosesIt(brep_, Mesh::MergeAndWeld(TessellateCertifiedAdaptive(chord_tolerance, max_refinements)),
+                             /*geometry_preserving=*/true),
+      [chord_tolerance](const NurbsSurface& s) { return s.SuggestedDivisions(chord_tolerance); }, chord_tolerance,
+      max_refinements);
+}
+
+Mesh Brep::TessellateToClosedMeshAdaptiveByAngle(double angle_tolerance) const {
+  return ConformingClosedMeshAtAdaptiveDivisions(
+      StitchedIfThatClosesIt(brep_, Mesh::MergeAndWeld(TessellateAdaptiveByAngle(angle_tolerance))),
+      [angle_tolerance](const NurbsSurface& s) { return s.SuggestedDivisionsByAngle(angle_tolerance); }, 0.0, 0);
 }
 
 // ---------------------------------------------------------------------------
