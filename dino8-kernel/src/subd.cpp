@@ -38,6 +38,62 @@ bool IsAxisAlignedQuadUvForSubD(const std::array<Point2d, 4>& uv) {
   return true;
 }
 
+// One row (or column) of a uniform-knot cubic B-spline's control net,
+// re-expressed as the control polygon of the SAME curve on the SAME domain
+// over an UNCLAMPED uniform knot vector - the form in which a uniform
+// cubic B-spline span is literally a regular Catmull-Clark patch (see
+// SubD::FromUniformBicubicSurface()). Exact, not fitted: a clamped
+// uniform cubic differs from the unclamped one only on its first and last
+// span, so those two spans' exact Bezier points (OpenNURBS' own
+// ON_NurbsCurve::ConvertSpanToBezier, plain knot insertion) are mapped
+// back through the closed-form uniform-B-spline <-> Bezier relation for
+// one span with uniform control points P0..P3:
+//   B0 = (P0 + 4P1 + P2)/6, B1 = (2P1 + P2)/3, B2 = (P1 + 2P2)/3,
+//   B3 = (P1 + 4P2 + P3)/6
+// whose inverse is
+//   P1 = 2B1 - B2, P2 = 2B2 - B1, P0 = 6B0 - 7B1 + 2B2,
+//   P3 = 6B3 + 2B1 - 7B2.
+// Every other control point already carries a fully uniform basis
+// function and is kept as-is; for an already-unclamped row the first/last
+// spans are themselves uniform and the map is the identity. Needs the
+// knot vector to be uniform (ON_IsKnotVectorUniform, checked by the
+// caller) - on a non-uniform one the interior spans would not be uniform
+// B-spline spans at all and no cage could reproduce them.
+std::vector<ON_3dPoint> UnclampUniformCubicRow(const std::vector<ON_3dPoint>& cvs,
+                                                const std::vector<double>& knots) {
+  const int n = static_cast<int>(cvs.size());
+  ON_NurbsCurve row(3, false, 4, n);
+  for (int i = 0; i < n; ++i) row.SetCV(i, cvs[static_cast<size_t>(i)]);
+  for (int k = 0; k < n + 2; ++k) row.SetKnot(k, knots[static_cast<size_t>(k)]);
+
+  const auto bezier_of_span = [&row](int span, ON_3dPoint (&b)[4]) {
+    ON_BezierCurve bezier;
+    if (!row.ConvertSpanToBezier(span, bezier)) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::FromUniformBicubicSurface: ON_NurbsCurve::ConvertSpanToBezier "
+          "failed on an end span of a control-net row (empty span?)");
+    }
+    for (int i = 0; i < 4; ++i) bezier.GetCV(i, b[i]);
+  };
+  const auto comb = [](double a, const ON_3dPoint& A, double b, const ON_3dPoint& B, double c,
+                       const ON_3dPoint& C) {
+    return ON_3dPoint(a * A.x + b * B.x + c * C.x, a * A.y + b * B.y + c * C.y,
+                      a * A.z + b * B.z + c * C.z);
+  };
+
+  std::vector<ON_3dPoint> out = cvs;
+  ON_3dPoint b[4];
+  bezier_of_span(0, b);  // first span: uniform control points P0..P3 = out[0..3]
+  out[0] = comb(6.0, b[0], -7.0, b[1], 2.0, b[2]);
+  out[1] = comb(2.0, b[1], -1.0, b[2], 0.0, b[2]);
+  out[2] = comb(2.0, b[2], -1.0, b[1], 0.0, b[1]);
+  bezier_of_span(n - 4, b);  // last span: P0..P3 = out[n-4..n-1]
+  out[static_cast<size_t>(n - 3)] = comb(2.0, b[1], -1.0, b[2], 0.0, b[2]);
+  out[static_cast<size_t>(n - 2)] = comb(2.0, b[2], -1.0, b[1], 0.0, b[1]);
+  out[static_cast<size_t>(n - 1)] = comb(6.0, b[3], 2.0, b[1], -7.0, b[2]);
+  return out;
+}
+
 }  // namespace
 
 SubD SubD::FromControlMesh(const Mesh& control_mesh, bool crease_at_double_edges) {
@@ -96,6 +152,101 @@ SubD SubD::FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_
     }
   }
 
+  return SubD::FromControlMesh(grid);
+}
+
+SubD SubD::FromUniformBicubicSurface(const NurbsSurface& surface) {
+  const ON_NurbsSurface& raw = surface.raw();
+  if (!raw.IsValid()) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromUniformBicubicSurface: surface is not IsValid() (e.g. "
+        "default-constructed or otherwise degenerate)");
+  }
+  if (raw.Degree(0) != 3 || raw.Degree(1) != 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromUniformBicubicSurface: surface must be bicubic (degree 3 in "
+        "both directions), got degree (" +
+        std::to_string(raw.Degree(0)) + ", " + std::to_string(raw.Degree(1)) +
+        ") - only a uniform bicubic B-spline has an exact Catmull-Clark counterpart; use "
+        "FromNurbsSurface() for a sampled approximation of anything else");
+  }
+  if (raw.IsRational()) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromUniformBicubicSurface: surface is rational - a Catmull-Clark "
+        "limit surface is polynomial, so no cage reproduces it exactly; use FromNurbsSurface() "
+        "for a sampled approximation");
+  }
+  for (int dir = 0; dir < 2; ++dir) {
+    if (!ON_IsKnotVectorUniform(raw.m_order[dir], raw.m_cv_count[dir], raw.m_knot[dir])) {
+      throw std::invalid_argument(
+          "dino8::kernel::SubD::FromUniformBicubicSurface: the " + std::string(dir == 0 ? "u" : "v") +
+          " knot vector is not uniform (every interior knot span must have the same length) - "
+          "only a uniform bicubic B-spline has an exact Catmull-Clark counterpart; use "
+          "FromNurbsSurface() for a sampled approximation");
+    }
+    if (raw.IsPeriodic(dir)) {
+      throw std::invalid_argument(
+          "dino8::kernel::SubD::FromUniformBicubicSurface: surface is periodic in " +
+          std::string(dir == 0 ? "u" : "v") +
+          " - a closed cage welded across the seam is out of scope here (the surface would have "
+          "to be treated as open, duplicating the seam's control points)");
+    }
+  }
+
+  const int n = raw.m_cv_count[0];
+  const int m = raw.m_cv_count[1];
+  std::vector<double> knots_u(static_cast<size_t>(n + 2));
+  std::vector<double> knots_v(static_cast<size_t>(m + 2));
+  for (int k = 0; k < n + 2; ++k) knots_u[static_cast<size_t>(k)] = raw.m_knot[0][k];
+  for (int k = 0; k < m + 2; ++k) knots_v[static_cast<size_t>(k)] = raw.m_knot[1][k];
+
+  // The cage: the surface's own control net, unclamped exactly in u (each
+  // column, i varying) and then in v (each row, j varying) - the two
+  // 1-D maps are linear, so applying them one direction at a time IS the
+  // tensor-product unclamping of the whole net.
+  std::vector<std::vector<ON_3dPoint>> cage(static_cast<size_t>(n),
+                                            std::vector<ON_3dPoint>(static_cast<size_t>(m)));
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < m; ++j) raw.GetCV(i, j, cage[static_cast<size_t>(i)][static_cast<size_t>(j)]);
+  }
+  for (int j = 0; j < m; ++j) {
+    std::vector<ON_3dPoint> column(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) column[static_cast<size_t>(i)] = cage[static_cast<size_t>(i)][static_cast<size_t>(j)];
+    column = UnclampUniformCubicRow(column, knots_u);
+    for (int i = 0; i < n; ++i) cage[static_cast<size_t>(i)][static_cast<size_t>(j)] = column[static_cast<size_t>(i)];
+  }
+  for (int i = 0; i < n; ++i) {
+    cage[static_cast<size_t>(i)] = UnclampUniformCubicRow(cage[static_cast<size_t>(i)], knots_v);
+  }
+
+  // Same quad grid FromNurbsSurface() builds, but with DOUBLE-precision
+  // vertices too: ON_SubD::CreateFromMesh reads m_dV whenever
+  // HasDoublePrecisionVertices() (ON_3dPointListRef::SetFromMesh), and a
+  // float-only cage would already cost ~1e-7 of the exactness this method
+  // exists for.
+  Mesh grid;
+  ON_Mesh& mesh = grid.raw();
+  mesh.m_V.Reserve(n * m);
+  mesh.m_dV.Reserve(n * m);
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < m; ++j) {
+      const ON_3dPoint& p = cage[static_cast<size_t>(i)][static_cast<size_t>(j)];
+      mesh.m_V.Append(ON_3fPoint(p));
+      mesh.m_dV.Append(p);
+    }
+  }
+  const auto grid_index = [m](int i, int j) { return i * m + j; };
+  mesh.m_F.Reserve((n - 1) * (m - 1));
+  for (int i = 0; i + 1 < n; ++i) {
+    for (int j = 0; j + 1 < m; ++j) {
+      ON_MeshFace f;
+      f.vi[0] = grid_index(i, j);
+      f.vi[1] = grid_index(i + 1, j);
+      f.vi[2] = grid_index(i + 1, j + 1);
+      f.vi[3] = grid_index(i, j + 1);
+      mesh.m_F.Append(f);
+    }
+  }
   return SubD::FromControlMesh(grid);
 }
 

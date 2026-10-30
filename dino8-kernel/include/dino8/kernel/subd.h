@@ -170,6 +170,46 @@ class SubD {
   // failing with a named cause.
   static SubD FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_divisions);
 
+  // EXACT counterpart to FromNurbsSurface() for the one NURBS class that
+  // has one: a non-rational, uniform-knot BICUBIC surface (clamped or
+  // unclamped knots - a `FromControlGrid(..., 3, 3)` surface qualifies).
+  // The Catmull-Clark limit surface of a regular quad region IS a uniform
+  // bicubic B-spline over the region's 4x4 control points, so such a
+  // surface is reproduced to floating-point precision by using its own
+  // control net as the cage - after unclamping it exactly (the same
+  // surface over the same domain, re-expressed over unclamped uniform
+  // knots; only the first two and last two control points per direction
+  // change, and for an already-unclamped surface nothing changes). This
+  // narrows FromNurbsSurface()'s own disclosed "deliberately an
+  // APPROXIMATION" caveat for exactly the class that caveat names as the
+  // one a regular quad reproduces; anything else (other degrees, rational
+  // weights, non-uniform knots) still has no exact cage and is refused
+  // rather than approximated - FromNurbsSurface() remains the sampled
+  // path for those.
+  //
+  // Result layout: the cage is `CVCountU() x CVCountV()` vertices, cage
+  // vertex (i, j) at the unclamped control point (i, j), with
+  // `(CVCountU()-1) x (CVCountV()-1)` quad faces, cage face (i, j) listing
+  // its vertices as (i, j), (i+1, j), (i+1, j+1), (i, j+1) and sitting at
+  // index `i * (CVCountV()-1) + j` of `raw().FaceIterator()`. Face (i, j)
+  // with 1 <= i <= CVCountU()-3 and 1 <= j <= CVCountV()-3 is regular and
+  // its limit patch is EXACTLY the surface's knot span (i-1, j-1):
+  // `EvaluateFace(face, u, v)` equals `PointAt(u0 + (i-1+u)*du, v0 +
+  // (j-1+v)*dv)` for the surface's domain start (u0, v0) and knot spacing
+  // (du, dv); the interior vertices' LimitPoints() likewise land on the
+  // surface at the knots. The outer ring of faces (any face touching the
+  // cage boundary) is a deliberate SKIRT: it lies outside the surface's
+  // parameter domain (it is what a Catmull-Clark boundary does to the two
+  // extra control-point rows every uniform B-spline needs beyond its
+  // first/last knot) and is not part of the reproduced surface. A caller
+  // wanting only the surface's own extent evaluates the interior faces.
+  //
+  // Throws std::invalid_argument if `surface` is not `IsValid()`, not
+  // degree (3, 3), rational, has a non-uniform knot vector in either
+  // direction (`ON_IsKnotVectorUniform`), or is periodic in either
+  // direction (a cage welded across the seam is out of scope).
+  static SubD FromUniformBicubicSurface(const NurbsSurface& surface);
+
   // Builds a SubD control cage from a whole Brep, one quad per face,
   // faces that share an edge in the Brep sharing that edge (and its
   // vertices) at the SubD level too - closing PARITY_MAP.md's subd_mesh
