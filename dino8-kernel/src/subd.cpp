@@ -1979,7 +1979,20 @@ double FindTolerance(const ON_SubDFace* f) {
     hi.x = std::max(hi.x, p.x); hi.y = std::max(hi.y, p.y); hi.z = std::max(hi.z, p.z);
   }
   const double diagonal = lo.IsValid() ? hi.DistanceTo(lo) : 0.0;
-  return std::max(1e-9, diagonal * 1e-7);
+  // The floor used to be a flat 1e-9, which is fine at the shallow
+  // adaptive depths EvaluateFace() originally reached but stops being
+  // scale-invariant once a deep adaptive level shrinks the face's own
+  // diagonal toward 1e-9 itself (a tolerance as large as the face
+  // can no longer tell neighboring vertices apart). The floor now tracks
+  // the actual floating-point noise floor instead - the magnitude of the
+  // coordinates themselves, times a few ulps' worth of slack - which is
+  // all it ever needed to absorb (predicted-vs-actual subdivision point
+  // differing only by summation order).
+  const double coordinate_magnitude =
+      lo.IsValid() ? std::max({std::abs(lo.x), std::abs(lo.y), std::abs(lo.z), std::abs(hi.x),
+                               std::abs(hi.y), std::abs(hi.z)})
+                   : 0.0;
+  return std::max({1e-300, diagonal * 1e-7, coordinate_magnitude * 1e-13});
 }
 
 // The unique face incident to all three of vF, vP, and vN (each has
@@ -2005,6 +2018,112 @@ const ON_SubDFace* FindCommonFace(const ON_SubDVertex* vF, const ON_SubDVertex* 
     }
   }
   return nullptr;
+}
+
+// Copies just the neighborhood of `f`'s corner `corner_index` out of `src`
+// into the standalone, much smaller SubD `out`, so EvaluateFace()'s deep
+// adaptive recursion refines a few dozen faces per level instead of
+// globally re-subdividing the WHOLE net (which grows 4x per level and used
+// to cap the reachable depth around 7-8 levels, see kMaxWorkingFaceCount).
+//
+// Why the neighborhood alone is enough: a subdivision-surface point's
+// refined position depends only on its own 1-ring of faces. Every vertex
+// within `rings - 1` vertex-steps of the tracked corner has its COMPLETE
+// 1-ring present in the copy (the faces gathered are every face touching
+// any vertex within `rings - 1` steps), so one global refinement of the
+// copy reproduces the exact refined positions for every vertex out to
+// distance 2 * (rings - 1) in the new mesh's own steps. EvaluateFace()
+// needs only the 2-ring around the tracked corner exact at every level (a
+// regular 4x4 stencil, or the next level's own copy), and 2 * (rings - 1)
+// >= rings whenever rings >= 2 - so the exact region never shrinks below
+// what the next level's own copy needs, however many levels deep this
+// repeats. The copy's own outer boundary (which OpenNURBS necessarily
+// treats as a naked boundary) only ever pollutes positions beyond that.
+//
+// Conservative, on purpose: any boundary/crease/dart/semi-sharp edge or
+// non-manifold vertex inside the exact region (every vertex within
+// `rings - 1` steps) refuses (returns false) rather than try to carry
+// those tags across, and the caller keeps using `src` itself exactly as it
+// did before this helper existed.
+bool TrimToNeighborhood(const ON_SubD& src, const ON_SubDFace* f, int corner_index, int rings,
+                        ON_SubD& out, const ON_SubDFace*& f_out) {
+  if (f == nullptr || rings < 2) return false;
+  const ON_SubDVertex* center = f->Vertex(static_cast<unsigned int>(corner_index));
+  if (center == nullptr) return false;
+
+  std::unordered_map<const ON_SubDVertex*, int> distance;
+  std::vector<const ON_SubDVertex*> frontier{center};
+  std::vector<const ON_SubDFace*> faces;
+  std::unordered_set<const ON_SubDFace*> seen_faces;
+  distance[center] = 0;
+  for (int r = 1; r <= rings; ++r) {
+    std::vector<const ON_SubDVertex*> next;
+    for (const ON_SubDVertex* v : frontier) {
+      for (unsigned int i = 0; i < v->FaceCount(); ++i) {
+        const ON_SubDFace* nf = v->Face(i);
+        if (nf == nullptr || nf->EdgeCount() < 3) return false;
+        if (!seen_faces.insert(nf).second) continue;
+        faces.push_back(nf);
+        for (unsigned int j = 0; j < nf->EdgeCount(); ++j) {
+          const ON_SubDVertex* nv = nf->Vertex(j);
+          if (nv == nullptr) return false;
+          if (distance.emplace(nv, r).second) next.push_back(nv);
+        }
+      }
+    }
+    frontier = std::move(next);
+  }
+
+  // Everything within rings - 1 steps must be an ordinary, untagged
+  // interior vertex whose incident edges are all smooth, zero-sharpness,
+  // two-faced edges.
+  for (const auto& entry : distance) {
+    if (entry.second > rings - 1) continue;
+    const ON_SubDVertex* v = entry.first;
+    if (!v->IsSmooth() || v->EdgeCount() != v->FaceCount() || v->EdgeCount() < 3) return false;
+    for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+      const ON_SubDEdge* e = v->Edge(i);
+      if (e == nullptr || !e->IsSmooth() || e->FaceCount() != 2) return false;
+      const ON_SubDVertex* other = e->OtherEndVertex(v);
+      if (other == nullptr || e->EndSharpness(v) > 0.0 || e->EndSharpness(other) > 0.0) return false;
+    }
+  }
+
+  std::unordered_map<const ON_SubDVertex*, const ON_SubDVertex*> copied;
+  const auto copy_vertex = [&](const ON_SubDVertex* v) -> const ON_SubDVertex* {
+    const auto it = copied.find(v);
+    if (it != copied.end()) return it->second;
+    const ON_3dPoint p = v->ControlNetPoint();
+    const ON_SubDVertex* nv = out.AddVertex(ON_SubDVertexTag::Unset, &p.x);
+    copied.emplace(v, nv);
+    return nv;
+  };
+  std::vector<const ON_SubDVertex*> corners;
+  const ON_SubDFace* mapped_face = nullptr;
+  for (const ON_SubDFace* face : faces) {
+    corners.clear();
+    for (unsigned int j = 0; j < face->EdgeCount(); ++j) {
+      const ON_SubDVertex* nv = copy_vertex(face->Vertex(j));
+      if (nv == nullptr) return false;
+      corners.push_back(nv);
+    }
+    const ON_SubDFace* nf = out.FindOrAddFace(ON_SubDEdgeTag::Unset, corners.data(), corners.size());
+    if (nf == nullptr) return false;
+    if (face == f) mapped_face = nf;
+  }
+  if (mapped_face == nullptr) return false;
+  out.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+
+  // The tracked corner must still be the same corner index of the same
+  // vertex in the copy.
+  const ON_SubDVertex* mapped_center = copied[center];
+  if (mapped_face->EdgeCount() != f->EdgeCount() ||
+      mapped_face->Vertex(static_cast<unsigned int>(corner_index)) != mapped_center ||
+      mapped_center->EdgeCount() != center->EdgeCount() || !mapped_center->IsSmooth()) {
+    return false;
+  }
+  f_out = mapped_face;
+  return true;
 }
 
 // The result of one real ON_SubD::GlobalSubdivide(1) step, tracking which
@@ -2044,6 +2163,17 @@ SubdividedCorner SubdivideTrackingCorner(ON_SubD& s, const ON_SubDFace* f, int c
   if (!face_ref.IsValid() || !prev_ref.IsValid() || !next_ref.IsValid()) return {};
 
   const double tolerance = FindTolerance(f);
+  // Once a face has shrunk (via deep adaptive levels) to where the
+  // floating-point noise floor of its own coordinates is a sizeable
+  // fraction of its own width, the predicted subdivision points can no
+  // longer be told apart from their neighbors by position - refuse to
+  // guess and let the caller fall back, rather than risk tracking the
+  // wrong child.
+  {
+    const ON_SubDVertex* a = f->Vertex(0);
+    const ON_SubDVertex* c = f->Vertex(2);
+    if (!a || !c || tolerance > 0.1 * a->ControlNetPoint().DistanceTo(c->ControlNetPoint())) return {};
+  }
   if (!s.GlobalSubdivide(1)) return {};
 
   const ON_SubDVertex* vF = s.FindVertex(&face_ref.x, tolerance);
@@ -2182,20 +2312,44 @@ SubDSurfacePoint ExactVertexCorner(ON_SubD& s, const ON_SubDFace* f, int corner_
   return pt;
 }
 
-SubDSurfacePoint EvaluateFaceAdaptive(ON_SubD& s, const ON_SubDFace* f, double u, double v,
-                                      int depth_remaining) {
+// EvaluateFaceAdaptive()'s result plus whether `point.tangent_u/tangent_v`
+// are d(position)/du and d(position)/dv in the (u, v) of the face the call
+// was made on (`true`: a regular-patch / flat-fallback partial derivative)
+// or ExactVertexCorner()'s canonical unit tangent-plane basis (`false`:
+// not tied to any face's own (u, v) axes - see its own doc comment).
+struct AdaptiveResult {
+  SubDSurfacePoint point;
+  bool tangents_in_face_frame = true;
+};
+
+// How many adaptive levels may be spent refining the WHOLE net (a
+// neighborhood TrimToNeighborhood() refused: boundary/crease/semi-sharp tag
+// or non-manifold vertex nearby) - the pre-trim cost profile, where each
+// level quadruples the working copy. Levels spent on an already-trimmed
+// copy are not charged against this.
+constexpr int kMaxWholeNetLevels = 4;
+// A copy this size or smaller is not worth trimming further (see
+// TrimToNeighborhood()).
+constexpr unsigned int kTrimMinFaceCount = 128;
+// Face-rings TrimToNeighborhood() keeps around the tracked corner. Any
+// value >= 2 keeps the exact region from ever shrinking (see its own doc
+// comment); 4 leaves margin.
+constexpr int kTrimRings = 4;
+
+AdaptiveResult EvaluateFaceAdaptive(ON_SubD& s, const ON_SubDFace* f, double u, double v,
+                                    int depth_remaining, bool s_is_trimmed, int whole_net_left) {
   ON_3dPoint grid[4][4];
   bool regular = false;
   BuildFaceBezierGrid(f, grid, regular, /*exact_irregular_corners=*/false);
   if (regular) {
-    return EvalPatchPoint(grid, u, v, true);
+    return {EvalPatchPoint(grid, u, v, true), true};
   }
-  if (u == 0.0 && v == 0.0) return ExactVertexCorner(s, f, 0);
-  if (u == 1.0 && v == 0.0) return ExactVertexCorner(s, f, 1);
-  if (u == 1.0 && v == 1.0) return ExactVertexCorner(s, f, 2);
-  if (u == 0.0 && v == 1.0) return ExactVertexCorner(s, f, 3);
-  if (depth_remaining <= 0) {
-    return EvalPatchPoint(grid, u, v, false);
+  if (u == 0.0 && v == 0.0) return {ExactVertexCorner(s, f, 0), false};
+  if (u == 1.0 && v == 0.0) return {ExactVertexCorner(s, f, 1), false};
+  if (u == 1.0 && v == 1.0) return {ExactVertexCorner(s, f, 2), false};
+  if (u == 0.0 && v == 1.0) return {ExactVertexCorner(s, f, 3), false};
+  if (depth_remaining <= 0 || (!s_is_trimmed && whole_net_left <= 0)) {
+    return {EvalPatchPoint(grid, u, v, false), true};
   }
 
   int k = 0;
@@ -2219,12 +2373,59 @@ SubDSurfacePoint EvaluateFaceAdaptive(ON_SubD& s, const ON_SubDFace* f, double u
   // predict-then-relocate logic.
   const SubdividedCorner next = SubdivideTrackingCorner(s, f, k);
   if (next.face == nullptr) {
-    return EvalPatchPoint(grid, u, v, false);
+    return {EvalPatchPoint(grid, u, v, false), true};
   }
 
   double u2 = 0.0, v2 = 0.0;
   FromVertexLocal(next.corner_index, uk2, vk2, u2, v2);
-  return EvaluateFaceAdaptive(s, next.face, u2, v2, depth_remaining - 1);
+
+  // Keep the working copy small: once it has grown past a handful of
+  // faces, carry on from a copy of just the tracked corner's neighborhood
+  // (refused, and harmlessly skipped, whenever that neighborhood has any
+  // boundary/crease/semi-sharp tag in it).
+  ON_SubD trimmed;
+  ON_SubD* work = &s;
+  const ON_SubDFace* child = next.face;
+  bool work_is_trimmed = s_is_trimmed;
+  if (s.FaceCount() > kTrimMinFaceCount) {
+    const ON_SubDFace* trimmed_child = nullptr;
+    if (TrimToNeighborhood(s, next.face, next.corner_index, kTrimRings, trimmed, trimmed_child)) {
+      work = &trimmed;
+      child = trimmed_child;
+      work_is_trimmed = true;
+    }
+  }
+
+  AdaptiveResult r = EvaluateFaceAdaptive(*work, child, u2, v2, depth_remaining - 1, work_is_trimmed,
+                                          s_is_trimmed ? whole_net_left : whole_net_left - 1);
+
+  // The child's tangents are partials with respect to ITS OWN (u2, v2),
+  // which relate to this face's (u, v) through the affine map just built
+  // (a quarter-turn rotation, then a doubling): chain rule, S_u = a*S_u2 +
+  // c*S_v2, S_v = b*S_u2 + d*S_v2 for u2 = a*u + b*v + ..., v2 = c*u +
+  // d*v + .... Before this, the child's raw (rotated, 2^-depth-scaled)
+  // partials were returned unchanged as if they were this face's own.
+  // The linear part is read off the same two functions used above (they
+  // are exactly affine, entries are 0 or +-2, so rounding recovers them
+  // exactly); the normal is a unit vector and the map is a pure rotation
+  // times a positive scale, so it needs no change.
+  if (r.tangents_in_face_frame) {
+    const auto map = [&](double pu, double pv, double& qu, double& qv) {
+      double a = 0.0, b = 0.0;
+      ToVertexLocal(k, pu, pv, a, b);
+      FromVertexLocal(next.corner_index, 2.0 * a, 2.0 * b, qu, qv);
+    };
+    double o_u, o_v, x_u, x_v, y_u, y_v;
+    map(0.0, 0.0, o_u, o_v);
+    map(1.0, 0.0, x_u, x_v);
+    map(0.0, 1.0, y_u, y_v);
+    const double a = std::round(x_u - o_u), c = std::round(x_v - o_v);
+    const double b = std::round(y_u - o_u), d = std::round(y_v - o_v);
+    const ON_3dVector tu = r.point.tangent_u, tv = r.point.tangent_v;
+    r.point.tangent_u = a * tu + c * tv;
+    r.point.tangent_v = b * tu + d * tv;
+  }
+  return r;
 }
 
 }  // namespace
@@ -2259,12 +2460,39 @@ SubDSurfacePoint SubD::EvaluateFace(unsigned int face_id, double u, double v,
     return EvalPatchPoint(grid, u, v, true);
   }
 
+  // Prefer a copy of just the neighborhood of whichever corner (u, v) is
+  // nearest - the only corner the adaptive recursion ever tracks first -
+  // over cloning the whole net; falls back to the whole-net clone
+  // whenever that neighborhood carries any boundary/crease/semi-sharp tag
+  // (see TrimToNeighborhood()).
+  int corner = 0;
+  if (u < 0.5 && v < 0.5) {
+    corner = 0;
+  } else if (u >= 0.5 && v < 0.5) {
+    corner = 1;
+  } else if (u >= 0.5 && v >= 0.5) {
+    corner = 2;
+  } else {
+    corner = 3;
+  }
+  {
+    ON_SubD local;
+    const ON_SubDFace* f_local = nullptr;
+    if (max_adaptive_levels > 0 && TrimToNeighborhood(subd_, f0, corner, kTrimRings, local, f_local)) {
+      return EvaluateFaceAdaptive(local, f_local, u, v, max_adaptive_levels, /*s_is_trimmed=*/true,
+                                  kMaxWholeNetLevels)
+          .point;
+    }
+  }
+
   ON_SubD working_copy(subd_);
   const ON_SubDFace* f0_copy = working_copy.FaceFromId(face_id);
   if (f0_copy == nullptr) {
     return EvalPatchPoint(grid, u, v, false);
   }
-  return EvaluateFaceAdaptive(working_copy, f0_copy, u, v, max_adaptive_levels);
+  return EvaluateFaceAdaptive(working_copy, f0_copy, u, v, max_adaptive_levels, /*s_is_trimmed=*/false,
+                              kMaxWholeNetLevels)
+      .point;
 }
 
 namespace {

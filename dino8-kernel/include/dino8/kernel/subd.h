@@ -1248,15 +1248,48 @@ class SubD {
   // in the refined copy, and the one still-unknown 4th corner of the
   // face touching all three IS the target child - no assumption that
   // ids or pointers survive subdivision. This repeats up to
-  // `max_adaptive_levels` times (each level only re-examines whichever
-  // single quadrant remains irregular, but still by globally refining
-  // the WHOLE internal working copy - there's no cheaper "just this
-  // face's neighborhood" primitive plugged in here - so cost is
-  // proportional to the working copy's OWN current size PER LEVEL, and
-  // that size itself grows roughly 4x each level; a working copy already
-  // past 500,000 faces stops refining further and falls back rather
-  // than risk exhausting memory, regardless of `max_adaptive_levels`
-  // left. A query at exactly a face corner's (u, v) - any face, any
+  // `max_adaptive_levels` times. Each level only needs the tracked
+  // quadrant's own neighborhood, so once the working copy has grown past
+  // a few dozen faces it is replaced by a standalone copy of just the
+  // faces within 4 face-rings of the tracked corner (a subdivision
+  // point's refined position depends only on its own 1-ring, so a
+  // 4-ring copy reproduces the next level's 2-ring exactly - the exact
+  // region never shrinks, however deep this goes), keeping the cost per
+  // level constant instead of growing 4x per level. That trim is skipped
+  // whenever the neighborhood carries any boundary, crease, dart or
+  // semi-sharp tag, or a non-manifold vertex - only a plain smooth
+  // interior neighborhood is trimmed. In an untrimmable neighborhood the
+  // WHOLE net is refined instead, which quadruples per level, so at most
+  // 4 levels are spent that way regardless of `max_adaptive_levels` (the
+  // same 4 the default used to be, so the cost profile there is
+  // unchanged, and still subject to the old 500,000-face safety cap,
+  // past which this falls back rather than risk exhausting memory);
+  // levels spent after a later trim succeeds (e.g. once the tracked
+  // quadrant has moved away from a boundary) are not charged against
+  // those 4. So near a boundary/crease/semi-sharp-adjacent extraordinary
+  // vertex, `exact = false` fallback is still reached within 2^-4 of it,
+  // exactly as before this change - that case is NOT improved. Past a scale-dependent depth (about
+  // 40 levels for coordinates of magnitude ~1) the face being tracked is
+  // so small that its own coordinates' floating-point noise floor can no
+  // longer tell neighboring refined vertices apart, so the recursion
+  // stops there regardless of the budget requested and reports the
+  // flat-fallback value below (position error O(h^2) in that face's
+  // width h, far below double precision's own resolution). A
+  // `max_adaptive_levels` too small for the query's distance to the
+  // nearest extraordinary vertex (a query within 2^-max_adaptive_levels
+  // of it) still ends in the tolerance-bounded fallback and
+  // `exact = false`; with the default of 24 that is only a query within
+  // about 6e-8 of an extraordinary vertex's own (u, v) corner, where the
+  // flat fallback's error is itself O(1e-14) of the face's size and
+  // `tangent_u`/`tangent_v` are the fallback's flat partials.
+  //
+  // `tangent_u`/`tangent_v` are always d(position)/du and d(position)/dv
+  // in THIS face's own (u, v), including after any number of adaptive
+  // levels (the recursion composes each level's quarter-turn-and-double
+  // reparametrization back out with the chain rule) - except exactly at a
+  // face corner, see below.
+  //
+  // A query at exactly a face corner's (u, v) - any face, any
   // level - always resolves immediately via that vertex's own real
   // `ON_SubDVertex::GetSurfacePoint()` instead (the same eigenbasis-based
   // routine `SurfacePoint()`/`SurfaceNormal()`/LimitPoints() already call
@@ -1293,7 +1326,7 @@ class SubD {
   // "Subdivide(1) first" limitation ToNurbsPatches() already documents
   // for a level-0 n-gon).
   SubDSurfacePoint EvaluateFace(unsigned int face_id, double u, double v,
-                                int max_adaptive_levels = 4) const;
+                                int max_adaptive_levels = 24) const;
 
   // A kernel-level, TOLERANCE-driven display mesh - closes the remaining
   // half of PARITY_MAP.md's subd_mesh "SubD display-level control at

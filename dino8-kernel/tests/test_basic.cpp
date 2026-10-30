@@ -31674,10 +31674,17 @@ void TestSubDEvaluateFaceAdaptiveOnIrregularFace() {
   const double deep_u = corner_uv[k][0] + inward[k][0] * deep_eps;
   const double deep_v = corner_uv[k][1] + inward[k][1] * deep_eps;
 
-  const SubDSurfacePoint near_pt = subd.EvaluateFace(face_id, deep_u, deep_v);
+  // 1e-6 away is within the default 24-level budget now (2^-20 ~ 1e-6, see
+  // TestSubDEvaluateFaceExactNearExtraordinaryVertexScalesByTheSubdominantEigenvalue);
+  // 1e-9 is past it (2^-30 < 2^-24), so it is still correctly reported as
+  // not exact at the default budget.
+  const double beyond_budget_eps = 1e-9;
+  const SubDSurfacePoint near_pt =
+      subd.EvaluateFace(face_id, corner_uv[k][0] + inward[k][0] * beyond_budget_eps,
+                        corner_uv[k][1] + inward[k][1] * beyond_budget_eps);
   Check(!near_pt.exact,
-        "a query point genuinely close to the still-extraordinary corner is correctly "
-        "reported as not exact, at the default adaptive-level budget");
+        "a query point closer to the still-extraordinary corner than the default adaptive-level "
+        "budget can resolve is correctly reported as not exact");
 
   // Continuity check across the shared boundary between quadrant k
   // (touching the still-extraordinary corner) and its neighbor
@@ -31765,6 +31772,182 @@ void TestSubDEvaluateFaceAdaptiveOnIrregularFace() {
     Check(at_corner.position.DistanceTo(expected_lp->limit_point) < 1e-12,
           "EvaluateFace() at the extraordinary corner's own (u,v) matches LimitPoints()'s "
           "exact limit position for that same vertex");
+  }
+}
+
+// Regression coverage for a bug found while auditing PARITY_MAP.md's
+// "SubD extraordinary-vertex limit-tangent quality" item: on an irregular
+// face EvaluateFace() returned the CHILD face's tangent_u/tangent_v from
+// its adaptive recursion unchanged - partials with respect to the child's
+// own (u2, v2), which is a quarter-turn-rotated and 2^depth-scaled copy of
+// the caller's (u, v) - while the doc comment promises d(position)/du and
+// d(position)/dv of the face that was asked about. Independent reference:
+// central finite differences of EvaluateFace()'s own POSITION (which was
+// always right) along the caller's u and v, compared to the reported
+// tangents. Before the fix every point below disagreed by an O(1) factor
+// (2^depth, with u/v swapped).
+void TestSubDEvaluateFaceTangentsAreFaceFramePartialsAfterAdaptiveRefinement() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDSurfacePoint;
+
+  // Level-0 cube: all 6 faces irregular at all 4 corners (valence 3), so
+  // every interior query below goes through at least one adaptive level.
+  SubD subd = SubD::FromControlMesh(MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1));
+  unsigned int face_id = 0;
+  {
+    ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+    face_id = fit.FirstFace()->FaceId();
+  }
+  const double pts[][2] = {{0.3, 0.3}, {0.1, 0.1}, {0.1, 0.4}, {0.4, 0.1},
+                           {0.8, 0.2}, {0.2, 0.8}, {0.6, 0.7}, {0.05, 0.3}};
+  const double h = 1e-5;
+  for (const auto& p : pts) {
+    const SubDSurfacePoint e = subd.EvaluateFace(face_id, p[0], p[1], 6);
+    Check(e.exact, "the query point is resolved exactly within 6 adaptive levels");
+    const Point3d pu = subd.EvaluateFace(face_id, p[0] + h, p[1], 6).position;
+    const Point3d mu = subd.EvaluateFace(face_id, p[0] - h, p[1], 6).position;
+    const Point3d pv = subd.EvaluateFace(face_id, p[0], p[1] + h, 6).position;
+    const Point3d mv = subd.EvaluateFace(face_id, p[0], p[1] - h, 6).position;
+    const dino8::kernel::Vector3d fd_u = (pu - mu) / (2.0 * h);
+    const dino8::kernel::Vector3d fd_v = (pv - mv) / (2.0 * h);
+    Check((e.tangent_u - fd_u).Length() < 1e-5,
+          "tangent_u equals the finite-difference d(position)/du of the face's own (u, v), "
+          "not the adaptive child's rotated/scaled frame");
+    Check((e.tangent_v - fd_v).Length() < 1e-5,
+          "tangent_v equals the finite-difference d(position)/dv of the face's own (u, v)");
+    dino8::kernel::Vector3d n = ON_CrossProduct(e.tangent_u, e.tangent_v);
+    Check(n.Unitize() && (n - e.normal).Length() < 1e-9,
+          "the reported unit normal is the unit cross product of the reported tangents");
+  }
+}
+
+// Closes the gap PARITY_MAP.md's "SubD extraordinary-vertex limit-tangent
+// quality" item disclosed: interior-of-quadrant queries NEAR (but not at)
+// an extraordinary vertex used to fall back to a flat bilinear-corner
+// interpolant after only 4 adaptive levels, giving a position error of up
+// to ~1e-3 (cube of side 2) for any query within 1/16 of the vertex's own
+// (u, v) corner - a larger error than the query's actual distance from the
+// pole itself, e.g. 4.5e-4 at (1e-4, 1e-4) where the true displacement from
+// the pole is 1.5e-5. Fixed by making the default budget 24 levels (cheap
+// now that each level refines only the tracked corner's own neighborhood,
+// not the whole net).
+//
+// Independent closed-form reference (not another run of the same
+// evaluator): Catmull-Clark's subdominant eigenvalue for valence N,
+// lambda(N) = (cos(2 pi/N) + 5 + sqrt((cos(2 pi/N) + 9)(cos(2 pi/N) + 1)))/16
+// (Catmull-Clark 1978 / Stam 1998; 1/2 for N=4, 0.41010 for N=3, 0.55 for
+// N=5). A subdivision surface is self-similar at an extraordinary vertex:
+// halving the parameter distance to the pole multiplies the displacement
+// from the pole's limit point by exactly lambda (asymptotically; the next
+// eigenvalue 1/4 contributes a (0.25/lambda)^k correction, ~1e-6 or less
+// by k = 15). So |S(eps/2) - S(0)| / |S(eps) - S(0)| must equal lambda(N)
+// along the face diagonal - a regime where the old 4-level fallback's
+// error (~4e-4, roughly constant) dwarfed the actual displacement (<1e-5)
+// and made the ratio meaningless. Checked at a valence-3 vertex (every
+// corner of a level-0 cube face) and a valence-5 vertex (a pentagonal
+// prism's cap-face center after one Subdivide).
+void TestSubDEvaluateFaceExactNearExtraordinaryVertexScalesByTheSubdominantEigenvalue() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDSurfacePoint;
+
+  const double kPi = 3.14159265358979323846;
+  const auto subdominant = [kPi](int n) {
+    const double c = std::cos(2.0 * kPi / n);
+    return (c + 5.0 + std::sqrt((c + 9.0) * (c + 1.0))) / 16.0;
+  };
+  Check(std::abs(subdominant(4) - 0.5) < 1e-15, "sanity: the closed form gives 1/2 for the regular valence-4 case");
+
+  const double corner_u[4] = {0.0, 1.0, 1.0, 0.0};
+  const double corner_v[4] = {0.0, 0.0, 1.0, 1.0};
+  const double inward_u[4] = {1.0, -1.0, -1.0, 1.0};
+  const double inward_v[4] = {1.0, 1.0, -1.0, -1.0};
+
+  const auto check_vertex = [&](const SubD& subd, unsigned int face_id, int corner, int valence,
+                                const char* label) {
+    const SubDSurfacePoint pole = subd.EvaluateFace(face_id, corner_u[corner], corner_v[corner]);
+    Check(pole.exact, label);
+    const double lambda = subdominant(valence);
+    double prev = 0.0;
+    int checked = 0;
+    for (int j = 10; j <= 23; ++j) {
+      const double eps = std::ldexp(1.0, -j);
+      const SubDSurfacePoint q = subd.EvaluateFace(face_id, corner_u[corner] + inward_u[corner] * eps,
+                                                   corner_v[corner] + inward_v[corner] * eps);
+      Check(q.exact, "a query 2^-j from the pole (j <= 23) is exact within the default 24-level budget");
+      const double d = q.position.DistanceTo(pole.position);
+      if (j > 10) {
+        const double ratio = d / prev;
+        if (std::abs(ratio - lambda) > 2e-4) {
+          std::fprintf(stderr, "valence %d, j=%d: ratio %.8f vs lambda %.8f\n", valence, j, ratio, lambda);
+        }
+        Check(std::abs(ratio - lambda) < 2e-4,
+              "displacement from the pole shrinks by the closed-form subdominant eigenvalue per halving");
+        ++checked;
+      }
+      prev = d;
+    }
+    Check(checked == 13, "all 13 halving ratios were checked");
+  };
+
+  // Valence 3: a level-0 cube, every corner of a face.
+  {
+    SubD cube = SubD::FromControlMesh(MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1));
+    ON_SubDFaceIterator fit = cube.raw().FaceIterator();
+    const ON_SubDFace* f = fit.FirstFace();
+    for (int corner = 0; corner < 4; ++corner) {
+      check_vertex(cube, f->FaceId(), corner, 3, "the cube corner pole is exact");
+    }
+  }
+
+  // Valence 5: a regular pentagonal prism built directly as a SubD (its two
+  // caps are genuine pentagons), subdivided once so every face is a quad;
+  // each cap's center vertex then has valence 5.
+  {
+    SubD prism;
+    ON_SubD& raw = prism.raw();
+    const ON_SubDVertex* bottom[5];
+    const ON_SubDVertex* top[5];
+    for (int i = 0; i < 5; ++i) {
+      const double a = 2.0 * kPi * i / 5.0;
+      const double pb[3] = {std::cos(a), std::sin(a), -1.0};
+      const double pt[3] = {std::cos(a), std::sin(a), 1.0};
+      bottom[i] = raw.AddVertex(ON_SubDVertexTag::Unset, pb);
+      top[i] = raw.AddVertex(ON_SubDVertexTag::Unset, pt);
+    }
+    const ON_SubDVertex* bottom_cap[5] = {bottom[0], bottom[4], bottom[3], bottom[2], bottom[1]};
+    const ON_SubDVertex* top_cap[5] = {top[0], top[1], top[2], top[3], top[4]};
+    Check(raw.FindOrAddFace(ON_SubDEdgeTag::Unset, bottom_cap, 5) != nullptr, "bottom pentagon added");
+    Check(raw.FindOrAddFace(ON_SubDEdgeTag::Unset, top_cap, 5) != nullptr, "top pentagon added");
+    for (int i = 0; i < 5; ++i) {
+      const int j = (i + 1) % 5;
+      const ON_SubDVertex* side[4] = {bottom[i], bottom[j], top[j], top[i]};
+      Check(raw.FindOrAddFace(ON_SubDEdgeTag::Unset, side, 4) != nullptr, "side quad added");
+    }
+    raw.UpdateAllTagsAndSectorCoefficients(true);
+    Check(prism.IsValid(), "the pentagonal prism is a valid SubD");
+    prism.Subdivide(1);
+
+    const ON_SubDFace* target = nullptr;
+    int corner = -1;
+    ON_SubDFaceIterator fit = prism.raw().FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr && target == nullptr; f = fit.NextFace()) {
+      if (f->EdgeCount() != 4) continue;
+      for (unsigned int i = 0; i < 4; ++i) {
+        const ON_SubDVertex* v = f->Vertex(i);
+        if (v != nullptr && v->EdgeCount() == 5 && v->IsSmooth()) {
+          target = f;
+          corner = static_cast<int>(i);
+          break;
+        }
+      }
+    }
+    Check(target != nullptr, "found a face with a valence-5 smooth corner");
+    if (target != nullptr) {
+      check_vertex(prism, target->FaceId(), corner, 5, "the valence-5 pole is exact");
+    }
   }
 }
 
@@ -82044,6 +82227,8 @@ int main() {
   RunTest("TestSubDThickenInheritsMeshThickenArgumentChecks", TestSubDThickenInheritsMeshThickenArgumentChecks);
   RunTest("TestSubDEvaluateFaceExactOnRegularFlatGrid", TestSubDEvaluateFaceExactOnRegularFlatGrid);
   RunTest("TestSubDEvaluateFaceAdaptiveOnIrregularFace", TestSubDEvaluateFaceAdaptiveOnIrregularFace);
+  RunTest("TestSubDEvaluateFaceTangentsAreFaceFramePartialsAfterAdaptiveRefinement", TestSubDEvaluateFaceTangentsAreFaceFramePartialsAfterAdaptiveRefinement);
+  RunTest("TestSubDEvaluateFaceExactNearExtraordinaryVertexScalesByTheSubdominantEigenvalue", TestSubDEvaluateFaceExactNearExtraordinaryVertexScalesByTheSubdominantEigenvalue);
   RunTest("TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane", TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane);
   RunTest("TestSubDEvaluateFaceExtraordinaryCornerHandlesSemiSharpEdge", TestSubDEvaluateFaceExtraordinaryCornerHandlesSemiSharpEdge);
   RunTest("TestSubDEvaluateFaceThrowsOnBadInput", TestSubDEvaluateFaceThrowsOnBadInput);
