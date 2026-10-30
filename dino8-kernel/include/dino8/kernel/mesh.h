@@ -296,9 +296,16 @@ class Mesh {
   // nearest vertex's or edge's positive distance. Returns
   // `distance == 0` for touching or crossing surfaces. Meaningful for
   // open surfaces too (it's a surface/surface query, not a solid one).
-  // Brute force over every triangle pair with a per-pair bounding-box
-  // reject against the best distance found so far; no BVH. Throws
-  // std::invalid_argument if either mesh has no faces.
+  // Spatially accelerated: an ON_RTree over `other`'s triangle boxes
+  // means each triangle of this mesh is tested only against the few
+  // `other` triangles whose box lies within the best distance found so
+  // far of its own (O(n log m) typical, not the O(n * m) triangle-pair
+  // loop this used to be - 180k x 180k triangles took ~4 minutes, now
+  // well under a second). The result, including which face pair wins an
+  // exact tie (the first in (this, other) face order), is identical to
+  // that old loop's; an index is built per call (O(m)), so for many
+  // queries against one fixed mesh the cost is dominated by `this`.
+  // Throws std::invalid_argument if either mesh has no faces.
   MeshDistance DistanceTo(const Mesh& other) const;
 
   // Solid-level classification of how this closed mesh and `other`

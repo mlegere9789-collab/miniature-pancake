@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -28434,6 +28435,113 @@ void TestMeshDistanceTo() {
     threw = true;
   }
   Check(threw, "DistanceTo throws when the other mesh has no faces");
+}
+
+// Mesh::DistanceTo() used to be a brute-force O(n * m) triangle-pair loop
+// ("no BVH" - the last public geometric query with no accelerated path at
+// all). It now bounds each triangle's candidate set with an ON_RTree over
+// the other mesh. Two independent checks:
+//   (1) Exactness: on moderate meshes (separated, near, crossing,
+//       coincident), the accelerated result - distance, closest points AND
+//       the face pair that wins a tie - equals an independent O(n * m)
+//       oracle built from the SAME public DistanceTo() applied to
+//       one-triangle-vs-one-triangle meshes (a trivial path that involves
+//       no candidate selection at all), taking the first (a, b) in order
+//       with a strictly smaller distance, exactly as the old loop did.
+//   (2) Closed form + scale: two dense radius-5 tessellated spheres whose
+//       centers are 14 apart are exactly 4 apart analytically (all mesh
+//       vertices lie ON the sphere so the mesh surfaces sit inside it:
+//       d >= 4, and by less than the facet sagitta above it). At this
+//       size the old brute-force loop took far longer than the time bound
+//       below; the accelerated path finishes in a small fraction of it.
+void TestMeshDistanceToSpatialAcceleration() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MeshDistance;
+  using dino8::kernel::Point3d;
+
+  auto tri_meshes = [](Mesh& m) {
+    // One single-triangle Mesh per triangle (quads split like DistanceTo
+    // itself does), remembering the original face index.
+    std::vector<std::pair<Mesh, int>> out;
+    const ON_Mesh& raw = m.raw();
+    for (int i = 0; i < raw.m_F.Count(); ++i) {
+      const ON_MeshFace& f = raw.m_F[i];
+      auto add = [&](int a, int b, int c) {
+        out.emplace_back(MakeTriangleMesh(Point3d(raw.m_V[a]), Point3d(raw.m_V[b]), Point3d(raw.m_V[c])), i);
+      };
+      add(f.vi[0], f.vi[1], f.vi[2]);
+      if (f.IsQuad()) add(f.vi[0], f.vi[2], f.vi[3]);
+    }
+    return out;
+  };
+  auto oracle = [&](Mesh& a, Mesh& b) {
+    const auto ta = tri_meshes(a), tb = tri_meshes(b);
+    MeshDistance best;
+    best.distance = std::numeric_limits<double>::infinity();
+    for (const auto& x : ta) {
+      for (const auto& y : tb) {
+        MeshDistance d = x.first.DistanceTo(y.first);
+        if (d.distance < best.distance) {
+          d.face_on_this = x.second;
+          d.face_on_other = y.second;
+          best = d;
+          if (d.distance == 0.0) return best;
+        }
+      }
+    }
+    return best;
+  };
+  auto sphere = [](double cx, double cy, double cz, double r, int n) {
+    return Brep::Sphere(Point3d(cx, cy, cz), r).TessellateToClosedMesh(n, n);
+  };
+
+  struct Case {
+    const char* name;
+    Mesh a, b;
+    double expect_at_least;  // closed-form lower bound, or -1 for none
+  };
+  std::vector<Case> cases;
+  cases.push_back({"separated spheres (centers 14 apart, r=5)", sphere(0, 0, 0, 5, 10), sphere(14, 0, 0, 5, 7), 4.0 - 1e-6});
+  cases.push_back({"near spheres, different resolutions", sphere(0, 0, 0, 5, 9), sphere(9.3, 0.7, -0.4, 3, 13), -1});
+  cases.push_back({"crossing spheres (surfaces intersect)", sphere(0, 0, 0, 5, 8), sphere(5, 0, 0, 3, 8), -1});
+  cases.push_back({"identical meshes (every pair tied at 0)", sphere(0, 0, 0, 5, 6), sphere(0, 0, 0, 5, 6), -1});
+  cases.push_back({"quad-box vs sphere, far apart", MakeQuadBoxMesh(0, 0, 0, 2, 2, 2), sphere(40, 5, -3, 4, 9), 40 - 2 - 4 - 1e-6});
+  cases.push_back({"touching spheres (centers 10 apart, r=5 each)", sphere(0, 0, 0, 5, 12), sphere(10, 0, 0, 5, 12), -1});
+  for (Case& c : cases) {
+    const MeshDistance got = c.a.DistanceTo(c.b);
+    const MeshDistance want = oracle(c.a, c.b);
+    const std::string n = c.name;
+    Check(std::abs(got.distance - want.distance) <= 1e-12 * std::max(1.0, want.distance),
+          ("DistanceTo (accelerated) distance matches the one-triangle-pair oracle: " + n).c_str());
+    Check(got.face_on_this == want.face_on_this && got.face_on_other == want.face_on_other,
+          ("DistanceTo (accelerated) picks the same (first-in-order) face pair as the oracle, ties included: " + n).c_str());
+    Check(got.point_on_this.DistanceTo(want.point_on_this) <= 1e-12 &&
+              got.point_on_other.DistanceTo(want.point_on_other) <= 1e-12,
+          ("DistanceTo (accelerated) reports the same closest points as the oracle: " + n).c_str());
+    if (c.expect_at_least >= 0) {
+      Check(got.distance >= c.expect_at_least, ("DistanceTo respects the independent closed-form lower bound: " + n).c_str());
+    }
+  }
+  // Crossing and identical cases must truly be 0, so the checks above are
+  // not vacuously comparing two large numbers.
+  Check(cases[2].a.DistanceTo(cases[2].b).distance == 0.0, "crossing spheres have distance exactly 0");
+  Check(cases[3].a.DistanceTo(cases[3].b).distance == 0.0, "identical meshes have distance exactly 0");
+  Check(cases[0].a.DistanceTo(cases[0].b).distance > 3.9, "separated-sphere fixture is genuinely separated (positive control)");
+
+  // (2) Dense closed-form + scale.
+  const Mesh big_a = sphere(0, 0, 0, 5, 300);
+  const Mesh big_b = sphere(14, 0, 0, 5, 300);
+  const auto t0 = std::chrono::steady_clock::now();
+  const MeshDistance dense = big_a.DistanceTo(big_b);
+  const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  Check(big_a.FaceCount() >= 150000 && big_b.FaceCount() >= 150000, "dense fixture really is that many faces per mesh");
+  Check(dense.distance >= 4.0 - 1e-9 && dense.distance <= 4.0 + 1e-2,
+        "dense spheres 14 apart (r=5): mesh distance is 4 (analytic) plus less than the facet sagitta");
+  Check(std::abs(dense.point_on_this.DistanceTo(dense.point_on_other) - dense.distance) <= 1e-9,
+        "dense case: the two reported closest points are exactly `distance` apart");
+  Check(seconds < 20.0,
+        ("dense case finishes inside the time bound brute force blows through (took " + std::to_string(seconds) + " s)").c_str());
 }
 
 void TestMeshClashWith() {
@@ -81609,6 +81717,7 @@ int main() {
   RunTest("TestMeshGetOrientedBoundingBox", TestMeshGetOrientedBoundingBox);
   RunTest("TestMeshFireRay", TestMeshFireRay);
   RunTest("TestMeshDistanceTo", TestMeshDistanceTo);
+  RunTest("TestMeshDistanceToSpatialAcceleration", TestMeshDistanceToSpatialAcceleration);
   RunTest("TestMeshClashWith", TestMeshClashWith);
   RunTest("TestPointCloudSpatialQueries", TestPointCloudSpatialQueries);
   RunTest("TestPointCloudSpatialQueriesUseRTreeAcceleration", TestPointCloudSpatialQueriesUseRTreeAcceleration);
