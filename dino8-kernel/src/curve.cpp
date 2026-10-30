@@ -2070,6 +2070,64 @@ Result NurbsCurve::Simplify(double tolerance) {
   return changed ? Result::Ok : Result::NoOpAlreadySatisfied;
 }
 
+double NurbsCurve::MaxSampledDeviationFrom(const NurbsCurve& other, int samples) const {
+  if (samples < 2) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::MaxSampledDeviationFrom: samples must be >= 2");
+  }
+  const Interval dom = Domain();
+  std::vector<double> ts;
+  ts.reserve(static_cast<size_t>(samples + KnotCount() + other.KnotCount()));
+  for (int i = 0; i < samples; ++i) {
+    ts.push_back(dom.min + (dom.max - dom.min) * i / (samples - 1.0));
+  }
+  // Every interior knot of either curve (see the header: the difference
+  // of two piecewise-polynomial curves sharing a domain can only change
+  // character at one of these, so for degree 1 its peak is always one).
+  auto add_interior_knots = [&](const NurbsCurve& c) {
+    for (int i = 0; i < c.KnotCount(); ++i) {
+      const double k = c.KnotAt(i);
+      if (k > dom.min && k < dom.max) ts.push_back(k);
+    }
+  };
+  add_interior_knots(*this);
+  add_interior_knots(other);
+  double worst = 0.0;
+  for (const double t : ts) {
+    worst = std::max(worst, PointAt(t).DistanceTo(other.PointAt(t)));
+  }
+  return worst;
+}
+
+Result NurbsCurve::MakeUniform(double tolerance, double* out_max_deviation) {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::MakeUniform: tolerance must be positive");
+  }
+  // A curve with no spans (default-constructed, or otherwise never
+  // given control points) has no domain to preserve and no knot vector
+  // to re-space - refuse before Domain() below could ever index it.
+  const int order = curve_.Order();
+  const int cv_count = curve_.CVCount();
+  if (order < 2 || cv_count < order || !curve_.Knot()) return Result::Failed;
+
+  if (ON_IsKnotVectorClamped(order, cv_count, curve_.Knot()) &&
+      ON_IsKnotVectorUniform(order, cv_count, curve_.Knot())) {
+    if (out_max_deviation) *out_max_deviation = 0.0;
+    return Result::NoOpAlreadySatisfied;
+  }
+
+  NurbsCurve candidate = *this;
+  if (!candidate.curve_.MakeClampedUniformKnotVector(1.0)) return Result::Failed;
+  const Interval dom = Domain();
+  if (candidate.SetDomain(dom.min, dom.max) == Result::Failed) return Result::Failed;
+
+  const double deviation = MaxSampledDeviationFrom(candidate);
+  if (out_max_deviation) *out_max_deviation = deviation;
+  if (deviation > tolerance) return Result::Failed;
+
+  curve_ = candidate.curve_;
+  return Result::Ok;
+}
+
 Interval NurbsCurve::Domain() const {
   const ON_Interval domain = curve_.Domain();
   return Interval{domain.Min(), domain.Max()};
