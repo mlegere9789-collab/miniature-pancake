@@ -2096,11 +2096,29 @@ Brep OffsetFace(const Brep& solid, int face_index, double distance) {
     const double area = PlanarPolygonArea(clipped, pl.zaxis);
     const double area_tol = tol * tol;
     if (clipped.size() < 3 || area <= area_tol) {
-      throw std::invalid_argument(
-          "dino8::kernel::OffsetFace: distance collapses face " + std::to_string(i) +
-          "'s own boundary to fewer than 3 vertices or ~0 area - the resulting "
-          "solid's topology would need to change (a face vanishing entirely), "
-          "which is out of scope here");
+      if (i == face_index) {
+        throw std::invalid_argument(
+            "dino8::kernel::OffsetFace: distance collapses face " + std::to_string(i) +
+            "'s own boundary (the face being moved) to fewer than 3 vertices or "
+            "~0 area - its moved plane no longer bounds the solid at all, so the "
+            "edit has no face left to describe; refused rather than silently "
+            "returning a solid without it");
+      }
+      // A NON-moved face whose boundary collapses is a half-space the
+      // moved plane has made redundant: the true new polytope (the
+      // intersection of every face's own half-space, which is exactly
+      // what each surviving face's own clipped polygon reconstructs)
+      // simply no longer touches it - e.g. a chamfer face on an edge of
+      // the moved face, swallowed once the moved plane passes below the
+      // chamfer's own far edge. Dropping it is exact, not an
+      // approximation: every OTHER face was clipped against this plane
+      // too, and a redundant half-space clips nothing, so the surviving
+      // faces already ARE the full boundary of the result (a tangent
+      // one, touching only along an edge, likewise clips nothing beyond
+      // the collinear point CleanPolygon already collapses). The old
+      // "throw: topology would need to change" refusal here was the
+      // disclosed "throws if any face would vanish" gap.
+      continue;
     }
     Brep::PlanarFace new_face;
     new_face.plane = pl;
