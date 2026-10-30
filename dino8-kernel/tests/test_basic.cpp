@@ -82720,6 +82720,267 @@ void TestBrepPersistentIdsSurviveKernelTopologyEdits() {
   }
 }
 
+// NurbsSurface::Join() - the kernel's own exact MergeSrf. The fixture is a
+// genuinely non-planar bicubic (4x4 control net, one span each way; z =
+// sin*cos bumps, so no isocurve is a line) cut by Split() - its halves
+// share the cut edge with the identical parameterization, so Join() must
+// be Split()'s exact inverse, in every orientation the shared edge can
+// sit in on either operand. Before Join() existed, dino8-app's MergeSrf
+// could only sample both halves into a 25x17 point grid and re-fit a new
+// surface (InterpolateThroughGrid) - measured on this exact fixture before
+// the change: 1.96e-6 off the original and 25x17 control points where the
+// exact answer is 7x4.
+void TestSurfaceJoinSplicesSharedEdgeExactly() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) grid.emplace_back(i, j, std::sin(i * 1.3) * std::cos(j * 0.7));
+  }
+  const NurbsSurface original = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+  NurbsSurface west, east, south, north;
+  Check(original.Split(0, 0.4, west, east) == Result::Ok && original.Split(1, 0.4, south, north) == Result::Ok,
+        "Join setup: Split(0, 0.4) and Split(1, 0.4) both succeed");
+
+  // Largest PointAt() gap between `s` and `original` over a 9x9 grid of
+  // the original's own (u, v) domain - near 0 only when `s` reproduces
+  // the original IN PLACE, i.e. with its parameterization preserved.
+  auto max_gap = [&](const NurbsSurface& s) {
+    double worst = 0.0;
+    for (int i = 0; i <= 8; ++i) {
+      for (int j = 0; j <= 8; ++j) {
+        worst = std::max(worst, s.PointAt(i / 8.0, j / 8.0).DistanceTo(original.PointAt(i / 8.0, j / 8.0)));
+      }
+    }
+    return worst;
+  };
+  auto domain_is = [](const NurbsSurface& s, int dir, double lo, double hi) {
+    return std::abs(s.Domain(dir).min - lo) < 1e-12 && std::abs(s.Domain(dir).max - hi) < 1e-12;
+  };
+
+  // 1. west + east: the exact 7x4 net - every control point and every
+  //    knot bit-identical to the half it came from (nothing needed
+  //    elevating or inserting, and the east knots shift by exactly 0).
+  NurbsSurface joined = west;
+  Check(joined.Join(east) == Result::Ok, "west.Join(east) succeeds");
+  Check(joined.CVCountU() == 7 && joined.CVCountV() == 4,
+        "the joined net is 7x4: 4 + 4 rows with the shared boundary row counted once");
+  Check(joined.DegreeU() == 3 && joined.DegreeV() == 3, "the joined surface keeps degree (3, 3)");
+  Check(domain_is(joined, 0, 0.0, 1.0) && domain_is(joined, 1, 0.0, 1.0),
+        "the joined domain is the original [0,1]x[0,1] again: west's own, extended past its max by east's length");
+  bool cvs_exact = true;
+  for (int j = 0; j < 4; ++j) {
+    for (int i = 0; i < 4; ++i) cvs_exact = cvs_exact && joined.ControlPointAt(i, j) == west.ControlPointAt(i, j);
+    for (int i = 1; i < 4; ++i) cvs_exact = cvs_exact && joined.ControlPointAt(3 + i, j) == east.ControlPointAt(i, j);
+  }
+  Check(cvs_exact, "every joined control point is bit-identical to the half's it came from");
+  bool knots_exact = joined.KnotCount(0) == 9 && joined.KnotCount(1) == 6;
+  for (int i = 0; i < 6 && knots_exact; ++i) knots_exact = joined.KnotAt(0, i) == west.KnotAt(0, i);
+  for (int i = 3; i < 6 && knots_exact; ++i) knots_exact = joined.KnotAt(0, 3 + i) == east.KnotAt(0, i);
+  for (int i = 0; i < 6 && knots_exact; ++i) knots_exact = joined.KnotAt(1, i) == west.KnotAt(1, i);
+  Check(knots_exact,
+        "the joined U knots are west's 6 followed by east's 3 past its clamped start (bit-exact) and the V knots are west's");
+  Check(max_gap(joined) < 1e-12, "the joined surface reproduces the original everywhere (9x9 samples, < 1e-12)");
+  // The junction knot (0.4, multiplicity 3) is only C0 by construction;
+  // the halves were genuinely smooth there, so taking it out three times
+  // gives the original 4x4 net back within round-off.
+  NurbsSurface smoothed = joined;
+  double removal_bound = 0.0;
+  bool removed = true;
+  for (int k = 0; k < 3 && removed; ++k) removed = smoothed.RemoveKnotAt(0, 3, 1e-9, &removal_bound) == Result::Ok;
+  bool net_restored = removed && smoothed.CVCountU() == 4;
+  for (int i = 0; i < 4 && net_restored; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      net_restored = net_restored && smoothed.ControlPointAt(i, j).DistanceTo(original.ControlPointAt(i, j)) < 1e-9;
+    }
+  }
+  Check(net_restored, "RemoveKnotAt() x3 on the junction knot afterwards restores the original 4x4 net (< 1e-9)");
+
+  // 2. The shared edge on this surface's u-min side (east + west): the
+  //    result is still oriented like `this`, growing below its min.
+  joined = east;
+  Check(joined.Join(west) == Result::Ok, "east.Join(west) succeeds (shared edge on this surface's u-min side)");
+  Check(domain_is(joined, 0, 0.0, 1.0) && max_gap(joined) < 1e-12,
+        "east.Join(west) keeps east's own parameterization and grows its U domain below 0.4 to [0,1] (< 1e-12)");
+
+  // 3. The shared edge on this surface's v sides (south + north, and
+  //    north + south): the transposed and transposed-and-reversed paths.
+  joined = south;
+  Check(joined.Join(north) == Result::Ok, "south.Join(north) succeeds (shared edge on this surface's v-max side)");
+  Check(domain_is(joined, 0, 0.0, 1.0) && domain_is(joined, 1, 0.0, 1.0) && max_gap(joined) < 1e-12,
+        "south.Join(north) grows V past 0.4 to [0,1], leaves U alone and reproduces the original (< 1e-12)");
+  joined = north;
+  Check(joined.Join(south) == Result::Ok, "north.Join(south) succeeds (shared edge on this surface's v-min side)");
+  Check(domain_is(joined, 0, 0.0, 1.0) && domain_is(joined, 1, 0.0, 1.0) && max_gap(joined) < 1e-12,
+        "north.Join(south) grows V below 0.4 to [0,1], leaves U alone and reproduces the original (< 1e-12)");
+
+  // 4. `other` turned every way: reversed along the shared edge,
+  //    transposed (edge on its v-min side), transposed and reversed
+  //    (edge on its v-max side). Join turns it back; `this` is untouched.
+  NurbsSurface east_flipped = east;
+  Check(east_flipped.Reverse(1) == Result::Ok, "Join setup: east reversed along the shared edge");
+  joined = west;
+  Check(joined.Join(east_flipped) == Result::Ok && max_gap(joined) < 1e-12,
+        "west.Join(east reversed along the edge) still reproduces the original in place (< 1e-12)");
+  NurbsSurface east_transposed = east;
+  east_transposed.Transpose();
+  joined = west;
+  Check(joined.Join(east_transposed) == Result::Ok && max_gap(joined) < 1e-12,
+        "west.Join(east transposed: edge on other's v-min side) reproduces the original in place (< 1e-12)");
+  NurbsSurface east_turned = east_transposed;
+  Check(east_turned.Reverse(1) == Result::Ok, "Join setup: transposed east reversed in V (edge on its v-max side)");
+  joined = west;
+  Check(joined.Join(east_turned) == Result::Ok && max_gap(joined) < 1e-12,
+        "west.Join(east transposed and reversed: edge on other's v-max side) reproduces the original (< 1e-12)");
+
+  // 5. Operands that need making compatible first: a higher degree along
+  //    the edge, a higher degree across it, an extra knot along it, and a
+  //    different domain across it (shape unchanged in every case).
+  NurbsSurface east_v4 = east;
+  Check(east_v4.ElevateDegree(1, 4) == Result::Ok, "Join setup: east elevated to degree 4 along the shared edge");
+  joined = west;
+  Check(joined.Join(east_v4) == Result::Ok && joined.DegreeV() == 4 && joined.CVCountV() == 5 && joined.CVCountU() == 7,
+        "a degree-3/degree-4 pair joins at degree 4 along the edge (west elevated, not east reduced): 7x5 net");
+  Check(max_gap(joined) < 1e-9, "...and still reproduces the original (< 1e-9, degree elevation round-off)");
+  NurbsSurface east_u4 = east;
+  Check(east_u4.ElevateDegree(0, 4) == Result::Ok, "Join setup: east elevated to degree 4 across the shared edge");
+  joined = west;
+  Check(joined.Join(east_u4) == Result::Ok && joined.DegreeU() == 4 && joined.CVCountU() == 9 && joined.CVCountV() == 4,
+        "a degree-3/degree-4 pair across the edge joins at degree 4: 5 + 5 - 1 = 9 rows");
+  Check(max_gap(joined) < 1e-9, "...and still reproduces the original (< 1e-9)");
+  NurbsSurface east_knotted = east;
+  Check(east_knotted.InsertKnotAt(1, 0.3, 1) == Result::Ok, "Join setup: east gets an extra V knot at 0.3");
+  joined = west;
+  Check(joined.Join(east_knotted) == Result::Ok && joined.CVCountV() == 5 && joined.KnotCount(1) == 7 &&
+            joined.KnotAt(1, 3) == 0.3,
+        "a pair with different V knots joins on their union: 5 columns, the 0.3 knot inserted into west's side too");
+  Check(max_gap(joined) < 1e-12, "...and still reproduces the original (< 1e-12, knot insertion is exact)");
+  NurbsSurface east_shifted = east;
+  Check(east_shifted.SetDomain(0, 5.0, 9.0) == Result::Ok, "Join setup: east's U domain moved to [5, 9]");
+  joined = west;
+  Check(joined.Join(east_shifted) == Result::Ok && domain_is(joined, 0, 0.0, 4.4),
+        "west.Join(east on [5,9]) grows west's U domain by other's length 4: [0, 4.4]");
+  double shifted_gap = 0.0;
+  for (int i = 0; i <= 8; ++i) {
+    for (int j = 0; j <= 8; ++j) {
+      const double u_other = 5.0 + 4.0 * i / 8.0, v = j / 8.0;
+      shifted_gap = std::max(shifted_gap, joined.PointAt(0.4 + (u_other - 5.0), v).DistanceTo(east_shifted.PointAt(u_other, v)));
+    }
+  }
+  Check(shifted_gap < 1e-12, "...and other's (u', v) lands at (0.4 + (u' - 5), v) on the result, the documented mapping (< 1e-12)");
+  joined = east_shifted;
+  Check(joined.Join(west) == Result::Ok && domain_is(joined, 0, 4.6, 9.0),
+        "east(on [5,9]).Join(west) keeps [5,9] and grows below it by west's length 0.4: [4.6, 9]");
+  shifted_gap = 0.0;
+  for (int i = 0; i <= 8; ++i) {
+    for (int j = 0; j <= 8; ++j) {
+      const double u_west = 0.4 * i / 8.0, v = j / 8.0;
+      shifted_gap = std::max(shifted_gap, joined.PointAt(4.6 + u_west, v).DistanceTo(west.PointAt(u_west, v)));
+      shifted_gap = std::max(shifted_gap, joined.PointAt(5.0 + 4.0 * i / 8.0, v).DistanceTo(east_shifted.PointAt(5.0 + 4.0 * i / 8.0, v)));
+    }
+  }
+  Check(shifted_gap < 1e-12, "...with this surface in place and west's (u, v) at (4.6 + u, v) (< 1e-12)");
+
+  // 6. One rational operand: both are made rational, the shape survives.
+  NurbsSurface west_rational = west;
+  Check(west_rational.MakeRational() == Result::Ok, "Join setup: west made rational");
+  joined = west_rational;
+  Check(joined.Join(east) == Result::Ok && joined.IsRational() && max_gap(joined) < 1e-12,
+        "a rational + non-rational pair joins as a rational surface that reproduces the original (< 1e-12)");
+}
+
+void TestSurfaceJoinRejectsUnsharedEdgesAndClosedSurfaces() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // The unit square P(u, v) = (u, v, 0), degree 1.
+  const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+  const NurbsSurface square = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  auto unchanged = [&](const NurbsSurface& s) {
+    return s.CVCountU() == 2 && s.CVCountV() == 2 && s.Domain(0).max == 1.0 && s.Domain(1).max == 1.0;
+  };
+
+  // No side coincides: a square 5 units up. Throws, naming the gap.
+  const std::vector<Point3d> far_grid = {Point3d(0, 0, 5), Point3d(0, 1, 5), Point3d(1, 0, 5), Point3d(1, 1, 5)};
+  const NurbsSurface far_square = NurbsSurface::FromControlGrid(far_grid, 2, 2, 1, 1);
+  NurbsSurface s = square;
+  bool threw = false;
+  std::string message;
+  try {
+    s.Join(far_square);
+  } catch (const std::invalid_argument& e) {
+    threw = true;
+    message = e.what();
+  }
+  Check(threw && message.find("do not share an edge") != std::string::npos && message.find("5.0") != std::string::npos,
+        "Join() throws std::invalid_argument for surfaces with no coinciding side, reporting the 5.0 gap");
+  Check(unchanged(s), "...and leaves this surface untouched");
+
+  // Same edge geometry, different parameterization: the neighbour's shared
+  // side is the same segment x=1, y in [0,1] but traced as a quadratic
+  // (middle control point at y=0.25, so its parameter-f point is at
+  // y=0.5f+0.5f^2, not y=f). The sampled side search compares parameter-
+  // aligned points, so this is reported as not shared - the exact splice
+  // never pretends such a pair matches.
+  const std::vector<Point3d> quadratic_grid = {Point3d(1, 0, 0), Point3d(1, 0.25, 0), Point3d(1, 1, 0),
+                                               Point3d(2, 0, 0), Point3d(2, 0.25, 0), Point3d(2, 1, 0)};
+  const NurbsSurface quadratic_neighbour = NurbsSurface::FromControlGrid(quadratic_grid, 2, 3, 1, 2);
+  Check(quadratic_neighbour.PointAt(1.0, 0.5).DistanceTo(Point3d(2, 0.375, 0)) < 1e-12,
+        "Join setup: the neighbour's side is the same segment, traced quadratically (f=0.5 sits at y=0.375)");
+  s = square;
+  threw = false;
+  try {
+    s.Join(quadratic_neighbour);
+  } catch (const std::invalid_argument& e) {
+    threw = true;
+    message = e.what();
+  }
+  Check(threw && message.find("do not share an edge") != std::string::npos && unchanged(s),
+        "Join() refuses a shared edge with a different parameterization (throws, surface untouched) rather than "
+        "snapping the two control polygons together");
+
+  // A loose tolerance that does accept that pair at the 9 samples (the
+  // largest parameter-aligned gap is 0.125 at f=0.5) still can't splice
+  // it: the boundary control polygons differ, so Join() fails closed.
+  s = square;
+  Check(s.Join(quadratic_neighbour, 0.2) == Result::Failed && unchanged(s),
+        "...and with a tolerance loose enough to pass the side search, the control-polygon check returns "
+        "Result::Failed with the surface untouched");
+
+  // A non-positive tolerance is a caller error.
+  s = square;
+  threw = false;
+  try {
+    s.Join(square, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw && unchanged(s), "Join() throws std::invalid_argument for tolerance <= 0");
+
+  // A surface closed across the shared edge (a cylinder wall, closed in
+  // U) has nothing to extend: its far side IS the shared edge.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  Check(cylinder.GetNurbForm(cylinder_surface) != 0, "Join setup: ON_Cylinder::GetNurbForm builds the wall");
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  const NurbsSurface wall_copy = wall;
+  const int wall_u = wall.CVCountU();
+  threw = false;
+  try {
+    wall.Join(wall_copy);
+  } catch (const std::invalid_argument& e) {
+    threw = true;
+    message = e.what();
+  }
+  Check(threw && message.find("closed") != std::string::npos && wall.CVCountU() == wall_u,
+        "Join() throws std::invalid_argument for a surface closed across its shared edge, leaving it untouched");
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -84021,6 +84282,9 @@ int main() {
   RunTest("TestLatticeInfillRejectsInvalidArguments", TestLatticeInfillRejectsInvalidArguments);
 
   RunTest("TestTessellateAdaptiveHonoursDegreeOneCreases", TestTessellateAdaptiveHonoursDegreeOneCreases);
+
+  RunTest("TestSurfaceJoinSplicesSharedEdgeExactly", TestSurfaceJoinSplicesSharedEdgeExactly);
+  RunTest("TestSurfaceJoinRejectsUnsharedEdgesAndClosedSurfaces", TestSurfaceJoinRejectsUnsharedEdgesAndClosedSurfaces);
 
   RunTest("ON::End", ON::End);
 

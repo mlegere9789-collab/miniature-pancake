@@ -702,6 +702,76 @@ class NurbsSurface {
   Result Split(int direction, double t, NurbsSurface& out_west_or_south,
                NurbsSurface& out_east_or_north) const;
 
+  // Joins `other` onto this surface in place across the one edge the two
+  // share, producing ONE untrimmed NURBS surface - `Split()`'s inverse
+  // and the surface-level counterpart to `NurbsCurve::Join()` (Rhino/
+  // Parasolid's MergeSrf). The first surface-combining operation here:
+  // before this the kernel could only cut a surface down, and dino8-app's
+  // `MergeSrf` command had to sample both operands into a point grid and
+  // re-fit a brand-new surface through the samples - a 25x17-control-
+  // point approximation of what is, for two halves of one surface, an
+  // exact 7x4 answer (measured on a split bicubic: 1.96e-6 off the
+  // original, and the original's own parameterization lost). Exact, not a
+  // re-fit: control nets are spliced, so both operands' own shapes
+  // survive to floating-point round-off.
+  //
+  // The shared edge is found by sampling all 4x4 side pairings (either
+  // side of this against either side of `other`, same or opposite
+  // direction along the edge, 9 samples each) and taking the first pair
+  // that coincides to within `tolerance` everywhere - the same search
+  // dino8-app's `MergeSrf` does. The samples are parameter-aligned
+  // (the point `f` of the way along one side against the point `f` of
+  // the way along the other), so a shared edge the two surfaces trace
+  // with different parameterizations reads as not shared. Throws
+  // std::invalid_argument if no pair coincides (the message reports the
+  // closest pair's measured gap), if
+  // either surface is closed in the direction across its shared edge
+  // (the far side of such a surface is that same edge - nothing to
+  // extend), or if `tolerance <= 0`.
+  //
+  // Then both operands are made compatible along the edge with only
+  // shape-preserving steps - clamped at every end (an unclamped/periodic
+  // knot vector would put its boundary control points off the edge),
+  // made rational if either is, the lower degree along the edge raised
+  // to the higher (via `ElevateDegree()`, not OpenNURBS' own corrupting
+  // `IncreaseDegree`), `other`'s along-edge domain mapped affinely onto
+  // this one's, and the union of the two along-edge knot vectors
+  // inserted into each (`InsertKnotAt()` semantics, knots within 1e-10 of
+  // the domain length treated as the same knot). The across-edge degree
+  // is likewise raised on whichever operand is lower. Only then is the
+  // splice itself possible, and it is exact: this surface's control rows
+  // are followed by `other`'s with the shared boundary row counted once,
+  // and `other`'s across-edge knot vector continues from this one's end
+  // (so, as in `NurbsCurve::Join()`, the junction knot has full
+  // multiplicity - the join is C0 there and keeps any tangent kink the
+  // two surfaces genuinely had; `RemoveKnotAt()` can take the knot out
+  // afterwards when they were smooth across it).
+  //
+  // The exact splice needs the two boundary control polygons to
+  // coincide once compatible, i.e. the two surfaces must agree not just
+  // on the edge's geometry but on its parameterization (two halves of a
+  // `Split()`, an `ExtendLinear()`-style continuation, or any surfaces
+  // built along the same edge curve all do). If every boundary control
+  // point (and, when rational, its weight) does not match to within
+  // `tolerance` after that, returns Result::Failed and leaves this
+  // surface untouched - a differently-parameterized shared edge is
+  // disclosed as not handled here, not silently snapped (the app's
+  // sample-and-refit route remains for that case). Also returns
+  // Result::Failed if either surface is invalid or OpenNURBS' own
+  // compatibility calls fail.
+  //
+  // This surface's own parameterization is preserved exactly: the result
+  // is oriented like this surface (whatever side the shared edge was on,
+  // and whichever way `other` was turned), so `PointAt(u, v)` for every
+  // (u, v) in this surface's old domain evaluates to the same point on
+  // the result (to round-off; exactly when no degree was raised). The
+  // domain across the shared edge grows by `other`'s own across-edge
+  // domain length, on the shared edge's side (past `max` when the edge
+  // was at `max`, below `min` when it was at `min`); the other domain is
+  // unchanged. `tolerance` defaults to the same 1e-6
+  // `NurbsCurve::Join()` and `Mesh::MergeAndWeld()` use.
+  Result Join(const NurbsSurface& other, double tolerance = 1e-6);
+
   // Splits this surface into one piece per genuinely G1-continuous
   // region - closing PARITY_MAP's own disclosed "Kinky / creased surface
   // splitting into G1 faces (SplitKinkyFaces, CreaseSplitting for NURBS)"
