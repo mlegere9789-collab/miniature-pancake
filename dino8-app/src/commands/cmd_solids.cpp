@@ -1,6 +1,7 @@
 // Surface, solid, mesh and SubD creation commands.
 #include "commands/cmd_common.h"
 #include "commands/history_rebuild.h"
+#include "commands/section_fit.h"
 
 #include <unordered_map>
 
@@ -131,32 +132,238 @@ std::optional<SceneObject> RebuildRevolve(CommandContext&, const kernel::NurbsCu
   return SceneObject::MakeBrep(WrapBrepForHistory(brep));
 }
 
-// Loft/SubDLoft's construction - shared the same way as RebuildExtrude
-// above. `rec.command == "SubDLoft"` selects the SubD/mesh output kind;
-// `rec.straight` is Style=Straight. Faithfully replicates Loft()'s own
-// control-grid construction below (including its existing behaviour that
-// an open SubDLoft still yields a NurbsSurface, same as Loft, since the
-// SubD-from-rings path only applies to closed sections) so a rebuilt
-// object can never differ from what the live command would have built.
-std::optional<SceneObject> RebuildLoft(CommandContext&, const std::vector<const kernel::NurbsCurve*>& curves, const HistoryRecord& rec) {
-  if (curves.size() < 2) return std::nullopt;
+// ---------------------------------------------------------------------------
+// Loft through NURBS curves: the kernel's exact interpolating Brep::Loft.
+//
+// The app's original Loft sampled every section at 24 points and handed the
+// samples to NurbsSurface::FromControlGrid as CONTROL points - a fit, not an
+// interpolation (the surface passes through the first and last section only
+// at their ends, never through an intermediate section), a closed first curve
+// came back as a MESH (Mesh::LoftClosedRings - capped, so Volume worked, but
+// not a B-rep and not through the sections), no section was reversed or
+// re-seamed to match its neighbour (circles with different seams or
+// directions twisted the surface), a mixed open/closed list divided the
+// samples wrongly, and even the control grid itself was handed over in the
+// wrong index order (see LoftControlGridFit below). Brep::Loft interpolates: every section lies
+// exactly on the surface (brep.h's doc comment on Loft). What it does NOT do
+// is orient or seam-align its inputs ("this does not re-orient or re-seam
+// them"), so this does, before the call:
+//   - an open section runs the way its predecessor does (reversed when that
+//     brings its two ends closer to the predecessor's ends),
+//   - a closed section circulates the way its predecessor does (reversed when
+//     its loop normal opposes the predecessor's) and its seam is moved to the
+//     point nearest the predecessor's start,
+//   - a list mixing open and closed curves is REFUSED with the reason printed
+//     (a closed and an open curve have no point-for-point correspondence).
+// Style=Straight is degree 1 in the loft direction (a ruled loft, sharp at
+// every section); Normal is cubic (degree - 1 for fewer sections). Closed
+// sections are capped (Cap=Yes, the default, like Pipe's Cap and Extrude's
+// Solid) into a polysurface solid when the end curves are planar, or left as
+// a periodic tube surface (Cap=No, or caps the kernel cannot make - printed).
+// The result is then MEASURED against every input section (the isocurve of
+// the surface at that section's station vs the section) and a result that
+// misses any section by more than 1e-6 of its size is discarded, not
+// returned. Any kernel refusal keeps the older control-grid construction,
+// with the reason printed. SubDLoft is untouched: it still lofts through the
+// same control grid/rings (cmd_solids.cpp's SubD output kind has no use for
+// an exact NURBS surface).
+// ---------------------------------------------------------------------------
+namespace {
+
+// Direction of travel of a closed curve, as the Newell normal of its sampled
+// polygon (sign flips when the curve is reversed).
+Vector3d LoopNormal(const kernel::NurbsCurve& c) {
+  const std::vector<Point3d> p = sectionfit::SamplePoints(c, 48);
+  Vector3d n(0, 0, 0);
+  for (size_t i = 0; i < p.size(); ++i) {
+    const Point3d& a = p[i];
+    const Point3d& b = p[(i + 1) % p.size()];
+    n.x += (a.y - b.y) * (a.z + b.z);
+    n.y += (a.z - b.z) * (a.x + b.x);
+    n.z += (a.x - b.x) * (a.y + b.y);
+  }
+  return n;
+}
+
+struct AlignedSections {
+  std::vector<kernel::NurbsCurve> curves;
+  int reversed = 0, reseamed = 0;
+  std::string refusal;
+};
+
+AlignedSections AlignLoftSections(const std::vector<const kernel::NurbsCurve*>& in) {
+  AlignedSections out;
+  const bool first_closed = in.front()->IsClosed();
+  for (size_t k = 0; k < in.size(); ++k) {
+    if (in[k]->IsClosed() != first_closed) {
+      out.refusal = "curve " + std::to_string(k + 1) + " is " + (first_closed ? "open" : "closed") + " but curve 1 is " + (first_closed ? "closed" : "open") +
+                    " - a loft needs all open or all closed curves (an open and a closed curve have no point-for-point correspondence)";
+      return out;
+    }
+  }
+  for (size_t k = 0; k < in.size(); ++k) {
+    kernel::NurbsCurve c = *in[k];
+    if (k > 0) {
+      const kernel::NurbsCurve& prev = out.curves.back();
+      const double size = std::max(sectionfit::CurveSize(c), 1e-12);
+      if (!first_closed) {
+        const Point3d ps = prev.PointAt(prev.Domain().min), pe = prev.PointAt(prev.Domain().max);
+        const Point3d cs = c.PointAt(c.Domain().min), ce = c.PointAt(c.Domain().max);
+        if (ps.DistanceTo(ce) + pe.DistanceTo(cs) < ps.DistanceTo(cs) + pe.DistanceTo(ce) - 1e-9 * size && c.Reverse() == kernel::Result::Ok) ++out.reversed;
+      } else {
+        const Vector3d np = LoopNormal(prev), nc = LoopNormal(c);
+        if (np.Length() > 1e-12 * size * size && nc.Length() > 1e-12 * size * size && ON_DotProduct(np, nc) < 0.0 && c.Reverse() == kernel::Result::Ok) ++out.reversed;
+        const double t = sectionfit::SnapToKnot(c, c.ClosestPointParameter(prev.PointAt(prev.Domain().min), 400));
+        if (c.PointAt(t).DistanceTo(c.PointAt(c.Domain().min)) > 1e-9 * size && c.ChangeSeam(t) == kernel::Result::Ok) ++out.reseamed;
+      }
+    }
+    out.curves.push_back(std::move(c));
+  }
+  return out;
+}
+
+// The loft surface of the built Brep (face 0 is always the wall; capped
+// results append their cap faces after it).
+std::optional<kernel::NurbsSurface> LoftWall(const kernel::Brep& b) {
+  if (b.raw().m_F.Count() < 1) return std::nullopt;
+  const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(b.raw().m_F[0].SurfaceOf());
+  if (!ns) return std::nullopt;
+  kernel::NurbsSurface k;
+  k.raw() = *ns;
+  return k;
+}
+
+// Largest deviation of any section from the isocurve of `wall` at that
+// section's own station. The station (v) is read off the surface by closest
+// point from several points of the section and must agree between them.
+double MeasureLoftSections(const kernel::NurbsSurface& wall, const std::vector<kernel::NurbsCurve>& sections, bool& stations_agree) {
+  stations_agree = true;
+  double worst = 0.0;
+  for (const kernel::NurbsCurve& s : sections) {
+    const std::vector<Point3d> probes = sectionfit::SamplePoints(s, 5);
+    std::vector<double> vs;
+    for (const Point3d& p : probes) vs.push_back(wall.ClosestPointParameter(p).y);
+    std::sort(vs.begin(), vs.end());
+    const double v = vs[vs.size() / 2];
+    const kernel::Interval dv = wall.Domain(1);
+    if (vs.back() - vs.front() > 1e-6 * (dv.max - dv.min)) stations_agree = false;
+    worst = std::max(worst, sectionfit::CurveDeviation(s, wall.IsoCurve(0, std::min(std::max(v, dv.min), dv.max))));
+  }
+  return worst;
+}
+
+// The original construction: each section sampled at 24 points and used as a
+// row of CONTROL points (a fit through the samples' control polygon, NOT an
+// interpolation). Kept as the fail-open path for Loft and as SubDLoft's
+// construction. `closed` selects the ring form (closed first curve: 24
+// samples around the loop, which feeds Mesh::LoftClosedRings).
+//
+// The control grid is handed to FromControlGrid in its documented index order
+// (control_grid[u * v_count + v], u along a section, v along the loft). The
+// original appended curve after curve (curve-major), which that layout reads
+// as u running THROUGH the sections and v hopping 3 samples at a time along
+// whichever section it lands on: a thin ribbon winding along the three
+// sections' samples in turn, not a surface spanning them (measured on three
+// 10-long lines whose true sheet has area 147.9: the old result had area 6.7
+// and missed the lines' ends by 0.88). Row-major here is the same fit, laid
+// out correctly.
+std::optional<SceneObject> LoftControlGridFit(const std::vector<const kernel::NurbsCurve*>& curves, const HistoryRecord& rec) {
   const bool subd = rec.command == "SubDLoft";
   const int n = 24;
-  std::vector<Point3d> grid;
+  const int count = static_cast<int>(curves.size());
+  std::vector<std::vector<Point3d>> samples;
   const bool closed = curves.front()->IsClosed();
   for (const kernel::NurbsCurve* c : curves) {
     kernel::Interval d = c->Domain();
-    for (int i = 0; i < n; ++i) grid.push_back(c->PointAt(d.min + (d.max - d.min) * i / (closed ? n : n - 1.0)));
+    std::vector<Point3d> row;
+    for (int i = 0; i < n; ++i) row.push_back(c->PointAt(d.min + (d.max - d.min) * i / (closed ? n : n - 1.0)));
+    samples.push_back(std::move(row));
   }
   if (closed) {
-    std::vector<std::vector<Point3d>> rings;
-    for (size_t k = 0; k < curves.size(); ++k) rings.emplace_back(grid.begin() + static_cast<long>(k * n), grid.begin() + static_cast<long>((k + 1) * n));
-    kernel::Mesh m = kernel::Mesh::LoftClosedRings(rings);
+    kernel::Mesh m = kernel::Mesh::LoftClosedRings(samples);
     if (subd) return SceneObject::MakeSubD(kernel::SubD::FromControlMesh(m));
     return SceneObject::MakeMesh(m);
   }
-  const int vdeg = rec.straight ? 1 : std::min(3, static_cast<int>(curves.size()) - 1);
-  return SceneObject::MakeSurface(kernel::NurbsSurface::FromControlGrid(grid, n, static_cast<int>(curves.size()), 3, vdeg));
+  std::vector<Point3d> grid(static_cast<size_t>(n) * static_cast<size_t>(count));
+  for (int k = 0; k < count; ++k)
+    for (int i = 0; i < n; ++i) grid[static_cast<size_t>(i) * static_cast<size_t>(count) + static_cast<size_t>(k)] = samples[static_cast<size_t>(k)][static_cast<size_t>(i)];
+  const int vdeg = rec.straight ? 1 : std::min(3, count - 1);
+  return SceneObject::MakeSurface(kernel::NurbsSurface::FromControlGrid(grid, n, count, 3, vdeg));
+}
+
+}  // namespace
+
+// Loft/SubDLoft's construction - shared the same way as RebuildExtrude
+// above. `rec.command == "SubDLoft"` selects the SubD/mesh output kind;
+// `rec.straight` is Style=Straight; `rec.num["cap"]` is Cap=Yes/No (1/0;
+// absent means Yes, the command's default). A Loft through NURBS curves
+// calls the kernel's exact interpolating Brep::Loft (see the block comment
+// above). nullopt (with a warning printed) means the curves cannot be
+// lofted at all - a mix of open and closed ones; any kernel refusal, or a
+// result that misses a section, instead falls through (reason printed) to the
+// control-grid fit, so a built object is returned in every other case.
+std::optional<SceneObject> RebuildLoft(CommandContext& ctx, const std::vector<const kernel::NurbsCurve*>& curves, const HistoryRecord& rec) {
+  if (curves.size() < 2) return std::nullopt;
+  if (rec.command == "SubDLoft") return LoftControlGridFit(curves, rec);
+
+  AlignedSections al = AlignLoftSections(curves);
+  if (!al.refusal.empty()) {
+    ctx.Warn("Loft: " + al.refusal);
+    return std::nullopt;
+  }
+  const bool want_cap = rec.num.count("cap") ? rec.num.at("cap") != 0.0 : true;
+  const bool closed_sections = al.curves.front().IsClosed();
+  const int degree = rec.straight ? 1 : std::min(3, static_cast<int>(curves.size()) - 1);
+  try {
+    kernel::Brep b;
+    bool capped = false;
+    std::string cap_note;
+    if (closed_sections && want_cap) {
+      try {
+        b = kernel::Brep::Loft(al.curves, degree, /*closed=*/false, /*cap=*/true);
+        capped = true;
+      } catch (const std::invalid_argument& ex) {
+        cap_note = std::string(" (caps not made - ") + ex.what() + ")";
+        b = kernel::Brep::Loft(al.curves, degree, /*closed=*/false, /*cap=*/false);
+      }
+    } else {
+      b = kernel::Brep::Loft(al.curves, degree, /*closed=*/false, /*cap=*/false);
+    }
+    std::optional<kernel::NurbsSurface> wall = LoftWall(b);
+    if (!wall) throw std::runtime_error("the kernel loft has no surface face");
+    bool agree = true;
+    const double dev = MeasureLoftSections(*wall, al.curves, agree);
+    double biggest = 0.0;
+    for (const kernel::NurbsCurve& s : al.curves) biggest = std::max(biggest, sectionfit::CurveSize(s));
+    const double limit = 1e-6 * std::max(biggest, 1e-9);
+    if (!agree || !(dev <= limit)) {
+      throw std::runtime_error(std::string("the lofted surface misses an input section by ") + sectionfit::Sci(dev) + " (limit " + sectionfit::Sci(limit) + ")" +
+                               (agree ? "" : ", or a section's station on it is ambiguous"));
+    }
+    std::string msg = "Loft: exact interpolating kernel loft through " + std::to_string(curves.size()) + " curves (degree " + std::to_string(degree) + " in the loft direction); every section reproduced, max deviation " +
+                      sectionfit::Sci(dev);
+    if (al.reversed || al.reseamed) msg += "; aligned first: " + std::to_string(al.reversed) + " curve(s) reversed, " + std::to_string(al.reseamed) + " seam(s) moved";
+    if (closed_sections) msg += capped ? "; end caps added (Cap=Yes), a closed polysurface" : (want_cap ? "" : "; uncapped (Cap=No)");
+    ctx.Print(msg + cap_note);
+    if (capped) {
+      SceneObject solid = SceneObject::MakeBrep(std::move(b));
+      // The capped B-rep is exact, but Volume/booleans measure its display
+      // mesh, and the app's mesher does not always close the kernel's fan
+      // caps (a square profile's cap fails 9 CDT constraints: Volume reads 0
+      // and the solid is reported "not closed" - the same pre-existing gap
+      // extrude_to_point_solid_script.txt documents for ExtrudeCrvToPoint).
+      // Say so rather than leave it a surprise.
+      const std::optional<kernel::Mesh> display = MeshOf(solid, 0.005);
+      if (!display || !display->IsClosedManifold()) {
+        ctx.Print("Loft: note - the capped solid is an exact closed B-rep, but this app's display mesher does not close this profile's caps, so Volume and boolean tools will treat it as open");
+      }
+      return solid;
+    }
+    return SceneObject::MakeSurface(*wall);
+  } catch (const std::exception& ex) {
+    ctx.Print(std::string("Loft: exact kernel loft not used (") + ex.what() + "); using the older control-point fit instead");
+    return LoftControlGridFit(curves, rec);
+  }
 }
 
 namespace {
@@ -741,16 +948,19 @@ class RevolveCommand : public Command {
   double angle_deg_ = 360.0, start_angle_deg_ = 0.0;
 };
 
-// Loft: surface through the selected curves (in selection order). `straight`
-// (Style=Straight) drops the v-direction to degree 1: a B-spline of degree 1
-// interpolates its control points exactly, so this gives a real ruled loft
-// with a sharp (C0) edge at every section, instead of the cubic-through-
-// control-points fit the default (Normal) style uses. Loose/Tight aren't
-// offered: both still interpolate every section like Normal and differ from
-// it only in end-tangent/fairing detail this control-point construction has
-// no way to express - claiming them as distinct styles here would not be
-// honest, so Straight is the only alternate style.
-void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd, bool straight = false) {
+// Loft: surface through the selected curves (in selection order), built by
+// RebuildLoft (above) - the kernel's exact interpolating Brep::Loft after the
+// curves are oriented and seam-aligned. `straight` (Style=Straight) is degree
+// 1 in the loft direction: a real ruled loft with a sharp (C0) edge at every
+// section, instead of the cubic (degree - 1 for fewer than 4 sections) the
+// default (Normal) style interpolates with. Loose/Tight aren't offered: both
+// still interpolate every section like Normal and differ from it only in end-
+// tangent/fairing detail; claiming them as distinct styles here would not be
+// honest, so Straight is the only alternate style. `cap` (Cap=Yes, the default,
+// like Pipe's Cap and Extrude's Solid) closes the ends of a loft through
+// closed planar curves into a polysurface solid; Cap=No leaves the periodic
+// tube surface.
+void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd, bool straight = false, bool cap = true) {
   std::vector<ObjectId> curve_ids;
   std::vector<const kernel::NurbsCurve*> curves;
   for (ObjectId id : ids) {
@@ -762,22 +972,28 @@ void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd, bool
   HistoryRecord rec;
   rec.command = subd ? "SubDLoft" : "Loft";
   rec.straight = straight;
+  if (!subd) rec.num = {{"cap", cap ? 1.0 : 0.0}};
   std::optional<SceneObject> built = RebuildLoft(ctx, curves, rec);
   if (!built) { ctx.Warn("Loft failed"); return; }
   const ObjectId new_id = ctx.Doc().Add(std::move(*built));
-  RecordHistoryIfEnabled(ctx, new_id, rec.command, curve_ids, {}, straight);
+  RecordHistoryIfEnabled(ctx, new_id, rec.command, curve_ids, rec.num, straight);
 }
 
-// Pulls "Style=Straight"/"Style=Normal" off the command's remaining typed
-// tokens (Loose/Tight aren't offered - see Loft() above).
-bool TakeLoftStyle(CommandContext& ctx) {
+// Pulls "Style=Straight"/"Style=Normal" and "Cap=Yes"/"Cap=No" off the
+// command's remaining typed tokens (Loose/Tight aren't offered - see Loft()
+// above). A later token of the same option wins.
+struct LoftTokens { bool straight = false; bool cap = true; };
+LoftTokens TakeLoftTokens(CommandContext& ctx) {
+  LoftTokens out;
   while (auto t = ctx.Engine().TakePendingInput()) {
     std::string s = *t;
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (s == "style=straight") return true;
-    if (s == "style=normal") return false;
+    if (s == "style=straight") out.straight = true;
+    else if (s == "style=normal") out.straight = false;
+    else if (s == "cap=yes" || s == "cap=y") out.cap = true;
+    else if (s == "cap=no" || s == "cap=n") out.cap = false;
   }
-  return false;
+  return out;
 }
 
 // Closes (for the one case where it's actually measurable - a Brep
@@ -1036,7 +1252,7 @@ void RegisterSolidCommands(CommandEngine& e) {
   Reg(e, "ExtrudeSrf", Make<ExtrudeCommand>(ExtrudeCommand::Kind::Surface));
   Reg(e, "ExtrudeCrvToPoint", Make<ExtrudeCommand>(ExtrudeCommand::Kind::ToPoint));
   Reg(e, "Revolve", Make<RevolveCommand>());
-  Reg(e, "Loft", OnSelection("Select curves to loft in order", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Loft(ctx, ids, false, TakeLoftStyle(ctx)); }, 2), CommandStatus::Implemented, "Normal (cubic through control points) and Style=Straight (linear, sharp at every section); Loose/Tight aren't distinguishable in this construction and aren't offered.");
+  Reg(e, "Loft", OnSelection("Select curves to loft in order", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { const LoftTokens t = TakeLoftTokens(ctx); Loft(ctx, ids, false, t.straight, t.cap); }, 2), CommandStatus::Implemented, "Calls the kernel's exact interpolating Brep::Loft: every selected curve lies exactly on the result (measured and printed), Normal is cubic in the loft direction and Style=Straight is linear (sharp at every section). Curves are first made consistent - open curves reversed to run the same way, closed curves reversed to circulate the same way and re-seamed to the point nearest the previous curve's start; a mix of open and closed curves is refused with the reason. Closed planar curves are capped into a polysurface solid (Cap=Yes, the default; Cap=No leaves the periodic surface). Loose/Tight aren't distinguishable here and aren't offered. If the kernel refuses a loft, the older control-point fit is used and the reason printed.");
   Reg(e, "SubDLoft", OnSelection("Select curves to loft in order", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Loft(ctx, ids, true); }, 2));
   Reg(e, "PlanarSrf", OnSelection("Select planar closed curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("PlanarSrf");

@@ -7,14 +7,16 @@
 # bounding-box move, not just an object count, so a fake/no-op rebuild would
 # fail this the same way it would in history_script.txt/history_pipe_script.txt.
 #
-# The section curve (not the rail) is the one moved here, deliberately: the
-# kernel's own exact Brep::Sweep1 carries the section RIGIDLY along the
-# rail's frames, preserving its offset from the rail's own current start
-# point (see brep.h's own Sweep1 doc comment) - so translating the RAIL
-# alone by a pure offset, with the section left untouched, exactly cancels
-# out in the rebuilt result (the recomputed offset absorbs it) and would be
-# a false-negative-proof test, not a real one. Moving the section instead
-# has no such cancellation and gives an unambiguous, real geometry change.
+# The section curve (not the rail) is the one moved here. RebuildSweep1
+# anchors the section where it sits along the rail (the swept surface covers
+# the rail and passes through the section wherever it is - see the block
+# comment above AnchoredSweep1 in cmd_surface.cpp), so the two edits below
+# test two different things: sliding the section ALONG the rail (+5 in Z) must
+# leave the surface covering the rail's own z=0..10 extent (it used to shift
+# the whole tube to z=5..15, because the kernel's Brep::Sweep1 carries the
+# section rigidly from the rail START - that was the defect); moving it
+# SIDEWAYS (+3 in X) is then the edit that proves UpdateHistory genuinely
+# re-derives the geometry, since it changes the swept bounding box in X.
 #
 # Object ids below are the deterministic 1-based counter Document::Add
 # assigns, in creation order.
@@ -51,12 +53,32 @@ Move
 0,0,0
 0,0,5
 
-# UpdateHistory re-derives object 3 from the section's new offset - the
-# money check: the whole tube shifts by the same +5 in Z (min/max z move
-# from 0..10 to 5..15), not stay put.
+# UpdateHistory re-derives object 3 from the section's new position. The
+# section now sits half way along the rail, so the rebuilt surface still
+# covers the rail's whole z=0..10 extent (x/y unchanged): the old behaviour
+# (z=5..15, the tube shifted wholesale and overshooting the rail's end by 5)
+# is exactly the defect being fixed. The printed Sweep1 line states where the
+# section was found and the measured deviation of the result from it.
 UpdateHistory
 SelNone
 SelID 3
 BoundingBox
 @expect_objects 5
+History
+
+# Now move the section SIDEWAYS (+3 in X, still at z=5). The circle no longer
+# encircles the rail, but it still sits half way along it; UpdateHistory
+# re-derives the surface from the section's new shape/position, so the
+# bounding box now moves in X (x: -0.9073..1 becomes 2.093..4) while z stays
+# 0..10 - a real geometry change a no-op rebuild could not produce.
+SelNone
+SelID 2
+Move
+0,0,0
+3,0,0
+UpdateHistory
+SelNone
+SelID 3
+BoundingBox
+@expect_objects 6
 History

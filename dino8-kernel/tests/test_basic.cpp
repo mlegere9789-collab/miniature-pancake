@@ -88498,6 +88498,259 @@ void TestNurbsSurfaceJoinCompatibleFormReportOverloadIsBitIdentical() {
         "...with the merged surface reproducing the original to round-off (< 1e-9)");
 }
 
+// ---------------------------------------------------------------------------
+// The kernel primitives dino8-app's section-anchored Sweep1/Sweep2 and its
+// aligned Loft are built from (cmd_surface.cpp's AnchoredSweep1/2,
+// cmd_solids.cpp's RebuildLoft). The app composes existing kernel calls rather
+// than adding a new kernel entry point, so these tests pin the properties that
+// composition relies on - and the defect it works around.
+// ---------------------------------------------------------------------------
+
+namespace anchored_sweep_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using dino8::kernel::Result;
+using dino8::kernel::SurfaceJoinReport;
+using dino8::kernel::Vector3d;
+
+NurbsCurve CubicBezierRail() {
+  return NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(6, 0, 4), Point3d(6, 6, 10), Point3d(0, 10, 14)}, 3);
+}
+
+// A circle of `radius` about the rail point at parameter `t`, in the plane
+// perpendicular to the rail's tangent there.
+NurbsCurve CircleAround(const NurbsCurve& rail, double t, double radius) {
+  const ON_Circle circle(ON_Plane(rail.PointAt(t), rail.TangentAt(t)), radius);
+  ON_NurbsCurve nurbs;
+  circle.GetNurbForm(nurbs);
+  NurbsCurve k;
+  k.raw() = nurbs;
+  return k;
+}
+
+NurbsSurface WallOf(const Brep& b) {
+  NurbsSurface k;
+  k.raw() = *ON_NurbsSurface::Cast(b.raw().m_F[0].SurfaceOf());
+  return k;
+}
+
+// Largest distance between `section` and the isocurve of `s` at v, compared
+// point for point at the same normalized parameter (a sweep/loft wall's u runs
+// along its section's own parameterization).
+double SectionToIsoGap(const NurbsSurface& s, double v, const NurbsCurve& section) {
+  double worst = 0.0;
+  const ON_Interval du = s.raw().Domain(0), dc = section.raw().Domain();
+  for (int j = 0; j <= 48; ++j) {
+    worst = std::max(worst, s.PointAt(du.ParameterAt(j / 48.0), v).DistanceTo(section.PointAt(dc.ParameterAt(j / 48.0))));
+  }
+  return worst;
+}
+
+// What the app does for a section 40% of the way along an open rail: cut the
+// rail at the section, sweep the forward part and the REVERSED backward part
+// from the section, turn the backward wall's v around and join the two.
+NurbsSurface SweepFromSectionBothSides(const NurbsCurve& section, const NurbsCurve& rail, double t, double& v_station) {
+  NurbsCurve left, right;
+  Check(rail.Split(t, left, right) == Result::Ok, "anchored sweep: the rail splits at the section");
+  NurbsCurve back_rail = left;
+  Check(back_rail.Reverse() == Result::Ok, "anchored sweep: the backward part reverses");
+  NurbsSurface fwd = WallOf(Brep::Sweep1(section, right, 32, false));
+  NurbsSurface back = WallOf(Brep::Sweep1(section, back_rail, 32, false));
+  Check(back.Reverse(1) == Result::Ok, "anchored sweep: the backward wall's v direction turns around");
+  v_station = back.Domain(1).max;
+  SurfaceJoinReport report;
+  Check(back.Join(fwd, report, 1e-8) == Result::Ok, "anchored sweep: the two halves join along the shared section");
+  Check(report.max_deviation < 1e-9 && report.steps.size() <= 1,
+        "...with a measured join deviation < 1e-9 and no preparation beyond naming the v edge a U side (both halves share the section's own u structure, so nothing is raised or knotted)");
+  return back;
+}
+
+void TestSectionAnchoredSweepReproducesTheSectionAndCoversTheRail() {
+  const NurbsCurve rail = CubicBezierRail();
+  const double radius = 1.5;
+  const double t = 0.4;  // the section is 40% of the way along the rail's parameter
+  const NurbsCurve section = CircleAround(rail, t, radius);
+
+  // The defect this works around: Brep::Sweep1 carries the section rigidly
+  // from the rail's START frame (brep.h), so a section away from the start
+  // gives a surface that does not follow the rail - the rail's own start
+  // point is nowhere near the tube it should be the axis of.
+  {
+    const NurbsSurface rigid = WallOf(Brep::Sweep1(section, rail, 32, false));
+    const double d_start = rigid.ClosestPoint(rail.PointAt(0.0)).DistanceTo(rail.PointAt(0.0));
+    Check(std::fabs(d_start - radius) > 1.0, "negative control: the plain rigid sweep of a 40% section is NOT a tube around the rail (rail start is not at the radius from it)");
+    Check(SectionToIsoGap(rigid, rigid.Domain(1).min, section) < 1e-9, "...although the plain sweep does contain the section as its first station");
+  }
+
+  double v_station = 0.0;
+  const NurbsSurface both = SweepFromSectionBothSides(section, rail, t, v_station);
+  Check(SectionToIsoGap(both, v_station, section) < 1e-9, "the joined two-sided sweep passes exactly through the section at its station (isocurve gap < 1e-9)");
+  Check(both.Domain(1).max > v_station && v_station > both.Domain(1).min, "...which lies strictly inside the surface's v range");
+  double worst = 0.0;
+  for (double rt : {0.0, 0.1, 0.25, 0.4, 0.6, 0.8, 1.0}) {
+    const Point3d rp = rail.PointAt(rt);
+    worst = std::max(worst, std::fabs(both.ClosestPoint(rp).DistanceTo(rp) - radius));
+  }
+  Check(worst < 1e-3 * radius, "every sampled rail point, start to end, is the section's radius from the joined surface (a tube around the whole rail, not 40%..140% of it)");
+  // The surface's first and last rings are circles about the rail's own start and end points.
+  const NurbsCurve start_ring = both.IsoCurve(0, both.Domain(1).min);
+  const NurbsCurve end_ring = both.IsoCurve(0, both.Domain(1).max);
+  Check(std::fabs(start_ring.ClosestPoint(rail.PointAt(0.0)).DistanceTo(rail.PointAt(0.0)) - radius) < 1e-3 * radius &&
+            std::fabs(end_ring.ClosestPoint(rail.PointAt(1.0)).DistanceTo(rail.PointAt(1.0)) - radius) < 1e-3 * radius,
+        "the surface's first and last rings are circles of the section's radius about the rail's start and end points (the surface spans the rail)");
+
+  // Section at the rail's end: only the backward sweep exists.
+  const NurbsCurve end_section = CircleAround(rail, 1.0, radius);
+  NurbsCurve reversed_rail = rail;
+  Check(reversed_rail.Reverse() == Result::Ok, "end case: the rail reverses");
+  NurbsSurface from_end = WallOf(Brep::Sweep1(end_section, reversed_rail, 32, false));
+  Check(from_end.Reverse(1) == Result::Ok, "end case: the wall's v direction turns around so v runs start to end");
+  Check(SectionToIsoGap(from_end, from_end.Domain(1).max, end_section) < 1e-9, "end case: the section is the surface's last ring, exactly");
+  Check(std::fabs(from_end.ClosestPoint(rail.PointAt(0.0)).DistanceTo(rail.PointAt(0.0)) - radius) < 1e-3 * radius,
+        "end case: the surface reaches back to the rail's start (a tube around the whole rail)");
+
+  // Closed rail: re-seaming the rail at the section makes the section the
+  // rigid sweep's own first station.
+  const ON_Circle rail_circle(ON_Plane(Point3d(0, 0, 0), Vector3d(0, 0, 1)), 10.0);
+  ON_NurbsCurve rail_nurbs;
+  rail_circle.GetNurbForm(rail_nurbs);
+  NurbsCurve closed_rail;
+  closed_rail.raw() = rail_nurbs;
+  const double tc = closed_rail.Domain().min + 0.4 * (closed_rail.Domain().max - closed_rail.Domain().min);
+  const NurbsCurve ring = CircleAround(closed_rail, tc, 1.0);
+  NurbsCurve reseamed = closed_rail;
+  Check(reseamed.ChangeSeam(tc) == Result::Ok, "closed rail: ChangeSeam moves the rail's start to the section");
+  Check(reseamed.PointAt(reseamed.Domain().min).DistanceTo(closed_rail.PointAt(tc)) < 1e-9, "...exactly onto the point the section circles");
+  const NurbsSurface tube = WallOf(Brep::Sweep1(ring, reseamed, 32, false));
+  Check(SectionToIsoGap(tube, tube.Domain(1).min, ring) < 1e-9, "closed rail: the periodic sweep from the re-seamed rail passes exactly through the section");
+}
+
+NurbsCurve CircleInPlane(const Point3d& c, const Vector3d& n, double r) {
+  const ON_Circle circle(ON_Plane(c, n), r);
+  ON_NurbsCurve nurbs;
+  circle.GetNurbForm(nurbs);
+  NurbsCurve k;
+  k.raw() = nurbs;
+  return k;
+}
+
+void TestLoftOfAlignedClosedSectionsInterpolatesAndCaps() {
+  // Three circles of radius 5, 3, 5 at z = 0, 5, 10. Radii quadratic in the
+  // loft parameter (equal chord spacing -> stations 0, 1/2, 1): r(v) = 5 -
+  // 8v(1-v), z = 10v, so the solid's volume is 10 pi * integral(r^2) = 10 pi *
+  // 13.8 exactly.
+  const double exact = 10.0 * M_PI * 13.8;
+  std::vector<NurbsCurve> aligned = {CircleInPlane(Point3d(0, 0, 0), Vector3d(0, 0, 1), 5.0), CircleInPlane(Point3d(0, 0, 5), Vector3d(0, 0, 1), 3.0),
+                                     CircleInPlane(Point3d(0, 0, 10), Vector3d(0, 0, 1), 5.0)};
+  const Brep clean = Brep::Loft(aligned, 3, false, true);
+  Check(clean.raw().IsValid() && clean.raw().IsSolid() && clean.FaceCount() == 3, "aligned circles: Loft(cap) is a valid closed solid (wall + 2 caps)");
+  Check(std::fabs(clean.TessellateToClosedMesh(64, 16).Volume() - exact) / exact < 0.003, "...whose volume is the exact 10 pi * 13.8 (the quadratic radius profile)");
+  {
+    const NurbsSurface wall = WallOf(clean);
+    double worst = 0.0;
+    const double vk[3] = {0.0, 0.5, 1.0};
+    for (int k = 0; k < 3; ++k) worst = std::max(worst, SectionToIsoGap(wall, vk[k], aligned[static_cast<size_t>(k)]));
+    Check(worst < 1e-9, "...and it passes exactly through all three circles (an interpolation, not a control-point fit)");
+  }
+
+  // The app's alignment: take the SAME three circles but start the middle one
+  // a quarter turn round and run it the other way, and the last one a third of
+  // a turn round. Loft does not re-orient or re-seam its inputs, so unaligned
+  // it twists; after the app's recipe (reverse when the loop normals oppose,
+  // then move the seam to the point nearest the previous section's start) it
+  // is the same solid as the aligned one.
+  std::vector<NurbsCurve> messy = aligned;
+  messy[1].raw().Rotate(M_PI / 2.0, ON_zaxis, ON_3dPoint(0, 0, 5));
+  Check(messy[1].Reverse() == Result::Ok, "fixture: the middle circle starts a quarter turn round and runs clockwise");
+  messy[2].raw().Rotate(2.0 * M_PI / 3.0, ON_zaxis, ON_3dPoint(0, 0, 10));
+  {
+    const Brep twisted = Brep::Loft(messy, 3, false, true);
+    const double v = twisted.TessellateToClosedMesh(64, 16).Volume();
+    Check(std::fabs(v - exact) / exact > 0.03, "negative control: lofting the un-aligned circles directly twists the solid (volume off by > 3%)");
+  }
+  std::vector<NurbsCurve> fixed;
+  for (size_t k = 0; k < messy.size(); ++k) {
+    NurbsCurve c = messy[k];
+    if (k > 0) {
+      const NurbsCurve& prev = fixed.back();
+      // Direction: the Newell normal of each loop (its sign flips with the direction of travel).
+      auto normal_z = [](const NurbsCurve& loop) {
+        double s = 0.0;
+        const int n = 48;
+        const ON_Interval d = loop.raw().Domain();
+        for (int i = 0; i < n; ++i) {
+          const Point3d a = loop.PointAt(d.ParameterAt(static_cast<double>(i) / n)), b = loop.PointAt(d.ParameterAt(static_cast<double>((i + 1) % n) / n));
+          s += (a.x - b.x) * (a.y + b.y);
+        }
+        return s;
+      };
+      if (normal_z(prev) * normal_z(c) < 0.0) Check(c.Reverse() == Result::Ok, "alignment: a circle running against its predecessor is reversed");
+      double t = c.ClosestPointParameter(prev.PointAt(prev.Domain().min), 400);
+      // Land exactly on a knot the seam is within 1e-6 of: a closest-point search stops a few 1e-9 beside it, and
+      // a ChangeSeam there leaves two near-equal knots Loft's section merge refuses.
+      for (int i = 0; i < c.raw().KnotCount(); ++i) {
+        if (std::fabs(c.raw().Knot(i) - t) <= 1e-6 * (c.raw().Domain().Length())) t = c.raw().Knot(i);
+      }
+      Check(c.ChangeSeam(t) == Result::Ok, "alignment: the seam moves to the point nearest the previous section's start");
+    }
+    fixed.push_back(c);
+  }
+  const Brep repaired = Brep::Loft(fixed, 3, false, true);
+  Check(repaired.raw().IsValid() && repaired.raw().IsSolid(), "aligned-by-recipe loft is a valid closed solid");
+  Check(std::fabs(repaired.TessellateToClosedMesh(64, 16).Volume() - exact) / exact < 0.003, "...with the untwisted volume 10 pi * 13.8 again");
+  {
+    const NurbsSurface wall = WallOf(repaired);
+    double worst = 0.0;
+    const double vk[3] = {0.0, 0.5, 1.0};
+    for (int k = 0; k < 3; ++k) {
+      // Geometry, not parameterization: every sampled point of the input circle lies on the surface.
+      for (int j = 0; j < 24; ++j) {
+        const ON_Interval dc = messy[static_cast<size_t>(k)].raw().Domain();
+        const Point3d p = messy[static_cast<size_t>(k)].PointAt(dc.ParameterAt(j / 24.0));
+        worst = std::max(worst, wall.ClosestPoint(p).DistanceTo(p));
+      }
+      (void)vk[k];
+    }
+    Check(worst < 1e-6, "...and every point of each input circle (whatever its start or direction) lies on the surface to < 1e-6");
+  }
+
+  // Style=Straight (degree 1) between two circles of different size is the
+  // exact cone frustum, and uncapped it is the periodic wall only.
+  const std::vector<NurbsCurve> two = {CircleInPlane(Point3d(0, 0, 0), Vector3d(0, 0, 1), 5.0), CircleInPlane(Point3d(0, 0, 10), Vector3d(0, 0, 1), 3.0)};
+  const Brep frustum = Brep::Loft(two, 1, false, true);
+  const double frustum_exact = M_PI * 10.0 / 3.0 * (25.0 + 15.0 + 9.0);
+  Check(WallOf(frustum).DegreeV() == 1 && std::fabs(frustum.TessellateToClosedMesh(64, 4).Volume() - frustum_exact) / frustum_exact < 0.003,
+        "Style=Straight is degree 1 in the loft direction and between two circles gives the exact frustum volume");
+  const Brep tube = Brep::Loft(two, 1, false, false);
+  Check(tube.FaceCount() == 1 && !tube.raw().IsSolid() && WallOf(tube).raw().IsClosed(0), "Cap=No gives the single periodic wall face (not a solid)");
+
+  // Open sections, one running the other way: unaligned it is a bow-tie.
+  const NurbsCurve l0 = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, 1);
+  const NurbsCurve l1_back = NurbsCurve::FromControlPoints({Point3d(10, 0, 5), Point3d(0, 0, 5)}, 1);
+  const Brep bowtie = Brep::Loft({l0, l1_back}, 1, false, false);
+  NurbsCurve l1 = l1_back;
+  Check(l1.Reverse() == Result::Ok, "open sections: reversing a line that runs against its predecessor");
+  const Brep ruled = Brep::Loft({l0, l1}, 1, false, false);
+  const double a_bow = WallOf(bowtie).ClosestPoint(Point3d(5, 0, 2.5)).DistanceTo(Point3d(5, 0, 2.5));
+  const double a_rule = WallOf(ruled).ClosestPoint(Point3d(2, 0, 2.5)).DistanceTo(Point3d(2, 0, 2.5));
+  Check(a_rule < 1e-9, "open sections: after reversal the loft is the flat ruled rectangle (a point at x=2, z=2.5 lies on it)");
+  Check(WallOf(bowtie).ClosestPoint(Point3d(2, 0, 2.5)).DistanceTo(Point3d(2, 0, 2.5)) > 1.0 || a_bow < 1e-9,
+        "negative control: without the reversal the same two lines cross over (the bow-tie leaves the x=2, z=2.5 point off the surface)");
+}
+
+}  // namespace anchored_sweep_tests
+
+void TestSectionAnchoredSweepReproducesTheSectionAndCoversTheRail() {
+  anchored_sweep_tests::TestSectionAnchoredSweepReproducesTheSectionAndCoversTheRail();
+}
+
+void TestLoftOfAlignedClosedSectionsInterpolatesAndCaps() {
+  anchored_sweep_tests::TestLoftOfAlignedClosedSectionsInterpolatesAndCaps();
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -89851,6 +90104,9 @@ int main() {
           TestNurbsSurfaceJoinCompatibleFormNegativeControls);
   RunTest("TestNurbsSurfaceJoinCompatibleFormReportOverloadIsBitIdentical",
           TestNurbsSurfaceJoinCompatibleFormReportOverloadIsBitIdentical);
+
+  RunTest("TestSectionAnchoredSweepReproducesTheSectionAndCoversTheRail", TestSectionAnchoredSweepReproducesTheSectionAndCoversTheRail);
+  RunTest("TestLoftOfAlignedClosedSectionsInterpolatesAndCaps", TestLoftOfAlignedClosedSectionsInterpolatesAndCaps);
 
   RunTest("ON::End", ON::End);
 
