@@ -283,6 +283,23 @@ class Brep {
   static Brep TrimmedPlanarFaceWelded(const NurbsSurface& surface, const std::vector<Point2d>& trim_loop_uv,
                                        std::vector<std::vector<Point2d>> hole_loops_uv = {});
 
+  // TrimmedPatchFace: ONE face with a real trimmed boundary - the surface
+  // `NurbsSurface::FitPatch()` returned, trimmed by the caller's own closed
+  // `boundary` curve. The face's outer loop is a single closed edge whose 3D
+  // curve is `boundary` exactly (a copy) and whose 2D trim curve is that same
+  // control net expressed in the fit's plane coordinates (the surface is a
+  // graph over that plane parameterized by plane coordinates, so this IS the
+  // boundary in the surface's own (u, v)); the loop is turned to run
+  // counter-clockwise in (u, v) if needed. The edge's tolerance is set to the
+  // MEASURED worst distance between the surface evaluated along the trim and
+  // the boundary (401 samples; ~ the fit's boundary deviation) and returned in
+  // `out_edge_deviation`, so the claim "this face is bounded by this curve" is
+  // exactly as tight as the fit. A real `ON_Brep` (`raw().IsValid()`), one
+  // face, no caps. Throws std::invalid_argument if `boundary` is not a valid
+  // closed curve or `fit`'s plane axes are not a usable frame.
+  static Brep TrimmedPatchFace(const NurbsSurface& surface, const NurbsSurface::PatchFitReport& fit,
+                               const NurbsCurve& boundary, double* out_edge_deviation = nullptr);
+
   // ------------------------------------------------------------------
   // Sweep-class factories (Parasolid "sweep/spin/loft/pipe" class) -
   // implemented in src/sweep.cpp. Every one of them builds REAL
@@ -1071,6 +1088,63 @@ class Brep {
   // there) - genuine, disclosed limits, not silently degraded output.
   static Brep Sweep2(const NurbsCurve& section, const NurbsCurve& rail1, const NurbsCurve& rail2,
                      int stations = 32, bool cap = true);
+
+  // What `Sweep2Sections()` measured on its own result (all lengths are model
+  // units; every figure is a sampled bound, not a proof).
+  struct Sweep2SectionsReport {
+    int sections = 0;                    // sections used
+    int stations = 0;                    // skin stations (rail stations incl. one per section)
+    double max_section_deviation = 0.0;  // wall isocurve at each section's station vs that section, 65 samples each
+    double section_rail_gap = 0.0;       // open sections: worst distance of a section end from the rail it is
+                                         // meant to touch (start to rail1, end to rail2); 0 if none is open
+    bool rails_on_boundary = false;      // every section open, so the wall's two edge isocurves are meant to
+                                         // lie on rail1 / rail2 (the two figures below are only meaningful then)
+    double max_rail1_deviation = 0.0;    // wall isocurve u = min vs rail1, 401 samples along the sweep
+    double max_rail2_deviation = 0.0;    // wall isocurve u = max vs rail2
+  };
+
+  // Sweep2Sections: SEVERAL cross-sections carried between `rail1` and
+  // `rail2` - the multi-section counterpart of Sweep2() above (which is
+  // exactly this with one section). Each section is placed at its own
+  // station: an open section is turned to start on the rail1 side and
+  // anchored at the closest rail1 point to its start and the closest rail2
+  // point to its end (a section drawn between the rails touches both
+  // there); a closed planar section is anchored where each rail crosses its
+  // plane (the crossing nearest its centroid's closest rail point; a closed
+  // non-planar one at the closest rail points to its control-point centroid).
+  // Sections are made structurally compatible
+  // (shape-preserving: common degree, rationality and knots) and each is
+  // decoded ONCE into its own anchor station's two-rail frame (origin on
+  // rail1, x toward rail2, uniform scale by the rail-to-rail width - exactly
+  // Sweep2()'s contract) as local control-point offsets and weights. Between
+  // two neighbouring anchors every local coordinate is blended with a cubic
+  // Hermite (Catmull-Rom tangents against rail1's arc length; two sections
+  // give the plain linear blend), weights linearly; beyond the first and last
+  // anchor the end section's local coordinates are held, so the sweep spans
+  // both rails end to end. The blended section is placed into the frame of
+  // every station (stations are packed per segment between anchors, at equal
+  // arc-length fractions of the segment on both rails, never fewer than 4
+  // subdivisions per segment, `stations - 1` shared out in proportion to
+  // rail1's length, with a station exactly AT every anchor) and Loft()'s
+  // interpolating skin passes through all of them. So:
+  //  - every input section is reproduced exactly (the skin interpolates the
+  //    station copies; the report measures it, ~1e-13);
+  //  - when the sections touch the rails, the wall's two edge isocurves lie
+  //    on the rails exactly at every station and between stations to the
+  //    skin's interpolation error - a MEASURED sampled bound in the report,
+  //    not an exact claim, shrinking as `stations` grows; with several
+  //    identical-shape sections the surface is the Sweep2() surface of one of
+  //    them.
+  // Always an UNCAPPED single-face body (the wall). Does not support two
+  // closed rails, and closed sections are not seam- or direction-aligned with
+  // each other (give them consistent seams and directions). Throws
+  // std::invalid_argument for fewer than 2 sections, stations < 2, an invalid
+  // curve, two closed rails, a zero-length rail, rails that touch at a
+  // station, sections whose anchors do not advance along BOTH rails (they
+  // cross, or two share a station), or two consecutive identical sections
+  // (the skin parameter would not increase).
+  static Brep Sweep2Sections(const std::vector<NurbsCurve>& sections, const NurbsCurve& rail1,
+                             const NurbsCurve& rail2, int stations = 32, Sweep2SectionsReport* report = nullptr);
 
   // Pipe: an exact rational circle of `radius`, centered on the rail's
   // start point in the plane perpendicular to the rail there, swept by

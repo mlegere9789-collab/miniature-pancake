@@ -88498,6 +88498,422 @@ void TestNurbsSurfaceJoinCompatibleFormReportOverloadIsBitIdentical() {
         "...with the merged surface reproducing the original to round-off (< 1e-9)");
 }
 
+// ---------------------------------------------------------------------------
+// Brep::Sweep2Sections: the multi-cross-section two-rail sweep (brep.h's own
+// doc comment has the contract). Every number asserted here was first
+// measured by a standalone driver against the built kernel; the bounds below
+// leave a stated margin over those measurements and are never looser than
+// the claim they back.
+// ---------------------------------------------------------------------------
+namespace sweep2_sections_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+
+bool ThrowsInvalid(const std::function<void()>& f) {
+  try {
+    f();
+  } catch (const std::invalid_argument&) {
+    return true;
+  }
+  return false;
+}
+
+NurbsCurve Quad(Point3d a, Point3d b, Point3d c) { return NurbsCurve::FromControlPoints({a, b, c}, 2); }
+
+NurbsSurface WallOf(const Brep& b) {
+  NurbsSurface ns;
+  ns.raw() = *ON_NurbsSurface::Cast(b.raw().m_F[0].SurfaceOf());
+  return ns;
+}
+
+Point3d OnCurve(const NurbsCurve& c, double fraction) {
+  return c.PointAt(c.Domain().min + (c.Domain().max - c.Domain().min) * fraction);
+}
+
+// Worst distance between two surfaces' own PointAt over an 11 x 11 grid of
+// normalized (u, v) parameters.
+double SurfaceGridGap(const NurbsSurface& a, const NurbsSurface& b) {
+  double worst = 0.0;
+  for (int i = 0; i <= 10; ++i) {
+    for (int j = 0; j <= 10; ++j) {
+      const double fu = i / 10.0, fv = j / 10.0;
+      const auto at = [&](const NurbsSurface& s) {
+        return s.PointAt(s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * fu,
+                         s.Domain(1).min + (s.Domain(1).max - s.Domain(1).min) * fv);
+      };
+      worst = std::max(worst, at(a).DistanceTo(at(b)));
+    }
+  }
+  return worst;
+}
+
+// Worst distance from 9 points on `section` to the wall, by the surface's own
+// closest-point search (independent of Sweep2Sections()'s own report).
+double SectionToWallDistance(const NurbsSurface& wall, const NurbsCurve& section) {
+  double worst = 0.0;
+  for (int k = 0; k <= 8; ++k) {
+    const Point3d p = OnCurve(section, k / 8.0);
+    worst = std::max(worst, p.DistanceTo(wall.ClosestPoint(p)));
+  }
+  return worst;
+}
+
+void TestSweep2SectionsIdenticalProfilesReduceToSweep2() {
+  // Diverging straight rails; the same quadratic-arc profile (scaled with the
+  // rail separation, so identical in rail-local coordinates) at z = 0, 5, 10.
+  // The local blend is then constant, every station copy is Sweep2()'s own,
+  // and the skin of data linear in z reproduces a straight line per column:
+  // the multi-section wall IS the one-section Sweep2() wall to round-off.
+  const NurbsCurve rail1 = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, 10)}, 1);
+  const NurbsCurve rail2 = NurbsCurve::FromControlPoints({Point3d(4, 0, 0), Point3d(6, 0, 10)}, 1);
+  const auto section = [&](double z) {
+    const double w = 4 + 0.2 * z;
+    return Quad(Point3d(0, 0, z), Point3d(w / 2, w * 0.5, z), Point3d(w, 0, z));
+  };
+  const std::vector<NurbsCurve> sections = {section(0), section(5), section(10)};
+  Brep::Sweep2SectionsReport report;
+  const Brep multi = Brep::Sweep2Sections(sections, rail1, rail2, 32, &report);
+  const Brep single = Brep::Sweep2(sections[0], rail1, rail2, 32, /*cap=*/false);
+  Check(multi.FaceCount() == 1 && multi.raw().IsValid(), "sweep2 sections: one valid face (uncapped wall)");
+  Check(report.sections == 3 && report.stations == 33,
+        "sweep2 sections: report says 3 sections on 33 stations (4 subdivisions per segment minimum, 16 each here)");
+  Check(SurfaceGridGap(WallOf(multi), WallOf(single)) < 1e-9,
+        "sweep2 sections: three identical-local profiles give the one-section Sweep2() wall (11x11 grid, < 1e-9)");
+  Check(report.max_section_deviation < 1e-12, "sweep2 sections: every section reproduced to < 1e-12 (measured 2e-15)");
+  Check(report.rails_on_boundary && report.section_rail_gap < 1e-12, "sweep2 sections: open sections touch both rails (gap < 1e-12)");
+  Check(report.max_rail1_deviation < 1e-12 && report.max_rail2_deviation < 1e-12,
+        "sweep2 sections: straight rails are reproduced to < 1e-12 along the whole wall edge (measured 6e-15)");
+  Check(SectionToWallDistance(WallOf(multi), sections[1]) < 1e-6,
+        "sweep2 sections: the middle section lies on the wall by an independent closest-point search (< 1e-6)");
+}
+
+void TestSweep2SectionsVaryingProfilesOnCurvedRails() {
+  const NurbsCurve rail1 = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 3), Point3d(-1, 0, 7), Point3d(0, 0, 10)}, 3);
+  const NurbsCurve rail2 = NurbsCurve::FromControlPoints({Point3d(6, 0, 0), Point3d(8, 1, 3), Point3d(7, -1, 7), Point3d(9, 0, 10)}, 3);
+  const auto section = [&](double t, double bulge) {
+    const Point3d a = OnCurve(rail1, t), b = OnCurve(rail2, t);
+    const Point3d m = (a + b) * 0.5;
+    return Quad(a, Point3d(m.x, m.y + bulge, m.z), b);
+  };
+  const std::vector<NurbsCurve> sections = {section(0, 0.5), section(0.5, 3.0), section(1, 1.0)};
+  Brep::Sweep2SectionsReport r16, r32, r64;
+  const Brep b16 = Brep::Sweep2Sections(sections, rail1, rail2, 16, &r16);
+  const Brep b32 = Brep::Sweep2Sections(sections, rail1, rail2, 32, &r32);
+  const Brep b64 = Brep::Sweep2Sections(sections, rail1, rail2, 64, &r64);
+  Check(b16.FaceCount() == 1 && b32.FaceCount() == 1 && b64.FaceCount() == 1, "sweep2 sections (curved rails): one face at every station count");
+  // Sections: reproduced exactly at every station count (the skin interpolates
+  // the station copies; measured ~2e-15).
+  Check(r16.max_section_deviation < 1e-12 && r32.max_section_deviation < 1e-12 && r64.max_section_deviation < 1e-12,
+        "sweep2 sections (curved rails): all 3 input sections reproduced to < 1e-12 at 16, 32 and 64 stations");
+  Check(SectionToWallDistance(WallOf(b32), sections[0]) < 1e-6 && SectionToWallDistance(WallOf(b32), sections[1]) < 1e-6 &&
+            SectionToWallDistance(WallOf(b32), sections[2]) < 1e-6,
+        "sweep2 sections (curved rails): each section lies on the wall by an independent closest-point search (< 1e-6)");
+  Check(r32.section_rail_gap < 1e-9, "sweep2 sections (curved rails): the sections start/end on the rails (gap < 1e-9)");
+  // Rails: exact at every station, an interpolation error between them -
+  // measured, shrinking with the station count (measured 6e-5/3e-4 at 16,
+  // 4e-6/1.7e-5 at 32, 4e-7/1e-6 at 64, 3e-8/6e-8 at 128).
+  const double worst16 = std::max(r16.max_rail1_deviation, r16.max_rail2_deviation);
+  const double worst32 = std::max(r32.max_rail1_deviation, r32.max_rail2_deviation);
+  const double worst64 = std::max(r64.max_rail1_deviation, r64.max_rail2_deviation);
+  Check(worst32 < 1e-4 && worst64 < 1e-5, "sweep2 sections (curved rails): wall edges stay within 1e-4 of the rails at 32 stations and 1e-5 at 64");
+  Check(worst16 > worst32 && worst32 > worst64 && worst64 > 0.0,
+        "sweep2 sections (curved rails): the rail deviation is a real, shrinking interpolation error (16 > 32 > 64 stations), not zero by accident");
+  // Independent confirmation of the edge claim: the wall's u = min edge vs
+  // rail1 and u = max edge vs rail2, sampled on a different grid (v = k/97).
+  const NurbsSurface wall = WallOf(b32);
+  double edge_worst = 0.0;
+  for (int k = 0; k <= 97; ++k) {
+    const double v = wall.Domain(1).min + (wall.Domain(1).max - wall.Domain(1).min) * k / 97.0;
+    const Point3d a = wall.PointAt(wall.Domain(0).min, v), b = wall.PointAt(wall.Domain(0).max, v);
+    edge_worst = std::max({edge_worst, a.DistanceTo(rail1.PointAt(rail1.ClosestPointParameter(a))),
+                           b.DistanceTo(rail2.PointAt(rail2.ClosestPointParameter(b)))});
+  }
+  Check(edge_worst < 1e-4, "sweep2 sections (curved rails): independent 98-sample edge check against the rails agrees (< 1e-4)");
+}
+
+void TestSweep2SectionsOrderDirectionAndShapeFamilies() {
+  const NurbsCurve rail1 = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, 10)}, 1);
+  const NurbsCurve rail2 = NurbsCurve::FromControlPoints({Point3d(4, 0, 0), Point3d(6, 0, 10)}, 1);
+  const auto section = [&](double z, double bulge) {
+    const double w = 4 + 0.2 * z;
+    return Quad(Point3d(0, 0, z), Point3d(w / 2, bulge, z), Point3d(w, 0, z));
+  };
+  const NurbsCurve s0 = section(1, 0.5), s1 = section(5, 2.0), s2 = section(9, 1.0);
+  const NurbsSurface ordered = WallOf(Brep::Sweep2Sections({s0, s1, s2}, rail1, rail2, 32));
+  // Same sections in a shuffled order, one of them drawn the other way round,
+  // and rail2 handed in reversed: Sweep2Sections() sorts by station, turns
+  // each open section to start on rail1, and matches rail2's direction.
+  NurbsCurve s1_reversed = s1;
+  s1_reversed.raw().Reverse();
+  NurbsCurve rail2_reversed = rail2;
+  rail2_reversed.raw().Reverse();
+  const NurbsSurface shuffled = WallOf(Brep::Sweep2Sections({s2, s1_reversed, s0}, rail1, rail2_reversed, 32));
+  Check(SurfaceGridGap(ordered, shuffled) < 1e-9,
+        "sweep2 sections: shuffled order + a reversed section + reversed rail2 give the same wall (11x11 grid, < 1e-9)");
+  // The first and last sections sit inside the rails (z = 1 and 9): beyond
+  // them the end profiles are held, so the wall still spans the rails end to end.
+  Check(ordered.PointAt(ordered.Domain(0).min, ordered.Domain(1).min).DistanceTo(Point3d(0, 0, 0)) < 1e-9 &&
+            ordered.PointAt(ordered.Domain(0).max, ordered.Domain(1).max).DistanceTo(Point3d(6, 0, 10)) < 1e-9,
+        "sweep2 sections: with sections at z = 1 and 9 the wall still spans the rails end to end (corners at the rail ends)");
+  // A section a rational circle arc against a degree-1 one: structurally
+  // compatible conditioning (degree elevation, rationalization, knot merging).
+  const NurbsCurve rail_a = NurbsCurve::FromControlPoints({Point3d(-2, 0, 0), Point3d(-2, 0, 8)}, 1);
+  const NurbsCurve rail_b = NurbsCurve::FromControlPoints({Point3d(2, 0, 0), Point3d(2, 0, 8)}, 1);
+  ON_NurbsCurve arc_raw;
+  ON_Arc(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)), 2.0), ON_Interval(0.0, ON_PI)).GetNurbForm(arc_raw);
+  NurbsCurve arc;
+  arc.raw() = arc_raw;  // from (2,0,0) over (0,2,0) to (-2,0,0)
+  const NurbsCurve flat = NurbsCurve::FromControlPoints({Point3d(2, 0, 8), Point3d(-2, 0, 8)}, 1);
+  Brep::Sweep2SectionsReport report;
+  const Brep mixed = Brep::Sweep2Sections({arc, flat}, rail_a, rail_b, 16, &report);
+  Check(mixed.FaceCount() == 1 && WallOf(mixed).IsRational(), "sweep2 sections: a rational arc + a degree-1 line section make one rational wall");
+  Check(report.max_section_deviation < 1e-12, "sweep2 sections: ...both reproduced to < 1e-12 after the compatibility conditioning");
+  Check(report.rails_on_boundary && report.section_rail_gap < 1e-9 && std::max(report.max_rail1_deviation, report.max_rail2_deviation) < 1e-12,
+        "sweep2 sections: ...with its straight-rail edges exact to < 1e-12");
+}
+
+void TestSweep2SectionsClosedSectionsMakeAnExactConeFrustum() {
+  // Circles of radius 1, 1.5, 2 at z = 0, 5, 10 between two straight diverging
+  // rails (x = -/+(1 + 0.1 z)): closed sections anchored by their centroids.
+  // The circle is a constant in rail-local coordinates, so the wall must be the
+  // exact right circular cone frustum: radial distance 1 + 0.1 z everywhere.
+  const NurbsCurve rail1 = NurbsCurve::FromControlPoints({Point3d(-1, 0, 0), Point3d(-2, 0, 10)}, 1);
+  const NurbsCurve rail2 = NurbsCurve::FromControlPoints({Point3d(1, 0, 0), Point3d(2, 0, 10)}, 1);
+  const auto circle = [&](double z) {
+    ON_NurbsCurve raw;
+    ON_Circle(ON_Plane(ON_3dPoint(0, 0, z), ON_3dVector(0, 0, 1)), 1.0 + 0.1 * z).GetNurbForm(raw);
+    NurbsCurve k;
+    k.raw() = raw;
+    return k;
+  };
+  Brep::Sweep2SectionsReport report;
+  const Brep body = Brep::Sweep2Sections({circle(0), circle(5), circle(10)}, rail1, rail2, 32, &report);
+  Check(body.FaceCount() == 1 && WallOf(body).IsClosed(0) && WallOf(body).IsRational(),
+        "sweep2 sections (circles): one wall, closed around the circle, rational");
+  Check(!report.rails_on_boundary && report.max_section_deviation < 1e-12,
+        "sweep2 sections (circles): closed sections -> no rail-edge claim, all three circles reproduced to < 1e-12");
+  const NurbsSurface wall = WallOf(body);
+  double worst = 0.0;
+  for (int i = 0; i <= 24; ++i) {
+    for (int j = 0; j <= 24; ++j) {
+      const Point3d p = wall.PointAt(wall.Domain(0).min + (wall.Domain(0).max - wall.Domain(0).min) * i / 24.0,
+                                     wall.Domain(1).min + (wall.Domain(1).max - wall.Domain(1).min) * j / 24.0);
+      worst = std::max(worst, std::abs(std::hypot(p.x, p.y) - (1.0 + 0.1 * p.z)));
+    }
+  }
+  Check(worst < 1e-9, "sweep2 sections (circles): every sampled wall point sits on the exact cone radius 1 + 0.1 z (25x25 grid, < 1e-9)");
+}
+
+void TestSweep2SectionsFloatingSectionsAndRefusals() {
+  const NurbsCurve rail1 = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, 10)}, 1);
+  const NurbsCurve rail2 = NurbsCurve::FromControlPoints({Point3d(4, 0, 0), Point3d(4, 0, 10)}, 1);
+  const auto section = [&](double z, double off) {
+    return Quad(Point3d(off, 0, z), Point3d(2, 1, z), Point3d(4 - off, 0, z));
+  };
+  // Sections that stop 0.5 short of the rails: still reproduced exactly, and
+  // the report says honestly that they do not touch the rails.
+  Brep::Sweep2SectionsReport report;
+  const Brep floating = Brep::Sweep2Sections({section(0, 0.5), section(10, 0.5)}, rail1, rail2, 16, &report);
+  Check(floating.FaceCount() == 1 && report.max_section_deviation < 1e-12,
+        "sweep2 sections (floating): sections 0.5 short of the rails are still reproduced to < 1e-12");
+  Check(report.section_rail_gap > 0.49 && report.section_rail_gap < 0.51,
+        "sweep2 sections (floating): the report's section-to-rail gap is the 0.5 the sections stop short by");
+  // Negative controls.
+  const NurbsCurve s0 = section(0, 0), s5 = section(5, 0), s10 = section(10, 0);
+  Check(ThrowsInvalid([&] { Brep::Sweep2Sections({s0}, rail1, rail2, 32); }), "sweep2 sections: a single section throws (that is Sweep2())");
+  Check(ThrowsInvalid([&] { Brep::Sweep2Sections({s0, s10}, rail1, rail2, 1); }), "sweep2 sections: stations < 2 throws");
+  Check(ThrowsInvalid([&] { Brep::Sweep2Sections({s0, s0}, rail1, rail2, 32); }), "sweep2 sections: two sections at the same station throw");
+  Check(ThrowsInvalid([&] { Brep::Sweep2Sections({s0, s10}, rail1, rail1, 32); }), "sweep2 sections: rails that touch (rail2 == rail1) throw");
+  // Crossing anchors: a section whose start is early on rail1 but whose end is
+  // LATE on rail2, and a second whose start is later on rail1 but end earlier.
+  const NurbsCurve cross_a = NurbsCurve::FromControlPoints({Point3d(0, 0, 2), Point3d(4, 0, 8)}, 1);
+  const NurbsCurve cross_b = NurbsCurve::FromControlPoints({Point3d(0, 0, 6), Point3d(4, 0, 4)}, 1);
+  Check(ThrowsInvalid([&] { Brep::Sweep2Sections({cross_a, cross_b}, rail1, rail2, 32); }),
+        "sweep2 sections: sections whose anchors cross along the two rails throw");
+  const NurbsCurve ring_a = [&] { ON_NurbsCurve r; ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0).GetNurbForm(r); NurbsCurve k; k.raw() = r; return k; }();
+  const NurbsCurve ring_b = [&] { ON_NurbsCurve r; ON_Circle(ON_Plane(ON_3dPoint(0, 0, 1), ON_3dVector(0, 0, 1)), 7.0).GetNurbForm(r); NurbsCurve k; k.raw() = r; return k; }();
+  Check(ThrowsInvalid([&] { Brep::Sweep2Sections({s0, s10}, ring_a, ring_b, 32); }), "sweep2 sections: two closed rails throw (documented limit)");
+  (void)s5;
+}
+
+}  // namespace sweep2_sections_tests
+
+// ---------------------------------------------------------------------------
+// NurbsSurface::FitPatch (least-squares NURBS patch through boundary samples
+// and interior points) and Brep::TrimmedPatchFace (that patch trimmed by its
+// own closed boundary curve). Every number asserted was first measured by a
+// standalone driver against the built kernel; each bound leaves a stated
+// margin over its measurement and none is looser than the claim it backs.
+// ---------------------------------------------------------------------------
+namespace fit_patch_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using dino8::kernel::Result;
+
+bool ThrowsInvalid(const std::function<void()>& f) {
+  try {
+    f();
+  } catch (const std::invalid_argument&) {
+    return true;
+  }
+  return false;
+}
+
+std::vector<Point3d> SaddleRing(int count) {
+  std::vector<Point3d> ring;
+  for (int k = 0; k < count; ++k) {
+    const double a = 2.0 * ON_PI * k / count;
+    ring.push_back(Point3d(5.0 * std::cos(a), 5.0 * std::sin(a), 1.5 * std::cos(2.0 * a)));
+  }
+  return ring;
+}
+
+// The surface's value at the plane coordinates (x, y) measured from the
+// fit's own origin along its own axes - the parameterization FitPatch documents.
+Point3d AtPlaneCoords(const NurbsSurface& s, const NurbsSurface::PatchFitReport& r, double x, double y) {
+  (void)r;
+  return s.PointAt(x, y);
+}
+
+void TestSurfaceFitPatchPlanarDataIsExactlyAPlane() {
+  std::vector<Point3d> pts;
+  for (int i = 0; i < 5; ++i)
+    for (int j = 0; j < 5; ++j) pts.push_back(Point3d(i, j, 0.3 * i - 0.1 * j + 2.0));
+  NurbsSurface s;
+  NurbsSurface::PatchFitReport rep;
+  Check(NurbsSurface::FitPatch({}, pts, 1e-3, s, &rep) == Result::Ok, "FitPatch: 25 points on a tilted plane fit (Ok)");
+  Check(rep.met_tolerance && rep.max_deviation < 1e-12 && rep.flat_deviation < 1e-12,
+        "FitPatch: planar data: worst deviation and the best-fit plane's own deviation both < 1e-12 (measured 3e-16)");
+  Check(rep.u_count == 2 && rep.v_count == 2 && rep.data_points == 25,
+        "FitPatch: planar data stop at the smallest net that meets the tolerance: 2 x 2 (a bilinear plane), 25 points fitted");
+  double worst = 0.0;
+  for (const Point3d& p : pts) {
+    const Point3d q = s.ClosestPoint(p);
+    worst = std::max(worst, p.DistanceTo(q));
+  }
+  Check(worst < 1e-9, "FitPatch: every data point lies on the returned surface by its own closest-point search (< 1e-9)");
+}
+
+void TestSurfaceFitPatchSaddleRingBoundaryAndMembraneInterior() {
+  // 96 samples of a closed saddle ring r = 5, z = 1.5 cos(2 theta) = 1.5 (x^2 - y^2) / 25
+  // - a boundary curve with NO interior data. The best-fit plane misses it by
+  // 1.5; the patch must reproduce the ring and fill the inside with the
+  // minimal-bending membrane, which for this ring is (close to) the same
+  // saddle z = 1.5 (x^2 - y^2) / 25.
+  const std::vector<Point3d> ring = SaddleRing(96);
+  NurbsSurface s;
+  NurbsSurface::PatchFitReport rep;
+  Check(NurbsSurface::FitPatch(ring, {}, 1e-3, s, &rep) == Result::Ok, "FitPatch: saddle ring (96 boundary points, no interior data) fits (Ok)");
+  Check(rep.met_tolerance && rep.max_boundary_deviation < 1e-7 && rep.max_deviation == rep.max_boundary_deviation,
+        "FitPatch: the ring is reproduced to < 1e-7 (measured 5.5e-9), all of it boundary deviation");
+  Check(std::abs(rep.flat_deviation - 1.5) < 1e-6, "FitPatch: the best-fit plane misses the saddle ring by 1.5 - what the old planar Patch would have flattened");
+  Check(rep.u_count == 3 && rep.v_count == 3, "FitPatch: a biquadratic 3 x 3 net is enough for z = 1.5 cos(2 theta), which is quadratic in x and y");
+  Check(rep.plane_z.z > 0.999999 || rep.plane_z.z < -0.999999, "FitPatch: the fit plane's normal is the world z axis (the saddle's smallest-variance axis)");
+  double worst = 0.0;
+  for (int i = 0; i <= 10; ++i) {
+    for (int j = 0; j <= 10; ++j) {
+      const double wx = -3.0 + 0.6 * i, wy = -3.0 + 0.6 * j;
+      const ON_3dVector d = ON_3dPoint(wx, wy, 0.0) - rep.plane_origin;
+      const Point3d q = AtPlaneCoords(s, rep, ON_DotProduct(d, rep.plane_x), ON_DotProduct(d, rep.plane_y));
+      // evaluate where the surface is above (wx, wy): the plane is z-up, so q.x/q.y are (wx, wy)
+      worst = std::max(worst, std::abs(q.x - wx) + std::abs(q.y - wy));
+    }
+  }
+  Check(worst < 1e-9, "FitPatch: the surface is parameterized by plane coordinates (x(u) = u, y(v) = v exactly: 121 points, < 1e-9)");
+  double interior_gap = 0.0;
+  for (int i = 0; i <= 10; ++i) {
+    for (int j = 0; j <= 10; ++j) {
+      const double wx = -3.0 + 0.6 * i, wy = -3.0 + 0.6 * j;
+      const ON_3dVector d = ON_3dPoint(wx, wy, 0.0) - rep.plane_origin;
+      const Point3d q = AtPlaneCoords(s, rep, ON_DotProduct(d, rep.plane_x), ON_DotProduct(d, rep.plane_y));
+      interior_gap = std::max(interior_gap, std::abs(q.z - 1.5 * (wx * wx - wy * wy) / 25.0));
+    }
+  }
+  Check(interior_gap < 3e-3, "FitPatch: with no interior data the stiffness term fills the ring with the saddle it describes (121 interior points within 3e-3 of 1.5 (x^2 - y^2) / 25; measured 1.4e-3; the flat plane is 0.54 off there)");
+}
+
+void TestSurfaceFitPatchHonestAboutWhatItCannotFit() {
+  // 7 x 7 grid sampling the bump 2 exp(-(x^2 + y^2) / 20): 49 points, so the
+  // net can grow to 7 x 7 and no further (never more control points than
+  // data). That net cannot meet 1e-3 - the report must say so.
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 7; ++i)
+    for (int j = 0; j < 7; ++j) {
+      const double x = -6.0 + 2.0 * i, y = -6.0 + 2.0 * j;
+      grid.push_back(Point3d(x, y, 2.0 * std::exp(-(x * x + y * y) / 20.0)));
+    }
+  NurbsSurface s;
+  NurbsSurface::PatchFitReport rep;
+  Check(NurbsSurface::FitPatch({}, grid, 1e-3, s, &rep, 7) == Result::Ok, "FitPatch: bump grid fits (Ok) even when it cannot meet the tolerance");
+  Check(!rep.met_tolerance && rep.max_deviation > 1e-3 && rep.max_deviation < 2e-2,
+        "FitPatch: ...and says met_tolerance = false with the measured worst deviation (between 1e-3 and 2e-2; measured 1.05e-2), not a silent pass");
+  Check(rep.max_deviation < 0.02 * rep.flat_deviation && rep.u_count * rep.v_count <= 49,
+        "FitPatch: ...still far better than a plane (flat deviation 1.39) and never more control points than data (49)");
+  // A tolerance it can meet: the same data at 2e-2 stop at a smaller net.
+  NurbsSurface s2;
+  NurbsSurface::PatchFitReport rep2;
+  Check(NurbsSurface::FitPatch({}, grid, 2e-1, s2, &rep2, 7) == Result::Ok && rep2.met_tolerance && rep2.max_deviation <= 2e-1 &&
+            rep2.u_count * rep2.v_count < rep.u_count * rep.v_count,
+        "FitPatch: a looser tolerance (0.2) is met by a smaller net than the 7 x 7 one the tight tolerance needed");
+  // Two data points (a segment), collinear data, and degenerate arguments.
+  Check(NurbsSurface::FitPatch({}, {Point3d(0, 0, 0), Point3d(1, 1, 1)}, 1e-3, s) == Result::Failed, "FitPatch: fewer than 3 points is Failed");
+  Check(NurbsSurface::FitPatch({}, {Point3d(0, 0, 0), Point3d(1, 1, 1), Point3d(2, 2, 2), Point3d(3, 3, 3)}, 1e-3, s) == Result::Failed,
+        "FitPatch: collinear points are Failed (no plane to fit over)");
+  Check(ThrowsInvalid([&] { NurbsSurface::FitPatch({}, grid, 0.0, s); }), "FitPatch: tolerance 0 throws");
+  Check(ThrowsInvalid([&] { NurbsSurface::FitPatch({}, grid, 1e-3, s, nullptr, 1); }), "FitPatch: max_count 1 throws");
+  Check(ThrowsInvalid([&] { NurbsSurface::FitPatch({}, {Point3d(0, 0, 0), Point3d(1, 0, std::nan("")), Point3d(0, 1, 0)}, 1e-3, s); }),
+        "FitPatch: a NaN coordinate throws");
+}
+
+void TestBrepTrimmedPatchFace() {
+  // A closed cubic boundary whose control polygon is 24 points of the saddle
+  // ring: a real NURBS curve (not a polyline), sampled densely for the fit.
+  std::vector<Point3d> cvs = SaddleRing(24);
+  cvs.push_back(cvs.front());
+  const NurbsCurve loop = NurbsCurve::FromControlPoints(cvs, 3);
+  Check(loop.IsClosed(), "TrimmedPatchFace fixture: the boundary curve is closed");
+  std::vector<Point3d> samples;
+  for (int k = 0; k < 160; ++k) samples.push_back(loop.PointAt(loop.Domain().min + (loop.Domain().max - loop.Domain().min) * k / 160.0));
+  NurbsSurface s;
+  NurbsSurface::PatchFitReport rep;
+  Check(NurbsSurface::FitPatch(samples, {}, 1e-3, s, &rep) == Result::Ok && rep.met_tolerance && rep.max_deviation < 1e-3,
+        "TrimmedPatchFace fixture: the boundary's 160 samples fit within 1e-3 (measured 5.7e-4 on a 5 x 5 net)");
+  double edge_dev = -1.0;
+  const Brep face = Brep::TrimmedPatchFace(s, rep, loop, &edge_dev);
+  Check(face.FaceCount() == 1 && face.raw().IsValid(), "TrimmedPatchFace: one face, real ON_Brep topology (raw().IsValid())");
+  Check(face.raw().m_L.Count() == 1 && face.raw().m_L[0].m_type == ON_BrepLoop::outer && face.raw().m_E.Count() == 1 &&
+            face.raw().m_T.Count() == 1,
+        "TrimmedPatchFace: exactly one outer loop made of one closed edge and its one trim");
+  Check(edge_dev >= 0.0 && edge_dev < 1.5e-3 && std::abs(face.raw().m_E[0].m_tolerance - edge_dev) < 1e-15,
+        "TrimmedPatchFace: the edge tolerance is the measured surface-to-boundary deviation along the trim (< 1.5e-3; measured 6.1e-4)");
+  // Independent check: sample the 3D edge curve and ask the SURFACE for its
+  // closest point - the face really is bounded by the boundary curve.
+  double worst = 0.0;
+  for (int k = 0; k < 64; ++k) {
+    const Point3d p = loop.PointAt(loop.Domain().min + (loop.Domain().max - loop.Domain().min) * (k + 0.5) / 64.0);
+    worst = std::max(worst, p.DistanceTo(s.ClosestPoint(p)));
+  }
+  Check(worst < 1.5e-3, "TrimmedPatchFace: 64 points of the boundary curve all lie within 1.5e-3 of the face's surface (independent closest-point search)");
+  // The 2D trim lies inside the surface's own (u, v) domain.
+  bool inside = true;
+  const ON_Curve* trim = face.raw().m_C2[face.raw().m_T[0].m_c2i];
+  for (int k = 0; k <= 64; ++k) {
+    const ON_3dPoint uv = trim->PointAt(trim->Domain().ParameterAt(k / 64.0));
+    inside = inside && uv.x >= s.Domain(0).min - 1e-9 && uv.x <= s.Domain(0).max + 1e-9 && uv.y >= s.Domain(1).min - 1e-9 && uv.y <= s.Domain(1).max + 1e-9;
+  }
+  Check(inside, "TrimmedPatchFace: the 2D trim curve stays inside the surface's (u, v) domain");
+  const NurbsCurve open_curve = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)}, 2);
+  Check(ThrowsInvalid([&] { Brep::TrimmedPatchFace(s, rep, open_curve); }), "TrimmedPatchFace: an open boundary throws");
+}
+
+}  // namespace fit_patch_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -89851,6 +90267,24 @@ int main() {
           TestNurbsSurfaceJoinCompatibleFormNegativeControls);
   RunTest("TestNurbsSurfaceJoinCompatibleFormReportOverloadIsBitIdentical",
           TestNurbsSurfaceJoinCompatibleFormReportOverloadIsBitIdentical);
+
+  RunTest("sweep2_sections_tests::TestSweep2SectionsIdenticalProfilesReduceToSweep2",
+          sweep2_sections_tests::TestSweep2SectionsIdenticalProfilesReduceToSweep2);
+  RunTest("sweep2_sections_tests::TestSweep2SectionsVaryingProfilesOnCurvedRails",
+          sweep2_sections_tests::TestSweep2SectionsVaryingProfilesOnCurvedRails);
+  RunTest("sweep2_sections_tests::TestSweep2SectionsOrderDirectionAndShapeFamilies",
+          sweep2_sections_tests::TestSweep2SectionsOrderDirectionAndShapeFamilies);
+  RunTest("sweep2_sections_tests::TestSweep2SectionsClosedSectionsMakeAnExactConeFrustum",
+          sweep2_sections_tests::TestSweep2SectionsClosedSectionsMakeAnExactConeFrustum);
+  RunTest("sweep2_sections_tests::TestSweep2SectionsFloatingSectionsAndRefusals",
+          sweep2_sections_tests::TestSweep2SectionsFloatingSectionsAndRefusals);
+  RunTest("fit_patch_tests::TestSurfaceFitPatchPlanarDataIsExactlyAPlane",
+          fit_patch_tests::TestSurfaceFitPatchPlanarDataIsExactlyAPlane);
+  RunTest("fit_patch_tests::TestSurfaceFitPatchSaddleRingBoundaryAndMembraneInterior",
+          fit_patch_tests::TestSurfaceFitPatchSaddleRingBoundaryAndMembraneInterior);
+  RunTest("fit_patch_tests::TestSurfaceFitPatchHonestAboutWhatItCannotFit",
+          fit_patch_tests::TestSurfaceFitPatchHonestAboutWhatItCannotFit);
+  RunTest("fit_patch_tests::TestBrepTrimmedPatchFace", fit_patch_tests::TestBrepTrimmedPatchFace);
 
   RunTest("ON::End", ON::End);
 
