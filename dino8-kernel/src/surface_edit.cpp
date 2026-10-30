@@ -1605,6 +1605,37 @@ Result NurbsSurface::CoonsPatch(const NurbsCurve& bottom, const NurbsCurve& top,
   return Result::Ok;
 }
 
+Result NurbsSurface::CoonsPatchTriangular(const NurbsCurve& a, const NurbsCurve& b, const NurbsCurve& c, NurbsSurface& out,
+                                          double tolerance, double* out_corner_gap) {
+  // `a` = bottom (A -> B). The collapsed "left" edge sits at A, so the
+  // curve of {b, c} that starts (or, reversed, ends) at A is "top" and the
+  // one that meets B is "right". Which of b/c is which is unknown to the
+  // caller, so try both and keep the better-closing success.
+  const ON_3dPoint A = a.raw().PointAt(a.raw().Domain().Min());
+  const NurbsCurve point_edge = NurbsCurve::FromControlPoints({Point3d(A.x, A.y, A.z), Point3d(A.x, A.y, A.z)}, 1);
+  double best_gap = std::numeric_limits<double>::infinity();
+  double best_success_gap = std::numeric_limits<double>::infinity();
+  bool have = false;
+  NurbsSurface best;
+  for (int order = 0; order < 2; ++order) {
+    const NurbsCurve& right = order == 0 ? b : c;
+    const NurbsCurve& top = order == 0 ? c : b;
+    NurbsSurface candidate;
+    double gap = std::numeric_limits<double>::infinity();
+    const Result r = CoonsPatch(a, top, point_edge, right, candidate, tolerance, &gap);
+    best_gap = std::min(best_gap, gap);
+    if (r == Result::Ok && gap < best_success_gap) {
+      best_success_gap = gap;
+      best = candidate;
+      have = true;
+    }
+  }
+  if (out_corner_gap) *out_corner_gap = best_gap;
+  if (!have) return Result::Failed;
+  out = best;
+  return Result::Ok;
+}
+
 Result NurbsSurface::ExtendLinear(int direction, double t0, double t1) {
   if (direction != 0 && direction != 1) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::ExtendLinear: direction must be 0 (U) or 1 (V)");

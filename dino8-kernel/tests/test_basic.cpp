@@ -74742,6 +74742,175 @@ void TestSurfaceCoonsPatchRefusesNonClosingBoundaries() {
   Check(gap > 1.0, "CoonsPatch reports a genuinely large corner gap on refusal (not a rounding-level number)");
 }
 
+// ---- NurbsSurface::CoonsPatchTriangular (3-sided Coons patch) ----
+
+void TestSurfaceCoonsPatchTriangularStraightEdgesIsCollapsedBilinearTriangle() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A planar-or-not triangle with three STRAIGHT edges: the Coons patch
+  // with its 4th edge collapsed to A has the closed form (derived by hand,
+  // not read off the implementation)
+  //   S(u, v) = (1-u)*A + u*(1-v)*B + u*v*C       (u, v in [0, 1])
+  // and, since that map is a bijection of the unit square minus the
+  // collapsed edge onto the triangle, an area equal to |AB x AC| / 2.
+  const Point3d A(0, 0, 0), B(4, 0, 0), C(1, 3, 2);
+  const NurbsCurve a = NurbsCurve::FromControlPoints({A, B}, 1);
+  const NurbsCurve b = NurbsCurve::FromControlPoints({B, C}, 1);
+  const NurbsCurve c = NurbsCurve::FromControlPoints({C, A}, 1);
+
+  NurbsSurface patch;
+  double gap = -1.0;
+  Check(NurbsSurface::CoonsPatchTriangular(a, b, c, patch, 1e-6, &gap) == Result::Ok, "CoonsPatchTriangular succeeds on a straight-edged closed 3-curve loop");
+  Check(gap < 1e-9, "CoonsPatchTriangular reports an essentially-zero corner gap for a loop that already closes");
+
+  const auto du = patch.Domain(0), dv = patch.Domain(1);
+  auto S = [&](double u, double v) { return patch.PointAt(du.min + (du.max - du.min) * u, dv.min + (dv.max - dv.min) * v); };
+  double worst = 0.0;
+  for (int i = 0; i <= 8; ++i) {
+    for (int j = 0; j <= 8; ++j) {
+      const double u = i / 8.0, v = j / 8.0;
+      const Point3d expect = A * (1 - u) + B * (u * (1 - v)) + C * (u * v);
+      worst = std::max(worst, S(u, v).DistanceTo(expect));
+    }
+  }
+  Check(worst < 1e-9, "CoonsPatchTriangular on straight edges equals the closed form (1-u)A + u(1-v)B + uvC at 81 samples (< 1e-9)");
+
+  // Independent area check: midpoint-rule quadrature of |S_u x S_v| built
+  // only from the patch's own evaluator, against the exact triangle area.
+  const int n = 64;
+  const double h = 1.0 / n;
+  double area = 0.0;
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < n; ++j) {
+      const double u = (i + 0.5) * h, v = (j + 0.5) * h;
+      // Central differences about the cell centre (exact for this
+      // bilinear map), so only the O(h^2) midpoint-rule error remains.
+      const ON_3dVector su = (S(u + h / 2, v) - S(u - h / 2, v)) / h, sv = (S(u, v + h / 2) - S(u, v - h / 2)) / h;
+      area += ON_CrossProduct(su, sv).Length() * h * h;
+    }
+  }
+  const double exact_area = ON_CrossProduct(B - A, C - A).Length() / 2.0;
+  Check(std::abs(area - exact_area) < 1e-9 * exact_area, "CoonsPatchTriangular straight-edged patch has the exact triangle area |AB x AC|/2 (quadrature, < 1e-9 relative)");
+}
+
+void TestSurfaceCoonsPatchTriangularReproducesCurvedBoundariesExactly() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Three genuinely CURVED edges (a straight-line triangle can't tell
+  // "exact" from "close enough").
+  const Point3d A(0, 0, 0), B(4, 0, 0.5), C(1.5, 3.5, 1);
+  const NurbsCurve a = NurbsCurve::FromControlPoints({A, Point3d(1.3, -0.6, 0.5), Point3d(2.7, 0.5, 0.0), B}, 3);
+  const NurbsCurve b = NurbsCurve::FromControlPoints({B, Point3d(3.4, 1.2, 0.9), Point3d(2.2, 2.6, 0.4), C}, 3);
+  const NurbsCurve c = NurbsCurve::FromControlPoints({C, Point3d(1.0, 2.5, 1.4), Point3d(0.6, 1.2, 0.2), A}, 3);  // C -> A
+  auto at = [](const NurbsCurve& k, double t) { return k.PointAt(k.Domain().min + (k.Domain().max - k.Domain().min) * t); };
+
+  NurbsSurface patch;
+  double gap = -1.0;
+  Check(NurbsSurface::CoonsPatchTriangular(a, b, c, patch, 1e-6, &gap) == Result::Ok, "CoonsPatchTriangular succeeds on 3 curved, already-closing curves");
+  Check(gap < 1e-9, "CoonsPatchTriangular curved loop: essentially-zero corner gap");
+
+  const auto du = patch.Domain(0), dv = patch.Domain(1);
+  auto S = [&](double u, double v) { return patch.PointAt(du.min + (du.max - du.min) * u, dv.min + (dv.max - dv.min) * v); };
+  double bnd = 0.0, collapsed = 0.0;
+  for (int k = 0; k <= 40; ++k) {
+    const double t = k / 40.0;
+    bnd = std::max({bnd, S(t, 0).DistanceTo(at(a, t)), S(1, t).DistanceTo(at(b, t)), S(t, 1).DistanceTo(at(c, 1 - t))});
+    collapsed = std::max(collapsed, S(0, t).DistanceTo(A));
+  }
+  Check(bnd < 1e-9, "CoonsPatchTriangular's boundary isocurves reproduce all 3 original curved input curves exactly (< 1e-9), at 41 samples each");
+  Check(collapsed < 1e-12, "CoonsPatchTriangular's 4th (u = min) edge is collapsed to the single point A");
+
+  // Interior: independent closed-form Coons blend evaluated straight from
+  // the three input curves (bottom a(u); top = c reversed, A -> C; right
+  // b(v); collapsed left = A):
+  //   S = (1-v)a(u) + v c(1-u) + (1-u)A + u b(v) - [(1-u)(1-v)A + u(1-v)B + (1-u)vA + uvC]
+  double interior = 0.0;
+  for (int i = 1; i < 7; ++i) {
+    for (int j = 1; j < 7; ++j) {
+      const double u = i / 7.0, v = j / 7.0;
+      const Point3d expect = at(a, u) * (1 - v) + at(c, 1 - u) * v + A * (1 - u) + at(b, v) * u -
+                             (A * ((1 - u) * (1 - v)) + B * (u * (1 - v)) + A * ((1 - u) * v) + C * (u * v));
+      interior = std::max(interior, S(u, v).DistanceTo(expect));
+    }
+  }
+  Check(interior < 1e-9, "CoonsPatchTriangular interior equals the closed-form Coons blend of the 3 input curves at 36 samples (< 1e-9)");
+
+  // Input order/direction independence: hand b and c swapped and each one
+  // reversed; the geometry is the same surface.
+  NurbsCurve b_rev = b, c_rev = c;
+  b_rev.Reverse();
+  c_rev.Reverse();
+  NurbsSurface shuffled;
+  Check(NurbsSurface::CoonsPatchTriangular(a, c_rev, b_rev, shuffled, 1e-6) == Result::Ok, "CoonsPatchTriangular succeeds with b/c swapped and both reversed");
+  const auto sdu = shuffled.Domain(0), sdv = shuffled.Domain(1);
+  double diff = 0.0;
+  for (int i = 0; i <= 6; ++i) {
+    for (int j = 0; j <= 6; ++j) {
+      const double u = i / 6.0, v = j / 6.0;
+      diff = std::max(diff, shuffled.PointAt(sdu.min + (sdu.max - sdu.min) * u, sdv.min + (sdv.max - sdv.min) * v).DistanceTo(S(u, v)));
+    }
+  }
+  Check(diff < 1e-9, "CoonsPatchTriangular built from swapped+reversed curves is geometrically identical to the reference build");
+}
+
+void TestSurfaceCoonsPatchTriangularWithRationalArcEdge() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A RATIONAL boundary: a quarter circle of radius 3 (exact NURBS arc) as
+  // the bottom edge, closed by two straight edges up to an apex at (0, 0, 2).
+  // The closed form independently available here is the circle itself: every
+  // point of the patch's bottom isocurve must sit at radius exactly 3 about
+  // the z axis (a non-rational approximation of the arc could not).
+  ON_Arc arc(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0), ON_Interval(0, ON_PI / 2));
+  NurbsCurve a;
+  Check(arc.GetNurbForm(a.raw()) != 0 && a.raw().IsRational(), "rational-arc setup: the quarter circle is a genuinely rational NURBS");
+  const Point3d A(3, 0, 0), B(0, 3, 0), C(0, 0, 2);
+  const NurbsCurve b = NurbsCurve::FromControlPoints({B, C}, 1);
+  const NurbsCurve c = NurbsCurve::FromControlPoints({C, A}, 1);
+
+  NurbsSurface patch;
+  Check(NurbsSurface::CoonsPatchTriangular(a, b, c, patch) == Result::Ok, "CoonsPatchTriangular succeeds with a rational circular-arc edge");
+  const auto du = patch.Domain(0), dv = patch.Domain(1);
+  double radius_err = 0.0, collapsed = 0.0, edge_b = 0.0, edge_c = 0.0;
+  for (int k = 0; k <= 40; ++k) {
+    const double t = k / 40.0;
+    const Point3d q = patch.PointAt(du.min + (du.max - du.min) * t, dv.min);
+    radius_err = std::max(radius_err, std::abs(std::hypot(q.x, q.y) - 3.0));
+    collapsed = std::max(collapsed, patch.PointAt(du.min, dv.min + (dv.max - dv.min) * t).DistanceTo(A));
+    edge_b = std::max(edge_b, patch.PointAt(du.max, dv.min + (dv.max - dv.min) * t).DistanceTo(B * (1 - t) + C * t));
+    edge_c = std::max(edge_c, patch.PointAt(du.min + (du.max - du.min) * t, dv.max).DistanceTo(A * (1 - t) + C * t));
+  }
+  Check(radius_err < 1e-9, "CoonsPatchTriangular's arc-edge isocurve stays at radius 3 about the z axis (< 1e-9): the rational circle is reproduced exactly");
+  Check(collapsed < 1e-12, "CoonsPatchTriangular with an arc edge: collapsed edge is the single point A");
+  Check(edge_b < 1e-9, "CoonsPatchTriangular with an arc edge: straight edge B->C reproduced (< 1e-9)");
+  Check(edge_c < 1e-9, "CoonsPatchTriangular with an arc edge: straight edge C->A (the v = max isocurve, traversed A -> apex) reproduced (< 1e-9)");
+}
+
+void TestSurfaceCoonsPatchTriangularRefusesNonClosingLoop() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const NurbsCurve a = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(4, 0, 0)}, 1);
+  const NurbsCurve b = NurbsCurve::FromControlPoints({Point3d(4, 0, 0), Point3d(1, 3, 0)}, 1);
+  // Deliberately ends nowhere near (0, 0, 0): a genuinely open loop.
+  const NurbsCurve c = NurbsCurve::FromControlPoints({Point3d(1, 3, 0), Point3d(9, 9, 0)}, 1);
+  NurbsSurface patch;
+  double gap = -1.0;
+  Check(NurbsSurface::CoonsPatchTriangular(a, b, c, patch, 1e-6, &gap) == Result::Failed, "CoonsPatchTriangular refuses 3 curves that don't close into a loop");
+  Check(gap > 1.0, "CoonsPatchTriangular reports a genuinely large corner gap on refusal (not a rounding-level number)");
+}
+
 void TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -82279,6 +82448,10 @@ int main() {
   RunTest("TestSurfaceCoonsPatchAutoOrientsReversedBoundaries", TestSurfaceCoonsPatchAutoOrientsReversedBoundaries);
   RunTest("TestSurfaceCoonsPatchAutoOrientsAllThreeNonReferenceCurves", TestSurfaceCoonsPatchAutoOrientsAllThreeNonReferenceCurves);
   RunTest("TestSurfaceCoonsPatchRefusesNonClosingBoundaries", TestSurfaceCoonsPatchRefusesNonClosingBoundaries);
+  RunTest("TestSurfaceCoonsPatchTriangularStraightEdgesIsCollapsedBilinearTriangle", TestSurfaceCoonsPatchTriangularStraightEdgesIsCollapsedBilinearTriangle);
+  RunTest("TestSurfaceCoonsPatchTriangularReproducesCurvedBoundariesExactly", TestSurfaceCoonsPatchTriangularReproducesCurvedBoundariesExactly);
+  RunTest("TestSurfaceCoonsPatchTriangularWithRationalArcEdge", TestSurfaceCoonsPatchTriangularWithRationalArcEdge);
+  RunTest("TestSurfaceCoonsPatchTriangularRefusesNonClosingLoop", TestSurfaceCoonsPatchTriangularRefusesNonClosingLoop);
 
   RunTest("TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere", TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere);
   RunTest("TestSurfaceOffsetAnalyticSpherePreservesPartialPatchExtent", TestSurfaceOffsetAnalyticSpherePreservesPartialPatchExtent);
