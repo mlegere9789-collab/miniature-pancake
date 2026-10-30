@@ -48774,6 +48774,238 @@ void TestBrepTransformOnBoxUnderNonRigidScaleKeepsSideTablesSafelyIndexable() {
         "every one of the box's six loopless faces");
 }
 
+// Body-orientation fix-up under a reflection (Brep::Transform()). Before
+// this, ON_Brep::Transform() moved every surface through the mirror but
+// never touched m_bRev, and a handedness-reversing map negates every
+// surface's own Su x Sv relative to the mirrored body, so every mirrored
+// solid came back inside-out - measured directly against the un-fixed
+// library, not inferred: Box(0,0,0,10,10,10) mirrored through x=0 gave
+// Volume() == -1000 exactly and TessellateToClosedMesh(8,8).Volume() ==
+// -1000, Sphere((5,0,0),2) gave -33.510383 (= -4/3*pi*8), and the
+// general orientation-reversing affine diag(-1,1,2) gave -2000, with all
+// six m_bRev flags still false in every case. Every number below is a
+// closed form (volumes/areas of a box, a sphere, a stretched box; the
+// mirror image of a known bounding box), never a value read off the
+// current output. The orientation-preserving controls (a proper
+// rotation+translation, a positive-determinant non-uniform scale) pin
+// down that the fix-up fires ONLY on det < 0, and the negative cases
+// cover the two ways this method must still refuse: an open sheet
+// mirrored is still not a solid (Volume() throws exactly as before), and
+// a NaN-carrying xform throws std::invalid_argument up front (measured:
+// ON_Brep::Transform() itself returns true on that input and silently
+// leaves every control point NaN, so the promise in Brep::Transform()'s
+// own doc comment was never actually kept for a Brep before this check).
+void TestBrepTransformReflectionKeepsBodyOutwardOriented() {
+  using dino8::kernel::BoundingBox;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  // Outward test straight off the real surfaces: each face's own surface
+  // normal at its domain midpoint, corrected for m_bRev (the identical
+  // convention brep.cpp's own MergeCoplanarFaces orientation check uses),
+  // must point away from the body's known center.
+  const auto every_face_normal_points_away_from = [](const Brep& b, const Point3d& center) {
+    for (int i = 0; i < b.raw().m_F.Count(); ++i) {
+      const ON_BrepFace& face = b.raw().m_F[i];
+      const ON_Surface* s = face.SurfaceOf();
+      if (!s) return false;
+      const double u = s->Domain(0).Mid(), v = s->Domain(1).Mid();
+      ON_3dPoint p;
+      ON_3dVector n;
+      if (!s->EvNormal(u, v, p, n)) return false;
+      if (face.m_bRev) n = -n;
+      if (ON_DotProduct(n, p - ON_3dPoint(center.x, center.y, center.z)) <= 0.0) return false;
+    }
+    return true;
+  };
+  const auto rev_count = [](const Brep& b) {
+    int n = 0;
+    for (int i = 0; i < b.raw().m_F.Count(); ++i) n += b.raw().m_F[i].m_bRev ? 1 : 0;
+    return n;
+  };
+  const auto bbox_is = [](const BoundingBox& bb, double x0, double y0, double z0, double x1, double y1, double z1) {
+    const double tol = 1e-9;
+    return std::fabs(bb.min.x - x0) < tol && std::fabs(bb.min.y - y0) < tol && std::fabs(bb.min.z - z0) < tol &&
+           std::fabs(bb.max.x - x1) < tol && std::fabs(bb.max.y - y1) < tol && std::fabs(bb.max.z - z1) < tol;
+  };
+
+  const ON_Xform mirror_x = ON_Xform::MirrorTransformation(ON_PlaneEquation(1, 0, 0, 0));
+  Check(mirror_x.IsRigid() == -1 && mirror_x.Determinant() < 0.0,
+        "sanity: a mirror through x=0 is an orientation-REVERSING isometry (IsRigid() == -1, det < 0)");
+
+  // 1. A loopless Box() through x=0: lands at x in [-10, 0], stays a
+  //    closed +1000 solid with every face normal still pointing outward.
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Check(std::fabs(box.Volume() - 1000.0) < 1e-9 && rev_count(box) == 0,
+        "sanity: the un-mirrored Box() is a +1000 solid with no face reversed");
+  const Brep mirrored = box.Transform(mirror_x);
+  Check(mirrored.raw().m_F.Count() == 6, "a mirrored Box() keeps its 6 faces");
+  Check(rev_count(mirrored) == 6,
+        "a mirrored Box() has every one of its 6 faces' m_bRev toggled - the orientation fix-up applied to each face");
+  Check(std::fabs(mirrored.Volume() - 1000.0) < 1e-9,
+        "a mirrored Box()'s exact Volume() is +1000, not -1000: the body is still outward-oriented");
+  const Mesh mirrored_mesh = mirrored.TessellateToClosedMesh(8, 8);
+  Check(mirrored_mesh.IsClosedManifold(), "a mirrored Box() still tessellates to a closed manifold");
+  Check(std::fabs(mirrored_mesh.Volume() - 1000.0) < 1e-9,
+        "a mirrored Box()'s tessellated mesh volume is +1000: the per-face m_bRev normal flip in Tessellate() "
+        "agrees with the exact integral");
+  Check(bbox_is(mirrored_mesh.GetBoundingBox(), -10, 0, 0, 0, 10, 10),
+        "a mirrored Box() really is the mirror image: its tessellation spans exactly [-10,0]x[0,10]x[0,10]");
+  Check(every_face_normal_points_away_from(mirrored, Point3d(-5, 5, 5)),
+        "every face normal of the mirrored Box() (surface normal corrected for m_bRev) points away from its "
+        "center (-5,5,5)");
+  Check(std::fabs(mirrored.Area() - 600.0) < 1e-9,
+        "Area() of a mirrored Box() is still exactly 600 - the per-face side-table reset stays indexable");
+  // The planar RECORDS re-derived from a mirrored face must describe the
+  // real oriented face too: ExtractPlanarFace used to take the Newell
+  // normal of the trim-ordered loop (the surface's natural Su x Sv) and
+  // ignore m_bRev entirely, so a mirrored face's plane.zaxis pointed IN.
+  // boolean.cpp's own FlipFace() invariant for a PlanarFace is "loop CCW
+  // as seen from outside, plane.zaxis = outward" - both halves asserted.
+  {
+    const auto newell = [](const std::vector<Point3d>& loop) {
+      ON_3dVector n(0, 0, 0);
+      for (size_t k = 0; k < loop.size(); ++k) {
+        const Point3d& a = loop[k];
+        const Point3d& b = loop[(k + 1) % loop.size()];
+        n.x += (a.y - b.y) * (a.z + b.z);
+        n.y += (a.z - b.z) * (a.x + b.x);
+        n.z += (a.x - b.x) * (a.y + b.y);
+      }
+      return n;
+    };
+    const std::vector<Brep::PlanarFace> planes = mirrored.PlanarFaces();
+    bool all_outward = planes.size() == 6, all_ccw = planes.size() == 6;
+    for (const Brep::PlanarFace& pf : planes) {
+      const ON_3dVector to_face = pf.plane.origin - ON_3dPoint(-5, 5, 5);
+      all_outward = all_outward && ON_DotProduct(pf.plane.zaxis, to_face) > 0.0;
+      all_ccw = all_ccw && ON_DotProduct(newell(pf.loop), pf.plane.zaxis) > 0.0;
+    }
+    Check(all_outward,
+          "PlanarFaces() of a mirrored Box() gives 6 records whose plane.zaxis each points away from the center "
+          "(-5,5,5) - the record reads the real m_bRev-corrected normal, not the natural Su x Sv");
+    Check(all_ccw,
+          "each of those 6 planar records' loops is counter-clockwise about its own plane.zaxis (the loop was "
+          "reversed along with the normal, keeping FlipFace()'s 'CCW seen from outside' invariant)");
+  }
+
+  // 2. Mirroring twice through the same plane is the identity: the flags
+  //    come back, the geometry comes back, the volume never changed sign.
+  const Brep twice = mirrored.Transform(mirror_x);
+  Check(rev_count(twice) == 0, "mirroring twice through the same plane toggles every m_bRev back to false");
+  Check(std::fabs(twice.Volume() - 1000.0) < 1e-9, "mirroring twice keeps the exact +1000 volume");
+  Check(bbox_is(twice.TessellateToClosedMesh(8, 8).GetBoundingBox(), 0, 0, 0, 10, 10, 10),
+        "mirroring twice through x=0 puts the Box() back on exactly [0,10]^3");
+
+  // 3. Real topology (BoxWelded) survives the fix-up as a valid solid.
+  const Brep welded = Brep::BoxWelded(0, 0, 0, 10, 10, 10).Transform(mirror_x);
+  Check(welded.raw().IsValid() && welded.raw().IsSolid(),
+        "a mirrored BoxWelded() is still raw().IsValid() and raw().IsSolid() - toggling m_bRev leaves the "
+        "trim/edge topology consistent");
+  Check(std::fabs(welded.Volume() - 1000.0) < 1e-9, "a mirrored BoxWelded()'s exact Volume() is +1000");
+  Check(every_face_normal_points_away_from(welded, Point3d(-5, 5, 5)),
+        "every face normal of the mirrored BoxWelded() points away from its center (-5,5,5)");
+
+  // 4. A single rational face (Sphere) - the fix-up is per face, not
+  //    per-box. Volume()'s fixed 5-point Gauss rule is not exact on the
+  //    rational sphere (measured 33.510383 against 4/3*pi*8 = 33.5103216,
+  //    identical before and after the mirror), so the sign-preserving
+  //    identity is asserted exactly and the closed form to that 1e-4.
+  const Brep sphere0 = Brep::Sphere(Point3d(5, 0, 0), 2.0);
+  const Brep sphere = sphere0.Transform(mirror_x);
+  Check(rev_count(sphere) == 1 && std::fabs(sphere.Volume() - sphere0.Volume()) < 1e-9 &&
+            std::fabs(sphere.Volume() - (4.0 / 3.0) * ON_PI * 8.0) < 1e-4,
+        "a mirrored Sphere(r=2) keeps its one face reversed and its Volume() POSITIVE and identical to the "
+        "un-mirrored sphere's (within 1e-4 of +4/3*pi*8)");
+
+  // 5. A general orientation-reversing AFFINE (not an isometry): x -> -x,
+  //    z -> 2z. Volume 10*10*20 = 2000, area 2*(100 + 200 + 200) = 1000.
+  const ON_Xform diag = ON_Xform::DiagonalTransformation(-1.0, 1.0, 2.0);
+  Check(diag.IsRigid() == 0 && diag.Determinant() < 0.0,
+        "sanity: diag(-1,1,2) is a non-isometric, orientation-reversing affine (IsRigid() == 0, det == -2)");
+  const Brep stretched = box.Transform(diag);
+  Check(rev_count(stretched) == 6 && std::fabs(stretched.Volume() - 2000.0) < 1e-9,
+        "diag(-1,1,2) on a Box() is corrected too (keyed on det < 0, not on IsRigid() == -1): Volume() is "
+        "exactly +2000 with all 6 faces reversed");
+  Check(std::fabs(stretched.Area() - 1000.0) < 1e-9, "diag(-1,1,2) on a Box() gives exactly area 1000");
+  Check(bbox_is(stretched.TessellateToClosedMesh(8, 8).GetBoundingBox(), -10, 0, 0, 0, 10, 20),
+        "diag(-1,1,2) on a Box() spans exactly [-10,0]x[0,10]x[0,20]");
+
+  // 6. Controls: orientation-PRESERVING transforms must not be touched.
+  ON_Xform rot = ON_Xform::IdentityTransformation;
+  rot.Rotation(ON_PI / 2.0, ON_3dVector(0, 0, 1), ON_3dPoint(0, 0, 0));
+  const ON_Xform rigid = ON_Xform::TranslationTransformation(ON_3dVector(3, -4, 5)) * rot;
+  Check(rigid.IsRigid() == 1, "sanity: a 90-degree rotation about z plus a translation is a proper rigid motion");
+  const Brep moved = box.Transform(rigid);
+  Check(rev_count(moved) == 0 && std::fabs(moved.Volume() - 1000.0) < 1e-9,
+        "a proper rotation+translation leaves every m_bRev false and the exact +1000 volume (no fix-up fires)");
+  Check(bbox_is(moved.TessellateToClosedMesh(8, 8).GetBoundingBox(), -7, -4, 5, 3, 6, 15),
+        "the rotated+translated Box() spans exactly [-7,3]x[-4,6]x[5,15] (x->-y, y->x, then +(3,-4,5))");
+  const Brep scaled = box.Transform(ON_Xform::DiagonalTransformation(2.0, 1.0, 1.0));
+  Check(rev_count(scaled) == 0 && std::fabs(scaled.Volume() - 2000.0) < 1e-9,
+        "a positive-determinant non-uniform scale diag(2,1,1) leaves every m_bRev false with exact volume +2000");
+
+  // 7. A mirrored analytic face keeps its own orientation sense. The
+  //    verbatim record is dropped under any non-rigid transform, so this
+  //    goes through ExtractCylindricalFace's generic re-derivation - which
+  //    used to set `outward = !m_bRev`, silently assuming the surface's
+  //    natural Su x Sv points away from the axis. A mirrored surface's
+  //    does not (handedness reversed), so that record was wrong BOTH
+  //    ways: before the fix-up it claimed outward for a face whose real
+  //    normal pointed in (m_bRev false, natural normal inward); with the
+  //    fix-up alone it claimed inward for a face whose real normal pointed
+  //    out (m_bRev true) - caught by this test's own first run. `outward`
+  //    is now read off the real m_bRev-corrected normal against the
+  //    radial direction, so it must come back true, with the axis
+  //    genuinely mirrored (x=0 -> x=10 through the plane x=5).
+  {
+    const double r = 2.0, L = 3.0;
+    const Brep::CylindricalFace cf = BuildOutOfBandNotchedCylinder(r, L, 0.5, false, false);
+    const Brep built = Brep::FromMixedFaces({}, {cf});
+    const Brep::MixedFacesResult before = built.MixedFaces();
+    Check(before.cylindrical.size() == 1 && before.cylindrical[0].outward,
+          "sanity: the un-mirrored cylindrical face is found and outward");
+    const Brep mirrored_cyl = built.Transform(ON_Xform::MirrorTransformation(ON_PlaneEquation(1, 0, 0, -5)));
+    const Brep::MixedFacesResult after = mirrored_cyl.MixedFaces();
+    Check(after.cylindrical.size() == 1, "MixedFaces() still finds exactly one cylindrical face after a mirror");
+    const Brep::CylindricalFace& got = after.cylindrical[0];
+    Check(got.outward,
+          "the mirrored cylindrical face's re-derived `outward` is true - read off the real m_bRev-corrected "
+          "normal, not assumed from m_bRev alone");
+    Check(std::fabs(got.radius - r) < 1e-6 && std::fabs(got.frame.origin.x - 10.0) < 1e-6 &&
+              std::fabs(got.frame.origin.y) < 1e-6 && std::fabs(std::fabs(got.frame.zaxis.z) - 1.0) < 1e-9,
+          "the mirrored cylinder's re-derived axis is at x=10, y=0 (the mirror image of the origin through x=5), "
+          "still parallel to z, radius unchanged");
+  }
+
+  // 8. Negative cases.
+  {
+    // An open sheet mirrored is still an open sheet: the fix-up never
+    // manufactures a solid out of a non-solid.
+    const Brep sheet = Brep::FromMixedFaces({}, {BuildOutOfBandNotchedCylinder(1.0, 2.0, 0.5, false, false)})
+                           .Transform(mirror_x);
+    bool threw = false;
+    try {
+      (void)sheet.Volume();
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "Volume() of a mirrored OPEN sheet still throws std::invalid_argument (not a closed solid)");
+
+    ON_Xform bad = ON_Xform::IdentityTransformation;
+    bad.m_xform[1][2] = ON_DBL_QNAN;
+    threw = false;
+    try {
+      (void)box.Transform(bad);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "Brep::Transform() throws std::invalid_argument for a NaN-carrying xform instead of silently "
+                 "producing NaN geometry");
+  }
+}
+
 // The same defect reached through the REAL producer: the oblique-drilled
 // box's own surviving cylindrical hole-wall fragment (both ends notched by
 // SplitCylindricalByObliquePlane) has the closed-form lateral area
@@ -84352,6 +84584,7 @@ int main() {
   RunTest("TestBrepTransformPreservesNotchedCylindricalFaceRecordUnderRigidMove", TestBrepTransformPreservesNotchedCylindricalFaceRecordUnderRigidMove);
   RunTest("TestBrepTransformDropsVerbatimRecordsUnderNonRigidScale", TestBrepTransformDropsVerbatimRecordsUnderNonRigidScale);
   RunTest("TestBrepTransformOnBoxUnderNonRigidScaleKeepsSideTablesSafelyIndexable", TestBrepTransformOnBoxUnderNonRigidScaleKeepsSideTablesSafelyIndexable);
+  RunTest("TestBrepTransformReflectionKeepsBodyOutwardOriented", TestBrepTransformReflectionKeepsBodyOutwardOriented);
   RunTest("TestBooleanCombineMixedObliqueSurvivingWallAreaAndVolumeMatchClosedForm", TestBooleanCombineMixedObliqueSurvivingWallAreaAndVolumeMatchClosedForm);
   RunTest("TestTessellateConformingNotchedUncappedCylinderHonorsTrim", TestTessellateConformingNotchedUncappedCylinderHonorsTrim);
   RunTest("TestTessellateConformingObliqueDrilledBoxIsClosedManifold", TestTessellateConformingObliqueDrilledBoxIsClosedManifold);
