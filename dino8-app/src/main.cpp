@@ -141,11 +141,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <typeinfo>
 #include <utility>
 #include <vector>
 
@@ -157,6 +159,7 @@
 #include <GLFW/glfw3.h>
 
 #include "imgui.h"
+#include "imgui_internal.h"  // ErrorRecoveryStoreState/TryToRecoverState (exception recovery around app.Frame())
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
@@ -1691,44 +1694,78 @@ int main(int argc, char** argv) {
         else if (cmd == "expect_selected") { size_t n; ss >> n; const size_t got = app.Doc().SelectedCount(); std::printf("%s expect_selected %zu (got %zu)\n", got == n ? "ok  " : "FAIL", n, got); if (got != n) exit_code = 2; }
         else if (cmd == "expect_objects") { size_t n; ss >> n; const size_t got = app.Doc().ObjectCount(); std::printf("%s expect_objects %zu (got %zu)\n", got == n ? "ok  " : "FAIL", n, got); if (got != n) exit_code = 2; }
       } else {
-        app.Engine().Execute(line);
+        // CommandEngine guards each command callback (DINO8_GUARD), but not
+        // the engine's own bookkeeping around them; nothing a typed line
+        // does may take the whole app down.
+        try {
+          app.Engine().Execute(line);
+        } catch (const std::exception& ex) {
+          std::fprintf(stderr, "dino8: ! Command '%s' failed outside its guard: %s\n", line.c_str(), ex.what());
+          std::fflush(stderr);
+          app.Notify(std::string("Command failed: ") + ex.what());
+        }
       }
     }
     if (wait_frames > 0) --wait_frames;
-    app.Frame();
-    dino8::platform::UpdateAccessibility(app.Engine().Prompt(), app.CommandInput(), app.Engine().History(),
-                                          dino8::app::LastMenuBarAccessibleTree(),
-                                          dino8::app::CommandOptionsAccessibleTree(app),
-                                          dino8::app::LayersPanelAccessibleTree(app),
-                                          dino8::app::PropertiesPanelAccessibleTree(app),
-                                          dino8::app::ViewportsAccessibleTree(app),
-                                          dino8::app::ActivityLogAccessibleTree(app),
-                                          dino8::app::NamedViewsAccessibleTree(app),
-                                          dino8::app::NamedCPlanesAccessibleTree(app),
-                                          dino8::app::LinetypesAccessibleTree(app),
-                                          dino8::app::MaterialsAccessibleTree(app),
-                                          dino8::app::ClippingPlanesAccessibleTree(app),
-                                          dino8::app::LayoutsAccessibleTree(app),
-                                          dino8::app::BlockManagerAccessibleTree(app),
-                                          dino8::app::LayerStateManagerAccessibleTree(app),
-                                          dino8::app::DocumentUserTextAccessibleTree(app),
-                                          dino8::app::LightsAccessibleTree(app),
-                                          dino8::app::AnnotationStylesAccessibleTree(app),
-                                          dino8::app::DocumentNotesAccessibleTree(app),
-                                          dino8::app::EnvironmentsAccessibleTree(app),
-                                          dino8::app::AuditResultsAccessibleTree(app),
-                                          dino8::app::UndoHistoryAccessibleTree(app),
-                                          dino8::app::RedoHistoryAccessibleTree(app),
-                                          dino8::app::HatchPatternsAccessibleTree(),
-                                          dino8::plugins::PluginsAccessibleTree(),
-                                          dino8::app::CommandListAccessibleTree(app),
-                                          dino8::app::CommandAliasesAccessibleTree(app),
-                                          dino8::app::KeyboardShortcutsAccessibleTree(app),
-                                          dino8::app::BuiltinShortcutsAccessibleTree(app),
-                                          dino8::app::DocumentPropertiesAccessibleTree(app),
-                                          dino8::app::TexturesAccessibleTree(app),
-                                          dino8::app::DisplayAccessibleTree(app),
-                                          dino8::app::CommandHistoryAccessibleTree(app));
+    // A C++ exception escaping from anywhere in the per-frame UI/viewport/
+    // tessellation path must not terminate the process (on MSVC that is the
+    // bare "UNHANDLED EXCEPTION: code=0xE06D7363" the unhandled-exception
+    // filter above reports). Drop the rest of this frame's UI, put ImGui's
+    // window/ID/style stacks back to where NewFrame() left them so the
+    // frame can still be rendered, and report the message (once per
+    // distinct message, so a persistent failure doesn't flood the log).
+    {
+      ImGuiErrorRecoveryState imgui_state;
+      ImGui::ErrorRecoveryStoreState(&imgui_state);
+      try {
+        app.Frame();
+        dino8::platform::UpdateAccessibility(app.Engine().Prompt(), app.CommandInput(), app.Engine().History(),
+                                              dino8::app::LastMenuBarAccessibleTree(),
+                                              dino8::app::CommandOptionsAccessibleTree(app),
+                                              dino8::app::LayersPanelAccessibleTree(app),
+                                              dino8::app::PropertiesPanelAccessibleTree(app),
+                                              dino8::app::ViewportsAccessibleTree(app),
+                                              dino8::app::ActivityLogAccessibleTree(app),
+                                              dino8::app::NamedViewsAccessibleTree(app),
+                                              dino8::app::NamedCPlanesAccessibleTree(app),
+                                              dino8::app::LinetypesAccessibleTree(app),
+                                              dino8::app::MaterialsAccessibleTree(app),
+                                              dino8::app::ClippingPlanesAccessibleTree(app),
+                                              dino8::app::LayoutsAccessibleTree(app),
+                                              dino8::app::BlockManagerAccessibleTree(app),
+                                              dino8::app::LayerStateManagerAccessibleTree(app),
+                                              dino8::app::DocumentUserTextAccessibleTree(app),
+                                              dino8::app::LightsAccessibleTree(app),
+                                              dino8::app::AnnotationStylesAccessibleTree(app),
+                                              dino8::app::DocumentNotesAccessibleTree(app),
+                                              dino8::app::EnvironmentsAccessibleTree(app),
+                                              dino8::app::AuditResultsAccessibleTree(app),
+                                              dino8::app::UndoHistoryAccessibleTree(app),
+                                              dino8::app::RedoHistoryAccessibleTree(app),
+                                              dino8::app::HatchPatternsAccessibleTree(),
+                                              dino8::plugins::PluginsAccessibleTree(),
+                                              dino8::app::CommandListAccessibleTree(app),
+                                              dino8::app::CommandAliasesAccessibleTree(app),
+                                              dino8::app::KeyboardShortcutsAccessibleTree(app),
+                                              dino8::app::BuiltinShortcutsAccessibleTree(app),
+                                              dino8::app::DocumentPropertiesAccessibleTree(app),
+                                              dino8::app::TexturesAccessibleTree(app),
+                                              dino8::app::DisplayAccessibleTree(app),
+                                              dino8::app::CommandHistoryAccessibleTree(app));
+      } catch (const std::exception& ex) {
+        static std::string last_frame_error;
+        if (last_frame_error != ex.what()) {
+          last_frame_error = ex.what();
+          std::fprintf(stderr, "dino8: ! Frame failed (%s): %s\n", typeid(ex).name(), ex.what());
+          std::fflush(stderr);  // MSVC treats setvbuf(_IOLBF) as fully buffered; don't leave the diagnosis in the buffer
+          app.Notify(std::string("Display error: ") + ex.what());
+        }
+        const bool assert_was_enabled = io.ConfigErrorRecoveryEnableAssert;
+        io.ConfigErrorRecoveryEnableAssert = false;
+        ImGui::ErrorRecoveryTryToRecoverState(&imgui_state);
+        io.ConfigErrorRecoveryEnableAssert = assert_was_enabled;
+      }
+    }
     // Catch up history_printed to whatever on_print_line already flushed
     // live as each line was recorded (see its own comment on why that has
     // to happen from inside CommandEngine::Print(), not here) - printing
