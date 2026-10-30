@@ -87897,6 +87897,607 @@ void TestBrepNakedEdgeIndexReproducesExistingFixtures() {
   Check(kd::BrepNakedEdgeIndexQueryCount() - q0 > 0, "the existing fixtures really ran through the naked-edge index");
 }
 
+// ---------------------------------------------------------------------------
+// NurbsSurface::Join() compatible-form coverage. Join() brings the two
+// operands to a common form along the shared edge before it splices
+// (orientation, clamping, rationality, degree in both directions, the
+// affine map of the along-edge domain, the union of the two along-edge knot
+// vectors, and - new with SurfaceJoinReport - a constant homogeneous scale of
+// the second surface's weights) and then measures the merged surface against
+// BOTH operands. The tests below pin each of those configurations on its
+// own, every time asserting the merged surface reproduces both inputs to
+// round-off (< 1e-9 of the surface size, in place - no sample-and-refit),
+// and then the negative controls: pairs whose boundaries do not coincide
+// return Result::Failed with a reason (or throw, for no shared edge at all)
+// and leave this surface bit-for-bit untouched.
+// ---------------------------------------------------------------------------
+
+// Diagonal of the box around a 9x9 sample grid of `s` - the "size" the
+// round-off bounds below are relative to.
+static double JoinCompatSize(const dino8::kernel::NurbsSurface& s) {
+  double lo[3] = {1e300, 1e300, 1e300};
+  double hi[3] = {-1e300, -1e300, -1e300};
+  for (int i = 0; i <= 8; ++i) {
+    for (int j = 0; j <= 8; ++j) {
+      const auto p = s.PointAt(s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * i / 8.0,
+                               s.Domain(1).min + (s.Domain(1).max - s.Domain(1).min) * j / 8.0);
+      const double c[3] = {p.x, p.y, p.z};
+      for (int k = 0; k < 3; ++k) {
+        lo[k] = std::min(lo[k], c[k]);
+        hi[k] = std::max(hi[k], c[k]);
+      }
+    }
+  }
+  return std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
+}
+
+// Largest distance between `part`(u, v) and `merged`(u + u_offset, v) over a
+// 17x17 grid of `part`'s own domain, relative to the part's size.
+static double JoinCompatGap(const dino8::kernel::NurbsSurface& merged, const dino8::kernel::NurbsSurface& part,
+                            double u_offset) {
+  double worst = 0.0;
+  for (int i = 0; i <= 16; ++i) {
+    for (int j = 0; j <= 16; ++j) {
+      const double u = part.Domain(0).min + (part.Domain(0).max - part.Domain(0).min) * i / 16.0;
+      const double v = part.Domain(1).min + (part.Domain(1).max - part.Domain(1).min) * j / 16.0;
+      worst = std::max(worst, merged.PointAt(u + u_offset, v).DistanceTo(part.PointAt(u, v)));
+    }
+  }
+  return worst / JoinCompatSize(part);
+}
+
+// Largest distance between `merged`(u, v) and `original`(map(u, v)) over a
+// 17x17 grid of `merged`'s domain, relative to the original's size.
+static double JoinCompatGapToOriginal(const dino8::kernel::NurbsSurface& merged,
+                                      const dino8::kernel::NurbsSurface& original,
+                                      const std::function<std::pair<double, double>(double, double)>& map) {
+  double worst = 0.0;
+  for (int i = 0; i <= 16; ++i) {
+    for (int j = 0; j <= 16; ++j) {
+      const double u = merged.Domain(0).min + (merged.Domain(0).max - merged.Domain(0).min) * i / 16.0;
+      const double v = merged.Domain(1).min + (merged.Domain(1).max - merged.Domain(1).min) * j / 16.0;
+      const auto uv = map(u, v);
+      worst = std::max(worst, merged.PointAt(u, v).DistanceTo(original.PointAt(uv.first, uv.second)));
+    }
+  }
+  return worst / JoinCompatSize(original);
+}
+
+// True when `a` and `b` have identical degrees, control counts, knots and
+// (homogeneous) control points, bit for bit.
+static bool JoinCompatSameNet(const dino8::kernel::NurbsSurface& a, const dino8::kernel::NurbsSurface& b) {
+  if (a.CVCountU() != b.CVCountU() || a.CVCountV() != b.CVCountV() || a.DegreeU() != b.DegreeU() ||
+      a.DegreeV() != b.DegreeV() || a.IsRational() != b.IsRational() || a.KnotCount(0) != b.KnotCount(0) ||
+      a.KnotCount(1) != b.KnotCount(1)) {
+    return false;
+  }
+  for (int d = 0; d < 2; ++d) {
+    for (int i = 0; i < a.KnotCount(d); ++i) {
+      if (a.KnotAt(d, i) != b.KnotAt(d, i)) return false;
+    }
+  }
+  for (int i = 0; i < a.CVCountU(); ++i) {
+    for (int j = 0; j < a.CVCountV(); ++j) {
+      ON_4dPoint pa, pb;
+      a.raw().GetCV(i, j, pa);
+      b.raw().GetCV(i, j, pb);
+      if (pa.x != pb.x || pa.y != pb.y || pa.z != pb.z || pa.w != pb.w) return false;
+    }
+  }
+  return true;
+}
+
+static bool JoinCompatMentions(const dino8::kernel::SurfaceJoinReport& report, const char* text) {
+  for (const std::string& step : report.steps) {
+    if (step.find(text) != std::string::npos) return true;
+  }
+  return false;
+}
+
+// A genuinely non-planar bicubic with REAL interior knots along V (4 x 6
+// control net, V domain [0, 3]: the knots at 1 and 2 are not removable), so "different knot
+// spacing along the edge" below is a statement about real structure.
+static dino8::kernel::NurbsSurface JoinCompatBaseSurface() {
+  std::vector<dino8::kernel::Point3d> grid;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 6; ++j) {
+      grid.emplace_back(i, 0.8 * j + 0.1 * i, std::sin(i * 1.3 + 0.2 * j) * std::cos(j * 0.7) + 0.2 * i * j);
+    }
+  }
+  return dino8::kernel::NurbsSurface::FromControlGrid(grid, 4, 6, 3, 3);
+}
+
+void TestNurbsSurfaceJoinCompatibleFormDifferentKnotSpacingAlongTheEdge() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  using dino8::kernel::SurfaceJoinReport;
+
+  const NurbsSurface original = JoinCompatBaseSurface();
+  const double size = JoinCompatSize(original);
+  Check(original.CVCountV() == 6 && original.KnotCount(1) == 8 && original.Domain(1).max == 3.0,
+        "Join fixture: the non-planar bicubic has a 4x6 net, V domain [0, 3] and two real interior V knots (1, 2)");
+  NurbsSurface west, east;
+  Check(original.Split(0, 0.4, west, east) == Result::Ok, "Join fixture: Split(0, 0.4) cuts it in two");
+  const auto identity = [](double u, double v) { return std::make_pair(u, v); };
+
+  // 1. Each half gets a different extra knot along the shared edge: the
+  //    two V knot vectors now differ ({0.5, 1, 2} vs {0.2, 1, 2}).
+  NurbsSurface west_k = west, east_k = east;
+  Check(west_k.InsertKnotAt(1, 0.5, 1) == Result::Ok && east_k.InsertKnotAt(1, 0.2, 1) == Result::Ok,
+        "Join fixture: west gets an extra V knot at 0.5, east one at 0.2");
+  NurbsSurface joined = west_k;
+  SurfaceJoinReport report;
+  Check(joined.Join(east_k, report) == Result::Ok && report.failure_reason.empty(),
+        "halves with different knot spacing along the shared edge join exactly (Result::Ok, no failure reason)");
+  Check(joined.CVCountU() == 7 && joined.CVCountV() == 8 && joined.DegreeU() == 3 && joined.DegreeV() == 3,
+        "the merged net is 7 x 8: 4 + 4 - 1 rows across, 4 + 4 columns on the union of the two knot sets {0.2, 0.5, 1, 2}");
+  Check(JoinCompatGap(joined, west_k, 0.0) < 1e-9 && JoinCompatGap(joined, east_k, 0.0) < 1e-9,
+        "the merged surface reproduces BOTH inputs in place to round-off (< 1e-9 of their size)");
+  Check(JoinCompatGapToOriginal(joined, original, identity) < 1e-9 && report.max_deviation < 1e-9 * size,
+        "...and the original it was cut from (< 1e-9), the report's own measured deviation agreeing");
+  Check(JoinCompatMentions(report, "inserted 1 knot(s) along the shared edge into the first surface") &&
+            JoinCompatMentions(report, "inserted 1 knot(s) along the shared edge into the second surface"),
+        "the report names the knot insertions into each operand");
+
+  // 2. Several extra knots each, one of them a double knot, none shared
+  //    except 0.5 (and the real knots at 1 and 2).
+  west_k = west;
+  east_k = east;
+  Check(west_k.InsertKnotAt(1, 0.13, 1) == Result::Ok && west_k.InsertKnotAt(1, 0.5, 1) == Result::Ok &&
+            west_k.InsertKnotAt(1, 0.91, 1) == Result::Ok && east_k.InsertKnotAt(1, 0.22, 1) == Result::Ok &&
+            east_k.InsertKnotAt(1, 0.5, 2) == Result::Ok && east_k.InsertKnotAt(1, 0.7, 1) == Result::Ok &&
+            east_k.InsertKnotAt(1, 0.8, 1) == Result::Ok,
+        "Join fixture: west gets 3 extra V knots, east 4 (0.5 doubled): different CV counts along the edge");
+  Check(west_k.CVCountV() != east_k.CVCountV(), "Join fixture: the two edges now carry different control point counts");
+  joined = west_k;
+  Check(joined.Join(east_k, report) == Result::Ok, "...and they still join exactly");
+  Check(JoinCompatGap(joined, west_k, 0.0) < 1e-9 && JoinCompatGap(joined, east_k, 0.0) < 1e-9 &&
+            JoinCompatGapToOriginal(joined, original, identity) < 1e-9,
+        "...reproducing both inputs and the original to round-off (< 1e-9)");
+
+  // 3. The along-edge domains differ too (west on [-2, 3], east on [10, 14])
+  //    and east is walked backwards; the affine map to a common domain makes
+  //    them the same edge. The result keeps west's parameterization.
+  west_k = west;
+  east_k = east;
+  Check(west_k.SetDomain(1, -2.0, 3.0) == Result::Ok && east_k.SetDomain(1, 10.0, 14.0) == Result::Ok &&
+            east_k.InsertKnotAt(1, 13.0, 1) == Result::Ok && east_k.Reverse(1) == Result::Ok,
+        "Join fixture: west's V domain is [-2, 3], east's [10, 14], east reversed along the edge with a knot at 13");
+  joined = west_k;
+  Check(joined.Join(east_k, report) == Result::Ok && std::abs(joined.Domain(1).min + 2.0) < 1e-12 &&
+            std::abs(joined.Domain(1).max - 3.0) < 1e-12,
+        "differently-sized, reversed along-edge domains join, and the result keeps west's V domain [-2, 3]");
+  Check(JoinCompatMentions(report, "mapped the second surface's along-edge domain affinely") &&
+            JoinCompatMentions(report, "reversed the second surface along the shared edge"),
+        "the report names the affine domain map and the reversal");
+  Check(JoinCompatGapToOriginal(joined, original, [](double u, double v) { return std::make_pair(u, 3.0 * (v + 2.0) / 5.0); }) <
+            1e-9,
+        "...and reproduces the original at the affinely-mapped parameters v -> 3 (v + 2) / 5 (< 1e-9)");
+}
+
+void TestNurbsSurfaceJoinCompatibleFormDegreeMismatch() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::SurfaceJoinReport;
+
+  // Two INDEPENDENT patches sharing one edge curve written at two degrees:
+  // `quad` is a biquadratic 3x3 patch, `cubic` a bicubic 4x4 patch whose
+  // u-max row is `quad`'s u-min row degree-elevated by hand
+  // (Q = P0, (P0 + 2 P1)/3, (2 P1 + P2)/3, P2) - the same curve, a
+  // different control polygon. Neither is derived from the other by Split().
+  std::vector<Point3d> quad_grid;
+  const Point3d edge[3] = {Point3d(4, 0, 0), Point3d(4.5, 3, 2), Point3d(4, 6, -1)};
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      quad_grid.emplace_back(edge[j].x + 0.9 * i + 0.1 * i * j, edge[j].y + 0.2 * i, edge[j].z + 0.5 * i * i - 0.3 * i * j);
+    }
+  }
+  const NurbsSurface quad = NurbsSurface::FromControlGrid(quad_grid, 3, 3, 2, 2);
+  const auto elevate_point = [&](int k) {
+    if (k == 0) return edge[0];
+    if (k == 3) return edge[2];
+    if (k == 1) return Point3d((edge[0].x + 2 * edge[1].x) / 3, (edge[0].y + 2 * edge[1].y) / 3, (edge[0].z + 2 * edge[1].z) / 3);
+    return Point3d((2 * edge[1].x + edge[2].x) / 3, (2 * edge[1].y + edge[2].y) / 3, (2 * edge[1].z + edge[2].z) / 3);
+  };
+  std::vector<Point3d> cubic_grid;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      const Point3d e = elevate_point(j);
+      // i = 3 is the shared row; the rest curve away to u = 0 side (x smaller).
+      const double back = 3 - i;
+      cubic_grid.emplace_back(e.x - 1.1 * back, e.y - 0.15 * back * back, e.z + 0.4 * back * std::sin(j + 1.0));
+    }
+  }
+  const NurbsSurface cubic = NurbsSurface::FromControlGrid(cubic_grid, 4, 4, 3, 3);
+  Check(cubic.PointAt(1.0, 0.37).DistanceTo(quad.PointAt(0.0, 0.37)) < 1e-12 &&
+            cubic.PointAt(1.0, 0.9).DistanceTo(quad.PointAt(0.0, 0.9)) < 1e-12,
+        "Join fixture: the cubic patch's u-max edge and the quadratic patch's u-min edge are the same curve (< 1e-12)");
+  Check(cubic.DegreeU() == 3 && quad.DegreeU() == 2 && cubic.DegreeV() == 3 && quad.DegreeV() == 2,
+        "Join fixture: degrees (3, 3) vs (2, 2) - mismatched both across and along the edge");
+
+  // 1. cubic.Join(quad): the quadratic patch is raised in both directions.
+  NurbsSurface joined = cubic;
+  SurfaceJoinReport report;
+  Check(joined.Join(quad, report) == Result::Ok && report.failure_reason.empty(),
+        "a cubic patch and a quadratic patch sharing an edge join exactly");
+  Check(joined.DegreeU() == 3 && joined.DegreeV() == 3 && joined.CVCountU() == 7 && joined.CVCountV() == 4,
+        "the merged surface is bicubic with a 7 x 4 net (4 + 4 - 1 rows: the quadratic patch was raised, not the cubic reduced)");
+  Check(JoinCompatMentions(report, "raised the second surface's degree along the shared edge 2 -> 3") &&
+            JoinCompatMentions(report, "raised the second surface's degree across the shared edge 2 -> 3"),
+        "the report names the degree elevation of the quadratic patch in both directions");
+  Check(JoinCompatGap(joined, cubic, 0.0) < 1e-9 && JoinCompatGap(joined, quad, 1.0) < 1e-9,
+        "the merged surface reproduces both patches to round-off (< 1e-9): the cubic in place, the quadratic at u + 1");
+  Check(report.max_deviation < 1e-9 * JoinCompatSize(cubic), "...with the report's own measurement agreeing");
+
+  // 2. quad.Join(cubic): the lower-degree surface is the one being extended,
+  //    its shared edge on its u-min side; the result keeps ITS parameterization
+  //    (u domain grows below 0 by the cubic's length 1).
+  joined = quad;
+  Check(joined.Join(cubic, report) == Result::Ok && joined.DegreeU() == 3 && joined.DegreeV() == 3 &&
+            joined.CVCountU() == 7 && joined.CVCountV() == 4,
+        "quad.Join(cubic) also joins, at degree (3, 3) with a 7 x 4 net: the first operand is elevated");
+  Check(JoinCompatMentions(report, "raised the first surface's degree along the shared edge 2 -> 3") &&
+            std::abs(joined.Domain(0).min + 1.0) < 1e-12 && std::abs(joined.Domain(0).max - 1.0) < 1e-12,
+        "...the report says the FIRST surface was raised, and the U domain grew below the quad's 0 to [-1, 1]");
+  Check(JoinCompatGap(joined, quad, 0.0) < 1e-9 && JoinCompatGap(joined, cubic, -1.0) < 1e-9,
+        "...reproducing both (the quadratic in place, the cubic at u - 1) to round-off (< 1e-9)");
+
+  // 3. Mismatch in OPPOSITE directions: (3, 2) against (2, 3). The along-edge
+  //    degree of the first and the across degree of the second get raised.
+  std::vector<Point3d> g32, g23;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 3; ++j) g32.emplace_back(i - 3.0, edge[j].y, edge[j].z + 0.3 * (3 - i) * std::cos(j + i));
+  }
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      const Point3d e = elevate_point(j);
+      g23.emplace_back(i * 1.0, e.y, e.z + 0.25 * i * std::sin(2.0 * j + i));
+    }
+  }
+  // g32's shared row is i = 3 (x = 0): z = edge z, y = edge y at j - but the
+  // along-edge degree there is 2 (3 columns), g23's is 3 (4 columns).
+  const NurbsSurface s32 = NurbsSurface::FromControlGrid(g32, 4, 3, 3, 2);
+  const NurbsSurface s23 = NurbsSurface::FromControlGrid(g23, 3, 4, 2, 3);
+  // Both shared rows are the planar curve y = edge.y, z = edge.z with x = 0;
+  // the g23 row holds the elevated copy of the quadratic one.
+  joined = s32;
+  Check(joined.Join(s23, report) == Result::Ok && joined.DegreeU() == 3 && joined.DegreeV() == 3 &&
+            joined.CVCountU() == 7 && joined.CVCountV() == 4,
+        "a (3, 2) patch and a (2, 3) patch sharing an edge join at (3, 3): 7 x 4");
+  Check(JoinCompatMentions(report, "raised the first surface's degree along the shared edge 2 -> 3") &&
+            JoinCompatMentions(report, "raised the second surface's degree across the shared edge 2 -> 3"),
+        "...the report names the along-edge raise of the first and the across raise of the second");
+  Check(JoinCompatGap(joined, s32, 0.0) < 1e-9 && JoinCompatGap(joined, s23, 1.0) < 1e-9,
+        "...reproducing both to round-off (< 1e-9)");
+
+  // 4. A bilinear patch against a bicubic one (degree 1 -> 3 in both
+  //    directions): the bilinear patch's edge is a straight segment, written
+  //    on the cubic side as the elevated 4-point polygon.
+  const Point3d a0(4, 0, 0), a1(4, 6, 3);
+  std::vector<Point3d> lin_grid = {Point3d(3, 0, 0.5), Point3d(3, 6, 2.5), a0, a1};
+  const NurbsSurface bilinear = NurbsSurface::FromControlGrid(lin_grid, 2, 2, 1, 1);
+  std::vector<Point3d> cub4;
+  // u = 0 is the shared edge (x = 4); later rows move to x = 5, 6, 7 with a z bump.
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      const double t = j / 3.0;
+      cub4.emplace_back(4.0 + i, a0.y + (a1.y - a0.y) * t, a0.z + (a1.z - a0.z) * t + (i == 0 ? 0.0 : 0.3 * i * std::sin(3.0 * t)));
+    }
+  }
+  const NurbsSurface bicubic = NurbsSurface::FromControlGrid(cub4, 4, 4, 3, 3);
+  joined = bilinear;
+  Check(joined.Join(bicubic, report) == Result::Ok && joined.DegreeU() == 3 && joined.DegreeV() == 3 &&
+            joined.CVCountU() == 7 && joined.CVCountV() == 4,
+        "a bilinear patch joins a bicubic one (degree 1 raised to 3 in both directions): 7 x 4");
+  Check(JoinCompatGap(joined, bilinear, 0.0) < 1e-9 && JoinCompatGap(joined, bicubic, 1.0) < 1e-9,
+        "...reproducing both to round-off (< 1e-9)");
+}
+
+void TestNurbsSurfaceJoinCompatibleFormReversedAndTurnedOperands() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  using dino8::kernel::SurfaceJoinReport;
+
+  const NurbsSurface original = JoinCompatBaseSurface();
+  NurbsSurface west, east;
+  Check(original.Split(0, 0.4, west, east) == Result::Ok, "Join fixture: the non-planar bicubic cut at u = 0.4");
+  const auto identity = [](double u, double v) { return std::make_pair(u, v); };
+  SurfaceJoinReport report;
+
+  // 1. The second surface walks the shared edge the other way.
+  NurbsSurface east_r = east;
+  Check(east_r.Reverse(1) == Result::Ok, "Join fixture: east reversed along the shared edge");
+  NurbsSurface joined = west;
+  Check(joined.Join(east_r, report) == Result::Ok && joined.CVCountU() == 7 && joined.CVCountV() == 6,
+        "a pair whose shared edge is traversed in opposite directions joins exactly: the 7 x 6 net");
+  Check(JoinCompatMentions(report, "reversed the second surface along the shared edge") &&
+            JoinCompatGapToOriginal(joined, original, identity) < 1e-9,
+        "...the report names the reversal and the original is reproduced in place (< 1e-9)");
+
+  // 2. The FIRST surface walks it the other way: the result keeps the
+  //    reversed parameterization, so merged(u, v) = original(u, -v) on the negated V domain [-3, 0].
+  NurbsSurface west_r = west;
+  Check(west_r.Reverse(1) == Result::Ok, "Join fixture: west reversed along the shared edge");
+  joined = west_r;
+  Check(joined.Join(east, report) == Result::Ok && joined.CVCountU() == 7 && joined.CVCountV() == 6,
+        "...and with the FIRST surface reversed instead");
+  Check(JoinCompatGapToOriginal(joined, original, [](double u, double v) { return std::make_pair(u, -v); }) < 1e-9,
+        "...the result keeps the first surface's reversed parameterization: merged(u, v) = original(u, -v) on the negated V domain [-3, 0] (< 1e-9)");
+
+  // 3. Both turned at once, and across the join too: the second surface
+  //    transposed and reversed (shared edge on a v side, backwards), also
+  //    degree-raised along the edge and carrying a different V knot.
+  NurbsSurface east_t = east;
+  east_t.Transpose();
+  Check(east_t.Reverse(1) == Result::Ok, "Join fixture: east transposed then reversed in V");
+  joined = west;
+  Check(joined.Join(east_t, report) == Result::Ok && JoinCompatGapToOriginal(joined, original, identity) < 1e-9,
+        "a transposed-and-reversed second surface joins and the original is reproduced (< 1e-9)");
+  Check(JoinCompatMentions(report, "swapped the second surface's U and V"),
+        "...the report names the U/V swap");
+  NurbsSurface east_mix = east;
+  Check(east_mix.ElevateDegree(1, 5) == Result::Ok && east_mix.InsertKnotAt(1, 0.45, 1) == Result::Ok &&
+            east_mix.Reverse(1) == Result::Ok && east_mix.SetDomain(1, 0.0, 9.0) == Result::Ok,
+        "Join fixture: east raised to degree 5 along the edge, an extra V knot, reversed, V domain [0, 9]");
+  joined = west;
+  Check(joined.Join(east_mix, report) == Result::Ok && joined.DegreeV() == 5 && joined.DegreeU() == 3,
+        "reversed + degree-raised + extra-knot + rescaled-domain at once: joins at degree (3, 5)");
+  Check(JoinCompatGapToOriginal(joined, original, identity) < 1e-9 && report.max_deviation < 1e-9 * JoinCompatSize(original),
+        "...and still reproduces the original in place to round-off (< 1e-9)");
+
+  // 4. The shared edge on the first surface's v side, second surface's on its
+  //    u-max side (both need turning): south/north halves.
+  NurbsSurface south, north;
+  Check(original.Split(1, 1.5, south, north) == Result::Ok, "Join fixture: the same bicubic cut at v = 1.5");
+  NurbsSurface north_r = north;
+  Check(north_r.Reverse(0) == Result::Ok, "Join fixture: north reversed along the shared edge (its U)");
+  joined = south;
+  Check(joined.Join(north_r, report) == Result::Ok && JoinCompatGapToOriginal(joined, original, identity) < 1e-9,
+        "south.Join(north reversed along the edge) reproduces the original in place (< 1e-9)");
+  NurbsSurface north_flip = north;
+  Check(north_flip.Reverse(1) == Result::Ok, "Join fixture: north reversed across the join (its V)");
+  joined = south;
+  Check(joined.Join(north_flip, report) == Result::Ok && JoinCompatMentions(report, "reversed the second surface across"),
+        "south.Join(north reversed ACROSS the join) joins, the report naming the turn");
+  Check(JoinCompatGap(joined, south, 0.0) < 1e-9 && joined.CVCountU() == 4 && joined.CVCountV() == 9,
+        "...and keeps south in place (< 1e-9) in a 4 x 9 net (5 + 5 - 1 columns along V)");
+}
+
+void TestNurbsSurfaceJoinCompatibleFormRescalesConstantWeightFactor() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::SurfaceJoinReport;
+
+  // Two quarter-sphere pieces: genuinely rational, degree 2, weights varying
+  // along the shared meridian.
+  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 3.0);
+  ON_NurbsSurface sphere_nurbs;
+  Check(sphere.GetNurbForm(sphere_nurbs) != 0, "Join fixture: ON_Sphere::GetNurbForm builds the sphere");
+  NurbsSurface whole;
+  whole.raw() = sphere_nurbs;
+  Check(whole.Trim(0, 0.0, 3.14159265358979323846) == Result::Ok, "Join fixture: the sphere trimmed to a hemisphere in U");
+  NurbsSurface first, second;
+  Check(whole.Split(0, 1.5707963267948966, first, second) == Result::Ok, "Join fixture: ...and cut into two quarter spheres");
+  Check(first.IsRational() && second.IsRational(), "Join fixture: both quarters are rational");
+  const double size = JoinCompatSize(whole);
+  const double u_split = first.Domain(0).max;
+
+  // Control: unscaled, the pair joins with no rescale step.
+  NurbsSurface joined = first;
+  SurfaceJoinReport report;
+  Check(joined.Join(second, report) == Result::Ok && !JoinCompatMentions(report, "rescaled"),
+        "the two quarter spheres join as they stand, with no weight rescale");
+
+  // Second surface's whole homogeneous net x 3: the SAME surface (a uniform
+  // scale of every homogeneous control point), but boundary weights 3x.
+  NurbsSurface second_scaled = second;
+  for (int i = 0; i < second_scaled.CVCountU(); ++i) {
+    for (int j = 0; j < second_scaled.CVCountV(); ++j) {
+      ON_4dPoint cv;
+      second_scaled.raw().GetCV(i, j, cv);
+      cv.x *= 3.0;
+      cv.y *= 3.0;
+      cv.z *= 3.0;
+      cv.w *= 3.0;
+      second_scaled.raw().SetCV(i, j, cv);
+    }
+  }
+  Check(second_scaled.PointAt(second.Domain(0).min + 0.3, 0.1).DistanceTo(second.PointAt(second.Domain(0).min + 0.3, 0.1)) < 1e-12 &&
+            std::abs(second_scaled.WeightAt(0, 1) - 3.0 * second.WeightAt(0, 1)) < 1e-12,
+        "Join fixture: scaling every homogeneous control point by 3 leaves the quarter sphere unchanged but triples its weights");
+  joined = first;
+  Check(joined.Join(second_scaled, report) == Result::Ok && report.failure_reason.empty(),
+        "a pair whose shared boundary has the same points but weights 3x apart joins exactly (it failed before)");
+  Check(JoinCompatMentions(report, "rescaled the second surface's weights by 0.333333"),
+        "...the report names the weight rescale (factor 1/3)");
+  Check(JoinCompatGap(joined, first, 0.0) < 1e-9 && JoinCompatGap(joined, second, u_split - second.Domain(0).min) < 1e-9 &&
+            JoinCompatGap(joined, second_scaled, u_split - second.Domain(0).min) < 1e-9,
+        "...reproducing both quarters (and the scaled copy) to round-off (< 1e-9)");
+  Check(report.max_deviation < 1e-9 * size, "...with the report's measured deviation < 1e-9 of the size");
+  // The scale may sit on the first surface instead.
+  NurbsSurface first_scaled = first;
+  for (int i = 0; i < first_scaled.CVCountU(); ++i) {
+    for (int j = 0; j < first_scaled.CVCountV(); ++j) {
+      ON_4dPoint cv;
+      first_scaled.raw().GetCV(i, j, cv);
+      cv.x *= 0.25;
+      cv.y *= 0.25;
+      cv.z *= 0.25;
+      cv.w *= 0.25;
+      first_scaled.raw().SetCV(i, j, cv);
+    }
+  }
+  joined = first_scaled;
+  Check(joined.Join(second, report) == Result::Ok && JoinCompatGap(joined, first, 0.0) < 1e-9 &&
+            JoinCompatGap(joined, second, u_split - second.Domain(0).min) < 1e-9,
+        "...and a first surface at a quarter of the weights joins too, reproducing both (< 1e-9)");
+
+  // Negative control: the same straight edge written with weights (1, 1, 1)
+  // on one surface and (1, 2, 1) on the other - same control points, the
+  // weights differ by MORE than a constant factor, so it is the same segment
+  // under a different rational parameterization. (Tolerance 0.2 lets the side
+  // search pass: the two parameterizations are at most ~0.07 apart.)
+  // Failed, the reason says 'constant factor', the surface is untouched.
+  std::vector<Point3d> line_w, line_e;
+  for (int i = 0; i < 2; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      line_w.emplace_back(i - 1.0, 0.5 * j, 0.0);
+      line_e.emplace_back(i, 0.5 * j, 0.0);
+    }
+  }
+  NurbsSurface rational_w = NurbsSurface::FromControlGrid(line_w, 2, 3, 1, 2);
+  NurbsSurface rational_e = NurbsSurface::FromControlGrid(line_e, 2, 3, 1, 2);
+  Check(rational_w.MakeRational() == Result::Ok && rational_e.MakeRational() == Result::Ok,
+        "Join fixture: two rational strips sharing the segment x = 0, y in [0, 1], all weights 1");
+  joined = rational_w;
+  Check(joined.Join(rational_e, report) == Result::Ok, "control: with equal weights they join exactly");
+  {
+    ON_4dPoint cv;
+    rational_e.raw().GetCV(0, 1, cv);
+    rational_e.raw().SetCV(0, 1, ON_4dPoint(2.0 * cv.x, 2.0 * cv.y, 2.0 * cv.z, 2.0));
+  }
+  joined = rational_w;
+  const NurbsSurface rational_before = rational_w;
+  Check(joined.Join(rational_e, report, 0.2) == Result::Failed && report.failure_reason.find("constant factor") != std::string::npos,
+        "the same edge points with weights (1,1,1) vs (1,2,1): Result::Failed, the reason says 'constant factor'");
+  Check(JoinCompatSameNet(joined, rational_before), "...and this surface is bit-for-bit untouched");
+}
+
+void TestNurbsSurfaceJoinCompatibleFormNegativeControls() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::SurfaceJoinReport;
+
+  // 1. Boundaries that coincide at every sampled parameter yet differ between
+  //    them: two degree-1 strips (2 x 17 nets), identical except east's shared
+  //    edge has a 0.1 spike at its 2nd control point (parameter 1/16 - the side
+  //    search's 9 samples fall on every second control point and never see it).
+  std::vector<Point3d> west_grid, east_grid;
+  for (int i = 0; i < 2; ++i) {
+    for (int j = 0; j < 17; ++j) {
+      west_grid.emplace_back(i - 1.0, j * 0.5, 0.05 * i * j);
+      east_grid.emplace_back(i, j * 0.5, 0.0);
+    }
+  }
+  for (int j = 0; j < 17; ++j) west_grid[1 * 17 + j] = Point3d(0.0, j * 0.5, 0.0);
+  east_grid[1] = Point3d(0.0, 0.5, 0.1);
+  const NurbsSurface strip_w = NurbsSurface::FromControlGrid(west_grid, 2, 17, 1, 1);
+  const NurbsSurface strip_e = NurbsSurface::FromControlGrid(east_grid, 2, 17, 1, 1);
+  NurbsSurface joined = strip_w;
+  SurfaceJoinReport report;
+  Check(joined.Join(strip_e, report) == Result::Failed,
+        "boundaries that agree at the 9 side samples but differ by a 0.1 spike between them: Result::Failed (not thrown, not merged)");
+  Check(report.failure_reason.find("do not coincide") != std::string::npos && report.failure_reason.find("0.1") != std::string::npos,
+        "...the reason reports that the boundary curves do not coincide and the measured 0.1 gap");
+  Check(JoinCompatSameNet(joined, strip_w), "...and this surface is bit-for-bit unchanged");
+  // Without the spike the same strips join exactly (the control for the above).
+  east_grid[1] = Point3d(0.0, 0.5, 0.0);
+  joined = strip_w;
+  Check(joined.Join(NurbsSurface::FromControlGrid(east_grid, 2, 17, 1, 1), report) == Result::Ok && joined.CVCountU() == 3 &&
+            joined.CVCountV() == 17,
+        "...control: without the spike the two strips join exactly into a 3 x 17 net");
+
+  // 2. A bicubic whose edge bulges 0.5 away from the neighbour's: found by the
+  //    side search at the default tolerance (throws), and at a tolerance of 1
+  //    that waves the side search through, the boundary check still refuses.
+  std::vector<Point3d> g1, g2;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      g1.emplace_back(i - 3.0, j, std::sin(i + j));
+      g2.emplace_back(i, j, std::sin(j) * (i == 0 ? 1.0 : std::cos(i)));
+    }
+  }
+  for (int j = 0; j < 4; ++j) g1[3 * 4 + j] = Point3d(0, j, std::sin(j));
+  const NurbsSurface bicubic_w = NurbsSurface::FromControlGrid(g1, 4, 4, 3, 3);
+  NurbsSurface bicubic_e = NurbsSurface::FromControlGrid(g2, 4, 4, 3, 3);
+  joined = bicubic_w;
+  Check(joined.Join(bicubic_e, report) == Result::Ok, "control: the matching bicubic pair joins exactly");
+  g2[1] = Point3d(0, 1, std::sin(1.0) + 0.5);
+  bicubic_e = NurbsSurface::FromControlGrid(g2, 4, 4, 3, 3);
+  joined = bicubic_w;
+  bool threw = false;
+  try {
+    joined.Join(bicubic_e, report);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw && report.failure_reason.find("do not share an edge") != std::string::npos && JoinCompatSameNet(joined, bicubic_w),
+        "an edge that bulges 0.5 away: the default tolerance throws 'do not share an edge', the reason is reported, the surface is untouched");
+  joined = bicubic_w;
+  Check(joined.Join(bicubic_e, report, 0.3) == Result::Failed && !report.failure_reason.empty() &&
+            JoinCompatSameNet(joined, bicubic_w),
+        "...and with a tolerance of 0.3 that passes the side search (the bulge peaks at 0.22) the boundary check still returns Result::Failed, surface untouched");
+
+  // 3. The same edge geometry with a different parameterization (a segment
+  //    traced quadratically): not exactly splicable, and the reason says so.
+  const std::vector<Point3d> unit = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0), Point3d(1, 1, 0)};
+  const NurbsSurface square = NurbsSurface::FromControlGrid(unit, 2, 2, 1, 1);
+  const std::vector<Point3d> quad_trace = {Point3d(1, 0, 0), Point3d(1, 0.25, 0), Point3d(1, 1, 0),
+                                           Point3d(2, 0, 0), Point3d(2, 0.25, 0), Point3d(2, 1, 0)};
+  const NurbsSurface traced = NurbsSurface::FromControlGrid(quad_trace, 2, 3, 1, 2);
+  joined = square;
+  Check(joined.Join(traced, report, 0.2) == Result::Failed &&
+            report.failure_reason.find("different parameterizations") != std::string::npos && JoinCompatSameNet(joined, square),
+        "the same segment traced quadratically (tolerance 0.2 lets the side search pass): Failed, reason says 'different parameterizations', surface untouched");
+
+  // 4. No shared edge at all throws (documented), with the reason also reported.
+  const std::vector<Point3d> far_grid = {Point3d(0, 0, 5), Point3d(0, 1, 5), Point3d(1, 0, 5), Point3d(1, 1, 5)};
+  joined = square;
+  threw = false;
+  try {
+    joined.Join(NurbsSurface::FromControlGrid(far_grid, 2, 2, 1, 1), report);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw && report.failure_reason.find("5.0") != std::string::npos && JoinCompatSameNet(joined, square),
+        "two squares 5 apart: Join throws std::invalid_argument, the report carries the 5.0 gap, the surface is untouched");
+
+  // 5. A successful join clears any stale reason from a previous report.
+  joined = square;
+  const std::vector<Point3d> next = {Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0), Point3d(2, 1, 0)};
+  report.failure_reason = "stale";
+  Check(joined.Join(NurbsSurface::FromControlGrid(next, 2, 2, 1, 1), report) == Result::Ok && report.failure_reason.empty() &&
+            report.steps.empty() && report.max_deviation < 1e-12,
+        "a join of two squares as they stand: Ok, no steps, empty reason, measured deviation < 1e-12");
+}
+
+void TestNurbsSurfaceJoinCompatibleFormReportOverloadIsBitIdentical() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  using dino8::kernel::SurfaceJoinReport;
+
+  const NurbsSurface original = JoinCompatBaseSurface();
+  NurbsSurface west, east;
+  Check(original.Split(0, 0.4, west, east) == Result::Ok, "Join fixture: bicubic cut at u = 0.4");
+  // 1. Operands that need no preparation: no steps, and the report overload
+  //    equals the plain overload bit for bit.
+  NurbsSurface plain = west, with_report = west;
+  SurfaceJoinReport report;
+  Check(plain.Join(east) == Result::Ok && with_report.Join(east, report) == Result::Ok && JoinCompatSameNet(plain, with_report),
+        "Join(other) and Join(other, report) give bit-identical merged nets");
+  Check(report.steps.empty() && report.max_deviation < 1e-12 * JoinCompatSize(original),
+        "...a pair needing no preparation reports no steps and a measured deviation < 1e-12");
+  // 2. A pair needing everything: reversed, raised, knotted, rational.
+  NurbsSurface east_mix = east;
+  Check(east_mix.ElevateDegree(1, 4) == Result::Ok && east_mix.InsertKnotAt(1, 0.45, 1) == Result::Ok &&
+            east_mix.MakeRational() == Result::Ok && east_mix.Reverse(1) == Result::Ok,
+        "Join fixture: east raised to degree 4 along the edge, given a knot at 0.45, made rational and reversed");
+  plain = west;
+  with_report = west;
+  Check(plain.Join(east_mix) == Result::Ok && with_report.Join(east_mix, report) == Result::Ok &&
+            JoinCompatSameNet(plain, with_report) && with_report.IsRational(),
+        "...both overloads still give the identical (rational) merged net");
+  Check(report.steps.size() >= 4 && JoinCompatMentions(report, "made the first surface rational") &&
+            JoinCompatMentions(report, "raised the first surface's degree along the shared edge 3 -> 4") &&
+            JoinCompatMentions(report, "reversed the second surface along the shared edge"),
+        "...and the report lists at least the four steps taken (reversal, degree raise, knot insertions, rationalization)");
+  Check(JoinCompatGapToOriginal(with_report, original, [](double u, double v) { return std::make_pair(u, v); }) < 1e-9,
+        "...with the merged surface reproducing the original to round-off (< 1e-9)");
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -89238,6 +89839,18 @@ int main() {
   RunTest("TestInterferenceBroadPhaseUsesBodyIndexAndIsIdentical", TestInterferenceBroadPhaseUsesBodyIndexAndIsIdentical);
   RunTest("TestBrepNakedEdgeSearchesAreAcceleratedAndIdentical", TestBrepNakedEdgeSearchesAreAcceleratedAndIdentical);
   RunTest("TestBrepNakedEdgeIndexReproducesExistingFixtures", TestBrepNakedEdgeIndexReproducesExistingFixtures);
+  RunTest("TestNurbsSurfaceJoinCompatibleFormDifferentKnotSpacingAlongTheEdge",
+          TestNurbsSurfaceJoinCompatibleFormDifferentKnotSpacingAlongTheEdge);
+  RunTest("TestNurbsSurfaceJoinCompatibleFormDegreeMismatch",
+          TestNurbsSurfaceJoinCompatibleFormDegreeMismatch);
+  RunTest("TestNurbsSurfaceJoinCompatibleFormReversedAndTurnedOperands",
+          TestNurbsSurfaceJoinCompatibleFormReversedAndTurnedOperands);
+  RunTest("TestNurbsSurfaceJoinCompatibleFormRescalesConstantWeightFactor",
+          TestNurbsSurfaceJoinCompatibleFormRescalesConstantWeightFactor);
+  RunTest("TestNurbsSurfaceJoinCompatibleFormNegativeControls",
+          TestNurbsSurfaceJoinCompatibleFormNegativeControls);
+  RunTest("TestNurbsSurfaceJoinCompatibleFormReportOverloadIsBitIdentical",
+          TestNurbsSurfaceJoinCompatibleFormReportOverloadIsBitIdentical);
 
   RunTest("ON::End", ON::End);
 

@@ -1126,15 +1126,25 @@ bool JoinInsertMissingKnots(const ON_NurbsSurface& from, ON_NurbsSurface& into, 
 }  // namespace
 
 Result NurbsSurface::Join(const NurbsSurface& other, double tolerance) {
+  SurfaceJoinReport discarded;
+  return Join(other, discarded, tolerance);
+}
+
+Result NurbsSurface::Join(const NurbsSurface& other, SurfaceJoinReport& report, double tolerance) {
+  report = SurfaceJoinReport();
   if (tolerance <= 0.0) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::Join: tolerance must be positive");
   }
+  auto fail = [&report](const std::string& reason) {
+    report.failure_reason = reason;
+    return Result::Failed;
+  };
   // Both operands are worked on as copies: this surface is only replaced
   // once the whole splice has succeeded, and `other` may alias `*this`.
   NurbsSurface a = *this;
   NurbsSurface b = other;
   if (!a.surface_.IsValid() || !b.surface_.IsValid()) {
-    return Result::Failed;
+    return fail("one of the two surfaces is not a valid NURBS surface");
   }
 
   // 1. Which side of each surface is the shared edge, and do the two
@@ -1155,11 +1165,14 @@ Result NurbsSurface::Join(const NurbsSurface& other, double tolerance) {
     }
   }
   if (side_a < 0) {
+    report.failure_reason = "the two surfaces do not share an edge (closest pair of sides " + std::to_string(closest) +
+                            " apart, tolerance " + std::to_string(tolerance) + ")";
     throw std::invalid_argument("dino8::kernel::NurbsSurface::Join: the two surfaces do not share an edge (the "
                                 "closest pair of sides is " +
                                 std::to_string(closest) + " apart, tolerance " + std::to_string(tolerance) + ")");
   }
   if (a.surface_.IsClosed(side_a < 2 ? 0 : 1) || b.surface_.IsClosed(side_b < 2 ? 0 : 1)) {
+    report.failure_reason = "a surface closed in the direction across the shared edge has nothing to extend";
     throw std::invalid_argument("dino8::kernel::NurbsSurface::Join: a surface closed in the direction across the "
                                 "shared edge has nothing to extend - its far side is that same edge");
   }
@@ -1183,77 +1196,199 @@ Result NurbsSurface::Join(const NurbsSurface& other, double tolerance) {
   if (side_b >= 2) {
     b.surface_.Transpose();
     side_b -= 2;
+    report.steps.push_back("swapped the second surface's U and V so its shared edge is a U side");
   }
   if (side_b == 1) {
     b.surface_.Reverse(0);
+    report.steps.push_back("reversed the second surface across the shared edge so it continues the first");
   }
   {
     double same = 0.0, reversed = 0.0;
     JoinSideGaps(a.surface_, 1, b.surface_, 0, same, reversed);
     if (reversed < same) {
       b.surface_.Reverse(1);
+      report.steps.push_back("reversed the second surface along the shared edge so both run the same way");
     }
   }
+  // The operands as they stand after orientation only: the splice is
+  // measured against these (same shapes, same parameterizations as the
+  // originals, just turned) once it is built.
+  const NurbsSurface a_oriented = a;
+  const NurbsSurface b_oriented = b;
 
   // 3. Make the two compatible along the edge (v): clamped, both
   //    rational or neither, same degree, same domain, same knots.
   for (int direction = 0; direction < 2; ++direction) {
     if (!a.surface_.ClampEnd(direction, 2) || !b.surface_.ClampEnd(direction, 2)) {
-      return Result::Failed;
+      return fail("could not clamp the knot vectors of the two surfaces (an unclamped end cannot be spliced exactly)");
     }
   }
   if (a.surface_.IsRational() != b.surface_.IsRational()) {
     if (!a.surface_.MakeRational() || !b.surface_.MakeRational()) {
-      return Result::Failed;
+      return fail("could not make the two surfaces both rational");
     }
+    report.steps.push_back(std::string("made the ") + (a_oriented.surface_.IsRational() ? "second" : "first") +
+                           " surface rational to match");
   }
   const bool rational = a.surface_.IsRational();
-  const int v_degree = std::max(a.surface_.Degree(1), b.surface_.Degree(1));
+  const int a_v_degree = a.surface_.Degree(1);
+  const int b_v_degree = b.surface_.Degree(1);
+  const int v_degree = std::max(a_v_degree, b_v_degree);
   if (a.ElevateDegree(1, v_degree) == Result::Failed || b.ElevateDegree(1, v_degree) == Result::Failed) {
-    return Result::Failed;
+    return fail("could not raise the degree along the shared edge to " + std::to_string(v_degree));
+  }
+  if (a_v_degree != v_degree) {
+    report.steps.push_back("raised the first surface's degree along the shared edge " + std::to_string(a_v_degree) +
+                           " -> " + std::to_string(v_degree));
+  }
+  if (b_v_degree != v_degree) {
+    report.steps.push_back("raised the second surface's degree along the shared edge " + std::to_string(b_v_degree) +
+                           " -> " + std::to_string(v_degree));
   }
   const ON_Interval dv = a.surface_.Domain(1);
+  const ON_Interval b_dv_before = b.surface_.Domain(1);
   if (!b.surface_.SetDomain(1, dv.Min(), dv.Max())) {
-    return Result::Failed;
+    return fail("could not map the second surface's along-edge domain onto the first's");
+  }
+  if (std::abs(b_dv_before.Min() - dv.Min()) > 1e-12 * (1.0 + std::abs(dv.Min())) ||
+      std::abs(b_dv_before.Max() - dv.Max()) > 1e-12 * (1.0 + std::abs(dv.Max()))) {
+    report.steps.push_back("mapped the second surface's along-edge domain affinely onto the first's");
   }
   const double knot_tol = 1e-10 * dv.Length();
+  const int a_v_cvs_before = a.surface_.CVCount(1);
+  const int b_v_cvs_before = b.surface_.CVCount(1);
   if (!JoinInsertMissingKnots(b.surface_, a.surface_, 1, knot_tol) ||
       !JoinInsertMissingKnots(a.surface_, b.surface_, 1, knot_tol)) {
-    return Result::Failed;
+    return fail("could not insert the union of the two along-edge knot vectors into both surfaces");
+  }
+  if (a.surface_.CVCount(1) != a_v_cvs_before) {
+    report.steps.push_back("inserted " + std::to_string(a.surface_.CVCount(1) - a_v_cvs_before) +
+                           " knot(s) along the shared edge into the first surface");
+  }
+  if (b.surface_.CVCount(1) != b_v_cvs_before) {
+    report.steps.push_back("inserted " + std::to_string(b.surface_.CVCount(1) - b_v_cvs_before) +
+                           " knot(s) along the shared edge into the second surface");
   }
   const int v_count = a.surface_.CVCount(1);
   if (b.surface_.CVCount(1) != v_count || b.surface_.KnotCount(1) != a.surface_.KnotCount(1)) {
-    return Result::Failed;
+    return fail("the two along-edge knot vectors could not be made identical");
   }
   for (int i = 0; i < a.surface_.KnotCount(1); ++i) {
     if (std::abs(a.surface_.Knot(1, i) - b.surface_.Knot(1, i)) > knot_tol) {
-      return Result::Failed;
+      return fail("the two along-edge knot vectors could not be made identical");
     }
   }
   // ...and across it (u): same degree, so one knot vector can carry both.
-  const int u_degree = std::max(a.surface_.Degree(0), b.surface_.Degree(0));
+  const int a_u_degree = a.surface_.Degree(0);
+  const int b_u_degree = b.surface_.Degree(0);
+  const int u_degree = std::max(a_u_degree, b_u_degree);
   if (a.ElevateDegree(0, u_degree) == Result::Failed || b.ElevateDegree(0, u_degree) == Result::Failed) {
-    return Result::Failed;
+    return fail("could not raise the degree across the shared edge to " + std::to_string(u_degree));
+  }
+  if (a_u_degree != u_degree) {
+    report.steps.push_back("raised the first surface's degree across the shared edge " + std::to_string(a_u_degree) +
+                           " -> " + std::to_string(u_degree));
+  }
+  if (b_u_degree != u_degree) {
+    report.steps.push_back("raised the second surface's degree across the shared edge " + std::to_string(b_u_degree) +
+                           " -> " + std::to_string(u_degree));
   }
 
   // 4. The exact splice needs the two boundary control polygons to be
   //    the same polygon, not merely the same curve.
   const int a_count = a.surface_.CVCount(0);
   const int b_count = b.surface_.CVCount(0);
+  bool points_agree = true;
+  bool polygons_agree = true;
+  int first_bad = -1;
+  double worst_point_gap = 0.0;
   for (int j = 0; j < v_count; ++j) {
     ON_4dPoint pa, pb;
     a.surface_.GetCV(a_count - 1, j, pa);
     b.surface_.GetCV(0, j, pb);
-    if (ON_3dPoint(pa).DistanceTo(ON_3dPoint(pb)) > tolerance || (rational && std::abs(pa.w - pb.w) > tolerance)) {
-      return Result::Failed;
+    const double gap = ON_3dPoint(pa).DistanceTo(ON_3dPoint(pb));
+    worst_point_gap = std::max(worst_point_gap, gap);
+    if (gap > tolerance) points_agree = false;
+    if (gap > tolerance || (rational && std::abs(pa.w - pb.w) > tolerance)) {
+      polygons_agree = false;
+      if (first_bad < 0) first_bad = j;
     }
+  }
+  if (!polygons_agree && rational && points_agree) {
+    // Same boundary points, different weights. The same rational edge
+    // curve in another homogeneous scale: a constant factor on every
+    // weight. Scaling EVERY homogeneous control point of `b` by one
+    // factor leaves `b` unchanged, so do that and re-check.
+    ON_4dPoint pa0, pb0;
+    a.surface_.GetCV(a_count - 1, 0, pa0);
+    b.surface_.GetCV(0, 0, pb0);
+    const double factor = (pa0.w > 0.0 && pb0.w > 0.0) ? pa0.w / pb0.w : 0.0;
+    bool scalable = factor > 0.0 && std::isfinite(factor);
+    for (int j = 0; j < v_count && scalable; ++j) {
+      ON_4dPoint pa, pb;
+      a.surface_.GetCV(a_count - 1, j, pa);
+      b.surface_.GetCV(0, j, pb);
+      scalable = pa.w > 0.0 && pb.w > 0.0 && std::abs(pa.w - factor * pb.w) <= tolerance * pa.w;
+    }
+    if (!scalable) {
+      ON_4dPoint pa, pb;
+      a.surface_.GetCV(a_count - 1, first_bad, pa);
+      b.surface_.GetCV(0, first_bad, pb);
+      return fail("the shared edge has the same control points on both surfaces but weights that differ by more than "
+                  "a constant factor (control point " +
+                  std::to_string(first_bad) + ": weight " + std::to_string(pa.w) + " vs " + std::to_string(pb.w) +
+                  ") - a different rational parameterization of the edge, not exactly splicable");
+    }
+    for (int i = 0; i < b_count; ++i) {
+      for (int j = 0; j < v_count; ++j) {
+        ON_4dPoint cv;
+        b.surface_.GetCV(i, j, cv);
+        cv.x *= factor;
+        cv.y *= factor;
+        cv.z *= factor;
+        cv.w *= factor;
+        b.surface_.SetCV(i, j, cv);
+      }
+    }
+    report.steps.push_back("rescaled the second surface's weights by " + std::to_string(factor) +
+                           " (same edge curve in a different homogeneous scale)");
+    polygons_agree = true;
+  }
+  if (!polygons_agree) {
+    // Say whether the boundary CURVES truly differ or only their
+    // control polygons do (33 evenly spaced samples of the shared edge).
+    double curve_gap = 0.0;
+    double curve_gap_at = 0.0;
+    const ON_Interval du_a = a.surface_.Domain(0);
+    const ON_Interval du_b = b.surface_.Domain(0);
+    for (int k = 0; k <= 32; ++k) {
+      const double f = static_cast<double>(k) / 32.0;
+      ON_3dPoint pa, pb;
+      a.surface_.EvPoint(du_a.Max(), dv.ParameterAt(f), pa);
+      b.surface_.EvPoint(du_b.Min(), dv.ParameterAt(f), pb);
+      const double gap = pa.DistanceTo(pb);
+      if (gap > curve_gap) {
+        curve_gap = gap;
+        curve_gap_at = f;
+      }
+    }
+    if (curve_gap > tolerance) {
+      return fail("the shared boundary curves do not coincide once both are in compatible form: " +
+                  std::to_string(curve_gap) + " apart at " + std::to_string(curve_gap_at) +
+                  " of the way along the edge (tolerance " + std::to_string(tolerance) + ")");
+    }
+    return fail("the shared boundary curves agree at 33 samples to within " + std::to_string(tolerance) +
+                " but their control polygons differ (control point " + std::to_string(first_bad) + ", gap " +
+                std::to_string(worst_point_gap) +
+                ") - the two surfaces trace the edge with different parameterizations, which no exact splice can "
+                "bridge");
   }
 
   // 5. Splice: a's rows, then b's rows past its boundary row; a's u knots,
   //    then b's past its clamped start, shifted to continue a's domain.
   ON_NurbsSurface joined;
   if (!joined.Create(3, rational, u_degree + 1, v_degree + 1, a_count + b_count - 1, v_count)) {
-    return Result::Failed;
+    return fail("could not allocate the merged control net");
   }
   for (int i = 0; i < a_count; ++i) {
     for (int j = 0; j < v_count; ++j) {
@@ -1281,7 +1416,47 @@ Result NurbsSurface::Join(const NurbsSurface& other, double tolerance) {
     joined.SetKnot(1, i, a.surface_.Knot(1, i));
   }
   if (!joined.IsValid()) {
-    return Result::Failed;
+    return fail("the spliced control net is not a valid NURBS surface");
+  }
+
+  // 5b. Measure the result against BOTH operands (9 x 9 samples each, in
+  //     the oriented frame): this surface's own (u, v) must land on the
+  //     same point, and so must every sample of `other`, at its own
+  //     parameter shifted to continue this one's. Loose enough to admit
+  //     what a caller-chosen `tolerance` deliberately accepts (boundary
+  //     control points up to `tolerance` apart), tight enough to catch a
+  //     corrupted splice or elevation.
+  {
+    constexpr int kVerify = 8;
+    const ON_Interval a_du = a_oriented.surface_.Domain(0);
+    const ON_Interval a_dv = a_oriented.surface_.Domain(1);
+    const ON_Interval b_du = b_oriented.surface_.Domain(0);
+    const ON_Interval b_dv = b_oriented.surface_.Domain(1);
+    const double joined_shift = shift;
+    double deviation = 0.0;
+    ON_BoundingBox box;
+    for (int i = 0; i <= kVerify; ++i) {
+      for (int j = 0; j <= kVerify; ++j) {
+        const double fi = static_cast<double>(i) / kVerify;
+        const double fj = static_cast<double>(j) / kVerify;
+        ON_3dPoint want, got;
+        const double ua = a_du.ParameterAt(fi), va = a_dv.ParameterAt(fj);
+        a_oriented.surface_.EvPoint(ua, va, want);
+        joined.EvPoint(ua, va, got);
+        deviation = std::max(deviation, want.DistanceTo(got));
+        box.Set(want, true);
+        const double ub = b_du.ParameterAt(fi), vb = b_dv.ParameterAt(fj);
+        b_oriented.surface_.EvPoint(ub, vb, want);
+        joined.EvPoint(ub + joined_shift, dv.ParameterAt(fj), got);
+        deviation = std::max(deviation, want.DistanceTo(got));
+        box.Set(want, true);
+      }
+    }
+    report.max_deviation = deviation;
+    if (!(deviation <= 2.0 * tolerance + 1e-9 * box.Diagonal().Length())) {
+      return fail("the merged surface strays " + std::to_string(deviation) + " from one of the two surfaces (tolerance " +
+                  std::to_string(tolerance) + ") - refusing a merge that does not reproduce its inputs");
+    }
   }
 
   // 6. Put the result back the way this surface was oriented.

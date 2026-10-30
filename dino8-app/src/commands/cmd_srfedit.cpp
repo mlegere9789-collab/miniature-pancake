@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <map>
 #include <set>
@@ -761,21 +762,33 @@ void MergeSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   const double tol = ctx.Settings().absolute_tolerance * 100;
   // Exact merge, tried FIRST: kernel::NurbsSurface::Join splices the two
   // control nets across the shared edge (Split()'s inverse) - no sampling,
-  // no refit, both operands' own shapes survive to round-off. The result is
-  // oriented like the first surface. It throws std::invalid_argument when
-  // no side pair coincides (or a surface is closed across the shared edge)
-  // and returns Result::Failed when the boundary control polygons do not
-  // coincide (a differently-parameterized shared edge); in both cases the
-  // older sample-and-refit route below handles the pair exactly as before.
+  // no refit, both operands' own shapes survive to round-off. Before the
+  // splice the kernel brings the pair to a compatible form along the edge
+  // (turns/reverses whichever surface needs it, raises the lower degree in
+  // both directions, maps the along-edge domains together, inserts the union
+  // of the two along-edge knot vectors, rescales a constant weight factor)
+  // and measures the merged surface against both inputs, so a pair that is
+  // parameterized differently across or along the edge still merges exactly.
+  // The result is oriented like the first surface. The older sample-and-refit
+  // route below runs only when the kernel refuses: Join throws
+  // std::invalid_argument when no side pair coincides (or a surface is closed
+  // across the shared edge) and returns Result::Failed, with a reason, when
+  // the two boundary curves really do not coincide or are traced with
+  // parameterizations no exact splice can bridge. That reason is reported.
+  std::string kernel_refusal;
   {
     kernel::NurbsSurface joined;
     joined.raw() = a;
     kernel::NurbsSurface other;
     other.raw() = b;
+    kernel::SurfaceJoinReport report;
     bool exact = false;
     try {
-      exact = joined.Join(other, std::max(ctx.Settings().absolute_tolerance, 1e-6)) == kernel::Result::Ok;
-    } catch (const std::exception&) {}
+      exact = joined.Join(other, report, std::max(ctx.Settings().absolute_tolerance, 1e-6)) == kernel::Result::Ok;
+      if (!exact) kernel_refusal = report.failure_reason;
+    } catch (const std::exception& e) {
+      kernel_refusal = report.failure_reason.empty() ? std::string(e.what()) : report.failure_reason;
+    }
     if (exact) {
       ctx.Doc().BeginChange("MergeSrf");
       SceneObject n = SceneObject::MakeSurface(joined);
@@ -785,6 +798,16 @@ void MergeSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
       ctx.Doc().Add(std::move(n));
       ctx.Print("MergeSrf: merged 2 surfaces into one (exact merge: control nets spliced across the shared edge, " +
                 std::to_string(joined.raw().CVCount(0)) + " x " + std::to_string(joined.raw().CVCount(1)) + " control points, no refit)");
+      if (!report.steps.empty()) {
+        // The pair was not already in splice-ready form: say exactly what the
+        // kernel did to bring it there, and how closely the result reproduces both.
+        std::string steps;
+        for (const std::string& step : report.steps) steps += (steps.empty() ? "" : "; ") + step;
+        char deviation[32];
+        std::snprintf(deviation, sizeof deviation, "%.1e", report.max_deviation);
+        ctx.Print("MergeSrf: made the pair compatible along the shared edge first (" + steps +
+                  "); the merged surface reproduces both inputs to " + deviation);
+      }
       return;
     }
   }
@@ -836,7 +859,8 @@ void MergeSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   ctx.Doc().Remove(srfs[0].first);
   ctx.Doc().Remove(srfs[1].first);
   ctx.Doc().Add(std::move(n));
-  ctx.Print("MergeSrf: merged 2 surfaces into one (refit through samples; the exact kernel merge refused this pair)");
+  ctx.Print("MergeSrf: merged 2 surfaces into one (refit through samples; the exact kernel merge refused this pair" +
+            (kernel_refusal.empty() ? std::string() : ": " + kernel_refusal) + ")");
 }
 
 // ---------------------------------------------------------------------------
