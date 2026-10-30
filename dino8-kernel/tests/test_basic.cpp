@@ -81136,6 +81136,134 @@ void TestLatticeInfillRejectsInvalidArguments() {
         "hitting undefined behavior in the ceil()-and-cast");
 }
 
+// Tessellation: the UNIFORM-division adaptive paths (NurbsSurface::
+// TessellateGridAdaptive/TessellateGridAdaptiveByAngle/
+// TessellateGridCertifiedAdaptive and their Brep::Tessellate*Adaptive/
+// ByAngle/CertifiedAdaptive callers) used to estimate a division count from
+// isocurve CURVATURE alone. A degree-1, multi-span direction (one wall of a
+// revolved or extruded POLYGONAL profile) has zero curvature between its
+// corners and never samples the corners themselves, so the estimate was 1:
+// a uniform 1-division lattice skips every interior corner and the whole
+// wall collapses onto its two end rows. Repro (before the fix, standalone
+// probe): Brep::Revolve of an L-profile (a cylinder, r=1, h=3)
+// .TessellateToClosedMeshAdaptive(0.01) came back as 48 vertices that were
+// all at (0,0,0) or (0,0,3), welding down to an EMPTY mesh (0 faces) that
+// still answered IsClosedManifold() == true with Volume() == 0; the same
+// zero volume for an L-shaped prism, a pyramid and a tapered extrusion, and
+// TessellateToClosedMeshCertifiedAdaptive of the cylinder ground through
+// ~1.5 million vertices (the lattice never lands on the corners, so the
+// measured deviation never converges) while the L-prism's threw "could not
+// certify". Fix: the uniform lattice keeps its exact old values for any
+// surface with no real tangent crease and otherwise ADDS the exact crease
+// parameters (surface.cpp, InteriorCreaseParameters()).
+//
+// Every expected value below is closed-form and independent of the fix.
+void TestTessellateAdaptiveHonoursDegreeOneCreases() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // --- Exactly-representable bodies (flat faces): volume must be EXACT. ---
+  // L-shaped prism: area 2*1 + 1*1 = 3, height 2 -> volume 6.
+  const NurbsCurve l_profile = NurbsCurve::FromControlPoints(
+      {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0), Point3d(1, 1, 0), Point3d(1, 2, 0), Point3d(0, 2, 0),
+       Point3d(0, 0, 0)},
+      1);
+  const Brep prism = Brep::Extrude(l_profile, Vector3d(0, 0, 2));
+  // Square pyramid: base 2x2, apex height 3 -> volume 4*3/3 = 4.
+  const NurbsCurve square = NurbsCurve::FromControlPoints(
+      {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0), Point3d(0, 0, 0)}, 1);
+  const Brep pyramid = Brep::ExtrudeToPoint(square, Point3d(1, 1, 3));
+
+  const Mesh prism_chord = prism.TessellateToClosedMeshAdaptive(0.01);
+  const Mesh prism_angle = prism.TessellateToClosedMeshAdaptiveByAngle(0.2);
+  Check(prism_chord.FaceCount() > 0 && prism_chord.IsClosedManifold() &&
+            std::fabs(prism_chord.Volume() - 6.0) < 1e-9,
+        "L-prism TessellateToClosedMeshAdaptive(0.01) is a non-empty closed manifold of volume exactly 6 "
+        "(was an empty mesh, volume 0)");
+  Check(prism_angle.FaceCount() > 0 && prism_angle.IsClosedManifold() &&
+            std::fabs(prism_angle.Volume() - 6.0) < 1e-9,
+        "L-prism TessellateToClosedMeshAdaptiveByAngle(0.2) is a non-empty closed manifold of volume exactly 6");
+  const Mesh pyr_chord = pyramid.TessellateToClosedMeshAdaptive(0.01);
+  const Mesh pyr_angle = pyramid.TessellateToClosedMeshAdaptiveByAngle(0.2);
+  Check(pyr_chord.FaceCount() > 0 && pyr_chord.IsClosedManifold() && std::fabs(pyr_chord.Volume() - 4.0) < 1e-9,
+        "pyramid TessellateToClosedMeshAdaptive(0.01) is a closed manifold of volume exactly 4");
+  Check(pyr_angle.FaceCount() > 0 && pyr_angle.IsClosedManifold() && std::fabs(pyr_angle.Volume() - 4.0) < 1e-9,
+        "pyramid TessellateToClosedMeshAdaptiveByAngle(0.2) is a closed manifold of volume exactly 4");
+
+  // A zero-draft tapered extrude of the 2x2 square is the 2x2x2 cube: volume 8.
+  const Brep cube = Brep::ExtrudeTapered(square, Vector3d(0, 0, 2), 0.0);
+  const Mesh cube_chord = cube.TessellateToClosedMeshAdaptive(0.01);
+  Check(cube_chord.FaceCount() > 0 && cube_chord.IsClosedManifold() && std::fabs(cube_chord.Volume() - 8.0) < 1e-9,
+        "zero-draft ExtrudeTapered TessellateToClosedMeshAdaptive(0.01) is a closed manifold of volume exactly 8");
+
+  // --- Curved body: revolved L-profile cylinder, r = 1, h = 3. ---
+  // A closed-form inscribed n-gon prism has volume (n/2)*sin(2*pi/n)*h; the
+  // circle direction needs n >= 23 for a 0.01 sagitta (acos(1-0.01) = 0.1415
+  // rad per half step), so the polygon area deficit is below ~1.3% and the
+  // result can never EXCEED the exact pi*h.
+  const NurbsCurve l_cyl = NurbsCurve::FromControlPoints(
+      {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 0, 3), Point3d(0, 0, 3)}, 1);
+  const Brep cylinder = Brep::Revolve(l_cyl, Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  const double exact_cyl = ON_PI * 3.0;
+  for (int mode = 0; mode < 2; ++mode) {
+    const Mesh m = mode == 0 ? cylinder.TessellateToClosedMeshAdaptive(0.01)
+                             : cylinder.TessellateToClosedMeshAdaptiveByAngle(0.2);
+    const std::string label = mode == 0 ? "chord 0.01" : "angle 0.2";
+    Check(m.FaceCount() > 0 && m.IsClosedManifold(),
+          ("revolved-L cylinder adaptive (" + label + ") is a non-empty closed manifold").c_str());
+    Check(m.Volume() < exact_cyl && m.Volume() > 0.97 * exact_cyl,
+          ("revolved-L cylinder adaptive (" + label + ") volume is an inscribed polygon prism of pi*3 within 3%")
+              .c_str());
+    // The rim circles at z = 0 and z = 3 are present at full radius.
+    const dino8::kernel::BoundingBox bb = m.GetBoundingBox();
+    // (x = +1 is a sample at angle 0; the far side only reaches -cos(pi/n) for an n-gon, so just -0.98 is asserted.)
+    Check(std::fabs(bb.max.x - 1.0) < 1e-6 && bb.min.x < -0.98 && bb.min.x >= -1.0 && std::fabs(bb.min.z) < 1e-9 &&
+              std::fabs(bb.max.z - 3.0) < 1e-9,
+          ("revolved-L cylinder adaptive (" + label + ") spans the exact radius 1 and height 0..3").c_str());
+  }
+
+  // --- Certified path: used to need ~1.5M vertices (cylinder) / throw (L-prism). ---
+  const Mesh cyl_cert = cylinder.TessellateToClosedMeshCertifiedAdaptive(0.01);
+  Check(cyl_cert.VertexCount() < 20000 && cyl_cert.IsClosedManifold() && cyl_cert.Volume() < exact_cyl &&
+            cyl_cert.Volume() > 0.99 * exact_cyl,
+        "revolved-L cylinder TessellateToClosedMeshCertifiedAdaptive(0.01) stays small (<20000 vertices, was ~1.5M) "
+        "and is within 1% of pi*3");
+  bool prism_cert_threw = false;
+  try {
+    prism.TessellateCertifiedAdaptive(0.01);
+  } catch (const std::exception&) {
+    prism_cert_threw = true;
+  }
+  Check(!prism_cert_threw, "L-prism TessellateCertifiedAdaptive(0.01) no longer throws 'could not certify'");
+
+  // Surface-level: the cylinder wall is a single degree-1 x quadratic NURBS surface; its adaptive grid must
+  // place a row on each profile corner (z = 0 and z = 3 at r = 1) - the exact thing the old lattice skipped.
+  NurbsSurface wall;
+  wall.raw() = *ON_NurbsSurface::Cast(cylinder.raw().m_F[0].SurfaceOf());
+  const Mesh wall_mesh = wall.TessellateGridAdaptive(0.01);
+  bool saw_rim_bottom = false, saw_rim_top = false;
+  for (int i = 0; i < wall_mesh.VertexCount(); ++i) {
+    const ON_3fPoint& p = wall_mesh.raw().m_V[i];
+    const double r = std::sqrt(static_cast<double>(p.x) * p.x + static_cast<double>(p.y) * p.y);
+    if (std::fabs(r - 1.0) < 1e-5 && std::fabs(p.z) < 1e-5) saw_rim_bottom = true;
+    if (std::fabs(r - 1.0) < 1e-5 && std::fabs(p.z - 3.0) < 1e-5) saw_rim_top = true;
+  }
+  Check(saw_rim_bottom && saw_rim_top, "the adaptive wall grid contains the r = 1 rim rows at z = 0 and z = 3");
+
+  // --- A smooth surface keeps EXACTLY today's uniform lattice (no spurious crease rows). ---
+  // An exact rational circle has double (C0-parametrized) knots at its quarter points but is G1 there.
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 1.5);
+  NurbsSurface sphere_face;
+  sphere_face.raw() = *ON_NurbsSurface::Cast(sphere.raw().m_F[0].SurfaceOf());
+  const dino8::kernel::SurfaceDivisions d = sphere_face.SuggestedDivisions(0.01);
+  Check(sphere_face.TessellateGridAdaptive(0.01).VertexCount() == (d.u + 1) * (d.v + 1),
+        "a smooth (sphere) face's adaptive grid is still exactly the (u+1)*(v+1) uniform lattice");
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -82422,6 +82550,8 @@ int main() {
 
   RunTest("TestLatticeInfillFillsBoxAndConformsToNonBoxSolids", TestLatticeInfillFillsBoxAndConformsToNonBoxSolids);
   RunTest("TestLatticeInfillRejectsInvalidArguments", TestLatticeInfillRejectsInvalidArguments);
+
+  RunTest("TestTessellateAdaptiveHonoursDegreeOneCreases", TestTessellateAdaptiveHonoursDegreeOneCreases);
 
   RunTest("ON::End", ON::End);
 

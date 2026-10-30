@@ -1852,11 +1852,193 @@ Mesh NurbsSurface::TessellateGridNonUniform(
   return TessellateFromValues(*this, u_values, v_values, trim_polygon, hole_polygons);
 }
 
+namespace {
+
+// ---- Crease-aware sampling for the UNIFORM-division adaptive tessellators ----
+//
+// SuggestedDivisions()/SuggestedDivisionsByAngle() estimate a division
+// count from isocurve CURVATURE alone (NurbsCurve::SuggestedSamples()). A
+// direction whose isocurve is a polyline - any degree-1, multi-span
+// direction, which is exactly what Brep::Extrude()/Revolve() of a
+// polygonal profile produce as one wall - has zero curvature everywhere
+// BETWEEN its corners and an undefined (never sampled) curvature AT them,
+// so the estimate comes back as 1 division. A uniform lattice of 1
+// division samples only the two ends of that direction and skips every
+// interior corner, so the whole wall collapses onto its end points: a
+// revolved L-profile cylinder tessellated to just its two pole rows, which
+// MergeAndWeld() then reduces to an EMPTY mesh that still reports
+// IsClosedManifold() == true with Volume() == 0 (confirmed directly, see
+// TestTessellateAdaptiveHonoursDegreeOneCreases). Even a larger fixed
+// count only helps by luck: a uniform lattice hits an interior corner only
+// if the corner happens to lie on it.
+//
+// The fix keeps the uniform lattice but ADDS the exact corner parameters to
+// it. Only genuine geometric creases are added - a surface that is G1 but
+// C0 in its PARAMETRIZATION (an exact rational circle's double knots) is
+// left alone, so every smooth surface keeps today's exact uniform lattice.
+
+// Interior parameters in `direction` at which `surface` has a real tangent
+// discontinuity (turning angle above ~1.1 degrees), judged geometrically
+// from point samples either side of each C0 knot.
+std::vector<double> InteriorCreaseParameters(const NurbsSurface& surface, int direction) {
+  const ON_NurbsSurface& raw = surface.raw();
+  std::vector<double> out;
+  const int degree = raw.Degree(direction);
+  const int knot_count = raw.KnotCount(direction);
+  const ON_Interval domain = raw.Domain(direction);
+  const ON_Interval other = raw.Domain(1 - direction);
+  auto point = [&](double along, double across) {
+    return direction == 0 ? surface.PointAt(along, across) : surface.PointAt(across, along);
+  };
+  int i = 0;
+  while (i < knot_count) {
+    int j = i;
+    while (j + 1 < knot_count && raw.Knot(direction, j + 1) == raw.Knot(direction, i)) ++j;
+    const double k = raw.Knot(direction, i);
+    const int multiplicity = j - i + 1;
+    i = j + 1;
+    if (!(k > domain.Min() && k < domain.Max()) || multiplicity < degree) continue;
+    // Neighbouring distinct knots bound the span either side.
+    double lo = domain.Min(), hi = domain.Max();
+    for (int m = 0; m < knot_count; ++m) {
+      const double km = raw.Knot(direction, m);
+      if (km < k) lo = std::max(lo, km);
+      if (km > k) hi = std::min(hi, km);
+    }
+    const double h = 1e-3 * std::min(k - lo, hi - k);
+    bool crease = false;
+    for (int s = 1; s <= 5 && !crease; ++s) {
+      const double across = other.ParameterAt(static_cast<double>(s) / 6.0);
+      const Vector3d before = point(k, across) - point(k - h, across);
+      const Vector3d after = point(k + h, across) - point(k, across);
+      const double lb = before.Length(), la = after.Length();
+      if (!(lb > 1e-12) || !(la > 1e-12)) continue;
+      const double cos_turn = (before.x * after.x + before.y * after.y + before.z * after.z) / (lb * la);
+      if (cos_turn < std::cos(0.02)) crease = true;
+    }
+    if (crease) out.push_back(k);
+  }
+  return out;
+}
+
+// `divisions` equal parameter steps across `direction`'s domain (identical
+// to TessellateGrid()'s own lattice) ...
+std::vector<double> UniformParameterValues(const NurbsSurface& surface, int direction, int divisions) {
+  const ON_Interval domain = surface.raw().Domain(direction);
+  std::vector<double> values(static_cast<size_t>(divisions) + 1);
+  for (int i = 0; i <= divisions; ++i) {
+    values[static_cast<size_t>(i)] = domain.ParameterAt(static_cast<double>(i) / divisions);
+  }
+  return values;
+}
+
+// ... plus every crease parameter, a lattice value within a hair of a
+// crease snapped onto it so no sliver cell appears.
+std::vector<double> UniformValuesWithCreases(const NurbsSurface& surface, int direction, int divisions,
+                                             const std::vector<double>& creases) {
+  std::vector<double> values = UniformParameterValues(surface, direction, divisions);
+  if (creases.empty()) return values;
+  const double snap = 1e-6 * surface.raw().Domain(direction).Length();
+  std::vector<double> merged;
+  for (double v : values) {
+    bool near_crease = false;
+    for (double c : creases) near_crease = near_crease || std::fabs(v - c) <= snap;
+    if (!near_crease) merged.push_back(v);
+  }
+  for (double c : creases) merged.push_back(c);
+  std::sort(merged.begin(), merged.end());
+  return merged;
+}
+
+// The uniform-division tessellation with creases honoured; for a surface
+// with no crease in either direction this is EXACTLY TessellateGrid().
+Mesh TessellateUniformCreaseAware(const NurbsSurface& surface, int u_divisions, int v_divisions,
+                                  const std::vector<Point2d>* trim_polygon,
+                                  const std::vector<std::vector<Point2d>>* hole_polygons) {
+  const std::vector<double> u_creases = InteriorCreaseParameters(surface, 0);
+  const std::vector<double> v_creases = InteriorCreaseParameters(surface, 1);
+  if (u_creases.empty() && v_creases.empty()) {
+    return surface.TessellateGrid(u_divisions, v_divisions, trim_polygon, hole_polygons);
+  }
+  return TessellateFromValues(surface, UniformValuesWithCreases(surface, 0, u_divisions, u_creases),
+                              UniformValuesWithCreases(surface, 1, v_divisions, v_creases), trim_polygon,
+                              hole_polygons);
+}
+
+double MeasureDeviationOverValues(const NurbsSurface& surface, const std::vector<double>& u_values,
+                                  const std::vector<double>& v_values, int samples_per_triangle) {
+  // Interior barycentric sample points for a triangle (a, b, c), a+b+c=1,
+  // deliberately excluding the three corners (a=1, b=1 or c=1) where the
+  // flat facet and the true surface coincide exactly by construction.
+  std::vector<std::array<double, 3>> samples;
+  samples.reserve(static_cast<size_t>(samples_per_triangle));
+  for (int k = 0; k < samples_per_triangle; ++k) {
+    const double theta = (2.0 * ON_PI * k) / samples_per_triangle;
+    // A small ring around the centroid plus the centroid itself (k == 0
+    // reduces to the pure centroid below) - several distinct interior
+    // points rather than just the one that might accidentally sit at a
+    // low-deviation spot for a particular surface.
+    double a = 1.0 / 3.0 + 0.2 * std::cos(theta);
+    double b = 1.0 / 3.0 + 0.2 * std::sin(theta);
+    double c = 1.0 - a - b;
+    if (a <= 0.0 || b <= 0.0 || c <= 0.0) {
+      a = b = c = 1.0 / 3.0;
+    }
+    samples.push_back({a, b, c});
+  }
+
+  auto evaluate_triangle_deviation = [&](double u0, double v0, double u1, double v1, double u2,
+                                          double v2, const Point3d& p0, const Point3d& p1,
+                                          const Point3d& p2) {
+    double worst = 0.0;
+    for (const auto& bary : samples) {
+      const double a = bary[0];
+      const double b = bary[1];
+      const double c = bary[2];
+      const double u = a * u0 + b * u1 + c * u2;
+      const double v = a * v0 + b * v1 + c * v2;
+      const Point3d true_point = surface.PointAt(u, v);
+      const Point3d facet_point(a * p0.x + b * p1.x + c * p2.x, a * p0.y + b * p1.y + c * p2.y,
+                                 a * p0.z + b * p1.z + c * p2.z);
+      const double deviation = (true_point - facet_point).Length();
+      worst = std::max(worst, deviation);
+    }
+    return worst;
+  };
+
+  double max_deviation = 0.0;
+  for (size_t i = 0; i + 1 < u_values.size(); ++i) {
+    const double u0 = u_values[i];
+    const double u1 = u_values[i + 1];
+    for (size_t j = 0; j + 1 < v_values.size(); ++j) {
+      const double v0 = v_values[j];
+      const double v1 = v_values[j + 1];
+
+      const Point3d p00 = surface.PointAt(u0, v0);
+      const Point3d p10 = surface.PointAt(u1, v0);
+      const Point3d p11 = surface.PointAt(u1, v1);
+      const Point3d p01 = surface.PointAt(u0, v1);
+
+      // Same diagonal convention TessellateFromValues() uses: triangle 1 =
+      // (u0,v0)-(u1,v0)-(u1,v1), triangle 2 = (u0,v0)-(u1,v1)-(u0,v1).
+      max_deviation =
+          std::max(max_deviation,
+                    evaluate_triangle_deviation(u0, v0, u1, v0, u1, v1, p00, p10, p11));
+      max_deviation =
+          std::max(max_deviation,
+                    evaluate_triangle_deviation(u0, v0, u1, v1, u0, v1, p00, p11, p01));
+    }
+  }
+  return max_deviation;
+}
+
+}  // namespace
+
 Mesh NurbsSurface::TessellateGridAdaptive(
     double chord_tolerance, const std::vector<Point2d>* trim_polygon,
     const std::vector<std::vector<Point2d>>* hole_polygons) const {
   const SurfaceDivisions divisions = SuggestedDivisions(chord_tolerance);
-  return TessellateGrid(divisions.u, divisions.v, trim_polygon, hole_polygons);
+  return TessellateUniformCreaseAware(*this, divisions.u, divisions.v, trim_polygon, hole_polygons);
 }
 
 Mesh NurbsSurface::TessellateGridNonUniformAdaptive(
@@ -2307,7 +2489,7 @@ Mesh NurbsSurface::TessellateGridAdaptiveByAngle(
     double angle_tolerance, const std::vector<Point2d>* trim_polygon,
     const std::vector<std::vector<Point2d>>* hole_polygons) const {
   const SurfaceDivisions divisions = SuggestedDivisionsByAngle(angle_tolerance);
-  return TessellateGrid(divisions.u, divisions.v, trim_polygon, hole_polygons);
+  return TessellateUniformCreaseAware(*this, divisions.u, divisions.v, trim_polygon, hole_polygons);
 }
 
 Mesh NurbsSurface::TessellateGridNonUniformAdaptiveByAngle(
@@ -2331,73 +2513,8 @@ double NurbsSurface::MeasureGridTessellationDeviation(int u_divisions, int v_div
         "dino8::kernel::NurbsSurface::MeasureGridTessellationDeviation: "
         "u_divisions and v_divisions must each be at least 1");
   }
-
-  const ON_Interval u_domain = surface_.Domain(0);
-  const ON_Interval v_domain = surface_.Domain(1);
-
-  // Interior barycentric sample points for a triangle (a, b, c), a+b+c=1,
-  // deliberately excluding the three corners (a=1, b=1 or c=1) where the
-  // flat facet and the true surface coincide exactly by construction.
-  std::vector<std::array<double, 3>> samples;
-  samples.reserve(static_cast<size_t>(samples_per_triangle));
-  for (int k = 0; k < samples_per_triangle; ++k) {
-    const double theta = (2.0 * ON_PI * k) / samples_per_triangle;
-    // A small ring around the centroid plus the centroid itself (k == 0
-    // reduces to the pure centroid below) - several distinct interior
-    // points rather than just the one that might accidentally sit at a
-    // low-deviation spot for a particular surface.
-    double a = 1.0 / 3.0 + 0.2 * std::cos(theta);
-    double b = 1.0 / 3.0 + 0.2 * std::sin(theta);
-    double c = 1.0 - a - b;
-    if (a <= 0.0 || b <= 0.0 || c <= 0.0) {
-      a = b = c = 1.0 / 3.0;
-    }
-    samples.push_back({a, b, c});
-  }
-
-  auto evaluate_triangle_deviation = [&](double u0, double v0, double u1, double v1, double u2,
-                                          double v2, const Point3d& p0, const Point3d& p1,
-                                          const Point3d& p2) {
-    double worst = 0.0;
-    for (const auto& bary : samples) {
-      const double a = bary[0];
-      const double b = bary[1];
-      const double c = bary[2];
-      const double u = a * u0 + b * u1 + c * u2;
-      const double v = a * v0 + b * v1 + c * v2;
-      const Point3d true_point = PointAt(u, v);
-      const Point3d facet_point(a * p0.x + b * p1.x + c * p2.x, a * p0.y + b * p1.y + c * p2.y,
-                                 a * p0.z + b * p1.z + c * p2.z);
-      const double deviation = (true_point - facet_point).Length();
-      worst = std::max(worst, deviation);
-    }
-    return worst;
-  };
-
-  double max_deviation = 0.0;
-  for (int i = 0; i < u_divisions; ++i) {
-    const double u0 = u_domain.ParameterAt(static_cast<double>(i) / u_divisions);
-    const double u1 = u_domain.ParameterAt(static_cast<double>(i + 1) / u_divisions);
-    for (int j = 0; j < v_divisions; ++j) {
-      const double v0 = v_domain.ParameterAt(static_cast<double>(j) / v_divisions);
-      const double v1 = v_domain.ParameterAt(static_cast<double>(j + 1) / v_divisions);
-
-      const Point3d p00 = PointAt(u0, v0);
-      const Point3d p10 = PointAt(u1, v0);
-      const Point3d p11 = PointAt(u1, v1);
-      const Point3d p01 = PointAt(u0, v1);
-
-      // Same diagonal convention TessellateFromValues() uses: triangle 1 =
-      // (u0,v0)-(u1,v0)-(u1,v1), triangle 2 = (u0,v0)-(u1,v1)-(u0,v1).
-      max_deviation =
-          std::max(max_deviation,
-                    evaluate_triangle_deviation(u0, v0, u1, v0, u1, v1, p00, p10, p11));
-      max_deviation =
-          std::max(max_deviation,
-                    evaluate_triangle_deviation(u0, v0, u1, v1, u0, v1, p00, p11, p01));
-    }
-  }
-  return max_deviation;
+  return MeasureDeviationOverValues(*this, UniformParameterValues(*this, 0, u_divisions),
+                                    UniformParameterValues(*this, 1, v_divisions), samples_per_triangle);
 }
 
 Mesh NurbsSurface::TessellateGridCertifiedAdaptive(double chord_tolerance, int max_refinements,
@@ -2414,11 +2531,18 @@ Mesh NurbsSurface::TessellateGridCertifiedAdaptive(double chord_tolerance, int m
   }
 
   SurfaceDivisions div = SuggestedDivisions(chord_tolerance);
+  // Creases (see InteriorCreaseParameters()) are fixed for the surface, so
+  // find them once; with none, the lattice below is exactly the plain
+  // uniform one this method always used.
+  const std::vector<double> u_creases = InteriorCreaseParameters(*this, 0);
+  const std::vector<double> v_creases = InteriorCreaseParameters(*this, 1);
   for (int attempt = 0; attempt <= max_refinements; ++attempt) {
-    const double deviation = MeasureGridTessellationDeviation(div.u, div.v);
+    const std::vector<double> u_values = UniformValuesWithCreases(*this, 0, div.u, u_creases);
+    const std::vector<double> v_values = UniformValuesWithCreases(*this, 1, div.v, v_creases);
+    const double deviation = MeasureDeviationOverValues(*this, u_values, v_values, 6);
     if (deviation <= chord_tolerance) {
       if (out_achieved_deviation) *out_achieved_deviation = deviation;
-      return TessellateGrid(div.u, div.v);
+      return TessellateFromValues(*this, u_values, v_values, nullptr, nullptr);
     }
     div.u *= 2;
     div.v *= 2;
