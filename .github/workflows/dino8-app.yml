@@ -264,7 +264,7 @@ jobs:
           if-no-files-found: error
   macos:
     name: macOS (build, .dmg)
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERT_BASE64 != '' }}
     steps:
