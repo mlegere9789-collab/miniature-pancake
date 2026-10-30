@@ -2206,4 +2206,69 @@ Brep FilletConcaveEdgesByDistanceFromEdge(const Brep& solid, const std::vector<s
 Brep FilletConcaveEdgesByDistanceBetweenRails(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges,
                                                double rail_distance);
 
+// EXACT chamfer of a right circular cylinder's own RIM edge - the circular
+// edge where a full-sweep (2*pi) convex CylindricalFace wall meets its
+// flat end-cap disc - the first kernel fillet/chamfer construction in this
+// file whose adjacent faces are NOT both planar (every other function
+// above goes through PlanarFaces(), which rejects any curved face
+// outright; this one reads MixedFaces() instead, so it also chains onto a
+// solid that already carries curved faces). The removed material is the
+// ring-shaped right-triangle cross-section revolved about the axis, and
+// the bevel it leaves is a genuine Brep::ConicalFace (a frustum of a right
+// circular cone, full 2*pi sweep): radius `R - distance_cap` in the cap
+// plane, radius `R` at `distance_wall` down the wall, apex on the axis at
+// `distance_wall * (R - distance_cap) / distance_cap` beyond the cap plane
+// (similar triangles - the same radius0/radius1/length -> apex relation
+// ConicalFace's own doc comment documents). Exact by construction of the
+// representation: the wall is the SAME CylindricalFace shortened by
+// `distance_wall` at that end, the cap is the SAME planar face(s) mapped by
+// the homothety of ratio `(R - distance_cap) / R` about the rim centre
+// (loop points, arc-run radii and literal points alike, so a boolean-
+// pipeline 4-wedge disc stays a 4-wedge disc), and the cone's own closed-
+// form volume/area are what dino8-kernel's own regression test checks:
+// removed volume = (2*pi*distance_wall/distance_cap) * (R^3/3 - (R-dc)*R^2/2
+// + (R-dc)^3/6) (the revolved triangle), bevel area = pi*(2R-dc)*
+// sqrt(dw^2 + dc^2) (frustum lateral area).
+//
+// `point_on_rim` identifies the rim exactly as RemoveBlend's own
+// `point_on_fillet` identifies a fillet: it must lie (within
+// tolerance::kDistance, scaled by the solid's own extent) on the v=0 or
+// v=length circle of exactly ONE full-sweep, `outward == true`
+// CylindricalFace of `solid.MixedFaces()`. `distance_wall` is the setback
+// measured along the wall (axially) from the rim; `distance_cap` the
+// setback measured across the cap (radially) - the cylinder analogue of
+// ChamferConvexEdge's own distance_i/distance_j, and like them each may
+// differ (an unequal-distance chamfer on a curved face, which no other
+// function here builds). Both must be strictly positive, `distance_wall`
+// strictly less than the wall's own length and `distance_cap` strictly
+// less than the radius (a bevel that consumes the whole cap or the whole
+// wall is a different shape - a cone to a point or a bare frustum - and is
+// refused rather than mis-built; the same "too large to fit" discipline
+// ChamferConvexEdge applies).
+//
+// The CAP is found, not assumed: the planar face(s) of `solid.MixedFaces()`
+// lying in the rim's own plane with the end's own outward normal, EVERY
+// one of whose loop points is either the rim centre or a point of the rim
+// circle, and whose on-circle loop segments together cover the full
+// 2*pi (checked, within tolerance::kAlignment) - i.e. a plain disc,
+// whether a single dense polygon (the DiskCap fixture pattern) or the
+// four centre-anchored quadrant wedges BooleanCombineMixed's own
+// SynthesizeEndCaps builds. Throws std::invalid_argument when no such
+// cap exists, when a face in that plane has a loop point elsewhere (a
+// square cap, an annular cap around a coaxial boss, a cap that the rim
+// does not bound), or when the wall's own end at the rim carries a cap
+// notch (an oblique boolean cut - no longer a flat rim).
+//
+// SCOPE, disclosed rather than silently narrowed: a convex rim only
+// (`outward == true` - a drilled hole's countersink is the concave mirror
+// and is refused), the rim of a FULL cylinder only (a partial-sweep
+// wedge's rim is an arc with two end conditions, out of scope), and the
+// result's topology at the new disc's own seam is exactly what every
+// FromMixedFaces disc cap in this kernel already carries (the disc's
+// dense polygon and the curved face's closed cap circle reduce to
+// different vertex pairs and so stay two edges - see
+// MakeCylinderAxisForGeneralBooleanTest's own comment in the test file),
+// no better and no worse than the input's own rim was.
+Brep ChamferCylinderRim(const Brep& solid, Point3d point_on_rim, double distance_wall, double distance_cap);
+
 }  // namespace dino8::kernel

@@ -6890,4 +6890,179 @@ Brep FilletConcaveEdgesByDistanceBetweenRails(const Brep& solid, const std::vect
   return FilletConcaveEdges(solid, edges, radius);
 }
 
+// --- ChamferCylinderRim -----------------------------------------------------
+// See fillet.h for the contract. Everything below is MixedFaces()-based:
+// the wall is a full-sweep CylindricalFace record, the cap is one or more
+// PlanarFace records in the rim plane, and the result is assembled by
+// Brep::FromMixedFaces from the SAME records, edited in place - no
+// re-derivation of anything the input already states exactly.
+Brep ChamferCylinderRim(const Brep& solid, Point3d point_on_rim, double distance_wall, double distance_cap) {
+  if (!(distance_wall > 0.0) || !(distance_cap > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferCylinderRim: distance_wall and distance_cap must both be strictly positive");
+  }
+  const Brep::MixedFacesResult mf = solid.MixedFaces();
+  if (mf.cylindrical.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferCylinderRim: `solid` has no cylindrical face at all - for a planar-faced solid use "
+        "ChamferConvexEdge");
+  }
+
+  // Scale for the point-on-rim and cap-identification tests: the kernel's
+  // own kDistance, relative to the solid's own extent (the same
+  // RelativeTol/kRelative discipline every other function here uses).
+  double extent = 1.0;
+  for (const Brep::PlanarFace& f : mf.planar) {
+    for (const Point3d& p : f.loop) extent = std::max({extent, std::fabs(p.x), std::fabs(p.y), std::fabs(p.z)});
+  }
+  for (const Brep::CylindricalFace& c : mf.cylindrical) {
+    extent = std::max({extent, c.radius, std::fabs(c.length)});
+  }
+  const double tol = tolerance::kDistance * extent;
+
+  // (1) The rim: exactly one full-sweep convex wall whose v=0 or v=length
+  //     circle passes through `point_on_rim`.
+  int wall_index = -1;
+  bool at_v0 = false;
+  for (size_t c = 0; c < mf.cylindrical.size(); ++c) {
+    const Brep::CylindricalFace& cf = mf.cylindrical[c];
+    if (std::fabs(cf.angle - 2.0 * ON_PI) > tolerance::kZeroVector) continue;  // partial wedge: out of scope
+    const Vector3d d = point_on_rim - cf.frame.origin;
+    const double h = d * cf.frame.zaxis;
+    const Vector3d radial = d - h * cf.frame.zaxis;
+    if (std::fabs(radial.Length() - cf.radius) > tol) continue;
+    const bool end0 = std::fabs(h) <= tol;
+    const bool end1 = std::fabs(h - cf.length) <= tol;
+    if (!end0 && !end1) continue;
+    if (wall_index >= 0) {
+      throw std::invalid_argument(
+          "dino8::kernel::ChamferCylinderRim: `point_on_rim` lies on the rim circle of more than one cylindrical "
+          "face (an internal seam between two coaxial segments is not a rim)");
+    }
+    wall_index = static_cast<int>(c);
+    at_v0 = end0;
+  }
+  if (wall_index < 0) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferCylinderRim: `point_on_rim` does not lie on the v=0 or v=length circle of any "
+        "full-sweep cylindrical face of `solid`");
+  }
+  const Brep::CylindricalFace& wall = mf.cylindrical[static_cast<size_t>(wall_index)];
+  if (!wall.outward) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferCylinderRim: the rim belongs to an inward-facing (hole) wall - a countersink is the "
+        "concave mirror of this construction and is out of scope here");
+  }
+  if (at_v0 ? !wall.cap0_notch_points.empty() : !wall.cap1_notch_points.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferCylinderRim: the wall's own end at `point_on_rim` carries a cap notch (an oblique "
+        "cut) - it is not a flat circular rim");
+  }
+  const double radius = wall.radius;
+  if (!(distance_cap < radius)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferCylinderRim: distance_cap must be strictly less than the wall radius (a bevel that "
+        "consumes the whole cap is a cone to a point, not a chamfer)");
+  }
+  if (!(distance_wall < wall.length)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferCylinderRim: distance_wall must be strictly less than the wall's own length (the "
+        "bevel would consume the whole wall)");
+  }
+  const Vector3d axis = wall.frame.zaxis;
+  const Point3d rim_centre = wall.frame.origin + (at_v0 ? 0.0 : wall.length) * axis;
+  const Vector3d out = at_v0 ? -axis : axis;  // the cap's outward normal at this end
+
+  // (2) The cap: every planar face in the rim plane facing `out`, each a
+  //     plain disc piece (loop points at the centre or on the rim circle),
+  //     together covering the full turn.
+  std::vector<size_t> cap_faces;
+  double covered = 0.0;
+  for (size_t i = 0; i < mf.planar.size(); ++i) {
+    const Brep::PlanarFace& f = mf.planar[i];
+    if (f.plane.zaxis * out < 1.0 - tolerance::kAlignment) continue;
+    if (std::fabs((f.plane.origin - rim_centre) * axis) > tol) continue;
+    std::vector<bool> on_circle(f.loop.size(), false);
+    for (size_t k = 0; k < f.loop.size(); ++k) {
+      const Vector3d d = f.loop[k] - rim_centre;
+      if (std::fabs(d * axis) > tol) {
+        throw std::invalid_argument(
+            "dino8::kernel::ChamferCylinderRim: a planar face in the rim's own plane has a loop point off that plane "
+            "- please report this as a bug");
+      }
+      const double r = d.Length();
+      if (r <= tol) continue;  // the disc centre (a quadrant wedge's anchor vertex)
+      if (std::fabs(r - radius) > tol) {
+        throw std::invalid_argument(
+            "dino8::kernel::ChamferCylinderRim: the planar face in the rim's own plane is not a plain disc bounded by "
+            "the rim (a loop point is neither the centre nor on the rim circle) - only a full flat end cap is "
+            "chamfered here");
+      }
+      on_circle[k] = true;
+    }
+    for (size_t k = 0; k < f.loop.size(); ++k) {
+      const size_t k1 = (k + 1) % f.loop.size();
+      if (!on_circle[k] || !on_circle[k1]) continue;
+      const Vector3d a = f.loop[k] - rim_centre, b = f.loop[k1] - rim_centre;
+      covered += std::atan2(ON_CrossProduct(a, b).Length(), a * b);
+    }
+    cap_faces.push_back(i);
+  }
+  if (cap_faces.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferCylinderRim: no planar end cap lies in the rim's own plane - the rim is not the edge "
+        "between the wall and a flat cap");
+  }
+  if (std::fabs(covered - 2.0 * ON_PI) > tolerance::kAlignment) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferCylinderRim: the planar face(s) in the rim's own plane do not cover the full rim "
+        "circle (" + std::to_string(covered) + " rad of 2*pi) - not a plain disc cap");
+  }
+
+  // (3) Edit the records. Wall: shortened by distance_wall at the rim end.
+  std::vector<Brep::CylindricalFace> cylindrical = mf.cylindrical;
+  Brep::CylindricalFace& w = cylindrical[static_cast<size_t>(wall_index)];
+  w.length -= distance_wall;
+  if (at_v0) {
+    w.frame.origin = w.frame.origin + distance_wall * axis;
+    w.frame.UpdateEquation();
+  }
+  // The bevel: a full-sweep frustum, radius R - distance_cap in the cap
+  // plane growing to R at the new wall end, i.e. radius increasing along
+  // -out; ConicalFace's frame.zaxis is that direction and frame.origin its
+  // apex (see brep.h), which sits `distance_wall * (R - dc) / dc` beyond
+  // the cap plane along `out` by similar triangles. frame.xaxis is the
+  // wall's own, so the cone's angle-0 rail corner at the junction circle
+  // is exactly the shortened wall's own corner there (welded, not merely
+  // close).
+  Brep::ConicalFace cone;
+  cone.frame.origin = rim_centre + out * (distance_wall * (radius - distance_cap) / distance_cap);
+  cone.frame.zaxis = -out;
+  cone.frame.xaxis = wall.frame.xaxis;
+  cone.frame.yaxis = ON_CrossProduct(cone.frame.zaxis, cone.frame.xaxis);
+  cone.frame.UpdateEquation();
+  cone.radius0 = radius - distance_cap;
+  cone.radius1 = radius;
+  cone.length = distance_wall;
+  cone.angle = 2.0 * ON_PI;
+  cone.outward = true;
+  std::vector<Brep::ConicalFace> conical = mf.conical;
+  conical.push_back(cone);
+  // The cap: the same face records under the homothety of ratio k about
+  // the rim centre - loop, arc-run radii/literal points alike; notch
+  // indices and the plane are unchanged.
+  const double k = (radius - distance_cap) / radius;
+  std::vector<Brep::PlanarFace> planar = mf.planar;
+  for (size_t i : cap_faces) {
+    Brep::PlanarFace& f = planar[i];
+    for (Point3d& p : f.loop) p = rim_centre + (p - rim_centre) * k;
+    for (Brep::PlanarFace::ArcRun& run : f.arc_runs) {
+      run.radius *= k;
+      run.center = rim_centre + (run.center - rim_centre) * k;
+      for (Point3d& p : run.literal_points) p = rim_centre + (p - rim_centre) * k;
+    }
+  }
+  return Brep::FromMixedFaces(planar, cylindrical, conical, mf.spherical);
+}
+
 }  // namespace dino8::kernel
