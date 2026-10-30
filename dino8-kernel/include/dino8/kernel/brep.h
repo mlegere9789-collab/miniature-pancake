@@ -1383,9 +1383,28 @@ class Brep {
   // lump_face_ranges_ and the three *_persistent_ids_ tables are index-
   // or identity-based, not geometric, so neither case touches them.
   //
-  // Throws std::invalid_argument if `xform` is not a valid transform (the
+  // Body-orientation fix-up under a reflection: whenever
+  // `xform.Determinant() < 0` (a mirror, or any affine map with an odd
+  // number of negative scale factors - handedness-reversing either way),
+  // every face's m_bRev is toggled (`ON_Brep::Flip()`) after the
+  // geometry moves. `ON_Brep::Transform()` itself never does this, and a
+  // handedness-reversing map negates every surface's own Su x Sv
+  // relative to the mirrored body, so without it a mirrored solid came
+  // back inside-out: Volume() exactly negated (a mirrored Box() read
+  // -1000), TessellateToClosedMesh() normals all inward, a mirrored
+  // CylindricalFace's re-derived `outward` flag inverted. With it, a
+  // mirrored solid keeps its outward orientation (Volume() stays
+  // positive, same magnitude), a sheet keeps its chosen normal side, and
+  // mirroring twice through the same plane gives back the original
+  // m_bRev flags. Pure rotations/translations and positive-determinant
+  // scales are untouched by this.
+  //
+  // Throws std::invalid_argument if `xform` is not a valid transform
+  // (`ON_Xform::IsValid()` is false - a NaN/unset coefficient - or the
   // underlying `ON_Brep::Transform()` returns false) - the same failure
-  // convention SubD::Transform() already uses.
+  // convention SubD::Transform() already uses. Checked explicitly up
+  // front: `ON_Brep::Transform()` itself reports success on a NaN xform
+  // and silently leaves every control point NaN.
   Brep Transform(const ON_Xform& xform) const;
 
   // Mass-properties volume via the divergence theorem - direct NURBS

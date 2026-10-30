@@ -714,10 +714,44 @@ Brep::SphericalFace TransformSphericalFaceRecord(const ON_Xform& xform, const Br
 }  // namespace
 
 Brep Brep::Transform(const ON_Xform& xform) const {
+  // ON_Brep::Transform() does not validate `xform` itself - measured
+  // directly: an identity with one ON_DBL_QNAN coefficient comes back
+  // `true` with every control point silently NaN - so the invalid-input
+  // contract this method's own doc comment promises is checked here, up
+  // front, rather than relying on a return value that never says so.
+  if (!xform.IsValid()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::Transform: xform carries a NaN/unset coefficient (ON_Xform::IsValid() is false)");
+  }
   Brep result = *this;
   if (!result.brep_.Transform(xform)) {
     throw std::invalid_argument(
         "dino8::kernel::Brep::Transform: ON_Brep::Transform failed (xform is not a valid transform)");
+  }
+
+  if (xform.Determinant() < 0.0) {
+    // Orientation-reversing (reflection / mirror, or any affine with an
+    // odd number of negative scale factors): ON_Brep::Transform() maps
+    // every surface's control net through `xform` but never touches
+    // m_bRev, and a handedness-reversing linear map negates every
+    // surface's own Su x Sv relative to the mirrored body (for a
+    // reflection M: (M Su) x (M Sv) = det(M) * M (Su x Sv) = -M (Su x Sv)),
+    // so a solid that was consistently outward-oriented comes back
+    // inside-out - measured directly before this fix-up existed: a
+    // mirrored Box()'s Volume() read exactly -1000, its
+    // TessellateToClosedMesh() normals all pointed inward, and a mirrored
+    // CylindricalFace's re-derived `outward` flag inverted. The trim
+    // loops are untouched by any of this (m_C2 is parameter-space and
+    // never transformed; the outer loop stays counter-clockwise in (u, v);
+    // every trim's own m_bRev3d still relates it to its edge), so the ONE
+    // inconsistency is the geometric normal against m_bRev, and toggling
+    // m_bRev on every face (ON_Brep::Flip(), which changes nothing else)
+    // restores the body to its pre-transform orientation sense (outward
+    // stays outward, a sheet's chosen normal side stays that side).
+    // Keyed on the determinant's sign rather than `IsRigid() == -1` so a
+    // non-isometric orientation reversal (e.g. DiagonalTransformation(-1,
+    // 1, 2)) is corrected too, not only a pure mirror.
+    result.brep_.Flip();
   }
 
   if (xform.IsRigid() == 1) {
@@ -1878,12 +1912,26 @@ std::vector<Point2d> FaceOuterUv(const FaceGeometry& fg) {
 // planar - the one conversion PlanarFaces() and MixedFaces() (below)
 // share verbatim, so a planar face's own extraction never has two
 // independently-maintained copies that could quietly drift apart.
-Brep::PlanarFace ExtractPlanarFace(const FaceGeometry& fg) {
+// `rev` is the face's own m_bRev. The trim loop is counter-clockwise in
+// (u, v), so its 3D Newell normal is the surface's NATURAL Su x Sv - the
+// real face normal only when m_bRev is false. A reversed face (one the
+// app's own Flip toggled via raw().Flip(), or any face of a mirrored
+// Brep - Brep::Transform() toggles m_bRev under a reflection precisely
+// because a handedness-reversing map points every natural normal the
+// wrong way) has its real normal OPPOSITE the Newell normal, so the
+// record negates the plane and reverses the loop, keeping boolean.cpp's
+// own FlipFace() invariant ("CCW as seen from outside" about plane.zaxis
+// = the real outward normal) true of what this returns.
+Brep::PlanarFace ExtractPlanarFace(const FaceGeometry& fg, bool rev) {
   const std::vector<Point2d> uv = FaceOuterUv(fg);
   Brep::PlanarFace face;
   face.loop.reserve(uv.size());
   for (const Point2d& p : uv) face.loop.push_back(fg.surface.PointAt(p.x, p.y));
-  const ON_3dVector n = NewellNormal(face.loop);
+  ON_3dVector n = NewellNormal(face.loop);
+  if (rev) {
+    n = -n;
+    std::reverse(face.loop.begin(), face.loop.end());
+  }
   face.plane = ON_Plane(face.loop[0], n);
   return face;
 }
@@ -2020,7 +2068,15 @@ void ExtractConicalFace(const ON_Brep& brep, int face_index, const FaceGeometry&
   cf.radius0 = radius0;
   cf.radius1 = radius1;
   cf.length = h_far - h_near;
-  cf.outward = !brep.m_F[face_index].m_bRev;
+  // Same geometric reading of `outward` as the cylinder path (see
+  // ExtractCylindricalFace): the real face normal at the near trim corner
+  // against its own radial direction, so a mirrored (handedness-reversed)
+  // cone reports the truth instead of the inverse of m_bRev.
+  {
+    ON_3dVector n = fg.surface.NormalAt(u_min, v_min);
+    if (brep.m_F[face_index].m_bRev) n = -n;
+    cf.outward = ON_DotProduct(n, xaxis) > 0.0;
+  }
 
   // True radian sweep between the trim's own u_min and u_max, via the
   // SAME ON_Circle::GetRadianFromNurbFormParameter conversion the
@@ -2098,7 +2154,18 @@ Brep::CylindricalFace ExtractCylindricalFace(const ON_Brep& brep, int face_index
   cf.frame.UpdateEquation();
   cf.radius = radius;
   cf.length = v_max - v_min;
-  cf.outward = !brep.m_F[face_index].m_bRev;
+  // `outward` is read off the REAL face normal (the surface's own normal
+  // at the trim corner, reversed by m_bRev) against the radial direction
+  // from the axis, not assumed from m_bRev alone: every cylinder this
+  // kernel or OpenNURBS builds has its natural Su x Sv pointing away from
+  // the axis, but a handedness-reversed surface (a mirrored face -
+  // Brep::Transform() toggles m_bRev for exactly that case) has it
+  // pointing IN, so !m_bRev would report the opposite of the truth.
+  {
+    ON_3dVector n = fg.surface.NormalAt(u_min, v_min);
+    if (brep.m_F[face_index].m_bRev) n = -n;
+    cf.outward = ON_DotProduct(n, xaxis) > 0.0;
+  }
 
   // A genuinely FULL (closed, untrimmed-in-u) cylindrical wall - going all
   // the way around back to its own start point - is detected directly and
@@ -2303,7 +2370,7 @@ std::vector<Brep::PlanarFace> Brep::PlanarFaces() const {
           "dino8::kernel::Brep::PlanarFaces: face " + std::to_string(i) +
           " is not planar - this is a planar-only B-rep boolean, see its own doc comment");
     }
-    result.push_back(ExtractPlanarFace(fg));
+    result.push_back(ExtractPlanarFace(fg, brep_.m_F[i].m_bRev));
   }
   return result;
 }
@@ -2348,7 +2415,7 @@ Brep::MixedFacesResult Brep::MixedFaces() const {
     NurbsSurface wrapper;
     wrapper.raw() = fg.surface;
     if (wrapper.IsPlanar()) {
-      result.planar.push_back(ExtractPlanarFace(fg));
+      result.planar.push_back(ExtractPlanarFace(fg, brep_.m_F[i].m_bRev));
       continue;
     }
 
@@ -7371,7 +7438,9 @@ int Brep::MergeCoplanarFaces(double tolerance) {
       NurbsSurface wa;
       wa.raw() = fga.surface;
       if (!wa.IsPlanar()) continue;
-      const PlanarFace pa = ExtractPlanarFace(fga);
+      // fa's REAL outward normal (m_bRev-corrected), which is exactly what
+      // TryMergeCoplanarPair() below documents `plane.zaxis` to be.
+      const PlanarFace pa = ExtractPlanarFace(fga, face_a.m_bRev);
 
       const ON_BrepLoop& loop_a = brep_.m_L[outer_a];
       for (int k = 0; k < loop_a.TrimCount() && !changed; ++k) {
@@ -7419,7 +7488,7 @@ int Brep::MergeCoplanarFaces(double tolerance) {
         NurbsSurface wb;
         wb.raw() = fgb.surface;
         if (!wb.IsPlanar()) continue;
-        const PlanarFace pb = ExtractPlanarFace(fgb);
+        const PlanarFace pb = ExtractPlanarFace(fgb, brep_.m_F[fb].m_bRev);
 
         // Coplanar AND coincident: same-direction normal, and fb's plane
         // origin lies in fa's own plane.
