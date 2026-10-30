@@ -86449,6 +86449,531 @@ void TestSurfaceMatchEdgeToCurveExactRowsPrescribedAndPreserved() {
   }
 }
 
+// Mesh::ClosestPoint / FireRay / ContainsPoint (and so SignedDistance)
+// answer from one lazily built, cached ON_RTree (MeshClosestPointIndex)
+// instead of scanning every triangle. The contract is BIT-IDENTICAL
+// results, so the oracle is the production brute-force code itself
+// (dino8::kernel::detail::SetMeshSpatialAccelerationEnabled(false)),
+// compared with exact (not toleranced) equality, plus an independent
+// scan built from one-face meshes, closed-form unit-cube answers,
+// degenerate inputs, cache invalidation, and a dense timing case.
+void TestMeshSpatialQueriesAreAcceleratedAndBitIdentical() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MeshClosestPointIndex;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RayHit;
+  using dino8::kernel::Vector3d;
+  namespace kd = dino8::kernel::detail;
+
+  struct AccelRestorer {
+    ~AccelRestorer() { kd::SetMeshSpatialAccelerationEnabled(true); }
+  } restore_accel;
+
+  uint64_t rng_state = 0x9E3779B97F4A7C15ull;
+  auto rnd = [&rng_state]() {  // uniform [0, 1)
+    rng_state = rng_state * 6364136223846793005ull + 1442695040888963407ull;
+    return static_cast<double>(rng_state >> 11) / 9007199254740992.0;
+  };
+  auto rnd_in = [&](double lo, double hi) { return lo + (hi - lo) * rnd(); };
+
+  auto same = [](double a, double b) { return a == b || (std::isnan(a) && std::isnan(b)); };
+  auto same_pt = [&](const Point3d& a, const Point3d& b) { return same(a.x, b.x) && same(a.y, b.y) && same(a.z, b.z); };
+  auto same_hits = [&](const std::vector<RayHit>& a, const std::vector<RayHit>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+      if (!same(a[i].t, b[i].t) || !same_pt(a[i].point, b[i].point) || a[i].face_index != b[i].face_index ||
+          a[i].entering != b[i].entering) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Subdivided unit cube [0,1]^3, outward-wound, dyadic coordinates (k = 4
+  // so every vertex is exact in ON_Mesh's float storage).
+  auto make_cube = [](int k, bool quads) {
+    Mesh m;
+    ON_Mesh& raw = m.raw();
+    for (int axis = 0; axis < 3; ++axis) {
+      for (int side = 0; side < 2; ++side) {
+        const int b = (axis + 1) % 3, c = (axis + 2) % 3;
+        const int u_axis = side == 1 ? b : c, v_axis = side == 1 ? c : b;  // u x v = outward normal
+        const int base = raw.m_V.Count();
+        for (int i = 0; i <= k; ++i) {
+          for (int j = 0; j <= k; ++j) {
+            double p[3];
+            p[axis] = side;
+            p[u_axis] = static_cast<double>(i) / k;
+            p[v_axis] = static_cast<double>(j) / k;
+            raw.m_V.Append(ON_3fPoint(static_cast<float>(p[0]), static_cast<float>(p[1]), static_cast<float>(p[2])));
+          }
+        }
+        auto vid = [&](int i, int j) { return base + i * (k + 1) + j; };
+        for (int i = 0; i < k; ++i) {
+          for (int j = 0; j < k; ++j) {
+            ON_MeshFace f;
+            if (quads) {
+              f.vi[0] = vid(i, j);
+              f.vi[1] = vid(i + 1, j);
+              f.vi[2] = vid(i + 1, j + 1);
+              f.vi[3] = vid(i, j + 1);
+              raw.m_F.Append(f);
+            } else {
+              f.vi[0] = vid(i, j);
+              f.vi[1] = vid(i + 1, j);
+              f.vi[2] = vid(i + 1, j + 1);
+              f.vi[3] = f.vi[2];
+              raw.m_F.Append(f);
+              f.vi[1] = vid(i + 1, j + 1);
+              f.vi[2] = vid(i, j + 1);
+              f.vi[3] = f.vi[2];
+              raw.m_F.Append(f);
+            }
+          }
+        }
+      }
+    }
+    return m;
+  };
+  auto sphere = [](double cx, double cy, double cz, double r, int n) {
+    return Brep::Sphere(Point3d(cx, cy, cz), r).TessellateToClosedMesh(n, n);
+  };
+  // Random triangle/quad soup with degenerate (collinear, point) faces.
+  auto make_soup = [&](int tris, int quads) {
+    Mesh m;
+    ON_Mesh& raw = m.raw();
+    auto pt = [&]() { return ON_3fPoint(static_cast<float>(rnd_in(-1, 1)), static_cast<float>(rnd_in(-1, 1)), static_cast<float>(rnd_in(-1, 1))); };
+    for (int i = 0; i < tris; ++i) {
+      const int base = raw.m_V.Count();
+      raw.m_V.Append(pt());
+      raw.m_V.Append(pt());
+      raw.m_V.Append(pt());
+      if (i % 40 == 7) raw.m_V[base + 2] = raw.m_V[base + 1];             // collinear/degenerate
+      if (i % 55 == 11) raw.m_V[base + 1] = raw.m_V[base + 2] = raw.m_V[base];  // a point
+      ON_MeshFace f;
+      f.vi[0] = base;
+      f.vi[1] = base + 1;
+      f.vi[2] = base + 2;
+      f.vi[3] = base + 2;
+      raw.m_F.Append(f);
+    }
+    for (int i = 0; i < quads; ++i) {
+      const int base = raw.m_V.Count();
+      for (int k = 0; k < 4; ++k) raw.m_V.Append(pt());
+      ON_MeshFace f;
+      for (int k = 0; k < 4; ++k) f.vi[k] = base + k;
+      raw.m_F.Append(f);
+    }
+    return m;
+  };
+
+  // Query sets drawn from the mesh itself: random points around it,
+  // vertices, edge midpoints, face centroids, far points; rays: random,
+  // axis-aligned, non-unit, through vertices, along edges.
+  struct Queries {
+    std::vector<Point3d> points;
+    std::vector<std::pair<Point3d, Vector3d>> rays;
+  };
+  auto make_queries = [&](const Mesh& m, int n_random) {
+    Queries q;
+    const ON_Mesh& raw = m.raw();
+    ON_BoundingBox box = raw.BoundingBox();
+    const Point3d c((box.m_min.x + box.m_max.x) / 2, (box.m_min.y + box.m_max.y) / 2, (box.m_min.z + box.m_max.z) / 2);
+    const double span = std::max(1e-3, box.Diagonal().Length());
+    for (int i = 0; i < n_random; ++i) {
+      q.points.push_back(Point3d(c.x + rnd_in(-0.75, 0.75) * span, c.y + rnd_in(-0.75, 0.75) * span, c.z + rnd_in(-0.75, 0.75) * span));
+    }
+    for (int i = 0; i < raw.m_V.Count(); i += std::max(1, raw.m_V.Count() / 24)) q.points.push_back(Point3d(raw.m_V[i]));
+    for (int i = 0; i < raw.m_F.Count(); i += std::max(1, raw.m_F.Count() / 24)) {
+      const ON_MeshFace& f = raw.m_F[i];
+      const Point3d a(raw.m_V[f.vi[0]]), b(raw.m_V[f.vi[1]]), d(raw.m_V[f.vi[2]]);
+      q.points.push_back(Point3d((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2));                   // edge midpoint
+      q.points.push_back(Point3d((a.x + b.x + d.x) / 3, (a.y + b.y + d.y) / 3, (a.z + b.z + d.z) / 3));  // face centroid
+    }
+    q.points.push_back(Point3d(c.x + 40 * span, c.y - 25 * span, c.z + 9 * span));
+    q.points.push_back(c);
+
+    const Vector3d axes[] = {Vector3d(1, 0, 0), Vector3d(-1, 0, 0), Vector3d(0, 1, 0),
+                             Vector3d(0, -1, 0), Vector3d(0, 0, 1), Vector3d(0, 0, -1), Vector3d(1, 1, 1)};
+    for (size_t i = 0; i < q.points.size(); i += 2) {
+      const Point3d& o = q.points[i];
+      for (const Vector3d& a : axes) q.rays.push_back({o, a});
+      for (int k = 0; k < 4; ++k) q.rays.push_back({o, Vector3d(rnd_in(-1, 1), rnd_in(-1, 1), rnd_in(-1, 1)) * (k == 3 ? 37.0 : 1.0)});
+      // Aimed exactly at a vertex, and along an edge from a vertex.
+      if (raw.m_V.Count() > 0) {
+        const Point3d v(raw.m_V[static_cast<int>(rnd() * raw.m_V.Count()) % raw.m_V.Count()]);
+        if ((v - o).LengthSquared() > 0) q.rays.push_back({o, v - o});
+      }
+    }
+    for (int i = 0; i < raw.m_F.Count(); i += std::max(1, raw.m_F.Count() / 16)) {
+      const ON_MeshFace& f = raw.m_F[i];
+      const Point3d a(raw.m_V[f.vi[0]]), b(raw.m_V[f.vi[1]]);
+      if ((b - a).LengthSquared() > 0) {
+        q.rays.push_back({a, b - a});            // along an edge, starting on its vertex
+        q.rays.push_back({a - (b - a), b - a});  // along the edge's line from outside it
+      }
+    }
+    // Drop non-finite queries (a mesh with a NaN vertex yields NaN points):
+    // ClosestPoint of a NaN point has no defined answer to compare.
+    auto finite3 = [](double x, double y, double z) { return std::isfinite(x) && std::isfinite(y) && std::isfinite(z); };
+    q.points.erase(std::remove_if(q.points.begin(), q.points.end(), [&](const Point3d& p) { return !finite3(p.x, p.y, p.z); }), q.points.end());
+    q.rays.erase(std::remove_if(q.rays.begin(), q.rays.end(),
+                                [&](const std::pair<Point3d, Vector3d>& r) {
+                                  return !finite3(r.first.x, r.first.y, r.first.z) || !finite3(r.second.x, r.second.y, r.second.z);
+                                }),
+                 q.rays.end());
+    return q;
+  };
+
+  struct Results {
+    std::vector<Point3d> closest;
+    std::vector<char> inside;
+    std::vector<double> signed_dist;
+    std::vector<std::vector<RayHit>> hits;
+  };
+  auto run = [&](const Mesh& m, const Queries& q, bool with_rays) {
+    Results r;
+    for (const Point3d& p : q.points) {
+      r.closest.push_back(m.ClosestPoint(p));
+      r.inside.push_back(m.ContainsPoint(p) ? 1 : 0);
+      r.signed_dist.push_back(m.SignedDistance(p));
+    }
+    if (with_rays) {
+      for (const auto& ray : q.rays) r.hits.push_back(m.FireRay(ray.first, ray.second));
+    }
+    return r;
+  };
+  auto compare_to_scan = [&](const char* name, const Mesh& m, int n_random, bool with_rays) {
+    const Queries q = make_queries(m, n_random);
+    kd::SetMeshSpatialAccelerationEnabled(false);
+    const Results want = run(m, q, with_rays);
+    kd::SetMeshSpatialAccelerationEnabled(true);
+    const Results got = run(m, q, with_rays);
+    bool closest_ok = true, inside_ok = true, signed_ok = true, hits_ok = true;
+    size_t inside_count = 0, hit_count = 0;
+    for (size_t i = 0; i < q.points.size(); ++i) {
+      closest_ok = closest_ok && same_pt(got.closest[i], want.closest[i]);
+      inside_ok = inside_ok && got.inside[i] == want.inside[i];
+      signed_ok = signed_ok && same(got.signed_dist[i], want.signed_dist[i]);
+      inside_count += static_cast<size_t>(want.inside[i]);
+    }
+    for (size_t i = 0; i < want.hits.size(); ++i) {
+      hits_ok = hits_ok && same_hits(got.hits[i], want.hits[i]);
+      hit_count += want.hits[i].size();
+    }
+    const std::string n = name;
+    const std::string count = " (" + std::to_string(q.points.size()) + " points, " + std::to_string(q.rays.size()) + " rays)";
+    Check(closest_ok, ("ClosestPoint is bit-identical to the brute-force scan: " + n + count).c_str());
+    Check(inside_ok, ("ContainsPoint is identical to the brute-force scan: " + n + count).c_str());
+    Check(signed_ok, ("SignedDistance is bit-identical to the brute-force scan: " + n + count).c_str());
+    if (with_rays) {
+      Check(hits_ok, ("FireRay hit lists (t, point, face, entering, order) are bit-identical to the scan: " + n + count).c_str());
+      Check(hit_count > 0, ("positive control, the FireRay comparison actually exercised real hits: " + n).c_str());
+    }
+    return inside_count;
+  };
+
+  // (1) Randomized/deterministic cross-check on meshes of several sizes.
+  {
+    const Mesh cube_quads = make_cube(4, true);
+    const Mesh cube_tris = make_cube(4, false);
+    Check(cube_quads.FaceCount() == 96 && cube_tris.FaceCount() == 192, "cube fixtures have 96 quads / 192 triangles (well past the index threshold)");
+    const size_t in_cq = compare_to_scan("subdivided unit cube, quad faces", cube_quads, 60, true);
+    compare_to_scan("subdivided unit cube, triangle faces", cube_tris, 60, true);
+    const size_t in_s = compare_to_scan("tessellated sphere r=5", sphere(0, 0, 0, 5, 12), 80, true);
+    compare_to_scan("tessellated sphere translated to (40,20,10)", sphere(40, 20, 10, 5, 16), 60, true);
+    compare_to_scan("random triangle/quad soup with degenerate faces", make_soup(400, 25), 80, true);
+    Check(in_cq > 0 && in_s > 0, "positive control: the closed fixtures classified some query points as inside (so ContainsPoint was not vacuously all-false)");
+
+    // Every face duplicated: every distance and every hit is tied, so the
+    // first-in-order tie-break (and the equal-t hit order) is exercised.
+    Mesh doubled = sphere(0, 0, 0, 5, 10);
+    {
+      ON_Mesh& raw = doubled.raw();
+      const int n = raw.m_F.Count();
+      for (int i = 0; i < n; ++i) raw.m_F.Append(raw.m_F[i]);
+    }
+    compare_to_scan("sphere with every face duplicated (exact ties everywhere)", doubled, 50, true);
+
+    // A non-finite vertex: the scan never selects its (NaN) distances and
+    // never counts its crossings; the index falls back to scanning.
+    Mesh with_nan = sphere(0, 0, 0, 5, 10);
+    with_nan.raw().m_V[3] = ON_3fPoint(std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f);
+    compare_to_scan("sphere with a NaN vertex (no rays; ClosestPoint/ContainsPoint only)", with_nan, 40, false);
+  }
+
+  // (2) Independent oracle: a scan assembled from one-face meshes (each
+  // below the index threshold, so each answers with the plain scan).
+  {
+    const Mesh soup = make_soup(300, 20);
+    const ON_Mesh& raw = soup.raw();
+    std::vector<Mesh> faces;
+    for (int i = 0; i < raw.m_F.Count(); ++i) {
+      Mesh one;
+      ON_Mesh& r = one.raw();
+      const ON_MeshFace& f = raw.m_F[i];
+      ON_MeshFace nf;
+      for (int k = 0; k < 4; ++k) {
+        r.m_V.Append(raw.m_V[f.vi[k]]);
+        nf.vi[k] = k;
+      }
+      r.m_F.Append(nf);
+      faces.push_back(one);
+    }
+    bool closest_ok = true, hits_ok = true;
+    size_t total_hits = 0;
+    for (int qi = 0; qi < 40; ++qi) {
+      const Point3d p(rnd_in(-1.3, 1.3), rnd_in(-1.3, 1.3), rnd_in(-1.3, 1.3));
+      Point3d best;
+      double best_d2 = std::numeric_limits<double>::infinity();
+      for (const Mesh& one : faces) {
+        const Point3d cand = one.ClosestPoint(p);
+        const double d2 = (cand - p).LengthSquared();
+        if (d2 < best_d2) {
+          best_d2 = d2;
+          best = cand;
+        }
+      }
+      closest_ok = closest_ok && same_pt(soup.ClosestPoint(p), best);
+
+      const Vector3d dir(rnd_in(-1, 1), rnd_in(-1, 1), rnd_in(-1, 1));
+      std::vector<RayHit> want;
+      for (size_t fi = 0; fi < faces.size(); ++fi) {
+        for (RayHit h : faces[fi].FireRay(p, dir)) {
+          h.face_index = static_cast<int>(fi);
+          want.push_back(h);
+        }
+      }
+      std::sort(want.begin(), want.end(), [](const RayHit& x, const RayHit& y) { return x.t < y.t; });
+      total_hits += want.size();
+      hits_ok = hits_ok && same_hits(soup.FireRay(p, dir), want);
+    }
+    Check(closest_ok, "accelerated ClosestPoint equals a scan assembled from independent one-face meshes (40 queries)");
+    Check(hits_ok && total_hits > 0, "accelerated FireRay equals the hits gathered face by face from independent one-face meshes (40 rays)");
+  }
+
+  // (3) Closed-form unit cube (exact, dyadic coordinates).
+  {
+    for (int variant = 0; variant < 2; ++variant) {
+      const bool quads = variant == 0;
+      const Mesh cube = make_cube(4, quads);
+      const std::string v = quads ? " (quad cube)" : " (triangle cube)";
+      auto close = [](const Point3d& a, const Point3d& b) { return a.DistanceTo(b) <= 1e-12; };
+      Check(close(cube.ClosestPoint(Point3d(0.4, 0.3, 2)), Point3d(0.4, 0.3, 1)), ("cube: closest point above a face is its projection" + v).c_str());
+      Check(close(cube.ClosestPoint(Point3d(2, 3, 4)), Point3d(1, 1, 1)), ("cube: closest point beyond a corner is that corner" + v).c_str());
+      Check(close(cube.ClosestPoint(Point3d(-1, 0.5, 0.5)), Point3d(0, 0.5, 0.5)), ("cube: closest point beside a face" + v).c_str());
+      Check(cube.ClosestPoint(Point3d(0, 0, 0)) == Point3d(0, 0, 0), ("cube: a query on a vertex returns that vertex exactly" + v).c_str());
+      Check(cube.ClosestPoint(Point3d(0.5, 0, 0)) == Point3d(0.5, 0, 0), ("cube: a query on an edge returns itself exactly" + v).c_str());
+      Check(close(cube.ClosestPoint(Point3d(0.5, 0.5, 0.6)), Point3d(0.5, 0.5, 1)), ("cube: an interior point is closest to the nearest face" + v).c_str());
+      Check(cube.ClosestPoint(Point3d(0.4, 0.3, 1)) == Point3d(0.4, 0.3, 1), ("cube: a query inside a face triangle returns itself" + v).c_str());
+
+      const std::vector<RayHit> through = cube.FireRay(Point3d(0.4, 0.3, -1), Vector3d(0, 0, 1));
+      Check(through.size() == 2 && std::abs(through[0].t - 1.0) <= 1e-12 && std::abs(through[1].t - 2.0) <= 1e-12 &&
+                through[0].entering && !through[1].entering,
+            ("cube: a ray through two faces hits at t=1 (entering) and t=2 (leaving)" + v).c_str());
+      Check(through.size() == 2 && close(through[0].point, Point3d(0.4, 0.3, 0)) && close(through[1].point, Point3d(0.4, 0.3, 1)),
+            ("cube: the ray hit points are exact" + v).c_str());
+      Check(cube.FireRay(Point3d(2, 2, -1), Vector3d(0, 0, 1)).empty(), ("cube: a ray that misses reports nothing" + v).c_str());
+      Check(cube.FireRay(Point3d(0.4, 0.3, 2), Vector3d(0, 0, 1)).empty(), ("cube: a ray pointing away reports nothing" + v).c_str());
+      // Along the x=0,y=0 edge: the side faces are parallel (rejected), the
+      // caps are crossed exactly at their corner vertex.
+      const std::vector<RayHit> along_edge = cube.FireRay(Point3d(0, 0, -1), Vector3d(0, 0, 1));
+      Check(!along_edge.empty() && std::abs(along_edge.front().t - 1.0) <= 1e-12 && std::abs(along_edge.back().t - 2.0) <= 1e-12,
+            ("cube: a ray along an edge still crosses both caps at the corner" + v).c_str());
+      Check(cube.FireRay(Point3d(-1, 0, 0), Vector3d(1, 0, 0)).size() >= 2,
+            ("cube: a ray running along an edge line crosses the two end faces on their boundary" + v).c_str());
+
+      Check(cube.ContainsPoint(Point3d(0.5, 0.5, 0.5)) && cube.ContainsPoint(Point3d(0.3, 0.6, 0.7)) && cube.ContainsPoint(Point3d(0.5, 0.5, 0.99)),
+            ("cube: interior points are contained" + v).c_str());
+      Check(!cube.ContainsPoint(Point3d(1.5, 0.5, 0.5)) && !cube.ContainsPoint(Point3d(0.5, 0.5, -0.01)) &&
+                !cube.ContainsPoint(Point3d(0.5, 0.5, 1.01)) && !cube.ContainsPoint(Point3d(10, 10, 10)),
+            ("cube: exterior points are not contained" + v).c_str());
+      Check(std::abs(cube.SignedDistance(Point3d(0.5, 0.5, 0.5)) + 0.5) <= 1e-12 && std::abs(cube.SignedDistance(Point3d(0.5, 0.5, 2)) - 1.0) <= 1e-12 &&
+                std::abs(cube.SignedDistance(Point3d(2, 2, 2)) - std::sqrt(3.0)) <= 1e-12 && std::abs(cube.SignedDistance(Point3d(0.5, 0.5, 0.9)) + 0.1) <= 1e-12,
+            ("cube: signed distances are -0.5 at the center, +1 above a face, sqrt(3) from the far corner, -0.1 just inside" + v).c_str());
+    }
+  }
+
+  // (4) Degenerate meshes, and the index built explicitly on tiny meshes.
+  {
+    const Mesh empty;
+    bool threw_closest = false, threw_dir = false;
+    try {
+      empty.ClosestPoint(Point3d(0, 0, 0));
+    } catch (const std::invalid_argument&) {
+      threw_closest = true;
+    }
+    try {
+      empty.FireRay(Point3d(0, 0, 0), Vector3d(0, 0, 0));
+    } catch (const std::invalid_argument&) {
+      threw_dir = true;
+    }
+    Check(threw_closest, "empty mesh: ClosestPoint throws invalid_argument");
+    Check(empty.FireRay(Point3d(0, 0, 0), Vector3d(1, 0, 0)).empty() && !empty.ContainsPoint(Point3d(0, 0, 0)),
+          "empty mesh: FireRay reports nothing and ContainsPoint is false");
+    Check(threw_dir, "a zero ray direction throws invalid_argument");
+    bool index_threw = false;
+    try {
+      MeshClosestPointIndex bad(empty);
+    } catch (const std::invalid_argument&) {
+      index_threw = true;
+    }
+    Check(index_threw, "MeshClosestPointIndex on an empty mesh throws invalid_argument");
+
+    const Mesh tri = MakeTriangleMesh(Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(0, 1, 0));
+    Check(tri.ClosestPoint(Point3d(0.2, 0.2, 3)).DistanceTo(Point3d(0.2, 0.2, 0)) <= 1e-12 &&
+              tri.ClosestPoint(Point3d(2, 2, 0)).DistanceTo(Point3d(0.5, 0.5, 0)) <= 1e-12 &&
+              tri.ClosestPoint(Point3d(-1, -1, 1)) == Point3d(0, 0, 0),
+          "single triangle: inside-face, edge and vertex closest points are right (vertex exactly)");
+    const std::vector<RayHit> one = tri.FireRay(Point3d(0.2, 0.2, 1), Vector3d(0, 0, -1));
+    Check(one.size() == 1 && one[0].t == 1.0 && one[0].entering && one[0].face_index == 0, "single triangle: a ray down onto it hits once at t=1, entering");
+    Check(tri.FireRay(Point3d(-1, 0, 0), Vector3d(1, 0, 0)).empty() && tri.FireRay(Point3d(2, 2, 1), Vector3d(0, 0, -1)).empty(),
+          "single triangle: a ray along its edge (coplanar) and a ray that misses both report nothing");
+
+    // The index forced onto tiny meshes (below Mesh's own threshold) must
+    // agree with Mesh's plain scan too.
+    const Mesh box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+    bool tiny_ok = true;
+    for (const Mesh* m : {&tri, &box}) {
+      const MeshClosestPointIndex index(*m);
+      const Queries q = make_queries(*m, 40);
+      for (const Point3d& p : q.points) {
+        tiny_ok = tiny_ok && same_pt(index.ClosestPoint(p), m->ClosestPoint(p)) && index.ContainsPoint(p) == m->ContainsPoint(p) &&
+                  same(index.SignedDistance(p), m->SignedDistance(p));
+      }
+      for (const auto& ray : q.rays) tiny_ok = tiny_ok && same_hits(index.FireRay(ray.first, ray.second), m->FireRay(ray.first, ray.second));
+    }
+    Check(tiny_ok, "MeshClosestPointIndex built on a single triangle and on a 6-quad box equals Mesh's own answers for every query");
+  }
+
+  // (5) Cache invalidation: edits through raw() and in-place healing.
+  {
+    Mesh cube = make_cube(4, true);
+    Check(std::abs(cube.SignedDistance(Point3d(0.5, 0.5, 2)) - 1.0) <= 1e-12, "cache: first query builds the index (cube, +1 above the top)");
+    const Mesh copy = cube;
+    {
+      ON_Mesh& raw = cube.raw();
+      for (int i = 0; i < raw.m_V.Count(); ++i) raw.m_V[i].z += 5.0f;  // same array, same counts, moved in place
+    }
+    Check(cube.ClosestPoint(Point3d(0.5, 0.5, 2)) == Point3d(0.5, 0.5, 5) && std::abs(cube.SignedDistance(Point3d(0.5, 0.5, 2)) - 3.0) <= 1e-12,
+          "cache: moving every vertex in place through raw() is seen by the next query (not answered from the stale tree)");
+    Check(cube.ContainsPoint(Point3d(0.5, 0.5, 5.5)) && !cube.ContainsPoint(Point3d(0.5, 0.5, 0.5)),
+          "cache: containment follows the moved geometry");
+    Check(std::abs(copy.SignedDistance(Point3d(0.5, 0.5, 2)) - 1.0) <= 1e-12 && copy.ContainsPoint(Point3d(0.5, 0.5, 0.5)),
+          "cache: a copy made before the edit keeps answering for the original geometry");
+
+    Mesh edited = make_cube(4, true);
+    const Point3d aim(-1, 0.4, 0.3);  // down +x onto cell 5 of the x=0 side
+    const Vector3d aim_dir(1, 0, 0);
+    const std::vector<RayHit> before = edited.FireRay(aim, aim_dir);  // fills the cache
+    {
+      ON_Mesh& raw = edited.raw();
+      std::swap(raw.m_F[5].vi[1], raw.m_F[5].vi[3]);  // re-wind that one face in place
+    }
+    kd::SetMeshSpatialAccelerationEnabled(false);
+    const std::vector<RayHit> rewound_scan = edited.FireRay(aim, aim_dir);
+    kd::SetMeshSpatialAccelerationEnabled(true);
+    const std::vector<RayHit> rewound = edited.FireRay(aim, aim_dir);
+    Check(same_hits(rewound, rewound_scan), "cache: after a face winding edit through raw() the ray hits match the scan");
+    const int healed = edited.UnifyNormals();
+    kd::SetMeshSpatialAccelerationEnabled(false);
+    const std::vector<RayHit> healed_scan = edited.FireRay(aim, aim_dir);
+    kd::SetMeshSpatialAccelerationEnabled(true);
+    const std::vector<RayHit> healed_hits = edited.FireRay(aim, aim_dir);
+    Check(same_hits(healed_hits, healed_scan), "cache: UnifyNormals() (an in-place winding edit) invalidates the index, hits match the scan");
+    Check(healed == 1 && !before.empty() && !rewound.empty() && !healed_hits.empty() && before[0].entering && !rewound[0].entering &&
+              healed_hits[0].entering,
+          "cache: positive control, the re-wound face flipped the hit's entering flag and UnifyNormals() flipped it back");
+
+    Mesh dup = make_cube(4, true);
+    const Point3d probe(0.4, 0.3, 2);
+    Check(dup.ClosestPoint(probe) == Point3d(0.4, 0.3, 1), "cache: duplicate-face fixture baseline");
+    {
+      ON_Mesh& raw = dup.raw();
+      raw.m_F.Append(raw.m_F[0]);
+    }
+    const int removed = dup.RemoveDuplicateFaces();
+    Check(removed == 1 && dup.FaceCount() == 96 && dup.ClosestPoint(probe) == Point3d(0.4, 0.3, 1) &&
+              std::abs(dup.SignedDistance(Point3d(0.5, 0.5, 0.5)) + 0.5) <= 1e-12,
+          "cache: RemoveDuplicateFaces() invalidates the index and queries stay correct");
+  }
+
+  // (6) Dense mesh: the scan is measurably slow, the index is not.
+  {
+    const Mesh dense = sphere(0, 0, 0, 5, 300);
+    Check(dense.FaceCount() >= 150000, "dense fixture really is that many faces");
+    const int kBrute = 12;
+    const int kFast = 2000;
+    std::vector<Point3d> points;
+    std::vector<std::pair<Point3d, Vector3d>> rays;
+    for (int i = 0; i < kFast; ++i) {
+      Vector3d d(rnd_in(-1, 1), rnd_in(-1, 1), rnd_in(-1, 1));
+      d.Unitize();
+      const double radius = rnd_in(1.0, 9.0);
+      points.push_back(Point3d(d.x * radius, d.y * radius, d.z * radius));
+      rays.push_back({Point3d(rnd_in(-7, 7), rnd_in(-7, 7), rnd_in(-7, 7)), Vector3d(rnd_in(-1, 1), rnd_in(-1, 1), rnd_in(-1, 1))});
+    }
+    using Clock = std::chrono::steady_clock;
+    auto seconds_since = [](Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); };
+
+    // The first accelerated query pays the one-off build.
+    auto t = Clock::now();
+    (void)dense.ClosestPoint(points[0]);
+    const double build_seconds = seconds_since(t);
+
+    t = Clock::now();
+    std::vector<Point3d> fast_closest;
+    for (const Point3d& p : points) fast_closest.push_back(dense.ClosestPoint(p));
+    const double fast_closest_s = seconds_since(t) / kFast;
+    t = Clock::now();
+    std::vector<char> fast_inside;
+    for (const Point3d& p : points) fast_inside.push_back(dense.ContainsPoint(p) ? 1 : 0);
+    const double fast_inside_s = seconds_since(t) / kFast;
+    t = Clock::now();
+    std::vector<std::vector<RayHit>> fast_hits;
+    for (const auto& r : rays) fast_hits.push_back(dense.FireRay(r.first, r.second));
+    const double fast_ray_s = seconds_since(t) / kFast;
+
+    kd::SetMeshSpatialAccelerationEnabled(false);
+    t = Clock::now();
+    bool closest_ok = true;
+    for (int i = 0; i < kBrute; ++i) closest_ok = closest_ok && same_pt(dense.ClosestPoint(points[static_cast<size_t>(i)]), fast_closest[static_cast<size_t>(i)]);
+    const double slow_closest_s = seconds_since(t) / kBrute;
+    t = Clock::now();
+    bool inside_ok = true;
+    for (int i = 0; i < kBrute; ++i) inside_ok = inside_ok && (dense.ContainsPoint(points[static_cast<size_t>(i)]) ? 1 : 0) == fast_inside[static_cast<size_t>(i)];
+    const double slow_inside_s = seconds_since(t) / kBrute;
+    t = Clock::now();
+    bool rays_ok = true;
+    size_t hits_seen = 0;
+    for (int i = 0; i < kBrute; ++i) {
+      const auto want = dense.FireRay(rays[static_cast<size_t>(i)].first, rays[static_cast<size_t>(i)].second);
+      hits_seen += want.size();
+      rays_ok = rays_ok && same_hits(fast_hits[static_cast<size_t>(i)], want);
+    }
+    const double slow_ray_s = seconds_since(t) / kBrute;
+    kd::SetMeshSpatialAccelerationEnabled(true);
+
+    std::printf("  [spatial timing, %d faces] build %.3f s | per query: ClosestPoint %.1f us vs scan %.1f us (%.0fx), ContainsPoint %.1f us vs scan %.1f us (%.0fx), FireRay %.1f us vs scan %.1f us (%.0fx)\n",
+                dense.FaceCount(), build_seconds, fast_closest_s * 1e6, slow_closest_s * 1e6, slow_closest_s / fast_closest_s, fast_inside_s * 1e6,
+                slow_inside_s * 1e6, slow_inside_s / fast_inside_s, fast_ray_s * 1e6, slow_ray_s * 1e6, slow_ray_s / fast_ray_s);
+    Check(closest_ok, "dense: accelerated ClosestPoint is bit-identical to the scan on the sampled queries");
+    Check(inside_ok, "dense: accelerated ContainsPoint is identical to the scan on the sampled queries");
+    Check(rays_ok && hits_seen > 0, "dense: accelerated FireRay hit lists are bit-identical to the scan on the sampled rays (with real hits)");
+    Check(build_seconds < 20.0, ("dense: the one-off index build finishes inside a generous bound (took " + std::to_string(build_seconds) + " s)").c_str());
+    Check(slow_closest_s > 10 * fast_closest_s && slow_inside_s > 5 * fast_inside_s && slow_ray_s > 5 * fast_ray_s,
+          "dense: every accelerated query is at least 5x (ClosestPoint 10x) faster per call than the brute-force scan");
+    Check(fast_closest_s * kFast < 30.0 && fast_inside_s * kFast < 30.0 && fast_ray_s * kFast < 30.0,
+          "dense: 2000 queries of each kind finish inside a wall-clock bound the scan (180k triangles each) would blow through");
+    // Closed form on the dense mesh: a point at distance d from the center
+    // of a radius-5 sphere is |5 - d| from the surface, up to the facet sagitta.
+    const double sd = dense.SignedDistance(Point3d(0, 3.0, 0));
+    Check(sd < 0 && std::abs(sd + 2.0) <= 1e-2 && std::abs(dense.SignedDistance(Point3d(9, 0, 0)) - 4.0) <= 1e-2,
+          "dense: signed distance 2 inside and 4 outside the radius-5 sphere (analytic, within the facet sagitta)");
+  }
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -87782,6 +88307,8 @@ int main() {
   RunTest("TestNurbsCurveSaveStepStandardRationalLayoutAndLoadStepReadsBothLayouts",
           TestNurbsCurveSaveStepStandardRationalLayoutAndLoadStepReadsBothLayouts);
   RunTest("TestSurfaceMatchEdgeToCurveExactRowsPrescribedAndPreserved", TestSurfaceMatchEdgeToCurveExactRowsPrescribedAndPreserved);
+
+  RunTest("TestMeshSpatialQueriesAreAcceleratedAndBitIdentical", TestMeshSpatialQueriesAreAcceleratedAndBitIdentical);
 
   RunTest("ON::End", ON::End);
 

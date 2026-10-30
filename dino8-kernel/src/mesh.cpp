@@ -1,5 +1,6 @@
 #include "dino8/kernel/mesh.h"
 
+#include <atomic>
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -498,7 +499,41 @@ bool ContainsPointAlong(const ON_Mesh& mesh, Point3d point, const Vector3d& dire
 }
 }  // namespace
 
+namespace detail {
+namespace {
+std::atomic<bool> g_mesh_spatial_acceleration_enabled{true};
+}  // namespace
+
+void SetMeshSpatialAccelerationEnabled(bool enabled) { g_mesh_spatial_acceleration_enabled.store(enabled); }
+bool MeshSpatialAccelerationEnabled() { return g_mesh_spatial_acceleration_enabled.load(); }
+}  // namespace detail
+
+namespace {
+// Below this many faces a plain scan beats building an R-tree for what
+// is, for most callers, a one-off query; the index only pays for itself
+// when it is reused (it is cached on the Mesh) or the mesh is large.
+constexpr int kMinFacesForSpatialIndex = 32;
+}  // namespace
+
+std::shared_ptr<const MeshClosestPointIndex> Mesh::SpatialIndexForQuery() const {
+  if (mesh_.m_F.Count() < kMinFacesForSpatialIndex || !detail::MeshSpatialAccelerationEnabled()) return nullptr;
+  detail::MeshSpatialCache& cache = spatial_cache_;
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  const void* vertex_array = mesh_.m_V.Array();
+  const void* face_array = mesh_.m_F.Array();
+  if (!cache.index || cache.vertex_array != vertex_array || cache.face_array != face_array ||
+      cache.vertex_count != mesh_.m_V.Count() || cache.face_count != mesh_.m_F.Count()) {
+    cache.index = std::make_shared<const MeshClosestPointIndex>(*this);
+    cache.vertex_array = vertex_array;
+    cache.face_array = face_array;
+    cache.vertex_count = mesh_.m_V.Count();
+    cache.face_count = mesh_.m_F.Count();
+  }
+  return cache.index;
+}
+
 bool Mesh::ContainsPoint(Point3d point) const {
+  if (const auto index = SpatialIndexForQuery()) return index->ContainsPoint(point);
   int votes_in = 0;
   for (const Vector3d& direction : kContainsPointDirections) {
     if (ContainsPointAlong(mesh_, point, direction)) ++votes_in;
@@ -514,6 +549,7 @@ Point3d Mesh::ClosestPoint(Point3d point) const {
         "dino8::kernel::Mesh::ClosestPoint: mesh has no faces - there's no "
         "surface to be close to");
   }
+  if (const auto index = SpatialIndexForQuery()) return index->ClosestPoint(point);
 
   Point3d best_point;
   double best_distance_squared = std::numeric_limits<double>::infinity();
@@ -545,6 +581,68 @@ double Mesh::SignedDistance(Point3d point) const {
   return ContainsPoint(point) ? -distance : distance;
 }
 
+namespace {
+// How far a triangle's box is padded in the index. The exact tests accept
+// a ray hit up to 1e-9 of an edge length outside the triangle (the
+// barycentric slack FireRay() uses), so the box must reach at least
+// ~2e-9 * edge beyond the triangle; 1e-8 leaves a 5x margin. The
+// absolute term (1e-11 of the coordinate magnitude, ~1e5 machine
+// epsilons) covers the rounding in the barycentric/parameter arithmetic
+// when a triangle is tiny relative to its distance from the origin.
+double TriangleBoxPad(const std::array<Point3d, 3>& t, double tri_scale) {
+  const double e0 = (t[1] - t[0]).Length();
+  const double e1 = (t[2] - t[1]).Length();
+  const double e2 = (t[0] - t[2]).Length();
+  return 1e-8 * std::max({e0, e1, e2}) + 1e-11 * tri_scale;
+}
+
+bool AllFinite(const Point3d& p) { return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z); }
+
+bool ON_CALLBACK_CDECL CollectRTreeId(void* context, ON__INT_PTR id) {
+  static_cast<std::vector<int>*>(context)->push_back(static_cast<int>(id));
+  return true;
+}
+
+// State for MeshClosestPointIndex::ClosestPoint()'s shrinking-sphere
+// search (a plain struct so the ON_RTree callback needs no private access).
+struct ClosestPointSearch {
+  const std::vector<std::array<Point3d, 3>>* triangles = nullptr;
+  Point3d point;
+  ON_RTreeSphere* sphere = nullptr;
+  double radius_slack = 0.0;
+  double best_distance_squared = std::numeric_limits<double>::infinity();
+  int best_id = -1;
+  Point3d best_point;
+
+  void Consider(int id) {
+    const auto& t = (*triangles)[static_cast<size_t>(id)];
+    const Point3d candidate = ClosestPointOnTriangle(point, t[0], t[1], t[2]);
+    const double distance_squared = (candidate - point).LengthSquared();
+    // The scan keeps the FIRST triangle (in original order) with the
+    // strictly smallest squared distance, so on an exact tie the lower
+    // index wins no matter in which order the tree visits them.
+    if (distance_squared < best_distance_squared ||
+        (distance_squared == best_distance_squared && id < best_id)) {
+      best_distance_squared = distance_squared;
+      best_id = id;
+      best_point = candidate;
+    }
+  }
+};
+
+bool ON_CALLBACK_CDECL ClosestPointSearchCallback(void* context, ON__INT_PTR id) {
+  ClosestPointSearch* s = static_cast<ClosestPointSearch*>(context);
+  s->Consider(static_cast<int>(id));
+  if (s->sphere != nullptr && s->best_id >= 0) {
+    // Nothing farther than the best distance so far (plus rounding slack,
+    // so exact ties are never pruned) can win or tie.
+    const double r = std::sqrt(s->best_distance_squared) * (1.0 + 1e-9) + s->radius_slack;
+    if (r < s->sphere->m_radius) s->sphere->m_radius = r;
+  }
+  return true;
+}
+}  // namespace
+
 MeshClosestPointIndex::MeshClosestPointIndex(const Mesh& mesh) : tree_(0) {
   if (mesh.mesh_.m_F.Count() == 0) {
     throw std::invalid_argument(
@@ -552,81 +650,137 @@ MeshClosestPointIndex::MeshClosestPointIndex(const Mesh& mesh) : tree_(0) {
         "surface to index");
   }
 
+  double max_pad = 0.0;
+  double lo[3] = {std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(),
+                  std::numeric_limits<double>::infinity()};
+  double hi[3] = {-std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
+                  -std::numeric_limits<double>::infinity()};
   auto add_triangle = [&](int i0, int i1, int i2, int face_index) {
-    const Point3d a(mesh.mesh_.m_V[i0]), b(mesh.mesh_.m_V[i1]), c(mesh.mesh_.m_V[i2]);
+    const std::array<Point3d, 3> t = {Point3d(mesh.mesh_.m_V[i0]), Point3d(mesh.mesh_.m_V[i1]),
+                                      Point3d(mesh.mesh_.m_V[i2])};
     const int id = static_cast<int>(triangles_.size());
-    triangles_.push_back({a, b, c});
+    triangles_.push_back(t);
     triangle_face_indices_.push_back(face_index);
-    double tri_min[3] = {std::min({a.x, b.x, c.x}), std::min({a.y, b.y, c.y}), std::min({a.z, b.z, c.z})};
-    double tri_max[3] = {std::max({a.x, b.x, c.x}), std::max({a.y, b.y, c.y}), std::max({a.z, b.z, c.z})};
+    double tri_min[3] = {std::min({t[0].x, t[1].x, t[2].x}), std::min({t[0].y, t[1].y, t[2].y}),
+                         std::min({t[0].z, t[1].z, t[2].z})};
+    double tri_max[3] = {std::max({t[0].x, t[1].x, t[2].x}), std::max({t[0].y, t[1].y, t[2].y}),
+                         std::max({t[0].z, t[1].z, t[2].z})};
+    double tri_scale = 0.0;
+    // (std::min/max silently skip a NaN operand, so test each vertex.)
+    if (!AllFinite(t[0]) || !AllFinite(t[1]) || !AllFinite(t[2])) finite_ = false;
+    for (int k = 0; k < 3; ++k) {
+      if (!std::isfinite(tri_min[k]) || !std::isfinite(tri_max[k])) finite_ = false;
+      lo[k] = std::min(lo[k], tri_min[k]);
+      hi[k] = std::max(hi[k], tri_max[k]);
+      tri_scale = std::max({tri_scale, std::fabs(tri_min[k]), std::fabs(tri_max[k])});
+    }
+    scale_ = std::max(scale_, tri_scale);
+    const double pad = TriangleBoxPad(t, tri_scale);
+    if (std::isfinite(pad)) max_pad = std::max(max_pad, pad);
+    for (int k = 0; k < 3; ++k) {
+      tri_min[k] -= pad;
+      tri_max[k] += pad;
+    }
     tree_.Insert(tri_min, tri_max, id);
-    bbox_.Set(a, true);
-    bbox_.Set(b, true);
-    bbox_.Set(c, true);
   };
   for (int i = 0; i < mesh.mesh_.m_F.Count(); ++i) {
     const ON_MeshFace& f = mesh.mesh_.m_F[i];
     add_triangle(f.vi[0], f.vi[1], f.vi[2], i);
     if (f.IsQuad()) add_triangle(f.vi[0], f.vi[2], f.vi[3], i);
   }
+  if (!std::isfinite(scale_)) finite_ = false;
+  if (finite_) {
+    bbox_.m_min = ON_3dPoint(lo[0], lo[1], lo[2]);
+    bbox_.m_max = ON_3dPoint(hi[0], hi[1], hi[2]);
+    const double grow = 2.0 * max_pad + 1e-9 * scale_;
+    padded_bbox_.m_min = ON_3dPoint(lo[0] - grow, lo[1] - grow, lo[2] - grow);
+    padded_bbox_.m_max = ON_3dPoint(hi[0] + grow, hi[1] + grow, hi[2] + grow);
+  }
 }
 
 Point3d MeshClosestPointIndex::ClosestPoint(Point3d point) const {
-  const int n = static_cast<int>(triangles_.size());
-  const double diagonal = bbox_.IsValid() ? bbox_.Diagonal().Length() : 0.0;
-  double r = diagonal > 0.0 ? diagonal / std::cbrt(static_cast<double>(n)) : 1.0;
-  if (!(r > 0.0)) r = 1.0;
+  ClosestPointSearch search;
+  search.triangles = &triangles_;
+  search.point = point;
 
-  auto search = [&](double radius, Point3d& best_point, double& best_distance) {
-    const double box_min[3] = {point.x - radius, point.y - radius, point.z - radius};
-    const double box_max[3] = {point.x + radius, point.y + radius, point.z + radius};
-    ON_SimpleArray<int> ids;
-    tree_.Search(box_min, box_max, ids);
-    best_distance = std::numeric_limits<double>::infinity();
-    for (int j = 0; j < ids.Count(); ++j) {
-      const auto& t = triangles_[static_cast<size_t>(ids[j])];
-      const Point3d candidate = ClosestPointOnTriangle(point, t[0], t[1], t[2]);
-      const double d = candidate.DistanceTo(point);
-      if (d < best_distance) {
-        best_distance = d;
-        best_point = candidate;
-      }
-    }
-    return ids.Count();
-  };
-
-  // Whether the search box (half-width `radius`, centered on `point`)
-  // already contains the mesh's own whole bounding box - if so, nothing
-  // outside it exists at all, and the result is exact regardless of the
-  // `best_distance <= radius` proof below.
-  auto covers_everything = [&](double radius) {
-    return point.x - radius <= bbox_.m_min.x && point.x + radius >= bbox_.m_max.x &&
-           point.y - radius <= bbox_.m_min.y && point.y + radius >= bbox_.m_max.y &&
-           point.z - radius <= bbox_.m_min.z && point.z + radius >= bbox_.m_max.z;
-  };
-
-  Point3d best_point;
-  double best_distance;
-  for (int iter = 0; iter < 64; ++iter) {
-    const int count = search(r, best_point, best_distance);
-    if (count > 0 && (best_distance <= r || covers_everything(r))) return best_point;
-    if (count == 0 && covers_everything(r)) break;  // genuinely nothing found anywhere (unreachable for a real mesh, see the fallback below)
-    r *= 2.0;
+  if (!finite_ || !AllFinite(point)) {
+    // Not something a box test can reason about - take the plain scan.
+    for (int id = 0; id < static_cast<int>(triangles_.size()); ++id) search.Consider(id);
+    return search.best_point;
   }
-  // Unreachable in practice (64 doublings covers any finite mesh many
-  // times over, see PointCloud::KNearest()'s own identical fallback),
-  // kept only as an honest fallback rather than an infinite loop if it
-  // ever were reached.
-  best_distance = std::numeric_limits<double>::infinity();
-  for (const auto& t : triangles_) {
-    const Point3d candidate = ClosestPointOnTriangle(point, t[0], t[1], t[2]);
-    const double d = candidate.DistanceTo(point);
-    if (d < best_distance) {
-      best_distance = d;
-      best_point = candidate;
-    }
+
+  // A sphere that certainly encloses every padded box, shrunk by the
+  // callback to the best distance found so far.
+  const double fx = std::max(std::fabs(point.x - padded_bbox_.m_min.x), std::fabs(point.x - padded_bbox_.m_max.x));
+  const double fy = std::max(std::fabs(point.y - padded_bbox_.m_min.y), std::fabs(point.y - padded_bbox_.m_max.y));
+  const double fz = std::max(std::fabs(point.z - padded_bbox_.m_min.z), std::fabs(point.z - padded_bbox_.m_max.z));
+  ON_RTreeSphere sphere;
+  sphere.m_point[0] = point.x;
+  sphere.m_point[1] = point.y;
+  sphere.m_point[2] = point.z;
+  sphere.m_radius = std::sqrt(fx * fx + fy * fy + fz * fz) * (1.0 + 1e-9) + 1.0;
+  search.sphere = &sphere;
+  search.radius_slack =
+      1e-9 * (scale_ + std::max({std::fabs(point.x), std::fabs(point.y), std::fabs(point.z)}));
+  tree_.Search(&sphere, ClosestPointSearchCallback, &search);
+  return search.best_point;
+}
+
+void MeshClosestPointIndex::RayCandidates(Point3d origin, Vector3d direction, std::vector<int>& ids) const {
+  ids.clear();
+  auto all = [&]() {
+    ids.resize(triangles_.size());
+    for (size_t i = 0; i < ids.size(); ++i) ids[i] = static_cast<int>(i);
+  };
+  if (!finite_ || !AllFinite(origin) || !AllFinite(Point3d(direction.x, direction.y, direction.z))) {
+    all();
+    return;
   }
-  return best_point;
+
+  // Standard slab method: clip the FORWARD ray (t >= 0) to the padded
+  // bounding box. Every possible hit lies inside it, so a ray that misses
+  // it has no candidates at all.
+  double tmin = 0.0;
+  double tmax = std::numeric_limits<double>::infinity();
+  const double o[3] = {origin.x, origin.y, origin.z};
+  const double d[3] = {direction.x, direction.y, direction.z};
+  const double bmin[3] = {padded_bbox_.m_min.x, padded_bbox_.m_min.y, padded_bbox_.m_min.z};
+  const double bmax[3] = {padded_bbox_.m_max.x, padded_bbox_.m_max.y, padded_bbox_.m_max.z};
+  for (int axis = 0; axis < 3; ++axis) {
+    if (std::fabs(d[axis]) < 1e-300) {
+      if (o[axis] < bmin[axis] || o[axis] > bmax[axis]) return;  // parallel to this slab and outside it
+      continue;
+    }
+    double t1 = (bmin[axis] - o[axis]) / d[axis];
+    double t2 = (bmax[axis] - o[axis]) / d[axis];
+    if (t1 > t2) std::swap(t1, t2);
+    tmin = std::max(tmin, t1);
+    tmax = std::min(tmax, t2);
+    if (tmin > tmax) return;  // misses the bounding box entirely
+  }
+  const Point3d p0 = origin + direction * tmin;
+  const Point3d p1 = origin + direction * tmax;
+  if (!std::isfinite(tmax) || !AllFinite(p0) || !AllFinite(p1)) {
+    all();
+    return;
+  }
+
+  // Triangles whose padded boxes pass within `radius` of the segment
+  // p0..p1; the radius only has to cover the rounding in p0/p1 (the boxes
+  // already carry the tolerance padding).
+  ON_RTreeCapsule capsule;
+  capsule.m_point[0][0] = p0.x;
+  capsule.m_point[0][1] = p0.y;
+  capsule.m_point[0][2] = p0.z;
+  capsule.m_point[1][0] = p1.x;
+  capsule.m_point[1][1] = p1.y;
+  capsule.m_point[1][2] = p1.z;
+  capsule.m_radius =
+      1e-9 * (scale_ + std::max({std::fabs(origin.x), std::fabs(origin.y), std::fabs(origin.z)})) + 1e-300;
+  capsule.m_domain[0] = 0.0;
+  capsule.m_domain[1] = 1.0;
+  tree_.Search(&capsule, CollectRTreeId, &ids);
+  std::sort(ids.begin(), ids.end());
 }
 
 std::vector<RayHit> MeshClosestPointIndex::FireRay(Point3d origin, Vector3d direction) const {
@@ -635,90 +789,71 @@ std::vector<RayHit> MeshClosestPointIndex::FireRay(Point3d origin, Vector3d dire
         "dino8::kernel::MeshClosestPointIndex::FireRay: direction is the zero vector - a ray needs "
         "a direction");
   }
-  std::vector<RayHit> hits;
-  if (!bbox_.IsValid()) return hits;  // unreachable - the constructor already requires at least one face
+  std::vector<int> ids;
+  RayCandidates(origin, direction, ids);
 
-  // Standard slab method: clip the FORWARD ray (t >= 0, matching
-  // Mesh::FireRay()'s own contract) to this index's own whole bounding
-  // box. No real triangle intersection is possible outside it, by
-  // construction, so a ray that misses the box entirely (tmin > tmax
-  // below) returns immediately - zero triangle tests, not even one.
-  double tmin = 0.0;
-  double tmax = std::numeric_limits<double>::infinity();
-  const double o[3] = {origin.x, origin.y, origin.z};
-  const double d[3] = {direction.x, direction.y, direction.z};
-  const double bmin[3] = {bbox_.m_min.x, bbox_.m_min.y, bbox_.m_min.z};
-  const double bmax[3] = {bbox_.m_max.x, bbox_.m_max.y, bbox_.m_max.z};
-  for (int axis = 0; axis < 3; ++axis) {
-    if (std::fabs(d[axis]) < 1e-300) {
-      if (o[axis] < bmin[axis] || o[axis] > bmax[axis]) return hits;  // parallel to this slab and outside it
+  // The same per-triangle test, hit assembly and quad rule as
+  // Mesh::FireRay()'s own scan, applied in original triangle order to the
+  // candidates (a triangle outside the candidate set provably misses).
+  constexpr double kEpsilon = 1e-12;
+  std::vector<RayHit> hits;
+  int last_hit_id = -2;
+  for (const int id : ids) {
+    // A quad's second triangle is tested only when its first missed.
+    if (id > 0 && triangle_face_indices_[static_cast<size_t>(id)] == triangle_face_indices_[static_cast<size_t>(id - 1)] &&
+        last_hit_id == id - 1) {
       continue;
     }
-    double t1 = (bmin[axis] - o[axis]) / d[axis];
-    double t2 = (bmax[axis] - o[axis]) / d[axis];
-    if (t1 > t2) std::swap(t1, t2);
-    tmin = std::max(tmin, t1);
-    tmax = std::min(tmax, t2);
-    if (tmin > tmax) return hits;  // the ray misses the bounding box entirely
-  }
-
-  // A TIGHT box around just the clipped segment [tmin, tmax] - not this
-  // index's own full extent - is what actually narrows the RTree query
-  // to the triangles near the ray's own path, the real acceleration
-  // this gives a ray that only grazes a small part of a large mesh.
-  const Point3d p0 = origin + direction * tmin;
-  const Point3d p1 = origin + direction * tmax;
-  const double box_min[3] = {std::min(p0.x, p1.x), std::min(p0.y, p1.y), std::min(p0.z, p1.z)};
-  const double box_max[3] = {std::max(p0.x, p1.x), std::max(p0.y, p1.y), std::max(p0.z, p1.z)};
-  ON_SimpleArray<int> ids;
-  tree_.Search(box_min, box_max, ids);
-
-  constexpr double kEpsilon = 1e-12;
-  for (int j = 0; j < ids.Count(); ++j) {
-    const auto& t = triangles_[static_cast<size_t>(ids[j])];
-    double tt = 0, u = 0, v = 0;
-    // The same hair of barycentric slack Mesh::FireRay() itself uses -
-    // see its own doc comment for why.
-    if (!LineTriangleParameter(origin, direction, t[0], t[1], t[2], tt, u, v, /*slack=*/1e-9) || tt <= kEpsilon) {
+    const auto& tri = triangles_[static_cast<size_t>(id)];
+    const Point3d& a = tri[0];
+    const Point3d& b = tri[1];
+    const Point3d& c = tri[2];
+    double t = 0, u = 0, v = 0;
+    // A hair of barycentric slack so a crossing landing exactly on a
+    // quad's shared diagonal isn't rejected by BOTH triangles to
+    // round-off (u + v = 1 - 1e-17 in one, u = -1e-17 in the other).
+    if (!LineTriangleParameter(origin, direction, a, b, c, t, u, v, /*slack=*/1e-9) || t <= kEpsilon) {
       continue;
     }
     RayHit h;
-    h.t = tt;
-    h.point = origin + direction * tt;
-    h.face_index = triangle_face_indices_[static_cast<size_t>(ids[j])];
-    h.entering = ON_DotProduct(direction, ON_CrossProduct(t[1] - t[0], t[2] - t[0])) < 0.0;
+    h.t = t;
+    h.point = origin + direction * t;
+    h.face_index = triangle_face_indices_[static_cast<size_t>(id)];
+    h.entering = ON_DotProduct(direction, ON_CrossProduct(b - a, c - a)) < 0.0;
     hits.push_back(h);
+    last_hit_id = id;
   }
   std::sort(hits.begin(), hits.end(), [](const RayHit& x, const RayHit& y) { return x.t < y.t; });
+  return hits;
+}
 
-  // A quad face contributes two sub-triangles sharing one face_index
-  // (see triangle_face_indices_'s own doc comment) - a ray can only
-  // genuinely cross a planar quad once, so both reporting a hit means
-  // the crossing landed exactly on their shared diagonal; keep only the
-  // nearest (first, after the sort above) one per face_index, the same
-  // "report a quad's own crossing once" contract Mesh::FireRay() itself
-  // already guarantees by only testing its second triangle when its
-  // first one misses.
-  std::vector<RayHit> deduped;
-  deduped.reserve(hits.size());
-  for (const RayHit& h : hits) {
-    const bool seen = std::any_of(deduped.begin(), deduped.end(),
-                                   [&](const RayHit& existing) { return existing.face_index == h.face_index; });
-    if (!seen) deduped.push_back(h);
+int MeshClosestPointIndex::CountCrossings(Point3d origin, const Vector3d& direction) const {
+  std::vector<int> ids;
+  RayCandidates(origin, direction, ids);
+  int crossing_count = 0;
+  for (const int id : ids) {
+    const auto& tri = triangles_[static_cast<size_t>(id)];
+    double t = 0, u = 0, v = 0;
+    if (LineTriangleParameter(origin, direction, tri[0], tri[1], tri[2], t, u, v) && t > tolerance::kZero) {
+      ++crossing_count;
+    }
   }
-  return deduped;
+  return crossing_count;
+}
+
+bool MeshClosestPointIndex::ContainsPoint(Point3d point) const {
+  int votes_in = 0;
+  for (const Vector3d& direction : kContainsPointDirections) {
+    if ((CountCrossings(point, direction) % 2) == 1) ++votes_in;
+  }
+  // Strict majority of 5, the identical tie-proof rule Mesh::ContainsPoint()
+  // itself uses (kContainsPointDirectionCount is odd).
+  return votes_in * 2 > kContainsPointDirectionCount;
 }
 
 double MeshClosestPointIndex::SignedDistance(Point3d point) const {
   const double distance = (ClosestPoint(point) - point).Length();
-  int votes_in = 0;
-  for (const Vector3d& direction : kContainsPointDirections) {
-    if ((FireRay(point, direction).size() % 2) == 1) ++votes_in;
-  }
-  // Strict majority of 5, the identical tie-proof rule Mesh::ContainsPoint()
-  // itself uses (kContainsPointDirectionCount is odd).
-  const bool inside = votes_in * 2 > kContainsPointDirectionCount;
-  return inside ? -distance : distance;
+  return ContainsPoint(point) ? -distance : distance;
 }
 
 MassProperties Mesh::VolumeMassProperties() const {
@@ -900,6 +1035,8 @@ std::vector<RayHit> Mesh::FireRay(Point3d origin, Vector3d direction) const {
         "dino8::kernel::Mesh::FireRay: direction is the zero vector - a ray needs "
         "a direction");
   }
+  if (mesh_.m_F.Count() == 0) return {};
+  if (const auto index = SpatialIndexForQuery()) return index->FireRay(origin, direction);
   constexpr double kEpsilon = 1e-12;
   std::vector<RayHit> hits;
   for (int i = 0; i < mesh_.m_F.Count(); ++i) {
@@ -6961,6 +7098,7 @@ std::vector<std::vector<int>> Mesh::NakedEdgeLoops() const {
 }
 
 int Mesh::CloseNakedEdges(double tolerance) {
+  InvalidateSpatialIndex();  // geometry/winding edited in place below
   const CheckReport report = Check(tolerance);
   std::set<int> boundary;
   for (const auto& [a, b] : report.naked_edge_list) {
@@ -7007,6 +7145,7 @@ int Mesh::CloseNakedEdges(double tolerance) {
 }
 
 int Mesh::MergeDuplicateVertices(double tolerance) {
+  InvalidateSpatialIndex();  // geometry/winding edited in place below
   const double tol = std::max(tolerance, 0.0);
   if (mesh_.m_V.Count() < 2) return 0;
   std::vector<int> all(static_cast<size_t>(mesh_.m_V.Count()));
@@ -7051,6 +7190,7 @@ int Mesh::MergeDuplicateVertices(double tolerance) {
 }
 
 bool Mesh::SplitNonManifoldVertex(int vertex_index) {
+  InvalidateSpatialIndex();  // geometry/winding edited in place below
   if (vertex_index < 0 || vertex_index >= mesh_.m_V.Count()) return false;
 
   std::vector<int> incident;
@@ -7098,6 +7238,7 @@ bool Mesh::SplitNonManifoldVertex(int vertex_index) {
 }
 
 int Mesh::SplitNonManifoldVertices(double tolerance) {
+  InvalidateSpatialIndex();  // geometry/winding edited in place below
   const std::vector<int> to_split = Check(tolerance).non_manifold_vertex_list;
   int count = 0;
   for (const int v : to_split) {
@@ -7137,6 +7278,7 @@ std::vector<Mesh> Mesh::SplitDisjointPieces() const {
 }
 
 int Mesh::RemoveDegenerateFaces(double tolerance) {
+  InvalidateSpatialIndex();  // geometry/winding edited in place below
   const double tol = std::max(tolerance, 0.0);
   ON_SimpleArray<ON_MeshFace> faces;
   int removed = 0;
@@ -7157,6 +7299,7 @@ int Mesh::RemoveDegenerateFaces(double tolerance) {
 }
 
 int Mesh::RemoveDuplicateFaces() {
+  InvalidateSpatialIndex();  // geometry/winding edited in place below
   std::set<std::vector<int>> seen;
   ON_SimpleArray<ON_MeshFace> faces;
   int removed = 0;
@@ -7177,6 +7320,7 @@ int Mesh::RemoveDuplicateFaces() {
 }
 
 int Mesh::FillSmallHoles(double max_extent) {
+  InvalidateSpatialIndex();  // geometry/winding edited in place below
   int filled = 0;
   for (const std::vector<int>& loop : NakedEdgeLoops()) {
     ON_BoundingBox box;
@@ -7216,6 +7360,7 @@ int Mesh::FillSmallHoles(double max_extent) {
 }
 
 int Mesh::UnifyNormals() {
+  InvalidateSpatialIndex();  // geometry/winding edited in place below
   const int n = mesh_.m_F.Count();
   std::map<std::pair<int, int>, std::vector<int>> faces_of_edge;
   for (int i = 0; i < n; ++i) {
@@ -7265,6 +7410,7 @@ int Mesh::UnifyNormals() {
 }
 
 int Mesh::TrisToQuads(double max_dihedral_deg) {
+  InvalidateSpatialIndex();  // geometry/winding edited in place below
   if (!ON_IsValid(max_dihedral_deg)) {
     throw std::invalid_argument("dino8::kernel::Mesh::TrisToQuads: max_dihedral_deg must be finite");
   }
