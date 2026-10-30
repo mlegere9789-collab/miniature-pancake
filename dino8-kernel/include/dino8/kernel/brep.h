@@ -600,7 +600,17 @@ class Brep {
   // to OffsetAnalytic()'s own plane branch) and a real, disclosed
   // first-order approximation otherwise, inherited here unchanged, along
   // with its own curvature-fold guard (Result::Failed propagated as
-  // std::invalid_argument, not silently built anyway).
+  // std::invalid_argument, not silently built anyway) - with one exact
+  // exception: a right circular CYLINDER (IsCylinder(), full or partial)
+  // is offset exactly, by a radial homothety of its control net about its
+  // own axis (sweep.cpp's OffsetKeepingNet(): an affine map, under which a
+  // NURBS surface and the cylinder it traces transform together, leaving
+  // knots/weights - and so boundary compatibility - untouched), so a
+  // thickened cylinder wall's caps are true cylinders of radius r +/-
+  // thickness and its volume is the closed-form pi*h*((r+t)^2 - r^2), not
+  // OffsetApproximate()'s between-the-knots approximation of it. An
+  // inward offset of the full radius or more is refused the same way the
+  // fold guard refuses a freeform fold.
   //
   // `symmetric=false` (default): the first cap is `sheet`'s own surface,
   // unmoved; the second is offset by `thickness` (either sign - chooses
@@ -638,11 +648,20 @@ class Brep {
   // a dedicated test - see src/sweep.cpp's own ThickenTrimmedPlanarSheet()
   // doc comment for the specific finding.
   //
-  // If UNTRIMMED, that surface must be open (IsClosed() false) in BOTH
-  // parametric directions - a partially or fully closed sheet (a full
-  // cylinder/cone wall, a sphere or torus patch that wraps back on itself)
-  // needs a different, variable side-wall count (a closed direction has no
-  // free boundary to wall at all) this pass does not attempt.
+  // If UNTRIMMED, that surface may be open (IsClosed() false) in both
+  // parametric directions - 2 caps + 4 side walls, 6 faces - or closed in
+  // exactly ONE of them (a full cylinder wall, a cone frustum's wall,
+  // Pipe()'s or an uncapped Extrude()'s own single wall face): a closed
+  // direction has no
+  // free boundary to wall at all, so such a sheet gets only the 2 side
+  // walls across its open direction, each ruled between two CLOSED
+  // isocurves (a flat annulus for a cylinder wall) - 4 faces in all. Two
+  // cases are still refused: a sheet closed in BOTH directions (a full
+  // torus - it already bounds a solid, and a hollow two-shell thicken is
+  // a separate, disclosed gap), and a sheet whose open direction ends in
+  // a SINGULAR side (a full sphere's poles, a cone wall carried to its
+  // apex - IsSingular() on the two ends of the open direction), where the
+  // "wall" would be ruled between two points, not two curves.
   //
   // `thickness` must be finite and non-zero in every case.
   static Brep Thicken(const Brep& sheet, double thickness, bool symmetric = false);
