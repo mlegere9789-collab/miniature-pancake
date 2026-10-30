@@ -1346,6 +1346,163 @@ Result NurbsSurface::MatchEdge(int fixed_direction, bool at_min, const NurbsSurf
   return Result::Ok;
 }
 
+Result NurbsSurface::MatchEdgeToCurve(int fixed_direction, bool at_min, const NurbsCurve& target,
+                                      MatchContinuity continuity, const NurbsCurve* cross_derivative,
+                                      const NurbsCurve* cross_second_derivative, MatchEdgeReport* report) {
+  if (fixed_direction != 0 && fixed_direction != 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::MatchEdgeToCurve: direction must be 0 (U) or 1 (V)");
+  }
+  const int rows_needed = continuity == MatchContinuity::Position ? 1 : continuity == MatchContinuity::Tangent ? 2 : 3;
+  const int edge_dir = 1 - fixed_direction;
+  const ON_NurbsSurface& s = surface_;
+  if (!s.IsClamped(0, 2) || !s.IsClamped(1, 2)) return Result::Failed;
+  ON_NurbsCurve c = target.raw();
+  if (c.Dimension() != 3 || c.Order() < 2 || c.CVCount() < c.Order() || !c.IsClamped(2)) return Result::Failed;
+  // A prescribed 3D derivative field against a rational row would need
+  // the field times the weight function as a spline (a polynomial
+  // product) - not done here; fail closed (see the header).
+  if (rows_needed >= 2 && (s.IsRational() || c.IsRational())) return Result::Failed;
+
+  const ON_Interval c_dom = c.Domain();
+  const ON_Interval s_edge = s.Domain(edge_dir);
+  const double knot_tol = 1e-12 * std::max(1.0, s_edge.Length());
+
+  // Explicit fields: 3D, non-rational, clamped, on the target's domain.
+  ON_NurbsCurve d, e;
+  bool have_d = false, have_e = false;
+  auto take_field = [&](const NurbsCurve* field, ON_NurbsCurve& out) {
+    const ON_NurbsCurve& f = field->raw();
+    if (f.Dimension() != 3 || f.IsRational() || f.Order() < 2 || f.CVCount() < f.Order() || !f.IsClamped(2)) return false;
+    const double dom_tol = 1e-12 * std::max(1.0, c_dom.Length());
+    if (std::abs(f.Domain().Min() - c_dom.Min()) > dom_tol || std::abs(f.Domain().Max() - c_dom.Max()) > dom_tol) return false;
+    out = f;
+    return true;
+  };
+  if (rows_needed >= 2 && cross_derivative) { if (!take_field(cross_derivative, d)) return Result::Failed; have_d = true; }
+  if (rows_needed >= 3 && cross_second_derivative) { if (!take_field(cross_second_derivative, e)) return Result::Failed; have_e = true; }
+
+  // Orient the target to run the way this edge does (corner distances,
+  // the same rule MatchEdge() applies to a surface edge), then put it
+  // and the explicit fields on this edge's domain - one affine map for
+  // all of them, so D(t)/E(t) keep pairing with C(t).
+  const double at = at_min ? s.Domain(fixed_direction).Min() : s.Domain(fixed_direction).Max();
+  auto s_corner = [&](double ee) { return fixed_direction == 0 ? s.PointAt(at, ee) : s.PointAt(ee, at); };
+  const double straight = s_corner(s_edge.Min()).DistanceTo(c.PointAt(c_dom.Min())) + s_corner(s_edge.Max()).DistanceTo(c.PointAt(c_dom.Max()));
+  const double crossed = s_corner(s_edge.Min()).DistanceTo(c.PointAt(c_dom.Max())) + s_corner(s_edge.Max()).DistanceTo(c.PointAt(c_dom.Min()));
+  const bool reversed = crossed < straight;
+  for (ON_NurbsCurve* f : {&c, have_d ? &d : nullptr, have_e ? &e : nullptr}) {
+    if (!f) continue;
+    if (reversed && !f->Reverse()) return Result::Failed;
+    if (!f->SetDomain(s_edge.Min(), s_edge.Max())) return Result::Failed;
+  }
+
+  // Default fields: this surface's own pre-edit cross derivatives along
+  // the edge, exact from its rows (textbook clamped end-derivative
+  // formulas, as in MatchEdge()), as curves on the edge's own basis. The
+  // cross direction is normalized to "edge at min" first so both are
+  // the derivatives pointing into the surface.
+  if (rows_needed >= 2 && (!have_d || (rows_needed >= 3 && !have_e))) {
+    ON_NurbsSurface sn = s;
+    if (!at_min && !sn.Reverse(fixed_direction)) return Result::Failed;
+    const int p = sn.Degree(fixed_direction);
+    const int n = sn.CVCount(edge_dir);
+    const std::vector<ON_4dPoint> r0 = HomogeneousRow(sn, fixed_direction, 0), r1 = HomogeneousRow(sn, fixed_direction, 1);
+    const double ds1 = TextbookKnot(sn, fixed_direction, p + 1) - TextbookKnot(sn, fixed_direction, 1);
+    auto row_curve = [&](const std::vector<ON_4dPoint>& vals, ON_NurbsCurve& out) {
+      out.Create(3, false, sn.Order(edge_dir), n);
+      for (int k = 0; k < out.KnotCount(); ++k) out.SetKnot(k, sn.Knot(edge_dir, k));
+      for (int i = 0; i < n; ++i) out.SetCV(i, ON_3dPoint(vals[static_cast<size_t>(i)].x, vals[static_cast<size_t>(i)].y, vals[static_cast<size_t>(i)].z));
+    };
+    if (!have_d) {
+      std::vector<ON_4dPoint> dv(static_cast<size_t>(n));
+      for (int i = 0; i < n; ++i) dv[static_cast<size_t>(i)] = Scale4(Sub4(r1[static_cast<size_t>(i)], r0[static_cast<size_t>(i)]), p / ds1);
+      row_curve(dv, d);
+      have_d = true;
+    }
+    if (rows_needed >= 3 && !have_e) {
+      std::vector<ON_4dPoint> ev(static_cast<size_t>(n), ON_4dPoint(0.0, 0.0, 0.0, 0.0));
+      if (p >= 2) {
+        const std::vector<ON_4dPoint> r2 = HomogeneousRow(sn, fixed_direction, 2);
+        const double ds2 = TextbookKnot(sn, fixed_direction, p + 2) - TextbookKnot(sn, fixed_direction, 2);
+        for (int i = 0; i < n; ++i) {
+          const ON_4dPoint inner = Sub4(Scale4(Sub4(r2[static_cast<size_t>(i)], r1[static_cast<size_t>(i)]), 1.0 / ds2),
+                                        Scale4(Sub4(r1[static_cast<size_t>(i)], r0[static_cast<size_t>(i)]), 1.0 / ds1));
+          ev[static_cast<size_t>(i)] = Scale4(inner, p * (p - 1.0) / ds1);
+        }
+      }
+      row_curve(ev, e);
+      have_e = true;
+    }
+  }
+
+  // One shared basis for the target and the fields in use.
+  if (have_d && !UnifyCurves(c, d, knot_tol)) return Result::Failed;
+  if (have_e && !UnifyCurves(c, e, knot_tol)) return Result::Failed;
+  if (have_d && have_e && !UnifyCurves(c, d, knot_tol)) return Result::Failed;
+  for (const ON_NurbsCurve* f : {have_d ? &d : nullptr, have_e ? &e : nullptr}) {
+    if (!f) continue;
+    if (f->Degree() != c.Degree() || f->CVCount() != c.CVCount() || f->KnotCount() != c.KnotCount()) return Result::Failed;
+    for (int k = 0; k < c.KnotCount(); ++k) {
+      if (std::abs(f->Knot(k) - c.Knot(k)) > knot_tol) return Result::Failed;
+    }
+  }
+
+  // The ribbon T(e, t) = C(e) - t D(e) + t^2/2 E(e), t in [0, 1], degree 2
+  // in t: rows C, C - D/2, C - D + E/2 (so T_t(0) = -D, T_tt = E). For
+  // Position neither derivative row is read; a plain translate keeps the
+  // ribbon non-degenerate (homogeneous, so a rational target's weights
+  // carry through unchanged).
+  NurbsSurface ribbon;
+  ON_NurbsSurface& t = ribbon.raw();
+  const int n = c.CVCount();
+  const bool rational = c.IsRational();
+  if (!t.Create(3, rational, c.Order(), 3, n, 3)) return Result::Failed;
+  for (int k = 0; k < c.KnotCount(); ++k) t.SetKnot(0, k, c.Knot(k));
+  t.SetKnot(1, 0, 0.0);
+  t.SetKnot(1, 1, 0.0);
+  t.SetKnot(1, 2, 1.0);
+  t.SetKnot(1, 3, 1.0);
+  ON_BoundingBox bb;
+  s.GetBoundingBox(bb, false);
+  const ON_3dVector offset(0.0, 0.0, std::max(1.0, bb.Diagonal().Length()));
+  for (int i = 0; i < n; ++i) {
+    ON_4dPoint c4;
+    c.GetCV(i, c4);
+    if (!rational) c4.w = 1.0;
+    ON_4dPoint r1, r2;
+    if (rows_needed >= 2) {
+      ON_3dPoint di, ei(0.0, 0.0, 0.0);
+      d.GetCV(i, di);
+      if (rows_needed >= 3) e.GetCV(i, ei);
+      r1 = ON_4dPoint(c4.x - 0.5 * di.x, c4.y - 0.5 * di.y, c4.z - 0.5 * di.z, 1.0);
+      r2 = ON_4dPoint(c4.x - di.x + 0.5 * ei.x, c4.y - di.y + 0.5 * ei.y, c4.z - di.z + 0.5 * ei.z, 1.0);
+    } else {
+      r1 = ON_4dPoint(c4.x + c4.w * offset.x, c4.y + c4.w * offset.y, c4.z + c4.w * offset.z, c4.w);
+      r2 = ON_4dPoint(c4.x + 2.0 * c4.w * offset.x, c4.y + 2.0 * c4.w * offset.y, c4.z + 2.0 * c4.w * offset.z, c4.w);
+    }
+    if (rational) {
+      t.SetCV(i, 0, c4);
+      t.SetCV(i, 1, r1);
+      t.SetCV(i, 2, r2);
+    } else {
+      t.SetCV(i, 0, ON_3dPoint(c4.x, c4.y, c4.z));
+      t.SetCV(i, 1, ON_3dPoint(r1.x, r1.y, r1.z));
+      t.SetCV(i, 2, ON_3dPoint(r2.x, r2.y, r2.z));
+    }
+  }
+
+  // Exact rows, far-edge protection and the evaluate-after-edit
+  // self-check all come from MatchEdge(); scale 1 makes its "-scale *
+  // T_t" exactly D and its "scale^2 * T_tt" exactly E. The ribbon was
+  // oriented above, so MatchEdge() sees it straight; report the real
+  // orientation decision.
+  MatchEdgeReport local;
+  const Result r = MatchEdge(fixed_direction, at_min, ribbon, 1, true, continuity, &local, 1.0);
+  local.target_edge_reversed = reversed;
+  if (report) *report = local;
+  return r;
+}
+
 Result NurbsSurface::UnrollDevelopable(int u_divisions, int v_divisions, Mesh& out_flat, double* out_area,
                                        DevelopableKind* out_kind) const {
   if (u_divisions < 1 || v_divisions < 1) {
