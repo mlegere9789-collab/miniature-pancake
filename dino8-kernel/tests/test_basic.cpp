@@ -62591,6 +62591,261 @@ void TestMergeSameSurfaceFacesCarriesHolesFromBothFaces() {
         "14 naked edges (6 outer + 4 + 4 hole), nothing non-manifold");
 }
 
+// Brep::MergeSameSurfaceFaces() across a shared seam that has been
+// subdivided into TWO collinear pieces - the same "shared boundary later
+// split into several trims" case MergeCoplanarFaces() already accepts
+// (TestMergeCoplanarFacesWeldsAdjacentSquaresSharingTwoCollinearTrims
+// above), reached here through a real kernel operation rather than a
+// hand-built fixture: BuildTwoFaceCylinderFixture()'s own single shared
+// seam is split at its midpoint by Brep::SplitNakedEdgeAt(), which puts a
+// new vertex on the seam and one extra trim on BOTH faces, so the pair now
+// shares two separate 2-trim edges forming one contiguous run. Before this
+// generalization the merge refused the pair outright (0 merges, 2 faces);
+// now the whole run is dissolved in one merge and the split's own midpoint
+// vertex goes with it.
+void TestMergeSameSurfaceFacesWeldsAcrossSeamSplitIntoTwoCollinearTrims() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const double radius = 2.0, height = 3.0, total_angle = 2.5, split_angle = 1.0;
+  Brep tube = BuildTwoFaceCylinderFixture(radius, height, total_angle, split_angle);
+  ON_Brep& raw = tube.raw();
+  Check(tube.FaceCount() == 2 && raw.m_E.Count() == 7 && raw.m_V.Count() == 6,
+        "setup: the two-patch cylinder fixture starts with 2 faces, 7 edges, 6 vertices");
+
+  // Counts the manifold-safe (2-trim) edges whose two trims sit on
+  // different faces - the pair's own shared boundary, edge by edge.
+  auto shared_edge_count = [&]() {
+    int count = 0;
+    for (int ei = 0; ei < raw.m_E.Count(); ++ei) {
+      const ON_BrepEdge& e = raw.m_E[ei];
+      if (e.m_edge_index < 0 || e.TrimCount() != 2) continue;
+      if (raw.m_T[e.m_ti[0]].FaceIndexOf() != raw.m_T[e.m_ti[1]].FaceIndexOf()) ++count;
+    }
+    return count;
+  };
+  Check(shared_edge_count() == 1, "setup: the fixture's two faces share exactly 1 edge before the split");
+
+  // The seam is make_edge()'s 4th edge (left, bottom, top, SHARED, ...).
+  const int seam = 3;
+  Check(raw.m_E[seam].TrimCount() == 2 && raw.m_T[raw.m_E[seam].m_ti[0]].FaceIndexOf() !=
+                                              raw.m_T[raw.m_E[seam].m_ti[1]].FaceIndexOf(),
+        "setup: edge 3 is the genuinely shared seam (2 trims, on 2 different faces)");
+
+  const double chord_tol = 1e-4;
+  auto tessellated_area = [&]() {
+    double area = 0.0;
+    for (const Mesh& m : tube.TessellateAdaptive(chord_tol)) area += m.Area();
+    return area;
+  };
+  const double area_before = tessellated_area();
+  const double uv_before = FaceUvSignedArea(raw, 0) + FaceUvSignedArea(raw, 1);
+
+  const Point3d mid = raw.m_E[seam].PointAt(raw.m_E[seam].Domain().Mid());
+  Check(tube.SplitNakedEdgeAt(seam, mid, 1e-6) == Result::Ok,
+        "setup: SplitNakedEdgeAt() splits the shared seam at its own midpoint");
+  Check(tube.FaceCount() == 2 && raw.m_E.Count() == 8 && raw.m_V.Count() == 7,
+        "setup: the split added exactly 1 edge and 1 vertex, no face");
+  Check(raw.m_F[0].Loop(0)->TrimCount() == 5 && raw.m_F[1].Loop(0)->TrimCount() == 5,
+        "setup: both faces went from 4 trims to 5 - the seam is now two collinear trims on each side");
+  Check(shared_edge_count() == 2,
+        "setup: the pair now shares 2 separate (2-trim) edges - exercising the multi-edge run path, not "
+        "the old single-edge one");
+  Check(raw.IsValid(), "setup: the split fixture is a valid ON_Brep");
+  Check(std::abs(tessellated_area() - area_before) < 1e-6, "setup: the split changed no geometry (same area)");
+
+  const int merges = tube.MergeSameSurfaceFaces();
+  Check(merges == 1, "MergeSameSurfaceFaces() performs exactly 1 merge across the 2 collinear shared trims "
+                     "(previously refused outright: 0 merges)");
+  Check(tube.FaceCount() == 1, "the two patches merged into a single face");
+  Check(raw.IsValid(), "the merged single face is still a valid ON_Brep");
+  Check(raw.m_F[0].LoopCount() == 1 && raw.m_F[0].Loop(0)->TrimCount() == 6,
+        "the merged face has one outer loop of exactly 6 trims: 5 + 5 minus the 2 dissolved seam pieces "
+        "on each side (the seam's two endpoint corners survive as the junctions between the still-separate "
+        "top and bottom arcs)");
+  Check(raw.m_E.Count() == 6 && raw.m_V.Count() == 6,
+        "both seam pieces are gone (8 edges -> 6) and so is the split's own midpoint vertex (7 -> 6) - "
+        "a vertex private to the dissolved run is not left stranded");
+  bool midpoint_vertex_left = false;
+  for (int vi = 0; vi < raw.m_V.Count(); ++vi) {
+    if (raw.m_V[vi].m_vertex_index >= 0 && raw.m_V[vi].point.DistanceTo(mid) < 1e-9) midpoint_vertex_left = true;
+  }
+  Check(!midpoint_vertex_left, "no surviving vertex sits at the seam's old midpoint");
+  Check(!raw.m_F[0].SurfaceOf()->IsPlanar(), "the merged face's own surface is still the genuine cylinder");
+
+  Check(std::abs(FaceUvSignedArea(raw, 0) - uv_before) < 1e-12,
+        "the merged face covers exactly the two source faces' combined (u, v) region");
+  const double area_after = tessellated_area();
+  Check(std::abs(area_after - area_before) < 1e-6,
+        "merging across the split seam leaves the tessellated area exactly unchanged");
+  Check(std::abs(area_after - radius * total_angle * height) < 1e-2,
+        "...and still matches the exact closed-form cylinder-sector area r*angle*height");
+  const Brep::CheckReport report = tube.Check();
+  Check(report.Count(Brep::CheckIssue::Kind::NakedEdge) == 6 && report.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0,
+        "6 naked boundary edges, nothing non-manifold");
+  Check(tube.MergeSameSurfaceFaces() == 0, "a second call on the merged single face finds nothing left to merge");
+}
+
+// Builds, on ONE shared cylindrical ON_NurbsSurface (the same
+// ON_Cylinder::GetNurbForm() surface BuildTwoFaceCylinderFixture() uses),
+// one face per entry of `faces`: each is a CCW-in-(u, v) list of
+// (angle_radians, height) corners whose consecutive sides are all
+// iso-aligned (same angle or same height), so every edge is the surface's
+// own exact IsoCurve() cut to its sub-range, exactly as
+// BuildTwoFaceCylinderFixture() builds its own. Corners are shared by
+// exact value, and a side two faces walk in opposite directions becomes
+// one genuinely shared 2-trim edge (found by its two vertex ids, never
+// duplicated) - which is what lets this build pairs sharing an arbitrary
+// SET of edges, not just the one seam the fixed fixture has.
+dino8::kernel::Brep BuildSameSurfaceIsoPolygonFaces(double radius, double height,
+                                                     const std::vector<std::vector<std::pair<double, double>>>& faces) {
+  using dino8::kernel::Brep;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const ON_Circle circle(plane, radius);
+  ON_Cylinder cyl(circle, height);
+  auto* surface = new ON_NurbsSurface();
+  if (cyl.GetNurbForm(*surface) == 0) {
+    delete surface;
+    throw std::runtime_error("BuildSameSurfaceIsoPolygonFaces: ON_Cylinder::GetNurbForm failed");
+  }
+
+  Brep b;
+  ON_Brep& raw = b.raw();
+  const int si = raw.AddSurface(surface);
+
+  std::map<std::pair<double, double>, int> vertex_of;  // (u, v) -> vertex index
+  auto vertex_at = [&](double u, double v) -> int {
+    auto it = vertex_of.find({u, v});
+    if (it != vertex_of.end()) return it->second;
+    const int vi = raw.NewVertex(surface->PointAt(u, v), 0.0).m_vertex_index;
+    vertex_of[{u, v}] = vi;
+    return vi;
+  };
+  // (vertex a, vertex b) -> edge index; stored under the edge's own
+  // (start, end) vertex order, which is the order of the FIRST side that
+  // created it.
+  std::map<std::pair<int, int>, int> edge_of;
+  auto edge_between = [&](int va, double ua, double vala, int vb, double ub, double valb, bool* rev) -> int {
+    auto fwd = edge_of.find({va, vb});
+    if (fwd != edge_of.end()) { *rev = false; return fwd->second; }
+    auto back = edge_of.find({vb, va});
+    if (back != edge_of.end()) { *rev = true; return back->second; }
+    const bool along_u = (vala == valb);
+    ON_Curve* iso = along_u ? surface->IsoCurve(0, vala) : surface->IsoCurve(1, ua);
+    const double lo = along_u ? std::min(ua, ub) : std::min(vala, valb);
+    const double hi = along_u ? std::max(ua, ub) : std::max(vala, valb);
+    iso->Trim(ON_Interval(lo, hi));
+    if (along_u ? (ua > ub) : (vala > valb)) iso->Reverse();
+    const int c3i = raw.AddEdgeCurve(iso);
+    ON_BrepEdge& edge = raw.NewEdge(raw.m_V[va], raw.m_V[vb], c3i);
+    edge.m_tolerance = 0.0;
+    edge_of[{va, vb}] = edge.m_edge_index;
+    *rev = false;
+    return edge.m_edge_index;
+  };
+
+  for (const std::vector<std::pair<double, double>>& corners : faces) {
+    std::vector<std::pair<double, double>> uv;
+    for (const std::pair<double, double>& c : corners) {
+      double u = 0.0;
+      if (!circle.GetNurbFormParameterFromRadian(c.first, &u)) {
+        throw std::runtime_error("BuildSameSurfaceIsoPolygonFaces: GetNurbFormParameterFromRadian failed");
+      }
+      uv.push_back({u, c.second});
+    }
+    const int face_index = raw.NewFace(si).m_face_index;
+    raw.m_F[face_index].m_bRev = false;
+    const int loop_index = raw.NewLoop(ON_BrepLoop::outer, raw.m_F[face_index]).m_loop_index;
+    const size_t n = uv.size();
+    for (size_t k = 0; k < n; ++k) {
+      const std::pair<double, double>& a = uv[k];
+      const std::pair<double, double>& c = uv[(k + 1) % n];
+      if (a.first != c.first && a.second != c.second) {
+        throw std::runtime_error("BuildSameSurfaceIsoPolygonFaces: a side is not iso-aligned");
+      }
+      const int va = vertex_at(a.first, a.second);
+      const int vb = vertex_at(c.first, c.second);
+      bool rev = false;
+      const int ei = edge_between(va, a.first, a.second, vb, c.first, c.second, &rev);
+      auto* c2 = new ON_LineCurve(ON_2dPoint(a.first, a.second), ON_2dPoint(c.first, c.second));
+      c2->SetDomain(0.0, 1.0);
+      const int c2i = raw.AddTrimCurve(c2);
+      ON_BrepTrim& trim = raw.NewTrim(raw.m_E[ei], rev, raw.m_L[loop_index], c2i);
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    }
+  }
+
+  raw.SetTrimIsoFlags();
+  raw.SetTolerancesBoxesAndFlags();
+  for (int i = 0; i < raw.m_E.Count(); ++i) {
+    ON_BrepEdge& e = raw.m_E[i];
+    if (e.m_edge_index >= 0 && !(e.m_tolerance >= 0.0)) e.m_tolerance = 0.0;
+  }
+  return b;
+}
+
+// The negative counterpart of the collinear-run test above: two faces on
+// the same cylinder sharing two SEPARATE, non-contiguous edges. Face A is
+// a plain (u, v) rectangle whose right side is cut into three pieces at
+// heights 1 and 2; face B is a C-shape to its right that touches A along
+// the bottom piece [0, 1] and the top piece [2, 3] but has a notch facing
+// the middle piece [1, 2], which stays naked. Both shared edges are
+// manifold-safe 2-trim edges, so a naive "gather every shared edge and
+// splice" would try to merge them - but the union is a face with a HOLE
+// (the notch), which no single simple outer loop can represent, so the
+// run check must refuse the pair and leave the Brep untouched, exactly
+// as MergeCoplanarFaces() refuses the same shape.
+void TestMergeSameSurfaceFacesRefusesTwoSeparateNonContiguousSharedEdges() {
+  using dino8::kernel::Brep;
+
+  const double radius = 2.0, height = 3.0;
+  const double a0 = 0.0, a1 = 1.0, a_notch = 1.5, a2 = 2.5;
+  Brep tube = BuildSameSurfaceIsoPolygonFaces(
+      radius, height,
+      {// A: bottom -> right (3 pieces) -> top -> left, CCW in (u, v).
+       {{a0, 0.0}, {a1, 0.0}, {a1, 1.0}, {a1, 2.0}, {a1, 3.0}, {a0, 3.0}},
+       // B: bottom -> right -> top -> down its left side, into the notch
+       // and back out, -> down to the start, CCW in (u, v).
+       {{a1, 0.0}, {a2, 0.0}, {a2, 3.0}, {a1, 3.0}, {a1, 2.0}, {a_notch, 2.0}, {a_notch, 1.0}, {a1, 1.0}}});
+  ON_Brep& raw = tube.raw();
+  Check(tube.FaceCount() == 2, "setup: the rectangle-plus-C-shape fixture has 2 faces");
+  Check(raw.IsValid(), "setup: the fixture is a valid ON_Brep");
+  Check(raw.m_F[0].m_si == raw.m_F[1].m_si, "setup: both faces trim the literal same surface");
+  Check(raw.m_F[0].Loop(0)->TrimCount() == 6 && raw.m_F[1].Loop(0)->TrimCount() == 8,
+        "setup: A has 6 trims, B has 8");
+  const int edges_before = raw.m_E.Count(), vertices_before = raw.m_V.Count();
+  Check(edges_before == 12 && vertices_before == 10,
+        "setup: 12 edges (A's 6 + B's 8 minus the 2 shared) and 10 distinct corners");
+
+  int shared = 0, naked_middle_piece = 0;
+  for (int ei = 0; ei < raw.m_E.Count(); ++ei) {
+    const ON_BrepEdge& e = raw.m_E[ei];
+    if (e.m_edge_index < 0) continue;
+    if (e.TrimCount() == 2 && raw.m_T[e.m_ti[0]].FaceIndexOf() != raw.m_T[e.m_ti[1]].FaceIndexOf()) ++shared;
+    const ON_3dPoint m = e.PointAt(e.Domain().Mid());
+    if (e.TrimCount() == 1 && std::abs(m.z - 1.5) < 1e-9 && std::abs(m.x - radius * std::cos(a1)) < 1e-9 &&
+        std::abs(m.y - radius * std::sin(a1)) < 1e-9) {
+      ++naked_middle_piece;
+    }
+  }
+  Check(shared == 2, "setup: the pair genuinely shares 2 separate (2-trim) edges");
+  Check(naked_middle_piece == 1, "setup: the middle piece of A's right side (facing B's notch) is naked, so the "
+                                 "two shared edges are NOT contiguous in either loop");
+  const double uv_before = FaceUvSignedArea(raw, 0) + FaceUvSignedArea(raw, 1);
+
+  Check(tube.MergeSameSurfaceFaces() == 0,
+        "MergeSameSurfaceFaces() refuses a pair sharing two separate, non-contiguous edges (their union would "
+        "need a hole) rather than guessing a splice");
+  Check(tube.FaceCount() == 2 && raw.m_E.Count() == edges_before && raw.m_V.Count() == vertices_before,
+        "the refused Brep is left completely untouched (same face/edge/vertex counts)");
+  Check(raw.IsValid(), "...and is still a valid ON_Brep");
+  Check(std::abs(FaceUvSignedArea(raw, 0) + FaceUvSignedArea(raw, 1) - uv_before) < 1e-12,
+        "...with both faces' own (u, v) regions unchanged");
+}
+
 // Brep::ReplaceEdgeCurve() on a single, naked-boundary flat plate: since
 // the substitute curve only has to fit ONE face's own plane (a naked
 // edge, unlike a shared one, is never constrained to lie on a second
@@ -83916,6 +84171,10 @@ int main() {
   RunTest("TestMergeSameSurfaceFacesLeavesGenuinelyDifferentCylindersUntouched", TestMergeSameSurfaceFacesLeavesGenuinelyDifferentCylindersUntouched);
   RunTest("TestMergeSameSurfaceFacesCarriesCurvedHoleOnCylinder", TestMergeSameSurfaceFacesCarriesCurvedHoleOnCylinder);
   RunTest("TestMergeSameSurfaceFacesCarriesHolesFromBothFaces", TestMergeSameSurfaceFacesCarriesHolesFromBothFaces);
+  RunTest("TestMergeSameSurfaceFacesWeldsAcrossSeamSplitIntoTwoCollinearTrims",
+          TestMergeSameSurfaceFacesWeldsAcrossSeamSplitIntoTwoCollinearTrims);
+  RunTest("TestMergeSameSurfaceFacesRefusesTwoSeparateNonContiguousSharedEdges",
+          TestMergeSameSurfaceFacesRefusesTwoSeparateNonContiguousSharedEdges);
   RunTest("TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute", TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute);
   RunTest("TestReplaceEdgeCurveThrowsOnEndpointMismatch", TestReplaceEdgeCurveThrowsOnEndpointMismatch);
   RunTest("TestReplaceEdgeCurveThrowsOnSurfaceMismatch", TestReplaceEdgeCurveThrowsOnSurfaceMismatch);
