@@ -498,22 +498,37 @@ std::vector<double> ChordParams(const std::vector<ON_3dPoint>& pts, bool closed)
   return t;
 }
 
-ON_NurbsCurve InterpolateCubic(const std::vector<ON_3dPoint>& in_pts, std::vector<double> in_params, bool closed, int dim) {
+namespace {
+// Shared body of InterpolateCubic() and InterpolateCubicPeriodic(). A CLOSED
+// input is solved as an open collocation system over the data WRAPPED
+// `wrap_depth` points past each end (indices taken modulo n0, parameters
+// shifted by whole periods), then trimmed back to one period. That open-ended
+// solve's end-condition error decays by roughly (2 - sqrt(3)) ~= 0.268 per
+// extra wrapped point, so the depth sets how closely the trimmed curve's seam
+// matches a true periodic interpolant (C2 across the seam). `wrap_depth <= 0`
+// (or fewer than `min_wrap_points` closed points) falls back to appending the
+// first point and solving open - a clamped curve with a kink at the seam.
+ON_NurbsCurve InterpolateCubicImpl(const std::vector<ON_3dPoint>& in_pts, std::vector<double> in_params, bool closed, int dim,
+                                    int wrap_depth, size_t min_wrap_points) {
   ON_NurbsCurve curve;
   std::vector<ON_3dPoint> pts = in_pts;
   if (pts.size() < 2) return curve;
   if (in_params.size() != pts.size() + (closed ? 1 : 0)) in_params = ChordParams(pts, closed);
   std::vector<double> params = in_params;
   const size_t n0 = pts.size();
-  const int wrap = closed && n0 >= 4 ? 3 : 0;
+  const int wrap = closed && n0 >= min_wrap_points ? wrap_depth : 0;
   if (wrap) {
-    // Wrap three points at both ends so the seam is smooth, trim afterwards.
     std::vector<ON_3dPoint> w;
     std::vector<double> wt;
     const double period = in_params[n0];
-    for (int k = wrap; k >= 1; --k) { w.push_back(pts[n0 - static_cast<size_t>(k)]); wt.push_back(in_params[n0 - static_cast<size_t>(k)] - period); }
-    for (size_t i = 0; i < n0; ++i) { w.push_back(pts[i]); wt.push_back(in_params[i]); }
-    for (int k = 0; k <= wrap; ++k) { w.push_back(pts[static_cast<size_t>(k) % n0]); wt.push_back(in_params[static_cast<size_t>(k) % n0] + period); }
+    const long N0 = static_cast<long>(n0);
+    auto push = [&](long j) {
+      const long q = j >= 0 ? j / N0 : -((-j + N0 - 1) / N0);  // floor division
+      const size_t m = static_cast<size_t>(j - q * N0);
+      w.push_back(pts[m]);
+      wt.push_back(in_params[m] + static_cast<double>(q) * period);
+    };
+    for (long j = -wrap; j <= N0 + wrap; ++j) push(j);
     pts = w;
     params = wt;
   } else if (closed) {
@@ -580,6 +595,24 @@ ON_NurbsCurve InterpolateCubic(const std::vector<ON_3dPoint>& in_pts, std::vecto
   for (int i = 0; i < n; ++i) curve.SetCV(i, ON_3dPoint(sol[0][static_cast<size_t>(i)], sol[1][static_cast<size_t>(i)], sol[2][static_cast<size_t>(i)]));
   if (wrap) curve.Trim(ON_Interval(in_params.front(), in_params[n0]));
   return curve;
+}
+}  // namespace
+
+// The long-standing entry point, behavior unchanged: closed input of 4 or
+// more points is wrapped only 3 points past each end. That is cheap, and
+// every Boolean/intersection caller's results were tuned against it, but it
+// leaves the seam only APPROXIMATELY smooth (tangent mismatch ~3e-2 on a
+// 4-point circle, ~1e-4 on a 24-point one) and a closed 3-point input is not
+// wrapped at all (a clamped open curve, full kink at the seam). Use
+// InterpolateCubicPeriodic() when the seam must be genuinely C2.
+ON_NurbsCurve InterpolateCubic(const std::vector<ON_3dPoint>& in_pts, std::vector<double> in_params, bool closed, int dim) {
+  return InterpolateCubicImpl(in_pts, std::move(in_params), closed, dim, /*wrap_depth=*/3, /*min_wrap_points=*/4);
+}
+
+// 24 wrapped points drive the open-ended solve's end error down by
+// 0.268^24 ~ 1e-14 (rounding level), for any closed input of 3 or more points.
+ON_NurbsCurve InterpolateCubicPeriodic(const std::vector<ON_3dPoint>& in_pts, std::vector<double> in_params, int dim) {
+  return InterpolateCubicImpl(in_pts, std::move(in_params), /*closed=*/true, dim, /*wrap_depth=*/24, /*min_wrap_points=*/3);
 }
 
 namespace {

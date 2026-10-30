@@ -28867,6 +28867,17 @@ void TestPointCloudContourAtPlaneFitsRingThroughBand() {
     if (Point3d(p).DistanceTo(contour.points[i]) > 1e-6) curve_interpolates = false;
   }
   Check(curve_interpolates, "the fitted curve passes exactly through every one of the 12 ordered ring points at their own chord-length parameter");
+  {
+    // A closed contour must also CLOSE smoothly: the curve's start and end
+    // agree in position, tangent and curvature vector (a C2 seam), which the
+    // previous 3-point-wrap fit only met approximately.
+    ON_3dPoint a, b;
+    ON_3dVector v1, v2, w1, w2;
+    contour.curve.Ev2Der(contour.curve.Domain().Min(), a, v1, v2);
+    contour.curve.Ev2Der(contour.curve.Domain().Max(), b, w1, w2);
+    Check(a.DistanceTo(b) < 1e-9 && (v1 - w1).Length() < 1e-9 && (v2 - w2).Length() < 1e-9,
+          "the fitted closed contour curve has a C2 seam (position, tangent and curvature vector continuous)");
+  }
 
   // Fewer than 3 points in the band: indices/points are still returned, but
   // no curve can be fit (an empty, default-constructed ON_NurbsCurve).
@@ -63939,6 +63950,101 @@ void TestSurfaceInterpolateThroughGrid() {
         "exactly");
 }
 
+// ---- InterpolateCubicPeriodic: closed-curve seam (surface_intersect.h) ----
+//
+// Found by probing the "closed" interpolation path against a known-correct
+// answer: InterpolateCubic(closed = true) solves an OPEN collocation over the
+// data wrapped only 3 points past each end, whose free-end condition error
+// has not decayed enough to be a true periodic interpolant - the seam
+// tangent differed by ~3% on a 4-point circle (~1e-4 on a 24-point one), and
+// a 3-point closed input was not wrapped at all (a clamped open curve with a
+// full kink at the seam). InterpolateCubic is left unchanged (the Boolean/
+// intersection callers' results, e.g. MakeHole's exact round trip, are
+// chaotically sensitive to its 1e-12-level output); InterpolateCubicPeriodic
+// wraps 24 points instead.
+
+void TestInterpolateCubicPeriodicSeamIsC2() {
+  const auto seam_defects = [](const ON_NurbsCurve& c, double& d0, double& d1, double& d2) {
+    ON_3dPoint a, b;
+    ON_3dVector v1, v2, w1, w2;
+    c.Ev2Der(c.Domain().Min(), a, v1, v2);
+    c.Ev2Der(c.Domain().Max(), b, w1, w2);
+    d0 = a.DistanceTo(b);
+    d1 = (v1 - w1).Length();
+    d2 = (v2 - w2).Length();
+  };
+
+  // (1) Uniformly spaced samples of a circle: the exact PERIODIC cubic
+  // interpolant is rotationally symmetric - C(t + h) = Rz(2*pi/n) C(t),
+  // h = the (equal) chord length - an independent closed-form property no
+  // seam-defective fit can satisfy (the pre-fix 3-point wrap broke it by
+  // ~1e-2 on n = 4 and ~1e-4 on n = 24). The seam must also be C2.
+  for (int n : {3, 4, 5, 8, 24}) {
+    std::vector<ON_3dPoint> pts;
+    for (int i = 0; i < n; ++i) {
+      const double a = 2.0 * 3.14159265358979323846 * i / n;
+      pts.push_back(ON_3dPoint(2.5 * std::cos(a), 2.5 * std::sin(a), 0.0));
+    }
+    const std::vector<double> par = dino8::kernel::ChordParams(pts, true);
+    const ON_NurbsCurve c = dino8::kernel::InterpolateCubicPeriodic(pts, par, 3);
+    Check(c.IsValid(), "InterpolateCubicPeriodic circle fit is a valid curve");
+    double through = 0.0;
+    for (int i = 0; i < n; ++i) through = std::max(through, c.PointAt(par[static_cast<size_t>(i)]).DistanceTo(pts[static_cast<size_t>(i)]));
+    Check(through < 1e-9, "InterpolateCubicPeriodic fit still passes through every input point exactly");
+    double d0, d1, d2;
+    seam_defects(c, d0, d1, d2);
+    Check(d0 < 1e-9 && d1 < 1e-9 && d2 < 1e-9,
+          "InterpolateCubicPeriodic fit has a C2 seam (position, tangent and curvature vector all continuous) "
+          "for 3, 4, 5, 8 and 24 points on a circle");
+    const double h = par[1];
+    const double ang = 2.0 * 3.14159265358979323846 / n;
+    double sym = 0.0;
+    for (int k = 0; k < 40; ++k) {
+      const double t = (par[static_cast<size_t>(n)] - h) * k / 39.0;
+      const ON_3dPoint q0 = c.PointAt(t), q1 = c.PointAt(t + h);
+      const ON_3dPoint r(std::cos(ang) * q0.x - std::sin(ang) * q0.y, std::sin(ang) * q0.x + std::cos(ang) * q0.y, q0.z);
+      sym = std::max(sym, q1.DistanceTo(r));
+    }
+    Check(sym < 1e-9,
+          "InterpolateCubicPeriodic fit of equally spaced circle samples is exactly rotation-symmetric "
+          "(C(t + h) == Rz(2*pi/n) C(t)), as the true periodic interpolant must be");
+  }
+
+  // (2) Unevenly spaced samples of a non-planar closed curve: no symmetry to
+  // lean on, but the seam must still be C2 and every point interpolated.
+  {
+    const double ang[] = {0.0, 0.3, 0.9, 1.4, 2.6, 3.0, 4.4, 5.5};
+    std::vector<ON_3dPoint> pts;
+    for (double a : ang) pts.push_back(ON_3dPoint(3.0 * std::cos(a), std::sin(a), 0.2 * std::sin(2.0 * a)));
+    const std::vector<double> par = dino8::kernel::ChordParams(pts, true);
+    const ON_NurbsCurve c = dino8::kernel::InterpolateCubicPeriodic(pts, par, 3);
+    double through = 0.0;
+    for (size_t i = 0; i < pts.size(); ++i) through = std::max(through, c.PointAt(par[i]).DistanceTo(pts[i]));
+    Check(through < 1e-9, "InterpolateCubicPeriodic fit of uneven non-planar samples interpolates every point");
+    double d0, d1, d2;
+    seam_defects(c, d0, d1, d2);
+    Check(d0 < 1e-9 && d1 < 1e-9 && d2 < 1e-9, "InterpolateCubicPeriodic fit of uneven non-planar samples has a C2 seam");
+    Check(std::abs(c.Domain().Min() - par.front()) < 1e-12 && std::abs(c.Domain().Max() - par.back()) < 1e-12,
+          "InterpolateCubicPeriodic fit's domain is still exactly [params.front(), params.back()]");
+  }
+
+  // (3) The open case is untouched by the closed-seam fix: it still
+  // interpolates every point of a (non-uniformly spaced) cubic polynomial
+  // curve exactly.
+  {
+    std::vector<ON_3dPoint> pts;
+    for (int i = 0; i < 7; ++i) {
+      const double x = 0.7 * i * i / 4.0 + 0.3 * i;
+      pts.push_back(ON_3dPoint(x, x * x * x - 2.0 * x * x + x, 0.5 * x * x));
+    }
+    const std::vector<double> par = dino8::kernel::ChordParams(pts, false);
+    const ON_NurbsCurve c = dino8::kernel::InterpolateCubic(pts, par, false, 3);
+    double through = 0.0;
+    for (size_t i = 0; i < pts.size(); ++i) through = std::max(through, c.PointAt(par[i]).DistanceTo(pts[i]));
+    Check(through < 1e-9, "InterpolateCubic open fit still interpolates every point exactly");
+  }
+}
+
 // ---- NurbsSurface::DecomposeToBeziers ----
 
 void TestSurfaceDecomposeToBeziersProducesExactSpanPatches() {
@@ -82227,6 +82333,7 @@ int main() {
   RunTest("TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise", TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise);
   RunTest("TestSurfaceReduceDegree", TestSurfaceReduceDegree);
   RunTest("TestSurfaceInterpolateThroughGrid", TestSurfaceInterpolateThroughGrid);
+  RunTest("TestInterpolateCubicPeriodicSeamIsC2", TestInterpolateCubicPeriodicSeamIsC2);
   RunTest("TestSurfaceDecomposeToBeziersProducesExactSpanPatches", TestSurfaceDecomposeToBeziersProducesExactSpanPatches);
 
   RunTest("TestSurfaceMatchEdgePositionTangentCurvature", TestSurfaceMatchEdgePositionTangentCurvature);
