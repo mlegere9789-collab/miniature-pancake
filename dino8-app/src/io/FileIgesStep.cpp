@@ -52,6 +52,24 @@ std::string Num(double v, int decimals = 9) {
   return s;
 }
 
+// A shortest-round-trip REAL literal: `%.15g` when that already reads back
+// as the identical double, `%.17g` otherwise - so a B-spline knot, weight or
+// control point written by ExportStep comes back from ImportStep bit-exact
+// (Num()'s 9 significant digits lose ~1e-10 on a weight like sqrt(2)/2, the
+// weight every circle, sphere, cylinder and torus carries). The same
+// formatter the kernel's own NurbsSurface::SaveStep uses. Still carries a
+// decimal point (a bare "10" is an ISO-10303-21 INTEGER, see Num()).
+std::string NumExact(double v) {
+  if (!std::isfinite(v)) v = 0.0;
+  if (v == 0.0) v = 0.0;  // normalises -0.0
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%.15g", v);
+  if (std::strtod(buf, nullptr) != v) std::snprintf(buf, sizeof(buf), "%.17g", v);
+  std::string s = buf;
+  if (s.find('.') == std::string::npos && s.find('e') == std::string::npos && s.find('E') == std::string::npos) s += ".";
+  return s;
+}
+
 std::string Trim(const std::string& s) {
   size_t a = 0, b = s.size();
   while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
@@ -1753,6 +1771,11 @@ std::string StepDir(const ON_3dVector& v) {
 }
 
 int WriteCartesianPoint(StepWriter& w, const ON_3dPoint& p) { return w.Add("CARTESIAN_POINT", "''," + StepPt(p)); }
+// A B-spline control point: lossless (see NumExact), so the curve/surface
+// definition ExportStep writes is the one ImportStep reads back.
+int WriteCartesianPointExact(StepWriter& w, const ON_3dPoint& p) {
+  return w.Add("CARTESIAN_POINT", "'',(" + NumExact(p.x) + "," + NumExact(p.y) + "," + NumExact(p.z) + ")");
+}
 int WriteDirection(StepWriter& w, const ON_3dVector& v) { return w.Add("DIRECTION", "''," + StepDir(v)); }
 int WriteAxis2Placement3D(StepWriter& w, const ON_Plane& pl) {
   const int p = WriteCartesianPoint(w, pl.origin);
@@ -1798,17 +1821,30 @@ int WriteStepCurve(StepWriter& w, const ON_NurbsCurve& c) {
   for (int i = 0; i <= K; ++i) {
     double wgt;
     const ON_3dPoint p = EuclideanCV(c, i, wgt);
-    cvs += "#" + std::to_string(WriteCartesianPoint(w, p)) + (i < K ? "," : "");
-    wts += Num(wgt) + (i < K ? "," : "");
+    cvs += "#" + std::to_string(WriteCartesianPointExact(w, p)) + (i < K ? "," : "");
+    wts += NumExact(wgt) + (i < K ? "," : "");
     if (std::fabs(wgt - 1.0) > 1e-9) rational = true;
   }
   cvs += ")"; wts += ")";
   std::string kn = "(", mu = "(";
-  for (size_t i = 0; i < uknots.size(); ++i) { kn += Num(uknots[i]) + (i + 1 < uknots.size() ? "," : ""); mu += std::to_string(mult[i]) + (i + 1 < uknots.size() ? "," : ""); }
+  for (size_t i = 0; i < uknots.size(); ++i) { kn += NumExact(uknots[i]) + (i + 1 < uknots.size() ? "," : ""); mu += std::to_string(mult[i]) + (i + 1 < uknots.size() ? "," : ""); }
   kn += ")"; mu += ")";
-  const std::string args = "''," + std::to_string(M) + "," + cvs + ",.UNSPECIFIED.,.F.,.F.,.F.," + mu + "," + kn + ",.UNSPECIFIED.";
-  if (!rational) return w.Add("B_SPLINE_CURVE_WITH_KNOTS", args);
-  return w.AddComplex({{"BOUNDED_CURVE", ""}, {"B_SPLINE_CURVE", ""}, {"B_SPLINE_CURVE_WITH_KNOTS", args.substr(2)}, {"CURVE", ""},
+  // ISO 10303-42 attribute order: B_SPLINE_CURVE's own are degree,
+  // control_points_list, curve_form, closed_curve, self_intersect (THREE
+  // flag fields - an earlier revision of this writer emitted a fourth
+  // `.F.`, which the reader below still tolerates in old files);
+  // B_SPLINE_CURVE_WITH_KNOTS adds knot_multiplicities, knots, knot_spec.
+  const std::string bsc_args = std::to_string(M) + "," + cvs + ",.UNSPECIFIED.,.F.,.F.";
+  const std::string knots_args = mu + "," + kn + ",.UNSPECIFIED.";
+  if (!rational) return w.Add("B_SPLINE_CURVE_WITH_KNOTS", "''," + bsc_args + "," + knots_args);
+  // The STANDARD ISO 10303-21 complex-entity layout real CAD exporters emit
+  // (and read): each attribute inside the supertype that declares it. The
+  // earlier revision packed everything into the B_SPLINE_CURVE_WITH_KNOTS
+  // part behind a leading empty field, with B_SPLINE_CURVE() left empty - a
+  // layout only Dino 8's own reader understood, so every rational curve
+  // (any circle or arc that isn't a pure CIRCLE entity) was refused by
+  // every other STEP reader.
+  return w.AddComplex({{"BOUNDED_CURVE", ""}, {"B_SPLINE_CURVE", bsc_args}, {"B_SPLINE_CURVE_WITH_KNOTS", knots_args}, {"CURVE", ""},
                        {"GEOMETRIC_REPRESENTATION_ITEM", ""}, {"RATIONAL_B_SPLINE_CURVE", wts}, {"REPRESENTATION_ITEM", "''"}});
 }
 
@@ -1844,8 +1880,8 @@ int WriteStepSurface(StepWriter& w, const ON_NurbsSurface& srf) {
     for (int j = 0; j < nv; ++j) {
       double wgt;
       const ON_3dPoint p = EuclideanCV(srf, i, j, wgt);
-      cvs += "#" + std::to_string(WriteCartesianPoint(w, p)) + (j + 1 < nv ? "," : "");
-      wts += Num(wgt) + (j + 1 < nv ? "," : "");
+      cvs += "#" + std::to_string(WriteCartesianPointExact(w, p)) + (j + 1 < nv ? "," : "");
+      wts += NumExact(wgt) + (j + 1 < nv ? "," : "");
       if (std::fabs(wgt - 1.0) > 1e-9) rational = true;
     }
     cvs += ")" + std::string(i + 1 < nu ? "," : "");
@@ -1853,13 +1889,24 @@ int WriteStepSurface(StepWriter& w, const ON_NurbsSurface& srf) {
   }
   cvs += ")"; wts += ")";
   std::string ku_s = "(", mu_u_s = "(", kv_s = "(", mu_v_s = "(";
-  for (size_t i = 0; i < uk_u.size(); ++i) { ku_s += Num(uk_u[i]) + (i + 1 < uk_u.size() ? "," : ""); mu_u_s += std::to_string(mu_u[i]) + (i + 1 < uk_u.size() ? "," : ""); }
-  for (size_t i = 0; i < uk_v.size(); ++i) { kv_s += Num(uk_v[i]) + (i + 1 < uk_v.size() ? "," : ""); mu_v_s += std::to_string(mu_v[i]) + (i + 1 < uk_v.size() ? "," : ""); }
+  for (size_t i = 0; i < uk_u.size(); ++i) { ku_s += NumExact(uk_u[i]) + (i + 1 < uk_u.size() ? "," : ""); mu_u_s += std::to_string(mu_u[i]) + (i + 1 < uk_u.size() ? "," : ""); }
+  for (size_t i = 0; i < uk_v.size(); ++i) { kv_s += NumExact(uk_v[i]) + (i + 1 < uk_v.size() ? "," : ""); mu_v_s += std::to_string(mu_v[i]) + (i + 1 < uk_v.size() ? "," : ""); }
   ku_s += ")"; mu_u_s += ")"; kv_s += ")"; mu_v_s += ")";
-  const std::string args = "''," + std::to_string(srf.Degree(0)) + "," + std::to_string(srf.Degree(1)) + "," + cvs +
-                           ",.UNSPECIFIED.,.F.,.F.,.F.," + mu_u_s + "," + mu_v_s + "," + ku_s + "," + kv_s + ",.UNSPECIFIED.";
-  if (!rational) return w.Add("B_SPLINE_SURFACE_WITH_KNOTS", args);
-  return w.AddComplex({{"BOUNDED_SURFACE", ""}, {"B_SPLINE_SURFACE", ""}, {"B_SPLINE_SURFACE_WITH_KNOTS", args.substr(2)},
+  // ISO 10303-42 attribute order: B_SPLINE_SURFACE's own are u_degree,
+  // v_degree, control_points_list, surface_form, u_closed, v_closed,
+  // self_intersect; B_SPLINE_SURFACE_WITH_KNOTS adds u_multiplicities,
+  // v_multiplicities, u_knots, v_knots, knot_spec.
+  const std::string bss_args = std::to_string(srf.Degree(0)) + "," + std::to_string(srf.Degree(1)) + "," + cvs + ",.UNSPECIFIED.,.F.,.F.,.F.";
+  const std::string knots_args = mu_u_s + "," + mu_v_s + "," + ku_s + "," + kv_s + ",.UNSPECIFIED.";
+  if (!rational) return w.Add("B_SPLINE_SURFACE_WITH_KNOTS", "''," + bss_args + "," + knots_args);
+  // The STANDARD ISO 10303-21 complex-entity layout real CAD exporters emit
+  // (and read): each attribute inside the supertype that declares it - the
+  // same entity text the kernel's own NurbsSurface::SaveStep writes. The
+  // earlier revision packed everything into the B_SPLINE_SURFACE_WITH_KNOTS
+  // part behind a leading empty field, with B_SPLINE_SURFACE() left empty -
+  // a layout only Dino 8's own reader understood, so every rational face
+  // (a sphere, a torus, any fillet) was refused by every other STEP reader.
+  return w.AddComplex({{"BOUNDED_SURFACE", ""}, {"B_SPLINE_SURFACE", bss_args}, {"B_SPLINE_SURFACE_WITH_KNOTS", knots_args},
                        {"GEOMETRIC_REPRESENTATION_ITEM", ""}, {"RATIONAL_B_SPLINE_SURFACE", wts}, {"REPRESENTATION_ITEM", "''"}, {"SURFACE", ""}});
 }
 
@@ -2327,30 +2374,45 @@ class StepModel {
       return out.IsValid();
     }
     if (const StepPart* p = e->Find("B_SPLINE_CURVE_WITH_KNOTS")) {
-      if (p->args.size() < 9) return false;
-      const int degree = std::atoi(Trim(p->args[1]).c_str());
-      const std::vector<int> cv_refs = StepRefList(p->args[2]);
-      // Field layout (flattened, 0-indexed): name[0], degree[1],
-      // control_points_list[2], curve_form[3], closed_curve[4],
-      // self_intersect[5], knot_multiplicities[6], knots[7], knot_spec[8] -
-      // a genuine, previously-undisclosed off-by-one: THREE fields
-      // (curve_form plus the two logicals) separate control_points_list
-      // from knot_multiplicities, not two, confirmed directly by splitting
-      // WriteStepCurve()'s own emitted args string on top-level commas and
-      // counting (the dino8-kernel port of this exact encoding,
-      // NurbsCurve::LoadStep, caught this the same way: its own circle
-      // round-trip test failed outright against this identical indexing
-      // before the fix). Before this, args[6]/args[7] read the THIRD
-      // ".UNSPECIFIED./.F./.F." logical/enum field as the multiplicity
-      // list (StepIntList("...F...") silently parses to a single 0) and
-      // the real multiplicity list as the knot list - MakeNurbsCurve()
-      // then always rejected the mismatched knot-vector length, so any
-      // genuine (non-line/circle/ellipse) free-form NURBS curve written by
-      // ExportStep came back as "no usable geometry" on ImportStep, not a
-      // crash or a silently-wrong shape, but a reader-side import failure
-      // for the single most general case this entity exists to carry.
-      const std::vector<int> mult = StepIntList(p->args[7]);
-      const std::vector<double> uknots = StepRealList(p->args[8]);
+      // Two layouts (see WriteStepCurve): the simple/flat one with every
+      // attribute in this part (name, degree, control_points_list, the
+      // curve_form/closed_curve/self_intersect flags, knot_multiplicities,
+      // knots, knot_spec), and the STANDARD ISO 10303-21 complex-entity
+      // split real CAD exporters emit for a rational curve, where
+      // B_SPLINE_CURVE carries degree/control_points_list/flags and this
+      // part only knot_multiplicities/knots/knot_spec. Before this, only
+      // the flat form decoded, so a rational B-spline curve from any other
+      // CAD tool (or from the kernel's own NurbsCurve::SaveStep) was an
+      // "unsupported entity". The two knot lists are located as the first
+      // two parenthesised attributes after the control points rather than
+      // at fixed indices, so a file with the schema's three flag fields
+      // and one with the four this writer emitted before both decode.
+      const StepPart* bp = e->Find("B_SPLINE_CURVE");
+      std::string degree_text, cvs_text;
+      size_t after_cvs = 0;
+      if (p->args.size() >= 7) { degree_text = p->args[1]; cvs_text = p->args[2]; after_cvs = 3; }
+      else if (bp && bp->args.size() >= 2 && p->args.size() >= 2) { degree_text = bp->args[0]; cvs_text = bp->args[1]; after_cvs = 0; }
+      else return false;
+      size_t mi = after_cvs;
+      while (mi < p->args.size() && Trim(p->args[mi]).rfind('(', 0) != 0) ++mi;
+      if (mi + 1 >= p->args.size()) return false;
+      const int degree = std::atoi(Trim(degree_text).c_str());
+      const std::vector<int> cv_refs = StepRefList(cvs_text);
+      // Field layout of the flat form (0-indexed): name[0], degree[1],
+      // control_points_list[2], then the curve_form/closed_curve/
+      // self_intersect flags (the schema's three at [3..5], so
+      // knot_multiplicities[6], knots[7], knot_spec[8]; or the four at
+      // [3..6] every file this writer wrote before the fix carries, so
+      // [7], [8], [9]). The reader once hard-coded one of these two
+      // indexings and so refused the other: fixed indices turned the
+      // multiplicity list into a parsed flag field ("...F..." -> a single
+      // 0) and the knot list into the multiplicity list, and
+      // MakeNurbsCurve() then rejected the mismatched knot-vector length -
+      // "no usable geometry" for the single most general curve entity this
+      // format has. Locating the lists by their own parentheses (above)
+      // reads both.
+      const std::vector<int> mult = StepIntList(p->args[mi]);
+      const std::vector<double> uknots = StepRealList(p->args[mi + 1]);
       std::vector<double> full;
       for (size_t i = 0; i < uknots.size() && i < mult.size(); ++i) {
         // Reject a corrupt/hostile file's multiplicity instead of an
@@ -2489,15 +2551,35 @@ class StepModel {
       return ss.GetNurbForm(out) > 0;
     }
     if (const StepPart* p = e->Find("B_SPLINE_SURFACE_WITH_KNOTS")) {
-      if (p->args.size() < 12) return false;
-      const int du = std::atoi(Trim(p->args[1]).c_str()), dv = std::atoi(Trim(p->args[2]).c_str());
+      // Two layouts (see WriteStepSurface): the simple/flat one with all 13
+      // attributes in this part (name first), and the STANDARD ISO 10303-21
+      // complex-entity split real CAD exporters emit for a rational surface
+      // - B_SPLINE_SURFACE(u_degree, v_degree, control_points_list,
+      // surface_form, u_closed, v_closed, self_intersect) then this part
+      // with only (u_multiplicities, v_multiplicities, u_knots, v_knots,
+      // knot_spec). Before this, `args.size() < 12` refused the split form
+      // outright, so every rational face from another CAD tool (and every
+      // file the kernel's own NurbsSurface::SaveStep writes) failed to
+      // import; the same two-layout selection that kernel reader makes.
+      const StepPart* bp = e->Find("B_SPLINE_SURFACE");
+      std::string du_text, dv_text, cvs_text, mu_text, mv_text, ku_text, kv_text;
+      if (p->args.size() >= 12) {
+        du_text = p->args[1]; dv_text = p->args[2]; cvs_text = p->args[3];
+        mu_text = p->args[8]; mv_text = p->args[9]; ku_text = p->args[10]; kv_text = p->args[11];
+      } else if (bp && bp->args.size() >= 3 && p->args.size() >= 4) {
+        du_text = bp->args[0]; dv_text = bp->args[1]; cvs_text = bp->args[2];
+        mu_text = p->args[0]; mv_text = p->args[1]; ku_text = p->args[2]; kv_text = p->args[3];
+      } else {
+        return false;
+      }
+      const int du = std::atoi(Trim(du_text).c_str()), dv = std::atoi(Trim(dv_text).c_str());
       // Control point list is a list of rows (u), each a list of columns (v).
       // Rows are themselves comma-containing lists ("(#a,#b,...)"), so a
       // top-level SplitTop would break on inner commas too; split at the
       // outer nesting level explicitly instead.
       std::vector<std::vector<int>> rows;
       {
-        const std::string body = Unparen(p->args[3]);
+        const std::string body = Unparen(cvs_text);
         int depth = 0;
         std::string cur;
         for (char c : body) {
@@ -2510,10 +2592,10 @@ class StepModel {
       const int nu = static_cast<int>(rows.size()), nv = static_cast<int>(rows.front().size());
       std::vector<ON_3dPoint> cvs(static_cast<size_t>(nu * nv));
       for (int i = 0; i < nu; ++i) for (int j = 0; j < nv && j < static_cast<int>(rows[static_cast<size_t>(i)].size()); ++j) cvs[static_cast<size_t>(j * nu + i)] = Point(rows[static_cast<size_t>(i)][static_cast<size_t>(j)]);
-      const std::vector<int> mu = StepIntList(p->args[8]);
-      const std::vector<int> mv = StepIntList(p->args[9]);
-      const std::vector<double> ku = StepRealList(p->args[10]);
-      const std::vector<double> kv = StepRealList(p->args[11]);
+      const std::vector<int> mu = StepIntList(mu_text);
+      const std::vector<int> mv = StepIntList(mv_text);
+      const std::vector<double> ku = StepRealList(ku_text);
+      const std::vector<double> kv = StepRealList(kv_text);
       std::vector<double> full_u, full_v;
       // Same untrusted-multiplicity guard as B_SPLINE_CURVE_WITH_KNOTS above.
       for (size_t i = 0; i < ku.size() && i < mu.size(); ++i) {
@@ -2553,6 +2635,9 @@ class StepModel {
 
 struct StepImportStats {
   int curves = 0, points = 0, breps = 0, faces_trimmed = 0, faces_untrimmed_fallback = 0, meshes = 0, skipped = 0, layers = 0;
+  // Free (untrimmed) surface objects read from B-spline surface entities no
+  // face refers to - see ImportStep's own "free surface" pass.
+  int surfaces = 0;
   // Shapes placed through a real MAPPED_ITEM assembly transform (see
   // ResolveMappedItem) rather than read at face value from a top-level
   // entity - already counted in breps/meshes/curves/points above too, this
@@ -3039,15 +3124,44 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
     }
   }
 
+  // A free B-spline surface - one that no face, shell or other entity
+  // refers to: a bare top-level B_SPLINE_SURFACE_WITH_KNOTS record (what
+  // the kernel's own NurbsSurface::SaveStep writes), or a member of a
+  // GEOMETRIC_SET (how AP214's GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_
+  // REPRESENTATION carries untrimmed surfaces) - becomes its own surface
+  // object, the STEP counterpart of ImportIges's standalone type-128 case.
+  // Every ADVANCED_FACE names its surface by reference, so a face's own
+  // surface is never read a second time here.
+  {
+    std::set<int> referenced;
+    for (const auto& [id, e] : model.entities) {
+      (void)id;
+      if (e.Find("GEOMETRIC_SET") || e.Find("GEOMETRIC_CURVE_SET")) continue;
+      for (const StepPart& part : e.parts)
+        for (const std::string& a : part.args)
+          for (size_t pos = a.find('#'); pos != std::string::npos; pos = a.find('#', pos + 1)) referenced.insert(std::atoi(a.c_str() + pos + 1));
+    }
+    for (const auto& [id, e] : model.entities) {
+      if (!e.Find("B_SPLINE_SURFACE_WITH_KNOTS") || referenced.count(id)) continue;
+      ON_NurbsSurface srf;
+      if (!model.Surface(id, srf)) { ++stats.skipped; continue; }
+      kernel::NurbsSurface k;
+      k.raw() = srf;
+      doc.Add(SceneObject::MakeSurface(k));
+      ++stats.surfaces;
+    }
+  }
+
   std::ostringstream ss;
   ss << "STEP: " << stats.breps << " brep" << (stats.breps == 1 ? "" : "s") << " (" << stats.faces_trimmed << " trimmed face" << (stats.faces_trimmed == 1 ? "" : "s") << ")"
      << ", " << stats.curves << " curve" << (stats.curves == 1 ? "" : "s") << ", " << stats.points << " point" << (stats.points == 1 ? "" : "s");
   if (stats.meshes) ss << ", " << stats.meshes << " mesh" << (stats.meshes == 1 ? "" : "es");
+  if (stats.surfaces) ss << ", " << stats.surfaces << " surface" << (stats.surfaces == 1 ? "" : "s");
   if (stats.faces_untrimmed_fallback) ss << ", " << stats.faces_untrimmed_fallback << " face" << (stats.faces_untrimmed_fallback == 1 ? "" : "s") << " fell back to untrimmed";
   if (stats.assembly_parts) ss << ", " << stats.assembly_parts << " part" << (stats.assembly_parts == 1 ? "" : "s") << " placed via real assembly (MAPPED_ITEM) transforms";
   if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped";
   summary = ss.str();
-  if (stats.breps + stats.curves + stats.points + stats.meshes == 0) { summary = "No usable geometry found in " + path; return false; }
+  if (stats.breps + stats.curves + stats.points + stats.meshes + stats.surfaces == 0) { summary = "No usable geometry found in " + path; return false; }
   return true;
 }
 

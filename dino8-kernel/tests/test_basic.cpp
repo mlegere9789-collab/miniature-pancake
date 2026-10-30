@@ -39274,9 +39274,13 @@ void TestNurbsCurveLoadStepRejectsMalformedFiles() {
     std::ifstream in(bad_mult_path);
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     in.close();
-    const size_t pos = text.find(".UNSPECIFIED.,.F.,.F.,.F.,(");
+    // The rational circle is written in the standard split layout, so its
+    // knot-multiplicity list is the first attribute of the
+    // B_SPLINE_CURVE_WITH_KNOTS part (see TestNurbsCurveSaveStepStandard-
+    // RationalLayoutAndLoadStepReadsBothLayouts).
+    const size_t pos = text.find("B_SPLINE_CURVE_WITH_KNOTS((");
     Check(pos != std::string::npos, "setup: found the multiplicity list's own opening paren");
-    const size_t mult_start = pos + std::string(".UNSPECIFIED.,.F.,.F.,.F.,(").size();
+    const size_t mult_start = pos + std::string("B_SPLINE_CURVE_WITH_KNOTS((").size();
     const size_t mult_end = text.find(')', mult_start);
     Check(mult_end != std::string::npos, "setup: found the multiplicity list's own closing paren");
     text.replace(mult_start, mult_end - mult_start, "2000000000");
@@ -86042,6 +86046,162 @@ void TestBrepSimplifyPlanarFaceCanonicalizesPlanarNurbsFaces() {
   }
 }
 
+// STEP rational-curve interoperability (PARITY_MAP's "Kernel data exchange",
+// the STEP half of the kernel exchange API): NurbsCurve::SaveStep() writes a
+// rational curve in the STANDARD ISO 10303-21 complex-entity layout - the
+// attributes split over B_SPLINE_CURVE (degree, control points, the three
+// curve_form/closed_curve/self_intersect flags) / B_SPLINE_CURVE_WITH_KNOTS
+// (knot multiplicities, knots, knot_spec) / RATIONAL_B_SPLINE_CURVE
+// (weights), the form every real CAD exporter emits and reads - and
+// LoadStep() reads BOTH that layout and the flat one the first revision of
+// this writer (and the app's own ExportStep) emitted. Confirmed failing
+// first: against the pre-change writer the entity text was
+// `B_SPLINE_CURVE()B_SPLINE_CURVE_WITH_KNOTS(,2,...` (an empty supertype
+// part and a leading empty field no other reader accepts), its `%.9g`
+// weights came back ~1e-10 off, and the pre-change LoadStep refused every
+// hand-written standard-layout file below outright (`args.size() < 9`),
+// exactly as the app's ImportStep did with the same files.
+void TestNurbsCurveSaveStepStandardRationalLayoutAndLoadStepReadsBothLayouts() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Result;
+  using step_surface_test_detail::ReadWholeFile;
+
+  // Whole-definition comparison: degree, control count, rationality, every
+  // knot and every weight BIT-exact (==), every Euclidean control point
+  // within `cv_tol` (a rational point passes through one division by its
+  // weight on write and one multiplication on read).
+  auto same_curve = [](const ON_NurbsCurve& a, const ON_NurbsCurve& b, double cv_tol) {
+    if (a.Degree() != b.Degree() || a.CVCount() != b.CVCount() || a.IsRational() != b.IsRational()) return false;
+    if (a.KnotCount() != b.KnotCount()) return false;
+    for (int i = 0; i < a.KnotCount(); ++i) if (a.Knot(i) != b.Knot(i)) return false;
+    for (int i = 0; i < a.CVCount(); ++i) {
+      if (a.IsRational() && a.Weight(i) != b.Weight(i)) return false;
+      ON_3dPoint pa, pb;
+      a.GetCV(i, pa);
+      b.GetCV(i, pb);
+      if ((pa - pb).Length() > cv_tol) return false;
+    }
+    return true;
+  };
+
+  // (1) A circle's own NURBS form: rational (weights sqrt(2)/2, NOT
+  // representable in 9 digits), 9 control points, degree 2, knots at
+  // multiples of pi/2 - written in the standard split layout, read back
+  // bit-exact.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(1, 2, 0), ON_3dVector(0, 0, 1)), 5.0);
+  ON_NurbsCurve circle_form;
+  Check(on_circle.GetNurbForm(circle_form) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = circle_form;
+  Check(circle.raw().IsRational() && circle.raw().CVCount() == 9 && circle.raw().Degree() == 2,
+        "setup: the circle's NURBS form is rational, degree 2, 9 control points");
+  const std::string path = "dino8_kernel_curve_step_standard_layout_test.stp";
+  Check(circle.SaveStep(path) == Result::Ok, "SaveStep succeeds on a circle's NURBS form");
+  const std::string text = ReadWholeFile(path);
+  Check(text.find("=(BOUNDED_CURVE()B_SPLINE_CURVE(2,(#1,#2,#3,#4,#5,#6,#7,#8,#9),.UNSPECIFIED.,.F.,.F.)"
+                  "B_SPLINE_CURVE_WITH_KNOTS((3,2,2,2,3),(") != std::string::npos,
+        "a rational curve is written as the standard complex entity: degree, control points and the schema's THREE "
+        "flags inside B_SPLINE_CURVE, the compressed knot lists inside B_SPLINE_CURVE_WITH_KNOTS");
+  Check(text.find(",.UNSPECIFIED.)CURVE()GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE((1.,0.70710678118654746,1.,"
+                  "0.70710678118654746,1.,0.70710678118654746,1.,0.70710678118654746,1.))REPRESENTATION_ITEM(''));") !=
+            std::string::npos,
+        "the weights follow in RATIONAL_B_SPLINE_CURVE, every sqrt(2)/2 written losslessly (17 significant digits)");
+  Check(text.find("B_SPLINE_CURVE()") == std::string::npos && text.find("B_SPLINE_CURVE_WITH_KNOTS(,") == std::string::npos,
+        "no empty B_SPLINE_CURVE() part and no leading empty field: the flat layout only Dino 8's own readers "
+        "understood is gone from the writer");
+  NurbsCurve reloaded;
+  Check(NurbsCurve::LoadStep(path, reloaded) == Result::Ok, "LoadStep reads the standard layout back");
+  Check(same_curve(circle.raw(), reloaded.raw(), 1e-12),
+        "degree, control count, every knot and every weight round-trip bit-exact, every control point within 1e-12");
+  std::remove(path.c_str());
+
+  // (2) A hand-written standard-layout rational quarter arc (radius 5
+  // about 30,0,0), NOT SaveStep()'s own output, checked against closed form
+  // - rules out a matched writer/reader bug cancelling itself out.
+  const std::string std_path = "dino8_kernel_curve_step_standard_hand_test.stp";
+  {
+    std::ofstream o(std_path);
+    o << "ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\n"
+         "#1=CARTESIAN_POINT('',(35.,0.,0.));\n#2=CARTESIAN_POINT('',(35.,5.,0.));\n#3=CARTESIAN_POINT('',(30.,5.,0.));\n"
+         "#4 = ( BOUNDED_CURVE ( ) B_SPLINE_CURVE ( 2, ( #1, #2, #3 ), .UNSPECIFIED., .F., .F. ) "
+         "B_SPLINE_CURVE_WITH_KNOTS ( ( 3, 3 ), ( 0., 1. ), .UNSPECIFIED. ) CURVE ( ) GEOMETRIC_REPRESENTATION_ITEM ( ) "
+         "RATIONAL_B_SPLINE_CURVE ( ( 1., 0.70710678118654757, 1. ) ) REPRESENTATION_ITEM ( '' ) );\n"
+         "ENDSEC;\nEND-ISO-10303-21;\n";
+  }
+  NurbsCurve arc;
+  Check(NurbsCurve::LoadStep(std_path, arc) == Result::Ok,
+        "LoadStep reads a hand-written standard-layout rational arc (the form every other CAD tool writes), spaces and all");
+  Check(arc.raw().Degree() == 2 && arc.raw().CVCount() == 3 && arc.raw().IsRational() &&
+            arc.raw().Weight(1) == 0.70710678118654757,
+        "the arc decodes as degree 2, 3 control points, rational, its middle weight bit-exact");
+  Check(std::abs(arc.raw().PointAt(0.5).DistanceTo(ON_3dPoint(30, 0, 0)) - 5.0) < 1e-12,
+        "the arc's midpoint lies at exactly radius 5 from the centre (a genuine circular arc, not an unweighted parabola)");
+  Check(std::abs(arc.Length(5000) - 2.5 * ON_PI) < 1e-6, "the arc's length is a quarter circumference, 5*pi/2 (to the polyline estimate's own accuracy)");
+  std::remove(std_path.c_str());
+
+  // (3) The same arc in the FLAT layout the first revision of this writer
+  // (and the app's ExportStep) emitted - every attribute packed into
+  // B_SPLINE_CURVE_WITH_KNOTS behind a leading empty field, B_SPLINE_CURVE
+  // left empty, and FOUR flag fields - must still load identically: files
+  // already written that way stay readable.
+  const std::string flat_path = "dino8_kernel_curve_step_flat_hand_test.stp";
+  {
+    std::ofstream o(flat_path);
+    o << "ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\n"
+         "#1=CARTESIAN_POINT('',(35.,0.,0.));\n#2=CARTESIAN_POINT('',(35.,5.,0.));\n#3=CARTESIAN_POINT('',(30.,5.,0.));\n"
+         "#4=(BOUNDED_CURVE()B_SPLINE_CURVE()B_SPLINE_CURVE_WITH_KNOTS(,2,(#1,#2,#3),.UNSPECIFIED.,.F.,.F.,.F.,(3,3),(0.,1.),"
+         ".UNSPECIFIED.)CURVE()GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE((1.,0.70710678118654757,1.))"
+         "REPRESENTATION_ITEM(''));\nENDSEC;\nEND-ISO-10303-21;\n";
+  }
+  NurbsCurve flat;
+  Check(NurbsCurve::LoadStep(flat_path, flat) == Result::Ok, "LoadStep still reads the flat (pre-fix Dino 8) layout");
+  Check(same_curve(arc.raw(), flat.raw(), 0.0), "the flat-layout arc decodes to the identical definition");
+  std::remove(flat_path.c_str());
+
+  // (4) A plain (non-rational) B_SPLINE_CURVE_WITH_KNOTS with the schema's
+  // THREE flag fields, as every other tool writes it, and with the FOUR
+  // the first revision wrote - both decode to the same exact line from
+  // (0,0,0) to (3,4,0), length 5.
+  for (int variant = 0; variant < 2; ++variant) {
+    const std::string line_path = "dino8_kernel_curve_step_simple_hand_test.stp";
+    {
+      std::ofstream o(line_path);
+      o << "ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\n#1=CARTESIAN_POINT('',(0.,0.,0.));\n#2=CARTESIAN_POINT('',(3.,4.,0.));\n"
+           "#3=B_SPLINE_CURVE_WITH_KNOTS('',1,(#1,#2),.UNSPECIFIED.,.F.,.F."
+        << (variant == 1 ? ",.F." : "") << ",(2,2),(0.,1.),.UNSPECIFIED.);\nENDSEC;\nEND-ISO-10303-21;\n";
+    }
+    NurbsCurve line;
+    Check(NurbsCurve::LoadStep(line_path, line) == Result::Ok,
+          variant == 0 ? "LoadStep reads a standard simple B_SPLINE_CURVE_WITH_KNOTS (three flag fields)"
+                       : "LoadStep reads the pre-fix simple form too (four flag fields)");
+    Check(!line.raw().IsRational() && line.raw().Degree() == 1 && line.raw().CVCount() == 2 && line.raw().Knot(0) == 0.0 &&
+              line.raw().Knot(1) == 1.0 && std::abs(line.Length() - 5.0) < 1e-12,
+          "the simple curve decodes as a non-rational degree-1 line with knots (0, 1) and length exactly 5");
+    std::remove(line_path.c_str());
+  }
+
+  // (5) A non-rational curve SaveStep() writes now carries exactly the
+  // schema's three flag fields (nine attributes), no fourth `.F.`.
+  ON_NurbsCurve cubic_form(3, false, 4, 4);
+  cubic_form.SetKnot(0, 0.0); cubic_form.SetKnot(1, 0.0); cubic_form.SetKnot(2, 0.0);
+  cubic_form.SetKnot(3, 1.0); cubic_form.SetKnot(4, 1.0); cubic_form.SetKnot(5, 1.0);
+  cubic_form.SetCV(0, ON_3dPoint(0, 0, 0));
+  cubic_form.SetCV(1, ON_3dPoint(1, 2, 0));
+  cubic_form.SetCV(2, ON_3dPoint(2, -1, 0));
+  cubic_form.SetCV(3, ON_3dPoint(3, 0, 0));
+  NurbsCurve cubic;
+  cubic.raw() = cubic_form;
+  const std::string cubic_path = "dino8_kernel_curve_step_simple_written_test.stp";
+  Check(cubic.SaveStep(cubic_path) == Result::Ok, "SaveStep succeeds on a non-rational cubic");
+  Check(ReadWholeFile(cubic_path).find("=B_SPLINE_CURVE_WITH_KNOTS('',3,(#1,#2,#3,#4),.UNSPECIFIED.,.F.,.F.,(4,4),(0.,1.),.UNSPECIFIED.);") !=
+            std::string::npos,
+        "a non-rational curve is written as the schema's nine-attribute simple entity (three flag fields, not four)");
+  NurbsCurve cubic_reloaded;
+  Check(NurbsCurve::LoadStep(cubic_path, cubic_reloaded) == Result::Ok && same_curve(cubic.raw(), cubic_reloaded.raw(), 0.0),
+        "the non-rational cubic round-trips bit-exact");
+  std::remove(cubic_path.c_str());
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -87372,6 +87532,8 @@ int main() {
   RunTest("TestBendAndMultiBendRightAngleThinSheetsAreExactSolids",
           TestBendAndMultiBendRightAngleThinSheetsAreExactSolids);
   RunTest("TestBrepSimplifyPlanarFaceCanonicalizesPlanarNurbsFaces", TestBrepSimplifyPlanarFaceCanonicalizesPlanarNurbsFaces);
+  RunTest("TestNurbsCurveSaveStepStandardRationalLayoutAndLoadStepReadsBothLayouts",
+          TestNurbsCurveSaveStepStandardRationalLayoutAndLoadStepReadsBothLayouts);
 
   RunTest("ON::End", ON::End);
 

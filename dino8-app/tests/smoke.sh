@@ -8614,4 +8614,56 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
   fi
 fi
 
+# STEP rational B-spline interoperability (io/FileIgesStep.cpp, see
+# step_rational_script.txt and the two fixtures it opens). Real CAD
+# exporters write a rational B-spline surface/curve as the STANDARD ISO
+# 10303-21 complex entity with the attributes split over their own
+# supertypes - B_SPLINE_SURFACE(...)B_SPLINE_SURFACE_WITH_KNOTS(...)
+# RATIONAL_B_SPLINE_SURFACE(...) - and Dino 8's reader refused exactly that
+# layout ("args.size() < 12" / "< 9") while its own writer emitted a flat
+# variant nothing else reads (every attribute packed into the WITH_KNOTS
+# part behind a leading empty field). Regression for both halves: the
+# reader now accepts both layouts (older Dino 8 files keep importing), the
+# writer emits the standard one with lossless REALs, and a bare top-level
+# B-spline surface (what the kernel's own NurbsSurface::SaveStep writes)
+# imports as a free surface object. Confirmed failing first: the pre-fix
+# binary reports "STEP: 0 breps (0 trimmed faces), 1 curve, 0 points; 1
+# unsupported entity skipped" and "FAIL expect_objects 3 (got 1)" on the
+# first fixture, and "No usable geometry found" on the kernel-written one.
+sed "s|@TMP@|$TMPW|g" "$HERE/step_rational_script.txt" > "$TMPW/step_rational_script.txt"
+cp "$HERE/step_rational_standard_layout_fixture.stp" "$TMPW/step_rational_standard_layout_fixture.stp"
+cp "$HERE/step_kernel_rational_sphere_fixture.stp" "$TMPW/step_kernel_rational_sphere_fixture.stp"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RAT="$("$BIN" --smoke 80 --script "$TMPW/step_rational_script.txt" 2>&1)" || { echo "$RAT"; echo "FAIL: step rational script exited non-zero"; exit 1; }
+else
+  RAT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 80 --script "$TMPW/step_rational_script.txt" 2>&1)" || { echo "$RAT"; echo "FAIL: step rational script exited non-zero"; exit 1; }
+fi
+ratcheck() { if echo "$RAT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RAT" "$1"; fail=1; fi; }
+ratcount() { if [ "$(grep -c "$1" <<<"$RAT")" -ge "$2" ]; then echo "ok   $3"; else echo "FAIL $3"; near "$RAT" "$1"; fail=1; fi; }
+# (1) the hand-written standard-layout fixture
+ratcheck "STEP: 1 brep (0 trimmed faces), 2 curves, 0 points, 1 face fell back to untrimmed" "a standard-layout rational B_SPLINE_SURFACE face (quarter cylinder) plus a standard-layout AND a flat-layout rational B_SPLINE_CURVE all imported - no entity 'unsupported', no face dropped (was: 0 breps, 1 curve, 1 unsupported entity skipped)"
+ratcheck "^ok   expect_objects 3" "the standard-layout fixture became exactly 3 objects (was: 1, only the flat-layout curve)"
+ratcheck "Object [0-9]* (polysurface) layer Default name 'QuarterCylinder'" "the quarter-cylinder face imported as a polysurface named from its SHELL_BASED_SURFACE_MODEL"
+ratcheck "^history:   1 faces, 4 edges, open" "the untrimmed quarter-cylinder face is one open face with its four natural edges"
+ratcount "^history:   degree 2, 3 control points, rational, open" 2 "both quarter arcs (standard split layout AND the older flat layout) decode as degree-2, 3-control-point RATIONAL open curves - the weights were read, not dropped"
+ratcount "^history: Curve [0-9]* length = 7.854" 2 "each quarter arc's length is 5*pi/2 = 7.854 - a genuine circular arc (the sqrt(2)/2 middle weight applied), not an unweighted parabola (which would be 7.969)"
+ratcheck "^history: Total length = 15.71 Millimeters" "the two arcs together: 5*pi = 15.71"
+ratcheck "^history: Area = 314.1 square Millimeters" "the quarter cylinder's area is 100*pi = 314.2 (314.1 on the tessellated mesh) (radius 10 x height 20 x pi/2): its sqrt(2)/2 weights were read at full precision"
+ratcheck "^history: Bounding box min 0,0,0 max 10,10,20" "the quarter cylinder's bounding box is exactly 0,0,0 - 10,10,20"
+# (2) the file the kernel's own NurbsSurface::SaveStep writes (a sphere, centre 1,2,3, radius 2.5)
+ratcheck "STEP: 0 breps (0 trimmed faces), 0 curves, 0 points, 1 surface" "a bare top-level rational B_SPLINE_SURFACE entity in the standard layout - the kernel's own SaveStep output - imports as one free surface object (was: 'No usable geometry found')"
+ratcheck "^ok   expect_objects 1" "the kernel-written sphere file became exactly 1 object"
+ratcheck "^history:   degree 2 x 2, CVs 9 x 5" "the imported sphere keeps the kernel's exact degree-(2,2), 9x5 control net"
+ratcheck "^history: Area = 78.4 square Millimeters" "the imported sphere's area is 4*pi*2.5^2 = 78.54 (78.4 on the tessellated mesh): every sqrt(2)/2 weight read back exactly"
+ratcheck "^history: Bounding box min -1.5,-0.5,0.5 max 3.5,4.5,5.5" "the imported sphere's bounding box is exactly centre (1,2,3) +/- 2.5"
+# (3) ExportStep -> ImportStep round trip of the app's own rational geometry
+ratcount "^history: Volume = 4177 cubic Millimeters" 2 "the reimported sphere (rational faces written by ExportStep in the standard layout) has the identical tessellated volume 4177 as the original - weights, knots and control points round-tripped losslessly"
+ratcheck "^ok   expect_objects 2" "the round-trip file came back as exactly 2 objects (sphere polysurface + circle)"
+ratcheck "^history: Total length = 31.42 Millimeters" "the round-tripped circle's length is 2*pi*5 = 31.42"
+grep -q "^#[0-9]*=(BOUNDED_SURFACE()B_SPLINE_SURFACE(2,2,((#" "$TMPW/rational_roundtrip.stp" && echo "ok   rational_roundtrip.stp writes the sphere's rational face as the STANDARD complex entity: B_SPLINE_SURFACE carries the degrees and control net" || { echo "FAIL rational_roundtrip.stp lacks the standard B_SPLINE_SURFACE(u_degree,v_degree,control_points,...) part"; fail=1; }
+grep -q ",.F.,.F.,.F.)B_SPLINE_SURFACE_WITH_KNOTS((" "$TMPW/rational_roundtrip.stp" && echo "ok   rational_roundtrip.stp's B_SPLINE_SURFACE_WITH_KNOTS part carries only the knot data, right after the three B_SPLINE_SURFACE flags" || { echo "FAIL rational_roundtrip.stp's B_SPLINE_SURFACE_WITH_KNOTS part is not the standard knot-only form"; fail=1; }
+grep -q ")GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_SURFACE(((" "$TMPW/rational_roundtrip.stp" && echo "ok   rational_roundtrip.stp carries the weights as a RATIONAL_B_SPLINE_SURFACE grid" || { echo "FAIL rational_roundtrip.stp has no RATIONAL_B_SPLINE_SURFACE weight grid"; fail=1; }
+grep -q "0\.7071067811865[0-9][0-9]" "$TMPW/rational_roundtrip.stp" && echo "ok   rational_roundtrip.stp writes the sphere's sqrt(2)/2 weights losslessly (17 significant digits), not rounded to 9" || { echo "FAIL rational_roundtrip.stp rounds its weights (no full-precision sqrt(2)/2)"; fail=1; }
+grep -q "B_SPLINE_SURFACE()\|B_SPLINE_SURFACE_WITH_KNOTS(,\|B_SPLINE_CURVE()\|B_SPLINE_CURVE_WITH_KNOTS(," "$TMPW/rational_roundtrip.stp" && { echo "FAIL rational_roundtrip.stp still contains the flat pre-fix layout (an empty supertype part or a leading empty field)"; fail=1; } || echo "ok   rational_roundtrip.stp contains no empty B_SPLINE_SURFACE()/B_SPLINE_CURVE() part and no leading empty field - the flat layout only Dino 8 could read is gone"
+
 exit $fail
