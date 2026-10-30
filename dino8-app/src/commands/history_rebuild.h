@@ -60,7 +60,13 @@ std::optional<SceneObject> RebuildRevolve(CommandContext& ctx, const kernel::Nur
                                            const HistoryRecord& rec);
 
 // Loft/SubDLoft. `rec.straight` selects Style=Straight; `rec.command`
-// distinguishes Loft (NURBS/mesh) from SubDLoft (always SubD output).
+// distinguishes Loft from SubDLoft (always the SubD/mesh output kind, built
+// from a control-point grid of the sections). Loft calls the kernel's exact
+// interpolating Brep::Loft after reversing/re-seaming the curves to match
+// (cmd_solids.cpp): reads num: cap (1/0, Cap=Yes/No; absent means Yes) - a
+// closed planar loft with Cap=Yes is a polysurface solid, otherwise a Surface.
+// Returns nullopt, with a warning printed, when the curves mix open and closed
+// ones; a kernel refusal keeps the older control-point fit (reason printed).
 std::optional<SceneObject> RebuildLoft(CommandContext& ctx, const std::vector<const kernel::NurbsCurve*>& curves,
                                         const HistoryRecord& rec);
 
@@ -71,23 +77,32 @@ std::optional<SceneObject> RebuildLoft(CommandContext& ctx, const std::vector<co
 std::optional<SceneObject> RebuildPipe(CommandContext& ctx, const kernel::NurbsCurve& curve, const HistoryRecord& rec);
 
 // Sweep1 (Sweep1Command, cmd_surface.cpp), single-cross-section case only -
-// the kernel's own exact Brep::Sweep1 (RMF transport + skin, real caps when
-// the section is closed and planar). Reads no num parameters: stations and
-// cap are fixed the same way the live command's single-section call is.
-// Returns nullopt (no history recorded, live command falls back to its own
-// approximate multi-section construction) when the kernel itself refuses
-// the inputs (e.g. a non-planar closed section, or a degenerate rail/
-// section) - never throws.
+// the kernel's own exact Brep::Sweep1 (RMF transport + skin), built uncapped.
+// Reads no num parameters: stations and cap are fixed the same way the live
+// command's single-section call is. The section is anchored where it sits
+// along the rail (a section at the rail start is the kernel call unchanged;
+// anywhere else the rail is split at the section, each side swept from it and
+// the halves joined; a closed rail is re-seamed there) and the result is
+// measured against the section, so the surface covers the rail and passes
+// through the section. Prints one line saying where the section was found and
+// the measured deviation. Returns nullopt (no history recorded, live command
+// falls back to its own approximate section-anchored construction, reason
+// printed) when the kernel refuses the inputs or the measured result misses
+// the section - never throws.
 std::optional<SceneObject> RebuildSweep1(CommandContext& ctx, const kernel::NurbsCurve& section,
                                           const kernel::NurbsCurve& rail, const HistoryRecord& rec);
 
 // Sweep2 (Sweep2Command, cmd_surface.cpp), single-cross-section case only -
 // the kernel's own exact Brep::Sweep2 (two-rail frame transport + skin).
 // Reads no num parameters: stations and cap are fixed the same way the
-// live command's single-section call is. Returns nullopt (no history
+// live command's single-section call is. Section placement is handled as in
+// RebuildSweep1 (anchored on each rail; both rails split at the anchors and
+// the sides joined; a closed rail pair re-seamed). Returns nullopt (no history
 // recorded, live command falls back to its own approximate scaled-frame
-// construction) when the kernel itself refuses the inputs (e.g. a
-// degenerate rail/section, or the rails touching) - never throws.
+// construction, reason printed) when the kernel itself refuses the inputs
+// (e.g. a degenerate rail/section, or the rails touching), the section sits
+// at the start of one rail but not the other, or the measured result misses
+// the section - never throws.
 std::optional<SceneObject> RebuildSweep2(CommandContext& ctx, const kernel::NurbsCurve& section,
                                           const kernel::NurbsCurve& rail1, const kernel::NurbsCurve& rail2,
                                           const HistoryRecord& rec);

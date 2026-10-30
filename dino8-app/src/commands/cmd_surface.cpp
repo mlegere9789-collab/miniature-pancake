@@ -19,6 +19,7 @@
 
 #include "commands/cmd_common.h"
 #include "commands/history_rebuild.h"
+#include "commands/section_fit.h"
 
 namespace dino8::app {
 
@@ -1956,6 +1957,220 @@ std::optional<SceneObject> RebuildPatch(CommandContext& ctx, const kernel::Nurbs
   return SceneObject::MakeBrep(WrapBrep(b));
 }
 
+// ---------------------------------------------------------------------------
+// Section-anchored single-section sweeps (RebuildSweep1 / RebuildSweep2).
+//
+// kernel::Brep::Sweep1/Sweep2 carry the section RIGIDLY from the rail's START
+// frame: the section's offset from the rail start is preserved, so the swept
+// surface runs from wherever the section is for the rail's whole length
+// (a section sitting 40% along a straight rail of length 10 gives a surface
+// spanning 40%..140% of the rail, overshooting its end by 4), and on a rail
+// that is not a circular arc the transported copies drift off the rail
+// altogether. Rhino's semantics are different: the swept surface covers the
+// rail and passes through the picked section WHEREVER it sits along it.
+//
+// So the section is anchored first (sectionfit::AnchorOnRail: the rail point
+// closest to the section's reference point). A section at the rail start (to
+// 1e-6 of the rail's size) is the kernel call UNCHANGED - it is exactly the
+// case that call is right for. Otherwise the rail is cut at the anchor and
+// each side is swept from the anchor by the same kernel call (the section is
+// station 0 of each side, so it is reproduced exactly), the backward side on
+// the reversed rail with its v direction turned back, and the two surfaces are
+// spliced with NurbsSurface::Join (they share the section as their common
+// boundary row). A section at the rail's end needs only the backward side; a
+// closed rail is simply re-seamed at the anchor (a periodic sweep has no ends
+// to split). Whatever is built is then MEASURED: the isocurve of the result at
+// the section's station is compared with the section, and a result that
+// strays by more than 1e-6 of the section's size is refused rather than
+// returned - the caller then falls back to the older section-anchored
+// approximate sweep and the reason is printed.
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr double kAnchorTolerance = 1e-6;  // fraction of the rail's / section's size
+
+// The wall (first face's NURBS surface) of an uncapped swept Brep.
+std::optional<kernel::NurbsSurface> SweptWall(const kernel::Brep& b) {
+  if (b.raw().m_F.Count() < 1) return std::nullopt;
+  const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(b.raw().m_F[0].SurfaceOf());
+  if (!ns) return std::nullopt;
+  kernel::NurbsSurface k;
+  k.raw() = *ns;
+  return k;
+}
+
+// Fraction of the rail's arc length at which parameter `t` sits.
+double RailFraction(const kernel::NurbsCurve& rail, double t) {
+  const kernel::Interval d = rail.Domain();
+  if (!(t > d.min) || !(t < d.max)) return t <= d.min ? 0.0 : 1.0;
+  kernel::NurbsCurve left, right;
+  if (rail.Split(t, left, right) != kernel::Result::Ok) return (t - d.min) / (d.max - d.min);
+  const double ll = left.Length(), rl = right.Length();
+  return ll + rl > 0.0 ? ll / (ll + rl) : 0.0;
+}
+
+std::string Percent(double fraction) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.1f%%", 100.0 * fraction);
+  return buf;
+}
+
+kernel::NurbsCurve Reversed(const kernel::NurbsCurve& c) {
+  kernel::NurbsCurve r = c;
+  r.Reverse();
+  return r;
+}
+
+struct AnchoredSweep {
+  std::optional<kernel::NurbsSurface> surface;
+  std::string how;      // what was done, for the printed line
+  std::string refusal;  // why `surface` is empty
+  double deviation = 0.0;  // measured: section vs the result's isocurve at its station
+  bool gated = false;      // true when the result was checked against the tolerance
+};
+
+// Measures the isocurve of `s` at `v_station` against `section`; false (with
+// `a.refusal` set) when a gated result strays by more than the tolerance.
+bool VerifyStation(AnchoredSweep& a, const kernel::NurbsSurface& s, double v_station, const kernel::NurbsCurve& section, bool gated) {
+  const double limit = kAnchorTolerance * std::max(sectionfit::CurveSize(section), 1e-9);
+  a.deviation = sectionfit::CurveDeviation(section, s.IsoCurve(0, v_station));
+  a.gated = gated;
+  if (gated && !(a.deviation <= limit)) {
+    a.refusal = "the combined surface misses the section by " + sectionfit::Sci(a.deviation) + " (limit " + sectionfit::Sci(limit) + ")";
+    return false;
+  }
+  return true;
+}
+
+// Sweeps the two sides of an anchored rail pair (`fwd_*` from the anchor to the
+// rails' ends, `back_*` from the anchor back toward their starts, already
+// reversed so they also run away from the anchor) and splices them. Either
+// side may be absent (null), but not both. `sweep` builds one side's wall.
+template <typename Sweep>
+std::optional<kernel::NurbsSurface> SweepBothSides(const Sweep& sweep, bool have_fwd, bool have_back, double join_tol, double& v_station, std::string& refusal) {
+  std::optional<kernel::NurbsSurface> fwd, back;
+  if (have_fwd) fwd = sweep(true);
+  if (have_back) back = sweep(false);
+  if ((have_fwd && !fwd) || (have_back && !back)) { refusal = "the kernel sweep returned no surface"; return std::nullopt; }
+  if (fwd && !back) { v_station = fwd->Domain(1).min; return fwd; }
+  // The backward side runs anchor -> start; turn its v direction so v runs
+  // start -> end like the forward side, leaving the section at its v maximum.
+  if (back->Reverse(1) != kernel::Result::Ok) { refusal = "could not turn the backward side's v direction"; return std::nullopt; }
+  v_station = back->Domain(1).max;
+  if (!fwd) return back;
+  kernel::SurfaceJoinReport report;
+  const double station = v_station;
+  if (back->Join(*fwd, report, join_tol) != kernel::Result::Ok) {
+    refusal = "joining the two halves of the sweep failed: " + report.failure_reason;
+    return std::nullopt;
+  }
+  v_station = station;
+  return back;
+}
+
+AnchoredSweep AnchoredSweep1(const kernel::NurbsCurve& section, const kernel::NurbsCurve& rail) {
+  AnchoredSweep out;
+  const kernel::Interval dom = rail.Domain();
+  const double rail_tol = kAnchorTolerance * std::max(sectionfit::CurveSize(rail), 1e-9);
+  const sectionfit::RailAnchor an = sectionfit::AnchorOnRail(section, rail);
+  const Point3d pa = rail.PointAt(an.t);
+  const bool closed = rail.IsClosed();
+  const bool at_start = pa.DistanceTo(rail.PointAt(dom.min)) <= rail_tol;
+  const bool at_end = !closed && pa.DistanceTo(rail.PointAt(dom.max)) <= rail_tol;
+  const double join_tol = 1e-8 * std::max(sectionfit::CurveSize(section), 1e-6);
+
+  auto wall_of = [&](const kernel::NurbsCurve& r) { return SweptWall(kernel::Brep::Sweep1(section, r, /*stations=*/32, /*cap=*/false)); };
+
+  if (at_start) {
+    // The case Brep::Sweep1 is right for: the call, unchanged.
+    out.surface = wall_of(rail);
+    if (!out.surface) { out.refusal = "the kernel sweep returned no surface"; return out; }
+    out.how = "the section is at the rail start";
+    VerifyStation(out, *out.surface, out.surface->Domain(1).min, section, /*gated=*/false);
+    return out;
+  }
+  const std::string where = "the section sits " + Percent(RailFraction(rail, an.t)) + " along the rail";
+  double v_station = 0.0;
+  if (closed) {
+    kernel::NurbsCurve reseamed = rail;
+    if (reseamed.ChangeSeam(an.t) != kernel::Result::Ok) { out.refusal = "could not move the closed rail's seam to the section"; return out; }
+    out.surface = wall_of(reseamed);
+    if (!out.surface) { out.refusal = "the kernel sweep returned no surface"; return out; }
+    v_station = out.surface->Domain(1).min;
+    out.how = where + "; the closed rail was re-seamed there";
+  } else {
+    kernel::NurbsCurve left, right;
+    if (!at_end && rail.Split(an.t, left, right) != kernel::Result::Ok) { out.refusal = "could not split the rail at the section"; return out; }
+    const kernel::NurbsCurve back_rail = Reversed(at_end ? rail : left);
+    out.surface = SweepBothSides([&](bool forward) { return forward ? wall_of(right) : wall_of(back_rail); },
+                                 /*have_fwd=*/!at_end, /*have_back=*/true, join_tol, v_station, out.refusal);
+    if (!out.surface) return out;
+    out.how = where + (at_end ? "; swept back along the rail from the section" : "; the rail was split there and both sides swept from the section and joined");
+  }
+  if (!VerifyStation(out, *out.surface, v_station, section, /*gated=*/true)) out.surface.reset();
+  return out;
+}
+
+AnchoredSweep AnchoredSweep2(const kernel::NurbsCurve& section, const kernel::NurbsCurve& rail1, const kernel::NurbsCurve& rail2_in) {
+  AnchoredSweep out;
+  // rail2 runs the way rail1 does (the kernel's own start-to-start test).
+  kernel::NurbsCurve rail2 = rail2_in;
+  if (rail1.PointAt(rail1.Domain().min).DistanceTo(rail2.PointAt(rail2.Domain().max)) < rail1.PointAt(rail1.Domain().min).DistanceTo(rail2.PointAt(rail2.Domain().min))) rail2.Reverse();
+  const kernel::Interval d1 = rail1.Domain(), d2 = rail2.Domain();
+  const double tol1 = kAnchorTolerance * std::max(sectionfit::CurveSize(rail1), 1e-9), tol2 = kAnchorTolerance * std::max(sectionfit::CurveSize(rail2), 1e-9);
+  const sectionfit::RailAnchor an1 = sectionfit::AnchorOnRail(section, rail1), an2 = sectionfit::AnchorOnRail(section, rail2);
+  const Point3d p1 = rail1.PointAt(an1.t), p2 = rail2.PointAt(an2.t);
+  const bool closed1 = rail1.IsClosed(), closed2 = rail2.IsClosed();
+  const bool start1 = p1.DistanceTo(rail1.PointAt(d1.min)) <= tol1, start2 = p2.DistanceTo(rail2.PointAt(d2.min)) <= tol2;
+  const bool end1 = !closed1 && p1.DistanceTo(rail1.PointAt(d1.max)) <= tol1, end2 = !closed2 && p2.DistanceTo(rail2.PointAt(d2.max)) <= tol2;
+  const double join_tol = 1e-8 * std::max(sectionfit::CurveSize(section), 1e-6);
+
+  auto wall_of = [&](const kernel::NurbsCurve& a, const kernel::NurbsCurve& b) { return SweptWall(kernel::Brep::Sweep2(section, a, b, /*stations=*/32, /*cap=*/false)); };
+
+  if (start1 && start2) {
+    out.surface = wall_of(rail1, rail2_in);
+    if (!out.surface) { out.refusal = "the kernel sweep returned no surface"; return out; }
+    out.how = "the section is at the start of both rails";
+    VerifyStation(out, *out.surface, out.surface->Domain(1).min, section, /*gated=*/false);
+    return out;
+  }
+  const std::string where = "the section sits " + Percent(RailFraction(rail1, an1.t)) + " along rail 1 and " + Percent(RailFraction(rail2, an2.t)) + " along rail 2";
+  double v_station = 0.0;
+  if (closed1 && closed2) {
+    kernel::NurbsCurve r1 = rail1, r2 = rail2;
+    if (r1.ChangeSeam(an1.t) != kernel::Result::Ok || r2.ChangeSeam(an2.t) != kernel::Result::Ok) { out.refusal = "could not move the closed rails' seams to the section"; return out; }
+    // Two closed rails have no start/end to compare, so match their sense of travel at the new seams.
+    if (ON_DotProduct(r1.TangentAt(r1.Domain().min), r2.TangentAt(r2.Domain().min)) < 0.0) r2.Reverse();
+    out.surface = wall_of(r1, r2);
+    if (!out.surface) { out.refusal = "the kernel sweep returned no surface"; return out; }
+    v_station = out.surface->Domain(1).min;
+    out.how = where + "; both closed rails were re-seamed there";
+  } else {
+    if (start1 != start2 || end1 != end2) {
+      out.refusal = std::string("the section sits at the ") + (start1 ? "start" : end1 ? "end" : "interior") + " of rail 1 but at the " + (start2 ? "start" : end2 ? "end" : "interior") +
+                    " of rail 2, so one rail has nothing to sweep on one side of it";
+      return out;
+    }
+    kernel::NurbsCurve l1, r1, l2, r2;
+    if (!end1 && (rail1.Split(an1.t, l1, r1) != kernel::Result::Ok || rail2.Split(an2.t, l2, r2) != kernel::Result::Ok)) { out.refusal = "could not split the rails at the section"; return out; }
+    const kernel::NurbsCurve b1 = Reversed(end1 ? rail1 : l1), b2 = Reversed(end2 ? rail2 : l2);
+    // Each side's rails must still run the same way from the anchor (the kernel re-matches them by start distance).
+    auto same_way = [](const kernel::NurbsCurve& a, const kernel::NurbsCurve& b) {
+      const Point3d a0 = a.PointAt(a.Domain().min);
+      return a0.DistanceTo(b.PointAt(b.Domain().min)) <= a0.DistanceTo(b.PointAt(b.Domain().max));
+    };
+    if ((!end1 && !same_way(r1, r2)) || !same_way(b1, b2)) { out.refusal = "the two rails do not run the same way away from the section"; return out; }
+    out.surface = SweepBothSides([&](bool forward) { return forward ? wall_of(r1, r2) : wall_of(b1, b2); },
+                                 /*have_fwd=*/!end1, /*have_back=*/true, join_tol, v_station, out.refusal);
+    if (!out.surface) return out;
+    out.how = where + (end1 ? "; swept back along the rails from the section" : "; both rails were split there and both sides swept from the section and joined");
+  }
+  if (!VerifyStation(out, *out.surface, v_station, section, /*gated=*/true)) out.surface.reset();
+  return out;
+}
+
+}  // namespace
+
 // Shared by Sweep1Command::Build above and UpdateHistory (cmd_history.cpp) -
 // same "single source of truth" shape as RebuildPipe above. Unlike every
 // other Rebuild* function here, this does not reproduce one of this file's
@@ -1965,6 +2180,17 @@ std::optional<SceneObject> RebuildPatch(CommandContext& ctx, const kernel::Nurbs
 // at all. `stations` is fixed at 32 (this command exposes no Style/
 // tolerance option to vary it).
 //
+// The section's position along the rail is honoured (see the block comment
+// above AnchoredSweep1): a section at the rail start is the kernel call
+// unchanged; a section anywhere else along the rail is swept from where it
+// sits, each side of the rail separately, and joined, so the result covers
+// the rail and passes through the section exactly. The measured deviation is
+// printed on every call. Cases this cannot do exactly (the kernel refuses a
+// side, the halves cannot be joined, or the measured result misses the
+// section) return nullopt with the reason printed, and the live command then
+// takes its older section-anchored approximate path - never a silently wrong
+// exact-looking surface.
+//
 // Always built uncapped (`cap=false`), even when the section is closed and
 // planar: capping is a real Brep::Sweep1 feature, but this command has no
 // Cap option of its own (unlike Pipe), and this file's existing Sweep1
@@ -1973,8 +2199,8 @@ std::optional<SceneObject> RebuildPatch(CommandContext& ctx, const kernel::Nurbs
 // case sweeps a closed circle down an OPEN rail specifically to get a
 // periodic surface with a seam to move; auto-capping would silently turn it
 // into a solid and break that case's own premise). So the one-face,
-// untrimmed Brep::Sweep1(..., cap=false) returns is unwrapped back down to
-// the bare ON_NurbsSurface its one face already wraps (`ON_NurbsSurface::
+// untrimmed wall the kernel returns is unwrapped back down to the bare
+// ON_NurbsSurface its one face already wraps (`ON_NurbsSurface::
 // Cast(m_F[0].SurfaceOf())` - the same idiom used throughout this codebase
 // to read a built Brep's own surface back out, e.g. dino8-kernel/tests/
 // test_basic.cpp) and re-packaged as SceneObject::MakeSurface, matching
@@ -1984,16 +2210,18 @@ std::optional<SceneObject> RebuildPatch(CommandContext& ctx, const kernel::Nurbs
 // same "degrade gracefully" contract every other Rebuild* function in this
 // file already follows, so neither the live command nor UpdateHistory ever
 // crashes on an input the exact path can't handle.
-std::optional<SceneObject> RebuildSweep1(CommandContext&, const kernel::NurbsCurve& section,
+std::optional<SceneObject> RebuildSweep1(CommandContext& ctx, const kernel::NurbsCurve& section,
                                           const kernel::NurbsCurve& rail, const HistoryRecord&) {
   try {
-    kernel::Brep b = kernel::Brep::Sweep1(section, rail, /*stations=*/32, /*cap=*/false);
-    const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(b.raw().m_F[0].SurfaceOf());
-    if (!ns) return std::nullopt;
-    kernel::NurbsSurface k;
-    k.raw() = *ns;
-    return SceneObject::MakeSurface(k);
-  } catch (const std::exception&) {
+    AnchoredSweep r = AnchoredSweep1(section, rail);
+    if (!r.surface) {
+      ctx.Print("Sweep1: exact sweep not used - " + r.refusal + "; falling back to the approximate section-anchored sweep");
+      return std::nullopt;
+    }
+    ctx.Print("Sweep1: " + r.how + "; " + (r.gated ? "the result reproduces the section to " : "the section's isocurve on the result deviates by ") + sectionfit::Sci(r.deviation));
+    return SceneObject::MakeSurface(*r.surface);
+  } catch (const std::exception& ex) {
+    ctx.Print(std::string("Sweep1: exact sweep not used - the kernel refused (") + ex.what() + "); falling back to the approximate section-anchored sweep");
     return std::nullopt;
   }
 }
@@ -2010,17 +2238,28 @@ std::optional<SceneObject> RebuildSweep1(CommandContext&, const kernel::NurbsCur
 // kernel throws std::invalid_argument for a genuinely degenerate rail/
 // section or touching rails - caught here and reported as nullopt, same
 // "degrade gracefully" contract every other Rebuild* function follows.
-std::optional<SceneObject> RebuildSweep2(CommandContext&, const kernel::NurbsCurve& section,
+//
+// Section placement is handled exactly as in RebuildSweep1: anchored on
+// rail 1 and on rail 2 (each at its own closest point to the section), the
+// unchanged kernel call when the section is at the start of both rails,
+// otherwise both rails are split at their anchors, each side swept and the
+// halves joined (closed rail pairs are re-seamed instead). A section at the
+// start of one rail but not the other has nothing to sweep on one side of
+// the first rail: refused with the reason printed, falling back to the older
+// approximate path.
+std::optional<SceneObject> RebuildSweep2(CommandContext& ctx, const kernel::NurbsCurve& section,
                                           const kernel::NurbsCurve& rail1, const kernel::NurbsCurve& rail2,
                                           const HistoryRecord&) {
   try {
-    kernel::Brep b = kernel::Brep::Sweep2(section, rail1, rail2, /*stations=*/32, /*cap=*/false);
-    const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(b.raw().m_F[0].SurfaceOf());
-    if (!ns) return std::nullopt;
-    kernel::NurbsSurface k;
-    k.raw() = *ns;
-    return SceneObject::MakeSurface(k);
-  } catch (const std::exception&) {
+    AnchoredSweep r = AnchoredSweep2(section, rail1, rail2);
+    if (!r.surface) {
+      ctx.Print("Sweep2: exact sweep not used - " + r.refusal + "; falling back to the approximate section-anchored sweep");
+      return std::nullopt;
+    }
+    ctx.Print("Sweep2: " + r.how + "; " + (r.gated ? "the result reproduces the section to " : "the section's isocurve on the result deviates by ") + sectionfit::Sci(r.deviation));
+    return SceneObject::MakeSurface(*r.surface);
+  } catch (const std::exception& ex) {
+    ctx.Print(std::string("Sweep2: exact sweep not used - the kernel refused (") + ex.what() + "); falling back to the approximate section-anchored sweep");
     return std::nullopt;
   }
 }

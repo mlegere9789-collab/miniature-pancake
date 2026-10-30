@@ -13,11 +13,16 @@
 # same length, so the rail-to-rail width is constant along the whole sweep -
 # the same "no net scaling" case history_sweep1_script.txt's own single
 # straight rail is, which is why the swept tube's bounding box below comes
-# out identical to that file's own. As with Sweep1, the kernel's own exact
-# Brep::Sweep2 carries the section RIGIDLY in its station-0 frame, so moving
-# the SECTION (not a rail) is the one edit guaranteed not to cancel out in
-# the rebuilt result - see history_sweep1_script.txt's own header comment
-# for the full cancellation argument, which applies identically here.
+# out identical to that file's own. As with Sweep1, RebuildSweep2 anchors the
+# section where it sits along the rails (the surface covers the rails and
+# passes through the section wherever it is), so the two edits below test two
+# different things: sliding the section ALONG the rails (+5 in Z) must leave
+# the surface covering the rails' own z=0..10 extent (it used to shift the
+# whole tube to z=5..15 - the kernel's Brep::Sweep2 carries the section
+# rigidly from the rails' START frame, which was the defect); moving it
+# SIDEWAYS (+3 in X) is then the edit that proves UpdateHistory genuinely
+# re-derives the geometry, since it changes the swept bounding box in X. See
+# history_sweep1_script.txt's header comment.
 #
 # Object ids below are the deterministic 1-based counter Document::Add
 # assigns, in creation order.
@@ -58,12 +63,28 @@ Move
 0,0,0
 0,0,5
 
-# UpdateHistory re-derives object 4 from the section's new offset - the
-# money check: the whole tube shifts by the same +5 in Z (min/max z move
-# from 0..10 to 5..15), not stay put.
+# UpdateHistory re-derives object 4 from the section's new position. The
+# section now sits half way along both rails, so the rebuilt surface still
+# covers the rails' whole z=0..10 extent (x/y unchanged); the old behaviour
+# (z=5..15) is exactly the defect being fixed.
 UpdateHistory
 SelNone
 SelID 4
 BoundingBox
 @expect_objects 6
+History
+
+# Now move the section SIDEWAYS (+3 in X, still at z=5): UpdateHistory
+# re-derives the surface from the section's new shape/position, so the
+# bounding box moves in X while z stays 0..10.
+SelNone
+SelID 3
+Move
+0,0,0
+3,0,0
+UpdateHistory
+SelNone
+SelID 4
+BoundingBox
+@expect_objects 7
 History
