@@ -86202,6 +86202,253 @@ void TestNurbsCurveSaveStepStandardRationalLayoutAndLoadStepReadsBothLayouts() {
   std::remove(cubic_path.c_str());
 }
 
+// ---------------------------------------------------------------------------
+// NurbsSurface::MatchEdgeToCurve (surface_edit.cpp): MatchSrf against a
+// target CURVE, done as exact NURBS algebra. Before this method the only
+// curve-target path anywhere was the app's per-control-point heuristic
+// (boundary CVs moved to closest points, the next CV's step projected
+// perpendicular to the curve tangent): on the fixture below it leaves the
+// edge 0.279 away from the curve and changes the cross derivative by 1.39
+// (measured on the baseline library). Everything here is closed-form: the
+// edge IS the target curve (1e-12), the inward cross derivative / second
+// derivative IS the prescribed or preserved field (1e-9), the far edge and
+// its own cross derivative never move.
+
+namespace {
+
+struct EdgeDerivs {
+  ON_3dPoint p;
+  ON_3dVector inward;  // first cross derivative pointing into the surface
+  ON_3dVector cc;      // second cross derivative (sign-free)
+};
+
+// Edge evaluation at the `fixed_direction`/`at_min` edge, `frac` in [0, 1]
+// along the edge.
+EdgeDerivs EdgeAt(const dino8::kernel::NurbsSurface& s, int fixed_direction, bool at_min, double frac) {
+  const ON_NurbsSurface& r = s.raw();
+  const double at = at_min ? r.Domain(fixed_direction).Min() : r.Domain(fixed_direction).Max();
+  const double e = r.Domain(1 - fixed_direction).ParameterAt(frac);
+  EdgeDerivs out;
+  ON_3dVector du, dv, duu, duv, dvv;
+  if (fixed_direction == 0) r.Ev2Der(at, e, out.p, du, dv, duu, duv, dvv);
+  else r.Ev2Der(e, at, out.p, du, dv, duu, duv, dvv);
+  out.inward = fixed_direction == 0 ? du : dv;
+  if (!at_min) out.inward = -out.inward;
+  out.cc = fixed_direction == 0 ? duu : dvv;
+  return out;
+}
+
+// The target-curve parameter paired with edge fraction `frac` (the affine
+// map MatchEdgeToCurve uses, reversed when it reports so).
+double PairedParam(const ON_NurbsCurve& c, double frac, bool reversed) {
+  return c.Domain().ParameterAt(reversed ? 1.0 - frac : frac);
+}
+
+bool SameSurfaceCVs(const dino8::kernel::NurbsSurface& a, const dino8::kernel::NurbsSurface& b) {
+  if (a.CVCountU() != b.CVCountU() || a.CVCountV() != b.CVCountV() || a.IsRational() != b.IsRational()) return false;
+  for (int i = 0; i < a.CVCountU(); ++i)
+    for (int j = 0; j < a.CVCountV(); ++j) {
+      ON_4dPoint pa, pb;
+      a.raw().GetCV(i, j, pa);
+      b.raw().GetCV(i, j, pb);
+      if (pa.x != pb.x || pa.y != pb.y || pa.z != pb.z || (a.IsRational() && pa.w != pb.w)) return false;
+    }
+  return true;
+}
+
+}  // namespace
+
+void TestSurfaceMatchEdgeToCurveExactRowsPrescribedAndPreserved() {
+  using dino8::kernel::MatchContinuity;
+  using dino8::kernel::MatchEdgeReport;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  const int kSamples = 33;
+
+  // Fixture: WigglyBicubic(4, 4) has CV(u = j, v = i) = (i, j, z), so its
+  // v = min edge is the x = 0 line, y running with u. The target runs
+  // alongside it at x ~ -0.4 with one interior knot (5 CVs) the surface
+  // doesn't have.
+  const NurbsSurface original = WigglyBicubic(4, 4);
+  const NurbsCurve target = NurbsCurve::FromControlPoints(
+      {Point3d(-0.4, 0, 0.2), Point3d(-0.6, 0.8, 0.9), Point3d(-0.2, 1.5, -0.3), Point3d(-0.5, 2.3, 0.6), Point3d(-0.3, 3, 0.1)}, 3);
+  // Far-edge (v = max) position and cross derivative before any edit.
+  std::vector<EdgeDerivs> far_before;
+  for (int k = 0; k < kSamples; ++k) far_before.push_back(EdgeAt(original, 1, false, k / (kSamples - 1.0)));
+  auto far_edge_untouched = [&](const NurbsSurface& s, const char* what) {
+    double pos = 0.0, der = 0.0;
+    for (int k = 0; k < kSamples; ++k) {
+      const EdgeDerivs now = EdgeAt(s, 1, false, k / (kSamples - 1.0));
+      pos = std::max(pos, now.p.DistanceTo(far_before[static_cast<size_t>(k)].p));
+      der = std::max(der, (now.inward - far_before[static_cast<size_t>(k)].inward).Length());
+    }
+    Check(pos < 1e-12 && der < 1e-9, what);
+  };
+
+  // --- Tangent, prescribed field D (a quadratic vector field over the target's domain) ---
+  {
+    NurbsSurface s = original;
+    NurbsCurve d_field = NurbsCurve::FromControlPoints({Point3d(1.0, 0.3, 0.2), Point3d(0.8, -0.2, 0.5), Point3d(1.2, 0.1, -0.3)}, 2);
+    d_field.raw().SetDomain(target.raw().Domain().Min(), target.raw().Domain().Max());
+    MatchEdgeReport rep;
+    Check(s.MatchEdgeToCurve(1, true, target, MatchContinuity::Tangent, &d_field, nullptr, &rep) == Result::Ok,
+          "MatchEdgeToCurve G1 with a prescribed cross-derivative field returns Ok");
+    Check(!rep.target_edge_reversed, "MatchEdgeToCurve G1: the target already runs the way the edge does (not reversed)");
+    double pos = 0.0, tan = 0.0;
+    for (int k = 0; k < kSamples; ++k) {
+      const double f = k / (kSamples - 1.0);
+      const EdgeDerivs ed = EdgeAt(s, 1, true, f);
+      const double t = PairedParam(target.raw(), f, rep.target_edge_reversed);
+      pos = std::max(pos, ed.p.DistanceTo(target.raw().PointAt(t)));
+      tan = std::max(tan, (ed.inward - ON_3dVector(d_field.raw().PointAt(t))).Length());
+    }
+    Check(pos < 1e-12, "MatchEdgeToCurve G1: the edge IS the target curve (1e-12 at 33 samples)");
+    Check(tan < 1e-9, "MatchEdgeToCurve G1: the inward cross derivative along the edge IS the prescribed field D (1e-9)");
+    Check(rep.max_position_error < 1e-12 && rep.max_tangent_error < 1e-9, "MatchEdgeToCurve G1: the report's self-measured residuals agree");
+    Check(s.CVCountU() == 5 && s.DegreeU() == 3 && s.CVCountV() == 4,
+          "MatchEdgeToCurve G1: the edge direction gained the target's interior knot (4 -> 5 CVs), the cross direction is untouched (4 rows)");
+    far_edge_untouched(s, "MatchEdgeToCurve G1: the far (v = max) edge and its own cross derivative never moved");
+  }
+
+  // --- Tangent, preserved field: the edge relocates onto the curve, the surface's own cross-derivative field stays ---
+  {
+    NurbsSurface s = original;
+    std::vector<EdgeDerivs> before;
+    for (int k = 0; k < kSamples; ++k) before.push_back(EdgeAt(original, 1, true, k / (kSamples - 1.0)));
+    MatchEdgeReport rep;
+    Check(s.MatchEdgeToCurve(1, true, target, MatchContinuity::Tangent, nullptr, nullptr, &rep) == Result::Ok,
+          "MatchEdgeToCurve G1 with the surface's own (preserved) cross derivative returns Ok");
+    double pos = 0.0, tan = 0.0, moved = 0.0;
+    for (int k = 0; k < kSamples; ++k) {
+      const double f = k / (kSamples - 1.0);
+      const EdgeDerivs ed = EdgeAt(s, 1, true, f);
+      pos = std::max(pos, ed.p.DistanceTo(target.raw().PointAt(PairedParam(target.raw(), f, rep.target_edge_reversed))));
+      tan = std::max(tan, (ed.inward - before[static_cast<size_t>(k)].inward).Length());
+      moved = std::max(moved, ed.p.DistanceTo(before[static_cast<size_t>(k)].p));
+    }
+    Check(pos < 1e-12, "MatchEdgeToCurve G1 (preserve): the edge IS the target curve (1e-12)");
+    Check(tan < 1e-9, "MatchEdgeToCurve G1 (preserve): the inward cross derivative is exactly the pre-edit one (1e-9)");
+    Check(moved > 0.3, "MatchEdgeToCurve G1 (preserve): the edge really moved (> 0.3) - the preserved derivative is not a no-op artefact");
+    far_edge_untouched(s, "MatchEdgeToCurve G1 (preserve): the far edge and its own cross derivative never moved");
+  }
+
+  // --- Curvature, prescribed D and E, on the u = max edge, target handed over reversed ---
+  {
+    NurbsSurface s = original;  // u = max edge: y = 3 line, x running with v
+    NurbsCurve rev = NurbsCurve::FromControlPoints(
+        {Point3d(3, 3.4, 0.6), Point3d(2.2, 3.6, -0.2), Point3d(1.4, 3.1, 0.9), Point3d(0.7, 3.5, 0.3), Point3d(0, 3.3, 0.1)}, 3);
+    NurbsCurve d_field = NurbsCurve::FromControlPoints({Point3d(0.2, -0.9, 0.3), Point3d(-0.1, -1.1, 0.1), Point3d(0.3, -0.8, -0.2), Point3d(0.0, -1.0, 0.4)}, 3);
+    NurbsCurve e_field = NurbsCurve::FromControlPoints({Point3d(0.4, 0.1, -0.5), Point3d(-0.3, 0.6, 0.2), Point3d(0.2, -0.4, 0.7)}, 2);
+    d_field.raw().SetDomain(rev.raw().Domain().Min(), rev.raw().Domain().Max());
+    e_field.raw().SetDomain(rev.raw().Domain().Min(), rev.raw().Domain().Max());
+    std::vector<EdgeDerivs> far_u_before;
+    for (int k = 0; k < kSamples; ++k) far_u_before.push_back(EdgeAt(original, 0, true, k / (kSamples - 1.0)));
+    MatchEdgeReport rep;
+    Check(s.MatchEdgeToCurve(0, false, rev, MatchContinuity::Curvature, &d_field, &e_field, &rep) == Result::Ok,
+          "MatchEdgeToCurve G2 with prescribed D and E on the u = max edge returns Ok");
+    Check(rep.target_edge_reversed, "MatchEdgeToCurve G2: a target running against the edge is detected and reported reversed");
+    double pos = 0.0, tan = 0.0, cur = 0.0;
+    for (int k = 0; k < kSamples; ++k) {
+      const double f = k / (kSamples - 1.0);
+      const EdgeDerivs ed = EdgeAt(s, 0, false, f);
+      const double t = PairedParam(rev.raw(), f, rep.target_edge_reversed);
+      pos = std::max(pos, ed.p.DistanceTo(rev.raw().PointAt(t)));
+      tan = std::max(tan, (ed.inward - ON_3dVector(d_field.raw().PointAt(t))).Length());
+      cur = std::max(cur, (ed.cc - ON_3dVector(e_field.raw().PointAt(t))).Length());
+    }
+    Check(pos < 1e-12, "MatchEdgeToCurve G2: the u = max edge IS the (reversed) target curve (1e-12)");
+    Check(tan < 1e-9, "MatchEdgeToCurve G2: the inward (-S_u) cross derivative IS the prescribed D (1e-9)");
+    Check(cur < 1e-9, "MatchEdgeToCurve G2: the second cross derivative S_uu IS the prescribed E (1e-9)");
+    Check(rep.max_curvature_error < 1e-9 && rep.scale == 1.0, "MatchEdgeToCurve G2: the report's curvature residual agrees and the scale is exactly 1");
+    // G2 rewrites 3 of this bicubic's 4 u-rows, so the far (u = min) edge
+    // is pinned by its one spare row: its position is exact; its own
+    // cross derivative (which reads the rewritten third row too) is not
+    // a promise here - MatchEdge()'s contract is "the far edge never
+    // moves", which is what this checks.
+    double far = 0.0;
+    for (int k = 0; k < kSamples; ++k) {
+      far = std::max(far, EdgeAt(s, 0, true, k / (kSamples - 1.0)).p.DistanceTo(far_u_before[static_cast<size_t>(k)].p));
+    }
+    Check(far < 1e-12, "MatchEdgeToCurve G2: the far (u = min) edge never moved (1e-12)");
+  }
+
+  // --- Curvature, preserved, on a degree-1 (ruled) cross direction: S_vv == 0 is what gets preserved, via degree elevation ---
+  {
+    std::vector<Point3d> grid;
+    for (int j = 0; j < 4; ++j)
+      for (int i = 0; i < 2; ++i) grid.push_back(Point3d(1.5 * i, j, 0.4 * std::sin(1.3 * j) + 0.2 * i));
+    const NurbsSurface ruled = NurbsSurface::FromControlGrid(grid, 4, 2, 3, 1);
+    NurbsSurface s = ruled;
+    std::vector<EdgeDerivs> before, far_before2;
+    for (int k = 0; k < kSamples; ++k) {
+      before.push_back(EdgeAt(ruled, 1, true, k / (kSamples - 1.0)));
+      far_before2.push_back(EdgeAt(ruled, 1, false, k / (kSamples - 1.0)));
+    }
+    MatchEdgeReport rep;
+    Check(s.MatchEdgeToCurve(1, true, target, MatchContinuity::Curvature, nullptr, nullptr, &rep) == Result::Ok,
+          "MatchEdgeToCurve G2 (preserve) on a degree-1 cross direction returns Ok");
+    Check(s.DegreeV() >= 2 && s.CVCountV() >= 4, "MatchEdgeToCurve G2 (preserve): the cross direction was degree-elevated and given a spare row for the far edge");
+    double pos = 0.0, tan = 0.0, cur = 0.0, far = 0.0;
+    for (int k = 0; k < kSamples; ++k) {
+      const double f = k / (kSamples - 1.0);
+      const EdgeDerivs ed = EdgeAt(s, 1, true, f);
+      pos = std::max(pos, ed.p.DistanceTo(target.raw().PointAt(PairedParam(target.raw(), f, rep.target_edge_reversed))));
+      tan = std::max(tan, (ed.inward - before[static_cast<size_t>(k)].inward).Length());
+      cur = std::max(cur, ed.cc.Length());
+      far = std::max(far, EdgeAt(s, 1, false, f).p.DistanceTo(far_before2[static_cast<size_t>(k)].p));
+    }
+    Check(pos < 1e-12, "MatchEdgeToCurve G2 (preserve, ruled): the edge IS the target curve (1e-12)");
+    Check(tan < 1e-9, "MatchEdgeToCurve G2 (preserve, ruled): the ruling direction along the edge is exactly the pre-edit one (1e-9)");
+    Check(cur < 1e-9, "MatchEdgeToCurve G2 (preserve, ruled): S_vv along the edge is identically zero, as on the degree-1 original (1e-9)");
+    Check(far < 1e-12, "MatchEdgeToCurve G2 (preserve, ruled): the far edge never moved");
+  }
+
+  // --- Position against a rational target (an exact arc): the edge becomes a true circular arc ---
+  {
+    NurbsSurface s = original;
+    const ON_3dPoint centre(-0.3, 1.5, 0.3);
+    const ON_Plane plane(centre, ON_3dVector(0, 0, 1), ON_3dVector(0, 1, 0));
+    const ON_Arc arc(ON_Circle(plane, 1.6), ON_Interval(-1.2, 1.2));
+    NurbsCurve arc_curve;
+    Check(arc.GetNurbForm(arc_curve.raw()) > 0 && arc_curve.raw().IsRational(), "MatchEdgeToCurve G0: the arc fixture is a rational NURBS");
+    MatchEdgeReport rep;
+    Check(s.MatchEdgeToCurve(1, true, arc_curve, MatchContinuity::Position, nullptr, nullptr, &rep) == Result::Ok,
+          "MatchEdgeToCurve G0 against a rational arc returns Ok");
+    Check(s.IsRational(), "MatchEdgeToCurve G0: the surface became rational to carry the arc's weights");
+    double pos = 0.0, radius = 0.0;
+    for (int k = 0; k < kSamples; ++k) {
+      const double f = k / (kSamples - 1.0);
+      const EdgeDerivs ed = EdgeAt(s, 1, true, f);
+      pos = std::max(pos, ed.p.DistanceTo(arc_curve.raw().PointAt(PairedParam(arc_curve.raw(), f, rep.target_edge_reversed))));
+      radius = std::max(radius, std::abs(ed.p.DistanceTo(centre) - 1.6));
+    }
+    Check(pos < 1e-12, "MatchEdgeToCurve G0 (arc): the edge IS the arc (1e-12)");
+    Check(radius < 1e-12, "MatchEdgeToCurve G0 (arc): every edge sample is exactly radius 1.6 from the centre - a true circle, not a fit");
+    Check(s.CVCountV() == 4, "MatchEdgeToCurve G0 (arc): only the edge row was rewritten (cross direction still 4 rows)");
+    far_edge_untouched(s, "MatchEdgeToCurve G0 (arc): the far edge and its cross derivative never moved");
+  }
+
+  // --- Refusals: fail closed, surface untouched ---
+  {
+    NurbsSurface s = original;
+    const ON_Plane plane(ON_3dPoint(-0.3, 1.5, 0.3), ON_3dVector(0, 0, 1), ON_3dVector(0, 1, 0));
+    const ON_Arc arc(ON_Circle(plane, 1.6), ON_Interval(-1.2, 1.2));
+    NurbsCurve arc_curve;
+    arc.GetNurbForm(arc_curve.raw());
+    Check(s.MatchEdgeToCurve(1, true, arc_curve, MatchContinuity::Tangent) == Result::Failed && SameSurfaceCVs(s, original),
+          "MatchEdgeToCurve refuses Tangent against a rational target (no polynomial-product construction), surface untouched");
+    NurbsCurve wrong_domain = NurbsCurve::FromControlPoints({Point3d(1, 0, 0), Point3d(1, 0, 0), Point3d(1, 0, 0)}, 2);
+    wrong_domain.raw().SetDomain(target.raw().Domain().Min(), target.raw().Domain().Max() + 1.0);
+    Check(s.MatchEdgeToCurve(1, true, target, MatchContinuity::Tangent, &wrong_domain) == Result::Failed && SameSurfaceCVs(s, original),
+          "MatchEdgeToCurve refuses a field whose domain isn't the target's, surface untouched");
+    bool threw = false;
+    try { s.MatchEdgeToCurve(2, true, target, MatchContinuity::Position); } catch (const std::invalid_argument&) { threw = true; }
+    Check(threw && SameSurfaceCVs(s, original), "MatchEdgeToCurve throws std::invalid_argument on a direction outside 0/1, surface untouched");
+  }
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -87534,6 +87781,7 @@ int main() {
   RunTest("TestBrepSimplifyPlanarFaceCanonicalizesPlanarNurbsFaces", TestBrepSimplifyPlanarFaceCanonicalizesPlanarNurbsFaces);
   RunTest("TestNurbsCurveSaveStepStandardRationalLayoutAndLoadStepReadsBothLayouts",
           TestNurbsCurveSaveStepStandardRationalLayoutAndLoadStepReadsBothLayouts);
+  RunTest("TestSurfaceMatchEdgeToCurveExactRowsPrescribedAndPreserved", TestSurfaceMatchEdgeToCurveExactRowsPrescribedAndPreserved);
 
   RunTest("ON::End", ON::End);
 

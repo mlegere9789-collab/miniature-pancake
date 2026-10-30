@@ -1688,6 +1688,70 @@ class NurbsSurface {
                    bool target_at_min, MatchContinuity continuity, MatchEdgeReport* report = nullptr,
                    double cross_scale = 0.0);
 
+  // MatchSrf against a target CURVE (the "match to curve" half of the
+  // Parasolid/Rhino operation; `MatchEdge()` above is the surface-edge
+  // half): edits this surface in place so its boundary edge selected by
+  // `fixed_direction`/`at_min` (same convention as `MatchEdge()`) becomes
+  // `target` exactly - the same NURBS curve, G0 to rounding, not to a
+  // tolerance - and, for Tangent/Curvature, so its cross-boundary
+  // derivatives along that edge equal prescribed vector fields exactly.
+  // A bare curve carries a position row only, so the derivative rows
+  // can't come from the target itself; they come from:
+  //
+  //  * `cross_derivative` / `cross_second_derivative`: 3D vector-valued
+  //    NurbsCurves over the target's OWN domain (D(t) pairs with
+  //    target(t); both must be non-rational, clamped, and have exactly
+  //    the target's domain), giving the wanted first / second
+  //    cross-boundary derivative of this surface along the edge, taken
+  //    along the direction pointing INTO this surface (the raw
+  //    parametric derivative at a domain-min edge, its negation at a
+  //    domain-max edge - the second derivative is sign-free). An app
+  //    that wants the edge tangent to a host surface along the curve
+  //    fits that surface's tangent field into such a curve; one that
+  //    wants a specific isocurve direction passes it directly.
+  //  * nullptr (the default): the field is this surface's OWN pre-edit
+  //    cross-boundary derivative along the edge, read exactly from its
+  //    own control rows (the clamped-B-spline end-derivative formulas
+  //    `MatchEdge()` documents) - the edge is relocated onto the curve
+  //    while the surface's cross-boundary tangent (and, for Curvature,
+  //    curvature) field is kept, Rhino's "preserve isocurve direction".
+  //    A degree-1 cross direction has an identically zero second
+  //    derivative, which is what Curvature then preserves.
+  //
+  // Construction: the target (reversed if its ends line up better with
+  // this edge's corners that way, reported in `target_edge_reversed`) and
+  // the two fields are reparameterized onto this edge's domain and
+  // brought to one shared degree/knot vector (degree elevation and knot
+  // insertion, all shape-preserving), then assembled into a degree-2
+  // Bezier-in-t ribbon T(e, t) = C(e) - t D(e) + t^2/2 E(e) whose rows
+  // are exactly C, C - D/2 and C - D + E/2, and this surface is
+  // `MatchEdge()`d to that ribbon's t = 0 edge with `cross_scale` 1 -
+  // so every exact-row guarantee, the far-edge protection (rows beyond
+  // the rewritten 1/2/3 are untouched; the cross direction is
+  // degree-elevated / knot-refined first if it has no spare row) and the
+  // evaluate-after-edit self-check (1e-9 x size, Result::Failed with the
+  // surface restored if it doesn't hold) of `MatchEdge()` apply
+  // verbatim. The `report` fields mean the same as there with scale 1:
+  // `max_tangent_error` is max |S_inward - D| and `max_curvature_error`
+  // max |S_crosscross - E| along the edge.
+  //
+  // Rational: a rational `target` (an exact arc, say) and/or a rational
+  // surface are supported for Position (the edge row carries the
+  // weights, as in `MatchEdge()`). Tangent/Curvature need a non-rational
+  // surface and target (a prescribed 3D field against a rational row is
+  // a polynomial-product construction this method doesn't do) and
+  // return Result::Failed, surface untouched, otherwise - it fails
+  // closed rather than approximating. Also Result::Failed (untouched) if
+  // this surface isn't clamped in both directions, the target or a
+  // field isn't clamped, a field's dimension isn't 3 or its domain
+  // isn't the target's, or the shared basis can't be built. Throws
+  // std::invalid_argument on a direction outside 0/1. A field passed
+  // for a continuity that doesn't use it (e.g. `cross_second_derivative`
+  // with Tangent) is ignored.
+  Result MatchEdgeToCurve(int fixed_direction, bool at_min, const NurbsCurve& target, MatchContinuity continuity,
+                          const NurbsCurve* cross_derivative = nullptr,
+                          const NurbsCurve* cross_second_derivative = nullptr, MatchEdgeReport* report = nullptr);
+
   // Unrolls a *developable* surface (a plane, a cylinder, or a cone -
   // the only three shapes an ON_NurbsSurface can be per OpenNURBS'
   // IsPlanar/IsCylinder/IsCone, and the classical differential-geometry
