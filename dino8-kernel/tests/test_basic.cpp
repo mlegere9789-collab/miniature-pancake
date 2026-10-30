@@ -18416,13 +18416,10 @@ void TestBrepAreaHandlesGenuinelyTrimmedFaces() {
 // theorem integrand) closes this bullet's own "throws on any trimmed
 // face" gap for Volume() too, not only Area(). Volume() also keeps its
 // own separate closedness precondition (TessellateToClosedMesh(8,
-// 8).IsClosedManifold()) - unaffected by this change, still disclosed
-// as a materially different, already-known limitation for several
-// BooleanCombineGeneral() results (confirmed directly via a standalone
-// `dino8_scratch_test` probe before writing this test: of the three
-// box+box ops, only Intersection's own result happens to pass that
-// precondition - Union and Difference still throw on it, the same as
-// before this change, not a regression this round introduces or fixes).
+// 8).IsClosedManifold()). When this test was written only Intersection's
+// result passed it (Union and Difference threw on it); the T-junction
+// stitch in Brep::TessellateToClosedMesh() has since closed that gap, see
+// the Union/Difference checks at the end of this test.
 void TestBrepVolumeHandlesGenuinelyTrimmedFaces() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
@@ -18450,29 +18447,25 @@ void TestBrepVolumeHandlesGenuinelyTrimmedFaces() {
         "faces, real ON_Brep loop topology) matches the closed-form unit-cube volume 1.0 within 1e-6, no "
         "longer throwing on the trimmed-face restriction");
 
-  // Union and Difference still throw - but on the SAME pre-existing,
-  // already-disclosed closedness precondition this change doesn't touch
-  // (TessellateToClosedMesh(8, 8).IsClosedManifold() is false for both,
-  // confirmed via the probe), not the trimmed-face restriction this
-  // change removes. A real regression guard: if this change somehow
-  // broke the closedness check itself, these would start throwing a
-  // DIFFERENT message, or stop throwing at all with a wrong answer.
-  auto throws_invalid_argument_matching = [](const std::function<void()>& f, const std::string& needle) {
-    try {
-      f();
-    } catch (const std::invalid_argument& e) {
-      return std::string(e.what()).find(needle) != std::string::npos;
-    }
-    return false;
-  };
+  // Union and Difference used to throw on Volume()'s closedness precondition
+  // (TessellateToClosedMesh(8, 8).IsClosedManifold() was false for both):
+  // their faces are differently-split coplanar pieces of the two boxes' faces,
+  // so neighbouring faces' tessellation lattices disagreed along shared edges
+  // (hairline T-junction cracks) - the SAME root cause as
+  // TestBrepTessellateSplitPlanarFaceClosesAcrossSharedEdges. With
+  // TessellateToClosedMesh() now stitching those cracks (brep.cpp,
+  // StitchedIfThatClosesIt), both are closed and Volume() returns the
+  // closed-form answers: |A| + |B| - |A and B| = 8 + 8 - 1 = 15 for the Union
+  // and |A| - |A and B| = 8 - 1 = 7 for the Difference. This test used to pin
+  // the throw as a "disclosed limitation"; that limitation is closed.
   const Brep uni = BooleanCombineGeneral(box_a, box_b, BooleanOp::Union);
   const Brep diff = BooleanCombineGeneral(box_a, box_b, BooleanOp::Difference);
-  Check(throws_invalid_argument_matching([&] { uni.Volume(); }, "not a closed, watertight solid"),
-        "Volume() on the Union result still throws on the pre-existing closedness precondition, not the "
-        "trimmed-face restriction this change removes");
-  Check(throws_invalid_argument_matching([&] { diff.Volume(); }, "not a closed, watertight solid"),
-        "Volume() on the Difference result still throws on the pre-existing closedness precondition, not "
-        "the trimmed-face restriction this change removes");
+  Check(uni.TessellateToClosedMesh(8, 8).IsClosedManifold() && diff.TessellateToClosedMesh(8, 8).IsClosedManifold(),
+        "the Union and Difference results' closed-mesh tessellations are now closed manifolds (T-junction cracks stitched)");
+  Check(std::abs(uni.Volume() - 15.0) < 1e-6,
+        "Volume() on the box+box Union result no longer throws: exactly 8 + 8 - 1 = 15 within 1e-6");
+  Check(std::abs(diff.Volume() - 7.0) < 1e-6,
+        "Volume() on the box+box Difference result no longer throws: exactly 8 - 1 = 7 within 1e-6");
 }
 
 void TestBrepTrimmedPlanarFaceRejectsTooFewPoints() {
@@ -23738,6 +23731,166 @@ void TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip() {
     const dino8::kernel::Mesh mesh = box.TessellateToClosedMeshTolerant(4, 4);
     Check(mesh.IsClosedManifold(), "the healed box's tolerant tessellation is a closed manifold");
     Check(std::fabs(mesh.Volume() - 1.0) <= 2.0 * width, "...with volume within the strip's width of 1");
+  }
+}
+
+// A valid, closed, consistently oriented planar solid whose TOP face is
+// split into several coplanar faces (and whose side walls carry the split
+// points, so the shell is topologically closed - IsValid()/IsSolid()/
+// Check() all clean) used to tessellate to an OPEN mesh at every
+// resolution above 1, so Volume() threw "not a closed, watertight solid"
+// on a perfectly valid solid. Root cause: each face is meshed on its OWN
+// (u, v) lattice - a 5%-padded bounding box of its trim polygon - and the
+// boundary vertices it puts on a shared edge are wherever ITS grid lines
+// cross that edge. A plain Box() conforms only because every side spans
+// the same extent along every shared edge; a face split differently from
+// its neighbour has a different lattice, so one side of the shared edge
+// carries vertices the other lacks (hairline T-junction cracks), and
+// Mesh::MergeAndWeld(), which welds vertices but never splits an edge,
+// cannot close them. Fixed in brep.cpp (StitchedIfThatClosesIt): if the
+// welded mesh is open although the Brep's edge topology is closed (every
+// edge has two trims),
+// each naked edge is split at the naked vertices lying on it and the
+// result is returned only when it is then a closed manifold.
+//
+// `top` gives the top face's pieces as CCW (seen from +z) polygons in the
+// box's own unit-square coordinates; the four side walls and the bottom
+// are built from them, each side wall carrying exactly the top vertices
+// that lie on its rim (`match_sides == false` leaves them out, which makes
+// a genuinely OPEN shell: that variant must stay open).
+std::vector<dino8::kernel::Brep::PlanarFace> SplitTopBoxFaces(
+    const std::vector<std::vector<std::pair<double, double>>>& top, bool match_sides, double ox, double oy, double oz,
+    double sx, double sy, double sz) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  auto at = [&](double x, double y, double z) { return Point3d(ox + sx * x, oy + sy * y, oz + sz * z); };
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(CheckHealFace({at(0, 1, 0), at(1, 1, 0), at(1, 0, 0), at(0, 0, 0)}, ON_3dVector(0, 0, -1)));
+  for (const auto& piece : top) {
+    std::vector<Point3d> loop;
+    for (const auto& p : piece) loop.push_back(at(p.first, p.second, 1));
+    faces.push_back(CheckHealFace(loop, ON_3dVector(0, 0, 1)));
+  }
+  const std::pair<double, double> corner[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  for (int i = 0; i < 4; ++i) {
+    const auto& ci = corner[i];
+    const auto& cj = corner[(i + 1) % 4];
+    // Top vertices strictly inside this rim edge, as a parameter along ci -> cj.
+    std::vector<double> ts;
+    if (match_sides) {
+      for (const auto& piece : top) {
+        for (const auto& p : piece) {
+          const double dx = cj.first - ci.first, dy = cj.second - ci.second;
+          const double t = ((p.first - ci.first) * dx + (p.second - ci.second) * dy) / (dx * dx + dy * dy);
+          const double px = ci.first + t * dx, py = ci.second + t * dy;
+          if (t > 1e-9 && t < 1 - 1e-9 && std::fabs(px - p.first) < 1e-12 && std::fabs(py - p.second) < 1e-12) {
+            if (std::find_if(ts.begin(), ts.end(), [&](double u) { return std::fabs(u - t) < 1e-12; }) == ts.end()) {
+              ts.push_back(t);
+            }
+          }
+        }
+      }
+    }
+    std::sort(ts.begin(), ts.end(), std::greater<double>());  // the side loop walks the top rim j -> i
+    std::vector<Point3d> loop = {at(ci.first, ci.second, 0), at(cj.first, cj.second, 0), at(cj.first, cj.second, 1)};
+    for (const double t : ts) loop.push_back(at(ci.first + t * (cj.first - ci.first), ci.second + t * (cj.second - ci.second), 1));
+    loop.push_back(at(ci.first, ci.second, 1));
+    // Outward normal: the rim edge direction rotated clockwise (a CCW square's outside).
+    faces.push_back(CheckHealFace(loop, ON_3dVector(cj.second - ci.second, -(cj.first - ci.first), 0)));
+  }
+  return faces;
+}
+
+void TestBrepTessellateSplitPlanarFaceClosesAcrossSharedEdges() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using Poly = std::vector<std::pair<double, double>>;
+
+  struct Fixture {
+    const char* name;
+    std::vector<Poly> top;
+    double ox, oy, oz, sx, sy, sz;
+  };
+  const std::vector<Fixture> fixtures = {
+      {"top split in two at x=0.5 (unit box)", {{{0, 0}, {.5, 0}, {.5, 1}, {0, 1}}, {{.5, 0}, {1, 0}, {1, 1}, {.5, 1}}}, 0, 0, 0, 1, 1, 1},
+      {"top split in two at x=0.3 (offset 4x3x2 box)",
+       {{{0, 0}, {.3, 0}, {.3, 1}, {0, 1}}, {{.3, 0}, {1, 0}, {1, 1}, {.3, 1}}}, 10, -5, 7, 4, 3, 2},
+      {"top split in three strips, the middle one mid-face",
+       {{{0, 0}, {1, 0}, {1, .4}, {0, .4}}, {{0, .4}, {1, .4}, {1, .6}, {0, .6}}, {{0, .6}, {1, .6}, {1, 1}, {0, 1}}}, 0, 0, 0, 1, 1, 1},
+      {"top split by a slanted line (offset 4x3x2 box)",
+       {{{0, 0}, {1, 0}, {1, .7}, {0, .4}}, {{0, .4}, {1, .7}, {1, 1}, {0, 1}}}, 10, -5, 7, 4, 3, 2},
+      {"top = a rectangle plus a concave L (vertex on a lattice line at res 2)",
+       {{{0, .5}, {.4, .5}, {.4, 1}, {0, 1}}, {{0, 0}, {1, 0}, {1, 1}, {.4, 1}, {.4, .5}, {0, .5}}}, 0, 0, 0, 1, 1, 1},
+  };
+  const int res_pairs[][2] = {{1, 1}, {2, 2}, {3, 5}, {4, 4}, {7, 7}, {8, 8}, {16, 16}, {5, 9}};
+
+  for (const Fixture& fx : fixtures) {
+    const double exact = fx.sx * fx.sy * fx.sz;
+    const Brep solid = Brep::FromPlanarFaces(SplitTopBoxFaces(fx.top, true, fx.ox, fx.oy, fx.oz, fx.sx, fx.sy, fx.sz));
+    const Brep::CheckReport report = solid.Check();
+    Check(solid.raw().IsValid() && solid.raw().IsSolid() && report.IsClean() && report.is_closed && report.is_oriented,
+          fx.name);  // the fixture itself: valid, solid, closed, oriented, Check() clean
+    bool all_closed = true, all_exact = true;
+    for (const auto& rp : res_pairs) {
+      const Mesh plain = solid.TessellateToClosedMesh(rp[0], rp[1]);
+      const Mesh tolerant = solid.TessellateToClosedMeshTolerant(rp[0], rp[1]);
+      const Mesh conforming = solid.TessellateToClosedMeshConforming(rp[0], rp[1]);
+      for (const Mesh* m : {&plain, &tolerant, &conforming}) {
+        if (!m->IsClosedManifold()) {
+          all_closed = false;
+          std::fprintf(stderr, "  [%s] res (%d,%d) is open: %d naked edges\n", fx.name, rp[0], rp[1], m->Check().naked_edges);
+          continue;
+        }
+        if (std::fabs(m->Volume() - exact) > 1e-5 * exact) {
+          all_exact = false;
+          std::fprintf(stderr, "  [%s] res (%d,%d) volume %.9f != %.9f\n", fx.name, rp[0], rp[1], m->Volume(), exact);
+        }
+      }
+    }
+    Check(all_closed, "...TessellateToClosedMesh / ...Tolerant / ...Conforming are closed manifolds at every resolution pair, incl. unequal u/v");
+    Check(all_exact, "...and each one's volume is the closed-form sx*sy*sz (the stitch splits triangles, it moves nothing)");
+    double volume = -1.0;
+    bool threw = false;
+    try {
+      volume = solid.Volume();
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    Check(!threw && std::fabs(volume - exact) <= 1e-9 * exact, "...and Brep::Volume() no longer throws on this valid solid: exactly sx*sy*sz");
+  }
+
+  // Already-closed results are untouched: a plain FromPlanarFaces box (no
+  // split) must come out vertex-for-vertex and triangle-for-triangle what
+  // the bare Tessellate() + MergeAndWeld() composition gives.
+  {
+    const Brep box = Brep::FromPlanarFaces(SplitTopBoxFaces({{{0, 0}, {1, 0}, {1, 1}, {0, 1}}}, true, 0, 0, 0, 2, 3, 4));
+    for (const int res : {2, 4, 8}) {
+      const Mesh bare = Mesh::MergeAndWeld(box.Tessellate(res, res));
+      const Mesh viaApi = box.TessellateToClosedMesh(res, res);
+      Check(bare.IsClosedManifold() && viaApi.raw().m_V.Count() == bare.raw().m_V.Count() &&
+                viaApi.raw().m_F.Count() == bare.raw().m_F.Count() && std::fabs(viaApi.Volume() - 24.0) < 1e-5,
+            "an unsplit FromPlanarFaces box is already closed and TessellateToClosedMesh() returns exactly the bare weld (nothing stitched)");
+    }
+  }
+
+  // A TOPOLOGICALLY open shell (the side walls do not carry the top's split
+  // vertex: a genuine T-junction in the B-rep itself, 6 naked edges) is a
+  // real hole, not a tessellation artefact, and must stay open - the stitch
+  // is gated on the Brep's edge topology being closed.
+  {
+    const Brep open = Brep::FromPlanarFaces(
+        SplitTopBoxFaces({{{0, 0}, {.5, 0}, {.5, 1}, {0, 1}}, {{.5, 0}, {1, 0}, {1, 1}, {.5, 1}}}, false, 0, 0, 0, 1, 1, 1));
+    Check(!open.raw().IsSolid() && open.Check().Count(Brep::CheckIssue::Kind::NakedEdge) == 6,
+          "the unmatched-side variant is topologically open (6 naked edges), as the sliver-removal fixture already says");
+    Check(!open.TessellateToClosedMesh(8, 8).IsClosedManifold() && !open.TessellateToClosedMeshConforming(8, 8).IsClosedManifold(),
+          "...and its tessellation stays open (a real topological hole is never papered over)");
+    bool threw = false;
+    try {
+      (void)open.Volume();
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "...so Volume() still refuses it");
   }
 }
 
@@ -49972,22 +50125,23 @@ void TestTessellateSymmetricDivisionsMatchesIndependentReconstruction() {
   }
 }
 
-// Honest disclosure, not silently papered over: this fix's own
-// IsAxisAlignedQuadUv guard deliberately excludes a "plain quad" face
-// whose own (u, v) corners are NOT an axis-aligned rectangle in its own
-// parameter domain (see that function's own doc comment in brep.cpp) -
-// confirmed directly to be a real, SEPARATE, PRE-EXISTING gap: hulling a
-// box's 8 corners after rotating them by an arbitrary angle produces
-// exactly this shape, and its own tessellation does NOT reliably close
-// even at u_divisions == v_divisions (each side's own vertex count along
-// a shared "diagonal" edge comes from however many grid lines its own
-// clip crosses, not from u_divisions+1 or v_divisions+1 alone). This
-// test asserts that gap remains EXACTLY as before this fix - neither
-// worsened (this fix must not misapply its own u/v-axis labeling to
-// such a face) nor silently, incorrectly "fixed" (which would mean the
-// guard failed to exclude it) - at BOTH a symmetric and an asymmetric
-// divisions pair.
-void TestTessellateObliqueHullQuadSeamRemainsPreExistingGap() {
+// This fix's own IsAxisAlignedQuadUv guard deliberately excludes a "plain
+// quad" face whose own (u, v) corners are NOT an axis-aligned rectangle in
+// its own parameter domain (see that function's own doc comment in
+// brep.cpp): hulling a box's 8 corners after rotating them by an arbitrary
+// angle produces exactly this shape, and the plain-quad seam pass therefore
+// never touches it. Its bare tessellation used to be a PRE-EXISTING open
+// mesh at every divisions pair (each side's vertex count along a shared
+// "diagonal" edge comes from however many grid lines its own clip crosses,
+// not from u_divisions+1 or v_divisions+1 alone) - this test used to pin
+// that gap as open. The gap was the same hairline T-junction cracks as
+// TestBrepTessellateSplitPlanarFaceClosesAcrossSharedEdges, and
+// Brep::TessellateToClosedMesh() now stitches them (brep.cpp,
+// StitchedIfThatClosesIt) without touching the seam pass or Tessellate():
+// the hull is a closed manifold at a symmetric AND an asymmetric divisions
+// pair, with the closed-form volume 2*3*5 = 30 (to float32 vertex storage
+// of the rotated coordinates).
+void TestTessellateObliqueHullQuadSeamClosesViaTJunctionStitch() {
   using dino8::kernel::Brep;
   using dino8::kernel::ExactConvexHull;
   using dino8::kernel::Mesh;
@@ -50008,14 +50162,12 @@ void TestTessellateObliqueHullQuadSeamRemainsPreExistingGap() {
   };
   const Brep rotated_hull = ExactConvexHull(corners);
 
-  Check(!rotated_hull.TessellateToClosedMesh(8, 8).IsClosedManifold(),
-        "a hulled, arbitrarily-rotated box's own quad faces are NOT axis-aligned in their own (u, v) domain "
-        "(IsAxisAlignedQuadUv correctly excludes them), so this fix's own plain-quad seam pass never touches "
-        "them - the PRE-EXISTING, SEPARATE grid-mismatch gap that already existed even at u_divisions == "
-        "v_divisions is left exactly as it was, not silently masked into a false IsClosedManifold() pass");
-  Check(!rotated_hull.TessellateToClosedMesh(8, 5).IsClosedManifold(),
-        "...and the same pre-existing gap is also left exactly as it was at an ASYMMETRIC divisions pair - this "
-        "fix's own guard does not misapply its u/v-axis labeling to an oblique quad and make things worse either");
+  for (const std::pair<int, int> res : {std::pair<int, int>{8, 8}, std::pair<int, int>{8, 5}, std::pair<int, int>{3, 7}}) {
+    const Mesh mesh = rotated_hull.TessellateToClosedMesh(res.first, res.second);
+    Check(mesh.IsClosedManifold() && std::fabs(mesh.Volume() - 30.0) < 1e-4,
+          "a hulled, arbitrarily-rotated 2x3x5 box tessellates to a closed manifold of volume 30 (T-junction cracks "
+          "between its oblique quad faces stitched) at a symmetric and at asymmetric divisions pairs");
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -82301,7 +82453,7 @@ int main() {
   RunTest("TestBoxAsymmetricDivisionsIsClosedManifold", TestBoxAsymmetricDivisionsIsClosedManifold);
   RunTest("TestPlainQuadFactoriesAsymmetricDivisionsIsClosedManifold", TestPlainQuadFactoriesAsymmetricDivisionsIsClosedManifold);
   RunTest("TestTessellateSymmetricDivisionsMatchesIndependentReconstruction", TestTessellateSymmetricDivisionsMatchesIndependentReconstruction);
-  RunTest("TestTessellateObliqueHullQuadSeamRemainsPreExistingGap", TestTessellateObliqueHullQuadSeamRemainsPreExistingGap);
+  RunTest("TestTessellateObliqueHullQuadSeamClosesViaTJunctionStitch", TestTessellateObliqueHullQuadSeamClosesViaTJunctionStitch);
   RunTest("TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed", TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed);
   RunTest("TestBooleanCombineMixedUnionBossOverlappingBaseVolumeAndCapSeamIsClosed", TestBooleanCombineMixedUnionBossOverlappingBaseVolumeAndCapSeamIsClosed);
   RunTest("TestBooleanCombineMixedUnionBossNoContactBothEndsCapped", TestBooleanCombineMixedUnionBossNoContactBothEndsCapped);
@@ -82544,6 +82696,7 @@ int main() {
   RunTest("TestCapPlanarHolesReportsWhyANonPlanarHoleIsSkipped", TestCapPlanarHolesReportsWhyANonPlanarHoleIsSkipped);
   RunTest("TestBrepJoinNakedEdgesRecordsTolerantEdges", TestBrepJoinNakedEdgesRecordsTolerantEdges);
   RunTest("TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip", TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip);
+  RunTest("TestBrepTessellateSplitPlanarFaceClosesAcrossSharedEdges", TestBrepTessellateSplitPlanarFaceClosesAcrossSharedEdges);
   RunTest("TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge", TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge);
   RunTest("TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly", TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly);
   RunTest("TestBrepSplitNakedEdgeAtSplitsCurvedNakedRim", TestBrepSplitNakedEdgeAtSplitsCurvedNakedRim);
