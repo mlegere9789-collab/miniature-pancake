@@ -761,10 +761,19 @@ class Brep {
   //     the endpoints, so the two caps share the axis segment as two
   //     literal edges and the body is a genuine solid.
   //   - open profile with an endpoint off the axis: full angle + `cap`
-  //     -> a flat disc cap (a fan over that end's circle) closes it; a
-  //     partial angle with an off-axis endpoint is not cappable here and
-  //     throws when `cap` is requested. Two off-axis endpoints at the
-  //     same axial height (a zero-thickness disc) throw.
+  //     -> a flat disc cap (a fan over that end's circle) closes it;
+  //     partial angle + `cap` -> a genuine wedge solid: two planar side
+  //     caps in the start and end half-planes, each the exact region
+  //     between the profile and the axis (a ruled planar face between the
+  //     axis segment and that end's profile copy, so the two share the
+  //     axis segment as one literal edge), plus a flat pie sector over
+  //     each off-axis endpoint's swept arc, sharing its two straight
+  //     radial edges literally with the side caps (AssembleRevolvedWedge,
+  //     sweep.cpp). That side-cap region must be sweepable by straight
+  //     rulings from the axis segment - a profile that doubles back over
+  //     its own radial end segments is not, and throws. Two off-axis
+  //     endpoints at the same axial height (a zero-thickness disc at the
+  //     full angle, a degenerate axis segment at a partial one) throw.
   // A closed profile touching the axis along a single sub-arc (e.g. a
   // rectangle with one side on it) is handled by internally revolving
   // its away-from-axis remainder instead - the same solid the open
@@ -5598,6 +5607,19 @@ class Brep {
                                 const char* caller, const Vector3d* cap_v0_outward_hint = nullptr,
                                 const Vector3d* cap_v1_outward_hint = nullptr,
                                 const RoundCapSpec* round_v0 = nullptr, const RoundCapSpec* round_v1 = nullptr);
+  // Revolve()'s own assembly step for the one case AssembleSweptBody()
+  // cannot cap - a PARTIAL-angle revolve of an OPEN profile with an
+  // endpoint off the axis (src/sweep.cpp): takes ownership of `wall` (the
+  // revolved surface, u = profile, v = angle) and closes it with two
+  // planar side caps plus a flat pie sector over each off-axis endpoint's
+  // arc, every edge literally shared. `start_on_axis`/`end_on_axis` say
+  // which of the profile's two endpoints already sits on the axis (that
+  // end's wall side is singular and gets no sector); `tol` is Revolve()'s
+  // own on-axis tolerance, reused here for vertex matching. Throws
+  // std::invalid_argument when the region between the profile and the
+  // axis cannot be swept by straight rulings from the axis segment.
+  static Brep AssembleRevolvedWedge(ON_NurbsSurface* wall, Point3d axis_point, Vector3d axis_direction,
+                                    bool start_on_axis, bool end_on_axis, double tol, const char* caller);
   // Parallel to brep_.m_F: face_trim_loops_[i] is empty for an untrimmed
   // face, or the trim polygon for a face built by TrimmedPlanarFace().
   // Every face-adding factory must keep this in lockstep with brep_.m_F.
