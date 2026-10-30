@@ -939,7 +939,24 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
     if (PoleSide(b, ic.uv_b[i].x, ic.uv_b[i].y, side) || PoleSide(b, ic.uv_b[j].x, ic.uv_b[j].y, side)) return true;
     return false;
   };
-  auto fit = [&]() {
+  // `periodic`: fit a closed chain as a genuinely periodic cubic (C2 across
+  // its own start/end seam, InterpolateCubicPeriodic) instead of the 3-wrap
+  // InterpolateCubic(closed = true) whose seam is only approximately smooth
+  // (on a cylinder cut by a tilted plane, a 67-sample closed ellipse, the
+  // 3-wrap fit's two ends mismatched by 5.8e-3 in tangent and 3.7e-2 in
+  // curvature; a sphere/plane circle by 6e-6..2.9e-4 and 2.6e-3..6e-3).
+  // Only the FINAL fit (the curves this function hands out) is periodic. The
+  // intermediate fits only seed the midpoint refinement below and stay on
+  // the 3-wrap fit on purpose: every refined sample is Newton-polished onto
+  // both surfaces regardless of its seed, so the seeds' seam error costs
+  // nothing in accuracy, whereas moving them (even by 1e-9 per sample)
+  // perturbs every downstream consumer's result bit pattern - measured:
+  // BuildHoleTool()/MakeHole() drilling re-fragments differently from a
+  // 3e-12 change in the recognized hole origin, and the general-Boolean
+  // sweep's closed-mesh tessellator flips sweep case 01's Intersection
+  // (a verdict that already flips on the baseline under a 1e-8 operand
+  // shift). Both are disclosed, separate sensitivities, not this fit's.
+  auto fit = [&](bool periodic) {
     std::vector<ON_3dPoint> p3, pa, pb;
     for (size_t i = 0; i < ic.points.size(); ++i) {
       p3.push_back(ic.points[i]);
@@ -947,11 +964,17 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
       pb.emplace_back(ic.uv_b[i].x, ic.uv_b[i].y, 0);
     }
     ic.params = ChordParams(p3, ic.closed);
+    if (periodic && ic.closed) {
+      ic.curve = InterpolateCubicPeriodic(p3, ic.params, 3);
+      ic.pcurve_a = InterpolateCubicPeriodic(pa, ic.params, 2);
+      ic.pcurve_b = InterpolateCubicPeriodic(pb, ic.params, 2);
+      return;
+    }
     ic.curve = InterpolateCubic(p3, ic.params, ic.closed, 3);
     ic.pcurve_a = InterpolateCubic(pa, ic.params, ic.closed, 2);
     ic.pcurve_b = InterpolateCubic(pb, ic.params, ic.closed, 2);
   };
-  fit();
+  fit(/*periodic=*/false);
   for (int pass = 0; pass < 3; ++pass) {
     bool inserted = false;
     const size_t n = ic.points.size();
@@ -1066,7 +1089,7 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
     }
     if (!inserted) break;
     ic.points = np; ic.uv_a = na; ic.uv_b = nb;
-    fit();
+    fit(/*periodic=*/false);
   }
   // Final cleanup pass: drop any point that locally reverses direction
   // relative to its own two immediate neighbors, in EITHER surface's own
@@ -1139,7 +1162,7 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
     }
     if (np2.size() < 3) break;  // never collapse below a usable curve
     ic.points = np2; ic.uv_a = na2; ic.uv_b = nb2;
-    fit();
+    fit(/*periodic=*/false);
   }
   // Final de-duplication pass: two ADJACENT samples that end up within a
   // couple tolerance-units of each other in 3D - not caught by the initial
@@ -1185,8 +1208,10 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
     }
     if (np3.size() < 3) break;  // never collapse below a usable curve
     ic.points = np3; ic.uv_a = na3; ic.uv_b = nb3;
-    fit();
+    fit(/*periodic=*/false);
   }
+  // The curves handed out: periodic across a closed chain's seam (see fit()).
+  if (ic.closed) fit(/*periodic=*/true);
   ic.max_error = 0;
   for (size_t i = 0; i < ic.points.size(); ++i) ic.max_error = std::max(ic.max_error, a.PointAt(ic.uv_a[i].x, ic.uv_a[i].y).DistanceTo(b.PointAt(ic.uv_b[i].x, ic.uv_b[i].y)));
 }
@@ -1930,9 +1955,10 @@ std::vector<IntersectionCurve> CoincidentOverlapBoundaryCurves(const ON_Surface&
       pb3.emplace_back(ic.uv_b[i].x, ic.uv_b[i].y, 0);
     }
     ic.params = ChordParams(p3, true);
-    ic.curve = InterpolateCubic(p3, ic.params, true, 3);
-    ic.pcurve_a = InterpolateCubic(pa3, ic.params, true, 2);
-    ic.pcurve_b = InterpolateCubic(pb3, ic.params, true, 2);
+    // Periodic (C2-at-seam) fit, as FinishCurve()'s own closed-chain fit.
+    ic.curve = InterpolateCubicPeriodic(p3, ic.params, 3);
+    ic.pcurve_a = InterpolateCubicPeriodic(pa3, ic.params, 2);
+    ic.pcurve_b = InterpolateCubicPeriodic(pb3, ic.params, 2);
     out.push_back(std::move(ic));
   }
   return out;

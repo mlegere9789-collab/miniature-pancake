@@ -1814,7 +1814,9 @@ std::vector<double> ChordParams(const std::vector<ON_3dPoint>& pts, bool closed)
 // being the period), `dim` = 2 or 3. Unlike InterpolateCubic(closed = true), which
 // wraps only 3 points per end (seam tangent off by ~3e-2 on a 4-point circle, ~1e-4
 // on a 24-point one; a 3-point loop is not wrapped at all) and is kept unchanged
-// because the Boolean/intersection callers' results were tuned against it, this
+// because the Boolean/intersection callers' refinement SEEDS were tuned against
+// it (FinishCurve's intermediate fits still use it; only the closed-chain
+// curves IntersectSurfaces()/IntersectFaces() hand out are fit with this), this
 // wraps 24 and accepts any loop of >= 3 points. Output has the same shape: a
 // clamped curve whose domain is [params.front(), params.back()].
 ON_NurbsCurve InterpolateCubicPeriodic(const std::vector<ON_3dPoint>& pts, std::vector<double> params, int dim = 3);
