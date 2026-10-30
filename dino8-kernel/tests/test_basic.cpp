@@ -70004,6 +70004,296 @@ void TestThickenRejectsInvalidArguments() {
         "own IsPlanar() check catches it rather than silently treating a curved patch as flat");
 }
 
+// A full cylinder wall of radius `r` and height `h` about +Z as a single-
+// face sheet body - closed in u (the circular direction), open in v (the
+// height) via ON_Cylinder::GetNurbForm, the same fixture
+// TestSurfaceIsClosed uses; `transpose` swaps u and v so the
+// closure lands in v instead (and, since Su x Sv reverses, so does the
+// NormalAt() direction - a fact the tests below sample rather than assume).
+dino8::kernel::Brep FullCylinderWallSheet(double r, double h, bool transpose) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), r);
+  const ON_Cylinder cylinder(circle, h);
+  NurbsSurface wall;
+  if (cylinder.GetNurbForm(wall.raw()) == 0) throw std::runtime_error("ON_Cylinder::GetNurbForm failed");
+  if (transpose) wall.raw().Transpose();
+  return Brep::FromSurface(wall);
+}
+
+// Whether `sheet`'s single face's own NormalAt() points radially AWAY from
+// the Z axis at its domain midpoint - the sign convention Thicken() (via
+// OffsetApproximate()) resolves a positive thickness against.
+bool SheetNormalPointsAwayFromZAxis(const dino8::kernel::Brep& sheet) {
+  using dino8::kernel::NurbsSurface;
+  NurbsSurface s;
+  sheet.raw().m_F[0].SurfaceOf()->GetNurbForm(s.raw());
+  const dino8::kernel::Interval du = s.Domain(0), dv = s.Domain(1);
+  const double um = 0.5 * (du.min + du.max), vm = 0.5 * (dv.min + dv.max);
+  const ON_3dPoint p = s.PointAt(um, vm);
+  const ON_3dVector n = s.NormalAt(um, vm);
+  return p.x * n.x + p.y * n.y > 0.0;
+}
+
+// Closed-form checks shared by the closed-in-one-direction cylinder-wall
+// cases below. A cylinder wall of height `h` thickened into the tube
+// between radii `r_in` and `r_out` has volume pi*h*(r_out^2 - r_in^2) and
+// area 2*pi*h*(r_in + r_out) + 2*pi*(r_out^2 - r_in^2) (two cylindrical
+// caps plus two flat annular end walls); its two caps are TRUE cylinders
+// of exactly those radii (sweep.cpp's exact radial-homothety offset for a
+// cylinder, not OffsetApproximate()'s between-the-knots approximation,
+// which comes back IsCylinder() false), and its two walls are planes
+// perpendicular to the axis. Brep::Volume()/Area() are this kernel's own
+// exact divergence-theorem integrals (brep.h) whose rational-face
+// quadrature converges rather than lands exactly - hence a 1e-6 RELATIVE
+// bound (observed ~1.5e-7 here) rather than the 1e-9 the polynomial Box()
+// case gets in TestBrepVolumeAndAreaMatchClosedForms; the radii, planes
+// and bounding box are checked on the B-rep itself to 1e-9. 7 checks.
+void CheckThickenedCylinderWall(const dino8::kernel::Brep& solid, double h, double r_in, double r_out,
+                                const std::string& label) {
+  using dino8::kernel::Mesh;
+  const double volume = ON_PI * h * (r_out * r_out - r_in * r_in);
+  const double area = 2.0 * ON_PI * h * (r_in + r_out) + 2.0 * ON_PI * (r_out * r_out - r_in * r_in);
+  Check(solid.FaceCount() == 4,
+        (label + ": exactly 2 caps + 2 annular end walls, 4 faces - not the open sheet's own 6").c_str());
+  const Mesh m = solid.TessellateToClosedMesh(32, 32);
+  Check(m.IsClosedManifold(), (label + ": a genuine closed 2-manifold").c_str());
+  Check(std::fabs(solid.Volume() - volume) / volume < 1e-6,
+        (label + ": Brep::Volume() matches the closed-form tube volume pi*h*(r_out^2 - r_in^2) to 1e-6 relative")
+            .c_str());
+  Check(std::fabs(solid.Area() - area) / area < 1e-6,
+        (label + ": Brep::Area() matches the closed-form 2*pi*h*(r_in + r_out) + 2*pi*(r_out^2 - r_in^2) to 1e-6 "
+                 "relative")
+            .c_str());
+  std::vector<double> radii;
+  int axis_normal_planar_walls = 0;
+  for (int fi = 0; fi < solid.raw().m_F.Count(); ++fi) {
+    const ON_Surface* s = solid.raw().m_F[fi].SurfaceOf();
+    ON_Cylinder cyl;
+    if (s->IsCylinder(&cyl)) {
+      radii.push_back(cyl.circle.radius);
+      continue;
+    }
+    ON_Plane plane;
+    if (s->IsPlanar(&plane) && std::fabs(std::fabs(plane.zaxis.z) - 1.0) < 1e-9) ++axis_normal_planar_walls;
+  }
+  std::sort(radii.begin(), radii.end());
+  Check(radii.size() == 2 && std::fabs(radii[0] - r_in) < 1e-9 && std::fabs(radii[1] - r_out) < 1e-9,
+        (label + ": both caps are exact cylinders (IsCylinder()) of radii exactly r_in and r_out - the offset "
+                 "cap is a TRUE cylinder, not a first-order approximation of one")
+            .c_str());
+  Check(axis_normal_planar_walls == 2,
+        (label + ": both end walls are flat annuli - planar faces perpendicular to the cylinder's own axis")
+            .c_str());
+  const auto bbox = solid.GetTightBoundingBox();
+  Check(std::fabs(bbox.max.x - r_out) < 1e-9 && std::fabs(bbox.min.x + r_out) < 1e-9 && bbox.min.z > -1e-9 &&
+            std::fabs(bbox.max.z - h) < 1e-9,
+        (label + ": the solid spans exactly +/- r_out radially and exactly the wall's own height axially").c_str());
+}
+
+void TestThickenFullCylinderWallMatchesClosedFormTube() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+
+  // parity-map "kernel: Feature operations" - "Thicken a sheet body into a
+  // solid"'s own disclosed "a sheet that wraps back on itself (a full
+  // cylinder/cone wall) needs a different, variable side-wall count" gap,
+  // closed for a sheet closed in exactly ONE parametric direction: 2 side
+  // walls across the open direction, each ruled between two CLOSED
+  // isocurves, instead of the open case's 4. Radius 1, height 2, so every
+  // expected value below is closed-form in r, h and the thickness.
+  const double r = 1.0, h = 2.0, t = 0.25;
+  const Brep sheet = FullCylinderWallSheet(r, h, /*transpose=*/false);
+  {
+    NurbsSurface s;
+    sheet.raw().m_F[0].SurfaceOf()->GetNurbForm(s.raw());
+    Check(s.IsClosed(0) && !s.IsClosed(1),
+          "closed-sheet Thicken() setup: the cylinder wall sheet is closed in u and open in v - the exact input "
+          "the open-both-directions path used to refuse outright");
+    Check(SheetNormalPointsAwayFromZAxis(sheet),
+          "closed-sheet Thicken() setup: ON_Cylinder::GetNurbForm's own NormalAt() points radially outward, so a "
+          "positive thickness here means an OUTWARD tube (sampled, not assumed)");
+  }
+
+  CheckThickenedCylinderWall(Brep::Thicken(sheet, t), h, r, r + t, "Thicken(+0.25) on a full cylinder wall");
+  CheckThickenedCylinderWall(Brep::Thicken(sheet, -t), h, r - t, r, "Thicken(-0.25) on a full cylinder wall");
+  CheckThickenedCylinderWall(Brep::Thicken(sheet, t, /*symmetric=*/true), h, r - t / 2.0, r + t / 2.0,
+                             "Thicken(0.25, symmetric) on a full cylinder wall");
+
+  // The same wall with u and v swapped: closed in v instead, so the two
+  // walls are now the u = u_min / u = u_max isocurve rulings - the
+  // direction-agnostic half of the construction. Transposing reverses
+  // Su x Sv, so this sheet's own NormalAt() points INWARD and +0.25 must
+  // give the inward tube - the documented "sign follows NormalAt()"
+  // convention, sampled here rather than assumed.
+  const Brep transposed = FullCylinderWallSheet(r, h, /*transpose=*/true);
+  {
+    NurbsSurface s;
+    transposed.raw().m_F[0].SurfaceOf()->GetNurbForm(s.raw());
+    Check(!s.IsClosed(0) && s.IsClosed(1),
+          "closed-sheet Thicken() setup: the transposed cylinder wall is closed in v and open in u");
+    Check(!SheetNormalPointsAwayFromZAxis(transposed),
+          "closed-sheet Thicken() setup: transposing the wall reverses its NormalAt() to radially inward");
+  }
+  CheckThickenedCylinderWall(Brep::Thicken(transposed, t), h, r - t, r,
+                             "Thicken(+0.25) on the transposed (closed-in-v) cylinder wall");
+}
+
+void TestThickenClosedSheetGeneralOffsetAndOpenCylinderPatch() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+
+  // (1) The exact cylinder offset is a property of the surface, not of the
+  // closed-direction path: an OPEN quarter-cylinder patch still takes the
+  // open path's 6-face construction, now with exact caps too - volume a
+  // quarter of the full tube's own.
+  {
+    const double r = 1.0, h = 2.0, t = 0.25;
+    const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), r);
+    const ON_Cylinder cylinder(circle, h);
+    NurbsSurface wall;
+    cylinder.GetNurbForm(wall.raw());
+    const ON_Interval dom = wall.raw().Domain(0);
+    wall.raw().Trim(0, ON_Interval(dom.Min(), dom.Min() + 0.25 * dom.Length()));
+    const Brep solid = Brep::Thicken(Brep::FromSurface(wall), t);
+    Check(solid.FaceCount() == 6, "Thicken() on an OPEN quarter-cylinder patch still builds 2 caps + 4 walls");
+    const double volume = 0.25 * ON_PI * h * ((r + t) * (r + t) - r * r);
+    Check(std::fabs(solid.Volume() - volume) / volume < 1e-6,
+          "Thicken(+0.25) on a quarter-cylinder patch matches a quarter of the closed-form tube volume to 1e-6 "
+          "relative - the exact cylinder offset applies to the open path too");
+    std::vector<double> radii;
+    for (int fi = 0; fi < solid.raw().m_F.Count(); ++fi) {
+      ON_Cylinder cyl;
+      if (solid.raw().m_F[fi].SurfaceOf()->IsCylinder(&cyl)) radii.push_back(cyl.circle.radius);
+    }
+    std::sort(radii.begin(), radii.end());
+    Check(radii.size() == 2 && std::fabs(radii[0] - r) < 1e-9 && std::fabs(radii[1] - r - t) < 1e-9,
+          "Thicken() on a quarter-cylinder patch: both caps are exact cylinders of radii 1 and 1.25");
+  }
+
+  // (2) A closed sheet that is NOT a cylinder takes OffsetApproximate()'s
+  // genuinely approximate route: an uncapped Extrude() of a true NURBS
+  // ellipse (semi-axes 2 and 1.2, height 3). Closed form via Steiner: the
+  // area between a convex curve and its parallel curve at distance t is
+  // P*t + pi*t^2 outward (P*t - pi*t^2 inward), P the perimeter, so the
+  // exact tube volume is h times that. The approximate offset lands
+  // exactly on it only at the knots: on each 90-degree rational-quadratic
+  // arc the mid-arc point is the (P0 + 2w*P1 + P2)/(2 + 2w) blend of the
+  // three control points, whose three normal translations (the two end
+  // normals 45 degrees off the middle one, w = cos(45 deg)) blend to only
+  // (2*cos45 + 2w)/(2 + 2w) * t = 0.83 t of displacement there - so the
+  // offset curve bulges INSIDE the true parallel curve between knots, on
+  // an outward and an inward offset alike, and the tube is measurably
+  // thinner than Steiner's: strictly below it (measured 0.88 of it, both
+  // calls) but above 0.85 of it - a real, bounded first-order
+  // approximation, which this test states rather than hides. The tangent
+  // point at x = +2 IS a knot, so the offset passes through it exactly
+  // and the bounding box's own x-extent is exact to 1e-9.
+  {
+    const double a = 2.0, b = 1.2, h = 3.0, t = 0.1;
+    const ON_Ellipse ellipse(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), a, b);
+    NurbsCurve profile;
+    ellipse.GetNurbForm(profile.raw());
+    const Brep tube = Brep::Extrude(profile, ON_3dVector(0, 0, h), /*cap=*/false);
+    NurbsSurface s;
+    tube.raw().m_F[0].SurfaceOf()->GetNurbForm(s.raw());
+    Check(tube.FaceCount() == 1 && s.IsClosed(0) && !s.IsClosed(1),
+          "closed-sheet Thicken() setup: an uncapped Extrude() of an ellipse is a single-face sheet closed in u");
+    const bool outward = SheetNormalPointsAwayFromZAxis(tube);
+    const double perimeter = profile.Length();
+    const double steiner = h * (perimeter * t + (outward ? 1.0 : -1.0) * ON_PI * t * t);
+
+    const Brep solid = Brep::Thicken(tube, t);
+    Check(solid.FaceCount() == 4, "Thicken(+0.1) on the ellipse tube builds 2 caps + 2 end walls");
+    Check(solid.TessellateToClosedMesh(32, 32).IsClosedManifold(),
+          "Thicken(+0.1) on the ellipse tube is a genuine closed 2-manifold - the approximate offset of a closed "
+          "surface stays closed across its seam (OffsetApproximate()'s own seam wrap)");
+    const double ratio = solid.Volume() / steiner;
+    Check(ratio > 0.85 && ratio < 1.0,
+          "Thicken(+0.1) on the ellipse tube lands strictly below Steiner's exact parallel-curve volume "
+          "h*(P*t +/- pi*t^2) but above 0.85 of it - the approximate offset's between-the-knots inward bulge, a "
+          "real, bounded first-order approximation, not exact and not pretended to be");
+    const auto bbox = solid.GetTightBoundingBox();
+    Check(std::fabs(bbox.max.x - (outward ? a + t : a)) < 1e-9 && std::fabs(bbox.max.z - h) < 1e-9,
+          "Thicken(+0.1) on the ellipse tube: the offset passes exactly through the knot point at x = 2 moved by "
+          "the full thickness, on the side NormalAt() points to");
+
+    const Brep sym = Brep::Thicken(tube, t, /*symmetric=*/true);
+    Check(sym.TessellateToClosedMesh(32, 32).IsClosedManifold(),
+          "Thicken(0.1, symmetric) on the ellipse tube is a genuine closed 2-manifold");
+    const double sym_ratio = sym.Volume() / (h * perimeter * t);
+    Check(sym_ratio > 0.85 && sym_ratio < 1.0,
+          "Thicken(0.1, symmetric) on the ellipse tube lands strictly below h*P*t (Steiner's two pi*t^2 terms "
+          "cancel) but above 0.85 of it - both half-offsets bulge toward the source surface between knots");
+    const auto sym_bbox = sym.GetTightBoundingBox();
+    Check(std::fabs(sym_bbox.max.x - (a + t / 2.0)) < 1e-9 && std::fabs(sym_bbox.max.y - (b + t / 2.0)) < 1e-9,
+          "Thicken(0.1, symmetric) on the ellipse tube spans exactly half the thickness past both semi-axis knot "
+          "points - the original surface sits on the solid's own mid-surface");
+  }
+
+  // (3) A closed sheet that is only position-continuous across its seam
+  // (an uncapped Extrude() of a closed degree-1 octagon, whose seam sits
+  // on a corner): OffsetApproximate() hands both seam control points the
+  // same corner normal, so the offset is still a closed ring and the
+  // result a closed solid - a first-order approximation of the true
+  // mitred offset, as that method's own contract already says.
+  {
+    std::vector<Point3d> pts;
+    for (int i = 0; i <= 8; ++i) {
+      const double ang = 2.0 * ON_PI * (i % 8) / 8.0;
+      pts.push_back(P(2.0 * std::cos(ang), 1.2 * std::sin(ang), 0.0));
+    }
+    const Brep tube = Brep::Extrude(NurbsCurve::FromControlPoints(pts, 1), ON_3dVector(0, 0, 3), /*cap=*/false);
+    const Brep solid = Brep::Thicken(tube, 0.1);
+    Check(solid.FaceCount() == 4, "Thicken(+0.1) on a kinked-seam octagon tube builds 2 caps + 2 end walls");
+    Check(solid.TessellateToClosedMesh(16, 16).IsClosedManifold() && solid.Volume() > 0.0,
+          "Thicken(+0.1) on a kinked-seam octagon tube is still a closed, positive-volume solid - the seam's two "
+          "coincident control points move together, not along the two adjacent facets' different normals");
+  }
+}
+
+void TestThickenClosedSheetRejectsInvalidInputs() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+
+  // Closed in BOTH directions: a full torus already bounds a solid; a
+  // hollow two-shell thicken is a separate, disclosed gap.
+  const Brep torus = Brep::Torus(P(0, 0, 0), ON_3dVector(0, 0, 1), 3.0, 1.0);
+  Check(torus.FaceCount() == 1 && Throws([&] { Brep::Thicken(torus, 0.25); }),
+        "Thicken() throws for a single-face sheet closed in BOTH parametric directions (a full torus)");
+
+  // Closed in u with a SINGULAR open-direction end: a full sphere (both v
+  // ends are poles) and a cone wall carried to its apex - the "wall" there
+  // would be ruled between two points, not two curves.
+  Check(Throws([&] { Brep::Thicken(Brep::Sphere(P(0, 0, 0), 1.0), 0.1); }),
+        "Thicken() still throws for a full sphere - closed in u, but each v end collapsed to a pole");
+  const ON_Cone cone(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0, 1.0);
+  NurbsSurface cone_wall;
+  cone.GetNurbForm(cone_wall.raw());
+  Check(cone_wall.IsClosed(0) && !cone_wall.IsClosed(1) &&
+            (cone_wall.raw().IsSingular(0) || cone_wall.raw().IsSingular(2)),
+        "closed-sheet Thicken() setup: ON_Cone::GetNurbForm's wall is closed in u with its apex a singular v end");
+  Check(Throws([&] { Brep::Thicken(Brep::FromSurface(cone_wall), 0.25); }),
+        "Thicken() throws for a full cone wall carried to its apex (a singular end of the open direction)");
+
+  // The exact cylinder offset's own fold guard: an inward offset of the
+  // full radius or more collapses the wall through its own axis - refused
+  // at the same `new_radius <= 0` threshold OffsetAnalytic()'s cylinder
+  // branch uses, for the plain and the symmetric call alike.
+  const Brep wall = FullCylinderWallSheet(1.0, 2.0, /*transpose=*/false);
+  Check(Throws([&] { Brep::Thicken(wall, -1.0); }),
+        "Thicken() throws for a cylinder wall offset inward by exactly its own radius (the wall collapses onto "
+        "its axis)");
+  Check(Throws([&] { Brep::Thicken(wall, -1.5); }),
+        "Thicken() throws for a cylinder wall offset inward past its own axis");
+  Check(Throws([&] { Brep::Thicken(wall, 2.0, /*symmetric=*/true); }),
+        "Thicken(symmetric) throws when half the total thickness reaches the cylinder wall's own radius");
+  Check(!Throws([&] { Brep::Thicken(wall, -0.9); }),
+        "Thicken() accepts an inward offset short of the radius (negative control for the fold guard)");
+}
+
 void TestExtrudeFaceStraightMatchesExactPrismVolume() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -76918,6 +77208,92 @@ void TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance() {
 
   Check(s.OffsetApproximate(0.0, out) == Result::Ok, "OffsetApproximate(0.0) succeeds");
   Check(out.PointAt(0.3, 0.2).DistanceTo(s.PointAt(0.3, 0.2)) < 1e-12, "OffsetApproximate(0.0) reproduces the same surface");
+}
+
+// A real, previously-undisclosed defect found while extending
+// Brep::Thicken() to a sheet closed in one direction: OffsetApproximate()
+// nudged every control point's Greville abscissa 1e-6 of the domain INTO
+// the domain before evaluating its normal, so a clamped closed row's first
+// and last control points - the same 3D point, at the seam - were
+// evaluated from opposite ends of the domain and moved by two normals
+// differing by O(nudge * curvature). On a tangent-continuous closed
+// surface that opened the seam by 1.9e-6 (measured on this exact ellipse
+// tube before the fix: IsClosed(0) came back false), and on a kinked one
+// by the two adjacent facets' whole normals. Fixed by wrapping the
+// abscissa into the domain by its own length in a closed direction
+// (surface.cpp's OffsetGrevilleParameter()), so both seam columns use the
+// same parameter - the offset of a closed surface is now closed by
+// construction, with a 0 seam gap, not merely within tolerance.
+void TestSurfaceOffsetApproximateKeepsAClosedSurfaceClosedAcrossItsSeam() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Seam gap of an offset: distance between the first and last control
+  // point of each row in the closed direction (u), worst row.
+  const auto seam_gap = [](const NurbsSurface& off) {
+    const int last = off.raw().CVCount(0) - 1;
+    double worst = 0.0;
+    for (int j = 0; j < off.raw().CVCount(1); ++j) {
+      ON_3dPoint a, b;
+      off.raw().GetCV(0, j, a);
+      off.raw().GetCV(last, j, b);
+      worst = std::max(worst, a.DistanceTo(b));
+    }
+    return worst;
+  };
+
+  // Tangent-continuous seam: an uncapped Extrude() of a NURBS ellipse.
+  {
+    const ON_Ellipse ellipse(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0, 1.2);
+    NurbsCurve profile;
+    ellipse.GetNurbForm(profile.raw());
+    const Brep tube = Brep::Extrude(profile, ON_3dVector(0, 0, 3), /*cap=*/false);
+    NurbsSurface s, off;
+    tube.raw().m_F[0].SurfaceOf()->GetNurbForm(s.raw());
+    Check(s.IsClosed(0) && seam_gap(s) == 0.0,
+          "OffsetApproximate seam setup: the ellipse tube is closed in u with its seam control points coincident");
+    Check(s.OffsetApproximate(0.1, off) == Result::Ok, "OffsetApproximate(+0.1) succeeds on the ellipse tube");
+    Check(off.IsClosed(0) && seam_gap(off) == 0.0,
+          "OffsetApproximate(+0.1) keeps the ellipse tube closed in u with a seam gap of exactly 0 - the two "
+          "coincident seam control points move by the same normal (was a 1.9e-6 gap, IsClosed(0) false)");
+    Check(off.OffsetApproximate(-0.1, s) == Result::Ok && s.IsClosed(0) && seam_gap(s) == 0.0,
+          "OffsetApproximate(-0.1) of the offset is closed across the seam too (the inward direction)");
+  }
+
+  // Kinked seam: an uncapped Extrude() of a closed degree-1 octagon whose
+  // seam sits on a corner - the harder case, where the two sides of the
+  // seam have genuinely different facet normals.
+  {
+    std::vector<Point3d> pts;
+    for (int i = 0; i <= 8; ++i) {
+      const double ang = 2.0 * ON_PI * (i % 8) / 8.0;
+      pts.push_back(Point3d(2.0 * std::cos(ang), 1.2 * std::sin(ang), 0.0));
+    }
+    const Brep tube = Brep::Extrude(NurbsCurve::FromControlPoints(pts, 1), ON_3dVector(0, 0, 3), /*cap=*/false);
+    NurbsSurface s, off;
+    tube.raw().m_F[0].SurfaceOf()->GetNurbForm(s.raw());
+    Check(s.IsClosed(0) && seam_gap(s) == 0.0 && s.OffsetApproximate(0.1, off) == Result::Ok && off.IsClosed(0) &&
+              seam_gap(off) == 0.0,
+          "OffsetApproximate(+0.1) keeps a kinked-seam octagon tube closed in u with a seam gap of exactly 0 - "
+          "both seam control points take the same corner normal rather than one facet's normal each");
+  }
+
+  // A full sphere (closed in u, poles in v) keeps its closure too - the
+  // offset adds EXACTLY no seam gap beyond whatever the input's own seam
+  // control points already carry (both columns get the identical
+  // translation) - and its open direction is never wrapped, so the
+  // measured offset error elsewhere in this file is unaffected.
+  {
+    const ON_Sphere sphere(ON_3dPoint(1, 2, 3), 5.0);
+    NurbsSurface s, off;
+    sphere.GetNurbForm(s.raw());
+    Check(s.OffsetApproximate(1.5, off) == Result::Ok && off.IsClosed(0) && !off.IsClosed(1) &&
+              seam_gap(off) == seam_gap(s),
+          "OffsetApproximate(+1.5) on a full sphere stays closed in u (adds exactly no seam gap) and open in v");
+  }
 }
 
 void TestSurfaceOffsetVariableIsExactOnAGenuinePlaneAndVariesLinearlyAlongU() {
@@ -84365,6 +84741,9 @@ int main() {
   RunTest("sweep_tests::TestThickenTrimmedPlanarSheetMatchesExactTrimAreaTimesThickness", sweep_tests::TestThickenTrimmedPlanarSheetMatchesExactTrimAreaTimesThickness);
   RunTest("sweep_tests::TestThickenTrimmedPlanarSheetSymmetricPutsOriginalOnMidplane", sweep_tests::TestThickenTrimmedPlanarSheetSymmetricPutsOriginalOnMidplane);
   RunTest("sweep_tests::TestThickenRejectsInvalidArguments", sweep_tests::TestThickenRejectsInvalidArguments);
+  RunTest("sweep_tests::TestThickenFullCylinderWallMatchesClosedFormTube", sweep_tests::TestThickenFullCylinderWallMatchesClosedFormTube);
+  RunTest("sweep_tests::TestThickenClosedSheetGeneralOffsetAndOpenCylinderPatch", sweep_tests::TestThickenClosedSheetGeneralOffsetAndOpenCylinderPatch);
+  RunTest("sweep_tests::TestThickenClosedSheetRejectsInvalidInputs", sweep_tests::TestThickenClosedSheetRejectsInvalidInputs);
   RunTest("sweep_tests::TestExtrudeFaceStraightMatchesExactPrismVolume", sweep_tests::TestExtrudeFaceStraightMatchesExactPrismVolume);
   RunTest("sweep_tests::TestExtrudeFaceObliqueDirectionMatchesCavalieriVolume", sweep_tests::TestExtrudeFaceObliqueDirectionMatchesCavalieriVolume);
   RunTest("sweep_tests::TestExtrudeFaceOnCurvedFreeformSurfaceExceedsThickenGuard", sweep_tests::TestExtrudeFaceOnCurvedFreeformSurfaceExceedsThickenGuard);
@@ -84415,6 +84794,7 @@ int main() {
   RunTest("TestSurfaceOffsetApproximateSphereErrorIsBoundedButGenuinelyNonzero", TestSurfaceOffsetApproximateSphereErrorIsBoundedButGenuinelyNonzero);
   RunTest("TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance", TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance);
   RunTest("TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance", TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance);
+  RunTest("TestSurfaceOffsetApproximateKeepsAClosedSurfaceClosedAcrossItsSeam", TestSurfaceOffsetApproximateKeepsAClosedSurfaceClosedAcrossItsSeam);
 
   RunTest("TestSurfaceOffsetVariableIsExactOnAGenuinePlaneAndVariesLinearlyAlongU", TestSurfaceOffsetVariableIsExactOnAGenuinePlaneAndVariesLinearlyAlongU);
   RunTest("TestSurfaceOffsetVariableWithEqualEndsMatchesOffsetApproximateExactly", TestSurfaceOffsetVariableWithEqualEndsMatchesOffsetApproximateExactly);

@@ -2234,6 +2234,81 @@ Brep ThickenTrimmedPlanarSheet(const ON_Surface* raw_surface, const std::vector<
   if (holes.empty()) return Brep::Extrude(outer, direction, /*cap=*/true);
   return ExtrudeProfileWithHoles(outer, holes, direction);
 }
+
+// The offset step Brep::Thicken()'s untrimmed path below uses for its
+// caps: NurbsSurface::OffsetApproximate() (surface.h) in the general case,
+// exactly as before, but EXACT when `src` is a right circular cylinder -
+// a radial homothety of the control net about the cylinder's own axis.
+// Why that is exact rather than one more approximation: scaling every
+// point's distance from a fixed axis by one constant factor `s` is an
+// affine map of 3-space ((x, y, z) -> (s*x, s*y, z) in axis-aligned
+// coordinates), a NURBS surface is affine-invariant (applying the map to
+// its control points applies it to every point of the surface), and the
+// image of the cylinder of radius r under that map is precisely the
+// cylinder of radius s*r about the same axis - for ANY NURBS form of the
+// cylinder (ON_Cylinder::GetNurbForm()'s own, a transposed one, or a
+// re-parameterized one), not one particular control-net layout. Knot
+// vectors and weights are untouched, so the result's boundary isocurves
+// stay compatible with `src`'s own at the same parameter values - the one
+// property Thicken()'s RuledBetween() walls rely on, and the reason
+// OffsetApproximate() was chosen over OffsetAnalytic() there in the first
+// place (Thicken()'s own brep.h doc comment). OffsetApproximate()'s own
+// per-control-point Greville-normal translation is NOT exact for a
+// cylinder: a rational quadratic circle's off-curve control points sit
+// at r/cos(pi/4) from the center, so moving them by `distance` rather
+// than by distance/cos(pi/4) leaves each "offset" arc bulging measurably
+// inside the true offset circle between its knots (confirmed directly:
+// OffsetApproximate(0.25) on a unit cylinder wall comes back IsCylinder()
+// false, its mid-arc radius 0.043 short of the true 1.25 - 17% of the
+// offset distance, exactly the (1 - (2cos45 + 2w)/(2 + 2w)) a rational
+// quadratic arc's own mid-point blend of its three translated control
+// points predicts for w = cos45).
+//
+// Sign: the SAME convention OffsetApproximate() uses - positive
+// `distance` moves along `src`'s own NormalAt() direction - resolved by
+// comparing NormalAt() at the domain midpoint against the outward radial
+// direction there (a cylinder's parametrization may put Su x Sv either
+// radially outward or inward; neither can be assumed). Guard: the new
+// radius must stay positive (the same `new_radius <= 0` test
+// OffsetAnalytic()'s own cylinder branch applies - an inward offset of
+// the full radius or more collapses the wall through its own axis),
+// Result::Failed otherwise, mirroring OffsetApproximate()'s own fold
+// guard so Thicken() reports both the same way.
+Result OffsetKeepingNet(const NurbsSurface& src, double distance, NurbsSurface& out) {
+  ON_Cylinder cyl;
+  if (!src.raw().IsCylinder(&cyl) || !(cyl.circle.radius > 0.0)) {
+    return src.OffsetApproximate(distance, out);
+  }
+  const ON_3dPoint axis_origin = cyl.circle.plane.origin;
+  ON_3dVector axis = cyl.circle.plane.zaxis;
+  if (!axis.Unitize()) return src.OffsetApproximate(distance, out);
+  const double r = cyl.circle.radius;
+
+  const Interval du = src.Domain(0), dv = src.Domain(1);
+  const double um = 0.5 * (du.min + du.max), vm = 0.5 * (dv.min + dv.max);
+  const ON_3dVector n = src.NormalAt(um, vm);
+  ON_3dVector radial = src.PointAt(um, vm) - axis_origin;
+  radial -= (radial * axis) * axis;
+  const double new_r = r + ((radial * n) >= 0.0 ? distance : -distance);
+  if (new_r <= 0.0) return Result::Failed;
+  const double s = new_r / r;
+
+  ON_NurbsSurface moved = src.raw();
+  for (int i = 0; i < moved.CVCount(0); ++i) {
+    for (int j = 0; j < moved.CVCount(1); ++j) {
+      ON_4dPoint cv;
+      moved.GetCV(i, j, cv);
+      const double w = cv.w;
+      const ON_3dPoint e(cv.x / w, cv.y / w, cv.z / w);
+      const ON_3dVector d = e - axis_origin;
+      const double along = d * axis;
+      const ON_3dPoint scaled = axis_origin + along * axis + s * (d - along * axis);
+      moved.SetCV(i, j, ON_4dPoint(scaled.x * w, scaled.y * w, scaled.z * w, w));
+    }
+  }
+  out.raw() = moved;
+  return Result::Ok;
+}
 }  // namespace
 
 Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
@@ -2258,11 +2333,38 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
   if (!raw_surface->GetNurbForm(base)) {
     Fail(caller, "sheet's surface could not be converted to an exact NURBS form");
   }
-  if (base.IsClosed(0) || base.IsClosed(1)) {
+  // A direction the surface wraps back on itself in (IsClosed()) has no
+  // free boundary to wall at all: a sheet closed in exactly ONE direction
+  // (a full cylinder/cone wall, Pipe()'s or an uncapped Extrude()'s own
+  // single wall face) gets 2 side walls below instead of the open case's
+  // 4, each a ruled surface between two CLOSED isocurves; a sheet closed
+  // in BOTH directions (a torus) already bounds a solid by itself, so the
+  // "thickened" result would be a hollow two-shell body - a separate,
+  // disclosed gap, refused rather than mis-built as one shell.
+  const bool closed_u = base.IsClosed(0);
+  const bool closed_v = base.IsClosed(1);
+  if (closed_u && closed_v) {
     Fail(caller,
-         "the surface must be open (non-periodic) in both parametric directions - a fully or partially closed "
-         "sheet (e.g. a full cylinder, sphere, or torus patch) needs a variable side-wall count this scoped "
-         "version does not attempt");
+         "the surface is closed in BOTH parametric directions (a full torus) - it already bounds a solid with "
+         "no free boundary to wall at all, and a hollow two-shell thicken of a closed sheet is a separate, "
+         "disclosed gap");
+  }
+  if (closed_u || closed_v) {
+    // The open direction's two ends must be genuine free boundaries, not
+    // poles: a full sphere (closed in u, each v end collapsed to a pole)
+    // or a cone wall carried all the way to its apex would get a wall
+    // ruled between two POINTS there - a degenerate zero-area face, not
+    // a solid's boundary. ON_Surface::IsSingular()'s side numbering: 0 =
+    // south (v = v_min), 1 = east (u = u_max), 2 = north (v = v_max), 3
+    // = west (u = u_min).
+    const int side_a = closed_u ? 0 : 3;
+    const int side_b = closed_u ? 2 : 1;
+    if (base.IsSingular(side_a) || base.IsSingular(side_b)) {
+      Fail(caller,
+           "the sheet's open parametric direction ends in a side collapsed to a single point (a pole or apex - "
+           "a full sphere, or a cone wall carried all the way to its apex) - there is no boundary curve there "
+           "to wall between; a sheet with a singular side is a separate, disclosed gap");
+    }
   }
 
   NurbsSurface original;
@@ -2270,23 +2372,26 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
 
   // `lo`/`hi`: the two caps, always assigned so the solid lies on the +N
   // side of `lo` and the -N side of `hi`, N = `original`'s own NormalAt()
-  // direction (OffsetApproximate()'s own translation convention) - see
-  // this function's own brep.h doc comment for why OffsetApproximate(),
+  // direction (OffsetApproximate()'s own translation convention, which
+  // OffsetKeepingNet() above keeps for its exact cylinder branch too) -
+  // see this function's own brep.h doc comment for why OffsetApproximate(),
   // not OffsetAnalytic(), is what makes `lo`/`hi` boundary-compatible.
   NurbsSurface lo, hi;
   if (symmetric) {
     const double half = std::fabs(thickness) * 0.5;
-    if (original.OffsetApproximate(-half, lo) != Result::Ok || original.OffsetApproximate(half, hi) != Result::Ok) {
+    if (OffsetKeepingNet(original, -half, lo) != Result::Ok || OffsetKeepingNet(original, half, hi) != Result::Ok) {
       Fail(caller,
            "the requested thickness is too large for this surface's own curvature - the offset would fold "
-           "through its own center of curvature (see NurbsSurface::OffsetApproximate's own guard)");
+           "through its own center of curvature (see NurbsSurface::OffsetApproximate's own guard; for a "
+           "cylinder wall, an inward offset of its full radius or more)");
     }
   } else {
     NurbsSurface offset;
-    if (original.OffsetApproximate(thickness, offset) != Result::Ok) {
+    if (OffsetKeepingNet(original, thickness, offset) != Result::Ok) {
       Fail(caller,
            "the requested thickness is too large for this surface's own curvature - the offset would fold "
-           "through its own center of curvature (see NurbsSurface::OffsetApproximate's own guard)");
+           "through its own center of curvature (see NurbsSurface::OffsetApproximate's own guard; for a "
+           "cylinder wall, an inward offset of its full radius or more)");
     }
     if (thickness > 0.0) {
       lo = original;
@@ -2295,6 +2400,23 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
       lo = offset;
       hi = original;
     }
+  }
+
+  // A sheet closed in one direction must STAY closed in it after the
+  // offset, or the two caps are no longer closed rings and the result
+  // cannot be watertight. Both offset routes guarantee this by
+  // construction - OffsetKeepingNet()'s cylinder branch applies one
+  // affine map to every control point, and OffsetApproximate() hands the
+  // seam's coincident control points the SAME Greville parameter in a
+  // closed direction (surface.cpp's OffsetGrevilleParameter(); before
+  // that wrap existed, nudging them inward from opposite ends of the
+  // domain opened the seam by O(nudge * curvature), 1.9e-6 on an
+  // elliptical Extrude() tube, found while building this path) - so a
+  // failure here is a broken invariant, not an input the caller could
+  // have avoided.
+  const int closed_dir = closed_u ? 0 : 1;
+  if ((closed_u || closed_v) && (!lo.IsClosed(closed_dir) || !hi.IsClosed(closed_dir))) {
+    Internal(caller, "the offset of a sheet closed in one direction came back open across its seam");
   }
 
   const ON_NurbsSurface& lo_raw = lo.raw();
@@ -2332,7 +2454,9 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
     // builds the face's own natural full-domain rectangular loop, the
     // same real OpenNURBS primitive Brep::RemoveOuterTrim() already uses
     // (brep.cpp) for an open, non-singular, non-periodic rectangular
-    // surface exactly like this one.
+    // surface, and - for a cap closed in one direction - the seam-sharing
+    // loop AddFanCap()'s own doc comment above confirms it builds for a
+    // periodic-in-u untrimmed face.
     if (brep.NewOuterLoop(f.m_face_index) == nullptr) {
       Internal(caller, "ON_Brep::NewOuterLoop failed unexpectedly for a cap face");
     }
@@ -2340,11 +2464,14 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
   add_cap(lo_raw, /*brev=*/true);
   add_cap(hi_raw, /*brev=*/false);
 
-  // Four side walls, one per edge of the domain rectangle: the exact
-  // degree-1-in-v ruled surface (RuledBetween()) between that edge's
-  // isocurve on `lo` and the SAME edge's isocurve on `hi` - compatible by
-  // construction (OffsetApproximate() never changes the control-point grid
-  // or knot vectors, only moves the control points, so `lo`/`hi` share
+  // Side walls, one per OPEN edge of the domain rectangle (all four for
+  // an open sheet; only the two across the open direction for a sheet
+  // closed in the other, whose closed edges are seams, not boundary): the
+  // exact degree-1-in-v ruled surface (RuledBetween()) between that
+  // edge's isocurve on `lo` and the SAME edge's isocurve on `hi` -
+  // compatible by construction (neither OffsetApproximate() nor
+  // OffsetKeepingNet()'s cylinder branch changes the control-point grid or
+  // knot vectors, only moves the control points, so `lo`/`hi` share
   // identical knot vectors/CV counts and so do their corresponding
   // isocurves). Walked CCW as seen from the `hi` (outward, N) side, the
   // same convention Extrude() itself relies on for why a CCW boundary here
@@ -2352,8 +2479,13 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
   // in v, v=v_max backward in u, u=u_min backward in v - the standard
   // positively-oriented parameter-rectangle loop, already used the same
   // way for a curved-face cap's own rectangle loop elsewhere in this
-  // codebase (see FromMixedFaces' own doc comment in brep.cpp).
+  // codebase (see FromMixedFaces' own doc comment in brep.cpp). Skipping
+  // a closed direction's two edges leaves that orientation argument
+  // intact for the remaining walls: each is still the same ruling
+  // between the same two isocurves, only now closed curves.
+  int wall_count = 0;
   auto add_wall = [&](int dir, double param, bool reverse_iso) {
+    ++wall_count;
     std::unique_ptr<ON_NurbsCurve> c_lo(IsoCurveOf(lo_raw, dir, param, caller));
     std::unique_ptr<ON_NurbsCurve> c_hi(IsoCurveOf(hi_raw, dir, param, caller));
     if (reverse_iso) {
@@ -2370,13 +2502,13 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
       Internal(caller, "ON_Brep::NewOuterLoop failed unexpectedly for a side wall face");
     }
   };
-  add_wall(0, dv.Min(), /*reverse_iso=*/false);  // v = v_min, walked +u
-  add_wall(1, du.Max(), /*reverse_iso=*/false);  // u = u_max, walked +v
-  add_wall(0, dv.Max(), /*reverse_iso=*/true);   // v = v_max, walked -u
-  add_wall(1, du.Min(), /*reverse_iso=*/true);   // u = u_min, walked -v
+  if (!closed_v) add_wall(0, dv.Min(), /*reverse_iso=*/false);  // v = v_min, walked +u
+  if (!closed_u) add_wall(1, du.Max(), /*reverse_iso=*/false);  // u = u_max, walked +v
+  if (!closed_v) add_wall(0, dv.Max(), /*reverse_iso=*/true);   // v = v_max, walked -u
+  if (!closed_u) add_wall(1, du.Min(), /*reverse_iso=*/true);   // u = u_min, walked -v
 
   brep.SetTrimIsoFlags();
-  result.AppendUntrimmedFaceSideTables(6);
+  result.AppendUntrimmedFaceSideTables(2 + wall_count);
 
   // Outward-orientation safety net, the same one AssembleSweptBody() itself
   // uses: the construction above orients the result outward already under

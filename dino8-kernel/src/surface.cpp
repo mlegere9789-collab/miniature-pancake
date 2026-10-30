@@ -3559,6 +3559,36 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
   return Result::Failed;
 }
 
+namespace {
+// The parameter OffsetApproximate()/OffsetVariable() hand to NormalAt()
+// for control point `i` in direction `dir`: that point's own Greville
+// abscissa, nudged `nudge` inside `dom` (see OffsetApproximate()'s own
+// header doc comment for the pole reasoning behind the nudge). For a
+// direction the surface is CLOSED in, the abscissa is first wrapped into
+// the domain by the domain's own length, so the control-point columns
+// that coincide at the seam (the first and last of a clamped closed row,
+// whose Greville values are the domain's two ends; each periodic pair,
+// whose values differ by exactly one period) are handed the SAME
+// parameter and so move by the SAME normal. The plain clamp evaluates
+// them from opposite sides of the seam instead - two normals that differ
+// by O(nudge * curvature) even on a tangent-continuous surface, enough to
+// pull the seam apart (confirmed directly: a 0.1 offset of an uncapped
+// elliptical Extrude() tube came back IsClosed(0) false with a 1.9e-6
+// seam gap), and by the two adjacent facets' whole normals on a kinked
+// one. With the wrap, a closed surface's offset is closed by
+// construction, which Brep::Thicken() (sweep.cpp) relies on for a sheet
+// closed in one direction.
+double OffsetGrevilleParameter(const ON_NurbsSurface& s, int dir, int i, const Interval& dom, double nudge) {
+  double g = s.GrevilleAbcissa(dir, i);
+  const double len = dom.max - dom.min;
+  if (len > 0.0 && s.IsClosed(dir)) {
+    g = dom.min + std::fmod(g - dom.min, len);
+    if (g < dom.min) g += len;
+  }
+  return std::clamp(g, dom.min + nudge, dom.max - nudge);
+}
+}  // namespace
+
 Result NurbsSurface::OffsetApproximate(double distance, NurbsSurface& out, double tolerance) const {
   if (!ON_IsValid(distance)) {
     throw std::invalid_argument(
@@ -3600,16 +3630,17 @@ Result NurbsSurface::OffsetApproximate(double distance, NurbsSurface& out, doubl
   // Per-control-point translation along this surface's own normal at that
   // control point's Greville abscissa - see this method's own header doc
   // comment for why this is exact for a plane and a first-order
-  // approximation otherwise, and for the domain-interior nudge below.
+  // approximation otherwise, and for the domain-interior nudge (plus the
+  // closed-direction seam wrap, OffsetGrevilleParameter() above).
   ON_NurbsSurface moved = surface_;
   const int cv_count_u = moved.CVCount(0);
   const int cv_count_v = moved.CVCount(1);
   const double nudge_u = 1e-6 * u_range;
   const double nudge_v = 1e-6 * v_range;
   for (int i = 0; i < cv_count_u; ++i) {
-    const double gu = std::clamp(surface_.GrevilleAbcissa(0, i), du.min + nudge_u, du.max - nudge_u);
+    const double gu = OffsetGrevilleParameter(surface_, 0, i, du, nudge_u);
     for (int j = 0; j < cv_count_v; ++j) {
-      const double gv = std::clamp(surface_.GrevilleAbcissa(1, j), dv.min + nudge_v, dv.max - nudge_v);
+      const double gv = OffsetGrevilleParameter(surface_, 1, j, dv, nudge_v);
       const Vector3d n = NormalAt(gu, gv);
       ON_4dPoint cv;
       moved.GetCV(i, j, cv);
@@ -3692,10 +3723,10 @@ Result NurbsSurface::OffsetVariable(double distance_u_min, double distance_u_max
     // SAMPLED u too - an identity that only holds for the TRUE Greville
     // value, not a nudged one.
     const double true_gu = surface_.GrevilleAbcissa(0, i);
-    const double gu = std::clamp(true_gu, du.min + nudge_u, du.max - nudge_u);
+    const double gu = OffsetGrevilleParameter(surface_, 0, i, du, nudge_u);
     const double d = distance_at(true_gu);
     for (int j = 0; j < cv_count_v; ++j) {
-      const double gv = std::clamp(surface_.GrevilleAbcissa(1, j), dv.min + nudge_v, dv.max - nudge_v);
+      const double gv = OffsetGrevilleParameter(surface_, 1, j, dv, nudge_v);
       const Vector3d n = NormalAt(gu, gv);
       ON_4dPoint cv;
       moved.GetCV(i, j, cv);
