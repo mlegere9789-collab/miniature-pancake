@@ -87483,6 +87483,420 @@ void TestInterferenceBroadPhaseUsesBodyIndexAndIsIdentical() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Naked-edge proximity searches: WeldCoincidentNakedEdges() (behind
+// JoinNakedEdges(), MergeCoplanarFaces() and the fillet/boolean post-passes)
+// and Brep::SewTJunctions() generate their candidate edge pairs through an
+// ON_RTree over the naked edges' endpoints / curve hulls instead of testing
+// every pair; the original all-pairs scans stay reachable behind
+// detail::SetBrepSpatialAccelerationEnabled(false) and are the oracle here.
+// Every comparison is EXACT: same return value, same slot-for-slot topology
+// (edge/vertex/trim/face tables, trim counts, tolerances), same endpoint and
+// vertex coordinates bit for bit, same Area()/Volume() bit for bit.
+// ---------------------------------------------------------------------------
+
+// Bit-exact fingerprint of a Brep's raw tables plus Area()/Volume().
+std::vector<double> NakedFingerprint(const dino8::kernel::Brep& br) {
+  std::vector<double> fp;
+  const ON_Brep& raw = br.raw();
+  fp.push_back(raw.m_E.Count());
+  fp.push_back(raw.m_V.Count());
+  fp.push_back(raw.m_F.Count());
+  fp.push_back(raw.m_T.Count());
+  fp.push_back(raw.m_L.Count());
+  fp.push_back(raw.IsValid() ? 1.0 : 0.0);
+  for (int i = 0; i < raw.m_E.Count(); ++i) {
+    const ON_BrepEdge& e = raw.m_E[i];
+    fp.push_back(e.m_edge_index);
+    fp.push_back(e.m_vi[0]);
+    fp.push_back(e.m_vi[1]);
+    fp.push_back(e.TrimCount());
+    fp.push_back(e.m_tolerance);
+    if (e.m_edge_index >= 0) {
+      const ON_3dPoint s = e.PointAtStart(), t = e.PointAtEnd();
+      fp.insert(fp.end(), {s.x, s.y, s.z, t.x, t.y, t.z});
+    }
+  }
+  for (int i = 0; i < raw.m_V.Count(); ++i) {
+    const ON_BrepVertex& v = raw.m_V[i];
+    fp.push_back(v.m_vertex_index);
+    fp.push_back(v.m_ei.Count());
+    fp.insert(fp.end(), {v.point.x, v.point.y, v.point.z, v.m_tolerance});
+  }
+  for (int i = 0; i < raw.m_T.Count(); ++i) {
+    const ON_BrepTrim& t = raw.m_T[i];
+    fp.insert(fp.end(), {static_cast<double>(t.m_trim_index), static_cast<double>(t.m_ei),
+                         static_cast<double>(t.m_vi[0]), static_cast<double>(t.m_vi[1]), static_cast<double>(t.m_li)});
+  }
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    fp.push_back(raw.m_F[i].m_face_index);
+    fp.push_back(raw.m_F[i].m_li.Count());
+  }
+  try {
+    fp.push_back(1.0);
+    fp.push_back(br.Area());
+  } catch (const std::exception&) {
+    fp.push_back(-1.0);
+  }
+  try {
+    fp.push_back(1.0);
+    fp.push_back(br.Volume());
+  } catch (const std::exception&) {
+    fp.push_back(-1.0);
+  }
+  return fp;
+}
+
+bool NakedFingerprintsEqual(const std::vector<double>& a, const std::vector<double>& b) {
+  return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(double)) == 0);
+}
+
+struct NakedEdgeRun {
+  std::vector<double> fp;
+  int ret = 0;
+  long queries = 0;
+  double seconds = 0.0;
+  int naked_before = 0;
+};
+
+// Builds a fresh Brep with `make`, applies `op` under either the oracle
+// (accelerated == false) or the accelerated path (index minimum `minimum`;
+// 0 forces the index onto small fixtures, 16 is the production default).
+NakedEdgeRun RunNakedEdgeCase(bool accelerated, int minimum, const std::function<dino8::kernel::Brep()>& make,
+                              const std::function<int(dino8::kernel::Brep&)>& op) {
+  namespace kd = dino8::kernel::detail;
+  kd::SetBrepSpatialAccelerationEnabled(accelerated);
+  kd::SetBrepNakedEdgeIndexMinimum(minimum);
+  dino8::kernel::Brep b = make();
+  NakedEdgeRun run;
+  for (int i = 0; i < b.raw().m_E.Count(); ++i) {
+    if (b.raw().m_E[i].m_edge_index >= 0 && b.raw().m_E[i].TrimCount() == 1) ++run.naked_before;
+  }
+  const long q0 = kd::BrepNakedEdgeIndexQueryCount();
+  const auto t0 = std::chrono::steady_clock::now();
+  run.ret = op(b);
+  run.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  run.queries = kd::BrepNakedEdgeIndexQueryCount() - q0;
+  run.fp = NakedFingerprint(b);
+  kd::SetBrepSpatialAccelerationEnabled(true);
+  kd::SetBrepNakedEdgeIndexMinimum(16);
+  return run;
+}
+
+struct NakedCaseResult {
+  NakedEdgeRun fast, slow;
+};
+
+// Runs `make`/`op` under both paths and checks accelerated == oracle exactly.
+// `expect_index` demands the index really answered queries (and the oracle
+// none). Returns both runs for further case-specific assertions.
+NakedCaseResult CompareNakedEdgeCase(const std::string& label, int minimum, bool expect_index,
+                                     const std::function<dino8::kernel::Brep()>& make,
+                                     const std::function<int(dino8::kernel::Brep&)>& op) {
+  NakedCaseResult r;
+  r.slow = RunNakedEdgeCase(false, minimum, make, op);
+  r.fast = RunNakedEdgeCase(true, minimum, make, op);
+  Check(r.fast.ret == r.slow.ret, (label + ": accelerated return value == oracle return value").c_str());
+  Check(NakedFingerprintsEqual(r.fast.fp, r.slow.fp),
+        (label + ": accelerated result is bit-identical to the oracle (edge/vertex/trim/face tables, coordinates, Area, Volume)").c_str());
+  Check(r.slow.queries == 0, (label + ": the oracle never touches the naked-edge index").c_str());
+  if (expect_index) {
+    Check(r.fast.queries > 0, (label + ": the accelerated run really answered candidate queries from the index").c_str());
+  }
+  return r;
+}
+
+void TestBrepNakedEdgeSearchesAreAcceleratedAndIdentical() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  namespace kd = dino8::kernel::detail;
+
+  struct Restorer {
+    ~Restorer() {
+      kd::SetBrepSpatialAccelerationEnabled(true);
+      kd::SetBrepNakedEdgeIndexMinimum(16);
+    }
+  } restore;
+
+  // A k x k x 6 "gapped cube": every tile of the cube [0,k]^3 shrunk by eps
+  // on all four sides, so every in-plane neighbour pair is 2 eps apart and
+  // every pair across a cube edge sqrt(2) eps apart. 6 k^2 faces, 24 k^2
+  // naked edges (nothing is shared at construction).
+  auto gapped_cube = [](int k, double eps) {
+    std::vector<Brep::PlanarFace> faces;
+    for (int axis = 0; axis < 3; ++axis)
+      for (int side = 0; side < 2; ++side)
+        for (int i = 0; i < k; ++i)
+          for (int j = 0; j < k; ++j) {
+            const double sd = side ? static_cast<double>(k) : 0.0;
+            auto at = [&](double u, double v) {
+              double c[3];
+              c[axis] = sd;
+              c[(axis + 1) % 3] = u;
+              c[(axis + 2) % 3] = v;
+              return Point3d(c[0], c[1], c[2]);
+            };
+            std::vector<Point3d> q = {at(i + eps, j + eps), at(i + 1 - eps, j + eps), at(i + 1 - eps, j + 1 - eps), at(i + eps, j + 1 - eps)};
+            if (!side) std::reverse(q.begin(), q.end());
+            double n[3] = {0, 0, 0};
+            n[axis] = side ? 1.0 : -1.0;
+            faces.push_back(CheckHealFace(q, ON_3dVector(n[0], n[1], n[2])));
+          }
+    return Brep::FromMixedFaces(faces, {});
+  };
+  auto join = [](double tol) { return [tol](Brep& b) { return b.JoinNakedEdges(tol); }; };
+  auto sew = [](double tol) { return [tol](Brep& b) { return b.SewTJunctions(tol); }; };
+
+  // --- 1. Large many-edge weld: 384 faces / 1536 naked edges, default
+  // production threshold (no forcing), with the measured speed-up. -------
+  {
+    const auto make = [&] { return gapped_cube(16, 0.01); };
+    const NakedCaseResult r = CompareNakedEdgeCase("large weld (1536 faces, 6144 naked edges)", 16, true, make, join(0.03));
+    Check(r.slow.naked_before == 6144, "large weld: the fixture starts with 6144 naked edges");
+    Check(r.slow.ret > 3000, "large weld: positive control - hundreds of coincident pairs really were welded");
+    const double ratio = r.slow.seconds / std::max(r.fast.seconds, 1e-9);
+    // Reported, not asserted: with 3000+ welds the JoinNakedEdges() total is
+    // dominated by the weld bookkeeping (CombineCoincident*, Compact,
+    // SetTolerancesBoxesAndFlags, UnifyNormals), which the index does not touch.
+    std::printf("info: large weld (%d welds) JoinNakedEdges total: oracle %.4fs, accelerated %.4fs, ratio %.2fx\n", r.slow.ret, r.slow.seconds, r.fast.seconds, ratio);
+    // The scan itself: the same 6144 naked edges with a tolerance nothing is
+    // within (no welds, so JoinNakedEdges() is the pure candidate search).
+    const NakedCaseResult inert = CompareNakedEdgeCase("large inert weld scan (6144 naked edges, nothing within tolerance)", 16, true, make, join(1e-3));
+    Check(inert.slow.ret == 0, "large inert weld scan: nothing is within 1e-3 of anything, so the oracle welds nothing");
+    const double inert_ratio = inert.slow.seconds / std::max(inert.fast.seconds, 1e-9);
+    std::printf("info: large inert weld scan oracle %.4fs, accelerated %.4fs, speed-up %.1fx\n", inert.slow.seconds, inert.fast.seconds, inert_ratio);
+    Check(inert_ratio >= 3.0, "large inert weld scan: the accelerated candidate search is at least 3x faster than the all-pairs oracle");
+    // Above the default threshold even for a small set.
+    const NakedEdgeRun tiny = RunNakedEdgeCase(true, 16, [&] { return gapped_cube(1, 0.01); }, join(0.03));
+    Check(tiny.naked_before == 24 && tiny.queries > 0, "gapped cube k=1 (24 naked edges) is above the default threshold and uses the index");
+  }
+
+  // --- 2. Weld tolerance boundary: a row of quads whose neighbour gaps sit
+  // exactly on, a hair below and a hair above the weld tolerance. ---------
+  {
+    const double tol = 0.25;
+    const double d = 1e-9;
+    const std::vector<double> gaps = {tol, tol * (1 - d), tol * (1 + d), tol * (1 - 1e-3), tol * (1 + 1e-3), 0.125, 0.5, tol, tol * (1 + 1e-15), tol * (1 - 1e-15)};
+    const auto make = [&] {
+      std::vector<Brep::PlanarFace> faces;
+      double x = 0.0;
+      for (int i = 0; i < 48; ++i) {
+        faces.push_back(CheckHealFace({Point3d(x, 0, 0), Point3d(x + 1, 0, 0), Point3d(x + 1, 1, 0), Point3d(x, 1, 0)}, ON_3dVector(0, 0, 1)));
+        x += 1.0 + gaps[static_cast<size_t>(i) % gaps.size()];
+      }
+      return Brep::FromMixedFaces(faces, {});
+    };
+    const NakedCaseResult r = CompareNakedEdgeCase("weld tolerance boundary", 0, true, make, join(tol));
+    Check(r.slow.ret > 0 && r.slow.ret < 47, "weld tolerance boundary: some but not all neighbour pairs are within tolerance (oracle)");
+    CompareNakedEdgeCase("weld tolerance boundary (tol just below)", 0, true, make, join(tol * (1 - 1e-12)));
+    CompareNakedEdgeCase("weld tolerance boundary (tol just above)", 0, true, make, join(tol * (1 + 1e-12)));
+    CompareNakedEdgeCase("weld tolerance boundary (tol 0, exact only)", 0, true, make, join(0.0));
+  }
+
+  // --- 3. No-op cases: a closed box (no naked edges), a lone plate, and a
+  // set whose naked edges are all far from one another. -------------------
+  {
+    CompareNakedEdgeCase("no-op: closed box JoinNakedEdges", 0, false, [] { return Brep::Box(0, 0, 0, 1, 1, 1); }, join(1e-3));
+    CompareNakedEdgeCase("no-op: closed box SewTJunctions", 0, false, [] { return Brep::Box(0, 0, 0, 1, 1, 1); }, sew(1e-3));
+    const auto plate = [] {
+      return Brep::FromPlanarFaces({CheckHealFace({Point3d(0, 1, 0), Point3d(1, 1, 0), Point3d(1, 0, 0), Point3d(0, 0, 0)}, ON_3dVector(0, 0, -1))});
+    };
+    const NakedCaseResult a = CompareNakedEdgeCase("no-op: lone plate JoinNakedEdges", 0, true, plate, join(1e-3));
+    Check(a.slow.ret == 0, "no-op: a lone plate welds nothing");
+    const NakedCaseResult b = CompareNakedEdgeCase("no-op: lone plate SewTJunctions", 0, true, plate, sew(1e-3));
+    Check(b.slow.ret == 0, "no-op: a lone plate has no T-junction");
+    const auto far_apart = [&] { return gapped_cube(3, 0.1); };
+    const NakedCaseResult c = CompareNakedEdgeCase("no-op: well-separated naked edges JoinNakedEdges", 0, true, far_apart, join(1e-3));
+    Check(c.slow.ret == 0, "no-op: nothing within 1e-3 of anything on a 0.2-gap tiling");
+    const NakedCaseResult d = CompareNakedEdgeCase("no-op: well-separated naked edges SewTJunctions", 0, true, far_apart, sew(1e-3));
+    Check(d.slow.ret == 0, "no-op: no T-junction on a 0.2-gap tiling");
+  }
+
+  // --- 4. Existing weld fixtures: a tolerant box (gap 1e-4, 4 joins), a
+  // box split into coplanar halves merged by MergeCoplanarFaces() (which
+  // re-welds through the same pass), and a boolean union (post-pass). ------
+  {
+    const double gap = 1e-4;
+    const NakedCaseResult a = CompareNakedEdgeCase("tolerant box JoinNakedEdges", 0, true, [&] { return Brep::FromPlanarFaces(CheckHealBoxFaces(1.0 + gap)); }, join(2.0 * gap));
+    Check(a.slow.ret == 4, "tolerant box: exactly the 4 known pairs join");
+    CompareNakedEdgeCase("tolerant box JoinNakedEdges (huge tolerance)", 0, true, [&] { return Brep::FromPlanarFaces(CheckHealBoxFaces(1.0 + gap)); }, join(5.0));
+
+    const auto split_box = [] {
+      const std::vector<Brep::PlanarFace> whole = Brep::Box(0, 0, 0, 2, 2, 1).PlanarFaces();
+      auto clip_at_x = [](const Brep::PlanarFace& f, double x_cut, bool keep_left) {
+        Brep::PlanarFace out;
+        out.plane = f.plane;
+        for (const Point3d& p : f.loop) out.loop.emplace_back(keep_left ? std::min(p.x, x_cut) : std::max(p.x, x_cut), p.y, p.z);
+        return out;
+      };
+      std::vector<Brep::PlanarFace> faces;
+      for (int i = 0; i < 4; ++i) {
+        faces.push_back(clip_at_x(whole[static_cast<size_t>(i)], 1.0, true));
+        faces.push_back(clip_at_x(whole[static_cast<size_t>(i)], 1.0, false));
+      }
+      faces.push_back(whole[4]);
+      faces.push_back(whole[5]);
+      return Brep::FromPlanarFaces(faces);
+    };
+    const NakedCaseResult b = CompareNakedEdgeCase("split box MergeCoplanarFaces", 0, false, split_box, [](Brep& br) { return br.MergeCoplanarFaces(); });
+    Check(b.slow.ret == 4, "split box: MergeCoplanarFaces() performs the 4 known merges");
+    CompareNakedEdgeCase("split box JoinNakedEdges", 0, false, split_box, join(1e-6));
+
+    // Boolean union of three boxes: the whole boolean (including any
+    // internal weld post-pass) runs under each mode; the op replaces the
+    // placeholder with the result.
+    CompareNakedEdgeCase("boolean union staircase (post-passes)", 0, false, [] { return Brep::Box(0, 0, 0, 1, 1, 1); },
+                         [](Brep& br) {
+                           Brep s = Brep::Box(0, 0, 0, 2, 2, 2);
+                           for (int i = 1; i < 3; ++i) {
+                             s = dino8::kernel::BooleanCombineGeneral(
+                                 s, Brep::Box(i * 1.5, i * 1.5, i * 1.5, i * 1.5 + 2, i * 1.5 + 2, i * 1.5 + 2), dino8::kernel::BooleanOp::Union);
+                           }
+                           br = s;
+                           return br.FaceCount();
+                         });
+  }
+
+  // --- 5. SewTJunctions fixtures. ---------------------------------------
+  {
+    const auto classic = [] {
+      Brep::PlanarFace a = CheckHealFace({Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)}, ON_3dVector(0, 0, 1));
+      Brep::PlanarFace b = CheckHealFace({Point3d(1, 0, 0), Point3d(2, 0, 0), Point3d(2, 0.5, 0), Point3d(1, 0.5, 0)}, ON_3dVector(0, 0, 1));
+      Brep::PlanarFace c = CheckHealFace({Point3d(1, 0.5, 0), Point3d(2, 0.5, 0), Point3d(2, 1, 0), Point3d(1, 1, 0)}, ON_3dVector(0, 0, 1));
+      return Brep::FromMixedFaces({a, b, c}, {});
+    };
+    const NakedCaseResult r = CompareNakedEdgeCase("classic T-junction SewTJunctions", 0, true, classic, sew(1e-6));
+    Check(r.slow.ret == 1 && r.fast.ret == 1, "classic T-junction: exactly 1 split in both paths");
+    CompareNakedEdgeCase("classic T-junction SewTJunctions (loose tolerance)", 0, true, classic, sew(0.4));
+
+    // T-junction tolerance boundary: a long face A (top edge y = 0, x in
+    // [0, 40]) with quads B_i sitting at heights h_i above it, each h_i
+    // exactly on, a hair below or a hair above the tolerance; both bottom
+    // corners of every B_i project strictly inside A's top edge.
+    const double tol = 0.25;
+    const std::vector<double> heights = {tol, tol * (1 - 1e-9), tol * (1 + 1e-9), 0.125, 0.5, tol * (1 - 1e-12), tol * (1 + 1e-12), 0.0625};
+    const auto boundary = [&] {
+      std::vector<Brep::PlanarFace> faces;
+      faces.push_back(CheckHealFace({Point3d(0, -1, 0), Point3d(40, -1, 0), Point3d(40, 0, 0), Point3d(0, 0, 0)}, ON_3dVector(0, 0, 1)));
+      for (int i = 0; i < 16; ++i) {
+        const double x = 1.0 + 2.5 * i, h = heights[static_cast<size_t>(i) % heights.size()];
+        faces.push_back(CheckHealFace({Point3d(x, h, 0), Point3d(x + 1, h, 0), Point3d(x + 1, h + 1, 0), Point3d(x, h + 1, 0)}, ON_3dVector(0, 0, 1)));
+      }
+      return Brep::FromMixedFaces(faces, {});
+    };
+    const NakedCaseResult t = CompareNakedEdgeCase("T-junction tolerance boundary SewTJunctions", 0, true, boundary, sew(tol));
+    Check(t.slow.ret > 0 && t.slow.ret < 32, "T-junction tolerance boundary: some but not all candidate corners are within tolerance (oracle)");
+    CompareNakedEdgeCase("T-junction tolerance boundary (tol just below)", 0, true, boundary, sew(tol * (1 - 1e-12)));
+    CompareNakedEdgeCase("T-junction tolerance boundary (tol just above)", 0, true, boundary, sew(tol * (1 + 1e-12)));
+  }
+
+  // --- 5b. Randomised differential check: jittered grids whose neighbouring
+  // edge endpoints land at random distances around the tolerance, so welds,
+  // near-misses and (for Sew) T-junctions of every shape occur. ------------
+  {
+    int random_welds = 0, random_splits = 0;
+    uint64_t rng = 0x9E3779B97F4A7C15ull;
+    auto rnd = [&rng](double lo, double hi) {
+      rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+      return lo + (hi - lo) * (static_cast<double>(rng >> 11) / 9007199254740992.0);
+    };
+    for (int trial = 0; trial < 10; ++trial) {
+      const double tol = rnd(0.05, 0.3);
+      const int n = trial < 6 ? 6 : 4;
+      std::vector<std::vector<Point3d>> corners;  // per quad, jittered once so the result is reproducible
+      if (trial < 6) {
+        for (int i = 0; i < n; ++i)
+          for (int j = 0; j < n; ++j) {
+            std::vector<Point3d> q;
+            const double base[4][2] = {{i + 0.0, j + 0.0}, {i + 1.0, j + 0.0}, {i + 1.0, j + 1.0}, {i + 0.0, j + 1.0}};
+            for (int c = 0; c < 4; ++c) {
+              const double sx = c == 0 || c == 3 ? 1.0 : -1.0, sy = c < 2 ? 1.0 : -1.0;
+              q.emplace_back(base[c][0] + sx * rnd(0.25 * tol, 1.2 * tol), base[c][1] + sy * rnd(0.25 * tol, 1.2 * tol), 0.0);
+            }
+            corners.push_back(q);
+          }
+      } else {
+        // Running-bond bricks: alternate rows are offset by half a brick, so
+        // each brick's corners land strictly inside the edges of the row
+        // below, a random 0.3..1.3 tol above them.
+        for (int r = 0; r < n; ++r)
+          for (int c = 0; c < n; ++c) {
+            const double x0 = c + 0.5 * (r % 2) + rnd(-0.01, 0.01), y0 = r * 1.5 + rnd(0.3, 1.3) * tol * (r > 0 ? 1.0 : 0.0);
+            corners.push_back({Point3d(x0, y0, 0), Point3d(x0 + 0.95, y0, 0), Point3d(x0 + 0.95, y0 + 1, 0), Point3d(x0, y0 + 1, 0)});
+          }
+      }
+      const auto make = [&] {
+        std::vector<Brep::PlanarFace> faces;
+        for (const auto& q : corners) faces.push_back(CheckHealFace(q, ON_3dVector(0, 0, 1)));
+        return Brep::FromMixedFaces(faces, {});
+      };
+      const std::string tag = "random jittered grid " + std::to_string(trial);
+      if (trial < 6) {
+        random_welds += CompareNakedEdgeCase(tag + " JoinNakedEdges", 0, true, make, join(tol)).slow.ret;
+        random_welds += CompareNakedEdgeCase(tag + " JoinNakedEdges (tol x1.5)", 0, true, make, join(1.5 * tol)).slow.ret;
+      } else {
+        random_splits += CompareNakedEdgeCase(tag + " SewTJunctions", 0, true, make, sew(tol)).slow.ret;
+      }
+    }
+    std::printf("info: random jittered grids: %d welds, %d T-junction splits in total\n", random_welds, random_splits);
+    Check(random_welds > 0, "random jittered grids: positive control - the join trials weld something");
+    Check(random_splits > 0, "random jittered grids: positive control - the running-bond sew trials split T-junctions");
+  }
+
+  // --- 6. Large SewTJunctions: 72 inert gapped quads (288 naked edges, none
+  // within the 1e-3 tolerance of anything) plus three exact T-junction
+  // clusters placed LAST in edge order, i.e. the oracle's worst case. -----
+  {
+    const auto make = [] {
+      std::vector<Brep::PlanarFace> faces;
+      const double eps = 0.02;
+      for (int i = 0; i < 9; ++i)
+        for (int j = 0; j < 8; ++j)
+          faces.push_back(CheckHealFace({Point3d(i + eps, j + eps, 0), Point3d(i + 1 - eps, j + eps, 0), Point3d(i + 1 - eps, j + 1 - eps, 0), Point3d(i + eps, j + 1 - eps, 0)}, ON_3dVector(0, 0, 1)));
+      for (int c = 0; c < 3; ++c) {
+        const double ox = 100.0 + 10.0 * c;
+        faces.push_back(CheckHealFace({Point3d(ox, 0, 0), Point3d(ox + 1, 0, 0), Point3d(ox + 1, 1, 0), Point3d(ox, 1, 0)}, ON_3dVector(0, 0, 1)));
+        faces.push_back(CheckHealFace({Point3d(ox + 1, 0, 0), Point3d(ox + 2, 0, 0), Point3d(ox + 2, 0.5, 0), Point3d(ox + 1, 0.5, 0)}, ON_3dVector(0, 0, 1)));
+        faces.push_back(CheckHealFace({Point3d(ox + 1, 0.5, 0), Point3d(ox + 2, 0.5, 0), Point3d(ox + 2, 1, 0), Point3d(ox + 1, 1, 0)}, ON_3dVector(0, 0, 1)));
+      }
+      return Brep::FromMixedFaces(faces, {});
+    };
+    const NakedCaseResult r = CompareNakedEdgeCase("large SewTJunctions", 16, true, make, sew(1e-3));
+    Check(r.slow.naked_before >= 300, "large SewTJunctions: the fixture starts with 300+ naked edges");
+    Check(r.slow.ret == 3, "large SewTJunctions: exactly the 3 planted T-junctions are split (the inert bulk is untouched)");
+    const double ratio = r.slow.seconds / std::max(r.fast.seconds, 1e-9);
+    std::printf("info: large SewTJunctions (%d naked edges) oracle %.4fs, accelerated %.4fs, speed-up %.1fx\n", r.slow.naked_before, r.slow.seconds, r.fast.seconds, ratio);
+    Check(ratio >= 3.0, "large SewTJunctions: the accelerated sew is at least 3x faster than the all-pairs oracle");
+  }
+}
+
+// The pre-existing T-junction / weld / merge fixtures of this suite, re-run
+// with the naked-edge index forced onto them (minimum 0): each carries its own
+// hand-derived expectations, so passing proves the index finds exactly the
+// pairs those fixtures were designed around (including the curved-edge
+// T-junction).
+void TestBrepNakedEdgeIndexReproducesExistingFixtures() {
+  namespace kd = dino8::kernel::detail;
+  struct Restorer {
+    ~Restorer() {
+      kd::SetBrepSpatialAccelerationEnabled(true);
+      kd::SetBrepNakedEdgeIndexMinimum(16);
+    }
+  } restore;
+  kd::SetBrepSpatialAccelerationEnabled(true);
+  kd::SetBrepNakedEdgeIndexMinimum(0);
+  const long q0 = kd::BrepNakedEdgeIndexQueryCount();
+  TestBrepSewTJunctionsClosesActualTJunction();
+  TestBrepSewTJunctionsNoOpOnCleanBreps();
+  TestBrepSewTJunctionsDetectsAndSplitsCurvedEdge();
+  TestBrepDeleteFaceHealFlagControlsJoinAndSewTJunctions();
+  TestBrepJoinNakedEdgesRecordsTolerantEdges();
+  TestBrepJoinNakedEdgesFloorsRecordedToleranceByEdgeExtent();
+  TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne();
+  TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane();
+  Check(kd::BrepNakedEdgeIndexQueryCount() - q0 > 0, "the existing fixtures really ran through the naked-edge index");
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -88822,6 +89236,8 @@ int main() {
   RunTest("TestBrepFreeQueriesAreAcceleratedAndBitIdentical", TestBrepFreeQueriesAreAcceleratedAndBitIdentical);
   RunTest("TestBooleanClassificationUsesOneSharedFaceIndexAndIsIdentical", TestBooleanClassificationUsesOneSharedFaceIndexAndIsIdentical);
   RunTest("TestInterferenceBroadPhaseUsesBodyIndexAndIsIdentical", TestInterferenceBroadPhaseUsesBodyIndexAndIsIdentical);
+  RunTest("TestBrepNakedEdgeSearchesAreAcceleratedAndIdentical", TestBrepNakedEdgeSearchesAreAcceleratedAndIdentical);
+  RunTest("TestBrepNakedEdgeIndexReproducesExistingFixtures", TestBrepNakedEdgeIndexReproducesExistingFixtures);
 
   RunTest("ON::End", ON::End);
 

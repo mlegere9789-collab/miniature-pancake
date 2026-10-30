@@ -358,6 +358,25 @@ long BrepFaceBoxIndexBuildCount();
 // switch above also turns that tree off - they then use the linear loop).
 long BodyBroadPhaseTreeQueryCount();
 
+// Naked-edge proximity searches (Brep::SewTJunctions(), and the coincident-
+// naked-edge weld Brep::JoinNakedEdges()/MergeCoplanarFaces() and the
+// fillet/boolean post-passes share): with at least this many naked edges
+// they generate their candidate edge pairs through an `ON_RTree` over the
+// naked edges' endpoints / curve hulls instead of testing every pair, then
+// run the unchanged exact pair predicate on the candidates in ascending
+// edge order - so the same pairs are welded/split in the same order, bit
+// for bit. Smaller sets, and every call while
+// `SetBrepSpatialAccelerationEnabled(false)` is in force, take the original
+// all-pairs scan (the oracle).
+// `SetBrepNakedEdgeIndexMinimum()` is a test-only knob (process-global,
+// default 16) so a test can force the index onto a small fixture (0 or 1)
+// or off (a huge value); `BrepNakedEdgeIndexQueryCount()` counts the index
+// queries answered so far (observability: proves the index path ran).
+void SetBrepNakedEdgeIndexMinimum(int min_naked_edges);
+int BrepNakedEdgeIndexMinimum();
+long BrepNakedEdgeIndexQueryCount();
+void NoteBrepNakedEdgeIndexQuery();
+
 // Below this many faces a per-call index build does not pay for itself
 // (the scan is already only a handful of face evaluations).
 constexpr int kMinBrepFacesForSpatialIndex = 16;
