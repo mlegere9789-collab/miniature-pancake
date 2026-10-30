@@ -23189,9 +23189,17 @@ void TestBrepCheckAndUnifyNormalsOnFlippedFace() {
 
   // Whole-shell inversion: every face flipped is perfectly consistent
   // (no InconsistentFaceOrientation at all) yet inside-out, volume -1.
-  // Only the outward step can catch that - and does.
+  // No orientation CONFLICT to find - but Check() used to report this as
+  // wholly clean, leaving UnifyNormals()'s outward step as the only thing
+  // that noticed (this test pinned that gap as intended behaviour). It now
+  // reports exactly one InsideOutShell (see
+  // TestBrepCheckReportsInsideOutClosedShell), with every conflict-based
+  // flag still true.
   for (int i = 0; i < box.raw().m_F.Count(); ++i) box.raw().FlipFace(box.raw().m_F[i]);
-  Check(box.Check().IsClean(), "an inside-out box (every face flipped) is internally consistent, so Check() is clean");
+  const Brep::CheckReport inverted_report = box.Check();
+  Check(inverted_report.is_oriented && inverted_report.is_closed && inverted_report.issues.size() == 1 &&
+            inverted_report.Count(Brep::CheckIssue::Kind::InsideOutShell) == 1,
+        "an inside-out box (every face flipped) is internally consistent - closed and oriented, no conflict - but Check() reports exactly one InsideOutShell");
   Check(std::fabs(box.TessellateToClosedMesh(4, 4).Volume() + 1.0) < 1e-9, "...but its volume is -1");
   Check(box.UnifyNormals() == 6, "UnifyNormals() flips all 6 faces of the inside-out box");
   Check(std::fabs(box.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9, "...restoring volume +1");
@@ -23737,6 +23745,113 @@ void TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip() {
     const dino8::kernel::Mesh mesh = box.TessellateToClosedMeshTolerant(4, 4);
     Check(mesh.IsClosedManifold(), "the healed box's tolerant tessellation is a closed manifold");
     Check(std::fabs(mesh.Volume() - 1.0) <= 2.0 * width, "...with volume within the strip's width of 1");
+  }
+}
+
+// Check() on an INSIDE-OUT closed solid. Before this change a box whose
+// six faces all point inward (a consistent orientation, no naked edge, no
+// conflict - just the wrong way round) reported ZERO issues from Check():
+// IsClean(), is_closed and is_oriented all true, raw().IsValid()/IsSolid()
+// true - yet Volume() is -V, so every consumer that treats the solid as a
+// solid (Booleans, mass properties) sees the exterior as its interior.
+// CheckIssue::Kind::InsideOutShell now reports it, with the (negative)
+// coarse-tessellation volume as `measure`; UnifyNormals() is the repair.
+// Closed forms: a 2x3x4 box is exactly 24; a unit box exactly 1; a
+// radius-1 height-4 cylinder is 4*pi (the coarse tessellation of its
+// curved wall is an inscribed approximation, so it is checked as a
+// bracket, not an exact value).
+void TestBrepCheckReportsInsideOutClosedShell() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  using dino8::kernel::NurbsCurve;
+  constexpr double kPi = 3.14159265358979323846;
+  auto inside_out_count = [](const Brep::CheckReport& r) { return r.Count(Brep::CheckIssue::Kind::InsideOutShell); };
+
+  // Unit box built face-by-face, then every face's loop and normal reversed.
+  {
+    std::vector<Brep::PlanarFace> faces = CheckHealBoxFaces();
+    Brep clean = Brep::FromPlanarFaces(faces);
+    const Brep::CheckReport clean_report = clean.Check();
+    Check(clean_report.IsClean() && inside_out_count(clean_report) == 0,
+          "control: the ordinary outward-facing unit box still checks perfectly clean (no false InsideOutShell)");
+
+    for (Brep::PlanarFace& f : faces) {
+      std::reverse(f.loop.begin(), f.loop.end());
+      ON_3dVector n = f.plane.Normal();
+      n.Reverse();
+      f.plane = ON_Plane(f.loop[0], n);
+    }
+    Brep inverted = Brep::FromPlanarFaces(faces);
+    const Brep::CheckReport r = inverted.Check();
+    Check(r.is_closed && r.is_oriented && inverted.raw().IsValid() && inverted.raw().IsSolid(),
+          "an all-faces-reversed unit box is closed, consistently oriented and a valid ON_Brep solid (everything else passes)");
+    Check(r.issues.size() == 1 && inside_out_count(r) == 1, "...and Check() reports exactly one issue: InsideOutShell");
+    const Brep::CheckIssue& issue = r.issues[0];
+    Check(std::fabs(issue.measure + 1.0) < 1e-9 && issue.index == -1,
+          "...whose `measure` is the exact negative unit-box volume, -1");
+    Check(std::fabs(issue.location.x - 0.5) < 1e-9 && std::fabs(issue.location.y - 0.5) < 1e-9 &&
+              std::fabs(issue.location.z - 0.5) < 1e-9,
+          "...located at the box's centre");
+    Check(!r.IsClean(), "...so IsClean() is no longer true for an inside-out solid");
+
+    Check(inverted.UnifyNormals() > 0, "UnifyNormals() flips the inside-out box");
+    const Brep::CheckReport fixed = inverted.Check();
+    Check(fixed.IsClean() && inside_out_count(fixed) == 0, "...after which Check() reports it clean again");
+    Check(std::fabs(inverted.Volume() - 1.0) < 1e-9, "...with Volume() back to exactly +1");
+  }
+
+  // 2 x 3 x 4 box (volume 24), inverted by flipping each face's m_bRev.
+  {
+    const std::vector<Point3d> b = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 3, 0), Point3d(0, 3, 0)};
+    const std::vector<Point3d> t = {Point3d(0, 0, 4), Point3d(2, 0, 4), Point3d(2, 3, 4), Point3d(0, 3, 4)};
+    std::vector<Brep::PlanarFace> faces;
+    faces.push_back(CheckHealFace({b[3], b[2], b[1], b[0]}, ON_3dVector(0, 0, -1)));
+    faces.push_back(CheckHealFace({t[0], t[1], t[2], t[3]}, ON_3dVector(0, 0, 1)));
+    for (size_t i = 0; i < 4; ++i) {
+      const size_t j = (i + 1) % 4;
+      ON_3dVector n = ON_CrossProduct(b[j] - b[i], t[i] - b[i]);
+      n.Unitize();
+      faces.push_back(CheckHealFace({b[i], b[j], t[j], t[i]}, n));
+    }
+    Brep box = Brep::FromPlanarFaces(faces);
+    Check(box.Check().IsClean() && std::fabs(box.Volume() - 24.0) < 1e-9, "control: the 2x3x4 box is clean with Volume() 24");
+    for (int i = 0; i < box.raw().m_F.Count(); ++i) box.raw().FlipFace(box.raw().m_F[i]);
+    const Brep::CheckReport r = box.Check();
+    Check(r.issues.size() == 1 && inside_out_count(r) == 1 && std::fabs(r.issues[0].measure + 24.0) < 1e-9,
+          "flipping every face of the 2x3x4 box gives exactly one InsideOutShell with measure -24");
+
+    // An open inside-out shell has no meaningful inside: the missing face
+    // is what Check() must report, not an orientation verdict.
+    Brep open = box;
+    open.DeleteFace(1, /*heal=*/false);
+    const Brep::CheckReport open_report = open.Check();
+    Check(!open_report.is_closed && open_report.Count(Brep::CheckIssue::Kind::NakedEdge) == 4 && inside_out_count(open_report) == 0,
+          "an inside-out shell with one face deleted reports its 4 naked edges and no InsideOutShell (open shells have no inside)");
+  }
+
+  // A curved solid: Extrude(circle) is clean and outward; flipping every
+  // face makes it inside-out with measure about -(4*pi).
+  {
+    const ON_Circle circle(ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+    ON_NurbsCurve nurbs;
+    circle.GetNurbForm(nurbs);
+    NurbsCurve profile;
+    profile.raw() = nurbs;
+    Brep cyl = Brep::Extrude(profile, Vector3d(0, 0, 4));
+    const Brep::CheckReport clean = cyl.Check();
+    Check(inside_out_count(clean) == 0, "control: an outward Extrude(circle) cylinder is not reported inside-out");
+    for (int i = 0; i < cyl.raw().m_F.Count(); ++i) cyl.raw().FlipFace(cyl.raw().m_F[i]);
+    const Brep::CheckReport r = cyl.Check();
+    Check(inside_out_count(r) == 1, "the flipped cylinder is reported as exactly one InsideOutShell");
+    if (inside_out_count(r) == 1) {
+      double measure = 0.0;
+      for (const Brep::CheckIssue& issue : r.issues) {
+        if (issue.kind == Brep::CheckIssue::Kind::InsideOutShell) measure = issue.measure;
+      }
+      Check(measure < -0.6 * 4.0 * kPi && measure > -1.001 * 4.0 * kPi,
+            "...with a negative volume bracketing the closed-form -4*pi (inscribed coarse tessellation: between -4*pi and 0.6 of it)");
+    }
   }
 }
 
@@ -82138,6 +82253,7 @@ int main() {
   RunTest("TestCapPlanarHolesReportsWhyANonPlanarHoleIsSkipped", TestCapPlanarHolesReportsWhyANonPlanarHoleIsSkipped);
   RunTest("TestBrepJoinNakedEdgesRecordsTolerantEdges", TestBrepJoinNakedEdgesRecordsTolerantEdges);
   RunTest("TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip", TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip);
+  RunTest("TestBrepCheckReportsInsideOutClosedShell", TestBrepCheckReportsInsideOutClosedShell);
   RunTest("TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge", TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge);
   RunTest("TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly", TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly);
   RunTest("TestBrepSplitNakedEdgeAtSplitsCurvedNakedRim", TestBrepSplitNakedEdgeAtSplitsCurvedNakedRim);

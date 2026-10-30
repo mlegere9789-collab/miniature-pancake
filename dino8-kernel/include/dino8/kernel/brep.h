@@ -4154,6 +4154,25 @@ class Brep {
       // the shared 3D point; `measure` the residual gap after refinement
       // (always <= tolerance, since that is what makes it a hit).
       FaceInteriorSelfIntersection,
+      // A CLOSED, consistently-oriented shell whose faces all point
+      // INWARD: every other check above passes (no naked edge, no
+      // orientation conflict, nothing degenerate) yet the solid is inside
+      // out - its tessellated divergence-theorem volume is negative, so
+      // Volume() reports a negative number, a Boolean treats its interior
+      // as the exterior, and a downstream consumer sees a "hole" shaped
+      // like the part. Decided by the sign of TessellateToClosedMesh(4, 4)'s
+      // volume - the identical test UnifyNormals() uses to decide whether
+      // to flip a closed shell outward, and UnifyNormals() is its repair.
+      // Only evaluated when the Brep is already closed and oriented (an
+      // open or inconsistent shell has no meaningful "inside"), and
+      // skipped, never guessed, when that coarse tessellation cannot be
+      // built. `index` and
+      // `other_index` are -1 (a property of the whole shell, not one
+      // element), `location` the bounding-box centre, `measure` the
+      // (negative) volume. Honest limit: this is the NET volume sign, so
+      // a body of several lumps whose lumps disagree is judged by the
+      // sum, not lump by lump.
+      InsideOutShell,
     };
     Kind kind = Kind::NakedEdge;
     int index = -1;
