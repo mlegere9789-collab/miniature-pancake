@@ -2,9 +2,9 @@
 
 **This file is the required reading for dispatch decisions.** `PARITY_MAP.md` in this directory is the full historical round-by-round narrative log (382 rounds, ~10,750 lines) — it is an archival record only; nothing requires reading it to pick up the next unit of work. See `/DINO8_PLAYBOOK.md` at the repo root for the process this file is part of.
 
-As of commit `ab20e4ce` (last full re-score).
+As of commit `ab20e4ce` (last full re-score); Mass properties row updated at `e6081ae6` (see the note under the Kernel table).
 
-## Kernel — headline 78.1% (total weight 17.75, 17 categories)
+## Kernel — headline 78.2% (total weight 17.75, 17 categories)
 
 | Category | Weight | Items | Present | Partial | Missing | % |
 |---|---|---|---|---|---|---|
@@ -17,7 +17,7 @@ As of commit `ab20e4ce` (last full re-score).
 | Local/direct-edit | 1.0 | 28 | 8 | 20 | 0 | 64.3% |
 | Intersections & projections | 1.5 | 29 | 29 | 0 | 0 | 100% |
 | Healing | 1.0 | 30 | 23 | 7 | 0 | 88.3% |
-| Mass properties & spatial queries | 1.0 | 30 | 28 | 2 | 0 | 96.7% |
+| Mass properties & spatial queries | 1.0 | 30 | 29 | 1 | 0 | 98.3% |
 | Tessellation | 1.0 | 25 | 20 | 5 | 0 | 90.0% |
 | Transformations/patterns/splitting | 0.5 | 22 | 12 | 10 | 0 | 77.3% |
 | Kernel data exchange | 1.0 | 27 | 14 | 9 | 4 | 68.5% |
@@ -25,6 +25,8 @@ As of commit `ab20e4ce` (last full re-score).
 | Surface/Curve ops (curves) | 1.0 | 28 | 28 | 0 | 0 | 100% |
 | Surface/Curve ops (surfaces) | 1.0 | 29 | 23 | 6 | 0 | 89.7% |
 | SubD kernel support | 0.75 | 22 | 16 | 6 | 0 | 86.4% |
+
+**Row move at `e6081ae6` (Mass properties & spatial queries, 28/2/0 -> 29/1/0, 96.7% -> 98.3%; kernel headline 78.17% -> 78.26%, displayed 78.1% -> 78.2%).** The bullet "Spatial acceleration structures for geometric queries" ("only private uniform grids for SSX/CSX; every public query brute force") is now `[present]`, scoped to the public distance / containment / ray / intersection / proximity queries. Evidence, each accelerated path compared bit for bit against the retained brute-force scan as oracle, full suite 12546 checks, exit 0, empty stderr: `TestMeshSpatialQueriesAreAcceleratedAndBitIdentical` (Mesh ClosestPoint/FireRay/ContainsPoint/SignedDistance, cached R-tree), the Mesh::DistanceTo, B-rep face-box index (ClosestPointOnBrep, ContainsPointExact, SignedDistanceToBrep, FireRayAtBrep, boolean classification, interference broad phase) and naked-edge search tests (`TestBrepNakedEdgeSearchesAreAcceleratedAndIdentical`, `TestBrepNakedEdgeIndexReproducesExistingFixtures`). An independent skeptic pass first refuted the unscoped claim (quadratic naked-edge weld and T-junction sew); both were then fixed (SewTJunctions on 318 naked edges 16-19 s -> 9 ms). **Residual, disclosed, not claimed:** `FindBrepSelfIntersections` still enumerates all face pairs behind a box prefilter (O(F^2) box tests), `LoopSelfIntersects3d` and `NurbsCurve::FindSelfIntersections` are O(n^2) per single loop/curve, `IntersectCurveBrep` for non-line curves and `IntersectBrepByPlane` keep their per-face box/plane rejection loops, breps under 16 faces take the plain scan on purpose, and the weld-heavy `JoinNakedEdges` case is bookkeeping-bound (no speedup there). The remaining `[partial]` in this category is unchanged.
 
 **Former blocker, now fixed:** the fragment-loop test-suite-abort crash (root cause commit `878ecdb`) is root-caused and fixed, with a permanent regression test — `TestBooleanCombineGeneralFlatSidedBossCrashRegression` (`dino8-kernel/tests/test_basic.cpp`), which reproduces the exact previously-crashing fixture (a flat-sided box boss flush on a bigger box's face) unwrapped and confirms it no longer throws "an edge is claimed by 3 or more fragment loops," now asserting the exact closed-form volume for every op. Confirmed to fail on pre-fix code and pass on post-fix code via a standalone harness using the real test scaffold, not assumed. Root cause: `CoincidentOverlapBoundaryCurves()` (`surface_intersect.cpp`, added by `878ecdb`) silently dropped the sample at a detected coincident region's own corner whenever that corner sat exactly on the other face's own domain boundary — `SurfaceClosestPoint()`'s Newton solve requires the full unconstrained gradient to vanish, which a genuine boundary-clamped closest point can never satisfy — undermeasuring the region `BooleanCombineGeneral`'s own whole-face coincidence override relies on. Fixed with a new, narrowly-scoped `ClosestPointAllowingDomainBoundary()` helper used only at that one function's own 4 rectangle corners — not a tolerance widening, not a try/catch, and the shared `SurfaceClosestPoint()`/`SurfaceClosestPointGlobal()` every other caller in the file depends on is left untouched. Two broader first-draft versions of this fix (one editing the shared closest-point function directly, one widening `IntersectSurfacesOverlap()`'s own region-acceptance without accounting for periodic/pole surface directions) were each caught regressing a different, previously-passing test by a full-suite rebuild-and-rerun, and were narrowed before landing — not shipped assumed-safe. Full kernel suite: 11050/11050 checks passing, 0 failures (pre-fix baseline: 11040/11040, 0 failures; the +10 is this new test's own checks, nothing else changed). **Separately-disclosed scope, unchanged by this fix:** curved-face coincidence and multi-boss/oblique flat-sided configurations remain unexercised — proven on the canonical single-flat-boss fixture, not asserted for every shape; item counts below are unchanged (9/15/1/25) since this closes a blocking crash, not a new feature item, and the "Coplanar / coincident face handling" bullet's own broader scope stays `[partial]`.
 
