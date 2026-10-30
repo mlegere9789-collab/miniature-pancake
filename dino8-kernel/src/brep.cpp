@@ -7442,14 +7442,16 @@ namespace {
 
 // Attempts to merge same-surface faces `fa`/`fb` of `b` (already
 // confirmed by the caller to share the same surface index and the same
-// m_bRev, and to share EXACTLY one edge with EXACTLY two trims) into a
-// single face on that shared surface. On success, deletes both source
-// faces, appends the merged one, and returns true. Returns false
-// (leaving `b` completely untouched) if either loop's own trim order
-// can't be spliced into a simple open boundary path - e.g. a singular/
-// seam trim along the way (out of scope here), or this pair's own stored
-// trim directions don't follow the standard opposite-direction two-
-// manifold-edge convention.
+// m_bRev, and to share the edges `shared_edge_indices`, each with EXACTLY
+// two trims) into a single face on that shared surface. On success,
+// deletes both source faces, appends the merged one, and returns true.
+// Returns false (leaving `b` completely untouched) if either loop's own
+// trim order can't be spliced into a simple open boundary path - e.g. the
+// named edges don't form ONE contiguous run in both outer loops' own
+// cyclic order (a pair touching along two SEPARATE, non-adjacent edges -
+// see build_path()'s own comment), a singular/seam trim along the way
+// (out of scope here), or this pair's own stored trim directions don't
+// follow the standard opposite-direction two-manifold-edge convention.
 //
 // Unlike TryMergeCoplanarPair() above, this never rebuilds any geometry:
 // fa and fb already trim the exact same surface, so every surviving
@@ -7521,7 +7523,8 @@ int SameSurfaceMergeOuterLoop(const ON_Brep& b, const ON_BrepFace& face, std::ve
 
 // `index_map` (never null): same persistent-id carry-through contract as
 // TryMergeCoplanarPair()'s own parameter of that name.
-bool TryMergeSameSurfacePair(ON_Brep& b, int fa, int fb, int shared_edge_index, CompactIndexMap* index_map) {
+bool TryMergeSameSurfacePair(ON_Brep& b, int fa, int fb, const std::vector<int>& shared_edge_indices,
+                             CompactIndexMap* index_map) {
   ON_BrepFace& face_a = b.m_F[fa];
   ON_BrepFace& face_b = b.m_F[fb];
   std::vector<int> hole_loops;
@@ -7531,27 +7534,52 @@ bool TryMergeSameSurfacePair(ON_Brep& b, int fa, int fb, int shared_edge_index, 
   const ON_BrepLoop& loop_a = b.m_L[outer_a];
   const ON_BrepLoop& loop_b = b.m_L[outer_b];
 
+  const std::unordered_set<int> shared_set(shared_edge_indices.begin(), shared_edge_indices.end());
+
   // Same splice as TryMergeCoplanarPair()'s own build_path (see its
   // comment above for the full reasoning): walks the loop's own trim
-  // order starting right after the shared edge's own trim, all the way
+  // order starting right after the shared run's own trims, all the way
   // around to right before it - but returns the real ON_BrepTrim
   // pointers themselves, to be reused directly rather than duplicated as
-  // 3D curves.
+  // 3D curves. A single shared edge is the `shared_set.size() == 1` case
+  // this only ever handled before; more than one is accepted only when
+  // every named edge forms ONE maximal contiguous run in this loop's own
+  // cyclic trim order (checked directly, not assumed) - a shared seam
+  // later subdivided into several collinear trims (e.g. by
+  // SplitNakedEdgeAt(), or an imprint) is exactly this case, while two
+  // genuinely separate shared edges elsewhere on the same pair is not,
+  // and returns an empty vector rather than guessing a splice. Also
+  // empty if any named edge is missing from `loop` entirely (e.g. it
+  // sits on one of fa's own holes instead - the caller gathers over
+  // every loop), appears more than once, the loop has too few trims, or
+  // any trim outside the run has no edge (a singular/seam trim).
   auto build_path = [&](const ON_BrepLoop& loop) -> std::vector<const ON_BrepTrim*> {
     std::vector<const ON_BrepTrim*> path;
     const int n = loop.TrimCount();
-    if (n < 2) return path;
-    int pos = -1;
+    if (n < 2 || shared_set.empty() || static_cast<size_t>(n) <= shared_set.size()) return path;
+    std::vector<bool> is_shared(static_cast<size_t>(n), false);
+    int shared_count = 0;
     for (int k = 0; k < n; ++k) {
       const ON_BrepTrim* t = loop.Trim(k);
-      if (t && t->m_ei == shared_edge_index) {
-        if (pos >= 0) return {};  // shared edge appears twice in this loop
-        pos = k;
+      if (t && shared_set.count(t->m_ei) != 0) {
+        is_shared[static_cast<size_t>(k)] = true;
+        ++shared_count;
       }
     }
-    if (pos < 0) return path;
-    for (int step = 1; step < n; ++step) {
-      const ON_BrepTrim* t = loop.Trim((pos + step) % n);
+    if (shared_count != static_cast<int>(shared_set.size())) return {};  // a named edge missing (or duplicated)
+    int run_start = -1;
+    for (int k = 0; k < n; ++k) {
+      if (is_shared[static_cast<size_t>(k)] && !is_shared[static_cast<size_t>((k - 1 + n) % n)]) {
+        if (run_start >= 0) return {};  // more than one separate run - not contiguous
+        run_start = k;
+      }
+    }
+    if (run_start < 0) return {};  // shouldn't happen given shared_count in (0, n) - defensive only
+    for (int step = 0; step < shared_count; ++step) {
+      if (!is_shared[static_cast<size_t>((run_start + step) % n)]) return {};  // the run wraps but isn't contiguous
+    }
+    for (int step = 0; step < n - shared_count; ++step) {
+      const ON_BrepTrim* t = loop.Trim((run_start + shared_count + step) % n);
       if (!t || !t->Edge()) return {};  // singular/seam trim - out of scope here
       path.push_back(t);
     }
@@ -7653,9 +7681,11 @@ bool TryMergeSameSurfacePair(ON_Brep& b, int fa, int fb, int shared_edge_index, 
 
   // Both source faces' own reused edges now carry a second trim (the new
   // face's own), so DeleteFace()'s "used only by this face" test spares
-  // them; only the now-fully-interior shared edge (and any vertex unique
-  // to it) actually gets removed, once the SECOND of the two DeleteFace()
-  // calls below drops its own last remaining trim.
+  // them; only the now-fully-interior shared edge(s) (and any vertex
+  // unique to that run - e.g. the midpoint vertex a SplitNakedEdgeAt()
+  // split left between two collinear pieces of one seam) actually get
+  // removed, once the SECOND of the two DeleteFace() calls below drops
+  // their own last remaining trim.
   const int hi = std::max(fa, fb), lo = std::min(fa, fb);
   b.DeleteFace(b.m_F[hi], true);
   b.DeleteFace(b.m_F[lo], true);
@@ -7717,31 +7747,45 @@ int Brep::MergeSameSurfaceFaces() {
           continue;
         }
 
-        // fa/fb must share EXACTLY this one edge - same check
-        // MergeCoplanarFaces() applies, for the same reason (a pair also
-        // touching along a second, separate edge would not splice into
-        // one simple polygon below).
-        // Counted over EVERY loop of fa (just loop_a for a hole-free
+        // Gather EVERY manifold-safe (exactly 2 trims) edge of fa that
+        // borders fb - the same gathering MergeCoplanarFaces() above
+        // performs, for the same reason: this used to stop at "exactly
+        // one or refuse", but a shared seam later subdivided into several
+        // collinear trims (e.g. by SplitNakedEdgeAt() on the seam, or an
+        // imprint) is a real, mergeable case TryMergeSameSurfacePair()'s
+        // own build_path() now accepts, as long as the whole named set
+        // forms one contiguous run in each outer loop's own cyclic order
+        // - checked there, not here. Any OTHER edge bordering fb that is
+        // itself non-manifold (TrimCount() != 2, a third face also
+        // touching it) still refuses the whole pair outright.
+        // Gathered over EVERY loop of fa (just loop_a for a hole-free
         // face, exactly as before), so a pair where fb also touches one
-        // of fa's own holes is never mistaken for a one-edge pair.
-        int shared_edges = 0;
-        for (int li = 0; li < face_a.LoopCount(); ++li) {
+        // of fa's own holes names an edge build_path() can't find on the
+        // outer loop and is refused there, never mistaken for a plain
+        // seam pair.
+        std::vector<int> shared_edge_indices;
+        bool non_manifold_shared_edge = false;
+        for (int li = 0; li < face_a.LoopCount() && !non_manifold_shared_edge; ++li) {
           const ON_BrepLoop* lm = face_a.Loop(li);
           if (!lm) continue;
           for (int m = 0; m < lm->TrimCount(); ++m) {
             const ON_BrepTrim* tm = lm->Trim(m);
             const ON_BrepEdge* em = tm ? tm->Edge() : nullptr;
             if (!em) continue;
+            bool borders_fb = false;
             for (int q = 0; q < em->TrimCount(); ++q) {
               if (em->m_ti[q] == tm->m_trim_index) continue;
-              if (brep_.m_T[em->m_ti[q]].FaceIndexOf() == fb) { ++shared_edges; break; }
+              if (brep_.m_T[em->m_ti[q]].FaceIndexOf() == fb) { borders_fb = true; break; }
             }
+            if (!borders_fb) continue;
+            if (em->TrimCount() != 2) { non_manifold_shared_edge = true; break; }
+            shared_edge_indices.push_back(em->m_edge_index);
           }
         }
-        if (shared_edges != 1) continue;
+        if (non_manifold_shared_edge || shared_edge_indices.empty()) continue;
 
         CompactIndexMap index_map = IdentityIndexMap(brep_);
-        if (TryMergeSameSurfacePair(brep_, fa, fb, edge->m_edge_index, &index_map)) {
+        if (TryMergeSameSurfacePair(brep_, fa, fb, shared_edge_indices, &index_map)) {
           RemapPersistentIds(index_map.faces, index_map.edges, index_map.vertices, index_map.valid);
           ++merges;
           changed = true;

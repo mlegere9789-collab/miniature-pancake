@@ -3566,9 +3566,17 @@ class Brep {
   //     (u, v) map is involved, so neither planarity nor straight hole
   //     edges are required. A hole loop holding a singular/edgeless trim
   //     refuses the pair (left untouched).
-  //   - they share EXACTLY ONE edge, with EXACTLY TWO trims on it (the
-  //     same non-manifold-safe condition MergeCoplanarFaces() already
-  //     applies - an edge a third face also touches is never removed).
+  //   - every edge they share has EXACTLY TWO trims on it (the same
+  //     non-manifold-safe condition MergeCoplanarFaces() already applies
+  //     - an edge a third face also touches is never removed), and the
+  //     shared edges form ONE contiguous run in each face's own outer
+  //     loop: a single shared edge (the ordinary case), or a seam later
+  //     subdivided into several collinear pieces (e.g. by
+  //     SplitNakedEdgeAt() on the seam, or an imprint) - the whole run is
+  //     dissolved in one merge, along with any vertex private to it. A
+  //     pair touching along two SEPARATE, non-adjacent edges, or along a
+  //     hole loop's own edge, is left untouched rather than guessed at
+  //     (exactly as MergeCoplanarFaces() treats the same shape).
   //
   // Every one of those is an exact index/topology comparison (m_si, edge
   // index, vertex index) rather than a distance or angle measurement, so
