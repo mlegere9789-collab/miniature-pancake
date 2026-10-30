@@ -67,4 +67,92 @@ MergeSrf
 @expect_objects 2
 SelAll
 Delete
+# --- ChamferEdge on a cylinder's rim: R=2 L=5, Distance1 (wall) 0.6 and
+# Distance2 (cap) 0.4 reach kernel::ChamferCylinderRim's exact cone; the
+# command's own Volume reads the plain cylinder as 62.7 (exact 62.83, the
+# display mesh is a 0.2% inscribed polygon either way) and the chamfered one
+# 1.41 lower: the revolved-triangle closed form (2*pi*dw/dc)*(R^3/3 -
+# (R-dc)*R^2/2 + (R-dc)^3/6) = 1.4074. The result is a closed 4-face/
+# 7-edge solid (wall, cone, two circle-bounded caps), not a polygon shell.
+Cylinder 0,0,0 2 5
+SelAll
+Volume
+ChamferEdge
+Radius=0.6
+Distance2=0.4
+0,2,5
+Enter
+SelAll
+Volume
+Area
+List
+SelAll
+Delete
+# --- the same two distances swapped (wall 0.4, cap 0.6): removes 1.3572 by
+# the same closed form, so the volume must differ from the case above - the
+# two distances are not interchangeable.
+Cylinder 0,0,0 2 5
+ChamferEdge
+Radius=0.4
+Distance2=0.6
+0,2,5
+Enter
+SelAll
+Volume
+Area
+SelAll
+Delete
+# --- the bottom rim (mirrored end), wall 0.6 / cap 0.4: same removed volume
+# as the top rim.
+Cylinder 0,0,0 2 5
+ChamferEdge
+Radius=0.6
+Distance2=0.4
+0,2,0
+Enter
+SelAll
+Volume
+List
+SelAll
+Delete
+# --- ChamferSrf on the cap and the wall (symmetric distance 0.5): removed
+# volume 2*pi*(R^3/3 - (R-dc)*R^2/2 + (R-dc)^3/6) = 1.4399. Before this
+# wiring this fell to the approximate RuledBetween path, which left the
+# cylinder whole and added a loose 2x25-CV ruled surface.
+Cylinder 0,0,0 2 5
+ChamferSrf
+Radius=0.5
+0,0,5
+0,2,2.5
+SelAll
+Volume
+Area
+List
+SelAll
+Delete
+# --- Fallthrough: a cap setback of 3 exceeds the radius 2, the kernel
+# refuses, and ChamferSrf keeps building the approximate surface exactly as
+# before (the cylinder itself stays).
+Cylinder 0,0,0 2 5
+ChamferSrf
+Radius=3
+0,0,5
+0,2,2.5
+SelAll
+List
+SelAll
+Delete
+# --- Distance/Angle has no cone construction: still refused with the
+# diagnostic, and the cylinder is untouched.
+Cylinder 0,0,0 2 5
+ChamferEdge
+Radius=0.6
+Angle=45
+0,2,5
+Enter
+SelAll
+Volume
+List
+SelAll
+Delete
 @expect_objects 0
