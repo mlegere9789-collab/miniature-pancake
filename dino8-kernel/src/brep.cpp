@@ -7409,6 +7409,84 @@ void FixUnsetEdgeTolerances(ON_Brep& b) {
   }
 }
 
+// Point index for the naked-edge proximity searches below
+// (WeldCoincidentNakedEdges(), Brep::SewTJunctions()): an `ON_RTree` over
+// point entries (degenerate boxes), each carrying a caller-chosen integer
+// id. Query() returns, ascending and de-duplicated, EVERY id whose point
+// lies within `pad` of the query box in every coordinate - a superset of
+// "within Euclidean distance `pad` of any point of the query box" (a
+// Euclidean distance <= pad forces each coordinate difference <= pad), plus
+// a rounding slop of 1e-9 * (1 + largest coordinate magnitude) that dwarfs
+// the ~1e-16 relative error of the sqrt/sum-of-squares the exact predicates
+// use. So a pair the exact predicate would accept is never missed here; the
+// exact predicate itself, unchanged, still makes the final call. Entries
+// with a non-finite coordinate cannot live in the tree and are returned by
+// every query, and a non-finite or negative `pad` or non-finite query box
+// returns every id: in all those cases the result is simply the plain full
+// scan's candidate set.
+class NakedPointIndex {
+ public:
+  NakedPointIndex() : tree_(0) {}
+
+  void Insert(double x, double y, double z, int id) {
+    const double c[3] = {x, y, z};
+    all_.push_back(id);
+    if (!std::isfinite(c[0]) || !std::isfinite(c[1]) || !std::isfinite(c[2])) {
+      odd_.push_back(id);
+      return;
+    }
+    for (double v : c) scale_ = std::max(scale_, std::fabs(v));
+    tree_.Insert(c, c, id);
+  }
+
+  void Finalize() {
+    std::sort(all_.begin(), all_.end());
+    all_.erase(std::unique(all_.begin(), all_.end()), all_.end());
+    std::sort(odd_.begin(), odd_.end());
+    odd_.erase(std::unique(odd_.begin(), odd_.end()), odd_.end());
+  }
+
+  // Ids with a point within `pad` of box [lo, hi] (see class comment).
+  void Query(const double lo[3], const double hi[3], double pad, std::vector<int>& out) const {
+    out.clear();
+    detail::NoteBrepNakedEdgeIndexQuery();
+    bool ok = std::isfinite(pad) && pad >= 0.0;
+    for (int d = 0; d < 3; ++d) ok = ok && std::isfinite(lo[d]) && std::isfinite(hi[d]);
+    if (!ok) {
+      out = all_;
+      return;
+    }
+    double scale = scale_;
+    for (int d = 0; d < 3; ++d) scale = std::max(scale, std::max(std::fabs(lo[d]), std::fabs(hi[d])));
+    const double grow = pad + 1e-9 * (1.0 + scale);
+    const double qlo[3] = {lo[0] - grow, lo[1] - grow, lo[2] - grow};
+    const double qhi[3] = {hi[0] + grow, hi[1] + grow, hi[2] + grow};
+    ON_SimpleArray<int> found;
+    tree_.Search(qlo, qhi, found);
+    out.reserve(static_cast<size_t>(found.Count()) + odd_.size());
+    for (int k = 0; k < found.Count(); ++k) out.push_back(found[k]);
+    for (int id : odd_) out.push_back(id);
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+  }
+
+ private:
+  ON_RTree tree_;
+  std::vector<int> all_;
+  std::vector<int> odd_;
+  double scale_ = 0.0;
+};
+
+// True when a naked-edge proximity search over `naked_count` naked edges
+// should generate candidates through NakedPointIndex rather than scan every
+// pair (see detail::SetBrepNakedEdgeIndexMinimum() in surface_intersect.h;
+// the oracle switch detail::SetBrepSpatialAccelerationEnabled(false) turns
+// the index off everywhere).
+bool UseNakedEdgeIndex(size_t naked_count) {
+  return detail::BrepSpatialAccelerationEnabled() &&
+         naked_count >= static_cast<size_t>(std::max(detail::BrepNakedEdgeIndexMinimum(), 2));
+}
+
 // Joins coincident naked (single-trim) edges of `b` within `tol` by
 // position (or, for a closed edge, by tangent direction at its start) -
 // the same technique dino8-app's own JoinNakedEdges (cmd_common.h)
@@ -7417,32 +7495,104 @@ void FixUnsetEdgeTolerances(ON_Brep& b) {
 // Brep::MergeCoplanarFaces() uses this to re-weld a freshly-merged face's
 // own boundary onto whatever naked edges deleting its two source faces
 // exposed on their other, untouched neighbors.
+//
+// Candidate generation. The original implementation tested every pair
+// (i, j > i) of naked edges - O(E^2) endpoint evaluations. The exact pair
+// predicate (`try_weld` below, unchanged from that implementation) can only
+// succeed when edge i's START point is within `tol` of edge j's start or
+// end point (forward: a0~p0 and a1~p1; reversed: a0~p1 and a1~p0; both
+// need a0 within `tol` of p0 or p1). So an index of every live naked edge's
+// two endpoints, queried with the box around edge i's start point padded by
+// `tol` (+ NakedPointIndex's rounding slop), returns a superset of every
+// partner the predicate could accept; every other j would `continue` with
+// no side effect (the predicate's early-outs mutate nothing - the first
+// mutation, e1.Reverse(), comes only after the whole geometric test
+// passed). The candidates are visited in ascending j, exactly the order of
+// the full scan restricted to the candidates, and the first success breaks
+// out of the j loop exactly as before, so the same pairs are welded in the
+// same order.
+// Why one index built up front stays valid while welds mutate `b`: the
+// loop only ever (a) reverses an edge's curve (swaps which end is "start";
+// the endpoint SET is unchanged, up to the proxy's own parameter-remap
+// rounding, which the slop covers), (b) combines vertices/edges, which
+// rewrites vertex/trim/edge bookkeeping and DELETES an edge or turns it
+// into a 2-trim edge but never moves an edge curve, and (c) never creates
+// an edge or turns a non-naked edge naked. So the set of live naked edges
+// only shrinks, every edge the full scan would still see as naked at visit
+// time is in the index, and `try_weld` re-checks liveness/trim count at
+// visit time exactly as the full scan did.
+// With fewer than UseNakedEdgeIndex()'s minimum naked edges, or with
+// detail::SetBrepSpatialAccelerationEnabled(false), the original full scan
+// runs (it is the oracle the tests compare against).
 int WeldCoincidentNakedEdges(ON_Brep& b, double tol) {
   int joined = 0;
+  // Exact pair predicate + weld, unchanged from the original all-pairs
+  // implementation: tests edge `j` against edge `i` (whose start/end points
+  // are a0/a1) and, if they are coincident, welds them. True = welded.
+  auto try_weld = [&](ON_BrepEdge& e0, const ON_3dPoint& a0, const ON_3dPoint& a1, int j) -> bool {
+    ON_BrepEdge& e1 = b.m_E[j];
+    if (e1.m_edge_index < 0 || e1.TrimCount() != 1) return false;
+    const ON_3dPoint p0 = e1.PointAtStart(), p1 = e1.PointAtEnd();
+    bool forward = a0.DistanceTo(p0) <= tol && a1.DistanceTo(p1) <= tol;
+    bool reversed = !forward && a0.DistanceTo(p1) <= tol && a1.DistanceTo(p0) <= tol;
+    if (forward && a0.DistanceTo(a1) <= tol) {
+      // Closed edges: endpoints alone say nothing about direction.
+      forward = ON_DotProduct(e0.TangentAt(e0.Domain().Min()), e1.TangentAt(e1.Domain().Min())) > 0;
+      reversed = !forward;
+    }
+    if (!forward && !reversed) return false;
+    const ON_3dPoint m0 = e0.PointAt(e0.Domain().Mid()), m1 = e1.PointAt(e1.Domain().Mid());
+    if (m0.DistanceTo(m1) > tol * 10) return false;
+    if (reversed && !e1.Reverse()) return false;
+    for (int k = 0; k < 2; ++k) {
+      if (e0.m_vi[k] == e1.m_vi[k]) continue;
+      if (!b.CombineCoincidentVertices(b.m_V[e0.m_vi[k]], b.m_V[e1.m_vi[k]])) break;
+    }
+    if (b.CombineCoincidentEdges(e0, e1)) {
+      ++joined;
+      return true;
+    }
+    return false;
+  };
+
+  size_t naked_count = 0;
+  for (int i = 0; i < b.m_E.Count(); ++i) {
+    const ON_BrepEdge& e = b.m_E[i];
+    if (e.m_edge_index >= 0 && e.TrimCount() == 1) ++naked_count;
+  }
+
+  if (UseNakedEdgeIndex(naked_count)) {
+    NakedPointIndex index;
+    for (int i = 0; i < b.m_E.Count(); ++i) {
+      const ON_BrepEdge& e = b.m_E[i];
+      if (e.m_edge_index < 0 || e.TrimCount() != 1) continue;
+      const ON_3dPoint s0 = e.PointAtStart(), s1 = e.PointAtEnd();
+      index.Insert(s0.x, s0.y, s0.z, i);
+      index.Insert(s1.x, s1.y, s1.z, i);
+    }
+    index.Finalize();
+    std::vector<int> candidates;
+    for (int i = 0; i < b.m_E.Count(); ++i) {
+      ON_BrepEdge& e0 = b.m_E[i];
+      if (e0.m_edge_index < 0 || e0.TrimCount() != 1) continue;
+      const ON_3dPoint a0 = e0.PointAtStart(), a1 = e0.PointAtEnd();
+      const double c[3] = {a0.x, a0.y, a0.z};
+      index.Query(c, c, tol, candidates);
+      for (const int j : candidates) {
+        if (j <= i) continue;
+        if (try_weld(e0, a0, a1, j)) break;
+      }
+    }
+    return joined;
+  }
+
+  // Oracle: the original all-pairs scan.
   for (int i = 0; i < b.m_E.Count(); ++i) {
     ON_BrepEdge& e0 = b.m_E[i];
     if (e0.m_edge_index < 0 || e0.TrimCount() != 1) continue;
     const ON_3dPoint a0 = e0.PointAtStart(), a1 = e0.PointAtEnd();
     for (int j = i + 1; j < b.m_E.Count(); ++j) {
-      ON_BrepEdge& e1 = b.m_E[j];
-      if (e1.m_edge_index < 0 || e1.TrimCount() != 1) continue;
-      const ON_3dPoint p0 = e1.PointAtStart(), p1 = e1.PointAtEnd();
-      bool forward = a0.DistanceTo(p0) <= tol && a1.DistanceTo(p1) <= tol;
-      bool reversed = !forward && a0.DistanceTo(p1) <= tol && a1.DistanceTo(p0) <= tol;
-      if (forward && a0.DistanceTo(a1) <= tol) {
-        // Closed edges: endpoints alone say nothing about direction.
-        forward = ON_DotProduct(e0.TangentAt(e0.Domain().Min()), e1.TangentAt(e1.Domain().Min())) > 0;
-        reversed = !forward;
-      }
-      if (!forward && !reversed) continue;
-      const ON_3dPoint m0 = e0.PointAt(e0.Domain().Mid()), m1 = e1.PointAt(e1.Domain().Mid());
-      if (m0.DistanceTo(m1) > tol * 10) continue;
-      if (reversed && !e1.Reverse()) continue;
-      for (int k = 0; k < 2; ++k) {
-        if (e0.m_vi[k] == e1.m_vi[k]) continue;
-        if (!b.CombineCoincidentVertices(b.m_V[e0.m_vi[k]], b.m_V[e1.m_vi[k]])) break;
-      }
-      if (b.CombineCoincidentEdges(e0, e1)) { ++joined; break; }
+      if (try_weld(e0, a0, a1, j)) break;
     }
   }
   return joined;
@@ -12290,6 +12440,30 @@ int Brep::SewTJunctions(double tolerance) {
       if (e.m_edge_index >= 0 && e.TrimCount() == 1) naked.push_back(ei);
     }
 
+    // Endpoint-vertex index over this pass's naked edges (rebuilt every
+    // pass: a committed split renumbers everything). id = edge * 2 + end.
+    // Null = take the original all-pairs scan (oracle / small input).
+    std::unique_ptr<NakedPointIndex> index;
+    if (UseNakedEdgeIndex(naked.size())) {
+      index = std::make_unique<NakedPointIndex>();
+      for (const int ei : naked) {
+        const ON_BrepEdge& e = b.m_E[ei];
+        for (int k = 0; k < 2; ++k) {
+          const int vi = e.m_vi[k];
+          if (vi >= 0 && vi < b.m_V.Count()) {
+            const Point3d vp = b.m_V[vi].point;
+            index->Insert(vp.x, vp.y, vp.z, ei * 2 + k);
+          } else {
+            // Unreachable for a live edge; keep it a candidate always so
+            // the (identical) full-scan behavior is preserved.
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            index->Insert(nan, nan, nan, ei * 2 + k);
+          }
+        }
+      }
+      index->Finalize();
+    }
+
     // Find one T-junction this pass: a naked edge B whose endpoint lands
     // strictly inside another naked, LINEAR edge A's own span. Only one
     // split is committed per pass, since SplitNakedEdgeAt()'s own
@@ -12321,48 +12495,107 @@ int Brep::SewTJunctions(double tolerance) {
       NurbsCurve a_wrap;
       a_wrap.raw() = a_nc;
 
-      for (const int bi : naked) {
-        if (bi == ai) continue;
+      // One (B, endpoint) candidate against A: the exact, unchanged
+      // T-junction test, then the split. Returns true if a split was
+      // committed (so the caller restarts with fresh indices).
+      auto try_candidate = [&](int bi, int k) -> bool {
         const ON_BrepEdge& be = b.m_E[bi];
-        for (int k = 0; k < 2; ++k) {
-          const Point3d v = b.m_V[be.m_vi[k]].point;
-          // Already at (or coincides with) one of A's own endpoints: an
-          // ordinary endpoint match, JoinNakedEdges()'s job, not a
-          // T-junction.
-          if (v.DistanceTo(a0) <= tol || v.DistanceTo(a1) <= tol) continue;
+        const Point3d v = b.m_V[be.m_vi[k]].point;
+        // Already at (or coincides with) one of A's own endpoints: an
+        // ordinary endpoint match, JoinNakedEdges()'s job, not a
+        // T-junction.
+        if (v.DistanceTo(a0) <= tol || v.DistanceTo(a1) <= tol) return false;
 
-          const double t_param = a_wrap.ClosestPointParameter(v, 200);
-          const Point3d proj = a_wrap.PointAt(t_param);
-          if (proj.DistanceTo(v) > tol) continue;  // not on A's own curve within tolerance
-          // "Strictly interior, not clamped to (or merely near) either
-          // end" is checked by real 3D distance, not by comparing
-          // `t_param` against the domain ends directly - a parameter
-          // value is not a distance, and the two don't share units for a
-          // curved (or even just non-arc-length-parameterized linear)
-          // curve. A closest point that was clamped to one of A's own
-          // ends lands exactly on that endpoint, caught here either way.
-          if (proj.DistanceTo(a0) <= tol || proj.DistanceTo(a1) <= tol) continue;
+        const double t_param = a_wrap.ClosestPointParameter(v, 200);
+        const Point3d proj = a_wrap.PointAt(t_param);
+        if (proj.DistanceTo(v) > tol) return false;  // not on A's own curve within tolerance
+        // "Strictly interior, not clamped to (or merely near) either
+        // end" is checked by real 3D distance, not by comparing
+        // `t_param` against the domain ends directly - a parameter
+        // value is not a distance, and the two don't share units for a
+        // curved (or even just non-arc-length-parameterized linear)
+        // curve. A closest point that was clamped to one of A's own
+        // ends lands exactly on that endpoint, caught here either way.
+        if (proj.DistanceTo(a0) <= tol || proj.DistanceTo(a1) <= tol) return false;
 
-          if (SplitNakedEdgeAt(ai, v, tol) == Result::Ok) {
-            ++splits;
+        if (SplitNakedEdgeAt(ai, v, tol) == Result::Ok) {
+          ++splits;
+          return true;
+        }
+        // The candidate was geometrically valid but the split itself
+        // failed (SplitNakedEdgeAt's own reasons, e.g. a parameter-margin
+        // refusal near A's own domain ends) - the caller tries B's OTHER
+        // endpoint (k=1) against this same A before giving up on this bi
+        // entirely. PARITY_MAP.md's own honesty note: the old
+        // unconditional break here skipped k=1 whenever k=0 merely
+        // reached a failed split attempt, silently missing a
+        // legitimate, independently-valid second candidate. This is
+        // provably monotonic - SplitNakedEdgeAt() never mutates this
+        // Brep on failure (see its own doc comment), so trying k=1
+        // here can only ever ADD a healing opportunity this method
+        // would otherwise have missed, never remove or corrupt one
+        // that already worked.
+        return false;
+      };
+
+      if (index) {
+        // Candidate generation. A (bi, k) candidate can only pass the
+        // test above if its vertex `v` lies within `tol` of a point
+        // `proj` ON A's curve (proj = a_wrap.PointAt(t) for a t that
+        // ClosestPointParameter() keeps inside A's domain). A NURBS curve
+        // with positive weights lies inside the bounding box of its
+        // control points, so `v` lies within `tol` (+ the index's
+        // rounding slop) of that hull box: the index query below returns
+        // a superset of every (bi, k) that can pass. Entries come back
+        // ascending by id = bi*2 + k, i.e. in exactly the (bi ascending,
+        // k = 0 then 1) order of the full scan restricted to the
+        // candidates; every skipped (bi, k) would have returned false
+        // with no side effect (the test above is pure up to the split
+        // call). A curve with a non-positive/non-finite weight, or a
+        // non-finite hull, is not covered by the hull argument and takes
+        // the full candidate list.
+        bool hull_ok = a_nc.IsValid() && a_nc.CVCount() > 0;
+        if (hull_ok && a_nc.IsRational()) {
+          for (int ci = 0; ci < a_nc.CVCount(); ++ci) {
+            const double w = a_nc.Weight(ci);
+            if (!(w > 0.0) || !std::isfinite(w)) {
+              hull_ok = false;
+              break;
+            }
+          }
+        }
+        ON_BoundingBox hull;
+        if (hull_ok) hull_ok = a_nc.GetBoundingBox(hull, false) && hull.IsValid();
+        std::vector<int> cand;
+        if (hull_ok) {
+          const double lo[3] = {hull.m_min.x, hull.m_min.y, hull.m_min.z};
+          const double hi[3] = {hull.m_max.x, hull.m_max.y, hull.m_max.z};
+          index->Query(lo, hi, tol, cand);
+        } else {
+          const double nan = std::numeric_limits<double>::quiet_NaN();
+          const double lo[3] = {nan, nan, nan};
+          index->Query(lo, lo, tol, cand);  // non-finite query: every id
+        }
+        for (const int id : cand) {
+          const int bi = id / 2, k = id % 2;
+          if (bi == ai) continue;
+          if (try_candidate(bi, k)) {
             found = true;
             break;
           }
-          // k=0's own candidate was geometrically valid but the split
-          // itself failed (SplitNakedEdgeAt's own reasons, e.g. a
-          // parameter-margin refusal near A's own domain ends) - try B's
-          // OTHER endpoint (k=1) against this same A before giving up on
-          // this bi entirely. PARITY_MAP.md's own honesty note: the old
-          // unconditional break here skipped k=1 whenever k=0 merely
-          // reached a failed split attempt, silently missing a
-          // legitimate, independently-valid second candidate. This is
-          // provably monotonic - SplitNakedEdgeAt() never mutates this
-          // Brep on failure (see its own doc comment), so trying k=1
-          // here can only ever ADD a healing opportunity this method
-          // would otherwise have missed, never remove or corrupt one
-          // that already worked.
         }
-        if (found) break;
+      } else {
+        // Oracle: the original all-pairs scan.
+        for (const int bi : naked) {
+          if (bi == ai) continue;
+          for (int k = 0; k < 2; ++k) {
+            if (try_candidate(bi, k)) {
+              found = true;
+              break;
+            }
+          }
+          if (found) break;
+        }
       }
       if (found) break;
     }

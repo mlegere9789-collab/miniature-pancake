@@ -2433,6 +2433,15 @@ std::atomic<long> g_brep_face_box_index_builds{0};
 }  // namespace
 long BrepFaceBoxIndexBuildCount() { return g_brep_face_box_index_builds.load(); }
 
+namespace {
+std::atomic<int> g_brep_naked_edge_index_minimum{16};
+std::atomic<long> g_brep_naked_edge_index_queries{0};
+}  // namespace
+void SetBrepNakedEdgeIndexMinimum(int min_naked_edges) { g_brep_naked_edge_index_minimum.store(min_naked_edges); }
+int BrepNakedEdgeIndexMinimum() { return g_brep_naked_edge_index_minimum.load(); }
+long BrepNakedEdgeIndexQueryCount() { return g_brep_naked_edge_index_queries.load(); }
+void NoteBrepNakedEdgeIndexQuery() { g_brep_naked_edge_index_queries.fetch_add(1); }
+
 BrepFaceBoxIndex::BrepFaceBoxIndex(const ON_Brep& b) : tree_(0) {
   g_brep_face_box_index_builds.fetch_add(1);
   double scale = 0.0;
