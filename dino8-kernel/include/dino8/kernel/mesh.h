@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -66,6 +68,50 @@ enum class Clash {
   Intersecting,      // the solids share positive volume, but neither contains the other
   Touching,          // no shared volume, but the surfaces meet (shared face, edge or corner contact)
 };
+
+class MeshClosestPointIndex;
+
+namespace detail {
+// Test-only switch: when disabled, Mesh::ClosestPoint()/FireRay()/
+// ContainsPoint()/SignedDistance() take their original brute-force
+// per-triangle scan instead of the lazily built spatial index. The two
+// paths return bit-identical results; this exists so the test suite can
+// use the production brute-force code itself as the oracle for the
+// accelerated path. Process-global, thread-safe, defaults to enabled.
+void SetMeshSpatialAccelerationEnabled(bool enabled);
+bool MeshSpatialAccelerationEnabled();
+
+// The lazily built spatial index a Mesh keeps for its own point/ray
+// queries (see Mesh::ClosestPoint()). Copying or moving a Mesh yields an
+// EMPTY cache for the new object (the arrays it would describe are new
+// ones), so a stale index can never travel with a copy.
+struct MeshSpatialCache {
+  MeshSpatialCache() = default;
+  MeshSpatialCache(const MeshSpatialCache&) {}
+  MeshSpatialCache(MeshSpatialCache&&) noexcept {}
+  MeshSpatialCache& operator=(const MeshSpatialCache&) {
+    Reset();
+    return *this;
+  }
+  MeshSpatialCache& operator=(MeshSpatialCache&&) noexcept {
+    Reset();
+    return *this;
+  }
+  void Reset() {
+    std::lock_guard<std::mutex> lock(mutex);
+    index.reset();
+  }
+  std::mutex mutex;
+  std::shared_ptr<const MeshClosestPointIndex> index;
+  // What the index was built from: a cheap tripwire (array identity and
+  // sizes) that catches a mutation made without going through one of the
+  // invalidating accessors, e.g. a reallocation.
+  const void* vertex_array = nullptr;
+  const void* face_array = nullptr;
+  int vertex_count = 0;
+  int face_count = 0;
+};
+}  // namespace detail
 
 // Wraps ON_Mesh. OpenNURBS' polygon-mesh representation, produced by
 // tessellating a Brep — this is as far as OpenNURBS' public API goes
@@ -196,8 +242,8 @@ class Mesh {
   // surface).
   bool ContainsPoint(Point3d point) const;
 
-  // The closest point on this mesh's surface to `point` (brute force over
-  // every triangle - a quad face's own two triangles, same split
+  // The closest point on this mesh's surface to `point` (every triangle
+  // is a candidate - a quad face's own two triangles, same split
   // Area()/Volume()/ContainsPoint() already use, each checked
   // independently - no spatial acceleration structure). A real query
   // nothing here could answer before: ContainsPoint() only answers
@@ -222,6 +268,25 @@ class Mesh {
   // (no interpolation/gradient, no acceleration structure) - just this
   // one query, exactly as expensive as one ClosestPoint() call plus one
   // ContainsPoint() call.
+  //
+  // Spatial acceleration (ContainsPoint(), ClosestPoint(), FireRay() and
+  // therefore SignedDistance()): a mesh with enough faces lazily builds,
+  // on the first such query, one shared ON_RTree over its triangle boxes
+  // (the same structure MeshClosestPointIndex wraps, held in a private
+  // cache) and answers every later query from it in expected sublinear
+  // time, instead of scanning every triangle. The answers are
+  // bit-identical to the plain scan's - same closest point and
+  // first-in-order tie-break, same hit list in the same order, same
+  // majority vote - because the tree is only ever used to discard
+  // triangles that provably cannot matter (their boxes are padded
+  // beyond every tolerance the exact tests apply), and every surviving
+  // triangle goes through the unchanged exact test in original order.
+  // The cache is dropped by every Mesh method that edits geometry in
+  // place and by the non-const raw() accessor; a caller who keeps an
+  // ON_Mesh& from raw() across a query and edits through it later must
+  // call raw() again (or InvalidateSpatialIndex()) first - the same
+  // caveat PointCloud::raw() documents. Meshes below a few dozen faces
+  // skip the index entirely (a scan is cheaper than building one).
   double SignedDistance(Point3d point) const;
 
   // The full volume mass properties (see MassProperties above) - volume,
@@ -268,9 +333,10 @@ class Mesh {
   // report WHERE a ray hits, or on which face. Exact Moller-Trumbore
   // per triangle (the same formula ContainsPoint() uses, now returning
   // its parameter and barycentrics instead of a bool) - not a march or
-  // a sampled search - with no spatial acceleration structure (every
-  // triangle is tested; a quad face's own two triangles both, same split
-  // Area()/Volume() use). Returns empty for a miss. A hit exactly on a
+  // a sampled search - spatially accelerated like ContainsPoint() (see
+  // SignedDistance()'s note; the hit list is bit-identical to testing
+  // every triangle; a quad face's own two triangles are both candidates,
+  // same split Area()/Volume() use). Returns empty for a miss. A hit exactly on a
   // quad face's shared diagonal is reported once, not once per
   // triangle. A ray exactly grazing an edge or vertex shared by two
   // faces is the usual unhandled degenerate case (it may be reported
@@ -1739,7 +1805,18 @@ class Mesh {
   static Result LoadDxf(const std::string& path, Mesh& out_mesh);
 
   const ON_Mesh& raw() const { return mesh_; }
-  ON_Mesh& raw() { return mesh_; }
+  // Handing out mutable access drops the cached spatial index (see
+  // SignedDistance()'s note), so `m.raw().m_V[i] = ...` is always safe.
+  ON_Mesh& raw() {
+    InvalidateSpatialIndex();
+    return mesh_;
+  }
+
+  // Drops the lazily built spatial index so the next ContainsPoint()/
+  // ClosestPoint()/FireRay()/SignedDistance() rebuilds it. Called by
+  // every in-place editing method and by the non-const raw(); public only
+  // for the rare caller that edits through a retained ON_Mesh&.
+  void InvalidateSpatialIndex() const { spatial_cache_.Reset(); }
 
   // --- Check / heal ------------------------------------------------------
   //
@@ -2727,6 +2804,13 @@ class Mesh {
 
   ON_Mesh mesh_;
 
+  // The shared index described on SignedDistance(); mutable because it is
+  // a pure cache filled by const queries. See detail::MeshSpatialCache.
+  mutable detail::MeshSpatialCache spatial_cache_;
+  // The index to use for a query, building it if absent/stale; null when
+  // the mesh is empty, tiny, or acceleration is disabled (scan instead).
+  std::shared_ptr<const MeshClosestPointIndex> SpatialIndexForQuery() const;
+
   // Whether SetVertexAlpha() was ever explicitly called and is still
   // trusted (see HasVertexAlpha()'s own doc comment) - alpha lives in
   // `mesh_.m_C`'s own per-entry byte, which has no out-of-band "not set"
@@ -2752,42 +2836,39 @@ class Mesh {
 
 // A reusable spatial acceleration structure over a Mesh's own triangles -
 // PARITY_MAP.md's own "Spatial acceleration structures for geometric
-// queries" bullet: "only private uniform grids for SSX/CSX; every public
-// query brute force." `Mesh::ClosestPoint()` itself is exactly that: a
-// plain O(triangle count) scan over every triangle, every call. This is
-// left completely UNCHANGED (every existing caller's own behavior and
-// performance characteristics are untouched) - `MeshClosestPointIndex` is
-// instead a new, explicit, opt-in structure a caller builds ONCE
-// (O(triangle count), the same up-front cost `PointCloud::SpatialIndex()`
-// already pays for repeated point queries) and then queries many times in
-// expected sublinear time, the real value an acceleration structure gives
-// a workload that calls `ClosestPoint()` on the SAME mesh many times
-// (per-vertex offsetting, signed-distance sampling, ...).
+// queries" bullet. It is both a stand-alone, opt-in index a caller can
+// build once and query many times, AND the exact structure `Mesh` itself
+// builds lazily and caches (see `Mesh::SignedDistance()`'s note) so that
+// `Mesh::ClosestPoint()`, `Mesh::FireRay()`, `Mesh::ContainsPoint()` and
+// `Mesh::SignedDistance()` need no explicit index from the caller.
 //
-// Built on an `ON_RTree` of each triangle's own bounding box - the
-// identical index structure `PointCloud::SpatialIndex()` already builds
-// over points, generalized from a point (zero-volume box) to a genuine
-// triangle box - and queried with the same expanding-box, doubling-until-
-// proven-sufficient search `PointCloud::KNearest()` already establishes:
-// search a box of half-width `r` around the query point, compute every
-// candidate triangle's own EXACT closest point via `ClosestPointOnTriangle`
-// (the identical per-triangle primitive `Mesh::ClosestPoint()` itself
-// uses - not an approximation traded for speed), and stop once the best
-// distance found is proven to be within `r` (nothing outside the box
-// could then possibly be closer) or the box already covers the mesh's own
-// whole bounding box (nothing exists outside it at all) - exactly
-// `PointCloud::KNearest()`'s own two stopping proofs, one dimension up.
-// The result is identical to `mesh.ClosestPoint(point)` at the time this
-// index was built, verified directly against it in testing.
+// Built once (O(triangle count log triangle count)) on an `ON_RTree` of
+// each triangle's own bounding box, padded by far more than any
+// tolerance the exact per-triangle tests apply (so the tree can only ever
+// discard a triangle that provably cannot matter). Queries:
+//   * ClosestPoint(): the branch-and-bound closest-point search
+//     `ON_RTree` provides (a sphere around the query point that shrinks
+//     to the best distance found as triangles are visited, nearest
+//     boxes first). Every visited triangle goes through the identical
+//     `ClosestPointOnTriangle` primitive and the identical strict
+//     squared-distance comparison `Mesh`'s plain scan uses, with exact
+//     ties resolved to the LOWEST triangle index - i.e. the same
+//     first-in-order winner the scan returns.
+//   * FireRay() / ContainsPoint(): a capsule search along the ray's
+//     portion inside the mesh's padded bounding box finds the triangles
+//     whose boxes the ray can touch; those candidates are then tested in
+//     original triangle order with the unchanged `LineTriangleParameter`
+//     test and the unchanged hit assembly, so the hit list (order and
+//     all) and every crossing count are bit-identical to the scan's.
+// The one theoretical difference from a scan is a ray numerically
+// parallel to a triangle's plane (|determinant| near the 1e-12 floor),
+// where the scan's own barycentrics are rounding noise; no such ray is
+// meaningful, and an exactly parallel/coplanar one (e.g. a ray along an
+// edge) is rejected identically by both.
 //
 // Becomes stale if the mesh is mutated after construction - rebuild a
-// fresh index, the same contract any index over mutable data has. This
-// deliberately does NOT try to auto-invalidate the way
-// `PointCloud::SpatialIndex()`'s own private, class-owned cache does
-// (reset from inside `PointCloud`'s own few mutators): `Mesh` has many
-// more existing mutating methods, and silently missing one would mean
-// silently serving a stale answer - a real correctness hazard worse than
-// just documenting the rebuild-after-mutation contract plainly, as here.
+// fresh index. (The cache `Mesh` keeps internally is invalidated by `Mesh`
+// itself; this stand-alone class has no back-pointer, so its owner must.)
 class MeshClosestPointIndex {
  public:
   // Throws std::invalid_argument if `mesh` has no faces - no surface to
@@ -2795,64 +2876,51 @@ class MeshClosestPointIndex {
   // than deferring the same throw to the first query.
   explicit MeshClosestPointIndex(const Mesh& mesh);
 
-  // Identical to `Mesh::ClosestPoint(point)` on the mesh this index was
-  // built from (see this class's own doc comment above for why).
+  // Bit-identical to `Mesh::ClosestPoint(point)` on the mesh this index
+  // was built from, including which triangle wins an exact tie.
   Point3d ClosestPoint(Point3d point) const;
 
-  // Identical to `Mesh::FireRay(origin, direction)` on the mesh this
-  // index was built from, same sorted-nearest-first `RayHit` list,
-  // same single-hit-per-quad-face contract - but accelerated via this
-  // index's own `tree_`, rather than FireRay()'s own plain per-triangle
-  // scan. The forward ray is first clipped to this mesh's own whole
-  // bounding box via the standard slab method (no real intersection is
-  // possible outside it, by construction) - a ray that misses the
-  // bounding box entirely returns immediately with zero triangle
-  // tests - then the RTree is queried with a TIGHT box around just
-  // that clipped segment (not the mesh's own full extent), so a ray
-  // that only grazes a small part of a large mesh tests only the
-  // triangles actually near its own path, the real acceleration this
-  // gives over a brute-force scan. Every surviving candidate is still
-  // tested with the exact `LineTriangleParameter` primitive
-  // `Mesh::FireRay()` itself uses - not an approximation traded for
-  // speed, same as `ClosestPoint()` above. Throws
-  // std::invalid_argument for a zero/non-finite direction, matching
-  // `Mesh::FireRay()`'s own contract.
+  // Bit-identical to `Mesh::FireRay(origin, direction)` on the mesh this
+  // index was built from: the same hits, the same nearest-first order,
+  // the same single-hit-per-quad-face rule (a quad's second triangle is
+  // tested only when its first misses). Throws std::invalid_argument for
+  // a zero direction, matching `Mesh::FireRay()`'s own contract.
   std::vector<RayHit> FireRay(Point3d origin, Vector3d direction) const;
 
-  // Identical to `Mesh::SignedDistance(point)` on the mesh this index
+  // Bit-identical to `Mesh::ContainsPoint(point)` on the mesh this index
+  // was built from: the strict-majority-of-5-directions parity vote,
+  // each direction's crossings counted by the same exact test as the
+  // scan (so, like it, a quad's two triangles are counted separately).
+  bool ContainsPoint(Point3d point) const;
+
+  // Bit-identical to `Mesh::SignedDistance(point)` on the mesh this index
   // was built from (negative if inside, positive if outside, magnitude
-  // `(ClosestPoint(point) - point).Length()`) - but with BOTH halves of
-  // that composition now accelerated via this index's own `tree_`,
-  // rather than `Mesh::SignedDistance()`'s own fully brute-force pair:
-  // the distance magnitude through this class's own `ClosestPoint()`
-  // above (already accelerated), and the inside/outside sign through
-  // this class's own `FireRay()` above (also already accelerated) cast
-  // along the SAME 5 fixed, well-separated directions and majority-vote
-  // rule `Mesh::ContainsPoint()` itself uses internally, rather than
-  // `Mesh::ContainsPoint()`'s own separate brute-force per-triangle
-  // ray/triangle scan. `FireRay()`'s own quad-face deduplication (one
-  // logical crossing per original quad, not two) is a strictly more
-  // correct parity count than `Mesh::ContainsPoint()`'s own undeduped
-  // one for the ordinary case (a ray crossing only one of a quad's two
-  // triangles, the overwhelming majority), and differs from it only in
-  // the degenerate edge case of a ray landing exactly on a quad's own
-  // diagonal - no new ambiguity beyond what 5 independent directions
-  // already exist to wash out. Throws std::invalid_argument under the
-  // identical "mesh has no faces" circumstance the constructor already
-  // guards against (unreachable once constructed) - no other new throw.
+  // `(ClosestPoint(point) - point).Length()`), with both halves
+  // accelerated through this index. Throws nothing new.
   double SignedDistance(Point3d point) const;
 
+  // Number of triangles indexed (a quad face contributes two).
+  int TriangleCount() const { return static_cast<int>(triangles_.size()); }
+
  private:
+  // Indices (ascending, original triangle order) of every triangle whose
+  // padded box the forward ray `origin + t * direction` can touch; every
+  // triangle when the geometry/inputs are not finite.
+  void RayCandidates(Point3d origin, Vector3d direction, std::vector<int>& ids) const;
+  // Number of triangles `Mesh::ContainsPoint()`'s per-direction test
+  // counts for this ray (strictly ahead of `origin`, zero barycentric slack).
+  int CountCrossings(Point3d origin, const Vector3d& direction) const;
+
   std::vector<std::array<Point3d, 3>> triangles_;
   // Parallel to `triangles_`: which ORIGINAL mesh face (`Mesh::FireRay()`'s
   // own `RayHit::face_index` convention) each entry came from - a quad
-  // face contributes two triangles here sharing the identical index,
-  // exactly as `Mesh::FireRay()` itself reports a quad's own crossing
-  // once, under its single original face index, never as two separate
-  // sub-triangle hits.
+  // face contributes two consecutive triangles sharing one face index.
   std::vector<int> triangle_face_indices_;
   ON_RTree tree_;
-  ON_BoundingBox bbox_;
+  ON_BoundingBox bbox_;         // of the vertices, unpadded
+  ON_BoundingBox padded_bbox_;  // bbox_ grown by more than any triangle's box padding
+  double scale_ = 0.0;          // largest |coordinate| of any vertex
+  bool finite_ = true;          // every vertex coordinate finite (else queries scan everything)
 };
 
 }  // namespace dino8::kernel
