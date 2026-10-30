@@ -891,9 +891,32 @@ std::optional<SubDFidelityResult> BuildSubDVerifiedAgainstBrep(const SceneObject
     double dev = 0.0;
     const int n = static_cast<int>(patches.size());
     if (n > 0) {
+      // The bounded sample is chosen by GEOMETRY (every step-th patch
+      // midpoint in lexicographic x/y/z order), never by patch storage
+      // index. `patches` inherits its order from the cage mesh's face
+      // order, which is whatever the Brep mesher's constrained Delaunay
+      // refinement happened to emit - identical geometry can come back in
+      // a different face order on another compiler/platform (and did:
+      // the same 11310-face sphere cage reports a different "worst
+      // measured deviation" under MSVC than under GCC, and reversing the
+      // face order on one machine alone moves 0.016850 to 0.017945). A
+      // stride over storage order therefore measured a platform-dependent
+      // subset; a stride over position-sorted midpoints measures the same
+      // subset wherever the same cage was built. Same sample budget, same
+      // cost: the midpoints are evaluated once either way and the extra
+      // sort of at most a few hundred thousand points is negligible next
+      // to the closest-point queries.
+      std::vector<std::pair<Point3d, int>> mids;
+      mids.reserve(static_cast<size_t>(n));
+      for (int i = 0; i < n; ++i) mids.emplace_back(patches[static_cast<size_t>(i)].surface.PointAt(0.5, 0.5), i);
+      std::sort(mids.begin(), mids.end(), [](const std::pair<Point3d, int>& a, const std::pair<Point3d, int>& b) {
+        if (a.first.x != b.first.x) return a.first.x < b.first.x;
+        if (a.first.y != b.first.y) return a.first.y < b.first.y;
+        return a.first.z < b.first.z;
+      });
       const int step = std::max(1, n / kMaxFidelitySamples);
       for (int i = 0; i < n; i += step) {
-        const Point3d p = patches[static_cast<size_t>(i)].surface.PointAt(0.5, 0.5);
+        const Point3d& p = mids[static_cast<size_t>(i)].first;
         dev = std::max(dev, (reference_index.ClosestPoint(p) - p).Length());
       }
     }

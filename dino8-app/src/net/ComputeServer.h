@@ -17,12 +17,17 @@
 // flag keeps the server open, exactly as before. See docs/COMPUTE_SERVER.md
 // for the wire format.
 //
-// POSIX sockets only, same honestly-scoped-by-platform shape as
-// AccessibilityLinux.cpp's AT-SPI2 bridge: Start() always fails with a
-// clear message on a platform without POSIX sockets (Windows) rather than
-// silently pretending to listen.
+// BSD/POSIX sockets on Linux/macOS and Winsock2 on Windows, behind one
+// small shim in ComputeServer.cpp (handle type, close call, error source,
+// SO_RCVTIMEO's value type and the one-time WSAStartup are the only things
+// that differ; the wire behaviour is identical on every platform, and
+// tests/smoke.sh's --serve sections are the same spec on each). Start()
+// still fails with a clear message, never silently pretending to listen,
+// when the socket layer itself refuses (WSAStartup, socket, bind or listen
+// failing).
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <string>
@@ -81,7 +86,7 @@ class ComputeServer {
   // Binds and listens on 127.0.0.1:`port` (0 asks the OS for a free
   // ephemeral port - see Port() below). Returns false, with `error` set to
   // a human-readable reason, if the socket/bind/listen calls fail (e.g. the
-  // port is already in use) or this build has no POSIX socket support.
+  // port is already in use, or Winsock could not be initialised).
   bool Start(int port, std::string& error);
   void Stop();
   bool IsRunning() const { return listen_fd_ >= 0; }
@@ -101,7 +106,11 @@ class ComputeServer {
   bool PollOnce(const ComputeHandler& handler, int timeout_ms = 0);
 
  private:
-  int listen_fd_ = -1;
+  // The listening socket: a POSIX fd, or a Winsock SOCKET (an unsigned
+  // pointer-sized handle) stored through intptr_t so this header needs no
+  // socket headers - INVALID_SOCKET maps to -1, every valid handle to a
+  // non-negative value, so ">= 0" means "running" on both.
+  intptr_t listen_fd_ = -1;
   int port_ = 0;
 };
 

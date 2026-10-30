@@ -476,8 +476,10 @@ endif()
 # Kernel32, already linked by default) - no GDI object is created.
 if(WIN32)
   # shell32: ShellExecuteA behind OpenURL/WebBrowser/FileExplorer
-  # (commands/cmd_state.cpp).
-  target_link_libraries(Dino8 PRIVATE user32 shell32)
+  # (commands/cmd_state.cpp). ws2_32: Winsock2 behind the --serve compute
+  # server (net/ComputeServer.cpp) - an OS-provided DLL, so the installed
+  # exe's "imports only OS DLLs" check in the Windows CI job is unaffected.
+  target_link_libraries(Dino8 PRIVATE user32 shell32 ws2_32)
 elseif(APPLE)
   target_link_libraries(Dino8 PRIVATE "-framework AppKit")
 else()
@@ -976,6 +978,11 @@ if(DINO8_BUILD_TESTS)
 
   add_executable(dino8_test_compute_server tests/test_compute_server.cpp src/net/ComputeServer.cpp)
   target_include_directories(dino8_test_compute_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  if(WIN32)
+    # Winsock2 (socket/bind/listen/select/recv/send and WSAStartup) - the
+    # same OS-provided DLL Dino8 itself links for src/net/ComputeServer.cpp.
+    target_link_libraries(dino8_test_compute_server PRIVATE ws2_32)
+  endif()
   add_test(NAME dino8_compute_server COMMAND dino8_test_compute_server)
 
   # Real-time multi-user collaboration relay (src/net/Collab.h/.cpp) and its

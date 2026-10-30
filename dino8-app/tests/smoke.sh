@@ -35,6 +35,24 @@ if command -v cygpath >/dev/null 2>&1; then HEREW="$(cygpath -m "$HERE")"; else 
 # Isolate settings so persisted toggles (Ortho, snaps, theme) from earlier runs cannot leak into the checks.
 export XDG_CONFIG_HOME="$TMPW/config"
 mkdir -p "$XDG_CONFIG_HOME"
+# Windows (Git-Bash on the CI runner): the app's config directory there is
+# %APPDATA%\Dino8 (app/Settings.h - XDG_CONFIG_HOME is a freedesktop
+# convention the app rightly does not consult on Windows), so the export
+# above alone isolated nothing on that platform: every script shared, and
+# persisted into, the runner's real %APPDATA%\Dino8, and the one check that
+# reads the config directory back off disk (plugin_reviews.json, below)
+# looked in a directory the app never wrote to. Pointing APPDATA at the
+# same per-run scratch directory gives Windows exactly the isolation
+# XDG_CONFIG_HOME gives Linux. Nothing else this script runs (the app, curl,
+# python3's stdlib) keys off APPDATA. CONFIG_DIR is the directory the app
+# actually writes on the current platform, for the checks that read it.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;; *) IS_WINDOWS=0 ;; esac
+if [ "$IS_WINDOWS" = 1 ]; then
+  export APPDATA="$XDG_CONFIG_HOME"
+  CONFIG_DIR="$APPDATA/Dino8"
+else
+  CONFIG_DIR="$XDG_CONFIG_HOME/dino8"
+fi
 trap 'rm -rf "$TMP"' EXIT
 
 cat > "$TMPW/script.txt" <<EOS
@@ -1580,8 +1598,16 @@ sdcheck "11310 faces, 16965 edges, 5657 vertices, 0 creases" "ToSubD's sphere Su
 # own tessellation is already at the mesher's per-edge subdivision cap, so
 # retightening can't shrink it further; the exact deviation below is this
 # check's own honestly-disclosed, unconverged measurement, not a success
-# silently claimed.
-sdcheck "ToSubD: created 1 object(s) (0 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0.016850)" "ToSubD on the Brep sphere measures and discloses a real (not fully within tolerance) Catmull-Clark limit-surface deviation from the original Brep"
+# silently claimed. The measured number is the worst of a bounded sample of
+# limit-surface patch midpoints chosen by position (lexicographic x/y/z
+# order), not by patch storage index: the cage's face order is whatever
+# the Brep mesher's Delaunay refinement emitted, which differs between
+# GCC and MSVC for this very same 11310-face cage (the index-strided
+# sample used to report 0.016850 here and 0.023475 on Windows CI; merely
+# reversing the face order on Linux moved it to 0.017945), so the
+# position-sorted sample is what makes this one number comparable across
+# platforms at all.
+sdcheck "ToSubD: created 1 object(s) (0 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0.019460)" "ToSubD on the Brep sphere measures and discloses a real (not fully within tolerance) Catmull-Clark limit-surface deviation from the original Brep"
 # The opposite, provable case: a flat planar patch's control points are all
 # already coplanar, so Catmull-Clark's own limit-point formula (an affine
 # combination of coplanar points) introduces no deviation regardless of
@@ -7687,7 +7713,7 @@ pmrcheck "! PluginMarketplaceRate: rating must be between 1 and 5, got 12" "Plug
 pmrcheck "PluginMarketplaceReviews: hellodino - 2 review(s), average 4" "PluginMarketplaceReviews averages only the 2 valid ratings ((5+3)/2 == 4), not the rejected one"
 pmrcheck "  [0] Alice: 5/5 - Works great" "PluginMarketplaceReviews lists Alice's named review with its comment, tagged with its [index] for PluginMarketplaceDeleteReview"
 pmrcheck "  [1] Anonymous: 3/5 - A bit slow on big meshes" "PluginMarketplaceReviews lists the second review as Anonymous (no Reviewer= given) at index [1]"
-REVIEWS_FILE="$XDG_CONFIG_HOME/dino8/plugin_reviews.json"
+REVIEWS_FILE="$CONFIG_DIR/plugin_reviews.json"
 if [ -f "$REVIEWS_FILE" ] && grep -q "hellodino" "$REVIEWS_FILE" && grep -q "Alice" "$REVIEWS_FILE"; then
   echo "ok   ratings persisted to $REVIEWS_FILE, not just kept in memory"
 else
@@ -8059,7 +8085,7 @@ else
   SERVE_PORT=""
   for _ in $(seq 1 100); do
     if grep -q "^serve: listening on port " "$SERVE_LOG" 2>/dev/null; then
-      SERVE_PORT="$(grep "^serve: listening on port " "$SERVE_LOG" | head -1 | awk '{print $NF}')"
+      SERVE_PORT="$(grep "^serve: listening on port " "$SERVE_LOG" | head -1 | awk '{print $NF}' | tr -d '\r')"
       break
     fi
     sleep 0.1
@@ -8279,7 +8305,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
   TOKEN_PORT=""
   for _ in $(seq 1 100); do
     if grep -q "^serve: listening on port " "$TOKEN_LOG" 2>/dev/null; then
-      TOKEN_PORT="$(grep "^serve: listening on port " "$TOKEN_LOG" | head -1 | awk '{print $NF}')"
+      TOKEN_PORT="$(grep "^serve: listening on port " "$TOKEN_LOG" | head -1 | awk '{print $NF}' | tr -d '\r')"
       break
     fi
     sleep 0.1
@@ -8336,7 +8362,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
   TOKFILE_PORT=""
   for _ in $(seq 1 100); do
     if grep -q "^serve: listening on port " "$TOKFILE_LOG" 2>/dev/null; then
-      TOKFILE_PORT="$(grep "^serve: listening on port " "$TOKFILE_LOG" | head -1 | awk '{print $NF}')"
+      TOKFILE_PORT="$(grep "^serve: listening on port " "$TOKFILE_LOG" | head -1 | awk '{print $NF}' | tr -d '\r')"
       break
     fi
     sleep 0.1
@@ -8399,7 +8425,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
   TTL_PORT=""
   for _ in $(seq 1 100); do
     if grep -q "^serve: listening on port " "$TTL_LOG" 2>/dev/null; then
-      TTL_PORT="$(grep "^serve: listening on port " "$TTL_LOG" | head -1 | awk '{print $NF}')"
+      TTL_PORT="$(grep "^serve: listening on port " "$TTL_LOG" | head -1 | awk '{print $NF}' | tr -d '\r')"
       break
     fi
     sleep 0.1
@@ -8454,7 +8480,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
   HASH_PORT=""
   for _ in $(seq 1 100); do
     if grep -q "^serve: listening on port " "$HASH_LOG" 2>/dev/null; then
-      HASH_PORT="$(grep "^serve: listening on port " "$HASH_LOG" | head -1 | awk '{print $NF}')"
+      HASH_PORT="$(grep "^serve: listening on port " "$HASH_LOG" | head -1 | awk '{print $NF}' | tr -d '\r')"
       break
     fi
     sleep 0.1
@@ -8508,7 +8534,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
   PERM_PORT=""
   for _ in $(seq 1 100); do
     if grep -q "^serve: listening on port " "$PERM_LOG" 2>/dev/null; then
-      PERM_PORT="$(grep "^serve: listening on port " "$PERM_LOG" | head -1 | awk '{print $NF}')"
+      PERM_PORT="$(grep "^serve: listening on port " "$PERM_LOG" | head -1 | awk '{print $NF}' | tr -d '\r')"
       break
     fi
     sleep 0.1
@@ -8526,9 +8552,25 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
     chmod 0644 "$PERM_PATH"
     PERM_CODE_LOOSE_AGAIN="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer permtoken' -X POST --data 'print("should not run either")' "http://127.0.0.1:$PERM_PORT/run")"
     set -e
-    [ "$PERM_CODE_LOOSE" = "401" ] && echo "ok   --serve-token-file rejects a correct token when the file itself is world-readable (0644) - the token file's own permissions, not just what it contains, are checked" || { echo "FAIL --serve-token-file accepted a token from a world-readable (0644) file, expected 401 (HTTP $PERM_CODE_LOOSE)"; fail=1; }
+    if [ "$IS_WINDOWS" = 1 ]; then
+      # Not a pass: TokenFilePermissionsOk (main.cpp) is a documented no-op
+      # on Windows - there are no POSIX group/other read bits to inspect
+      # (Git-Bash's chmod above changes nothing the app could read either),
+      # and NTFS ACLs are not examined - so the two loose-permissions
+      # rejections below cannot be exercised there. Both are left FAIL on
+      # every other platform; the server start, the tight-permissions
+      # request and the clean exit are still checked here exactly as on
+      # Linux/macOS, so the Winsock path itself is not skipped.
+      echo "skip (Windows: POSIX permission bits not checked - TokenFilePermissionsOk is a documented no-op there) --serve-token-file world-readable (0644) rejection (HTTP $PERM_CODE_LOOSE)"
+    else
+      [ "$PERM_CODE_LOOSE" = "401" ] && echo "ok   --serve-token-file rejects a correct token when the file itself is world-readable (0644) - the token file's own permissions, not just what it contains, are checked" || { echo "FAIL --serve-token-file accepted a token from a world-readable (0644) file, expected 401 (HTTP $PERM_CODE_LOOSE)"; fail=1; }
+    fi
     echo "$PERM_RESP_TIGHT" | grep -q "^tight perms ok$" && echo "ok   chmod'ing the file to 0600 WHILE the server keeps running immediately allows the identical token - live, no restart needed, same as TTL/rotation above" || { echo "$PERM_RESP_TIGHT"; echo "FAIL --serve-token-file still rejected the token after tightening the file to 0600"; fail=1; }
-    [ "$PERM_CODE_LOOSE_AGAIN" = "401" ] && echo "ok   chmod'ing the file back to 0644 revokes access again on the very next request - a live recheck every time, not a one-shot startup gate" || { echo "FAIL --serve-token-file accepted a token again after loosening the file back to 0644, expected 401 (HTTP $PERM_CODE_LOOSE_AGAIN)"; fail=1; }
+    if [ "$IS_WINDOWS" = 1 ]; then
+      echo "skip (Windows: POSIX permission bits not checked - TokenFilePermissionsOk is a documented no-op there) --serve-token-file re-loosened (0644) revocation (HTTP $PERM_CODE_LOOSE_AGAIN)"
+    else
+      [ "$PERM_CODE_LOOSE_AGAIN" = "401" ] && echo "ok   chmod'ing the file back to 0644 revokes access again on the very next request - a live recheck every time, not a one-shot startup gate" || { echo "FAIL --serve-token-file accepted a token again after loosening the file back to 0644, expected 401 (HTTP $PERM_CODE_LOOSE_AGAIN)"; fail=1; }
+    fi
 
     set +e; wait "$PERM_PID"; PERM_EC=$?; set -e
     if [ "$PERM_EC" -eq 124 ]; then
@@ -8554,7 +8596,7 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
   MISSING_PORT=""
   for _ in $(seq 1 100); do
     if grep -q "^serve: listening on port " "$MISSING_LOG" 2>/dev/null; then
-      MISSING_PORT="$(grep "^serve: listening on port " "$MISSING_LOG" | head -1 | awk '{print $NF}')"
+      MISSING_PORT="$(grep "^serve: listening on port " "$MISSING_LOG" | head -1 | awk '{print $NF}' | tr -d '\r')"
       break
     fi
     sleep 0.1

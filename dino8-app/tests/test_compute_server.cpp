@@ -17,11 +17,29 @@
 #include <string>
 #include <thread>
 
-#ifndef _WIN32
+// The client side of the end-to-end round trip below is written against
+// the same BSD-socket vocabulary on every platform; only the handle type,
+// the close call and the one-time WSAStartup differ (the identical shim
+// shape src/net/ComputeServer.cpp itself uses for the server side).
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+using ClientSocket = SOCKET;
+static bool ClientSocketValid(ClientSocket s) { return s != INVALID_SOCKET; }
+static void ClientSocketClose(ClientSocket s) { ::closesocket(s); }
+static bool ClientSocketsInit() { WSADATA d; return ::WSAStartup(MAKEWORD(2, 2), &d) == 0; }
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+using ClientSocket = int;
+static bool ClientSocketValid(ClientSocket s) { return s >= 0; }
+static void ClientSocketClose(ClientSocket s) { ::close(s); }
+static bool ClientSocketsInit() { return true; }
 #endif
 
 #include "net/ComputeServer.h"
@@ -186,12 +204,13 @@ int main() {
     Check(req.headers.empty(), "no Authorization header means an empty headers map, not a spurious entry");
   }
 
-#ifndef _WIN32
   // Real end-to-end round trip over an actual loopback TCP socket: start
   // the server on an OS-assigned port, connect a real client socket from a
   // background thread, exchange one request/response, and check both what
   // the handler received and what the client actually read back off the
-  // wire.
+  // wire. Runs on Windows too (Winsock2) - the identical wire behaviour is
+  // the whole point of ComputeServer.cpp's platform shim.
+  Check(ClientSocketsInit(), "the test's own client socket layer initialised (WSAStartup on Windows, a no-op elsewhere)");
   {
     dino8::app::ComputeServer server;
     std::string start_error;
@@ -203,24 +222,29 @@ int main() {
       std::string client_response;
       bool client_connected = false;
       std::thread client([&] {
-        const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) return;
+        const ClientSocket fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (!ClientSocketValid(fd)) return;
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         addr.sin_port = htons(static_cast<uint16_t>(server.Port()));
         if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-          ::close(fd);
+          ClientSocketClose(fd);
           return;
         }
         client_connected = true;
         const std::string body = "hello";
         const std::string request = "POST /run HTTP/1.1\r\nContent-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
-        ::send(fd, request.data(), request.size(), 0);
+        ::send(fd, request.data(), static_cast<int>(request.size()), 0);
         char buf[4096];
-        ssize_t n;
-        while ((n = ::recv(fd, buf, sizeof(buf), 0)) > 0) client_response.append(buf, static_cast<size_t>(n));
-        ::close(fd);
+        // recv() returns ssize_t on POSIX and int on Winsock; both compare
+        // against 0 and convert to size_t the same way.
+        auto n = ::recv(fd, buf, static_cast<int>(sizeof(buf)), 0);
+        while (n > 0) {
+          client_response.append(buf, static_cast<size_t>(n));
+          n = ::recv(fd, buf, static_cast<int>(sizeof(buf)), 0);
+        }
+        ClientSocketClose(fd);
       });
 
       std::string handler_saw_body;
@@ -263,7 +287,6 @@ int main() {
     Check(!handler_called, "PollOnce never calls the handler when there is nothing to service");
     server.Stop();
   }
-#endif
 
   if (failures) std::printf("%d FAILED\n", failures);
   else std::printf("all passed\n");
