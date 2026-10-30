@@ -83844,6 +83844,182 @@ void TestSurfaceJoinRejectsUnsharedEdgesAndClosedSurfaces() {
         "Join() throws std::invalid_argument for a surface closed across its shared edge, leaving it untouched");
 }
 
+// NurbsCurve::MakeUniform - the curve-level counterpart to
+// NurbsSurface::MakeUniform (TestSurfaceMakeUniform above). The degree-1
+// fixture is chosen so the whole shape shift is hand-derivable: control
+// points (0,0,0), (1,0,0), (3,0,0) with knots {0, 0.1, 1} vs. the
+// uniform {0, 0.5, 1}. Both are the same polyline, so x(t) is piecewise
+// linear in each: original 10t on [0, 0.1] then 1 + (20/9)(t - 0.1);
+// uniform 2t on [0, 0.5] then 1 + 4(t - 0.5). Their difference is 8t on
+// [0, 0.1], 7/9 + (2/9)t on [0.1, 0.5], and (16/9)(1 - t) on [0.5, 1] -
+// peaking at exactly 8/9 at t = 0.5, a knot of the uniform curve, which
+// the knot-inclusive sampler must hit exactly (64 evenly-spaced samples
+// alone straddle 0.5: the nearest two, 31/63 and 32/63, read 503/567 =
+// 0.8871 and (16/9)(31/63) = 0.8748, both strictly under 8/9).
+// The degree-3 fixture's two knot-point values are hand-derived too:
+// a clamped cubic with knots {0,0,0,1/2,1,1,1} evaluates to
+// (P1 + 2 P2 + P3)/4 at its interior knot (two Boehm insertions of 1/2),
+// and the same net with that knot moved to 1/10 evaluates at t = 1/2 by
+// de Boor (alphas 1/2, 1/2, 4/9 then 1/2, 4/9 then 4/9) to
+// (1756/729, 965/972, 0); the sampler visits t = 1/2 (the candidate's
+// knot) so its result is at least that pair's distance.
+void TestCurveMakeUniform() {
+  using dino8::kernel::Interval;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+  auto ControlPointsMatch = [](const NurbsCurve& a, const NurbsCurve& b) {
+    if (a.ControlPointCount() != b.ControlPointCount()) return false;
+    for (int i = 0; i < a.ControlPointCount(); ++i) {
+      if (a.ControlPointAt(i).DistanceTo(b.ControlPointAt(i)) > 0.0) return false;
+    }
+    return true;
+  };
+
+  // A single-span curve's own knot vector is always already clamped and
+  // uniform - a true NoOp, measuring nothing.
+  {
+    NurbsCurve bezier = NurbsCurve::FromControlPoints(
+        {Point3d(0, 0, 0), Point3d(1, 2, 0), Point3d(2, -1, 0), Point3d(3, 0, 0)}, 3);
+    double dev = -1.0;
+    Check(bezier.MakeUniform(1e-9, &dev) == Result::NoOpAlreadySatisfied,
+          "MakeUniform is a NoOp on an already clamped-uniform single-span curve");
+    Check(dev == 0.0, "...and reports exactly 0 deviation without measuring anything");
+  }
+
+  // The closed-form degree-1 fixture described above.
+  {
+    NurbsCurve polyline = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(3, 0, 0)}, 1);
+    Check(polyline.SetDomain(0.0, 1.0) == Result::Ok && polyline.SetKnotAt(1, 0.1) == Result::Ok,
+          "MakeUniform setup: degree-1 fixture re-domained to [0, 1] with its interior knot moved to 0.1");
+    Check(polyline.KnotAt(0) == 0.0 && polyline.KnotAt(1) == 0.1 && polyline.KnotAt(2) == 1.0,
+          "MakeUniform setup: knot vector is exactly {0, 0.1, 1}");
+    const NurbsCurve original = polyline;
+    const double kExpected = 8.0 / 9.0;
+
+    // The sampler itself, measured against the hand-built uniform twin:
+    // exact 8/9, not the 0.8748 that evenly-spaced samples alone give.
+    {
+      NurbsCurve twin = original;
+      Check(twin.SetKnotAt(1, 0.5) == Result::Ok, "MakeUniform setup: hand-built uniform twin has knot {0, 0.5, 1}");
+      Check(std::fabs(original.MaxSampledDeviationFrom(twin) - kExpected) < 1e-12,
+            "MaxSampledDeviationFrom reports exactly 8/9 against the uniform twin (the peak sits on the twin's own knot)");
+      Check(std::fabs(twin.MaxSampledDeviationFrom(original) - kExpected) < 1e-12,
+            "...and the same exact 8/9 measured the other way round (the peak then sits on the OTHER curve's knot)");
+    }
+
+    // Tight tolerance: refuses, curve untouched, the exact closed-form
+    // deviation reported.
+    {
+      NurbsCurve probe = original;
+      double dev = -1.0;
+      Check(probe.MakeUniform(1e-9, &dev) == Result::Failed,
+            "MakeUniform refuses a tight tolerance on the genuinely non-uniform degree-1 fixture");
+      Check(std::fabs(dev - kExpected) < 1e-12, "...reporting exactly the hand-derived 8/9 max shift");
+      Check(probe.KnotAt(1) == 0.1 && probe.Domain().min == 0.0 && probe.Domain().max == 1.0 &&
+                ControlPointsMatch(probe, original),
+            "...and leaves knots, domain and control points completely untouched on refusal");
+    }
+
+    // The tolerance gate brackets the closed-form value: 0.88 refuses,
+    // 0.89 commits.
+    {
+      NurbsCurve below = original, above = original;
+      Check(below.MakeUniform(0.88) == Result::Failed && below.KnotAt(1) == 0.1,
+            "MakeUniform refuses at tolerance 0.88, just under the 8/9 shift");
+      Check(above.MakeUniform(0.89) == Result::Ok && above.KnotAt(1) == 0.5,
+            "MakeUniform commits at tolerance 0.89, just over the 8/9 shift");
+    }
+
+    // Loose tolerance: commits, knots exactly {0, 0.5, 1}, domain/degree/
+    // control points preserved, and the re-knotted curve evaluates to the
+    // closed-form uniform polyline.
+    {
+      NurbsCurve committed = original;
+      double dev = -1.0;
+      Check(committed.MakeUniform(1.0, &dev) == Result::Ok, "MakeUniform commits under a loose tolerance");
+      Check(std::fabs(dev - kExpected) < 1e-12, "...reporting the identical exact 8/9 the refusal above measured");
+      Check(committed.KnotAt(0) == 0.0 && committed.KnotAt(1) == 0.5 && committed.KnotAt(2) == 1.0,
+            "...knot vector is now exactly {0, 0.5, 1} (rescaled back from OpenNURBS' own {0, 1, 2})");
+      Check(committed.Domain().min == 0.0 && committed.Domain().max == 1.0,
+            "...preserves the original [0, 1] domain exactly, unlike the raw MakeClampedUniformKnotVector call");
+      Check(committed.Degree() == original.Degree() && ControlPointsMatch(committed, original),
+            "...preserves degree and every control point exactly");
+      Check(committed.PointAt(0.5).DistanceTo(Point3d(1, 0, 0)) < 1e-12 &&
+                committed.PointAt(0.25).DistanceTo(Point3d(0.5, 0, 0)) < 1e-12 &&
+                committed.PointAt(0.75).DistanceTo(Point3d(2, 0, 0)) < 1e-12,
+            "...and evaluates to the closed-form uniform polyline: (1,0,0) at t=0.5, (0.5,0,0) at 0.25, (2,0,0) at 0.75");
+      const int o2 = committed.raw().Order(), c2 = committed.raw().CVCount();
+      Check(ON_IsKnotVectorClamped(o2, c2, committed.raw().Knot()) &&
+                ON_IsKnotVectorUniform(o2, c2, committed.raw().Knot()),
+            "...OpenNURBS itself agrees the knot vector is now clamped and uniformly spaced");
+
+      double dev2 = -1.0;
+      Check(committed.MakeUniform(1e-9, &dev2) == Result::NoOpAlreadySatisfied && dev2 == 0.0,
+            "Re-running MakeUniform on the now-uniform result is a true NoOp reporting exactly 0");
+    }
+  }
+
+  // A degree-3 curve with a genuinely non-uniform interior knot (see the
+  // hand derivation above the function): the shift at t = 1/2 is the
+  // closed-form |(1756/729, 965/972) - (2, 3/4)|, the sampler visits that
+  // t exactly, the tight tolerance refuses, and the loose one commits with
+  // the interior knot landing exactly at the uniform midpoint of the
+  // preserved domain and the curve evaluating to (P1 + 2 P2 + P3)/4 there.
+  {
+    NurbsCurve cubic = NurbsCurve::FromControlPoints(
+        {Point3d(0, 0, 0), Point3d(1, 2, 0), Point3d(2, -1, 0), Point3d(3, 3, 0), Point3d(4, 0, 0)}, 3);
+    Check(cubic.SetDomain(0.0, 1.0) == Result::Ok && cubic.KnotCount() == 7 && cubic.SetKnotAt(3, 0.1) == Result::Ok,
+          "MakeUniform setup: degree-3 fixture re-domained to [0, 1] with its single interior knot moved to 0.1");
+    const NurbsCurve original = cubic;
+    const Point3d kOriginalAtHalf(1756.0 / 729.0, 965.0 / 972.0, 0.0);
+    const Point3d kUniformAtHalf(2.0, 0.75, 0.0);
+    const double kShiftAtHalf = kOriginalAtHalf.DistanceTo(kUniformAtHalf);  // = hypot(298/729, 236/972)
+    Check(original.PointAt(0.5).DistanceTo(kOriginalAtHalf) < 1e-12,
+          "MakeUniform setup: the non-uniform cubic evaluates at t=1/2 to the de Boor closed form (1756/729, 965/972, 0)");
+    NurbsCurve probe = original;
+    double dev = -1.0;
+    Check(probe.MakeUniform(1e-9, &dev) == Result::Failed && probe.KnotAt(3) == 0.1,
+          "MakeUniform refuses a tight tolerance on the non-uniform cubic, leaving its knot at 0.1");
+    Check(dev >= kShiftAtHalf - 1e-12,
+          "...reporting a shift at least the closed-form |(1756/729, 965/972) - (2, 3/4)| at t=1/2, which the sampler visits");
+    NurbsCurve committed = original;
+    double dev_committed = -1.0;
+    Check(committed.MakeUniform(std::numeric_limits<double>::infinity(), &dev_committed) == Result::Ok &&
+              dev_committed == dev,
+          "MakeUniform commits the cubic under an infinite tolerance, reporting the same shift the refusal measured");
+    Check(committed.KnotAt(3) == 0.5 && committed.Domain().min == 0.0 && committed.Domain().max == 1.0 &&
+              committed.Degree() == 3 && ControlPointsMatch(committed, original),
+          "...interior knot lands exactly at 0.5 with domain, degree and control points preserved");
+    Check(committed.PointAt(0.5).DistanceTo(kUniformAtHalf) < 1e-12,
+          "...and the re-knotted cubic evaluates at its interior knot to exactly (P1 + 2 P2 + P3)/4 = (2, 3/4, 0)");
+  }
+
+  // Invalid input: non-positive/NaN tolerance throws; too few samples
+  // throws; a curve with no spans at all is refused, never dereferenced.
+  {
+    NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0)}, 1);
+    Check(Throws([&] { line.MakeUniform(0.0); }), "MakeUniform throws std::invalid_argument for tolerance 0");
+    Check(Throws([&] { line.MakeUniform(-1.0); }), "MakeUniform throws std::invalid_argument for a negative tolerance");
+    Check(Throws([&] { line.MakeUniform(std::numeric_limits<double>::quiet_NaN()); }),
+          "MakeUniform throws std::invalid_argument for a NaN tolerance");
+    Check(Throws([&] { line.MaxSampledDeviationFrom(line, 1); }),
+          "MaxSampledDeviationFrom throws std::invalid_argument for fewer than 2 samples");
+    NurbsCurve empty;
+    double dev = -1.0;
+    Check(empty.MakeUniform(1.0, &dev) == Result::Failed && dev == -1.0,
+          "MakeUniform returns Failed on a default-constructed curve with no spans, measuring nothing");
+  }
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -85157,6 +85333,8 @@ int main() {
 
   RunTest("TestSurfaceJoinSplicesSharedEdgeExactly", TestSurfaceJoinSplicesSharedEdgeExactly);
   RunTest("TestSurfaceJoinRejectsUnsharedEdgesAndClosedSurfaces", TestSurfaceJoinRejectsUnsharedEdgesAndClosedSurfaces);
+
+  RunTest("TestCurveMakeUniform", TestCurveMakeUniform);
 
   RunTest("ON::End", ON::End);
 

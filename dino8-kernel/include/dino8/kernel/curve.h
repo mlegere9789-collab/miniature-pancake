@@ -1050,6 +1050,61 @@ class NurbsCurve {
   // isn't positive.
   Result Simplify(double tolerance);
 
+  // Max 3D distance between `PointAt(t)` on this curve and on `other`
+  // over `samples` evenly-spaced t values across *this curve's* domain,
+  // PLUS every distinct interior knot of either curve (both curves are
+  // evaluated at the same numeric t, so this only means anything when
+  // the two share a parameterization - e.g. one is a knot-refined/
+  // removed or re-knotted copy of the other). The curve-level
+  // counterpart to `NurbsSurface::MaxSampledDeviationFrom()`, with one
+  // deliberate addition that version doesn't need: the knots. The
+  // difference between two curves sharing a domain is piecewise-
+  // polynomial with breakpoints exactly at the union of their knots, so
+  // for two degree-1 curves it peaks AT a knot of one of them and never
+  // strictly between - sampling the knots makes the measurement exact
+  // (not merely a lower bound) in that case, which is what lets
+  // `MakeUniform()`'s own regression test assert a closed-form value.
+  // For higher degrees it remains a sampled measurement, so a lower
+  // bound on the true max deviation, not an upper bound; the sample
+  // count sets how fine. Throws std::invalid_argument if `samples` < 2.
+  double MaxSampledDeviationFrom(const NurbsCurve& other, int samples = 64) const;
+
+  // Re-knots the curve to a clamped, uniformly-spaced knot vector while
+  // holding every control point exactly fixed and the parameter domain
+  // exactly unchanged - Rhino's `MakeUniform` on a curve, the curve-
+  // level counterpart to `NurbsSurface::MakeUniform()` (surface_edit.cpp),
+  // closing this kernel's own disclosed gap that curve re-knotting only
+  // ever existed as the app's raw `MakeClampedUniformKnotVector(1.0)`
+  // call (cmd_curves2.cpp), which silently replaces the domain with
+  // `[0, span count]` and ships whatever shape change results with no
+  // measurement at all. Degree, control-point count, and `Domain()` are
+  // all preserved; only the relative SPACING between interior knots
+  // changes (via `ON_NurbsCurve::MakeClampedUniformKnotVector`, then an
+  // affine `SetDomain()` rescale back onto this curve's own original
+  // domain, so the unit-spaced knots that underlying call always
+  // produces are never left exposed to a caller). Re-knotting with the
+  // control polygon held fixed is NOT shape-preserving in general (the
+  // basis functions evaluated at any given parameter change whenever
+  // the source wasn't already uniformly spaced), so this never ships
+  // that shift unmeasured: it builds the candidate on a copy, measures
+  // the real max 3D deviation from `*this` via
+  // `MaxSampledDeviationFrom()` (exact for degree 1, a sampled lower
+  // bound above that, stated as such), and only commits the candidate
+  // if that bound is <= `tolerance` - otherwise `*this` is left
+  // completely untouched and Result::Failed is returned.
+  // `out_max_deviation`, if non-null, always receives the measured
+  // bound, including on failure (so a caller can report how far off
+  // making it uniform would have been). Returns
+  // Result::NoOpAlreadySatisfied, without measuring anything, if the
+  // knot vector is already both clamped and uniform (e.g. any single-
+  // span curve always is). A periodic curve is not special-cased: the
+  // result is clamped, and the end spans' own shape change is simply
+  // measured and gated like any other. Returns Result::Failed, never
+  // crashes, on a curve with no spans at all (default-constructed).
+  // Throws std::invalid_argument if `tolerance` isn't positive (NaN
+  // included); +infinity is accepted and means "commit unconditionally".
+  Result MakeUniform(double tolerance, double* out_max_deviation = nullptr);
+
   // Whether the curve's start and end points coincide - either because
   // it's genuinely periodic (its own knot vector wraps) or because a
   // clamped curve's own two endpoints just happen to be the same point
