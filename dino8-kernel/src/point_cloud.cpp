@@ -191,7 +191,7 @@ PointCloud::Contour PointCloud::ContourAtPlane(const ON_Plane& plane, double ban
   }
 
   if (out.points.size() >= 3) {
-    out.curve = InterpolateCubic(out.points, ChordParams(out.points, /*closed=*/true), /*closed=*/true, /*dim=*/3);
+    out.curve = InterpolateCubicPeriodic(out.points, ChordParams(out.points, /*closed=*/true), /*dim=*/3);
   }
   return out;
 }

@@ -1808,6 +1808,16 @@ double CurveClosestParamGlobal(const ON_Curve& c, Point3d p, int samples = 256);
 // is wrapped so the seam is smooth. `dim` = 2 or 3.
 ON_NurbsCurve InterpolateCubic(const std::vector<ON_3dPoint>& pts, std::vector<double> params, bool closed, int dim = 3);
 std::vector<double> ChordParams(const std::vector<ON_3dPoint>& pts, bool closed);
+// Closed global cubic interpolation whose seam is C2 to rounding level (~1e-13):
+// `pts` are the distinct points of the loop (the first is NOT repeated at the end),
+// `params` is empty (chord length, closed) or has pts.size() + 1 entries (the last
+// being the period), `dim` = 2 or 3. Unlike InterpolateCubic(closed = true), which
+// wraps only 3 points per end (seam tangent off by ~3e-2 on a 4-point circle, ~1e-4
+// on a 24-point one; a 3-point loop is not wrapped at all) and is kept unchanged
+// because the Boolean/intersection callers' results were tuned against it, this
+// wraps 24 and accepts any loop of >= 3 points. Output has the same shape: a
+// clamped curve whose domain is [params.front(), params.back()].
+ON_NurbsCurve InterpolateCubicPeriodic(const std::vector<ON_3dPoint>& pts, std::vector<double> params, int dim = 3);
 
 // Is (u, v) inside the face's trim loops? (Untrimmed surface: domain test.)
 bool FaceContainsUV(const ON_BrepFace& f, double u, double v);
