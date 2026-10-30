@@ -11,6 +11,25 @@
 namespace dino8::app {
 
 namespace {
+// Every object is registered over its bounding box grown by
+// max(kRegistrationPadFraction * scene diagonal, kRegistrationPadMin) world
+// units on all sides, so QueryRay/QueryBox return a conservative SUPERSET of
+// the exact AABB overlap (every caller - Viewport's picks, the frustum cull,
+// cmd_smartblocks - re-tests each candidate exactly, so extra candidates cost
+// only a little time). Why it is needed: a pick ray that lands exactly ON an
+// object's bounding-box face - e.g. a click dead on the outer edge of a box,
+// which is where the scene's minimum corner (== origin_, a cell boundary)
+// sits - differs from "exactly on the face" by floating-point noise of either
+// sign (mouse position -> pixel -> double-precision ray). With exact
+// registration the negative-noise ray lands in the neighbouring, empty cell
+// and the DDA never visits the object's cells at all, so the click selects
+// nothing. Which sign the noise has depends on the viewport's pixel size,
+// i.e. on the window size, so the same ui_script click passed at some window
+// sizes and failed at others (Windows CI: tests/ui_script.txt's
+// `@clickworld Top 10 0 0` on a Box whose y=0 edge is that face).
+constexpr double kRegistrationPadFraction = 1e-4;
+constexpr double kRegistrationPadMin = 1e-6;
+
 // EnsureFresh() below folds every object's own BoundingBox() into the
 // scene-wide extent (via std::min/std::max) and then, independently, into
 // this object's own cell range (via CellOf(), which casts a floor()'d
@@ -105,11 +124,15 @@ void ObjectGrid::EnsureFresh(const Document& doc) {
   cell_size_ = std::max(target, diag > 0 ? diag * 1e-4 : 1.0);
   if (!(cell_size_ > 0.0) || !std::isfinite(cell_size_)) cell_size_ = 1.0;
 
+  const double pad = std::max(kRegistrationPadFraction * diag, kRegistrationPadMin);
   for (std::size_t index = 0; index < objects.size(); ++index) {
     const kernel::BoundingBox b = objects[index].BoundingBox();
     if (!IsFiniteBox(b)) continue;  // see IsFiniteBox()'s own comment above
-    const CellKey lo = CellOf(b.min);
-    const CellKey hi = CellOf(b.max);
+    // See kRegistrationPadFraction: grow the registered
+    // range so a query landing on the box's face within floating-point noise
+    // still finds it.
+    const CellKey lo = CellOf(kernel::Point3d(b.min.x - pad, b.min.y - pad, b.min.z - pad));
+    const CellKey hi = CellOf(kernel::Point3d(b.max.x + pad, b.max.y + pad, b.max.z + pad));
     for (int x = lo.x; x <= hi.x; ++x)
       for (int y = lo.y; y <= hi.y; ++y)
         for (int z = lo.z; z <= hi.z; ++z) cells_[CellKey{x, y, z}].push_back(index);

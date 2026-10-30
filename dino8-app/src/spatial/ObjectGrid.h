@@ -9,9 +9,12 @@
 //
 // The grid is a broad phase only: QueryRay returns every object whose world
 // AABB the ray's line actually passes through, and QueryBox every object
-// whose AABB overlaps the query box - callers still run their existing
-// precise wire/triangle/point math on the returned candidates. QueryRay is
-// exact for "does the ray's infinite line cross this object's AABB", which
+// whose AABB (grown by a tiny registration pad - see kRegistrationPadFraction
+// in ObjectGrid.cpp, so a ray/box landing on a bounding-box face within
+// floating-point noise still finds the object) overlaps the query box -
+// callers still run their existing precise wire/triangle/point math on the
+// returned candidates. QueryRay is a conservative superset of "does the
+// ray's infinite line cross this object's AABB", which
 // is what PickObject/PickSubObject/ObjectsInWindow need; see the caveat in
 // Viewport.cpp (RayCandidates) about the narrow case where a caller also
 // accepts a hit within a screen-pixel tolerance of the ray rather than only

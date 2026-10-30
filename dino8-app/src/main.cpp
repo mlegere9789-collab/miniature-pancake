@@ -649,6 +649,12 @@ ON_Mesh ComputeTessellateBrep(const dino8::app::SceneObject& o, double tol) {
   return m;
 }
 
+// The display size a hidden --smoke/--script run lays its UI out for
+// (identical to the Linux/Xvfb CI screen the smoke expectations were
+// calibrated on); see the io.DisplaySize pin in the frame loop.
+constexpr int kHeadlessDisplayW = 1600;
+constexpr int kHeadlessDisplayH = 900;
+
 }  // namespace
 
 #if defined(_MSC_VER)
@@ -795,19 +801,14 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "Could not load OpenGL functions: %s\n", dino8::gl::LastError());
     return 1;
   }
-  // Interactive runs only. A hidden --smoke/--script window must keep the
-  // exact 1600x900 it was created with on every platform: the view-
-  // dependent display LOD (FrameContext::lod_scale, AdaptiveTessellation.h)
-  // and every per-pixel capture check in tests/smoke.sh follow the
-  // viewport's pixel size, so the window size IS part of what those checks
-  // measure. On X11 under Xvfb (no window manager) this call was already a
-  // no-op, but Win32's SW_MAXIMIZE both shows the hidden window and resizes
-  // it to the host desktop's work area - on GitHub's windows-latest runner
-  // a far smaller desktop than 1600x900 - which shrank every viewport
-  // there, coarsened the LOD (a circle tessellated at 6 segments instead
-  // of Linux's 7, moving BoundingBox results) and let grid lines dominate
-  // tiny environment-backdrop captures. Nothing about a hidden window
-  // benefits from being maximized.
+  // Interactive runs only: a hidden --smoke/--script window is never
+  // maximized (on Win32 SW_MAXIMIZE also shows it and resizes it to the host
+  // desktop's work area - on GitHub's windows-latest runner far smaller than
+  // 1600x900). Its effective size does not matter anyway: the frame loop pins
+  // io.DisplaySize to kHeadlessDisplayW x kHeadlessDisplayH for hidden runs
+  // (see there), which is what the view-dependent display LOD
+  // (FrameContext::lod_scale, AdaptiveTessellation.h), every per-pixel
+  // capture check in tests/smoke.sh and every @clickworld pick follow.
   if (!hidden_window) glfwMaximizeWindow(window);
 
   IMGUI_CHECKVERSION();
@@ -825,7 +826,9 @@ int main(int argc, char** argv) {
   io.IniFilename = interactive_run ? ini_path.c_str() : nullptr;
   float xscale = 1.0f, yscale = 1.0f;
   glfwGetWindowContentScale(window, &xscale, &yscale);
-  float ui_scale = xscale > 0 ? xscale : 1.0f;
+  // A hidden headless run always uses scale 1: the monitor's DPI must not
+  // change the font size (and so the layout) of what the checks measure.
+  float ui_scale = (xscale > 0 && !hidden_window) ? xscale : 1.0f;
   dino8::app::ApplyDinoTheme(ui_scale);
   ImFontConfig font_cfg;
   font_cfg.SizePixels = 16.0f * ui_scale;
@@ -1598,6 +1601,23 @@ int main(int argc, char** argv) {
     if (!interactive_run) io.AddFocusEvent(true);
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
+    // Hidden --smoke/--script run: the UI is laid out for a fixed
+    // kHeadlessDisplayW x kHeadlessDisplayH display no matter what size the
+    // OS actually gave the window. The window is requested at exactly that
+    // size, but nothing guarantees the OS honours it (a Win32 top-level
+    // window may be limited to the desktop's tracking size - GitHub's
+    // windows-latest runner has a small desktop, ~1080x732 usable - and a
+    // maximized/shown one is resized to the work area), and the layout
+    // derives every viewport's pixel size from io.DisplaySize. The viewport
+    // height feeds the view-dependent display
+    // LOD (FrameContext::lod_scale), every per-pixel capture check and the
+    // pixel position of every `@clickworld`, so on a small desktop the sweep
+    // bounding boxes, Background::Image / SSAO pixel counts and pick hits
+    // all came out different from Linux's. Pinning DisplaySize here makes
+    // them platform- and desktop-independent; nothing reads the real window
+    // size except the final default-framebuffer glViewport/capture below,
+    // which a hidden window never needs at full size.
+    if (hidden_window) io.DisplaySize = ImVec2(static_cast<float>(kHeadlessDisplayW), static_cast<float>(kHeadlessDisplayH));
     ImGui::NewFrame();
 
     if (stress_count >= 0 && frame == 3) RunStressTest(app, stress_count);

@@ -149,6 +149,40 @@ int main() {
     Check(grid.Empty(), "a document where every object's box is non-finite reports Empty()");
   }
 
+  // A pick ray on an object's bounding-box face must still find it when it
+  // misses the face by floating-point noise of either sign. The scene's
+  // minimum corner is the grid origin (a cell boundary), so before the
+  // registration pad a ray at x = min - 1e-9 fell in the neighbouring empty
+  // cell and the object was never a candidate - which made clicking the outer
+  // edge of a lone box select nothing at some window sizes (see
+  // ObjectGrid.cpp's kRegistrationPadFraction).
+  {
+    Document doc;
+    doc.Add(SceneObject::MakePoint(Point3d(1, 1, 1)));
+    doc.Add(SceneObject::MakePoint(Point3d(21, 21, 11)));
+
+    ObjectGrid& grid = doc.PickGrid();
+    grid.EnsureFresh(doc);
+
+    for (double noise : {0.0, 1e-12, -1e-12, 1e-9, -1e-9, -1e-7}) {
+      for (int axis = 0; axis < 2; ++axis) {
+        const Point3d origin = axis == 0 ? Point3d(1 + noise, 1, 100) : Point3d(1, 1 + noise, 100);
+        const auto hits = grid.QueryRay(Ray{origin, Vector3d(0, 0, -1)}, 1000.0);
+        bool found = false;
+        for (std::size_t idx : hits) if (doc.Objects()[idx].point.x == 1) found = true;
+        char what[160];
+        std::snprintf(what, sizeof what, "a ray %+g off the scene's minimum face (axis %d) still finds the point on it", noise, axis);
+        Check(found, what);
+      }
+    }
+    // The pad is conservative, not unbounded (it can add the neighbouring grid
+    // cell, but no further): a ray several cells away is still not a candidate.
+    const auto far_hits = grid.QueryRay(Ray{Point3d(-30, 1, 100), Vector3d(0, 0, -1)}, 1000.0);
+    bool far_found = false;
+    for (std::size_t idx : far_hits) if (doc.Objects()[idx].point.x == 1) far_found = true;
+    Check(!far_found, "a ray 31 units outside the scene's bounding box is still not a candidate");
+  }
+
   if (failures) std::printf("%d FAILED\n", failures);
   else std::printf("all passed\n");
   return failures ? 1 : 0;
