@@ -156,3 +156,41 @@ List
 SelAll
 Delete
 @expect_objects 0
+# --- Curve MakeUniform: a line 0,0,0 -> 3,0,0 (domain 0..1) with a kink
+# inserted at x=1 becomes a 3-control-point degree-1 curve (control points
+# 0,1,3 on the x axis) with knots {0,1/3,1}. Re-knotting it to the uniform
+# {0,1/2,1} with the control points held fixed moves it by exactly 0.5 (at
+# t=1/2: x = 1.5 before, 1 after) - the kernel measures that; the old raw
+# MakeClampedUniformKnotVector(1.0) call shipped it unmeasured AND moved the
+# domain to 0..2. The default Tolerance is the document tolerance, so the
+# plain run refuses and reports 0.5; 0.4 still refuses; 0.6 commits and the
+# domain stays 0 to 1; a second run finds it already uniform.
+Line 0,0,0 3,0,0
+SelCrv
+InsertKink
+1,0,0
+Enter
+SelCrv
+Domain
+Enter
+SelCrv
+MakeUniform
+Enter
+SelCrv
+MakeUniform
+Tolerance=0.4
+Enter
+Domain
+Enter
+SelCrv
+MakeUniform
+Tolerance=0.6
+Enter
+Domain
+Enter
+SelCrv
+MakeUniform
+Enter
+SelAll
+Delete
+@expect_objects 0

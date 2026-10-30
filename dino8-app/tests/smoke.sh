@@ -8614,8 +8614,6 @@ dino8.GetInteger("how many")' "http://127.0.0.1:$SERVE_PORT/run/python")"
   fi
 fi
 
-
-
 # Kernel primitives reached from the app commands (kernel_wiring_script.txt):
 # MergeSrf -> NurbsSurface::Join (exact control-net splice, 7x4 for a bicubic
 # split at 0.4, instead of a 25x17 sample-and-refit), ChamferEdge/ChamferSrf
@@ -8660,4 +8658,11 @@ kwcount "4 faces, 7 edges, closed solid" 3 "every rim chamfer (top, bottom, Cham
 kwcheck "Area = 84.01 square" "the top-rim chamfer's area (84.01) matches the closed form 2*pi*R*(L-dw)+pi*R^2+pi*(R-dc)^2+pi*(2R-dc)*sqrt(dw^2+dc^2) = 84.056 to the display mesh's 0.05"
 kwcheck "ChamferSrf: built between object .* and .*, radius 3" "a ChamferSrf cap setback of 3 on the R=2 cylinder is refused by the kernel and falls through to the approximate surface exactly as before"
 kwcheck "cylinder-rim attempt: Distance/Angle mode has no cylinder-rim construction" "ChamferEdge Angle= on a cylinder rim keeps its clear 'needs the whole object to be planar-faced' diagnostic and leaves the cylinder untouched"
+# Curve MakeUniform
+kwcheck "! MakeUniform: curve .* left unchanged - uniform knots would move it by up to 0.5, more than Tolerance 0.001" "curve MakeUniform at the default (document) Tolerance refuses a re-knot that would move the curve 0.5 and reports the measured 0.5 - the old call shipped it unmeasured"
+kwcheck "! MakeUniform: curve .* left unchanged - uniform knots would move it by up to 0.5, more than Tolerance 0.4" "...and Tolerance=0.4 still refuses (0.5 > 0.4)"
+kwcheck "MakeUniform: 1 curve(s) now have uniform knots (largest measured shape change 0.5, domain preserved)" "Tolerance=0.6 commits, reporting the exact closed-form 0.5 shift"
+kwcount "Curve .* domain: 0 to 1" 3 "the curve's domain is 0 to 1 before, after the refused runs and after the committed re-knot (the old call re-domained it to 0 to 2)"
+kwcheck "MakeUniform: 0 curve(s) now have uniform knots; 1 already uniform" "a second MakeUniform finds the curve already uniform (NoOpAlreadySatisfied) and changes nothing"
+
 exit $fail
