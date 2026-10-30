@@ -38,6 +38,12 @@
 #include "dino8/kernel/surface.h"
 #include "dino8/kernel/surface_intersect.h"
 #include "dino8/kernel/tolerance.h"
+#ifdef DINO8_TEST_HAS_APP_MESHER
+// dino8-app's face-by-face brep mesher (what the app's MeshOf() calls) - see
+// tests/CMakeLists.txt; compiled in only when the app sources sit next to
+// the kernel, so a standalone kernel checkout still builds.
+#include "geom/BrepMesher.h"
+#endif
 
 namespace {
 
@@ -89165,6 +89171,307 @@ void TestLoftOfAlignedClosedSectionsInterpolatesAndCaps() {
   anchored_sweep_tests::TestLoftOfAlignedClosedSectionsInterpolatesAndCaps();
 }
 
+// ---------------------------------------------------------------------------
+// Capped Loft of closed planar sections: each end cap is ONE planar trimmed
+// face (a plane patch in the section plane's own frame, the section curve as
+// its single outer trim loop, mated to the wall's own boundary edge), not a
+// fan collapsed to a point.
+//
+// Why: the app's face-by-face (u, v) mesher (dino8-app BrepMesher, behind
+// MeshOf()/display/analysis/booleans) could not close a FAN cap of a
+// polygonal section - measured on the base this pass was written against: a
+// 10 x 10 square, a 12 x 6 rectangle and a regular hexagon (and 3-section
+// squares) lofted with cap=true came back OPEN (a square's 9 CDT constraints
+// fail on the fan's collapsed apex side), so the capped loft read Volume = 0
+// and booleans treated it as open, while the B-rep itself was a valid closed
+// solid and Brep::Volume() was right. A circle, a triangle and an L meshed
+// closed. With the planar trimmed cap every profile below meshes closed there.
+//
+// What this checks, per profile and per prism / frustum:
+//  - B-rep: 3 faces, IsValid, IsSolid, Check() clean + closed + oriented, no
+//    m_bRev, every edge shared by exactly two trims, tolerances set;
+//  - each cap IS one planar trimmed face: planar bilinear patch (no singular
+//    side), one outer loop of one mated trim, CCW in (u, v), outward normal;
+//  - exact integration (Volume()/Area()) equals the analytic frustum values;
+//  - the kernel's own closed mesh is a closed manifold at asymmetric division
+//    pairs and its volume matches (exactly for polygons);
+//  - when the app mesher is compiled in (DINO8_TEST_HAS_APP_MESHER, see
+//    tests/CMakeLists.txt): MeshBrepClosed() is a closed manifold with the
+//    analytic volume - the check that FAILED for the fan caps.
+// ---------------------------------------------------------------------------
+namespace loft_planar_cap_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::Mesh;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+
+struct CapProfile {
+  const char* name;
+  std::vector<Point3d> corners;  // z = 0, any winding (the loft re-orients as needed)
+  bool curved;                   // a circle: exact integrals but a chordal app mesh
+  double radius;
+};
+
+NurbsCurve ScaledSection(const CapProfile& p, double scale, double z) {
+  if (p.curved) return sweep_tests::Circle(Point3d(0, 0, z), Vector3d(0, 0, 1), p.radius * scale);
+  std::vector<Point3d> pts;
+  for (const Point3d& c : p.corners) pts.push_back(Point3d(c.x * scale, c.y * scale, z));
+  pts.push_back(pts.front());
+  return NurbsCurve::FromControlPoints(pts, 1);
+}
+
+double PolygonArea(const std::vector<Point3d>& c) {
+  double a = 0.0;
+  for (size_t i = 0; i < c.size(); ++i) {
+    const Point3d& p = c[i];
+    const Point3d& q = c[(i + 1) % c.size()];
+    a += p.x * q.y - q.x * p.y;
+  }
+  return std::fabs(a) / 2.0;
+}
+
+// Analytic volume of the loft between a section and its homothetic copy
+// (scale `s`, height `h`): the ruled walls are then a true frustum, so
+// V = h/3 (A0 + A0 s + A0 s^2).
+double FrustumVolume(const CapProfile& p, double s, double h) {
+  const double a0 = p.curved ? M_PI * p.radius * p.radius : PolygonArea(p.corners);
+  return h / 3.0 * a0 * (1.0 + s + s * s);
+}
+
+// Analytic total area: the two caps plus the lateral walls (each polygon edge
+// sweeps a PLANAR trapezoid to its scaled copy; a circle's wall is the cone
+// frustum pi (r0 + r1) slant).
+double FrustumArea(const CapProfile& p, double s, double h) {
+  const double a0 = p.curved ? M_PI * p.radius * p.radius : PolygonArea(p.corners);
+  double lateral = 0.0;
+  if (p.curved) {
+    const double r0 = p.radius, r1 = p.radius * s;
+    lateral = M_PI * (r0 + r1) * std::sqrt(h * h + (r0 - r1) * (r0 - r1));
+  } else {
+    for (size_t i = 0; i < p.corners.size(); ++i) {
+      const Point3d& a = p.corners[i];
+      const Point3d& b = p.corners[(i + 1) % p.corners.size()];
+      const Point3d a1(a.x * s, a.y * s, h), b1(b.x * s, b.y * s, h);
+      auto tri = [](const Point3d& u, const Point3d& v, const Point3d& w) {
+        return 0.5 * ON_CrossProduct(v - u, w - u).Length();
+      };
+      lateral += tri(a, b, b1) + tri(a, b1, a1);
+    }
+  }
+  return a0 * (1.0 + s * s) + lateral;
+}
+
+bool Close(double a, double b, double rel) { return std::fabs(a - b) <= rel * std::max(std::fabs(a), std::fabs(b)); }
+
+// The structure of one capped loft: faces 1 and 2 are the caps.
+void CheckPlanarTrimmedCaps(const Brep& b, bool bottom_faces_down, const std::string& s) {
+  const ON_Brep& raw = b.raw();
+  Check(b.FaceCount() == 3, (s + ": wall + two caps = 3 faces").c_str());
+  Check(raw.IsValid(), (s + ": raw().IsValid()").c_str());
+  Check(raw.IsSolid(), (s + ": raw().IsSolid() - a closed, oriented manifold").c_str());
+  const Brep::CheckReport rep = b.Check();
+  Check(rep.IsClean() && rep.is_closed && rep.is_oriented, (s + ": Check() is clean, closed and oriented").c_str());
+  bool any_rev = false;
+  for (int i = 0; i < raw.m_F.Count(); ++i) any_rev = any_rev || raw.m_F[i].m_bRev;
+  Check(!any_rev, (s + ": every face is outward by construction (no m_bRev flip was needed)").c_str());
+
+  bool caps_ok = true, loops_ok = true, shared_ok = true, tol_ok = true, planar_ok = true, normals_ok = true;
+  for (int fi = 1; fi <= 2; ++fi) {
+    const ON_BrepFace& face = raw.m_F[fi];
+    const ON_NurbsSurface* srf = ON_NurbsSurface::Cast(face.SurfaceOf());
+    // One bilinear plane patch with no singular side - not a fan.
+    caps_ok = caps_ok && srf && srf->Degree(0) == 1 && srf->Degree(1) == 1 && srf->CVCount(0) == 2 && srf->CVCount(1) == 2;
+    for (int side = 0; srf && side < 4; ++side) caps_ok = caps_ok && !srf->IsSingular(side);
+    planar_ok = planar_ok && srf && srf->IsPlanar(nullptr, 1e-9);
+    // One outer loop made of exactly one trim, along an edge shared with the wall.
+    loops_ok = loops_ok && face.m_li.Count() == 1 && raw.m_L[face.m_li[0]].m_type == ON_BrepLoop::outer &&
+               raw.m_L[face.m_li[0]].m_ti.Count() == 1 && raw.LoopDirection(raw.m_L[face.m_li[0]]) > 0;
+    if (face.m_li.Count() == 1 && raw.m_L[face.m_li[0]].m_ti.Count() == 1) {
+      const ON_BrepTrim& trim = raw.m_T[raw.m_L[face.m_li[0]].m_ti[0]];
+      loops_ok = loops_ok && trim.m_type == ON_BrepTrim::mated;
+      const ON_BrepEdge& edge = raw.m_E[trim.m_ei];
+      shared_ok = shared_ok && edge.m_ti.Count() == 2;
+      bool wall_side = false;
+      for (int k = 0; k < edge.m_ti.Count(); ++k) wall_side = wall_side || raw.m_T[edge.m_ti[k]].Face()->m_face_index == 0;
+      shared_ok = shared_ok && wall_side && edge.m_vi[0] == edge.m_vi[1];  // one closed edge shared with the wall
+      tol_ok = tol_ok && edge.m_tolerance >= 0.0 && edge.m_tolerance < 1e-7 && trim.m_tolerance[0] >= 0.0 &&
+               raw.m_V[edge.m_vi[0]].m_tolerance >= 0.0;
+    }
+    // Outward normal: the first cap faces down (-z), the second up (+z) for a loft going up in z.
+    if (srf) {
+      const ON_3dVector n = srf->NormalAt(srf->Domain(0).Mid(), srf->Domain(1).Mid());
+      const double want = (fi == 1) == bottom_faces_down ? -1.0 : 1.0;
+      normals_ok = normals_ok && n.z * want > 0.999;
+    }
+  }
+  Check(caps_ok, (s + ": each cap is one bilinear plane patch with no singular (collapsed) side - not a fan").c_str());
+  Check(planar_ok, (s + ": each cap surface is planar").c_str());
+  Check(loops_ok, (s + ": each cap has exactly one outer loop of one mated trim, counterclockwise in (u, v)").c_str());
+  Check(shared_ok, (s + ": each cap's trim runs along ONE closed edge it shares with the wall (2 trims, closed vertex)").c_str());
+  Check(tol_ok, (s + ": shared edge / trim / vertex tolerances are set (>= 0) and tiny (< 1e-7)").c_str());
+  Check(normals_ok, (s + ": cap normals are outward (bottom -z, top +z)").c_str());
+}
+
+void CheckLoftNumbers(const CapProfile& p, double s, double h, const char* kind) {
+  const std::string name = std::string(p.name) + " " + kind;
+  const std::vector<NurbsCurve> secs = {ScaledSection(p, 1.0, 0.0), ScaledSection(p, s, h)};
+  const Brep b = Brep::Loft(secs, 1, /*closed=*/false, /*cap=*/true);
+  CheckPlanarTrimmedCaps(b, true, name);
+
+  // The cap patch is the section's own bounding rectangle (zero margin), so
+  // the B-rep's bounding box is exactly the solid's - a wider patch would
+  // inflate zoom-extents / selection boxes / the app's adaptive mesh tolerance.
+  {
+    double lo_x = 1e300, hi_x = -1e300, lo_y = 1e300, hi_y = -1e300;
+    if (p.curved) {
+      lo_x = lo_y = -p.radius;
+      hi_x = hi_y = p.radius;
+    }
+    for (const Point3d& c : p.corners) {
+      lo_x = std::min(lo_x, c.x);
+      hi_x = std::max(hi_x, c.x);
+      lo_y = std::min(lo_y, c.y);
+      hi_y = std::max(hi_y, c.y);
+    }
+    const ON_BoundingBox bb = b.raw().BoundingBox();
+    Check(std::fabs(bb.m_min.x - lo_x) < 1e-9 && std::fabs(bb.m_max.x - hi_x) < 1e-9 &&
+              std::fabs(bb.m_min.y - lo_y) < 1e-9 && std::fabs(bb.m_max.y - hi_y) < 1e-9 &&
+              std::fabs(bb.m_min.z) < 1e-9 && std::fabs(bb.m_max.z - h) < 1e-9,
+          (name + ": raw().BoundingBox() is exactly the solid's (the cap patch adds no margin)").c_str());
+  }
+
+  // Exact integration paths vs the analytic frustum.
+  const double exact_v = FrustumVolume(p, s, h);
+  const double exact_a = FrustumArea(p, s, h);
+  const double rel = p.curved ? 1e-6 : 1e-9;
+  Check(Close(b.Volume(), exact_v, rel), (name + ": Brep::Volume() equals the analytic frustum volume").c_str());
+  Check(Close(b.Area(), exact_a, rel), (name + ": Brep::Area() equals the analytic area").c_str());
+
+  // The kernel's own closed mesh: a closed manifold at asymmetric division
+  // pairs (the property the old fan caps were built for) and the exact
+  // volume for a polygon to float precision (the lattice hits every corner:
+  // uniform knots, 48 divisions).
+  const std::pair<int, int> division_pairs[] = {{48, 4}, {12, 5}, {5, 12}, {8, 8}};
+  for (const std::pair<int, int>& d : division_pairs) {
+    Check(b.TessellateToClosedMesh(d.first, d.second).IsClosedManifold(),
+          (name + ": TessellateToClosedMesh(" + std::to_string(d.first) + ", " + std::to_string(d.second) +
+           ") is a closed manifold")
+              .c_str());
+  }
+  const double mesh_vol = b.TessellateToClosedMesh(48, 4).Volume();
+  Check(mesh_vol > 0.0 && Close(mesh_vol, exact_v, p.curved ? 5e-3 : 1e-6),  // mesh vertices are float: ~5e-8
+        (name + ": kernel mesh volume is positive and matches the analytic volume").c_str());
+
+#ifdef DINO8_TEST_HAS_APP_MESHER
+  // THE regression: what the app's MeshOf() (dino8-app BrepMesher) makes of it.
+  dino8::app::BrepMeshOptions opt;
+  opt.chord_tolerance = 0.005;
+  const Mesh app = dino8::app::MeshBrepClosed(b.raw(), opt);
+  Check(app.IsClosedManifold(), (name + ": the app mesher (MeshOf) closes the capped loft - Volume is not 0").c_str());
+  Check(Close(app.Volume(), exact_v, p.curved ? 2e-3 : 1e-4),
+        (name + ": the app mesh's volume equals the analytic volume").c_str());
+#endif
+}
+
+}  // namespace loft_planar_cap_tests
+
+void TestLoftPlanarCapsMeshClosedAndVolumeExact() {
+  using namespace loft_planar_cap_tests;
+  const double h = 10.0;
+  std::vector<CapProfile> profiles;
+  profiles.push_back({"square 10x10", {Point3d(-5, -5, 0), Point3d(5, -5, 0), Point3d(5, 5, 0), Point3d(-5, 5, 0)}, false, 0});
+  profiles.push_back({"rectangle 12x6", {Point3d(-6, -3, 0), Point3d(6, -3, 0), Point3d(6, 3, 0), Point3d(-6, 3, 0)}, false, 0});
+  profiles.push_back({"L-shape (non-convex)",
+                      {Point3d(-4, -4, 0), Point3d(4, -4, 0), Point3d(4, -1, 0), Point3d(-1, -1, 0), Point3d(-1, 4, 0), Point3d(-4, 4, 0)},
+                      false,
+                      0});
+  CapProfile hex{"hexagon", {}, false, 0};
+  for (int i = 0; i < 6; ++i) hex.corners.push_back(Point3d(5 * std::cos(i * M_PI / 3), 5 * std::sin(i * M_PI / 3), 0));
+  profiles.push_back(hex);
+  profiles.push_back({"triangle", {Point3d(-5, -4, 0), Point3d(5, -4, 0), Point3d(0, 5, 0)}, false, 0});
+  profiles.push_back({"circle r5", {}, true, 5.0});
+
+  for (const CapProfile& p : profiles) {
+    CheckLoftNumbers(p, 1.0, h, "prism");     // scale 1: the cube-like case (square -> exactly 1000)
+    CheckLoftNumbers(p, 0.5, h, "frustum");   // scale 1/2: a true frustum
+  }
+
+  // The cube itself: the headline number of the regression.
+  {
+    const CapProfile& sq = profiles[0];
+    const Brep cube = Brep::Loft({ScaledSection(sq, 1.0, 0.0), ScaledSection(sq, 1.0, h)}, 1, false, true);
+    Check(std::abs(cube.Volume() - 1000.0) < 1e-9, "10x10x10 capped square loft: Brep::Volume() == 1000");
+    Check(std::abs(cube.TessellateToClosedMesh(8, 8).Volume() - 1000.0) < 1e-9, "...and its closed mesh volume == 1000");
+  }
+
+  // A clockwise input winding and a loft running DOWN in z are re-oriented
+  // so the caps still face outward.
+  {
+    const CapProfile& sq = profiles[0];
+    std::vector<Point3d> cw(sq.corners.rbegin(), sq.corners.rend());
+    CapProfile rev{"clockwise square", cw, false, 0};
+    const Brep b = Brep::Loft({ScaledSection(rev, 1.0, 0.0), ScaledSection(rev, 1.0, h)}, 1, false, true);
+    CheckPlanarTrimmedCaps(b, true, "clockwise-wound square");
+    Check(Close(b.Volume(), 1000.0, 1e-9), "clockwise-wound square loft: volume 1000");
+    const Brep down = Brep::Loft({ScaledSection(sq, 1.0, h), ScaledSection(sq, 1.0, 0.0)}, 1, false, true);
+    CheckPlanarTrimmedCaps(down, false, "downward square loft");  // first cap now faces UP
+    Check(Close(down.Volume(), 1000.0, 1e-9), "downward square loft: volume 1000");
+  }
+
+  // Several sections (cubic through 4 growing squares) and an oblique, rotated
+  // copy: the cap follows the wall's own end sections, the analysis fan is
+  // derived from the cap's edge (so it survives a rigid motion).
+  {
+    const CapProfile& sq = profiles[0];
+    std::vector<NurbsCurve> four;
+    for (int k = 0; k < 4; ++k) four.push_back(ScaledSection(sq, 1.0 + 0.2 * k, 3.0 * k));
+    const Brep cubic = Brep::Loft(four, 3, false, true);
+    CheckPlanarTrimmedCaps(cubic, true, "cubic loft through four squares");
+    Check(cubic.TessellateToClosedMesh(48, 16).IsClosedManifold(), "cubic loft: closed mesh");
+    const double v0 = cubic.Volume();
+    ON_Xform rot;
+    rot.Rotation(0.7, ON_3dVector(1, 2, 3), ON_3dPoint(1, 1, 1));
+    const ON_Xform xf = ON_Xform::TranslationTransformation(ON_3dVector(4, -5, 6)) * rot;
+    const Brep moved = cubic.Transform(xf);
+    Check(moved.raw().IsValid() && moved.raw().IsSolid(), "rigidly moved capped loft: still a valid closed solid");
+    Check(Close(moved.Volume(), v0, 1e-9), "rigidly moved capped loft: Volume() unchanged (analysis fan follows the cap's edge)");
+    Check(moved.TessellateToClosedMesh(48, 16).IsClosedManifold(), "rigidly moved capped loft: closed kernel mesh");
+  }
+
+  // ExtrudeTapered() rides on Loft(): a square drafted outward.
+  {
+    const CapProfile& sq = profiles[0];
+    const NurbsCurve square = ScaledSection(sq, 1.0, 0.0);
+    const Brep tapered = Brep::ExtrudeTapered(square, Vector3d(0, 0, h), std::atan(0.1));
+    CheckPlanarTrimmedCaps(tapered, true, "ExtrudeTapered square");
+    Check(tapered.TessellateToClosedMesh(48, 4).IsClosedManifold(), "ExtrudeTapered square: closed kernel mesh");
+  }
+
+  // A cap's real trim is genuine loop topology (no pseudo-trim side-table
+  // polygon), so ExtrudeFace() - which would otherwise silently extrude the
+  // cap's whole PLANE PATCH, a box of the wrong size - refuses it, exactly as
+  // it refused the old closed fan (the wall is refused too: it is closed).
+  {
+    const CapProfile& sq = profiles[0];
+    const Brep lo = Brep::Loft({ScaledSection(sq, 1.0, 0.0), ScaledSection(sq, 1.0, h)}, 1, false, true);
+    for (int face = 0; face < 3; ++face) {
+      Check(sweep_tests::Throws([&] { Brep::ExtrudeFace(lo, face, Vector3d(0, 0, -3)); }),
+            "ExtrudeFace() refuses every face of a capped loft (wall: closed; cap: real-loop trim it cannot read)");
+    }
+  }
+
+  // Refusals are unchanged: a non-planar end section cannot be capped.
+  {
+    const NurbsCurve flat = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0), Point3d(0, 0, 0)}, 1);
+    const NurbsCurve warped =
+        NurbsCurve::FromControlPoints({Point3d(0, 0, 5), Point3d(2, 0, 5), Point3d(2, 2, 6), Point3d(0, 2, 5), Point3d(0, 0, 5)}, 1);
+    Check(sweep_tests::Throws([&] { Brep::Loft({flat, warped}, 1, false, true); }), "a non-planar end section still cannot be capped");
+    Check(!sweep_tests::Throws([&] { Brep::Loft({flat, warped}, 1, false, false); }), "...but lofts fine uncapped");
+  }
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -90538,6 +90845,7 @@ int main() {
   RunTest("fit_patch_tests::TestBrepTrimmedPatchFace", fit_patch_tests::TestBrepTrimmedPatchFace);
   RunTest("TestSectionAnchoredSweepReproducesTheSectionAndCoversTheRail", TestSectionAnchoredSweepReproducesTheSectionAndCoversTheRail);
   RunTest("TestLoftOfAlignedClosedSectionsInterpolatesAndCaps", TestLoftOfAlignedClosedSectionsInterpolatesAndCaps);
+  RunTest("TestLoftPlanarCapsMeshClosedAndVolumeExact", TestLoftPlanarCapsMeshClosedAndVolumeExact);
 
   RunTest("ON::End", ON::End);
 
