@@ -454,7 +454,133 @@ int FindByPersistentId(const std::vector<uint64_t>& table, uint64_t id) {
   return -1;
 }
 
+// Where every ORIGINAL face/edge/vertex index of an ON_Brep ends up after
+// any number of ON_Brep::Compact() calls routed through TrackedCompact()
+// below: faces[k] is the original index of the face that NOW sits at k,
+// or -1 for one that did not exist when tracking began (appended by the
+// operation itself). Starts as the identity (IdentityIndexMap()) over the
+// Brep's own current table sizes and is composed through each compact.
+//
+// This is what lets Brep's persistent-id tables (face_persistent_ids_ and
+// its two siblings) survive an operation that compacts on a TRIAL copy
+// and only then assigns it over brep_ (TryMergeCoplanarPair()), or that
+// compacts more than once, exactly as well as one that compacts brep_ in
+// place: the ON_Brep itself carries no record of where a slot came from,
+// so the map is computed from the dead-slot flags right BEFORE each
+// compact, mirroring the only guarantee ON_Brep::Compact() makes - it
+// drops exactly the slots flagged deleted and keeps every survivor in
+// its original relative order (CullUnusedFaces()/CullUnusedEdges()/
+// CullUnusedVertices(), confirmed against the vendored source).
+struct CompactIndexMap {
+  std::vector<int> faces, edges, vertices;
+  bool valid = true;  // false once a compact did not behave as modelled; every id is then dropped, never mis-assigned
+};
+
+CompactIndexMap IdentityIndexMap(const ON_Brep& b) {
+  CompactIndexMap m;
+  m.faces.resize(static_cast<size_t>(b.m_F.Count()));
+  m.edges.resize(static_cast<size_t>(b.m_E.Count()));
+  m.vertices.resize(static_cast<size_t>(b.m_V.Count()));
+  for (size_t i = 0; i < m.faces.size(); ++i) m.faces[i] = static_cast<int>(i);
+  for (size_t i = 0; i < m.edges.size(); ++i) m.edges[i] = static_cast<int>(i);
+  for (size_t i = 0; i < m.vertices.size(); ++i) m.vertices[i] = static_cast<int>(i);
+  return m;
+}
+
+// `survivor[i]` true for every slot i that Compact() is about to keep,
+// in current indexing. Composes `old_of_new` (the map before this
+// compact) into the post-compact one.
+std::vector<int> ComposeSurvivors(const std::vector<int>& old_of_new, const std::vector<char>& survivor) {
+  std::vector<int> out;
+  out.reserve(survivor.size());
+  for (size_t i = 0; i < survivor.size(); ++i) {
+    if (!survivor[i]) continue;
+    out.push_back(i < old_of_new.size() ? old_of_new[i] : -1);
+  }
+  return out;
+}
+
+// b.Compact(), with `map` carried through it. Survivors are decided the
+// way Compact() itself decides them: a face/edge slot whose own
+// m_face_index/m_edge_index is -1 is dropped; a vertex slot whose
+// m_vertex_index is -1 is dropped UNLESS a still-live trim references it
+// (ON_Brep::CullUnusedVertices() deliberately un-deletes such a vertex,
+// "in order to prevent crashes" - its own source comment - so the map
+// must keep it too). If the post-compact table sizes nevertheless differ
+// from what was modelled, the map is marked invalid rather than left
+// pointing at the wrong element.
+void TrackedCompact(ON_Brep& b, CompactIndexMap& map) {
+  std::vector<char> live_f(static_cast<size_t>(b.m_F.Count()), 0);
+  std::vector<char> live_e(static_cast<size_t>(b.m_E.Count()), 0);
+  std::vector<char> live_v(static_cast<size_t>(b.m_V.Count()), 0);
+  for (int i = 0; i < b.m_F.Count(); ++i) live_f[static_cast<size_t>(i)] = b.m_F[i].m_face_index != -1;
+  for (int i = 0; i < b.m_E.Count(); ++i) live_e[static_cast<size_t>(i)] = b.m_E[i].m_edge_index != -1;
+  for (int i = 0; i < b.m_V.Count(); ++i) live_v[static_cast<size_t>(i)] = b.m_V[i].m_vertex_index != -1;
+  for (int ti = 0; ti < b.m_T.Count(); ++ti) {
+    const ON_BrepTrim& trim = b.m_T[ti];
+    if (trim.m_trim_index == -1) continue;
+    for (int j = 0; j < 2; ++j) {
+      const int vi = trim.m_vi[j];
+      if (vi >= 0 && vi < b.m_V.Count()) live_v[static_cast<size_t>(vi)] = 1;
+    }
+  }
+  std::vector<int> faces = ComposeSurvivors(map.faces, live_f);
+  std::vector<int> edges = ComposeSurvivors(map.edges, live_e);
+  std::vector<int> vertices = ComposeSurvivors(map.vertices, live_v);
+
+  b.Compact();
+
+  if (static_cast<int>(faces.size()) != b.m_F.Count() || static_cast<int>(edges.size()) != b.m_E.Count() ||
+      static_cast<int>(vertices.size()) != b.m_V.Count()) {
+    map.valid = false;
+  }
+  map.faces = std::move(faces);
+  map.edges = std::move(edges);
+  map.vertices = std::move(vertices);
+}
+
+// Rebuilds one persistent-id table through `old_of_new`: the element now
+// at k keeps whatever id its original slot had (0 - "never asked" - for
+// an element appended by the operation, or one whose original slot was
+// never queried).
+void RemapPersistentIdTable(std::vector<uint64_t>& table, const std::vector<int>& old_of_new) {
+  if (table.empty()) return;  // nothing was ever assigned - nothing to carry
+  std::vector<uint64_t> out(old_of_new.size(), 0);
+  bool any = false;
+  for (size_t k = 0; k < old_of_new.size(); ++k) {
+    const int old = old_of_new[k];
+    if (old >= 0 && static_cast<size_t>(old) < table.size() && table[static_cast<size_t>(old)] != 0) {
+      out[k] = table[static_cast<size_t>(old)];
+      any = true;
+    }
+  }
+  if (!any) out.clear();
+  table = std::move(out);
+}
+
 }  // namespace
+
+void Brep::RemapPersistentIds(const std::vector<int>& old_face_of_new, const std::vector<int>& old_edge_of_new,
+                              const std::vector<int>& old_vertex_of_new, bool map_valid) {
+  if (!map_valid) {
+    // Never mis-assign: a compact that did not match the model forfeits
+    // every id (each then resolves to nothing, the same answer a deleted
+    // element gives) rather than guessing.
+    face_persistent_ids_.clear();
+    edge_persistent_ids_.clear();
+    vertex_persistent_ids_.clear();
+    return;
+  }
+  RemapPersistentIdTable(face_persistent_ids_, old_face_of_new);
+  RemapPersistentIdTable(edge_persistent_ids_, old_edge_of_new);
+  RemapPersistentIdTable(vertex_persistent_ids_, old_vertex_of_new);
+}
+
+void Brep::CompactRaw() {
+  CompactIndexMap map = IdentityIndexMap(brep_);
+  TrackedCompact(brep_, map);
+  RemapPersistentIds(map.faces, map.edges, map.vertices, map.valid);
+}
 
 uint64_t Brep::FacePersistentId(int face_index) {
   if (face_index < 0 || face_index >= brep_.m_F.Count()) {
@@ -495,35 +621,41 @@ uint64_t Brep::VertexPersistentId(int vertex_index) {
   return GetOrAssignPersistentId(vertex_persistent_ids_, next_persistent_id_, vertex_index);
 }
 
-int Brep::FindFaceByPersistentId(uint64_t id) const { return FindByPersistentId(face_persistent_ids_, id); }
-int Brep::FindEdgeByPersistentId(uint64_t id) const { return FindByPersistentId(edge_persistent_ids_, id); }
-int Brep::FindVertexByPersistentId(uint64_t id) const { return FindByPersistentId(vertex_persistent_ids_, id); }
+// The three Find*ByPersistentId() resolvers only ever answer with a LIVE
+// slot: an element deleted but not yet compacted away (a raw
+// ON_Brep::DeleteFace() with no Compact() after it, say) still occupies
+// its slot in the id table, but its id must already resolve to -1 - the
+// documented "its owner was deleted, possibly since compacted away"
+// contract, which the compacted case alone does not cover.
+int Brep::FindFaceByPersistentId(uint64_t id) const {
+  const int i = FindByPersistentId(face_persistent_ids_, id);
+  return (i >= 0 && i < brep_.m_F.Count() && brep_.m_F[i].m_face_index >= 0) ? i : -1;
+}
+int Brep::FindEdgeByPersistentId(uint64_t id) const {
+  const int i = FindByPersistentId(edge_persistent_ids_, id);
+  return (i >= 0 && i < brep_.m_E.Count() && brep_.m_E[i].m_edge_index >= 0) ? i : -1;
+}
+int Brep::FindVertexByPersistentId(uint64_t id) const {
+  const int i = FindByPersistentId(vertex_persistent_ids_, id);
+  return (i >= 0 && i < brep_.m_V.Count() && brep_.m_V[i].m_vertex_index >= 0) ? i : -1;
+}
 
 void Brep::CompactPreservingPersistentIds() {
   // Assign an id to every CURRENTLY LIVE element first (not just ones a
-  // caller already happened to query), walked in ascending raw-index
-  // order - the same order Compact() itself preserves among survivors,
-  // relied on below.
-  std::vector<uint64_t> live_face_ids, live_edge_ids, live_vertex_ids;
+  // caller already happened to query), then compact through the same
+  // tracked path every other Compact()-calling method of this class now
+  // uses (CompactRaw()), which carries each survivor's id to its new
+  // index.
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
-    if (brep_.m_F[i].m_face_index >= 0) live_face_ids.push_back(FacePersistentId(i));
+    if (brep_.m_F[i].m_face_index >= 0) FacePersistentId(i);
   }
   for (int i = 0; i < brep_.m_E.Count(); ++i) {
-    if (brep_.m_E[i].m_edge_index >= 0) live_edge_ids.push_back(EdgePersistentId(i));
+    if (brep_.m_E[i].m_edge_index >= 0) EdgePersistentId(i);
   }
   for (int i = 0; i < brep_.m_V.Count(); ++i) {
-    if (brep_.m_V[i].m_vertex_index >= 0) live_vertex_ids.push_back(VertexPersistentId(i));
+    if (brep_.m_V[i].m_vertex_index >= 0) VertexPersistentId(i);
   }
-
-  brep_.Compact();
-
-  // Compact() removes exactly the deleted slots and leaves every
-  // survivor in its own original relative order - so the k-th id
-  // collected above (0-indexed, in ascending OLD order) now belongs to
-  // the k-th face/edge/vertex in the freshly compacted table.
-  face_persistent_ids_ = std::move(live_face_ids);
-  edge_persistent_ids_ = std::move(live_edge_ids);
-  vertex_persistent_ids_ = std::move(live_vertex_ids);
+  CompactRaw();
 }
 
 namespace {
@@ -6978,8 +7110,13 @@ int FindOuterLoop(const ON_Brep& b, const ON_BrepFace& face, std::vector<int>* h
 // manifold-safe shared boundary) can still fail here, e.g. if the two
 // loops' own stored trim directions aren't the standard opposite pair a
 // valid 2-manifold edge is expected to have.
+// `index_map` (never null) is composed through every Compact() this
+// performs - including the ones on its own trial copy - so the caller
+// can carry its persistent-id tables across the merge (see
+// CompactIndexMap above); on a `false` return it is left meaningless and
+// must be discarded along with the untouched `b`.
 bool TryMergeCoplanarPair(ON_Brep& b, int fa, int fb, const std::vector<int>& shared_edge_indices,
-                           const ON_Plane& plane, double tol) {
+                           const ON_Plane& plane, double tol, CompactIndexMap* index_map) {
   const ON_BrepFace& face_a = b.m_F[fa];
   const ON_BrepFace& face_b = b.m_F[fb];
   std::vector<int> holes_a, holes_b;
@@ -7144,10 +7281,10 @@ bool TryMergeCoplanarPair(ON_Brep& b, int fa, int fb, const std::vector<int>& sh
   const int hi = std::max(fa, fb), lo = std::min(fa, fb);
   trial.DeleteFace(trial.m_F[hi], true);
   trial.DeleteFace(trial.m_F[lo], true);
-  trial.Compact();
+  TrackedCompact(trial, *index_map);
   trial.Append(merged);
   WeldCoincidentNakedEdges(trial, std::max(tol * 20, tolerance::kEdgeJoin));
-  trial.Compact();
+  TrackedCompact(trial, *index_map);
   trial.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(trial);
 
@@ -7289,7 +7426,9 @@ int Brep::MergeCoplanarFaces(double tolerance) {
         if (ON_DotProduct(pa.plane.zaxis, pb.plane.zaxis) < 1.0 - tolerance::kAlignment) continue;
         if (std::fabs(ON_DotProduct(pa.plane.zaxis, pb.plane.origin - pa.plane.origin)) > tol) continue;
 
-        if (TryMergeCoplanarPair(brep_, fa, fb, shared_edge_indices, pa.plane, tol)) {
+        CompactIndexMap index_map = IdentityIndexMap(brep_);
+        if (TryMergeCoplanarPair(brep_, fa, fb, shared_edge_indices, pa.plane, tol, &index_map)) {
+          RemapPersistentIds(index_map.faces, index_map.edges, index_map.vertices, index_map.valid);
           ++merges;
           changed = true;
         }
@@ -7380,7 +7519,9 @@ int SameSurfaceMergeOuterLoop(const ON_Brep& b, const ON_BrepFace& face, std::ve
   return FindOuterLoop(b, face, holes);
 }
 
-bool TryMergeSameSurfacePair(ON_Brep& b, int fa, int fb, int shared_edge_index) {
+// `index_map` (never null): same persistent-id carry-through contract as
+// TryMergeCoplanarPair()'s own parameter of that name.
+bool TryMergeSameSurfacePair(ON_Brep& b, int fa, int fb, int shared_edge_index, CompactIndexMap* index_map) {
   ON_BrepFace& face_a = b.m_F[fa];
   ON_BrepFace& face_b = b.m_F[fb];
   std::vector<int> hole_loops;
@@ -7518,7 +7659,7 @@ bool TryMergeSameSurfacePair(ON_Brep& b, int fa, int fb, int shared_edge_index) 
   const int hi = std::max(fa, fb), lo = std::min(fa, fb);
   b.DeleteFace(b.m_F[hi], true);
   b.DeleteFace(b.m_F[lo], true);
-  b.Compact();
+  TrackedCompact(b, *index_map);
   b.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(b);
   return true;
@@ -7599,7 +7740,9 @@ int Brep::MergeSameSurfaceFaces() {
         }
         if (shared_edges != 1) continue;
 
-        if (TryMergeSameSurfacePair(brep_, fa, fb, edge->m_edge_index)) {
+        CompactIndexMap index_map = IdentityIndexMap(brep_);
+        if (TryMergeSameSurfacePair(brep_, fa, fb, edge->m_edge_index, &index_map)) {
+          RemapPersistentIds(index_map.faces, index_map.edges, index_map.vertices, index_map.valid);
           ++merges;
           changed = true;
         }
@@ -8276,7 +8419,7 @@ Result Brep::RemoveNakedMicroEdge(int edge_index, double tolerance) {
   brep_.CombineCoincidentVertices(brep_.m_V[v_start], brep_.m_V[v_end]);
   brep_.m_E[edge_index].m_edge_index = -1;
   brep_.m_T[ti].m_trim_index = -1;
-  brep_.Compact();
+  CompactRaw();
 
   brep_.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(brep_);
@@ -8507,7 +8650,7 @@ Result Brep::RemoveSharedMicroEdge(int edge_index, double tolerance) {
   brep_.m_E[edge_index].m_edge_index = -1;
   brep_.m_T[ti0].m_trim_index = -1;
   brep_.m_T[ti1].m_trim_index = -1;
-  brep_.Compact();
+  CompactRaw();
 
   brep_.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(brep_);
@@ -8721,7 +8864,7 @@ Result Brep::MergeContiguousEdges(int edge_index_a, int edge_index_b, double ang
   ON_BrepEdge* merged = brep_.CombineContiguousEdges(edge_index_a, edge_index_b, angle_tolerance_radians);
   if (!merged) return Result::Failed;
 
-  brep_.Compact();
+  CompactRaw();
   brep_.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(brep_);
   // Same reasoning as every other topology-surgery method above: the
@@ -9482,7 +9625,7 @@ int Brep::JoinNakedEdges(double tolerance) {
   ClearFaceSideTables();
   const int joined = WeldCoincidentNakedEdges(brep_, std::max(tolerance, 0.0));
   if (joined == 0) return 0;
-  brep_.Compact();
+  CompactRaw();
   brep_.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(brep_);
   RecordMeasuredTolerances(brep_, tolerance::kDistance);
@@ -9564,7 +9707,7 @@ int Brep::DeleteFacesImpl(const std::vector<int>& face_indices, bool heal, doubl
     ++removed;
   }
   if (removed == 0) return 0;
-  brep_.Compact();
+  CompactRaw();
   brep_.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(brep_);
   if (heal) {
@@ -9624,7 +9767,7 @@ int Brep::RemoveDegenerateEdges(double tolerance) {
     if (ei < 0 || ei >= brep_.m_E.Count() || brep_.m_E[ei].m_edge_index < 0) continue;
     if (brep_.CollapseEdge(ei, /*bCloseTrimGap=*/true, /*vertex_index=*/-1)) ++collapsed;
   }
-  brep_.Compact();
+  CompactRaw();
   CloseLoopGapsWithinTolerance(brep_, std::max(tolerance, 0.0));
   brep_.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(brep_);
@@ -9954,7 +10097,7 @@ Result Brep::KillEdgeVertex(int edge_index) {
   }
   b.m_V[leaf_vi].m_vertex_index = -1;
   b.m_E[edge_index].m_edge_index = -1;
-  b.Compact();
+  CompactRaw();
   b.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(b);
   return Result::Ok;
@@ -10372,7 +10515,7 @@ Result Brep::KillEdgeFace(int edge_index) {
   b.m_L[loop1_index].m_loop_index = -1;
   b.m_F[face1_index].m_face_index = -1;
 
-  b.Compact();
+  CompactRaw();
   b.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(b);
   ClearFaceSideTables();
@@ -10668,7 +10811,7 @@ Result Brep::KillEdgeMakeRing(int edge_index) {
   b.m_T[ti1].m_trim_index = -1;
   b.m_E[edge_index].m_edge_index = -1;
 
-  b.Compact();
+  CompactRaw();
   b.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(b);
   ClearFaceSideTables();
@@ -11069,7 +11212,7 @@ Result Brep::RemoveHoleLoop(int loop_index) {
   const Result result = RemoveHoleLoopNoFinalize(loop_index);
   if (result != Result::Ok) return result;
   ON_Brep& b = brep_;
-  b.Compact();
+  CompactRaw();
   b.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(b);
   ClearFaceSideTables();
@@ -11109,7 +11252,7 @@ int Brep::RemoveAllHoleLoops(int face_index) {
   }
   if (removed == 0) return 0;
 
-  b.Compact();
+  CompactRaw();
   b.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(b);
   ClearFaceSideTables();
@@ -11143,7 +11286,7 @@ int Brep::RemoveAllHoleLoopsInBrep() {
   }
   if (removed == 0) return 0;
 
-  b.Compact();
+  CompactRaw();
   b.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(b);
   ClearFaceSideTables();
@@ -11259,7 +11402,7 @@ Result Brep::RemoveOuterTrim(int face_index) {
                               "for face_index " + std::to_string(face_index));
   }
 
-  b.Compact();
+  CompactRaw();
   b.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(b);
   ClearFaceSideTables();
@@ -11538,7 +11681,7 @@ Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
   b.m_E[edge_index].m_edge_index = -1;
   for (const SplitTrim& st : split_trims) b.m_T[st.old_ti].m_trim_index = -1;
 
-  b.Compact();
+  CompactRaw();
   b.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(b);
   ClearFaceSideTables();
@@ -11949,7 +12092,7 @@ Result Brep::ExtendFaceInPlace(int face_index, int direction, double t0, double 
   cull_vertex(lo_max_vi);
   cull_vertex(hi_max_vi);
 
-  b.Compact();
+  CompactRaw();
   b.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(b);
   ClearFaceSideTables();
@@ -12209,7 +12352,7 @@ int Brep::CapPlanarHoles(double tolerance, std::vector<SkippedCap>* skipped) {
     ++added;
   }
   if (added == 0) return 0;
-  b.Compact();
+  CompactRaw();
   b.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(b);
   JoinNakedEdges(tol);

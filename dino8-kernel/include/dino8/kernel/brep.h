@@ -1311,16 +1311,26 @@ class Brep {
   // same return value semantics) - this only adds the id bookkeeping on
   // top, it does not change what Compact() itself does.
   //
-  // Deliberately a separate, additive entry point rather than a change
-  // to every existing Compact()-calling method in this class (DeleteFace,
-  // RemoveSharedMicroEdge, and the rest each already call `brep_.Compact()`
-  // directly as part of their own established contract): threading this
-  // through every one of them is a larger, separate change this pass
-  // does not attempt, so an id survives a call to THIS method, not yet
-  // every operation that happens to compact internally - the same
-  // "narrower than the full gap, honestly disclosed" scope limit
-  // BoxWelded()/TrimmedPlanarFaceWelded() already carry for their own
-  // still-partial siblings.
+  // Every Compact()-calling topology-surgery method of this class
+  // (DeleteFace()/DeleteFaces(), MergeCoplanarFaces(),
+  // MergeSameSurfaceFaces(), KillEdgeVertex()/KillEdgeFace()/
+  // KillEdgeMakeRing(), RemoveHoleLoop()/RemoveAllHoleLoops()/
+  // RemoveAllHoleLoopsInBrep(), RemoveOuterTrim(), SplitNakedEdgeAt(),
+  // ExtendFaceInPlace(), CapPlanarHoles(), RemoveNakedMicroEdge()/
+  // RemoveSharedMicroEdge(), MergeContiguousEdges(), JoinNakedEdges(),
+  // RemoveDegenerateEdges(), and the RemoveThinFaces()-based sliver/
+  // degenerate removals) now carries the already-assigned ids through its
+  // own internal Compact() the same way - including one performed on a
+  // private trial copy that is only then assigned over this Brep - so an
+  // id a caller holds keeps naming the SAME element (or resolves to -1
+  // once that element is gone) across those edits, rather than silently
+  // naming whichever element Compact() shifted into its old index. The
+  // difference between those methods and this one is only that this one
+  // also assigns an id to every live element that was never queried.
+  // Not carried: a NEW Brep returned by a boolean, split, or any other
+  // factory starts with no ids at all - identity across those outputs is
+  // a separate, still-open gap. Nor can an id survive a `raw().Compact()`
+  // a caller performs directly behind this class's back.
   void CompactPreservingPersistentIds();
 
   // Returns a copy of this Brep moved/rotated by `xform`, the Brep
@@ -5478,6 +5488,18 @@ class Brep {
   // below) - what every topology-surgery method here must do first; see
   // MergeCoplanarFaces' own comment for why.
   void ClearFaceSideTables();
+  // brep_.Compact() with the three persistent-id tables carried through
+  // it (see CompactPreservingPersistentIds()'s own doc comment): what
+  // every Compact()-calling method of this class uses in place of a bare
+  // `brep_.Compact()`, so an id keeps naming the same element across the
+  // renumber. Rebuilds the tables through an "original index of the
+  // element now at k" map (-1 for an element the edit appended) computed
+  // from the dead-slot flags right before the compact; `map_valid` false
+  // (the compact did not drop exactly the modelled slots) forfeits every
+  // id rather than mis-assigning one.
+  void CompactRaw();
+  void RemapPersistentIds(const std::vector<int>& old_face_of_new, const std::vector<int>& old_edge_of_new,
+                          const std::vector<int>& old_vertex_of_new, bool map_valid);
   // Shared body of RemoveDegenerateFaces()/RemoveSliverFaces().
   int RemoveThinFaces(double width, double join_tolerance, bool slivers_too);
   // Shared body of RemoveThinFaces()/DeleteFace()/DeleteFaces(): the

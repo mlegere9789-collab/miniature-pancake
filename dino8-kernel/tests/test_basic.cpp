@@ -82097,6 +82097,314 @@ void TestTessellateAdaptiveHonoursDegreeOneCreases() {
         "a smooth (sphere) face's adaptive grid is still exactly the (u+1)*(v+1) uniform lattice");
 }
 
+// Loop-vertex centroid of a face: a surface-parameterisation-independent
+// "which physical face is this" fingerprint for the persistent-id test
+// below (two distinct faces of any fixture used there never share one).
+ON_3dPoint PersistentIdFaceCentroid(const dino8::kernel::Brep& b, int fi) {
+  const ON_BrepFace& f = b.raw().m_F[fi];
+  ON_3dPoint sum(0, 0, 0);
+  int n = 0;
+  for (int li = 0; li < f.LoopCount(); ++li) {
+    const ON_BrepLoop* loop = f.Loop(li);
+    for (int ti = 0; ti < loop->TrimCount(); ++ti) {
+      const ON_BrepVertex* v = loop->Trim(ti)->Vertex(0);
+      if (v) {
+        sum += v->point;
+        ++n;
+      }
+    }
+  }
+  return n ? ON_3dPoint(sum.x / n, sum.y / n, sum.z / n) : ON_3dPoint::UnsetPoint;
+}
+
+ON_3dPoint PersistentIdEdgeMidpoint(const dino8::kernel::Brep& b, int ei) {
+  const ON_BrepEdge& e = b.raw().m_E[ei];
+  return ON_3dPoint(0.5 * (e.Vertex(0)->point + e.Vertex(1)->point));
+}
+
+// A closed square wire body of side `s` with its lower-left corner at
+// (x0, y0, 0), for AddHoleLoops() below.
+dino8::kernel::Brep PersistentIdSquareWire(double x0, double y0, double s) {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  const Point3d p[4] = {Point3d(x0, y0, 0), Point3d(x0 + s, y0, 0), Point3d(x0 + s, y0 + s, 0), Point3d(x0, y0 + s, 0)};
+  std::vector<NurbsCurve> c;
+  for (int k = 0; k < 4; ++k) c.push_back(NurbsCurve::FromControlPoints({p[k], p[(k + 1) % 4]}, /*degree=*/1));
+  return dino8::kernel::Brep::WireBody(c);
+}
+
+// Two unit cubes glued along x = 1 with no interior wall, built as ONE
+// welded shell of 10 unit-square faces (faces 0..7: bottom/top/y=0/y=1
+// of each cube, in that order; faces 8 and 9: the x = 0 and x = 2 end
+// walls). Four coplanar pairs for MergeCoplanarFaces(); the two end
+// walls are never touched by any merge. V = 12, E = 20, F = 10 and
+// V - E + F = 2 (a closed genus-0 shell).
+dino8::kernel::Brep PersistentIdTwoCubeShell() {
+  using dino8::kernel::Point3d;
+  std::vector<dino8::kernel::Brep::PlanarFace> f;
+  for (int k = 0; k < 2; ++k) {
+    const double x0 = k, x1 = k + 1;
+    f.push_back(CheckHealFace({Point3d(x0, 1, 0), Point3d(x1, 1, 0), Point3d(x1, 0, 0), Point3d(x0, 0, 0)},
+                              ON_3dVector(0, 0, -1)));  // bottom
+    f.push_back(CheckHealFace({Point3d(x0, 0, 1), Point3d(x1, 0, 1), Point3d(x1, 1, 1), Point3d(x0, 1, 1)},
+                              ON_3dVector(0, 0, 1)));  // top
+    f.push_back(CheckHealFace({Point3d(x0, 0, 0), Point3d(x1, 0, 0), Point3d(x1, 0, 1), Point3d(x0, 0, 1)},
+                              ON_3dVector(0, -1, 0)));  // y = 0
+    f.push_back(CheckHealFace({Point3d(x1, 1, 0), Point3d(x0, 1, 0), Point3d(x0, 1, 1), Point3d(x1, 1, 1)},
+                              ON_3dVector(0, 1, 0)));  // y = 1
+  }
+  f.push_back(CheckHealFace({Point3d(0, 1, 0), Point3d(0, 0, 0), Point3d(0, 0, 1), Point3d(0, 1, 1)},
+                            ON_3dVector(-1, 0, 0)));  // face 8: x = 0
+  f.push_back(CheckHealFace({Point3d(2, 0, 0), Point3d(2, 1, 0), Point3d(2, 1, 1), Point3d(2, 0, 1)},
+                            ON_3dVector(1, 0, 0)));  // face 9: x = 2
+  return dino8::kernel::Brep::FromPlanarFaces(f);
+}
+
+// Regression test for a real, previously-undisclosed misidentification:
+// every Compact()-calling topology-surgery method of Brep (DeleteFace()
+// and the rest named in CompactPreservingPersistentIds()'s doc comment)
+// used to call the bare `brep_.Compact()` and leave the persistent-id
+// tables untouched - so after `DeleteFace(0)` on a 6-face box, face 0's
+// own id still resolved to index 0 (now a DIFFERENT face), face 5's id
+// resolved to index 5 (out of range), and `FacePersistentId(k)` handed
+// back the id that belonged to face k+1 - silently wrong answers, not
+// merely "not preserved". Confirmed on a standalone probe linked against
+// the pre-fix library before any code change: 13 of 13 of the checks
+// below failed there. A second, independent contract hole found the same
+// way: Find*ByPersistentId() returned a deleted-but-not-yet-compacted
+// element's dead slot instead of the documented -1.
+//
+// Every assertion is against the element's own GEOMETRY after the edit
+// (loop-vertex centroid / edge midpoint / vertex point), never against an
+// index assumed from the construction, so a wrong-but-in-range answer is
+// caught, not just an out-of-range one.
+void TestBrepPersistentIdsSurviveKernelTopologyEdits() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  const auto same = [](const ON_3dPoint& a, const ON_3dPoint& b) { return a.DistanceTo(b) < 1e-9; };
+
+  // --- DeleteFace(): the single most direct case ---------------------------
+  {
+    Brep box = Brep::BoxWelded(0, 0, 0, 1, 2, 3);
+    Check(box.FaceCount() == 6, "setup: BoxWelded() has 6 faces");
+    std::vector<uint64_t> id(6);
+    std::vector<ON_3dPoint> center(6);
+    for (int i = 0; i < 6; ++i) {
+      id[i] = box.FacePersistentId(i);
+      center[i] = PersistentIdFaceCentroid(box, i);
+    }
+    box.DeleteFace(0, /*heal=*/false);
+    Check(box.FaceCount() == 5, "DeleteFace(0) leaves 5 faces");
+    Check(box.FindFaceByPersistentId(id[0]) == -1, "the deleted face's own id resolves to -1, not to the face "
+                                                    "Compact() shifted into index 0");
+    bool resolve_to_same_face = true, forward_ids_match = true;
+    for (int k = 1; k < 6; ++k) {
+      const int ni = box.FindFaceByPersistentId(id[k]);
+      if (ni != k - 1 || !same(PersistentIdFaceCentroid(box, ni), center[k])) resolve_to_same_face = false;
+      if (box.FacePersistentId(k - 1) != id[k]) forward_ids_match = false;
+    }
+    Check(resolve_to_same_face, "each of the 5 surviving faces' ids resolves to index k-1 AND to the same physical "
+                                "face (same loop centroid) it named before the delete");
+    Check(forward_ids_match, "FacePersistentId(new index) hands back that face's own pre-delete id, not the id of "
+                             "the face that used to sit one slot later");
+  }
+
+  // --- DeleteFaces(): a cascade that removes edges and vertices too --------
+  // The 3 faces meeting at the corner (0,0,0) of CheckHealBoxFaces()'s box
+  // (0: bottom, 2 and 5: two sides) - deleting them removes exactly the 3
+  // edges and 1 vertex unique to that corner, the same cascade
+  // TestBrepPersistentIdsSurviveCompact() above already pins via raw
+  // ON_Brep::DeleteFace() + CompactPreservingPersistentIds(); here it runs
+  // through the kernel's own DeleteFaces() and its internal Compact().
+  {
+    Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+    const int ne = box.EdgeCount(), nv = box.VertexCount();
+    std::vector<uint64_t> eid(ne), vid(nv);
+    std::vector<ON_3dPoint> emid(ne), vpt(nv);
+    for (int i = 0; i < ne; ++i) {
+      eid[i] = box.EdgePersistentId(i);
+      emid[i] = PersistentIdEdgeMidpoint(box, i);
+    }
+    for (int i = 0; i < nv; ++i) {
+      vid[i] = box.VertexPersistentId(i);
+      vpt[i] = box.raw().m_V[i].point;
+    }
+    Check(box.DeleteFaces({0, 2, 5}, /*heal=*/false) == 3, "DeleteFaces({0,2,5}) removes exactly 3 faces");
+    Check(box.FaceCount() == 3 && box.EdgeCount() == 9 && box.VertexCount() == 7,
+          "...cascading into exactly 3 removed edges and 1 removed vertex (F/E/V = 3/9/7)");
+    int e_same = 0, e_wrong = 0, e_gone = 0, v_same = 0, v_wrong = 0, v_gone = 0;
+    for (int i = 0; i < ne; ++i) {
+      const int ni = box.FindEdgeByPersistentId(eid[i]);
+      if (ni < 0) ++e_gone;
+      else if (ni < box.EdgeCount() && same(PersistentIdEdgeMidpoint(box, ni), emid[i])) ++e_same;
+      else ++e_wrong;
+    }
+    for (int i = 0; i < nv; ++i) {
+      const int ni = box.FindVertexByPersistentId(vid[i]);
+      if (ni < 0) ++v_gone;
+      else if (ni < box.VertexCount() && same(box.raw().m_V[ni].point, vpt[i])) ++v_same;
+      else ++v_wrong;
+    }
+    Check(e_same == 9 && e_wrong == 0 && e_gone == 3,
+          "exactly the 9 surviving edges' ids resolve to the same physical edge (same midpoint), the 3 removed "
+          "ones to -1, and none to a wrong edge");
+    Check(v_same == 7 && v_wrong == 0 && v_gone == 1,
+          "exactly the 7 surviving vertices' ids resolve to the same point, the 1 removed one to -1, and none to "
+          "a wrong vertex");
+  }
+
+  // --- MergeCoplanarFaces(): compacts on a TRIAL copy, twice per merge ------
+  {
+    Brep shell = PersistentIdTwoCubeShell();
+    Check(shell.FaceCount() == 10 && shell.EdgeCount() == 20 && shell.VertexCount() == 12,
+          "setup: the two-cube shell has F/E/V = 10/20/12");
+    Check(shell.raw().IsValid() && shell.raw().IsSolid() &&
+              shell.VertexCount() - shell.EdgeCount() + shell.FaceCount() == 2,
+          "setup: a valid closed solid with Euler characteristic V - E + F = 2");
+    std::vector<uint64_t> fid(10);
+    std::vector<ON_3dPoint> fc(10);
+    for (int i = 0; i < 10; ++i) {
+      fid[i] = shell.FacePersistentId(i);
+      fc[i] = PersistentIdFaceCentroid(shell, i);
+    }
+    Check(shell.MergeCoplanarFaces() == 4, "MergeCoplanarFaces() merges exactly the 4 coplanar pairs");
+    Check(shell.FaceCount() == 6, "...leaving 6 faces");
+    Check(shell.raw().IsValid() && shell.raw().IsSolid() &&
+              shell.VertexCount() - shell.EdgeCount() + shell.FaceCount() == 2,
+          "...still a valid closed solid with V - E + F = 2");
+    for (const int wall : {8, 9}) {
+      const int ni = shell.FindFaceByPersistentId(fid[wall]);
+      Check(ni >= 0 && ni < shell.FaceCount() && same(PersistentIdFaceCentroid(shell, ni), fc[wall]),
+            "an end wall no merge ever touched keeps resolving to that same wall across 4 trial-copy merges");
+    }
+    int merged_away_still_resolve = 0;
+    for (int i = 0; i < 8; ++i) {
+      if (shell.FindFaceByPersistentId(fid[i]) >= 0) ++merged_away_still_resolve;
+    }
+    Check(merged_away_still_resolve == 0, "all 8 merged-away faces' ids resolve to -1");
+    // The 4 merged faces are NEW elements: never asked, so a fresh id on
+    // first ask, distinct from every id handed out before (lazy
+    // assignment still works after a tracked compact).
+    bool fresh = true;
+    for (int i = 0; i < shell.FaceCount(); ++i) {
+      const uint64_t v = shell.FacePersistentId(i);
+      if (i == shell.FindFaceByPersistentId(fid[8]) || i == shell.FindFaceByPersistentId(fid[9])) continue;
+      for (int k = 0; k < 10; ++k) {
+        if (v == fid[k]) fresh = false;
+      }
+    }
+    Check(fresh, "each of the 4 merged faces gets a brand-new id on first ask, never a recycled pre-merge one");
+  }
+
+  // --- MergeSameSurfaceFaces(): compacts brep_ in place inside a helper ----
+  {
+    Brep tube = BuildTwoFaceCylinderFixture(2.0, 3.0, 2.5, 1.0);
+    Check(tube.FaceCount() == 2, "setup: the two-patch cylinder fixture has 2 faces");
+    const uint64_t f0 = tube.FacePersistentId(0), f1 = tube.FacePersistentId(1);
+    const int ne = tube.EdgeCount();
+    std::vector<uint64_t> eid(ne);
+    std::vector<ON_3dPoint> emid(ne);
+    for (int i = 0; i < ne; ++i) {
+      eid[i] = tube.EdgePersistentId(i);
+      emid[i] = PersistentIdEdgeMidpoint(tube, i);
+    }
+    Check(tube.MergeSameSurfaceFaces() == 1 && tube.FaceCount() == 1, "MergeSameSurfaceFaces() merges the pair");
+    Check(tube.FindFaceByPersistentId(f0) == -1 && tube.FindFaceByPersistentId(f1) == -1,
+          "both merged-away source faces' ids resolve to -1");
+    const uint64_t merged_id = tube.FacePersistentId(0);
+    Check(merged_id != f0 && merged_id != f1, "the merged face gets a fresh id, not one of its sources'");
+    int e_same = 0, e_wrong = 0, e_gone = 0;
+    for (int i = 0; i < ne; ++i) {
+      const int ni = tube.FindEdgeByPersistentId(eid[i]);
+      if (ni < 0) ++e_gone;
+      else if (ni < tube.EdgeCount() && same(PersistentIdEdgeMidpoint(tube, ni), emid[i])) ++e_same;
+      else ++e_wrong;
+    }
+    Check(e_gone == 1 && e_wrong == 0 && e_same == ne - 1,
+          "exactly the one dissolved shared edge's id resolves to -1; every reused boundary edge's id still "
+          "names the same physical edge");
+  }
+
+  // --- KillEdgeVertex(): a Euler operator removing a MIDDLE edge/vertex ---
+  // Two spurs off the box corner at the origin: killing the FIRST one
+  // shifts the second spur's own edge and vertex down one slot each.
+  {
+    Brep box = Brep::BoxWelded(0, 0, 0, 1, 1, 1);
+    int corner = -1;
+    for (int i = 0; i < box.VertexCount(); ++i) {
+      if (same(box.raw().m_V[i].point, ON_3dPoint(0, 0, 0))) corner = i;
+    }
+    Check(corner >= 0, "setup: found the box's own corner vertex at the origin");
+    const Brep::MakeEdgeVertexResult spur1 = box.MakeEdgeVertex(corner, Point3d(-1, 0, 0));
+    const Brep::MakeEdgeVertexResult spur2 = box.MakeEdgeVertex(corner, Point3d(0, -1, 0));
+    Check(spur1.result == Result::Ok && spur2.result == Result::Ok && spur1.edge_index == 12 &&
+              spur1.vertex_index == 8 && spur2.edge_index == 13 && spur2.vertex_index == 9,
+          "setup: the two spurs occupy edge/vertex slots 12/8 and 13/9");
+    const uint64_t e1 = box.EdgePersistentId(spur1.edge_index), e2 = box.EdgePersistentId(spur2.edge_index);
+    const uint64_t v1 = box.VertexPersistentId(spur1.vertex_index), v2 = box.VertexPersistentId(spur2.vertex_index);
+    const uint64_t vc = box.VertexPersistentId(corner);
+    Check(box.KillEdgeVertex(spur1.edge_index) == Result::Ok, "KillEdgeVertex() removes the first spur");
+    Check(box.EdgeCount() == 13 && box.VertexCount() == 9, "...leaving 13 edges and 9 vertices");
+    Check(box.FindEdgeByPersistentId(e1) == -1 && box.FindVertexByPersistentId(v1) == -1,
+          "the killed spur's own edge and leaf vertex ids resolve to -1");
+    const int ne2 = box.FindEdgeByPersistentId(e2), nv2 = box.FindVertexByPersistentId(v2);
+    Check(ne2 == 12 && same(PersistentIdEdgeMidpoint(box, ne2), ON_3dPoint(0, -0.5, 0)),
+          "the second spur's edge id now resolves to slot 12 - still the (0,0,0)-(0,-1,0) spur itself");
+    Check(nv2 == 8 && same(box.raw().m_V[nv2].point, ON_3dPoint(0, -1, 0)),
+          "the second spur's leaf vertex id now resolves to slot 8 - still the point (0,-1,0)");
+    Check(box.FindVertexByPersistentId(vc) == corner, "the shared corner vertex's id is unchanged");
+  }
+
+  // --- RemoveHoleLoop(): removing the FIRST of two holes shifts the second -
+  {
+    Brep sheet = Brep::FromPlanarFaces(
+        {CheckHealFace({Point3d(0, 0, 0), Point3d(5, 0, 0), Point3d(5, 5, 0), Point3d(0, 5, 0)}, ON_3dVector(0, 0, 1))});
+    const Brep::AddHoleLoopsResult holes =
+        sheet.AddHoleLoops(0, {PersistentIdSquareWire(1, 1, 1), PersistentIdSquareWire(3, 3, 1)});
+    Check(holes.result == Result::Ok && holes.loop_indices.size() == 2 && sheet.EdgeCount() == 12 &&
+              sheet.VertexCount() == 12,
+          "setup: two square holes punched into a 5x5 sheet (E/V = 12/12)");
+    std::vector<uint64_t> eid(12), vid(12);
+    std::vector<ON_3dPoint> emid(12), vpt(12);
+    for (int i = 0; i < 12; ++i) {
+      eid[i] = sheet.EdgePersistentId(i);
+      emid[i] = PersistentIdEdgeMidpoint(sheet, i);
+      vid[i] = sheet.VertexPersistentId(i);
+      vpt[i] = sheet.raw().m_V[i].point;
+    }
+    Check(sheet.RemoveHoleLoop(holes.loop_indices[0]) == Result::Ok, "RemoveHoleLoop() removes the first hole");
+    Check(sheet.EdgeCount() == 8 && sheet.VertexCount() == 8 && sheet.LoopCount(0) == 2,
+          "...leaving E/V = 8/8 and 2 loops");
+    bool exact = true;
+    for (int i = 0; i < 12; ++i) {
+      const int ne = sheet.FindEdgeByPersistentId(eid[i]), nv = sheet.FindVertexByPersistentId(vid[i]);
+      if (i >= 4 && i < 8) {
+        if (ne != -1 || nv != -1) exact = false;  // the removed hole's own 4 edges/vertices
+      } else {
+        const int expect = i < 4 ? i : i - 4;  // outer boundary stays; second hole shifts down 4 slots
+        if (ne != expect || !same(PersistentIdEdgeMidpoint(sheet, ne), emid[i])) exact = false;
+        if (nv != expect || !same(sheet.raw().m_V[nv].point, vpt[i])) exact = false;
+      }
+    }
+    Check(exact, "the outer boundary's 4 edge/vertex ids stay at 0..3, the second hole's 4 shift from 8..11 to "
+                 "4..7 (same midpoints/points), and the removed hole's 4 resolve to -1");
+  }
+
+  // --- Find*ByPersistentId() on a deleted-but-uncompacted slot -------------
+  {
+    Brep box = Brep::BoxWelded(0, 0, 0, 1, 1, 1);
+    const uint64_t id1 = box.FacePersistentId(1), id2 = box.FacePersistentId(2);
+    box.raw().DeleteFace(box.raw().m_F[1], /*bDeleteFaceEdges=*/true);  // raw, no Compact()
+    Check(box.raw().m_F.Count() == 6 && box.FindFaceByPersistentId(id1) == -1,
+          "a deleted but not yet compacted face's id resolves to -1, not to its own dead slot");
+    Check(box.FindFaceByPersistentId(id2) == 2, "...while a live neighbour's id still resolves normally");
+    box.CompactPreservingPersistentIds();
+    Check(box.FindFaceByPersistentId(id1) == -1 && box.FindFaceByPersistentId(id2) == 1,
+          "after the compact: the dead one still -1, the neighbour now at its shifted index 1");
+  }
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -82214,6 +82522,7 @@ int main() {
   RunTest("TestProjectCurveToSurfaceFlatPlaneStraightDown", TestProjectCurveToSurfaceFlatPlaneStraightDown);
   RunTest("TestProjectCurveToSurfacePartialMiss", TestProjectCurveToSurfacePartialMiss);
   RunTest("TestBrepPersistentIdsSurviveCompact", TestBrepPersistentIdsSurviveCompact);
+  RunTest("TestBrepPersistentIdsSurviveKernelTopologyEdits", TestBrepPersistentIdsSurviveKernelTopologyEdits);
   RunTest("TestBrepJoinNakedEdgesFloorsRecordedToleranceByEdgeExtent", TestBrepJoinNakedEdgesFloorsRecordedToleranceByEdgeExtent);
   RunTest("TestBooleanCombineGeneralBoxBox", TestBooleanCombineGeneralBoxBox);
   RunTest("TestBooleanCombineGeneralFreeformSurfaceOperand", TestBooleanCombineGeneralFreeformSurfaceOperand);
