@@ -8,8 +8,28 @@
 #include <map>
 #include <sstream>
 
-#ifndef _WIN32
-#define DINO8_HAVE_POSIX_SOCKETS 1
+// One socket API, two spellings. Winsock2 and BSD/POSIX sockets share the
+// same calls (socket/bind/listen/accept/select/recv/send/getsockname) and
+// the same sockaddr_in/htons/INADDR_LOOPBACK vocabulary; what differs is
+// (1) the handle type (SOCKET, an unsigned pointer-sized integer whose
+// invalid value is INVALID_SOCKET, versus a non-negative int whose invalid
+// value is -1), (2) how a socket is closed (closesocket versus close),
+// (3) where the error code lives (WSAGetLastError versus errno), (4) the
+// SO_RCVTIMEO option's value type (a DWORD of milliseconds versus a
+// timeval), and (5) that Winsock has to be initialised once per process
+// (WSAStartup) before any of it works. The tiny shim below pins each of
+// those five down so the server logic itself is written once, identically,
+// for both.
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/select.h>
@@ -31,6 +51,79 @@ std::string ToLowerAscii(std::string s) {
 // rather than buffered indefinitely - this is a local automation service,
 // not a public-facing endpoint hardened against arbitrary request sizes.
 constexpr size_t kMaxRequestBytes = 8 * 1024 * 1024;
+
+#ifdef _WIN32
+using NativeSocket = SOCKET;
+constexpr NativeSocket kInvalidSocket = INVALID_SOCKET;
+// recv()/send() take and return int on Winsock, ssize_t/size_t on POSIX.
+using IoLength = int;
+using IoResult = int;
+
+bool IsInvalid(NativeSocket s) { return s == INVALID_SOCKET; }
+void CloseSocket(NativeSocket s) { ::closesocket(s); }
+
+// WSAStartup once per process, the first time any ComputeServer starts;
+// the matching WSACleanup runs at process exit via the static's destructor.
+// Thread-safe by C++11's magic-statics guarantee. A failed WSAStartup is
+// reported by Start() rather than silently proceeding to a socket() call
+// that would then fail with a far less helpful WSANOTINITIALISED.
+bool EnsureWinsock(std::string& error) {
+  struct Winsock {
+    int rc;
+    WSADATA data{};
+    Winsock() : rc(::WSAStartup(MAKEWORD(2, 2), &data)) {}
+    ~Winsock() { if (rc == 0) ::WSACleanup(); }
+  };
+  static Winsock winsock;
+  if (winsock.rc != 0) {
+    error = "compute server: WSAStartup() failed: error " + std::to_string(winsock.rc);
+    return false;
+  }
+  return true;
+}
+
+std::string LastSocketError() {
+  const int code = ::WSAGetLastError();
+  char* msg = nullptr;
+  const DWORD n = ::FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                                   nullptr, static_cast<DWORD>(code), 0, reinterpret_cast<char*>(&msg), 0, nullptr);
+  std::string text = (n && msg) ? std::string(msg, n) : std::string();
+  if (msg) ::LocalFree(msg);
+  while (!text.empty() && (text.back() == '\r' || text.back() == '\n' || text.back() == ' ')) text.pop_back();
+  if (text.empty()) text = "error";
+  return text + " (" + std::to_string(code) + ")";
+}
+
+void SetReceiveTimeout(NativeSocket s, int seconds) {
+  const DWORD ms = static_cast<DWORD>(seconds) * 1000u;
+  ::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&ms), sizeof(ms));
+}
+#else
+using NativeSocket = int;
+constexpr NativeSocket kInvalidSocket = -1;
+using IoLength = size_t;
+using IoResult = ssize_t;
+
+bool IsInvalid(NativeSocket s) { return s < 0; }
+void CloseSocket(NativeSocket s) { ::close(s); }
+bool EnsureWinsock(std::string&) { return true; }
+std::string LastSocketError() { return std::strerror(errno); }
+
+void SetReceiveTimeout(NativeSocket s, int seconds) {
+  timeval recv_tv{};
+  recv_tv.tv_sec = seconds;
+  recv_tv.tv_usec = 0;
+  ::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &recv_tv, sizeof(recv_tv));
+}
+#endif
+
+// The listening socket is stored in the header as an intptr_t (so the
+// header needs no socket headers at all): a POSIX fd round-trips through it
+// unchanged, and a Winsock SOCKET (an unsigned pointer-sized handle) fits
+// too - INVALID_SOCKET (all bits set) maps to -1, every valid handle to a
+// non-negative value, which is exactly what IsRunning()'s ">= 0" test needs.
+NativeSocket ToNative(intptr_t h) { return static_cast<NativeSocket>(h); }
+intptr_t FromNative(NativeSocket s) { return static_cast<intptr_t>(s); }
 
 }  // namespace
 
@@ -117,76 +210,72 @@ std::string BuildHttpResponse(const HttpResponse& resp) {
 ComputeServer::~ComputeServer() { Stop(); }
 
 bool ComputeServer::Start(int port, std::string& error) {
-#ifndef DINO8_HAVE_POSIX_SOCKETS
-  (void)port;
-  error = "compute server: this build has no POSIX socket support (Windows is not yet supported - see net/ComputeServer.h)";
-  return false;
-#else
   Stop();
-  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
-    error = std::string("compute server: socket() failed: ") + std::strerror(errno);
+  if (!EnsureWinsock(error)) return false;
+  const NativeSocket fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (IsInvalid(fd)) {
+    error = "compute server: socket() failed: " + LastSocketError();
     return false;
   }
+#ifndef _WIN32
+  // Lets a restarted server rebind its port while the previous instance's
+  // connections are still in TIME_WAIT. Deliberately NOT set on Winsock,
+  // where SO_REUSEADDR means something else entirely: it lets a second
+  // socket bind the very same address while the first is still actively
+  // listening (port hijacking), with no TIME_WAIT benefit (Windows allows
+  // that rebind anyway).
   const int reuse = 1;
   ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+#endif
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = htons(static_cast<uint16_t>(port));
   if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    error = std::string("compute server: bind() failed: ") + std::strerror(errno);
-    ::close(fd);
+    error = "compute server: bind() failed: " + LastSocketError();
+    CloseSocket(fd);
     return false;
   }
   if (::listen(fd, 8) != 0) {
-    error = std::string("compute server: listen() failed: ") + std::strerror(errno);
-    ::close(fd);
+    error = "compute server: listen() failed: " + LastSocketError();
+    CloseSocket(fd);
     return false;
   }
   sockaddr_in bound{};
   socklen_t bound_len = sizeof(bound);
   port_ = (::getsockname(fd, reinterpret_cast<sockaddr*>(&bound), &bound_len) == 0) ? ntohs(bound.sin_port) : port;
-  listen_fd_ = fd;
+  listen_fd_ = FromNative(fd);
   return true;
-#endif
 }
 
 void ComputeServer::Stop() {
-#ifdef DINO8_HAVE_POSIX_SOCKETS
-  if (listen_fd_ >= 0) ::close(listen_fd_);
-#endif
+  if (listen_fd_ >= 0) CloseSocket(ToNative(listen_fd_));
   listen_fd_ = -1;
   port_ = 0;
 }
 
 bool ComputeServer::PollOnce(const ComputeHandler& handler, int timeout_ms) {
-#ifndef DINO8_HAVE_POSIX_SOCKETS
-  (void)handler;
-  (void)timeout_ms;
-  return false;
-#else
   if (listen_fd_ < 0) return false;
+  const NativeSocket listen_fd = ToNative(listen_fd_);
 
   fd_set read_fds;
   FD_ZERO(&read_fds);
-  FD_SET(listen_fd_, &read_fds);
+  FD_SET(listen_fd, &read_fds);
   timeval tv{};
   tv.tv_sec = timeout_ms / 1000;
   tv.tv_usec = (timeout_ms % 1000) * 1000;
-  const int ready = ::select(listen_fd_ + 1, &read_fds, nullptr, nullptr, &tv);
+  // select()'s first argument is the highest fd + 1 on POSIX and ignored
+  // (kept only for source compatibility) on Winsock.
+  const int ready = ::select(static_cast<int>(listen_fd + 1), &read_fds, nullptr, nullptr, &tv);
   if (ready <= 0) return false;
 
-  const int conn_fd = ::accept(listen_fd_, nullptr, nullptr);
-  if (conn_fd < 0) return false;
+  const NativeSocket conn_fd = ::accept(listen_fd, nullptr, nullptr);
+  if (IsInvalid(conn_fd)) return false;
 
   // A slow/stalled client can't hang this call forever: cap both the total
   // time spent reading one request (a receive timeout on the socket) and
   // its total size (kMaxRequestBytes, checked each time around the loop).
-  timeval recv_tv{};
-  recv_tv.tv_sec = 5;
-  recv_tv.tv_usec = 0;
-  ::setsockopt(conn_fd, SOL_SOCKET, SO_RCVTIMEO, &recv_tv, sizeof(recv_tv));
+  SetReceiveTimeout(conn_fd, 5);
 
   std::string buffer;
   HttpRequest request;
@@ -203,7 +292,7 @@ bool ComputeServer::PollOnce(const ComputeHandler& handler, int timeout_ms) {
       oversized = true;
       break;
     }
-    const ssize_t n = ::recv(conn_fd, chunk, sizeof(chunk), 0);
+    const IoResult n = ::recv(conn_fd, chunk, static_cast<IoLength>(sizeof(chunk)), 0);
     if (n <= 0) break;  // client closed early, or the receive timeout above fired
     buffer.append(chunk, static_cast<size_t>(n));
   }
@@ -221,13 +310,12 @@ bool ComputeServer::PollOnce(const ComputeHandler& handler, int timeout_ms) {
   const std::string wire = BuildHttpResponse(response);
   size_t sent = 0;
   while (sent < wire.size()) {
-    const ssize_t n = ::send(conn_fd, wire.data() + sent, wire.size() - sent, 0);
+    const IoResult n = ::send(conn_fd, wire.data() + sent, static_cast<IoLength>(wire.size() - sent), 0);
     if (n <= 0) break;
     sent += static_cast<size_t>(n);
   }
-  ::close(conn_fd);
+  CloseSocket(conn_fd);
   return true;
-#endif
 }
 
 }  // namespace dino8::app

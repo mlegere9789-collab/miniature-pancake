@@ -92,9 +92,11 @@
 //                 check ssh/ssh-keygen already apply, re-checked fresh on
 //                 every request so tightening or loosening the file's
 //                 permissions while the server runs takes effect
-//                 immediately, no restart. No such check on a platform
-//                 with no POSIX permission bits (and no such platform can
-//                 reach --serve at all - see net/ComputeServer.h).
+//                 immediately, no restart. No such check on Windows (no
+//                 POSIX permission bits to read - NTFS ACLs are not
+//                 inspected), where the file is trusted on existence and
+//                 freshness alone; tests/smoke.sh says so explicitly
+//                 there instead of counting the check as passed.
 //   --serve-token-file-ttl SECONDS   with --serve-token-file: that file's
 //                 own entries additionally expire once the file's last-
 //                 write time is more than SECONDS old - real automatic
@@ -483,11 +485,12 @@ bool TokenFileFresh(const std::string& path, double ttl) {
 // design this whole flag already has, just for a third reason a file
 // might not be trustworthy right now (missing, stale, or insecurely
 // permissioned). Always true (no check at all, matching the
-// pre-existing behavior) on a platform with no POSIX permission bits to
-// check - meaningless there, and this whole flag's own underlying
-// `net/ComputeServer.h` already refuses to even start `--serve` on
-// Windows (no POSIX-socket implementation exists to fall back on), so
-// this check is moot on that platform regardless. A path that can't be
+// pre-existing behavior) on Windows, which has no POSIX permission bits
+// to read: `--serve` itself runs there (net/ComputeServer.cpp's Winsock
+// shim), so this is a real, documented gap on that platform - an NTFS
+// ACL inspection is not attempted - and tests/smoke.sh's own
+// loose-permissions checks print an explicit skip line there rather
+// than claiming the check passed. A path that can't be
 // stat'd at all (missing, a dangling symlink, ...) is treated as having
 // no permission problem - TokenFileFresh/ParseTokenFile already fail
 // that case closed on their own, so this check only ever adds a NEW
@@ -765,7 +768,8 @@ int main(int argc, char** argv) {
   // Hidden window for --smoke (headless QC) and for pure --script batch runs
   // alike - a batch job has no user to look at a window, and creating one
   // visible would steal focus / flash on screen for the run's duration.
-  if (smoke_frames >= 0 || !script_path.empty()) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+  const bool hidden_window = smoke_frames >= 0 || !script_path.empty();
+  if (hidden_window) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
   // Windows (and X11): size the window in screen pixels scaled by the
   // monitor's content scale, and let GLFW rescale it when it is dragged to
   // a monitor with a different DPI. The process is per-monitor-v2 DPI
@@ -791,7 +795,20 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "Could not load OpenGL functions: %s\n", dino8::gl::LastError());
     return 1;
   }
-  glfwMaximizeWindow(window);
+  // Interactive runs only. A hidden --smoke/--script window must keep the
+  // exact 1600x900 it was created with on every platform: the view-
+  // dependent display LOD (FrameContext::lod_scale, AdaptiveTessellation.h)
+  // and every per-pixel capture check in tests/smoke.sh follow the
+  // viewport's pixel size, so the window size IS part of what those checks
+  // measure. On X11 under Xvfb (no window manager) this call was already a
+  // no-op, but Win32's SW_MAXIMIZE both shows the hidden window and resizes
+  // it to the host desktop's work area - on GitHub's windows-latest runner
+  // a far smaller desktop than 1600x900 - which shrank every viewport
+  // there, coarsened the LOD (a circle tessellated at 6 segments instead
+  // of Linux's 7, moving BoundingBox results) and let grid lines dominate
+  // tiny environment-backdrop captures. Nothing about a hidden window
+  // benefits from being maximized.
+  if (!hidden_window) glfwMaximizeWindow(window);
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
