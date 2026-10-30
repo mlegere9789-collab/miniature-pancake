@@ -8945,6 +8945,167 @@ void Brep::RefitEdgeTrims(int edge_index, double tolerance, int* out_refit_count
   if (out_failed_count) *out_failed_count = failed;
 }
 
+Result Brep::SimplifyPlanarFace(int face_index, double tolerance) {
+  if (face_index < 0 || face_index >= brep_.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::SimplifyPlanarFace: face_index " + std::to_string(face_index) +
+                            " is out of range (this Brep has " + std::to_string(brep_.m_F.Count()) +
+                            " face slot(s))");
+  }
+  if (!ON_IsValid(tolerance) || tolerance <= 0.0) {
+    throw std::invalid_argument("dino8::kernel::Brep::SimplifyPlanarFace: tolerance must be positive and finite");
+  }
+  ON_BrepFace& face = brep_.m_F[face_index];
+  if (face.m_face_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::SimplifyPlanarFace: face_index " +
+                                std::to_string(face_index) + " refers to a deleted face");
+  }
+  const ON_NurbsSurface* old_srf = ON_NurbsSurface::Cast(face.SurfaceOf());
+  if (!old_srf || !old_srf->IsValid()) return Result::Failed;
+  if (face.m_li.Count() == 0) return Result::Failed;  // surface-only factory face: pseudo-trims, out of scope
+
+  ON_Plane fitted;
+  if (!old_srf->IsPlanar(&fitted, tolerance)) return Result::Failed;
+  if (old_srf->Degree(0) == 1 && old_srf->Degree(1) == 1 && old_srf->CVCount(0) == 2 && old_srf->CVCount(1) == 2 &&
+      !old_srf->IsRational()) {
+    return Result::NoOpAlreadySatisfied;  // a planar bilinear patch is already an affine map of its plane
+  }
+
+  // The canonical frame: the old surface's OWN normal direction at its
+  // domain centre (not ON_Surface::IsPlanar's plane, whose sign the
+  // rest of this class already documents as not guaranteed), so the
+  // face's m_bRev keeps meaning exactly what it meant before.
+  ON_3dVector normal = old_srf->NormalAt(old_srf->Domain(0).ParameterAt(0.5), old_srf->Domain(1).ParameterAt(0.5));
+  if (!normal.Unitize()) return Result::Failed;
+  // In-plane x axis: the old surface's own u direction at its centre
+  // (IsPlanar's fitted xaxis is exactly that, unitized), re-projected
+  // onto the plane, so an axis-aligned face keeps u along its old u.
+  ON_3dVector xaxis = fitted.xaxis - ON_DotProduct(fitted.xaxis, normal) * normal;
+  if (!xaxis.Unitize()) return Result::Failed;
+  ON_Plane plane;
+  plane.origin = fitted.origin;
+  plane.xaxis = xaxis;
+  plane.yaxis = ON_CrossProduct(normal, xaxis);
+  plane.zaxis = normal;
+  plane.UpdateEquation();
+  if (!plane.IsValid()) return Result::Failed;
+
+  // Phase 1: pull every trim back from its edge's own 3D curve, exactly
+  // (affine map of the control points, same knots and weights), into
+  // the plane's metric (u, v); validate everything before any mutation.
+  struct PendingTrim {
+    int trim_index;
+    std::unique_ptr<ON_NurbsCurve> curve;
+  };
+  std::vector<PendingTrim> pending;
+  double umin = 0.0, umax = 0.0, vmin = 0.0, vmax = 0.0;
+  bool have_extent = false;
+  for (int k = 0; k < face.m_li.Count(); ++k) {
+    const int li = face.m_li[k];
+    if (li < 0 || li >= brep_.m_L.Count()) return Result::Failed;
+    const ON_BrepLoop& loop = brep_.m_L[li];
+    for (int m = 0; m < loop.m_ti.Count(); ++m) {
+      const int ti = loop.m_ti[m];
+      if (ti < 0 || ti >= brep_.m_T.Count()) return Result::Failed;
+      const ON_BrepTrim& trim = brep_.m_T[ti];
+      if (trim.m_trim_index < 0) continue;
+      if (trim.m_ei < 0 || trim.m_ei >= brep_.m_E.Count()) return Result::Failed;  // singular trim: no 3D curve
+      const ON_BrepEdge& edge = brep_.m_E[trim.m_ei];
+      if (edge.m_edge_index < 0) return Result::Failed;
+      ON_NurbsCurve c3;
+      if (edge.GetNurbForm(c3) <= 0 || !c3.IsValid()) return Result::Failed;
+
+      auto c2 = std::make_unique<ON_NurbsCurve>(2, c3.IsRational(), c3.Order(), c3.CVCount());
+      for (int i = 0; i < c3.KnotCount(); ++i) c2->SetKnot(i, c3.Knot(i));
+      for (int i = 0; i < c3.CVCount(); ++i) {
+        ON_3dPoint p;
+        if (!c3.GetCV(i, p)) return Result::Failed;
+        if (std::fabs(plane.DistanceTo(p)) > tolerance) return Result::Failed;  // edge not on this plane
+        const ON_3dVector d = p - plane.origin;
+        const double u = ON_DotProduct(d, plane.xaxis);
+        const double v = ON_DotProduct(d, plane.yaxis);
+        if (c3.IsRational()) {
+          const double w = c3.Weight(i);
+          if (!(w > 0.0)) return Result::Failed;
+          c2->SetCV(i, ON_4dPoint(u * w, v * w, 0.0, w));
+        } else {
+          c2->SetCV(i, ON_3dPoint(u, v, 0.0));
+        }
+        if (!have_extent) {
+          umin = umax = u;
+          vmin = vmax = v;
+          have_extent = true;
+        } else {
+          umin = std::min(umin, u);
+          umax = std::max(umax, u);
+          vmin = std::min(vmin, v);
+          vmax = std::max(vmax, v);
+        }
+      }
+      if (trim.m_bRev3d && !c2->Reverse()) return Result::Failed;
+      if (!c2->IsValid()) return Result::Failed;
+      pending.push_back({ti, std::move(c2)});
+    }
+  }
+  if (!have_extent || pending.empty()) return Result::Failed;
+  if (!(umax - umin > tolerance) || !(vmax - vmin > tolerance)) return Result::Failed;  // degenerate extent
+
+  // The same 5% domain margin FromMixedFacesImpl() leaves around a
+  // planar face's own trim loop (see its comment there).
+  const double mu = std::max(1e-9, (umax - umin) * 0.05);
+  const double mv = std::max(1e-9, (vmax - vmin) * 0.05);
+  const double u0 = umin - mu, u1 = umax + mu, v0 = vmin - mv, v1 = vmax + mv;
+  const std::vector<Point3d> grid = {
+      plane.origin + u0 * plane.xaxis + v0 * plane.yaxis,
+      plane.origin + u0 * plane.xaxis + v1 * plane.yaxis,
+      plane.origin + u1 * plane.xaxis + v0 * plane.yaxis,
+      plane.origin + u1 * plane.xaxis + v1 * plane.yaxis,
+  };
+  NurbsSurface canonical = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  if (canonical.SetDomain(0, u0, u1) != Result::Ok || canonical.SetDomain(1, v0, v1) != Result::Ok) {
+    return Result::Failed;
+  }
+  if (!canonical.raw().IsValid()) return Result::Failed;
+
+  // Phase 2: commit. Surface first (in place when this face is its only
+  // user - same index, no orphaned m_S entry - else appended), then
+  // every trim onto its freshly-built 2D curve.
+  auto* new_srf = new ON_NurbsSurface(canonical.raw());
+  int si = face.m_si;
+  if (si >= 0 && si < brep_.m_S.Count() && brep_.SurfaceUseCount(si, 2) <= 1) {
+    delete brep_.m_S[si];
+    brep_.m_S[si] = new_srf;
+  } else {
+    si = brep_.AddSurface(new_srf);
+  }
+  face.m_si = si;
+  face.SetProxySurface(brep_.m_S[si]);  // ON_BrepFace caches its proxy surface at NewFace() time - see ExtendFace()
+  face.DestroyRuntimeCache(true);
+  for (PendingTrim& pt : pending) {
+    const int c2i = brep_.AddTrimCurve(pt.curve.release());
+    ON_BrepTrim& trim = brep_.m_T[pt.trim_index];
+    if (!trim.ChangeTrimCurve(c2i)) {
+      throw std::runtime_error("dino8::kernel::Brep::SimplifyPlanarFace: ON_BrepTrim::ChangeTrimCurve failed for trim " +
+                               std::to_string(pt.trim_index));
+    }
+  }
+  brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(brep_);
+  ClearFaceSideTables();  // this face's trim boundary changed shape in (u, v) - same reason RefitTrim() clears
+  return Result::Ok;
+}
+
+int Brep::SimplifyPlanarFaces(double tolerance) {
+  if (!ON_IsValid(tolerance) || tolerance <= 0.0) {
+    throw std::invalid_argument("dino8::kernel::Brep::SimplifyPlanarFaces: tolerance must be positive and finite");
+  }
+  int simplified = 0;
+  for (int fi = 0; fi < brep_.m_F.Count(); ++fi) {
+    if (brep_.m_F[fi].m_face_index < 0) continue;
+    if (SimplifyPlanarFace(fi, tolerance) == Result::Ok) ++simplified;
+  }
+  return simplified;
+}
+
 Result Brep::MergeContiguousEdges(int edge_index_a, int edge_index_b, double angle_tolerance_radians) {
   if (edge_index_a < 0 || edge_index_a >= brep_.m_E.Count()) {
     throw std::out_of_range("dino8::kernel::Brep::MergeContiguousEdges: edge_index_a " +

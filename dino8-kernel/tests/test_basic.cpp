@@ -84651,6 +84651,421 @@ void TestBooleanCombineGeneralSphereCentredOnBoxEdgeAlongSeamMeridian() {
   }
 }
 
+// Brep::SimplifyPlanarFace()/SimplifyPlanarFaces(): the plane half of
+// PARITY_MAP.md's "Analytic-form recognition / canonical simplification
+// of faces" (kernel: Healing) bullet, whose named gap was "nothing
+// replaces a recognized NURBS face with a canonical analytic one".
+// Reproduced on the baseline before the fix: a welded box whose top face
+// is a degree-2 3x3 planar NURBS with an in-plane warped parametrization
+// (PointAt(0.5, 0.5) = (1.1, 1.5, 4), not the square's centre (1, 1.5, 4))
+// is recognized by IsPlanar() yet nothing can replace it - the only
+// existing simplifiers act on the PARAMETRIZATION (NurbsSurface::
+// ReduceDegree(u->1, tol 1e-9) returns Failed; at tol 1.0 it succeeds
+// with max_dev 0.1, i.e. not shape-exact) and there was no Brep entry
+// point at all. Every number below is closed-form.
+void TestBrepSimplifyPlanarFaceCanonicalizesPlanarNurbsFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+  using CheckKind = Brep::CheckIssue::Kind;
+
+  ON_TextLog discard;
+  auto face_normal = [](const Brep& b, int fi) {
+    const ON_BrepFace& f = b.raw().m_F[fi];
+    const ON_Surface* s = f.SurfaceOf();
+    ON_3dVector n = s->NormalAt(s->Domain(0).ParameterAt(0.5), s->Domain(1).ParameterAt(0.5));
+    n.Unitize();
+    return f.m_bRev ? -n : n;
+  };
+  auto find_face = [&](const Brep& b, ON_3dVector want) {
+    for (int fi = 0; fi < b.raw().m_F.Count(); ++fi) {
+      if (b.raw().m_F[fi].m_face_index < 0) continue;
+      if (ON_DotProduct(face_normal(b, fi), want) > 0.999) return fi;
+    }
+    return -1;
+  };
+  auto surface_of = [](const Brep& b, int fi) { return ON_NurbsSurface::Cast(b.raw().m_F[fi].SurfaceOf()); };
+  // Swaps face fi's surface in place (same m_si), the way an importer
+  // that hands this kernel a B-spline plane would leave it.
+  auto swap_surface = [](Brep& b, int fi, const ON_NurbsSurface& s) {
+    ON_Brep& raw = b.raw();
+    ON_BrepFace& f = raw.m_F[fi];
+    delete raw.m_S[f.m_si];
+    raw.m_S[f.m_si] = new ON_NurbsSurface(s);
+    f.SetProxySurface(raw.m_S[f.m_si]);
+    f.DestroyRuntimeCache(true);
+  };
+  // Exact, parametrization-preserving "un-canonicalization": degree 1 ->
+  // 3 in both directions plus one interior knot each way (5x5 CVs).
+  auto elevate_in_place = [&](Brep& b, int fi) {
+    NurbsSurface e;
+    e.raw() = *surface_of(b, fi);
+    const bool ok = e.ElevateDegree(0, 3) == Result::Ok && e.ElevateDegree(1, 3) == Result::Ok &&
+                    e.InsertKnotAt(0, 0.5 * (e.Domain(0).min + e.Domain(0).max)) == Result::Ok &&
+                    e.InsertKnotAt(1, 0.5 * (e.Domain(1).min + e.Domain(1).max)) == Result::Ok;
+    swap_surface(b, fi, e.raw());
+    return ok;
+  };
+  auto is_canonical = [](const ON_NurbsSurface* s) {
+    return s && s->Degree(0) == 1 && s->Degree(1) == 1 && s->CVCount(0) == 2 && s->CVCount(1) == 2 && !s->IsRational();
+  };
+  // Worst distance, over 17 samples per trim, between a trim's 3D image
+  // through its face's surface and its edge at the matching parameter -
+  // Check()'s own TrimEdgeGap measure at a tighter sampling.
+  auto max_trim_edge_mismatch = [](const Brep& b, int fi) {
+    const ON_Brep& raw = b.raw();
+    const ON_BrepFace& f = raw.m_F[fi];
+    const ON_Surface* s = f.SurfaceOf();
+    double worst = 0.0;
+    for (int k = 0; k < f.m_li.Count(); ++k) {
+      const ON_BrepLoop& loop = raw.m_L[f.m_li[k]];
+      for (int m = 0; m < loop.m_ti.Count(); ++m) {
+        const ON_BrepTrim& t = raw.m_T[loop.m_ti[m]];
+        if (t.m_ei < 0) continue;  // singular trim: no edge to compare against
+        const ON_BrepEdge& e = raw.m_E[t.m_ei];
+        for (int i = 0; i <= 16; ++i) {
+          const double sn = i / 16.0;
+          const ON_3dPoint uv = t.PointAt(t.Domain().ParameterAt(sn));
+          const ON_3dPoint tp = s->PointAt(uv.x, uv.y);
+          const ON_3dPoint ep = e.PointAt(e.Domain().ParameterAt(t.m_bRev3d ? 1.0 - sn : sn));
+          worst = std::max(worst, tp.DistanceTo(ep));
+        }
+      }
+    }
+    return worst;
+  };
+  auto trim_count = [](const Brep& b, int fi) {
+    int n = 0;
+    const ON_BrepFace& f = b.raw().m_F[fi];
+    for (int k = 0; k < f.m_li.Count(); ++k) n += b.raw().m_L[f.m_li[k]].m_ti.Count();
+    return n;
+  };
+
+  // ---- Fixture A: a welded 2x3x4 box whose top face is a degree-3 5x5
+  // NURBS plane (parametrization unchanged, so the fixture is still a
+  // valid, clean, exact-volume solid before the fix).
+  {
+    Brep box = Brep::BoxWelded(0, 0, 0, 2, 3, 4);
+    const int top = find_face(box, ON_3dVector(0, 0, 1));
+    Check(top >= 0, "setup: the welded box's +z top face is found");
+    Check(elevate_in_place(box, top), "setup: the top face's plane is degree-elevated and knot-inserted exactly");
+    const ON_NurbsSurface* before = surface_of(box, top);
+    Check(before->Degree(0) == 3 && before->Degree(1) == 3 && before->CVCount(0) == 5 && before->CVCount(1) == 5,
+          "setup: the top face is now a degree (3,3), 5x5 control point NURBS plane");
+    Check(box.raw().IsValid(&discard) && box.Check().IsClean() && std::fabs(box.Volume() - 24.0) < 1e-9,
+          "setup: still a valid ON_Brep with a clean Check() and exact volume 24 (same parametrization)");
+    const bool rev_before = box.raw().m_F[top].m_bRev;
+    const int surface_count_before = box.raw().m_S.Count();
+
+    Check(box.SimplifyPlanarFace(top) == Result::Ok, "SimplifyPlanarFace() replaces the degree-3 planar NURBS face");
+    const ON_NurbsSurface* after = surface_of(box, top);
+    Check(is_canonical(after), "the top face's surface is now the canonical plane: non-rational degree (1,1), 2x2 CVs");
+    {
+      // u follows the old surface's own u, which for BoxWelded's top may
+      // run along x or y - so the two metric extents are {2.2, 3.3} in
+      // either order.
+      const double du = after->Domain(0).Length(), dv = after->Domain(1).Length();
+      const bool xy = std::fabs(du - 2.2) < 1e-12 && std::fabs(dv - 3.3) < 1e-12;
+      const bool yx = std::fabs(du - 3.3) < 1e-12 && std::fabs(dv - 2.2) < 1e-12;
+      Check(xy || yx, "the new (u,v) is metric in the plane: 2 x 3 face plus a 5% margin each side = 2.2 x 3.3 domain exactly");
+    }
+    Check(ON_DotProduct(after->NormalAt(after->Domain(0).ParameterAt(0.5), after->Domain(1).ParameterAt(0.5)),
+                        ON_3dVector(0, 0, 1)) > 1.0 - 1e-12 &&
+              box.raw().m_F[top].m_bRev == rev_before,
+          "the canonical plane keeps the old surface's own normal direction, so m_bRev is unchanged");
+    Check(box.raw().m_S.Count() == surface_count_before,
+          "the surface was replaced in place (face was its only user) - no orphaned m_S entry");
+    Check(box.raw().IsValid(&discard) && box.raw().IsSolid(), "the result is a valid, solid ON_Brep");
+    Check(box.Check().IsClean(), "the result's Check() report is clean (no TrimEdgeGap, LoopGap or InvalidTrim)");
+    Check(box.FaceCount() == 6 && box.LiveVertexCount() == 8 && box.LiveEdgeCount() == 12,
+          "topology untouched: 6 faces, 8 vertices, 12 edges");
+    Check(std::fabs(box.Volume() - 24.0) < 1e-9, "exact volume 2*3*4 = 24 after the simplification");
+    Check(std::fabs(box.Area() - 52.0) < 1e-9, "exact area 2*(6 + 12 + 8) = 52 after the simplification");
+    Check(max_trim_edge_mismatch(box, top) < 1e-9,
+          "every rebuilt trim reproduces its own edge through the new surface exactly (17 samples per trim)");
+    int line_trims = 0;
+    const ON_BrepLoop& loop = box.raw().m_L[box.raw().m_F[top].m_li[0]];
+    for (int m = 0; m < loop.m_ti.Count(); ++m) {
+      ON_NurbsCurve c2;
+      if (box.raw().m_T[loop.m_ti[m]].GetNurbForm(c2) > 0 && c2.Degree() == 1 && c2.CVCount() == 2) ++line_trims;
+    }
+    Check(trim_count(box, top) == 4 && line_trims == 4, "the 4 rebuilt trims are each an exact 2-CV line (edge pullback, no refit)");
+    Check(box.SimplifyPlanarFace(top) == Result::NoOpAlreadySatisfied,
+          "a second call reports NoOpAlreadySatisfied - the canonical plane is recognized as such");
+    Check(box.SimplifyPlanarFaces() == 0, "SimplifyPlanarFaces() on the now-canonical box replaces nothing (0)");
+    Check(std::fabs(box.Volume() - 24.0) < 1e-9, "...and leaves the volume at exactly 24");
+  }
+
+  // The whole-Brep convenience: on a fresh fixture exactly one face (the
+  // elevated top) is replaced; the five canonical faces are no-ops.
+  {
+    Brep box = Brep::BoxWelded(0, 0, 0, 2, 3, 4);
+    const int top = find_face(box, ON_3dVector(0, 0, 1));
+    Check(top >= 0 && elevate_in_place(box, top), "setup: a second elevated-top welded box");
+    Check(box.SimplifyPlanarFaces() == 1, "SimplifyPlanarFaces() replaces exactly 1 face (the elevated top)");
+    bool all_canonical = true;
+    for (int fi = 0; fi < box.FaceCount(); ++fi) all_canonical = all_canonical && is_canonical(surface_of(box, fi));
+    Check(all_canonical && box.raw().IsValid(&discard) && box.Check().IsClean() && std::fabs(box.Volume() - 24.0) < 1e-9,
+          "...after which all 6 faces are canonical planes and the box is still valid, clean and exactly 24");
+  }
+
+  // ---- Fixture B: a hand-built single planar face (genuine ON_Brep
+  // topology: 4 vertices, 4 line edges, 1 loop) on a degree-2 3x3
+  // Bezier plane whose centre control point is shifted by (0.4, 0) in
+  // the plane: the face is exactly the rectangle [0,2]x[0,3] at z=4
+  // (boundary parametrization linear), but its interior parametrization
+  // is NOT affine - the old 2D trims could not simply be reused, the
+  // pullback from the 3D edges is what makes the result exact.
+  {
+    std::vector<Point3d> grid;
+    for (int i = 0; i < 3; ++i)
+      for (int j = 0; j < 3; ++j) grid.push_back(Point3d(1.0 * i + ((i == 1 && j == 1) ? 0.4 : 0.0), 1.5 * j, 4.0));
+    const NurbsSurface warped = NurbsSurface::FromControlGrid(grid, 3, 3, 2, 2);
+    const Point3d warped_mid = warped.PointAt(0.5, 0.5);
+    // Degree-2 Bernstein weights at 0.5 are (1/4, 1/2, 1/4): the centre
+    // CV's shift of 0.4 moves PointAt(0.5, 0.5) by exactly 0.25 * 0.4 = 0.1.
+    Check(std::fabs(warped_mid.x - 1.1) < 1e-12 && std::fabs(warped_mid.y - 1.5) < 1e-12 && std::fabs(warped_mid.z - 4.0) < 1e-12,
+          "setup: the warped plane's PointAt(0.5, 0.5) is (1.1, 1.5, 4), off the rectangle's centre by exactly 0.1");
+    Check(warped.IsPlanar(1e-9), "setup: the warped surface is recognized as planar");
+
+    Brep sheet;
+    ON_Brep& raw = sheet.raw();
+    const int si = raw.AddSurface(new ON_NurbsSurface(warped.raw()));
+    const Point3d c00(0, 0, 4), c10(2, 0, 4), c11(2, 3, 4), c01(0, 3, 4);
+    const int v00 = raw.NewVertex(c00, 0.0).m_vertex_index;
+    const int v10 = raw.NewVertex(c10, 0.0).m_vertex_index;
+    const int v11 = raw.NewVertex(c11, 0.0).m_vertex_index;
+    const int v01 = raw.NewVertex(c01, 0.0).m_vertex_index;
+    auto mk_edge = [&](int va, const Point3d& pa, int vb, const Point3d& pb) {
+      const int c3i = raw.AddEdgeCurve(new ON_LineCurve(pa, pb));
+      const int ei = raw.NewEdge(raw.m_V[va], raw.m_V[vb], c3i).m_edge_index;
+      raw.m_E[ei].m_tolerance = 0.0;
+      return ei;
+    };
+    const int e0 = mk_edge(v00, c00, v10, c10);
+    const int e1 = mk_edge(v10, c10, v11, c11);
+    const int e2 = mk_edge(v11, c11, v01, c01);
+    const int e3 = mk_edge(v01, c01, v00, c00);
+    const int fi = raw.NewFace(si).m_face_index;
+    const int li = raw.NewLoop(ON_BrepLoop::outer, raw.m_F[fi]).m_loop_index;
+    auto add_trim = [&](int ei, double ua, double va, double ub, double vb) {
+      auto* c2 = new ON_LineCurve(ON_2dPoint(ua, va), ON_2dPoint(ub, vb));
+      ON_BrepTrim& trim = raw.NewTrim(raw.m_E[ei], false, raw.m_L[li], raw.AddTrimCurve(c2));
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    };
+    add_trim(e0, 0, 0, 1, 0);
+    add_trim(e1, 1, 0, 1, 1);
+    add_trim(e2, 1, 1, 0, 1);
+    add_trim(e3, 0, 1, 0, 0);
+    raw.SetTrimIsoFlags();
+    raw.SetTolerancesBoxesAndFlags();
+    for (int i = 0; i < raw.m_E.Count(); ++i) {
+      if (raw.m_E[i].m_edge_index >= 0 && !(raw.m_E[i].m_tolerance >= 0.0)) raw.m_E[i].m_tolerance = 0.0;
+    }
+    Check(raw.IsValid(&discard), "setup: the hand-built warped-plane sheet is a valid ON_Brep");
+    const Brep::CheckReport rb = sheet.Check();
+    Check(rb.Count(CheckKind::NakedEdge) == 4 && static_cast<int>(rb.issues.size()) == 4,
+          "setup: its Check() reports exactly its 4 naked rim edges and nothing else");
+    Check(max_trim_edge_mismatch(sheet, fi) < 1e-9, "setup: the warped sheet's trims already match its edges exactly");
+    const bool rev_before = raw.m_F[fi].m_bRev;
+
+    Check(sheet.SimplifyPlanarFace(fi) == Result::Ok, "SimplifyPlanarFace() replaces the warped degree-2 planar face");
+    const ON_NurbsSurface* after = surface_of(sheet, fi);
+    Check(is_canonical(after), "the sheet's surface is now the canonical non-rational degree (1,1) 2x2 plane");
+    const Point3d mid = after->PointAt(after->Domain(0).ParameterAt(0.5), after->Domain(1).ParameterAt(0.5));
+    Check(std::fabs(mid.x - 1.0) < 1e-12 && std::fabs(mid.y - 1.5) < 1e-12 && std::fabs(mid.z - 4.0) < 1e-12,
+          "the canonical plane's domain centre is the rectangle's exact centre (1, 1.5, 4) - the 0.1 warp is gone");
+    Check(std::fabs(after->Domain(0).Length() - 2.2) < 1e-12 && std::fabs(after->Domain(1).Length() - 3.3) < 1e-12,
+          "metric domain 2.2 x 3.3 exactly (2 x 3 rectangle plus 5% margins)");
+    Check(ON_DotProduct(face_normal(sheet, fi), ON_3dVector(0, 0, 1)) > 1.0 - 1e-12 && raw.m_F[fi].m_bRev == rev_before,
+          "the sheet's outward normal (+z) and m_bRev are unchanged");
+    Check(raw.IsValid(&discard), "the simplified sheet is a valid ON_Brep");
+    const Brep::CheckReport ra = sheet.Check();
+    Check(ra.Count(CheckKind::NakedEdge) == 4 && static_cast<int>(ra.issues.size()) == 4,
+          "its Check() still reports exactly the 4 naked rim edges and nothing else (no TrimEdgeGap/LoopGap/InvalidTrim)");
+    Check(sheet.LiveVertexCount() == 4 && sheet.LiveEdgeCount() == 4 && trim_count(sheet, fi) == 4,
+          "topology untouched: 4 vertices, 4 edges, 4 trims");
+    Check(max_trim_edge_mismatch(sheet, fi) < 1e-9, "every rebuilt trim reproduces its edge through the canonical plane exactly");
+    Check(std::fabs(sheet.Area() - 6.0) < 1e-9, "exact area 2 * 3 = 6 after the simplification");
+    const ON_BoundingBox pbox = raw.m_L[li].m_pbox;
+    Check(std::fabs((pbox.m_max.x - pbox.m_min.x) - 2.0) < 1e-12 && std::fabs((pbox.m_max.y - pbox.m_min.y) - 3.0) < 1e-12,
+          "the rebuilt loop's own (u,v) box is exactly 2 x 3: the trims are the rectangle in metric plane coordinates");
+  }
+
+  // ---- Refusals leave the Brep untouched: an extruded cylinder's curved
+  // wall (not planar), and its +z cap - which Extrude()'s
+  // AssembleSweptBody() builds as a SINGULAR ruled disc (the rim circle
+  // swept to an apex: an apex trim with no edge plus a seam edge), not as
+  // a plane with a circular trim loop. A singular trim has no 3D curve to
+  // pull back, so SimplifyPlanarFace() refuses it (Result::Failed, as
+  // documented) rather than guess a boundary.
+  {
+    const ON_Circle circle_raw(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+    ON_NurbsCurve circle_nurbs;
+    Check(circle_raw.GetNurbForm(circle_nurbs) != 0, "setup: ON_Circle::GetNurbForm succeeds");
+    NurbsCurve circle;
+    circle.raw() = circle_nurbs;
+    Brep cyl = Brep::Extrude(circle, Vector3d(0, 0, 3), /*cap=*/true);
+    const int cap = find_face(cyl, ON_3dVector(0, 0, 1));
+    Check(cap >= 0 && cyl.FaceCount() == 3, "setup: the capped cylinder has 3 faces and a +z cap");
+    int wall = -1;
+    for (int k = 0; k < cyl.FaceCount(); ++k) {
+      NurbsSurface w;
+      w.raw() = *surface_of(cyl, k);
+      if (!w.IsPlanar(1e-6)) wall = k;
+    }
+    Check(wall >= 0, "setup: the cylinder wall (non-planar) face is found");
+    auto same_surface = [](const ON_NurbsSurface& a, const ON_NurbsSurface* b) {
+      bool same = b && b->Degree(0) == a.Degree(0) && b->Degree(1) == a.Degree(1) && b->CVCount(0) == a.CVCount(0) &&
+                  b->CVCount(1) == a.CVCount(1);
+      for (int i = 0; same && i < a.CVCount(0); ++i) {
+        for (int j = 0; same && j < a.CVCount(1); ++j) {
+          ON_4dPoint p, q;
+          a.GetCV(i, j, p);
+          b->GetCV(i, j, q);
+          same = p.x == q.x && p.y == q.y && p.z == q.z && p.w == q.w;
+        }
+      }
+      return same;
+    };
+
+    // Negative: the curved wall is refused, and refused WITHOUT touching anything.
+    const ON_NurbsSurface wall_before(*surface_of(cyl, wall));
+    const int surfaces_before = cyl.raw().m_S.Count();
+    Check(cyl.SimplifyPlanarFace(wall) == Result::Failed, "a cylindrical wall face is refused (Result::Failed)");
+    Check(same_surface(wall_before, surface_of(cyl, wall)) && cyl.raw().m_S.Count() == surfaces_before,
+          "...and the refusal leaves the wall's surface bit-for-bit untouched");
+
+    // Negative: the singular ruled disc cap is planar but has an apex trim with no edge.
+    int singular_trims = 0;
+    const ON_BrepFace& cf = cyl.raw().m_F[cap];
+    for (int k = 0; k < cf.m_li.Count(); ++k) {
+      const ON_BrepLoop& loop = cyl.raw().m_L[cf.m_li[k]];
+      for (int m = 0; m < loop.m_ti.Count(); ++m) {
+        if (cyl.raw().m_T[loop.m_ti[m]].m_ei < 0) ++singular_trims;
+      }
+    }
+    NurbsSurface cap_srf;
+    cap_srf.raw() = *surface_of(cyl, cap);
+    Check(singular_trims == 1 && cap_srf.IsPlanar(1e-9),
+          "setup: Extrude's +z cap is a planar singular ruled disc with exactly one apex (edge-less) trim");
+    const ON_NurbsSurface cap_before(*surface_of(cyl, cap));
+    Check(cyl.SimplifyPlanarFace(cap) == Result::Failed,
+          "the singular disc cap is refused (Result::Failed): a singular trim has no 3D edge to pull back");
+    Check(same_surface(cap_before, surface_of(cyl, cap)) && cyl.raw().m_S.Count() == surfaces_before && cyl.raw().IsValid(&discard),
+          "...and that refusal too leaves the cap's surface bit-for-bit untouched and the cylinder a valid ON_Brep");
+  }
+
+  // ---- A rational (circular) edge pulled back exactly: a hand-built disc
+  // face (genuine topology: one vertex, one closed rational degree-2
+  // circle edge, one loop with one trim) on the canonical plane z = 3,
+  // degree-elevated into a non-canonical plane, gets its circle trim
+  // rebuilt from the rational edge itself - weights and all.
+  {
+    const ON_Circle circle_raw(ON_Plane(ON_3dPoint(0, 0, 3), ON_3dVector(0, 0, 1)), 1.0);
+    ON_NurbsCurve c3;
+    Check(circle_raw.GetNurbForm(c3) != 0 && c3.IsRational() && c3.Degree() == 2 && c3.IsClosed(),
+          "setup: the unit circle at z = 3 has a closed rational degree-2 NURBS form");
+    // The canonical plane P(u, v) = (u, v, 3) over [-1.1, 1.1]^2.
+    const std::vector<Point3d> grid = {Point3d(-1.1, -1.1, 3), Point3d(-1.1, 1.1, 3), Point3d(1.1, -1.1, 3),
+                                       Point3d(1.1, 1.1, 3)};
+    NurbsSurface plane = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    Check(plane.SetDomain(0, -1.1, 1.1) == Result::Ok && plane.SetDomain(1, -1.1, 1.1) == Result::Ok,
+          "setup: the canonical plane's (u, v) are metric x, y");
+
+    Brep disc;
+    ON_Brep& raw = disc.raw();
+    const int si = raw.AddSurface(new ON_NurbsSurface(plane.raw()));
+    const int v0 = raw.NewVertex(c3.PointAtStart(), 0.0).m_vertex_index;
+    const int ei = raw.NewEdge(raw.m_V[v0], raw.m_V[v0], raw.AddEdgeCurve(new ON_NurbsCurve(c3))).m_edge_index;
+    raw.m_E[ei].m_tolerance = 0.0;
+    // The initial 2D trim is the circle itself with z dropped (homogeneous
+    // CVs, same weights), since this plane's (u, v) are exactly x, y.
+    auto* c2 = new ON_NurbsCurve(2, c3.IsRational(), c3.Order(), c3.CVCount());
+    for (int i = 0; i < c3.KnotCount(); ++i) c2->SetKnot(i, c3.Knot(i));
+    for (int i = 0; i < c3.CVCount(); ++i) {
+      ON_4dPoint h;
+      c3.GetCV(i, h);
+      c2->SetCV(i, ON_4dPoint(h.x, h.y, 0.0, h.w));
+    }
+    Check(c2->IsValid() && c2->IsClosed(), "setup: the dropped-z circle is a valid closed 2D rational curve");
+    const int fi = raw.NewFace(si).m_face_index;
+    const int li = raw.NewLoop(ON_BrepLoop::outer, raw.m_F[fi]).m_loop_index;
+    ON_BrepTrim& trim = raw.NewTrim(raw.m_E[ei], false, raw.m_L[li], raw.AddTrimCurve(c2));
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    raw.SetTrimIsoFlags();
+    raw.SetTolerancesBoxesAndFlags();
+    for (int i = 0; i < raw.m_E.Count(); ++i) {
+      if (raw.m_E[i].m_edge_index >= 0 && !(raw.m_E[i].m_tolerance >= 0.0)) raw.m_E[i].m_tolerance = 0.0;
+    }
+    Check(raw.IsValid(&discard), "setup: the hand-built disc (1 vertex, 1 closed circle edge, 1 trim) is a valid ON_Brep");
+    Check(max_trim_edge_mismatch(disc, fi) < 1e-9, "setup: the disc's trim already matches its circle edge exactly");
+    const double area_before = disc.Area();
+    // Area() is tessellation-based, so a circular boundary is only
+    // approximate (~1% low); the exact invariant checked below is that
+    // the simplification leaves it unchanged to 1e-9.
+    Check(std::fabs(area_before - ON_PI) < 0.05, "setup: the disc's tessellated area is pi to within ~1%");
+    Check(disc.SimplifyPlanarFace(fi) == Result::NoOpAlreadySatisfied,
+          "the disc on the canonical plane is reported already canonical (NoOpAlreadySatisfied)");
+
+    Check(elevate_in_place(disc, fi), "setup: the disc's plane is degree-elevated into a non-canonical NURBS plane");
+    Check(!is_canonical(surface_of(disc, fi)) && raw.IsValid(&discard), "setup: the elevated-plane disc is still a valid ON_Brep");
+    const size_t issues_before = disc.Check().issues.size();
+    Check(disc.SimplifyPlanarFace(fi) == Result::Ok, "SimplifyPlanarFace() replaces the elevated circular disc's plane");
+    const ON_NurbsSurface* after = surface_of(disc, fi);
+    Check(is_canonical(after) && raw.IsValid(&discard), "the disc's surface is canonical again and the disc is a valid ON_Brep");
+    Check(std::fabs(after->Domain(0).Length() - 2.2) < 1e-12 && std::fabs(after->Domain(1).Length() - 2.2) < 1e-12,
+          "the new domain is the circle's own [-1, 1]^2 extent plus the 5% margin: 2.2 x 2.2 exactly");
+    Check(disc.Check().issues.size() == issues_before, "the rebuild adds no Check() issue");
+    Check(max_trim_edge_mismatch(disc, fi) < 1e-9, "the rebuilt circular trim reproduces the rational edge through the plane exactly");
+    int rational_trims = 0, total = 0;
+    const ON_BrepFace& df = raw.m_F[fi];
+    const ON_Surface* ds = df.SurfaceOf();
+    double worst_radius = 0.0;
+    for (int k = 0; k < df.m_li.Count(); ++k) {
+      const ON_BrepLoop& loop = raw.m_L[df.m_li[k]];
+      for (int m = 0; m < loop.m_ti.Count(); ++m) {
+        const ON_BrepTrim& t = raw.m_T[loop.m_ti[m]];
+        ON_NurbsCurve t2;
+        ++total;
+        if (t.GetNurbForm(t2) > 0 && t2.IsRational() && t2.Degree() == 2 && t2.CVCount() == c3.CVCount()) ++rational_trims;
+        for (int i = 0; i <= 32; ++i) {
+          const ON_3dPoint uv = t.PointAt(t.Domain().ParameterAt(i / 32.0));
+          const ON_3dPoint p = ds->PointAt(uv.x, uv.y);
+          worst_radius = std::max(worst_radius, std::fabs(std::hypot(p.x, p.y) - 1.0) + std::fabs(p.z - 3.0));
+        }
+      }
+    }
+    Check(total == 1 && rational_trims == 1,
+          "the single rebuilt trim is a rational degree-2 2D curve with the circle's own CV count - its NURBS form pulled back, not a refit");
+    Check(worst_radius < 1e-9, "33 samples along the rebuilt trim lie exactly on the unit circle at z = 3 through the canonical plane");
+    Check(std::fabs(disc.Area() - area_before) < 1e-9, "the disc's area is unchanged (pi) by the simplification");
+  }
+
+  // ---- Argument checks.
+  {
+    Brep box = Brep::BoxWelded(0, 0, 0, 1, 1, 1);
+    bool threw_range = false, threw_tol = false;
+    try {
+      box.SimplifyPlanarFace(99);
+    } catch (const std::out_of_range&) {
+      threw_range = true;
+    }
+    try {
+      box.SimplifyPlanarFace(0, 0.0);
+    } catch (const std::invalid_argument&) {
+      threw_tol = true;
+    }
+    Check(threw_range, "an out-of-range face_index throws std::out_of_range");
+    Check(threw_tol, "a non-positive tolerance throws std::invalid_argument");
+    Check(Brep::Box(0, 0, 0, 1, 1, 1).SimplifyPlanarFace(0) == Result::Failed,
+          "a surface-only Box() face (no real ON_Brep loops, pseudo-trim side tables) is refused, not guessed at");
+  }
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -85970,6 +86385,7 @@ int main() {
   RunTest("TestSubDFromUniformBicubicSurfaceReproducesSurfaceExactly", TestSubDFromUniformBicubicSurfaceReproducesSurfaceExactly);
   RunTest("TestSubDFromUniformBicubicSurfaceRejectsUnsupportedInput", TestSubDFromUniformBicubicSurfaceRejectsUnsupportedInput);
   RunTest("TestBooleanCombineGeneralSphereCentredOnBoxEdgeAlongSeamMeridian", TestBooleanCombineGeneralSphereCentredOnBoxEdgeAlongSeamMeridian);
+  RunTest("TestBrepSimplifyPlanarFaceCanonicalizesPlanarNurbsFaces", TestBrepSimplifyPlanarFaceCanonicalizesPlanarNurbsFaces);
 
   RunTest("ON::End", ON::End);
 
