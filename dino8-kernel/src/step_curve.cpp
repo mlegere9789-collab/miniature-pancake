@@ -11,7 +11,12 @@
 // (kernel library) STEP/IGES/PLY/DXF exchange API" gap's STEP half
 // (PARITY_MAP.md, kernel: Kernel-level data exchange) the same way
 // SaveIges()/LoadIges() (iges.cpp) already closed the IGES half.
+//
+// NurbsSurface::SaveStep/LoadStep (B_SPLINE_SURFACE_WITH_KNOTS, optionally
+// wrapped in RATIONAL_B_SPLINE_SURFACE) live at the bottom of this same TU
+// so they can share the Part 21 record parser instead of duplicating it.
 #include "dino8/kernel/curve.h"
+#include "dino8/kernel/surface.h"
 
 #include <cctype>
 #include <cmath>
@@ -306,19 +311,21 @@ ON_3dPoint StepCurvePoint(const std::map<int, StepCurveEntity>& entities, int id
   return ON_3dPoint::Origin;
 }
 
-}  // namespace
-
-Result NurbsCurve::LoadStep(const std::string& path, NurbsCurve& out) {
+// Reads a whole ISO-10303-21 file into its DATA section's numbered records
+// (comments stripped, one entry per `#id=...;` record). False for a missing
+// file, no ISO-10303-21 header, no DATA section, or no records at all.
+// Shared by NurbsCurve::LoadStep() and NurbsSurface::LoadStep() below.
+bool StepCurveParseFile(const std::string& path, std::map<int, StepCurveEntity>& entities) {
   std::ifstream is(path, std::ios::binary);
-  if (!is) return Result::Failed;
+  if (!is) return false;
   std::ostringstream buf;
   buf << is.rdbuf();
   const std::string text = buf.str();
-  if (text.find("ISO-10303-21") == std::string::npos) return Result::Failed;
+  if (text.find("ISO-10303-21") == std::string::npos) return false;
 
   const size_t data_pos = text.find("DATA;");
   const size_t end_pos = text.rfind("ENDSEC;");
-  if (data_pos == std::string::npos) return Result::Failed;
+  if (data_pos == std::string::npos) return false;
   std::string data =
       text.substr(data_pos + 5, (end_pos != std::string::npos && end_pos > data_pos ? end_pos - data_pos - 5 : std::string::npos));
 
@@ -344,7 +351,6 @@ Result NurbsCurve::LoadStep(const std::string& path, NurbsCurve& out) {
     data = stripped;
   }
 
-  std::map<int, StepCurveEntity> entities;
   for (const std::string& raw : StepCurveSplitTop(data, ';')) {
     const std::string r = StepCurveTrim(raw);
     if (r.empty() || r[0] != '#') continue;
@@ -354,7 +360,14 @@ Result NurbsCurve::LoadStep(const std::string& path, NurbsCurve& out) {
     if (id <= 0) continue;
     entities[id] = StepCurveParseEntity(r.substr(eq + 1));
   }
-  if (entities.empty()) return Result::Failed;
+  return !entities.empty();
+}
+
+}  // namespace
+
+Result NurbsCurve::LoadStep(const std::string& path, NurbsCurve& out) {
+  std::map<int, StepCurveEntity> entities;
+  if (!StepCurveParseFile(path, entities)) return Result::Failed;
 
   for (const auto& [id, e] : entities) {
     (void)id;
@@ -405,6 +418,289 @@ Result NurbsCurve::LoadStep(const std::string& path, NurbsCurve& out) {
     return Result::Ok;
   }
   return Result::Failed;  // no B_SPLINE_CURVE_WITH_KNOTS entity found
+}
+
+
+// ===========================================================================
+// NurbsSurface::SaveStep/LoadStep - the surface counterpart of the curve
+// pair above (B_SPLINE_SURFACE_WITH_KNOTS, optionally wrapped in the complex
+// RATIONAL_B_SPLINE_SURFACE form). Lives in this TU to share the Part 21
+// record parser above rather than duplicating it.
+//
+// Simple (non-rational) entity: the 13-attribute B_SPLINE_SURFACE_WITH_KNOTS
+// layout of ISO 10303-42 - identical to what dino8-app/src/io/
+// FileIgesStep.cpp's own WriteStepSurface() writes and its Surface() reader
+// reads (args[8..11] for the two multiplicity lists and two knot lists;
+// verified to agree with each other, unlike the curve pair's off-by-one the
+// port above fixed).
+//
+// Complex (rational) entity: SaveStep() writes the standard Part 21 form
+// real CAD exporters emit, with the attributes distributed over their own
+// supertypes - B_SPLINE_SURFACE(u_degree, v_degree, control_points_list,
+// surface_form, u_closed, v_closed, self_intersect) then
+// B_SPLINE_SURFACE_WITH_KNOTS(u_multiplicities, v_multiplicities, u_knots,
+// v_knots, knot_spec) then RATIONAL_B_SPLINE_SURFACE(weights_data) - NOT the
+// app writer's own variant, which packs every attribute into the
+// B_SPLINE_SURFACE_WITH_KNOTS part behind a leading empty field (a layout
+// the app's own reader, and nothing else, understands). LoadStep() reads
+// both: the standard split form, and that flat form, so a file from either
+// the app or an external tool decodes.
+// ===========================================================================
+
+namespace {
+
+// A shortest-round-trip REAL literal: `%.15g` when that already reads back
+// as the identical double, `%.17g` otherwise - so a control point, knot or
+// weight survives SaveStep()/LoadStep() bit-exact (the curve writer's own
+// `%.9g`, ported from the app, loses ~1e-10 on a weight like sqrt(2)/2).
+// Still carries a decimal point (a bare "10" is an ISO-10303-21 INTEGER).
+std::string StepSurfaceNum(double v) {
+  if (!std::isfinite(v)) v = 0.0;
+  if (v == 0.0) v = 0.0;  // normalises -0.0
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%.15g", v);
+  if (std::strtod(buf, nullptr) != v) std::snprintf(buf, sizeof(buf), "%.17g", v);
+  std::string s = buf;
+  if (s.find('.') == std::string::npos && s.find('e') == std::string::npos && s.find('E') == std::string::npos) s += ".";
+  return s;
+}
+
+// Full (clamped) knot vector in one direction - FileIgesStep.cpp's own
+// FullKnots(const ON_NurbsSurface&, int), one dimension up from
+// StepCurveFullKnots() above.
+std::vector<double> StepSurfaceFullKnots(const ON_NurbsSurface& s, int dir) {
+  std::vector<double> k;
+  const int n = s.KnotCount(dir);
+  if (n <= 0) return k;
+  k.push_back(s.Knot(dir, 0));
+  for (int i = 0; i < n; ++i) k.push_back(s.Knot(dir, i));
+  k.push_back(s.Knot(dir, n - 1));
+  return k;
+}
+
+// STEP's own (knot, multiplicity) compression of a full knot vector - two
+// consecutive knots closer than 1e-9 are one knot of higher multiplicity.
+void StepSurfaceCompressKnots(const std::vector<double>& full, std::vector<double>& knots, std::vector<int>& mult) {
+  for (double k : full) {
+    if (!knots.empty() && std::fabs(k - knots.back()) < 1e-9) ++mult.back();
+    else { knots.push_back(k); mult.push_back(1); }
+  }
+}
+
+// "((a,b,c),(d,e,f))" -> the top-level rows' own inner text, "a,b,c" and
+// "d,e,f". A row that is not itself parenthesised is reported as-is.
+std::vector<std::string> StepSurfaceRows(const std::string& arg) {
+  std::vector<std::string> rows;
+  const std::string body = StepCurveUnparen(arg);
+  if (StepCurveTrim(body).empty()) return rows;
+  for (const std::string& r : StepCurveSplitTop(body, ',')) rows.push_back(StepCurveUnparen(r));
+  return rows;
+}
+
+}  // namespace
+
+Result NurbsSurface::SaveStep(const std::string& path) const {
+  if (!surface_.IsValid()) return Result::Failed;
+  const int nu = surface_.CVCount(0), nv = surface_.CVCount(1);
+  const int du = surface_.Degree(0), dv = surface_.Degree(1);
+  if (nu < 1 || nv < 1 || du < 1 || dv < 1) return Result::Failed;
+
+  std::vector<double> ku, kv;
+  std::vector<int> mu, mv;
+  StepSurfaceCompressKnots(StepSurfaceFullKnots(surface_, 0), ku, mu);
+  StepSurfaceCompressKnots(StepSurfaceFullKnots(surface_, 1), kv, mv);
+
+  // Euclidean control points and their real weights, row i (u) by column j
+  // (v) - the nesting order WriteStepSurface() (app level) writes.
+  std::vector<ON_3dPoint> pts(static_cast<size_t>(nu) * static_cast<size_t>(nv));
+  std::vector<double> wts(pts.size(), 1.0);
+  bool rational = false;
+  for (int i = 0; i < nu; ++i) {
+    for (int j = 0; j < nv; ++j) {
+      ON_4dPoint h;
+      surface_.GetCV(i, j, h);
+      const size_t idx = static_cast<size_t>(i) * static_cast<size_t>(nv) + static_cast<size_t>(j);
+      if (surface_.IsRational()) {
+        if (!(std::fabs(h.w) > 1e-300)) return Result::Failed;  // a zero weight has no Euclidean point
+        pts[idx] = ON_3dPoint(h.x / h.w, h.y / h.w, h.z / h.w);
+        wts[idx] = h.w;
+        if (std::fabs(h.w - 1.0) > 1e-9) rational = true;
+      } else {
+        pts[idx] = ON_3dPoint(h.x, h.y, h.z);
+      }
+    }
+  }
+
+  std::ofstream out(path);
+  if (!out) return Result::Failed;
+
+  std::time_t now = std::time(nullptr);
+  char date[32];
+  std::strftime(date, sizeof(date), "%Y-%m-%dT%H:%M:%S", std::localtime(&now));
+
+  out << "ISO-10303-21;\n";
+  out << "HEADER;\n";
+  out << "FILE_DESCRIPTION((''),'2;1');\n";
+  out << "FILE_NAME('" << path << "','" << date << "',('Dino 8'),(''),'Dino 8 kernel','Dino 8','');\n";
+  out << "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 3 1 1 }'));\n";
+  out << "ENDSEC;\n";
+  out << "DATA;\n";
+
+  int next_id = 1;
+  std::string cvs = "(", wtext = "(";
+  for (int i = 0; i < nu; ++i) {
+    cvs += "(";
+    wtext += "(";
+    for (int j = 0; j < nv; ++j) {
+      const size_t idx = static_cast<size_t>(i) * static_cast<size_t>(nv) + static_cast<size_t>(j);
+      out << "#" << next_id << "=CARTESIAN_POINT('',(" << StepSurfaceNum(pts[idx].x) << "," << StepSurfaceNum(pts[idx].y)
+          << "," << StepSurfaceNum(pts[idx].z) << "));\n";
+      cvs += "#" + std::to_string(next_id) + (j + 1 < nv ? "," : "");
+      wtext += StepSurfaceNum(wts[idx]) + (j + 1 < nv ? "," : "");
+      ++next_id;
+    }
+    cvs += std::string(")") + (i + 1 < nu ? "," : "");
+    wtext += std::string(")") + (i + 1 < nu ? "," : "");
+  }
+  cvs += ")";
+  wtext += ")";
+
+  auto list_real = [](const std::vector<double>& v) {
+    std::string s = "(";
+    for (size_t i = 0; i < v.size(); ++i) s += StepSurfaceNum(v[i]) + (i + 1 < v.size() ? "," : "");
+    return s + ")";
+  };
+  auto list_int = [](const std::vector<int>& v) {
+    std::string s = "(";
+    for (size_t i = 0; i < v.size(); ++i) s += std::to_string(v[i]) + (i + 1 < v.size() ? "," : "");
+    return s + ")";
+  };
+
+  // B_SPLINE_SURFACE's own attributes: u_degree, v_degree,
+  // control_points_list, surface_form, u_closed, v_closed, self_intersect;
+  // B_SPLINE_SURFACE_WITH_KNOTS adds u_multiplicities, v_multiplicities,
+  // u_knots, v_knots, knot_spec (ISO 10303-42 attribute order).
+  const std::string bss_args = std::to_string(du) + "," + std::to_string(dv) + "," + cvs + ",.UNSPECIFIED.,.F.,.F.,.F.";
+  const std::string knots_args = list_int(mu) + "," + list_int(mv) + "," + list_real(ku) + "," + list_real(kv) + ",.UNSPECIFIED.";
+  const int surface_id = next_id++;
+  if (!rational) {
+    out << "#" << surface_id << "=B_SPLINE_SURFACE_WITH_KNOTS(''," << bss_args << "," << knots_args << ");\n";
+  } else {
+    out << "#" << surface_id << "=(BOUNDED_SURFACE()B_SPLINE_SURFACE(" << bss_args << ")B_SPLINE_SURFACE_WITH_KNOTS("
+        << knots_args << ")GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_SURFACE(" << wtext
+        << ")REPRESENTATION_ITEM('')SURFACE());\n";
+  }
+
+  out << "ENDSEC;\n";
+  out << "END-ISO-10303-21;\n";
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result NurbsSurface::LoadStep(const std::string& path, NurbsSurface& out) {
+  std::map<int, StepCurveEntity> entities;
+  if (!StepCurveParseFile(path, entities)) return Result::Failed;
+
+  for (const auto& [id, e] : entities) {
+    (void)id;
+    const StepCurvePart* pk = e.Find("B_SPLINE_SURFACE_WITH_KNOTS");
+    if (!pk) continue;  // this reader's own disclosed scope: the first B_SPLINE_SURFACE_WITH_KNOTS entity only
+
+    // Either layout (see the block comment above): the simple/flat one with
+    // all 13 attributes in this part (name first), or the standard complex
+    // one with the first 7 in a B_SPLINE_SURFACE part and the last 5 here.
+    std::string du_text, dv_text, cvs_text, mu_text, mv_text, ku_text, kv_text;
+    const StepCurvePart* pb = e.Find("B_SPLINE_SURFACE");
+    if (pk->args.size() >= 12) {
+      du_text = pk->args[1]; dv_text = pk->args[2]; cvs_text = pk->args[3];
+      mu_text = pk->args[8]; mv_text = pk->args[9]; ku_text = pk->args[10]; kv_text = pk->args[11];
+    } else if (pk->args.size() >= 4 && pb && pb->args.size() >= 3) {
+      du_text = pb->args[0]; dv_text = pb->args[1]; cvs_text = pb->args[2];
+      mu_text = pk->args[0]; mv_text = pk->args[1]; ku_text = pk->args[2]; kv_text = pk->args[3];
+    } else {
+      return Result::Failed;
+    }
+
+    const int du = std::atoi(StepCurveTrim(du_text).c_str());
+    const int dv = std::atoi(StepCurveTrim(dv_text).c_str());
+    if (du < 1 || du > 1000 || dv < 1 || dv > 1000) return Result::Failed;
+
+    // Control points: a list of u-rows, each a list of v-column references.
+    // Every row must have the same length - a ragged grid is a malformed
+    // file, refused rather than silently padded.
+    std::vector<std::vector<int>> rows;
+    for (const std::string& row_text : StepSurfaceRows(cvs_text)) {
+      std::vector<int> refs;
+      for (const std::string& t : StepCurveSplitTop(row_text, ',')) {
+        if (!StepCurveIsRef(t)) return Result::Failed;
+        refs.push_back(StepCurveRef(t));
+      }
+      if (!rows.empty() && refs.size() != rows.front().size()) return Result::Failed;
+      rows.push_back(std::move(refs));
+    }
+    if (rows.empty() || rows.front().empty()) return Result::Failed;
+    const int nu = static_cast<int>(rows.size()), nv = static_cast<int>(rows.front().size());
+    if (nu < du + 1 || nv < dv + 1) return Result::Failed;
+
+    const std::vector<int> mu = StepCurveIntList(mu_text);
+    const std::vector<int> mv = StepCurveIntList(mv_text);
+    const std::vector<double> ku = StepCurveRealList(ku_text);
+    const std::vector<double> kv = StepCurveRealList(kv_text);
+    if (mu.size() != ku.size() || mv.size() != kv.size()) return Result::Failed;
+
+    auto expand = [](const std::vector<double>& knots, const std::vector<int>& mult, std::vector<double>& full) {
+      for (size_t i = 0; i < knots.size(); ++i) {
+        // Same untrusted-multiplicity guard as LoadStep()'s curve branch.
+        if (mult[i] < 0 || mult[i] > 100000) return false;
+        for (int k = 0; k < mult[i]; ++k) full.push_back(knots[i]);
+      }
+      return true;
+    };
+    std::vector<double> full_u, full_v;
+    if (!expand(ku, mu, full_u) || !expand(kv, mv, full_v)) return Result::Failed;
+    // A full clamped knot vector has cv_count + degree + 1 entries; anything
+    // else cannot describe this grid at this degree.
+    if (static_cast<int>(full_u.size()) != nu + du + 1 || static_cast<int>(full_v.size()) != nv + dv + 1) return Result::Failed;
+
+    std::vector<double> weights;  // empty = non-rational
+    if (const StepCurvePart* rp = e.Find("RATIONAL_B_SPLINE_SURFACE")) {
+      if (rp->args.empty()) return Result::Failed;
+      const std::vector<std::string> wrows = StepSurfaceRows(rp->args[0]);
+      if (static_cast<int>(wrows.size()) != nu) return Result::Failed;
+      for (const std::string& wr : wrows) {
+        const std::vector<double> w = StepCurveRealList("(" + wr + ")");
+        if (static_cast<int>(w.size()) != nv) return Result::Failed;
+        for (double x : w) {
+          if (!(x > 0.0) || !std::isfinite(x)) return Result::Failed;
+          weights.push_back(x);
+        }
+      }
+    }
+
+    ON_NurbsSurface ns;
+    if (!ns.Create(3, !weights.empty(), du + 1, dv + 1, nu, nv)) return Result::Failed;
+    for (int i = 0; i < ns.KnotCount(0); ++i) ns.SetKnot(0, i, full_u[static_cast<size_t>(i + 1)]);
+    for (int i = 0; i < ns.KnotCount(1); ++i) ns.SetKnot(1, i, full_v[static_cast<size_t>(i + 1)]);
+    for (int i = 0; i < nu; ++i) {
+      for (int j = 0; j < nv; ++j) {
+        // A dangling reference, or one naming something other than a
+        // CARTESIAN_POINT, is a malformed file - refused, not read as the
+        // origin the way the curve reader's lenient StepCurvePoint() does.
+        const auto it = entities.find(rows[static_cast<size_t>(i)][static_cast<size_t>(j)]);
+        if (it == entities.end() || !it->second.Find("CARTESIAN_POINT")) return Result::Failed;
+        const ON_3dPoint q = StepCurvePoint(entities, it->first);
+        if (weights.empty()) {
+          ns.SetCV(i, j, q);
+        } else {
+          const double w = weights[static_cast<size_t>(i) * static_cast<size_t>(nv) + static_cast<size_t>(j)];
+          ns.SetCV(i, j, ON_4dPoint(q.x * w, q.y * w, q.z * w, w));
+        }
+      }
+    }
+    if (!ns.IsValid()) return Result::Failed;
+    out.raw() = ns;
+    return Result::Ok;
+  }
+  return Result::Failed;  // no B_SPLINE_SURFACE_WITH_KNOTS entity found
 }
 
 }  // namespace dino8::kernel

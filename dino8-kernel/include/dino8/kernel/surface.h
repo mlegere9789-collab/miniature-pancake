@@ -1943,6 +1943,53 @@ class NurbsSurface {
   // resolve - never silently hands back an out-of-tolerance fit.
   Result OffsetRefit(double distance, NurbsSurface& out, double tolerance = -1.0) const;
 
+  // Writes this surface as a single real ISO-10303-21 (STEP) physical file
+  // holding one `B_SPLINE_SURFACE_WITH_KNOTS` entity (wrapped in the complex
+  // `RATIONAL_B_SPLINE_SURFACE` form when any weight differs from 1) - the
+  // surface counterpart of `NurbsCurve::SaveStep()`, and this kernel's first
+  // Document-free STEP surface writer: before this, STEP surfaces/B-reps
+  // existed only in `dino8-app/src/io/FileIgesStep.cpp`'s own `ExportStep`
+  // (PARITY_MAP's "STEP AP203/AP214 B-rep export - app-only" item). Always
+  // writes the general B-spline form, never `WriteStepSurface()`'s own
+  // PLANE/CYLINDRICAL_SURFACE special cases - the identical narrowing
+  // `NurbsCurve::SaveStep()` makes for LINE/CIRCLE. The entity carries both
+  // real degrees, the control net as a u-row-by-v-column nested list of
+  // `CARTESIAN_POINT` references, (knot, multiplicity) pairs compressed from
+  // each full clamped knot vector, and - when rational - a matching nested
+  // weight list, in ISO 10303-42's own attribute order. The non-rational
+  // simple entity is byte-for-byte the layout the app writer emits; the
+  // rational complex entity is the STANDARD Part 21 form real CAD exporters
+  // write (attributes distributed over `B_SPLINE_SURFACE(...)` /
+  // `B_SPLINE_SURFACE_WITH_KNOTS(...)` / `RATIONAL_B_SPLINE_SURFACE(...)`),
+  // not the app writer's own flat variant - see LoadStep() below, which
+  // reads both. Every REAL is written with enough digits to read back as
+  // the identical double (not the curve writer's `%.9g`), so knots and
+  // weights round-trip bit-exact; a rational control point passes through
+  // STEP's mandatory Euclidean form (one homogeneous->Euclidean division
+  // and one multiplication back), so it is reproduced to ~1 ulp, not
+  // necessarily the identical bits. Returns Result::Failed for an invalid
+  // surface, a rational control point with a zero weight, or an unwritable
+  // path.
+  Result SaveStep(const std::string& path) const;
+
+  // Reads the first `B_SPLINE_SURFACE_WITH_KNOTS` entity (simple, or inside
+  // a complex `RATIONAL_B_SPLINE_SURFACE` entity in EITHER the standard
+  // split layout or the app writer's flat one) from an ISO-10303-21 file
+  // written by SaveStep(), by the app's own `ExportStep`, or by another
+  // STEP writer - without `ImportStep()`'s Document-bound PLANE/
+  // CYLINDRICAL_SURFACE/TRIMMED/B-rep dispatch: a file whose surfaces are
+  // all analytic is refused, not misread, the same "declared scope"
+  // convention `NurbsCurve::LoadStep()` has. Strict about the entity's own
+  // consistency: a ragged control-point grid, a control-point reference
+  // that is dangling or not a `CARTESIAN_POINT`, a multiplicity list whose
+  // length differs from its knot list, a knot vector whose expanded length
+  // is not `cv_count + degree + 1` in either direction, a weight grid that
+  // does not match the control grid, a non-positive weight, or an absurd
+  // (> 100000) multiplicity are each refused outright. Returns
+  // Result::Failed on any of those, on a missing file, a file with no
+  // ISO-10303-21 header or DATA section, or one with no such entity at all.
+  static Result LoadStep(const std::string& path, NurbsSurface& out);
+
   const ON_NurbsSurface& raw() const { return surface_; }
   ON_NurbsSurface& raw() { return surface_; }
 

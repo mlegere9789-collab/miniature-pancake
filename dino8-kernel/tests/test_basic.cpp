@@ -39104,6 +39104,321 @@ void TestNurbsCurveLoadStepRejectsMalformedFiles() {
   std::remove(bad_mult_path.c_str());
 }
 
+namespace step_surface_test_detail {
+
+std::string ReadWholeFile(const std::string& path) {
+  std::ifstream in(path);
+  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+// Comparison of two surfaces' whole definitions: degrees, control counts,
+// rationality, every knot and every weight BIT-exact (==), and every
+// Euclidean control point within `cv_tol` (0.0 = bit-exact too). A rational
+// control point necessarily passes through STEP's Euclidean CARTESIAN_POINT
+// form (one division by its weight on write, one multiplication on read),
+// so only the non-rational fixtures can demand cv_tol == 0.
+bool SameDefinition(const ON_NurbsSurface& a, const ON_NurbsSurface& b, double cv_tol) {
+  if (a.Degree(0) != b.Degree(0) || a.Degree(1) != b.Degree(1)) return false;
+  if (a.CVCount(0) != b.CVCount(0) || a.CVCount(1) != b.CVCount(1)) return false;
+  if (a.IsRational() != b.IsRational()) return false;
+  for (int dir = 0; dir < 2; ++dir) {
+    if (a.KnotCount(dir) != b.KnotCount(dir)) return false;
+    for (int i = 0; i < a.KnotCount(dir); ++i) if (a.Knot(dir, i) != b.Knot(dir, i)) return false;
+  }
+  for (int i = 0; i < a.CVCount(0); ++i) {
+    for (int j = 0; j < a.CVCount(1); ++j) {
+      if (a.IsRational() && a.Weight(i, j) != b.Weight(i, j)) return false;
+      ON_3dPoint pa, pb;
+      a.GetCV(i, j, pa);  // Euclidean
+      b.GetCV(i, j, pb);
+      if (cv_tol <= 0.0 ? (pa != pb) : ((pa - pb).Length() > cv_tol)) return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace step_surface_test_detail
+
+// Kernel-level STEP B_SPLINE_SURFACE_WITH_KNOTS round trip - the first
+// Document-free STEP *surface* reader/writer in this kernel (PARITY_MAP's
+// "STEP AP203/AP214 B-rep export" / "STEP B-rep import" items were both
+// app-only before this). Confirmed absent first: a standalone program
+// linked against the pre-change libdino8_kernel.a could not name
+// NurbsSurface::SaveStep/LoadStep at all, and both existing kernel STEP
+// readers (NurbsCurve::LoadStep, Mesh::LoadStepAp242) refused a valid
+// hand-written B_SPLINE_SURFACE_WITH_KNOTS file.
+void TestNurbsSurfaceSaveStepRoundTrips() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using step_surface_test_detail::ReadWholeFile;
+  using step_surface_test_detail::SameDefinition;
+
+  // (1) A non-rational degree-(3,2) surface on a 5x4 grid whose knot
+  // vectors are made NON-uniform - a reader that merely regenerated a
+  // clamped-uniform knot vector from the counts would be caught.
+  std::vector<Point3d> grid;
+  for (int u = 0; u < 5; ++u)
+    for (int v = 0; v < 4; ++v) grid.emplace_back(1.5 * u, 2.0 * v, 0.25 * u * v - 0.5 * u);
+  NurbsSurface srf = NurbsSurface::FromControlGrid(grid, 5, 4, 3, 2);
+  Check(srf.KnotCount(0) == 7 && srf.KnotCount(1) == 5, "setup: 5x4 degree-(3,2) surface has 7 u-knots and 5 v-knots");
+  // Pin both knot vectors explicitly (OpenNURBS' own clamped-uniform default
+  // spaces knots 1.0 apart, i.e. a [0, 2] domain here): u = [0,0,0,0.35,1,1,1]
+  // and v = [0,0,0.8,1,1], each with its single interior knot off-centre.
+  {
+    const double uk[7] = {0.0, 0.0, 0.0, 0.35, 1.0, 1.0, 1.0};
+    const double vk[5] = {0.0, 0.0, 0.8, 1.0, 1.0};
+    bool set_ok = true;
+    for (int i = 0; i < 7; ++i) set_ok = set_ok && srf.SetKnotAt(0, i, uk[i]) != Result::Failed;
+    for (int i = 0; i < 5; ++i) set_ok = set_ok && srf.SetKnotAt(1, i, vk[i]) != Result::Failed;
+    Check(set_ok, "setup: every u- and v-knot is set explicitly");
+  }
+  Check(srf.KnotAt(0, 3) == 0.35 && srf.KnotAt(1, 2) == 0.8 && srf.Domain(0).max == 1.0 && srf.Domain(1).max == 1.0,
+        "setup: the interior knots are 0.35 / 0.8 (non-uniform) on a [0,1]x[0,1] domain");
+  Check(!srf.IsRational(), "setup: the fixture is genuinely non-rational");
+
+  const std::string path = "dino8_kernel_surface_step_test.stp";
+  Check(srf.SaveStep(path) == Result::Ok, "NurbsSurface::SaveStep succeeds");
+  const std::string text = ReadWholeFile(path);
+  Check(text.find("ISO-10303-21;") != std::string::npos, "the file has a real ISO-10303-21 header");
+  Check(text.find("B_SPLINE_SURFACE_WITH_KNOTS(") != std::string::npos,
+        "the DATA section carries a real B_SPLINE_SURFACE_WITH_KNOTS entity");
+  Check(text.find("RATIONAL_B_SPLINE_SURFACE(") == std::string::npos,
+        "a non-rational surface is written plain, with no RATIONAL_B_SPLINE_SURFACE wrapper");
+  {
+    size_t n = 0;
+    for (size_t pos = text.find("=CARTESIAN_POINT("); pos != std::string::npos; pos = text.find("=CARTESIAN_POINT(", pos + 1)) ++n;
+    Check(n == 20, "exactly one CARTESIAN_POINT entity per control point (5 x 4 = 20)");
+  }
+  // STEP's own (knot, multiplicity) compression, checked as literal text:
+  // u: full clamped vector [0,0,0,0,0.35,1,1,1,1] -> (4,1,4) / (0.,0.35,1.);
+  // v: [0,0,0,0.8,1,1,1] -> (3,1,3) / (0.,0.8,1.).
+  Check(text.find(",.UNSPECIFIED.,.F.,.F.,.F.,(4,1,4),(3,1,3),(0.,0.35,1.),(0.,0.8,1.),.UNSPECIFIED.") != std::string::npos,
+        "the entity's own multiplicity and knot lists are exactly the schema's compressed form of both clamped knot "
+        "vectors, in u-then-v order");
+  Check(text.find("'',3,2,((#1,#2,#3,#4),(#5,#6,#7,#8),") != std::string::npos,
+        "degrees are written u-then-v and the control net as u-rows of v-column point references");
+
+  NurbsSurface reloaded;
+  Check(NurbsSurface::LoadStep(path, reloaded) == Result::Ok, "NurbsSurface::LoadStep succeeds on SaveStep()'s own output");
+  Check(reloaded.DegreeU() == 3 && reloaded.DegreeV() == 2, "the reloaded surface keeps both exact degrees");
+  Check(reloaded.CVCountU() == 5 && reloaded.CVCountV() == 4, "the reloaded surface keeps its exact 5x4 control grid");
+  Check(reloaded.KnotAt(0, 3) == 0.35 && reloaded.KnotAt(1, 2) == 0.8,
+        "the non-uniform interior knots come back bit-exact (not regenerated as uniform)");
+  Check(SameDefinition(srf.raw(), reloaded.raw(), 0.0),
+        "every knot and every control point of the non-rational surface round-trips bit-exact");
+  {
+    bool eval_ok = true;
+    const double us[] = {0.0, 0.2, 0.35, 0.9, 1.0}, vs[] = {0.0, 0.3, 0.8, 1.0};
+    for (double u : us)
+      for (double v : vs)
+        if ((srf.PointAt(u, v) - reloaded.PointAt(u, v)).Length() > 1e-12) eval_ok = false;
+    Check(eval_ok, "the reloaded surface evaluates to the original at a 5x4 parameter grid");
+  }
+  // Scope cross-check: the curve reader refuses a surface-only file.
+  NurbsCurve not_a_curve;
+  Check(NurbsCurve::LoadStep(path, not_a_curve) == Result::Failed,
+        "NurbsCurve::LoadStep refuses a file whose only B-spline entity is a surface");
+  std::remove(path.c_str());
+
+  // (2) A rational surface with hand-set, exactly representable weights -
+  // written in the complex RATIONAL_B_SPLINE_SURFACE form, weights as a
+  // nested grid matching the control net, round-tripping bit-exact.
+  std::vector<Point3d> g3;
+  for (int u = 0; u < 3; ++u)
+    for (int v = 0; v < 3; ++v) g3.emplace_back(u, v, (u == 1 && v == 1) ? 2.0 : 0.0);
+  NurbsSurface rat = NurbsSurface::FromControlGrid(g3, 3, 3, 2, 2);
+  Check(rat.raw().MakeRational(), "setup: the 3x3 fixture is made rational");
+  Check(rat.SetWeightAt(1, 1, 2.5) == Result::Ok && rat.SetWeightAt(0, 2, 0.5) == Result::Ok,
+        "setup: two weights are set to exactly representable non-unit values");
+  const std::string rat_path = "dino8_kernel_surface_step_rational_test.stp";
+  Check(rat.SaveStep(rat_path) == Result::Ok, "SaveStep succeeds on a rational surface");
+  const std::string rat_text = ReadWholeFile(rat_path);
+  // The standard ISO 10303-21 complex-entity layout (what real CAD
+  // exporters emit): B_SPLINE_SURFACE carries the degrees/control net/form
+  // flags, B_SPLINE_SURFACE_WITH_KNOTS only the knot data, and
+  // RATIONAL_B_SPLINE_SURFACE the weights as a u-row-by-v-column grid, the
+  // two non-unit weights in exactly their control points' slots.
+  Check(rat_text.find("=(BOUNDED_SURFACE()B_SPLINE_SURFACE(2,2,((#1,#2,#3),(#4,#5,#6),(#7,#8,#9)),.UNSPECIFIED.,.F.,.F.,.F.)"
+                      "B_SPLINE_SURFACE_WITH_KNOTS((3,3),(3,3),(0.,1.),(0.,1.),.UNSPECIFIED.)GEOMETRIC_REPRESENTATION_ITEM()"
+                      "RATIONAL_B_SPLINE_SURFACE(((1.,1.,0.5),(1.,2.5,1.),(1.,1.,1.)))REPRESENTATION_ITEM('')SURFACE());") !=
+            std::string::npos,
+        "a rational surface is written as the standard complex entity, attributes distributed over B_SPLINE_SURFACE / "
+        "B_SPLINE_SURFACE_WITH_KNOTS / RATIONAL_B_SPLINE_SURFACE, weights gridded like the control net");
+  NurbsSurface rat_reloaded;
+  Check(NurbsSurface::LoadStep(rat_path, rat_reloaded) == Result::Ok, "LoadStep succeeds on the rational fixture");
+  Check(rat_reloaded.IsRational(), "the reloaded surface is still genuinely rational");
+  Check(rat_reloaded.WeightAt(1, 1) == 2.5 && rat_reloaded.WeightAt(0, 2) == 0.5 && rat_reloaded.WeightAt(2, 2) == 1.0,
+        "the reloaded weights are bit-exact, in the right (i, j) slots");
+  Check(SameDefinition(rat.raw(), rat_reloaded.raw(), 1e-12),
+        "every knot and weight of the rational surface round-trips bit-exact and every control point within 1e-12");
+  std::remove(rat_path.c_str());
+
+  // (3) Real closed-form geometry: a sphere's own NURBS form (rational,
+  // weights sqrt(2)/2 - NOT representable in the curve writer's 9 digits).
+  // Every reloaded point must still lie exactly on the sphere.
+  const ON_3dPoint centre(1.0, 2.0, 3.0);
+  const double radius = 2.5;
+  ON_NurbsSurface sphere_form;
+  Check(ON_Sphere(centre, radius).GetNurbForm(sphere_form) != 0, "setup: ON_Sphere::GetNurbForm succeeds");
+  NurbsSurface sphere;
+  sphere.raw() = sphere_form;
+  Check(sphere.IsRational(), "setup: a sphere's NURBS form is genuinely rational");
+  const std::string sphere_path = "dino8_kernel_surface_step_sphere_test.stp";
+  Check(sphere.SaveStep(sphere_path) == Result::Ok, "SaveStep succeeds on a sphere's NURBS form");
+  NurbsSurface sphere_reloaded;
+  Check(NurbsSurface::LoadStep(sphere_path, sphere_reloaded) == Result::Ok, "LoadStep succeeds on the sphere file");
+  Check(SameDefinition(sphere.raw(), sphere_reloaded.raw(), 1e-12),
+        "the sphere's irrational (sqrt(2)/2) weights round-trip bit-exact (lossless REAL formatting) and its control "
+        "points within 1e-12");
+  {
+    const ON_Interval du = sphere_reloaded.raw().Domain(0), dv = sphere_reloaded.raw().Domain(1);
+    double worst = 0.0;
+    for (int i = 0; i <= 12; ++i)
+      for (int j = 0; j <= 12; ++j) {
+        const ON_3dPoint q = sphere_reloaded.raw().PointAt(du.ParameterAt(i / 12.0), dv.ParameterAt(j / 12.0));
+        worst = std::max(worst, std::abs((q - centre).Length() - radius));
+      }
+    Check(worst < 1e-9, "every point of the reloaded sphere lies at exactly the sphere's radius from its centre");
+  }
+  std::remove(sphere_path.c_str());
+
+  // (4) A hand-written file (NOT SaveStep()'s own output): a bilinear patch
+  // whose corners and exact bilinear centre are known in closed form -
+  // rules out a matched writer/reader bug cancelling itself out.
+  const std::string hand_path = "dino8_kernel_surface_step_hand_test.stp";
+  {
+    std::ofstream o(hand_path);
+    o << "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\n"
+         "FILE_NAME('x','2026-10-30T00:00:00',(''),(''),'','','');\n"
+         "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 3 1 1 }'));\nENDSEC;\nDATA;\n"
+         "/* a comment the reader must skip */\n"
+         "#1 = CARTESIAN_POINT ( 'c00', ( 0., 0., 0. ) ) ;\n#2=CARTESIAN_POINT('c01',(0.,4.,0.));\n"
+         "#3=CARTESIAN_POINT('c10',(6.,0.,0.));\n#4=CARTESIAN_POINT('c11',(6.,4.,2.));\n"
+         "#5=B_SPLINE_SURFACE_WITH_KNOTS('patch',1,1,((#1,#2),(#3,#4)),.UNSPECIFIED.,.F.,.F.,.F.,"
+         "(2,2),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.);\nENDSEC;\nEND-ISO-10303-21;\n";
+  }
+  NurbsSurface hand;
+  Check(NurbsSurface::LoadStep(hand_path, hand) == Result::Ok, "LoadStep reads a hand-written bilinear patch");
+  Check(hand.DegreeU() == 1 && hand.DegreeV() == 1 && hand.CVCountU() == 2 && hand.CVCountV() == 2 && !hand.IsRational(),
+        "the hand-written patch decodes to a non-rational degree-(1,1) 2x2 surface");
+  Check(hand.ControlPointAt(0, 0) == Point3d(0, 0, 0) && hand.ControlPointAt(0, 1) == Point3d(0, 4, 0) &&
+            hand.ControlPointAt(1, 0) == Point3d(6, 0, 0) && hand.ControlPointAt(1, 1) == Point3d(6, 4, 2),
+        "its four corners land in exactly the (u-row, v-column) slots the nested list names");
+  Check(hand.PointAt(0.5, 0.5) == Point3d(3.0, 2.0, 0.5),
+        "the patch's centre is the exact bilinear average of the four corners, (3, 2, 0.5)");
+  std::remove(hand_path.c_str());
+}
+
+void TestNurbsSurfaceLoadStepRejectsMalformedFiles() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  NurbsSurface out;
+  Check(NurbsSurface::LoadStep("dino8_kernel_surface_step_does_not_exist.stp", out) == Result::Failed,
+        "LoadStep refuses a missing file");
+
+  const std::string garbage_path = "dino8_kernel_surface_step_garbage.stp";
+  {
+    std::ofstream o(garbage_path);
+    o << "this is not a STEP file at all\n";
+  }
+  Check(NurbsSurface::LoadStep(garbage_path, out) == Result::Failed, "LoadStep refuses a file with no ISO-10303-21 header");
+  std::remove(garbage_path.c_str());
+
+  const std::string no_data_path = "dino8_kernel_surface_step_no_data.stp";
+  {
+    std::ofstream o(no_data_path);
+    o << "ISO-10303-21;\nHEADER;\nENDSEC;\nEND-ISO-10303-21;\n";
+  }
+  Check(NurbsSurface::LoadStep(no_data_path, out) == Result::Failed, "LoadStep refuses a real header with no DATA section");
+  std::remove(no_data_path.c_str());
+
+  // A real curve-only STEP file (NurbsCurve::SaveStep's own output) has no
+  // surface entity - refused, not misread.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
+  ON_NurbsCurve circle_form;
+  on_circle.GetNurbForm(circle_form);
+  NurbsCurve circle;
+  circle.raw() = circle_form;
+  const std::string curve_only_path = "dino8_kernel_surface_step_curve_only.stp";
+  Check(circle.SaveStep(curve_only_path) == Result::Ok, "setup: NurbsCurve::SaveStep succeeds");
+  Check(NurbsSurface::LoadStep(curve_only_path, out) == Result::Failed,
+        "LoadStep refuses a real STEP file whose only B-spline entity is a curve");
+  std::remove(curve_only_path.c_str());
+
+  // Each case below is one field of an otherwise-valid bilinear patch
+  // corrupted in isolation; the control case (unpatched) must load.
+  auto write_patch = [](const std::string& p, const std::string& surface_record) {
+    std::ofstream o(p);
+    o << "ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\n"
+         "#1=CARTESIAN_POINT('',(0.,0.,0.));\n#2=CARTESIAN_POINT('',(0.,4.,0.));\n"
+         "#3=CARTESIAN_POINT('',(6.,0.,0.));\n#4=CARTESIAN_POINT('',(6.,4.,2.));\n"
+      << surface_record << "\nENDSEC;\nEND-ISO-10303-21;\n";
+  };
+  const std::string patch_path = "dino8_kernel_surface_step_patched.stp";
+  write_patch(patch_path, "#5=B_SPLINE_SURFACE_WITH_KNOTS('',1,1,((#1,#2),(#3,#4)),.UNSPECIFIED.,.F.,.F.,.F.,(2,2),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.);");
+  Check(NurbsSurface::LoadStep(patch_path, out) == Result::Ok, "control: the unpatched bilinear patch loads");
+
+  write_patch(patch_path, "#5=B_SPLINE_SURFACE_WITH_KNOTS('',1,1,((#1,#2),(#3)),.UNSPECIFIED.,.F.,.F.,.F.,(2,2),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.);");
+  Check(NurbsSurface::LoadStep(patch_path, out) == Result::Failed, "LoadStep refuses a ragged control-point grid");
+
+  write_patch(patch_path, "#5=B_SPLINE_SURFACE_WITH_KNOTS('',1,1,((#1,#2),(#3,#4)),.UNSPECIFIED.,.F.,.F.,.F.,(2,1),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.);");
+  Check(NurbsSurface::LoadStep(patch_path, out) == Result::Failed,
+        "LoadStep refuses a u-knot vector whose expanded length is not cv_count + degree + 1");
+
+  write_patch(patch_path, "#5=B_SPLINE_SURFACE_WITH_KNOTS('',1,1,((#1,#2),(#3,#4)),.UNSPECIFIED.,.F.,.F.,.F.,(2,2),(2,2,1),(0.,1.),(0.,1.),.UNSPECIFIED.);");
+  Check(NurbsSurface::LoadStep(patch_path, out) == Result::Failed,
+        "LoadStep refuses a v-multiplicity list whose length differs from its knot list");
+
+  write_patch(patch_path, "#5=B_SPLINE_SURFACE_WITH_KNOTS('',1,1,((#1,#2),(#3,#4)),.UNSPECIFIED.,.F.,.F.,.F.,(2000000000,2),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.);");
+  Check(NurbsSurface::LoadStep(patch_path, out) == Result::Failed,
+        "LoadStep refuses an absurdly large multiplicity rather than attempting an unbounded allocation");
+
+  write_patch(patch_path, "#5=B_SPLINE_SURFACE_WITH_KNOTS('',0,1,((#1,#2),(#3,#4)),.UNSPECIFIED.,.F.,.F.,.F.,(1,1),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.);");
+  Check(NurbsSurface::LoadStep(patch_path, out) == Result::Failed, "LoadStep refuses a degree-0 direction");
+
+  write_patch(patch_path, "#5=B_SPLINE_SURFACE_WITH_KNOTS('',1,1,((#1,#2),(#3,#9)),.UNSPECIFIED.,.F.,.F.,.F.,(2,2),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.);");
+  Check(NurbsSurface::LoadStep(patch_path, out) == Result::Failed,
+        "LoadStep refuses a dangling control-point reference rather than reading it as the origin");
+
+  write_patch(patch_path, "#5=B_SPLINE_SURFACE_WITH_KNOTS('',1,1,((#1,#2),(#3,#5)),.UNSPECIFIED.,.F.,.F.,.F.,(2,2),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.);");
+  Check(NurbsSurface::LoadStep(patch_path, out) == Result::Failed,
+        "LoadStep refuses a control-point reference that names something other than a CARTESIAN_POINT");
+
+  // Rational complex records, in the standard split layout:
+  const std::string std_head = "#5=(BOUNDED_SURFACE()B_SPLINE_SURFACE(1,1,((#1,#2),(#3,#4)),.UNSPECIFIED.,.F.,.F.,.F.)"
+                               "B_SPLINE_SURFACE_WITH_KNOTS((2,2),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.)GEOMETRIC_REPRESENTATION_ITEM()"
+                               "RATIONAL_B_SPLINE_SURFACE(";
+  const std::string std_tail = ")REPRESENTATION_ITEM('')SURFACE());";
+  write_patch(patch_path, std_head + "((1.,1.),(1.))" + std_tail);
+  Check(NurbsSurface::LoadStep(patch_path, out) == Result::Failed,
+        "LoadStep refuses a RATIONAL_B_SPLINE_SURFACE weight grid that does not match the control grid");
+
+  write_patch(patch_path, std_head + "((1.,0.),(1.,1.))" + std_tail);
+  Check(NurbsSurface::LoadStep(patch_path, out) == Result::Failed, "LoadStep refuses a zero weight");
+
+  // And the same complex record with a well-formed weight grid IS accepted -
+  // proving the two refusals above are about the weights, not the form.
+  write_patch(patch_path, std_head + "((1.,1.),(1.,3.))" + std_tail);
+  Check(NurbsSurface::LoadStep(patch_path, out) == Result::Ok && out.IsRational() && out.WeightAt(1, 1) == 3.0,
+        "control: the same standard complex record with a well-formed weight grid loads as a rational surface with "
+        "that weight");
+
+  // The app writer's own flat complex layout (every attribute packed into
+  // the B_SPLINE_SURFACE_WITH_KNOTS part behind a leading empty field, the
+  // exact text dino8-app's WriteStepSurface emits) is read too, to the same
+  // surface.
+  write_patch(patch_path, "#5=(BOUNDED_SURFACE()B_SPLINE_SURFACE()B_SPLINE_SURFACE_WITH_KNOTS(,1,1,((#1,#2),(#3,#4)),.UNSPECIFIED.,.F.,.F.,.F.,(2,2),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.)GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_SURFACE(((1.,1.),(1.,3.)))REPRESENTATION_ITEM('')SURFACE());");
+  NurbsSurface flat;
+  Check(NurbsSurface::LoadStep(patch_path, flat) == Result::Ok && flat.IsRational() && flat.WeightAt(1, 1) == 3.0 &&
+            flat.ControlPointAt(1, 1) == dino8::kernel::Point3d(6, 4, 2),
+        "control: the app writer's own flat complex layout of the same surface loads identically");
+  std::remove(patch_path.c_str());
+}
+
 void TestMeshSaveDxfRoundTrips() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
@@ -82332,6 +82647,8 @@ int main() {
   RunTest("TestNurbsCurveLoadIgesRejectsMalformedFiles", TestNurbsCurveLoadIgesRejectsMalformedFiles);
   RunTest("TestNurbsCurveSaveStepRoundTrips", TestNurbsCurveSaveStepRoundTrips);
   RunTest("TestNurbsCurveLoadStepRejectsMalformedFiles", TestNurbsCurveLoadStepRejectsMalformedFiles);
+  RunTest("TestNurbsSurfaceSaveStepRoundTrips", TestNurbsSurfaceSaveStepRoundTrips);
+  RunTest("TestNurbsSurfaceLoadStepRejectsMalformedFiles", TestNurbsSurfaceLoadStepRejectsMalformedFiles);
   RunTest("TestMeshSaveDxfRoundTrips", TestMeshSaveDxfRoundTrips);
   RunTest("TestMeshLoadDxfRejectsMalformedFiles", TestMeshLoadDxfRejectsMalformedFiles);
   RunTest("TestMeshSaveStlSplitsQuadsAndComputesNormals", TestMeshSaveStlSplitsQuadsAndComputesNormals);
