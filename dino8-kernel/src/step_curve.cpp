@@ -10,7 +10,12 @@
 // not a fresh derivation, closing this kernel's own "App-independent
 // (kernel library) STEP/IGES/PLY/DXF exchange API" gap's STEP half
 // (PARITY_MAP.md, kernel: Kernel-level data exchange) the same way
-// SaveIges()/LoadIges() (iges.cpp) already closed the IGES half.
+// SaveIges()/LoadIges() (iges.cpp) already closed the IGES half. One thing
+// is deliberately NOT ported: the rational complex entity is written in the
+// STANDARD Part 21 layout (attributes split over B_SPLINE_CURVE /
+// B_SPLINE_CURVE_WITH_KNOTS / RATIONAL_B_SPLINE_CURVE) every real CAD
+// exporter emits and reads, and the reader accepts both that layout and
+// the flat one earlier Dino 8 writers emitted - see SaveStep()/LoadStep().
 //
 // NurbsSurface::SaveStep/LoadStep (B_SPLINE_SURFACE_WITH_KNOTS, optionally
 // wrapped in RATIONAL_B_SPLINE_SURFACE) live at the bottom of this same TU
@@ -32,13 +37,19 @@ namespace dino8::kernel {
 
 namespace {
 
-// An ISO-10303-21 REAL literal needs a decimal point (a bare "10" parses
-// as an INTEGER) - identical to FileIgesStep.cpp's own Num().
+// A shortest-round-trip REAL literal: `%.15g` when that already reads back
+// as the identical double, `%.17g` otherwise - so a control point, knot or
+// weight survives SaveStep()/LoadStep() bit-exact (the `%.9g` this writer
+// first ported from the app loses ~1e-10 on a weight like sqrt(2)/2, the
+// weight every circle and sphere carries). Shared by the curve and surface
+// writers below. Still carries a decimal point: an ISO-10303-21 REAL
+// literal needs one (a bare "10" parses as an INTEGER).
 std::string StepCurveNum(double v) {
   if (!std::isfinite(v)) v = 0.0;
-  if (std::fabs(v) < 1e-13) v = 0.0;
+  if (v == 0.0) v = 0.0;  // normalises -0.0
   char buf[64];
-  std::snprintf(buf, sizeof(buf), "%.9g", v);
+  std::snprintf(buf, sizeof(buf), "%.15g", v);
+  if (std::strtod(buf, nullptr) != v) std::snprintf(buf, sizeof(buf), "%.17g", v);
   std::string s = buf;
   if (s.find('.') == std::string::npos && s.find('e') == std::string::npos && s.find('E') == std::string::npos) s += ".";
   return s;
@@ -146,16 +157,29 @@ Result NurbsCurve::SaveStep(const std::string& path) const {
   }
   kn += ")"; mu += ")";
 
-  const std::string args = "''," + std::to_string(M) + "," + cvs + ",.UNSPECIFIED.,.F.,.F.,.F.," + mu + "," + kn + ",.UNSPECIFIED.";
+  // ISO 10303-42 attribute order: B_SPLINE_CURVE's own are degree,
+  // control_points_list, curve_form, closed_curve, self_intersect (THREE
+  // flag fields; the app writer this was ported from emitted a fourth `.F.`
+  // until both were fixed together - LoadStep() below still reads such
+  // files); B_SPLINE_CURVE_WITH_KNOTS adds knot_multiplicities, knots,
+  // knot_spec.
+  const std::string bsc_args = std::to_string(M) + "," + cvs + ",.UNSPECIFIED.,.F.,.F.";
+  const std::string knots_args = mu + "," + kn + ",.UNSPECIFIED.";
   const int curve_id = next_id++;
   if (!rational) {
-    out << "#" << curve_id << "=B_SPLINE_CURVE_WITH_KNOTS(" << args << ");\n";
+    out << "#" << curve_id << "=B_SPLINE_CURVE_WITH_KNOTS(''," << bsc_args << "," << knots_args << ");\n";
   } else {
     // The complex-entity form: several KEYWORD(args) groups bracketed
-    // together under one id, read back by ParseEntity()'s own "starts with
-    // '('" branch (app level) exactly as WriteStepCurve()'s own
-    // StepWriter::AddComplex already emits it.
-    out << "#" << curve_id << "=(BOUNDED_CURVE()B_SPLINE_CURVE()B_SPLINE_CURVE_WITH_KNOTS(" << args.substr(2)
+    // together under one id, in the STANDARD Part 21 layout real CAD
+    // exporters emit and read - each attribute inside the supertype that
+    // declares it (B_SPLINE_CURVE / B_SPLINE_CURVE_WITH_KNOTS /
+    // RATIONAL_B_SPLINE_CURVE), the same split NurbsSurface::SaveStep()
+    // below already makes. The first revision of this writer (and the app
+    // writer it was ported from) instead packed everything into the
+    // B_SPLINE_CURVE_WITH_KNOTS part behind a leading empty field, with
+    // B_SPLINE_CURVE() left empty - a layout only Dino 8's own readers
+    // understood, so every rational curve was refused by every other tool.
+    out << "#" << curve_id << "=(BOUNDED_CURVE()B_SPLINE_CURVE(" << bsc_args << ")B_SPLINE_CURVE_WITH_KNOTS(" << knots_args
         << ")CURVE()GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE(" << wts << ")REPRESENTATION_ITEM(''));\n";
   }
 
@@ -373,26 +397,38 @@ Result NurbsCurve::LoadStep(const std::string& path, NurbsCurve& out) {
     (void)id;
     const StepCurvePart* p = e.Find("B_SPLINE_CURVE_WITH_KNOTS");
     if (!p) continue;  // this reader's own disclosed scope: the first B_SPLINE_CURVE_WITH_KNOTS entity only
-    if (p->args.size() < 9) return Result::Failed;
+    // Either layout (see SaveStep() above): the simple/flat one with every
+    // attribute in this part (name, degree, control_points_list, the
+    // curve_form/closed_curve/self_intersect flags, knot_multiplicities,
+    // knots, knot_spec - whether with the schema's three flag fields or the
+    // four the first revision of this writer emitted), or the standard
+    // complex one with degree/control_points_list/flags in a B_SPLINE_CURVE
+    // part and only knot_multiplicities/knots/knot_spec here. The two knot
+    // lists are located as the first two parenthesised attributes after
+    // the control points rather than at fixed indices, so both flag counts
+    // decode; the same two-layout selection NurbsSurface::LoadStep() makes.
+    const StepCurvePart* pb = e.Find("B_SPLINE_CURVE");
+    std::string degree_text, cvs_text;
+    size_t after_cvs = 0;
+    if (p->args.size() >= 7) {
+      degree_text = p->args[1]; cvs_text = p->args[2]; after_cvs = 3;
+    } else if (pb && pb->args.size() >= 2 && p->args.size() >= 2) {
+      degree_text = pb->args[0]; cvs_text = pb->args[1]; after_cvs = 0;
+    } else {
+      return Result::Failed;
+    }
+    size_t mi = after_cvs;
+    while (mi < p->args.size() && StepCurveTrim(p->args[mi]).rfind('(', 0) != 0) ++mi;
+    if (mi + 1 >= p->args.size()) return Result::Failed;
 
-    const int degree = std::atoi(StepCurveTrim(p->args[1]).c_str());
+    const int degree = std::atoi(StepCurveTrim(degree_text).c_str());
     if (degree < 1 || degree > 1000) return Result::Failed;
     std::vector<int> cv_refs;
-    for (const std::string& t : StepCurveSplitTop(StepCurveUnparen(p->args[2]), ',')) {
+    for (const std::string& t : StepCurveSplitTop(StepCurveUnparen(cvs_text), ',')) {
       if (StepCurveIsRef(t)) cv_refs.push_back(StepCurveRef(t));
     }
-    // Field layout (flattened, 0-indexed): name[0], degree[1],
-    // control_points_list[2], curve_form[3], closed_curve[4],
-    // self_intersect[5], knot_multiplicities[6], knots[7], knot_spec[8] -
-    // THREE fields (curve_form plus the two logicals) separate the control
-    // point list from knot_multiplicities, not two; confirmed directly by
-    // splitting this writer's own emitted args string on top-level commas
-    // and counting, not assumed from FileIgesStep.cpp's own matching
-    // branch, which reads args[6]/args[7] here - the identical off-by-one
-    // this fix corrects, a genuine, previously-undisclosed defect in that
-    // app-level reader too (see PARITY_MAP.md's own note on this bullet).
-    const std::vector<int> mult = StepCurveIntList(p->args[7]);
-    const std::vector<double> uknots = StepCurveRealList(p->args[8]);
+    const std::vector<int> mult = StepCurveIntList(p->args[mi]);
+    const std::vector<double> uknots = StepCurveRealList(p->args[mi + 1]);
 
     std::vector<double> full;
     for (size_t i = 0; i < uknots.size() && i < mult.size(); ++i) {
@@ -440,30 +476,14 @@ Result NurbsCurve::LoadStep(const std::string& path, NurbsCurve& out) {
 // surface_form, u_closed, v_closed, self_intersect) then
 // B_SPLINE_SURFACE_WITH_KNOTS(u_multiplicities, v_multiplicities, u_knots,
 // v_knots, knot_spec) then RATIONAL_B_SPLINE_SURFACE(weights_data) - NOT the
-// app writer's own variant, which packs every attribute into the
-// B_SPLINE_SURFACE_WITH_KNOTS part behind a leading empty field (a layout
-// the app's own reader, and nothing else, understands). LoadStep() reads
-// both: the standard split form, and that flat form, so a file from either
-// the app or an external tool decodes.
+// variant the app writer emitted until it was fixed alongside this (every
+// attribute packed into the B_SPLINE_SURFACE_WITH_KNOTS part behind a
+// leading empty field, a layout only Dino 8's own reader understood).
+// LoadStep() reads both: the standard split form, and that flat form, so a
+// file from the app (old or new) or from an external tool decodes.
 // ===========================================================================
 
 namespace {
-
-// A shortest-round-trip REAL literal: `%.15g` when that already reads back
-// as the identical double, `%.17g` otherwise - so a control point, knot or
-// weight survives SaveStep()/LoadStep() bit-exact (the curve writer's own
-// `%.9g`, ported from the app, loses ~1e-10 on a weight like sqrt(2)/2).
-// Still carries a decimal point (a bare "10" is an ISO-10303-21 INTEGER).
-std::string StepSurfaceNum(double v) {
-  if (!std::isfinite(v)) v = 0.0;
-  if (v == 0.0) v = 0.0;  // normalises -0.0
-  char buf[64];
-  std::snprintf(buf, sizeof(buf), "%.15g", v);
-  if (std::strtod(buf, nullptr) != v) std::snprintf(buf, sizeof(buf), "%.17g", v);
-  std::string s = buf;
-  if (s.find('.') == std::string::npos && s.find('e') == std::string::npos && s.find('E') == std::string::npos) s += ".";
-  return s;
-}
 
 // Full (clamped) knot vector in one direction - FileIgesStep.cpp's own
 // FullKnots(const ON_NurbsSurface&, int), one dimension up from
@@ -553,10 +573,10 @@ Result NurbsSurface::SaveStep(const std::string& path) const {
     wtext += "(";
     for (int j = 0; j < nv; ++j) {
       const size_t idx = static_cast<size_t>(i) * static_cast<size_t>(nv) + static_cast<size_t>(j);
-      out << "#" << next_id << "=CARTESIAN_POINT('',(" << StepSurfaceNum(pts[idx].x) << "," << StepSurfaceNum(pts[idx].y)
-          << "," << StepSurfaceNum(pts[idx].z) << "));\n";
+      out << "#" << next_id << "=CARTESIAN_POINT('',(" << StepCurveNum(pts[idx].x) << "," << StepCurveNum(pts[idx].y)
+          << "," << StepCurveNum(pts[idx].z) << "));\n";
       cvs += "#" + std::to_string(next_id) + (j + 1 < nv ? "," : "");
-      wtext += StepSurfaceNum(wts[idx]) + (j + 1 < nv ? "," : "");
+      wtext += StepCurveNum(wts[idx]) + (j + 1 < nv ? "," : "");
       ++next_id;
     }
     cvs += std::string(")") + (i + 1 < nu ? "," : "");
@@ -567,7 +587,7 @@ Result NurbsSurface::SaveStep(const std::string& path) const {
 
   auto list_real = [](const std::vector<double>& v) {
     std::string s = "(";
-    for (size_t i = 0; i < v.size(); ++i) s += StepSurfaceNum(v[i]) + (i + 1 < v.size() ? "," : "");
+    for (size_t i = 0; i < v.size(); ++i) s += StepCurveNum(v[i]) + (i + 1 < v.size() ? "," : "");
     return s + ")";
   };
   auto list_int = [](const std::vector<int>& v) {
