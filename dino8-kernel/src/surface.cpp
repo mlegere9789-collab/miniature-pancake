@@ -1060,6 +1060,241 @@ Result NurbsSurface::Split(int direction, double t, NurbsSurface& out_west_or_so
   return Result::Ok;
 }
 
+namespace {
+
+// A point on one of a surface's four sides, `fraction` (0..1) of the way
+// along it. Sides: 0 = u min, 1 = u max, 2 = v min, 3 = v max - the same
+// numbering dino8-app's `MergeSrf` uses for its own edge search.
+ON_3dPoint JoinSidePoint(const ON_NurbsSurface& s, int side, double fraction) {
+  const ON_Interval du = s.Domain(0);
+  const ON_Interval dv = s.Domain(1);
+  const double u = side == 0 ? du.Min() : side == 1 ? du.Max() : du.ParameterAt(fraction);
+  const double v = side == 2 ? dv.Min() : side == 3 ? dv.Max() : dv.ParameterAt(fraction);
+  ON_3dPoint pt;
+  s.EvPoint(u, v, pt);
+  return pt;
+}
+
+// Largest gap between side `side_a` of `a` and side `side_b` of `b` over
+// `kJoinSideSamples + 1` evenly spaced samples, both walking the sides
+// the same way (`same`) and opposite ways (`reversed`).
+constexpr int kJoinSideSamples = 8;
+void JoinSideGaps(const ON_NurbsSurface& a, int side_a, const ON_NurbsSurface& b, int side_b, double& same,
+                  double& reversed) {
+  same = 0.0;
+  reversed = 0.0;
+  for (int k = 0; k <= kJoinSideSamples; ++k) {
+    const double f = static_cast<double>(k) / kJoinSideSamples;
+    const ON_3dPoint pa = JoinSidePoint(a, side_a, f);
+    same = std::max(same, pa.DistanceTo(JoinSidePoint(b, side_b, f)));
+    reversed = std::max(reversed, pa.DistanceTo(JoinSidePoint(b, side_b, 1.0 - f)));
+  }
+}
+
+// Multiplicity of the knot value `value` (to within `tol`) in `s`'s
+// knot vector in `direction` - 0 if absent.
+int JoinKnotMultiplicity(const ON_NurbsSurface& s, int direction, double value, double tol) {
+  int count = 0;
+  for (int i = 0; i < s.KnotCount(direction); ++i) {
+    if (std::abs(s.Knot(direction, i) - value) <= tol) ++count;
+  }
+  return count;
+}
+
+// Inserts every interior knot of `from`'s `direction` knot vector into
+// `into`'s so that `into` carries at least `from`'s multiplicity of each
+// (`ON_InsertKnot`'s multiplicity argument is the RESULTING one, including
+// whatever was already there). Both must already share the same domain
+// and degree in `direction`. False if OpenNURBS refuses an insertion.
+bool JoinInsertMissingKnots(const ON_NurbsSurface& from, ON_NurbsSurface& into, int direction, double tol) {
+  const int degree = from.Degree(direction);
+  const int count = from.KnotCount(direction);
+  int i = degree;  // first interior knot of a clamped vector
+  while (i < count - degree) {
+    const double value = from.Knot(direction, i);
+    int j = i;
+    while (j < count - degree && std::abs(from.Knot(direction, j) - value) <= tol) ++j;
+    const int wanted = j - i;
+    if (JoinKnotMultiplicity(into, direction, value, tol) < wanted) {
+      if (!into.InsertKnot(direction, value, wanted)) return false;
+    }
+    i = j;
+  }
+  return true;
+}
+
+}  // namespace
+
+Result NurbsSurface::Join(const NurbsSurface& other, double tolerance) {
+  if (tolerance <= 0.0) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::Join: tolerance must be positive");
+  }
+  // Both operands are worked on as copies: this surface is only replaced
+  // once the whole splice has succeeded, and `other` may alias `*this`.
+  NurbsSurface a = *this;
+  NurbsSurface b = other;
+  if (!a.surface_.IsValid() || !b.surface_.IsValid()) {
+    return Result::Failed;
+  }
+
+  // 1. Which side of each surface is the shared edge, and do the two
+  //    sides run the same way along it? First coinciding pair wins.
+  int side_a = -1;
+  int side_b = -1;
+  double closest = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < 4 && side_a < 0; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      double same = 0.0, reversed = 0.0;
+      JoinSideGaps(a.surface_, i, b.surface_, j, same, reversed);
+      closest = std::min(closest, std::min(same, reversed));
+      if (same <= tolerance || reversed <= tolerance) {
+        side_a = i;
+        side_b = j;
+        break;
+      }
+    }
+  }
+  if (side_a < 0) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::Join: the two surfaces do not share an edge (the "
+                                "closest pair of sides is " +
+                                std::to_string(closest) + " apart, tolerance " + std::to_string(tolerance) + ")");
+  }
+  if (a.surface_.IsClosed(side_a < 2 ? 0 : 1) || b.surface_.IsClosed(side_b < 2 ? 0 : 1)) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::Join: a surface closed in the direction across the "
+                                "shared edge has nothing to extend - its far side is that same edge");
+  }
+
+  // 2. Normalize: the shared edge becomes `a`'s u-max side and `b`'s
+  //    u-min side, with v running the same way along it on both, so the
+  //    splice below only ever has one case. `a`'s moves are remembered
+  //    and undone on the result so this surface's own parameterization
+  //    survives; `b`'s are what the join is defined to do to `other`.
+  //    Transpose/Reverse only re-index control points and negate knots -
+  //    exact, and exactly reversible.
+  const bool a_transposed = side_a >= 2;
+  if (a_transposed) {
+    a.surface_.Transpose();
+    side_a -= 2;
+  }
+  const bool a_reversed = side_a == 0;
+  if (a_reversed) {
+    a.surface_.Reverse(0);
+  }
+  if (side_b >= 2) {
+    b.surface_.Transpose();
+    side_b -= 2;
+  }
+  if (side_b == 1) {
+    b.surface_.Reverse(0);
+  }
+  {
+    double same = 0.0, reversed = 0.0;
+    JoinSideGaps(a.surface_, 1, b.surface_, 0, same, reversed);
+    if (reversed < same) {
+      b.surface_.Reverse(1);
+    }
+  }
+
+  // 3. Make the two compatible along the edge (v): clamped, both
+  //    rational or neither, same degree, same domain, same knots.
+  for (int direction = 0; direction < 2; ++direction) {
+    if (!a.surface_.ClampEnd(direction, 2) || !b.surface_.ClampEnd(direction, 2)) {
+      return Result::Failed;
+    }
+  }
+  if (a.surface_.IsRational() != b.surface_.IsRational()) {
+    if (!a.surface_.MakeRational() || !b.surface_.MakeRational()) {
+      return Result::Failed;
+    }
+  }
+  const bool rational = a.surface_.IsRational();
+  const int v_degree = std::max(a.surface_.Degree(1), b.surface_.Degree(1));
+  if (a.ElevateDegree(1, v_degree) == Result::Failed || b.ElevateDegree(1, v_degree) == Result::Failed) {
+    return Result::Failed;
+  }
+  const ON_Interval dv = a.surface_.Domain(1);
+  if (!b.surface_.SetDomain(1, dv.Min(), dv.Max())) {
+    return Result::Failed;
+  }
+  const double knot_tol = 1e-10 * dv.Length();
+  if (!JoinInsertMissingKnots(b.surface_, a.surface_, 1, knot_tol) ||
+      !JoinInsertMissingKnots(a.surface_, b.surface_, 1, knot_tol)) {
+    return Result::Failed;
+  }
+  const int v_count = a.surface_.CVCount(1);
+  if (b.surface_.CVCount(1) != v_count || b.surface_.KnotCount(1) != a.surface_.KnotCount(1)) {
+    return Result::Failed;
+  }
+  for (int i = 0; i < a.surface_.KnotCount(1); ++i) {
+    if (std::abs(a.surface_.Knot(1, i) - b.surface_.Knot(1, i)) > knot_tol) {
+      return Result::Failed;
+    }
+  }
+  // ...and across it (u): same degree, so one knot vector can carry both.
+  const int u_degree = std::max(a.surface_.Degree(0), b.surface_.Degree(0));
+  if (a.ElevateDegree(0, u_degree) == Result::Failed || b.ElevateDegree(0, u_degree) == Result::Failed) {
+    return Result::Failed;
+  }
+
+  // 4. The exact splice needs the two boundary control polygons to be
+  //    the same polygon, not merely the same curve.
+  const int a_count = a.surface_.CVCount(0);
+  const int b_count = b.surface_.CVCount(0);
+  for (int j = 0; j < v_count; ++j) {
+    ON_4dPoint pa, pb;
+    a.surface_.GetCV(a_count - 1, j, pa);
+    b.surface_.GetCV(0, j, pb);
+    if (ON_3dPoint(pa).DistanceTo(ON_3dPoint(pb)) > tolerance || (rational && std::abs(pa.w - pb.w) > tolerance)) {
+      return Result::Failed;
+    }
+  }
+
+  // 5. Splice: a's rows, then b's rows past its boundary row; a's u knots,
+  //    then b's past its clamped start, shifted to continue a's domain.
+  ON_NurbsSurface joined;
+  if (!joined.Create(3, rational, u_degree + 1, v_degree + 1, a_count + b_count - 1, v_count)) {
+    return Result::Failed;
+  }
+  for (int i = 0; i < a_count; ++i) {
+    for (int j = 0; j < v_count; ++j) {
+      ON_4dPoint cv;
+      a.surface_.GetCV(i, j, cv);
+      joined.SetCV(i, j, cv);
+    }
+  }
+  for (int i = 1; i < b_count; ++i) {
+    for (int j = 0; j < v_count; ++j) {
+      ON_4dPoint cv;
+      b.surface_.GetCV(i, j, cv);
+      joined.SetCV(a_count - 1 + i, j, cv);
+    }
+  }
+  const int a_u_knots = a.surface_.KnotCount(0);
+  for (int i = 0; i < a_u_knots; ++i) {
+    joined.SetKnot(0, i, a.surface_.Knot(0, i));
+  }
+  const double shift = a.surface_.Domain(0).Max() - b.surface_.Domain(0).Min();
+  for (int i = u_degree; i < b.surface_.KnotCount(0); ++i) {
+    joined.SetKnot(0, a_u_knots + i - u_degree, b.surface_.Knot(0, i) + shift);
+  }
+  for (int i = 0; i < a.surface_.KnotCount(1); ++i) {
+    joined.SetKnot(1, i, a.surface_.Knot(1, i));
+  }
+  if (!joined.IsValid()) {
+    return Result::Failed;
+  }
+
+  // 6. Put the result back the way this surface was oriented.
+  if (a_reversed) {
+    joined.Reverse(0);
+  }
+  if (a_transposed) {
+    joined.Transpose();
+  }
+  surface_ = joined;
+  return Result::Ok;
+}
+
 Interval NurbsSurface::Domain(int direction) const {
   const ON_Interval domain = surface_.Domain(direction);
   return Interval{domain.Min(), domain.Max()};
