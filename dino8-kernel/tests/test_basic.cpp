@@ -84514,6 +84514,143 @@ void TestSubDFromUniformBicubicSurfaceRejectsUnsupportedInput() {
   Check(accepted, "FromUniformBicubicSurface accepts the untouched clamped-uniform bicubic fixture (negative control)");
 }
 
+// Regression test for ReconcileFragmentBoundaries()'s sparse-side (u, v)
+// placement (boolean_general.cpp): general_boolean_sweep.cpp's own case 10
+// ("sphere+box sphere centred on EDGE (quarter in)") reported INVALID for
+// every one of its four ops before this fix, with ON_Brep::IsValid()'s own
+// log reading "Distance from end of ON_Brep.m_T[59] to 3d edge is
+// 0.0151697" - a trim of the y == 0 box face ending 0.015 units INSIDE the
+// sphere, on the pole-to-first-sample CHORD rather than on the circle.
+// Root cause, confirmed with DINO8_BOOL_DEBUG=1 rather than assumed: the
+// sphere's own seam meridian IS that box face's intersection curve, and
+// CutChainAtDomainBoundary()'s seam splice leaves one of the sphere's own
+// original seam-boundary samples standing between the south pole and the
+// chain's first off-pole sample, so the sphere side of that run has one
+// more point than the plane side. ReconcileFragmentBoundaries() then
+// (correctly) inserted that point into the plane side's loop, but placed
+// its plane (u, v) by LINEAR interpolation between the plane side's own two
+// bracketing samples - a point on the chord, not on the shared 3D curve.
+// Fixed by polishing the interpolated (u, v) onto the sparse face's own
+// surface with a Newton closest-point solve (SurfaceClosestPoint()), kept
+// only when it converges and genuinely lands closer to the shared 3D point.
+//
+// The fixture is deliberately the one whose quarter-sphere boundary runs
+// pole-to-pole ALONG the seam (box [0,10]x[0,10]x[-5,5], sphere radius 2 at
+// the origin: cut by x == 0, the u == pi/2 meridian, and by y == 0, the
+// u == 0 seam meridian). Every closed form is exact: a quarter sphere is
+// (4/3 pi r^3) / 4. Volumes are measured on TessellateGeneralBooleanClosedMesh()
+// (the general engine's own closed-manifold mesher, asserted closed here
+// too) at (32, 64), with tolerances ~2.3x the measured n = 32 error
+// (quarter-sized results: -0.065; results carrying 3/4 of the sphere's
+// curved surface: -0.18; plain TessellateToClosedMesh() of a full sphere
+// at the same n is short by 0.24, so this is the usual second-order
+// inscribed-polyhedron deficit, confirmed by the explicit halving check
+// below) - the same justification TestBooleanCombineGeneralSphereBox uses.
+//
+// Controls: the mirror-image quadrant (box [-10,0]x[0,10]x[-5,5], whose
+// y == 0 cut lies on the u == pi meridian, NOT the seam) was already valid
+// before the fix and must stay so with the identical closed forms; and a
+// disjoint sphere/box pair must still give an empty Intersection and keep
+// both operands' exact volumes (the reconcile pass has nothing to share
+// there, so the polish must never fabricate a point).
+void TestBooleanCombineGeneralSphereCentredOnBoxEdgeAlongSeamMeridian() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const double r = 2.0;
+  const double sphere_vol = (4.0 / 3.0) * ON_PI * r * r * r;
+  const double box_vol = 1000.0;
+  const double quarter = sphere_vol / 4.0;
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), r);
+  const int nu = 32, nv = 64;
+  const double tol_quarter = 0.15, tol_bulk = 0.4;
+
+  // The pre-fix defect's own signature, independent of ON_Brep::IsValid()'s
+  // internal tolerance: the largest distance between any trim's own end
+  // (its 2D curve's end evaluated on its face's surface) and the matching
+  // end of its 3D edge. Every SSX point is Newton-refined to the default
+  // 0.001 tolerance, so a well-formed result stays within that; the
+  // chord-placed trim end was 0.0152 away.
+  auto max_trim_end_gap = [](const Brep& b) {
+    const ON_Brep& brep = b.raw();
+    double worst = 0.0;
+    for (int ti = 0; ti < brep.m_T.Count(); ++ti) {
+      const ON_BrepTrim& t = brep.m_T[ti];
+      if (t.m_ei < 0 || t.m_c2i < 0 || t.m_li < 0) continue;
+      const ON_BrepEdge& e = brep.m_E[t.m_ei];
+      const ON_Surface* srf = brep.m_F[brep.m_L[t.m_li].m_fi].SurfaceOf();
+      if (!srf) continue;
+      for (int end = 0; end < 2; ++end) {
+        const ON_3dPoint uv = t.PointAt(end == 0 ? t.Domain().Min() : t.Domain().Max());
+        const bool edge_start = (end == 0) != t.m_bRev3d;
+        const ON_3dPoint ep = edge_start ? e.PointAtStart() : e.PointAtEnd();
+        worst = std::max(worst, srf->PointAt(uv.x, uv.y).DistanceTo(ep));
+      }
+    }
+    return worst;
+  };
+
+  struct Case {
+    const char* label;
+    Brep result;
+    double expect;
+    double tol;
+  };
+  auto run_quadrant = [&](const Brep& box, const char* tag, bool check_gap) {
+    const Case cases[4] = {
+        {"Union", BooleanCombineGeneral(sphere, box, BooleanOp::Union), box_vol + sphere_vol - quarter, tol_bulk},
+        {"Intersection", BooleanCombineGeneral(sphere, box, BooleanOp::Intersection), quarter, tol_quarter},
+        {"sphere-box Difference", BooleanCombineGeneral(sphere, box, BooleanOp::Difference), sphere_vol - quarter, tol_bulk},
+        {"box-sphere Difference", BooleanCombineGeneral(box, sphere, BooleanOp::Difference), box_vol - quarter, tol_quarter},
+    };
+    for (const Case& c : cases) {
+      std::string what = std::string(tag) + " " + c.label;
+      Check(c.result.raw().IsValid(), (what + " is a valid ON_Brep").c_str());
+      const Mesh m = TessellateGeneralBooleanClosedMesh(c.result, nu, nv);
+      Check(m.IsClosedManifold(), (what + "'s TessellateGeneralBooleanClosedMesh() result is a closed manifold").c_str());
+      Check(std::abs(m.Volume() - c.expect) < c.tol,
+            (what + "'s volume matches the exact closed form (quarter sphere = (4/3 pi r^3)/4) within tessellation tolerance").c_str());
+      if (check_gap) {
+        Check(max_trim_end_gap(c.result) < 1e-3,
+              (what + ": every trim end lies on its 3D edge's end to within the SSX tolerance (was 0.0152 off, on the chord)").c_str());
+      }
+    }
+  };
+
+  // The seam-meridian quadrant: INVALID on all four ops before the fix.
+  run_quadrant(Brep::Box(0, 0, -5, 10, 10, 5), "seam-meridian quarter (box [0,10]x[0,10])", /*check_gap=*/true);
+  {
+    const Brep i = BooleanCombineGeneral(sphere, Brep::Box(0, 0, -5, 10, 10, 5), BooleanOp::Intersection);
+    const double err_coarse = std::abs(TessellateGeneralBooleanClosedMesh(i, 16, 32).Volume() - quarter);
+    const double err_fine = std::abs(TessellateGeneralBooleanClosedMesh(i, 32, 64).Volume() - quarter);
+    Check(err_fine < 0.5 * err_coarse,
+          "seam-meridian quarter Intersection's volume error at least halves when the tessellation is doubled "
+          "(convergent tessellation error, not a fixed leak)");
+  }
+
+  // Control: the mirror quadrant, whose y == 0 cut is the u == pi meridian
+  // (not the seam) - already valid before the fix, identical closed forms.
+  run_quadrant(Brep::Box(-10, 0, -5, 0, 10, 5), "control quarter off the seam (box [-10,0]x[0,10])", /*check_gap=*/false);
+
+  // Negative control: disjoint operands share no boundary at all.
+  {
+    const Brep far_box = Brep::Box(5, 5, -5, 15, 15, 5);
+    const Brep i = BooleanCombineGeneral(sphere, far_box, BooleanOp::Intersection);
+    Check(i.raw().m_F.Count() == 0, "disjoint sphere/box Intersection is empty (0 faces)");
+    const Brep d = BooleanCombineGeneral(far_box, sphere, BooleanOp::Difference);
+    Check(d.raw().IsValid() && std::abs(TessellateGeneralBooleanClosedMesh(d, 8, 8).Volume() - box_vol) < 1e-9,
+          "disjoint box-sphere Difference is the untouched box, exact volume 1000");
+    const Brep u = BooleanCombineGeneral(sphere, far_box, BooleanOp::Union);
+    Check(u.raw().IsValid() && u.raw().m_F.Count() == 7 &&
+              std::abs(TessellateGeneralBooleanClosedMesh(u, nu, nv).Volume() - (sphere_vol + box_vol)) < 0.4,
+          "disjoint sphere+box Union keeps both operands whole (7 faces, volume = sphere + box within tessellation tolerance)");
+  }
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -85832,6 +85969,7 @@ int main() {
   RunTest("TestRevolvePartialAngleCapsOffAxisOpenProfile", TestRevolvePartialAngleCapsOffAxisOpenProfile);
   RunTest("TestSubDFromUniformBicubicSurfaceReproducesSurfaceExactly", TestSubDFromUniformBicubicSurfaceReproducesSurfaceExactly);
   RunTest("TestSubDFromUniformBicubicSurfaceRejectsUnsupportedInput", TestSubDFromUniformBicubicSurfaceRejectsUnsupportedInput);
+  RunTest("TestBooleanCombineGeneralSphereCentredOnBoxEdgeAlongSeamMeridian", TestBooleanCombineGeneralSphereCentredOnBoxEdgeAlongSeamMeridian);
 
   RunTest("ON::End", ON::End);
 

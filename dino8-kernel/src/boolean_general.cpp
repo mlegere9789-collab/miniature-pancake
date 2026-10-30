@@ -2722,7 +2722,11 @@ void ReconcileFragmentBoundaries(std::vector<KeptFace>& kept) {
   // Linear-in-arc-length-fraction interpolation of `arr`'s own (p, uv) at
   // fraction `t` (already normalized the same way `gather()` above
   // computes its own points' `t`).
-  auto interp_at = [](const std::vector<RunPoint>& arr, double t) {
+  // `bracket_span` (optional) receives the (u, v) distance between the two
+  // samples the interpolation ran between - the most any point genuinely
+  // lying between them can be from the interpolated guess, used as the
+  // bound on the surface polish below.
+  auto interp_at = [](const std::vector<RunPoint>& arr, double t, double* bracket_span = nullptr) {
     size_t lo = 0;
     while (lo + 2 < arr.size() && arr[lo + 1].t <= t) ++lo;
     const RunPoint& a = arr[lo];
@@ -2732,6 +2736,7 @@ void ReconcileFragmentBoundaries(std::vector<KeptFace>& kept) {
     UVPt out;
     out.p = Point3d(a.p.x + (b.p.x - a.p.x) * frac, a.p.y + (b.p.y - a.p.y) * frac, a.p.z + (b.p.z - a.p.z) * frac);
     out.uv = Point2d(a.uv.x + (b.uv.x - a.uv.x) * frac, a.uv.y + (b.uv.y - a.uv.y) * frac);
+    if (bracket_span) *bracket_span = std::sqrt(Dist2(a.uv, b.uv));
     return out;
   };
 
@@ -2857,11 +2862,54 @@ void ReconcileFragmentBoundaries(std::vector<KeptFace>& kept) {
     // merely a slower convergence. Reversed here so the spliced sequence
     // always runs from near a_pos to near b_pos in the SPARSE loop's own
     // forward sense, matching every other run this function ever builds.
+    //
+    // Each new point's (u, v) on the SPARSE side is first placed by
+    // `interp_at()`'s linear interpolation between the sparse run's own two
+    // bracketing samples, then polished onto the sparse face's own surface
+    // with a Newton closest-point solve seeded from that guess
+    // (SurfaceClosestPoint(), surface_intersect.h). The linear guess alone
+    // is a point on the sparse side's (u, v) CHORD, not on the shared 3D
+    // curve: its surface point misses `ref[k].p` by the chord's own sagitta,
+    // which is only negligible while the sparse run is densely sampled.
+    // Confirmed as a real, measured ON_Brep::IsValid() failure, not a
+    // theoretical one (general_boolean_sweep.cpp case 10, a sphere centred
+    // on a box EDGE, every one of Union/Intersection/both Differences): the
+    // sphere's own seam meridian IS the y == 0 box face's intersection
+    // curve there, and CutChainAtDomainBoundary()'s seam splice leaves one
+    // of the sphere's own original seam-boundary samples standing between
+    // the south pole and the chain's first off-pole sample, so the sphere
+    // side of that pole-to-sample run has one more point than the plane
+    // side. Interpolated linearly, that point's plane (u, v) landed on the
+    // pole-to-sample chord, 0.0152 units inside the sphere ("Distance from
+    // end of ON_Brep.m_T[59] to 3d edge is 0.0151697"); polished onto the
+    // plane it lands exactly on the circle, where the 3D edge is. The
+    // polish is accepted only when Newton reports convergence, its
+    // surface point is genuinely closer to `ref[k].p` than the linear
+    // guess's own, AND it stayed within the bracketing pair's own (u, v)
+    // span of the guess (a point between two samples can never be farther
+    // from their interpolation than they are from each other - this keeps
+    // a near-singular solve on a pole-bearing sparse face, where the
+    // Newton system is rank-deficient and u is free to wander, from
+    // dragging a point to a 3D-equivalent but (u, v)-distant parameter and
+    // corrupting the loop's own 2D polygon); otherwise the linear guess is
+    // kept exactly as before, so no previously-correct case can get worse.
+    const ON_Surface* sparse_surface = loops[sparse_run.li].surface;
     std::vector<UVPt> new_interior;
     new_interior.reserve(ref.size() - 2);
     for (size_t k = 1; k + 1 < ref.size(); ++k) {
       const double query_t = same_direction ? ref[k].t : 1.0 - ref[k].t;
-      new_interior.push_back({ref[k].p, interp_at(sparse_full, query_t).uv});
+      double bracket_span = 0.0;
+      UVPt np{ref[k].p, interp_at(sparse_full, query_t, &bracket_span).uv};
+      if (sparse_surface) {
+        const double d_lerp = (sparse_surface->PointAt(np.uv.x, np.uv.y) - np.p).Length();
+        double ru = np.uv.x, rv = np.uv.y;
+        if (d_lerp > 0.0 && SurfaceClosestPoint(*sparse_surface, np.p, ru, rv)) {
+          const double d_polished = (sparse_surface->PointAt(ru, rv) - np.p).Length();
+          const Point2d polished(ru, rv);
+          if (d_polished < d_lerp && Dist2(polished, np.uv) <= bracket_span * bracket_span) np.uv = polished;
+        }
+      }
+      new_interior.push_back(np);
     }
     if (!same_direction) std::reverse(new_interior.begin(), new_interior.end());
     edits[sparse_run.li].push_back({sparse_run.a_pos, sparse_run.b_pos, std::move(new_interior)});
