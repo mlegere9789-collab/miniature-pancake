@@ -1,7 +1,9 @@
 #include "dino8/kernel/sheet_metal.h"
 
 #include <cmath>
+#include <memory>
 #include <stdexcept>
+#include <string>
 
 #include "dino8/kernel/curve.h"
 
@@ -25,6 +27,117 @@ NurbsCurve ArcCurve(Point3d center, Vector3d xaxis, Vector3d yaxis, double radiu
   }
   NurbsCurve result;
   result.raw() = arc_nurbs;
+  return result;
+}
+
+// Shared body of Bend()/MultiBend(): the bent part as ONE exact swept
+// solid - the sheet's own width x thickness rectangular cross-section
+// carried along the bend path - assembled from the two offset copies of
+// that path, `inner_pieces`/`outer_pieces` (leg, arc, leg, ... in
+// entry-to-exit order, the inner at every bend's own inside_radius and
+// the outer at inside_radius + thickness), lifted by `lift` (the bend
+// axis direction times the sheet width).
+//
+// Each list is first joined into one curve (NurbsCurve::Join, curve.h).
+// The two joined curves are compatible BY CONSTRUCTION: piece k of both
+// is the same kind of segment over the same parameter length (a degree-1
+// line over its own FromControlPoints() domain, or an ON_Arc NURBS form
+// over the same angle - the same knots and weights at any radius), and
+// Join() splices each operand's own knot vector verbatim - so the inner
+// and outer paths come out with identical degree, knots, control-point
+// count and weights. Verified below rather than assumed: a mismatch is
+// an internal error, never a silently mis-skinned wall. The wall is then
+// the tensor-product surface whose u direction is the closed rectangle
+// outer -> inner -> inner+lift -> outer+lift -> outer (degree 1, four
+// straight spans, the exact section) and whose v direction is the joined
+// path (its knots and weights, shared by all five rows): with equal
+// weights down every u-column, each u-span is a straight Euclidean
+// segment between corresponding points of the two paths, so the surface
+// is EXACTLY the rectangle swept along the legs and arcs - parallel legs,
+// concentric arcs, no interpolation anywhere. Wound outer -> inner on the
+// lift=0 side so S_u x S_v points out of the material, the same "profile
+// counterclockwise about the sweep direction" rule Brep::Extrude()
+// enforces on its own profile.
+//
+// The two caps Brep::AssembleSweptBody() then adds are the rectangle at
+// the chain's two free (cut) ends - always convex, so always star-shaped,
+// whatever the bend angles or leg lengths. That is the whole point of
+// sweeping the SECTION along the path instead of extruding the bent
+// PROFILE along the width, the way these two functions used to: the bent
+// profile (two leg-arc-leg boundaries closed by the two cut ends) stops
+// being star-shaped as soon as one leg is long enough to hide behind the
+// other leg's own inner corner - a plain 90-degree bend of a thin sheet
+// (legs 1, thickness 0.05, inside radius 0.5), or any U-channel with two
+// right-angle bends - and Brep::Extrude()'s fan cap then correctly
+// refused it ("not star-shaped"). The solid is identical either way;
+// only the cap geometry differs, and a rectangle's never fails.
+//
+// Throws std::runtime_error (an internal error - "please report this as a
+// bug") if the two paths fail to join or come out incompatible, or if
+// the assembled body is not a closed solid; AssembleSweptBody()'s own
+// std::invalid_argument for a non-planar end section cannot fire here
+// (every end section is one of the rectangles above by construction).
+Brep SweepSectionAlongBendPath(const std::vector<NurbsCurve>& inner_pieces,
+                               const std::vector<NurbsCurve>& outer_pieces, Vector3d lift, double join_tolerance,
+                               const char* caller) {
+  const std::string prefix = std::string("dino8::kernel::") + caller + ": ";
+  auto internal = [&](const char* what) {
+    throw std::runtime_error(prefix + what + " (please report this as a bug)");
+  };
+  if (inner_pieces.empty() || inner_pieces.size() != outer_pieces.size()) {
+    internal("the inner and outer bend paths have different piece counts");
+  }
+  NurbsCurve inner = inner_pieces.front();
+  NurbsCurve outer = outer_pieces.front();
+  for (size_t i = 1; i < inner_pieces.size(); ++i) {
+    if (inner.Join(inner_pieces[i], join_tolerance) != Result::Ok) {
+      internal("failed joining the inner bend path's own segments");
+    }
+    if (outer.Join(outer_pieces[i], join_tolerance) != Result::Ok) {
+      internal("failed joining the outer bend path's own segments");
+    }
+  }
+  const ON_NurbsCurve& ci = inner.raw();
+  const ON_NurbsCurve& co = outer.raw();
+  const bool rational = ci.IsRational();
+  auto homogeneous_cv = [rational](const ON_NurbsCurve& c, int j) {
+    ON_4dPoint h;
+    c.GetCV(j, h);
+    if (!rational) h.w = 1.0;
+    return h;
+  };
+  bool compatible = ci.Degree() == co.Degree() && ci.CVCount() == co.CVCount() &&
+                    ci.KnotCount() == co.KnotCount() && rational == co.IsRational();
+  for (int k = 0; compatible && k < ci.KnotCount(); ++k) compatible = ci.Knot(k) == co.Knot(k);
+  for (int j = 0; compatible && j < ci.CVCount(); ++j) {
+    compatible = homogeneous_cv(ci, j).w == homogeneous_cv(co, j).w;
+  }
+  if (!compatible) internal("the inner and outer bend paths did not come out with identical knots and weights");
+
+  const int n = ci.CVCount();
+  auto wall = std::make_unique<ON_NurbsSurface>();
+  if (!wall->Create(3, rational, /*order0=*/2, ci.Order(), /*cv_count0=*/5, n)) {
+    internal("ON_NurbsSurface::Create failed for the swept bend wall");
+  }
+  for (int k = 0; k < wall->KnotCount(0); ++k) wall->SetKnot(0, k, static_cast<double>(k));
+  for (int k = 0; k < ci.KnotCount(); ++k) wall->SetKnot(1, k, ci.Knot(k));
+  for (int j = 0; j < n; ++j) {
+    const ON_4dPoint pi = homogeneous_cv(ci, j);
+    const ON_4dPoint po = homogeneous_cv(co, j);
+    // Homogeneous lift: (wx, wy, wz, w) + w * lift keeps the same weight.
+    const ON_4dPoint pi_up(pi.x + lift.x * pi.w, pi.y + lift.y * pi.w, pi.z + lift.z * pi.w, pi.w);
+    const ON_4dPoint po_up(po.x + lift.x * po.w, po.y + lift.y * po.w, po.z + lift.z * po.w, po.w);
+    wall->SetCV(0, j, po);
+    wall->SetCV(1, j, pi);
+    wall->SetCV(2, j, pi_up);
+    wall->SetCV(3, j, po_up);
+    wall->SetCV(4, j, po);
+  }
+  if (!wall->IsValid()) internal("the assembled swept bend wall is not a valid NURBS surface");
+
+  Brep result = Brep::AssembleSweptBody(wall.release(), /*cap_v0=*/true, /*cap_v1=*/true, /*cap_u0=*/false,
+                                        /*cap_u1=*/false, caller);
+  if (!result.raw().IsSolid()) internal("the swept bend did not close into a solid");
   return result;
 }
 
@@ -109,36 +222,24 @@ Brep Bend(double leg1_length, double leg2_length, double width, double thickness
   const Point3d inner_leg2_tan = tangent_point(r_in, theta);
   const Point3d inner_leg2_far = inner_leg2_tan + t1 * leg2_length;
 
-  // Assemble the closed profile going all the way around once: outer
-  // leg 1 -> outer arc -> outer leg 2 -> end cap at the leg-2 end ->
-  // inner leg 2 (reversed) -> inner arc (reversed) -> inner leg 1
-  // (reversed) -> end cap at the leg-1 end, back to the start.
-  // NurbsCurve::Join() (curve.h) auto-reverses whichever end of the next
-  // segment actually meets the curve built so far, so each segment below
-  // is built in its own natural direction rather than pre-reversed here.
-  NurbsCurve profile = NurbsCurve::FromControlPoints({outer_leg1_far, outer_leg1_tan}, 1);
-  const NurbsCurve outer_arc = ArcCurve(O, xaxis, yaxis, r_out, theta);
-  const NurbsCurve outer_leg2 = NurbsCurve::FromControlPoints({outer_leg2_tan, outer_leg2_far}, 1);
-  const NurbsCurve end_cap_leg2 = NurbsCurve::FromControlPoints({outer_leg2_far, inner_leg2_far}, 1);
-  const NurbsCurve inner_leg2 = NurbsCurve::FromControlPoints({inner_leg2_far, inner_leg2_tan}, 1);
-  const NurbsCurve inner_arc = ArcCurve(O, xaxis, yaxis, r_in, theta);
-  const NurbsCurve inner_leg1 = NurbsCurve::FromControlPoints({inner_leg1_tan, inner_leg1_far}, 1);
-  const NurbsCurve end_cap_leg1 = NurbsCurve::FromControlPoints({inner_leg1_far, outer_leg1_far}, 1);
-
+  // The two offset copies of the bend path, each leg -> arc -> leg in
+  // entry-to-exit order (every segment built in its own natural direction;
+  // NurbsCurve::Join() auto-reverses whichever end of the curve built so
+  // far actually meets the next segment): the inner path at `inside_radius`
+  // and the outer at `inside_radius + thickness`. SweepSectionAlongBendPath()
+  // (above) then carries the width x thickness rectangle along them.
+  const std::vector<NurbsCurve> inner_pieces = {
+      NurbsCurve::FromControlPoints({inner_leg1_far, inner_leg1_tan}, 1),
+      ArcCurve(O, xaxis, yaxis, r_in, theta),
+      NurbsCurve::FromControlPoints({inner_leg2_tan, inner_leg2_far}, 1),
+  };
+  const std::vector<NurbsCurve> outer_pieces = {
+      NurbsCurve::FromControlPoints({outer_leg1_far, outer_leg1_tan}, 1),
+      ArcCurve(O, xaxis, yaxis, r_out, theta),
+      NurbsCurve::FromControlPoints({outer_leg2_tan, outer_leg2_far}, 1),
+  };
   const double tol = std::max(r_out, 1.0) * 1e-6;
-  const char* fail_msg = "dino8::kernel::Bend: failed joining the bend profile's own segments (please report this as a bug)";
-  if (profile.Join(outer_arc, tol) != Result::Ok) throw std::runtime_error(fail_msg);
-  if (profile.Join(outer_leg2, tol) != Result::Ok) throw std::runtime_error(fail_msg);
-  if (profile.Join(end_cap_leg2, tol) != Result::Ok) throw std::runtime_error(fail_msg);
-  if (profile.Join(inner_leg2, tol) != Result::Ok) throw std::runtime_error(fail_msg);
-  if (profile.Join(inner_arc, tol) != Result::Ok) throw std::runtime_error(fail_msg);
-  if (profile.Join(inner_leg1, tol) != Result::Ok) throw std::runtime_error(fail_msg);
-  if (profile.Join(end_cap_leg1, tol) != Result::Ok) throw std::runtime_error(fail_msg);
-  if (!profile.IsClosed()) {
-    throw std::runtime_error("dino8::kernel::Bend: assembled profile did not close (please report this as a bug)");
-  }
-
-  return Brep::Extrude(profile, zaxis * width, /*cap=*/true);
+  return SweepSectionAlongBendPath(inner_pieces, outer_pieces, zaxis * width, tol, "Bend");
 }
 
 Brep MultiBend(const std::vector<double>& leg_lengths, const std::vector<double>& bend_angles_degrees,
@@ -191,9 +292,6 @@ Brep MultiBend(const std::vector<double>& leg_lengths, const std::vector<double>
   Point3d inner_tan = center + inside_radii[0] * radial(angle);
   Point3d outer_tan = inner_tan + thickness * radial(angle);
 
-  // The chain's own two free (cut) ends, filled in once each below.
-  Point3d outer_start_far, inner_start_far, outer_end_far, inner_end_far;
-
   std::vector<NurbsCurve> outer_pieces, inner_pieces;  // entry-to-exit order, both chains in parallel
 
   for (size_t i = 0; i < num_bends; ++i) {
@@ -215,8 +313,6 @@ Brep MultiBend(const std::vector<double>& leg_lengths, const std::vector<double>
     if (i == 0) {
       const Point3d inner_leg_far = inner_tan - heading(angle) * leg_lengths[0];
       const Point3d outer_leg_far = outer_tan - heading(angle) * leg_lengths[0];
-      inner_start_far = inner_leg_far;
-      outer_start_far = outer_leg_far;
       outer_pieces.push_back(NurbsCurve::FromControlPoints({outer_leg_far, outer_tan}, 1));
       inner_pieces.push_back(NurbsCurve::FromControlPoints({inner_leg_far, inner_tan}, 1));
     }
@@ -238,17 +334,11 @@ Brep MultiBend(const std::vector<double>& leg_lengths, const std::vector<double>
     const Point3d inner_next = inner_tan_end + heading(new_angle) * leg_lengths[i + 1];
     const Point3d outer_next = outer_tan_end + heading(new_angle) * leg_lengths[i + 1];
 
-    if (i + 1 == num_bends) {
-      // Last leg: these are the chain's OTHER free (cut) end, not another
-      // arc's own entry tangent point.
-      inner_end_far = inner_next;
-      outer_end_far = outer_next;
-      outer_pieces.push_back(NurbsCurve::FromControlPoints({outer_tan_end, outer_next}, 1));
-      inner_pieces.push_back(NurbsCurve::FromControlPoints({inner_tan_end, inner_next}, 1));
-    } else {
-      outer_pieces.push_back(NurbsCurve::FromControlPoints({outer_tan_end, outer_next}, 1));
-      inner_pieces.push_back(NurbsCurve::FromControlPoints({inner_tan_end, inner_next}, 1));
-      // Next bend's own center: wherever ITS OWN inside_radii[i + 1] places
+    outer_pieces.push_back(NurbsCurve::FromControlPoints({outer_tan_end, outer_next}, 1));
+    inner_pieces.push_back(NurbsCurve::FromControlPoints({inner_tan_end, inner_next}, 1));
+    if (i + 1 < num_bends) {
+      // Not the last leg (which is the chain's other free, cut end):
+      // next bend's own center: wherever ITS OWN inside_radii[i + 1] places
       // it so its own tangent point at bearing `new_angle` lands exactly on
       // `inner_next` (derived algebraically from the same radial()
       // relationship every tangent point above already uses - verified the
@@ -262,31 +352,11 @@ Brep MultiBend(const std::vector<double>& leg_lengths, const std::vector<double>
     }
   }
 
-  // Assemble the closed profile exactly like Bend()'s own single-arc
-  // version: every outer piece in entry-to-exit order, the end cap, every
-  // inner piece in EXIT-to-entry (reverse) order, then the start cap -
-  // NurbsCurve::Join() auto-reverses whichever end of the curve-so-far
-  // actually meets the next segment, so each piece above is built in its
-  // own natural direction rather than pre-reversed here.
+  // Sweep the width x thickness rectangle along the two offset paths
+  // (SweepSectionAlongBendPath(), above) - exactly like Bend()'s own
+  // single-arc version, with N legs/arcs per path instead of 2/1.
   const double tol = std::max(1.0, std::abs(outer_tan.x) + std::abs(outer_tan.y)) * 1e-6;
-  const char* fail_msg =
-      "dino8::kernel::MultiBend: failed joining the bent profile's own segments (please report this as a bug)";
-  NurbsCurve profile = outer_pieces.front();
-  for (size_t i = 1; i < outer_pieces.size(); ++i) {
-    if (profile.Join(outer_pieces[i], tol) != Result::Ok) throw std::runtime_error(fail_msg);
-  }
-  const NurbsCurve end_cap = NurbsCurve::FromControlPoints({outer_end_far, inner_end_far}, 1);
-  if (profile.Join(end_cap, tol) != Result::Ok) throw std::runtime_error(fail_msg);
-  for (size_t i = inner_pieces.size(); i-- > 0;) {
-    if (profile.Join(inner_pieces[i], tol) != Result::Ok) throw std::runtime_error(fail_msg);
-  }
-  const NurbsCurve start_cap = NurbsCurve::FromControlPoints({inner_start_far, outer_start_far}, 1);
-  if (profile.Join(start_cap, tol) != Result::Ok) throw std::runtime_error(fail_msg);
-  if (!profile.IsClosed()) {
-    throw std::runtime_error("dino8::kernel::MultiBend: assembled profile did not close (please report this as a bug)");
-  }
-
-  return Brep::Extrude(profile, zaxis * width, /*cap=*/true);
+  return SweepSectionAlongBendPath(inner_pieces, outer_pieces, zaxis * width, tol, "MultiBend");
 }
 
 Brep UnfoldBend(double leg1_length, double leg2_length, double width, double thickness, double inside_radius,

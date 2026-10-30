@@ -82791,7 +82791,8 @@ void TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency() {
   const Brep bent = Bend(leg1, leg2, width, thickness, r_in, angle_deg);
   Check(bent.raw().IsValid(), "Bend produces a valid ON_Brep");
   Check(bent.FaceCount() == 3,
-        "Bend's single-arc profile extrudes into exactly 3 faces: the swept wall and its two end caps");
+        "Bend's rectangular section swept along its leg-arc-leg path gives exactly 3 faces: the swept wall and its "
+        "two rectangular end caps");
 
   const Mesh m = bent.TessellateToClosedMesh(128, 256);
   Check(m.IsClosedManifold(), "Bend's tessellation is a genuine closed manifold");
@@ -82811,15 +82812,13 @@ void TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency() {
         "BendAllowance at k_factor=0.5 exactly matches Bend()'s own true geometric mid-plane arc length");
 
   // A shallower bend (30 degrees) and a steeper one (60 degrees) both
-  // stay valid, star-shaped, closed solids - not just the one 90-degree
-  // case above. (A much steeper bend angle with these same dimensions -
-  // confirmed directly, dino8_scratch_test - can exceed Brep::Extrude()'s
-  // own star-shaped capping requirement well before 180 degrees, since a
-  // fairly THICK annular sector's own star-shaped kernel shrinks faster
-  // with angle than a thin one's does; picking dimensions/angles that
-  // stay comfortably inside that boundary is this function's own caller's
-  // responsibility, the same as any other Extrude()-based feature op in
-  // this kernel.)
+  // stay valid closed solids - not just the one 90-degree case above.
+  // (Bend() used to extrude the bent PROFILE, whose fan cap needed that
+  // profile to be star-shaped - a limit a thin 90-degree bend or a thick
+  // 150-degree one already exceeded; it now sweeps the convex rectangular
+  // SECTION along the path instead, so every angle in (0, 180) builds -
+  // see TestBendAndMultiBendRightAngleThinSheetsAreExactSolids below for
+  // the once-refused cases pinned to the same Pappus closed form.)
   for (double angle : {30.0, 60.0}) {
     const Brep b = Bend(2.0, 2.0, 1.0, 0.2, 0.3, angle);
     Check(b.raw().IsValid(), "Bend stays a valid ON_Brep across a range of bend angles");
@@ -82891,14 +82890,11 @@ void TestMultiBendUChannelAndHatChannelMatchPappusClosedForm() {
   // TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency above
   // already establishes for a single bend, extended to two, each with its
   // own radius) gives an exact cross-check independent of MultiBend()'s own
-  // construction. Dimensions chosen to stay comfortably inside
-  // `Brep::Extrude()`'s own star-shaped capping requirement (see MultiBend()'s
-  // own doc comment): a two-bend chain's overall profile hits that
-  // requirement's own empty-kernel limit far sooner than a single bend of
-  // similar size does (confirmed directly, dino8_scratch_test, sweeping
-  // angle/leg-length/thickness - the same "stay comfortably inside the
-  // boundary" caveat `Bend()`'s own doc comment already discloses for one
-  // bend, compounding faster across a chain of them).
+  // construction. (These gentle 8-15 degree angles were originally forced
+  // by the closed-bent-profile extrusion's own star-shaped capping limit;
+  // MultiBend() now sweeps the convex rectangular section along the path,
+  // and the same fixtures at right angles are pinned to the same closed
+  // form in TestBendAndMultiBendRightAngleThinSheetsAreExactSolids below.)
   const double width = 1.0, thickness = 0.08;
   const std::vector<double> legs = {0.6, 0.8, 0.6};
   const std::vector<double> angles_deg = {10.0, 10.0};
@@ -85498,6 +85494,139 @@ void TestIntersectSurfacesClosedChainFitIsPeriodicC2AtSeam() {
   }
 }
 
+void TestBendAndMultiBendRightAngleThinSheetsAreExactSolids() {
+  using dino8::kernel::Bend;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MultiBend;
+  using dino8::kernel::UnfoldMultiBend;
+  using sweep_tests::Throws;
+
+  // parity-map "kernel: Feature operations" - "Sheet-metal features".
+  // Regression: Bend()/MultiBend() used to build the bent PROFILE (the
+  // closed outer-plus-inner leg-arc-leg loop) and extrude it along the
+  // width, so Brep::Extrude()'s fan cap had to find a star-shaped kernel
+  // of that profile. A thin sheet bent 90 degrees - the most ordinary
+  // sheet-metal part there is - has none (one leg hides behind the other
+  // leg's inner corner), and every case below threw "cap requested but
+  // the end section's region is not star-shaped" on the old construction
+  // (confirmed on a standalone build of the previous library). Both
+  // functions now sweep the width x thickness rectangular SECTION along
+  // the bend path (exact: parallel legs, concentric arcs), whose two cut-
+  // end caps are convex rectangles, so the closed-form Pappus volume -
+  // legs plus bend_angle_radians * (inside_radius + thickness/2) per
+  // bend, all times width * thickness - is checked with Brep::Volume()'s
+  // exact integration (its quadrature on the rational arc wall agrees
+  // with the closed form to ~1e-7 on these fixtures; 1e-6 absolute here
+  // is far below any tessellation-level agreement), not a mesh estimate.
+  const double w = 1.0;
+
+  // (1) A thin 90-degree bend: legs 1/1, thickness 0.05, inside radius 0.5.
+  {
+    const double leg = 1.0, t = 0.05, r = 0.5, deg = 90.0;
+    const Brep b = Bend(leg, leg, w, t, r, deg);
+    const double pappus = 2.0 * leg * w * t + (deg * ON_PI / 180.0) * (r + t / 2.0) * w * t;
+    Check(b.raw().IsValid() && b.raw().IsSolid(), "thin 90-degree Bend() is a valid closed solid (it used to throw)");
+    Check(b.FaceCount() == 3 && b.EdgeCount() == 5 && b.VertexCount() == 4,
+          "thin 90-degree Bend() keeps Bend()'s wall-plus-two-caps topology: 3 faces, 5 edges, 4 vertices");
+    Check(std::abs(b.Volume() - pappus) < 1e-6,
+          "thin 90-degree Bend()'s exact Brep::Volume() matches the Pappus closed form 0.1 + (pi/2)*0.525*0.05 to "
+          "1e-6");
+    // Leg 1 runs down -y at x in [0.5, 0.55]; the quarter arc sits in the
+    // first quadrant; leg 2 runs along -x at y in [0.5, 0.55].
+    const auto bb = b.GetTightBoundingBox();
+    Check(std::abs(bb.min.x + 1.0) < 1e-9 && std::abs(bb.min.y + 1.0) < 1e-9 && std::abs(bb.min.z) < 1e-9,
+          "thin 90-degree Bend()'s tight bounding box min is exactly (-1, -1, 0)");
+    Check(std::abs(bb.max.x - 0.55) < 1e-9 && std::abs(bb.max.y - 0.55) < 1e-9 && std::abs(bb.max.z - 1.0) < 1e-9,
+          "thin 90-degree Bend()'s tight bounding box max is exactly (0.55, 0.55, 1)");
+    const Mesh m = b.TessellateToClosedMesh(64, 128);
+    Check(m.IsClosedManifold(), "thin 90-degree Bend()'s tessellation is a genuine closed manifold");
+    Check(std::abs(m.Volume() - pappus) < 0.01 * pappus,
+          "thin 90-degree Bend()'s tessellated volume matches the Pappus closed form to within 1%");
+    Check(b.Check().IsClean(), "thin 90-degree Bend() passes Brep::Check() with no issues");
+  }
+
+  // (2) The same thin sheet at 170 degrees (a near-hairpin), and (3) a
+  // THICK sheet (thickness 0.4, inside radius 0.2) at 150 degrees - the
+  // "thick annular sector" case the old construction's own doc comment
+  // disclosed as exceeding its capping limit well before 180 degrees.
+  {
+    const double t = 0.05, r = 0.5, deg = 170.0;
+    const Brep b = Bend(1.0, 1.0, w, t, r, deg);
+    const double pappus = 2.0 * w * t + (deg * ON_PI / 180.0) * (r + t / 2.0) * w * t;
+    Check(b.raw().IsSolid(), "thin 170-degree Bend() is a closed solid (it used to throw)");
+    Check(std::abs(b.Volume() - pappus) < 1e-6,
+          "thin 170-degree Bend()'s exact volume matches the Pappus closed form to 1e-6");
+  }
+  {
+    const double t = 0.4, r = 0.2, deg = 150.0;
+    const Brep b = Bend(1.0, 1.0, w, t, r, deg);
+    const double pappus = 2.0 * w * t + (deg * ON_PI / 180.0) * (r + t / 2.0) * w * t;
+    Check(b.raw().IsSolid(), "thick 150-degree Bend() is a closed solid (it used to throw)");
+    Check(std::abs(b.Volume() - pappus) < 1e-6,
+          "thick 150-degree Bend()'s exact volume matches the Pappus closed form to 1e-6");
+  }
+
+  // (4) A right-angle U-channel: the SAME legs/width/thickness fixture
+  // TestMultiBendUChannelAndHatChannelMatchPappusClosedForm uses at 10
+  // degrees, here at two 90-degree bends of radius 0.1 (the old
+  // construction refused this fixture from a cumulative turn of ~8
+  // degrees on).
+  const std::vector<double> u_legs = {0.6, 0.8, 0.6};
+  const std::vector<double> u_angles = {90.0, 90.0};
+  const std::vector<double> u_radii = {0.1, 0.1};
+  const double t = 0.08;
+  const double u_pappus = (0.6 + 0.8 + 0.6) * w * t + 2.0 * (ON_PI / 2.0) * (0.1 + t / 2.0) * w * t;
+  {
+    const Brep u = MultiBend(u_legs, u_angles, u_radii, w, t);
+    Check(u.raw().IsValid() && u.raw().IsSolid(),
+          "right-angle U-channel MultiBend() (2 x 90 degrees) is a valid closed solid (it used to throw)");
+    Check(u.FaceCount() == 3, "right-angle U-channel MultiBend() is one swept wall plus two rectangular caps");
+    Check(std::abs(u.Volume() - u_pappus) < 1e-6,
+          "right-angle U-channel's exact Brep::Volume() matches the Pappus closed form 0.16 + pi*0.14*0.08 to 1e-6");
+    // Leg 0 runs down -y at x in [0.1, 0.18]; bend 1 turns into leg 1 running
+    // along -x at y in [0.1, 0.18] from x = 0 to x = -0.8; bend 2 (center
+    // (-0.8, 0)) turns into leg 2 running down -y at x in [-0.98, -0.9].
+    const auto bb = u.GetTightBoundingBox();
+    Check(std::abs(bb.min.x + 0.98) < 1e-9 && std::abs(bb.min.y + 0.6) < 1e-9 && std::abs(bb.min.z) < 1e-9,
+          "right-angle U-channel's tight bounding box min is exactly (-0.98, -0.6, 0)");
+    Check(std::abs(bb.max.x - 0.18) < 1e-9 && std::abs(bb.max.y - 0.18) < 1e-9 && std::abs(bb.max.z - 1.0) < 1e-9,
+          "right-angle U-channel's tight bounding box max is exactly (0.18, 0.18, 1)");
+    Check(u.Check().IsClean(), "right-angle U-channel passes Brep::Check() with no issues");
+    const Mesh m = u.TessellateToClosedMesh(64, 128);
+    Check(m.IsClosedManifold() && std::abs(m.Volume() - u_pappus) < 0.01 * u_pappus,
+          "right-angle U-channel's tessellation is a closed manifold whose volume matches Pappus to within 1%");
+    // Flat-pattern consistency carried over unchanged: at k_factor 0.5
+    // the unfolded blank's exact volume equals the bent part's own Pappus
+    // volume (the neutral axis IS the geometric mid-plane there).
+    const Brep flat = UnfoldMultiBend(u_legs, u_angles, u_radii, w, t, 0.5);
+    Check(std::abs(flat.Volume() - u_pappus) < 1e-9 * u_pappus,
+          "UnfoldMultiBend at k_factor=0.5 of the right-angle U-channel exactly matches its Pappus volume");
+  }
+
+  // (5) A right-angle hat-channel: three 90-degree bends.
+  {
+    const std::vector<double> legs = {0.3, 0.5, 0.5, 0.3};
+    const std::vector<double> angles = {90.0, 90.0, 90.0};
+    const std::vector<double> radii = {0.1, 0.1, 0.1};
+    const Brep hat = MultiBend(legs, angles, radii, w, t);
+    const double pappus = (0.3 + 0.5 + 0.5 + 0.3) * w * t + 3.0 * (ON_PI / 2.0) * (0.1 + t / 2.0) * w * t;
+    Check(hat.raw().IsSolid(),
+          "right-angle hat-channel MultiBend() (3 x 90 degrees) is a closed solid (it used to throw)");
+    Check(std::abs(hat.Volume() - pappus) < 1e-6,
+          "right-angle hat-channel's exact volume matches the Pappus closed form 0.128 + 1.5*pi*0.14*0.08 to 1e-6");
+  }
+
+  // Negative controls: the (0, 180) bend-angle contract is unchanged - a
+  // half-turn bend and a direction-reversing (Z-bend) chain are still
+  // refused as std::invalid_argument, not built.
+  Check(Throws([&] { Bend(1.0, 1.0, w, 0.05, 0.5, 180.0); }),
+        "Bend() still refuses a bend angle of exactly 180 degrees (the contract did not widen with the new "
+        "construction)");
+  Check(Throws([&] { MultiBend(u_legs, {90.0, -90.0}, u_radii, w, t); }),
+        "MultiBend() still refuses a chain that reverses direction partway (a Z-bend's negative second angle)");
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -86825,6 +86954,8 @@ int main() {
   RunTest("TestChamferCylinderRimExactConeAndClosedForms", TestChamferCylinderRimExactConeAndClosedForms);
 
   RunTest("TestIntersectSurfacesClosedChainFitIsPeriodicC2AtSeam", TestIntersectSurfacesClosedChainFitIsPeriodicC2AtSeam);
+  RunTest("TestBendAndMultiBendRightAngleThinSheetsAreExactSolids",
+          TestBendAndMultiBendRightAngleThinSheetsAreExactSolids);
 
   RunTest("ON::End", ON::End);
 
