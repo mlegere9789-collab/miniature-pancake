@@ -759,6 +759,35 @@ void MergeSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   if (srfs.size() < 2) { ctx.Warn("Select two surfaces"); return; }
   ON_NurbsSurface a = srfs[0].second, b = srfs[1].second;
   const double tol = ctx.Settings().absolute_tolerance * 100;
+  // Exact merge, tried FIRST: kernel::NurbsSurface::Join splices the two
+  // control nets across the shared edge (Split()'s inverse) - no sampling,
+  // no refit, both operands' own shapes survive to round-off. The result is
+  // oriented like the first surface. It throws std::invalid_argument when
+  // no side pair coincides (or a surface is closed across the shared edge)
+  // and returns Result::Failed when the boundary control polygons do not
+  // coincide (a differently-parameterized shared edge); in both cases the
+  // older sample-and-refit route below handles the pair exactly as before.
+  {
+    kernel::NurbsSurface joined;
+    joined.raw() = a;
+    kernel::NurbsSurface other;
+    other.raw() = b;
+    bool exact = false;
+    try {
+      exact = joined.Join(other, std::max(ctx.Settings().absolute_tolerance, 1e-6)) == kernel::Result::Ok;
+    } catch (const std::exception&) {}
+    if (exact) {
+      ctx.Doc().BeginChange("MergeSrf");
+      SceneObject n = SceneObject::MakeSurface(joined);
+      n.layer_index = like.layer_index;
+      ctx.Doc().Remove(srfs[0].first);
+      ctx.Doc().Remove(srfs[1].first);
+      ctx.Doc().Add(std::move(n));
+      ctx.Print("MergeSrf: merged 2 surfaces into one (exact merge: control nets spliced across the shared edge, " +
+                std::to_string(joined.raw().CVCount(0)) + " x " + std::to_string(joined.raw().CVCount(1)) + " control points, no refit)");
+      return;
+    }
+  }
   // Find the pair of edges that coincide: try a's 4 sides against b's 4 sides.
   auto edge_pts = [](const ON_NurbsSurface& s, int side, int n) {
     std::vector<Point3d> pts;
@@ -807,7 +836,7 @@ void MergeSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   ctx.Doc().Remove(srfs[0].first);
   ctx.Doc().Remove(srfs[1].first);
   ctx.Doc().Add(std::move(n));
-  ctx.Print("MergeSrf: merged 2 surfaces into one (refit through samples)");
+  ctx.Print("MergeSrf: merged 2 surfaces into one (refit through samples; the exact kernel merge refused this pair)");
 }
 
 // ---------------------------------------------------------------------------
