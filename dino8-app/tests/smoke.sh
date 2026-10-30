@@ -2,6 +2,13 @@
 # Headless functional QC for Dino 8: runs a command script through the real
 # app under Xvfb and checks the resulting history/object counts.
 set -euo pipefail
+# Hundreds of checks below are `echo "$BIG" | grep -q PATTERN`. GitHub's
+# runner starts this script with SIGPIPE ignored, so when grep exits on its
+# first match a still-writing echo gets EPIPE ("echo: write error: Broken
+# pipe") instead of dying silently, and under `pipefail` that turned a
+# MATCHED check into a FAIL at random (the e7b5a52c Linux run). An echo's
+# write status must never decide a check: only grep's does.
+echo() { builtin echo "$@" 2>/dev/null || true; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="${1:-$HERE/../build/Dino8}"
 TMP="$(mktemp -d)"
