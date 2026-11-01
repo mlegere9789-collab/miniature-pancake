@@ -4,6 +4,7 @@
 // CreateUVCrv, UnrollSrf/Smash (developable approximation), Fin, Ribbon,
 // Silhouette, 3DFace, MakeUniformUV and friends.
 #include "commands/cmd_common.h"
+#include "commands/history_rebuild.h"
 #include "dino8/kernel/boolean_general.h"
 #include "doc/SubObjectEdit.h"
 #include "drafting/SectionView.h"
@@ -1084,7 +1085,13 @@ class RailRevolveCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select profile curve"); }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
-    for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) { if (!profile_) profile_ = *o->curve; else if (!rail_) rail_ = *o->curve; } }
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (o && o->kind == ObjectKind::Curve) {
+        if (!profile_) { profile_ = *o->curve; profile_id_ = id; }
+        else if (!rail_) { rail_ = *o->curve; rail_id_ = id; }
+      }
+    }
     for (ObjectId id : ids) ctx.Doc().Select(id, false);
     accept_preselection = false;
     if (!profile_) { ctx.Warn("Select a curve"); Finish(); return; }
@@ -1111,15 +1118,18 @@ class RailRevolveCommand : public Command {
     // existing result changes. Built BEFORE any BeginChange/Add - on
     // refusal, nothing has touched the document yet, so the fallback below
     // runs exactly as it always has, not after a wasted empty undo entry.
-    std::optional<kernel::Brep> exact;
-    try {
-      exact = kernel::Brep::RailRevolve(*profile_, *a_, axis, *rail_);
-    } catch (const std::invalid_argument&) {
-      // Not applicable to this profile/axis/rail - fall back below.
-    }
+    // The kernel call lives in RebuildRailRevolve (below the anonymous
+    // namespace) so UpdateHistory re-runs it when the profile or rail moves;
+    // only this exact branch records history (the approximate fallback below
+    // is a different construction and records nothing).
+    HistoryRecord rec;
+    rec.command = "RailRevolve";
+    rec.num = {{"ax", a_->x}, {"ay", a_->y}, {"az", a_->z}, {"dx", axis.x}, {"dy", axis.y}, {"dz", axis.z}};
+    std::optional<SceneObject> exact = RebuildRailRevolve(ctx, *profile_, *rail_, rec);
     if (exact) {
       ctx.Doc().BeginChange("RailRevolve");
-      ctx.Doc().Add(SceneObject::MakeBrep(*exact));
+      const ObjectId new_id = ctx.Doc().Add(std::move(*exact));
+      RecordHistoryIfEnabled(ctx, new_id, "RailRevolve", {profile_id_, rail_id_}, rec.num);
       ctx.Print("RailRevolve: genuine B-rep solid/shell built (profile planar through the picked axis)");
       Finish();
       return;
@@ -1166,6 +1176,7 @@ class RailRevolveCommand : public Command {
   void OnHover(CommandContext& ctx, Point3d h) override { if (a_) { ctx.ClearPreview(); ctx.AddPreviewLine(*a_, h); } }
   void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
   std::optional<kernel::NurbsCurve> profile_, rail_;
+  ObjectId profile_id_ = kNoObject, rail_id_ = kNoObject;  // history sources
   std::optional<Point3d> a_;
 };
 
@@ -3238,6 +3249,21 @@ class SplitRefitSurfaceCommand : public Command {
 };
 
 }  // namespace
+
+// RailRevolve's exact kernel branch (see RailRevolveCommand::OnPoint), shared
+// with UpdateHistory. Reads num: ax,ay,az (axis start), dx,dy,dz (axis
+// direction). nullopt when the kernel refuses the profile/axis/rail.
+std::optional<SceneObject> RebuildRailRevolve(CommandContext&, const kernel::NurbsCurve& profile, const kernel::NurbsCurve& rail, const HistoryRecord& rec) {
+  auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  const Point3d a(num("ax"), num("ay"), num("az"));
+  Vector3d axis(num("dx"), num("dy"), num("dz"));
+  if (!axis.Unitize()) return std::nullopt;
+  try {
+    return SceneObject::MakeBrep(kernel::Brep::RailRevolve(profile, a, axis, rail));
+  } catch (const std::invalid_argument&) {
+    return std::nullopt;
+  }
+}
 
 void RegisterSrfEditCommands(CommandEngine& e) {
   Reg(e, "ExtractSrf", Make<FacePickCommand>(FacePickCommand::Op::Extract));

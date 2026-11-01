@@ -14,6 +14,7 @@
 #include <limits>
 
 #include "commands/Command.h"
+#include "commands/history_rebuild.h"
 #include "doc/SubObjectEdit.h"
 #include "i18n/I18n.h"
 #include "imgui.h"
@@ -1236,6 +1237,13 @@ void UpdateAssociativeAnnotations(Application& app) {
 
 void Application::Frame() {
   if (std::getenv("DINO8_UI_DEBUG") && (ImGui::GetFrameCount() == 5 || ImGui::GetFrameCount() == 90)) { const ImVec4& w = ImGui::GetStyle().Colors[ImGuiCol_WindowBg]; std::fprintf(stderr, "[theme] mode=%d WindowBg=%.2f %.2f %.2f a=%.2f\n", theme_mode, w.x, w.y, w.z, w.w); }
+  // Edits that never went through a command (gizmo/control-point drags, Ctrl+Z):
+  // keep recorded construction history up to date (cmd_history.cpp; a revision
+  // compare when nothing changed, nothing at all without recorded history).
+  if (Engine().ActiveName().empty()) {
+    CommandContext history_ctx(*this, doc_, Engine());
+    HistoryAutoUpdate(history_ctx, "frame");
+  }
   UpdateCageCaptives(doc_);
   UpdateSymmetryLive(doc_);
   UpdateAssociativeAnnotations(*this);

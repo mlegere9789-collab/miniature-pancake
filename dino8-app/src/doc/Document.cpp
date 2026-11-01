@@ -795,6 +795,7 @@ void Document::BeginChange(const std::string& label) {
   pending_.objects = objects_;  // O(document) - same cost the old Capture() paid at BeginChange time
   pending_.fast_path_before.clear();
   pending_.user_text = user_text_;
+  pending_.history = history_records_;
   redo_.clear();
 }
 
@@ -820,7 +821,20 @@ void Document::BeginChangeForObjects(const std::string& label, const std::vector
     if (const SceneObject* o = Find(id)) pending_.fast_path_before.push_back(*o);
   }
   pending_.user_text = user_text_;
+  pending_.history = history_records_;
   redo_.clear();
+}
+
+bool Document::JoinPendingChange(const std::vector<ObjectId>& ids) {
+  if (!pending_.active) return false;
+  if (!pending_.fast_path) return true;  // the general path captured every object already
+  for (ObjectId id : ids) {
+    bool have = false;
+    for (const SceneObject& b : pending_.fast_path_before) if (b.id == id) { have = true; break; }
+    if (have) continue;
+    if (const SceneObject* o = Find(id)) pending_.fast_path_before.push_back(*o);
+  }
+  return true;
 }
 
 void Document::FinalizePending() {
@@ -850,6 +864,8 @@ void Document::FinalizePending() {
   d.next_light_id_after = next_light_id_;
   d.user_text_before = std::move(pending_.user_text);
   d.user_text_after = user_text_;
+  d.history_before = std::move(pending_.history);
+  d.history_after = history_records_;
 
   if (pending_.fast_path) {
     std::unordered_set<ObjectId> live_ids;
@@ -1097,6 +1113,7 @@ void Document::ApplyDelta(const StateDelta& d, bool undo) {
   next_group_id_ = undo ? d.next_group_id_before : d.next_group_id_after;
   next_light_id_ = undo ? d.next_light_id_before : d.next_light_id_after;
   user_text_ = undo ? d.user_text_before : d.user_text_after;
+  history_records_ = undo ? d.history_before : d.history_after;
   Touch();
 }
 

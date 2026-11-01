@@ -1082,6 +1082,18 @@ class Document {
   // contract; every other caller should keep using the always-safe
   // BeginChange(label) above, which never requires this guarantee.
   void BeginChangeForObjects(const std::string& label, const std::vector<ObjectId>& ids);
+  // Declares that `ids` are about to be modified in place as PART OF the
+  // change that is already pending (the last BeginChange/BeginChangeForObjects
+  // call, not yet finalized by a later one): their current state is added to
+  // that change's before-images so Undo/Redo treat the edit and these follow-on
+  // edits as ONE step. Call it BEFORE mutating the objects. Used by history
+  // auto-propagation (cmd_history.cpp), which rebuilds dependents after a
+  // BeginChangeForObjects-style fast-path edit (e.g. Move) that did not know
+  // about them. A whole-document BeginChange already captures everything, so
+  // there this only reports the pending state. Returns false when no change
+  // is pending (Undo/Redo just ran, or nothing called BeginChange): the
+  // caller's follow-on edits then are not an undo step of their own.
+  bool JoinPendingChange(const std::vector<ObjectId>& ids);
   bool Undo();
   bool Redo();
 
@@ -1314,6 +1326,10 @@ class Document {
     // plot_style_tables, ...) at whatever it was when the entry was popped,
     // regardless of which side of the delta was being applied.
     std::map<std::string, std::string> user_text_before, user_text_after;
+    // Construction-history records (HistoryRecord, below) belong to the undo
+    // step that created/changed them: Undo of a boolean drops its record, Redo
+    // brings it back, Undo of an EditHistory restores the previous parameters.
+    std::map<ObjectId, HistoryRecord> history_before, history_after;
 
     std::vector<SceneObject> modified_before;
     std::vector<SceneObject> modified_after;  // lazily populated - see Document::Undo
@@ -1374,6 +1390,7 @@ class Document {
     std::vector<SceneObject> objects;            // general path: full pre-edit copy
     std::vector<SceneObject> fast_path_before;    // fast path: just the declared ids
     std::map<std::string, std::string> user_text;  // see Snapshot::user_text above
+    std::map<ObjectId, HistoryRecord> history;      // see StateDelta::history_before
   };
   void FinalizePending();
   void ApplyDelta(const StateDelta& delta, bool undo);
