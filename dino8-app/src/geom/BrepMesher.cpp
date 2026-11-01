@@ -153,7 +153,12 @@ class CDT {
   static std::pair<int, int> Key(int a, int b) { return {std::min(a, b), std::max(a, b)}; }
   bool IsSuper(const Tri& t) const { return t.v[0] >= n_input_ && t.v[0] < n_input_ + 3 && pts_.size() > 0 && IsSuperIndex(t.v[0]) || IsSuperIndex(t.v[1]) || IsSuperIndex(t.v[2]); }
   bool IsSuperIndex(int i) const { return i >= n_input_ && i < n_input_ + 3; }
-  int AliveCount() const { int n = 0; for (const Tri& t : tris_) n += t.alive; return n; }
+  // No triangle is ever retired (SplitInside/SplitOnEdge/FlipEdge rewrite slots
+  // in place and NewTri appends; nothing clears `alive`), so the live count IS
+  // the slot count. This used to walk every slot, and Refine() calls it once
+  // per inserted point: O(n^2) - minutes at the adaptive display's 150000
+  // triangle budget, which stalled the viewport (and the CI smoke run).
+  int AliveCount() const { return static_cast<int>(tris_.size()); }
 
   static double Orient(const Vec2& a, const Vec2& b, const Vec2& c) { return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x); }
   static bool SegmentsCross(const Vec2& a, const Vec2& b, const Vec2& c, const Vec2& d) {

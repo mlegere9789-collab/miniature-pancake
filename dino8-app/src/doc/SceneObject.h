@@ -341,7 +341,11 @@ class SceneObject {
   // refinement raises it to kAdaptiveTriangleBudget for the one build.
   static constexpr int kDefaultFaceTriangleCap = 12000;
   static constexpr std::size_t kLodStashCapacity = 3;
-  static constexpr std::size_t kLodStashMaxTriangles = 60000;
+  // A level at the full budget must be stashable: with several viewports at
+  // different zooms drawing the same object every frame, dropping the
+  // saturated (largest, most expensive) level when a coarser viewport draws
+  // forced a full re-tessellation on every following frame.
+  static constexpr std::size_t kLodStashMaxTriangles = kAdaptiveTriangleBudget + kAdaptiveTriangleBudget / 10;
   // const: only ever touches the mutable display cache, and marking it so
   // lets EnsureAdaptiveDisplay (itself const, like EnsureDisplay) call it
   // directly - every existing non-const caller is unaffected, since a
