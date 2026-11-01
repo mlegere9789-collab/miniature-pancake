@@ -261,6 +261,7 @@ set(DINO8_SOURCES
   src/app/Application.cpp
   src/app/ShortcutRules.cpp
   src/app/Settings.cpp
+  src/app/MacroLibrary.cpp
   src/i18n/I18n.cpp
   src/input/SpaceMouse.cpp
   src/sketch/Constraints.cpp
@@ -335,6 +336,7 @@ set(DINO8_SOURCES
   src/commands/cmd_layer.cpp
   src/commands/cmd_file.cpp
   src/commands/cmd_misc.cpp
+  src/commands/cmd_macros.cpp
   src/commands/cmd_render.cpp
   src/script/LuaEngine.cpp
   src/script/PythonEngine.cpp

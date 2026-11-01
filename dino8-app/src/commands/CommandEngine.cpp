@@ -345,7 +345,7 @@ void CommandEngine::Execute(const std::string& raw_input) {
   // the buffer's own last recorded line. `input` is the whole line as
   // typed, args included ("Box 0,0,0 10,10,10"), not just the command
   // name - see AppState::macro_recording's own comment (Application.h).
-  if (app_.State().macro_recording && name != "RecordMacro") {
+  if (app_.State().macro_recording && name != "RecordMacro" && !in_deferred_) {
     app_.State().macro_text += input + "\n";
   }
   pending_inputs_.assign(rest.begin(), rest.end());
@@ -363,9 +363,28 @@ void CommandEngine::Execute(const std::string& raw_input) {
   // ever changes behavior for the new case: an alias target that does
   // NOT, by itself, name one registered command.
   if (!Find(name) && (name.find(' ') != std::string::npos || name.find(';') != std::string::npos)) {
-    std::istringstream alias_lines(name);
-    std::string alias_line;
-    while (std::getline(alias_lines, alias_line, ';')) if (!alias_line.empty()) Execute(alias_line);
+    // Arguments typed after the alias ("boxmac size=5") belong to the
+    // alias's last command line, so a macro-bound alias can take run-time
+    // arguments (RunMacro "name" size=5); tokens with blanks are re-quoted.
+    std::string tail;
+    for (const std::string& tok : rest) {
+      const bool quote = tok.empty() || tok.find_first_of(" \t") != std::string::npos;
+      tail += " " + (quote ? "\"" + tok + "\"" : tok);
+    }
+    std::vector<std::string> alias_parts;
+    {
+      std::istringstream alias_lines(name);
+      std::string alias_line;
+      while (std::getline(alias_lines, alias_line, ';')) if (!alias_line.empty()) alias_parts.push_back(alias_line);
+    }
+    if (!alias_parts.empty()) alias_parts.back() += tail;
+    pending_inputs_.clear();
+    // The typed alias line itself was already recorded above; its expansion
+    // must not be recorded a second time.
+    const bool was_deferred = in_deferred_;
+    in_deferred_ = true;
+    for (const std::string& alias_line : alias_parts) Execute(alias_line);
+    in_deferred_ = was_deferred;
     return;
   }
   RunCommand(name, script);
@@ -427,9 +446,22 @@ void CommandEngine::RunDeferred() {
     last_point_.reset();
     pending_inputs_.clear();
   }
+  // A macro that (directly or through an alias) runs itself would otherwise
+  // recurse here until the stack overflows.
+  if (deferred_depth_ >= 32) {
+    Print("! Command nesting too deep (a macro or alias that runs itself?); the remaining queued commands were dropped");
+    deferred_.clear();
+    command_failed_ = true;
+    return;
+  }
   std::vector<std::string> lines;
   lines.swap(deferred_);
+  ++deferred_depth_;
+  const bool was_deferred = in_deferred_;
+  in_deferred_ = true;
   for (const std::string& line : lines) Execute(line);
+  in_deferred_ = was_deferred;
+  --deferred_depth_;
 }
 
 void CommandEngine::AfterCallback() {

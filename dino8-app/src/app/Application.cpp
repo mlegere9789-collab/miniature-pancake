@@ -58,6 +58,7 @@ void RegisterViewCommands(CommandEngine&);
 void RegisterLayerCommands(CommandEngine&);
 void RegisterFileCommands(CommandEngine&);
 void RegisterMiscCommands(CommandEngine&);
+void RegisterMacroCommands(CommandEngine&);
 void RegisterAnnotateCommands(CommandEngine&);
 void RegisterDraftingCommands(CommandEngine&);
 void RegisterSmartBlockCommands(CommandEngine&);
@@ -392,6 +393,7 @@ void Application::RegisterCommands() {
   RegisterLayerCommands(*engine_);
   RegisterFileCommands(*engine_);
   RegisterMiscCommands(*engine_);
+  RegisterMacroCommands(*engine_);
   RegisterAnnotateCommands(*engine_);
   RegisterDraftingCommands(*engine_);
   RegisterSmartBlockCommands(*engine_);

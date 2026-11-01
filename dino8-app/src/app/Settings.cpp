@@ -1,11 +1,13 @@
 #include "app/Settings.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 
 #include "app/Application.h"
+#include "app/MacroLibrary.h"
 #include "util/json_mini.h"
 
 namespace dino8::app {
@@ -121,14 +123,36 @@ bool LoadSettingsFrom(const std::string& path_str, Application& app, float& ui_s
     app.Engine().Aliases().clear();
     for (const auto& [k, v] : aliases.object) if (v.IsString()) app.Engine().Aliases()[k] = v.AsString();
   }
-  // Named macro library (MacroSave/MacroLoad/MacroDelete/RunSavedMacro,
-  // cmd_misc.cpp): same wholesale-replace-when-present contract as
-  // aliases above, so a macro deleted via MacroDelete stays deleted
-  // across a restart/import.
-  const json::Value& macros = root["macros"];
-  if (macros.IsObject()) {
-    app.State().macros.clear();
-    for (const auto& [k, v] : macros.object) if (v.IsString()) app.State().macros[k] = v.AsString();
+  // Named macro OBJECTS (app/MacroLibrary.h): wholesale replace when the
+  // "macro_library" key is present, so a macro deleted via DeleteMacro stays
+  // deleted across a restart/import. Settings written before the library had
+  // objects carry (a) "macros", a name -> ';'/newline text map (MacroSave),
+  // and (b) only the single "macro_text" editor buffer: both migrate on load -
+  // each old saved text becomes a macro object of the same name, and the
+  // editor buffer becomes a macro named "Scratch" (unless one already exists).
+  const json::Value& library = root["macro_library"];
+  if (library.IsObject()) {
+    std::vector<MacroObject> loaded;
+    std::string lib_err;
+    if (MacroLibrary::FromJson(library, loaded, lib_err)) {
+      app.State().macro_lib.All() = std::move(loaded);
+    } else {
+      std::fprintf(stderr, "settings: ignoring macro_library: %s\n", lib_err.c_str());
+    }
+  } else {
+    MacroLibrary& lib = app.State().macro_lib;
+    const json::Value& macros = root["macros"];
+    if (macros.IsObject()) {
+      lib.All().clear();
+      for (const auto& [k, v] : macros.object) {
+        if (!v.IsString() || !ValidMacroName(k)) continue;
+        if (MacroObject* m = lib.Create(k, MacroStepsFromText(v.AsString()))) m->description = "Migrated from a saved macro (MacroSave)";
+      }
+    }
+    if (root["macro_text"].IsString() && !MacroStepsFromText(root["macro_text"].AsString()).empty() && !lib.Find("Scratch")) {
+      if (MacroObject* m = lib.Create("Scratch", MacroStepsFromText(root["macro_text"].AsString())))
+        m->description = "Migrated from the Macro Editor's single text buffer";
+    }
   }
   const json::Value& shortcuts = root["shortcuts"];
   if (shortcuts.IsArray()) {
@@ -180,12 +204,7 @@ bool SaveSettingsTo(const std::string& path_str, const Application& app, float u
     for (const auto& [k, v] : a.Engine().Aliases()) { out << (first ? "" : ", ") << "\"" << Escape(k) << "\": \"" << Escape(v) << "\""; first = false; }
   }
   out << "},\n";
-  out << "  \"macros\": {";
-  {
-    bool first = true;
-    for (const auto& [k, v] : a.State().macros) { out << (first ? "" : ", ") << "\"" << Escape(k) << "\": \"" << Escape(v) << "\""; first = false; }
-  }
-  out << "},\n";
+  out << "  \"macro_library\": " << a.State().macro_lib.ToJson() << ",\n";
   out << "  \"shortcuts\": [";
   for (size_t i = 0; i < a.user_shortcuts.size(); ++i) {
     const KeyShortcut& s = a.user_shortcuts[i];

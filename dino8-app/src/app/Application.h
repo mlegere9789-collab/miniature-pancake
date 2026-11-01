@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "app/MacroLibrary.h"
 #include "app/ShortcutRules.h"
 #include "app/ViewTools.h"
 #include "commands/CommandCatalog.h"
@@ -185,7 +186,7 @@ struct AppState {
   std::string content_filter;        // ContentFilter: case-insensitive name substring for the Materials/Textures/Environments panels
   std::string macro_text = "! _Box 0,0,0 10,10,10\n_ZoomExtents\n";  // MacroEditor's buffer (Options.cpp Settings persists this, like startup_script)
   bool macro_recording = false;      // RecordMacro On/Off: while on, CommandEngine::Execute appends each typed top-level command line to macro_text - see cmd_misc.cpp's RecordMacro
-  std::map<std::string, std::string> macros;  // Named macro library (MacroSave/MacroLoad/MacroDelete/RunSavedMacro, cmd_misc.cpp): a saved name -> ';'-or-newline-separated command text, independent of the single macro_text editor buffer. Persisted the same wholesale-replace way CommandEngine::Aliases() is (Settings.cpp's "macros" key).
+  MacroLibrary macro_lib;            // Named macro OBJECTS (app/MacroLibrary.h; SaveMacro/ListMacros/ShowMacro/EditMacro/RunMacro/... in commands/cmd_macros.cpp): name, description, tags, parameters, structured steps, created/modified. Independent of the single macro_text editor buffer; persisted in settings.json under "macro_library" (Settings.cpp).
 };
 
 struct FileDialogState {
