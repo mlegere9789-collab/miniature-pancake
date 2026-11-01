@@ -142,6 +142,7 @@ bool RenderFullFrame(CommandContext& ctx, Viewport* vp, int w, int h, const Qual
   s.denoise = q.denoise; s.arctic = arctic;
   std::vector<float> hdr_rgb;
   std::vector<unsigned char> rgb = tracer.Render(s, nullptr, q.hdr ? &hdr_rgb : nullptr);
+  ctx.Print("Render: path-traced image: " + tracer.RenderStats());
   seconds_out = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   RenderImage& img = app.LastRender();
   if (img.texture) app.Renderer().DeleteTexture(img.texture);

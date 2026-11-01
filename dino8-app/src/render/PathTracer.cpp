@@ -383,10 +383,43 @@ std::string PathTracer::SceneDiagnostics() const {
     }
     facing += f; lit += l; lit_facing += (f && l);
   }
-  char buf[256];
-  std::snprintf(buf, sizeof buf, "facing_camera=%zu lit=%zu lit_and_facing=%zu bad_normals=%zu eye=%.2f,%.2f,%.2f target=%.2f,%.2f,%.2f",
+  // The tracer's own light sampler, called at the first lit camera-facing
+  // triangle with 64 different random states: does it return light?
+  double probe_max = 0, probe_sum = 0;
+  int probe_nonfinite = 0;
+  if (light) {
+    for (const render::BvhTriangle& t : bvh_.Triangles()) {
+      Vector3d n = t.n0;
+      if (!n.Unitize()) continue;
+      const Point3d c((t.v0.x + t.v1.x + t.v2.x) / 3, (t.v0.y + t.v1.y + t.v2.y) / 3, (t.v0.z + t.v1.z + t.v2.z) / 3);
+      Vector3d to_eye = camera_.eye - c;
+      to_eye.Unitize();
+      Vector3d to = light->position - c;
+      to.Unitize();
+      if (!(ON_DotProduct(n, to_eye) > 0 && ON_DotProduct(n, to) > 0)) continue;
+      for (unsigned k = 1; k <= 64; ++k) {
+        unsigned rng = 0x9e3779b9u * k + 17u;
+        const Vector3d r = SampleDirectLighting(c, n, -to_eye, Material{}, Vector3d(0.8, 0.8, 0.8), rng);
+        const double m = std::max({r.x, r.y, r.z});
+        if (!std::isfinite(m)) { ++probe_nonfinite; continue; }
+        probe_max = std::max(probe_max, m);
+        probe_sum += m;
+      }
+      break;
+    }
+  }
+  char buf[384];
+  std::snprintf(buf, sizeof buf,
+                "facing_camera=%zu lit=%zu lit_and_facing=%zu bad_normals=%zu eye=%.2f,%.2f,%.2f target=%.2f,%.2f,%.2f nee_probe_max=%.4g nee_probe_mean=%.4g nee_probe_nonfinite=%d",
                 facing, lit, lit_facing, bad, camera_.eye.x, camera_.eye.y, camera_.eye.z, camera_.target.x, camera_.target.y,
-                camera_.target.z);
+                camera_.target.z, probe_max, probe_sum / 64.0, probe_nonfinite);
+  return buf;
+}
+
+std::string PathTracer::RenderStats() const {
+  char buf[160];
+  std::snprintf(buf, sizeof buf, "nonfinite_samples_zeroed=%ld max_before_denoise=%.4g max_after_denoise=%.4g", last_nonfinite_samples_,
+                static_cast<double>(last_raw_max_), static_cast<double>(last_denoised_max_));
   return buf;
 }
 
@@ -635,6 +668,7 @@ std::vector<unsigned char> PathTracer::Render(const PathTraceSettings& settings,
   const int nthreads = std::max(1u, std::thread::hardware_concurrency());
   std::vector<std::thread> workers;
   std::atomic<int> next_row{0};
+  std::atomic<long> nonfinite_samples{0};
   const int samples = std::max(settings.samples, 1);
   const int bounces = std::max(settings.bounces, 1);
 
@@ -659,7 +693,7 @@ std::vector<unsigned char> PathTracer::Render(const PathTraceSettings& settings,
           const Ray ray = cam.ScreenRay(ndc_x, ndc_y, static_cast<double>(w) / h);
           Vector3d first_albedo(0, 0, 0), first_normal(0, 0, 1);
           Vector3d c = TracePath(ray.origin, ray.direction, rng, bounces, settings.arctic, &first_albedo, &first_normal);
-          if (!std::isfinite(c.x) || !std::isfinite(c.y) || !std::isfinite(c.z)) c = Vector3d(0, 0, 0);
+          if (!std::isfinite(c.x) || !std::isfinite(c.y) || !std::isfinite(c.z)) { c = Vector3d(0, 0, 0); ++nonfinite_samples; }
           sum += c; a_sum += first_albedo; n_sum += first_normal;
         }
         const size_t idx = (static_cast<size_t>(y) * w + x) * 3;
@@ -672,6 +706,10 @@ std::vector<unsigned char> PathTracer::Render(const PathTraceSettings& settings,
   for (int i = 0; i < nthreads; ++i) workers.emplace_back(worker);
   for (auto& t : workers) t.join();
   if (progress) progress(samples);
+  last_nonfinite_samples_ = nonfinite_samples.load();
+  last_raw_max_ = 0.f;
+  for (float v : hdr) if (std::isfinite(v)) last_raw_max_ = std::max(last_raw_max_, v);
+  last_denoised_max_ = 0.f;
 
   std::vector<unsigned char> rgb(static_cast<size_t>(w) * h * 3);
   for (size_t i = 0; i < static_cast<size_t>(w) * h; ++i) {
@@ -679,6 +717,7 @@ std::vector<unsigned char> PathTracer::Render(const PathTraceSettings& settings,
   }
   if (!settings.denoise) {
     if (hdr_rgb_out) *hdr_rgb_out = hdr;
+    last_denoised_max_ = last_raw_max_;
     return rgb;
   }
 
@@ -716,6 +755,7 @@ std::vector<unsigned char> PathTracer::Render(const PathTraceSettings& settings,
       const float d0 = acc[0] / wsum, d1 = acc[1] / wsum, d2 = acc[2] / wsum;
       out[ci] = ToByte(d0); out[ci + 1] = ToByte(d1); out[ci + 2] = ToByte(d2);
       if (hdr_rgb_out) { (*hdr_rgb_out)[ci] = d0; (*hdr_rgb_out)[ci + 1] = d1; (*hdr_rgb_out)[ci + 2] = d2; }
+      for (float v : {d0, d1, d2}) if (std::isfinite(v)) last_denoised_max_ = std::max(last_denoised_max_, v);
     }
   }
   return out;
