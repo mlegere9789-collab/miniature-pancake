@@ -308,15 +308,16 @@ int main() {
     for (const std::string& name : SceneObject::DisplayOverrideNames()) {
       if (!o.SetDisplayOverride(name)) continue;
       const int set = o.force_wireframe + o.force_shaded + o.force_rendered + o.force_ghosted + o.force_xray + o.force_technical +
-                      o.force_artistic + o.force_pen + o.force_arctic + o.force_monochrome;
+                      o.force_artistic + o.force_pen + o.force_arctic + o.force_monochrome + o.force_raytraced;
       if (name == "UseViewport" ? set == 0 : (set == 1 && name == o.DisplayOverrideName())) ++ok;
     }
     Check(ok == static_cast<int>(SceneObject::DisplayOverrideNames().size()),
-          "every one of the 11 names (UseViewport + 10 modes) sets exactly its own flag and reads back under the same name");
+          "every one of the 12 names (UseViewport + 11 modes, RayTraced included) sets exactly its own flag and reads back under the same name");
     Check(o.SetDisplayOverride("x-ray") && o.force_xray && !o.force_pen, "names are case-insensitive and accept X-Ray / xray");
-    Check(!o.SetDisplayOverride("RayTraced") && o.force_xray, "RayTraced is refused and leaves the current override untouched");
+    Check(o.SetDisplayOverride("RayTraced") && o.force_raytraced && !o.force_xray && std::string(o.DisplayOverrideName()) == "RayTraced", "RayTraced is a per-object mode now: it replaces the current override (exactly one flag set)");
+    o.SetDisplayOverride("x-ray");
     SceneObject copy = o;
-    Check(copy.force_xray, "the override survives a copy (undo/redo snapshots)");
+    Check(copy.force_xray && !copy.force_raytraced, "the override survives a copy (undo/redo snapshots)");
 
     // Per-VIEWPORT scope (Rhino: "their display in other viewports won't be affected").
     SceneObject v = SceneObject::MakeCurve(NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0)}, 1));
@@ -330,7 +331,8 @@ int main() {
     SceneObject vcopy = v;
     Check(vcopy.DisplayOverrideNameFor("Top") == "Pen" && vcopy.DisplayOverrideNameFor("Right") == "Technical", "both scopes survive a copy (undo/redo)");
     Check(v.SetViewportDisplayOverride("Top", "UseViewport") && v.DisplayOverrideNameFor("Top") == "Technical", "UseViewport removes the viewport entry (the all-viewports override then applies)");
-    Check(!v.SetViewportDisplayOverride("Top", "RayTraced") && v.viewport_display_overrides.empty(), "RayTraced is refused at viewport scope too");
+    Check(v.SetViewportDisplayOverride("Top", "RayTraced") && v.DisplayOverrideNameFor("Top") == "RayTraced" && v.DisplayOverrideFlagsFor("Top").raytraced, "RayTraced is accepted at viewport scope too");
+    v.SetViewportDisplayOverride("Top", "UseViewport");
     v.SetViewportDisplayOverride("Front", "X-Ray");
     v.ClearDisplayOverrides();
     Check(!v.HasAnyDisplayOverride(), "ClearDisplayOverrides (ClearAllObjectDisplayModes) removes both scopes");
