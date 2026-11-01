@@ -1,0 +1,238 @@
+# Exact revolved-solid editing QC (see the "SR" section at the end of smoke.sh).
+#
+# Closes two sub-gaps of "Solid editing with B-rep results (booleans, fillet,
+# shell, offset)": OffsetSrf Solid=Yes on a plain capped cylinder, and
+# OffsetSrf / Shell on a plain capped CONE and CONE FRUSTUM (Cone / TCone), all
+# of which used to give meshes. Every case starts from `New` and is bracketed by
+# an unknown-command marker line ("SRBEGIN_<name>") that smoke.sh uses to slice
+# the output into per-case blocks. Each case ends with List, Volume and Check on
+# the result so the smoke checks read measured numbers against closed forms.
+# NB the app's Cone puts its APEX at the clicked base point and the flat cap at
+# z = height, so the cap of "Cone 0,0,0 5 10" is clicked at 2,0,10.
+SetActiveViewport Top
+
+# ===================== OffsetSrf Solid=Yes on a plain cylinder =====================
+# cylinder r5 h20 grown by 1, hollow wall between original and offset:
+# pi*(6^2*22 - 5^2*20) = 917.35
+New
+SRBEGIN_O_cyl_solid_out
+Cylinder 0,0,0 5 20
+SelLast
+OffsetSrf
+Solid=Yes
+1
+SelLast
+List
+Volume
+Check
+SelBadObjects
+# shrunk by 1 (the offset cylinder is the inner shell): pi*(25*20 - 4^2*18) = 665.9
+New
+SRBEGIN_O_cyl_solid_in
+Cylinder 0,0,0 5 20
+SelLast
+OffsetSrf
+Solid=Yes
+-1
+SelLast
+List
+Volume
+Check
+# plain Solid=No still the single exact cylinder (control): pi*36*22 = 2488.1
+New
+SRBEGIN_O_cyl_plain
+Cylinder 0,0,0 5 20
+SelLast
+OffsetSrf
+1
+SelLast
+List
+Volume
+# collapse: shrinking by more than the radius is refused with the reason, mesh fallback runs
+New
+SRBEGIN_O_cyl_solid_collapse
+Cylinder 0,0,0 5 20
+SelLast
+OffsetSrf
+Solid=Yes
+-6
+SelLast
+List
+# old behaviour reachable: Exact=No
+New
+SRBEGIN_O_cyl_solid_exactno
+Cylinder 0,0,0 5 20
+SelLast
+OffsetSrf
+Solid=Yes
+Exact=No
+1
+SelLast
+List
+
+# ===================== OffsetSrf on a plain cone / frustum =====================
+# cone r5 h10 grown by 1 (sharp offset: every face moved 1 along its normal): the
+# result is the cone r6.618 h13.236 -> 607.08
+New
+SRBEGIN_O_cone
+Cone 0,0,0 5 10
+SelLast
+OffsetSrf
+1
+SelLast
+List
+Volume
+Check
+# Solid=Yes: the hollow wall = 607.08 - 261.80 = 345.28
+New
+SRBEGIN_O_cone_solid
+Cone 0,0,0 5 10
+SelLast
+OffsetSrf
+Solid=Yes
+1
+SelLast
+List
+Volume
+Check
+# frustum r5 -> r3, h10 (V = 513.13) grown by 1: 968.05
+New
+SRBEGIN_O_tcone
+TCone 0,0,0 5 10 3
+SelLast
+OffsetSrf
+1
+SelLast
+List
+Volume
+Check
+# frustum shrunk by 1 as a hollow wall: 513.13 - 228.58 = 284.55
+New
+SRBEGIN_O_tcone_solid_in
+TCone 0,0,0 5 10 3
+SelLast
+OffsetSrf
+Solid=Yes
+-1
+SelLast
+List
+Volume
+Check
+# a shrink beyond the axial inradius (3.09) eats the whole cone: refused with the reason
+New
+SRBEGIN_O_cone_collapse
+Cone 0,0,0 5 10
+SelLast
+OffsetSrf
+-4
+SelLast
+List
+# old behaviour reachable: Exact=No
+New
+SRBEGIN_O_cone_exactno
+Cone 0,0,0 5 10
+SelLast
+OffsetSrf
+Exact=No
+1
+SelLast
+List
+
+# ===================== Shell of a plain cone / frustum =====================
+# cone r5 h10, closed hollow, wall 1: 261.80 - 81.02 = 180.78
+New
+SRBEGIN_S_cone_closed
+Cone 0,0,0 5 10
+SelAll
+Shell
+Enter
+1
+SelAll
+List
+Volume
+Check
+# cone with its flat cap (z=10) removed = an open cone cup: 139.28
+New
+SRBEGIN_S_cone_cap
+Cone 0,0,0 5 10
+SelAll
+Shell
+2,0,10
+Enter
+1
+SelAll
+List
+Volume
+Check
+# cone with its WALL removed: no exact construction, reason printed (mesh)
+New
+SRBEGIN_S_cone_wall
+Cone 0,0,0 5 10
+SelAll
+Shell
+2.5,0,5
+Enter
+1
+SelAll
+List
+# a wall as thick as the cone: refused with the reason
+New
+SRBEGIN_S_cone_thick
+Cone 0,0,0 5 10
+SelAll
+Shell
+Enter
+6
+SelAll
+List
+# frustum, closed hollow: 284.55
+New
+SRBEGIN_S_tcone_closed
+TCone 0,0,0 5 10 3
+SelAll
+Shell
+Enter
+1
+SelAll
+List
+Volume
+Check
+# frustum with the top (small) cap removed: 270.94
+New
+SRBEGIN_S_tcone_top
+TCone 0,0,0 5 10 3
+SelAll
+Shell
+0,0,10
+Enter
+1
+SelAll
+List
+Volume
+Check
+# frustum with the bottom (big) cap removed: 237.24
+New
+SRBEGIN_S_tcone_bottom
+TCone 0,0,0 5 10 3
+SelAll
+Shell
+0,0,0
+Enter
+1
+SelAll
+List
+Volume
+Check
+# old behaviour reachable: Exact=No
+New
+SRBEGIN_S_cone_exactno
+Cone 0,0,0 5 10
+SelAll
+Shell
+Exact=No
+Enter
+1
+SelAll
+List
+New
+SREND

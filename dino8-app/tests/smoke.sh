@@ -9913,4 +9913,91 @@ else
   echo "FAIL islands: hatch-line length ratio (plain '$FIOX_LEN_PLAIN', holed '$FIOX_LEN_HOLE', expected ~8000 and 0.75)"; near "$FIOX_OUT" "Total length = "; fail=1
 fi
 
+# SR: exact revolved-solid editing (solidsrev_script.txt) - closes two more
+# sub-gaps of "Solid editing with B-rep results (booleans, fillet, shell,
+# offset)": OffsetSrf Solid=Yes on a plain capped cylinder (the hollow wall
+# between the original and the offset, two shells of one Brep) and OffsetSrf /
+# Shell on a plain capped cone and cone frustum (the (radius, height) profile
+# is offset with sharp corners and revolved: every face an exact revolved
+# surface). All of these used to give meshes. Every case is bracketed by an
+# SRBEGIN_<name> marker; srblock slices the app output into that case.
+# Volumes are read from the display mesh, so the ranges carry that tessellation
+# error (measured 0.05-0.15% low here; +-0.6% allowed for other platforms);
+# face/edge counts and "closed solid" are topological, so those are exact.
+# ---------------------------------------------------------------------------
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SROUT="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/solidsrev_script.txt" 2>&1)" || { echo "$SROUT"; echo "FAIL: solidsrev script exited non-zero"; exit 1; }
+else
+  SROUT="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/solidsrev_script.txt" 2>&1)" || { echo "$SROUT"; echo "FAIL: solidsrev script exited non-zero"; exit 1; }
+fi
+srblock() { awk -v name="$1" '$0 ~ ("Unknown command: SRBEGIN_" name "$") { on = 1; next } on && /Unknown command: SRBEGIN_|Unknown command: SREND/ { exit } on { print }' <<<"$SROUT"; }
+srcheck() { local blk; blk="$(srblock "$1")"; if grep -q -- "$2" <<<"$blk"; then echo "ok   $3"; else echo "FAIL $3"; echo "     expected: $2"; grep -E "^history: (Shell|Offset|Object|  [0-9]|Volume|!)" <<<"$blk" | head -8 | sed 's/^/     actual:   /' || true; fail=1; fi; }
+# srvol NAME MIN MAX DESC: the case's last "Volume = V" must lie in [MIN, MAX]
+srvol() {
+  local blk v; blk="$(srblock "$1")"
+  v="$(grep -E "^history: Volume = " <<<"$blk" | tail -1 | sed -E 's/^history: Volume = ([0-9.eE+-]+).*/\1/' || true)"
+  if [ -n "$v" ] && awk -v v="$v" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   $4 (Volume $v in [$2, $3])"; else echo "FAIL $4 (Volume '${v:-none}' not in [$2, $3])"; fail=1; fi
+}
+# --- OffsetSrf Solid=Yes on a plain cylinder
+srcheck O_cyl_solid_out "OffsetSrf: distance 1, 1 object(s), solid, 1 exact B-rep" "cylinder Solid=Yes is an exact B-rep (before: a 13420-triangle mesh, reason 'planar-only B-rep boolean')"
+srcheck O_cyl_solid_out "(polysurface)" "...a polysurface"
+srcheck O_cyl_solid_out "6 faces, 6 edges, closed solid" "...6 faces (outer 3 + reversed inner 3), a closed solid"
+srvol O_cyl_solid_out 912 922 "cylinder r5 h20 Solid=Yes +1: Volume = pi*(36*22 - 25*20) = 917.35"
+srcheck O_cyl_solid_out "Object 2: valid" "...and Check reports the result valid"
+srcheck O_cyl_solid_out "0 bad object(s) selected" "...SelBadObjects selects nothing"
+srcheck O_cyl_solid_in "solid, 1 exact B-rep" "Solid=Yes inward (the offset cylinder is the inner shell) is exact too"
+srcheck O_cyl_solid_in "6 faces, 6 edges, closed solid" "...6 faces, closed solid"
+srvol O_cyl_solid_in 662 670 "cylinder Solid=Yes -1: Volume = pi*(25*20 - 16*18) = 666.0"
+srcheck O_cyl_solid_in "Object 2: valid" "...valid"
+srcheck O_cyl_plain "3 faces, 3 edges, closed solid" "control: Solid=No on a cylinder is still the single exact 3-face cylinder"
+srvol O_cyl_plain 2473 2503 "control: grown cylinder Volume = pi*36*22 = 2488.1"
+srcheck O_cyl_solid_collapse "exact B-rep offset not used (the cylinder would collapse at that offset)" "shrinking past the radius: exact refused WITH the reason"
+srcheck O_cyl_solid_collapse "(mesh)" "...and the mesh offset runs"
+srcheck O_cyl_solid_exactno "(mesh)" "old behaviour reachable: Exact=No keeps the mesh offset"
+# --- OffsetSrf on a plain cone / frustum
+srcheck O_cone "OffsetSrf: distance 1, 1 object(s), 1 exact B-rep" "cone offset is exact (before: a mesh)"
+srcheck O_cone "2 faces, 3 edges, closed solid" "...the offset is again a 2-face cone"
+srvol O_cone 603.5 610.5 "cone r5 h10 +1 = cone r6.618 h13.236: Volume = 607.08"
+srcheck O_cone "Object 2: valid" "...valid"
+srcheck O_cone_solid "solid, 1 exact B-rep" "cone Solid=Yes is exact"
+srcheck O_cone_solid "4 faces, 6 edges, closed solid" "...4 faces (outer 2 + inner 2), closed solid"
+srvol O_cone_solid 343 347.5 "cone Solid=Yes hollow wall Volume = 607.08 - 261.80 = 345.28"
+srcheck O_cone_solid "Object 2: valid" "...valid"
+srcheck O_tcone "1 exact B-rep" "frustum offset is exact"
+srcheck O_tcone "3 faces, 5 edges, closed solid" "...3 faces, closed solid"
+srvol O_tcone 962 974 "frustum r5->r3 h10 +1: Volume = 968.05"
+srcheck O_tcone "Object 2: valid" "...valid"
+srcheck O_tcone_solid_in "solid, 1 exact B-rep" "frustum Solid=Yes inward is exact"
+srcheck O_tcone_solid_in "6 faces, 10 edges, closed solid" "...6 faces, closed solid"
+srvol O_tcone_solid_in 282.8 286.3 "frustum hollow wall Volume = 513.13 - 228.58 = 284.55"
+srcheck O_tcone_solid_in "Object 2: valid" "...valid"
+srcheck O_cone_collapse "exact B-rep offset not used (the cone would collapse or self-intersect at that offset)" "shrinking a cone past its axial inradius: exact refused WITH the reason"
+srcheck O_cone_exactno "(mesh)" "old behaviour reachable: Exact=No keeps the mesh offset"
+# --- Shell of a plain cone / frustum
+srcheck S_cone_closed "Shell: thickness 1, closed, exact B-rep" "cone closed shell is exact (before: a mesh)"
+srcheck S_cone_closed "4 faces, 6 edges, closed solid" "...4 faces (outer 2 + inner 2), closed solid"
+srvol S_cone_closed 179.5 182 "hollow cone Volume = 261.80 - 81.02 = 180.78"
+srcheck S_cone_closed "Object 2: valid" "...valid"
+srcheck S_cone_cap "open (1 face(s) removed), exact B-rep" "cone with its flat cap removed is an exact open cup"
+srcheck S_cone_cap "3 faces, 5 edges, closed solid" "...3 faces (outer wall, inner wall, rim annulus), closed solid"
+srvol S_cone_cap 138.3 140.3 "cone cup Volume = 139.28"
+srcheck S_cone_cap "Object 2: valid" "...valid"
+srcheck S_cone_wall "exact B-rep shell not used (only one flat cap of a cone can be removed exactly" "removing the cone's WALL: no exact construction, reason printed, mesh kept"
+srcheck S_cone_wall "(mesh)" "...a mesh"
+srcheck S_cone_thick "exact B-rep shell not used (the wall thickness is too large for this cone)" "a wall as thick as the cone: refused WITH the reason"
+srcheck S_tcone_closed "Shell: thickness 1, closed, exact B-rep" "frustum closed shell is exact"
+srcheck S_tcone_closed "6 faces, 10 edges, closed solid" "...6 faces, closed solid"
+srvol S_tcone_closed 282.8 286.3 "hollow frustum Volume = 284.55"
+srcheck S_tcone_closed "Object 2: valid" "...valid"
+srcheck S_tcone_top "open (1 face(s) removed), exact B-rep" "frustum with the small (top) cap removed is an exact cup"
+srcheck S_tcone_top "5 faces, 9 edges, closed solid" "...5 faces, closed solid"
+srvol S_tcone_top 269.2 272.7 "frustum top-open cup Volume = 270.94"
+srcheck S_tcone_top "Object 2: valid" "...valid"
+srcheck S_tcone_bottom "open (1 face(s) removed), exact B-rep" "frustum with the big (bottom) cap removed is an exact cup"
+srcheck S_tcone_bottom "5 faces, 9 edges, closed solid" "...5 faces, closed solid"
+srvol S_tcone_bottom 235.7 238.8 "frustum bottom-open cup Volume = 237.24"
+srcheck S_tcone_bottom "Object 2: valid" "...valid"
+srcheck S_cone_exactno "(mesh)" "old behaviour reachable: Exact=No gives the mesh shell"
+if grep -q "^FAIL" <<<"$SROUT"; then echo "FAIL solidsrev script reported an in-script FAIL"; fail=1; fi
+
 exit $fail
