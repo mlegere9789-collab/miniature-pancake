@@ -176,6 +176,7 @@ bool LoadSettingsFrom(const std::string& path_str, Application& app, float& ui_s
   if (accent.IsArray() && accent.Size() >= 3) for (size_t i = 0; i < 3; ++i) app.accent_color[i] = static_cast<float>(Num(accent[i], app.accent_color[i]));
   app.curve_display_tolerance = Num(root["curve_display_tolerance"], app.curve_display_tolerance);
   app.surface_display_tolerance = Num(root["surface_display_tolerance"], app.surface_display_tolerance);
+  app.adaptive_tessellation = Bool(root["adaptive_tessellation"], app.adaptive_tessellation);
   return true;
 }
 
@@ -222,6 +223,7 @@ bool SaveSettingsTo(const std::string& path_str, const Application& app, float u
   out << "  \"accent_color\": [" << a.accent_color[0] << ", " << a.accent_color[1] << ", " << a.accent_color[2] << "],\n";
   out << "  \"curve_display_tolerance\": " << a.curve_display_tolerance << ",\n";
   out << "  \"surface_display_tolerance\": " << a.surface_display_tolerance << ",\n";
+  out << "  \"adaptive_tessellation\": " << (a.adaptive_tessellation ? "true" : "false") << ",\n";
   out << "  \"recent_files\": [";
   for (size_t i = 0; i < a.RecentFiles().size(); ++i) out << (i ? ", " : "") << "\"" << Escape(a.RecentFiles()[i]) << "\"";
   out << "],\n";

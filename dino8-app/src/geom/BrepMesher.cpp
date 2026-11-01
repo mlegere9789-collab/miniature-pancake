@@ -526,8 +526,20 @@ std::vector<kernel::Mesh> MeshBrepFaces(const ON_Brep& brep, const BrepMeshOptio
 
   // Pass 1: per-face sizing.
   std::vector<FaceInfo> infos(static_cast<size_t>(brep.m_F.Count()));
+  auto face_tol = [&](int fi) {
+    const size_t k = static_cast<size_t>(fi);
+    return (k < options.face_chord_tolerance.size() && options.face_chord_tolerance[k] > 0.0) ? std::max(1e-6, options.face_chord_tolerance[k]) : tol;
+  };
+  auto face_cap = [&](int fi) {
+    const size_t k = static_cast<size_t>(fi);
+    return (k < options.face_max_triangles.size() && options.face_max_triangles[k] > 0) ? options.face_max_triangles[k] : options.max_triangles_per_face;
+  };
   for (int fi = 0; fi < brep.m_F.Count(); ++fi) {
-    if (brep.m_F[fi].m_face_index >= 0) infos[static_cast<size_t>(fi)] = AnalyseFace(brep.m_F[fi], options, tol);
+    if (brep.m_F[fi].m_face_index >= 0) {
+      BrepMeshOptions fo = options;
+      fo.max_triangles_per_face = face_cap(fi);
+      infos[static_cast<size_t>(fi)] = AnalyseFace(brep.m_F[fi], fo, face_tol(fi));
+    }
   }
 
   // Pass 2: edges, sampled at the finest neighbouring face's target size.
@@ -739,7 +751,7 @@ std::vector<kernel::Mesh> MeshBrepFaces(const ON_Brep& brep, const BrepMeshOptio
       return in;
     };
     if (std::getenv("DINO8_MESH_DEBUG")) std::fprintf(stderr, "[mesh] face %d: %zu boundary pts, Lu %.2f Lv %.2f h %.3f (div %d x %d) failed constraints %d\n", fi, uniq.size(), Lu, Lv, h3, nu, nv, failed_constraints);
-    cdt.Refine(h3, h3, options.max_triangles_per_face, inside);
+    cdt.Refine(h3, h3, face_cap(fi), inside);
     if (std::getenv("DINO8_MESH_DEBUG")) {
       auto all_tris = cdt.Triangles([](const Vec2&) { return true; });
       auto in_tris = cdt.Triangles(inside);

@@ -36,7 +36,10 @@ class PathTracer {
   // render settings into the tracer's own scene copy and builds the BVH.
   // `curve_tol`/`surface_tol` control the tessellation fed to EnsureDisplay
   // (finer than the viewport's own, matching Application::RenderView).
-  void Prepare(const Document& doc, const CameraState& camera, double aspect, double curve_tol, double surface_tol);
+  // `include`, when given, restricts the scene to the objects it returns true for
+  // (the viewport's per-object RayTraced override: only those are traced).
+  void Prepare(const Document& doc, const CameraState& camera, double aspect, double curve_tol, double surface_tol,
+               const std::function<bool(const SceneObject&)>* include = nullptr);
 
   // Restricts Render() to an off-axis sub-rectangle of the full view, given
   // as [ndc_x0, ndc_y0, ndc_x1, ndc_y1] in the same convention as

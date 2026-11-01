@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -125,7 +126,17 @@ struct DisplayCache {
   // first real build. See SceneObject::EnsureAdaptiveDisplay.
   double built_curve_tolerance = -1.0;
   double built_surface_tolerance = -1.0;
+  // Region-limited (face-level) brep build: fine_faces[f] != 0 means brep face f
+  // was tessellated at built_surface_tolerance, every other face at the coarse
+  // base level. Empty = the whole object was built at built_surface_tolerance.
+  std::vector<char> fine_faces;
 };
+
+// Answers "does this world-space box (a brep face's bounds) intersect the view
+// frustum?". `guard` = false is the tight frustum (what must be fine now);
+// `guard` = true is the frustum grown by a guard band (what a build keeps fine
+// so a small pan does not rebuild). Supplied by Viewport::DrawObjects.
+using FaceVisibilityFn = std::function<bool(const kernel::BoundingBox& box, bool guard)>;
 
 class SceneObject {
  public:
@@ -182,6 +193,7 @@ class SceneObject {
   // mutually exclusive with the four overrides above; Viewport::DrawObjects
   // honours it the same mode-agnostic way.
   bool force_monochrome = false;
+  bool force_raytraced = false;  // per-object RayTraced: traced by the path tracer, composited with the rasterized objects (Viewport)
   // SetObjectDisplayMode Pen/Arctic: the two other viewport-wide "force
   // white" modes (ModeStyle::force_white in Viewport.cpp), given the same
   // per-object treatment as Monochrome above - a fixed fill colour,
@@ -241,7 +253,7 @@ class SceneObject {
   // flags) - what Viewport::DrawObjects reads instead of the raw bools.
   struct DisplayOverrideFlags {
     bool wireframe = false, shaded = false, rendered = false, ghosted = false, xray = false, technical = false,
-         artistic = false, pen = false, arctic = false, monochrome = false;
+         artistic = false, pen = false, arctic = false, monochrome = false, raytraced = false;
   };
   DisplayOverrideFlags DisplayOverrideFlagsFor(const std::string& viewport) const;
   bool HasDisplayOverride() const;          // the all-viewports override
@@ -316,13 +328,23 @@ class SceneObject {
   // false` is the user toggle: the cache is rebuilt whenever it was not built
   // at EXACTLY the requested tolerances (no hysteresis, stash or budget) -
   // i.e. plain fixed-tolerance tessellation.
+  //
+  // Face-level refinement (brep only): with `face_visible` set, a refinement
+  // (finer than the base) tessellates only the faces the view frustum can see
+  // at the requested tolerance and keeps every other face at the coarse base
+  // level; the per-object triangle budget is split over the FINE faces only.
+  // The per-face level set is cached with the level (stash included), and a
+  // cached level is reused for as long as every face visible NOW is fine in it,
+  // so panning inside the guard band never rebuilds.
   void EnsureAdaptiveDisplay(double curve_tolerance, double surface_tolerance, double base_surface_tolerance = 0.0,
-                             bool adaptive = true) const;
+                             bool adaptive = true, const FaceVisibilityFn* face_visible = nullptr) const;
   // Read-only view of the multi-level cache for diagnostics (LodStats).
   struct AdaptiveLodInfo {
     std::size_t stashed_levels = 0;    // extra tessellation levels held besides the current one
     double surface_floor = 0.0;        // tolerance at which the triangle budget saturated (0 = never)
     std::size_t current_triangles = 0;
+    std::size_t fine_faces = 0;        // brep faces of the current level built at the fine tolerance (0 = whole-object build)
+    std::size_t total_faces = 0;       // brep face count (0 for non-brep)
   };
   AdaptiveLodInfo LodInfo() const;
   // Process-wide counters (monotonic) of what EnsureAdaptiveDisplay did:
@@ -330,6 +352,11 @@ class SceneObject {
   // avoided one, and budget clamps. For LodStats and tests.
   struct AdaptiveLodCounters { unsigned long long rebuilds = 0, stash_hits = 0, budget_clamps = 0; };
   static AdaptiveLodCounters LodCounters();
+  // Process-wide switch for face-level (region-limited) brep refinement; off = the previous
+  // whole-object refinement (AdaptiveTessellation FaceLevel Off|On), kept for A/B measurement.
+  static void SetFaceLevelRefinement(bool on);
+  static bool FaceLevelRefinement();
+  // Display-only triangle count of the viewport's current level, for tests.
   static void ResetLodCounters();
   // Per-object triangle budget for view-dependent refinement (only applies to
   // requests finer than the app-wide base tolerance).
@@ -352,14 +379,22 @@ class SceneObject {
   // const method can still be called on a non-const object.
   // Also drops the multi-level LOD stash and the discovered budget floor:
   // both describe the OLD geometry/settings.
-  void InvalidateDisplay() const { cache_.dirty = true; cache_.colors_valid = false; lod_stash_.clear(); lod_surface_floor_ = 0.0; base_bbox_valid_ = false; }
+  void InvalidateDisplay() const { cache_.dirty = true; cache_.colors_valid = false; other_cache_.dirty = true; other_cache_.colors_valid = false; lod_stash_.clear(); lod_surface_floor_ = 0.0; base_bbox_valid_ = false; face_boxes_.clear(); }
   // Dash pattern (dash, gap... in model units, already scaled) the display
   // polylines of a curve are split with; empty draws continuous. Set by the
   // viewport from Document::EffectiveDashes before EnsureDisplay; a change
   // invalidates the display cache.
   void SetDisplayDashes(const std::vector<double>& dashes) const;
   const std::vector<double>& DisplayDashes() const { return display_dashes_; }
+  // The display cache of the CURRENT level: the fixed base level (0.02/0.05 or whatever the
+  // first non-viewport EnsureDisplay caller asked for) for every command, export, pick and
+  // snap; the viewport's zoom-dependent level only between Viewport::DrawObjects'
+  // EnsureAdaptiveDisplay and the next EnsureDisplay. EnsureDisplay always makes the fixed level
+  // current again, so nothing outside the draw path can depend on the camera.
   const DisplayCache& Display() const { return cache_; }
+  // The viewport's zoom-dependent level as last installed by EnsureAdaptiveDisplay
+  // (diagnostics: LodSagitta). Same as Display() while that level is current.
+  const DisplayCache& ViewDisplay() const { return view_current_ ? cache_ : other_cache_; }
 
   // Fills Display().colors for a Curvature / DraftAngle analysis (no-op for
   // other modes: colors is cleared). Recomputes only when `settings` differ
@@ -377,6 +412,12 @@ class SceneObject {
 
  private:
   mutable DisplayCache cache_;
+  // The level that is NOT current: the fixed level while the viewport's is installed in cache_
+  // (view_current_), or the viewport's level while the fixed one is. EnsureDisplay and
+  // EnsureAdaptiveDisplay swap them as needed (O(1) moves), so the two never overwrite each other.
+  mutable DisplayCache other_cache_;
+  mutable bool view_current_ = false;
+  void BuildDisplay(double curve_tolerance, double surface_tolerance) const;
   // BoundingBox() of the fixed base tessellation (0.05 / 0.1), kept apart from
   // cache_ because the viewport swaps cache_ to zoom-dependent levels: a
   // measured bounding box must not change with the camera.
@@ -384,6 +425,9 @@ class SceneObject {
   mutable bool base_bbox_valid_ = false;
   mutable std::vector<DisplayCache> lod_stash_;  // other tessellation levels, least-recently-used first
   mutable double lod_surface_floor_ = 0.0;       // budget floor (see EnsureAdaptiveDisplay)
+  mutable std::vector<char> display_fine_faces_;                  // region build input (see EnsureAdaptiveDisplay); empty = whole object
+  mutable double display_coarse_tol_ = 0.0;                       // tolerance of the non-fine faces in a region build
+  mutable std::vector<kernel::BoundingBox> face_boxes_;           // per-face world bounds, lazily filled, cleared by InvalidateDisplay
   mutable int display_face_cap_ = kDefaultFaceTriangleCap;        // BrepMeshOptions::max_triangles_per_face for the next display build
   mutable std::vector<double> display_dashes_;
   void CopyFrom(const SceneObject& other);

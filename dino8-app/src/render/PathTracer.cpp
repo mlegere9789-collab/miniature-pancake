@@ -121,7 +121,7 @@ unsigned char ToByte(float linear) {
 // ---------------------------------------------------------------------------
 
 void PathTracer::Prepare(const Document& doc, const CameraState& camera, double aspect, double curve_tol,
-                         double surface_tol) {
+                         double surface_tol, const std::function<bool(const SceneObject&)>* include) {
   doc_ = &doc;
   camera_ = camera;
   aspect_ = aspect;
@@ -133,6 +133,7 @@ void PathTracer::Prepare(const Document& doc, const CameraState& camera, double 
   int object_index = 0;
   for (const SceneObject& o : doc.Objects()) {
     if (!doc.IsObjectVisible(o)) { ++object_index; continue; }
+    if (include && !(*include)(o)) { ++object_index; continue; }
     o.EnsureDisplay(curve_tol, surface_tol);
     const DisplayCache& d = o.Display();
     if (d.triangles.empty()) { ++object_index; continue; }

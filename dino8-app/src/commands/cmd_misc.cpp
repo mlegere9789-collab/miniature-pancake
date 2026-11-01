@@ -476,15 +476,10 @@ class SetObjectDisplayModeCommand : public Command {
     // One-letter / short forms the command always accepted, plus the new modes.
     static const std::map<std::string, std::string> alias = {
         {"w", "Wireframe"}, {"s", "Shaded"}, {"g", "Ghosted"}, {"x", "X-Ray"}, {"m", "Monochrome"},
-        {"p", "Pen"},      {"a", "Arctic"},  {"r", "Rendered"}, {"t", "Technical"}, {"art", "Artistic"}};
+        {"p", "Pen"},      {"a", "Arctic"},  {"r", "Rendered"}, {"t", "Technical"}, {"art", "Artistic"},
+        {"raytrace", "RayTraced"}, {"rt", "RayTraced"}};
     const auto al = alias.find(mode);
     const std::string name = al != alias.end() ? al->second : mode_word;
-    if (mode == "raytraced" || mode == "raytrace") {
-      ctx.Warn("SetObjectDisplayMode: RayTraced is a whole-frame path-traced image, not a per-object display mode - nothing changed. "
-               "Use Rendered for the per-object material/lighting path, or switch the viewport itself to RayTraced.");
-      Finish();
-      return;
-    }
     const std::string canonical = SceneObject::CanonicalDisplayOverrideName(name);
     if (canonical.empty()) {
       ctx.Warn("SetObjectDisplayMode: unknown mode '" + t + "' - nothing changed. Modes: " + JoinModeNames() + ".");
@@ -533,6 +528,8 @@ class SetObjectDisplayModeCommand : public Command {
       msg = who + "Technical (flat grey fill, dark technical line work), even in Wireframe or another viewport display mode.";
     else if (canonical == "Artistic")
       msg = who + "Artistic (flat grey fill, warm sketch line work), even in Wireframe or another viewport display mode.";
+    else if (canonical == "RayTraced")
+      msg = who + "RayTraced: path-traced by the GPU raytracer and depth-composited with the objects the viewport rasterizes (the traced frame carries no depth of its own; the rasterizer's depth of the same tessellation stands in for it), even in a Shaded/Wireframe viewport.";
     ctx.Print(msg + " Scope: " + scope + ".");
     Finish();
   }
