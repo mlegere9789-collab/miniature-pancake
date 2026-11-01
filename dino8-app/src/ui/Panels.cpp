@@ -1920,12 +1920,203 @@ int GrowStringTextCallback(ImGuiInputTextCallbackData* data) {
 }
 }  // namespace
 
+namespace {
+
+// A single-line text field over a std::string that reports a commit (the
+// field lost focus after an edit), so a macro's description/step/parameter
+// is written once per edit, not once per keystroke.
+bool MacroField(const char* id, std::string& value, float width = -1.0f) {
+  char buf[1024];
+  std::snprintf(buf, sizeof(buf), "%s", value.c_str());
+  ImGui::SetNextItemWidth(width);
+  ImGui::InputText(id, buf, sizeof(buf));
+  if (ImGui::IsItemDeactivatedAfterEdit()) { value = buf; return true; }
+  return false;
+}
+
+// The macro library half of the Macro Editor (macro objects: app/
+// MacroLibrary.h; commands: cmd_macros.cpp). Operations that exist as
+// commands (save, rename, duplicate, delete, bind, run, import, export, load)
+// go through Execute, exactly like the Record button, so the command-line
+// feedback and this panel never disagree; fields whose text can contain double
+// quotes (a step, a prompt) are written to the macro object directly, since
+// the command line's tokenizer cannot carry a literal quote.
+void DrawMacroLibrary(Application& app) {
+  MacroLibrary& lib = app.State().macro_lib;
+  static char save_name[128] = "";
+  static std::string selected;
+  static char rename_buf[128] = "";
+  static char bind_alias[64] = "";
+  static bool bind_toolbar = true;
+  static std::string new_step;
+  static std::map<std::string, std::string> run_values;
+
+  ImGui::TextDisabled("Macro library (%d)", static_cast<int>(lib.All().size()));
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Import...")) {
+    app.ShowFileDialog("Import macro library", {".json"}, false, [&app](const std::string& path) { app.Engine().Execute("ImportMacro \"" + path + "\""); });
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Export all...")) {
+    app.ShowFileDialog("Export macro library", {".json"}, true, [&app](const std::string& path) { app.Engine().Execute("ExportMacro * \"" + path + "\""); });
+  }
+  ImGui::SetNextItemWidth(160);
+  ImGui::InputText("##save_name", save_name, sizeof(save_name));
+  ImGui::SameLine();
+  if (ImGui::Button("Save buffer as macro") && save_name[0]) {
+    app.Engine().Execute("SaveMacro \"" + std::string(save_name) + "\"");
+    selected = save_name;
+  }
+
+  if (!lib.Find(selected)) selected.clear();
+  if (selected.empty() && !lib.Empty()) selected = lib.Names().front();
+
+  ImGui::BeginChild("##macro_list", ImVec2(170, 0), true);
+  for (const std::string& n : lib.Names()) {
+    if (ImGui::Selectable(n.c_str(), n == selected)) { selected = n; rename_buf[0] = 0; }
+  }
+  ImGui::EndChild();
+  ImGui::SameLine();
+  ImGui::BeginChild("##macro_detail", ImVec2(0, 0), true);
+  MacroObject* m = selected.empty() ? nullptr : lib.Find(selected);
+  if (!m) {
+    ImGui::TextDisabled("Record commands (Record), then name the buffer above and Save it as a macro.");
+  } else {
+    ImGui::PushID(m->name.c_str());
+    ImGui::Text("%s", m->name.c_str());
+    ImGui::TextDisabled("created  %s", FormatMacroTime(m->created_ms).c_str());
+    ImGui::TextDisabled("modified %s", FormatMacroTime(m->modified_ms).c_str());
+    bool commit = false;
+    ImGui::TextUnformatted("Description");
+    ImGui::SameLine();
+    if (MacroField("##desc", m->description)) commit = true;
+    std::string tags_text;
+    for (const std::string& t : m->tags) tags_text += (tags_text.empty() ? "" : ", ") + t;
+    ImGui::TextUnformatted("Tags       ");
+    ImGui::SameLine();
+    if (MacroField("##tags", tags_text)) {
+      m->tags.clear();
+      std::istringstream ts(tags_text);
+      std::string t;
+      while (std::getline(ts, t, ',')) {
+        while (!t.empty() && t.front() == ' ') t.erase(t.begin());
+        while (!t.empty() && t.back() == ' ') t.pop_back();
+        if (!t.empty()) m->tags.push_back(t);
+      }
+      commit = true;
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("Parameters: {name} in a step; default (blank = required, prompted for at run time) and prompt");
+    const std::vector<std::string> used = MacroPlaceholders(*m);
+    for (size_t i = 0; i < m->params.size(); ++i) {
+      MacroParam& p = m->params[i];
+      ImGui::PushID(static_cast<int>(i));
+      ImGui::Text("{%s}%s", p.name.c_str(), std::find(used.begin(), used.end(), p.name) == used.end() ? " (unused)" : "");
+      ImGui::SameLine(120);
+      if (MacroField("##def", p.default_value, 90)) { p.has_default = !p.default_value.empty(); commit = true; }
+      ImGui::SameLine();
+      if (MacroField("##prompt", p.prompt, 160)) commit = true;
+      ImGui::PopID();
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("Steps (%d)", static_cast<int>(m->steps.size()));
+    int erase_at = -1, insert_after = -1;
+    for (size_t i = 0; i < m->steps.size(); ++i) {
+      ImGui::PushID(1000 + static_cast<int>(i));
+      ImGui::Text("%2d", static_cast<int>(i + 1));
+      ImGui::SameLine();
+      if (MacroField("##step", m->steps[i], -60)) commit = true;
+      ImGui::SameLine();
+      if (ImGui::SmallButton("+")) insert_after = static_cast<int>(i);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Insert an empty step after this one");
+      ImGui::SameLine();
+      if (ImGui::SmallButton("x")) erase_at = static_cast<int>(i);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete this step");
+      ImGui::PopID();
+    }
+    if (erase_at >= 0) { m->steps.erase(m->steps.begin() + erase_at); commit = true; }
+    if (insert_after >= 0) { m->steps.insert(m->steps.begin() + insert_after + 1, "ZoomExtents"); commit = true; }
+    ImGui::TextUnformatted("Add step");
+    ImGui::SameLine();
+    if (MacroField("##newstep", new_step) && !new_step.empty()) { m->steps.push_back(new_step); new_step.clear(); commit = true; }
+    if (commit) {
+      // Steps with blank text are dropped; new {placeholders} become parameters.
+      m->steps.erase(std::remove_if(m->steps.begin(), m->steps.end(), [](const std::string& s) { return s.find_first_not_of(" \t") == std::string::npos; }), m->steps.end());
+      SyncMacroParams(*m);
+      MacroLibrary::Touch(*m);
+    }
+    ImGui::Separator();
+    // Run with arguments: one field per parameter, pre-filled from the default.
+    const std::vector<std::string> run_params = MacroPlaceholders(*m);
+    for (const std::string& pn : run_params) {
+      const MacroParam* decl = nullptr;
+      for (const MacroParam& q : m->params) if (q.name == pn) decl = &q;
+      std::string& v = run_values[m->name + "\n" + pn];
+      if (v.empty() && decl && decl->has_default) v = decl->default_value;
+      ImGui::Text("%s", pn.c_str());
+      ImGui::SameLine(120);
+      MacroField(("##run_" + pn).c_str(), v, 140);
+      if (v.empty() && !(decl && decl->has_default)) { ImGui::SameLine(); ImGui::TextDisabled("(required)"); }
+    }
+    const std::string name = m->name;  // Execute below may delete or rename `m`
+    if (ImGui::Button("Run")) {
+      std::string cmd = "RunMacro \"" + name + "\"";
+      for (const std::string& pn : run_params) {
+        std::string v = run_values[name + "\n" + pn];
+        for (size_t at = v.find('"'); at != std::string::npos; at = v.find('"', at + 2)) v.replace(at, 1, "\\q");
+        if (!v.empty()) cmd += " " + pn + "=\"" + v + "\"";
+      }
+      app.Engine().Execute(cmd);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Load into buffer")) app.Engine().Execute("MacroLoad \"" + name + "\"");
+    ImGui::SameLine();
+    if (ImGui::Button("Duplicate")) { app.Engine().Execute("DuplicateMacro \"" + name + "\" \"" + name + " copy\""); selected = name + " copy"; }
+    ImGui::SameLine();
+    if (ImGui::Button("Export...")) {
+      app.ShowFileDialog("Export macro", {".json"}, true, [&app, name](const std::string& path) { app.Engine().Execute("ExportMacro \"" + name + "\" \"" + path + "\""); });
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete")) { app.Engine().Execute("DeleteMacro \"" + name + "\""); selected.clear(); }
+    ImGui::SetNextItemWidth(130);
+    ImGui::InputText("##rename", rename_buf, sizeof(rename_buf));
+    ImGui::SameLine();
+    if (ImGui::Button("Rename") && rename_buf[0]) { app.Engine().Execute("RenameMacro \"" + name + "\" \"" + std::string(rename_buf) + "\""); selected = rename_buf; rename_buf[0] = 0; }
+    // Bindings are by NAME: the alias runs RunMacro "<name>", so edits and
+    // renames keep every button working.
+    const std::vector<std::string> bound = MacroBoundAliases(app, name);
+    ImGui::Text("Bound to:");
+    for (const std::string& a : bound) {
+      ImGui::SameLine();
+      ImGui::Text("%s", a.c_str());
+      ImGui::SameLine();
+      ImGui::PushID(a.c_str());
+      if (ImGui::SmallButton("unbind")) app.Engine().Execute("UnbindMacro \"" + a + "\"");
+      ImGui::PopID();
+    }
+    if (bound.empty()) { ImGui::SameLine(); ImGui::TextDisabled("(nothing)"); }
+    ImGui::SetNextItemWidth(130);
+    ImGui::InputText("##bind_alias", bind_alias, sizeof(bind_alias));
+    ImGui::SameLine();
+    ImGui::Checkbox("toolbar button", &bind_toolbar);
+    ImGui::SameLine();
+    if (ImGui::Button("Bind") && bind_alias[0]) {
+      app.Engine().Execute("BindMacro \"" + name + "\" \"" + std::string(bind_alias) + "\"" + (bind_toolbar ? " Toolbar=Yes" : ""));
+      bind_alias[0] = 0;
+    }
+    ImGui::PopID();
+  }
+  ImGui::EndChild();
+}
+
+}  // namespace
+
 void DrawMacroEditor(Application& app) {
-  ImGui::SetNextWindowSize(ImVec2(520, 360), ImGuiCond_Appearing);
+  ImGui::SetNextWindowSize(ImVec2(820, 800), ImGuiCond_Appearing);
   if (!ImGui::Begin(PanelTitle("panel.macro_editor", "MacroEditor").c_str(), &app.Panels().macro_editor)) { ImGui::End(); return; }
   std::string& text = app.State().macro_text;
   ImGui::TextDisabled("One command per line. ! cancels the running command, _ forces English names, - suppresses dialogs.");
-  ImGui::InputTextMultiline("##macro", text.data(), text.capacity() + 1, ImVec2(-1, -ImGui::GetFrameHeightWithSpacing() * 1.5f),
+  ImGui::InputTextMultiline("##macro", text.data(), text.capacity() + 1, ImVec2(-1, 70),
                             ImGuiInputTextFlags_CallbackResize, GrowStringTextCallback, &text);
   if (ImGui::Button("Run")) {
     std::istringstream in(text);
@@ -1944,35 +2135,8 @@ void DrawMacroEditor(Application& app) {
   if (recording) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.15f, 0.15f, 1));
   if (ImGui::Button(recording ? "Recording... (click to stop)" : "Record")) app.Engine().Execute(recording ? "RecordMacro Off" : "RecordMacro On");
   if (recording) ImGui::PopStyleColor();
-  // Named macro library (MacroSave/MacroLoad/MacroDelete/RunSavedMacro,
-  // cmd_misc.cpp): lets this one shared buffer stand in for any number of
-  // saved macros, each selectable by name, rather than overwriting the
-  // only copy every time. Goes through Execute (quoted, since a saved
-  // name may contain spaces) the same way the Record button above does,
-  // so command-line feedback and this panel never disagree.
-  static char name_buf[128] = "";
   ImGui::Separator();
-  ImGui::TextDisabled("Saved macros");
-  ImGui::InputText("##macro_name", name_buf, sizeof(name_buf));
-  ImGui::SameLine();
-  if (ImGui::Button("Save") && name_buf[0]) app.Engine().Execute("MacroSave \"" + std::string(name_buf) + "\"");
-  // Copied out up front: a Load/Run/Delete button clicked below calls
-  // Execute synchronously, which can erase from app.State().macros while
-  // this loop is still walking it - iterating a snapshot of the names
-  // instead of the live map keeps that safe.
-  std::vector<std::string> saved_names;
-  for (const auto& [saved_name, saved_text] : app.State().macros) saved_names.push_back(saved_name);
-  for (const std::string& saved_name : saved_names) {
-    ImGui::PushID(saved_name.c_str());
-    ImGui::BulletText("%s", saved_name.c_str());
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Load")) app.Engine().Execute("MacroLoad \"" + saved_name + "\"");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Run")) app.Engine().Execute("RunSavedMacro \"" + saved_name + "\"");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Delete")) app.Engine().Execute("MacroDelete \"" + saved_name + "\"");
-    ImGui::PopID();
-  }
+  DrawMacroLibrary(app);
   ImGui::End();
 }
 

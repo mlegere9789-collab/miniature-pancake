@@ -863,7 +863,10 @@ void RegisterStateCommands(CommandEngine& e) {
         Application& app = ctx.App();
         app.Snaps() = SnapSettings{};
         app.Panels() = PanelState{};
+        // The macro library is the user's own work, not a preference: keep it.
+        MacroLibrary keep_macros = std::move(app.State().macro_lib);
         app.State() = AppState{};
+        app.State().macro_lib = std::move(keep_macros);
         app.gumball_enabled = true;
         app.toolbar_commands.clear();
         app.curve_display_tolerance = 0.02;

@@ -294,6 +294,10 @@ std::vector<std::string> AllToolbarButtonCommands();
 // scriptable "ToolbarAddCommand" command (cmd_state.cpp) go through, so the
 // picker's effect can be exercised headlessly without a mouse.
 bool AddToolbarCommand(Application& app, const std::string& name);
+// Aliases whose target is RunMacro/RunSavedMacro "<macro_name>" (defined in
+// commands/cmd_macros.cpp): the macro's bindings, read live from the alias
+// table so the Macro Editor panel and ShowMacro can never disagree with it.
+std::vector<std::string> MacroBoundAliases(Application& app, const std::string& macro_name);
 // The canonical name to store in app.toolbar_commands for `name`: the
 // registered command's own catalog name, or the lowercased alias name if
 // `name` isn't a literal command but is a registered alias (Alias,

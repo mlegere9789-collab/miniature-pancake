@@ -161,6 +161,8 @@ class CommandEngine {
   std::string last_command_;
   bool command_failed_ = false;   // set by HandleCommandException / unknown command (for RunNested)
   int nested_depth_ = 0;
+  int deferred_depth_ = 0;       // RunDeferred recursion depth (a macro that runs itself must stop, not overflow the stack)
+  bool in_deferred_ = false;     // true while RunDeferred executes queued lines: those are command-started, not typed, so RecordMacro skips them
   std::optional<kernel::Point3d> last_point_;
   std::optional<kernel::Point3d> hover_point_;
   std::vector<float> preview_lines_;
