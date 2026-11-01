@@ -44,8 +44,9 @@ SelNone
 SelID 4
 Volume
 History
-# Move the root curve 5 in +X: the extrusion (hidden 2) and the boolean (4) are
-# stale until UpdateHistory runs.
+# Move the root curve 5 in +X: the extrusion (hidden 2) and the boolean (4)
+# follow AUTOMATICALLY (History is On: see history_auto_script.txt); the explicit
+# UpdateHistory below re-evaluates them again and must give the same answer.
 SelNone
 SelID 1
 Move
@@ -58,7 +59,7 @@ UpdateHistory
 SelNone
 SelID 4
 Volume
-# Undo reverts the whole rebuild (both objects); Redo re-applies it.
+# UpdateHistory had nothing left to change, so Undo/Redo of it is a no-op here.
 Undo
 @expect_objects 4
 SelNone

@@ -160,15 +160,32 @@ using HistoryInputs = std::vector<const SceneObject*>;
 using HistoryRebuildFn = std::function<std::optional<SceneObject>(CommandContext& ctx, const HistoryInputs& inputs,
                                                                    const HistoryRecord& rec, std::string& why)>;
 
+// One editable option of a recorded construction (EditHistory, cmd_history.cpp).
+// `name` is the user-facing key ("distance"), matched case-insensitively.
+// `choices` non-empty makes it a choice option (values matched
+// case-insensitively), otherwise it is a number. `get` renders the current
+// value from the record; `set` validates `value`, applies it to the record
+// (updating every derived num key) and returns "" or the reason it is invalid.
+struct HistoryParam {
+  std::string name;
+  std::string description;
+  std::string range;                 // shown for numbers, e.g. "non-zero (negative flips the side)"
+  std::vector<std::string> choices;
+  std::function<std::string(const HistoryRecord&)> get;
+  std::function<std::string(HistoryRecord&, const std::string&)> set;
+};
+
 struct HistoryRebuilder {
   std::string command;      // HistoryRecord::command
   std::string description;  // what it rebuilds, shown by History
   HistoryRebuildFn fn;
+  std::vector<HistoryParam> params;  // editable options (empty: the inputs are the source objects only)
 };
 
 // Idempotent per command name (the last registration wins), so every
 // CommandEngine's Register*Commands call can repeat it safely.
-void RegisterHistoryRebuilder(const std::string& command, const std::string& description, HistoryRebuildFn fn);
+void RegisterHistoryRebuilder(const std::string& command, const std::string& description, HistoryRebuildFn fn,
+                              std::vector<HistoryParam> params = {});
 const HistoryRebuilder* FindHistoryRebuilder(const std::string& command);
 // Every registered rebuilder, sorted by command name.
 std::vector<const HistoryRebuilder*> HistoryRebuilders();
@@ -230,5 +247,21 @@ std::optional<SceneObject> RebuildOffsetCurve(CommandContext& ctx, const kernel:
 // PlanarSrf (cmd_solids.cpp): trimmed plane bounded by one closed planar,
 // non-self-intersecting curve. Reads no num parameters.
 std::optional<SceneObject> RebuildPlanarSrf(CommandContext& ctx, const kernel::NurbsCurve& curve, const HistoryRecord& rec);
+
+
+// Automatic propagation (cmd_history.cpp): called by CommandEngine after every
+// finished command (`cause` is its name) and by Application::Frame (cause
+// "frame") for edits that never went through a command. While History is On
+// and the document has any recorded construction, it fingerprints the SOURCE
+// objects of the records, and when one differs from last time rebuilds every
+// dependent in dependency order inside the pending undo step of the edit (see
+// Document::JoinPendingChange), printing one summary line. Re-entrancy
+// guarded; a no-op when the document has no records. Undo/Redo only resync
+// the fingerprints: the dependents travel with the edit in the same undo step.
+void HistoryAutoUpdate(CommandContext& ctx, const std::string& cause);
+// Number of dependent rebuilds the automatic propagation has done / refused in
+// this session (shown by History).
+int HistoryAutoRebuilt();
+int HistoryAutoKept();
 
 }  // namespace dino8::app

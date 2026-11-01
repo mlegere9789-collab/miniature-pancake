@@ -1,4 +1,5 @@
 #include "commands/CommandEngine.h"
+#include "commands/history_rebuild.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -436,6 +437,14 @@ void CommandEngine::AfterCallback() {
   if (!active_) { RunDeferred(); return; }
   if (active_->finished) {
     if (app_.State().check_new_objects && active_name_ != "CheckNewObjects") CheckNewObjects();
+    // Construction history: a command that just edited a source object (Move,
+    // Rotate, Scale, point edits, Set*, Delete, ...) has its recorded
+    // dependents rebuilt now, inside the same undo step (cmd_history.cpp).
+    {
+      const std::string finished_name = active_name_;
+      CommandContext hctx(app_, doc_, *this);
+      HistoryAutoUpdate(hctx, finished_name);
+    }
     active_.reset();
     active_name_.clear();
     ClearPreview();

@@ -371,6 +371,7 @@ struct BooleanOutcome {
   bool ok = false;                 // false: nothing was computed (a warning was printed)
   std::optional<SceneObject> object;
   std::string how;                 // the printed summary, without the label
+  std::string declined;            // why the exact engines were declined (printed by the caller), empty if they were not
   std::vector<ObjectId> first, second;
   int layer = 0;
 };
@@ -421,7 +422,7 @@ BooleanOutcome ComputeBoolean(CommandContext& ctx, const std::vector<ObjectId>& 
         exact_result = std::move(g->brep);
         via_general = true;
       } else if (!why.empty()) {
-        ctx.Print(label + ": exact B-rep boolean declined (" + why + "); using the mesh boolean, so the result is a mesh");
+        out.declined = "exact B-rep boolean declined (" + why + "); using the mesh boolean, so the result is a mesh";
       }
     }
     if (exact_result) {
@@ -501,6 +502,7 @@ BooleanOutcome ComputeBoolean(CommandContext& ctx, const std::vector<ObjectId>& 
 void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::vector<ObjectId>& b, kernel::BooleanOp op,
                 bool two_sets, const std::string& label, bool swap_sides = false, bool try_exact_brep = false) {
   BooleanOutcome r = ComputeBoolean(ctx, a, b, op, two_sets, swap_sides, try_exact_brep);
+  if (!r.declined.empty()) ctx.Print(label + ": " + r.declined);
   if (!r.ok) return;
   ctx.Doc().BeginChange(label);
   std::vector<ObjectId> consumed = r.first;
@@ -1352,6 +1354,7 @@ std::optional<SceneObject> RebuildBoolean(CommandContext& ctx, const HistoryInpu
     second_ids.assign(ids.begin() + static_cast<long>(first), ids.end());
   }
   BooleanOutcome r = ComputeBoolean(ctx, first_ids, second_ids, op, !second_ids.empty(), /*swap_sides=*/false, /*try_exact_brep=*/true);
+  if (!r.declined.empty()) ctx.Print("UpdateHistory: boolean: " + r.declined);
   if (!r.ok) { why = "the operands' current shapes cannot be combined (not closed solids, or every boolean engine refused them)"; return std::nullopt; }
   if (!r.object) { why = "the boolean of the operands' current shapes is empty"; return std::nullopt; }
   return std::move(r.object);

@@ -1,0 +1,87 @@
+# Automatic history propagation, part 2 (cmd_history.cpp HistoryAutoUpdate):
+# the OTHER ways a source object is edited - Rotate, Mirror (in place), a
+# non-uniform Scale, a control-point removal - plus a 3-deep chain, a boolean
+# whose OPERAND is edited, and Undo/Redo consistency of the combined step.
+# No UpdateHistory anywhere. Every claim is a measured BoundingBox / Volume.
+SetActiveViewport Top
+History On
+
+# ===================================================================== R
+# R1: curve -> Extrude -> OffsetSrf (2-deep). Rotating the source square 45
+# degrees about its centre widens the offset solid's footprint from 12 to
+# 12*sqrt(2) = 16.97 (box -3.485..13.485); the volume is rotation-invariant.
+Rectangle 0,0,0 10,10,0
+SelNone
+SelID 1
+Extrude
+10
+SelNone
+SelID 2
+OffsetSrf
+1
+SelNone
+SelID 3
+BoundingBox
+Volume
+SelNone
+SelID 1
+Rotate 5,5,0 45
+SelNone
+SelID 3
+BoundingBox
+Volume
+Undo
+SelNone
+SelID 3
+BoundingBox
+Redo
+SelNone
+SelID 3
+BoundingBox
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== M
+# M1: Mirror with Copy=No edits the source IN PLACE: the square 0..10 lands on
+# 30..40 across the plane x = 20 and the extrusion follows.
+Rectangle 0,0,0 10,10,0
+SelNone
+SelID 4
+Extrude
+10
+SelNone
+SelID 4
+Mirror Copy=No 20,0,0 20,10,0
+SelNone
+SelID 5
+BoundingBox
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== S
+# S1: a NON-uniform scale (Scale1D along x) of the source of a 3-deep chain
+# curve -> Extrude -> OffsetSrf -> BooleanUnion with a fixed box.
+Rectangle 0,100,0 10,110,0
+SelNone
+SelID 6
+Extrude
+10
+SelNone
+SelID 7
+OffsetSrf
+1
+Box 50,100,0 60,110,0 10
+SelNone
+SelID 8
+SelID 9
+BooleanUnion
+SelNone
+SelID 11
+Volume
+SelNone
+SelID 6
+Scale1D 0,100,0 0,100,0 2
