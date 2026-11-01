@@ -203,7 +203,7 @@ Enter
 1
 SelLast
 List
-SelClosedMesh
+SelPolysrf
 @expect_selected 1
 Area
 BoundingBox
@@ -245,7 +245,7 @@ Enter
 1
 SelLast
 List
-SelClosedMesh
+SelPolysrf
 @expect_selected 1
 Area
 BoundingBox

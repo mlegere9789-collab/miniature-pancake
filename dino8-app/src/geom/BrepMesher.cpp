@@ -794,7 +794,8 @@ void DebugStats(const char* label, const kernel::Mesh& mesh) {
 }  // namespace
 
 namespace {
-kernel::Mesh MeshBrepClosedOnce(const ON_Brep& brep, const BrepMeshOptions& options);
+kernel::Mesh MeshBrepClosedOnce(const ON_Brep& brep, const BrepMeshOptions& options, double weld_fraction = 1e-8,
+                                const std::vector<kernel::Mesh>* precomputed_faces = nullptr);
 }
 
 kernel::Mesh MeshBrepClosed(const ON_Brep& brep, const BrepMeshOptions& options) {
@@ -809,18 +810,40 @@ kernel::Mesh MeshBrepClosed(const ON_Brep& brep, const BrepMeshOptions& options)
       m = MeshBrepClosedOnce(brep, finer);
     }
   }
+  // Last resort for a topologically closed brep (IsSolid) whose faces still do
+  // not weld watertight at the exact 1e-8 weld: a brep assembled from
+  // independently-trimmed faces - the General boolean engine's results, whose
+  // shared edges are dense polylines sampled by the surface/surface
+  // intersector to its 1e-3 refinement tolerance - has face-boundary vertices
+  // that agree only to about that much, so an exact weld leaves a few
+  // 1e-3-sized T-gaps even though the B-rep itself is a valid solid. Re-weld
+  // the SAME per-face meshes at an escalating, still tiny fraction of the
+  // object's size (0.01% .. 0.3%) and keep the first weld that is closed AND
+  // manifold; if none is, the unwelded result above is returned unchanged
+  // (so this can only turn a "not closed" outcome into a closed one, never
+  // alter a mesh that was already closed).
+  if (brep.IsSolid() && !m.IsClosedManifold()) {
+    const std::vector<kernel::Mesh> faces = MeshBrepFaces(brep, options);
+    if (!faces.empty()) {
+      for (double fraction : {1e-4, 3e-4, 1e-3, 3e-3}) {
+        kernel::Mesh welded = MeshBrepClosedOnce(brep, options, fraction, &faces);
+        if (welded.IsClosedManifold()) return welded;
+      }
+    }
+  }
   return m;
 }
 
 namespace {
-kernel::Mesh MeshBrepClosedOnce(const ON_Brep& brep, const BrepMeshOptions& options) {
-  std::vector<kernel::Mesh> faces = MeshBrepFaces(brep, options);
+kernel::Mesh MeshBrepClosedOnce(const ON_Brep& brep, const BrepMeshOptions& options, double weld_fraction,
+                                const std::vector<kernel::Mesh>* precomputed_faces) {
+  std::vector<kernel::Mesh> faces = precomputed_faces ? *precomputed_faces : MeshBrepFaces(brep, options);
   if (faces.empty()) return kernel::Mesh();
   for (size_t i = 0; i < faces.size(); ++i) DebugStats(("face " + std::to_string(i)).c_str(), faces[i]);
   ON_BoundingBox bb;
   brep.GetBoundingBox(bb);
   const double size = std::max(1e-9, bb.Diagonal().Length());
-  kernel::Mesh merged = kernel::Mesh::MergeAndWeld(faces, std::max(1e-12, size * 1e-8));
+  kernel::Mesh merged = kernel::Mesh::MergeAndWeld(faces, std::max(1e-12, size * weld_fraction));
   merged.raw().CullDegenerateFaces();
   // Welding a pole collapses fans of triangles; two of them can end up as
   // the same triangle (possibly with opposite winding). Keep one copy.

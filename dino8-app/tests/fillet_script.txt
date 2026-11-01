@@ -383,6 +383,9 @@ Continuity=G4
 SelLast
 List
 SelNone
+# (This case now passes Exact=No: a plain cylinder's rim has an exact quarter-torus
+# fillet by default - see solidsx_script.txt - and Exact=No keeps this old
+# approximate mesh fallback reachable and covered.)
 # --- FilletEdge on a solid cylinder's own flat-top rim (a full 360-degree
 # closed edge, one planar face + one cylindrical face) via the mesh
 # fallback: the exact B-rep trim only handles planar-planar adjacent
@@ -398,6 +401,7 @@ Hide
 Cylinder 650,0,0 5 20
 SelLast
 FilletEdge
+Exact=No
 Radius=1
 650,5,20
 Enter

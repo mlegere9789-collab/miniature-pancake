@@ -1,0 +1,529 @@
+# Exact curved-solid QC (see the "SX" section at the end of smoke.sh).
+#
+# Audits and closes the "Solid editing with B-rep results (booleans, fillet,
+# shell, offset)" bullet: every case below starts from `New` (so object ids
+# restart at 1: operands are 1 and 2, a Boolean result is 3) and is bracketed
+# by a marker line (an unknown command, "SXBEGIN_<name>") that smoke.sh uses to
+# slice this script's output into per-case blocks. Each case ends with List
+# (polysurface vs mesh, face/edge counts, closed solid), Volume and Area, so the
+# smoke checks read measured numbers against closed-form values.
+SetActiveViewport Top
+
+# ===================== Booleans of curved solids =====================
+# box 10x10x10 minus a through-hole cylinder (r 2, axis z through the middle):
+# exact volume 1000 - pi*2^2*10 = 874.34
+New
+SXBEGIN_B_box_minus_cyl
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+List
+Volume
+Area
+# blind hole (cylinder from z=5 to 15): 1000 - pi*4*5 = 937.17
+New
+SXBEGIN_B_box_minus_blind
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,5 2 10
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+List
+Volume
+# boss: cylinder r3 h5 standing on the top face: 1000 + pi*9*5 = 1141.37
+New
+SXBEGIN_B_box_plus_boss
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,10 3 5
+SelAll
+BooleanUnion
+SelAll
+List
+Volume
+# tube: cylinder r5 h10 minus a coaxial r2 h20 cylinder: pi*(25-4)*10 = 659.73
+New
+SXBEGIN_B_tube
+Cylinder 0,0,0 5 10
+Cylinder 0,0,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+List
+Volume
+# stacked cylinders r3 h10 + r2 h10 starting at z=5: pi*9*10 + pi*4*5 = 345.58
+New
+SXBEGIN_B_cyl_stack
+Cylinder 0,0,0 3 10
+Cylinder 0,0,5 2 10
+SelAll
+BooleanUnion
+SelAll
+List
+Volume
+# dome cut: cylinder r5 h10 minus the sphere r4 centred on its top face:
+# 250*pi - 2/3*pi*64 = 651.36
+New
+SXBEGIN_B_cyl_minus_sphere
+Cylinder 0,0,0 5 10
+Sphere 0,0,10 4
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+List
+Volume
+# chain: two successive holes. The first result (id 3) must be a closed solid so
+# the second Boolean can take it as an operand: 1000 - 2*pi*1.5^2*10 = 858.62
+New
+SXBEGIN_B_chain
+Box 0,0,0 10,10,0 10
+Cylinder 3,5,-5 1.5 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+Cylinder 7,5,-5 1.5 20
+SelNone
+SelID 3
+BooleanDifference
+SelID 4
+Enter
+SelAll
+List
+Volume
+# the same two holes cut in ONE Boolean (both cylinders selected as the cutter set):
+# the engine folds them in a single pass and the result is an exact closed solid
+New
+SXBEGIN_B_two_holes_at_once
+Box 0,0,0 10,10,0 10
+Cylinder 3,5,-5 1.5 20
+Cylinder 7,5,-5 1.5 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+SelID 3
+Enter
+SelAll
+List
+Volume
+# sphere + box: the engine's result does not tessellate to a closed mesh through
+# the sphere's pole, so it is declined WITH its reason and the mesh boolean is
+# used (a closed mesh, volume 1000 + 2/3*pi*64 = 1134.04)
+New
+SXBEGIN_B_sphere_plus_box
+Box 0,0,0 10,10,0 10
+Sphere 5,5,10 4
+SelAll
+BooleanUnion
+SelAll
+List
+Volume
+# scale checks: the same hole at 100x and at 1/10 size (the engine's 0.001 refinement tolerance is absolute)
+New
+SXBEGIN_B_scale_large
+Box 0,0,0 1000,1000,0 1000
+Cylinder 500,500,-500 200 2000
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+List
+Volume
+New
+SXBEGIN_B_scale_small
+Box 0,0,0 1,1,0 1
+Cylinder 0.5,0.5,-0.5 0.2 2
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+List
+Volume
+New
+SXBEGIN_B_far_from_origin
+Box 100000,100000,0 100010,100010,0 10
+Cylinder 100005,100005,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+List
+Volume
+# old behaviour stays reachable: the MeshBoolean* alias always returns a mesh
+New
+SXBEGIN_B_meshalias
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+MeshBooleanDifference
+SelID 2
+Enter
+SelAll
+List
+Volume
+# off-axis cylinder union: the engine refuses it (non-manifold result), reason printed, mesh used
+New
+SXBEGIN_B_cyl_offaxis
+Cylinder 0,0,0 3 10
+Cylinder 4,0,2 3 10
+SelAll
+BooleanUnion
+SelAll
+List
+Volume
+# a following Shell on the Boolean result: it is now a closed solid, so Shell
+# no longer reports "not a closed solid; skipped"
+New
+SXBEGIN_B_then_shell
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Shell
+Enter
+0.5
+SelAll
+List
+Volume
+
+# ===================== Shell =====================
+# control: closed box shell, 1000 - 8^3 = 488
+New
+SXBEGIN_S_box_closed
+Box 0,0,0 10,10,0 10
+SelAll
+Shell
+Enter
+1
+SelAll
+List
+Volume
+# box with the top face removed: 1000 - 8*8*9 = 424, exact B-rep (was a mesh)
+New
+SXBEGIN_S_box_open
+Box 0,0,0 10,10,0 10
+SelAll
+Shell
+5,5,10
+Enter
+1
+SelAll
+List
+Volume
+Area
+# per-face thickness: top wall 3, others 1: 1000 - 8*8*6 = 616, exact B-rep
+New
+SXBEGIN_S_box_perface
+Box 0,0,0 10,10,0 10
+SelAll
+Shell
+Mode=Thickness
+5,5,10
+3
+Enter
+1
+SelAll
+List
+Volume
+# old behaviour reachable: Exact=No gives the mesh construction
+New
+SXBEGIN_S_box_exactno
+Box 0,0,0 10,10,0 10
+SelAll
+Shell
+Exact=No
+Enter
+1
+SelAll
+List
+Volume
+# whole sphere: 4/3*pi*(125-64) = 255.5 (concentric reversed inner sphere)
+New
+SXBEGIN_S_sphere
+Sphere 0,0,0 5
+SelAll
+Shell
+Enter
+1
+SelAll
+List
+Volume
+# whole torus: 2*pi^2*10*(9-4) = 986.96
+New
+SXBEGIN_S_torus
+Torus 0,0,0 10 3
+SelAll
+Shell
+Enter
+1
+SelAll
+List
+Volume
+# plain cylinder, closed hollow: pi*(25*10 - 16*8) = 383.27
+New
+SXBEGIN_S_cyl_closed
+Cylinder 0,0,0 5 10
+SelAll
+Shell
+Enter
+1
+SelAll
+List
+Volume
+# plain cylinder, top cap removed = a cup: pi*(25*10 - 16*9) = 333.01
+New
+SXBEGIN_S_cyl_open
+Cylinder 0,0,0 5 10
+SelAll
+Shell
+0,0,10
+Enter
+1
+SelAll
+List
+Volume
+Area
+# plain cylinder, bottom cap removed
+New
+SXBEGIN_S_cyl_open_bottom
+Cylinder 0,0,0 5 10
+SelAll
+Shell
+0,0,0
+Enter
+1
+SelAll
+List
+Volume
+# non-convex L-shaped extrusion: no exact kernel shell -> mesh, reason printed
+New
+SXBEGIN_S_L_nonconvex
+Polyline 0,0,0 20,0,0 20,10,0 10,10,0 10,20,0 0,20,0 0,0,0
+Enter
+SelLast
+ExtrudeCrv 8
+SelPolysrf
+Shell
+Enter
+1
+SelAll
+List
+
+# ===================== OffsetSrf =====================
+# sphere r5 grown by 1: exact sphere r6, 4/3*pi*216 = 904.78
+New
+SXBEGIN_O_sphere
+Sphere 0,0,0 5
+SelLast
+OffsetSrf
+1
+SelLast
+List
+Volume
+# torus tube 3 grown by 1: 2*pi^2*10*16 = 3158.27
+New
+SXBEGIN_O_torus
+Torus 0,0,0 10 3
+SelLast
+OffsetSrf
+1
+SelLast
+List
+Volume
+# plain cylinder r5 h10 grown by 1: pi*36*12 = 1357.17
+New
+SXBEGIN_O_cyl
+Cylinder 0,0,0 5 10
+SelLast
+OffsetSrf
+1
+SelLast
+List
+Volume
+# box Solid=Yes grown by 1: the 1-thick hollow wall = 12^3 - 10^3 = 728
+New
+SXBEGIN_O_box_solid
+Box 0,0,0 10,10,0 10
+SelLast
+OffsetSrf
+Solid=Yes
+1
+SelLast
+List
+Volume
+# sphere Solid=Yes: 4/3*pi*(216-125) = 381.2
+New
+SXBEGIN_O_sphere_solid
+Sphere 0,0,0 5
+SelLast
+OffsetSrf
+Solid=Yes
+1
+SelLast
+List
+Volume
+# old behaviour reachable: Exact=No
+New
+SXBEGIN_O_sphere_exactno
+Sphere 0,0,0 5
+SelLast
+OffsetSrf
+Exact=No
+1
+SelLast
+List
+# non-convex L extrusion: no exact offset -> mesh, reason printed
+New
+SXBEGIN_O_L_nonconvex
+Polyline 0,0,0 20,0,0 20,10,0 10,10,0 10,20,0 0,20,0 0,0,0
+Enter
+SelLast
+ExtrudeCrv 8
+SelPolysrf
+OffsetSrf
+1
+SelLast
+List
+
+# ===================== Pipe on a closed rail =====================
+# circle r10, pipe r1: exact torus, 2*pi^2*10*1 = 197.39 (was a 1152-triangle mesh)
+New
+SXBEGIN_P_closed
+Circle 0,0,0 10
+SelLast
+Pipe
+Enter
+SelLast
+List
+Volume
+New
+SXBEGIN_P_closed_r2
+Circle 0,0,0 10
+SelLast
+Pipe
+2
+SelLast
+List
+Volume
+
+# ===================== Fillet of a cylinder rim =====================
+# plain cylinder r5 h20, top rim radius 1: 25*pi*20 - removed = 1564.36 exactly
+# (Pappus), assembled from an exact quarter torus (was a mesh with volume 1594)
+New
+SXBEGIN_F_cyl_top
+Cylinder 0,0,0 5 20
+SelLast
+FilletEdge
+Radius=1
+0,5,20
+Enter
+SelAll
+List
+Volume
+# both rims in one run (top radius 1, bottom radius 2): 1539.80
+New
+SXBEGIN_F_cyl_both
+Cylinder 0,0,0 5 20
+SelLast
+FilletEdge
+Radius=1
+0,5,20
+Radius=2
+0,5,0
+Enter
+SelAll
+List
+Volume
+# bottom rim only
+New
+SXBEGIN_F_cyl_bottom
+Cylinder 0,0,0 5 20
+SelLast
+FilletEdge
+Radius=2
+0,5,0
+Enter
+SelAll
+List
+Volume
+# old behaviour reachable: Exact=No (the approximate mesh fillet)
+New
+SXBEGIN_F_cyl_exactno
+Cylinder 0,0,0 5 20
+SelLast
+FilletEdge
+Exact=No
+Radius=1
+0,5,20
+Enter
+SelAll
+List
+Volume
+# a radius larger than the cylinder: refused exact, reason printed
+New
+SXBEGIN_F_cyl_toobig
+Cylinder 0,0,0 5 20
+SelLast
+FilletEdge
+Radius=6
+0,5,20
+Enter
+SelAll
+List
+# control: box edge (planar-planar) is still the kernel's exact fillet
+New
+SXBEGIN_F_box_control
+Box 0,0,0 10,10,0 10
+FilletEdge
+Radius=2
+10,10,5
+Enter
+SelAll
+List
+Volume
+# a box edge on a solid that also has a cylindrical hole (Boolean result): the
+# solid is now closed, so the approximate fillet can run on it
+New
+SXBEGIN_F_box_hole_edge
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=1
+10,10,5
+Enter
+SelAll
+List
+Volume
+New
+SXEND
