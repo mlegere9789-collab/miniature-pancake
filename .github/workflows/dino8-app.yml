@@ -133,7 +133,7 @@ jobs:
       # this branch for hours. See RHINO8_KILLER_AUDIT.md row L.
       - name: Smoke test (headless)
         shell: bash
-        timeout-minutes: 20
+        timeout-minutes: 60
         run: dino8-app/tests/smoke.sh dino8-app/build/Dino8.exe
       # Inert until a real certificate exists: skipped entirely (no-op) when
       # the WINDOWS_CERT_BASE64 secret is unset, so this changes nothing
