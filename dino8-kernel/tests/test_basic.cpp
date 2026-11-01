@@ -66292,31 +66292,37 @@ void TestFilletConvexEdgeConicRejectsInvalidInput() {
                "rejects a distance_i too large to fit within face i's own extent");
 
   // A closed box's own end faces are PERPENDICULAR to the edge, which this
-  // function now closes (see TestFilletConvexEdgeConicClosesCornerNotchOnUnitCube)
-  // - so the still-out-of-scope case is an OBLIQUE third face. The
-  // oblique-ended hexahedron FilletConvexEdge's own oblique tests use has
-  // a perpendicular x = 0 face at edge_p0 = (0,0,1) but an oblique end face
-  // (x = 1 + slope*y) at edge_p1 = (1,0,1): that one oblique end alone must
-  // still be refused, with a message that names the real reason.
+  // function closes (see TestFilletConvexEdgeConicClosesCornerNotchOnUnitCube),
+  // and an OBLIQUE end face is now closed too (the profile projected along
+  // the edge onto the oblique plane; see
+  // TestFilletConvexEdgeConicObliqueEndExactVolumeG1AndTopology for the full
+  // verification). The oblique-ended hexahedron FilletConvexEdge's own
+  // oblique tests use has a perpendicular x = 0 face at edge_p0 = (0,0,1)
+  // and an oblique end face (x = 1 + slope*y) at edge_p1 = (1,0,1): this
+  // used to be refused ("OBLIQUE third face ... out of scope"); it must now
+  // build a closed solid, whichever endpoint the oblique face is at.
   const Brep hex = FilletObliqueTestHexahedron(0.3);
-  std::string oblique_message;
   bool oblique_threw = false;
+  Brep oblique_blend;
   try {
-    FilletConvexEdgeConic(hex, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.2, 0.2, 0.5);
-  } catch (const std::invalid_argument& ex) {
+    oblique_blend = FilletConvexEdgeConic(hex, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.2, 0.2, 0.5);
+  } catch (const std::invalid_argument&) {
     oblique_threw = true;
-    oblique_message = ex.what();
   }
-  Check(oblique_threw,
-        "rejects an edge with an OBLIQUE third face at an endpoint (oblique end-condition splicing is still out "
-        "of scope), even though the other endpoint's third face is perpendicular and would be handled");
-  Check(oblique_message.find("OBLIQUE third face") != std::string::npos,
-        "the oblique-end rejection's own message names the actual reason (an oblique third face), not a generic "
-        "'any third face' refusal");
+  Check(!oblique_threw, "accepts an edge with an OBLIQUE third face at an endpoint (no longer out of scope)");
+  Check(!oblique_threw && oblique_blend.raw().IsSolid() && oblique_blend.FaceCount() == 7,
+        "and the result is a closed 7-face solid (the oblique end's own conic cap is sewn to the wall)");
   // Same fixture, reversed edge direction: the oblique face is now at
-  // edge_p0 instead - still refused.
-  expect_throw([&] { FilletConvexEdgeConic(hex, Point3d(1, 0, 1), Point3d(0, 0, 1), 0.2, 0.2, 0.5); },
-               "rejects the oblique third face at edge_p0 too (the check is per endpoint, not only at edge_p1)");
+  // edge_p0 instead - also accepted.
+  bool reversed_threw = false;
+  Brep reversed_blend;
+  try {
+    reversed_blend = FilletConvexEdgeConic(hex, Point3d(1, 0, 1), Point3d(0, 0, 1), 0.2, 0.2, 0.5);
+  } catch (const std::invalid_argument&) {
+    reversed_threw = true;
+  }
+  Check(!reversed_threw && reversed_blend.raw().IsSolid(),
+        "accepts the oblique third face at edge_p0 too (the check is per endpoint, not only at edge_p1)");
 }
 
 // FilletConvexEdgeConic's perpendicular third-face end condition: a full
@@ -90228,6 +90234,469 @@ void TestShellClosedExtrusionArgumentChecks() {
 }  // namespace shell_closed_tests
 
 
+// ---------------------------------------------------------------------------
+// FilletConvexEdgeConic / FilletConcaveEdgeConic / FilletConvexEdgesConic:
+// OBLIQUE third face at an edge endpoint (fillet.h, "A third face that is
+// OBLIQUE to the edge"). The conic wall is a pure translational sweep, so
+// the curve it cuts from an oblique end plane is the profile projected
+// along the edge onto that plane - again an exact rational quadratic with
+// the same weights - and the wall becomes the exact ruled surface between
+// the two end curves. Everything below is checked against independently
+// written formulas, not against the kernel's own helpers.
+
+namespace conic_oblique_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+
+// A "sheared box": the unit square cross-section (y, z in [0, 1]) extruded
+// along x between a START plane x = b0*y + c0*z and an END plane
+// x = 1 + b1*y + c1*z. All six faces are planar (an affine plane through
+// the four cross-section corners), so b0/c0 tilt the start face and b1/c1
+// the end face, in either sense. Volume = 1 + (beta + gamma)/2 with
+// beta = b1 - b0, gamma = c1 - c0. `y_max` < 1 narrows the END face's y
+// extent to [0, y_max] (a tapered box: the back face is then oblique in
+// plan, the top face a trapezoid) - used for the overrun controls.
+struct Sheared {
+  double b0, c0, b1, c1, y_max;
+  double X0(double y, double z) const { return b0 * y + c0 * z; }
+  double X1(double y, double z) const { return 1.0 + b1 * y + c1 * z; }
+};
+
+Brep BuildSheared(const Sheared& s, double x_shift = 0.0) {
+  auto P0 = [&](double y, double z) { return Point3d(s.X0(y, z) + x_shift, y, z); };
+  auto P1 = [&](double y, double z) { return Point3d(s.X1(y, z) + x_shift, y, z); };
+  const double ym = s.y_max;
+  const Point3d A = P0(0, 0), B = P0(1, 0), C = P0(1, 1), D = P0(0, 1);
+  const Point3d A1 = P1(0, 0), B1 = P1(ym, 0), C1 = P1(ym, 1), D1 = P1(0, 1);
+  return Brep::FromPlanarFaces({
+      ChamferTestPlanarFace({A, D, C, B}),      // start face
+      ChamferTestPlanarFace({A1, B1, C1, D1}),  // end face
+      ChamferTestPlanarFace({A, A1, D1, D}),    // y = 0 (front)
+      ChamferTestPlanarFace({B, C, C1, B1}),    // back
+      ChamferTestPlanarFace({A, B, B1, A1}),    // z = 0
+      ChamferTestPlanarFace({D, D1, C1, C}),    // z = 1 (top)
+  });
+}
+
+double ShearedVolume(const Sheared& s) {
+  // Untapered only: int_0^1 int_0^1 (X1 - X0) dy dz.
+  return 1.0 + ((s.b1 - s.b0) + (s.c1 - s.c0)) / 2.0;
+}
+
+bool ClosedSolid(const Brep& b) {
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  return b.raw().IsValid(&log) && b.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+         b.raw().IsSolid();
+}
+
+// Cross-section integrals of the conic removal region R bounded by the
+// two legs O->P_a (along axis a, length d_a), P_b->O (along axis b, length
+// d_b) and the rational quadratic arc a(t) = (1-t)^2 d_a / D(t),
+// b(t) = t^2 d_b / D(t), D = (1-t)^2 + 2 w t (1-t) + t^2, w = rho/(1-rho):
+//   A = 1/2 int (a b' - b a') dt, M_a = int_R a dA = 1/2 int a^2 b' dt,
+//   M_b = int_R b dA = -1/2 int b^2 a' dt
+// (Green's theorem; both legs lie on an axis through O so they contribute
+// nothing). Composite Simpson, n = 20000.
+struct ConicMoments {
+  double A = 0.0, Ma = 0.0, Mb = 0.0;
+};
+
+ConicMoments ConicRegionMoments(double d_a, double d_b, double rho) {
+  const double w = rho / (1.0 - rho);
+  const int n = 20000;
+  ConicMoments m;
+  for (int k = 0; k <= n; ++k) {
+    const double t = static_cast<double>(k) / n;
+    const double omt = 1.0 - t;
+    const double D = omt * omt + 2.0 * w * t * omt + t * t;
+    const double dD = -2.0 * omt + 2.0 * w * (1.0 - 2.0 * t) + 2.0 * t;
+    const double Na = omt * omt * d_a, Nb = t * t * d_b;
+    const double dNa = -2.0 * omt * d_a, dNb = 2.0 * t * d_b;
+    const double a = Na / D, b = Nb / D;
+    const double da = (dNa * D - Na * dD) / (D * D), db = (dNb * D - Nb * dD) / (D * D);
+    const double weight = ((k == 0 || k == n) ? 1.0 : (k % 2 ? 4.0 : 2.0)) / (3.0 * n);
+    m.A += 0.5 * (a * db - b * da) * weight;
+    m.Ma += 0.5 * a * a * db * weight;
+    m.Mb += -0.5 * b * b * da * weight;
+  }
+  return m;
+}
+
+// The id of the (single) non-planar face: the conic wall.
+int WallFaceIndex(const Brep& b) {
+  int found = -1;
+  for (int f = 0; f < b.raw().m_F.Count(); ++f) {
+    ON_Plane p;
+    if (!b.raw().m_F[f].SurfaceOf()->IsPlanar(&p, 1e-9)) {
+      if (found >= 0) return -2;
+      found = f;
+    }
+  }
+  return found;
+}
+
+// Which role the top face (z = 1) plays: face i if the result carries the
+// rail vertex at distance_i along the top at the start end.
+bool TopIsFaceI(const Brep& r, const Sheared& s, double di, double dj) {
+  const Point3d top_i(s.X0(di, 1.0), di, 1.0);
+  const Point3d top_j(s.X0(dj, 1.0), dj, 1.0);
+  const bool a = ChamferTestBrepHasVertexNear(r, top_i, 1e-9);
+  const bool b = ChamferTestBrepHasVertexNear(r, top_j, 1e-9);
+  // di != dj in every use, so exactly one matches.
+  return a && !b;
+}
+
+}  // namespace conic_oblique_tests
+
+// One obliquely-ended conic edge blend, fully verified: closed solid,
+// topology counts, original corner vertices gone, the oblique crossing
+// vertices at their hand-derived coordinates, and the removed volume
+// against the independent Green's-theorem closed form. Returns the blend.
+dino8::kernel::Brep ConicObliqueCheckOne(const conic_oblique_tests::Sheared& s, bool reversed, double da, double db,
+                                         double rho, const char* label) {
+  using namespace conic_oblique_tests;
+  using dino8::kernel::FilletConvexEdgeConic;
+  const std::string L(label);
+  const Brep fixture = BuildSheared(s);
+  Check(ClosedSolid(fixture) && std::fabs(fixture.TessellateToClosedMesh(8, 8).Volume() - ShearedVolume(s)) < 1e-6,
+        (L + ": sanity - the sheared fixture is a closed solid of volume 1 + (beta+gamma)/2").c_str());
+  Point3d p0(s.X0(0, 1), 0, 1), p1(s.X1(0, 1), 0, 1);
+  if (reversed) std::swap(p0, p1);
+  Brep r;
+  bool threw = false;
+  try {
+    r = FilletConvexEdgeConic(fixture, p0, p1, da, db, rho);
+  } catch (const std::exception& ex) {
+    threw = true;
+    std::fprintf(stderr, "unexpected throw in %s: %s\n", label, ex.what());
+  }
+  Check(!threw, (L + ": an obliquely-ended conic blend is accepted").c_str());
+  if (threw) return r;
+  Check(ClosedSolid(r), (L + ": result is a valid, oriented, CLOSED 2-manifold solid").c_str());
+  const Brep::CheckReport rep = r.Check();
+  Check(rep.is_closed && rep.is_oriented && rep.issues.empty(),
+        (L + ": Brep::Check() closed, oriented and issue-free").c_str());
+  Check(r.FaceCount() == 7 && r.raw().m_E.Count() == 15 && r.raw().m_V.Count() == 10,
+        (L + ": topology 7 faces / 15 edges / 10 vertices (Euler V-E+F = 2)").c_str());
+  Check(!ChamferTestBrepHasVertexNear(r, Point3d(s.X0(0, 1), 0, 1), 1e-9) &&
+            !ChamferTestBrepHasVertexNear(r, Point3d(s.X1(0, 1), 0, 1), 1e-9),
+        (L + ": both original sharp edge-end vertices are gone").c_str());
+
+  // Which of top (z=1) / front (y=0) is face i depends on edge direction.
+  const bool top_i = TopIsFaceI(r, s, da, db);
+  const double d_top = top_i ? da : db, d_front = top_i ? db : da;
+  // Hand-derived end-curve endpoints: the rail on the top face, distance
+  // d_top from the edge (y = d_top, z = 1), meets each end plane at
+  // x = X(d_top, 1); the front-face rail (y = 0, z = 1 - d_front) at
+  // x = X(0, 1 - d_front).
+  Check(ChamferTestBrepHasVertexNear(r, Point3d(s.X0(d_top, 1.0), d_top, 1.0), 1e-9) &&
+            ChamferTestBrepHasVertexNear(r, Point3d(s.X1(d_top, 1.0), d_top, 1.0), 1e-9) &&
+            ChamferTestBrepHasVertexNear(r, Point3d(s.X0(0.0, 1.0 - d_front), 0.0, 1.0 - d_front), 1e-9) &&
+            ChamferTestBrepHasVertexNear(r, Point3d(s.X1(0.0, 1.0 - d_front), 0.0, 1.0 - d_front), 1e-9),
+        (L + ": the four rail/end-plane crossing vertices sit at their hand-derived coordinates").c_str());
+
+  // Removed volume = int_R L(y,z) dA, L = X1 - X0 = (1+gamma) + beta*y - gamma*b'
+  // with y = a (distance along the top face's rail axis) and b' = 1 - z
+  // (distance along the front face's), so axis "a" is whichever of
+  // d_top / d_front pairs with y.
+  const double beta = s.b1 - s.b0, gamma = s.c1 - s.c0;
+  const ConicMoments m = top_i ? ConicRegionMoments(d_top, d_front, rho) : ConicRegionMoments(d_front, d_top, rho);
+  // top_i: a-axis is the top rail (y direction), b-axis the front (b').
+  // !top_i: the arc runs front -> top, so a-axis is the front (b') and
+  // b-axis the top (y): swap the moments' roles.
+  const double M_y = top_i ? m.Ma : m.Mb, M_bp = top_i ? m.Mb : m.Ma;
+  const double removed = (1.0 + gamma) * m.A + beta * M_y - gamma * M_bp;
+  const double expected = ShearedVolume(s) - removed;
+  const double measured = r.TessellateToClosedMeshAdaptive(1e-7).Volume();
+  Check(std::fabs(measured - expected) < 2e-6,
+        (L + ": tessellated volume matches the independent closed form V - [(1+gamma)A + beta*M_y - gamma*M_b'] "
+             "to within 2e-6")
+            .c_str());
+  return r;
+}
+
+// Wall exactness and G1: sampled on the wall's own surface, against
+// independently written formulas.
+void ConicObliqueCheckWall(const dino8::kernel::Brep& r, const conic_oblique_tests::Sheared& s, bool reversed,
+                           double da, double db, double rho, const char* label) {
+  using namespace conic_oblique_tests;
+  const std::string L(label);
+  const int wf = WallFaceIndex(r);
+  Check(wf >= 0, (L + ": exactly one non-planar face (the conic wall)").c_str());
+  if (wf < 0) return;
+  const ON_Surface* surf = r.raw().m_F[wf].SurfaceOf();
+  const ON_Interval du = surf->Domain(0), dv = surf->Domain(1);
+  const bool top_i = TopIsFaceI(r, s, da, db);
+  const double d_top = top_i ? da : db, d_front = top_i ? db : da;
+  const double w = rho / (1.0 - rho);
+  // Independent conic in the (y, z) cross-section: control polygon
+  // top-rail point T=(d_top, 1), corner O=(0, 1), front-rail point
+  // F=(0, 1-d_front), weight w on O. Profile runs face i -> face j.
+  const double ty = d_top, tz = 1.0, oy = 0.0, oz = 1.0, fy = 0.0, fz = 1.0 - d_front;
+  auto conic_yz = [&](double t, double& y, double& z) {
+    const double b0 = (1 - t) * (1 - t), b1 = 2 * w * t * (1 - t), b2 = t * t, D = b0 + b1 + b2;
+    // top_i: the profile starts on top; otherwise it starts on the front.
+    const double sy = top_i ? ty : fy, sz = top_i ? tz : fz, ey = top_i ? fy : ty, ez = top_i ? fz : tz;
+    y = (b0 * sy + b1 * oy + b2 * ey) / D;
+    z = (b0 * sz + b1 * oz + b2 * ez) / D;
+  };
+  double worst_yz = 0.0, worst_x = 0.0, worst_g1 = 0.0, worst_plane = 0.0;
+  for (int iu = 0; iu <= 24; ++iu) {
+    const double t = iu / 24.0;
+    const double u = du.ParameterAt(t);
+    double cy = 0, cz = 0;
+    conic_yz(t, cy, cz);
+    for (int iv = 0; iv <= 8; ++iv) {
+      const double vv = iv / 8.0;
+      const ON_3dPoint P = surf->PointAt(u, dv.ParameterAt(vv));
+      worst_yz = std::max(worst_yz, std::hypot(P.y - cy, P.z - cz));
+      const double x0 = s.X0(cy, cz), x1 = s.X1(cy, cz);
+      const double xa = reversed ? x1 : x0, xb = reversed ? x0 : x1;  // v = 0 is the p0 end
+      worst_x = std::max(worst_x, std::fabs(P.x - ((1.0 - vv) * xa + vv * xb)));
+    }
+  }
+  Check(worst_yz < 1e-12,
+        (L + ": the wall's (y, z) equals the independently-written conic at every (u, v) sample - an exact "
+             "translational surface, not a fit")
+            .c_str());
+  Check(worst_x < 1e-12,
+        (L + ": the wall's x is exactly the ruled interpolation between the start-plane and end-plane stations "
+             "(x = (1-v) X0 + v X1 at that (y, z))")
+            .c_str());
+  // G1 along both rails: the wall normal is parallel to face i's normal on
+  // the u = 0 rail and face j's on u = 1, at every v (including the
+  // oblique-end station), and the rail points lie ON the adjoining plane.
+  const Vector3d n_top(0, 0, 1), n_front(0, -1, 0);
+  const Vector3d n_u0 = top_i ? n_top : n_front, n_u1 = top_i ? n_front : n_top;
+  for (int iv = 0; iv <= 10; ++iv) {
+    const double v = dv.ParameterAt(iv / 10.0);
+    for (int side = 0; side < 2; ++side) {
+      const double u = side == 0 ? du.Min() : du.Max();
+      ON_3dPoint P;
+      ON_3dVector dU, dV, nrm;
+      if (!surf->Ev1Der(u, v, P, dU, dV)) continue;
+      nrm = ON_CrossProduct(dU, dV);
+      nrm.Unitize();
+      const Vector3d& want = side == 0 ? n_u0 : n_u1;
+      worst_g1 = std::max(worst_g1, std::acos(std::min(1.0, std::fabs(nrm * want))));
+      const bool on_top_rail = (side == 0) == top_i;
+      worst_plane = std::max(worst_plane, on_top_rail ? std::fabs(P.z - 1.0) : std::fabs(P.y));
+    }
+  }
+  Check(worst_g1 < 1e-9,
+        (L + ": G1 - the wall's normal is parallel to the adjoining face's along BOTH rails (max angle < 1e-9 rad)")
+            .c_str());
+  Check(worst_plane < 1e-12, (L + ": both wall rails lie exactly on their adjoining planes (G0)").c_str());
+}
+
+void TestFilletConvexEdgeConicObliqueEndExactVolumeG1AndTopology() {
+  using namespace conic_oblique_tests;
+  // The classic one-oblique-end hexahedron (end plane x = 1 + 0.3 y), both
+  // edge directions, three rho (ellipse / parabola / hyperbola), unequal
+  // setbacks.
+  const Sheared s{0.0, 0.0, 0.3, 0.0, 1.0};
+  for (const double rho : {0.3, 0.5, 0.7}) {
+    for (const bool reversed : {false, true}) {
+      const std::string label = std::string("oblique end, rho ") + std::to_string(rho) + (reversed ? ", reversed" : "");
+      const Brep r = ConicObliqueCheckOne(s, reversed, 0.2, 0.3, rho, label.c_str());
+      if (r.FaceCount() > 0) ConicObliqueCheckWall(r, s, reversed, 0.2, 0.3, rho, label.c_str());
+    }
+  }
+}
+
+void TestFilletConvexEdgeConicObliqueBothEndsAndNegativeTilt() {
+  using namespace conic_oblique_tests;
+  // Both ends oblique, tilted in BOTH cross-section directions (y and z),
+  // and with senses that lengthen at one end and shorten at the other.
+  const Sheared both{0.15, -0.1, 0.3, 0.2, 1.0};
+  for (const bool reversed : {false, true}) {
+    const std::string label = std::string("both ends oblique, y+z tilt") + (reversed ? ", reversed" : "");
+    const Brep r = ConicObliqueCheckOne(both, reversed, 0.25, 0.15, 0.4, label.c_str());
+    if (r.FaceCount() > 0) ConicObliqueCheckWall(r, both, reversed, 0.25, 0.15, 0.4, label.c_str());
+  }
+  // End plane leaning the other way (x = 1 - 0.3 y): the blend SHORTENS.
+  const Sheared neg{0.0, 0.0, -0.3, 0.0, 1.0};
+  {
+    const Brep r = ConicObliqueCheckOne(neg, false, 0.2, 0.3, 0.5, "negative tilt");
+    if (r.FaceCount() > 0) ConicObliqueCheckWall(r, neg, false, 0.2, 0.3, 0.5, "negative tilt");
+  }
+  // A strongly oblique end (slope 1.5, ~56 degrees off perpendicular).
+  const Sheared steep{0.0, 0.0, 1.5, -0.4, 1.0};
+  {
+    const Brep r = ConicObliqueCheckOne(steep, false, 0.3, 0.2, 0.6, "steep tilt");
+    if (r.FaceCount() > 0) ConicObliqueCheckWall(r, steep, false, 0.3, 0.2, 0.6, "steep tilt");
+  }
+}
+
+void TestFilletConvexEdgeConicObliqueZeroSlopeMatchesPerpendicular() {
+  using namespace conic_oblique_tests;
+  using dino8::kernel::FilletConvexEdgeConic;
+  // A fixture whose "oblique" end has slope 0 is perpendicular: the new
+  // code path must be a strict no-op there (same counts, same volume).
+  const Brep a = FilletConvexEdgeConic(BuildSheared({0, 0, 0, 0, 1.0}), Point3d(0, 0, 1), Point3d(1, 0, 1), 0.2, 0.3, 0.4);
+  const Brep b = FilletConvexEdgeConic(Brep::Box(0, 0, 0, 1, 1, 1), Point3d(0, 0, 1), Point3d(1, 0, 1), 0.2, 0.3, 0.4);
+  Check(a.FaceCount() == b.FaceCount() && a.raw().m_E.Count() == b.raw().m_E.Count() &&
+            a.raw().m_V.Count() == b.raw().m_V.Count(),
+        "a zero-slope 'oblique' end gives the plain perpendicular result's face/edge/vertex counts");
+  Check(std::fabs(a.TessellateToClosedMeshAdaptive(1e-7).Volume() - b.TessellateToClosedMeshAdaptive(1e-7).Volume()) <
+            1e-12,
+        "and the identical tessellated volume");
+  Check(ClosedSolid(a), "and is a closed solid");
+}
+
+void TestFilletConvexEdgesConicObliqueBatch() {
+  using namespace conic_oblique_tests;
+  using dino8::kernel::ConicEdgeSpec;
+  using dino8::kernel::FilletConvexEdgeConic;
+  using dino8::kernel::FilletConvexEdgesConic;
+  const Sheared s{0.0, 0.0, 0.3, 0.0, 1.0};
+  const Brep hex = BuildSheared(s);
+  const Point3d p0(0, 0, 1), p1(1, 0, 1);
+
+  // One-edge batch == single-edge result.
+  ConicEdgeSpec spec;
+  spec.p0 = p0;
+  spec.p1 = p1;
+  spec.distance_i = 0.2;
+  spec.distance_j = 0.3;
+  spec.rho = 0.4;
+  const Brep single = FilletConvexEdgeConic(hex, p0, p1, 0.2, 0.3, 0.4);
+  const Brep batch1 = FilletConvexEdgesConic(hex, {spec});
+  Check(batch1.FaceCount() == single.FaceCount() && batch1.raw().m_E.Count() == single.raw().m_E.Count() &&
+            batch1.raw().m_V.Count() == single.raw().m_V.Count() &&
+            std::fabs(batch1.TessellateToClosedMeshAdaptive(1e-7).Volume() -
+                      single.TessellateToClosedMeshAdaptive(1e-7).Volume()) < 1e-12,
+        "a one-edge oblique batch reproduces the single-edge result (counts and volume)");
+  Check(ClosedSolid(batch1), "the one-edge oblique batch is a closed solid");
+
+  // Two independent obliquely-ended edges, in two separate solids joined
+  // by Brep::Compound, blended in ONE call: volumes add.
+  const Sheared s2{0.1, 0.0, -0.25, 0.1, 1.0};
+  const Brep pair = Brep::Compound({BuildSheared(s), BuildSheared(s2, 5.0)});
+  ConicEdgeSpec spec2;
+  spec2.p0 = Point3d(s2.X0(0, 1) + 5.0, 0, 1);
+  spec2.p1 = Point3d(s2.X1(0, 1) + 5.0, 0, 1);
+  spec2.distance_i = 0.15;
+  spec2.distance_j = 0.35;
+  spec2.rho = 0.6;
+  const Brep both = FilletConvexEdgesConic(pair, {spec, spec2});
+  Check(both.FaceCount() == 14 && ClosedSolid(both) && both.Check().issues.empty(),
+        "two obliquely-ended edges on two solids, one call: 14 faces, closed, Check() issue-free");
+  const Brep single2 = FilletConvexEdgeConic(BuildSheared(s2, 5.0), spec2.p0, spec2.p1, 0.15, 0.35, 0.6);
+  const double expected = single.TessellateToClosedMeshAdaptive(1e-7).Volume() +
+                          single2.TessellateToClosedMeshAdaptive(1e-7).Volume();
+  Check(std::fabs(both.TessellateToClosedMeshAdaptive(1e-7).Volume() - expected) < 1e-6,
+        "and its volume is the sum of the two single-edge blends' volumes");
+}
+
+void TestFilletConcaveEdgeConicObliqueEnd() {
+  using namespace conic_oblique_tests;
+  using dino8::kernel::FilletConcaveEdgeConic;
+  // L-shaped prism whose top tilts: z = 1 + slope*(y - 1). The concave
+  // vertical edge (1,1,0)-(1,1,1) has a perpendicular bottom (z = 0) and an
+  // OBLIQUE top. Added volume = int_R (1 + slope*(y-1)) dA over the conic
+  // region in the notch: A + slope * (first moment of R along +y).
+  const double slope = 0.3;
+  const Brep prism = ConcaveLShapedPrismObliqueTop(slope);
+  const double v0 = prism.TessellateToClosedMesh(8, 8).Volume();
+  for (const bool reversed : {false, true}) {
+    for (const double rho : {0.3, 0.7}) {
+      const double da = 0.2, db = 0.35;
+      const Point3d p0 = reversed ? Point3d(1, 1, 1) : Point3d(1, 1, 0), p1 = reversed ? Point3d(1, 1, 0) : Point3d(1, 1, 1);
+      const std::string L = std::string("concave oblique top, rho ") + std::to_string(rho) + (reversed ? ", reversed" : "");
+      Brep r;
+      bool threw = false;
+      try {
+        r = FilletConcaveEdgeConic(prism, p0, p1, da, db, rho);
+      } catch (const std::exception& ex) {
+        threw = true;
+        std::fprintf(stderr, "unexpected throw in %s: %s\n", L.c_str(), ex.what());
+      }
+      Check(!threw, (L + ": accepted").c_str());
+      if (threw) continue;
+      Check(ClosedSolid(r) && r.Check().issues.empty(), (L + ": closed valid solid, Check() issue-free").c_str());
+      // Face i is the wall x = 1 (rail along +y) iff the rail vertex at
+      // y = 1 + da on the bottom exists.
+      const bool i_is_x_wall = ChamferTestBrepHasVertexNear(r, Point3d(1, 1 + da, 0), 1e-9);
+      const bool i_is_y_wall = ChamferTestBrepHasVertexNear(r, Point3d(1 + da, 1, 0), 1e-9);
+      Check(i_is_x_wall != i_is_y_wall, (L + ": exactly one face-i labeling matches the rail vertices").c_str());
+      const double d_y = i_is_x_wall ? da : db, d_x = i_is_x_wall ? db : da;
+      // Oblique-top crossing of the y-direction rail: z = 1 + slope*((1 + d_y) - 1).
+      Check(ChamferTestBrepHasVertexNear(r, Point3d(1, 1 + d_y, 1.0 + slope * d_y), 1e-9) &&
+                ChamferTestBrepHasVertexNear(r, Point3d(1 + d_x, 1, 1.0), 1e-9),
+            (L + ": the oblique-top rail crossings sit at their hand-derived heights").c_str());
+      const ConicMoments m = ConicRegionMoments(da, db, rho);  // arc runs face i -> face j
+      const double M_y = i_is_x_wall ? m.Ma : m.Mb;  // first moment along +y
+      const double added = m.A + slope * M_y;
+      Check(std::fabs(r.TessellateToClosedMeshAdaptive(1e-7).Volume() - (v0 + added)) < 2e-6,
+            (L + ": ADDED volume matches the independent closed form A + slope*M_y to within 2e-6").c_str());
+    }
+  }
+}
+
+void TestFilletConvexEdgeConicObliqueNegativeControls() {
+  using namespace conic_oblique_tests;
+  using dino8::kernel::FilletConvexEdgeConic;
+  auto message_of = [](auto&& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument& ex) {
+      return std::string(ex.what());
+    }
+    return std::string("<no throw>");
+  };
+
+  // (1) Valence-4 apex: a square pyramid's lateral edge apex -> base corner
+  // has TWO other lateral faces at the apex, both oblique.
+  const Point3d a(0, 0, 0), b(2, 0, 0), c(2, 2, 0), d(0, 2, 0), apex(1, 1, 1.5);
+  const Brep pyramid = Brep::FromPlanarFaces({
+      ChamferTestPlanarFace({a, d, c, b}),   // base (z = 0), outward -z
+      ChamferTestPlanarFace({a, b, apex}),   // y = 0 side
+      ChamferTestPlanarFace({b, c, apex}),   // x = 2 side
+      ChamferTestPlanarFace({c, d, apex}),   // y = 2 side
+      ChamferTestPlanarFace({d, a, apex}),   // x = 0 side
+  });
+  Check(ClosedSolid(pyramid), "sanity: the square pyramid fixture is a closed solid");
+  const std::string m1 = message_of([&] { FilletConvexEdgeConic(pyramid, a, apex, 0.2, 0.2, 0.5); });
+  Check(m1.find("valence > 3") != std::string::npos,
+        "an oblique face meeting another third face at the same endpoint (apex valence 4) is refused, naming "
+        "the valence reason");
+
+  // (2) Overrun: a tapered box whose END face is narrower (y in [0, 0.4])
+  // than the top face's extent (1.0). A top setback of 0.7 < 1.0 passes
+  // the extent test but runs past the end face's own boundary edge
+  // (length ~0.4) - refused, for the oblique and the perpendicular end
+  // alike.
+  const Sheared tapered_oblique{0.0, 0.0, 0.3, 0.0, 0.4};
+  const Sheared tapered_perp{0.0, 0.0, 0.0, 0.0, 0.4};
+  for (const Sheared* s : {&tapered_oblique, &tapered_perp}) {
+    const Brep fx = BuildSheared(*s);
+    Check(ClosedSolid(fx), "sanity: the tapered fixture is a closed solid");
+    const std::string m = message_of([&] {
+      FilletConvexEdgeConic(fx, Point3d(0, 0, 1), Point3d(s->X1(0, 1), 0, 1), 0.7, 0.7, 0.5);
+    });
+    Check(m.find("overruns the third face") != std::string::npos,
+          s == &tapered_oblique
+              ? "oblique end: a setback that runs past the end face's own boundary edge is refused"
+              : "perpendicular end: the same overrun is now refused instead of splicing a self-overlapping polygon");
+    // The same fixture with a setback that fits is accepted and closed.
+    const Brep ok = FilletConvexEdgeConic(fx, Point3d(0, 0, 1), Point3d(s->X1(0, 1), 0, 1), 0.3, 0.2, 0.5);
+    Check(ClosedSolid(ok) && ok.Check().issues.empty(), "and a setback that fits the narrower end face is a closed solid");
+  }
+
+  // (3) The still-unchanged refusals.
+  const Brep hex = BuildSheared({0.0, 0.0, 0.3, 0.0, 1.0});
+  Check(message_of([&] { FilletConvexEdgeConic(hex, Point3d(0, 0, 1), Point3d(1, 0, 1), 5.0, 0.2, 0.5); }) !=
+            "<no throw>",
+        "an oversized distance is still refused on the oblique fixture");
+  Check(message_of([&] { FilletConvexEdgeConic(hex, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.2, 0.2, 1.0); }) !=
+            "<no throw>",
+        "rho == 1 is still refused on the oblique fixture");
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -91622,6 +92091,12 @@ int main() {
           shell_closed_tests::TestShellClosedExtrusionCurvedWalls);
   RunTest("shell_closed_tests::TestShellClosedExtrusionArgumentChecks",
           shell_closed_tests::TestShellClosedExtrusionArgumentChecks);
+  RunTest("TestFilletConvexEdgeConicObliqueEndExactVolumeG1AndTopology", TestFilletConvexEdgeConicObliqueEndExactVolumeG1AndTopology);
+  RunTest("TestFilletConvexEdgeConicObliqueBothEndsAndNegativeTilt", TestFilletConvexEdgeConicObliqueBothEndsAndNegativeTilt);
+  RunTest("TestFilletConvexEdgeConicObliqueZeroSlopeMatchesPerpendicular", TestFilletConvexEdgeConicObliqueZeroSlopeMatchesPerpendicular);
+  RunTest("TestFilletConvexEdgesConicObliqueBatch", TestFilletConvexEdgesConicObliqueBatch);
+  RunTest("TestFilletConcaveEdgeConicObliqueEnd", TestFilletConcaveEdgeConicObliqueEnd);
+  RunTest("TestFilletConvexEdgeConicObliqueNegativeControls", TestFilletConvexEdgeConicObliqueNegativeControls);
 
   RunTest("ON::End", ON::End);
 
