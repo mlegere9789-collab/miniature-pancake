@@ -135,6 +135,7 @@ bool RenderFullFrame(CommandContext& ctx, Viewport* vp, int w, int h, const Qual
     std::snprintf(scene, sizeof scene, "Render: path-traced scene has %zu triangles and %zu lights", tracer.SceneBvh().Triangles().size(),
                   tracer.SceneLights().size());
     ctx.Print(scene);
+    ctx.Print("Render: path-traced scene: " + tracer.SceneDiagnostics());
   }
   PathTraceSettings s;
   s.width = w; s.height = h; s.samples = std::max(q.samples, 1); s.bounces = std::max(q.bounces, 1);

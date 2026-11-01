@@ -97,6 +97,10 @@ class PathTracer {
   const render::Bvh& SceneBvh() const { return bvh_; }
   const std::vector<Material>& SceneMaterials() const { return materials_; }
   const std::vector<SceneLight>& SceneLights() const { return lights_; }
+  // One line describing what the tracer will see: how many triangles face the
+  // camera, how many are lit by the first point/spot light with a clear shadow
+  // ray, and the camera. Diagnostic only (printed by Render).
+  std::string SceneDiagnostics() const;
 
  private:
   struct GroundPlane {

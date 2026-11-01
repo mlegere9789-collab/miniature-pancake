@@ -360,6 +360,36 @@ bool PathTracer::Occluded(const Point3d& from, const Point3d& to) const {
   return false;
 }
 
+std::string PathTracer::SceneDiagnostics() const {
+  size_t lit = 0, facing = 0, lit_facing = 0, bad = 0;
+  const SceneLight* light = nullptr;
+  for (const SceneLight& L : lights_) {
+    if (L.type == LightType::Point || L.type == LightType::Spot) { light = &L; break; }
+  }
+  for (const render::BvhTriangle& t : bvh_.Triangles()) {
+    Vector3d n = t.n0;
+    const double len = n.Length();
+    if (!std::isfinite(len) || len < 0.5) { ++bad; continue; }
+    n.Unitize();
+    const Point3d c((t.v0.x + t.v1.x + t.v2.x) / 3, (t.v0.y + t.v1.y + t.v2.y) / 3, (t.v0.z + t.v1.z + t.v2.z) / 3);
+    Vector3d to_eye = camera_.eye - c;
+    to_eye.Unitize();
+    const bool f = ON_DotProduct(n, to_eye) > 0;
+    bool l = false;
+    if (light) {
+      Vector3d to = light->position - c;
+      to.Unitize();
+      l = ON_DotProduct(n, to) > 0 && !Occluded(c + n * 1e-4, light->position);
+    }
+    facing += f; lit += l; lit_facing += (f && l);
+  }
+  char buf[256];
+  std::snprintf(buf, sizeof buf, "facing_camera=%zu lit=%zu lit_and_facing=%zu bad_normals=%zu eye=%.2f,%.2f,%.2f target=%.2f,%.2f,%.2f",
+                facing, lit, lit_facing, bad, camera_.eye.x, camera_.eye.y, camera_.eye.z, camera_.target.x, camera_.target.y,
+                camera_.target.z);
+  return buf;
+}
+
 Vector3d PathTracer::SampleDirectLighting(const Point3d& p, const Vector3d& n, const Vector3d& /*wo*/,
                                           const Material& /*mat*/, const Vector3d& albedo, unsigned& rng) const {
   if (lights_.empty()) return Vector3d(0, 0, 0);
