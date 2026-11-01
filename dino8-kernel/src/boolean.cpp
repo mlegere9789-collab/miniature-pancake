@@ -2140,6 +2140,217 @@ Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_m
   return Brep::Compound({outer, inner});
 }
 
+Brep ShellClosedExtrusion(const NurbsCurve& profile, Vector3d direction, double thickness) {
+  const std::string fn = "dino8::kernel::ShellClosedExtrusion: ";
+  if (!std::isfinite(thickness) || !(thickness > 0.0)) {
+    throw std::invalid_argument(fn + "thickness must be finite and positive");
+  }
+  if (!std::isfinite(direction.x) || !std::isfinite(direction.y) || !std::isfinite(direction.z)) {
+    throw std::invalid_argument(fn + "direction must be finite");
+  }
+  const double height = direction.Length();
+  if (!(height > 0.0)) throw std::invalid_argument(fn + "direction must be non-zero");
+  if (!(2.0 * thickness < height)) {
+    throw std::invalid_argument(fn + "thickness must be strictly less than half the extrusion height - otherwise "
+                                     "the two cap walls meet or cross and no cavity is left");
+  }
+  if (!profile.IsClosed()) throw std::invalid_argument(fn + "profile must be a closed curve");
+
+  const BoundingBox bbox = profile.GetTightBoundingBox();
+  const double size = std::sqrt((bbox.max.x - bbox.min.x) * (bbox.max.x - bbox.min.x) +
+                                (bbox.max.y - bbox.min.y) * (bbox.max.y - bbox.min.y) +
+                                (bbox.max.z - bbox.min.z) * (bbox.max.z - bbox.min.z));
+  const double tol = tolerance::DistanceForSize(size);
+  ON_Plane plane;
+  if (!profile.raw().IsPlanar(&plane, tol)) throw std::invalid_argument(fn + "profile must be planar");
+  Vector3d dhat = direction;
+  dhat.Unitize();
+  if (std::fabs(ON_DotProduct(dhat, plane.zaxis)) < 1.0 - 1e-9) {
+    throw std::invalid_argument(fn + "direction must be perpendicular to the profile's plane - an oblique prism's "
+                                     "wall is not a constant normal distance from its outer skin, so a uniform "
+                                     "wall thickness is not defined for it");
+  }
+
+  NurbsCurve::RegionProperties outer_props;
+  if (profile.PlanarRegionProperties(outer_props, tol) != Result::Ok || !(outer_props.area > 0.0)) {
+    throw std::invalid_argument(fn + "could not measure the profile's enclosed area");
+  }
+
+  // Which sign of OffsetInPlane() is "inward" depends on the profile's own
+  // fitted-plane orientation, so decide it by the area: the inward offset is
+  // the candidate that ENCLOSES LESS than the profile.
+  NurbsCurve inner;
+  bool have_inner = false;
+  double inner_area = 0.0;
+  for (const double sign : {1.0, -1.0}) {
+    NurbsCurve cand;
+    if (profile.OffsetInPlane(sign * thickness, cand, tol) != Result::Ok) continue;
+    NurbsCurve::RegionProperties props;
+    if (!cand.IsClosed() || cand.PlanarRegionProperties(props, tol) != Result::Ok) continue;
+    if (!(props.area < outer_props.area)) continue;
+    inner = cand;
+    inner_area = props.area;
+    have_inner = true;
+    break;
+  }
+  if (!have_inner || !(inner_area > 1e-9 * outer_props.area)) {
+    throw std::invalid_argument(fn + "the inward offset by `thickness` is infeasible (it collapses, inverts or "
+                                     "self-intersects: thickness is at or beyond the profile's own local "
+                                     "half-width or minimum radius of curvature)");
+  }
+
+  // Independent verification of the inward offset: every sampled point of the
+  // inner curve must lie inside the profile and at least `thickness` (less
+  // fit tolerance) from it. This is what rejects an offset that has inverted
+  // past a narrow arm - such a result can be a perfectly simple, positively
+  // oriented loop with a plausible area.
+  const double slack = 2.0 * tol;
+  const bool polyline = profile.Degree() == 1 && inner.Degree() == 1 && !profile.raw().IsRational();
+  const int outer_n = profile.ControlPointCount();
+  if (polyline) {
+    if (inner.ControlPointCount() != outer_n) {
+      throw std::invalid_argument(fn + "the inward offset changed the polyline's vertex count (a corner collapsed)");
+    }
+    std::vector<Point3d> ov, iv;
+    for (int i = 0; i < outer_n; ++i) {
+      ov.push_back(profile.ControlPointAt(i));
+      iv.push_back(inner.ControlPointAt(i));
+    }
+    for (int i = 0; i + 1 < outer_n; ++i) {
+      const Vector3d eo = ov[static_cast<size_t>(i + 1)] - ov[static_cast<size_t>(i)];
+      const Vector3d ei = iv[static_cast<size_t>(i + 1)] - iv[static_cast<size_t>(i)];
+      if (eo.Length() <= tol) continue;
+      if (!(ei.Length() > tol) || ON_DotProduct(eo, ei) <= 0.0) {
+        throw std::invalid_argument(fn + "the inward offset collapsed or reversed an edge of the profile - "
+                                         "thickness is beyond the local half-width there");
+      }
+    }
+    auto seg_dist = [](const Point3d& p, const Point3d& a, const Point3d& b) {
+      const Vector3d ab = b - a;
+      const double l2 = ON_DotProduct(ab, ab);
+      double s = l2 > 0.0 ? ON_DotProduct(p - a, ab) / l2 : 0.0;
+      s = std::min(1.0, std::max(0.0, s));
+      return (p - (a + s * ab)).Length();
+    };
+    for (int i = 0; i + 1 < outer_n; ++i) {
+      for (int k = 0; k <= 8; ++k) {
+        const Point3d p = iv[static_cast<size_t>(i)] + (k / 8.0) * (iv[static_cast<size_t>(i + 1)] - iv[static_cast<size_t>(i)]);
+        double dmin = std::numeric_limits<double>::infinity();
+        for (int j = 0; j + 1 < outer_n; ++j) {
+          dmin = std::min(dmin, seg_dist(p, ov[static_cast<size_t>(j)], ov[static_cast<size_t>(j + 1)]));
+        }
+        if (dmin < thickness - slack) {
+          throw std::invalid_argument(fn + "the inward offset comes closer than `thickness` to the profile itself");
+        }
+        // Inside test (even-odd crossing count in the profile's own plane).
+        const double px = ON_DotProduct(p - plane.origin, plane.xaxis);
+        const double py = ON_DotProduct(p - plane.origin, plane.yaxis);
+        bool inside = false;
+        for (int j = 0; j + 1 < outer_n; ++j) {
+          const double ax = ON_DotProduct(ov[static_cast<size_t>(j)] - plane.origin, plane.xaxis);
+          const double ay = ON_DotProduct(ov[static_cast<size_t>(j)] - plane.origin, plane.yaxis);
+          const double bx = ON_DotProduct(ov[static_cast<size_t>(j + 1)] - plane.origin, plane.xaxis);
+          const double by = ON_DotProduct(ov[static_cast<size_t>(j + 1)] - plane.origin, plane.yaxis);
+          if ((ay > py) != (by > py) && px < ax + (py - ay) * (bx - ax) / (by - ay)) inside = !inside;
+        }
+        if (!inside) {
+          throw std::invalid_argument(fn + "the inward offset leaves the profile - thickness is infeasible");
+        }
+      }
+    }
+  } else {
+    const ON_Interval dom = inner.raw().Domain();
+    const int samples = 720;
+    for (int k = 0; k < samples; ++k) {
+      const double t = dom.ParameterAt(static_cast<double>(k) / samples);
+      const Point3d p = inner.PointAt(t);
+      const double tp = profile.ClosestPointParameter(p, 800);
+      const double d = (profile.PointAt(tp) - p).Length();
+      if (d < thickness - slack) {
+        throw std::invalid_argument(fn + "the inward offset comes closer than `thickness` to the profile itself");
+      }
+    }
+  }
+
+  if (polyline) {
+    // Polyline profile: build both prisms directly from exact planar faces.
+    // Brep::Extrude() caps with a fan from a kernel point and so refuses a
+    // profile that is not star-shaped (a dumbbell, a plus, a comb); planar
+    // polygon faces have no such restriction, and keep every face exactly
+    // planar so the volume and distances stay exact.
+    auto loop_of = [&](const NurbsCurve& c) {
+      std::vector<Point3d> pts;
+      for (int i = 0; i < c.ControlPointCount(); ++i) pts.push_back(c.ControlPointAt(i));
+      if (pts.size() > 1 && pts.front().DistanceTo(pts.back()) <= tol) pts.pop_back();
+      return pts;
+    };
+    std::vector<Point3d> outer_pts = loop_of(profile);
+    std::vector<Point3d> cavity_pts = loop_of(inner);
+    double signed_area = 0.0;  // about +dhat; > 0 means counter-clockwise seen from the tip of dhat
+    for (size_t i = 0; i < outer_pts.size(); ++i) {
+      const Point3d& a = outer_pts[i];
+      const Point3d& b = outer_pts[(i + 1) % outer_pts.size()];
+      signed_area += ON_DotProduct(ON_CrossProduct(Vector3d(a.x, a.y, a.z), Vector3d(b.x, b.y, b.z)), dhat);
+    }
+    if (signed_area < 0.0) {
+      std::reverse(outer_pts.begin(), outer_pts.end());
+      std::reverse(cavity_pts.begin(), cavity_pts.end());
+    }
+    std::vector<Brep::PlanarFace> faces;
+    // `into_material`: normals point out of the MATERIAL, i.e. into the cavity
+    // for the inner prism (all loops and normals reversed).
+    auto add_prism = [&](const std::vector<Point3d>& pts, const Vector3d& lift, const Vector3d& span, bool into_material) {
+      const size_t n = pts.size();
+      const double sgn = into_material ? -1.0 : 1.0;
+      Brep::PlanarFace bottom, top;
+      for (size_t i = 0; i < n; ++i) {
+        const Point3d b = pts[i] + lift;
+        const Point3d u = b + span;
+        if (into_material) {
+          bottom.loop.push_back(b);
+          top.loop.insert(top.loop.begin(), u);
+        } else {
+          bottom.loop.insert(bottom.loop.begin(), b);
+          top.loop.push_back(u);
+        }
+      }
+      bottom.plane = ON_Plane(bottom.loop[0], -sgn * dhat);
+      top.plane = ON_Plane(top.loop[0], sgn * dhat);
+      faces.push_back(std::move(bottom));
+      faces.push_back(std::move(top));
+      for (size_t i = 0; i < n; ++i) {
+        const Point3d a = pts[i] + lift;
+        const Point3d b = pts[(i + 1) % n] + lift;
+        Vector3d nrm = ON_CrossProduct(b - a, dhat);
+        nrm.Unitize();
+        Brep::PlanarFace side;
+        if (into_material) side.loop = {a + span, b + span, b, a};
+        else side.loop = {a, b, b + span, a + span};
+        side.plane = ON_Plane(side.loop[0], sgn * nrm);
+        faces.push_back(std::move(side));
+      }
+    };
+    add_prism(outer_pts, Vector3d(0, 0, 0), direction, false);
+    add_prism(cavity_pts, thickness * dhat, (height - 2.0 * thickness) * dhat, true);
+    return Brep::FromPlanarFaces(faces);
+  }
+
+  Brep outer = Brep::Extrude(profile, direction, true);
+  NurbsCurve inner_lifted = inner;
+  inner_lifted.raw().Translate(thickness * dhat);
+  Brep cavity = Brep::Extrude(inner_lifted, (height - 2.0 * thickness) * dhat, true);
+
+  // OpenNURBS' base-class SolidOrientation() cannot report a direction (it
+  // returns 2 for any closed solid), so orient by the SIGN of the
+  // divergence-theorem volume instead: the cap/wall normals of a body whose
+  // signed volume is positive point outward. The outer body must be outward
+  // and the cavity body inward (negative signed volume), so the compound's
+  // face-wise volumes subtract.
+  if (outer.Volume() < 0.0) outer.raw().Flip();
+  if (cavity.Volume() > 0.0) cavity.raw().Flip();
+  return Brep::Compound({outer, cavity});
+}
+
 Brep OffsetFace(const Brep& solid, int face_index, double distance) {
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const int n = static_cast<int>(faces.size());

@@ -862,6 +862,11 @@ std::vector<Point3d> ClipConvexPolygon(const std::vector<Point3d>& poly, const O
 // no non-planar rim) required. Only the edges where a removed face
 // borders a KEPT one still get a flat lip in the removed face's own
 // plane, exactly as the single-face case already has.
+// `removed_faces` may be EMPTY: the result is then a CLOSED hollow shell
+// (uniform wall, no opening) - every face kept twice (outer copy plus
+// reversed inner copy), no rim, a valid IsSolid() Brep whose volume is the
+// solid's minus its inward-offset cavity's. Pinned by
+// TestShellConvexPlanarClosedHollowShell* (tests/test_basic.cpp).
 Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces, double t);
 
 // Per-face wall-thickness override of ShellConvexPlanar() above (Parasolid
@@ -927,6 +932,54 @@ Brep ShellClosedSphere(Point3d center, double outer_radius, double thickness);
 // same collapse-through-center hazard ShellClosedSphere() and
 // OffsetAnalytic()'s own torus case both guard against).
 Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_minor_radius, double thickness);
+
+// Closed hollow shell (uniform wall, NO opening) of a RIGHT PRISM whose
+// cross-section is ANY closed planar `profile` curve - concave polygons,
+// circles (a hollow cylinder), ellipses, freeform closed curves - the
+// non-convex / curved-wall sibling of ShellClosedSphere()/
+// ShellClosedTorus() above and of ShellConvexPlanar(solid, {}, t) (which
+// already hollows a convex planar solid with no opening, but cannot see a
+// non-convex or curved body at all).
+//
+// Construction: the cavity is the INWARD in-plane offset of the profile by
+// `thickness` (`NurbsCurve::OffsetInPlane`, Sharp corners: exact for a
+// polyline, a line or an arc/circle, tolerance-driven refit for any other
+// curve), lifted `thickness` along the extrusion axis and extruded for
+// `|direction| - 2*thickness`, with its normals pointing into the cavity.
+//  - A POLYLINE profile (any simple closed polygon, star-shaped or not: a
+//    dumbbell, a plus, a comb) is built directly from exact planar faces via
+//    FromPlanarFaces() - 2*(n+2) faces for an n-gon, one valid IsSolid() Brep
+//    like ShellConvexPlanar(solid, {}, t)'s, PlanarFaces() exact.
+//    (`Brep::Extrude`'s fan cap would refuse a profile that is not
+//    star-shaped, so it is not used here.)
+//  - Any other profile (circle, ellipse, freeform) is `Brep::Extrude(profile,
+//    direction, cap=true)` for the outer body plus the flipped cavity
+//    extrusion, combined with `Brep::Compound()` (2 lumps of 3 faces); a
+//    curved profile that is not star-shaped is refused by Extrude's own cap.
+//
+// Wall thickness is therefore exactly `thickness` normal to every cap and
+// every wall point; at a REFLEX (concave) profile vertex the sharp inward
+// offset leaves the wall locally thicker (`thickness / sin(theta/2)` along
+// the bisector, theta the interior angle) - the same sharp-offset-plane
+// convention ShellConvexPlanar() and Mesh::Shell() use, as opposed to
+// ShellViaOffsetSolid()'s ball-eroded rounding.
+//
+// The inward offset is verified independently of OffsetInPlane() before any
+// solid is built: it must be closed, enclose strictly less area than the
+// profile, and every sampled point of it must lie inside the profile at
+// least `thickness` (less fit tolerance) from it; for a polyline no edge may
+// collapse or reverse. That last check is what refuses a thickness beyond a
+// narrow arm's half-width - an inward miter offset past a thin arm turns
+// into a perfectly simple, positively oriented loop with a plausible area.
+//
+// Throws std::invalid_argument for: a non-finite or non-positive
+// `thickness`; a zero or non-finite `direction`; `2*thickness >=
+// |direction|`; an open or non-planar profile; a `direction` not
+// perpendicular to the profile's plane (an oblique prism has no uniform
+// normal wall thickness); a thickness at or beyond the profile's local
+// half-width or minimum radius of curvature (the inward offset collapses,
+// inverts or self-intersects).
+Brep ShellClosedExtrusion(const NurbsCurve& profile, Vector3d direction, double thickness);
 
 // Moves ONE face of a convex planar-faced solid along its own outward
 // normal by `distance` (positive grows the solid at that face, negative
