@@ -3895,8 +3895,8 @@ bgecheck() { if echo "$BG" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL 
 # engine does not return a closed solid for a box pierced by a cylinder. RunBoolean now accepts a General-engine
 # result only when it is a closed solid, so the union and difference fall through to the mesh path, whose volumes
 # are the true ones (box 1000 +/- the cylinder's 10-long, r=2 part, pi*4*10 = 125.66: union 1125, difference 874.9).
-bgecheck "BooleanUnion: 3706 faces, volume 1125" "a box unioned with a piercing, record-less cylinder: the General engine's open-shell result is rejected and the mesh fallback gives the true volume 1000 + 125.7 (before: an open 10-face shell of volume 0 was accepted)"
-bgecheck "BooleanDifference: 3506 faces, volume 874.9" "the same box minus the piercing cylinder likewise falls back to the mesh path with the true volume 1000 - 125.7 (before: an open 7-face shell of volume 0)"
+bgecheck ", sewn into a closed solid (tolerance 0.02449), volume 1125 (mesh cross-check 1125)" "a box unioned with a piercing, record-less cylinder: the General engine's result is sewn into a closed solid and accepted only because its volume agrees with the mesh boolean (1000 + 125.7); an open shell would now be refused by RunBoolean's closed-solid gate"
+bgecheck ", sewn into a closed solid (tolerance 0.01855), volume 874.8 (mesh cross-check 874.9)" "the same box minus the piercing cylinder likewise: closed, volume 1000 - 125.7"
 bgecheck "BooleanIntersection: exact B-rep boolean (no tessellation, general engine), 3 face(s)" "the box intersected with the piercing cylinder also took the General-engine exact path"
 if echo "$BG" | grep -q "! No object with id"; then echo "FAIL boolean-general-engine script's own SelID bookkeeping was wrong (references a missing id)"; fail=1; else echo "ok   boolean-general-engine script's SelID bookkeeping matched every object the app actually created"; fi
 echo "$BG" | grep -E "^(ok|FAIL)"
