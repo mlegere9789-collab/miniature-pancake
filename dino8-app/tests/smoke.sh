@@ -8865,4 +8865,155 @@ kwcheck "140 faces, 210 edges, 72 vertices, 0 creases" "SubDLoft through three c
 kwcheck "through 4 curves (degree 3 in the loft direction); every section reproduced, max deviation [0-9.]*e-\(0[6-9]\|[1-9][0-9]\)$" "Loft through four lines is cubic in the loft direction and reproduces every section"
 kwdist "through 4 curves .degree 3 in the loft direction." 1 0 3 0 0.000001 "...and the middle points of the three non-trivial lines lie on the surface to < 1e-6"
 
+# ---------------------------------------------------------------------------
+# Viewport display: per-object display modes + view-dependent adaptive
+# tessellation (PARITY_MAP.md "Viewport display, rendering & visualization":
+# "Per-object display mode override" and "View-dependent adaptive
+# tessellation"). tests/viewport_lod_script.txt runs both against the real
+# app: part 1 zooms one sphere through several levels and reads back what
+# each viewport's last frame drew (LodStats); part 2 cycles one box through
+# every per-object mode in Rendered/Shaded/Wireframe viewports and captures
+# bitmaps, then queries (ObjectDisplayModes) and round-trips through .3dm.
+# ---------------------------------------------------------------------------
+mkdir -p "$TMPW/vpl"
+sed "s|@TMP@|$TMPW/vpl|g" "$HERE/viewport_lod_script.txt" > "$TMPW/viewport_lod_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  VPL="$("$BIN" --smoke 30 --script "$TMPW/viewport_lod_script.txt" 2>&1)" || { echo "$VPL"; echo "FAIL: viewport_lod script exited non-zero"; exit 1; }
+else
+  VPL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/viewport_lod_script.txt" 2>&1)" || { echo "$VPL"; echo "FAIL: viewport_lod script exited non-zero"; exit 1; }
+fi
+vplcheck() { if grep -q "$1" <<<"$VPL"; then echo "ok   $2"; else echo "FAIL $2"; near "$VPL" "$1"; fail=1; fi; }
+# vplval SECTION VIEWPORT FIELD: FIELD of the "LodStats: viewport VIEWPORT object" line in the SECTION-th LodStats call.
+vplval() {
+  awk -v n="$1" -v v="$2" -v f="$3" '
+    /LodStats: adaptive=/ { k++ }
+    k == n && index($0, "LodStats: viewport " v " object ") { if (match($0, f "=[-0-9.e+]+")) { s = substr($0, RSTART + length(f) + 1, RLENGTH - length(f) - 1); print s; exit } }' <<<"$VPL"
+}
+# vplhdr SECTION FIELD: FIELD of the SECTION-th "LodStats: adaptive=" header line.
+vplhdr() {
+  awk -v n="$1" -v f="$2" '
+    /LodStats: adaptive=/ { k++; if (k == n) { if (match($0, f "=[a-z0-9]+")) { print substr($0, RSTART + length(f) + 1, RLENGTH - length(f) - 1); exit } } }' <<<"$VPL"
+}
+vplnum() { # DESC EXPR : EXPR is an awk expression over already-substituted numbers
+  local r; r="$(awk "BEGIN { print ($2) ? \"yes\" : \"no\" }")"
+  if [ "$r" = yes ]; then echo "ok   $1"; else echo "FAIL $1 [$2]"; fail=1; fi
+}
+vplcheck "^ok   expect_objects 2" "viewport_lod script left exactly the two boxes"
+vplcheck "gl_error=0" "viewport_lod script ran without OpenGL errors"
+VP_P0="$(vplval 1 Perspective tris)"; VP_P3="$(vplval 2 Perspective tris)"; VP_P9="$(vplval 3 Perspective tris)"; VP_PB="$(vplval 4 Perspective tris)"
+VP_T0="$(vplval 1 Top tris)"; VP_T3="$(vplval 2 Top tris)"; VP_T9="$(vplval 3 Top tris)"
+echo "     Perspective triangles at zoom 0 / 3 / 9 / back to 3 steps: $VP_P0 / $VP_P3 / $VP_P9 / $VP_PB;  Top (never zoomed): $VP_T0 / $VP_T3 / $VP_T9"
+vplnum "zooming the Perspective viewport in 3 steps re-tessellates the sphere finer (more triangles than at zoom 0)" "$VP_P3 > $VP_P0"
+vplnum "...and 9 steps in is denser still, more than 3x the zoom-0 triangle count" "$VP_P9 > 3 * $VP_P0 && $VP_P9 > $VP_P3"
+vplnum "the Top viewport, never zoomed, keeps its own level through all of it (each viewport has its OWN LOD, not one shared finest value)" "$VP_T0 == $VP_T3 && $VP_T3 == $VP_T9 && $VP_T0 < $VP_P9"
+vplnum "zooming back out to the 3-step zoom restores exactly that zoom's mesh (same triangle count as before)" "$VP_PB == $VP_P3"
+VP_E0="$(vplval 1 Perspective nominal_err_px)"; VP_E9="$(vplval 3 Perspective nominal_err_px)"
+echo "     NOMINAL on-screen chord error (tolerance / pixel size; the mesher really leaves ~2.1x this, see test_adaptive_display) Perspective: $VP_E0 px at zoom 0, $VP_E9 px at zoom 9"
+vplnum "the screen-space error stays ~0.5 px even 9 zoom steps in (past the old 0.2x clamp, where it grew to ~1.8 px and beyond)" "$VP_E9 < 0.6 && $VP_E9 > 0.4"
+vplnum "9 zoom steps in is past the OLD clamp (lod_scale < 0.2) yet the scale still keeps refining" "$(vplval 3 Perspective surface_tol) < 0.05 * 0.2 * 0.9"
+vplnum "the multi-level cache swapped levels instead of re-tessellating every time: stash_hits counter > 0" "$(vplhdr 6 stash_hits) > 0"
+vplcheck "LodStats: object 1 polysurface stashed_levels=[1-3] budget_floor=0$" "LodStats reports the stashed levels and no budget floor for a modest sphere"
+vplcheck "LodStats: adaptive=off" "AdaptiveTessellation Off is reported by LodStats"
+VP_OFF_TRIS="$(awk '/LodStats: adaptive=/ { k++ } k == 5 && /LodStats: viewport [A-Za-z]+ object / && match($0, /tris=[0-9]+/) { print substr($0, RSTART + 5, RLENGTH - 5) }' <<<"$VPL" | sort -u | tr '\n' ' ')"
+echo "     adaptive OFF: distinct triangle counts across the four viewports: $VP_OFF_TRIS"
+vplnum "adaptive OFF: all four viewports draw one identical fixed-tolerance mesh (a single distinct triangle count)" "$(wc -w <<<"$VP_OFF_TRIS") == 1"
+vplnum "adaptive OFF: the tolerances are exactly the Options values (surface 0.05, curve 0.02)" "$(vplval 5 Perspective surface_tol) == 0.05 && $(vplval 5 Perspective curve_tol) == 0.02"
+vplnum "adaptive ON again: Perspective (zoomed) is finer than the fixed-tolerance mesh it just had" "$(vplval 6 Perspective tris) > $(vplval 5 Perspective tris)"
+vplnum "switching adaptive off does not itself count as a zoom-driven re-tessellation (rebuilds counter unchanged)" "$(vplhdr 5 rebuilds) == $(vplhdr 4 rebuilds)"
+
+# Part 2: per-object modes, pixel level + query + .3dm round trip.
+python3 - "$TMPW/vpl" <<'PY' && echo "ok   per-object display modes carry their FULL style: Wireframe stays visible in a Rendered viewport, Pen/Arctic/Technical/Artistic/Rendered each draw their own edge colour (and no wires for Rendered) over their own fill, Box A never changes" || { echo "FAIL per-object display mode pixel check"; fail=1; }
+import struct, sys
+d = sys.argv[1]
+def read_bmp(name):
+    b = open(f'{d}/{name}.bmp', 'rb').read()
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', b[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (name, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = b[off:]
+    def get(x, y):
+        r = h - 1 - y
+        i = r * row + x * 3
+        return px[i + 2], px[i + 1], px[i]
+    return w, h, get
+w, h, rb = read_bmp('r_base')
+y = h // 2 + 40   # a row inside both boxes, off the X axis line
+blue = [x for x in range(w) if rb(x, y)[2] > rb(x, y)[0] + 80]
+bx0, bx1 = blue[0], blue[-1]; cx = (bx0 + bx1) // 2
+red = [x for x in range(w) if rb(x, y)[0] > rb(x, y)[2] + 80 and rb(x, y)[0] > 150]
+ax = (red[0] + red[-1]) // 2
+def probe(name):
+    _, _, g = read_bmp(name)
+    return dict(edge=g(bx0, y), fill=g(cx, y), A=g(ax, y), out=g(bx0 - 3, y))
+r_base, r_wire = probe('r_base'), probe('r_wire')
+s = {n: probe(n) for n in ('s_base', 's_pen', 's_arctic', 's_technical', 's_artistic', 's_rendered')}
+for k, v in list(s.items()) + [('r_base', r_base), ('r_wire', r_wire)]:
+    print(f'{k:12s} edge={v["edge"]} fill={v["fill"]} A={v["A"]}')
+# Box A (never overridden) is identical across captures of the same viewport mode.
+assert r_wire['A'] == r_base['A'], 'Box A changed in the Rendered viewport'
+for n, v in s.items(): assert v['A'] == s['s_base']['A'], f'Box A changed in {n}'
+# Wireframe override in a RENDERED viewport (edges and isocurves both off there): used to vanish entirely.
+assert r_wire['fill'] == r_wire['out'], 'Wireframe override still filled in a Rendered viewport'
+assert r_wire['edge'] != r_wire['out'] and r_wire['edge'][2] > r_wire['edge'][0] + 80, f'Wireframe override has no visible blue outline in a Rendered viewport: {r_wire}'
+# Pen: black edge, unlit flat white fill.   Arctic: grey (150) edge, lit white fill.
+assert s['s_pen']['edge'] == (0, 0, 0) and s['s_pen']['fill'] == (245, 245, 245), s['s_pen']
+assert s['s_arctic']['edge'] == (150, 150, 150) and all(c < 245 and c > 200 for c in s['s_arctic']['fill']), s['s_arctic']
+# Technical vs Artistic: same lit flat grey fill, different line work.
+assert s['s_technical']['edge'] == (20, 20, 20), s['s_technical']
+assert s['s_artistic']['edge'] == (60, 50, 40), s['s_artistic']
+assert s['s_technical']['fill'] == s['s_artistic']['fill'] and abs(s['s_technical']['fill'][0] - s['s_technical']['fill'][2]) < 12, 'Technical/Artistic fills differ or are not grey'
+assert s['s_technical']['fill'] != s['s_base']['fill'], 'Technical fill equals the plain blue object fill'
+# Rendered override in a Shaded viewport: no wires at all (edge == fill == the Rendered look), unlike Shaded's darker outline.
+assert s['s_rendered']['edge'] == s['s_rendered']['fill'] == r_base['fill'], s['s_rendered']
+assert s['s_base']['edge'] != s['s_base']['fill'], 'plain Shaded object lost its outline'
+PY
+vplcheck "ObjectDisplayModes: object [0-9]* polysurface = Rendered" "ObjectDisplayModes reports the Rendered override by name"
+vplcheck "ObjectDisplayModes: 1 of 2 object(s) carry a per-object display mode Rendered=1" "...and the per-mode tally"
+vplcheck "ObjectDisplayModes: object [0-9]* polysurface = Technical" "ObjectDisplayModes reports Technical (a mode that used to be refused)"
+vplcheck "ObjectDisplayModes: object [0-9]* polysurface = UseViewport" "ObjectDisplayModes All also lists the objects that follow the viewport"
+vplcheck "SetObjectDisplayMode: RayTraced is a whole-frame path-traced image" "RayTraced is refused with the reason, not silently turned into UseViewport"
+vplcheck "SetObjectDisplayMode: unknown mode 'Bogus' - nothing changed" "an unknown mode name is refused and changes nothing"
+VP_QT="$(grep -c 'ObjectDisplayModes: 1 of 2 object(s) carry a per-object display mode Technical=1' <<<"$VPL")"
+vplnum "Technical survives the refused RayTraced/Bogus attempts and a Save/New/Open round trip through .3dm (query shows it 4 times: before, All, after RayTraced, after reopen)" "$VP_QT == 4"
+VP_TV="$(grep -c 'ObjectDisplayModes: object [0-9]* polysurface = Technical (viewport [A-Za-z]*)' <<<"$VPL")"
+vplnum "SetObjectDisplayMode defaults to the ACTIVE viewport only (Rhino's scope): every Technical query line carries '(viewport NAME)', and it survives the .3dm round trip (4 lines)" "$VP_TV == 4"
+
+# Part 3: scope, pixel level. Pen pinned to Top only must leave Front untouched (byte-identical bitmap); Pen All reaches Front too.
+python3 - "$TMPW/vpl" <<'PY' && echo "ok   per-VIEWPORT scope: Pen set in Top changes Top but leaves Front's whole bitmap byte-identical; 'Pen All' then changes Front too, and Top keeps it" || { echo "FAIL per-viewport scope pixel check"; fail=1; }
+import struct, sys
+d = sys.argv[1]
+def load(name):
+    b = open(f'{d}/{name}.bmp', 'rb').read()
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', b[2:30])
+    row = (w * 3 + 3) & ~3
+    px = b[off:]
+    def get(x, y):
+        r = h - 1 - y
+        i = r * row + x * 3
+        return px[i + 2], px[i + 1], px[i]
+    return w, h, px, get
+def diff_centre(a, b):
+    w, h, pa, ga = a; _, _, pb, gb = b
+    pts = [(x, y) for y in range(h) for x in range(w) if sum(abs(p - q) for p, q in zip(ga(x, y), gb(x, y))) > 15]
+    assert pts, 'captures do not differ'
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    return (min(xs) + max(xs)) // 2, (min(ys) + max(ys)) // 2
+t_base, t_pen, t_all = load('t_base'), load('t_pen'), load('t_all')
+f_base, f_scoped, f_all = load('f_base'), load('f_scoped'), load('f_all')
+cx, cy = diff_centre(t_base, t_pen)
+print('Top: B centre', (cx, cy), 'base', t_base[3](cx, cy), 'pen', t_pen[3](cx, cy), 'after Pen All', t_all[3](cx, cy))
+assert t_pen[3](cx, cy) == (245, 245, 245), 'Pen not applied in Top'
+assert t_base[3](cx, cy) != (245, 245, 245)
+assert f_base[2] == f_scoped[2], 'Front changed although Pen was pinned to Top only'
+fx, fy = diff_centre(f_base, f_all)
+print('Front: B centre', (fx, fy), 'base', f_base[3](fx, fy), 'scoped', f_scoped[3](fx, fy), 'Pen All', f_all[3](fx, fy))
+assert f_all[3](fx, fy) == (245, 245, 245), 'Pen All did not reach Front'
+assert f_scoped[3](fx, fy) == f_base[3](fx, fy)
+assert t_all[3](cx, cy) == (245, 245, 245), 'Top lost Pen after Pen All'
+PY
+vplcheck "ObjectDisplayModes: object [0-9]* polysurface = Pen (viewport Top)" "a viewport-scoped override is listed with its viewport"
+vplcheck "ObjectDisplayModes: object [0-9]* polysurface = Pen$" "Pen All is listed as an all-viewports override (no viewport suffix)"
+vplcheck "ClearAllObjectDisplayModes: 1 object(s) reset to the viewport display mode" "ClearAllObjectDisplayModes (Rhino's command, extended to the display-mode overrides) removes them and reports how many objects"
+vplcheck "ObjectDisplayModes: 0 of 2 object(s) carry a per-object display mode$" "...and the query then shows none"
+
 exit $fail

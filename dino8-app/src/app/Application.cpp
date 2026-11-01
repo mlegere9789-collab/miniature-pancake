@@ -255,6 +255,7 @@ Viewport::FrameContext Application::MakeFrameContext() {
   ctx.show_control_points_for_selected = show_control_points_for_selected;
   ctx.curve_tolerance = curve_display_tolerance;
   ctx.surface_tolerance = surface_display_tolerance;
+  ctx.adaptive_tessellation = adaptive_tessellation;
   // View-dependent adaptive tessellation: the FINEST scale any open,
   // visible modeling viewport's own zoom calls for wins (see
   // FinestLodScale's own comment in AdaptiveTessellation.h for why - every

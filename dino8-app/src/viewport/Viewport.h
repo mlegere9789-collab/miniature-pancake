@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -179,19 +180,23 @@ class Viewport {
     bool show_control_points_for_selected = false;
     double curve_tolerance = 0.02;
     double surface_tolerance = 0.05;
-    // View-dependent adaptive tessellation: curve_tolerance/surface_tolerance
-    // above scaled by this factor before use (see AdaptiveTessellation.h's
-    // LodScaleForPixelSize). Set once per frame by Application::
-    // MakeFrameContext from FinestLodScale across every open, visible
-    // viewport's own current zoom (not just the active one - see that
-    // function's own comment for why) and shared by every viewport's
-    // DrawObjects this frame - not recomputed per viewport - so all open
-    // viewports tessellate a given object identically and never fight over
-    // its one shared SceneObject display cache by requesting different
-    // resolutions in the same frame, while still never landing coarser
-    // than any one of them actually needs. 1.0 (its default) means no
-    // scaling.
+    // INFORMATIONAL: the finest LodScaleForPixelSize across every open,
+    // visible viewport (Application::MakeFrameContext via FinestLodScale).
+    // DrawObjects no longer uses it - each viewport scales
+    // curve_tolerance/surface_tolerance by its OWN zoom, because SceneObject
+    // keeps several tessellation levels and swaps between them (see
+    // `adaptive_tessellation` below). 1.0 (its default) means no scaling.
     double lod_scale = 1.0;
+    // View-dependent adaptive tessellation master switch (the
+    // AdaptiveTessellation command / Display panel checkbox). When false,
+    // DrawObjects tessellates every object at exactly curve_tolerance/
+    // surface_tolerance regardless of zoom and distance. When true, each
+    // viewport scales those tolerances by ITS OWN zoom (LodScaleForPixelSize
+    // of its own camera) - lod_scale above (the finest across viewports) is
+    // now informational only, because SceneObject keeps
+    // several tessellation levels per object and swaps between them, so two
+    // viewports at different zoom no longer have to share one resolution.
+    bool adaptive_tessellation = true;
     // App-wide surface analysis applied to objects whose own `analysis`
     // mode is None (null or mode None = plain shading).
     const AnalysisSettings* fallback_analysis = nullptr;
@@ -328,6 +333,19 @@ class Viewport {
   };
   FrustumCullStats LastFrustumCullStats() const { return frustum_cull_stats_; }
 
+  // What the most recent DrawObjects call of THIS viewport actually submitted
+  // for each object it tessellated for display: the triangle count and the
+  // curve/surface tolerances of the level it drew (view-dependent adaptive
+  // tessellation gives every viewport its own level of an object). Read by
+  // the LodStats command; empty before the first frame and for for_render
+  // calls (image export has its own fixed tolerance).
+  struct LodDrawRecord {
+    std::size_t triangles = 0;
+    double curve_tolerance = 0.0;
+    double surface_tolerance = 0.0;
+  };
+  const std::map<ObjectId, LodDrawRecord>& LastLodDraw() const { return lod_draw_; }
+
  private:
   void DrawGrid(GlRenderer& renderer, const DocumentSettings& settings, DisplayMode mode);
   // Everything between the background and the overlays: grid, ground
@@ -428,6 +446,7 @@ class Viewport {
   std::uint64_t raytrace_revision_ = 0;
 
   // See LastFrustumCullStats() above.
+  mutable std::map<ObjectId, LodDrawRecord> lod_draw_;
   FrustumCullStats frustum_cull_stats_;
 };
 

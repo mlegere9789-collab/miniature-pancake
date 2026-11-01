@@ -206,6 +206,51 @@ class SceneObject {
   // mode happens to already be Rendered. Mutually exclusive with every
   // override above and each other, same convention.
   bool force_rendered = false;
+  // SetObjectDisplayMode Technical/Artistic: the two remaining per-object-
+  // meaningful viewport-wide modes. Both fill in the same flat grey as
+  // Monochrome (lit, fully opaque) - what makes each a genuine mode of its
+  // own is the line work, exactly as the viewport-wide versions: Technical
+  // draws dark (20,20,20) edges, Artistic warm brown (60,50,40) ones (see
+  // Viewport.cpp's StyleFor/ObjectStyleFor). Mutually exclusive with every
+  // override above and each other. RayTraced has no flag: it is a whole-
+  // frame path-traced image, not a per-object concept.
+  bool force_technical = false;
+  bool force_artistic = false;
+  // Per-VIEWPORT scope, as Rhino has it ("SetObjectDisplayMode: sets how the
+  // selected objects display in the current viewport. Their display in other
+  // viewports won't be affected"): viewport name -> canonical mode name
+  // (never "UseViewport"; that erases the entry). The ten flags above are the
+  // ALL-VIEWPORTS override; a viewport's own entry wins over them in that
+  // viewport. Carried through CopyFrom (undo/redo) and saved in the .3dm.
+  std::map<std::string, std::string> viewport_display_overrides;
+  // The one name-based entry point to all ten flags (used by
+  // SetObjectDisplayMode, the Properties panel and the .3dm round trip so
+  // none of them re-lists the flags): exactly one override is set, or none
+  // for "UseViewport". Returns false (and changes nothing) for a name that is
+  // not one of DisplayOverrideNames() - case-insensitive, "X-Ray"/"XRay",
+  // "UseView" for UseViewport. This sets the ALL-VIEWPORTS override.
+  bool SetDisplayOverride(const std::string& name);
+  // Same, for ONE viewport (by Viewport::Name()): "UseViewport" removes that
+  // viewport's entry (an all-viewports override still applies there).
+  bool SetViewportDisplayOverride(const std::string& viewport, const std::string& name);
+  // "UseViewport" when no all-viewports override is set, else its canonical name.
+  const char* DisplayOverrideName() const;
+  // What `viewport` actually applies: its own entry, else the all-viewports one.
+  std::string DisplayOverrideNameFor(const std::string& viewport) const;
+  // The flags `viewport` actually applies (own entry, else the all-viewports
+  // flags) - what Viewport::DrawObjects reads instead of the raw bools.
+  struct DisplayOverrideFlags {
+    bool wireframe = false, shaded = false, rendered = false, ghosted = false, xray = false, technical = false,
+         artistic = false, pen = false, arctic = false, monochrome = false;
+  };
+  DisplayOverrideFlags DisplayOverrideFlagsFor(const std::string& viewport) const;
+  bool HasDisplayOverride() const;          // the all-viewports override
+  bool HasAnyDisplayOverride() const { return HasDisplayOverride() || !viewport_display_overrides.empty(); }
+  void ClearDisplayOverrides() { SetDisplayOverride("UseViewport"); viewport_display_overrides.clear(); }
+  static const std::vector<std::string>& DisplayOverrideNames();  // canonical, "UseViewport" first
+  // Canonical spelling of a mode name ("" when unknown); "UseViewport" for
+  // UseViewport/UseView/viewport/default/none.
+  static std::string CanonicalDisplayOverrideName(const std::string& name);
   bool show_render_mesh_wires = false;  // ToggleRenderMesh/ShowRenderMesh: overlay the tessellation's triangle edges
   // Per-object display tolerance override for surface/brep/SubD tessellation
   // (SetMeshSurfaceParameters); <= 0 means "use the app-wide setting".
@@ -259,12 +304,51 @@ class SceneObject {
   // preview elsewhere in the app does not thrash it every frame. Only ever
   // called from Viewport.cpp; every other existing EnsureDisplay call site
   // is unchanged.
-  void EnsureAdaptiveDisplay(double curve_tolerance, double surface_tolerance) const;
+  //
+  // Multi-level cache + budget (this pass): the previous cache level is kept
+  // in a small LRU stash rather than thrown away, so a zoom back to a level
+  // already tessellated (or a second viewport at a different zoom) swaps it
+  // in with no re-tessellation. `base_surface_tolerance` (> 0) enables the
+  // per-object triangle budget for refinements finer than the base: the
+  // mesher's per-face cap is raised to the budget (split across the faces),
+  // and a mesh that saturates the budget records its request as a floor so
+  // finer requests stop re-tessellating the same capped mesh. `adaptive =
+  // false` is the user toggle: the cache is rebuilt whenever it was not built
+  // at EXACTLY the requested tolerances (no hysteresis, stash or budget) -
+  // i.e. plain fixed-tolerance tessellation.
+  void EnsureAdaptiveDisplay(double curve_tolerance, double surface_tolerance, double base_surface_tolerance = 0.0,
+                             bool adaptive = true) const;
+  // Read-only view of the multi-level cache for diagnostics (LodStats).
+  struct AdaptiveLodInfo {
+    std::size_t stashed_levels = 0;    // extra tessellation levels held besides the current one
+    double surface_floor = 0.0;        // tolerance at which the triangle budget saturated (0 = never)
+    std::size_t current_triangles = 0;
+  };
+  AdaptiveLodInfo LodInfo() const;
+  // Process-wide counters (monotonic) of what EnsureAdaptiveDisplay did:
+  // re-tessellations it forced because the zoom drifted, stash swaps that
+  // avoided one, and budget clamps. For LodStats and tests.
+  struct AdaptiveLodCounters { unsigned long long rebuilds = 0, stash_hits = 0, budget_clamps = 0; };
+  static AdaptiveLodCounters LodCounters();
+  static void ResetLodCounters();
+  // Per-object triangle budget for view-dependent refinement (only applies to
+  // requests finer than the app-wide base tolerance).
+  static constexpr std::size_t kAdaptiveTriangleBudget = 150000;
+  // The mesher stops refining a single brep face at this many triangles
+  // (BrepMeshOptions::max_triangles_per_face's default). At deep zoom that cap
+  // - not the requested tolerance - decides the accuracy (measured: a sphere
+  // stays at ~11k triangles and its worst chord sagitta GROWS), so adaptive
+  // refinement raises it to kAdaptiveTriangleBudget for the one build.
+  static constexpr int kDefaultFaceTriangleCap = 12000;
+  static constexpr std::size_t kLodStashCapacity = 3;
+  static constexpr std::size_t kLodStashMaxTriangles = 60000;
   // const: only ever touches the mutable display cache, and marking it so
   // lets EnsureAdaptiveDisplay (itself const, like EnsureDisplay) call it
   // directly - every existing non-const caller is unaffected, since a
   // const method can still be called on a non-const object.
-  void InvalidateDisplay() const { cache_.dirty = true; cache_.colors_valid = false; }
+  // Also drops the multi-level LOD stash and the discovered budget floor:
+  // both describe the OLD geometry/settings.
+  void InvalidateDisplay() const { cache_.dirty = true; cache_.colors_valid = false; lod_stash_.clear(); lod_surface_floor_ = 0.0; }
   // Dash pattern (dash, gap... in model units, already scaled) the display
   // polylines of a curve are split with; empty draws continuous. Set by the
   // viewport from Document::EffectiveDashes before EnsureDisplay; a change
@@ -289,6 +373,9 @@ class SceneObject {
 
  private:
   mutable DisplayCache cache_;
+  mutable std::vector<DisplayCache> lod_stash_;  // other tessellation levels, least-recently-used first
+  mutable double lod_surface_floor_ = 0.0;       // budget floor (see EnsureAdaptiveDisplay)
+  mutable int display_face_cap_ = kDefaultFaceTriangleCap;        // BrepMeshOptions::max_triangles_per_face for the next display build
   mutable std::vector<double> display_dashes_;
   void CopyFrom(const SceneObject& other);
 };

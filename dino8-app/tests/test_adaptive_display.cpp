@@ -10,11 +10,15 @@
 // the hysteresis band, and does NOT happen for a trivial drift - the two
 // things "no re-tessellation on zoom" and "every frame re-tessellates
 // regardless of zoom" would each separately mean this feature isn't real.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
+#include <vector>
 
 #include "doc/SceneObject.h"
 #include "dino8/kernel/curve.h"
+#include "dino8/kernel/brep.h"
 #include "dino8/kernel/surface.h"
 #include "viewport/AdaptiveTessellation.h"
 #include "viewport/Camera.h"
@@ -22,6 +26,8 @@
 using dino8::app::Camera;
 using dino8::app::DistanceLodFactor;
 using dino8::app::SceneObject;
+using dino8::app::LodScaleForPixelSize;
+using dino8::app::ScreenSpaceErrorPixels;
 using dino8::kernel::NurbsCurve;
 using dino8::kernel::NurbsSurface;
 using dino8::kernel::Point3d;
@@ -159,6 +165,177 @@ int main() {
           "orthographic: the near object builds at the plain base tolerance, no distance correction");
     Check(Near(ortho_far.Display().built_surface_tolerance, base_tolerance),
           "orthographic: the far object builds at the plain base tolerance too - identical, not just close");
+  }
+
+
+  // --- Multi-level cache: zooming back to a level already tessellated swaps it in, no re-tessellation. ---
+  // The same construction the Sphere command uses (cmd_solids.cpp AddBrep(ON_BrepSphere(...))).
+  auto sphere_of = [](double radius) {
+    dino8::kernel::Brep k;
+    ON_Brep* b = ON_BrepSphere(ON_Sphere(ON_3dPoint(0, 0, 0), radius));
+    k.raw() = *b;
+    delete b;
+    return SceneObject::MakeBrep(k);
+  };
+  auto sphere_object = [&] { return sphere_of(10.0); };
+  auto tris = [](const SceneObject& o) { return o.Display().triangles.size() / 18; };
+  {
+    SceneObject o = sphere_object();
+    SceneObject::ResetLodCounters();
+    o.EnsureAdaptiveDisplay(0.02, 0.05, 0.05);                       // level A (base)
+    const std::size_t tris_a = tris(o);
+    o.EnsureAdaptiveDisplay(0.002, 0.005, 0.05);                     // 10x finer: level B
+    const std::size_t tris_b = tris(o);
+    Check(tris_b > 2 * tris_a, "10x finer tolerance builds a much denser mesh (measured triangle counts differ >2x)");
+    std::printf("     sphere r=10: %zu triangles at surface tol 0.05, %zu at 0.005\n", tris_a, tris_b);
+    SceneObject::AdaptiveLodCounters c0 = SceneObject::LodCounters();
+    Check(c0.rebuilds == 1, "going from level A to B re-tessellated exactly once");
+    o.EnsureAdaptiveDisplay(0.02, 0.05, 0.05);                       // back to A
+    Check(tris(o) == tris_a && Near(o.Display().built_surface_tolerance, 0.05), "zooming back to level A restores A's exact mesh");
+    Check(SceneObject::LodCounters().rebuilds == c0.rebuilds, "...without re-tessellating (rebuild counter unchanged)");
+    Check(SceneObject::LodCounters().stash_hits == c0.stash_hits + 1, "...it came from the stash (stash hit counter +1)");
+    Check(o.LodInfo().stashed_levels == 1, "level B is now the stashed one");
+    // Two viewports at different zoom alternating on one object: after warm-up, zero tessellation.
+    SceneObject::ResetLodCounters();
+    for (int i = 0; i < 20; ++i) {
+      o.EnsureAdaptiveDisplay(0.002, 0.005, 0.05);
+      o.EnsureAdaptiveDisplay(0.02, 0.05, 0.05);
+    }
+    c0 = SceneObject::LodCounters();
+    Check(c0.rebuilds == 0 && c0.stash_hits == 40, "20 alternations between two viewports' zoom levels: 0 re-tessellations, 40 stash swaps");
+    // Geometry change invalidates every stashed level.
+    o.InvalidateDisplay();
+    Check(o.LodInfo().stashed_levels == 0, "InvalidateDisplay drops the stashed levels (they describe the old geometry)");
+    o.EnsureAdaptiveDisplay(0.002, 0.005, 0.05);
+    o.EnsureAdaptiveDisplay(0.02, 0.05, 0.05);
+    Check(SceneObject::LodCounters().rebuilds == 1, "after invalidation the old levels are NOT reused: the first return to level A rebuilds");
+    // Capacity: more distinct levels than slots evicts the least recently used.
+    SceneObject p = sphere_object();
+    for (double t : {0.05, 0.01, 0.002, 0.0004, 0.00008}) p.EnsureAdaptiveDisplay(t * 0.4, t, 0.0);
+    Check(p.LodInfo().stashed_levels <= SceneObject::kLodStashCapacity, "the stash never holds more than kLodStashCapacity levels");
+  }
+
+  // --- Screen-space error, MEASURED against the exact sphere. ---
+  // For every display triangle, the worst chord sagitta (radius minus the
+  // distance of an edge midpoint from the centre) in model units. The
+  // viewport asks for tolerance = base * LodScaleForPixelSize(pixel); the
+  // error that leaves on screen is sagitta / pixel_size.
+  {
+    auto worst_sagitta = [](const SceneObject& o) {
+      const std::vector<float>& t = o.Display().triangles;
+      double worst = 0.0;
+      for (std::size_t v = 0; v + 17 < t.size(); v += 18) {
+        for (int e = 0; e < 3; ++e) {
+          const float* a = &t[v + 6 * e];
+          const float* b = &t[v + 6 * ((e + 1) % 3)];
+          const double mx = (a[0] + b[0]) / 2.0, my = (a[1] + b[1]) / 2.0, mz = (a[2] + b[2]) / 2.0;
+          worst = std::max(worst, 10.0 - std::sqrt(mx * mx + my * my + mz * mz));
+        }
+      }
+      return worst;
+    };
+    const double base = 0.05;
+    struct Row { double pixel; };
+    std::printf("     zoom (units/px) -> tolerance, triangles, measured worst sagitta, on-screen error (px):\n");
+    for (double pixel : {0.1, 0.02, 0.005, 0.001}) {
+      SceneObject o = sphere_object();
+      const double tol = base * LodScaleForPixelSize(pixel);
+      o.EnsureAdaptiveDisplay(0.02, tol, base);
+      const double sag = worst_sagitta(o);
+      std::printf("     %8.4f -> tol %.5f  %7zu tris  sagitta %.5f  %.2f px\n", pixel, tol, tris(o), sag, sag / pixel);
+      Check(sag <= 2.5 * o.Display().built_surface_tolerance,
+            "measured chord sagitta of the built mesh stays within 2.5x of the tolerance it was built for (the mesher's own constant is ~2.1x)");
+      Check(sag / pixel <= 2.5, "MEASURED on-screen chord error stays under 2.5 px from the reference zoom down to 100x deeper");
+    }
+    {
+      // What the OLD clamp (scale floor 0.2, default 12000-triangle face cap) did at the deepest zoom, measured the same way.
+      SceneObject old = sphere_object();
+      old.EnsureDisplay(0.02, 0.05 * 0.2);
+      const double sag_old = worst_sagitta(old);
+      std::printf("     OLD clamp at 0.001 units/px: tol 0.01000 %7zu tris  sagitta %.5f  %.2f px\n", tris(old), sag_old, sag_old / 0.001);
+      SceneObject now = sphere_object();
+      now.EnsureAdaptiveDisplay(0.02, 0.05 * LodScaleForPixelSize(0.001), 0.05);
+      Check(worst_sagitta(now) < 0.25 * sag_old, "at the deepest zoom the new floor cuts the measured chord error to under a quarter of the old clamp's");
+    }
+    Check(LodScaleForPixelSize(0.001) < 0.2, "deep-zoom scale now goes below the old 0.2 floor");
+    Check(std::fabs(ScreenSpaceErrorPixels(0.05, 0.1) - 0.5) < 1e-12, "reference zoom leaves a 0.5 px error (0.05 / 0.1)");
+  }
+
+  // --- Triangle budget: a refinement that saturates the budget records a floor and stops rebuilding. ---
+  {
+    // r=200: already at tolerance 0.01 the mesh wants far more than the budget.
+    SceneObject o = sphere_of(200.0);
+    SceneObject::ResetLodCounters();
+    o.EnsureAdaptiveDisplay(0.02, 0.0002, 0.05);  // absurdly fine for a r=200 sphere
+    const std::size_t n1 = tris(o);
+    std::printf("     budgeted: %zu triangles (budget %zu), floor %g\n", n1, SceneObject::kAdaptiveTriangleBudget, o.LodInfo().surface_floor);
+    Check(n1 <= SceneObject::kAdaptiveTriangleBudget, "the refined mesh never exceeds the triangle budget");
+    Check(n1 * 10 >= SceneObject::kAdaptiveTriangleBudget * 9, "...it saturates it (>= 90%) - the mesher's per-face cap was raised to the budget");
+    Check(SceneObject::LodCounters().budget_clamps == 1 && Near(o.LodInfo().surface_floor, 0.0002), "the saturating request is recorded as the budget floor (1 clamp)");
+    const unsigned long long rebuilds_before = SceneObject::LodCounters().rebuilds;
+    o.EnsureAdaptiveDisplay(0.02, 0.0001, 0.05);  // zoom in further: finer than the floor
+    o.EnsureAdaptiveDisplay(0.02, 0.00004, 0.05);
+    Check(SceneObject::LodCounters().rebuilds == rebuilds_before && Near(o.Display().built_surface_tolerance, 0.0002),
+          "requests finer than the floor are raised to it: no further re-tessellation of the same capped mesh");
+    SceneObject u = sphere_of(200.0);
+    u.custom_mesh_tolerance = 0.05;  // SetMeshSurfaceParameters pin: the user's own choice, never budget-limited
+    u.EnsureAdaptiveDisplay(0.02, 0.0002, 0.05);
+    Check(u.LodInfo().surface_floor == 0.0 && Near(u.Display().built_surface_tolerance, 0.05), "a pinned (custom tolerance) object is never budget-limited");
+    // Without a base tolerance (the Render/RenderView path) the budget machinery is off.
+    SceneObject r = sphere_of(10.0);
+    r.EnsureAdaptiveDisplay(0.02, 0.0005, 0.0);
+    Check(r.LodInfo().surface_floor == 0.0, "no base tolerance given: no budget floor");
+  }
+
+  // --- Toggle off: fixed tolerance, exact. ---
+  {
+    SceneObject o = sphere_object();
+    o.EnsureAdaptiveDisplay(0.02, 0.05, 0.05, true);
+    o.EnsureAdaptiveDisplay(0.021, 0.0505, 0.05, true);
+    Check(Near(o.Display().built_surface_tolerance, 0.05), "adaptive on: a 1% change stays inside the hysteresis band");
+    o.EnsureAdaptiveDisplay(0.02, 0.05, 0.0, false);
+    Check(Near(o.Display().built_surface_tolerance, 0.05) && Near(o.Display().built_curve_tolerance, 0.02),
+          "adaptive off: the mesh is at exactly the Options tolerances");
+    o.EnsureAdaptiveDisplay(0.02, 0.0505, 0.0, false);
+    Check(Near(o.Display().built_surface_tolerance, 0.0505), "adaptive off: no hysteresis - even a 1% tolerance change is honoured exactly");
+  }
+
+  // --- Per-object display-mode override: the name API is the one door to all ten flags. ---
+  {
+    SceneObject o = SceneObject::MakeCurve(NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0)}, 1));
+    Check(!o.HasDisplayOverride() && std::string(o.DisplayOverrideName()) == "UseViewport", "a fresh object follows the viewport");
+    int ok = 0;
+    for (const std::string& name : SceneObject::DisplayOverrideNames()) {
+      if (!o.SetDisplayOverride(name)) continue;
+      const int set = o.force_wireframe + o.force_shaded + o.force_rendered + o.force_ghosted + o.force_xray + o.force_technical +
+                      o.force_artistic + o.force_pen + o.force_arctic + o.force_monochrome;
+      if (name == "UseViewport" ? set == 0 : (set == 1 && name == o.DisplayOverrideName())) ++ok;
+    }
+    Check(ok == static_cast<int>(SceneObject::DisplayOverrideNames().size()),
+          "every one of the 11 names (UseViewport + 10 modes) sets exactly its own flag and reads back under the same name");
+    Check(o.SetDisplayOverride("x-ray") && o.force_xray && !o.force_pen, "names are case-insensitive and accept X-Ray / xray");
+    Check(!o.SetDisplayOverride("RayTraced") && o.force_xray, "RayTraced is refused and leaves the current override untouched");
+    SceneObject copy = o;
+    Check(copy.force_xray, "the override survives a copy (undo/redo snapshots)");
+
+    // Per-VIEWPORT scope (Rhino: "their display in other viewports won't be affected").
+    SceneObject v = SceneObject::MakeCurve(NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0)}, 1));
+    Check(v.SetViewportDisplayOverride("Top", "Pen") && v.DisplayOverrideNameFor("Top") == "Pen" && v.DisplayOverrideNameFor("Front") == "UseViewport",
+          "a per-viewport override applies in that viewport only");
+    Check(v.DisplayOverrideFlagsFor("Top").pen && !v.DisplayOverrideFlagsFor("Front").pen && !v.HasDisplayOverride() && v.HasAnyDisplayOverride(),
+          "...its flags are visible only for that viewport, and it is not an all-viewports override");
+    v.SetDisplayOverride("Technical");
+    Check(v.DisplayOverrideFlagsFor("Top").pen && !v.DisplayOverrideFlagsFor("Top").technical && v.DisplayOverrideFlagsFor("Front").technical,
+          "a viewport's own entry wins over the all-viewports override there; other viewports use the all-viewports one");
+    SceneObject vcopy = v;
+    Check(vcopy.DisplayOverrideNameFor("Top") == "Pen" && vcopy.DisplayOverrideNameFor("Right") == "Technical", "both scopes survive a copy (undo/redo)");
+    Check(v.SetViewportDisplayOverride("Top", "UseViewport") && v.DisplayOverrideNameFor("Top") == "Technical", "UseViewport removes the viewport entry (the all-viewports override then applies)");
+    Check(!v.SetViewportDisplayOverride("Top", "RayTraced") && v.viewport_display_overrides.empty(), "RayTraced is refused at viewport scope too");
+    v.SetViewportDisplayOverride("Front", "X-Ray");
+    v.ClearDisplayOverrides();
+    Check(!v.HasAnyDisplayOverride(), "ClearDisplayOverrides (ClearAllObjectDisplayModes) removes both scopes");
+    Check(SceneObject::CanonicalDisplayOverrideName("UseView") == "UseViewport" && SceneObject::CanonicalDisplayOverrideName("xray") == "X-Ray",
+          "Rhino's UseView spelling is accepted");
   }
 
   if (failures) std::printf("%d FAILED\n", failures);

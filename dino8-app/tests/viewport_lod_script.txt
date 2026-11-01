@@ -1,0 +1,170 @@
+# Viewport display QC (PARITY_MAP.md "Viewport display/rendering": Per-object
+# display mode override + View-dependent adaptive tessellation). Two parts in
+# one run; tests/smoke.sh's section "viewport display: per-object modes +
+# adaptive tessellation" reads the output and the captured bitmaps.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+
+# ---- Part 1: adaptive tessellation, measured through LodStats ----------
+# A radius-10 sphere in the default four-viewport layout. LodStats prints, per
+# viewport, what that viewport's LAST FRAME drew: triangles, tolerances, and
+# the on-screen chord error.
+GroundPlane Off
+Sphere 0,0,0 10
+SelNone
+ShadedViewport
+ZoomExtentsAll
+@wait 4
+LodStats
+Zoom
+In
+Zoom
+In
+Zoom
+In
+@wait 4
+LodStats
+Zoom
+In
+Zoom
+In
+Zoom
+In
+Zoom
+In
+Zoom
+In
+Zoom
+In
+@wait 4
+LodStats
+Zoom
+Out
+Zoom
+Out
+Zoom
+Out
+Zoom
+Out
+Zoom
+Out
+Zoom
+Out
+@wait 4
+LodStats
+# Switching adaptive tessellation OFF: every viewport back to the fixed
+# Options tolerances regardless of zoom.
+AdaptiveTessellation Off
+@wait 4
+LodStats
+AdaptiveTessellation On
+@wait 4
+LodStats
+
+# ---- Part 2: per-object display modes, measured on pixels --------------
+# Two boxes off the grid lines (no grid/axis pixel can be mistaken for an
+# edge). Box A is never touched; Box B (blue, id 3 after the sphere) cycles
+# through the modes in a Rendered, a Shaded and a Wireframe viewport.
+SelAll
+Delete
+Box -19.3,-4.3,0 -10.7,4.3,0 5
+SelLast
+SetRenderColor 230,30,30
+Box 10.7,-4.3,0 19.3,4.3,0 5
+SelLast
+SetRenderColor 30,30,230
+SelNone
+Top
+ZoomExtentsAll
+RenderedViewport
+@wait 3
+ViewCaptureToFile @TMP@/r_base.bmp
+SelLast
+SetObjectDisplayMode Wireframe
+SelNone
+@wait 3
+ViewCaptureToFile @TMP@/r_wire.bmp
+SelLast
+SetObjectDisplayMode UseViewport
+SelNone
+ShadedViewport
+@wait 3
+ViewCaptureToFile @TMP@/s_base.bmp
+SelLast
+SetObjectDisplayMode Pen
+SelNone
+@wait 3
+ViewCaptureToFile @TMP@/s_pen.bmp
+SelLast
+SetObjectDisplayMode Arctic
+SelNone
+@wait 3
+ViewCaptureToFile @TMP@/s_arctic.bmp
+SelLast
+SetObjectDisplayMode Technical
+SelNone
+@wait 3
+ViewCaptureToFile @TMP@/s_technical.bmp
+SelLast
+SetObjectDisplayMode Artistic
+SelNone
+@wait 3
+ViewCaptureToFile @TMP@/s_artistic.bmp
+SelLast
+SetObjectDisplayMode Rendered
+SelNone
+@wait 3
+ViewCaptureToFile @TMP@/s_rendered.bmp
+ObjectDisplayModes
+SelLast
+SetObjectDisplayMode Technical
+SelNone
+ObjectDisplayModes
+ObjectDisplayModes All
+SelLast
+SetObjectDisplayMode RayTraced
+ObjectDisplayModes
+SelLast
+SetObjectDisplayMode Bogus
+SelNone
+Save @TMP@/modes.3dm
+New
+Open @TMP@/modes.3dm
+ObjectDisplayModes
+
+# ---- Part 3: scope. Like Rhino, SetObjectDisplayMode applies to the ACTIVE
+# viewport only; "All" sets every viewport. Box B is Technical (saved in the
+# .3dm above) - clear that first, then pin Pen to Top only, look at Front,
+# then pin Pen to All viewports and look at Front again.
+SelLast
+SetObjectDisplayMode UseViewport All
+SelNone
+SetActiveViewport Front
+ShadedViewport
+ZoomExtentsAll
+@wait 3
+ViewCaptureToFile @TMP@/f_base.bmp
+SetActiveViewport Top
+ShadedViewport
+@wait 3
+ViewCaptureToFile @TMP@/t_base.bmp
+SelLast
+SetObjectDisplayMode Pen
+SelNone
+@wait 3
+ViewCaptureToFile @TMP@/t_pen.bmp
+ObjectDisplayModes
+SetActiveViewport Front
+@wait 3
+ViewCaptureToFile @TMP@/f_scoped.bmp
+SelLast
+SetObjectDisplayMode Pen All
+SelNone
+@wait 3
+ViewCaptureToFile @TMP@/f_all.bmp
+ObjectDisplayModes
+SetActiveViewport Top
+@wait 3
+ViewCaptureToFile @TMP@/t_all.bmp
+ClearAllObjectDisplayModes
+ObjectDisplayModes
+@expect_objects 2

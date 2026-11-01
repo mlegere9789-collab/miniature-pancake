@@ -21,6 +21,18 @@ namespace dino8::app {
 // `pixel_size <= 0` (a degenerate camera state) returns 1.0 - no scaling.
 double LodScaleForPixelSize(double pixel_size);
 
+// The chord error a tessellation tolerance leaves ON SCREEN, in pixels:
+// `tolerance` (model units) / `pixel_size` (model units per pixel). This is
+// the quantity LodScaleForPixelSize keeps near-constant (tolerance scales with
+// pixel size, so tolerance/pixel_size stays at base/reference = 0.5 px for the
+// app's default 0.05 surface tolerance) everywhere the scale is not clamped;
+// where it IS clamped (past LodMinScale()/LodMaxScale() of zoom) it drifts, and
+// that drift is exactly what the diagnostics report. 0 for degenerate input.
+double ScreenSpaceErrorPixels(double tolerance, double pixel_size);
+// The clamp band of LodScaleForPixelSize (deep-zoom floor, zoomed-out ceiling).
+double LodMinScale();
+double LodMaxScale();
+
 // Per-object DISTANCE-based LOD, on top of LodScaleForPixelSize's own
 // per-VIEWPORT zoom-level scale - closing the "still zoom-level LOD, not
 // per-object distance-based LOD" gap PARITY_MAP.md's "View-dependent

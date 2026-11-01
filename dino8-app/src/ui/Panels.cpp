@@ -284,6 +284,28 @@ void DrawPropertiesPanel(Application& app) {
       doc.BeginChange("Material");
       for (ObjectId id : sel) if (SceneObject* o = doc.Find(id)) o->material_name = mat;
     }
+    // Per-object display mode (SetObjectDisplayMode) for the ACTIVE viewport,
+    // as in Rhino ("their display in other viewports won't be affected"):
+    // every viewport mode except RayTraced (a whole-frame image) can be
+    // pinned to an object. The command's `All` word sets every viewport.
+    {
+      Viewport* active_vp = app.ActiveViewport();
+      const std::string vp_name = active_vp ? active_vp->Name() : std::string();
+      const std::string current_mode = first->DisplayOverrideNameFor(vp_name);
+      const std::string label = "Display mode (" + (vp_name.empty() ? std::string("all viewports") : vp_name) + ")";
+      if (ImGui::BeginCombo(label.c_str(), current_mode.c_str())) {
+        for (const std::string& n : SceneObject::DisplayOverrideNames()) {
+          if (ImGui::Selectable(n.c_str(), n == current_mode)) {
+            doc.BeginChange("Object display mode");
+            for (ObjectId id : sel)
+              if (SceneObject* o = doc.Find(id)) {
+                if (vp_name.empty()) o->SetDisplayOverride(n); else o->SetViewportDisplayOverride(vp_name, n);
+              }
+          }
+        }
+        ImGui::EndCombo();
+      }
+    }
   }
   if (sel.size() == 1 && ImGui::CollapsingHeader("Details", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::TextWrapped("%s", first->Describe().c_str());
@@ -933,6 +955,8 @@ void DrawDisplayPanel(Application& app) {
     app.surface_display_tolerance = st;
     for (SceneObject& o : app.Doc().Objects()) o.InvalidateDisplay();
   }
+  if (ImGui::Checkbox("Adaptive tessellation (re-tessellate on zoom)", &app.adaptive_tessellation))
+    for (SceneObject& o : app.Doc().Objects()) o.InvalidateDisplay();
   ImGui::Checkbox("Control points on selected", &app.show_control_points_for_selected);
   ImGui::End();
 }

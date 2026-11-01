@@ -47,7 +47,13 @@ int main() {
 
   // Clamped in both directions so an extreme zoom can't blow up the
   // triangle count or collapse it to nothing.
-  Check(LodScaleForPixelSize(0.0000001) >= 0.2 - 1e-9, "an extreme close-up is clamped to a floor scale (>= 0.2)");
+  Check(LodScaleForPixelSize(0.0000001) >= 0.02 - 1e-9, "an extreme close-up is clamped to a floor scale (>= 0.02, the deep-zoom floor)");
+  Check(std::fabs(LodScaleForPixelSize(0.0000001) - dino8::app::LodMinScale()) < 1e-12, "...which is exactly LodMinScale()");
+  Check(std::fabs(LodScaleForPixelSize(1000.0) - dino8::app::LodMaxScale()) < 1e-12, "...and the zoomed-out ceiling is exactly LodMaxScale()");
+  Check(LodScaleForPixelSize(0.002) < 0.2, "20x past the reference zoom the scale is below the old 0.2 floor (still refining)");
+  Check(std::fabs(LodScaleForPixelSize(0.002) - 0.02) < 1e-12 || LodScaleForPixelSize(0.002) > 0.02, "...but never below the new floor");
+  Check(std::fabs(dino8::app::ScreenSpaceErrorPixels(0.05 * LodScaleForPixelSize(0.04), 0.04) - 0.5) < 1e-9, "inside the unclamped band, tolerance/pixel_size is constant (0.5 px)");
+  Check(dino8::app::ScreenSpaceErrorPixels(0.0, 0.1) == 0.0 && dino8::app::ScreenSpaceErrorPixels(0.1, 0.0) == 0.0, "ScreenSpaceErrorPixels: degenerate input gives 0");
   Check(LodScaleForPixelSize(1000.0) <= 6.0 + 1e-9, "an extreme zoom-out is clamped to a ceiling scale (<= 6.0)");
   // And the clamp is real, not just coincidentally satisfied at these two
   // probes - a further order of magnitude past each must not move it.
