@@ -1243,6 +1243,11 @@ std::vector<Brep::PlanarFace> PlanarBooleanFaces(const Brep& a, const Brep& b, B
   auto same_plane = [tol](const ON_Plane& p, const ON_Plane& q) {
     return std::fabs(p.DistanceTo(q.origin)) <= tol && p.zaxis.IsParallelTo(q.zaxis, 1e-6) == 1;
   };
+  // Same plane, outward normals anti-parallel: two solids touching face to
+  // face (see the Intersection branch below).
+  auto opposed_plane = [tol](const ON_Plane& p, const ON_Plane& q) {
+    return std::fabs(p.DistanceTo(q.origin)) <= tol && p.zaxis.IsParallelTo(q.zaxis, 1e-6) == -1;
+  };
 
   std::vector<Brep::PlanarFace> result;
   switch (op) {
@@ -1261,7 +1266,24 @@ std::vector<Brep::PlanarFace> PlanarBooleanFaces(const Brep& a, const Brep& b, B
       // BooleanIntersectConvexPlanar's own result on convex inputs.
       for (const Brep::PlanarFace& f : from_a.in) result.push_back(f);
       for (const Brep::PlanarFace& f : from_b.in) result.push_back(f);
-      for (const Brep::PlanarFace& f : from_a.on) result.push_back(f);
+      // A coincident A_on/B_on pair with OPPOSED outward normals is two
+      // solids touching face-to-face: the material of one lies on the far
+      // side of the shared plane from the other's, so the contact is a 2D
+      // patch with no volume and belongs to no Intersection result.
+      // (Keeping it - the pre-existing behaviour - returned the touching
+      // face as a one-face open "sheet" with no volume at all for two
+      // boxes merely sharing a face.) Same-normal pairs still keep A's
+      // copy, as before.
+      for (const Brep::PlanarFace& a_on : from_a.on) {
+        bool touching_only = false;
+        for (const Brep::PlanarFace& b_on : from_b.on) {
+          if (opposed_plane(a_on.plane, b_on.plane)) {
+            touching_only = true;
+            break;
+          }
+        }
+        if (!touching_only) result.push_back(a_on);
+      }
       break;
     case BooleanOp::Difference:
       // A - B: keep the part of A outside B, plus the part of B inside A
@@ -8465,6 +8487,9 @@ std::vector<MixedFace> MixedBooleanFaces(const Brep& a, const Brep& b, BooleanOp
   auto same_plane = [tol](const ON_Plane& p, const ON_Plane& q) {
     return std::fabs(p.DistanceTo(q.origin)) <= tol && p.zaxis.IsParallelTo(q.zaxis, 1e-6) == 1;
   };
+  auto opposed_plane = [tol](const ON_Plane& p, const ON_Plane& q) {
+    return std::fabs(p.DistanceTo(q.origin)) <= tol && p.zaxis.IsParallelTo(q.zaxis, 1e-6) == -1;
+  };
 
   std::vector<MixedFace> result;
   switch (op) {
@@ -8492,7 +8517,22 @@ std::vector<MixedFace> MixedBooleanFaces(const Brep& a, const Brep& b, BooleanOp
     case BooleanOp::Intersection: {
       for (const MixedFace& f : from_a.in) result.push_back(f);
       for (const MixedFace& f : from_b.in) result.push_back(f);
-      for (const MixedFace& f : from_a.on) result.push_back(f);
+      // A coincident planar A_on/B_on pair with OPPOSED outward normals is
+      // two solids touching face to face - a 2D contact with no volume,
+      // not part of any Intersection (see BooleanCombinePlanar's identical
+      // rule). Same-normal pairs and everything else keep A's copy.
+      for (const MixedFace& a_on : from_a.on) {
+        bool touching_only = false;
+        if (!a_on.is_cyl) {
+          for (const MixedFace& b_on : from_b.on) {
+            if (!b_on.is_cyl && opposed_plane(a_on.planar.plane, b_on.planar.plane)) {
+              touching_only = true;
+              break;
+            }
+          }
+        }
+        if (!touching_only) result.push_back(a_on);
+      }
       // End-cap synthesis, mirroring the Union branch above but with the
       // OPPOSITE probe polarity (PointClass::kIn, not the default kOut -
       // see SynthesizeEndCaps' own doc comment above and boolean.h's own

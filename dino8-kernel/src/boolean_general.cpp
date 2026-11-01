@@ -1794,6 +1794,155 @@ bool RepresentativeUV(const Fragment& frag, Point2d& out_uv) {
   return false;
 }
 
+// True when `curves` (an SSX result for one face pair) is nothing but the
+// numerical debris of a TANGENT contact. Two surfaces that only touch -
+// an internally tangent sphere pair (a point), a cylinder inscribed in a
+// box (a line along each wall) - have no crossing for the boolean to
+// fragment against, but the SSX seed meshes (chord tolerance
+// `opt.mesh_tolerance`) see the two surfaces closer than their own
+// tolerance over a band around the touch locus and report it as a fan of
+// short OPEN curves (measured: 16 two-point curves ~0.03 long around the
+// touch point of spheres of radius 2 and 1; 15 collinear segments tiling
+// the whole tangent line of a radius-5 cylinder against a box wall). Fed
+// into the fragmenter they slice slivers off both faces whose edges then
+// collide ("an edge is claimed by 3 or more fragment loops") or - worse -
+// leave a silently invalid, wrong-volume result.
+//
+// Claimed only when ALL of:
+//   (1) every curve is open (a closed loop is always a real crossing);
+//   (2) at every point of every curve the two surface normals are nearly
+//       parallel (sin of the angle < 0.3) - a single clearly transversal
+//       point proves a real crossing and exits before any expensive work;
+//   (3) FindSurfaceTangentContacts() / FindSurfaceTangentCurves() confirm
+//       a genuine tangent locus (isolated points, or a whole curve
+//       sampled densely), and every curve point lies within 4 mesh
+//       tolerances of it.
+// A real crossing leaves the locus (or has a closed curve, or a
+// transversal point), so it is never discarded. The only thing treated as
+// touching that is geometrically a very shallow overlap is a penetration
+// shallower than the SSX mesh tolerance's own resolution, which
+// IntersectSurfaces() already documents as "only touch tangentially
+// within the mesh tolerance".
+bool CurvesAreTangentContactNoise(const std::vector<IntersectionCurve>& curves, const ON_Surface& a,
+                                  const ON_Surface& b, const IntersectOptions& opt) {
+  const double band = 4.0 * opt.mesh_tolerance;
+  for (const IntersectionCurve& c : curves) {
+    if (c.closed || c.points.empty() || c.uv_a.size() != c.points.size() || c.uv_b.size() != c.points.size()) return false;
+    for (size_t k = 0; k < c.points.size(); ++k) {
+      const ON_3dVector na = a.NormalAt(c.uv_a[k].x, c.uv_a[k].y);
+      const ON_3dVector nb = b.NormalAt(c.uv_b[k].x, c.uv_b[k].y);
+      if (!na.IsValid() || !nb.IsValid() || na.Length() < 0.5 || nb.Length() < 0.5) return false;
+      if (ON_CrossProduct(na, nb).Length() > 0.3) return false;
+    }
+  }
+  // The tangent locus as polylines (an isolated contact is a one-point
+  // polyline), measured by true point-to-segment distance so a long
+  // tangent curve sampled coarsely still covers its whole length.
+  std::vector<std::vector<Point3d>> locus;
+  {
+    // FindSurfaceTangentContacts() reports a tangent LINE as however many
+    // isolated points its seed grid converged to (17 points, ~0.4 apart,
+    // along a 6-long cylinder/plane tangent line), so debris between two
+    // neighbouring points would be 0.2 from either. Link each contact to
+    // every other within 1.5x the largest nearest-neighbour spacing so a
+    // line becomes a chain of segments; an isolated contact stays a point.
+    std::vector<Point3d> pts;
+    for (const SurfaceTangentContact& t : FindSurfaceTangentContacts(a, b, opt)) pts.push_back(t.point);
+    double d_ref = 0.0;
+    for (size_t i = 0; i < pts.size(); ++i) {
+      double nn = std::numeric_limits<double>::max();
+      for (size_t j = 0; j < pts.size(); ++j) {
+        if (j != i) nn = std::min(nn, pts[i].DistanceTo(pts[j]));
+      }
+      if (nn < std::numeric_limits<double>::max()) d_ref = std::max(d_ref, nn);
+    }
+    for (size_t i = 0; i < pts.size(); ++i) {
+      locus.push_back({pts[i]});
+      for (size_t j = i + 1; j < pts.size(); ++j) {
+        if (pts[i].DistanceTo(pts[j]) <= 1.5 * d_ref) locus.push_back({pts[i], pts[j]});
+      }
+    }
+  }
+  for (const SurfaceTangentCurve& tc : FindSurfaceTangentCurves(a, b, opt)) {
+    const ON_Interval dom = tc.curve.Domain();
+    const int samples = 400;
+    std::vector<Point3d> poly;
+    for (int k = 0; k <= samples; ++k) poly.push_back(tc.curve.PointAt(dom.ParameterAt(k / static_cast<double>(samples))));
+    locus.push_back(std::move(poly));
+  }
+  if (locus.empty()) return false;
+  auto dist_to_polyline = [](const Point3d& p, const std::vector<Point3d>& poly) {
+    double best = p.DistanceTo(poly[0]);
+    for (size_t k = 0; k + 1 < poly.size(); ++k) {
+      const Vector3d d = poly[k + 1] - poly[k];
+      const double len2 = d.x * d.x + d.y * d.y + d.z * d.z;
+      if (len2 <= 0.0) continue;
+      const Vector3d w = p - poly[k];
+      const double t = std::clamp((w.x * d.x + w.y * d.y + w.z * d.z) / len2, 0.0, 1.0);
+      best = std::min(best, p.DistanceTo(poly[k] + d * t));
+    }
+    return best;
+  };
+  for (const IntersectionCurve& c : curves) {
+    for (const Point3d& p : c.points) {
+      bool near_locus = false;
+      for (const std::vector<Point3d>& poly : locus) {
+        if (dist_to_polyline(p, poly) <= band) {
+          near_locus = true;
+          break;
+        }
+      }
+      if (!near_locus) return false;
+    }
+  }
+  return true;
+}
+
+// Further interior (u, v) candidates for a fragment, for a caller whose
+// first pick (RepresentativeUV(), the centroid) turned out to be a bad
+// query point. A 9x9 grid over the outer loop's (u, v) bounding box,
+// filtered to points strictly inside the outer loop and outside every
+// hole, ordered farthest-from-`first` last so the nearest alternates are
+// tried first, and with anything within 2% of the box span of `first`
+// dropped (that is the same neighbourhood that was just rejected).
+std::vector<Point2d> AlternateRepresentativeUVs(const Fragment& frag, const Point2d& first) {
+  std::vector<Point2d> out;
+  const std::vector<Point2d> outer_poly = ToPoly(frag.outer);
+  if (outer_poly.size() < 3) return out;
+  std::vector<std::vector<Point2d>> hole_polys;
+  for (const auto& h : frag.holes) hole_polys.push_back(ToPoly(h));
+  double umin = outer_poly[0].x, umax = umin, vmin = outer_poly[0].y, vmax = vmin;
+  for (const Point2d& q : outer_poly) {
+    umin = std::min(umin, q.x);
+    umax = std::max(umax, q.x);
+    vmin = std::min(vmin, q.y);
+    vmax = std::max(vmax, q.y);
+  }
+  const double du = umax - umin, dv = vmax - vmin;
+  const int n = 9;
+  for (int i = 1; i <= n; ++i) {
+    for (int j = 1; j <= n; ++j) {
+      const Point2d q(umin + du * i / (n + 1.0), vmin + dv * j / (n + 1.0));
+      if (std::fabs(q.x - first.x) <= 0.02 * du && std::fabs(q.y - first.y) <= 0.02 * dv) continue;
+      if (!PointInPolygon(outer_poly, q)) continue;
+      bool in_hole = false;
+      for (const auto& hp : hole_polys) {
+        if (PointInPolygon(hp, q)) {
+          in_hole = true;
+          break;
+        }
+      }
+      if (!in_hole) out.push_back(q);
+    }
+  }
+  std::sort(out.begin(), out.end(), [&](const Point2d& a, const Point2d& b) {
+    const double da = (a.x - first.x) * (a.x - first.x) + (a.y - first.y) * (a.y - first.y);
+    const double db = (b.x - first.x) * (b.x - first.x) + (b.y - first.y) * (b.y - first.y);
+    return da < db;
+  });
+  return out;
+}
+
 // --- keyhole bridging: fold a genuinely interior closed hole loop into
 // its own fragment's outer loop, so the assembled face ends up hole-free
 // -------------------------------------------------------------------
@@ -2300,8 +2449,18 @@ std::unique_ptr<detail::BrepFaceBoxIndex> MakeClassifyIndex(const ON_Brep& b) {
 // then applies the IDENTICAL exact `fb.IsDisjoint(ray_box)` predicate the
 // plain scan applies to every face - so the same faces reach the
 // intersector in the same order, and the answer is unchanged.
+//
+// `on_boundary`, if given, is set true when any ray finds a genuine
+// intersection with a face of `other` at (within `tol` of) the ray origin
+// itself: `p` then sits ON `other`'s boundary, and the returned parity is
+// numerically arbitrary (it depends on which side of the surface each
+// generic ray happens to leave). A caller that has a choice of query point
+// uses this to pick a different one - see the fragment classification in
+// BooleanCombineGeneral(), where a face's centroid is exactly the tangent
+// point of a sphere resting on it.
 Cls ClassifyPointVsBrep(const Point3d& p, const ON_Brep& other, double ray_length, const IntersectOptions& opt,
-                         double tol, const detail::BrepFaceBoxIndex* index = nullptr) {
+                         double tol, const detail::BrepFaceBoxIndex* index = nullptr, bool* on_boundary = nullptr) {
+  if (on_boundary) *on_boundary = false;
   const std::vector<Vector3d> dirs = GenericRayDirections();
   std::vector<int> candidates;
   for (const Vector3d& d : dirs) {
@@ -2321,7 +2480,10 @@ Cls ClassifyPointVsBrep(const Point3d& p, const ON_Brep& other, double ray_lengt
       if (fb.IsDisjoint(ray_box)) return;
       std::vector<CurveSurfaceHit> hits = IntersectCurveSurface(ray, *s, opt);
       for (const CurveSurfaceHit& h : hits) {
-        if (h.t <= tol) continue;  // at/behind the ray origin
+        if (h.t <= tol) {  // at/behind the ray origin
+          if (on_boundary && h.point.DistanceTo(p) <= tol && FaceContainsUV(face, h.uv.x, h.uv.y)) *on_boundary = true;
+          continue;
+        }
         if (!FaceContainsUV(face, h.uv.x, h.uv.y)) continue;
         // Grazing hit very near this face's own trim boundary can't be
         // parity-counted reliably - abandon this direction.
@@ -3420,6 +3582,7 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
       const ON_BrepFace& fa = ba.m_F[i];
       const ON_BrepFace& fb = bb.m_F[j];
       std::vector<IntersectionCurve> curves = IntersectFaces(&fa, *fa.SurfaceOf(), &fb, *fb.SurfaceOf(), opt);
+      if (!curves.empty() && CurvesAreTangentContactNoise(curves, *fa.SurfaceOf(), *fb.SurfaceOf(), opt)) curves.clear();
       // Geometric coincidence check, run UNCONDITIONALLY rather than only
       // when `curves.empty()` - the exact regression this engine's own
       // `TestBooleanCombineGeneralCoplanarBoxes` fixture (two boxes merely
@@ -3930,8 +4093,29 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
             if (debug) std::fprintf(stderr, "  frag: NO representative UV found (outer pts=%zu, holes=%zu)\n", frag.outer.size(), frag.holes.size());
             continue;
           }
-          const Point3d p3 = ff.surface->PointAt(uv.x, uv.y);
-          const Cls cls = ClassifyPointVsBrep(p3, other, ray_length, opt, tol, other_index);
+          Point3d p3 = ff.surface->PointAt(uv.x, uv.y);
+          bool on_other_boundary = false;
+          Cls cls = ClassifyPointVsBrep(p3, other, ray_length, opt, tol, other_index, &on_other_boundary);
+          if (on_other_boundary) {
+            // Tangent contact: the representative point (typically the
+            // fragment's centroid - e.g. the centre of a box face a sphere
+            // rests on) is exactly the touch point, so its ray-cast parity
+            // is arbitrary. The fragment as a whole lies on one side of
+            // the other solid, so classify an interior point that is NOT
+            // on its boundary instead. If every candidate is on the
+            // boundary (a genuinely coincident fragment) keep the original.
+            for (const Point2d& alt : AlternateRepresentativeUVs(frag, uv)) {
+              const Point3d alt_p3 = ff.surface->PointAt(alt.x, alt.y);
+              bool alt_on_boundary = false;
+              const Cls alt_cls = ClassifyPointVsBrep(alt_p3, other, ray_length, opt, tol, other_index, &alt_on_boundary);
+              if (alt_on_boundary) continue;
+              if (debug) std::fprintf(stderr, "  frag: representative on other's boundary (tangent contact); reclassified at uv=(%f,%f)\n", alt.x, alt.y);
+              uv = alt;
+              p3 = alt_p3;
+              cls = alt_cls;
+              break;
+            }
+          }
           if (debug) std::fprintf(stderr, "  frag: outer=%zu holes=%zu uv=(%f,%f) p3=(%f,%f,%f) cls=%s\n", frag.outer.size(), frag.holes.size(), uv.x, uv.y, p3.x, p3.y, p3.z, cls == Cls::In ? "In" : "Out");
           switch (op) {
             case BooleanOp::Union:
