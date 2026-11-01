@@ -89472,6 +89472,446 @@ void TestLoftPlanarCapsMeshClosedAndVolumeExact() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Closed hollow shell (uniform wall, NO opening) of a solid at B-rep level:
+// ShellConvexPlanar(solid, {}, t) for convex planar bodies (this was never
+// pinned by a test, and PARITY_MAP's "only a full sphere or torus" text was
+// stale for it) and the new ShellClosedExtrusion() for non-convex and
+// curved-wall prisms. Every check below is against an independent closed
+// form (analytic volume, exact signed distance to the outer skin), never
+// against the implementation's own arithmetic.
+// ---------------------------------------------------------------------------
+namespace shell_closed_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+
+// Distance from p to the segment ab.
+double SegDist2D(double px, double py, double ax, double ay, double bx, double by) {
+  const double abx = bx - ax, aby = by - ay;
+  const double l2 = abx * abx + aby * aby;
+  double s = l2 > 0.0 ? ((px - ax) * abx + (py - ay) * aby) / l2 : 0.0;
+  s = std::min(1.0, std::max(0.0, s));
+  return std::hypot(px - (ax + s * abx), py - (ay + s * aby));
+}
+
+bool PointInPolygon2D(double px, double py, const std::vector<std::pair<double, double>>& poly) {
+  bool inside = false;
+  const size_t n = poly.size();
+  for (size_t i = 0, j = n - 1; i < n; j = i++) {
+    const double ax = poly[j].first, ay = poly[j].second, bx = poly[i].first, by = poly[i].second;
+    if ((ay > py) != (by > py) && px < ax + (py - ay) * (bx - ax) / (by - ay)) inside = !inside;
+  }
+  return inside;
+}
+
+// Exact distance from p (inside or on the skin) to the boundary of the
+// right prism {(x, y) in polygon, z in [0, h]}.
+double PrismBoundaryDistance(const std::vector<std::pair<double, double>>& poly, double h, const Point3d& p) {
+  double d = std::min(p.z, h - p.z);
+  const size_t n = poly.size();
+  for (size_t i = 0; i < n; ++i) {
+    const auto& a = poly[i];
+    const auto& b = poly[(i + 1) % n];
+    d = std::min(d, SegDist2D(p.x, p.y, a.first, a.second, b.first, b.second));
+  }
+  return d;
+}
+
+double ShoelaceArea(const std::vector<std::pair<double, double>>& poly) {
+  double a = 0.0;
+  for (size_t i = 0; i < poly.size(); ++i) {
+    const auto& p = poly[i];
+    const auto& q = poly[(i + 1) % poly.size()];
+    a += p.first * q.second - q.first * p.second;
+  }
+  return 0.5 * a;
+}
+
+NurbsCurve ClosedPolyline(const std::vector<std::pair<double, double>>& poly, double z = 0.0) {
+  std::vector<Point3d> pts;
+  for (const auto& p : poly) pts.emplace_back(p.first, p.second, z);
+  pts.push_back(pts.front());
+  return NurbsCurve::FromControlPoints(pts, 1);
+}
+
+NurbsCurve MakeCircleCurve(Point3d center, Vector3d normal, double radius) {
+  const ON_Circle circle(ON_Plane(center, normal), radius);
+  ON_NurbsCurve nurbs;
+  circle.GetNurbForm(nurbs);
+  NurbsCurve k;
+  k.raw() = nurbs;
+  return k;
+}
+
+NurbsCurve MakeEllipseCurve(double a, double b) {
+  const ON_Ellipse e(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), a, b);
+  ON_NurbsCurve nurbs;
+  e.GetNurbForm(nurbs);
+  NurbsCurve k;
+  k.raw() = nurbs;
+  return k;
+}
+
+template <typename F>
+bool Throws(F&& f) {
+  try {
+    f();
+  } catch (const std::invalid_argument&) {
+    return true;
+  }
+  return false;
+}
+
+// Min over the solid's own face planes of the (inside-positive) distance:
+// exact distance from an interior point to the boundary of a CONVEX polyhedron.
+double ConvexBoundaryDistance(const std::vector<Brep::PlanarFace>& faces, const Point3d& p) {
+  double d = std::numeric_limits<double>::infinity();
+  for (const auto& f : faces) d = std::min(d, -ON_DotProduct(p - f.plane.origin, f.plane.zaxis));
+  return d;
+}
+
+// Vertices, edge midpoints and the vertex centroid of one planar face.
+std::vector<Point3d> FaceSamples(const Brep::PlanarFace& f) {
+  std::vector<Point3d> s;
+  Vector3d c(0, 0, 0);
+  for (size_t i = 0; i < f.loop.size(); ++i) {
+    const Point3d& a = f.loop[i];
+    const Point3d& b = f.loop[(i + 1) % f.loop.size()];
+    s.push_back(a);
+    s.push_back(Point3d((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2));
+    c += Vector3d(a.x, a.y, a.z);
+  }
+  c /= static_cast<double>(f.loop.size());
+  s.push_back(Point3d(c.x, c.y, c.z));
+  return s;
+}
+
+void TestShellConvexPlanarClosedHollowShellBoxExact() {
+  using dino8::kernel::ShellConvexPlanar;
+  const double s = 10.0, t = 1.0;
+  const Brep cube = Brep::Box(0, 0, 0, s, s, s);
+  const Brep shell = ShellConvexPlanar(cube, {}, t);
+
+  Check(shell.FaceCount() == 12, "a CLOSED hollow box shell (no removed face) has 12 faces: 6 outer + 6 inner, no rim");
+  Check(shell.raw().IsValid() && shell.raw().IsSolid(), "the closed hollow box shell is a valid ON_Brep solid");
+  const Brep::CheckReport report = shell.Check(dino8::kernel::tolerance::kDistance, dino8::kernel::tolerance::kEdgeJoin, true);
+  Check(report.IsClean() && report.topology_valid && report.is_closed && report.is_oriented,
+        "Check(self-intersections on) is clean: closed, oriented, no face/face or interior self-intersection");
+
+  Check(std::fabs(PlanarBrepVolumeExact(shell) - 488.0) < 1e-9,
+        "closed hollow box shell exact volume = s^3 - (s-2t)^3 = 488");
+  Check(std::fabs(shell.Volume() - 488.0) < 1e-6, "Brep::Volume() (divergence theorem) agrees: 488");
+  const dino8::kernel::Mesh mesh = shell.TessellateToClosedMesh(1, 1);
+  Check(mesh.IsClosedManifold() && std::fabs(mesh.Volume() - 488.0) < 1e-3,
+        "the shell tessellates into a closed manifold of volume 488");
+
+  // Wall thickness at every sample of every face: outer faces lie ON the
+  // original skin (distance 0), inner faces at distance exactly t, and NO
+  // sample lies strictly between (that would be a thin or intruding wall).
+  const std::vector<Brep::PlanarFace> faces = shell.PlanarFaces();
+  const std::vector<Brep::PlanarFace> original = cube.PlanarFaces();
+  int on_skin = 0, at_t = 0, between = 0;
+  bool inner_normals_face_cavity = true;
+  int inner_faces = 0;
+  for (const auto& f : faces) {
+    bool face_inner = false;
+    for (const Point3d& p : FaceSamples(f)) {
+      const double d = ConvexBoundaryDistance(original, p);
+      if (std::fabs(d) < 1e-12) {
+        ++on_skin;
+      } else if (std::fabs(d - t) < 1e-12) {
+        ++at_t;
+        face_inner = true;
+      } else {
+        ++between;
+      }
+    }
+    if (face_inner) {
+      ++inner_faces;
+      // Outward-from-material normal of the cavity wall points INTO the cavity.
+      inner_normals_face_cavity = inner_normals_face_cavity &&
+                                  ON_DotProduct(Point3d(5, 5, 5) - f.loop[0], f.plane.zaxis) > 0.0;
+    }
+  }
+  Check(between == 0, "no sample of the shell lies strictly between the outer skin and wall depth t");
+  Check(on_skin == 54 && at_t == 54, "6 outer + 6 inner faces x 9 samples: 54 on the skin, 54 at exactly depth t");
+  Check(inner_faces == 6 && inner_normals_face_cavity, "the 6 inner faces' normals all point into the cavity");
+
+  // Near the inradius: a cavity of side 0.2 survives, exactly s^3 - 0.2^3.
+  const Brep thin = ShellConvexPlanar(cube, {}, 4.9);
+  Check(thin.raw().IsValid() && thin.raw().IsSolid() && std::fabs(thin.Volume() - (1000.0 - 0.008)) < 1e-6,
+        "t = 4.9 (0.1 short of the inradius 5) still gives a valid shell of volume 1000 - 0.2^3");
+  Check(Throws([&] { ShellConvexPlanar(cube, {}, 5.0); }), "t = inradius collapses the cavity: refused");
+  Check(Throws([&] { ShellConvexPlanar(cube, {}, 5.5); }), "t beyond the inradius: refused");
+
+  // Per-face closed shell: cavity is the exact box with each wall its own thickness.
+  const std::vector<double> th = {0.5, 1.0, 1.5, 2.0, 0.8, 0.7};
+  const Brep mixed = ShellConvexPlanar(cube, {}, th);
+  const double cavity = (s - th[4] - th[5]) * (s - th[2] - th[3]) * (s - th[0] - th[1]);
+  Check(mixed.raw().IsValid() && mixed.raw().IsSolid() && std::fabs(mixed.Volume() - (1000.0 - cavity)) < 1e-6,
+        "closed per-face shell volume = s^3 - (s-t4-t5)(s-t2-t3)(s-t0-t1)");
+  Check(mixed.Check(dino8::kernel::tolerance::kDistance, dino8::kernel::tolerance::kEdgeJoin, true).IsClean(),
+        "closed per-face shell passes Check(self-intersections on)");
+}
+
+void TestShellConvexPlanarClosedHollowShellTetrahedronExactScaling() {
+  using dino8::kernel::ShellConvexPlanar;
+  // A non-axis-aligned convex solid: its inward offset by t is the SIMILAR
+  // tetrahedron scaled by (r - t)/r about the incenter (r = 3V/S), so
+  // V_cavity = V ((r - t)/r)^3 exactly.
+  const Brep tet = MakeTestTetrahedron(Point3d(0, 0, 6), Point3d(0, 0, 0), Point3d(6, 0, 0), Point3d(0, 6, 0));
+  const std::vector<Brep::PlanarFace> tf = tet.PlanarFaces();
+  const double V = 36.0;
+  const double S = 54.0 + std::sqrt(3.0) / 4.0 * 72.0;
+  const double r = 3.0 * V / S;
+  for (const double t : {0.25, 0.5, 1.0, 0.999 * r}) {
+    const Brep shell = ShellConvexPlanar(tet, {}, t);
+    const double scale = (r - t) / r;
+    const double expected = V * (1.0 - scale * scale * scale);
+    Check(shell.FaceCount() == 8 && shell.raw().IsValid() && shell.raw().IsSolid(),
+          "closed tetrahedron shell: 8 faces, valid solid");
+    Check(std::fabs(shell.Volume() - expected) < 1e-9 * V && std::fabs(PlanarBrepVolumeExact(shell) - expected) < 1e-9 * V,
+          "closed tetrahedron shell volume = V (1 - ((r-t)/r)^3) to 1e-9 relative");
+    Check(shell.Check(dino8::kernel::tolerance::kDistance, dino8::kernel::tolerance::kEdgeJoin, true).IsClean(),
+          "closed tetrahedron shell passes Check(self-intersections on)");
+    // Every inner-face sample sits at exactly depth t from the outer skin.
+    int at_t = 0, bad = 0;
+    for (const auto& f : shell.PlanarFaces()) {
+      for (const Point3d& p : FaceSamples(f)) {
+        const double d = ConvexBoundaryDistance(tf, p);
+        if (std::fabs(d) < 1e-9) continue;
+        if (std::fabs(d - t) < 1e-9) ++at_t; else ++bad;
+      }
+    }
+    Check(bad == 0 && at_t == 4 * 7, "tetrahedron shell: all 4 inner faces' 28 samples are at exactly depth t, none between");
+  }
+  Check(Throws([&] { ShellConvexPlanar(tet, {}, r); }), "t = inradius: refused");
+  Check(Throws([&] { ShellConvexPlanar(tet, {}, 1.01 * r); }), "t just beyond the inradius: refused");
+}
+
+void TestShellClosedExtrusionNonConvexLShape() {
+  using dino8::kernel::ShellClosedExtrusion;
+  const std::vector<std::pair<double, double>> L = {{0, 0}, {6, 0}, {6, 2}, {2, 2}, {2, 6}, {0, 6}};
+  const double h = 4.0;
+  // Independent closed form: the sharp inward offset of this L is the L with
+  // vertices (t,t) (6-t,t) (6-t,2-t) (2-t,2-t) (2-t,6-t) (t,6-t).
+  auto cavity_poly = [&](double t) {
+    return std::vector<std::pair<double, double>>{{t, t}, {6 - t, t}, {6 - t, 2 - t}, {2 - t, 2 - t}, {2 - t, 6 - t}, {t, 6 - t}};
+  };
+  auto expected_volume = [&](double t) { return 20.0 * h - ShoelaceArea(cavity_poly(t)) * (h - 2 * t); };
+  Check(std::fabs(ShoelaceArea(L) - 20.0) < 1e-12, "fixture: L area is 20");
+
+  const double t = 0.5;
+  const Brep shell = ShellClosedExtrusion(ClosedPolyline(L), Vector3d(0, 0, h), t);
+  Check(std::fabs(expected_volume(t) - 53.0) < 1e-12, "hand-derived L shell volume at t=0.5 is 80 - 9*3 = 53");
+  Check(std::fabs(shell.Volume() - 53.0) < 1e-6, "ShellClosedExtrusion(L, t=0.5) Brep::Volume() = 53 (divergence theorem on the NURBS faces)");
+
+  Check(std::fabs(PlanarBrepVolumeExact(shell) - 53.0) < 1e-9,
+        "...and the exact double-precision planar-face volume agrees to 1e-9 (the L shell is all exactly-planar faces)");
+  Check(shell.FaceCount() == 16 && shell.PlanarFaces().size() == 16,
+        "an n-gon prism shell has 2*(n+2) = 16 exactly-planar faces for the 6-gon L (outer + cavity)");
+  Check(shell.raw().IsValid() && shell.raw().IsSolid(), "the L shell is a valid ON_Brep solid (two closed shells)");
+  Check(shell.raw().m_V.Count() == 24 && shell.raw().m_E.Count() == 36 && shell.raw().m_F.Count() == 16,
+        "topology counts V=24, E=36, F=16: two disjoint closed prism shells (V-E+F = 2 each), no weld, no stray edge");
+  const Brep::CheckReport deep = shell.Check(dino8::kernel::tolerance::kDistance, dino8::kernel::tolerance::kEdgeJoin, true);
+  Check(deep.IsClean() && deep.topology_valid && deep.is_closed && deep.is_oriented,
+        "Check(self-intersections on) is clean: closed, oriented, no face/face or interior self-intersection, no inside-out shell");
+
+  const std::vector<Brep> pieces = shell.SplitDisjointPieces();
+  Check(pieces.size() == 2, "the shell splits into exactly 2 disjoint closed pieces (outer prism, cavity prism)");
+  if (pieces.size() == 2) {
+    const double v0 = pieces[0].Volume(), v1 = pieces[1].Volume();
+    const double pos = std::max(v0, v1), neg = std::min(v0, v1);
+    Check(std::fabs(pos - 80.0) < 1e-6 && std::fabs(neg + 27.0) < 1e-6,
+          "one piece has signed volume +80 (outer prism) and the other -27 (cavity, normals into the cavity)");
+  }
+
+  // Wall thickness: every tessellation vertex of the whole shell is either on
+  // the outer skin (distance 0) or at least t from it; the cavity wall
+  // sits at exactly t on caps and flat walls and at t*sqrt(2) at the
+  // sharp reflex corner of the cavity (the wall is locally thicker there).
+  const dino8::kernel::Mesh mesh = shell.TessellateToClosedMesh(48, 8);
+  int skin = 0, wall = 0, reflex = 0, bad = 0;
+  const ON_Mesh& om = mesh.raw();
+  for (int i = 0; i < om.VertexCount(); ++i) {
+    const ON_3fPoint v = om.m_V[i];
+    const double d = PrismBoundaryDistance(L, h, Point3d(v.x, v.y, v.z));
+    if (d < 1e-5) ++skin;
+    else if (std::fabs(d - t) < 1e-5) ++wall;
+    else if (std::fabs(d - t * std::sqrt(2.0)) < 1e-5) ++reflex;
+    else if (d < t - 1e-5) ++bad;
+  }
+  Check(bad == 0, "no tessellation vertex of the L shell lies strictly inside the wall (0 < d < t)");
+  Check(skin > 30 && wall > 30, "both the outer skin and the cavity wall are densely sampled (>30 vertices each)");
+  Check(reflex > 0, "the cavity's sharp reflex corner is thicker: vertices at exactly t*sqrt(2) exist");
+
+  // Orientation robustness: clockwise profile, negative direction, and a
+  // profile in a tilted plane all give the identical shell volume.
+  std::vector<std::pair<double, double>> Lcw(L.rbegin(), L.rend());
+  const Brep cw = ShellClosedExtrusion(ClosedPolyline(Lcw), Vector3d(0, 0, h), t);
+  const Brep down = ShellClosedExtrusion(ClosedPolyline(L), Vector3d(0, 0, -h), t);
+  Check(std::fabs(cw.Volume() - 53.0) < 1e-6 && cw.raw().IsSolid(), "clockwise profile: same volume 53, valid solid");
+  Check(std::fabs(down.Volume() - 53.0) < 1e-6 && down.raw().IsSolid(), "extrusion direction reversed (-z): same volume 53, valid solid");
+  ON_Xform rot;
+  rot.Rotation(0.5, ON_3dVector(1, 0.3, 0), ON_3dPoint(1, 2, 3));
+  NurbsCurve tilted = ClosedPolyline(L);
+  tilted.raw().Transform(rot);
+  ON_3dVector normal(0, 0, 1);
+  normal.Transform(rot);
+  const Brep tshell = ShellClosedExtrusion(tilted, h * Vector3d(normal.x, normal.y, normal.z), t);
+  Check(std::fabs(tshell.Volume() - 53.0) < 1e-6 && tshell.raw().IsSolid() && tshell.Check().IsClean(),
+        "profile in a tilted plane with the extrusion along its normal: same volume 53");
+
+  // Near-limit thickness: arms are 2 wide, so t -> 1 leaves a 0.02-wide cavity arm.
+  const Brep slim = ShellClosedExtrusion(ClosedPolyline(L), Vector3d(0, 0, h), 0.99);
+  Check(std::fabs(slim.Volume() - expected_volume(0.99)) < 1e-6 && slim.raw().IsSolid(),
+        "t = 0.99 (cavity arms 0.02 wide) still matches the closed-form volume");
+  Check(Throws([&] { ShellClosedExtrusion(ClosedPolyline(L), Vector3d(0, 0, h), 1.0); }),
+        "t = 1.0 = half the arm width: the cavity arms collapse to zero width - refused");
+  Check(Throws([&] { ShellClosedExtrusion(ClosedPolyline(L), Vector3d(0, 0, h), 1.2); }),
+        "t = 1.2 > half the arm width: the inward miter offset INVERTS past the arm (a simple loop with plausible area) - refused");
+  Check(Throws([&] { ShellClosedExtrusion(ClosedPolyline(L), Vector3d(0, 0, 1.0), 0.5); }),
+        "2t = height: the two caps meet - refused");
+}
+
+void TestShellClosedExtrusionDumbbellNeckRefusal() {
+  using dino8::kernel::ShellClosedExtrusion;
+  // Two blocks joined by a 1-wide neck: the inward offset of the neck's two
+  // long edges move TOWARD each other and pass through one another once
+  // t > 0.5 although no edge of the polygon reverses direction - the
+  // non-local inversion the per-edge check alone cannot see.
+  const std::vector<std::pair<double, double>> P = {{0, -2}, {4, -2}, {4, 0},  {8, 0}, {8, -2}, {12, -2},
+                                                     {12, 3}, {8, 3},  {8, 1},  {4, 1}, {4, 3},   {0, 3}};
+  const double h = 3.0;
+  auto cavity_poly = [&](double t) {
+    return std::vector<std::pair<double, double>>{
+        {t, -2 + t},     {4 - t, -2 + t}, {4 - t, t},      {8 + t, t},      {8 + t, -2 + t},  {12 - t, -2 + t},
+        {12 - t, 3 - t}, {8 + t, 3 - t},  {8 + t, 1 - t},  {4 - t, 1 - t},  {4 - t, 3 - t},   {t, 3 - t}};
+  };
+  const double area = ShoelaceArea(P);
+  Check(std::fabs(area - (4 * 5 + 4 * 1 + 4 * 5)) < 1e-12, "fixture: dumbbell area is 44");
+  for (const double t : {0.2, 0.45, 0.49}) {
+    const Brep shell = ShellClosedExtrusion(ClosedPolyline(P), Vector3d(0, 0, h), t);
+    const double expected = area * h - ShoelaceArea(cavity_poly(t)) * (h - 2 * t);
+    Check(std::fabs(shell.Volume() - expected) < 1e-6 && shell.raw().IsSolid() && shell.Check().IsClean(),
+          "dumbbell shell below the neck's half-width: closed-form volume, valid solid");
+    const dino8::kernel::Mesh mesh = shell.TessellateToClosedMesh(48, 8);
+    int bad = 0;
+    for (int i = 0; i < mesh.raw().VertexCount(); ++i) {
+      const ON_3fPoint v = mesh.raw().m_V[i];
+      const double d = PrismBoundaryDistance(P, h, Point3d(v.x, v.y, v.z));
+      if (d > 1e-5 && d < t - 1e-5) ++bad;
+    }
+    Check(bad == 0, "dumbbell shell: no vertex inside the wall (0 < d < t), neck wall included");
+  }
+  Check(Throws([&] { ShellClosedExtrusion(ClosedPolyline(P), Vector3d(0, 0, h), 0.5); }),
+        "t = neck half-width exactly: refused");
+  Check(Throws([&] { ShellClosedExtrusion(ClosedPolyline(P), Vector3d(0, 0, h), 0.8); }),
+        "t = 0.8 past the neck half-width: the neck's offset edges cross - refused");
+}
+
+void TestShellClosedExtrusionCurvedWalls() {
+  using dino8::kernel::ShellClosedExtrusion;
+  // Hollow cylinder: circle profile.
+  const double R = 3.0, H = 10.0;
+  for (const double t : {0.7, 2.0, 2.999}) {
+    const Brep shell = ShellClosedExtrusion(MakeCircleCurve(Point3d(0, 0, 0), Vector3d(0, 0, 1), R), Vector3d(0, 0, H), t);
+    const double expected = ON_PI * (R * R * H - (R - t) * (R - t) * (H - 2 * t));
+    Check(std::fabs(shell.Volume() - expected) < 1e-5 * expected && shell.raw().IsValid() && shell.raw().IsSolid(),
+          "hollow cylinder: volume = pi (R^2 H - (R-t)^2 (H-2t)), valid solid");
+    Check(shell.LumpFaceRanges().size() == 2 && shell.FaceCount() == 6 && shell.Check().IsClean(), "hollow cylinder: 2 lumps, 6 faces, Check clean");
+    const dino8::kernel::Mesh mesh = shell.TessellateToClosedMesh(96, 8);
+    int bad = 0, deep = 0;
+    for (int i = 0; i < mesh.raw().VertexCount(); ++i) {
+      const ON_3fPoint v = mesh.raw().m_V[i];
+      const double rho = std::hypot(v.x, v.y);
+      const double d = std::min({static_cast<double>(v.z), H - v.z, R - rho});
+      if (d > 1e-5 && d < t - 2e-5) ++bad;
+      if (std::fabs(d - t) < 2e-5) ++deep;
+    }
+    Check(bad == 0 && deep > 50, "hollow cylinder: no vertex inside the wall; the cavity wall is sampled at exactly depth t");
+  }
+  const NurbsCurve circle = MakeCircleCurve(Point3d(0, 0, 0), Vector3d(0, 0, 1), R);
+  Check(Throws([&] { ShellClosedExtrusion(circle, Vector3d(0, 0, H), R); }), "cylinder t = R: cavity radius 0 - refused");
+  Check(Throws([&] { ShellClosedExtrusion(circle, Vector3d(0, 0, H), R + 0.5); }), "cylinder t > R: refused");
+
+  // Elliptical prism a=4, b=2: minimum radius of curvature b^2/a = 1 (at the
+  // ends of the major axis). Steiner's formula for the parallel curve of a
+  // convex curve, valid until the focal point is reached: A(-t) = A - t P + pi t^2.
+  double perimeter = 0.0;
+  {
+    const int N = 400000;
+    for (int i = 0; i < N; ++i) {
+      const double th = 2.0 * ON_PI * (i + 0.5) / N;
+      perimeter += std::sqrt(16.0 * std::sin(th) * std::sin(th) + 4.0 * std::cos(th) * std::cos(th));
+    }
+    perimeter *= 2.0 * ON_PI / N;
+  }
+  const double area = ON_PI * 8.0;
+  const NurbsCurve ellipse = MakeEllipseCurve(4.0, 2.0);
+  const double he = 4.0;
+  for (const double t : {0.4, 0.9, 0.99}) {
+    const Brep shell = ShellClosedExtrusion(ellipse, Vector3d(0, 0, he), t);
+    const double inner_area = area - t * perimeter + ON_PI * t * t;
+    const double expected = area * he - inner_area * (he - 2 * t);
+    Check(std::fabs(shell.Volume() - expected) < 1e-4 * expected && shell.raw().IsSolid(),
+          "elliptical shell below the minimum radius of curvature: volume matches Steiner's parallel-curve area to 1e-4");
+    const dino8::kernel::Mesh mesh = shell.TessellateToClosedMesh(128, 8);
+    int bad = 0;
+    for (int i = 0; i < mesh.raw().VertexCount(); ++i) {
+      const ON_3fPoint v = mesh.raw().m_V[i];
+      // Distance to the ellipse: coarse 4000-point scan, then a fine local
+      // scan (200 steps) over the two neighbouring intervals of the best one.
+      double dxy = std::numeric_limits<double>::infinity();
+      int best = 0;
+      for (int k = 0; k < 4000; ++k) {
+        const double th = 2.0 * ON_PI * k / 4000.0;
+        const double dk = std::hypot(v.x - 4.0 * std::cos(th), v.y - 2.0 * std::sin(th));
+        if (dk < dxy) { dxy = dk; best = k; }
+      }
+      for (int k = -200; k <= 200; ++k) {
+        const double th = 2.0 * ON_PI * (best + k / 200.0) / 4000.0;
+        dxy = std::min(dxy, std::hypot(v.x - 4.0 * std::cos(th), v.y - 2.0 * std::sin(th)));
+      }
+      const double d = std::min({static_cast<double>(v.z), he - v.z, dxy});
+      if (d > 2e-3 && d < t - 4e-3) ++bad;
+    }
+    Check(bad == 0, "elliptical shell: no vertex inside the wall (0 < d < t) up to the dense-sampling resolution");
+  }
+  Check(Throws([&] { ShellClosedExtrusion(ellipse, Vector3d(0, 0, he), 1.0); }),
+        "t = minimum radius of curvature (1.0): the cavity develops a cusp - refused");
+  Check(Throws([&] { ShellClosedExtrusion(ellipse, Vector3d(0, 0, he), 1.2); }),
+        "t past the minimum radius of curvature: refused");
+}
+
+void TestShellClosedExtrusionArgumentChecks() {
+  using dino8::kernel::ShellClosedExtrusion;
+  const std::vector<std::pair<double, double>> sq = {{0, 0}, {4, 0}, {4, 4}, {0, 4}};
+  const NurbsCurve closed = ClosedPolyline(sq);
+  const Vector3d up(0, 0, 4);
+  const double nan = std::numeric_limits<double>::quiet_NaN(), inf = std::numeric_limits<double>::infinity();
+  Check(!Throws([&] { ShellClosedExtrusion(closed, up, 0.5); }), "baseline: a 4x4 square prism shell builds");
+  Check(Throws([&] { ShellClosedExtrusion(closed, up, 0.0); }), "zero thickness refused");
+  Check(Throws([&] { ShellClosedExtrusion(closed, up, -0.5); }), "negative thickness refused");
+  Check(Throws([&] { ShellClosedExtrusion(closed, up, nan); }), "NaN thickness refused");
+  Check(Throws([&] { ShellClosedExtrusion(closed, up, inf); }), "infinite thickness refused");
+  Check(Throws([&] { ShellClosedExtrusion(closed, Vector3d(0, 0, 0), 0.5); }), "zero direction refused");
+  Check(Throws([&] { ShellClosedExtrusion(closed, Vector3d(0, 0, nan), 0.5); }), "NaN direction refused");
+  Check(Throws([&] { ShellClosedExtrusion(closed, Vector3d(1, 0, 4), 0.5); }), "oblique direction refused");
+  Check(Throws([&] { ShellClosedExtrusion(closed, Vector3d(4, 0, 0), 0.5); }), "in-plane direction refused");
+  const NurbsCurve open = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(4, 0, 0), Point3d(4, 4, 0), Point3d(0, 4, 0)}, 1);
+  Check(Throws([&] { ShellClosedExtrusion(open, up, 0.5); }), "open profile refused");
+  const NurbsCurve skew = NurbsCurve::FromControlPoints(
+      {Point3d(0, 0, 0), Point3d(4, 0, 0), Point3d(4, 4, 2), Point3d(0, 4, 0), Point3d(0, 0, 0)}, 1);
+  Check(Throws([&] { ShellClosedExtrusion(skew, up, 0.5); }), "non-planar closed profile refused");
+}
+
+}  // namespace shell_closed_tests
+
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -90846,6 +91286,19 @@ int main() {
   RunTest("TestSectionAnchoredSweepReproducesTheSectionAndCoversTheRail", TestSectionAnchoredSweepReproducesTheSectionAndCoversTheRail);
   RunTest("TestLoftOfAlignedClosedSectionsInterpolatesAndCaps", TestLoftOfAlignedClosedSectionsInterpolatesAndCaps);
   RunTest("TestLoftPlanarCapsMeshClosedAndVolumeExact", TestLoftPlanarCapsMeshClosedAndVolumeExact);
+
+  RunTest("shell_closed_tests::TestShellConvexPlanarClosedHollowShellBoxExact",
+          shell_closed_tests::TestShellConvexPlanarClosedHollowShellBoxExact);
+  RunTest("shell_closed_tests::TestShellConvexPlanarClosedHollowShellTetrahedronExactScaling",
+          shell_closed_tests::TestShellConvexPlanarClosedHollowShellTetrahedronExactScaling);
+  RunTest("shell_closed_tests::TestShellClosedExtrusionNonConvexLShape",
+          shell_closed_tests::TestShellClosedExtrusionNonConvexLShape);
+  RunTest("shell_closed_tests::TestShellClosedExtrusionDumbbellNeckRefusal",
+          shell_closed_tests::TestShellClosedExtrusionDumbbellNeckRefusal);
+  RunTest("shell_closed_tests::TestShellClosedExtrusionCurvedWalls",
+          shell_closed_tests::TestShellClosedExtrusionCurvedWalls);
+  RunTest("shell_closed_tests::TestShellClosedExtrusionArgumentChecks",
+          shell_closed_tests::TestShellClosedExtrusionArgumentChecks);
 
   RunTest("ON::End", ON::End);
 
