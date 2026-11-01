@@ -452,7 +452,7 @@ class SetObjectDisplayModeCommand : public Command {
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (ids.empty()) { Finish(); return; }
     ids_ = ids;
-    WantText("Mode (Wireframe/Shaded/Rendered/Ghosted/X-Ray/Technical/Artistic/Pen/Arctic/Monochrome/UseViewport; add All for every viewport)", "Shaded");
+    WantText("Mode (Wireframe/Shaded/Rendered/RayTraced/Ghosted/X-Ray/Technical/Artistic/Pen/Arctic/Monochrome/UseViewport; add All for every viewport)", "Shaded");
   }
   void OnText(CommandContext& ctx, const std::string& t) override {
     // Tokens: one mode word plus an optional "All".
@@ -490,6 +490,9 @@ class SetObjectDisplayModeCommand : public Command {
     const bool all_viewports = all || !vp;
     const std::string vp_name = vp ? vp->Name() : std::string();
     Document& doc = ctx.Doc();
+    // An undo step (and a Modified()/Revision() bump): only the listed objects
+    // are touched. Undo restores their override flags.
+    doc.BeginChangeForObjects("SetObjectDisplayMode", ids_);
     int n = 0;
     for (ObjectId id : ids_) {
       SceneObject* o = doc.Find(id);

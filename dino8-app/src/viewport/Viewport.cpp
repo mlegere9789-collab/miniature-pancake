@@ -2149,9 +2149,13 @@ PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, d
           if (snaps.int_) {
             // Intersections with other visible curves near the cursor, from
             // the display polylines (screen-space test, 3D result).
+            // Snapping reads the fixed display level, never the zoom-dependent
+            // one a viewport last installed (EnsureDisplay brings it back).
+            o.EnsureDisplay(0.02, 0.05);
             const DisplayCache& d = o.Display();
             for (const SceneObject& other : doc.Objects()) {
               if (&other == &o || other.kind != ObjectKind::Curve || !doc.IsObjectVisible(other) || other.id < o.id) continue;
+              other.EnsureDisplay(0.02, 0.05);
               const DisplayCache& e = other.Display();
               for (size_t i = 0; i + 5 < d.lines.size(); i += 6) {
                 double ax, ay, bx, by, tt;
@@ -2175,6 +2179,7 @@ PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, d
             }
           }
           if (snaps.near_) {
+            o.EnsureDisplay(0.02, 0.05);
             const DisplayCache& d = o.Display();
             for (size_t i = 0; i + 5 < d.lines.size(); i += 6) {
               double ax, ay, bx, by, t;
