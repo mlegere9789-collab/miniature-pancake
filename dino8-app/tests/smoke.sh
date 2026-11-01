@@ -1577,10 +1577,10 @@ sdcheck "gl_error=0" "subd script ran without OpenGL errors"
 # count (from List) must match the adaptively-split SubD's own patch
 # count, not the original 16/6 control faces a facetted conversion would
 # have produced, nor the smaller non-adaptive patch count either.
-sdcheck "Converted 1 object(s) (1504 exact, 416 approximated near extraordinary vertices/creases/boundaries)" "ToNURBS on SubDPlane produced real exact regular-patch NURBS via the adaptive converter (not facetted, not the non-adaptive 160/224 split) - 1504 of 1920 total patches are the mathematically exact Catmull-Clark bicubic patch, not an approximation"
-sdcheck "1920 faces, 7680 edges, open" "ToNURBS's SubDPlane Brep has 1920 real per-patch faces (the non-adaptive conversion's own 384 patches, each irregular one of which the adaptive converter further splits into several smaller exact patches plus one smaller, tighter approximation)"
-sdcheck "Converted 1 object(s) (216 exact, 24 approximated near extraordinary vertices/creases/boundaries)" "ToNURBS on SubDBox produced 216 real exact regular-patch NURBS away from the cube's corners (72 from the non-adaptive pre-refinement plus 144 more from adaptively splitting each of the 8 corners' own irregular patches), and still honestly approximates only 24 patches total - the same count as the non-adaptive conversion, now each one a tighter (16x smaller deviation, 2 further adaptive levels) approximation of its own corner, not a coarser single patch across the whole irregular region"
-sdcheck "240 faces, 960 edges, open" "ToNURBS's SubDBox Brep has 240 real per-patch faces (96 from the non-adaptive conversion, plus 144 more from the adaptive split); it reports open, not closed, because both the original approximate patches and the adaptive split's own T-junction boundaries are deliberately left unjoined rather than faked into looking seamless"
+sdcheck "Converted 1 object(s) (1248 exact, 288 approximated near extraordinary vertices/creases/boundaries)" "ToNURBS on SubDPlane (open surface) produced 1248 exact regular limit patches plus 288 Coons patches on the shared edge curves via the watertight converter (SubD::ToNurbsPatchesWatertight; the earlier adaptive converter gave 1504 exact + 416 flat approximations)"
+sdcheck "1536 faces, 6144 edges, open" "ToNURBS's SubDPlane Brep has one real bicubic patch per face of its 3-round refinement (1536); it stays open because the SubDPlane itself is an open sheet (its 128 boundary edges are naked)"
+sdcheck "Converted 1 object(s) (360 exact, 24 approximated near extraordinary vertices/creases/boundaries)" "ToNURBS on SubDBox: 360 exact limit patches + 24 Coons patches (the 3 faces around each of the cube corner's valence-3 vertices) - every corner patch now meets its neighbours instead of being a flat bilinear approximation"
+sdcheck "384 faces, 1536 edges, closed solid" "ToNURBS's SubDBox Brep is a CLOSED SOLID (384 faces; before this pass the same conversion reported 240 faces, open, and Volume refused it)"
 # ToSubD: a Brep -> SubD conversion now tessellates at the document's real
 # modeling tolerance (ctx.Settings().absolute_tolerance, default 0.001)
 # instead of the display-quality surface_display_tolerance (default 0.05,
@@ -1590,7 +1590,7 @@ sdcheck "240 faces, 960 edges, open" "ToNURBS's SubDBox Brep has 240 real per-pa
 # tighter tolerance actually driving the tessellation, not just "didn't
 # crash"; this command had no test coverage at all before this check.
 sdcheck "ToSubD: created 1 object(s)" "ToSubD converted the Brep sphere"
-sdcheck "11310 faces, 16965 edges, 5657 vertices, 0 creases" "ToSubD's sphere SubD control cage is tessellated at the document's tight 0.001 modeling tolerance (a real Euler check: 5657 - 16965 + 11310 = 2, a genuinely closed surface), not the coarse 0.05 display tolerance a sphere this size would need far fewer faces for"
+sdcheck "18240 faces, 27360 edges, 9122 vertices, 0 creases" "ToSubD's sphere SubD is built on the kernel's 96 x 96 grid tessellation (every vertex on the sphere, no sliver triangles; a real Euler check: 9122 - 27360 + 18240 = 2, a closed surface) instead of the 11310-face chord-tolerance mesh whose long triangles sagged up to 0.09 off the sphere"
 # ToSubD limit-surface fidelity: BuildSubDVerifiedAgainstBrep (cmd_solids.cpp)
 # now measures the resulting SubD's own true Catmull-Clark LIMIT surface
 # against the original Brep - not just the control cage's own tessellation
@@ -1609,7 +1609,7 @@ sdcheck "11310 faces, 16965 edges, 5657 vertices, 0 creases" "ToSubD's sphere Su
 # reversing the face order on Linux moved it to 0.017945), so the
 # position-sorted sample is what makes this one number comparable across
 # platforms at all.
-sdcheck "ToSubD: created 1 object(s) (0 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.0[0-9]*)" "ToSubD on the Brep sphere measures and discloses a real (not fully within tolerance) Catmull-Clark limit-surface deviation from the original Brep"
+sdcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.000[0-9]*); cage interpolated onto the Brep surface (limit surface passes through every cage vertex: [0-9]* iteration(s), residual 0\.0000[0-9]*), 0 feature edge(s) creased" "ToSubD on the Brep sphere now VERIFIES (before: 0 of 1, worst measured deviation 0.0202): the measured limit-surface deviation from a 384 x 384 reference of the sphere is under the 0.001 tolerance, with the cage interpolated onto the surface"
 # The opposite, provable case: a flat planar patch's control points are all
 # already coplanar, so Catmull-Clark's own limit-point formula (an affine
 # combination of coplanar points) introduces no deviation regardless of
@@ -2178,9 +2178,9 @@ stcheck "Bounce: polyline with 1 bounce(s)" "Bounce traced a ray straight down o
 stcheck "CreateSolid: 1 surface(s) joined into a closed mesh solid" "CreateSolid welded a single closed Brep's own faces into a closed mesh solid"
 stcheck "Splop: placed 1 copy(ies) at 1 point(s)" "Splop placed a copy at the picked surface point"
 stcheck "Reflect: mirrored across the plane through 1005,0,0 and welded original . mirror image into one symmetric mesh" "Reflect mirrored and welded the mesh into one symmetric solid"
-stcheck "Reflect: mirrored across the plane through 1015,0,0 and welded original . mirror image into one symmetric SubD (12 faces)" "Reflect on a single SubD returns a real SubD (kernel::SubD::Symmetrize), not the facetted-mesh path the MeshBox case above still uses"
+stcheck "Reflect: mirrored across the plane through 1015,0,0 and welded original . mirror image into one symmetric SubD (10 faces)" "Reflect on a single SubD returns a real SubD (kernel::SubD::Symmetrize), not the facetted-mesh path the MeshBox case above still uses; the mirror plane is the closed box's own far face, which is now DROPPED from both halves (an interior wall), so the result is 5 + 5 = 10 faces (it used to keep the wall twice: 12 faces, an open non-manifold body)"
 stcheck "Object [0-9]* (SubD) layer Default" "Reflect's SubD output is genuinely ObjectKind::SubD, not a Mesh wearing a similar print statement"
-stcheck "12 faces, 20 edges, 12 vertices, 4 creases" "Reflect's reflected SubD has the real welded-seam topology: the mirror plane coincides with the box's own far face, so that face's 4 vertices weld into one real shared seam (now creased) instead of duplicating"
+stcheck "10 faces, 20 edges, 12 vertices, 0 creases" "Reflect's reflected SubD is one closed 4x2x2-style body: 10 faces, 20 edges, 12 vertices (Euler 12 - 20 + 10 = 2), no stray creases - the old result had a doubled wall with 4 edges carrying 4 faces each and reported itself not closed"
 stcheck "Reflect: mirrored across the plane through 1020,5,0 and welded original . mirror image into one symmetric SubD (24 faces)" "Reflect on TWO SubDs at once still returns a real SubD (each Symmetrize()d separately, then folded together via SubD::BooleanToSubD), not just the single-object case"
 stcheck "24 faces, 48 edges, 32 vertices, 0 creases" "Reflect's two-SubD result has the expected topology: two 6-face boxes, each mirrored (x2) and folded together (no shared seam this time, since neither box touches the mirror plane)"
 stcheck "Radiate: baked diffuse.specular vertex colours from 1 light(s)/sun onto 1 mesh(es)" "Radiate baked vertex colours from the Sun onto the mesh"
@@ -3756,10 +3756,10 @@ bocheck() { if echo "$BO" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $
 # instead of collapsing everything to a Mesh - gated so an all-Brep
 # selection still takes the exact B-rep path and an all-Mesh selection
 # still comes back as a plain Mesh, both unaffected.
-bocheck "BooleanUnion: SubD boolean (mesh-approximate, via BooleanToSubD), 19 face(s)" "BooleanUnion on two overlapping SubD boxes returns a real SubD, not a tessellated Mesh"
-bocheck "BooleanDifference: SubD boolean (mesh-approximate, via BooleanToSubD), 12 face(s)" "BooleanDifference on two SubD boxes returns a real SubD"
-bocheck "BooleanIntersection: SubD boolean (mesh-approximate, via BooleanToSubD), 6 face(s)" "BooleanIntersection on two SubD boxes returns a real SubD"
-bocheck "BooleanUnion: SubD boolean (mesh-approximate, via BooleanToSubD), [0-9][0-9] face(s)" "BooleanUnion on a mixed SubD + Brep selection now ALSO returns a real SubD (TrySubDBoolean promotes the Brep's own tessellation to a SubD) instead of collapsing to a Mesh"
+bocheck "BooleanUnion: SubD boolean (operands refined to their limit surfaces, seam creased), 760 face(s), 32 crease edge(s) (32 on the cut seam, 0 along operand creases, 0 sharp-angle)" "BooleanUnion on two overlapping SubD boxes returns a real SubD whose operands were refined to their LIMIT surfaces (was a 19-face cage-level result) with the cut seam creased (32 seam crease edges)"
+bocheck "BooleanDifference: SubD boolean (operands refined to their limit surfaces, seam creased), 436 face(s), 32 crease edge(s) (32 on the cut seam" "BooleanDifference on two SubD boxes returns a real SubD with a creased cut (was 12 faces, no creases)"
+bocheck "BooleanIntersection: SubD boolean (operands refined to their limit surfaces, seam creased), 112 face(s), 32 crease edge(s) (32 on the cut seam" "BooleanIntersection on two SubD boxes returns a real SubD with a creased cut (was 6 faces, no creases)"
+bocheck "BooleanUnion: SubD boolean (operands refined to their limit surfaces, seam creased), 330 face(s), 45 crease edge(s) (32 on the cut seam, 0 along operand creases, 13 sharp-angle)" "BooleanUnion on a mixed SubD + Brep selection returns a real SubD: the promoted Brep's box edges (13 sharp-angle crease edges) stay sharp and the cut seam is creased"
 bocheck "BooleanUnion: exact B-rep boolean (no tessellation), 26 face(s)" "BooleanUnion on an all-Brep selection is unaffected by the mixed-type change - still the exact B-rep path, never downgraded to a SubD"
 bocheck "BooleanUnion: 36 faces, volume 14" "BooleanUnion on an all-Mesh selection is unaffected by the mixed-type change - still a plain Mesh, never surprise-upgraded to a SubD"
 echo "$BO" | grep -E "^(ok|FAIL)"
@@ -8864,5 +8864,63 @@ kwcheck "Area = 114.8 square" "SubDLoft through three lines still builds the con
 kwcheck "140 faces, 210 edges, 72 vertices, 0 creases" "SubDLoft through three circles still builds a SubD"
 kwcheck "through 4 curves (degree 3 in the loft direction); every section reproduced, max deviation [0-9.]*e-\(0[6-9]\|[1-9][0-9]\)$" "Loft through four lines is cubic in the loft direction and reproduces every section"
 kwdist "through 4 curves .degree 3 in the loft direction." 1 0 3 0 0.000001 "...and the middle points of the three non-trivial lines lie on the surface to < 1e-6"
+
+# SubD parity (app_subd_mesh): ToNURBS closes a SubD into a watertight solid,
+# ToSubD verifies a smooth Brep and creases feature edges, SubD booleans work
+# on the operands' limit surfaces with a creased cut, and SubD symmetry
+# (radial / two-plane / welded live copy / crease-preserving Reflect) - all
+# measured through the real app (see subd_parity_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SPAR="$("$BIN" --smoke 300 --script "$HERE/subd_parity_script.txt" 2>&1)" || { echo "$SPAR"; echo "FAIL: subd parity script exited non-zero"; exit 1; }
+else
+  SPAR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 300 --script "$HERE/subd_parity_script.txt" 2>&1)" || { echo "$SPAR"; echo "FAIL: subd parity script exited non-zero"; exit 1; }
+fi
+sparcheck() { if grep -q -- "$1" <<<"$SPAR"; then echo "ok   $2"; else echo "FAIL $2"; near "$SPAR" "$1"; fail=1; fi; }
+# (1) ToNURBS: closed SubD -> closed polysurface (was: 240 faces, open, Volume refused)
+sparcheck "ToNURBS: watertight conversion of a 6-face SubD (3 Catmull-Clark refinement round(s) first): 384 bicubic patches (360 exact limit patches, 24 Coons patches on the shared edge curves; 744 exact + 24 Hermite edge curves), joined 768 edge pair(s) at 1e-6, 0 naked edge(s) left, closed solid: yes, manifold; max distance of 3456 patch samples from the Subdivide(+2) limit reference 0\.00[0-9]*" "ToNURBS turns SubDBox into 384 bicubic patches (360 exact + 24 Coons) joined at 1e-6 into a closed manifold solid with 0 naked edges, within 0.01 of the limit surface"
+sparcheck "384 faces, 1536 edges, closed solid" "the ToNURBS result of SubDBox lists as a closed solid (before: 240 faces, open)"
+sparcheck "ToNURBS: watertight conversion of a 48-face SubD (3 Catmull-Clark refinement round(s) first): 2304 bicubic patches (2016 exact limit patches, 288 Coons patches on the shared edge curves; 4320 exact + 288 Hermite edge curves), joined 4608 edge pair(s) at 1e-6, 0 naked edge(s) left, closed solid: yes, manifold" "ToNURBS closes the triangulated-cage SubD sphere (almost every vertex extraordinary) into a closed manifold solid with 0 naked edges (before: 2304 faces, open)"
+sparcheck "2304 faces, 9216 edges, closed solid" "the ToNURBS result of the SubD sphere lists as a closed solid"
+sparcheck "384 bicubic patches (312 exact limit patches, 72 Coons patches on the shared edge curves; 696 exact + 72 Hermite edge curves), joined 768 edge pair(s) at 1e-6, 0 naked edge(s) left, closed solid: yes" "ToNURBS of a box with 4 creased edges is also a closed solid (crease chains are shared exact cubic B-spline curves: 696 exact edge curves)"
+# (2) Brep -> SubD
+sparcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.000[0-9]*); cage interpolated onto the Brep surface (limit surface passes through every cage vertex: [0-9]* iteration(s), residual 0\.0000[0-9]*), 0 feature edge(s) creased" "ToSubD on a Brep sphere VERIFIES: measured limit-surface deviation < 0.001 (before: 0 of 1 verified, 0.0202) with the cage interpolated onto the surface"
+sparcheck "18240 faces, 27360 edges, 9122 vertices, 0 creases" "the verified sphere SubD is the 96 x 96 grid cage (Euler 9122 - 27360 + 18240 = 2)"
+sparcheck "512 feature edge(s) creased" "ToSubD on a cylinder creases its 512 rim edges (two 256-segment circles) instead of rounding them off"
+sparcheck "11894 faces, 17841 edges, 5949 vertices, 512 creases" "the cylinder SubD carries the 512 rim creases (before: 0 creases)"
+sparcheck "ToSubD: created 1 object(s) (0 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.02[0-9]*)" "the cylinder (trimmed planar caps the grid tessellation cannot weld) still falls back to the mesher cage and honestly reports it is NOT verified (0.02x)"
+# (3) SubD booleans on the limit surfaces
+sparcheck "BooleanUnion: SubD boolean (operands refined to their limit surfaces, seam creased), 815 face(s), 158 crease edge(s) (158 on the cut seam, 0 along operand creases, 0 sharp-angle); cage interpolated onto the Boolean surface" "BooleanUnion of two overlapping SubD boxes: 815 faces, the 158 edges of the cut seam are creases"
+sparcheck "BooleanDifference: SubD boolean (operands refined to their limit surfaces, seam creased), 640 face(s), 160 crease edge(s) (160 on the cut seam" "BooleanDifference: 640 faces, 160 seam creases"
+sparcheck "BooleanIntersection: SubD boolean (operands refined to their limit surfaces, seam creased), 462 face(s), 159 crease edge(s) (159 on the cut seam" "BooleanIntersection: 462 faces, 159 seam creases"
+sparcheck "BooleanUnion: SubD boolean (operands refined to their limit surfaces, seam creased), 810 face(s), 64 crease edge(s) (0 on the cut seam, 64 along operand creases" "a creased operand's 8 crease edges survive the union (64 crease edges along operand creases after 3 refinement rounds)"
+sparcheck "Crease edges: 158" "the union SubD reports its 158 crease edges in What"
+# volumes in script order: ToNURBS x3, ToSubD x2, union, difference, intersection, Reflect, Weld=No
+mapfile -t SPAR_VOLS < <(grep -o "Volume = [0-9.e+-]*" <<<"$SPAR" | awk '{print $3}')
+if [ "${#SPAR_VOLS[@]}" -ge 10 ]; then
+  echo "ok   subd parity script printed ${#SPAR_VOLS[@]} volumes"
+  # The two boxes are translates of each other, so |A union B| = |A-B| + |A intersect B| + |B-A| = 2|A-B| + |A intersect B|.
+  SPAR_RES="$(awk -v u="${SPAR_VOLS[5]}" -v d="${SPAR_VOLS[6]}" -v i="${SPAR_VOLS[7]}" 'BEGIN{r=u-(2*d+i); if(r<0) r=-r; printf "%.4f", r}')"
+  if awk -v r="$SPAR_RES" 'BEGIN{exit !(r<0.05)}'; then echo "ok   SubD booleans are mutually consistent: union ${SPAR_VOLS[5]} = 2 x difference ${SPAR_VOLS[6]} + intersection ${SPAR_VOLS[7]} (residual $SPAR_RES < 0.05)"; else echo "FAIL SubD boolean volumes inconsistent: union ${SPAR_VOLS[5]}, difference ${SPAR_VOLS[6]}, intersection ${SPAR_VOLS[7]} (residual $SPAR_RES)"; fail=1; fi
+  if awk -v a="${SPAR_VOLS[0]}" 'BEGIN{exit !(a>300 && a<340)}'; then echo "ok   ToNURBS SubDBox volume ${SPAR_VOLS[0]} (a smooth cube blob, in 300..340)"; else echo "FAIL ToNURBS SubDBox volume ${SPAR_VOLS[0]}"; fail=1; fi
+  if awk -v a="${SPAR_VOLS[3]}" 'BEGIN{exit !(a>523 && a<525)}'; then echo "ok   verified sphere SubD encloses ${SPAR_VOLS[3]} (true sphere 523.6)"; else echo "FAIL sphere SubD volume ${SPAR_VOLS[3]}"; fail=1; fi
+  if awk -v a="${SPAR_VOLS[8]}" 'BEGIN{exit !(a>1999 && a<2001)}'; then echo "ok   Reflect of a closed SubD box across its far face has volume ${SPAR_VOLS[8]} (two boxes, one body)"; else echo "FAIL Reflect volume ${SPAR_VOLS[8]}"; fail=1; fi
+  if awk -v a="${SPAR_VOLS[9]}" 'BEGIN{exit !(a>999 && a<1001)}'; then echo "ok   Symmetry Weld=No mirror copy has positive volume ${SPAR_VOLS[9]} (outward winding)"; else echo "FAIL Weld=No mirrored copy volume ${SPAR_VOLS[9]}"; fail=1; fi
+else
+  echo "FAIL subd parity script printed only ${#SPAR_VOLS[@]} volumes (expected 10)"; fail=1
+fi
+# (4) symmetry
+sparcheck "Symmetry: 1 live radial copy created (1 welded into one SubD with creases kept \[128 faces, 32 crease edges\])" "Symmetry Mode=Radial Count=4 welds a 32-face triangulated sector into one 128-face SubD"
+sparcheck "Bounding box: (290, -10, 0) to (310, 10, 0)" "the radial SubD spans the full 20 x 20 about the axis through (300, 0)"
+sparcheck "Symmetry: 1 live two-plane copy created (1 welded into one SubD with creases kept \[128 faces, 32 crease edges\])" "Symmetry Mode=TwoPlane mirrors the sector across two perpendicular planes into one 128-face SubD"
+sparcheck "Bounding box: (390, -10, 0) to (410, 10, 0)" "the two-plane SubD spans the full 20 x 20"
+sparcheck "Reflect: mirrored across the plane through 510,0,0 and welded original . mirror image into one symmetric SubD (10 faces)" "Reflect of a closed SubD box across its own far-face plane drops the shared wall: 10 faces"
+sparcheck "10 faces, 20 edges, 12 vertices, 0 creases" "the reflected box is one closed body (Euler 12 - 20 + 10 = 2)"
+sparcheck "Crease edges: 8" "Reflect mirrors the 4 creased edges of the source onto the other half (4 + 4 = 8 crease edges)"
+sparcheck "Symmetry: 1 live mirrored copy created (1 welded into one SubD with creases kept \[64 faces, 32 crease edges\])" "Symmetry on a SubD plane welds source + mirror into one 64-face SubD by default"
+sparcheck "Bounding box: (785, 0, 0) to (815, 10, 0)" "the live symmetric copy first spans the source plus its mirror about x = 800"
+sparcheck "Bounding box: (775, 0, 0) to (825, 10, 0)" "after the source is MOVED +10 the live symmetric copy re-derived itself and now spans (775 .. 825) - a live link, rebuilt from the changed cage"
+sparcheck "Bounding box: (730.608[0-9]*, 0.60763[0-9]*, 0.60763[0-9]*) to (739.39[0-9]*, 9.3923[0-9]*, 9.3923[0-9]*)" "Symmetry Weld=No gives a separate mirror copy on the other side of the plane (x 730.6 .. 739.4)"
+sparcheck "gl_error=0" "subd parity script ran without OpenGL errors"
+sparcheck "smoke: frames=[0-9]* objects=24" "subd parity script produced the expected object count"
 
 exit $fail

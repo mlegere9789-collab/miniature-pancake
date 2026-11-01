@@ -2218,7 +2218,7 @@ void Reflect(CommandContext& ctx, const Input& in) {
         kernel::SubD result = subd_objs[0]->subd->Symmetrize(n, plane_offset, 1e-9, weld_tol);
         for (size_t i = 1; i < subd_objs.size(); ++i) {
           kernel::SubD mirrored = subd_objs[i]->subd->Symmetrize(n, plane_offset, 1e-9, weld_tol);
-          result = result.BooleanToSubD(mirrored, kernel::BooleanOp::Union);
+          result = result.BooleanToSubDCreased(mirrored, kernel::BooleanOp::Union, 0, 0, 0.0, 3.0, false);  // cage-exact fold; operand creases kept
         }
         ctx.Doc().BeginChange("Reflect");
         const int layer = subd_objs[0]->layer_index;

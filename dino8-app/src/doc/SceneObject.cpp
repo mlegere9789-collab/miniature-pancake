@@ -236,7 +236,13 @@ void SceneObject::Transform(const ON_Xform& xform) {
     case ObjectKind::Surface: surface->raw().Transform(xform); break;
     case ObjectKind::Brep: *brep = brep->Transform(xform); break;
     case ObjectKind::Mesh: *mesh = mesh->Transform(xform); break;
-    case ObjectKind::SubD: subd->raw().Transform(xform); break;
+    case ObjectKind::SubD:
+      // ON_SubD::Transform() leaves face windings alone, so a reflection
+      // (negative determinant) would turn the cage inside out; the kernel's
+      // TransformOriented() reverses the loops for that case.
+      if (xform.Determinant() < 0.0) *subd = subd->TransformOriented(xform);
+      else subd->raw().Transform(xform);
+      break;
     case ObjectKind::PointCloud: *point_cloud = point_cloud->Transform(xform); break;
   }
   // Block instances remember their insertion point (see cmd_drafting.cpp).

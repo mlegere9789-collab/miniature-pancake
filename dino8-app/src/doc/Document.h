@@ -721,6 +721,27 @@ struct SymmetryLink {
   ObjectId source_id = kNoObject;
   kernel::Point3d plane_point{0, 0, 0};
   kernel::Vector3d plane_normal{0, 0, 1};
+  // --- SubD-aware modes (only used when the source is a SubD; any other
+  // source kind keeps the plain mirrored-transform behaviour above) ---
+  // True: the linked copy is the WELDED symmetric whole - the source cage
+  // plus its images, merged into ONE SubD (kernel::SubD::Symmetrize /
+  // SymmetrizeRadial, crease- and sharpness-preserving) - instead of a
+  // separate unwelded mirrored shell.
+  bool weld = false;
+  // >= 2: radial symmetry - `radial_count` copies rotated about the axis
+  // (axis_point, axis_dir) instead of a mirror about (plane_point,
+  // plane_normal).
+  int radial_count = 0;
+  kernel::Point3d axis_point{0, 0, 0};
+  kernel::Vector3d axis_dir{0, 0, 1};
+  // Further mirror planes (point, normal) applied one after another to the
+  // result of the first (multi-plane symmetry: two perpendicular planes
+  // give four-fold mirror symmetry).
+  std::vector<std::pair<kernel::Point3d, kernel::Vector3d>> extra_planes;
+  // Fingerprint of the source SubD the copy was last derived from, so a
+  // welded/radial copy (a full kernel rebuild) is only recomputed when the
+  // source actually changed instead of every frame. 0 = never derived.
+  unsigned long long source_fingerprint = 0;
 };
 
 // The data behind PackSubDFaces (cmd_subd.cpp): the packed UV-atlas layout
