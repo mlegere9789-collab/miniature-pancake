@@ -860,6 +860,125 @@ std::optional<SceneObject> BuildNetworkSrfLoop(CommandContext& ctx, const std::v
   return SceneObject::MakeSurface(SurfaceFromRows(rows));
 }
 
+// NetworkSrf through FIVE OR MORE boundary curves. No exact multi-sided Coons
+// patch exists in the kernel (3 and 4 sides do), and the command used to keep
+// only the first 4 curves of a longer selection. Here the curves are chained
+// head to tail by endpoint proximity, each corner is closed within the
+// DOCUMENT tolerance (moved to the midpoint, as the 3/4-curve case does), the
+// chain is joined into ONE closed NURBS curve (exact NurbsCurve::Join), a
+// least-squares NURBS surface is fitted through the boundary samples
+// (NurbsSurface::FitPatch) and trimmed by the joined loop
+// (Brep::TrimmedPatchFace, one real B-rep face). This is NOT an interpolating
+// surface: the worst deviation of the fit from the sampled curves and the
+// kernel-measured deviation of the trimmed edge from the loop are printed, and
+// a fit missing the document tolerance is flagged. Returns nullopt with the
+// reason when the curves do not close, the loop folds over its best-fit plane
+// (a height-field fit cannot represent it) or the kernel refuses.
+std::optional<SceneObject> BuildNetworkSrfMany(CommandContext& ctx, const std::vector<kernel::NurbsCurve>& curves, std::string& note,
+                                               std::string& reason) {
+  std::vector<kernel::NurbsCurve> loop = {curves[0]};
+  std::vector<bool> used(curves.size(), false);
+  used[0] = true;
+  Point3d end = curves[0].PointAt(curves[0].Domain().max);
+  while (loop.size() < curves.size()) {
+    size_t best = 0;
+    bool best_reverse = false;
+    double best_d = std::numeric_limits<double>::max();
+    for (size_t i = 0; i < curves.size(); ++i) {
+      if (used[i]) continue;
+      const double ds = end.DistanceTo(curves[i].PointAt(curves[i].Domain().min)), de = end.DistanceTo(curves[i].PointAt(curves[i].Domain().max));
+      if (ds < best_d) { best_d = ds; best = i; best_reverse = false; }
+      if (de < best_d) { best_d = de; best = i; best_reverse = true; }
+    }
+    used[best] = true;
+    kernel::NurbsCurve c = curves[best];
+    if (best_reverse) c.Reverse();
+    end = c.PointAt(c.Domain().max);
+    loop.push_back(c);
+  }
+  const double tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
+  const size_t n = loop.size();
+  double max_gap = 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    const kernel::NurbsCurve& a = loop[i];
+    const kernel::NurbsCurve& b = loop[(i + 1) % n];
+    max_gap = std::max(max_gap, a.PointAt(a.Domain().max).DistanceTo(b.PointAt(b.Domain().min)));
+  }
+  if (max_gap > tol) {
+    reason = "the " + std::to_string(n) + " curves do not close into a loop within the document tolerance " + FormatNumber(tol) + " (largest corner gap " + FormatNumber(max_gap) + ")";
+    return std::nullopt;
+  }
+  if (max_gap > 1e-12) {
+    for (size_t i = 0; i < n; ++i) {
+      const size_t j = (i + 1) % n;
+      const Point3d mid = (loop[i].PointAt(loop[i].Domain().max) + loop[j].PointAt(loop[j].Domain().min)) * 0.5;
+      if (!MoveCurveEnd(loop[i], false, mid) || !MoveCurveEnd(loop[j], true, mid)) {
+        reason = "a curve is not clamped, so its open corner (gap " + FormatNumber(max_gap) + ") cannot be closed exactly";
+        return std::nullopt;
+      }
+    }
+  }
+  kernel::NurbsCurve joined = loop[0];
+  try {
+    for (size_t i = 1; i < n; ++i) {
+      if (joined.Join(loop[i], std::max(tol, 1e-6)) != kernel::Result::Ok) { reason = "the kernel could not join curve " + std::to_string(i + 1) + " onto the chain"; return std::nullopt; }
+    }
+  } catch (const std::exception& e) {
+    reason = std::string("joining the curves into one loop failed: ") + e.what();
+    return std::nullopt;
+  }
+  if (!joined.IsClosed()) { reason = "the joined loop is not closed"; return std::nullopt; }
+  Row boundary;
+  for (const kernel::NurbsCurve& c : loop) {
+    const Row smp = SampleCurve(c, 96, false);
+    boundary.insert(boundary.end(), smp.begin(), smp.end());
+  }
+  kernel::NurbsSurface patch;
+  kernel::NurbsSurface::PatchFitReport rep;
+  kernel::Result fr = kernel::Result::Failed;
+  try {
+    fr = kernel::NurbsSurface::FitPatch(boundary, {}, tol, patch, &rep);
+  } catch (const std::exception& e) {
+    reason = std::string("the kernel patch fit threw: ") + e.what();
+    return std::nullopt;
+  }
+  if (fr != kernel::Result::Ok) { reason = "the kernel could not fit a surface through these curves (collinear or singular)"; return std::nullopt; }
+  // The fit is a height field over its plane: a loop that crosses itself when
+  // projected onto that plane cannot be trimmed out of it.
+  std::vector<std::pair<double, double>> poly;
+  for (const Point3d& q : SampleCurve(joined, 128, true)) {
+    const ON_3dVector d = q - rep.plane_origin;
+    poly.emplace_back(ON_DotProduct(d, rep.plane_x), ON_DotProduct(d, rep.plane_y));
+  }
+  auto cross = [](double ax, double ay, double bx, double by, double cx, double cy) { return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax); };
+  for (size_t i = 0; i < poly.size(); ++i) {
+    const size_t i2 = (i + 1) % poly.size();
+    for (size_t j = i + 2; j < poly.size(); ++j) {
+      const size_t j2 = (j + 1) % poly.size();
+      if (j2 == i) continue;
+      const double d1 = cross(poly[i].first, poly[i].second, poly[i2].first, poly[i2].second, poly[j].first, poly[j].second);
+      const double d2 = cross(poly[i].first, poly[i].second, poly[i2].first, poly[i2].second, poly[j2].first, poly[j2].second);
+      const double d3 = cross(poly[j].first, poly[j].second, poly[j2].first, poly[j2].second, poly[i].first, poly[i].second);
+      const double d4 = cross(poly[j].first, poly[j].second, poly[j2].first, poly[j2].second, poly[i2].first, poly[i2].second);
+      if (d1 * d2 < 0 && d3 * d4 < 0) { reason = "the loop folds over its best-fit plane (it crosses itself when projected), which a height-field fit cannot represent"; return std::nullopt; }
+    }
+  }
+  try {
+    double edge_dev = 0.0;
+    kernel::Brep face = kernel::Brep::TrimmedPatchFace(patch, rep, joined, &edge_dev);
+    note = "NetworkSrf: " + std::to_string(n) + " curves chained into a closed loop" +
+           (max_gap > 1e-12 ? " (corners closed within the document tolerance " + FormatNumber(tol) + ", largest gap " + FormatNumber(max_gap) + ")" : std::string()) +
+           "; kernel least-squares NURBS patch (" + std::to_string(rep.u_count) + " x " + std::to_string(rep.v_count) + " net, worst deviation from the curves " +
+           FormatDeviation(rep.max_deviation) + " vs tolerance " + FormatNumber(tol) + (rep.met_tolerance ? ": met" : ": NOT met") +
+           ") trimmed by the joined loop, trimmed edge within " + FormatDeviation(edge_dev) +
+           " of the loop (approximate: fitted through the boundary samples, not an interpolating Coons patch)";
+    return SceneObject::MakeBrep(std::move(face));
+  } catch (const std::exception& e) {
+    reason = std::string("the loop could not be trimmed out of the fitted surface: ") + e.what();
+    return std::nullopt;
+  }
+}
+
 void NetworkSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   // Ids kept in lockstep with CurvesOf's own curve-only filter (not just
   // ids itself) so the 2-curve case's recorded history sources line up
@@ -873,7 +992,19 @@ void NetworkSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
     if (std::optional<kernel::NurbsCurve> c = CurveOf(ctx, id)) { curves.push_back(*c); curve_ids.push_back(id); }
   }
   if (curves.size() < 2) { ctx.Warn("Select 2, 3 or 4 curves"); return; }
-  if (curves.size() > 4) { ctx.Warn("NetworkSrf handles up to 4 boundary curves here; using the first 4"); curves.resize(4); curve_ids.resize(4); }
+  if (curves.size() > 4) {
+    std::string many_note, many_reason;
+    std::optional<SceneObject> many = BuildNetworkSrfMany(ctx, curves, many_note, many_reason);
+    if (many) {
+      ctx.Doc().BeginChange("NetworkSrf");
+      ctx.Doc().Add(std::move(*many));
+      ctx.Print(many_note);
+      return;
+    }
+    ctx.Warn("NetworkSrf: " + std::to_string(curves.size()) + " curves could not be fitted (" + many_reason + "); using the first 4 curves only");
+    curves.resize(4);
+    curve_ids.resize(4);
+  }
   if (curves.size() == 2) {
     std::optional<SceneObject> fresh = RebuildNetworkSrf2(ctx, curves[0], curves[1], HistoryRecord{});
     if (!fresh) { ctx.Warn("NetworkSrf: ruled surface failed"); return; }
@@ -962,16 +1093,71 @@ void Patch(CommandContext& ctx, const std::vector<ObjectId>& ids) {
                               FormatDeviation(rep.max_deviation) + " vs tolerance " + FormatNumber(patch_tol) +
                               (rep.met_tolerance ? ": met" : ": NOT met") + "; the best-fit plane misses the data by " + FormatDeviation(flat_dev);
       if (!rep.met_tolerance) ctx.Warn("Patch: the least-squares surface misses the data by " + FormatDeviation(rep.max_deviation) + ", more than the document tolerance " + FormatNumber(patch_tol) + " (still better than the flat plane's " + FormatDeviation(flat_dev) + ")");
-      if (closed.size() == 1) {
-        try {
-          double edge_dev = 0.0;
-          kernel::Brep face = kernel::Brep::TrimmedPatchFace(patch, rep, closed[0], &edge_dev);
-          ctx.Doc().Add(SceneObject::MakeBrep(std::move(face)));
-          ctx.Print("Patch: non-planar data - kernel least-squares NURBS patch (" + net + ") trimmed by the closed curve; the face's edge is within " +
-                    FormatDeviation(edge_dev) + " of the curve");
-          return;
-        } catch (const std::exception& e) {
-          ctx.Print(std::string("Patch: the closed curve could not be trimmed out of the fitted surface (") + e.what() + "); keeping the untrimmed fitted surface");
+      if (!closed.empty()) {
+        // One closed curve trims the fitted surface; with several, the one
+        // enclosing the largest area (in the fit's own plane coordinates) is the
+        // outer boundary and every other closed curve must lie wholly inside it
+        // and clear of the other holes to become a hole of the same face.
+        // Anything else (a curve crossing another, two disjoint islands) is
+        // reported and gives the untrimmed surface, as before.
+        using Poly = std::vector<std::pair<double, double>>;
+        std::vector<Poly> polys;
+        for (const kernel::NurbsCurve& c : closed) {
+          Poly poly;
+          for (const Point3d& q : SampleCurve(c, 96, true)) {
+            const ON_3dVector d = q - rep.plane_origin;
+            poly.emplace_back(ON_DotProduct(d, rep.plane_x), ON_DotProduct(d, rep.plane_y));
+          }
+          polys.push_back(std::move(poly));
+        }
+        auto signed_area = [](const Poly& pl) {
+          double a = 0.0;
+          for (size_t i = 0; i < pl.size(); ++i) { const auto& p0 = pl[i]; const auto& p1 = pl[(i + 1) % pl.size()]; a += p0.first * p1.second - p1.first * p0.second; }
+          return 0.5 * a;
+        };
+        auto inside = [](const Poly& pl, double x, double y) {
+          bool in = false;
+          for (size_t i = 0, j = pl.size() - 1; i < pl.size(); j = i++) {
+            if (((pl[i].second > y) != (pl[j].second > y)) && (x < (pl[j].first - pl[i].first) * (y - pl[i].second) / (pl[j].second - pl[i].second) + pl[i].first)) in = !in;
+          }
+          return in;
+        };
+        auto all_inside = [&](const Poly& pl, const Poly& outer) {
+          for (const auto& q : pl) if (!inside(outer, q.first, q.second)) return false;
+          return true;
+        };
+        auto any_inside = [&](const Poly& pl, const Poly& outer) {
+          for (const auto& q : pl) if (inside(outer, q.first, q.second)) return true;
+          return false;
+        };
+        size_t outer_i = 0;
+        for (size_t i = 1; i < closed.size(); ++i) if (std::fabs(signed_area(polys[i])) > std::fabs(signed_area(polys[outer_i]))) outer_i = i;
+        std::string hole_problem;
+        for (size_t i = 0; i < closed.size() && hole_problem.empty(); ++i) {
+          if (i == outer_i) continue;
+          if (!all_inside(polys[i], polys[outer_i])) hole_problem = "closed curve " + std::to_string(i + 1) + " is not wholly inside the outer boundary";
+          for (size_t j = i + 1; j < closed.size() && hole_problem.empty(); ++j) {
+            if (j == outer_i) continue;
+            if (any_inside(polys[i], polys[j]) || any_inside(polys[j], polys[i])) hole_problem = "closed curves " + std::to_string(i + 1) + " and " + std::to_string(j + 1) + " overlap";
+          }
+        }
+        if (hole_problem.empty()) {
+          try {
+            std::vector<kernel::NurbsCurve> holes;
+            for (size_t i = 0; i < closed.size(); ++i) if (i != outer_i) holes.push_back(closed[i]);
+            double edge_dev = 0.0;
+            kernel::Brep face = kernel::Brep::TrimmedPatchFace(patch, rep, closed[outer_i], holes, &edge_dev);
+            ctx.Doc().Add(SceneObject::MakeBrep(std::move(face)));
+            ctx.Print("Patch: non-planar data - kernel least-squares NURBS patch (" + net + ") trimmed by the closed curve" +
+                      (holes.empty() ? "; the face's edge is within " + FormatDeviation(edge_dev) + " of the curve"
+                                     : " with " + std::to_string(holes.size()) + " hole(s) cut by the other closed curve(s); the worst of the " +
+                                           std::to_string(holes.size() + 1) + " trimmed edges is within " + FormatDeviation(edge_dev) + " of its curve"));
+            return;
+          } catch (const std::exception& e) {
+            ctx.Print(std::string("Patch: the closed curve(s) could not be trimmed out of the fitted surface (") + e.what() + "); keeping the untrimmed fitted surface");
+          }
+        } else {
+          ctx.Print("Patch: " + hole_problem + "; keeping the untrimmed fitted surface");
         }
       }
       ctx.Doc().Add(SceneObject::MakeSurface(patch));
@@ -2629,8 +2815,8 @@ std::optional<SceneObject> RebuildNetworkSrfLoop(CommandContext& ctx, const std:
 void RegisterSurfaceCommands(CommandEngine& e) {
   Reg(e, "Sweep1", Make<Sweep1Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep1 (rotation-minimizing-frame transport and skin; still an uncapped surface, periodic when the rail is closed, same as before) and records History (History On) for UpdateHistory to rebuild against the rail/section's current shape; multiple cross sections still blend as an approximated lofted sweep fitted to a degree-3 surface, with no history recorded.");
   Reg(e, "Sweep2", Make<Sweep2Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep2 (two-rail frame transport and skin; still an uncapped surface, same as before) and records History (History On) for UpdateHistory to rebuild against the rails/section's current shape. Two or more cross sections call the kernel's Brep::Sweep2Sections (each section decoded in its own station's two-rail frame, blended between neighbours and skinned through the stations: every section reproduced, wall edges within the document tolerance of the rails when the sections touch them, measured and printed; closed cross sections must already share a seam and direction, the kernel does not align them; no history recorded); it falls back, with the reason printed, to the old approximated two-rail-scaled sweep fitted to a degree-3 surface when the kernel refuses (crossing section anchors, closed rails, touching rails) or misses the document tolerance.");
-  Reg(e, "NetworkSrf", OnSelection("Select curves in network (2, 3 or 4)", NetworkSrf, 2), CommandStatus::Implemented, "Two curves give an exact ruled surface. Three or four curves that close into a loop within the document tolerance call the kernel's exact Coons patch (CoonsPatchTriangular / CoonsPatch: all boundaries reproduced exactly, corners within tolerance closed first, any order or direction, measured boundary deviation printed); a set that does not close, or that the kernel refuses, prints why and falls back to the old bilinear Coons patch fitted as a degree-3 surface.");
-  Reg(e, "Patch", OnSelection("Select curves and points to fit a surface through", Patch), CommandStatus::Implemented, "Data within the document tolerance of their own best-fit plane keep the planar patch (an exact plane trimmed by a single closed planar curve, or a least-squares rectangle). Non-planar data call the kernel's least-squares NurbsSurface::FitPatch (boundary samples of the selected curves and the selected points, a bicubic-or-lower net grown until the worst data deviation is within the document tolerance, measured and printed; a surface that misses tolerance is flagged NOT met) and a single closed curve is trimmed out of it by Brep::TrimmedPatchFace; if the kernel refuses or the fit is no better than the flat plane the reason is printed and the planar construction runs. No history is recorded for the non-planar result.");
+  Reg(e, "NetworkSrf", OnSelection("Select curves in network (2, 3 or 4)", NetworkSrf, 2), CommandStatus::Implemented, "Two curves give an exact ruled surface. Three or four curves that close into a loop within the document tolerance call the kernel's exact Coons patch (CoonsPatchTriangular / CoonsPatch: all boundaries reproduced exactly, corners within tolerance closed first, any order or direction, measured boundary deviation printed); a set that does not close, or that the kernel refuses, prints why and falls back to the old bilinear Coons patch fitted as a degree-3 surface. Five or more curves that close into a loop within the document tolerance are chained (any order or direction), joined into one loop and trimmed out of the kernel's least-squares NurbsSurface::FitPatch surface as one B-rep face (approximate, not an interpolating Coons patch: the worst deviation from the curves and the trimmed edge's deviation are printed and a miss of the tolerance is flagged); a set that does not close, or whose loop folds over its best-fit plane, prints why and uses the first 4 curves as before.");
+  Reg(e, "Patch", OnSelection("Select curves and points to fit a surface through", Patch), CommandStatus::Implemented, "Data within the document tolerance of their own best-fit plane keep the planar patch (an exact plane trimmed by a single closed planar curve, or a least-squares rectangle). Non-planar data call the kernel's least-squares NurbsSurface::FitPatch (boundary samples of the selected curves and the selected points, a bicubic-or-lower net grown until the worst data deviation is within the document tolerance, measured and printed; a surface that misses tolerance is flagged NOT met) and the closed curve enclosing the most area is trimmed out of it by Brep::TrimmedPatchFace, every other closed curve wholly inside it becoming a hole of the same face (overlapping or crossing curves are reported and leave the surface untrimmed); if the kernel refuses or the fit is no better than the flat plane the reason is printed and the planar construction runs. No history is recorded for the non-planar result.");
   Reg(e, "Pipe", Make<PipeCommand>(), CommandStatus::Implemented, "Single radius. Cap=Yes on an open rail calls the kernel's exact Brep::Pipe (real flat-disc end caps, exact rational cylinder wall along a straight rail); a closed rail still gives a closed mesh tube. Cap=No gives a periodic NURBS surface (circle approximated by a cubic). Records History (History On, see cmd_history.cpp) for UpdateHistory to rebuild against the rail curve's current shape.");
   Reg(e, "OffsetSrf", Make<OffsetSrfCommand>(), CommandStatus::Implemented, "Surfaces: control points offset along Greville normals (exact for planes). Polysurfaces and meshes are offset as meshes along vertex normals; Solid=Yes closes the shell as a mesh.");
   Reg(e, "Shell", Make<ShellCommand>(), CommandStatus::Implemented, "Hollows a closed solid. With no face clicked to remove/open and no per-face thickness override, a polysurface whose faces are all planar and convex (a box or other simple polyhedron) now calls the kernel's exact ShellConvexPlanar first, giving a real B-rep result (exact volume, no tessellation) instead of a mesh; it fails open to the existing mesh construction (outer minus inward vertex-normal offset) for a curved or non-convex solid, or a thickness beyond that shape's own offset feasibility. Optionally click face(s) of a polysurface solid to remove/open before entering thickness (Enter with none picked keeps the old fully-closed behavior): the picked face(s) are dropped from the outer surface, the remainder gets the inward offset, and a rim mesh connects the two boundary loops - a real open shell (cup/case) for a single face, or a group of mutually-adjacent faces, on a simple box-like solid; a selection that would leave a non-manifold or multi-piece remainder is rejected with a warning rather than producing bad geometry, and mesh-only solids (no polysurface to pick faces on) still only support the fully-closed form. After face removal you can also click additional face(s) and type a thickness for each (repeat, then Enter for the default Thickness on the rest): every kept face's vertices then solve to the exact intersection of its own neighbours' offset planes, so two faces with different thickness meet in a real mitered corner rather than an average - numerically verified for a box (see tests/surface_script.txt) and, by the same plane-intersection algebra, correct for any solid whose kept faces are all planar (prisms and other polyhedra). If any kept face is curved, per-face overrides are detected and dropped for that solid (warned), falling back to the single default Thickness everywhere on it rather than applying an unverified per-triangle offset to a curved surface.");

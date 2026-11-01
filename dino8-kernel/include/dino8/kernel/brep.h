@@ -300,6 +300,18 @@ class Brep {
   static Brep TrimmedPatchFace(const NurbsSurface& surface, const NurbsSurface::PatchFitReport& fit,
                                const NurbsCurve& boundary, double* out_edge_deviation = nullptr);
 
+  // The same with HOLES: each `holes` curve is a further closed curve that
+  // becomes an inner loop of the one face (clockwise in (u, v)), built exactly
+  // like the outer loop (3D edge = a copy of the curve, 2D trim = its net in
+  // the fit's plane coordinates, edge tolerance = the measured surface-to-
+  // curve distance). `out_edge_deviation` is the WORST such distance over all
+  // loops. The caller must supply holes that lie inside `boundary` and do not
+  // cross each other or it (checked by the app, not here: only validity and
+  // closedness of each curve are). Throws as the overload above does.
+  static Brep TrimmedPatchFace(const NurbsSurface& surface, const NurbsSurface::PatchFitReport& fit,
+                               const NurbsCurve& boundary, const std::vector<NurbsCurve>& holes,
+                               double* out_edge_deviation = nullptr);
+
   // ------------------------------------------------------------------
   // Sweep-class factories (Parasolid "sweep/spin/loft/pipe" class) -
   // implemented in src/sweep.cpp. Every one of them builds REAL

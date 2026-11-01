@@ -4135,10 +4135,20 @@ Brep Brep::FromPlanarFaces(const std::vector<Brep::PlanarFace>& faces) {
 
 Brep Brep::TrimmedPatchFace(const NurbsSurface& surface, const NurbsSurface::PatchFitReport& fit, const NurbsCurve& boundary,
                             double* out_edge_deviation) {
+  return TrimmedPatchFace(surface, fit, boundary, {}, out_edge_deviation);
+}
+
+Brep Brep::TrimmedPatchFace(const NurbsSurface& surface, const NurbsSurface::PatchFitReport& fit, const NurbsCurve& boundary,
+                            const std::vector<NurbsCurve>& holes, double* out_edge_deviation) {
   const char* caller = "dino8::kernel::Brep::TrimmedPatchFace";
   const ON_NurbsCurve& bc = boundary.raw();
   if (!bc.IsValid() || !bc.IsClosed()) {
     throw std::invalid_argument(std::string(caller) + ": the boundary must be a valid closed curve");
+  }
+  for (const NurbsCurve& h : holes) {
+    if (!h.raw().IsValid() || !h.raw().IsClosed()) {
+      throw std::invalid_argument(std::string(caller) + ": every hole must be a valid closed curve");
+    }
   }
   if (!surface.raw().IsValid()) throw std::invalid_argument(std::string(caller) + ": the surface is not valid");
   const ON_3dVector xaxis = fit.plane_x, yaxis = fit.plane_y;
@@ -4150,44 +4160,54 @@ Brep Brep::TrimmedPatchFace(const NurbsSurface& surface, const NurbsSurface::Pat
   ON_Brep& brep = result.raw();
   ON_NurbsSurface* wall = new ON_NurbsSurface(surface.raw());
   const int si = brep.AddSurface(wall);
-  // 3D edge curve: the caller's boundary, exactly. 2D trim curve: the same
-  // control net in the plane's (x, y) coordinates (see brep.h).
-  ON_NurbsCurve* c3 = new ON_NurbsCurve(bc);
-  ON_NurbsCurve* c2 = new ON_NurbsCurve(2, bc.IsRational(), bc.Order(), bc.CVCount());
-  for (int k = 0; k < bc.KnotCount(); ++k) c2->SetKnot(k, bc.Knot(k));
-  for (int i = 0; i < bc.CVCount(); ++i) {
-    ON_3dPoint p;
-    bc.GetCV(i, p);
-    const ON_3dVector d = p - fit.plane_origin;
-    const double x = ON_DotProduct(d, xaxis), y = ON_DotProduct(d, yaxis);
-    if (bc.IsRational()) {
-      const double w = bc.Weight(i);
-      c2->SetCV(i, ON_4dPoint(x * w, y * w, 0.0, w));
-    } else {
-      c2->SetCV(i, ON_3dPoint(x, y, 0.0));
+  ON_BrepFace* face_ptr = nullptr;
+  double worst = 0.0;
+  // One loop: 3D edge curve = the caller's curve exactly (a copy); 2D trim
+  // curve = the same control net in the plane's (x, y) coordinates (see
+  // brep.h). The edge tolerance is the MEASURED surface-to-curve distance.
+  auto add_loop = [&](const ON_NurbsCurve& curve, ON_BrepLoop::TYPE type) {
+    ON_NurbsCurve* c3 = new ON_NurbsCurve(curve);
+    ON_NurbsCurve* c2 = new ON_NurbsCurve(2, curve.IsRational(), curve.Order(), curve.CVCount());
+    for (int k = 0; k < curve.KnotCount(); ++k) c2->SetKnot(k, curve.Knot(k));
+    for (int i = 0; i < curve.CVCount(); ++i) {
+      ON_3dPoint p;
+      curve.GetCV(i, p);
+      const ON_3dVector d = p - fit.plane_origin;
+      const double x = ON_DotProduct(d, xaxis), y = ON_DotProduct(d, yaxis);
+      if (curve.IsRational()) {
+        const double w = curve.Weight(i);
+        c2->SetCV(i, ON_4dPoint(x * w, y * w, 0.0, w));
+      } else {
+        c2->SetCV(i, ON_3dPoint(x, y, 0.0));
+      }
     }
-  }
-  double deviation = 0.0;
-  for (int k = 0; k <= 400; ++k) {
-    const ON_3dPoint uv = c2->PointAt(c2->Domain().ParameterAt(k / 400.0));
-    const ON_3dPoint on_boundary = c3->PointAt(c3->Domain().ParameterAt(k / 400.0));
-    deviation = std::max(deviation, wall->PointAt(uv.x, uv.y).DistanceTo(on_boundary));
-  }
-  const int c3i = brep.AddEdgeCurve(c3);
-  const int c2i = brep.AddTrimCurve(c2);
-  ON_BrepVertex& vertex = brep.NewVertex(c3->PointAtStart(), 0.0);
-  ON_BrepEdge& edge = brep.NewEdge(vertex, vertex, c3i);
-  edge.m_tolerance = deviation;
-  ON_BrepFace& face = brep.NewFace(si);
-  ON_BrepLoop& loop = brep.NewLoop(ON_BrepLoop::outer, face);
-  ON_BrepTrim& trim = brep.NewTrim(edge, false, loop, c2i);
-  trim.m_type = ON_BrepTrim::boundary;
-  trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
-  if (brep.LoopDirection(loop) < 0) brep.FlipLoop(loop);
-  brep.SetTrimIsoFlags(face);
-  brep.SetVertexTolerance(brep.m_V[0]);
+    double deviation = 0.0;
+    for (int k = 0; k <= 400; ++k) {
+      const ON_3dPoint uv = c2->PointAt(c2->Domain().ParameterAt(k / 400.0));
+      const ON_3dPoint on_boundary = c3->PointAt(c3->Domain().ParameterAt(k / 400.0));
+      deviation = std::max(deviation, wall->PointAt(uv.x, uv.y).DistanceTo(on_boundary));
+    }
+    worst = std::max(worst, deviation);
+    const int c3i = brep.AddEdgeCurve(c3);
+    const int c2i = brep.AddTrimCurve(c2);
+    ON_BrepVertex& vertex = brep.NewVertex(c3->PointAtStart(), 0.0);
+    ON_BrepEdge& edge = brep.NewEdge(vertex, vertex, c3i);
+    edge.m_tolerance = deviation;
+    if (!face_ptr) face_ptr = &brep.NewFace(si);
+    ON_BrepLoop& loop = brep.NewLoop(type, *face_ptr);
+    ON_BrepTrim& trim = brep.NewTrim(edge, false, loop, c2i);
+    trim.m_type = ON_BrepTrim::boundary;
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    // Outer loops run counter-clockwise in (u, v), holes clockwise.
+    const int dir = brep.LoopDirection(loop);
+    if (type == ON_BrepLoop::outer ? dir < 0 : dir > 0) brep.FlipLoop(loop);
+    brep.SetVertexTolerance(brep.m_V[brep.m_V.Count() - 1]);
+  };
+  add_loop(bc, ON_BrepLoop::outer);
+  for (const NurbsCurve& h : holes) add_loop(h.raw(), ON_BrepLoop::inner);
+  brep.SetTrimIsoFlags(brep.m_F[0]);
   result.AppendUntrimmedFaceSideTables(1);
-  if (out_edge_deviation) *out_edge_deviation = deviation;
+  if (out_edge_deviation) *out_edge_deviation = worst;
   return result;
 }
 
