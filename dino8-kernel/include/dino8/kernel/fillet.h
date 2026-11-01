@@ -1234,18 +1234,40 @@ Brep ChamferConcaveEdges(const Brep& solid, const std::vector<std::pair<Point3d,
 //     not a simple trihedral corner between faces i and j (the case
 //     NotchCornerAtVertex silently skips), rather than returning an
 //     unclosed shape.
-//   - A third face that is OBLIQUE to the edge (not perpendicular): still
-//     out of scope - throws std::invalid_argument rather than silently
-//     leaving that face's own sharp corner unmodified (which would produce
-//     a self-overlapping, not merely open, shape - the wall's own curved
-//     end cap would pass THROUGH that untouched corner's own material).
-//     Closing it needs the wall's own length adjusted to where each rail
-//     crosses the oblique plane and the true curve that plane cuts from
-//     the translational wall spliced in - the problem FilletConvexEdge
-//     solves for its cylinder via FindObliqueThirdFaceCrossing/
-//     EllipseNotchCornerAtVertexCylindrical - a real, disclosed future
-//     increment for the conic case, as is any general vertex blend where
-//     several blended edges meet.
+//   - A third face that is OBLIQUE to the edge (its normal not parallel to
+//     e, but not nearly perpendicular to it either - |n.e| >= 1e-3): closed
+//     exactly, by the same translational property. The wall is the
+//     translational sweep of `profile` along e, so it meets that face's
+//     plane (through the endpoint v, normal n) in the profile PROJECTED
+//     ALONG e onto the plane, x -> x + ((n.(v - x))/(n.e)) e. That map is
+//     affine, an affine map commutes with a rational Bezier (the weights,
+//     hence the denominator, are untouched), so the end curve is again an
+//     exact rational quadratic - the profile's own control polygon slid
+//     along e by t_k = n.(v - P_k)/(n.e) per control point, weights
+//     unchanged (no new construction, no sampled ellipse). The wall then
+//     becomes the exact degree-1 ruled surface between the two end curves
+//     (every ruling is parallel to e, so it lies on the very same
+//     translational surface; only the per-u end stations differ) in place
+//     of Brep::Extrude, and the oblique face's corner is notched with the
+//     projected end curve exactly as the perpendicular case notches with
+//     the translated profile. Verified by this function's own regression
+//     tests against an independently Simpson-integrated closed form: the
+//     removed volume is the cross-section integral of the affine end-to-
+//     end length, (1+gamma)*A + beta*M_a - gamma*M_b for end planes tilted
+//     by (beta, gamma) in the two face directions, A/M_a/M_b the conic
+//     region's area and first moments by Green's theorem on the arc; the
+//     wall's (y,z) cross-section equals the independently-written conic at
+//     every (u, v) sample; and G1 contact with faces i/j (the wall's
+//     normal against each face's, along both rails) is measured to < 1e-9.
+//     Scope of the oblique case: at most ONE third face may touch an
+//     oblique endpoint (an oblique face together with another third face,
+//     i.e. a valence > 3 corner, throws), and the conic's end curve must
+//     stay on that face's own two boundary edges at the corner (a setback
+//     that overruns the face throws - this check now applies to the
+//     perpendicular case too, where an overrun used to splice a
+//     self-overlapping polygon silently). As is any general vertex blend
+//     where several blended edges meet, a shared corner stays a disclosed
+//     future increment.
 // Also matches ChamferConvexEdge's own scope otherwise: one straight edge
 // between exactly two PLANAR faces, convex dihedral only, of a solid
 // PlanarFaces() can describe.
@@ -1292,9 +1314,10 @@ Brep FilletConvexEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, 
 // SCOPE: identical to FilletConvexEdgeConic's own (see that function's
 // own doc comment) with the convexity sense reversed - one straight
 // CONCAVE edge between exactly two PLANAR faces, a third face at either
-// endpoint either a free boundary or exactly PERPENDICULAR to the edge
-// (an OBLIQUE third face, or a multi-edge/vertex-blend form, remain out
-// of scope for the same reasons given there).
+// endpoint either a free boundary, PERPENDICULAR to the edge, or a single
+// OBLIQUE face (see FilletConvexEdgeConic's own doc comment); a
+// multi-edge/vertex-blend form remains out of scope for the reasons given
+// there.
 Brep FilletConcaveEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
                              double distance_j, double rho);
 

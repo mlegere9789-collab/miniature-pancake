@@ -237,14 +237,25 @@ void NotchCornerAtVertex(std::vector<Brep::PlanarFace>& other_faces, const Point
 // Returns how many faces were actually notched, so FilletConvexEdgeConic
 // can refuse (rather than silently mis-build) a perpendicular third face
 // this skipped for its own exotic-topology reason.
+//
+// OBLIQUE GENERALISATION: `c` is whatever curve the wall's own end cap
+// really is at `vertex` - for a perpendicular (or absent) third face that
+// is `profile` translated to the vertex (the original case), for an
+// OBLIQUE third face it is the profile's PROJECTION ALONG THE EDGE onto
+// that face's plane (ConicEndCurve below, exact and again a rational
+// quadratic) - and `face_normal` is the normal of the third face to notch
+// (`e` itself for the perpendicular case, so that case is what it always
+// was). The notch is only spliced when the curve's two ends really lie on
+// the third face's own boundary edges at this corner (the setback does not
+// overrun the face): an overrun used to be a silently self-overlapping
+// polygon and now throws.
 int ConicNotchCornerAtVertex(std::vector<Brep::PlanarFace>& other_faces, const Point3d& vertex,
-                             const Vector3d& e, const ON_Plane& plane_i, const ON_Plane& plane_j,
-                             const NurbsCurve& profile, const Vector3d& offset, double tol) {
-  const ON_NurbsCurve& c = profile.raw();
+                             const Vector3d& face_normal, const ON_Plane& plane_i, const ON_Plane& plane_j,
+                             const ON_NurbsCurve& c, double tol) {
   const ON_Interval dom = c.Domain();
   int notched = 0;
   for (Brep::PlanarFace& f : other_faces) {
-    if (std::fabs(f.plane.zaxis * e) < 1.0 - 1e-6) continue;
+    if (std::fabs(f.plane.zaxis * face_normal) < 1.0 - 1e-6) continue;
 
     std::vector<Point3d>& loop = f.loop;
     const size_t n = loop.size();
@@ -277,7 +288,22 @@ int ConicNotchCornerAtVertex(std::vector<Brep::PlanarFace>& other_faces, const P
                                   : (idx == kNotchSamples ? dom.Max()
                                                           : dom.ParameterAt(static_cast<double>(idx) / kNotchSamples));
         const ON_3dPoint p = c.PointAt(t);
-        run.push_back(Point3d(p.x, p.y, p.z) + offset);
+        run.push_back(Point3d(p.x, p.y, p.z));
+      }
+
+      // The run's first point must sit on the segment vertex->pred and its
+      // last on vertex->succ (the third face's own two boundary edges at
+      // this corner), else the setback overruns the face.
+      auto within = [&](const Point3d& q, const Point3d& other) {
+        const Vector3d seg = other - loop[k];
+        const double len2 = seg * seg;
+        if (!(len2 > 0.0)) return false;
+        return ((q - loop[k]) * seg) / len2 <= 1.0 + 1e-9;
+      };
+      if (!within(run.front(), i_to_j ? pred : succ) || !within(run.back(), i_to_j ? succ : pred)) {
+        throw std::invalid_argument(
+            "dino8::kernel::FilletConvexEdgeConic: a setback distance overruns the third face at an edge "
+            "endpoint (the conic's end curve leaves that face's own boundary edge) - reduce the distance");
       }
 
       std::vector<Point3d> new_loop;
@@ -296,6 +322,118 @@ int ConicNotchCornerAtVertex(std::vector<Brep::PlanarFace>& other_faces, const P
     }
   }
   return notched;
+}
+
+// One endpoint's end condition for the conic blend: how many PERPENDICULAR
+// third faces touch it (the original case, notched with the profile
+// translated to the vertex), or the plane normal of a single OBLIQUE third
+// face (notched with the profile projected along the edge onto its plane).
+struct ConicEndCondition {
+  int perpendicular = 0;
+  bool oblique = false;
+  Vector3d oblique_normal;
+  bool Notched() const { return perpendicular > 0 || oblique; }
+  int Expected() const { return oblique ? 1 : perpendicular; }
+  Vector3d FaceNormal(const Vector3d& e) const { return oblique ? oblique_normal : e; }
+};
+
+// Classifies every third face (not idx_i/idx_j) touching p0/p1. A
+// perpendicular one is counted (the original behaviour); a single oblique
+// one is recorded; an oblique face together with any other third face at
+// the same endpoint (a valence > 3 corner), or a plane nearly parallel to
+// the edge, is out of scope and throws. `owned`, when given, receives
+// every touched face index.
+void ScanConicThirdFaces(const std::vector<Brep::PlanarFace>& faces, int idx_i, int idx_j, const Point3d& p0,
+                         const Point3d& p1, const Vector3d& e, double tol, const char* caller,
+                         std::vector<int>* owned, ConicEndCondition& end0, ConicEndCondition& end1) {
+  int third_at_p0 = 0, third_at_p1 = 0;
+  for (size_t f = 0; f < faces.size(); ++f) {
+    if (static_cast<int>(f) == idx_i || static_cast<int>(f) == idx_j) continue;
+    bool touches_p0 = false, touches_p1 = false;
+    for (const Point3d& v : faces[f].loop) {
+      if (PointsEqual(v, p0, tol)) touches_p0 = true;
+      if (PointsEqual(v, p1, tol)) touches_p1 = true;
+    }
+    if (!touches_p0 && !touches_p1) continue;
+    const Vector3d& n = faces[f].plane.zaxis;
+    const bool perpendicular = std::fabs(n * e) >= 1.0 - 1e-6;
+    if (!perpendicular && std::fabs(n * e) < 1e-3) {
+      throw std::invalid_argument(std::string("dino8::kernel::") + caller +
+                                  ": a third face touching an edge endpoint is (nearly) parallel to the edge - "
+                                  "there is no well-defined end curve on it");
+    }
+    if (touches_p0) {
+      ++third_at_p0;
+      if (perpendicular) {
+        ++end0.perpendicular;
+      } else {
+        end0.oblique = true;
+        end0.oblique_normal = n;
+      }
+    }
+    if (touches_p1) {
+      ++third_at_p1;
+      if (perpendicular) {
+        ++end1.perpendicular;
+      } else {
+        end1.oblique = true;
+        end1.oblique_normal = n;
+      }
+    }
+    if (owned) owned->push_back(static_cast<int>(f));
+  }
+  if ((end0.oblique && third_at_p0 > 1) || (end1.oblique && third_at_p1 > 1)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + caller +
+                                ": an OBLIQUE third face shares an edge endpoint with another third face (a "
+                                "valence > 3 corner) - only a single oblique end face per endpoint is supported");
+  }
+}
+
+// The conic cross-section as the wall's end cap at one endpoint. Free or
+// perpendicular end: `profile` translated by `offset` (zero at edge_p0,
+// the sweep at edge_p1). OBLIQUE end: `profile` projected ALONG THE EDGE
+// onto the third face's plane through `vertex`. That projection
+// x -> x + ((n.(vertex - x))/(n.e)) e is affine, and an affine map
+// commutes with a rational Bezier/B-spline (the weights, hence the
+// denominator, are untouched), so the result is the profile's own control
+// polygon slid along e with the weights unchanged - an EXACT rational
+// quadratic, and exactly the curve in which the translational wall meets
+// that plane.
+ON_NurbsCurve ConicEndCurve(const NurbsCurve& profile, const Vector3d& offset, const Vector3d& e,
+                            const Point3d& vertex, const ConicEndCondition& end) {
+  ON_NurbsCurve c = profile.raw();
+  if (!end.oblique) {
+    c.Translate(offset);
+    return c;
+  }
+  const Vector3d& n = end.oblique_normal;
+  const double ne = n * e;
+  for (int i = 0; i < c.CVCount(); ++i) {
+    ON_4dPoint h;
+    c.GetCV(i, h);
+    const double w = h.w;
+    const Point3d x(h.x / w, h.y / w, h.z / w);
+    const double t = (n * (vertex - x)) / ne;
+    h.x += w * t * e.x;
+    h.y += w * t * e.y;
+    h.z += w * t * e.z;
+    c.SetCV(i, h);
+  }
+  return c;
+}
+
+// Builds the conic blend's wall from its two end caps: the original exact
+// translational Extrude when neither end is oblique, otherwise the exact
+// ruled surface between the two (compatible, same-weight) end curves -
+// which lies on the very same translational surface (every ruling is
+// parallel to e), just with per-u end stations.
+Brep ConicWall(const NurbsCurve& profile, const Vector3d& sweep, const ON_NurbsCurve& cap0,
+               const ON_NurbsCurve& cap1, bool any_oblique) {
+  if (!any_oblique) return Brep::Extrude(profile, sweep, /*cap=*/false);
+  NurbsCurve a, b;
+  a.raw() = cap0;
+  b.raw() = cap1;
+  return Brep::Loft({a, b}, /*degree=*/1, /*closed=*/false, /*cap=*/false);
 }
 
 // Same corner-notch splicing NotchCornerAtVertex performs (see its own doc
@@ -3384,32 +3522,15 @@ Brep FilletConvexEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, 
         "exceeds that face's own extent from the edge");
   }
 
-  // SCOPE (see this function's own doc comment): a third face touching
-  // edge_p0/edge_p1 is handled only when its own plane is PERPENDICULAR to
-  // the edge (its corner is then notched by ConicNotchCornerAtVertex,
-  // below). An OBLIQUE third face there is still out of scope and throws
-  // rather than silently building a self-overlapping shape. Counted per
-  // endpoint so the notch step can confirm it actually notched every
-  // perpendicular face it was expected to.
-  int perpendicular_at_p0 = 0, perpendicular_at_p1 = 0;
-  for (size_t f = 0; f < faces.size(); ++f) {
-    if (static_cast<int>(f) == idx_i || static_cast<int>(f) == idx_j) continue;
-    bool touches_p0 = false, touches_p1 = false;
-    for (const Point3d& v : faces[f].loop) {
-      if (PointsEqual(v, edge_p0, tol)) touches_p0 = true;
-      if (PointsEqual(v, edge_p1, tol)) touches_p1 = true;
-    }
-    if (!touches_p0 && !touches_p1) continue;
-    if (std::fabs(faces[f].plane.zaxis * e) < 1.0 - 1e-6) {
-      throw std::invalid_argument(
-          "dino8::kernel::FilletConvexEdgeConic: an OBLIQUE third face of `solid` (one whose plane is not "
-          "perpendicular to the edge) touches edge_p0 or edge_p1 - oblique end-condition splicing for the conic "
-          "blend is out of scope for this increment (see this function's own doc comment); only a free "
-          "boundary or a third face perpendicular to the edge is supported at each endpoint");
-    }
-    if (touches_p0) ++perpendicular_at_p0;
-    if (touches_p1) ++perpendicular_at_p1;
-  }
+  // End conditions (see this function's own doc comment): a third face
+  // touching edge_p0/edge_p1 is either PERPENDICULAR to the edge (its
+  // corner is notched with the profile itself, ConicNotchCornerAtVertex
+  // below) or a single OBLIQUE face (notched with the profile projected
+  // along the edge onto its plane, ConicEndCurve). More than one third
+  // face alongside an oblique one still throws rather than silently
+  // building a self-overlapping shape.
+  ConicEndCondition end0, end1;
+  ScanConicThirdFaces(faces, idx_i, idx_j, edge_p0, edge_p1, e, tol, "FilletConvexEdgeConic", nullptr, end0, end1);
 
   // Re-trim faces i/j by their own rail line - identical to
   // ChamferConvexEdge's own step 3.
@@ -3448,26 +3569,27 @@ Brep FilletConvexEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, 
     if (static_cast<int>(f) != idx_i && static_cast<int>(f) != idx_j) others.push_back(faces[f]);
   }
 
-  // End conditions (see this function's own doc comment): a third face
-  // perpendicular to the edge at edge_p0/edge_p1 gets its sharp corner
-  // replaced by a dense polygonal copy of the wall's own end-cap curve -
-  // `profile` itself at edge_p0, `profile` translated by `sweep` at
-  // edge_p1 - exactly where FilletConvexEdge calls NotchCornerAtVertex. No
-  // third face at an endpoint leaves it a free boundary, unchanged.
-  const bool notch_p0 = perpendicular_at_p0 > 0;
-  const bool notch_p1 = perpendicular_at_p1 > 0;
+  // Each end's cap curve: the profile (translated) for a free or
+  // perpendicular end, the profile projected along e onto the third
+  // face's plane for an oblique one. A third face at an endpoint gets its
+  // sharp corner replaced by a dense polygonal copy of that cap curve -
+  // exactly where FilletConvexEdge calls NotchCornerAtVertex. No third
+  // face at an endpoint leaves it a free boundary, unchanged.
+  const ON_NurbsCurve cap0 = ConicEndCurve(profile, Vector3d(0, 0, 0), e, edge_p0, end0);
+  const ON_NurbsCurve cap1 = ConicEndCurve(profile, sweep, e, edge_p1, end1);
+  const bool notch_p0 = end0.Notched();
+  const bool notch_p1 = end1.Notched();
   if (notch_p0 &&
-      ConicNotchCornerAtVertex(others, edge_p0, e, plane_i, plane_j, profile, Vector3d(0, 0, 0), tol) !=
-          perpendicular_at_p0) {
+      ConicNotchCornerAtVertex(others, edge_p0, end0.FaceNormal(e), plane_i, plane_j, cap0, tol) != end0.Expected()) {
     throw std::invalid_argument(
-        "dino8::kernel::FilletConvexEdgeConic: a third face perpendicular to the edge touches edge_p0 but its "
-        "corner there is not a simple trihedral corner between faces i and j - out of scope");
+        "dino8::kernel::FilletConvexEdgeConic: a third face touching edge_p0 has a corner there that is not a "
+        "simple trihedral corner between faces i and j - out of scope");
   }
   if (notch_p1 &&
-      ConicNotchCornerAtVertex(others, edge_p1, e, plane_i, plane_j, profile, sweep, tol) != perpendicular_at_p1) {
+      ConicNotchCornerAtVertex(others, edge_p1, end1.FaceNormal(e), plane_i, plane_j, cap1, tol) != end1.Expected()) {
     throw std::invalid_argument(
-        "dino8::kernel::FilletConvexEdgeConic: a third face perpendicular to the edge touches edge_p1 but its "
-        "corner there is not a simple trihedral corner between faces i and j - out of scope");
+        "dino8::kernel::FilletConvexEdgeConic: a third face touching edge_p1 has a corner there that is not a "
+        "simple trihedral corner between faces i and j - out of scope");
   }
 
   std::vector<Brep::PlanarFace> all = std::move(others);
@@ -3487,9 +3609,8 @@ Brep FilletConvexEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, 
   // cap edge, and record the polygon's genuinely measured deviation from
   // that curve as the edge's own tolerance rather than a false claim of
   // exactness (the same honesty ConicalFace::cap0_notch_tolerance carries).
-  auto replace_notch_chord = [&](const Vector3d& offset) {
-    ON_NurbsCurve cap = profile.raw();
-    cap.Translate(offset);
+  auto replace_notch_chord = [&](const ON_NurbsCurve& end_cap) {
+    ON_NurbsCurve cap = end_cap;
     const ON_3dPoint a = cap.PointAtStart(), b = cap.PointAtEnd();
     const ON_Interval dom = cap.Domain();
     double sag = 0.0;
@@ -3527,13 +3648,14 @@ Brep FilletConvexEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, 
     for (int k = 0; k < E.m_ti.Count(); ++k) b3.m_T[E.m_ti[k]].UnsetPlineEdgeParameters();
     E.m_tolerance = sag;
   };
-  if (notch_p0) replace_notch_chord(Vector3d(0, 0, 0));
-  if (notch_p1) replace_notch_chord(sweep);
+  if (notch_p0) replace_notch_chord(cap0);
+  if (notch_p1) replace_notch_chord(cap1);
 
   // Exact translational sweep (step 5): the wall's own u=0/u=1 rails are,
   // by construction, the SAME two points/lines the re-trim above already
-  // cut faces i/j along.
-  Brep wall = Brep::Extrude(profile, sweep, /*cap=*/false);
+  // cut faces i/j along. With an oblique end it is the exact ruled surface
+  // between the two end caps instead (same surface, per-u end stations).
+  Brep wall = ConicWall(profile, sweep, cap0, cap1, end0.oblique || end1.oblique);
 
   Brep combined = Brep::Compound({planar_shell, wall});
   combined.JoinNakedEdges(tol);
@@ -3585,7 +3707,8 @@ struct ConicMultiEdge {
   Vector3d sweep;
   NurbsCurve profile;
   bool notch_p0 = false, notch_p1 = false;
-  int perp_p0 = 0, perp_p1 = 0;
+  ConicEndCondition end0, end1;
+  ON_NurbsCurve cap0, cap1;
   std::vector<int> owned;  // idx_i, idx_j, plus every third face touched at p0/p1
 };
 
@@ -3665,32 +3788,15 @@ Brep FilletConvexEdgesConic(const Brep& solid, const std::vector<ConicEdgeSpec>&
     }
 
     // Third-face scan at each endpoint - verbatim FilletConvexEdgeConic's
-    // own SCOPE check (perpendicular-only, free boundary otherwise), plus
-    // recording every touched face index so the disjointness check below
-    // can see it.
+    // own end-condition classification (perpendicular, a single oblique
+    // face, or a free boundary), plus recording every touched face index
+    // so the disjointness check below can see it.
     m.owned.push_back(m.idx_i);
     m.owned.push_back(m.idx_j);
-    for (size_t f = 0; f < faces.size(); ++f) {
-      if (static_cast<int>(f) == m.idx_i || static_cast<int>(f) == m.idx_j) continue;
-      bool touches_p0 = false, touches_p1 = false;
-      for (const Point3d& v : faces[f].loop) {
-        if (PointsEqual(v, m.p0, tol)) touches_p0 = true;
-        if (PointsEqual(v, m.p1, tol)) touches_p1 = true;
-      }
-      if (!touches_p0 && !touches_p1) continue;
-      if (std::fabs(faces[f].plane.zaxis * m.e) < 1.0 - 1e-6) {
-        throw std::invalid_argument(
-            "dino8::kernel::FilletConvexEdgesConic: an OBLIQUE third face of `solid` (one whose plane is not "
-            "perpendicular to the edge) touches an edge endpoint - oblique end-condition splicing for the "
-            "conic blend is out of scope; only a free boundary or a third face perpendicular to the edge is "
-            "supported at each endpoint");
-      }
-      m.owned.push_back(static_cast<int>(f));
-      if (touches_p0) ++m.perp_p0;
-      if (touches_p1) ++m.perp_p1;
-    }
-    m.notch_p0 = m.perp_p0 > 0;
-    m.notch_p1 = m.perp_p1 > 0;
+    ScanConicThirdFaces(faces, m.idx_i, m.idx_j, m.p0, m.p1, m.e, tol, "FilletConvexEdgesConic", &m.owned, m.end0,
+                        m.end1);
+    m.notch_p0 = m.end0.Notched();
+    m.notch_p1 = m.end1.Notched();
 
     m.m_i = m_i;
     m.m_j = m_j;
@@ -3702,6 +3808,8 @@ Brep FilletConvexEdgesConic(const Brep& solid, const std::vector<ConicEdgeSpec>&
     profile.SetWeightAt(1, w);
     m.profile = profile;
     m.sweep = m.p1 - m.p0;
+    m.cap0 = ConicEndCurve(profile, Vector3d(0, 0, 0), m.e, m.p0, m.end0);
+    m.cap1 = ConicEndCurve(profile, m.sweep, m.e, m.p1, m.end1);
 
     me.push_back(std::move(m));
   }
@@ -3739,18 +3847,17 @@ Brep FilletConvexEdgesConic(const Brep& solid, const std::vector<ConicEdgeSpec>&
   }
 
   for (const ConicMultiEdge& m : me) {
-    if (m.notch_p0 &&
-        ConicNotchCornerAtVertex(others, m.p0, m.e, m.plane_i, m.plane_j, m.profile, Vector3d(0, 0, 0), tol) !=
-            m.perp_p0) {
+    if (m.notch_p0 && ConicNotchCornerAtVertex(others, m.p0, m.end0.FaceNormal(m.e), m.plane_i, m.plane_j,
+                                               m.cap0, tol) != m.end0.Expected()) {
       throw std::invalid_argument(
-          "dino8::kernel::FilletConvexEdgesConic: a third face perpendicular to an edge touches its endpoint "
-          "but its corner there is not a simple trihedral corner between faces i and j - out of scope");
+          "dino8::kernel::FilletConvexEdgesConic: a third face touching an edge endpoint has a corner there "
+          "that is not a simple trihedral corner between faces i and j - out of scope");
     }
-    if (m.notch_p1 &&
-        ConicNotchCornerAtVertex(others, m.p1, m.e, m.plane_i, m.plane_j, m.profile, m.sweep, tol) != m.perp_p1) {
+    if (m.notch_p1 && ConicNotchCornerAtVertex(others, m.p1, m.end1.FaceNormal(m.e), m.plane_i, m.plane_j,
+                                               m.cap1, tol) != m.end1.Expected()) {
       throw std::invalid_argument(
-          "dino8::kernel::FilletConvexEdgesConic: a third face perpendicular to an edge touches its endpoint "
-          "but its corner there is not a simple trihedral corner between faces i and j - out of scope");
+          "dino8::kernel::FilletConvexEdgesConic: a third face touching an edge endpoint has a corner there "
+          "that is not a simple trihedral corner between faces i and j - out of scope");
     }
   }
 
@@ -3773,9 +3880,8 @@ Brep FilletConvexEdgesConic(const Brep& solid, const std::vector<ConicEdgeSpec>&
 
   Brep planar_shell = Brep::FromMixedFaces(all, {});
 
-  auto replace_notch_chord = [&](const NurbsCurve& profile, const Vector3d& offset) {
-    ON_NurbsCurve cap = profile.raw();
-    cap.Translate(offset);
+  auto replace_notch_chord = [&](const ON_NurbsCurve& end_cap) {
+    ON_NurbsCurve cap = end_cap;
     const ON_3dPoint a = cap.PointAtStart(), b = cap.PointAtEnd();
     const ON_Interval dom = cap.Domain();
     double sag = 0.0;
@@ -3814,14 +3920,16 @@ Brep FilletConvexEdgesConic(const Brep& solid, const std::vector<ConicEdgeSpec>&
     E.m_tolerance = sag;
   };
   for (const ConicMultiEdge& m : me) {
-    if (m.notch_p0) replace_notch_chord(m.profile, Vector3d(0, 0, 0));
-    if (m.notch_p1) replace_notch_chord(m.profile, m.sweep);
+    if (m.notch_p0) replace_notch_chord(m.cap0);
+    if (m.notch_p1) replace_notch_chord(m.cap1);
   }
 
   std::vector<Brep> parts;
   parts.reserve(me.size() + 1);
   parts.push_back(std::move(planar_shell));
-  for (const ConicMultiEdge& m : me) parts.push_back(Brep::Extrude(m.profile, m.sweep, /*cap=*/false));
+  for (const ConicMultiEdge& m : me) {
+    parts.push_back(ConicWall(m.profile, m.sweep, m.cap0, m.cap1, m.end0.oblique || m.end1.oblique));
+  }
 
   Brep combined = Brep::Compound(parts);
   combined.JoinNakedEdges(tol);
