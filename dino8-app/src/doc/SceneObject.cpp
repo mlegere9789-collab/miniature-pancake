@@ -1287,18 +1287,23 @@ void SceneObject::EnsureAnalysisColors(const AnalysisSettings& settings) const {
 }
 
 kernel::BoundingBox SceneObject::BoundingBox() const {
-  if (base_bbox_valid_) return base_bbox_;
+  if (base_bbox_valid_ && !cache_.dirty) return base_bbox_;
   // Always measured on the fixed base tessellation, never on whichever
   // zoom-dependent level the viewport last installed in cache_ (adaptive
   // tessellation swaps cache_ per frame; a bounding box that changed with the
   // camera made BoundingBox/Describe/zoom-extents depend on the view). Build
   // the base level in a scratch cache and put the viewport's level back.
+  const bool was_dirty = cache_.dirty;
   DisplayCache saved = std::move(cache_);
   cache_ = DisplayCache{};  // dirty
   EnsureDisplay(0.05, 0.1);
   base_bbox_ = cache_.has_bbox ? cache_.bbox : kernel::BoundingBox{point, point};
   cache_ = std::move(saved);
-  base_bbox_valid_ = true;
+  // While the display is dirty the geometry may still be mid-edit (several
+  // edit sequences mark it dirty, then keep mutating, relying on the next
+  // rebuild to see the final state): answer now, but only remember the answer
+  // once the live cache is clean.
+  base_bbox_valid_ = !was_dirty;
   return base_bbox_;
 }
 
