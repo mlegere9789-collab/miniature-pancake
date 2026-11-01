@@ -149,42 +149,94 @@ std::optional<kernel::Brep> TryGeneralBrepBoolean(CommandContext& ctx, const std
 // non-watertight SubD or mesh on either side - BooleanToSubD's own
 // disclosed precondition, inherited unchanged from Boolean()/
 // BooleanCombine()).
+// What TrySubDBoolean measured, for the status line.
+struct SubDBooleanTotals {
+  int seam_creases = 0;
+  int operand_creases = 0;
+  int sharp_creases = 0;
+  int folds = 0;
+  int refine_levels_max = 0;
+  int fit_iterations_max = 0;
+  double fit_residual_worst = 0.0;
+  bool any_promoted = false;
+};
+
+// Catmull-Clark rounds applied to a SubD operand before the mesh Boolean
+// sees it: enough that the polyhedron is a close approximation of the
+// operand's smooth limit surface (a box: 3 rounds, 384 faces) without
+// making the Boolean slow (cap ~4000 faces).
+int SubDBooleanRefineLevels(const kernel::SubD& s) {
+  int faces = std::max(1, s.FaceCount()), lv = 0;
+  while (lv < 3 && faces * 4 <= 4000) { faces *= 4; ++lv; }
+  return std::max(lv, 1);
+}
+
 std::optional<kernel::SubD> TrySubDBoolean(CommandContext& ctx, const std::vector<ObjectId>& first_ids, const std::vector<ObjectId>& second_ids,
-                                            kernel::BooleanOp op) {
+                                            kernel::BooleanOp op, SubDBooleanTotals* totals = nullptr) {
+  // Every operand carries the number of refinement rounds the Boolean
+  // applies to it: a TRUE SubD is refined (its visible shape is its limit
+  // surface, not its control polyhedron), while a Brep/Mesh promoted to a
+  // SubD cage already IS the shape it was tessellated to (0 rounds) and its
+  // sharp edges (> 40 degrees) are creased so Catmull-Clark does not
+  // round them off. A folded intermediate result is a dense cage whose
+  // vertices already lie on the exact shape, also 0 rounds.
+  struct Operand { kernel::SubD sd; int levels; };
   bool any_subd = false;
-  auto collect = [&](const std::vector<ObjectId>& ids, std::vector<kernel::SubD>& out) -> bool {
+  bool any_promoted = false;
+  auto collect = [&](const std::vector<ObjectId>& ids, std::vector<Operand>& out) -> bool {
     for (ObjectId id : ids) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o) return false;
       if (o->kind == ObjectKind::SubD && o->subd) {
-        out.push_back(*o->subd);
+        out.push_back({*o->subd, SubDBooleanRefineLevels(*o->subd)});
         any_subd = true;
         continue;
       }
       std::optional<kernel::Mesh> m = MeshOf(*o, AdaptiveMeshTolerance(*o));
       if (!m || m->FaceCount() == 0) return false;
       try {
-        out.push_back(kernel::SubD::FromControlMesh(*m));
+        out.push_back({kernel::SubD::FromControlMesh(*m), 0});
+        any_promoted = true;
       } catch (const std::exception&) {
         return false;
       }
     }
     return !out.empty();
   };
-  std::vector<kernel::SubD> g1, g2;
+  std::vector<Operand> g1, g2;
   if (!collect(first_ids, g1)) return std::nullopt;
   if (!second_ids.empty() && !collect(second_ids, g2)) return std::nullopt;
   if (!any_subd) return std::nullopt;
-  auto fold = [](const std::vector<kernel::SubD>& v, kernel::BooleanOp fold_op) {
-    kernel::SubD result = v[0];
-    for (size_t i = 1; i < v.size(); ++i) result = result.BooleanToSubD(v[i], fold_op);
+  SubDBooleanTotals t;
+  t.any_promoted = any_promoted;
+  auto combine = [&](const Operand& x, const Operand& y, kernel::BooleanOp combine_op) {
+    kernel::SubDBooleanReport rep;
+    kernel::SubD r = x.sd.BooleanToSubDCreased(y.sd, combine_op, x.levels, y.levels, any_promoted ? 40.0 : 0.0, 3.0, true, &rep);
+    t.seam_creases += rep.seam_crease_edges;
+    t.operand_creases += rep.operand_crease_edges;
+    t.sharp_creases += rep.sharp_crease_edges;
+    ++t.folds;
+    t.refine_levels_max = std::max({t.refine_levels_max, x.levels, y.levels});
+    t.fit_iterations_max = std::max(t.fit_iterations_max, rep.interpolation.iterations);
+    t.fit_residual_worst = std::max(t.fit_residual_worst, rep.interpolation.final_max_residual);
+    return Operand{std::move(r), 0};
+  };
+  auto fold = [&](const std::vector<Operand>& v, kernel::BooleanOp fold_op) {
+    Operand result = v[0];
+    for (size_t i = 1; i < v.size(); ++i) result = combine(result, v[i], fold_op);
     return result;
   };
   try {
-    if (second_ids.empty()) return fold(g1, kernel::BooleanOp::Union);
-    kernel::SubD ra = fold(g1, kernel::BooleanOp::Union);
-    kernel::SubD rb = fold(g2, kernel::BooleanOp::Union);
-    return ra.BooleanToSubD(rb, op);
+    std::optional<kernel::SubD> out;
+    if (second_ids.empty()) {
+      out = fold(g1, kernel::BooleanOp::Union).sd;
+    } else {
+      Operand ra = fold(g1, kernel::BooleanOp::Union);
+      Operand rb = fold(g2, kernel::BooleanOp::Union);
+      out = combine(ra, rb, op).sd;
+    }
+    if (totals != nullptr) *totals = t;
+    return out;
   } catch (const std::exception&) {
     return std::nullopt;
   }
@@ -232,7 +284,8 @@ void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::
       }
       return;
     }
-    if (std::optional<kernel::SubD> result = TrySubDBoolean(ctx, first_ids, second_ids, op)) {
+    SubDBooleanTotals sd_totals;
+    if (std::optional<kernel::SubD> result = TrySubDBoolean(ctx, first_ids, second_ids, op, &sd_totals)) {
       ctx.Doc().BeginChange(label);
       int layer = 0;
       if (const SceneObject* o = ctx.Doc().Find(all.front())) layer = o->layer_index;
@@ -241,7 +294,11 @@ void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::
         SceneObject n = SceneObject::MakeSubD(*result);
         n.layer_index = layer;
         ctx.Doc().Add(std::move(n));
-        ctx.Print(label + ": SubD boolean (mesh-approximate, via BooleanToSubD), " + std::to_string(result->FaceCount()) + " face(s)");
+        ctx.Print(label + ": SubD boolean (operands refined to their limit surfaces, seam creased), " + std::to_string(result->FaceCount()) +
+                   " face(s), " + std::to_string(result->CreaseEdgeCount()) + " crease edge(s) (" + std::to_string(sd_totals.seam_creases) +
+                   " on the cut seam, " + std::to_string(sd_totals.operand_creases) + " along operand creases, " + std::to_string(sd_totals.sharp_creases) +
+                   " sharp-angle); cage interpolated onto the Boolean surface (" + std::to_string(sd_totals.fit_iterations_max) +
+                   " iteration(s), residual " + std::to_string(sd_totals.fit_residual_worst) + ")");
       } else {
         ctx.Print(label + ": result is empty");
       }

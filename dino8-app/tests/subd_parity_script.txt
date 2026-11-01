@@ -1,0 +1,210 @@
+# SubD parity QC (app_subd_mesh): the four former [partial] bullets - ToNURBS,
+# NURBS/Brep to SubD, SubD symmetry, SubD booleans - measured end to end through
+# the real app. Every number the checks in smoke.sh match is printed by the
+# command itself (ToNURBS / ToSubD / Boolean* / Symmetry status lines) or by
+# List / What / Volume.
+# --- (1) ToNURBS: a closed SubD converts to a CLOSED polysurface. SubDBox has 8
+# valence-3 corners, so every corner face is irregular: before this pass those
+# faces were flat bilinear patches that did not meet their curved neighbours
+# (240 faces, "open", Volume refused).
+SubDBox 0,0,0 10,10,0 10
+SelLast
+ToNURBS
+SelLast
+List
+Volume
+SelNone
+# A triangulated-cage SubD sphere (almost every vertex extraordinary) must also close.
+SubDSphere 30,0,0 5
+SelLast
+ToNURBS
+SelLast
+List
+Volume
+SelNone
+# A creased box: the crease chains are exact cubic B-spline curves shared by neighbours.
+SubDBox 60,0,0 70,10,0 10
+SelLast
+Crease
+65,0,0
+70,5,0
+65,10,0
+60,5,0
+Enter
+SelLast
+ToNURBS
+SelLast
+List
+Volume
+SelAll
+Hide
+# --- (2) Brep -> SubD: the cage is built on the kernel's uniform grid
+# tessellation (every vertex on the surface, no long sliver triangles) and the
+# SubD's limit surface is INTERPOLATED through it. The sphere used to report
+# "0 of 1 verified, worst measured deviation 0.0202"; it now verifies.
+Sphere 100,0,0 5
+SelLast
+ToSubD
+SelLast
+List
+Volume
+SelAll
+Hide
+# A cylinder keeps its two rim circles sharp (feature edges become creases).
+Cylinder 130,0,0 4 10
+SelLast
+ToSubD
+SelLast
+List
+Volume
+SelAll
+Hide
+# --- (3) SubD booleans: operands are refined to their LIMIT surfaces, the cut is creased.
+SubDBox 200,0,0 204,4,0 4
+SelLast
+SetObjectName BoolA
+SubDBox 201,1,1 205,5,1 4
+SelLast
+SetObjectName BoolB
+SelAll
+BooleanUnion
+SelLast
+List
+Volume
+What
+SelAll
+Hide
+SubDBox 220,0,0 224,4,0 4
+SelLast
+SetObjectName BoolC
+SubDBox 221,1,1 225,5,1 4
+SelLast
+SetObjectName BoolD
+SelNone
+SelName BoolC
+BooleanDifference
+SelName BoolD
+Enter
+SelLast
+List
+Volume
+SelAll
+Hide
+SubDBox 240,0,0 244,4,0 4
+SelLast
+SetObjectName BoolE
+SubDBox 241,1,1 245,5,1 4
+SelLast
+SetObjectName BoolF
+SelNone
+SelName BoolE
+BooleanIntersection
+SelName BoolF
+Enter
+SelLast
+List
+Volume
+SelAll
+Hide
+# A creased operand: its sharp edges survive the union (operand crease count in the status line).
+SubDBox 260,0,0 264,4,0 4
+SelLast
+Crease
+262,0,0
+262,4,0
+262,0,4
+262,4,4
+260,2,0
+264,2,0
+260,2,4
+264,2,4
+Enter
+SelNone
+SubDBox 270,0,0 272,2,0 2
+SelAll
+BooleanUnion
+SelLast
+List
+SelAll
+Hide
+# --- (4) SubD symmetry. Radial: a quarter-plane sector (SubDPlane 0..10, a 4x4
+# triangulated grid) repeated 4x about the Z axis through the origin welds into
+# one 20x20 plane (9x9 vertices).
+SubDPlane 300,0,0 310,10,0
+SelLast
+Symmetry
+Mode=Radial
+Count=4
+300,0,0
+300,0,1
+SelLast
+What
+SelAll
+Hide
+# TwoPlane: the same sector mirrored across two perpendicular planes through its corner.
+SubDPlane 400,0,0 410,10,0
+SelLast
+Symmetry
+Mode=TwoPlane
+400,0,0
+400,1,0
+SelLast
+What
+SelAll
+Hide
+# Reflect of a closed SubD across the plane of its own far face: the shared wall
+# disappears, the result is ONE closed 4-by-... body (10 faces), not a double wall.
+SubDBox 500,0,0 510,10,0 10
+SelLast
+Reflect
+510,0,0
+510,10,0
+SelLast
+List
+What
+Volume
+SelAll
+Hide
+# Creases are mirrored: a box with its four vertical-middle edges creased, mirrored across the far face plane.
+SubDBox 600,0,0 610,10,0 10
+SelLast
+Crease
+605,0,0
+605,10,0
+605,0,10
+605,10,10
+Enter
+SelLast
+Reflect
+610,0,0
+610,10,0
+SelLast
+What
+SelAll
+Hide
+# Weld=No: an unwelded mirror copy of a SubD keeps outward winding (positive Volume).
+SubDBox 700,0,0 710,10,0 10
+SelLast
+Symmetry
+Weld=No
+720,0,0
+720,1,0
+SelLast
+What
+Volume
+SelAll
+Hide
+# Live: moving the source SubD re-derives the welded symmetric copy (a rebuild only when the source changed).
+SubDPlane 805,0,0 815,10,0
+SelLast
+SetObjectName LiveSrc
+Symmetry
+800,0,0
+800,1,0
+SelLast
+SetObjectName LiveCopy
+What
+SelName LiveSrc
+Move 0,0,0 10,0,0
+SelName LiveCopy
+What

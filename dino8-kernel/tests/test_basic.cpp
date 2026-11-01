@@ -89472,6 +89472,349 @@ void TestLoftPlanarCapsMeshClosedAndVolumeExact() {
   }
 }
 
+// ===========================================================================
+// app_subd_mesh parity pass: SubD::InterpolateControlNet, SetCreasesByDihedral,
+// BooleanToSubDCreased, Symmetrize (crease/sharpness copy + in-plane faces),
+// SymmetrizeRadial, TransformOriented and ToNurbsPatchesWatertight.
+// ===========================================================================
+
+// Outward-wound quad box mesh (8 shared vertices, 6 quads).
+dino8::kernel::Mesh SubDParityBoxMesh(double x0, double y0, double z0, double x1, double y1, double z1) {
+  dino8::kernel::Mesh m;
+  ON_Mesh& raw = m.raw();
+  const double xs[2] = {x0, x1}, ys[2] = {y0, y1}, zs[2] = {z0, z1};
+  for (int z = 0; z < 2; ++z)
+    for (int y = 0; y < 2; ++y)
+      for (int x = 0; x < 2; ++x)
+        raw.m_V.Append(ON_3fPoint(static_cast<float>(xs[x]), static_cast<float>(ys[y]), static_cast<float>(zs[z])));
+  const auto q = [&raw](int a, int b, int c, int d) {
+    ON_MeshFace f;
+    f.vi[0] = a; f.vi[1] = b; f.vi[2] = c; f.vi[3] = d;
+    raw.m_F.Append(f);
+  };
+  q(0, 2, 3, 1);  // bottom
+  q(0, 1, 5, 4);  // front
+  q(2, 6, 7, 3);  // back
+  q(0, 4, 6, 2);  // left
+  q(1, 3, 7, 5);  // right
+  q(4, 5, 7, 6);  // top
+  return m;
+}
+
+// Worst distance from the vertices of `a` to the surface of `ref`.
+double SubDParityVertexToMesh(const dino8::kernel::Mesh& a, const dino8::kernel::Mesh& ref) {
+  double worst = 0.0;
+  for (int i = 0; i < a.VertexCount(); ++i) {
+    const dino8::kernel::Point3d p(a.raw().m_V[i]);
+    worst = std::max(worst, (ref.ClosestPoint(p) - p).Length());
+  }
+  return worst;
+}
+
+void TestSubDInterpolateControlNetPullsSphereLimitOntoSurface() {
+  using namespace dino8::kernel;
+  const Mesh cage = Brep::Sphere(Point3d(0, 0, 0), 5.0).TessellateToClosedMesh(24, 12);
+  const SubD sd = SubD::FromControlMesh(cage);
+  // Radial error of the limit surface at EVERY vertex, edge midpoint and face
+  // centre of the cage (the limit points of Subdivide(1)).
+  const auto radial_error = [](const SubD& s) {
+    SubD probe = s;
+    probe.Subdivide(1);
+    double worst = 0.0;
+    for (const SubDLimitPoint& lp : probe.LimitPoints()) {
+      worst = std::max(worst, std::abs(lp.limit_point.DistanceTo(Point3d(0, 0, 0)) - 5.0));
+    }
+    return worst;
+  };
+  const double before = radial_error(sd);
+  SubDInterpolationReport rep;
+  const SubD fit = sd.InterpolateControlNet(1e-5, 300, &rep);
+  const double after = radial_error(fit);
+  Check(before > 0.05, "a plain Catmull-Clark cage sampled from a sphere has a limit surface visibly inside it (> 0.05 radial error on R=5)");
+  Check(rep.converged && rep.final_max_residual <= 1e-5, "the interpolating fit converges to its 1e-5 vertex residual");
+  Check(rep.initial_max_residual > 0.05 && rep.iterations > 0, "the fit starts from the real (large) smoothing residual and iterates");
+  Check(after < before / 5.0, "after the fit the limit surface (vertices, edge midpoints, face centres) is at least 5x closer to the sphere");
+  Check(fit.FaceCount() == sd.FaceCount() && fit.VertexCount() == sd.VertexCount() && fit.EdgeCount() == sd.EdgeCount(),
+        "topology is unchanged by the fit");
+  Check(fit.IsValid(), "the fitted SubD is valid");
+  // The fitted cage's limit points sit on its ORIGINAL control points.
+  const std::vector<SubDLimitPoint> lps = fit.LimitPoints();
+  double worst_vertex = 0.0;
+  for (size_t i = 0; i < lps.size(); ++i) worst_vertex = std::max(worst_vertex, lps[i].limit_point.DistanceTo(Point3d(0, 0, 0)) - 5.0 > 0 ? lps[i].limit_point.DistanceTo(Point3d(0, 0, 0)) - 5.0 : 5.0 - lps[i].limit_point.DistanceTo(Point3d(0, 0, 0)));
+  Check(worst_vertex < 1e-4, "every vertex limit point lies on the sphere to < 1e-4");
+  bool threw_tol = false, threw_iters = false;
+  try { (void)sd.InterpolateControlNet(0.0, 10); } catch (const std::invalid_argument&) { threw_tol = true; }
+  try { (void)sd.InterpolateControlNet(1e-6, -1); } catch (const std::invalid_argument&) { threw_iters = true; }
+  Check(threw_tol && threw_iters, "InterpolateControlNet rejects a non-positive tolerance and a negative iteration count");
+}
+
+void TestSubDInterpolateControlNetKeepsCreasedBoxSharp() {
+  using namespace dino8::kernel;
+  SubD box = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 10, 10, 10));
+  const int creased = box.SetCreasesByDihedral(30.0);
+  Check(creased == 12 && box.CreaseEdgeCount() == 12, "SetCreasesByDihedral(30) creases exactly the 12 edges of a box (90 degree dihedral)");
+  Check(box.IsValid(), "the creased box is valid");
+  SubDInterpolationReport rep;
+  const SubD fit = box.InterpolateControlNet(1e-6, 50, &rep);
+  Check(rep.converged, "a fully creased box (every vertex a corner) interpolates immediately - a corner's limit point IS its control point");
+  Check(fit.CreaseEdgeCount() == 12, "creases survive the fit");
+  SubD refined = fit;
+  refined.Subdivide(3);
+  const Mesh m = refined.ToApproximateMesh();
+  const BoundingBox bb = m.GetBoundingBox();
+  Check(std::abs(bb.max.x - 10.0) < 1e-4 && std::abs(bb.min.x) < 1e-4 && std::abs(bb.max.z - 10.0) < 1e-4,
+        "the creased, interpolated box stays a 10-unit cube (a smooth cage would shrink it)");
+  Check(std::abs(m.Volume() - 1000.0) < 0.5, "its refined volume is 1000 (the sharp cube), not the ~70% a smooth blob would give");
+  SubD smooth = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 10, 10, 10));
+  smooth.Subdivide(3);
+  Check(smooth.ToApproximateMesh().Volume() < 800.0, "(control) the uncreased box refines to a much smaller blob");
+  bool threw = false;
+  try { (void)box.SetCreasesByDihedral(-1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "SetCreasesByDihedral rejects a negative angle");
+}
+
+void TestSubDSetCreasesByDihedralLeavesSmoothSphereAlone() {
+  using namespace dino8::kernel;
+  SubD sd = SubD::FromControlMesh(Brep::Sphere(Point3d(0, 0, 0), 5.0).TessellateToClosedMesh(24, 12));
+  Check(sd.SetCreasesByDihedral(35.0) == 0 && sd.CreaseEdgeCount() == 0, "a smooth sphere tessellation has no feature edge above 35 degrees");
+}
+
+void TestSubDBooleanToSubDCreasedSeamAndLimitShape() {
+  using namespace dino8::kernel;
+  // Two 4-cubes offset by (1,1,1): their SMOOTH limit blobs (extent [1,3] and [2,4] per axis) overlap.
+  const SubD a = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 4, 4, 4));
+  const SubD b = SubD::FromControlMesh(SubDParityBoxMesh(1, 1, 1, 5, 5, 5));
+  // Reference: union of the two SMOOTH shapes (heavily refined operands).
+  SubD ra = a, rb = b;
+  ra.Subdivide(5);
+  rb.Subdivide(5);
+  const Mesh ref = BooleanCombine(ra.ToApproximateMesh(), rb.ToApproximateMesh(), BooleanOp::Union);
+  const double ref_volume = ref.Volume();
+
+  const SubD old_union = a.BooleanToSubD(b, BooleanOp::Union);
+  SubD old_refined = old_union;
+  old_refined.Subdivide(3);
+  const double old_dev = SubDParityVertexToMesh(old_refined.ToApproximateMesh(), ref);
+
+  SubDBooleanReport rep;
+  const SubD u = a.BooleanToSubDCreased(b, BooleanOp::Union, 2, 2, 0.0, 3.0, true, &rep);
+  SubD u_refined = u;
+  u_refined.Subdivide(3);
+  const Mesh um = u_refined.ToApproximateMesh();
+  const double new_dev = SubDParityVertexToMesh(um, ref);
+  Check(u.IsValid() && u.Check().naked_edges == 0 && u.Check().non_manifold_edges == 0, "the creased union is a valid closed manifold SubD");
+  Check(rep.seam_crease_edges > 0, "the intersection curve of the two operands is creased (seam_crease_edges > 0)");
+  Check(rep.total_crease_edges == u.CreaseEdgeCount() && u.CreaseEdgeCount() >= rep.seam_crease_edges, "the report's crease totals match the SubD");
+  Check(rep.interpolation.converged, "the result cage was interpolated onto the Boolean surface");
+  Check(std::abs(um.Volume() - ref_volume) / ref_volume < 0.02, "the creased union's volume is within 2% of the union of the two smooth operands");
+  Check(new_dev < old_dev * 0.5, "the new union is at least 2x closer to the union of the smooth operands than the cage-level BooleanToSubD result");
+  // The seam is sharp: the limit points of seam-crease vertices stay on the seam.
+  const SubD d = a.BooleanToSubDCreased(b, BooleanOp::Difference, 2, 2, 0.0, 3.0, true, nullptr);
+  const SubD i = a.BooleanToSubDCreased(b, BooleanOp::Intersection, 2, 2, 0.0, 3.0, true, nullptr);
+  Check(d.IsValid() && i.IsValid() && d.CreaseEdgeCount() > 0 && i.CreaseEdgeCount() > 0, "Difference and Intersection also come back valid and creased along the cut");
+  bool threw = false;
+  try { (void)a.BooleanToSubDCreased(b, BooleanOp::Union, -1, 2); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "BooleanToSubDCreased rejects negative refinement levels");
+}
+
+void TestSubDBooleanToSubDCreasedKeepsOperandCreases() {
+  using namespace dino8::kernel;
+  SubD a = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 4, 4, 4));
+  a.SetCreasesByDihedral(30.0);  // a fully sharp 4-cube
+  const SubD b = SubD::FromControlMesh(SubDParityBoxMesh(10, 0, 0, 12, 2, 2));  // far away, uncreased
+  SubDBooleanReport rep;
+  // A cube far from the other operand: the Union keeps both bodies, the cube's 12 creases survive.
+  const SubD u = a.BooleanToSubDCreased(b, BooleanOp::Union, 1, 1, 0.0, 3.0, true, &rep);
+  Check(rep.operand_crease_edges >= 12, "a creased operand's crease edges stay creased in the result (operand_crease_edges >= 12)");
+  Check(u.IsValid(), "the union of the creased cube with the far cube is a valid SubD");
+  SubD refined = u;
+  refined.Subdivide(2);
+  const Mesh m = refined.ToApproximateMesh();
+  const BoundingBox bb = m.GetBoundingBox();
+  Check(bb.max.x > 11.0 && bb.max.x < 12.01 && std::abs(bb.min.x) < 1e-3, "the sharp cube corner stays at 0 (not rounded in) after the creased union");
+}
+
+void TestSubDSymmetrizeCopiesCreasesAndDropsInPlaneFaces() {
+  using namespace dino8::kernel;
+  // (1) creases on the original half appear on the mirror half.
+  SubD half = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 2, 2, 1));
+  Check(half.SetCrease(Point3d(0, 0, 0), Point3d(2, 0, 0), true, 1e-6), "creased an edge of the half box");
+  Check(half.SetCrease(Point3d(0, 0, 1), Point3d(2, 0, 1), true, 1e-6), "creased a second edge");
+  const SubD mirrored = half.Symmetrize(Vector3d(1, 0, 0), 4.0, 1e-9, 1e-4);  // plane x = 4, no contact
+  Check(mirrored.FaceCount() == 12, "disjoint mirror: 6 + 6 faces");
+  Check(mirrored.CreaseEdgeCount() == 4, "the 2 original creases + their 2 mirror images = 4");
+  // (2) a closed box across the plane of its own far face: the in-plane face is dropped from both halves.
+  const SubD box = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 2, 2, 2));
+  const SubD doubled = box.Symmetrize(Vector3d(1, 0, 0), 2.0, 1e-9, 1e-4);
+  Check(doubled.FaceCount() == 10 && doubled.VertexCount() == 12, "box across its own x=2 face: 5 + 5 faces, 12 vertices (the shared wall is gone)");
+  const SubD::SubDCheckReport rep = doubled.Check();
+  Check(rep.naked_edges == 0 && rep.non_manifold_edges == 0 && rep.body_count == 1 && doubled.IsValid(), "result is one closed manifold body");
+  const Mesh mesh = doubled.ToApproximateMesh();
+  Check(mesh.IsClosedManifold() && std::abs(mesh.Volume() - 16.0) < 1e-9, "closed, outward-wound 4x2x2 box (volume 16)");
+  // (3) creased box, mirrored across a face plane: crease count is 2*12 minus the 4 wall edges that become interior smooth... wait
+  SubD cbox = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 2, 2, 2));
+  cbox.SetCreasesByDihedral(30.0);
+  const SubD cd = cbox.Symmetrize(Vector3d(1, 0, 0), 2.0, 1e-9, 1e-4);
+  Check(cd.FaceCount() == 10 && cd.IsValid(), "creased box mirrored across its far face: 10 faces, valid");
+  Check(cd.CreaseEdgeCount() == 16,
+        "the 12 creased box edges become 16 (4 along-x edges are split by the seam ring into 2 each = 8, plus the 8 end edges); the 4 ring edges around the dropped wall are smooth");
+}
+
+void TestSubDSymmetrizeRadialClosesSectorIntoRing() {
+  using namespace dino8::kernel;
+  Mesh sector;
+  ON_Mesh& r = sector.raw();
+  r.m_V.Append(ON_3fPoint(0, 0, 0));
+  r.m_V.Append(ON_3fPoint(1, 0, 0));
+  r.m_V.Append(ON_3fPoint(1, 1, 0));
+  r.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace f;
+  f.vi[0] = 0; f.vi[1] = 1; f.vi[2] = 2; f.vi[3] = 3;
+  r.m_F.Append(f);
+  const SubD sec = SubD::FromControlMesh(sector);
+  const SubD ring = sec.SymmetrizeRadial(Point3d(0, 0, 0), Vector3d(0, 0, 1), 4);
+  Check(ring.FaceCount() == 4 && ring.VertexCount() == 9, "a 1-quad quarter sector x4 about z: 4 faces, 9 vertices (centre + 4 edge points + 4 corners, all welded)");
+  Check(ring.IsValid() && ring.Check().non_manifold_edges == 0, "valid, manifold");
+  Check(ring.Check().naked_edges == 8, "only the outer boundary is naked (8 edges); the 4 spokes are interior");
+  bool threw_count = false, threw_axis = false;
+  try { (void)sec.SymmetrizeRadial(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1); } catch (const std::invalid_argument&) { threw_count = true; }
+  try { (void)sec.SymmetrizeRadial(Point3d(0, 0, 0), Vector3d(0, 0, 0), 4); } catch (const std::invalid_argument&) { threw_axis = true; }
+  Check(threw_count && threw_axis, "count < 2 and a zero axis are rejected");
+  // creases on the source sector's interior edges are copied to every copy: a 2-quad sector with one interior crease.
+  Mesh two;
+  ON_Mesh& t = two.raw();
+  t.m_V.Append(ON_3fPoint(0, 0, 0)); t.m_V.Append(ON_3fPoint(1, 0, 0)); t.m_V.Append(ON_3fPoint(2, 0, 0));
+  t.m_V.Append(ON_3fPoint(0, 1, 0)); t.m_V.Append(ON_3fPoint(1, 1, 0)); t.m_V.Append(ON_3fPoint(2, 1, 0));
+  ON_MeshFace f1, f2;
+  f1.vi[0] = 0; f1.vi[1] = 1; f1.vi[2] = 4; f1.vi[3] = 3;
+  f2.vi[0] = 1; f2.vi[1] = 2; f2.vi[2] = 5; f2.vi[3] = 4;
+  t.m_F.Append(f1); t.m_F.Append(f2);
+  SubD two_sd = SubD::FromControlMesh(two);
+  Check(two_sd.SetCrease(Point3d(1, 0, 0), Point3d(1, 1, 0), true, 1e-6), "creased the interior edge of the 2-quad sector");
+  const SubD two_ring = two_sd.SymmetrizeRadial(Point3d(0, 0, 0), Vector3d(0, 0, 1), 4);
+  Check(two_ring.FaceCount() == 8, "2 quads x 4 copies = 8 faces");
+  Check(two_ring.CreaseEdgeCount() >= 4, "the interior crease exists on all 4 copies (>= 4 crease edges; boundary creases are extra)");
+}
+
+void TestSubDTransformOrientedMirrorKeepsOutwardWinding() {
+  using namespace dino8::kernel;
+  SubD box = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 2, 3, 4));
+  box.SetCrease(Point3d(0, 0, 0), Point3d(2, 0, 0), true, 1e-6);
+  ON_Xform mirror = ON_Xform::MirrorTransformation(ON_PlaneEquation(1, 0, 0, 5.0));  // plane x = -5
+  const SubD plain = box.Transform(mirror);
+  const SubD oriented = box.TransformOriented(mirror);
+  Check(plain.ToApproximateMesh().Volume() < 0.0, "(control) ON_SubD::Transform with a mirror leaves the cage inside out (negative signed volume)");
+  Check(std::abs(oriented.ToApproximateMesh().Volume() - 24.0) < 1e-9, "TransformOriented with a mirror gives the outward, positive-volume 24 cage");
+  Check(oriented.IsValid() && oriented.FaceCount() == 6 && oriented.CreaseEdgeCount() == 1, "valid, same topology, the crease edge carried across");
+  const ON_Xform shift = ON_Xform::TranslationTransformation(ON_3dVector(1, 2, 3));
+  Check(std::abs(box.TransformOriented(shift).ToApproximateMesh().Volume() - 24.0) < 1e-9, "a proper transform is exactly Transform()");
+  bool threw = false;
+  try { ON_Xform z = ON_Xform::ZeroTransformation; (void)box.TransformOriented(z); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "a singular transform is rejected");
+}
+
+void TestSubDToNurbsPatchesWatertightClosesEverySeam() {
+  using namespace dino8::kernel;
+  const auto run = [](SubD s, int levels, const char* what, bool expect_closed) {
+    s.Subdivide(levels);
+    SubDWatertightReport rep;
+    const std::vector<SubDNurbsPatch> patches = s.ToNurbsPatchesWatertight(&rep);
+    Check(rep.patches == static_cast<int>(patches.size()) && rep.patches == s.FaceCount(), "one patch per SubD face");
+    // Every patch edge must coincide with exactly one other patch edge (closed) - checked by
+    // hashing 5 samples along each of the 4 boundaries at 1e-9.
+    std::map<std::tuple<long long, long long, long long>, int> count;
+    const auto key = [](const Point3d& p) {
+      return std::make_tuple(static_cast<long long>(std::llround(p.x * 1e8)), static_cast<long long>(std::llround(p.y * 1e8)),
+                             static_cast<long long>(std::llround(p.z * 1e8)));
+    };
+    for (const SubDNurbsPatch& p : patches) {
+      for (int k = 0; k <= 4; ++k) {
+        const double t = k / 4.0;
+        ++count[key(p.surface.PointAt(t, 0.0))];
+        ++count[key(p.surface.PointAt(t, 1.0))];
+        ++count[key(p.surface.PointAt(0.0, t))];
+        ++count[key(p.surface.PointAt(1.0, t))];
+      }
+    }
+    int unmatched = 0;
+    for (const auto& kv : count) if (kv.second < 2) ++unmatched;
+    if (expect_closed) Check(unmatched == 0, what);
+    return rep;
+  };
+  const SubDWatertightReport box = run(SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 10, 10, 10)), 2,
+                                       "SubDBox level 2: every patch boundary sample is shared by another patch to 1e-8 (watertight)", true);
+  Check(box.coons_patches == 24 && box.exact_patches == 96 - 24, "SubDBox level 2: 96 patches = 72 exact + 24 Coons (3 faces around each of the 8 corners)");
+  run(SubD::FromControlMesh(Brep::Sphere(Point3d(0, 0, 0), 5.0).TessellateToClosedMesh(8, 4)), 2,
+      "triangulated sphere cage level 2: watertight although nearly every vertex is extraordinary", true);
+  SubD creased = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 10, 10, 10));
+  creased.SetCreasesByDihedral(30.0);
+  run(creased, 2, "creased box level 2: watertight (crease chains are shared exact cubic B-spline curves)", true);
+  // Accuracy against a much finer refinement.
+  SubD s = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 10, 10, 10));
+  s.Subdivide(3);
+  SubD fine = s;
+  fine.Subdivide(3);
+  const Mesh fm = fine.ToApproximateMesh();
+  double worst = 0.0;
+  for (const SubDNurbsPatch& p : s.ToNurbsPatchesWatertight()) {
+    for (int i = 0; i <= 4; ++i)
+      for (int j = 0; j <= 4; ++j) {
+        const Point3d q = p.surface.PointAt(i / 4.0, j / 4.0);
+        worst = std::max(worst, (fm.ClosestPoint(q) - q).Length());
+      }
+  }
+  Check(worst < 0.02, "SubDBox level 3: every patch sample lies within 0.02 of the Subdivide(+3) limit approximation");
+  // A triangle/n-gon cage level 0 is refused with a clear error.
+  bool threw = false;
+  try { (void)SubD::FromControlMesh(Brep::Sphere(Point3d(0, 0, 0), 5.0).TessellateToClosedMesh(8, 4)).ToNurbsPatchesWatertight(); }
+  catch (const std::runtime_error&) { threw = true; }
+  Check(threw, "ToNurbsPatchesWatertight refuses a cage with non-quad faces");
+}
+
+void TestSubDSetCreasesByDihedralPinsSheetCornersSoFitCannotOvershoot() {
+  using namespace dino8::kernel;
+  // A flat 10 x 10 open sheet (2 x 2 quads): every boundary edge is a naked
+  // crease, every corner a valence-2 crease vertex with a 90 degree turn.
+  Mesh m;
+  ON_Mesh& r = m.raw();
+  for (int y = 0; y < 3; ++y)
+    for (int x = 0; x < 3; ++x) r.m_V.Append(ON_3fPoint(x * 5.0f, y * 5.0f, 0.0f));
+  for (int y = 0; y < 2; ++y)
+    for (int x = 0; x < 2; ++x) {
+      ON_MeshFace f;
+      f.vi[0] = y * 3 + x; f.vi[1] = y * 3 + x + 1; f.vi[2] = (y + 1) * 3 + x + 1; f.vi[3] = (y + 1) * 3 + x;
+      r.m_F.Append(f);
+    }
+  const auto x_range = [](const SubD& s) {
+    SubD p = s;
+    p.Subdivide(2);
+    const Mesh pm = p.ToApproximateMesh();
+    double lo = 1e9, hi = -1e9;
+    for (int i = 0; i < pm.VertexCount(); ++i) {
+      const double x = pm.raw().m_V[i].x;
+      lo = std::min(lo, x);
+      hi = std::max(hi, x);
+    }
+    return std::make_pair(lo, hi);
+  };
+  const SubD plain = SubD::FromControlMesh(m);
+  const SubD overshoot = plain.InterpolateControlNet(1e-6, 100);
+  Check(x_range(overshoot).first < -0.3 && x_range(overshoot).second > 10.3,
+        "(control) interpolating an UNtagged sheet overshoots its corners: refined x extent about [-0.36, 10.36]");
+  SubD pinned = plain;
+  const int creased = pinned.SetCreasesByDihedral(30.0);
+  Check(creased == 0, "a flat sheet has no interior feature edge to crease");
+  Check(pinned.IsValid(), "the corner-tagged sheet is valid");
+  const SubD fit = pinned.InterpolateControlNet(1e-6, 100);
+  Check(std::abs(x_range(fit).first) < 1e-4 && std::abs(x_range(fit).second - 10.0) < 1e-4,
+        "with its 4 corners pinned the interpolated sheet stays exactly within [0, 10] (no overshoot)");
+  int corner_vertices = 0;
+  for (const SubDLimitPoint& lp : pinned.LimitPoints()) {
+    if ((lp.limit_point - lp.control_point).Length() < 1e-9 && !lp.smooth && lp.valence == 2) ++corner_vertices;
+  }
+  Check(corner_vertices == 4, "exactly the 4 sheet corners have their limit point on their control point");
+}
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -90846,6 +91189,18 @@ int main() {
   RunTest("TestSectionAnchoredSweepReproducesTheSectionAndCoversTheRail", TestSectionAnchoredSweepReproducesTheSectionAndCoversTheRail);
   RunTest("TestLoftOfAlignedClosedSectionsInterpolatesAndCaps", TestLoftOfAlignedClosedSectionsInterpolatesAndCaps);
   RunTest("TestLoftPlanarCapsMeshClosedAndVolumeExact", TestLoftPlanarCapsMeshClosedAndVolumeExact);
+
+  RunTest("TestSubDInterpolateControlNetPullsSphereLimitOntoSurface", TestSubDInterpolateControlNetPullsSphereLimitOntoSurface);
+  RunTest("TestSubDInterpolateControlNetKeepsCreasedBoxSharp", TestSubDInterpolateControlNetKeepsCreasedBoxSharp);
+  RunTest("TestSubDSetCreasesByDihedralLeavesSmoothSphereAlone", TestSubDSetCreasesByDihedralLeavesSmoothSphereAlone);
+  RunTest("TestSubDBooleanToSubDCreasedSeamAndLimitShape", TestSubDBooleanToSubDCreasedSeamAndLimitShape);
+  RunTest("TestSubDBooleanToSubDCreasedKeepsOperandCreases", TestSubDBooleanToSubDCreasedKeepsOperandCreases);
+  RunTest("TestSubDSymmetrizeCopiesCreasesAndDropsInPlaneFaces", TestSubDSymmetrizeCopiesCreasesAndDropsInPlaneFaces);
+  RunTest("TestSubDSymmetrizeRadialClosesSectorIntoRing", TestSubDSymmetrizeRadialClosesSectorIntoRing);
+  RunTest("TestSubDTransformOrientedMirrorKeepsOutwardWinding", TestSubDTransformOrientedMirrorKeepsOutwardWinding);
+  RunTest("TestSubDToNurbsPatchesWatertightClosesEverySeam", TestSubDToNurbsPatchesWatertightClosesEverySeam);
+
+  RunTest("TestSubDSetCreasesByDihedralPinsSheetCornersSoFitCannotOvershoot", TestSubDSetCreasesByDihedralPinsSheetCornersSoFitCannotOvershoot);
 
   RunTest("ON::End", ON::End);
 

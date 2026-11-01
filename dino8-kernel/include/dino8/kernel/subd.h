@@ -30,6 +30,43 @@ struct SubDNurbsPatch {
   bool exact;
 };
 
+// What SubD::InterpolateControlNet() did (all distances in model units).
+struct SubDInterpolationReport {
+  int iterations = 0;                // fixed-point iterations actually run
+  double initial_max_residual = 0.0; // worst |control point - limit point| before the fit
+  double final_max_residual = 0.0;   // worst |target - limit point| after the fit
+  bool converged = false;            // final_max_residual <= the requested tolerance
+};
+
+// What SubD::BooleanToSubDCreased() did.
+struct SubDBooleanReport {
+  int result_faces = 0;
+  int result_vertices = 0;
+  // Edges of the result tagged Crease because they lie on the intersection
+  // curve of the two operand surfaces (both end points and the mid point
+  // are on BOTH operand surfaces and the two faces meeting there are not
+  // coplanar).
+  int seam_crease_edges = 0;
+  // Edges tagged Crease because they run along a crease of an operand.
+  int operand_crease_edges = 0;
+  // Edges tagged Crease only because the dihedral angle between their two
+  // faces exceeds `sharp_angle_deg` (promoted-mesh operands).
+  int sharp_crease_edges = 0;
+  int total_crease_edges = 0;        // CreaseEdgeCount() of the result
+  // Interpolation of the result cage (see InterpolateControlNet()).
+  SubDInterpolationReport interpolation;
+};
+
+// What SubD::ToNurbsPatchesWatertight() built.
+struct SubDWatertightReport {
+  int patches = 0;
+  int exact_patches = 0;        // regular faces: the exact limit patch
+  int coons_patches = 0;        // irregular faces: bicubic Coons patch on the shared edge curves
+  int shared_edges = 0;         // distinct SubD edges whose canonical curve was built once and used by both faces
+  int exact_edge_curves = 0;    // edges whose curve is the exact limit curve (both ends ordinary interior, or an ordinary crease chain)
+  int hermite_edge_curves = 0;  // edges at an extraordinary vertex / semi-sharp / corner mixes: cubic Hermite from limit data
+};
+
 // One edge's current sharpness state, from SubD::EdgeSharpnessAt() - the
 // read-back counterpart the two SetEdgeSharpness() overloads never had
 // (see their own doc comments below): writing a semi-sharp weight has
@@ -765,6 +802,168 @@ class SubD {
   // eliminating, the irregular region) rather than relying on this
   // method to close every seam.
   std::vector<SubDNurbsPatch> ToNurbsPatchesAdaptive(int max_adaptive_levels) const;
+
+  // ---------------------------------------------------------------------
+  // Limit-surface interpolation and crease detection (SubD fidelity).
+  // ---------------------------------------------------------------------
+
+  // Returns a copy whose Catmull-Clark LIMIT surface passes through THIS
+  // SubD's current control points: every vertex's limit point is driven to
+  // the position its control point has now. Catmull-Clark smoothing pulls
+  // the limit surface away from (inside of) a cage that was merely
+  // sampled from a shape - a sphere's tessellation vertices end up
+  // visibly inside the sphere - and this is the standard cure
+  // (interpolating fit / progressive interpolation): treat the current
+  // control points as TARGETS and iterate `control += target - limit`,
+  // using the exact per-vertex limit evaluator (ON_SubDVertex::
+  // SurfacePoint, the same one LimitPoints() wraps, creases and corners
+  // included - a crease vertex's limit lies on its crease curve, a corner
+  // vertex's limit is its control point). The iteration is a damped
+  // Richardson iteration on the (well-conditioned, eigenvalues in
+  // [1/9, 1] for the regular mask) limit-mask matrix and is safeguarded
+  // by halving the damping if the worst residual ever grows twice in a
+  // row. Stops when the worst residual is <= `tolerance` or after
+  // `max_iterations` updates (control points are stored as 32-bit floats,
+  // so a `tolerance` below roughly 1e-7 times the model's coordinate size
+  // cannot be met - `report->converged` says whether it was). Topology,
+  // creases and semi-sharp weights are copied unchanged. Between the
+  // vertices the limit surface is of course not forced through anything;
+  // it is a smooth interpolant of the targets (callers measure that
+  // separately). Throws std::invalid_argument for a non-positive/NaN
+  // tolerance or a negative max_iterations, std::runtime_error if a
+  // vertex has no evaluable limit point (same condition as
+  // LimitPoints()).
+  SubD InterpolateControlNet(double tolerance = 1e-6, int max_iterations = 200,
+                             SubDInterpolationReport* report = nullptr) const;
+
+  // Tags as Crease every interior edge (exactly two faces, currently
+  // smooth) whose two face normals differ by MORE than `min_dihedral_deg`
+  // degrees, and returns how many edges were tagged - the geometric
+  // feature-edge detector AutomaticSubDFromMesh-style conversions need
+  // (a box's 12 edges, a cylinder's two rim circles) so that Catmull-Clark
+  // does not round them away. Face normals come from the control-net
+  // points (Newell), so the SubD must be consistently oriented. A vertex
+  // where exactly two crease edges (including an open sheet's naked
+  // boundary edges) meet at a turning angle above `min_dihedral_deg` is
+  // also tagged Corner (limit point pinned to its control point, so an
+  // interpolating fit cannot overshoot it). The return value counts the
+  // edges tagged. Throws
+  // std::invalid_argument if `min_dihedral_deg` is not in [0, 180).
+  int SetCreasesByDihedral(double min_dihedral_deg);
+
+  // ---------------------------------------------------------------------
+  // Boolean with the operands' visible (limit) shape and a creased seam.
+  // ---------------------------------------------------------------------
+
+  // BooleanToSubD() above takes the Boolean of the two operands' CONTROL
+  // CAGES (their un-smoothed polyhedra), so the result's visible shape is
+  // not the Boolean of the two shapes you were looking at, and nothing
+  // marks the cut as a sharp feature. This variant fixes both:
+  //  1. each operand is first refined by `levels_this` / `levels_other`
+  //     Catmull-Clark rounds (0 = take its cage as the exact shape, the
+  //     right choice for an operand that is a promoted mesh/Brep
+  //     tessellation rather than a smooth SubD), so the Boolean sees a
+  //     close polyhedral approximation of each limit surface, with each
+  //     operand's own creases still sharp ridges on it;
+  //  2. the mesh Boolean (BooleanCombine, Manifold) runs on those meshes;
+  //  3. triangle pairs are re-joined into quads with `quad_dihedral_deg`
+  //     (kept small so a re-joined quad can never swallow a seam edge);
+  //  4. every result edge that lies on the intersection curve of the two
+  //     operand surfaces (both end points and the mid point within
+  //     1e-5 * bounding-box-diagonal of BOTH operand meshes, faces not
+  //     coplanar) is tagged Crease, as is every edge that runs along an
+  //     operand's crease, and - when `sharp_angle_deg` > 0 - every edge
+  //     whose dihedral angle exceeds it (sharp features of a promoted
+  //     mesh operand);
+  //  5. if `interpolate`, the cage is passed through InterpolateControlNet()
+  //     so the final limit surface (not just the cage) lies on the refined
+  //     Boolean mesh; without it the result is smoothed once more and
+  //     shrinks slightly.
+  // `report`, when non-null, receives the counts and the interpolation
+  // residuals. Both operands must be closed (BooleanCombine()'s own
+  // precondition and std::runtime_error apply). Honest limit: this is
+  // still a mesh Boolean of polyhedral approximations of the limit
+  // surfaces (accuracy grows with the refinement levels), not an
+  // analytic Boolean of the Catmull-Clark surfaces themselves.
+  SubD BooleanToSubDCreased(const SubD& other, BooleanOp op, int levels_this, int levels_other,
+                            double sharp_angle_deg = 0.0, double quad_dihedral_deg = 3.0,
+                            bool interpolate = true, SubDBooleanReport* report = nullptr) const;
+
+  // Like Transform(), but correct for a REFLECTION: ON_SubD::Transform()
+  // moves the control points and nothing else, so a mirror transform
+  // (negative determinant) turns the cage inside out - every face still
+  // winds the way it did before the reflection, i.e. its normal now points
+  // INTO the solid (signed volume flips sign, shading and Boolean/Offset
+  // see an inverted body). When `xform` has a negative determinant this
+  // rebuilds the cage with every face loop reversed (same vertices, same
+  // topology, same vertex/edge identity), copying edge tags (creases) and
+  // semi-sharp weights across; otherwise it is exactly Transform().
+  // Throws std::invalid_argument for a non-invertible/invalid xform.
+  SubD TransformOriented(const ON_Xform& xform) const;
+
+  // ---------------------------------------------------------------------
+  // Radial symmetry.
+  // ---------------------------------------------------------------------
+
+  // Rotational counterpart of Symmetrize(): returns this control cage
+  // repeated `count` times (count >= 2) at equal angles about the axis
+  // through `axis_point` with direction `axis_dir`, copy k rotated by
+  // 360*k/count degrees, with every vertex that coincides (within the
+  // weld tolerance) between neighbouring copies welded into one shared
+  // vertex - so a cage that is exactly one sector (its two bounding
+  // meridian boundaries mapping onto each other under the rotation)
+  // closes into a seamless ring, a vertex on the axis is shared by all
+  // copies, and former boundary edges that become interior lose their
+  // boundary Crease tag. Interior crease edges and semi-sharp weights of
+  // the source are copied onto every rotated copy (Symmetrize() copies
+  // them onto the mirrored half the same way as of this pass). Weld
+  // tolerance: `weld_tolerance` if positive, else max(point_tolerance,
+  // 1e-6) - rotated float positions carry rounding noise of about
+  // 1e-7 times the coordinate size, so the exact-zero style tolerance
+  // Symmetrize() defaults to would leave seams open. Throws
+  // std::invalid_argument for count < 2, a zero axis, a non-finite
+  // point or a bad tolerance.
+  SubD SymmetrizeRadial(Point3d axis_point, Vector3d axis_dir, int count,
+                        double point_tolerance = 1e-9, double weld_tolerance = 0.0) const;
+
+  // ---------------------------------------------------------------------
+  // SubD -> NURBS, watertight.
+  // ---------------------------------------------------------------------
+
+  // Like ToNurbsPatches() (one bicubic patch per quad face of the current
+  // level), but the patches are built to MEET: every SubD edge has ONE
+  // canonical cubic Bezier boundary curve, computed from the edge's own
+  // data only, and both faces that share the edge use exactly that curve
+  // (bit-identical control points), so joining the patches by
+  // edge-matching yields a closed, watertight polysurface wherever the
+  // SubD is closed - which ToNurbsPatches()/ToNurbsPatchesAdaptive() never
+  // do at irregular faces (their flat bilinear patches have straight
+  // boundaries that do not match the neighbours' curved ones).
+  //  - A REGULAR face keeps its exact limit patch (`exact = true`).
+  //  - An IRREGULAR face (extraordinary vertex, crease, boundary,
+  //    semi-sharp edge) becomes the bicubic Coons patch spanning its four
+  //    canonical edge curves (`exact = false`): exact on its boundary
+  //    wherever the edge curve is exact, an interpolant in between.
+  // Edge curve rule (end data per end vertex v of edge e->w):
+  //  - both ends ordinary smooth interior vertices (valence 4, no
+  //    semi-sharp edge): the EXACT limit curve, cubic Bezier points
+  //    (L_a, (2R_a+R_b)/3, (R_a+2R_b)/3, L_b) with R_x the 1-4-1 blend of
+  //    x and its two cross neighbours in the faces beside e;
+  //  - a crease/boundary edge whose end vertices have exactly two crease
+  //    edges: the exact cubic B-spline crease curve ((a_prev+4a+b)/6 ...);
+  //    a corner end uses the control point itself;
+  //  - otherwise (extraordinary / dart / semi-sharp ends): cubic Hermite
+  //    from the exact vertex limit point and a tangent taken from the
+  //    limit tangent plane (chord projected onto it, chord/3 long) -
+  //    watertight but an approximation of the true limit curve.
+  // Every vertex uses ONE limit-point definition across all of its edges
+  // (exact limit evaluator; crease vertex: (prev+4v+next)/6; corner: the
+  // control point), so patch corners also coincide exactly.
+  // Requires every face of the current level to be a quad (call
+  // Subdivide(1) first otherwise): throws std::runtime_error naming the
+  // problem if one is not, or if there are no faces. Not G1 across
+  // irregular faces (the Coons patches share position, not tangent plane).
+  std::vector<SubDNurbsPatch> ToNurbsPatchesWatertight(SubDWatertightReport* report = nullptr) const;
 
   int FaceCount() const;
   int VertexCount() const;

@@ -3,6 +3,8 @@
 #include "commands/history_rebuild.h"
 #include "commands/section_fit.h"
 
+#include <array>
+#include <map>
 #include <unordered_map>
 
 namespace dino8::app {
@@ -996,152 +998,349 @@ LoftTokens TakeLoftTokens(CommandContext& ctx) {
   return out;
 }
 
-// Closes (for the one case where it's actually measurable - a Brep
-// operand, which has a true surface to measure against) PARITY_MAP.md's
-// app_subd_mesh "NURBS/Brep to SubD" item's own disclosed remaining gap:
-// the control cage's tessellation has a real chord-tolerance bound on the
-// ORIGINAL Brep (see MeshFromSelection's own comment below), but
-// Catmull-Clark smoothing then pulls the SubD's own LIMIT surface - the
-// shape a user actually sees and edits - further away from that cage
-// than the cage's own tessellation tolerance alone bounds, with no
-// guarantee on the final shape at all.
-//
-// `SubD::ToNurbsPatches()` already gives a real, independent handle on
-// that limit surface: a REGULAR face's own patch (`exact == true`) is
-// the mathematically exact Catmull-Clark limit patch, not a flat facet
-// of the control cage, and this is the SAME cheap, non-adaptive,
-// single-pass-over-the-mesh construction `ToNURBS` (see the command
-// below) already uses at this exact scale. (`EvaluateFace()`/
-// `SubD::Tessellate()` were tried first and rejected: both internally
-// clone and globally re-subdivide an ENTIRE working copy on every single
-// call that touches an irregular region, per their own doc comments -
-// fine for a handful of queries, but ToNurbsPatches()'s own doc comment
-// shows that cost compounding across every sample point here, which
-// measurably hung on a mid-size SubD in manual testing - and `Tessellate()`
-// additionally and silently returns an EMPTY mesh for any non-quad
-// level-0 face, exactly what a Brep's own triangle tessellation always
-// produces, which would have made this whole check a no-op false
-// positive.) Sampling the CENTER of a bounded number of patches (cheap:
-// `NurbsSurface::PointAt()` is a single Bezier evaluation, not an
-// adaptive search) and comparing against `reference` (a tol-chord-
-// tolerance tessellation of the ORIGINAL Brep - the same kind of mesh
-// `MeshBrepClosed` already guarantees lands within `tol` of the true
-// Brep surface everywhere) gives a real, MEASURED bound on how far the
-// FINAL SubD shape sits from the surface it was converted from, not just
-// on its intermediate cage. The patches themselves come from a disposable
-// working copy (`refined`, subdivided a couple of whole-mesh rounds first
-// - the same pre-refinement `ToNURBS` below applies, to shrink irregular
-// regions and guarantee quad faces) - the actual SubD kept as this
-// round's result (`sd`) is the plain, unsubdivided cage, so a caller
-// still gets the control net its own tessellation tolerance implies, not
-// a needlessly denser one.
-//
-// If the measured deviation exceeds `tol`, the cage is rebuilt from a
-// tighter tessellation (chord tolerance halved) and remeasured, up to
-// `kMaxFidelityRounds` times, each capped by `kMaxFidelityCageFaces` (the
-// same kind of face-count safety cap `ToNURBS`'s own adaptive converter
-// already applies) since each round's tessellation can grow the cage
-// roughly 4x. A bounded sample count (`kMaxFidelitySamples`) keeps this
-// check's own cost from scaling with however many patches the finest
-// attempted cage actually has - `Mesh::ClosestPoint()` is a brute-force
-// per-triangle search with no spatial acceleration structure (see its own
-// doc comment), so an unbounded sample count against a large reference
-// mesh would make this check itself the slow part of the conversion.
-//
-// Still honestly disclosed either way: the achieved bound (met or not)
-// is reported to the caller, and running out of rounds (or hitting the
-// face-count cap) without converging is reported as exactly that - a
-// measured, disclosed miss - never silently claimed as success.
 struct SubDFidelityResult {
   kernel::SubD subd;
   double achieved_deviation = 0.0;
   bool verified = false;
   int rounds = 0;
+  int fit_iterations = 0;       // interpolation iterations of the accepted round
+  double fit_residual = 0.0;    // worst |cage vertex - limit point| after the fit
+  int crease_edges = 0;         // feature edges tagged Crease on the cage
+  int samples = 0;              // limit-surface points measured
+  int cage_faces = 0;           // faces of the accepted cage
 };
 
-constexpr int kMaxFidelityRounds = 3;
-constexpr int kMaxFidelitySamples = 400;
+constexpr int kMaxFidelityRounds = 3;  // + the initial one: grid divisions 24, 48, 96, 192
+constexpr int kMaxFidelitySamples = 1500;
 constexpr int kMaxFidelityCageFaces = 300000;
+// Cage edges whose two faces differ by more than this are feature edges
+// (a cylinder's rim, a filleted box's flats) and become creases, so the
+// limit surface keeps them sharp instead of rounding them away.
+constexpr double kFidelityCreaseAngleDeg = 35.0;
 
+// Even-odd point-in-face test in a Brep face's (u, v) domain: every loop
+// (outer and holes) is sampled to a 2D polyline from its trim curves.
+bool UvInsideFaceLoops(const ON_Brep& b, const ON_BrepFace& f, double u, double v) {
+  int crossings = 0;
+  for (int li = 0; li < f.m_li.Count(); ++li) {
+    const ON_BrepLoop& loop = b.m_L[f.m_li[li]];
+    std::vector<ON_2dPoint> poly;
+    for (int k = 0; k < loop.m_ti.Count(); ++k) {
+      const ON_BrepTrim& t = b.m_T[loop.m_ti[k]];
+      const ON_Interval d = t.Domain();
+      constexpr int kSeg = 24;
+      for (int j = 0; j < kSeg; ++j) {
+        const ON_3dPoint q = t.PointAt(d.ParameterAt(static_cast<double>(j) / kSeg));
+        poly.emplace_back(q.x, q.y);
+      }
+    }
+    const size_t n = poly.size();
+    for (size_t i = 0; i < n; ++i) {
+      const ON_2dPoint& a = poly[i];
+      const ON_2dPoint& c = poly[(i + 1) % n];
+      if ((a.y > v) != (c.y > v)) {
+        const double x = a.x + (v - a.y) * (c.x - a.x) / (c.y - a.y);
+        if (x > u) ++crossings;
+      }
+    }
+  }
+  return (crossings & 1) != 0;
+}
+
+// Distance from points to the TRUE Brep surface (not a tessellation of it):
+// closest point on each face's own NURBS surface
+// (kernel::NurbsSurface::ClosestPointParameter, refined to floating-point
+// precision), accepted only where that closest (u, v) lies inside the
+// face's trim loops. nullopt if no face produced an accepted point (the
+// caller falls back to a mesh distance for that sample).
+struct TrueBrepProbe {
+  const ON_Brep* brep = nullptr;
+  std::vector<kernel::NurbsSurface> surfaces;
+  std::vector<char> usable;
+  explicit TrueBrepProbe(const ON_Brep& b) : brep(&b), surfaces(static_cast<size_t>(b.m_F.Count())), usable(static_cast<size_t>(b.m_F.Count()), 0) {
+    for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+      const ON_Surface* srf = b.m_F[fi].SurfaceOf();
+      if (srf != nullptr && SurfaceFromON(*srf, surfaces[static_cast<size_t>(fi)])) usable[static_cast<size_t>(fi)] = 1;
+    }
+  }
+  // Closest point of the true surface to `p` (inside the trims), or nullopt.
+  std::optional<ON_3dPoint> Closest(const ON_3dPoint& p, int divisions = 24) const {
+    double best = std::numeric_limits<double>::infinity();
+    ON_3dPoint best_pt = p;
+    for (int fi = 0; fi < brep->m_F.Count(); ++fi) {
+      if (!usable[static_cast<size_t>(fi)]) continue;
+      const kernel::NurbsSurface& ns = surfaces[static_cast<size_t>(fi)];
+      // The closest-point search is a grid scan; a coarse grid can lock onto
+      // the wrong place near a degenerate pole (reported distances too
+      // LARGE, never too small), so it is repeated on a finer grid and the
+      // smaller distance wins.
+      for (int div : {divisions, divisions * 3}) {
+        const kernel::Point2d uv = ns.ClosestPointParameter(p, div, div);
+        if (!UvInsideFaceLoops(*brep, brep->m_F[fi], uv.x, uv.y)) continue;
+        const ON_3dPoint q = ns.PointAt(uv.x, uv.y);
+        const double d = q.DistanceTo(p);
+        if (d < best) { best = d; best_pt = q; }
+      }
+    }
+    if (!std::isfinite(best)) return std::nullopt;
+    return best_pt;
+  }
+  std::optional<double> Distance(const ON_3dPoint& p, int divisions = 24) const {
+    const std::optional<ON_3dPoint> q = Closest(p, divisions);
+    if (!q) return std::nullopt;
+    return q->DistanceTo(p);
+  }
+};
+
+// Builds the SubD for a Brep ToSubD cannot convert exactly (anything
+// FromBrep refuses) and MEASURES how far its Catmull-Clark limit surface
+// is from the Brep. Three steps per round (this replaces the earlier
+// measure-and-disclose-only loop, whose sphere and box both missed):
+//  1. tessellate the Brep at the round's chord tolerance into the control
+//     cage (every cage vertex lies ON the Brep surface) and tag feature
+//     edges as creases (SubD::SetCreasesByDihedral);
+//  2. INTERPOLATE: SubD::InterpolateControlNet drives every cage vertex's
+//     limit point onto the tessellation vertex it came from - Catmull-
+//     Clark's smoothing no longer pulls the limit surface inside the
+//     cage, which was the whole source of the old 0.0168 sphere miss;
+//  3. measure the limit surface between and at the vertices: the limit
+//     points of Subdivide(1) (every original vertex, edge midpoint and
+//     face centre of the cage - exact limit evaluation, not facets)
+//     against a tol/4 reference tessellation of the Brep (a proxy for the
+//     true surface good to tol/4, which the reported number includes).
+// If the deviation still exceeds `tol`, the chord tolerance is halved and
+// the round repeated (bounded; plateau guard on the mesher's per-edge cap).
+// The achieved bound is reported whether or not it converged.
 std::optional<SubDFidelityResult> BuildSubDVerifiedAgainstBrep(const SceneObject& o, double tol) {
+  // Cage candidates, finest last: the kernel's uniform parametric grid
+  // tessellation (Brep::TessellateToClosedMesh(n, n): every vertex ON the
+  // surface and, unlike the chord-tolerance mesher MeshOf() uses, no long
+  // sliver triangles - on the default 0.001 sphere the mesher leaves
+  // triangle centres up to 0.09 off the sphere) at n = 24, 48, 96, 192
+  // divisions per face direction; when the grid tessellation is not a
+  // closed manifold (a trimmed face it cannot weld) the round falls back to
+  // MeshOf() at the round's chord tolerance, the previous behaviour.
+  // Deviation is measured against a 384 x 384 grid tessellation of the same
+  // Brep when that is a closed manifold; otherwise (a trimmed face the grid
+  // cannot weld) against the TRUE surface (per-face NURBS closest point,
+  // trim-aware, up to 64 faces) as an UPPER bound: the smaller of that
+  // distance and the distance to the nearest cage vertex.
   std::optional<kernel::Mesh> reference = MeshOf(o, tol);
   if (!reference || reference->FaceCount() == 0) return std::nullopt;
-  // `reference` is built once above and never changes for the rest of this
-  // function, while the sampling loop below re-queries it up to
-  // kMaxFidelitySamples times per round across kMaxFidelityRounds rounds -
-  // exactly the "same mesh queried many times" workload
-  // kernel::MeshClosestPointIndex exists for (PARITY_MAP.md's own
-  // "Spatial acceleration structures for geometric queries" bullet
-  // disclosed no caller used it yet). Built once here instead of calling
-  // reference->ClosestPoint() directly in the loop.
   const kernel::MeshClosestPointIndex reference_index(*reference);
+  // Preferred measuring stick: a 384 x 384-per-face grid tessellation of the
+  // same Brep (about 3e-4 chord sag even on a 5-unit-radius sphere, every
+  // vertex on the surface), queried through the closest-point index. It
+  // avoids the pole failure of the per-face closest-point search below.
+  std::optional<kernel::Mesh> fine;
+  if (o.brep) {
+    try {
+      kernel::Mesh g = o.brep->TessellateToClosedMesh(384, 384);
+      if (g.IsClosedManifold() && g.FaceCount() > 0) fine = std::move(g);
+    } catch (const std::exception&) {}
+  }
+  std::optional<kernel::MeshClosestPointIndex> fine_index;
+  if (fine) fine_index.emplace(*fine);
+  const bool use_true = !fine && o.brep && o.brep->raw().m_F.Count() <= 64;
+  std::optional<TrueBrepProbe> true_probe;
+  if (use_true) true_probe.emplace(o.brep->raw());
   SubDFidelityResult best;
   bool have_best = false;
   double cage_tol = tol;
   int last_cage_faces = -1;
-  for (int round = 0; round < kMaxFidelityRounds; ++round) {
-    std::optional<kernel::Mesh> cage = (round == 0) ? reference : MeshOf(o, cage_tol);
+  for (int round = 0; round < kMaxFidelityRounds + 1; ++round) {
+    std::optional<kernel::Mesh> cage;
+    if (o.brep) {
+      try {
+        const int n = 24 << round;
+        kernel::Mesh grid = o.brep->TessellateToClosedMesh(n, n);
+        if (grid.IsClosedManifold() && grid.FaceCount() > 0) cage = std::move(grid);
+      } catch (const std::exception&) {}
+    }
+    if (!cage) {
+      cage = MeshOf(o, cage_tol);
+      cage_tol *= 0.5;
+    }
     if (!cage || cage->FaceCount() == 0 || cage->FaceCount() > kMaxFidelityCageFaces) break;
-    // MeshBrepClosed's own per-edge subdivision count is capped
-    // (BrepMesher.cpp), so a Brep already fine enough to hit that cap at
-    // `tol` retessellates to the SAME face count no matter how far
-    // `cage_tol` is tightened beyond it - retrying would just repeat an
-    // identical, already-measured cage for the remaining rounds. Stop as
-    // soon as that plateau is detected instead of burning the rest of
-    // `kMaxFidelityRounds` on no-op reruns.
     if (round > 0 && cage->FaceCount() == last_cage_faces) break;
     last_cage_faces = cage->FaceCount();
-    kernel::SubD sd;
-    std::vector<kernel::SubDNurbsPatch> patches;
+    SubDFidelityResult cur;
+    cur.rounds = round + 1;
     try {
-      sd = kernel::SubD::FromControlMesh(*cage);
-      kernel::SubD refined = sd;
-      int faces = refined.FaceCount(), levels = 0;
-      while (levels < 3 && faces > 0 && faces * 4 <= kMaxFidelityCageFaces) { faces *= 4; ++levels; }
-      if (levels == 0) levels = 1;
-      refined.Subdivide(levels);
-      patches = refined.ToNurbsPatches();
+      kernel::SubD sd = kernel::SubD::FromControlMesh(*cage);
+      cur.crease_edges = sd.SetCreasesByDihedral(kFidelityCreaseAngleDeg);
+      kernel::SubDInterpolationReport frep;
+      const kernel::BoundingBox cbb = cage->GetBoundingBox();
+      const double extent = (cbb.max - cbb.min).Length();
+      cur.subd = sd.InterpolateControlNet(std::max(tol * 0.05, 2e-7 * std::max(extent, 1.0)), 150, &frep);
+      cur.fit_iterations = frep.iterations;
+      cur.fit_residual = frep.final_max_residual;
+      kernel::SubD probe = cur.subd;
+      probe.Subdivide(1);
+      const std::vector<kernel::SubDLimitPoint> lps = probe.LimitPoints();
+      std::vector<Point3d> cage_vertices;
+      for (int i = 0; i < cage->VertexCount(); ++i) cage_vertices.emplace_back(cage->raw().m_V[i]);
+      const size_t step = std::max<size_t>(1, lps.size() / static_cast<size_t>(kMaxFidelitySamples));
+      double dev = 0.0;
+      for (size_t i = 0; i < lps.size(); i += step) {
+        const Point3d& q = lps[i].limit_point;
+        double dd = 0.0;
+        std::optional<double> td;
+        if (true_probe) td = true_probe->Distance(q);
+        if (fine_index) {
+          dd = (fine_index->ClosestPoint(q) - q).Length();
+        } else if (td) {
+          double nv = std::numeric_limits<double>::infinity();
+          for (const Point3d& rv : cage_vertices) nv = std::min(nv, rv.DistanceTo(q));
+          dd = std::min(*td, nv);
+        } else {
+          dd = (reference_index.ClosestPoint(q) - q).Length();
+        }
+        dev = std::max(dev, dd);
+        ++cur.samples;
+      }
+      cur.achieved_deviation = dev;
+      cur.verified = dev <= tol;
+      cur.cage_faces = cage->FaceCount();
     } catch (const std::exception&) {
       break;
     }
-    double dev = 0.0;
-    const int n = static_cast<int>(patches.size());
-    if (n > 0) {
-      // The bounded sample is chosen by GEOMETRY (every step-th patch
-      // midpoint in lexicographic x/y/z order), never by patch storage
-      // index. `patches` inherits its order from the cage mesh's face
-      // order, which is whatever the Brep mesher's constrained Delaunay
-      // refinement happened to emit - identical geometry can come back in
-      // a different face order on another compiler/platform (and did:
-      // the same 11310-face sphere cage reports a different "worst
-      // measured deviation" under MSVC than under GCC, and reversing the
-      // face order on one machine alone moves 0.016850 to 0.017945). A
-      // stride over storage order therefore measured a platform-dependent
-      // subset; a stride over position-sorted midpoints measures the same
-      // subset wherever the same cage was built. Same sample budget, same
-      // cost: the midpoints are evaluated once either way and the extra
-      // sort of at most a few hundred thousand points is negligible next
-      // to the closest-point queries.
-      std::vector<std::pair<Point3d, int>> mids;
-      mids.reserve(static_cast<size_t>(n));
-      for (int i = 0; i < n; ++i) mids.emplace_back(patches[static_cast<size_t>(i)].surface.PointAt(0.5, 0.5), i);
-      std::sort(mids.begin(), mids.end(), [](const std::pair<Point3d, int>& a, const std::pair<Point3d, int>& b) {
-        if (a.first.x != b.first.x) return a.first.x < b.first.x;
-        if (a.first.y != b.first.y) return a.first.y < b.first.y;
-        return a.first.z < b.first.z;
-      });
-      const int step = std::max(1, n / kMaxFidelitySamples);
-      for (int i = 0; i < n; i += step) {
-        const Point3d& p = mids[static_cast<size_t>(i)].first;
-        dev = std::max(dev, (reference_index.ClosestPoint(p) - p).Length());
-      }
-    }
-    best = SubDFidelityResult{sd, dev, dev <= tol, round + 1};
+    best = cur;
     have_best = true;
     if (best.verified) break;
-    cage_tol *= 0.5;
   }
   return have_best ? std::make_optional(best) : std::nullopt;
+}
+
+// Joins coincident naked edges of `b` like JoinNakedEdges (cmd_common.h)
+// but with a spatial hash on edge mid points instead of an all-pairs scan,
+// so a thousand-patch SubD conversion joins in milliseconds instead of
+// minutes. Same acceptance test (both end points within `tol`, mid points
+// within 10*tol), same vertex/edge merging, same face re-orientation.
+int JoinNakedEdgesHashed(ON_Brep& b, double tol) {
+  struct Cell { long long x, y, z; bool operator==(const Cell& o) const { return x == o.x && y == o.y && z == o.z; } };
+  struct CellHash {
+    size_t operator()(const Cell& c) const {
+      return static_cast<size_t>(c.x * 73856093LL) ^ static_cast<size_t>(c.y * 19349663LL) ^ static_cast<size_t>(c.z * 83492791LL);
+    }
+  };
+  const double cell = std::max(tol * 40.0, 1e-9);
+  const auto cell_of = [&](const ON_3dPoint& p) {
+    return Cell{static_cast<long long>(std::floor(p.x / cell)), static_cast<long long>(std::floor(p.y / cell)), static_cast<long long>(std::floor(p.z / cell))};
+  };
+  std::unordered_map<Cell, std::vector<int>, CellHash> grid;
+  std::vector<int> naked;
+  for (int i = 0; i < b.m_E.Count(); ++i) {
+    const ON_BrepEdge& e = b.m_E[i];
+    if (e.m_edge_index < 0 || e.TrimCount() != 1) continue;
+    naked.push_back(i);
+    grid[cell_of(e.PointAt(e.Domain().Mid()))].push_back(i);
+  }
+  int joined = 0;
+  for (int i : naked) {
+    ON_BrepEdge& e0 = b.m_E[i];
+    if (e0.m_edge_index < 0 || e0.TrimCount() != 1) continue;
+    const ON_3dPoint a0 = e0.PointAtStart(), a1 = e0.PointAtEnd();
+    const ON_3dPoint m0 = e0.PointAt(e0.Domain().Mid());
+    const Cell c0 = cell_of(m0);
+    bool done = false;
+    for (long long dx = -1; dx <= 1 && !done; ++dx)
+      for (long long dy = -1; dy <= 1 && !done; ++dy)
+        for (long long dz = -1; dz <= 1 && !done; ++dz) {
+          const auto it = grid.find(Cell{c0.x + dx, c0.y + dy, c0.z + dz});
+          if (it == grid.end()) continue;
+          for (int j : it->second) {
+            if (j == i) continue;
+            ON_BrepEdge& e1 = b.m_E[j];
+            if (e1.m_edge_index < 0 || e1.TrimCount() != 1) continue;
+            const ON_3dPoint b0 = e1.PointAtStart(), b1 = e1.PointAtEnd();
+            bool forward = a0.DistanceTo(b0) <= tol && a1.DistanceTo(b1) <= tol;
+            bool reversed = !forward && a0.DistanceTo(b1) <= tol && a1.DistanceTo(b0) <= tol;
+            if (forward && a0.DistanceTo(a1) <= tol) {
+              forward = ON_DotProduct(e0.TangentAt(e0.Domain().Min()), e1.TangentAt(e1.Domain().Min())) > 0;
+              reversed = !forward;
+            }
+            if (!forward && !reversed) continue;
+            const ON_3dPoint m1 = e1.PointAt(e1.Domain().Mid());
+            if (m0.DistanceTo(m1) > tol * 10) continue;
+            if (reversed && !e1.Reverse()) continue;
+            for (int k = 0; k < 2; ++k) {
+              if (e0.m_vi[k] == e1.m_vi[k]) continue;
+              if (!b.CombineCoincidentVertices(b.m_V[e0.m_vi[k]], b.m_V[e1.m_vi[k]])) break;
+            }
+            if (b.CombineCoincidentEdges(e0, e1)) { ++joined; done = true; break; }
+          }
+        }
+  }
+  if (joined) {
+    OrientBrepFaces(b);
+    b.SetTolerancesBoxesAndFlags();
+  }
+  return joined;
+}
+
+// The SubD -> NURBS conversion ToNURBS uses: kernel
+// SubD::ToNurbsPatchesWatertight() (every SubD edge has ONE canonical
+// cubic boundary curve shared bit-for-bit by both faces that meet there),
+// the patches appended into one ON_Brep, edge-matched with a strict 1e-6
+// tolerance (NOT the loose 10*modeling-tolerance the adaptive path needed),
+// and MEASURED: naked edge count after the join, whether the polysurface is
+// a closed solid, and the largest distance of patch sample points from a
+// Subdivide(+2) reference of the same SubD. Throws on kernel failure so
+// the caller can fall back to the adaptive path.
+struct WatertightNurbsResult {
+  ON_Brep brep;
+  kernel::SubDWatertightReport report;
+  int levels = 0;
+  int joined = 0;
+  int naked_edges = 0;
+  bool is_solid = false;
+  bool is_manifold = false;
+  double max_deviation = 0.0;
+  int samples = 0;
+};
+
+WatertightNurbsResult ConvertSubDWatertight(const kernel::SubD& subd) {
+  WatertightNurbsResult r;
+  kernel::SubD refined = subd;
+  int faces = refined.FaceCount();
+  while (r.levels < 3 && faces > 0 && faces * 4 <= 6000) { faces *= 4; ++r.levels; }
+  if (r.levels == 0) r.levels = 1;  // always at least one round, to guarantee quad faces
+  refined.Subdivide(r.levels);
+  std::vector<kernel::SubDNurbsPatch> patches = refined.ToNurbsPatchesWatertight(&r.report);
+  for (kernel::SubDNurbsPatch& p : patches) {
+    ON_Brep tmp;
+    ON_NurbsSurface* srf = new ON_NurbsSurface(p.surface.raw());
+    tmp.Create(srf);
+    r.brep.Append(tmp);
+  }
+  r.joined = JoinNakedEdgesHashed(r.brep, 1e-6);
+  for (int i = 0; i < r.brep.m_E.Count(); ++i) {
+    if (r.brep.m_E[i].m_edge_index >= 0 && r.brep.m_E[i].TrimCount() == 1) ++r.naked_edges;
+  }
+  r.is_solid = r.brep.IsSolid();
+  r.is_manifold = r.brep.IsManifold();
+  // Deviation from the limit surface: sample every patch on a 3x3 grid
+  // (bounded) and measure against a finer refinement of the same SubD.
+  try {
+    kernel::SubD fine = refined;
+    int ff = fine.FaceCount(), extra = 0;
+    while (extra < 2 && ff * 4 <= 120000) { ff *= 4; ++extra; }
+    if (extra > 0) {
+      fine.Subdivide(extra);
+      const kernel::Mesh ref = fine.ToApproximateMesh();
+      const size_t stride = std::max<size_t>(1, patches.size() / 4000);
+      for (size_t i = 0; i < patches.size(); i += stride) {
+        for (int a = 0; a <= 2; ++a)
+          for (int c = 0; c <= 2; ++c) {
+            const Point3d q = patches[i].surface.PointAt(a / 2.0, c / 2.0);
+            r.max_deviation = std::max(r.max_deviation, (ref.ClosestPoint(q) - q).Length());
+            ++r.samples;
+          }
+      }
+    }
+  } catch (const std::exception&) {}
+  return r;
 }
 
 void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, const char* label, bool to_subd) {
@@ -1149,6 +1348,8 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
   int made = 0;
   int fidelity_checked = 0, fidelity_verified = 0;
   double fidelity_worst = 0.0;
+  int fit_iterations_max = 0, creases_total = 0, fit_runs = 0, samples_total = 0;
+  double fit_residual_worst = 0.0;
   // ToSubD/MeshToSubD (to_subd) tessellate a Brep's real surface at the
   // document's own modeling tolerance (ctx.Settings().absolute_tolerance)
   // rather than surface_display_tolerance - a viewport-quality setting
@@ -1203,6 +1404,11 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
         ++fidelity_checked;
         if (fr->verified) ++fidelity_verified;
         fidelity_worst = std::max(fidelity_worst, fr->achieved_deviation);
+        fit_iterations_max = std::max(fit_iterations_max, fr->fit_iterations);
+        fit_residual_worst = std::max(fit_residual_worst, fr->fit_residual);
+        creases_total += fr->crease_edges;
+        samples_total += fr->samples;
+        ++fit_runs;
         n = SceneObject::MakeSubD(fr->subd);
       }
     } else {
@@ -1220,6 +1426,12 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
     msg += " (" + std::to_string(fidelity_verified) + " of " + std::to_string(fidelity_checked) +
            " limit-surface-fidelity verified within tolerance " + std::to_string(tol) +
            ", worst measured deviation " + std::to_string(fidelity_worst) + ")";
+    if (fit_runs > 0) {
+      msg += "; cage interpolated onto the Brep surface (limit surface passes through every cage vertex: " +
+             std::to_string(fit_iterations_max) + " iteration(s), residual " + std::to_string(fit_residual_worst) + "), " +
+             std::to_string(creases_total) + " feature edge(s) creased, deviation measured at " + std::to_string(samples_total) +
+             " exact limit-surface points";
+    }
   }
   ctx.Print(msg);
 }
@@ -1302,6 +1514,34 @@ void RegisterSolidCommands(CommandEngine& e) {
             // or adaptive) roughly quarters the remaining irregular
             // region's maximum deviation from the true limit surface (see
             // ToNurbsPatches()'s doc comment).
+            // Watertight path first (see ConvertSubDWatertight above): every
+            // SubD edge has one canonical boundary curve shared by both
+            // faces, so a closed SubD converts to a closed polysurface. The
+            // adaptive converter below stays as the fallback when the
+            // watertight one throws (e.g. a non-quad face it cannot handle).
+            bool watertight_done = false;
+            try {
+              const int src_faces = o->subd->FaceCount();
+              WatertightNurbsResult wr = ConvertSubDWatertight(*o->subd);
+              kernel::Brep k; k.raw() = wr.brep;
+              ctx.Doc().Add(SceneObject::MakeBrep(k));
+              ++made;
+              exact_patches += wr.report.exact_patches;
+              approx_patches += wr.report.coons_patches;
+              watertight_done = true;
+              ctx.Print("ToNURBS: watertight conversion of a " + std::to_string(src_faces) + "-face SubD (" + std::to_string(wr.levels) +
+                         " Catmull-Clark refinement round(s) first): " + std::to_string(wr.report.patches) + " bicubic patches (" +
+                         std::to_string(wr.report.exact_patches) + " exact limit patches, " + std::to_string(wr.report.coons_patches) +
+                         " Coons patches on the shared edge curves; " + std::to_string(wr.report.exact_edge_curves) + " exact + " +
+                         std::to_string(wr.report.hermite_edge_curves) + " Hermite edge curves), joined " + std::to_string(wr.joined) +
+                         " edge pair(s) at 1e-6, " + std::to_string(wr.naked_edges) + " naked edge(s) left, " +
+                         (wr.is_solid ? "closed solid: yes" : "closed solid: no") + (wr.is_manifold ? ", manifold" : ", non-manifold") +
+                         "; max distance of " + std::to_string(wr.samples) + " patch samples from the Subdivide(+2) limit reference " +
+                         std::to_string(wr.max_deviation));
+            } catch (const std::exception&) {
+              watertight_done = false;
+            }
+            if (!watertight_done) {
             kernel::SubD refined = *o->subd;
             // Cap subdivision rounds (and hence patch count) much lower than
             // the old dense-mesh path's cap: each patch here is a real NURBS
@@ -1353,6 +1593,7 @@ void RegisterSolidCommands(CommandEngine& e) {
                 }
               } catch (...) {}
             }
+            }  // !watertight_done
           } else if (o->kind == ObjectKind::Mesh) {
             ON_Brep* b = ON_BrepFromMesh(o->mesh->raw().Topology());
             if (b) { ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); ++made; }
