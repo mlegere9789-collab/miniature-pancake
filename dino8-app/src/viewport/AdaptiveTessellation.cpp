@@ -17,11 +17,18 @@ constexpr double kLodReferencePixelSize = 0.1;
 // drive the triangle count unbounded in either direction.
 constexpr double kLodMinScale = 0.2;
 constexpr double kLodMaxScale = 6.0;
+// The zoom-level scale (LodScaleForPixelSize) may go much finer than the
+// per-object distance correction above: it used to share the 0.2 floor, so
+// past ~5x deeper than the reference zoom the on-screen chord error grew
+// without bound (measured: a sphere's facets visibly widen). The finer floor
+// is safe only because SceneObject::EnsureAdaptiveDisplay enforces a
+// per-object triangle budget (SceneObject::kAdaptiveTriangleBudget).
+constexpr double kLodDeepZoomMinScale = 0.02;
 }  // namespace
 
 double LodScaleForPixelSize(double pixel_size) {
   if (!(pixel_size > 0.0)) return 1.0;  // degenerate camera state: no scaling
-  return std::clamp(pixel_size / kLodReferencePixelSize, kLodMinScale, kLodMaxScale);
+  return std::clamp(pixel_size / kLodReferencePixelSize, kLodDeepZoomMinScale, kLodMaxScale);
 }
 
 double DistanceLodFactor(double object_distance, double target_distance, bool is_perspective) {
@@ -40,5 +47,17 @@ double FinestLodScale(const std::vector<double>& viewport_pixel_sizes) {
   }
   return any ? finest : 1.0;
 }
+
+}  // namespace dino8::app
+
+namespace dino8::app {
+
+double ScreenSpaceErrorPixels(double tolerance, double pixel_size) {
+  if (!(pixel_size > 0.0) || !(tolerance > 0.0)) return 0.0;
+  return tolerance / pixel_size;
+}
+
+double LodMinScale() { return kLodDeepZoomMinScale; }
+double LodMaxScale() { return kLodMaxScale; }
 
 }  // namespace dino8::app

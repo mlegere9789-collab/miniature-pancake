@@ -147,12 +147,49 @@ const Color kForceWhiteFillColor = Color::FromBytes(245, 245, 245);
 // "fill/don't"). Pen/Arctic need no branch below - both are fully opaque,
 // the same fall-through default every mode except Ghosted/X-Ray already
 // gets.
-float EffectiveFillAlpha(const SceneObject& o, float viewport_alpha) {
-  if (o.force_ghosted) return kGhostedFillAlpha;
-  if (o.force_xray) return kXRayFillAlpha;
-  if (o.force_monochrome) return kMonochromeFillColor.a;
-  if (o.force_pen || o.force_arctic) return kForceWhiteFillColor.a;
+// The override flags that apply to an object IN THIS VIEWPORT (its own
+// per-viewport entry, else its all-viewports flags) - SceneObject::
+// DisplayOverrideFlagsFor(Viewport::Name()).
+using OverrideFlags = SceneObject::DisplayOverrideFlags;
+
+// Monochrome, Technical and Artistic all fill in the same flat grey (the
+// viewport-wide modes differ only in line work and background); Pen and
+// Arctic both fill flat white.
+bool FlatGreyOverride(const OverrideFlags& f) { return f.monochrome || f.technical || f.artistic; }
+bool FlatWhiteOverride(const OverrideFlags& f) { return f.pen || f.arctic; }
+// Any override that makes this object fill in the Wireframe-viewport
+// "ShadeSelected" pass (everything except Wireframe itself).
+bool FillingOverride(const OverrideFlags& f) {
+  return f.shaded || f.ghosted || f.xray || FlatGreyOverride(f) || FlatWhiteOverride(f) || f.rendered;
+}
+
+float EffectiveFillAlpha(const OverrideFlags& f, float viewport_alpha) {
+  if (f.ghosted) return kGhostedFillAlpha;
+  if (f.xray) return kXRayFillAlpha;
+  if (FlatGreyOverride(f)) return kMonochromeFillColor.a;
+  if (FlatWhiteOverride(f)) return kForceWhiteFillColor.a;
   return viewport_alpha;
+}
+
+// The FULL per-object style: the viewport-wide ModeStyle of the mode this
+// object's override names - fill, line work (edges/isocurves, edge colour),
+// depth-tested lines - not just its fill colour. Without this a Wireframe-
+// overridden object in a Rendered viewport (edges and isocurves both off)
+// vanished entirely, and a Pen/Technical/Artistic object kept the viewport's
+// own edge colour instead of the mode's. An object with no override just
+// takes the viewport's style.
+ModeStyle ObjectStyleFor(const OverrideFlags& f, const ModeStyle& viewport_style) {
+  if (f.wireframe) return StyleFor(DisplayMode::Wireframe);
+  if (f.shaded) return StyleFor(DisplayMode::Shaded);
+  if (f.rendered) return StyleFor(DisplayMode::Rendered);
+  if (f.ghosted) return StyleFor(DisplayMode::Ghosted);
+  if (f.xray) return StyleFor(DisplayMode::XRay);
+  if (f.technical) return StyleFor(DisplayMode::Technical);
+  if (f.artistic) return StyleFor(DisplayMode::Artistic);
+  if (f.pen) return StyleFor(DisplayMode::Pen);
+  if (f.arctic) return StyleFor(DisplayMode::Arctic);
+  if (f.monochrome) return StyleFor(DisplayMode::Monochrome);
+  return viewport_style;
 }
 
 const Color kSelectionColor = Color::FromBytes(255, 210, 0);
@@ -957,18 +994,23 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
   const Document& doc = *ctx.doc;
   const ModeStyle style = StyleFor(mode);
   const bool rendered = mode == DisplayMode::Rendered;
-  // View-dependent adaptive tessellation: ctx.lod_scale (the finest scale
-  // any open, visible viewport's own zoom calls for, shared by every
-  // viewport this frame - see FrameContext::lod_scale) scales the app-wide
-  // curve/surface tolerance Options up or down. Passed to every
-  // EnsureAdaptiveDisplay call below,
-  // so every pass in this one frame (fills, edges, the Z-buffer
-  // visualization, sub-object highlighting) tessellates each object at the
-  // same resolution. Skipped for ctx.for_render (Render/RenderView image
-  // export): that path already deliberately picks its own, generally finer,
-  // tolerance independent of any viewport's current zoom (see
-  // Application::RenderView) - the same reason it skips frustum culling above.
-  const double lod_factor = ctx.for_render ? 1.0 : ctx.lod_scale;
+  // View-dependent adaptive tessellation: this viewport's OWN zoom
+  // (LodScaleForPixelSize of its camera's pixel size) scales the app-wide
+  // curve/surface tolerance up or down - the screen-space-error criterion
+  // (tolerance/pixel_size stays ~constant, see ScreenSpaceErrorPixels).
+  // Each viewport uses its own scale, not a shared one: SceneObject keeps
+  // several tessellation levels and swaps between them (EnsureAdaptiveDisplay),
+  // so viewports at different zoom no longer fight over one cache. Passed
+  // to every EnsureAdaptiveDisplay call below via ensure_lod, so every pass
+  // in this one frame (fills, edges, the Z-buffer visualization, sub-object
+  // highlighting) tessellates each object at the same resolution. Skipped for
+  // ctx.for_render (Render/RenderView image export), which picks its own
+  // generally finer tolerance independent of zoom (see Application::RenderView)
+  // - the same reason it skips frustum culling; and skipped entirely (fixed
+  // tolerance) when the user has switched adaptive tessellation off.
+  if (!ctx.for_render) lod_draw_.clear();
+  const bool lod_adaptive = ctx.adaptive_tessellation;
+  const double lod_factor = (ctx.for_render || !lod_adaptive) ? 1.0 : LodScaleForPixelSize(ZoomPixelSize());
   const double adaptive_curve_tolerance = ctx.curve_tolerance * lod_factor;
   const double adaptive_surface_tolerance = ctx.surface_tolerance * lod_factor;
   // Per-object DISTANCE-based LOD, on top of the per-viewport zoom-level
@@ -993,13 +1035,26 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
   const bool lod_is_perspective = camera_.State().perspective;
   const Point3d lod_eye = camera_.State().eye;
   auto adaptive_tolerances_for = [&](const SceneObject& o) -> std::pair<double, double> {
-    if (ctx.for_render) return {adaptive_curve_tolerance, adaptive_surface_tolerance};
+    if (ctx.for_render || !lod_adaptive) return {adaptive_curve_tolerance, adaptive_surface_tolerance};
     const kernel::BoundingBox box = o.BoundingBox();
     const Point3d centre((box.min.x + box.max.x) / 2, (box.min.y + box.max.y) / 2, (box.min.z + box.max.z) / 2);
     const double object_distance = (centre - lod_eye).Length();
     const double distance_factor = DistanceLodFactor(object_distance, lod_target_distance, lod_is_perspective);
     return {adaptive_curve_tolerance * distance_factor, adaptive_surface_tolerance * distance_factor};
   };
+  // Every pass's EnsureAdaptiveDisplay goes through this: the per-viewport,
+  // per-object tolerances above, the app-wide base surface tolerance (enables
+  // the per-object triangle budget for refinements), and the master toggle.
+  auto ensure_lod = [&](const SceneObject& o) {
+    const auto [cv_tol, sf_tol] = adaptive_tolerances_for(o);
+    o.EnsureAdaptiveDisplay(cv_tol, sf_tol, (ctx.for_render || !lod_adaptive) ? 0.0 : ctx.surface_tolerance, lod_adaptive);
+    if (!ctx.for_render) {
+      const DisplayCache& built = o.Display();
+      lod_draw_[o.id] = LodDrawRecord{built.triangles.size() / 18, built.built_curve_tolerance, built.built_surface_tolerance};
+    }
+  };
+  // The override flags this viewport applies to an object (own per-viewport entry, else all-viewports).
+  auto flags_of = [&](const SceneObject& o) { return o.DisplayOverrideFlagsFor(name_); };
   // Rendered mode draws every opaque object first, then the transparent
   // ones back to front with depth writes off so glass composites properly.
   std::vector<std::pair<double, const SceneObject*>> transparent;
@@ -1021,7 +1076,8 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     // A per-object Ghosted/X-Ray override wins outright, the same "always
     // this fixed alpha" way it does outside Rendered mode - not merely
     // multiplied with the material's own transparency.
-    rm.diffuse.a = (o.force_ghosted || o.force_xray) ? EffectiveFillAlpha(o, style.fill_alpha)
+    const OverrideFlags fl = flags_of(o);
+    rm.diffuse.a = (fl.ghosted || fl.xray) ? EffectiveFillAlpha(fl, style.fill_alpha)
                                                       : std::clamp(1.f - m.transparency, 0.f, 1.f) * style.fill_alpha;
     const std::vector<float>* uvs = nullptr;
     if (rm.texture) {
@@ -1140,10 +1196,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     for (std::size_t candidate_index : render_candidates) {
       const SceneObject& o = doc.Objects()[candidate_index];
       if (!shown(o)) continue;
-      {
-        const auto [cv_tol, sf_tol] = adaptive_tolerances_for(o);
-        o.EnsureAdaptiveDisplay(cv_tol, sf_tol);
-      }
+      ensure_lod(o);
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
       depth_objects.push_back(&o);
@@ -1181,14 +1234,12 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     for (std::size_t candidate_index : render_candidates) {
       const SceneObject& o = doc.Objects()[candidate_index];
       if (!shown(o)) continue;
+      const OverrideFlags fl = flags_of(o);
       // SetObjectDisplayMode Wireframe: a per-object override that skips
       // the fill pass even in a shaded/rendered/etc. viewport, so the
       // object still shows only edges/curves below.
-      if (o.force_wireframe) continue;
-      {
-        const auto [cv_tol, sf_tol] = adaptive_tolerances_for(o);
-        o.EnsureAdaptiveDisplay(cv_tol, sf_tol);
-      }
+      if (fl.wireframe) continue;
+      ensure_lod(o);
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
       // Shaded/Ghosted/X-Ray fill with one light material like Rhino's
@@ -1200,13 +1251,13 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       // object's own colour/material and the viewport's own style, the
       // same mode-agnostic way the Ghosted/X-Ray overrides already win on
       // alpha.
-      if (o.force_monochrome) c = kMonochromeFillColor;
-      else if (o.force_pen || o.force_arctic) c = kForceWhiteFillColor;
+      if (FlatGreyOverride(fl)) c = kMonochromeFillColor;
+      else if (FlatWhiteOverride(fl)) c = kForceWhiteFillColor;
       else if (style.force_white) c = kForceWhiteFillColor;
       else if (style.monochrome) c = kMonochromeFillColor;
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
       if (o.selected) c = Mix(c, kSelectionColor, 0.55f);
-      const float alpha = EffectiveFillAlpha(o, style.fill_alpha);
+      const float alpha = EffectiveFillAlpha(fl, style.fill_alpha);
       c.a = alpha;
       // Surface analysis: the object's own setting wins, else the app-wide
       // fallback (Zebra/EMap with nothing selected applies to every surface).
@@ -1256,9 +1307,9 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       // full material/texture/lighting pass rather than a flat colour, so
       // it is checked here alongside `rendered` rather than down with the
       // flat-colour overrides below.
-      if ((rendered || o.force_rendered) && !o.force_monochrome && !o.force_pen && !o.force_arctic) {
+      if ((rendered || fl.rendered) && !FlatGreyOverride(fl) && !FlatWhiteOverride(fl)) {
         const Material m = doc.MaterialFor(o);
-        if ((m.transparency > 0.001f || o.force_ghosted || o.force_xray) && !ctx.arctic) {
+        if ((m.transparency > 0.001f || fl.ghosted || fl.xray) && !ctx.arctic) {
           transparent.emplace_back(transparent_sort_key(o), &o);
           continue;
         }
@@ -1271,7 +1322,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       // viewport-wide Arctic mode, which leaves `lit` at its true default)
       // - so an Arctic-tagged object still shades even in a Pen viewport,
       // and a Pen-tagged object stays flat even in a lit Shaded viewport.
-      const bool lit = o.force_pen ? false : (o.force_arctic ? true : style.lit);
+      const bool lit = fl.pen ? false : ((fl.arctic || FlatGreyOverride(fl)) ? true : style.lit);
       renderer.DrawTriangles(d.triangles, c, lit);
     }
   } else {
@@ -1289,15 +1340,12 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       // instead, same as it does in the `style.fill` branch above, so a
       // Rendered-tagged object looks identical whether the viewport itself
       // happens to be Wireframe or something else entirely).
-      if ((!o.force_shaded && !o.force_ghosted && !o.force_xray && !o.force_monochrome && !o.force_pen && !o.force_arctic && !o.force_rendered) ||
-          !shown(o)) continue;
-      {
-        const auto [cv_tol, sf_tol] = adaptive_tolerances_for(o);
-        o.EnsureAdaptiveDisplay(cv_tol, sf_tol);
-      }
+      const OverrideFlags fl = flags_of(o);
+      if (!FillingOverride(fl) || !shown(o)) continue;
+      ensure_lod(o);
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
-      if (o.force_rendered) {
+      if (fl.rendered) {
         const Material m = doc.MaterialFor(o);
         if (m.transparency > 0.001f && !ctx.arctic) {
           transparent.emplace_back(transparent_sort_key(o), &o);
@@ -1307,13 +1355,13 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
         continue;
       }
       Color c = Color::FromBytes(205, 207, 212);
-      if (o.force_monochrome) c = kMonochromeFillColor;
-      else if (o.force_pen || o.force_arctic) c = kForceWhiteFillColor;
+      if (FlatGreyOverride(fl)) c = kMonochromeFillColor;
+      else if (FlatWhiteOverride(fl)) c = kForceWhiteFillColor;
       else if (!o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
       if (o.selected) c = Mix(c, kSelectionColor, 0.55f);
-      c.a = EffectiveFillAlpha(o, shaded_style.fill_alpha);
-      const bool lit = o.force_pen ? false : (o.force_arctic ? true : shaded_style.lit);
+      c.a = EffectiveFillAlpha(fl, shaded_style.fill_alpha);
+      const bool lit = fl.pen ? false : ((fl.arctic || FlatGreyOverride(fl)) ? true : shaded_style.lit);
       renderer.DrawTriangles(d.triangles, c, lit);
     }
   }
@@ -1354,10 +1402,10 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     if (!doc.IsObjectVisible(o)) continue;
     if (o.kind == ObjectKind::Curve) o.SetDisplayDashes(doc.EffectiveDashes(o));
     if (!shown(o)) continue;
-    {
-      const auto [cv_tol, sf_tol] = adaptive_tolerances_for(o);
-      o.EnsureAdaptiveDisplay(cv_tol, sf_tol);
-    }
+    ensure_lod(o);
+    // The object's own mode (SetObjectDisplayMode) decides its line work too.
+    const ModeStyle ostyle = ObjectStyleFor(flags_of(o), style);
+    renderer.EnableDepthTest(ostyle.depth_lines);
     const DisplayCache& d = o.Display();
     const bool is_curve_like = o.kind == ObjectKind::Curve;
     Color line_color = doc.EffectiveColor(o);
@@ -1373,19 +1421,19 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       BackgroundFor(mode, &doc, ctx.arctic, bg_top, bg_bottom);
       const float bg_lum = 0.299f * bg_bottom.r + 0.587f * bg_bottom.g + 0.114f * bg_bottom.b;
       const float lum = 0.299f * line_color.r + 0.587f * line_color.g + 0.114f * line_color.b;
-      if (bg_lum < 0.45f && lum < 0.25f && !style.fill) line_color = Color::FromBytes(222, 225, 230);
+      if (bg_lum < 0.45f && lum < 0.25f && !ostyle.fill) line_color = Color::FromBytes(222, 225, 230);
       else if (bg_lum < 0.45f && lum < 0.25f && is_curve_like) line_color = Color::FromBytes(222, 225, 230);
     }
     if (!is_curve_like) {
-      if (style.fill) line_color = style.monochrome || style.force_white ? style.edge_color : Mix(line_color, style.edge_color, 0.55f);
-      if (!style.edges && !style.isocurves && !o.selected) {
+      if (ostyle.fill) line_color = ostyle.monochrome || ostyle.force_white ? ostyle.edge_color : Mix(line_color, ostyle.edge_color, 0.55f);
+      if (!ostyle.edges && !ostyle.isocurves && !o.selected) {
         // Rendered mode: no wires on surfaces/meshes at all.
         if (o.kind != ObjectKind::Point && o.kind != ObjectKind::PointCloud) continue;
       }
     }
     if (doc.IsObjectLocked(o)) line_color = Mix(line_color, kLockedColor, 0.7f);
     if (o.selected) line_color = kSelectionColor;
-    if (!d.lines.empty() && (is_curve_like || style.edges || style.isocurves || o.selected)) {
+    if (!d.lines.empty() && (is_curve_like || ostyle.edges || ostyle.isocurves || o.selected)) {
       renderer.DrawLines(d.lines, line_color, is_curve_like ? curve_width : 1.0f);
     }
     if (!d.points.empty()) {
@@ -1417,7 +1465,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
         VisibleControlPoints(o, idx, &xyz);
         renderer.DrawPoints(xyz, kControlPointColor, 5.0f);
       }
-      renderer.EnableDepthTest(style.depth_lines);
+      renderer.EnableDepthTest(ostyle.depth_lines);
     }
     if (o.highlight_edges && !d.edges.empty()) {
       // ShowEdges: every edge thick, naked edges on top in a second colour.
@@ -1425,16 +1473,14 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       if (!d.naked_edges.empty()) renderer.DrawLines(d.naked_edges, kNakedEdgeColor, 4.0f);
     }
   }
+  renderer.EnableDepthTest(style.depth_lines);
   // Selected sub-objects: control points as big dots, edges thick, faces tinted.
   if (ctx.sub_selection && !ctx.sub_selection->Empty() && !ctx.for_render) {
     std::vector<float> pts, lines, tris;
     for (const SubObjectRef& r : ctx.sub_selection->Items()) {
       const SceneObject* o = doc.Find(r.id);
       if (!o || !shown(*o)) continue;
-      {
-        const auto [cv_tol, sf_tol] = adaptive_tolerances_for(*o);
-        o->EnsureAdaptiveDisplay(cv_tol, sf_tol);
-      }
+      ensure_lod(*o);
       const DisplayCache& d = o->Display();
       if (r.kind == SubObjectKind::Face && o->kind == ObjectKind::Surface) {
         tris.insert(tris.end(), d.triangles.begin(), d.triangles.end());

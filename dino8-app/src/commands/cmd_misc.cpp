@@ -2,7 +2,9 @@
 // scripting (RunScript / LoadScript / EditScript / ScriptEditor).
 #include "commands/cmd_common.h"
 
+#include <cstring>
 #include <filesystem>
+#include <map>
 #include <fstream>
 #include <sstream>
 
@@ -506,80 +508,156 @@ class PythonScriptCommand : public Command {
 
 // A genuine per-object display-mode override (SceneObject::force_wireframe /
 // force_shaded / force_ghosted / force_xray / force_monochrome / force_pen /
-// force_arctic / force_rendered, honoured by Viewport::DrawObjects) for the
-// modes that map onto a real per-object switch: Wireframe (never filled),
-// Shaded (always filled, same as ShadeSelected), Ghosted/X-Ray (always
-// filled at that mode's own fixed transparency - 0.35/0.18, the same alpha
-// Viewport.cpp's StyleFor uses for the viewport-wide versions of these
-// modes), Monochrome (always filled in that mode's own flat grey, fully
-// opaque), Pen/Arctic (always filled in that mode's own flat white, fully
-// opaque - lit for Arctic, unlit for Pen, the one difference between the
-// two viewport-wide modes themselves), and now Rendered (always drawn
-// through the exact same material/texture/lighting/reflectivity path - and
-// back-to-front transparent sort for a transparent material - a Rendered
-// viewport already gives every object, even in a Wireframe/Shaded/Ghosted/
-// etc. viewport that would otherwise never run that path). The remaining
-// Rhino display modes (Technical, Artistic, RayTraced, ...) are still
-// viewport-wide render styles with no per-object equivalent in this
-// renderer (Technical/Artistic would in any case be visually identical to
-// Monochrome here - both already resolve to the exact same flat fill
-// colour, differing only in viewport-wide edge/background colour, so a
-// dedicated override would be a no-op alias rather than a real new
-// capability; RayTraced is a whole-frame path-traced image, not a
-// per-object concept at all), so those fall back to clearing the override
-// (UseViewport) with an explanatory note.
+// force_arctic / force_rendered / force_technical / force_artistic, honoured
+// by Viewport::DrawObjects) for every viewport display mode that is a
+// per-object concept: Wireframe (never filled), Shaded (always filled, same
+// as ShadeSelected), Rendered (the full material/texture/lighting/
+// transparency path), Ghosted/X-Ray (always filled at that mode's own fixed
+// transparency), Monochrome/Technical/Artistic (flat grey, lit, opaque -
+// Technical and Artistic differ from Monochrome and each other in their line
+// work, exactly as the viewport-wide modes do), Pen/Arctic (flat white,
+// unlit/lit). Each override carries its mode's FULL style (Viewport.cpp's
+// ObjectStyleFor): fill, edges, isocurves and edge colour, not just a fill
+// colour. Scope follows Rhino ("sets how the selected objects display in the
+// current viewport; their display in other viewports won't be affected"): the
+// override applies to the ACTIVE viewport only, unless the word `All` is
+// typed after the mode ("Pen All" / "All Pen"), which sets it for every
+// viewport (and clears any per-viewport entries). RayTraced is the one
+// viewport mode with no per-object form - it is a whole-frame path-traced
+// image - and is refused with that explanation (nothing changes) rather than
+// silently treated as UseViewport. The override is saved in the .3dm.
 class SetObjectDisplayModeCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select objects to set a display mode for", 1); }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (ids.empty()) { Finish(); return; }
     ids_ = ids;
-    WantText("Mode (Wireframe/Shaded/Ghosted/X-Ray/Monochrome/Pen/Arctic/Rendered/UseViewport)", "Shaded");
+    WantText("Mode (Wireframe/Shaded/Rendered/Ghosted/X-Ray/Technical/Artistic/Pen/Arctic/Monochrome/UseViewport; add All for every viewport)", "Shaded");
   }
   void OnText(CommandContext& ctx, const std::string& t) override {
-    std::string mode = ToLower(t);
+    // Tokens: one mode word plus an optional "All".
+    std::string mode_word;
+    bool all = false;
+    {
+      // "SetObjectDisplayMode Pen All" arrives as two tokens: the mode text and
+      // whatever the script/command line still has queued.
+      std::string line = t;
+      while (auto extra = ctx.Engine().TakePendingInput()) line += " " + *extra;
+      std::istringstream in(line);
+      std::string tok;
+      while (in >> tok) {
+        const std::string low = ToLower(tok);
+        if (low == "all" || low == "allviewports") all = true;
+        else if (mode_word.empty()) mode_word = tok;
+      }
+    }
+    std::string mode = ToLower(mode_word);
     mode.erase(std::remove(mode.begin(), mode.end(), '-'), mode.end());
+    // One-letter / short forms the command always accepted, plus the new modes.
+    static const std::map<std::string, std::string> alias = {
+        {"w", "Wireframe"}, {"s", "Shaded"}, {"g", "Ghosted"}, {"x", "X-Ray"}, {"m", "Monochrome"},
+        {"p", "Pen"},      {"a", "Arctic"},  {"r", "Rendered"}, {"t", "Technical"}, {"art", "Artistic"}};
+    const auto al = alias.find(mode);
+    const std::string name = al != alias.end() ? al->second : mode_word;
+    if (mode == "raytraced" || mode == "raytrace") {
+      ctx.Warn("SetObjectDisplayMode: RayTraced is a whole-frame path-traced image, not a per-object display mode - nothing changed. "
+               "Use Rendered for the per-object material/lighting path, or switch the viewport itself to RayTraced.");
+      Finish();
+      return;
+    }
+    const std::string canonical = SceneObject::CanonicalDisplayOverrideName(name);
+    if (canonical.empty()) {
+      ctx.Warn("SetObjectDisplayMode: unknown mode '" + t + "' - nothing changed. Modes: " + JoinModeNames() + ".");
+      Finish();
+      return;
+    }
+    Viewport* vp = ctx.ActiveViewport();
+    const bool all_viewports = all || !vp;
+    const std::string vp_name = vp ? vp->Name() : std::string();
     Document& doc = ctx.Doc();
     int n = 0;
     for (ObjectId id : ids_) {
       SceneObject* o = doc.Find(id);
       if (!o) continue;
-      o->force_wireframe = o->force_shaded = o->force_ghosted = o->force_xray = o->force_monochrome =
-          o->force_pen = o->force_arctic = o->force_rendered = false;
-      if (mode == "wireframe" || mode == "w") o->force_wireframe = true;
-      else if (mode == "shaded" || mode == "s") o->force_shaded = true;
-      else if (mode == "ghosted" || mode == "g") o->force_ghosted = true;
-      else if (mode == "xray" || mode == "x") o->force_xray = true;
-      else if (mode == "monochrome" || mode == "m") o->force_monochrome = true;
-      else if (mode == "pen" || mode == "p") o->force_pen = true;
-      else if (mode == "arctic" || mode == "a") o->force_arctic = true;
-      else if (mode == "rendered" || mode == "r") o->force_rendered = true;
+      if (all_viewports) {
+        o->SetDisplayOverride(canonical);
+        o->viewport_display_overrides.clear();
+      } else {
+        o->SetViewportDisplayOverride(vp_name, canonical);
+      }
       o->InvalidateDisplay();
       ++n;
     }
-    if (mode == "wireframe" || mode == "w")
-      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown as wireframe, even in a shaded/rendered viewport.");
-    else if (mode == "shaded" || mode == "s")
-      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown shaded (see ShadeSelected), even in Wireframe or another line-only viewport.");
-    else if (mode == "ghosted" || mode == "g")
-      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown Ghosted (35% opaque), even in Wireframe or another viewport display mode.");
-    else if (mode == "xray" || mode == "x")
-      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown X-Ray (18% opaque), even in Wireframe or another viewport display mode.");
-    else if (mode == "monochrome" || mode == "m")
-      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown Monochrome (flat grey, fully opaque), even in Wireframe or another viewport display mode.");
-    else if (mode == "pen" || mode == "p")
-      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown Pen (flat white, unlit, fully opaque), even in Wireframe or another viewport display mode.");
-    else if (mode == "arctic" || mode == "a")
-      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown Arctic (flat white, lit, fully opaque), even in Wireframe or another viewport display mode.");
-    else if (mode == "rendered" || mode == "r")
-      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown Rendered (full material/lighting), even in Wireframe or another viewport display mode.");
-    else
-      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) reset to the viewport's own display mode. Other Rhino modes (Technical/Artistic/RayTraced/...) are viewport-wide render styles here, with no per-object equivalent - use the Display panel to change the viewport itself.");
+    const std::string scope = all_viewports ? "all viewports" : "viewport " + vp_name;
+    const std::string who = "SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown ";
+    std::string msg;
+    if (canonical == "UseViewport")
+      msg = "SetObjectDisplayMode: " + std::to_string(n) + " object(s) reset to the viewport's own display mode.";
+    else if (canonical == "Wireframe")
+      msg = "SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown as wireframe, even in a shaded/rendered viewport.";
+    else if (canonical == "Shaded")
+      msg = who + "shaded (see ShadeSelected), even in Wireframe or another line-only viewport.";
+    else if (canonical == "Ghosted")
+      msg = who + "Ghosted (35% opaque), even in Wireframe or another viewport display mode.";
+    else if (canonical == "X-Ray")
+      msg = who + "X-Ray (18% opaque), even in Wireframe or another viewport display mode.";
+    else if (canonical == "Monochrome")
+      msg = who + "Monochrome (flat grey, fully opaque), even in Wireframe or another viewport display mode.";
+    else if (canonical == "Pen")
+      msg = who + "Pen (flat white, unlit, fully opaque), even in Wireframe or another viewport display mode.";
+    else if (canonical == "Arctic")
+      msg = who + "Arctic (flat white, lit, fully opaque), even in Wireframe or another viewport display mode.";
+    else if (canonical == "Rendered")
+      msg = who + "Rendered (full material/lighting), even in Wireframe or another viewport display mode.";
+    else if (canonical == "Technical")
+      msg = who + "Technical (flat grey fill, dark technical line work), even in Wireframe or another viewport display mode.";
+    else if (canonical == "Artistic")
+      msg = who + "Artistic (flat grey fill, warm sketch line work), even in Wireframe or another viewport display mode.";
+    ctx.Print(msg + " Scope: " + scope + ".");
     Finish();
+  }
+
+  static std::string JoinModeNames() {
+    std::string out;
+    for (const std::string& n : SceneObject::DisplayOverrideNames()) out += (out.empty() ? "" : "/") + n;
+    return out;
   }
 
  private:
   std::vector<ObjectId> ids_;
+};
+
+// ObjectDisplayModes: the query side of SetObjectDisplayMode. Lists every
+// object that carries a per-object display-mode override - an all-viewports
+// one ("= Pen") and/or per-viewport ones ("= Pen (viewport Top)") - or, with
+// the argument "All", every object, plus a per-mode tally.
+class ObjectDisplayModesCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    bool all = false;
+    while (auto t = ctx.Engine().TakePendingInput()) if (ToLower(*t) == "all") all = true;
+    std::map<std::string, int> tally;
+    int overridden = 0, total = 0;
+    for (const SceneObject& o : ctx.Doc().Objects()) {
+      ++total;
+      const std::string head = "ObjectDisplayModes: object " + std::to_string(static_cast<unsigned long long>(o.id)) + " " + ObjectKindName(o.kind) + " = ";
+      if (!o.HasAnyDisplayOverride()) {
+        if (all) ctx.Print(head + "UseViewport");
+        continue;
+      }
+      ++overridden;
+      if (o.HasDisplayOverride()) { ctx.Print(head + o.DisplayOverrideName()); ++tally[o.DisplayOverrideName()]; }
+      for (const auto& [vp, mode] : o.viewport_display_overrides) { ctx.Print(head + mode + " (viewport " + vp + ")"); ++tally[mode]; }
+    }
+    std::string summary = "ObjectDisplayModes: " + std::to_string(overridden) + " of " + std::to_string(total) +
+                          " object(s) carry a per-object display mode";
+    for (const std::string& n : SceneObject::DisplayOverrideNames()) {
+      const auto it = tally.find(n);
+      if (it != tally.end()) summary += " " + n + "=" + std::to_string(it->second);
+    }
+    ctx.Print(summary);
+    Finish();
+  }
 };
 
 }  // namespace
@@ -594,6 +672,7 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "ToggleLeftSidebar", Immediate([](CommandContext& ctx) { ctx.App().show_left_sidebar = !ctx.App().show_left_sidebar; ctx.Print(std::string("Left sidebar ") + (ctx.App().show_left_sidebar ? "shown." : "hidden.")); }));
   Reg(e, "Toolbar", Immediate([](CommandContext& ctx) { ctx.App().Panels().toolbars = !ctx.App().Panels().toolbars; }));
   Reg(e, "ToolbarReset", Immediate([](CommandContext& ctx) { ctx.App().Panels().toolbars = true; ctx.App().SetViewportLayout(4); }));
+  Reg(e, "ObjectDisplayModes", Make<ObjectDisplayModesCommand>(), CommandStatus::Implemented, "Lists the per-object display-mode overrides (SetObjectDisplayMode); ObjectDisplayModes All lists every object.");
   Reg(e, "Alias", Make<AliasCommand>());
   Reg(e, "Calc", Make<CalcCommand>());
   Reg(e, "CalcRPN", Make<CalcRPNCommand>(), CommandStatus::Implemented, "Evaluates a postfix expression (numbers then + - * / ^ or sqrt/neg/sin/cos/tan/abs) with an explicit operand stack.");

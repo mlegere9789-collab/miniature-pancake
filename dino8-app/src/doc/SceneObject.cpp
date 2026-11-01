@@ -99,6 +99,9 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   force_pen = other.force_pen;
   force_arctic = other.force_arctic;
   force_rendered = other.force_rendered;
+  force_technical = other.force_technical;
+  force_artistic = other.force_artistic;
+  viewport_display_overrides = other.viewport_display_overrides;
   show_render_mesh_wires = other.show_render_mesh_wires;
   custom_mesh_tolerance = other.custom_mesh_tolerance;
   analysis = other.analysis;
@@ -121,13 +124,15 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   subd = other.subd ? std::make_unique<kernel::SubD>(*other.subd) : nullptr;
   point_cloud = other.point_cloud ? std::make_unique<kernel::PointCloud>(*other.point_cloud) : nullptr;
   cache_ = other.cache_;
+  lod_stash_.clear();  // the extra tessellation levels are a per-instance cache, never copied
+  lod_surface_floor_ = 0.0;
   display_dashes_ = other.display_dashes_;
 }
 
 void SceneObject::SetDisplayDashes(const std::vector<double>& dashes) const {
   if (dashes == display_dashes_) return;
   display_dashes_ = dashes;
-  cache_.dirty = true;
+  InvalidateDisplay();
 }
 
 std::vector<std::vector<kernel::Point3d>> DashPolyline(const std::vector<kernel::Point3d>& points,
@@ -256,7 +261,7 @@ void SceneObject::Transform(const ON_Xform& xform) {
       it->second = buf;
     }
   }
-  cache_.dirty = true;
+  InvalidateDisplay();
 }
 
 namespace {
@@ -677,6 +682,7 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
       try {
         BrepMeshOptions opt;
         opt.chord_tolerance = surface_tolerance;
+        opt.max_triangles_per_face = display_face_cap_;
         meshes = MeshBrepFaces(brep->raw(), opt);
       } catch (...) {
         meshes.clear();
@@ -780,16 +786,206 @@ bool DriftedPastHysteresis(double built, double requested) {
   const double ratio = requested / built;
   return ratio > kLodHysteresis || ratio < 1.0 / kLodHysteresis;
 }
+
+bool SameTolerance(double built, double requested) {
+  return std::fabs(built - requested) <= 1e-12 * std::max(1.0, std::fabs(requested));
+}
+
+SceneObject::AdaptiveLodCounters g_lod_counters;
 }  // namespace
 
-void SceneObject::EnsureAdaptiveDisplay(double curve_tolerance, double surface_tolerance) const {
-  const double effective_surface_tolerance = custom_mesh_tolerance > 0.0 ? custom_mesh_tolerance : surface_tolerance;
-  if (DriftedPastHysteresis(cache_.built_curve_tolerance, curve_tolerance) ||
-      DriftedPastHysteresis(cache_.built_surface_tolerance, effective_surface_tolerance)) {
-    InvalidateDisplay();
-  }
-  EnsureDisplay(curve_tolerance, surface_tolerance);
+SceneObject::AdaptiveLodCounters SceneObject::LodCounters() { return g_lod_counters; }
+void SceneObject::ResetLodCounters() { g_lod_counters = AdaptiveLodCounters{}; }
+
+SceneObject::AdaptiveLodInfo SceneObject::LodInfo() const {
+  AdaptiveLodInfo i;
+  i.stashed_levels = lod_stash_.size();
+  i.surface_floor = lod_surface_floor_;
+  i.current_triangles = cache_.triangles.size() / 18;
+  return i;
 }
+
+void SceneObject::EnsureAdaptiveDisplay(double curve_tolerance, double surface_tolerance, double base_surface_tolerance,
+                                        bool adaptive) const {
+  const bool pinned = custom_mesh_tolerance > 0.0;  // SetMeshSurfaceParameters: the user fixed the surface tolerance
+  const double effective_surface_tolerance = pinned ? custom_mesh_tolerance : surface_tolerance;
+
+  if (!adaptive) {
+    // Toggle off: plain fixed-tolerance tessellation. Rebuild only when the
+    // cache was not built at exactly this tolerance (e.g. just after
+    // switching adaptive tessellation off).
+    if (!cache_.dirty && (!SameTolerance(cache_.built_curve_tolerance, curve_tolerance) ||
+                          !SameTolerance(cache_.built_surface_tolerance, effective_surface_tolerance)))
+      cache_.dirty = true;  // not InvalidateDisplay(): the geometry is unchanged, the stash stays valid
+    EnsureDisplay(curve_tolerance, surface_tolerance);
+    return;
+  }
+
+  // Budget floor (see kAdaptiveTriangleBudget): a refinement request below a
+  // floor already discovered for this object is raised to it. Never applies
+  // to a pinned tolerance (the user's explicit choice) nor to requests at or
+  // coarser than the base.
+  double request_surface = effective_surface_tolerance;
+  const bool budgeted = !pinned && base_surface_tolerance > 0.0;
+  if (budgeted && lod_surface_floor_ > 0.0 && request_surface < lod_surface_floor_) request_surface = lod_surface_floor_;
+
+  // A refinement (finer than the base) is allowed to put up to the whole
+  // triangle budget on one brep face; everything else keeps the mesher's
+  // default per-face cap. Restored right after the build so any other
+  // EnsureDisplay caller sees the default.
+  auto build = [&](double ct, double st) {
+    int cap = kDefaultFaceTriangleCap;
+    if (budgeted && st < base_surface_tolerance) {
+      // The whole object's budget, split across its faces so a many-face brep
+      // cannot reach faces x budget triangles (never below the default cap).
+      const int faces = (kind == ObjectKind::Brep && brep) ? std::max(1, brep->raw().m_F.Count()) : 1;
+      cap = std::max(kDefaultFaceTriangleCap, static_cast<int>(kAdaptiveTriangleBudget) / faces);
+    }
+    display_face_cap_ = cap;
+    EnsureDisplay(ct, st);
+    display_face_cap_ = kDefaultFaceTriangleCap;
+  };
+
+  if (cache_.dirty) {
+    // First build, or the geometry/settings changed (InvalidateDisplay already
+    // dropped the stash): just build at the requested level.
+    build(curve_tolerance, request_surface);
+  } else if (DriftedPastHysteresis(cache_.built_curve_tolerance, curve_tolerance) ||
+             DriftedPastHysteresis(cache_.built_surface_tolerance, request_surface)) {
+    // The zoom moved past the hysteresis band. First: does an already-built
+    // level in the stash fit? Pick the closest one.
+    int best = -1;
+    double best_dist = 0.0;
+    for (std::size_t i = 0; i < lod_stash_.size(); ++i) {
+      const DisplayCache& c = lod_stash_[i];
+      if (DriftedPastHysteresis(c.built_curve_tolerance, curve_tolerance) ||
+          DriftedPastHysteresis(c.built_surface_tolerance, request_surface))
+        continue;
+      const double dist = std::fabs(std::log(request_surface / c.built_surface_tolerance)) +
+                          std::fabs(std::log(curve_tolerance / c.built_curve_tolerance));
+      if (best < 0 || dist < best_dist) { best = static_cast<int>(i); best_dist = dist; }
+    }
+    if (best >= 0) {
+      // Swap the stashed level in; the level that was current becomes the
+      // most-recently-used stash entry. No tessellation happens.
+      DisplayCache hit = std::move(lod_stash_[static_cast<std::size_t>(best)]);
+      lod_stash_.erase(lod_stash_.begin() + best);
+      if (cache_.triangles.size() / 18 <= kLodStashMaxTriangles && cache_.lines.size() / 6 <= 4 * kLodStashMaxTriangles) lod_stash_.push_back(std::move(cache_));
+      cache_ = std::move(hit);
+      ++g_lod_counters.stash_hits;
+    } else {
+      // Re-tessellate. Keep the level we are leaving (if it is small enough
+      // to be worth the memory) so zooming back is free.
+      if (cache_.triangles.size() / 18 <= kLodStashMaxTriangles && cache_.lines.size() / 6 <= 4 * kLodStashMaxTriangles) {
+        lod_stash_.push_back(std::move(cache_));
+        while (lod_stash_.size() > kLodStashCapacity) lod_stash_.erase(lod_stash_.begin());
+      }
+      cache_ = DisplayCache{};  // dirty
+      build(curve_tolerance, request_surface);
+      ++g_lod_counters.rebuilds;
+    }
+  } else {
+    return;
+  }
+
+  // Triangle budget. A refinement is allowed to put up to kAdaptiveTriangleBudget
+  // triangles on the object (the per-face cap in `build` above is that budget
+  // split across faces). A mesh that reaches ~90% of it has saturated: asking
+  // for a still finer tolerance would only rebuild the same capped mesh at
+  // every zoom step, so the request tolerance that saturated it is remembered
+  // as a floor and any later, finer request is raised to it (no rebuild).
+  if (budgeted && request_surface < base_surface_tolerance && cache_.triangles.size() / 18 * 10 >= kAdaptiveTriangleBudget * 9 &&
+      (lod_surface_floor_ <= 0.0 || request_surface < lod_surface_floor_)) {
+    lod_surface_floor_ = request_surface;
+    ++g_lod_counters.budget_clamps;
+  }
+}
+
+// ---- per-object display-mode override (SetObjectDisplayMode) ---------------
+
+const std::vector<std::string>& SceneObject::DisplayOverrideNames() {
+  static const std::vector<std::string> names = {"UseViewport", "Wireframe", "Shaded",    "Rendered", "Ghosted", "X-Ray",
+                                                  "Technical",   "Artistic",  "Pen",       "Arctic",   "Monochrome"};
+  return names;
+}
+
+namespace {
+std::string NormalizeModeName(const std::string& in) {
+  std::string out;
+  for (char c : in)
+    if (c != '-' && c != ' ' && c != '_') out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  return out;
+}
+}  // namespace
+
+std::string SceneObject::CanonicalDisplayOverrideName(const std::string& name) {
+  const std::string n = NormalizeModeName(name);
+  if (n == "useviewport" || n == "useview" || n == "viewport" || n == "default" || n == "none") return "UseViewport";
+  for (const std::string& canonical : DisplayOverrideNames())
+    if (n == NormalizeModeName(canonical)) return canonical;
+  return "";
+}
+
+bool SceneObject::SetDisplayOverride(const std::string& name) {
+  const std::string c = CanonicalDisplayOverrideName(name);
+  if (c.empty()) return false;
+  force_wireframe = c == "Wireframe";
+  force_shaded = c == "Shaded";
+  force_rendered = c == "Rendered";
+  force_ghosted = c == "Ghosted";
+  force_xray = c == "X-Ray";
+  force_technical = c == "Technical";
+  force_artistic = c == "Artistic";
+  force_pen = c == "Pen";
+  force_arctic = c == "Arctic";
+  force_monochrome = c == "Monochrome";
+  return true;
+}
+
+bool SceneObject::SetViewportDisplayOverride(const std::string& viewport, const std::string& name) {
+  const std::string c = CanonicalDisplayOverrideName(name);
+  if (c.empty()) return false;
+  if (c == "UseViewport") viewport_display_overrides.erase(viewport);
+  else viewport_display_overrides[viewport] = c;
+  return true;
+}
+
+const char* SceneObject::DisplayOverrideName() const {
+  if (force_wireframe) return "Wireframe";
+  if (force_shaded) return "Shaded";
+  if (force_rendered) return "Rendered";
+  if (force_ghosted) return "Ghosted";
+  if (force_xray) return "X-Ray";
+  if (force_technical) return "Technical";
+  if (force_artistic) return "Artistic";
+  if (force_pen) return "Pen";
+  if (force_arctic) return "Arctic";
+  if (force_monochrome) return "Monochrome";
+  return "UseViewport";
+}
+
+std::string SceneObject::DisplayOverrideNameFor(const std::string& viewport) const {
+  const auto it = viewport_display_overrides.find(viewport);
+  return it != viewport_display_overrides.end() ? it->second : std::string(DisplayOverrideName());
+}
+
+SceneObject::DisplayOverrideFlags SceneObject::DisplayOverrideFlagsFor(const std::string& viewport) const {
+  DisplayOverrideFlags f;
+  const auto it = viewport_display_overrides.find(viewport);
+  if (it == viewport_display_overrides.end()) {
+    f.wireframe = force_wireframe; f.shaded = force_shaded; f.rendered = force_rendered; f.ghosted = force_ghosted;
+    f.xray = force_xray; f.technical = force_technical; f.artistic = force_artistic; f.pen = force_pen;
+    f.arctic = force_arctic; f.monochrome = force_monochrome;
+    return f;
+  }
+  const std::string& c = it->second;
+  f.wireframe = c == "Wireframe"; f.shaded = c == "Shaded"; f.rendered = c == "Rendered"; f.ghosted = c == "Ghosted";
+  f.xray = c == "X-Ray"; f.technical = c == "Technical"; f.artistic = c == "Artistic"; f.pen = c == "Pen";
+  f.arctic = c == "Arctic"; f.monochrome = c == "Monochrome";
+  return f;
+}
+
+bool SceneObject::HasDisplayOverride() const { return std::strcmp(DisplayOverrideName(), "UseViewport") != 0; }
 
 void SceneObject::EnsureMappedUVs(TextureMapping mapping, float scale) const {
   if (mapping == TextureMapping::Default) mapping = TextureMapping::Surface;

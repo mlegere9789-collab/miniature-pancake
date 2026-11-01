@@ -447,6 +447,10 @@ class Application {
   bool show_control_points_for_selected = false;
   double curve_display_tolerance = 0.02;
   double surface_display_tolerance = 0.05;
+  // View-dependent adaptive tessellation master switch (AdaptiveTessellation
+  // command, Display panel checkbox): when off, every viewport tessellates
+  // at exactly the two tolerances above whatever the zoom.
+  bool adaptive_tessellation = true;
   std::string help_command;  // command whose help the Help panel shows
 
  private:

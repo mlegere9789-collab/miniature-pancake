@@ -1913,8 +1913,9 @@ void SynchronizeViews(CommandContext& ctx) {
 void ClearAllObjectDisplayModes(CommandContext& ctx) {
   int n = 0;
   for (SceneObject& o : ctx.Doc().Objects()) {
-    if (o.analysis.mode == AnalysisMode::None && !o.highlight_edges && !o.show_control_points && !o.show_control_net) continue;
+    if (o.analysis.mode == AnalysisMode::None && !o.highlight_edges && !o.show_control_points && !o.show_control_net && !o.HasAnyDisplayOverride()) continue;
     o.analysis.mode = AnalysisMode::None; o.highlight_edges = false; o.show_control_points = false; o.show_control_net = false;
+    o.ClearDisplayOverrides();  // SetObjectDisplayMode overrides: all viewports and per-viewport
     o.InvalidateDisplay();
     ++n;
   }

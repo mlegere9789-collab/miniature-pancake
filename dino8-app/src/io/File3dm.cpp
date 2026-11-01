@@ -1437,6 +1437,19 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
         if (key == "Dino8.Mapping") { ParseTextureMapping(val, obj.mapping); continue; }
         if (key == "Dino8.MappingScale") { obj.mapping_scale = static_cast<float>(std::atof(val.c_str())); continue; }
         if (key == "Dino8.GroupId") { file_group_id = std::atoi(val.c_str()); continue; }
+        if (key == "Dino8.DisplayMode") { obj.SetDisplayOverride(val); continue; }
+        if (key == "Dino8.DisplayModeViewports") {  // "Top=Pen;Perspective=Technical"
+          std::size_t at = 0;
+          while (at < val.size()) {
+            const std::size_t end = val.find(';', at);
+            const std::string item = val.substr(at, end == std::string::npos ? std::string::npos : end - at);
+            const std::size_t eq = item.find('=');
+            if (eq != std::string::npos) obj.SetViewportDisplayOverride(item.substr(0, eq), item.substr(eq + 1));
+            if (end == std::string::npos) break;
+            at = end + 1;
+          }
+          continue;
+        }
         obj.user_text[key] = val;
       }
     }
@@ -2332,6 +2345,12 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     // dimension's line/arrow/text objects together both survive Save/Open
     // (restored via Document::CreateGroup on read, below).
     if (o.group_id >= 0) attr.SetUserString(L"Dino8.GroupId", ON_wString(std::to_string(o.group_id).c_str()));
+    if (o.HasDisplayOverride()) attr.SetUserString(L"Dino8.DisplayMode", ON_wString(o.DisplayOverrideName()));
+    if (!o.viewport_display_overrides.empty()) {
+      std::string joined;
+      for (const auto& [vp, mode] : o.viewport_display_overrides) joined += (joined.empty() ? "" : ";") + vp + "=" + mode;
+      attr.SetUserString(L"Dino8.DisplayModeViewports", ON_wString(joined.c_str()));
+    }
     if (!o.material_name.empty() && material_index.count(o.material_name)) {
       attr.m_material_index = material_index[o.material_name];
       attr.SetMaterialSource(ON::material_from_object);

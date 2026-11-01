@@ -15,6 +15,7 @@
 #include "platform/Clipboard.h"
 #include "render/ImageIO.h"
 #include "render/MaterialLibrary.h"
+#include "viewport/AdaptiveTessellation.h"
 #include "ui/Panels.h"
 
 namespace dino8::app {
@@ -1318,6 +1319,68 @@ void RegisterRenderCommands(CommandEngine& e) {
         }
         ctx.Print("PolygonCount: " + std::to_string(tri) + " triangles in " + std::to_string(objects) + (any_selected ? " selected object(s)" : " visible object(s)"));
       }));
+  // LodStats: read-only diagnostic for view-dependent adaptive tessellation.
+  // Prints the master switch and the process-wide counters (re-tessellations
+  // forced by zoom drift, stash swaps that avoided one, budget clamps), then
+  // per open viewport its zoom (world units per pixel), the LOD scale that
+  // zoom asks for and what its LAST FRAME actually drew for each visible (or
+  // selected) object - triangle count, the tolerances of the level it drew
+  // and the NOMINAL on-screen chord error that tolerance asks for at that
+  // viewport's zoom (ScreenSpaceErrorPixels = tolerance / pixel size; the
+  // mesher's measured sagitta is ~2.1x its tolerance, see test_adaptive_display) - then per object how many other
+  // tessellation levels are stashed and any triangle-budget floor. All of it
+  // read back from the real draws, never recomputed; tessellates nothing.
+  Reg(e, "LodStats", Immediate([](CommandContext& ctx) {
+        const SceneObject::AdaptiveLodCounters c = SceneObject::LodCounters();
+        char buf[512];
+        std::snprintf(buf, sizeof buf, "LodStats: adaptive=%s rebuilds=%llu stash_hits=%llu budget_clamps=%llu stash_capacity=%zu budget_tris=%zu",
+                      ctx.App().adaptive_tessellation ? "on" : "off", c.rebuilds, c.stash_hits, c.budget_clamps,
+                      SceneObject::kLodStashCapacity, SceneObject::kAdaptiveTriangleBudget);
+        ctx.Print(buf);
+        const bool any_selected = ctx.Doc().SelectedCount() > 0;
+        for (const auto& vp : ctx.Viewports()) {
+          const double px = vp->ZoomPixelSize();
+          std::snprintf(buf, sizeof buf, "LodStats: viewport %s pixel_size=%.6g lod_scale=%.4g", vp->Name().c_str(), px,
+                        LodScaleForPixelSize(px));
+          ctx.Print(buf);
+          for (const SceneObject& o : ctx.Doc().Objects()) {
+            if (any_selected ? !o.selected : !ctx.Doc().IsObjectVisible(o)) continue;
+            const auto it = vp->LastLodDraw().find(o.id);
+            if (it == vp->LastLodDraw().end()) continue;
+            std::snprintf(buf, sizeof buf,
+                          "LodStats: viewport %s object %llu %s tris=%zu curve_tol=%.6g surface_tol=%.6g nominal_err_px=%.3f",
+                          vp->Name().c_str(), static_cast<unsigned long long>(o.id), ObjectKindName(o.kind),
+                          it->second.triangles, it->second.curve_tolerance, it->second.surface_tolerance,
+                          ScreenSpaceErrorPixels(it->second.surface_tolerance, px));
+            ctx.Print(buf);
+          }
+        }
+        for (const SceneObject& o : ctx.Doc().Objects()) {
+          if (any_selected ? !o.selected : !ctx.Doc().IsObjectVisible(o)) continue;
+          const SceneObject::AdaptiveLodInfo li = o.LodInfo();
+          std::snprintf(buf, sizeof buf, "LodStats: object %llu %s stashed_levels=%zu budget_floor=%.6g",
+                        static_cast<unsigned long long>(o.id), ObjectKindName(o.kind), li.stashed_levels, li.surface_floor);
+          ctx.Print(buf);
+        }
+      }), CommandStatus::Implemented, "Read-only: adaptive-tessellation switch/counters, and per viewport its zoom, LOD scale and what its last frame drew for each object (triangles, tolerances, on-screen error), plus each object's stashed levels and budget floor.");
+  // AdaptiveTessellation [On|Off|Status]: the user-visible switch for
+  // view-dependent adaptive tessellation (also a checkbox in the Display
+  // panel). Off = every viewport tessellates at exactly the Options
+  // tolerances whatever the zoom.
+  Reg(e, "AdaptiveTessellation", Immediate([](CommandContext& ctx) {
+        Application& app = ctx.App();
+        bool changed = false;
+        while (auto t = ctx.Engine().TakePendingInput()) {
+          const std::string v = Lower(*t);
+          if (v == "on") { app.adaptive_tessellation = true; changed = true; }
+          else if (v == "off") { app.adaptive_tessellation = false; changed = true; }
+          else if (v == "toggle") { app.adaptive_tessellation = !app.adaptive_tessellation; changed = true; }
+        }
+        if (changed) for (SceneObject& o : ctx.Doc().Objects()) o.InvalidateDisplay();
+        ctx.Print(std::string("AdaptiveTessellation ") + (app.adaptive_tessellation ? "on" : "off") +
+                  (app.adaptive_tessellation ? ": display meshes re-tessellate with zoom (hysteresis, multi-level cache, triangle budget)."
+                                             : ": display meshes use the fixed Options tolerances at every zoom."));
+      }), CommandStatus::Implemented, "Turns view-dependent adaptive tessellation on or off (AdaptiveTessellation On|Off|Toggle); with no argument reports the state. LodStats shows the effect.");
   Reg(e, "GradientView", Immediate([](CommandContext& ctx) {
         RenderSettings& r = ctx.Doc().Render();
         Args a = TakeArgs(ctx);
