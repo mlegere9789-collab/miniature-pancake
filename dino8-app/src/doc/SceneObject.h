@@ -352,7 +352,7 @@ class SceneObject {
   // const method can still be called on a non-const object.
   // Also drops the multi-level LOD stash and the discovered budget floor:
   // both describe the OLD geometry/settings.
-  void InvalidateDisplay() const { cache_.dirty = true; cache_.colors_valid = false; lod_stash_.clear(); lod_surface_floor_ = 0.0; }
+  void InvalidateDisplay() const { cache_.dirty = true; cache_.colors_valid = false; lod_stash_.clear(); lod_surface_floor_ = 0.0; base_bbox_valid_ = false; }
   // Dash pattern (dash, gap... in model units, already scaled) the display
   // polylines of a curve are split with; empty draws continuous. Set by the
   // viewport from Document::EffectiveDashes before EnsureDisplay; a change
@@ -377,6 +377,11 @@ class SceneObject {
 
  private:
   mutable DisplayCache cache_;
+  // BoundingBox() of the fixed base tessellation (0.05 / 0.1), kept apart from
+  // cache_ because the viewport swaps cache_ to zoom-dependent levels: a
+  // measured bounding box must not change with the camera.
+  mutable kernel::BoundingBox base_bbox_;
+  mutable bool base_bbox_valid_ = false;
   mutable std::vector<DisplayCache> lod_stash_;  // other tessellation levels, least-recently-used first
   mutable double lod_surface_floor_ = 0.0;       // budget floor (see EnsureAdaptiveDisplay)
   mutable int display_face_cap_ = kDefaultFaceTriangleCap;        // BrepMeshOptions::max_triangles_per_face for the next display build
