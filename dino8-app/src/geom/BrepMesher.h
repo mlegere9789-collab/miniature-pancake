@@ -21,6 +21,13 @@ struct BrepMeshOptions {
   double chord_tolerance = 0.01;  // model units
   int max_triangles_per_face = 12000;
   double min_edge_samples = 2;
+  // Optional per-brep-face overrides, indexed by face index (shorter/empty
+  // vectors or values <= 0 fall back to chord_tolerance / max_triangles_per_face).
+  // Faces meshed at different tolerances stay watertight: every edge is sampled
+  // once at the finest neighbouring face's spacing and shared by both faces.
+  // `chord_tolerance` should be the FINEST of these (it also sizes edge sampling).
+  std::vector<double> face_chord_tolerance;
+  std::vector<int> face_max_triangles;
 };
 
 // Meshes each face separately (for display: per-face normals / colours).

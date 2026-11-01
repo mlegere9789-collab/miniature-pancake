@@ -303,7 +303,29 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
   UpdateEnvironmentMap(renderer, ctx.doc, mode_, false);
   renderer.EnableDepthTest(true);
   renderer.EnableBlend(true);
-  if (mode_ == DisplayMode::RayTraced && !page_ && ctx.doc && !ctx.show_zbuffer) {
+  // Per-object RayTraced: the traced subset is the objects that resolve to RayTraced in THIS
+  // viewport - everything in a RayTraced viewport that is not overridden to a rasterized
+  // mode, or just the objects overridden to RayTraced in any other viewport. The rest are
+  // rasterized over the traced frame, depth-composited (see the partial path below).
+  const auto raster_override = [](const OverrideFlags& f) {
+    return f.wireframe || f.shaded || f.rendered || f.ghosted || f.xray || f.technical || f.artistic || f.pen || f.arctic || f.monochrome;
+  };
+  const std::function<bool(const SceneObject&)> is_traced = [&](const SceneObject& o) {
+    const OverrideFlags f = o.DisplayOverrideFlagsFor(name_);
+    return f.raytraced || (mode_ == DisplayMode::RayTraced && !raster_override(f));
+  };
+  bool any_traced = false, any_raster = false;
+  std::uint64_t traced_sig = 1469598103934665603ull;
+  if (!page_ && ctx.doc && !ctx.show_zbuffer) {
+    for (const SceneObject& o : ctx.doc->Objects()) {
+      if (!ctx.doc->IsObjectVisible(o)) continue;
+      if (is_traced(o)) { any_traced = true; traced_sig = (traced_sig ^ o.id) * 1099511628211ull; }
+      else any_raster = true;
+    }
+  }
+  const bool trace_frame = !page_ && ctx.doc && !ctx.show_zbuffer && (mode_ == DisplayMode::RayTraced || any_traced);
+  const bool partial_trace = trace_frame && any_raster;
+  if (trace_frame) {
     // Real per-frame GPU raytraced preview (render::GpuRaytracer): a BVH
     // built once from the document (below, only when the scene actually
     // changed) is traced by a fragment shader every frame, temporally
@@ -323,16 +345,18 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
              a.perspective == b.perspective && std::fabs(a.ortho_height - b.ortho_height) < 1e-6 &&
              std::fabs(a.lens_mm - b.lens_mm) < 1e-6;
     };
-    const bool scene_stale = !raytrace_have_state_ || ctx.doc->Revision() != raytrace_revision_;
+    const bool scene_stale = !raytrace_have_state_ || ctx.doc->Revision() != raytrace_revision_ || traced_sig != raytrace_set_sig_;
     const bool camera_stale = !raytrace_have_state_ || !same_camera(cam, raytrace_camera_) || rw != raytrace_w_ || rh != raytrace_h_;
     if (scene_stale && raytrace_gpu_inited_) {
-      raytrace_.Prepare(*ctx.doc, cam, static_cast<double>(rw) / rh, ctx.curve_tolerance, ctx.surface_tolerance);
+      raytrace_.Prepare(*ctx.doc, cam, static_cast<double>(rw) / rh, ctx.curve_tolerance, ctx.surface_tolerance,
+                        partial_trace ? &is_traced : nullptr);
       raytrace_gpu_.UploadScene(raytrace_, ctx.doc->Render());
     }
     if (scene_stale || camera_stale) {
       raytrace_camera_ = cam;
       raytrace_w_ = rw; raytrace_h_ = rh;
       raytrace_revision_ = ctx.doc->Revision();
+      raytrace_set_sig_ = traced_sig;
       raytrace_have_state_ = true;
     }
     GLuint present = 0;
@@ -346,6 +370,10 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
       static const bool time_it = std::getenv("DINO8_RT_TIMING") != nullptr;
       const auto t0 = time_it ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
       present = raytrace_gpu_.Render(camera_, static_cast<double>(rw) / rh, rw, rh, scene_stale || camera_stale);
+      // GpuRaytracer::Render leaves the default framebuffer bound with its own (half-size) viewport:
+      // without this the traced frame and everything drawn after it (the rasterized subset of a
+      // per-object RayTraced scene, the gizmo, previews) missed this viewport's own render target.
+      target_.Bind();
       if (time_it) {
         glFinish();
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -369,6 +397,24 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
     // DINO8_RT_TIMING's existing env-gated stderr print pattern above.
     static const bool print_frames = std::getenv("DINO8_RT_FRAMES") != nullptr;
     if (print_frames) std::fprintf(stderr, "rt_accum_frames=%d empty=%d\n", raytrace_gpu_.AccumulatedFrames(), raytrace_gpu_.Empty() ? 1 : 0);
+    if (partial_trace) {
+      // Composite the rasterized subset over the traced frame, depth-correct: (1) write the
+      // TRACED objects' depth only (colour mask off) so (2) the rasterized objects are occluded
+      // by traced ones in front of them and occlude traced ones behind them. The traced frame
+      // itself carries no depth; the rasterizer's depth of the same tessellation stands in for it.
+      const std::function<bool(const SceneObject&)> not_traced = [&](const SceneObject& o) { return !is_traced(o); };
+      glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+      draw_filter_ = &is_traced;
+      DrawScene(renderer, ctx, DisplayMode::Shaded, Aspect());
+      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+      const std::size_t traced_candidates = frustum_cull_stats_.draw_candidates;
+      draw_filter_ = &not_traced;
+      DrawScene(renderer, ctx, mode_, Aspect());
+      draw_filter_ = nullptr;
+      if (std::getenv("DINO8_LOD_DEBUG"))
+        std::fprintf(stderr, "composite: viewport %s traced-pass candidates=%zu raster-pass candidates=%zu\n", name_.c_str(), traced_candidates,
+                     frustum_cull_stats_.draw_candidates);
+    }
   } else if (page_) {
     DrawPage(renderer);
   } else {
@@ -1045,12 +1091,24 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
   // Every pass's EnsureAdaptiveDisplay goes through this: the per-viewport,
   // per-object tolerances above, the app-wide base surface tolerance (enables
   // the per-object triangle budget for refinements), and the master toggle.
+  // Face-level refinement: which brep faces can this viewport see? The same
+  // frustum planes the object cull uses; `guard` grows them by a guard band
+  // (35% of the visible extent) so a small pan stays inside the fine region.
+  const FrustumPlanes face_planes = ExtractFrustumPlanes(camera_.ViewMatrix(), camera_.ProjectionMatrix(Aspect()));
+  const double face_guard_margin = 0.35 * ZoomPixelSize() * static_cast<double>(std::max(width_, height_));
+  const FaceVisibilityFn face_visible = [&](const kernel::BoundingBox& box, bool guard) {
+    return !BoxOutsideFrustum(face_planes, box, guard ? face_guard_margin : 0.0);
+  };
+  const bool face_lod = !ctx.for_render && lod_adaptive && !FrustumCullDisabled();
   auto ensure_lod = [&](const SceneObject& o) {
     const auto [cv_tol, sf_tol] = adaptive_tolerances_for(o);
-    o.EnsureAdaptiveDisplay(cv_tol, sf_tol, (ctx.for_render || !lod_adaptive) ? 0.0 : ctx.surface_tolerance, lod_adaptive);
+    o.EnsureAdaptiveDisplay(cv_tol, sf_tol, (ctx.for_render || !lod_adaptive) ? 0.0 : ctx.surface_tolerance, lod_adaptive,
+                            face_lod ? &face_visible : nullptr);
     if (!ctx.for_render) {
       const DisplayCache& built = o.Display();
-      lod_draw_[o.id] = LodDrawRecord{built.triangles.size() / 18, built.built_curve_tolerance, built.built_surface_tolerance};
+      const SceneObject::AdaptiveLodInfo li = o.LodInfo();
+      lod_draw_[o.id] = LodDrawRecord{built.triangles.size() / 18, built.built_curve_tolerance, built.built_surface_tolerance,
+                                      li.fine_faces, li.total_faces};
     }
   };
   // The override flags this viewport applies to an object (own per-viewport entry, else all-viewports).
@@ -1100,6 +1158,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
   };
   auto shown = [&](const SceneObject& o) {
     if (!doc.IsObjectVisible(o)) return false;
+    if (draw_filter_ && !(*draw_filter_)(o)) return false;
     if (ctx.hidden_layers && std::find(ctx.hidden_layers->begin(), ctx.hidden_layers->end(), o.layer_index) != ctx.hidden_layers->end()) return false;
     if (ctx.hidden_objects && std::find(ctx.hidden_objects->begin(), ctx.hidden_objects->end(), o.id) != ctx.hidden_objects->end()) return false;
     return true;
@@ -1168,6 +1227,11 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
         const double margin = std::max(1e-4, diag * 1e-3);
         if (!BoxOutsideFrustum(planes, box, margin)) render_candidates.push_back(idx);
       }
+    }
+    if (draw_filter_) {
+      render_candidates.erase(std::remove_if(render_candidates.begin(), render_candidates.end(),
+                                             [&](std::size_t i) { return i >= objects.size() || !(*draw_filter_)(objects[i]); }),
+                              render_candidates.end());
     }
     frustum_cull_stats_.total_objects = objects.size();
     frustum_cull_stats_.draw_candidates = render_candidates.size();

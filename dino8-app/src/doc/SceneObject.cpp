@@ -96,6 +96,7 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   force_ghosted = other.force_ghosted;
   force_xray = other.force_xray;
   force_monochrome = other.force_monochrome;
+  force_raytraced = other.force_raytraced;
   force_pen = other.force_pen;
   force_arctic = other.force_arctic;
   force_rendered = other.force_rendered;
@@ -123,7 +124,9 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   mesh = other.mesh ? std::make_unique<kernel::Mesh>(*other.mesh) : nullptr;
   subd = other.subd ? std::make_unique<kernel::SubD>(*other.subd) : nullptr;
   point_cloud = other.point_cloud ? std::make_unique<kernel::PointCloud>(*other.point_cloud) : nullptr;
-  cache_ = other.cache_;
+  cache_ = other.view_current_ ? other.other_cache_ : other.cache_;  // the copy starts on the fixed level
+  other_cache_ = DisplayCache{};
+  view_current_ = false;
   lod_stash_.clear();  // the extra tessellation levels are a per-instance cache, never copied
   lod_surface_floor_ = 0.0;
   display_dashes_ = other.display_dashes_;
@@ -565,9 +568,9 @@ void AppendBrepEdges(const kernel::Brep& brep, double chord_tolerance, std::vect
 
 // Smooth display of a SubD: Catmull-Clark subdivides a copy (up to two
 // levels, bounded by the resulting face count) and shows that control net.
-kernel::Mesh SmoothSubDMesh(const kernel::SubD& subd, const kernel::Mesh& net) {
+kernel::Mesh SmoothSubDMesh(const kernel::SubD& subd, const kernel::Mesh& net, int max_levels = 2, int max_faces = 24000) {
   int faces = subd.FaceCount(), levels = 0;
-  while (levels < 2 && faces > 0 && faces * 4 <= 24000) { faces *= 4; ++levels; }
+  while (levels < max_levels && faces > 0 && faces * 4 <= max_faces) { faces *= 4; ++levels; }
   if (levels == 0) return net;
   try {
     kernel::SubD copy = subd;
@@ -581,6 +584,13 @@ kernel::Mesh SmoothSubDMesh(const kernel::SubD& subd, const kernel::Mesh& net) {
 }  // namespace
 
 void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance) const {
+  // Every caller except the viewport's EnsureAdaptiveDisplay wants the FIXED level: bring it
+  // back if the viewport's zoom-dependent one is installed.
+  if (view_current_) { std::swap(cache_, other_cache_); view_current_ = false; }
+  BuildDisplay(curve_tolerance, surface_tolerance);
+}
+
+void SceneObject::BuildDisplay(double curve_tolerance, double surface_tolerance) const {
   if (!cache_.dirty) return;
   if (custom_mesh_tolerance > 0.0) surface_tolerance = custom_mesh_tolerance;  // SetMeshSurfaceParameters override
   cache_.triangles.clear();
@@ -652,8 +662,13 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
     }
     case ObjectKind::Surface: {
       const kernel::SurfaceDivisions div = surface->SuggestedDivisions(surface_tolerance);
-      const int u = std::clamp(div.u, 4, 96);
-      const int v = std::clamp(div.v, 4, 96);
+      // A refinement build (display_face_cap_ raised to the triangle budget) may use up to
+      // sqrt(budget / 2) divisions per direction instead of the fixed 96, so a deep zoom on
+      // a surface keeps getting finer until the per-object budget is reached.
+      const int max_div = display_face_cap_ > kDefaultFaceTriangleCap
+          ? std::clamp(static_cast<int>(std::sqrt(display_face_cap_ / 2.0)), 96, 270) : 96;
+      const int u = std::clamp(div.u, 4, max_div);
+      const int v = std::clamp(div.v, 4, max_div);
       AppendSurfaceGrid(*surface, u, v, cache_.triangles, cache_.uvs, cache_.bbox, cache_.has_bbox);
       AppendSurfaceIsocurves(*surface, surface_tolerance, cache_.lines);
       AppendSurfaceBoundary(*surface, surface_tolerance, cache_.edges);
@@ -683,6 +698,18 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
         BrepMeshOptions opt;
         opt.chord_tolerance = surface_tolerance;
         opt.max_triangles_per_face = display_face_cap_;
+        const int nf = brep->raw().m_F.Count();
+        if (display_fine_faces_.size() == static_cast<size_t>(nf) && nf > 0) {
+          // Region build: visible (fine) faces at the requested tolerance and the
+          // per-object budget split over them; the rest at the coarse base level.
+          opt.face_chord_tolerance.assign(static_cast<size_t>(nf), std::max(display_coarse_tol_, surface_tolerance));
+          opt.face_max_triangles.assign(static_cast<size_t>(nf), 3000);  // off-screen faces: a small fixed cap
+          for (int f = 0; f < nf; ++f)
+            if (display_fine_faces_[static_cast<size_t>(f)]) {
+              opt.face_chord_tolerance[static_cast<size_t>(f)] = surface_tolerance;
+              opt.face_max_triangles[static_cast<size_t>(f)] = display_face_cap_;
+            }
+        }
         meshes = MeshBrepFaces(brep->raw(), opt);
       } catch (...) {
         meshes.clear();
@@ -725,7 +752,17 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
     }
     case ObjectKind::SubD: {
       const kernel::Mesh net = subd->ToApproximateMesh();
-      const kernel::Mesh m = show_control_net ? net : SmoothSubDMesh(*subd, net);
+      // Zoom-dependent smoothing: a refinement build (display_face_cap_ raised to the triangle
+      // budget by EnsureAdaptiveDisplay) subdivides one level deeper per halving of the
+      // chord tolerance below the default 0.05 (Catmull-Clark quarters the error per level),
+      // up to the budget; every other build keeps the fixed 2 levels / 24000 faces.
+      int sd_levels = 2, sd_faces = 24000;
+      if (display_face_cap_ > kDefaultFaceTriangleCap && surface_tolerance > 0.0 && surface_tolerance < 0.05) {
+        sd_levels = 2 + static_cast<int>(std::ceil(0.5 * std::log2(0.05 / surface_tolerance)));
+        sd_levels = std::clamp(sd_levels, 2, 5);
+        sd_faces = static_cast<int>(kAdaptiveTriangleBudget / 2);
+      }
+      const kernel::Mesh m = show_control_net ? net : SmoothSubDMesh(*subd, net, sd_levels, sd_faces);
       AppendMeshTriangles(m, cache_.triangles, cache_.bbox, cache_.has_bbox);
       AppendMeshEdges(show_control_net ? net : m, cache_.lines);
       AppendMeshNakedEdges(m, cache_.edges, cache_.naked_edges);
@@ -769,6 +806,8 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
     cache_.has_bbox = false;
   }
   cache_.dirty = false;
+  cache_.fine_faces = (kind == ObjectKind::Brep && brep && display_fine_faces_.size() == static_cast<size_t>(brep->raw().m_F.Count()))
+                          ? display_fine_faces_ : std::vector<char>{};
   cache_.built_curve_tolerance = curve_tolerance;
   cache_.built_surface_tolerance = surface_tolerance;
 }
@@ -792,8 +831,11 @@ bool SameTolerance(double built, double requested) {
 }
 
 SceneObject::AdaptiveLodCounters g_lod_counters;
+bool g_face_level_refinement = true;
 }  // namespace
 
+void SceneObject::SetFaceLevelRefinement(bool on) { g_face_level_refinement = on; }
+bool SceneObject::FaceLevelRefinement() { return g_face_level_refinement; }
 SceneObject::AdaptiveLodCounters SceneObject::LodCounters() { return g_lod_counters; }
 void SceneObject::ResetLodCounters() { g_lod_counters = AdaptiveLodCounters{}; }
 
@@ -802,11 +844,23 @@ SceneObject::AdaptiveLodInfo SceneObject::LodInfo() const {
   i.stashed_levels = lod_stash_.size();
   i.surface_floor = lod_surface_floor_;
   i.current_triangles = cache_.triangles.size() / 18;
+  if (kind == ObjectKind::Brep && brep) {
+    i.total_faces = static_cast<std::size_t>(brep->raw().m_F.Count());
+    for (char c : cache_.fine_faces) i.fine_faces += c ? 1 : 0;
+  }
   return i;
 }
 
 void SceneObject::EnsureAdaptiveDisplay(double curve_tolerance, double surface_tolerance, double base_surface_tolerance,
-                                        bool adaptive) const {
+                                        bool adaptive, const FaceVisibilityFn* face_visible) const {
+  // Points, meshes and point clouds display the same geometry at every tolerance: nothing to
+  // refine, so no second level (a 1M-triangle mesh must not be cached twice) and no rebuild on zoom.
+  if (kind == ObjectKind::Point || kind == ObjectKind::Mesh || kind == ObjectKind::PointCloud) {
+    EnsureDisplay(curve_tolerance, surface_tolerance);
+    return;
+  }
+  // The viewport's level lives in cache_ while it draws; the fixed level waits in other_cache_.
+  if (!view_current_) { std::swap(cache_, other_cache_); view_current_ = true; }
   const bool pinned = custom_mesh_tolerance > 0.0;  // SetMeshSurfaceParameters: the user fixed the surface tolerance
   const double effective_surface_tolerance = pinned ? custom_mesh_tolerance : surface_tolerance;
 
@@ -817,7 +871,7 @@ void SceneObject::EnsureAdaptiveDisplay(double curve_tolerance, double surface_t
     if (!cache_.dirty && (!SameTolerance(cache_.built_curve_tolerance, curve_tolerance) ||
                           !SameTolerance(cache_.built_surface_tolerance, effective_surface_tolerance)))
       cache_.dirty = true;  // not InvalidateDisplay(): the geometry is unchanged, the stash stays valid
-    EnsureDisplay(curve_tolerance, surface_tolerance);
+    BuildDisplay(curve_tolerance, surface_tolerance);
     return;
   }
 
@@ -833,17 +887,76 @@ void SceneObject::EnsureAdaptiveDisplay(double curve_tolerance, double surface_t
   // triangle budget on one brep face; everything else keeps the mesher's
   // default per-face cap. Restored right after the build so any other
   // EnsureDisplay caller sees the default.
+  if (!g_face_level_refinement) face_visible = nullptr;
+  // Face-level refinement inputs (brep, refinement only): `need` = faces visible
+  // in the tight frustum right now; `guard` = faces visible in the guard-band
+  // frustum, which is what a region build keeps fine.
+  const int nfaces = (kind == ObjectKind::Brep && brep) ? brep->raw().m_F.Count() : 0;
+  const bool refining = budgeted && request_surface < base_surface_tolerance;
+  std::vector<char> need, guard;
+  bool region = false;
+  if (refining && nfaces >= 2 && face_visible && *face_visible) {
+    if (face_boxes_.size() != static_cast<std::size_t>(nfaces)) {
+      face_boxes_.assign(static_cast<std::size_t>(nfaces), kernel::BoundingBox{});
+      for (int f = 0; f < nfaces; ++f) {
+        const ON_BrepFace& bf = brep->raw().m_F[f];
+        ON_BoundingBox bb = bf.BoundingBox();
+        if (bf.m_face_index < 0 || !bb.IsValid()) { bb = ON_BoundingBox(ON_3dPoint(-1e300, -1e300, -1e300), ON_3dPoint(1e300, 1e300, 1e300)); }
+        face_boxes_[static_cast<std::size_t>(f)] = kernel::BoundingBox{kernel::Point3d(bb.m_min.x, bb.m_min.y, bb.m_min.z),
+                                                                      kernel::Point3d(bb.m_max.x, bb.m_max.y, bb.m_max.z)};
+      }
+    }
+    need.assign(static_cast<std::size_t>(nfaces), 0);
+    guard.assign(static_cast<std::size_t>(nfaces), 0);
+    int n_guard = 0;
+    for (int f = 0; f < nfaces; ++f) {
+      const kernel::BoundingBox& fb = face_boxes_[static_cast<std::size_t>(f)];
+      need[static_cast<std::size_t>(f)] = (*face_visible)(fb, false) ? 1 : 0;
+      guard[static_cast<std::size_t>(f)] = (need[static_cast<std::size_t>(f)] || (*face_visible)(fb, true)) ? 1 : 0;
+      n_guard += guard[static_cast<std::size_t>(f)];
+    }
+    region = n_guard < nfaces;  // everything in view: an ordinary whole-object build
+  } else if (refining && nfaces >= 1) {
+    need.assign(static_cast<std::size_t>(nfaces), 1);  // no visibility info: every face must be fine
+  }
+  // A cached level serves this request only if every face needed NOW is fine in it.
+  auto covers = [&](const DisplayCache& c) {
+    if (c.fine_faces.empty() || need.empty()) return true;
+    if (c.fine_faces.size() != need.size()) return false;
+    for (std::size_t f = 0; f < need.size(); ++f)
+      if (need[f] && !c.fine_faces[f]) return false;
+    return true;
+  };
+
   auto build = [&](double ct, double st) {
     int cap = kDefaultFaceTriangleCap;
+    display_fine_faces_.clear();
+    if (region) {
+      display_fine_faces_ = guard;
+      display_coarse_tol_ = base_surface_tolerance * 6.0;  // off-screen faces: the zoomed-out level (LodMaxScale)
+    }
     if (budgeted && st < base_surface_tolerance) {
-      // The whole object's budget, split across its faces so a many-face brep
-      // cannot reach faces x budget triangles (never below the default cap).
-      const int faces = (kind == ObjectKind::Brep && brep) ? std::max(1, brep->raw().m_F.Count()) : 1;
-      cap = std::max(kDefaultFaceTriangleCap, static_cast<int>(kAdaptiveTriangleBudget) / faces);
+      // The whole object's budget, split across its faces (only the FINE ones in
+      // a region build) so a many-face brep cannot reach faces x budget
+      // triangles (never below the default cap).
+      int faces = (kind == ObjectKind::Brep && brep) ? std::max(1, brep->raw().m_F.Count()) : 1;
+      int coarse_faces = 0;
+      if (region) { faces = 0; for (char c : guard) faces += c ? 1 : 0; faces = std::max(1, faces); coarse_faces = nfaces - faces; }
+      // The fine faces share what the budget leaves after the small off-screen faces (3000 each).
+      cap = std::max(kDefaultFaceTriangleCap, (static_cast<int>(kAdaptiveTriangleBudget) - 3000 * coarse_faces) / faces);
+      if (region && std::getenv("DINO8_LOD_DEBUG")) {
+        std::fprintf(stderr, "lod: object %llu region build st=%g fine=%d/%d cap=%d\n", static_cast<unsigned long long>(id), st, faces, nfaces, cap);
+        for (int f = 0; f < nfaces; ++f) {
+          const kernel::BoundingBox& fb = face_boxes_[static_cast<std::size_t>(f)];
+          std::fprintf(stderr, "lod:   face %d need=%d guard=%d box (%.1f %.1f %.1f)-(%.1f %.1f %.1f)\n", f, int(need[static_cast<std::size_t>(f)]), int(guard[static_cast<std::size_t>(f)]),
+                       fb.min.x, fb.min.y, fb.min.z, fb.max.x, fb.max.y, fb.max.z);
+        }
+      }
     }
     display_face_cap_ = cap;
-    EnsureDisplay(ct, st);
+    BuildDisplay(ct, st);
     display_face_cap_ = kDefaultFaceTriangleCap;
+    display_fine_faces_.clear();
   };
 
   if (cache_.dirty) {
@@ -851,7 +964,7 @@ void SceneObject::EnsureAdaptiveDisplay(double curve_tolerance, double surface_t
     // dropped the stash): just build at the requested level.
     build(curve_tolerance, request_surface);
   } else if (DriftedPastHysteresis(cache_.built_curve_tolerance, curve_tolerance) ||
-             DriftedPastHysteresis(cache_.built_surface_tolerance, request_surface)) {
+             DriftedPastHysteresis(cache_.built_surface_tolerance, request_surface) || !covers(cache_)) {
     // The zoom moved past the hysteresis band. First: does an already-built
     // level in the stash fit? Pick the closest one.
     int best = -1;
@@ -859,7 +972,7 @@ void SceneObject::EnsureAdaptiveDisplay(double curve_tolerance, double surface_t
     for (std::size_t i = 0; i < lod_stash_.size(); ++i) {
       const DisplayCache& c = lod_stash_[i];
       if (DriftedPastHysteresis(c.built_curve_tolerance, curve_tolerance) ||
-          DriftedPastHysteresis(c.built_surface_tolerance, request_surface))
+          DriftedPastHysteresis(c.built_surface_tolerance, request_surface) || !covers(c))
         continue;
       const double dist = std::fabs(std::log(request_surface / c.built_surface_tolerance)) +
                           std::fabs(std::log(curve_tolerance / c.built_curve_tolerance));
@@ -905,7 +1018,7 @@ void SceneObject::EnsureAdaptiveDisplay(double curve_tolerance, double surface_t
 
 const std::vector<std::string>& SceneObject::DisplayOverrideNames() {
   static const std::vector<std::string> names = {"UseViewport", "Wireframe", "Shaded",    "Rendered", "Ghosted", "X-Ray",
-                                                  "Technical",   "Artistic",  "Pen",       "Arctic",   "Monochrome"};
+                                                  "Technical",   "Artistic",  "Pen",       "Arctic",   "Monochrome", "RayTraced"};
   return names;
 }
 
@@ -939,6 +1052,7 @@ bool SceneObject::SetDisplayOverride(const std::string& name) {
   force_pen = c == "Pen";
   force_arctic = c == "Arctic";
   force_monochrome = c == "Monochrome";
+  force_raytraced = c == "RayTraced";
   return true;
 }
 
@@ -961,6 +1075,7 @@ const char* SceneObject::DisplayOverrideName() const {
   if (force_pen) return "Pen";
   if (force_arctic) return "Arctic";
   if (force_monochrome) return "Monochrome";
+  if (force_raytraced) return "RayTraced";
   return "UseViewport";
 }
 
@@ -975,13 +1090,13 @@ SceneObject::DisplayOverrideFlags SceneObject::DisplayOverrideFlagsFor(const std
   if (it == viewport_display_overrides.end()) {
     f.wireframe = force_wireframe; f.shaded = force_shaded; f.rendered = force_rendered; f.ghosted = force_ghosted;
     f.xray = force_xray; f.technical = force_technical; f.artistic = force_artistic; f.pen = force_pen;
-    f.arctic = force_arctic; f.monochrome = force_monochrome;
+    f.arctic = force_arctic; f.monochrome = force_monochrome; f.raytraced = force_raytraced;
     return f;
   }
   const std::string& c = it->second;
   f.wireframe = c == "Wireframe"; f.shaded = c == "Shaded"; f.rendered = c == "Rendered"; f.ghosted = c == "Ghosted";
   f.xray = c == "X-Ray"; f.technical = c == "Technical"; f.artistic = c == "Artistic"; f.pen = c == "Pen";
-  f.arctic = c == "Arctic"; f.monochrome = c == "Monochrome";
+  f.arctic = c == "Arctic"; f.monochrome = c == "Monochrome"; f.raytraced = c == "RayTraced";
   return f;
 }
 
@@ -1295,7 +1410,7 @@ kernel::BoundingBox SceneObject::BoundingBox() const {
   // the base level in a scratch cache and put the viewport's level back.
   DisplayCache saved = std::move(cache_);
   cache_ = DisplayCache{};  // dirty
-  EnsureDisplay(0.05, 0.1);
+  BuildDisplay(0.05, 0.1);
   base_bbox_ = cache_.has_bbox ? cache_.bbox : kernel::BoundingBox{point, point};
   cache_ = std::move(saved);
   base_bbox_valid_ = true;

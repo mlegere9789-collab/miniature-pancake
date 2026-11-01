@@ -271,6 +271,7 @@ bool NakedEdgesBox(const Document& doc, kernel::BoundingBox& box) {
   bool has = false;
   for (const SceneObject& o : doc.Objects()) {
     if (!doc.IsObjectVisible(o)) continue;
+    o.EnsureDisplay(0.05, 0.1);  // the fixed level, never whichever zoom level a viewport last drew
     const std::vector<float>& e = o.Display().naked_edges;
     for (size_t i = 0; i + 2 < e.size(); i += 3) GrowBox(box, has, Point3d(e[i], e[i + 1], e[i + 2]));
   }

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -343,6 +344,8 @@ class Viewport {
     std::size_t triangles = 0;
     double curve_tolerance = 0.0;
     double surface_tolerance = 0.0;
+    std::size_t fine_faces = 0;   // brep faces of that level built at surface_tolerance (0 = whole object)
+    std::size_t total_faces = 0;  // brep face count (0 for non-brep)
   };
   const std::map<ObjectId, LodDrawRecord>& LastLodDraw() const { return lod_draw_; }
 
@@ -444,6 +447,10 @@ class Viewport {
   CameraState raytrace_camera_{};
   bool raytrace_have_state_ = false;
   std::uint64_t raytrace_revision_ = 0;
+  std::uint64_t raytrace_set_sig_ = 0;  // which objects the last trace contained (per-object RayTraced override)
+  // When set, DrawObjects skips every object this returns false for (the
+  // per-object RayTraced composite draws the traced and the rasterized subsets in two passes).
+  const std::function<bool(const SceneObject&)>* draw_filter_ = nullptr;
 
   // See LastFrustumCullStats() above.
   mutable std::map<ObjectId, LodDrawRecord> lod_draw_;

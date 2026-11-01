@@ -120,8 +120,6 @@ SetObjectDisplayMode Technical
 SelNone
 ObjectDisplayModes
 ObjectDisplayModes All
-SelLast
-SetObjectDisplayMode RayTraced
 ObjectDisplayModes
 SelLast
 SetObjectDisplayMode Bogus

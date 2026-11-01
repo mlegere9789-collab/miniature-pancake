@@ -1340,18 +1340,19 @@ void RegisterRenderCommands(CommandEngine& e) {
         const bool any_selected = ctx.Doc().SelectedCount() > 0;
         for (const auto& vp : ctx.Viewports()) {
           const double px = vp->ZoomPixelSize();
-          std::snprintf(buf, sizeof buf, "LodStats: viewport %s pixel_size=%.6g lod_scale=%.4g", vp->Name().c_str(), px,
-                        LodScaleForPixelSize(px));
+          const CameraState cs = vp->GetCamera().State();
+          std::snprintf(buf, sizeof buf, "LodStats: viewport %s pixel_size=%.6g lod_scale=%.4g target=%.1f,%.1f,%.1f", vp->Name().c_str(), px,
+                        LodScaleForPixelSize(px), cs.target.x, cs.target.y, cs.target.z);
           ctx.Print(buf);
           for (const SceneObject& o : ctx.Doc().Objects()) {
             if (any_selected ? !o.selected : !ctx.Doc().IsObjectVisible(o)) continue;
             const auto it = vp->LastLodDraw().find(o.id);
             if (it == vp->LastLodDraw().end()) continue;
             std::snprintf(buf, sizeof buf,
-                          "LodStats: viewport %s object %llu %s tris=%zu curve_tol=%.6g surface_tol=%.6g nominal_err_px=%.3f",
+                          "LodStats: viewport %s object %llu %s tris=%zu curve_tol=%.6g surface_tol=%.6g nominal_err_px=%.3f fine_faces=%zu total_faces=%zu",
                           vp->Name().c_str(), static_cast<unsigned long long>(o.id), ObjectKindName(o.kind),
                           it->second.triangles, it->second.curve_tolerance, it->second.surface_tolerance,
-                          ScreenSpaceErrorPixels(it->second.surface_tolerance, px));
+                          ScreenSpaceErrorPixels(it->second.surface_tolerance, px), it->second.fine_faces, it->second.total_faces);
             ctx.Print(buf);
           }
         }
@@ -1363,6 +1364,95 @@ void RegisterRenderCommands(CommandEngine& e) {
           ctx.Print(buf);
         }
       }), CommandStatus::Implemented, "Read-only: adaptive-tessellation switch/counters, and per viewport its zoom, LOD scale and what its last frame drew for each object (triangles, tolerances, on-screen error), plus each object's stashed levels and budget floor.");
+  // LodSagitta Sphere cx,cy,cz r | Cylinder cx,cy,z r | Circle cx,cy,cz r [x0,y0,z0 x1,y1,z1]:
+  // read-only accuracy probe for the display level the selected object currently
+  // holds (what the last frame drew). Measures the deviation of every display
+  // triangle (or curve segment) from the EXACT primitive given: for a triangle,
+  // at its circumcentre (where a flat facet is furthest from the surface); for
+  // a segment, at its midpoint. An optional box restricts the measurement to
+  // geometry whose centroid lies inside it (the visible corner of a zoomed
+  // view). Prints triangle/segment totals, the in-region count and the max and
+  // mean deviation ("sagitta"). Uses only Display(), never the base level.
+  Reg(e, "LodSagitta", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> tok;
+        while (auto t = ctx.Engine().TakePendingInput()) {
+          std::istringstream in(*t);
+          std::string w;
+          while (in >> w) tok.push_back(w);
+        }
+        auto pt = [](const std::string& s, double* v) {
+          return std::sscanf(s.c_str(), "%lf,%lf,%lf", &v[0], &v[1], &v[2]) == 3;
+        };
+        double c[3] = {0, 0, 0}, lo[3] = {-1e300, -1e300, -1e300}, hi[3] = {1e300, 1e300, 1e300};
+        double r = 0;
+        std::string shape = tok.empty() ? "" : Lower(tok[0]);
+        if (tok.size() < 3 || !pt(tok[1], c) || std::sscanf(tok[2].c_str(), "%lf", &r) != 1 || r <= 0 ||
+            (shape != "sphere" && shape != "cylinder" && shape != "circle")) {
+          ctx.Warn("LodSagitta: usage: LodSagitta Sphere|Cylinder|Circle cx,cy,cz radius [x0,y0,z0 x1,y1,z1]");
+          return;
+        }
+        if (tok.size() >= 5) { pt(tok[3], lo); pt(tok[4], hi); }
+        const SceneObject* sel = nullptr;
+        for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected) { sel = &o; break; }
+        if (!sel) { ctx.Warn("LodSagitta: select one object first"); return; }
+        // Meshes/points/clouds have no zoom-dependent level (their display is the data itself): fall back to Display().
+        const DisplayCache& d = (sel->ViewDisplay().triangles.empty() && sel->ViewDisplay().lines.empty()) ? sel->Display() : sel->ViewDisplay();
+        auto dist = [&](const double* p) {  // distance of p from the axis/centre minus nothing: |p - c| in 3D or 2D
+          const double dx = p[0] - c[0], dy = p[1] - c[1], dz = p[2] - c[2];
+          return shape == "sphere" ? std::sqrt(dx * dx + dy * dy + dz * dz) : std::sqrt(dx * dx + dy * dy);
+        };
+        auto inside = [&](const double* p) {
+          for (int k = 0; k < 3; ++k) if (p[k] < lo[k] || p[k] > hi[k]) return false;
+          return true;
+        };
+        std::size_t total = 0, in_region = 0;
+        double mx = 0, sum = 0;
+        if (shape == "circle") {
+          for (std::size_t i = 0; i + 5 < d.lines.size(); i += 6) {
+            ++total;
+            const double m[3] = {(d.lines[i] + d.lines[i + 3]) / 2.0, (d.lines[i + 1] + d.lines[i + 4]) / 2.0, (d.lines[i + 2] + d.lines[i + 5]) / 2.0};
+            if (!inside(m)) continue;
+            const double s = std::fabs(r - dist(m));
+            ++in_region; mx = std::max(mx, s); sum += s;
+          }
+        } else {
+          // d.triangles: 6 floats per vertex (xyz + normal), 3 vertices per triangle.
+          for (std::size_t i = 0; i + 17 < d.triangles.size(); i += 18) {
+            double a[3], b[3], g[3];
+            for (int k = 0; k < 3; ++k) { a[k] = d.triangles[i + k]; b[k] = d.triangles[i + 6 + k]; g[k] = d.triangles[i + 12 + k]; }
+            ++total;
+            const double cen[3] = {(a[0] + b[0] + g[0]) / 3, (a[1] + b[1] + g[1]) / 3, (a[2] + b[2] + g[2]) / 3};
+            if (!inside(cen)) continue;
+            // circumcentre of triangle abg
+            const double ab[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]}, ag[3] = {g[0] - a[0], g[1] - a[1], g[2] - a[2]};
+            const double n[3] = {ab[1] * ag[2] - ab[2] * ag[1], ab[2] * ag[0] - ab[0] * ag[2], ab[0] * ag[1] - ab[1] * ag[0]};
+            const double n2 = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+            double pcc[3] = {cen[0], cen[1], cen[2]};
+            if (n2 > 1e-24) {
+              const double ab2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2], ag2 = ag[0] * ag[0] + ag[1] * ag[1] + ag[2] * ag[2];
+              // (|ag|^2 (ab x ag) x ab + |ab|^2 ag x (ab x ag)) / (2 |ab x ag|^2)
+              const double t1[3] = {n[1] * ab[2] - n[2] * ab[1], n[2] * ab[0] - n[0] * ab[2], n[0] * ab[1] - n[1] * ab[0]};
+              const double t2[3] = {ag[1] * n[2] - ag[2] * n[1], ag[2] * n[0] - ag[0] * n[2], ag[0] * n[1] - ag[1] * n[0]};
+              for (int k = 0; k < 3; ++k) pcc[k] = a[k] + (ag2 * t1[k] + ab2 * t2[k]) / (2.0 * n2);
+              // keep it inside the triangle: fall back to the centroid for obtuse facets
+              const double e0 = std::sqrt(ab2), e1 = std::sqrt(ag2);
+              (void)e0; (void)e1;
+              const double dot_a = ab[0] * ag[0] + ab[1] * ag[1] + ab[2] * ag[2];
+              const double bg[3] = {g[0] - b[0], g[1] - b[1], g[2] - b[2]}, ba[3] = {-ab[0], -ab[1], -ab[2]};
+              const double dot_b = bg[0] * ba[0] + bg[1] * ba[1] + bg[2] * ba[2];
+              const double gb[3] = {-bg[0], -bg[1], -bg[2]}, ga[3] = {-ag[0], -ag[1], -ag[2]};
+              const double dot_g = gb[0] * ga[0] + gb[1] * ga[1] + gb[2] * ga[2];
+              if (dot_a <= 0 || dot_b <= 0 || dot_g <= 0) for (int k = 0; k < 3; ++k) pcc[k] = cen[k];
+            }
+            const double s = std::fabs(r - dist(pcc));
+            ++in_region; mx = std::max(mx, s); sum += s;
+          }
+        }
+        char buf[400];
+        std::snprintf(buf, sizeof buf, "LodSagitta: %s r=%.6g total=%zu in_region=%zu max_sagitta=%.6g mean_sagitta=%.6g", shape.c_str(), r,
+                      total, in_region, mx, in_region ? sum / static_cast<double>(in_region) : 0.0);
+        ctx.Print(buf);
+      }), CommandStatus::Implemented, "Read-only: deviation of the selected object's current display triangles/segments from an exact sphere/cylinder/circle (LodSagitta Sphere|Cylinder|Circle cx,cy,cz r [x0,y0,z0 x1,y1,z1]).");
   // AdaptiveTessellation [On|Off|Status]: the user-visible switch for
   // view-dependent adaptive tessellation (also a checkbox in the Display
   // panel). Off = every viewport tessellates at exactly the Options
@@ -1370,8 +1460,16 @@ void RegisterRenderCommands(CommandEngine& e) {
   Reg(e, "AdaptiveTessellation", Immediate([](CommandContext& ctx) {
         Application& app = ctx.App();
         bool changed = false;
+        bool face_level_next = false;
         while (auto t = ctx.Engine().TakePendingInput()) {
           const std::string v = Lower(*t);
+          if (v == "facelevel" || v == "faces") { face_level_next = true; continue; }
+          if (face_level_next && (v == "on" || v == "off")) {
+            SceneObject::SetFaceLevelRefinement(v == "on");
+            face_level_next = false; changed = true;
+            ctx.Print(std::string("AdaptiveTessellation FaceLevel ") + (v == "on" ? "on: brep faces refine only where the view can see them." : "off: whole-object refinement (every face at the zoom's tolerance)."));
+            continue;
+          }
           if (v == "on") { app.adaptive_tessellation = true; changed = true; }
           else if (v == "off") { app.adaptive_tessellation = false; changed = true; }
           else if (v == "toggle") { app.adaptive_tessellation = !app.adaptive_tessellation; changed = true; }
