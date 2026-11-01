@@ -71,6 +71,53 @@ std::optional<kernel::Brep> TryExactBrepBoolean(CommandContext& ctx, const std::
   }
 }
 
+// Sews a General-engine result into a topologically closed solid. The engine
+// (BooleanCombineGeneral) hands back faces trimmed by dense-polyline
+// intersection edges, with a face that has a hole folded into ONE loop through
+// a thin "keyhole" corridor (boolean_general.cpp, BridgeHolesIntoOuter) - so
+// the raw result is a valid shell of faces that tessellates to the right
+// volume but carries a few dozen NAKED edges (the two sides of each corridor,
+// and T-junctions where a straight box edge meets the polyline): List says
+// "open", IsSolid() is false, Volume refuses it, and every later Shell/Fillet/
+// Boolean sees "not a closed solid". Brep::SewTJunctions + JoinNakedEdges
+// (brep.h) close those pairs. The sewing tolerance is escalated from 0.02% to
+// 1% of the bounding-box diagonal and the FIRST tolerance that yields
+// IsSolid() wins (a corridor is 0.1% of an edge long, so the larger steps are
+// only reached by results with long edges); nothing else is changed. Returns
+// false (leaving `r` untouched) when no tolerance closes it.
+bool HealGeneralBooleanResult(kernel::Brep& r, double& used_tolerance) {
+  used_tolerance = 0;
+  if (r.raw().IsSolid()) return true;
+  ON_BoundingBox bb;
+  r.raw().GetBoundingBox(bb);
+  const double diag = bb.Diagonal().Length();
+  if (!(diag > 0) || !std::isfinite(diag)) return false;
+  for (double fraction : {2e-4, 1e-3, 3e-3, 1e-2}) {
+    kernel::Brep c = r;
+    const double tol = fraction * diag;
+    try {
+      for (int pass = 0; pass < 3 && !c.raw().IsSolid(); ++pass) {
+        c.SewTJunctions(tol);
+        c.JoinNakedEdges(tol);
+      }
+    } catch (const std::exception&) {
+      continue;
+    }
+    if (c.raw().IsSolid()) {
+      r = std::move(c);
+      used_tolerance = tol;
+      return true;
+    }
+  }
+  return false;
+}
+
+struct GeneralBooleanResult {
+  kernel::Brep brep;
+  double volume = 0;          // |volume| of the closed display tessellation
+  double heal_tolerance = 0;  // 0 when the engine's result was already a solid
+};
+
 // Tries BooleanCombineGeneral/BooleanCombineGeneralNAry when the Planar
 // engine above declines - PARITY_MAP.md's own "kernel: Boolean operations"
 // category names "General NURBS-surface B-rep boolean" as having "no app
@@ -79,14 +126,25 @@ std::optional<kernel::Brep> TryExactBrepBoolean(CommandContext& ctx, const std::
 // TryExactBrepBoolean's own Planar path declines (typically because some
 // operand has a curved face, or some other PlanarFaces()-only scope limit
 // Planar itself has) - Planar's all-flat-faces case is strictly cheaper and
-// already proven correct, so it stays first. Same IsSolid() eligibility and
-// the same silent "fall through on any precondition violation or thrown
-// exception" contract TryExactBrepBoolean already established.
+// already proven correct, so it stays first. Same IsSolid() eligibility.
 // SymmetricDifference has no General form at all - BooleanCombineGeneral
 // itself does not implement that op, so it is refused here outright rather
 // than attempted and caught.
-std::optional<kernel::Brep> TryGeneralBrepBoolean(CommandContext& ctx, const std::vector<ObjectId>& first_ids, const std::vector<ObjectId>& second_ids,
-                                                   kernel::BooleanOp op) {
+//
+// A General result is NOT accepted as the engine hands it back (the earlier
+// version of this function did, and every curved Boolean came out as an
+// "open" polysurface that Volume refused and Shell/Fillet/the next Boolean
+// rejected): it is (1) sewn into a closed solid (HealGeneralBooleanResult),
+// then (2) required to tessellate to a closed manifold mesh (so Volume, Shell,
+// export and the next Boolean can use it). Anything that cannot be made
+// closed is declined with the reason in `why`, and the caller falls through to
+// the mesh boolean - which always yields a closed mesh - and prints `why`.
+// `why` stays empty when the exact engine was not applicable at all (a mesh /
+// SubD / surface operand, an open operand, SymmetricDifference), so those
+// ordinary cases print nothing extra.
+std::optional<GeneralBooleanResult> TryGeneralBrepBoolean(CommandContext& ctx, const std::vector<ObjectId>& first_ids,
+                                                           const std::vector<ObjectId>& second_ids, kernel::BooleanOp op, std::string& why) {
+  why.clear();
   if (op == kernel::BooleanOp::SymmetricDifference) return std::nullopt;
   auto collect = [&](const std::vector<ObjectId>& ids, std::vector<kernel::Brep>& out) -> bool {
     for (ObjectId id : ids) {
@@ -99,9 +157,61 @@ std::optional<kernel::Brep> TryGeneralBrepBoolean(CommandContext& ctx, const std
   std::vector<kernel::Brep> g1, g2;
   if (!collect(first_ids, g1)) return std::nullopt;
   if (!second_ids.empty() && !collect(second_ids, g2)) return std::nullopt;
+  GeneralBooleanResult res;
   try {
-    if (second_ids.empty()) return kernel::BooleanCombineGeneralNAry(g1, {}, kernel::BooleanOp::Union);
-    return kernel::BooleanCombineGeneralNAry(g1, g2, op);
+    if (second_ids.empty()) res.brep = kernel::BooleanCombineGeneralNAry(g1, {}, kernel::BooleanOp::Union);
+    else res.brep = kernel::BooleanCombineGeneralNAry(g1, g2, op);
+  } catch (const std::exception& ex) {
+    why = ex.what();
+    return std::nullopt;
+  }
+  if (res.brep.raw().m_F.Count() == 0) return res;  // an empty result is reported as such by the caller
+  if (!HealGeneralBooleanResult(res.brep, res.heal_tolerance)) {
+    why = "the engine's result has gaps between faces that sewing could not close, so it is not a closed solid";
+    return std::nullopt;
+  }
+  ON_BoundingBox bb;
+  res.brep.raw().GetBoundingBox(bb);
+  BrepMeshOptions mopt;
+  mopt.chord_tolerance = std::clamp(bb.Diagonal().Length() * 5e-4, 1e-5, 1.0);  // same 0.05%-of-diagonal rule as AdaptiveMeshTolerance
+  const kernel::Mesh m = MeshBrepClosed(res.brep.raw(), mopt);
+  if (!m.IsClosedManifold()) {
+    why = "the sewn result does not tessellate to a closed mesh";
+    return std::nullopt;
+  }
+  res.volume = std::fabs(m.Volume());
+  return res;
+}
+
+// |volume| of the same boolean done on closed meshes (Manifold) - the
+// independent reference a General-engine result is cross-checked against
+// before it replaces the operands. nullopt when an operand cannot give a
+// closed mesh (then no cross-check is possible and the exact result stands on
+// its own closed-solid + closed-tessellation checks).
+std::optional<double> MeshBooleanVolume(CommandContext& ctx, const std::vector<ObjectId>& first_ids, const std::vector<ObjectId>& second_ids,
+                                         kernel::BooleanOp op) {
+  auto collect = [&](const std::vector<ObjectId>& ids, std::vector<kernel::Mesh>& out) -> bool {
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o) return false;
+      std::optional<kernel::Mesh> m = MeshOf(*o, AdaptiveMeshTolerance(*o));
+      if (!m || !m->IsClosedManifold()) return false;
+      out.push_back(*m);
+    }
+    return !out.empty();
+  };
+  std::vector<kernel::Mesh> g1, g2;
+  if (!collect(first_ids, g1)) return std::nullopt;
+  if (!second_ids.empty() && !collect(second_ids, g2)) return std::nullopt;
+  try {
+    kernel::Mesh r = g1[0];
+    for (size_t i = 1; i < g1.size(); ++i) r = kernel::BooleanCombine(r, g1[i], kernel::BooleanOp::Union);
+    if (!second_ids.empty()) {
+      kernel::Mesh other = g2[0];
+      for (size_t i = 1; i < g2.size(); ++i) other = kernel::BooleanCombine(other, g2[i], kernel::BooleanOp::Union);
+      r = kernel::BooleanCombine(r, other, op);
+    }
+    return r.FaceCount() == 0 ? 0.0 : std::fabs(r.Volume());
   } catch (const std::exception&) {
     return std::nullopt;
   }
@@ -263,9 +373,31 @@ void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::
     std::vector<ObjectId> second_ids = two_sets ? eb : std::vector<ObjectId>{};
     std::optional<kernel::Brep> exact_result = TryExactBrepBoolean(ctx, first_ids, second_ids, op);
     bool via_general = false;
+    std::string general_note;
     if (!exact_result) {
-      exact_result = TryGeneralBrepBoolean(ctx, first_ids, second_ids, op);
-      via_general = exact_result.has_value();
+      std::string why;
+      std::optional<GeneralBooleanResult> g = TryGeneralBrepBoolean(ctx, first_ids, second_ids, op, why);
+      if (g && g->brep.raw().m_F.Count() > 0) {
+        // Independent cross-check against the mesh boolean of the same
+        // operands: an exact result whose volume disagrees by more than 2% is
+        // a wrong answer (the engine's own scope limits can fail silently),
+        // never accepted.
+        const std::optional<double> ref = MeshBooleanVolume(ctx, first_ids, second_ids, op);
+        const double tol = 0.02 * std::max(ref.value_or(0.0), g->volume) + 1e-9;
+        if (ref && std::fabs(*ref - g->volume) > tol) {
+          why = "its volume " + FormatNumber(g->volume) + " disagrees with the mesh boolean's " + FormatNumber(*ref) + " by more than 2%";
+          g.reset();
+        } else {
+          general_note = std::string(g->heal_tolerance > 0 ? ", sewn into a closed solid (tolerance " + FormatNumber(g->heal_tolerance) + ")" : "") +
+                         ", volume " + FormatNumber(g->volume) + (ref ? " (mesh cross-check " + FormatNumber(*ref) + ")" : "");
+        }
+      }
+      if (g) {
+        exact_result = std::move(g->brep);
+        via_general = true;
+      } else if (!why.empty()) {
+        ctx.Print(label + ": exact B-rep boolean declined (" + why + "); using the mesh boolean, so the result is a mesh");
+      }
     }
     if (exact_result) {
       kernel::Brep& result = *exact_result;
@@ -278,7 +410,7 @@ void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::
         n.layer_index = layer;
         ctx.Doc().Add(std::move(n));
         ctx.Print(label + ": exact B-rep boolean (no tessellation" + std::string(via_general ? ", general engine" : "") + "), " +
-                   std::to_string(result.raw().m_F.Count()) + " face(s)");
+                   std::to_string(result.raw().m_F.Count()) + " face(s)" + general_note);
       } else {
         ctx.Print(label + ": result is empty");
       }

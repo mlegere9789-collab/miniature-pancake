@@ -1045,13 +1045,13 @@ class PipeCommand : public Command {
     HistoryRecord rec;
     rec.command = "Pipe";
     rec.num = {{"radius", radius_}, {"cap", cap_ ? 1.0 : 0.0}};
-    int made = 0, made_brep = 0;
+    int made = 0, made_brep = 0, made_closed_brep = 0;
     for (ObjectId id : ids_) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o || o->kind != ObjectKind::Curve) continue;
       std::optional<SceneObject> built = RebuildPipe(ctx, *o->curve, rec);
       if (!built) continue;
-      if (built->kind == ObjectKind::Brep) ++made_brep;
+      if (built->kind == ObjectKind::Brep) { ++made_brep; if (o->curve->IsClosed()) ++made_closed_brep; }
       // Tag with the rail curve (see PipeFeature, Document.h) regardless of
       // Cap/mesh-vs-surface/B-rep, as real geometry (a value copy, not a
       // reference to the source object, which may since have been
@@ -1069,7 +1069,7 @@ class PipeCommand : public Command {
     // the hand-rolled mesh - report honestly which one this batch actually
     // built rather than always claiming "mesh".
     std::string kind_note;
-    if (cap_) kind_note = made == 0 ? "" : made_brep == made ? " (exact capped B-rep)" : made_brep == 0 ? " (capped mesh)" : " (mixed exact B-rep/mesh)";
+    if (cap_) kind_note = made == 0 ? "" : made_brep == made ? (made_closed_brep == made ? " (exact closed B-rep tube)" : made_closed_brep > 0 ? " (exact B-rep, closed rails as closed tubes)" : " (exact capped B-rep)") : made_brep == 0 ? " (capped mesh)" : " (mixed exact B-rep/mesh)";
     ctx.Print("Pipe: radius " + FormatNumber(radius_) + ", " + std::to_string(made) + " pipe(s)" + kind_note);
     Finish();
   }
@@ -1112,26 +1112,202 @@ std::vector<Row> SurfaceRows(const kernel::NurbsSurface& s, int nu, int nv) {
   return rows;
 }
 
+// A PLAIN CAPPED CYLINDER recognised from an ON_Brep: exactly one cylindrical
+// wall face and two planar caps perpendicular to its axis (what the Cylinder
+// command makes). `wall` / `bottom` / `top` are brep face indices.
+struct PlainCylinder {
+  ON_3dPoint c0;   // centre of the bottom cap
+  ON_3dVector ax;  // unit axis, bottom -> top
+  ON_3dVector u;   // unit direction perpendicular to ax
+  double R = 0, H = 0;
+  int wall = -1, bottom = -1, top = -1;
+};
+
+bool RecognizePlainCylinder(const ON_Brep& b, PlainCylinder& pc) {
+  if (!b.IsSolid() || b.m_F.Count() != 3) return false;
+  ON_BoundingBox bb;
+  b.GetBoundingBox(bb);
+  const double tol = std::max(1e-6, bb.Diagonal().Length() * 1e-6);
+  ON_Cylinder cyl;
+  int caps[2] = {-1, -1}, ncaps = 0;
+  ON_Plane cap_plane[2];
+  pc.wall = -1;
+  for (int f = 0; f < 3; ++f) {
+    const ON_Surface* surf = b.m_F[f].SurfaceOf();
+    if (!surf) return false;
+    ON_Plane pl;
+    if (pc.wall < 0 && surf->IsCylinder(&cyl, tol)) pc.wall = f;
+    else if (ncaps < 2 && surf->IsPlanar(&pl, tol)) { caps[ncaps] = f; cap_plane[ncaps] = pl; ++ncaps; }
+    else return false;
+  }
+  if (pc.wall < 0 || ncaps != 2) return false;
+  ON_3dVector ax = cyl.Axis();
+  if (!ax.Unitize()) return false;
+  double h[2];
+  for (int k = 0; k < 2; ++k) {
+    if (std::fabs(cap_plane[k].zaxis * ax) < 1.0 - 1e-9) return false;
+    h[k] = (cap_plane[k].origin - cyl.circle.plane.origin) * ax;
+  }
+  pc.bottom = h[0] <= h[1] ? caps[0] : caps[1];
+  pc.top = h[0] <= h[1] ? caps[1] : caps[0];
+  const double h0 = std::min(h[0], h[1]), h1 = std::max(h[0], h[1]);
+  if (!(h1 - h0 > tol)) return false;
+  pc.c0 = cyl.circle.plane.origin + h0 * ax;
+  pc.ax = ax;
+  pc.u = cyl.circle.plane.xaxis;
+  pc.R = cyl.circle.radius;
+  pc.H = h1 - h0;
+  return true;
+}
+
+// Revolves the open polyline profile `prof` ((radius, height) pairs about the axis
+// through c0 along ax, radial direction u) 360 degrees, one EXACT revolved face per
+// segment (a segment parallel to the axis gives a cylinder wall, a radial one a
+// flat disc / annulus), and joins the faces along their shared circles
+// (Brep::JoinNakedEdges: the circles coincide exactly). A profile that starts and
+// ends on the axis gives a closed solid (Shell uses this for an opened cup).
+std::optional<kernel::Brep> RevolveProfileBrep(ON_3dPoint c0, ON_3dVector ax, ON_3dVector u, const std::vector<std::pair<double, double>>& prof) {
+  ON_Brep all;
+  for (size_t i = 0; i + 1 < prof.size(); ++i) {
+    const ON_3dPoint a = c0 + prof[i].first * u + prof[i].second * ax, e = c0 + prof[i + 1].first * u + prof[i + 1].second * ax;
+    ON_RevSurface* rev = new ON_RevSurface();
+    rev->m_curve = new ON_LineCurve(a, e);
+    rev->m_axis = ON_Line(c0, c0 + ax);
+    rev->m_angle = ON_Interval(0.0, 2.0 * ON_PI);
+    rev->m_t = rev->m_angle;
+    rev->m_bTransposed = false;
+    ON_Brep* piece = ON_BrepRevSurface(rev, false, false);
+    if (!piece) return std::nullopt;
+    all.Append(*piece);
+    delete piece;
+  }
+  kernel::Brep k;
+  k.raw() = all;
+  try {
+    k.JoinNakedEdges(1e-6);
+    k.UnifyNormals();
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+  if (!k.raw().IsSolid() || !k.raw().IsValid()) return std::nullopt;
+  return k;
+}
+
+// Two closed shells in one Brep: `outer` as built and `inner` reversed (its normals
+// point into the cavity) - the hollow solid between them. Both are the app's own
+// primitives (ON_BrepSphere / ON_BrepTorus / ON_BrepCylinder), so the result
+// tessellates exactly like those do. nullopt if the assembly is not a valid solid.
+std::optional<kernel::Brep> HollowSolid(ON_Brep* outer, ON_Brep* inner) {
+  if (!outer || !inner) { delete outer; delete inner; return std::nullopt; }
+  inner->Flip();
+  ON_Brep all;
+  all.Append(*outer);
+  all.Append(*inner);
+  delete outer;
+  delete inner;
+  kernel::Brep k;
+  k.raw() = all;
+  if (!k.raw().IsSolid() || !k.raw().IsValid()) return std::nullopt;
+  return k;
+}
+
+// Exact B-rep offset of a closed solid by `d` (positive grows, negative
+// shrinks) - every kernel construction that exists, tried before OffsetSrf's
+// mesh offset:
+//   Solid=No
+//     * a solid whose faces are ALL planar and whose shape is convex:
+//       kernel::OffsetSolidConvexPlanar (every plane moved by d, re-clipped);
+//     * a WHOLE sphere (radius r -> r + d) or WHOLE torus (minor radius ->
+//       minor + d): the exact offset of an analytic primitive is the same
+//       primitive with the radius moved, built by kernel::Brep::Sphere/Torus;
+//     * a plain capped right circular CYLINDER (wall + two flat caps):
+//       radius r + d, each cap moved d outward (ON_BrepCylinder);
+//   Solid=Yes (the hollow wall between the original and the offset)
+//     * convex planar: kernel::ShellConvexPlanar of the OUTER body with
+//       thickness |d| (outer = offset solid for d > 0, the original for d < 0);
+//     * whole sphere / torus: kernel::ShellClosedSphere / ShellClosedTorus.
+// nullopt (with the kernel's reason in `why`) for everything else - the caller
+// then keeps the mesh offset and prints the reason.
+std::optional<kernel::Brep> TryExactOffsetSolid(const kernel::Brep& kb, double d, bool solid, std::string& why) {
+  const ON_Brep& b = kb.raw();
+  if (!b.IsSolid()) { why = "the polysurface is not a closed solid"; return std::nullopt; }
+  ON_BoundingBox bb;
+  b.GetBoundingBox(bb);
+  const double diag = std::max(1e-9, bb.Diagonal().Length());
+  const double tol = diag * 1e-6;
+  try {
+    if (b.m_F.Count() == 1) {
+      const ON_Surface* surf = b.m_F[0].SurfaceOf();
+      ON_Sphere sph;
+      ON_Torus tor;
+      if (surf && surf->IsSphere(&sph, tol)) {
+        const double r = sph.Radius();
+        const ON_3dPoint c = sph.Center();
+        if (!solid) {
+          if (!(r + d > 0)) { why = "the sphere would collapse (offset distance <= -radius)"; return std::nullopt; }
+          return WrapBrep(ON_BrepSphere(ON_Sphere(c, r + d)));
+        }
+        if (!(r + std::min(d, 0.0) > 0)) { why = "the sphere would collapse"; return std::nullopt; }
+        if (std::optional<kernel::Brep> h = d > 0 ? HollowSolid(ON_BrepSphere(ON_Sphere(c, r + d)), ON_BrepSphere(ON_Sphere(c, r)))
+                                                  : HollowSolid(ON_BrepSphere(ON_Sphere(c, r)), ON_BrepSphere(ON_Sphere(c, r + d)))) return h;
+        why = "the hollow sphere did not assemble into a valid solid";
+        return std::nullopt;
+      }
+      if (surf && surf->IsTorus(&tor, tol)) {
+        const double mn = tor.minor_radius, mj = tor.major_radius;
+        auto tb = [&](double minor) { return ON_BrepTorus(ON_Torus(tor.plane, mj, minor)); };
+        if (!solid) {
+          if (!(mn + d > 0) || !(mn + d < mj)) { why = "the torus tube would collapse or self-intersect at that offset"; return std::nullopt; }
+          return WrapBrep(tb(mn + d));
+        }
+        if (!(mn + d > 0) || !(mn + d < mj) || !(mn - std::fabs(d) > 0)) { why = "the torus tube would collapse or self-intersect at that offset"; return std::nullopt; }
+        if (std::optional<kernel::Brep> h = d > 0 ? HollowSolid(tb(mn + d), tb(mn)) : HollowSolid(tb(mn), tb(mn + d))) return h;
+        why = "the hollow torus did not assemble into a valid solid";
+        return std::nullopt;
+      }
+    }
+    if (b.m_F.Count() == 3 && !solid) {
+      PlainCylinder pc;
+      if (!RecognizePlainCylinder(b, pc)) {
+        why = "no exact offset for this solid (needs all-planar convex faces, a whole sphere/torus, or a plain capped cylinder)";
+        return std::nullopt;
+      }
+      const double r2 = pc.R + d;
+      if (!(r2 > 0) || !(pc.H + 2 * d > 0)) { why = "the cylinder would collapse at that offset"; return std::nullopt; }
+      return WrapBrep(ON_BrepCylinder(ON_Cylinder(ON_Circle(ON_Plane(pc.c0 - d * pc.ax, pc.ax), r2), pc.H + 2 * d), true, true));
+    }
+    // All-planar convex solid.
+    if (!solid) return kernel::OffsetSolidConvexPlanar(kb, d);
+    if (d > 0) return kernel::ShellConvexPlanar(kernel::OffsetSolidConvexPlanar(kb, d), {}, d);
+    return kernel::ShellConvexPlanar(kb, {}, -d);
+  } catch (const std::exception& ex) {
+    why = ex.what();
+    return std::nullopt;
+  }
+}
+
 class OffsetSrfCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select surfaces or polysurfaces to offset"); }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind != ObjectKind::Curve && o->kind != ObjectKind::Point) ids_.push_back(id); }
     if (ids_.empty()) { ctx.Warn("Select surfaces, polysurfaces or meshes"); Finish(); return; }
-    options = {{"Distance", FormatNumber(distance_), {}, true, false}, {"Solid", "No", {"Yes", "No"}, false, true}, {"FlipAll", "No", {"Yes", "No"}, false, true}};
+    options = {{"Distance", FormatNumber(distance_), {}, true, false}, {"Solid", "No", {"Yes", "No"}, false, true}, {"FlipAll", "No", {"Yes", "No"}, false, true},
+               {"Exact", exact_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
     WantNumber("Offset distance", distance_);
   }
   void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
     if (n == "Distance") { double d; if (ParseNumber(v, d)) { distance_ = d; options[0].value = FormatNumber(d); default_number = d; } else ctx.Warn("Invalid distance"); }
     if (n == "Solid") { solid_ = (v == "Yes"); options[1].value = solid_ ? "Yes" : "No"; }
     if (n == "FlipAll") { flip_ = (v == "Yes"); options[2].value = flip_ ? "Yes" : "No"; }
+    if (n == "Exact") { exact_ = (v == "Yes"); options[3].value = exact_ ? "Yes" : "No"; }
   }
   void OnText(CommandContext& ctx, const std::string& t) override { double v; if (ParseNumber(t, v)) OnNumber(ctx, v); }
   void OnNumber(CommandContext& ctx, double d) override {
     if (d == 0) { ctx.Warn("Distance must be non-zero"); return; }
     if (flip_) d = -d;
     ctx.Doc().BeginChange("OffsetSrf");
-    int made = 0;
+    int made = 0, exact_made = 0;
     for (ObjectId id : ids_) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
@@ -1165,32 +1341,23 @@ class OffsetSrfCommand : public Command {
           n = SceneObject::MakeSurface(off);
         }
       } else {
-        // A polysurface, Solid=No: try the kernel's own exact
-        // OffsetSolidConvexPlanar first - the same real B-rep result
-        // (every face's own plane moved by `d`, re-clipped against its
-        // neighbours, no tessellation) ShellConvexPlanar already gives
-        // Shell's identical "exact first, fail open" case above, for a
-        // solid whose faces are all planar and whose shape is convex -
-        // the one case this had zero callers for anywhere in this app
-        // before this (see PARITY_MAP.md's own account of the gap).
-        // Fails open (std::invalid_argument: a curved face, non-convex
-        // shape, or `d` too large for some face's own offset feasibility)
-        // straight through to the mesh path below. Solid=Yes isn't
-        // attempted here - that case walls the original and offset
-        // surfaces together into a hollow shell, a different
-        // construction from this plain grow/shrink - so it keeps using
-        // the mesh path unchanged either way.
-        if (!solid_ && o->kind == ObjectKind::Brep && o->brep && o->brep->raw().IsSolid()) {
-          try {
-            n = SceneObject::MakeBrep(kernel::OffsetSolidConvexPlanar(*o->brep, d));
+        // A closed polysurface: try the kernel's exact offset first
+        // (TryExactOffsetSolid above - convex planar solids, whole spheres /
+        // tori, plain capped cylinders; Solid=Yes as well for convex planar
+        // solids and whole spheres / tori). Fails open to the mesh offset
+        // below, printing the kernel's reason; Exact=No keeps the mesh path.
+        if (exact_ && o->kind == ObjectKind::Brep && o->brep) {
+          std::string why;
+          if (std::optional<kernel::Brep> ex = TryExactOffsetSolid(*o->brep, d, solid_, why)) {
+            n = SceneObject::MakeBrep(*ex);
             n.layer_index = layer;
             ctx.Doc().Add(std::move(n));
             ++made;
+            ++exact_made;
             continue;
-          } catch (const std::exception&) {
-            // Not eligible (curved face, non-convex, or d too large) -
-            // fall through to the mesh path below unchanged.
           }
+          if (!why.empty() && o->brep->raw().IsSolid())
+            ctx.Print("OffsetSrf: object " + std::to_string(id) + " - exact B-rep offset not used (" + why + "); using the mesh offset");
         }
         std::optional<kernel::Mesh> m = MeshOf(*o, 0.01);
         if (!m || m->FaceCount() == 0) { ctx.Warn("Object " + std::to_string(id) + " could not be meshed; skipped"); continue; }
@@ -1207,12 +1374,13 @@ class OffsetSrfCommand : public Command {
       ctx.Doc().Add(std::move(n));
       ++made;
     }
-    ctx.Print("OffsetSrf: distance " + FormatNumber(d) + ", " + std::to_string(made) + " object(s)" + (solid_ ? ", solid" : ""));
+    ctx.Print("OffsetSrf: distance " + FormatNumber(d) + ", " + std::to_string(made) + " object(s)" + (solid_ ? ", solid" : "") +
+               (exact_made ? ", " + std::to_string(exact_made) + " exact B-rep" : std::string()));
     Finish();
   }
   std::vector<ObjectId> ids_;
   double distance_ = 1;
-  bool solid_ = false, flip_ = false;
+  bool solid_ = false, flip_ = false, exact_ = true;
 };
 
 // ---------------------------------------------------------------------------
@@ -1377,6 +1545,119 @@ std::optional<kernel::Mesh> BuildShell(const ON_Brep& brep, const std::vector<in
   }
 }
 
+// ---------------------------------------------------------------------------
+// Exact (B-rep) shell: every kernel shell construction that exists, wired in
+// ahead of BuildShell's mesh construction. Returns a real, untessellated
+// Brep for
+//   * a solid whose faces are ALL planar and whose shape is convex (a box or
+//     other simple polyhedron): kernel::ShellConvexPlanar - with or without
+//     removed (opened) faces and per-face thickness overrides, the two cases
+//     the earlier "plain closed shell" wiring did not reach;
+//   * a WHOLE sphere or WHOLE torus (a single-face solid): kernel::
+//     ShellClosedSphere / ShellClosedTorus (concentric inner copy);
+// and returns nullopt, with `why` set to the kernel's own reason, for
+// everything else (a curved face among several - cylinder, cone, filleted or
+// Boolean-built solids -, a non-convex shape, a thickness beyond the shape's
+// offset feasibility): the caller then keeps the mesh construction it always
+// had and prints `why`, so a mesh result is never silent.
+// `removed` / `overrides` are brep face indices as returned by PickShellFace.
+// ---------------------------------------------------------------------------
+std::optional<kernel::Brep> TryExactShell(const SceneObject& o, const std::vector<int>& removed,
+                                           const std::map<int, double>& overrides, double t, std::string& why) {
+  if (o.kind != ObjectKind::Brep || !o.brep) { why = "the object is not a polysurface"; return std::nullopt; }
+  const ON_Brep& b = o.brep->raw();
+  if (!b.IsSolid()) { why = "the polysurface is not a closed solid"; return std::nullopt; }
+  ON_BoundingBox bb;
+  b.GetBoundingBox(bb);
+  const double diag = std::max(1e-9, bb.Diagonal().Length());
+  // A whole sphere / torus: one face, nothing to open or override.
+  if (b.m_F.Count() == 1 && removed.empty() && overrides.empty()) {
+    const ON_Surface* surf = b.m_F[0].SurfaceOf();
+    ON_Sphere sph;
+    ON_Torus tor;
+    try {
+      if (surf && surf->IsSphere(&sph, diag * 1e-6)) {
+        if (!(t < sph.Radius())) { why = "the wall thickness is not smaller than the sphere radius"; return std::nullopt; }
+        if (std::optional<kernel::Brep> h = HollowSolid(ON_BrepSphere(ON_Sphere(sph.Center(), sph.Radius())), ON_BrepSphere(ON_Sphere(sph.Center(), sph.Radius() - t)))) return h;
+        return kernel::ShellClosedSphere(sph.Center(), sph.Radius(), t);
+      }
+      if (surf && surf->IsTorus(&tor, diag * 1e-6)) {
+        if (!(t < tor.minor_radius)) { why = "the wall thickness is not smaller than the tube radius"; return std::nullopt; }
+        if (std::optional<kernel::Brep> h = HollowSolid(ON_BrepTorus(ON_Torus(tor.plane, tor.major_radius, tor.minor_radius)),
+                                                         ON_BrepTorus(ON_Torus(tor.plane, tor.major_radius, tor.minor_radius - t)))) return h;
+        return kernel::ShellClosedTorus(tor.plane, tor.major_radius, tor.minor_radius, t);
+      }
+    } catch (const std::exception& ex) {
+      why = ex.what();
+      return std::nullopt;
+    }
+  }
+  // A plain capped cylinder: a closed hollow (outer cylinder + a reversed inner
+  // cylinder, two shells of one Brep) or, with one CAP removed, an open cup
+  // (outer wall + base disc + inner wall + inner floor + flat rim annulus), every
+  // face an exact revolved/cylindrical surface (RevolveProfileBrep).
+  PlainCylinder pc;
+  if (b.m_F.Count() == 3 && RecognizePlainCylinder(b, pc)) {
+    if (!overrides.empty()) { why = "a per-face thickness on a cylinder has no exact construction"; return std::nullopt; }
+    if (!(t < pc.R)) { why = "the wall thickness is not smaller than the cylinder radius"; return std::nullopt; }
+    try {
+      if (removed.empty()) {
+        if (!(2 * t < pc.H)) { why = "the wall thickness consumes the whole height"; return std::nullopt; }
+        ON_Brep all;
+        ON_Brep* outer = ON_BrepCylinder(ON_Cylinder(ON_Circle(ON_Plane(pc.c0, pc.ax), pc.R), pc.H), true, true);
+        ON_Brep* inner = ON_BrepCylinder(ON_Cylinder(ON_Circle(ON_Plane(pc.c0 + t * pc.ax, pc.ax), pc.R - t), pc.H - 2 * t), true, true);
+        if (!outer || !inner) { delete outer; delete inner; why = "could not build the cylinders"; return std::nullopt; }
+        inner->Flip();
+        all.Append(*outer);
+        all.Append(*inner);
+        delete outer;
+        delete inner;
+        kernel::Brep k;
+        k.raw() = all;
+        if (!k.raw().IsSolid() || !k.raw().IsValid()) { why = "the hollow cylinder did not assemble into a valid solid"; return std::nullopt; }
+        return k;
+      }
+      if (removed.size() == 1 && (removed[0] == pc.top || removed[0] == pc.bottom)) {
+        if (!(t < pc.H)) { why = "the wall thickness consumes the whole height"; return std::nullopt; }
+        const bool open_top = removed[0] == pc.top;
+        const double R = pc.R, H = pc.H;
+        const std::vector<std::pair<double, double>> prof =
+            open_top ? std::vector<std::pair<double, double>>{{0, 0}, {R, 0}, {R, H}, {R - t, H}, {R - t, t}, {0, t}}
+                     : std::vector<std::pair<double, double>>{{0, H}, {R, H}, {R, 0}, {R - t, 0}, {R - t, H - t}, {0, H - t}};
+        if (std::optional<kernel::Brep> cup = RevolveProfileBrep(pc.c0, pc.ax, pc.u, prof)) return cup;
+        why = "the revolved cup pieces did not join into a valid closed solid";
+        return std::nullopt;
+      }
+      why = "only one cap of a cylinder can be removed exactly (not its wall, not several faces)";
+      return std::nullopt;
+    } catch (const std::exception& ex) {
+      why = ex.what();
+      return std::nullopt;
+    }
+  }
+  try {
+    const std::vector<kernel::Brep::PlanarFace> pf = o.brep->PlanarFaces();  // throws on any curved face
+    // PlanarFaces()/ShellConvexPlanar index faces in the brep's own face
+    // order; verify that against the picked indices (each face's bounding-box
+    // centre must lie on the matching plane) instead of assuming it.
+    if (static_cast<int>(pf.size()) != b.m_F.Count()) { why = "planar face list does not match the polysurface's faces"; return std::nullopt; }
+    for (size_t i = 0; i < pf.size(); ++i) {
+      ON_BoundingBox fb;
+      b.m_F[static_cast<int>(i)].GetBoundingBox(fb);
+      if (std::fabs(pf[i].plane.DistanceTo(fb.Center())) > diag * 1e-6) { why = "planar face order does not match the polysurface's face order"; return std::nullopt; }
+    }
+    std::vector<double> thick(pf.size(), t);
+    for (const auto& [fi, ft] : overrides) {
+      if (fi < 0 || static_cast<size_t>(fi) >= thick.size()) { why = "invalid face index"; return std::nullopt; }
+      thick[static_cast<size_t>(fi)] = ft;
+    }
+    return kernel::ShellConvexPlanar(*o.brep, removed, thick);
+  } catch (const std::exception& ex) {
+    why = ex.what();
+    return std::nullopt;
+  }
+}
+
 class ShellCommand : public Command {
  public:
   // Picking: the original single face-picking prompt, now doing double
@@ -1410,7 +1691,7 @@ class ShellCommand : public Command {
       DeselectAll(ctx, ids_);
       accept_preselection = false;
       phase_ = Phase::Picking;
-      options = {{"Mode", "Remove", {"Remove", "Thickness"}, false, false}};
+      options = {{"Mode", "Remove", {"Remove", "Thickness"}, false, false}, {"Exact", exact_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
       WantPoint("Click face(s) to remove/open, or set Mode=Thickness first to give clicked face(s) their own wall thickness (Enter for the default Thickness)");
     } else {
       StartThickness();
@@ -1447,6 +1728,7 @@ class ShellCommand : public Command {
   void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
     if (n == "Thickness") { double d; if (ParseNumber(v, d) && d > 0) { thickness_ = d; options[0].value = FormatNumber(d); default_number = d; } else ctx.Warn("Thickness must be positive"); }
     if (n == "Mode") { override_mode_ = (v == "Thickness"); options[0].value = v; }
+    if (n == "Exact") { exact_ = (v == "Yes"); for (auto& op : options) if (op.name == "Exact") op.value = v; }
   }
   void OnText(CommandContext& ctx, const std::string& t) override {
     if (phase_ != Phase::Thickness && phase_ != Phase::OverrideValue) return;
@@ -1477,6 +1759,24 @@ class ShellCommand : public Command {
       const bool has_remove = rem_it != open_faces_.end() && !rem_it->second.empty();
       const auto fth_it = face_thickness_.find(id);
       const bool has_overrides = fth_it != face_thickness_.end() && !fth_it->second.empty();
+      // Exact B-rep first (TryExactShell above): convex planar solids with or
+      // without opened faces / per-face thickness, and whole spheres / tori.
+      // Fails open to the mesh constructions below, printing the kernel's
+      // reason; Exact=No (option) skips this and keeps the mesh path.
+      if (exact_ && o->kind == ObjectKind::Brep && o->brep) {
+        static const std::vector<int> kNoRemoveExact;
+        static const std::map<int, double> kNoOverridesExact;
+        std::string why;
+        std::optional<kernel::Brep> ex = TryExactShell(*o, has_remove ? rem_it->second : kNoRemoveExact,
+                                                        has_overrides ? fth_it->second : kNoOverridesExact, t, why);
+        if (ex) {
+          exact_results.push_back({id, *ex});
+          exact_notes_.push_back({has_remove ? rem_it->second.size() : size_t(0), has_overrides ? fth_it->second.size() : size_t(0)});
+          continue;
+        }
+        if (!why.empty() && (has_remove || has_overrides || o->brep->raw().IsSolid()))
+          ctx.Print("Shell: object " + std::to_string(id) + " - exact B-rep shell not used (" + why + "); using the mesh construction");
+      }
       if (has_remove || has_overrides) {
         if (o->kind != ObjectKind::Brep || !o->brep) {
           ctx.Warn("Object " + std::to_string(id) + " has picked faces but is not a polysurface; skipped");
@@ -1499,26 +1799,6 @@ class ShellCommand : public Command {
         if (has_overrides && overrides_applied) per_face.push_back(id);
         continue;
       }
-      // Plain, fully-closed shell (no face removed/opened, no per-face
-      // override): try the kernel's own exact ShellConvexPlanar first - a
-      // real, untessellated Brep result for any solid whose PlanarFaces()
-      // are all planar and whose shape is convex, the one case
-      // ShellConvexPlanar covers and (per PARITY_MAP.md's own account)
-      // had zero callers anywhere in this app before this. Fails open
-      // (std::invalid_argument - any curved face, a non-convex shape, or
-      // `t` too large for some face's own offset feasibility) straight
-      // through to the existing mesh path below, the same "exact first,
-      // fail open to the approximate path" shape TryExactBrepBoolean
-      // (cmd_boolean.cpp) already uses for the booleans.
-      if (o->kind == ObjectKind::Brep && o->brep && o->brep->raw().IsSolid()) {
-        try {
-          exact_results.push_back({id, kernel::ShellConvexPlanar(*o->brep, {}, t)});
-          continue;
-        } catch (const std::exception&) {
-          // Not eligible (curved face, non-convex, or t too large) - fall
-          // through to the mesh path below unchanged.
-        }
-      }
       std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
       if (!m || !m->IsClosedManifold()) { ctx.Warn("Object " + std::to_string(id) + " is not a closed solid; skipped"); continue; }
       kernel::Mesh outer = Outward(*m);
@@ -1533,7 +1813,10 @@ class ShellCommand : public Command {
     }
     if (results.empty() && exact_results.empty()) { Finish(); return; }
     ctx.Doc().BeginChange("Shell");
+    size_t exact_i = 0;
     for (auto& [id, r] : exact_results) {
+      const std::pair<size_t, size_t> note = exact_i < exact_notes_.size() ? exact_notes_[exact_i] : std::pair<size_t, size_t>{0, 0};
+      ++exact_i;
       int layer = 0;
       if (const SceneObject* o = ctx.Doc().Find(id)) layer = o->layer_index;
       ctx.Doc().Remove(id);
@@ -1556,7 +1839,13 @@ class ShellCommand : public Command {
       if (const SceneObject* added = ctx.Doc().Find(new_id)) {
         if (std::optional<kernel::Mesh> disp = MeshOf(*added, 0.005)) vol = std::fabs(disp->Volume());
       }
-      ctx.Print("Shell: thickness " + FormatNumber(t) + ", closed, exact B-rep, volume " + FormatNumber(vol));
+      // A shell with removed faces is still a closed solid (the opening is a
+      // cavity reachable through empty space, bounded by the flat rim in the
+      // removed face's own plane), so its volume is meaningful too.
+      ctx.Print("Shell: thickness " + FormatNumber(t) +
+                 (note.second ? ", " + std::to_string(note.second) + " face(s) at their own thickness" : std::string()) +
+                 (note.first ? ", open (" + std::to_string(note.first) + " face(s) removed)" : std::string(", closed")) +
+                 ", exact B-rep, volume " + FormatNumber(vol));
     }
     for (auto& [id, r] : results) {
       int layer = 0;
@@ -1580,10 +1869,12 @@ class ShellCommand : public Command {
   }
   void StartThickness() {
     phase_ = Phase::Thickness;
-    options = {{"Thickness", FormatNumber(thickness_), {}, true, false}};
+    options = {{"Thickness", FormatNumber(thickness_), {}, true, false}, {"Exact", exact_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
     WantNumber("Thickness", thickness_);
   }
   std::vector<ObjectId> ids_;
+  std::vector<std::pair<size_t, size_t>> exact_notes_;  // per exact result: (faces removed, per-face overrides)
+  bool exact_ = true;  // Exact=No keeps the mesh constructions only
   std::map<ObjectId, std::vector<int>> open_faces_;
   std::map<ObjectId, std::map<int, double>> face_thickness_;
   std::optional<ShellFacePick> pending_override_;
@@ -1899,7 +2190,13 @@ std::optional<SceneObject> RebuildPipe(CommandContext&, const kernel::NurbsCurve
   // hand-rolled construction below still runs, the same "degrade
   // gracefully" contract every other Rebuild* function in this file
   // follows.
-  if (cap && !wrap) {
+  // A CLOSED rail with Cap=Yes also takes the kernel's exact Brep::Pipe now
+  // ("a closed rail gives a closed tube", brep.h): a closed rail has no ends
+  // to cap, but the result is then a real closed solid (an exact rational
+  // torus for a circular rail) rather than the hand-rolled ring-loft mesh
+  // the earlier code kept for it. A kernel throw still falls through to
+  // that mesh construction.
+  if (cap) {
     try {
       return SceneObject::MakeBrep(kernel::Brep::Pipe(c, radius, /*cap=*/true, /*stations=*/32, /*round_caps=*/false));
     } catch (const std::exception&) {

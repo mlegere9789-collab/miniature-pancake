@@ -173,6 +173,122 @@ bool TryCylinderRimChamfer(const ON_Brep& solid, Point3d point_on_rim, double di
   }
 }
 
+// ---------------------------------------------------------------------------
+// Exact fillet of the rim(s) of a PLAIN CAPPED CYLINDER.
+//
+// The kernel has no fillet between a plane and a cylinder (FilletConvexEdge is
+// planar-planar; only the CHAMFER of a cylinder rim, ChamferCylinderRim, is
+// exact), so the app used to send a cylinder rim to the mesh fallback - which,
+// measured, was not even right (a radius-1 fillet on the top rim of a
+// radius-5, height-20 cylinder INCREASED the volume 1570.8 -> 1594). The rolling
+// ball between a flat cap and a cylinder wall traces an exact quarter TORUS, so
+// the result is assembled from exact pieces: the wall (a shortened cylinder), one
+// quarter-torus patch per filleted rim (an exact rational arc revolved about the
+// axis, ON_RevSurface), joined along their shared circles
+// (Brep::JoinNakedEdges - the circles coincide exactly) and re-capped with
+// planar discs (Brep::CapPlanarHoles). The result is a true closed polysurface
+// (4 faces / 7 edges for one rim, 5 / 9 for both) whose volume is the closed
+// form 2*pi*[R^2 H/2 - ...] (checked in the smoke script), not a tessellation.
+// Only a plain cylinder (one cylindrical wall + two flat caps perpendicular to
+// its axis) is recognised; anything else keeps the existing paths.
+// ---------------------------------------------------------------------------
+struct CylinderRimPlan {
+  ON_3dPoint c0;   // centre of the bottom cap
+  ON_3dVector ax;  // unit axis, bottom -> top
+  ON_3dVector u;   // unit direction perpendicular to ax
+  double R = 0, H = 0;
+  bool top = false;  // which cap the picked edge bounds
+};
+
+bool ClassifyPlainCylinderRim(const ON_Brep& b, int edge_index, CylinderRimPlan& plan, std::string& why) {
+  if (!b.IsSolid() || b.m_F.Count() != 3) { why = "not a plain capped cylinder (needs a wall and two cap faces)"; return false; }
+  if (edge_index < 0 || edge_index >= b.m_E.Count()) { why = "invalid edge"; return false; }
+  ON_BoundingBox bb;
+  b.GetBoundingBox(bb);
+  const double tol = std::max(1e-6, bb.Diagonal().Length() * 1e-6);
+  int wall = -1;
+  ON_Cylinder cyl;
+  std::vector<ON_Plane> caps;
+  for (int f = 0; f < 3; ++f) {
+    const ON_Surface* surf = b.m_F[f].SurfaceOf();
+    if (!surf) { why = "face without a surface"; return false; }
+    ON_Plane pl;
+    if (wall < 0 && surf->IsCylinder(&cyl, tol)) wall = f;
+    else if (surf->IsPlanar(&pl, tol)) caps.push_back(pl);
+    else { why = "not a plain capped cylinder"; return false; }
+  }
+  if (wall < 0 || caps.size() != 2) { why = "not a plain capped cylinder (needs one cylindrical wall and two planar caps)"; return false; }
+  ON_3dVector ax = cyl.Axis();
+  if (!ax.Unitize()) { why = "degenerate cylinder axis"; return false; }
+  double h[2];
+  for (int k = 0; k < 2; ++k) {
+    if (std::fabs(caps[k].zaxis * ax) < 1.0 - 1e-9) { why = "a cap is not perpendicular to the cylinder axis"; return false; }
+    h[k] = (caps[k].origin - cyl.circle.plane.origin) * ax;
+  }
+  const double h0 = std::min(h[0], h[1]), h1 = std::max(h[0], h[1]);
+  if (!(h1 - h0 > tol)) { why = "degenerate cylinder height"; return false; }
+  const ON_BrepEdge& e = b.m_E[edge_index];
+  const ON_3dPoint p = e.PointAtStart();
+  if (p.DistanceTo(e.PointAtEnd()) > 10 * tol) { why = "the picked edge is the cylinder's seam line, not a closed rim circle"; return false; }
+  const double hp = (p - cyl.circle.plane.origin) * ax;
+  const ON_3dVector radial = (p - cyl.circle.plane.origin) - hp * ax;
+  if (std::fabs(radial.Length() - cyl.circle.radius) > 10 * tol) { why = "the picked edge is not a rim circle of the cylinder"; return false; }
+  if (std::fabs(hp - h0) <= 10 * tol) plan.top = false;
+  else if (std::fabs(hp - h1) <= 10 * tol) plan.top = true;
+  else { why = "the picked edge is the cylinder's seam, not a rim"; return false; }
+  plan.c0 = cyl.circle.plane.origin + h0 * ax;
+  plan.ax = ax;
+  plan.u = radial.Length() > tol ? radial / radial.Length() : cyl.circle.plane.xaxis;
+  plan.R = cyl.circle.radius;
+  plan.H = h1 - h0;
+  return true;
+}
+
+// rt / rb: fillet radius at the top / bottom rim (0 = leave that rim sharp).
+bool BuildFilletedCylinder(const CylinderRimPlan& g, double rt, double rb, ON_Brep& out, std::string& why) {
+  if (!(rt >= 0) || !(rb >= 0) || (rt <= 0 && rb <= 0)) { why = "no positive radius"; return false; }
+  if (!(rt < g.R) || !(rb < g.R)) { why = "the radius is not smaller than the cylinder radius"; return false; }
+  if (!(rt + rb < g.H)) { why = "the radii together consume the whole wall"; return false; }
+  auto revolve = [&](const ON_Arc& arc) -> ON_Brep* {
+    ON_RevSurface* rev = new ON_RevSurface();
+    rev->m_curve = new ON_ArcCurve(arc);
+    rev->m_axis = ON_Line(g.c0, g.c0 + g.ax);
+    rev->m_angle = ON_Interval(0.0, 2.0 * ON_PI);
+    rev->m_t = rev->m_angle;
+    rev->m_bTransposed = false;
+    return ON_BrepRevSurface(rev, false, false);
+  };
+  ON_Brep all;
+  ON_Cylinder wall(ON_Circle(ON_Plane(g.c0 + rb * g.ax, g.ax), g.R), g.H - rt - rb);
+  if (ON_Brep* w = ON_BrepCylinder(wall, false, false)) { all.Append(*w); delete w; }
+  else { why = "could not build the cylinder wall"; return false; }
+  if (rt > 0) {
+    ON_Brep* t = revolve(ON_Arc(ON_Plane(g.c0 + (g.R - rt) * g.u + (g.H - rt) * g.ax, g.u, g.ax), rt, ON_PI / 2));
+    if (!t) { why = "could not build the top torus patch"; return false; }
+    all.Append(*t);
+    delete t;
+  }
+  if (rb > 0) {
+    ON_Brep* t = revolve(ON_Arc(ON_Circle(ON_Plane(g.c0 + (g.R - rb) * g.u + rb * g.ax, g.u, g.ax), rb), ON_Interval(-ON_PI / 2, 0.0)));
+    if (!t) { why = "could not build the bottom torus patch"; return false; }
+    all.Append(*t);
+    delete t;
+  }
+  kernel::Brep k;
+  k.raw() = all;
+  try {
+    k.JoinNakedEdges(1e-6);
+    k.CapPlanarHoles(1e-6);
+    k.UnifyNormals();
+  } catch (const std::exception& ex) {
+    why = ex.what();
+    return false;
+  }
+  if (!k.raw().IsSolid() || !k.raw().IsValid()) { why = "the assembled pieces did not form a valid closed solid"; return false; }
+  out = k.raw();
+  return true;
+}
+
 struct EdgePick { ObjectId id = kNoObject; int edge = -1; double dist = 0; };
 
 std::optional<EdgePick> PickEdge(CommandContext& ctx, Point3d p) {
@@ -1747,6 +1863,9 @@ class FilletEdgeCommand : public Command {
       // than silently building a plain radius-based rolling-ball fillet
       // under a different distance interpretation.
       options.push_back({"RailType", "RollingBall", {"RollingBall", "DistFromEdge", "DistBetweenRails"}, false, false});
+      // Exact (default Yes): a plain cylinder's rim is filleted as an exact quarter torus
+      // (ClassifyPlainCylinderRim / BuildFilletedCylinder above); No keeps the old approximate path.
+      options.push_back({"Exact", "Yes", {"Yes", "No"}, false, true});
     }
     if (mode_ == Mode::Blend) options = {{"Continuity", "Tangency", {"Tangency", "Curvature"}, false, false}};
     options.push_back({"Preview", "No", {"Yes", "No"}, false, true});
@@ -1761,6 +1880,7 @@ class FilletEdgeCommand : public Command {
     if (n == "RailType") rail_type_ = v == "DistFromEdge" ? RailType::DistFromEdge : v == "DistBetweenRails" ? RailType::DistBetweenRails : RailType::RollingBall;
     if (n == "Continuity") curvature_ = (v == "Curvature");
     if (n == "Preview") preview_ = (v == "Yes");
+    if (n == "Exact") exact_rim_ = (v == "Yes");
   }
   // Parses "t0:r0,t1:r1,..." into sorted, [0,1]-clamped (t, radius) pairs.
   // Malformed or empty tokens are skipped; a parse that yields nothing
@@ -1796,6 +1916,7 @@ class FilletEdgeCommand : public Command {
     return radii_.back().second;
   }
   void OnEnter(CommandContext& ctx) override {
+    FlushPendingRims(ctx);
     FlushPendingConic(ctx);
     FlushPendingRail(ctx);
     FlushPendingFillet(ctx);
@@ -1836,6 +1957,64 @@ class FilletEdgeCommand : public Command {
       if ((a.DistanceTo(p0) <= tol && c.DistanceTo(p1) <= tol) || (a.DistanceTo(p1) <= tol && c.DistanceTo(p0) <= tol)) return i;
     }
     return -1;
+  }
+  // Applies every staged cylinder-rim edge (see Run()) in ONE exact build, so
+  // filleting both rims of a cylinder in the same run yields one solid.
+  // Fails open: on any refusal the staged edges are replayed through the
+  // unchanged approximate path, with the reason printed.
+  void FlushPendingRims(CommandContext& ctx) {
+    if (pending_rims_.empty()) return;
+    const std::vector<PendingRim> rims = std::move(pending_rims_);
+    const ObjectId id = pending_rim_id_;
+    pending_rims_.clear();
+    pending_rim_id_ = kNoObject;
+    const std::string label = "FilletEdge";
+    const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
+    const SceneObject* o = ctx.Doc().Find(id);
+    std::optional<ON_Brep> b = o ? BrepOfObject(*o) : std::nullopt;
+    std::string why = "object not found";
+    if (b) {
+      double rt = 0, rb = 0;
+      CylinderRimPlan plan;
+      bool ok = true;
+      for (const PendingRim& r : rims) {
+        const int ei = FindEdgeIndexByEndpoints(*b, r.start, r.start, tol);
+        CylinderRimPlan p;
+        if (ei < 0 || !ClassifyPlainCylinderRim(*b, ei, p, why)) { ok = false; if (ei < 0) why = "staged rim edge no longer exists"; break; }
+        plan = p;
+        (r.top ? rt : rb) = r.radius;
+      }
+      ON_Brep out;
+      if (ok && BuildFilletedCylinder(plan, rt, rb, out, why)) {
+        ctx.Doc().BeginChange(label);
+        if (SceneObject* orig = ctx.Doc().Find(id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = out;
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        ctx.Print(label + ": cylinder rim(s) of object " + std::to_string(id) + " replaced with an exact fillet (" +
+                   (rt > 0 ? "top radius " + FormatNumber(rt) : std::string()) + (rt > 0 && rb > 0 ? ", " : "") +
+                   (rb > 0 ? "bottom radius " + FormatNumber(rb) : std::string()) + "; exact quarter-torus patch" + (rt > 0 && rb > 0 ? "es" : "") +
+                   ", " + std::to_string(out.m_F.Count()) + " faces, closed solid)");
+        return;
+      }
+    }
+    ctx.Print(label + ": exact cylinder-rim fillet not used (" + why + "); using the approximate (mesh) fillet");
+    flushing_fillet_ = true;
+    for (const PendingRim& r : rims) {
+      const SceneObject* oc = ctx.Doc().Find(id);
+      std::optional<ON_Brep> bc = oc ? BrepOfObject(*oc) : std::nullopt;
+      if (!bc) continue;
+      const int ei = FindEdgeIndexByEndpoints(*bc, r.start, r.start, tol);
+      if (ei < 0) continue;
+      EdgePick replay;
+      replay.id = id;
+      replay.edge = ei;
+      Run(ctx, replay);
+    }
+    flushing_fillet_ = false;
   }
   void FlushPendingFillet(CommandContext& ctx) {
     if (pending_fillet_.empty()) return;
@@ -2084,6 +2263,25 @@ class FilletEdgeCommand : public Command {
     if (!sa || !sb) { ctx.Warn("Could not read the adjacent surfaces"); return; }
     const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
     const std::string label = mode_ == Mode::Fillet ? "FilletEdge" : mode_ == Mode::Chamfer ? "ChamferEdge" : "BlendEdge";
+    // Exact fillet of a plain cylinder's rim (an exact quarter torus) - see
+    // ClassifyPlainCylinderRim above. Staged like the planar edges so both rims
+    // picked in one run become one solid; applied at Enter, failing open to the
+    // approximate path below with the reason printed.
+    if (mode_ == Mode::Fillet && exact_rim_ && !flushing_fillet_ && !rho_.has_value() && rail_type_ == RailType::RollingBall && radii_.empty() && !preview_) {
+      CylinderRimPlan plan;
+      std::string why;
+      if (ClassifyPlainCylinderRim(*b, pick.edge, plan, why)) {
+        if ((!pending_fillet_.empty() && pending_fillet_id_ != pick.id) || (!pending_rims_.empty() && pending_rim_id_ != pick.id)) {
+          ctx.Warn(label + ": an edge on a different object is already staged in this FilletEdge run; press Enter to apply it first, then run FilletEdge again for this object");
+          return;
+        }
+        pending_rim_id_ = pick.id;
+        pending_rims_.push_back({edge.PointAtStart(), plan.top, radius_});
+        ctx.Print(label + ": " + std::string(plan.top ? "top" : "bottom") + " rim of cylinder object " + std::to_string(pick.id) +
+                   " staged for an exact torus fillet (radius " + FormatNumber(radius_) + ") - " + std::to_string(pending_rims_.size()) + " staged, Enter to apply");
+        return;
+      }
+    }
     // Exact planar chamfer, tried FIRST (ahead of the rolling-ball-derived
     // approximate path below): kernel::ChamferConvexEdge/ChamferConcaveEdge
     // (and their Angle overloads) build a genuine flat-bevel B-rep with
@@ -3071,6 +3269,10 @@ class FilletEdgeCommand : public Command {
   RailType rail_type_ = RailType::RollingBall;  // Fillet only: alternate distance-based input for the same circular rolling-ball fillet; RollingBall = plain Radius (default)
   bool curvature_ = false;
   bool preview_ = false;
+  struct PendingRim { Point3d start; bool top; double radius; };
+  std::vector<PendingRim> pending_rims_;  // staged plain-cylinder rim fillets (see Run()/FlushPendingRims)
+  ObjectId pending_rim_id_ = kNoObject;
+  bool exact_rim_ = true;  // Exact=No skips the exact cylinder-rim torus fillet
   bool variable_engine_used_ = false;  // set by Run(): true when TryExactTaperedFillet (kernel::FilletConvexEdgeTapered) or BuildPlanarVariableFillet/BuildPlaneCylinderVariableFillet (the app's own exact closed forms) built the last variable-radius result
 
   // Staged Rho (exact conic) edges for this command run, applied together at
