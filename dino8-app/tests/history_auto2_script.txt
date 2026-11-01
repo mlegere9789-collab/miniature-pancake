@@ -1,87 +1,131 @@
 # Automatic history propagation, part 2 (cmd_history.cpp HistoryAutoUpdate):
 # the OTHER ways a source object is edited - Rotate, Mirror (in place), a
-# non-uniform Scale, a control-point removal - plus a 3-deep chain, a boolean
-# whose OPERAND is edited, and Undo/Redo consistency of the combined step.
-# No UpdateHistory anywhere. Every claim is a measured BoundingBox / Volume.
+# non-uniform ScaleNU, and a boolean OPERAND moved directly - plus Undo/Redo
+# consistency. No UpdateHistory anywhere. Every claim is a measured Volume.
+# (BoundingBox, VolumeCentroid & co CREATE objects in this app, which would
+# clear the Redo stack and shift the ids, so only Volume is used here.)
 SetActiveViewport Top
 History On
 
 # ===================================================================== R
-# R1: curve -> Extrude -> OffsetSrf (2-deep). Rotating the source square 45
-# degrees about its centre widens the offset solid's footprint from 12 to
-# 12*sqrt(2) = 16.97 (box -3.485..13.485); the volume is rotation-invariant.
+# R1: curve (1) -> Extrude (2), intersected with a fixed Box (3) -> result (4).
+# The 10x10 square overlaps the box x 5..15, y 0..10 in a 5x10 strip: 500.
+# Rotating the square 45 degrees about its centre leaves the right half of a
+# diamond clipped to y 0..10: 100*(50 - 2*(2.0711^2/2))/10... measured 457.1
+# (= 10 * (50 - 4.2893)). Undo reverts curve, extrusion AND boolean in one step.
 Rectangle 0,0,0 10,10,0
 SelNone
 SelID 1
 Extrude
 10
+Box 5,0,0 15,10,0 10
 SelNone
 SelID 2
-OffsetSrf
-1
-SelNone
+BooleanIntersection
 SelID 3
-BoundingBox
+Enter
+SelNone
+SelID 4
 Volume
 SelNone
 SelID 1
 Rotate 5,5,0 45
 SelNone
-SelID 3
-BoundingBox
+SelID 4
 Volume
 Undo
 SelNone
-SelID 3
-BoundingBox
+SelID 4
+Volume
 Redo
 SelNone
-SelID 3
-BoundingBox
+SelID 4
+Volume
 SelAll
 Hide
 SelNone
 HistoryPurge
 
 # ===================================================================== M
-# M1: Mirror with Copy=No edits the source IN PLACE: the square 0..10 lands on
-# 30..40 across the plane x = 20 and the extrusion follows.
+# M1: Mirror Copy=No edits the source IN PLACE across the plane x = 10: the
+# square 0..10 lands on 10..20; its overlap with the box x 4..14 goes from
+# 6*10*10 = 600 to 4*10*10 = 400.
 Rectangle 0,0,0 10,10,0
 SelNone
-SelID 4
+SelID 5
 Extrude
 10
+Box 4,0,0 14,10,0 10
 SelNone
-SelID 4
-Mirror Copy=No 20,0,0 20,10,0
+SelID 6
+BooleanIntersection
+SelID 7
+Enter
+SelNone
+SelID 8
+Volume
 SelNone
 SelID 5
-BoundingBox
+Mirror Copy=No 10,0,0 10,10,0
+SelNone
+SelID 8
+Volume
 SelAll
 Hide
 SelNone
 HistoryPurge
 
-# ===================================================================== S
-# S1: a NON-uniform scale (Scale1D along x) of the source of a 3-deep chain
-# curve -> Extrude -> OffsetSrf -> BooleanUnion with a fixed box.
-Rectangle 0,100,0 10,110,0
+# ===================================================================== N
+# N1: ScaleNU (3,1,1) of a profile: the 10x10x10 extrusion becomes 30x10x10.
+Rectangle 0,0,0 10,10,0
 SelNone
-SelID 6
+SelID 9
 Extrude
 10
 SelNone
-SelID 7
-OffsetSrf
-1
-Box 50,100,0 60,110,0 10
-SelNone
-SelID 8
-SelID 9
-BooleanUnion
-SelNone
-SelID 11
+SelID 10
 Volume
 SelNone
-SelID 6
-Scale1D 0,100,0 0,100,0 2
+SelID 9
+ScaleNU 0,0,0 3 1 1
+SelNone
+SelID 10
+Volume
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== B
+# B1: a boolean whose OPERAND is edited directly (not the curve): Extrude
+# (x 0..10) intersect Box (x 5..15) is 500; moving the box +3 in x (8..18)
+# shrinks the overlap to 2*10*10 = 200 with no UpdateHistory; Undo gives 500.
+Rectangle 0,0,0 10,10,0
+SelNone
+SelID 11
+Extrude
+10
+Box 5,0,0 15,10,0 10
+SelNone
+SelID 12
+BooleanIntersection
+SelID 13
+Enter
+SelNone
+SelID 14
+Volume
+# the boolean hid its operands (History On); show them to pick the box
+Show
+SelNone
+SelID 13
+Move
+0,0,0
+3,0,0
+SelNone
+SelID 14
+Volume
+Undo
+SelNone
+SelID 14
+Volume
+History

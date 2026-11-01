@@ -1354,7 +1354,7 @@ std::optional<SceneObject> RebuildBoolean(CommandContext& ctx, const HistoryInpu
     second_ids.assign(ids.begin() + static_cast<long>(first), ids.end());
   }
   BooleanOutcome r = ComputeBoolean(ctx, first_ids, second_ids, op, !second_ids.empty(), /*swap_sides=*/false, /*try_exact_brep=*/true);
-  if (!r.declined.empty()) ctx.Print("UpdateHistory: boolean: " + r.declined);
+  if (!r.declined.empty()) ctx.Print("History rebuild of a boolean: " + r.declined);
   if (!r.ok) { why = "the operands' current shapes cannot be combined (not closed solids, or every boolean engine refused them)"; return std::nullopt; }
   if (!r.object) { why = "the boolean of the operands' current shapes is empty"; return std::nullopt; }
   return std::move(r.object);
