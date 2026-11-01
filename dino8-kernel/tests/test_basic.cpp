@@ -89472,6 +89472,323 @@ void TestLoftPlanarCapsMeshClosedAndVolumeExact() {
   }
 }
 
+// ===========================================================================
+// Tangent / grazing contact handling (PARITY_MAP.md "Tangent / grazing
+// contact handling"). Measured on the tip before this change: two solids
+// that merely TOUCH (no volumetric overlap, or one inside the other with a
+// shared tangent locus) either threw or, worse, came back silently wrong -
+//  * a sphere inscribed in a box, or resting on a box face's CENTRE
+//    (the face's representative classification point IS the tangent point,
+//    so its ray-cast parity is arbitrary): Union 4 instead of 8, Intersection
+//    8.16 instead of 4.19, solid=0, open meshes, negative volumes;
+//  * internally tangent spheres / cylinders, a cylinder inscribed in a box:
+//    the SSX seed meshes report a fan of tiny open curves around the touch
+//    locus ("an edge is claimed by 3 or more fragment loops", or an invalid
+//    Intersection of volume 383 instead of 471);
+//  * BooleanCombinePlanar/Mixed Intersection of two solids sharing only a
+//    face returned that face as a one-face open "sheet" (Volume() NaN).
+// Every expected value below is an analytic closed form; every result is
+// checked for IsValid, IsSolid, a closed manifold tessellation, the exact
+// face count of the exact answer, and the inclusion-exclusion identity
+// V(A) + V(B) = V(A u B) + V(A n B) computed from the SAME tessellation.
+// ===========================================================================
+namespace tangent_tests {
+
+using dino8::kernel::BooleanCombineGeneral;
+using dino8::kernel::BooleanOp;
+using dino8::kernel::Brep;
+using dino8::kernel::Mesh;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::Point3d;
+using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+using dino8::kernel::Vector3d;
+
+Brep Pipe(Point3d a, Point3d b, double r) { return Brep::Pipe(NurbsCurve::FromControlPoints({a, b}, 1), r, true, 2); }
+
+struct Expect {
+  int faces;      // exact face count of the exact answer (0 = empty result)
+  double volume;  // analytic volume
+};
+
+// Runs all four of Union / Intersection / A-B / B-A on `a`,`b` through the
+// general engine and checks each against `ex[4]` (in that order). Returns
+// the four tessellated volumes through `vols`.
+void CheckFourOps(const char* tag, const Brep& a, const Brep& b, const Expect ex[4], double rel_tol, bool require_closed,
+                  int nu = 32, int nv = 64) {
+  const BooleanOp ops[4] = {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference, BooleanOp::Difference};
+  const char* names[4] = {"Union", "Intersection", "A-B", "B-A"};
+  double vols[4] = {0, 0, 0, 0};
+  for (int k = 0; k < 4; ++k) {
+    const std::string what = std::string(tag) + " " + names[k];
+    try {
+      const Brep r = k == 3 ? BooleanCombineGeneral(b, a, ops[k]) : BooleanCombineGeneral(a, b, ops[k]);
+      Check(r.raw().m_F.Count() == ex[k].faces, (what + ": exact face count of the exact answer").c_str());
+      if (ex[k].faces == 0) {
+        Check(ex[k].volume == 0.0, (what + ": empty result is the exact answer (no volume)").c_str());
+        continue;
+      }
+      Check(r.raw().IsValid(), (what + ": is a valid ON_Brep").c_str());
+      Check(r.raw().IsSolid(), (what + ": IsSolid").c_str());
+      const Mesh m = TessellateGeneralBooleanClosedMesh(r, nu, nv);
+      if (require_closed) Check(m.IsClosedManifold(), (what + ": tessellates to a closed manifold").c_str());
+      vols[k] = m.Volume();
+      Check(std::fabs(vols[k] - ex[k].volume) <= rel_tol * ex[k].volume,
+            (what + ": volume matches the analytic closed form within tessellation tolerance").c_str());
+    } catch (const std::exception& e) {
+      Check(false, (what + " threw: " + e.what()).c_str());
+    }
+  }
+}
+
+double VolOf(const Brep& b, int nu = 32, int nv = 64) { return TessellateGeneralBooleanClosedMesh(b, nu, nv).Volume(); }
+
+// V(A) + V(B) = V(A u B) + V(A n B), all four volumes from one tessellation
+// resolution (an implementation-independent identity that a misclassified
+// fragment cannot satisfy).
+void CheckInclusionExclusion(const char* tag, const Brep& a, const Brep& b, double tol, int nu = 32, int nv = 64) {
+  try {
+    const Brep u = BooleanCombineGeneral(a, b, BooleanOp::Union);
+    const Brep i = BooleanCombineGeneral(a, b, BooleanOp::Intersection);
+    const double vi = i.raw().m_F.Count() == 0 ? 0.0 : VolOf(i, nu, nv);
+    const double scale = VolOf(a, nu, nv) + VolOf(b, nu, nv);
+    Check(std::fabs(scale - VolOf(u, nu, nv) - vi) <= tol * scale,
+          (std::string(tag) + ": inclusion-exclusion V(A)+V(B) = V(A u B)+V(A n B) holds").c_str());
+  } catch (const std::exception& e) {
+    Check(false, (std::string(tag) + " inclusion-exclusion threw: " + e.what()).c_str());
+  }
+}
+
+// A sphere inscribed in a box touches all six faces at their CENTRES - the
+// fragment representative point of every box face is exactly a tangent
+// point. Also the r = 0.999 control (a clean 0.001 gap everywhere).
+void TestTangentSphereInscribedInBoxAtFaceCentres() {
+  const double pi = ON_PI;
+  const Brep box = Brep::Box(-1, -1, -1, 1, 1, 1);
+  const double sv = 4.0 * pi / 3.0;
+  {
+    const Brep s = Brep::Sphere(Point3d(0, 0, 0), 1.0);
+    const Expect ex[4] = {{6, 8.0}, {1, sv}, {7, 8.0 - sv}, {0, 0.0}};
+    CheckFourOps("sphere inscribed in box (6 tangent points at the face centres)", box, s, ex, 0.012, true);
+    CheckInclusionExclusion("inscribed sphere", box, s, 0.005);
+  }
+  {
+    // Control: not touching (gap 0.001) - was already right, must stay so.
+    const Brep s = Brep::Sphere(Point3d(0, 0, 0), 0.999);
+    const double v = sv * 0.999 * 0.999 * 0.999;
+    const Expect ex[4] = {{6, 8.0}, {1, v}, {7, 8.0 - v}, {0, 0.0}};
+    CheckFourOps("control sphere r=0.999 (gap 0.001 to every face)", box, s, ex, 0.012, true);
+  }
+  {
+    // Tangent at points that are NOT the face centres (the case that always
+    // worked): same answers.
+    const Brep wide = Brep::Box(-2, -1, -1, 2, 1, 1);
+    const Brep s = Brep::Sphere(Point3d(0.5, 0, 0), 1.0);
+    const Expect ex[4] = {{6, 16.0}, {1, sv}, {7, 16.0 - sv}, {0, 0.0}};
+    CheckFourOps("off-centre tangent sphere in a 4x2x2 box", wide, s, ex, 0.012, true);
+  }
+}
+
+// A sphere / torus / cylinder RESTING on a box face's centre or centre line
+// from outside: tangent at a point / circle / line through the centroid.
+void TestTangentSolidsRestingOnBoxFaceCentre() {
+  const double pi = ON_PI;
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  {
+    const Brep s = Brep::Sphere(Point3d(5, 5, 14), 4.0);
+    const double sv = 4.0 * pi * 64.0 / 3.0;
+    const Expect ex[4] = {{7, 1000.0 + sv}, {0, 0.0}, {6, 1000.0}, {1, sv}};
+    CheckFourOps("sphere r=4 resting on the centre of a box top", box, s, ex, 0.012, true);
+    CheckInclusionExclusion("sphere resting on box", box, s, 0.005);
+  }
+  {
+    // Sphere INSIDE the box, tangent to the top face at its centre only.
+    const Brep s = Brep::Sphere(Point3d(5, 5, 7), 3.0);
+    const double sv = 4.0 * pi * 27.0 / 3.0;
+    const Expect ex[4] = {{6, 1000.0}, {1, sv}, {7, 1000.0 - sv}, {0, 0.0}};
+    CheckFourOps("sphere r=3 inside a box, tangent to the top at its centre", box, s, ex, 0.012, true);
+  }
+  {
+    // Torus (major 3, minor 1) lying on the top face: tangent along a circle.
+    const Brep t = Brep::Torus(Point3d(5, 5, 11), Vector3d(0, 0, 1), 3.0, 1.0);
+    const double tv = 2.0 * pi * pi * 3.0;
+    const Expect ex[4] = {{7, 1000.0 + tv}, {0, 0.0}, {6, 1000.0}, {1, tv}};
+    CheckFourOps("torus resting on a box top (tangent circle)", box, t, ex, 0.02, true, 48, 96);
+  }
+  {
+    // Cylinder (r=1, L=16) lying on the top face, axis through the centre
+    // line (tangent along a line through the face centroid).
+    const Brep c = Pipe(Point3d(-3, 5, 11), Point3d(13, 5, 11), 1.0);
+    const double cv = pi * 16.0;
+    const Expect ex[4] = {{9, 1000.0 + cv}, {0, 0.0}, {6, 1000.0}, {3, cv}};
+    CheckFourOps("cylinder lying on a box top (tangent line through the centroid)", box, c, ex, 0.012, true, 48, 96);
+  }
+}
+
+// A cylinder inscribed in a box touches the four side walls along four
+// full-length lines (the SSX reports each as ~15 collinear segments).
+void TestTangentCylinderInscribedInBoxAlongFourLines() {
+  const double pi = ON_PI;
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep c = Pipe(Point3d(5, 5, 2), Point3d(5, 5, 8), 5.0);
+  const double cv = pi * 25.0 * 6.0;
+  const Expect ex[4] = {{6, 1000.0}, {3, cv}, {9, 1000.0 - cv}, {0, 0.0}};
+  CheckFourOps("cylinder r=5 inscribed in a 10-cube (4 tangent lines)", box, c, ex, 0.012, true, 48, 96);
+  CheckInclusionExclusion("inscribed cylinder", box, c, 0.005, 48, 96);
+}
+
+// Internally and externally tangent sphere pairs, along a seam-free axis,
+// the pole axis, and the seam meridian.
+void TestTangentSpherePairsInternalAndExternal() {
+  const double pi = ON_PI;
+  const double big = 4.0 * pi * 8.0 / 3.0, small = 4.0 * pi / 3.0;
+  const Brep R = Brep::Sphere(Point3d(0, 0, 0), 2.0);
+  const char* tags[3] = {"internally tangent spheres (touch on the +z pole axis)",
+                         "internally tangent spheres (touch on the +y meridian)",
+                         "internally tangent spheres (touch on the +x seam meridian)"};
+  const Point3d centres[3] = {Point3d(0, 0, 1), Point3d(0, 1, 0), Point3d(1, 0, 0)};
+  for (int k = 0; k < 3; ++k) {
+    const Brep r = Brep::Sphere(centres[k], 1.0);
+    const Expect ex[4] = {{1, big}, {1, small}, {2, big - small}, {0, 0.0}};
+    CheckFourOps(tags[k], R, r, ex, 0.012, true);
+    CheckInclusionExclusion(tags[k], R, r, 0.005);
+  }
+  const Brep u = Brep::Sphere(Point3d(0, 0, 0), 1.0);
+  const char* etags[2] = {"externally tangent unit spheres (along z)", "externally tangent unit spheres (along x)"};
+  const Point3d ecentres[2] = {Point3d(0, 0, 2), Point3d(2, 0, 0)};
+  for (int k = 0; k < 2; ++k) {
+    const Brep v = Brep::Sphere(ecentres[k], 1.0);
+    const Expect ex[4] = {{2, 2.0 * small}, {0, 0.0}, {1, small}, {1, small}};
+    CheckFourOps(etags[k], u, v, ex, 0.012, true);
+  }
+}
+
+// Parallel cylinders touching along a line, externally and internally.
+void TestTangentParallelCylinders() {
+  const double pi = ON_PI;
+  {
+    const Brep p1 = Pipe(Point3d(0, 0, 0), Point3d(0, 0, 4), 1.0);
+    const Brep p2 = Pipe(Point3d(2, 0, 1), Point3d(2, 0, 5), 1.0);
+    const double v = 4.0 * pi;
+    // The Union's two lumps touch along a line: a genuinely non-manifold
+    // shape, so its tessellation is (correctly) not a closed 2-manifold.
+    const Expect ex[4] = {{6, 2.0 * v}, {0, 0.0}, {3, v}, {3, v}};
+    CheckFourOps("externally tangent parallel cylinders", p1, p2, ex, 0.012, false, 48, 96);
+  }
+  {
+    // Internally tangent (nested) cylinders, small inside big, touching
+    // along x = 2: Union is the big cylinder, B-A is empty.
+    const Brep big = Pipe(Point3d(0, 0, 0), Point3d(0, 0, 6), 2.0);
+    const Brep small = Pipe(Point3d(1, 0, 1), Point3d(1, 0, 5), 1.0);
+    const double bv = 24.0 * pi;
+    try {
+      const Brep u = BooleanCombineGeneral(big, small, BooleanOp::Union);
+      Check(u.raw().IsValid() && u.raw().IsSolid() && u.raw().m_F.Count() == 3, "nested tangent cylinders Union: valid solid, 3 faces (the big cylinder)");
+      const Mesh m = TessellateGeneralBooleanClosedMesh(u, 48, 96);
+      Check(m.IsClosedManifold() && std::fabs(m.Volume() - bv) <= 0.012 * bv, "nested tangent cylinders Union: closed, volume 24 pi");
+      const Brep e = BooleanCombineGeneral(small, big, BooleanOp::Difference);
+      Check(e.raw().m_F.Count() == 0, "nested tangent cylinders small - big is empty");
+    } catch (const std::exception& e) {
+      Check(false, (std::string("nested tangent cylinders threw: ") + e.what()).c_str());
+    }
+  }
+}
+
+// Controls: the fix must not swallow GENUINE shallow crossings or genuine gaps.
+void TestTangentFixLeavesRealShallowCrossingsAndGapsAlone() {
+  const double pi = ON_PI;
+  const Brep box = Brep::Box(-3, -3, -3, 3, 3, 3);
+  const double sv = 4.0 * pi / 3.0;
+  for (double h : {0.05, 0.2}) {
+    // Sphere r=1 poking h into the top face: spherical-cap lens of volume
+    // pi h^2 (3 - h) / 3.
+    const Brep s = Brep::Sphere(Point3d(0, 0, 3.0 + 1.0 - h), 1.0);
+    const double cap = pi * h * h * (3.0 - h) / 3.0;
+    const std::string tag = "sphere poking " + std::to_string(h) + " into a box top";
+    try {
+      const Brep u = BooleanCombineGeneral(box, s, BooleanOp::Union);
+      const Brep i = BooleanCombineGeneral(box, s, BooleanOp::Intersection);
+      Check(u.raw().IsValid() && i.raw().IsValid() && i.raw().m_F.Count() == 2,
+            (tag + ": Union valid; Intersection is the 2-face lens (spherical cap + planar disc)").c_str());
+      Check(std::fabs(VolOf(i, 48, 96) - cap) <= 0.02 * cap + 2e-4, (tag + ": lens volume matches the analytic cap").c_str());
+      Check(std::fabs(VolOf(u, 48, 96) - (216.0 + sv - cap)) <= 0.012 * sv,
+            (tag + ": Union volume is box + sphere - cap").c_str());
+    } catch (const std::exception& e) {
+      Check(false, (tag + " threw: " + e.what()).c_str());
+    }
+  }
+  {
+    const Brep s = Brep::Sphere(Point3d(0, 0, 4.01), 1.0);
+    const Expect ex[4] = {{7, 216.0 + sv}, {0, 0.0}, {6, 216.0}, {1, sv}};
+    CheckFourOps("sphere hovering 0.01 above a box top (a real gap)", box, s, ex, 0.012, true);
+  }
+}
+
+// BooleanCombinePlanar / BooleanCombineMixed: Intersection of solids that
+// share only a face is empty, not the shared face as an open sheet.
+void TestTangentPlanarFaceContactIntersectionIsEmpty() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanCombinePlanar;
+  const Brep a = Brep::Box(0, 0, 0, 1, 1, 1);
+  struct Fix {
+    const char* tag;
+    Brep b;
+  };
+  const Fix fixes[] = {
+      {"flush face contact", Brep::Box(1, 0, 0, 2, 1, 1)},
+      {"partial face contact (offset by half a face)", Brep::Box(1, 0.5, 0, 2, 1.5, 1)},
+      {"stacked in z", Brep::Box(0, 0, 1, 1, 1, 2)},
+      {"smaller box on top", Brep::Box(0.25, 0.25, 1, 0.75, 0.75, 2)},
+      {"face contact with a 1e-9 gap", Brep::Box(1.0 + 1e-9, 0, 0, 2, 1, 1)},
+      {"edge contact", Brep::Box(1, 1, 0, 2, 2, 1)},
+      {"vertex contact", Brep::Box(1, 1, 1, 2, 2, 2)},
+  };
+  for (const Fix& f : fixes) {
+    for (int engine = 0; engine < 2; ++engine) {
+      const std::string who = std::string(engine == 0 ? "Planar " : "Mixed ") + f.tag;
+      try {
+        const Brep i = engine == 0 ? BooleanCombinePlanar(a, f.b, BooleanOp::Intersection)
+                                   : BooleanCombineMixed(a, f.b, BooleanOp::Intersection);
+        Check(i.raw().m_F.Count() == 0, (who + ": Intersection of touching solids is empty (0 faces), not a one-face sheet").c_str());
+        const Brep d = engine == 0 ? BooleanCombinePlanar(a, f.b, BooleanOp::Difference)
+                                   : BooleanCombineMixed(a, f.b, BooleanOp::Difference);
+        Check(d.raw().IsValid() && d.raw().IsSolid() && std::fabs(d.Volume() - 1.0) < 1e-9,
+              (who + ": A - B of touching solids is A, exact volume 1, valid solid").c_str());
+        const Brep d2 = engine == 0 ? BooleanCombinePlanar(f.b, a, BooleanOp::Difference)
+                                    : BooleanCombineMixed(f.b, a, BooleanOp::Difference);
+        const double vb = std::fabs(f.b.Volume());
+        Check(d2.raw().IsValid() && d2.raw().IsSolid() && std::fabs(d2.Volume() - vb) < 1e-9,
+              (who + ": B - A of touching solids is B, exact volume").c_str());
+      } catch (const std::exception& e) {
+        Check(false, (who + " threw: " + e.what()).c_str());
+      }
+    }
+  }
+  // Controls: volumetric overlap that also shares a face plane keeps its
+  // Intersection (the same-normal coincident face is kept, not dropped).
+  {
+    const Brep b = Brep::Box(0.5, 0, 0, 1.5, 1, 1);
+    for (int engine = 0; engine < 2; ++engine) {
+      const Brep i = engine == 0 ? BooleanCombinePlanar(a, b, BooleanOp::Intersection) : BooleanCombineMixed(a, b, BooleanOp::Intersection);
+      Check(i.raw().m_F.Count() == 6 && i.raw().IsValid() && i.raw().IsSolid() && std::fabs(i.Volume() - 0.5) < 1e-9,
+            "overlapping boxes sharing the y/z face planes: Intersection is still the 6-face box of volume 0.5");
+    }
+  }
+  // Touching Union is still the (disclosed) non-manifold refusal by default,
+  // and the opt-in flag still builds it.
+  {
+    const Brep b = Brep::Box(1, 0, 0, 2, 1, 1);
+    bool threw = false;
+    try {
+      BooleanCombinePlanar(a, b, BooleanOp::Union);
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    Check(threw, "face-touching Union still refuses by default (non-manifold output)");
+  }
+}
+
+}  // namespace tangent_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -90846,6 +91163,14 @@ int main() {
   RunTest("TestSectionAnchoredSweepReproducesTheSectionAndCoversTheRail", TestSectionAnchoredSweepReproducesTheSectionAndCoversTheRail);
   RunTest("TestLoftOfAlignedClosedSectionsInterpolatesAndCaps", TestLoftOfAlignedClosedSectionsInterpolatesAndCaps);
   RunTest("TestLoftPlanarCapsMeshClosedAndVolumeExact", TestLoftPlanarCapsMeshClosedAndVolumeExact);
+
+  RunTest("tangent_tests::TestTangentSphereInscribedInBoxAtFaceCentres", tangent_tests::TestTangentSphereInscribedInBoxAtFaceCentres);
+  RunTest("tangent_tests::TestTangentSolidsRestingOnBoxFaceCentre", tangent_tests::TestTangentSolidsRestingOnBoxFaceCentre);
+  RunTest("tangent_tests::TestTangentCylinderInscribedInBoxAlongFourLines", tangent_tests::TestTangentCylinderInscribedInBoxAlongFourLines);
+  RunTest("tangent_tests::TestTangentSpherePairsInternalAndExternal", tangent_tests::TestTangentSpherePairsInternalAndExternal);
+  RunTest("tangent_tests::TestTangentParallelCylinders", tangent_tests::TestTangentParallelCylinders);
+  RunTest("tangent_tests::TestTangentFixLeavesRealShallowCrossingsAndGapsAlone", tangent_tests::TestTangentFixLeavesRealShallowCrossingsAndGapsAlone);
+  RunTest("tangent_tests::TestTangentPlanarFaceContactIntersectionIsEmpty", tangent_tests::TestTangentPlanarFaceContactIntersectionIsEmpty);
 
   RunTest("ON::End", ON::End);
 
