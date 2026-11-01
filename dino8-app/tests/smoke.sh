@@ -9998,6 +9998,22 @@ srcheck S_tcone_bottom "5 faces, 9 edges, closed solid" "...5 faces, closed soli
 srvol S_tcone_bottom 235.7 238.8 "frustum bottom-open cup Volume = 237.24"
 srcheck S_tcone_bottom "Object 2: valid" "...valid"
 srcheck S_cone_exactno "(mesh)" "old behaviour reachable: Exact=No gives the mesh shell"
+# --- ChamferEdge on the rim of a plain cone / frustum
+srcheck C_tcone_bottom "replaced with an exact chamfer (radius 1; exact cone on the cylinder rim" "frustum bottom-rim chamfer is an exact revolved bevel (before: the approximate mesh fallback)"
+srcheck C_tcone_bottom "(polysurface)" "...a polysurface"
+srcheck C_tcone_bottom "4 faces, 7 edges, closed solid" "...4 faces (cap, bevel cone, wall, top cap), 7 edges, closed solid"
+srvol C_tcone_bottom 496 501.5 "frustum r5->r3 h10 with a 1x1 bottom bevel: Volume = 498.95"
+srcheck C_tcone_bottom "Object 1: valid" "...Check reports it valid"
+srcheck C_tcone_top "replaced with an exact chamfer (distance1 1, distance2 2; exact cone on the cylinder rim" "frustum top-rim chamfer with Distance2 (wall 1, cap 2) is exact: the two distances are honoured"
+srcheck C_tcone_top "4 faces, 7 edges, closed solid" "...4 faces, closed solid"
+srvol C_tcone_top 495.4 501.3 "frustum top bevel wall 1 / cap 2: Volume = 498.35"
+srcheck C_tcone_top "Object 1: valid" "...valid"
+srcheck C_cone_rim "replaced with an exact chamfer (distance1 1, distance2 2; exact cone on the cylinder rim" "plain cone rim chamfer with Distance2 is exact"
+srcheck C_cone_rim "3 faces, 5 edges, closed solid" "...3 faces, closed solid"
+srvol C_cone_rim 236.9 239.7 "cone r5 h10 rim bevel wall 1 / cap 2: Volume = 238.28"
+srcheck C_cone_rim "Object 1: valid" "...valid"
+srcheck C_cone_toobig "cone-rim attempt: a chamfer distance consumes the whole wall or cap" "a cap distance larger than the cap: refused WITH the cone-rim reason in the diagnostic"
+srcheck C_cone_toobig "2 faces, 2 edges, closed solid" "...and the cone is left untouched"
 if grep -q "^FAIL" <<<"$SROUT"; then echo "FAIL solidsrev script reported an in-script FAIL"; fail=1; fi
 
 exit $fail

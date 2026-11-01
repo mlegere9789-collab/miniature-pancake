@@ -20,6 +20,7 @@
 // back to a mesh boolean of a swept cutting tool, and says so in the
 // command's printed note ("mesh fallback").
 #include "commands/cmd_common.h"
+#include "commands/revolved_solid.h"
 #include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/fillet.h"
 #include "geom/BlendSurface.h"
@@ -166,6 +167,52 @@ bool TryCylinderRimChamfer(const ON_Brep& solid, Point3d point_on_rim, double di
     res.CapPlanarHoles(1e-6);
     if (!res.raw().IsSolid() || !res.raw().IsValid()) { err = "the chamfered cylinder could not be re-closed with exact disc caps"; return false; }
     out = res.raw();
+    return true;
+  } catch (const std::exception& ex) {
+    err = ex.what();
+    return false;
+  }
+}
+
+// Exact conical chamfer on the rim of a PLAIN CAPPED CONE or CONE FRUSTUM (Cone / TCone): the
+// solid's convex (radius, height) profile has the rim circle through `point_on_rim` as a vertex;
+// that corner is cut by `distance_wall` along the wall and `distance_cap` across the flat cap and
+// the new profile is revolved (revolved_solid.h), so the bevel is an exact cone and every face
+// stays an exact revolved surface. Same contract as TryCylinderRimChamfer: false (reason in
+// `err`, `out` untouched) when this is not such a solid / rim or a distance does not fit.
+bool TryConeRimChamfer(const ON_Brep& solid, Point3d point_on_rim, double distance_wall, double distance_cap, ON_Brep& out,
+                       std::string& err) {
+  try {
+    revolved::PlainRevolved pr;
+    if (!revolved::RecognizeConeLike(solid, pr)) { err = "not a plain capped cone or frustum"; return false; }
+    ON_BoundingBox bb;
+    solid.GetBoundingBox(bb);
+    const double tol = std::max(1e-9, bb.Diagonal().Length() * 1e-5);
+    const ON_3dVector v = point_on_rim - pr.c0;
+    const double h = v * pr.ax;
+    const double r = (v - h * pr.ax).Length();
+    const auto& P = pr.prof;
+    int k = -1;
+    for (size_t i = 1; i + 1 < P.size(); ++i) if (std::fabs(P[i].first - r) < tol && std::fabs(P[i].second - h) < tol) k = static_cast<int>(i);
+    if (k < 0) { err = "the edge is not a rim circle of this cone"; return false; }
+    if (!(distance_wall > 0) || !(distance_cap > 0)) { err = "chamfer distances must be positive"; return false; }
+    auto unit = [&](size_t a, size_t b) {
+      const double dr = P[b].first - P[a].first, dz = P[b].second - P[a].second, len = std::hypot(dr, dz);
+      return std::array<double, 3>{dr / len, dz / len, len};
+    };
+    const std::array<double, 3> in = unit(static_cast<size_t>(k) - 1, static_cast<size_t>(k)), outd = unit(static_cast<size_t>(k), static_cast<size_t>(k) + 1);
+    const bool in_is_cap = std::fabs(in[1]) < 1e-9;  // the edge arriving at the rim vertex is the flat cap
+    const double d_in = in_is_cap ? distance_cap : distance_wall, d_out = in_is_cap ? distance_wall : distance_cap;
+    if (!(d_in < in[2] - tol) || !(d_out < outd[2] - tol)) { err = "a chamfer distance consumes the whole wall or cap"; return false; }
+    std::vector<std::pair<double, double>> prof;
+    for (int i = 0; i < static_cast<int>(P.size()); ++i) {
+      if (i != k) { prof.push_back(P[static_cast<size_t>(i)]); continue; }
+      prof.emplace_back(P[static_cast<size_t>(i)].first - d_in * in[0], P[static_cast<size_t>(i)].second - d_in * in[1]);
+      prof.emplace_back(P[static_cast<size_t>(i)].first + d_out * outd[0], P[static_cast<size_t>(i)].second + d_out * outd[1]);
+    }
+    std::optional<kernel::Brep> res = revolved::RevolveOutward(pr, prof);
+    if (!res) { err = "the chamfered cone profile did not revolve into a valid closed solid"; return false; }
+    out = res->raw();
     return true;
   } catch (const std::exception& ex) {
     err = ex.what();
@@ -3124,7 +3171,13 @@ class FilletEdgeCommand : public Command {
       if (rim_chamfer) *rim_chamfer = true;
       return true;
     }
-    detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err + "; cylinder-rim attempt: " + rim_err;
+    // Fourth attempt: the rim of a plain capped cone / frustum (a conical bevel, same distance meaning).
+    std::string cone_err = "Distance/Angle mode has no cone-rim construction";
+    if (!use_angle && TryConeRimChamfer(solid, p0, d_i, d_j, out, cone_err)) {
+      if (rim_chamfer) *rim_chamfer = true;
+      return true;
+    }
+    detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err + "; cylinder-rim attempt: " + rim_err + "; cone-rim attempt: " + cone_err;
     return false;
   }
 

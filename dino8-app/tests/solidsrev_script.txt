@@ -234,5 +234,56 @@ Enter
 1
 SelAll
 List
+# ===================== ChamferEdge on the rim of a plain cone / frustum =====================
+# frustum r5 -> r3 h10, bottom rim chamfered 1 x 1 (a conical bevel; the profile corner is cut and
+# revolved, so every face stays exact): 498.95
+New
+SRBEGIN_C_tcone_bottom
+TCone 0,0,0 5 10 3
+ChamferEdge
+Radius=1
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+# same frustum, top rim with an asymmetric chamfer (wall 1, cap 2): 498.35
+New
+SRBEGIN_C_tcone_top
+TCone 0,0,0 5 10 3
+ChamferEdge
+Radius=1
+Distance2=2
+0,3,10
+Enter
+SelAll
+List
+Volume
+Check
+# plain cone r5 h10 (flat cap at z=10), rim chamfered wall 1 / cap 2: 238.28
+New
+SRBEGIN_C_cone_rim
+Cone 0,0,0 5 10
+ChamferEdge
+Radius=1
+Distance2=2
+0,5,10
+Enter
+SelAll
+List
+Volume
+Check
+# a cap distance as large as the cap itself: refused, the cone-rim reason is part of the diagnostic
+New
+SRBEGIN_C_cone_toobig
+Cone 0,0,0 5 10
+ChamferEdge
+Radius=1
+Distance2=6
+0,5,10
+Enter
+SelAll
+List
 New
 SREND
