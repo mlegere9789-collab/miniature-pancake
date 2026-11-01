@@ -128,6 +128,14 @@ bool RenderFullFrame(CommandContext& ctx, Viewport* vp, int w, int h, const Qual
   const auto t0 = std::chrono::steady_clock::now();
   tracer.Prepare(ctx.Doc(), vp->GetCamera().State(), static_cast<double>(w) / h,
                  std::min(app.curve_display_tolerance, 0.01), std::min(app.surface_display_tolerance, 0.02));
+  {
+    // What the tracer was actually handed (an empty scene or a missing light renders
+    // plausible-looking sky and ground, so say it).
+    char scene[128];
+    std::snprintf(scene, sizeof scene, "Render: path-traced scene has %zu triangles and %zu lights", tracer.SceneBvh().Triangles().size(),
+                  tracer.SceneLights().size());
+    ctx.Print(scene);
+  }
   PathTraceSettings s;
   s.width = w; s.height = h; s.samples = std::max(q.samples, 1); s.bounces = std::max(q.bounces, 1);
   s.denoise = q.denoise; s.arctic = arctic;

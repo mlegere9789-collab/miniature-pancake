@@ -1888,7 +1888,7 @@ rhdrrtcheck() { if echo "$RHDRRT" | grep -q "$1"; then echo "ok   $2"; else echo
 rhdrrtcheck "Saved rendering $TMPW/renderhdr/raytrace_hdr.hdr (24 x 24)" "SaveRenderWindowAs wrote a real .hdr file from a Quality=Raytraced render"
 rhdrrtcheck "Saved rendering $TMPW/renderhdr/raytrace_hdr.exr (24 x 24)" "SaveRenderWindowAs wrote a real .exr file from a Quality=Raytraced render"
 rhdrrtcheck "! This render has no real HDR data to save" "a Quality=Raytraced render with no Hdr=Yes still correctly refuses an .hdr save afterward (the per-call-request refusal is not loosened by adding raytraced HDR capture)"
-python3 - "$TMPW/renderhdr/raytrace_hdr.hdr" "$TMPW/renderhdr/raytrace_hdr.exr" <<'PY' && echo "ok   Quality=Raytraced's own .hdr and .exr captures carry real, unclamped linear-radiance values above 1.0 too - PathTracer::Render's hdr_rgb_out, not just the rasteriser's own second HDR pass" || { echo "FAIL Render Hdr=Yes Quality=Raytraced pixel check"; fail=1; }
+python3 - "$TMPW/renderhdr/raytrace_hdr.hdr" "$TMPW/renderhdr/raytrace_hdr.exr" <<'PY' && echo "ok   Quality=Raytraced's own .hdr and .exr captures carry real, unclamped linear-radiance values above 1.0 too - PathTracer::Render's hdr_rgb_out, not just the rasteriser's own second HDR pass" || { echo "FAIL Render Hdr=Yes Quality=Raytraced pixel check"; grep -a "Render:" <<<"$RHDRRT" || true; fail=1; }
 import struct, sys
 
 def load_hdr_flat(path):
