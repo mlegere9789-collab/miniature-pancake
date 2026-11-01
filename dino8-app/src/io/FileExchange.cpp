@@ -416,22 +416,31 @@ void WriteDxfMesh(DxfWriter& w, const ON_Mesh& m, const std::string& layer, cons
 // Was entirely missing before this change: DXF's own writer had no HATCH
 // function at all, so a Dino8-made or DXF-imported solid hatch round-
 // tripped out to bare boundary LINE/polyline entities, losing its fill.
-void WriteDxfHatchSolid(DxfWriter& w, const std::vector<Point3d>& pts, const std::string& layer, const Color* color) {
-  if (pts.size() < 3) return;
+//
+// `loops` holds one polygon per boundary path: the first is the outer
+// boundary and any further ones are island/hole loops (written as extra
+// polyline paths, group 91 = loop count - exactly what DxfImporter::Hatch
+// reads back as outer + holes). Before this, a solid hatch with holes
+// (an imported multi-path HATCH, or any trimmed-plane fill with inner trim
+// loops) exported as its outer loop alone and silently lost its holes.
+void WriteDxfHatchSolid(DxfWriter& w, const std::vector<std::vector<Point3d>>& loops, const std::string& layer, const Color* color) {
+  if (loops.empty() || loops.front().size() < 3) return;
   w.BeginEntity("HATCH", layer, color);
   w.G(100, "AcDbHatch");
-  w.G(10, 0.0); w.G(20, 0.0); w.G(30, pts.front().z);  // elevation point
+  w.G(10, 0.0); w.G(20, 0.0); w.G(30, loops.front().front().z);  // elevation point
   w.G(210, 0.0); w.G(220, 0.0); w.G(230, 1.0);         // extrusion normal: +Z
   w.G(2, "SOLID");
   w.G(70, 1);  // solid fill
   w.G(71, 0);  // not associative
-  w.G(91, 1);  // one boundary path
-  w.G(92, 2);  // boundary path type: polyline
-  w.G(72, 0);  // no bulges
-  w.G(73, 1);  // closed
-  w.G(93, static_cast<int>(pts.size()));
-  for (const Point3d& p : pts) { w.G(10, p.x); w.G(20, p.y); }
-  w.G(97, 0);  // no source boundary objects
+  w.G(91, static_cast<int>(loops.size()));  // boundary path count
+  for (const std::vector<Point3d>& pts : loops) {
+    w.G(92, 2);  // boundary path type: polyline
+    w.G(72, 0);  // no bulges
+    w.G(73, 1);  // closed
+    w.G(93, static_cast<int>(pts.size()));
+    for (const Point3d& p : pts) { w.G(10, p.x); w.G(20, p.y); }
+    w.G(97, 0);  // no source boundary objects
+  }
   w.G(75, 0);  // hatch style: normal
   w.G(76, 1);  // pattern type: predefined
   w.G(98, 0);  // no seed points
@@ -1326,10 +1335,24 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
           const std::vector<Polyline3> loops = ObjectPolylines(*o);
           if (!loops.empty() && loops.front().closed && loops.front().pts.size() >= 3) {
             const std::vector<Point3d>& pts = loops.front().pts;
+            // Outer loop first (largest bounding box), then any hole loops.
+            std::vector<std::vector<Point3d>> hatch_loops;
             bool planar_xy = true;
-            for (const Point3d& p : pts) if (std::fabs(p.z - pts.front().z) > 1e-9) { planar_xy = false; break; }
+            for (const Polyline3& lp : loops) {
+              if (!lp.closed || lp.pts.size() < 3) continue;
+              for (const Point3d& p : lp.pts) if (std::fabs(p.z - pts.front().z) > 1e-9) { planar_xy = false; break; }
+              hatch_loops.push_back(lp.pts);
+            }
+            auto box_area = [](const std::vector<Point3d>& v) {
+              ON_BoundingBox bb;
+              for (const Point3d& p : v) bb.Set(p, true);
+              const ON_3dVector d = bb.Diagonal();
+              return d.x * d.y;
+            };
+            std::stable_sort(hatch_loops.begin(), hatch_loops.end(),
+                             [&](const std::vector<Point3d>& a, const std::vector<Point3d>& b) { return box_area(a) > box_area(b); });
             if (planar_xy) {
-              WriteDxfHatchSolid(w, pts, layer, color);
+              WriteDxfHatchSolid(w, hatch_loops, layer, color);
               ++written;
               break;
             }
@@ -2183,26 +2206,64 @@ class DxfImporter {
   // Both fall into the ordinary skipped-entity count, same as DIMENSION/
   // SPLINE-boundary elsewhere in this importer.
   void Hatch(const DxfEntity& e) {
-    if (e.I(91, 0) != 1) { ++stats_.skipped; return; }  // multiple loops/islands: unsupported
-    size_t i = 0;
-    bool is_polyline = false;
-    for (; i < e.groups.size(); ++i) {
-      if (e.groups[i].code == 92) { is_polyline = (std::atoi(e.groups[i].value.c_str()) & 2) != 0; ++i; break; }
+    const int npaths = e.I(91, 0);
+    if (npaths < 1 || npaths > 64) { ++stats_.skipped; return; }
+    // Each boundary path starts at a group 92 (path type flags); everything
+    // between two 92s belongs to the earlier path, and no group 92 occurs
+    // after the last path (the pattern-definition data uses other codes).
+    std::vector<size_t> starts;
+    for (size_t gi = 0; gi < e.groups.size(); ++gi) if (e.groups[gi].code == 92) starts.push_back(gi);
+    if (static_cast<int>(starts.size()) != npaths) { ++stats_.skipped; return; }
+    std::vector<kernel::NurbsCurve> paths(npaths);
+    for (int pi = 0; pi < npaths; ++pi) {
+      const size_t i = starts[pi] + 1;
+      const bool is_polyline = (std::atoi(e.groups[starts[pi]].value.c_str()) & 2) != 0;
+      if (is_polyline ? !PolylineHatchBoundary(e, i, paths[pi]) : !EdgeHatchBoundary(e, i, paths[pi])) { ++stats_.skipped; return; }
     }
-    kernel::NurbsCurve boundary;
-    if (is_polyline ? !PolylineHatchBoundary(e, i, boundary) : !EdgeHatchBoundary(e, i, boundary)) { ++stats_.skipped; return; }
+    // More than one path = islands. Only the plain "one outer loop with
+    // holes" shape is rebuilt: the largest loop (by bounding-box area) is the
+    // outer boundary, every other loop must lie strictly inside it and the
+    // holes must be pairwise disjoint (bounding boxes). Islands nested inside
+    // holes (alternating fill levels) and overlapping loops are declined
+    // rather than filled wrongly.
+    kernel::NurbsCurve boundary = paths[0];
+    std::vector<kernel::NurbsCurve> holes;
+    if (npaths > 1) {
+      std::vector<ON_BoundingBox> bbs;
+      size_t outer = 0;
+      double best = -1;
+      for (int pi = 0; pi < npaths; ++pi) {
+        bbs.push_back(paths[pi].raw().BoundingBox());
+        const ON_3dVector d = bbs.back().Diagonal();
+        if (d.x * d.y > best) { best = d.x * d.y; outer = static_cast<size_t>(pi); }
+      }
+      const double eps = 1e-9;
+      for (int pi = 0; pi < npaths; ++pi) {
+        if (static_cast<size_t>(pi) == outer) continue;
+        const ON_BoundingBox& h = bbs[pi];
+        const ON_BoundingBox& o = bbs[outer];
+        if (!(h.m_min.x > o.m_min.x + eps && h.m_max.x < o.m_max.x - eps && h.m_min.y > o.m_min.y + eps && h.m_max.y < o.m_max.y - eps)) { ++stats_.skipped; return; }
+        for (int pj = pi + 1; pj < npaths; ++pj) {
+          if (static_cast<size_t>(pj) == outer) continue;
+          const ON_BoundingBox& g = bbs[pj];
+          if (!(g.m_max.x < h.m_min.x || g.m_min.x > h.m_max.x || g.m_max.y < h.m_min.y || g.m_min.y > h.m_max.y)) { ++stats_.skipped; return; }
+        }
+        holes.push_back(paths[pi]);
+      }
+      boundary = paths[outer];
+    }
     const int layer = LayerFor(e.S(8, "0"));
     const double tol = doc_.Settings().absolute_tolerance;
     bool built = false;
     if (e.I(70, 0) != 0) {  // solid fill flag
-      built = drafting::BuildSolidHatch(doc_, boundary, kNoObject, layer, tol);
+      built = drafting::BuildSolidHatch(doc_, boundary, kNoObject, layer, tol, nullptr, holes);
     } else {
       const drafting::HatchPattern* pat = drafting::HatchLibrary::Instance().Find(e.S(2, "ANSI31"));
       if (!pat) pat = drafting::HatchLibrary::Instance().Find("ANSI31");
       if (pat) {
         double scale = e.D(41, 1.0);
         if (scale <= 0) scale = 1.0;
-        built = drafting::BuildPatternHatch(doc_, *pat, boundary, kNoObject, layer, tol, scale, e.D(52, 0.0), doc_.Settings().hatch_base);
+        built = drafting::BuildPatternHatch(doc_, *pat, boundary, kNoObject, layer, tol, scale, e.D(52, 0.0), doc_.Settings().hatch_base, nullptr, nullptr, holes);
       }
     }
     if (!built) { ++stats_.skipped; return; }

@@ -73,3 +73,31 @@ New
 Open @TMP@/dxf_hatch_edges_rt.dxf
 SelHatch
 Area
+# ---- 4. HATCH with islands (several boundary paths: one outer loop plus holes)
+# Solid fixture: A = 100x100 with a 20x20 polyline hole and an edge-type
+# circular hole r 10 (IDs: 1 = the fill); B (a hole poking out of the outer
+# loop) and C (two overlapping holes) are declined.
+New
+Open @TMP@/dxf_hatch_islands_solid_fixture.dxf
+SelID 1
+Area
+BoundingBox
+# Export that holed fill to DXF and reopen it: the holes must survive.
+SelNone
+SelHatch
+Export @TMP@/dxf_hatch_islands_rt.dxf
+New
+Open @TMP@/dxf_hatch_islands_rt.dxf
+SelHatch
+Area
+# Pattern fixtures: the same 100x100 outer loop hatched with ANSI31 without
+# a hole, then with a centred 50x50 hole - the total hatch-line length must
+# drop to 75 percent (the hatch lines no longer cross the hole's area).
+New
+Open @TMP@/dxf_hatch_islands_pattern_plain_fixture.dxf
+SelCrv
+Length
+New
+Open @TMP@/dxf_hatch_islands_pattern_hole_fixture.dxf
+SelCrv
+Length

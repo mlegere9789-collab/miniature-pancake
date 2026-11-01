@@ -43,13 +43,44 @@ inline std::vector<kernel::Point3d> SampleClosedBoundary(const kernel::NurbsCurv
 }
 
 // A closed, solid-filled boundary: builds one trimmed-planar-brep object,
-// tagged Hatch=Solid. Same as LibraryHatchCommand's `solid` case.
+// tagged Hatch=Solid. Same as LibraryHatchCommand's `solid` case. `holes`
+// are island loops (closed curves strictly inside `boundary`, mutually
+// disjoint) cut out of the fill as inner trim loops - the DXF/DWG HATCH
+// importer's multi-path case; the Hatch command itself passes none.
 inline bool BuildSolidHatch(Document& doc, const kernel::NurbsCurve& boundary, ObjectId boundary_id, int layer,
-                             double tolerance, const Color* color = nullptr) {
+                             double tolerance, const Color* color = nullptr,
+                             const std::vector<kernel::NurbsCurve>& holes = {}) {
   ON_Plane pl;
   if (!boundary.raw().IsPlanar(&pl, tolerance)) return false;
   ON_Brep* b = ON_BrepTrimmedPlane(pl, boundary.raw());
   if (!b) return false;
+  if (!holes.empty()) {
+    // Inner loops must run opposite to the outer loop about the plane
+    // normal; compare signed areas in the plane's own (u,v) coordinates and
+    // reverse a hole that runs the same way as the outer boundary.
+    auto signed_area = [&](const kernel::NurbsCurve& c) {
+      const std::vector<kernel::Point3d> poly = SampleClosedBoundary(c);
+      double a = 0;
+      for (size_t i = 0; i < poly.size(); ++i) {
+        double u0, v0, u1, v1;
+        pl.ClosestPointTo(poly[i], &u0, &v0);
+        pl.ClosestPointTo(poly[(i + 1) % poly.size()], &u1, &v1);
+        a += u0 * v1 - u1 * v0;
+      }
+      return a * 0.5;
+    };
+    const double outer_sign = signed_area(boundary);
+    for (const kernel::NurbsCurve& h : holes) {
+      ON_Curve* dup = h.raw().DuplicateCurve();
+      if (!dup) { delete b; return false; }
+      if ((signed_area(h) > 0) == (outer_sign > 0)) dup->Reverse();
+      ON_SimpleArray<ON_Curve*> loop;
+      loop.Append(dup);
+      if (!b->NewPlanarFaceLoop(0, ON_BrepLoop::inner, loop, false)) { delete dup; delete b; return false; }
+    }
+    b->Compact();
+    if (!b->IsValid()) { delete b; return false; }
+  }
   kernel::Brep k;
   k.raw() = *b;
   delete b;
@@ -70,10 +101,12 @@ inline bool BuildSolidHatch(Document& doc, const kernel::NurbsCurve& boundary, O
 // pattern produced no geometry (e.g. spacing too coarse for the loop).
 inline bool BuildPatternHatch(Document& doc, const HatchPattern& pattern, const kernel::NurbsCurve& boundary,
                                ObjectId boundary_id, int layer, double tolerance, double scale, double rotation,
-                               kernel::Point3d base, const Color* color = nullptr, bool* truncated = nullptr) {
+                               kernel::Point3d base, const Color* color = nullptr, bool* truncated = nullptr,
+                               const std::vector<kernel::NurbsCurve>& holes = {}) {
   ON_Plane pl;
   if (!boundary.raw().IsPlanar(&pl, tolerance)) return false;
-  const std::vector<Loop> loops = {SampleClosedBoundary(boundary)};
+  std::vector<Loop> loops = {SampleClosedBoundary(boundary)};
+  for (const kernel::NurbsCurve& h : holes) loops.push_back(SampleClosedBoundary(h));
   std::vector<kernel::NurbsCurve> lines = HatchPatternCurves(pattern, loops, pl, scale, rotation, base, 200000, truncated);
   if (lines.empty()) return false;
   std::vector<ObjectId> objs;
