@@ -6874,8 +6874,14 @@ echo "$AAU" | grep -q "^history: UpdateDimensions:   DimLinear now measures 40$"
 hcheck_absent() { if echo "$HS" | grep -qF "$1"; then echo "FAIL $2"; fail=1; else echo "ok   $2"; fi; }
 hcheck "object 6: Extrude <- 5" "an Undo/Redo round trip keeps the redone extrusion's own id (6) and its HistoryRecord (the record survives Undo+Redo, it is only ever orphaned by a real removal)"
 hcheck "  ID: 7" "a Box drawn after undoing the tracked extrusion (id 6) gets a fresh id (7), not the undone object's id"
-hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry, 1 orphaned entry cleared (object deleted or an Undo passed the construction)" \
-  "UpdateHistory rebuilt only the still-live tracked surface (4) and reported the undone extrusion's record (6) as orphaned - it did NOT treat the new Box as a tracked object"
+# History records are now part of the undo deltas (automatic propagation work): undoing a
+# tracked construction removes its record with it, so UpdateHistory has no orphan to clear
+# (the old output said "1 orphaned entry cleared"). The invariant the test protects is
+# unchanged: only the still-live tracked surface (4) is re-evaluated, and the new Box is
+# NOT treated as a tracked object (checked just below: its geometry stays untouched).
+hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" \
+  "UpdateHistory rebuilt only the still-live tracked surface (4) - it did NOT treat the new Box as a tracked object"
+hcheck_absent "orphaned entry cleared (object deleted" "an Undo takes the undone construction's history record with it, so UpdateHistory has no orphaned record to clear"
 hcheck_absent "Bounding box: (40, 0, 0) to (50, 0, 5)" "the Box was never rebuilt into line 5's extrusion (the exact silent wrong result the id reuse produced before)"
 hcheck "Bounding box: (50, 50, 0) to (60, 60, 10)" "the Box's own geometry is untouched after UpdateHistory"
 
@@ -8863,7 +8869,7 @@ kwcheck "Area = 25[0-9]" "...a surface with the exact frustum lateral area pi (5
 kwcheck "Volume = 51[0-9]" "...and capped (Cap=Yes) it is the exact frustum solid pi 10/3 (25+15+9) = 513.2"
 kwcheck "Loft: exact kernel loft not used (dino8::kernel::Brep::Loft: every section coincides with every other one - nothing to loft); using the older control-point fit instead" "Loft of two coincident circles: the kernel refuses, the reason is printed, the older control-point fit is kept as the fail-open path"
 kwcheck "Area = 600 square" "Loft Style=Straight between two squares (second starting at a different corner) is the exact capped box: lateral + cap area 600"
-kwcount "Loft: exact interpolating kernel loft through 3 curves (degree 2 in the loft direction); every section reproduced, max deviation [0-9.]*$KWTINY" 2 "Loft with History On: built once and re-lofted by UpdateHistory (two kernel lofts)"
+kwcount "Loft: exact interpolating kernel loft through 3 curves (degree 2 in the loft direction); every section reproduced, max deviation [0-9.]*$KWTINY" 3 "Loft with History On: built once, re-lofted automatically when the middle line moved (no UpdateHistory call), and re-lofted again by the explicit UpdateHistory (three kernel lofts)"
 kwcheck "Closest point 5,7,5 distance 0" "...and after the middle line moves +2 in y, UpdateHistory's re-loft passes through (5,7,5)"
 kwcheck "Area = 114.8 square" "SubDLoft through three lines still builds the control-point-fit NURBS surface, now laid out correctly (area 114.8; before: a ribbon of area 6.7)"
 kwcheck "140 faces, 210 edges, 72 vertices, 0 creases" "SubDLoft through three circles still builds a SubD"
