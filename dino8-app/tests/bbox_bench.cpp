@@ -116,6 +116,17 @@ int main() {
     selection.push_back(ids[static_cast<size_t>(i) * static_cast<size_t>(kDocSize) / kSelectionSize]);
   }
 
+  // A selected object is one the viewport has already drawn, so its display
+  // cache is clean (SceneObject::BoundingBox answers from a clean cache without
+  // rebuilding). Model that: draw the selection once, as the first frame does.
+  // Without this the bench measures a rebuild of a never-displayed object on
+  // every call - in both paths - which compresses the lookup ratio this bench
+  // exists to guard and left it within noise of the threshold on a shared
+  // Windows runner.
+  for (ObjectId id : selection) {
+    if (const SceneObject* o = doc.Find(id)) o->EnsureDisplay(0.05, 0.1);
+  }
+
   long checksum = 0;
 
   // ---- 1. Old path: Find(id) once per selected id, per simulated frame -----
