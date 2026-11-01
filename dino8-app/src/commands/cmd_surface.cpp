@@ -739,36 +739,11 @@ double BoundaryDeviation(const kernel::NurbsSurface& s, const std::vector<kernel
 }
 
 
-void NetworkSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
-  // Ids kept in lockstep with CurvesOf's own curve-only filter (not just
-  // ids itself) so the 2-curve case's recorded history sources line up
-  // with curves[0]/curves[1] exactly, even if a non-curve object was also
-  // selected - the same reason Sweep1Command/Sweep2Command/PipeCommand
-  // above track ids alongside their own curve copies rather than the raw
-  // selection list.
-  std::vector<kernel::NurbsCurve> curves;
-  std::vector<ObjectId> curve_ids;
-  for (ObjectId id : ids) {
-    if (std::optional<kernel::NurbsCurve> c = CurveOf(ctx, id)) { curves.push_back(*c); curve_ids.push_back(id); }
-  }
-  if (curves.size() < 2) { ctx.Warn("Select 2, 3 or 4 curves"); return; }
-  if (curves.size() > 4) { ctx.Warn("NetworkSrf handles up to 4 boundary curves here; using the first 4"); curves.resize(4); curve_ids.resize(4); }
-  if (curves.size() == 2) {
-    std::optional<SceneObject> fresh = RebuildNetworkSrf2(ctx, curves[0], curves[1], HistoryRecord{});
-    if (!fresh) { ctx.Warn("NetworkSrf: ruled surface failed"); return; }
-    ctx.Doc().BeginChange("NetworkSrf");
-    const ObjectId new_id = ctx.Doc().Add(std::move(*fresh));
-    // History (UpdateHistory, cmd_history.cpp's RebuildNetworkSrf2
-    // dispatch): deterministic from these two source curves alone, the
-    // same "simple, unambiguous rebuild" shape Pipe/Sweep1/Sweep2/Patch
-    // above already qualify for - which of the two needs reversing to
-    // match head-to-tail is re-derived fresh from the sources' *current*
-    // geometry on rebuild, not itself recorded, the same way Pipe's own
-    // `wrap` is read fresh rather than frozen at creation time.
-    RecordHistoryIfEnabled(ctx, new_id, "NetworkSrf2", {curve_ids[0], curve_ids[1]}, {});
-    ctx.Print("NetworkSrf: ruled surface between 2 curves");
-    return;
-  }
+// The 3- and 4-curve NetworkSrf/EdgeSrf construction (the kernel's exact
+// Coons patch, its triangular variant, or the fitted bilinear fallback), shared
+// by the live command below and UpdateHistory (RebuildNetworkSrfLoop). `note`
+// receives the one-line description the live command prints.
+std::optional<SceneObject> BuildNetworkSrfLoop(CommandContext& ctx, const std::vector<kernel::NurbsCurve>& curves, std::string& note) {
   // Chain the curves into a loop by endpoint proximity.
   std::vector<kernel::NurbsCurve> loop = {curves[0]};
   std::vector<bool> used(curves.size(), false);
@@ -837,11 +812,9 @@ void NetworkSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   if (loop.size() == 4 && fallback_reason.empty()) {
     kernel::NurbsSurface exact;
     if (kernel::NurbsSurface::CoonsPatch(loop[0], loop[2], loop[3], loop[1], exact, tol) == kernel::Result::Ok) {
-      ctx.Doc().BeginChange("NetworkSrf");
-      ctx.Doc().Add(SceneObject::MakeSurface(exact));
-      ctx.Print("NetworkSrf: exact Coons patch through 4 curves (all 4 boundaries reproduced exactly)" + closure_note +
-                "; measured boundary deviation from the closed loop " + FormatDeviation(BoundaryDeviation(exact, loop)));
-      return;
+      note = "NetworkSrf: exact Coons patch through 4 curves (all 4 boundaries reproduced exactly)" + closure_note +
+             "; measured boundary deviation from the closed loop " + FormatDeviation(BoundaryDeviation(exact, loop));
+      return SceneObject::MakeSurface(exact);
     }
     fallback_reason = "the kernel's exact 4-curve Coons patch refused these curves (their degrees/knots could not be unified, or the self-check missed a boundary)";
   }
@@ -855,11 +828,9 @@ void NetworkSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   if (loop.size() == 3 && fallback_reason.empty()) {
     kernel::NurbsSurface exact;
     if (kernel::NurbsSurface::CoonsPatchTriangular(loop[0], loop[1], loop[2], exact, tol) == kernel::Result::Ok) {
-      ctx.Doc().BeginChange("NetworkSrf");
-      ctx.Doc().Add(SceneObject::MakeSurface(exact));
-      ctx.Print("NetworkSrf: exact 3-sided Coons patch through 3 curves (all 3 boundaries reproduced exactly)" + closure_note +
-                "; measured boundary deviation from the closed loop " + FormatDeviation(BoundaryDeviation(exact, loop)));
-      return;
+      note = "NetworkSrf: exact 3-sided Coons patch through 3 curves (all 3 boundaries reproduced exactly)" + closure_note +
+             "; measured boundary deviation from the closed loop " + FormatDeviation(BoundaryDeviation(exact, loop));
+      return SceneObject::MakeSurface(exact);
     }
     fallback_reason = "the kernel's exact 3-sided Coons patch refused these curves (their degrees/knots could not be unified, or the self-check missed a boundary)";
   }
@@ -884,10 +855,51 @@ void NetworkSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
     }
     rows.push_back(row);
   }
+  note = "NetworkSrf: fitted bilinear Coons patch through " + std::to_string(curves.size()) + " curves (approximate fallback" +
+         (fallback_reason.empty() ? std::string() : ": " + fallback_reason) + ")";
+  return SceneObject::MakeSurface(SurfaceFromRows(rows));
+}
+
+void NetworkSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  // Ids kept in lockstep with CurvesOf's own curve-only filter (not just
+  // ids itself) so the 2-curve case's recorded history sources line up
+  // with curves[0]/curves[1] exactly, even if a non-curve object was also
+  // selected - the same reason Sweep1Command/Sweep2Command/PipeCommand
+  // above track ids alongside their own curve copies rather than the raw
+  // selection list.
+  std::vector<kernel::NurbsCurve> curves;
+  std::vector<ObjectId> curve_ids;
+  for (ObjectId id : ids) {
+    if (std::optional<kernel::NurbsCurve> c = CurveOf(ctx, id)) { curves.push_back(*c); curve_ids.push_back(id); }
+  }
+  if (curves.size() < 2) { ctx.Warn("Select 2, 3 or 4 curves"); return; }
+  if (curves.size() > 4) { ctx.Warn("NetworkSrf handles up to 4 boundary curves here; using the first 4"); curves.resize(4); curve_ids.resize(4); }
+  if (curves.size() == 2) {
+    std::optional<SceneObject> fresh = RebuildNetworkSrf2(ctx, curves[0], curves[1], HistoryRecord{});
+    if (!fresh) { ctx.Warn("NetworkSrf: ruled surface failed"); return; }
+    ctx.Doc().BeginChange("NetworkSrf");
+    const ObjectId new_id = ctx.Doc().Add(std::move(*fresh));
+    // History (UpdateHistory, cmd_history.cpp's RebuildNetworkSrf2
+    // dispatch): deterministic from these two source curves alone, the
+    // same "simple, unambiguous rebuild" shape Pipe/Sweep1/Sweep2/Patch
+    // above already qualify for - which of the two needs reversing to
+    // match head-to-tail is re-derived fresh from the sources' *current*
+    // geometry on rebuild, not itself recorded, the same way Pipe's own
+    // `wrap` is read fresh rather than frozen at creation time.
+    RecordHistoryIfEnabled(ctx, new_id, "NetworkSrf2", {curve_ids[0], curve_ids[1]}, {});
+    ctx.Print("NetworkSrf: ruled surface between 2 curves");
+    return;
+  }
+  std::string note;
+  std::optional<SceneObject> built = BuildNetworkSrfLoop(ctx, curves, note);
+  if (!built) { ctx.Warn("NetworkSrf: could not build a surface through these curves"); return; }
   ctx.Doc().BeginChange("NetworkSrf");
-  ctx.Doc().Add(SceneObject::MakeSurface(SurfaceFromRows(rows)));
-  ctx.Print("NetworkSrf: fitted bilinear Coons patch through " + std::to_string(curves.size()) + " curves (approximate fallback" +
-            (fallback_reason.empty() ? std::string() : ": " + fallback_reason) + ")");
+  const ObjectId new_id = ctx.Doc().Add(std::move(*built));
+  // History: the loop order/orientation is re-derived from the curves' current
+  // geometry on every rebuild, so only the source ids (in selection order) are
+  // recorded.
+  RecordHistoryIfEnabled(ctx, new_id, "NetworkSrf", curve_ids, {});
+  ctx.Print(note);
 }
 
 // ---------------------------------------------------------------------------
@@ -1312,66 +1324,17 @@ class OffsetSrfCommand : public Command {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
       const int layer = o->layer_index;
-      SceneObject n;
-      if (o->kind == ObjectKind::Surface && o->surface) {
-        // Prefer the kernel's own tolerance-driven OffsetRefit() (samples
-        // the true offset locus and least-squares refits to within
-        // ctx.Settings().absolute_tolerance) over this file's own
-        // first-order Greville-normal OffsetNurbs() approximation above -
-        // closes PARITY_MAP.md's own "Offset surfaces" bullet's disclosed
-        // "no app command calls [OffsetRefit]" gap. Falls back to the old
-        // approximation, with a disclosed warning, exactly when
-        // OffsetRefit() itself refuses (the fold-through-curvature guard,
-        // or a freeform surface whose true offset needs more control
-        // points than the fit's own sample-grid ceiling can resolve) -
-        // never silently worse, never silently unconverged.
-        kernel::NurbsSurface refit;
-        const bool refit_ok = o->surface->OffsetRefit(d, refit, ctx.Settings().absolute_tolerance) == kernel::Result::Ok;
-        if (!refit_ok) {
-          ctx.Warn("OffsetSrf: object " + std::to_string(id) + " could not be refit to tolerance " +
-                    FormatNumber(ctx.Settings().absolute_tolerance) +
-                    " (fold-through-curvature guard, or this surface's own offset needs more control points than "
-                    "the fit's own ceiling) - using the first-order Greville-normal approximation instead");
-        }
-        const kernel::NurbsSurface off = refit_ok ? refit : OffsetNurbs(*o->surface, d);
-        if (solid_) {
-          const int nu = std::max(8, 2 * o->surface->CVCountU()), nv = std::max(8, 2 * o->surface->CVCountV());
-          n = SceneObject::MakeMesh(ShellBetween(MeshFromRows(SurfaceRows(*o->surface, nu, nv), false, false), MeshFromRows(SurfaceRows(off, nu, nv), false, false)));
-        } else {
-          n = SceneObject::MakeSurface(off);
-        }
-      } else {
-        // A closed polysurface: try the kernel's exact offset first
-        // (TryExactOffsetSolid above - convex planar solids, whole spheres /
-        // tori, plain capped cylinders; Solid=Yes as well for convex planar
-        // solids and whole spheres / tori). Fails open to the mesh offset
-        // below, printing the kernel's reason; Exact=No keeps the mesh path.
-        if (exact_ && o->kind == ObjectKind::Brep && o->brep) {
-          std::string why;
-          if (std::optional<kernel::Brep> ex = TryExactOffsetSolid(*o->brep, d, solid_, why)) {
-            n = SceneObject::MakeBrep(*ex);
-            n.layer_index = layer;
-            ctx.Doc().Add(std::move(n));
-            ++made;
-            ++exact_made;
-            continue;
-          }
-          if (!why.empty() && o->brep->raw().IsSolid())
-            ctx.Print("OffsetSrf: object " + std::to_string(id) + " - exact B-rep offset not used (" + why + "); using the mesh offset");
-        }
-        std::optional<kernel::Mesh> m = MeshOf(*o, 0.01);
-        if (!m || m->FaceCount() == 0) { ctx.Warn("Object " + std::to_string(id) + " could not be meshed; skipped"); continue; }
-        kernel::Mesh base = *m;
-        if (base.IsClosedManifold() && base.Volume() < 0) base = base.FlipNormals();
-        kernel::Mesh off = OffsetMesh(base, d);
-        if (solid_) {
-          if (base.IsClosedManifold()) off = Outward(kernel::Mesh::MergeAndWeld({d > 0 ? base.FlipNormals() : base, d > 0 ? off : off.FlipNormals()}, 1e-9));
-          else off = ShellBetween(base, off);
-        }
-        n = SceneObject::MakeMesh(off);
-      }
-      n.layer_index = layer;
-      ctx.Doc().Add(std::move(n));
+      // The per-object construction lives in RebuildOffsetSrf (below the
+      // anonymous namespace) so UpdateHistory re-runs exactly what this does.
+      HistoryRecord rec;
+      rec.command = "OffsetSrf";
+      rec.num = {{"d", d}, {"solid", solid_ ? 1.0 : 0.0}, {"exact", exact_ ? 1.0 : 0.0}};
+      std::optional<SceneObject> built = RebuildOffsetSrf(ctx, *o, rec);
+      if (!built) continue;
+      if (built->kind == ObjectKind::Brep && o->kind != ObjectKind::Surface) ++exact_made;
+      built->layer_index = layer;
+      const ObjectId new_id = ctx.Doc().Add(std::move(*built));
+      RecordHistoryIfEnabled(ctx, new_id, "OffsetSrf", {id}, rec.num);
       ++made;
     }
     ctx.Print("OffsetSrf: distance " + FormatNumber(d) + ", " + std::to_string(made) + " object(s)" + (solid_ ? ", solid" : "") +
@@ -1894,6 +1857,7 @@ class ExtrudeAlongCommand : public Command {
     if (profiles_.empty()) {
       profiles_ = CurvesOf(ctx, ids);
       if (profiles_.empty()) { ctx.Warn("Select curves"); Finish(); return; }
+      for (ObjectId id : ids) if (CurveOf(ctx, id)) profile_ids_.push_back(id);  // lockstep with CurvesOf's curve-only filter
       DeselectAll(ctx, ids);
       accept_preselection = false;
       WantObjects("Select path curve");
@@ -1901,17 +1865,22 @@ class ExtrudeAlongCommand : public Command {
     }
     std::vector<kernel::NurbsCurve> path = CurvesOf(ctx, ids);
     if (path.empty()) { ctx.Warn("Select a path curve"); Finish(); return; }
+    ObjectId path_id = kNoObject;
+    for (ObjectId id : ids) if (CurveOf(ctx, id)) { path_id = id; break; }
     ctx.Doc().BeginChange("ExtrudeCrvAlongCrv");
     int made = 0;
-    for (const kernel::NurbsCurve& c : profiles_) {
-      ON_SumSurface ss;
-      kernel::NurbsSurface k;
-      if (ss.Create(c.raw(), path[0].raw()) && SurfaceFromON(ss, k)) { ctx.Doc().Add(SceneObject::MakeSurface(k)); ++made; }
+    for (size_t i = 0; i < profiles_.size(); ++i) {
+      std::optional<SceneObject> built = RebuildExtrudeAlongCrv(ctx, profiles_[i], path[0], HistoryRecord{});
+      if (!built) continue;
+      const ObjectId new_id = ctx.Doc().Add(std::move(*built));
+      RecordHistoryIfEnabled(ctx, new_id, "ExtrudeCrvAlongCrv", {profile_ids_[i], path_id}, {});
+      ++made;
     }
     ctx.Print("ExtrudeCrvAlongCrv: " + std::to_string(made) + " surface(s)");
     Finish();
   }
   std::vector<kernel::NurbsCurve> profiles_;
+  std::vector<ObjectId> profile_ids_;  // history sources, in lockstep with profiles_
 };
 
 class ExtrudeTaperedCommand : public Command {
@@ -1920,6 +1889,8 @@ class ExtrudeTaperedCommand : public Command {
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     profiles_ = CurvesOf(ctx, ids);
     if (profiles_.empty()) { ctx.Warn("Select curves"); Finish(); return; }
+    profile_ids_.clear();
+    for (ObjectId id : ids) if (CurveOf(ctx, id)) profile_ids_.push_back(id);  // lockstep with CurvesOf's curve-only filter
     Row all;
     for (const kernel::NurbsCurve& c : profiles_) { Row s = SampleCurve(c, 8, false); all.insert(all.end(), s.begin(), s.end()); }
     center_ = Centroid(all);
@@ -1940,42 +1911,17 @@ class ExtrudeTaperedCommand : public Command {
     int made = 0;
     const Vector3d direction = n * d;
     const double draft_rad = angle_ * ON_PI / 180.0;
-    for (const kernel::NurbsCurve& c : profiles_) {
-      ON_Plane plane;
-      const bool want_solid = solid_ && c.IsClosed() && c.raw().IsPlanar(&plane, ctx.Settings().absolute_tolerance);
-      try {
-        // dino8::kernel::Brep::ExtrudeTapered (sweep.cpp) is the real
-        // kernel-native draft-extrude primitive: an exact NURBS cone
-        // frustum wall for a circle/line profile, an exact closed-form
-        // miter-join offset for a multi-segment polyline, and
-        // OffsetInPlane()'s own general least-squares offset otherwise -
-        // not this command's own former centroid-scaling approximation
-        // (which treated every profile, circular or not, as a uniform
-        // scale about its centroid - exact only for a circle centered at
-        // its own centroid, approximate for everything else, including a
-        // circle offset from its own curve centroid by a prior edit).
-        // Closes PARITY_MAP.md's "kernel: Feature operations" - "Draft
-        // angle on extrusions" bullet's own last disclosed gap.
-        kernel::Brep b = kernel::Brep::ExtrudeTapered(c, direction, draft_rad, /*cap=*/want_solid);
-        if (want_solid) {
-          if (!b.raw().IsSolid()) {
-            ctx.Warn("ExtrudeCrvTapered: caps could not be joined; result is an open polysurface");
-          } else {
-            BrepMeshOptions opt;
-            opt.chord_tolerance = 0.05;
-            if (MeshBrepClosed(b.raw(), opt).Volume() < 0) b.raw().Flip();  // outward normals
-          }
-          ctx.Doc().Add(SceneObject::MakeBrep(b));
-        } else {
-          const ON_Surface* s = b.raw().m_F.Count() > 0 ? b.raw().m_F[0].SurfaceOf() : nullptr;
-          kernel::NurbsSurface k;
-          if (!s || !SurfaceFromON(*s, k)) { ctx.Warn("ExtrudeCrvTapered: could not build a surface for this profile"); continue; }
-          ctx.Doc().Add(SceneObject::MakeSurface(k));
-        }
-        ++made;
-      } catch (const std::exception& ex) {
-        ctx.Warn(std::string("ExtrudeCrvTapered: ") + ex.what());
-      }
+    for (size_t i = 0; i < profiles_.size(); ++i) {
+      // Construction in RebuildExtrudeTapered (below the anonymous namespace),
+      // shared with UpdateHistory.
+      HistoryRecord rec;
+      rec.command = "ExtrudeCrvTapered";
+      rec.num = {{"dx", direction.x}, {"dy", direction.y}, {"dz", direction.z}, {"draft", draft_rad}, {"solid", solid_ ? 1.0 : 0.0}};
+      std::optional<SceneObject> built = RebuildExtrudeTapered(ctx, profiles_[i], rec);
+      if (!built) continue;
+      const ObjectId new_id = ctx.Doc().Add(std::move(*built));
+      RecordHistoryIfEnabled(ctx, new_id, "ExtrudeCrvTapered", {profile_ids_[i]}, rec.num);
+      ++made;
     }
     ctx.Print("ExtrudeCrvTapered: distance " + FormatNumber(d) + ", draft " + FormatNumber(angle_) + " deg, " + std::to_string(made) + " object(s)");
     Finish();
@@ -1987,6 +1933,7 @@ class ExtrudeTaperedCommand : public Command {
   }
   void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
   std::vector<kernel::NurbsCurve> profiles_;
+  std::vector<ObjectId> profile_ids_;  // history sources, in lockstep with profiles_
   Point3d center_;
   double angle_ = 10;
   bool solid_ = true;
@@ -2559,6 +2506,124 @@ std::optional<SceneObject> RebuildSweep2(CommandContext& ctx, const kernel::Nurb
     ctx.Print(std::string("Sweep2: exact sweep not used - the kernel refused (") + ex.what() + "); falling back to the approximate section-anchored sweep");
     return std::nullopt;
   }
+}
+
+
+// OffsetSrf's construction for ONE object - shared by OffsetSrfCommand and
+// UpdateHistory. Reads num: d (signed distance, FlipAll already applied) and
+// solid (1/0). A surface goes through the kernel's tolerance-driven
+// OffsetRefit (the first-order Greville-normal fit only when that refuses,
+// with a warning), a convex planar solid through OffsetSolidConvexPlanar (exact
+// B-rep), anything else through the mesh offset. Layer is the caller's.
+std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObject& o, const HistoryRecord& rec) {
+  auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  const double d = num("d");
+  const bool solid_ = num("solid") != 0.0;
+  if (d == 0) return std::nullopt;
+  SceneObject n;
+  if (o.kind == ObjectKind::Surface && o.surface) {
+    // Prefer the kernel's own tolerance-driven OffsetRefit() (samples
+    // the true offset locus and least-squares refits to within
+    // ctx.Settings().absolute_tolerance) over this file's own
+    // first-order Greville-normal OffsetNurbs() approximation above -
+    // closes PARITY_MAP.md's own "Offset surfaces" bullet's disclosed
+    // "no app command calls [OffsetRefit]" gap. Falls back to the old
+    // approximation, with a disclosed warning, exactly when
+    // OffsetRefit() itself refuses (the fold-through-curvature guard,
+    // or a freeform surface whose true offset needs more control
+    // points than the fit's own sample-grid ceiling can resolve) -
+    // never silently worse, never silently unconverged.
+    kernel::NurbsSurface refit;
+    const bool refit_ok = o.surface->OffsetRefit(d, refit, ctx.Settings().absolute_tolerance) == kernel::Result::Ok;
+    if (!refit_ok) {
+      ctx.Warn("OffsetSrf: object " + std::to_string(o.id) + " could not be refit to tolerance " +
+                FormatNumber(ctx.Settings().absolute_tolerance) +
+                " (fold-through-curvature guard, or this surface's own offset needs more control points than "
+                "the fit's own ceiling) - using the first-order Greville-normal approximation instead");
+    }
+    const kernel::NurbsSurface off = refit_ok ? refit : OffsetNurbs(*o.surface, d);
+    if (solid_) {
+      const int nu = std::max(8, 2 * o.surface->CVCountU()), nv = std::max(8, 2 * o.surface->CVCountV());
+      n = SceneObject::MakeMesh(ShellBetween(MeshFromRows(SurfaceRows(*o.surface, nu, nv), false, false), MeshFromRows(SurfaceRows(off, nu, nv), false, false)));
+    } else {
+      n = SceneObject::MakeSurface(off);
+    }
+  } else {
+    // A closed polysurface: try the kernel's exact offset first
+    // (TryExactOffsetSolid - convex planar solids, whole spheres / tori, plain
+    // capped cylinders; Solid=Yes as well for convex planar solids and whole
+    // spheres / tori). Fails open to the mesh offset below, printing the
+    // kernel's reason; Exact=No keeps the mesh path.
+    const auto ex_it = rec.num.find("exact");
+    const bool exact_ = ex_it == rec.num.end() || ex_it->second != 0.0;
+    if (exact_ && o.kind == ObjectKind::Brep && o.brep) {
+      std::string why;
+      if (std::optional<kernel::Brep> ex = TryExactOffsetSolid(*o.brep, d, solid_, why)) return SceneObject::MakeBrep(*ex);
+      if (!why.empty() && o.brep->raw().IsSolid())
+        ctx.Print("OffsetSrf: object " + std::to_string(o.id) + " - exact B-rep offset not used (" + why + "); using the mesh offset");
+    }
+    std::optional<kernel::Mesh> m = MeshOf(o, 0.01);
+    if (!m || m->FaceCount() == 0) { ctx.Warn("Object " + std::to_string(o.id) + " could not be meshed; skipped"); return std::nullopt; }
+    kernel::Mesh base = *m;
+    if (base.IsClosedManifold() && base.Volume() < 0) base = base.FlipNormals();
+    kernel::Mesh off = OffsetMesh(base, d);
+    if (solid_) {
+      if (base.IsClosedManifold()) off = Outward(kernel::Mesh::MergeAndWeld({d > 0 ? base.FlipNormals() : base, d > 0 ? off : off.FlipNormals()}, 1e-9));
+      else off = ShellBetween(base, off);
+    }
+    n = SceneObject::MakeMesh(off);
+  }
+  return n;
+}
+
+// ExtrudeCrvAlongCrv's construction: exact translational sum surface.
+std::optional<SceneObject> RebuildExtrudeAlongCrv(CommandContext&, const kernel::NurbsCurve& profile, const kernel::NurbsCurve& path, const HistoryRecord&) {
+  ON_SumSurface ss;
+  kernel::NurbsSurface k;
+  if (ss.Create(profile.raw(), path.raw()) && SurfaceFromON(ss, k)) return SceneObject::MakeSurface(k);
+  return std::nullopt;
+}
+
+// ExtrudeCrvTapered's construction for ONE profile: the kernel's
+// Brep::ExtrudeTapered. Reads num: dx,dy,dz, draft (radians), solid (1/0). The
+// caps are wanted only for a closed planar profile (read fresh from the curve).
+std::optional<SceneObject> RebuildExtrudeTapered(CommandContext& ctx, const kernel::NurbsCurve& c, const HistoryRecord& rec) {
+  auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  const Vector3d direction(num("dx"), num("dy"), num("dz"));
+  const double draft_rad = num("draft");
+  const bool solid = num("solid") != 0.0;
+  ON_Plane plane;
+  const bool want_solid = solid && c.IsClosed() && c.raw().IsPlanar(&plane, ctx.Settings().absolute_tolerance);
+  try {
+    kernel::Brep b = kernel::Brep::ExtrudeTapered(c, direction, draft_rad, /*cap=*/want_solid);
+    if (want_solid) {
+      if (!b.raw().IsSolid()) {
+        ctx.Warn("ExtrudeCrvTapered: caps could not be joined; result is an open polysurface");
+      } else {
+        BrepMeshOptions opt;
+        opt.chord_tolerance = 0.05;
+        if (MeshBrepClosed(b.raw(), opt).Volume() < 0) b.raw().Flip();  // outward normals
+      }
+      return SceneObject::MakeBrep(b);
+    }
+    const ON_Surface* s = b.raw().m_F.Count() > 0 ? b.raw().m_F[0].SurfaceOf() : nullptr;
+    kernel::NurbsSurface k;
+    if (!s || !SurfaceFromON(*s, k)) { ctx.Warn("ExtrudeCrvTapered: could not build a surface for this profile"); return std::nullopt; }
+    return SceneObject::MakeSurface(k);
+  } catch (const std::exception& ex) {
+    ctx.Warn(std::string("ExtrudeCrvTapered: ") + ex.what());
+    return std::nullopt;
+  }
+}
+
+// NetworkSrf/EdgeSrf, 3 or 4 curves (history rebuild entry point).
+std::optional<SceneObject> RebuildNetworkSrfLoop(CommandContext& ctx, const std::vector<const kernel::NurbsCurve*>& curves, const HistoryRecord&, std::string* note) {
+  std::vector<kernel::NurbsCurve> copy;
+  for (const kernel::NurbsCurve* c : curves) copy.push_back(*c);
+  std::string n;
+  std::optional<SceneObject> built = BuildNetworkSrfLoop(ctx, copy, n);
+  if (note) *note = n;
+  return built;
 }
 
 void RegisterSurfaceCommands(CommandEngine& e) {

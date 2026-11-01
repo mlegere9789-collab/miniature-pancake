@@ -1,5 +1,6 @@
 // Boolean and splitting commands (mesh-based, via Manifold).
 #include "commands/cmd_common.h"
+#include "commands/history_rebuild.h"
 #include "dino8/kernel/boolean_general.h"
 
 namespace dino8::app {
@@ -362,10 +363,30 @@ std::optional<kernel::SubD> TrySubDBoolean(CommandContext& ctx, const std::vecto
 // first, then TryGeneralBrepBoolean (General engine, for a curved face or
 // any other Planar-only scope limit), then TrySubDBoolean, ahead of this
 // function's own generic mesh path.
-void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::vector<ObjectId>& b, kernel::BooleanOp op,
-                bool two_sets, const std::string& label, bool swap_sides = false, bool try_exact_brep = false) {
+// What a boolean computes, before the document is touched: the result object
+// (nullopt = the result is empty), the one-line description to print, and the
+// operands that were actually combined - already side-swapped, as the first
+// group then the second group (`second` empty for a single-group Union).
+struct BooleanOutcome {
+  bool ok = false;                 // false: nothing was computed (a warning was printed)
+  std::optional<SceneObject> object;
+  std::string how;                 // the printed summary, without the label
+  std::vector<ObjectId> first, second;
+  int layer = 0;
+};
+
+// The computation behind RunBoolean and RebuildBoolean (UpdateHistory), kept
+// in one place so a rebuild chooses its engine exactly the way the live command
+// did: exact planar B-rep, exact general B-rep (kept only when it really is a
+// closed solid - the general engine can hand back an open shell for operands
+// with non-planar walls, which used to be accepted and measured as volume 0),
+// SubD, then the generic mesh path.
+BooleanOutcome ComputeBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::vector<ObjectId>& b, kernel::BooleanOp op,
+                              bool two_sets, bool swap_sides, bool try_exact_brep) {
+  BooleanOutcome out;
   std::vector<ObjectId> all = a;
   all.insert(all.end(), b.begin(), b.end());
+  auto layer_of = [&](ObjectId id) { const SceneObject* o = ctx.Doc().Find(id); return o ? o->layer_index : 0; };
   if (try_exact_brep && !all.empty()) {
     const std::vector<ObjectId>& ea = swap_sides ? b : a;
     const std::vector<ObjectId>& eb = swap_sides ? a : b;
@@ -377,6 +398,10 @@ void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::
     if (!exact_result) {
       std::string why;
       std::optional<GeneralBooleanResult> g = TryGeneralBrepBoolean(ctx, first_ids, second_ids, op, why);
+      if (g && g->brep.raw().m_F.Count() > 0 && !g->brep.raw().IsSolid()) {
+        why = "the general engine returned an open shell, not a closed solid";
+        g.reset();
+      }
       if (g && g->brep.raw().m_F.Count() > 0) {
         // Independent cross-check against the mesh boolean of the same
         // operands: an exact result whose volume disagrees by more than 2% is
@@ -400,59 +425,54 @@ void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::
       }
     }
     if (exact_result) {
-      kernel::Brep& result = *exact_result;
-      ctx.Doc().BeginChange(label);
-      int layer = 0;
-      if (const SceneObject* o = ctx.Doc().Find(all.front())) layer = o->layer_index;
-      for (ObjectId id : all) ctx.Doc().Remove(id);
-      if (result.raw().m_F.Count() > 0) {
-        SceneObject n = SceneObject::MakeBrep(result);
-        n.layer_index = layer;
-        ctx.Doc().Add(std::move(n));
-        ctx.Print(label + ": exact B-rep boolean (no tessellation" + std::string(via_general ? ", general engine" : "") + "), " +
-                   std::to_string(result.raw().m_F.Count()) + " face(s)" + general_note);
+      out.ok = true;
+      out.first = first_ids;
+      out.second = second_ids;
+      out.layer = layer_of(all.front());
+      if (exact_result->raw().m_F.Count() > 0) {
+        out.object = SceneObject::MakeBrep(*exact_result);
+        out.how = "exact B-rep boolean (no tessellation" + std::string(via_general ? ", general engine" : "") + "), " +
+                  std::to_string(exact_result->raw().m_F.Count()) + " face(s)" + general_note;
       } else {
-        ctx.Print(label + ": result is empty");
+        out.how = "result is empty";
       }
-      return;
+      return out;
     }
     SubDBooleanTotals sd_totals;
     if (std::optional<kernel::SubD> result = TrySubDBoolean(ctx, first_ids, second_ids, op, &sd_totals)) {
-      ctx.Doc().BeginChange(label);
-      int layer = 0;
-      if (const SceneObject* o = ctx.Doc().Find(all.front())) layer = o->layer_index;
-      for (ObjectId id : all) ctx.Doc().Remove(id);
+      out.ok = true;
+      out.first = first_ids;
+      out.second = second_ids;
+      out.layer = layer_of(all.front());
       if (result->FaceCount() > 0) {
-        SceneObject n = SceneObject::MakeSubD(*result);
-        n.layer_index = layer;
-        ctx.Doc().Add(std::move(n));
-        ctx.Print(label + ": SubD boolean (operands refined to their limit surfaces, seam creased), " + std::to_string(result->FaceCount()) +
-                   " face(s), " + std::to_string(result->CreaseEdgeCount()) + " crease edge(s) (" + std::to_string(sd_totals.seam_creases) +
-                   " on the cut seam, " + std::to_string(sd_totals.operand_creases) + " along operand creases, " + std::to_string(sd_totals.sharp_creases) +
-                   " sharp-angle); cage interpolated onto the Boolean surface (" + std::to_string(sd_totals.fit_iterations_max) +
-                   " iteration(s), residual " + std::to_string(sd_totals.fit_residual_worst) + ")");
+        out.object = SceneObject::MakeSubD(*result);
+        out.how = "SubD boolean (operands refined to their limit surfaces, seam creased), " + std::to_string(result->FaceCount()) +
+                  " face(s), " + std::to_string(result->CreaseEdgeCount()) + " crease edge(s) (" + std::to_string(sd_totals.seam_creases) +
+                  " on the cut seam, " + std::to_string(sd_totals.operand_creases) + " along operand creases, " + std::to_string(sd_totals.sharp_creases) +
+                  " sharp-angle); cage interpolated onto the Boolean surface (" + std::to_string(sd_totals.fit_iterations_max) +
+                  " iteration(s), residual " + std::to_string(sd_totals.fit_residual_worst) + ")";
       } else {
-        ctx.Print(label + ": result is empty");
+        out.how = "result is empty";
       }
-      return;
+      return out;
     }
   }
   std::vector<std::pair<ObjectId, kernel::Mesh>> ma, mb;
-  auto collect = [&](const std::vector<ObjectId>& ids, std::vector<std::pair<ObjectId, kernel::Mesh>>& out) {
+  auto collect = [&](const std::vector<ObjectId>& ids, std::vector<std::pair<ObjectId, kernel::Mesh>>& dst) {
     for (ObjectId id : ids) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
       std::optional<kernel::Mesh> m = MeshOf(*o, AdaptiveMeshTolerance(*o));
       if (!m || !m->IsClosedManifold()) { ctx.Warn("Object " + std::to_string(id) + " is not a closed solid; skipped"); continue; }
-      out.push_back({id, *m});
+      dst.push_back({id, *m});
     }
   };
   if (two_sets) { collect(a, ma); collect(b, mb); }
   else { collect(all, ma); }
-  if (ma.empty() || (two_sets && mb.empty())) { ctx.Warn("Nothing to combine"); return; }
+  if (ma.empty() || (two_sets && mb.empty())) { ctx.Warn("Nothing to combine"); return out; }
   try {
     kernel::Mesh result = ma[0].second;
-    int layer = ctx.Doc().Find(ma[0].first) ? ctx.Doc().Find(ma[0].first)->layer_index : 0;
+    out.layer = layer_of(ma[0].first);
     if (two_sets) {
       for (size_t i = 1; i < ma.size(); ++i) result = kernel::BooleanCombine(result, ma[i].second, kernel::BooleanOp::Union);
       kernel::Mesh other = mb[0].second;
@@ -461,20 +481,51 @@ void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::
     } else {
       for (size_t i = 1; i < ma.size(); ++i) result = kernel::BooleanCombine(result, ma[i].second, op);
     }
-    ctx.Doc().BeginChange(label);
-    for (auto& [id, m] : ma) ctx.Doc().Remove(id);
-    for (auto& [id, m] : mb) ctx.Doc().Remove(id);
+    out.ok = true;
+    // Record/rebuild order is post-swap: the group that is the operation's left side comes first.
+    for (auto& [id, m] : (swap_sides && two_sets) ? mb : ma) out.first.push_back(id);
+    if (two_sets) for (auto& [id, m] : swap_sides ? ma : mb) out.second.push_back(id);
     if (result.FaceCount() > 0) {
-      SceneObject n = SceneObject::MakeMesh(result);
-      n.layer_index = layer;
-      ctx.Doc().Add(std::move(n));
-      ctx.Print(label + ": " + std::to_string(result.FaceCount()) + " faces, volume " + FormatNumber(result.Volume()));
+      out.object = SceneObject::MakeMesh(result);
+      out.how = std::to_string(result.FaceCount()) + " faces, volume " + FormatNumber(result.Volume());
     } else {
-      ctx.Print(label + ": result is empty");
+      out.how = "result is empty";
     }
   } catch (const std::exception& ex) {
     ctx.Warn(std::string("Boolean failed: ") + ex.what());
+    out.ok = false;
   }
+  return out;
+}
+
+void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::vector<ObjectId>& b, kernel::BooleanOp op,
+                bool two_sets, const std::string& label, bool swap_sides = false, bool try_exact_brep = false) {
+  BooleanOutcome r = ComputeBoolean(ctx, a, b, op, two_sets, swap_sides, try_exact_brep);
+  if (!r.ok) return;
+  ctx.Doc().BeginChange(label);
+  std::vector<ObjectId> consumed = r.first;
+  consumed.insert(consumed.end(), r.second.begin(), r.second.end());
+  // History On (and the exact/SubD/mesh result is non-empty): the operands are
+  // HIDDEN instead of deleted, as Rhino does with RecordHistory, so the result
+  // can name them as its recorded sources and UpdateHistory can re-run the
+  // boolean when an operand - or the curve an operand was extruded from -
+  // changes. With History Off they are deleted exactly as before.
+  const bool keep_operands = try_exact_brep && ctx.App().State().history_recording && r.object.has_value() && !consumed.empty();
+  if (keep_operands) {
+    for (SceneObject* o : ctx.Doc().FindMany(consumed)) if (o) { o->visible = false; o->selected = false; o->InvalidateDisplay(); }
+  } else {
+    for (ObjectId id : consumed) ctx.Doc().Remove(id);
+  }
+  if (r.object) {
+    r.object->layer_index = r.layer;
+    const ObjectId new_id = ctx.Doc().Add(std::move(*r.object));
+    if (keep_operands) {
+      const double opcode = op == kernel::BooleanOp::Union ? 0 : op == kernel::BooleanOp::Difference ? 1 : op == kernel::BooleanOp::Intersection ? 2 : 3;
+      RecordHistoryIfEnabled(ctx, new_id, label, consumed,
+                             {{"op", opcode}, {"first", two_sets ? static_cast<double>(r.first.size()) : 0.0}});
+    }
+  }
+  ctx.Print(label + ": " + r.how);
 }
 
 // Two-set boolean: first selection, then second selection. `try_exact_brep`
@@ -1270,6 +1321,41 @@ class MeshSmoothCommand : public Command {
 };
 
 }  // namespace
+
+// The boolean behind BooleanUnion/BooleanDifference/BooleanIntersection/
+// Boolean2Objects, re-run by UpdateHistory from the recorded operands'
+// CURRENT geometry (history_rebuild.h documents the num keys). It runs the very
+// same ComputeBoolean the live command ran - exact planar engine, exact
+// general engine, SubD, then the mesh path - so the engine choice is re-made
+// from the new shapes. If that changes the kind of result (e.g. an exact B-rep
+// that now only the mesh path can combine), the object follows; if nothing can
+// combine them, `why` says so and the object is left alone.
+std::optional<SceneObject> RebuildBoolean(CommandContext& ctx, const HistoryInputs& inputs, const HistoryRecord& rec, std::string& why) {
+  auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  const int opcode = static_cast<int>(num("op"));
+  const kernel::BooleanOp op = opcode == 1 ? kernel::BooleanOp::Difference
+                               : opcode == 2 ? kernel::BooleanOp::Intersection
+                               : opcode == 3 ? kernel::BooleanOp::SymmetricDifference
+                                             : kernel::BooleanOp::Union;
+  std::vector<ObjectId> ids;
+  for (const SceneObject* o : inputs) {
+    if (o->kind == ObjectKind::Curve || o->kind == ObjectKind::Point) {
+      why = "operand " + std::to_string(o->id) + " is " + HistoryKindName(o->kind) + " now, not a solid";
+      return std::nullopt;
+    }
+    ids.push_back(o->id);
+  }
+  const size_t first = static_cast<size_t>(num("first"));
+  std::vector<ObjectId> first_ids = ids, second_ids;
+  if (first > 0 && first < ids.size()) {
+    first_ids.assign(ids.begin(), ids.begin() + static_cast<long>(first));
+    second_ids.assign(ids.begin() + static_cast<long>(first), ids.end());
+  }
+  BooleanOutcome r = ComputeBoolean(ctx, first_ids, second_ids, op, !second_ids.empty(), /*swap_sides=*/false, /*try_exact_brep=*/true);
+  if (!r.ok) { why = "the operands' current shapes cannot be combined (not closed solids, or every boolean engine refused them)"; return std::nullopt; }
+  if (!r.object) { why = "the boolean of the operands' current shapes is empty"; return std::nullopt; }
+  return std::move(r.object);
+}
 
 void RegisterBooleanCommands(CommandEngine& e) {
   Reg(e, "BooleanUnion", Make<BooleanCommand>(kernel::BooleanOp::Union, "BooleanUnion", false, /*try_exact_brep=*/true));

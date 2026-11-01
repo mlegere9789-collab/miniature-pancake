@@ -19,6 +19,19 @@ kernel::Brep WrapBrepForHistory(ON_Brep* b) {
   if (b) { k.raw() = *b; delete b; }
   return k;
 }
+
+// A closed extrusion built by ON_BrepExtrudeFace takes its orientation from
+// the profile's winding, so a counter-clockwise rectangle came back inside out
+// (its display mesh had NEGATIVE volume: a boolean of it with a box returned the
+// wrong solid - the union of a 1000 prism and a 1000 box measured 250). Flip a
+// closed result whose mesh volume is negative so every extruded solid has
+// outward normals, as ExtrudeCrvTapered already does. Open results are left alone.
+void OrientOutward(kernel::Brep& k) {
+  if (!k.raw().IsSolid()) return;
+  BrepMeshOptions opt;
+  opt.chord_tolerance = 0.05;
+  if (MeshBrepClosed(k.raw(), opt).Volume() < 0) k.raw().Flip();
+}
 }  // namespace
 
 void RecordHistoryIfEnabled(CommandContext& ctx, ObjectId new_id, const std::string& command,
@@ -51,7 +64,7 @@ std::optional<SceneObject> RebuildExtrude(CommandContext& ctx, const kernel::Nur
     ON_Brep* b = ON_BrepTrimmedPlane(plane, c);
     if (b) {
       ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + v));
-      if (ON_BrepExtrudeFace(*b, 0, path, true) >= 0) return SceneObject::MakeBrep(WrapBrepForHistory(b));
+      if (ON_BrepExtrudeFace(*b, 0, path, true) >= 0) { kernel::Brep k = WrapBrepForHistory(b); OrientOutward(k); return SceneObject::MakeBrep(k); }
       delete b;
     }
   }
@@ -132,6 +145,49 @@ std::optional<SceneObject> RebuildRevolve(CommandContext&, const kernel::NurbsCu
   ON_Brep* brep = ON_BrepRevSurface(rs, true, true);
   if (!brep) return std::nullopt;
   return SceneObject::MakeBrep(WrapBrepForHistory(brep));
+}
+
+// ExtrudeSrf's construction for ONE surface or polysurface - shared by the
+// live command and UpdateHistory the same way RebuildExtrude is. A surface is
+// wrapped into a one-face Brep and its face extruded; a polysurface has every
+// face extruded (so a box extrudes into the union of its face prisms exactly as
+// the command always has).
+std::optional<SceneObject> RebuildExtrudeSrf(CommandContext&, const SceneObject& src, const HistoryRecord& rec) {
+  auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  const Vector3d v(num("vx"), num("vy"), num("vz"));
+  const Point3d shift(num("shiftx"), num("shifty"), num("shiftz"));
+  const bool solid = num("solid") != 0.0;
+  if (v.Length() <= 0) return std::nullopt;
+  ON_Brep* b = nullptr;
+  if (src.kind == ObjectKind::Surface && src.surface) {
+    b = ON_Brep::New();
+    ON_NurbsSurface* srf = new ON_NurbsSurface(src.surface->raw());
+    b->Create(srf);
+  } else if (src.kind == ObjectKind::Brep && src.brep) {
+    b = new ON_Brep(src.brep->raw());
+  } else {
+    return std::nullopt;
+  }
+  if (shift != Point3d(0, 0, 0)) b->Translate(shift);
+  ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + v));
+  const int nf = src.kind == ObjectKind::Surface ? 1 : b->m_F.Count();
+  bool ok = nf > 0;
+  for (int f = 0; f < nf && ok; ++f) ok = ON_BrepExtrudeFace(*b, f, path, solid) >= 0;
+  if (!ok) { delete b; return std::nullopt; }
+  kernel::Brep k = WrapBrepForHistory(b);
+  OrientOutward(k);
+  return SceneObject::MakeBrep(k);
+}
+
+// PlanarSrf's construction for ONE curve: the trimmed plane bounded by a
+// closed, planar, non-self-intersecting curve. nullopt for anything else.
+std::optional<SceneObject> RebuildPlanarSrf(CommandContext& ctx, const kernel::NurbsCurve& curve, const HistoryRecord&) {
+  ON_Plane pl;
+  if (!curve.raw().IsClosed() || !curve.raw().IsPlanar(&pl, ctx.Settings().absolute_tolerance)) return std::nullopt;
+  if (CurveSelfIntersects(curve, std::max(ctx.Settings().absolute_tolerance, 1e-9))) return std::nullopt;
+  ON_Brep* b = ON_BrepTrimmedPlane(pl, curve.raw());
+  if (!b) return std::nullopt;
+  return SceneObject::MakeBrep(WrapBrepForHistory(b));
 }
 
 // ---------------------------------------------------------------------------
@@ -773,29 +829,19 @@ class ExtrudeCommand : public Command {
       if (both_) { v = n * (2 * d); shift = Point3d(0, 0, 0) - n * d; }
       if (o->kind == ObjectKind::Curve) {
         if (ExtrudeCurve(ctx, id, *o->curve, v, shift)) ++made;
-      } else if (o->kind == ObjectKind::Surface) {
-        ON_Brep* b = ON_Brep::New();
-        ON_NurbsSurface* srf = new ON_NurbsSurface(o->surface->raw());
-        b->Create(srf);
-        if (shift != Point3d(0, 0, 0)) b->Translate(shift);
-        ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + v));
-        if (ON_BrepExtrudeFace(*b, 0, path, solid_) >= 0) {
-          const ObjectId new_id = ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b)));
+      } else if (o->kind == ObjectKind::Surface || o->kind == ObjectKind::Brep) {
+        // Delegates to RebuildExtrudeSrf so UpdateHistory re-runs the same
+        // construction when the source surface/polysurface changes.
+        HistoryRecord rec;
+        rec.command = "ExtrudeSrf";
+        rec.num = {{"vx", v.x}, {"vy", v.y}, {"vz", v.z}, {"shiftx", shift.x}, {"shifty", shift.y}, {"shiftz", shift.z}, {"solid", solid_ ? 1.0 : 0.0}};
+        std::optional<SceneObject> built = RebuildExtrudeSrf(ctx, *o, rec);
+        if (built) {
+          const ObjectId new_id = ctx.Doc().Add(std::move(*built));
           ctx.Doc().SetProvenance(new_id, id, ProvenanceKind::ExtrusionRail);
+          RecordHistoryIfEnabled(ctx, new_id, "ExtrudeSrf", {id}, rec.num);
           ++made;
-        } else delete b;
-      } else if (o->kind == ObjectKind::Brep) {
-        ON_Brep* b = new ON_Brep(o->brep->raw());
-        if (shift != Point3d(0, 0, 0)) b->Translate(shift);
-        ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + v));
-        bool ok = true;
-        const int nf = b->m_F.Count();
-        for (int f = 0; f < nf && ok; ++f) ok = ON_BrepExtrudeFace(*b, f, path, solid_) >= 0;
-        if (ok) {
-          const ObjectId new_id = ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b)));
-          ctx.Doc().SetProvenance(new_id, id, ProvenanceKind::ExtrusionRail);
-          ++made;
-        } else delete b;
+        }
       }
     }
     ctx.Print("Extruded " + std::to_string(made) + " object(s)");
@@ -1479,7 +1525,11 @@ void RegisterSolidCommands(CommandEngine& e) {
           // itself in 2D, silently reported as a normal planar surface.
           // Reject that here instead of shipping the corrupt result.
           if (CurveSelfIntersects(*o->curve, std::max(ctx.Settings().absolute_tolerance, 1e-9))) { ++self_int; continue; }
-          if (ON_Brep* b = ON_BrepTrimmedPlane(pl, o->curve->raw())) { ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); ++made; }
+          if (std::optional<SceneObject> built = RebuildPlanarSrf(ctx, *o->curve, HistoryRecord{})) {
+            const ObjectId new_id = ctx.Doc().Add(std::move(*built));
+            RecordHistoryIfEnabled(ctx, new_id, "PlanarSrf", {id}, {});
+            ++made;
+          }
         }
         if (made == 0 && self_int > 0) ctx.Warn("PlanarSrf: " + std::to_string(self_int) + " curve(s) cross themselves - a planar surface needs a simple (non-self-intersecting) boundary");
         else if (made == 0) ctx.Warn("Select closed planar curves");

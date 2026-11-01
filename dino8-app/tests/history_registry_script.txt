@@ -1,0 +1,524 @@
+# Registry-based construction history (cmd_history.cpp, history_rebuild.h):
+# every construction whose result comes from an exact kernel call records its
+# source objects + numeric options, and UpdateHistory re-executes it through ONE
+# dispatch table, in dependency order. This script MOVES/SCALES an input and
+# checks the dependent result's MEASURED geometry (Volume / Area / Length /
+# bounding box), never just an object count:
+#   S1  curve -> Extrude -> BooleanIntersection (a 2-deep chain), Undo/Redo of
+#       the UpdateHistory
+#   S2  curve -> Extrude (x2) -> BooleanUnion, Undo/Redo of the boolean itself
+#   S3  BooleanDifference and Boolean2Objects
+#   S4  failure: the root curve of a chain is deleted -> reason printed, the
+#       dependents keep their geometry
+#   S5  History Off is respected (no record, operands deleted as before), and
+#       a record made while On survives History being turned Off
+#   S6  the other newly recorded constructions: PlanarSrf -> ExtrudeSrf (a
+#       2-deep chain), ExtrudeCrvTapered, ExtrudeCrvAlongCrv, NetworkSrf (4 and
+#       3 curves), EdgeSrf, RailRevolve, Offset, OffsetSrf
+# Object ids are the deterministic 1-based counter Document::Add assigns, in
+# creation order (a hidden boolean operand still owns its id). Each section ends
+# with Hide-all + HistoryPurge so the next section's UpdateHistory only sees its
+# own records.
+SetActiveViewport Top
+
+# ===================================================================== S1
+History On
+Rectangle 0,0,0 10,10,0
+SelNone
+SelID 1
+Extrude
+10
+Box 5,5,0 15,15,0 10
+@expect_objects 3
+SelNone
+SelID 2
+BooleanIntersection
+SelID 3
+Enter
+# The operands are hidden (kept as recorded sources), not deleted: 4 objects,
+# but only the curve and the result are visible.
+@expect_objects 4
+SelAll
+@expect_selected 2
+SelNone
+SelID 4
+Volume
+History
+# Move the root curve 5 in +X: the extrusion (hidden 2) and the boolean (4) are
+# stale until UpdateHistory runs.
+SelNone
+SelID 1
+Move
+0,0,0
+5,0,0
+SelNone
+SelID 4
+Volume
+UpdateHistory
+SelNone
+SelID 4
+Volume
+# Undo reverts the whole rebuild (both objects); Redo re-applies it.
+Undo
+@expect_objects 4
+SelNone
+SelID 4
+Volume
+Redo
+SelNone
+SelID 4
+Volume
+BoundingBox
+@expect_objects 5
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== S2
+Rectangle 30,0,0 40,10,0
+Rectangle 35,0,0 45,10,0
+SelNone
+SelID 6
+Extrude
+10
+SelNone
+SelID 7
+Extrude
+10
+SelNone
+SelID 8
+SelID 9
+BooleanUnion
+@expect_objects 10
+SelNone
+SelID 10
+Volume
+History
+# Undo/Redo of the boolean itself: the operands come back visible, then hidden
+# again, and the record survives the round trip.
+Undo
+@expect_objects 9
+SelAll
+@expect_selected 4
+Redo
+@expect_objects 10
+SelAll
+@expect_selected 3
+SelNone
+SelID 7
+Move
+0,0,0
+2,0,0
+UpdateHistory
+SelNone
+SelID 10
+Volume
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== S3
+Rectangle 50,0,0 60,10,0
+Rectangle 55,0,0 65,10,0
+SelNone
+SelID 11
+Extrude
+10
+SelNone
+SelID 12
+Extrude
+10
+SelNone
+SelID 13
+BooleanDifference
+SelID 14
+Enter
+SelNone
+SelID 15
+Volume
+SelNone
+SelID 12
+Move
+0,0,0
+2,0,0
+UpdateHistory
+SelNone
+SelID 15
+Volume
+SelAll
+Hide
+SelNone
+HistoryPurge
+# Boolean2Objects (default Result=Union) records too.
+Rectangle 70,0,0 80,10,0
+Rectangle 75,0,0 85,10,0
+SelNone
+SelID 16
+Extrude
+10
+SelNone
+SelID 17
+Extrude
+10
+SelNone
+SelID 18
+Boolean2Objects
+SelID 19
+Enter
+Enter
+SelNone
+SelID 20
+Volume
+SelNone
+SelID 17
+Move
+0,0,0
+2,0,0
+UpdateHistory
+SelNone
+SelID 20
+Volume
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== S4
+# Failure: delete the ROOT curve of a chain. The extrusion cannot be rebuilt
+# (reason printed), and the boolean built from it is skipped because its source
+# was not rebuilt - both keep their geometry exactly.
+Rectangle 90,0,0 100,10,0
+SelNone
+SelID 21
+Extrude
+10
+Box 95,5,0 105,15,0 10
+SelNone
+SelID 22
+BooleanIntersection
+SelID 23
+Enter
+SelNone
+SelID 24
+Volume
+SelNone
+SelID 21
+Delete
+UpdateHistory
+SelNone
+SelID 24
+Volume
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== S5
+# History Off is respected: a boolean made while Off deletes its operands (as it
+# always did) and records nothing.
+History Off
+Box 0,30,0 10,40,0 10
+Box 5,30,0 15,40,0 10
+SelNone
+SelID 25
+SelID 26
+BooleanUnion
+@expect_objects 24
+History
+SelNone
+SelID 27
+Volume
+# A record made while On stays linked when History is later turned Off; an
+# object built while Off never gets one.
+History On
+Rectangle 110,0,0 120,10,0
+SelNone
+SelID 28
+Extrude
+10
+History Off
+Rectangle 130,0,0 140,10,0
+SelNone
+SelID 30
+Extrude
+10
+SelNone
+SelID 28
+Scale 110,0,0 2
+SelNone
+SelID 30
+Scale 130,0,0 2
+UpdateHistory
+SelNone
+SelID 29
+Volume
+SelNone
+SelID 31
+Volume
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== S6a
+# PlanarSrf -> ExtrudeSrf: a 2-deep chain with a surface as the middle link.
+History On
+Rectangle 0,50,0 10,60,0
+SelNone
+SelID 32
+PlanarSrf
+SelNone
+SelID 33
+ExtrudeSrf
+5
+SelNone
+SelID 34
+Volume
+SelNone
+SelID 32
+Scale 0,50,0 2
+UpdateHistory
+SelNone
+SelID 34
+Volume
+SelNone
+SelID 33
+Area
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== S6b
+Circle 30,50,0 10
+SelNone
+SelID 35
+ExtrudeCrvTapered
+5
+SelNone
+SelID 36
+Volume
+SelNone
+SelID 35
+Scale 30,50,0 2
+UpdateHistory
+SelNone
+SelID 36
+Volume
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== S6c
+Line 60,50,0 70,50,0
+Line 60,50,0 60,55,0
+SelNone
+SelID 37
+ExtrudeCrvAlongCrv
+SelID 38
+Enter
+SelNone
+SelID 39
+Area
+SelNone
+SelID 38
+Scale 60,50,0 2
+UpdateHistory
+SelNone
+SelID 39
+Area
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== S6d
+# NetworkSrf, 4 curves (exact Coons patch).
+Line 0,70,0 10,70,0
+Line 10,70,0 10,80,0
+Line 10,80,0 0,80,0
+Line 0,80,0 0,70,0
+SelNone
+SelID 40
+SelID 41
+SelID 42
+SelID 43
+NetworkSrf
+SelNone
+SelID 44
+Area
+SelNone
+SelID 40
+SelID 41
+SelID 42
+SelID 43
+Scale 0,70,0 2
+UpdateHistory
+SelNone
+SelID 44
+Area
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== S6e
+# EdgeSrf, 3 curves (exact triangular Coons patch).
+Line 0,90,0 10,90,0
+Line 10,90,0 0,100,0
+Line 0,100,0 0,90,0
+SelNone
+SelID 45
+SelID 46
+SelID 47
+EdgeSrf
+SelNone
+SelID 48
+Area
+SelNone
+SelID 45
+SelID 46
+SelID 47
+Scale 0,90,0 2
+UpdateHistory
+SelNone
+SelID 48
+Area
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== S6f
+# Offset -> Extrude: curve -> offset curve -> solid (a 3-object chain).
+Circle 60,100,0 5
+SelNone
+SelID 49
+Offset Distance=2 60,100,0
+SelNone
+SelID 50
+Length
+Extrude
+4
+SelNone
+SelID 51
+Volume
+SelNone
+SelID 49
+Scale 60,100,0 2
+UpdateHistory
+SelNone
+SelID 50
+Length
+SelNone
+SelID 51
+Volume
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== S6g
+# Extrude -> OffsetSrf (convex planar solid, exact B-rep offset).
+Rectangle 0,120,0 10,130,0
+SelNone
+SelID 52
+Extrude
+10
+SelNone
+SelID 53
+OffsetSrf
+1
+SelNone
+SelID 54
+Volume
+SelNone
+SelID 52
+Scale 0,120,0 2
+UpdateHistory
+SelNone
+SelID 54
+Volume
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== S6h
+# RailRevolve (exact kernel branch): the PROFILE is scaled 2x about the axis
+# point (scaling the rail circle alone changes nothing: the kernel scales the
+# profile by rail-distance ratios), and the revolved solid must equal a fresh
+# RailRevolve built from the scaled profile (second block).
+Polyline 5,0,200 7,0,200 7,0,203 5,0,203 5,0,200
+Enter
+Circle 0,0,200 2
+SelNone
+SelID 55
+SelID 56
+RailRevolve
+0,0,200
+0,0,201
+SelNone
+SelID 57
+Volume
+SelNone
+SelID 55
+Scale 0,0,200 2
+UpdateHistory
+SelNone
+SelID 57
+Volume
+SelAll
+Hide
+SelNone
+HistoryPurge
+Polyline 10,0,300 14,0,300 14,0,306 10,0,306 10,0,300
+Enter
+Circle 0,0,300 2
+SelNone
+SelID 58
+SelID 59
+RailRevolve
+0,0,300
+0,0,301
+SelNone
+SelID 60
+Volume
+History
+SelAll
+Hide
+SelNone
+HistoryPurge
+
+# ===================================================================== S7
+# An EXACT B-rep chain: Box -> OffsetSrf (exact convex planar offset, 6 planar
+# faces) -> BooleanUnion with a second Box (planar engine). Moving the first
+# box must re-run both and the union must stay a polysurface, not turn into a mesh.
+Box 0,200,0 10,210,0 10
+Box 5,205,0 15,215,0 10
+SelNone
+SelID 61
+OffsetSrf
+1
+SelNone
+SelID 63
+SelID 62
+BooleanUnion
+SelNone
+SelID 64
+Volume
+List
+SelNone
+SelID 61
+Move
+0,0,0
+4,0,0
+UpdateHistory
+SelNone
+SelID 64
+Volume
+List
+History

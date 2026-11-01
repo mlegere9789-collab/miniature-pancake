@@ -1,6 +1,7 @@
 // Editing commands: Delete, Undo/Redo, Group, Hide/Show/Lock, Join,
 // Explode, Rebuild, Reverse, Offset...
 #include "commands/cmd_common.h"
+#include "commands/history_rebuild.h"
 #include "dino8/kernel/curve.h"
 #include "io/File3dm.h"
 
@@ -178,8 +179,8 @@ class OffsetCommand : public Command {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
       const int sign = SideSign(ctx, *o->curve, side);
-      Make(ctx, *o->curve, distance_ * sign, o->layer_index);
-      if (both_) Make(ctx, *o->curve, -distance_ * sign, o->layer_index);
+      Make(ctx, id, *o->curve, distance_ * sign, o->layer_index);
+      if (both_) Make(ctx, id, *o->curve, -distance_ * sign, o->layer_index);
     }
     Finish();
   }
@@ -210,15 +211,25 @@ class OffsetCommand : public Command {
   // `[partial]` ("no app command calls OffsetInPlane with anything but
   // the implicit Sharp default"), despite all four styles already being
   // real, tested kernel code.
-  void Make(CommandContext& ctx, const kernel::NurbsCurve& c, double d, int layer) {
-    kernel::NurbsCurve out;
-    const double tol = ctx.Settings().absolute_tolerance;
-    kernel::Result r = c.OffsetInPlane(d, out, tol, corner_style_);
-    if (r != kernel::Result::Ok) r = c.OffsetInPlane(ActivePlane(ctx), d, out, tol, corner_style_);
-    if (r != kernel::Result::Ok) return;
-    SceneObject n = SceneObject::MakeCurve(out);
-    n.layer_index = layer;
-    ctx.Doc().Add(std::move(n));
+  void Make(CommandContext& ctx, ObjectId src_id, const kernel::NurbsCurve& c, double d, int layer) {
+    // The construction itself is RebuildOffsetCurve (below the anonymous
+    // namespace), shared with UpdateHistory; the active CPlane is recorded
+    // because it is the fallback offset plane for a non-planar curve.
+    const ON_Plane pl = ActivePlane(ctx);
+    HistoryRecord rec;
+    rec.command = "Offset";
+    const int corner = corner_style_ == kernel::CurveOffsetCornerStyle::Round ? 1
+                       : corner_style_ == kernel::CurveOffsetCornerStyle::Chamfer ? 2
+                       : corner_style_ == kernel::CurveOffsetCornerStyle::Smooth ? 3 : 0;
+    rec.num = {{"d", d}, {"corner", static_cast<double>(corner)},
+               {"ox", pl.origin.x}, {"oy", pl.origin.y}, {"oz", pl.origin.z},
+               {"xx", pl.xaxis.x}, {"xy", pl.xaxis.y}, {"xz", pl.xaxis.z},
+               {"yx", pl.yaxis.x}, {"yy", pl.yaxis.y}, {"yz", pl.yaxis.z}};
+    std::optional<SceneObject> built = RebuildOffsetCurve(ctx, c, rec);
+    if (!built) return;
+    built->layer_index = layer;
+    const ObjectId new_id = ctx.Doc().Add(std::move(*built));
+    RecordHistoryIfEnabled(ctx, new_id, "Offset", {src_id}, rec.num);
   }
   void OnHover(CommandContext& ctx, Point3d h) override {
     ctx.ClearPreview();
@@ -557,6 +568,28 @@ class InsertKnotCommand : public Command {
 };
 
 }  // namespace
+
+// Offset's construction for ONE curve (see OffsetCommand::Make): the kernel's
+// OffsetInPlane in the curve's own plane, else in the recorded CPlane. Reads
+// num: d, corner (0 Sharp, 1 Round, 2 Chamfer, 3 Smooth), ox..zz (CPlane).
+std::optional<SceneObject> RebuildOffsetCurve(CommandContext& ctx, const kernel::NurbsCurve& c, const HistoryRecord& rec) {
+  auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  const int ci = static_cast<int>(num("corner"));
+  const kernel::CurveOffsetCornerStyle style = ci == 1 ? kernel::CurveOffsetCornerStyle::Round
+                                               : ci == 2 ? kernel::CurveOffsetCornerStyle::Chamfer
+                                               : ci == 3 ? kernel::CurveOffsetCornerStyle::Smooth
+                                                         : kernel::CurveOffsetCornerStyle::Sharp;
+  kernel::NurbsCurve out;
+  const double tol = ctx.Settings().absolute_tolerance;
+  const double d = num("d");
+  kernel::Result r = c.OffsetInPlane(d, out, tol, style);
+  if (r != kernel::Result::Ok) {
+    ON_Plane pl(ON_3dPoint(num("ox"), num("oy"), num("oz")), ON_3dVector(num("xx"), num("xy"), num("xz")), ON_3dVector(num("yx"), num("yy"), num("yz")));
+    r = c.OffsetInPlane(pl, d, out, tol, style);
+  }
+  if (r != kernel::Result::Ok) return std::nullopt;
+  return SceneObject::MakeCurve(out);
+}
 
 void RegisterEditCommands(CommandEngine& e) {
   Reg(e, "Delete", OnSelection("Select objects to delete", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {

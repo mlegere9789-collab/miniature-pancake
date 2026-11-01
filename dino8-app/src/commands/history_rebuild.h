@@ -17,7 +17,10 @@
 // drift from what the command itself actually does.
 #pragma once
 
+#include <functional>
+#include <map>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "commands/cmd_common.h"
@@ -127,5 +130,105 @@ std::optional<SceneObject> RebuildPatch(CommandContext& ctx, const kernel::Nurbs
 // OpenNURBS' own CreateRuledSurface refuses the (degenerate) inputs.
 std::optional<SceneObject> RebuildNetworkSrf2(CommandContext& ctx, const kernel::NurbsCurve& a,
                                                const kernel::NurbsCurve& b, const HistoryRecord& rec);
+
+// ---------------------------------------------------------------------------
+// The rebuild registry: ONE dispatch table for every construction that can
+// re-execute through UpdateHistory/HistoryUpdate (cmd_history.cpp).
+//
+// A construction command makes itself history-capable in exactly two steps:
+//   1. cmd_history.cpp's table calls RegisterHistoryRebuilder() once with the
+//      HistoryRecord::command name it records under and a rebuild function
+//      that maps (the source objects' CURRENT state, the recorded numeric
+//      options) to a fresh SceneObject (or a printed reason why not) - the
+//      adapter only validates the source kinds and calls the Rebuild*
+//      function declared in this header;
+//   2. at construction time it calls RecordHistoryIfEnabled() with the
+//      source ObjectIds (in the order the rebuild function expects) and the
+//      options, and builds its own result through the same rebuild function
+//      so live construction and re-execution can never drift apart.
+// UpdateHistory then needs no per-command code: it resolves each record's
+// sources to live objects (any kind - a curve, a surface, a polysurface, or
+// the result of another recorded construction), orders the records so every
+// object is rebuilt after the objects it was built from (a chain of any
+// depth), calls the registered function, and replaces the geometry in place.
+// ---------------------------------------------------------------------------
+using HistoryInputs = std::vector<const SceneObject*>;
+// `inputs` has exactly rec.sources.size() entries, all non-null, in the
+// recorded order. Return nullopt and set `why` to refuse (e.g. an input is no
+// longer the kind of object the construction needs, or the kernel refuses its
+// current shape); the target is then left exactly as it was.
+using HistoryRebuildFn = std::function<std::optional<SceneObject>(CommandContext& ctx, const HistoryInputs& inputs,
+                                                                   const HistoryRecord& rec, std::string& why)>;
+
+struct HistoryRebuilder {
+  std::string command;      // HistoryRecord::command
+  std::string description;  // what it rebuilds, shown by History
+  HistoryRebuildFn fn;
+};
+
+// Idempotent per command name (the last registration wins), so every
+// CommandEngine's Register*Commands call can repeat it safely.
+void RegisterHistoryRebuilder(const std::string& command, const std::string& description, HistoryRebuildFn fn);
+const HistoryRebuilder* FindHistoryRebuilder(const std::string& command);
+// Every registered rebuilder, sorted by command name.
+std::vector<const HistoryRebuilder*> HistoryRebuilders();
+
+// Human name of an object kind for refusal messages ("a polysurface").
+const char* HistoryKindName(ObjectKind k);
+// The curve behind `o`, or nullptr with `why` set ("source object 3 is a
+// polysurface, not a curve").
+const kernel::NurbsCurve* HistoryRequireCurve(const SceneObject* o, std::string& why);
+
+// Boolean (cmd_boolean.cpp). Reads num: op (0 Union, 1 Difference, 2
+// Intersection, 3 SymmetricDifference), first (how many of the leading
+// sources form the first group; 0 means a single-group Union). Operands must
+// all be closed solid B-reps; the exact planar engine is tried first, then the
+// general engine - the same order the live commands use. Never falls back to a
+// mesh result (that would silently change the object's kind).
+std::optional<SceneObject> RebuildBoolean(CommandContext& ctx, const HistoryInputs& inputs, const HistoryRecord& rec, std::string& why);
+
+// ExtrudeSrf (cmd_solids.cpp): one surface or polysurface in, extruded along
+// the recorded vector. Reads num: vx,vy,vz, shiftx,shifty,shiftz, solid.
+std::optional<SceneObject> RebuildExtrudeSrf(CommandContext& ctx, const SceneObject& src, const HistoryRecord& rec);
+
+// ExtrudeCrvAlongCrv (cmd_surface.cpp): exact translational sum surface of
+// the profile along the path. Reads no num parameters.
+std::optional<SceneObject> RebuildExtrudeAlongCrv(CommandContext& ctx, const kernel::NurbsCurve& profile,
+                                                   const kernel::NurbsCurve& path, const HistoryRecord& rec);
+
+// ExtrudeCrvTapered (cmd_surface.cpp): kernel Brep::ExtrudeTapered. Reads num:
+// dx,dy,dz (the extrusion vector), draft (radians), solid (1/0). Whether the
+// ends are capped is derived fresh from the profile (closed and planar).
+std::optional<SceneObject> RebuildExtrudeTapered(CommandContext& ctx, const kernel::NurbsCurve& profile, const HistoryRecord& rec);
+
+// NetworkSrf / EdgeSrf with 3 or 4 boundary curves (cmd_surface.cpp): the
+// kernel's exact Coons patch, or its triangular variant, or the fitted bilinear
+// fallback when those refuse - the same chain the live command runs. Reads no
+// num parameters; the loop order and orientation are re-derived from the
+// curves' current geometry. `note` (optional) receives the one-line
+// description the live command prints.
+std::optional<SceneObject> RebuildNetworkSrfLoop(CommandContext& ctx, const std::vector<const kernel::NurbsCurve*>& curves,
+                                                  const HistoryRecord& rec, std::string* note);
+
+// RailRevolve (cmd_srfedit.cpp), exact kernel branch only: Brep::RailRevolve.
+// Reads num: ax,ay,az (axis start), dx,dy,dz (unit axis direction).
+std::optional<SceneObject> RebuildRailRevolve(CommandContext& ctx, const kernel::NurbsCurve& profile,
+                                               const kernel::NurbsCurve& rail, const HistoryRecord& rec);
+
+// OffsetSrf (cmd_surface.cpp): the same per-object construction the live
+// command runs (OffsetRefit for a surface, OffsetSolidConvexPlanar for a
+// convex planar solid, otherwise the mesh offset). Reads num: d (signed
+// distance), solid (1/0).
+std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObject& src, const HistoryRecord& rec);
+
+// Offset (cmd_edit.cpp), curves: NurbsCurve::OffsetInPlane in the curve's own
+// plane, else in the CPlane that was active. Reads num: d (signed),
+// corner (0 Sharp, 1 Round, 2 Chamfer, 3 Smooth), ox,oy,oz / xx,xy,xz /
+// yx,yy,yz (that CPlane's origin and x/y axes).
+std::optional<SceneObject> RebuildOffsetCurve(CommandContext& ctx, const kernel::NurbsCurve& curve, const HistoryRecord& rec);
+
+// PlanarSrf (cmd_solids.cpp): trimmed plane bounded by one closed planar,
+// non-self-intersecting curve. Reads no num parameters.
+std::optional<SceneObject> RebuildPlanarSrf(CommandContext& ctx, const kernel::NurbsCurve& curve, const HistoryRecord& rec);
 
 }  // namespace dino8::app
