@@ -1199,6 +1199,59 @@ class SplitByObjectCommand : public Command {
       }
     }
 
+    // A split that involves a true SubD (a SubD target, or a SubD cutter)
+    // keeps its pieces SubDs: the inside piece is the creased SubD
+    // Intersection of the target with the (unioned) cutters and the outside
+    // piece the creased SubD Difference (TrySubDBoolean - operands refined
+    // to their limit surfaces, seam creased, cage interpolated), instead of
+    // the two flat Meshes the generic pipeline below would produce.
+    // All-or-nothing across the targets, like the exact paths above: any
+    // target the SubD boolean cannot do (an open sheet cutter, a target the
+    // cutter misses or swallows, a kernel failure) sends EVERY target to the
+    // mesh pipeline below, unchanged.
+    {
+      bool any_subd = false;
+      for (const std::vector<ObjectId>* ids : {static_cast<const std::vector<ObjectId>*>(&target_ids_), &cutter_ids})
+        for (ObjectId id : *ids) {
+          const SceneObject* o = ctx.Doc().Find(id);
+          if (o && o->kind == ObjectKind::SubD && o->subd) any_subd = true;
+        }
+      if (any_subd) {
+        struct SubDSplit { ObjectId id; int layer; kernel::SubD inside, outside; SubDBooleanTotals t_in, t_out; };
+        std::vector<SubDSplit> subd_results;
+        bool all_ok = true;
+        for (ObjectId tid : target_ids_) {
+          const SceneObject* o = ctx.Doc().Find(tid);
+          if (!o) { all_ok = false; break; }
+          SubDBooleanTotals t_in, t_out;
+          std::optional<kernel::SubD> inside = TrySubDBoolean(ctx, {tid}, cutter_ids, kernel::BooleanOp::Intersection, &t_in);
+          std::optional<kernel::SubD> outside = TrySubDBoolean(ctx, {tid}, cutter_ids, kernel::BooleanOp::Difference, &t_out);
+          if (!inside || !outside || inside->FaceCount() == 0 || outside->FaceCount() == 0) { all_ok = false; break; }
+          subd_results.push_back({tid, o->layer_index, std::move(*inside), std::move(*outside), t_in, t_out});
+        }
+        if (all_ok && !subd_results.empty()) {
+          ctx.Doc().BeginChange("SplitByObject");
+          for (ObjectId id : cutter_ids) ctx.Doc().Remove(id);
+          int made = 0, faces = 0, seam = 0;
+          for (SubDSplit& res : subd_results) {
+            ctx.Doc().Remove(res.id);
+            seam += res.t_in.seam_creases + res.t_out.seam_creases;
+            for (kernel::SubD* piece : {&res.inside, &res.outside}) {
+              faces += piece->FaceCount();
+              SceneObject s = SceneObject::MakeSubD(*piece);
+              s.layer_index = res.layer;
+              ctx.Doc().Add(std::move(s));
+              ++made;
+            }
+          }
+          ctx.Print("SplitByObject: " + std::to_string(subd_results.size()) + " solid(s) split into " + std::to_string(made) +
+                     " piece(s) (SubD boolean: the pieces are editable SubDs, " + std::to_string(faces) + " face(s) in all, " +
+                     std::to_string(seam) + " crease edge(s) on the cut seams)");
+          return;
+        }
+      }
+    }
+
     std::vector<std::pair<ObjectId, kernel::Mesh>> targets;
     kernel::BoundingBox span;
     bool have_span = false;

@@ -2456,6 +2456,33 @@ ON_Xform MirrorXform(Point3d plane_point, Vector3d plane_normal) {
       ON_PlaneEquation(plane_normal.x, plane_normal.y, plane_normal.z, -ON_DotProduct(plane_normal, plane_point)));
 }
 
+// Non-SubD sources (Brep, Mesh, curve, ...) have no cage to weld, so their
+// Radial / TwoPlane symmetry is a set of live IMAGE copies, one object per
+// image, each re-derived from the source by its own rigid transform. The
+// image number rides in SymmetryLink::source_fingerprint, which a non-SubD
+// source never otherwise uses (it is only the "last derived from" stamp of
+// the welded SubD rebuild): for a Radial link (radial_count >= 2) image k
+// (1..Count-1) is the source rotated k * 360 / Count degrees about the axis;
+// for a TwoPlane link (extra_planes holds the second plane) image k is the
+// source reflected across plane 1 (k=1), plane 2 (k=2) or both (k=3). Image
+// 0 / a plain link is the ordinary single mirror.
+ON_Xform NonSubDImageXform(const SymmetryLink& link) {
+  const unsigned long long k = link.source_fingerprint;
+  if (link.radial_count >= 2 && k >= 1 && k < static_cast<unsigned long long>(link.radial_count)) {
+    const double angle = 2.0 * ON_PI * static_cast<double>(k) / static_cast<double>(link.radial_count);
+    ON_Xform rot;
+    rot.Rotation(angle, link.axis_dir, link.axis_point);
+    return rot;
+  }
+  if (!link.extra_planes.empty() && k >= 1 && k <= 3) {
+    ON_Xform xf = ON_Xform::IdentityTransformation;
+    if (k & 1ULL) xf = MirrorXform(link.plane_point, link.plane_normal) * xf;
+    if (k & 2ULL) xf = MirrorXform(link.extra_planes[0].first, link.extra_planes[0].second) * xf;
+    return xf;
+  }
+  return MirrorXform(link.plane_point, link.plane_normal);
+}
+
 // Cheap content fingerprint of a SubD's control net (positions, edge tags,
 // semi-sharp weights, element counts) so a welded/radial Symmetry copy -
 // a full kernel rebuild - is only recomputed when its source really
@@ -2568,7 +2595,7 @@ class SymmetryCommand : public Command {
     const bool two_plane = (mode_ == "TwoPlane");
     const double weld_tol = std::max(ctx.Settings().absolute_tolerance, 1e-4);
     ctx.Doc().BeginChange("Symmetry");
-    int made = 0, welded = 0, skipped = 0;
+    int made = 0, welded = 0, skipped = 0, images_made = 0;
     std::string detail;
     for (ObjectId id : ids_) {
       const SceneObject* src = ctx.Doc().Find(id);
@@ -2578,8 +2605,35 @@ class SymmetryCommand : public Command {
       link.plane_point = a;
       link.plane_normal = n;
       const bool is_subd = (src->kind == ObjectKind::SubD && src->subd);
+      if (!is_subd && (radial || two_plane)) {
+        // No cage to weld: one live image copy per rotation / reflection,
+        // each carrying its own link (see NonSubDImageXform).
+        const int images = radial ? count_ - 1 : 3;
+        const SceneObject source_copy = *src;  // Doc().Add below may reallocate the object store
+        for (int k = 1; k <= images; ++k) {
+          SymmetryLink img = link;
+          img.source_fingerprint = static_cast<unsigned long long>(k);
+          if (radial) {
+            img.radial_count = count_;
+            img.axis_point = a;
+            img.axis_dir = axis;
+          } else {
+            img.extra_planes.push_back({a, axis});
+          }
+          SceneObject dup = source_copy;
+          dup.id = kNoObject;
+          dup.selected = false;
+          dup.Transform(NonSubDImageXform(img));
+          if (dup.user_text.count("Block")) dup.user_text["Mirrored"] = "1";
+          const ObjectId copy_id = ctx.Doc().Add(std::move(dup));
+          ctx.Doc().SetSymmetryLink(copy_id, id, a, n);
+          ctx.Doc().SymmetryLinks()[copy_id] = img;
+          ++made;
+          ++images_made;
+        }
+        continue;
+      }
       if (radial) {
-        if (!is_subd) { ++skipped; continue; }  // radial copies are a SubD-cage operation
         link.radial_count = count_;
         link.axis_point = a;
         link.axis_dir = axis;
@@ -2637,7 +2691,10 @@ class SymmetryCommand : public Command {
     ctx.Print("Symmetry: " + std::to_string(made) + " live " + (radial ? "radial" : two_plane ? "two-plane" : "mirrored") + " cop" + (made == 1 ? "y" : "ies") +
                " created" + (welded > 0 ? " (" + std::to_string(welded) + " welded into one SubD with creases kept" + detail + ")" : "") +
                " - editing the source half updates the symmetric result automatically (RemoveSymmetry breaks the link)" +
-               (skipped > 0 ? "; " + std::to_string(skipped) + " non-SubD object(s) skipped (radial symmetry needs a SubD cage)" : ""));
+               (images_made > 0 ? "; " + std::to_string(images_made) + " live image cop" + (images_made == 1 ? "y" : "ies") +
+                                      " of non-SubD object(s), each re-derived from its source by a " + (radial ? "rotation" : "reflection") + " about the " +
+                                      (radial ? "axis (" + std::to_string(count_) + "-fold)" : "two planes") : "") +
+               (skipped > 0 ? "; " + std::to_string(skipped) + " object(s) skipped" : ""));
     Finish();
   }
   void OnHover(CommandContext& ctx, Point3d h) override {
@@ -2695,7 +2752,7 @@ void UpdateSymmetryPairs(Document& doc) {
         continue;
       } catch (const std::exception&) {}
     }
-    RederiveMirroredCopy(*copy, *src, MirrorXform(link.plane_point, link.plane_normal));
+    RederiveMirroredCopy(*copy, *src, NonSubDImageXform(link));
     doc.Touch();
     ++it;
   }
