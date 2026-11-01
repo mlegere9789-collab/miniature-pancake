@@ -2021,7 +2021,7 @@ class DxfImporter {
       ++stats_.meshes;
       return;
     }
-    if (flags & 16) { ++stats_.skipped; return; }  // polygon mesh: not supported
+    if (flags & 16) { PolygonMesh(e, vertices); return; }
     std::vector<BulgeVertex> verts;
     for (const DxfEntity& v : vertices) {
       const int vf = v.I(70);
@@ -2041,16 +2041,109 @@ class DxfImporter {
     AddCurve(k, e);
   }
 
-  void Face(const DxfEntity& e) {
-    const int layer = LayerFor(e.S(8, "0"));
-    ON_Mesh& m = faces_[layer];
-    const Point3d p[4] = {e.P(10), e.P(11), e.P(12), e.Has(13) ? e.P(13) : e.P(12)};
+  // Appends one triangle/quad (p[3] == p[2] means a triangle) to `m`.
+  static void AppendFace(ON_Mesh& m, const Point3d p[4]) {
     const int base = m.VertexCount();
     ON_MeshFace f;
     for (int i = 0; i < 3; ++i) { m.m_V.Append(ON_3fPoint(p[i])); f.vi[i] = base + i; }
     if (p[3].DistanceTo(p[2]) > 1e-12) { m.m_V.Append(ON_3fPoint(p[3])); f.vi[3] = base + 3; }
     else f.vi[3] = f.vi[2];
     m.m_F.Append(f);
+  }
+
+  // Inside a BLOCK (depth_ > 0) the deferred per-layer meshes below are
+  // never visible to Insert(): its definition-template capture and its
+  // per-instance placement transform both look at objects added DURING the
+  // member walk, while FlushFaces only runs once at the very end of the
+  // file - so a 3DFACE/SOLID inside a block used to vanish from every
+  // instance. Block members therefore become their own mesh object right
+  // away (one per entity: blocks are small, and the placement transform
+  // needs them to exist as objects).
+  void EmitFaceNow(const ON_Mesh& m, const DxfEntity& e) {
+    kernel::Mesh k;
+    k.raw() = m;
+    k.raw().ComputeVertexNormals();
+    SceneObject o = SceneObject::MakeMesh(k);
+    ApplyAttributes(o, e);
+    doc_.Add(std::move(o));
+    ++stats_.meshes;
+  }
+
+  void Face(const DxfEntity& e) {
+    const Point3d p[4] = {e.P(10), e.P(11), e.P(12), e.Has(13) ? e.P(13) : e.P(12)};
+    if (depth_ > 0) {
+      ON_Mesh one;
+      AppendFace(one, p);
+      EmitFaceNow(one, e);
+      return;
+    }
+    AppendFace(faces_[LayerFor(e.S(8, "0"))], p);
+  }
+
+  // SOLID / TRACE: a filled 2D quadrilateral (three or four corners, group
+  // codes 10/11/12/13, expressed in the entity's OCS - extrusion direction
+  // group 210/220/230 - not world space). Previously this reader had no
+  // case for either entity at all, so every SOLID (arrowheads, filled
+  // plates and fills in third-party drawings) fell into the skipped count
+  // and vanished. NOTE the corner order: AutoCAD stores the corners as
+  // 1,2,4,3 - the 4th point (group 13) is diagonally OPPOSITE the 2nd, so
+  // the boundary walks 10 -> 11 -> 13 -> 12. Imported as a planar mesh
+  // face the same way a 3DFACE is (they share the per-layer mesh), so the
+  // area/bounding box of the original fill is preserved and a later
+  // ExportDxf writes it back out as a 3DFACE. A SOLID with a nonzero
+  // thickness (group 39, an extruded prism) is imported as its flat top
+  // face only - the extrusion is not rebuilt.
+  void Solid2d(const DxfEntity& e) {
+    Point3d c[4] = {e.P(10), e.P(11), e.Has(13) ? e.P(13) : e.P(12), e.P(12)};
+    if (e.Has(210) || e.Has(220) || e.Has(230)) {
+      const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), e.Normal());
+      for (Point3d& q : c) q = OcsToWorld(ocs, q);
+    }
+    // c[2] == c[3] when only three corners are given -> a triangle.
+    if (c[0].DistanceTo(c[1]) < 1e-12 && c[1].DistanceTo(c[2]) < 1e-12) { ++stats_.skipped; return; }
+    if (depth_ > 0) {
+      ON_Mesh one;
+      AppendFace(one, c);
+      EmitFaceNow(one, e);
+      return;
+    }
+    AppendFace(faces_[LayerFor(e.S(8, "0"))], c);
+  }
+
+  // POLYLINE with the polygon-mesh flag (70 bit 16): an M x N grid of
+  // vertices (group 71 = M, 72 = N; vertices are listed row-major, M-major:
+  // index = m * N + n), each cell a quad. Group 70 bit 1 closes the mesh in
+  // the M direction and bit 32 in the N direction (the last row/column wraps
+  // to the first). Previously this reader counted every polygon mesh as a
+  // skipped entity. Only the plain control-vertex mesh (smooth-surface type
+  // group 75 == 0) is rebuilt: with 75 = 5/6/8 (quadratic/cubic B-spline,
+  // Bezier) AutoCAD stores a control net that DISPLAYS as a smoothed
+  // surface, and approximating that net by its own faces would silently
+  // misreport the shape, so those stay in the skipped count. A vertex-count
+  // that does not equal M * N (a malformed file) is skipped too.
+  void PolygonMesh(const DxfEntity& e, const std::vector<DxfEntity>& vertices) {
+    const int M = e.I(71, 0), N = e.I(72, 0), flags = e.I(70);
+    if (M < 2 || N < 2 || e.I(75, 0) != 0) { ++stats_.skipped; return; }
+    std::vector<Point3d> grid;
+    for (const DxfEntity& v : vertices) {
+      if (v.I(70) & 16) continue;  // spline-frame control points, not mesh vertices
+      grid.push_back(v.P(10));
+    }
+    if (static_cast<long long>(grid.size()) != static_cast<long long>(M) * N) { ++stats_.skipped; return; }
+    ON_Mesh m;
+    for (const Point3d& p : grid) m.m_V.Append(ON_3fPoint(p));
+    const int mi_count = (flags & 1) ? M : M - 1;
+    const int ni_count = (flags & 32) ? N : N - 1;
+    for (int i = 0; i < mi_count; ++i) {
+      for (int j = 0; j < ni_count; ++j) {
+        const int i1 = (i + 1) % M, j1 = (j + 1) % N;
+        ON_MeshFace f;
+        f.vi[0] = i * N + j; f.vi[1] = i1 * N + j; f.vi[2] = i1 * N + j1; f.vi[3] = i * N + j1;
+        m.m_F.Append(f);
+      }
+    }
+    if (m.FaceCount() == 0) { ++stats_.skipped; return; }
+    EmitFaceNow(m, e);
   }
 
   void FlushFaces() {
@@ -2096,28 +2189,8 @@ class DxfImporter {
     for (; i < e.groups.size(); ++i) {
       if (e.groups[i].code == 92) { is_polyline = (std::atoi(e.groups[i].value.c_str()) & 2) != 0; ++i; break; }
     }
-    if (!is_polyline) { ++stats_.skipped; return; }  // edge-type (arc/spline) boundary: unsupported
-    bool has_bulge = false;
-    int nverts = -1;
-    for (; i < e.groups.size(); ++i) {
-      const DxfGroup& g = e.groups[i];
-      if (g.code == 72) has_bulge = std::atoi(g.value.c_str()) != 0;
-      else if (g.code == 93) { nverts = std::atoi(g.value.c_str()); ++i; break; }
-      else if (g.code == 10) break;  // no explicit 93 before the vertices: malformed, bail below
-    }
-    if (nverts < 3) { ++stats_.skipped; return; }
-    std::vector<BulgeVertex> verts;
-    for (; i < e.groups.size() && static_cast<int>(verts.size()) < nverts; ++i) {
-      if (e.groups[i].code != 10) continue;
-      BulgeVertex bv;
-      bv.p = Point3d(std::atof(e.groups[i].value.c_str()), 0, 0);
-      if (i + 1 < e.groups.size() && e.groups[i + 1].code == 20) { bv.p.y = std::atof(e.groups[i + 1].value.c_str()); ++i; }
-      if (has_bulge && i + 1 < e.groups.size() && e.groups[i + 1].code == 42) { bv.bulge = std::atof(e.groups[i + 1].value.c_str()); ++i; }
-      verts.push_back(bv);
-    }
-    if (static_cast<int>(verts.size()) != nverts) { ++stats_.skipped; return; }
     kernel::NurbsCurve boundary;
-    if (!BulgePolylineCurve(verts, /*closed=*/true, boundary)) { ++stats_.skipped; return; }
+    if (is_polyline ? !PolylineHatchBoundary(e, i, boundary) : !EdgeHatchBoundary(e, i, boundary)) { ++stats_.skipped; return; }
     const int layer = LayerFor(e.S(8, "0"));
     const double tol = doc_.Settings().absolute_tolerance;
     bool built = false;
@@ -2134,6 +2207,130 @@ class DxfImporter {
     }
     if (!built) { ++stats_.skipped; return; }
     ++stats_.hatches;
+  }
+
+  // Polyline-type boundary path (92 bit 0x2): `i` is the group index just
+  // past the 92 record.
+  bool PolylineHatchBoundary(const DxfEntity& e, size_t i, kernel::NurbsCurve& boundary) {
+    bool has_bulge = false;
+    int nverts = -1;
+    for (; i < e.groups.size(); ++i) {
+      const DxfGroup& g = e.groups[i];
+      if (g.code == 72) has_bulge = std::atoi(g.value.c_str()) != 0;
+      else if (g.code == 93) { nverts = std::atoi(g.value.c_str()); ++i; break; }
+      else if (g.code == 10) break;  // no explicit 93 before the vertices: malformed, bail below
+    }
+    if (nverts < 3) return false;
+    std::vector<BulgeVertex> verts;
+    for (; i < e.groups.size() && static_cast<int>(verts.size()) < nverts; ++i) {
+      if (e.groups[i].code != 10) continue;
+      BulgeVertex bv;
+      bv.p = Point3d(std::atof(e.groups[i].value.c_str()), 0, 0);
+      if (i + 1 < e.groups.size() && e.groups[i + 1].code == 20) { bv.p.y = std::atof(e.groups[i + 1].value.c_str()); ++i; }
+      if (has_bulge && i + 1 < e.groups.size() && e.groups[i + 1].code == 42) { bv.bulge = std::atof(e.groups[i + 1].value.c_str()); ++i; }
+      verts.push_back(bv);
+    }
+    if (static_cast<int>(verts.size()) != nverts) return false;
+    return BulgePolylineCurve(verts, /*closed=*/true, boundary);
+  }
+
+  // Edge-type boundary path (92 without bit 0x2): 93 = edge count, then per
+  // edge a 72 edge-type group followed by that edge's own fields:
+  //   72=1 line:         10/20 start, 11/21 end
+  //   72=2 circular arc: 10/20 centre, 40 radius, 50/51 start/end angle
+  //                      (degrees), 73 counter-clockwise flag
+  // Edges are chained by endpoint (either direction, within a tolerance
+  // proportional to the loop's own size) into one closed loop, because a
+  // real file does not guarantee head-to-tail order or orientation. This is
+  // what AutoCAD writes for any hatch whose boundary was picked from
+  // separate LINE/ARC objects rather than from a single closed polyline -
+  // previously every such hatch was skipped outright. Elliptic-arc (72=3)
+  // and spline (72=4) edges, a chain that breaks, and anything that does
+  // not close are declined (skipped), never guessed at.
+  bool EdgeHatchBoundary(const DxfEntity& e, size_t i, kernel::NurbsCurve& boundary) {
+    int nedges = -1;
+    for (; i < e.groups.size(); ++i) {
+      if (e.groups[i].code == 93) { nedges = std::atoi(e.groups[i].value.c_str()); ++i; break; }
+    }
+    if (nedges < 2 || nedges > 100000) return false;
+    struct Edge { int type = 0; double v[8] = {0, 0, 0, 0, 0, 0, 0, 0}; int ccw = 1; };
+    // v: 0=x10 1=y20 2=x11 3=y21 4=r40 5=a50 6=a51
+    std::vector<Edge> edges;
+    for (; i < e.groups.size(); ++i) {
+      const DxfGroup& g = e.groups[i];
+      if (g.code == 97 || g.code == 75 || g.code == 76 || g.code == 98) break;  // past the boundary path
+      const double d = std::atof(g.value.c_str());
+      if (g.code == 72) { edges.emplace_back(); edges.back().type = static_cast<int>(d); continue; }
+      if (edges.empty()) continue;
+      Edge& ed = edges.back();
+      switch (g.code) {
+        case 10: ed.v[0] = d; break;
+        case 20: ed.v[1] = d; break;
+        case 11: ed.v[2] = d; break;
+        case 21: ed.v[3] = d; break;
+        case 40: ed.v[4] = d; break;
+        case 50: ed.v[5] = d; break;
+        case 51: ed.v[6] = d; break;
+        case 73: ed.ccw = static_cast<int>(d); break;
+        default: break;
+      }
+    }
+    if (static_cast<int>(edges.size()) != nedges) return false;
+    std::vector<std::unique_ptr<ON_Curve>> segs;
+    ON_BoundingBox bb;
+    for (const Edge& ed : edges) {
+      std::unique_ptr<ON_Curve> c;
+      if (ed.type == 1) {
+        const Point3d a(ed.v[0], ed.v[1], 0), b(ed.v[2], ed.v[3], 0);
+        if (a.DistanceTo(b) < 1e-12) continue;
+        c.reset(new ON_LineCurve(a, b));
+      } else if (ed.type == 2) {
+        if (ed.v[4] <= 0) return false;
+        double a0 = ON_DEGREES_TO_RADIANS * ed.v[5], a1 = ON_DEGREES_TO_RADIANS * ed.v[6];
+        if (!ed.ccw) std::swap(a0, a1);  // a clockwise edge sweeps the same set as the ccw arc end -> start
+        while (a1 <= a0 + 1e-12) a1 += 2.0 * ON_PI;
+        if (a1 - a0 > 2.0 * ON_PI) a1 = a0 + 2.0 * ON_PI;
+        ON_Arc arc(ON_Circle(ON_Plane(Point3d(ed.v[0], ed.v[1], 0), ON_xaxis, ON_yaxis), ed.v[4]), ON_Interval(a0, a1));
+        if (!arc.IsValid()) return false;
+        c.reset(new ON_ArcCurve(arc));
+      } else {
+        return false;  // elliptic arc / spline edge
+      }
+      bb.Union(c->BoundingBox());
+      segs.push_back(std::move(c));
+    }
+    if (segs.size() < 2) return false;
+    const double jt = std::max(1e-9, 1e-6 * bb.Diagonal().Length());
+    ON_PolyCurve pc;
+    std::vector<bool> used(segs.size(), false);
+    pc.Append(segs[0].release());
+    used[0] = true;
+    for (size_t placed = 1; placed < segs.size(); ++placed) {
+      const Point3d tail = pc.PointAtEnd();
+      bool found = false;
+      for (size_t k = 0; k < segs.size() && !found; ++k) {
+        if (used[k]) continue;
+        if (segs[k]->PointAtStart().DistanceTo(tail) <= jt) found = true;
+        else if (segs[k]->PointAtEnd().DistanceTo(tail) <= jt) { segs[k]->Reverse(); found = true; }
+        if (found) { used[k] = true; pc.Append(segs[k].release()); }
+      }
+      if (!found) return false;  // chain breaks: not one loop
+    }
+    if (pc.PointAtStart().DistanceTo(pc.PointAtEnd()) > jt) return false;  // open loop
+    // An all-LINE loop is the same polygon the polyline-path produces, so
+    // build it as the same plain polyline (not a PolyCurve of separate
+    // segments): everything downstream that recognises a hatch boundary as a
+    // polyline - notably ExportDxf's own HATCH writer - then treats it
+    // identically.
+    bool all_lines = true;
+    for (const Edge& ed : edges) if (ed.type != 1) all_lines = false;
+    if (all_lines) {
+      ON_Polyline pl;
+      for (int k = 0; k < pc.Count(); ++k) pl.Append(pc.SegmentCurve(k)->PointAtStart());
+      pl.Append(pl[0]);
+      return CurveFromON(ON_PolylineCurve(pl), boundary);
+    }
+    return CurveFromON(pc, boundary);
   }
 
   // DIMENSION: rebuilds a real, live/re-measurable Dino8 dimension
@@ -2478,6 +2675,7 @@ class DxfImporter {
     else if (t == "LWPOLYLINE") LwPolyline(e);
     else if (t == "POLYLINE") Polyline(e, vertices);
     else if (t == "3DFACE") Face(e);
+    else if (t == "SOLID" || t == "TRACE") Solid2d(e);
     else if (t == "HATCH") Hatch(e);
     else if (t == "DIMENSION") Dimension(e);
     else if (t == "LEADER") Leader(e);
