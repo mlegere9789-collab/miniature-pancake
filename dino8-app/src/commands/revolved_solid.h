@@ -4,6 +4,7 @@
 // cmd_surface.cpp (OffsetSrf, Shell) and cmd_fillet.cpp (ChamferEdge on a cone / frustum rim).
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <optional>
 #include <utility>
